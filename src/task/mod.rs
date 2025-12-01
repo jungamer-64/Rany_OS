@@ -85,29 +85,41 @@ static WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
 
 unsafe fn waker_clone(data: *const ()) -> RawWaker {
     // Arc::cloneと同等の処理
-    let arc = Arc::from_raw(data as *const TaskWaker);
-    let cloned = arc.clone();
-    core::mem::forget(arc); // from_rawで作ったArcはforgetする
-    RawWaker::new(Arc::into_raw(cloned) as *const (), &WAKER_VTABLE)
+    // SAFETY: dataはArc::into_rawで変換されたポインタ
+    unsafe {
+        let arc = Arc::from_raw(data as *const TaskWaker);
+        let cloned = arc.clone();
+        core::mem::forget(arc); // from_rawで作ったArcはforgetする
+        RawWaker::new(Arc::into_raw(cloned) as *const (), &WAKER_VTABLE)
+    }
 }
 
 unsafe fn waker_wake(data: *const ()) {
     // 所有権を取得してwake
-    let arc = Arc::from_raw(data as *const TaskWaker);
-    arc.wake_task();
-    // Arcは自動的にdropされる
+    // SAFETY: dataはArc::into_rawで変換されたポインタ
+    unsafe {
+        let arc = Arc::from_raw(data as *const TaskWaker);
+        arc.wake_task();
+        // Arcは自動的にdropされる
+    }
 }
 
 unsafe fn waker_wake_by_ref(data: *const ()) {
     // 参照としてwake
-    let arc = Arc::from_raw(data as *const TaskWaker);
-    arc.wake_task();
-    core::mem::forget(arc); // from_rawで作ったArcはforgetする
+    // SAFETY: dataはArc::into_rawで変換されたポインタ
+    unsafe {
+        let arc = Arc::from_raw(data as *const TaskWaker);
+        arc.wake_task();
+        core::mem::forget(arc); // from_rawで作ったArcはforgetする
+    }
 }
 
 unsafe fn waker_drop(data: *const ()) {
     // Arc をdrop
-    drop(Arc::from_raw(data as *const TaskWaker));
+    // SAFETY: dataはArc::into_rawで変換されたポインタ
+    unsafe {
+        drop(Arc::from_raw(data as *const TaskWaker));
+    }
 }
 
 /// Wakerを作成する公開API

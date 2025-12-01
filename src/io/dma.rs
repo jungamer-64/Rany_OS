@@ -270,7 +270,8 @@ impl<'a> DmaGuard<'a> {
     /// # Safety
     /// DMA転送が実際に開始されることを保証する必要がある
     pub unsafe fn begin(buffer: &'a DmaSlice) -> Self {
-        buffer.transfer_to_device();
+        // SAFETY: 呼び出し元がDMA転送の安全性を保証
+        unsafe { buffer.transfer_to_device(); }
         Self { buffer }
     }
     
@@ -370,7 +371,8 @@ impl SgList {
     /// 全バッファをデバイスに転送
     pub unsafe fn transfer_all_to_device(&self) {
         for buffer in &self.buffers {
-            buffer.transfer_to_device();
+            // SAFETY: 呼び出し元がDMA転送の安全性を保証
+            unsafe { buffer.transfer_to_device(); }
         }
     }
     

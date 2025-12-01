@@ -15,6 +15,7 @@ mod io;
 mod loader;
 mod net;
 mod panic_handler;
+mod sync;
 
 // ipc モジュールは ipc/ ディレクトリを使用
 mod ipc {
