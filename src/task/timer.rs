@@ -7,7 +7,6 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use spin::Mutex;
 
 /// グローバルなタイマーティック（1ms単位）

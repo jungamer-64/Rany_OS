@@ -4,7 +4,6 @@
 // ============================================================================
 
 use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 use alloc::alloc::{alloc, dealloc, Layout};

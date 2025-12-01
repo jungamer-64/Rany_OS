@@ -8,8 +8,6 @@
 // - cpu_id引数が不要になり、APIが簡素化
 // ============================================================================
 use core::arch::asm;
-use core::ptr::NonNull;
-use core::alloc::Layout;
 use spin::Mutex;
 
 /// Per-CPUデータ構造
