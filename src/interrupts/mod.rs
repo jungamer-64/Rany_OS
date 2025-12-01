@@ -221,16 +221,32 @@ use core::sync::atomic::AtomicU64;
 pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 
 /// タイマー割り込みハンドラ
+/// 
+/// 仕様書 4.2: プリエンプション制御との統合
+/// - タイマーティックの管理
+/// - タスクの時間スライス減少
+/// - 必要に応じてプリエンプション要求
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // タイマーティックを増加
-    let _tick = TIMER_TICKS.fetch_add(1, Ordering::SeqCst);
+    let tick = TIMER_TICKS.fetch_add(1, Ordering::SeqCst);
     
-    // TODO: スケジューラのタイマーティック処理
-    // crate::task::scheduler::timer_tick();
+    // プリエンプションシステムにタイマーティックを通知
+    // これにより時間スライスが減少し、必要に応じてプリエンプションが要求される
+    crate::task::preemption::handle_timer_tick(tick);
+    
+    // タスクタイマーシステムにも通知（将来のタイマー処理用）
+    // TODO: crate::task::timer::process_timers(tick);
     
     // EOI (End Of Interrupt) を送信
     unsafe {
         PICS.lock().notify_end_of_interrupt(InterruptVector::Timer as u8);
+    }
+    
+    // プリエンプションが要求されていて、割り込み可能な状態なら
+    // タスク切り替えを試みる
+    if crate::task::preemption::should_preempt() {
+        // 協調的yield（割り込みハンドラ終了後に実行）
+        crate::task::preemption::request_yield();
     }
 }
 

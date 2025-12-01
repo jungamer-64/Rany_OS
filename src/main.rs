@@ -15,6 +15,10 @@ mod interrupts;
 mod io;
 mod loader;
 mod net;
+mod fs;
+mod smp;
+mod spectre;
+mod unwind;
 mod panic_handler;
 mod sync;
 mod domain_system;
@@ -64,6 +68,11 @@ pub extern "C" fn _start() -> ! {
     loader::init_kernel_cell();
     register_kernel_symbols();
     log!("[OK] Cell loader initialized\n");
+    
+    // 5.5. シンボルテーブルの初期化（バックトレース用）
+    log!("[INIT] Initializing symbol table\n");
+    unwind::init_symbol_table();
+    log!("[OK] Symbol table initialized\n");
     
     // 6. 割り込みを有効化
     interrupts::enable_interrupts();

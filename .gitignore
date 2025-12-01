@@ -7,3 +7,8 @@
 # Added by cargo
 
 /target
+
+/.serena
+/.github/instructions
+*result*
+*.log

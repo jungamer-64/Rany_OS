@@ -122,14 +122,40 @@ pub struct PreemptionStats {
 /// グローバルプリエンプションコントローラ
 static PREEMPTION_CONTROLLER: PreemptionController = PreemptionController::new();
 
+/// プリエンプション要求フラグ（割り込みハンドラ外で処理するため）
+static YIELD_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 /// プリエンプションコントローラを取得
 pub fn preemption_controller() -> &'static PreemptionController {
     &PREEMPTION_CONTROLLER
 }
 
 /// タイマー割り込みハンドラから呼ばれる
+/// タスクの時間スライスをチェックし、必要に応じてプリエンプションをスケジュール
 pub fn handle_timer_tick(current_tick: u64) {
     PREEMPTION_CONTROLLER.check_time_slice(current_tick);
+}
+
+/// プリエンプションが必要かどうか（割り込みハンドラから呼ばれる）
+pub fn should_preempt() -> bool {
+    PREEMPTION_CONTROLLER.should_preempt()
+}
+
+/// Yield要求をセット（割り込みハンドラから呼ばれる）
+/// 割り込みハンドラ内では実際のyieldを行わず、フラグを立てるだけ
+pub fn request_yield() {
+    YIELD_REQUESTED.store(true, Ordering::Release);
+}
+
+/// Yield要求をチェックしてクリア
+/// ExecutorのメインループやYieldポイントで呼ばれる
+pub fn check_and_clear_yield_request() -> bool {
+    YIELD_REQUESTED.swap(false, Ordering::AcqRel)
+}
+
+/// タスク開始を通知（Executorから呼ばれる）
+pub fn notify_task_started(current_tick: u64) {
+    PREEMPTION_CONTROLLER.task_started(current_tick);
 }
 
 /// Yieldポイント

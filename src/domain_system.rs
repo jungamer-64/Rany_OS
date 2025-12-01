@@ -219,10 +219,13 @@ impl DomainRegistry {
 static REGISTRY: Mutex<DomainRegistry> = Mutex::new(DomainRegistry::new());
 
 // ============================================================================
-// ヒープレジストリ（RRef追跡）
+// ヒープレジストリ（RRef追跡）- sas/heap_registryの統合版を使用
 // ============================================================================
 
-/// ヒープエントリ
+// NOTE: domain_systemレベルのHeapEntryは簡易追跡用
+// 完全版はsas/heap_registryを使用
+
+/// ヒープエントリ（簡易版）
 #[derive(Debug, Clone, Copy)]
 struct HeapEntry {
     ptr: usize,
@@ -230,7 +233,9 @@ struct HeapEntry {
     owner: DomainId,
 }
 
-/// ヒープレジストリ
+/// ドメインレベルのヒープ追跡（簡易版）
+/// 注: より高度な追跡（型安全、世代管理、参照カウント）は
+/// sas::heap_registry::HeapRegistry を使用すること
 struct HeapRegistry {
     entries: BTreeMap<usize, HeapEntry>,
 }

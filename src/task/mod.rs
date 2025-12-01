@@ -24,6 +24,8 @@ pub use preemption::{
     PreemptionController, preemption_controller,
     handle_timer_tick, yield_point, voluntary_yield,
     YieldNow, yield_now, CpuTimeTracker, AdaptiveTimeSlice, PreemptionStats,
+    // 新規追加: タイマー割り込み統合用
+    should_preempt, request_yield, check_and_clear_yield_request, notify_task_started,
 };
 #[allow(unused_imports)]
 pub use context::{CpuContext, TaskControlBlock, TaskState, KernelStack};
