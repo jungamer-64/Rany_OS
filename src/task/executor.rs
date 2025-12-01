@@ -372,14 +372,3 @@ pub struct ExecutorStatsSnapshot {
 pub fn get_executor_stats() -> ExecutorStatsSnapshot {
     EXECUTOR_STATS.snapshot()
 }
-
-// ============================================================================
-// レガシーAPI（互換性のため）
-// ============================================================================
-
-/// グローバルキューにタスクを追加（レガシー）
-#[deprecated(note = "Use Executor::spawn_global instead")]
-pub fn spawn_global(task: Task) {
-    Executor::spawn_global(task);
-}
-

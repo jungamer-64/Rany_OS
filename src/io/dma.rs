@@ -30,7 +30,7 @@
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::Ordering;
 use alloc::alloc::{alloc, dealloc, Layout};
 use x86_64::PhysAddr;
 
@@ -221,167 +221,22 @@ impl<T> TypedDmaGuard<T> {
 }
 
 // ============================================================================
-// 従来のDMAバッファ（後方互換性）
+// 型安全なDMAスライス
 // ============================================================================
 
-/// DMAバッファの状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DmaBufferState {
-    /// CPUが所有（読み書き可能）
-    OwnedByCpu,
-    /// デバイスが所有（DMA転送中）
-    OwnedByDevice,
-    /// 同期待ち
-    SyncPending,
-}
-
-/// DMAバッファ（ランタイムチェック版）
-/// 設計書 5.4: Pinningと所有権
-/// - メモリ上の移動を禁止（Pin）
-/// - DMA転送中はCPUからのアクセスを型システムで禁止
-pub struct DmaBuffer<T> {
-    /// バッファへのポインタ
-    ptr: NonNull<T>,
-    /// 物理アドレス（DMAエンジン用）
-    phys_addr: PhysAddr,
-    /// サイズ
-    size: usize,
-    /// 現在の所有者
-    state: AtomicBool, // true = CPU, false = Device
-    /// レイアウト（解放時に使用）
-    layout: Layout,
-    _marker: PhantomData<T>,
-}
-
-// Sendは許可（別コアに転送可能）だがSyncは許可しない（同時アクセス不可）
-unsafe impl<T: Send> Send for DmaBuffer<T> {}
-
-impl<T> DmaBuffer<T> {
-    /// 新しいDMAバッファを割り当て
-    /// 
-    /// # Safety
-    /// DMAに適したアライメントでメモリを割り当てる
-    pub fn new(value: T) -> Option<Self> {
-        let size = core::mem::size_of::<T>();
-        let layout = Layout::from_size_align(size.max(1), DMA_ALIGNMENT).ok()?;
-        
-        let ptr = unsafe { alloc(layout) };
-        if ptr.is_null() {
-            return None;
-        }
-        
-        // 値を書き込む
-        unsafe {
-            core::ptr::write(ptr as *mut T, value);
-        }
-        
-        // 物理アドレスを計算（SAS環境では仮想=物理のオフセット）
-        let phys_addr = PhysAddr::new(ptr as u64); // TODO: 実際の変換
-        
-        Some(Self {
-            ptr: unsafe { NonNull::new_unchecked(ptr as *mut T) },
-            phys_addr,
-            size,
-            state: AtomicBool::new(true), // 初期状態はCPU所有
-            layout,
-            _marker: PhantomData,
-        })
-    }
-    
-    /// 物理アドレスを取得
-    pub fn phys_addr(&self) -> PhysAddr {
-        self.phys_addr
-    }
-    
-    /// サイズを取得
-    pub fn size(&self) -> usize {
-        self.size
-    }
-    
-    /// 現在の状態を取得
-    pub fn state(&self) -> DmaBufferState {
-        if self.state.load(Ordering::Acquire) {
-            DmaBufferState::OwnedByCpu
-        } else {
-            DmaBufferState::OwnedByDevice
-        }
-    }
-    
-    /// CPUが所有しているかどうか
-    pub fn is_owned_by_cpu(&self) -> bool {
-        self.state.load(Ordering::Acquire)
-    }
-    
-    /// デバイスに所有権を移動（DMA転送開始）
-    /// 
-    /// # Safety
-    /// この関数を呼んだ後、DMA転送が完了するまでバッファにアクセスしてはならない
-    pub unsafe fn transfer_to_device(&self) {
-        // メモリバリアを発行してCPUキャッシュをフラッシュ
-        core::sync::atomic::fence(Ordering::Release);
-        self.state.store(false, Ordering::Release);
-    }
-    
-    /// デバイスからCPUに所有権を返却（DMA転送完了）
-    pub fn transfer_to_cpu(&self) {
-        self.state.store(true, Ordering::Release);
-        // メモリバリアを発行してデバイスの書き込みを可視化
-        core::sync::atomic::fence(Ordering::Acquire);
-    }
-    
-    /// CPUが所有している場合のみ参照を取得
-    pub fn try_as_ref(&self) -> Option<&T> {
-        if self.is_owned_by_cpu() {
-            Some(unsafe { self.ptr.as_ref() })
-        } else {
-            None
-        }
-    }
-    
-    /// CPUが所有している場合のみ可変参照を取得
-    pub fn try_as_mut(&mut self) -> Option<&mut T> {
-        if self.is_owned_by_cpu() {
-            Some(unsafe { self.ptr.as_mut() })
-        } else {
-            None
-        }
-    }
-}
-
-impl<T> Drop for DmaBuffer<T> {
-    fn drop(&mut self) {
-        // デバイスが所有している場合は警告（本来はエラーにすべき）
-        if !self.is_owned_by_cpu() {
-            // パニックではなくログを出力
-            // デバイスがまだ使用中の可能性があるため
-        }
-        
-        unsafe {
-            // デストラクタを呼び出し
-            core::ptr::drop_in_place(self.ptr.as_ptr());
-            // メモリを解放
-            dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
-        }
-    }
-}
-
-// ============================================================================
-// DmaSlice - スライス用のDMAバッファ
-// ============================================================================
-
-/// DMAスライスバッファ
-pub struct DmaSlice {
+/// 型状態付きDMAスライスバッファ
+pub struct TypedDmaSlice<State: DmaState> {
     ptr: NonNull<u8>,
     phys_addr: PhysAddr,
     size: usize,
-    state: AtomicBool,
     layout: Layout,
+    _state: PhantomData<State>,
 }
 
-unsafe impl Send for DmaSlice {}
+unsafe impl<State: DmaState> Send for TypedDmaSlice<State> {}
 
-impl DmaSlice {
-    /// 指定サイズのDMAバッファを割り当て
+impl TypedDmaSlice<CpuOwned> {
+    /// 指定サイズのDMAスライスを割り当て
     pub fn new(size: usize) -> Option<Self> {
         let layout = Layout::from_size_align(size, DMA_ALIGNMENT).ok()?;
         
@@ -401,11 +256,57 @@ impl DmaSlice {
             ptr: unsafe { NonNull::new_unchecked(ptr) },
             phys_addr,
             size,
-            state: AtomicBool::new(true),
             layout,
+            _state: PhantomData,
         })
     }
     
+    /// スライスとして取得（CPU所有時のみ）
+    pub fn as_slice(&self) -> &[u8] {
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.size) }
+    }
+    
+    /// 可変スライスとして取得（CPU所有時のみ）
+    pub fn as_mut_slice(&mut self) -> &mut [u8] {
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size) }
+    }
+    
+    /// DMA転送を開始
+    pub fn start_dma(self) -> TypedDmaSlice<DeviceOwned> {
+        core::sync::atomic::fence(Ordering::Release);
+        
+        let result = TypedDmaSlice {
+            ptr: self.ptr,
+            phys_addr: self.phys_addr,
+            size: self.size,
+            layout: self.layout,
+            _state: PhantomData,
+        };
+        
+        core::mem::forget(self);
+        result
+    }
+}
+
+impl TypedDmaSlice<DeviceOwned> {
+    /// DMA転送完了
+    pub fn complete_dma(self) -> TypedDmaSlice<CpuOwned> {
+        core::sync::atomic::fence(Ordering::Acquire);
+        
+        let result = TypedDmaSlice {
+            ptr: self.ptr,
+            phys_addr: self.phys_addr,
+            size: self.size,
+            layout: self.layout,
+            _state: PhantomData,
+        };
+        
+        core::mem::forget(self);
+        result
+    }
+}
+
+impl<State: DmaState> TypedDmaSlice<State> {
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
@@ -420,44 +321,9 @@ impl DmaSlice {
     pub fn is_empty(&self) -> bool {
         self.size == 0
     }
-    
-    /// CPUが所有しているかどうか
-    pub fn is_owned_by_cpu(&self) -> bool {
-        self.state.load(Ordering::Acquire)
-    }
-    
-    /// デバイスに所有権を移動
-    pub unsafe fn transfer_to_device(&self) {
-        core::sync::atomic::fence(Ordering::Release);
-        self.state.store(false, Ordering::Release);
-    }
-    
-    /// CPUに所有権を返却
-    pub fn transfer_to_cpu(&self) {
-        self.state.store(true, Ordering::Release);
-        core::sync::atomic::fence(Ordering::Acquire);
-    }
-    
-    /// スライスとして取得（CPU所有時のみ）
-    pub fn as_slice(&self) -> Option<&[u8]> {
-        if self.is_owned_by_cpu() {
-            Some(unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.size) })
-        } else {
-            None
-        }
-    }
-    
-    /// 可変スライスとして取得（CPU所有時のみ）
-    pub fn as_mut_slice(&mut self) -> Option<&mut [u8]> {
-        if self.is_owned_by_cpu() {
-            Some(unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size) })
-        } else {
-            None
-        }
-    }
 }
 
-impl Drop for DmaSlice {
+impl<State: DmaState> Drop for TypedDmaSlice<State> {
     fn drop(&mut self) {
         unsafe {
             dealloc(self.ptr.as_ptr(), self.layout);
@@ -466,50 +332,7 @@ impl Drop for DmaSlice {
 }
 
 // ============================================================================
-// DmaGuard - RAII型のDMA転送ガード
-// ============================================================================
-
-/// DMA転送のRAIIガード
-/// 設計書 5.4: DMA転送を開始する際、バッファの所有権を論理的に「ドライバ（ハードウェア）」に移動
-pub struct DmaGuard<'a> {
-    buffer: &'a DmaSlice,
-}
-
-impl<'a> DmaGuard<'a> {
-    /// DMA転送を開始
-    /// 
-    /// # Safety
-    /// DMA転送が実際に開始されることを保証する必要がある
-    pub unsafe fn begin(buffer: &'a DmaSlice) -> Self {
-        // SAFETY: 呼び出し元がDMA転送の安全性を保証
-        unsafe { buffer.transfer_to_device(); }
-        Self { buffer }
-    }
-    
-    /// 物理アドレスを取得（DMAエンジンに渡す用）
-    pub fn phys_addr(&self) -> PhysAddr {
-        self.buffer.phys_addr()
-    }
-    
-    /// サイズを取得
-    pub fn len(&self) -> usize {
-        self.buffer.len()
-    }
-    
-    /// DMA転送完了をマーク
-    pub fn complete(self) {
-        // Dropで自動的にCPUに所有権が戻る
-    }
-}
-
-impl<'a> Drop for DmaGuard<'a> {
-    fn drop(&mut self) {
-        self.buffer.transfer_to_cpu();
-    }
-}
-
-// ============================================================================
-// Scatter-Gather DMA
+// Scatter-Gather DMA（型安全版）
 // ============================================================================
 
 /// Scatter-Gather DMA記述子
@@ -524,23 +347,25 @@ pub struct SgEntry {
     pub flags: u32,
 }
 
-/// Scatter-Gather DMAリスト
-pub struct SgList {
+/// Scatter-Gather DMAリスト（型安全版）
+pub struct TypedSgList<State: DmaState> {
     entries: alloc::vec::Vec<SgEntry>,
-    buffers: alloc::vec::Vec<DmaSlice>,
+    buffers: alloc::vec::Vec<TypedDmaSlice<State>>,
+    _state: PhantomData<State>,
 }
 
-impl SgList {
+impl TypedSgList<CpuOwned> {
     pub fn new() -> Self {
         Self {
             entries: alloc::vec::Vec::new(),
             buffers: alloc::vec::Vec::new(),
+            _state: PhantomData,
         }
     }
     
     /// バッファを追加
     pub fn add_buffer(&mut self, size: usize) -> Option<usize> {
-        let buffer = DmaSlice::new(size)?;
+        let buffer = TypedDmaSlice::new(size)?;
         let entry = SgEntry {
             phys_addr: buffer.phys_addr().as_u64(),
             size: size as u32,
@@ -554,6 +379,52 @@ impl SgList {
         Some(index)
     }
     
+    /// バッファにアクセス
+    pub fn buffer(&self, index: usize) -> Option<&TypedDmaSlice<CpuOwned>> {
+        self.buffers.get(index)
+    }
+    
+    /// バッファに可変アクセス
+    pub fn buffer_mut(&mut self, index: usize) -> Option<&mut TypedDmaSlice<CpuOwned>> {
+        self.buffers.get_mut(index)
+    }
+    
+    /// 全バッファをデバイスに転送
+    pub fn start_dma(self) -> TypedSgList<DeviceOwned> {
+        core::sync::atomic::fence(Ordering::Release);
+        
+        let buffers: alloc::vec::Vec<TypedDmaSlice<DeviceOwned>> = self.buffers
+            .into_iter()
+            .map(|b| b.start_dma())
+            .collect();
+        
+        TypedSgList {
+            entries: self.entries,
+            buffers,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl TypedSgList<DeviceOwned> {
+    /// 全バッファをCPUに返却
+    pub fn complete_dma(self) -> TypedSgList<CpuOwned> {
+        core::sync::atomic::fence(Ordering::Acquire);
+        
+        let buffers: alloc::vec::Vec<TypedDmaSlice<CpuOwned>> = self.buffers
+            .into_iter()
+            .map(|b| b.complete_dma())
+            .collect();
+        
+        TypedSgList {
+            entries: self.entries,
+            buffers,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl<State: DmaState> TypedSgList<State> {
     /// エントリ数を取得
     pub fn len(&self) -> usize {
         self.entries.len()
@@ -568,34 +439,9 @@ impl SgList {
     pub fn entries(&self) -> &[SgEntry] {
         &self.entries
     }
-    
-    /// バッファにアクセス
-    pub fn buffer(&self, index: usize) -> Option<&DmaSlice> {
-        self.buffers.get(index)
-    }
-    
-    /// バッファに可変アクセス
-    pub fn buffer_mut(&mut self, index: usize) -> Option<&mut DmaSlice> {
-        self.buffers.get_mut(index)
-    }
-    
-    /// 全バッファをデバイスに転送
-    pub unsafe fn transfer_all_to_device(&self) {
-        for buffer in &self.buffers {
-            // SAFETY: 呼び出し元がDMA転送の安全性を保証
-            unsafe { buffer.transfer_to_device(); }
-        }
-    }
-    
-    /// 全バッファをCPUに返却
-    pub fn transfer_all_to_cpu(&self) {
-        for buffer in &self.buffers {
-            buffer.transfer_to_cpu();
-        }
-    }
 }
 
-impl Default for SgList {
+impl Default for TypedSgList<CpuOwned> {
     fn default() -> Self {
         Self::new()
     }
@@ -606,35 +452,45 @@ mod tests {
     use super::*;
     
     #[test]
-    fn test_dma_buffer() {
-        let buffer = DmaBuffer::new(42u32).expect("Failed to allocate DMA buffer");
+    fn test_typed_dma_buffer() {
+        let buffer = TypedDmaBuffer::<u32, CpuOwned>::new(42).expect("Failed to allocate");
         
-        assert!(buffer.is_owned_by_cpu());
-        assert_eq!(*buffer.try_as_ref().unwrap(), 42);
+        // CPU所有状態ではアクセス可能
+        assert_eq!(*buffer.as_ref(), 42);
         
-        unsafe { buffer.transfer_to_device(); }
-        assert!(!buffer.is_owned_by_cpu());
-        assert!(buffer.try_as_ref().is_none());
+        // DMA転送開始
+        let (device_buffer, guard) = buffer.start_dma();
+        let _phys = guard.phys_addr();
         
-        buffer.transfer_to_cpu();
-        assert!(buffer.is_owned_by_cpu());
-        assert_eq!(*buffer.try_as_ref().unwrap(), 42);
+        // DeviceOwned状態では as_ref() がコンパイルエラーになる
+        // （ここでは確認のためコメントアウト）
+        // device_buffer.as_ref(); // ERROR!
+        
+        // DMA転送完了
+        let buffer = device_buffer.complete_dma();
+        assert_eq!(*buffer.as_ref(), 42);
     }
     
     #[test]
-    fn test_dma_slice() {
-        let mut slice = DmaSlice::new(4096).expect("Failed to allocate DMA slice");
+    fn test_typed_dma_slice() {
+        let mut slice = TypedDmaSlice::<CpuOwned>::new(4096).expect("Failed to allocate");
         
         // データを書き込み
-        if let Some(s) = slice.as_mut_slice() {
+        {
+            let s = slice.as_mut_slice();
             s[0] = 0xDE;
             s[1] = 0xAD;
         }
         
         // 確認
-        if let Some(s) = slice.as_slice() {
-            assert_eq!(s[0], 0xDE);
-            assert_eq!(s[1], 0xAD);
-        }
+        assert_eq!(slice.as_slice()[0], 0xDE);
+        assert_eq!(slice.as_slice()[1], 0xAD);
+        
+        // DMA転送
+        let device_slice = slice.start_dma();
+        // device_slice.as_slice(); // ERROR! DeviceOwnedでは不可
+        
+        let cpu_slice = device_slice.complete_dma();
+        assert_eq!(cpu_slice.as_slice()[0], 0xDE);
     }
 }

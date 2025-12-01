@@ -13,5 +13,8 @@ pub use polling::{
 };
 #[allow(unused_imports)]
 pub use dma::{
-    DmaBuffer, DmaBufferState, DmaSlice, DmaGuard, SgEntry, SgList,
+    // 型安全DMA（型状態パターン）
+    TypedDmaBuffer, TypedDmaSlice, TypedDmaGuard, TypedSgList,
+    CpuOwned, DeviceOwned, DmaState,
+    SgEntry,
 };
