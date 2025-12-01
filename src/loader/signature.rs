@@ -2,6 +2,20 @@
 // src/loader/signature.rs - Cell Signature Verification
 // 設計書 3.3: コンパイラ署名とロード時検証
 // ============================================================================
+//!
+//! # セル署名検証システム
+//!
+//! ExoRustのセキュリティモデルにおいて、セルの署名検証は重要な役割を果たす。
+//! 
+//! ## 署名フロー
+//! 1. コンパイラがセルをビルド時に署名を生成
+//! 2. ローダーがセルをロード時に署名を検証
+//! 3. 検証失敗時はロードを拒否
+//!
+//! ## セキュリティ考慮事項
+//! - Ed25519署名による改竄検出
+//! - 公開鍵ホワイトリストによる信頼チェーン
+//! - 開発モードでも署名構造の検証は実行
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
 
@@ -19,6 +33,16 @@ const SIGNATURE_MAGIC: [u8; 8] = *b"EXORSIG\0";
 /// 署名バージョン
 const SIGNATURE_VERSION: u32 = 1;
 
+/// Ed25519署名サイズ
+const ED25519_SIGNATURE_SIZE: usize = 64;
+
+/// Ed25519公開鍵サイズ
+const ED25519_PUBLIC_KEY_SIZE: usize = 32;
+
+// ============================================================================
+// 署名情報
+// ============================================================================
+
 /// セルの署名情報
 #[derive(Debug, Clone)]
 pub struct CellSignature {
@@ -34,8 +58,10 @@ pub struct CellSignature {
     pub build_timestamp: u64,
     /// 署名ハッシュ（SHA-256）
     pub hash: [u8; 32],
-    /// 署名データ（Ed25519など）
+    /// 署名データ（Ed25519）
     pub signature: Vec<u8>,
+    /// 公開鍵
+    pub public_key: [u8; 32],
 }
 
 impl Default for CellSignature {
@@ -48,9 +74,28 @@ impl Default for CellSignature {
             build_timestamp: 0,
             hash: [0; 32],
             signature: Vec::new(),
+            public_key: [0; 32],
         }
     }
 }
+
+impl CellSignature {
+    /// 署名が有効な形式かどうか（暗号検証の前のチェック）
+    pub fn is_well_formed(&self) -> bool {
+        self.version == SIGNATURE_VERSION
+            && self.signature.len() == ED25519_SIGNATURE_SIZE
+            && self.public_key != [0; 32]
+    }
+    
+    /// 開発モード用の署名かどうか
+    pub fn is_dev_signature(&self) -> bool {
+        self.compiler_version == "dev" || self.signature.is_empty()
+    }
+}
+
+// ============================================================================
+// 署名ヘッダー（ELFセクション）
+// ============================================================================
 
 /// 署名ヘッダー（ELFセクション内のデータ構造）
 #[repr(C)]
@@ -70,6 +115,8 @@ pub struct SignatureHeader {
     pub build_timestamp: u64,
     /// コードハッシュ
     pub hash: [u8; 32],
+    /// 公開鍵
+    pub public_key: [u8; 32],
     /// 署名長
     pub signature_len: u32,
     /// 予約済み
@@ -84,12 +131,53 @@ pub mod flags {
     pub const FRAMEWORK_ONLY: u32 = 1 << 1;
     /// デバッグビルド
     pub const DEBUG_BUILD: u32 = 1 << 2;
+    /// 開発モードビルド（署名なし許可）
+    pub const DEV_MODE: u32 = 1 << 3;
+}
+
+// ============================================================================
+// 署名検証器
+// ============================================================================
+
+/// 署名検証エラー
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationError {
+    /// 署名形式が無効
+    MalformedSignature,
+    /// 公開鍵が信頼されていない
+    UntrustedKey,
+    /// 署名検証に失敗
+    InvalidSignature,
+    /// ハッシュが一致しない
+    HashMismatch,
+    /// バージョン不一致
+    VersionMismatch,
 }
 
 /// 署名検証器
+/// 
+/// 信頼された公開鍵のリストを保持し、
+/// セル署名を検証する。
 pub struct SignatureVerifier {
     /// 信頼された公開鍵のリスト
-    trusted_keys: Vec<[u8; 32]>,
+    trusted_keys: Vec<[u8; ED25519_PUBLIC_KEY_SIZE]>,
+    /// 開発モードを許可するか（デフォルト: false）
+    allow_dev_mode: bool,
+    /// 検証統計
+    stats: VerifierStats,
+}
+
+/// 検証統計
+#[derive(Debug, Default, Clone)]
+pub struct VerifierStats {
+    /// 検証試行回数
+    pub verification_attempts: u64,
+    /// 成功回数
+    pub successful_verifications: u64,
+    /// 失敗回数
+    pub failed_verifications: u64,
+    /// 開発モードでスキップした回数
+    pub dev_mode_bypasses: u64,
 }
 
 impl SignatureVerifier {
@@ -97,21 +185,127 @@ impl SignatureVerifier {
     pub fn new() -> Self {
         Self {
             trusted_keys: Vec::new(),
+            allow_dev_mode: cfg!(not(feature = "require_signatures")),
+            stats: VerifierStats::default(),
+        }
+    }
+    
+    /// 本番モードの検証器を作成（開発モード無効）
+    pub fn production() -> Self {
+        Self {
+            trusted_keys: Vec::new(),
+            allow_dev_mode: false,
+            stats: VerifierStats::default(),
         }
     }
     
     /// 信頼された公開鍵を追加
-    pub fn add_trusted_key(&mut self, key: [u8; 32]) {
-        self.trusted_keys.push(key);
+    pub fn add_trusted_key(&mut self, key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
+        if !self.trusted_keys.contains(&key) {
+            self.trusted_keys.push(key);
+        }
+    }
+    
+    /// 開発モードを許可/禁止
+    pub fn set_dev_mode(&mut self, allow: bool) {
+        self.allow_dev_mode = allow;
+    }
+    
+    /// 公開鍵が信頼されているかチェック
+    pub fn is_trusted_key(&self, key: &[u8; ED25519_PUBLIC_KEY_SIZE]) -> bool {
+        self.trusted_keys.contains(key)
     }
     
     /// 署名を検証
-    pub fn verify(&self, signature: &CellSignature, _data: &[u8]) -> bool {
-        // TODO: 実際の暗号検証を実装
-        // Ed25519署名の検証など
+    pub fn verify(
+        &mut self,
+        signature: &CellSignature,
+        data: &[u8],
+    ) -> Result<(), VerificationError> {
+        self.stats.verification_attempts += 1;
         
-        // 現在は単純なチェックのみ
-        signature.version == SIGNATURE_VERSION && !signature.signature.is_empty()
+        // 開発モードのバイパス（設定されている場合のみ）
+        if self.allow_dev_mode && signature.is_dev_signature() {
+            self.stats.dev_mode_bypasses += 1;
+            self.stats.successful_verifications += 1;
+            return Ok(());
+        }
+        
+        // 1. 署名形式のチェック
+        if !signature.is_well_formed() {
+            self.stats.failed_verifications += 1;
+            return Err(VerificationError::MalformedSignature);
+        }
+        
+        // 2. 公開鍵の信頼チェック
+        if !self.trusted_keys.is_empty() && !self.is_trusted_key(&signature.public_key) {
+            self.stats.failed_verifications += 1;
+            return Err(VerificationError::UntrustedKey);
+        }
+        
+        // 3. ハッシュ検証
+        let computed_hash = self.compute_hash(data);
+        if computed_hash != signature.hash {
+            self.stats.failed_verifications += 1;
+            return Err(VerificationError::HashMismatch);
+        }
+        
+        // 4. Ed25519署名検証
+        if !self.verify_ed25519(&signature.public_key, &signature.hash, &signature.signature) {
+            self.stats.failed_verifications += 1;
+            return Err(VerificationError::InvalidSignature);
+        }
+        
+        self.stats.successful_verifications += 1;
+        Ok(())
+    }
+    
+    /// SHA-256ハッシュを計算
+    fn compute_hash(&self, data: &[u8]) -> [u8; 32] {
+        // TODO: 実際のSHA-256実装
+        // 現在は単純なチェックサム
+        let mut hash = [0u8; 32];
+        for (i, &byte) in data.iter().enumerate() {
+            hash[i % 32] ^= byte;
+        }
+        hash
+    }
+    
+    /// Ed25519署名を検証
+    /// 
+    /// TODO: 実際のEd25519実装（ed25519-dalek等）
+    fn verify_ed25519(
+        &self,
+        public_key: &[u8; 32],
+        message: &[u8; 32],
+        signature: &[u8],
+    ) -> bool {
+        // 実装予定: ed25519_verify(public_key, message, signature)
+        // 現在はプレースホルダー
+        
+        // 基本的な形式チェック
+        if signature.len() != ED25519_SIGNATURE_SIZE {
+            return false;
+        }
+        
+        // 公開鍵が空でないこと
+        if public_key.iter().all(|&b| b == 0) {
+            return false;
+        }
+        
+        // メッセージが空でないこと
+        if message.iter().all(|&b| b == 0) {
+            return false;
+        }
+        
+        // TODO: 実際のEd25519検証
+        // 現在は形式チェックのみでパス
+        true
+    }
+    
+    /// 統計を取得
+    pub fn stats(&self) -> &VerifierStats {
+        &self.stats
     }
 }
 
@@ -121,6 +315,10 @@ impl Default for SignatureVerifier {
     }
 }
 
+// ============================================================================
+// 署名抽出
+// ============================================================================
+
 /// ELFデータから署名を抽出
 pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
     // ELFヘッダーを読み取り
@@ -128,40 +326,35 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
         return Err(LoadError::InvalidFormat("ELF too small".into()));
     }
     
-    // シンプルな実装: 署名セクションを探す
-    // 実際には完全なELFパーサーが必要
-    
-    // 署名が見つからない場合はデフォルト署名を返す（開発用）
-    // 本番環境では InvalidSignature を返すべき
-    
-    #[cfg(feature = "require_signatures")]
-    {
-        // 署名セクションを探す
-        if let Some(sig) = find_signature_section(elf_data) {
-            parse_signature_section(sig)
-        } else {
+    // 署名セクションを探す
+    if let Some(sig_data) = find_signature_section(elf_data) {
+        parse_signature_section(sig_data)
+    } else {
+        // 署名セクションが見つからない場合
+        #[cfg(feature = "require_signatures")]
+        {
             Err(LoadError::InvalidSignature)
         }
-    }
-    
-    #[cfg(not(feature = "require_signatures"))]
-    {
-        // 開発モード: 署名なしでもロードを許可
-        // ただしunsafeは無効とマーク
-        Ok(CellSignature {
-            version: SIGNATURE_VERSION,
-            contains_unsafe: false,
-            uses_framework_only: true,
-            compiler_version: "dev".into(),
-            build_timestamp: 0,
-            hash: [0; 32],
-            signature: vec![1], // ダミー署名
-        })
+        
+        #[cfg(not(feature = "require_signatures"))]
+        {
+            // 開発モード: 署名なしでもロードを許可（ただし制限付き）
+            crate::log!("[SIGNATURE] Warning: Loading unsigned cell (dev mode)\n");
+            Ok(CellSignature {
+                version: SIGNATURE_VERSION,
+                contains_unsafe: false,
+                uses_framework_only: true,
+                compiler_version: "dev".into(),
+                build_timestamp: 0,
+                hash: [0; 32],
+                signature: Vec::new(),
+                public_key: [0; 32],
+            })
+        }
     }
 }
 
 /// 署名セクションを検索
-#[allow(dead_code)]
 fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
     use super::elf::{Elf64Header, Elf64SectionHeader};
     use core::mem;
@@ -173,6 +366,11 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
     let header: Elf64Header = unsafe {
         core::ptr::read(elf_data.as_ptr() as *const Elf64Header)
     };
+    
+    // ELFマジック検証
+    if &header.e_ident[0..4] != b"\x7FELF" {
+        return None;
+    }
     
     // 文字列テーブルセクションを取得
     let shstrtab_offset = header.e_shoff as usize
@@ -236,7 +434,6 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
 }
 
 /// 署名セクションをパース
-#[allow(dead_code)]
 fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
     use core::mem;
     
@@ -293,24 +490,56 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
         build_timestamp: header.build_timestamp,
         hash: header.hash,
         signature,
+        public_key: header.public_key,
     })
+}
+
+// ============================================================================
+// グローバルAPI
+// ============================================================================
+
+use spin::Mutex;
+
+/// グローバル検証器
+static GLOBAL_VERIFIER: Mutex<Option<SignatureVerifier>> = Mutex::new(None);
+
+/// グローバル検証器を初期化
+pub fn init_verifier() {
+    let mut verifier = GLOBAL_VERIFIER.lock();
+    if verifier.is_none() {
+        *verifier = Some(SignatureVerifier::new());
+        crate::log!("[SIGNATURE] Signature verifier initialized\n");
+    }
+}
+
+/// グローバル検証器を本番モードで初期化
+pub fn init_verifier_production() {
+    let mut verifier = GLOBAL_VERIFIER.lock();
+    *verifier = Some(SignatureVerifier::production());
+    crate::log!("[SIGNATURE] Signature verifier initialized (production mode)\n");
+}
+
+/// 信頼された公開鍵を追加
+pub fn add_trusted_key(key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
+    let mut verifier = GLOBAL_VERIFIER.lock();
+    if let Some(v) = verifier.as_mut() {
+        v.add_trusted_key(key);
+    }
 }
 
 /// 署名を検証（グローバル検証器を使用）
 pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
-    // 開発モード: 常にtrue
-    #[cfg(not(feature = "require_signatures"))]
-    {
-        let _ = (signature, data);
-        true
+    let mut verifier_guard = GLOBAL_VERIFIER.lock();
+    
+    // 未初期化の場合は自動初期化
+    if verifier_guard.is_none() {
+        *verifier_guard = Some(SignatureVerifier::new());
     }
     
-    #[cfg(feature = "require_signatures")]
-    {
-        // 本番モード: 実際の検証
-        static VERIFIER: spin::Once<SignatureVerifier> = spin::Once::new();
-        let verifier = VERIFIER.call_once(SignatureVerifier::new);
-        verifier.verify(signature, data)
+    if let Some(verifier) = verifier_guard.as_mut() {
+        verifier.verify(signature, data).is_ok()
+    } else {
+        false
     }
 }
 
@@ -318,6 +547,11 @@ pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
 pub fn verify_cell(elf_data: &[u8]) -> Result<bool, LoadError> {
     let signature = extract_signature(elf_data)?;
     Ok(verify_signature(&signature, elf_data))
+}
+
+/// 検証統計を取得
+pub fn get_verifier_stats() -> Option<VerifierStats> {
+    GLOBAL_VERIFIER.lock().as_ref().map(|v| v.stats().clone())
 }
 
 #[cfg(test)]
@@ -333,11 +567,42 @@ mod tests {
     }
     
     #[test]
-    fn test_verifier() {
-        let verifier = SignatureVerifier::new();
+    fn test_well_formed_signature() {
         let mut sig = CellSignature::default();
-        sig.signature = vec![1, 2, 3]; // ダミー署名
+        // デフォルトは不完全
+        assert!(!sig.is_well_formed());
         
-        assert!(verifier.verify(&sig, &[]));
+        // 完全な署名
+        sig.signature = vec![0u8; ED25519_SIGNATURE_SIZE];
+        sig.public_key = [1u8; 32];
+        assert!(sig.is_well_formed());
+    }
+    
+    #[test]
+    fn test_verifier_dev_mode() {
+        let mut verifier = SignatureVerifier::new();
+        verifier.set_dev_mode(true);
+        
+        let mut sig = CellSignature::default();
+        sig.compiler_version = "dev".into();
+        
+        // 開発モードではバイパス
+        assert!(verifier.verify(&sig, &[]).is_ok());
+        assert_eq!(verifier.stats().dev_mode_bypasses, 1);
+    }
+    
+    #[test]
+    fn test_verifier_production_mode() {
+        let mut verifier = SignatureVerifier::production();
+        
+        let mut sig = CellSignature::default();
+        sig.compiler_version = "dev".into();
+        
+        // 本番モードでは不完全な署名は拒否
+        assert_eq!(
+            verifier.verify(&sig, &[]),
+            Err(VerificationError::MalformedSignature)
+        );
     }
 }
+

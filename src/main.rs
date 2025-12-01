@@ -18,6 +18,9 @@ mod net;
 mod panic_handler;
 mod sync;
 mod domain_system;
+mod domain;
+mod sas;
+mod error;
 
 // ipc モジュールは ipc/ ディレクトリを使用
 mod ipc {

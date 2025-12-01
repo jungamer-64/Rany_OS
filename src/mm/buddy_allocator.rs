@@ -312,37 +312,43 @@ impl BuddyFrameAllocator {
         self.coalesce(frame, order);
     }
     
-    /// Buddyとの合体を再帰的に試みる
+    /// Buddyとの合体を反復的に試みる
+    /// 
+    /// 以前の再帰実装はスタックオーバーフローのリスクがあったため、
+    /// ループベースの反復的実装に変更。
     fn coalesce(&mut self, frame: FrameIndex, order: usize) {
-        if order >= MAX_ORDER {
-            // 最大オーダーに達したので空きリストに追加
-            self.free_lists[order].push(frame);
-            return;
-        }
+        let mut current_frame = frame;
+        let mut current_order = order;
         
-        let buddy = frame.buddy(order);
-        let _aligned_frame = frame.align_down(order);
-        
-        // Buddyが存在し、かつ同じオーダーで空いているか確認
-        if self.is_buddy_free(buddy, order) {
-            // Buddyを空きリストから削除
-            if self.free_lists[order].remove(buddy) {
-                self.coalesce_count += 1;
-                
-                // 合体したブロックの先頭を使用して次のオーダーで再帰
-                let merged_frame = if frame.as_usize() < buddy.as_usize() {
-                    frame
-                } else {
-                    buddy
-                };
-                
-                self.coalesce(merged_frame, order + 1);
-                return;
+        // 反復的に合体を試みる
+        while current_order < MAX_ORDER {
+            let buddy = current_frame.buddy(current_order);
+            
+            // Buddyが存在し、かつ同じオーダーで空いているか確認
+            if !self.is_buddy_free(buddy, current_order) {
+                break;
             }
+            
+            // Buddyを空きリストから削除
+            if !self.free_lists[current_order].remove(buddy) {
+                break;
+            }
+            
+            self.coalesce_count += 1;
+            
+            // 合体したブロックの先頭を計算
+            current_frame = if current_frame.as_usize() < buddy.as_usize() {
+                current_frame
+            } else {
+                buddy
+            };
+            
+            // 次のオーダーへ
+            current_order += 1;
         }
         
-        // 合体できない場合は現在のオーダーの空きリストに追加
-        self.free_lists[order].push(frame);
+        // 最終的なオーダーの空きリストに追加
+        self.free_lists[current_order].push(current_frame);
     }
     
     /// Buddyが同じオーダーで空いているか確認

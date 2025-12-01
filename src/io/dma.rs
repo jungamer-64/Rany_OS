@@ -1,7 +1,31 @@
 // ============================================================================
-// src/io/dma.rs - DMA Buffer Management with Ownership Safety
+// src/io/dma.rs - DMA Buffer Management with Type-State Safety
 // 設計書 5.4: DMAと安全性
 // ============================================================================
+//!
+//! # DMAバッファの型状態安全性
+//!
+//! このモジュールは型システムを使用してDMA転送中のメモリアクセスを
+//! コンパイル時に防止します。
+//!
+//! ## 状態遷移
+//! ```text
+//! CpuOwned <---> DeviceOwned
+//!     ^              |
+//!     |              v
+//!     +--- complete -+
+//! ```
+//!
+//! ## 使用例
+//! ```rust
+//! let buffer = TypedDmaBuffer::<u32, CpuOwned>::new(42)?;
+//! let data = buffer.as_ref(); // CPUからアクセス可能
+//!
+//! let (buffer, guard) = buffer.start_dma(); // 所有権移動
+//! // buffer.as_ref(); // コンパイルエラー！DeviceOwnedはas_refを持たない
+//!
+//! let buffer = buffer.complete_dma(); // CPUに戻る
+//! ```
 #![allow(dead_code)]
 
 use core::marker::PhantomData;
@@ -12,6 +36,193 @@ use x86_64::PhysAddr;
 
 /// DMAバッファの最小アライメント
 const DMA_ALIGNMENT: usize = 4096; // ページアライメント
+
+// ============================================================================
+// 型状態マーカー（改善案7: DMA型安全性強化）
+// ============================================================================
+
+/// CPU所有状態マーカー
+/// この状態ではCPUからのアクセスが可能
+pub struct CpuOwned;
+
+/// デバイス所有状態マーカー
+/// この状態ではCPUからのアクセスが禁止
+pub struct DeviceOwned;
+
+/// 状態マーカートレイト（シールド）
+mod sealed {
+    pub trait DmaState {}
+    impl DmaState for super::CpuOwned {}
+    impl DmaState for super::DeviceOwned {}
+}
+
+/// DMA状態を示すマーカートレイト
+pub trait DmaState: sealed::DmaState {}
+impl DmaState for CpuOwned {}
+impl DmaState for DeviceOwned {}
+
+// ============================================================================
+// 型安全なDMAバッファ（改善案7）
+// ============================================================================
+
+/// 型状態付きDMAバッファ
+/// 
+/// `State` パラメータで現在の所有状態を型レベルで追跡し、
+/// 不正なアクセスをコンパイル時に検出する。
+pub struct TypedDmaBuffer<T, State: DmaState> {
+    /// バッファへのポインタ
+    ptr: NonNull<T>,
+    /// 物理アドレス（DMAエンジン用）
+    phys_addr: PhysAddr,
+    /// レイアウト（解放時に使用）
+    layout: Layout,
+    /// 状態マーカー
+    _state: PhantomData<State>,
+}
+
+// Send は両状態で許可（別コアに転送可能）
+unsafe impl<T: Send, State: DmaState> Send for TypedDmaBuffer<T, State> {}
+
+impl<T> TypedDmaBuffer<T, CpuOwned> {
+    /// 新しいDMAバッファを割り当て（CPU所有状態で開始）
+    pub fn new(value: T) -> Option<Self> {
+        let size = core::mem::size_of::<T>();
+        let layout = Layout::from_size_align(size.max(1), DMA_ALIGNMENT).ok()?;
+        
+        let ptr = unsafe { alloc(layout) };
+        if ptr.is_null() {
+            return None;
+        }
+        
+        // 値を書き込む
+        unsafe {
+            core::ptr::write(ptr as *mut T, value);
+        }
+        
+        // 物理アドレスを計算
+        let phys_addr = PhysAddr::new(ptr as u64);
+        
+        Some(Self {
+            ptr: unsafe { NonNull::new_unchecked(ptr as *mut T) },
+            phys_addr,
+            layout,
+            _state: PhantomData,
+        })
+    }
+    
+    /// CPUからの読み取り参照を取得
+    /// （CpuOwned状態でのみ利用可能）
+    pub fn as_ref(&self) -> &T {
+        // SAFETY: CpuOwned状態ではCPUがバッファを所有
+        unsafe { self.ptr.as_ref() }
+    }
+    
+    /// CPUからの書き込み参照を取得
+    /// （CpuOwned状態でのみ利用可能）
+    pub fn as_mut(&mut self) -> &mut T {
+        // SAFETY: CpuOwned状態ではCPUがバッファを所有
+        unsafe { self.ptr.as_mut() }
+    }
+    
+    /// DMA転送を開始（デバイスに所有権を移動）
+    /// 
+    /// 返り値は所有権が移動したバッファとDMAガード。
+    /// ガードがドロップされると自動的にCPUに所有権が戻る。
+    pub fn start_dma(self) -> (TypedDmaBuffer<T, DeviceOwned>, TypedDmaGuard<T>) {
+        // キャッシュフラッシュ（アーキテクチャ依存）
+        core::sync::atomic::fence(Ordering::Release);
+        
+        let guard = TypedDmaGuard {
+            phys_addr: self.phys_addr,
+            layout: self.layout,
+            _marker: PhantomData,
+        };
+        
+        let buffer = TypedDmaBuffer {
+            ptr: self.ptr,
+            phys_addr: self.phys_addr,
+            layout: self.layout,
+            _state: PhantomData,
+        };
+        
+        // selfのDropを防ぐ
+        core::mem::forget(self);
+        
+        (buffer, guard)
+    }
+}
+
+impl<T> TypedDmaBuffer<T, DeviceOwned> {
+    // 注意: as_ref() と as_mut() は DeviceOwned では実装しない
+    // → コンパイルエラーになる
+    
+    /// DMA転送完了（CPUに所有権を返却）
+    pub fn complete_dma(self) -> TypedDmaBuffer<T, CpuOwned> {
+        // キャッシュ無効化（アーキテクチャ依存）
+        core::sync::atomic::fence(Ordering::Acquire);
+        
+        let buffer = TypedDmaBuffer {
+            ptr: self.ptr,
+            phys_addr: self.phys_addr,
+            layout: self.layout,
+            _state: PhantomData,
+        };
+        
+        // selfのDropを防ぐ
+        core::mem::forget(self);
+        
+        buffer
+    }
+}
+
+impl<T, State: DmaState> TypedDmaBuffer<T, State> {
+    /// 物理アドレスを取得（どちらの状態でも利用可能）
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.phys_addr
+    }
+    
+    /// サイズを取得
+    pub fn size(&self) -> usize {
+        self.layout.size()
+    }
+}
+
+impl<T, State: DmaState> Drop for TypedDmaBuffer<T, State> {
+    fn drop(&mut self) {
+        unsafe {
+            // デストラクタを呼び出し
+            core::ptr::drop_in_place(self.ptr.as_ptr());
+            // メモリを解放
+            dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        }
+    }
+}
+
+/// DMA転送のRAIIガード（型安全版）
+/// 
+/// DMA転送中の物理アドレス情報を保持。
+/// ドロップ時に自動的に同期処理を行う。
+pub struct TypedDmaGuard<T> {
+    phys_addr: PhysAddr,
+    layout: Layout,
+    _marker: PhantomData<T>,
+}
+
+impl<T> TypedDmaGuard<T> {
+    /// 物理アドレスを取得（DMAエンジンに渡す用）
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.phys_addr
+    }
+    
+    /// サイズを取得
+    pub fn size(&self) -> usize {
+        self.layout.size()
+    }
+}
+
+// ============================================================================
+// 従来のDMAバッファ（後方互換性）
+// ============================================================================
 
 /// DMAバッファの状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,7 +235,7 @@ pub enum DmaBufferState {
     SyncPending,
 }
 
-/// DMAバッファ
+/// DMAバッファ（ランタイムチェック版）
 /// 設計書 5.4: Pinningと所有権
 /// - メモリ上の移動を禁止（Pin）
 /// - DMA転送中はCPUからのアクセスを型システムで禁止
