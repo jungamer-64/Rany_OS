@@ -41,7 +41,7 @@ pub struct CellRegistry {
     /// セルID -> セル情報のマッピング
     cells: BTreeMap<CellId, CellEntry>,
     /// シンボルテーブル（名前 -> アドレス）
-    symbol_table: BTreeMap<String, usize>,
+    pub symbol_table: BTreeMap<String, usize>,
     /// 次のセルID
     next_id: u64,
 }

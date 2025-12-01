@@ -1,19 +1,22 @@
 // ============================================================================
-// Global Heap Allocator (Phase 1: Simple Implementation)
+// Global Heap Allocator Helper Functions
+// 注: グローバルアロケータ本体は memory.rs で定義されています
 // ============================================================================
-use linked_list_allocator::LockedHeap;
+#![allow(dead_code)]
+
 use x86_64::structures::paging::{
     mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
 };
 use x86_64::VirtAddr;
 
-#[global_allocator]
-static ALLOCATOR: LockedHeap = LockedHeap::empty();
-
 pub const HEAP_START: usize = 0x_4444_4444_0000;
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
-pub fn init_heap(
+/// ページテーブルを使用したヒープ初期化（将来用）
+/// 
+/// 現在はmemory::init()で簡略化された初期化を行っています。
+/// 完全なページテーブル管理が必要な場合はこちらを使用します。
+pub fn init_heap_with_mapping(
     mapper: &mut impl Mapper<Size4KiB>,
     frame_allocator: &mut impl FrameAllocator<Size4KiB>,
 ) -> Result<(), MapToError<Size4KiB>> {
@@ -33,9 +36,6 @@ pub fn init_heap(
         unsafe { mapper.map_to(page, frame, flags, frame_allocator)?.flush() };
     }
 
-    unsafe {
-        ALLOCATOR.lock().init(HEAP_START, HEAP_SIZE);
-    }
-
+    // アロケータの初期化は memory.rs で行う
     Ok(())
 }

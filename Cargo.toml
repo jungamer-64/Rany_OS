@@ -1,7 +1,9 @@
 [package]
 name = "rany_os"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+authors = ["ExoRust Team"]
+description = "Single Address Space, Async-First Rust OS Kernel"
 
 [[bin]]
 name = "exorust_kernel"
@@ -11,9 +13,13 @@ path = "src/main.rs"
 name = "rany_os"
 path = "src/lib.rs"
 
+# ============================================================================
+# 依存関係
+# ============================================================================
+
 [dependencies]
 # ブートローダー（物理メモリマッピング機能付き）
-bootloader = "0.9"
+bootloader = { version = "0.9", features = ["map_physical_memory"] }
 
 # x86_64アーキテクチャサポート
 x86_64 = "0.14"
@@ -25,15 +31,71 @@ spin = "0.9"
 linked_list_allocator = "0.10"
 
 # Lazy static for global state
-lazy_static = { version = "1.4", features = ["spin_no_std"] }
+lazy_static = { version = "1.5", features = ["spin_no_std"] }
 
 # PIC (Programmable Interrupt Controller)
 pic8259 = "0.10"
 
+# UART シリアル出力（デバッグ用）
+uart_16550 = { version = "0.3", optional = true }
+
+# ビットフィールド操作
+bitflags = "2.4"
+
+# ============================================================================
+# ビルドプロファイル
+# ============================================================================
+
 [profile.dev]
 panic = "abort"
+# デバッグシンボルを保持
+opt-level = 0
+debug = true
 
 [profile.release]
 panic = "abort"
 lto = true
 opt-level = 3
+# リリースビルドでもデバッグシンボルを保持
+debug = true
+
+[profile.test]
+panic = "abort"
+opt-level = 1
+
+# ============================================================================
+# フィーチャーフラグ
+# ============================================================================
+
+[features]
+default = []
+# 詳細ログ出力
+verbose_logging = []
+# 署名検証を必須化
+require_signatures = []
+# シリアル出力を有効化
+serial = ["uart_16550"]
+# 統計情報収集
+stats = []
+
+# ============================================================================
+# ブートイメージ設定
+# ============================================================================
+
+[package.metadata.bootimage]
+build-command = ["build"]
+run-command = [
+    "qemu-system-x86_64",
+    "-drive", "format=raw,file={}",
+    "-serial", "stdio",
+    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-display", "none"
+]
+
+test-args = [
+    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-serial", "stdio",
+    "-display", "none"
+]
+test-success-exit-code = 33
+test-timeout = 300
