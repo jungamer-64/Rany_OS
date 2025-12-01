@@ -319,7 +319,7 @@ impl BuddyFrameAllocator {
         }
         
         let buddy = frame.buddy(order);
-        let aligned_frame = frame.align_down(order);
+        let _aligned_frame = frame.align_down(order);
         
         // Buddyが存在し、かつ同じオーダーで空いているか確認
         if self.is_buddy_free(buddy, order) {

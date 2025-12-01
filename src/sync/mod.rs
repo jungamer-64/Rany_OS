@@ -5,4 +5,5 @@
 
 pub mod irq_mutex;
 
+#[allow(unused_imports)]
 pub use irq_mutex::{IrqMutex, IrqMutexGuard};

@@ -12,15 +12,23 @@ mod executor;
 pub mod timer;
 mod work_stealing;
 pub mod preemption;
+pub mod context;
+pub mod scheduler;
 
 pub use executor::Executor;
 pub use timer::{sleep_ms, current_tick};
+#[allow(unused_imports)]
 pub use work_stealing::{WorkStealingQueue, inject_global, steal_from_global};
+#[allow(unused_imports)]
 pub use preemption::{
     PreemptionController, preemption_controller,
     handle_timer_tick, yield_point, voluntary_yield,
     YieldNow, yield_now, CpuTimeTracker, AdaptiveTimeSlice, PreemptionStats,
 };
+#[allow(unused_imports)]
+pub use context::{CpuContext, TaskControlBlock, TaskState, KernelStack};
+#[allow(unused_imports)]
+pub use scheduler::{PerCpuScheduler, init_scheduler};
 
 /// タスクID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -7,7 +7,9 @@
 pub mod elf;
 pub mod signature;
 
+#[allow(unused_imports)]
 pub use elf::{ElfLoader, LoadedCell, CellInfo};
+#[allow(unused_imports)]
 pub use signature::{SignatureVerifier, CellSignature, verify_cell};
 
 use alloc::string::String;

@@ -22,6 +22,7 @@ mod ipc {
     pub mod rref;
     pub mod proxy;
     pub use rref::{DomainId, RRef, reclaim_domain_resources};
+    #[allow(unused_imports)]
     pub use proxy::{DomainProxy, ProxyError, ProxyResult};
 }
 
@@ -38,12 +39,14 @@ pub extern "C" fn _start() -> ! {
     memory::init();
     log!("[OK] Memory subsystem initialized\n");
     
-    // 割り込みシステムの初期化
+    // 割り込みシステムの初期化（GDT/TSS + IDT + PIC）
     log!("[INIT] Initializing interrupt system\n");
-    interrupts::init_idt();
-    interrupts::init_pics();
-    interrupts::enable_interrupts();
+    interrupts::init();
     log!("[OK] Interrupt system initialized\n");
+    
+    // 割り込みを有効化
+    interrupts::enable_interrupts();
+    log!("[OK] Interrupts enabled\n");
     
     // Executorの作成
     log!("[INIT] Creating async executor\n");
