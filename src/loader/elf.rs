@@ -2,6 +2,7 @@
 // src/loader/elf.rs - ELF Parser and Loader
 // 設計書 3.1: 動的リンクとシンボル解決
 // ============================================================================
+#![allow(dead_code)]
 
 use alloc::string::String;
 use alloc::vec::Vec;

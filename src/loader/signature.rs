@@ -2,6 +2,7 @@
 // src/loader/signature.rs - Cell Signature Verification
 // 設計書 3.3: コンパイラ署名とロード時検証
 // ============================================================================
+#![allow(dead_code)]
 
 use alloc::string::String;
 use alloc::vec::Vec;

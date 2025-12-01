@@ -2,6 +2,8 @@
 // src/task/work_stealing.rs - Lock-Free Work-Stealing Queue
 // 設計書 4.3: マルチコアスケーリングとShare-Nothingアーキテクチャ
 // ============================================================================
+#![allow(dead_code)]
+
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use spin::Mutex;

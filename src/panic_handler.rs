@@ -2,6 +2,7 @@
 // src/panic_handler.rs - Enhanced Panic Handler with Domain Isolation
 // 設計書 8.1: スタックアンワインドとリソース回収
 // ============================================================================
+#![allow(dead_code)]
 
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};

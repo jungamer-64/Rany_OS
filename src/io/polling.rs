@@ -2,6 +2,8 @@
 // src/io/polling.rs - Adaptive Polling/Interrupt Hybrid Mode
 // 設計書 6.1: ポーリング vs 割り込み：ハイブリッド適応モデル
 // ============================================================================
+#![allow(dead_code)]
+
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use spin::Mutex;
 

@@ -4,6 +4,8 @@
 //
 // x86_64 のレジスタ退避・復帰、スタック切り替えを実装
 // ============================================================================
+#![allow(dead_code)]
+
 use core::arch::naked_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::boxed::Box;

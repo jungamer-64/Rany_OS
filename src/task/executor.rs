@@ -1,6 +1,8 @@
 // ============================================================================
 // src/task/executor.rs - Simplified Executor with Proper Waker Integration
 // ============================================================================
+#![allow(dead_code)]
+
 use super::{create_waker, Task, TaskId};
 use alloc::collections::{BTreeMap, VecDeque};
 use core::task::{Context, Poll};

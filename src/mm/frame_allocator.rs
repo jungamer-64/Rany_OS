@@ -5,6 +5,8 @@
 // 注意: 構造体全体がMutexで保護されているため、内部フィールドは
 // 通常のu64を使用。Mutex + Atomicの二重ロックはオーバーヘッド。
 // ============================================================================
+#![allow(dead_code)]
+
 use crate::sync::IrqMutex;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB, Size2MiB, Size1GiB};
 use x86_64::PhysAddr;

@@ -2,6 +2,7 @@
 // src/io/dma.rs - DMA Buffer Management with Ownership Safety
 // 設計書 5.4: DMAと安全性
 // ============================================================================
+#![allow(dead_code)]
 
 use core::marker::PhantomData;
 use core::ptr::NonNull;

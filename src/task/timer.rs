@@ -2,6 +2,8 @@
 // src/task/timer.rs - Timer-based async sleep implementation
 // 設計書 4.2: Interrupt-Waker Bridge の実装例
 // ============================================================================
+#![allow(dead_code)]
+
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};

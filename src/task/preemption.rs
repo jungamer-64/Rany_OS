@@ -2,6 +2,7 @@
 // src/task/preemption.rs - Cooperative + Preemptive Hybrid Scheduler
 // 設計書 4.4: スターベーション対策
 // ============================================================================
+#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 

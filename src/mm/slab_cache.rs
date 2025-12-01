@@ -3,6 +3,8 @@
 // 設計書 5.2 Tier3: コアローカルな高速割り当て
 // LinuxのSLUBアロケータに類似。各コアごとに独立したロックで動作し、False Sharingを防ぐ
 // ============================================================================
+#![allow(dead_code)]
+
 use core::alloc::Layout;
 use core::ptr::NonNull;
 use alloc::vec::Vec;

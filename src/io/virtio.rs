@@ -1,6 +1,8 @@
 // ============================================================================
 // src/io/virtio.rs - Async VirtIO Driver Example
 // ============================================================================
+#![allow(dead_code)]
+
 use core::future::poll_fn;
 use core::task::{Poll, Waker};
 use core::sync::atomic::{AtomicBool, Ordering};

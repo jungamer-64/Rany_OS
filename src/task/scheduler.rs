@@ -4,6 +4,8 @@
 //
 // ラウンドロビン + 優先度ベースのスケジューリング
 // ============================================================================
+#![allow(dead_code)]
+
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;

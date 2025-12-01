@@ -9,6 +9,8 @@
 //
 // 参考: Linux の spin_lock_irqsave / spin_unlock_irqrestore
 // ============================================================================
+#![allow(dead_code)]
+
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};

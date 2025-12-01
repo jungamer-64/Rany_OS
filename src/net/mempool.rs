@@ -2,6 +2,7 @@
 // src/net/mempool.rs - Zero-Copy Network Buffer Pool
 // 設計書 6.2: Mempool によるゼロコピーネットワークバッファ管理
 // ============================================================================
+#![allow(dead_code)]
 
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};

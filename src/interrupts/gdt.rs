@@ -2,6 +2,8 @@
 // src/interrupts/gdt.rs - Global Descriptor Table with TSS
 // Double Fault 用の専用スタック (IST) を設定
 // ============================================================================
+#![allow(dead_code)]
+
 use x86_64::structures::gdt::{GlobalDescriptorTable, Descriptor, SegmentSelector};
 use x86_64::structures::tss::TaskStateSegment;
 use x86_64::VirtAddr;

@@ -2,6 +2,8 @@
 // src/ipc/rref.rs - Zero-Copy Remote Reference (based on RedLeaf OS)
 // 設計書 5.3: 線形型（Linear Types）と交換ヒープ（Exchange Heap）
 // ============================================================================
+#![allow(dead_code)]
+
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use core::alloc::Layout;

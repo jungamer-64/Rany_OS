@@ -2,6 +2,7 @@
 // src/ipc/proxy.rs - Domain Proxy Pattern
 // 設計書 8.2: RedLeafの知見：交換可能な型とプロキシ
 // ============================================================================
+#![allow(dead_code)]
 
 use core::future::Future;
 use core::pin::Pin;

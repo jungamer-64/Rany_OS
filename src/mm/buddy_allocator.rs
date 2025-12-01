@@ -11,6 +11,8 @@
 // - 連続領域の確保が効率的
 // - 2のべき乗サイズの自然なサポート
 // ============================================================================
+#![allow(dead_code)]
+
 use crate::sync::IrqMutex;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB, Size2MiB, Size1GiB};
 use x86_64::PhysAddr;

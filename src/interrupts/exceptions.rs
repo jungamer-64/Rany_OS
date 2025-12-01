@@ -2,6 +2,8 @@
 // src/interrupts/exceptions.rs - CPU Exception Handlers
 // 堅牢な例外処理：詳細なダンプ、リカバリ可能な場合の対応
 // ============================================================================
+#![allow(dead_code)]
+
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
 use x86_64::registers::control::Cr2;
 use core::sync::atomic::{AtomicU64, Ordering};
