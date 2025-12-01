@@ -9,9 +9,20 @@ use core::panic::PanicInfo;
 mod memory;
 mod mm;
 mod task;
-mod ipc;
 mod vga;
 mod interrupts;
+mod io;
+mod loader;
+mod net;
+mod panic_handler;
+
+// ipc モジュールは ipc/ ディレクトリを使用
+mod ipc {
+    pub mod rref;
+    pub mod proxy;
+    pub use rref::{DomainId, RRef, reclaim_domain_resources};
+    pub use proxy::{DomainProxy, ProxyCall, ProxyError};
+}
 
 #[no_mangle]
 pub extern "C" fn _start() -> ! {

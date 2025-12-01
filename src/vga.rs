@@ -3,7 +3,6 @@
 // ============================================================================
 use core::fmt;
 use spin::Mutex;
-use volatile::Volatile;
 
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
@@ -35,7 +34,7 @@ pub enum Color {
 struct ColorCode(u8);
 
 impl ColorCode {
-    fn new(foreground: Color, background: Color) -> ColorCode {
+    const fn new(foreground: Color, background: Color) -> ColorCode {
         ColorCode((background as u8) << 4 | (foreground as u8))
     }
 }
@@ -49,13 +48,13 @@ struct ScreenChar {
 
 #[repr(transparent)]
 struct Buffer {
-    chars: [[Volatile<ScreenChar>; BUFFER_WIDTH]; BUFFER_HEIGHT],
+    chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
 }
 
 pub struct Writer {
     column_position: usize,
     color_code: ColorCode,
-    buffer: &'static mut Buffer,
+    buffer: *mut Buffer,
 }
 
 impl Writer {
@@ -71,10 +70,15 @@ impl Writer {
                 let col = self.column_position;
 
                 let color_code = self.color_code;
-                self.buffer.chars[row][col].write(ScreenChar {
-                    ascii_character: byte,
-                    color_code,
-                });
+                unsafe {
+                    core::ptr::write_volatile(
+                        &mut (*self.buffer).chars[row][col],
+                        ScreenChar {
+                            ascii_character: byte,
+                            color_code,
+                        },
+                    );
+                }
                 self.column_position += 1;
             }
         }
@@ -92,8 +96,15 @@ impl Writer {
     fn new_line(&mut self) {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
-                let character = self.buffer.chars[row][col].read();
-                self.buffer.chars[row - 1][col].write(character);
+                unsafe {
+                    let character = core::ptr::read_volatile(
+                        &(*self.buffer).chars[row][col]
+                    );
+                    core::ptr::write_volatile(
+                        &mut (*self.buffer).chars[row - 1][col],
+                        character,
+                    );
+                }
             }
         }
         self.clear_row(BUFFER_HEIGHT - 1);
@@ -106,7 +117,12 @@ impl Writer {
             color_code: self.color_code,
         };
         for col in 0..BUFFER_WIDTH {
-            self.buffer.chars[row][col].write(blank);
+            unsafe {
+                core::ptr::write_volatile(
+                    &mut (*self.buffer).chars[row][col],
+                    blank,
+                );
+            }
         }
     }
 }
@@ -118,10 +134,13 @@ impl fmt::Write for Writer {
     }
 }
 
+// SAFETY: VGA バッファは固定アドレスにあり、Writerは単一スレッドでのみ使用される
+unsafe impl Send for Writer {}
+
 static WRITER: Mutex<Writer> = Mutex::new(Writer {
     column_position: 0,
     color_code: ColorCode::new(Color::Yellow, Color::Black),
-    buffer: unsafe { &mut *(0xb8000 as *mut Buffer) },
+    buffer: 0xb8000 as *mut Buffer,
 });
 
 pub fn init() {

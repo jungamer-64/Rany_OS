@@ -83,12 +83,17 @@ pub struct HeapStats {
 /// RRefで使用する専用のヒープ
 static EXCHANGE_HEAP: ExchangeHeap = ExchangeHeap::new();
 
+/// Exchange Heapが初期化済みかどうか
+static INITIALIZED: spin::Once<()> = spin::Once::new();
+
 /// Exchange Heapの初期化関数
 /// 
 /// # Safety
 /// カーネル初期化時に一度だけ呼ばれる必要がある
 pub unsafe fn init_exchange_heap(heap_start: usize, size: usize) {
-    EXCHANGE_HEAP.init(heap_start, size);
+    INITIALIZED.call_once(|| {
+        EXCHANGE_HEAP.init(heap_start, size);
+    });
 }
 
 /// Exchange Heap経由でメモリを割り当て（RRefで使用）
@@ -111,6 +116,20 @@ pub unsafe fn deallocate_on_exchange<T>(ptr: NonNull<T>) {
     let layout = Layout::new::<T>();
     ptr.as_ptr().drop_in_place();
     EXCHANGE_HEAP.deallocate(ptr.cast(), layout);
+}
+
+/// 生のポインタとレイアウトを指定してExchange Heapから解放
+/// 
+/// # Safety
+/// - `ptr` はExchange Heap上に割り当てられたメモリである必要がある
+/// - `layout` は割り当て時と同じである必要がある
+pub unsafe fn deallocate_raw(ptr: NonNull<u8>, layout: Layout) {
+    EXCHANGE_HEAP.deallocate(ptr, layout);
+}
+
+/// Exchange Heapの統計を取得
+pub fn exchange_heap_stats() -> HeapStats {
+    EXCHANGE_HEAP.stats()
 }
 
 #[cfg(test)]

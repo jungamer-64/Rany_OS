@@ -1,9 +1,9 @@
 [build]
-target = "x86_64-exorust.json"
+target = "x86_64-rany_os.json"
 
 [unstable]
 build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
-[target.x86_64-exorust]
+[target.x86_64-rany_os]
 runner = "qemu-system-x86_64 -drive format=raw,file="

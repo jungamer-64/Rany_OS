@@ -29,7 +29,6 @@ dependencies = [
  "linked_list_allocator",
  "pic8259",
  "spin",
- "volatile",
  "x86_64",
 ]
 

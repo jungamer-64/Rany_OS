@@ -11,12 +11,17 @@ use alloc::sync::Arc;
 use spin::Mutex;
 
 mod executor;
-mod timer;
+pub mod timer;
 mod work_stealing;
+pub mod preemption;
 
 pub use executor::Executor;
 pub use timer::{sleep_ms, handle_timer_interrupt, current_tick};
 pub use work_stealing::{WorkStealingQueue, inject_global, steal_from_global};
+pub use preemption::{
+    PreemptionController, preemption_controller, check_preemption,
+    force_yield, set_current_task, clear_current_task,
+};
 
 /// タスクID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
