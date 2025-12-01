@@ -28,7 +28,7 @@ lazy_static! {
             // 静的に確保したスタック
             static mut DOUBLE_FAULT_STACK: [u8; IST_STACK_SIZE] = [0; IST_STACK_SIZE];
             
-            let stack_start = VirtAddr::from_ptr(unsafe { &raw const DOUBLE_FAULT_STACK as *const u8 });
+            let stack_start = VirtAddr::from_ptr(&raw const DOUBLE_FAULT_STACK as *const u8);
             let stack_end = stack_start + IST_STACK_SIZE as u64;
             stack_end
         };
@@ -37,7 +37,7 @@ lazy_static! {
         tss.interrupt_stack_table[PAGE_FAULT_IST_INDEX as usize] = {
             static mut PAGE_FAULT_STACK: [u8; IST_STACK_SIZE] = [0; IST_STACK_SIZE];
             
-            let stack_start = VirtAddr::from_ptr(unsafe { &raw const PAGE_FAULT_STACK as *const u8 });
+            let stack_start = VirtAddr::from_ptr(&raw const PAGE_FAULT_STACK as *const u8);
             let stack_end = stack_start + IST_STACK_SIZE as u64;
             stack_end
         };

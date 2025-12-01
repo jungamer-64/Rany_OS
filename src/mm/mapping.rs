@@ -1,6 +1,8 @@
 // ============================================================================
 // src/mm/mapping.rs - SAS/SPL Linear Memory Mapping
 // ============================================================================
+#![allow(dead_code)]
+
 use x86_64::{PhysAddr, VirtAddr};
 
 /// 設計書 1.3: Higher Half Kernel Base (SAS)

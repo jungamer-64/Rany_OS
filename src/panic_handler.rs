@@ -61,12 +61,16 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     let domain_id = get_current_domain();
     
     // パニックメッセージを構築
-    let message = if let Some(msg) = info.payload().downcast_ref::<&str>() {
-        String::from(*msg)
-    } else if let Some(msg) = info.payload().downcast_ref::<String>() {
-        msg.clone()
-    } else {
-        String::from("Unknown panic")
+    let message = {
+        use core::fmt::Write;
+        let mut s = String::new();
+        // PanicMessage から文字列を取得
+        let _ = write!(s, "{}", info.message());
+        if s.is_empty() {
+            String::from("Unknown panic")
+        } else {
+            s
+        }
     };
     
     // パニック場所を記録

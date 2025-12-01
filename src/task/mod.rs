@@ -40,6 +40,7 @@ impl TaskId {
         TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
     }
 
+    #[allow(dead_code)]
     pub fn as_u64(&self) -> u64 {
         self.0
     }

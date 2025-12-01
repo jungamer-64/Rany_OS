@@ -3,6 +3,7 @@
 // 設計書 3.3: コンパイラ署名とロード時検証
 // ============================================================================
 #![allow(dead_code)]
+#![allow(unexpected_cfgs)]
 
 use alloc::string::String;
 use alloc::vec::Vec;

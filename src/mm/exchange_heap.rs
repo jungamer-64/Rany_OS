@@ -2,6 +2,8 @@
 // src/mm/exchange_heap.rs - Exchange Heap for Zero-Copy IPC
 // 設計書 5.3: 線形型と交換ヒープ（RedLeaf OS参照）
 // ============================================================================
+#![allow(dead_code)]
+
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
 use spin::Mutex;

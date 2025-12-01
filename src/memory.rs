@@ -1,6 +1,8 @@
 // ============================================================================
 // src/memory.rs - SAS Memory Management with Linear Mapping
 // ============================================================================
+#![allow(dead_code)]
+
 use x86_64::{PhysAddr, VirtAddr};
 use linked_list_allocator::LockedHeap;
 

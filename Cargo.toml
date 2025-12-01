@@ -1,11 +1,15 @@
 [package]
-name = "exorust_kernel"
+name = "rany_os"
 version = "0.1.0"
 edition = "2024"
 
 [[bin]]
 name = "exorust_kernel"
 path = "src/main.rs"
+
+[lib]
+name = "rany_os"
+path = "src/lib.rs"
 
 [dependencies]
 # ブートローダー（物理メモリマッピング機能付き）
