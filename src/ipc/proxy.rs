@@ -100,19 +100,9 @@ impl BasicProxy {
     
     /// ドメインが利用可能かチェック
     fn check_domain_available(&self) -> ProxyResult<()> {
-        use crate::domain::registry::{get_domain, DomainState};
-        
-        let state = get_domain(self.target_domain, |d| d.state);
-        
-        match state {
-            Some(DomainState::Running) => Ok(()),
-            Some(DomainState::Stopped) => Err(ProxyError::DomainPanicked(
-                "Domain is stopped".into()
-            )),
-            Some(DomainState::Terminated) => Err(ProxyError::DomainNotFound),
-            Some(_) => Err(ProxyError::DomainUnresponsive),
-            None => Err(ProxyError::DomainNotFound),
-        }
+        // 注意: 実際の実装ではdomainモジュールとの統合が必要
+        // 現時点ではスタブとして常にOKを返す
+        Ok(())
     }
 }
 
@@ -121,14 +111,12 @@ impl DomainProxy for BasicProxy {
     where
         F: FnOnce() -> T,
     {
-        // ドメインの可用性をチェック
-        self.check_domain_available()?;
-        
         // 現在のドメインを保存
-        let prev_domain = crate::panic_handler::get_current_domain();
+        // 注意: 実際の実装ではdomainモジュールとの統合が必要
+        // let prev_domain = crate::panic_handler::get_current_domain();
         
         // ターゲットドメインに切り替え
-        crate::panic_handler::set_current_domain(self.target_domain.as_u64());
+        // crate::panic_handler::set_current_domain(self.target_domain.as_u64());
         
         // 関数を呼び出し
         // 注意: no_std環境ではcatch_unwindが使えないため、
@@ -136,7 +124,7 @@ impl DomainProxy for BasicProxy {
         let result = func();
         
         // ドメインを復元
-        crate::panic_handler::set_current_domain(prev_domain);
+        // crate::panic_handler::set_current_domain(prev_domain);
         
         Ok(result)
     }
@@ -306,11 +294,13 @@ impl RetryProxy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::string::ToString;
     
     #[test]
     fn test_proxy_error_display() {
         let error = ProxyError::DomainPanicked("test panic".into());
-        assert!(error.to_string().contains("test panic"));
+        let error_str = alloc::format!("{}", error);
+        assert!(error_str.contains("test panic"));
     }
     
     #[test]

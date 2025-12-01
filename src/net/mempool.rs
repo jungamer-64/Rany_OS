@@ -169,6 +169,10 @@ pub struct Mempool {
     alloc_failed: AtomicU64,
 }
 
+// MempoolはSend + Sync可能（NonNullはスレッドセーフに管理される）
+unsafe impl Send for Mempool {}
+unsafe impl Sync for Mempool {}
+
 impl Mempool {
     /// 新しいメモリプールを作成
     pub fn new(id: u32) -> Self {
@@ -329,28 +333,22 @@ impl PerCoreMempoolCache {
 // ============================================================================
 
 /// グローバルネットワークメモリプール
-static NET_MEMPOOL: Mempool = Mempool {
-    id: 0,
-    buffers: Mutex::new(Vec::new()),
-    free_list: Mutex::new(Vec::new()),
-    alloc_count: AtomicU64::new(0),
-    free_count: AtomicU64::new(0),
-    alloc_failed: AtomicU64::new(0),
-};
+static NET_MEMPOOL: spin::Once<Mempool> = spin::Once::new();
 
 /// グローバルメモリプールを初期化
 pub fn init_net_mempool(capacity: usize) -> Result<(), &'static str> {
-    NET_MEMPOOL.init(capacity)
+    let pool = NET_MEMPOOL.call_once(|| Mempool::new(0));
+    pool.init(capacity)
 }
 
 /// ネットワークメモリプールを取得
-pub fn net_mempool() -> &'static Mempool {
-    &NET_MEMPOOL
+pub fn net_mempool() -> Option<&'static Mempool> {
+    NET_MEMPOOL.get()
 }
 
 /// パケットバッファを割り当て
 pub fn alloc_packet() -> Option<PacketRef> {
-    NET_MEMPOOL.alloc()
+    NET_MEMPOOL.get()?.alloc()
 }
 
 #[cfg(test)]

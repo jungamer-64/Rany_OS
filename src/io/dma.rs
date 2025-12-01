@@ -28,7 +28,7 @@ pub enum DmaBufferState {
 /// 設計書 5.4: Pinningと所有権
 /// - メモリ上の移動を禁止（Pin）
 /// - DMA転送中はCPUからのアクセスを型システムで禁止
-pub struct DmaBuffer<T: ?Sized> {
+pub struct DmaBuffer<T> {
     /// バッファへのポインタ
     ptr: NonNull<T>,
     /// 物理アドレス（DMAエンジン用）
@@ -43,7 +43,7 @@ pub struct DmaBuffer<T: ?Sized> {
 }
 
 // Sendは許可（別コアに転送可能）だがSyncは許可しない（同時アクセス不可）
-unsafe impl<T: Send + ?Sized> Send for DmaBuffer<T> {}
+unsafe impl<T: Send> Send for DmaBuffer<T> {}
 
 impl<T> DmaBuffer<T> {
     /// 新しいDMAバッファを割り当て

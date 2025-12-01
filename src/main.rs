@@ -21,10 +21,10 @@ mod ipc {
     pub mod rref;
     pub mod proxy;
     pub use rref::{DomainId, RRef, reclaim_domain_resources};
-    pub use proxy::{DomainProxy, ProxyCall, ProxyError};
+    pub use proxy::{DomainProxy, ProxyError, ProxyResult};
 }
 
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // VGAバッファの初期化（ログ出力用）
     vga::init();

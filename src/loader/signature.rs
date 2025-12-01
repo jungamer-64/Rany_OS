@@ -5,6 +5,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::vec;
 use super::LoadError;
 
 /// 署名セクションの名前（ELFセクション）
@@ -264,9 +265,10 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
             return Err(LoadError::InvalidFormat("Invalid compiler version offset".into()));
         }
         
-        core::str::from_utf8(&data[start..end])
-            .map_err(|_| LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into()))?
-            .to_string()
+        String::from(
+            core::str::from_utf8(&data[start..end])
+                .map_err(|_| LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into()))?
+        )
     } else {
         String::new()
     };

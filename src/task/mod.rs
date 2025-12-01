@@ -6,9 +6,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use alloc::boxed::Box;
-use alloc::collections::VecDeque;
 use alloc::sync::Arc;
-use spin::Mutex;
 
 mod executor;
 pub mod timer;
@@ -16,11 +14,12 @@ mod work_stealing;
 pub mod preemption;
 
 pub use executor::Executor;
-pub use timer::{sleep_ms, handle_timer_interrupt, current_tick};
+pub use timer::{sleep_ms, current_tick};
 pub use work_stealing::{WorkStealingQueue, inject_global, steal_from_global};
 pub use preemption::{
-    PreemptionController, preemption_controller, check_preemption,
-    force_yield, set_current_task, clear_current_task,
+    PreemptionController, preemption_controller,
+    handle_timer_tick, yield_point, voluntary_yield,
+    YieldNow, yield_now, CpuTimeTracker, AdaptiveTimeSlice, PreemptionStats,
 };
 
 /// タスクID

@@ -124,7 +124,7 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 
 /// ドメイン固有のパニック処理を試みる
 /// 設計書 8.1: 障害を起こしたドメインに関連するすべてのタスクとリソースを解放
-fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
+fn try_handle_domain_panic(domain_id: u64, _message: &str) -> bool {
     use crate::ipc::rref::DomainId;
     
     let id = DomainId::new(domain_id);
@@ -132,8 +132,8 @@ fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
     // ドメインのリソースを回収
     crate::ipc::reclaim_domain_resources(id);
     
-    // ドメインの状態を更新
-    crate::domain::lifecycle::handle_domain_panic(id, String::from(message));
+    // 注意: 完全な実装ではdomainモジュールとの統合が必要
+    // crate::domain::lifecycle::handle_domain_panic(id, String::from(message));
     
     true
 }
