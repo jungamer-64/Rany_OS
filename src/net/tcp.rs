@@ -714,6 +714,74 @@ fn process_tcp_packet(tcp_offset: usize, packet: PacketRef, _ip_header: &Ipv4Hea
 }
 
 // ============================================================================
+// TCP Processor (for integration with NetworkStack)
+// ============================================================================
+
+use crate::net::ipv4::Ipv4Address;
+
+/// TCP segment processor for the network stack
+pub struct TcpProcessor {
+    /// TCP connections (simplified)
+    _connections: Vec<TcpControlBlock>,
+}
+
+impl TcpProcessor {
+    /// Create a new TCP processor
+    pub fn new() -> Self {
+        TcpProcessor {
+            _connections: Vec::new(),
+        }
+    }
+    
+    /// Process an incoming TCP segment
+    pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+        if data.len() < TcpHeader::MIN_HEADER_LEN {
+            return;
+        }
+        
+        // Read header fields directly from bytes to avoid packed struct alignment issues
+        let src_port = u16::from_be_bytes([data[0], data[1]]);
+        let dst_port = u16::from_be_bytes([data[2], data[3]]);
+        let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
+        let _flags = data_offset_flags & 0x003F;
+        
+        // Convert to internal address types
+        let _src = SocketAddr::new(
+            Ipv4Addr::new(
+                src_ip.as_bytes()[0],
+                src_ip.as_bytes()[1],
+                src_ip.as_bytes()[2],
+                src_ip.as_bytes()[3],
+            ),
+            src_port,
+        );
+        
+        let _dst = SocketAddr::new(
+            Ipv4Addr::new(
+                dst_ip.as_bytes()[0],
+                dst_ip.as_bytes()[1],
+                dst_ip.as_bytes()[2],
+                dst_ip.as_bytes()[3],
+            ),
+            dst_port,
+        );
+        
+        // TODO: Full TCP state machine implementation
+        // - Look up connection by (src, dst) tuple
+        // - Process based on current state and flags
+        // - Handle SYN, ACK, FIN, RST
+        // - Manage sequence numbers
+        // - Retransmission timer
+    }
+}
+
+impl Default for TcpProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
 // テスト
 // ============================================================================
 
