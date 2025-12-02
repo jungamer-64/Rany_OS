@@ -226,6 +226,7 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 /// - タイマーティックの管理
 /// - タスクの時間スライス減少
 /// - 必要に応じてプリエンプション要求
+/// - Interrupt-Wakerブリッジとの連携
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // タイマーティックを増加
     let tick = TIMER_TICKS.fetch_add(1, Ordering::SeqCst);
@@ -234,8 +235,9 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // これにより時間スライスが減少し、必要に応じてプリエンプションが要求される
     crate::task::preemption::handle_timer_tick(tick);
     
-    // タスクタイマーシステムにも通知（将来のタイマー処理用）
-    // TODO: crate::task::timer::process_timers(tick);
+    // Interrupt-Wakerブリッジにタイマー割り込みを通知（設計書 4.2）
+    // これによりsleep_ms等で待機中のタスクが起床される
+    crate::task::interrupt_waker::handle_timer_interrupt_waker();
     
     // EOI (End Of Interrupt) を送信
     unsafe {
@@ -251,6 +253,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 }
 
 /// キーボード割り込みハンドラ
+/// Interrupt-Wakerブリッジとの連携
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     use x86_64::instructions::port::Port;
     
@@ -261,6 +264,11 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // スキャンコードを処理キューに追加
     // TODO: キーボードドライバの実装
     crate::log!("Key: {:#x}\n", scancode);
+    
+    // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
+    crate::task::interrupt_waker::wake_from_interrupt(
+        crate::task::interrupt_waker::InterruptSource::Keyboard
+    );
     
     // EOI を送信
     unsafe {
