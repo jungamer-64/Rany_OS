@@ -34,6 +34,19 @@ mod graphics;
 mod shell;
 mod input;
 
+// Phase 4: High-Performance & Advanced Features
+mod console;
+mod diag;
+mod smp_advanced;
+
+// Phase 5: Extended Features & System Integration
+mod usb;
+mod profiler;
+mod watchdog;
+mod thermal;
+mod pcie;
+mod gpu;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // VGAバッファの初期化（ログ出力用）
