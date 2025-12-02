@@ -20,6 +20,9 @@ pub mod signal;
 pub mod process;
 pub mod environ;
 
+// Phase 4: Advanced Work-Stealing
+pub mod work_stealing_advanced;
+
 pub use executor::Executor;
 pub use timer::{sleep_ms, current_tick};
 #[allow(unused_imports)]
@@ -65,6 +68,15 @@ pub use environ::{
     EnvKey, EnvValue, EnvError, Environment, kernel_env,
     getenv, setenv, unsetenv, putenv, environ,
     get_path, get_home, get_user, get_pwd, set_pwd,
+};
+
+// Phase 4: Advanced Work-Stealing re-exports
+#[allow(unused_imports)]
+pub use work_stealing_advanced::{
+    GlobalScheduler, PerCoreWorker, WorkStealingDeque, WorkerStats, SchedulerStats,
+    StealableTask, CoreAffinity, Priority as WsPriority, TaskState as WsTaskState,
+    TaskId as WsTaskId,
+    init as init_work_stealing, spawn as ws_spawn, schedule as ws_schedule,
 };
 
 /// タスクID
