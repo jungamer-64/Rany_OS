@@ -14,6 +14,11 @@ mod work_stealing;
 pub mod preemption;
 pub mod context;
 pub mod scheduler;
+pub mod interrupt_waker;
+pub mod per_core_executor;
+pub mod signal;
+pub mod process;
+pub mod environ;
 
 pub use executor::Executor;
 pub use timer::{sleep_ms, current_tick};
@@ -31,6 +36,36 @@ pub use preemption::{
 pub use context::{CpuContext, TaskControlBlock, TaskState, KernelStack};
 #[allow(unused_imports)]
 pub use scheduler::{PerCpuScheduler, init_scheduler};
+#[allow(unused_imports)]
+pub use interrupt_waker::{
+    AtomicWaker, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
+    interrupt_waker_registry, register_interrupt_waker, wake_from_interrupt,
+    wait_for_interrupt, InterruptFuture, handle_timer_interrupt_waker,
+};
+#[allow(unused_imports)]
+pub use per_core_executor::{
+    PerCoreExecutor, ExecutorManager, ExecutorStats, Priority,
+    executor_manager, init_executors, spawn, spawn_with_priority,
+    Task as CoreTask, TaskId as CoreTaskId, TaskState as CoreTaskState, TaskMetadata,
+};
+#[allow(unused_imports)]
+pub use signal::{
+    Signal, SignalAction, SignalMask, SignalHandler, SignalQueue, SignalContext,
+    SignalManager, signal_manager, kill, signal as set_signal, sigignore,
+    SignalFuture,
+};
+#[allow(unused_imports)]
+pub use process::{
+    ProcessId, ThreadId, ProcessState, Credentials, ResourceLimits, ProcessInfo,
+    ProcessManager, process_manager, spawn as spawn_process, exit as process_exit,
+    waitpid, getpid, getppid, getuid, getgid, setpriority, getpriority,
+};
+#[allow(unused_imports)]
+pub use environ::{
+    EnvKey, EnvValue, EnvError, Environment, kernel_env,
+    getenv, setenv, unsetenv, putenv, environ,
+    get_path, get_home, get_user, get_pwd, set_pwd,
+};
 
 /// タスクID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

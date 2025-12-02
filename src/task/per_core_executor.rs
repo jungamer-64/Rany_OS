@@ -16,7 +16,59 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::collections::VecDeque;
 use spin::Mutex;
-use super::work_stealing::WorkStealingQueue;
+
+// ============================================================================
+// Generic Work-Stealing Queue (for Per-Core Executor)
+// ============================================================================
+
+/// ジェネリックなワークスティーリングキュー
+/// 
+/// Per-Core Executor 専用の実装。
+/// Mutex で保護されたVecDequeを使用した簡易実装。
+pub struct WorkStealingQueue<T> {
+    /// 内部キュー（Mutex保護）
+    inner: Mutex<VecDeque<T>>,
+}
+
+impl<T> WorkStealingQueue<T> {
+    /// 新しいキューを作成
+    pub fn new() -> Self {
+        Self {
+            inner: Mutex::new(VecDeque::with_capacity(256)),
+        }
+    }
+    
+    /// アイテムをプッシュ
+    pub fn push(&self, item: T) {
+        self.inner.lock().push_back(item);
+    }
+    
+    /// アイテムをポップ（LIFO: ローカル実行用）
+    pub fn pop(&self) -> Option<T> {
+        self.inner.lock().pop_back()
+    }
+    
+    /// アイテムをスチール（FIFO: 他コアからの取得用）
+    pub fn steal(&self) -> Option<T> {
+        self.inner.lock().pop_front()
+    }
+    
+    /// キューの長さ
+    pub fn len(&self) -> usize {
+        self.inner.lock().len()
+    }
+    
+    /// キューが空かどうか
+    pub fn is_empty(&self) -> bool {
+        self.inner.lock().is_empty()
+    }
+}
+
+impl<T> Default for WorkStealingQueue<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 // ============================================================================
 // Task Types
