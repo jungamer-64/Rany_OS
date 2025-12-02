@@ -47,6 +47,11 @@ mod thermal;
 mod pcie;
 mod gpu;
 
+// Phase 6: Testing, Demos & System Monitor
+mod test;
+mod demo;
+mod monitor;
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // VGAバッファの初期化（ログ出力用）
