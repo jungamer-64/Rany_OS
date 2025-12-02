@@ -370,6 +370,10 @@ pub struct Ring {
     physical_addr: u64,
 }
 
+// SAFETY: Ring is only accessed from one core at a time with proper synchronization
+unsafe impl Send for Ring {}
+unsafe impl Sync for Ring {}
+
 impl Ring {
     pub unsafe fn new(size: usize) -> Self {
         use core::alloc::Layout;
@@ -488,6 +492,10 @@ pub struct XhciController {
     initialized: AtomicBool,
     stats: XhciStats,
 }
+
+// SAFETY: XhciController is protected by a Mutex at the global level
+unsafe impl Send for XhciController {}
+unsafe impl Sync for XhciController {}
 
 /// xHCI統計
 #[derive(Debug, Default)]
