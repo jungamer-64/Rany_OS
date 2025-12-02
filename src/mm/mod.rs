@@ -8,6 +8,8 @@ pub mod frame_allocator;
 pub mod buddy_allocator;
 pub mod slab_cache;
 pub mod per_cpu;
+pub mod higher_half;
+pub mod mmap;
 
 #[allow(unused_imports)]
 pub use mapping::{phys_to_virt, virt_to_phys, PHYSICAL_MEMORY_OFFSET};
@@ -46,4 +48,10 @@ pub use per_cpu::{
     current_per_cpu, current_per_cpu_mut, get_per_cpu,
     active_cpu_count, enable_fsgsbase, is_fsgsbase_enabled,
     PerCpuData, MAX_CPUS,
+};
+#[allow(unused_imports)]
+pub use mmap::{
+    MappedAddress, MappingSize, Protection, MappingFlags, MmapError,
+    MemoryMapping, MmapManager, mmap_manager,
+    mmap, munmap, mprotect, msync,
 };
