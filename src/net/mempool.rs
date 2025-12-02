@@ -330,6 +330,65 @@ impl PerCoreMempoolCache {
 }
 
 // ============================================================================
+// PacketPool - Simple packet buffer pool for transmit
+// ============================================================================
+
+/// Simple packet pool for transmit buffers
+/// Used by the network stack for building outgoing packets
+pub struct PacketPool {
+    /// Pre-allocated buffers
+    buffers: Mutex<Vec<Vec<u8>>>,
+    /// Buffer size
+    buffer_size: usize,
+    /// Pool capacity
+    capacity: usize,
+}
+
+impl PacketPool {
+    /// Create a new packet pool
+    pub fn new(capacity: usize, buffer_size: usize) -> Self {
+        let mut buffers = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            buffers.push(alloc::vec![0u8; buffer_size]);
+        }
+        
+        PacketPool {
+            buffers: Mutex::new(buffers),
+            buffer_size,
+            capacity,
+        }
+    }
+    
+    /// Allocate a buffer from the pool
+    pub fn alloc(&self) -> Option<Vec<u8>> {
+        let mut buffers = self.buffers.lock();
+        buffers.pop()
+    }
+    
+    /// Return a buffer to the pool
+    pub fn free(&self, mut buffer: Vec<u8>) {
+        // Clear the buffer
+        buffer.fill(0);
+        
+        let mut buffers = self.buffers.lock();
+        if buffers.len() < self.capacity {
+            buffers.push(buffer);
+        }
+        // Otherwise drop the buffer
+    }
+    
+    /// Get buffer size
+    pub fn buffer_size(&self) -> usize {
+        self.buffer_size
+    }
+    
+    /// Get available buffer count
+    pub fn available(&self) -> usize {
+        self.buffers.lock().len()
+    }
+}
+
+// ============================================================================
 // Global Mempool
 // ============================================================================
 
