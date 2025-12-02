@@ -124,6 +124,37 @@ pub struct VringUsed {
     pub ring: [VringUsedElem; 256],
 }
 
+// ============================================================================
+// Send-safe pointer wrapper
+// ============================================================================
+
+/// 生ポインタをSend可能にするラッパー
+/// 
+/// # Safety
+/// このラッパーを使う側が、ポインタの有効性とスレッド安全性を保証する必要がある
+struct SendPtr<T>(*mut T);
+
+unsafe impl<T> Send for SendPtr<T> {}
+unsafe impl<T> Sync for SendPtr<T> {}
+
+impl<T> SendPtr<T> {
+    fn new(ptr: *mut T) -> Self {
+        Self(ptr)
+    }
+    
+    fn as_ptr(&self) -> *mut T {
+        self.0
+    }
+}
+
+impl<T> Clone for SendPtr<T> {
+    fn clone(&self) -> Self {
+        Self(self.0)
+    }
+}
+
+impl<T> Copy for SendPtr<T> {}
+
 /// ネットワーク VirtQueue
 pub struct NetVirtQueue {
     /// キューインデックス (0=RX, 1=TX)
@@ -131,11 +162,11 @@ pub struct NetVirtQueue {
     /// キューサイズ
     pub size: u16,
     /// ディスクリプタテーブル
-    desc_table: *mut VringDesc,
+    desc_table: SendPtr<VringDesc>,
     /// Available Ring
-    avail_ring: *mut VringAvail,
+    avail_ring: SendPtr<VringAvail>,
     /// Used Ring
-    used_ring: *mut VringUsed,
+    used_ring: SendPtr<VringUsed>,
     /// 次の空きディスクリプタ
     next_free_desc: AtomicU16,
     /// 最後に処理した Used インデックス
@@ -145,6 +176,10 @@ pub struct NetVirtQueue {
     /// ペンディングバッファの追跡 (desc_id -> callback)
     pending_buffers: Mutex<Vec<Option<PendingBuffer>>>,
 }
+
+// NetVirtQueueをSend/Syncにする
+unsafe impl Send for NetVirtQueue {}
+unsafe impl Sync for NetVirtQueue {}
 
 /// ペンディングバッファ情報
 struct PendingBuffer {
@@ -175,9 +210,9 @@ impl NetVirtQueue {
         Self {
             index,
             size,
-            desc_table,
-            avail_ring,
-            used_ring,
+            desc_table: SendPtr::new(desc_table),
+            avail_ring: SendPtr::new(avail_ring),
+            used_ring: SendPtr::new(used_ring),
             next_free_desc: AtomicU16::new(0),
             last_used_idx: AtomicU16::new(0),
             pending_wakers: Mutex::new(Vec::new()),
@@ -202,14 +237,14 @@ impl NetVirtQueue {
         
         unsafe {
             // ディスクリプタを設定
-            let desc = &mut *self.desc_table.add(desc_idx as usize);
+            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
             desc.addr = data.as_ptr() as u64;
             desc.len = (VirtioNetHeader::SIZE + data.len()) as u32;
             desc.flags = 0;
             desc.next = 0;
             
             // Available Ringに追加
-            let avail = &mut *self.avail_ring;
+            let avail = &mut *self.avail_ring.as_ptr();
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
             
@@ -228,14 +263,14 @@ impl NetVirtQueue {
         
         unsafe {
             // ディスクリプタを設定（書き込み可能）
-            let desc = &mut *self.desc_table.add(desc_idx as usize);
+            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
             desc.addr = buffer.as_ptr() as u64;
             desc.len = buffer.len() as u32;
             desc.flags = VringDesc::VRING_DESC_F_WRITE;
             desc.next = 0;
             
             // Available Ringに追加
-            let avail = &mut *self.avail_ring;
+            let avail = &mut *self.avail_ring.as_ptr();
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
             
@@ -252,7 +287,7 @@ impl NetVirtQueue {
         let mut completed = Vec::new();
         
         unsafe {
-            let used = &*self.used_ring;
+            let used = &*self.used_ring.as_ptr();
             let mut last_idx = self.last_used_idx.load(Ordering::Acquire);
             
             while last_idx != used.idx {
@@ -283,7 +318,7 @@ impl NetVirtQueue {
     /// ペンディングバッファがあるかチェック
     pub fn has_pending(&self) -> bool {
         unsafe {
-            let used = &*self.used_ring;
+            let used = &*self.used_ring.as_ptr();
             let last_idx = self.last_used_idx.load(Ordering::Acquire);
             last_idx != used.idx
         }
@@ -414,6 +449,12 @@ impl VirtioNetDevice {
         
         // 適応的ポーリングコントローラに通知
         super::polling::net_io_controller().notify_packet_processed(1);
+        
+        // Interrupt-Wakerブリッジに通知（設計書 4.2）
+        // RX/TXで待機中のFutureを起床
+        crate::task::interrupt_waker::wake_from_interrupt(
+            crate::task::interrupt_waker::InterruptSource::VirtioNet(0)
+        );
     }
     
     /// 統計を取得

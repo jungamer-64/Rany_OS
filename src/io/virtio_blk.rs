@@ -680,6 +680,11 @@ impl VirtioBlkDevice {
                 }
             }
         }
+        
+        // Interrupt-Wakerブリッジに通知（設計書 4.2）
+        crate::task::interrupt_waker::wake_from_interrupt(
+            crate::task::interrupt_waker::InterruptSource::VirtioBlk(0)
+        );
     }
     
     /// Submit a read request (internal)
