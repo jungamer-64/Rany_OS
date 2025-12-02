@@ -25,15 +25,14 @@ mod domain_system;
 mod domain;
 mod sas;
 mod error;
-
-// ipc モジュールは ipc/ ディレクトリを使用
-mod ipc {
-    pub mod rref;
-    pub mod proxy;
-    pub use rref::{DomainId, RRef, reclaim_domain_resources};
-    #[allow(unused_imports)]
-    pub use proxy::{DomainProxy, ProxyError, ProxyResult};
-}
+mod ipc;
+mod security;
+mod syscall;
+mod power;
+mod time;
+mod graphics;
+mod shell;
+mod input;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
@@ -53,15 +52,56 @@ pub extern "C" fn _start() -> ! {
     domain_system::init();
     log!("[OK] Domain system initialized\n");
     
+    // 2.5. SAS（単一アドレス空間）の初期化
+    log!("[INIT] Initializing Single Address Space manager\n");
+    sas::init();
+    log!("[OK] SAS manager initialized\n");
+    
+    // 2.6. Spectre/Meltdown緩和策の初期化
+    log!("[INIT] Initializing Spectre mitigations\n");
+    spectre::init();
+    let status = spectre::status_summary();
+    log!("[OK] Spectre mitigations: IBRS={}, STIBP={}, SSBD={}, Retpoline={}\n",
+        status.ibrs_enabled, status.stibp_enabled, 
+        status.ssbd_enabled, status.using_retpoline);
+    
+    // 2.7. セキュリティフレームワークの初期化
+    log!("[INIT] Initializing security framework\n");
+    security::init();
+    log!("[OK] Security framework initialized\n");
+    
+    // 2.8. システムコールインターフェースの初期化
+    log!("[INIT] Initializing system call interface\n");
+    syscall::init();
+    log!("[OK] System call interface initialized\n");
+    
     // 3. 割り込みシステムの初期化（GDT/TSS + IDT + PIC）
     log!("[INIT] Initializing interrupt system\n");
     interrupts::init();
     log!("[OK] Interrupt system initialized\n");
     
+    // 3.5. キーボードドライバの初期化
+    log!("[INIT] Initializing keyboard driver\n");
+    io::keyboard::init();
+    log!("[OK] Keyboard driver initialized\n");
+    
+    // 3.6. シリアルポートの初期化（デバッグ用）
+    log!("[INIT] Initializing serial port\n");
+    if io::serial::init().is_ok() {
+        log!("[OK] Serial port initialized\n");
+    } else {
+        log!("[WARN] Serial port initialization failed\n");
+    }
+    
     // 4. タスクスケジューラの初期化
     log!("[INIT] Initializing task scheduler\n");
     task::init_scheduler(0); // CPU 0
     log!("[OK] Task scheduler initialized\n");
+    
+    // 4.5. Per-Core Executorの初期化（設計書 4.3）
+    log!("[INIT] Initializing per-core executors\n");
+    task::init_executors(1); // シングルコアで開始
+    log!("[OK] Per-core executors initialized\n");
     
     // 5. ローダーシステムの初期化
     log!("[INIT] Initializing cell loader\n");
@@ -102,6 +142,11 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"));
+    
+    // SAS統計をログ
+    let sas_stats = sas::stats();
+    log!("[INIT] SAS Stats: {} regions, {} objects, {} domains\n",
+        sas_stats.total_regions, sas_stats.total_objects, sas_stats.domains);
     domain_system::start_domain(domain1).ok();
     
     // タスク1: ドメイン1のメインタスク
@@ -212,6 +257,22 @@ fn print_system_stats() {
         domain_stats.total,
         domain_stats.running,
         domain_stats.stopped);
+    
+    // SAS統計
+    let sas_stats = sas::stats();
+    log!("[STATS] SAS: {} regions, {} objects\n",
+        sas_stats.total_regions, sas_stats.total_objects);
+    
+    // セキュリティ統計
+    let security_violations = security::access_control().violation_count();
+    let zero_copy_stats = security::zero_copy_barrier().stats();
+    log!("[STATS] Security: {} violations, {} bytes transferred\n",
+        security_violations, zero_copy_stats.bytes_transferred);
+    
+    // 割り込みWaker統計
+    let waker_stats = task::interrupt_waker::interrupt_waker_registry().stats();
+    log!("[STATS] Interrupt-Waker: {} interrupts, {} wakes, {} registered\n",
+        waker_stats.interrupt_count, waker_stats.wake_count, waker_stats.registered_sources);
     
     // 割り込み統計
     let timer_ticks = interrupts::get_timer_ticks();
