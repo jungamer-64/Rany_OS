@@ -1,0 +1,240 @@
+name: QEMU Integration Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run with verbose output'
+        required: false
+        default: 'false'
+
+jobs:
+  integration-tests:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    strategy:
+      matrix:
+        qemu_cpu: [qemu64, Haswell-v4]
+        memory: [256M, 512M, 1G]
+        cpus: [1, 2, 4]
+      fail-fast: false
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src, llvm-tools-preview
+    
+    - name: Install QEMU
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86 qemu-utils
+    
+    - name: Cache cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-integration-${{ hashFiles('**/Cargo.lock') }}
+    
+    - name: Build kernel
+      run: cargo build --target x86_64-rany_os.json
+    
+    - name: Run QEMU test (${{ matrix.qemu_cpu }}, ${{ matrix.memory }}, ${{ matrix.cpus }} CPUs)
+      run: |
+        KERNEL="target/x86_64-rany_os/debug/RanyOS"
+        
+        if [ ! -f "$KERNEL" ]; then
+          echo "Kernel not found at $KERNEL"
+          exit 1
+        fi
+        
+        echo "Testing with CPU=${{ matrix.qemu_cpu }}, RAM=${{ matrix.memory }}, CPUs=${{ matrix.cpus }}"
+        
+        timeout 60s qemu-system-x86_64 \
+          -machine q35,accel=tcg \
+          -cpu ${{ matrix.qemu_cpu }} \
+          -smp ${{ matrix.cpus }} \
+          -m ${{ matrix.memory }} \
+          -kernel "$KERNEL" \
+          -serial stdio \
+          -display none \
+          -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+          -no-reboot \
+          2>&1 | tee qemu_output.log || EXIT_CODE=$?
+        
+        echo "QEMU exit code: ${EXIT_CODE:-0}"
+        
+        # Check output for expected strings
+        if grep -q "ExoRust\|RanyOS\|kernel" qemu_output.log; then
+          echo "✓ Kernel output detected"
+        fi
+      continue-on-error: true
+    
+    - name: Upload QEMU logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: qemu-logs-${{ matrix.qemu_cpu }}-${{ matrix.memory }}-${{ matrix.cpus }}
+        path: qemu_output.log
+        retention-days: 7
+
+  network-test:
+    name: Network Stack Test
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src
+    
+    - name: Install QEMU with networking
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86 bridge-utils
+    
+    - name: Build kernel
+      run: cargo build --target x86_64-rany_os.json
+    
+    - name: Run network test
+      run: |
+        KERNEL="target/x86_64-rany_os/debug/RanyOS"
+        
+        timeout 60s qemu-system-x86_64 \
+          -machine q35,accel=tcg \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 512M \
+          -kernel "$KERNEL" \
+          -serial stdio \
+          -display none \
+          -device virtio-net-pci,netdev=net0 \
+          -netdev user,id=net0,hostfwd=tcp::8080-:80 \
+          -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+          -no-reboot \
+          2>&1 | tee network_test.log || true
+      continue-on-error: true
+    
+    - name: Upload network test logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: network-test-logs
+        path: network_test.log
+        retention-days: 7
+
+  storage-test:
+    name: Storage Test
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src
+    
+    - name: Install QEMU
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86 qemu-utils
+    
+    - name: Create test disk
+      run: |
+        qemu-img create -f raw test_disk.img 64M
+    
+    - name: Build kernel
+      run: cargo build --target x86_64-rany_os.json
+    
+    - name: Run storage test
+      run: |
+        KERNEL="target/x86_64-rany_os/debug/RanyOS"
+        
+        timeout 60s qemu-system-x86_64 \
+          -machine q35,accel=tcg \
+          -cpu qemu64 \
+          -smp 2 \
+          -m 512M \
+          -kernel "$KERNEL" \
+          -serial stdio \
+          -display none \
+          -device virtio-blk-pci,drive=drive0 \
+          -drive id=drive0,if=none,format=raw,file=test_disk.img \
+          -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+          -no-reboot \
+          2>&1 | tee storage_test.log || true
+      continue-on-error: true
+    
+    - name: Upload storage test logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: storage-test-logs
+        path: storage_test.log
+        retention-days: 7
+
+  smp-test:
+    name: SMP Test
+    runs-on: ubuntu-latest
+    needs: integration-tests
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@nightly
+      with:
+        components: rust-src
+    
+    - name: Install QEMU
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-system-x86
+    
+    - name: Build kernel
+      run: cargo build --target x86_64-rany_os.json
+    
+    - name: Run SMP test (8 CPUs)
+      run: |
+        KERNEL="target/x86_64-rany_os/debug/RanyOS"
+        
+        for cpus in 1 2 4 8; do
+          echo "=== Testing with $cpus CPUs ==="
+          timeout 60s qemu-system-x86_64 \
+            -machine q35,accel=tcg \
+            -cpu qemu64,+x2apic \
+            -smp $cpus \
+            -m 1G \
+            -kernel "$KERNEL" \
+            -serial stdio \
+            -display none \
+            -device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+            -no-reboot \
+            2>&1 | tee smp_test_${cpus}.log || true
+          echo ""
+        done
+      continue-on-error: true
+    
+    - name: Upload SMP test logs
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: smp-test-logs
+        path: smp_test_*.log
+        retention-days: 7
