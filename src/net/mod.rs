@@ -10,6 +10,9 @@ pub mod tcp;
 pub mod adaptive_polling;
 pub mod zero_copy;
 
+// Phase 5+: Advanced Performance Optimization
+pub mod optimization;
+
 // Protocol layers
 pub mod ethernet;
 pub mod ipv4;
@@ -146,4 +149,24 @@ pub use zero_copy::{
     EthernetHeaderView, Ipv4HeaderView,
     ZeroCopyReader, ZeroCopyWriter, PoolManager,
     init as init_zero_copy,
+};
+
+// Re-export Phase 5+ Advanced Optimization
+#[allow(unused_imports)]
+pub use optimization::{
+    // Batch processing
+    PacketBatch, BatchProcessor, BatchConfig, BatchStats, MAX_BATCH_SIZE,
+    // NUMA
+    NumaNode, NumaTopology, NumaMempool,
+    // CPU Affinity
+    CpuAffinity, FlowAffinity,
+    // Interrupt coalescing
+    InterruptCoalescing, AdaptiveCoalescing,
+    // GRO/TSO
+    GroSegment, GroTable, TsoContext,
+    // Metrics
+    NetworkMetrics,
+    // Initialization
+    init as init_optimization,
+    batch_processor, numa_topology, flow_affinity, adaptive_coalescing, metrics,
 };

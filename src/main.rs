@@ -52,6 +52,13 @@ mod test;
 mod demo;
 mod monitor;
 
+// Phase 7: System Integration & User Space Support
+mod benchmark;
+mod integration;
+mod userspace;
+
+// Note: smp module with bootstrap is included in the main smp module
+
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // VGAバッファの初期化（ログ出力用）

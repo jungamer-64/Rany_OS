@@ -3,6 +3,9 @@
 // Phase 6: Integration Tests & Validation
 // ============================================================================
 
+// Integration test suite for comprehensive kernel testing
+pub mod integration;
+
 // Note: Individual test modules are disabled until API stabilization
 // pub mod memory_tests;
 // pub mod task_tests;
