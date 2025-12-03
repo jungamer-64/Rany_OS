@@ -150,8 +150,42 @@ pub fn _print(args: fmt::Arguments) {
     let _ = WRITER.lock().write_fmt(args);
 }
 
+/// 早期ブート段階用のシリアル出力（ロックなし、シンプル）
+pub fn early_serial_char(c: u8) {
+    use x86_64::instructions::port::Port;
+    unsafe {
+        let mut status_port: Port<u8> = Port::new(0x3FD);
+        let mut data_port: Port<u8> = Port::new(0x3F8);
+        // 送信バッファが空になるまで待つ（タイムアウト付き）
+        let mut timeout = 100000u32;
+        while (status_port.read() & 0x20) == 0 && timeout > 0 {
+            timeout -= 1;
+        }
+        if timeout > 0 {
+            data_port.write(c);
+        }
+    }
+}
+
+/// 早期ブート段階用のシリアル文字列出力
+pub fn early_serial_str(s: &str) {
+    for byte in s.bytes() {
+        early_serial_char(byte);
+    }
+}
+
 #[macro_export]
 macro_rules! log {
+    ($($arg:tt)*) => ({
+        $crate::vga::_print(format_args!($($arg)*));
+        // 早期ブート段階ではシンプルなシリアル出力を使用
+        // format_args!を直接使うのは複雑なので、一旦VGAのみ
+    });
+}
+
+/// VGAとシリアル両方に出力するマクロ（シリアル初期化後用）
+#[macro_export]
+macro_rules! log_serial {
     ($($arg:tt)*) => ({
         $crate::vga::_print(format_args!($($arg)*));
         $crate::io::serial::_print(format_args!($($arg)*));

@@ -81,7 +81,7 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
         .set_handler_fn(exceptions::general_protection_fault_handler);
 
     // Page Fault (#PF) - Vector 14
-    // オプション: IST を使用することもできる
+    // IST を使用
     unsafe {
         idt.page_fault
             .set_handler_fn(exceptions::page_fault_handler)
@@ -107,6 +107,8 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
     idt[InterruptVector::Timer as usize].set_handler_fn(timer_interrupt_handler);
 
     idt[InterruptVector::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
+
+    idt[InterruptVector::Com1 as usize].set_handler_fn(com1_interrupt_handler);
 
     idt
 });
@@ -359,6 +361,23 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // EOI を送信
     unsafe {
         send_eoi(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
+    }
+}
+
+/// COM1 (Serial) 割り込みハンドラ
+/// シリアルポートからのデータ受信時に呼ばれる
+extern "x86-interrupt" fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // シリアルポートドライバの割り込みハンドラを呼び出し
+    crate::io::serial::handle_interrupt();
+
+    // Interrupt-Wakerブリッジに通知
+    crate::task::interrupt_waker::wake_from_interrupt(
+        crate::task::interrupt_waker::InterruptSource::Serial,
+    );
+
+    // EOI を送信 (IRQ4 = COM1)
+    unsafe {
+        send_eoi(InterruptVector::Com1 as u8 - PIC1_OFFSET);
     }
 }
 

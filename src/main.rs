@@ -328,6 +328,14 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
         );
         log!("[Task 7] Integration test task completed\n");
     }));
+
+    // タスク8: 非同期シリアルシェル（IRQ4駆動）
+    executor.spawn(Task::new(async {
+        log!("[Task 8] Async serial shell task starting...\n");
+        // シェルはすべてのタスクが落ち着いてから開始
+        task::sleep_ms(3000).await;
+        shell::async_shell::run_async_shell().await;
+    }));
 }
 
 /// システム統計を表示
