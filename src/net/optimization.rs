@@ -22,10 +22,13 @@ use spin::Mutex;
 // Batch Processing - バッチ処理
 // ============================================================================
 
+/// 最大バッチサイズ (DPDK/NAPIの典型値)
+pub const MAX_BATCH_SIZE: usize = 64;
+
 /// パケットバッチ - 複数パケットをまとめて処理
 pub struct PacketBatch {
     /// バッファへのポインタ配列
-    buffers: [Option<*mut u8>; MAX_BATCH_SIZE],
+    buffers: [Option<usize>; MAX_BATCH_SIZE],  // *mut u8をusizeとして保持
     /// 各パケットの長さ
     lengths: [u16; MAX_BATCH_SIZE],
     /// バッチ内のパケット数
@@ -34,8 +37,9 @@ pub struct PacketBatch {
     capacity: usize,
 }
 
-/// 最大バッチサイズ (DPDK/NAPIの典型値)
-pub const MAX_BATCH_SIZE: usize = 64;
+// Safety: PacketBatchはunsafe操作でのみアクセスされ、適切に同期される
+unsafe impl Send for PacketBatch {}
+unsafe impl Sync for PacketBatch {}
 
 impl PacketBatch {
     /// 新しい空のバッチを作成
@@ -56,7 +60,7 @@ impl PacketBatch {
         if self.count >= self.capacity {
             return false;
         }
-        self.buffers[self.count] = Some(buffer);
+        self.buffers[self.count] = Some(buffer as usize);
         self.lengths[self.count] = length;
         self.count += 1;
         true
@@ -92,7 +96,7 @@ impl PacketBatch {
     /// イテレータを取得
     pub fn iter(&self) -> impl Iterator<Item = (*mut u8, u16)> + '_ {
         (0..self.count).filter_map(move |i| {
-            self.buffers[i].map(|buf| (buf, self.lengths[i]))
+            self.buffers[i].map(|buf| (buf as *mut u8, self.lengths[i]))
         })
     }
 }
@@ -332,8 +336,8 @@ impl NumaTopology {
 
 /// NUMA対応メモリプール
 pub struct NumaMempool {
-    /// ノードごとのメモリプール
-    pools: Vec<Mutex<Vec<*mut u8>>>,
+    /// ノードごとのメモリプール（usizeとして保持）
+    pools: Vec<Mutex<Vec<usize>>>,
     /// バッファサイズ
     buffer_size: usize,
     /// トポロジー参照
@@ -362,7 +366,7 @@ impl NumaMempool {
                     .expect("Invalid layout");
                 let ptr = alloc::alloc::alloc(layout);
                 if !ptr.is_null() {
-                    node_pool.push(ptr);
+                    node_pool.push(ptr as usize);
                 }
             }
             
@@ -399,7 +403,7 @@ impl NumaMempool {
     
     fn alloc_from_node(&self, node_id: usize) -> Option<*mut u8> {
         if node_id < self.pools.len() {
-            self.pools[node_id].lock().pop()
+            self.pools[node_id].lock().pop().map(|addr| addr as *mut u8)
         } else {
             None
         }
@@ -412,7 +416,7 @@ impl NumaMempool {
     pub unsafe fn free(&self, ptr: *mut u8, cpu_id: usize) {
         let node_id = self.topology.cpu_node(cpu_id) as usize;
         if node_id < self.pools.len() {
-            self.pools[node_id].lock().push(ptr);
+            self.pools[node_id].lock().push(ptr as usize);
         }
     }
 }
@@ -650,8 +654,8 @@ impl AdaptiveCoalescing {
 
 /// GROセグメント
 pub struct GroSegment {
-    /// 先頭パケットバッファ
-    pub head: *mut u8,
+    /// 先頭パケットバッファ（usizeとして保持）
+    pub head: usize,
     /// 結合データサイズ
     pub total_len: u32,
     /// 結合パケット数
@@ -664,6 +668,18 @@ pub struct GroSegment {
     pub next_seq: u32,
     /// タイムスタンプ (TSC)
     pub timestamp: u64,
+}
+
+// Safety: GroSegmentはunsafe操作でのみアクセスされ、適切に同期される
+unsafe impl Send for GroSegment {}
+unsafe impl Sync for GroSegment {}
+
+impl GroSegment {
+    /// バッファポインタを取得
+    #[inline]
+    pub fn head_ptr(&self) -> *mut u8 {
+        self.head as *mut u8
+    }
 }
 
 /// GROテーブル
@@ -717,7 +733,7 @@ impl GroTable {
         // 新しいセグメントを作成
         if self.count < GRO_TABLE_SIZE {
             let new_segment = GroSegment {
-                head: buffer,
+                head: buffer as usize,
                 total_len: len as u32,
                 packet_count: 1,
                 flow_hash,
@@ -743,12 +759,14 @@ impl GroTable {
         let mut flushed = Vec::new();
         
         for slot in self.segments.iter_mut() {
-            if let Some(ref segment) = slot {
-                if current_tsc - segment.timestamp > self.max_age_tsc {
-                    if let Some(seg) = slot.take() {
-                        self.count -= 1;
-                        flushed.push(seg);
-                    }
+            let should_flush = slot.as_ref()
+                .map(|segment| current_tsc - segment.timestamp > self.max_age_tsc)
+                .unwrap_or(false);
+            
+            if should_flush {
+                if let Some(seg) = slot.take() {
+                    self.count -= 1;
+                    flushed.push(seg);
                 }
             }
         }
@@ -758,11 +776,13 @@ impl GroTable {
     
     fn take_segment(&mut self, flow_hash: u32) -> Option<GroSegment> {
         for slot in self.segments.iter_mut() {
-            if let Some(ref segment) = slot {
-                if segment.flow_hash == flow_hash {
-                    self.count -= 1;
-                    return slot.take();
-                }
+            let matches = slot.as_ref()
+                .map(|segment| segment.flow_hash == flow_hash)
+                .unwrap_or(false);
+            
+            if matches {
+                self.count -= 1;
+                return slot.take();
             }
         }
         None
@@ -777,8 +797,8 @@ impl GroTable {
 pub struct TsoContext {
     /// MSS (Maximum Segment Size)
     pub mss: u16,
-    /// 送信バッファ
-    pub buffer: *mut u8,
+    /// 送信バッファ（usizeとして保持）
+    pub buffer: usize,
     /// 総データサイズ
     pub total_len: u32,
     /// 現在のオフセット
@@ -786,6 +806,10 @@ pub struct TsoContext {
     /// 送信済みセグメント数
     pub segments_sent: u32,
 }
+
+// Safety: TsoContextはunsafe操作でのみアクセスされ、適切に同期される
+unsafe impl Send for TsoContext {}
+unsafe impl Sync for TsoContext {}
 
 impl TsoContext {
     /// TSOセグメントを生成
@@ -795,7 +819,7 @@ impl TsoContext {
     pub unsafe fn new(buffer: *mut u8, total_len: u32, mss: u16) -> Self {
         Self {
             mss,
-            buffer,
+            buffer: buffer as usize,
             total_len,
             offset: 0,
             segments_sent: 0,
@@ -811,7 +835,7 @@ impl TsoContext {
         let remaining = self.total_len - self.offset;
         let seg_len = core::cmp::min(remaining, self.mss as u32) as u16;
         
-        let ptr = unsafe { self.buffer.add(self.offset as usize) };
+        let ptr = unsafe { (self.buffer as *mut u8).add(self.offset as usize) };
         self.offset += seg_len as u32;
         self.segments_sent += 1;
         

@@ -36,15 +36,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "linked_list_allocator"
-version = "0.10.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9afa463f5405ee81cdb9cc2baf37e08ec7e4c8209442b5d72c04cfb2cd6e6286"
-dependencies = [
- "spinning_top",
-]
-
-[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -54,23 +45,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "pic8259"
-version = "0.10.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb844b5b01db1e0b17938685738f113bfc903846f18932b378bc0eabfa40e194"
-dependencies = [
- "x86_64",
-]
-
-[[package]]
 name = "rany_os"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "bitflags 2.10.0",
  "bootloader",
  "lazy_static",
- "linked_list_allocator",
- "pic8259",
  "spin",
  "uart_16550",
  "x86_64",
@@ -102,15 +82,6 @@ name = "spin"
 version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
-dependencies = [
- "lock_api",
-]
-
-[[package]]
-name = "spinning_top"
-version = "0.2.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b9eb1a2f4c41445a3a0ff9abc5221c5fcd28e1f13cd7c0397706f9ac938ddb0"
 dependencies = [
  "lock_api",
 ]

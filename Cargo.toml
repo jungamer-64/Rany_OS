@@ -1,9 +1,9 @@
 [package]
 name = "rany_os"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["ExoRust Team"]
-description = "Single Address Space, Async-First Rust OS Kernel"
+description = "Single Address Space, Async-First Rust OS Kernel - Pure Performance Architecture"
 
 [[bin]]
 name = "exorust_kernel"
@@ -16,6 +16,12 @@ path = "src/lib.rs"
 # ============================================================================
 # 依存関係
 # ============================================================================
+# 設計理念:
+# - linked_list_allocator を削除: O(n)探索は性能目標と矛盾
+#   → 自作Buddy Allocator (src/mm/buddy_allocator.rs) を使用
+# - pic8259 を削除: レガシーPICはAPIC/MSI-X専用設計と矛盾
+#   → PIC無効化処理は直接I/Oポート操作で実装
+# ============================================================================
 
 [dependencies]
 # ブートローダー（物理メモリマッピング機能付き）
@@ -27,14 +33,8 @@ x86_64 = "0.14"
 # スピンロック（no_std互換）
 spin = "0.9"
 
-# メモリアロケータ
-linked_list_allocator = "0.10"
-
 # Lazy static for global state
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
-
-# PIC (Programmable Interrupt Controller)
-pic8259 = "0.10"
 
 # UART シリアル出力（デバッグ用）
 uart_16550 = { version = "0.3", optional = true }

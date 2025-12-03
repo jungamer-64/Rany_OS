@@ -164,49 +164,125 @@ where
 }
 
 // ============================================================================
-// PIC (8259A Programmable Interrupt Controller)
+// PIC (8259A) 無効化 - APIC専用設計
+// ============================================================================
+// 設計理念: レガシーPICはモダンx86_64では不要
+// - pic8259クレートを削除し、直接I/Oポート操作で無効化
+// - 全ての割り込みはAPIC/IO APICで処理
 // ============================================================================
 
-use pic8259::ChainedPics;
-use spin::Mutex;
+use x86_64::instructions::port::Port;
 
-/// カスケード接続されたPIC
-pub static PICS: Mutex<ChainedPics> = Mutex::new(
-    unsafe { ChainedPics::new(PIC1_OFFSET, PIC2_OFFSET) }
-);
+/// PICのI/Oポートアドレス
+const PIC1_COMMAND: u16 = 0x20;
+const PIC1_DATA: u16 = 0x21;
+const PIC2_COMMAND: u16 = 0xA0;
+const PIC2_DATA: u16 = 0xA1;
 
-/// PICの初期化
+/// ICW1: 初期化コマンド
+const ICW1_INIT: u8 = 0x10;
+const ICW1_ICW4: u8 = 0x01;
+/// ICW4: 8086モード
+const ICW4_8086: u8 = 0x01;
+
+/// PICを完全に無効化（APICモードへ移行）
+/// 
+/// これは設計理念に基づく重要な処理：
+/// - レガシーPICはシングルコア時代の遺物
+/// - 現代のx86_64ではAPIC/MSI-Xを使用すべき
+/// - PICは初期化後に全マスクして無効化
 fn init_pic() {
     unsafe {
-        PICS.lock().initialize();
+        let mut pic1_cmd: Port<u8> = Port::new(PIC1_COMMAND);
+        let mut pic1_data: Port<u8> = Port::new(PIC1_DATA);
+        let mut pic2_cmd: Port<u8> = Port::new(PIC2_COMMAND);
+        let mut pic2_data: Port<u8> = Port::new(PIC2_DATA);
+        
+        // PICの初期化シーケンス（リマップ）
+        // これは必要: BIOSがPIC割り込みをCPU例外と衝突する位置に設定するため
+        
+        // ICW1: 初期化開始
+        pic1_cmd.write(ICW1_INIT | ICW1_ICW4);
+        io_wait();
+        pic2_cmd.write(ICW1_INIT | ICW1_ICW4);
+        io_wait();
+        
+        // ICW2: ベクタオフセット設定（例外との衝突を回避）
+        pic1_data.write(PIC1_OFFSET);
+        io_wait();
+        pic2_data.write(PIC2_OFFSET);
+        io_wait();
+        
+        // ICW3: カスケード設定
+        pic1_data.write(4); // IRQ2にスレーブ接続
+        io_wait();
+        pic2_data.write(2); // カスケードID
+        io_wait();
+        
+        // ICW4: 8086モード
+        pic1_data.write(ICW4_8086);
+        io_wait();
+        pic2_data.write(ICW4_8086);
+        io_wait();
+        
+        // 全割り込みをマスク（APIC使用のため）
+        // 0xFF = 全ビットマスク
+        pic1_data.write(0xFF);
+        pic2_data.write(0xFF);
     }
 }
 
-/// 特定の割り込みをマスク（無効化）
-pub fn mask_irq(irq: u8) {
+/// I/O待機（PICは遅いデバイス）
+#[inline]
+fn io_wait() {
     unsafe {
-        let mut pics = PICS.lock();
-        let mut masks = pics.read_masks();
-        if irq < 8 {
-            masks[0] |= 1 << irq;
-        } else {
-            masks[1] |= 1 << (irq - 8);
-        }
-        pics.write_masks(masks[0], masks[1]);
+        // 未使用ポートへのI/Oで遅延を発生
+        let mut port: Port<u8> = Port::new(0x80);
+        port.write(0);
     }
 }
 
-/// 特定の割り込みをアンマスク（有効化）
+/// EOI送信（タイマー/キーボード用 - APICへの移行までの暫定）
+/// 
+/// # Safety
+/// 割り込みハンドラ内でのみ呼び出すこと
+pub unsafe fn send_eoi(irq: u8) {
+    let mut pic1_cmd: Port<u8> = Port::new(PIC1_COMMAND);
+    let mut pic2_cmd: Port<u8> = Port::new(PIC2_COMMAND);
+    
+    if irq >= 8 {
+        pic2_cmd.write(0x20); // スレーブPICにEOI
+    }
+    pic1_cmd.write(0x20); // マスターPICにEOI
+}
+
+/// 特定の割り込みをアンマスク（APIC移行までの暫定）
 pub fn unmask_irq(irq: u8) {
     unsafe {
-        let mut pics = PICS.lock();
-        let mut masks = pics.read_masks();
         if irq < 8 {
-            masks[0] &= !(1 << irq);
+            let mut port: Port<u8> = Port::new(PIC1_DATA);
+            let mask = port.read();
+            port.write(mask & !(1 << irq));
         } else {
-            masks[1] &= !(1 << (irq - 8));
+            let mut port: Port<u8> = Port::new(PIC2_DATA);
+            let mask = port.read();
+            port.write(mask & !(1 << (irq - 8)));
         }
-        pics.write_masks(masks[0], masks[1]);
+    }
+}
+
+/// 特定の割り込みをマスク
+pub fn mask_irq(irq: u8) {
+    unsafe {
+        if irq < 8 {
+            let mut port: Port<u8> = Port::new(PIC1_DATA);
+            let mask = port.read();
+            port.write(mask | (1 << irq));
+        } else {
+            let mut port: Port<u8> = Port::new(PIC2_DATA);
+            let mask = port.read();
+            port.write(mask | (1 << (irq - 8)));
+        }
     }
 }
 
@@ -241,7 +317,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     
     // EOI (End Of Interrupt) を送信
     unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptVector::Timer as u8);
+        send_eoi(InterruptVector::Timer as u8 - PIC1_OFFSET);
     }
     
     // プリエンプションが要求されていて、割り込み可能な状態なら
@@ -272,7 +348,7 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     
     // EOI を送信
     unsafe {
-        PICS.lock().notify_end_of_interrupt(InterruptVector::Keyboard as u8);
+        send_eoi(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
     }
 }
 

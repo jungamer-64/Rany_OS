@@ -4,11 +4,24 @@
 
 ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用したx86_64用カーネルです。
 
+### 設計哲学
+
+**POSIX API は意図的に排除**: ソケット、ファイルディスクリプタ、シグナルなどの POSIX インターフェースは、ゼロコピーと所有権ベースの設計を阻害するため採用しません。
+
 ### アーキテクチャ三本柱
 
 1. **単一アドレス空間 (SAS)**: TLBフラッシュを排除
 2. **単一特権レベル (SPL)**: Ring 0で全コード実行
 3. **非同期中心主義 (Async-First)**: async/awaitベースの協調的マルチタスク
+
+### バージョン
+
+- 現在: **v0.3.0**（アーキテクチャ整合性修正版）
+- 変更内容:
+  - `linked_list_allocator` 削除 → カスタム Buddy Heap Allocator
+  - `pic8259` 削除 → APIC専用（PICは初期化時に無効化のみ）
+  - 静的ケイパビリティシステム導入（ランタイムオーバーヘッドゼロ）
+  - POSIX風APIを完全排除
 
 ---
 
@@ -101,12 +114,15 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | **コンパイラ署名 (9.1)** | ✅ 完了 | `src/loader/signature.rs` |
 | **Spectre緩和策 (9.2)** | ✅ 完了 | `src/spectre.rs` |
 | **セキュリティフレームワーク** | ✅ 完了 | `src/security/mod.rs` |
-| **ケイパビリティシステム (9.3)** | ✅ 完了 | `src/security/capability.rs` |
-| **MAC (強制アクセス制御)** | ✅ 完了 | `src/security/mac.rs` |
-| **監査ログ** | ✅ 完了 | `src/security/audit.rs` |
-| **ポリシーエンジン** | ✅ 完了 | `src/security/policy.rs` |
+| **静的ケイパビリティ (v0.3.0)** | ✅ 完了 | `src/security/static_capability.rs` |
+| **ケイパビリティシステム (レガシー)** | 📦 維持 | `src/security/capability.rs` |
+| **MAC (強制アクセス制御) (レガシー)** | 📦 維持 | `src/security/mac.rs` |
+| **監査ログ (レガシー)** | 📦 維持 | `src/security/audit.rs` |
+| **ポリシーエンジン (レガシー)** | 📦 維持 | `src/security/policy.rs` |
 | アクセス制御 | ✅ 完了 | `src/security/mod.rs` |
 | ゼロコピーバリア | ✅ 完了 | `src/security/mod.rs` |
+
+**注**: v0.3.0 で静的ケイパビリティシステムを導入。型システムによるコンパイル時アクセス制御を実現。ランタイムMAC/監査ログはレガシー互換性のため維持しているが、新規コードは静的ケイパビリティを使用すべき。
 
 ### ✅ 追加実装: システムインターフェース
 
@@ -212,10 +228,11 @@ src/
 │
 ├── security/            # セキュリティフレームワーク ★
 │   ├── mod.rs           # セキュリティ統合
-│   ├── capability.rs    # ケイパビリティシステム ★
-│   ├── mac.rs           # 強制アクセス制御 ★
-│   ├── audit.rs         # 監査ログ ★
-│   └── policy.rs        # ポリシーエンジン ★
+│   ├── static_capability.rs # 静的ケイパビリティ (v0.3.0) ★★
+│   ├── capability.rs    # ケイパビリティシステム (レガシー)
+│   ├── mac.rs           # 強制アクセス制御 (レガシー)
+│   ├── audit.rs         # 監査ログ (レガシー)
+│   └── policy.rs        # ポリシーエンジン (レガシー)
 │
 ├── syscall/             # システムコールAPI ★
 │   └── mod.rs
@@ -270,8 +287,8 @@ cargo build --target x86_64-rany_os.json
 x86_64 = "0.15"
 bootloader = "0.9"
 spin = { version = "0.9", features = ["lazy"] }
-pic8259 = "0.11"
-linked_list_allocator = "0.10"
+# linked_list_allocator - 削除（カスタムBuddyアロケータに置換）
+# pic8259 - 削除（APIC専用設計、PICは直接無効化）
 ```
 
 ---
@@ -428,14 +445,18 @@ pub struct AuditSubsystem {
 
 ## 今後の作業
 
-### ✅ フェーズ 4 (仕様書 10節): 高性能ドライバとネットワーク (完了)
+### フェーズ状況についての注記
+
+設計書では「フェーズ4-5」は「Year 2（2年目）」の目標とされていますが、現在の実装では基盤コードの準備が完了しています。実運用レベルの検証（実ハードウェア、高負荷テスト等）は今後の課題です。
+
+### ✅ フェーズ 4 (仕様書 10節): 高性能ドライバとネットワーク (基盤完了)
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
 | 10Gbpsラインレート検証 | ✅ 完了 | `src/benchmark/mod.rs` |
 | ベンチマークシステム | ✅ 完了 | `src/benchmark/mod.rs` |
 
-### ✅ フェーズ 5: 統合とテスト (完了)
+### ✅ フェーズ 5: 統合とテスト (基盤完了)
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
@@ -448,11 +469,125 @@ pub struct AuditSubsystem {
 | SMPフル初期化 | ✅ 完了 | `src/smp/bootstrap.rs` |
 | ユーザー空間APIサポート | ✅ 完了 | `src/userspace/mod.rs` |
 
-### 追加検討事項
+### ✅ フェーズ 6: 自動化テストと最適化 (基盤完了)
 
-- [ ] 実デバイスでのテスト
-- [ ] QEMUでの自動化テスト
-- [ ] ネットワークスタック性能最適化
+| 項目 | 状態 | ファイル |
+|------|------|----------|
+| QEMU自動化スクリプト (PowerShell) | ✅ 完了 | `scripts/qemu-run.ps1` |
+| QEMU自動化スクリプト (Bash) | ✅ 完了 | `scripts/qemu-run.sh` |
+| 自動テストランナー | ✅ 完了 | `scripts/run-tests.ps1` |
+| ネットワーク性能最適化 | ✅ 完了 | `src/net/optimization.rs` |
+| バッチパケット処理 (64パケット) | ✅ 完了 | `src/net/optimization.rs` |
+| NUMAメモリプール | ✅ 完了 | `src/net/optimization.rs` |
+| CPU親和性最適化 | ✅ 完了 | `src/net/optimization.rs` |
+| GRO (Generic Receive Offload) | ✅ 完了 | `src/net/optimization.rs` |
+| TSO (TCP Segmentation Offload) | ✅ 完了 | `src/net/optimization.rs` |
+| API参照ドキュメント | ✅ 完了 | `docs/API_REFERENCE.md` |
+| アーキテクチャドキュメント | ✅ 完了 | `docs/ARCHITECTURE.md` |
+| CI/CDパイプライン | ✅ 完了 | `.github/workflows/ci.yml` |
+| QEMUマトリックステスト | ✅ 完了 | `.github/workflows/qemu-tests.yml` |
+
+---
+
+## 新規追加モジュール
+
+### ネットワーク性能最適化 (`src/net/optimization.rs`)
+
+```rust
+// バッチパケット処理
+pub struct PacketBatch {
+    pub count: usize,
+    pub buffers: [Option<usize>; 64],
+    pub lengths: [u16; 64],
+}
+
+// NUMAメモリプール
+pub struct NumaMempool {
+    pools: Vec<Mutex<Vec<usize>>>,
+    buffer_size: usize,
+    numa_nodes: usize,
+}
+
+// GRO (Generic Receive Offload)
+pub struct GroEngine {
+    segments: [Option<GroSegment>; 64],
+    max_coalesce_size: usize,
+    max_age_tsc: u64,
+}
+
+// TSO (TCP Segmentation Offload)
+pub struct TsoContext {
+    buffer: usize,
+    buffer_len: usize,
+    mss: u16,
+}
+```
+
+---
+
+## CI/CD パイプライン
+
+### メインCI (`ci.yml`)
+- ✅ ビルド検証
+- ✅ 静的解析 (clippy)
+- ✅ ドキュメント生成
+- ✅ QEMUテスト
+- ✅ セキュリティ監査
+- ✅ リリースビルド
+
+### QEMUテスト (`qemu-tests.yml`)
+- ✅ CPUタイプマトリックス (qemu64, max, host)
+- ✅ メモリサイズテスト (128MB, 256MB, 512MB)
+- ✅ SMPテスト (1, 2, 4コア)
+- ✅ Linux/macOSマトリックス
+
+---
+
+## スクリプト
+
+### `scripts/qemu-run.ps1` (Windows)
+```powershell
+# 使用例
+.\scripts\qemu-run.ps1 -Debug           # デバッグモード
+.\scripts\qemu-run.ps1 -Network          # ネットワーク有効
+.\scripts\qemu-run.ps1 -Storage          # ストレージ有効
+.\scripts\qemu-run.ps1 -Benchmark        # ベンチマークモード
+```
+
+### `scripts/qemu-run.sh` (Linux/macOS)
+```bash
+# 使用例
+./scripts/qemu-run.sh --debug            # デバッグモード
+./scripts/qemu-run.sh --network          # ネットワーク有効
+./scripts/qemu-run.sh --storage          # ストレージ有効
+./scripts/qemu-run.sh --benchmark        # ベンチマークモード
+```
+
+---
+
+## ドキュメント
+
+- [API参照](docs/API_REFERENCE.md) - 全パブリックAPI詳細
+- [アーキテクチャ概要](docs/ARCHITECTURE.md) - 設計思想と構造
+
+---
+
+## 今後の課題
+
+### 優先度: 高
+- [ ] 実ハードウェアでのテスト
+- [ ] ストレステスト実施
+- [ ] パフォーマンスプロファイリング
+
+### 優先度: 中
+- [ ] USBスタック実装
+- [ ] NVMe最適化
+- [ ] プロセス分離強化
+
+### 優先度: 低
+- [ ] GPU支援
+- [ ] サウンドサポート
+- [ ] Bluetoothスタック
 
 ---
 
@@ -462,4 +597,4 @@ MIT License
 
 ---
 
-最終更新: 2025年7月
+最終更新: 2025年1月 (v0.3.0)
