@@ -18,8 +18,8 @@ pub mod interrupt_routing;
 pub mod security_integration;
 
 // Re-exports
-pub use device_manager::{DeviceInfo, DeviceManager, DeviceType};
-pub use interrupt_routing::{InterruptRouter, IrqRoute};
+pub use device_manager::{DeviceInfo, DeviceManager};
+pub use interrupt_routing::InterruptRouter;
 pub use security_integration::SecurityIntegration;
 
 /// Integration status

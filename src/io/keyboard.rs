@@ -15,7 +15,6 @@
 
 #![allow(dead_code)]
 
-use alloc::collections::VecDeque;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -831,17 +830,17 @@ impl KeyboardDriver {
     }
 
     /// 次のキーイベントを非同期で待機
-    pub fn read_key(&self) -> KeyEventFuture {
+    pub fn read_key(&self) -> KeyEventFuture<'_> {
         KeyEventFuture { _driver: self }
     }
 
     /// 次の文字を非同期で待機
-    pub fn read_char(&self) -> CharFuture {
+    pub fn read_char(&self) -> CharFuture<'_> {
         CharFuture { _driver: self }
     }
 
     /// 行を非同期で読み取り
-    pub fn read_line(&self) -> LineFuture {
+    pub fn read_line(&self) -> LineFuture<'_> {
         LineFuture {
             _driver: self,
             buffer: alloc::string::String::new(),

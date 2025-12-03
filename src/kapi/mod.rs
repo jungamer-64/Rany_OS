@@ -50,7 +50,6 @@
 
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -58,7 +57,7 @@ use core::task::{Context, Poll};
 
 // 静的ケイパビリティシステム
 use crate::security::static_capability::{
-    DmaCapability, FsCapability, IoCapability, IpcCapability, MemoryCapability, NetCapability,
+    DmaCapability, FsCapability, IoCapability, IpcCapability, NetCapability,
     TaskCapability,
 };
 
@@ -544,7 +543,7 @@ pub mod fs_api {
 ///
 /// 権限不要の読み取り専用システム情報。
 pub mod sys_api {
-    use super::*;
+    
 
     /// 起動からの経過時間（ナノ秒）
     #[inline(always)]

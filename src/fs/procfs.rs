@@ -6,7 +6,6 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -160,7 +159,7 @@ pub struct ProcFs {
 impl ProcFs {
     /// 新しいprocfsを作成
     pub fn new() -> Self {
-        let mut root = ProcEntry::directory(ProcInode::ROOT, "");
+        let root = ProcEntry::directory(ProcInode::ROOT, "");
 
         let fs = Self {
             root: spin::RwLock::new(root),
@@ -469,7 +468,7 @@ impl ProcFs {
         )
     }
 
-    fn generate_process_maps(pid: Pid) -> String {
+    fn generate_process_maps(_pid: Pid) -> String {
         // TODO: 実際のメモリマップ
         alloc::format!(
             "00400000-00401000 r-xp 00000000 00:00 0          /bin/process\n\

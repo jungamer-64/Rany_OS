@@ -186,7 +186,7 @@ impl VirtQueue {
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
         notify_addr: *mut u16,
-    ) -> Self {
+    ) -> Self { unsafe {
         // Initialize descriptor table
         for i in 0..queue_size {
             (*desc_table.add(i as usize)) = VringDesc::default();
@@ -209,7 +209,7 @@ impl VirtQueue {
             last_used_idx: AtomicU32::new(0),
             notify_addr,
         }
-    }
+    }}
 
     /// Allocate a descriptor from the free list
     pub fn alloc_desc(&self) -> Option<u16> {
@@ -252,7 +252,7 @@ impl VirtQueue {
     ///
     /// # Safety
     /// Caller must ensure descriptors are properly set up
-    pub unsafe fn submit(&self, head: u16) {
+    pub unsafe fn submit(&self, head: u16) { unsafe {
         // Memory barrier before making buffer visible to device
         core::sync::atomic::fence(Ordering::Release);
 
@@ -267,7 +267,7 @@ impl VirtQueue {
 
         // Notify device
         core::ptr::write_volatile(self.notify_addr, 0);
-    }
+    }}
 
     /// Poll for completed requests
     pub fn poll_completions(&self) -> Option<(u16, u32)> {
@@ -406,7 +406,7 @@ impl VirtioBlkDevice {
     ///
     /// # Safety
     /// Caller must ensure MMIO address is valid
-    pub unsafe fn init(&mut self) -> Result<(), BlockError> {
+    pub unsafe fn init(&mut self) -> Result<(), BlockError> { unsafe {
         // Step 1: Reset device
         self.write_status(0);
 
@@ -470,40 +470,40 @@ impl VirtioBlkDevice {
 
         self.ready.store(true, Ordering::Release);
         Ok(())
-    }
+    }}
 
     /// Read device status register
-    unsafe fn read_status(&self) -> u8 {
+    unsafe fn read_status(&self) -> u8 { unsafe {
         // MMIO offset 0x70 for status
         let ptr = (self.mmio_base + 0x70) as *const u8;
         core::ptr::read_volatile(ptr)
-    }
+    }}
 
     /// Write device status register
-    unsafe fn write_status(&self, status: u8) {
+    unsafe fn write_status(&self, status: u8) { unsafe {
         let ptr = (self.mmio_base + 0x70) as *mut u8;
         core::ptr::write_volatile(ptr, status);
-    }
+    }}
 
     /// Read device features
-    unsafe fn read_device_features(&self) -> u64 {
+    unsafe fn read_device_features(&self) -> u64 { unsafe {
         // MMIO offset 0x10 for device features
         let ptr = (self.mmio_base + 0x10) as *const u32;
         let low = core::ptr::read_volatile(ptr) as u64;
         let high = core::ptr::read_volatile(ptr.add(1)) as u64;
         low | (high << 32)
-    }
+    }}
 
     /// Write driver features
-    unsafe fn write_driver_features(&self, features: u64) {
+    unsafe fn write_driver_features(&self, features: u64) { unsafe {
         // MMIO offset 0x20 for driver features
         let ptr = (self.mmio_base + 0x20) as *mut u32;
         core::ptr::write_volatile(ptr, features as u32);
         core::ptr::write_volatile(ptr.add(1), (features >> 32) as u32);
-    }
+    }}
 
     /// Read device configuration
-    unsafe fn read_config(&mut self) -> Result<(), BlockError> {
+    unsafe fn read_config(&mut self) -> Result<(), BlockError> { unsafe {
         // Configuration space starts at MMIO offset 0x100
         let config_base = self.mmio_base + 0x100;
 
@@ -529,10 +529,10 @@ impl VirtioBlkDevice {
         }
 
         Ok(())
-    }
+    }}
 
     /// Setup a virtqueue
-    unsafe fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> {
+    unsafe fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> { unsafe {
         // Select queue
         let queue_sel_ptr = (self.mmio_base + 0x30) as *mut u32;
         core::ptr::write_volatile(queue_sel_ptr, queue_idx as u32);
@@ -603,7 +603,7 @@ impl VirtioBlkDevice {
         self.queues.push(Arc::new(Mutex::new(virtqueue)));
 
         Ok(())
-    }
+    }}
 
     /// Get device configuration
     pub fn config(&self) -> &BlockDeviceConfig {
@@ -968,7 +968,7 @@ pub struct FlushFuture<'a> {
 impl<'a> Future for FlushFuture<'a> {
     type Output = Result<(), BlockError>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
             if self.device.features & features::VIRTIO_BLK_F_FLUSH == 0 {
                 return Poll::Ready(Err(BlockError::Unsupported));
@@ -1025,7 +1025,7 @@ static VIRTIO_BLK_DEVICE: Mutex<Option<VirtioBlkDevice>> = Mutex::new(None);
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid and device exists
-pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
+pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> { unsafe {
     let mut device = VirtioBlkDevice::new(mmio_base);
     device.init()?;
 
@@ -1037,7 +1037,7 @@ pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
 
     *VIRTIO_BLK_DEVICE.lock() = Some(device);
     Ok(())
-}
+}}
 
 /// Handle VirtIO block device interrupt
 pub fn handle_virtio_blk_interrupt() {
@@ -1050,7 +1050,7 @@ pub fn handle_virtio_blk_interrupt() {
 ///
 /// Note: For a proper async implementation, you would need to use
 /// Arc<VirtioBlkDevice> to allow the future to outlive the lock.
-pub fn blk_read_sync(sector: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
+pub fn blk_read_sync(_sector: u64, buf: &mut [u8]) -> Result<usize, BlockError> {
     let device_guard = VIRTIO_BLK_DEVICE.lock();
     let _device = device_guard.as_ref().ok_or(BlockError::NotReady)?;
 

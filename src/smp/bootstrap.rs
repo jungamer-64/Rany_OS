@@ -129,20 +129,20 @@ impl LocalApic {
     /// # Safety
     /// Must be valid LAPIC address
     #[inline]
-    pub unsafe fn read(&self, reg: u32) -> u32 {
+    pub unsafe fn read(&self, reg: u32) -> u32 { unsafe {
         let ptr = (self.base_address + reg as u64) as *const u32;
         core::ptr::read_volatile(ptr)
-    }
+    }}
 
     /// Write LAPIC register
     ///
     /// # Safety
     /// Must be valid LAPIC address
     #[inline]
-    pub unsafe fn write(&self, reg: u32, value: u32) {
+    pub unsafe fn write(&self, reg: u32, value: u32) { unsafe {
         let ptr = (self.base_address + reg as u64) as *mut u32;
         core::ptr::write_volatile(ptr, value);
-    }
+    }}
 
     /// Get LAPIC ID
     pub fn id(&self) -> u32 {
@@ -201,12 +201,12 @@ impl LocalApic {
     }
 
     /// Wait for IPI delivery
-    unsafe fn wait_for_delivery(&self) {
+    unsafe fn wait_for_delivery(&self) { unsafe {
         // Bit 12 = Delivery Status (0 = idle, 1 = pending)
         while (self.read(Self::ICR_LOW) & (1 << 12)) != 0 {
             core::hint::spin_loop();
         }
-    }
+    }}
 
     /// Send IPI to specific CPU
     pub fn send_ipi(&self, target_apic_id: u32, vector: u8) {
@@ -269,7 +269,7 @@ impl ApBootstrap {
     ///
     /// # Safety
     /// Writes to low memory
-    pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> {
+    pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> { unsafe {
         // Trampoline code (simplified - real code would be in assembly)
         // This is a placeholder for the actual AP startup code
         static TRAMPOLINE_CODE: [u8; 32] = [
@@ -295,7 +295,7 @@ impl ApBootstrap {
         );
 
         Ok(())
-    }
+    }}
 
     /// Start a single AP
     pub fn start_ap(&self, ap_index: usize, apic_id: u32) -> Result<(), &'static str> {
@@ -385,12 +385,12 @@ static AP_BOOTSTRAP: Mutex<Option<ApBootstrap>> = Mutex::new(None);
 ///
 /// # Safety
 /// Modifies low memory and sends IPIs
-pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> {
+pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> { unsafe {
     let bootstrap = ApBootstrap::new(lapic_base, num_aps);
     bootstrap.setup_trampoline()?;
     *AP_BOOTSTRAP.lock() = Some(bootstrap);
     Ok(())
-}
+}}
 
 /// Start all APs
 pub fn start_aps(apic_ids: &[u32]) -> u32 {

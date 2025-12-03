@@ -8,7 +8,6 @@
 #![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::Waker;
 use spin::Mutex;

@@ -17,12 +17,11 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
@@ -368,7 +367,7 @@ impl SubmissionQueue {
     ///
     /// # Safety
     /// Caller must ensure command is valid
-    pub unsafe fn submit(&self, cmd: NvmeCommand) {
+    pub unsafe fn submit(&self, cmd: NvmeCommand) { unsafe {
         let tail = self.tail.load(Ordering::Acquire);
 
         // Write command to queue
@@ -383,7 +382,7 @@ impl SubmissionQueue {
 
         // Ring doorbell
         core::ptr::write_volatile(self.doorbell, new_tail as u32);
-    }
+    }}
 }
 
 /// NVMe Completion Queue
@@ -645,34 +644,34 @@ impl NvmeController {
     }
 
     /// Read a 32-bit register
-    unsafe fn read32(&self, offset: u64) -> u32 {
+    unsafe fn read32(&self, offset: u64) -> u32 { unsafe {
         let ptr = (self.mmio_base + offset) as *const u32;
         core::ptr::read_volatile(ptr)
-    }
+    }}
 
     /// Write a 32-bit register
-    unsafe fn write32(&self, offset: u64, value: u32) {
+    unsafe fn write32(&self, offset: u64, value: u32) { unsafe {
         let ptr = (self.mmio_base + offset) as *mut u32;
         core::ptr::write_volatile(ptr, value);
-    }
+    }}
 
     /// Read a 64-bit register
-    unsafe fn read64(&self, offset: u64) -> u64 {
+    unsafe fn read64(&self, offset: u64) -> u64 { unsafe {
         let ptr = (self.mmio_base + offset) as *const u64;
         core::ptr::read_volatile(ptr)
-    }
+    }}
 
     /// Write a 64-bit register
-    unsafe fn write64(&self, offset: u64, value: u64) {
+    unsafe fn write64(&self, offset: u64, value: u64) { unsafe {
         let ptr = (self.mmio_base + offset) as *mut u64;
         core::ptr::write_volatile(ptr, value);
-    }
+    }}
 
     /// Initialize the controller
     ///
     /// # Safety
     /// Caller must ensure MMIO address is valid
-    pub unsafe fn init(&mut self) -> Result<(), NvmeError> {
+    pub unsafe fn init(&mut self) -> Result<(), NvmeError> { unsafe {
         // Step 1: Read capabilities
         self.config.cap = self.read64(regs::CAP);
         self.config.mqes = ((self.config.cap & 0xFFFF) + 1) as u16;
@@ -735,10 +734,10 @@ impl NvmeController {
 
         self.ready.store(true, Ordering::Release);
         Ok(())
-    }
+    }}
 
     /// Allocate admin queue pair
-    unsafe fn allocate_admin_queues(&mut self, depth: u16) -> Result<(), NvmeError> {
+    unsafe fn allocate_admin_queues(&mut self, depth: u16) -> Result<(), NvmeError> { unsafe {
         // Allocate submission queue
         let sq_size = core::mem::size_of::<NvmeCommand>() * depth as usize;
         let sq_layout = alloc::alloc::Layout::from_size_align(sq_size, 4096)
@@ -781,10 +780,10 @@ impl NvmeController {
         completions.resize(depth as usize, None);
 
         Ok(())
-    }
+    }}
 
     /// Identify controller
-    unsafe fn identify_controller(&mut self) -> Result<(), NvmeError> {
+    unsafe fn identify_controller(&mut self) -> Result<(), NvmeError> { unsafe {
         // Allocate identify buffer (4KB)
         let layout = alloc::alloc::Layout::from_size_align(4096, 4096)
             .map_err(|_| NvmeError::AllocationFailed)?;
@@ -816,10 +815,10 @@ impl NvmeController {
         admin.sq.free_cid(cid);
 
         Ok(())
-    }
+    }}
 
     /// Identify namespaces
-    unsafe fn identify_namespaces(&mut self) -> Result<(), NvmeError> {
+    unsafe fn identify_namespaces(&mut self) -> Result<(), NvmeError> { unsafe {
         let layout = alloc::alloc::Layout::from_size_align(4096, 4096)
             .map_err(|_| NvmeError::AllocationFailed)?;
         let buffer = alloc::alloc::alloc_zeroed(layout);
@@ -857,10 +856,10 @@ impl NvmeController {
         admin.sq.free_cid(cid);
 
         Ok(())
-    }
+    }}
 
     /// Create I/O queue pairs
-    unsafe fn create_io_queues(&mut self, num_queues: u16) -> Result<(), NvmeError> {
+    unsafe fn create_io_queues(&mut self, num_queues: u16) -> Result<(), NvmeError> { unsafe {
         let queue_depth = IO_QUEUE_DEPTH.min(self.config.mqes);
 
         for qid in 1..=num_queues {
@@ -923,7 +922,7 @@ impl NvmeController {
         }
 
         Ok(())
-    }
+    }}
 
     /// Poll admin queue for a specific completion
     fn poll_admin_completion(&self, cid: u16, max_polls: u32) -> Result<NvmeCompletion, NvmeError> {
@@ -1194,7 +1193,7 @@ static NVME_CONTROLLER: Mutex<Option<NvmeController>> = Mutex::new(None);
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid
-pub unsafe fn init_nvme(mmio_base: u64) -> Result<(), NvmeError> {
+pub unsafe fn init_nvme(mmio_base: u64) -> Result<(), NvmeError> { unsafe {
     let mut controller = NvmeController::new(mmio_base);
     controller.init()?;
 
@@ -1208,7 +1207,7 @@ pub unsafe fn init_nvme(mmio_base: u64) -> Result<(), NvmeError> {
 
     *NVME_CONTROLLER.lock() = Some(controller);
     Ok(())
-}
+}}
 
 /// Handle NVMe interrupt
 pub fn handle_nvme_interrupt() {

@@ -5,10 +5,9 @@
 #![allow(dead_code)]
 
 use alloc::collections::VecDeque;
-use alloc::vec::Vec;
 use core::future::poll_fn;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Poll, Waker};
 use spin::Mutex;
 use x86_64::PhysAddr;
@@ -512,7 +511,7 @@ impl VirtioNet {
     pub fn receive_packet(&self) -> Option<PacketRef> {
         let mut rx_queue = self.rx_queue.lock();
 
-        if let Some((_idx, mut packet, len)) = rx_queue.pop_used() {
+        if let Some((_idx, packet, len)) = rx_queue.pop_used() {
             // 受信したデータ長を設定
             packet.set_len(len as usize);
 

@@ -5,7 +5,6 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -13,7 +12,6 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
-use super::dma::{CpuOwned, DeviceOwned, DmaState, TypedDmaBuffer};
 
 // ============================================================================
 // VirtIO Net Device Feature Flags
@@ -234,7 +232,7 @@ impl NetVirtQueue {
     /// 送信バッファを追加
     pub fn add_tx_buffer(
         &self,
-        header: &VirtioNetHeader,
+        _header: &VirtioNetHeader,
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
         let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;

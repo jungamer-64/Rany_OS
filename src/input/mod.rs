@@ -15,8 +15,6 @@
 #![allow(dead_code)]
 
 use alloc::collections::VecDeque;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 

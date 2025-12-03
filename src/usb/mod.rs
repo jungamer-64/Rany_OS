@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::RwLock;
 
 // =============================================================================
@@ -375,7 +375,7 @@ unsafe impl Send for Ring {}
 unsafe impl Sync for Ring {}
 
 impl Ring {
-    pub unsafe fn new(size: usize) -> Self {
+    pub unsafe fn new(size: usize) -> Self { unsafe {
         use core::alloc::Layout;
 
         // Layout::from_size_align はサイズとアライメントが有効な場合は常に成功
@@ -395,7 +395,7 @@ impl Ring {
             cycle_bit: true,
             physical_addr: ptr as u64,
         }
-    }
+    }}
 
     pub fn enqueue_trb(&mut self, mut trb: Trb) -> &mut Trb {
         trb.set_cycle(self.cycle_bit);
@@ -534,28 +534,28 @@ impl XhciController {
         }
     }
 
-    unsafe fn read32(&self, offset: usize) -> u32 {
+    unsafe fn read32(&self, offset: usize) -> u32 { unsafe {
         core::ptr::read_volatile((self.mmio_base as *const u8).add(offset) as *const u32)
-    }
+    }}
 
-    unsafe fn write32(&self, offset: usize, value: u32) {
+    unsafe fn write32(&self, offset: usize, value: u32) { unsafe {
         core::ptr::write_volatile((self.mmio_base as *mut u8).add(offset) as *mut u32, value);
-    }
+    }}
 
-    unsafe fn read64(&self, offset: usize) -> u64 {
+    unsafe fn read64(&self, offset: usize) -> u64 { unsafe {
         core::ptr::read_volatile((self.mmio_base as *const u8).add(offset) as *const u64)
-    }
+    }}
 
-    unsafe fn write64(&self, offset: usize, value: u64) {
+    unsafe fn write64(&self, offset: usize, value: u64) { unsafe {
         core::ptr::write_volatile((self.mmio_base as *mut u8).add(offset) as *mut u64, value);
-    }
+    }}
 
     fn op_base(&self) -> usize {
         self.cap_length as usize
     }
 
     /// コントローラを初期化
-    pub unsafe fn init(&mut self) -> UsbResult<()> {
+    pub unsafe fn init(&mut self) -> UsbResult<()> { unsafe {
         // ケーパビリティレジスタを読み取り
         self.cap_length = self.read32(xhci_cap::CAPLENGTH) as u8;
         let hcsparams1 = self.read32(xhci_cap::HCSPARAMS1);
@@ -587,9 +587,9 @@ impl XhciController {
         self.initialized.store(true, Ordering::SeqCst);
 
         Ok(())
-    }
+    }}
 
-    unsafe fn reset(&mut self) -> UsbResult<()> {
+    unsafe fn reset(&mut self) -> UsbResult<()> { unsafe {
         let op_base = self.op_base();
 
         // 停止
@@ -618,9 +618,9 @@ impl XhciController {
         }
 
         Err(UsbError::ControllerError)
-    }
+    }}
 
-    unsafe fn allocate_dcbaa(&mut self) -> UsbResult<()> {
+    unsafe fn allocate_dcbaa(&mut self) -> UsbResult<()> { unsafe {
         use core::alloc::Layout;
 
         let size = (self.max_slots as usize + 1) * 8;
@@ -638,9 +638,9 @@ impl XhciController {
         self.write64(op_base + xhci_op::DCBAAP, self.dcbaa as u64);
 
         Ok(())
-    }
+    }}
 
-    unsafe fn configure(&mut self) -> UsbResult<()> {
+    unsafe fn configure(&mut self) -> UsbResult<()> { unsafe {
         let op_base = self.op_base();
 
         // 有効スロット数を設定
@@ -652,9 +652,9 @@ impl XhciController {
         }
 
         Ok(())
-    }
+    }}
 
-    unsafe fn start(&mut self) -> UsbResult<()> {
+    unsafe fn start(&mut self) -> UsbResult<()> { unsafe {
         let op_base = self.op_base();
 
         // 割り込みを有効化してコントローラを開始
@@ -673,7 +673,7 @@ impl XhciController {
         }
 
         Err(UsbError::ControllerError)
-    }
+    }}
 
     /// ポートステータスを取得
     pub fn port_status(&self, port: u8) -> u32 {
@@ -831,7 +831,7 @@ impl UsbManager {
     /// デバイス一覧を取得（ガード付き参照）
     ///
     /// Vec clone() を避け、ゼロコスト参照を提供。
-    pub fn devices(&self) -> spin::RwLockReadGuard<Vec<UsbDeviceInfo>> {
+    pub fn devices(&self) -> spin::RwLockReadGuard<'_, Vec<UsbDeviceInfo>> {
         self.devices.read()
     }
 

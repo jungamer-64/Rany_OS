@@ -8,19 +8,15 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::future::Future;
-use core::pin::Pin;
 
 use super::descriptor::{
-    ConfigurationDescriptor, DeviceDescriptor, EndpointDescriptor, InterfaceDescriptor,
+    DeviceDescriptor, EndpointDescriptor,
     ParsedConfiguration, SafePackedRead, parse_configuration, parse_string_descriptor,
 };
 use super::{
-    DeviceAddress, EndpointAddress, SetupPacket, SlotId, UsbDevice, UsbError, UsbResult, UsbSpeed,
+    DeviceAddress, EndpointAddress, SetupPacket, UsbDevice, UsbError, UsbResult, UsbSpeed,
 };
 
 // ============================================================================
@@ -358,7 +354,7 @@ pub mod hub_class {
             true,        // IN
             0,           // Device
             0x06,        // GET_DESCRIPTOR
-            (0x29 << 8), // Hub descriptor type
+            0x29 << 8, // Hub descriptor type
             0,
             8,
         );

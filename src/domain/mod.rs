@@ -6,5 +6,3 @@
 pub mod lifecycle;
 pub mod registry;
 
-pub use lifecycle::{DomainError, spawn_domain_task, terminate_domain};
-pub use registry::{Domain, DomainRegistry, DomainState, get_domain, register_domain};

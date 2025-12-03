@@ -7,10 +7,9 @@
 //! - MSI-X
 //! - ホットプラグ
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 
 // =============================================================================
 // 定数

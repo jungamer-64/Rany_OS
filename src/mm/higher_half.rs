@@ -17,7 +17,6 @@
 
 #![allow(dead_code)]
 
-use core::ptr;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
@@ -547,11 +546,11 @@ impl<'a> PageTableWalker<'a> {
     }
 
     /// 現在のCR3からウォーカーを作成
-    pub unsafe fn from_current_cr3(mapper: &'a PhysicalMemoryMapper) -> Self {
+    pub unsafe fn from_current_cr3(mapper: &'a PhysicalMemoryMapper) -> Self { unsafe {
         let cr3: u64;
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
         Self::new(PhysAddr::new(cr3 & !0xFFF), mapper)
-    }
+    }}
 
     /// 仮想アドレスを物理アドレスに変換
     pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
@@ -699,9 +698,9 @@ pub fn flush_tlb() {
 
 /// CR3を設定
 #[inline]
-pub unsafe fn set_cr3(pml4_phys: PhysAddr) {
+pub unsafe fn set_cr3(pml4_phys: PhysAddr) { unsafe {
     core::arch::asm!("mov cr3, {}", in(reg) pml4_phys.as_u64(), options(nostack, preserves_flags));
-}
+}}
 
 /// CR3を取得
 #[inline]

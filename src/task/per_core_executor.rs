@@ -212,11 +212,11 @@ impl Task {
     ///
     /// # Safety
     /// 同一のTaskに対して複数のスレッドから同時にpollしてはいけない
-    unsafe fn poll(&self, waker: &Waker) -> Poll<()> {
+    unsafe fn poll(&self, waker: &Waker) -> Poll<()> { unsafe {
         let future = &mut *self.future.get();
         let mut cx = Context::from_waker(waker);
         future.as_mut().poll(&mut cx)
-    }
+    }}
 }
 
 // ============================================================================
@@ -562,7 +562,7 @@ struct TaskWakerData {
 const WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
-unsafe fn waker_clone(data: *const ()) -> RawWaker {
+unsafe fn waker_clone(data: *const ()) -> RawWaker { unsafe {
     let data = &*(data as *const TaskWakerData);
 
     // タスクの参照カウントを増やす
@@ -576,14 +576,14 @@ unsafe fn waker_clone(data: *const ()) -> RawWaker {
     });
 
     RawWaker::new(Box::into_raw(new_data) as *const (), &WAKER_VTABLE)
-}
+}}
 
-unsafe fn waker_wake(data: *const ()) {
+unsafe fn waker_wake(data: *const ()) { unsafe {
     waker_wake_by_ref(data);
     waker_drop(data);
-}
+}}
 
-unsafe fn waker_wake_by_ref(data: *const ()) {
+unsafe fn waker_wake_by_ref(data: *const ()) { unsafe {
     let data = &*(data as *const TaskWakerData);
 
     // タスクを復元
@@ -598,14 +598,14 @@ unsafe fn waker_wake_by_ref(data: *const ()) {
         // フォールバック: グローバルキューへ
         EXECUTOR_MANAGER.spawn(task_clone);
     }
-}
+}}
 
-unsafe fn waker_drop(data: *const ()) {
+unsafe fn waker_drop(data: *const ()) { unsafe {
     let data = Box::from_raw(data as *mut TaskWakerData);
 
     // タスクの参照カウントを減らす
     let _ = Arc::from_raw(data.task as *const Task);
-}
+}}
 
 // ============================================================================
 // Global Instance

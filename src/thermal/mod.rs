@@ -263,7 +263,7 @@ impl CpuThermalDriver {
         status
     }
 
-    unsafe fn read_msr(&self, msr: u32) -> ThermalResult<u64> {
+    unsafe fn read_msr(&self, msr: u32) -> ThermalResult<u64> { unsafe {
         let low: u32;
         let high: u32;
 
@@ -276,7 +276,7 @@ impl CpuThermalDriver {
         );
 
         Ok(((high as u64) << 32) | (low as u64))
-    }
+    }}
 
     fn detect_core_count(&self) -> u32 {
         unsafe {
@@ -610,7 +610,7 @@ impl FanController {
     ///
     /// Vec clone() を避け、参照カウント不要のゼロコスト参照を提供。
     /// 呼び出し側は RwLockReadGuard の寿命内でのみアクセス可能。
-    pub fn fans(&self) -> spin::RwLockReadGuard<Vec<Fan>> {
+    pub fn fans(&self) -> spin::RwLockReadGuard<'_, Vec<Fan>> {
         self.fans.read()
     }
 
@@ -928,7 +928,7 @@ impl ThermalManager {
     /// 全センサーを取得（ガード付き参照）
     ///
     /// Vec clone() を避け、ゼロコスト参照を提供。
-    pub fn sensors(&self) -> spin::RwLockReadGuard<Vec<ThermalSensor>> {
+    pub fn sensors(&self) -> spin::RwLockReadGuard<'_, Vec<ThermalSensor>> {
         self.sensors.read()
     }
 

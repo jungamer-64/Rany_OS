@@ -19,13 +19,8 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
-use alloc::string::String;
-use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
-use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -1230,7 +1225,7 @@ pub fn init() {
     manager.init_legacy();
 
     // 統計を表示
-    let stats = manager.stats();
+    let _stats = manager.stats();
     // log::info!("PCIe: {} devices found ({} PCIe, {} MSI, {} MSI-X)",
     //     stats.devices_found, stats.pcie_devices, stats.msi_capable, stats.msix_capable);
 

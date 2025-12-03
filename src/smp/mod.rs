@@ -8,7 +8,7 @@
 pub mod bootstrap;
 
 pub use bootstrap::{
-    ApBootInfo, ApState, LocalApic, broadcast_ipi, init, online_aps, send_ipi, start_aps,
+    init, online_aps, start_aps,
 };
 
 /// Get total CPU count (BSP + APs)

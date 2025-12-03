@@ -559,7 +559,7 @@ impl LatencyProfiler {
     }
 
     /// スコープ測定用ガード
-    pub fn scope(&self, name: &'static str) -> LatencyScope {
+    pub fn scope(&self, name: &'static str) -> LatencyScope<'_> {
         LatencyScope {
             profiler: self,
             name,

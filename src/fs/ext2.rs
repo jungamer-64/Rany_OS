@@ -14,13 +14,11 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;
-use spin::RwLock;
 
 use super::block::BlockDevice;
 use super::vfs::{

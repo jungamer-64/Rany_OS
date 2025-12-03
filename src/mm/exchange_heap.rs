@@ -74,7 +74,7 @@ impl SimpleFreeListHeap {
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
 
         // 最低ブロックサイズ（ヘッダ + アライメント）
-        let min_block_size = size + align;
+        let _min_block_size = size + align;
 
         let mut prev: Option<NonNull<FreeBlock>> = None;
         let mut current = self.free_list_head;

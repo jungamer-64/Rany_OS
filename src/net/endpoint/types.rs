@@ -2,8 +2,7 @@
 //!
 //! SocketFd, SocketType, SocketState, SocketError, SocketAddr, AcceptedConnection等
 
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::AtomicU32;
 
 use super::tcb::TcpControlBlockEntry;
 

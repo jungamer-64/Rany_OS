@@ -42,12 +42,10 @@
 
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
-use core::pin::Pin;
 
 use crate::kapi;
 use crate::security::static_capability::{
@@ -317,7 +315,7 @@ impl DomainManager {
     /// 1. 新しいドメインを作成
     /// 2. 権限を設定
     /// 3. バックグラウンドタスクとして起動
-    pub fn load_and_start<A>(&mut self, mut app: A, name: String, caps: DomainCapabilities)
+    pub fn load_and_start<A>(&mut self, app: A, name: String, caps: DomainCapabilities)
     where
         A: Application + 'static,
     {

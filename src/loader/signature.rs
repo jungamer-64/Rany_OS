@@ -21,7 +21,6 @@
 
 use super::LoadError;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
 
 /// 署名セクションの名前（ELFセクション）

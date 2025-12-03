@@ -3,7 +3,6 @@
 //! This module implements a flexible rule-based security policy
 //! system for controlling access and operations.
 
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;

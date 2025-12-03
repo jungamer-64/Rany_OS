@@ -3,7 +3,7 @@
 //! This module implements Message Signaled Interrupts (MSI) and MSI-X
 //! for modern PCI device interrupt handling.
 
-use crate::io::pci::{PciDevice, pci_read, pci_read8, pci_read16, pci_write};
+use crate::io::pci::{PciDevice, pci_read, pci_read16, pci_write};
 use alloc::vec::Vec;
 use spin::Mutex;
 
@@ -428,40 +428,40 @@ impl MsixCapability {
         table_base: *mut MsixTableEntry,
         vector: u16,
         config: &MsiConfig,
-    ) {
+    ) { unsafe {
         if vector >= self.table_size {
             return;
         }
 
         let entry = &mut *table_base.add(vector as usize);
         entry.configure(config);
-    }
+    }}
 
     /// Mask a vector
     ///
     /// # Safety
     /// The table_base must be a valid mapped address
-    pub unsafe fn mask_vector(&self, table_base: *mut MsixTableEntry, vector: u16) {
+    pub unsafe fn mask_vector(&self, table_base: *mut MsixTableEntry, vector: u16) { unsafe {
         if vector >= self.table_size {
             return;
         }
 
         let entry = &mut *table_base.add(vector as usize);
         entry.mask();
-    }
+    }}
 
     /// Unmask a vector
     ///
     /// # Safety
     /// The table_base must be a valid mapped address
-    pub unsafe fn unmask_vector(&self, table_base: *mut MsixTableEntry, vector: u16) {
+    pub unsafe fn unmask_vector(&self, table_base: *mut MsixTableEntry, vector: u16) { unsafe {
         if vector >= self.table_size {
             return;
         }
 
         let entry = &mut *table_base.add(vector as usize);
         entry.unmask();
-    }
+    }}
 }
 
 /// Interrupt allocation state
@@ -541,7 +541,7 @@ pub fn setup_msi(device: &PciDevice, apic_id: u8) -> Option<u8> {
 /// Returns base vector if successful
 pub fn setup_msix(
     device: &PciDevice,
-    apic_id: u8,
+    _apic_id: u8,
     num_vectors: u16,
 ) -> Option<(MsixCapability, u8)> {
     let msix = MsixCapability::probe(device)?;

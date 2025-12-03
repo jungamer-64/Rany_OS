@@ -2,9 +2,8 @@
 //!
 //! process_tcp_segment, network_event_task
 
-use alloc::vec::Vec;
 
-use super::event::{NetworkEvent, event_queue};
+use super::event::event_queue;
 use super::handler::{EventHandleResult, NetworkEventHandler};
 use super::manager::SOCKET_MANAGER;
 use super::retransmit::{

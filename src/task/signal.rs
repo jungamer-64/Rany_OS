@@ -8,7 +8,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 
 /// シグナル番号 (Newtype)
@@ -632,7 +632,7 @@ pub fn kill(target: TaskId, signal: Signal) -> Result<(), SignalError> {
 }
 
 /// 自分自身にシグナルを送信 (raise() 相当)
-pub fn raise(signal: Signal) -> Result<(), SignalError> {
+pub fn raise(_signal: Signal) -> Result<(), SignalError> {
     // TODO: 現在のタスクID取得
     Err(SignalError::NoSuchTask)
 }

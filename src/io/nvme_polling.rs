@@ -30,8 +30,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
-use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ptr::{read_volatile, write_volatile};

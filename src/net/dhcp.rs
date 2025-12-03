@@ -9,7 +9,6 @@ use spin::Mutex;
 
 use super::ethernet::MacAddress;
 use super::ipv4::Ipv4Address;
-use super::udp::{UdpAddr, UdpSocket};
 
 /// DHCPクライアントポート
 pub const DHCP_CLIENT_PORT: u16 = 68;

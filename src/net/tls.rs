@@ -14,15 +14,9 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
-use spin::Mutex;
 
 // ============================================================================
 // Type-Safe Identifiers

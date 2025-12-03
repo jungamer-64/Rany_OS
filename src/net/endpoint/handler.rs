@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 use super::event::NetworkEvent;
 use super::manager::SOCKET_MANAGER;
 use super::segment::TcpSegmentBuilder;
-use super::tcb::{TcbTable, TcpConnectionState, TcpControlBlockEntry, tcb_table};
+use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table};
 use super::types::{SocketAddr, SocketError, SocketFd, SocketResult, SocketType};
 
 /// イベント処理の結果
