@@ -143,6 +143,19 @@ pub extern "C" fn _start() -> ! {
     unwind::init_symbol_table();
     log!("[OK] Symbol table initialized\n");
 
+    // 5.6. テストフレームワークの初期化
+    log!("[INIT] Initializing test framework\n");
+    test::init();
+    log!("[OK] Test framework initialized\n");
+
+    // 5.7. システム統合の初期化
+    log!("[INIT] Initializing system integration\n");
+    if let Err(e) = integration::init() {
+        log!("[WARN] System integration failed: {:?}\n", e);
+    } else {
+        log!("[OK] System integration initialized\n");
+    }
+
     // 6. 割り込みを有効化
     interrupts::enable_interrupts();
     log!("[OK] Interrupts enabled\n");
@@ -288,6 +301,31 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
         .await;
 
         log!("[Task 5] Completed\n");
+    }));
+
+    // タスク6: ベンチマーク実行（オプション）
+    executor.spawn(Task::new(async {
+        log!("[Task 6] Benchmark task started\n");
+        task::sleep_ms(1000).await;
+
+        // ベンチマーク結果を取得
+        let results = benchmark::run_all_benchmarks();
+        log!("[Task 6] Ran {} benchmarks\n", results.len());
+        log!("[Task 6] Benchmark task completed\n");
+    }));
+
+    // タスク7: 統合テスト実行
+    executor.spawn(Task::new(async {
+        log!("[Task 7] Integration test task started\n");
+        task::sleep_ms(2000).await;
+
+        let (passed, failed) = test::integration::run_all_integration_tests();
+        log!(
+            "[Task 7] Integration tests: {} passed, {} failed\n",
+            passed,
+            failed
+        );
+        log!("[Task 7] Integration test task completed\n");
     }));
 }
 
