@@ -798,6 +798,45 @@ pub fn disable_iommu() -> Result<(), IommuError> {
     unsafe { controller.disable() }
 }
 
+/// Check if IOMMU is enabled
+pub fn is_iommu_enabled() -> bool {
+    IOMMU.lock().is_some()
+}
+
+/// Map a physical address range for DMA access
+/// 
+/// Returns the IOVA (I/O Virtual Address) that devices should use
+pub fn map_for_dma(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuError> {
+    let mut guard = IOMMU.lock();
+    let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+    
+    // For simplicity, use identity mapping (IOVA == physical address)
+    // In a more sophisticated implementation, this would allocate from an IOVA space
+    let iova = phys_addr.as_u64();
+    
+    // Create a mapping in the default domain (domain 0)
+    // This is a simplified implementation
+    let domain = controller.domains.get_mut(&0)
+        .ok_or(IommuError::DomainNotFound)?;
+    
+    domain.map(iova, phys_addr.as_u64(), size, true, true)?;
+    
+    Ok(iova)
+}
+
+/// Unmap a DMA address range
+pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
+    let mut guard = IOMMU.lock();
+    let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+    
+    // Unmap from the default domain
+    let domain = controller.domains.get_mut(&0)
+        .ok_or(IommuError::DomainNotFound)?;
+    
+    domain.unmap(iova)?;
+    Ok(())
+}
+
 /// Execute with IOMMU controller
 pub fn with_iommu<F, R>(f: F) -> Result<R, IommuError>
 where

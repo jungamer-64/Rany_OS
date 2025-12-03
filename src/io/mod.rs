@@ -25,6 +25,9 @@ pub mod rtc;
 // Phase 4: High-Performance I/O
 pub mod nvme_polling;
 
+// DMA Cache Coherency Management
+pub mod dma_cache;
+
 #[allow(unused_imports)]
 pub use polling::{
     AdaptiveIoController, IoMode, IoStats, PollingConfig,
