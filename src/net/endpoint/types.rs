@@ -15,19 +15,19 @@ pub struct SocketFd(u32);
 impl SocketFd {
     /// 無効なファイルディスクリプタ
     pub const INVALID: Self = Self(u32::MAX);
-    
+
     /// 生の値を取得
     #[inline(always)]
     pub const fn raw(self) -> u32 {
         self.0
     }
-    
+
     /// 生の値から作成（内部用）
     #[inline(always)]
     pub const fn from_raw(fd: u32) -> Self {
         Self(fd)
     }
-    
+
     /// 有効かどうか
     #[inline(always)]
     pub const fn is_valid(self) -> bool {
@@ -74,25 +74,25 @@ impl SocketState {
     pub const fn can_send(self) -> bool {
         matches!(self, Self::Connected | Self::Bound)
     }
-    
+
     /// 受信可能な状態か
     #[inline(always)]
     pub const fn can_receive(self) -> bool {
         matches!(self, Self::Connected | Self::Bound | Self::Listening)
     }
-    
+
     /// バインド可能な状態か
     #[inline(always)]
     pub const fn can_bind(self) -> bool {
         matches!(self, Self::Created)
     }
-    
+
     /// 接続可能な状態か
     #[inline(always)]
     pub const fn can_connect(self) -> bool {
         matches!(self, Self::Created | Self::Bound)
     }
-    
+
     /// リッスン可能な状態か
     #[inline(always)]
     pub const fn can_listen(self) -> bool {
@@ -172,25 +172,25 @@ impl SocketAddr {
         ip: [0, 0, 0, 0],
         port: 0,
     };
-    
+
     /// ループバックアドレス
     pub const LOCALHOST: Self = Self {
         ip: [127, 0, 0, 1],
         port: 0,
     };
-    
+
     /// 新規作成
     #[inline(always)]
     pub const fn new(ip: [u8; 4], port: u16) -> Self {
         Self { ip, port }
     }
-    
+
     /// ポート付きで作成
     #[inline(always)]
     pub const fn with_port(self, port: u16) -> Self {
         Self { ip: self.ip, port }
     }
-    
+
     /// IPアドレスをu32で取得
     #[inline(always)]
     pub const fn ip_u32(self) -> u32 {
@@ -217,7 +217,12 @@ pub struct AcceptedConnection {
 
 impl AcceptedConnection {
     /// 新規作成
-    pub fn new(fd: SocketFd, local_addr: SocketAddr, remote_addr: SocketAddr, tcb: TcpControlBlockEntry) -> Self {
+    pub fn new(
+        fd: SocketFd,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+        tcb: TcpControlBlockEntry,
+    ) -> Self {
         Self {
             fd,
             local_addr,
@@ -234,23 +239,23 @@ impl AcceptedConnection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_socket_fd() {
         let fd1 = SocketFd::from_raw(1);
         let fd2 = SocketFd::from_raw(2);
-        
+
         assert!(fd1.is_valid());
         assert!(!SocketFd::INVALID.is_valid());
         assert!(fd1 < fd2);
     }
-    
+
     #[test]
     fn test_socket_addr() {
         let addr = SocketAddr::new([192, 168, 1, 1], 8080);
         assert_eq!(addr.ip, [192, 168, 1, 1]);
         assert_eq!(addr.port, 8080);
-        
+
         let localhost = SocketAddr::LOCALHOST.with_port(3000);
         assert_eq!(localhost.ip, [127, 0, 0, 1]);
         assert_eq!(localhost.port, 3000);

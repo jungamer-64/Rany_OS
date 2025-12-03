@@ -3,12 +3,12 @@
 //! This module implements comprehensive security auditing for
 //! tracking security-relevant events in the kernel.
 
-use core::fmt;
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::collections::VecDeque;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 
 extern crate alloc;
 
@@ -22,7 +22,7 @@ pub enum AuditEventType {
     DomainTerminate,
     /// Domain context change
     DomainContextChange,
-    
+
     // Access events
     /// File access
     FileAccess,
@@ -32,7 +32,7 @@ pub enum AuditEventType {
     MemoryMap,
     /// IPC operation
     IpcOperation,
-    
+
     // Security events
     /// MAC policy decision
     MacDecision,
@@ -42,7 +42,7 @@ pub enum AuditEventType {
     PermissionDenied,
     /// Privilege escalation attempt
     PrivilegeEscalation,
-    
+
     // System events
     /// System call
     Syscall,
@@ -50,7 +50,7 @@ pub enum AuditEventType {
     ModuleLoad,
     /// Configuration change
     ConfigChange,
-    
+
     // Authentication events
     /// Login attempt
     LoginAttempt,
@@ -83,14 +83,15 @@ impl AuditEventType {
             AuditEventType::AuthFailure => "AUTH_FAILURE",
         }
     }
-    
+
     /// Check if event type is critical
     pub fn is_critical(&self) -> bool {
-        matches!(self,
-            AuditEventType::PrivilegeEscalation |
-            AuditEventType::PermissionDenied |
-            AuditEventType::AuthFailure |
-            AuditEventType::ModuleLoad
+        matches!(
+            self,
+            AuditEventType::PrivilegeEscalation
+                | AuditEventType::PermissionDenied
+                | AuditEventType::AuthFailure
+                | AuditEventType::ModuleLoad
         )
     }
 }
@@ -124,7 +125,7 @@ impl AuditRecord {
     /// Create a new audit record
     pub fn new(event_type: AuditEventType, domain_id: u64, success: bool) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        
+
         AuditRecord {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             timestamp: crate::task::timer::current_tick(),
@@ -135,23 +136,23 @@ impl AuditRecord {
             fields: Vec::new(),
         }
     }
-    
+
     /// Set message
     pub fn with_message(mut self, msg: impl Into<String>) -> Self {
         self.message = msg.into();
         self
     }
-    
+
     /// Add a field
     pub fn with_field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.fields.push((key.into(), value.into()));
         self
     }
-    
+
     /// Format as log line
     pub fn format(&self) -> String {
         use alloc::format;
-        
+
         let mut result = format!(
             "audit({}:{}): type={} domain={} success={}",
             self.timestamp,
@@ -160,20 +161,20 @@ impl AuditRecord {
             self.domain_id,
             if self.success { "yes" } else { "no" }
         );
-        
+
         if !self.message.is_empty() {
             result.push_str(" msg=\"");
             result.push_str(&self.message);
             result.push('"');
         }
-        
+
         for (key, value) in &self.fields {
             result.push(' ');
             result.push_str(key);
             result.push('=');
             result.push_str(value);
         }
-        
+
         result
     }
 }
@@ -210,33 +211,33 @@ impl AuditEvent {
             fields: Vec::new(),
         }
     }
-    
+
     /// Set success/failure
     pub fn success(mut self, success: bool) -> Self {
         self.success = success;
         self
     }
-    
+
     /// Set message
     pub fn message(mut self, msg: impl Into<String>) -> Self {
         self.message = Some(msg.into());
         self
     }
-    
+
     /// Add field
     pub fn field(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         self.fields.push((key.into(), value.into()));
         self
     }
-    
+
     /// Convert to record
     pub fn to_record(&self) -> AuditRecord {
         let mut record = AuditRecord::new(self.event_type, self.domain_id, self.success);
-        
+
         if let Some(ref msg) = self.message {
             record.message = msg.clone();
         }
-        
+
         record.fields = self.fields.clone();
         record
     }
@@ -270,109 +271,112 @@ impl AuditLog {
             critical_only: AtomicBool::new(false),
         }
     }
-    
+
     /// Log an event
     pub fn log(&self, event: AuditEvent) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         // Filter non-critical events if critical_only mode
         if self.critical_only.load(Ordering::Relaxed) && !event.event_type.is_critical() {
             return;
         }
-        
+
         let record = event.to_record();
-        
+
         // Print critical events immediately
         if event.event_type.is_critical() {
             crate::log!("[AUDIT] {}\n", record.format());
         }
-        
+
         let mut records = self.records.lock();
-        
+
         // Drop oldest if at capacity
         if records.len() >= self.max_records {
             records.pop_front();
             self.dropped_records.fetch_add(1, Ordering::Relaxed);
         }
-        
+
         records.push_back(record);
         self.total_records.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// Log a record directly
     pub fn log_record(&self, record: AuditRecord) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         if self.critical_only.load(Ordering::Relaxed) && !record.event_type.is_critical() {
             return;
         }
-        
+
         if record.event_type.is_critical() {
             crate::log!("[AUDIT] {}\n", record.format());
         }
-        
+
         let mut records = self.records.lock();
-        
+
         if records.len() >= self.max_records {
             records.pop_front();
             self.dropped_records.fetch_add(1, Ordering::Relaxed);
         }
-        
+
         records.push_back(record);
         self.total_records.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// Get all records
     pub fn get_records(&self) -> Vec<AuditRecord> {
         self.records.lock().iter().cloned().collect()
     }
-    
+
     /// Get records by type
     pub fn get_by_type(&self, event_type: AuditEventType) -> Vec<AuditRecord> {
-        self.records.lock()
+        self.records
+            .lock()
             .iter()
             .filter(|r| r.event_type == event_type)
             .cloned()
             .collect()
     }
-    
+
     /// Get records for a domain
     pub fn get_by_domain(&self, domain_id: u64) -> Vec<AuditRecord> {
-        self.records.lock()
+        self.records
+            .lock()
             .iter()
             .filter(|r| r.domain_id == domain_id)
             .cloned()
             .collect()
     }
-    
+
     /// Get failed events
     pub fn get_failures(&self) -> Vec<AuditRecord> {
-        self.records.lock()
+        self.records
+            .lock()
             .iter()
             .filter(|r| !r.success)
             .cloned()
             .collect()
     }
-    
+
     /// Clear the log
     pub fn clear(&self) {
         self.records.lock().clear();
     }
-    
+
     /// Enable/disable logging
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Relaxed);
     }
-    
+
     /// Set critical-only mode
     pub fn set_critical_only(&self, critical_only: bool) {
         self.critical_only.store(critical_only, Ordering::Relaxed);
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> AuditStats {
         AuditStats {
@@ -427,7 +431,10 @@ pub fn stats() -> AuditStats {
 
 /// Initialize audit subsystem
 pub fn init() {
-    crate::log!("[AUDIT] Audit subsystem initialized (max {} records)\n", 10000);
+    crate::log!(
+        "[AUDIT] Audit subsystem initialized (max {} records)\n",
+        10000
+    );
 }
 
 /// Convenience macro for logging audit events
@@ -445,30 +452,30 @@ macro_rules! audit {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_audit_record() {
         let record = AuditRecord::new(AuditEventType::DomainCreate, 42, true)
             .with_message("Test domain created")
             .with_field("name", "test_domain");
-        
+
         assert_eq!(record.domain_id, 42);
         assert!(record.success);
         assert_eq!(record.event_type, AuditEventType::DomainCreate);
     }
-    
+
     #[test]
     fn test_audit_event() {
         let event = AuditEvent::new(AuditEventType::CapabilityCheck, 1)
             .success(false)
             .message("Capability denied")
             .field("capability", "CAP_SYS_ADMIN");
-        
+
         let record = event.to_record();
         assert!(!record.success);
         assert_eq!(record.fields.len(), 1);
     }
-    
+
     #[test]
     fn test_event_type_critical() {
         assert!(AuditEventType::PrivilegeEscalation.is_critical());

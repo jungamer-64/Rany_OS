@@ -15,12 +15,12 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
+use super::descriptor::{
+    ConfigurationDescriptor, DeviceDescriptor, EndpointDescriptor, InterfaceDescriptor,
+    ParsedConfiguration, SafePackedRead, parse_configuration, parse_string_descriptor,
+};
 use super::{
     DeviceAddress, EndpointAddress, SetupPacket, SlotId, UsbDevice, UsbError, UsbResult, UsbSpeed,
-};
-use super::descriptor::{
-    DeviceDescriptor, ConfigurationDescriptor, InterfaceDescriptor, EndpointDescriptor,
-    parse_configuration, parse_string_descriptor, ParsedConfiguration, SafePackedRead,
 };
 
 // ============================================================================
@@ -133,12 +133,11 @@ impl DeviceEnumerator {
     /// デバイスディスクリプタを取得
     pub async fn get_device_descriptor(device: &dyn UsbDevice) -> UsbResult<DeviceDescriptor> {
         let mut buffer = [0u8; 18];
-        
+
         let setup = SetupPacket::get_descriptor(1, 0, 18); // Device descriptor
         device.control_transfer(&setup, Some(&mut buffer)).await?;
 
-        DeviceDescriptor::from_bytes(&buffer)
-            .ok_or(UsbError::InvalidParameter)
+        DeviceDescriptor::from_bytes(&buffer).ok_or(UsbError::InvalidParameter)
     }
 
     /// コンフィグレーションディスクリプタを取得
@@ -158,8 +157,7 @@ impl DeviceEnumerator {
         let setup = SetupPacket::get_descriptor(2, config_index, total_length as u16);
         device.control_transfer(&setup, Some(&mut buffer)).await?;
 
-        parse_configuration(&buffer)
-            .ok_or(UsbError::InvalidParameter)
+        parse_configuration(&buffer).ok_or(UsbError::InvalidParameter)
     }
 
     /// 文字列ディスクリプタを取得
@@ -183,8 +181,7 @@ impl DeviceEnumerator {
 
         let len = device.control_transfer(&setup, Some(&mut buffer)).await?;
 
-        parse_string_descriptor(&buffer[..len])
-            .ok_or(UsbError::InvalidParameter)
+        parse_string_descriptor(&buffer[..len]).ok_or(UsbError::InvalidParameter)
     }
 
     /// サポートされている言語IDのリストを取得
@@ -209,10 +206,7 @@ impl DeviceEnumerator {
     }
 
     /// デバイスを設定
-    pub async fn set_configuration(
-        device: &dyn UsbDevice,
-        config_value: u8,
-    ) -> UsbResult<()> {
+    pub async fn set_configuration(device: &dyn UsbDevice, config_value: u8) -> UsbResult<()> {
         let setup = SetupPacket::set_configuration(config_value);
         device.control_transfer(&setup, None).await?;
         Ok(())
@@ -226,19 +220,25 @@ impl DeviceEnumerator {
         let lang_id = 0x0409; // English (US)
 
         let manufacturer = if desc.i_manufacturer != 0 {
-            Self::get_string_descriptor(device, desc.i_manufacturer, lang_id).await.ok()
+            Self::get_string_descriptor(device, desc.i_manufacturer, lang_id)
+                .await
+                .ok()
         } else {
             None
         };
 
         let product = if desc.i_product != 0 {
-            Self::get_string_descriptor(device, desc.i_product, lang_id).await.ok()
+            Self::get_string_descriptor(device, desc.i_product, lang_id)
+                .await
+                .ok()
         } else {
             None
         };
 
         let serial_number = if desc.i_serial_number != 0 {
-            Self::get_string_descriptor(device, desc.i_serial_number, lang_id).await.ok()
+            Self::get_string_descriptor(device, desc.i_serial_number, lang_id)
+                .await
+                .ok()
         } else {
             None
         };
@@ -317,10 +317,7 @@ impl StandardRequests {
     }
 
     /// 現在のインターフェース設定を取得
-    pub async fn get_interface(
-        device: &dyn UsbDevice,
-        interface: u8,
-    ) -> UsbResult<u8> {
+    pub async fn get_interface(device: &dyn UsbDevice, interface: u8) -> UsbResult<u8> {
         let mut buffer = [0u8; 1];
         let setup = SetupPacket {
             bm_request_type: 0x81, // Device-to-host, Standard, Interface
@@ -358,9 +355,9 @@ pub mod hub_class {
     pub async fn get_hub_descriptor(device: &dyn UsbDevice) -> UsbResult<HubDescriptor> {
         let mut buffer = [0u8; 8];
         let setup = SetupPacket::class_request(
-            true,  // IN
-            0,     // Device
-            0x06,  // GET_DESCRIPTOR
+            true,        // IN
+            0,           // Device
+            0x06,        // GET_DESCRIPTOR
             (0x29 << 8), // Hub descriptor type
             0,
             8,
@@ -369,16 +366,14 @@ pub mod hub_class {
 
         // パースは実際には SafePackedRead を実装すべき
         unsafe {
-            Ok(core::ptr::read_unaligned(buffer.as_ptr() as *const HubDescriptor))
+            Ok(core::ptr::read_unaligned(
+                buffer.as_ptr() as *const HubDescriptor
+            ))
         }
     }
 
     /// ポートフィーチャーを設定
-    pub async fn set_port_feature(
-        device: &dyn UsbDevice,
-        port: u8,
-        feature: u16,
-    ) -> UsbResult<()> {
+    pub async fn set_port_feature(device: &dyn UsbDevice, port: u8, feature: u16) -> UsbResult<()> {
         let setup = SetupPacket::class_request(
             false, // OUT
             3,     // Other (port)
@@ -413,9 +408,9 @@ pub mod hub_class {
     pub async fn get_port_status(device: &dyn UsbDevice, port: u8) -> UsbResult<u32> {
         let mut buffer = [0u8; 4];
         let setup = SetupPacket::class_request(
-            true,  // IN
-            3,     // Other (port)
-            0x00,  // GET_STATUS
+            true, // IN
+            3,    // Other (port)
+            0x00, // GET_STATUS
             0,
             port as u16,
             4,

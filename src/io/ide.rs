@@ -16,8 +16,8 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -150,46 +150,46 @@ impl DriveSel {
 
 /// IDEレジスタオフセット
 pub mod regs {
-    pub const DATA: u16 = 0;           // R/W データ
-    pub const ERROR: u16 = 1;          // R エラー
-    pub const FEATURES: u16 = 1;       // W フィーチャー
-    pub const SECTOR_COUNT: u16 = 2;   // R/W セクタカウント
-    pub const LBA_LOW: u16 = 3;        // R/W LBA[0:7]
-    pub const LBA_MID: u16 = 4;        // R/W LBA[8:15]
-    pub const LBA_HIGH: u16 = 5;       // R/W LBA[16:23]
-    pub const DRIVE: u16 = 6;          // R/W ドライブ/ヘッド
-    pub const STATUS: u16 = 7;         // R ステータス
-    pub const COMMAND: u16 = 7;        // W コマンド
+    pub const DATA: u16 = 0; // R/W データ
+    pub const ERROR: u16 = 1; // R エラー
+    pub const FEATURES: u16 = 1; // W フィーチャー
+    pub const SECTOR_COUNT: u16 = 2; // R/W セクタカウント
+    pub const LBA_LOW: u16 = 3; // R/W LBA[0:7]
+    pub const LBA_MID: u16 = 4; // R/W LBA[8:15]
+    pub const LBA_HIGH: u16 = 5; // R/W LBA[16:23]
+    pub const DRIVE: u16 = 6; // R/W ドライブ/ヘッド
+    pub const STATUS: u16 = 7; // R ステータス
+    pub const COMMAND: u16 = 7; // W コマンド
 }
 
 /// ステータスビット
 pub mod status {
-    pub const ERR: u8 = 0x01;   // エラー
-    pub const IDX: u8 = 0x02;   // インデックス
-    pub const CORR: u8 = 0x04;  // 訂正データ
-    pub const DRQ: u8 = 0x08;   // データ要求
-    pub const SRV: u8 = 0x10;   // サービス
-    pub const DF: u8 = 0x20;    // ドライブ障害
-    pub const RDY: u8 = 0x40;   // 準備完了
-    pub const BSY: u8 = 0x80;   // ビジー
+    pub const ERR: u8 = 0x01; // エラー
+    pub const IDX: u8 = 0x02; // インデックス
+    pub const CORR: u8 = 0x04; // 訂正データ
+    pub const DRQ: u8 = 0x08; // データ要求
+    pub const SRV: u8 = 0x10; // サービス
+    pub const DF: u8 = 0x20; // ドライブ障害
+    pub const RDY: u8 = 0x40; // 準備完了
+    pub const BSY: u8 = 0x80; // ビジー
 }
 
 /// ATAコマンド
 pub mod commands {
-    pub const IDENTIFY: u8 = 0xEC;           // IDENTIFY DEVICE
-    pub const IDENTIFY_PACKET: u8 = 0xA1;    // IDENTIFY PACKET DEVICE
-    pub const READ_SECTORS: u8 = 0x20;       // READ SECTORS
-    pub const READ_SECTORS_EXT: u8 = 0x24;   // READ SECTORS EXT (48-bit LBA)
-    pub const WRITE_SECTORS: u8 = 0x30;      // WRITE SECTORS
-    pub const WRITE_SECTORS_EXT: u8 = 0x34;  // WRITE SECTORS EXT (48-bit LBA)
-    pub const READ_DMA: u8 = 0xC8;           // READ DMA
-    pub const READ_DMA_EXT: u8 = 0x25;       // READ DMA EXT
-    pub const WRITE_DMA: u8 = 0xCA;          // WRITE DMA
-    pub const WRITE_DMA_EXT: u8 = 0x35;      // WRITE DMA EXT
-    pub const CACHE_FLUSH: u8 = 0xE7;        // CACHE FLUSH
-    pub const CACHE_FLUSH_EXT: u8 = 0xEA;    // CACHE FLUSH EXT
-    pub const PACKET: u8 = 0xA0;             // PACKET (ATAPI)
-    pub const SET_FEATURES: u8 = 0xEF;       // SET FEATURES
+    pub const IDENTIFY: u8 = 0xEC; // IDENTIFY DEVICE
+    pub const IDENTIFY_PACKET: u8 = 0xA1; // IDENTIFY PACKET DEVICE
+    pub const READ_SECTORS: u8 = 0x20; // READ SECTORS
+    pub const READ_SECTORS_EXT: u8 = 0x24; // READ SECTORS EXT (48-bit LBA)
+    pub const WRITE_SECTORS: u8 = 0x30; // WRITE SECTORS
+    pub const WRITE_SECTORS_EXT: u8 = 0x34; // WRITE SECTORS EXT (48-bit LBA)
+    pub const READ_DMA: u8 = 0xC8; // READ DMA
+    pub const READ_DMA_EXT: u8 = 0x25; // READ DMA EXT
+    pub const WRITE_DMA: u8 = 0xCA; // WRITE DMA
+    pub const WRITE_DMA_EXT: u8 = 0x35; // WRITE DMA EXT
+    pub const CACHE_FLUSH: u8 = 0xE7; // CACHE FLUSH
+    pub const CACHE_FLUSH_EXT: u8 = 0xEA; // CACHE FLUSH EXT
+    pub const PACKET: u8 = 0xA0; // PACKET (ATAPI)
+    pub const SET_FEATURES: u8 = 0xEF; // SET FEATURES
 }
 
 // ============================================================================
@@ -491,7 +491,13 @@ impl IdeChannel {
     }
 
     /// セクタを読み取り（PIO）
-    pub fn read_sectors(&self, drive: DriveSel, lba: u64, count: u16, buffer: &mut [u8]) -> Result<(), IdeError> {
+    pub fn read_sectors(
+        &self,
+        drive: DriveSel,
+        lba: u64,
+        count: u16,
+        buffer: &mut [u8],
+    ) -> Result<(), IdeError> {
         let device = &self.devices[if drive == DriveSel::Master { 0 } else { 1 }];
         let device = device.as_ref().ok_or(IdeError::NoDevice)?;
 
@@ -517,11 +523,17 @@ impl IdeChannel {
     }
 
     /// LBA28モードでセクタを読み取り
-    unsafe fn read_sectors_lba28(&self, drive: DriveSel, lba: u32, count: u8, buffer: &mut [u8]) -> Result<(), IdeError> {
+    unsafe fn read_sectors_lba28(
+        &self,
+        drive: DriveSel,
+        lba: u32,
+        count: u8,
+        buffer: &mut [u8],
+    ) -> Result<(), IdeError> {
         // ドライブとLBA上位4ビットを選択
         let drive_head = drive.value() | 0x40 | ((lba >> 24) & 0x0F) as u8;
         self.write_reg(regs::DRIVE, drive_head);
-        
+
         // 400ns待機
         for _ in 0..4 {
             let _ = self.read_alt_status();
@@ -542,10 +554,8 @@ impl IdeChannel {
             // ワード単位で読み取り
             let offset = i * 512;
             let sector_buffer = &mut buffer[offset..offset + 512];
-            let word_buffer: &mut [u16] = core::slice::from_raw_parts_mut(
-                sector_buffer.as_mut_ptr() as *mut u16,
-                256
-            );
+            let word_buffer: &mut [u16] =
+                core::slice::from_raw_parts_mut(sector_buffer.as_mut_ptr() as *mut u16, 256);
             data_port.read_words(word_buffer);
         }
 
@@ -553,7 +563,13 @@ impl IdeChannel {
     }
 
     /// LBA48モードでセクタを読み取り
-    unsafe fn read_sectors_lba48(&self, drive: DriveSel, lba: u64, count: u16, buffer: &mut [u8]) -> Result<(), IdeError> {
+    unsafe fn read_sectors_lba48(
+        &self,
+        drive: DriveSel,
+        lba: u64,
+        count: u16,
+        buffer: &mut [u8],
+    ) -> Result<(), IdeError> {
         // ドライブを選択（LBAモード）
         let drive_head = drive.value() | 0x40;
         self.write_reg(regs::DRIVE, drive_head);
@@ -585,10 +601,8 @@ impl IdeChannel {
 
             let offset = i * 512;
             let sector_buffer = &mut buffer[offset..offset + 512];
-            let word_buffer: &mut [u16] = core::slice::from_raw_parts_mut(
-                sector_buffer.as_mut_ptr() as *mut u16,
-                256
-            );
+            let word_buffer: &mut [u16] =
+                core::slice::from_raw_parts_mut(sector_buffer.as_mut_ptr() as *mut u16, 256);
             data_port.read_words(word_buffer);
         }
 
@@ -596,7 +610,13 @@ impl IdeChannel {
     }
 
     /// セクタを書き込み（PIO）
-    pub fn write_sectors(&self, drive: DriveSel, lba: u64, count: u16, buffer: &[u8]) -> Result<(), IdeError> {
+    pub fn write_sectors(
+        &self,
+        drive: DriveSel,
+        lba: u64,
+        count: u16,
+        buffer: &[u8],
+    ) -> Result<(), IdeError> {
         let device = &self.devices[if drive == DriveSel::Master { 0 } else { 1 }];
         let device = device.as_ref().ok_or(IdeError::NoDevice)?;
 
@@ -622,7 +642,13 @@ impl IdeChannel {
     }
 
     /// LBA28モードでセクタを書き込み
-    unsafe fn write_sectors_lba28(&self, drive: DriveSel, lba: u32, count: u8, buffer: &[u8]) -> Result<(), IdeError> {
+    unsafe fn write_sectors_lba28(
+        &self,
+        drive: DriveSel,
+        lba: u32,
+        count: u8,
+        buffer: &[u8],
+    ) -> Result<(), IdeError> {
         let drive_head = drive.value() | 0x40 | ((lba >> 24) & 0x0F) as u8;
         self.write_reg(regs::DRIVE, drive_head);
 
@@ -644,10 +670,8 @@ impl IdeChannel {
 
             let offset = i * 512;
             let sector_buffer = &buffer[offset..offset + 512];
-            let word_buffer: &[u16] = core::slice::from_raw_parts(
-                sector_buffer.as_ptr() as *const u16,
-                256
-            );
+            let word_buffer: &[u16] =
+                core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256);
             data_port.write_words(word_buffer);
         }
 
@@ -659,7 +683,13 @@ impl IdeChannel {
     }
 
     /// LBA48モードでセクタを書き込み
-    unsafe fn write_sectors_lba48(&self, drive: DriveSel, lba: u64, count: u16, buffer: &[u8]) -> Result<(), IdeError> {
+    unsafe fn write_sectors_lba48(
+        &self,
+        drive: DriveSel,
+        lba: u64,
+        count: u16,
+        buffer: &[u8],
+    ) -> Result<(), IdeError> {
         let drive_head = drive.value() | 0x40;
         self.write_reg(regs::DRIVE, drive_head);
 
@@ -687,10 +717,8 @@ impl IdeChannel {
 
             let offset = i * 512;
             let sector_buffer = &buffer[offset..offset + 512];
-            let word_buffer: &[u16] = core::slice::from_raw_parts(
-                sector_buffer.as_ptr() as *const u16,
-                256
-            );
+            let word_buffer: &[u16] =
+                core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256);
             data_port.write_words(word_buffer);
         }
 

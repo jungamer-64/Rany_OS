@@ -3,13 +3,13 @@
 //! ExoRust Async-First アーキテクチャに基づくパイプ実装
 //! ゼロコピー転送と非同期I/Oをサポート
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use core::task::{Context, Poll, Waker};
-use core::pin::Pin;
-use core::future::Future;
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::task::{Context, Poll, Waker};
 
 /// パイプファイルディスクリプタ (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -44,9 +44,9 @@ impl PipeId {
 pub struct PipeBufferSize(usize);
 
 impl PipeBufferSize {
-    pub const DEFAULT: Self = Self(65536);  // 64KB
-    pub const MIN: Self = Self(4096);       // 4KB
-    pub const MAX: Self = Self(1048576);    // 1MB
+    pub const DEFAULT: Self = Self(65536); // 64KB
+    pub const MIN: Self = Self(4096); // 4KB
+    pub const MAX: Self = Self(1048576); // 1MB
 
     pub const fn new(size: usize) -> Self {
         Self(size)
@@ -144,7 +144,7 @@ impl RingBuffer {
     pub fn new(capacity: usize) -> Self {
         let mut buffer = Vec::with_capacity(capacity);
         buffer.resize(capacity, 0);
-        
+
         Self {
             buffer,
             capacity,
@@ -179,19 +179,20 @@ impl RingBuffer {
     pub fn write(&mut self, data: &[u8]) -> usize {
         let available = self.available();
         let to_write = data.len().min(available);
-        
+
         if to_write == 0 {
             return 0;
         }
 
         let write_pos = self.write_pos.load(Ordering::Acquire);
-        
+
         for i in 0..to_write {
             let pos = (write_pos + i) % self.capacity;
             self.buffer[pos] = data[i];
         }
-        
-        self.write_pos.store(write_pos.wrapping_add(to_write), Ordering::Release);
+
+        self.write_pos
+            .store(write_pos.wrapping_add(to_write), Ordering::Release);
         to_write
     }
 
@@ -199,19 +200,20 @@ impl RingBuffer {
     pub fn read(&mut self, buf: &mut [u8]) -> usize {
         let len = self.len();
         let to_read = buf.len().min(len);
-        
+
         if to_read == 0 {
             return 0;
         }
 
         let read_pos = self.read_pos.load(Ordering::Acquire);
-        
+
         for i in 0..to_read {
             let pos = (read_pos + i) % self.capacity;
             buf[i] = self.buffer[pos];
         }
-        
-        self.read_pos.store(read_pos.wrapping_add(to_read), Ordering::Release);
+
+        self.read_pos
+            .store(read_pos.wrapping_add(to_read), Ordering::Release);
         to_read
     }
 
@@ -219,18 +221,18 @@ impl RingBuffer {
     pub fn peek(&self, buf: &mut [u8]) -> usize {
         let len = self.len();
         let to_read = buf.len().min(len);
-        
+
         if to_read == 0 {
             return 0;
         }
 
         let read_pos = self.read_pos.load(Ordering::Acquire);
-        
+
         for i in 0..to_read {
             let pos = (read_pos + i) % self.capacity;
             buf[i] = self.buffer[pos];
         }
-        
+
         to_read
     }
 }
@@ -310,24 +312,26 @@ impl PipeInner {
         if !self.is_writer_open() {
             let buffer = self.buffer.lock();
             if buffer.is_empty() {
-                return Poll::Ready(Ok(0));  // EOF
+                return Poll::Ready(Ok(0)); // EOF
             }
         }
 
         // バッファから読み取り
         let mut buffer = self.buffer.lock();
         let read = buffer.read(buf);
-        
+
         if read > 0 {
-            self.stats.bytes_read.fetch_add(read as u64, Ordering::Relaxed);
+            self.stats
+                .bytes_read
+                .fetch_add(read as u64, Ordering::Relaxed);
             self.stats.read_ops.fetch_add(1, Ordering::Relaxed);
-            
+
             // 書き込み待機中のタスクを起床
             let mut wakers = self.write_wakers.lock();
             if let Some(waker) = wakers.pop_front() {
                 waker.wake();
             }
-            
+
             Poll::Ready(Ok(read))
         } else if self.flags.non_blocking {
             Poll::Ready(Err(PipeError::WouldBlock))
@@ -341,11 +345,7 @@ impl PipeInner {
     }
 
     /// 非同期書き込み
-    pub fn poll_write(
-        &self,
-        data: &[u8],
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<usize, PipeError>> {
+    pub fn poll_write(&self, data: &[u8], cx: &mut Context<'_>) -> Poll<Result<usize, PipeError>> {
         // 読み取り端がクローズされていたらエラー
         if !self.is_reader_open() {
             return Poll::Ready(Err(PipeError::BrokenPipe));
@@ -354,17 +354,19 @@ impl PipeInner {
         // バッファに書き込み
         let mut buffer = self.buffer.lock();
         let written = buffer.write(data);
-        
+
         if written > 0 {
-            self.stats.bytes_written.fetch_add(written as u64, Ordering::Relaxed);
+            self.stats
+                .bytes_written
+                .fetch_add(written as u64, Ordering::Relaxed);
             self.stats.write_ops.fetch_add(1, Ordering::Relaxed);
-            
+
             // 読み取り待機中のタスクを起床
             let mut wakers = self.read_wakers.lock();
             if let Some(waker) = wakers.pop_front() {
                 waker.wake();
             }
-            
+
             Poll::Ready(Ok(written))
         } else if self.flags.non_blocking {
             Poll::Ready(Err(PipeError::WouldBlock))
@@ -406,21 +408,18 @@ impl PipeReader {
 
     /// 非同期読み取り
     pub fn read<'a>(&'a self, buf: &'a mut [u8]) -> PipeReadFuture<'a> {
-        PipeReadFuture {
-            reader: self,
-            buf,
-        }
+        PipeReadFuture { reader: self, buf }
     }
 
     /// 同期読み取り (ブロッキング)
     pub fn read_sync(&self, buf: &mut [u8]) -> Result<usize, PipeError> {
         let mut buffer = self.inner.buffer.lock();
         let read = buffer.read(buf);
-        
+
         if read > 0 {
             Ok(read)
         } else if !self.inner.is_writer_open() {
-            Ok(0)  // EOF
+            Ok(0) // EOF
         } else {
             Err(PipeError::WouldBlock)
         }
@@ -451,10 +450,7 @@ impl PipeWriter {
 
     /// 非同期書き込み
     pub fn write<'a>(&'a self, data: &'a [u8]) -> PipeWriteFuture<'a> {
-        PipeWriteFuture {
-            writer: self,
-            data,
-        }
+        PipeWriteFuture { writer: self, data }
     }
 
     /// 同期書き込み (ブロッキング)
@@ -465,7 +461,7 @@ impl PipeWriter {
 
         let mut buffer = self.inner.buffer.lock();
         let written = buffer.write(data);
-        
+
         if written > 0 {
             Ok(written)
         } else {
@@ -529,7 +525,7 @@ impl Pipe {
     /// オプション付きで新しいパイプを作成
     pub fn with_options(id: PipeId, buffer_size: PipeBufferSize, flags: PipeFlags) -> Self {
         let inner = Arc::new(PipeInner::new(id, buffer_size, flags));
-        
+
         Self {
             reader: PipeReader::new(inner.clone()),
             writer: PipeWriter::new(inner),
@@ -551,7 +547,7 @@ impl NamedPipe {
             PipeBufferSize::DEFAULT,
             PipeFlags::default(),
         ));
-        
+
         Self {
             inner,
             name: alloc::string::String::from(name),
@@ -618,15 +614,15 @@ impl PipeManager {
             PipeBufferSize::DEFAULT,
             PipeFlags::default(),
         ));
-        
+
         let mut pipes = self.named_pipes.lock();
         if pipes.contains_key(name) {
             return Err(PipeError::CreationFailed);
         }
-        
+
         pipes.insert(alloc::string::String::from(name), inner.clone());
         self.total_created.fetch_add(1, Ordering::Relaxed);
-        
+
         Ok(NamedPipe {
             inner,
             name: alloc::string::String::from(name),
@@ -694,14 +690,14 @@ mod tests {
     #[test]
     fn test_ring_buffer() {
         let mut buf = RingBuffer::new(16);
-        
+
         assert!(buf.is_empty());
         assert!(!buf.is_full());
-        
+
         let written = buf.write(b"Hello");
         assert_eq!(written, 5);
         assert_eq!(buf.len(), 5);
-        
+
         let mut read_buf = [0u8; 10];
         let read = buf.read(&mut read_buf);
         assert_eq!(read, 5);
@@ -711,10 +707,10 @@ mod tests {
     #[test]
     fn test_pipe_sync() {
         let pipe = pipe();
-        
+
         let written = pipe.writer.write_sync(b"Test data").unwrap();
         assert!(written > 0);
-        
+
         let mut buf = [0u8; 32];
         let read = pipe.reader.read_sync(&mut buf).unwrap();
         assert_eq!(read, written);

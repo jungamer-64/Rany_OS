@@ -3,17 +3,22 @@
 //! This module integrates all network protocol layers into
 //! a unified zero-copy network stack as specified in Section 6.2.
 
-use super::ethernet::{MacAddress, EtherType, EthernetProcessor, EthernetFrame, EthernetFrameMut, ProcessResult};
-use super::ipv4::{Ipv4Address, Ipv4Config, Ipv4Processor, Ipv4Packet, Ipv4PacketMut, IpProtocol, Ipv4ProcessResult};
-use super::arp::{ArpProcessor, ArpResult, ArpPacket};
-use super::icmp::{IcmpProcessor, IcmpResult, IcmpEchoBuilder};
-use super::udp::{UdpProcessor, UdpResult, UdpSocket};
-use super::tcp::TcpProcessor;
+use super::arp::{ArpPacket, ArpProcessor, ArpResult};
+use super::ethernet::{
+    EtherType, EthernetFrame, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult,
+};
+use super::icmp::{IcmpEchoBuilder, IcmpProcessor, IcmpResult};
+use super::ipv4::{
+    IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult,
+    Ipv4Processor,
+};
 use super::mempool::PacketPool;
+use super::tcp::TcpProcessor;
+use super::udp::{UdpProcessor, UdpResult, UdpSocket};
 
-use spin::Mutex;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use spin::Mutex;
 
 extern crate alloc;
 
@@ -24,7 +29,7 @@ pub const MAX_PACKET_SIZE: usize = 1518;
 pub const MTU: usize = 1500;
 
 /// Network interface configuration
-/// 
+///
 /// Note: 全フィールドが Copy 型のため、Copy を実装。
 /// clone() 呼び出しが単純なビットコピーに最適化される。
 #[derive(Debug, Clone, Copy)]
@@ -72,23 +77,23 @@ impl NetworkStats {
         self.rx_packets.fetch_add(1, Ordering::Relaxed);
         self.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
     }
-    
+
     /// Record transmitted packet
     pub fn record_tx(&self, len: usize) {
         self.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
     }
-    
+
     /// Record receive error
     pub fn record_rx_error(&self) {
         self.rx_errors.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// Record transmit error
     pub fn record_tx_error(&self) {
         self.tx_errors.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// Record dropped packet
     pub fn record_dropped(&self) {
         self.rx_dropped.fetch_add(1, Ordering::Relaxed);
@@ -126,14 +131,14 @@ pub struct NetworkStack {
 
 impl NetworkStack {
     /// Create a new network stack with configuration
-    /// 
+    ///
     /// # パフォーマンス注意
     /// Ipv4Config が Clone を実装しているが、内部データが Copy なら
     /// clone() はゼロコストでインライン化される
     pub fn new(config: NetworkConfig) -> Self {
         let mac = config.mac;
         let ip = config.ipv4.address;
-        
+
         // Note: ipv4.clone() は Ipv4Config が小さい構造体のため
         // アセンブリでは memcpy やレジスタコピーに展開される
         NetworkStack {
@@ -150,29 +155,29 @@ impl NetworkStack {
             current_time: AtomicU64::new(0),
         }
     }
-    
+
     /// Create with default configuration
     pub fn new_default() -> Self {
         Self::new(NetworkConfig::default())
     }
-    
+
     /// Set transmit callback
     pub fn set_transmit_fn(&self, f: TransmitFn) {
         *self.transmit_fn.lock() = Some(f);
     }
-    
+
     /// Update current time (call periodically)
     pub fn update_time(&self, ticks: u64) {
         self.current_time.store(ticks, Ordering::Release);
     }
-    
+
     /// Get current time
     pub fn current_time(&self) -> u64 {
         self.current_time.load(Ordering::Acquire)
     }
-    
+
     /// Get configuration (full clone - use sparingly)
-    /// 
+    ///
     /// Note: この関数は NetworkConfig 全体をクローンするため、
     /// 頻繁に呼び出す場合は個別のフィールドアクセサを使用すること。
     pub fn config(&self) -> NetworkConfig {
@@ -196,34 +201,34 @@ impl NetworkStack {
     pub fn ipv4_address(&self) -> Ipv4Address {
         self.config.lock().ipv4.address
     }
-    
+
     /// Update configuration
     pub fn set_config(&self, config: NetworkConfig) {
         let mut cfg = self.config.lock();
-        
+
         // Update all processors
         self.ethernet.lock().set_local_mac(config.mac);
         self.ipv4.lock().set_config(config.ipv4.clone());
         self.arp.lock().set_local(config.mac, config.ipv4.address);
-        
+
         *cfg = config;
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> &NetworkStats {
         &self.stats
     }
-    
+
     /// Process an incoming packet (main entry point)
     pub fn receive(&self, data: &[u8]) {
         let current_time = self.current_time();
-        
+
         // Process Ethernet frame
         let result = {
             let mut eth = self.ethernet.lock();
             eth.process(data)
         };
-        
+
         match result {
             ProcessResult::Ipv4(payload) => {
                 self.process_ipv4(payload, current_time);
@@ -242,17 +247,17 @@ impl NetworkStack {
                 self.stats.record_rx_error();
             }
         }
-        
+
         self.stats.record_rx(data.len());
     }
-    
+
     /// Process IPv4 packet
     fn process_ipv4(&self, data: &[u8], current_time: u64) {
         let result = {
             let mut ipv4 = self.ipv4.lock();
             ipv4.process(data)
         };
-        
+
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip) => {
                 self.process_icmp(payload, src_ip, current_time);
@@ -271,16 +276,19 @@ impl NetworkStack {
             }
         }
     }
-    
+
     /// Process ARP packet
     fn process_arp(&self, data: &[u8], current_time: u64) {
         let result = {
             let arp = self.arp.lock();
             arp.process(data, current_time)
         };
-        
+
         match result {
-            ArpResult::SendReply { target_mac, target_ip } => {
+            ArpResult::SendReply {
+                target_mac,
+                target_ip,
+            } => {
                 self.send_arp_reply(target_mac, target_ip);
             }
             ArpResult::CacheUpdated => {
@@ -289,42 +297,51 @@ impl NetworkStack {
             ArpResult::Ignored | ArpResult::Invalid => {}
         }
     }
-    
+
     /// Process ICMP packet
     fn process_icmp(&self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
         // clone() の代わりに専用アクセサを使用（Copy型の値のみ取得）
         if !self.icmp_echo_enabled() {
             return;
         }
-        
+
         let result = {
             let mut icmp = self.icmp.lock();
             icmp.process(data, src_ip)
         };
-        
+
         match result {
-            IcmpResult::SendEchoReply { src_ip, identifier, sequence, data_offset, data_len } => {
+            IcmpResult::SendEchoReply {
+                src_ip,
+                identifier,
+                sequence,
+                data_offset,
+                data_len,
+            } => {
                 // Get echo data
                 let echo_data = if data_offset + data_len <= data.len() {
                     &data[data_offset..data_offset + data_len]
                 } else {
                     &[]
                 };
-                
+
                 self.send_icmp_echo_reply(src_ip, identifier, sequence, echo_data, current_time);
             }
-            IcmpResult::EchoReplyReceived { identifier, sequence } => {
+            IcmpResult::EchoReplyReceived {
+                identifier,
+                sequence,
+            } => {
                 // Could notify waiting pingers
                 let _ = (identifier, sequence);
             }
             _ => {}
         }
     }
-    
+
     /// Process UDP packet
     fn process_udp(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
         let result = self.udp.process(data, src_ip, dst_ip);
-        
+
         match result {
             UdpResult::Delivered => {}
             UdpResult::NoSocket => {
@@ -336,42 +353,43 @@ impl NetworkStack {
             }
         }
     }
-    
+
     /// Process TCP packet
     fn process_tcp(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
         let mut tcp = self.tcp.lock();
         tcp.process(data, src_ip, dst_ip);
     }
-    
+
     /// Send an ARP reply
     fn send_arp_reply(&self, target_mac: MacAddress, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
         // clone() ではなく Copy 型の個別取得
         let mac = self.mac_address();
-        
+
         // Build Ethernet frame
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame.set_destination(target_mac)
-                 .set_source(mac)
-                 .set_ether_type(EtherType::Arp);
-            
+            frame
+                .set_destination(target_mac)
+                .set_source(mac)
+                .set_ether_type(EtherType::Arp);
+
             let payload = frame.payload_mut();
             if let Some(len) = self.arp.lock().build_reply(payload, target_mac, target_ip) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
-                
+
                 self.transmit(frame.as_bytes());
             }
         }
     }
-    
+
     /// Send an ARP request
     pub fn send_arp_request(&self, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
         // clone() ではなく Copy 型の個別取得
         let mac = self.mac_address();
         let current_time = self.current_time();
-        
+
         // Check if we already have a pending request
         {
             let arp = self.arp.lock();
@@ -379,26 +397,27 @@ impl NetworkStack {
                 return;
             }
         }
-        
+
         // Build Ethernet frame (broadcast)
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame.set_destination(MacAddress::BROADCAST)
-                 .set_source(mac)
-                 .set_ether_type(EtherType::Arp);
-            
+            frame
+                .set_destination(MacAddress::BROADCAST)
+                .set_source(mac)
+                .set_ether_type(EtherType::Arp);
+
             let payload = frame.payload_mut();
             if let Some(len) = self.arp.lock().build_request(payload, target_ip) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
-                
+
                 // Mark request as sent
                 self.arp.lock().request_sent(target_ip, current_time);
-                
+
                 self.transmit(frame.as_bytes());
             }
         }
     }
-    
+
     /// Send ICMP echo reply
     fn send_icmp_echo_reply(
         &self,
@@ -409,7 +428,7 @@ impl NetworkStack {
         current_time: u64,
     ) {
         let config = self.config.lock().clone();
-        
+
         // Resolve MAC address
         let dst_mac = if config.ipv4.is_local(&dst_ip) {
             // Destination is on local subnet, use ARP
@@ -431,82 +450,80 @@ impl NetworkStack {
                 }
             }
         };
-        
+
         let mut buffer = [0u8; MAX_PACKET_SIZE];
-        
+
         // Build Ethernet frame
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame.set_destination(dst_mac)
-                 .set_source(config.mac)
-                 .set_ether_type(EtherType::Ipv4);
-            
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
             let eth_payload = frame.payload_mut();
-            
+
             // Build IP packet
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet.init_header()
-                         .set_source(config.ipv4.address)
-                         .set_destination(dst_ip)
-                         .set_protocol(IpProtocol::Icmp)
-                         .set_ttl(64);
-                
+                ip_packet
+                    .init_header()
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Icmp)
+                    .set_ttl(64);
+
                 let ip_payload = ip_packet.payload_mut();
-                
+
                 // Build ICMP packet
                 if let Some(mut icmp) = IcmpEchoBuilder::new(ip_payload) {
                     icmp.build_reply(identifier, sequence);
                     icmp.write_data(echo_data);
                     let icmp_len = icmp.finalize();
-                    
+
                     ip_packet.finalize(icmp_len);
-                    
+
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
-                    
+
                     self.transmit(frame.as_bytes());
                 }
             }
         }
     }
-    
+
     /// Send a UDP packet
-    pub fn send_udp(
-        &self,
-        src_port: u16,
-        dst_ip: Ipv4Address,
-        dst_port: u16,
-        data: &[u8],
-    ) -> bool {
+    pub fn send_udp(&self, src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
         let config = self.config.lock().clone();
         let current_time = self.current_time();
-        
+
         // Resolve MAC address
         let dst_mac = self.resolve_mac(dst_ip, &config, current_time);
         let dst_mac = match dst_mac {
             Some(mac) => mac,
             None => return false,
         };
-        
+
         let mut buffer = [0u8; MAX_PACKET_SIZE];
-        
+
         // Build Ethernet frame
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame.set_destination(dst_mac)
-                 .set_source(config.mac)
-                 .set_ether_type(EtherType::Ipv4);
-            
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
             let eth_payload = frame.payload_mut();
-            
+
             // Build IP packet
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet.init_header()
-                         .set_source(config.ipv4.address)
-                         .set_destination(dst_ip)
-                         .set_protocol(IpProtocol::Udp)
-                         .set_ttl(64);
-                
+                ip_packet
+                    .init_header()
+                    .set_source(config.ipv4.address)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Udp)
+                    .set_ttl(64);
+
                 let ip_payload = ip_packet.payload_mut();
-                
+
                 // Build UDP packet
                 if let Some(udp_len) = super::udp::UdpProcessor::build_packet(
                     ip_payload,
@@ -517,18 +534,18 @@ impl NetworkStack {
                     data,
                 ) {
                     ip_packet.finalize(udp_len);
-                    
+
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
-                    
+
                     return self.transmit(frame.as_bytes());
                 }
             }
         }
-        
+
         false
     }
-    
+
     /// Resolve IP to MAC address
     fn resolve_mac(
         &self,
@@ -540,14 +557,14 @@ impl NetworkStack {
         if dst_ip.is_broadcast() {
             return Some(MacAddress::BROADCAST);
         }
-        
+
         // Determine next hop
         let next_hop = if config.ipv4.is_local(&dst_ip) {
             dst_ip
         } else {
             config.ipv4.gateway
         };
-        
+
         // Look up in ARP cache
         let arp = self.arp.lock();
         match arp.resolve(next_hop, current_time) {
@@ -560,70 +577,67 @@ impl NetworkStack {
             }
         }
     }
-    
+
     /// Send a raw TCP segment
     /// tcp_segment should already have the TCP header and data, with checksum calculated
-    pub fn send_tcp(
-        &self,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        tcp_segment: &[u8],
-    ) -> bool {
+    pub fn send_tcp(&self, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
         let config = self.config.lock().clone();
         let current_time = self.current_time();
-        
+
         // Resolve MAC address
         let dst_mac = self.resolve_mac(dst_ip, &config, current_time);
         let dst_mac = match dst_mac {
             Some(mac) => mac,
             None => return false, // ARP resolution pending
         };
-        
+
         let mut buffer = [0u8; MAX_PACKET_SIZE];
-        
+
         // Build Ethernet frame
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
-            frame.set_destination(dst_mac)
-                 .set_source(config.mac)
-                 .set_ether_type(EtherType::Ipv4);
-            
+            frame
+                .set_destination(dst_mac)
+                .set_source(config.mac)
+                .set_ether_type(EtherType::Ipv4);
+
             let eth_payload = frame.payload_mut();
-            
+
             // Build IP packet
             if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
-                ip_packet.init_header()
-                         .set_source(src_ip)
-                         .set_destination(dst_ip)
-                         .set_protocol(IpProtocol::Tcp)
-                         .set_ttl(64);
-                
+                ip_packet
+                    .init_header()
+                    .set_source(src_ip)
+                    .set_destination(dst_ip)
+                    .set_protocol(IpProtocol::Tcp)
+                    .set_ttl(64);
+
                 let ip_payload = ip_packet.payload_mut();
-                
+
                 // Copy TCP segment
                 if ip_payload.len() >= tcp_segment.len() {
                     ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
                     ip_packet.finalize(tcp_segment.len());
-                    
+
                     let ip_len = ip_packet.total_len();
                     frame.set_payload_len(ip_len);
-                    
+
                     return self.transmit(frame.as_bytes());
                 }
             }
         }
-        
+
         false
     }
-    
+
     /// Bind a UDP socket
     pub fn bind_udp(&self, port: u16) -> Option<UdpSocket> {
         self.udp.bind(port)
     }
-    
+
     /// Transmit a raw Ethernet frame
     pub fn transmit(&self, data: &[u8]) -> bool {
         let tx_fn = self.transmit_fn.lock();
-        
+
         if let Some(f) = *tx_fn {
             if f(data) {
                 self.stats.record_tx(data.len());
@@ -633,23 +647,26 @@ impl NetworkStack {
                 return false;
             }
         }
-        
+
         false
     }
-    
+
     /// Get ARP cache entries (for debugging)
     pub fn arp_cache(&self) -> Vec<(Ipv4Address, MacAddress)> {
-        self.arp.lock().cache().all_entries()
+        self.arp
+            .lock()
+            .cache()
+            .all_entries()
             .iter()
             .filter(|e| e.state == super::arp::ArpEntryState::Resolved)
             .map(|e| (e.ip, e.mac))
             .collect()
     }
-    
+
     /// Periodic maintenance (call from timer)
     pub fn periodic(&self) {
         let current_time = self.current_time();
-        
+
         // Expire old ARP entries
         self.arp.lock().cache().expire_old(current_time);
     }
@@ -707,13 +724,16 @@ pub fn bind_udp(port: u16) -> Option<UdpSocket> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_network_stack_creation() {
         let stack = NetworkStack::new_default();
         let config = stack.config();
-        
-        assert_eq!(config.mac, MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01));
+
+        assert_eq!(
+            config.mac,
+            MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01)
+        );
         assert!(config.icmp_echo_enabled);
     }
 }

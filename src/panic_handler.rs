@@ -4,9 +4,9 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use alloc::string::String;
 use core::panic::PanicInfo;
 use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::string::String;
 use spin::Mutex;
 
 /// パニック情報の記録
@@ -53,13 +53,13 @@ pub fn get_current_domain() -> u64 {
 pub fn handle_panic(info: &PanicInfo) -> ! {
     // 割り込みを無効化
     x86_64::instructions::interrupts::disable();
-    
+
     // パニック回数をインクリメント
     let count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     // 現在のドメインIDを取得
     let domain_id = get_current_domain();
-    
+
     // パニックメッセージを構築
     let message = {
         use core::fmt::Write;
@@ -72,14 +72,14 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
             s
         }
     };
-    
+
     // パニック場所を記録
     let location = info.location().map(|loc| PanicLocation {
         file: String::from(loc.file()),
         line: loc.line(),
         column: loc.column(),
     });
-    
+
     // パニック情報を保存
     let record = PanicRecord {
         message: message.clone(),
@@ -87,40 +87,49 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         location: location.clone(),
         tick: crate::task::timer::current_tick(),
     };
-    
+
     *LAST_PANIC.lock() = Some(record);
-    
+
     // エラー出力
     crate::log!("\n");
-    crate::log!("================================================================================\n");
+    crate::log!(
+        "================================================================================\n"
+    );
     crate::log!("                            !!! KERNEL PANIC !!!\n");
-    crate::log!("================================================================================\n");
+    crate::log!(
+        "================================================================================\n"
+    );
     crate::log!("Panic #{}\n", count + 1);
-    
+
     if let Some(loc) = &location {
         crate::log!("Location: {}:{}:{}\n", loc.file, loc.line, loc.column);
     }
-    
+
     crate::log!("Message: {}\n", message);
-    
+
     if domain_id > 0 {
         crate::log!("Domain ID: {}\n", domain_id);
-        
+
         // ドメイン固有のパニック処理を試みる
         if try_handle_domain_panic(domain_id, &message) {
             // ドメインのリソースを回収して続行を試みる
-            crate::log!("Domain {} terminated, attempting to continue...\n", domain_id);
-            
+            crate::log!(
+                "Domain {} terminated, attempting to continue...\n",
+                domain_id
+            );
+
             // ドメインをリセット
             set_current_domain(0);
-            
+
             // 注意: no_std環境では実際のアンワインドは困難
             // ここでは概念的な処理を示す
         }
     }
-    
-    crate::log!("================================================================================\n");
-    
+
+    crate::log!(
+        "================================================================================\n"
+    );
+
     // システム停止
     loop {
         x86_64::instructions::hlt();
@@ -131,15 +140,15 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 /// 設計書 8.1: 障害を起こしたドメインに関連するすべてのタスクとリソースを解放
 fn try_handle_domain_panic(domain_id: u64, _message: &str) -> bool {
     use crate::ipc::rref::DomainId;
-    
+
     let id = DomainId::new(domain_id);
-    
+
     // ドメインのリソースを回収
     crate::ipc::reclaim_domain_resources(id);
-    
+
     // 注意: 完全な実装ではdomainモジュールとの統合が必要
     // crate::domain::lifecycle::handle_domain_panic(id, String::from(message));
-    
+
     true
 }
 
@@ -163,17 +172,26 @@ pub struct PanicStats {
 // ============================================================================
 
 /// Double Fault発生時のハンドラ
-pub fn handle_double_fault(stack_frame: &x86_64::structures::idt::InterruptStackFrame, error_code: u64) -> ! {
+pub fn handle_double_fault(
+    stack_frame: &x86_64::structures::idt::InterruptStackFrame,
+    error_code: u64,
+) -> ! {
     x86_64::instructions::interrupts::disable();
-    
+
     crate::log!("\n");
-    crate::log!("================================================================================\n");
+    crate::log!(
+        "================================================================================\n"
+    );
     crate::log!("                         !!! DOUBLE FAULT !!!\n");
-    crate::log!("================================================================================\n");
+    crate::log!(
+        "================================================================================\n"
+    );
     crate::log!("Error Code: {}\n", error_code);
     crate::log!("Stack Frame:\n{:#?}\n", stack_frame);
-    crate::log!("================================================================================\n");
-    
+    crate::log!(
+        "================================================================================\n"
+    );
+
     loop {
         x86_64::instructions::hlt();
     }
@@ -197,9 +215,9 @@ pub fn setup_stack_guard(_stack_bottom: usize, _stack_size: usize) {
 /// 回復不能なエラー時の処理
 pub fn abort(message: &str) -> ! {
     x86_64::instructions::interrupts::disable();
-    
+
     crate::log!("\n!!! ABORT: {} !!!\n", message);
-    
+
     loop {
         x86_64::instructions::hlt();
     }

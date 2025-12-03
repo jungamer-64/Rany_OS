@@ -81,10 +81,10 @@ impl DeviceInfo {
     /// Create device info from PCI device
     pub fn from_pci_device(dev: &crate::io::pci::PciDevice) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        
+
         let device_type = Self::classify_pci_device(dev);
         let name = Self::generate_device_name(dev, device_type);
-        
+
         // Collect base addresses
         let mut base_addresses = Vec::new();
         for bar in &dev.bars {
@@ -92,7 +92,7 @@ impl DeviceInfo {
                 base_addresses.push(addr);
             }
         }
-        
+
         DeviceInfo {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             name,
@@ -109,26 +109,26 @@ impl DeviceInfo {
             base_addresses,
         }
     }
-    
+
     /// Classify PCI device type
     fn classify_pci_device(dev: &crate::io::pci::PciDevice) -> DeviceType {
         // Check for VirtIO devices first
         if dev.vendor_id == 0x1AF4 {
             return match dev.device_id {
-                0x1000 | 0x1041 => DeviceType::Network,  // VirtIO Network
-                0x1001 | 0x1042 => DeviceType::Storage,  // VirtIO Block
-                0x1050 => DeviceType::Display,           // VirtIO GPU
-                0x1052 => DeviceType::Input,             // VirtIO Input
+                0x1000 | 0x1041 => DeviceType::Network, // VirtIO Network
+                0x1001 | 0x1042 => DeviceType::Storage, // VirtIO Block
+                0x1050 => DeviceType::Display,          // VirtIO GPU
+                0x1052 => DeviceType::Input,            // VirtIO Input
                 _ => DeviceType::Unknown,
             };
         }
-        
+
         // Classify by PCI class code
         match dev.class {
-            0x01 => DeviceType::Storage,    // Mass Storage
-            0x02 => DeviceType::Network,    // Network
-            0x03 => DeviceType::Display,    // Display
-            0x06 => DeviceType::Bridge,     // Bridge
+            0x01 => DeviceType::Storage, // Mass Storage
+            0x02 => DeviceType::Network, // Network
+            0x03 => DeviceType::Display, // Display
+            0x06 => DeviceType::Bridge,  // Bridge
             0x0C => {
                 // Serial Bus
                 match dev.subclass {
@@ -139,7 +139,7 @@ impl DeviceInfo {
             _ => DeviceType::Unknown,
         }
     }
-    
+
     /// Generate device name
     fn generate_device_name(dev: &crate::io::pci::PciDevice, device_type: DeviceType) -> String {
         let type_str = match device_type {
@@ -153,8 +153,14 @@ impl DeviceInfo {
             DeviceType::Timer => "timer",
             DeviceType::Unknown => "dev",
         };
-        
-        alloc::format!("{}{:02x}{:02x}{}", type_str, dev.bus, dev.device, dev.function)
+
+        alloc::format!(
+            "{}{:02x}{:02x}{}",
+            type_str,
+            dev.bus,
+            dev.device,
+            dev.function
+        )
     }
 }
 
@@ -171,65 +177,67 @@ impl DeviceManager {
             devices: Vec::new(),
         }
     }
-    
+
     /// Register a new device
     pub fn register(&mut self, device: DeviceInfo) {
         self.devices.push(device);
     }
-    
+
     /// Get device by ID
     pub fn get(&self, id: u64) -> Option<&DeviceInfo> {
         self.devices.iter().find(|d| d.id == id)
     }
-    
+
     /// Get mutable device by ID
     pub fn get_mut(&mut self, id: u64) -> Option<&mut DeviceInfo> {
         self.devices.iter_mut().find(|d| d.id == id)
     }
-    
+
     /// Get all devices
     pub fn all(&self) -> &[DeviceInfo] {
         &self.devices
     }
-    
+
     /// Get devices by type
     pub fn by_type(&self, device_type: DeviceType) -> Vec<&DeviceInfo> {
-        self.devices.iter()
+        self.devices
+            .iter()
             .filter(|d| d.device_type == device_type)
             .collect()
     }
-    
+
     /// Get MSI-capable devices
     pub fn get_msi_capable(&self) -> Vec<&DeviceInfo> {
-        self.devices.iter()
+        self.devices
+            .iter()
             .filter(|d| d.msi_capable || d.msix_capable)
             .collect()
     }
-    
+
     /// Get device count
     pub fn device_count(&self) -> usize {
         self.devices.len()
     }
-    
+
     /// Update device status
     pub fn update_status(&mut self, id: u64, status: DeviceStatus) {
         if let Some(dev) = self.get_mut(id) {
             dev.status = status;
         }
     }
-    
+
     /// Assign interrupt vector
     pub fn assign_interrupt(&mut self, id: u64, vector: u8) {
         if let Some(dev) = self.get_mut(id) {
             dev.interrupt_vector = Some(vector);
         }
     }
-    
+
     /// Get storage devices
     pub fn storage_devices(&self) -> Vec<&DeviceInfo> {
         self.by_type(DeviceType::Storage)
     }
-    
+
     /// Get network devices
     pub fn network_devices(&self) -> Vec<&DeviceInfo> {
         self.by_type(DeviceType::Network)

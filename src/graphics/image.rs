@@ -15,11 +15,11 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::convert::TryInto;
 
-use super::{Color, PixelFormat, Framebuffer, Rect, Point};
+use super::{Color, Framebuffer, PixelFormat, Point, Rect};
 
 // ============================================================================
 // Math Helpers
@@ -81,7 +81,11 @@ impl Image {
             data.push(color.alpha);
         }
 
-        Self { data, width, height }
+        Self {
+            data,
+            width,
+            height,
+        }
     }
 
     /// 幅を取得
@@ -284,8 +288,14 @@ impl Image {
         for y in 0..self.height {
             for x in 0..self.width {
                 let color = self.get_pixel(x, y);
-                let gray = (color.red as u32 * 299 + color.green as u32 * 587 + color.blue as u32 * 114) / 1000;
-                result.set_pixel(x, y, Color::with_alpha(gray as u8, gray as u8, gray as u8, color.alpha));
+                let gray =
+                    (color.red as u32 * 299 + color.green as u32 * 587 + color.blue as u32 * 114)
+                        / 1000;
+                result.set_pixel(
+                    x,
+                    y,
+                    Color::with_alpha(gray as u8, gray as u8, gray as u8, color.alpha),
+                );
             }
         }
 
@@ -353,13 +363,9 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     }
 
     // ヘッダを読み取り
-    let file_header = unsafe {
-        *(data.as_ptr() as *const BmpFileHeader)
-    };
+    let file_header = unsafe { *(data.as_ptr() as *const BmpFileHeader) };
 
-    let info_header = unsafe {
-        *(data.as_ptr().add(14) as *const BmpInfoHeader)
-    };
+    let info_header = unsafe { *(data.as_ptr().add(14) as *const BmpInfoHeader) };
 
     let width = info_header.width.abs() as u32;
     let height = info_header.height.abs() as u32;
@@ -393,11 +399,8 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
                 for x in 0..width {
                     let idx = row_start + x as usize * 3;
                     if idx + 2 < pixel_data.len() {
-                        let color = Color::new(
-                            pixel_data[idx + 2],
-                            pixel_data[idx + 1],
-                            pixel_data[idx],
-                        );
+                        let color =
+                            Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
                         image.set_pixel(x, y, color);
                     }
                 }
@@ -494,14 +497,16 @@ pub fn decode_tga(data: &[u8]) -> ImageResult<Image> {
     }
 
     let top_down = (descriptor & 0x20) != 0;
-    let pixel_data_offset = 18 + id_length + if color_map_type != 0 { 
-        // カラーマップをスキップ
-        let cm_length = u16::from_le_bytes([data[5], data[6]]) as usize;
-        let cm_entry_size = data[7] as usize;
-        cm_length * ((cm_entry_size + 7) / 8)
-    } else { 
-        0 
-    };
+    let pixel_data_offset = 18
+        + id_length
+        + if color_map_type != 0 {
+            // カラーマップをスキップ
+            let cm_length = u16::from_le_bytes([data[5], data[6]]) as usize;
+            let cm_entry_size = data[7] as usize;
+            cm_length * ((cm_entry_size + 7) / 8)
+        } else {
+            0
+        };
 
     let mut image = Image::new(width, height);
     let bytes_per_pixel = bpp as usize / 8;
@@ -661,9 +666,7 @@ pub fn decode_ico(data: &[u8]) -> ImageResult<Vec<Image>> {
             break;
         }
 
-        let entry = unsafe {
-            *(data.as_ptr().add(entry_offset) as *const IcoDirEntry)
-        };
+        let entry = unsafe { *(data.as_ptr().add(entry_offset) as *const IcoDirEntry) };
 
         let image_offset = entry.image_offset as usize;
         let image_size = entry.image_size as usize;
@@ -701,8 +704,16 @@ fn decode_ico_bmp(data: &[u8], width_hint: u8, height_hint: u8) -> ImageResult<I
 
     let header = unsafe { *(data.as_ptr() as *const BmpInfoHeader) };
 
-    let width = if width_hint == 0 { 256 } else { width_hint as u32 };
-    let height = if height_hint == 0 { 256 } else { height_hint as u32 };
+    let width = if width_hint == 0 {
+        256
+    } else {
+        width_hint as u32
+    };
+    let height = if height_hint == 0 {
+        256
+    } else {
+        height_hint as u32
+    };
     let bpp = header.bpp;
 
     let mut image = Image::new(width, height);
@@ -859,7 +870,11 @@ impl IconGenerator {
                     } else {
                         color.alpha
                     };
-                    image.set_pixel(x as u32, y as u32, Color::with_alpha(color.red, color.green, color.blue, alpha));
+                    image.set_pixel(
+                        x as u32,
+                        y as u32,
+                        Color::with_alpha(color.red, color.green, color.blue, alpha),
+                    );
                 }
             }
         }

@@ -24,13 +24,13 @@
 //! - 非同期ファイル操作
 //! - マウントポイント管理
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 use spin::RwLock;
 
 // ============================================================================
@@ -125,22 +125,22 @@ impl FileMode {
     pub const S_IWOTH: u16 = 0o002;
     /// Other execute permission
     pub const S_IXOTH: u16 = 0o001;
-    
+
     /// Default file mode (rw-r--r--)
     pub const DEFAULT_FILE: FileMode = FileMode(0o644);
     /// Default directory mode (rwxr-xr-x)
     pub const DEFAULT_DIR: FileMode = FileMode(0o755);
-    
+
     /// Check if owner can read
     pub fn owner_read(&self) -> bool {
         self.0 & Self::S_IRUSR != 0
     }
-    
+
     /// Check if owner can write
     pub fn owner_write(&self) -> bool {
         self.0 & Self::S_IWUSR != 0
     }
-    
+
     /// Check if owner can execute
     pub fn owner_execute(&self) -> bool {
         self.0 & Self::S_IXUSR != 0
@@ -178,27 +178,27 @@ impl OpenFlags {
     pub const O_SYNC: u32 = 0o4010000;
     /// Directory
     pub const O_DIRECTORY: u32 = 0o200000;
-    
+
     /// Check if read access requested
     pub fn can_read(&self) -> bool {
         self.0 & 3 != Self::O_WRONLY
     }
-    
+
     /// Check if write access requested
     pub fn can_write(&self) -> bool {
         self.0 & 3 != Self::O_RDONLY
     }
-    
+
     /// Check if create flag set
     pub fn create(&self) -> bool {
         self.0 & Self::O_CREAT != 0
     }
-    
+
     /// Check if truncate flag set
     pub fn truncate(&self) -> bool {
         self.0 & Self::O_TRUNC != 0
     }
-    
+
     /// Check if append flag set
     pub fn append(&self) -> bool {
         self.0 & Self::O_APPEND != 0
@@ -293,49 +293,49 @@ pub struct DirEntry {
 pub trait Inode: Send + Sync {
     /// Get file attributes
     fn getattr(&self) -> FsResult<FileAttr>;
-    
+
     /// Set file attributes
     fn setattr(&self, attr: &FileAttr) -> FsResult<()>;
-    
+
     /// Look up a name in this directory
     fn lookup(&self, name: &str) -> FsResult<Arc<dyn Inode>>;
-    
+
     /// Read directory entries
     fn readdir(&self, offset: u64) -> FsResult<Vec<DirEntry>>;
-    
+
     /// Create a file in this directory
     fn create(&self, name: &str, mode: FileMode, flags: OpenFlags) -> FsResult<Arc<dyn Inode>>;
-    
+
     /// Create a directory
     fn mkdir(&self, name: &str, mode: FileMode) -> FsResult<Arc<dyn Inode>>;
-    
+
     /// Remove a file
     fn unlink(&self, name: &str) -> FsResult<()>;
-    
+
     /// Remove a directory
     fn rmdir(&self, name: &str) -> FsResult<()>;
-    
+
     /// Rename a file
     fn rename(&self, old_name: &str, new_dir: &Arc<dyn Inode>, new_name: &str) -> FsResult<()>;
-    
+
     /// Create a hard link
     fn link(&self, name: &str, inode: &Arc<dyn Inode>) -> FsResult<()>;
-    
+
     /// Create a symbolic link
     fn symlink(&self, name: &str, target: &str) -> FsResult<Arc<dyn Inode>>;
-    
+
     /// Read symbolic link target
     fn readlink(&self) -> FsResult<String>;
-    
+
     /// Read data from file
     fn read(&self, offset: u64, buf: &mut [u8]) -> FsResult<usize>;
-    
+
     /// Write data to file
     fn write(&self, offset: u64, buf: &[u8]) -> FsResult<usize>;
-    
+
     /// Truncate file to specified length
     fn truncate(&self, size: u64) -> FsResult<()>;
-    
+
     /// Sync file data to storage
     fn fsync(&self, datasync: bool) -> FsResult<()>;
 }
@@ -348,16 +348,16 @@ pub trait Inode: Send + Sync {
 pub trait FileSystem: Send + Sync {
     /// Get filesystem name
     fn name(&self) -> &str;
-    
+
     /// Get root inode
     fn root(&self) -> FsResult<Arc<dyn Inode>>;
-    
+
     /// Get filesystem statistics
     fn statfs(&self) -> FsResult<FsStats>;
-    
+
     /// Sync all pending writes to storage
     fn sync(&self) -> FsResult<()>;
-    
+
     /// Unmount filesystem
     fn unmount(&self) -> FsResult<()>;
 }
@@ -406,34 +406,34 @@ impl FileHandle {
             position: 0,
         }
     }
-    
+
     /// Read data from file
     pub fn read(&mut self, buf: &mut [u8]) -> FsResult<usize> {
         if !self.flags.can_read() {
             return Err(FsError::PermissionDenied);
         }
-        
+
         let n = self.inode.read(self.position, buf)?;
         self.position += n as u64;
         Ok(n)
     }
-    
+
     /// Write data to file
     pub fn write(&mut self, buf: &[u8]) -> FsResult<usize> {
         if !self.flags.can_write() {
             return Err(FsError::PermissionDenied);
         }
-        
+
         if self.flags.append() {
             let attr = self.inode.getattr()?;
             self.position = attr.size;
         }
-        
+
         let n = self.inode.write(self.position, buf)?;
         self.position += n as u64;
         Ok(n)
     }
-    
+
     /// Seek to position
     pub fn seek(&mut self, pos: SeekFrom) -> FsResult<u64> {
         let new_pos = match pos {
@@ -441,7 +441,8 @@ impl FileHandle {
             SeekFrom::End(offset) => {
                 let attr = self.inode.getattr()?;
                 if offset < 0 {
-                    attr.size.checked_sub((-offset) as u64)
+                    attr.size
+                        .checked_sub((-offset) as u64)
                         .ok_or(FsError::InvalidArgument)?
                 } else {
                     attr.size + offset as u64
@@ -449,28 +450,29 @@ impl FileHandle {
             }
             SeekFrom::Current(offset) => {
                 if offset < 0 {
-                    self.position.checked_sub((-offset) as u64)
+                    self.position
+                        .checked_sub((-offset) as u64)
                         .ok_or(FsError::InvalidArgument)?
                 } else {
                     self.position + offset as u64
                 }
             }
         };
-        
+
         self.position = new_pos;
         Ok(new_pos)
     }
-    
+
     /// Get file attributes
     pub fn getattr(&self) -> FsResult<FileAttr> {
         self.inode.getattr()
     }
-    
+
     /// Sync file to storage
     pub fn fsync(&self, datasync: bool) -> FsResult<()> {
         self.inode.fsync(datasync)
     }
-    
+
     /// Get current position
     pub fn position(&self) -> u64 {
         self.position
@@ -503,14 +505,14 @@ impl<'a> AsyncReadFuture<'a> {
 
 impl<'a> Future for AsyncReadFuture<'a> {
     type Output = FsResult<usize>;
-    
+
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        
+
         if this.completed {
             return Poll::Ready(Err(FsError::InvalidArgument));
         }
-        
+
         // For now, synchronous implementation
         // Real implementation would use async block device
         this.completed = true;
@@ -542,14 +544,14 @@ impl<'a> AsyncWriteFuture<'a> {
 
 impl<'a> Future for AsyncWriteFuture<'a> {
     type Output = FsResult<usize>;
-    
+
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = unsafe { self.get_unchecked_mut() };
-        
+
         if this.completed {
             return Poll::Ready(Err(FsError::InvalidArgument));
         }
-        
+
         this.completed = true;
         let position = this.position;
         let result = this.inode.write(position, this.buf);
@@ -575,46 +577,46 @@ impl PathResolver {
             cwd: root,
         }
     }
-    
+
     /// Resolve a path to an inode
     pub fn resolve(&self, path: &str) -> FsResult<Arc<dyn Inode>> {
         if path.is_empty() {
             return Err(FsError::InvalidPath);
         }
-        
+
         let (start, components) = if path.starts_with('/') {
             (self.root.clone(), path[1..].split('/'))
         } else {
             (self.cwd.clone(), path.split('/'))
         };
-        
+
         let mut current = start;
-        
+
         for component in components {
             if component.is_empty() || component == "." {
                 continue;
             }
-            
+
             if component == ".." {
                 // TODO: Handle parent directory
                 // For now, stay at current
                 continue;
             }
-            
+
             current = current.lookup(component)?;
         }
-        
+
         Ok(current)
     }
-    
+
     /// Resolve parent directory and filename
     pub fn resolve_parent(&self, path: &str) -> FsResult<(Arc<dyn Inode>, String)> {
         if path.is_empty() {
             return Err(FsError::InvalidPath);
         }
-        
+
         let path = path.trim_end_matches('/');
-        
+
         if let Some(pos) = path.rfind('/') {
             let parent_path = if pos == 0 { "/" } else { &path[..pos] };
             let name = &path[pos + 1..];
@@ -624,16 +626,16 @@ impl PathResolver {
             Ok((self.cwd.clone(), path.into()))
         }
     }
-    
+
     /// Set current working directory
     pub fn set_cwd(&mut self, path: &str) -> FsResult<()> {
         let inode = self.resolve(path)?;
         let attr = inode.getattr()?;
-        
+
         if attr.file_type != FileType::Directory {
             return Err(FsError::NotDirectory);
         }
-        
+
         self.cwd = inode;
         Ok(())
     }
@@ -663,28 +665,28 @@ impl MountTable {
             mounts: RwLock::new(Vec::new()),
         }
     }
-    
+
     /// Mount a filesystem
     pub fn mount(&self, path: &str, fs: Arc<dyn FileSystem>) -> FsResult<()> {
         let mut mounts = self.mounts.write();
-        
+
         // Check if already mounted
         if mounts.iter().any(|m| m.path == path) {
             return Err(FsError::AlreadyExists);
         }
-        
+
         mounts.push(MountEntry {
             path: path.into(),
             fs,
         });
-        
+
         Ok(())
     }
-    
+
     /// Unmount a filesystem
     pub fn unmount(&self, path: &str) -> FsResult<()> {
         let mut mounts = self.mounts.write();
-        
+
         if let Some(pos) = mounts.iter().position(|m| m.path == path) {
             let entry = mounts.remove(pos);
             entry.fs.unmount()?;
@@ -693,11 +695,11 @@ impl MountTable {
             Err(FsError::NotFound)
         }
     }
-    
+
     /// Find filesystem for a path
     pub fn find(&self, path: &str) -> Option<Arc<dyn FileSystem>> {
         let mounts = self.mounts.read();
-        
+
         // Find longest matching mount point
         mounts
             .iter()
@@ -722,7 +724,7 @@ pub fn mount_table() -> &'static MountTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_file_mode() {
         let mode = FileMode::DEFAULT_FILE;
@@ -730,7 +732,7 @@ mod tests {
         assert!(mode.owner_write());
         assert!(!mode.owner_execute());
     }
-    
+
     #[test]
     fn test_open_flags() {
         let flags = OpenFlags(OpenFlags::O_RDWR | OpenFlags::O_CREAT);

@@ -30,7 +30,7 @@ impl WindowScaleOption {
             rcv_scale: 0,
         }
     }
-    
+
     /// 有効状態で作成
     pub const fn with_scale(rcv_scale: u8) -> Self {
         let scale = if rcv_scale > MAX_WINDOW_SCALE {
@@ -44,19 +44,19 @@ impl WindowScaleOption {
             rcv_scale: scale,
         }
     }
-    
+
     /// デフォルト設定で有効化
     pub const fn default_enabled() -> Self {
         Self::with_scale(DEFAULT_WINDOW_SCALE)
     }
-    
+
     /// 相手のスケール値を設定（SYN-ACK受信時）
     pub fn set_snd_scale(&mut self, scale: u8) {
         if self.enabled {
             self.snd_scale = scale.min(MAX_WINDOW_SCALE);
         }
     }
-    
+
     /// 実際の送信ウィンドウサイズを計算
     #[inline]
     pub fn scale_snd_window(&self, advertised_window: u16) -> u32 {
@@ -66,7 +66,7 @@ impl WindowScaleOption {
             advertised_window as u32
         }
     }
-    
+
     /// 実際の受信ウィンドウサイズを計算
     #[inline]
     pub fn scale_rcv_window(&self, advertised_window: u16) -> u32 {
@@ -76,7 +76,7 @@ impl WindowScaleOption {
             advertised_window as u32
         }
     }
-    
+
     /// 広告するウィンドウ値（16bit）を計算
     /// 実際のバッファサイズからスケールダウン
     #[inline]
@@ -120,13 +120,13 @@ impl<'a> TcpOptionParser<'a> {
             pos: 0,
         }
     }
-    
+
     /// Window Scale オプションを探す
     pub fn find_window_scale(&mut self) -> Option<u8> {
         self.pos = 0;
         while self.pos < self.data.len() {
             let kind = self.data[self.pos];
-            
+
             match kind {
                 tcp_option_kind::END_OF_OPTIONS => break,
                 tcp_option_kind::NOP => {
@@ -155,13 +155,13 @@ impl<'a> TcpOptionParser<'a> {
         }
         None
     }
-    
+
     /// MSS オプションを探す
     pub fn find_mss(&mut self) -> Option<u16> {
         self.pos = 0;
         while self.pos < self.data.len() {
             let kind = self.data[self.pos];
-            
+
             match kind {
                 tcp_option_kind::END_OF_OPTIONS => break,
                 tcp_option_kind::NOP => {
@@ -170,10 +170,8 @@ impl<'a> TcpOptionParser<'a> {
                 tcp_option_kind::MSS => {
                     // Kind(1) + Length(1) + MSS(2) = 4 bytes
                     if self.pos + 4 <= self.data.len() && self.data[self.pos + 1] == 4 {
-                        let mss = u16::from_be_bytes([
-                            self.data[self.pos + 2],
-                            self.data[self.pos + 3],
-                        ]);
+                        let mss =
+                            u16::from_be_bytes([self.data[self.pos + 2], self.data[self.pos + 3]]);
                         return Some(mss);
                     }
                     self.pos += 4;
@@ -209,7 +207,7 @@ impl TcpOptionBuilder {
             len: 0,
         }
     }
-    
+
     /// MSS オプション追加
     pub fn add_mss(&mut self, mss: u16) -> &mut Self {
         if self.len + 4 <= 40 {
@@ -220,7 +218,7 @@ impl TcpOptionBuilder {
         }
         self
     }
-    
+
     /// Window Scale オプション追加
     pub fn add_window_scale(&mut self, scale: u8) -> &mut Self {
         // NOP + WSopt for 4-byte alignment
@@ -233,7 +231,7 @@ impl TcpOptionBuilder {
         }
         self
     }
-    
+
     /// SACK Permitted オプション追加
     pub fn add_sack_permitted(&mut self) -> &mut Self {
         if self.len + 2 <= 40 {
@@ -243,7 +241,7 @@ impl TcpOptionBuilder {
         }
         self
     }
-    
+
     /// End of Options + パディング
     pub fn finalize(&mut self) -> &[u8] {
         // 4バイト境界にパディング
@@ -253,12 +251,12 @@ impl TcpOptionBuilder {
         }
         &self.buffer[..self.len]
     }
-    
+
     /// 現在の長さ
     pub fn len(&self) -> usize {
         self.len
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
@@ -277,7 +275,7 @@ impl Default for TcpOptionBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_window_scale_disabled() {
         let ws = WindowScaleOption::new();
@@ -285,29 +283,29 @@ mod tests {
         assert_eq!(ws.scale_snd_window(65535), 65535);
         assert_eq!(ws.scale_rcv_window(65535), 65535);
     }
-    
+
     #[test]
     fn test_window_scale_enabled() {
         let mut ws = WindowScaleOption::with_scale(7);
         assert!(ws.enabled);
         ws.set_snd_scale(7);
-        
+
         // 128倍にスケール
         assert_eq!(ws.scale_snd_window(1000), 128000);
         assert_eq!(ws.scale_rcv_window(1000), 128000);
     }
-    
+
     #[test]
     fn test_advertised_window() {
         let ws = WindowScaleOption::with_scale(7);
-        
+
         // 128で割ってスケールダウン
         assert_eq!(ws.advertised_window(128000), 1000);
-        
+
         // オーバーフロー防止
         assert_eq!(ws.advertised_window(u32::MAX), 65535);
     }
-    
+
     #[test]
     fn test_option_builder() {
         let mut builder = TcpOptionBuilder::new();
@@ -315,21 +313,21 @@ mod tests {
             .add_mss(1460)
             .add_window_scale(7)
             .add_sack_permitted();
-        
+
         let options = builder.finalize();
         assert!(!options.is_empty());
         assert_eq!(options.len() % 4, 0); // 4バイト境界
     }
-    
+
     #[test]
     fn test_option_parser() {
         // MSS=1460, WSopt=7 のオプション
         let options = [
-            2, 4, 0x05, 0xB4,  // MSS = 1460
-            1,                  // NOP
-            3, 3, 7,           // Window Scale = 7
+            2, 4, 0x05, 0xB4, // MSS = 1460
+            1,    // NOP
+            3, 3, 7, // Window Scale = 7
         ];
-        
+
         let mut parser = TcpOptionParser::new(&options);
         assert_eq!(parser.find_mss(), Some(1460));
         assert_eq!(parser.find_window_scale(), Some(7));

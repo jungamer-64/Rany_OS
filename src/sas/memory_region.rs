@@ -25,22 +25,22 @@ impl MemoryRegion {
             permissions,
         }
     }
-    
+
     /// 終端アドレスを取得
     pub const fn end(&self) -> usize {
         self.start + self.size
     }
-    
+
     /// アドレスが領域内かチェック
     pub fn contains(&self, addr: usize) -> bool {
         addr >= self.start && addr < self.end()
     }
-    
+
     /// 範囲が領域内かチェック
     pub fn contains_range(&self, start: usize, size: usize) -> bool {
         start >= self.start && start + size <= self.end()
     }
-    
+
     /// 領域が重なるかチェック
     pub fn overlaps(&self, other: &MemoryRegion) -> bool {
         self.start < other.end() && other.start < self.end()
@@ -63,7 +63,7 @@ bitflags! {
         const SHARED = 1 << 4;
         /// DMA対象領域
         const DMA = 1 << 5;
-        
+
         /// 読み書き
         const RW = Self::READ.bits() | Self::WRITE.bits();
         /// 読み取り実行

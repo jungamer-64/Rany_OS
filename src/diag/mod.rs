@@ -16,11 +16,11 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicU32, AtomicBool, Ordering};
-use alloc::vec::Vec;
-use alloc::string::String;
-use alloc::collections::BTreeMap;
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -42,7 +42,7 @@ pub fn rdtsc() -> u64 {
         );
         ((hi as u64) << 32) | (lo as u64)
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     {
         0
@@ -66,7 +66,7 @@ pub fn rdtscp() -> (u64, u32) {
         );
         (((hi as u64) << 32) | (lo as u64), aux)
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     {
         (0, 0)
@@ -742,7 +742,7 @@ mod tests {
     #[test]
     fn test_histogram() {
         let hist = Histogram::new();
-        
+
         for i in 1..=100 {
             hist.record(i);
         }
@@ -756,7 +756,7 @@ mod tests {
     #[test]
     fn test_histogram_percentile() {
         let hist = Histogram::new();
-        
+
         for i in 1..=100 {
             hist.record(i);
         }
@@ -771,7 +771,7 @@ mod tests {
         let buf = TraceBuffer::new(100);
         buf.enable();
         buf.record(TracePointId(1), 0, 42);
-        
+
         let events = buf.drain();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, 42);
@@ -783,7 +783,7 @@ mod tests {
         let result = BenchmarkRunner::run("test", 1000, || {
             counter += 1;
         });
-        
+
         assert_eq!(result.iterations, 1000);
         assert!(result.cycles_per_op > 0);
     }

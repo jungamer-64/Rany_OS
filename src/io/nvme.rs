@@ -17,13 +17,13 @@
 
 #![allow(dead_code)]
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
 // ============================================================================
@@ -58,22 +58,22 @@ pub mod regs {
 
 /// Controller Configuration bits
 pub mod cc_bits {
-    pub const CC_EN: u32 = 1 << 0;           // Enable
-    pub const CC_CSS_NVM: u32 = 0 << 4;      // NVM command set
-    pub const CC_MPS_SHIFT: u32 = 7;         // Memory page size shift
-    pub const CC_AMS_RR: u32 = 0 << 11;      // Round robin arbitration
-    pub const CC_SHN_NONE: u32 = 0 << 14;    // No shutdown notification
-    pub const CC_IOSQES: u32 = 6 << 16;      // I/O SQ entry size (64 bytes)
-    pub const CC_IOCQES: u32 = 4 << 20;      // I/O CQ entry size (16 bytes)
+    pub const CC_EN: u32 = 1 << 0; // Enable
+    pub const CC_CSS_NVM: u32 = 0 << 4; // NVM command set
+    pub const CC_MPS_SHIFT: u32 = 7; // Memory page size shift
+    pub const CC_AMS_RR: u32 = 0 << 11; // Round robin arbitration
+    pub const CC_SHN_NONE: u32 = 0 << 14; // No shutdown notification
+    pub const CC_IOSQES: u32 = 6 << 16; // I/O SQ entry size (64 bytes)
+    pub const CC_IOCQES: u32 = 4 << 20; // I/O CQ entry size (16 bytes)
 }
 
 /// Controller Status bits
 pub mod csts_bits {
-    pub const CSTS_RDY: u32 = 1 << 0;        // Ready
-    pub const CSTS_CFS: u32 = 1 << 1;        // Controller fatal status
+    pub const CSTS_RDY: u32 = 1 << 0; // Ready
+    pub const CSTS_CFS: u32 = 1 << 1; // Controller fatal status
     pub const CSTS_SHST_NORMAL: u32 = 0 << 2; // Normal operation
-    pub const CSTS_NSSRO: u32 = 1 << 4;      // NVM subsystem reset occurred
-    pub const CSTS_PP: u32 = 1 << 5;         // Processing paused
+    pub const CSTS_NSSRO: u32 = 1 << 4; // NVM subsystem reset occurred
+    pub const CSTS_PP: u32 = 1 << 5; // Processing paused
 }
 
 /// NVMe Admin opcodes
@@ -189,7 +189,7 @@ impl NvmeCommand {
             ..Default::default()
         }
     }
-    
+
     /// Create an Identify command
     pub fn identify(cid: u16, nsid: u32, cns: u8, prp1: u64) -> Self {
         let mut cmd = Self::new(AdminOpcode::Identify as u8, cid);
@@ -198,7 +198,7 @@ impl NvmeCommand {
         cmd.cdw10 = cns as u32;
         cmd
     }
-    
+
     /// Create a Read command
     pub fn read(cid: u16, nsid: u32, slba: u64, nlb: u16, prp1: u64, prp2: u64) -> Self {
         let mut cmd = Self::new(IoOpcode::Read as u8, cid);
@@ -210,7 +210,7 @@ impl NvmeCommand {
         cmd.cdw12 = nlb as u32;
         cmd
     }
-    
+
     /// Create a Write command
     pub fn write(cid: u16, nsid: u32, slba: u64, nlb: u16, prp1: u64, prp2: u64) -> Self {
         let mut cmd = Self::new(IoOpcode::Write as u8, cid);
@@ -222,14 +222,14 @@ impl NvmeCommand {
         cmd.cdw12 = nlb as u32;
         cmd
     }
-    
+
     /// Create a Flush command
     pub fn flush(cid: u16, nsid: u32) -> Self {
         let mut cmd = Self::new(IoOpcode::Flush as u8, cid);
         cmd.nsid = nsid;
         cmd
     }
-    
+
     /// Create a Create I/O Submission Queue command
     pub fn create_io_sq(cid: u16, sqid: u16, qsize: u16, prp1: u64, cqid: u16) -> Self {
         let mut cmd = Self::new(AdminOpcode::CreateIOSQ as u8, cid);
@@ -238,7 +238,7 @@ impl NvmeCommand {
         cmd.cdw11 = (cqid as u32) << 16 | 1; // Physically contiguous
         cmd
     }
-    
+
     /// Create a Create I/O Completion Queue command
     pub fn create_io_cq(cid: u16, cqid: u16, qsize: u16, prp1: u64, iv: u16) -> Self {
         let mut cmd = Self::new(AdminOpcode::CreateIOCQ as u8, cid);
@@ -272,12 +272,12 @@ impl NvmeCompletion {
     pub fn phase(&self) -> bool {
         (self.status & 1) != 0
     }
-    
+
     /// Get status code
     pub fn get_status(&self) -> NvmeStatus {
         NvmeStatus::from(self.status)
     }
-    
+
     /// Check if successful
     pub fn is_success(&self) -> bool {
         (self.status >> 1) & 0xFF == 0
@@ -314,7 +314,7 @@ unsafe impl Sync for SubmissionQueue {}
 
 impl SubmissionQueue {
     /// Create a new submission queue
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure memory is properly allocated and aligned
     pub unsafe fn new(entries: *mut NvmeCommand, depth: u16, doorbell: *mut u32) -> Self {
@@ -326,7 +326,7 @@ impl SubmissionQueue {
             free_ids: AtomicU64::new((1u64 << depth.min(64)) - 1),
         }
     }
-    
+
     /// Allocate a command ID
     pub fn alloc_cid(&self) -> Option<u16> {
         loop {
@@ -334,55 +334,53 @@ impl SubmissionQueue {
             if bitmap == 0 {
                 return None;
             }
-            
+
             let idx = bitmap.trailing_zeros() as u16;
             let new_bitmap = bitmap & !(1u64 << idx);
-            
-            if self.free_ids.compare_exchange(
-                bitmap,
-                new_bitmap,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ).is_ok() {
+
+            if self
+                .free_ids
+                .compare_exchange(bitmap, new_bitmap, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 return Some(idx);
             }
         }
     }
-    
+
     /// Free a command ID
     pub fn free_cid(&self, cid: u16) {
         loop {
             let bitmap = self.free_ids.load(Ordering::Acquire);
             let new_bitmap = bitmap | (1u64 << cid);
-            
-            if self.free_ids.compare_exchange(
-                bitmap,
-                new_bitmap,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ).is_ok() {
+
+            if self
+                .free_ids
+                .compare_exchange(bitmap, new_bitmap, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 return;
             }
         }
     }
-    
+
     /// Submit a command
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure command is valid
     pub unsafe fn submit(&self, cmd: NvmeCommand) {
         let tail = self.tail.load(Ordering::Acquire);
-        
+
         // Write command to queue
         core::ptr::write_volatile(self.entries.add(tail as usize), cmd);
-        
+
         // Memory barrier
         core::sync::atomic::fence(Ordering::Release);
-        
+
         // Update tail
         let new_tail = (tail + 1) % self.depth;
         self.tail.store(new_tail, Ordering::Release);
-        
+
         // Ring doorbell
         core::ptr::write_volatile(self.doorbell, new_tail as u32);
     }
@@ -409,13 +407,13 @@ unsafe impl Sync for CompletionQueue {}
 
 impl CompletionQueue {
     /// Create a new completion queue
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure memory is properly allocated
     pub unsafe fn new(entries: *mut NvmeCompletion, depth: u16, doorbell: *mut u32) -> Self {
         let mut wakers = Vec::with_capacity(depth as usize);
         wakers.resize(depth as usize, None);
-        
+
         Self {
             entries,
             depth,
@@ -425,7 +423,7 @@ impl CompletionQueue {
             wakers: Mutex::new(wakers),
         }
     }
-    
+
     /// Register a waker for a command ID
     pub fn register_waker(&self, cid: u16, waker: Waker) {
         let mut wakers = self.wakers.lock();
@@ -433,45 +431,45 @@ impl CompletionQueue {
             *slot = Some(waker);
         }
     }
-    
+
     /// Poll for completions
     pub fn poll(&self) -> Option<NvmeCompletion> {
         let head = self.head.load(Ordering::Acquire);
         let expected_phase = self.phase.load(Ordering::Acquire);
-        
+
         // Memory barrier
         core::sync::atomic::fence(Ordering::Acquire);
-        
+
         let cqe = unsafe { *self.entries.add(head as usize) };
-        
+
         if cqe.phase() != expected_phase {
             return None;
         }
-        
+
         // Update head
         let new_head = (head + 1) % self.depth;
         self.head.store(new_head, Ordering::Release);
-        
+
         // Toggle phase at wrap
         if new_head == 0 {
             self.phase.store(!expected_phase, Ordering::Release);
         }
-        
+
         // Ring doorbell
         unsafe {
             core::ptr::write_volatile(self.doorbell, new_head as u32);
         }
-        
+
         // Wake pending future
         let mut wakers = self.wakers.lock();
         if let Some(waker) = wakers.get_mut(cqe.cid as usize).and_then(|w| w.take()) {
             drop(wakers);
             waker.wake();
         }
-        
+
         Some(cqe)
     }
-    
+
     /// Process all pending completions
     pub fn process_all(&self) -> usize {
         let mut count = 0;
@@ -645,33 +643,33 @@ impl NvmeController {
             completions: Mutex::new(Vec::new()),
         }
     }
-    
+
     /// Read a 32-bit register
     unsafe fn read32(&self, offset: u64) -> u32 {
         let ptr = (self.mmio_base + offset) as *const u32;
         core::ptr::read_volatile(ptr)
     }
-    
+
     /// Write a 32-bit register
     unsafe fn write32(&self, offset: u64, value: u32) {
         let ptr = (self.mmio_base + offset) as *mut u32;
         core::ptr::write_volatile(ptr, value);
     }
-    
+
     /// Read a 64-bit register
     unsafe fn read64(&self, offset: u64) -> u64 {
         let ptr = (self.mmio_base + offset) as *const u64;
         core::ptr::read_volatile(ptr)
     }
-    
+
     /// Write a 64-bit register
     unsafe fn write64(&self, offset: u64, value: u64) {
         let ptr = (self.mmio_base + offset) as *mut u64;
         core::ptr::write_volatile(ptr, value);
     }
-    
+
     /// Initialize the controller
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure MMIO address is valid
     pub unsafe fn init(&mut self) -> Result<(), NvmeError> {
@@ -681,12 +679,12 @@ impl NvmeController {
         self.config.dstrd = ((self.config.cap >> 32) & 0xF) as u32;
         self.config.mpsmin = ((self.config.cap >> 48) & 0xF) as u32;
         self.config.mpsmax = ((self.config.cap >> 52) & 0xF) as u32;
-        
+
         // Step 2: Disable controller if enabled
         let cc = self.read32(regs::CC);
         if cc & cc_bits::CC_EN != 0 {
             self.write32(regs::CC, cc & !cc_bits::CC_EN);
-            
+
             // Wait for not ready
             for _ in 0..10000 {
                 if self.read32(regs::CSTS) & csts_bits::CSTS_RDY == 0 {
@@ -694,22 +692,22 @@ impl NvmeController {
                 }
             }
         }
-        
+
         // Step 3: Allocate admin queues
         let aq_depth = ADMIN_QUEUE_DEPTH.min(self.config.mqes);
         self.allocate_admin_queues(aq_depth)?;
-        
+
         // Step 4: Configure and enable controller
         let mps = self.config.mpsmin; // Use minimum page size (4KB)
-        let cc = cc_bits::CC_EN |
-                 cc_bits::CC_CSS_NVM |
-                 (mps << cc_bits::CC_MPS_SHIFT) |
-                 cc_bits::CC_AMS_RR |
-                 cc_bits::CC_IOSQES |
-                 cc_bits::CC_IOCQES;
-        
+        let cc = cc_bits::CC_EN
+            | cc_bits::CC_CSS_NVM
+            | (mps << cc_bits::CC_MPS_SHIFT)
+            | cc_bits::CC_AMS_RR
+            | cc_bits::CC_IOSQES
+            | cc_bits::CC_IOCQES;
+
         self.write32(regs::CC, cc);
-        
+
         // Step 5: Wait for ready
         for _ in 0..100000 {
             let csts = self.read32(regs::CSTS);
@@ -720,25 +718,25 @@ impl NvmeController {
                 break;
             }
         }
-        
+
         if self.read32(regs::CSTS) & csts_bits::CSTS_RDY == 0 {
             return Err(NvmeError::Timeout);
         }
-        
+
         // Step 6: Identify controller
         self.identify_controller()?;
-        
+
         // Step 7: Identify namespaces
         self.identify_namespaces()?;
-        
+
         // Step 8: Create I/O queues (one per CPU for now)
         // TODO: Detect CPU count
         self.create_io_queues(1)?;
-        
+
         self.ready.store(true, Ordering::Release);
         Ok(())
     }
-    
+
     /// Allocate admin queue pair
     unsafe fn allocate_admin_queues(&mut self, depth: u16) -> Result<(), NvmeError> {
         // Allocate submission queue
@@ -749,7 +747,7 @@ impl NvmeController {
         if sq_ptr.is_null() {
             return Err(NvmeError::AllocationFailed);
         }
-        
+
         // Allocate completion queue
         let cq_size = core::mem::size_of::<NvmeCompletion>() * depth as usize;
         let cq_layout = alloc::alloc::Layout::from_size_align(cq_size, 4096)
@@ -759,32 +757,32 @@ impl NvmeController {
             alloc::alloc::dealloc(sq_ptr as *mut u8, sq_layout);
             return Err(NvmeError::AllocationFailed);
         }
-        
+
         // Set admin queue attributes
         let aqa = ((depth - 1) as u32) | (((depth - 1) as u32) << 16);
         self.write32(regs::AQA, aqa);
-        
+
         // Set queue base addresses
         self.write64(regs::ASQ, sq_ptr as u64);
         self.write64(regs::ACQ, cq_ptr as u64);
-        
+
         // Calculate doorbell addresses
         let stride = 4 << self.config.dstrd;
         let sq_doorbell = (self.mmio_base + regs::SQ0TDBL) as *mut u32;
         let cq_doorbell = (self.mmio_base + regs::SQ0TDBL + stride as u64) as *mut u32;
-        
+
         let sq = SubmissionQueue::new(sq_ptr, depth, sq_doorbell);
         let cq = CompletionQueue::new(cq_ptr, depth, cq_doorbell);
-        
+
         self.admin_queue = Some(NvmeQueuePair { sq, cq, id: 0 });
-        
+
         // Initialize completions storage
         let mut completions = self.completions.lock();
         completions.resize(depth as usize, None);
-        
+
         Ok(())
     }
-    
+
     /// Identify controller
     unsafe fn identify_controller(&mut self) -> Result<(), NvmeError> {
         // Allocate identify buffer (4KB)
@@ -794,32 +792,32 @@ impl NvmeController {
         if buffer.is_null() {
             return Err(NvmeError::AllocationFailed);
         }
-        
+
         // Submit identify controller command
         let admin = self.admin_queue.as_ref().ok_or(NvmeError::NotReady)?;
         let cid = admin.sq.alloc_cid().ok_or(NvmeError::QueueFull)?;
-        
+
         let cmd = NvmeCommand::identify(cid, 0, 1, buffer as u64); // CNS=1: controller
         admin.sq.submit(cmd);
-        
+
         // Poll for completion
         let cqe = self.poll_admin_completion(cid, 1000)?;
         if !cqe.is_success() {
             alloc::alloc::dealloc(buffer, layout);
             return Err(NvmeError::CommandFailed(cqe.get_status()));
         }
-        
+
         // Parse identify data
         let id_ctrl = &*(buffer as *const NvmeIdentifyController);
         self.config.mdts = id_ctrl.mdts;
         self.config.nn = 1; // Assume at least one namespace
-        
+
         alloc::alloc::dealloc(buffer, layout);
         admin.sq.free_cid(cid);
-        
+
         Ok(())
     }
-    
+
     /// Identify namespaces
     unsafe fn identify_namespaces(&mut self) -> Result<(), NvmeError> {
         let layout = alloc::alloc::Layout::from_size_align(4096, 4096)
@@ -828,25 +826,25 @@ impl NvmeController {
         if buffer.is_null() {
             return Err(NvmeError::AllocationFailed);
         }
-        
+
         // Identify namespace 1
         let admin = self.admin_queue.as_ref().ok_or(NvmeError::NotReady)?;
         let cid = admin.sq.alloc_cid().ok_or(NvmeError::QueueFull)?;
-        
+
         let cmd = NvmeCommand::identify(cid, 1, 0, buffer as u64); // CNS=0: namespace
         admin.sq.submit(cmd);
-        
+
         let cqe = self.poll_admin_completion(cid, 1000)?;
         if cqe.is_success() {
             let id_ns = &*(buffer as *const NvmeIdentifyNamespace);
-            
+
             // Get LBA format
             let flbas = id_ns.flbas & 0xF;
             let lbaf_offset = 128 + flbas as usize * 4;
             let lbaf = *((buffer.add(lbaf_offset)) as *const u32);
             let lba_ds = ((lbaf >> 16) & 0xFF) as u8;
             let block_size = 1u32 << lba_ds;
-            
+
             self.namespaces.push(NvmeNamespace {
                 nsid: 1,
                 nsze: id_ns.nsze,
@@ -854,17 +852,17 @@ impl NvmeController {
                 lba_format: flbas,
             });
         }
-        
+
         alloc::alloc::dealloc(buffer, layout);
         admin.sq.free_cid(cid);
-        
+
         Ok(())
     }
-    
+
     /// Create I/O queue pairs
     unsafe fn create_io_queues(&mut self, num_queues: u16) -> Result<(), NvmeError> {
         let queue_depth = IO_QUEUE_DEPTH.min(self.config.mqes);
-        
+
         for qid in 1..=num_queues {
             // Allocate CQ first
             let cq_size = core::mem::size_of::<NvmeCompletion>() * queue_depth as usize;
@@ -874,21 +872,21 @@ impl NvmeController {
             if cq_ptr.is_null() {
                 return Err(NvmeError::AllocationFailed);
             }
-            
+
             // Create CQ via admin command
             let admin = self.admin_queue.as_ref().ok_or(NvmeError::NotReady)?;
             let cid = admin.sq.alloc_cid().ok_or(NvmeError::QueueFull)?;
-            
+
             let cmd = NvmeCommand::create_io_cq(cid, qid, queue_depth, cq_ptr as u64, qid - 1);
             admin.sq.submit(cmd);
-            
+
             let cqe = self.poll_admin_completion(cid, 1000)?;
             admin.sq.free_cid(cid);
             if !cqe.is_success() {
                 alloc::alloc::dealloc(cq_ptr as *mut u8, cq_layout);
                 return Err(NvmeError::QueueCreationFailed);
             }
-            
+
             // Allocate SQ
             let sq_size = core::mem::size_of::<NvmeCommand>() * queue_depth as usize;
             let sq_layout = alloc::alloc::Layout::from_size_align(sq_size, 4096)
@@ -897,37 +895,40 @@ impl NvmeController {
             if sq_ptr.is_null() {
                 return Err(NvmeError::AllocationFailed);
             }
-            
+
             // Create SQ via admin command
             let cid = admin.sq.alloc_cid().ok_or(NvmeError::QueueFull)?;
             let cmd = NvmeCommand::create_io_sq(cid, qid, queue_depth, sq_ptr as u64, qid);
             admin.sq.submit(cmd);
-            
+
             let cqe = self.poll_admin_completion(cid, 1000)?;
             admin.sq.free_cid(cid);
             if !cqe.is_success() {
                 alloc::alloc::dealloc(sq_ptr as *mut u8, sq_layout);
                 return Err(NvmeError::QueueCreationFailed);
             }
-            
+
             // Calculate doorbell addresses
             let stride = 4 << self.config.dstrd;
-            let sq_doorbell = (self.mmio_base + regs::SQ0TDBL + (qid as u64 * 2) * stride as u64) as *mut u32;
-            let cq_doorbell = (self.mmio_base + regs::SQ0TDBL + (qid as u64 * 2 + 1) * stride as u64) as *mut u32;
-            
+            let sq_doorbell =
+                (self.mmio_base + regs::SQ0TDBL + (qid as u64 * 2) * stride as u64) as *mut u32;
+            let cq_doorbell =
+                (self.mmio_base + regs::SQ0TDBL + (qid as u64 * 2 + 1) * stride as u64) as *mut u32;
+
             let sq = SubmissionQueue::new(sq_ptr, queue_depth, sq_doorbell);
             let cq = CompletionQueue::new(cq_ptr, queue_depth, cq_doorbell);
-            
-            self.io_queues.push(Arc::new(Mutex::new(NvmeQueuePair { sq, cq, id: qid })));
+
+            self.io_queues
+                .push(Arc::new(Mutex::new(NvmeQueuePair { sq, cq, id: qid })));
         }
-        
+
         Ok(())
     }
-    
+
     /// Poll admin queue for a specific completion
     fn poll_admin_completion(&self, cid: u16, max_polls: u32) -> Result<NvmeCompletion, NvmeError> {
         let admin = self.admin_queue.as_ref().ok_or(NvmeError::NotReady)?;
-        
+
         for _ in 0..max_polls {
             if let Some(cqe) = admin.cq.poll() {
                 if cqe.cid == cid {
@@ -940,27 +941,22 @@ impl NvmeController {
                 }
             }
         }
-        
+
         Err(NvmeError::Timeout)
     }
-    
+
     /// Check if controller is ready
     pub fn is_ready(&self) -> bool {
         self.ready.load(Ordering::Acquire)
     }
-    
+
     /// Get namespaces
     pub fn namespaces(&self) -> &[NvmeNamespace] {
         &self.namespaces
     }
-    
+
     /// Async read operation
-    pub fn read_async<'a>(
-        &'a self,
-        nsid: u32,
-        slba: u64,
-        buf: &'a mut [u8],
-    ) -> NvmeReadFuture<'a> {
+    pub fn read_async<'a>(&'a self, nsid: u32, slba: u64, buf: &'a mut [u8]) -> NvmeReadFuture<'a> {
         NvmeReadFuture {
             controller: self,
             nsid,
@@ -971,14 +967,9 @@ impl NvmeController {
             queue_idx: 0,
         }
     }
-    
+
     /// Async write operation
-    pub fn write_async<'a>(
-        &'a self,
-        nsid: u32,
-        slba: u64,
-        buf: &'a [u8],
-    ) -> NvmeWriteFuture<'a> {
+    pub fn write_async<'a>(&'a self, nsid: u32, slba: u64, buf: &'a [u8]) -> NvmeWriteFuture<'a> {
         NvmeWriteFuture {
             controller: self,
             nsid,
@@ -989,7 +980,7 @@ impl NvmeController {
             queue_idx: 0,
         }
     }
-    
+
     /// Handle interrupt
     pub fn handle_interrupt(&self) {
         // Process all I/O queues
@@ -1017,35 +1008,40 @@ pub struct NvmeReadFuture<'a> {
 
 impl<'a> Future for NvmeReadFuture<'a> {
     type Output = Result<usize, NvmeError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.controller.is_ready() {
             return Poll::Ready(Err(NvmeError::NotReady));
         }
-        
+
         if !self.submitted {
             // Find namespace block size
-            let ns = self.controller.namespaces()
+            let ns = self
+                .controller
+                .namespaces()
                 .iter()
                 .find(|n| n.nsid == self.nsid)
                 .ok_or(NvmeError::NoNamespace)?;
-            
+
             let block_size = ns.block_size as usize;
             if self.buf.len() % block_size != 0 {
                 return Poll::Ready(Err(NvmeError::InvalidParameter));
             }
-            
+
             let nlb = (self.buf.len() / block_size) as u16;
-            
+
             // Get I/O queue
-            let queue = self.controller.io_queues.get(self.queue_idx)
+            let queue = self
+                .controller
+                .io_queues
+                .get(self.queue_idx)
                 .ok_or(NvmeError::NotReady)?;
             let qp = queue.lock();
-            
+
             // Allocate CID
             let cid = qp.sq.alloc_cid().ok_or(NvmeError::QueueFull)?;
             self.cid = Some(cid);
-            
+
             // Submit read command
             let cmd = NvmeCommand::read(
                 cid,
@@ -1055,21 +1051,26 @@ impl<'a> Future for NvmeReadFuture<'a> {
                 self.buf.as_ptr() as u64,
                 0,
             );
-            
-            unsafe { qp.sq.submit(cmd); }
-            
+
+            unsafe {
+                qp.sq.submit(cmd);
+            }
+
             // Register waker
             qp.cq.register_waker(cid, cx.waker().clone());
-            
+
             self.submitted = true;
             return Poll::Pending;
         }
-        
+
         // Check for completion
-        let queue = self.controller.io_queues.get(self.queue_idx)
+        let queue = self
+            .controller
+            .io_queues
+            .get(self.queue_idx)
             .ok_or(NvmeError::NotReady)?;
         let qp = queue.lock();
-        
+
         if let Some(cqe) = qp.cq.poll() {
             // SAFETY: submitted=true なら cid は必ず Some
             // アセンブリ: Option の分岐条件 (test + cmov) を除去
@@ -1083,12 +1084,12 @@ impl<'a> Future for NvmeReadFuture<'a> {
                 }
             }
         }
-        
+
         // Re-register waker
         if let Some(cid) = self.cid {
             qp.cq.register_waker(cid, cx.waker().clone());
         }
-        
+
         Poll::Pending
     }
 }
@@ -1106,32 +1107,37 @@ pub struct NvmeWriteFuture<'a> {
 
 impl<'a> Future for NvmeWriteFuture<'a> {
     type Output = Result<usize, NvmeError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.controller.is_ready() {
             return Poll::Ready(Err(NvmeError::NotReady));
         }
-        
+
         if !self.submitted {
-            let ns = self.controller.namespaces()
+            let ns = self
+                .controller
+                .namespaces()
                 .iter()
                 .find(|n| n.nsid == self.nsid)
                 .ok_or(NvmeError::NoNamespace)?;
-            
+
             let block_size = ns.block_size as usize;
             if self.buf.len() % block_size != 0 {
                 return Poll::Ready(Err(NvmeError::InvalidParameter));
             }
-            
+
             let nlb = (self.buf.len() / block_size) as u16;
-            
-            let queue = self.controller.io_queues.get(self.queue_idx)
+
+            let queue = self
+                .controller
+                .io_queues
+                .get(self.queue_idx)
                 .ok_or(NvmeError::NotReady)?;
             let qp = queue.lock();
-            
+
             let cid = qp.sq.alloc_cid().ok_or(NvmeError::QueueFull)?;
             self.cid = Some(cid);
-            
+
             let cmd = NvmeCommand::write(
                 cid,
                 self.nsid,
@@ -1140,18 +1146,23 @@ impl<'a> Future for NvmeWriteFuture<'a> {
                 self.buf.as_ptr() as u64,
                 0,
             );
-            
-            unsafe { qp.sq.submit(cmd); }
+
+            unsafe {
+                qp.sq.submit(cmd);
+            }
             qp.cq.register_waker(cid, cx.waker().clone());
-            
+
             self.submitted = true;
             return Poll::Pending;
         }
-        
-        let queue = self.controller.io_queues.get(self.queue_idx)
+
+        let queue = self
+            .controller
+            .io_queues
+            .get(self.queue_idx)
             .ok_or(NvmeError::NotReady)?;
         let qp = queue.lock();
-        
+
         if let Some(cqe) = qp.cq.poll() {
             // SAFETY: submitted=true なら cid は必ず Some
             let cid = unsafe { self.cid.unwrap_unchecked() };
@@ -1164,11 +1175,11 @@ impl<'a> Future for NvmeWriteFuture<'a> {
                 }
             }
         }
-        
+
         if let Some(cid) = self.cid {
             qp.cq.register_waker(cid, cx.waker().clone());
         }
-        
+
         Poll::Pending
     }
 }
@@ -1180,17 +1191,21 @@ impl<'a> Future for NvmeWriteFuture<'a> {
 static NVME_CONTROLLER: Mutex<Option<NvmeController>> = Mutex::new(None);
 
 /// Initialize the global NVMe controller
-/// 
+///
 /// # Safety
 /// Caller must ensure MMIO address is valid
 pub unsafe fn init_nvme(mmio_base: u64) -> Result<(), NvmeError> {
     let mut controller = NvmeController::new(mmio_base);
     controller.init()?;
-    
+
     if let Some(ns) = controller.namespaces().first() {
-        crate::log!("NVMe initialized: {} blocks x {} bytes\n", ns.nsze, ns.block_size);
+        crate::log!(
+            "NVMe initialized: {} blocks x {} bytes\n",
+            ns.nsze,
+            ns.block_size
+        );
     }
-    
+
     *NVME_CONTROLLER.lock() = Some(controller);
     Ok(())
 }
@@ -1209,17 +1224,17 @@ pub fn handle_nvme_interrupt() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_nvme_command_size() {
         assert_eq!(core::mem::size_of::<NvmeCommand>(), 64);
     }
-    
+
     #[test]
     fn test_nvme_completion_size() {
         assert_eq!(core::mem::size_of::<NvmeCompletion>(), 16);
     }
-    
+
     #[test]
     fn test_nvme_status_from() {
         assert_eq!(NvmeStatus::from(0), NvmeStatus::Success);

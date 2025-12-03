@@ -7,13 +7,13 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use alloc::format;
-use core::sync::atomic::{AtomicU64, Ordering};
-use core::ptr::NonNull;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::alloc::Layout;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -29,12 +29,12 @@ impl DomainId {
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
-    
+
     /// IDを数値として取得
     pub const fn as_u64(&self) -> u64 {
         self.0
     }
-    
+
     /// カーネルドメイン（常にID=0）
     pub const KERNEL: DomainId = DomainId(0);
 }
@@ -69,7 +69,7 @@ impl DomainState {
     pub fn is_runnable(&self) -> bool {
         matches!(self, DomainState::Running | DomainState::Initializing)
     }
-    
+
     /// アクティブな状態かどうか（リソースを保持）
     pub fn is_active(&self) -> bool {
         !matches!(self, DomainState::Terminated)
@@ -88,23 +88,23 @@ pub struct Domain {
     pub name: String,
     /// 現在の状態
     pub state: DomainState,
-    
+
     // タスク管理
     /// このドメインに属するタスクID
     pub tasks: Vec<u64>,
-    
+
     // 依存関係
     /// このドメインが依存するドメイン
     pub dependencies: Vec<DomainId>,
     /// このドメインに依存するドメイン
     pub dependents: Vec<DomainId>,
-    
+
     // リソース追跡
     /// 所有するRRefの数
     pub rref_count: u64,
     /// 割り当て済みメモリ量（バイト）
     pub allocated_memory: u64,
-    
+
     // 統計情報
     /// 総実行時間（ティック）
     pub runtime_ticks: u64,
@@ -112,7 +112,7 @@ pub struct Domain {
     pub context_switches: u64,
     /// 作成時刻（ティック）
     pub created_at: u64,
-    
+
     // エラー情報
     /// パニックメッセージ（クラッシュ時）
     pub panic_message: Option<String>,
@@ -139,48 +139,48 @@ impl Domain {
             last_error: None,
         }
     }
-    
+
     /// 実行可能かどうか
     pub fn is_runnable(&self) -> bool {
         self.state.is_runnable()
     }
-    
+
     /// タスクを追加
     pub fn add_task(&mut self, task_id: u64) {
         if !self.tasks.contains(&task_id) {
             self.tasks.push(task_id);
         }
     }
-    
+
     /// タスクを削除
     pub fn remove_task(&mut self, task_id: u64) {
         self.tasks.retain(|&id| id != task_id);
     }
-    
+
     /// 依存関係を追加
     pub fn add_dependency(&mut self, dep: DomainId) {
         if !self.dependencies.contains(&dep) {
             self.dependencies.push(dep);
         }
     }
-    
+
     /// RRef数をインクリメント
     pub fn increment_rref(&mut self) {
         self.rref_count += 1;
     }
-    
+
     /// RRef数をデクリメント
     pub fn decrement_rref(&mut self) {
         if self.rref_count > 0 {
             self.rref_count -= 1;
         }
     }
-    
+
     /// メモリ使用量を追加
     pub fn add_memory(&mut self, size: u64) {
         self.allocated_memory = self.allocated_memory.saturating_add(size);
     }
-    
+
     /// メモリ使用量を減少
     pub fn free_memory(&mut self, size: u64) {
         self.allocated_memory = self.allocated_memory.saturating_sub(size);
@@ -207,7 +207,7 @@ impl DomainRegistry {
             next_id: AtomicU64::new(1), // 0はカーネル用
         }
     }
-    
+
     /// 新しいドメインIDを生成
     fn generate_id(&self) -> DomainId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
@@ -246,17 +246,17 @@ impl HeapRegistry {
             entries: BTreeMap::new(),
         }
     }
-    
+
     /// エントリを登録
     fn register(&mut self, ptr: usize, layout: Layout, owner: DomainId) {
         self.entries.insert(ptr, HeapEntry { ptr, layout, owner });
     }
-    
+
     /// エントリを削除
     fn unregister(&mut self, ptr: usize) -> Option<HeapEntry> {
         self.entries.remove(&ptr)
     }
-    
+
     /// 所有者を変更
     fn change_owner(&mut self, ptr: usize, new_owner: DomainId) -> bool {
         if let Some(entry) = self.entries.get_mut(&ptr) {
@@ -266,7 +266,7 @@ impl HeapRegistry {
             false
         }
     }
-    
+
     /// 特定ドメインの全エントリを取得
     fn get_owned_by(&self, domain: DomainId) -> Vec<HeapEntry> {
         self.entries
@@ -287,17 +287,17 @@ static HEAP_REGISTRY: Mutex<HeapRegistry> = Mutex::new(HeapRegistry::new());
 /// ドメインシステムを初期化（カーネルドメインを作成）
 pub fn init() {
     let mut registry = REGISTRY.lock();
-    
+
     // カーネルドメインを作成
     let mut kernel = Domain::new(DomainId::KERNEL, "kernel".into());
     kernel.state = DomainState::Running;
     registry.domains.insert(DomainId::KERNEL, kernel);
-    
+
     crate::log!("[DOMAIN] Domain system initialized (kernel domain created)\n");
 }
 
 /// 新しいドメインを作成
-/// 
+///
 /// # パフォーマンス注意
 /// `name.clone()` は `crate::log!` マクロで使用するために必要。
 /// ドメイン作成は頻繁に呼ばれないため、このコストは許容される。
@@ -305,14 +305,14 @@ pub fn init() {
 pub fn create_domain(name: String) -> DomainId {
     let mut registry = REGISTRY.lock();
     let id = registry.generate_id();
-    
+
     // name をログで先に使用し、その後 Domain::new に渡す
     // これにより clone() を回避
     crate::log!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
-    
+
     let domain = Domain::new(id, name);
     registry.domains.insert(id, domain);
-    
+
     id
 }
 
@@ -333,7 +333,7 @@ pub fn set_domain_state(id: DomainId, state: DomainState) {
 /// ドメインを開始
 pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
     let mut registry = REGISTRY.lock();
-    
+
     if let Some(domain) = registry.domains.get_mut(&id) {
         if domain.state != DomainState::Initializing {
             return Err("Domain is not in initializing state");
@@ -351,9 +351,9 @@ pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
     if id == DomainId::KERNEL {
         return Err("Cannot stop kernel domain");
     }
-    
+
     let mut registry = REGISTRY.lock();
-    
+
     if let Some(domain) = registry.domains.get_mut(&id) {
         domain.state = DomainState::Stopped;
         crate::log!("[DOMAIN] Stopped {}\n", id);
@@ -368,15 +368,15 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
     if id == DomainId::KERNEL {
         return Err("Cannot terminate kernel domain");
     }
-    
+
     // dependents をロック外で使うため clone() が必要
     // Note: Vec<DomainId> の clone は DomainId が Copy なら
     // 単純な memcpy に展開される（Vecヘッダーのみアロケート）
     let dependents: Vec<DomainId>;
-    
+
     {
         let mut registry = REGISTRY.lock();
-        
+
         if let Some(domain) = registry.domains.get_mut(&id) {
             domain.state = DomainState::Terminated;
             // clone() はロックを保持したままの処理を避けるため
@@ -386,10 +386,10 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
             return Err("Domain not found");
         }
     }
-    
+
     // リソース回収（ロックを解放してから）
     reclaim_domain_resources(id);
-    
+
     // 依存するドメインに通知
     {
         let mut registry = REGISTRY.lock();
@@ -399,7 +399,7 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
             }
         }
     }
-    
+
     crate::log!("[DOMAIN] Terminated {} and reclaimed resources\n", id);
     Ok(())
 }
@@ -407,16 +407,16 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
 /// ドメインがパニックした場合の処理
 pub fn handle_domain_panic(id: DomainId, message: String) {
     crate::log!("[PANIC] {} crashed: {}\n", id, message);
-    
+
     {
         let mut registry = REGISTRY.lock();
-        
+
         if let Some(domain) = registry.domains.get_mut(&id) {
             domain.state = DomainState::Stopped;
             domain.panic_message = Some(message);
         }
     }
-    
+
     // リソース回収
     reclaim_domain_resources(id);
 }
@@ -442,7 +442,7 @@ pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
 /// Exchange Heap上にオブジェクトを登録
 pub fn register_heap_object(ptr: usize, layout: Layout, owner: DomainId) {
     HEAP_REGISTRY.lock().register(ptr, layout, owner);
-    
+
     if let Some(domain) = REGISTRY.lock().domains.get_mut(&owner) {
         domain.increment_rref();
         domain.add_memory(layout.size() as u64);
@@ -465,25 +465,25 @@ pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
         let heap_registry = HEAP_REGISTRY.lock();
         heap_registry.entries.get(&ptr).map(|e| (e.owner, e.layout))
     };
-    
+
     if let Some((old_owner, layout)) = entry_opt {
         // 所有者変更
         HEAP_REGISTRY.lock().change_owner(ptr, new_owner);
-        
+
         let mut registry = REGISTRY.lock();
-        
+
         // 旧所有者のカウント減少
         if let Some(old_domain) = registry.domains.get_mut(&old_owner) {
             old_domain.decrement_rref();
             old_domain.free_memory(layout.size() as u64);
         }
-        
+
         // 新所有者のカウント増加
         if let Some(new_domain) = registry.domains.get_mut(&new_owner) {
             new_domain.increment_rref();
             new_domain.add_memory(layout.size() as u64);
         }
-        
+
         true
     } else {
         false
@@ -494,7 +494,7 @@ pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
 pub fn reclaim_domain_resources(domain: DomainId) {
     let entries = HEAP_REGISTRY.lock().get_owned_by(domain);
     let count = entries.len();
-    
+
     for entry in entries {
         // Exchange Heapから解放
         unsafe {
@@ -505,13 +505,13 @@ pub fn reclaim_domain_resources(domain: DomainId) {
         }
         HEAP_REGISTRY.lock().unregister(entry.ptr);
     }
-    
+
     // ドメインのリソースカウントをリセット
     if let Some(domain) = REGISTRY.lock().domains.get_mut(&domain) {
         domain.rref_count = 0;
         domain.allocated_memory = 0;
     }
-    
+
     if count > 0 {
         crate::log!("[DOMAIN] Reclaimed {} resources from {}\n", count, domain);
     }
@@ -541,7 +541,7 @@ pub struct DomainStats {
 /// ドメイン統計を取得
 pub fn get_domain_stats() -> DomainStats {
     let registry = REGISTRY.lock();
-    
+
     let mut stats = DomainStats {
         total: registry.domains.len(),
         running: 0,
@@ -550,7 +550,7 @@ pub fn get_domain_stats() -> DomainStats {
         memory_used: 0,
         total_rrefs: 0,
     };
-    
+
     for domain in registry.domains.values() {
         match domain.state {
             DomainState::Running | DomainState::Initializing => stats.running += 1,
@@ -560,17 +560,18 @@ pub fn get_domain_stats() -> DomainStats {
         stats.memory_used += domain.allocated_memory;
         stats.total_rrefs += domain.rref_count;
     }
-    
+
     stats
 }
 
 /// ドメイン一覧を表示
 pub fn print_domain_list() {
     let registry = REGISTRY.lock();
-    
+
     crate::log!("[DOMAIN] === Domain List ===\n");
     for domain in registry.domains.values() {
-        crate::log!("[DOMAIN] {} '{}': {:?}, tasks={}, rrefs={}, mem={}KB\n",
+        crate::log!(
+            "[DOMAIN] {} '{}': {:?}, tasks={}, rrefs={}, mem={}KB\n",
             domain.id,
             domain.name,
             domain.state,

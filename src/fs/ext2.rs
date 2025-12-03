@@ -14,19 +14,19 @@
 
 #![allow(dead_code)]
 
-use core::mem;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
+use core::mem;
 use spin::RwLock;
 
-use super::vfs::{
-    DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats,
-    Inode, InodeNum, OpenFlags,
-};
 use super::block::BlockDevice;
+use super::vfs::{
+    DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
+    InodeNum, OpenFlags,
+};
 
 // ============================================================================
 // Ext2 Constants
@@ -366,12 +366,12 @@ impl Ext2FileSystem {
         // スーパーブロックを読み取り（オフセット1024バイト）
         // 512バイトセクタでセクタ2から読み取り
         let mut buffer = [0u8; BASE_BLOCK_SIZE];
-        device.read_sync(2, &mut buffer)  // セクタ2 = オフセット1024
+        device
+            .read_sync(2, &mut buffer) // セクタ2 = オフセット1024
             .map_err(|_| FsError::IoError)?;
 
-        let superblock: Superblock = unsafe {
-            core::ptr::read(buffer.as_ptr() as *const Superblock)
-        };
+        let superblock: Superblock =
+            unsafe { core::ptr::read(buffer.as_ptr() as *const Superblock) };
 
         // マジックナンバーを確認
         if superblock.magic != EXT2_MAGIC {
@@ -392,10 +392,11 @@ impl Ext2FileSystem {
         // 512バイトセクタ単位で読み取り
         let sectors_per_fs_block = block_size as u64 / BASE_BLOCK_SIZE as u64;
         for i in 0..bgdt_blocks {
-            let start_sector = bgdt_block as u64 * sectors_per_fs_block 
-                + i as u64 * sectors_per_fs_block;
+            let start_sector =
+                bgdt_block as u64 * sectors_per_fs_block + i as u64 * sectors_per_fs_block;
             for j in 0..sectors_per_fs_block as usize {
-                device.read_sync(start_sector + j as u64, &mut buffer)
+                device
+                    .read_sync(start_sector + j as u64, &mut buffer)
                     .map_err(|_| FsError::IoError)?;
                 let offset = i * block_size as usize + j * BASE_BLOCK_SIZE;
                 let end = offset + BASE_BLOCK_SIZE;
@@ -441,9 +442,8 @@ impl Ext2FileSystem {
         let mut buffer = vec![0u8; self.block_size as usize];
         self.read_block(block, &mut buffer)?;
 
-        let inode: Ext2Inode = unsafe {
-            core::ptr::read(buffer[offset as usize..].as_ptr() as *const Ext2Inode)
-        };
+        let inode: Ext2Inode =
+            unsafe { core::ptr::read(buffer[offset as usize..].as_ptr() as *const Ext2Inode) };
 
         Ok(inode)
     }
@@ -455,7 +455,8 @@ impl Ext2FileSystem {
 
         let mut temp = [0u8; BASE_BLOCK_SIZE];
         for i in 0..sectors_per_block as usize {
-            self.device.read_sync(start_sector + i as u64, &mut temp)
+            self.device
+                .read_sync(start_sector + i as u64, &mut temp)
                 .map_err(|_| FsError::IoError)?;
             let offset = i * BASE_BLOCK_SIZE;
             let end = offset + BASE_BLOCK_SIZE;
@@ -630,17 +631,16 @@ impl Ext2InodeWrapper {
 
             let mut pos = block_offset;
             while pos < buffer.len() && (offset + (pos - block_offset) as u64) < size {
-                let entry: Ext2DirEntry = unsafe {
-                    core::ptr::read(buffer[pos..].as_ptr() as *const Ext2DirEntry)
-                };
+                let entry: Ext2DirEntry =
+                    unsafe { core::ptr::read(buffer[pos..].as_ptr() as *const Ext2DirEntry) };
 
                 if entry.inode != 0 && entry.rec_len > 0 {
                     let name_start = pos + 8;
                     let name_end = name_start + entry.name_len as usize;
 
                     if name_end <= buffer.len() {
-                        let name = String::from_utf8_lossy(&buffer[name_start..name_end])
-                            .into_owned();
+                        let name =
+                            String::from_utf8_lossy(&buffer[name_start..name_end]).into_owned();
 
                         if name != "." && name != ".." {
                             entries.push((name, entry.inode, entry.get_file_type()));
@@ -705,13 +705,14 @@ impl Inode for Ext2InodeWrapper {
     fn readdir(&self, _offset: u64) -> FsResult<Vec<DirEntry>> {
         let entries = self.read_dir_entries()?;
 
-        Ok(entries.into_iter().map(|(name, ino, file_type)| {
-            DirEntry {
+        Ok(entries
+            .into_iter()
+            .map(|(name, ino, file_type)| DirEntry {
                 name,
                 ino: ino as InodeNum,
                 file_type,
-            }
-        }).collect())
+            })
+            .collect())
     }
 
     fn create(&self, _name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
@@ -751,16 +752,12 @@ impl Inode for Ext2InodeWrapper {
         let size = self.inode.file_size();
         if size <= 60 {
             // packed structのフィールドを安全に読み取り
-            let block: [u32; 15] = unsafe { 
+            let block: [u32; 15] = unsafe {
                 let ptr = core::ptr::addr_of!(self.inode.block);
-                core::ptr::read_unaligned(ptr) 
+                core::ptr::read_unaligned(ptr)
             };
-            let bytes: &[u8] = unsafe {
-                core::slice::from_raw_parts(
-                    block.as_ptr() as *const u8,
-                    size as usize,
-                )
-            };
+            let bytes: &[u8] =
+                unsafe { core::slice::from_raw_parts(block.as_ptr() as *const u8, size as usize) };
             return Ok(String::from_utf8_lossy(bytes).into_owned());
         }
 

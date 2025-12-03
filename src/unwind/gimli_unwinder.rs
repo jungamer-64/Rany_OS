@@ -14,8 +14,8 @@
 
 use core::ops::Range;
 use gimli::{
-    BaseAddresses, CieOrFde, EhFrame, EndianSlice, LittleEndian,
-    UninitializedUnwindContext, UnwindSection,
+    BaseAddresses, CieOrFde, EhFrame, EndianSlice, LittleEndian, UninitializedUnwindContext,
+    UnwindSection,
 };
 
 /// gimli用のエンディアン型
@@ -44,7 +44,7 @@ pub enum GimliUnwindError {
 }
 
 /// gimliベースのアンワインダー
-/// 
+///
 /// .eh_frame セクションを解析して、正確なスタックアンワインドを行う。
 /// gimli クレートにより、複雑なDWARF CFI命令を正しく解釈できる。
 pub struct GimliUnwinder<'a> {
@@ -58,46 +58,41 @@ pub struct GimliUnwinder<'a> {
 
 impl<'a> GimliUnwinder<'a> {
     /// 新しいアンワインダーを作成
-    /// 
+    ///
     /// # Arguments
     /// * `eh_frame_data` - .eh_frame セクションのバイト列
     /// * `eh_frame_addr` - .eh_frame セクションのロードアドレス
     /// * `text_range` - .text セクションのアドレス範囲
-    pub fn new(
-        eh_frame_data: &'a [u8],
-        eh_frame_addr: u64,
-        text_range: Range<u64>,
-    ) -> Self {
+    pub fn new(eh_frame_data: &'a [u8], eh_frame_addr: u64, text_range: Range<u64>) -> Self {
         let eh_frame = EhFrame::new(eh_frame_data, LittleEndian);
-        
-        let bases = BaseAddresses::default()
-            .set_eh_frame(eh_frame_addr);
-        
+
+        let bases = BaseAddresses::default().set_eh_frame(eh_frame_addr);
+
         Self {
             eh_frame,
             bases,
             text_range,
         }
     }
-    
+
     /// 指定アドレスに対応するFDEを検索
     pub fn find_fde(
         &self,
         address: u64,
     ) -> Result<gimli::FrameDescriptionEntry<GimliSlice<'a>>, GimliUnwindError> {
         let mut entries = self.eh_frame.entries(&self.bases);
-        
+
         while let Ok(Some(entry)) = entries.next() {
             match entry {
                 CieOrFde::Cie(_) => continue,
                 CieOrFde::Fde(partial_fde) => {
                     // FDEを解析
-                    if let Ok(fde) = partial_fde.parse(|_, _, offset| {
-                        self.eh_frame.cie_from_offset(&self.bases, offset)
-                    }) {
+                    if let Ok(fde) = partial_fde
+                        .parse(|_, _, offset| self.eh_frame.cie_from_offset(&self.bases, offset))
+                    {
                         let start = fde.initial_address();
                         let end = start + fde.len();
-                        
+
                         if address >= start && address < end {
                             return Ok(fde);
                         }
@@ -105,18 +100,18 @@ impl<'a> GimliUnwinder<'a> {
                 }
             }
         }
-        
+
         Err(GimliUnwindError::FdeNotFound)
     }
-    
+
     /// 単一フレームをアンワインド
-    /// 
+    ///
     /// 現在のレジスタ状態から、呼び出し元のレジスタ状態を計算する。
-    /// 
+    ///
     /// # Arguments
     /// * `address` - 現在の命令アドレス（RIP）
     /// * `registers` - 現在のレジスタ状態
-    /// 
+    ///
     /// # Returns
     /// 呼び出し元のレジスタ状態、またはエラー
     pub fn unwind_frame(
@@ -126,22 +121,20 @@ impl<'a> GimliUnwinder<'a> {
     ) -> Result<RegisterSet, GimliUnwindError> {
         // FDEを検索
         let fde = self.find_fde(address)?;
-        
+
         // アンワインドコンテキストを初期化
         let mut ctx = UninitializedUnwindContext::new();
-        
+
         // アンワインドテーブル行を取得
-        let unwind_info = fde.unwind_info_for_address(
-            &self.eh_frame,
-            &self.bases,
-            &mut ctx,
-            address,
-        ).map_err(|_| GimliUnwindError::GimliError)?;
-        
+        let unwind_info = fde
+            .unwind_info_for_address(&self.eh_frame, &self.bases, &mut ctx, address)
+            .map_err(|_| GimliUnwindError::GimliError)?;
+
         // CFAを計算
         let cfa = match unwind_info.cfa() {
             gimli::CfaRule::RegisterAndOffset { register, offset } => {
-                let reg_value = registers.get(register.0 as usize)
+                let reg_value = registers
+                    .get(register.0 as usize)
                     .ok_or(GimliUnwindError::UndefinedRegister)?;
                 (reg_value as i64 + offset) as u64
             }
@@ -150,68 +143,64 @@ impl<'a> GimliUnwinder<'a> {
                 return Err(GimliUnwindError::GimliError);
             }
         };
-        
+
         // 新しいレジスタセットを構築
         let mut new_registers = RegisterSet::new();
         new_registers.set(7, cfa); // RSP = CFA
-        
+
         // 各レジスタのルールを適用
         for reg_num in 0..17 {
             let rule = unwind_info.register(gimli::Register(reg_num as u16));
-            
+
             let value = match rule {
                 gimli::RegisterRule::Undefined => continue,
-                gimli::RegisterRule::SameValue => {
-                    registers.get(reg_num).unwrap_or(0)
-                }
+                gimli::RegisterRule::SameValue => registers.get(reg_num).unwrap_or(0),
                 gimli::RegisterRule::Offset(offset) => {
                     let addr = (cfa as i64 + offset) as u64;
                     // SAFETY: アドレスが有効であることを仮定
                     unsafe { core::ptr::read(addr as *const u64) }
                 }
-                gimli::RegisterRule::ValOffset(offset) => {
-                    (cfa as i64 + offset) as u64
-                }
+                gimli::RegisterRule::ValOffset(offset) => (cfa as i64 + offset) as u64,
                 gimli::RegisterRule::Register(other_reg) => {
                     registers.get(other_reg.0 as usize).unwrap_or(0)
                 }
                 _ => continue, // 式や他の複雑なルールはスキップ
             };
-            
+
             new_registers.set(reg_num, value);
         }
-        
+
         Ok(new_registers)
     }
-    
+
     /// 完全なバックトレースを生成
     pub fn backtrace(&self, initial_registers: RegisterSet) -> GimliBacktrace {
         let mut trace = GimliBacktrace::new();
         let mut registers = initial_registers;
-        
+
         for _ in 0..GimliBacktrace::MAX_FRAMES {
             let rip = registers.get(16).unwrap_or(0); // RIP
-            
+
             if rip == 0 || !self.is_valid_code_address(rip) {
                 break;
             }
-            
+
             trace.push(GimliFrame {
                 instruction_pointer: rip,
                 stack_pointer: registers.get(7).unwrap_or(0),
                 frame_pointer: registers.get(6).unwrap_or(0),
             });
-            
+
             // 次のフレームをアンワインド
             match self.unwind_frame(rip, &registers) {
                 Ok(new_regs) => registers = new_regs,
                 Err(_) => break,
             }
         }
-        
+
         trace
     }
-    
+
     /// コードアドレスが有効かチェック
     fn is_valid_code_address(&self, addr: u64) -> bool {
         // カーネルテキストセクション内かチェック
@@ -220,7 +209,7 @@ impl<'a> GimliUnwinder<'a> {
 }
 
 /// レジスタセット
-/// 
+///
 /// x86_64 のレジスタ番号:
 /// 0=RAX, 1=RDX, 2=RCX, 3=RBX, 4=RSI, 5=RDI,
 /// 6=RBP, 7=RSP, 8-15=R8-R15, 16=RIP
@@ -231,15 +220,13 @@ pub struct RegisterSet {
 
 impl RegisterSet {
     pub fn new() -> Self {
-        Self {
-            values: [None; 17],
-        }
+        Self { values: [None; 17] }
     }
-    
+
     /// 現在のレジスタ状態をキャプチャ
     pub fn capture() -> Self {
         let mut regs = Self::new();
-        
+
         unsafe {
             let rax: u64;
             let rbx: u64;
@@ -257,7 +244,7 @@ impl RegisterSet {
             let r13: u64;
             let r14: u64;
             let r15: u64;
-            
+
             core::arch::asm!(
                 "mov {}, rax",
                 "mov {}, rbx",
@@ -293,7 +280,7 @@ impl RegisterSet {
                 out(reg) r15,
                 options(nostack, preserves_flags)
             );
-            
+
             regs.set(0, rax);
             regs.set(1, rdx);
             regs.set(2, rcx);
@@ -310,19 +297,19 @@ impl RegisterSet {
             regs.set(13, r13);
             regs.set(14, r14);
             regs.set(15, r15);
-            
+
             // RIPはリターンアドレスから推定
             let rip = core::ptr::read((rbp + 8) as *const u64);
             regs.set(16, rip);
         }
-        
+
         regs
     }
-    
+
     pub fn get(&self, reg: usize) -> Option<u64> {
         self.values.get(reg).copied().flatten()
     }
-    
+
     pub fn set(&mut self, reg: usize, value: u64) {
         if reg < self.values.len() {
             self.values[reg] = Some(value);
@@ -346,7 +333,7 @@ pub struct GimliBacktrace {
 
 impl GimliBacktrace {
     pub const MAX_FRAMES: usize = 64;
-    
+
     pub fn new() -> Self {
         const NONE: Option<GimliFrame> = None;
         Self {
@@ -354,24 +341,27 @@ impl GimliBacktrace {
             count: 0,
         }
     }
-    
+
     pub fn push(&mut self, frame: GimliFrame) {
         if self.count < Self::MAX_FRAMES {
             self.frames[self.count] = Some(frame);
             self.count += 1;
         }
     }
-    
+
     pub fn len(&self) -> usize {
         self.count
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     pub fn iter(&self) -> impl Iterator<Item = &GimliFrame> {
-        self.frames.iter().take(self.count).filter_map(|f| f.as_ref())
+        self.frames
+            .iter()
+            .take(self.count)
+            .filter_map(|f| f.as_ref())
     }
 }
 
@@ -394,11 +384,11 @@ pub struct EhFrameSection {
 
 impl EhFrameSection {
     /// リンカシンボルから .eh_frame セクション情報を取得
-    /// 
+    ///
     /// リンカスクリプトで以下のシンボルを定義する必要がある:
     /// - __eh_frame_start
     /// - __eh_frame_end
-    /// 
+    ///
     /// # Safety
     /// リンカシンボルが正しく定義されている必要がある
     pub unsafe fn from_linker_symbols() -> Option<Self> {
@@ -406,22 +396,22 @@ impl EhFrameSection {
             static __eh_frame_start: u8;
             static __eh_frame_end: u8;
         }
-        
+
         let start = &__eh_frame_start as *const u8 as u64;
         let end = &__eh_frame_end as *const u8 as u64;
-        
+
         if start != 0 && end > start {
             Some(Self { start, end })
         } else {
             None
         }
     }
-    
+
     pub fn data(&self) -> &'static [u8] {
         let len = (self.end - self.start) as usize;
         unsafe { core::slice::from_raw_parts(self.start as *const u8, len) }
     }
-    
+
     pub fn len(&self) -> usize {
         (self.end - self.start) as usize
     }
@@ -432,7 +422,7 @@ impl EhFrameSection {
 // ============================================================================
 
 /// ドメインパニック時のアンワインド処理
-/// 
+///
 /// ドメインがパニックした場合、そのドメインのリソースをクリーンアップし、
 /// 他のドメインに影響を与えずに回復する。
 pub struct DomainUnwinder {
@@ -449,32 +439,29 @@ impl DomainUnwinder {
             stack_range,
         }
     }
-    
+
     /// ドメインのパニック回復を実行
-    /// 
+    ///
     /// 1. ドメインのスタックをアンワインド
     /// 2. ドメインが所有するリソースを解放
     /// 3. ドメインを終了状態に移行
     pub fn recover_from_panic(&self) -> Result<(), GimliUnwindError> {
         // 注意: 実際の実装ではドメインレジストリと連携する
-        crate::serial_println!(
-            "Domain {} panic recovery initiated",
-            self.domain_id
-        );
-        
+        crate::serial_println!("Domain {} panic recovery initiated", self.domain_id);
+
         // スタック範囲の有効性チェック
         if self.stack_range.is_empty() {
             return Err(GimliUnwindError::InvalidFramePointer);
         }
-        
+
         // TODO: 実際のアンワインド処理
         // - Drop トレイトの呼び出し
         // - Exchange Heap の参照カウント調整
         // - ロックの解放
-        
+
         Ok(())
     }
-    
+
     /// スタックアドレスがこのドメインに属するか確認
     pub fn is_domain_stack(&self, addr: u64) -> bool {
         self.stack_range.contains(&addr)

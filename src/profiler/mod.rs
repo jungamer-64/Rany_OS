@@ -6,11 +6,11 @@
 //! - I/Oレイテンシ測定
 //! - フレームグラフ生成サポート
 
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 // =============================================================================
@@ -96,45 +96,45 @@ impl CallStack {
             timestamp: 0,
         }
     }
-    
+
     pub fn capture() -> Self {
         let mut stack = Self::new();
         stack.timestamp = rdtsc();
-        
+
         // スタックウォーク（x86_64）
         unsafe {
             let mut fp: u64;
             core::arch::asm!("mov {}, rbp", out(reg) fp);
-            
+
             for _ in 0..MAX_STACK_DEPTH {
                 if fp == 0 || fp & 0x7 != 0 {
                     break;
                 }
-                
+
                 // 戻りアドレスはフレームポインタ + 8
                 let ret_addr = core::ptr::read_volatile((fp + 8) as *const u64);
                 let prev_fp = core::ptr::read_volatile(fp as *const u64);
-                
+
                 if ret_addr == 0 {
                     break;
                 }
-                
+
                 stack.frames.push(StackFrame::new(ret_addr, 0, fp));
                 fp = prev_fp;
             }
         }
-        
+
         stack
     }
-    
+
     pub fn frames(&self) -> &[StackFrame] {
         &self.frames
     }
-    
+
     pub fn depth(&self) -> usize {
         self.frames.len()
     }
-    
+
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
@@ -166,7 +166,7 @@ impl ProfileSample {
             stack: None,
         }
     }
-    
+
     pub fn with_stack(mut self) -> Self {
         self.stack = Some(CallStack::capture());
         self
@@ -198,7 +198,7 @@ impl LogHistogram {
             count: AtomicU64::new(0),
         }
     }
-    
+
     /// 値を追加
     pub fn record(&self, value: u64) {
         // バケットインデックスを計算（対数スケール）
@@ -208,21 +208,21 @@ impl LogHistogram {
             (64 - value.leading_zeros()) as usize
         };
         let bucket = bucket.min(HISTOGRAM_BUCKETS - 1);
-        
+
         self.buckets[bucket].fetch_add(1, Ordering::Relaxed);
         self.min.fetch_min(value, Ordering::Relaxed);
         self.max.fetch_max(value, Ordering::Relaxed);
         self.sum.fetch_add(value, Ordering::Relaxed);
         self.count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> HistogramStats {
         let count = self.count.load(Ordering::Relaxed);
         let sum = self.sum.load(Ordering::Relaxed);
         let min = self.min.load(Ordering::Relaxed);
         let max = self.max.load(Ordering::Relaxed);
-        
+
         HistogramStats {
             count,
             min: if min == u64::MAX { 0 } else { min },
@@ -233,17 +233,17 @@ impl LogHistogram {
             p99: self.percentile(99),
         }
     }
-    
+
     /// パーセンタイル値を計算
     pub fn percentile(&self, p: u32) -> u64 {
         let total = self.count.load(Ordering::Relaxed);
         if total == 0 {
             return 0;
         }
-        
+
         let target = (total as u128 * p as u128 / 100) as u64;
         let mut cumulative = 0u64;
-        
+
         for (i, bucket) in self.buckets.iter().enumerate() {
             cumulative += bucket.load(Ordering::Relaxed);
             if cumulative >= target {
@@ -251,10 +251,10 @@ impl LogHistogram {
                 return if i == 0 { 0 } else { 1u64 << (i - 1) };
             }
         }
-        
+
         self.max.load(Ordering::Relaxed)
     }
-    
+
     /// リセット
     pub fn reset(&self) {
         for bucket in &self.buckets {
@@ -288,10 +288,10 @@ pub struct CpuProfiler {
     samples: Mutex<Vec<ProfileSample>>,
     enabled: AtomicBool,
     sample_rate_hz: AtomicU64,
-    
+
     // 集計データ
     function_hits: RwLock<BTreeMap<u64, u64>>,
-    
+
     // 統計
     total_samples: AtomicU64,
     dropped_samples: AtomicU64,
@@ -308,26 +308,26 @@ impl CpuProfiler {
             dropped_samples: AtomicU64::new(0),
         }
     }
-    
+
     /// プロファイリングを開始
     pub fn start(&self, sample_rate_hz: u64) {
         self.sample_rate_hz.store(sample_rate_hz, Ordering::SeqCst);
         self.enabled.store(true, Ordering::SeqCst);
     }
-    
+
     /// プロファイリングを停止
     pub fn stop(&self) {
         self.enabled.store(false, Ordering::SeqCst);
     }
-    
+
     /// サンプルを記録
     pub fn record_sample(&self) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let sample = ProfileSample::new(ProfileMode::Cpu, 1).with_stack();
-        
+
         let mut samples = self.samples.lock();
         if samples.len() < MAX_SAMPLES {
             // スタックのトップアドレスを集計
@@ -337,20 +337,20 @@ impl CpuProfiler {
                     *hits.entry(frame.instruction_pointer).or_insert(0) += 1;
                 }
             }
-            
+
             samples.push(sample);
             self.total_samples.fetch_add(1, Ordering::Relaxed);
         } else {
             self.dropped_samples.fetch_add(1, Ordering::Relaxed);
         }
     }
-    
+
     /// サンプルをクリア
     pub fn clear(&self) {
         self.samples.lock().clear();
         self.function_hits.write().clear();
     }
-    
+
     /// ホットスポットを取得
     pub fn hot_spots(&self, limit: usize) -> Vec<(u64, u64)> {
         let hits = self.function_hits.read();
@@ -359,7 +359,7 @@ impl CpuProfiler {
         sorted.truncate(limit);
         sorted
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> CpuProfilerStats {
         CpuProfilerStats {
@@ -396,7 +396,7 @@ pub enum AllocEvent {
 pub struct MemoryProfiler {
     events: Mutex<Vec<(u64, AllocEvent, Option<CallStack>)>>,
     enabled: AtomicBool,
-    
+
     // 統計
     total_allocated: AtomicU64,
     total_freed: AtomicU64,
@@ -404,7 +404,7 @@ pub struct MemoryProfiler {
     peak_allocated: AtomicU64,
     alloc_count: AtomicU64,
     free_count: AtomicU64,
-    
+
     // サイズ別ヒストグラム
     size_histogram: LogHistogram,
 }
@@ -423,52 +423,57 @@ impl MemoryProfiler {
             size_histogram: LogHistogram::new(),
         }
     }
-    
+
     /// プロファイリングを開始
     pub fn start(&self) {
         self.enabled.store(true, Ordering::SeqCst);
     }
-    
+
     /// プロファイリングを停止
     pub fn stop(&self) {
         self.enabled.store(false, Ordering::SeqCst);
     }
-    
+
     /// 割り当てを記録
     pub fn record_alloc(&self, size: usize, align: usize) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let event = AllocEvent::Alloc { size, align };
         let stack = CallStack::capture();
-        
+
         self.events.lock().push((rdtsc(), event, Some(stack)));
-        
-        self.total_allocated.fetch_add(size as u64, Ordering::Relaxed);
+
+        self.total_allocated
+            .fetch_add(size as u64, Ordering::Relaxed);
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
-        
-        let current = self.current_allocated.fetch_add(size as u64, Ordering::Relaxed) + size as u64;
+
+        let current = self
+            .current_allocated
+            .fetch_add(size as u64, Ordering::Relaxed)
+            + size as u64;
         self.peak_allocated.fetch_max(current, Ordering::Relaxed);
-        
+
         self.size_histogram.record(size as u64);
     }
-    
+
     /// 解放を記録
     pub fn record_dealloc(&self, size: usize, align: usize) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let event = AllocEvent::Dealloc { size, align };
-        
+
         self.events.lock().push((rdtsc(), event, None));
-        
+
         self.total_freed.fetch_add(size as u64, Ordering::Relaxed);
         self.free_count.fetch_add(1, Ordering::Relaxed);
-        self.current_allocated.fetch_sub(size as u64, Ordering::Relaxed);
+        self.current_allocated
+            .fetch_sub(size as u64, Ordering::Relaxed);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> MemoryProfilerStats {
         MemoryProfilerStats {
@@ -481,7 +486,7 @@ impl MemoryProfiler {
             size_histogram: self.size_histogram.stats(),
         }
     }
-    
+
     /// イベントをクリア
     pub fn clear(&self) {
         self.events.lock().clear();
@@ -517,17 +522,17 @@ impl LatencyProfiler {
             enabled: AtomicBool::new(false),
         }
     }
-    
+
     /// プロファイリングを開始
     pub fn start(&self) {
         self.enabled.store(true, Ordering::SeqCst);
     }
-    
+
     /// プロファイリングを停止
     pub fn stop(&self) {
         self.enabled.store(false, Ordering::SeqCst);
     }
-    
+
     /// ヒストグラムを取得または作成
     pub fn histogram(&self, name: &str) -> Arc<LogHistogram> {
         {
@@ -536,23 +541,23 @@ impl LatencyProfiler {
                 return h.clone();
             }
         }
-        
+
         let mut histograms = self.histograms.write();
         histograms
             .entry(name.into())
             .or_insert_with(|| Arc::new(LogHistogram::new()))
             .clone()
     }
-    
+
     /// レイテンシを記録
     pub fn record(&self, name: &str, latency_ns: u64) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         self.histogram(name).record(latency_ns);
     }
-    
+
     /// スコープ測定用ガード
     pub fn scope(&self, name: &'static str) -> LatencyScope {
         LatencyScope {
@@ -561,7 +566,7 @@ impl LatencyProfiler {
             start: rdtsc(),
         }
     }
-    
+
     /// 全ヒストグラムの統計を取得
     pub fn all_stats(&self) -> BTreeMap<String, HistogramStats> {
         self.histograms
@@ -607,21 +612,21 @@ impl Profiler {
             latency: LatencyProfiler::new(),
         }
     }
-    
+
     /// 全プロファイリングを開始
     pub fn start_all(&self, cpu_sample_rate: u64) {
         self.cpu.start(cpu_sample_rate);
         self.memory.start();
         self.latency.start();
     }
-    
+
     /// 全プロファイリングを停止
     pub fn stop_all(&self) {
         self.cpu.stop();
         self.memory.stop();
         self.latency.stop();
     }
-    
+
     /// レポートを生成
     pub fn report(&self) -> ProfileReport {
         ProfileReport {

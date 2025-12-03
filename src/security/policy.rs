@@ -3,10 +3,10 @@
 //! This module implements a flexible rule-based security policy
 //! system for controlling access and operations.
 
-use core::fmt;
-use alloc::vec::Vec;
-use alloc::string::String;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
+use alloc::vec::Vec;
+use core::fmt;
 use spin::RwLock;
 
 extern crate alloc;
@@ -29,7 +29,7 @@ impl PolicyAction {
     pub fn is_allow(&self) -> bool {
         matches!(self, PolicyAction::Allow | PolicyAction::AllowAudit)
     }
-    
+
     /// Check if action requires auditing
     pub fn needs_audit(&self) -> bool {
         matches!(self, PolicyAction::AllowAudit | PolicyAction::DenyAudit)
@@ -102,7 +102,7 @@ impl PolicyObject {
             _ => false,
         }
     }
-    
+
     /// Check if this object matches a path
     pub fn matches_path(&self, path: &str) -> bool {
         match self {
@@ -192,9 +192,8 @@ impl PolicyRule {
         operation: PolicyOperation,
         action: PolicyAction,
     ) -> Self {
-        static NEXT_ID: core::sync::atomic::AtomicU64 = 
-            core::sync::atomic::AtomicU64::new(1);
-        
+        static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
         PolicyRule {
             id: NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
             priority: 100,
@@ -206,19 +205,19 @@ impl PolicyRule {
             enabled: true,
         }
     }
-    
+
     /// Set priority
     pub fn with_priority(mut self, priority: u32) -> Self {
         self.priority = priority;
         self
     }
-    
+
     /// Set description
     pub fn with_description(mut self, desc: impl Into<String>) -> Self {
         self.description = desc.into();
         self
     }
-    
+
     /// Check if rule matches a request
     pub fn matches(
         &self,
@@ -231,25 +230,25 @@ impl PolicyRule {
         if !self.enabled {
             return false;
         }
-        
+
         // Check subject
         if !self.subject.matches_domain(domain_id, domain_type) {
             return false;
         }
-        
+
         // Check object
         if !self.object.matches_resource(resource_id, resource_type) {
             return false;
         }
-        
+
         // Check operation
         if self.operation != PolicyOperation::Any && self.operation != operation {
             return false;
         }
-        
+
         true
     }
-    
+
     /// Check if rule matches a path-based request
     pub fn matches_path(
         &self,
@@ -261,28 +260,30 @@ impl PolicyRule {
         if !self.enabled {
             return false;
         }
-        
+
         if !self.subject.matches_domain(domain_id, domain_type) {
             return false;
         }
-        
+
         if !self.object.matches_path(path) {
             return false;
         }
-        
+
         if self.operation != PolicyOperation::Any && self.operation != operation {
             return false;
         }
-        
+
         true
     }
 }
 
 impl fmt::Display for PolicyRule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Rule {} (pri={}): {:?} -> {:?} on {:?} = {:?}",
-               self.id, self.priority, self.subject, self.object,
-               self.operation, self.action)
+        write!(
+            f,
+            "Rule {} (pri={}): {:?} -> {:?} on {:?} = {:?}",
+            self.id, self.priority, self.subject, self.object, self.operation, self.action
+        )
     }
 }
 
@@ -306,7 +307,7 @@ impl PolicyDecision {
             audit_message: Some(String::from("No matching rule, default deny")),
         }
     }
-    
+
     /// Create a decision from a rule match
     pub fn from_rule(rule: &PolicyRule) -> Self {
         PolicyDecision {
@@ -349,31 +350,31 @@ impl SecurityPolicy {
             stats: PolicyStats::default(),
         }
     }
-    
+
     /// Add a rule
     pub fn add_rule(&mut self, rule: PolicyRule) {
         self.rules.push(rule);
         // Sort by priority (descending)
         self.rules.sort_by(|a, b| b.priority.cmp(&a.priority));
     }
-    
+
     /// Remove a rule by ID
     pub fn remove_rule(&mut self, rule_id: u64) -> bool {
         let len = self.rules.len();
         self.rules.retain(|r| r.id != rule_id);
         self.rules.len() < len
     }
-    
+
     /// Get a rule by ID
     pub fn get_rule(&self, rule_id: u64) -> Option<&PolicyRule> {
         self.rules.iter().find(|r| r.id == rule_id)
     }
-    
+
     /// Get all rules
     pub fn rules(&self) -> &[PolicyRule] {
         &self.rules
     }
-    
+
     /// Check policy
     pub fn check(
         &mut self,
@@ -384,7 +385,7 @@ impl SecurityPolicy {
         operation: PolicyOperation,
     ) -> PolicyDecision {
         self.stats.total_checks += 1;
-        
+
         if !self.enabled {
             return PolicyDecision {
                 action: PolicyAction::Allow,
@@ -392,10 +393,16 @@ impl SecurityPolicy {
                 audit_message: None,
             };
         }
-        
+
         // Find first matching rule
         for rule in &self.rules {
-            if rule.matches(domain_id, domain_type, resource_id, resource_type, operation) {
+            if rule.matches(
+                domain_id,
+                domain_type,
+                resource_id,
+                resource_type,
+                operation,
+            ) {
                 if rule.action.is_allow() {
                     self.stats.allowed += 1;
                 } else {
@@ -404,12 +411,12 @@ impl SecurityPolicy {
                 return PolicyDecision::from_rule(rule);
             }
         }
-        
+
         // No matching rule, use default
         self.stats.denied += 1;
         PolicyDecision::default_deny()
     }
-    
+
     /// Check path-based policy
     pub fn check_path(
         &mut self,
@@ -419,7 +426,7 @@ impl SecurityPolicy {
         operation: PolicyOperation,
     ) -> PolicyDecision {
         self.stats.total_checks += 1;
-        
+
         if !self.enabled {
             return PolicyDecision {
                 action: PolicyAction::Allow,
@@ -427,7 +434,7 @@ impl SecurityPolicy {
                 audit_message: None,
             };
         }
-        
+
         for rule in &self.rules {
             if rule.matches_path(domain_id, domain_type, path, operation) {
                 if rule.action.is_allow() {
@@ -438,26 +445,26 @@ impl SecurityPolicy {
                 return PolicyDecision::from_rule(rule);
             }
         }
-        
+
         self.stats.denied += 1;
         PolicyDecision::default_deny()
     }
-    
+
     /// Enable/disable policy
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
     }
-    
+
     /// Set default action
     pub fn set_default_action(&mut self, action: PolicyAction) {
         self.default_action = action;
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> &PolicyStats {
         &self.stats
     }
-    
+
     /// Clear rules
     pub fn clear(&mut self) {
         self.rules.clear();
@@ -509,7 +516,13 @@ pub fn check_policy(
     resource_type: &str,
     operation: PolicyOperation,
 ) -> PolicyDecision {
-    POLICY.write().check(domain_id, domain_type, resource_id, resource_type, operation)
+    POLICY.write().check(
+        domain_id,
+        domain_type,
+        resource_id,
+        resource_type,
+        operation,
+    )
 }
 
 /// Check path-based policy
@@ -519,7 +532,9 @@ pub fn check_path_policy(
     path: &str,
     operation: PolicyOperation,
 ) -> PolicyDecision {
-    POLICY.write().check_path(domain_id, domain_type, path, operation)
+    POLICY
+        .write()
+        .check_path(domain_id, domain_type, path, operation)
 }
 
 /// Add a rule to global policy
@@ -535,9 +550,9 @@ pub fn remove_rule(rule_id: u64) -> bool {
 /// Initialize policy engine with default rules
 pub fn init() {
     let mut policy = SecurityPolicy::new("kernel_policy");
-    
+
     // Default rules
-    
+
     // Kernel domain can do everything
     policy.add_rule(
         PolicyRule::new(
@@ -547,9 +562,9 @@ pub fn init() {
             PolicyAction::Allow,
         )
         .with_priority(1000)
-        .with_description("Kernel unrestricted")
+        .with_description("Kernel unrestricted"),
     );
-    
+
     // Default deny
     policy.add_rule(
         PolicyRule::new(
@@ -559,19 +574,19 @@ pub fn init() {
             PolicyAction::DenyAudit,
         )
         .with_priority(0)
-        .with_description("Default deny")
+        .with_description("Default deny"),
     );
-    
+
     policy.set_enabled(true);
     load_policy(policy);
-    
+
     crate::log!("[POLICY] Policy engine initialized\n");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_policy_rule() {
         let rule = PolicyRule::new(
@@ -580,12 +595,12 @@ mod tests {
             PolicyOperation::Read,
             PolicyAction::Allow,
         );
-        
+
         assert!(rule.matches(1, "app", 100, "file", PolicyOperation::Read));
         assert!(!rule.matches(2, "app", 100, "file", PolicyOperation::Read));
         assert!(!rule.matches(1, "app", 100, "network", PolicyOperation::Read));
     }
-    
+
     #[test]
     fn test_path_matching() {
         let rule = PolicyRule::new(
@@ -594,28 +609,26 @@ mod tests {
             PolicyOperation::Read,
             PolicyAction::Allow,
         );
-        
+
         assert!(rule.matches_path(1, "app", "/home/user", PolicyOperation::Read));
         assert!(rule.matches_path(1, "app", "/home/test", PolicyOperation::Read));
         assert!(!rule.matches_path(1, "app", "/etc/passwd", PolicyOperation::Read));
     }
-    
+
     #[test]
     fn test_policy() {
         let mut policy = SecurityPolicy::new("test");
-        
-        policy.add_rule(
-            PolicyRule::new(
-                PolicySubject::Domain(1),
-                PolicyObject::Any,
-                PolicyOperation::Read,
-                PolicyAction::Allow,
-            )
-        );
-        
+
+        policy.add_rule(PolicyRule::new(
+            PolicySubject::Domain(1),
+            PolicyObject::Any,
+            PolicyOperation::Read,
+            PolicyAction::Allow,
+        ));
+
         let decision = policy.check(1, "app", 0, "file", PolicyOperation::Read);
         assert!(decision.action.is_allow());
-        
+
         let decision = policy.check(1, "app", 0, "file", PolicyOperation::Write);
         assert!(!decision.action.is_allow());
     }

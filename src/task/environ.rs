@@ -2,11 +2,11 @@
 //!
 //! プロセス環境の管理
 
-use core::sync::atomic::{AtomicUsize, Ordering};
-use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicUsize, Ordering};
 
 /// 環境変数名 (Newtype)
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -31,15 +31,17 @@ impl EnvKey {
         if bytes.is_empty() {
             return false;
         }
-        
+
         // 最初の文字は英字またはアンダースコア（ASCII前提で高速化）
         let first = bytes[0];
         if !(first.is_ascii_alphabetic() || first == b'_') {
             return false;
         }
-        
+
         // 残りの文字は英数字またはアンダースコア
-        self.0.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        self.0
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
     }
 }
 
@@ -119,7 +121,7 @@ pub struct Environment {
 
 impl Environment {
     pub const DEFAULT_MAX_VARS: usize = 1024;
-    pub const DEFAULT_MAX_VALUE_SIZE: usize = 32 * 1024;  // 32KB
+    pub const DEFAULT_MAX_VALUE_SIZE: usize = 32 * 1024; // 32KB
 
     /// 新しい環境を作成
     pub const fn new() -> Self {
@@ -173,14 +175,14 @@ impl Environment {
         let value = EnvValue::new(value);
 
         let mut vars = self.vars.write();
-        
+
         if !vars.contains_key(&key) {
             if self.count.load(Ordering::Acquire) >= self.max_vars {
                 return Err(EnvError::TooManyVariables);
             }
             self.count.fetch_add(1, Ordering::AcqRel);
         }
-        
+
         vars.insert(key, value);
         Ok(())
     }
@@ -196,7 +198,7 @@ impl Environment {
     pub fn unset(&self, key: &str) -> Result<(), EnvError> {
         let key = EnvKey::new(key);
         let mut vars = self.vars.write();
-        
+
         if vars.remove(&key).is_some() {
             self.count.fetch_sub(1, Ordering::AcqRel);
             Ok(())
@@ -255,7 +257,7 @@ impl Environment {
     }
 
     /// 環境をコピー
-    /// 
+    ///
     /// # パフォーマンス最適化
     /// clone()の代わりに String::from() を使用。
     /// BTreeMapは自己バランス木のため、reserve()は提供されていないが、
@@ -263,7 +265,7 @@ impl Environment {
     pub fn clone_from(&self, other: &Environment) {
         let other_vars = other.vars.read();
         let mut vars = self.vars.write();
-        
+
         vars.clear();
         // Note: BTreeMapはreserve()を持たないが、各insertは O(log n) で
         // アロケーションも最小限。clone() の代わりに明示的な構築で
@@ -272,12 +274,9 @@ impl Environment {
             // EnvKey/EnvValue が Clone を実装している場合でも、
             // 内部の String を直接参照してコピーすることで
             // vtable lookupを回避（monomorphization）
-            vars.insert(
-                EnvKey::new(k.as_str()),
-                EnvValue::new(v.as_str()),
-            );
+            vars.insert(EnvKey::new(k.as_str()), EnvValue::new(v.as_str()));
         }
-        
+
         self.count.store(other_vars.len(), Ordering::Release);
     }
 
@@ -285,12 +284,12 @@ impl Environment {
     pub fn expand(&self, s: &str) -> String {
         let mut result = String::with_capacity(s.len());
         let mut chars = s.chars().peekable();
-        
+
         while let Some(c) = chars.next() {
             if c == '$' {
                 let mut var_name = String::new();
                 let braced = chars.peek() == Some(&'{');
-                
+
                 if braced {
                     chars.next(); // '{'
                     while let Some(&c) = chars.peek() {
@@ -312,7 +311,7 @@ impl Environment {
                         }
                     }
                 }
-                
+
                 if let Some(value) = self.get(&var_name) {
                     result.push_str(value.as_str());
                 }
@@ -320,7 +319,7 @@ impl Environment {
                 result.push(c);
             }
         }
-        
+
         result
     }
 }
@@ -404,10 +403,10 @@ mod tests {
     #[test]
     fn test_env_basic() {
         let env = Environment::new();
-        
+
         env.set("TEST_VAR", "test_value").unwrap();
         assert_eq!(env.get("TEST_VAR").unwrap().as_str(), "test_value");
-        
+
         env.unset("TEST_VAR").unwrap();
         assert!(env.get("TEST_VAR").is_none());
     }
@@ -417,7 +416,7 @@ mod tests {
         assert!(EnvKey::new("VALID_KEY").is_valid());
         assert!(EnvKey::new("_also_valid").is_valid());
         assert!(EnvKey::new("KEY123").is_valid());
-        
+
         assert!(!EnvKey::new("").is_valid());
         assert!(!EnvKey::new("123_invalid").is_valid());
         assert!(!EnvKey::new("key-with-dash").is_valid());
@@ -428,7 +427,7 @@ mod tests {
         let env = Environment::new();
         env.set("USER", "testuser").unwrap();
         env.set("HOME", "/home/testuser").unwrap();
-        
+
         assert_eq!(env.expand("Hello $USER!"), "Hello testuser!");
         assert_eq!(env.expand("Home is ${HOME}"), "Home is /home/testuser");
     }

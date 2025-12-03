@@ -97,13 +97,8 @@ impl Writer {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
                 unsafe {
-                    let character = core::ptr::read_volatile(
-                        &(*self.buffer).chars[row][col]
-                    );
-                    core::ptr::write_volatile(
-                        &mut (*self.buffer).chars[row - 1][col],
-                        character,
-                    );
+                    let character = core::ptr::read_volatile(&(*self.buffer).chars[row][col]);
+                    core::ptr::write_volatile(&mut (*self.buffer).chars[row - 1][col], character);
                 }
             }
         }
@@ -118,10 +113,7 @@ impl Writer {
         };
         for col in 0..BUFFER_WIDTH {
             unsafe {
-                core::ptr::write_volatile(
-                    &mut (*self.buffer).chars[row][col],
-                    blank,
-                );
+                core::ptr::write_volatile(&mut (*self.buffer).chars[row][col], blank);
             }
         }
     }

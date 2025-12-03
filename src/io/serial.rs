@@ -19,8 +19,8 @@
 use core::fmt::{self, Write};
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 use x86_64::instructions::port::Port;
 
@@ -39,17 +39,17 @@ pub const COM4: u16 = 0x2E8;
 
 // レジスタオフセット
 mod reg {
-    pub const DATA: u16 = 0;           // データレジスタ（DLAB=0）
-    pub const DLL: u16 = 0;            // 分周器下位（DLAB=1）
-    pub const DLH: u16 = 1;            // 分周器上位（DLAB=1）
-    pub const IER: u16 = 1;            // 割り込み有効化レジスタ（DLAB=0）
-    pub const IIR: u16 = 2;            // 割り込み識別レジスタ（読み取り）
-    pub const FCR: u16 = 2;            // FIFOコントロールレジスタ（書き込み）
-    pub const LCR: u16 = 3;            // ラインコントロールレジスタ
-    pub const MCR: u16 = 4;            // モデムコントロールレジスタ
-    pub const LSR: u16 = 5;            // ラインステータスレジスタ
-    pub const MSR: u16 = 6;            // モデムステータスレジスタ
-    pub const SR: u16 = 7;             // スクラッチレジスタ
+    pub const DATA: u16 = 0; // データレジスタ（DLAB=0）
+    pub const DLL: u16 = 0; // 分周器下位（DLAB=1）
+    pub const DLH: u16 = 1; // 分周器上位（DLAB=1）
+    pub const IER: u16 = 1; // 割り込み有効化レジスタ（DLAB=0）
+    pub const IIR: u16 = 2; // 割り込み識別レジスタ（読み取り）
+    pub const FCR: u16 = 2; // FIFOコントロールレジスタ（書き込み）
+    pub const LCR: u16 = 3; // ラインコントロールレジスタ
+    pub const MCR: u16 = 4; // モデムコントロールレジスタ
+    pub const LSR: u16 = 5; // ラインステータスレジスタ
+    pub const MSR: u16 = 6; // モデムステータスレジスタ
+    pub const SR: u16 = 7; // スクラッチレジスタ
 }
 
 // ラインステータスビット
@@ -105,7 +105,7 @@ mod mcr {
     pub const DTR: u8 = 1 << 0;
     pub const RTS: u8 = 1 << 1;
     pub const OUT1: u8 = 1 << 2;
-    pub const OUT2: u8 = 1 << 3;   // 割り込み有効化
+    pub const OUT2: u8 = 1 << 3; // 割り込み有効化
     pub const LOOPBACK: u8 = 1 << 4;
 }
 
@@ -156,7 +156,7 @@ impl SerialPort {
             initialized: AtomicBool::new(false),
         }
     }
-    
+
     /// シリアルポートを初期化
     pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> {
         unsafe {
@@ -166,53 +166,53 @@ impl SerialPort {
             let mut lcr_port: Port<u8> = Port::new(self.base + reg::LCR);
             let mut mcr_port: Port<u8> = Port::new(self.base + reg::MCR);
             let mut sr_port: Port<u8> = Port::new(self.base + reg::SR);
-            
+
             // 割り込みを無効化
             ier_port.write(0x00);
-            
+
             // ボーレート設定（DLAB=1）
             lcr_port.write(lcr::DLAB);
-            
+
             let divisor = baud_rate.divisor();
-            data_port.write((divisor & 0xFF) as u8);  // DLL
-            ier_port.write(((divisor >> 8) & 0xFF) as u8);  // DLH
-            
+            data_port.write((divisor & 0xFF) as u8); // DLL
+            ier_port.write(((divisor >> 8) & 0xFF) as u8); // DLH
+
             // 8N1設定（8データビット、パリティなし、1ストップビット）
             lcr_port.write(lcr::DATA_8 | lcr::STOP_1 | lcr::PARITY_NONE);
-            
+
             // FIFOを有効化、14バイトトリガ
             fcr_port.write(fcr::ENABLE | fcr::RX_CLEAR | fcr::TX_CLEAR | fcr::TRIGGER_14);
-            
+
             // DTR、RTS、OUT2（割り込み）を有効化
             mcr_port.write(mcr::DTR | mcr::RTS | mcr::OUT2);
-            
+
             // ループバックモードでテスト
             mcr_port.write(mcr::LOOPBACK | mcr::DTR | mcr::RTS | mcr::OUT2);
-            
+
             // テストバイトを送信
             data_port.write(0xAE);
-            
+
             // 読み戻しチェック
             let response = data_port.read();
             if response != 0xAE {
                 return Err(SerialError::InitFailed);
             }
-            
+
             // 通常モードに戻す
             mcr_port.write(mcr::DTR | mcr::RTS | mcr::OUT2);
-            
+
             // スクラッチレジスタでさらにテスト
             sr_port.write(0x55);
             if sr_port.read() != 0x55 {
                 return Err(SerialError::InitFailed);
             }
-            
+
             self.initialized.store(true, Ordering::SeqCst);
         }
-        
+
         Ok(())
     }
-    
+
     /// 受信データがあるか確認
     pub fn can_receive(&self) -> bool {
         unsafe {
@@ -220,7 +220,7 @@ impl SerialPort {
             (lsr_port.read() & lsr::DATA_READY) != 0
         }
     }
-    
+
     /// 送信可能か確認
     pub fn can_transmit(&self) -> bool {
         unsafe {
@@ -228,31 +228,31 @@ impl SerialPort {
             (lsr_port.read() & lsr::TX_HOLDING_EMPTY) != 0
         }
     }
-    
+
     /// バイトを送信（ブロッキング）
     pub fn send(&self, byte: u8) {
         while !self.can_transmit() {
             core::hint::spin_loop();
         }
-        
+
         unsafe {
             let mut data_port: Port<u8> = Port::new(self.base + reg::DATA);
             data_port.write(byte);
         }
     }
-    
+
     /// バイトを受信（ブロッキング）
     pub fn receive(&self) -> u8 {
         while !self.can_receive() {
             core::hint::spin_loop();
         }
-        
+
         unsafe {
             let mut data_port: Port<u8> = Port::new(self.base + reg::DATA);
             data_port.read()
         }
     }
-    
+
     /// バイトを送信（ノンブロッキング）
     pub fn try_send(&self, byte: u8) -> Result<(), SerialError> {
         if self.can_transmit() {
@@ -265,7 +265,7 @@ impl SerialPort {
             Err(SerialError::BufferFull)
         }
     }
-    
+
     /// バイトを受信（ノンブロッキング）
     pub fn try_receive(&self) -> Result<u8, SerialError> {
         if self.can_receive() {
@@ -277,14 +277,14 @@ impl SerialPort {
             Err(SerialError::NoData)
         }
     }
-    
+
     /// 文字列を送信
     pub fn send_str(&self, s: &str) {
         for byte in s.bytes() {
             self.send(byte);
         }
     }
-    
+
     /// 割り込みを有効化
     pub fn enable_interrupts(&self, rx: bool, tx: bool) {
         let mut flags = 0u8;
@@ -294,13 +294,13 @@ impl SerialPort {
         if tx {
             flags |= ier::TX_EMPTY;
         }
-        
+
         unsafe {
             let mut ier_port: Port<u8> = Port::new(self.base + reg::IER);
             ier_port.write(flags);
         }
     }
-    
+
     /// 割り込みを無効化
     pub fn disable_interrupts(&self) {
         unsafe {
@@ -308,7 +308,7 @@ impl SerialPort {
             ier_port.write(0);
         }
     }
-    
+
     /// ラインステータスを取得
     pub fn line_status(&self) -> u8 {
         unsafe {
@@ -368,31 +368,32 @@ impl RxBuffer {
             tail: AtomicUsize::new(0),
         }
     }
-    
+
     fn push(&self, byte: u8) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
         let next_tail = (tail + 1) % RX_BUFFER_SIZE;
-        
+
         if next_tail == self.head.load(Ordering::Acquire) {
             return false;
         }
-        
+
         self.buffer[tail].store(byte, Ordering::Relaxed);
         self.tail.store(next_tail, Ordering::Release);
         true
     }
-    
+
     fn pop(&self) -> Option<u8> {
         let head = self.head.load(Ordering::Relaxed);
         if head == self.tail.load(Ordering::Acquire) {
             return None;
         }
-        
+
         let byte = self.buffer[head].load(Ordering::Relaxed);
-        self.head.store((head + 1) % RX_BUFFER_SIZE, Ordering::Release);
+        self.head
+            .store((head + 1) % RX_BUFFER_SIZE, Ordering::Release);
         Some(byte)
     }
-    
+
     fn is_empty(&self) -> bool {
         self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
     }
@@ -414,12 +415,12 @@ impl AsyncSerialPort {
             waker: Mutex::new(None),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> {
         self.port.init(baud_rate)
     }
-    
+
     /// 割り込みハンドラ（ISRから呼ばれる）
     pub fn handle_interrupt(&self) {
         // 受信データを読み取ってバッファに追加
@@ -428,31 +429,33 @@ impl AsyncSerialPort {
                 self.rx_buffer.push(byte);
             }
         }
-        
+
         // 待機中のタスクを起床
         if let Some(waker) = self.waker.lock().take() {
             waker.wake();
         }
     }
-    
+
     /// バイトを送信
     pub fn send(&self, byte: u8) {
         self.port.send(byte);
     }
-    
+
     /// 文字列を送信
     pub fn send_str(&self, s: &str) {
         self.port.send_str(s);
     }
-    
+
     /// バイトを非同期で受信
     pub fn read_byte(&self) -> SerialReadFuture {
         SerialReadFuture { port: self }
     }
-    
+
     /// バイトをポーリングで受信
     pub fn poll_byte(&self) -> Option<u8> {
-        self.rx_buffer.pop().or_else(|| self.port.try_receive().ok())
+        self.rx_buffer
+            .pop()
+            .or_else(|| self.port.try_receive().ok())
     }
 }
 
@@ -463,30 +466,30 @@ pub struct SerialReadFuture<'a> {
 
 impl<'a> Future for SerialReadFuture<'a> {
     type Output = u8;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // まずバッファをチェック
         if let Some(byte) = self.port.rx_buffer.pop() {
             return Poll::Ready(byte);
         }
-        
+
         // 直接ポートをチェック
         if let Ok(byte) = self.port.port.try_receive() {
             return Poll::Ready(byte);
         }
-        
+
         // Wakerを登録
         *self.port.waker.lock() = Some(cx.waker().clone());
-        
+
         // 再度チェック
         if let Some(byte) = self.port.rx_buffer.pop() {
             return Poll::Ready(byte);
         }
-        
+
         if let Ok(byte) = self.port.port.try_receive() {
             return Poll::Ready(byte);
         }
-        
+
         Poll::Pending
     }
 }
@@ -539,7 +542,7 @@ macro_rules! serial_println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    
+
     // シリアルポートに書き込み
     unsafe {
         let _ = (&SERIAL1.port as *const SerialPort as *mut SerialPort)
@@ -555,7 +558,7 @@ pub fn _print(args: fmt::Arguments) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_baud_rate_divisor() {
         assert_eq!(BaudRate::Baud115200.divisor(), 1);

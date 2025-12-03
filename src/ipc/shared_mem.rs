@@ -3,12 +3,12 @@
 //! ExoRust SAS (Single Address Space) アーキテクチャにおける
 //! 高速プロセス間通信の実装
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use core::ptr::NonNull;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 /// 共有メモリID (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -30,7 +30,7 @@ pub struct ShmKey(i32);
 
 impl ShmKey {
     pub const IPC_PRIVATE: Self = Self(0);
-    
+
     pub const fn new(key: i32) -> Self {
         Self(key)
     }
@@ -81,7 +81,7 @@ impl Default for ShmPermissions {
             read: true,
             write: true,
             execute: false,
-            mode: 0o600,  // owner r/w
+            mode: 0o600, // owner r/w
         }
     }
 }
@@ -179,7 +179,7 @@ impl ShmStats {
             attach_count: AtomicUsize::new(0),
             total_attaches: AtomicU64::new(0),
             total_detaches: AtomicU64::new(0),
-            created_at: 0,  // TODO: 実際のタイムスタンプ
+            created_at: 0, // TODO: 実際のタイムスタンプ
             last_access: AtomicU64::new(0),
             last_modify: AtomicU64::new(0),
         }
@@ -218,12 +218,13 @@ impl SharedMemoryRegion {
         flags: ShmFlags,
     ) -> Result<Self, ShmError> {
         let aligned_size = size.page_aligned();
-        
+
         let mut memory = Vec::new();
-        memory.try_reserve(aligned_size.as_usize())
+        memory
+            .try_reserve(aligned_size.as_usize())
             .map_err(|_| ShmError::OutOfMemory)?;
         memory.resize(aligned_size.as_usize(), 0);
-        
+
         Ok(Self {
             id,
             key,
@@ -306,10 +307,10 @@ impl SharedMemoryRegion {
     fn detach(&self) -> Result<bool, ShmError> {
         let prev = self.stats.attach_count.fetch_sub(1, Ordering::AcqRel);
         self.stats.total_detaches.fetch_add(1, Ordering::Relaxed);
-        
+
         // 最後のデタッチで削除マークがあれば削除可能
         if prev == 1 && self.marked_for_removal.load(Ordering::Acquire) {
-            return Ok(true);  // 削除可能
+            return Ok(true); // 削除可能
         }
         Ok(false)
     }
@@ -321,8 +322,7 @@ impl SharedMemoryRegion {
 
     /// 削除可能かどうか
     pub fn can_be_removed(&self) -> bool {
-        self.marked_for_removal.load(Ordering::Acquire) 
-            && self.attach_count() == 0
+        self.marked_for_removal.load(Ordering::Acquire) && self.attach_count() == 0
     }
 }
 
@@ -341,7 +341,7 @@ impl ShmHandle {
             r.attach()?;
             r.as_ptr() as usize
         };
-        
+
         Ok(Self {
             region,
             base_addr,
@@ -388,11 +388,11 @@ impl ShmHandle {
     /// 指定オフセットに書き込み
     pub fn write_at(&self, offset: usize, data: &[u8]) -> Result<(), ShmError> {
         let mem = self.write().ok_or(ShmError::NotAttached)?;
-        
+
         if offset + data.len() > mem.len() {
             return Err(ShmError::InvalidAddress);
         }
-        
+
         mem[offset..offset + data.len()].copy_from_slice(data);
         Ok(())
     }
@@ -400,11 +400,11 @@ impl ShmHandle {
     /// 指定オフセットから読み取り
     pub fn read_at(&self, offset: usize, buf: &mut [u8]) -> Result<usize, ShmError> {
         let mem = self.read().ok_or(ShmError::NotAttached)?;
-        
+
         if offset >= mem.len() {
             return Err(ShmError::InvalidAddress);
         }
-        
+
         let to_read = buf.len().min(mem.len() - offset);
         buf[..to_read].copy_from_slice(&mem[offset..offset + to_read]);
         Ok(to_read)
@@ -415,7 +415,7 @@ impl ShmHandle {
         if !self.attached.swap(false, Ordering::AcqRel) {
             return Err(ShmError::NotAttached);
         }
-        
+
         let r = self.region.read();
         r.detach()?;
         Ok(())
@@ -587,7 +587,7 @@ impl SharedMemoryManager {
         {
             let r = region.read();
             r.mark_for_removal();
-            
+
             // アタッチがある場合は実際の削除を延期
             if r.attach_count() > 0 {
                 return Ok(());
@@ -626,7 +626,8 @@ impl SharedMemoryManager {
         }
 
         self.total_destroyed.fetch_add(1, Ordering::Relaxed);
-        self.total_bytes.fetch_sub(size.as_usize(), Ordering::Relaxed);
+        self.total_bytes
+            .fetch_sub(size.as_usize(), Ordering::Relaxed);
 
         Ok(())
     }
@@ -636,7 +637,7 @@ impl SharedMemoryManager {
         let id_map = self.regions_by_id.read();
         let region = id_map.get(&id)?;
         let r = region.read();
-        
+
         Some(ShmInfo {
             id,
             key: r.key(),
@@ -740,8 +741,12 @@ mod tests {
         let id = shmget(
             ShmKey::IPC_PRIVATE,
             ShmSize::new(4096),
-            ShmFlags { create: true, ..Default::default() },
-        ).unwrap();
+            ShmFlags {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let handle = shmat(id).unwrap();
         assert!(handle.is_attached());
@@ -762,8 +767,13 @@ mod tests {
         let id = shm_open(
             name,
             ShmSize::new(8192),
-            ShmFlags { create: true, exclusive: true, ..Default::default() },
-        ).unwrap();
+            ShmFlags {
+                create: true,
+                exclusive: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let handle = shmat(id).unwrap();
         handle.write_at(0, b"Named SHM").unwrap();

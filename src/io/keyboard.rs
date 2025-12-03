@@ -15,11 +15,11 @@
 
 #![allow(dead_code)]
 
+use alloc::collections::VecDeque;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use alloc::collections::VecDeque;
+use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
 // ============================================================================
@@ -44,7 +44,7 @@ pub enum KeyCode {
     F10 = 0x44,
     F11 = 0x57,
     F12 = 0x58,
-    
+
     // 数字キー
     Key1 = 0x02,
     Key2 = 0x03,
@@ -56,13 +56,13 @@ pub enum KeyCode {
     Key8 = 0x09,
     Key9 = 0x0A,
     Key0 = 0x0B,
-    
+
     // 記号キー
     Minus = 0x0C,
     Equals = 0x0D,
     Backspace = 0x0E,
     Tab = 0x0F,
-    
+
     // 文字キー（QWERTY配列）
     Q = 0x10,
     W = 0x11,
@@ -103,20 +103,20 @@ pub enum KeyCode {
     Period = 0x34,
     Slash = 0x35,
     RightShift = 0x36,
-    
+
     // その他
     LeftAlt = 0x38,
     Space = 0x39,
     CapsLock = 0x3A,
     NumLock = 0x45,
     ScrollLock = 0x46,
-    
+
     // 矢印キー（拡張スキャンコード）
     Up = 0x48,
     Down = 0x50,
     Left = 0x4B,
     Right = 0x4D,
-    
+
     // 不明
     Unknown = 0xFF,
 }
@@ -211,67 +211,349 @@ impl KeyCode {
             }
         }
     }
-    
+
     /// キーコードをASCII文字に変換（シフトなし）
     pub fn to_char(&self, shift: bool, caps_lock: bool) -> Option<char> {
         let base = match self {
-            KeyCode::Key1 => if shift { '!' } else { '1' },
-            KeyCode::Key2 => if shift { '@' } else { '2' },
-            KeyCode::Key3 => if shift { '#' } else { '3' },
-            KeyCode::Key4 => if shift { '$' } else { '4' },
-            KeyCode::Key5 => if shift { '%' } else { '5' },
-            KeyCode::Key6 => if shift { '^' } else { '6' },
-            KeyCode::Key7 => if shift { '&' } else { '7' },
-            KeyCode::Key8 => if shift { '*' } else { '8' },
-            KeyCode::Key9 => if shift { '(' } else { '9' },
-            KeyCode::Key0 => if shift { ')' } else { '0' },
-            KeyCode::Minus => if shift { '_' } else { '-' },
-            KeyCode::Equals => if shift { '+' } else { '=' },
-            KeyCode::LeftBracket => if shift { '{' } else { '[' },
-            KeyCode::RightBracket => if shift { '}' } else { ']' },
-            KeyCode::Semicolon => if shift { ':' } else { ';' },
-            KeyCode::Quote => if shift { '"' } else { '\'' },
-            KeyCode::BackTick => if shift { '~' } else { '`' },
-            KeyCode::Backslash => if shift { '|' } else { '\\' },
-            KeyCode::Comma => if shift { '<' } else { ',' },
-            KeyCode::Period => if shift { '>' } else { '.' },
-            KeyCode::Slash => if shift { '?' } else { '/' },
+            KeyCode::Key1 => {
+                if shift {
+                    '!'
+                } else {
+                    '1'
+                }
+            }
+            KeyCode::Key2 => {
+                if shift {
+                    '@'
+                } else {
+                    '2'
+                }
+            }
+            KeyCode::Key3 => {
+                if shift {
+                    '#'
+                } else {
+                    '3'
+                }
+            }
+            KeyCode::Key4 => {
+                if shift {
+                    '$'
+                } else {
+                    '4'
+                }
+            }
+            KeyCode::Key5 => {
+                if shift {
+                    '%'
+                } else {
+                    '5'
+                }
+            }
+            KeyCode::Key6 => {
+                if shift {
+                    '^'
+                } else {
+                    '6'
+                }
+            }
+            KeyCode::Key7 => {
+                if shift {
+                    '&'
+                } else {
+                    '7'
+                }
+            }
+            KeyCode::Key8 => {
+                if shift {
+                    '*'
+                } else {
+                    '8'
+                }
+            }
+            KeyCode::Key9 => {
+                if shift {
+                    '('
+                } else {
+                    '9'
+                }
+            }
+            KeyCode::Key0 => {
+                if shift {
+                    ')'
+                } else {
+                    '0'
+                }
+            }
+            KeyCode::Minus => {
+                if shift {
+                    '_'
+                } else {
+                    '-'
+                }
+            }
+            KeyCode::Equals => {
+                if shift {
+                    '+'
+                } else {
+                    '='
+                }
+            }
+            KeyCode::LeftBracket => {
+                if shift {
+                    '{'
+                } else {
+                    '['
+                }
+            }
+            KeyCode::RightBracket => {
+                if shift {
+                    '}'
+                } else {
+                    ']'
+                }
+            }
+            KeyCode::Semicolon => {
+                if shift {
+                    ':'
+                } else {
+                    ';'
+                }
+            }
+            KeyCode::Quote => {
+                if shift {
+                    '"'
+                } else {
+                    '\''
+                }
+            }
+            KeyCode::BackTick => {
+                if shift {
+                    '~'
+                } else {
+                    '`'
+                }
+            }
+            KeyCode::Backslash => {
+                if shift {
+                    '|'
+                } else {
+                    '\\'
+                }
+            }
+            KeyCode::Comma => {
+                if shift {
+                    '<'
+                } else {
+                    ','
+                }
+            }
+            KeyCode::Period => {
+                if shift {
+                    '>'
+                } else {
+                    '.'
+                }
+            }
+            KeyCode::Slash => {
+                if shift {
+                    '?'
+                } else {
+                    '/'
+                }
+            }
             KeyCode::Space => ' ',
             KeyCode::Enter => '\n',
             KeyCode::Tab => '\t',
             KeyCode::Backspace => '\x08',
-            
+
             // 文字キー
-            KeyCode::Q => if shift ^ caps_lock { 'Q' } else { 'q' },
-            KeyCode::W => if shift ^ caps_lock { 'W' } else { 'w' },
-            KeyCode::E => if shift ^ caps_lock { 'E' } else { 'e' },
-            KeyCode::R => if shift ^ caps_lock { 'R' } else { 'r' },
-            KeyCode::T => if shift ^ caps_lock { 'T' } else { 't' },
-            KeyCode::Y => if shift ^ caps_lock { 'Y' } else { 'y' },
-            KeyCode::U => if shift ^ caps_lock { 'U' } else { 'u' },
-            KeyCode::I => if shift ^ caps_lock { 'I' } else { 'i' },
-            KeyCode::O => if shift ^ caps_lock { 'O' } else { 'o' },
-            KeyCode::P => if shift ^ caps_lock { 'P' } else { 'p' },
-            KeyCode::A => if shift ^ caps_lock { 'A' } else { 'a' },
-            KeyCode::S => if shift ^ caps_lock { 'S' } else { 's' },
-            KeyCode::D => if shift ^ caps_lock { 'D' } else { 'd' },
-            KeyCode::F => if shift ^ caps_lock { 'F' } else { 'f' },
-            KeyCode::G => if shift ^ caps_lock { 'G' } else { 'g' },
-            KeyCode::H => if shift ^ caps_lock { 'H' } else { 'h' },
-            KeyCode::J => if shift ^ caps_lock { 'J' } else { 'j' },
-            KeyCode::K => if shift ^ caps_lock { 'K' } else { 'k' },
-            KeyCode::L => if shift ^ caps_lock { 'L' } else { 'l' },
-            KeyCode::Z => if shift ^ caps_lock { 'Z' } else { 'z' },
-            KeyCode::X => if shift ^ caps_lock { 'X' } else { 'x' },
-            KeyCode::C => if shift ^ caps_lock { 'C' } else { 'c' },
-            KeyCode::V => if shift ^ caps_lock { 'V' } else { 'v' },
-            KeyCode::B => if shift ^ caps_lock { 'B' } else { 'b' },
-            KeyCode::N => if shift ^ caps_lock { 'N' } else { 'n' },
-            KeyCode::M => if shift ^ caps_lock { 'M' } else { 'm' },
-            
+            KeyCode::Q => {
+                if shift ^ caps_lock {
+                    'Q'
+                } else {
+                    'q'
+                }
+            }
+            KeyCode::W => {
+                if shift ^ caps_lock {
+                    'W'
+                } else {
+                    'w'
+                }
+            }
+            KeyCode::E => {
+                if shift ^ caps_lock {
+                    'E'
+                } else {
+                    'e'
+                }
+            }
+            KeyCode::R => {
+                if shift ^ caps_lock {
+                    'R'
+                } else {
+                    'r'
+                }
+            }
+            KeyCode::T => {
+                if shift ^ caps_lock {
+                    'T'
+                } else {
+                    't'
+                }
+            }
+            KeyCode::Y => {
+                if shift ^ caps_lock {
+                    'Y'
+                } else {
+                    'y'
+                }
+            }
+            KeyCode::U => {
+                if shift ^ caps_lock {
+                    'U'
+                } else {
+                    'u'
+                }
+            }
+            KeyCode::I => {
+                if shift ^ caps_lock {
+                    'I'
+                } else {
+                    'i'
+                }
+            }
+            KeyCode::O => {
+                if shift ^ caps_lock {
+                    'O'
+                } else {
+                    'o'
+                }
+            }
+            KeyCode::P => {
+                if shift ^ caps_lock {
+                    'P'
+                } else {
+                    'p'
+                }
+            }
+            KeyCode::A => {
+                if shift ^ caps_lock {
+                    'A'
+                } else {
+                    'a'
+                }
+            }
+            KeyCode::S => {
+                if shift ^ caps_lock {
+                    'S'
+                } else {
+                    's'
+                }
+            }
+            KeyCode::D => {
+                if shift ^ caps_lock {
+                    'D'
+                } else {
+                    'd'
+                }
+            }
+            KeyCode::F => {
+                if shift ^ caps_lock {
+                    'F'
+                } else {
+                    'f'
+                }
+            }
+            KeyCode::G => {
+                if shift ^ caps_lock {
+                    'G'
+                } else {
+                    'g'
+                }
+            }
+            KeyCode::H => {
+                if shift ^ caps_lock {
+                    'H'
+                } else {
+                    'h'
+                }
+            }
+            KeyCode::J => {
+                if shift ^ caps_lock {
+                    'J'
+                } else {
+                    'j'
+                }
+            }
+            KeyCode::K => {
+                if shift ^ caps_lock {
+                    'K'
+                } else {
+                    'k'
+                }
+            }
+            KeyCode::L => {
+                if shift ^ caps_lock {
+                    'L'
+                } else {
+                    'l'
+                }
+            }
+            KeyCode::Z => {
+                if shift ^ caps_lock {
+                    'Z'
+                } else {
+                    'z'
+                }
+            }
+            KeyCode::X => {
+                if shift ^ caps_lock {
+                    'X'
+                } else {
+                    'x'
+                }
+            }
+            KeyCode::C => {
+                if shift ^ caps_lock {
+                    'C'
+                } else {
+                    'c'
+                }
+            }
+            KeyCode::V => {
+                if shift ^ caps_lock {
+                    'V'
+                } else {
+                    'v'
+                }
+            }
+            KeyCode::B => {
+                if shift ^ caps_lock {
+                    'B'
+                } else {
+                    'b'
+                }
+            }
+            KeyCode::N => {
+                if shift ^ caps_lock {
+                    'N'
+                } else {
+                    'n'
+                }
+            }
+            KeyCode::M => {
+                if shift ^ caps_lock {
+                    'M'
+                } else {
+                    'm'
+                }
+            }
+
             _ => return None,
         };
-        
+
         Some(base)
     }
 }
@@ -350,19 +632,19 @@ impl ModifierState {
             extended_mode: AtomicBool::new(false),
         }
     }
-    
+
     fn is_shift(&self) -> bool {
         self.left_shift.load(Ordering::Relaxed) || self.right_shift.load(Ordering::Relaxed)
     }
-    
+
     fn is_ctrl(&self) -> bool {
         self.left_ctrl.load(Ordering::Relaxed)
     }
-    
+
     fn is_alt(&self) -> bool {
         self.left_alt.load(Ordering::Relaxed)
     }
-    
+
     fn is_caps_lock(&self) -> bool {
         self.caps_lock.load(Ordering::Relaxed)
     }
@@ -393,37 +675,38 @@ impl ScancodeQueue {
             tail: AtomicUsize::new(0),
         }
     }
-    
+
     /// スキャンコードをプッシュ（ISRから呼ばれる）
     fn push(&self, scancode: u8) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
-        
+
         let next_tail = (tail + 1) % SCANCODE_QUEUE_SIZE;
         if next_tail == head {
             // キューが満杯
             return false;
         }
-        
+
         self.buffer[tail].store(scancode, Ordering::Relaxed);
         self.tail.store(next_tail, Ordering::Release);
         true
     }
-    
+
     /// スキャンコードをポップ
     fn pop(&self) -> Option<u8> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
-        
+
         if head == tail {
             return None;
         }
-        
+
         let scancode = self.buffer[head].load(Ordering::Relaxed);
-        self.head.store((head + 1) % SCANCODE_QUEUE_SIZE, Ordering::Release);
+        self.head
+            .store((head + 1) % SCANCODE_QUEUE_SIZE, Ordering::Release);
         Some(scancode)
     }
-    
+
     /// キューが空かどうか
     fn is_empty(&self) -> bool {
         self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
@@ -473,19 +756,19 @@ impl KeyboardDriver {
             initialized: AtomicBool::new(false),
         }
     }
-    
+
     /// ドライバを初期化
     pub fn init(&self) {
         if self.initialized.swap(true, Ordering::SeqCst) {
             return; // 既に初期化済み
         }
-        
+
         // PS/2キーボードコントローラの初期化
         // （基本的な初期化はBIOSが行っているので、ここでは追加設定のみ）
-        
+
         crate::log!("[KEYBOARD] Keyboard driver initialized\n");
     }
-    
+
     /// スキャンコードを処理（ISRから呼ばれる）
     pub fn handle_scancode(&self, scancode: u8) {
         // 拡張スキャンコードプレフィックスのチェック
@@ -493,29 +776,37 @@ impl KeyboardDriver {
             MODIFIER_STATE.extended_mode.store(true, Ordering::Relaxed);
             return;
         }
-        
+
         // キューにプッシュ
         if SCANCODE_QUEUE.push(scancode) {
             // 待機中のタスクを起床
             wake_waiting();
         }
     }
-    
+
     /// 次のキーイベントを取得（ノンブロッキング）
     pub fn poll_key_event(&self) -> Option<KeyEvent> {
         let scancode = SCANCODE_QUEUE.pop()?;
-        
+
         let extended = MODIFIER_STATE.extended_mode.swap(false, Ordering::Relaxed);
         let released = (scancode & 0x80) != 0;
         let code = scancode & 0x7F;
-        
+
         let key = KeyCode::from_scancode(code, extended);
-        let state = if released { KeyState::Released } else { KeyState::Pressed };
-        
+        let state = if released {
+            KeyState::Released
+        } else {
+            KeyState::Pressed
+        };
+
         // 修飾キーの状態を更新
         match key {
-            KeyCode::LeftShift => MODIFIER_STATE.left_shift.store(!released, Ordering::Relaxed),
-            KeyCode::RightShift => MODIFIER_STATE.right_shift.store(!released, Ordering::Relaxed),
+            KeyCode::LeftShift => MODIFIER_STATE
+                .left_shift
+                .store(!released, Ordering::Relaxed),
+            KeyCode::RightShift => MODIFIER_STATE
+                .right_shift
+                .store(!released, Ordering::Relaxed),
             KeyCode::LeftCtrl => MODIFIER_STATE.left_ctrl.store(!released, Ordering::Relaxed),
             KeyCode::LeftAlt => MODIFIER_STATE.left_alt.store(!released, Ordering::Relaxed),
             KeyCode::CapsLock if !released => {
@@ -528,7 +819,7 @@ impl KeyboardDriver {
             }
             _ => {}
         }
-        
+
         Some(KeyEvent {
             key,
             state,
@@ -538,17 +829,17 @@ impl KeyboardDriver {
             caps_lock: MODIFIER_STATE.is_caps_lock(),
         })
     }
-    
+
     /// 次のキーイベントを非同期で待機
     pub fn read_key(&self) -> KeyEventFuture {
         KeyEventFuture { _driver: self }
     }
-    
+
     /// 次の文字を非同期で待機
     pub fn read_char(&self) -> CharFuture {
         CharFuture { _driver: self }
     }
-    
+
     /// 行を非同期で読み取り
     pub fn read_line(&self) -> LineFuture {
         LineFuture {
@@ -587,13 +878,13 @@ pub struct KeyEventFuture<'a> {
 
 impl<'a> Future for KeyEventFuture<'a> {
     type Output = KeyEvent;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
             Poll::Ready(event)
         } else {
             register_waker(cx.waker());
-            
+
             // 再度チェック（Wakerを登録した後にイベントが来た可能性）
             if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
                 Poll::Ready(event)
@@ -611,7 +902,7 @@ pub struct CharFuture<'a> {
 
 impl<'a> Future for CharFuture<'a> {
     type Output = char;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
@@ -622,14 +913,14 @@ impl<'a> Future for CharFuture<'a> {
                 continue;
             } else {
                 register_waker(cx.waker());
-                
+
                 // 再度チェック
                 if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
                     if let Some(c) = event.to_char() {
                         return Poll::Ready(c);
                     }
                 }
-                
+
                 return Poll::Pending;
             }
         }
@@ -644,14 +935,14 @@ pub struct LineFuture<'a> {
 
 impl<'a> Future for LineFuture<'a> {
     type Output = alloc::string::String;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
             if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
                 if event.state == KeyState::Released {
                     continue;
                 }
-                
+
                 match event.key {
                     KeyCode::Enter => {
                         let result = core::mem::take(&mut self.buffer);
@@ -683,7 +974,7 @@ impl<'a> Future for LineFuture<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_keycode_to_char() {
         assert_eq!(KeyCode::A.to_char(false, false), Some('a'));
@@ -691,11 +982,11 @@ mod tests {
         assert_eq!(KeyCode::A.to_char(false, true), Some('A'));
         assert_eq!(KeyCode::A.to_char(true, true), Some('a'));
     }
-    
+
     #[test]
     fn test_scancode_queue() {
         let queue = ScancodeQueue::new();
-        
+
         assert!(queue.is_empty());
         assert!(queue.push(0x1E)); // 'A'
         assert!(!queue.is_empty());

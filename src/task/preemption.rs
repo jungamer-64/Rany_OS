@@ -4,7 +4,7 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// タスク実行時間の制限（ティック数）
 /// 設計書: APICタイマー割り込みを利用し、一定時間以上Executorに制御が戻らない場合は
@@ -45,56 +45,56 @@ impl PreemptionController {
             voluntary_yields: AtomicU64::new(0),
         }
     }
-    
+
     /// タイムスライスを設定
     pub fn set_time_slice(&self, ticks: u64) {
         let clamped = ticks.clamp(MIN_TIME_SLICE, MAX_TIME_SLICE);
         self.time_slice.store(clamped, Ordering::Relaxed);
     }
-    
+
     /// プリエンプションを有効/無効化
     pub fn set_enabled(&self, enabled: bool) {
         self.enabled.store(enabled, Ordering::Release);
     }
-    
+
     /// タスク実行開始を記録
     pub fn task_started(&self, current_tick: u64) {
         self.task_start_tick.store(current_tick, Ordering::Release);
         self.preemption_pending.store(false, Ordering::Release);
     }
-    
+
     /// タイマー割り込みから呼ばれる
     /// タイムスライスを超過した場合はプリエンプションフラグを立てる
     pub fn check_time_slice(&self, current_tick: u64) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let start = self.task_start_tick.load(Ordering::Acquire);
         let elapsed = current_tick.saturating_sub(start);
         let slice = self.time_slice.load(Ordering::Relaxed);
-        
+
         if elapsed >= slice {
             self.preemption_pending.store(true, Ordering::Release);
             self.forced_preemptions.fetch_add(1, Ordering::Relaxed);
         }
     }
-    
+
     /// プリエンプションが必要かチェック
     pub fn should_preempt(&self) -> bool {
         self.preemption_pending.load(Ordering::Acquire)
     }
-    
+
     /// プリエンプションフラグをクリア
     pub fn clear_preemption(&self) {
         self.preemption_pending.store(false, Ordering::Release);
     }
-    
+
     /// 自発的yieldを記録
     pub fn record_voluntary_yield(&self) {
         self.voluntary_yields.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> PreemptionStats {
         PreemptionStats {
@@ -203,7 +203,7 @@ impl Default for YieldNow {
 
 impl Future for YieldNow {
     type Output = ();
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if self.yielded {
             Poll::Ready(())
@@ -244,19 +244,19 @@ impl CpuTimeTracker {
             run_count: 0,
         }
     }
-    
+
     /// 実行開始を記録
     pub fn start(&mut self, current_tick: u64) {
         self.last_start = current_tick;
         self.run_count += 1;
     }
-    
+
     /// 実行終了を記録
     pub fn stop(&mut self, current_tick: u64) {
         let elapsed = current_tick.saturating_sub(self.last_start);
         self.total_ticks += elapsed;
     }
-    
+
     /// 平均実行時間を取得
     pub fn average_run_time(&self) -> u64 {
         if self.run_count > 0 {
@@ -287,23 +287,23 @@ impl AdaptiveTimeSlice {
             adjustment: AtomicU64::new(100), // 100% = 調整なし
         }
     }
-    
+
     /// 実行時間に基づいてタイムスライスを調整
     /// 短いタスクには短いスライス、長いタスクには長いスライスを与える
     pub fn adjust(&self, average_run_time: u64) {
         let adjustment = if average_run_time < 1 {
-            50  // 非常に短いタスク -> スライスを半分に
+            50 // 非常に短いタスク -> スライスを半分に
         } else if average_run_time < 5 {
-            75  // 短いタスク -> スライスを75%に
+            75 // 短いタスク -> スライスを75%に
         } else if average_run_time > 20 {
             150 // 長いタスク -> スライスを150%に
         } else {
             100 // 通常
         };
-        
+
         self.adjustment.store(adjustment, Ordering::Relaxed);
     }
-    
+
     /// 調整後のタイムスライスを取得
     pub fn get_time_slice(&self) -> u64 {
         let base = self.base_slice.load(Ordering::Relaxed);
@@ -315,36 +315,36 @@ impl AdaptiveTimeSlice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_preemption_controller() {
         let controller = PreemptionController::new();
-        
+
         // タスク開始
         controller.task_started(0);
         assert!(!controller.should_preempt());
-        
+
         // タイムスライス内
         controller.check_time_slice(5);
         assert!(!controller.should_preempt());
-        
+
         // タイムスライス超過
         controller.check_time_slice(DEFAULT_TIME_SLICE + 1);
         assert!(controller.should_preempt());
-        
+
         // クリア
         controller.clear_preemption();
         assert!(!controller.should_preempt());
     }
-    
+
     #[test]
     fn test_cpu_time_tracker() {
         let mut tracker = CpuTimeTracker::new();
-        
+
         tracker.start(0);
         tracker.stop(10);
         assert_eq!(tracker.total_ticks, 10);
-        
+
         tracker.start(10);
         tracker.stop(30);
         assert_eq!(tracker.total_ticks, 30);

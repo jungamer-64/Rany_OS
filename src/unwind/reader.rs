@@ -7,7 +7,7 @@
 use super::UnwindError;
 
 /// 安全なメモリストリームリーダー
-/// 
+///
 /// # 設計原則
 /// - 生ポインタ (`ptr::read`) の使用を完全に排除
 /// - すべての読み取りで境界チェックを実施
@@ -24,19 +24,24 @@ impl<'a> MemoryReader<'a> {
     /// 新しいリーダーを作成
     #[inline]
     pub const fn new(buffer: &'a [u8]) -> Self {
-        Self { buffer, position: 0 }
+        Self {
+            buffer,
+            position: 0,
+        }
     }
 
     /// 現在位置から指定バイト数を読み込む（境界チェック付き）
     #[inline]
     pub fn read_bytes(&mut self, len: usize) -> Result<&'a [u8], UnwindError> {
-        let end = self.position.checked_add(len)
+        let end = self
+            .position
+            .checked_add(len)
             .ok_or(UnwindError::MemoryReadError)?;
-        
+
         if end > self.buffer.len() {
             return Err(UnwindError::MemoryReadError);
         }
-        
+
         let slice = &self.buffer[self.position..end];
         self.position = end;
         Ok(slice)
@@ -50,7 +55,7 @@ impl<'a> MemoryReader<'a> {
     }
 
     /// u16を読み込む（リトルエンディアン）
-    /// 
+    ///
     /// # Safety Note
     /// `read_bytes()` が既に長さ検証を行うため、配列変換は常に成功する。
     #[inline]
@@ -75,8 +80,7 @@ impl<'a> MemoryReader<'a> {
         let bytes = self.read_bytes(core::mem::size_of::<u64>())?;
         // SAFETY: read_bytes() が正確に 8 バイトを返すことを保証
         Ok(u64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]))
     }
 
@@ -109,75 +113,73 @@ impl<'a> MemoryReader<'a> {
         let bytes = self.read_bytes(core::mem::size_of::<i64>())?;
         // SAFETY: read_bytes() が正確に 8 バイトを返すことを保証
         Ok(i64::from_le_bytes([
-            bytes[0], bytes[1], bytes[2], bytes[3],
-            bytes[4], bytes[5], bytes[6], bytes[7],
+            bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
         ]))
     }
 
     /// ULEB128を読み込む
-    /// 
+    ///
     /// ULEB128 (Unsigned Little Endian Base 128) は可変長整数エンコーディング。
     /// 各バイトの下位7ビットがデータ、最上位ビットが継続フラグ。
     pub fn read_uleb128(&mut self) -> Result<u64, UnwindError> {
         let mut result: u64 = 0;
         let mut shift: u32 = 0;
-        
+
         loop {
             let byte = self.read_u8()?;
-            
+
             // オーバーフローチェック
             if shift >= 64 {
                 return Err(UnwindError::InvalidDwarf);
             }
-            
+
             // 下位7ビットを結果に追加
             let value = (byte & 0x7F) as u64;
-            result |= value.checked_shl(shift)
-                .ok_or(UnwindError::InvalidDwarf)?;
-            
+            result |= value.checked_shl(shift).ok_or(UnwindError::InvalidDwarf)?;
+
             // 最上位ビットが0なら終了
             if byte & 0x80 == 0 {
                 break;
             }
-            
+
             shift += 7;
         }
-        
+
         Ok(result)
     }
 
     /// SLEB128を読み込む
-    /// 
+    ///
     /// SLEB128 (Signed Little Endian Base 128) は符号付き可変長整数エンコーディング。
     pub fn read_sleb128(&mut self) -> Result<i64, UnwindError> {
         let mut result: i64 = 0;
         let mut shift: u32 = 0;
         let mut byte: u8;
-        
+
         loop {
             byte = self.read_u8()?;
-            
+
             // オーバーフローチェック
             if shift >= 64 {
                 return Err(UnwindError::InvalidDwarf);
             }
-            
+
             // 下位7ビットを結果に追加
             let value = (byte & 0x7F) as i64;
             result |= value << shift;
             shift += 7;
-            
+
             // 最上位ビットが0なら終了
             if byte & 0x80 == 0 {
                 break;
             }
         }
-        
+
         // 符号拡張
         if shift < 64 && (byte & 0x40) != 0 {
             result |= !0i64 << shift;
         }
-        
+
         Ok(result)
     }
 
@@ -221,7 +223,7 @@ impl<'a> MemoryReader<'a> {
     }
 
     /// 位置を直接設定（境界チェックなし - 内部使用向け）
-    /// 
+    ///
     /// 範囲外の場合は次の読み取りでエラーになる
     #[inline]
     pub fn set_position(&mut self, pos: usize) {
@@ -236,13 +238,15 @@ impl<'a> MemoryReader<'a> {
 
     /// 相対シーク
     pub fn skip(&mut self, count: usize) -> Result<(), UnwindError> {
-        let new_pos = self.position.checked_add(count)
+        let new_pos = self
+            .position
+            .checked_add(count)
             .ok_or(UnwindError::MemoryReadError)?;
-        
+
         if new_pos > self.buffer.len() {
             return Err(UnwindError::MemoryReadError);
         }
-        
+
         self.position = new_pos;
         Ok(())
     }
@@ -250,37 +254,42 @@ impl<'a> MemoryReader<'a> {
     /// 現在位置からサブスライスを取得（位置は進めない）
     #[inline]
     pub fn peek_bytes(&self, len: usize) -> Result<&'a [u8], UnwindError> {
-        let end = self.position.checked_add(len)
+        let end = self
+            .position
+            .checked_add(len)
             .ok_or(UnwindError::MemoryReadError)?;
-        
+
         if end > self.buffer.len() {
             return Err(UnwindError::MemoryReadError);
         }
-        
+
         Ok(&self.buffer[self.position..end])
     }
 
     /// 指定オフセットの値を読み込む（位置は変更しない）
     pub fn read_at(&self, offset: usize, len: usize) -> Result<&'a [u8], UnwindError> {
-        let end = offset.checked_add(len)
+        let end = offset
+            .checked_add(len)
             .ok_or(UnwindError::MemoryReadError)?;
-        
+
         if end > self.buffer.len() {
             return Err(UnwindError::MemoryReadError);
         }
-        
+
         Ok(&self.buffer[offset..end])
     }
 
     /// 現在位置からサブリーダーを作成
     pub fn sub_reader(&self, len: usize) -> Result<MemoryReader<'a>, UnwindError> {
-        let end = self.position.checked_add(len)
+        let end = self
+            .position
+            .checked_add(len)
             .ok_or(UnwindError::MemoryReadError)?;
-        
+
         if end > self.buffer.len() {
             return Err(UnwindError::MemoryReadError);
         }
-        
+
         Ok(MemoryReader::new(&self.buffer[self.position..end]))
     }
 
@@ -398,10 +407,9 @@ pub fn read_encoded_pointer(
         return Ok(0);
     }
 
-    let format = DwarfPointerEncoding::from_byte(encoding)
-        .ok_or(UnwindError::InvalidDwarf)?;
-    let application = DwarfPointerApplication::from_byte(encoding)
-        .ok_or(UnwindError::InvalidDwarf)?;
+    let format = DwarfPointerEncoding::from_byte(encoding).ok_or(UnwindError::InvalidDwarf)?;
+    let application =
+        DwarfPointerApplication::from_byte(encoding).ok_or(UnwindError::InvalidDwarf)?;
 
     // 読み取り位置を記録（PC相対計算用）
     let read_position = base_address + reader.position();
@@ -429,13 +437,11 @@ pub fn read_encoded_pointer(
     // ベースアドレスを適用
     let result = match application {
         DwarfPointerApplication::Absolute => value as usize,
-        DwarfPointerApplication::Pcrel => {
-            (read_position as i64 + value) as usize
-        }
-        DwarfPointerApplication::Textrel |
-        DwarfPointerApplication::Datarel |
-        DwarfPointerApplication::Funcrel |
-        DwarfPointerApplication::Aligned => {
+        DwarfPointerApplication::Pcrel => (read_position as i64 + value) as usize,
+        DwarfPointerApplication::Textrel
+        | DwarfPointerApplication::Datarel
+        | DwarfPointerApplication::Funcrel
+        | DwarfPointerApplication::Aligned => {
             // これらは追加のベース情報が必要
             // 現時点では未サポートとしてエラー
             return Err(UnwindError::InvalidDwarf);
@@ -501,11 +507,11 @@ mod tests {
     fn test_boundary_check() {
         let data = [0x01, 0x02];
         let mut reader = MemoryReader::new(&data);
-        
+
         // 正常読み取り
         assert!(reader.read_u8().is_ok());
         assert!(reader.read_u8().is_ok());
-        
+
         // 境界外
         assert_eq!(reader.read_u8().unwrap_err(), UnwindError::MemoryReadError);
     }

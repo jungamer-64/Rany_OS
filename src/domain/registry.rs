@@ -2,12 +2,12 @@
 // src/domain/registry.rs - Domain Registry
 // 設計書 3.1: セル（ドメイン）の管理とライフサイクル
 // ============================================================================
+use crate::ipc::rref::DomainId;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
-use spin::Mutex;
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::ipc::rref::DomainId;
+use spin::Mutex;
 
 /// ドメインの状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,31 +62,31 @@ impl Domain {
             panic_message: None,
         }
     }
-    
+
     /// タスクを追加
     pub fn add_task(&mut self, task_id: u64) {
         self.tasks.push(task_id);
     }
-    
+
     /// タスクを削除
     pub fn remove_task(&mut self, task_id: u64) {
         self.tasks.retain(|&id| id != task_id);
     }
-    
+
     /// 依存関係を追加
     pub fn add_dependency(&mut self, dep_id: DomainId) {
         if !self.dependencies.contains(&dep_id) {
             self.dependencies.push(dep_id);
         }
     }
-    
+
     /// 被依存関係を追加（他のドメインがこのドメインに依存）
     pub fn add_dependent(&mut self, dep_id: DomainId) {
         if !self.dependents.contains(&dep_id) {
             self.dependents.push(dep_id);
         }
     }
-    
+
     /// ドメインが実行可能かどうか
     pub fn is_runnable(&self) -> bool {
         matches!(self.state, DomainState::Running | DomainState::Initializing)
@@ -110,43 +110,43 @@ impl DomainRegistry {
             next_id: AtomicU64::new(1), // 0はカーネル用に予約
         }
     }
-    
+
     /// 新しいドメインIDを生成
     pub fn generate_id(&self) -> DomainId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         DomainId::new(id)
     }
-    
+
     /// ドメインを登録
     pub fn register(&mut self, domain: Domain) {
         self.domains.insert(domain.id, domain);
     }
-    
+
     /// ドメインを取得
     pub fn get(&self, id: DomainId) -> Option<&Domain> {
         self.domains.get(&id)
     }
-    
+
     /// ドメインを可変で取得
     pub fn get_mut(&mut self, id: DomainId) -> Option<&mut Domain> {
         self.domains.get_mut(&id)
     }
-    
+
     /// ドメインを削除
     pub fn remove(&mut self, id: DomainId) -> Option<Domain> {
         self.domains.remove(&id)
     }
-    
+
     /// 全ドメインを列挙
     pub fn all_domains(&self) -> impl Iterator<Item = &Domain> {
         self.domains.values()
     }
-    
+
     /// 特定の状態のドメインを列挙
     pub fn domains_by_state(&self, state: DomainState) -> impl Iterator<Item = &Domain> {
         self.domains.values().filter(move |d| d.state == state)
     }
-    
+
     /// ドメイン数を取得
     pub fn count(&self) -> usize {
         self.domains.len()
@@ -233,21 +233,21 @@ pub struct DomainStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_domain_registry() {
         let mut registry = DomainRegistry::new();
-        
+
         // ドメイン作成
         let id1 = registry.generate_id();
         let domain1 = Domain::new(id1, "test1".into());
         registry.register(domain1);
-        
+
         // 取得
         let domain = registry.get(id1);
         assert!(domain.is_some());
         assert_eq!(domain.unwrap().name, "test1");
-        
+
         // 状態変更
         registry.get_mut(id1).unwrap().state = DomainState::Running;
         assert_eq!(registry.get(id1).unwrap().state, DomainState::Running);

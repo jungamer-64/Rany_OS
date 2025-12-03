@@ -4,11 +4,11 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use alloc::collections::BTreeMap;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll};
 use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::collections::BTreeMap;
+use core::task::{Context, Poll};
 use spin::Mutex;
 
 /// グローバルなタイマーティック（1ms単位）
@@ -21,14 +21,12 @@ static SLEEP_REGISTRY: Mutex<BTreeMap<u64, core::task::Waker>> = Mutex::new(BTre
 /// 設計書 4.2 ステップ3: Wakeの発行
 pub fn handle_timer_interrupt() {
     let current_tick = TICKS.fetch_add(1, Ordering::SeqCst) + 1;
-    
+
     // 起床すべきタスクを探してWakerを起動
     let mut registry = SLEEP_REGISTRY.lock();
-    let wake_keys: alloc::vec::Vec<u64> = registry
-        .range(..=current_tick)
-        .map(|(k, _)| *k)
-        .collect();
-    
+    let wake_keys: alloc::vec::Vec<u64> =
+        registry.range(..=current_tick).map(|(k, _)| *k).collect();
+
     for key in wake_keys {
         if let Some(waker) = registry.remove(&key) {
             waker.wake();
@@ -64,21 +62,23 @@ impl SleepFuture {
 
 impl Future for SleepFuture {
     type Output = ();
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let current = current_tick();
-        
+
         if current >= self.wake_tick {
             // スリープ期間が終了
             return Poll::Ready(());
         }
-        
+
         // Wakerを登録（初回のみ）
         if !self.registered {
-            SLEEP_REGISTRY.lock().insert(self.wake_tick, cx.waker().clone());
+            SLEEP_REGISTRY
+                .lock()
+                .insert(self.wake_tick, cx.waker().clone());
             self.registered = true;
         }
-        
+
         Poll::Pending
     }
 }
@@ -95,7 +95,7 @@ impl Drop for SleepFuture {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_sleep_future() {
         // テストは割り込み環境が必要なため、統合テストで実施

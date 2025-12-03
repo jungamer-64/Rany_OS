@@ -1,20 +1,20 @@
 // ============================================================================
 // src/task/per_core_executor.rs - Per-Core Executor
 // 設計書 4.3: Per-Core Executorとワークスティーリング
-// 
+//
 // 各CPUコアに専用のエグゼキュータを持ち、ロック競合なしでタスクを実行。
 // コア間の負荷分散はWork Stealingで行う。
 // ============================================================================
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
+use alloc::collections::VecDeque;
+use alloc::sync::Arc;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool, Ordering};
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-use alloc::boxed::Box;
-use alloc::sync::Arc;
-use alloc::collections::VecDeque;
 use spin::Mutex;
 
 // ============================================================================
@@ -22,7 +22,7 @@ use spin::Mutex;
 // ============================================================================
 
 /// ジェネリックなワークスティーリングキュー
-/// 
+///
 /// Per-Core Executor 専用の実装。
 /// Mutex で保護されたVecDequeを使用した簡易実装。
 pub struct WorkStealingQueue<T> {
@@ -37,27 +37,27 @@ impl<T> WorkStealingQueue<T> {
             inner: Mutex::new(VecDeque::with_capacity(256)),
         }
     }
-    
+
     /// アイテムをプッシュ
     pub fn push(&self, item: T) {
         self.inner.lock().push_back(item);
     }
-    
+
     /// アイテムをポップ（LIFO: ローカル実行用）
     pub fn pop(&self) -> Option<T> {
         self.inner.lock().pop_back()
     }
-    
+
     /// アイテムをスチール（FIFO: 他コアからの取得用）
     pub fn steal(&self) -> Option<T> {
         self.inner.lock().pop_front()
     }
-    
+
     /// キューの長さ
     pub fn len(&self) -> usize {
         self.inner.lock().len()
     }
-    
+
     /// キューが空かどうか
     pub fn is_empty(&self) -> bool {
         self.inner.lock().is_empty()
@@ -84,7 +84,7 @@ impl TaskId {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         TaskId(NEXT_ID.fetch_add(1, Ordering::Relaxed))
     }
-    
+
     /// IDの値を取得
     pub fn as_u64(self) -> u64 {
         self.0
@@ -192,7 +192,7 @@ impl Task {
             state: AtomicUsize::new(TaskState::Ready as usize),
         })
     }
-    
+
     /// タスクの状態を取得
     pub fn state(&self) -> TaskState {
         match self.state.load(Ordering::Acquire) {
@@ -202,14 +202,14 @@ impl Task {
             _ => TaskState::Completed,
         }
     }
-    
+
     /// タスクの状態を設定
     pub fn set_state(&self, state: TaskState) {
         self.state.store(state as usize, Ordering::Release);
     }
-    
+
     /// タスクをpollする
-    /// 
+    ///
     /// # Safety
     /// 同一のTaskに対して複数のスレッドから同時にpollしてはいけない
     unsafe fn poll(&self, waker: &Waker) -> Poll<()> {
@@ -224,7 +224,7 @@ impl Task {
 // ============================================================================
 
 /// Per-Core エグゼキュータ
-/// 
+///
 /// 各CPUコアが専用のエグゼキュータを持つ。
 /// ローカルキューへのアクセスはロック不要。
 pub struct PerCoreExecutor {
@@ -260,12 +260,12 @@ impl PerCoreExecutor {
             shutdown: AtomicBool::new(false),
         }
     }
-    
+
     /// コアIDを取得
     pub fn core_id(&self) -> u32 {
         self.core_id
     }
-    
+
     /// タスクをローカルキューに追加
     pub fn spawn(&self, task: Arc<Task>) {
         if task.metadata.priority <= Priority::High {
@@ -276,24 +276,24 @@ impl PerCoreExecutor {
             self.local_queue.push(task);
         }
     }
-    
+
     /// タスクをスケジュール（Wakerから呼ばれる）
     pub fn schedule(&self, task: Arc<Task>) {
         task.set_state(TaskState::Ready);
         self.spawn(task);
     }
-    
+
     /// 次のタスクを取得
     fn next_task(&self) -> Option<Arc<Task>> {
         // 1. 高優先度キューを最初にチェック
         if let Some(task) = self.high_priority_queue.lock().pop_front() {
             return Some(task);
         }
-        
+
         // 2. ローカルキューからpop
         self.local_queue.pop()
     }
-    
+
     /// 他のエグゼキュータからタスクをスチール
     pub fn steal_from(&self, other: &PerCoreExecutor) -> Option<Arc<Task>> {
         if let Some(task) = other.local_queue.steal() {
@@ -304,7 +304,7 @@ impl PerCoreExecutor {
             None
         }
     }
-    
+
     /// 複数のエグゼキュータからタスクをスチール
     pub fn steal_batch_from(&self, other: &PerCoreExecutor, max_count: usize) -> usize {
         let mut stolen = 0;
@@ -316,21 +316,24 @@ impl PerCoreExecutor {
                 break;
             }
         }
-        
+
         if stolen > 0 {
-            self.tasks_stolen.fetch_add(stolen as u64, Ordering::Relaxed);
-            other.tasks_stolen_from.fetch_add(stolen as u64, Ordering::Relaxed);
+            self.tasks_stolen
+                .fetch_add(stolen as u64, Ordering::Relaxed);
+            other
+                .tasks_stolen_from
+                .fetch_add(stolen as u64, Ordering::Relaxed);
         }
-        
+
         stolen
     }
-    
+
     /// エグゼキュータのメインループ（1イテレーション）
     pub fn run_once(&self) -> bool {
         if self.shutdown.load(Ordering::Acquire) {
             return false;
         }
-        
+
         if let Some(task) = self.next_task() {
             self.run_task(&task);
             true
@@ -338,26 +341,30 @@ impl PerCoreExecutor {
             false
         }
     }
-    
+
     /// 単一のタスクを実行
     fn run_task(&self, task: &Arc<Task>) {
         self.running_count.fetch_add(1, Ordering::Relaxed);
         task.set_state(TaskState::Running);
-        
+
         let start_cycles = read_tsc();
-        task.metadata.last_run_at.store(start_cycles, Ordering::Relaxed);
+        task.metadata
+            .last_run_at
+            .store(start_cycles, Ordering::Relaxed);
         task.metadata.schedule_count.fetch_add(1, Ordering::Relaxed);
-        
+
         // Wakerを作成
         let waker = task_waker(task.clone(), self.core_id);
-        
+
         // タスクをpoll
         let poll_result = unsafe { task.poll(&waker) };
-        
+
         let end_cycles = read_tsc();
         let elapsed = end_cycles.saturating_sub(start_cycles);
-        task.metadata.total_run_time.fetch_add(elapsed, Ordering::Relaxed);
-        
+        task.metadata
+            .total_run_time
+            .fetch_add(elapsed, Ordering::Relaxed);
+
         match poll_result {
             Poll::Ready(()) => {
                 // タスク完了
@@ -368,21 +375,21 @@ impl PerCoreExecutor {
                 task.set_state(TaskState::Blocked);
             }
         }
-        
+
         self.running_count.fetch_sub(1, Ordering::Relaxed);
         self.tasks_executed.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// エグゼキュータをシャットダウン
     pub fn shutdown(&self) {
         self.shutdown.store(true, Ordering::Release);
     }
-    
+
     /// キューの長さを取得
     pub fn queue_length(&self) -> usize {
         self.local_queue.len() + self.high_priority_queue.lock().len()
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> ExecutorStats {
         ExecutorStats {
@@ -436,97 +443,90 @@ impl ExecutorManager {
             global_queue: Mutex::new(VecDeque::new()),
         }
     }
-    
+
     /// エグゼキュータを初期化
     pub fn init(&self, core_count: usize) {
         let mut executors = self.executors.lock();
         executors.clear();
-        
+
         for i in 0..core_count {
             executors.push(Arc::new(PerCoreExecutor::new(i as u32)));
         }
-        
+
         self.core_count.store(core_count, Ordering::Release);
     }
-    
+
     /// 指定コアのエグゼキュータを取得
     pub fn get_executor(&self, core_id: u32) -> Option<Arc<PerCoreExecutor>> {
         let executors = self.executors.lock();
         executors.get(core_id as usize).cloned()
     }
-    
+
     /// 現在のコアのエグゼキュータを取得
     pub fn current_executor(&self) -> Option<Arc<PerCoreExecutor>> {
         let core_id = current_core_id();
         self.get_executor(core_id)
     }
-    
+
     /// タスクをspawn（負荷分散考慮）
     pub fn spawn(&self, task: Arc<Task>) {
         let executors = self.executors.lock();
-        
+
         if executors.is_empty() {
             // エグゼキュータが初期化されていない場合はグローバルキューへ
             drop(executors);
             self.global_queue.lock().push_back(task);
             return;
         }
-        
+
         // 最も負荷の低いエグゼキュータを選択
-        let min_executor = executors
-            .iter()
-            .min_by_key(|e| e.queue_length())
-            .cloned();
-        
+        let min_executor = executors.iter().min_by_key(|e| e.queue_length()).cloned();
+
         drop(executors);
-        
+
         if let Some(executor) = min_executor {
             executor.spawn(task);
         }
     }
-    
+
     /// ワークスティーリングを実行
     pub fn try_steal(&self, core_id: u32) -> bool {
         let executors = self.executors.lock();
-        
+
         let thief = match executors.get(core_id as usize) {
             Some(e) => e.clone(),
             None => return false,
         };
-        
+
         // グローバルキューからまず取得
         drop(executors);
         if let Some(task) = self.global_queue.lock().pop_front() {
             thief.spawn(task);
             return true;
         }
-        
+
         let executors = self.executors.lock();
-        
+
         // 最も負荷の高いエグゼキュータからスチール
         let victim = executors
             .iter()
             .filter(|e| e.core_id() != core_id)
             .max_by_key(|e| e.queue_length());
-        
+
         if let Some(victim) = victim {
             if victim.queue_length() > 1 {
                 return thief.steal_from(victim).is_some();
             }
         }
-        
+
         false
     }
-    
+
     /// 全エグゼキュータの統計を取得
     pub fn all_stats(&self) -> alloc::vec::Vec<ExecutorStats> {
-        self.executors
-            .lock()
-            .iter()
-            .map(|e| e.stats())
-            .collect()
+        self.executors.lock().iter().map(|e| e.stats()).collect()
     }
-    
+
     /// 全エグゼキュータをシャットダウン
     pub fn shutdown_all(&self) {
         for executor in self.executors.lock().iter() {
@@ -547,12 +547,9 @@ fn task_waker(task: Arc<Task>, core_id: u32) -> Waker {
         task: task_ptr,
         core_id,
     };
-    
-    let raw_waker = RawWaker::new(
-        Box::into_raw(Box::new(data)) as *const (),
-        &WAKER_VTABLE,
-    );
-    
+
+    let raw_waker = RawWaker::new(Box::into_raw(Box::new(data)) as *const (), &WAKER_VTABLE);
+
     unsafe { Waker::from_raw(raw_waker) }
 }
 
@@ -562,26 +559,22 @@ struct TaskWakerData {
     core_id: u32,
 }
 
-const WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    waker_clone,
-    waker_wake,
-    waker_wake_by_ref,
-    waker_drop,
-);
+const WAKER_VTABLE: RawWakerVTable =
+    RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
 unsafe fn waker_clone(data: *const ()) -> RawWaker {
     let data = &*(data as *const TaskWakerData);
-    
+
     // タスクの参照カウントを増やす
     let task = Arc::from_raw(data.task as *const Task);
     let _ = task.clone();
     core::mem::forget(task);
-    
+
     let new_data = Box::new(TaskWakerData {
         task: data.task,
         core_id: data.core_id,
     });
-    
+
     RawWaker::new(Box::into_raw(new_data) as *const (), &WAKER_VTABLE)
 }
 
@@ -592,12 +585,12 @@ unsafe fn waker_wake(data: *const ()) {
 
 unsafe fn waker_wake_by_ref(data: *const ()) {
     let data = &*(data as *const TaskWakerData);
-    
+
     // タスクを復元
     let task = Arc::from_raw(data.task as *const Task);
     let task_clone = task.clone();
     core::mem::forget(task); // 参照カウントを維持
-    
+
     // エグゼキュータマネージャにタスクを再スケジュール
     if let Some(executor) = EXECUTOR_MANAGER.get_executor(data.core_id) {
         executor.schedule(task_clone);
@@ -609,7 +602,7 @@ unsafe fn waker_wake_by_ref(data: *const ()) {
 
 unsafe fn waker_drop(data: *const ()) {
     let data = Box::from_raw(data as *mut TaskWakerData);
-    
+
     // タスクの参照カウントを減らす
     let _ = Arc::from_raw(data.task as *const Task);
 }
@@ -660,7 +653,7 @@ fn read_tsc() -> u64 {
     unsafe {
         core::arch::x86_64::_rdtsc()
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     {
         0
@@ -677,7 +670,7 @@ fn current_core_id() -> u32 {
         // 簡易実装: GS baseまたはper-CPU変数から取得
         0
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     {
         0
@@ -691,14 +684,14 @@ fn current_core_id() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_task_id_generation() {
         let id1 = TaskId::new();
         let id2 = TaskId::new();
         assert_ne!(id1, id2);
     }
-    
+
     #[test]
     fn test_priority_ordering() {
         assert!(Priority::Realtime < Priority::High);
@@ -706,7 +699,7 @@ mod tests {
         assert!(Priority::Normal < Priority::Low);
         assert!(Priority::Low < Priority::Idle);
     }
-    
+
     #[test]
     fn test_executor_creation() {
         let executor = PerCoreExecutor::new(0);

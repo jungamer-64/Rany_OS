@@ -17,10 +17,10 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicU32, AtomicBool, Ordering};
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -105,7 +105,7 @@ impl CpuTopology {
     pub fn detect() -> Self {
         // 実際にはCPUID命令でトポロジーを検出
         // ここでは仮の値を設定
-        
+
         let mut cores = Vec::new();
         let num_cores = 4; // 仮定
 
@@ -209,7 +209,10 @@ impl NumaNode {
 
     /// 他ノードへの距離を取得
     pub fn distance_to(&self, other_node: u32) -> u32 {
-        self.distances.get(other_node as usize).copied().unwrap_or(u32::MAX)
+        self.distances
+            .get(other_node as usize)
+            .copied()
+            .unwrap_or(u32::MAX)
     }
 }
 
@@ -229,9 +232,7 @@ impl NumaTopology {
         node.cores = vec![0, 1, 2, 3];
         node.distances = vec![10]; // ローカル距離
 
-        Self {
-            nodes: vec![node],
-        }
+        Self { nodes: vec![node] }
     }
 
     /// ノード数を取得
@@ -263,7 +264,7 @@ impl NumaTopology {
     /// 最も近いノードを取得
     pub fn nearest_node(&self, from_node: u32, exclude: &[u32]) -> Option<u32> {
         let node = self.node(from_node)?;
-        
+
         self.nodes
             .iter()
             .filter(|n| n.id != from_node && !exclude.contains(&n.id))
@@ -368,7 +369,7 @@ impl PowerManager {
     pub fn enter_idle(&self, core_id: u32, target: CState) {
         if let Some(state) = self.c_states.get(core_id as usize) {
             state.store(target as u32, Ordering::Release);
-            
+
             // 実際にはHLT命令やMWAIT命令を発行
             match target {
                 CState::C0 => {}
@@ -391,15 +392,15 @@ impl PowerManager {
 
     /// 現在のC-Stateを取得
     pub fn current_c_state(&self, core_id: u32) -> Option<CState> {
-        self.c_states.get(core_id as usize).map(|s| {
-            match s.load(Ordering::Acquire) {
+        self.c_states
+            .get(core_id as usize)
+            .map(|s| match s.load(Ordering::Acquire) {
                 0 => CState::C0,
                 1 => CState::C1,
                 2 => CState::C1E,
                 3 => CState::C3,
                 _ => CState::C6,
-            }
-        })
+            })
     }
 
     /// P-Stateを設定（周波数スケーリング）
@@ -526,7 +527,8 @@ impl IpiDispatcher {
             });
         }
 
-        self.sent.fetch_add(self.pending.len() as u64, Ordering::Relaxed);
+        self.sent
+            .fetch_add(self.pending.len() as u64, Ordering::Relaxed);
 
         // 実際にはブロードキャストIPIを送信
     }
@@ -543,7 +545,7 @@ impl IpiDispatcher {
 
         for msg in messages {
             self.received.fetch_add(1, Ordering::Relaxed);
-            
+
             match msg.ipi_type {
                 IpiType::Reschedule => {
                     // スケジューラーにリスケジュールを要求
@@ -748,10 +750,10 @@ mod tests {
     fn test_per_cpu_data() {
         let data = PerCpuData::new(0);
         assert!(data.preemptible());
-        
+
         data.preempt_disable();
         assert!(!data.preemptible());
-        
+
         data.preempt_enable();
         assert!(data.preemptible());
     }

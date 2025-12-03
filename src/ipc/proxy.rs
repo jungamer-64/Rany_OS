@@ -4,12 +4,12 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use super::rref::DomainId;
+use alloc::boxed::Box;
+use alloc::string::String;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
-use alloc::boxed::Box;
-use alloc::string::String;
-use super::rref::DomainId;
 
 /// プロキシ呼び出しの結果
 pub type ProxyResult<T> = Result<T, ProxyError>;
@@ -55,7 +55,7 @@ pub trait DomainProxy {
     fn call<F, T>(&self, func: F) -> ProxyResult<T>
     where
         F: FnOnce() -> T;
-    
+
     /// 非同期プロキシ呼び出し
     fn call_async<'a, F, Fut, T>(&'a self, func: F) -> ProxyCallFuture<'a, T>
     where
@@ -82,23 +82,23 @@ impl BasicProxy {
             timeout_ms: 5000, // デフォルト5秒
         }
     }
-    
+
     /// タイムアウトを設定
     pub fn with_timeout(mut self, timeout_ms: u64) -> Self {
         self.timeout_ms = timeout_ms;
         self
     }
-    
+
     /// ターゲットドメインを取得
     pub fn target(&self) -> DomainId {
         self.target_domain
     }
-    
+
     /// 呼び出し元ドメインを取得
     pub fn caller(&self) -> DomainId {
         self.caller_domain
     }
-    
+
     /// ドメインが利用可能かチェック
     fn check_domain_available(&self) -> ProxyResult<()> {
         // 注意: 実際の実装ではdomainモジュールとの統合が必要
@@ -115,21 +115,21 @@ impl DomainProxy for BasicProxy {
         // 現在のドメインを保存
         // 注意: 実際の実装ではdomainモジュールとの統合が必要
         // let prev_domain = crate::panic_handler::get_current_domain();
-        
+
         // ターゲットドメインに切り替え
         // crate::panic_handler::set_current_domain(self.target_domain.as_u64());
-        
+
         // 関数を呼び出し
         // 注意: no_std環境ではcatch_unwindが使えないため、
         // 実際のパニック捕捉はカスタムパニックハンドラで行う
         let result = func();
-        
+
         // ドメインを復元
         // crate::panic_handler::set_current_domain(prev_domain);
-        
+
         Ok(result)
     }
-    
+
     fn call_async<'a, F, Fut, T>(&'a self, func: F) -> ProxyCallFuture<'a, T>
     where
         F: FnOnce() -> Fut + 'a,
@@ -166,16 +166,18 @@ impl<'a, T> ProxyCallFuture<'a, T> {
 
 impl<'a, T> Future for ProxyCallFuture<'a, T> {
     type Output = ProxyResult<T>;
-    
+
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         // ドメインの可用性をチェック
         if let Err(e) = self.proxy.check_domain_available() {
             return Poll::Ready(Err(e));
         }
-        
+
         // 実際の非同期呼び出し実装
         // 注意: 完全な実装にはより複雑なステートマシンが必要
-        Poll::Ready(Err(ProxyError::Other("Async proxy not fully implemented".into())))
+        Poll::Ready(Err(ProxyError::Other(
+            "Async proxy not fully implemented".into(),
+        )))
     }
 }
 
@@ -196,7 +198,7 @@ pub trait ServiceProxy<S> {
 pub trait Service {
     type Request;
     type Response;
-    
+
     fn handle(&self, request: Self::Request) -> Self::Response;
 }
 
@@ -260,7 +262,7 @@ impl RetryProxy {
             config,
         }
     }
-    
+
     /// リトライ付きで呼び出し
     pub fn call_with_retry<F, T>(&self, func: F) -> ProxyResult<T>
     where
@@ -268,18 +270,18 @@ impl RetryProxy {
     {
         let mut last_error = ProxyError::Other("No attempts made".into());
         let mut _interval = self.config.retry_interval_ms;
-        
+
         for attempt in 0..=self.config.max_retries {
             match self.inner.call(func.clone()) {
                 Ok(result) => return Ok(result),
                 Err(e) => {
                     last_error = e;
-                    
+
                     // 最後の試行では待機しない
                     if attempt < self.config.max_retries {
                         // 待機（実際にはasync sleep）
                         // crate::task::sleep_ms(interval).await;
-                        
+
                         if self.config.exponential_backoff {
                             _interval *= 2;
                         }
@@ -287,7 +289,7 @@ impl RetryProxy {
                 }
             }
         }
-        
+
         Err(last_error)
     }
 }
@@ -296,14 +298,14 @@ impl RetryProxy {
 mod tests {
     use super::*;
     use alloc::string::ToString;
-    
+
     #[test]
     fn test_proxy_error_display() {
         let error = ProxyError::DomainPanicked("test panic".into());
         let error_str = alloc::format!("{}", error);
         assert!(error_str.contains("test panic"));
     }
-    
+
     #[test]
     fn test_retry_config_default() {
         let config = RetryConfig::default();

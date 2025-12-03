@@ -3,13 +3,13 @@
 //! ExoRust用のシグナルシステム実装
 //! POSIX互換性は排除し、Rustらしいエラーハンドリングと統合
 
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
-use core::task::{Context, Poll, Waker};
-use core::pin::Pin;
-use core::future::Future;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::task::{Context, Poll, Waker};
 
 /// シグナル番号 (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -17,38 +17,38 @@ pub struct Signal(u32);
 
 impl Signal {
     // 基本シグナル
-    pub const SIGKILL: Self = Self(9);      // 強制終了
-    pub const SIGTERM: Self = Self(15);     // 終了要求
-    pub const SIGSTOP: Self = Self(19);     // 停止
-    pub const SIGCONT: Self = Self(18);     // 再開
+    pub const SIGKILL: Self = Self(9); // 強制終了
+    pub const SIGTERM: Self = Self(15); // 終了要求
+    pub const SIGSTOP: Self = Self(19); // 停止
+    pub const SIGCONT: Self = Self(18); // 再開
 
     // 例外シグナル
-    pub const SIGSEGV: Self = Self(11);     // セグメンテーション違反
-    pub const SIGBUS: Self = Self(7);       // バスエラー
-    pub const SIGILL: Self = Self(4);       // 不正命令
-    pub const SIGFPE: Self = Self(8);       // 浮動小数点例外
+    pub const SIGSEGV: Self = Self(11); // セグメンテーション違反
+    pub const SIGBUS: Self = Self(7); // バスエラー
+    pub const SIGILL: Self = Self(4); // 不正命令
+    pub const SIGFPE: Self = Self(8); // 浮動小数点例外
 
     // I/Oシグナル
-    pub const SIGIO: Self = Self(29);       // I/O可能
-    pub const SIGPIPE: Self = Self(13);     // パイプ破損
-    pub const SIGURG: Self = Self(23);      // 緊急データ
+    pub const SIGIO: Self = Self(29); // I/O可能
+    pub const SIGPIPE: Self = Self(13); // パイプ破損
+    pub const SIGURG: Self = Self(23); // 緊急データ
 
     // タイマーシグナル
-    pub const SIGALRM: Self = Self(14);     // アラーム
-    pub const SIGVTALRM: Self = Self(26);   // 仮想タイマー
-    pub const SIGPROF: Self = Self(27);     // プロファイリング
+    pub const SIGALRM: Self = Self(14); // アラーム
+    pub const SIGVTALRM: Self = Self(26); // 仮想タイマー
+    pub const SIGPROF: Self = Self(27); // プロファイリング
 
     // ユーザー定義シグナル
-    pub const SIGUSR1: Self = Self(10);     // ユーザー定義1
-    pub const SIGUSR2: Self = Self(12);     // ユーザー定義2
+    pub const SIGUSR1: Self = Self(10); // ユーザー定義1
+    pub const SIGUSR2: Self = Self(12); // ユーザー定義2
 
     // 子プロセス
-    pub const SIGCHLD: Self = Self(17);     // 子プロセス状態変化
+    pub const SIGCHLD: Self = Self(17); // 子プロセス状態変化
 
     // ExoRust固有シグナル
-    pub const SIGWAKE: Self = Self(64);     // ウェイクアップ
-    pub const SIGDOMAIN: Self = Self(65);   // ドメインイベント
-    pub const SIGIPC: Self = Self(66);      // IPC通知
+    pub const SIGWAKE: Self = Self(64); // ウェイクアップ
+    pub const SIGDOMAIN: Self = Self(65); // ドメインイベント
+    pub const SIGIPC: Self = Self(66); // IPC通知
 
     /// カスタムシグナルの最小番号
     pub const SIGRTMIN: Self = Self(32);
@@ -130,15 +130,9 @@ pub enum SignalData {
     /// ポインタ (アドレス)
     Ptr(usize),
     /// 子プロセス情報
-    Child {
-        pid: u64,
-        status: i32,
-    },
+    Child { pid: u64, status: i32 },
     /// エラー情報
-    Error {
-        errno: i32,
-        addr: usize,
-    },
+    Error { errno: i32, addr: usize },
     /// カスタムデータ
     Custom(u64),
 }
@@ -185,12 +179,16 @@ impl SignalMask {
 
     /// マスクを結合
     pub fn union(&self, other: &Self) -> Self {
-        Self { bits: self.bits | other.bits }
+        Self {
+            bits: self.bits | other.bits,
+        }
     }
 
     /// マスクの差分
     pub fn difference(&self, other: &Self) -> Self {
-        Self { bits: self.bits & !other.bits }
+        Self {
+            bits: self.bits & !other.bits,
+        }
     }
 }
 
@@ -255,14 +253,15 @@ impl SignalQueue {
     /// シグナルをキューに追加
     pub fn enqueue(&self, info: SignalInfo) -> Result<(), SignalError> {
         let mut pending = self.pending.lock();
-        
+
         if pending.len() >= self.max_size {
             return Err(SignalError::QueueFull);
         }
 
         // ペンディングマスクを更新
         if info.signal.as_u32() < 64 {
-            self.pending_mask.fetch_or(1 << info.signal.as_u32(), Ordering::Release);
+            self.pending_mask
+                .fetch_or(1 << info.signal.as_u32(), Ordering::Release);
         }
 
         pending.push(info);
@@ -272,15 +271,18 @@ impl SignalQueue {
     /// シグナルをデキュー (マスク外の最初のシグナル)
     pub fn dequeue(&self, mask: &SignalMask) -> Option<SignalInfo> {
         let mut pending = self.pending.lock();
-        
+
         // マスクされていないシグナルを探す
-        let idx = pending.iter().position(|info| !mask.contains(info.signal))?;
+        let idx = pending
+            .iter()
+            .position(|info| !mask.contains(info.signal))?;
         let info = pending.remove(idx);
 
         // 同じシグナルがまだあるかチェック
         let has_same = pending.iter().any(|i| i.signal == info.signal);
         if !has_same && info.signal.as_u32() < 64 {
-            self.pending_mask.fetch_and(!(1 << info.signal.as_u32()), Ordering::Release);
+            self.pending_mask
+                .fetch_and(!(1 << info.signal.as_u32()), Ordering::Release);
         }
 
         Some(info)
@@ -303,7 +305,9 @@ impl SignalQueue {
 
     /// ペンディング中のシグナルマスクを取得
     pub fn pending_mask(&self) -> SignalMask {
-        SignalMask { bits: self.pending_mask.load(Ordering::Acquire) }
+        SignalMask {
+            bits: self.pending_mask.load(Ordering::Acquire),
+        }
     }
 
     /// キューをクリア
@@ -370,12 +374,15 @@ impl SignalContext {
         }
 
         let mut configs = self.configs.write();
-        configs.insert(signal, SignalConfig {
-            action,
-            handler,
-            flags: SignalFlags::default(),
-            mask: SignalMask::EMPTY,
-        });
+        configs.insert(
+            signal,
+            SignalConfig {
+                action,
+                handler,
+                flags: SignalFlags::default(),
+                mask: SignalMask::EMPTY,
+            },
+        );
 
         Ok(())
     }
@@ -383,7 +390,8 @@ impl SignalContext {
     /// シグナルアクションを取得
     pub fn get_action(&self, signal: Signal) -> SignalAction {
         let configs = self.configs.read();
-        configs.get(&signal)
+        configs
+            .get(&signal)
             .map(|c| c.action)
             .unwrap_or(SignalAction::default_for(signal))
     }
@@ -391,16 +399,16 @@ impl SignalContext {
     /// シグナルを送信
     pub fn send(&self, info: SignalInfo) -> Result<(), SignalError> {
         self.received_count.fetch_add(1, Ordering::Relaxed);
-        
+
         // キューに追加
         self.queue.enqueue(info)?;
-        
+
         // 待機中のタスクを起床
         let mut wakers = self.wakers.lock();
         for waker in wakers.drain(..) {
             waker.wake();
         }
-        
+
         Ok(())
     }
 
@@ -408,18 +416,18 @@ impl SignalContext {
     pub fn process(&self) -> Option<ProcessedSignal> {
         let blocked = self.blocked.lock();
         let info = self.queue.dequeue(&blocked)?;
-        
+
         let configs = self.configs.read();
         let config = configs.get(&info.signal);
-        
+
         let action = config
             .map(|c| c.action)
             .unwrap_or(SignalAction::default_for(info.signal));
-        
+
         let handler = config.and_then(|c| c.handler);
-        
+
         self.handled_count.fetch_add(1, Ordering::Relaxed);
-        
+
         Some(ProcessedSignal {
             info,
             action,
@@ -486,7 +494,7 @@ impl<'a> Future for SignalFuture<'a> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let blocked = self.ctx.blocked.lock();
-        
+
         if let Some(info) = self.ctx.queue.dequeue(&blocked) {
             Poll::Ready(info)
         } else {
@@ -566,17 +574,17 @@ impl SignalManager {
     ) -> Result<(), SignalError> {
         let contexts = self.contexts.read();
         let ctx = contexts.get(&target).ok_or(SignalError::NoSuchTask)?;
-        
+
         let info = SignalInfo {
             signal,
-            sender_pid: None,  // TODO: 送信元PID
+            sender_pid: None, // TODO: 送信元PID
             data,
-            timestamp: 0,      // TODO: タイムスタンプ
+            timestamp: 0, // TODO: タイムスタンプ
         };
-        
+
         ctx.send(info)?;
         self.total_sent.fetch_add(1, Ordering::Relaxed);
-        
+
         Ok(())
     }
 
@@ -584,7 +592,7 @@ impl SignalManager {
     pub fn broadcast(&self, signal: Signal) -> usize {
         let contexts = self.contexts.read();
         let mut count = 0;
-        
+
         for (_, ctx) in contexts.iter() {
             let info = SignalInfo {
                 signal,
@@ -592,12 +600,12 @@ impl SignalManager {
                 data: SignalData::None,
                 timestamp: 0,
             };
-            
+
             if ctx.send(info).is_ok() {
                 count += 1;
             }
         }
-        
+
         self.total_sent.fetch_add(count as u64, Ordering::Relaxed);
         count
     }
@@ -655,10 +663,10 @@ mod tests {
     fn test_signal_mask() {
         let mut mask = SignalMask::new();
         assert!(!mask.contains(Signal::SIGTERM));
-        
+
         mask.add(Signal::SIGTERM);
         assert!(mask.contains(Signal::SIGTERM));
-        
+
         mask.remove(Signal::SIGTERM);
         assert!(!mask.contains(Signal::SIGTERM));
     }
@@ -666,17 +674,17 @@ mod tests {
     #[test]
     fn test_signal_queue() {
         let queue = SignalQueue::new();
-        
+
         let info = SignalInfo {
             signal: Signal::SIGTERM,
             sender_pid: None,
             data: SignalData::None,
             timestamp: 0,
         };
-        
+
         queue.enqueue(info.clone()).unwrap();
         assert!(queue.is_pending(Signal::SIGTERM));
-        
+
         let dequeued = queue.dequeue(&SignalMask::EMPTY).unwrap();
         assert_eq!(dequeued.signal, Signal::SIGTERM);
     }

@@ -19,10 +19,10 @@ use core::panic::PanicInfo;
 /// テストランナー
 pub fn test_runner(tests: &[&dyn Testable]) {
     serial_println!("Running {} tests", tests.len());
-    
+
     let mut passed = 0;
     let mut failed = 0;
-    
+
     for test in tests {
         if test.run() {
             passed += 1;
@@ -30,13 +30,13 @@ pub fn test_runner(tests: &[&dyn Testable]) {
             failed += 1;
         }
     }
-    
+
     serial_println!("\nTest results: {} passed, {} failed", passed, failed);
-    
-    exit_qemu(if failed == 0 { 
-        QemuExitCode::Success 
-    } else { 
-        QemuExitCode::Failed 
+
+    exit_qemu(if failed == 0 {
+        QemuExitCode::Success
+    } else {
+        QemuExitCode::Failed
     });
 }
 
@@ -69,12 +69,12 @@ pub enum QemuExitCode {
 
 pub fn exit_qemu(exit_code: QemuExitCode) -> ! {
     use x86_64::instructions::port::Port;
-    
+
     unsafe {
         let mut port = Port::new(0xf4);
         port.write(exit_code as u32);
     }
-    
+
     loop {
         x86_64::instructions::hlt();
     }
@@ -112,11 +112,11 @@ fn trivial_assertion() {
 fn test_allocator() {
     use alloc::boxed::Box;
     use alloc::vec::Vec;
-    
+
     // Box割り当てテスト
     let x = Box::new(42);
     assert_eq!(*x, 42);
-    
+
     // Vec割り当てテスト
     let mut v = Vec::new();
     for i in 0..100 {
@@ -128,7 +128,7 @@ fn test_allocator() {
 #[test_case]
 fn test_string_allocation() {
     use alloc::string::String;
-    
+
     let s = String::from("Hello, Kernel!");
     assert_eq!(s.len(), 14);
 }
@@ -142,9 +142,9 @@ pub extern "C" fn _start() -> ! {
     // TODO: 最小限の初期化
     // rany_os::vga::init();
     // rany_os::memory::init();
-    
+
     test_main();
-    
+
     loop {
         x86_64::instructions::hlt();
     }

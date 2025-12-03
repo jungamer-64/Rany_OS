@@ -18,9 +18,9 @@
 
 #![allow(dead_code)]
 
-pub mod xhci;
 pub mod descriptor;
 pub mod device;
+pub mod xhci;
 
 use alloc::boxed::Box;
 use alloc::string::String;
@@ -95,7 +95,7 @@ pub struct DeviceAddress(pub u8);
 
 impl DeviceAddress {
     pub const UNASSIGNED: Self = Self(0);
-    
+
     pub fn is_valid(&self) -> bool {
         self.0 > 0 && self.0 <= 127
     }
@@ -321,11 +321,10 @@ impl SetupPacket {
         index: u16,
         length: u16,
     ) -> Self {
-        let bm_request_type = 
-            (if direction_in { 0x80 } else { 0x00 }) |  // Direction
+        let bm_request_type = (if direction_in { 0x80 } else { 0x00 }) |  // Direction
             0x20 |                                       // Class
-            (recipient & 0x1F);                          // Recipient
-        
+            (recipient & 0x1F); // Recipient
+
         Self {
             bm_request_type,
             b_request: request,
@@ -523,7 +522,7 @@ impl UsbManager {
         let mut devices = self.devices.write();
         if let Some(pos) = devices.iter().position(|d| d.address() == address) {
             let device = devices.remove(pos);
-            
+
             // クラスドライバに通知
             let drivers = self.class_drivers.read();
             for driver in drivers.iter() {
@@ -541,15 +540,21 @@ impl UsbManager {
 
     /// アドレスでデバイスを検索
     pub fn find_device(&self, address: DeviceAddress) -> Option<Arc<dyn UsbDevice>> {
-        self.devices.read()
+        self.devices
+            .read()
             .iter()
             .find(|d| d.address() == address)
             .cloned()
     }
 
     /// VID/PIDでデバイスを検索
-    pub fn find_device_by_vid_pid(&self, vendor_id: u16, product_id: u16) -> Option<Arc<dyn UsbDevice>> {
-        self.devices.read()
+    pub fn find_device_by_vid_pid(
+        &self,
+        vendor_id: u16,
+        product_id: u16,
+    ) -> Option<Arc<dyn UsbDevice>> {
+        self.devices
+            .read()
             .iter()
             .find(|d| d.vendor_id() == vendor_id && d.product_id() == product_id)
             .cloned()

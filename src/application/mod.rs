@@ -42,17 +42,17 @@
 
 extern crate alloc;
 
-use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
 use crate::kapi;
 use crate::security::static_capability::{
-    DomainCapabilities, NetCapability, FsCapability, IoCapability,
-    TaskCapability, IpcCapability, DmaCapability, MemoryCapability,
+    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
+    NetCapability, TaskCapability,
 };
 
 // ============================================================================
@@ -323,7 +323,7 @@ impl DomainManager {
     {
         let domain_id = self.next_domain_id;
         self.next_domain_id += 1;
-        
+
         let app_id = self.next_app_id;
         self.next_app_id += 1;
 
@@ -341,9 +341,13 @@ impl DomainManager {
         // バックグラウンドタスクとして起動
         // Note: 実際の実装ではExecutorに登録
         let domain_name = name.clone();
-        
-        crate::log!("[Domain:{}] Loading application '{}'\n", domain_id, domain_name);
-        
+
+        crate::log!(
+            "[Domain:{}] Loading application '{}'\n",
+            domain_id,
+            domain_name
+        );
+
         // 将来的にはタスクスポーンで実行
         // let future = async move {
         //     app.on_start(ctx).await;
@@ -445,8 +449,12 @@ impl Application for ExampleApp {
     }
 
     async fn on_start(&mut self, ctx: AppContext) {
-        crate::log!("[{}] Starting (app_id: {}, domain_id: {})\n", 
-            self.name(), ctx.app_id, ctx.domain_id);
+        crate::log!(
+            "[{}] Starting (app_id: {}, domain_id: {})\n",
+            self.name(),
+            ctx.app_id,
+            ctx.domain_id
+        );
 
         // 権限チェックのデモ
         if let Some(_net_cap) = ctx.net() {
@@ -466,8 +474,12 @@ impl Application for ExampleApp {
         // 非同期ループのデモ
         for i in 0..3 {
             self.counter += 1;
-            crate::log!("[{}] Working... iteration {} (counter: {})\n", 
-                self.name(), i, self.counter);
+            crate::log!(
+                "[{}] Working... iteration {} (counter: {})\n",
+                self.name(),
+                i,
+                self.counter
+            );
             sleep(100).await;
         }
 
@@ -475,8 +487,11 @@ impl Application for ExampleApp {
     }
 
     fn on_stop(&mut self) {
-        crate::log!("[{}] Cleanup complete (final counter: {})\n", 
-            self.name(), self.counter);
+        crate::log!(
+            "[{}] Cleanup complete (final counter: {})\n",
+            self.name(),
+            self.counter
+        );
     }
 }
 
@@ -496,7 +511,7 @@ impl AppHandle {
     pub fn new(id: u64) -> Self {
         Self(id)
     }
-    
+
     pub fn id(&self) -> u64 {
         self.0
     }

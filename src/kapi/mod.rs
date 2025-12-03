@@ -50,16 +50,16 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
 // 静的ケイパビリティシステム
 use crate::security::static_capability::{
-    IoCapability, NetCapability, FsCapability, TaskCapability,
-    DmaCapability, MemoryCapability, IpcCapability,
+    DmaCapability, FsCapability, IoCapability, IpcCapability, MemoryCapability, NetCapability,
+    TaskCapability,
 };
 
 // ============================================================================
@@ -158,14 +158,13 @@ pub mod task_api {
     {
         // 権限チェックは型システムが実施済み（_capの存在が証明）
         // ランタイムオーバーヘッドなしでタスク生成
-        static NEXT_TASK_ID: core::sync::atomic::AtomicU64 = 
-            core::sync::atomic::AtomicU64::new(1);
-        
+        static NEXT_TASK_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
         let id = NEXT_TASK_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        
+
         // 実際のExecutorへの登録（将来実装）
         // crate::task::executor::spawn(future);
-        
+
         Ok(TaskHandle { id })
     }
 
@@ -306,7 +305,7 @@ pub mod mem_api {
     pub fn alloc_dma(_cap: &DmaCapability, size: usize) -> KapiResult<DmaBuffer> {
         // 権限チェック済み（_capの存在が証明）
         // 実際のDMA割り当て（将来実装）
-        
+
         // ダミー実装
         Ok(DmaBuffer {
             phys_addr: 0x1000_0000,
@@ -405,7 +404,10 @@ pub mod net_api {
     impl TcpEndpoint {
         /// 新しいエンドポイントを作成
         pub fn new(id: u64) -> Self {
-            Self { id, connected: false }
+            Self {
+                id,
+                connected: false,
+            }
         }
 
         /// 接続状態を取得
@@ -428,10 +430,10 @@ pub mod net_api {
     ) -> KapiResult<Packet> {
         // 権限チェック済み
         // 実際のネットワーク受信（将来実装）
-        
+
         // 非同期待機をシミュレート
         task_api::yield_now().await;
-        
+
         // ダミーパケット
         Ok(Packet::new(Vec::new()))
     }
@@ -452,9 +454,9 @@ pub mod net_api {
     ) -> KapiResult<()> {
         // パケットの所有権を受け取り、送信後に自動drop
         // ゼロコピー: データはmempoolに直接返却
-        
+
         task_api::yield_now().await;
-        
+
         // packetはここでdrop（mempoolに返却）
         drop(packet);
         Ok(())
@@ -462,9 +464,8 @@ pub mod net_api {
 
     /// TCPエンドポイントを作成
     pub fn create_endpoint(_cap: &NetCapability) -> KapiResult<TcpEndpoint> {
-        static NEXT_ID: core::sync::atomic::AtomicU64 = 
-            core::sync::atomic::AtomicU64::new(1);
-        
+        static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
         let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         Ok(TcpEndpoint::new(id))
     }
@@ -523,19 +524,14 @@ pub mod fs_api {
     /// - `_cap`: ファイルシステム権限
     /// - `path`: ファイルパス
     /// - `mode`: オープンモード
-    pub async fn open(
-        _cap: &FsCapability,
-        path: &str,
-        mode: OpenMode,
-    ) -> KapiResult<FileHandle> {
+    pub async fn open(_cap: &FsCapability, path: &str, mode: OpenMode) -> KapiResult<FileHandle> {
         // 権限チェック済み
-        static NEXT_ID: core::sync::atomic::AtomicU64 = 
-            core::sync::atomic::AtomicU64::new(1);
-        
+        static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
         let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        
+
         task_api::yield_now().await;
-        
+
         Ok(FileHandle { id, mode })
     }
 }
@@ -607,15 +603,11 @@ pub mod ipc_api {
 
     /// チャネルを作成
     pub fn create_channel(_cap: &IpcCapability) -> KapiResult<(ChannelHandle, ChannelHandle)> {
-        static NEXT_ID: core::sync::atomic::AtomicU64 = 
-            core::sync::atomic::AtomicU64::new(1);
-        
+        static NEXT_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
         let id = NEXT_ID.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        
-        Ok((
-            ChannelHandle { id },
-            ChannelHandle { id },
-        ))
+
+        Ok((ChannelHandle { id }, ChannelHandle { id }))
     }
 }
 

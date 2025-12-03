@@ -4,12 +4,12 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::future::poll_fn;
-use core::task::{Poll, Waker};
-use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
-use core::ptr::NonNull;
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
+use core::future::poll_fn;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::task::{Poll, Waker};
 use spin::Mutex;
 use x86_64::PhysAddr;
 
@@ -27,10 +27,10 @@ const VIRTIO_STATUS_FEATURES_OK: u8 = 8;
 const VIRTIO_STATUS_FAILED: u8 = 128;
 
 /// VirtIO-netフィーチャービット
-const VIRTIO_NET_F_MAC: u64 = 1 << 5;        // デバイスはMACアドレスを持つ
-const VIRTIO_NET_F_STATUS: u64 = 1 << 16;    // リンクステータスを報告
+const VIRTIO_NET_F_MAC: u64 = 1 << 5; // デバイスはMACアドレスを持つ
+const VIRTIO_NET_F_STATUS: u64 = 1 << 16; // リンクステータスを報告
 const VIRTIO_NET_F_MRG_RXBUF: u64 = 1 << 15; // マージ受信バッファ
-const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;   // 制御virtqueue
+const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17; // 制御virtqueue
 
 /// Virtqueueインデックス
 const VIRTQUEUE_RX: u16 = 0;
@@ -59,8 +59,8 @@ pub struct VirtqDesc {
 }
 
 impl VirtqDesc {
-    pub const FLAG_NEXT: u16 = 1;     // チェーンに続くディスクリプタあり
-    pub const FLAG_WRITE: u16 = 2;    // デバイスが書き込むバッファ
+    pub const FLAG_NEXT: u16 = 1; // チェーンに続くディスクリプタあり
+    pub const FLAG_WRITE: u16 = 2; // デバイスが書き込むバッファ
     pub const FLAG_INDIRECT: u16 = 4; // 間接ディスクリプタテーブル
 }
 
@@ -126,32 +126,29 @@ impl Virtqueue {
     pub fn new(index: u16) -> Result<Self, &'static str> {
         // ディスクリプタテーブル、Avail、Usedリングを割り当て
         // 実際にはDMA可能な連続物理メモリが必要
-        
+
         let desc_layout = core::alloc::Layout::array::<VirtqDesc>(QUEUE_SIZE as usize)
             .map_err(|_| "Layout error")?;
         let avail_layout = core::alloc::Layout::new::<VirtqAvail>();
         let used_layout = core::alloc::Layout::new::<VirtqUsed>();
-        
+
         let desc_ptr = unsafe {
             alloc::alloc::alloc_zeroed(desc_layout) as *mut [VirtqDesc; QUEUE_SIZE as usize]
         };
-        let avail_ptr = unsafe {
-            alloc::alloc::alloc_zeroed(avail_layout) as *mut VirtqAvail
-        };
-        let used_ptr = unsafe {
-            alloc::alloc::alloc_zeroed(used_layout) as *mut VirtqUsed
-        };
-        
+        let avail_ptr = unsafe { alloc::alloc::alloc_zeroed(avail_layout) as *mut VirtqAvail };
+        let used_ptr = unsafe { alloc::alloc::alloc_zeroed(used_layout) as *mut VirtqUsed };
+
         if desc_ptr.is_null() || avail_ptr.is_null() || used_ptr.is_null() {
             return Err("Failed to allocate virtqueue memory");
         }
-        
+
         // ディスクリプタチェーンを初期化
         let desc = unsafe { NonNull::new_unchecked(desc_ptr) };
         unsafe {
             let desc_ref = desc.as_ref();
             for i in 0..(QUEUE_SIZE - 1) {
-                (desc_ref.as_ptr() as *mut VirtqDesc).add(i as usize)
+                (desc_ref.as_ptr() as *mut VirtqDesc)
+                    .add(i as usize)
                     .write(VirtqDesc {
                         addr: 0,
                         len: 0,
@@ -160,13 +157,13 @@ impl Virtqueue {
                     });
             }
         }
-        
+
         // 保留バッファを初期化
         let mut pending_buffers = VecDeque::with_capacity(QUEUE_SIZE as usize);
         for _ in 0..QUEUE_SIZE {
             pending_buffers.push_back(None);
         }
-        
+
         Ok(Self {
             index,
             size: QUEUE_SIZE,
@@ -179,21 +176,21 @@ impl Virtqueue {
             pending_buffers,
         })
     }
-    
+
     /// ディスクリプタを割り当て
     fn alloc_desc(&mut self) -> Option<u16> {
         if self.free_count == 0 {
             return None;
         }
-        
+
         let idx = self.free_head;
         let desc = unsafe { &(*self.desc.as_ptr())[idx as usize] };
         self.free_head = desc.next;
         self.free_count -= 1;
-        
+
         Some(idx)
     }
-    
+
     /// ディスクリプタを解放
     fn free_desc(&mut self, idx: u16) {
         let desc = unsafe { &mut (*self.desc.as_ptr())[idx as usize] };
@@ -202,97 +199,96 @@ impl Virtqueue {
         self.free_head = idx;
         self.free_count += 1;
     }
-    
+
     /// バッファをキューに追加（ゼロコピー送信用）
     pub fn add_buffer_tx(&mut self, packet: PacketRef) -> Result<u16, &'static str> {
         let desc_idx = self.alloc_desc().ok_or("No free descriptors")?;
-        
+
         // ディスクリプタを設定
         let desc = unsafe { &mut (*self.desc.as_ptr())[desc_idx as usize] };
         desc.addr = packet.phys_addr().as_u64();
         desc.len = packet.data().len() as u32;
         desc.flags = 0; // デバイスは読み取りのみ
-        
+
         // バッファを保存（完了時に解放）
         self.pending_buffers[desc_idx as usize] = Some(packet);
-        
+
         // Availリングに追加
         unsafe {
             let avail = self.avail.as_mut();
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
-            
+
             // メモリバリア
             core::sync::atomic::fence(Ordering::Release);
-            
+
             avail.idx = avail_idx.wrapping_add(1);
         }
-        
+
         Ok(desc_idx)
     }
-    
+
     /// バッファをキューに追加（ゼロコピー受信用）
     pub fn add_buffer_rx(&mut self, packet: PacketRef) -> Result<u16, &'static str> {
         let desc_idx = self.alloc_desc().ok_or("No free descriptors")?;
-        
+
         // ディスクリプタを設定
         let desc = unsafe { &mut (*self.desc.as_ptr())[desc_idx as usize] };
         desc.addr = packet.phys_addr().as_u64();
         desc.len = packet.data().len() as u32;
         desc.flags = VirtqDesc::FLAG_WRITE; // デバイスが書き込む
-        
+
         // バッファを保存
         self.pending_buffers[desc_idx as usize] = Some(packet);
-        
+
         // Availリングに追加
         unsafe {
             let avail = self.avail.as_mut();
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
-            
+
             core::sync::atomic::fence(Ordering::Release);
-            
+
             avail.idx = avail_idx.wrapping_add(1);
         }
-        
+
         Ok(desc_idx)
     }
-    
+
     /// 完了したバッファを取得
     pub fn pop_used(&mut self) -> Option<(u16, PacketRef, u32)> {
         core::sync::atomic::fence(Ordering::Acquire);
-        
+
         let used_idx = unsafe { self.used.as_ref().idx };
-        
+
         if self.last_used_idx == used_idx {
             return None;
         }
-        
-        let used_elem = unsafe {
-            &self.used.as_ref().ring[(self.last_used_idx % self.size) as usize]
-        };
-        
+
+        let used_elem =
+            unsafe { &self.used.as_ref().ring[(self.last_used_idx % self.size) as usize] };
+
         let desc_idx = used_elem.id as u16;
         let len = used_elem.len;
-        
+
         self.last_used_idx = self.last_used_idx.wrapping_add(1);
-        
+
         // バッファを取り出してディスクリプタを解放
         let packet = self.pending_buffers[desc_idx as usize].take()?;
         self.free_desc(desc_idx);
-        
+
         Some((desc_idx, packet, len))
     }
-    
+
     /// 物理アドレスを取得（デバイス設定用）
     pub fn desc_phys_addr(&self) -> PhysAddr {
         PhysAddr::new(self.desc.as_ptr() as u64)
     }
-    
+
     pub fn avail_phys_addr(&self) -> PhysAddr {
         PhysAddr::new(self.avail.as_ptr() as u64)
     }
-    
+
     pub fn used_phys_addr(&self) -> PhysAddr {
         PhysAddr::new(self.used.as_ptr() as u64)
     }
@@ -355,7 +351,7 @@ impl VirtioNet {
     pub fn new(base_addr: usize) -> Result<Self, &'static str> {
         let rx_queue = Virtqueue::new(VIRTQUEUE_RX)?;
         let tx_queue = Virtqueue::new(VIRTQUEUE_TX)?;
-        
+
         let mut device = Self {
             base_addr,
             mac: [0; 6],
@@ -364,78 +360,84 @@ impl VirtioNet {
             rx_buffers: Mutex::new(VecDeque::new()),
             stats: VirtioNetStats::new(),
         };
-        
+
         device.initialize()?;
-        
+
         Ok(device)
     }
-    
+
     /// デバイスを初期化
     fn initialize(&mut self) -> Result<(), &'static str> {
         // 1. デバイスリセット
         self.write_status(0);
-        
+
         // 2. ACKNOWLEDGE
         self.write_status(VIRTIO_STATUS_ACKNOWLEDGE);
-        
+
         // 3. DRIVER
         self.write_status(self.read_status() | VIRTIO_STATUS_DRIVER);
-        
+
         // 4. フィーチャーネゴシエーション
         let features = self.read_features();
         let supported = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
         self.write_features(features & supported);
-        
+
         // 5. FEATURES_OK
         self.write_status(self.read_status() | VIRTIO_STATUS_FEATURES_OK);
-        
+
         // フィーチャーが受け入れられたか確認
         if (self.read_status() & VIRTIO_STATUS_FEATURES_OK) == 0 {
             self.write_status(VIRTIO_STATUS_FAILED);
             return Err("Feature negotiation failed");
         }
-        
+
         // 6. MACアドレスを読み取り
         self.read_mac()?;
-        
+
         // 7. Virtqueueを設定
         self.setup_queues()?;
-        
+
         // 8. 受信バッファを投入
         self.refill_rx_buffers()?;
-        
+
         // 9. DRIVER_OK
         self.write_status(self.read_status() | VIRTIO_STATUS_DRIVER_OK);
-        
-        crate::log!("[VIRTIO-NET] Initialized, MAC={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
-            self.mac[0], self.mac[1], self.mac[2],
-            self.mac[3], self.mac[4], self.mac[5]);
-        
+
+        crate::log!(
+            "[VIRTIO-NET] Initialized, MAC={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+            self.mac[0],
+            self.mac[1],
+            self.mac[2],
+            self.mac[3],
+            self.mac[4],
+            self.mac[5]
+        );
+
         Ok(())
     }
-    
+
     /// ステータスレジスタを読み取り
     fn read_status(&self) -> u8 {
         // TODO: 実際のMMIO読み取り
         0
     }
-    
+
     /// ステータスレジスタに書き込み
     fn write_status(&self, _status: u8) {
         // TODO: 実際のMMIO書き込み
     }
-    
+
     /// フィーチャーを読み取り
     fn read_features(&self) -> u64 {
         // TODO: 実際のMMIO読み取り
         VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS
     }
-    
+
     /// フィーチャーを書き込み
     fn write_features(&self, _features: u64) {
         // TODO: 実際のMMIO書き込み
     }
-    
+
     /// MACアドレスを読み取り
     fn read_mac(&mut self) -> Result<(), &'static str> {
         // TODO: 実際のMMIO読み取り
@@ -443,17 +445,17 @@ impl VirtioNet {
         self.mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
         Ok(())
     }
-    
+
     /// Virtqueueを設定
     fn setup_queues(&self) -> Result<(), &'static str> {
         // TODO: デバイスにキューアドレスを通知
         Ok(())
     }
-    
+
     /// 受信バッファを補充
     fn refill_rx_buffers(&self) -> Result<(), &'static str> {
         let mut rx_queue = self.rx_queue.lock();
-        
+
         // キューサイズの半分までバッファを投入
         for _ in 0..(QUEUE_SIZE / 2) {
             if let Some(packet) = alloc_packet() {
@@ -463,75 +465,75 @@ impl VirtioNet {
                 break;
             }
         }
-        
+
         // デバイスに通知
         self.notify_rx();
-        
+
         Ok(())
     }
-    
+
     /// デバイスに通知（RXキュー）
     fn notify_rx(&self) {
         // TODO: 実際のMMIO書き込み（キュー通知）
     }
-    
+
     /// デバイスに通知（TXキュー）
     fn notify_tx(&self) {
         // TODO: 実際のMMIO書き込み（キュー通知）
     }
-    
+
     /// パケットを送信（ゼロコピー）
     pub fn send_packet(&self, packet: PacketRef) -> Result<(), &'static str> {
         let mut tx_queue = self.tx_queue.lock();
-        
+
         let len = packet.data().len();
         tx_queue.add_buffer_tx(packet)?;
-        
+
         // デバイスに通知
         drop(tx_queue);
         self.notify_tx();
-        
+
         self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.stats.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
-        
+
         Ok(())
     }
-    
+
     /// 完了した送信を処理
     pub fn process_tx_completions(&self) {
         let mut tx_queue = self.tx_queue.lock();
-        
+
         while let Some((_idx, _packet, _len)) = tx_queue.pop_used() {
             // PacketRefはdropされると自動的にプールに返却される
         }
     }
-    
+
     /// 受信したパケットを取得（ゼロコピー）
     pub fn receive_packet(&self) -> Option<PacketRef> {
         let mut rx_queue = self.rx_queue.lock();
-        
+
         if let Some((_idx, mut packet, len)) = rx_queue.pop_used() {
             // 受信したデータ長を設定
             packet.set_len(len as usize);
-            
+
             self.stats.rx_packets.fetch_add(1, Ordering::Relaxed);
             self.stats.rx_bytes.fetch_add(len as u64, Ordering::Relaxed);
-            
+
             // 新しいバッファを補充
             drop(rx_queue);
             let _ = self.refill_rx_buffers();
-            
+
             return Some(packet);
         }
-        
+
         None
     }
-    
+
     /// MACアドレスを取得
     pub fn mac_address(&self) -> [u8; 6] {
         self.mac
     }
-    
+
     /// 統計を取得
     pub fn get_stats(&self) -> (u64, u64, u64, u64) {
         (
@@ -579,15 +581,15 @@ pub fn init_virtio_net(base_addr: usize) -> Result<(), &'static str> {
 pub fn virtio_net_interrupt_handler() {
     // 1. 割り込み要因のクリア（ドライバ依存）
     // TODO: VirtIOレジスタからの読み取り処理
-    
+
     // 2. フラグをセット
     NET_DEVICE_STATE.ready.store(true, Ordering::SeqCst);
-    
+
     // 3. Wakerを起動
     if let Some(waker) = NET_DEVICE_STATE.waker.lock().take() {
         waker.wake_by_ref();
     }
-    
+
     // 4. EOI送信
     // TODO: APIC/PICへのEOI送信処理
 }
@@ -604,10 +606,10 @@ pub async fn async_receive_packet() -> Option<PacketRef> {
             }
         }
         drop(device_guard);
-        
+
         if NET_DEVICE_STATE.ready.load(Ordering::SeqCst) {
             NET_DEVICE_STATE.ready.store(false, Ordering::SeqCst);
-            
+
             // もう一度チェック
             let device_guard = VIRTIO_NET_DEVICE.lock();
             if let Some(device) = device_guard.as_ref() {
@@ -616,12 +618,13 @@ pub async fn async_receive_packet() -> Option<PacketRef> {
                 }
             }
         }
-        
+
         // まだデータがないならWakerを登録
         let mut waker_guard = NET_DEVICE_STATE.waker.lock();
         *waker_guard = Some(cx.waker().clone());
         Poll::Pending
-    }).await
+    })
+    .await
 }
 
 /// 非同期パケット送信関数（ゼロコピー）
@@ -637,11 +640,11 @@ pub async fn async_send_packet(packet: PacketRef) -> Result<(), &'static str> {
 /// パケットを送信（Vec<u8>からPacketRefを作成）
 pub async fn async_send_data(data: &[u8]) -> Result<(), &'static str> {
     let mut packet = alloc_packet().ok_or("Failed to allocate packet buffer")?;
-    
+
     let len = data.len().min(packet.data().len());
     packet.data_mut()[..len].copy_from_slice(&data[..len]);
     packet.set_len(len);
-    
+
     async_send_packet(packet).await
 }
 
@@ -652,16 +655,16 @@ pub async fn async_send_data(data: &[u8]) -> Result<(), &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_virtqueue_desc_allocation() {
         let mut queue = Virtqueue::new(0).expect("Failed to create virtqueue");
-        
+
         // ディスクリプタを割り当て
         let idx1 = queue.alloc_desc().expect("Should allocate descriptor");
         let idx2 = queue.alloc_desc().expect("Should allocate descriptor");
         assert_ne!(idx1, idx2);
-        
+
         // 解放して再割り当て
         queue.free_desc(idx1);
         let idx3 = queue.alloc_desc().expect("Should allocate descriptor");

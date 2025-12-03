@@ -16,12 +16,12 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU32, AtomicBool, Ordering};
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -238,7 +238,8 @@ impl TerminalBuffer {
                     self.write_char(' ');
                 }
             }
-            '\x08' => { // Backspace
+            '\x08' => {
+                // Backspace
                 if self.cursor_x > 0 {
                     self.cursor_x -= 1;
                 }
@@ -280,7 +281,7 @@ impl TerminalBuffer {
         // 最上行をスクロールバックに保存
         let top_line: Vec<CharCell> = self.screen[..self.cols].to_vec();
         self.scrollback.push_back(top_line);
-        
+
         if self.scrollback.len() > SCROLLBACK_LINES {
             self.scrollback.pop_front();
         }
@@ -290,7 +291,7 @@ impl TerminalBuffer {
             let src_start = (y + 1) * self.cols;
             let src_end = src_start + self.cols;
             let dst_start = y * self.cols;
-            
+
             for i in 0..self.cols {
                 self.screen[dst_start + i] = self.screen[src_start + i];
             }
@@ -433,32 +434,28 @@ impl AnsiParser {
                     Some(AnsiAction::Print(ch))
                 }
             }
-            ParserState::Escape => {
-                match ch {
-                    '[' => {
-                        self.state = ParserState::Csi;
-                        self.params.clear();
-                        self.current_param = 0;
-                        self.intermediate.clear();
-                        None
-                    }
-                    ']' => {
-                        self.state = ParserState::Osc;
-                        None
-                    }
-                    'c' => {
-                        self.state = ParserState::Normal;
-                        Some(AnsiAction::Reset)
-                    }
-                    _ => {
-                        self.state = ParserState::Normal;
-                        None
-                    }
+            ParserState::Escape => match ch {
+                '[' => {
+                    self.state = ParserState::Csi;
+                    self.params.clear();
+                    self.current_param = 0;
+                    self.intermediate.clear();
+                    None
                 }
-            }
-            ParserState::Csi => {
-                self.parse_csi(ch)
-            }
+                ']' => {
+                    self.state = ParserState::Osc;
+                    None
+                }
+                'c' => {
+                    self.state = ParserState::Normal;
+                    Some(AnsiAction::Reset)
+                }
+                _ => {
+                    self.state = ParserState::Normal;
+                    None
+                }
+            },
+            ParserState::Csi => self.parse_csi(ch),
             ParserState::Osc => {
                 // OSCシーケンス（タイトル設定など）
                 if ch == '\x07' || ch == '\x1b' {
@@ -501,12 +498,10 @@ impl AnsiParser {
             'B' => Some(AnsiAction::CursorDown(get(0, 1) as usize)),
             'C' => Some(AnsiAction::CursorForward(get(0, 1) as usize)),
             'D' => Some(AnsiAction::CursorBack(get(0, 1) as usize)),
-            'H' | 'f' => {
-                Some(AnsiAction::SetCursor {
-                    row: get(0, 1).saturating_sub(1) as usize,
-                    col: get(1, 1).saturating_sub(1) as usize,
-                })
-            }
+            'H' | 'f' => Some(AnsiAction::SetCursor {
+                row: get(0, 1).saturating_sub(1) as usize,
+                col: get(1, 1).saturating_sub(1) as usize,
+            }),
             'J' => {
                 let mode = match get(0, 0) {
                     0 => ClearMode::ToEnd,
@@ -523,9 +518,7 @@ impl AnsiParser {
                 };
                 Some(AnsiAction::ClearLine(mode))
             }
-            'm' => {
-                Some(AnsiAction::SetGraphics(params.clone()))
-            }
+            'm' => Some(AnsiAction::SetGraphics(params.clone())),
             's' => Some(AnsiAction::SaveCursor),
             'u' => Some(AnsiAction::RestoreCursor),
             'n' => {
@@ -766,11 +759,11 @@ impl ConsoleManager {
         }
 
         let old_active = self.active.swap(console_id, Ordering::AcqRel) as usize;
-        
+
         if let Some(old) = self.consoles.get(old_active) {
             old.lock().set_active(false);
         }
-        
+
         if let Some(new) = self.consoles.get(id) {
             new.lock().set_active(true);
         }
@@ -898,7 +891,7 @@ mod tests {
         let mut buffer = TerminalBuffer::new(80, 25);
         buffer.write_str("Hello, World!");
         assert_eq!(buffer.cursor(), (13, 0));
-        
+
         buffer.write_char('\n');
         assert_eq!(buffer.cursor(), (0, 1));
     }
@@ -906,7 +899,7 @@ mod tests {
     #[test]
     fn test_ansi_parser() {
         let mut parser = AnsiParser::new();
-        
+
         // 通常文字
         let action = parser.feed('A');
         assert!(matches!(action, Some(AnsiAction::Print('A'))));
@@ -914,10 +907,13 @@ mod tests {
         // エスケープシーケンス開始
         assert!(parser.feed('\x1b').is_none());
         assert!(parser.feed('[').is_none());
-        
+
         // カーソル移動
         let action = parser.feed('H');
-        assert!(matches!(action, Some(AnsiAction::SetCursor { row: 0, col: 0 })));
+        assert!(matches!(
+            action,
+            Some(AnsiAction::SetCursor { row: 0, col: 0 })
+        ));
     }
 
     #[test]
@@ -925,7 +921,7 @@ mod tests {
         let mut vc = VirtualConsole::new(0, 80, 25);
         vc.write("Hello\n");
         assert_eq!(vc.buffer().cursor(), (0, 1));
-        
+
         // ANSIカラー
         vc.write("\x1b[31mRed\x1b[0m");
     }

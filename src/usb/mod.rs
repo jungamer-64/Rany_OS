@@ -1,15 +1,15 @@
 //! USB (Universal Serial Bus) スタック
-//! 
+//!
 //! ExoRust用のUSBホストコントローラドライバとデバイス管理
 //! - xHCI (USB 3.x) コントローラサポート
 //! - USBデバイス列挙と設定
 //! - 非同期転送API
 
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;
 
 // =============================================================================
@@ -159,7 +159,7 @@ impl EndpointDescriptor {
     pub fn number(&self) -> u8 {
         self.endpoint_address & 0x0F
     }
-    
+
     pub fn direction(&self) -> Direction {
         if self.endpoint_address & 0x80 != 0 {
             Direction::In
@@ -167,7 +167,7 @@ impl EndpointDescriptor {
             Direction::Out
         }
     }
-    
+
     pub fn transfer_type(&self) -> TransferType {
         match self.attributes & 0x03 {
             0 => TransferType::Control,
@@ -204,7 +204,7 @@ impl SetupPacket {
             length,
         }
     }
-    
+
     /// GET_DESCRIPTOR リクエスト
     pub fn get_descriptor(desc_type: u8, desc_index: u8, length: u16) -> Self {
         Self::new(
@@ -215,7 +215,7 @@ impl SetupPacket {
             length,
         )
     }
-    
+
     /// SET_ADDRESS リクエスト
     pub fn set_address(address: u8) -> Self {
         Self::new(
@@ -226,7 +226,7 @@ impl SetupPacket {
             0,
         )
     }
-    
+
     /// SET_CONFIGURATION リクエスト
     pub fn set_configuration(config: u8) -> Self {
         Self::new(
@@ -338,15 +338,15 @@ impl Trb {
             control: 0,
         }
     }
-    
+
     pub fn set_type(&mut self, trb_type: TrbType) {
         self.control = (self.control & !0xFC00) | ((trb_type as u32) << 10);
     }
-    
+
     pub fn get_type(&self) -> u8 {
         ((self.control >> 10) & 0x3F) as u8
     }
-    
+
     pub fn set_cycle(&mut self, cycle: bool) {
         if cycle {
             self.control |= 1;
@@ -354,7 +354,7 @@ impl Trb {
             self.control &= !1;
         }
     }
-    
+
     pub fn cycle(&self) -> bool {
         self.control & 1 != 0
     }
@@ -377,18 +377,16 @@ unsafe impl Sync for Ring {}
 impl Ring {
     pub unsafe fn new(size: usize) -> Self {
         use core::alloc::Layout;
-        
+
         // Layout::from_size_align はサイズとアライメントが有効な場合は常に成功
         // 4096アライメントとTrbサイズの積は常に有効なため、
         // unwrap_unchecked() で分岐を完全に除去
         // アセンブリ: cmp + jne (条件分岐) → 完全に消滅
-        let layout = Layout::from_size_align(
-            size * core::mem::size_of::<Trb>(),
-            4096,
-        ).unwrap_unchecked();
-        
+        let layout =
+            Layout::from_size_align(size * core::mem::size_of::<Trb>(), 4096).unwrap_unchecked();
+
         let ptr = alloc::alloc::alloc_zeroed(layout) as *mut Trb;
-        
+
         Self {
             trbs: ptr,
             size,
@@ -398,14 +396,14 @@ impl Ring {
             physical_addr: ptr as u64,
         }
     }
-    
+
     pub fn enqueue_trb(&mut self, mut trb: Trb) -> &mut Trb {
         trb.set_cycle(self.cycle_bit);
-        
+
         unsafe {
             let slot = self.trbs.add(self.enqueue);
             core::ptr::write_volatile(slot, trb);
-            
+
             self.enqueue += 1;
             if self.enqueue >= self.size - 1 {
                 // リンクTRBを設定
@@ -416,30 +414,30 @@ impl Ring {
                     (*link).control |= 1;
                 }
                 (*link).control |= 1 << 1; // Toggle Cycle
-                
+
                 self.enqueue = 0;
                 self.cycle_bit = !self.cycle_bit;
             }
-            
+
             &mut *slot
         }
     }
-    
+
     pub fn dequeue_trb(&mut self) -> Option<Trb> {
         unsafe {
             let slot = self.trbs.add(self.dequeue);
             let trb = core::ptr::read_volatile(slot);
-            
+
             if trb.cycle() != self.cycle_bit {
                 return None;
             }
-            
+
             self.dequeue += 1;
             if self.dequeue >= self.size {
                 self.dequeue = 0;
                 self.cycle_bit = !self.cycle_bit;
             }
-            
+
             Some(trb)
         }
     }
@@ -486,13 +484,13 @@ pub struct XhciController {
     max_slots: u8,
     max_ports: u8,
     page_size: u32,
-    
+
     command_ring: Option<Ring>,
     event_ring: Option<Ring>,
     dcbaa: *mut u64,
-    
+
     slots: [Option<Box<DeviceSlot>>; 256],
-    
+
     initialized: AtomicBool,
     stats: XhciStats,
 }
@@ -514,7 +512,7 @@ pub struct XhciStats {
 impl XhciController {
     pub const fn new(mmio_base: u64) -> Self {
         const NONE_SLOT: Option<Box<DeviceSlot>> = None;
-        
+
         Self {
             mmio_base,
             cap_length: 0,
@@ -535,69 +533,69 @@ impl XhciController {
             },
         }
     }
-    
+
     unsafe fn read32(&self, offset: usize) -> u32 {
         core::ptr::read_volatile((self.mmio_base as *const u8).add(offset) as *const u32)
     }
-    
+
     unsafe fn write32(&self, offset: usize, value: u32) {
         core::ptr::write_volatile((self.mmio_base as *mut u8).add(offset) as *mut u32, value);
     }
-    
+
     unsafe fn read64(&self, offset: usize) -> u64 {
         core::ptr::read_volatile((self.mmio_base as *const u8).add(offset) as *const u64)
     }
-    
+
     unsafe fn write64(&self, offset: usize, value: u64) {
         core::ptr::write_volatile((self.mmio_base as *mut u8).add(offset) as *mut u64, value);
     }
-    
+
     fn op_base(&self) -> usize {
         self.cap_length as usize
     }
-    
+
     /// コントローラを初期化
     pub unsafe fn init(&mut self) -> UsbResult<()> {
         // ケーパビリティレジスタを読み取り
         self.cap_length = self.read32(xhci_cap::CAPLENGTH) as u8;
         let hcsparams1 = self.read32(xhci_cap::HCSPARAMS1);
-        
+
         self.max_slots = (hcsparams1 & 0xFF) as u8;
         self.max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
-        
+
         let page_size = self.read32(self.op_base() + xhci_op::PAGESIZE);
         self.page_size = 1 << (page_size.trailing_zeros() + 12);
-        
+
         // コントローラをリセット
         self.reset()?;
-        
+
         // DCBAAを割り当て
         self.allocate_dcbaa()?;
-        
+
         // コマンドリングを作成
         self.command_ring = Some(Ring::new(256));
-        
+
         // イベントリングを作成
         self.event_ring = Some(Ring::new(256));
-        
+
         // コントローラを設定
         self.configure()?;
-        
+
         // コントローラを開始
         self.start()?;
-        
+
         self.initialized.store(true, Ordering::SeqCst);
-        
+
         Ok(())
     }
-    
+
     unsafe fn reset(&mut self) -> UsbResult<()> {
         let op_base = self.op_base();
-        
+
         // 停止
         let cmd = self.read32(op_base + xhci_op::USBCMD);
         self.write32(op_base + xhci_op::USBCMD, cmd & !xhci_cmd::RUN_STOP);
-        
+
         // 停止を待機
         for _ in 0..1000 {
             if self.read32(op_base + xhci_op::USBSTS) & xhci_sts::HCH != 0 {
@@ -605,10 +603,10 @@ impl XhciController {
             }
             core::hint::spin_loop();
         }
-        
+
         // リセット
         self.write32(op_base + xhci_op::USBCMD, xhci_cmd::HCRST);
-        
+
         // リセット完了を待機
         for _ in 0..1000 {
             let cmd = self.read32(op_base + xhci_op::USBCMD);
@@ -618,54 +616,54 @@ impl XhciController {
             }
             core::hint::spin_loop();
         }
-        
+
         Err(UsbError::ControllerError)
     }
-    
+
     unsafe fn allocate_dcbaa(&mut self) -> UsbResult<()> {
         use core::alloc::Layout;
-        
+
         let size = (self.max_slots as usize + 1) * 8;
         // 64バイトアライメントと (max_slots+1)*8 は常に有効なレイアウト
         // unwrap_unchecked() で panic ブランチを除去
         let layout = Layout::from_size_align(size, 64).unwrap_unchecked();
         self.dcbaa = alloc::alloc::alloc_zeroed(layout) as *mut u64;
-        
+
         if self.dcbaa.is_null() {
             return Err(UsbError::NoResources);
         }
-        
+
         // DCBAAPを設定
         let op_base = self.op_base();
         self.write64(op_base + xhci_op::DCBAAP, self.dcbaa as u64);
-        
+
         Ok(())
     }
-    
+
     unsafe fn configure(&mut self) -> UsbResult<()> {
         let op_base = self.op_base();
-        
+
         // 有効スロット数を設定
         self.write32(op_base + xhci_op::CONFIG, self.max_slots as u32);
-        
+
         // コマンドリングを設定
         if let Some(ref ring) = self.command_ring {
             self.write64(op_base + xhci_op::CRCR, ring.physical_addr | 1);
         }
-        
+
         Ok(())
     }
-    
+
     unsafe fn start(&mut self) -> UsbResult<()> {
         let op_base = self.op_base();
-        
+
         // 割り込みを有効化してコントローラを開始
         let cmd = self.read32(op_base + xhci_op::USBCMD);
         self.write32(
             op_base + xhci_op::USBCMD,
             cmd | xhci_cmd::RUN_STOP | xhci_cmd::INTE,
         );
-        
+
         // 開始を確認
         for _ in 0..1000 {
             if self.read32(op_base + xhci_op::USBSTS) & xhci_sts::HCH == 0 {
@@ -673,27 +671,27 @@ impl XhciController {
             }
             core::hint::spin_loop();
         }
-        
+
         Err(UsbError::ControllerError)
     }
-    
+
     /// ポートステータスを取得
     pub fn port_status(&self, port: u8) -> u32 {
         if port == 0 || port > self.max_ports {
             return 0;
         }
-        
+
         let port_offset = 0x400 + (port as usize - 1) * 0x10;
         unsafe { self.read32(self.op_base() + port_offset) }
     }
-    
+
     /// デバイスを列挙
     pub fn enumerate_devices(&mut self) -> UsbResult<Vec<u8>> {
         let mut devices = Vec::new();
-        
+
         for port in 1..=self.max_ports {
             let status = self.port_status(port);
-            
+
             // Current Connect Status
             if status & 1 != 0 {
                 // Port Enabled
@@ -704,38 +702,43 @@ impl XhciController {
                 }
             }
         }
-        
+
         Ok(devices)
     }
-    
+
     fn enable_slot(&mut self) -> UsbResult<u8> {
-        let ring = self.command_ring.as_mut().ok_or(UsbError::ControllerError)?;
-        
+        let ring = self
+            .command_ring
+            .as_mut()
+            .ok_or(UsbError::ControllerError)?;
+
         let mut trb = Trb::new();
         trb.set_type(TrbType::EnableSlot);
         ring.enqueue_trb(trb);
-        
+
         self.stats.commands_issued.fetch_add(1, Ordering::Relaxed);
-        
+
         // ドアベルを鳴らす
         self.ring_doorbell(0, 0);
-        
+
         // 完了を待機（実際には非同期で処理すべき）
         // ここでは簡略化のため同期的に待機
         for _ in 0..10000 {
             if let Some(event) = self.poll_event() {
                 if event.get_type() == TrbType::CommandCompletion as u8 {
                     let slot_id = ((event.control >> 24) & 0xFF) as u8;
-                    self.stats.commands_completed.fetch_add(1, Ordering::Relaxed);
+                    self.stats
+                        .commands_completed
+                        .fetch_add(1, Ordering::Relaxed);
                     return Ok(slot_id);
                 }
             }
             core::hint::spin_loop();
         }
-        
+
         Err(UsbError::Timeout)
     }
-    
+
     fn ring_doorbell(&self, slot: u8, target: u8) {
         let db_offset = unsafe { self.read32(xhci_cap::DBOFF) } as usize;
         let doorbell = self.mmio_base as usize + db_offset + (slot as usize * 4);
@@ -743,11 +746,11 @@ impl XhciController {
             core::ptr::write_volatile(doorbell as *mut u32, target as u32);
         }
     }
-    
+
     fn poll_event(&mut self) -> Option<Trb> {
         self.event_ring.as_mut()?.dequeue_trb()
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> &XhciStats {
         &self.stats
@@ -784,26 +787,26 @@ impl UsbManager {
             devices: RwLock::new(Vec::new()),
         }
     }
-    
+
     /// xHCIコントローラを追加
     pub fn add_controller(&mut self, mmio_base: u64) -> UsbResult<()> {
         let mut controller = XhciController::new(mmio_base);
         unsafe { controller.init()? };
-        
+
         self.controllers.push(Arc::new(RwLock::new(controller)));
         Ok(())
     }
-    
+
     /// 全デバイスを列挙（キャッシュを更新）
-    /// 
+    ///
     /// clone() を避けて所有権を移動。結果は devices() で取得。
     pub fn enumerate_all(&self) -> UsbResult<()> {
         let mut all_devices = Vec::new();
-        
+
         for controller in &self.controllers {
             let mut ctrl = controller.write();
             let slot_ids = ctrl.enumerate_devices()?;
-            
+
             for slot_id in slot_ids {
                 all_devices.push(UsbDeviceInfo {
                     slot_id,
@@ -817,16 +820,16 @@ impl UsbManager {
                 });
             }
         }
-        
+
         // clone() を避けて所有権を移動
         // キャッシュを更新してから参照カウントなしでアクセス
         *self.devices.write() = all_devices;
         // 参照を返す代わりにOkだけ返す（呼び出し側は devices() で取得）
         Ok(())
     }
-    
+
     /// デバイス一覧を取得（ガード付き参照）
-    /// 
+    ///
     /// Vec clone() を避け、ゼロコスト参照を提供。
     pub fn devices(&self) -> spin::RwLockReadGuard<Vec<UsbDeviceInfo>> {
         self.devices.read()
@@ -847,13 +850,13 @@ impl UsbManager {
 pub trait UsbClassDriver: Send + Sync {
     /// ドライバ名
     fn name(&self) -> &'static str;
-    
+
     /// このドライバがデバイスをサポートするか
     fn supports(&self, info: &UsbDeviceInfo) -> bool;
-    
+
     /// デバイスにアタッチ
     fn attach(&mut self, slot_id: u8) -> UsbResult<()>;
-    
+
     /// デバイスからデタッチ
     fn detach(&mut self, slot_id: u8) -> UsbResult<()>;
 }
@@ -875,16 +878,16 @@ impl UsbClassDriver for UsbMassStorage {
     fn name(&self) -> &'static str {
         "USB Mass Storage"
     }
-    
+
     fn supports(&self, info: &UsbDeviceInfo) -> bool {
         info.device_class == 0x08 // Mass Storage Class
     }
-    
+
     fn attach(&mut self, slot_id: u8) -> UsbResult<()> {
         self.attached_slots.push(slot_id);
         Ok(())
     }
-    
+
     fn detach(&mut self, slot_id: u8) -> UsbResult<()> {
         self.attached_slots.retain(|&s| s != slot_id);
         Ok(())
@@ -904,7 +907,7 @@ impl UsbKeyboard {
             key_buffer: [0; 8],
         }
     }
-    
+
     /// キーバッファを読み取り
     pub fn read_keys(&self) -> &[u8] {
         &self.key_buffer
@@ -915,16 +918,16 @@ impl UsbClassDriver for UsbKeyboard {
     fn name(&self) -> &'static str {
         "USB Keyboard (HID)"
     }
-    
+
     fn supports(&self, info: &UsbDeviceInfo) -> bool {
         info.device_class == 0x03 && info.device_subclass == 0x01
     }
-    
+
     fn attach(&mut self, slot_id: u8) -> UsbResult<()> {
         self.attached_slots.push(slot_id);
         Ok(())
     }
-    
+
     fn detach(&mut self, slot_id: u8) -> UsbResult<()> {
         self.attached_slots.retain(|&s| s != slot_id);
         Ok(())

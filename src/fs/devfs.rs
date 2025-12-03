@@ -3,12 +3,12 @@
 //! /dev ファイルシステムの実装
 //! デバイスノードを仮想ファイルとして公開
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// デバイス番号 (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -80,16 +80,16 @@ impl DevInode {
 pub trait DeviceOps: Send + Sync {
     /// デバイスを開く
     fn open(&self) -> Result<(), DevError>;
-    
+
     /// デバイスを閉じる
     fn close(&self) -> Result<(), DevError>;
-    
+
     /// 読み取り
     fn read(&self, offset: usize, buf: &mut [u8]) -> Result<usize, DevError>;
-    
+
     /// 書き込み
     fn write(&self, offset: usize, buf: &[u8]) -> Result<usize, DevError>;
-    
+
     /// ioctl
     fn ioctl(&self, cmd: u32, arg: usize) -> Result<usize, DevError>;
 }
@@ -215,17 +215,21 @@ pub enum DevError {
 pub struct NullDevice;
 
 impl DeviceOps for NullDevice {
-    fn open(&self) -> Result<(), DevError> { Ok(()) }
-    fn close(&self) -> Result<(), DevError> { Ok(()) }
-    
+    fn open(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+    fn close(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DevError> {
-        Ok(0)  // EOF
+        Ok(0) // EOF
     }
-    
+
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DevError> {
-        Ok(buf.len())  // 全て捨てる
+        Ok(buf.len()) // 全て捨てる
     }
-    
+
     fn ioctl(&self, _cmd: u32, _arg: usize) -> Result<usize, DevError> {
         Ok(0)
     }
@@ -235,20 +239,24 @@ impl DeviceOps for NullDevice {
 pub struct ZeroDevice;
 
 impl DeviceOps for ZeroDevice {
-    fn open(&self) -> Result<(), DevError> { Ok(()) }
-    fn close(&self) -> Result<(), DevError> { Ok(()) }
-    
+    fn open(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+    fn close(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+
     fn read(&self, _offset: usize, buf: &mut [u8]) -> Result<usize, DevError> {
         for byte in buf.iter_mut() {
             *byte = 0;
         }
         Ok(buf.len())
     }
-    
+
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DevError> {
         Ok(buf.len())
     }
-    
+
     fn ioctl(&self, _cmd: u32, _arg: usize) -> Result<usize, DevError> {
         Ok(0)
     }
@@ -258,20 +266,24 @@ impl DeviceOps for ZeroDevice {
 pub struct FullDevice;
 
 impl DeviceOps for FullDevice {
-    fn open(&self) -> Result<(), DevError> { Ok(()) }
-    fn close(&self) -> Result<(), DevError> { Ok(()) }
-    
+    fn open(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+    fn close(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+
     fn read(&self, _offset: usize, buf: &mut [u8]) -> Result<usize, DevError> {
         for byte in buf.iter_mut() {
             *byte = 0;
         }
         Ok(buf.len())
     }
-    
+
     fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DevError> {
-        Err(DevError::NotWritable)  // ENOSPC
+        Err(DevError::NotWritable) // ENOSPC
     }
-    
+
     fn ioctl(&self, _cmd: u32, _arg: usize) -> Result<usize, DevError> {
         Ok(0)
     }
@@ -293,16 +305,22 @@ impl RandomDevice {
     /// 簡易乱数生成
     fn next_random(&self) -> u64 {
         let mut state = self.state.load(Ordering::Relaxed);
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.state.store(state, Ordering::Relaxed);
         state
     }
 }
 
 impl DeviceOps for RandomDevice {
-    fn open(&self) -> Result<(), DevError> { Ok(()) }
-    fn close(&self) -> Result<(), DevError> { Ok(()) }
-    
+    fn open(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+    fn close(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+
     fn read(&self, _offset: usize, buf: &mut [u8]) -> Result<usize, DevError> {
         for chunk in buf.chunks_mut(8) {
             let random = self.next_random();
@@ -312,7 +330,7 @@ impl DeviceOps for RandomDevice {
         }
         Ok(buf.len())
     }
-    
+
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DevError> {
         // エントロピーを追加
         for chunk in buf.chunks(8) {
@@ -323,7 +341,7 @@ impl DeviceOps for RandomDevice {
         }
         Ok(buf.len())
     }
-    
+
     fn ioctl(&self, _cmd: u32, _arg: usize) -> Result<usize, DevError> {
         Ok(0)
     }
@@ -333,21 +351,25 @@ impl DeviceOps for RandomDevice {
 pub struct ConsoleDevice;
 
 impl DeviceOps for ConsoleDevice {
-    fn open(&self) -> Result<(), DevError> { Ok(()) }
-    fn close(&self) -> Result<(), DevError> { Ok(()) }
-    
+    fn open(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+    fn close(&self) -> Result<(), DevError> {
+        Ok(())
+    }
+
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DevError> {
         // TODO: キーボード入力
         Ok(0)
     }
-    
+
     fn write(&self, _offset: usize, buf: &[u8]) -> Result<usize, DevError> {
         // VGAに出力 (簡易実装 - 実際はVGAドライバを呼び出す)
         // シリアル出力の代替としてバッファに保存するか、無視
         let _ = core::str::from_utf8(buf);
         Ok(buf.len())
     }
-    
+
     fn ioctl(&self, _cmd: u32, _arg: usize) -> Result<usize, DevError> {
         Ok(0)
     }
@@ -378,25 +400,13 @@ impl DevFs {
     /// 標準デバイスを初期化
     fn init_standard_devices(&self) {
         // /dev/null
-        self.register_char_device(
-            "null",
-            DeviceNumber::NULL,
-            Arc::new(NullDevice),
-        );
+        self.register_char_device("null", DeviceNumber::NULL, Arc::new(NullDevice));
 
         // /dev/zero
-        self.register_char_device(
-            "zero",
-            DeviceNumber::ZERO,
-            Arc::new(ZeroDevice),
-        );
+        self.register_char_device("zero", DeviceNumber::ZERO, Arc::new(ZeroDevice));
 
         // /dev/full
-        self.register_char_device(
-            "full",
-            DeviceNumber::FULL,
-            Arc::new(FullDevice),
-        );
+        self.register_char_device("full", DeviceNumber::FULL, Arc::new(FullDevice));
 
         // /dev/random
         self.register_char_device(
@@ -413,18 +423,10 @@ impl DevFs {
         );
 
         // /dev/tty
-        self.register_char_device(
-            "tty",
-            DeviceNumber::TTY,
-            Arc::new(ConsoleDevice),
-        );
+        self.register_char_device("tty", DeviceNumber::TTY, Arc::new(ConsoleDevice));
 
         // /dev/console
-        self.register_char_device(
-            "console",
-            DeviceNumber::CONSOLE,
-            Arc::new(ConsoleDevice),
-        );
+        self.register_char_device("console", DeviceNumber::CONSOLE, Arc::new(ConsoleDevice));
 
         // /dev/stdin -> /proc/self/fd/0 (シンボリックリンク)
         self.create_symlink("stdin", "/proc/self/fd/0");
@@ -454,17 +456,17 @@ impl DevFs {
     /// ディレクトリを作成
     pub fn create_directory(&self, path: &str) {
         let inode = self.allocate_inode();
-        
+
         // パスを分解
         let parts: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-        
+
         if parts.is_empty() {
             return;
         }
-        
+
         let mut root = self.root.write();
         let mut current = &mut *root;
-        
+
         for (i, part) in parts.iter().enumerate() {
             if i == parts.len() - 1 {
                 // 最後の要素: ディレクトリを作成
@@ -478,7 +480,9 @@ impl DevFs {
                 }
                 // contains_key チェック後なので必ず存在
                 // expect で明示的に理由を文書化（デバッグ時に有用）
-                current = current.children.get_mut(*part)
+                current = current
+                    .children
+                    .get_mut(*part)
                     .expect("child must exist after contains_key check or add_child");
             }
         }
@@ -488,7 +492,7 @@ impl DevFs {
     pub fn create_symlink(&self, name: &str, target: &str) {
         let inode = self.allocate_inode();
         let entry = DevEntry::symlink(inode, name, target);
-        
+
         let mut root = self.root.write();
         root.add_child(entry);
     }
@@ -502,7 +506,7 @@ impl DevFs {
     ) {
         let inode = self.allocate_inode();
         let entry = DevEntry::character_device(inode, name, device_number, ops);
-        
+
         let mut root = self.root.write();
         root.add_child(entry);
     }
@@ -516,7 +520,7 @@ impl DevFs {
     ) {
         let inode = self.allocate_inode();
         let entry = DevEntry::block_device(inode, name, device_number, ops);
-        
+
         let mut root = self.root.write();
         root.add_child(entry);
     }
@@ -531,14 +535,14 @@ impl DevFs {
     /// パスからエントリを検索
     fn lookup_entry<'a>(entry: &'a DevEntry, path: &str) -> Option<&'a DevEntry> {
         let mut current = entry;
-        
+
         for component in path.split('/').filter(|s| !s.is_empty()) {
             match current.children.get(component) {
                 Some(child) => current = child,
                 None => return None,
             }
         }
-        
+
         Some(current)
     }
 
@@ -553,17 +557,17 @@ impl DevFs {
     /// ディレクトリ一覧を取得
     pub fn readdir(&self, path: &str) -> Result<Vec<String>, DevError> {
         let root = self.root.read();
-        
+
         let entry = if path.is_empty() || path == "/" {
             &*root
         } else {
             Self::lookup_entry(&root, path).ok_or(DevError::NotFound)?
         };
-        
+
         if !entry.is_directory() {
             return Err(DevError::NotDirectory);
         }
-        
+
         Ok(entry.children.keys().cloned().collect())
     }
 
@@ -571,7 +575,7 @@ impl DevFs {
     pub fn open(&self, path: &str) -> Result<Arc<dyn DeviceOps>, DevError> {
         let root = self.root.read();
         let entry = Self::lookup_entry(&root, path).ok_or(DevError::NotFound)?;
-        
+
         entry.ops.clone().ok_or(DevError::NotDevice)
     }
 }
@@ -599,7 +603,7 @@ impl DevFileHandle {
     pub fn open(path: &str) -> Result<Self, DevError> {
         let ops = devfs().open(path)?;
         ops.open()?;
-        
+
         Ok(Self {
             ops,
             position: AtomicUsize::new(0),
@@ -642,10 +646,10 @@ mod tests {
     #[test]
     fn test_null_device() {
         let null = NullDevice;
-        
+
         let mut buf = [0u8; 10];
         assert_eq!(null.read(0, &mut buf).unwrap(), 0);
-        
+
         let data = b"test";
         assert_eq!(null.write(0, data).unwrap(), 4);
     }
@@ -653,7 +657,7 @@ mod tests {
     #[test]
     fn test_zero_device() {
         let zero = ZeroDevice;
-        
+
         let mut buf = [1u8; 10];
         assert_eq!(zero.read(0, &mut buf).unwrap(), 10);
         assert!(buf.iter().all(|&b| b == 0));
@@ -662,13 +666,13 @@ mod tests {
     #[test]
     fn test_random_device() {
         let random = RandomDevice::new();
-        
+
         let mut buf1 = [0u8; 8];
         let mut buf2 = [0u8; 8];
-        
+
         random.read(0, &mut buf1).unwrap();
         random.read(0, &mut buf2).unwrap();
-        
+
         // 異なる値が生成される(ほぼ確実)
         assert_ne!(buf1, buf2);
     }
@@ -676,7 +680,7 @@ mod tests {
     #[test]
     fn test_devfs_structure() {
         let fs = DevFs::new();
-        
+
         let entries = fs.readdir("").unwrap();
         assert!(entries.contains(&String::from("null")));
         assert!(entries.contains(&String::from("zero")));

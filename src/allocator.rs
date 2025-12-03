@@ -4,16 +4,16 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use x86_64::structures::paging::{
-    mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
-};
 use x86_64::VirtAddr;
+use x86_64::structures::paging::{
+    FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB, mapper::MapToError,
+};
 
 pub const HEAP_START: usize = 0x_4444_4444_0000;
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
 /// ページテーブルを使用したヒープ初期化（将来用）
-/// 
+///
 /// 現在はmemory::init()で簡略化された初期化を行っています。
 /// 完全なページテーブル管理が必要な場合はこちらを使用します。
 pub fn init_heap_with_mapping(

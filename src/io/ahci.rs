@@ -113,57 +113,57 @@ impl SectorCount {
 // ============================================================================
 
 /// GHC (Global Host Control) オフセット
-const GHC_CAP: u32 = 0x00;        // HBA Capabilities
-const GHC_GHC: u32 = 0x04;        // Global HBA Control
-const GHC_IS: u32 = 0x08;         // Interrupt Status
-const GHC_PI: u32 = 0x0C;         // Ports Implemented
-const GHC_VS: u32 = 0x10;         // Version
-const GHC_CCC_CTL: u32 = 0x14;    // Command Completion Coalescing Control
-const GHC_CCC_PORTS: u32 = 0x18;  // Command Completion Coalescing Ports
-const GHC_CAP2: u32 = 0x24;       // HBA Capabilities Extended
-const GHC_BOHC: u32 = 0x28;       // BIOS/OS Handoff Control
+const GHC_CAP: u32 = 0x00; // HBA Capabilities
+const GHC_GHC: u32 = 0x04; // Global HBA Control
+const GHC_IS: u32 = 0x08; // Interrupt Status
+const GHC_PI: u32 = 0x0C; // Ports Implemented
+const GHC_VS: u32 = 0x10; // Version
+const GHC_CCC_CTL: u32 = 0x14; // Command Completion Coalescing Control
+const GHC_CCC_PORTS: u32 = 0x18; // Command Completion Coalescing Ports
+const GHC_CAP2: u32 = 0x24; // HBA Capabilities Extended
+const GHC_BOHC: u32 = 0x28; // BIOS/OS Handoff Control
 
 /// GHC ビット
-const GHC_AE: u32 = 1 << 31;      // AHCI Enable
-const GHC_IE: u32 = 1 << 1;       // Interrupt Enable
-const GHC_HR: u32 = 1 << 0;       // HBA Reset
+const GHC_AE: u32 = 1 << 31; // AHCI Enable
+const GHC_IE: u32 = 1 << 1; // Interrupt Enable
+const GHC_HR: u32 = 1 << 0; // HBA Reset
 
 /// ポートレジスタオフセット（ポート0の開始）
 const PORT_BASE: u32 = 0x100;
 const PORT_SIZE: u32 = 0x80;
 
 /// ポートレジスタ
-const PxCLB: u32 = 0x00;          // Command List Base Address
-const PxCLBU: u32 = 0x04;         // Command List Base Address Upper
-const PxFB: u32 = 0x08;           // FIS Base Address
-const PxFBU: u32 = 0x0C;          // FIS Base Address Upper
-const PxIS: u32 = 0x10;           // Interrupt Status
-const PxIE: u32 = 0x14;           // Interrupt Enable
-const PxCMD: u32 = 0x18;          // Command and Status
-const PxTFD: u32 = 0x20;          // Task File Data
-const PxSIG: u32 = 0x24;          // Signature
-const PxSSTS: u32 = 0x28;         // SATA Status
-const PxSCTL: u32 = 0x2C;         // SATA Control
-const PxSERR: u32 = 0x30;         // SATA Error
-const PxSACT: u32 = 0x34;         // SATA Active
-const PxCI: u32 = 0x38;           // Command Issue
-const PxSNTF: u32 = 0x3C;         // SATA Notification
-const PxFBS: u32 = 0x40;          // FIS-based Switching Control
+const PxCLB: u32 = 0x00; // Command List Base Address
+const PxCLBU: u32 = 0x04; // Command List Base Address Upper
+const PxFB: u32 = 0x08; // FIS Base Address
+const PxFBU: u32 = 0x0C; // FIS Base Address Upper
+const PxIS: u32 = 0x10; // Interrupt Status
+const PxIE: u32 = 0x14; // Interrupt Enable
+const PxCMD: u32 = 0x18; // Command and Status
+const PxTFD: u32 = 0x20; // Task File Data
+const PxSIG: u32 = 0x24; // Signature
+const PxSSTS: u32 = 0x28; // SATA Status
+const PxSCTL: u32 = 0x2C; // SATA Control
+const PxSERR: u32 = 0x30; // SATA Error
+const PxSACT: u32 = 0x34; // SATA Active
+const PxCI: u32 = 0x38; // Command Issue
+const PxSNTF: u32 = 0x3C; // SATA Notification
+const PxFBS: u32 = 0x40; // FIS-based Switching Control
 
 /// PxCMD ビット
-const PxCMD_ST: u32 = 1 << 0;     // Start
-const PxCMD_SUD: u32 = 1 << 1;    // Spin-Up Device
-const PxCMD_POD: u32 = 1 << 2;    // Power On Device
-const PxCMD_FRE: u32 = 1 << 4;    // FIS Receive Enable
-const PxCMD_FR: u32 = 1 << 14;    // FIS Receive Running
-const PxCMD_CR: u32 = 1 << 15;    // Command List Running
+const PxCMD_ST: u32 = 1 << 0; // Start
+const PxCMD_SUD: u32 = 1 << 1; // Spin-Up Device
+const PxCMD_POD: u32 = 1 << 2; // Power On Device
+const PxCMD_FRE: u32 = 1 << 4; // FIS Receive Enable
+const PxCMD_FR: u32 = 1 << 14; // FIS Receive Running
+const PxCMD_CR: u32 = 1 << 15; // Command List Running
 
 /// PxIS ビット
-const PxIS_DHRS: u32 = 1 << 0;    // Device to Host Register FIS
-const PxIS_PSS: u32 = 1 << 1;     // PIO Setup FIS
-const PxIS_DSS: u32 = 1 << 2;     // DMA Setup FIS
-const PxIS_SDBS: u32 = 1 << 3;    // Set Device Bits
-const PxIS_TFES: u32 = 1 << 30;   // Task File Error
+const PxIS_DHRS: u32 = 1 << 0; // Device to Host Register FIS
+const PxIS_PSS: u32 = 1 << 1; // PIO Setup FIS
+const PxIS_DSS: u32 = 1 << 2; // DMA Setup FIS
+const PxIS_SDBS: u32 = 1 << 3; // Set Device Bits
+const PxIS_TFES: u32 = 1 << 30; // Task File Error
 
 /// デバイスシグネチャ
 const SATA_SIG_ATA: u32 = 0x00000101;
@@ -548,7 +548,10 @@ impl AhciPort {
         self.write_port(PxIS, 0xFFFFFFFF);
 
         // 割り込みを有効化
-        self.write_port(PxIE, PxIS_DHRS | PxIS_PSS | PxIS_DSS | PxIS_SDBS | PxIS_TFES);
+        self.write_port(
+            PxIE,
+            PxIS_DHRS | PxIS_PSS | PxIS_DSS | PxIS_SDBS | PxIS_TFES,
+        );
 
         // ポートを開始
         self.start()?;
@@ -672,7 +675,12 @@ impl AhciPort {
     }
 
     /// セクタを読み取り
-    pub fn read_sectors(&mut self, lba: Lba, count: SectorCount, buffer: &mut [u8]) -> AhciResult<()> {
+    pub fn read_sectors(
+        &mut self,
+        lba: Lba,
+        count: SectorCount,
+        buffer: &mut [u8],
+    ) -> AhciResult<()> {
         if buffer.len() < count.to_bytes() as usize {
             return Err(AhciError::InvalidParameter);
         }
@@ -695,7 +703,8 @@ impl AhciPort {
 
         // PRDTを設定
         let buffer_addr = buffer.as_ptr() as u64;
-        cmd_table.prdt[0] = PhysicalRegionDescriptor::new(buffer_addr, count.to_bytes() as u32, true);
+        cmd_table.prdt[0] =
+            PhysicalRegionDescriptor::new(buffer_addr, count.to_bytes() as u32, true);
 
         // コマンドヘッダを設定
         let header = &mut self.command_list[slot.as_usize()];
@@ -737,7 +746,8 @@ impl AhciPort {
 
         // PRDTを設定
         let buffer_addr = buffer.as_ptr() as u64;
-        cmd_table.prdt[0] = PhysicalRegionDescriptor::new(buffer_addr, count.to_bytes() as u32, true);
+        cmd_table.prdt[0] =
+            PhysicalRegionDescriptor::new(buffer_addr, count.to_bytes() as u32, true);
 
         // コマンドヘッダを設定
         let header = &mut self.command_list[slot.as_usize()];
@@ -860,7 +870,11 @@ impl IdentifyData {
 
         let lba48_supported = (words[83] & (1 << 10)) != 0;
         let ncq_supported = (words[76] & (1 << 8)) != 0;
-        let ncq_queue_depth = if ncq_supported { (words[75] & 0x1F) as u8 + 1 } else { 0 };
+        let ncq_queue_depth = if ncq_supported {
+            (words[75] & 0x1F) as u8 + 1
+        } else {
+            0
+        };
 
         Self {
             model,
@@ -957,11 +971,11 @@ impl AhciController {
             if (self.ports_implemented & (1 << i)) != 0 {
                 let port = PortNumber(i);
                 let mut ahci_port = Box::new(AhciPort::new(self.base, port));
-                
+
                 // ポートステータスを確認
                 let ssts = self.read_port_reg(port, PxSSTS);
                 let det = ssts & 0x0F;
-                
+
                 if det == 3 {
                     // デバイスが接続されている
                     if let Err(_e) = ahci_port.init() {
@@ -1009,7 +1023,8 @@ impl AhciController {
 
     /// ポートレジスタを読み取り
     fn read_port_reg(&self, port: PortNumber, offset: u32) -> u32 {
-        let addr = self.base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64) + offset as u64;
+        let addr =
+            self.base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64) + offset as u64;
         unsafe { ptr::read_volatile(addr as *const u32) }
     }
 }

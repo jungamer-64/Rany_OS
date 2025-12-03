@@ -3,13 +3,13 @@
 //! DHCPを使用してIPアドレス、サブネットマスク、ゲートウェイ、
 //! DNSサーバーなどのネットワーク設定を自動取得する。
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
-use alloc::vec::Vec;
 
 use super::ethernet::MacAddress;
 use super::ipv4::Ipv4Address;
-use super::udp::{UdpSocket, UdpAddr};
+use super::udp::{UdpAddr, UdpSocket};
 
 /// DHCPクライアントポート
 pub const DHCP_CLIENT_PORT: u16 = 68;
@@ -141,32 +141,32 @@ pub struct DhcpHeader {
 impl DhcpHeader {
     /// ヘッダサイズ
     pub const SIZE: usize = 236;
-    
+
     /// トランザクションIDを取得
     pub fn xid(&self) -> u32 {
         u32::from_be_bytes(self.xid)
     }
-    
+
     /// 経過秒数を取得
     pub fn secs(&self) -> u16 {
         u16::from_be_bytes(self.secs)
     }
-    
+
     /// フラグを取得
     pub fn flags(&self) -> u16 {
         u16::from_be_bytes(self.flags)
     }
-    
+
     /// クライアントIPを取得
     pub fn ciaddr(&self) -> Ipv4Address {
         Ipv4Address::new(self.ciaddr)
     }
-    
+
     /// 提供されたIPを取得
     pub fn yiaddr(&self) -> Ipv4Address {
         Ipv4Address::new(self.yiaddr)
     }
-    
+
     /// サーバーIPを取得
     pub fn siaddr(&self) -> Ipv4Address {
         Ipv4Address::new(self.siaddr)
@@ -202,7 +202,7 @@ impl DhcpLease {
         let elapsed_secs = (current_tick.saturating_sub(self.obtained_at)) / tick_rate;
         elapsed_secs > self.lease_time as u64
     }
-    
+
     /// 更新が必要か判定 (リース時間の50%経過)
     pub fn needs_renewal(&self, current_tick: u64, tick_rate: u64) -> bool {
         let elapsed_secs = (current_tick.saturating_sub(self.obtained_at)) / tick_rate;
@@ -248,7 +248,7 @@ pub struct DhcpClient {
 impl DhcpClient {
     /// 最大再試行回数
     pub const MAX_RETRIES: u32 = 4;
-    
+
     /// 新しいDHCPクライアントを作成
     pub fn new(mac_address: MacAddress) -> Self {
         Self {
@@ -261,27 +261,31 @@ impl DhcpClient {
             retry_count: AtomicU32::new(0),
         }
     }
-    
+
     /// 現在の状態を取得
     pub fn state(&self) -> DhcpState {
         *self.state.lock()
     }
-    
+
     /// 現在のリースを取得
     pub fn lease(&self) -> Option<DhcpLease> {
         self.lease.lock().clone()
     }
-    
+
     /// DHCPDISCOVER メッセージを構築
-    pub fn build_discover(&self, buffer: &mut [u8], current_tick: u64) -> Result<usize, &'static str> {
+    pub fn build_discover(
+        &self,
+        buffer: &mut [u8],
+        current_tick: u64,
+    ) -> Result<usize, &'static str> {
         if buffer.len() < DhcpHeader::SIZE + 64 {
             return Err("Buffer too small");
         }
-        
+
         // 新しいトランザクションIDを生成
         let xid = (current_tick as u32) ^ 0xDEADBEEF;
         self.xid.store(xid, Ordering::SeqCst);
-        
+
         // ヘッダを構築
         buffer[0..DhcpHeader::SIZE].fill(0);
         buffer[0] = DhcpOperation::Request as u8;
@@ -293,20 +297,20 @@ impl DhcpClient {
         buffer[10..12].copy_from_slice(&0x8000u16.to_be_bytes()); // flags: broadcast
         // ciaddr, yiaddr, siaddr, giaddr = 0
         buffer[28..34].copy_from_slice(self.mac_address.as_bytes());
-        
+
         // オプション開始
         let mut offset = DhcpHeader::SIZE;
-        
+
         // マジッククッキー
-        buffer[offset..offset+4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+        buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
         offset += 4;
-        
+
         // メッセージタイプ: DISCOVER
         buffer[offset] = DhcpOption::MessageType as u8;
         buffer[offset + 1] = 1;
         buffer[offset + 2] = DhcpMessageType::Discover as u8;
         offset += 3;
-        
+
         // パラメータ要求リスト
         buffer[offset] = DhcpOption::ParameterRequestList as u8;
         buffer[offset + 1] = 4;
@@ -315,36 +319,40 @@ impl DhcpClient {
         buffer[offset + 4] = DhcpOption::DnsServer as u8;
         buffer[offset + 5] = DhcpOption::DomainName as u8;
         offset += 6;
-        
+
         // クライアント識別子
         buffer[offset] = DhcpOption::ClientIdentifier as u8;
         buffer[offset + 1] = 7;
         buffer[offset + 2] = 1; // Ethernet
         buffer[offset + 3..offset + 9].copy_from_slice(self.mac_address.as_bytes());
         offset += 9;
-        
+
         // 終端
         buffer[offset] = DhcpOption::End as u8;
         offset += 1;
-        
+
         // 状態を更新
         *self.state.lock() = DhcpState::Selecting;
         self.state_time.store(current_tick, Ordering::SeqCst);
-        
+
         Ok(offset)
     }
-    
+
     /// DHCPREQUEST メッセージを構築
-    pub fn build_request(&self, buffer: &mut [u8], current_tick: u64) -> Result<usize, &'static str> {
+    pub fn build_request(
+        &self,
+        buffer: &mut [u8],
+        current_tick: u64,
+    ) -> Result<usize, &'static str> {
         if buffer.len() < DhcpHeader::SIZE + 64 {
             return Err("Buffer too small");
         }
-        
+
         let offered = self.offered_lease.lock();
         let lease = offered.as_ref().ok_or("No offer available")?;
-        
+
         let xid = self.xid.load(Ordering::SeqCst);
-        
+
         // ヘッダを構築
         buffer[0..DhcpHeader::SIZE].fill(0);
         buffer[0] = DhcpOperation::Request as u8;
@@ -356,32 +364,32 @@ impl DhcpClient {
         buffer[10..12].copy_from_slice(&0x8000u16.to_be_bytes()); // flags: broadcast
         // ciaddr = 0 (新規リクエスト時)
         buffer[28..34].copy_from_slice(self.mac_address.as_bytes());
-        
+
         // オプション開始
         let mut offset = DhcpHeader::SIZE;
-        
+
         // マジッククッキー
-        buffer[offset..offset+4].copy_from_slice(&DHCP_MAGIC_COOKIE);
+        buffer[offset..offset + 4].copy_from_slice(&DHCP_MAGIC_COOKIE);
         offset += 4;
-        
+
         // メッセージタイプ: REQUEST
         buffer[offset] = DhcpOption::MessageType as u8;
         buffer[offset + 1] = 1;
         buffer[offset + 2] = DhcpMessageType::Request as u8;
         offset += 3;
-        
+
         // 要求するIPアドレス
         buffer[offset] = DhcpOption::RequestedIp as u8;
         buffer[offset + 1] = 4;
         buffer[offset + 2..offset + 6].copy_from_slice(lease.ip_address.as_bytes());
         offset += 6;
-        
+
         // サーバー識別子
         buffer[offset] = DhcpOption::ServerIdentifier as u8;
         buffer[offset + 1] = 4;
         buffer[offset + 2..offset + 6].copy_from_slice(lease.server_ip.as_bytes());
         offset += 6;
-        
+
         // パラメータ要求リスト
         buffer[offset] = DhcpOption::ParameterRequestList as u8;
         buffer[offset + 1] = 4;
@@ -390,52 +398,54 @@ impl DhcpClient {
         buffer[offset + 4] = DhcpOption::DnsServer as u8;
         buffer[offset + 5] = DhcpOption::DomainName as u8;
         offset += 6;
-        
+
         // クライアント識別子
         buffer[offset] = DhcpOption::ClientIdentifier as u8;
         buffer[offset + 1] = 7;
         buffer[offset + 2] = 1; // Ethernet
         buffer[offset + 3..offset + 9].copy_from_slice(self.mac_address.as_bytes());
         offset += 9;
-        
+
         // 終端
         buffer[offset] = DhcpOption::End as u8;
         offset += 1;
-        
+
         // 状態を更新
         *self.state.lock() = DhcpState::Requesting;
         self.state_time.store(current_tick, Ordering::SeqCst);
-        
+
         Ok(offset)
     }
-    
+
     /// DHCP応答を処理
-    pub fn process_response(&self, data: &[u8], current_tick: u64) -> Result<DhcpResponseResult, &'static str> {
+    pub fn process_response(
+        &self,
+        data: &[u8],
+        current_tick: u64,
+    ) -> Result<DhcpResponseResult, &'static str> {
         if data.len() < DhcpHeader::SIZE + 4 {
             return Err("Packet too small");
         }
-        
+
         // ヘッダを解析
-        let header = unsafe {
-            &*(data.as_ptr() as *const DhcpHeader)
-        };
-        
+        let header = unsafe { &*(data.as_ptr() as *const DhcpHeader) };
+
         // トランザクションIDを確認
         if header.xid() != self.xid.load(Ordering::SeqCst) {
             return Err("Transaction ID mismatch");
         }
-        
+
         // オペレーションを確認
         if header.op != DhcpOperation::Reply as u8 {
             return Err("Not a DHCP reply");
         }
-        
+
         // マジッククッキーを確認
         let options_start = DhcpHeader::SIZE;
-        if data[options_start..options_start+4] != DHCP_MAGIC_COOKIE {
+        if data[options_start..options_start + 4] != DHCP_MAGIC_COOKIE {
             return Err("Invalid magic cookie");
         }
-        
+
         // オプションを解析
         let mut message_type = None;
         let mut subnet_mask = None;
@@ -445,48 +455,52 @@ impl DhcpClient {
         let mut server_id = None;
         let mut hostname = None;
         let mut domain_name = None;
-        
+
         let mut offset = options_start + 4;
         while offset < data.len() {
             let opt = data[offset];
-            
+
             if opt == DhcpOption::Pad as u8 {
                 offset += 1;
                 continue;
             }
-            
+
             if opt == DhcpOption::End as u8 {
                 break;
             }
-            
+
             if offset + 1 >= data.len() {
                 break;
             }
-            
+
             let len = data[offset + 1] as usize;
             let opt_data = &data[offset + 2..offset + 2 + len.min(data.len() - offset - 2)];
-            
+
             match opt {
-                53 => { // Message Type
+                53 => {
+                    // Message Type
                     if !opt_data.is_empty() {
                         message_type = DhcpMessageType::from_u8(opt_data[0]);
                     }
                 }
-                1 => { // Subnet Mask
+                1 => {
+                    // Subnet Mask
                     if opt_data.len() >= 4 {
                         let mut bytes = [0u8; 4];
                         bytes.copy_from_slice(&opt_data[..4]);
                         subnet_mask = Some(Ipv4Address::new(bytes));
                     }
                 }
-                3 => { // Router
+                3 => {
+                    // Router
                     if opt_data.len() >= 4 {
                         let mut bytes = [0u8; 4];
                         bytes.copy_from_slice(&opt_data[..4]);
                         router = Some(Ipv4Address::new(bytes));
                     }
                 }
-                6 => { // DNS Servers
+                6 => {
+                    // DNS Servers
                     for chunk in opt_data.chunks(4) {
                         if chunk.len() == 4 {
                             let mut bytes = [0u8; 4];
@@ -495,34 +509,38 @@ impl DhcpClient {
                         }
                     }
                 }
-                51 => { // Lease Time
+                51 => {
+                    // Lease Time
                     if opt_data.len() >= 4 {
                         let mut bytes = [0u8; 4];
                         bytes.copy_from_slice(&opt_data[..4]);
                         lease_time = u32::from_be_bytes(bytes);
                     }
                 }
-                54 => { // Server Identifier
+                54 => {
+                    // Server Identifier
                     if opt_data.len() >= 4 {
                         let mut bytes = [0u8; 4];
                         bytes.copy_from_slice(&opt_data[..4]);
                         server_id = Some(Ipv4Address::new(bytes));
                     }
                 }
-                12 => { // Hostname
+                12 => {
+                    // Hostname
                     hostname = Some(opt_data.to_vec());
                 }
-                15 => { // Domain Name
+                15 => {
+                    // Domain Name
                     domain_name = Some(opt_data.to_vec());
                 }
                 _ => {}
             }
-            
+
             offset += 2 + len;
         }
-        
+
         let msg_type = message_type.ok_or("No message type in response")?;
-        
+
         match msg_type {
             DhcpMessageType::Offer => {
                 let lease = DhcpLease {
@@ -536,9 +554,9 @@ impl DhcpClient {
                     hostname,
                     domain_name,
                 };
-                
+
                 *self.offered_lease.lock() = Some(lease.clone());
-                
+
                 Ok(DhcpResponseResult::Offer(lease))
             }
             DhcpMessageType::Ack => {
@@ -553,12 +571,12 @@ impl DhcpClient {
                     hostname,
                     domain_name,
                 };
-                
+
                 *self.lease.lock() = Some(lease.clone());
                 *self.state.lock() = DhcpState::Bound;
                 self.state_time.store(current_tick, Ordering::SeqCst);
                 self.retry_count.store(0, Ordering::SeqCst);
-                
+
                 Ok(DhcpResponseResult::Ack(lease))
             }
             DhcpMessageType::Nak => {
@@ -569,20 +587,20 @@ impl DhcpClient {
             _ => Err("Unexpected message type"),
         }
     }
-    
+
     /// リースを解放
     pub fn release(&self) {
         *self.state.lock() = DhcpState::Init;
         *self.lease.lock() = None;
         *self.offered_lease.lock() = None;
     }
-    
+
     /// タイムアウトをチェック
     pub fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
         let state = *self.state.lock();
         let state_time = self.state_time.load(Ordering::SeqCst);
         let elapsed_secs = (current_tick.saturating_sub(state_time)) / tick_rate;
-        
+
         match state {
             DhcpState::Selecting | DhcpState::Requesting => {
                 // 4秒でタイムアウト
@@ -605,7 +623,7 @@ impl DhcpClient {
             }
             _ => {}
         }
-        
+
         false
     }
 }

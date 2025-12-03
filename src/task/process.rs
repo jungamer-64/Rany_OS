@@ -3,11 +3,11 @@
 //! ExoRust のタスク/プロセスライフサイクル管理
 //! ドメインベースのプロセスモデル
 
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicBool, Ordering};
-use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 /// プロセスID (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -122,7 +122,13 @@ impl Priority {
 
     pub const fn new(prio: i8) -> Self {
         // clamp を const fn 内で使えないため手動で実装
-        let clamped = if prio < -20 { -20 } else if prio > 20 { 20 } else { prio };
+        let clamped = if prio < -20 {
+            -20
+        } else if prio > 20 {
+            20
+        } else {
+            prio
+        };
         Self(clamped)
     }
 
@@ -271,26 +277,38 @@ pub struct ResourceLimits {
 impl Default for ResourceLimits {
     fn default() -> Self {
         let mut limits = BTreeMap::new();
-        
+
         // デフォルト制限
         limits.insert(ResourceType::CpuTime, ResourceLimit::unlimited());
         limits.insert(ResourceType::FileSize, ResourceLimit::unlimited());
         limits.insert(ResourceType::DataSize, ResourceLimit::unlimited());
-        limits.insert(ResourceType::StackSize, ResourceLimit::new(8 * 1024 * 1024, ResourceLimit::UNLIMITED));
-        limits.insert(ResourceType::CoreSize, ResourceLimit::new(0, ResourceLimit::UNLIMITED));
+        limits.insert(
+            ResourceType::StackSize,
+            ResourceLimit::new(8 * 1024 * 1024, ResourceLimit::UNLIMITED),
+        );
+        limits.insert(
+            ResourceType::CoreSize,
+            ResourceLimit::new(0, ResourceLimit::UNLIMITED),
+        );
         limits.insert(ResourceType::ResidentSet, ResourceLimit::unlimited());
         limits.insert(ResourceType::NumProcesses, ResourceLimit::new(4096, 65536));
         limits.insert(ResourceType::NumFiles, ResourceLimit::new(1024, 65536));
-        limits.insert(ResourceType::MemLock, ResourceLimit::new(64 * 1024, 64 * 1024));
+        limits.insert(
+            ResourceType::MemLock,
+            ResourceLimit::new(64 * 1024, 64 * 1024),
+        );
         limits.insert(ResourceType::AddressSpace, ResourceLimit::unlimited());
-        
+
         Self { limits }
     }
 }
 
 impl ResourceLimits {
     pub fn get(&self, resource: ResourceType) -> ResourceLimit {
-        self.limits.get(&resource).copied().unwrap_or(ResourceLimit::unlimited())
+        self.limits
+            .get(&resource)
+            .copied()
+            .unwrap_or(ResourceLimit::unlimited())
     }
 
     pub fn set(&mut self, resource: ResourceType, limit: ResourceLimit) {
@@ -371,7 +389,7 @@ impl ProcessInfo {
             priority: Priority::NORMAL,
             stats: ProcessStats::default(),
             limits: ResourceLimits::default(),
-            created_at: 0,  // TODO: タイムスタンプ
+            created_at: 0, // TODO: タイムスタンプ
             exit_code: None,
             children: Vec::new(),
             threads: Vec::new(),
@@ -445,7 +463,7 @@ impl ProcessManager {
     pub const fn new() -> Self {
         Self {
             processes: spin::RwLock::new(BTreeMap::new()),
-            next_pid: AtomicU64::new(2),  // 0=kernel, 1=init
+            next_pid: AtomicU64::new(2), // 0=kernel, 1=init
             next_tid: AtomicU64::new(1),
             total_created: AtomicU64::new(0),
             total_exited: AtomicU64::new(0),
@@ -466,7 +484,7 @@ impl ProcessManager {
     pub fn create(&self, ppid: ProcessId, name: &str) -> Result<ProcessId, ProcessError> {
         let pid = self.allocate_pid();
         let info = ProcessInfo::new(pid, ppid, name);
-        
+
         {
             let mut processes = self.processes.write();
             processes.insert(pid, Arc::new(spin::RwLock::new(info)));
@@ -501,13 +519,13 @@ impl ProcessManager {
     /// プロセスを終了
     pub fn exit(&self, pid: ProcessId, code: ExitCode) -> Result<(), ProcessError> {
         let process = self.get(pid).ok_or(ProcessError::NotFound)?;
-        
+
         {
             let mut p = process.write();
             if p.state == ProcessState::Dead {
                 return Err(ProcessError::AlreadyExited);
             }
-            
+
             p.state = ProcessState::Zombie;
             p.exit_code = Some(code);
         }
@@ -517,7 +535,11 @@ impl ProcessManager {
     }
 
     /// ゾンビプロセスを回収 (wait)
-    pub fn wait(&self, ppid: ProcessId, pid: Option<ProcessId>) -> Result<(ProcessId, ExitCode), ProcessError> {
+    pub fn wait(
+        &self,
+        ppid: ProcessId,
+        pid: Option<ProcessId>,
+    ) -> Result<(ProcessId, ExitCode), ProcessError> {
         let parent = self.get(ppid).ok_or(ProcessError::NotFound)?;
         let children = {
             let p = parent.read();
@@ -556,18 +578,18 @@ impl ProcessManager {
                 if let Some(code) = exit_code {
                     // ゾンビを完全に削除
                     self.reap(child_pid)?;
-                    
+
                     // 親の子リストから削除
                     let mut p = parent.write();
                     p.remove_child(child_pid);
-                    
+
                     return Ok((child_pid, code));
                 }
             }
         }
 
         // 待機する子がいない (ブロックすべき)
-        Err(ProcessError::NoChild)  // TODO: 実際にはブロック
+        Err(ProcessError::NoChild) // TODO: 実際にはブロック
     }
 
     /// ゾンビを回収
@@ -676,7 +698,9 @@ mod tests {
 
     #[test]
     fn test_process_creation() {
-        let pid = PROCESS_MANAGER.create(ProcessId::INIT, "test_process").unwrap();
+        let pid = PROCESS_MANAGER
+            .create(ProcessId::INIT, "test_process")
+            .unwrap();
         assert!(pid.as_u64() > 1);
 
         let process = PROCESS_MANAGER.get(pid).unwrap();
@@ -687,9 +711,13 @@ mod tests {
 
     #[test]
     fn test_process_exit() {
-        let pid = PROCESS_MANAGER.create(ProcessId::INIT, "exit_test").unwrap();
-        
-        PROCESS_MANAGER.set_state(pid, ProcessState::Running).unwrap();
+        let pid = PROCESS_MANAGER
+            .create(ProcessId::INIT, "exit_test")
+            .unwrap();
+
+        PROCESS_MANAGER
+            .set_state(pid, ProcessState::Running)
+            .unwrap();
         PROCESS_MANAGER.exit(pid, ExitCode::SUCCESS).unwrap();
 
         let process = PROCESS_MANAGER.get(pid).unwrap();

@@ -9,14 +9,14 @@
 //! - VirtIO-blk、NVMe、RAMディスク対応
 //! - 非同期I/Oサポート
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
-use core::sync::atomic::{AtomicU64, Ordering};
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
 // ============================================================================
@@ -107,7 +107,7 @@ impl BlockRequest {
             waker: Mutex::new(None),
         }
     }
-    
+
     /// Create a new write request
     pub fn write(id: u64, block: u64, data: Vec<u8>) -> Self {
         let count = (data.len() / 512) as u32;
@@ -121,7 +121,7 @@ impl BlockRequest {
             waker: Mutex::new(None),
         }
     }
-    
+
     /// Create a flush request
     pub fn flush(id: u64) -> Self {
         Self {
@@ -134,32 +134,35 @@ impl BlockRequest {
             waker: Mutex::new(None),
         }
     }
-    
+
     /// Get request state
     pub fn state(&self) -> RequestState {
         *self.state.lock()
     }
-    
+
     /// Set request state
     pub fn set_state(&self, state: RequestState) {
         *self.state.lock() = state;
-        
+
         // Wake pending future
         if let Some(waker) = self.waker.lock().take() {
             waker.wake();
         }
     }
-    
+
     /// Check if request is complete
     pub fn is_complete(&self) -> bool {
-        matches!(self.state(), RequestState::Completed | RequestState::Failed(_))
+        matches!(
+            self.state(),
+            RequestState::Completed | RequestState::Failed(_)
+        )
     }
-    
+
     /// Register waker for async completion
     pub fn register_waker(&self, waker: Waker) {
         *self.waker.lock() = Some(waker);
     }
-    
+
     /// Take the data buffer
     pub fn take_buffer(&mut self) -> Option<Vec<u8>> {
         self.buffer.take()
@@ -204,16 +207,16 @@ impl Default for BlockDeviceInfo {
 pub trait BlockDevice: Send + Sync {
     /// Get device information
     fn info(&self) -> BlockDeviceInfo;
-    
+
     /// Submit a request
     fn submit(&self, request: Arc<BlockRequest>) -> BlockResult<()>;
-    
+
     /// Poll for completions
     fn poll_completions(&self) -> usize;
-    
+
     /// Synchronous read
     /// Synchronous read
-    /// 
+    ///
     /// # パフォーマンス注意
     /// `Arc::clone()` は同期read毎に参照カウンタの atomic increment を発生させる。
     /// ホットパスでは `submit()` が Arc<BlockRequest> を直接受け取り、
@@ -221,12 +224,12 @@ pub trait BlockDevice: Send + Sync {
     fn read_sync(&self, block: u64, buf: &mut [u8]) -> BlockResult<usize> {
         let info = self.info();
         let count = buf.len() / info.block_size as usize;
-        
+
         let request = Arc::new(BlockRequest::read(0, block, count as u32));
         // Note: Arc::clone() は atomic increment (約3-5 CPU cycles on x86-64)
         // submit() が &Arc<T> を受け取れれば回避可能
         self.submit(Arc::clone(&request))?;
-        
+
         // Poll until complete
         loop {
             self.poll_completions();
@@ -241,12 +244,12 @@ pub trait BlockDevice: Send + Sync {
             }
         }
     }
-    
+
     /// Synchronous write
     fn write_sync(&self, block: u64, buf: &[u8]) -> BlockResult<usize> {
         let request = Arc::new(BlockRequest::write(0, block, buf.to_vec()));
         self.submit(Arc::clone(&request))?;
-        
+
         loop {
             self.poll_completions();
             match request.state() {
@@ -256,12 +259,12 @@ pub trait BlockDevice: Send + Sync {
             }
         }
     }
-    
+
     /// Flush pending writes
     fn flush(&self) -> BlockResult<()> {
         let request = Arc::new(BlockRequest::flush(0));
         self.submit(Arc::clone(&request))?;
-        
+
         loop {
             self.poll_completions();
             match request.state() {
@@ -293,7 +296,7 @@ impl RamDisk {
     /// Create a new RAM disk
     pub fn new(size_blocks: u64, block_size: u32) -> Self {
         let total_size = size_blocks as usize * block_size as usize;
-        
+
         Self {
             info: BlockDeviceInfo {
                 name: "ramdisk",
@@ -308,18 +311,18 @@ impl RamDisk {
             next_id: AtomicU64::new(0),
         }
     }
-    
+
     /// Create a 1MB RAM disk
     pub fn new_1mb() -> Self {
         Self::new(2048, 512) // 2048 * 512 = 1MB
     }
-    
+
     /// Process a single request
     fn process_request(&self, request: &BlockRequest) {
         let block_size = self.info.block_size as usize;
         let offset = request.block as usize * block_size;
         let size = request.count as usize * block_size;
-        
+
         match request.req_type {
             RequestType::Read => {
                 let data = self.data.lock();
@@ -357,7 +360,7 @@ impl RamDisk {
             }
         }
     }
-    
+
     /// Get next request ID
     pub fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::Relaxed)
@@ -368,23 +371,23 @@ impl BlockDevice for RamDisk {
     fn info(&self) -> BlockDeviceInfo {
         self.info.clone()
     }
-    
+
     fn submit(&self, request: Arc<BlockRequest>) -> BlockResult<()> {
         request.set_state(RequestState::Submitted);
         self.pending.lock().push_back(request);
         Ok(())
     }
-    
+
     fn poll_completions(&self) -> usize {
         let mut pending = self.pending.lock();
         let mut completed = 0;
-        
+
         // Process all pending requests
         while let Some(request) = pending.pop_front() {
             self.process_request(&request);
             completed += 1;
         }
-        
+
         completed
     }
 }
@@ -409,7 +412,7 @@ impl BlockReadFuture {
 
 impl Future for BlockReadFuture {
     type Output = BlockResult<Vec<u8>>;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Submit if pending
         if matches!(self.request.state(), RequestState::Pending) {
@@ -417,15 +420,18 @@ impl Future for BlockReadFuture {
                 return Poll::Ready(Err(e));
             }
         }
-        
+
         // Poll completions
         self.device.poll_completions();
-        
+
         // Check state
         match self.request.state() {
             RequestState::Completed => {
                 // Return data
-                let buffer = self.request.buffer.as_ref()
+                let buffer = self
+                    .request
+                    .buffer
+                    .as_ref()
                     .map(|b| b.clone())
                     .unwrap_or_default();
                 Poll::Ready(Ok(buffer))
@@ -455,16 +461,16 @@ impl BlockWriteFuture {
 
 impl Future for BlockWriteFuture {
     type Output = BlockResult<usize>;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if matches!(self.request.state(), RequestState::Pending) {
             if let Err(e) = self.device.submit(self.request.clone()) {
                 return Poll::Ready(Err(e));
             }
         }
-        
+
         self.device.poll_completions();
-        
+
         match self.request.state() {
             RequestState::Completed => {
                 let size = self.request.count as usize * 512;
@@ -503,12 +509,12 @@ impl BlockDeviceManager {
             devices: Mutex::new(Vec::new()),
         }
     }
-    
+
     /// Register a block device
     pub fn register(&self, name: &'static str, device: Arc<dyn BlockDevice>) {
         self.devices.lock().push(DeviceEntry { name, device });
     }
-    
+
     /// Get a device by name
     pub fn get(&self, name: &str) -> Option<Arc<dyn BlockDevice>> {
         self.devices
@@ -517,12 +523,12 @@ impl BlockDeviceManager {
             .find(|e| e.name == name)
             .map(|e| e.device.clone())
     }
-    
+
     /// List all devices
     pub fn list(&self) -> Vec<&'static str> {
         self.devices.lock().iter().map(|e| e.name).collect()
     }
-    
+
     /// Remove a device
     pub fn unregister(&self, name: &str) -> Option<Arc<dyn BlockDevice>> {
         let mut devices = self.devices.lock();
@@ -549,17 +555,17 @@ pub fn block_manager() -> &'static BlockDeviceManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_ram_disk() {
         let disk = RamDisk::new_1mb();
         let info = disk.info();
-        
+
         assert_eq!(info.total_blocks, 2048);
         assert_eq!(info.block_size, 512);
         assert!(!info.read_only);
     }
-    
+
     #[test]
     fn test_block_request() {
         let req = BlockRequest::read(1, 0, 4);
@@ -569,16 +575,16 @@ mod tests {
         assert_eq!(req.count, 4);
         assert!(matches!(req.state(), RequestState::Pending));
     }
-    
+
     #[test]
     fn test_ram_disk_sync_io() {
         let disk = Arc::new(RamDisk::new_1mb());
-        
+
         // Write data
         let data = [0x42u8; 512];
         let result = disk.write_sync(0, &data);
         assert!(result.is_ok());
-        
+
         // Read back
         let mut buf = [0u8; 512];
         let result = disk.read_sync(0, &mut buf);

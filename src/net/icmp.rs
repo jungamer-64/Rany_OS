@@ -2,7 +2,7 @@
 //!
 //! This module implements ICMP for ping/pong and error messages.
 
-use super::ipv4::{Ipv4Address, IpProtocol, data_checksum};
+use super::ipv4::{IpProtocol, Ipv4Address, data_checksum};
 
 /// ICMP message type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,32 +103,32 @@ pub struct IcmpHeader {
 impl IcmpHeader {
     /// Header size
     pub const SIZE: usize = 4;
-    
+
     /// Get message type
     pub fn icmp_type(&self) -> IcmpType {
         IcmpType::from(self.icmp_type)
     }
-    
+
     /// Set message type
     pub fn set_type(&mut self, icmp_type: IcmpType) {
         self.icmp_type = icmp_type.into();
     }
-    
+
     /// Get code
     pub const fn code(&self) -> u8 {
         self.code
     }
-    
+
     /// Set code
     pub fn set_code(&mut self, code: u8) {
         self.code = code;
     }
-    
+
     /// Get checksum
     pub fn checksum(&self) -> u16 {
         u16::from_be_bytes(self.checksum)
     }
-    
+
     /// Set checksum
     pub fn set_checksum(&mut self, checksum: u16) {
         self.checksum = checksum.to_be_bytes();
@@ -150,22 +150,22 @@ pub struct IcmpEchoHeader {
 impl IcmpEchoHeader {
     /// Header size
     pub const SIZE: usize = 8;
-    
+
     /// Get identifier
     pub fn identifier(&self) -> u16 {
         u16::from_be_bytes(self.identifier)
     }
-    
+
     /// Set identifier
     pub fn set_identifier(&mut self, id: u16) {
         self.identifier = id.to_be_bytes();
     }
-    
+
     /// Get sequence number
     pub fn sequence(&self) -> u16 {
         u16::from_be_bytes(self.sequence)
     }
-    
+
     /// Set sequence number
     pub fn set_sequence(&mut self, seq: u16) {
         self.sequence = seq.to_be_bytes();
@@ -186,50 +186,46 @@ impl<'a> IcmpPacket<'a> {
         }
         Some(IcmpPacket { data })
     }
-    
+
     /// Get the ICMP header
     pub fn header(&self) -> &IcmpHeader {
         // SAFETY: We verified the length in parse()
-        unsafe {
-            &*(self.data.as_ptr() as *const IcmpHeader)
-        }
+        unsafe { &*(self.data.as_ptr() as *const IcmpHeader) }
     }
-    
+
     /// Get message type
     pub fn icmp_type(&self) -> IcmpType {
         self.header().icmp_type()
     }
-    
+
     /// Get code
     pub fn code(&self) -> u8 {
         self.header().code()
     }
-    
+
     /// Get the payload
     pub fn payload(&self) -> &'a [u8] {
         &self.data[IcmpHeader::SIZE..]
     }
-    
+
     /// Get raw packet data
     pub fn as_bytes(&self) -> &'a [u8] {
         self.data
     }
-    
+
     /// Verify checksum
     pub fn verify_checksum(&self) -> bool {
         data_checksum(self.data, 0) == 0xFFFF
     }
-    
+
     /// Try to parse as echo request/reply
     pub fn as_echo(&self) -> Option<IcmpEcho<'a>> {
         if self.data.len() < IcmpEchoHeader::SIZE {
             return None;
         }
-        
+
         match self.icmp_type() {
-            IcmpType::EchoRequest | IcmpType::EchoReply => {
-                Some(IcmpEcho { data: self.data })
-            }
+            IcmpType::EchoRequest | IcmpType::EchoReply => Some(IcmpEcho { data: self.data }),
             _ => None,
         }
     }
@@ -244,31 +240,29 @@ impl<'a> IcmpEcho<'a> {
     /// Get the echo header
     pub fn header(&self) -> &IcmpEchoHeader {
         // SAFETY: Validated in IcmpPacket::as_echo()
-        unsafe {
-            &*(self.data.as_ptr() as *const IcmpEchoHeader)
-        }
+        unsafe { &*(self.data.as_ptr() as *const IcmpEchoHeader) }
     }
-    
+
     /// Get identifier
     pub fn identifier(&self) -> u16 {
         self.header().identifier()
     }
-    
+
     /// Get sequence number
     pub fn sequence(&self) -> u16 {
         self.header().sequence()
     }
-    
+
     /// Get echo data
     pub fn data(&self) -> &'a [u8] {
         &self.data[IcmpEchoHeader::SIZE..]
     }
-    
+
     /// Is this an echo request?
     pub fn is_request(&self) -> bool {
         self.header().base.icmp_type() == IcmpType::EchoRequest
     }
-    
+
     /// Is this an echo reply?
     pub fn is_reply(&self) -> bool {
         self.header().base.icmp_type() == IcmpType::EchoReply
@@ -292,61 +286,58 @@ impl<'a> IcmpBuilder<'a> {
             payload_len: 0,
         })
     }
-    
+
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut IcmpHeader {
         // SAFETY: Buffer size checked in new()
-        unsafe {
-            &mut *(self.buffer.as_mut_ptr() as *mut IcmpHeader)
-        }
+        unsafe { &mut *(self.buffer.as_mut_ptr() as *mut IcmpHeader) }
     }
-    
+
     /// Set message type
     pub fn set_type(&mut self, icmp_type: IcmpType) -> &mut Self {
         self.header_mut().set_type(icmp_type);
         self
     }
-    
+
     /// Set code
     pub fn set_code(&mut self, code: u8) -> &mut Self {
         self.header_mut().set_code(code);
         self
     }
-    
+
     /// Get mutable payload
     pub fn payload_mut(&mut self) -> &mut [u8] {
         &mut self.buffer[IcmpHeader::SIZE..]
     }
-    
+
     /// Write payload
     pub fn write_payload(&mut self, data: &[u8]) -> usize {
         let max = self.buffer.len() - IcmpHeader::SIZE;
         let len = data.len().min(max);
-        self.buffer[IcmpHeader::SIZE..IcmpHeader::SIZE + len]
-            .copy_from_slice(&data[..len]);
+        self.buffer[IcmpHeader::SIZE..IcmpHeader::SIZE + len].copy_from_slice(&data[..len]);
         self.payload_len = len;
         len
     }
-    
+
     /// Set payload length
     pub fn set_payload_len(&mut self, len: usize) {
         self.payload_len = len.min(self.buffer.len() - IcmpHeader::SIZE);
     }
-    
+
     /// Finalize the packet (compute checksum)
     pub fn finalize(&mut self) -> usize {
         let total_len = IcmpHeader::SIZE + self.payload_len;
-        
+
         // Clear checksum for calculation
         self.header_mut().set_checksum(0);
-        
+
         // Calculate checksum
         let checksum = data_checksum(&self.buffer[..total_len], 0);
         self.header_mut().set_checksum(checksum);
-        
+
         total_len
     }
-    
+
     /// Get packet as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer[..IcmpHeader::SIZE + self.payload_len]
@@ -370,15 +361,13 @@ impl<'a> IcmpEchoBuilder<'a> {
             data_len: 0,
         })
     }
-    
+
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut IcmpEchoHeader {
         // SAFETY: Buffer size checked in new()
-        unsafe {
-            &mut *(self.buffer.as_mut_ptr() as *mut IcmpEchoHeader)
-        }
+        unsafe { &mut *(self.buffer.as_mut_ptr() as *mut IcmpEchoHeader) }
     }
-    
+
     /// Build echo request
     pub fn build_request(&mut self, identifier: u16, sequence: u16) -> &mut Self {
         let header = self.header_mut();
@@ -388,7 +377,7 @@ impl<'a> IcmpEchoBuilder<'a> {
         header.set_sequence(sequence);
         self
     }
-    
+
     /// Build echo reply
     pub fn build_reply(&mut self, identifier: u16, sequence: u16) -> &mut Self {
         let header = self.header_mut();
@@ -398,31 +387,30 @@ impl<'a> IcmpEchoBuilder<'a> {
         header.set_sequence(sequence);
         self
     }
-    
+
     /// Write echo data
     pub fn write_data(&mut self, data: &[u8]) -> usize {
         let max = self.buffer.len() - IcmpEchoHeader::SIZE;
         let len = data.len().min(max);
-        self.buffer[IcmpEchoHeader::SIZE..IcmpEchoHeader::SIZE + len]
-            .copy_from_slice(&data[..len]);
+        self.buffer[IcmpEchoHeader::SIZE..IcmpEchoHeader::SIZE + len].copy_from_slice(&data[..len]);
         self.data_len = len;
         len
     }
-    
+
     /// Finalize the packet
     pub fn finalize(&mut self) -> usize {
         let total_len = IcmpEchoHeader::SIZE + self.data_len;
-        
+
         // Clear checksum
         self.header_mut().base.set_checksum(0);
-        
+
         // Calculate checksum
         let checksum = data_checksum(&self.buffer[..total_len], 0);
         self.header_mut().base.set_checksum(checksum);
-        
+
         total_len
     }
-    
+
     /// Get packet as bytes
     pub fn as_bytes(&self) -> &[u8] {
         &self.buffer[..IcmpEchoHeader::SIZE + self.data_len]
@@ -463,15 +451,9 @@ pub enum IcmpResult {
         data_len: usize,
     },
     /// Received echo reply
-    EchoReplyReceived {
-        identifier: u16,
-        sequence: u16,
-    },
+    EchoReplyReceived { identifier: u16, sequence: u16 },
     /// Error message
-    Error {
-        icmp_type: IcmpType,
-        code: u8,
-    },
+    Error { icmp_type: IcmpType, code: u8 },
     /// Ignored/dropped
     Ignored,
     /// Invalid packet
@@ -486,12 +468,12 @@ impl IcmpProcessor {
             stats: IcmpStats::default(),
         }
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> &IcmpStats {
         &self.stats
     }
-    
+
     /// Process an incoming ICMP packet
     pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address) -> IcmpResult {
         let packet = match IcmpPacket::parse(data) {
@@ -501,17 +483,17 @@ impl IcmpProcessor {
                 return IcmpResult::Invalid;
             }
         };
-        
+
         // Verify checksum
         if !packet.verify_checksum() {
             self.stats.invalid += 1;
             return IcmpResult::Invalid;
         }
-        
+
         match packet.icmp_type() {
             IcmpType::EchoRequest => {
                 self.stats.echo_requests_rx += 1;
-                
+
                 if let Some(echo) = packet.as_echo() {
                     IcmpResult::SendEchoReply {
                         src_ip,
@@ -526,7 +508,7 @@ impl IcmpProcessor {
             }
             IcmpType::EchoReply => {
                 self.stats.echo_replies_rx += 1;
-                
+
                 if let Some(echo) = packet.as_echo() {
                     IcmpResult::EchoReplyReceived {
                         identifier: echo.identifier(),
@@ -536,9 +518,9 @@ impl IcmpProcessor {
                     IcmpResult::Invalid
                 }
             }
-            IcmpType::DestinationUnreachable |
-            IcmpType::TimeExceeded |
-            IcmpType::ParameterProblem => {
+            IcmpType::DestinationUnreachable
+            | IcmpType::TimeExceeded
+            | IcmpType::ParameterProblem => {
                 self.stats.errors_rx += 1;
                 IcmpResult::Error {
                     icmp_type: packet.icmp_type(),
@@ -548,7 +530,7 @@ impl IcmpProcessor {
             _ => IcmpResult::Ignored,
         }
     }
-    
+
     /// Build an echo reply packet
     pub fn build_echo_reply(
         buffer: &mut [u8],
@@ -557,11 +539,12 @@ impl IcmpProcessor {
         echo_data: &[u8],
     ) -> Option<usize> {
         let mut builder = IcmpEchoBuilder::new(buffer)?;
-        builder.build_reply(identifier, sequence)
-               .write_data(echo_data);
+        builder
+            .build_reply(identifier, sequence)
+            .write_data(echo_data);
         Some(builder.finalize())
     }
-    
+
     /// Build an echo request packet
     pub fn build_echo_request(
         buffer: &mut [u8],
@@ -570,11 +553,10 @@ impl IcmpProcessor {
         data: &[u8],
     ) -> Option<usize> {
         let mut builder = IcmpEchoBuilder::new(buffer)?;
-        builder.build_request(identifier, sequence)
-               .write_data(data);
+        builder.build_request(identifier, sequence).write_data(data);
         Some(builder.finalize())
     }
-    
+
     /// Build a destination unreachable packet
     pub fn build_dest_unreachable(
         buffer: &mut [u8],
@@ -584,22 +566,23 @@ impl IcmpProcessor {
         if buffer.len() < IcmpHeader::SIZE + 4 + 8 {
             return None;
         }
-        
+
         let mut builder = IcmpBuilder::new(buffer)?;
-        builder.set_type(IcmpType::DestinationUnreachable)
-               .set_code(code as u8);
-        
+        builder
+            .set_type(IcmpType::DestinationUnreachable)
+            .set_code(code as u8);
+
         // 4 bytes unused, then original IP header + 8 bytes
         let payload = builder.payload_mut();
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
-        
+
         let copy_len = original_packet.len().min(payload.len() - 4).min(28);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
-        
+
         builder.set_payload_len(4 + copy_len);
         Some(builder.finalize())
     }
-    
+
     /// Build a time exceeded packet
     pub fn build_time_exceeded(
         buffer: &mut [u8],
@@ -609,17 +592,18 @@ impl IcmpProcessor {
         if buffer.len() < IcmpHeader::SIZE + 4 + 8 {
             return None;
         }
-        
+
         let mut builder = IcmpBuilder::new(buffer)?;
-        builder.set_type(IcmpType::TimeExceeded)
-               .set_code(code as u8);
-        
+        builder
+            .set_type(IcmpType::TimeExceeded)
+            .set_code(code as u8);
+
         let payload = builder.payload_mut();
         payload[0..4].copy_from_slice(&[0, 0, 0, 0]); // Unused
-        
+
         let copy_len = original_packet.len().min(payload.len() - 4).min(28);
         payload[4..4 + copy_len].copy_from_slice(&original_packet[..copy_len]);
-        
+
         builder.set_payload_len(4 + copy_len);
         Some(builder.finalize())
     }
@@ -628,30 +612,29 @@ impl IcmpProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_icmp_type() {
         assert_eq!(IcmpType::from(8), IcmpType::EchoRequest);
         assert_eq!(IcmpType::from(0), IcmpType::EchoReply);
         assert_eq!(u8::from(IcmpType::EchoRequest), 8);
     }
-    
+
     #[test]
     fn test_echo_builder() {
         let mut buffer = [0u8; 64];
         let mut builder = IcmpEchoBuilder::new(&mut buffer).unwrap();
-        
-        builder.build_request(1234, 1)
-               .write_data(b"hello");
+
+        builder.build_request(1234, 1).write_data(b"hello");
         let len = builder.finalize();
-        
+
         assert_eq!(len, IcmpEchoHeader::SIZE + 5);
-        
+
         // Verify we can parse it back
         let packet = IcmpPacket::parse(&buffer[..len]).unwrap();
         assert_eq!(packet.icmp_type(), IcmpType::EchoRequest);
         assert!(packet.verify_checksum());
-        
+
         let echo = packet.as_echo().unwrap();
         assert_eq!(echo.identifier(), 1234);
         assert_eq!(echo.sequence(), 1);

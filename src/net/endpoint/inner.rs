@@ -5,10 +5,10 @@
 use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
-use crate::net::tcp::{TcpStream, TcpListener as TcpListenerImpl};
+use crate::net::tcp::{TcpListener as TcpListenerImpl, TcpStream};
 use crate::net::udp::UdpSocket as RawUdpSocket;
 
-use super::types::{SocketState, SocketError, SocketAddr, SocketResult, AcceptedConnection};
+use super::types::{AcceptedConnection, SocketAddr, SocketError, SocketResult, SocketState};
 
 /// ソケットの可変状態（Mutex保護対象）
 pub struct SocketInner {
@@ -57,7 +57,7 @@ impl SocketInner {
     pub const MAX_BUFFER_SIZE: usize = 65536;
     /// デフォルトのAcceptバックログサイズ
     pub const DEFAULT_BACKLOG: usize = 128;
-    
+
     /// 新規作成
     pub fn new() -> Self {
         Self {
@@ -81,7 +81,7 @@ impl SocketInner {
             accept_waker: None,
         }
     }
-    
+
     /// 状態遷移（ガード付き）
     #[inline]
     pub fn transition_to(&mut self, new_state: SocketState) -> SocketResult<()> {
@@ -110,7 +110,7 @@ impl SocketInner {
             (s1, s2) if s1 == s2 => true,
             _ => false,
         };
-        
+
         if valid {
             self.state = new_state;
             Ok(())
@@ -118,7 +118,7 @@ impl SocketInner {
             Err(SocketError::InvalidStateTransition)
         }
     }
-    
+
     /// 受信バッファからデータ取得（O(1)）
     #[inline]
     pub fn recv_from_buffer(&mut self, buf: &mut [u8]) -> usize {
@@ -132,34 +132,38 @@ impl SocketInner {
         }
         len
     }
-    
+
     /// 送信バッファにデータ追加
     #[inline]
     pub fn send_to_buffer(&mut self, data: &[u8]) -> SocketResult<usize> {
-        let available = self.send_buffer_limit.saturating_sub(self.send_buffer.len());
-        
+        let available = self
+            .send_buffer_limit
+            .saturating_sub(self.send_buffer.len());
+
         if available == 0 {
             return Err(SocketError::BufferFull);
         }
-        
+
         let len = data.len().min(available);
         self.send_buffer.extend(data[..len].iter().copied());
         Ok(len)
     }
-    
+
     /// 受信バッファにデータ追加（内部用 - カーネル/ドライバから呼ばれる）
     #[inline]
     pub fn push_recv_data(&mut self, data: &[u8]) {
-        let available = self.recv_buffer_limit.saturating_sub(self.recv_buffer.len());
+        let available = self
+            .recv_buffer_limit
+            .saturating_sub(self.recv_buffer.len());
         let len = data.len().min(available);
         self.recv_buffer.extend(data[..len].iter().copied());
-        
+
         // データが到着したので受信待ちを起こす
         if let Some(waker) = self.recv_waker.take() {
             waker.wake();
         }
     }
-    
+
     /// 接続完了通知（内部用 - TCPスタックから呼ばれる）
     #[inline]
     pub fn notify_connected(&mut self) {
@@ -182,31 +186,31 @@ impl Default for SocketInner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_socket_state_transitions() {
         let mut inner = SocketInner::new();
-        
+
         // Created -> Bound
         assert!(inner.transition_to(SocketState::Bound).is_ok());
         assert_eq!(inner.state, SocketState::Bound);
-        
+
         // Bound -> Listening
         assert!(inner.transition_to(SocketState::Listening).is_ok());
         assert_eq!(inner.state, SocketState::Listening);
-        
+
         // Invalid: Listening -> Connected
         assert!(inner.transition_to(SocketState::Connected).is_err());
     }
-    
+
     #[test]
     fn test_vecdeque_buffer() {
         let mut inner = SocketInner::new();
-        
+
         // データ追加
         inner.push_recv_data(&[1, 2, 3, 4, 5]);
         assert_eq!(inner.recv_buffer.len(), 5);
-        
+
         // O(1)でのデータ取得
         let mut buf = [0u8; 3];
         let len = inner.recv_from_buffer(&mut buf);

@@ -74,23 +74,23 @@ pub enum DevicePowerState {
 
 /// ACPI PM1コントロールレジスタビット
 mod pm1_control {
-    pub const SCI_EN: u16 = 1 << 0;    // SCI割り込み有効
-    pub const BM_RLD: u16 = 1 << 1;    // バスマスターリロード
-    pub const GBL_RLS: u16 = 1 << 2;   // グローバルリリース
+    pub const SCI_EN: u16 = 1 << 0; // SCI割り込み有効
+    pub const BM_RLD: u16 = 1 << 1; // バスマスターリロード
+    pub const GBL_RLS: u16 = 1 << 2; // グローバルリリース
     pub const SLP_TYP_SHIFT: u16 = 10; // スリープタイプシフト
     pub const SLP_TYP_MASK: u16 = 0x07 << 10;
-    pub const SLP_EN: u16 = 1 << 13;   // スリープ有効
+    pub const SLP_EN: u16 = 1 << 13; // スリープ有効
 }
 
 /// ACPI PM1ステータスレジスタビット
 mod pm1_status {
-    pub const TMR_STS: u16 = 1 << 0;   // タイマーステータス
-    pub const BM_STS: u16 = 1 << 4;    // バスマスターステータス
-    pub const GBL_STS: u16 = 1 << 5;   // グローバルステータス
+    pub const TMR_STS: u16 = 1 << 0; // タイマーステータス
+    pub const BM_STS: u16 = 1 << 4; // バスマスターステータス
+    pub const GBL_STS: u16 = 1 << 5; // グローバルステータス
     pub const PWRBTN_STS: u16 = 1 << 8; // 電源ボタンステータス
     pub const SLPBTN_STS: u16 = 1 << 9; // スリープボタンステータス
-    pub const RTC_STS: u16 = 1 << 10;  // RTCステータス
-    pub const WAK_STS: u16 = 1 << 15;  // ウェイクステータス
+    pub const RTC_STS: u16 = 1 << 10; // RTCステータス
+    pub const WAK_STS: u16 = 1 << 15; // ウェイクステータス
 }
 
 /// ACPI電源管理設定
@@ -143,7 +143,7 @@ impl AcpiPmConfig {
             s5_slp_typ_b: 0,
         }
     }
-    
+
     /// FADTから設定を読み込み
     pub fn from_fadt(fadt: &Fadt) -> Self {
         Self {
@@ -210,16 +210,16 @@ impl PowerManager {
             sci_enabled: Mutex::new(false),
         }
     }
-    
+
     /// 設定を更新
     pub fn set_config(&self, config: AcpiPmConfig) {
         *self.config.lock() = config;
     }
-    
+
     /// ACPI SCI割り込みを有効化
     pub fn enable_sci(&self) {
         let config = self.config.lock();
-        
+
         if config.pm1a_cnt_blk != 0 {
             unsafe {
                 let mut port: Port<u16> = Port::new(config.pm1a_cnt_blk);
@@ -227,28 +227,28 @@ impl PowerManager {
                 port.write(value | pm1_control::SCI_EN);
             }
         }
-        
+
         *self.sci_enabled.lock() = true;
     }
-    
+
     /// PM1ステータスを読み込み
     pub fn read_pm1_status(&self) -> u16 {
         let config = self.config.lock();
-        
+
         if config.pm1a_evt_blk == 0 {
             return 0;
         }
-        
+
         unsafe {
             let mut port: Port<u16> = Port::new(config.pm1a_evt_blk);
             port.read()
         }
     }
-    
+
     /// PM1ステータスをクリア
     pub fn clear_pm1_status(&self, bits: u16) {
         let config = self.config.lock();
-        
+
         if config.pm1a_evt_blk != 0 {
             unsafe {
                 let mut port: Port<u16> = Port::new(config.pm1a_evt_blk);
@@ -256,19 +256,19 @@ impl PowerManager {
             }
         }
     }
-    
+
     /// PMタイマーを読み込み
     pub fn read_pm_timer(&self) -> u32 {
         let config = self.config.lock();
-        
+
         if config.pm_tmr_blk == 0 {
             return 0;
         }
-        
+
         unsafe {
             let mut port: Port<u32> = Port::new(config.pm_tmr_blk);
             let value = port.read();
-            
+
             // 24ビットまたは32ビットタイマー
             if config.pm_tmr_32bit {
                 value
@@ -277,7 +277,7 @@ impl PowerManager {
             }
         }
     }
-    
+
     /// スリープ状態に遷移 (注意: 実際のスリープは危険)
     pub fn enter_sleep_state(&self, state: PowerState) -> Result<(), &'static str> {
         match state {
@@ -302,38 +302,38 @@ impl PowerManager {
             }
         }
     }
-    
+
     /// システムシャットダウン (ACPI S5)
     pub fn shutdown(&self) -> Result<(), &'static str> {
         let config = self.config.lock();
-        
+
         if config.pm1a_cnt_blk == 0 {
             return Err("PM1a control block not available");
         }
-        
+
         // QEMUでは特殊なシャットダウンポートを使用
         // 実機では正式なACPI S5遷移が必要
-        
+
         // まずQEMUの直接シャットダウンを試行
         unsafe {
             let mut port: Port<u16> = Port::new(0x604);
             port.write(0x2000);
         }
-        
+
         // それでもシャットダウンしない場合、ACPI経由
         unsafe {
             // SLP_TYP_S5とSLP_ENを設定
             let slp_typ_a = (config.s5_slp_typ_a as u16) << pm1_control::SLP_TYP_SHIFT;
             let value = slp_typ_a | pm1_control::SLP_EN;
-            
+
             let mut port: Port<u16> = Port::new(config.pm1a_cnt_blk);
             port.write(value);
         }
-        
+
         // シャットダウンに失敗した場合
         Err("Shutdown failed")
     }
-    
+
     /// システムリブート
     pub fn reboot(&self) -> Result<(), &'static str> {
         // キーボードコントローラー経由でリブート
@@ -341,74 +341,78 @@ impl PowerManager {
             // 8042リセットコマンド
             let mut cmd_port: Port<u8> = Port::new(0x64);
             let mut data_port: Port<u8> = Port::new(0x60);
-            
+
             // コントローラー準備待ち
             for _ in 0..100000 {
                 if cmd_port.read() & 0x02 == 0 {
                     break;
                 }
             }
-            
+
             // リセットコマンド送信
             cmd_port.write(0xFE);
         }
-        
+
         // それでもリブートしない場合、トリプルフォルト
         // (危険なので通常は使用しない)
-        
+
         Err("Reboot failed")
     }
-    
+
     /// 電源ボタンイベントを処理
     pub fn handle_power_button(&self) {
-        self.stats.power_button_presses.fetch_add(1, Ordering::Relaxed);
-        
+        self.stats
+            .power_button_presses
+            .fetch_add(1, Ordering::Relaxed);
+
         // ステータスをクリア
         self.clear_pm1_status(pm1_status::PWRBTN_STS);
-        
+
         // シャットダウンシーケンスを開始
         // 実際のOSではユーザーに確認を求める
     }
-    
+
     /// スリープボタンイベントを処理
     pub fn handle_sleep_button(&self) {
-        self.stats.sleep_button_presses.fetch_add(1, Ordering::Relaxed);
-        
+        self.stats
+            .sleep_button_presses
+            .fetch_add(1, Ordering::Relaxed);
+
         // ステータスをクリア
         self.clear_pm1_status(pm1_status::SLPBTN_STS);
-        
+
         // スリープモードに遷移
     }
-    
+
     /// ACPI SCI割り込みハンドラ
     pub fn handle_sci(&self) {
         let status = self.read_pm1_status();
-        
+
         if status & pm1_status::PWRBTN_STS != 0 {
             self.handle_power_button();
         }
-        
+
         if status & pm1_status::SLPBTN_STS != 0 {
             self.handle_sleep_button();
         }
-        
+
         if status & pm1_status::RTC_STS != 0 {
             self.clear_pm1_status(pm1_status::RTC_STS);
             // RTCウェイクアップ処理
         }
-        
+
         if status & pm1_status::TMR_STS != 0 {
             self.clear_pm1_status(pm1_status::TMR_STS);
             // タイマーオーバーフロー処理
         }
     }
-    
+
     /// 現在の電源状態を取得
     pub fn current_state(&self) -> PowerState {
         PowerState::from_u8(self.stats.current_state.load(Ordering::Relaxed))
             .unwrap_or(PowerState::Working)
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> &PowerStats {
         &self.stats
@@ -437,40 +441,38 @@ impl CpuIdle {
             c3_count: AtomicU64::new(0),
         }
     }
-    
+
     /// アイドル状態に入る (C1 - HLT)
     pub fn idle(&self) {
-        self.current_state.store(CpuPowerState::Halt as u8, Ordering::Relaxed);
+        self.current_state
+            .store(CpuPowerState::Halt as u8, Ordering::Relaxed);
         self.c1_count.fetch_add(1, Ordering::Relaxed);
-        
+
         // 割り込みを有効にしてHLT
         unsafe {
-            core::arch::asm!(
-                "sti",
-                "hlt",
-            );
+            core::arch::asm!("sti", "hlt",);
         }
-        
-        self.current_state.store(CpuPowerState::Active as u8, Ordering::Relaxed);
+
+        self.current_state
+            .store(CpuPowerState::Active as u8, Ordering::Relaxed);
     }
-    
+
     /// MWAIT命令でアイドル (より効率的)
     pub fn mwait_idle(&self, hint: u32) {
-        self.current_state.store(CpuPowerState::Halt as u8, Ordering::Relaxed);
+        self.current_state
+            .store(CpuPowerState::Halt as u8, Ordering::Relaxed);
         self.c1_count.fetch_add(1, Ordering::Relaxed);
-        
+
         unsafe {
             // MONITORとMWAITは対応CPUでのみ使用可能
             // ここでは簡易実装としてHLTにフォールバック
-            core::arch::asm!(
-                "sti",
-                "hlt",
-            );
+            core::arch::asm!("sti", "hlt",);
         }
-        
-        self.current_state.store(CpuPowerState::Active as u8, Ordering::Relaxed);
+
+        self.current_state
+            .store(CpuPowerState::Active as u8, Ordering::Relaxed);
     }
-    
+
     /// 現在のC状態を取得
     pub fn current_state(&self) -> CpuPowerState {
         match self.current_state.load(Ordering::Relaxed) {
@@ -481,7 +483,7 @@ impl CpuIdle {
             _ => CpuPowerState::Active,
         }
     }
-    
+
     /// アイドル統計を取得
     pub fn stats(&self) -> (u64, u64, u64) {
         (
@@ -524,20 +526,24 @@ pub fn init_from_fadt(fadt: &Fadt) {
 /// システムシャットダウン
 pub fn shutdown() -> ! {
     let _ = POWER_MANAGER.shutdown();
-    
+
     // シャットダウンに失敗した場合は無限ループ
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 
 /// システムリブート
 pub fn reboot() -> ! {
     let _ = POWER_MANAGER.reboot();
-    
+
     // リブートに失敗した場合は無限ループ
     loop {
-        unsafe { core::arch::asm!("hlt"); }
+        unsafe {
+            core::arch::asm!("hlt");
+        }
     }
 }
 

@@ -16,10 +16,10 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -27,8 +27,8 @@ use spin::Mutex;
 // ============================================================================
 
 /// ポーリングモード閾値（パケット/秒）
-const POLLING_THRESHOLD_HIGH: u64 = 100_000;  // 10万pps以上でポーリングへ
-const POLLING_THRESHOLD_LOW: u64 = 50_000;    // 5万pps以下で割り込みへ
+const POLLING_THRESHOLD_HIGH: u64 = 100_000; // 10万pps以上でポーリングへ
+const POLLING_THRESHOLD_LOW: u64 = 50_000; // 5万pps以下で割り込みへ
 
 /// ポーリングバジェット（1回のポーリングで処理する最大パケット数）
 const POLL_BUDGET: usize = 64;
@@ -142,7 +142,7 @@ impl<T> RingBuffer<T> {
         for _ in 0..capacity {
             buffer.push(None);
         }
-        
+
         Self {
             buffer,
             head: AtomicU32::new(0),
@@ -155,12 +155,12 @@ impl<T> RingBuffer<T> {
     pub fn push(&mut self, item: T) -> Result<(), T> {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
-        
+
         let next_tail = (tail + 1) & (self.capacity - 1);
         if next_tail == head {
             return Err(item); // Full
         }
-        
+
         self.buffer[tail as usize] = Some(item);
         self.tail.store(next_tail, Ordering::Release);
         Ok(())
@@ -170,11 +170,11 @@ impl<T> RingBuffer<T> {
     pub fn pop(&mut self) -> Option<T> {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
-        
+
         if head == tail {
             return None; // Empty
         }
-        
+
         let item = self.buffer[head as usize].take();
         let next_head = (head + 1) & (self.capacity - 1);
         self.head.store(next_head, Ordering::Release);
@@ -233,8 +233,8 @@ impl NetworkStats {
         if elapsed_ms == 0 {
             return 0;
         }
-        let total = self.rx_packets.load(Ordering::Relaxed)
-            + self.tx_packets.load(Ordering::Relaxed);
+        let total =
+            self.rx_packets.load(Ordering::Relaxed) + self.tx_packets.load(Ordering::Relaxed);
         total * 1000 / elapsed_ms
     }
 }
@@ -311,7 +311,7 @@ impl AdaptivePoller {
         let rx_now = self.stats.rx_packets.load(Ordering::Relaxed);
         let tx_now = self.stats.tx_packets.load(Ordering::Relaxed);
         let (rx_last, tx_last) = self.last_stats_snapshot;
-        
+
         let packets = (rx_now - rx_last) + (tx_now - tx_last);
         let pps = packets * 1000 / elapsed;
 
@@ -396,13 +396,15 @@ impl AdaptivePoller {
         self.stats.poll_cycles.fetch_add(1, Ordering::Relaxed);
 
         let mut processed = 0;
-        
+
         for _ in 0..self.budget {
             match process_packet() {
                 Some(bytes) => {
                     processed += 1;
                     self.stats.rx_packets.fetch_add(1, Ordering::Relaxed);
-                    self.stats.rx_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
+                    self.stats
+                        .rx_bytes
+                        .fetch_add(bytes as u64, Ordering::Relaxed);
                 }
                 None => break,
             }
@@ -419,7 +421,7 @@ impl AdaptivePoller {
     /// 割り込みハンドラから呼ばれる
     pub fn on_interrupt(&mut self) {
         self.stats.interrupts.fetch_add(1, Ordering::Relaxed);
-        
+
         // ビジーポーリングモードでは割り込みを無視
         if self.mode == PollingMode::BusyPolling {
             return;
@@ -438,16 +440,16 @@ impl AdaptivePoller {
 pub trait PollingDriver {
     /// 受信キューをポーリング
     fn poll_rx(&mut self, budget: usize) -> usize;
-    
+
     /// 送信完了をポーリング
     fn poll_tx(&mut self, budget: usize) -> usize;
-    
+
     /// 割り込みを有効化
     fn enable_interrupts(&mut self);
-    
+
     /// 割り込みを無効化
     fn disable_interrupts(&mut self);
-    
+
     /// リンク状態を取得
     fn link_up(&self) -> bool;
 }
@@ -552,11 +554,7 @@ impl PerCorePolling {
                 if napi.is_scheduled() {
                     let processed = napi.poller_mut().poll(|| {
                         let bytes = driver_poll(1);
-                        if bytes > 0 {
-                            Some(bytes)
-                        } else {
-                            None
-                        }
+                        if bytes > 0 { Some(bytes) } else { None }
                     });
                     work_done += processed;
 
@@ -734,11 +732,11 @@ mod tests {
     fn test_ring_buffer() {
         let mut ring: RingBuffer<u32> = RingBuffer::new(4);
         assert!(ring.is_empty());
-        
+
         ring.push(1).unwrap();
         ring.push(2).unwrap();
         assert_eq!(ring.len(), 2);
-        
+
         assert_eq!(ring.pop(), Some(1));
         assert_eq!(ring.pop(), Some(2));
         assert!(ring.is_empty());
@@ -749,7 +747,7 @@ mod tests {
         let stats = NetworkStats::new();
         stats.rx_packets.fetch_add(100, Ordering::Relaxed);
         stats.tx_packets.fetch_add(50, Ordering::Relaxed);
-        
+
         let pps = stats.packets_per_second(1000);
         assert_eq!(pps, 150);
     }

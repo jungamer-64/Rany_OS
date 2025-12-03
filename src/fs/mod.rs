@@ -21,48 +21,50 @@ pub mod fs_abstraction;
 // 後方互換性のためのエイリアス
 pub use fs_abstraction as vfs;
 
-pub mod cache;
-pub mod block;
 pub mod async_ops;
-pub mod fat32;
-pub mod ext2;
-pub mod procfs;
+pub mod block;
+pub mod cache;
 pub mod devfs;
+pub mod ext2;
+pub mod fat32;
+pub mod procfs;
 
-#[allow(unused_imports)]
-pub use fs_abstraction::{
-    FileSystem, Inode, DirEntry, FileType, FileMode,
-    OpenFlags, SeekFrom, FsError, FsResult, FileAttr, FsStats,
-    FileHandle, PathResolver, MountTable, mount_table,
-    AsyncReadFuture, AsyncWriteFuture,
-};
-#[allow(unused_imports)]
-pub use cache::{PageCache, CachedPage, CacheStats};
-#[allow(unused_imports)]
-pub use block::{BlockDevice, BlockRequest, RequestType};
 #[allow(unused_imports)]
 pub use async_ops::{
     // 非同期ファイル操作
-    AsyncFile, AsyncIoRequest, AsyncIoType,
+    AsyncFile,
+    AsyncIoRequest,
+    // I/Oスケジューラ
+    AsyncIoScheduler,
+    AsyncIoType,
     // ダイレクトブロックアクセス
     DirectBlockHandle,
+    IoSchedulerStats,
     // Scatter-Gather I/O
-    SgEntry, SgIoRequest,
-    // I/Oスケジューラ
-    AsyncIoScheduler, IoSchedulerStats, async_io_scheduler,
+    SgEntry,
+    SgIoRequest,
+    async_io_scheduler,
 };
 #[allow(unused_imports)]
-pub use fat32::Fat32FileSystem;
+pub use block::{BlockDevice, BlockRequest, RequestType};
+#[allow(unused_imports)]
+pub use cache::{CacheStats, CachedPage, PageCache};
+#[allow(unused_imports)]
+pub use devfs::{
+    ConsoleDevice, DevEntry, DevError, DevFileHandle, DevFs, DevInode, DeviceNumber, DeviceOps,
+    DeviceType, FullDevice, NullDevice, RandomDevice, ZeroDevice, devfs,
+};
 #[allow(unused_imports)]
 pub use ext2::Ext2FileSystem;
 #[allow(unused_imports)]
-pub use procfs::{
-    ProcInode, ProcFileType, ProcEntry, ProcError, ProcFs, ProcFileHandle,
-    procfs, Pid as ProcPid,
+pub use fat32::Fat32FileSystem;
+#[allow(unused_imports)]
+pub use fs_abstraction::{
+    AsyncReadFuture, AsyncWriteFuture, DirEntry, FileAttr, FileHandle, FileMode, FileSystem,
+    FileType, FsError, FsResult, FsStats, Inode, MountTable, OpenFlags, PathResolver, SeekFrom,
+    mount_table,
 };
 #[allow(unused_imports)]
-pub use devfs::{
-    DeviceNumber, DeviceType, DevInode, DevEntry, DevError, DevFs,
-    DeviceOps, NullDevice, ZeroDevice, FullDevice, RandomDevice, ConsoleDevice,
-    DevFileHandle, devfs,
+pub use procfs::{
+    Pid as ProcPid, ProcEntry, ProcError, ProcFileHandle, ProcFileType, ProcFs, ProcInode, procfs,
 };
