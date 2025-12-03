@@ -23,6 +23,8 @@ pub enum InterruptSource {
     Timer,
     /// キーボード割り込み
     Keyboard,
+    /// シリアルポート (COM1)
+    Serial,
     /// VirtIO ネットワーク
     VirtioNet(u8), // queue index
     /// VirtIO ブロック
@@ -39,6 +41,7 @@ impl InterruptSource {
         match vector {
             0x20 => Some(InterruptSource::Timer),
             0x21 => Some(InterruptSource::Keyboard),
+            0x24 => Some(InterruptSource::Serial), // COM1 = IRQ4 = 0x20 + 4
             0x30..=0x3F => Some(InterruptSource::VirtioNet((vector - 0x30) as u8)),
             0x40..=0x4F => Some(InterruptSource::VirtioBlk((vector - 0x40) as u8)),
             0x50..=0x5F => Some(InterruptSource::Nvme((vector - 0x50) as u16)),

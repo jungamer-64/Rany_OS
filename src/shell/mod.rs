@@ -12,8 +12,11 @@
 //! - ヒストリ
 //! - タブ補完（基本）
 //! - 環境変数
+//! - 非同期シリアル入力（IRQ4駆動）
 
 #![allow(dead_code)]
+
+pub mod async_shell;
 
 use alloc::collections::BTreeMap;
 use alloc::format;

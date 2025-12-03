@@ -1,18 +1,19 @@
 // ============================================================================
 // src/io/serial.rs - Serial Port Driver (UART 16550)
-// デバッグ出力およびコンソール入出力用
+// Debug output and console I/O
 // ============================================================================
 //!
-//! # シリアルポートドライバ
+//! # Serial Port Driver
 //!
-//! UART 16550互換のシリアルポートドライバ。
-//! QEMUなどのエミュレータでのデバッグ出力に使用。
+//! UART 16550 compatible serial port driver.
+//! Used for debug output in QEMU and other emulators.
 //!
-//! ## 機能
-//! - 非同期送受信
-//! - 複数のボーレート対応
-//! - FIFOバッファ
-//! - 割り込みまたはポーリングモード
+//! ## Features
+//! - Async send/receive
+//! - Multiple baud rates
+//! - FIFO buffer
+//! - Interrupt or polling mode
+//! - Type-safe register operations
 
 #![allow(dead_code)]
 
@@ -25,183 +26,181 @@ use spin::Mutex;
 use x86_64::instructions::port::Port;
 
 // ============================================================================
-// シリアルポート定数
+// Serial port constants and type definitions
 // ============================================================================
 
-/// COM1ベースポート
-pub const COM1: u16 = 0x3F8;
-/// COM2ベースポート
-pub const COM2: u16 = 0x2F8;
-/// COM3ベースポート
-pub const COM3: u16 = 0x3E8;
-/// COM4ベースポート
-pub const COM4: u16 = 0x2E8;
+/// COM port base addresses
+#[repr(u16)]
+#[derive(Debug, Clone, Copy)]
+pub enum ComPort {
+    Com1 = 0x3F8,
+    Com2 = 0x2F8,
+    Com3 = 0x3E8,
+    Com4 = 0x2E8,
+}
 
-// レジスタオフセット
+/// Register offsets (DLAB=0/1 share same offsets for different registers)
 mod reg {
-    pub const DATA: u16 = 0; // データレジスタ（DLAB=0）
-    pub const DLL: u16 = 0; // 分周器下位（DLAB=1）
-    pub const DLH: u16 = 1; // 分周器上位（DLAB=1）
-    pub const IER: u16 = 1; // 割り込み有効化レジスタ（DLAB=0）
-    pub const IIR: u16 = 2; // 割り込み識別レジスタ（読み取り）
-    pub const FCR: u16 = 2; // FIFOコントロールレジスタ（書き込み）
-    pub const LCR: u16 = 3; // ラインコントロールレジスタ
-    pub const MCR: u16 = 4; // モデムコントロールレジスタ
-    pub const LSR: u16 = 5; // ラインステータスレジスタ
-    pub const MSR: u16 = 6; // モデムステータスレジスタ
-    pub const SR: u16 = 7; // スクラッチレジスタ
+    pub const DATA: u16 = 0;    // R/W: Data Register (DLAB=0)
+    pub const DLL: u16 = 0;     // W:   Divisor Latch Low (DLAB=1)
+    pub const DLH: u16 = 1;     // W:   Divisor Latch High (DLAB=1)
+    pub const IER: u16 = 1;     // R/W: Interrupt Enable Register (DLAB=0)
+    pub const FCR: u16 = 2;     // W:   FIFO Control Register
+    pub const LCR: u16 = 3;     // R/W: Line Control Register
+    pub const MCR: u16 = 4;     // R/W: Modem Control Register
+    pub const LSR: u16 = 5;     // R:   Line Status Register
+    pub const SCRATCH: u16 = 7; // R/W: Scratch Register
 }
 
-// ラインステータスビット
-mod lsr {
-    pub const DATA_READY: u8 = 1 << 0;
-    pub const OVERRUN_ERROR: u8 = 1 << 1;
-    pub const PARITY_ERROR: u8 = 1 << 2;
-    pub const FRAMING_ERROR: u8 = 1 << 3;
-    pub const BREAK_INTERRUPT: u8 = 1 << 4;
+/// Data bit length
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DataBits {
+    Bits5 = 0b00,
+    Bits6 = 0b01,
+    Bits7 = 0b10,
+    Bits8 = 0b11,
+}
+
+/// Stop bits
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum StopBits {
+    Stop1 = 0b0 << 2,
+    Stop2 = 0b1 << 2,
+}
+
+/// Parity settings
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Parity {
+    None  = 0b000 << 3,
+    Odd   = 0b001 << 3,
+    Even  = 0b011 << 3,
+    Mark  = 0b101 << 3,
+    Space = 0b111 << 3,
+}
+
+/// Line status flags (LSR)
+#[derive(Debug, Clone, Copy)]
+pub struct LineStatus(u8);
+
+impl LineStatus {
+    pub const DATA_READY: u8       = 1 << 0;
+    pub const OVERRUN_ERROR: u8    = 1 << 1;
+    pub const PARITY_ERROR: u8     = 1 << 2;
+    pub const FRAMING_ERROR: u8    = 1 << 3;
+    pub const BREAK_INTERRUPT: u8  = 1 << 4;
     pub const TX_HOLDING_EMPTY: u8 = 1 << 5;
-    pub const TX_EMPTY: u8 = 1 << 6;
-    pub const FIFO_ERROR: u8 = 1 << 7;
+    pub const TX_EMPTY: u8         = 1 << 6;
+    pub const FIFO_ERROR: u8       = 1 << 7;
+
+    pub fn from_u8(val: u8) -> Self { Self(val) }
+    pub fn is_data_ready(&self) -> bool { self.0 & Self::DATA_READY != 0 }
+    pub fn is_tx_ready(&self) -> bool { self.0 & Self::TX_HOLDING_EMPTY != 0 }
 }
 
-// ラインコントロール設定
-mod lcr {
-    pub const DATA_5: u8 = 0b00;
-    pub const DATA_6: u8 = 0b01;
-    pub const DATA_7: u8 = 0b10;
-    pub const DATA_8: u8 = 0b11;
-    pub const STOP_1: u8 = 0 << 2;
-    pub const STOP_2: u8 = 1 << 2;
-    pub const PARITY_NONE: u8 = 0 << 3;
-    pub const PARITY_ODD: u8 = 1 << 3;
-    pub const PARITY_EVEN: u8 = 3 << 3;
-    pub const PARITY_MARK: u8 = 5 << 3;
-    pub const PARITY_SPACE: u8 = 7 << 3;
-    pub const DLAB: u8 = 1 << 7;
-}
+/// Interrupt enable flags (IER)
+#[derive(Debug, Clone, Copy)]
+pub struct InterruptEnable(u8);
 
-// 割り込み有効化ビット
-mod ier {
+impl InterruptEnable {
     pub const RX_AVAILABLE: u8 = 1 << 0;
-    pub const TX_EMPTY: u8 = 1 << 1;
-    pub const LINE_STATUS: u8 = 1 << 2;
+    pub const TX_EMPTY: u8     = 1 << 1;
+    pub const LINE_STATUS: u8  = 1 << 2;
     pub const MODEM_STATUS: u8 = 1 << 3;
 }
 
-// FIFOコントロール設定
-mod fcr {
-    pub const ENABLE: u8 = 1 << 0;
-    pub const RX_CLEAR: u8 = 1 << 1;
-    pub const TX_CLEAR: u8 = 1 << 2;
-    pub const DMA_MODE: u8 = 1 << 3;
-    pub const TRIGGER_1: u8 = 0b00 << 6;
-    pub const TRIGGER_4: u8 = 0b01 << 6;
-    pub const TRIGGER_8: u8 = 0b10 << 6;
-    pub const TRIGGER_14: u8 = 0b11 << 6;
-}
-
-// モデムコントロール設定
-mod mcr {
-    pub const DTR: u8 = 1 << 0;
-    pub const RTS: u8 = 1 << 1;
-    pub const OUT1: u8 = 1 << 2;
-    pub const OUT2: u8 = 1 << 3; // 割り込み有効化
-    pub const LOOPBACK: u8 = 1 << 4;
-}
-
-/// ボーレート
+/// Baud rate (divisor values for 115200 base)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaudRate {
-    Baud115200,
-    Baud57600,
-    Baud38400,
-    Baud19200,
-    Baud9600,
-    Baud4800,
-    Baud2400,
-    Baud1200,
-}
-
-impl BaudRate {
-    /// 分周器値を取得（115200基準）
-    fn divisor(&self) -> u16 {
-        match self {
-            BaudRate::Baud115200 => 1,
-            BaudRate::Baud57600 => 2,
-            BaudRate::Baud38400 => 3,
-            BaudRate::Baud19200 => 6,
-            BaudRate::Baud9600 => 12,
-            BaudRate::Baud4800 => 24,
-            BaudRate::Baud2400 => 48,
-            BaudRate::Baud1200 => 96,
-        }
-    }
+    Baud115200 = 1,
+    Baud57600  = 2,
+    Baud38400  = 3,
+    Baud19200  = 6,
+    Baud9600   = 12,
+    Baud4800   = 24,
+    Baud2400   = 48,
+    Baud1200   = 96,
 }
 
 // ============================================================================
-// シリアルポートドライバ
+// Serial port driver
 // ============================================================================
 
-/// シリアルポートドライバ
+/// Serial port driver
 pub struct SerialPort {
     base: u16,
     initialized: AtomicBool,
 }
 
 impl SerialPort {
-    /// 新しいシリアルポートを作成
-    pub const fn new(base: u16) -> Self {
+    /// Create a new serial port
+    pub const fn new(port: ComPort) -> Self {
         Self {
-            base,
+            base: port as u16,
             initialized: AtomicBool::new(false),
         }
     }
 
-    /// シリアルポートを初期化
-    pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> {
-        unsafe {
-            let mut data_port: Port<u8> = Port::new(self.base + reg::DATA);
-            let mut ier_port: Port<u8> = Port::new(self.base + reg::IER);
-            let mut fcr_port: Port<u8> = Port::new(self.base + reg::FCR);
-            let mut lcr_port: Port<u8> = Port::new(self.base + reg::LCR);
-            let mut mcr_port: Port<u8> = Port::new(self.base + reg::MCR);
-            let mut sr_port: Port<u8> = Port::new(self.base + reg::SR);
+    /// Port access helper
+    /// Safety: Race conditions must be managed by caller, but Port itself is stateless
+    unsafe fn port_at<T>(&self, offset: u16) -> Port<T> {
+        Port::new(self.base + offset)
+    }
 
-            // 割り込みを無効化
+    /// Initialize the serial port
+    pub fn init(
+        &self,
+        baud_rate: BaudRate,
+        data_bits: DataBits,
+        stop_bits: StopBits,
+        parity: Parity
+    ) -> Result<(), SerialError> {
+        unsafe {
+            let mut data_port: Port<u8> = self.port_at(reg::DATA);
+            let mut ier_port: Port<u8>  = self.port_at(reg::IER);
+            let mut fcr_port: Port<u8>  = self.port_at(reg::FCR);
+            let mut lcr_port: Port<u8>  = self.port_at(reg::LCR);
+            let mut mcr_port: Port<u8>  = self.port_at(reg::MCR);
+            let mut sr_port: Port<u8>   = self.port_at(reg::SCRATCH);
+
+            // Disable interrupts
             ier_port.write(0x00);
 
-            // ボーレート設定（DLAB=1）
-            lcr_port.write(lcr::DLAB);
+            // Set DLAB bit to enable baud rate setting
+            const DLAB: u8 = 1 << 7;
+            lcr_port.write(DLAB);
 
-            let divisor = baud_rate.divisor();
+            // Set baud rate
+            let divisor = baud_rate as u16;
             data_port.write((divisor & 0xFF) as u8); // DLL
             ier_port.write(((divisor >> 8) & 0xFF) as u8); // DLH
 
-            // 8N1設定（8データビット、パリティなし、1ストップビット）
-            lcr_port.write(lcr::DATA_8 | lcr::STOP_1 | lcr::PARITY_NONE);
+            // Line configuration (clear DLAB while setting)
+            let lcr_val = (data_bits as u8) | (stop_bits as u8) | (parity as u8);
+            lcr_port.write(lcr_val);
 
-            // FIFOを有効化、14バイトトリガ
-            fcr_port.write(fcr::ENABLE | fcr::RX_CLEAR | fcr::TX_CLEAR | fcr::TRIGGER_14);
+            // FIFO configuration: enable, clear RX/TX, 14-byte trigger
+            // Bit definitions: ENABLE(1) | RX_CLEAR(2) | TX_CLEAR(4) | TRIGGER_14(0xC0)
+            fcr_port.write(0x01 | 0x02 | 0x04 | 0xC0);
 
-            // DTR、RTS、OUT2（割り込み）を有効化
-            mcr_port.write(mcr::DTR | mcr::RTS | mcr::OUT2);
+            // Modem control: DTR(1) | RTS(2) | OUT2(8, interrupt gate)
+            mcr_port.write(0x01 | 0x02 | 0x08);
 
-            // ループバックモードでテスト
-            mcr_port.write(mcr::LOOPBACK | mcr::DTR | mcr::RTS | mcr::OUT2);
-
-            // テストバイトを送信
+            // Loopback test
+            // LOOPBACK(0x10) | DTR | RTS | OUT2
+            mcr_port.write(0x10 | 0x01 | 0x02 | 0x08);
+            
             data_port.write(0xAE);
-
-            // 読み戻しチェック
-            let response = data_port.read();
-            if response != 0xAE {
+            if data_port.read() != 0xAE {
                 return Err(SerialError::InitFailed);
             }
 
-            // 通常モードに戻す
-            mcr_port.write(mcr::DTR | mcr::RTS | mcr::OUT2);
-
-            // スクラッチレジスタでさらにテスト
+            // Return to normal mode
+            mcr_port.write(0x01 | 0x02 | 0x08);
+            
+            // Scratch register test
             sr_port.write(0x55);
             if sr_port.read() != 0x55 {
                 return Err(SerialError::InitFailed);
@@ -213,64 +212,48 @@ impl SerialPort {
         Ok(())
     }
 
-    /// 受信データがあるか確認
-    pub fn can_receive(&self) -> bool {
+    /// Get line status
+    pub fn line_status(&self) -> LineStatus {
         unsafe {
-            let mut lsr_port: Port<u8> = Port::new(self.base + reg::LSR);
-            (lsr_port.read() & lsr::DATA_READY) != 0
+            let mut lsr_port: Port<u8> = self.port_at(reg::LSR);
+            LineStatus::from_u8(lsr_port.read())
         }
     }
 
-    /// 送信可能か確認
+    /// Check if ready to transmit
     pub fn can_transmit(&self) -> bool {
-        unsafe {
-            let mut lsr_port: Port<u8> = Port::new(self.base + reg::LSR);
-            (lsr_port.read() & lsr::TX_HOLDING_EMPTY) != 0
-        }
+        self.line_status().is_tx_ready()
     }
 
-    /// バイトを送信（ブロッキング）
+    /// Check if data is available
+    pub fn can_receive(&self) -> bool {
+        self.line_status().is_data_ready()
+    }
+
+    /// Send a byte (blocking)
     pub fn send(&self, byte: u8) {
         while !self.can_transmit() {
             core::hint::spin_loop();
         }
 
         unsafe {
-            let mut data_port: Port<u8> = Port::new(self.base + reg::DATA);
+            let mut data_port: Port<u8> = self.port_at(reg::DATA);
             data_port.write(byte);
         }
     }
 
-    /// バイトを受信（ブロッキング）
-    pub fn receive(&self) -> u8 {
-        while !self.can_receive() {
-            core::hint::spin_loop();
-        }
-
-        unsafe {
-            let mut data_port: Port<u8> = Port::new(self.base + reg::DATA);
-            data_port.read()
+    /// Send a string
+    pub fn send_str(&self, s: &str) {
+        for byte in s.bytes() {
+            self.send(byte);
         }
     }
 
-    /// バイトを送信（ノンブロッキング）
-    pub fn try_send(&self, byte: u8) -> Result<(), SerialError> {
-        if self.can_transmit() {
-            unsafe {
-                let mut data_port: Port<u8> = Port::new(self.base + reg::DATA);
-                data_port.write(byte);
-            }
-            Ok(())
-        } else {
-            Err(SerialError::BufferFull)
-        }
-    }
-
-    /// バイトを受信（ノンブロッキング）
+    /// Receive a byte (non-blocking)
     pub fn try_receive(&self) -> Result<u8, SerialError> {
         if self.can_receive() {
             unsafe {
-                let mut data_port: Port<u8> = Port::new(self.base + reg::DATA);
+                let mut data_port: Port<u8> = self.port_at(reg::DATA);
                 Ok(data_port.read())
             }
         } else {
@@ -278,81 +261,40 @@ impl SerialPort {
         }
     }
 
-    /// 文字列を送信
-    pub fn send_str(&self, s: &str) {
-        for byte in s.bytes() {
-            self.send(byte);
-        }
-    }
-
-    /// 割り込みを有効化
-    pub fn enable_interrupts(&self, rx: bool, tx: bool) {
+    /// Interrupt control
+    pub fn set_interrupts(&self, rx: bool, tx: bool) {
         let mut flags = 0u8;
-        if rx {
-            flags |= ier::RX_AVAILABLE;
-        }
-        if tx {
-            flags |= ier::TX_EMPTY;
-        }
+        if rx { flags |= InterruptEnable::RX_AVAILABLE; }
+        if tx { flags |= InterruptEnable::TX_EMPTY; }
 
         unsafe {
-            let mut ier_port: Port<u8> = Port::new(self.base + reg::IER);
+            let mut ier_port: Port<u8> = self.port_at(reg::IER);
             ier_port.write(flags);
         }
     }
-
-    /// 割り込みを無効化
-    pub fn disable_interrupts(&self) {
-        unsafe {
-            let mut ier_port: Port<u8> = Port::new(self.base + reg::IER);
-            ier_port.write(0);
-        }
-    }
-
-    /// ラインステータスを取得
-    pub fn line_status(&self) -> u8 {
-        unsafe {
-            let mut lsr_port: Port<u8> = Port::new(self.base + reg::LSR);
-            lsr_port.read()
-        }
-    }
-}
-
-impl Write for SerialPort {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        self.send_str(s);
-        Ok(())
-    }
 }
 
 // ============================================================================
-// エラー型
+// Error types
 // ============================================================================
 
-/// シリアルポートエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SerialError {
-    /// 初期化失敗
     InitFailed,
-    /// 送信バッファが満杯
     BufferFull,
-    /// 受信データなし
     NoData,
-    /// フレーミングエラー
     FramingError,
-    /// パリティエラー
     ParityError,
-    /// オーバーランエラー
     OverrunError,
 }
 
 // ============================================================================
-// 非同期シリアルポート
+// Async serial port
 // ============================================================================
 
 const RX_BUFFER_SIZE: usize = 256;
 
-/// 受信バッファ
+/// Receive buffer (simple lock-free SPSC ring buffer)
 struct RxBuffer {
     buffer: [AtomicU8; RX_BUFFER_SIZE],
     head: AtomicUsize,
@@ -374,7 +316,7 @@ impl RxBuffer {
         let next_tail = (tail + 1) % RX_BUFFER_SIZE;
 
         if next_tail == self.head.load(Ordering::Acquire) {
-            return false;
+            return false; // Full
         }
 
         self.buffer[tail].store(byte, Ordering::Relaxed);
@@ -385,21 +327,16 @@ impl RxBuffer {
     fn pop(&self) -> Option<u8> {
         let head = self.head.load(Ordering::Relaxed);
         if head == self.tail.load(Ordering::Acquire) {
-            return None;
+            return None; // Empty
         }
 
         let byte = self.buffer[head].load(Ordering::Relaxed);
-        self.head
-            .store((head + 1) % RX_BUFFER_SIZE, Ordering::Release);
+        self.head.store((head + 1) % RX_BUFFER_SIZE, Ordering::Release);
         Some(byte)
-    }
-
-    fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
     }
 }
 
-/// 非同期シリアルポート
+/// Async wrapper
 pub struct AsyncSerialPort {
     port: SerialPort,
     rx_buffer: RxBuffer,
@@ -407,59 +344,40 @@ pub struct AsyncSerialPort {
 }
 
 impl AsyncSerialPort {
-    /// 新しい非同期シリアルポートを作成
-    pub const fn new(base: u16) -> Self {
+    pub const fn new(port: ComPort) -> Self {
         Self {
-            port: SerialPort::new(base),
+            port: SerialPort::new(port),
             rx_buffer: RxBuffer::new(),
             waker: Mutex::new(None),
         }
     }
 
-    /// 初期化
     pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> {
-        self.port.init(baud_rate)
+        // Standard configuration: 8N1
+        self.port.init(baud_rate, DataBits::Bits8, StopBits::Stop1, Parity::None)
     }
 
-    /// 割り込みハンドラ（ISRから呼ばれる）
     pub fn handle_interrupt(&self) {
-        // 受信データを読み取ってバッファに追加
-        while self.port.can_receive() {
-            if let Ok(byte) = self.port.try_receive() {
-                self.rx_buffer.push(byte);
-            }
+        // ISR context - keep locks minimal.
+        // Buffer push is lock-free.
+        while let Ok(byte) = self.port.try_receive() {
+            self.rx_buffer.push(byte);
         }
-
-        // 待機中のタスクを起床
+        // Notify waiting task
         if let Some(waker) = self.waker.lock().take() {
             waker.wake();
         }
     }
 
-    /// バイトを送信
-    pub fn send(&self, byte: u8) {
-        self.port.send(byte);
-    }
-
-    /// 文字列を送信
     pub fn send_str(&self, s: &str) {
         self.port.send_str(s);
     }
-
-    /// バイトを非同期で受信
+    
     pub fn read_byte(&self) -> SerialReadFuture<'_> {
         SerialReadFuture { port: self }
     }
-
-    /// バイトをポーリングで受信
-    pub fn poll_byte(&self) -> Option<u8> {
-        self.rx_buffer
-            .pop()
-            .or_else(|| self.port.try_receive().ok())
-    }
 }
 
-/// シリアル受信Future
 pub struct SerialReadFuture<'a> {
     port: &'a AsyncSerialPort,
 }
@@ -468,25 +386,20 @@ impl<'a> Future for SerialReadFuture<'a> {
     type Output = u8;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // まずバッファをチェック
+        // 1. Check buffer first
         if let Some(byte) = self.port.rx_buffer.pop() {
             return Poll::Ready(byte);
         }
-
-        // 直接ポートをチェック
+        // 2. Direct port check (fallback)
         if let Ok(byte) = self.port.port.try_receive() {
             return Poll::Ready(byte);
         }
 
-        // Wakerを登録
+        // 3. Register waker
         *self.port.waker.lock() = Some(cx.waker().clone());
 
-        // 再度チェック
+        // 4. Re-check to prevent race condition after waker registration
         if let Some(byte) = self.port.rx_buffer.pop() {
-            return Poll::Ready(byte);
-        }
-
-        if let Ok(byte) = self.port.port.try_receive() {
             return Poll::Ready(byte);
         }
 
@@ -495,35 +408,119 @@ impl<'a> Future for SerialReadFuture<'a> {
 }
 
 // ============================================================================
-// グローバルシリアルポート
+// Async read line (for shell integration)
 // ============================================================================
 
-/// グローバルCOM1シリアルポート
-static SERIAL1: AsyncSerialPort = AsyncSerialPort::new(COM1);
+use alloc::string::String;
+use alloc::vec::Vec;
 
-/// COM1を初期化
+/// Read a line from serial port asynchronously
+/// Returns when Enter is pressed or buffer is full
+pub async fn read_line() -> String {
+    let port = serial1();
+    let mut buffer = Vec::with_capacity(256);
+    
+    loop {
+        let byte = port.read_byte().await;
+        
+        match byte {
+            // Enter (CR or LF)
+            b'\r' | b'\n' => {
+                port.port.send(b'\r');
+                port.port.send(b'\n');
+                break;
+            }
+            // Backspace
+            0x08 | 0x7F => {
+                if !buffer.is_empty() {
+                    buffer.pop();
+                    // Echo: backspace, space, backspace
+                    port.port.send(0x08);
+                    port.port.send(b' ');
+                    port.port.send(0x08);
+                }
+            }
+            // Ctrl+C
+            0x03 => {
+                buffer.clear();
+                port.port.send(b'^');
+                port.port.send(b'C');
+                port.port.send(b'\r');
+                port.port.send(b'\n');
+                break;
+            }
+            // Ctrl+D (EOF)
+            0x04 => {
+                if buffer.is_empty() {
+                    // Return empty to signal EOF
+                    break;
+                }
+            }
+            // Printable ASCII
+            0x20..=0x7E => {
+                if buffer.len() < 255 {
+                    buffer.push(byte);
+                    // Echo the character
+                    port.port.send(byte);
+                }
+            }
+            _ => {
+                // Ignore other control characters
+            }
+        }
+    }
+    
+    String::from_utf8_lossy(&buffer).into_owned()
+}
+
+// ============================================================================
+// Global instance and macros
+// ============================================================================
+
+static SERIAL1: AsyncSerialPort = AsyncSerialPort::new(ComPort::Com1);
+
+/// COM1 IRQ number
+const COM1_IRQ: u8 = 4;
+
 pub fn init() -> Result<(), SerialError> {
     SERIAL1.init(BaudRate::Baud115200)?;
-    SERIAL1.port.enable_interrupts(true, false);
-    crate::log!("[SERIAL] COM1 initialized at 115200 baud\n");
+    SERIAL1.port.set_interrupts(true, false);
+    
+    // Unmask IRQ4 (COM1) in the PIC
+    crate::interrupts::unmask_irq(COM1_IRQ);
+    
+    // Using literal string to avoid circular reference with formatter
+    SERIAL1.send_str("[SERIAL] COM1 initialized (IRQ4 enabled)\n");
     Ok(())
 }
 
-/// COM1にアクセス
 pub fn serial1() -> &'static AsyncSerialPort {
     &SERIAL1
 }
 
-/// シリアル割り込みハンドラ
 pub fn handle_interrupt() {
     SERIAL1.handle_interrupt();
 }
 
-// ============================================================================
-// マクロ
-// ============================================================================
+// Helper struct for safe writing
+struct SerialWriter;
 
-/// シリアルポートに出力
+impl fmt::Write for SerialWriter {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        SERIAL1.send_str(s);
+        Ok(())
+    }
+}
+
+#[doc(hidden)]
+pub fn _print(args: fmt::Arguments) {
+    // Create a temporary Writer and write to it
+    // Note: Be careful about deadlocks in interrupt context,
+    // but current implementation doesn't use locks so it's safe.
+    let mut writer = SerialWriter;
+    let _ = writer.write_fmt(args);
+}
+
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {
@@ -531,37 +528,8 @@ macro_rules! serial_print {
     };
 }
 
-/// シリアルポートに出力（改行付き）
 #[macro_export]
 macro_rules! serial_println {
     () => ($crate::serial_print!("\n"));
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
-}
-
-/// 内部出力関数
-#[doc(hidden)]
-pub fn _print(args: fmt::Arguments) {
-    use core::fmt::Write;
-
-    // シリアルポートに書き込み
-    unsafe {
-        let _ = (&SERIAL1.port as *const SerialPort as *mut SerialPort)
-            .as_mut()
-            .map(|port| port.write_fmt(args));
-    }
-}
-
-// ============================================================================
-// テスト
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_baud_rate_divisor() {
-        assert_eq!(BaudRate::Baud115200.divisor(), 1);
-        assert_eq!(BaudRate::Baud9600.divisor(), 12);
-    }
 }
