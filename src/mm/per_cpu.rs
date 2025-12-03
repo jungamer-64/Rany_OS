@@ -198,26 +198,45 @@ pub fn is_fsgsbase_enabled() -> bool {
 /// - カーネル初期化時に一度だけ呼ばれる必要がある
 /// - BSP（ブートストラッププロセッサ）から呼ぶ
 pub unsafe fn init_per_cpu(num_cpus: usize) {
+    crate::vga::early_serial_str("[PCPU] init\n");
     INITIALIZED.call_once(|| {
+        crate::vga::early_serial_str("[PCPU] once\n");
         let num_cpus = num_cpus.min(MAX_CPUS);
 
         // FSGSBASEを有効化
         // SAFETY: 初期化時に一度だけ呼ばれる
+        crate::vga::early_serial_str("[PCPU] fsgs\n");
         unsafe {
             enable_fsgsbase();
         }
+        crate::vga::early_serial_str("[PCPU] fsgs ok\n");
 
         // 各CPUのデータを初期化
-        for cpu_id in 0..num_cpus {
+        crate::vga::early_serial_str("[PCPU] loop start\n");
+        let mut i = 0usize;
+        while i < num_cpus {
+            crate::vga::early_serial_str("[PCPU] i=");
+            crate::vga::early_serial_char(b'0' + (i as u8));
+            crate::vga::early_serial_str("\n");
+            
             // SAFETY: 初期化中は他のCPUからアクセスされない
             unsafe {
-                PER_CPU_DATA[cpu_id] = PerCpuData::new(cpu_id);
-                PER_CPU_DATA[cpu_id].set_self_ptr();
+                PER_CPU_DATA[i].cpu_id = i;
+                PER_CPU_DATA[i].self_ptr = 0;
+                PER_CPU_DATA[i].current_task_id = 0;
+                PER_CPU_DATA[i].alloc_count = 0;
+                PER_CPU_DATA[i].dealloc_count = 0;
+                PER_CPU_DATA[i].set_self_ptr();
             }
+            crate::vga::early_serial_str("[PCPU] ok\n");
+            i += 1;
         }
+        crate::vga::early_serial_str("[PCPU] cpus ok\n");
 
         *ACTIVE_CPUS.lock() = num_cpus;
+        crate::vga::early_serial_str("[PCPU] done\n");
     });
+    crate::vga::early_serial_str("[PCPU] exit\n");
 }
 
 /// 現在のCPUのPer-CPUデータを設定

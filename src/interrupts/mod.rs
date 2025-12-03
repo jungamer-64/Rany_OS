@@ -8,12 +8,19 @@
 pub mod exceptions;
 pub mod gdt;
 
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Lazy;
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 /// IDT初期化完了フラグ
 static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// IDTコンテナ（Sync実装のため）
+struct IdtContainer(UnsafeCell<MaybeUninit<InterruptDescriptorTable>>);
+unsafe impl Sync for IdtContainer {}
+
+static IDT_CONTAINER: IdtContainer = IdtContainer(UnsafeCell::new(MaybeUninit::uninit()));
 
 /// ハードウェア割り込みのベースオフセット
 pub const PIC1_OFFSET: u8 = 32;
@@ -41,77 +48,56 @@ pub enum InterruptVector {
     SecondaryAta = PIC2_OFFSET + 7,
 }
 
-/// IDT (Interrupt Descriptor Table)
-static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
-    let mut idt = InterruptDescriptorTable::new();
-
-    // ============================================================
-    // CPU例外ハンドラの設定
-    // ============================================================
-
-    // Division Error (#DE) - Vector 0
-    idt.divide_error
-        .set_handler_fn(exceptions::divide_error_handler);
-
-    // Debug (#DB) - Vector 1
-    idt.debug.set_handler_fn(exceptions::debug_handler);
-
-    // Breakpoint (#BP) - Vector 3
-    idt.breakpoint
-        .set_handler_fn(exceptions::breakpoint_handler);
-
-    // Invalid Opcode (#UD) - Vector 6
-    idt.invalid_opcode
-        .set_handler_fn(exceptions::invalid_opcode_handler);
-
-    // Device Not Available (#NM) - Vector 7
-    idt.device_not_available
-        .set_handler_fn(exceptions::device_not_available_handler);
-
-    // Double Fault (#DF) - Vector 8
-    // 重要: IST (Interrupt Stack Table) を使用
+/// IDTを初期化する関数
+fn init_idt() {
+    crate::vga::early_serial_str("[IDT] init\n");
+    
     unsafe {
-        idt.double_fault
-            .set_handler_fn(exceptions::double_fault_handler)
-            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        let idt_ptr = (*IDT_CONTAINER.0.get()).as_mut_ptr();
+        
+        // IDTをゼロクリア（大きなstructなので慎重に）
+        crate::vga::early_serial_str("[IDT] zero start\n");
+        let idt_bytes = idt_ptr as *mut u8;
+        let idt_size = core::mem::size_of::<InterruptDescriptorTable>();
+        // 小さなチャンクで初期化
+        for i in 0..idt_size {
+            core::ptr::write_volatile(idt_bytes.add(i), 0);
+        }
+        crate::vga::early_serial_str("[IDT] zeroed\n");
+        
+        // IDTはすでにゼロ初期化されているので、ハンドラだけ設定
+        // InterruptDescriptorTable::new()を呼ばずに直接設定
+        let idt = &mut *(idt_ptr as *mut InterruptDescriptorTable);
+        
+        crate::vga::early_serial_str("[IDT] handlers\n");
+        
+        // CPU例外ハンドラの設定
+        idt.divide_error.set_handler_fn(exceptions::divide_error_handler);
+        idt.debug.set_handler_fn(exceptions::debug_handler);
+        idt.breakpoint.set_handler_fn(exceptions::breakpoint_handler);
+        idt.invalid_opcode.set_handler_fn(exceptions::invalid_opcode_handler);
+        idt.device_not_available.set_handler_fn(exceptions::device_not_available_handler);
+        idt.double_fault.set_handler_fn(exceptions::double_fault_handler);
+        idt.general_protection_fault.set_handler_fn(exceptions::general_protection_fault_handler);
+        idt.page_fault.set_handler_fn(exceptions::page_fault_handler);
+        idt.alignment_check.set_handler_fn(exceptions::alignment_check_handler);
+        idt.machine_check.set_handler_fn(exceptions::machine_check_handler);
+        idt.simd_floating_point.set_handler_fn(exceptions::simd_floating_point_handler);
+        
+        crate::vga::early_serial_str("[IDT] hw int\n");
+        
+        // ハードウェア割り込みハンドラの設定
+        idt[InterruptVector::Timer as usize].set_handler_fn(timer_interrupt_handler);
+        idt[InterruptVector::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptVector::Com1 as usize].set_handler_fn(com1_interrupt_handler);
+        
+        crate::vga::early_serial_str("[IDT] load\n");
+        
+        // IDTをロード
+        idt.load();
+        crate::vga::early_serial_str("[IDT] done\n");
     }
-
-    // General Protection Fault (#GP) - Vector 13
-    idt.general_protection_fault
-        .set_handler_fn(exceptions::general_protection_fault_handler);
-
-    // Page Fault (#PF) - Vector 14
-    // IST を使用
-    unsafe {
-        idt.page_fault
-            .set_handler_fn(exceptions::page_fault_handler)
-            .set_stack_index(gdt::PAGE_FAULT_IST_INDEX);
-    }
-
-    // Alignment Check (#AC) - Vector 17
-    idt.alignment_check
-        .set_handler_fn(exceptions::alignment_check_handler);
-
-    // Machine Check (#MC) - Vector 18
-    idt.machine_check
-        .set_handler_fn(exceptions::machine_check_handler);
-
-    // SIMD Floating Point (#XM) - Vector 19
-    idt.simd_floating_point
-        .set_handler_fn(exceptions::simd_floating_point_handler);
-
-    // ============================================================
-    // ハードウェア割り込みハンドラの設定
-    // ============================================================
-
-    idt[InterruptVector::Timer as usize].set_handler_fn(timer_interrupt_handler);
-
-    idt[InterruptVector::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
-
-    idt[InterruptVector::Com1 as usize].set_handler_fn(com1_interrupt_handler);
-
-    idt
-});
+}
 
 // ============================================================================
 // 割り込みシステムの初期化
@@ -124,26 +110,22 @@ static IDT: Lazy<InterruptDescriptorTable> = Lazy::new(|| {
 /// 2. PICの初期化
 /// 3. IDTのロード
 pub fn init() {
-    crate::log!("[INT] Initializing interrupt system...\n");
+    crate::vga::early_serial_str("[INT] init\n");
 
-    // 1. GDT と TSS の初期化（IST スタックを含む）
-    gdt::init_gdt();
-    crate::log!("[INT] GDT/TSS initialized with IST\n");
+    // 1. GDT と TSS の初期化 - 一時的にスキップ
+    // gdt::init_gdt();
+    crate::vga::early_serial_str("[INT] GDT skip\n");
 
     // 2. PIC の初期化（ハードウェア割り込みのリマップ）
+    crate::vga::early_serial_str("[INT] PIC\n");
     init_pic();
-    crate::log!(
-        "[INT] PIC remapped (IRQ 0-15 -> Vector {}-{})\n",
-        PIC1_OFFSET,
-        PIC2_OFFSET + 7
-    );
+    crate::vga::early_serial_str("[INT] PIC done\n");
 
     // 3. IDT のロード
-    IDT.load();
+    crate::vga::early_serial_str("[INT] IDT init\n");
+    init_idt();
     IDT_INITIALIZED.store(true, Ordering::SeqCst);
-    crate::log!("[INT] IDT loaded\n");
-
-    crate::log!("[INT] Interrupt system ready\n");
+    crate::vga::early_serial_str("[INT] ready\n");
 }
 
 /// 割り込みを有効化

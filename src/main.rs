@@ -4,6 +4,7 @@
 
 extern crate alloc;
 
+use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
 
 mod allocator;
@@ -59,24 +60,35 @@ mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 
 // Note: smp module with bootstrap is included in the main smp module
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _start() -> ! {
-    // VGAバッファの初期化（ログ出力用）
+// bootloader 0.9のエントリポイントマクロを使用
+entry_point!(kernel_main);
+
+fn kernel_main(boot_info: &'static BootInfo) -> ! {
+    // 物理メモリオフセットを保存（メモリ初期化前に必要）
+    let phys_mem_offset = boot_info.physical_memory_offset;
+    
+    // VGAバッファの初期化（ログ出力用）- シリアル出力前に初期化
     vga::init();
+    
+    // シリアルデバッグ出力
+    vga::early_serial_str("[BOOT] kernel_main\n");
+    
+    // 物理メモリオフセットを設定
+    memory::set_physical_memory_offset(phys_mem_offset);
+    vga::early_serial_str("[BOOT] phys offset set\n");
 
     print_logo();
-    log!("ExoRust Kernel v0.2.0 - Booting...\n");
 
     // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
     // これにより、メモリ初期化中の例外でデバッグ情報が得られる
-    log!("[INIT] Early interrupt system initialization\n");
+    vga::early_serial_str("[MAIN] INT init\n");
     interrupts::init();
-    log!("[OK] Interrupt system initialized (exceptions enabled)\n");
+    vga::early_serial_str("[MAIN] INT done\n");
 
     // 1. メモリ管理の初期化
-    log!("[INIT] Initializing memory subsystem\n");
+    vga::early_serial_str("[MAIN] MEM init\n");
     memory::init();
-    log!("[OK] Memory subsystem initialized\n");
+    vga::early_serial_str("[MAIN] MEM done\n");
 
     // 2. ドメイン管理システムの初期化
     log!("[INIT] Initializing domain system\n");
@@ -454,14 +466,20 @@ pub extern "C" fn sys_sleep(ms: u64) {
 
 /// ExoRustロゴを表示
 fn print_logo() {
-    log!("================================================================================\n");
-    log!("  ___           ____            _   \n");
-    log!(" | __|_ _____ _|  _ \\ _  _ ___ | |_ \n");
-    log!(" | _|\\ \\ / _ \\ | |_) | || (_-< |  _|\n");
-    log!(" |___/_\\_\\___|_|____/ \\_,_/__/  \\__|\n");
+    let logo = r#"
+  _____           ____            _   
+ | ____|_  _____ |  _ \ _   _ ___| |_ 
+ |  _| \ \/ / _ \| |_) | | | / __| __|
+ | |___ >  < (_) |  _ <| |_| \__ \ |_ 
+ |_____/_/\_\___/|_| \_\\__,_|___/\__|
+"#;
+
+    log!("================================================================================");
+    log!("{}", logo);
     log!("\n");
-    log!("  Single Address Space | Async-First | Zero-Copy\n");
-    log!("  Rust-Based OS Kernel with Memory Safety Guarantee\n");
+    log!("  :: ExoRust Kernel ::      (v0.3.0)");
+    log!("  ----------------------------------------------------------------");
+    log!("  Target: x86_64-unknown-none | Arch: Single Address Space");
     log!("================================================================================\n");
 }
 
