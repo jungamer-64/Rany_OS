@@ -10,11 +10,24 @@
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
 /// 設計書 1.3: Higher Half Kernel Base (SAS)
-pub const PHYSICAL_MEMORY_OFFSET: u64 = 0xFFFF_8000_0000_0000;
+/// ブートローダーから取得した物理メモリオフセット（ランタイム設定）
+static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF_8000_0000_0000);
+
+/// 物理メモリオフセットを取得
+#[inline]
+pub fn physical_memory_offset() -> u64 {
+    PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed)
+}
+
+/// 物理メモリオフセットを設定（ブートローダーから取得した値で初期化）
+pub fn set_physical_memory_offset(offset: u64) {
+    PHYSICAL_MEMORY_OFFSET.store(offset, Ordering::SeqCst);
+}
 
 // ============================================================================
 // Buddy-Based Kernel Heap Allocator
@@ -57,15 +70,18 @@ impl BuddyHeapAllocator {
 
     /// ヒープを初期化
     unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
+        crate::vga::early_serial_str("[BUD] init\n");
         self.heap_start = heap_start;
         self.heap_size = heap_size;
         self.initialized = true;
 
+        crate::vga::early_serial_str("[BUD] clear\n");
         // 全てのフリーリストをクリア
         for list in self.free_lists.iter_mut() {
             *list = None;
         }
 
+        crate::vga::early_serial_str("[BUD] loop\n");
         // ヒープ全体を最大オーダーのブロックとして登録
         let mut current = heap_start;
         let end = heap_start + heap_size;
@@ -77,12 +93,14 @@ impl BuddyHeapAllocator {
             let block_size = Self::order_to_size(order);
 
             if current + block_size <= end {
+                crate::vga::early_serial_str("[BUD] add\n");
                 self.add_to_free_list(current, order);
                 current += block_size;
             } else {
                 break;
             }
         }
+        crate::vga::early_serial_str("[BUD] done\n");
     }
 
     /// サイズから必要なオーダーを計算
@@ -104,12 +122,16 @@ impl BuddyHeapAllocator {
 
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
+        crate::vga::early_serial_str("[F1]");
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr = addr as *mut usize;
+        crate::vga::early_serial_str("[F2]");
         unsafe {
-            *ptr = self.free_lists[order].unwrap_or(0);
+            core::ptr::write_volatile(ptr, self.free_lists[order].unwrap_or(0));
         }
+        crate::vga::early_serial_str("[F3]");
         self.free_lists[order] = Some(addr);
+        crate::vga::early_serial_str("[F4]\n");
     }
 
     /// フリーリストからブロックを取得
@@ -254,13 +276,24 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 #[global_allocator]
 static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 
-/// ヒープの開始アドレスとサイズ
-pub const HEAP_START: u64 = 0x_4444_4444_0000;
+/// ヒープのサイズ
 pub const HEAP_SIZE: usize = 1024 * 1024; // 1 MiB
 
-/// Exchange Heap の設定
-pub const EXCHANGE_HEAP_START: u64 = 0x_5555_5555_0000;
+/// Exchange Heap のサイズ
 pub const EXCHANGE_HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+
+/// ヒープの開始アドレスを計算（ランタイム）
+/// 物理メモリ16MBをPhysical Memory Offsetでマップした仮想アドレス
+#[inline]
+fn heap_start() -> u64 {
+    physical_memory_offset() + 0x100_0000
+}
+
+/// Exchange Heap の開始アドレスを計算（ランタイム）
+#[inline]
+fn exchange_heap_start() -> u64 {
+    physical_memory_offset() + 0x200_0000
+}
 
 /// メモリサブシステム初期化フラグ
 static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
@@ -277,56 +310,66 @@ static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
 pub fn init() {
     use core::sync::atomic::Ordering;
 
+    crate::vga::early_serial_str("[MEM] init start\n");
+
     if MEMORY_INITIALIZED.swap(true, Ordering::SeqCst) {
-        crate::log!("[MEM] Warning: Memory already initialized\n");
+        crate::vga::early_serial_str("[MEM] already init\n");
         return;
     }
 
-    crate::log!("[MEM] Initializing memory subsystem\n");
+    crate::vga::early_serial_str("[MEM] global heap\n");
 
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
     init_global_heap();
-    crate::log!("[MEM] Global heap initialized ({}KB)\n", HEAP_SIZE / 1024);
+    crate::vga::early_serial_str("[MEM] heap done\n");
 
     // 2. Buddy Allocator の初期化（デフォルトのメモリ領域を使用）
     // 注: 本番環境ではブートローダーからメモリマップを取得
+    crate::vga::early_serial_str("[MEM] buddy prep\n");
     let usable_regions = get_default_memory_regions();
-    crate::log!("[MEM] Using {} memory regions\n", usable_regions.len());
+    crate::vga::early_serial_str("[MEM] buddy init\n");
 
     unsafe {
         crate::mm::init_buddy_allocator(&usable_regions);
     }
-    crate::log!("[MEM] Buddy allocator initialized\n");
+    crate::vga::early_serial_str("[MEM] buddy done\n");
 
     // 3. Exchange Heap の初期化（ゼロコピーIPC用）
+    crate::vga::early_serial_str("[MEM] exheap init\n");
     unsafe {
-        crate::mm::init_exchange_heap(EXCHANGE_HEAP_START as usize, EXCHANGE_HEAP_SIZE);
+        crate::mm::init_exchange_heap(exchange_heap_start() as usize, EXCHANGE_HEAP_SIZE);
     }
-    crate::log!(
-        "[MEM] Exchange heap initialized ({}MB)\n",
-        EXCHANGE_HEAP_SIZE / 1024 / 1024
-    );
+    crate::vga::early_serial_str("[MEM] exheap done\n");
 
     // 4. Per-CPU データ構造の初期化（BSPのみ）
+    crate::vga::early_serial_str("[MEM] percpu init\n");
     unsafe {
         crate::mm::init_per_cpu(1);
         crate::mm::setup_current_cpu(0);
     }
-    crate::log!("[MEM] Per-CPU data initialized\n");
+    crate::vga::early_serial_str("[MEM] percpu done\n");
 
     // 5. Per-Core Slab Cache の初期化
+    crate::vga::early_serial_str("[MEM] slab init\n");
     crate::mm::init_per_core_caches(1);
-    crate::log!("[MEM] Per-core slab caches initialized\n");
+    crate::vga::early_serial_str("[MEM] slab done\n");
 
-    // メモリ統計を表示
-    print_memory_stats();
+    // メモリ統計を表示（スキップ）
+    // print_memory_stats();
+    crate::vga::early_serial_str("[MEM] all done\n");
 }
 
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 fn init_global_heap() {
+    crate::vga::early_serial_str("[HEAP] lock\n");
+    let mut guard = ALLOCATOR.0.lock();
+    crate::vga::early_serial_str("[HEAP] init call\n");
+    let start = heap_start();
+    crate::vga::early_serial_str("[HEAP] addr ok\n");
     unsafe {
-        ALLOCATOR.0.lock().init(HEAP_START as usize, HEAP_SIZE);
+        guard.init(start as usize, HEAP_SIZE);
     }
+    crate::vga::early_serial_str("[HEAP] done\n");
 }
 
 /// デフォルトのメモリ領域を取得
@@ -373,13 +416,13 @@ fn print_memory_stats() {
 /// 物理アドレス -> 仮想アドレスへの変換 (O(1))
 #[inline(always)]
 pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
-    VirtAddr::new(phys.as_u64() + PHYSICAL_MEMORY_OFFSET)
+    VirtAddr::new(phys.as_u64() + physical_memory_offset())
 }
 
 /// 仮想アドレス -> 物理アドレスへの変換 (O(1))
 #[inline(always)]
 pub fn virt_to_phys(virt: VirtAddr) -> PhysAddr {
-    PhysAddr::new(virt.as_u64() - PHYSICAL_MEMORY_OFFSET)
+    PhysAddr::new(virt.as_u64() - physical_memory_offset())
 }
 
 /// メモリサブシステムが初期化済みかどうか
