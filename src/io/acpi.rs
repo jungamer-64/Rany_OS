@@ -516,7 +516,9 @@ impl AcpiParser {
         }
         
         self.info = Some(info);
-        Ok(self.info.as_ref().unwrap())
+        // SAFETY: 直前で Some(info) を設定したため、unwrap は必ず成功する。
+        // unwrap_unchecked() でパニックコード生成を回避。
+        Ok(unsafe { self.info.as_ref().unwrap_unchecked() })
     }
     
     /// Parse RSDT (Root System Description Table)

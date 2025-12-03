@@ -606,9 +606,29 @@ impl FanController {
         }
     }
     
-    /// 全ファンを取得
-    pub fn fans(&self) -> Vec<Fan> {
-        self.fans.read().clone()
+    /// 全ファンを取得（ガード付き参照を返す）
+    /// 
+    /// Vec clone() を避け、参照カウント不要のゼロコスト参照を提供。
+    /// 呼び出し側は RwLockReadGuard の寿命内でのみアクセス可能。
+    pub fn fans(&self) -> spin::RwLockReadGuard<Vec<Fan>> {
+        self.fans.read()
+    }
+
+    /// ファンの数を取得（clone不要）
+    #[inline]
+    pub fn fan_count(&self) -> usize {
+        self.fans.read().len()
+    }
+
+    /// コールバックで全ファンを処理（clone不要）
+    pub fn for_each_fan<F>(&self, mut f: F)
+    where
+        F: FnMut(&Fan),
+    {
+        let fans = self.fans.read();
+        for fan in fans.iter() {
+            f(fan);
+        }
     }
 }
 
@@ -891,9 +911,17 @@ impl ThermalManager {
         self.process_zones();
     }
     
-    /// 全センサーを取得
-    pub fn sensors(&self) -> Vec<ThermalSensor> {
-        self.sensors.read().clone()
+    /// 全センサーを取得（ガード付き参照）
+    /// 
+    /// Vec clone() を避け、ゼロコスト参照を提供。
+    pub fn sensors(&self) -> spin::RwLockReadGuard<Vec<ThermalSensor>> {
+        self.sensors.read()
+    }
+
+    /// センサー数を取得（clone不要）
+    #[inline]
+    pub fn sensor_count(&self) -> usize {
+        self.sensors.read().len()
     }
     
     /// 特定のセンサーを取得

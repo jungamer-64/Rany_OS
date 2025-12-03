@@ -24,7 +24,10 @@ pub const MAX_PACKET_SIZE: usize = 1518;
 pub const MTU: usize = 1500;
 
 /// Network interface configuration
-#[derive(Debug, Clone)]
+/// 
+/// Note: 全フィールドが Copy 型のため、Copy を実装。
+/// clone() 呼び出しが単純なビットコピーに最適化される。
+#[derive(Debug, Clone, Copy)]
 pub struct NetworkConfig {
     /// MAC address
     pub mac: MacAddress,
@@ -162,9 +165,30 @@ impl NetworkStack {
         self.current_time.load(Ordering::Acquire)
     }
     
-    /// Get configuration
+    /// Get configuration (full clone - use sparingly)
+    /// 
+    /// Note: この関数は NetworkConfig 全体をクローンするため、
+    /// 頻繁に呼び出す場合は個別のフィールドアクセサを使用すること。
     pub fn config(&self) -> NetworkConfig {
         self.config.lock().clone()
+    }
+
+    /// ICMP echo が有効かチェック（clone不要）
+    #[inline]
+    pub fn icmp_echo_enabled(&self) -> bool {
+        self.config.lock().icmp_echo_enabled
+    }
+
+    /// MAC アドレスを取得（Copy型なのでclone不要）
+    #[inline]
+    pub fn mac_address(&self) -> MacAddress {
+        self.config.lock().mac
+    }
+
+    /// IPv4 アドレスを取得（Copy型なのでclone不要）
+    #[inline]
+    pub fn ipv4_address(&self) -> Ipv4Address {
+        self.config.lock().ipv4.address
     }
     
     /// Update configuration
@@ -262,9 +286,8 @@ impl NetworkStack {
     
     /// Process ICMP packet
     fn process_icmp(&self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
-        let config = self.config.lock().clone();
-        
-        if !config.icmp_echo_enabled {
+        // clone() の代わりに専用アクセサを使用（Copy型の値のみ取得）
+        if !self.icmp_echo_enabled() {
             return;
         }
         
@@ -317,12 +340,13 @@ impl NetworkStack {
     /// Send an ARP reply
     fn send_arp_reply(&self, target_mac: MacAddress, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
-        let config = self.config.lock().clone();
+        // clone() ではなく Copy 型の個別取得
+        let mac = self.mac_address();
         
         // Build Ethernet frame
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
             frame.set_destination(target_mac)
-                 .set_source(config.mac)
+                 .set_source(mac)
                  .set_ether_type(EtherType::Arp);
             
             let payload = frame.payload_mut();
@@ -338,7 +362,8 @@ impl NetworkStack {
     /// Send an ARP request
     pub fn send_arp_request(&self, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
-        let config = self.config.lock().clone();
+        // clone() ではなく Copy 型の個別取得
+        let mac = self.mac_address();
         let current_time = self.current_time();
         
         // Check if we already have a pending request
@@ -352,7 +377,7 @@ impl NetworkStack {
         // Build Ethernet frame (broadcast)
         if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
             frame.set_destination(MacAddress::BROADCAST)
-                 .set_source(config.mac)
+                 .set_source(mac)
                  .set_ether_type(EtherType::Arp);
             
             let payload = frame.payload_mut();

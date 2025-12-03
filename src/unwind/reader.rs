@@ -50,24 +50,34 @@ impl<'a> MemoryReader<'a> {
     }
 
     /// u16を読み込む（リトルエンディアン）
+    /// 
+    /// # Safety Note
+    /// `read_bytes()` が既に長さ検証を行うため、配列変換は常に成功する。
     #[inline]
     pub fn read_u16(&mut self) -> Result<u16, UnwindError> {
         let bytes = self.read_bytes(core::mem::size_of::<u16>())?;
-        Ok(u16::from_le_bytes(bytes.try_into().unwrap()))
+        // SAFETY: read_bytes() が正確に 2 バイトを返すことを保証
+        // try_into() のパニックコードを回避
+        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
     }
 
     /// u32を読み込む（リトルエンディアン）
     #[inline]
     pub fn read_u32(&mut self) -> Result<u32, UnwindError> {
         let bytes = self.read_bytes(core::mem::size_of::<u32>())?;
-        Ok(u32::from_le_bytes(bytes.try_into().unwrap()))
+        // SAFETY: read_bytes() が正確に 4 バイトを返すことを保証
+        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     /// u64を読み込む（リトルエンディアン）
     #[inline]
     pub fn read_u64(&mut self) -> Result<u64, UnwindError> {
         let bytes = self.read_bytes(core::mem::size_of::<u64>())?;
-        Ok(u64::from_le_bytes(bytes.try_into().unwrap()))
+        // SAFETY: read_bytes() が正確に 8 バイトを返すことを保証
+        Ok(u64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
     }
 
     /// i8を読み込む
@@ -81,21 +91,27 @@ impl<'a> MemoryReader<'a> {
     #[inline]
     pub fn read_i16(&mut self) -> Result<i16, UnwindError> {
         let bytes = self.read_bytes(core::mem::size_of::<i16>())?;
-        Ok(i16::from_le_bytes(bytes.try_into().unwrap()))
+        // SAFETY: read_bytes() が正確に 2 バイトを返すことを保証
+        Ok(i16::from_le_bytes([bytes[0], bytes[1]]))
     }
 
     /// i32を読み込む（リトルエンディアン）
     #[inline]
     pub fn read_i32(&mut self) -> Result<i32, UnwindError> {
         let bytes = self.read_bytes(core::mem::size_of::<i32>())?;
-        Ok(i32::from_le_bytes(bytes.try_into().unwrap()))
+        // SAFETY: read_bytes() が正確に 4 バイトを返すことを保証
+        Ok(i32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
     }
 
     /// i64を読み込む（リトルエンディアン）
     #[inline]
     pub fn read_i64(&mut self) -> Result<i64, UnwindError> {
         let bytes = self.read_bytes(core::mem::size_of::<i64>())?;
-        Ok(i64::from_le_bytes(bytes.try_into().unwrap()))
+        // SAFETY: read_bytes() が正確に 8 バイトを返すことを保証
+        Ok(i64::from_le_bytes([
+            bytes[0], bytes[1], bytes[2], bytes[3],
+            bytes[4], bytes[5], bytes[6], bytes[7],
+        ]))
     }
 
     /// ULEB128を読み込む

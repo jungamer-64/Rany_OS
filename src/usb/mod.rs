@@ -788,8 +788,10 @@ impl UsbManager {
         Ok(())
     }
     
-    /// 全デバイスを列挙
-    pub fn enumerate_all(&self) -> UsbResult<Vec<UsbDeviceInfo>> {
+    /// 全デバイスを列挙（キャッシュを更新）
+    /// 
+    /// clone() を避けて所有権を移動。結果は devices() で取得。
+    pub fn enumerate_all(&self) -> UsbResult<()> {
         let mut all_devices = Vec::new();
         
         for controller in &self.controllers {
@@ -810,13 +812,24 @@ impl UsbManager {
             }
         }
         
-        *self.devices.write() = all_devices.clone();
-        Ok(all_devices)
+        // clone() を避けて所有権を移動
+        // キャッシュを更新してから参照カウントなしでアクセス
+        *self.devices.write() = all_devices;
+        // 参照を返す代わりにOkだけ返す（呼び出し側は devices() で取得）
+        Ok(())
     }
     
-    /// デバイス一覧を取得
-    pub fn devices(&self) -> Vec<UsbDeviceInfo> {
-        self.devices.read().clone()
+    /// デバイス一覧を取得（ガード付き参照）
+    /// 
+    /// Vec clone() を避け、ゼロコスト参照を提供。
+    pub fn devices(&self) -> spin::RwLockReadGuard<Vec<UsbDeviceInfo>> {
+        self.devices.read()
+    }
+
+    /// デバイス数を取得（clone不要）
+    #[inline]
+    pub fn device_count(&self) -> usize {
+        self.devices.read().len()
     }
 }
 
