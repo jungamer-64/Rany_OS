@@ -28,10 +28,10 @@
 //! ```
 #![allow(dead_code)]
 
+use alloc::alloc::{Layout, alloc, dealloc};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 use core::sync::atomic::Ordering;
-use alloc::alloc::{alloc, dealloc, Layout};
 use x86_64::PhysAddr;
 
 /// DMAバッファの最小アライメント
@@ -66,7 +66,7 @@ impl DmaState for DeviceOwned {}
 // ============================================================================
 
 /// 型状態付きDMAバッファ
-/// 
+///
 /// `State` パラメータで現在の所有状態を型レベルで追跡し、
 /// 不正なアクセスをコンパイル時に検出する。
 pub struct TypedDmaBuffer<T, State: DmaState> {
@@ -88,20 +88,20 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
     pub fn new(value: T) -> Option<Self> {
         let size = core::mem::size_of::<T>();
         let layout = Layout::from_size_align(size.max(1), DMA_ALIGNMENT).ok()?;
-        
+
         let ptr = unsafe { alloc(layout) };
         if ptr.is_null() {
             return None;
         }
-        
+
         // 値を書き込む
         unsafe {
             core::ptr::write(ptr as *mut T, value);
         }
-        
+
         // 物理アドレスを計算
         let phys_addr = PhysAddr::new(ptr as u64);
-        
+
         Some(Self {
             ptr: unsafe { NonNull::new_unchecked(ptr as *mut T) },
             phys_addr,
@@ -109,45 +109,45 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
             _state: PhantomData,
         })
     }
-    
+
     /// CPUからの読み取り参照を取得
     /// （CpuOwned状態でのみ利用可能）
     pub fn as_ref(&self) -> &T {
         // SAFETY: CpuOwned状態ではCPUがバッファを所有
         unsafe { self.ptr.as_ref() }
     }
-    
+
     /// CPUからの書き込み参照を取得
     /// （CpuOwned状態でのみ利用可能）
     pub fn as_mut(&mut self) -> &mut T {
         // SAFETY: CpuOwned状態ではCPUがバッファを所有
         unsafe { self.ptr.as_mut() }
     }
-    
+
     /// DMA転送を開始（デバイスに所有権を移動）
-    /// 
+    ///
     /// 返り値は所有権が移動したバッファとDMAガード。
     /// ガードがドロップされると自動的にCPUに所有権が戻る。
     pub fn start_dma(self) -> (TypedDmaBuffer<T, DeviceOwned>, TypedDmaGuard<T>) {
         // キャッシュフラッシュ（アーキテクチャ依存）
         core::sync::atomic::fence(Ordering::Release);
-        
+
         let guard = TypedDmaGuard {
             phys_addr: self.phys_addr,
             layout: self.layout,
             _marker: PhantomData,
         };
-        
+
         let buffer = TypedDmaBuffer {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
             layout: self.layout,
             _state: PhantomData,
         };
-        
+
         // selfのDropを防ぐ
         core::mem::forget(self);
-        
+
         (buffer, guard)
     }
 }
@@ -155,22 +155,22 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
 impl<T> TypedDmaBuffer<T, DeviceOwned> {
     // 注意: as_ref() と as_mut() は DeviceOwned では実装しない
     // → コンパイルエラーになる
-    
+
     /// DMA転送完了（CPUに所有権を返却）
     pub fn complete_dma(self) -> TypedDmaBuffer<T, CpuOwned> {
         // キャッシュ無効化（アーキテクチャ依存）
         core::sync::atomic::fence(Ordering::Acquire);
-        
+
         let buffer = TypedDmaBuffer {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
             layout: self.layout,
             _state: PhantomData,
         };
-        
+
         // selfのDropを防ぐ
         core::mem::forget(self);
-        
+
         buffer
     }
 }
@@ -180,7 +180,7 @@ impl<T, State: DmaState> TypedDmaBuffer<T, State> {
     pub fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
     }
-    
+
     /// サイズを取得
     pub fn size(&self) -> usize {
         self.layout.size()
@@ -199,7 +199,7 @@ impl<T, State: DmaState> Drop for TypedDmaBuffer<T, State> {
 }
 
 /// DMA転送のRAIIガード（型安全版）
-/// 
+///
 /// DMA転送中の物理アドレス情報を保持。
 /// ドロップ時に自動的に同期処理を行う。
 pub struct TypedDmaGuard<T> {
@@ -213,7 +213,7 @@ impl<T> TypedDmaGuard<T> {
     pub fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
     }
-    
+
     /// サイズを取得
     pub fn size(&self) -> usize {
         self.layout.size()
@@ -239,19 +239,19 @@ impl TypedDmaSlice<CpuOwned> {
     /// 指定サイズのDMAスライスを割り当て
     pub fn new(size: usize) -> Option<Self> {
         let layout = Layout::from_size_align(size, DMA_ALIGNMENT).ok()?;
-        
+
         let ptr = unsafe { alloc(layout) };
         if ptr.is_null() {
             return None;
         }
-        
+
         // ゼロで初期化
         unsafe {
             core::ptr::write_bytes(ptr, 0, size);
         }
-        
+
         let phys_addr = PhysAddr::new(ptr as u64);
-        
+
         Some(Self {
             ptr: unsafe { NonNull::new_unchecked(ptr) },
             phys_addr,
@@ -260,21 +260,21 @@ impl TypedDmaSlice<CpuOwned> {
             _state: PhantomData,
         })
     }
-    
+
     /// スライスとして取得（CPU所有時のみ）
     pub fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.size) }
     }
-    
+
     /// 可変スライスとして取得（CPU所有時のみ）
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size) }
     }
-    
+
     /// DMA転送を開始
     pub fn start_dma(self) -> TypedDmaSlice<DeviceOwned> {
         core::sync::atomic::fence(Ordering::Release);
-        
+
         let result = TypedDmaSlice {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
@@ -282,7 +282,7 @@ impl TypedDmaSlice<CpuOwned> {
             layout: self.layout,
             _state: PhantomData,
         };
-        
+
         core::mem::forget(self);
         result
     }
@@ -292,7 +292,7 @@ impl TypedDmaSlice<DeviceOwned> {
     /// DMA転送完了
     pub fn complete_dma(self) -> TypedDmaSlice<CpuOwned> {
         core::sync::atomic::fence(Ordering::Acquire);
-        
+
         let result = TypedDmaSlice {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
@@ -300,7 +300,7 @@ impl TypedDmaSlice<DeviceOwned> {
             layout: self.layout,
             _state: PhantomData,
         };
-        
+
         core::mem::forget(self);
         result
     }
@@ -311,12 +311,12 @@ impl<State: DmaState> TypedDmaSlice<State> {
     pub fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
     }
-    
+
     /// サイズを取得
     pub fn len(&self) -> usize {
         self.size
     }
-    
+
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
         self.size == 0
@@ -362,7 +362,7 @@ impl TypedSgList<CpuOwned> {
             _state: PhantomData,
         }
     }
-    
+
     /// バッファを追加
     pub fn add_buffer(&mut self, size: usize) -> Option<usize> {
         let buffer = TypedDmaSlice::new(size)?;
@@ -371,33 +371,31 @@ impl TypedSgList<CpuOwned> {
             size: size as u32,
             flags: 0,
         };
-        
+
         let index = self.entries.len();
         self.entries.push(entry);
         self.buffers.push(buffer);
-        
+
         Some(index)
     }
-    
+
     /// バッファにアクセス
     pub fn buffer(&self, index: usize) -> Option<&TypedDmaSlice<CpuOwned>> {
         self.buffers.get(index)
     }
-    
+
     /// バッファに可変アクセス
     pub fn buffer_mut(&mut self, index: usize) -> Option<&mut TypedDmaSlice<CpuOwned>> {
         self.buffers.get_mut(index)
     }
-    
+
     /// 全バッファをデバイスに転送
     pub fn start_dma(self) -> TypedSgList<DeviceOwned> {
         core::sync::atomic::fence(Ordering::Release);
-        
-        let buffers: alloc::vec::Vec<TypedDmaSlice<DeviceOwned>> = self.buffers
-            .into_iter()
-            .map(|b| b.start_dma())
-            .collect();
-        
+
+        let buffers: alloc::vec::Vec<TypedDmaSlice<DeviceOwned>> =
+            self.buffers.into_iter().map(|b| b.start_dma()).collect();
+
         TypedSgList {
             entries: self.entries,
             buffers,
@@ -410,12 +408,10 @@ impl TypedSgList<DeviceOwned> {
     /// 全バッファをCPUに返却
     pub fn complete_dma(self) -> TypedSgList<CpuOwned> {
         core::sync::atomic::fence(Ordering::Acquire);
-        
-        let buffers: alloc::vec::Vec<TypedDmaSlice<CpuOwned>> = self.buffers
-            .into_iter()
-            .map(|b| b.complete_dma())
-            .collect();
-        
+
+        let buffers: alloc::vec::Vec<TypedDmaSlice<CpuOwned>> =
+            self.buffers.into_iter().map(|b| b.complete_dma()).collect();
+
         TypedSgList {
             entries: self.entries,
             buffers,
@@ -429,12 +425,12 @@ impl<State: DmaState> TypedSgList<State> {
     pub fn len(&self) -> usize {
         self.entries.len()
     }
-    
+
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    
+
     /// エントリのスライスを取得
     pub fn entries(&self) -> &[SgEntry] {
         &self.entries
@@ -450,46 +446,46 @@ impl Default for TypedSgList<CpuOwned> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_typed_dma_buffer() {
         let buffer = TypedDmaBuffer::<u32, CpuOwned>::new(42).expect("Failed to allocate");
-        
+
         // CPU所有状態ではアクセス可能
         assert_eq!(*buffer.as_ref(), 42);
-        
+
         // DMA転送開始
         let (device_buffer, guard) = buffer.start_dma();
         let _phys = guard.phys_addr();
-        
+
         // DeviceOwned状態では as_ref() がコンパイルエラーになる
         // （ここでは確認のためコメントアウト）
         // device_buffer.as_ref(); // ERROR!
-        
+
         // DMA転送完了
         let buffer = device_buffer.complete_dma();
         assert_eq!(*buffer.as_ref(), 42);
     }
-    
+
     #[test]
     fn test_typed_dma_slice() {
         let mut slice = TypedDmaSlice::<CpuOwned>::new(4096).expect("Failed to allocate");
-        
+
         // データを書き込み
         {
             let s = slice.as_mut_slice();
             s[0] = 0xDE;
             s[1] = 0xAD;
         }
-        
+
         // 確認
         assert_eq!(slice.as_slice()[0], 0xDE);
         assert_eq!(slice.as_slice()[1], 0xAD);
-        
+
         // DMA転送
         let device_slice = slice.start_dma();
         // device_slice.as_slice(); // ERROR! DeviceOwnedでは不可
-        
+
         let cpu_slice = device_slice.complete_dma();
         assert_eq!(cpu_slice.as_slice()[0], 0xDE);
     }

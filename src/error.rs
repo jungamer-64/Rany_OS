@@ -1,5 +1,5 @@
 //! 統一エラーハンドリングモジュール
-//! 
+//!
 //! カーネル全体で使用される統一エラー型を定義し、
 //! 各サブシステムのエラーから変換を提供します。
 
@@ -474,7 +474,10 @@ mod tests {
     fn test_error_conversion() {
         let mem_err = MemoryError::OutOfMemory;
         let kernel_err: KernelError = mem_err.into();
-        assert!(matches!(kernel_err, KernelError::Memory(MemoryError::OutOfMemory)));
+        assert!(matches!(
+            kernel_err,
+            KernelError::Memory(MemoryError::OutOfMemory)
+        ));
     }
 
     #[test]

@@ -3,11 +3,11 @@
 //! ExoRust SAS アーキテクチャにおけるメモリマッピング
 //! ファイルやデバイスを直接メモリにマップ
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool, Ordering};
-use core::ptr::NonNull;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// マッピングアドレス (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -118,7 +118,9 @@ impl Protection {
     }
 
     pub fn union(&self, other: Self) -> Self {
-        Self { bits: self.bits | other.bits }
+        Self {
+            bits: self.bits | other.bits,
+        }
     }
 }
 
@@ -265,17 +267,20 @@ impl MemoryMapping {
         flags: MappingFlags,
     ) -> Result<Self, MmapError> {
         let aligned_size = size.page_aligned();
-        
+
         let mut memory = Vec::new();
-        memory.try_reserve(aligned_size.as_usize())
+        memory
+            .try_reserve(aligned_size.as_usize())
             .map_err(|_| MmapError::OutOfMemory)?;
-        
+
         if flags.zero_init {
             memory.resize(aligned_size.as_usize(), 0);
         } else {
-            unsafe { memory.set_len(aligned_size.as_usize()); }
+            unsafe {
+                memory.set_len(aligned_size.as_usize());
+            }
         }
-        
+
         Ok(Self {
             address,
             size: aligned_size,
@@ -303,13 +308,14 @@ impl MemoryMapping {
         }
 
         let aligned_size = size.page_aligned();
-        
+
         // TODO: 実際のファイル読み込み
         let mut memory = Vec::new();
-        memory.try_reserve(aligned_size.as_usize())
+        memory
+            .try_reserve(aligned_size.as_usize())
             .map_err(|_| MmapError::OutOfMemory)?;
         memory.resize(aligned_size.as_usize(), 0);
-        
+
         Ok(Self {
             address,
             size: aligned_size,
@@ -341,14 +347,14 @@ impl MemoryMapping {
             flags: MappingFlags {
                 shared: true,
                 private: false,
-                locked: true,  // デバイスメモリはロック
+                locked: true, // デバイスメモリはロック
                 ..Default::default()
             },
             mapping_type: MappingType::Device {
                 device: alloc::string::String::from(device),
                 phys_addr,
             },
-            memory: None,  // デバイスメモリは直接アクセス
+            memory: None, // デバイスメモリは直接アクセス
             ref_count: AtomicUsize::new(1),
             access_count: AtomicU64::new(0),
             dirty: AtomicBool::new(false),
@@ -372,7 +378,7 @@ impl MemoryMapping {
 
     /// アドレスが範囲内かチェック
     pub fn contains(&self, addr: MappedAddress) -> bool {
-        addr.as_usize() >= self.address.as_usize() 
+        addr.as_usize() >= self.address.as_usize()
             && addr.as_usize() < self.end_address().as_usize()
     }
 
@@ -409,14 +415,14 @@ impl MemoryMapping {
         }
 
         let mem = self.memory.as_ref().ok_or(MmapError::NotSupported)?;
-        
+
         if offset >= mem.len() {
             return Ok(0);
         }
 
         let to_read = buf.len().min(mem.len() - offset);
         buf[..to_read].copy_from_slice(&mem[offset..offset + to_read]);
-        
+
         self.access_count.fetch_add(1, Ordering::Relaxed);
         Ok(to_read)
     }
@@ -428,14 +434,14 @@ impl MemoryMapping {
         }
 
         let mem = self.memory.as_mut().ok_or(MmapError::NotSupported)?;
-        
+
         if offset >= mem.len() {
             return Ok(0);
         }
 
         let to_write = data.len().min(mem.len() - offset);
         mem[offset..offset + to_write].copy_from_slice(&data[..to_write]);
-        
+
         self.dirty.store(true, Ordering::Release);
         self.access_count.fetch_add(1, Ordering::Relaxed);
         Ok(to_write)
@@ -514,9 +520,9 @@ impl MmapManager {
     fn find_free_address(&self, size: MappingSize) -> Option<MappedAddress> {
         let aligned_size = size.page_aligned().as_usize();
         let mappings = self.mappings.read();
-        
+
         let mut current = self.next_addr.load(Ordering::Acquire);
-        
+
         loop {
             if current + aligned_size > self.max_addr {
                 return None;
@@ -527,14 +533,15 @@ impl MmapManager {
                 let m = mapping.read();
                 let m_start = m.address().as_usize();
                 let m_end = m.end_address().as_usize();
-                
+
                 // 重複チェック
                 !(current + aligned_size <= m_start || current >= m_end)
             });
 
             if !overlaps {
                 // 次回のための更新
-                self.next_addr.store(current + aligned_size, Ordering::Release);
+                self.next_addr
+                    .store(current + aligned_size, Ordering::Release);
                 return Some(MappedAddress::new(current));
             }
 
@@ -570,7 +577,7 @@ impl MmapManager {
 
         let mapping = MemoryMapping::anonymous(address, size, protection, flags)?;
         let mapping_size = mapping.size().as_usize();
-        
+
         {
             let mut mappings = self.mappings.write();
             mappings.insert(address.as_usize(), Arc::new(spin::RwLock::new(mapping)));
@@ -609,7 +616,7 @@ impl MmapManager {
 
         let mapping = MemoryMapping::file(address, size, protection, flags, path, offset)?;
         let mapping_size = mapping.size().as_usize();
-        
+
         {
             let mut mappings = self.mappings.write();
             mappings.insert(address.as_usize(), Arc::new(spin::RwLock::new(mapping)));
@@ -622,14 +629,16 @@ impl MmapManager {
     /// マッピングを解除
     pub fn munmap(&self, addr: MappedAddress, size: MappingSize) -> Result<(), MmapError> {
         let mut mappings = self.mappings.write();
-        
+
         // 該当するマッピングを探す
-        let mapping = mappings.remove(&addr.as_usize())
+        let mapping = mappings
+            .remove(&addr.as_usize())
             .ok_or(MmapError::NotMapped)?;
-        
+
         let mapping_size = mapping.read().size().as_usize();
-        self.total_unmapped.fetch_add(mapping_size, Ordering::Relaxed);
-        
+        self.total_unmapped
+            .fetch_add(mapping_size, Ordering::Relaxed);
+
         Ok(())
     }
 
@@ -641,10 +650,9 @@ impl MmapManager {
         protection: Protection,
     ) -> Result<(), MmapError> {
         let mappings = self.mappings.read();
-        
-        let mapping = mappings.get(&addr.as_usize())
-            .ok_or(MmapError::NotMapped)?;
-        
+
+        let mapping = mappings.get(&addr.as_usize()).ok_or(MmapError::NotMapped)?;
+
         let mut m = mapping.write();
         m.set_protection(protection)
     }
@@ -652,10 +660,9 @@ impl MmapManager {
     /// 同期
     pub fn msync(&self, addr: MappedAddress, size: MappingSize) -> Result<(), MmapError> {
         let mappings = self.mappings.read();
-        
-        let mapping = mappings.get(&addr.as_usize())
-            .ok_or(MmapError::NotMapped)?;
-        
+
+        let mapping = mappings.get(&addr.as_usize()).ok_or(MmapError::NotMapped)?;
+
         let mut m = mapping.write();
         m.sync()
     }
@@ -663,7 +670,7 @@ impl MmapManager {
     /// マッピングを取得
     pub fn get_mapping(&self, addr: MappedAddress) -> Option<Arc<spin::RwLock<MemoryMapping>>> {
         let mappings = self.mappings.read();
-        
+
         // 完全一致
         if let Some(m) = mappings.get(&addr.as_usize()) {
             return Some(m.clone());
@@ -684,7 +691,7 @@ impl MmapManager {
     pub fn info(&self, addr: MappedAddress) -> Option<MappingInfo> {
         let mapping = self.get_mapping(addr)?;
         let m = mapping.read();
-        
+
         Some(MappingInfo {
             address: m.address(),
             size: m.size(),
@@ -699,7 +706,7 @@ impl MmapManager {
     pub fn list_mappings(&self) -> Vec<MappingInfo> {
         let mappings = self.mappings.read();
         let mut result = Vec::new();
-        
+
         for (_, mapping) in mappings.iter() {
             let m = mapping.read();
             result.push(MappingInfo {
@@ -711,7 +718,7 @@ impl MmapManager {
                 is_dirty: m.is_dirty(),
             });
         }
-        
+
         result
     }
 
@@ -771,7 +778,11 @@ pub fn munmap(addr: MappedAddress, size: MappingSize) -> Result<(), MmapError> {
 }
 
 /// mprotect() 相当
-pub fn mprotect(addr: MappedAddress, size: MappingSize, protection: Protection) -> Result<(), MmapError> {
+pub fn mprotect(
+    addr: MappedAddress,
+    size: MappingSize,
+    protection: Protection,
+) -> Result<(), MmapError> {
     MMAP_MANAGER.mprotect(addr, size, protection)
 }
 
@@ -791,7 +802,8 @@ mod tests {
             MappingSize::new(4096),
             Protection::READ_WRITE,
             MappingFlags::anonymous_private(),
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(addr.is_page_aligned());
 
@@ -805,7 +817,8 @@ mod tests {
             MappingSize::new(8192),
             Protection::READ_WRITE,
             MappingFlags::anonymous_private(),
-        ).unwrap();
+        )
+        .unwrap();
 
         let mapping = MMAP_MANAGER.get_mapping(addr).unwrap();
         {

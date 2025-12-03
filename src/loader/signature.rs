@@ -6,7 +6,7 @@
 //! # セル署名検証システム
 //!
 //! ExoRustのセキュリティモデルにおいて、セルの署名検証は重要な役割を果たす。
-//! 
+//!
 //! ## 署名フロー
 //! 1. コンパイラがセルをビルド時に署名を生成
 //! 2. ローダーがセルをロード時に署名を検証
@@ -19,10 +19,10 @@
 #![allow(dead_code)]
 #![allow(unexpected_cfgs)]
 
-use alloc::string::String;
-use alloc::vec::Vec;
-use alloc::vec;
 use super::LoadError;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
 /// 署名セクションの名前（ELFセクション）
 const SIGNATURE_SECTION_NAME: &[u8] = b".exorust_sig";
@@ -86,7 +86,7 @@ impl CellSignature {
             && self.signature.len() == ED25519_SIGNATURE_SIZE
             && self.public_key != [0; 32]
     }
-    
+
     /// 開発モード用の署名かどうか
     pub fn is_dev_signature(&self) -> bool {
         self.compiler_version == "dev" || self.signature.is_empty()
@@ -155,7 +155,7 @@ pub enum VerificationError {
 }
 
 /// 署名検証器
-/// 
+///
 /// 信頼された公開鍵のリストを保持し、
 /// セル署名を検証する。
 pub struct SignatureVerifier {
@@ -189,7 +189,7 @@ impl SignatureVerifier {
             stats: VerifierStats::default(),
         }
     }
-    
+
     /// 本番モードの検証器を作成（開発モード無効）
     pub fn production() -> Self {
         Self {
@@ -198,24 +198,24 @@ impl SignatureVerifier {
             stats: VerifierStats::default(),
         }
     }
-    
+
     /// 信頼された公開鍵を追加
     pub fn add_trusted_key(&mut self, key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
         if !self.trusted_keys.contains(&key) {
             self.trusted_keys.push(key);
         }
     }
-    
+
     /// 開発モードを許可/禁止
     pub fn set_dev_mode(&mut self, allow: bool) {
         self.allow_dev_mode = allow;
     }
-    
+
     /// 公開鍵が信頼されているかチェック
     pub fn is_trusted_key(&self, key: &[u8; ED25519_PUBLIC_KEY_SIZE]) -> bool {
         self.trusted_keys.contains(key)
     }
-    
+
     /// 署名を検証
     pub fn verify(
         &mut self,
@@ -223,43 +223,43 @@ impl SignatureVerifier {
         data: &[u8],
     ) -> Result<(), VerificationError> {
         self.stats.verification_attempts += 1;
-        
+
         // 開発モードのバイパス（設定されている場合のみ）
         if self.allow_dev_mode && signature.is_dev_signature() {
             self.stats.dev_mode_bypasses += 1;
             self.stats.successful_verifications += 1;
             return Ok(());
         }
-        
+
         // 1. 署名形式のチェック
         if !signature.is_well_formed() {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::MalformedSignature);
         }
-        
+
         // 2. 公開鍵の信頼チェック
         if !self.trusted_keys.is_empty() && !self.is_trusted_key(&signature.public_key) {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::UntrustedKey);
         }
-        
+
         // 3. ハッシュ検証
         let computed_hash = self.compute_hash(data);
         if computed_hash != signature.hash {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::HashMismatch);
         }
-        
+
         // 4. Ed25519署名検証
         if !self.verify_ed25519(&signature.public_key, &signature.hash, &signature.signature) {
             self.stats.failed_verifications += 1;
             return Err(VerificationError::InvalidSignature);
         }
-        
+
         self.stats.successful_verifications += 1;
         Ok(())
     }
-    
+
     /// SHA-256ハッシュを計算
     fn compute_hash(&self, data: &[u8]) -> [u8; 32] {
         // TODO: 実際のSHA-256実装
@@ -270,39 +270,34 @@ impl SignatureVerifier {
         }
         hash
     }
-    
+
     /// Ed25519署名を検証
-    /// 
+    ///
     /// TODO: 実際のEd25519実装（ed25519-dalek等）
-    fn verify_ed25519(
-        &self,
-        public_key: &[u8; 32],
-        message: &[u8; 32],
-        signature: &[u8],
-    ) -> bool {
+    fn verify_ed25519(&self, public_key: &[u8; 32], message: &[u8; 32], signature: &[u8]) -> bool {
         // 実装予定: ed25519_verify(public_key, message, signature)
         // 現在はプレースホルダー
-        
+
         // 基本的な形式チェック
         if signature.len() != ED25519_SIGNATURE_SIZE {
             return false;
         }
-        
+
         // 公開鍵が空でないこと
         if public_key.iter().all(|&b| b == 0) {
             return false;
         }
-        
+
         // メッセージが空でないこと
         if message.iter().all(|&b| b == 0) {
             return false;
         }
-        
+
         // TODO: 実際のEd25519検証
         // 現在は形式チェックのみでパス
         true
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> &VerifierStats {
         &self.stats
@@ -325,7 +320,7 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
     if elf_data.len() < 64 {
         return Err(LoadError::InvalidFormat("ELF too small".into()));
     }
-    
+
     // 署名セクションを探す
     if let Some(sig_data) = find_signature_section(elf_data) {
         parse_signature_section(sig_data)
@@ -335,7 +330,7 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
         {
             Err(LoadError::InvalidSignature)
         }
-        
+
         #[cfg(not(feature = "require_signatures"))]
         {
             // 開発モード: 署名なしでもロードを許可（ただし制限付き）
@@ -358,130 +353,131 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
 fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
     use super::elf::{Elf64Header, Elf64SectionHeader};
     use core::mem;
-    
+
     if elf_data.len() < mem::size_of::<Elf64Header>() {
         return None;
     }
-    
-    let header: Elf64Header = unsafe {
-        core::ptr::read(elf_data.as_ptr() as *const Elf64Header)
-    };
-    
+
+    let header: Elf64Header = unsafe { core::ptr::read(elf_data.as_ptr() as *const Elf64Header) };
+
     // ELFマジック検証
     if &header.e_ident[0..4] != b"\x7FELF" {
         return None;
     }
-    
+
     // 文字列テーブルセクションを取得
-    let shstrtab_offset = header.e_shoff as usize
-        + (header.e_shstrndx as usize * header.e_shentsize as usize);
-    
+    let shstrtab_offset =
+        header.e_shoff as usize + (header.e_shstrndx as usize * header.e_shentsize as usize);
+
     if shstrtab_offset + mem::size_of::<Elf64SectionHeader>() > elf_data.len() {
         return None;
     }
-    
-    let shstrtab_sh: Elf64SectionHeader = unsafe {
-        core::ptr::read(elf_data.as_ptr().add(shstrtab_offset) as *const _)
-    };
-    
+
+    let shstrtab_sh: Elf64SectionHeader =
+        unsafe { core::ptr::read(elf_data.as_ptr().add(shstrtab_offset) as *const _) };
+
     let shstrtab_start = shstrtab_sh.sh_offset as usize;
     let shstrtab_end = shstrtab_start + shstrtab_sh.sh_size as usize;
-    
+
     if shstrtab_end > elf_data.len() {
         return None;
     }
-    
+
     let shstrtab = &elf_data[shstrtab_start..shstrtab_end];
-    
+
     // 全セクションを走査して署名セクションを探す
     for i in 0..header.e_shnum {
-        let sh_offset = header.e_shoff as usize
-            + (i as usize * header.e_shentsize as usize);
-        
+        let sh_offset = header.e_shoff as usize + (i as usize * header.e_shentsize as usize);
+
         if sh_offset + mem::size_of::<Elf64SectionHeader>() > elf_data.len() {
             continue;
         }
-        
-        let sh: Elf64SectionHeader = unsafe {
-            core::ptr::read(elf_data.as_ptr().add(sh_offset) as *const _)
-        };
-        
+
+        let sh: Elf64SectionHeader =
+            unsafe { core::ptr::read(elf_data.as_ptr().add(sh_offset) as *const _) };
+
         // セクション名を取得
         let name_offset = sh.sh_name as usize;
         if name_offset >= shstrtab.len() {
             continue;
         }
-        
+
         // 名前を比較
-        let name_end = shstrtab[name_offset..].iter()
+        let name_end = shstrtab[name_offset..]
+            .iter()
             .position(|&c| c == 0)
             .map(|p| name_offset + p)
             .unwrap_or(shstrtab.len());
-        
+
         let section_name = &shstrtab[name_offset..name_end];
-        
+
         if section_name == SIGNATURE_SECTION_NAME {
             let data_start = sh.sh_offset as usize;
             let data_end = data_start + sh.sh_size as usize;
-            
+
             if data_end <= elf_data.len() {
                 return Some(&elf_data[data_start..data_end]);
             }
         }
     }
-    
+
     None
 }
 
 /// 署名セクションをパース
 fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
     use core::mem;
-    
+
     if data.len() < mem::size_of::<SignatureHeader>() {
-        return Err(LoadError::InvalidFormat("Signature section too small".into()));
+        return Err(LoadError::InvalidFormat(
+            "Signature section too small".into(),
+        ));
     }
-    
-    let header: SignatureHeader = unsafe {
-        core::ptr::read(data.as_ptr() as *const SignatureHeader)
-    };
-    
+
+    let header: SignatureHeader =
+        unsafe { core::ptr::read(data.as_ptr() as *const SignatureHeader) };
+
     // マジックナンバーの検証
     if header.magic != SIGNATURE_MAGIC {
         return Err(LoadError::InvalidSignature);
     }
-    
+
     // バージョンの検証
     if header.version != SIGNATURE_VERSION {
-        return Err(LoadError::InvalidFormat("Unsupported signature version".into()));
+        return Err(LoadError::InvalidFormat(
+            "Unsupported signature version".into(),
+        ));
     }
-    
+
     // コンパイラバージョンを読み取り
-    let compiler_version = if header.compiler_version_len > 0 {
-        let start = header.compiler_version_offset as usize;
-        let end = start + header.compiler_version_len as usize;
-        
-        if end > data.len() {
-            return Err(LoadError::InvalidFormat("Invalid compiler version offset".into()));
-        }
-        
-        String::from(
-            core::str::from_utf8(&data[start..end])
-                .map_err(|_| LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into()))?
-        )
-    } else {
-        String::new()
-    };
-    
+    let compiler_version =
+        if header.compiler_version_len > 0 {
+            let start = header.compiler_version_offset as usize;
+            let end = start + header.compiler_version_len as usize;
+
+            if end > data.len() {
+                return Err(LoadError::InvalidFormat(
+                    "Invalid compiler version offset".into(),
+                ));
+            }
+
+            String::from(core::str::from_utf8(&data[start..end]).map_err(|_| {
+                LoadError::InvalidFormat("Invalid UTF-8 in compiler version".into())
+            })?)
+        } else {
+            String::new()
+        };
+
     // 署名データを読み取り
     let sig_start = mem::size_of::<SignatureHeader>();
     let sig_end = sig_start + header.signature_len as usize;
-    
+
     if sig_end > data.len() {
         return Err(LoadError::InvalidFormat("Invalid signature data".into()));
     }
-    
+
     let signature = data[sig_start..sig_end].to_vec();
-    
+
     Ok(CellSignature {
         version: header.version,
         contains_unsafe: (header.flags & flags::CONTAINS_UNSAFE) != 0,
@@ -530,12 +526,12 @@ pub fn add_trusted_key(key: [u8; ED25519_PUBLIC_KEY_SIZE]) {
 /// 署名を検証（グローバル検証器を使用）
 pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
     let mut verifier_guard = GLOBAL_VERIFIER.lock();
-    
+
     // 未初期化の場合は自動初期化
     if verifier_guard.is_none() {
         *verifier_guard = Some(SignatureVerifier::new());
     }
-    
+
     if let Some(verifier) = verifier_guard.as_mut() {
         verifier.verify(signature, data).is_ok()
     } else {
@@ -557,7 +553,7 @@ pub fn get_verifier_stats() -> Option<VerifierStats> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_default_signature() {
         let sig = CellSignature::default();
@@ -565,39 +561,39 @@ mod tests {
         assert!(!sig.contains_unsafe);
         assert!(sig.uses_framework_only);
     }
-    
+
     #[test]
     fn test_well_formed_signature() {
         let mut sig = CellSignature::default();
         // デフォルトは不完全
         assert!(!sig.is_well_formed());
-        
+
         // 完全な署名
         sig.signature = vec![0u8; ED25519_SIGNATURE_SIZE];
         sig.public_key = [1u8; 32];
         assert!(sig.is_well_formed());
     }
-    
+
     #[test]
     fn test_verifier_dev_mode() {
         let mut verifier = SignatureVerifier::new();
         verifier.set_dev_mode(true);
-        
+
         let mut sig = CellSignature::default();
         sig.compiler_version = "dev".into();
-        
+
         // 開発モードではバイパス
         assert!(verifier.verify(&sig, &[]).is_ok());
         assert_eq!(verifier.stats().dev_mode_bypasses, 1);
     }
-    
+
     #[test]
     fn test_verifier_production_mode() {
         let mut verifier = SignatureVerifier::production();
-        
+
         let mut sig = CellSignature::default();
         sig.compiler_version = "dev".into();
-        
+
         // 本番モードでは不完全な署名は拒否
         assert_eq!(
             verifier.verify(&sig, &[]),
@@ -605,4 +601,3 @@ mod tests {
         );
     }
 }
-

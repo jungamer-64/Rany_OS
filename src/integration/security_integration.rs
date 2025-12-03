@@ -4,9 +4,9 @@
 
 extern crate alloc;
 
+use super::device_manager::{DeviceInfo, DeviceManager, DeviceType};
 use alloc::vec;
 use alloc::vec::Vec;
-use super::device_manager::{DeviceManager, DeviceInfo, DeviceType};
 
 /// Security context for a device
 #[derive(Debug, Clone)]
@@ -51,14 +51,26 @@ pub struct SecurityLabel {
 
 impl SecurityLabel {
     /// System level (highest)
-    pub const SYSTEM: Self = Self { level: 3, categories: 0xFFFFFFFFFFFFFFFF };
+    pub const SYSTEM: Self = Self {
+        level: 3,
+        categories: 0xFFFFFFFFFFFFFFFF,
+    };
     /// Driver level
-    pub const DRIVER: Self = Self { level: 2, categories: 0 };
+    pub const DRIVER: Self = Self {
+        level: 2,
+        categories: 0,
+    };
     /// Application level
-    pub const APPLICATION: Self = Self { level: 1, categories: 0 };
+    pub const APPLICATION: Self = Self {
+        level: 1,
+        categories: 0,
+    };
     /// Untrusted level (lowest)
-    pub const UNTRUSTED: Self = Self { level: 0, categories: 0 };
-    
+    pub const UNTRUSTED: Self = Self {
+        level: 0,
+        categories: 0,
+    };
+
     /// Check if this label dominates another
     pub fn dominates(&self, other: &Self) -> bool {
         self.level >= other.level && (self.categories & other.categories) == other.categories
@@ -78,74 +90,51 @@ impl SecurityIntegration {
             device_contexts: Vec::new(),
         }
     }
-    
+
     /// Bind all devices to security contexts
     pub fn bind_all_devices(&mut self, device_manager: &DeviceManager) {
         self.device_contexts.clear();
-        
+
         for device in device_manager.all() {
             let context = self.create_context_for_device(device);
             self.device_contexts.push(context);
         }
     }
-    
+
     /// Create security context for a device
     fn create_context_for_device(&self, device: &DeviceInfo) -> DeviceSecurityContext {
         let (capabilities, label) = match device.device_type {
-            DeviceType::Storage => {
-                (
-                    vec![
-                        DeviceCapability::DmaAccess,
-                        DeviceCapability::InterruptSource,
-                        DeviceCapability::StorageAccess,
-                    ],
-                    SecurityLabel::DRIVER,
-                )
-            }
-            DeviceType::Network => {
-                (
-                    vec![
-                        DeviceCapability::DmaAccess,
-                        DeviceCapability::InterruptSource,
-                        DeviceCapability::NetworkAccess,
-                    ],
-                    SecurityLabel::DRIVER,
-                )
-            }
-            DeviceType::Display => {
-                (
-                    vec![
-                        DeviceCapability::DmaAccess,
-                        DeviceCapability::DisplayAccess,
-                    ],
-                    SecurityLabel::DRIVER,
-                )
-            }
-            DeviceType::Usb => {
-                (
-                    vec![
-                        DeviceCapability::DmaAccess,
-                        DeviceCapability::InterruptSource,
-                    ],
-                    SecurityLabel::DRIVER,
-                )
-            }
-            DeviceType::Bridge => {
-                (
-                    vec![
-                        DeviceCapability::PciConfig,
-                    ],
-                    SecurityLabel::SYSTEM,
-                )
-            }
-            _ => {
-                (
-                    vec![],
-                    SecurityLabel::UNTRUSTED,
-                )
-            }
+            DeviceType::Storage => (
+                vec![
+                    DeviceCapability::DmaAccess,
+                    DeviceCapability::InterruptSource,
+                    DeviceCapability::StorageAccess,
+                ],
+                SecurityLabel::DRIVER,
+            ),
+            DeviceType::Network => (
+                vec![
+                    DeviceCapability::DmaAccess,
+                    DeviceCapability::InterruptSource,
+                    DeviceCapability::NetworkAccess,
+                ],
+                SecurityLabel::DRIVER,
+            ),
+            DeviceType::Display => (
+                vec![DeviceCapability::DmaAccess, DeviceCapability::DisplayAccess],
+                SecurityLabel::DRIVER,
+            ),
+            DeviceType::Usb => (
+                vec![
+                    DeviceCapability::DmaAccess,
+                    DeviceCapability::InterruptSource,
+                ],
+                SecurityLabel::DRIVER,
+            ),
+            DeviceType::Bridge => (vec![DeviceCapability::PciConfig], SecurityLabel::SYSTEM),
+            _ => (vec![], SecurityLabel::UNTRUSTED),
         };
-        
+
         DeviceSecurityContext {
             device_id: device.id,
             required_capabilities: capabilities,
@@ -153,15 +142,19 @@ impl SecurityIntegration {
             allowed_domains: Vec::new(),
         }
     }
-    
+
     /// Get security context for device
     pub fn get_context(&self, device_id: u64) -> Option<&DeviceSecurityContext> {
-        self.device_contexts.iter().find(|c| c.device_id == device_id)
+        self.device_contexts
+            .iter()
+            .find(|c| c.device_id == device_id)
     }
-    
+
     /// Grant domain access to device
     pub fn grant_access(&mut self, device_id: u64, domain_id: u64) {
-        if let Some(context) = self.device_contexts.iter_mut()
+        if let Some(context) = self
+            .device_contexts
+            .iter_mut()
             .find(|c| c.device_id == device_id)
         {
             if !context.allowed_domains.contains(&domain_id) {
@@ -169,16 +162,18 @@ impl SecurityIntegration {
             }
         }
     }
-    
+
     /// Revoke domain access from device
     pub fn revoke_access(&mut self, device_id: u64, domain_id: u64) {
-        if let Some(context) = self.device_contexts.iter_mut()
+        if let Some(context) = self
+            .device_contexts
+            .iter_mut()
             .find(|c| c.device_id == device_id)
         {
             context.allowed_domains.retain(|&id| id != domain_id);
         }
     }
-    
+
     /// Check if domain can access device
     pub fn check_access(&self, device_id: u64, domain_id: u64) -> bool {
         if let Some(context) = self.get_context(device_id) {
@@ -187,13 +182,13 @@ impl SecurityIntegration {
             if domain_id == 0 {
                 return true;
             }
-            
+
             context.allowed_domains.contains(&domain_id)
         } else {
             false
         }
     }
-    
+
     /// Get all device contexts
     pub fn all_contexts(&self) -> &[DeviceSecurityContext] {
         &self.device_contexts
@@ -220,7 +215,7 @@ impl CapabilityChecker {
         if domain_security_level >= SecurityLabel::SYSTEM.level {
             return true;
         }
-        
+
         // Driver level can access devices
         if domain_security_level >= SecurityLabel::DRIVER.level {
             match (device_type, operation) {

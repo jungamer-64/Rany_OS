@@ -5,15 +5,15 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
-use core::sync::atomic::{AtomicU16, AtomicU32, AtomicBool, Ordering};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
-use super::dma::{TypedDmaBuffer, CpuOwned, DeviceOwned, DmaState};
+use super::dma::{CpuOwned, DeviceOwned, DmaState, TypedDmaBuffer};
 
 // ============================================================================
 // VirtIO Net Device Feature Flags
@@ -68,7 +68,7 @@ pub struct VirtioNetHeader {
 
 impl VirtioNetHeader {
     pub const SIZE: usize = core::mem::size_of::<Self>();
-    
+
     /// 単純な送信用ヘッダを作成
     pub fn new_tx() -> Self {
         Self::default()
@@ -129,7 +129,7 @@ pub struct VringUsed {
 // ============================================================================
 
 /// 生ポインタをSend可能にするラッパー
-/// 
+///
 /// # Safety
 /// このラッパーを使う側が、ポインタの有効性とスレッド安全性を保証する必要がある
 struct SendPtr<T>(*mut T);
@@ -141,7 +141,7 @@ impl<T> SendPtr<T> {
     fn new(ptr: *mut T) -> Self {
         Self(ptr)
     }
-    
+
     fn as_ptr(&self) -> *mut T {
         self.0
     }
@@ -193,7 +193,7 @@ struct PendingBuffer {
 
 impl NetVirtQueue {
     /// 新しいVirtQueueを作成
-    /// 
+    ///
     /// # Safety
     /// desc_table, avail_ring, used_ring は有効なDMA可能メモリを指している必要がある
     pub unsafe fn new(
@@ -206,7 +206,7 @@ impl NetVirtQueue {
         // ペンディングバッファ配列を初期化
         let mut pending = Vec::with_capacity(size as usize);
         pending.resize_with(size as usize, || None);
-        
+
         Self {
             index,
             size,
@@ -219,7 +219,7 @@ impl NetVirtQueue {
             pending_buffers: Mutex::new(pending),
         }
     }
-    
+
     /// ディスクリプタを割り当て
     fn alloc_desc(&self) -> Option<u16> {
         let idx = self.next_free_desc.fetch_add(1, Ordering::AcqRel);
@@ -230,11 +230,15 @@ impl NetVirtQueue {
             None
         }
     }
-    
+
     /// 送信バッファを追加
-    pub fn add_tx_buffer(&self, header: &VirtioNetHeader, data: &[u8]) -> Result<u16, VirtioNetError> {
+    pub fn add_tx_buffer(
+        &self,
+        header: &VirtioNetHeader,
+        data: &[u8],
+    ) -> Result<u16, VirtioNetError> {
         let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
-        
+
         unsafe {
             // ディスクリプタを設定
             let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
@@ -242,25 +246,25 @@ impl NetVirtQueue {
             desc.len = (VirtioNetHeader::SIZE + data.len()) as u32;
             desc.flags = 0;
             desc.next = 0;
-            
+
             // Available Ringに追加
             let avail = &mut *self.avail_ring.as_ptr();
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
-            
+
             // メモリバリア
             core::sync::atomic::fence(Ordering::Release);
-            
+
             avail.idx = avail_idx.wrapping_add(1);
         }
-        
+
         Ok(desc_idx)
     }
-    
+
     /// 受信バッファを追加
     pub fn add_rx_buffer(&self, buffer: &mut [u8]) -> Result<u16, VirtioNetError> {
         let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
-        
+
         unsafe {
             // ディスクリプタを設定（書き込み可能）
             let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
@@ -268,37 +272,37 @@ impl NetVirtQueue {
             desc.len = buffer.len() as u32;
             desc.flags = VringDesc::VRING_DESC_F_WRITE;
             desc.next = 0;
-            
+
             // Available Ringに追加
             let avail = &mut *self.avail_ring.as_ptr();
             let avail_idx = avail.idx;
             avail.ring[(avail_idx % self.size) as usize] = desc_idx;
-            
+
             core::sync::atomic::fence(Ordering::Release);
-            
+
             avail.idx = avail_idx.wrapping_add(1);
         }
-        
+
         Ok(desc_idx)
     }
-    
+
     /// 完了したバッファを処理
     pub fn process_used(&self) -> Vec<(u16, u32)> {
         let mut completed = Vec::new();
-        
+
         unsafe {
             let used = &*self.used_ring.as_ptr();
             let mut last_idx = self.last_used_idx.load(Ordering::Acquire);
-            
+
             while last_idx != used.idx {
                 let elem = &used.ring[(last_idx % self.size) as usize];
                 completed.push((elem.id as u16, elem.len));
                 last_idx = last_idx.wrapping_add(1);
             }
-            
+
             self.last_used_idx.store(last_idx, Ordering::Release);
         }
-        
+
         // 完了したバッファのWakerを起動
         if !completed.is_empty() {
             let wakers: Vec<Waker> = self.pending_wakers.lock().drain(..).collect();
@@ -306,15 +310,15 @@ impl NetVirtQueue {
                 waker.wake();
             }
         }
-        
+
         completed
     }
-    
+
     /// Wakerを登録
     pub fn register_waker(&self, waker: Waker) {
         self.pending_wakers.lock().push(waker);
     }
-    
+
     /// ペンディングバッファがあるかチェック
     pub fn has_pending(&self) -> bool {
         unsafe {
@@ -391,7 +395,7 @@ impl VirtioNetDevice {
             rx_bytes: AtomicU32::new(0),
         }
     }
-    
+
     /// デバイスを初期化
     pub fn init(&mut self) -> Result<(), VirtioNetError> {
         // VirtIOデバイスの初期化シーケンス
@@ -402,13 +406,13 @@ impl VirtioNetDevice {
         // 5. FEATURES_OKビット設定
         // 6. キューの設定
         // 7. DRIVER_OKビット設定
-        
+
         // TODO: 実際のMMIOレジスタ操作を実装
-        
+
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
-    
+
     /// パケットを送信（非同期）
     pub fn send_async(&self, data: &[u8]) -> SendFuture<'_> {
         SendFuture {
@@ -418,7 +422,7 @@ impl VirtioNetDevice {
             submitted: false,
         }
     }
-    
+
     /// パケットを受信（非同期）
     pub fn recv_async<'a>(&'a self, buffer: &'a mut [u8]) -> RecvFuture<'a> {
         RecvFuture {
@@ -427,36 +431,38 @@ impl VirtioNetDevice {
             submitted: false,
         }
     }
-    
+
     /// MACアドレスを取得
     pub fn mac_address(&self) -> [u8; 6] {
         self.config.mac
     }
-    
+
     /// 割り込みハンドラ
     pub fn handle_interrupt(&self) {
         // RXキューを処理
         if let Some(ref rx_queue) = self.rx_queue {
             let completed = rx_queue.process_used();
-            self.rx_packets.fetch_add(completed.len() as u32, Ordering::Relaxed);
+            self.rx_packets
+                .fetch_add(completed.len() as u32, Ordering::Relaxed);
         }
-        
+
         // TXキューを処理
         if let Some(ref tx_queue) = self.tx_queue {
             let completed = tx_queue.process_used();
-            self.tx_packets.fetch_add(completed.len() as u32, Ordering::Relaxed);
+            self.tx_packets
+                .fetch_add(completed.len() as u32, Ordering::Relaxed);
         }
-        
+
         // 適応的ポーリングコントローラに通知
         super::polling::net_io_controller().notify_packet_processed(1);
-        
+
         // Interrupt-Wakerブリッジに通知（設計書 4.2）
         // RX/TXで待機中のFutureを起床
         crate::task::interrupt_waker::wake_from_interrupt(
-            crate::task::interrupt_waker::InterruptSource::VirtioNet(0)
+            crate::task::interrupt_waker::InterruptSource::VirtioNet(0),
         );
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> VirtioNetStats {
         VirtioNetStats {
@@ -482,19 +488,19 @@ pub struct SendFuture<'a> {
 
 impl<'a> Future for SendFuture<'a> {
     type Output = Result<usize, VirtioNetError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
             // 送信をキューに追加
             if let Some(ref tx_queue) = self.device.tx_queue {
                 let header = VirtioNetHeader::new_tx();
                 let data = unsafe { core::slice::from_raw_parts(self.data, self.len) };
-                
+
                 match tx_queue.add_tx_buffer(&header, data) {
                     Ok(_) => {
                         self.submitted = true;
                         tx_queue.register_waker(cx.waker().clone());
-                        
+
                         // デバイスに通知
                         // TODO: virtio_notify()
                     }
@@ -504,7 +510,7 @@ impl<'a> Future for SendFuture<'a> {
                 return Poll::Ready(Err(VirtioNetError::NotInitialized));
             }
         }
-        
+
         // 完了を確認
         if let Some(ref tx_queue) = self.device.tx_queue {
             if tx_queue.has_pending() {
@@ -528,7 +534,7 @@ pub struct RecvFuture<'a> {
 
 impl<'a> Future for RecvFuture<'a> {
     type Output = Result<usize, VirtioNetError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
             // 受信バッファをキューに追加
@@ -544,7 +550,7 @@ impl<'a> Future for RecvFuture<'a> {
                 return Poll::Ready(Err(VirtioNetError::NotInitialized));
             }
         }
-        
+
         // 完了を確認
         if let Some(ref rx_queue) = self.device.rx_queue {
             let completed = rx_queue.process_used();
@@ -636,7 +642,7 @@ pub fn handle_virtio_net_interrupt() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_virtio_net_header() {
         let header = VirtioNetHeader::new_tx();

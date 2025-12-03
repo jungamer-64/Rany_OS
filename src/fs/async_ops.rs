@@ -16,16 +16,16 @@
 
 #![allow(dead_code)]
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
-use super::vfs::{FsError, FsResult, FileAttr, SeekFrom};
+use super::vfs::{FileAttr, FsError, FsResult, SeekFrom};
 
 // ============================================================================
 // 非同期I/Oリクエスト
@@ -109,7 +109,7 @@ impl AsyncIoRequest {
     pub fn complete(&self, result: Result<usize, FsError>) {
         *self.result.lock() = Some(result);
         self.completed.store(true, Ordering::Release);
-        
+
         // Wakerを起こす
         if let Some(waker) = self.waker.lock().take() {
             waker.wake();
@@ -154,12 +154,7 @@ pub struct AsyncFile {
 
 impl AsyncFile {
     /// 新しい非同期ファイルを作成
-    pub fn new(
-        id: u64,
-        attr: FileAttr,
-        readable: bool,
-        writable: bool,
-    ) -> Self {
+    pub fn new(id: u64, attr: FileAttr, readable: bool, writable: bool) -> Self {
         Self {
             id,
             attr: Mutex::new(attr),
@@ -173,18 +168,13 @@ impl AsyncFile {
     }
 
     /// ダイレクトI/Oモードで作成
-    pub fn new_direct(
-        id: u64,
-        device_id: u64,
-        start_block: u64,
-        size: u64,
-    ) -> Self {
+    pub fn new_direct(id: u64, device_id: u64, start_block: u64, size: u64) -> Self {
         let attr = FileAttr {
             ino: id,
             size,
             ..Default::default()
         };
-        
+
         Self {
             id,
             attr: Mutex::new(attr),
@@ -211,7 +201,7 @@ impl AsyncFile {
     pub fn seek(&self, pos: SeekFrom) -> FsResult<u64> {
         let current = self.position.load(Ordering::Relaxed);
         let size = self.attr.lock().size;
-        
+
         let new_pos = match pos {
             SeekFrom::Start(offset) => offset,
             SeekFrom::End(offset) => {
@@ -224,14 +214,15 @@ impl AsyncFile {
             }
             SeekFrom::Current(offset) => {
                 if offset < 0 {
-                    current.checked_sub((-offset) as u64)
+                    current
+                        .checked_sub((-offset) as u64)
                         .ok_or(FsError::InvalidArgument)?
                 } else {
                     current + offset as u64
                 }
             }
         };
-        
+
         self.position.store(new_pos, Ordering::Relaxed);
         Ok(new_pos)
     }
@@ -282,55 +273,57 @@ impl<'a> AsyncReadFuture<'a> {
 
 impl<'a> Future for AsyncReadFuture<'a> {
     type Output = FsResult<usize>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.file.readable {
             return Poll::Ready(Err(FsError::PermissionDenied));
         }
-        
+
         // 最初のポーリングでリクエストを発行
         if !self.started {
             self.started = true;
-            
+
             let position = self.file.position.load(Ordering::Relaxed);
             let len = self.buf.len();
-            
+
             // ファイル終端チェック
             let size = self.file.attr.lock().size;
             if position >= size {
                 return Poll::Ready(Ok(0)); // EOF
             }
-            
+
             // 読み取り可能なバイト数を計算
             let available = (size - position) as usize;
             let to_read = len.min(available);
-            
+
             if to_read == 0 {
                 return Poll::Ready(Ok(0));
             }
-            
+
             // ダイレクトI/Oの場合は直接デバイスアクセス
             if self.file.direct_io {
                 // TODO: 実際のNVMeコマンド発行
                 let request_id = generate_request_id();
                 self.request_id = Some(request_id);
-                
+
                 // リクエストを発行（シミュレーション）
                 // 実際にはNVMeサブミッションキューにコマンドを追加
-                
+
                 return Poll::Pending;
             }
-            
+
             // ページキャッシュ経由（シミュレーション）
             // 実際にはキャッシュヒット/ミスを処理
             self.buf[..to_read].fill(0); // プレースホルダー
-            
+
             // 位置を更新
-            self.file.position.fetch_add(to_read as u64, Ordering::Relaxed);
-            
+            self.file
+                .position
+                .fetch_add(to_read as u64, Ordering::Relaxed);
+
             return Poll::Ready(Ok(to_read));
         }
-        
+
         // リクエストの完了を確認
         if let Some(_request_id) = self.request_id {
             // TODO: 完了キューをチェック
@@ -364,36 +357,36 @@ impl<'a> AsyncWriteFuture<'a> {
 
 impl<'a> Future for AsyncWriteFuture<'a> {
     type Output = FsResult<usize>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.file.writable {
             return Poll::Ready(Err(FsError::PermissionDenied));
         }
-        
+
         if !self.started {
             self.started = true;
-            
+
             let position = self.file.position.load(Ordering::Relaxed);
             let len = self.buf.len();
-            
+
             if len == 0 {
                 return Poll::Ready(Ok(0));
             }
-            
+
             // ダイレクトI/Oの場合
             if self.file.direct_io {
                 let request_id = generate_request_id();
                 self.request_id = Some(request_id);
-                
+
                 // TODO: NVMeコマンド発行
-                
+
                 return Poll::Pending;
             }
-            
+
             // ページキャッシュ経由（シミュレーション）
             // 位置を更新
             self.file.position.fetch_add(len as u64, Ordering::Relaxed);
-            
+
             // ファイルサイズを更新
             {
                 let mut attr = self.file.attr.lock();
@@ -402,10 +395,10 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                     attr.size = new_end;
                 }
             }
-            
+
             return Poll::Ready(Ok(len));
         }
-        
+
         // 完了確認
         if let Some(_request_id) = self.request_id {
             cx.waker().wake_by_ref();
@@ -433,20 +426,20 @@ impl<'a> AsyncFlushFuture<'a> {
 
 impl<'a> Future for AsyncFlushFuture<'a> {
     type Output = FsResult<()>;
-    
+
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.started {
             self.started = true;
-            
+
             if self.file.direct_io {
                 // ダイレクトI/Oの場合、実際にはデバイスフラッシュコマンドを発行
                 // TODO: NVMe Flushコマンド
             }
-            
+
             // シミュレーション: 即座に完了
             return Poll::Ready(Ok(()));
         }
-        
+
         Poll::Ready(Ok(()))
     }
 }
@@ -468,20 +461,20 @@ impl<'a> AsyncSyncFuture<'a> {
 
 impl<'a> Future for AsyncSyncFuture<'a> {
     type Output = FsResult<()>;
-    
+
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.started {
             self.started = true;
-            
+
             // データとメタデータの同期
             // ダイレクトI/Oの場合は既に同期済み
             if !self.file.direct_io {
                 // TODO: ページキャッシュのフラッシュ
             }
-            
+
             return Poll::Ready(Ok(()));
         }
-        
+
         Poll::Ready(Ok(()))
     }
 }
@@ -507,12 +500,7 @@ pub struct DirectBlockHandle {
 
 impl DirectBlockHandle {
     /// 新しいダイレクトブロックハンドルを作成
-    pub fn new(
-        device_id: u64,
-        start_block: u64,
-        block_count: u64,
-        block_size: u32,
-    ) -> Self {
+    pub fn new(device_id: u64, start_block: u64, block_count: u64, block_size: u32) -> Self {
         Self {
             device_id,
             start_block,
@@ -526,22 +514,22 @@ impl DirectBlockHandle {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }
-        
+
         let blocks_to_read = buf.len() / self.block_size as usize;
         let blocks_available = (self.block_count - block_offset) as usize;
         let blocks = blocks_to_read.min(blocks_available);
-        
+
         if blocks == 0 {
             return Ok(0);
         }
-        
+
         // TODO: 実際のNVMeリードコマンド発行
         // コア固有のSubmission Queueを使用
-        
+
         // シミュレーション
         let bytes = blocks * self.block_size as usize;
         buf[..bytes].fill(0);
-        
+
         Ok(bytes)
     }
 
@@ -550,17 +538,17 @@ impl DirectBlockHandle {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }
-        
+
         let blocks_to_write = buf.len() / self.block_size as usize;
         let blocks_available = (self.block_count - block_offset) as usize;
         let blocks = blocks_to_write.min(blocks_available);
-        
+
         if blocks == 0 {
             return Ok(0);
         }
-        
+
         // TODO: 実際のNVMeライトコマンド発行
-        
+
         Ok(blocks * self.block_size as usize)
     }
 
@@ -575,11 +563,11 @@ impl DirectBlockHandle {
         if block_offset >= self.block_count {
             return Err(FsError::InvalidArgument);
         }
-        
+
         let _count = block_count.min(self.block_count - block_offset);
-        
+
         // TODO: NVMe Dataset Management (TRIM) コマンド
-        
+
         Ok(())
     }
 }
@@ -638,7 +626,7 @@ impl SgIoRequest {
     pub fn complete(&self, result: FsResult<usize>) {
         *self.result.lock() = Some(result);
         self.completed.store(true, Ordering::Release);
-        
+
         if let Some(waker) = self.waker.lock().take() {
             waker.wake();
         }
@@ -685,7 +673,7 @@ impl AsyncIoScheduler {
     pub fn process_completions(&self) {
         let mut pending = self.pending.lock();
         let mut completed = self.completed.lock();
-        
+
         pending.retain(|req| {
             if req.is_completed() {
                 completed.push(req.clone());
@@ -740,7 +728,7 @@ pub fn async_io_scheduler() -> &'static AsyncIoScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_async_file_seek() {
         let attr = FileAttr {
@@ -748,20 +736,20 @@ mod tests {
             ..Default::default()
         };
         let file = AsyncFile::new(1, attr, true, true);
-        
+
         // Start
         assert_eq!(file.seek(SeekFrom::Start(100)).unwrap(), 100);
         assert_eq!(file.position(), 100);
-        
+
         // Current
         assert_eq!(file.seek(SeekFrom::Current(50)).unwrap(), 150);
         assert_eq!(file.seek(SeekFrom::Current(-30)).unwrap(), 120);
-        
+
         // End
         assert_eq!(file.seek(SeekFrom::End(0)).unwrap(), 1000);
         assert_eq!(file.seek(SeekFrom::End(-100)).unwrap(), 900);
     }
-    
+
     #[test]
     fn test_direct_block_handle() {
         let handle = DirectBlockHandle::new(0, 0, 1000, 512);

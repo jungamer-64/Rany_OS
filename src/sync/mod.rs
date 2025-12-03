@@ -11,15 +11,26 @@ pub use irq_mutex::{IrqMutex, IrqMutexGuard};
 
 #[allow(unused_imports)]
 pub use lockfree::{
-    // SPSC Ring Buffer
-    SpscRingBuffer,
+    // Backoff strategy
+    Backoff,
+    // Bounded channel
+    BoundedChannel,
+    BoundedReceiver,
+    BoundedSender,
+    // Cache-line optimization
+    CacheLinePadded,
+    DEFAULT_QUEUE_SIZE,
+    InterCoreChannel,
+    // Inter-core communication
+    InterCoreMessage,
+    // MPMC Ring Buffer
+    MpmcRingBuffer,
     // MPSC Ring Buffer
     MpscRingBuffer,
-    // Inter-core communication
-    InterCoreMessage, InterCoreChannel, create_inter_core_channel,
-    DEFAULT_QUEUE_SIZE,
-    // Bounded channel
-    BoundedChannel, BoundedSender, BoundedReceiver,
     // Seqlock
-    Seqlock, SeqlockWriteGuard,
+    Seqlock,
+    SeqlockWriteGuard,
+    // SPSC Ring Buffer
+    SpscRingBuffer,
+    create_inter_core_channel,
 };

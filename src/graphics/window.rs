@@ -18,13 +18,13 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
-use super::{Color, Framebuffer, Rect, Point};
 use super::image::Image;
+use super::{Color, Framebuffer, Point, Rect};
 
 // ============================================================================
 // Type-Safe Identifiers
@@ -279,7 +279,11 @@ impl Window {
             client_rect,
             style,
             state: WindowState::Normal,
-            z_order: if style.topmost { ZOrder::TOPMOST } else { ZOrder::NORMAL },
+            z_order: if style.topmost {
+                ZOrder::TOPMOST
+            } else {
+                ZOrder::NORMAL
+            },
             background: Color::WHITE,
             content,
             dirty: true,
@@ -396,9 +400,16 @@ impl Window {
         self.rect.width = width;
         self.rect.height = height;
         self.client_rect = Self::calculate_client_rect(&self.rect, &self.style);
-        self.content = Image::filled(self.client_rect.width, self.client_rect.height, self.background);
+        self.content = Image::filled(
+            self.client_rect.width,
+            self.client_rect.height,
+            self.background,
+        );
         self.dirty = true;
-        self.events.push(WindowEvent::Resize { width: self.client_rect.width, height: self.client_rect.height });
+        self.events.push(WindowEvent::Resize {
+            width: self.client_rect.width,
+            height: self.client_rect.height,
+        });
     }
 
     /// イベントをプッシュ
@@ -635,7 +646,11 @@ impl WindowManager {
                 // クライアント領域へのイベント
                 if window.client_contains(x, y) {
                     let (cx, cy) = window.screen_to_client(x, y);
-                    window.push_event(WindowEvent::MouseButtonDown { button, x: cx, y: cy });
+                    window.push_event(WindowEvent::MouseButtonDown {
+                        button,
+                        x: cx,
+                        y: cy,
+                    });
                 }
             }
         }
@@ -652,7 +667,11 @@ impl WindowManager {
             if let Some(window) = self.windows.get_mut(&id) {
                 if window.client_contains(x, y) {
                     let (cx, cy) = window.screen_to_client(x, y);
-                    window.push_event(WindowEvent::MouseButtonUp { button, x: cx, y: cy });
+                    window.push_event(WindowEvent::MouseButtonUp {
+                        button,
+                        x: cx,
+                        y: cy,
+                    });
                 }
             }
         }

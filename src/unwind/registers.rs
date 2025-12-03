@@ -5,7 +5,7 @@
 use core::fmt;
 
 /// x86_64 DWARF レジスタ番号
-/// 
+///
 /// DWARF標準で定義されたx86_64のレジスタ番号マッピング。
 /// System V AMD64 ABI に準拠。
 #[repr(u8)]
@@ -28,11 +28,11 @@ pub enum DwarfRegister {
     R13 = 13,
     R14 = 14,
     R15 = 15,
-    
+
     // 特殊レジスタ
     /// リターンアドレスレジスタ（RIP）
     ReturnAddress = 16,
-    
+
     // XMM レジスタ (17-32)
     Xmm0 = 17,
     Xmm1 = 18,
@@ -50,7 +50,6 @@ pub enum DwarfRegister {
     Xmm13 = 30,
     Xmm14 = 31,
     Xmm15 = 32,
-    
     // セグメントレジスタなど (拡張用)
     // ST0-ST7, MM0-MM7, RFLAGS, ES, CS, SS, DS, FS, GS などは
     // アンワインドでは通常使用しないため省略
@@ -121,7 +120,7 @@ impl DwarfRegister {
     }
 
     /// CFAレジスタとして有効かどうか
-    /// 
+    ///
     /// CFA (Canonical Frame Address) として使用できるのは
     /// 通常 RSP または RBP のみ
     #[inline]
@@ -130,7 +129,7 @@ impl DwarfRegister {
     }
 
     /// 呼び出し規約で保存されるレジスタかどうか (callee-saved)
-    /// 
+    ///
     /// System V AMD64 ABI では RBX, RBP, R12-R15 が callee-saved
     #[inline]
     pub const fn is_callee_saved(self) -> bool {
@@ -141,7 +140,7 @@ impl DwarfRegister {
     }
 
     /// 引数レジスタかどうか
-    /// 
+    ///
     /// System V AMD64 ABI では RDI, RSI, RDX, RCX, R8, R9 が引数用
     #[inline]
     pub const fn is_argument_register(self) -> bool {
@@ -202,25 +201,25 @@ impl fmt::Display for DwarfRegister {
 // ============================================================================
 
 /// DWARF CFI レジスタルール
-/// 
+///
 /// 各レジスタの復元方法を定義する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegisterRule {
     /// 未定義（値は不明）
     Undefined,
-    
+
     /// 同一値（呼び出し元と同じ値を保持）
     SameValue,
-    
+
     /// オフセット: CFA + offset の位置に保存されている
     Offset(i64),
-    
+
     /// 値オフセット: CFA + offset が値そのもの
     ValOffset(i64),
-    
+
     /// レジスタ: 別のレジスタに保存されている
     Register(DwarfRegister),
-    
+
     /// 式: DWARF式で計算（複雑なケース）
     Expression {
         /// 式データへのオフセット
@@ -228,7 +227,7 @@ pub enum RegisterRule {
         /// 式の長さ
         length: usize,
     },
-    
+
     /// 値式: DWARF式の結果が値そのもの
     ValExpression {
         /// 式データへのオフセット
@@ -236,7 +235,7 @@ pub enum RegisterRule {
         /// 式の長さ
         length: usize,
     },
-    
+
     /// アーキテクチャ固有
     Architectural,
 }
@@ -252,7 +251,7 @@ impl Default for RegisterRule {
 // ============================================================================
 
 /// アンワインドコンテキストのレジスタセット
-/// 
+///
 /// 固定サイズの配列を内部に持ち、`DwarfRegister` による型安全なアクセスを提供
 pub struct RegisterSet {
     /// レジスタルール（最大33個: 0-32）
@@ -318,16 +317,14 @@ impl Default for RegisterSet {
 
 impl Clone for RegisterSet {
     fn clone(&self) -> Self {
-        Self {
-            rules: self.rules,
-        }
+        Self { rules: self.rules }
     }
 }
 
 impl fmt::Debug for RegisterSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let mut debug = f.debug_struct("RegisterSet");
-        
+
         // 未定義以外のルールのみ表示
         for i in 0..Self::MAX_REGISTERS {
             if self.rules[i] != RegisterRule::Undefined {
@@ -336,7 +333,7 @@ impl fmt::Debug for RegisterSet {
                 }
             }
         }
-        
+
         debug.finish()
     }
 }
@@ -346,7 +343,7 @@ impl fmt::Debug for RegisterSet {
 // ============================================================================
 
 /// CFA (Canonical Frame Address) ルール
-/// 
+///
 /// フレームの基準アドレスの計算方法を定義
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CfaRule {
@@ -355,12 +352,9 @@ pub enum CfaRule {
         register: DwarfRegister,
         offset: i64,
     },
-    
+
     /// DWARF式で計算
-    Expression {
-        offset: usize,
-        length: usize,
-    },
+    Expression { offset: usize, length: usize },
 }
 
 impl Default for CfaRule {
@@ -433,7 +427,8 @@ impl UnwindContext {
     /// CIEの初期状態を設定
     pub fn set_initial_state(&mut self, return_register: DwarfRegister) {
         // 通常、リターンアドレスは CFA-8 に保存される
-        self.registers.set(return_register, RegisterRule::Offset(-8));
+        self.registers
+            .set(return_register, RegisterRule::Offset(-8));
     }
 
     /// CFAをレジスタ+オフセットで定義
@@ -459,7 +454,7 @@ impl UnwindContext {
     }
 
     /// 別のコンテキストから状態をコピー（clone()より高速）
-    /// 
+    ///
     /// clone() は新しいメモリを確保するが、copy_from() は既存のメモリに上書きするため、
     /// アロケーションコストが発生しない。スタック状態の保存/復元に最適。
     #[inline]
@@ -495,25 +490,28 @@ mod tests {
         assert_eq!(DwarfRegister::from_u8(0), Some(DwarfRegister::Rax));
         assert_eq!(DwarfRegister::from_u8(6), Some(DwarfRegister::Rbp));
         assert_eq!(DwarfRegister::from_u8(7), Some(DwarfRegister::Rsp));
-        assert_eq!(DwarfRegister::from_u8(16), Some(DwarfRegister::ReturnAddress));
+        assert_eq!(
+            DwarfRegister::from_u8(16),
+            Some(DwarfRegister::ReturnAddress)
+        );
         assert_eq!(DwarfRegister::from_u8(100), None);
     }
 
     #[test]
     fn test_register_set() {
         let mut regs = RegisterSet::new();
-        
+
         // 初期状態は全て未定義
         assert_eq!(regs.get(DwarfRegister::Rax), RegisterRule::Undefined);
-        
+
         // ルールを設定
         regs.set(DwarfRegister::Rbp, RegisterRule::Offset(-16));
         assert_eq!(regs.get(DwarfRegister::Rbp), RegisterRule::Offset(-16));
-        
+
         // 番号でアクセス
         assert!(regs.set_by_number(7, RegisterRule::SameValue));
         assert_eq!(regs.get(DwarfRegister::Rsp), RegisterRule::SameValue);
-        
+
         // 範囲外
         assert!(!regs.set_by_number(100, RegisterRule::SameValue));
     }

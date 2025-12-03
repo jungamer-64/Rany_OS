@@ -20,11 +20,11 @@
 pub mod image;
 pub mod window;
 
-use core::ptr;
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+use core::ptr;
 use spin::Mutex;
 
 // ============================================================================
@@ -189,7 +189,12 @@ pub struct Rect {
 
 impl Rect {
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     /// 右端のX座標
@@ -204,10 +209,7 @@ impl Rect {
 
     /// 点が矩形内にあるか
     pub fn contains(&self, point: Point) -> bool {
-        point.x >= self.x
-            && point.x < self.right()
-            && point.y >= self.y
-            && point.y < self.bottom()
+        point.x >= self.x && point.x < self.right() && point.y >= self.y && point.y < self.bottom()
     }
 
     /// 矩形が交差するか
@@ -229,12 +231,7 @@ impl Rect {
         let right = self.right().min(other.right());
         let bottom = self.bottom().min(other.bottom());
 
-        Some(Rect::new(
-            x,
-            y,
-            (right - x) as u32,
-            (bottom - y) as u32,
-        ))
+        Some(Rect::new(x, y, (right - x) as u32, (bottom - y) as u32))
     }
 }
 
@@ -279,11 +276,7 @@ impl Framebuffer {
     pub fn swap_buffers(&mut self) {
         if let Some(ref back) = self.back_buffer {
             unsafe {
-                ptr::copy_nonoverlapping(
-                    back.as_ptr(),
-                    self.buffer,
-                    self.info.size(),
-                );
+                ptr::copy_nonoverlapping(back.as_ptr(), self.buffer, self.info.size());
             }
         }
     }
@@ -338,8 +331,8 @@ impl Framebuffer {
             return;
         }
 
-        let offset = (y * self.info.stride) as usize
-            + (x as usize * self.info.format.bytes_per_pixel());
+        let offset =
+            (y * self.info.stride) as usize + (x as usize * self.info.format.bytes_per_pixel());
 
         let buffer = self.draw_buffer();
 
@@ -370,8 +363,8 @@ impl Framebuffer {
             return Color::BLACK;
         }
 
-        let offset = (y * self.info.stride) as usize
-            + (x as usize * self.info.format.bytes_per_pixel());
+        let offset =
+            (y * self.info.stride) as usize + (x as usize * self.info.format.bytes_per_pixel());
 
         match self.info.format {
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => unsafe {
@@ -577,7 +570,15 @@ impl BitmapFont {
     }
 
     /// 文字を描画
-    pub fn draw_char(&self, fb: &mut Framebuffer, x: i32, y: i32, c: char, color: Color, bg: Option<Color>) {
+    pub fn draw_char(
+        &self,
+        fb: &mut Framebuffer,
+        x: i32,
+        y: i32,
+        c: char,
+        color: Color,
+        bg: Option<Color>,
+    ) {
         let c = c as usize;
         if c >= 128 {
             return;
@@ -606,7 +607,15 @@ impl BitmapFont {
     }
 
     /// 文字列を描画
-    pub fn draw_string(&self, fb: &mut Framebuffer, x: i32, y: i32, s: &str, color: Color, bg: Option<Color>) {
+    pub fn draw_string(
+        &self,
+        fb: &mut Framebuffer,
+        x: i32,
+        y: i32,
+        s: &str,
+        color: Color,
+        bg: Option<Color>,
+    ) {
         let mut cx = x;
 
         for c in s.chars() {
@@ -940,14 +949,8 @@ impl TextConsole {
         }
 
         unsafe {
-            self.font.draw_char(
-                &mut *self.fb,
-                x,
-                y,
-                c,
-                self.fg_color,
-                Some(self.bg_color),
-            );
+            self.font
+                .draw_char(&mut *self.fb, x, y, c, self.fg_color, Some(self.bg_color));
         }
     }
 
@@ -991,14 +994,8 @@ impl TextConsole {
                         let x = (col * self.font.width()) as i32;
                         let y = (row * self.font.height()) as i32;
                         unsafe {
-                            self.font.draw_char(
-                                &mut *self.fb,
-                                x,
-                                y,
-                                c,
-                                self.fg_color,
-                                None,
-                            );
+                            self.font
+                                .draw_char(&mut *self.fb, x, y, c, self.fg_color, None);
                         }
                     }
                 }

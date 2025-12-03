@@ -1,82 +1,89 @@
 // ============================================================================
 // src/task/mod.rs - Task Definition and Executor
 // ============================================================================
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-use alloc::boxed::Box;
-use alloc::sync::Arc;
 
-mod executor;
-pub mod timer;
-mod work_stealing;
-pub mod preemption;
 pub mod context;
-pub mod scheduler;
+pub mod environ;
+mod executor;
 pub mod interrupt_waker;
 pub mod per_core_executor;
-pub mod signal;
+pub mod preemption;
 pub mod process;
-pub mod environ;
+pub mod scheduler;
+pub mod signal;
+pub mod timer;
+mod work_stealing;
 
 // Phase 4: Advanced Work-Stealing
 pub mod work_stealing_advanced;
 
-pub use executor::Executor;
-pub use timer::{sleep_ms, current_tick};
 #[allow(unused_imports)]
-pub use work_stealing::{WorkStealingQueue, inject_global, steal_from_global};
+pub use context::{CpuContext, KernelStack, TaskControlBlock, TaskState};
 #[allow(unused_imports)]
-pub use preemption::{
-    PreemptionController, preemption_controller,
-    handle_timer_tick, yield_point, voluntary_yield,
-    YieldNow, yield_now, CpuTimeTracker, AdaptiveTimeSlice, PreemptionStats,
-    // 新規追加: タイマー割り込み統合用
-    should_preempt, request_yield, check_and_clear_yield_request, notify_task_started,
+pub use environ::{
+    EnvError, EnvKey, EnvValue, Environment, environ, get_home, get_path, get_pwd, get_user,
+    getenv, kernel_env, putenv, set_pwd, setenv, unsetenv,
 };
-#[allow(unused_imports)]
-pub use context::{CpuContext, TaskControlBlock, TaskState, KernelStack};
-#[allow(unused_imports)]
-pub use scheduler::{PerCpuScheduler, init_scheduler};
+pub use executor::Executor;
 #[allow(unused_imports)]
 pub use interrupt_waker::{
-    AtomicWaker, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
-    interrupt_waker_registry, register_interrupt_waker, wake_from_interrupt,
-    wait_for_interrupt, InterruptFuture, handle_timer_interrupt_waker,
+    AtomicWaker, InterruptFuture, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
+    handle_timer_interrupt_waker, interrupt_waker_registry, register_interrupt_waker,
+    wait_for_interrupt, wake_from_interrupt,
 };
 #[allow(unused_imports)]
 pub use per_core_executor::{
-    PerCoreExecutor, ExecutorManager, ExecutorStats, Priority,
-    executor_manager, init_executors, spawn, spawn_with_priority,
-    Task as CoreTask, TaskId as CoreTaskId, TaskState as CoreTaskState, TaskMetadata,
+    ExecutorManager, ExecutorStats, PerCoreExecutor, Priority, Task as CoreTask,
+    TaskId as CoreTaskId, TaskMetadata, TaskState as CoreTaskState, executor_manager,
+    init_executors, spawn, spawn_with_priority,
 };
 #[allow(unused_imports)]
-pub use signal::{
-    Signal, SignalAction, SignalMask, SignalHandler, SignalQueue, SignalContext,
-    SignalManager, signal_manager, kill, signal as set_signal, sigignore,
-    SignalFuture,
+pub use preemption::{
+    AdaptiveTimeSlice,
+    CpuTimeTracker,
+    PreemptionController,
+    PreemptionStats,
+    YieldNow,
+    check_and_clear_yield_request,
+    handle_timer_tick,
+    notify_task_started,
+    preemption_controller,
+    request_yield,
+    // 新規追加: タイマー割り込み統合用
+    should_preempt,
+    voluntary_yield,
+    yield_now,
+    yield_point,
 };
 #[allow(unused_imports)]
 pub use process::{
-    ProcessId, ThreadId, ProcessState, Credentials, ResourceLimits, ProcessInfo,
-    ProcessManager, process_manager, spawn as spawn_process, exit as process_exit,
-    waitpid, getpid, getppid, getuid, getgid, setpriority, getpriority,
+    Credentials, ProcessId, ProcessInfo, ProcessManager, ProcessState, ResourceLimits, ThreadId,
+    exit as process_exit, getgid, getpid, getppid, getpriority, getuid, process_manager,
+    setpriority, spawn as spawn_process, waitpid,
 };
 #[allow(unused_imports)]
-pub use environ::{
-    EnvKey, EnvValue, EnvError, Environment, kernel_env,
-    getenv, setenv, unsetenv, putenv, environ,
-    get_path, get_home, get_user, get_pwd, set_pwd,
+pub use scheduler::{PerCpuScheduler, init_scheduler};
+#[allow(unused_imports)]
+pub use signal::{
+    Signal, SignalAction, SignalContext, SignalFuture, SignalHandler, SignalManager, SignalMask,
+    SignalQueue, kill, sigignore, signal as set_signal, signal_manager,
 };
+pub use timer::{current_tick, sleep_ms};
+#[allow(unused_imports)]
+pub use work_stealing::{WorkStealingQueue, inject_global, steal_from_global};
 
 // Phase 4: Advanced Work-Stealing re-exports
 #[allow(unused_imports)]
 pub use work_stealing_advanced::{
-    GlobalScheduler, PerCoreWorker, WorkStealingDeque, WorkerStats, SchedulerStats,
-    StealableTask, CoreAffinity, Priority as WsPriority, TaskState as WsTaskState,
-    TaskId as WsTaskId,
-    init as init_work_stealing, spawn as ws_spawn, schedule as ws_schedule,
+    CoreAffinity, GlobalScheduler, PerCoreWorker, Priority as WsPriority, SchedulerStats,
+    StealableTask, TaskId as WsTaskId, TaskState as WsTaskState, WorkStealingDeque, WorkerStats,
+    init as init_work_stealing, schedule as ws_schedule, spawn as ws_spawn,
 };
 
 /// タスクID
@@ -134,12 +141,8 @@ impl TaskWaker {
 
 /// RawWaker用のVTable
 /// これが最も複雑な部分 - 手動でWakerのVTableを構築
-static WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
-    waker_clone,
-    waker_wake,
-    waker_wake_by_ref,
-    waker_drop,
-);
+static WAKER_VTABLE: RawWakerVTable =
+    RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
 unsafe fn waker_clone(data: *const ()) -> RawWaker {
     // Arc::cloneと同等の処理

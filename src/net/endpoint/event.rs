@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 use spin::Mutex;
 
-use super::types::{SocketFd, SocketType, SocketAddr};
+use super::types::{SocketAddr, SocketFd, SocketType};
 
 /// ネットワークイベント種別
 #[derive(Debug, Clone)]
@@ -33,9 +33,7 @@ pub enum NetworkEvent {
         backlog: u32,
     },
     /// ソケットクローズ
-    Close {
-        fd: SocketFd,
-    },
+    Close { fd: SocketFd },
     /// UDP送信
     SendTo {
         fd: SocketFd,
@@ -56,7 +54,7 @@ pub struct NetworkEventQueue {
 impl NetworkEventQueue {
     /// キュー容量
     const CAPACITY: usize = 256;
-    
+
     /// 新規作成
     pub const fn new() -> Self {
         Self {
@@ -65,7 +63,7 @@ impl NetworkEventQueue {
             has_events: AtomicBool::new(false),
         }
     }
-    
+
     /// イベント送信（ソケット層から呼ばれる）
     pub fn send(&self, event: NetworkEvent) -> bool {
         let mut events = self.events.lock();
@@ -74,14 +72,14 @@ impl NetworkEventQueue {
         }
         events.push_back(event);
         self.has_events.store(true, Ordering::Release);
-        
+
         // 待機中のネットワークタスクを起こす
         if let Some(waker) = self.waker.lock().take() {
             waker.wake();
         }
         true
     }
-    
+
     /// イベント受信（ネットワークタスクから呼ばれる）
     pub fn recv(&self) -> Option<NetworkEvent> {
         let mut events = self.events.lock();
@@ -91,30 +89,30 @@ impl NetworkEventQueue {
         }
         event
     }
-    
+
     /// 全イベント取得（バッチ処理用）
     pub fn drain_all(&self) -> Vec<NetworkEvent> {
         let mut events = self.events.lock();
         self.has_events.store(false, Ordering::Release);
         events.drain(..).collect()
     }
-    
+
     /// イベント待ち（非同期）
     pub fn wait_for_events(&self) -> EventWaitFuture<'_> {
         EventWaitFuture { queue: self }
     }
-    
+
     /// イベントがあるか
     #[inline]
     pub fn has_events(&self) -> bool {
         self.has_events.load(Ordering::Acquire)
     }
-    
+
     /// キュー内イベント数
     pub fn len(&self) -> usize {
         self.events.lock().len()
     }
-    
+
     /// キューが空か
     pub fn is_empty(&self) -> bool {
         !self.has_events()
@@ -128,16 +126,16 @@ pub struct EventWaitFuture<'a> {
 
 impl<'a> Future for EventWaitFuture<'a> {
     type Output = NetworkEvent;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // まずイベントがあるかチェック
         if let Some(event) = self.queue.recv() {
             return Poll::Ready(event);
         }
-        
+
         // Wakerを登録
         *self.queue.waker.lock() = Some(cx.waker().clone());
-        
+
         // 再度チェック（Waker登録中にイベントが来た可能性）
         if let Some(event) = self.queue.recv() {
             Poll::Ready(event)

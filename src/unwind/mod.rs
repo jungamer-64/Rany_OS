@@ -2,19 +2,19 @@
 //! スタックアンワインドモジュール (ExoRust)
 //!
 //! # 設計書 8.1: スタックアンワインド
-//! 
+//!
 //! ## 安全性に関する注記
 //! - 可能な限り `gimli` feature を有効にして使用してください
 //! - 手動パース実装はフォールバック用であり、厳密な境界チェックを行いますが、
 //!   複雑なDWARF式の評価には対応していません
-//! 
+//!
 //! ## 機能
 //! - DWARFベースのアンワインド情報解析
 //! - .eh_frame セクション解析
 //! - パニック時のバックトレース生成
 //! - フレームポインタベースのアンワインド（フォールバック）
 //! - gimliベースの高精度アンワインド（オプション）
-//! 
+//!
 //! ## アーキテクチャ
 //! ```text
 //! +------------------+
@@ -51,8 +51,10 @@ pub mod registers;
 // Re-exports
 // ============================================================================
 
-pub use reader::{MemoryReader, DwarfPointerEncoding, DwarfPointerApplication, read_encoded_pointer};
-pub use registers::{DwarfRegister, RegisterRule, RegisterSet, CfaRule, UnwindContext};
+pub use reader::{
+    DwarfPointerApplication, DwarfPointerEncoding, MemoryReader, read_encoded_pointer,
+};
+pub use registers::{CfaRule, DwarfRegister, RegisterRule, RegisterSet, UnwindContext};
 
 use core::fmt;
 use core::ptr;
@@ -116,7 +118,7 @@ pub struct BacktraceEntry {
 impl fmt::Display for BacktraceEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "#{:2}: ", self.frame_number)?;
-        
+
         if let Some(ref sym) = self.symbol {
             if let Some(name) = sym.name {
                 write!(f, "{} + {:#x}", name, sym.offset)?;
@@ -126,7 +128,7 @@ impl fmt::Display for BacktraceEntry {
         } else {
             write!(f, "{:#018x}", self.frame.instruction_pointer)?;
         }
-        
+
         write!(f, " (SP: {:#018x})", self.frame.stack_pointer)
     }
 }
@@ -169,47 +171,47 @@ impl Backtrace {
         }
 
         let mut frame_num = 0;
-        
+
         // フレームポインタチェーンをたどる
         while frame_num < MAX_FRAMES {
             // フレームポインタの有効性チェック
             if !is_valid_stack_address(rbp) {
                 break;
             }
-            
+
             // リターンアドレスとスタックポインタを取得
             let return_addr = unsafe { ptr::read((rbp + 8) as *const usize) };
             let next_rbp = unsafe { ptr::read(rbp as *const usize) };
-            
+
             // 無効なリターンアドレスで終了
             if return_addr == 0 || !is_valid_code_address(return_addr) {
                 break;
             }
-            
+
             let frame = StackFrame {
                 instruction_pointer: return_addr,
                 stack_pointer: rbp + 16,
                 frame_pointer: rbp,
             };
-            
+
             // シンボル情報を解決（可能な場合）
             let symbol = resolve_symbol(return_addr);
-            
+
             self.entries[frame_num] = Some(BacktraceEntry {
                 frame_number: frame_num,
                 frame,
                 symbol,
             });
-            
+
             frame_num += 1;
-            
+
             // 次のフレームへ
             if next_rbp == 0 || next_rbp <= rbp {
                 break;
             }
             rbp = next_rbp;
         }
-        
+
         self.count = frame_num;
     }
 
@@ -225,7 +227,10 @@ impl Backtrace {
 
     /// イテレータを取得
     pub fn iter(&self) -> impl Iterator<Item = &BacktraceEntry> {
-        self.entries.iter().take(self.count).filter_map(|e| e.as_ref())
+        self.entries
+            .iter()
+            .take(self.count)
+            .filter_map(|e| e.as_ref())
     }
 }
 
@@ -252,12 +257,12 @@ fn is_valid_stack_address(addr: usize) -> bool {
     if addr == 0 || addr > 0xFFFF_FFFF_FFFF_0000 {
         return false;
     }
-    
+
     // アライメントチェック
     if addr % 8 != 0 {
         return false;
     }
-    
+
     true
 }
 
@@ -268,7 +273,7 @@ fn is_valid_code_address(addr: usize) -> bool {
     if addr == 0 {
         return false;
     }
-    
+
     // 高位カノニカルアドレスはカーネル空間
     addr >= 0xFFFF_8000_0000_0000 || addr < 0x0000_8000_0000_0000
 }
@@ -279,7 +284,7 @@ fn is_valid_code_address(addr: usize) -> bool {
 // ============================================================================
 
 /// シンボルテーブル（リンカスクリプトで提供）
-/// 
+///
 /// NOTE: __ksym_start/__ksym_end はリンカスクリプトで定義される必要があります。
 /// 現在はダミーのシンボルを提供して、シンボルテーブルが利用できない場合は
 /// gracefulに処理します。
@@ -338,11 +343,11 @@ impl KernelSymbolTable {
             // ダミーアドレスを使用（実際はリンカスクリプトで設定される）
             let start = KSYM_START_ADDR;
             let end = KSYM_END_ADDR;
-            
+
             if start == 0 || end == 0 || end <= start {
                 return None;
             }
-            
+
             // シンボル数をカウント
             let mut offset = 0;
             let mut count = 0;
@@ -354,7 +359,7 @@ impl KernelSymbolTable {
                 offset += aligned_size;
                 count += 1;
             }
-            
+
             Some(Self {
                 base: start,
                 end,
@@ -362,59 +367,60 @@ impl KernelSymbolTable {
             })
         }
     }
-    
+
     /// アドレスからシンボルを検索
     pub fn lookup(&self, address: usize) -> Option<(&KernelSymbol, &str)> {
         let mut best_match: Option<(&KernelSymbol, &str)> = None;
         let mut best_distance = usize::MAX;
-        
+
         let mut offset = 0;
         while self.base + offset < self.end {
             let sym = unsafe { &*((self.base + offset) as *const KernelSymbol) };
-            
+
             // シンボル名を取得
             let name_ptr = (self.base + offset + core::mem::size_of::<KernelSymbol>()) as *const u8;
             let name = unsafe {
-                core::str::from_utf8_unchecked(
-                    core::slice::from_raw_parts(name_ptr, sym.name_len as usize)
-                )
+                core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                    name_ptr,
+                    sym.name_len as usize,
+                ))
             };
-            
+
             // アドレスがこのシンボルの範囲内かチェック
             if address >= sym.address {
                 let distance = address - sym.address;
-                
+
                 // サイズが分かる場合は範囲内かチェック
                 if sym.size > 0 && distance < sym.size as usize {
                     return Some((sym, name));
                 }
-                
+
                 // 最も近いシンボルを記録
                 if distance < best_distance {
                     best_distance = distance;
                     best_match = Some((sym, name));
                 }
             }
-            
+
             // 次のエントリへ
             let entry_size = core::mem::size_of::<KernelSymbol>() + sym.name_len as usize;
             let aligned_size = (entry_size + 7) & !7;
             offset += aligned_size;
         }
-        
+
         // 距離が大きすぎる場合は無効
         if best_distance > 0x10000 {
             return None;
         }
-        
+
         best_match
     }
-    
+
     /// シンボル数を取得
     pub fn symbol_count(&self) -> usize {
         self.count
     }
-    
+
     /// イテレータを取得
     pub fn iter(&self) -> KernelSymbolIter {
         KernelSymbolIter {
@@ -442,24 +448,26 @@ pub struct KernelSymbolIter<'a> {
 
 impl<'a> Iterator for KernelSymbolIter<'a> {
     type Item = (&'a KernelSymbol, &'a str);
-    
+
     fn next(&mut self) -> Option<Self::Item> {
         if self.table.base + self.offset >= self.table.end {
             return None;
         }
-        
+
         let sym = unsafe { &*((self.table.base + self.offset) as *const KernelSymbol) };
-        let name_ptr = (self.table.base + self.offset + core::mem::size_of::<KernelSymbol>()) as *const u8;
+        let name_ptr =
+            (self.table.base + self.offset + core::mem::size_of::<KernelSymbol>()) as *const u8;
         let name = unsafe {
-            core::str::from_utf8_unchecked(
-                core::slice::from_raw_parts(name_ptr, sym.name_len as usize)
-            )
+            core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                name_ptr,
+                sym.name_len as usize,
+            ))
         };
-        
+
         let entry_size = core::mem::size_of::<KernelSymbol>() + sym.name_len as usize;
         let aligned_size = (entry_size + 7) & !7;
         self.offset += aligned_size;
-        
+
         Some((sym, name))
     }
 }
@@ -470,9 +478,12 @@ static KERNEL_SYMBOLS: spin::Once<Option<KernelSymbolTable>> = spin::Once::new()
 /// シンボルテーブルを初期化
 pub fn init_symbol_table() {
     KERNEL_SYMBOLS.call_once(|| KernelSymbolTable::new());
-    
+
     if let Some(Some(table)) = KERNEL_SYMBOLS.get() {
-        crate::log!("[UNWIND] Kernel symbol table loaded: {} symbols\n", table.symbol_count());
+        crate::log!(
+            "[UNWIND] Kernel symbol table loaded: {} symbols\n",
+            table.symbol_count()
+        );
     } else {
         crate::log!("[UNWIND] No kernel symbol table available\n");
     }
@@ -484,7 +495,7 @@ fn resolve_symbol(address: usize) -> Option<SymbolInfo> {
     if let Some(Some(table)) = KERNEL_SYMBOLS.get() {
         if let Some((sym, name)) = table.lookup(address) {
             return Some(SymbolInfo {
-                name: Some(unsafe { 
+                name: Some(unsafe {
                     // 'static ライフタイムに変換（シンボルテーブルは静的）
                     core::mem::transmute::<&str, &'static str>(name)
                 }),
@@ -493,7 +504,7 @@ fn resolve_symbol(address: usize) -> Option<SymbolInfo> {
             });
         }
     }
-    
+
     // シンボルテーブルがない場合はNone
     None
 }
@@ -501,7 +512,7 @@ fn resolve_symbol(address: usize) -> Option<SymbolInfo> {
 /// パニックハンドラ用バックトレース表示
 pub fn print_backtrace() {
     let bt = Backtrace::capture();
-    
+
     // VGAまたはシリアルに出力
     // ここでは単にバックトレースを生成
     for entry in bt.iter() {
@@ -515,7 +526,7 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
     let mut bt = Backtrace::new();
     let mut current_rbp = rbp;
     let mut frame_num = 0;
-    
+
     // 最初のフレーム（クラッシュ位置）
     bt.entries[0] = Some(BacktraceEntry {
         frame_number: 0,
@@ -527,16 +538,16 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
         symbol: resolve_symbol(rip),
     });
     frame_num = 1;
-    
+
     // フレームチェーンをたどる
     while frame_num < MAX_FRAMES && is_valid_stack_address(current_rbp) {
         let return_addr = unsafe { ptr::read((current_rbp + 8) as *const usize) };
         let next_rbp = unsafe { ptr::read(current_rbp as *const usize) };
-        
+
         if return_addr == 0 || !is_valid_code_address(return_addr) {
             break;
         }
-        
+
         bt.entries[frame_num] = Some(BacktraceEntry {
             frame_number: frame_num,
             frame: StackFrame {
@@ -546,15 +557,15 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
             },
             symbol: resolve_symbol(return_addr),
         });
-        
+
         frame_num += 1;
-        
+
         if next_rbp == 0 || next_rbp <= current_rbp {
             break;
         }
         current_rbp = next_rbp;
     }
-    
+
     bt.count = frame_num;
     bt
 }
@@ -564,7 +575,7 @@ pub fn get_eh_frame_data() -> Option<&'static [u8]> {
     unsafe {
         let start = &EH_FRAME_START as *const u8 as usize;
         let end = &EH_FRAME_END as *const u8 as usize;
-        
+
         if start != 0 && end > start {
             Some(core::slice::from_raw_parts(start as *const u8, end - start))
         } else {
@@ -574,21 +585,23 @@ pub fn get_eh_frame_data() -> Option<&'static [u8]> {
 }
 
 /// DWARFベースのアンワインドを実行
-/// 
+///
 /// 型安全な `SafeEhFrameParser` を使用してスタックフレームを巻き戻す
 pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
     // .eh_frame データを取得
     let eh_frame = get_eh_frame_data().ok_or(UnwindError::NoEhFrame)?;
-    
+
     let mut parser = SafeEhFrameParser::new(eh_frame);
-    
+
     // FDEを検索
-    let fde = parser.find_fde(frame.instruction_pointer as u64)
+    let fde = parser
+        .find_fde(frame.instruction_pointer as u64)
         .ok_or(UnwindError::NoUnwindInfo)?;
-    
+
     // CIEを取得し、必要な値をコピー（借用を解放するため）
     let (code_alignment_factor, data_alignment_factor, initial_start, initial_len) = {
-        let cie = parser.get_cached_cie(fde.cie_offset)
+        let cie = parser
+            .get_cached_cie(fde.cie_offset)
             .ok_or(UnwindError::InvalidDwarf)?;
         (
             cie.code_alignment_factor,
@@ -597,27 +610,24 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
             cie.initial_instructions_len,
         )
     };
-    
+
     // インタプリタを作成
-    let mut interpreter = SafeCfiInterpreter::new(
-        code_alignment_factor,
-        data_alignment_factor,
-    );
-    
+    let mut interpreter = SafeCfiInterpreter::new(code_alignment_factor, data_alignment_factor);
+
     // CIEの初期命令を実行
     let initial_end = initial_start + initial_len;
     parser.reader.set_position(initial_start);
-    
+
     while parser.reader.position() < initial_end {
         if let Some(instr) = parser.parse_instruction(data_alignment_factor) {
             interpreter.execute(instr);
         }
     }
-    
+
     // FDEの命令を実行（PCまで）
     parser.reader.set_position(fde.instructions_offset);
     let fde_end = fde.instructions_offset + fde.instructions_len;
-    
+
     while parser.reader.position() < fde_end {
         let pc_offset = (frame.instruction_pointer as u64).saturating_sub(fde.initial_location);
         if interpreter.location() > pc_offset {
@@ -627,7 +637,7 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
             interpreter.execute(instr);
         }
     }
-    
+
     // CFAを計算
     let ctx = interpreter.context();
     let cfa = match ctx.cfa() {
@@ -643,7 +653,7 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
             return Err(UnwindError::UnsupportedDwarfExpression);
         }
     };
-    
+
     // リターンアドレスを取得
     let return_address = match ctx.get_register_rule(DwarfRegister::ReturnAddress) {
         registers::RegisterRule::Offset(off) => {
@@ -653,7 +663,7 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
         }
         _ => return Err(UnwindError::InvalidDwarf),
     };
-    
+
     // 新しいRBPを取得
     let new_rbp = match ctx.get_register_rule(DwarfRegister::Rbp) {
         registers::RegisterRule::Offset(off) => {
@@ -663,7 +673,7 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
         registers::RegisterRule::SameValue => frame.frame_pointer as u64,
         _ => 0,
     };
-    
+
     Ok(StackFrame {
         instruction_pointer: return_address as usize,
         stack_pointer: cfa as usize,
@@ -676,7 +686,7 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
 // ============================================================================
 
 /// 型安全な .eh_frame パーサー
-/// 
+///
 /// `MemoryReader` を使用して境界チェック付きの安全なパースを行う
 pub struct SafeEhFrameParser<'a> {
     reader: MemoryReader<'a>,
@@ -724,19 +734,28 @@ pub struct AugmentationData {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SafeCfiInstruction {
     /// CFA定義: register + offset
-    DefCfa { register: DwarfRegister, offset: u64 },
+    DefCfa {
+        register: DwarfRegister,
+        offset: u64,
+    },
     /// CFAレジスタ変更
     DefCfaRegister { register: DwarfRegister },
     /// CFAオフセット変更
     DefCfaOffset { offset: u64 },
     /// レジスタをCFA相対オフセットで復元
-    Offset { register: DwarfRegister, offset: i64 },
+    Offset {
+        register: DwarfRegister,
+        offset: i64,
+    },
     /// レジスタ値維持
     SameValue { register: DwarfRegister },
     /// レジスタ状態未定義
     Undefined { register: DwarfRegister },
     /// 別レジスタに格納
-    Register { register: DwarfRegister, source: DwarfRegister },
+    Register {
+        register: DwarfRegister,
+        source: DwarfRegister,
+    },
     /// ロケーション進行
     AdvanceLoc { delta: u64 },
     /// 行状態保存
@@ -762,28 +781,28 @@ impl<'a> SafeEhFrameParser<'a> {
     /// 特定のPCに対応するFDEを検索
     pub fn find_fde(&mut self, pc: u64) -> Option<SafeFde> {
         self.reader.set_position(0);
-        
+
         while !self.reader.is_empty() {
             let entry_start = self.reader.position();
-            
+
             // 長さを読む
             let length = self.reader.read_u32().ok()? as u64;
             if length == 0 {
                 break; // 終端
             }
-            
+
             // 拡張長さ (64-bit format)
             let (length, _is_64bit) = if length == 0xFFFFFFFF {
                 (self.reader.read_u64().ok()?, true)
             } else {
                 (length, false)
             };
-            
+
             let entry_end = self.reader.position() + length as usize;
-            
+
             // CIE IDを読む
             let cie_id = self.reader.read_u32().ok()?;
-            
+
             if cie_id == 0 {
                 // CIE: キャッシュして次へ
                 let cie = self.parse_cie_content(length as usize - 4)?;
@@ -791,20 +810,21 @@ impl<'a> SafeEhFrameParser<'a> {
             } else {
                 // FDE
                 let cie_offset = entry_start as u64 + 4 - cie_id as u64;
-                
+
                 // FDEの位置情報を読む
-                let fde_encoding = self.get_cached_cie(cie_offset)
+                let fde_encoding = self
+                    .get_cached_cie(cie_offset)
                     .and_then(|c| c.augmentation.fde_encoding)
                     .unwrap_or(0x03); // DW_EH_PE_udata4
-                
+
                 let initial_location = self.read_encoded_value(fde_encoding)?;
                 let address_range = self.read_encoded_value(fde_encoding & 0x0F)?;
-                
+
                 // PCが範囲内か確認
                 if pc >= initial_location && pc < initial_location + address_range {
                     let instructions_offset = self.reader.position();
                     let instructions_len = entry_end.saturating_sub(instructions_offset);
-                    
+
                     return Some(SafeFde {
                         cie_offset,
                         initial_location,
@@ -814,30 +834,30 @@ impl<'a> SafeEhFrameParser<'a> {
                     });
                 }
             }
-            
+
             // 次のエントリへ
             self.reader.set_position(entry_end);
         }
-        
+
         None
     }
 
     /// CIE内容をパース
     fn parse_cie_content(&mut self, remaining_len: usize) -> Option<SafeCie> {
         let content_start = self.reader.position();
-        
+
         let version = self.reader.read_u8().ok()?;
         if version != 1 && version != 3 {
             return None; // サポート外バージョン
         }
-        
+
         // Augmentation string
         let mut augmentation = AugmentationData::default();
         let aug_string = self.read_null_terminated_string()?;
-        
+
         let code_alignment_factor = self.reader.read_uleb128().ok()?;
         let data_alignment_factor = self.reader.read_sleb128().ok()?;
-        
+
         // Return address register
         let ra_reg = if version == 1 {
             self.reader.read_u8().ok()? as u64
@@ -845,12 +865,12 @@ impl<'a> SafeEhFrameParser<'a> {
             self.reader.read_uleb128().ok()?
         };
         let return_address_register = DwarfRegister::from_dwarf_number(ra_reg as u8)?;
-        
+
         // Augmentation dataを解析
         if aug_string.starts_with(b"z") {
             let aug_len = self.reader.read_uleb128().ok()? as usize;
             let aug_end = self.reader.position() + aug_len;
-            
+
             for &ch in aug_string.iter().skip(1) {
                 match ch {
                     b'L' => {
@@ -872,13 +892,13 @@ impl<'a> SafeEhFrameParser<'a> {
                     _ => {}
                 }
             }
-            
+
             self.reader.set_position(aug_end);
         }
-        
+
         let initial_instructions_offset = self.reader.position();
         let initial_instructions_len = content_start + remaining_len - initial_instructions_offset;
-        
+
         Some(SafeCie {
             version,
             augmentation,
@@ -944,7 +964,7 @@ impl<'a> SafeEhFrameParser<'a> {
         let opcode = self.reader.read_u8().ok()?;
         let high2 = opcode & 0xC0;
         let low6 = opcode & 0x3F;
-        
+
         match high2 {
             0x00 => self.parse_extended_instruction(low6, data_align),
             0x40 => {
@@ -967,7 +987,11 @@ impl<'a> SafeEhFrameParser<'a> {
     }
 
     /// 拡張CFI命令をパース
-    fn parse_extended_instruction(&mut self, opcode: u8, data_align: i64) -> Option<SafeCfiInstruction> {
+    fn parse_extended_instruction(
+        &mut self,
+        opcode: u8,
+        data_align: i64,
+    ) -> Option<SafeCfiInstruction> {
         match opcode {
             0x00 => Some(SafeCfiInstruction::Nop),
             0x0C => {
@@ -1044,7 +1068,7 @@ impl<'a> SafeEhFrameParser<'a> {
 }
 
 /// 型安全なCFIインタプリタ
-/// 
+///
 /// state_stack は Clone の代わりに直接配列 + 有効フラグを使用。
 /// これにより RememberState/RestoreState 時に copy_from() で
 /// インプレースコピーが可能になり、アロケーションが不要。
@@ -1103,16 +1127,20 @@ impl SafeCfiInterpreter {
                 }
             }
             SafeCfiInstruction::Offset { register, offset } => {
-                self.context.set_register_rule(register, registers::RegisterRule::Offset(offset));
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::Offset(offset));
             }
             SafeCfiInstruction::SameValue { register } => {
-                self.context.set_register_rule(register, registers::RegisterRule::SameValue);
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::SameValue);
             }
             SafeCfiInstruction::Undefined { register } => {
-                self.context.set_register_rule(register, registers::RegisterRule::Undefined);
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::Undefined);
             }
             SafeCfiInstruction::Register { register, source } => {
-                self.context.set_register_rule(register, registers::RegisterRule::Register(source));
+                self.context
+                    .set_register_rule(register, registers::RegisterRule::Register(source));
             }
             SafeCfiInstruction::AdvanceLoc { delta } => {
                 self.location += delta * self.code_alignment_factor;
@@ -1131,7 +1159,8 @@ impl SafeCfiInterpreter {
                 if self.state_stack_len > 0 {
                     self.state_stack_len -= 1;
                     if self.state_stack_valid[self.state_stack_len] {
-                        self.context.copy_from(&self.state_stack[self.state_stack_len]);
+                        self.context
+                            .copy_from(&self.state_stack[self.state_stack_len]);
                         self.state_stack_valid[self.state_stack_len] = false;
                     }
                 }
@@ -1154,36 +1183,36 @@ impl SafeCfiInterpreter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_uleb128() {
         let mut reader = MemoryReader::new(&[0x00]);
         assert_eq!(reader.read_uleb128().unwrap(), 0);
-        
+
         let mut reader = MemoryReader::new(&[0x01]);
         assert_eq!(reader.read_uleb128().unwrap(), 1);
-        
+
         let mut reader = MemoryReader::new(&[0x7F]);
         assert_eq!(reader.read_uleb128().unwrap(), 127);
-        
+
         let mut reader = MemoryReader::new(&[0x80, 0x01]);
         assert_eq!(reader.read_uleb128().unwrap(), 128);
-        
+
         let mut reader = MemoryReader::new(&[0xE5, 0x8E, 0x26]);
         assert_eq!(reader.read_uleb128().unwrap(), 624485);
     }
-    
+
     #[test]
     fn test_sleb128() {
         let mut reader = MemoryReader::new(&[0x00]);
         assert_eq!(reader.read_sleb128().unwrap(), 0);
-        
+
         let mut reader = MemoryReader::new(&[0x01]);
         assert_eq!(reader.read_sleb128().unwrap(), 1);
-        
+
         let mut reader = MemoryReader::new(&[0x7F]);
         assert_eq!(reader.read_sleb128().unwrap(), -1);
-        
+
         let mut reader = MemoryReader::new(&[0x80, 0x7F]);
         assert_eq!(reader.read_sleb128().unwrap(), -128);
     }

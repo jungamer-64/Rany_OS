@@ -1,17 +1,17 @@
 // ============================================================================
 // src/memory.rs - 完全なメモリサブシステム初期化
 // 設計書 5: メモリ管理戦略 - 階層型アロケータ設計
-// 
+//
 // 重要: linked_list_allocator は設計理念に反するため使用しない
 // 代わりにBuddy Allocatorベースのヒープを使用（O(log n)保証）
 // ============================================================================
 #![allow(dead_code)]
 
-use x86_64::{PhysAddr, VirtAddr};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use spin::Mutex;
+use x86_64::{PhysAddr, VirtAddr};
 
 /// 設計書 1.3: Higher Half Kernel Base (SAS)
 pub const PHYSICAL_MEMORY_OFFSET: u64 = 0xFFFF_8000_0000_0000;
@@ -44,7 +44,7 @@ impl BuddyHeapAllocator {
     const MIN_BLOCK_SIZE: usize = 64;
     /// 最大オーダー（64バイト * 2^16 = 4MB最大ブロック）
     const MAX_ORDER: usize = 16;
-    
+
     const fn new() -> Self {
         Self {
             heap_start: 0,
@@ -54,28 +54,28 @@ impl BuddyHeapAllocator {
             block_states: [0u64; 1024],
         }
     }
-    
+
     /// ヒープを初期化
     unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
         self.heap_start = heap_start;
         self.heap_size = heap_size;
         self.initialized = true;
-        
+
         // 全てのフリーリストをクリア
         for list in self.free_lists.iter_mut() {
             *list = None;
         }
-        
+
         // ヒープ全体を最大オーダーのブロックとして登録
         let mut current = heap_start;
         let end = heap_start + heap_size;
-        
+
         while current + Self::MIN_BLOCK_SIZE <= end {
             // 現在位置から配置可能な最大ブロックを決定
             let remaining = end - current;
             let order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
             let block_size = Self::order_to_size(order);
-            
+
             if current + block_size <= end {
                 self.add_to_free_list(current, order);
                 current += block_size;
@@ -84,7 +84,7 @@ impl BuddyHeapAllocator {
             }
         }
     }
-    
+
     /// サイズから必要なオーダーを計算
     #[inline]
     fn size_to_order(size: usize) -> usize {
@@ -95,13 +95,13 @@ impl BuddyHeapAllocator {
             (usize::BITS - (blocks - 1).leading_zeros()) as usize
         }
     }
-    
+
     /// オーダーからサイズを計算
     #[inline]
     const fn order_to_size(order: usize) -> usize {
         Self::MIN_BLOCK_SIZE << order
     }
-    
+
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
         // アドレスに次のフリーブロックへのポインタを格納
@@ -111,7 +111,7 @@ impl BuddyHeapAllocator {
         }
         self.free_lists[order] = Some(addr);
     }
-    
+
     /// フリーリストからブロックを取得
     fn remove_from_free_list(&mut self, order: usize) -> Option<usize> {
         self.free_lists[order].take().map(|addr| {
@@ -121,19 +121,19 @@ impl BuddyHeapAllocator {
             addr
         })
     }
-    
+
     /// 特定アドレスのブロックをフリーリストから削除
     fn remove_specific(&mut self, addr: usize, order: usize) -> bool {
         let mut prev: Option<usize> = None;
         let mut current = self.free_lists[order];
-        
+
         while let Some(curr_addr) = current {
             if curr_addr == addr {
                 // 見つかった - リストから削除
                 let next_ptr = curr_addr as *const usize;
                 let next = unsafe { *next_ptr };
                 let next_opt = if next == 0 { None } else { Some(next) };
-                
+
                 if let Some(prev_addr) = prev {
                     unsafe {
                         *(prev_addr as *mut usize) = next;
@@ -150,20 +150,20 @@ impl BuddyHeapAllocator {
         }
         false
     }
-    
+
     /// メモリを割り当て（O(log n)）
     fn allocate(&mut self, layout: Layout) -> *mut u8 {
         if !self.initialized {
             return null_mut();
         }
-        
+
         let size = layout.size().max(layout.align()).max(Self::MIN_BLOCK_SIZE);
         let order = Self::size_to_order(size);
-        
+
         if order > Self::MAX_ORDER {
             return null_mut();
         }
-        
+
         // 要求オーダー以上の空きブロックを探す
         for current_order in order..=Self::MAX_ORDER {
             if let Some(block) = self.remove_from_free_list(current_order) {
@@ -172,55 +172,55 @@ impl BuddyHeapAllocator {
                 return block as *mut u8;
             }
         }
-        
+
         null_mut()
     }
-    
+
     /// ブロックを目標オーダーまで分割
     fn split_block(&mut self, addr: usize, from_order: usize, to_order: usize) {
         let mut current_order = from_order;
-        
+
         while current_order > to_order {
             current_order -= 1;
             let buddy_addr = addr + Self::order_to_size(current_order);
             self.add_to_free_list(buddy_addr, current_order);
         }
     }
-    
+
     /// メモリを解放（O(log n)）
     fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
         if ptr.is_null() || !self.initialized {
             return;
         }
-        
+
         let size = layout.size().max(layout.align()).max(Self::MIN_BLOCK_SIZE);
         let order = Self::size_to_order(size);
         let addr = ptr as usize;
-        
+
         self.coalesce(addr, order);
     }
-    
+
     /// Buddyとの合体を反復的に試みる
     fn coalesce(&mut self, addr: usize, order: usize) {
         let mut current_addr = addr;
         let mut current_order = order;
-        
+
         while current_order < Self::MAX_ORDER {
             let buddy_addr = self.buddy_addr(current_addr, current_order);
-            
+
             // Buddyがフリーリストにあるか確認
             if !self.remove_specific(buddy_addr, current_order) {
                 break;
             }
-            
+
             // 合体: 小さい方のアドレスを使用
             current_addr = current_addr.min(buddy_addr);
             current_order += 1;
         }
-        
+
         self.add_to_free_list(current_addr, current_order);
     }
-    
+
     /// Buddyのアドレスを計算
     #[inline]
     fn buddy_addr(&self, addr: usize, order: usize) -> usize {
@@ -243,7 +243,7 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.0.lock().allocate(layout)
     }
-    
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         self.0.lock().deallocate(ptr, layout)
     }
@@ -263,11 +263,11 @@ pub const EXCHANGE_HEAP_START: u64 = 0x_5555_5555_0000;
 pub const EXCHANGE_HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
 
 /// メモリサブシステム初期化フラグ
-static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool = 
+static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// メモリサブシステムの完全初期化
-/// 
+///
 /// 初期化順序:
 /// 1. グローバルヒープ（allocが使えるようになる）
 /// 2. Buddy Allocator（物理フレーム管理）
@@ -276,48 +276,48 @@ static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
 /// 5. Per-Core Slab Cache
 pub fn init() {
     use core::sync::atomic::Ordering;
-    
+
     if MEMORY_INITIALIZED.swap(true, Ordering::SeqCst) {
         crate::log!("[MEM] Warning: Memory already initialized\n");
         return;
     }
-    
+
     crate::log!("[MEM] Initializing memory subsystem\n");
-    
+
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
     init_global_heap();
     crate::log!("[MEM] Global heap initialized ({}KB)\n", HEAP_SIZE / 1024);
-    
+
     // 2. Buddy Allocator の初期化（デフォルトのメモリ領域を使用）
     // 注: 本番環境ではブートローダーからメモリマップを取得
     let usable_regions = get_default_memory_regions();
     crate::log!("[MEM] Using {} memory regions\n", usable_regions.len());
-    
+
     unsafe {
         crate::mm::init_buddy_allocator(&usable_regions);
     }
     crate::log!("[MEM] Buddy allocator initialized\n");
-    
+
     // 3. Exchange Heap の初期化（ゼロコピーIPC用）
     unsafe {
-        crate::mm::init_exchange_heap(
-            EXCHANGE_HEAP_START as usize,
-            EXCHANGE_HEAP_SIZE,
-        );
+        crate::mm::init_exchange_heap(EXCHANGE_HEAP_START as usize, EXCHANGE_HEAP_SIZE);
     }
-    crate::log!("[MEM] Exchange heap initialized ({}MB)\n", EXCHANGE_HEAP_SIZE / 1024 / 1024);
-    
+    crate::log!(
+        "[MEM] Exchange heap initialized ({}MB)\n",
+        EXCHANGE_HEAP_SIZE / 1024 / 1024
+    );
+
     // 4. Per-CPU データ構造の初期化（BSPのみ）
     unsafe {
         crate::mm::init_per_cpu(1);
         crate::mm::setup_current_cpu(0);
     }
     crate::log!("[MEM] Per-CPU data initialized\n");
-    
+
     // 5. Per-Core Slab Cache の初期化
     crate::mm::init_per_core_caches(1);
     crate::log!("[MEM] Per-core slab caches initialized\n");
-    
+
     // メモリ統計を表示
     print_memory_stats();
 }
@@ -342,22 +342,29 @@ fn get_default_memory_regions() -> Vec<(PhysAddr, u64)> {
 /// メモリ統計を表示
 fn print_memory_stats() {
     let buddy_stats = crate::mm::buddy_allocator_stats();
-    
+
     crate::log!("[MEM] === Memory Statistics ===\n");
     crate::log!("[MEM] Total Frames: {}\n", buddy_stats.total_frames);
-    crate::log!("[MEM] Free Frames: {} ({} KB)\n", 
-        buddy_stats.free_frames, 
+    crate::log!(
+        "[MEM] Free Frames: {} ({} KB)\n",
+        buddy_stats.free_frames,
         buddy_stats.free_frames * 4
     );
     crate::log!("[MEM] Split Operations: {}\n", buddy_stats.split_count);
-    crate::log!("[MEM] Coalesce Operations: {}\n", buddy_stats.coalesce_count);
-    
+    crate::log!(
+        "[MEM] Coalesce Operations: {}\n",
+        buddy_stats.coalesce_count
+    );
+
     // Order別の統計を表示
     for (order, (blocks, _frames)) in buddy_stats.order_stats.iter().enumerate() {
         if *blocks > 0 {
             let block_size_kb = (1usize << order) * 4;
-            crate::log!("[MEM]   Order {}: {} blocks ({}KB each)\n", 
-                order, blocks, block_size_kb
+            crate::log!(
+                "[MEM]   Order {}: {} blocks ({}KB each)\n",
+                order,
+                blocks,
+                block_size_kb
             );
         }
     }

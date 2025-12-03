@@ -27,22 +27,21 @@
 #![allow(dead_code)]
 
 // Submodules
+pub mod audit;
 pub mod capability;
 pub mod mac;
-pub mod audit;
 pub mod policy;
-pub mod static_capability;  // 新: 静的ケイパビリティシステム
+pub mod static_capability; // 新: 静的ケイパビリティシステム
 
 // Re-export static capability system (preferred API)
 pub use static_capability::{
-    MemoryCapability, NetCapability, IoCapability,
-    InterruptCapability, DmaCapability, FsCapability, IpcCapability,
-    DomainCapabilities, NetworkSocket, FileHandle, DmaBuffer,
-    send_packet, allocate_dma_buffer, port_read_u8, port_write_u8,
+    DmaBuffer, DmaCapability, DomainCapabilities, FileHandle, FsCapability, InterruptCapability,
+    IoCapability, IpcCapability, MemoryCapability, NetCapability, NetworkSocket,
+    allocate_dma_buffer, port_read_u8, port_write_u8, send_packet,
 };
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -180,7 +179,7 @@ impl AccessControlManager {
     /// ドメインの権限を設定
     pub fn set_capabilities(&self, domain_id: u64, caps: SecurityCapabilities) {
         let mut caps_map = self.domain_caps.lock();
-        
+
         // 既存エントリを更新または追加
         if let Some(entry) = caps_map.iter_mut().find(|(id, _)| *id == domain_id) {
             entry.1 = caps;
@@ -206,7 +205,7 @@ impl AccessControlManager {
         required: SecurityCapabilities,
     ) -> Result<(), SecurityViolation> {
         let actual = self.get_capabilities(domain_id);
-        
+
         // 各権限をチェック
         if required.can_call_kernel_api && !actual.can_call_kernel_api {
             return self.violation(domain_id, "kernel API call");
@@ -232,19 +231,22 @@ impl AccessControlManager {
         if required.can_filesystem && !actual.can_filesystem {
             return self.violation(domain_id, "filesystem access");
         }
-        
+
         Ok(())
     }
 
     /// セキュリティ違反を記録
     fn violation(&self, domain_id: u64, operation: &str) -> Result<(), SecurityViolation> {
         self.violations.fetch_add(1, Ordering::Relaxed);
-        
+
         if self.audit_enabled.load(Ordering::Relaxed) {
-            crate::log!("[SECURITY] Violation: domain {} attempted {}\n", 
-                domain_id, operation);
+            crate::log!(
+                "[SECURITY] Violation: domain {} attempted {}\n",
+                domain_id,
+                operation
+            );
         }
-        
+
         Err(SecurityViolation {
             domain_id,
             operation: operation.into(),
@@ -266,8 +268,11 @@ pub struct SecurityViolation {
 
 impl core::fmt::Display for SecurityViolation {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Security violation: domain {} attempted unauthorized {}", 
-            self.domain_id, self.operation)
+        write!(
+            f,
+            "Security violation: domain {} attempted unauthorized {}",
+            self.domain_id, self.operation
+        )
     }
 }
 
@@ -305,29 +310,31 @@ impl ZeroCopySecurityBarrier {
             self.transfers_denied.fetch_add(1, Ordering::Relaxed);
             return Err(TransferSecurityError::NullPointer);
         }
-        
+
         // 2. サイズの妥当性チェック（極端に大きいサイズを拒否）
         const MAX_TRANSFER_SIZE: usize = 1 << 30; // 1GB
         if size > MAX_TRANSFER_SIZE {
             self.transfers_denied.fetch_add(1, Ordering::Relaxed);
             return Err(TransferSecurityError::SizeTooLarge);
         }
-        
+
         // 3. ドメインIDの妥当性
         if from_domain == to_domain {
             // 同一ドメイン内転送は常にOK
-            self.bytes_transferred.fetch_add(size as u64, Ordering::Relaxed);
+            self.bytes_transferred
+                .fetch_add(size as u64, Ordering::Relaxed);
             return Ok(());
         }
-        
+
         // 4. アドレス範囲のオーバーフローチェック
         if ptr.checked_add(size).is_none() {
             self.transfers_denied.fetch_add(1, Ordering::Relaxed);
             return Err(TransferSecurityError::AddressOverflow);
         }
-        
+
         // 5. 転送を許可
-        self.bytes_transferred.fetch_add(size as u64, Ordering::Relaxed);
+        self.bytes_transferred
+            .fetch_add(size as u64, Ordering::Relaxed);
         Ok(())
     }
 
@@ -413,7 +420,7 @@ impl TcbTracker {
         let framework = self.framework_loc.load(Ordering::Relaxed) as f32;
         let safe = self.safe_loc.load(Ordering::Relaxed) as f32;
         let total = framework + safe;
-        
+
         if total > 0.0 {
             (framework / total) * 100.0
         } else {
@@ -502,14 +509,14 @@ impl AuditLog {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let mut events = self.events.lock();
-        
+
         // 最大数を超えたら古いイベントを削除
         if events.len() >= self.max_events {
             events.remove(0);
         }
-        
+
         events.push(event);
     }
 
@@ -569,7 +576,7 @@ pub fn audit_log() -> &'static AuditLog {
 pub fn init() {
     // カーネルドメイン（ID=0）の権限を設定
     ACCESS_CONTROL.set_capabilities(0, SecurityCapabilities::KERNEL);
-    
+
     crate::log!("[SECURITY] Security framework initialized\n");
     crate::log!("[SECURITY] Audit logging: enabled\n");
 }
@@ -577,39 +584,39 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_security_capabilities() {
         let sandboxed = SecurityCapabilities::SANDBOXED;
         assert!(!sandboxed.can_call_kernel_api);
         assert!(!sandboxed.can_ipc);
-        
+
         let user = SecurityCapabilities::USER_APP;
         assert!(user.can_call_kernel_api);
         assert!(user.can_ipc);
         assert!(!user.allows_unsafe);
     }
-    
+
     #[test]
     fn test_security_level() {
         assert!(SecurityLevel::KernelCore.has_privilege_over(SecurityLevel::Framework));
         assert!(SecurityLevel::Framework.has_privilege_over(SecurityLevel::SafeRust));
         assert!(!SecurityLevel::SafeRust.has_privilege_over(SecurityLevel::AuditedUnsafe));
     }
-    
+
     #[test]
     fn test_zero_copy_barrier() {
         let barrier = ZeroCopySecurityBarrier::new();
-        
+
         // 正常な転送
         assert!(barrier.check_transfer(1, 2, 0x1000, 4096).is_ok());
-        
+
         // NULLポインタ
         assert_eq!(
             barrier.check_transfer(1, 2, 0, 100),
             Err(TransferSecurityError::NullPointer)
         );
-        
+
         // 大きすぎるサイズ
         assert_eq!(
             barrier.check_transfer(1, 2, 0x1000, 2 << 30),

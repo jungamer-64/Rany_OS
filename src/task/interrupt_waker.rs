@@ -1,16 +1,16 @@
 // ============================================================================
 // src/task/interrupt_waker.rs - Interrupt-Waker Bridge
 // 設計書 4.2: 割り込みとWakerのブリッジ
-// 
+//
 // ハードウェア割り込みとRustのasync/await Futureを連携させる機構
 // ISRから安全にWakerを起動し、Executorにタスクの再開を通知する
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
-use core::task::Waker;
-use alloc::vec::Vec;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::task::Waker;
 use spin::Mutex;
 
 // ============================================================================
@@ -25,11 +25,11 @@ pub enum InterruptSource {
     /// キーボード割り込み
     Keyboard,
     /// VirtIO ネットワーク
-    VirtioNet(u8),  // queue index
+    VirtioNet(u8), // queue index
     /// VirtIO ブロック
-    VirtioBlk(u8),  // queue index
+    VirtioBlk(u8), // queue index
     /// NVMe
-    Nvme(u16),      // queue ID
+    Nvme(u16), // queue ID
     /// 汎用IRQ
     Irq(u8),
 }
@@ -53,7 +53,7 @@ impl InterruptSource {
 // ============================================================================
 
 /// ISR-safe な Waker ストレージ
-/// 
+///
 /// 割り込みハンドラ内から安全にWakerを操作できる
 pub struct AtomicWaker {
     /// Wakerが設定されているか
@@ -73,7 +73,7 @@ impl AtomicWaker {
             wake_requested: AtomicBool::new(false),
         }
     }
-    
+
     /// Wakerを登録
     pub fn register(&self, waker: &Waker) {
         // 既存のWakerと比較して、異なる場合のみ更新
@@ -82,12 +82,12 @@ impl AtomicWaker {
             Some(existing) => !existing.will_wake(waker),
             None => true,
         };
-        
+
         if should_update {
             *guard = Some(waker.clone());
             self.has_waker.store(true, Ordering::Release);
         }
-        
+
         // 保留中のwake要求があれば処理
         if self.wake_requested.swap(false, Ordering::AcqRel) {
             if let Some(w) = guard.take() {
@@ -97,9 +97,9 @@ impl AtomicWaker {
             }
         }
     }
-    
+
     /// Wakerを起動（ISRから呼ばれる）
-    /// 
+    ///
     /// # Safety
     /// ISR内から呼ばれることを想定。ロック取得に失敗した場合は
     /// wake_requestedフラグを設定して、次のregister時にwakeする
@@ -113,23 +113,23 @@ impl AtomicWaker {
                 return;
             }
         }
-        
+
         // ロック取得に失敗した場合はフラグを設定
         if self.has_waker.load(Ordering::Acquire) {
             self.wake_requested.store(true, Ordering::Release);
         }
     }
-    
+
     /// Wakerが登録されているか
     pub fn has_waker(&self) -> bool {
         self.has_waker.load(Ordering::Acquire)
     }
-    
+
     /// Wake要求が保留中か
     pub fn is_wake_pending(&self) -> bool {
         self.wake_requested.load(Ordering::Acquire)
     }
-    
+
     /// Wakerをクリア
     pub fn clear(&self) {
         *self.waker.lock() = None;
@@ -167,22 +167,20 @@ impl InterruptWakerRegistry {
             wake_count: AtomicU64::new(0),
         }
     }
-    
+
     /// 割り込みソースにWakerを登録
     pub fn register(&self, source: InterruptSource, waker: &Waker) {
         let mut wakers = self.wakers.lock();
-        
-        let atomic_waker = wakers
-            .entry(source)
-            .or_insert_with(AtomicWaker::new);
-        
+
+        let atomic_waker = wakers.entry(source).or_insert_with(AtomicWaker::new);
+
         atomic_waker.register(waker);
     }
-    
+
     /// 割り込みソースのWakerを起動（ISRから呼ばれる）
     pub fn wake(&self, source: InterruptSource) {
         self.interrupt_count.fetch_add(1, Ordering::Relaxed);
-        
+
         // try_lockでデッドロックを回避
         if let Some(wakers) = self.wakers.try_lock() {
             if let Some(atomic_waker) = wakers.get(&source) {
@@ -191,11 +189,12 @@ impl InterruptWakerRegistry {
             }
         }
     }
-    
+
     /// 複数の割り込みソースのWakerを一度に起動
     pub fn wake_many(&self, sources: &[InterruptSource]) {
-        self.interrupt_count.fetch_add(sources.len() as u64, Ordering::Relaxed);
-        
+        self.interrupt_count
+            .fetch_add(sources.len() as u64, Ordering::Relaxed);
+
         if let Some(wakers) = self.wakers.try_lock() {
             for source in sources {
                 if let Some(atomic_waker) = wakers.get(source) {
@@ -205,12 +204,12 @@ impl InterruptWakerRegistry {
             }
         }
     }
-    
+
     /// 割り込みソースの登録を解除
     pub fn unregister(&self, source: InterruptSource) {
         self.wakers.lock().remove(&source);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> InterruptWakerStats {
         InterruptWakerStats {
@@ -259,7 +258,7 @@ pub fn wake_from_interrupt(source: InterruptSource) {
 // ============================================================================
 
 /// 割り込み待ちFutureを作成するヘルパー
-/// 
+///
 /// 使用例:
 /// ```ignore
 /// let data = wait_for_interrupt(InterruptSource::VirtioNet(0)).await;
@@ -279,7 +278,7 @@ pub struct InterruptFuture {
 
 impl core::future::Future for InterruptFuture {
     type Output = ();
-    
+
     fn poll(
         mut self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
@@ -305,7 +304,7 @@ impl core::future::Future for InterruptFuture {
 pub fn handle_timer_interrupt_waker() {
     // タイマー関連のWakerを起動
     wake_from_interrupt(InterruptSource::Timer);
-    
+
     // タイマーモジュールに通知
     super::timer::handle_timer_interrupt();
 }
@@ -318,7 +317,7 @@ pub fn handle_timer_interrupt_waker() {
 mod tests {
     use super::*;
     use core::task::{RawWaker, RawWakerVTable};
-    
+
     fn dummy_waker() -> Waker {
         const VTABLE: RawWakerVTable = RawWakerVTable::new(
             |_| RawWaker::new(core::ptr::null(), &VTABLE),
@@ -326,24 +325,24 @@ mod tests {
             |_| {},
             |_| {},
         );
-        
+
         unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
     }
-    
+
     #[test]
     fn test_atomic_waker() {
         let atomic_waker = AtomicWaker::new();
         let waker = dummy_waker();
-        
+
         assert!(!atomic_waker.has_waker());
-        
+
         atomic_waker.register(&waker);
         assert!(atomic_waker.has_waker());
-        
+
         atomic_waker.wake();
         assert!(!atomic_waker.has_waker());
     }
-    
+
     #[test]
     fn test_interrupt_source_from_vector() {
         assert_eq!(

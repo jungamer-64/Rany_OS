@@ -6,9 +6,9 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
 use core::arch::naked_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
-use alloc::boxed::Box;
 use x86_64::VirtAddr;
 
 /// タスク状態
@@ -26,7 +26,7 @@ pub enum TaskState {
 }
 
 /// CPUコンテキスト（レジスタ状態）
-/// 
+///
 /// x86_64 ABI に従い、callee-saved レジスタのみ保存
 /// caller-saved (rax, rcx, rdx, r8-r11) は関数呼び出しで破壊されるため不要
 #[repr(C)]
@@ -39,13 +39,13 @@ pub struct CpuContext {
     pub r13: u64,
     pub r14: u64,
     pub r15: u64,
-    
+
     // スタックポインタ
     pub rsp: u64,
-    
+
     // 命令ポインタ（ret先アドレス）
     pub rip: u64,
-    
+
     // フラグレジスタ
     pub rflags: u64,
 }
@@ -65,34 +65,34 @@ impl CpuContext {
             rflags: 0x200, // 割り込み有効 (IF=1)
         }
     }
-    
+
     /// 新しいタスク用のコンテキストを作成
-    /// 
+    ///
     /// # Arguments
     /// * `entry_point` - タスクのエントリポイント関数
     /// * `stack_top` - スタックの最上位アドレス（高いアドレス側）
     /// * `arg` - タスクに渡す引数
     pub fn new_task(entry_point: fn(u64) -> !, stack_top: VirtAddr, arg: u64) -> Self {
         let stack = stack_top.as_u64();
-        
+
         // スタック上にリターンアドレスとして task_wrapper を配置
         // task_wrapper が entry_point(arg) を呼び出す
         Self {
             rbx: 0,
             rbp: 0,
-            r12: entry_point as u64,  // r12 にエントリポイントを保存
-            r13: arg,                  // r13 に引数を保存
+            r12: entry_point as u64, // r12 にエントリポイントを保存
+            r13: arg,                // r13 に引数を保存
             r14: 0,
             r15: 0,
-            rsp: stack - 8,           // リターンアドレス分を確保
+            rsp: stack - 8, // リターンアドレス分を確保
             rip: task_entry_trampoline as *const () as u64,
-            rflags: 0x200,            // IF=1 (割り込み有効)
+            rflags: 0x200, // IF=1 (割り込み有効)
         }
     }
 }
 
 /// タスクエントリ用のトランポリン関数
-/// 
+///
 /// コンテキストスイッチ後に最初に実行される
 /// r12 = entry_point, r13 = arg として呼び出される
 #[unsafe(naked)]
@@ -108,10 +108,10 @@ unsafe extern "C" fn task_entry_trampoline() -> ! {
 }
 
 /// コンテキストスイッチを実行
-/// 
+///
 /// 現在のタスクのコンテキストを `old` に保存し、
 /// `new` のコンテキストを復元して実行を再開する。
-/// 
+///
 /// # Safety
 /// - `old` と `new` は有効な CpuContext へのポインタである必要がある
 /// - スタックは適切に設定されている必要がある
@@ -128,20 +128,16 @@ pub unsafe extern "C" fn switch_context(_old: *mut CpuContext, _new: *const CpuC
         "mov [rdi + 0x18], r13",
         "mov [rdi + 0x20], r14",
         "mov [rdi + 0x28], r15",
-        
         // RSP を保存
         "mov [rdi + 0x30], rsp",
-        
         // RIP（リターンアドレス）を保存
         // switch_context から戻る際のアドレス
         "lea rax, [rip + 2f]",
         "mov [rdi + 0x38], rax",
-        
         // RFLAGS を保存
         "pushfq",
         "pop rax",
         "mov [rdi + 0x40], rax",
-        
         // ========================================
         // new (rsi) のコンテキストを復元
         // ========================================
@@ -152,18 +148,14 @@ pub unsafe extern "C" fn switch_context(_old: *mut CpuContext, _new: *const CpuC
         "mov r13, [rsi + 0x18]",
         "mov r14, [rsi + 0x20]",
         "mov r15, [rsi + 0x28]",
-        
         // RSP を復元
         "mov rsp, [rsi + 0x30]",
-        
         // RFLAGS を復元
         "mov rax, [rsi + 0x40]",
         "push rax",
         "popfq",
-        
         // RIP へジャンプ（新しいタスクの実行を再開）
         "jmp [rsi + 0x38]",
-        
         // switch_context からの戻り先（old タスクが再開される時）
         "2:",
         "ret",
@@ -171,7 +163,7 @@ pub unsafe extern "C" fn switch_context(_old: *mut CpuContext, _new: *const CpuC
 }
 
 /// カーネルタスク用のスタック
-/// 
+///
 /// Per-Task スタック管理。各タスクは独自のカーネルスタックを持つ。
 pub struct KernelStack {
     /// スタックメモリ（底から上に向かって成長）
@@ -181,39 +173,39 @@ pub struct KernelStack {
 impl KernelStack {
     /// スタックサイズ（16KiB）
     pub const SIZE: usize = 16 * 1024;
-    
+
     /// ガードページサイズ（スタックオーバーフロー検出用）
     pub const GUARD_SIZE: usize = 4096;
-    
+
     /// 新しいスタックを割り当て
     pub fn new() -> Option<Self> {
         // ゼロ初期化されたスタックメモリを確保
         // Box::new_zeroed() は allocator_api feature が必要なので代替実装
         let layout = core::alloc::Layout::new::<[u8; Self::SIZE]>();
         let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        
+
         if ptr.is_null() {
             return None;
         }
-        
+
         // SAFETY: ptr は適切なサイズとアラインメントで割り当てられている
         let memory = unsafe { Box::from_raw(ptr as *mut [u8; Self::SIZE]) };
-        
+
         Some(Self { memory })
     }
-    
+
     /// スタックの最上位アドレス（初期RSP）を取得
-    /// 
+    ///
     /// x86_64 ではスタックは下方向に成長するため、
     /// 最上位アドレスが初期スタックポインタとなる
     pub fn top(&self) -> VirtAddr {
         let ptr = self.memory.as_ptr() as u64;
         let top = ptr + Self::SIZE as u64;
-        
+
         // 16バイトアラインメント（ABI要件）
         VirtAddr::new(top & !0xF)
     }
-    
+
     /// スタックの底アドレスを取得
     pub fn bottom(&self) -> VirtAddr {
         VirtAddr::new(self.memory.as_ptr() as u64)
@@ -227,7 +219,7 @@ impl Default for KernelStack {
 }
 
 /// タスク制御ブロック (TCB)
-/// 
+///
 /// 各タスクの状態を管理する中心的なデータ構造
 pub struct TaskControlBlock {
     /// タスクID
@@ -248,16 +240,12 @@ pub struct TaskControlBlock {
 
 impl TaskControlBlock {
     /// 新しいTCBを作成
-    pub fn new(
-        entry_point: fn(u64) -> !,
-        arg: u64,
-        priority: u8,
-    ) -> Option<Self> {
+    pub fn new(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<Self> {
         let kernel_stack = KernelStack::new()?;
         let stack_top = kernel_stack.top();
-        
+
         let context = CpuContext::new_task(entry_point, stack_top, arg);
-        
+
         Some(Self {
             id: super::TaskId::new(),
             state: TaskState::Ready,
@@ -268,7 +256,7 @@ impl TaskControlBlock {
             last_cpu: None,
         })
     }
-    
+
     /// アイドルタスク用のTCBを作成
     pub fn idle(cpu_id: usize) -> Self {
         Self {
@@ -290,7 +278,7 @@ impl TaskControlBlock {
 use crate::sync::IrqMutex;
 
 /// Send を実装した TCB ポインタのラッパー
-/// 
+///
 /// 生ポインタは Send を実装しないが、TCB へのアクセスは
 /// IrqMutex で保護されているため、安全に Send を実装できる
 #[derive(Clone, Copy)]
@@ -306,7 +294,7 @@ static CURRENT_TASKS: [IrqMutex<Option<TcbPtr>>; 64] = {
 };
 
 /// 現在のCPUで実行中のタスクを設定
-/// 
+///
 /// # Safety
 /// tcb は有効な TaskControlBlock へのポインタである必要がある
 pub unsafe fn set_current_task(cpu_id: usize, tcb: *mut TaskControlBlock) {
@@ -328,7 +316,7 @@ pub fn get_current_task(cpu_id: usize) -> Option<*mut TaskControlBlock> {
 pub static CONTEXT_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// スケジューラからのコンテキストスイッチ
-/// 
+///
 /// # Safety
 /// - current と next は有効な TCB へのポインタである必要がある
 /// - 割り込みが適切に管理されている必要がある
@@ -340,20 +328,20 @@ pub unsafe fn schedule_switch(
     if current == next {
         return; // 同じタスクなら何もしない
     }
-    
+
     // 統計更新
     CONTEXT_SWITCH_COUNT.fetch_add(1, Ordering::Relaxed);
-    
+
     // 状態更新
     // SAFETY: current と next は有効なポインタ
     unsafe {
         (*current).state = TaskState::Ready;
         (*next).state = TaskState::Running;
         (*next).last_cpu = Some(cpu_id);
-        
+
         // 現在タスクを更新
         set_current_task(cpu_id, next);
-        
+
         // コンテキストスイッチ実行
         switch_context(&mut (*current).context, &(*next).context);
     }
@@ -362,13 +350,13 @@ pub unsafe fn schedule_switch(
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_context_size() {
         // CpuContext のサイズが期待通りか確認
         assert_eq!(core::mem::size_of::<CpuContext>(), 72); // 9 * 8 bytes
     }
-    
+
     #[test]
     fn test_context_alignment() {
         // 8バイトアラインメント

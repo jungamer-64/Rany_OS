@@ -17,10 +17,10 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicU32, AtomicUsize, AtomicBool, Ordering};
 use alloc::boxed::Box;
-use alloc::vec::Vec;
 use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -185,7 +185,7 @@ impl WorkStealingDeque {
     pub fn new(capacity: usize) -> Self {
         let mut buffer = Vec::with_capacity(capacity);
         buffer.resize_with(capacity, || None);
-        
+
         Self {
             buffer,
             bottom: AtomicUsize::new(0),
@@ -197,7 +197,7 @@ impl WorkStealingDeque {
     pub fn push(&mut self, task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
         let bottom = self.bottom.load(Ordering::Relaxed);
         let top = self.top.load(Ordering::Acquire);
-        
+
         let size = bottom.wrapping_sub(top);
         if size >= self.buffer.len() {
             return Err(task); // キューが満杯
@@ -205,10 +205,10 @@ impl WorkStealingDeque {
 
         let index = bottom % self.buffer.len();
         self.buffer[index] = Some(task);
-        
+
         core::sync::atomic::fence(Ordering::Release);
         self.bottom.store(bottom.wrapping_add(1), Ordering::Relaxed);
-        
+
         Ok(())
     }
 
@@ -218,12 +218,12 @@ impl WorkStealingDeque {
         if bottom == 0 {
             return None;
         }
-        
+
         let new_bottom = bottom.wrapping_sub(1);
         self.bottom.store(new_bottom, Ordering::SeqCst);
-        
+
         let top = self.top.load(Ordering::SeqCst);
-        
+
         if top > new_bottom {
             // キューが空
             self.bottom.store(top, Ordering::Relaxed);
@@ -235,12 +235,16 @@ impl WorkStealingDeque {
 
         if top == new_bottom {
             // 最後の要素：スチーラーと競合の可能性
-            if self.top.compare_exchange(
-                top,
-                top.wrapping_add(1),
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            ).is_err() {
+            if self
+                .top
+                .compare_exchange(
+                    top,
+                    top.wrapping_add(1),
+                    Ordering::SeqCst,
+                    Ordering::Relaxed,
+                )
+                .is_err()
+            {
                 // スチーラーが先に取った
                 self.bottom.store(top.wrapping_add(1), Ordering::Relaxed);
                 return None;
@@ -255,18 +259,18 @@ impl WorkStealingDeque {
     pub fn steal(&self) -> Option<Box<StealableTask>> {
         loop {
             let top = self.top.load(Ordering::Acquire);
-            
+
             core::sync::atomic::fence(Ordering::SeqCst);
-            
+
             let bottom = self.bottom.load(Ordering::Acquire);
-            
+
             if top >= bottom {
                 return None; // キューが空
             }
 
             // 注：実際にはバッファへの安全なアクセスが必要
             // この実装は概念的なもの
-            
+
             let result = self.top.compare_exchange_weak(
                 top,
                 top.wrapping_add(1),
@@ -436,7 +440,7 @@ impl GlobalScheduler {
     pub fn spawn(&self, mut task: Box<StealableTask>) -> Result<(), Box<StealableTask>> {
         // アフィニティに基づいてコアを選択
         let target_core = self.select_core_for_task(&task);
-        
+
         if let Some(worker) = self.workers.get(target_core as usize) {
             match worker.push_task(task) {
                 Ok(()) => return Ok(()),
@@ -500,7 +504,7 @@ impl GlobalScheduler {
     /// 指定コアの次のタスクを取得
     pub fn schedule(&self, core_id: u32) -> Option<Box<StealableTask>> {
         let worker = self.workers.get(core_id as usize)?;
-        
+
         // 1. ローカルキューから
         if let Some(task) = worker.pop_task() {
             return Some(task);
@@ -514,7 +518,10 @@ impl GlobalScheduler {
         // 3. 他のコアからスチール
         if worker.queue_size() < STEAL_THRESHOLD {
             if let Some(task) = self.try_steal_from_others(core_id) {
-                worker.stats.tasks_received_from_steal.fetch_add(1, Ordering::Relaxed);
+                worker
+                    .stats
+                    .tasks_received_from_steal
+                    .fetch_add(1, Ordering::Relaxed);
                 return Some(task);
             }
         }
@@ -528,7 +535,7 @@ impl GlobalScheduler {
     /// グローバルキューからポップ
     fn try_pop_global(&self, core_id: u32) -> Option<Box<StealableTask>> {
         let mut global = self.global_queue.lock();
-        
+
         // アフィニティに適合するタスクを探す
         for i in 0..global.len() {
             if global[i].affinity.is_allowed(core_id) {
@@ -541,11 +548,11 @@ impl GlobalScheduler {
     /// 他のコアからスチール
     fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
         let num_workers = self.workers.len();
-        
+
         // ランダム化されたスチール開始位置
         // 実際にはRNGを使うべきだが、ここではカウンターを使用
         let start = self.poll_counter.fetch_add(1, Ordering::Relaxed) as usize;
-        
+
         for offset in 1..num_workers {
             let victim_id = (start + offset) % num_workers;
             if victim_id == core_id as usize {
@@ -621,14 +628,14 @@ impl GlobalScheduler {
     /// 全体の統計を取得
     pub fn total_stats(&self) -> SchedulerStats {
         let mut stats = SchedulerStats::default();
-        
+
         for worker in &self.workers {
             let ws = worker.stats();
             stats.tasks_executed += ws.tasks_executed.load(Ordering::Relaxed);
             stats.tasks_stolen += ws.tasks_stolen.load(Ordering::Relaxed);
             stats.idle_cycles += ws.idle_cycles.load(Ordering::Relaxed);
         }
-        
+
         stats.global_queue_size = self.global_queue.lock().len();
         stats
     }

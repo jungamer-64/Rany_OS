@@ -1,6 +1,6 @@
 // ============================================================================
 // src/security/static_capability.rs - 静的ケイパビリティシステム
-// 
+//
 // ExoRust設計理念: ランタイムチェックを排除し、コンパイル時に安全性を保証
 // ============================================================================
 //!
@@ -37,7 +37,7 @@ use core::marker::PhantomData;
 // ============================================================================
 
 /// メモリマッピング権限（コンパイル時のみ存在）
-/// 
+///
 /// このトークンを持つ関数のみがメモリマッピング操作を実行可能。
 /// トークンはカーネル初期化時にのみ生成され、偽造不可能。
 #[derive(Debug)]
@@ -118,57 +118,57 @@ unsafe impl Sync for TaskCapability {}
 // ============================================================================
 
 /// カーネル権限ファクトリ
-/// 
+///
 /// このモジュールの関数はunsafeであり、カーネル初期化コードからのみ呼び出される。
 /// 各ドメインには、許可された権限のトークンのみが渡される。
 pub mod kernel_only {
     use super::*;
-    
+
     /// メモリ権限を生成
-    /// 
+    ///
     /// # Safety
     /// カーネル初期化時にのみ呼び出すこと
     #[inline(always)]
     pub unsafe fn grant_memory_capability() -> MemoryCapability {
         MemoryCapability { _private: () }
     }
-    
+
     /// ネットワーク権限を生成
     #[inline(always)]
     pub unsafe fn grant_net_capability() -> NetCapability {
         NetCapability { _private: () }
     }
-    
+
     /// I/O権限を生成
     #[inline(always)]
     pub unsafe fn grant_io_capability() -> IoCapability {
         IoCapability { _private: () }
     }
-    
+
     /// 割り込み権限を生成
     #[inline(always)]
     pub unsafe fn grant_interrupt_capability() -> InterruptCapability {
         InterruptCapability { _private: () }
     }
-    
+
     /// DMA権限を生成
     #[inline(always)]
     pub unsafe fn grant_dma_capability() -> DmaCapability {
         DmaCapability { _private: () }
     }
-    
+
     /// ファイルシステム権限を生成
     #[inline(always)]
     pub unsafe fn grant_fs_capability() -> FsCapability {
         FsCapability { _private: () }
     }
-    
+
     /// IPC権限を生成
     #[inline(always)]
     pub unsafe fn grant_ipc_capability() -> IpcCapability {
         IpcCapability { _private: () }
     }
-    
+
     /// タスク生成権限を生成
     #[inline(always)]
     pub unsafe fn grant_task_capability() -> TaskCapability {
@@ -181,7 +181,7 @@ pub mod kernel_only {
 // ============================================================================
 
 /// ドメインに付与された権限の束
-/// 
+///
 /// 各フィールドはOption型で、Noneは権限なしを意味する。
 /// 権限の有無はコンパイル時にパターンマッチで検証される。
 pub struct DomainCapabilities {
@@ -209,43 +209,45 @@ impl DomainCapabilities {
             task: None,
         }
     }
-    
+
     /// 権限を要求（なければパニック - デバッグ用）
     #[inline]
     pub fn require_memory(&self) -> &MemoryCapability {
         self.memory.as_ref().expect("Memory capability required")
     }
-    
+
     #[inline]
     pub fn require_net(&self) -> &NetCapability {
         self.net.as_ref().expect("Network capability required")
     }
-    
+
     #[inline]
     pub fn require_io(&self) -> &IoCapability {
         self.io.as_ref().expect("I/O capability required")
     }
-    
+
     #[inline]
     pub fn require_interrupt(&self) -> &InterruptCapability {
-        self.interrupt.as_ref().expect("Interrupt capability required")
+        self.interrupt
+            .as_ref()
+            .expect("Interrupt capability required")
     }
-    
+
     #[inline]
     pub fn require_dma(&self) -> &DmaCapability {
         self.dma.as_ref().expect("DMA capability required")
     }
-    
+
     #[inline]
     pub fn require_fs(&self) -> &FsCapability {
         self.fs.as_ref().expect("Filesystem capability required")
     }
-    
+
     #[inline]
     pub fn require_ipc(&self) -> &IpcCapability {
         self.ipc.as_ref().expect("IPC capability required")
     }
-    
+
     #[inline]
     pub fn require_task(&self) -> &TaskCapability {
         self.task.as_ref().expect("Task capability required")
@@ -257,7 +259,7 @@ impl DomainCapabilities {
 // ============================================================================
 
 /// 権限付きネットワークソケットハンドル
-/// 
+///
 /// NetCapabilityを消費して生成されるため、
 /// このハンドルが存在する = ネットワーク権限が検証済み
 pub struct NetworkSocket<'cap> {
@@ -275,7 +277,7 @@ impl<'cap> NetworkSocket<'cap> {
             _cap: PhantomData,
         }
     }
-    
+
     pub fn id(&self) -> u64 {
         self.id
     }
@@ -311,11 +313,11 @@ impl<'cap> DmaBuffer<'cap> {
             _cap: PhantomData,
         }
     }
-    
+
     pub fn physical_address(&self) -> u64 {
         self.phys_addr
     }
-    
+
     pub fn size(&self) -> usize {
         self.size
     }
@@ -326,7 +328,7 @@ impl<'cap> DmaBuffer<'cap> {
 // ============================================================================
 
 /// ネットワーク送信（権限トークンが必要）
-/// 
+///
 /// この関数を呼ぶには`NetCapability`トークンが必須。
 /// トークンなしでは**コンパイルエラー**になる。
 #[inline]
@@ -371,13 +373,13 @@ pub fn port_write_u8(_cap: &IoCapability, port: u16, value: u8) {
 // ============================================================================
 
 /// ドメインエントリポイントの型シグネチャ
-/// 
+///
 /// ドメインコードは、カーネルから渡される権限セットのみを使用可能。
 /// 権限の追加取得や偽造は型システムにより禁止される。
 pub type DomainEntryFn = fn(caps: DomainCapabilities);
 
 /// ドライバドメインのエントリポイント例
-/// 
+///
 /// ```rust
 /// fn driver_entry(caps: DomainCapabilities) {
 ///     // I/O権限を要求（なければパニック）
@@ -395,7 +397,7 @@ pub fn example_driver_entry(caps: DomainCapabilities) {
     if let Some(io) = &caps.io {
         let _ = port_read_u8(io, 0x1F7);
     }
-    
+
     // DMA権限を取得
     if let Some(dma) = &caps.dma {
         let _ = allocate_dma_buffer(dma, 4096);
@@ -441,7 +443,7 @@ impl SecurityLevel for security_levels::KernelCore {
 }
 
 /// セキュリティレベル付きデータ
-/// 
+///
 /// 低いレベルから高いレベルへのデータフローをコンパイル時に制限
 pub struct Classified<T, L: SecurityLevel> {
     data: T,
@@ -455,7 +457,7 @@ impl<T, L: SecurityLevel> Classified<T, L> {
             _level: PhantomData,
         }
     }
-    
+
     /// 同レベルでのアクセス
     pub fn access(&self) -> &T {
         &self.data

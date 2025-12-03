@@ -6,12 +6,12 @@
 //! - デッドロック検出
 //! - タスクタイムアウト監視
 
-use alloc::vec;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 // =============================================================================
@@ -77,28 +77,28 @@ pub enum TimeoutAction {
 pub trait HardwareWatchdog: Send + Sync {
     /// ドライバ名
     fn name(&self) -> &'static str;
-    
+
     /// サポートされる最大タイムアウト（秒）
     fn max_timeout(&self) -> u64;
-    
+
     /// サポートされる最小タイムアウト（秒）
     fn min_timeout(&self) -> u64;
-    
+
     /// 有効化
     fn enable(&mut self, timeout_secs: u64) -> WatchdogResult<()>;
-    
+
     /// 無効化
     fn disable(&mut self) -> WatchdogResult<()>;
-    
+
     /// キック（タイマーリセット）
     fn kick(&mut self) -> WatchdogResult<()>;
-    
+
     /// タイムアウトを設定
     fn set_timeout(&mut self, secs: u64) -> WatchdogResult<()>;
-    
+
     /// 現在のタイムアウトを取得
     fn timeout(&self) -> u64;
-    
+
     /// 有効状態を取得
     fn is_enabled(&self) -> bool;
 }
@@ -118,7 +118,7 @@ impl IntelTcoWatchdog {
             enabled: false,
         }
     }
-    
+
     /// TCOを検出
     pub fn detect() -> Option<Self> {
         // PCI設定空間からTCOベースアドレスを取得
@@ -126,7 +126,7 @@ impl IntelTcoWatchdog {
         // ここでは簡略化のため固定値を使用
         Some(Self::new(0x460))
     }
-    
+
     unsafe fn read_tco(&self, offset: u16) -> u16 {
         let port = self.tco_base + offset;
         let value: u16;
@@ -138,7 +138,7 @@ impl IntelTcoWatchdog {
         );
         value
     }
-    
+
     unsafe fn write_tco(&self, offset: u16, value: u16) {
         let port = self.tco_base + offset;
         core::arch::asm!(
@@ -154,81 +154,81 @@ impl HardwareWatchdog for IntelTcoWatchdog {
     fn name(&self) -> &'static str {
         "Intel TCO Watchdog"
     }
-    
+
     fn max_timeout(&self) -> u64 {
         613 // TCOの最大値
     }
-    
+
     fn min_timeout(&self) -> u64 {
         1
     }
-    
+
     fn enable(&mut self, timeout_secs: u64) -> WatchdogResult<()> {
         if self.enabled {
             return Err(WatchdogError::AlreadyEnabled);
         }
-        
+
         self.set_timeout(timeout_secs)?;
-        
+
         unsafe {
             // TCO1_CNTのTMR_HLTビットをクリア
             let cnt = self.read_tco(0x08);
             self.write_tco(0x08, cnt & !0x0800);
         }
-        
+
         self.enabled = true;
         Ok(())
     }
-    
+
     fn disable(&mut self) -> WatchdogResult<()> {
         if !self.enabled {
             return Err(WatchdogError::AlreadyDisabled);
         }
-        
+
         unsafe {
             // TCO1_CNTのTMR_HLTビットをセット
             let cnt = self.read_tco(0x08);
             self.write_tco(0x08, cnt | 0x0800);
         }
-        
+
         self.enabled = false;
         Ok(())
     }
-    
+
     fn kick(&mut self) -> WatchdogResult<()> {
         if !self.enabled {
             return Err(WatchdogError::AlreadyDisabled);
         }
-        
+
         unsafe {
             // TCO_RLDに書き込んでタイマーリロード
             self.write_tco(0x00, 0x0001);
         }
-        
+
         Ok(())
     }
-    
+
     fn set_timeout(&mut self, secs: u64) -> WatchdogResult<()> {
         if secs < self.min_timeout() || secs > self.max_timeout() {
             return Err(WatchdogError::NotSupported);
         }
-        
+
         // TCOタイマーティック（0.6秒/ティック）に変換
         let ticks = (secs * 10 / 6) as u16;
-        
+
         unsafe {
             // TCO_TMRに書き込み
             self.write_tco(0x12, ticks);
         }
-        
+
         self.timeout = secs;
         Ok(())
     }
-    
+
     fn timeout(&self) -> u64 {
         self.timeout
     }
-    
+
     fn is_enabled(&self) -> bool {
         self.enabled
     }
@@ -260,17 +260,17 @@ impl WatchTarget {
             triggered: false,
         }
     }
-    
+
     pub fn heartbeat(&mut self, now: u64) {
         self.last_heartbeat = now;
         self.triggered = false;
     }
-    
+
     pub fn check(&mut self, now: u64) -> Option<TimeoutAction> {
         if self.triggered {
             return None;
         }
-        
+
         let elapsed = now.saturating_sub(self.last_heartbeat);
         if elapsed > self.timeout_ms {
             self.triggered = true;
@@ -287,7 +287,7 @@ pub struct SoftwareWatchdog {
     next_id: AtomicU64,
     enabled: AtomicBool,
     check_interval_ms: u64,
-    
+
     // 統計
     stats: WatchdogStats,
 }
@@ -314,31 +314,31 @@ impl SoftwareWatchdog {
             },
         }
     }
-    
+
     /// ウォッチドッグを有効化
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::SeqCst);
     }
-    
+
     /// ウォッチドッグを無効化
     pub fn disable(&self) {
         self.enabled.store(false, Ordering::SeqCst);
     }
-    
+
     /// 監視対象を登録
     pub fn register(&self, name: &str, timeout_ms: u64, action: TimeoutAction) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let target = WatchTarget::new(id, name.into(), timeout_ms, action);
-        
+
         self.targets.write().push(target);
         id
     }
-    
+
     /// 監視対象を解除
     pub fn unregister(&self, id: u64) {
         self.targets.write().retain(|t| t.id != id);
     }
-    
+
     /// ハートビート送信
     pub fn heartbeat(&self, id: u64, now: u64) {
         let mut targets = self.targets.write();
@@ -347,28 +347,28 @@ impl SoftwareWatchdog {
             self.stats.total_heartbeats.fetch_add(1, Ordering::Relaxed);
         }
     }
-    
+
     /// 全ターゲットをチェック
     pub fn check_all(&self, now: u64) -> Vec<(u64, String, TimeoutAction)> {
         if !self.enabled.load(Ordering::Relaxed) {
             return Vec::new();
         }
-        
+
         self.stats.total_checks.fetch_add(1, Ordering::Relaxed);
-        
+
         let mut timeouts = Vec::new();
         let mut targets = self.targets.write();
-        
+
         for target in targets.iter_mut() {
             if let Some(action) = target.check(now) {
                 self.stats.total_timeouts.fetch_add(1, Ordering::Relaxed);
                 timeouts.push((target.id, target.name.clone(), action));
             }
         }
-        
+
         timeouts
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> (u64, u64, u64) {
         (
@@ -398,7 +398,7 @@ pub struct DeadlockDetector {
     locks: RwLock<Vec<LockInfo>>,
     enabled: AtomicBool,
     next_id: AtomicU64,
-    
+
     // 統計
     deadlocks_detected: AtomicU64,
 }
@@ -412,17 +412,17 @@ impl DeadlockDetector {
             deadlocks_detected: AtomicU64::new(0),
         }
     }
-    
+
     /// 検出を有効化
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::SeqCst);
     }
-    
+
     /// 検出を無効化
     pub fn disable(&self) {
         self.enabled.store(false, Ordering::SeqCst);
     }
-    
+
     /// ロックを登録
     pub fn register_lock(&self, name: &str) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
@@ -433,17 +433,17 @@ impl DeadlockDetector {
             waiters: Vec::new(),
             acquired_at: 0,
         };
-        
+
         self.locks.write().push(lock);
         id
     }
-    
+
     /// ロック取得を記録
     pub fn lock_acquired(&self, lock_id: u64, task_id: u64, timestamp: u64) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let mut locks = self.locks.write();
         if let Some(lock) = locks.iter_mut().find(|l| l.id == lock_id) {
             lock.holder_task = Some(task_id);
@@ -451,26 +451,26 @@ impl DeadlockDetector {
             lock.waiters.retain(|&w| w != task_id);
         }
     }
-    
+
     /// ロック解放を記録
     pub fn lock_released(&self, lock_id: u64, _task_id: u64) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let mut locks = self.locks.write();
         if let Some(lock) = locks.iter_mut().find(|l| l.id == lock_id) {
             lock.holder_task = None;
             lock.acquired_at = 0;
         }
     }
-    
+
     /// ロック待機を記録
     pub fn lock_waiting(&self, lock_id: u64, task_id: u64) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let mut locks = self.locks.write();
         if let Some(lock) = locks.iter_mut().find(|l| l.id == lock_id) {
             if !lock.waiters.contains(&task_id) {
@@ -478,16 +478,16 @@ impl DeadlockDetector {
             }
         }
     }
-    
+
     /// デッドロックを検出
     pub fn detect(&self) -> Vec<Vec<u64>> {
         if !self.enabled.load(Ordering::Relaxed) {
             return Vec::new();
         }
-        
+
         let locks = self.locks.read();
         let mut cycles = Vec::new();
-        
+
         // 各タスクについて、待機グラフでサイクルを探す
         for lock in locks.iter() {
             if let Some(holder) = lock.holder_task {
@@ -501,17 +501,17 @@ impl DeadlockDetector {
                 }
             }
         }
-        
+
         cycles
     }
-    
+
     fn find_cycle(&self, locks: &[LockInfo], start: u64, target: u64) -> Option<Vec<u64>> {
         let mut visited = Vec::new();
         let mut path = vec![start];
-        
+
         self.dfs(locks, start, target, &mut visited, &mut path)
     }
-    
+
     fn dfs(
         &self,
         locks: &[LockInfo],
@@ -523,12 +523,12 @@ impl DeadlockDetector {
         if current == target && path.len() > 1 {
             return Some(path.clone());
         }
-        
+
         if visited.contains(&current) {
             return None;
         }
         visited.push(current);
-        
+
         // currentが待っているロックを探す
         for lock in locks.iter() {
             if lock.waiters.contains(&current) {
@@ -541,10 +541,10 @@ impl DeadlockDetector {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// 検出数を取得
     pub fn deadlocks_detected(&self) -> u64 {
         self.deadlocks_detected.load(Ordering::Relaxed)
@@ -560,7 +560,7 @@ pub struct WatchdogManager {
     hardware: Mutex<Option<Box<dyn HardwareWatchdog>>>,
     software: SoftwareWatchdog,
     deadlock_detector: DeadlockDetector,
-    
+
     // 設定
     use_hardware: AtomicBool,
     timeout_action: Mutex<TimeoutAction>,
@@ -576,7 +576,7 @@ impl WatchdogManager {
             timeout_action: Mutex::new(TimeoutAction::Panic),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self) -> WatchdogResult<()> {
         // ハードウェアウォッチドッグを検出
@@ -584,13 +584,13 @@ impl WatchdogManager {
             *self.hardware.lock() = Some(Box::new(tco));
             self.use_hardware.store(true, Ordering::SeqCst);
         }
-        
+
         self.software.enable();
         self.deadlock_detector.enable();
-        
+
         Ok(())
     }
-    
+
     /// ハードウェアウォッチドッグを有効化
     pub fn enable_hardware(&self, timeout_secs: u64) -> WatchdogResult<()> {
         let mut hw = self.hardware.lock();
@@ -602,7 +602,7 @@ impl WatchdogManager {
             Err(WatchdogError::HardwareNotFound)
         }
     }
-    
+
     /// ハードウェアウォッチドッグをキック
     pub fn kick_hardware(&self) -> WatchdogResult<()> {
         let mut hw = self.hardware.lock();
@@ -612,37 +612,37 @@ impl WatchdogManager {
             Err(WatchdogError::HardwareNotFound)
         }
     }
-    
+
     /// ソフトウェア監視対象を登録
     pub fn watch(&self, name: &str, timeout_ms: u64, action: TimeoutAction) -> u64 {
         self.software.register(name, timeout_ms, action)
     }
-    
+
     /// ハートビート送信
     pub fn heartbeat(&self, id: u64, now: u64) {
         self.software.heartbeat(id, now);
     }
-    
+
     /// 定期チェック（タイマー割り込みから呼ぶ）
     pub fn periodic_check(&self, now: u64) {
         // ハードウェアウォッチドッグをキック
         if self.use_hardware.load(Ordering::Relaxed) {
             let _ = self.kick_hardware();
         }
-        
+
         // ソフトウェアタイムアウトをチェック
         let timeouts = self.software.check_all(now);
         for (_id, name, action) in timeouts {
             self.handle_timeout(&name, action);
         }
-        
+
         // デッドロックをチェック
         let deadlocks = self.deadlock_detector.detect();
         if !deadlocks.is_empty() {
             self.handle_deadlocks(&deadlocks);
         }
     }
-    
+
     fn handle_timeout(&self, name: &str, action: TimeoutAction) {
         match action {
             TimeoutAction::None => {}
@@ -663,13 +663,13 @@ impl WatchdogManager {
             }
         }
     }
-    
+
     fn handle_deadlocks(&self, deadlocks: &[Vec<u64>]) {
         for cycle in deadlocks {
             panic!("Deadlock detected! Cycle: {:?}", cycle);
         }
     }
-    
+
     fn system_reset(&self) {
         // Triple fault でリセット
         unsafe {
@@ -684,7 +684,7 @@ impl WatchdogManager {
             core::arch::asm!("int3", options(nostack));
         }
     }
-    
+
     fn send_nmi(&self) {
         // ローカルAPICでNMIを送信
         unsafe {
@@ -693,12 +693,12 @@ impl WatchdogManager {
             core::ptr::write_volatile(apic_icr, 0x000C4500); // NMI to self
         }
     }
-    
+
     /// ソフトウェアウォッチドッグを取得
     pub fn software(&self) -> &SoftwareWatchdog {
         &self.software
     }
-    
+
     /// デッドロック検出器を取得
     pub fn deadlock_detector(&self) -> &DeadlockDetector {
         &self.deadlock_detector

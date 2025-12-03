@@ -17,12 +17,12 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use alloc::sync::Arc;
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -108,7 +108,7 @@ impl MemoryPool {
         for _ in 0..count {
             let layout = core::alloc::Layout::from_size_align(total_size, DMA_ALIGNMENT)
                 .expect("Invalid layout");
-            
+
             let ptr = unsafe { alloc::alloc::alloc(layout) };
             if !ptr.is_null() {
                 if let Some(nn) = NonNull::new(ptr) {
@@ -134,11 +134,11 @@ impl MemoryPool {
     /// バッファを割り当て
     pub fn alloc(&self) -> Option<ZeroCopyBuffer> {
         let mut free_list = self.free_list.lock();
-        
+
         if let Some(ptr) = free_list.pop() {
             self.stats.allocations.fetch_add(1, Ordering::Relaxed);
             self.stats.in_use.fetch_add(1, Ordering::Relaxed);
-            
+
             Some(ZeroCopyBuffer {
                 data: ptr,
                 len: 0,
@@ -220,16 +220,12 @@ unsafe impl Sync for ZeroCopyBuffer {}
 impl ZeroCopyBuffer {
     /// データスライスを取得
     pub fn as_slice(&self) -> &[u8] {
-        unsafe {
-            core::slice::from_raw_parts(self.data.as_ptr().add(self.headroom), self.len)
-        }
+        unsafe { core::slice::from_raw_parts(self.data.as_ptr().add(self.headroom), self.len) }
     }
 
     /// データスライスを取得（可変）
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe {
-            core::slice::from_raw_parts_mut(self.data.as_ptr().add(self.headroom), self.len)
-        }
+        unsafe { core::slice::from_raw_parts_mut(self.data.as_ptr().add(self.headroom), self.len) }
     }
 
     /// データ長を取得
@@ -583,9 +579,7 @@ impl EthernetHeaderView {
         if buffer.len() < 14 {
             return None;
         }
-        unsafe {
-            Some(&*(buffer.as_slice().as_ptr() as *const Self))
-        }
+        unsafe { Some(&*(buffer.as_slice().as_ptr() as *const Self)) }
     }
 
     /// EtherTypeを取得
@@ -612,12 +606,11 @@ pub struct Ipv4HeaderView {
 impl Ipv4HeaderView {
     /// バッファからビューを取得（イーサネットヘッダの後）
     pub fn from_buffer(buffer: &ZeroCopyBuffer) -> Option<&Self> {
-        if buffer.len() < 34 { // 14 (eth) + 20 (ip)
+        if buffer.len() < 34 {
+            // 14 (eth) + 20 (ip)
             return None;
         }
-        unsafe {
-            Some(&*(buffer.as_slice().as_ptr().add(14) as *const Self))
-        }
+        unsafe { Some(&*(buffer.as_slice().as_ptr().add(14) as *const Self)) }
     }
 
     /// ヘッダ長を取得（バイト）
@@ -699,10 +692,7 @@ pub struct ZeroCopyWriter {
 
 impl ZeroCopyWriter {
     pub fn new(pool: Arc<MemoryPool>) -> Self {
-        Self {
-            pool,
-            waker: None,
-        }
+        Self { pool, waker: None }
     }
 
     /// バッファを確保
@@ -712,10 +702,11 @@ impl ZeroCopyWriter {
 
     /// データを送信（ゼロコピー）
     pub async fn send(&mut self, buffer: ZeroCopyBuffer) -> Result<(), &'static str> {
-        ZeroCopySendFuture { 
-            writer: self, 
-            buffer: Some(buffer) 
-        }.await
+        ZeroCopySendFuture {
+            writer: self,
+            buffer: Some(buffer),
+        }
+        .await
     }
 }
 
@@ -770,9 +761,7 @@ impl PoolManager {
 
     /// プールを取得
     pub fn get_pool(&self, id: PoolId) -> Option<Arc<MemoryPool>> {
-        self.pools.iter()
-            .find(|p| p.id() == id)
-            .cloned()
+        self.pools.iter().find(|p| p.id() == id).cloned()
     }
 
     /// デフォルトプールを取得
@@ -805,9 +794,7 @@ where
 
 /// デフォルトプールからバッファを割り当て
 pub fn alloc_buffer() -> Option<ZeroCopyBuffer> {
-    with_pool_manager(|mgr| {
-        mgr.default_pool().and_then(|pool| pool.alloc())
-    }).flatten()
+    with_pool_manager(|mgr| mgr.default_pool().and_then(|pool| pool.alloc())).flatten()
 }
 
 // ============================================================================

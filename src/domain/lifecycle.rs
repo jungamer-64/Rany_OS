@@ -3,12 +3,14 @@
 // 設計書 8: フォールトアイソレーションと回復メカニズム
 // 設計書 8.1: スタックアンワインドとリソース回収
 // ============================================================================
+use super::registry::{
+    Domain, DomainState, get_domain, register_domain, set_domain_state, update_domain,
+};
+use crate::ipc::rref::{DomainId, reclaim_domain_resources};
+use crate::task::{Task, TaskId};
 use alloc::string::String;
 use core::future::Future;
 use core::pin::Pin;
-use crate::ipc::rref::{DomainId, reclaim_domain_resources};
-use crate::task::{Task, TaskId};
-use super::registry::{Domain, DomainState, update_domain, set_domain_state, register_domain, get_domain};
 
 /// ドメイン操作のエラー
 #[derive(Debug, Clone)]
@@ -68,29 +70,26 @@ where
 
 /// ドメイン内でタスクをスポーン
 /// パニック発生時はドメイン境界で捕捉される
-pub fn spawn_domain_task<F>(
-    domain_name: &str,
-    future: F,
-) -> Result<(DomainId, Task), DomainError>
+pub fn spawn_domain_task<F>(domain_name: &str, future: F) -> Result<(DomainId, Task), DomainError>
 where
     F: Future<Output = ()> + Send + 'static,
 {
     // 新しいドメインを作成
     let domain_id = register_domain(domain_name.into());
     set_domain_state(domain_id, DomainState::Running);
-    
+
     // ドメインラッパーでFutureをラップ
     let wrapped_future = domain_wrapper(domain_id, future);
-    
+
     // タスクを作成
     let task = Task::new(wrapped_future);
     let task_id = task.id.as_u64();
-    
+
     // ドメインにタスクを登録
     update_domain(domain_id, |domain| {
         domain.add_task(task_id);
     });
-    
+
     Ok((domain_id, task))
 }
 
@@ -103,14 +102,14 @@ where
     // 注意: no_std環境ではstd::panic::catch_unwindが使えないため、
     // 実際にはカスタムパニックハンドラと連携する必要がある
     // ここでは概念的な実装を示す
-    
+
     // タスク開始をログ
     #[cfg(feature = "verbose_logging")]
     crate::log!("[Domain {}] Task started\n", domain_id.as_u64());
-    
+
     // Futureを実行
     future.await;
-    
+
     // 正常終了
     #[cfg(feature = "verbose_logging")]
     crate::log!("[Domain {}] Task completed normally\n", domain_id.as_u64());
@@ -124,16 +123,16 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     if !domain_exists {
         return Err(DomainError::NotFound);
     }
-    
+
     // 状態を終了中に変更
     set_domain_state(domain_id, DomainState::Terminated);
-    
+
     // Exchange Heap上のリソースを回収
     reclaim_domain_resources(domain_id);
-    
+
     // TODO: ドメインに属するタスクを停止
     // TODO: ドメインに依存する他のドメインに通知
-    
+
     Ok(())
 }
 
@@ -145,13 +144,17 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
         domain.state = DomainState::Stopped;
         domain.panic_message = Some(message.clone());
     });
-    
+
     // リソースを回収
     reclaim_domain_resources(domain_id);
-    
+
     // ログ出力
-    crate::log!("[PANIC] Domain {} crashed: {}\n", domain_id.as_u64(), message);
-    
+    crate::log!(
+        "[PANIC] Domain {} crashed: {}\n",
+        domain_id.as_u64(),
+        message
+    );
+
     // 依存するドメインに通知（将来の実装）
     // notify_dependents(domain_id, DomainError::Panicked(message));
 }
@@ -160,15 +163,15 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
 pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
     // ドメインの状態を確認
     let state = get_domain(domain_id, |d| d.state);
-    
+
     match state {
         Some(DomainState::Stopped) | Some(DomainState::Terminated) => {
             // 状態を初期化中に変更
             set_domain_state(domain_id, DomainState::Initializing);
-            
+
             // TODO: ドメインのコードを再ロード
             // TODO: 初期化タスクを再スポーン
-            
+
             set_domain_state(domain_id, DomainState::Running);
             Ok(())
         }
@@ -184,37 +187,37 @@ pub fn add_domain_dependency(dependent: DomainId, dependency: DomainId) -> Resul
     if !dep_exists {
         return Err(DomainError::NotFound);
     }
-    
+
     // 依存関係を追加
     update_domain(dependent, |domain| {
         domain.add_dependency(dependency);
     });
-    
+
     update_domain(dependency, |domain| {
         domain.add_dependent(dependent);
     });
-    
+
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_domain_lifecycle() {
         // ドメイン作成
         let id = register_domain("test_domain".into());
-        
+
         // 状態確認
         let state = get_domain(id, |d| d.state);
         assert_eq!(state, Some(DomainState::Initializing));
-        
+
         // 状態変更
         set_domain_state(id, DomainState::Running);
         let state = get_domain(id, |d| d.state);
         assert_eq!(state, Some(DomainState::Running));
-        
+
         // 終了
         let result = terminate_domain(id);
         assert!(result.is_ok());

@@ -15,13 +15,13 @@
 
 #![allow(dead_code)]
 
-use core::fmt::Write;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::string::{String, ToString};
-use alloc::vec::Vec;
-use alloc::vec;
 use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+use core::fmt::Write;
 use spin::Mutex;
 
 // ============================================================================
@@ -103,10 +103,16 @@ impl Shell {
         };
 
         // デフォルトの環境変数を設定
-        shell.env.insert(String::from("PATH"), String::from("/bin:/usr/bin"));
-        shell.env.insert(String::from("HOME"), String::from("/home"));
+        shell
+            .env
+            .insert(String::from("PATH"), String::from("/bin:/usr/bin"));
+        shell
+            .env
+            .insert(String::from("HOME"), String::from("/home"));
         shell.env.insert(String::from("USER"), String::from("root"));
-        shell.env.insert(String::from("SHELL"), String::from("/bin/rsh"));
+        shell
+            .env
+            .insert(String::from("SHELL"), String::from("/bin/rsh"));
         shell.env.insert(String::from("PWD"), String::from("/"));
 
         // 組み込みコマンドを登録
@@ -575,7 +581,10 @@ fn cmd_ls(_shell: &mut Shell, args: &[&str]) -> CommandResult {
 fn cmd_cd(shell: &mut Shell, args: &[&str]) -> CommandResult {
     let path = match args.first() {
         Some(&"-") => shell.prev_dir.clone(),
-        Some(&"~") | None => shell.get_env("HOME").cloned().unwrap_or_else(|| String::from("/")),
+        Some(&"~") | None => shell
+            .get_env("HOME")
+            .cloned()
+            .unwrap_or_else(|| String::from("/")),
         Some(path) => {
             if path.starts_with('/') {
                 path.to_string()
@@ -703,7 +712,8 @@ fn cmd_history(shell: &mut Shell, _args: &[&str]) -> CommandResult {
 }
 
 fn cmd_exit(_shell: &mut Shell, args: &[&str]) -> CommandResult {
-    let code = args.first()
+    let code = args
+        .first()
         .and_then(|s| s.parse::<i32>().ok())
         .unwrap_or(0);
     CommandResult::Exit(code)
@@ -732,7 +742,13 @@ fn cmd_uptime(_shell: &mut Shell, _args: &[&str]) -> CommandResult {
     let days = hours / 24;
 
     let output = if days > 0 {
-        format!("up {} days, {:02}:{:02}:{:02}\n", days, hours % 24, minutes % 60, seconds % 60)
+        format!(
+            "up {} days, {:02}:{:02}:{:02}\n",
+            days,
+            hours % 24,
+            minutes % 60,
+            seconds % 60
+        )
     } else {
         format!("up {:02}:{:02}:{:02}\n", hours, minutes % 60, seconds % 60)
     };
@@ -772,7 +788,10 @@ fn cmd_uname(_shell: &mut Shell, args: &[&str]) -> CommandResult {
 }
 
 fn cmd_whoami(shell: &mut Shell, _args: &[&str]) -> CommandResult {
-    let user = shell.get_env("USER").cloned().unwrap_or_else(|| String::from("root"));
+    let user = shell
+        .get_env("USER")
+        .cloned()
+        .unwrap_or_else(|| String::from("root"));
     CommandResult::Output(format!("{}\n", user))
 }
 
@@ -781,7 +800,8 @@ fn cmd_hostname(shell: &mut Shell, args: &[&str]) -> CommandResult {
         shell.set_env("HOSTNAME", name);
         CommandResult::Success
     } else {
-        let hostname = shell.get_env("HOSTNAME")
+        let hostname = shell
+            .get_env("HOSTNAME")
             .cloned()
             .unwrap_or_else(|| String::from("ranyos"));
         CommandResult::Output(format!("{}\n", hostname))

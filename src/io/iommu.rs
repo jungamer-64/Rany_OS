@@ -16,9 +16,9 @@
 
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -142,12 +142,12 @@ impl RootEntry {
     pub fn is_present(&self) -> bool {
         (self.lo & 1) != 0
     }
-    
+
     /// Set context table pointer
     pub fn set_context_table(&mut self, addr: u64) {
         self.lo = (addr & !0xFFF) | 1; // Present bit
     }
-    
+
     /// Get context table address
     pub fn context_table_addr(&self) -> u64 {
         self.lo & !0xFFF
@@ -169,23 +169,23 @@ impl ContextEntry {
     pub fn is_present(&self) -> bool {
         (self.lo & 1) != 0
     }
-    
+
     /// Check if entry is fault disabled
     pub fn is_fault_disabled(&self) -> bool {
         (self.lo & 2) != 0
     }
-    
+
     /// Set second level page table pointer
     pub fn set_sl_pt(&mut self, addr: u64, domain_id: u16, agaw: u8) {
         self.lo = (addr & !0xFFF) | 1; // Present
         self.hi = ((domain_id as u64) << 8) | ((agaw as u64) << 0);
     }
-    
+
     /// Get second level page table address
     pub fn sl_pt_addr(&self) -> u64 {
         self.lo & !0xFFF
     }
-    
+
     /// Get domain ID
     pub fn domain_id(&self) -> u16 {
         ((self.hi >> 8) & 0xFFFF) as u16
@@ -208,12 +208,12 @@ impl SlPte {
     pub const SNOOP: u64 = 1 << 11;
     /// Transient mapping hint
     pub const TRANSIENT: u64 = 1 << 62;
-    
+
     /// Create a new entry
     pub const fn new() -> Self {
         Self(0)
     }
-    
+
     /// Create a present entry with address and permissions
     pub fn mapping(phys_addr: u64, read: bool, write: bool) -> Self {
         let mut flags = Self::PRESENT;
@@ -225,22 +225,22 @@ impl SlPte {
         }
         Self((phys_addr & !0xFFF) | flags)
     }
-    
+
     /// Check if present
     pub fn is_present(&self) -> bool {
         (self.0 & Self::PRESENT) != 0
     }
-    
+
     /// Get physical address
     pub fn phys_addr(&self) -> u64 {
         self.0 & !0xFFF
     }
-    
+
     /// Check read permission
     pub fn can_read(&self) -> bool {
         (self.0 & Self::READ) != 0
     }
-    
+
     /// Check write permission
     pub fn can_write(&self) -> bool {
         (self.0 & Self::WRITE) != 0
@@ -286,15 +286,13 @@ impl IommuDomain {
     pub fn new(id: u16) -> Self {
         // Allocate page table
         // SAFETY: 4096アライメントと4096の倍数サイズは常に有効なレイアウト
-        let layout = unsafe { alloc::alloc::Layout::from_size_align(
-            PT_ENTRIES * core::mem::size_of::<SlPte>(),
-            4096,
-        ).unwrap_unchecked() };
-        
-        let page_table = unsafe {
-            alloc::alloc::alloc_zeroed(layout) as *mut SlPte
+        let layout = unsafe {
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .unwrap_unchecked()
         };
-        
+
+        let page_table = unsafe { alloc::alloc::alloc_zeroed(layout) as *mut SlPte };
+
         Self {
             id,
             page_table,
@@ -302,68 +300,84 @@ impl IommuDomain {
             mapped_size: 0,
         }
     }
-    
+
     /// Get domain ID
     pub fn id(&self) -> u16 {
         self.id
     }
-    
+
     /// Get page table physical address
     pub fn page_table_addr(&self) -> u64 {
         self.page_table as u64
     }
-    
+
     /// Map a DMA region
-    pub fn map(&mut self, iova: u64, phys: u64, size: u64, read: bool, write: bool) -> Result<(), IommuError> {
+    pub fn map(
+        &mut self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
         // Validate alignment
         if iova & 0xFFF != 0 || phys & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(IommuError::InvalidAlignment);
         }
-        
+
         // Check for overlapping mappings
         for (existing_iova, mapping) in &self.mappings {
             let existing_end = existing_iova + mapping.size;
             let new_end = iova + size;
-            
+
             if iova < existing_end && new_end > *existing_iova {
                 return Err(IommuError::AlreadyMapped);
             }
         }
-        
+
         // Create page table entries
         let num_pages = size / 4096;
         for i in 0..num_pages {
             let page_iova = iova + i * 4096;
             let page_phys = phys + i * 4096;
-            
+
             self.map_page(page_iova, page_phys, read, write)?;
         }
-        
+
         // Record mapping
-        self.mappings.insert(iova, DmaMapping {
+        self.mappings.insert(
             iova,
-            phys,
-            size,
-            read,
-            write,
-        });
-        
+            DmaMapping {
+                iova,
+                phys,
+                size,
+                read,
+                write,
+            },
+        );
+
         self.mapped_size += size;
-        
+
         Ok(())
     }
-    
+
     /// Map a single page (internal)
-    fn map_page(&mut self, iova: u64, phys: u64, read: bool, write: bool) -> Result<(), IommuError> {
+    fn map_page(
+        &mut self,
+        iova: u64,
+        phys: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
         // Simple single-level implementation for demonstration
         // Real implementation would use multi-level page tables
-        
+
         let index = (iova >> 12) & 0x1FF;
-        
+
         if index >= PT_ENTRIES as u64 {
             return Err(IommuError::InvalidAddress);
         }
-        
+
         unsafe {
             let entry = self.page_table.add(index as usize);
             if (*entry).is_present() {
@@ -371,48 +385,47 @@ impl IommuDomain {
             }
             *entry = SlPte::mapping(phys, read, write);
         }
-        
+
         Ok(())
     }
-    
+
     /// Unmap a DMA region
     pub fn unmap(&mut self, iova: u64) -> Result<DmaMapping, IommuError> {
-        let mapping = self.mappings.remove(&iova)
-            .ok_or(IommuError::NotMapped)?;
-        
+        let mapping = self.mappings.remove(&iova).ok_or(IommuError::NotMapped)?;
+
         // Clear page table entries
         let num_pages = mapping.size / 4096;
         for i in 0..num_pages {
             let page_iova = iova + i * 4096;
             self.unmap_page(page_iova)?;
         }
-        
+
         self.mapped_size -= mapping.size;
-        
+
         Ok(mapping)
     }
-    
+
     /// Unmap a single page (internal)
     fn unmap_page(&mut self, iova: u64) -> Result<(), IommuError> {
         let index = (iova >> 12) & 0x1FF;
-        
+
         if index >= PT_ENTRIES as u64 {
             return Err(IommuError::InvalidAddress);
         }
-        
+
         unsafe {
             let entry = self.page_table.add(index as usize);
             *entry = SlPte::new();
         }
-        
+
         Ok(())
     }
-    
+
     /// Get total mapped size
     pub fn mapped_size(&self) -> u64 {
         self.mapped_size
     }
-    
+
     /// Get all mappings
     pub fn mappings(&self) -> &BTreeMap<u64, DmaMapping> {
         &self.mappings
@@ -425,8 +438,9 @@ impl Drop for IommuDomain {
             let layout = alloc::alloc::Layout::from_size_align(
                 PT_ENTRIES * core::mem::size_of::<SlPte>(),
                 4096,
-            ).unwrap();
-            
+            )
+            .unwrap();
+
             unsafe {
                 alloc::alloc::dealloc(self.page_table as *mut u8, layout);
             }
@@ -481,9 +495,14 @@ pub struct DeviceId {
 impl DeviceId {
     /// Create a new device ID
     pub const fn new(segment: u16, bus: u8, device: u8, function: u8) -> Self {
-        Self { segment, bus, device, function }
+        Self {
+            segment,
+            bus,
+            device,
+            function,
+        }
     }
-    
+
     /// Get requester ID (used for root/context table indexing)
     pub fn requester_id(&self) -> u16 {
         ((self.bus as u16) << 8) | ((self.device as u16) << 3) | (self.function as u16)
@@ -530,94 +549,94 @@ impl IommuController {
             enabled: AtomicBool::new(false),
         }
     }
-    
+
     /// Read 32-bit register
     unsafe fn read32(&self, offset: u64) -> u32 {
         let ptr = (self.mmio_base + offset) as *const u32;
         core::ptr::read_volatile(ptr)
     }
-    
+
     /// Write 32-bit register
     unsafe fn write32(&self, offset: u64, value: u32) {
         let ptr = (self.mmio_base + offset) as *mut u32;
         core::ptr::write_volatile(ptr, value);
     }
-    
+
     /// Read 64-bit register
     unsafe fn read64(&self, offset: u64) -> u64 {
         let ptr = (self.mmio_base + offset) as *const u64;
         core::ptr::read_volatile(ptr)
     }
-    
+
     /// Write 64-bit register
     unsafe fn write64(&self, offset: u64, value: u64) {
         let ptr = (self.mmio_base + offset) as *mut u64;
         core::ptr::write_volatile(ptr, value);
     }
-    
+
     /// Initialize the IOMMU
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure MMIO address is valid
     pub unsafe fn init(&mut self) -> Result<(), IommuError> {
         // Read capabilities
         self.cap = self.read64(regs::CAP);
         self.ecap = self.read64(regs::ECAP);
-        
+
         // Allocate root table (4KB, 256 entries)
         // SAFETY: 4096 アライメントと4096サイズは常に有効
         let rt_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap_unchecked();
         self.root_table = alloc::alloc::alloc_zeroed(rt_layout) as *mut RootEntry;
-        
+
         if self.root_table.is_null() {
             return Err(IommuError::HardwareError);
         }
-        
+
         // Allocate context tables for all buses
         for _ in 0..256 {
             // SAFETY: 4096 アライメントと4096サイズは常に有効
             let ct_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap_unchecked();
             let ct = alloc::alloc::alloc_zeroed(ct_layout) as *mut ContextEntry;
-            
+
             if ct.is_null() {
                 return Err(IommuError::HardwareError);
             }
-            
+
             self.context_tables.push(ct);
         }
-        
+
         // Set root table address
         self.write64(regs::RTADDR, self.root_table as u64);
-        
+
         // Set root table pointer
         self.write32(regs::GCMD, gcmd_bits::GCMD_SRTP);
-        
+
         // Wait for completion
         for _ in 0..1000 {
             if self.read32(regs::GSTS) & gsts_bits::GSTS_RTPS != 0 {
                 break;
             }
         }
-        
+
         Ok(())
     }
-    
+
     /// Enable DMA remapping
     pub unsafe fn enable(&self) -> Result<(), IommuError> {
         // Write buffer flush if required
         if self.cap & cap_bits::CAP_RWBF != 0 {
             self.write32(regs::GCMD, gcmd_bits::GCMD_WBF);
-            
+
             for _ in 0..1000 {
                 if self.read32(regs::GSTS) & gsts_bits::GSTS_WBFS == 0 {
                     break;
                 }
             }
         }
-        
+
         // Enable translation
         self.write32(regs::GCMD, gcmd_bits::GCMD_TE);
-        
+
         // Wait for completion
         for _ in 0..1000 {
             if self.read32(regs::GSTS) & gsts_bits::GSTS_TES != 0 {
@@ -625,16 +644,16 @@ impl IommuController {
                 return Ok(());
             }
         }
-        
+
         Err(IommuError::Timeout)
     }
-    
+
     /// Disable DMA remapping
     pub unsafe fn disable(&self) -> Result<(), IommuError> {
         // Clear translation enable
         let gcmd = self.read32(regs::GCMD);
         self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_TE);
-        
+
         // Wait for completion
         for _ in 0..1000 {
             if self.read32(regs::GSTS) & gsts_bits::GSTS_TES == 0 {
@@ -642,79 +661,77 @@ impl IommuController {
                 return Ok(());
             }
         }
-        
+
         Err(IommuError::Timeout)
     }
-    
+
     /// Check if translation is enabled
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
-    
+
     /// Create a new domain
     pub fn create_domain(&mut self) -> Result<u16, IommuError> {
         let id = self.next_domain_id.fetch_add(1, Ordering::Relaxed) as u16;
-        
+
         let domain = IommuDomain::new(id);
         self.domains.insert(id, domain);
-        
+
         Ok(id)
     }
-    
+
     /// Get a domain by ID
     pub fn domain(&self, id: u16) -> Option<&IommuDomain> {
         self.domains.get(&id)
     }
-    
+
     /// Get a mutable domain by ID
     pub fn domain_mut(&mut self, id: u16) -> Option<&mut IommuDomain> {
         self.domains.get_mut(&id)
     }
-    
+
     /// Attach a device to a domain
     pub fn attach_device(&mut self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
-        let domain = self.domains.get(&domain_id)
+        let domain = self
+            .domains
+            .get(&domain_id)
             .ok_or(IommuError::DomainNotFound)?;
-        
+
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
-        
+
         // Setup root entry
         let root_entry = unsafe { &mut *self.root_table.add(bus) };
         if !root_entry.is_present() {
             root_entry.set_context_table(self.context_tables[bus] as u64);
         }
-        
+
         // Setup context entry
-        let context_entry = unsafe {
-            &mut *self.context_tables[bus].add(devfn)
-        };
-        
+        let context_entry = unsafe { &mut *self.context_tables[bus].add(devfn) };
+
         // 48-bit address width (AGAW = 2)
         context_entry.set_sl_pt(domain.page_table_addr(), domain.id(), 2);
-        
+
         self.device_domains.insert(device, domain_id);
-        
+
         Ok(())
     }
-    
+
     /// Detach a device from its domain
     pub fn detach_device(&mut self, device: DeviceId) -> Result<(), IommuError> {
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
-        
+
         // Clear context entry
-        let context_entry = unsafe {
-            &mut *self.context_tables[bus].add(devfn)
-        };
-        
+        let context_entry = unsafe { &mut *self.context_tables[bus].add(devfn) };
+
         *context_entry = ContextEntry::default();
-        
+
         self.device_domains.remove(&device);
-        
+
         Ok(())
     }
-    
+
     /// Map DMA region for a device
     pub fn map_dma(
         &mut self,
@@ -725,37 +742,45 @@ impl IommuController {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
-        let domain_id = self.device_domains.get(device)
+        let domain_id = self
+            .device_domains
+            .get(device)
             .copied()
             .ok_or(IommuError::DeviceNotFound)?;
-        
-        let domain = self.domains.get_mut(&domain_id)
+
+        let domain = self
+            .domains
+            .get_mut(&domain_id)
             .ok_or(IommuError::DomainNotFound)?;
-        
+
         domain.map(iova, phys, size, read, write)
     }
-    
+
     /// Unmap DMA region for a device
     pub fn unmap_dma(&mut self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
-        let domain_id = self.device_domains.get(device)
+        let domain_id = self
+            .device_domains
+            .get(device)
             .copied()
             .ok_or(IommuError::DeviceNotFound)?;
-        
-        let domain = self.domains.get_mut(&domain_id)
+
+        let domain = self
+            .domains
+            .get_mut(&domain_id)
             .ok_or(IommuError::DomainNotFound)?;
-        
+
         domain.unmap(iova)
     }
-    
+
     /// Invalidate IOTLB for a domain
     pub unsafe fn invalidate_iotlb(&self, domain_id: u16) {
         // Context command register invalidation
         let cmd: u64 = (1u64 << 63) |          // ICC (Invalidate context-cache)
                        (1u64 << 61) |          // Global invalidation
                        ((domain_id as u64) << 16);
-        
+
         self.write64(regs::CCMD, cmd);
-        
+
         // Wait for completion
         for _ in 0..1000 {
             if self.read64(regs::CCMD) & (1u64 << 63) == 0 {
@@ -772,15 +797,15 @@ impl IommuController {
 static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
 
 /// Initialize the global IOMMU
-/// 
+///
 /// # Safety
 /// Caller must ensure MMIO address is valid
 pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     let mut controller = IommuController::new(mmio_base);
     controller.init()?;
-    
+
     crate::log!("IOMMU initialized at 0x{:X}\n", mmio_base);
-    
+
     *IOMMU.lock() = Some(controller);
     Ok(())
 }
@@ -789,7 +814,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
 pub fn enable_iommu() -> Result<(), IommuError> {
     let guard = IOMMU.lock();
     let controller = guard.as_ref().ok_or(IommuError::NotPresent)?;
-    
+
     unsafe { controller.enable() }
 }
 
@@ -797,7 +822,7 @@ pub fn enable_iommu() -> Result<(), IommuError> {
 pub fn disable_iommu() -> Result<(), IommuError> {
     let guard = IOMMU.lock();
     let controller = guard.as_ref().ok_or(IommuError::NotPresent)?;
-    
+
     unsafe { controller.disable() }
 }
 
@@ -807,23 +832,25 @@ pub fn is_iommu_enabled() -> bool {
 }
 
 /// Map a physical address range for DMA access
-/// 
+///
 /// Returns the IOVA (I/O Virtual Address) that devices should use
 pub fn map_for_dma(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuError> {
     let mut guard = IOMMU.lock();
     let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
-    
+
     // For simplicity, use identity mapping (IOVA == physical address)
     // In a more sophisticated implementation, this would allocate from an IOVA space
     let iova = phys_addr.as_u64();
-    
+
     // Create a mapping in the default domain (domain 0)
     // This is a simplified implementation
-    let domain = controller.domains.get_mut(&0)
+    let domain = controller
+        .domains
+        .get_mut(&0)
         .ok_or(IommuError::DomainNotFound)?;
-    
+
     domain.map(iova, phys_addr.as_u64(), size, true, true)?;
-    
+
     Ok(iova)
 }
 
@@ -831,11 +858,13 @@ pub fn map_for_dma(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuE
 pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
     let mut guard = IOMMU.lock();
     let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
-    
+
     // Unmap from the default domain
-    let domain = controller.domains.get_mut(&0)
+    let domain = controller
+        .domains
+        .get_mut(&0)
         .ok_or(IommuError::DomainNotFound)?;
-    
+
     domain.unmap(iova)?;
     Ok(())
 }
@@ -857,13 +886,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_device_id() {
         let dev = DeviceId::new(0, 0, 1, 0);
         assert_eq!(dev.requester_id(), 0x08); // bus=0, dev=1, func=0
     }
-    
+
     #[test]
     fn test_sl_pte() {
         let pte = SlPte::mapping(0x1000, true, true);
@@ -872,16 +901,16 @@ mod tests {
         assert!(pte.can_write());
         assert_eq!(pte.phys_addr(), 0x1000);
     }
-    
+
     #[test]
     fn test_iommu_domain() {
         let mut domain = IommuDomain::new(1);
         assert_eq!(domain.id(), 1);
-        
+
         // Map a region
         let result = domain.map(0x1000, 0x2000, 0x1000, true, false);
         assert!(result.is_ok());
-        
+
         // Try to map overlapping region
         let result = domain.map(0x1000, 0x3000, 0x1000, true, false);
         assert_eq!(result, Err(IommuError::AlreadyMapped));

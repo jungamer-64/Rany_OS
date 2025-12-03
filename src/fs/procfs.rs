@@ -3,12 +3,12 @@
 //! /proc ファイルシステムの実装
 //! プロセス情報やカーネル状態を仮想ファイルとして公開
 
-use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 /// inode番号 (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -16,7 +16,7 @@ pub struct ProcInode(u64);
 
 impl ProcInode {
     pub const ROOT: Self = Self(1);
-    
+
     pub const fn new(id: u64) -> Self {
         Self(id)
     }
@@ -161,7 +161,7 @@ impl ProcFs {
     /// 新しいprocfsを作成
     pub fn new() -> Self {
         let mut root = ProcEntry::directory(ProcInode::ROOT, "");
-        
+
         let fs = Self {
             root: spin::RwLock::new(root),
             next_inode: AtomicU64::new(2),
@@ -198,9 +198,7 @@ impl ProcFs {
         self.add_file("stat", Self::generate_stat);
 
         // /proc/loadavg
-        self.add_file("loadavg", || {
-            alloc::format!("0.00 0.00 0.00 1/1 1\n")
-        });
+        self.add_file("loadavg", || alloc::format!("0.00 0.00 0.00 1/1 1\n"));
 
         // /proc/filesystems
         self.add_file("filesystems", || {
@@ -221,9 +219,7 @@ impl ProcFs {
         });
 
         // /proc/cmdline
-        self.add_file("cmdline", || {
-            alloc::format!("console=ttyS0\n")
-        });
+        self.add_file("cmdline", || alloc::format!("console=ttyS0\n"));
 
         // /proc/sys ディレクトリ
         self.add_directory("sys");
@@ -256,7 +252,7 @@ impl ProcFs {
     {
         let inode = self.allocate_inode();
         let entry = ProcEntry::file(inode, name, read_fn);
-        
+
         let mut root = self.root.write();
         root.add_child(entry);
     }
@@ -265,7 +261,7 @@ impl ProcFs {
     pub fn add_directory(&self, name: &str) {
         let inode = self.allocate_inode();
         let entry = ProcEntry::directory(inode, name);
-        
+
         let mut root = self.root.write();
         root.add_child(entry);
     }
@@ -273,9 +269,9 @@ impl ProcFs {
     /// プロセスエントリを追加
     pub fn add_process(&self, pid: Pid) {
         let pid_str = alloc::format!("{}", pid.as_u32());
-        
+
         let mut proc_dir = ProcEntry::directory(self.allocate_inode(), &pid_str);
-        
+
         // /proc/[pid]/status
         let pid_copy = pid;
         proc_dir.add_child(ProcEntry::file(
@@ -286,19 +282,15 @@ impl ProcFs {
 
         // /proc/[pid]/stat
         let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(
-            self.allocate_inode(),
-            "stat",
-            move || Self::generate_process_stat(pid_copy),
-        ));
+        proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "stat", move || {
+            Self::generate_process_stat(pid_copy)
+        }));
 
         // /proc/[pid]/maps
         let pid_copy = pid;
-        proc_dir.add_child(ProcEntry::file(
-            self.allocate_inode(),
-            "maps",
-            move || Self::generate_process_maps(pid_copy),
-        ));
+        proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "maps", move || {
+            Self::generate_process_maps(pid_copy)
+        }));
 
         // /proc/[pid]/cmdline
         let pid_copy = pid;
@@ -340,14 +332,14 @@ impl ProcFs {
     pub fn lookup(&self, path: &str) -> Result<ProcInode, ProcError> {
         let root = self.root.read();
         let mut current = &*root;
-        
+
         for component in path.split('/').filter(|s| !s.is_empty()) {
             match current.children.get(component) {
                 Some(entry) => current = entry,
                 None => return Err(ProcError::NotFound),
             }
         }
-        
+
         Ok(current.inode)
     }
 
@@ -355,14 +347,14 @@ impl ProcFs {
     pub fn read(&self, path: &str) -> Result<String, ProcError> {
         let root = self.root.read();
         let mut current = &*root;
-        
+
         for component in path.split('/').filter(|s| !s.is_empty()) {
             match current.children.get(component) {
                 Some(entry) => current = entry,
                 None => return Err(ProcError::NotFound),
             }
         }
-        
+
         match &current.read_fn {
             Some(read_fn) => Ok(read_fn()),
             None => Err(ProcError::NotReadable),
@@ -373,7 +365,7 @@ impl ProcFs {
     pub fn readdir(&self, path: &str) -> Result<Vec<String>, ProcError> {
         let root = self.root.read();
         let mut current = &*root;
-        
+
         if !path.is_empty() && path != "/" {
             for component in path.split('/').filter(|s| !s.is_empty()) {
                 match current.children.get(component) {
@@ -382,11 +374,11 @@ impl ProcFs {
                 }
             }
         }
-        
+
         if current.file_type != ProcFileType::Directory {
             return Err(ProcError::NotDirectory);
         }
-        
+
         Ok(current.children.keys().cloned().collect())
     }
 
@@ -535,15 +527,15 @@ impl ProcFileHandle {
     pub fn read(&self, buf: &mut [u8]) -> Result<usize, ProcError> {
         let pos = self.position.load(Ordering::Acquire);
         let bytes = self.content.as_bytes();
-        
+
         if pos >= bytes.len() {
             return Ok(0);
         }
-        
+
         let remaining = &bytes[pos..];
         let to_read = buf.len().min(remaining.len());
         buf[..to_read].copy_from_slice(&remaining[..to_read]);
-        
+
         self.position.fetch_add(to_read, Ordering::AcqRel);
         Ok(to_read)
     }
@@ -560,7 +552,7 @@ mod tests {
     #[test]
     fn test_procfs_read() {
         let fs = ProcFs::new();
-        
+
         let version = fs.read("version").unwrap();
         assert!(version.contains("ExoRust"));
     }
@@ -568,7 +560,7 @@ mod tests {
     #[test]
     fn test_procfs_directory() {
         let fs = ProcFs::new();
-        
+
         let entries = fs.readdir("").unwrap();
         assert!(entries.contains(&String::from("version")));
         assert!(entries.contains(&String::from("meminfo")));
@@ -577,12 +569,12 @@ mod tests {
     #[test]
     fn test_process_entries() {
         let fs = ProcFs::new();
-        
+
         fs.add_process(Pid::new(1234));
-        
+
         let status = fs.read("1234/status").unwrap();
         assert!(status.contains("Pid:\t1234"));
-        
+
         fs.remove_process(Pid::new(1234));
         assert!(fs.lookup("1234").is_err());
     }

@@ -4,7 +4,7 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 /// ポーリングモードのしきい値設定
@@ -24,9 +24,9 @@ impl Default for PollingConfig {
         Self {
             // DPDKやNAPIと同様のしきい値
             switch_to_polling_threshold: 10000,  // 10K packets/sec
-            switch_to_interrupt_threshold: 1000,  // 1K packets/sec
-            polling_interval_us: 10,              // 10μs
-            idle_timeout_ms: 100,                 // 100ms
+            switch_to_interrupt_threshold: 1000, // 1K packets/sec
+            polling_interval_us: 10,             // 10μs
+            idle_timeout_ms: 100,                // 100ms
         }
     }
 }
@@ -79,27 +79,27 @@ impl AdaptiveIoController {
             mode_switches: AtomicU64::new(0),
         }
     }
-    
+
     /// 設定を更新
     pub fn configure(&mut self, config: PollingConfig) {
         self.config = config;
     }
-    
+
     /// パケット処理完了を通知
     pub fn notify_packet_processed(&self, count: u64) {
         self.packets_processed.fetch_add(count, Ordering::Relaxed);
     }
-    
+
     /// 現在のモードを取得
     pub fn current_mode(&self) -> IoMode {
         *self.mode.lock()
     }
-    
+
     /// ポーリングが有効かどうか
     pub fn is_polling(&self) -> bool {
         self.polling_enabled.load(Ordering::Relaxed)
     }
-    
+
     /// モードを手動で設定
     pub fn set_mode(&self, mode: IoMode) {
         *self.mode.lock() = mode;
@@ -109,26 +109,26 @@ impl AdaptiveIoController {
             IoMode::Hybrid => {} // 自動判断に任せる
         }
     }
-    
+
     /// 適応的モード切り替えを評価（タイマー割り込みから定期的に呼ばれる）
     pub fn evaluate_mode(&self, current_tick: u64) {
         // Hybridモードでない場合は何もしない
         if *self.mode.lock() != IoMode::Hybrid {
             return;
         }
-        
+
         let last_tick = self.last_sample_tick.swap(current_tick, Ordering::AcqRel);
         let elapsed_ticks = current_tick.saturating_sub(last_tick);
-        
+
         // サンプリング間隔が短すぎる場合はスキップ
         if elapsed_ticks < 100 {
             return;
         }
-        
+
         let current_count = self.packets_processed.load(Ordering::Relaxed);
         let last_count = self.last_sample_count.swap(current_count, Ordering::AcqRel);
         let packets_delta = current_count.saturating_sub(last_count);
-        
+
         // パケットレートを計算（packets/sec）
         // 1ティック = 1ms と仮定
         let rate = if elapsed_ticks > 0 {
@@ -136,9 +136,9 @@ impl AdaptiveIoController {
         } else {
             0
         };
-        
+
         let currently_polling = self.polling_enabled.load(Ordering::Relaxed);
-        
+
         // しきい値に基づいてモードを切り替え
         if currently_polling {
             // ポーリング中: トラフィックが減少したら割り込みに戻す
@@ -152,25 +152,25 @@ impl AdaptiveIoController {
             }
         }
     }
-    
+
     /// ポーリングモードに切り替え
     fn switch_to_polling(&self) {
         self.polling_enabled.store(true, Ordering::Release);
         self.mode_switches.fetch_add(1, Ordering::Relaxed);
-        
+
         // 割り込みをマスク（デバイス固有の処理が必要）
         // TODO: 実際のデバイスの割り込みマスク処理を呼び出す
     }
-    
+
     /// 割り込みモードに切り替え
     fn switch_to_interrupt(&self) {
         self.polling_enabled.store(false, Ordering::Release);
         self.mode_switches.fetch_add(1, Ordering::Relaxed);
-        
+
         // 割り込みを有効化（デバイス固有の処理が必要）
         // TODO: 実際のデバイスの割り込み有効化処理を呼び出す
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> IoStats {
         IoStats {
@@ -204,7 +204,7 @@ pub async fn polling_loop() {
         if NET_IO_CONTROLLER.is_polling() {
             // ポーリングモード: NICのリングバッファを直接チェック
             // TODO: 実際のNICドライバのポーリング処理
-            
+
             // 処理したパケット数を通知
             // NET_IO_CONTROLLER.notify_packet_processed(processed_count);
         } else {
@@ -212,7 +212,7 @@ pub async fn polling_loop() {
             // 割り込みが来るまで待機
             crate::task::sleep_ms(1).await;
         }
-        
+
         // CPUを他のタスクに明け渡す
         core::hint::spin_loop();
     }
@@ -229,19 +229,19 @@ pub fn block_io_controller() -> &'static AdaptiveIoController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_adaptive_mode() {
         let controller = AdaptiveIoController::new();
-        
+
         // 初期状態はHybrid
         assert_eq!(controller.current_mode(), IoMode::Hybrid);
         assert!(!controller.is_polling());
-        
+
         // 手動でモード設定
         controller.set_mode(IoMode::Polling);
         assert!(controller.is_polling());
-        
+
         controller.set_mode(IoMode::Interrupt);
         assert!(!controller.is_polling());
     }

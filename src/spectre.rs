@@ -1,5 +1,5 @@
 //! Spectre緩和策モジュール
-//! 
+//!
 //! 設計書9.2: Spectre緩和
 //! - IBRS (Indirect Branch Restricted Speculation)
 //! - STIBP (Single Thread Indirect Branch Predictors)
@@ -201,7 +201,7 @@ impl SpectreMitigationManager {
 }
 
 /// IBPB (Indirect Branch Prediction Barrier) を発行
-/// 
+///
 /// コンテキストスイッチ時に呼び出してBTB/BHBをフラッシュ
 #[inline]
 pub fn issue_ibpb() {
@@ -212,7 +212,7 @@ pub fn issue_ibpb() {
 }
 
 /// L1Dキャッシュをフラッシュ
-/// 
+///
 /// VM exit時やセキュリティ境界越え時に呼び出す
 #[inline]
 pub fn flush_l1d() {
@@ -222,7 +222,7 @@ pub fn flush_l1d() {
 }
 
 /// 投機実行バリア (LFENCE)
-/// 
+///
 /// 投機実行を防止するためのシリアライズ命令
 #[inline(always)]
 pub fn speculation_barrier() {
@@ -235,16 +235,12 @@ pub fn speculation_barrier() {
 #[inline(always)]
 pub fn full_speculation_barrier() {
     unsafe {
-        asm!(
-            "mfence",
-            "lfence",
-            options(nostack, preserves_flags)
-        );
+        asm!("mfence", "lfence", options(nostack, preserves_flags));
     }
 }
 
 /// Retpoline: 間接呼び出しの安全な実装
-/// 
+///
 /// 投機実行を無限ループに誘導することで、
 /// 間接分岐の投機実行を防止
 #[macro_export]
@@ -280,7 +276,7 @@ macro_rules! retpoline_jmp {
                 "call 2f",
                 "1:",
                 "pause",
-                "lfence", 
+                "lfence",
                 "jmp 1b",
                 "2:",
                 "mov [rsp], {target}",
@@ -293,7 +289,7 @@ macro_rules! retpoline_jmp {
 }
 
 /// 境界チェック付きメモリアクセス（Spectre v1緩和）
-/// 
+///
 /// 配列境界チェック後の投機実行によるサイドチャネル攻撃を防止
 #[inline(always)]
 pub fn bounds_check_speculation_safe<T>(slice: &[T], index: usize) -> Option<&T> {
@@ -318,7 +314,7 @@ pub fn bounds_check_speculation_safe_mut<T>(slice: &mut [T], index: usize) -> Op
 }
 
 /// 投機実行セーフな配列インデックス計算
-/// 
+///
 /// インデックスが範囲外の場合は0を返す（投機実行でも安全）
 #[inline(always)]
 pub fn speculation_safe_index(index: usize, len: usize) -> usize {
@@ -328,18 +324,18 @@ pub fn speculation_safe_index(index: usize, len: usize) -> usize {
 }
 
 /// コンテキストスイッチ時のSpectre緩和処理
-/// 
+///
 /// ドメイン間・タスク間の切り替え時に呼び出す
 pub fn context_switch_mitigation() {
     // IBPBでBTBをフラッシュ
     issue_ibpb();
-    
+
     // 投機実行バリア
     speculation_barrier();
 }
 
 /// カーネル/ユーザー境界でのSpectre緩和処理
-/// 
+///
 /// syscall/sysret時に呼び出す
 pub fn kernel_entry_mitigation() {
     // IBRS が有効な場合は自動的に保護される
@@ -356,7 +352,7 @@ pub fn kernel_exit_mitigation() {
 }
 
 /// MDS (Microarchitectural Data Sampling) 緩和
-/// 
+///
 /// MD_CLEAR をサポートしている場合、VERW命令でバッファをクリア
 #[inline]
 pub fn mds_clear() {
@@ -376,14 +372,14 @@ pub fn mds_clear() {
 /// CPU機能を検出
 fn detect_cpu_features() -> CpuFeatures {
     let mut features = CpuFeatures::default();
-    
+
     // CPUID を使用して機能を検出
     // EAX=7, ECX=0 の EDX でSpectre関連機能を確認
     let (_, _, _, edx) = cpuid(7, 0);
-    
+
     // Bit 26: IBRS/IBPB
     features.ibrs_ibpb = (edx & (1 << 26)) != 0;
-    // Bit 27: STIBP  
+    // Bit 27: STIBP
     features.stibp = (edx & (1 << 27)) != 0;
     // Bit 28: L1D_FLUSH
     features.l1d_flush = (edx & (1 << 28)) != 0;
@@ -391,10 +387,10 @@ fn detect_cpu_features() -> CpuFeatures {
     let has_arch_cap = (edx & (1 << 29)) != 0;
     // Bit 31: SSBD
     features.ssbd = (edx & (1 << 31)) != 0;
-    
+
     // MD_CLEAR (Bit 10 in EDX of CPUID 7.0)
     features.md_clear = (edx & (1 << 10)) != 0;
-    
+
     // IA32_ARCH_CAPABILITIES MSR から追加情報を取得
     if has_arch_cap {
         let arch_cap = unsafe { read_msr(0x10A) };
@@ -405,7 +401,7 @@ fn detect_cpu_features() -> CpuFeatures {
         // Bit 6: STIBP_ALL
         features.stibp_all = (arch_cap & (1 << 6)) != 0;
     }
-    
+
     features
 }
 
@@ -499,7 +495,7 @@ pub struct SpectreMitigationStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_speculation_safe_index() {
         assert_eq!(speculation_safe_index(0, 10), 0);
@@ -508,7 +504,7 @@ mod tests {
         assert_eq!(speculation_safe_index(10, 10), 0); // 境界外
         assert_eq!(speculation_safe_index(100, 10), 0); // 境界外
     }
-    
+
     #[test]
     fn test_bounds_check() {
         let arr = [1, 2, 3, 4, 5];

@@ -6,9 +6,9 @@
 //! - ファン制御
 //! - サーマルゾーン管理
 
-use alloc::vec::Vec;
 use alloc::string::String;
-use core::sync::atomic::{AtomicU64, AtomicU32, AtomicBool, Ordering};
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
 // =============================================================================
@@ -59,23 +59,23 @@ impl Temperature {
     pub const fn from_millicelsius(mc: i32) -> Self {
         Self(mc)
     }
-    
+
     pub const fn from_celsius(c: i32) -> Self {
         Self(c * 1000)
     }
-    
+
     pub const fn millicelsius(&self) -> i32 {
         self.0
     }
-    
+
     pub const fn celsius(&self) -> i32 {
         self.0 / 1000
     }
-    
+
     pub const fn invalid() -> Self {
         Self(TEMP_INVALID)
     }
-    
+
     pub const fn is_valid(&self) -> bool {
         self.0 != TEMP_INVALID
     }
@@ -136,10 +136,10 @@ impl ThermalSensor {
             passive_temp: Temperature::from_millicelsius(DEFAULT_PASSIVE_TEMP),
         }
     }
-    
+
     pub fn update(&mut self, temp: Temperature) {
         self.current = temp;
-        
+
         if temp.is_valid() {
             if temp.millicelsius() > self.max_observed.millicelsius() {
                 self.max_observed = temp;
@@ -149,15 +149,15 @@ impl ThermalSensor {
             }
         }
     }
-    
+
     pub fn is_critical(&self) -> bool {
         self.current.is_valid() && self.current >= self.critical_temp
     }
-    
+
     pub fn is_hot(&self) -> bool {
         self.current.is_valid() && self.current >= self.hot_temp
     }
-    
+
     pub fn needs_throttle(&self) -> bool {
         self.current.is_valid() && self.current >= self.passive_temp
     }
@@ -187,7 +187,7 @@ impl CpuThermalDriver {
             num_cores: 0,
         }
     }
-    
+
     /// 初期化
     pub fn init(&mut self) -> ThermalResult<()> {
         // TJmaxを読み取り
@@ -198,53 +198,53 @@ impl CpuThermalDriver {
                 self.tj_max = tj_target * 1000;
             }
         }
-        
+
         // コア数を検出（CPUID使用）
         self.num_cores = self.detect_core_count();
-        
+
         Ok(())
     }
-    
+
     /// パッケージ温度を読み取り
     pub fn read_package_temp(&self) -> ThermalResult<Temperature> {
         unsafe {
             let status = self.read_msr(msr::IA32_PACKAGE_THERM_STATUS)?;
-            
+
             // Reading validビットをチェック
             if (status & (1 << 31)) == 0 {
                 return Err(ThermalError::ReadFailed);
             }
-            
+
             // デジタル読み取り値を取得
             let reading = ((status >> 16) & 0x7F) as i32;
             let temp = self.tj_max - (reading * 1000);
-            
+
             Ok(Temperature::from_millicelsius(temp))
         }
     }
-    
+
     /// コア温度を読み取り
     pub fn read_core_temp(&self, _core: u32) -> ThermalResult<Temperature> {
         // 特定のコアへのアフィニティ設定が必要
         // ここでは現在のコアの温度を読む
         unsafe {
             let status = self.read_msr(msr::IA32_THERM_STATUS)?;
-            
+
             if (status & (1 << 31)) == 0 {
                 return Err(ThermalError::ReadFailed);
             }
-            
+
             let reading = ((status >> 16) & 0x7F) as i32;
             let temp = self.tj_max - (reading * 1000);
-            
+
             Ok(Temperature::from_millicelsius(temp))
         }
     }
-    
+
     /// サーマルステータスを取得
     pub fn thermal_status(&self) -> ThermalStatus {
         let mut status = ThermalStatus::default();
-        
+
         unsafe {
             if let Ok(therm) = self.read_msr(msr::IA32_THERM_STATUS) {
                 status.thermal_status = (therm & 1) != 0;
@@ -259,14 +259,14 @@ impl CpuThermalDriver {
                 status.current_limit = (therm & 0x1000) != 0;
             }
         }
-        
+
         status
     }
-    
+
     unsafe fn read_msr(&self, msr: u32) -> ThermalResult<u64> {
         let low: u32;
         let high: u32;
-        
+
         core::arch::asm!(
             "rdmsr",
             out("eax") low,
@@ -274,17 +274,17 @@ impl CpuThermalDriver {
             in("ecx") msr,
             options(nomem, nostack)
         );
-        
+
         Ok(((high as u64) << 32) | (low as u64))
     }
-    
+
     fn detect_core_count(&self) -> u32 {
         unsafe {
             let eax: u32;
             let ebx: u32;
             let ecx: u32;
             let edx: u32;
-            
+
             // CPUID leaf 0x1
             // rbxはLLVMに予約されているため、pushq/popqで保存する
             core::arch::asm!(
@@ -300,16 +300,16 @@ impl CpuThermalDriver {
                 options(nomem)
             );
             let _ = (eax, ecx, edx); // suppress warnings
-            
+
             // EBX[23:16] = 最大論理プロセッサ数
             ((ebx >> 16) & 0xFF).max(1)
         }
     }
-    
+
     pub fn num_cores(&self) -> u32 {
         self.num_cores
     }
-    
+
     pub fn tj_max(&self) -> Temperature {
         Temperature::from_millicelsius(self.tj_max)
     }
@@ -364,26 +364,26 @@ impl ThrottleController {
             throttle_count: AtomicU64::new(0),
         }
     }
-    
+
     pub fn enable(&self) {
         self.enabled.store(true, Ordering::SeqCst);
     }
-    
+
     pub fn disable(&self) {
         self.enabled.store(false, Ordering::SeqCst);
     }
-    
+
     /// 温度に基づいてスロットリングポリシーを決定
     pub fn calculate_policy(&self, temp: Temperature, sensor: &ThermalSensor) -> ThrottlePolicy {
         if !temp.is_valid() {
             return ThrottlePolicy::None;
         }
-        
+
         let temp_mc = temp.millicelsius();
         let critical = sensor.critical_temp.millicelsius();
         let hot = sensor.hot_temp.millicelsius();
         let passive = sensor.passive_temp.millicelsius();
-        
+
         if temp_mc >= critical {
             ThrottlePolicy::Emergency
         } else if temp_mc >= hot {
@@ -396,18 +396,18 @@ impl ThrottleController {
             ThrottlePolicy::None
         }
     }
-    
+
     /// スロットリングを適用
     pub fn apply(&self, policy: ThrottlePolicy) {
         if !self.enabled.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let mut current = self.current_policy.lock();
         if *current == policy {
             return;
         }
-        
+
         match policy {
             ThrottlePolicy::None => self.clear_throttle(),
             ThrottlePolicy::Light => self.apply_light_throttle(),
@@ -415,14 +415,14 @@ impl ThrottleController {
             ThrottlePolicy::Heavy => self.apply_heavy_throttle(),
             ThrottlePolicy::Emergency => self.apply_emergency_throttle(),
         }
-        
+
         if policy != ThrottlePolicy::None {
             self.throttle_count.fetch_add(1, Ordering::Relaxed);
         }
-        
+
         *current = policy;
     }
-    
+
     fn clear_throttle(&self) {
         // スロットリングをクリア
         unsafe {
@@ -437,12 +437,12 @@ impl ThrottleController {
             );
         }
     }
-    
+
     fn apply_light_throttle(&self) {
         // P-state調整のみ
         // 実際にはACPIまたはIntel Speed Stepを使用
     }
-    
+
     fn apply_medium_throttle(&self) {
         // 25%デューティサイクル削減
         unsafe {
@@ -458,7 +458,7 @@ impl ThrottleController {
             );
         }
     }
-    
+
     fn apply_heavy_throttle(&self) {
         // 50%デューティサイクル削減
         unsafe {
@@ -473,7 +473,7 @@ impl ThrottleController {
             );
         }
     }
-    
+
     fn apply_emergency_throttle(&self) {
         // 最低クロック（12.5%）
         unsafe {
@@ -488,11 +488,11 @@ impl ThrottleController {
             );
         }
     }
-    
+
     pub fn current_policy(&self) -> ThrottlePolicy {
         *self.current_policy.lock()
     }
-    
+
     pub fn throttle_count(&self) -> u64 {
         self.throttle_count.load(Ordering::Relaxed)
     }
@@ -536,7 +536,7 @@ impl FanController {
             auto_mode: AtomicBool::new(true),
         }
     }
-    
+
     /// ファンを登録
     pub fn register(&self, id: u32, name: String) {
         let fan = Fan {
@@ -548,7 +548,7 @@ impl FanController {
         };
         self.fans.write().push(fan);
     }
-    
+
     /// ファン速度を更新
     pub fn update_rpm(&self, id: u32, rpm: u32) {
         let mut fans = self.fans.write();
@@ -556,7 +556,7 @@ impl FanController {
             fan.rpm = rpm;
         }
     }
-    
+
     /// ファンレベルを設定
     pub fn set_level(&self, id: u32, level: FanLevel) {
         let mut fans = self.fans.write();
@@ -572,13 +572,13 @@ impl FanController {
             };
         }
     }
-    
+
     /// 温度に基づいてファンを自動制御
     pub fn auto_control(&self, temp: Temperature) {
         if !self.auto_mode.load(Ordering::Relaxed) {
             return;
         }
-        
+
         let level = if temp.celsius() >= 85 {
             FanLevel::Full
         } else if temp.celsius() >= 75 {
@@ -590,7 +590,7 @@ impl FanController {
         } else {
             FanLevel::Silent
         };
-        
+
         let mut fans = self.fans.write();
         for fan in fans.iter_mut() {
             if fan.level == FanLevel::Auto {
@@ -605,9 +605,9 @@ impl FanController {
             }
         }
     }
-    
+
     /// 全ファンを取得（ガード付き参照を返す）
-    /// 
+    ///
     /// Vec clone() を避け、参照カウント不要のゼロコスト参照を提供。
     /// 呼び出し側は RwLockReadGuard の寿命内でのみアクセス可能。
     pub fn fans(&self) -> spin::RwLockReadGuard<Vec<Fan>> {
@@ -687,7 +687,7 @@ impl ThermalZone {
             mode: ThermalZoneMode::Enabled,
         }
     }
-    
+
     /// トリップポイントを追加
     pub fn add_trip_point(&mut self, trip_type: TripPointType, temp: Temperature, hysteresis: i32) {
         let trip = TripPoint {
@@ -698,22 +698,22 @@ impl ThermalZone {
         };
         self.trip_points.push(trip);
     }
-    
+
     /// トリップポイントをチェック
     pub fn check_trips(&mut self, current_temp: Temperature) -> Vec<TripPointType> {
         if self.mode == ThermalZoneMode::Disabled {
             return Vec::new();
         }
-        
+
         let mut triggered = Vec::new();
-        
+
         for trip in &mut self.trip_points {
             let threshold = if trip.triggered {
                 trip.temperature.millicelsius() - trip.hysteresis
             } else {
                 trip.temperature.millicelsius()
             };
-            
+
             if current_temp.millicelsius() >= threshold && !trip.triggered {
                 trip.triggered = true;
                 triggered.push(trip.trip_type);
@@ -721,7 +721,7 @@ impl ThermalZone {
                 trip.triggered = false;
             }
         }
-        
+
         triggered
     }
 }
@@ -737,10 +737,10 @@ pub struct ThermalManager {
     zones: RwLock<Vec<ThermalZone>>,
     throttle: ThrottleController,
     fans: FanController,
-    
+
     next_sensor_id: AtomicU32,
     next_zone_id: AtomicU32,
-    
+
     // 統計
     polling_count: AtomicU64,
     trip_events: AtomicU64,
@@ -760,29 +760,29 @@ impl ThermalManager {
             trip_events: AtomicU64::new(0),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self) -> ThermalResult<()> {
         // CPUドライバを初期化
         self.cpu_driver.lock().init()?;
-        
+
         // CPUセンサーを登録
         self.register_cpu_sensors()?;
-        
+
         // デフォルトのサーマルゾーンを作成
         self.create_default_zones();
-        
+
         Ok(())
     }
-    
+
     fn register_cpu_sensors(&self) -> ThermalResult<()> {
         let driver = self.cpu_driver.lock();
-        
+
         // パッケージセンサー
         let pkg_id = self.next_sensor_id.fetch_add(1, Ordering::SeqCst);
         let pkg_sensor = ThermalSensor::new(pkg_id, "CPU Package".into(), SensorType::CpuPackage);
         self.sensors.write().push(pkg_sensor);
-        
+
         // コアセンサー
         for core in 0..driver.num_cores() {
             let core_id = self.next_sensor_id.fetch_add(1, Ordering::SeqCst);
@@ -793,22 +793,25 @@ impl ThermalManager {
             );
             self.sensors.write().push(core_sensor);
         }
-        
+
         Ok(())
     }
-    
+
     fn create_default_zones(&self) {
         let zone_id = self.next_zone_id.fetch_add(1, Ordering::SeqCst);
         let mut zone = ThermalZone::new(zone_id, "CPU".into());
-        
+
         // CPUセンサーを追加
         let sensors = self.sensors.read();
         for sensor in sensors.iter() {
-            if matches!(sensor.sensor_type, SensorType::CpuPackage | SensorType::CpuCore(_)) {
+            if matches!(
+                sensor.sensor_type,
+                SensorType::CpuPackage | SensorType::CpuCore(_)
+            ) {
                 zone.sensors.push(sensor.id);
             }
         }
-        
+
         // トリップポイントを追加
         zone.add_trip_point(
             TripPointType::Passive,
@@ -825,68 +828,76 @@ impl ThermalManager {
             Temperature::from_millicelsius(DEFAULT_CRITICAL_TEMP),
             0,
         );
-        
+
         self.zones.write().push(zone);
     }
-    
+
     /// センサーを更新
     pub fn poll_sensors(&self) {
         self.polling_count.fetch_add(1, Ordering::Relaxed);
-        
+
         let driver = self.cpu_driver.lock();
         let mut sensors = self.sensors.write();
-        
+
         for sensor in sensors.iter_mut() {
             let temp = match sensor.sensor_type {
-                SensorType::CpuPackage => driver.read_package_temp().unwrap_or(Temperature::invalid()),
-                SensorType::CpuCore(core) => driver.read_core_temp(core as u32).unwrap_or(Temperature::invalid()),
+                SensorType::CpuPackage => {
+                    driver.read_package_temp().unwrap_or(Temperature::invalid())
+                }
+                SensorType::CpuCore(core) => driver
+                    .read_core_temp(core as u32)
+                    .unwrap_or(Temperature::invalid()),
                 _ => Temperature::invalid(),
             };
             sensor.update(temp);
         }
     }
-    
+
     /// サーマルゾーンを処理
     pub fn process_zones(&self) {
         let sensors = self.sensors.read();
         let mut zones = self.zones.write();
-        
+
         for zone in zones.iter_mut() {
             // ゾーン内のセンサーから最高温度を取得
-            let max_temp = zone.sensors.iter()
+            let max_temp = zone
+                .sensors
+                .iter()
                 .filter_map(|&id| sensors.iter().find(|s| s.id == id))
                 .filter(|s| s.current.is_valid())
                 .map(|s| s.current.millicelsius())
                 .max()
                 .map(Temperature::from_millicelsius)
                 .unwrap_or(Temperature::invalid());
-            
+
             if !max_temp.is_valid() {
                 continue;
             }
-            
+
             // トリップポイントをチェック
             let triggered = zone.check_trips(max_temp);
-            
+
             for trip_type in triggered {
                 self.trip_events.fetch_add(1, Ordering::Relaxed);
                 self.handle_trip(trip_type, max_temp);
             }
-            
+
             // スロットリングポリシーを計算
-            if let Some(sensor) = zone.sensors.iter()
+            if let Some(sensor) = zone
+                .sensors
+                .iter()
                 .filter_map(|&id| sensors.iter().find(|s| s.id == id))
                 .next()
             {
                 let policy = self.throttle.calculate_policy(max_temp, sensor);
                 self.throttle.apply(policy);
             }
-            
+
             // ファンを自動制御
             self.fans.auto_control(max_temp);
         }
     }
-    
+
     fn handle_trip(&self, trip_type: TripPointType, temp: Temperature) {
         match trip_type {
             TripPointType::Active(_) => {
@@ -900,19 +911,22 @@ impl ThermalManager {
             }
             TripPointType::Critical => {
                 // 緊急シャットダウン
-                panic!("THERMAL CRITICAL: {}°C - Emergency shutdown!", temp.celsius());
+                panic!(
+                    "THERMAL CRITICAL: {}°C - Emergency shutdown!",
+                    temp.celsius()
+                );
             }
         }
     }
-    
+
     /// 定期ポーリング（タイマー割り込みから呼ぶ）
     pub fn periodic_poll(&self) {
         self.poll_sensors();
         self.process_zones();
     }
-    
+
     /// 全センサーを取得（ガード付き参照）
-    /// 
+    ///
     /// Vec clone() を避け、ゼロコスト参照を提供。
     pub fn sensors(&self) -> spin::RwLockReadGuard<Vec<ThermalSensor>> {
         self.sensors.read()
@@ -923,22 +937,22 @@ impl ThermalManager {
     pub fn sensor_count(&self) -> usize {
         self.sensors.read().len()
     }
-    
+
     /// 特定のセンサーを取得
     pub fn sensor(&self, id: u32) -> Option<ThermalSensor> {
         self.sensors.read().iter().find(|s| s.id == id).cloned()
     }
-    
+
     /// スロットリングコントローラを取得
     pub fn throttle_controller(&self) -> &ThrottleController {
         &self.throttle
     }
-    
+
     /// ファンコントローラを取得
     pub fn fan_controller(&self) -> &FanController {
         &self.fans
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> (u64, u64) {
         (
@@ -970,7 +984,8 @@ pub fn periodic_poll() {
 
 /// CPU温度を取得
 pub fn cpu_temperature() -> Option<Temperature> {
-    thermal_manager().sensors()
+    thermal_manager()
+        .sensors()
         .iter()
         .find(|s| s.sensor_type == SensorType::CpuPackage)
         .map(|s| s.current)

@@ -11,7 +11,7 @@ use core::ptr::NonNull;
 use spin::Mutex;
 
 /// シンプルな空きリストベースのアロケータ（Exchange Heap専用）
-/// 
+///
 /// Exchange Heapはドメイン間通信専用で、通常の割り当てサイズは
 /// 比較的大きい（パケットバッファ等）ため、単純な空きリスト実装で十分。
 struct SimpleFreeListHeap {
@@ -46,9 +46,9 @@ impl SimpleFreeListHeap {
             allocated_bytes: 0,
         }
     }
-    
+
     /// ヒープを初期化
-    /// 
+    ///
     /// # Safety
     /// - `heap_start` は有効なメモリ領域を指す
     /// - `size` バイトがアクセス可能
@@ -56,7 +56,7 @@ impl SimpleFreeListHeap {
         self.heap_start = heap_start as usize;
         self.heap_end = self.heap_start + size;
         self.allocated_bytes = 0;
-        
+
         // 初期状態: 全体が1つの空きブロック
         if size >= core::mem::size_of::<FreeBlock>() {
             let block = heap_start as *mut FreeBlock;
@@ -67,31 +67,31 @@ impl SimpleFreeListHeap {
             self.free_list_head = NonNull::new(block);
         }
     }
-    
+
     /// メモリを割り当て（First-Fit）
     fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
         let align = layout.align().max(core::mem::align_of::<FreeBlock>());
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
-        
+
         // 最低ブロックサイズ（ヘッダ + アライメント）
         let min_block_size = size + align;
-        
+
         let mut prev: Option<NonNull<FreeBlock>> = None;
         let mut current = self.free_list_head;
-        
+
         while let Some(block_ptr) = current {
             let block = unsafe { block_ptr.as_ref() };
-            
+
             // アライメントを考慮した割り当て開始位置
             let block_addr = block_ptr.as_ptr() as usize;
             let aligned_addr = (block_addr + align - 1) & !(align - 1);
             let padding = aligned_addr - block_addr;
-            
+
             let total_needed = padding + size;
-            
+
             if block.size >= total_needed {
                 let remaining = block.size - total_needed;
-                
+
                 // 残りが十分大きければ分割
                 if remaining >= core::mem::size_of::<FreeBlock>() + 16 {
                     // 新しい空きブロックを作成
@@ -101,46 +101,50 @@ impl SimpleFreeListHeap {
                         (*new_block).size = remaining;
                         (*new_block).next = block.next;
                     }
-                    
+
                     // リストを更新
                     if let Some(mut p) = prev {
-                        unsafe { p.as_mut().next = NonNull::new(new_block); }
+                        unsafe {
+                            p.as_mut().next = NonNull::new(new_block);
+                        }
                     } else {
                         self.free_list_head = NonNull::new(new_block);
                     }
                 } else {
                     // 残りが小さければ全体を使用
                     if let Some(mut p) = prev {
-                        unsafe { p.as_mut().next = block.next; }
+                        unsafe {
+                            p.as_mut().next = block.next;
+                        }
                     } else {
                         self.free_list_head = block.next;
                     }
                 }
-                
+
                 self.allocated_bytes += total_needed;
                 return Ok(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) });
             }
-            
+
             prev = current;
             current = block.next;
         }
-        
+
         Err(())
     }
-    
+
     /// メモリを解放
-    /// 
+    ///
     /// # Safety
     /// - `ptr` は以前に `allocate_first_fit` で取得したポインタ
     unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
         let addr = ptr.as_ptr() as usize;
-        
+
         // 境界チェック
         if addr < self.heap_start || addr >= self.heap_end {
             return;
         }
-        
+
         // 新しい空きブロックを作成
         let new_block = addr as *mut FreeBlock;
         unsafe {
@@ -148,16 +152,16 @@ impl SimpleFreeListHeap {
             (*new_block).next = self.free_list_head;
         }
         self.free_list_head = NonNull::new(new_block);
-        
+
         self.allocated_bytes = self.allocated_bytes.saturating_sub(size);
-        
+
         // TODO: 隣接ブロックの合体（将来の最適化）
     }
-    
+
     fn used(&self) -> usize {
         self.allocated_bytes
     }
-    
+
     fn free(&self) -> usize {
         (self.heap_end - self.heap_start).saturating_sub(self.allocated_bytes)
     }
@@ -176,36 +180,37 @@ impl ExchangeHeap {
             heap: Mutex::new(SimpleFreeListHeap::empty()),
         }
     }
-    
+
     /// Exchange Heapを指定アドレスとサイズで初期化
-    /// 
+    ///
     /// # Safety
     /// - `heap_start` は有効なメモリ領域を指している必要がある
     /// - `size` はそのメモリ領域のサイズと一致する必要がある
     /// - このメモリ領域は他のアロケータと重複してはならない
     pub unsafe fn init(&self, heap_start: usize, size: usize) {
         // SAFETY: 呼び出し元がメモリ領域の有効性を保証
-        unsafe { self.heap.lock().init(heap_start as *mut u8, size); }
+        unsafe {
+            self.heap.lock().init(heap_start as *mut u8, size);
+        }
     }
-    
+
     /// Exchange Heap上にメモリを割り当て
     pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
-        self.heap
-            .lock()
-            .allocate_first_fit(layout)
-            .ok()
+        self.heap.lock().allocate_first_fit(layout).ok()
     }
-    
+
     /// Exchange Heap上のメモリを解放
-    /// 
+    ///
     /// # Safety
     /// - `ptr` は以前に `allocate` で取得したポインタである必要がある
     /// - `layout` は `allocate` 時と同じである必要がある
     pub unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // SAFETY: 呼び出し元がポインタとレイアウトの有効性を保証
-        unsafe { self.heap.lock().deallocate(ptr, layout); }
+        unsafe {
+            self.heap.lock().deallocate(ptr, layout);
+        }
     }
-    
+
     /// ヒープ使用統計を取得（デバッグ用）
     pub fn stats(&self) -> HeapStats {
         let heap = self.heap.lock();
@@ -222,11 +227,13 @@ unsafe impl GlobalAlloc for ExchangeHeap {
             .map(|p| p.as_ptr())
             .unwrap_or(core::ptr::null_mut())
     }
-    
+
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if let Some(non_null) = NonNull::new(ptr) {
             // SAFETY: GlobalAllocの契約でptrは以前にallocで取得したもの
-            unsafe { self.deallocate(non_null, layout); }
+            unsafe {
+                self.deallocate(non_null, layout);
+            }
         }
     }
 }
@@ -246,30 +253,30 @@ static EXCHANGE_HEAP: ExchangeHeap = ExchangeHeap::new();
 static INITIALIZED: spin::Once<()> = spin::Once::new();
 
 /// Exchange Heapの初期化関数
-/// 
+///
 /// # Safety
 /// カーネル初期化時に一度だけ呼ばれる必要がある
 pub unsafe fn init_exchange_heap(heap_start: usize, size: usize) {
     INITIALIZED.call_once(|| {
         // SAFETY: 呼び出し元がメモリ領域の有効性を保証
-        unsafe { EXCHANGE_HEAP.init(heap_start, size); }
+        unsafe {
+            EXCHANGE_HEAP.init(heap_start, size);
+        }
     });
 }
 
 /// Exchange Heap経由でメモリを割り当て（RRefで使用）
 pub fn allocate_on_exchange<T>(value: T) -> Option<NonNull<T>> {
     let layout = Layout::new::<T>();
-    EXCHANGE_HEAP.allocate(layout).map(|ptr| {
-        unsafe {
-            let typed_ptr = ptr.as_ptr() as *mut T;
-            typed_ptr.write(value);
-            NonNull::new_unchecked(typed_ptr)
-        }
+    EXCHANGE_HEAP.allocate(layout).map(|ptr| unsafe {
+        let typed_ptr = ptr.as_ptr() as *mut T;
+        typed_ptr.write(value);
+        NonNull::new_unchecked(typed_ptr)
     })
 }
 
 /// Exchange Heap上のメモリを解放
-/// 
+///
 /// # Safety
 /// - `ptr` はExchange Heap上に割り当てられたメモリである必要がある
 pub unsafe fn deallocate_on_exchange<T>(ptr: NonNull<T>) {
@@ -282,13 +289,15 @@ pub unsafe fn deallocate_on_exchange<T>(ptr: NonNull<T>) {
 }
 
 /// 生のポインタとレイアウトを指定してExchange Heapから解放
-/// 
+///
 /// # Safety
 /// - `ptr` はExchange Heap上に割り当てられたメモリである必要がある
 /// - `layout` は割り当て時と同じである必要がある
 pub unsafe fn deallocate_raw(ptr: NonNull<u8>, layout: Layout) {
     // SAFETY: 呼び出し元がポインタとレイアウトの有効性を保証
-    unsafe { EXCHANGE_HEAP.deallocate(ptr, layout); }
+    unsafe {
+        EXCHANGE_HEAP.deallocate(ptr, layout);
+    }
 }
 
 /// Exchange Heapの統計を取得
@@ -301,62 +310,62 @@ pub fn exchange_heap_stats() -> HeapStats {
 // 未初期化メモリの問題を型レベルで防ぐ
 // ============================================================================
 
-use core::mem::MaybeUninit;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 
 /// Exchange Heap上にゼロ初期化されたスライスを割り当て
-/// 
+///
 /// # Arguments
 /// * `len` - スライスの要素数
-/// 
+///
 /// # Returns
 /// 初期化済みスライスへのポインタとレイアウト
-/// 
+///
 /// # Safety Guarantee
 /// 返されるメモリは必ずゼロ初期化されている
 pub fn allocate_zeroed_slice<T: Sized>(len: usize) -> Option<(NonNull<T>, Layout)> {
     if len == 0 {
         return None;
     }
-    
+
     let layout = Layout::array::<T>(len).ok()?;
     let ptr = EXCHANGE_HEAP.allocate(layout)?;
-    
+
     // ゼロ初期化
     unsafe {
         core::ptr::write_bytes(ptr.as_ptr(), 0, layout.size());
     }
-    
+
     Some((ptr.cast(), layout))
 }
 
 /// Exchange Heap上に未初期化スライスを割り当て
-/// 
+///
 /// MaybeUninit<T> の配列として返すことで、
 /// 未初期化メモリへのアクセスを型レベルで防ぐ
-/// 
+///
 /// # Arguments
 /// * `len` - スライスの要素数
-/// 
+///
 /// # Returns
 /// 未初期化スライスへのポインタとレイアウト
 pub fn allocate_uninit_slice<T: Sized>(len: usize) -> Option<(NonNull<MaybeUninit<T>>, Layout)> {
     if len == 0 {
         return None;
     }
-    
+
     let layout = Layout::array::<MaybeUninit<T>>(len).ok()?;
     let ptr = EXCHANGE_HEAP.allocate(layout)?;
-    
+
     Some((ptr.cast(), layout))
 }
 
 /// 初期化関数を使ってスライスを割り当て・初期化
-/// 
+///
 /// # Arguments
 /// * `len` - スライスの要素数
 /// * `init` - 各要素を初期化する関数 (インデックスを受け取る)
-/// 
+///
 /// # Returns
 /// 初期化済みスライスへのポインタとレイアウト
 pub fn allocate_slice_with<T: Sized, F>(len: usize, mut init: F) -> Option<(NonNull<T>, Layout)>
@@ -366,26 +375,26 @@ where
     if len == 0 {
         return None;
     }
-    
+
     let layout = Layout::array::<T>(len).ok()?;
     let ptr = EXCHANGE_HEAP.allocate(layout)?;
     let typed_ptr = ptr.as_ptr() as *mut T;
-    
+
     // 各要素を初期化
     unsafe {
         for i in 0..len {
             typed_ptr.add(i).write(init(i));
         }
     }
-    
+
     Some((NonNull::new(typed_ptr)?, layout))
 }
 
 /// デフォルト値でスライスを割り当て・初期化
-/// 
+///
 /// # Arguments
 /// * `len` - スライスの要素数
-/// 
+///
 /// # Returns
 /// 初期化済みスライスへのポインタとレイアウト
 pub fn allocate_slice_default<T: Sized + Default>(len: usize) -> Option<(NonNull<T>, Layout)> {
@@ -393,7 +402,7 @@ pub fn allocate_slice_default<T: Sized + Default>(len: usize) -> Option<(NonNull
 }
 
 /// スライスを解放
-/// 
+///
 /// # Safety
 /// - `ptr` は `allocate_*_slice` で取得したポインタである必要がある
 /// - `layout` は割り当て時と同じである必要がある
@@ -402,18 +411,20 @@ pub unsafe fn deallocate_slice<T>(ptr: NonNull<T>, len: usize) {
     if len == 0 {
         return;
     }
-    
+
     // 各要素のデストラクタを呼ぶ
     unsafe {
         for i in 0..len {
             ptr.as_ptr().add(i).drop_in_place();
         }
     }
-    
+
     // メモリを解放
     if let Ok(layout) = Layout::array::<T>(len) {
         // SAFETY: ptrは有効なExchange Heap上のメモリ
-        unsafe { EXCHANGE_HEAP.deallocate(ptr.cast(), layout); }
+        unsafe {
+            EXCHANGE_HEAP.deallocate(ptr.cast(), layout);
+        }
     }
 }
 
@@ -422,7 +433,7 @@ pub unsafe fn deallocate_slice<T>(ptr: NonNull<T>, len: usize) {
 // ============================================================================
 
 /// 初期化済みスライス
-/// 
+///
 /// 型レベルで初期化状態を追跡し、未初期化メモリへの
 /// 不正アクセスを防止する。
 pub struct InitializedSlice<T: Sized> {
@@ -442,13 +453,13 @@ impl<T: Sized> InitializedSlice<T> {
             _marker: PhantomData,
         }
     }
-    
+
     /// ゼロ初期化されたスライスを作成
     pub fn zeroed(len: usize) -> Option<Self> {
         let (ptr, layout) = allocate_zeroed_slice::<T>(len)?;
         Some(Self::new(ptr, len, layout))
     }
-    
+
     /// 初期化関数でスライスを作成
     pub fn with_init<F>(len: usize, init: F) -> Option<Self>
     where
@@ -457,7 +468,7 @@ impl<T: Sized> InitializedSlice<T> {
         let (ptr, layout) = allocate_slice_with(len, init)?;
         Some(Self::new(ptr, len, layout))
     }
-    
+
     /// デフォルト値でスライスを作成
     pub fn with_default(len: usize) -> Option<Self>
     where
@@ -466,32 +477,32 @@ impl<T: Sized> InitializedSlice<T> {
         let (ptr, layout) = allocate_slice_default(len)?;
         Some(Self::new(ptr, len, layout))
     }
-    
+
     /// スライスへの参照を取得
     pub fn as_slice(&self) -> &[T] {
         unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.len) }
     }
-    
+
     /// 可変スライスへの参照を取得
     pub fn as_mut_slice(&mut self) -> &mut [T] {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.len) }
     }
-    
+
     /// 長さを取得
     pub fn len(&self) -> usize {
         self.len
     }
-    
+
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    
+
     /// ポインタを取得（危険）
     pub fn as_ptr(&self) -> *const T {
         self.ptr.as_ptr()
     }
-    
+
     /// 可変ポインタを取得（危険）
     pub fn as_mut_ptr(&mut self) -> *mut T {
         self.ptr.as_ptr()
@@ -515,7 +526,7 @@ impl<T: Sized> Drop for InitializedSlice<T> {
 
 impl<T: Sized> core::ops::Deref for InitializedSlice<T> {
     type Target = [T];
-    
+
     fn deref(&self) -> &Self::Target {
         self.as_slice()
     }
@@ -532,7 +543,7 @@ unsafe impl<T: Sized + Send> Send for InitializedSlice<T> {}
 unsafe impl<T: Sized + Sync> Sync for InitializedSlice<T> {}
 
 /// 未初期化スライス
-/// 
+///
 /// MaybeUninitのラッパーとして、安全な初期化パターンを強制する。
 /// 一度初期化したら InitializedSlice に変換する必要がある。
 pub struct UninitializedSlice<T: Sized> {
@@ -556,29 +567,29 @@ impl<T: Sized> UninitializedSlice<T> {
             _marker: PhantomData,
         })
     }
-    
+
     /// 長さを取得
     pub fn len(&self) -> usize {
         self.len
     }
-    
+
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
-    
+
     /// 初期化済み要素数を取得
     pub fn initialized_count(&self) -> usize {
         self.initialized_count
     }
-    
+
     /// 完全に初期化されているか
     pub fn is_fully_initialized(&self) -> bool {
         self.initialized_count == self.len
     }
-    
+
     /// 要素を初期化（インデックス指定）
-    /// 
+    ///
     /// # Safety
     /// 同じインデックスを2回初期化しないこと
     pub unsafe fn init_at(&mut self, index: usize, value: T) {
@@ -590,37 +601,33 @@ impl<T: Sized> UninitializedSlice<T> {
         // より正確な追跡が必要な場合はビットマップを使用
         self.initialized_count = self.initialized_count.max(index + 1);
     }
-    
+
     /// 連続して要素を初期化
     pub fn init_next(&mut self, value: T) -> Result<(), ExchangeHeapError> {
         if self.initialized_count >= self.len {
             return Err(ExchangeHeapError::SliceFull);
         }
-        
+
         unsafe {
             self.init_at(self.initialized_count, value);
         }
         self.initialized_count += 1;
         Ok(())
     }
-    
+
     /// 初期化済みスライスに変換
-    /// 
+    ///
     /// # Safety
     /// 全要素が初期化されている必要がある
     pub unsafe fn assume_init(self) -> InitializedSlice<T> {
-        let slice = InitializedSlice::new(
-            self.ptr.cast(),
-            self.len,
-            self.layout,
-        );
-        
+        let slice = InitializedSlice::new(self.ptr.cast(), self.len, self.layout);
+
         // selfのDropを防ぐ
         core::mem::forget(self);
-        
+
         slice
     }
-    
+
     /// 安全に初期化済みスライスに変換（全要素初期化済みの場合のみ）
     pub fn try_into_initialized(self) -> Result<InitializedSlice<T>, Self> {
         if self.is_fully_initialized() {
@@ -629,7 +636,7 @@ impl<T: Sized> UninitializedSlice<T> {
             Err(self)
         }
     }
-    
+
     /// イテレータを使って初期化
     pub fn init_from_iter<I>(mut self, iter: I) -> Result<InitializedSlice<T>, Self>
     where
@@ -643,7 +650,7 @@ impl<T: Sized> UninitializedSlice<T> {
                 self.init_at(i, value);
             }
         }
-        
+
         self.try_into_initialized()
     }
 }
@@ -676,25 +683,25 @@ pub enum ExchangeHeapError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_exchange_heap() {
         // メモリ領域を確保（テスト用）
         const HEAP_SIZE: usize = 4096;
         static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
-        
+
         unsafe {
             EXCHANGE_HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE);
         }
-        
+
         // アロケーション
         let layout = Layout::from_size_align(64, 8).unwrap();
         let ptr = EXCHANGE_HEAP.allocate(layout).expect("Allocation failed");
-        
+
         // 統計確認
         let stats = EXCHANGE_HEAP.stats();
         assert!(stats.allocated > 0);
-        
+
         // デアロケーション
         unsafe {
             EXCHANGE_HEAP.deallocate(ptr, layout);

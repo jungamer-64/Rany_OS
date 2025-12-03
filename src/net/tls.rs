@@ -17,8 +17,8 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -305,7 +305,7 @@ pub struct ServerNameList {
 /// サーバー名
 #[derive(Clone, Debug)]
 pub struct ServerName {
-    pub name_type: u8,  // 0 = hostname
+    pub name_type: u8, // 0 = hostname
     pub name: String,
 }
 
@@ -564,7 +564,9 @@ impl TlsConnection {
         hello.push(0);
 
         // 暗号スイート
-        let cipher_bytes: Vec<u8> = self.config.cipher_suites
+        let cipher_bytes: Vec<u8> = self
+            .config
+            .cipher_suites
             .iter()
             .flat_map(|c| [(c.0 >> 8) as u8, c.0 as u8])
             .collect();
@@ -581,11 +583,7 @@ impl TlsConnection {
 
         // ハンドシェイクヘッダを追加
         let mut message = vec![HandshakeType::ClientHello as u8];
-        message.extend_from_slice(&[
-            0,
-            (hello.len() >> 8) as u8,
-            hello.len() as u8,
-        ]);
+        message.extend_from_slice(&[0, (hello.len() >> 8) as u8, hello.len() as u8]);
         message.extend_from_slice(&hello);
 
         // ハンドシェイクメッセージを記録
@@ -594,7 +592,8 @@ impl TlsConnection {
         // レコードヘッダを追加
         let mut record = vec![
             ContentType::Handshake as u8,
-            0x03, 0x01,  // TLS 1.0（互換性のため）
+            0x03,
+            0x01, // TLS 1.0（互換性のため）
             (message.len() >> 8) as u8,
             message.len() as u8,
         ];
@@ -615,7 +614,10 @@ impl TlsConnection {
             let list_len = name_bytes.len() + 3;
             ext.extend_from_slice(&[(list_len >> 8) as u8, (list_len & 0xFF) as u8]); // list length
             ext.push(0); // hostname type
-            ext.extend_from_slice(&[(name_bytes.len() >> 8) as u8, (name_bytes.len() & 0xFF) as u8]);
+            ext.extend_from_slice(&[
+                (name_bytes.len() >> 8) as u8,
+                (name_bytes.len() & 0xFF) as u8,
+            ]);
             ext.extend_from_slice(name_bytes);
 
             extensions.extend_from_slice(&[0, 0]); // SNI type
@@ -625,7 +627,9 @@ impl TlsConnection {
 
         // Supported Groups
         {
-            let groups: Vec<u8> = self.config.named_groups
+            let groups: Vec<u8> = self
+                .config
+                .named_groups
                 .iter()
                 .flat_map(|g| [(g.0 >> 8) as u8, g.0 as u8])
                 .collect();
@@ -639,7 +643,9 @@ impl TlsConnection {
 
         // Signature Algorithms
         {
-            let schemes: Vec<u8> = self.config.signature_schemes
+            let schemes: Vec<u8> = self
+                .config
+                .signature_schemes
                 .iter()
                 .flat_map(|s| [(s.0 >> 8) as u8, s.0 as u8])
                 .collect();
@@ -654,7 +660,10 @@ impl TlsConnection {
         // Supported Versions (for TLS 1.3)
         {
             let mut ext = vec![2]; // 1 version = 2 bytes
-            ext.extend_from_slice(&[(self.config.max_version.0 >> 8) as u8, self.config.max_version.0 as u8]);
+            ext.extend_from_slice(&[
+                (self.config.max_version.0 >> 8) as u8,
+                self.config.max_version.0 as u8,
+            ]);
 
             extensions.extend_from_slice(&[0, 43]); // type
             extensions.extend_from_slice(&[(ext.len() >> 8) as u8, (ext.len() & 0xFF) as u8]);
@@ -690,7 +699,7 @@ impl TlsConnection {
             let length = ((self.recv_buffer[3] as usize) << 8) | self.recv_buffer[4] as usize;
 
             if self.recv_buffer.len() < 5 + length {
-                break;  // もっとデータが必要
+                break; // もっとデータが必要
             }
 
             let record = self.recv_buffer.drain(..5 + length).collect::<Vec<_>>();
@@ -742,11 +751,11 @@ impl TlsConnection {
         let payload = &data[4..];
 
         match msg_type {
-            2 => self.process_server_hello(payload)?,  // ServerHello
+            2 => self.process_server_hello(payload)?, // ServerHello
             11 => self.process_certificate(payload)?, // Certificate
             12 => self.process_server_key_exchange(payload)?, // ServerKeyExchange
             14 => self.process_server_hello_done(payload)?, // ServerHelloDone
-            20 => self.process_finished(payload)?, // Finished
+            20 => self.process_finished(payload)?,    // Finished
             _ => {}
         }
 
@@ -822,7 +831,8 @@ impl TlsConnection {
         // TODO: 実際の暗号化処理
         let mut record = vec![
             ContentType::ApplicationData as u8,
-            0x03, 0x03,
+            0x03,
+            0x03,
             (data.len() >> 8) as u8,
             data.len() as u8,
         ];
@@ -839,8 +849,10 @@ impl TlsConnection {
         // close_notify アラートを送信
         vec![
             ContentType::Alert as u8,
-            0x03, 0x03,
-            0, 2,
+            0x03,
+            0x03,
+            0,
+            2,
             AlertLevel::Warning as u8,
             AlertDescription::CloseNotify as u8,
         ]
@@ -887,7 +899,9 @@ fn generate_random() -> [u8; 32] {
 
     unsafe {
         for i in 0..32 {
-            SEED = SEED.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            SEED = SEED
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             result[i] = (SEED >> 56) as u8;
         }
     }

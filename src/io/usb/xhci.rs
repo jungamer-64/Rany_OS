@@ -34,11 +34,11 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
+use super::descriptor::{DeviceDescriptor, ParsedConfiguration, parse_configuration};
 use super::{
-    DeviceAddress, EndpointAddress, PortNumber, PortStatus, SetupPacket, SlotId,
-    TransferDirection, TransferStatus, TransferType, UsbDevice, UsbError, UsbResult, UsbSpeed,
+    DeviceAddress, EndpointAddress, PortNumber, PortStatus, SetupPacket, SlotId, TransferDirection,
+    TransferStatus, TransferType, UsbDevice, UsbError, UsbResult, UsbSpeed,
 };
-use super::descriptor::{DeviceDescriptor, parse_configuration, ParsedConfiguration};
 
 // ============================================================================
 // xHCI Constants
@@ -134,28 +134,29 @@ const USBCMD_HSEE: u32 = 1 << 3;
 // USBSTS Bits
 // ============================================================================
 
-const USBSTS_HCH: u32 = 1 << 0;  // Host Controller Halted
-const USBSTS_HSE: u32 = 1 << 2;  // Host System Error
+const USBSTS_HCH: u32 = 1 << 0; // Host Controller Halted
+const USBSTS_HSE: u32 = 1 << 2; // Host System Error
 const USBSTS_EINT: u32 = 1 << 3; // Event Interrupt
-const USBSTS_PCD: u32 = 1 << 4;  // Port Change Detect
+const USBSTS_PCD: u32 = 1 << 4; // Port Change Detect
 const USBSTS_CNR: u32 = 1 << 11; // Controller Not Ready
 
 // ============================================================================
 // PORTSC Bits
 // ============================================================================
 
-const PORTSC_CCS: u32 = 1 << 0;   // Current Connect Status
-const PORTSC_PED: u32 = 1 << 1;   // Port Enabled/Disabled
-const PORTSC_OCA: u32 = 1 << 3;   // Over-current Active
-const PORTSC_PR: u32 = 1 << 4;    // Port Reset
-const PORTSC_PP: u32 = 1 << 9;    // Port Power
-const PORTSC_CSC: u32 = 1 << 17;  // Connect Status Change
-const PORTSC_PEC: u32 = 1 << 18;  // Port Enabled/Disabled Change
-const PORTSC_WRC: u32 = 1 << 19;  // Warm Port Reset Change
-const PORTSC_PRC: u32 = 1 << 21;  // Port Reset Change
-const PORTSC_PLC: u32 = 1 << 22;  // Port Link State Change
-const PORTSC_CEC: u32 = 1 << 23;  // Port Config Error Change
-const PORTSC_CHANGE_MASK: u32 = PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC;
+const PORTSC_CCS: u32 = 1 << 0; // Current Connect Status
+const PORTSC_PED: u32 = 1 << 1; // Port Enabled/Disabled
+const PORTSC_OCA: u32 = 1 << 3; // Over-current Active
+const PORTSC_PR: u32 = 1 << 4; // Port Reset
+const PORTSC_PP: u32 = 1 << 9; // Port Power
+const PORTSC_CSC: u32 = 1 << 17; // Connect Status Change
+const PORTSC_PEC: u32 = 1 << 18; // Port Enabled/Disabled Change
+const PORTSC_WRC: u32 = 1 << 19; // Warm Port Reset Change
+const PORTSC_PRC: u32 = 1 << 21; // Port Reset Change
+const PORTSC_PLC: u32 = 1 << 22; // Port Link State Change
+const PORTSC_CEC: u32 = 1 << 23; // Port Config Error Change
+const PORTSC_CHANGE_MASK: u32 =
+    PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC;
 
 // ============================================================================
 // TRB Types
@@ -326,15 +327,16 @@ impl Trb {
 
     /// Setup Stage TRB を作成
     pub fn setup_stage(setup: &SetupPacket, transfer_type: u8, cycle: bool) -> Self {
-        let setup_bytes = unsafe {
-            core::slice::from_raw_parts(
-                setup as *const _ as *const u8,
-                8,
-            )
-        };
+        let setup_bytes = unsafe { core::slice::from_raw_parts(setup as *const _ as *const u8, 8) };
         let parameter = u64::from_le_bytes([
-            setup_bytes[0], setup_bytes[1], setup_bytes[2], setup_bytes[3],
-            setup_bytes[4], setup_bytes[5], setup_bytes[6], setup_bytes[7],
+            setup_bytes[0],
+            setup_bytes[1],
+            setup_bytes[2],
+            setup_bytes[3],
+            setup_bytes[4],
+            setup_bytes[5],
+            setup_bytes[6],
+            setup_bytes[7],
         ]);
 
         Self {
@@ -377,8 +379,8 @@ impl Trb {
             parameter: next_ring,
             status: 0,
             control: ((TrbType::Link as u32) << 10)
-                   | ((toggle_cycle as u32) << 1)
-                   | if cycle { 1 } else { 0 },
+                | ((toggle_cycle as u32) << 1)
+                | if cycle { 1 } else { 0 },
         }
     }
 
@@ -397,8 +399,8 @@ impl Trb {
             parameter: 0,
             status: 0,
             control: ((TrbType::DisableSlot as u32) << 10)
-                   | ((slot_id.as_u8() as u32) << 24)
-                   | if cycle { 1 } else { 0 },
+                | ((slot_id.as_u8() as u32) << 24)
+                | if cycle { 1 } else { 0 },
         }
     }
 
@@ -408,9 +410,9 @@ impl Trb {
             parameter: input_context_ptr,
             status: 0,
             control: ((TrbType::AddressDevice as u32) << 10)
-                   | ((slot_id.as_u8() as u32) << 24)
-                   | ((bsr as u32) << 9)
-                   | if cycle { 1 } else { 0 },
+                | ((slot_id.as_u8() as u32) << 24)
+                | ((bsr as u32) << 9)
+                | if cycle { 1 } else { 0 },
         }
     }
 
@@ -420,8 +422,8 @@ impl Trb {
             parameter: input_context_ptr,
             status: 0,
             control: ((TrbType::ConfigureEndpoint as u32) << 10)
-                   | ((slot_id.as_u8() as u32) << 24)
-                   | if cycle { 1 } else { 0 },
+                | ((slot_id.as_u8() as u32) << 24)
+                | if cycle { 1 } else { 0 },
         }
     }
 
@@ -431,9 +433,9 @@ impl Trb {
             parameter: 0,
             status: 0,
             control: ((TrbType::ResetEndpoint as u32) << 10)
-                   | ((slot_id.as_u8() as u32) << 24)
-                   | ((dci as u32) << 16)
-                   | if cycle { 1 } else { 0 },
+                | ((slot_id.as_u8() as u32) << 24)
+                | ((dci as u32) << 16)
+                | if cycle { 1 } else { 0 },
         }
     }
 
@@ -469,7 +471,7 @@ impl TrbRing {
     /// 新しいリングを作成
     pub fn new(size: usize) -> Self {
         let mut trbs = vec![Trb::default(); size].into_boxed_slice();
-        
+
         // 物理アドレスを取得（実際の実装ではメモリマネージャを使用）
         let phys_addr = trbs.as_ptr() as u64;
 
@@ -582,7 +584,7 @@ impl SlotContext {
         self.route_string_and_speed = (route_string & 0xFFFFF)
             | ((speed.to_slot_speed() as u32) << 20)
             | ((context_entries as u32) << 27);
-        
+
         self.latency_and_ports = (root_port as u32) << 16;
     }
 }
@@ -614,12 +616,10 @@ impl EndpointContext {
         interval: u8,
         error_count: u8,
     ) {
-        self.ep_state_and_type = ((ep_type as u32) << 3)
-            | ((error_count as u32) << 1)
-            | ((interval as u32) << 16);
+        self.ep_state_and_type =
+            ((ep_type as u32) << 3) | ((error_count as u32) << 1) | ((interval as u32) << 16);
 
-        self.max_packet_and_burst = (max_packet_size as u32)
-            | ((max_burst_size as u32) << 8);
+        self.max_packet_and_burst = (max_packet_size as u32) | ((max_burst_size as u32) << 8);
 
         // DCS (Dequeue Cycle State) = 1
         self.tr_dequeue_ptr = tr_dequeue_ptr | 1;
@@ -712,9 +712,12 @@ impl XhciController {
     pub fn new(base_addr: u64) -> UsbResult<Self> {
         // Capability Registers を読み取り
         let caplength = unsafe { ptr::read_volatile((base_addr + CAPLENGTH as u64) as *const u8) };
-        let hciversion = unsafe { ptr::read_volatile((base_addr + HCIVERSION as u64) as *const u16) };
-        let hcsparams1 = unsafe { ptr::read_volatile((base_addr + HCSPARAMS1 as u64) as *const u32) };
-        let hccparams1 = unsafe { ptr::read_volatile((base_addr + HCCPARAMS1 as u64) as *const u32) };
+        let hciversion =
+            unsafe { ptr::read_volatile((base_addr + HCIVERSION as u64) as *const u16) };
+        let hcsparams1 =
+            unsafe { ptr::read_volatile((base_addr + HCSPARAMS1 as u64) as *const u32) };
+        let hccparams1 =
+            unsafe { ptr::read_volatile((base_addr + HCCPARAMS1 as u64) as *const u32) };
         let dboff = unsafe { ptr::read_volatile((base_addr + DBOFF as u64) as *const u32) };
         let rtsoff = unsafe { ptr::read_volatile((base_addr + RTSOFF as u64) as *const u32) };
 
@@ -725,7 +728,7 @@ impl XhciController {
         let max_ports = ((hcsparams1 >> 24) & 0xFF) as u8;
         let _context_size_flag = (hccparams1 >> 2) & 1;
 
-        // log::info!("xHCI: {} slots, {} ports, context_size_64={}", 
+        // log::info!("xHCI: {} slots, {} ports, context_size_64={}",
         //            max_slots, max_ports, context_size_flag);
 
         let op_offset = base_addr + caplength as u64;
@@ -734,7 +737,7 @@ impl XhciController {
 
         // コマンドリングを作成
         let command_ring = TrbRing::new(COMMAND_RING_SIZE);
-        
+
         // イベントリングを作成
         let event_ring = TrbRing::new(EVENT_RING_SIZE);
 
@@ -747,7 +750,8 @@ impl XhciController {
         let dcbaa = vec![0u64; max_slots as usize + 1].into_boxed_slice();
 
         // Device contextsの初期化
-        let device_contexts: Vec<Option<Box<DeviceContext>>> = (0..MAX_SLOTS).map(|_| None).collect();
+        let device_contexts: Vec<Option<Box<DeviceContext>>> =
+            (0..MAX_SLOTS).map(|_| None).collect();
         // Transfer ringsの初期化
         let transfer_rings: Vec<Vec<Option<Box<TrbRing>>>> = (0..MAX_SLOTS)
             .map(|_| (0..MAX_ENDPOINTS).map(|_| None).collect())
@@ -798,13 +802,13 @@ impl XhciController {
 
         // イベントリングを設定
         let event_ring = self.event_ring.lock();
-        
+
         // ERSTSZ
         self.write_runtime(ERSTSZ, 1);
-        
+
         // ERDP
         self.write_runtime_64(ERDP, event_ring.physical_address());
-        
+
         // ERSTBA
         let erst_addr = self.erst.as_ptr() as u64;
         self.write_runtime_64(ERSTBA, erst_addr);
@@ -882,7 +886,7 @@ impl XhciController {
     /// ポート状態を取得
     pub fn port_status(&self, port: PortNumber) -> PortStatus {
         let portsc = self.read_portsc(port);
-        
+
         let speed = match (portsc >> 10) & 0x0F {
             1 => Some(UsbSpeed::Full),
             2 => Some(UsbSpeed::Low),
@@ -909,7 +913,7 @@ impl XhciController {
     /// ポートをリセット
     pub async fn reset_port(&self, port: PortNumber) -> UsbResult<UsbSpeed> {
         let offset = PORTSC_BASE + port.as_usize() * PORT_REGISTER_SIZE;
-        
+
         // リセットを開始
         let portsc = self.read_op(offset);
         self.write_op(offset, (portsc & !PORTSC_CHANGE_MASK) | PORTSC_PR);
@@ -920,7 +924,7 @@ impl XhciController {
             if (portsc & PORTSC_PRC) != 0 {
                 // リセット完了、変更フラグをクリア
                 self.write_op(offset, (portsc & !PORTSC_CHANGE_MASK) | PORTSC_PRC);
-                
+
                 let speed_code = ((portsc >> 10) & 0x0F) as u8;
                 return UsbSpeed::from_code(speed_code)
                     .ok_or(UsbError::Other("Unknown speed".into()));
@@ -934,14 +938,15 @@ impl XhciController {
     pub async fn enable_slot(&self) -> UsbResult<SlotId> {
         let trb = Trb::enable_slot(self.command_ring.lock().cycle_bit());
         let trb_addr = self.send_command(trb)?;
-        
+
         let completion = self.wait_command_completion(trb_addr).await?;
-        
+
         if completion.completion_code == CompletionCode::Success {
             Ok(completion.slot_id)
         } else {
             Err(UsbError::XhciError(alloc::format!(
-                "Enable slot failed: {:?}", completion.completion_code
+                "Enable slot failed: {:?}",
+                completion.completion_code
             )))
         }
     }
@@ -963,9 +968,12 @@ impl XhciController {
         // 実際の実装では適切なasync待機を行う
         for _ in 0..1000 {
             self.process_events();
-            
+
             let mut completions = self.command_completions.lock();
-            if let Some(pos) = completions.iter().position(|c| c.trb_addr == trb_addr && c.completed) {
+            if let Some(pos) = completions
+                .iter()
+                .position(|c| c.trb_addr == trb_addr && c.completed)
+            {
                 let completion = completions.remove(pos);
                 return Ok(CommandCompletionResult {
                     completion_code: completion.completion_code,
@@ -981,12 +989,10 @@ impl XhciController {
     pub fn process_events(&self) {
         let mut event_ring = self.event_ring.lock();
         let expected_cycle = event_ring.cycle_bit();
-        
+
         loop {
             let idx = event_ring.dequeue_index;
-            let trb = unsafe {
-                ptr::read_volatile(&event_ring.trbs[idx] as *const Trb)
-            };
+            let trb = unsafe { ptr::read_volatile(&event_ring.trbs[idx] as *const Trb) };
 
             if trb.cycle_bit() != expected_cycle {
                 break;
@@ -1096,11 +1102,21 @@ impl XhciController {
     }
 
     fn write_runtime(&self, offset: usize, value: u32) {
-        unsafe { ptr::write_volatile((self.rt_offset + IR0 as u64 + offset as u64) as *mut u32, value) }
+        unsafe {
+            ptr::write_volatile(
+                (self.rt_offset + IR0 as u64 + offset as u64) as *mut u32,
+                value,
+            )
+        }
     }
 
     fn write_runtime_64(&self, offset: usize, value: u64) {
-        unsafe { ptr::write_volatile((self.rt_offset + IR0 as u64 + offset as u64) as *mut u64, value) }
+        unsafe {
+            ptr::write_volatile(
+                (self.rt_offset + IR0 as u64 + offset as u64) as *mut u64,
+                value,
+            )
+        }
     }
 
     /// ポート数を取得
@@ -1210,9 +1226,7 @@ impl UsbDevice for XhciDevice {
         _endpoint: EndpointAddress,
         _buffer: &mut [u8],
     ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        Box::pin(async move {
-            Ok(0)
-        })
+        Box::pin(async move { Ok(0) })
     }
 
     fn bulk_out(
@@ -1220,9 +1234,7 @@ impl UsbDevice for XhciDevice {
         _endpoint: EndpointAddress,
         _data: &[u8],
     ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        Box::pin(async move {
-            Ok(0)
-        })
+        Box::pin(async move { Ok(0) })
     }
 
     fn interrupt_in(
@@ -1230,9 +1242,7 @@ impl UsbDevice for XhciDevice {
         _endpoint: EndpointAddress,
         _buffer: &mut [u8],
     ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        Box::pin(async move {
-            Ok(0)
-        })
+        Box::pin(async move { Ok(0) })
     }
 
     fn interrupt_out(
@@ -1240,9 +1250,7 @@ impl UsbDevice for XhciDevice {
         _endpoint: EndpointAddress,
         _data: &[u8],
     ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        Box::pin(async move {
-            Ok(0)
-        })
+        Box::pin(async move { Ok(0) })
     }
 }
 

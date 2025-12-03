@@ -556,7 +556,7 @@ impl<'a> PageTableWalker<'a> {
     /// 仮想アドレスを物理アドレスに変換
     pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
         let indices = virt.page_table_indices();
-        
+
         // PML4
         let pml4: &PageTable = unsafe { &*self.mapper.phys_as_ptr(self.pml4_phys) };
         let pml4e = pml4.entry(indices[0]);

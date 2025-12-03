@@ -41,7 +41,7 @@ mod regs {
     pub const STATUS_B: u8 = 0x0B;
     pub const STATUS_C: u8 = 0x0C;
     pub const STATUS_D: u8 = 0x0D;
-    pub const CENTURY: u8 = 0x32;  // ACPIで定義される場合
+    pub const CENTURY: u8 = 0x32; // ACPIで定義される場合
 }
 
 /// ステータスAビット
@@ -76,7 +76,7 @@ pub struct DateTime {
     pub hour: u8,
     pub minute: u8,
     pub second: u8,
-    pub day_of_week: u8,  // 1=日曜日, 7=土曜日
+    pub day_of_week: u8, // 1=日曜日, 7=土曜日
 }
 
 impl DateTime {
@@ -206,7 +206,7 @@ impl Rtc {
         );
         // 少し待機
         core::arch::asm!("jmp 2f", "2:", options(nomem, nostack));
-        
+
         let value: u8;
         core::arch::asm!(
             "in al, dx",
@@ -283,7 +283,7 @@ impl Rtc {
             let century = if let Some(reg) = self.century_register {
                 Self::read_cmos(reg)
             } else {
-                0x20  // デフォルトで21世紀
+                0x20 // デフォルトで21世紀
             };
 
             // BCDの場合は変換
@@ -420,7 +420,8 @@ impl Rtc {
             let status_b = Self::read_cmos(regs::STATUS_B);
             Self::write_cmos(
                 regs::STATUS_B,
-                status_b & !(status_b::PERIODIC_INT | status_b::ALARM_INT | status_b::UPDATE_ENDED_INT),
+                status_b
+                    & !(status_b::PERIODIC_INT | status_b::ALARM_INT | status_b::UPDATE_ENDED_INT),
             );
         }
     }

@@ -138,11 +138,11 @@ pub fn snapshot() -> SystemSnapshot {
     } else {
         0
     };
-    
+
     let domain_stats = crate::domain_system::get_domain_stats();
-    
+
     let preempt_stats = crate::task::preemption_controller().stats();
-    
+
     SystemSnapshot {
         timestamp: crate::interrupts::get_timer_ticks(),
         cpu_usage: estimate_cpu_usage(),
@@ -175,14 +175,14 @@ fn estimate_cpu_usage() -> u8 {
     // In a real implementation, this would track idle time
     // For now, return a placeholder
     static LAST_TICK: AtomicU64 = AtomicU64::new(0);
-    
+
     let current = crate::interrupts::get_timer_ticks();
     let last = LAST_TICK.swap(current, Ordering::Relaxed);
-    
+
     if last == 0 {
         return 5; // First call
     }
-    
+
     // Simplified: assume some baseline usage
     10
 }
@@ -199,22 +199,32 @@ pub fn print_snapshot(snap: &SystemSnapshot) {
     crate::log!("┌──────────────────────────────────────────────────────────────────────┐\n");
     crate::log!("│                    ExoRust System Monitor                            │\n");
     crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
-    
+
     // Timestamp and CPU
-    crate::log!("│  Tick: {:>12}  │  CPU: {:>3}%                                   │\n",
-        snap.timestamp, snap.cpu_usage);
-    
+    crate::log!(
+        "│  Tick: {:>12}  │  CPU: {:>3}%                                   │\n",
+        snap.timestamp,
+        snap.cpu_usage
+    );
+
     crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
-    
+
     // Memory
     crate::log!("│  MEMORY                                                              │\n");
-    crate::log!("│    Used:  {:>10} bytes ({:>2}%)                                  │\n",
-        snap.memory.heap_used, snap.memory.usage_percent);
-    crate::log!("│    Free:  {:>10} bytes                                          │\n",
-        snap.memory.heap_free);
-    crate::log!("│    Total: {:>10} bytes                                          │\n",
-        snap.memory.heap_total);
-    
+    crate::log!(
+        "│    Used:  {:>10} bytes ({:>2}%)                                  │\n",
+        snap.memory.heap_used,
+        snap.memory.usage_percent
+    );
+    crate::log!(
+        "│    Free:  {:>10} bytes                                          │\n",
+        snap.memory.heap_free
+    );
+    crate::log!(
+        "│    Total: {:>10} bytes                                          │\n",
+        snap.memory.heap_total
+    );
+
     // Memory bar
     let bar_width = 40;
     let filled = (snap.memory.usage_percent as usize * bar_width) / 100;
@@ -227,59 +237,77 @@ pub fn print_snapshot(snap: &SystemSnapshot) {
         }
     }
     crate::log!("]   │\n");
-    
+
     crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
-    
+
     // Domains
     crate::log!("│  DOMAINS                                                             │\n");
-    crate::log!("│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │\n",
-        snap.domains.total, snap.domains.running, snap.domains.stopped);
-    
+    crate::log!(
+        "│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │\n",
+        snap.domains.total,
+        snap.domains.running,
+        snap.domains.stopped
+    );
+
     crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
-    
+
     // Tasks
     crate::log!("│  TASKS                                                               │\n");
-    crate::log!("│    Context Switches: {:>10}                                     │\n",
-        snap.tasks.context_switches);
-    crate::log!("│    Voluntary Yields: {:>10}                                     │\n",
-        snap.tasks.voluntary_yields);
-    crate::log!("│    Forced Preempts:  {:>10}                                     │\n",
-        snap.tasks.forced_preemptions);
-    
+    crate::log!(
+        "│    Context Switches: {:>10}                                     │\n",
+        snap.tasks.context_switches
+    );
+    crate::log!(
+        "│    Voluntary Yields: {:>10}                                     │\n",
+        snap.tasks.voluntary_yields
+    );
+    crate::log!(
+        "│    Forced Preempts:  {:>10}                                     │\n",
+        snap.tasks.forced_preemptions
+    );
+
     crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
-    
+
     // Network
     crate::log!("│  NETWORK                                                             │\n");
-    crate::log!("│    RX: {:>8} pkts ({:>12} bytes)                            │\n",
-        snap.network.rx_packets, snap.network.rx_bytes);
-    crate::log!("│    TX: {:>8} pkts ({:>12} bytes)                            │\n",
-        snap.network.tx_packets, snap.network.tx_bytes);
-    
+    crate::log!(
+        "│    RX: {:>8} pkts ({:>12} bytes)                            │\n",
+        snap.network.rx_packets,
+        snap.network.rx_bytes
+    );
+    crate::log!(
+        "│    TX: {:>8} pkts ({:>12} bytes)                            │\n",
+        snap.network.tx_packets,
+        snap.network.tx_bytes
+    );
+
     crate::log!("└──────────────────────────────────────────────────────────────────────┘\n");
 }
 
 /// Print compact one-line status
 pub fn print_status_line(snap: &SystemSnapshot) {
-    crate::log!("[STATS] T={} CPU={}% MEM={}% DOM={}/{} CTX={}\n",
+    crate::log!(
+        "[STATS] T={} CPU={}% MEM={}% DOM={}/{} CTX={}\n",
         snap.timestamp,
         snap.cpu_usage,
         snap.memory.usage_percent,
         snap.domains.running,
         snap.domains.total,
-        snap.tasks.context_switches);
+        snap.tasks.context_switches
+    );
 }
 
 /// Run continuous monitoring (for async task)
 pub async fn monitor_loop() {
     crate::log!("[MONITOR] Starting monitor loop\n");
-    
+
     while is_running() {
         let snap = snapshot();
         print_status_line(&snap);
-        
+
         crate::task::sleep_ms(REFRESH_RATE_MS).await;
     }
-    
+
     crate::log!("[MONITOR] Monitor loop stopped\n");
 }
 
@@ -302,47 +330,47 @@ impl MonitorHistory {
             max_size,
         }
     }
-    
+
     pub fn add(&mut self, snap: SystemSnapshot) {
         if self.snapshots.len() >= self.max_size {
             self.snapshots.remove(0);
         }
         self.snapshots.push(snap);
     }
-    
+
     pub fn latest(&self) -> Option<&SystemSnapshot> {
         self.snapshots.last()
     }
-    
+
     pub fn iter(&self) -> impl Iterator<Item = &SystemSnapshot> {
         self.snapshots.iter()
     }
-    
+
     pub fn len(&self) -> usize {
         self.snapshots.len()
     }
-    
+
     pub fn is_empty(&self) -> bool {
         self.snapshots.is_empty()
     }
-    
+
     /// Calculate average CPU usage
     pub fn avg_cpu(&self) -> u8 {
         if self.snapshots.is_empty() {
             return 0;
         }
-        let sum: u64 = self.snapshots.iter()
-            .map(|s| s.cpu_usage as u64)
-            .sum();
+        let sum: u64 = self.snapshots.iter().map(|s| s.cpu_usage as u64).sum();
         (sum / self.snapshots.len() as u64) as u8
     }
-    
+
     /// Calculate average memory usage
     pub fn avg_memory(&self) -> u8 {
         if self.snapshots.is_empty() {
             return 0;
         }
-        let sum: u64 = self.snapshots.iter()
+        let sum: u64 = self
+            .snapshots
+            .iter()
             .map(|s| s.memory.usage_percent as u64)
             .sum();
         (sum / self.snapshots.len() as u64) as u8

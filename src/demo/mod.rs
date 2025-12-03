@@ -42,9 +42,7 @@ pub fn run_demo(name: &str) -> DemoResult {
             // Run simulation-based echo server demo
             echo_server::run()
         }
-        "perf" | "performance" => {
-            run_basic_perf_demo()
-        }
+        "perf" | "performance" => run_basic_perf_demo(),
         _ => DemoResult::Error(alloc::format!("Unknown demo: {}", name)),
     }
 }
@@ -52,28 +50,41 @@ pub fn run_demo(name: &str) -> DemoResult {
 /// Run basic performance demonstration
 fn run_basic_perf_demo() -> DemoResult {
     crate::log!("\n");
-    crate::log!("================================================================================\n");
+    crate::log!(
+        "================================================================================\n"
+    );
     crate::log!("                    ExoRust Performance Demonstration\n");
-    crate::log!("================================================================================\n\n");
-    
+    crate::log!(
+        "================================================================================\n\n"
+    );
+
     // RDTSC-based timing
     let start = rdtsc();
-    
+
     // Simple computation benchmark
     let mut sum: u64 = 0;
     for i in 0..10000 {
         sum = sum.wrapping_add(i);
     }
     core::hint::black_box(sum);
-    
+
     let end = rdtsc();
     let cycles = end - start;
-    
-    crate::log!("[PERF] 10000 iterations: {} cycles ({} cycles/iter)\n", cycles, cycles / 10000);
-    crate::log!("[PERF] Estimated time: ~{} ns (assuming 2GHz CPU)\n", cycles / 2);
-    
-    crate::log!("\n================================================================================\n\n");
-    
+
+    crate::log!(
+        "[PERF] 10000 iterations: {} cycles ({} cycles/iter)\n",
+        cycles,
+        cycles / 10000
+    );
+    crate::log!(
+        "[PERF] Estimated time: ~{} ns (assuming 2GHz CPU)\n",
+        cycles / 2
+    );
+
+    crate::log!(
+        "\n================================================================================\n\n"
+    );
+
     DemoResult::Success
 }
 

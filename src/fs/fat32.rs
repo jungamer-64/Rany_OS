@@ -20,20 +20,20 @@
 
 #![allow(dead_code)]
 
-use core::mem;
-use core::ops::{Add, Sub};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use alloc::vec;
+use alloc::vec::Vec;
+use core::mem;
+use core::ops::{Add, Sub};
 use spin::RwLock;
 
-use super::vfs::{
-    DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats,
-    Inode, InodeNum, OpenFlags,
-};
 use super::block::BlockDevice;
+use super::vfs::{
+    DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
+    InodeNum, OpenFlags,
+};
 
 // ============================================================================
 // Strong Types (Newtypes)
@@ -310,9 +310,7 @@ impl BootSector {
             return Err(FsError::InvalidArgument);
         }
         // アライメントの問題を回避するため、read_unalignedを使用
-        let boot_sector = unsafe {
-            core::ptr::read_unaligned(bytes.as_ptr() as *const BootSector)
-        };
+        let boot_sector = unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const BootSector) };
 
         // シグネチャチェック
         if boot_sector.signature != FAT32_SIGNATURE {
@@ -489,7 +487,9 @@ impl DirEntryRaw {
         // 拡張子があれば追加
         let ext_start = self.ext.iter().position(|&c| c != b' ');
         if let Some(_) = ext_start {
-            let ext: String = self.ext.iter()
+            let ext: String = self
+                .ext
+                .iter()
                 .take_while(|&&c| c != b' ')
                 .map(|&c| c as char)
                 .collect();
@@ -594,7 +594,8 @@ impl Fat32FileSystem {
     pub fn mount(device: Arc<dyn BlockDevice>) -> FsResult<Arc<Self>> {
         // ブートセクタを読み取り
         let mut boot_data = [0u8; BOOT_SECTOR_SIZE];
-        device.read_sync(0, &mut boot_data)
+        device
+            .read_sync(0, &mut boot_data)
             .map_err(|_| FsError::IoError)?;
 
         // BootSector::from_bytes で安全にパース
@@ -645,7 +646,8 @@ impl Fat32FileSystem {
 
         for i in 0..sectors {
             let sector = self.fat_start_sector + i as u32;
-            self.device.read_sync(sector.as_u64(), &mut buffer)
+            self.device
+                .read_sync(sector.as_u64(), &mut buffer)
                 .map_err(|_| FsError::IoError)?;
 
             for j in 0..BLOCK_SIZE / 4 {
@@ -705,18 +707,21 @@ impl Fat32FileSystem {
         let offset_in_sector = fat_offset % BLOCK_SIZE;
 
         let mut buffer = [0u8; BLOCK_SIZE];
-        self.device.read_sync(sector.as_u64(), &mut buffer)
+        self.device
+            .read_sync(sector.as_u64(), &mut buffer)
             .map_err(|_| FsError::IoError)?;
 
         let bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
         buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&bytes);
 
-        self.device.write_sync(sector.as_u64(), &buffer)
+        self.device
+            .write_sync(sector.as_u64(), &buffer)
             .map_err(|_| FsError::IoError)?;
 
         // バックアップFAT（FAT2）への書き込み
         let fat2_sector = sector + self.fat_size;
-        self.device.write_sync(fat2_sector.as_u64(), &buffer)
+        self.device
+            .write_sync(fat2_sector.as_u64(), &buffer)
             .map_err(|_| FsError::IoError)?;
 
         Ok(())
@@ -772,7 +777,8 @@ impl Fat32FileSystem {
         for i in 0..self.sectors_per_cluster {
             let sector = start_sector + i;
             let offset = (i as usize) * BLOCK_SIZE;
-            self.device.read_sync(sector.as_u64(), &mut buffer[offset..offset + BLOCK_SIZE])
+            self.device
+                .read_sync(sector.as_u64(), &mut buffer[offset..offset + BLOCK_SIZE])
                 .map_err(|_| FsError::IoError)?;
         }
 
@@ -791,7 +797,8 @@ impl Fat32FileSystem {
         for i in 0..self.sectors_per_cluster {
             let sector = start_sector + i;
             let offset = (i as usize) * BLOCK_SIZE;
-            self.device.write_sync(sector.as_u64(), &buffer[offset..offset + BLOCK_SIZE])
+            self.device
+                .write_sync(sector.as_u64(), &buffer[offset..offset + BLOCK_SIZE])
                 .map_err(|_| FsError::IoError)?;
         }
 
@@ -890,7 +897,12 @@ impl Fat32Inode {
     }
 
     /// 新しいファイルinodeを作成
-    pub fn new_file(fs: Arc<Fat32FileSystem>, cluster: Cluster, size: u64, parent: Cluster) -> Self {
+    pub fn new_file(
+        fs: Arc<Fat32FileSystem>,
+        cluster: Cluster,
+        size: u64,
+        parent: Cluster,
+    ) -> Self {
         Self {
             fs,
             first_cluster: cluster,
@@ -945,9 +957,7 @@ impl Fat32Inode {
                     // ロングネームを構築
                     let name = if !lfn_parts.is_empty() {
                         lfn_parts.sort_by_key(|&(seq, _)| seq);
-                        let long_name: String = lfn_parts.iter()
-                            .map(|(_, s)| s.as_str())
-                            .collect();
+                        let long_name: String = lfn_parts.iter().map(|(_, s)| s.as_str()).collect();
                         lfn_parts.clear();
                         long_name
                     } else {
@@ -1029,8 +1039,9 @@ impl Inode for Fat32Inode {
     fn readdir(&self, _offset: u64) -> FsResult<Vec<DirEntry>> {
         let entries = self.read_dir_entries()?;
 
-        Ok(entries.into_iter().map(|(name, raw)| {
-            DirEntry {
+        Ok(entries
+            .into_iter()
+            .map(|(name, raw)| DirEntry {
                 name,
                 ino: raw.first_cluster().as_u32() as InodeNum,
                 file_type: if raw.attributes().is_directory() {
@@ -1038,8 +1049,8 @@ impl Inode for Fat32Inode {
                 } else {
                     FileType::Regular
                 },
-            }
-        }).collect())
+            })
+            .collect())
     }
 
     fn create(&self, _name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {

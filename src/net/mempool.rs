@@ -4,9 +4,9 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use alloc::vec::Vec;
 use spin::Mutex;
 use x86_64::PhysAddr;
 
@@ -45,53 +45,54 @@ impl PacketBuffer {
         let len = self.len.load(Ordering::Acquire);
         &self.data[..len]
     }
-    
+
     /// 可変データスライスを取得
     pub fn data_mut(&mut self) -> &mut [u8] {
         let len = self.len.load(Ordering::Acquire);
         &mut self.data[..len]
     }
-    
+
     /// 生データポインタを取得
     pub fn as_ptr(&self) -> *const u8 {
         self.data.as_ptr()
     }
-    
+
     /// 可変生データポインタを取得
     pub fn as_mut_ptr(&mut self) -> *mut u8 {
         self.data.as_mut_ptr()
     }
-    
+
     /// 容量を取得
     pub fn capacity(&self) -> usize {
         DEFAULT_BUFFER_SIZE
     }
-    
+
     /// データ長を取得
     pub fn len(&self) -> usize {
         self.len.load(Ordering::Acquire)
     }
-    
+
     /// 空かどうか
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
-    
+
     /// データ長を設定
     pub fn set_len(&self, len: usize) {
-        self.len.store(len.min(DEFAULT_BUFFER_SIZE), Ordering::Release);
+        self.len
+            .store(len.min(DEFAULT_BUFFER_SIZE), Ordering::Release);
     }
-    
+
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
     }
-    
+
     /// 参照カウントをインクリメント
     pub fn add_ref(&self) {
         self.ref_count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 参照カウントをデクリメント
     /// 0になったらtrueを返す
     pub fn release(&self) -> bool {
@@ -111,22 +112,24 @@ impl PacketRef {
     pub fn data(&self) -> &[u8] {
         unsafe { self.buffer.as_ref().data() }
     }
-    
+
     /// 可変データスライスを取得（排他的所有時のみ）
     pub fn data_mut(&mut self) -> &mut [u8] {
         unsafe { self.buffer.as_mut().data_mut() }
     }
-    
+
     /// データ長を設定
     pub fn set_len(&self, len: usize) {
-        unsafe { self.buffer.as_ref().set_len(len); }
+        unsafe {
+            self.buffer.as_ref().set_len(len);
+        }
     }
-    
+
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
         unsafe { self.buffer.as_ref().phys_addr() }
     }
-    
+
     /// クローン（参照カウントをインクリメント）
     pub fn clone_ref(&self) -> Self {
         unsafe {
@@ -186,23 +189,23 @@ impl Mempool {
             alloc_failed: AtomicU64::new(0),
         }
     }
-    
+
     /// プールを初期化（バッファを事前割り当て）
     pub fn init(&self, capacity: usize) -> Result<(), &'static str> {
         let mut buffers = self.buffers.lock();
         let mut free_list = self.free_list.lock();
-        
+
         for i in 0..capacity {
             // バッファを割り当て
             let layout = alloc::alloc::Layout::new::<PacketBuffer>();
             let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-            
+
             if ptr.is_null() {
                 return Err("Failed to allocate buffer");
             }
-            
+
             let buffer = ptr as *mut PacketBuffer;
-            
+
             // バッファを初期化
             unsafe {
                 (*buffer).pool_id = self.id;
@@ -211,44 +214,41 @@ impl Mempool {
                 (*buffer).ref_count = AtomicU64::new(0);
                 (*buffer).phys_addr = PhysAddr::new(ptr as u64); // TODO: 実際の物理アドレス変換
             }
-            
+
             let non_null = unsafe { NonNull::new_unchecked(buffer) };
             buffers.push(non_null);
             free_list.push(non_null);
         }
-        
+
         Ok(())
     }
-    
+
     /// バッファを割り当て
     pub fn alloc(&'static self) -> Option<PacketRef> {
         let buffer = self.free_list.lock().pop()?;
-        
+
         unsafe {
             // 初期化
             buffer.as_ref().len.store(0, Ordering::Release);
             buffer.as_ref().ref_count.store(1, Ordering::Release);
         }
-        
+
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
-        
-        Some(PacketRef {
-            buffer,
-            pool: self,
-        })
+
+        Some(PacketRef { buffer, pool: self })
     }
-    
+
     /// バッファを返却
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
         self.free_list.lock().push(buffer);
         self.free_count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> MempoolStats {
         let total = self.buffers.lock().len();
         let free = self.free_list.lock().len();
-        
+
         MempoolStats {
             total_buffers: total,
             free_buffers: free,
@@ -295,7 +295,7 @@ impl PerCoreMempoolCache {
             parent,
         }
     }
-    
+
     /// バッファを割り当て（ローカルキャッシュから優先）
     pub fn alloc(&'static self) -> Option<PacketRef> {
         // まずローカルキャッシュから試みる
@@ -309,15 +309,15 @@ impl PerCoreMempoolCache {
                 pool: self.parent,
             });
         }
-        
+
         // キャッシュが空なら親プールから取得
         self.parent.alloc()
     }
-    
+
     /// バッファを返却（ローカルキャッシュに優先）
     pub fn free(&self, buffer: NonNull<PacketBuffer>) {
         let mut cache = self.local_cache.lock();
-        
+
         if cache.len() < self.cache_capacity {
             // ローカルキャッシュに空きがあれば追加
             cache.push(buffer);
@@ -351,37 +351,37 @@ impl PacketPool {
         for _ in 0..capacity {
             buffers.push(alloc::vec![0u8; buffer_size]);
         }
-        
+
         PacketPool {
             buffers: Mutex::new(buffers),
             buffer_size,
             capacity,
         }
     }
-    
+
     /// Allocate a buffer from the pool
     pub fn alloc(&self) -> Option<Vec<u8>> {
         let mut buffers = self.buffers.lock();
         buffers.pop()
     }
-    
+
     /// Return a buffer to the pool
     pub fn free(&self, mut buffer: Vec<u8>) {
         // Clear the buffer
         buffer.fill(0);
-        
+
         let mut buffers = self.buffers.lock();
         if buffers.len() < self.capacity {
             buffers.push(buffer);
         }
         // Otherwise drop the buffer
     }
-    
+
     /// Get buffer size
     pub fn buffer_size(&self) -> usize {
         self.buffer_size
     }
-    
+
     /// Get available buffer count
     pub fn available(&self) -> usize {
         self.buffers.lock().len()
@@ -414,7 +414,7 @@ pub fn alloc_packet() -> Option<PacketRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_mempool_stats() {
         let pool = Mempool::new(1);

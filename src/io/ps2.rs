@@ -26,69 +26,69 @@ use spin::Mutex;
 
 /// PS/2コントローラI/Oポート
 pub mod ports {
-    pub const DATA: u16 = 0x60;        // データポート
-    pub const STATUS: u16 = 0x64;      // ステータス（読み取り）
-    pub const COMMAND: u16 = 0x64;     // コマンド（書き込み）
+    pub const DATA: u16 = 0x60; // データポート
+    pub const STATUS: u16 = 0x64; // ステータス（読み取り）
+    pub const COMMAND: u16 = 0x64; // コマンド（書き込み）
 }
 
 /// ステータスレジスタビット
 pub mod status {
-    pub const OUTPUT_FULL: u8 = 0x01;   // 出力バッファフル
-    pub const INPUT_FULL: u8 = 0x02;    // 入力バッファフル
-    pub const SYSTEM: u8 = 0x04;        // システムフラグ
-    pub const COMMAND: u8 = 0x08;       // コマンド/データ
-    pub const TIMEOUT: u8 = 0x40;       // タイムアウトエラー
-    pub const PARITY: u8 = 0x80;        // パリティエラー
+    pub const OUTPUT_FULL: u8 = 0x01; // 出力バッファフル
+    pub const INPUT_FULL: u8 = 0x02; // 入力バッファフル
+    pub const SYSTEM: u8 = 0x04; // システムフラグ
+    pub const COMMAND: u8 = 0x08; // コマンド/データ
+    pub const TIMEOUT: u8 = 0x40; // タイムアウトエラー
+    pub const PARITY: u8 = 0x80; // パリティエラー
 }
 
 /// PS/2コントローラコマンド
 pub mod commands {
-    pub const READ_CONFIG: u8 = 0x20;       // 設定バイト読み取り
-    pub const WRITE_CONFIG: u8 = 0x60;      // 設定バイト書き込み
-    pub const DISABLE_PORT2: u8 = 0xA7;     // ポート2無効化
-    pub const ENABLE_PORT2: u8 = 0xA8;      // ポート2有効化
-    pub const TEST_PORT2: u8 = 0xA9;        // ポート2テスト
-    pub const SELF_TEST: u8 = 0xAA;         // セルフテスト
-    pub const TEST_PORT1: u8 = 0xAB;        // ポート1テスト
-    pub const DISABLE_PORT1: u8 = 0xAD;     // ポート1無効化
-    pub const ENABLE_PORT1: u8 = 0xAE;      // ポート1有効化
-    pub const READ_OUTPUT: u8 = 0xD0;       // 出力ポート読み取り
-    pub const WRITE_OUTPUT: u8 = 0xD1;      // 出力ポート書き込み
-    pub const WRITE_PORT2: u8 = 0xD4;       // ポート2にデータ送信
+    pub const READ_CONFIG: u8 = 0x20; // 設定バイト読み取り
+    pub const WRITE_CONFIG: u8 = 0x60; // 設定バイト書き込み
+    pub const DISABLE_PORT2: u8 = 0xA7; // ポート2無効化
+    pub const ENABLE_PORT2: u8 = 0xA8; // ポート2有効化
+    pub const TEST_PORT2: u8 = 0xA9; // ポート2テスト
+    pub const SELF_TEST: u8 = 0xAA; // セルフテスト
+    pub const TEST_PORT1: u8 = 0xAB; // ポート1テスト
+    pub const DISABLE_PORT1: u8 = 0xAD; // ポート1無効化
+    pub const ENABLE_PORT1: u8 = 0xAE; // ポート1有効化
+    pub const READ_OUTPUT: u8 = 0xD0; // 出力ポート読み取り
+    pub const WRITE_OUTPUT: u8 = 0xD1; // 出力ポート書き込み
+    pub const WRITE_PORT2: u8 = 0xD4; // ポート2にデータ送信
 }
 
 /// キーボードコマンド
 pub mod kbd_commands {
-    pub const SET_LEDS: u8 = 0xED;          // LED設定
-    pub const ECHO: u8 = 0xEE;              // エコー
-    pub const GET_SET_SCANCODE: u8 = 0xF0;  // スキャンコードセット取得/設定
-    pub const IDENTIFY: u8 = 0xF2;          // デバイス識別
-    pub const SET_RATE: u8 = 0xF3;          // タイプマティックレート設定
-    pub const ENABLE_SCAN: u8 = 0xF4;       // スキャン有効化
-    pub const DISABLE_SCAN: u8 = 0xF5;      // スキャン無効化
-    pub const SET_DEFAULTS: u8 = 0xF6;      // デフォルト設定
-    pub const RESEND: u8 = 0xFE;            // 再送
-    pub const RESET: u8 = 0xFF;             // リセット
+    pub const SET_LEDS: u8 = 0xED; // LED設定
+    pub const ECHO: u8 = 0xEE; // エコー
+    pub const GET_SET_SCANCODE: u8 = 0xF0; // スキャンコードセット取得/設定
+    pub const IDENTIFY: u8 = 0xF2; // デバイス識別
+    pub const SET_RATE: u8 = 0xF3; // タイプマティックレート設定
+    pub const ENABLE_SCAN: u8 = 0xF4; // スキャン有効化
+    pub const DISABLE_SCAN: u8 = 0xF5; // スキャン無効化
+    pub const SET_DEFAULTS: u8 = 0xF6; // デフォルト設定
+    pub const RESEND: u8 = 0xFE; // 再送
+    pub const RESET: u8 = 0xFF; // リセット
 }
 
 /// マウスコマンド
 pub mod mouse_commands {
-    pub const SET_SCALING_1_1: u8 = 0xE6;   // 1:1スケーリング
-    pub const SET_SCALING_2_1: u8 = 0xE7;   // 2:1スケーリング
-    pub const SET_RESOLUTION: u8 = 0xE8;    // 解像度設定
-    pub const GET_STATUS: u8 = 0xE9;        // ステータス取得
-    pub const SET_STREAM: u8 = 0xEA;        // ストリームモード
-    pub const READ_DATA: u8 = 0xEB;         // データ読み取り
-    pub const RESET_WRAP: u8 = 0xEC;        // ラップモードリセット
-    pub const SET_WRAP: u8 = 0xEE;          // ラップモード設定
-    pub const SET_REMOTE: u8 = 0xF0;        // リモートモード
-    pub const GET_ID: u8 = 0xF2;            // デバイスID取得
-    pub const SET_SAMPLE_RATE: u8 = 0xF3;   // サンプルレート設定
-    pub const ENABLE_DATA: u8 = 0xF4;       // データレポート有効化
-    pub const DISABLE_DATA: u8 = 0xF5;      // データレポート無効化
-    pub const SET_DEFAULTS: u8 = 0xF6;      // デフォルト設定
-    pub const RESEND: u8 = 0xFE;            // 再送
-    pub const RESET: u8 = 0xFF;             // リセット
+    pub const SET_SCALING_1_1: u8 = 0xE6; // 1:1スケーリング
+    pub const SET_SCALING_2_1: u8 = 0xE7; // 2:1スケーリング
+    pub const SET_RESOLUTION: u8 = 0xE8; // 解像度設定
+    pub const GET_STATUS: u8 = 0xE9; // ステータス取得
+    pub const SET_STREAM: u8 = 0xEA; // ストリームモード
+    pub const READ_DATA: u8 = 0xEB; // データ読み取り
+    pub const RESET_WRAP: u8 = 0xEC; // ラップモードリセット
+    pub const SET_WRAP: u8 = 0xEE; // ラップモード設定
+    pub const SET_REMOTE: u8 = 0xF0; // リモートモード
+    pub const GET_ID: u8 = 0xF2; // デバイスID取得
+    pub const SET_SAMPLE_RATE: u8 = 0xF3; // サンプルレート設定
+    pub const ENABLE_DATA: u8 = 0xF4; // データレポート有効化
+    pub const DISABLE_DATA: u8 = 0xF5; // データレポート無効化
+    pub const SET_DEFAULTS: u8 = 0xF6; // デフォルト設定
+    pub const RESEND: u8 = 0xFE; // 再送
+    pub const RESET: u8 = 0xFF; // リセット
 }
 
 // ============================================================================
@@ -356,9 +356,11 @@ impl Ps2Controller {
         self.write_data(cmd);
         self.wait_output();
         let response = self.read_data();
-        if response == 0xFA {  // ACK
+        if response == 0xFA {
+            // ACK
             Some(response)
-        } else if response == 0xFE {  // RESEND
+        } else if response == 0xFE {
+            // RESEND
             // リトライ
             self.write_data(cmd);
             self.wait_output();
@@ -388,7 +390,11 @@ impl Ps2Controller {
 
     /// デバイス識別
     fn identify_device(&self, port2: bool) -> Option<DeviceType> {
-        let send = if port2 { Self::send_port2 } else { Self::send_port1 };
+        let send = if port2 {
+            Self::send_port2
+        } else {
+            Self::send_port1
+        };
 
         // IDENTIFYコマンド送信
         if send(self, kbd_commands::IDENTIFY) != Some(0xFA) {
@@ -517,7 +523,7 @@ impl Ps2Controller {
 
         // 設定バイトを読み取り
         let mut config = self.read_config();
-        
+
         // デュアルチャネルかどうかを確認
         self.dual_channel = (config & 0x20) != 0;
 
@@ -550,12 +556,12 @@ impl Ps2Controller {
         // ポートを有効化
         if port1_ok {
             self.write_command(commands::ENABLE_PORT1);
-            config |= 0x01;  // ポート1割り込み有効
+            config |= 0x01; // ポート1割り込み有効
         }
 
         if port2_ok {
             self.write_command(commands::ENABLE_PORT2);
-            config |= 0x02;  // ポート2割り込み有効
+            config |= 0x02; // ポート2割り込み有効
         }
 
         self.write_config(config);
@@ -684,53 +690,335 @@ impl KeyboardHandler {
 
         // US配列のマッピング（簡易版）
         let c = match scancode {
-            0x02 => if shifted { '!' } else { '1' },
-            0x03 => if shifted { '@' } else { '2' },
-            0x04 => if shifted { '#' } else { '3' },
-            0x05 => if shifted { '$' } else { '4' },
-            0x06 => if shifted { '%' } else { '5' },
-            0x07 => if shifted { '^' } else { '6' },
-            0x08 => if shifted { '&' } else { '7' },
-            0x09 => if shifted { '*' } else { '8' },
-            0x0A => if shifted { '(' } else { '9' },
-            0x0B => if shifted { ')' } else { '0' },
-            0x0C => if shifted { '_' } else { '-' },
-            0x0D => if shifted { '+' } else { '=' },
-            0x10 => if shifted { 'Q' } else { 'q' },
-            0x11 => if shifted { 'W' } else { 'w' },
-            0x12 => if shifted { 'E' } else { 'e' },
-            0x13 => if shifted { 'R' } else { 'r' },
-            0x14 => if shifted { 'T' } else { 't' },
-            0x15 => if shifted { 'Y' } else { 'y' },
-            0x16 => if shifted { 'U' } else { 'u' },
-            0x17 => if shifted { 'I' } else { 'i' },
-            0x18 => if shifted { 'O' } else { 'o' },
-            0x19 => if shifted { 'P' } else { 'p' },
-            0x1A => if shifted { '{' } else { '[' },
-            0x1B => if shifted { '}' } else { ']' },
-            0x1E => if shifted { 'A' } else { 'a' },
-            0x1F => if shifted { 'S' } else { 's' },
-            0x20 => if shifted { 'D' } else { 'd' },
-            0x21 => if shifted { 'F' } else { 'f' },
-            0x22 => if shifted { 'G' } else { 'g' },
-            0x23 => if shifted { 'H' } else { 'h' },
-            0x24 => if shifted { 'J' } else { 'j' },
-            0x25 => if shifted { 'K' } else { 'k' },
-            0x26 => if shifted { 'L' } else { 'l' },
-            0x27 => if shifted { ':' } else { ';' },
-            0x28 => if shifted { '"' } else { '\'' },
-            0x29 => if shifted { '~' } else { '`' },
-            0x2B => if shifted { '|' } else { '\\' },
-            0x2C => if shifted { 'Z' } else { 'z' },
-            0x2D => if shifted { 'X' } else { 'x' },
-            0x2E => if shifted { 'C' } else { 'c' },
-            0x2F => if shifted { 'V' } else { 'v' },
-            0x30 => if shifted { 'B' } else { 'b' },
-            0x31 => if shifted { 'N' } else { 'n' },
-            0x32 => if shifted { 'M' } else { 'm' },
-            0x33 => if shifted { '<' } else { ',' },
-            0x34 => if shifted { '>' } else { '.' },
-            0x35 => if shifted { '?' } else { '/' },
+            0x02 => {
+                if shifted {
+                    '!'
+                } else {
+                    '1'
+                }
+            }
+            0x03 => {
+                if shifted {
+                    '@'
+                } else {
+                    '2'
+                }
+            }
+            0x04 => {
+                if shifted {
+                    '#'
+                } else {
+                    '3'
+                }
+            }
+            0x05 => {
+                if shifted {
+                    '$'
+                } else {
+                    '4'
+                }
+            }
+            0x06 => {
+                if shifted {
+                    '%'
+                } else {
+                    '5'
+                }
+            }
+            0x07 => {
+                if shifted {
+                    '^'
+                } else {
+                    '6'
+                }
+            }
+            0x08 => {
+                if shifted {
+                    '&'
+                } else {
+                    '7'
+                }
+            }
+            0x09 => {
+                if shifted {
+                    '*'
+                } else {
+                    '8'
+                }
+            }
+            0x0A => {
+                if shifted {
+                    '('
+                } else {
+                    '9'
+                }
+            }
+            0x0B => {
+                if shifted {
+                    ')'
+                } else {
+                    '0'
+                }
+            }
+            0x0C => {
+                if shifted {
+                    '_'
+                } else {
+                    '-'
+                }
+            }
+            0x0D => {
+                if shifted {
+                    '+'
+                } else {
+                    '='
+                }
+            }
+            0x10 => {
+                if shifted {
+                    'Q'
+                } else {
+                    'q'
+                }
+            }
+            0x11 => {
+                if shifted {
+                    'W'
+                } else {
+                    'w'
+                }
+            }
+            0x12 => {
+                if shifted {
+                    'E'
+                } else {
+                    'e'
+                }
+            }
+            0x13 => {
+                if shifted {
+                    'R'
+                } else {
+                    'r'
+                }
+            }
+            0x14 => {
+                if shifted {
+                    'T'
+                } else {
+                    't'
+                }
+            }
+            0x15 => {
+                if shifted {
+                    'Y'
+                } else {
+                    'y'
+                }
+            }
+            0x16 => {
+                if shifted {
+                    'U'
+                } else {
+                    'u'
+                }
+            }
+            0x17 => {
+                if shifted {
+                    'I'
+                } else {
+                    'i'
+                }
+            }
+            0x18 => {
+                if shifted {
+                    'O'
+                } else {
+                    'o'
+                }
+            }
+            0x19 => {
+                if shifted {
+                    'P'
+                } else {
+                    'p'
+                }
+            }
+            0x1A => {
+                if shifted {
+                    '{'
+                } else {
+                    '['
+                }
+            }
+            0x1B => {
+                if shifted {
+                    '}'
+                } else {
+                    ']'
+                }
+            }
+            0x1E => {
+                if shifted {
+                    'A'
+                } else {
+                    'a'
+                }
+            }
+            0x1F => {
+                if shifted {
+                    'S'
+                } else {
+                    's'
+                }
+            }
+            0x20 => {
+                if shifted {
+                    'D'
+                } else {
+                    'd'
+                }
+            }
+            0x21 => {
+                if shifted {
+                    'F'
+                } else {
+                    'f'
+                }
+            }
+            0x22 => {
+                if shifted {
+                    'G'
+                } else {
+                    'g'
+                }
+            }
+            0x23 => {
+                if shifted {
+                    'H'
+                } else {
+                    'h'
+                }
+            }
+            0x24 => {
+                if shifted {
+                    'J'
+                } else {
+                    'j'
+                }
+            }
+            0x25 => {
+                if shifted {
+                    'K'
+                } else {
+                    'k'
+                }
+            }
+            0x26 => {
+                if shifted {
+                    'L'
+                } else {
+                    'l'
+                }
+            }
+            0x27 => {
+                if shifted {
+                    ':'
+                } else {
+                    ';'
+                }
+            }
+            0x28 => {
+                if shifted {
+                    '"'
+                } else {
+                    '\''
+                }
+            }
+            0x29 => {
+                if shifted {
+                    '~'
+                } else {
+                    '`'
+                }
+            }
+            0x2B => {
+                if shifted {
+                    '|'
+                } else {
+                    '\\'
+                }
+            }
+            0x2C => {
+                if shifted {
+                    'Z'
+                } else {
+                    'z'
+                }
+            }
+            0x2D => {
+                if shifted {
+                    'X'
+                } else {
+                    'x'
+                }
+            }
+            0x2E => {
+                if shifted {
+                    'C'
+                } else {
+                    'c'
+                }
+            }
+            0x2F => {
+                if shifted {
+                    'V'
+                } else {
+                    'v'
+                }
+            }
+            0x30 => {
+                if shifted {
+                    'B'
+                } else {
+                    'b'
+                }
+            }
+            0x31 => {
+                if shifted {
+                    'N'
+                } else {
+                    'n'
+                }
+            }
+            0x32 => {
+                if shifted {
+                    'M'
+                } else {
+                    'm'
+                }
+            }
+            0x33 => {
+                if shifted {
+                    '<'
+                } else {
+                    ','
+                }
+            }
+            0x34 => {
+                if shifted {
+                    '>'
+                } else {
+                    '.'
+                }
+            }
+            0x35 => {
+                if shifted {
+                    '?'
+                } else {
+                    '/'
+                }
+            }
             0x39 => ' ',
             0x0F => '\t',
             0x1C => '\n',
@@ -858,7 +1146,7 @@ static MOUSE: Mutex<Option<MouseHandler>> = Mutex::new(None);
 /// PS/2コントローラを初期化
 pub fn init() {
     let mut controller = Ps2Controller::new();
-    
+
     if controller.initialize() {
         // キーボードハンドラを初期化
         if controller.port1_type.is_some() {

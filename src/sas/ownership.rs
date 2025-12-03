@@ -5,8 +5,8 @@
 //! ゼロコピーでのセル間オブジェクト転送を安全に実現。
 #![allow(dead_code)]
 
-use core::marker::PhantomData;
 use crate::domain_system::DomainId;
+use core::marker::PhantomData;
 
 /// 所有権転送エラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +39,16 @@ impl core::fmt::Display for OwnershipError {
             OwnershipError::AlreadyTransferred => write!(f, "Already transferred"),
             OwnershipError::NotRegistered => write!(f, "Not registered"),
             OwnershipError::TypeMismatch => write!(f, "Type mismatch"),
-            OwnershipError::AccessDenied { ptr, owner, accessor } => {
-                write!(f, "Access denied: ptr={:#x}, owner={}, accessor={}", ptr, owner, accessor)
+            OwnershipError::AccessDenied {
+                ptr,
+                owner,
+                accessor,
+            } => {
+                write!(
+                    f,
+                    "Access denied: ptr={:#x}, owner={}, accessor={}",
+                    ptr, owner, accessor
+                )
             }
             OwnershipError::UnregisteredPointer(ptr) => {
                 write!(f, "Unregistered pointer: {:#x}", ptr)
@@ -50,7 +58,7 @@ impl core::fmt::Display for OwnershipError {
 }
 
 /// 所有権転送トークン
-/// 
+///
 /// 所有権の転送を型レベルで追跡する。
 /// このトークンはムーブのみ可能で、コピー/クローン不可。
 #[derive(Debug)]
@@ -78,9 +86,9 @@ impl<T> OwnershipToken<T> {
             _marker: PhantomData,
         }
     }
-    
+
     /// 転送を完了してアドレスを取得
-    /// 
+    ///
     /// この関数はトークンを消費し、転送先でのみ呼び出し可能。
     pub fn complete(self, current_domain: DomainId) -> Result<usize, OwnershipError> {
         if current_domain != self.to {
@@ -91,7 +99,7 @@ impl<T> OwnershipToken<T> {
 }
 
 /// 転送可能なオブジェクトラッパー
-/// 
+///
 /// SAS環境でセル間転送可能なオブジェクトを表す。
 /// 所有権追跡と型安全性を保証。
 #[repr(C)]
@@ -124,7 +132,7 @@ impl<T: Sized + Send> Transferable<T> {
             state: TransferState::Owned,
         }
     }
-    
+
     /// 転送を開始
     pub fn begin_transfer(
         &mut self,
@@ -135,31 +143,27 @@ impl<T: Sized + Send> Transferable<T> {
         if self.owner != current_domain {
             return Err(OwnershipError::NotOwner);
         }
-        
+
         // 状態チェック
         if self.state != TransferState::Owned {
             return Err(OwnershipError::AlreadyTransferred);
         }
-        
+
         // 転送状態に移行
         self.state = TransferState::InTransfer;
-        
+
         let address = &self.data as *const T as usize;
         let size = core::mem::size_of::<T>();
-        
+
         Ok(OwnershipToken::new(current_domain, target, address, size))
     }
-    
+
     /// 転送を完了（受信側）
-    pub fn complete_transfer(
-        &mut self,
-        _token: OwnershipToken<T>,
-        new_owner: DomainId,
-    ) {
+    pub fn complete_transfer(&mut self, _token: OwnershipToken<T>, new_owner: DomainId) {
         self.owner = new_owner;
         self.state = TransferState::Owned;
     }
-    
+
     /// データへの参照を取得（所有者のみ）
     pub fn get(&self, accessor: DomainId) -> Result<&T, OwnershipError> {
         if self.owner != accessor {
@@ -170,7 +174,7 @@ impl<T: Sized + Send> Transferable<T> {
         }
         Ok(&self.data)
     }
-    
+
     /// データへの可変参照を取得（所有者のみ）
     pub fn get_mut(&mut self, accessor: DomainId) -> Result<&mut T, OwnershipError> {
         if self.owner != accessor {
@@ -181,12 +185,12 @@ impl<T: Sized + Send> Transferable<T> {
         }
         Ok(&mut self.data)
     }
-    
+
     /// 所有者を取得
     pub fn owner(&self) -> DomainId {
         self.owner
     }
-    
+
     /// 状態を取得
     pub fn state(&self) -> TransferState {
         self.state
@@ -194,7 +198,7 @@ impl<T: Sized + Send> Transferable<T> {
 }
 
 /// ゼロコピー転送用のポインタラッパー
-/// 
+///
 /// 実際のデータをムーブせずに、ポインタの所有権のみを転送する。
 pub struct ZeroCopyTransfer<T: Sized + Send> {
     /// データへのポインタ
@@ -211,7 +215,7 @@ pub struct ZeroCopyTransfer<T: Sized + Send> {
 
 impl<T: Sized + Send> ZeroCopyTransfer<T> {
     /// 既存のポインタから作成
-    /// 
+    ///
     /// # Safety
     /// - ptrは有効なT型データを指している必要がある
     /// - 呼び出し元がメモリの所有権を持っている必要がある
@@ -224,7 +228,7 @@ impl<T: Sized + Send> ZeroCopyTransfer<T> {
             valid: true,
         }
     }
-    
+
     /// 所有権を転送
     pub fn transfer(&mut self, from: DomainId, to: DomainId) -> Result<(), OwnershipError> {
         if !self.valid {
@@ -233,11 +237,11 @@ impl<T: Sized + Send> ZeroCopyTransfer<T> {
         if self.current_owner != from {
             return Err(OwnershipError::NotOwner);
         }
-        
+
         self.current_owner = to;
         Ok(())
     }
-    
+
     /// ポインタを取得（所有者のみ）
     pub fn as_ptr(&self, accessor: DomainId) -> Result<*const T, OwnershipError> {
         if !self.valid {
@@ -248,7 +252,7 @@ impl<T: Sized + Send> ZeroCopyTransfer<T> {
         }
         Ok(self.ptr as *const T)
     }
-    
+
     /// 可変ポインタを取得（所有者のみ）
     pub fn as_mut_ptr(&mut self, accessor: DomainId) -> Result<*mut T, OwnershipError> {
         if !self.valid {
@@ -259,17 +263,17 @@ impl<T: Sized + Send> ZeroCopyTransfer<T> {
         }
         Ok(self.ptr)
     }
-    
+
     /// 転送を無効化
     pub fn invalidate(&mut self) {
         self.valid = false;
     }
-    
+
     /// アドレスを取得
     pub fn address(&self) -> usize {
         self.ptr as usize
     }
-    
+
     /// サイズを取得
     pub fn size(&self) -> usize {
         self.size

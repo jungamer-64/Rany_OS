@@ -17,7 +17,7 @@
 //! - batch処理でスループット向上
 #![allow(dead_code)]
 
-use super::{create_waker, Task, TaskId};
+use super::{Task, TaskId, create_waker};
 use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
@@ -29,7 +29,7 @@ use x86_64::instructions::interrupts;
 // ============================================================================
 
 /// ロックフリーのタスクID キュー
-/// 
+///
 /// 実際のタスクはTASK_STOREに保存し、
 /// キューはTaskIdのみを管理してオーバーヘッド削減。
 pub struct LockFreeQueue {
@@ -54,77 +54,85 @@ impl LockFreeQueue {
             tail: AtomicUsize::new(0),
         }
     }
-    
+
     /// タスクIDをプッシュ（try）
     pub fn push(&self, task_id: TaskId) -> bool {
         loop {
             let tail = self.tail.load(Ordering::Relaxed);
             let head = self.head.load(Ordering::Acquire);
-            
+
             // キューが満杯
             if tail.wrapping_sub(head) >= QUEUE_SIZE {
                 return false;
             }
-            
+
             let idx = tail % QUEUE_SIZE;
-            
+
             // CAS for tail
-            if self.tail.compare_exchange_weak(
-                tail,
-                tail.wrapping_add(1),
-                Ordering::Release,
-                Ordering::Relaxed,
-            ).is_ok() {
+            if self
+                .tail
+                .compare_exchange_weak(
+                    tail,
+                    tail.wrapping_add(1),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 self.buffer[idx].store(task_id.as_u64(), Ordering::Release);
                 return true;
             }
-            
+
             core::hint::spin_loop();
         }
     }
-    
+
     /// タスクIDをポップ（try）
     pub fn pop(&self) -> Option<TaskId> {
         loop {
             let head = self.head.load(Ordering::Relaxed);
             let tail = self.tail.load(Ordering::Acquire);
-            
+
             // キューが空
             if head == tail {
                 return None;
             }
-            
+
             let idx = head % QUEUE_SIZE;
             let task_id = self.buffer[idx].load(Ordering::Acquire);
-            
+
             // まだ書き込まれていない
             if task_id == EMPTY_SLOT {
                 core::hint::spin_loop();
                 continue;
             }
-            
+
             // CAS for head
-            if self.head.compare_exchange_weak(
-                head,
-                head.wrapping_add(1),
-                Ordering::Release,
-                Ordering::Relaxed,
-            ).is_ok() {
+            if self
+                .head
+                .compare_exchange_weak(
+                    head,
+                    head.wrapping_add(1),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
                 self.buffer[idx].store(EMPTY_SLOT, Ordering::Release);
                 return Some(TaskId(task_id));
             }
-            
+
             core::hint::spin_loop();
         }
     }
-    
+
     /// キューが空かどうか
     pub fn is_empty(&self) -> bool {
         let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
         head == tail
     }
-    
+
     /// キュー内のアイテム数
     pub fn len(&self) -> usize {
         let head = self.head.load(Ordering::Acquire);
@@ -176,7 +184,7 @@ impl Executor {
     pub fn new() -> Self {
         Self::with_cpu_id(0)
     }
-    
+
     /// CPU IDを指定してExecutorを作成
     pub fn with_cpu_id(cpu_id: usize) -> Self {
         Self {
@@ -230,7 +238,7 @@ impl Executor {
     fn run_ready_tasks(&mut self) {
         // バッチ処理
         let mut processed = 0;
-        
+
         while let Some(mut task) = self.local_queue.pop_front() {
             let waker = create_waker(task.id);
             let mut context = Context::from_waker(&waker);
@@ -238,24 +246,28 @@ impl Executor {
             match task.poll(&mut context) {
                 Poll::Ready(()) => {
                     // タスク完了
-                    EXECUTOR_STATS.tasks_completed.fetch_add(1, Ordering::Relaxed);
+                    EXECUTOR_STATS
+                        .tasks_completed
+                        .fetch_add(1, Ordering::Relaxed);
                 }
                 Poll::Pending => {
                     // ペンディング状態のタスクをストアに保存
                     TASK_STORE.lock().insert(task.id, task);
                 }
             }
-            
+
             processed += 1;
-            
+
             // バッチ上限で一旦中断（他の処理を許可）
             if processed >= self.batch_size {
                 break;
             }
         }
-        
+
         if processed > 0 {
-            EXECUTOR_STATS.poll_cycles.fetch_add(processed as u64, Ordering::Relaxed);
+            EXECUTOR_STATS
+                .poll_cycles
+                .fetch_add(processed as u64, Ordering::Relaxed);
         }
     }
 
@@ -271,7 +283,7 @@ impl Executor {
                 // タスクが見つからない場合はローカルキャッシュに追加
                 self.local_cache.push_back(task_id);
             }
-            
+
             // バッチ上限
             if woken >= self.batch_size {
                 break;
@@ -292,9 +304,11 @@ impl Executor {
                 break;
             }
         }
-        
+
         if fetched > 0 {
-            EXECUTOR_STATS.global_fetches.fetch_add(fetched as u64, Ordering::Relaxed);
+            EXECUTOR_STATS
+                .global_fetches
+                .fetch_add(fetched as u64, Ordering::Relaxed);
         }
     }
 
@@ -343,7 +357,7 @@ impl ExecutorStats {
             idle_cycles: AtomicU64::new(0),
         }
     }
-    
+
     /// スナップショットを取得
     pub fn snapshot(&self) -> ExecutorStatsSnapshot {
         ExecutorStatsSnapshot {

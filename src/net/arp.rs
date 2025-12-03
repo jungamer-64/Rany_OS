@@ -95,79 +95,84 @@ pub struct ArpPacket {
 impl ArpPacket {
     /// Size of ARP packet (for IPv4 over Ethernet)
     pub const SIZE: usize = 28;
-    
+
     /// Get hardware type
     pub fn hardware_type(&self) -> ArpHardwareType {
         ArpHardwareType::from(u16::from_be_bytes(self.hardware_type))
     }
-    
+
     /// Set hardware type
     pub fn set_hardware_type(&mut self, htype: ArpHardwareType) {
         self.hardware_type = u16::to_be_bytes(htype.into());
     }
-    
+
     /// Get protocol type (EtherType)
     pub fn protocol_type(&self) -> u16 {
         u16::from_be_bytes(self.protocol_type)
     }
-    
+
     /// Set protocol type
     pub fn set_protocol_type(&mut self, ptype: u16) {
         self.protocol_type = ptype.to_be_bytes();
     }
-    
+
     /// Get operation
     pub fn operation(&self) -> ArpOperation {
         ArpOperation::from(u16::from_be_bytes(self.operation))
     }
-    
+
     /// Set operation
     pub fn set_operation(&mut self, op: ArpOperation) {
         self.operation = u16::to_be_bytes(op.into());
     }
-    
+
     /// Get sender MAC address
     pub fn sender_mac(&self) -> MacAddress {
         MacAddress::new(self.sender_mac)
     }
-    
+
     /// Set sender MAC address
     pub fn set_sender_mac(&mut self, mac: MacAddress) {
         self.sender_mac = *mac.as_bytes();
     }
-    
+
     /// Get sender IP address
     pub fn sender_ip(&self) -> Ipv4Address {
         Ipv4Address::new(self.sender_ip)
     }
-    
+
     /// Set sender IP address
     pub fn set_sender_ip(&mut self, ip: Ipv4Address) {
         self.sender_ip = *ip.as_bytes();
     }
-    
+
     /// Get target MAC address
     pub fn target_mac(&self) -> MacAddress {
         MacAddress::new(self.target_mac)
     }
-    
+
     /// Set target MAC address
     pub fn set_target_mac(&mut self, mac: MacAddress) {
         self.target_mac = *mac.as_bytes();
     }
-    
+
     /// Get target IP address
     pub fn target_ip(&self) -> Ipv4Address {
         Ipv4Address::new(self.target_ip)
     }
-    
+
     /// Set target IP address
     pub fn set_target_ip(&mut self, ip: Ipv4Address) {
         self.target_ip = *ip.as_bytes();
     }
-    
+
     /// Initialize as ARP request
-    pub fn init_request(&mut self, sender_mac: MacAddress, sender_ip: Ipv4Address, target_ip: Ipv4Address) {
+    pub fn init_request(
+        &mut self,
+        sender_mac: MacAddress,
+        sender_ip: Ipv4Address,
+        target_ip: Ipv4Address,
+    ) {
         self.set_hardware_type(ArpHardwareType::Ethernet);
         self.set_protocol_type(0x0800); // IPv4
         self.hardware_len = 6;
@@ -178,7 +183,7 @@ impl ArpPacket {
         self.set_target_mac(MacAddress::ZERO);
         self.set_target_ip(target_ip);
     }
-    
+
     /// Initialize as ARP reply
     pub fn init_reply(
         &mut self,
@@ -197,13 +202,13 @@ impl ArpPacket {
         self.set_target_mac(target_mac);
         self.set_target_ip(target_ip);
     }
-    
+
     /// Validate ARP packet (IPv4 over Ethernet)
     pub fn is_valid(&self) -> bool {
-        self.hardware_type() == ArpHardwareType::Ethernet &&
-        self.protocol_type() == 0x0800 &&
-        self.hardware_len == 6 &&
-        self.protocol_len == 4
+        self.hardware_type() == ArpHardwareType::Ethernet
+            && self.protocol_type() == 0x0800
+            && self.hardware_len == 6
+            && self.protocol_len == 4
     }
 }
 
@@ -241,7 +246,7 @@ impl ArpEntry {
             state: ArpEntryState::Resolved,
         }
     }
-    
+
     /// Create a new incomplete entry
     pub fn new_incomplete(ip: Ipv4Address, timestamp: u64) -> Self {
         ArpEntry {
@@ -251,7 +256,7 @@ impl ArpEntry {
             state: ArpEntryState::Incomplete,
         }
     }
-    
+
     /// Check if entry is expired
     pub fn is_expired(&self, current_time: u64, timeout: u64) -> bool {
         current_time.saturating_sub(self.timestamp) > timeout
@@ -312,11 +317,11 @@ impl ArpCache {
             },
         }
     }
-    
+
     /// Look up a MAC address by IP
     pub fn lookup(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
         let entries = self.entries.lock();
-        
+
         for entry in entries.iter().flatten() {
             if entry.ip == ip {
                 if entry.state == ArpEntryState::Resolved {
@@ -327,20 +332,20 @@ impl ArpCache {
                 }
             }
         }
-        
+
         self.stats.misses.fetch_add(1, Ordering::Relaxed);
         None
     }
-    
+
     /// Insert or update an ARP entry
     pub fn insert(&self, ip: Ipv4Address, mac: MacAddress, current_time: u64) {
         let mut entries = self.entries.lock();
-        
+
         // Look for existing entry or empty slot
         let mut empty_slot = None;
         let mut oldest_slot = None;
         let mut oldest_time = u64::MAX;
-        
+
         for (i, entry) in entries.iter_mut().enumerate() {
             match entry {
                 Some(e) if e.ip == ip => {
@@ -362,7 +367,7 @@ impl ArpCache {
                 _ => {}
             }
         }
-        
+
         // Insert in empty slot or replace oldest
         let slot = empty_slot.or(oldest_slot);
         if let Some(i) = slot {
@@ -370,11 +375,11 @@ impl ArpCache {
             self.stats.entries_added.fetch_add(1, Ordering::Relaxed);
         }
     }
-    
+
     /// Mark an entry as incomplete (ARP request sent)
     pub fn mark_incomplete(&self, ip: Ipv4Address, current_time: u64) {
         let mut entries = self.entries.lock();
-        
+
         // Look for existing entry
         for entry in entries.iter_mut().flatten() {
             if entry.ip == ip {
@@ -383,12 +388,12 @@ impl ArpCache {
                 return;
             }
         }
-        
+
         // Find empty slot or oldest entry
         let mut empty_slot = None;
         let mut oldest_slot = None;
         let mut oldest_time = u64::MAX;
-        
+
         for (i, entry) in entries.iter().enumerate() {
             match entry {
                 None if empty_slot.is_none() => {
@@ -401,29 +406,29 @@ impl ArpCache {
                 _ => {}
             }
         }
-        
+
         if let Some(i) = empty_slot.or(oldest_slot) {
             entries[i] = Some(ArpEntry::new_incomplete(ip, current_time));
         }
     }
-    
+
     /// Check if we have a pending request for an IP
     pub fn is_pending(&self, ip: Ipv4Address, current_time: u64) -> bool {
         let entries = self.entries.lock();
-        
+
         for entry in entries.iter().flatten() {
             if entry.ip == ip && entry.state == ArpEntryState::Incomplete {
                 return !entry.is_expired(current_time, ARP_INCOMPLETE_TIMEOUT);
             }
         }
-        
+
         false
     }
-    
+
     /// Remove an entry
     pub fn remove(&self, ip: Ipv4Address) {
         let mut entries = self.entries.lock();
-        
+
         for entry in entries.iter_mut() {
             if let Some(e) = entry {
                 if e.ip == ip {
@@ -433,11 +438,11 @@ impl ArpCache {
             }
         }
     }
-    
+
     /// Expire old entries
     pub fn expire_old(&self, current_time: u64) {
         let mut entries = self.entries.lock();
-        
+
         for entry in entries.iter_mut() {
             if let Some(e) = entry {
                 let timeout = if e.state == ArpEntryState::Incomplete {
@@ -445,7 +450,7 @@ impl ArpCache {
                 } else {
                     ARP_CACHE_TIMEOUT
                 };
-                
+
                 if e.is_expired(current_time, timeout) {
                     *entry = None;
                     self.stats.entries_expired.fetch_add(1, Ordering::Relaxed);
@@ -453,7 +458,7 @@ impl ArpCache {
             }
         }
     }
-    
+
     /// Get statistics
     pub fn stats(&self) -> (u64, u64, u64, u64) {
         (
@@ -463,7 +468,7 @@ impl ArpCache {
             self.stats.entries_expired.load(Ordering::Relaxed),
         )
     }
-    
+
     /// Get all entries (for debugging)
     pub fn all_entries(&self) -> alloc::vec::Vec<ArpEntry> {
         let entries = self.entries.lock();
@@ -507,42 +512,40 @@ impl ArpProcessor {
             cache: ArpCache::new(),
         }
     }
-    
+
     /// Get the ARP cache
     pub fn cache(&self) -> &ArpCache {
         &self.cache
     }
-    
+
     /// Set local addresses
     pub fn set_local(&mut self, mac: MacAddress, ip: Ipv4Address) {
         self.local_mac = mac;
         self.local_ip = ip;
     }
-    
+
     /// Process an incoming ARP packet
     pub fn process(&self, data: &[u8], current_time: u64) -> ArpResult {
         if data.len() < ArpPacket::SIZE {
             return ArpResult::Invalid;
         }
-        
+
         // SAFETY: We checked the length
-        let packet = unsafe {
-            &*(data.as_ptr() as *const ArpPacket)
-        };
-        
+        let packet = unsafe { &*(data.as_ptr() as *const ArpPacket) };
+
         if !packet.is_valid() {
             return ArpResult::Invalid;
         }
-        
+
         let sender_mac = packet.sender_mac();
         let sender_ip = packet.sender_ip();
         let target_ip = packet.target_ip();
-        
+
         // Update cache with sender info (opportunistic update)
         if !sender_ip.is_any() && !sender_mac.is_broadcast() {
             self.cache.insert(sender_ip, sender_mac, current_time);
         }
-        
+
         match packet.operation() {
             ArpOperation::Request => {
                 // Is this request for us?
@@ -562,22 +565,20 @@ impl ArpProcessor {
             _ => ArpResult::Ignored,
         }
     }
-    
+
     /// Build an ARP request packet
     pub fn build_request(&self, buffer: &mut [u8], target_ip: Ipv4Address) -> Option<usize> {
         if buffer.len() < ArpPacket::SIZE {
             return None;
         }
-        
+
         // SAFETY: Buffer is large enough
-        let packet = unsafe {
-            &mut *(buffer.as_mut_ptr() as *mut ArpPacket)
-        };
-        
+        let packet = unsafe { &mut *(buffer.as_mut_ptr() as *mut ArpPacket) };
+
         packet.init_request(self.local_mac, self.local_ip, target_ip);
         Some(ArpPacket::SIZE)
     }
-    
+
     /// Build an ARP reply packet
     pub fn build_reply(
         &self,
@@ -588,32 +589,29 @@ impl ArpProcessor {
         if buffer.len() < ArpPacket::SIZE {
             return None;
         }
-        
+
         // SAFETY: Buffer is large enough
-        let packet = unsafe {
-            &mut *(buffer.as_mut_ptr() as *mut ArpPacket)
-        };
-        
+        let packet = unsafe { &mut *(buffer.as_mut_ptr() as *mut ArpPacket) };
+
         packet.init_reply(self.local_mac, self.local_ip, target_mac, target_ip);
         Some(ArpPacket::SIZE)
     }
-    
+
     /// Resolve an IP address to MAC (from cache)
     pub fn resolve(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
         // Broadcast IP -> broadcast MAC
         if ip.is_broadcast() {
             return Some(MacAddress::BROADCAST);
         }
-        
+
         self.cache.lookup(ip, current_time)
     }
-    
+
     /// Check if we need to send an ARP request
     pub fn needs_request(&self, ip: Ipv4Address, current_time: u64) -> bool {
-        self.cache.lookup(ip, current_time).is_none() &&
-        !self.cache.is_pending(ip, current_time)
+        self.cache.lookup(ip, current_time).is_none() && !self.cache.is_pending(ip, current_time)
     }
-    
+
     /// Mark that we're waiting for a reply
     pub fn request_sent(&self, ip: Ipv4Address, current_time: u64) {
         self.cache.mark_incomplete(ip, current_time);
@@ -623,37 +621,35 @@ impl ArpProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_arp_cache() {
         let cache = ArpCache::new();
         let ip = Ipv4Address::from_octets(192, 168, 1, 1);
         let mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
-        
+
         // Initially empty
         assert!(cache.lookup(ip, 0).is_none());
-        
+
         // Insert and lookup
         cache.insert(ip, mac, 100);
         assert_eq!(cache.lookup(ip, 100), Some(mac));
-        
+
         // Expired entry
         assert!(cache.lookup(ip, ARP_CACHE_TIMEOUT + 200).is_none());
     }
-    
+
     #[test]
     fn test_arp_packet() {
         let mut buffer = [0u8; ArpPacket::SIZE];
-        let packet = unsafe {
-            &mut *(buffer.as_mut_ptr() as *mut ArpPacket)
-        };
-        
+        let packet = unsafe { &mut *(buffer.as_mut_ptr() as *mut ArpPacket) };
+
         let sender_mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
         let sender_ip = Ipv4Address::from_octets(192, 168, 1, 1);
         let target_ip = Ipv4Address::from_octets(192, 168, 1, 2);
-        
+
         packet.init_request(sender_mac, sender_ip, target_ip);
-        
+
         assert!(packet.is_valid());
         assert_eq!(packet.operation(), ArpOperation::Request);
         assert_eq!(packet.sender_mac(), sender_mac);

@@ -7,8 +7,8 @@
 // ============================================================================
 #![allow(dead_code)]
 
-pub mod memory_region;
 pub mod heap_registry;
+pub mod memory_region;
 pub mod ownership;
 
 use alloc::collections::BTreeMap;
@@ -18,8 +18,8 @@ use spin::Mutex;
 
 use crate::domain_system::DomainId;
 
-pub use memory_region::{MemoryRegion, RegionPermissions};
 pub use heap_registry::{HeapRegistry, RegistryError};
+pub use memory_region::{MemoryRegion, RegionPermissions};
 pub use ownership::{OwnershipError, OwnershipToken, Transferable, ZeroCopyTransfer};
 
 // ============================================================================
@@ -27,7 +27,7 @@ pub use ownership::{OwnershipError, OwnershipToken, Transferable, ZeroCopyTransf
 // ============================================================================
 
 /// Single Address Space Manager
-/// 
+///
 /// 設計書 1.1: CR3切り替えなしで全セルが同一アドレス空間を共有
 /// メモリ保護はRustの型システムとHeap Registryが提供
 pub struct SingleAddressSpaceManager {
@@ -51,25 +51,22 @@ impl SingleAddressSpaceManager {
             initialized: AtomicBool::new(false),
         }
     }
-    
+
     /// SASを初期化
     pub fn init(&mut self) {
         if self.initialized.swap(true, Ordering::SeqCst) {
             return; // 既に初期化済み
         }
-        
+
         // カーネル領域を登録
-        let kernel_region = MemoryRegion::new(
-            KERNEL_BASE,
-            KERNEL_SIZE,
-            RegionPermissions::KERNEL,
-        );
-        self.cell_regions.insert(DomainId::KERNEL, alloc::vec![kernel_region]);
-        
+        let kernel_region = MemoryRegion::new(KERNEL_BASE, KERNEL_SIZE, RegionPermissions::KERNEL);
+        self.cell_regions
+            .insert(DomainId::KERNEL, alloc::vec![kernel_region]);
+
         crate::log!("[SAS] Single Address Space Manager initialized\n");
         crate::log!("[SAS] Base address: {:#x}\n", SAS_BASE_ADDRESS);
     }
-    
+
     /// セル用のメモリ領域を割り当て
     pub fn allocate_region(
         &mut self,
@@ -78,32 +75,35 @@ impl SingleAddressSpaceManager {
         permissions: RegionPermissions,
     ) -> Result<MemoryRegion, SasError> {
         // アドレスを割り当て
-        let addr = self.next_alloc_addr.fetch_add(
-            align_up(size as u64, PAGE_SIZE),
-            Ordering::SeqCst,
-        );
-        
+        let addr = self
+            .next_alloc_addr
+            .fetch_add(align_up(size as u64, PAGE_SIZE), Ordering::SeqCst);
+
         // 上限チェック
         if addr + size as u64 > SAS_MAX_ADDRESS {
             return Err(SasError::OutOfAddressSpace);
         }
-        
+
         let region = MemoryRegion::new(addr as usize, size, permissions);
-        
+
         // セルの領域リストに追加
         self.cell_regions
             .entry(domain_id)
             .or_insert_with(Vec::new)
             .push(region.clone());
-        
-        crate::log!("[SAS] Allocated region for {}: {:#x} - {:#x}\n",
-            domain_id, region.start, region.end());
-        
+
+        crate::log!(
+            "[SAS] Allocated region for {}: {:#x} - {:#x}\n",
+            domain_id,
+            region.start,
+            region.end()
+        );
+
         Ok(region)
     }
-    
+
     /// 所有権をゼロコピーで移動
-    /// 
+    ///
     /// 設計書 7.1: CR3の切り替えなしでポインタの有効性を維持
     /// アドレス変換なしで即座に完了
     pub fn transfer_ownership(
@@ -115,23 +115,22 @@ impl SingleAddressSpaceManager {
         // ポインタはそのまま有効（SASなのでアドレス変換不要）
         // Heap Registryで所有者のみ変更
         self.heap_registry.change_owner(ptr, from, to)?;
-        
-        crate::log!("[SAS] Transferred ownership: {:#x} from {} to {}\n",
-            ptr, from, to);
-        
+
+        crate::log!(
+            "[SAS] Transferred ownership: {:#x} from {} to {}\n",
+            ptr,
+            from,
+            to
+        );
+
         Ok(())
     }
-    
+
     /// オブジェクトを登録
-    pub fn register_object(
-        &mut self,
-        ptr: usize,
-        size: usize,
-        owner: DomainId,
-    ) {
+    pub fn register_object(&mut self, ptr: usize, size: usize, owner: DomainId) {
         self.heap_registry.register_simple(ptr, size, owner);
     }
-    
+
     /// オブジェクトを解除
     pub fn unregister_object(&mut self, ptr: usize) -> Option<DomainId> {
         let owner = self.heap_registry.get_owner(ptr)?;
@@ -139,23 +138,19 @@ impl SingleAddressSpaceManager {
         // 実際の解除は reclaim_domain_resources で行う
         Some(owner)
     }
-    
+
     /// アドレスの所有者を取得
     pub fn get_owner(&self, ptr: usize) -> Option<DomainId> {
         self.heap_registry.get_owner(ptr)
     }
-    
+
     /// アクセス権限をチェック
-    pub fn check_access(
-        &self,
-        ptr: usize,
-        accessor: DomainId,
-    ) -> Result<(), OwnershipError> {
+    pub fn check_access(&self, ptr: usize, accessor: DomainId) -> Result<(), OwnershipError> {
         // カーネルドメインは全アクセス可能
         if accessor == DomainId::KERNEL {
             return Ok(());
         }
-        
+
         // 所有者チェック
         match self.heap_registry.get_owner(ptr) {
             Some(owner) if owner == accessor => Ok(()),
@@ -167,16 +162,16 @@ impl SingleAddressSpaceManager {
             None => Err(OwnershipError::UnregisteredPointer(ptr)),
         }
     }
-    
+
     /// セルのリソースを全て回収
     pub fn reclaim_domain_resources(&mut self, domain_id: DomainId) -> usize {
         let count = self.heap_registry.reclaim_all(domain_id);
         self.cell_regions.remove(&domain_id);
-        
+
         crate::log!("[SAS] Reclaimed {} objects from {}\n", count, domain_id);
         count
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> SasStats {
         SasStats {
@@ -265,8 +260,7 @@ pub struct SasStats {
 // ============================================================================
 
 /// グローバルSAS Manager
-static SAS_MANAGER: Mutex<SingleAddressSpaceManager> = 
-    Mutex::new(SingleAddressSpaceManager::new());
+static SAS_MANAGER: Mutex<SingleAddressSpaceManager> = Mutex::new(SingleAddressSpaceManager::new());
 
 /// SAS Managerにアクセス
 pub fn with_sas_manager<F, R>(f: F) -> R
@@ -290,11 +284,7 @@ pub fn init() {
 }
 
 /// 所有権を移動（公開API）
-pub fn transfer_ownership(
-    ptr: usize,
-    from: DomainId,
-    to: DomainId,
-) -> Result<(), OwnershipError> {
+pub fn transfer_ownership(ptr: usize, from: DomainId, to: DomainId) -> Result<(), OwnershipError> {
     with_sas_manager_mut(|m| m.transfer_ownership(ptr, from, to))
 }
 

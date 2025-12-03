@@ -5,8 +5,8 @@
 
 extern crate alloc;
 
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering, fence};
 use spin::Mutex;
 
 /// AP Bootstrap state
@@ -64,12 +64,12 @@ impl ApBootInfo {
             state: AtomicU32::new(ApState::Offline as u32),
         }
     }
-    
+
     /// Set state
     pub fn set_state(&self, state: ApState) {
         self.state.store(state as u32, Ordering::Release);
     }
-    
+
     /// Get state
     pub fn get_state(&self) -> ApState {
         match self.state.load(Ordering::Acquire) {
@@ -110,7 +110,7 @@ impl LocalApic {
     const TIMER_CURRENT: u32 = 0x390;
     /// Timer divide config
     const TIMER_DIVIDE: u32 = 0x3E0;
-    
+
     /// ICR delivery modes
     const DELIVERY_INIT: u32 = 5 << 8;
     const DELIVERY_STARTUP: u32 = 6 << 8;
@@ -118,14 +118,14 @@ impl LocalApic {
     const LEVEL_DEASSERT: u32 = 0;
     const TRIGGER_EDGE: u32 = 0;
     const TRIGGER_LEVEL: u32 = 1 << 15;
-    
+
     /// Create new LAPIC instance
     pub fn new(base_address: u64) -> Self {
         LocalApic { base_address }
     }
-    
+
     /// Read LAPIC register
-    /// 
+    ///
     /// # Safety
     /// Must be valid LAPIC address
     #[inline]
@@ -133,9 +133,9 @@ impl LocalApic {
         let ptr = (self.base_address + reg as u64) as *const u32;
         core::ptr::read_volatile(ptr)
     }
-    
+
     /// Write LAPIC register
-    /// 
+    ///
     /// # Safety
     /// Must be valid LAPIC address
     #[inline]
@@ -143,17 +143,17 @@ impl LocalApic {
         let ptr = (self.base_address + reg as u64) as *mut u32;
         core::ptr::write_volatile(ptr, value);
     }
-    
+
     /// Get LAPIC ID
     pub fn id(&self) -> u32 {
         unsafe { self.read(Self::ID) >> 24 }
     }
-    
+
     /// Send End of Interrupt
     pub fn eoi(&self) {
         unsafe { self.write(Self::EOI, 0) };
     }
-    
+
     /// Enable LAPIC
     pub fn enable(&self) {
         unsafe {
@@ -161,42 +161,45 @@ impl LocalApic {
             self.write(Self::SPURIOUS, spurious | 0x100);
         }
     }
-    
+
     /// Send INIT IPI to target AP
     pub fn send_init(&self, target_apic_id: u32) {
         unsafe {
             // Set destination
             self.write(Self::ICR_HIGH, target_apic_id << 24);
-            
+
             // Send INIT assert
-            self.write(Self::ICR_LOW, 
-                Self::DELIVERY_INIT | Self::LEVEL_ASSERT | Self::TRIGGER_LEVEL);
-            
+            self.write(
+                Self::ICR_LOW,
+                Self::DELIVERY_INIT | Self::LEVEL_ASSERT | Self::TRIGGER_LEVEL,
+            );
+
             // Wait for delivery
             self.wait_for_delivery();
-            
+
             // Send INIT deassert
-            self.write(Self::ICR_LOW,
-                Self::DELIVERY_INIT | Self::LEVEL_DEASSERT | Self::TRIGGER_LEVEL);
-            
+            self.write(
+                Self::ICR_LOW,
+                Self::DELIVERY_INIT | Self::LEVEL_DEASSERT | Self::TRIGGER_LEVEL,
+            );
+
             self.wait_for_delivery();
         }
     }
-    
+
     /// Send SIPI (Startup IPI) to target AP
     pub fn send_sipi(&self, target_apic_id: u32, vector: u8) {
         unsafe {
             // Set destination
             self.write(Self::ICR_HIGH, target_apic_id << 24);
-            
+
             // Send SIPI with vector (address = vector * 0x1000)
-            self.write(Self::ICR_LOW, 
-                Self::DELIVERY_STARTUP | (vector as u32));
-            
+            self.write(Self::ICR_LOW, Self::DELIVERY_STARTUP | (vector as u32));
+
             self.wait_for_delivery();
         }
     }
-    
+
     /// Wait for IPI delivery
     unsafe fn wait_for_delivery(&self) {
         // Bit 12 = Delivery Status (0 = idle, 1 = pending)
@@ -204,7 +207,7 @@ impl LocalApic {
             core::hint::spin_loop();
         }
     }
-    
+
     /// Send IPI to specific CPU
     pub fn send_ipi(&self, target_apic_id: u32, vector: u8) {
         unsafe {
@@ -213,13 +216,12 @@ impl LocalApic {
             self.wait_for_delivery();
         }
     }
-    
+
     /// Broadcast IPI (excluding self)
     pub fn broadcast_ipi(&self, vector: u8) {
         unsafe {
             // All excluding self
-            self.write(Self::ICR_LOW, 
-                (vector as u32) | (3 << 18)); // Destination shorthand: All excluding self
+            self.write(Self::ICR_LOW, (vector as u32) | (3 << 18)); // Destination shorthand: All excluding self
             self.wait_for_delivery();
         }
     }
@@ -249,7 +251,7 @@ impl ApBootstrap {
         for _ in 0..num_aps {
             ap_info.push(ApBootInfo::new());
         }
-        
+
         ApBootstrap {
             lapic: LocalApic::new(lapic_base),
             ap_info,
@@ -257,14 +259,14 @@ impl ApBootstrap {
             expected_aps: num_aps,
         }
     }
-    
+
     /// Get boot info for AP
     pub fn get_ap_info(&self, index: usize) -> Option<&ApBootInfo> {
         self.ap_info.get(index)
     }
-    
+
     /// Setup trampoline code
-    /// 
+    ///
     /// # Safety
     /// Writes to low memory
     pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> {
@@ -272,66 +274,64 @@ impl ApBootstrap {
         // This is a placeholder for the actual AP startup code
         static TRAMPOLINE_CODE: [u8; 32] = [
             // 16-bit real mode entry (simplified)
-            0xFA,       // CLI
+            0xFA, // CLI
             0x31, 0xC0, // XOR AX, AX
             0x8E, 0xD8, // MOV DS, AX
             0x8E, 0xC0, // MOV ES, AX
             0x8E, 0xD0, // MOV SS, AX
             // ... more code to switch to protected mode, long mode
-            0xF4,       // HLT (placeholder)
+            0xF4, // HLT (placeholder)
             0xEB, 0xFD, // JMP $-1 (loop)
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
         ];
-        
+
         // Copy trampoline code to low memory
         let trampoline_ptr = TRAMPOLINE_BASE as *mut u8;
         core::ptr::copy_nonoverlapping(
             TRAMPOLINE_CODE.as_ptr(),
             trampoline_ptr,
-            TRAMPOLINE_CODE.len()
+            TRAMPOLINE_CODE.len(),
         );
-        
+
         Ok(())
     }
-    
+
     /// Start a single AP
     pub fn start_ap(&self, ap_index: usize, apic_id: u32) -> Result<(), &'static str> {
-        let info = self.ap_info.get(ap_index)
-            .ok_or("Invalid AP index")?;
-        
+        let info = self.ap_info.get(ap_index).ok_or("Invalid AP index")?;
+
         crate::log!("[SMP] Starting AP {} (APIC ID: {})\n", ap_index, apic_id);
-        
+
         // Setup boot info
         info.set_state(ApState::InitSent);
-        
+
         // Send INIT IPI
         self.lapic.send_init(apic_id);
-        
+
         // Wait 10ms
         self.delay_ms(10);
-        
+
         // Send first SIPI
         info.set_state(ApState::SipiSent);
         let vector = (TRAMPOLINE_BASE / 0x1000) as u8;
         self.lapic.send_sipi(apic_id, vector);
-        
+
         // Wait 200us
         self.delay_us(200);
-        
+
         // Send second SIPI (required by spec)
         self.lapic.send_sipi(apic_id, vector);
-        
+
         // Wait for AP to start (timeout 100ms)
         let timeout = 100_000; // microseconds
         let mut waited = 0u64;
-        
+
         while !info.started.load(Ordering::Acquire) && waited < timeout {
             self.delay_us(100);
             waited += 100;
         }
-        
+
         if info.started.load(Ordering::Acquire) {
             info.set_state(ApState::Online);
             self.aps_started.fetch_add(1, Ordering::Relaxed);
@@ -342,31 +342,31 @@ impl ApBootstrap {
             Err("AP startup timeout")
         }
     }
-    
+
     /// Start all APs
     pub fn start_all_aps(&self, apic_ids: &[u32]) -> u32 {
         let mut started = 0;
-        
+
         for (i, &apic_id) in apic_ids.iter().enumerate() {
             match self.start_ap(i, apic_id) {
                 Ok(()) => started += 1,
                 Err(e) => crate::log!("[SMP] Failed to start AP {}: {}\n", i, e),
             }
         }
-        
+
         started
     }
-    
+
     /// Get number of started APs
     pub fn aps_online(&self) -> u32 {
         self.aps_started.load(Ordering::Relaxed)
     }
-    
+
     /// Busy-wait delay in milliseconds
     fn delay_ms(&self, ms: u64) {
         self.delay_us(ms * 1000);
     }
-    
+
     /// Busy-wait delay in microseconds
     fn delay_us(&self, us: u64) {
         // Simple delay loop (inaccurate but functional)
@@ -382,7 +382,7 @@ impl ApBootstrap {
 static AP_BOOTSTRAP: Mutex<Option<ApBootstrap>> = Mutex::new(None);
 
 /// Initialize SMP bootstrap
-/// 
+///
 /// # Safety
 /// Modifies low memory and sends IPIs
 pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> {
@@ -394,7 +394,8 @@ pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> {
 
 /// Start all APs
 pub fn start_aps(apic_ids: &[u32]) -> u32 {
-    AP_BOOTSTRAP.lock()
+    AP_BOOTSTRAP
+        .lock()
         .as_ref()
         .map(|b| b.start_all_aps(apic_ids))
         .unwrap_or(0)
@@ -402,20 +403,21 @@ pub fn start_aps(apic_ids: &[u32]) -> u32 {
 
 /// Get number of online APs
 pub fn online_aps() -> u32 {
-    AP_BOOTSTRAP.lock()
+    AP_BOOTSTRAP
+        .lock()
         .as_ref()
         .map(|b| b.aps_online())
         .unwrap_or(0)
 }
 
 /// AP entry point (called from trampoline)
-/// 
+///
 /// This function is called by each AP after the trampoline code
 /// has switched to long mode and set up a stack.
 #[unsafe(no_mangle)]
 pub extern "C" fn ap_entry(ap_index: u32) {
     crate::log!("[SMP] AP {} entered kernel\n", ap_index);
-    
+
     // Mark as started
     if let Some(bootstrap) = AP_BOOTSTRAP.lock().as_ref() {
         if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {
@@ -423,25 +425,25 @@ pub extern "C" fn ap_entry(ap_index: u32) {
             info.set_state(ApState::Initializing);
         }
     }
-    
+
     // Initialize per-CPU structures
     // - Set up GDT/TSS for this CPU
     // - Set up local IDT copy
     // - Enable local APIC
     // - Initialize per-core executor
-    
+
     fence(Ordering::SeqCst);
-    
+
     // Mark as online
     if let Some(bootstrap) = AP_BOOTSTRAP.lock().as_ref() {
         if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {
             info.set_state(ApState::Online);
         }
     }
-    
+
     // Enter scheduler loop
     crate::log!("[SMP] AP {} entering scheduler\n", ap_index);
-    
+
     loop {
         // Run executor for this core
         core::hint::spin_loop();

@@ -4,8 +4,8 @@
 
 use alloc::vec::Vec;
 
-use super::types::SocketAddr;
 use super::tcb::tcp_flags;
+use super::types::SocketAddr;
 
 /// TCPセグメントビルダー
 pub struct TcpSegmentBuilder {
@@ -31,69 +31,69 @@ impl TcpSegmentBuilder {
             data: Vec::new(),
         }
     }
-    
+
     /// シーケンス番号設定
     pub fn seq(mut self, seq: u32) -> Self {
         self.seq_num = seq;
         self
     }
-    
+
     /// ACK番号設定
     pub fn ack(mut self, ack: u32) -> Self {
         self.ack_num = ack;
         self
     }
-    
+
     /// フラグ設定
     pub fn flags(mut self, flags: u8) -> Self {
         self.flags = flags;
         self
     }
-    
+
     /// SYNフラグ追加
     pub fn syn(mut self) -> Self {
         self.flags |= tcp_flags::SYN;
         self
     }
-    
+
     /// ACKフラグ追加
     pub fn ack_flag(mut self) -> Self {
         self.flags |= tcp_flags::ACK;
         self
     }
-    
+
     /// FINフラグ追加
     pub fn fin(mut self) -> Self {
         self.flags |= tcp_flags::FIN;
         self
     }
-    
+
     /// RSTフラグ追加
     pub fn rst(mut self) -> Self {
         self.flags |= tcp_flags::RST;
         self
     }
-    
+
     /// ウィンドウサイズ設定
     pub fn window(mut self, window: u16) -> Self {
         self.window = window;
         self
     }
-    
+
     /// データ設定
     pub fn data(mut self, data: Vec<u8>) -> Self {
         self.data = data;
         self
     }
-    
+
     /// TCPセグメントをバイト列に構築
     pub fn build(self) -> Vec<u8> {
         let data_offset = 5u8; // 20バイト（オプションなし）
         let header_len = (data_offset as usize) * 4;
         let total_len = header_len + self.data.len();
-        
+
         let mut segment = alloc::vec![0u8; total_len];
-        
+
         // Source port (2 bytes)
         segment[0..2].copy_from_slice(&self.src_port.to_be_bytes());
         // Destination port (2 bytes)
@@ -111,24 +111,24 @@ impl TcpSegmentBuilder {
         segment[16..18].copy_from_slice(&0u16.to_be_bytes());
         // Urgent pointer (2 bytes)
         segment[18..20].copy_from_slice(&0u16.to_be_bytes());
-        
+
         // Data
         if !self.data.is_empty() {
             segment[header_len..].copy_from_slice(&self.data);
         }
-        
+
         segment
     }
-    
+
     /// チェックサム計算（疑似ヘッダ込み）
     pub fn calculate_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
         // チェックサムフィールドをゼロに
         segment[16] = 0;
         segment[17] = 0;
-        
+
         // 疑似ヘッダ
         let mut sum: u32 = 0;
-        
+
         // 送信元IP
         sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
         sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
@@ -138,7 +138,7 @@ impl TcpSegmentBuilder {
         // Protocol (TCP = 6) + TCPセグメント長
         sum += 6u32;
         sum += segment.len() as u32;
-        
+
         // TCPセグメント本体
         let mut i = 0;
         while i + 1 < segment.len() {
@@ -149,13 +149,13 @@ impl TcpSegmentBuilder {
         if i < segment.len() {
             sum += (segment[i] as u32) << 8;
         }
-        
+
         // 1の補数計算
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
         let checksum = !sum as u16;
-        
+
         segment[16..18].copy_from_slice(&checksum.to_be_bytes());
     }
 }
@@ -165,28 +165,30 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
     // IP層経由でパケット送信
     let src_ip = crate::net::ipv4::Ipv4Address::new(local.ip);
     let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.ip);
-    
+
     // NetworkStack経由で送信
     let stack = crate::net::stack::stack();
     if let Some(ref s) = *stack.lock() {
         if s.send_tcp(src_ip, dst_ip, &segment) {
             crate::serial_println!(
                 "TCP TX: {:?}:{} -> {:?}:{} ({} bytes)",
-                local.ip, local.port,
-                remote.ip, remote.port,
+                local.ip,
+                local.port,
+                remote.ip,
+                remote.port,
                 segment.len()
             );
         } else {
             crate::serial_println!(
                 "TCP TX failed (ARP pending?): {:?}:{} -> {:?}:{}",
-                local.ip, local.port,
-                remote.ip, remote.port
+                local.ip,
+                local.port,
+                remote.ip,
+                remote.port
             );
         }
     } else {
-        crate::serial_println!(
-            "TCP TX: Network stack not initialized"
-        );
+        crate::serial_println!("TCP TX: Network stack not initialized");
     }
 }
 
@@ -197,7 +199,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_tcp_segment_builder() {
         // SYNセグメント構築
@@ -206,23 +208,26 @@ mod tests {
             .syn()
             .window(65535)
             .build();
-        
+
         // ヘッダサイズは20バイト（オプションなし）
         assert_eq!(segment.len(), 20);
-        
+
         // ポート検証
         assert_eq!(u16::from_be_bytes([segment[0], segment[1]]), 12345);
         assert_eq!(u16::from_be_bytes([segment[2], segment[3]]), 80);
-        
+
         // シーケンス番号検証
-        assert_eq!(u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]), 1000);
-        
+        assert_eq!(
+            u32::from_be_bytes([segment[4], segment[5], segment[6], segment[7]]),
+            1000
+        );
+
         // フラグ検証（SYN = 0x02）
         let data_offset_flags = u16::from_be_bytes([segment[12], segment[13]]);
         let flags = (data_offset_flags & 0x3F) as u8;
         assert_eq!(flags & tcp_flags::SYN, tcp_flags::SYN);
     }
-    
+
     #[test]
     fn test_tcp_segment_with_data() {
         let data = alloc::vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
@@ -232,10 +237,10 @@ mod tests {
             .ack_flag()
             .data(data)
             .build();
-        
+
         // ヘッダ20バイト + データ5バイト
         assert_eq!(segment.len(), 25);
-        
+
         // データ検証
         assert_eq!(&segment[20..], b"Hello");
     }

@@ -14,8 +14,8 @@
 #![allow(dead_code)]
 
 use crate::sync::IrqMutex;
-use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size4KiB, Size2MiB, Size1GiB};
 use x86_64::PhysAddr;
+use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
 /// 4KiB ページサイズ
 pub const PAGE_SIZE_4K: usize = 4096;
@@ -48,22 +48,22 @@ impl FrameIndex {
     pub const fn new(index: usize) -> Self {
         Self(index)
     }
-    
+
     #[inline]
     pub const fn from_phys_addr(addr: u64) -> Self {
         Self((addr as usize) / PAGE_SIZE_4K)
     }
-    
+
     #[inline]
     pub const fn to_phys_addr(self) -> u64 {
         (self.0 * PAGE_SIZE_4K) as u64
     }
-    
+
     #[inline]
     pub const fn as_usize(self) -> usize {
         self.0
     }
-    
+
     /// Buddyのインデックスを計算
     /// order = 0 なら 1ページの Buddy
     /// order = 1 なら 2ページの Buddy
@@ -72,7 +72,7 @@ impl FrameIndex {
         let block_size = 1 << order;
         Self(self.0 ^ block_size)
     }
-    
+
     /// 指定オーダーのブロック先頭にアライン
     #[inline]
     pub const fn align_down(self, order: usize) -> Self {
@@ -97,14 +97,14 @@ impl FreeList {
             count: 0,
         }
     }
-    
+
     fn push(&mut self, frame: FrameIndex) {
         if self.count < self.entries.len() {
             self.entries[self.count] = Some(frame);
             self.count += 1;
         }
     }
-    
+
     fn pop(&mut self) -> Option<FrameIndex> {
         if self.count > 0 {
             self.count -= 1;
@@ -113,7 +113,7 @@ impl FreeList {
             None
         }
     }
-    
+
     /// 特定のフレームを削除（buddy合体時に使用）
     fn remove(&mut self, frame: FrameIndex) -> bool {
         for i in 0..self.count {
@@ -126,18 +126,18 @@ impl FreeList {
         }
         false
     }
-    
+
     fn is_empty(&self) -> bool {
         self.count == 0
     }
-    
+
     fn len(&self) -> usize {
         self.count
     }
 }
 
 /// Buddy Allocator
-/// 
+///
 /// オーダー n のブロックは 2^n 個の連続した4KiBフレームを表す
 /// - order 0: 4KiB (1フレーム)
 /// - order 9: 2MiB (512フレーム)
@@ -171,9 +171,9 @@ impl BuddyFrameAllocator {
             coalesce_count: 0,
         }
     }
-    
+
     /// メモリマップに基づいてアロケータを初期化
-    /// 
+    ///
     /// # Safety
     /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
     pub unsafe fn init(&mut self, usable_regions: &[(PhysAddr, u64)]) {
@@ -181,85 +181,85 @@ impl BuddyFrameAllocator {
         for word in self.bitmap.iter_mut() {
             *word = u64::MAX;
         }
-        
+
         let mut total = 0usize;
-        
+
         // 使用可能な領域を空きブロックとして登録
         for &(start, size) in usable_regions {
             let start_frame = FrameIndex::from_phys_addr(start.as_u64());
             let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
-            
+
             total = total.max(end_frame.as_usize());
-            
+
             // 領域を最大オーダーのブロックに分割して登録
             self.add_region(start_frame, end_frame);
         }
-        
+
         self.total_frames = total;
     }
-    
+
     /// 連続した空き領域を Buddy システムに追加
     fn add_region(&mut self, start: FrameIndex, end: FrameIndex) {
         let mut current = start.as_usize();
         let end_idx = end.as_usize();
-        
+
         while current < end_idx {
             // 現在位置からアラインされた最大ブロックを見つける
             let remaining = end_idx - current;
-            
+
             // 使用可能な最大オーダーを計算
             let max_order_by_alignment = current.trailing_zeros() as usize;
             let max_order_by_size = (usize::BITS - remaining.leading_zeros() - 1) as usize;
             let order = max_order_by_alignment.min(max_order_by_size).min(MAX_ORDER);
-            
+
             let block_size = 1 << order;
-            
+
             // このブロックを空きとして登録
             let frame = FrameIndex::new(current);
             self.free_lists[order].push(frame);
             self.free_frames += block_size as u64;
-            
+
             // ビットマップをクリア（空きとしてマーク）
             for i in 0..block_size {
                 self.mark_frame_free(FrameIndex::new(current + i));
             }
-            
+
             current += block_size;
         }
     }
-    
+
     /// フレームを空きとしてマーク
     fn mark_frame_free(&mut self, frame: FrameIndex) {
         let word_idx = frame.as_usize() / 64;
         let bit_idx = frame.as_usize() % 64;
-        
+
         if word_idx < self.bitmap.len() {
             self.bitmap[word_idx] &= !(1u64 << bit_idx);
         }
     }
-    
+
     /// フレームを使用中としてマーク
     fn mark_frame_used(&mut self, frame: FrameIndex) {
         let word_idx = frame.as_usize() / 64;
         let bit_idx = frame.as_usize() % 64;
-        
+
         if word_idx < self.bitmap.len() {
             self.bitmap[word_idx] |= 1u64 << bit_idx;
         }
     }
-    
+
     /// フレームが空きかどうか確認
     fn is_frame_free(&self, frame: FrameIndex) -> bool {
         let word_idx = frame.as_usize() / 64;
         let bit_idx = frame.as_usize() % 64;
-        
+
         if word_idx >= self.bitmap.len() {
             return false;
         }
-        
+
         (self.bitmap[word_idx] & (1u64 << bit_idx)) == 0
     }
-    
+
     /// 指定オーダーのブロックを割り当て
     /// O(log n) の性能
     fn allocate_order(&mut self, order: usize) -> Option<FrameIndex> {
@@ -268,36 +268,36 @@ impl BuddyFrameAllocator {
             if let Some(frame) = self.free_lists[current_order].pop() {
                 // 必要に応じてブロックを分割
                 self.split_block(frame, current_order, order);
-                
+
                 // フレームを使用中としてマーク
                 let block_size = 1 << order;
                 for i in 0..block_size {
                     self.mark_frame_used(FrameIndex::new(frame.as_usize() + i));
                 }
                 self.free_frames -= block_size as u64;
-                
+
                 return Some(frame);
             }
         }
-        
+
         None
     }
-    
+
     /// 大きなブロックを目標オーダーまで分割
     fn split_block(&mut self, frame: FrameIndex, from_order: usize, to_order: usize) {
         let mut current_order = from_order;
-        
+
         while current_order > to_order {
             current_order -= 1;
-            
+
             // 後半のBuddyを空きリストに追加
             let buddy = FrameIndex::new(frame.as_usize() + (1 << current_order));
             self.free_lists[current_order].push(buddy);
-            
+
             self.split_count += 1;
         }
     }
-    
+
     /// 指定オーダーのブロックを解放
     /// O(log n) の性能
     fn deallocate_order(&mut self, frame: FrameIndex, order: usize) {
@@ -307,68 +307,68 @@ impl BuddyFrameAllocator {
             self.mark_frame_free(FrameIndex::new(frame.as_usize() + i));
         }
         self.free_frames += block_size as u64;
-        
+
         // Buddyとの合体を試みる
         self.coalesce(frame, order);
     }
-    
+
     /// Buddyとの合体を反復的に試みる
-    /// 
+    ///
     /// 以前の再帰実装はスタックオーバーフローのリスクがあったため、
     /// ループベースの反復的実装に変更。
     fn coalesce(&mut self, frame: FrameIndex, order: usize) {
         let mut current_frame = frame;
         let mut current_order = order;
-        
+
         // 反復的に合体を試みる
         while current_order < MAX_ORDER {
             let buddy = current_frame.buddy(current_order);
-            
+
             // Buddyが存在し、かつ同じオーダーで空いているか確認
             if !self.is_buddy_free(buddy, current_order) {
                 break;
             }
-            
+
             // Buddyを空きリストから削除
             if !self.free_lists[current_order].remove(buddy) {
                 break;
             }
-            
+
             self.coalesce_count += 1;
-            
+
             // 合体したブロックの先頭を計算
             current_frame = if current_frame.as_usize() < buddy.as_usize() {
                 current_frame
             } else {
                 buddy
             };
-            
+
             // 次のオーダーへ
             current_order += 1;
         }
-        
+
         // 最終的なオーダーの空きリストに追加
         self.free_lists[current_order].push(current_frame);
     }
-    
+
     /// Buddyが同じオーダーで空いているか確認
     fn is_buddy_free(&self, buddy: FrameIndex, order: usize) -> bool {
         let block_size = 1 << order;
-        
+
         // Buddyブロック内の全フレームが空きかチェック
         if buddy.as_usize() + block_size > self.total_frames {
             return false;
         }
-        
+
         for i in 0..block_size {
             if !self.is_frame_free(FrameIndex::new(buddy.as_usize() + i)) {
                 return false;
             }
         }
-        
+
         true
     }
-    
+
     /// 必要フレーム数から適切なオーダーを計算
     fn frames_to_order(frames: usize) -> usize {
         if frames == 0 {
@@ -376,7 +376,7 @@ impl BuddyFrameAllocator {
         }
         (usize::BITS - (frames - 1).leading_zeros()) as usize
     }
-    
+
     /// 4KiB フレームを1つ割り当て
     pub fn allocate_4k_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         self.allocate_order(0).map(|frame| {
@@ -384,7 +384,7 @@ impl BuddyFrameAllocator {
             PhysFrame::containing_address(addr)
         })
     }
-    
+
     /// 2MiB フレームを割り当て（order 9 = 512 * 4KiB = 2MiB）
     pub fn allocate_2m_frame(&mut self) -> Option<PhysFrame<Size2MiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
@@ -393,7 +393,7 @@ impl BuddyFrameAllocator {
             PhysFrame::containing_address(addr)
         })
     }
-    
+
     /// 1GiB フレームを割り当て（order 18 = 262144 * 4KiB = 1GiB）
     pub fn allocate_1g_frame(&mut self) -> Option<PhysFrame<Size1GiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
@@ -402,55 +402,54 @@ impl BuddyFrameAllocator {
             PhysFrame::containing_address(addr)
         })
     }
-    
+
     /// 4KiB フレームを解放
     pub fn deallocate_4k_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
         self.deallocate_order(frame_idx, 0);
     }
-    
+
     /// 2MiB フレームを解放
     pub fn deallocate_2m_frame(&mut self, frame: PhysFrame<Size2MiB>) {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
         self.deallocate_order(frame_idx, order);
     }
-    
+
     /// 1GiB フレームを解放
     pub fn deallocate_1g_frame(&mut self, frame: PhysFrame<Size1GiB>) {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
         self.deallocate_order(frame_idx, order);
     }
-    
+
     /// 連続する物理フレームを割り当て（任意サイズ）
     pub fn allocate_contiguous(&mut self, frame_count: usize) -> Option<PhysAddr> {
         let order = Self::frames_to_order(frame_count);
-        self.allocate_order(order).map(|frame| {
-            PhysAddr::new(frame.to_phys_addr())
-        })
+        self.allocate_order(order)
+            .map(|frame| PhysAddr::new(frame.to_phys_addr()))
     }
-    
+
     /// 空きフレーム数を取得
     pub fn free_frame_count(&self) -> u64 {
         self.free_frames
     }
-    
+
     /// 総フレーム数を取得
     pub fn total_frame_count(&self) -> usize {
         self.total_frames
     }
-    
+
     /// 統計情報を取得
     pub fn stats(&self) -> BuddyAllocatorStats {
         let mut order_stats = [(0usize, 0usize); MAX_ORDER + 1];
-        
+
         for (order, free_list) in self.free_lists.iter().enumerate() {
             let block_frames = 1 << order;
             let total_frames = free_list.len() * block_frames;
             order_stats[order] = (free_list.len(), total_frames);
         }
-        
+
         BuddyAllocatorStats {
             total_frames: self.total_frames,
             free_frames: self.free_frames,
@@ -484,11 +483,13 @@ pub struct BuddyAllocatorStats {
 static BUDDY_ALLOCATOR: IrqMutex<BuddyFrameAllocator> = IrqMutex::new(BuddyFrameAllocator::new());
 
 /// Buddy Allocatorを初期化
-/// 
+///
 /// # Safety
 /// カーネル初期化時に一度だけ呼ばれる必要がある
 pub unsafe fn init_buddy_allocator(usable_regions: &[(PhysAddr, u64)]) {
-    unsafe { BUDDY_ALLOCATOR.lock().init(usable_regions); }
+    unsafe {
+        BUDDY_ALLOCATOR.lock().init(usable_regions);
+    }
 }
 
 /// 4KiB フレームを割り当て（Buddy版）
@@ -529,36 +530,39 @@ pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_buddy_allocator() {
         let mut allocator = BuddyFrameAllocator::new();
-        
+
         // テスト用のメモリ領域（4MiB、MAX_ORDER=18に対応）
         let regions = [(PhysAddr::new(0x100000), 0x400000u64)];
         unsafe {
             allocator.init(&regions);
         }
-        
+
         // フレーム割り当て
         let frame1 = allocator.allocate_4k_frame();
         assert!(frame1.is_some());
-        
+
         let frame2 = allocator.allocate_4k_frame();
         assert!(frame2.is_some());
-        
+
         // 異なるフレームが割り当てられていることを確認
-        assert_ne!(frame1.unwrap().start_address(), frame2.unwrap().start_address());
-        
+        assert_ne!(
+            frame1.unwrap().start_address(),
+            frame2.unwrap().start_address()
+        );
+
         // 解放
         allocator.deallocate_4k_frame(frame1.unwrap());
         allocator.deallocate_4k_frame(frame2.unwrap());
-        
+
         // 統計確認
         let stats = allocator.stats();
         assert!(stats.coalesce_count > 0, "Buddies should coalesce");
     }
-    
+
     #[test]
     fn test_order_calculation() {
         assert_eq!(BuddyFrameAllocator::frames_to_order(1), 0);

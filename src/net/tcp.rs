@@ -14,12 +14,12 @@
 
 #![allow(dead_code)]
 
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll, Waker};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
 use super::mempool::PacketRef;
@@ -36,19 +36,19 @@ impl Ipv4Addr {
     pub const fn new(a: u8, b: u8, c: u8, d: u8) -> Self {
         Self([a, b, c, d])
     }
-    
+
     pub const UNSPECIFIED: Self = Self([0, 0, 0, 0]);
     pub const LOCALHOST: Self = Self([127, 0, 0, 1]);
     pub const BROADCAST: Self = Self([255, 255, 255, 255]);
-    
+
     pub fn octets(&self) -> [u8; 4] {
         self.0
     }
-    
+
     pub fn to_u32(&self) -> u32 {
         u32::from_be_bytes(self.0)
     }
-    
+
     pub fn from_u32(val: u32) -> Self {
         Self(val.to_be_bytes())
     }
@@ -122,7 +122,7 @@ pub struct TcpControlBlock {
     pub remote_addr: Option<SocketAddr>,
     /// 現在の状態
     pub state: TcpState,
-    
+
     // シーケンス番号管理
     /// 送信シーケンス番号（次に送信するバイト）
     pub snd_nxt: u32,
@@ -134,24 +134,24 @@ pub struct TcpControlBlock {
     pub rcv_nxt: u32,
     /// 受信ウィンドウサイズ
     pub rcv_wnd: u16,
-    
+
     // バッファ
     /// 送信バッファ（ゼロコピー: PacketRefのキュー）
     pub send_buffer: VecDeque<PacketRef>,
     /// 受信バッファ
     pub recv_buffer: VecDeque<PacketRef>,
-    
+
     // 輻輳制御
     /// 輻輳ウィンドウ
     pub cwnd: u32,
     /// スロースタート閾値
     pub ssthresh: u32,
-    
+
     // Waker（非同期通知用）
     pub read_waker: Option<Waker>,
     pub write_waker: Option<Waker>,
     pub connect_waker: Option<Waker>,
-    
+
     /// 統計
     pub stats: TcpStats,
 }
@@ -177,16 +177,15 @@ impl TcpControlBlock {
             stats: TcpStats::default(),
         }
     }
-    
+
     /// 受信データがあるか
     pub fn has_data(&self) -> bool {
         !self.recv_buffer.is_empty()
     }
-    
+
     /// 送信可能か
     pub fn can_send(&self) -> bool {
-        self.state == TcpState::Established && 
-            (self.send_buffer.len() as u32) < self.cwnd
+        self.state == TcpState::Established && (self.send_buffer.len() as u32) < self.cwnd
     }
 }
 
@@ -210,16 +209,10 @@ pub trait AsyncWrite {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, TcpError>>;
-    
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), TcpError>>;
-    
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), TcpError>>;
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), TcpError>>;
 }
 
 /// TCPエラー
@@ -257,9 +250,9 @@ impl TcpStream {
     pub async fn connect(addr: SocketAddr) -> Result<Self, TcpError> {
         let local_port = allocate_ephemeral_port();
         let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, local_port);
-        
+
         let tcb = Arc::new(Mutex::new(TcpControlBlock::new(local_addr)));
-        
+
         // SYN送信
         {
             let mut tcb_guard = tcb.lock();
@@ -268,38 +261,38 @@ impl TcpStream {
             tcb_guard.snd_nxt = generate_initial_seq();
             // TODO: 実際のSYNパケット送信
         }
-        
+
         // 接続完了を待つ
         ConnectFuture { tcb: tcb.clone() }.await?;
-        
+
         Ok(Self { tcb })
     }
-    
+
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> SocketAddr {
         self.tcb.lock().local_addr
     }
-    
+
     /// リモートアドレスを取得
     pub fn peer_addr(&self) -> Option<SocketAddr> {
         self.tcb.lock().remote_addr
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> TcpStats {
         self.tcb.lock().stats.clone()
     }
-    
+
     /// 読み取り用Future
     pub fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> ReadFuture<'a> {
         ReadFuture { stream: self, buf }
     }
-    
+
     /// 書き込み用Future
     pub fn write<'a>(&'a mut self, buf: &'a [u8]) -> WriteFuture<'a> {
         WriteFuture { stream: self, buf }
     }
-    
+
     /// シャットダウン
     pub async fn shutdown(&mut self) -> Result<(), TcpError> {
         ShutdownFuture { stream: self }.await
@@ -313,11 +306,11 @@ impl AsyncRead for TcpStream {
         buf: &mut [u8],
     ) -> Poll<Result<usize, TcpError>> {
         let mut tcb = self.tcb.lock();
-        
+
         if tcb.state == TcpState::Closed {
             return Poll::Ready(Err(TcpError::ConnectionClosed));
         }
-        
+
         if let Some(packet) = tcb.recv_buffer.pop_front() {
             let data = packet.data();
             let len = data.len().min(buf.len());
@@ -338,16 +331,16 @@ impl AsyncWrite for TcpStream {
         buf: &[u8],
     ) -> Poll<Result<usize, TcpError>> {
         let mut tcb = self.tcb.lock();
-        
+
         if tcb.state != TcpState::Established {
             return Poll::Ready(Err(TcpError::InvalidState));
         }
-        
+
         if !tcb.can_send() {
             tcb.write_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
-        
+
         // パケットを割り当てて送信キューに追加
         if let Some(mut packet) = super::mempool::alloc_packet() {
             let len = buf.len().min(1460); // MSS制限
@@ -362,21 +355,15 @@ impl AsyncWrite for TcpStream {
             Poll::Pending
         }
     }
-    
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), TcpError>> {
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
         // TODO: 送信バッファのフラッシュ
         Poll::Ready(Ok(()))
     }
-    
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-    ) -> Poll<Result<(), TcpError>> {
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
         let mut tcb = self.tcb.lock();
-        
+
         match tcb.state {
             TcpState::Established => {
                 tcb.state = TcpState::FinWait1;
@@ -410,29 +397,29 @@ impl TcpListener {
         if is_port_in_use(addr.port) {
             return Err(TcpError::AddressInUse);
         }
-        
+
         Ok(Self {
             local_addr: addr,
             backlog: Arc::new(Mutex::new(VecDeque::new())),
             accept_waker: Arc::new(Mutex::new(None)),
         })
     }
-    
+
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
-    
+
     /// 接続を受け入れ（async版）
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
         AcceptFuture { listener: self }.await
     }
-    
+
     /// 新しい接続をバックログに追加（内部使用）
     pub(crate) fn push_connection(&self, stream: TcpStream, addr: SocketAddr) {
         let mut backlog = self.backlog.lock();
         backlog.push_back(stream);
-        
+
         if let Some(waker) = self.accept_waker.lock().take() {
             waker.wake();
         }
@@ -450,10 +437,10 @@ struct ConnectFuture {
 
 impl Future for ConnectFuture {
     type Output = Result<(), TcpError>;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut tcb = self.tcb.lock();
-        
+
         match tcb.state {
             TcpState::Established => Poll::Ready(Ok(())),
             TcpState::Closed => Poll::Ready(Err(TcpError::ConnectionRefused)),
@@ -474,7 +461,7 @@ pub struct ReadFuture<'a> {
 
 impl<'a> Future for ReadFuture<'a> {
     type Output = Result<usize, TcpError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
         Pin::new(&mut *this.stream).poll_read(cx, this.buf)
@@ -489,7 +476,7 @@ pub struct WriteFuture<'a> {
 
 impl<'a> Future for WriteFuture<'a> {
     type Output = Result<usize, TcpError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
         Pin::new(&mut *this.stream).poll_write(cx, this.buf)
@@ -503,12 +490,14 @@ struct AcceptFuture<'a> {
 
 impl<'a> Future for AcceptFuture<'a> {
     type Output = Result<(TcpStream, SocketAddr), TcpError>;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut backlog = self.listener.backlog.lock();
-        
+
         if let Some(stream) = backlog.pop_front() {
-            let addr = stream.peer_addr().unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
+            let addr = stream
+                .peer_addr()
+                .unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
             Poll::Ready(Ok((stream, addr)))
         } else {
             *self.listener.accept_waker.lock() = Some(cx.waker().clone());
@@ -524,7 +513,7 @@ struct ShutdownFuture<'a> {
 
 impl<'a> Future for ShutdownFuture<'a> {
     type Output = Result<(), TcpError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
         Pin::new(&mut *this.stream).poll_shutdown(cx)
@@ -601,7 +590,7 @@ impl Ipv4Header {
     pub const PROTOCOL_UDP: u8 = 17;
     pub const PROTOCOL_ICMP: u8 = 1;
     pub const MIN_HEADER_LEN: usize = 20;
-    
+
     pub fn header_len(&self) -> usize {
         ((self.version_ihl & 0x0F) as usize) * 4
     }
@@ -629,11 +618,11 @@ impl TcpHeader {
     pub const FLAG_ACK: u16 = 0x0010;
     pub const FLAG_URG: u16 = 0x0020;
     pub const MIN_HEADER_LEN: usize = 20;
-    
+
     pub fn data_offset(&self) -> usize {
         (((u16::from_be(self.data_offset_flags) >> 12) & 0x0F) as usize) * 4
     }
-    
+
     pub fn flags(&self) -> u16 {
         u16::from_be(self.data_offset_flags) & 0x003F
     }
@@ -644,19 +633,17 @@ pub fn process_incoming_packet(packet: PacketRef) {
     // Clone the packet reference so we can pass it along while keeping the data
     let packet_for_later = packet.clone_ref();
     let data = packet.data();
-    
+
     if data.len() < EthernetHeader::HEADER_LEN {
         return;
     }
-    
+
     // Ethernetヘッダ解析
-    let eth_header = unsafe {
-        &*(data.as_ptr() as *const EthernetHeader)
-    };
-    
+    let eth_header = unsafe { &*(data.as_ptr() as *const EthernetHeader) };
+
     let ethertype = u16::from_be(eth_header.ethertype);
     let ip_offset = EthernetHeader::HEADER_LEN;
-    
+
     match ethertype {
         EthernetHeader::ETHERTYPE_IPV4 => {
             process_ipv4_packet(ip_offset, packet_for_later);
@@ -672,19 +659,17 @@ pub fn process_incoming_packet(packet: PacketRef) {
 
 fn process_ipv4_packet(ip_offset: usize, packet: PacketRef) {
     let data = packet.data();
-    
+
     if data.len() < ip_offset + Ipv4Header::MIN_HEADER_LEN {
         return;
     }
-    
+
     let ip_data = &data[ip_offset..];
-    let ip_header = unsafe {
-        &*(ip_data.as_ptr() as *const Ipv4Header)
-    };
-    
+    let ip_header = unsafe { &*(ip_data.as_ptr() as *const Ipv4Header) };
+
     let header_len = ip_header.header_len();
     let tcp_offset = ip_offset + header_len;
-    
+
     match ip_header.protocol {
         Ipv4Header::PROTOCOL_TCP => {
             process_tcp_packet(tcp_offset, packet, ip_header);
@@ -701,15 +686,13 @@ fn process_ipv4_packet(ip_offset: usize, packet: PacketRef) {
 
 fn process_tcp_packet(tcp_offset: usize, packet: PacketRef, _ip_header: &Ipv4Header) {
     let data = packet.data();
-    
+
     if data.len() < tcp_offset + TcpHeader::MIN_HEADER_LEN {
         return;
     }
-    
-    let _tcp_header = unsafe {
-        &*(data[tcp_offset..].as_ptr() as *const TcpHeader)
-    };
-    
+
+    let _tcp_header = unsafe { &*(data[tcp_offset..].as_ptr() as *const TcpHeader) };
+
     // TODO: TCB検索と状態マシン処理
 }
 
@@ -732,19 +715,19 @@ impl TcpProcessor {
             _connections: Vec::new(),
         }
     }
-    
+
     /// Process an incoming TCP segment
     pub fn process(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
         if data.len() < TcpHeader::MIN_HEADER_LEN {
             return;
         }
-        
+
         // Read header fields directly from bytes to avoid packed struct alignment issues
         let src_port = u16::from_be_bytes([data[0], data[1]]);
         let dst_port = u16::from_be_bytes([data[2], data[3]]);
         let data_offset_flags = u16::from_be_bytes([data[12], data[13]]);
         let _flags = data_offset_flags & 0x003F;
-        
+
         // Convert to internal address types
         let _src = SocketAddr::new(
             Ipv4Addr::new(
@@ -755,7 +738,7 @@ impl TcpProcessor {
             ),
             src_port,
         );
-        
+
         let _dst = SocketAddr::new(
             Ipv4Addr::new(
                 dst_ip.as_bytes()[0],
@@ -765,7 +748,7 @@ impl TcpProcessor {
             ),
             dst_port,
         );
-        
+
         // TODO: Full TCP state machine implementation
         // - Look up connection by (src, dst) tuple
         // - Process based on current state and flags
@@ -788,20 +771,20 @@ impl Default for TcpProcessor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_ipv4_addr() {
         let addr = Ipv4Addr::new(192, 168, 1, 1);
         assert_eq!(addr.octets(), [192, 168, 1, 1]);
         assert_eq!(format!("{}", addr), "192.168.1.1");
     }
-    
+
     #[test]
     fn test_socket_addr() {
         let addr = SocketAddr::new(Ipv4Addr::LOCALHOST, 8080);
         assert_eq!(format!("{}", addr), "127.0.0.1:8080");
     }
-    
+
     #[test]
     fn test_tcp_state() {
         let tcb = TcpControlBlock::new(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
