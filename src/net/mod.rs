@@ -120,7 +120,7 @@ pub use dns::{
 pub use stack::{
     NetworkStack, NetworkConfig, NetworkStats,
     init as init_stack, init_default as init_stack_default,
-    stack as global_stack, receive, send_udp, bind_udp,
+    stack as global_stack, receive, send_udp, send_tcp, bind_udp,
     MAX_PACKET_SIZE, MTU,
 };
 
@@ -188,6 +188,13 @@ pub use endpoint::{
     TcpConnectionState, TcpControlBlockEntry, TcbTable,
     TcpSegmentBuilder, tcp_flags,
     tcb_table, process_tcp_segment,
+    // 再送タイマー・RTO
+    UnackedSegment, RtoCalculator, RetransmitQueue,
+    get_or_create_retransmit_queue, retransmit_queue_push,
+    retransmit_queue_ack, retransmit_queue_remove,
+    check_retransmit_timeouts, send_tcp_segment,
+    // Accept機能
+    AcceptedConnection,
     // Future
     RecvFuture, SendFuture, AcceptFuture, RecvFromFuture,
     // ヘルパー

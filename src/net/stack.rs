@@ -561,6 +561,60 @@ impl NetworkStack {
         }
     }
     
+    /// Send a raw TCP segment
+    /// tcp_segment should already have the TCP header and data, with checksum calculated
+    pub fn send_tcp(
+        &self,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+    ) -> bool {
+        let config = self.config.lock().clone();
+        let current_time = self.current_time();
+        
+        // Resolve MAC address
+        let dst_mac = self.resolve_mac(dst_ip, &config, current_time);
+        let dst_mac = match dst_mac {
+            Some(mac) => mac,
+            None => return false, // ARP resolution pending
+        };
+        
+        let mut buffer = [0u8; MAX_PACKET_SIZE];
+        
+        // Build Ethernet frame
+        if let Some(mut frame) = EthernetFrameMut::new(&mut buffer) {
+            frame.set_destination(dst_mac)
+                 .set_source(config.mac)
+                 .set_ether_type(EtherType::Ipv4);
+            
+            let eth_payload = frame.payload_mut();
+            
+            // Build IP packet
+            if let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) {
+                ip_packet.init_header()
+                         .set_source(src_ip)
+                         .set_destination(dst_ip)
+                         .set_protocol(IpProtocol::Tcp)
+                         .set_ttl(64);
+                
+                let ip_payload = ip_packet.payload_mut();
+                
+                // Copy TCP segment
+                if ip_payload.len() >= tcp_segment.len() {
+                    ip_payload[..tcp_segment.len()].copy_from_slice(tcp_segment);
+                    ip_packet.finalize(tcp_segment.len());
+                    
+                    let ip_len = ip_packet.total_len();
+                    frame.set_payload_len(ip_len);
+                    
+                    return self.transmit(frame.as_bytes());
+                }
+            }
+        }
+        
+        false
+    }
+    
     /// Bind a UDP socket
     pub fn bind_udp(&self, port: u16) -> Option<UdpSocket> {
         self.udp.bind(port)
@@ -631,6 +685,15 @@ pub fn receive(data: &[u8]) {
 pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
     if let Some(ref stack) = *NETWORK_STACK.lock() {
         stack.send_udp(src_port, dst_ip, dst_port, data)
+    } else {
+        false
+    }
+}
+
+/// Send a TCP segment
+pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
+    if let Some(ref stack) = *NETWORK_STACK.lock() {
+        stack.send_tcp(src_ip, dst_ip, tcp_segment)
     } else {
         false
     }
