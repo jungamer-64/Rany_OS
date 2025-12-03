@@ -3,9 +3,10 @@
 // Phase 6: Demo & Integration Showcase
 // ============================================================================
 
-// Note: Individual demo modules are disabled until API stabilization
+// Demo modules
+pub mod echo_server;
+// Note: These modules are disabled until API stabilization
 // pub mod http_server;
-// pub mod echo_server;
 // pub mod performance_demo;
 
 use alloc::string::String;
@@ -25,7 +26,7 @@ pub fn init() {
 pub fn list_demos() {
     crate::log!("\nAvailable Demos:\n");
     crate::log!("  1. http_server  - Simple HTTP server (zero-copy) [WIP]\n");
-    crate::log!("  2. echo_server  - TCP echo server [WIP]\n");
+    crate::log!("  2. echo_server  - TCP echo server [Ready]\n");
     crate::log!("  3. performance  - Performance demonstration [WIP]\n");
     crate::log!("\n");
 }
@@ -38,8 +39,8 @@ pub fn run_demo(name: &str) -> DemoResult {
             DemoResult::Error(String::from("Not implemented"))
         }
         "echo" | "echo_server" => {
-            crate::log!("[DEMO] Echo server demo not yet implemented\n");
-            DemoResult::Error(String::from("Not implemented"))
+            // Run simulation-based echo server demo
+            echo_server::run()
         }
         "perf" | "performance" => {
             run_basic_perf_demo()

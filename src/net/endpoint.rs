@@ -20,6 +20,9 @@ pub mod socket;
 pub mod futures;
 pub mod handler;
 pub mod tcp_rx;
+pub mod congestion;
+pub mod window_scale;
+pub mod flow_control;
 #[cfg(test)]
 mod tests;
 
@@ -82,4 +85,23 @@ pub use handler::{
 // Re-exports: tcp_rx
 pub use tcp_rx::{
     process_tcp_segment, network_event_task,
+};
+
+// Re-exports: congestion
+pub use congestion::{
+    CongestionAlgorithm, CongestionState, CongestionController,
+    CongestionDebugInfo, DEFAULT_MSS, INITIAL_WINDOW, MIN_CWND,
+};
+
+// Re-exports: window_scale
+pub use window_scale::{
+    WindowScaleOption, TcpOptionParser, TcpOptionBuilder,
+    tcp_option_kind, MAX_WINDOW_SCALE, DEFAULT_WINDOW_SCALE,
+};
+
+// Re-exports: flow_control
+pub use flow_control::{
+    FlowControlState, FlowController, FlowControlDebugInfo,
+    DEFAULT_RECV_BUFFER_SIZE, MAX_RECV_BUFFER_SIZE,
+    ZERO_WINDOW_PROBE_INTERVAL_MS,
 };
