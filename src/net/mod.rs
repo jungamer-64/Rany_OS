@@ -170,3 +170,27 @@ pub use optimization::{
     init as init_optimization,
     batch_processor, numa_topology, flow_affinity, adaptive_coalescing, metrics,
 };
+
+// Re-export Endpoint (Socket Layer with Event-Driven Architecture)
+#[allow(unused_imports)]
+pub use endpoint::{
+    // ソケット
+    Socket, OwnedSocket, SocketManager,
+    SocketFd, SocketType, SocketState,
+    SocketAddr as EndpointSocketAddr, // tcpのSocketAddrと区別
+    // エラー
+    SocketError, SocketResult,
+    // イベントシステム
+    NetworkEvent, NetworkEventQueue, EventWaitFuture,
+    EventHandleResult, NetworkEventHandler,
+    event_queue, network_event_task, init_network_event_handler,
+    // TCP制御ブロック
+    TcpConnectionState, TcpControlBlockEntry, TcbTable,
+    TcpSegmentBuilder, tcp_flags,
+    tcb_table, process_tcp_segment,
+    // Future
+    RecvFuture, SendFuture, AcceptFuture, RecvFromFuture,
+    // ヘルパー
+    create_tcp_socket, create_udp_socket, tcp_connect, udp_bind,
+    init_socket_manager,
+};
