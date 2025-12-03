@@ -9,6 +9,7 @@ pub mod dma;
 pub mod ide;
 pub mod iommu;
 pub mod keyboard;
+pub mod log;
 pub mod msi;
 pub mod nvme;
 pub mod pci;

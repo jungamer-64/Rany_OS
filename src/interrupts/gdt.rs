@@ -120,9 +120,9 @@ pub fn init_gdt() {
         
         serial_str("[GDT] entry\n");
         
-        let code_selector = (*gdt_ptr).add_entry(Descriptor::kernel_code_segment());
-        let data_selector = (*gdt_ptr).add_entry(Descriptor::kernel_data_segment());
-        let tss_selector = (*gdt_ptr).add_entry(Descriptor::tss_segment(&*tss_ptr));
+        let code_selector = (*gdt_ptr).append(Descriptor::kernel_code_segment());
+        let data_selector = (*gdt_ptr).append(Descriptor::kernel_data_segment());
+        let tss_selector = (*gdt_ptr).append(Descriptor::tss_segment(&*tss_ptr));
         
         // セレクタを保存
         let selectors_ptr = (*GDT_CONTAINER.selectors.get()).as_mut_ptr();

@@ -82,16 +82,43 @@ impl BuddyHeapAllocator {
         }
 
         crate::vga::early_serial_str("[BUD] loop\n");
-        // ヒープ全体を最大オーダーのブロックとして登録
+        // ヒープ全体を適切なオーダーのブロックとして登録
+        // 各オーダーのブロックは自身のサイズでアラインされている必要がある
         let mut current = heap_start;
         let end = heap_start + heap_size;
 
-        while current + Self::MIN_BLOCK_SIZE <= end {
-            // 現在位置から配置可能な最大ブロックを決定
+        while current < end {
+            // 現在アドレスから、アラインメント条件を満たす最大のオーダーを見つける
             let remaining = end - current;
-            let order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
+            if remaining < Self::MIN_BLOCK_SIZE {
+                break;
+            }
+            
+            // このアドレスで使用可能な最大オーダーを計算
+            // アドレスは block_size でアラインされている必要がある
+            let mut order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
+            
+            // アラインメント条件を満たすまでオーダーを下げる
+            while order > 0 {
+                let block_size = Self::order_to_size(order);
+                if current % block_size == 0 && current + block_size <= end {
+                    break;
+                }
+                order -= 1;
+            }
+            
+            // Order 0のアラインメントチェック（MIN_BLOCK_SIZE=64バイト）
             let block_size = Self::order_to_size(order);
-
+            if current % block_size != 0 {
+                // アラインメントを満たすまで進める
+                let aligned = (current + block_size - 1) & !(block_size - 1);
+                if aligned >= end {
+                    break;
+                }
+                current = aligned;
+                continue;
+            }
+            
             if current + block_size <= end {
                 crate::vga::early_serial_str("[BUD] add\n");
                 self.add_to_free_list(current, order);
@@ -122,16 +149,12 @@ impl BuddyHeapAllocator {
 
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
-        crate::vga::early_serial_str("[F1]");
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr = addr as *mut usize;
-        crate::vga::early_serial_str("[F2]");
         unsafe {
             core::ptr::write_volatile(ptr, self.free_lists[order].unwrap_or(0));
         }
-        crate::vga::early_serial_str("[F3]");
         self.free_lists[order] = Some(addr);
-        crate::vga::early_serial_str("[F4]\n");
     }
 
     /// フリーリストからブロックを取得
@@ -179,8 +202,17 @@ impl BuddyHeapAllocator {
             return null_mut();
         }
 
-        let size = layout.size().max(layout.align()).max(Self::MIN_BLOCK_SIZE);
-        let order = Self::size_to_order(size);
+        // アラインメント要求を満たすために、
+        // size と align の両方を満たす最小のブロックを使用
+        let align = layout.align();
+        let size = layout.size();
+        
+        // 必要なサイズ: sizeとalignの大きい方（最低 MIN_BLOCK_SIZE）
+        // Buddyアロケータでは、ブロックは常に2のべき乗サイズで、
+        // 自身のサイズでアラインされているため、
+        // align <= block_size を満たせばアラインメントも満たす
+        let alloc_size = size.max(align).max(Self::MIN_BLOCK_SIZE);
+        let order = Self::size_to_order(alloc_size);
 
         if order > Self::MAX_ORDER {
             return null_mut();
@@ -191,6 +223,9 @@ impl BuddyHeapAllocator {
             if let Some(block) = self.remove_from_free_list(current_order) {
                 // 必要に応じて分割
                 self.split_block(block, current_order, order);
+                
+                // Buddyブロックは自身のサイズでアラインされているため、
+                // block_size >= align なら自動的にアラインメントを満たす
                 return block as *mut u8;
             }
         }

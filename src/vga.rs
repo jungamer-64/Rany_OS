@@ -151,27 +151,19 @@ pub fn _print(args: fmt::Arguments) {
 }
 
 /// 早期ブート段階用のシリアル出力（ロックなし、シンプル）
+/// 
+/// 注意: この関数は後方互換性のために残されています。
+/// 新規コードでは `io::log::early_print` または `log` クレートを使用してください。
 pub fn early_serial_char(c: u8) {
-    use x86_64::instructions::port::Port;
-    unsafe {
-        let mut status_port: Port<u8> = Port::new(0x3FD);
-        let mut data_port: Port<u8> = Port::new(0x3F8);
-        // 送信バッファが空になるまで待つ（タイムアウト付き）
-        let mut timeout = 100000u32;
-        while (status_port.read() & 0x20) == 0 && timeout > 0 {
-            timeout -= 1;
-        }
-        if timeout > 0 {
-            data_port.write(c);
-        }
-    }
+    crate::io::log::early_print_char(c);
 }
 
 /// 早期ブート段階用のシリアル文字列出力
+/// 
+/// 注意: この関数は後方互換性のために残されています。
+/// 新規コードでは `io::log::early_print` または `log` クレートを使用してください。
 pub fn early_serial_str(s: &str) {
-    for byte in s.bytes() {
-        early_serial_char(byte);
-    }
+    crate::io::log::early_print(s);
 }
 
 #[macro_export]

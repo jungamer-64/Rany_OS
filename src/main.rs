@@ -6,6 +6,7 @@ extern crate alloc;
 
 use bootloader::{entry_point, BootInfo};
 use core::panic::PanicInfo;
+use log::{info, warn, debug, error};
 
 mod allocator;
 mod domain;
@@ -64,127 +65,167 @@ mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 entry_point!(kernel_main);
 
 fn kernel_main(boot_info: &'static BootInfo) -> ! {
+    // SSE/SSE2を有効化（x86_64ではABIで必須）
+    // CR0のEM(bit 2)をクリア、CR4のOSFXSR(bit 9)とOSXMMEXCPT(bit 10)をセット
+    unsafe {
+        use core::arch::asm;
+        // CR0: EM=0, TS=0 (浮動小数点エミュレーションを無効化、タスクスイッチビットをクリア)
+        let mut cr0: u64;
+        asm!("mov {}, cr0", out(reg) cr0);
+        cr0 &= !(1 << 2); // EM=0
+        cr0 &= !(1 << 3); // TS=0
+        asm!("mov cr0, {}", in(reg) cr0);
+        
+        // CR4: OSFXSR=1, OSXMMEXCPT=1 (SSEサポートを有効化)
+        let mut cr4: u64;
+        asm!("mov {}, cr4", out(reg) cr4);
+        cr4 |= 1 << 9;  // OSFXSR
+        cr4 |= 1 << 10; // OSXMMEXCPT  
+        asm!("mov cr4, {}", in(reg) cr4);
+    }
+    
     // 物理メモリオフセットを保存（メモリ初期化前に必要）
     let phys_mem_offset = boot_info.physical_memory_offset;
     
     // VGAバッファの初期化（ログ出力用）- シリアル出力前に初期化
     vga::init();
     
-    // シリアルデバッグ出力
-    vga::early_serial_str("[BOOT] kernel_main\n");
+    // ロギングシステムの初期化（最優先、ヒープ不要）
+    if io::log::init().is_err() {
+        io::log::early_print("[FATAL] Logger init failed\n");
+    }
+    
+    // 早期ブートログ（log crateを使用）
+    info!(target: "boot", "kernel_main started");
     
     // 物理メモリオフセットを設定
     memory::set_physical_memory_offset(phys_mem_offset);
-    vga::early_serial_str("[BOOT] phys offset set\n");
+    debug!(target: "boot", "physical memory offset set: {:#x}", phys_mem_offset);
 
     print_logo();
 
     // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
     // これにより、メモリ初期化中の例外でデバッグ情報が得られる
-    vga::early_serial_str("[MAIN] INT init\n");
+    info!(target: "init", "Initializing interrupt system");
     interrupts::init();
-    vga::early_serial_str("[MAIN] INT done\n");
+    info!(target: "init", "Interrupt system initialized");
 
     // 1. メモリ管理の初期化
-    vga::early_serial_str("[MAIN] MEM init\n");
+    info!(target: "init", "Initializing memory management");
     memory::init();
-    vga::early_serial_str("[MAIN] MEM done\n");
+    info!(target: "init", "Memory management initialized");
+    
+    // ヒープが使用可能になったことを通知
+    io::log::notify_heap_available();
+    
+    // アロケーションテスト（シンプル化）
+    debug!(target: "test", "Running allocation tests");
+    {
+        let v: alloc::vec::Vec<u8> = alloc::vec![1, 2, 3, 4];
+        debug!(target: "test", "Vec allocation OK");
+        let _sum: u8 = v.iter().sum();
+        debug!(target: "test", "Vec iteration OK");
+        
+        // BTreeMapテスト
+        debug!(target: "test", "Testing BTreeMap");
+        let mut map: alloc::collections::BTreeMap<u64, u64> = alloc::collections::BTreeMap::new();
+        map.insert(1, 100);
+        map.insert(2, 200);
+        debug!(target: "test", "BTreeMap OK");
+    }
+    info!(target: "test", "Allocation tests passed");
 
     // 2. ドメイン管理システムの初期化
-    log!("[INIT] Initializing domain system\n");
+    info!(target: "init", "Initializing domain system");
     domain_system::init();
-    log!("[OK] Domain system initialized\n");
+    info!(target: "init", "Domain system initialized");
 
     // 2.5. SAS（単一アドレス空間）の初期化
-    log!("[INIT] Initializing Single Address Space manager\n");
+    info!(target: "init", "Initializing SAS");
     sas::init();
-    log!("[OK] SAS manager initialized\n");
+    info!(target: "init", "SAS initialized");
 
     // 2.6. Spectre/Meltdown緩和策の初期化
-    log!("[INIT] Initializing Spectre mitigations\n");
+    info!(target: "init", "Initializing Spectre mitigations");
     spectre::init();
-    let status = spectre::status_summary();
-    log!(
-        "[OK] Spectre mitigations: IBRS={}, STIBP={}, SSBD={}, Retpoline={}\n",
-        status.ibrs_enabled,
-        status.stibp_enabled,
-        status.ssbd_enabled,
-        status.using_retpoline
-    );
+    info!(target: "init", "Spectre mitigations initialized");
 
     // 2.7. セキュリティフレームワークの初期化
-    log!("[INIT] Initializing security framework\n");
+    info!(target: "init", "Initializing security framework");
     security::init();
-    log!("[OK] Security framework initialized\n");
+    info!(target: "init", "Security framework initialized");
 
     // 2.8. カーネルAPIインターフェースの初期化（旧: syscall）
-    log!("[INIT] Initializing kernel API interface\n");
+    info!(target: "init", "Initializing kernel API");
     kapi::init();
-    log!("[OK] Kernel API interface initialized\n");
+    info!(target: "init", "Kernel API initialized");
 
     // 3. キーボードドライバの初期化
-    log!("[INIT] Initializing keyboard driver\n");
+    info!(target: "init", "Initializing keyboard driver");
     io::keyboard::init();
-    log!("[OK] Keyboard driver initialized\n");
+    info!(target: "init", "Keyboard driver initialized");
+    
+    // 完了
+    info!(target: "boot", "BOOT COMPLETE!");
 
     // 3.5. シリアルポートの初期化（デバッグ用）
-    log!("[INIT] Initializing serial port\n");
+    info!(target: "init", "Initializing serial port");
     if io::serial::init().is_ok() {
-        log!("[OK] Serial port initialized\n");
+        info!(target: "init", "Serial port initialized");
     } else {
-        log!("[WARN] Serial port initialization failed\n");
+        warn!(target: "init", "Serial port initialization failed");
     }
 
     // 4. タスクスケジューラの初期化
-    log!("[INIT] Initializing task scheduler\n");
+    info!(target: "init", "Initializing task scheduler");
     task::init_scheduler(0); // CPU 0
-    log!("[OK] Task scheduler initialized\n");
+    info!(target: "init", "Task scheduler initialized");
 
     // 4.5. Per-Core Executorの初期化（設計書 4.3）
-    log!("[INIT] Initializing per-core executors\n");
+    info!(target: "init", "Initializing per-core executors");
     task::init_executors(1); // シングルコアで開始
-    log!("[OK] Per-core executors initialized\n");
+    info!(target: "init", "Per-core executors initialized");
 
     // 5. ローダーシステムの初期化
-    log!("[INIT] Initializing cell loader\n");
+    info!(target: "init", "Initializing cell loader");
     loader::init_kernel_cell();
     register_kernel_symbols();
-    log!("[OK] Cell loader initialized\n");
+    info!(target: "init", "Cell loader initialized");
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
-    log!("[INIT] Initializing symbol table\n");
+    info!(target: "init", "Initializing symbol table");
     unwind::init_symbol_table();
-    log!("[OK] Symbol table initialized\n");
+    info!(target: "init", "Symbol table initialized");
 
     // 5.6. テストフレームワークの初期化
-    log!("[INIT] Initializing test framework\n");
+    info!(target: "init", "Initializing test framework");
     test::init();
-    log!("[OK] Test framework initialized\n");
+    info!(target: "init", "Test framework initialized");
 
     // 5.7. システム統合の初期化
-    log!("[INIT] Initializing system integration\n");
+    info!(target: "init", "Initializing system integration");
     if let Err(e) = integration::init() {
-        log!("[WARN] System integration failed: {:?}\n", e);
+        warn!(target: "init", "System integration failed: {:?}", e);
     } else {
-        log!("[OK] System integration initialized\n");
+        info!(target: "init", "System integration initialized");
     }
 
     // 6. 割り込みを有効化
     interrupts::enable_interrupts();
-    log!("[OK] Interrupts enabled\n");
+    info!(target: "init", "Interrupts enabled");
 
     // 7. システム統計を表示
     print_system_stats();
 
     // 8. Executorの作成とタスクスポーン
-    log!("[INIT] Creating async executor\n");
+    info!(target: "init", "Creating async executor");
     let mut executor = task::Executor::new();
 
     spawn_kernel_tasks(&mut executor);
-    log!("[OK] Kernel tasks spawned\n");
+    info!(target: "init", "Kernel tasks spawned");
 
-    log!("[RUN] Starting executor main loop\n");
-    log!("================================================================================\n\n");
+    info!(target: "run", "Starting executor main loop");
+    info!("================================================================================");
 
     // メインループ開始（戻ってこない）
     executor.run();
@@ -200,8 +241,7 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
 
     // SAS統計をログ
     let sas_stats = sas::stats();
-    log!(
-        "[INIT] SAS Stats: {} regions, {} objects, {} domains\n",
+    info!(target: "init", "SAS Stats: {} regions, {} objects, {} domains",
         sas_stats.total_regions,
         sas_stats.total_objects,
         sas_stats.domains
@@ -210,21 +250,18 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
 
     // タスク1: ドメイン1のメインタスク
     executor.spawn(Task::new(async move {
-        log!(
-            "[Task 1] User application domain started (ID: {})\n",
-            domain1.as_u64()
-        );
+        info!(target: "task1", "User application domain started (ID: {})", domain1.as_u64());
 
         // シミュレーション: データ処理
         for i in 0..5 {
-            log!("[Task 1] Processing iteration {}\n", i);
+            debug!(target: "task1", "Processing iteration {}", i);
             task::sleep_ms(100).await;
 
             // Yield point（プリエンプション対策）
             task::yield_point();
         }
 
-        log!("[Task 1] User application completed\n");
+        info!(target: "task1", "User application completed");
     }));
 
     // タスク2: ゼロコピー通信デモ
@@ -232,70 +269,65 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     domain_system::start_domain(domain2).ok();
 
     executor.spawn(Task::new(async move {
-        log!("[Task 2] IPC demonstration started\n");
+        info!(target: "task2", "IPC demonstration started");
 
         // RRefを使用したゼロコピーデータ転送
         let data = RRef::new(
             ipc::DomainId::new(domain1.as_u64()),
             alloc::vec![0xDE, 0xAD, 0xBE, 0xEF],
         );
-        log!("[Task 2] Created RRef in domain {}\n", domain1.as_u64());
+        debug!(target: "task2", "Created RRef in domain {}", domain1.as_u64());
 
         // 所有権を domain2 に移動
         let data = data.move_to(ipc::DomainId::new(domain2.as_u64()));
-        log!(
-            "[Task 2] Transferred ownership to domain {} (zero-copy)\n",
-            data.owner().as_u64()
-        );
+        debug!(target: "task2", "Transferred ownership to domain {} (zero-copy)", data.owner().as_u64());
 
-        log!("[Task 2] Data: {:?}\n", &data[..]);
-        log!("[Task 2] IPC demo completed\n");
+        debug!(target: "task2", "Data: {:?}", &data[..]);
+        info!(target: "task2", "IPC demo completed");
     }));
 
     // タスク3: プリエンプション統計デモ
     executor.spawn(Task::new(async {
-        log!("[Task 3] Preemption stats demo started\n");
+        info!(target: "task3", "Preemption stats demo started");
 
         for i in 0..3 {
-            log!("[Task 3] Iteration {}\n", i);
+            debug!(target: "task3", "Iteration {}", i);
             task::sleep_ms(200).await;
 
             let stats = task::preemption_controller().stats();
-            log!(
-                "[Task 3] Preemption Stats - Forced: {}, Voluntary: {}\n",
+            debug!(target: "task3", "Preemption Stats - Forced: {}, Voluntary: {}",
                 stats.forced_preemptions,
                 stats.voluntary_yields
             );
         }
 
-        log!("[Task 3] Preemption demo completed\n");
+        info!(target: "task3", "Preemption demo completed");
     }));
 
     // タスク4: メモリ統計モニタリング
     executor.spawn(Task::new(async {
-        log!("[Task 4] Memory monitor started\n");
+        info!(target: "task4", "Memory monitor started");
 
         for _ in 0..3 {
             task::sleep_ms(500).await;
 
             let (used, free) = memory::heap_stats();
-            log!("[Task 4] Heap: Used={} bytes, Free={} bytes\n", used, free);
+            debug!(target: "task4", "Heap: Used={} bytes, Free={} bytes", used, free);
 
             // ドメイン統計
             let domain_stats = domain_system::get_domain_stats();
-            log!(
-                "[Task 4] Domains: {} total, {} running\n",
+            debug!(target: "task4", "Domains: {} total, {} running",
                 domain_stats.total,
                 domain_stats.running
             );
         }
 
-        log!("[Task 4] Memory monitor completed\n");
+        info!(target: "task4", "Memory monitor completed");
     }));
 
     // タスク5: Wakerのテスト
     executor.spawn(Task::new(async {
-        log!("[Task 5] Waker test started\n");
+        info!(target: "task5", "Waker test started");
 
         use core::future::poll_fn;
         use core::task::Poll;
@@ -304,46 +336,42 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
         poll_fn(|_cx| {
             counter += 1;
             if counter >= 3 {
-                log!("[Task 5] Polled {} times, completing\n", counter);
+                debug!(target: "task5", "Polled {} times, completing", counter);
                 Poll::Ready(())
             } else {
-                log!("[Task 5] Polled {} times, pending\n", counter);
+                debug!(target: "task5", "Polled {} times, pending", counter);
                 Poll::Pending
             }
         })
         .await;
 
-        log!("[Task 5] Completed\n");
+        info!(target: "task5", "Completed");
     }));
 
     // タスク6: ベンチマーク実行（オプション）
     executor.spawn(Task::new(async {
-        log!("[Task 6] Benchmark task started\n");
+        info!(target: "task6", "Benchmark task started");
         task::sleep_ms(1000).await;
 
         // ベンチマーク結果を取得
         let results = benchmark::run_all_benchmarks();
-        log!("[Task 6] Ran {} benchmarks\n", results.len());
-        log!("[Task 6] Benchmark task completed\n");
+        info!(target: "task6", "Ran {} benchmarks", results.len());
+        info!(target: "task6", "Benchmark task completed");
     }));
 
     // タスク7: 統合テスト実行
     executor.spawn(Task::new(async {
-        log!("[Task 7] Integration test task started\n");
+        info!(target: "task7", "Integration test task started");
         task::sleep_ms(2000).await;
 
         let (passed, failed) = test::integration::run_all_integration_tests();
-        log!(
-            "[Task 7] Integration tests: {} passed, {} failed\n",
-            passed,
-            failed
-        );
-        log!("[Task 7] Integration test task completed\n");
+        info!(target: "task7", "Integration tests: {} passed, {} failed", passed, failed);
+        info!(target: "task7", "Integration test task completed");
     }));
 
     // タスク8: 非同期シリアルシェル（IRQ4駆動）
     executor.spawn(Task::new(async {
-        log!("[Task 8] Async serial shell task starting...\n");
+        info!(target: "task8", "Async serial shell task starting...");
         // シェルはすべてのタスクが落ち着いてから開始
         task::sleep_ms(3000).await;
         shell::async_shell::run_async_shell().await;
@@ -352,16 +380,15 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
 
 /// システム統計を表示
 fn print_system_stats() {
-    log!("\n[STATS] === System Statistics ===\n");
+    info!(target: "stats", "=== System Statistics ===");
 
     // メモリ統計
     let (used, free) = memory::heap_stats();
-    log!("[STATS] Heap: {} bytes used / {} bytes free\n", used, free);
+    info!(target: "stats", "Heap: {} bytes used / {} bytes free", used, free);
 
     // ドメイン統計
     let domain_stats = domain_system::get_domain_stats();
-    log!(
-        "[STATS] Domains: {} total, {} running, {} stopped\n",
+    info!(target: "stats", "Domains: {} total, {} running, {} stopped",
         domain_stats.total,
         domain_stats.running,
         domain_stats.stopped
@@ -369,8 +396,7 @@ fn print_system_stats() {
 
     // SAS統計
     let sas_stats = sas::stats();
-    log!(
-        "[STATS] SAS: {} regions, {} objects\n",
+    info!(target: "stats", "SAS: {} regions, {} objects",
         sas_stats.total_regions,
         sas_stats.total_objects
     );
@@ -378,16 +404,14 @@ fn print_system_stats() {
     // セキュリティ統計
     let security_violations = security::access_control().violation_count();
     let zero_copy_stats = security::zero_copy_barrier().stats();
-    log!(
-        "[STATS] Security: {} violations, {} bytes transferred\n",
+    info!(target: "stats", "Security: {} violations, {} bytes transferred",
         security_violations,
         zero_copy_stats.bytes_transferred
     );
 
     // 割り込みWaker統計
     let waker_stats = task::interrupt_waker::interrupt_waker_registry().stats();
-    log!(
-        "[STATS] Interrupt-Waker: {} interrupts, {} wakes, {} registered\n",
+    info!(target: "stats", "Interrupt-Waker: {} interrupts, {} wakes, {} registered",
         waker_stats.interrupt_count,
         waker_stats.wake_count,
         waker_stats.registered_sources
@@ -395,9 +419,9 @@ fn print_system_stats() {
 
     // 割り込み統計
     let timer_ticks = interrupts::get_timer_ticks();
-    log!("[STATS] Timer ticks: {}\n", timer_ticks);
+    info!(target: "stats", "Timer ticks: {}", timer_ticks);
 
-    log!("[STATS] ================================\n\n");
+    info!(target: "stats", "================================");
 }
 
 /// カーネルシンボルを登録（セルローダー用）
@@ -420,7 +444,7 @@ fn register_kernel_symbols() {
         );
     });
 
-    log!("[LOADER] Kernel symbols registered\n");
+    debug!(target: "loader", "Kernel symbols registered");
 }
 
 /// システムコール: ログ出力
@@ -432,7 +456,7 @@ pub extern "C" fn sys_log(msg: *const u8, len: usize) {
 
     let slice = unsafe { core::slice::from_raw_parts(msg, len) };
     if let Ok(s) = core::str::from_utf8(slice) {
-        log!("[CELL] {}", s);
+        info!(target: "cell", "{}", s);
     }
 }
 
@@ -474,14 +498,14 @@ fn print_logo() {
  |_____/_/\_\___/|_| \_\\__,_|___/\__|
 "#;
 
-    log!("{}", logo);
-    log!(" :: ExoRust Kernel v0.3.0-alpha ::");
-    log!(" ------------------------------------------------------------");
-    log!(" Build Time : 2025-12-04 03:25:00 JST"); // コンパイル時に埋め込めるとベスト
-    log!(" Arch       : x86_64 (Long Mode)");
-    log!(" Mem Layout : Higher Half Kernel / Single Address Space");
-    log!(" System     : Initializing Ring 0...");
-    log!(" ------------------------------------------------------------\n");
+    info!("{}", logo);
+    info!(" :: ExoRust Kernel v0.3.0-alpha ::");
+    info!(" ------------------------------------------------------------");
+    info!(" Build Time : 2025-12-04 03:25:00 JST");
+    info!(" Arch       : x86_64 (Long Mode)");
+    info!(" Mem Layout : Higher Half Kernel / Single Address Space");
+    info!(" System     : Initializing Ring 0...");
+    info!(" ------------------------------------------------------------");
 }
 
 /// Panicハンドラ
