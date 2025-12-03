@@ -485,7 +485,10 @@ impl SharedMemoryManager {
                 if flags.exclusive {
                     return Err(ShmError::AlreadyExists);
                 }
-                return Ok(*key_map.get(&key).unwrap());
+                // contains_key() で確認済みなので get() は必ず Some
+                // SAFETY: contains_key() returned true
+                // アセンブリ: Option の cmp + panic branch を除去
+                return Ok(unsafe { *key_map.get(&key).unwrap_unchecked() });
             }
         }
 
@@ -526,7 +529,9 @@ impl SharedMemoryManager {
                 if flags.exclusive {
                     return Err(ShmError::AlreadyExists);
                 }
-                return Ok(*name_map.get(name).unwrap());
+                // SAFETY: contains_key() returned true
+                // アセンブリ: 条件分岐の除去によりパイプラインストールを回避
+                return Ok(unsafe { *name_map.get(name).unwrap_unchecked() });
             }
         }
 

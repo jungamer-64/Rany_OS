@@ -82,8 +82,28 @@ impl CachedPage {
     }
     
     /// Get page data (Arc clone for zero-copy)
+    /// 
+    /// # パフォーマンス注意
+    /// `Arc::clone()` は参照カウンタの atomic increment を行う。
+    /// ゼロコストではないが、データコピーよりは大幅に高速。
+    /// - データコピー: O(n) memcpy
+    /// - Arc::clone: O(1) atomic add + memory barrier
+    /// 
+    /// # 代替案
+    /// - 読み取り専用なら `&[u8]` を返す API を追加することで
+    ///   atomic オーバーヘッドも回避可能
+    #[inline]
     pub fn data(&self) -> Arc<Vec<u8>> {
-        self.data.clone()
+        Arc::clone(&self.data)
+    }
+    
+    /// Get page data as slice (zero-cost, no atomic increment)
+    /// 
+    /// ゼロコストでデータにアクセスするためのAPI。
+    /// Arc の参照カウンタをインクリメントしない。
+    #[inline]
+    pub fn data_slice(&self) -> &[u8] {
+        &self.data
     }
     
     /// Get page number
@@ -384,12 +404,16 @@ impl PageCache {
         while freed < needed {
             // Find LRU page across all files
             let mut best_page: Option<(InodeNum, u64, u64)> = None;
+            let mut best_access_time = u64::MAX;
             
             for (ino, file_cache) in files.iter() {
                 if let Some(page_num) = file_cache.find_lru_page() {
                     if let Some(page) = file_cache.get_page(page_num) {
                         let access_time = page.last_access();
-                        if best_page.is_none() || access_time < best_page.unwrap().2 {
+                        // unwrap() を廃止し、直接比較で分岐を削減
+                        // アセンブリ: Option::unwrap() の cmp + panic branch → 単純な cmp
+                        if access_time < best_access_time {
+                            best_access_time = access_time;
                             best_page = Some((*ino, page_num, access_time));
                         }
                     }

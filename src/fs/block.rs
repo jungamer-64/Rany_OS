@@ -212,12 +212,20 @@ pub trait BlockDevice: Send + Sync {
     fn poll_completions(&self) -> usize;
     
     /// Synchronous read
+    /// Synchronous read
+    /// 
+    /// # パフォーマンス注意
+    /// `Arc::clone()` は同期read毎に参照カウンタの atomic increment を発生させる。
+    /// ホットパスでは `submit()` が Arc<BlockRequest> を直接受け取り、
+    /// クローンを回避するAPIの追加を検討すること。
     fn read_sync(&self, block: u64, buf: &mut [u8]) -> BlockResult<usize> {
         let info = self.info();
         let count = buf.len() / info.block_size as usize;
         
         let request = Arc::new(BlockRequest::read(0, block, count as u32));
-        self.submit(request.clone())?;
+        // Note: Arc::clone() は atomic increment (約3-5 CPU cycles on x86-64)
+        // submit() が &Arc<T> を受け取れれば回避可能
+        self.submit(Arc::clone(&request))?;
         
         // Poll until complete
         loop {
@@ -237,7 +245,7 @@ pub trait BlockDevice: Send + Sync {
     /// Synchronous write
     fn write_sync(&self, block: u64, buf: &[u8]) -> BlockResult<usize> {
         let request = Arc::new(BlockRequest::write(0, block, buf.to_vec()));
-        self.submit(request.clone())?;
+        self.submit(Arc::clone(&request))?;
         
         loop {
             self.poll_completions();
@@ -252,7 +260,7 @@ pub trait BlockDevice: Send + Sync {
     /// Flush pending writes
     fn flush(&self) -> BlockResult<()> {
         let request = Arc::new(BlockRequest::flush(0));
-        self.submit(request.clone())?;
+        self.submit(Arc::clone(&request))?;
         
         loop {
             self.poll_completions();

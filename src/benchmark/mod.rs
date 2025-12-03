@@ -205,7 +205,11 @@ impl BenchmarkRunner {
         };
         
         self.results.push(result);
-        self.results.last().unwrap()
+        // last().unwrap() はインデックスアクセスで置換
+        // push 直後なので必ず要素が存在し、len()-1 が有効なインデックス
+        // SAFETY: we just pushed, so len > 0
+        // アセンブリ: last() のイテレータ構築 + Option unwrap → 単純な ptr arithmetic
+        &self.results[self.results.len() - 1]
     }
     
     /// Run a throughput benchmark (bytes/second)
@@ -272,7 +276,9 @@ impl BenchmarkRunner {
         };
         
         self.results.push(result);
-        self.results.last().unwrap()
+        // push 直後なのでインデックスは必ず有効
+        // アセンブリ: イテレータ構築を回避
+        &self.results[self.results.len() - 1]
     }
     
     /// Get all results

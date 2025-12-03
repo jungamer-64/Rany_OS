@@ -151,7 +151,11 @@ pub fn init() {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    WRITER.lock().write_fmt(args).unwrap();
+    // unwrap() を expect() ではなく、単に無視することでパニックコード生成を回避
+    // write_fmt は VGA 書き込みで実質的に失敗しないため、
+    // let _ = で結果を破棄しても安全
+    // これにより panic unwind コードが生成されず、コードサイズとブランチ予測ミスを削減
+    let _ = WRITER.lock().write_fmt(args);
 }
 
 #[macro_export]

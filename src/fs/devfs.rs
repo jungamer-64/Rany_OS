@@ -476,7 +476,10 @@ impl DevFs {
                     let intermediate = DevEntry::directory(self.allocate_inode(), part);
                     current.add_child(intermediate);
                 }
-                current = current.children.get_mut(*part).unwrap();
+                // contains_key チェック後なので必ず存在
+                // expect で明示的に理由を文書化（デバッグ時に有用）
+                current = current.children.get_mut(*part)
+                    .expect("child must exist after contains_key check or add_child");
             }
         }
     }
