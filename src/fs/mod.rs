@@ -2,17 +2,25 @@
 // src/fs/mod.rs - Filesystem Abstraction Layer
 // ============================================================================
 //!
-//! ファイルシステム抽象化レイヤー
+//! # ファイルシステム抽象化レイヤー
 //!
 //! ## 設計原則 (仕様書 6.3準拠)
 //! - 非同期ファイルI/O API
 //! - ページキャッシュ (Arc<Vec<u8>>)
-//! - VFS (Virtual Filesystem) 抽象化
+//! - fs_abstraction: オプショナルなFS抽象化（旧称: VFS）
 //! - ブロックデバイス抽象化
+//!
+//! ## 高速パス vs 互換パス
+//! - **高速パス**: NVMeポーリングによる直接ブロックアクセス（推奨）
+//! - **互換パス**: fs_abstractionを経由したファイルシステムアクセス
 
 #![allow(dead_code)]
 
-pub mod vfs;
+// FS抽象化レイヤー（旧称: vfs → オプショナルな層であることを明確化）
+pub mod fs_abstraction;
+// 後方互換性のためのエイリアス
+pub use fs_abstraction as vfs;
+
 pub mod cache;
 pub mod block;
 pub mod async_ops;
@@ -22,7 +30,7 @@ pub mod procfs;
 pub mod devfs;
 
 #[allow(unused_imports)]
-pub use vfs::{
+pub use fs_abstraction::{
     FileSystem, Inode, DirEntry, FileType, FileMode,
     OpenFlags, SeekFrom, FsError, FsResult, FileAttr, FsStats,
     FileHandle, PathResolver, MountTable, mount_table,

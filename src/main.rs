@@ -27,7 +27,7 @@ mod sas;
 mod error;
 mod ipc;
 mod security;
-mod syscall;
+mod kapi;      // 旧称: syscall → SPL直接呼び出しを反映
 mod power;
 mod time;
 mod graphics;
@@ -52,10 +52,10 @@ mod test;
 mod demo;
 mod monitor;
 
-// Phase 7: System Integration & User Space Support
+// Phase 7: System Integration & Application Support
 mod benchmark;
 mod integration;
-mod userspace;
+mod application;  // 旧称: userspace → SPL単一特権レベルを反映
 
 // Note: smp module with bootstrap is included in the main smp module
 
@@ -95,10 +95,10 @@ pub extern "C" fn _start() -> ! {
     security::init();
     log!("[OK] Security framework initialized\n");
     
-    // 2.8. システムコールインターフェースの初期化
-    log!("[INIT] Initializing system call interface\n");
-    syscall::init();
-    log!("[OK] System call interface initialized\n");
+    // 2.8. カーネルAPIインターフェースの初期化（旧: syscall）
+    log!("[INIT] Initializing kernel API interface\n");
+    kapi::init();
+    log!("[OK] Kernel API interface initialized\n");
     
     // 3. 割り込みシステムの初期化（GDT/TSS + IDT + PIC）
     log!("[INIT] Initializing interrupt system\n");
