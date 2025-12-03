@@ -20,7 +20,7 @@
 use core::arch::asm;
 use core::ptr::NonNull;
 use x86_64::PhysAddr;
-use x86_64::structures::paging::{PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::PageTableFlags;
 
 /// キャッシュモード
 ///
@@ -267,7 +267,6 @@ impl DmaMemoryAttributes {
 // ============================================================================
 
 use alloc::alloc::{Layout, alloc, dealloc};
-use core::marker::PhantomData;
 
 /// キャッシュ一貫性を自動管理するDMAバッファ
 ///
@@ -350,17 +349,17 @@ impl CoherentDmaBuffer {
     ///
     /// # Safety
     /// DMA転送中に呼び出してはならない
-    pub unsafe fn as_slice(&self) -> &[u8] {
+    pub unsafe fn as_slice(&self) -> &[u8] { unsafe {
         core::slice::from_raw_parts(self.ptr.as_ptr(), self.size)
-    }
+    }}
 
     /// 可変スライスとして取得
     ///
     /// # Safety
     /// DMA転送中に呼び出してはならない
-    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] {
+    pub unsafe fn as_mut_slice(&mut self) -> &mut [u8] { unsafe {
         core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size)
-    }
+    }}
 
     /// 物理アドレスを取得（DMAエンジン用）
     pub fn phys_addr(&self) -> PhysAddr {

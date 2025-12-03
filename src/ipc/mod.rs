@@ -12,11 +12,7 @@ pub use pipe::{
     Pipe, PipeError, PipeFd, PipeFlags, PipeId, PipeManager, PipeReader, PipeWriter, mkfifo, pipe,
     pipe_manager, pipe2,
 };
-pub use proxy::{
-    BasicProxy, DomainProxy, ProxyError, ProxyResult, RetryConfig, RetryProxy, Service,
-    ServiceProxy,
-};
-pub use rref::{AccessError, DomainId, RRef, reclaim_domain_resources};
+pub use rref::{DomainId, RRef, reclaim_domain_resources};
 #[allow(unused_imports)]
 pub use shared_mem::{
     SharedMemoryManager, SharedMemoryRegion, ShmError, ShmFlags, ShmHandle, ShmId, ShmKey,

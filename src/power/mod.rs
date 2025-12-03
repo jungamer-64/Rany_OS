@@ -340,7 +340,7 @@ impl PowerManager {
         unsafe {
             // 8042リセットコマンド
             let mut cmd_port: Port<u8> = Port::new(0x64);
-            let mut data_port: Port<u8> = Port::new(0x60);
+            let _data_port: Port<u8> = Port::new(0x60);
 
             // コントローラー準備待ち
             for _ in 0..100000 {
@@ -458,7 +458,7 @@ impl CpuIdle {
     }
 
     /// MWAIT命令でアイドル (より効率的)
-    pub fn mwait_idle(&self, hint: u32) {
+    pub fn mwait_idle(&self, _hint: u32) {
         self.current_state
             .store(CpuPowerState::Halt as u8, Ordering::Relaxed);
         self.c1_count.fetch_add(1, Ordering::Relaxed);

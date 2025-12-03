@@ -34,11 +34,6 @@ pub mod policy;
 pub mod static_capability; // 新: 静的ケイパビリティシステム
 
 // Re-export static capability system (preferred API)
-pub use static_capability::{
-    DmaBuffer, DmaCapability, DomainCapabilities, FileHandle, FsCapability, InterruptCapability,
-    IoCapability, IpcCapability, MemoryCapability, NetCapability, NetworkSocket,
-    allocate_dma_buffer, port_read_u8, port_write_u8, send_packet,
-};
 
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};

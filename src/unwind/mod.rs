@@ -51,10 +51,8 @@ pub mod registers;
 // Re-exports
 // ============================================================================
 
-pub use reader::{
-    DwarfPointerApplication, DwarfPointerEncoding, MemoryReader, read_encoded_pointer,
-};
-pub use registers::{CfaRule, DwarfRegister, RegisterRule, RegisterSet, UnwindContext};
+pub use reader::MemoryReader;
+pub use registers::DwarfRegister;
 
 use core::fmt;
 use core::ptr;
@@ -422,7 +420,7 @@ impl KernelSymbolTable {
     }
 
     /// イテレータを取得
-    pub fn iter(&self) -> KernelSymbolIter {
+    pub fn iter(&self) -> KernelSymbolIter<'_> {
         KernelSymbolIter {
             table: self,
             offset: 0,

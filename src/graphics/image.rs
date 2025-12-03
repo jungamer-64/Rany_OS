@@ -14,12 +14,10 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::convert::TryInto;
 
-use super::{Color, Framebuffer, PixelFormat, Point, Rect};
+use super::{Color, Framebuffer, Rect};
 
 // ============================================================================
 // Math Helpers

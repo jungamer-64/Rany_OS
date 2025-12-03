@@ -17,7 +17,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut};
@@ -154,7 +153,7 @@ impl MemoryPool {
     }
 
     /// バッファを解放
-    pub fn free(&self, mut buffer: ZeroCopyBuffer) {
+    pub fn free(&self, buffer: ZeroCopyBuffer) {
         // 参照カウントをデクリメント
         if buffer.ref_count.fetch_sub(1, Ordering::AcqRel) == 1 {
             let mut free_list = self.free_list.lock();

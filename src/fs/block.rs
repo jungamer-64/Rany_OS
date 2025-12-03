@@ -9,7 +9,6 @@
 //! - VirtIO-blk、NVMe、RAMディスク対応
 //! - 非同期I/Oサポート
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

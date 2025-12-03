@@ -15,7 +15,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -559,7 +558,7 @@ fn cmd_help(shell: &mut Shell, args: &[&str]) -> CommandResult {
     CommandResult::Output(output)
 }
 
-fn cmd_echo(shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_echo(_shell: &mut Shell, args: &[&str]) -> CommandResult {
     let mut output = args.join(" ");
     output.push('\n');
     CommandResult::Output(output)

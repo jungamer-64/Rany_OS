@@ -3,13 +3,13 @@
 //! This module integrates all network protocol layers into
 //! a unified zero-copy network stack as specified in Section 6.2.
 
-use super::arp::{ArpPacket, ArpProcessor, ArpResult};
+use super::arp::{ArpProcessor, ArpResult};
 use super::ethernet::{
-    EtherType, EthernetFrame, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult,
+    EtherType, EthernetFrameMut, EthernetProcessor, MacAddress, ProcessResult,
 };
 use super::icmp::{IcmpEchoBuilder, IcmpProcessor, IcmpResult};
 use super::ipv4::{
-    IpProtocol, Ipv4Address, Ipv4Config, Ipv4Packet, Ipv4PacketMut, Ipv4ProcessResult,
+    IpProtocol, Ipv4Address, Ipv4Config, Ipv4PacketMut, Ipv4ProcessResult,
     Ipv4Processor,
 };
 use super::mempool::PacketPool;

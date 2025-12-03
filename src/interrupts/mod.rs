@@ -256,7 +256,7 @@ fn io_wait() {
 ///
 /// # Safety
 /// 割り込みハンドラ内でのみ呼び出すこと
-pub unsafe fn send_eoi(irq: u8) {
+pub unsafe fn send_eoi(irq: u8) { unsafe {
     let mut pic1_cmd: Port<u8> = Port::new(PIC1_COMMAND);
     let mut pic2_cmd: Port<u8> = Port::new(PIC2_COMMAND);
 
@@ -264,7 +264,7 @@ pub unsafe fn send_eoi(irq: u8) {
         pic2_cmd.write(0x20); // スレーブPICにEOI
     }
     pic1_cmd.write(0x20); // マスターPICにEOI
-}
+}}
 
 /// 特定の割り込みをアンマスク（APIC移行までの暫定）
 pub fn unmask_irq(irq: u8) {

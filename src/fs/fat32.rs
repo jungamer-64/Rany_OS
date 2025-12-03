@@ -20,12 +20,10 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::mem;
 use core::ops::{Add, Sub};
 use spin::RwLock;
 
@@ -216,9 +214,9 @@ trait SafePackedRead {
     unsafe fn read_field<T: Copy, F>(&self, field_fn: F) -> T
     where
         F: FnOnce(&Self) -> *const T,
-    {
+    { unsafe {
         core::ptr::read_unaligned(field_fn(self))
-    }
+    }}
 }
 
 // ============================================================================

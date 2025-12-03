@@ -6,11 +6,8 @@
 //! - カーソル制御
 //! - スキャンアウト
 
-use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::{Mutex, RwLock};
 
@@ -770,7 +767,7 @@ impl GraphicsManager {
     }
 
     /// 画面をクリア
-    pub fn clear(&self, color: u32) -> GpuResult<()> {
+    pub fn clear(&self, _color: u32) -> GpuResult<()> {
         let gpu = self.gpu.lock();
         let gpu = gpu.as_ref().ok_or(GpuError::DeviceNotFound)?;
 

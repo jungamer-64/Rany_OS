@@ -416,7 +416,7 @@ impl TcpListener {
     }
 
     /// 新しい接続をバックログに追加（内部使用）
-    pub(crate) fn push_connection(&self, stream: TcpStream, addr: SocketAddr) {
+    pub(crate) fn push_connection(&self, stream: TcpStream, _addr: SocketAddr) {
         let mut backlog = self.backlog.lock();
         backlog.push_back(stream);
 

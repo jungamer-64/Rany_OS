@@ -24,7 +24,6 @@
 //! - 非同期ファイル操作
 //! - マウントポイント管理
 
-use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

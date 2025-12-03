@@ -21,10 +21,9 @@
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::AtomicU32;
 use spin::Mutex;
 
 // ============================================================================
@@ -133,37 +132,37 @@ const PORT_BASE: u32 = 0x100;
 const PORT_SIZE: u32 = 0x80;
 
 /// ポートレジスタ
-const PxCLB: u32 = 0x00; // Command List Base Address
-const PxCLBU: u32 = 0x04; // Command List Base Address Upper
-const PxFB: u32 = 0x08; // FIS Base Address
-const PxFBU: u32 = 0x0C; // FIS Base Address Upper
-const PxIS: u32 = 0x10; // Interrupt Status
-const PxIE: u32 = 0x14; // Interrupt Enable
-const PxCMD: u32 = 0x18; // Command and Status
-const PxTFD: u32 = 0x20; // Task File Data
-const PxSIG: u32 = 0x24; // Signature
-const PxSSTS: u32 = 0x28; // SATA Status
-const PxSCTL: u32 = 0x2C; // SATA Control
-const PxSERR: u32 = 0x30; // SATA Error
-const PxSACT: u32 = 0x34; // SATA Active
-const PxCI: u32 = 0x38; // Command Issue
-const PxSNTF: u32 = 0x3C; // SATA Notification
-const PxFBS: u32 = 0x40; // FIS-based Switching Control
+const PX_CLB: u32 = 0x00; // Command List Base Address
+const PX_CLBU: u32 = 0x04; // Command List Base Address Upper
+const PX_FB: u32 = 0x08; // FIS Base Address
+const PX_FBU: u32 = 0x0C; // FIS Base Address Upper
+const PX_IS: u32 = 0x10; // Interrupt Status
+const PX_IE: u32 = 0x14; // Interrupt Enable
+const PX_CMD: u32 = 0x18; // Command and Status
+const PX_TFD: u32 = 0x20; // Task File Data
+const PX_SIG: u32 = 0x24; // Signature
+const PX_SSTS: u32 = 0x28; // SATA Status
+const PX_SCTL: u32 = 0x2C; // SATA Control
+const PX_SERR: u32 = 0x30; // SATA Error
+const PX_SACT: u32 = 0x34; // SATA Active
+const PX_CI: u32 = 0x38; // Command Issue
+const PX_SNTF: u32 = 0x3C; // SATA Notification
+const PX_FBS: u32 = 0x40; // FIS-based Switching Control
 
 /// PxCMD ビット
-const PxCMD_ST: u32 = 1 << 0; // Start
-const PxCMD_SUD: u32 = 1 << 1; // Spin-Up Device
-const PxCMD_POD: u32 = 1 << 2; // Power On Device
-const PxCMD_FRE: u32 = 1 << 4; // FIS Receive Enable
-const PxCMD_FR: u32 = 1 << 14; // FIS Receive Running
-const PxCMD_CR: u32 = 1 << 15; // Command List Running
+const PX_CMD_ST: u32 = 1 << 0; // Start
+const PX_CMD_SUD: u32 = 1 << 1; // Spin-Up Device
+const PX_CMD_POD: u32 = 1 << 2; // Power On Device
+const PX_CMD_FRE: u32 = 1 << 4; // FIS Receive Enable
+const PX_CMD_FR: u32 = 1 << 14; // FIS Receive Running
+const PX_CMD_CR: u32 = 1 << 15; // Command List Running
 
 /// PxIS ビット
-const PxIS_DHRS: u32 = 1 << 0; // Device to Host Register FIS
-const PxIS_PSS: u32 = 1 << 1; // PIO Setup FIS
-const PxIS_DSS: u32 = 1 << 2; // DMA Setup FIS
-const PxIS_SDBS: u32 = 1 << 3; // Set Device Bits
-const PxIS_TFES: u32 = 1 << 30; // Task File Error
+const PX_IS_DHRS: u32 = 1 << 0; // Device to Host Register FIS
+const PX_IS_PSS: u32 = 1 << 1; // PIO Setup FIS
+const PX_IS_DSS: u32 = 1 << 2; // DMA Setup FIS
+const PX_IS_SDBS: u32 = 1 << 3; // Set Device Bits
+const PX_IS_TFES: u32 = 1 << 30; // Task File Error
 
 /// デバイスシグネチャ
 const SATA_SIG_ATA: u32 = 0x00000101;
@@ -536,28 +535,28 @@ impl AhciPort {
         let clb = self.command_list.as_ptr() as u64;
         let fb = self.received_fis.as_ref() as *const _ as u64;
 
-        self.write_port(PxCLB, clb as u32);
-        self.write_port(PxCLBU, (clb >> 32) as u32);
-        self.write_port(PxFB, fb as u32);
-        self.write_port(PxFBU, (fb >> 32) as u32);
+        self.write_port(PX_CLB, clb as u32);
+        self.write_port(PX_CLBU, (clb >> 32) as u32);
+        self.write_port(PX_FB, fb as u32);
+        self.write_port(PX_FBU, (fb >> 32) as u32);
 
         // SATAエラーをクリア
-        self.write_port(PxSERR, 0xFFFFFFFF);
+        self.write_port(PX_SERR, 0xFFFFFFFF);
 
         // 割り込みをクリア
-        self.write_port(PxIS, 0xFFFFFFFF);
+        self.write_port(PX_IS, 0xFFFFFFFF);
 
         // 割り込みを有効化
         self.write_port(
-            PxIE,
-            PxIS_DHRS | PxIS_PSS | PxIS_DSS | PxIS_SDBS | PxIS_TFES,
+            PX_IE,
+            PX_IS_DHRS | PX_IS_PSS | PX_IS_DSS | PX_IS_SDBS | PX_IS_TFES,
         );
 
         // ポートを開始
         self.start()?;
 
         // デバイスシグネチャを確認
-        let sig = self.read_port(PxSIG);
+        let sig = self.read_port(PX_SIG);
         self.device_type = DeviceType::from_signature(sig);
 
         // log::info!("AHCI port {} initialized, device type: {:?}", self.port.as_u8(), self.device_type);
@@ -568,14 +567,14 @@ impl AhciPort {
     /// ポートを開始
     fn start(&self) -> AhciResult<()> {
         // FIS受信を有効化
-        let mut cmd = self.read_port(PxCMD);
-        cmd |= PxCMD_FRE;
-        self.write_port(PxCMD, cmd);
+        let mut cmd = self.read_port(PX_CMD);
+        cmd |= PX_CMD_FRE;
+        self.write_port(PX_CMD, cmd);
 
         // コマンド実行を有効化
-        cmd = self.read_port(PxCMD);
-        cmd |= PxCMD_ST;
-        self.write_port(PxCMD, cmd);
+        cmd = self.read_port(PX_CMD);
+        cmd |= PX_CMD_ST;
+        self.write_port(PX_CMD, cmd);
 
         Ok(())
     }
@@ -583,27 +582,27 @@ impl AhciPort {
     /// ポートを停止
     fn stop(&self) -> AhciResult<()> {
         // コマンド実行を停止
-        let mut cmd = self.read_port(PxCMD);
-        cmd &= !PxCMD_ST;
-        self.write_port(PxCMD, cmd);
+        let mut cmd = self.read_port(PX_CMD);
+        cmd &= !PX_CMD_ST;
+        self.write_port(PX_CMD, cmd);
 
         // CRビットがクリアされるまで待機
         for _ in 0..500 {
-            let cmd = self.read_port(PxCMD);
-            if (cmd & PxCMD_CR) == 0 {
+            let cmd = self.read_port(PX_CMD);
+            if (cmd & PX_CMD_CR) == 0 {
                 break;
             }
         }
 
         // FIS受信を停止
-        cmd = self.read_port(PxCMD);
-        cmd &= !PxCMD_FRE;
-        self.write_port(PxCMD, cmd);
+        cmd = self.read_port(PX_CMD);
+        cmd &= !PX_CMD_FRE;
+        self.write_port(PX_CMD, cmd);
 
         // FRビットがクリアされるまで待機
         for _ in 0..500 {
-            let cmd = self.read_port(PxCMD);
-            if (cmd & PxCMD_FR) == 0 {
+            let cmd = self.read_port(PX_CMD);
+            if (cmd & PX_CMD_FR) == 0 {
                 return Ok(());
             }
         }
@@ -613,8 +612,8 @@ impl AhciPort {
 
     /// 空きコマンドスロットを見つける
     fn find_slot(&self) -> Option<SlotNumber> {
-        let sact = self.read_port(PxSACT);
-        let ci = self.read_port(PxCI);
+        let sact = self.read_port(PX_SACT);
+        let ci = self.read_port(PX_CI);
         let busy = sact | ci;
 
         for i in 0..32 {
@@ -645,7 +644,7 @@ impl AhciPort {
         }
 
         // 結果バッファを用意
-        let mut identify_buffer = Box::new([0u16; 256]);
+        let identify_buffer = Box::new([0u16; 256]);
         let buffer_addr = identify_buffer.as_ptr() as u64;
 
         // PRDTを設定
@@ -665,7 +664,7 @@ impl AhciPort {
         self.command_tables[slot.as_usize()] = Some(cmd_table);
 
         // コマンドを発行
-        self.write_port(PxCI, 1 << slot.as_u8());
+        self.write_port(PX_CI, 1 << slot.as_u8());
 
         // 完了を待機
         self.wait_completion(slot)?;
@@ -716,7 +715,7 @@ impl AhciPort {
         self.command_tables[slot.as_usize()] = Some(cmd_table);
 
         // コマンドを発行
-        self.write_port(PxCI, 1 << slot.as_u8());
+        self.write_port(PX_CI, 1 << slot.as_u8());
 
         // 完了を待機
         self.wait_completion(slot)
@@ -759,7 +758,7 @@ impl AhciPort {
         self.command_tables[slot.as_usize()] = Some(cmd_table);
 
         // コマンドを発行
-        self.write_port(PxCI, 1 << slot.as_u8());
+        self.write_port(PX_CI, 1 << slot.as_u8());
 
         // 完了を待機
         self.wait_completion(slot)
@@ -770,10 +769,10 @@ impl AhciPort {
         let slot_mask = 1u32 << slot.as_u8();
 
         for _ in 0..100000 {
-            let ci = self.read_port(PxCI);
+            let ci = self.read_port(PX_CI);
             if (ci & slot_mask) == 0 {
                 // 完了
-                let tfd = self.read_port(PxTFD);
+                let tfd = self.read_port(PX_TFD);
                 let status = (tfd & 0xFF) as u8;
                 let error = ((tfd >> 8) & 0xFF) as u8;
 
@@ -786,9 +785,9 @@ impl AhciPort {
             }
 
             // タスクファイルエラーを確認
-            let is = self.read_port(PxIS);
-            if (is & PxIS_TFES) != 0 {
-                let tfd = self.read_port(PxTFD);
+            let is = self.read_port(PX_IS);
+            if (is & PX_IS_TFES) != 0 {
+                let tfd = self.read_port(PX_TFD);
                 let error = ((tfd >> 8) & 0xFF) as u8;
                 return Err(AhciError::TaskFileError(error));
             }
@@ -973,7 +972,7 @@ impl AhciController {
                 let mut ahci_port = Box::new(AhciPort::new(self.base, port));
 
                 // ポートステータスを確認
-                let ssts = self.read_port_reg(port, PxSSTS);
+                let ssts = self.read_port_reg(port, PX_SSTS);
                 let det = ssts & 0x0F;
 
                 if det == 3 {

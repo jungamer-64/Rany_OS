@@ -13,7 +13,6 @@
 //! - GROv2 (Generic Receive Offload)
 //! - TSOシミュレーション (TCP Segmentation Offload)
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
@@ -215,7 +214,7 @@ impl BatchProcessor {
     ///
     /// # Safety
     /// `buffer`は有効なメモリを指している必要があります
-    pub unsafe fn enqueue(&self, buffer: *mut u8, length: u16) -> Option<PacketBatch> {
+    pub unsafe fn enqueue(&self, buffer: *mut u8, length: u16) -> Option<PacketBatch> { unsafe {
         if !self.enabled.load(Ordering::Relaxed) {
             // バッチ処理無効時は即座に単一パケットバッチを返す
             let mut batch = PacketBatch::new();
@@ -234,7 +233,7 @@ impl BatchProcessor {
         } else {
             None
         }
-    }
+    }}
 
     /// バッチを強制フラッシュ
     pub fn flush(&self) -> Option<PacketBatch> {
@@ -357,7 +356,7 @@ impl NumaMempool {
         buffer_size: usize,
         buffers_per_node: usize,
         topology: &'static NumaTopology,
-    ) -> Self {
+    ) -> Self { unsafe {
         let mut pools = Vec::with_capacity(topology.node_count());
 
         for _node_id in 0..topology.node_count() {
@@ -382,7 +381,7 @@ impl NumaMempool {
             buffer_size,
             topology,
         }
-    }
+    }}
 
     /// 現在のCPUのNUMAノードからバッファを割り当て
     pub fn alloc(&self, cpu_id: usize) -> Option<*mut u8> {

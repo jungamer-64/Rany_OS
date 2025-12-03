@@ -6,7 +6,6 @@
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 /// マッピングアドレス (Newtype)
@@ -464,7 +463,7 @@ impl MemoryMapping {
         }
 
         match &self.mapping_type {
-            MappingType::File { path, offset } => {
+            MappingType::File { path: _, offset: _ } => {
                 // TODO: ファイルに書き戻し
                 self.clear_dirty();
                 Ok(())
@@ -529,7 +528,7 @@ impl MmapManager {
             }
 
             // 既存のマッピングと重複チェック
-            let overlaps = mappings.iter().any(|(addr, mapping)| {
+            let overlaps = mappings.iter().any(|(_addr, mapping)| {
                 let m = mapping.read();
                 let m_start = m.address().as_usize();
                 let m_end = m.end_address().as_usize();
@@ -627,7 +626,7 @@ impl MmapManager {
     }
 
     /// マッピングを解除
-    pub fn munmap(&self, addr: MappedAddress, size: MappingSize) -> Result<(), MmapError> {
+    pub fn munmap(&self, addr: MappedAddress, _size: MappingSize) -> Result<(), MmapError> {
         let mut mappings = self.mappings.write();
 
         // 該当するマッピングを探す
@@ -646,7 +645,7 @@ impl MmapManager {
     pub fn mprotect(
         &self,
         addr: MappedAddress,
-        size: MappingSize,
+        _size: MappingSize,
         protection: Protection,
     ) -> Result<(), MmapError> {
         let mappings = self.mappings.read();
@@ -658,7 +657,7 @@ impl MmapManager {
     }
 
     /// 同期
-    pub fn msync(&self, addr: MappedAddress, size: MappingSize) -> Result<(), MmapError> {
+    pub fn msync(&self, addr: MappedAddress, _size: MappingSize) -> Result<(), MmapError> {
         let mappings = self.mappings.read();
 
         let mapping = mappings.get(&addr.as_usize()).ok_or(MmapError::NotMapped)?;

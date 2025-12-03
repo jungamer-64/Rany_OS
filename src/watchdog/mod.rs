@@ -8,7 +8,6 @@
 
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -127,7 +126,7 @@ impl IntelTcoWatchdog {
         Some(Self::new(0x460))
     }
 
-    unsafe fn read_tco(&self, offset: u16) -> u16 {
+    unsafe fn read_tco(&self, offset: u16) -> u16 { unsafe {
         let port = self.tco_base + offset;
         let value: u16;
         core::arch::asm!(
@@ -137,9 +136,9 @@ impl IntelTcoWatchdog {
             options(nomem, nostack)
         );
         value
-    }
+    }}
 
-    unsafe fn write_tco(&self, offset: u16, value: u16) {
+    unsafe fn write_tco(&self, offset: u16, value: u16) { unsafe {
         let port = self.tco_base + offset;
         core::arch::asm!(
             "out dx, ax",
@@ -147,7 +146,7 @@ impl IntelTcoWatchdog {
             in("dx") port,
             options(nomem, nostack)
         );
-    }
+    }}
 }
 
 impl HardwareWatchdog for IntelTcoWatchdog {

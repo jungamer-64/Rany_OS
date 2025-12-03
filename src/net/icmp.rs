@@ -2,7 +2,7 @@
 //!
 //! This module implements ICMP for ping/pong and error messages.
 
-use super::ipv4::{IpProtocol, Ipv4Address, data_checksum};
+use super::ipv4::{Ipv4Address, data_checksum};
 
 /// ICMP message type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

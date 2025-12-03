@@ -18,9 +18,9 @@ use spin::Mutex;
 
 use crate::domain_system::DomainId;
 
-pub use heap_registry::{HeapRegistry, RegistryError};
+pub use heap_registry::HeapRegistry;
 pub use memory_region::{MemoryRegion, RegionPermissions};
-pub use ownership::{OwnershipError, OwnershipToken, Transferable, ZeroCopyTransfer};
+pub use ownership::OwnershipError;
 
 // ============================================================================
 // SAS Manager

@@ -14,10 +14,7 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
 // ============================================================================

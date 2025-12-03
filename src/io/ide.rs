@@ -14,13 +14,8 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec;
 use alloc::vec::Vec;
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
 use spin::Mutex;
 
 // ============================================================================
@@ -38,49 +33,49 @@ impl IoPort {
 
     /// バイトを読み取り
     #[inline]
-    pub unsafe fn read_u8(self) -> u8 {
+    pub unsafe fn read_u8(self) -> u8 { unsafe {
         let value: u8;
         core::arch::asm!("in al, dx", out("al") value, in("dx") self.0, options(nomem, nostack));
         value
-    }
+    }}
 
     /// ワードを読み取り
     #[inline]
-    pub unsafe fn read_u16(self) -> u16 {
+    pub unsafe fn read_u16(self) -> u16 { unsafe {
         let value: u16;
         core::arch::asm!("in ax, dx", out("ax") value, in("dx") self.0, options(nomem, nostack));
         value
-    }
+    }}
 
     /// ダブルワードを読み取り
     #[inline]
-    pub unsafe fn read_u32(self) -> u32 {
+    pub unsafe fn read_u32(self) -> u32 { unsafe {
         let value: u32;
         core::arch::asm!("in eax, dx", out("eax") value, in("dx") self.0, options(nomem, nostack));
         value
-    }
+    }}
 
     /// バイトを書き込み
     #[inline]
-    pub unsafe fn write_u8(self, value: u8) {
+    pub unsafe fn write_u8(self, value: u8) { unsafe {
         core::arch::asm!("out dx, al", in("dx") self.0, in("al") value, options(nomem, nostack));
-    }
+    }}
 
     /// ワードを書き込み
     #[inline]
-    pub unsafe fn write_u16(self, value: u16) {
+    pub unsafe fn write_u16(self, value: u16) { unsafe {
         core::arch::asm!("out dx, ax", in("dx") self.0, in("ax") value, options(nomem, nostack));
-    }
+    }}
 
     /// ダブルワードを書き込み
     #[inline]
-    pub unsafe fn write_u32(self, value: u32) {
+    pub unsafe fn write_u32(self, value: u32) { unsafe {
         core::arch::asm!("out dx, eax", in("dx") self.0, in("eax") value, options(nomem, nostack));
-    }
+    }}
 
     /// REP INSWで複数ワードを読み取り
     #[inline]
-    pub unsafe fn read_words(self, buffer: &mut [u16]) {
+    pub unsafe fn read_words(self, buffer: &mut [u16]) { unsafe {
         core::arch::asm!(
             "rep insw",
             in("dx") self.0,
@@ -88,11 +83,11 @@ impl IoPort {
             in("rcx") buffer.len(),
             options(nostack)
         );
-    }
+    }}
 
     /// REP OUTSWで複数ワードを書き込み
     #[inline]
-    pub unsafe fn write_words(self, buffer: &[u16]) {
+    pub unsafe fn write_words(self, buffer: &[u16]) { unsafe {
         core::arch::asm!(
             "rep outsw",
             in("dx") self.0,
@@ -100,7 +95,7 @@ impl IoPort {
             in("rcx") buffer.len(),
             options(nostack)
         );
-    }
+    }}
 }
 
 // ============================================================================
@@ -342,30 +337,30 @@ impl IdeChannel {
 
     /// レジスタを読み取り
     #[inline]
-    unsafe fn read_reg(&self, reg: u16) -> u8 {
+    unsafe fn read_reg(&self, reg: u16) -> u8 { unsafe {
         IoPort::new(self.io_base.0 + reg).read_u8()
-    }
+    }}
 
     /// レジスタに書き込み
     #[inline]
-    unsafe fn write_reg(&self, reg: u16, value: u8) {
+    unsafe fn write_reg(&self, reg: u16, value: u8) { unsafe {
         IoPort::new(self.io_base.0 + reg).write_u8(value);
-    }
+    }}
 
     /// ステータスを読み取り
     #[inline]
-    unsafe fn read_status(&self) -> u8 {
+    unsafe fn read_status(&self) -> u8 { unsafe {
         self.read_reg(regs::STATUS)
-    }
+    }}
 
     /// 代替ステータスを読み取り（割り込みクリアなし）
     #[inline]
-    unsafe fn read_alt_status(&self) -> u8 {
+    unsafe fn read_alt_status(&self) -> u8 { unsafe {
         self.control_base.read_u8()
-    }
+    }}
 
     /// ビジーフラグが解除されるまで待機
-    unsafe fn wait_not_busy(&self) -> Result<(), IdeError> {
+    unsafe fn wait_not_busy(&self) -> Result<(), IdeError> { unsafe {
         let mut timeout = 100_000;
         while timeout > 0 {
             let status = self.read_alt_status();
@@ -375,10 +370,10 @@ impl IdeChannel {
             timeout -= 1;
         }
         Err(IdeError::Timeout)
-    }
+    }}
 
     /// DRQがセットされるまで待機
-    unsafe fn wait_drq(&self) -> Result<(), IdeError> {
+    unsafe fn wait_drq(&self) -> Result<(), IdeError> { unsafe {
         let mut timeout = 100_000;
         while timeout > 0 {
             let status = self.read_alt_status();
@@ -393,19 +388,19 @@ impl IdeChannel {
             timeout -= 1;
         }
         Err(IdeError::Timeout)
-    }
+    }}
 
     /// ドライブを選択
-    unsafe fn select_drive(&self, drive: DriveSel) {
+    unsafe fn select_drive(&self, drive: DriveSel) { unsafe {
         self.write_reg(regs::DRIVE, drive.value());
         // 400ns待機（4回のステータス読み取り）
         for _ in 0..4 {
             let _ = self.read_alt_status();
         }
-    }
+    }}
 
     /// ソフトリセット
-    pub unsafe fn soft_reset(&self) {
+    pub unsafe fn soft_reset(&self) { unsafe {
         // SRST=1
         self.control_base.write_u8(0x04);
         // 少なくとも5us待機
@@ -418,7 +413,7 @@ impl IdeChannel {
         for _ in 0..4 {
             let _ = self.read_alt_status();
         }
-    }
+    }}
 
     /// デバイスを検出
     pub fn detect_devices(&mut self) {
@@ -430,7 +425,7 @@ impl IdeChannel {
     }
 
     /// デバイスを識別
-    unsafe fn identify_device(&self, drive: DriveSel) -> Option<IdentifyData> {
+    unsafe fn identify_device(&self, drive: DriveSel) -> Option<IdentifyData> { unsafe {
         self.select_drive(drive);
 
         // フローティングバスチェック
@@ -488,7 +483,7 @@ impl IdeChannel {
         identify.device_type = device_type;
 
         Some(identify)
-    }
+    }}
 
     /// セクタを読み取り（PIO）
     pub fn read_sectors(
@@ -529,7 +524,7 @@ impl IdeChannel {
         lba: u32,
         count: u8,
         buffer: &mut [u8],
-    ) -> Result<(), IdeError> {
+    ) -> Result<(), IdeError> { unsafe {
         // ドライブとLBA上位4ビットを選択
         let drive_head = drive.value() | 0x40 | ((lba >> 24) & 0x0F) as u8;
         self.write_reg(regs::DRIVE, drive_head);
@@ -560,7 +555,7 @@ impl IdeChannel {
         }
 
         Ok(())
-    }
+    }}
 
     /// LBA48モードでセクタを読み取り
     unsafe fn read_sectors_lba48(
@@ -569,7 +564,7 @@ impl IdeChannel {
         lba: u64,
         count: u16,
         buffer: &mut [u8],
-    ) -> Result<(), IdeError> {
+    ) -> Result<(), IdeError> { unsafe {
         // ドライブを選択（LBAモード）
         let drive_head = drive.value() | 0x40;
         self.write_reg(regs::DRIVE, drive_head);
@@ -607,7 +602,7 @@ impl IdeChannel {
         }
 
         Ok(())
-    }
+    }}
 
     /// セクタを書き込み（PIO）
     pub fn write_sectors(
@@ -648,7 +643,7 @@ impl IdeChannel {
         lba: u32,
         count: u8,
         buffer: &[u8],
-    ) -> Result<(), IdeError> {
+    ) -> Result<(), IdeError> { unsafe {
         let drive_head = drive.value() | 0x40 | ((lba >> 24) & 0x0F) as u8;
         self.write_reg(regs::DRIVE, drive_head);
 
@@ -680,7 +675,7 @@ impl IdeChannel {
         self.wait_not_busy()?;
 
         Ok(())
-    }
+    }}
 
     /// LBA48モードでセクタを書き込み
     unsafe fn write_sectors_lba48(
@@ -689,7 +684,7 @@ impl IdeChannel {
         lba: u64,
         count: u16,
         buffer: &[u8],
-    ) -> Result<(), IdeError> {
+    ) -> Result<(), IdeError> { unsafe {
         let drive_head = drive.value() | 0x40;
         self.write_reg(regs::DRIVE, drive_head);
 
@@ -726,7 +721,7 @@ impl IdeChannel {
         self.wait_not_busy()?;
 
         Ok(())
-    }
+    }}
 
     /// 接続されたデバイス情報を取得
     pub fn get_device(&self, drive: DriveSel) -> Option<&IdentifyData> {
@@ -770,15 +765,15 @@ pub fn init() {
 
     // 検出されたデバイスをログ
     for (i, device) in primary.devices.iter().enumerate() {
-        if let Some(dev) = device {
-            let drive = if i == 0 { "Master" } else { "Slave" };
+        if let Some(_dev) = device {
+            let _drive = if i == 0 { "Master" } else { "Slave" };
             // log::info!("Primary {}: {} ({} MB)", drive, dev.model, dev.capacity() / (1024 * 1024));
         }
     }
 
     for (i, device) in secondary.devices.iter().enumerate() {
-        if let Some(dev) = device {
-            let drive = if i == 0 { "Master" } else { "Slave" };
+        if let Some(_dev) = device {
+            let _drive = if i == 0 { "Master" } else { "Slave" };
             // log::info!("Secondary {}: {} ({} MB)", drive, dev.model, dev.capacity() / (1024 * 1024));
         }
     }

@@ -210,7 +210,7 @@ impl InterruptRouter {
     ///
     /// # Safety
     /// This writes to MMIO registers
-    pub unsafe fn program_ioapic_entry(&self, route: &IrqRoute) {
+    pub unsafe fn program_ioapic_entry(&self, route: &IrqRoute) { unsafe {
         if route.is_msi {
             return; // MSI doesn't use IOAPIC
         }
@@ -257,7 +257,7 @@ impl InterruptRouter {
         // Write high dword
         core::ptr::write_volatile(base, entry_offset + 1);
         core::ptr::write_volatile(base.add(4), high);
-    }
+    }}
 }
 
 impl Default for InterruptRouter {

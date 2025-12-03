@@ -3,7 +3,6 @@
 //! This module implements parsing of ACPI tables for system configuration
 //! discovery (MADT, MCFG, FADT, etc.)
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::ptr;
 use core::slice;
@@ -442,7 +441,7 @@ impl AcpiParser {
     ///
     /// # Safety
     /// This function reads from physical memory addresses
-    pub unsafe fn find_rsdp() -> Option<u64> {
+    pub unsafe fn find_rsdp() -> Option<u64> { unsafe {
         // Search in EBDA (Extended BIOS Data Area)
         let ebda_ptr = *(0x40E as *const u16) as u64;
         let ebda_start = ebda_ptr << 4;
@@ -453,10 +452,10 @@ impl AcpiParser {
 
         // Search in BIOS ROM area (0xE0000 - 0xFFFFF)
         Self::search_region(0xE0000, 0x100000)
-    }
+    }}
 
     /// Search for RSDP signature in a memory region
-    unsafe fn search_region(start: u64, end: u64) -> Option<u64> {
+    unsafe fn search_region(start: u64, end: u64) -> Option<u64> { unsafe {
         let mut addr = start;
         while addr < end {
             let ptr = addr as *const [u8; 8];
@@ -470,13 +469,13 @@ impl AcpiParser {
             addr += 16; // RSDP is always aligned to 16 bytes
         }
         None
-    }
+    }}
 
     /// Parse ACPI tables
     ///
     /// # Safety
     /// This function reads from physical memory addresses
-    pub unsafe fn parse(&mut self) -> Result<&AcpiInfo, AcpiError> {
+    pub unsafe fn parse(&mut self) -> Result<&AcpiInfo, AcpiError> { unsafe {
         let rsdp = &*(self.rsdp_address as *const Rsdp);
 
         if !rsdp.validate() {
@@ -515,10 +514,10 @@ impl AcpiParser {
         // SAFETY: 直前で Some(info) を設定したため、unwrap は必ず成功する。
         // unwrap_unchecked() でパニックコード生成を回避。
         Ok(unsafe { self.info.as_ref().unwrap_unchecked() })
-    }
+    }}
 
     /// Parse RSDT (Root System Description Table)
-    unsafe fn parse_rsdt(&self, rsdt_address: u64) -> Result<Vec<u64>, AcpiError> {
+    unsafe fn parse_rsdt(&self, rsdt_address: u64) -> Result<Vec<u64>, AcpiError> { unsafe {
         let header = &*(rsdt_address as *const AcpiSdtHeader);
 
         if header.signature != signature::RSDT {
@@ -540,10 +539,10 @@ impl AcpiParser {
         }
 
         Ok(addresses)
-    }
+    }}
 
     /// Parse XSDT (Extended System Description Table)
-    unsafe fn parse_xsdt(&self, xsdt_address: u64) -> Result<Vec<u64>, AcpiError> {
+    unsafe fn parse_xsdt(&self, xsdt_address: u64) -> Result<Vec<u64>, AcpiError> { unsafe {
         let header = &*(xsdt_address as *const AcpiSdtHeader);
 
         if header.signature != signature::XSDT {
@@ -565,10 +564,10 @@ impl AcpiParser {
         }
 
         Ok(addresses)
-    }
+    }}
 
     /// Parse MADT (Multiple APIC Description Table)
-    unsafe fn parse_madt(&self, madt_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
+    unsafe fn parse_madt(&self, madt_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> { unsafe {
         let madt = &*(madt_address as *const Madt);
 
         if !madt.header.validate() {
@@ -638,10 +637,10 @@ impl AcpiParser {
         }
 
         Ok(())
-    }
+    }}
 
     /// Parse MCFG (Memory-mapped Configuration space)
-    unsafe fn parse_mcfg(&self, mcfg_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
+    unsafe fn parse_mcfg(&self, mcfg_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> { unsafe {
         let mcfg = &*(mcfg_address as *const Mcfg);
 
         if !mcfg.header.validate() {
@@ -667,7 +666,7 @@ impl AcpiParser {
         }
 
         Ok(())
-    }
+    }}
 
     /// Get parsed ACPI info
     pub fn info(&self) -> Option<&AcpiInfo> {
@@ -682,12 +681,12 @@ static ACPI_INFO: Mutex<Option<AcpiInfo>> = Mutex::new(None);
 ///
 /// # Safety
 /// The rsdp_address must point to a valid RSDP structure
-pub unsafe fn init(rsdp_address: u64) -> Result<(), AcpiError> {
+pub unsafe fn init(rsdp_address: u64) -> Result<(), AcpiError> { unsafe {
     let mut parser = AcpiParser::new(rsdp_address);
     let info = parser.parse()?;
     *ACPI_INFO.lock() = Some(info.clone());
     Ok(())
-}
+}}
 
 /// Get local APIC address
 pub fn local_apic_address() -> Option<u64> {

@@ -30,14 +30,14 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use core::task::{Context, Poll, Waker};
+use core::sync::atomic::{AtomicBool, Ordering};
+use core::task::Waker;
 use spin::Mutex;
 
-use super::descriptor::{DeviceDescriptor, ParsedConfiguration, parse_configuration};
+use super::descriptor::{DeviceDescriptor, ParsedConfiguration};
 use super::{
-    DeviceAddress, EndpointAddress, PortNumber, PortStatus, SetupPacket, SlotId, TransferDirection,
-    TransferStatus, TransferType, UsbDevice, UsbError, UsbResult, UsbSpeed,
+    DeviceAddress, EndpointAddress, PortNumber, PortStatus, SetupPacket, SlotId,
+    TransferStatus, UsbDevice, UsbError, UsbResult, UsbSpeed,
 };
 
 // ============================================================================

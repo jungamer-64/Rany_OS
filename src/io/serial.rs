@@ -447,7 +447,7 @@ impl AsyncSerialPort {
     }
 
     /// バイトを非同期で受信
-    pub fn read_byte(&self) -> SerialReadFuture {
+    pub fn read_byte(&self) -> SerialReadFuture<'_> {
         SerialReadFuture { port: self }
     }
 

@@ -551,34 +551,34 @@ impl IommuController {
     }
 
     /// Read 32-bit register
-    unsafe fn read32(&self, offset: u64) -> u32 {
+    unsafe fn read32(&self, offset: u64) -> u32 { unsafe {
         let ptr = (self.mmio_base + offset) as *const u32;
         core::ptr::read_volatile(ptr)
-    }
+    }}
 
     /// Write 32-bit register
-    unsafe fn write32(&self, offset: u64, value: u32) {
+    unsafe fn write32(&self, offset: u64, value: u32) { unsafe {
         let ptr = (self.mmio_base + offset) as *mut u32;
         core::ptr::write_volatile(ptr, value);
-    }
+    }}
 
     /// Read 64-bit register
-    unsafe fn read64(&self, offset: u64) -> u64 {
+    unsafe fn read64(&self, offset: u64) -> u64 { unsafe {
         let ptr = (self.mmio_base + offset) as *const u64;
         core::ptr::read_volatile(ptr)
-    }
+    }}
 
     /// Write 64-bit register
-    unsafe fn write64(&self, offset: u64, value: u64) {
+    unsafe fn write64(&self, offset: u64, value: u64) { unsafe {
         let ptr = (self.mmio_base + offset) as *mut u64;
         core::ptr::write_volatile(ptr, value);
-    }
+    }}
 
     /// Initialize the IOMMU
     ///
     /// # Safety
     /// Caller must ensure MMIO address is valid
-    pub unsafe fn init(&mut self) -> Result<(), IommuError> {
+    pub unsafe fn init(&mut self) -> Result<(), IommuError> { unsafe {
         // Read capabilities
         self.cap = self.read64(regs::CAP);
         self.ecap = self.read64(regs::ECAP);
@@ -619,10 +619,10 @@ impl IommuController {
         }
 
         Ok(())
-    }
+    }}
 
     /// Enable DMA remapping
-    pub unsafe fn enable(&self) -> Result<(), IommuError> {
+    pub unsafe fn enable(&self) -> Result<(), IommuError> { unsafe {
         // Write buffer flush if required
         if self.cap & cap_bits::CAP_RWBF != 0 {
             self.write32(regs::GCMD, gcmd_bits::GCMD_WBF);
@@ -646,10 +646,10 @@ impl IommuController {
         }
 
         Err(IommuError::Timeout)
-    }
+    }}
 
     /// Disable DMA remapping
-    pub unsafe fn disable(&self) -> Result<(), IommuError> {
+    pub unsafe fn disable(&self) -> Result<(), IommuError> { unsafe {
         // Clear translation enable
         let gcmd = self.read32(regs::GCMD);
         self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_TE);
@@ -663,7 +663,7 @@ impl IommuController {
         }
 
         Err(IommuError::Timeout)
-    }
+    }}
 
     /// Check if translation is enabled
     pub fn is_enabled(&self) -> bool {
@@ -773,7 +773,7 @@ impl IommuController {
     }
 
     /// Invalidate IOTLB for a domain
-    pub unsafe fn invalidate_iotlb(&self, domain_id: u16) {
+    pub unsafe fn invalidate_iotlb(&self, domain_id: u16) { unsafe {
         // Context command register invalidation
         let cmd: u64 = (1u64 << 63) |          // ICC (Invalidate context-cache)
                        (1u64 << 61) |          // Global invalidation
@@ -787,7 +787,7 @@ impl IommuController {
                 break;
             }
         }
-    }
+    }}
 }
 
 // ============================================================================
@@ -800,7 +800,7 @@ static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid
-pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
+pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> { unsafe {
     let mut controller = IommuController::new(mmio_base);
     controller.init()?;
 
@@ -808,7 +808,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
 
     *IOMMU.lock() = Some(controller);
     Ok(())
-}
+}}
 
 /// Enable IOMMU translation
 pub fn enable_iommu() -> Result<(), IommuError> {

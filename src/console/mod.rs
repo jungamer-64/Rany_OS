@@ -16,9 +16,7 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::collections::VecDeque;
-use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
@@ -289,7 +287,7 @@ impl TerminalBuffer {
         // 行を上にシフト
         for y in 0..self.rows - 1 {
             let src_start = (y + 1) * self.cols;
-            let src_end = src_start + self.cols;
+            let _src_end = src_start + self.cols;
             let dst_start = y * self.cols;
 
             for i in 0..self.cols {

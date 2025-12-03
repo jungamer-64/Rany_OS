@@ -7,7 +7,6 @@
 // pub mod display;
 // pub mod collectors;
 
-use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 

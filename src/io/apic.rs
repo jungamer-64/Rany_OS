@@ -129,16 +129,16 @@ impl LocalApic {
     }
 
     /// レジスタを読み取り
-    unsafe fn read(&self, reg: u32) -> u32 {
+    unsafe fn read(&self, reg: u32) -> u32 { unsafe {
         let addr = self.base_address + reg as u64;
         core::ptr::read_volatile(addr as *const u32)
-    }
+    }}
 
     /// レジスタに書き込み
-    unsafe fn write(&self, reg: u32, value: u32) {
+    unsafe fn write(&self, reg: u32, value: u32) { unsafe {
         let addr = self.base_address + reg as u64;
         core::ptr::write_volatile(addr as *mut u32, value);
-    }
+    }}
 
     /// Local APICを初期化
     pub fn init(&self) {
@@ -350,24 +350,24 @@ impl IoApic {
     }
 
     /// レジスタを選択
-    unsafe fn select(&self, reg: u8) {
+    unsafe fn select(&self, reg: u8) { unsafe {
         let addr = self.base_address + ioapic_reg::IOREGSEL as u64;
         core::ptr::write_volatile(addr as *mut u32, reg as u32);
-    }
+    }}
 
     /// 選択したレジスタを読み取り
-    unsafe fn read(&self, reg: u8) -> u32 {
+    unsafe fn read(&self, reg: u8) -> u32 { unsafe {
         self.select(reg);
         let addr = self.base_address + ioapic_reg::IOWIN as u64;
         core::ptr::read_volatile(addr as *const u32)
-    }
+    }}
 
     /// 選択したレジスタに書き込み
-    unsafe fn write(&self, reg: u8, value: u32) {
+    unsafe fn write(&self, reg: u8, value: u32) { unsafe {
         self.select(reg);
         let addr = self.base_address + ioapic_reg::IOWIN as u64;
         core::ptr::write_volatile(addr as *mut u32, value);
-    }
+    }}
 
     /// I/O APICを初期化
     pub fn init(&self) {

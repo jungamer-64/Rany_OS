@@ -28,21 +28,20 @@ pub mod window_scale;
 
 // Re-exports: types
 pub use types::{
-    AcceptedConnection, NEXT_FD, SocketAddr, SocketError, SocketFd, SocketResult, SocketState,
+    AcceptedConnection, SocketAddr, SocketError, SocketFd, SocketResult, SocketState,
     SocketType,
 };
 
 // Re-exports: event
 pub use event::{
-    EventWaitFuture, NetworkEvent, NetworkEventQueue, event_queue, send_event, send_event_ignore,
+    EventWaitFuture, NetworkEvent, NetworkEventQueue, event_queue,
 };
 
 // Re-exports: inner
-pub use inner::SocketInner;
 
 // Re-exports: tcb
 pub use tcb::{
-    TCB_TABLE, TcbTable, TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags,
+    TcbTable, TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags,
 };
 
 // Re-exports: retransmit
@@ -56,11 +55,11 @@ pub use retransmit::{
 pub use segment::{TcpSegmentBuilder, send_tcp_segment};
 
 // Re-exports: manager
-pub use manager::{SOCKET_MANAGER, SocketManager, init_socket_manager, socket_manager};
+pub use manager::{SocketManager, init_socket_manager};
 
 // Re-exports: socket
 pub use socket::{
-    OwnedSocket, Socket, create_raw_socket, create_tcp_server, create_tcp_socket,
+    OwnedSocket, Socket, create_tcp_server, create_tcp_socket,
     create_udp_socket, tcp_connect, udp_bind,
 };
 
@@ -74,19 +73,7 @@ pub use handler::{EventHandleResult, NetworkEventHandler, init_network_event_han
 pub use tcp_rx::{network_event_task, process_tcp_segment};
 
 // Re-exports: congestion
-pub use congestion::{
-    CongestionAlgorithm, CongestionController, CongestionDebugInfo, CongestionState, DEFAULT_MSS,
-    INITIAL_WINDOW, MIN_CWND,
-};
 
 // Re-exports: window_scale
-pub use window_scale::{
-    DEFAULT_WINDOW_SCALE, MAX_WINDOW_SCALE, TcpOptionBuilder, TcpOptionParser, WindowScaleOption,
-    tcp_option_kind,
-};
 
 // Re-exports: flow_control
-pub use flow_control::{
-    DEFAULT_RECV_BUFFER_SIZE, FlowControlDebugInfo, FlowControlState, FlowController,
-    MAX_RECV_BUFFER_SIZE, ZERO_WINDOW_PROBE_INTERVAL_MS,
-};
