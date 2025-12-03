@@ -8,10 +8,16 @@
 //! ExoRustのセキュリティモデルは、以下の原則に基づいています：
 //!
 //! ## 設計原則
-//! 1. コンパイラベースのセキュリティ（Rust型システム）
-//! 2. TCB（Trusted Computing Base）の最小化
-//! 3. Spectre/Meltdown緩和策
-//! 4. ゼロコピー通信の安全性保証
+//! 1. **静的ケイパビリティ**: ランタイムチェックではなく型システムで保証
+//! 2. コンパイラベースのセキュリティ（Rust型システム）
+//! 3. TCB（Trusted Computing Base）の最小化
+//! 4. Spectre/Meltdown緩和策
+//! 5. ゼロコピー通信の安全性保証
+//!
+//! ## 設計変更 (v0.3.0)
+//! - MAC（強制アクセス制御）の実行時チェックを排除
+//! - 静的ケイパビリティベースのアクセス制御に移行
+//! - 監査ログをオプション（デバッグビルドのみ）に
 //!
 //! ## 攻撃対策
 //! - バッファオーバーフロー排除（Rust境界チェック）
@@ -25,6 +31,15 @@ pub mod capability;
 pub mod mac;
 pub mod audit;
 pub mod policy;
+pub mod static_capability;  // 新: 静的ケイパビリティシステム
+
+// Re-export static capability system (preferred API)
+pub use static_capability::{
+    MemoryCapability, NetCapability, IoCapability,
+    InterruptCapability, DmaCapability, FsCapability, IpcCapability,
+    DomainCapabilities, NetworkSocket, FileHandle, DmaBuffer,
+    send_packet, allocate_dma_buffer, port_read_u8, port_write_u8,
+};
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use alloc::vec::Vec;

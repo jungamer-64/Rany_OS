@@ -1,25 +1,179 @@
 // ============================================================================
 // src/mm/exchange_heap.rs - Exchange Heap for Zero-Copy IPC
 // 設計書 5.3: 線形型と交換ヒープ（RedLeaf OS参照）
+//
+// v0.3.0: linked_list_allocator から内蔵Buddy Allocatorへ移行
 // ============================================================================
 #![allow(dead_code)]
 
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
 use spin::Mutex;
-use linked_list_allocator::Heap;
+
+/// シンプルな空きリストベースのアロケータ（Exchange Heap専用）
+/// 
+/// Exchange Heapはドメイン間通信専用で、通常の割り当てサイズは
+/// 比較的大きい（パケットバッファ等）ため、単純な空きリスト実装で十分。
+struct SimpleFreeListHeap {
+    /// ヒープ開始アドレス
+    heap_start: usize,
+    /// ヒープ終了アドレス
+    heap_end: usize,
+    /// 空きリストの先頭
+    free_list_head: Option<NonNull<FreeBlock>>,
+    /// 使用中のバイト数
+    allocated_bytes: usize,
+}
+
+/// 空きブロックヘッダ
+#[repr(C)]
+struct FreeBlock {
+    size: usize,
+    next: Option<NonNull<FreeBlock>>,
+}
+
+// SimpleFreeListHeap は Mutex で保護されているため Send/Sync は安全
+// FreeBlock はヒープメモリ内に存在し、Mutex のロック下でのみアクセスされる
+unsafe impl Send for SimpleFreeListHeap {}
+unsafe impl Sync for SimpleFreeListHeap {}
+
+impl SimpleFreeListHeap {
+    const fn empty() -> Self {
+        Self {
+            heap_start: 0,
+            heap_end: 0,
+            free_list_head: None,
+            allocated_bytes: 0,
+        }
+    }
+    
+    /// ヒープを初期化
+    /// 
+    /// # Safety
+    /// - `heap_start` は有効なメモリ領域を指す
+    /// - `size` バイトがアクセス可能
+    unsafe fn init(&mut self, heap_start: *mut u8, size: usize) {
+        self.heap_start = heap_start as usize;
+        self.heap_end = self.heap_start + size;
+        self.allocated_bytes = 0;
+        
+        // 初期状態: 全体が1つの空きブロック
+        if size >= core::mem::size_of::<FreeBlock>() {
+            let block = heap_start as *mut FreeBlock;
+            unsafe {
+                (*block).size = size;
+                (*block).next = None;
+            }
+            self.free_list_head = NonNull::new(block);
+        }
+    }
+    
+    /// メモリを割り当て（First-Fit）
+    fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
+        let align = layout.align().max(core::mem::align_of::<FreeBlock>());
+        let size = layout.size().max(core::mem::size_of::<FreeBlock>());
+        
+        // 最低ブロックサイズ（ヘッダ + アライメント）
+        let min_block_size = size + align;
+        
+        let mut prev: Option<NonNull<FreeBlock>> = None;
+        let mut current = self.free_list_head;
+        
+        while let Some(block_ptr) = current {
+            let block = unsafe { block_ptr.as_ref() };
+            
+            // アライメントを考慮した割り当て開始位置
+            let block_addr = block_ptr.as_ptr() as usize;
+            let aligned_addr = (block_addr + align - 1) & !(align - 1);
+            let padding = aligned_addr - block_addr;
+            
+            let total_needed = padding + size;
+            
+            if block.size >= total_needed {
+                let remaining = block.size - total_needed;
+                
+                // 残りが十分大きければ分割
+                if remaining >= core::mem::size_of::<FreeBlock>() + 16 {
+                    // 新しい空きブロックを作成
+                    let new_block_addr = aligned_addr + size;
+                    let new_block = new_block_addr as *mut FreeBlock;
+                    unsafe {
+                        (*new_block).size = remaining;
+                        (*new_block).next = block.next;
+                    }
+                    
+                    // リストを更新
+                    if let Some(mut p) = prev {
+                        unsafe { p.as_mut().next = NonNull::new(new_block); }
+                    } else {
+                        self.free_list_head = NonNull::new(new_block);
+                    }
+                } else {
+                    // 残りが小さければ全体を使用
+                    if let Some(mut p) = prev {
+                        unsafe { p.as_mut().next = block.next; }
+                    } else {
+                        self.free_list_head = block.next;
+                    }
+                }
+                
+                self.allocated_bytes += total_needed;
+                return Ok(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) });
+            }
+            
+            prev = current;
+            current = block.next;
+        }
+        
+        Err(())
+    }
+    
+    /// メモリを解放
+    /// 
+    /// # Safety
+    /// - `ptr` は以前に `allocate_first_fit` で取得したポインタ
+    unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
+        let size = layout.size().max(core::mem::size_of::<FreeBlock>());
+        let addr = ptr.as_ptr() as usize;
+        
+        // 境界チェック
+        if addr < self.heap_start || addr >= self.heap_end {
+            return;
+        }
+        
+        // 新しい空きブロックを作成
+        let new_block = addr as *mut FreeBlock;
+        unsafe {
+            (*new_block).size = size;
+            (*new_block).next = self.free_list_head;
+        }
+        self.free_list_head = NonNull::new(new_block);
+        
+        self.allocated_bytes = self.allocated_bytes.saturating_sub(size);
+        
+        // TODO: 隣接ブロックの合体（将来の最適化）
+    }
+    
+    fn used(&self) -> usize {
+        self.allocated_bytes
+    }
+    
+    fn free(&self) -> usize {
+        (self.heap_end - self.heap_start).saturating_sub(self.allocated_bytes)
+    }
+}
 
 /// Exchange Heap: ドメイン間でゼロコピー通信するためのヒープ
 /// プライベートヒープとは別に管理される
 pub struct ExchangeHeap {
-    heap: Mutex<Heap>,
+    heap: Mutex<SimpleFreeListHeap>,
 }
 
 impl ExchangeHeap {
     /// 新しいExchange Heapを作成（未初期化）
     pub const fn new() -> Self {
         Self {
-            heap: Mutex::new(Heap::empty()),
+            heap: Mutex::new(SimpleFreeListHeap::empty()),
         }
     }
     

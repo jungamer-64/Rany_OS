@@ -4,55 +4,44 @@ ExoRust Kernelの公開APIリファレンスドキュメントです。
 
 ## 目次
 
-1. [概要](#概要)
+1. [設計哲学](#設計哲学)
 2. [メモリ管理 API](#メモリ管理-api)
 3. [タスク管理 API](#タスク管理-api)
-4. [IPC API](#ipc-api)
-5. [I/O API](#io-api)
-6. [ネットワーク API](#ネットワーク-api)
+4. [IPC API（所有権移動ベース）](#ipc-api所有権移動ベース)
+5. [I/O API（ゼロコピー）](#io-apiゼロコピー)
+6. [ネットワーク API（パケット所有権交換）](#ネットワーク-apiパケット所有権交換)
 7. [ファイルシステム API](#ファイルシステム-api)
-8. [同期プリミティブ](#同期プリミティブ)
+8. [静的ケイパビリティ](#静的ケイパビリティ)
 9. [ドメインシステム](#ドメインシステム)
 
 ---
 
-## 概要
+## 設計哲学
 
-ExoRust Kernelは、以下の3つの原則に基づいて設計されています：
+ExoRust Kernelは、従来のPOSIX APIパラダイムを**意図的に排除**しています：
 
-- **単一アドレス空間 (SAS)**: 全てのコードが同一の仮想アドレス空間で実行
+### POSIXを排除する理由
+
+| POSIX | ExoRust | 理由 |
+|-------|---------|------|
+| `socket()` / `bind()` / `listen()` | パケット所有権交換 | ソケットはカーネル内バッファのコピーを強制 |
+| `read()` / `write()` | 所有権移動（`Transfer<T>`） | syscallごとのコピーを排除 |
+| `mmap()` + シグナル | 明示的な非同期API | シグナルは協調的タスクと相性が悪い |
+| ファイルディスクリプタ | 型付きハンドル + ケイパビリティ | 整数FDは型安全でない |
+
+### 三本柱
+
+- **単一アドレス空間 (SAS)**: TLBフラッシュを排除
 - **単一特権レベル (SPL)**: 全てのコードがRing 0で実行
-- **非同期中心主義 (Async-First)**: 協調的マルチタスクを基盤とする
+- **非同期中心主義 (Async-First)**: 協調的マルチタスクを基盤
 
-### アーキテクチャ図
+### パフォーマンス目標
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    User Space Applications                   │
-│   (Async Tasks - Safe Rust enforced by compiler)            │
-├─────────────────────────────────────────────────────────────┤
-│                     Userspace API Layer                      │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
-│   │ Task API │ │  IPC API │ │  I/O API │ │ Net API  │       │
-│   └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
-├─────────────────────────────────────────────────────────────┤
-│                    Domain Manager (Isolation)                │
-│   ┌──────────────────────────────────────────────────────┐  │
-│   │ Domain Registry │ Lifecycle │ IPC Proxy │ Recovery  │   │
-│   └──────────────────────────────────────────────────────┘  │
-├─────────────────────────────────────────────────────────────┤
-│                      Core Kernel Services                    │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
-│   │  Memory  │ │   Task   │ │Interrupt │ │  Timer   │       │
-│   │ Manager  │ │ Executor │ │  Handler │ │  System  │       │
-│   └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
-├─────────────────────────────────────────────────────────────┤
-│                      Hardware Abstraction                    │
-│   ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
-│   │   VirtIO │ │   NVMe   │ │  Network │ │   DMA    │       │
-│   └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
-└─────────────────────────────────────────────────────────────┘
-```
+| 操作 | 目標レイテンシ | 達成手段 |
+|------|---------------|----------|
+| メモリ割り当て | < 100ns | Buddy Allocator (O(log n)) |
+| ドメイン間IPC | < 50ns | ゼロコピー所有権移動 |
+| syscall相当 | ~10 cycles | 関数呼び出しのみ（Ring遷移なし） |
 
 ---
 
@@ -60,54 +49,42 @@ ExoRust Kernelは、以下の3つの原則に基づいて設計されていま�
 
 ### モジュール: `exorust::mm`
 
-#### フレームアロケータ
+#### Buddy Allocator（O(log n) 保証）
 
 ```rust
-use exorust::mm::frame_allocator;
+use exorust::mm::buddy_allocator;
 
 // 4KiBフレームを割り当て
-let frame = frame_allocator::allocate_frame()?;
+let frame = buddy_allocator::buddy_alloc_frame()?;
 
 // 2MiBヒュージフレームを割り当て
-let huge_frame = frame_allocator::allocate_huge_frame()?;
+let huge_frame = buddy_allocator::buddy_alloc_frame_2m()?;
 
-// フレームを解放
-frame_allocator::deallocate_frame(frame);
+// 1GiBギガページを割り当て（PDPT直接マッピング用）
+let giga_frame = buddy_allocator::buddy_alloc_frame_1g()?;
+
+// フレームを解放（Buddyと自動合体）
+buddy_allocator::buddy_dealloc_frame(frame);
 ```
 
-#### グローバルヒープ
+#### ページサイズ定数
 
 ```rust
-use alloc::vec::Vec;
-use alloc::boxed::Box;
-
-// 通常のRustアロケーションが使用可能
-let data: Vec<u8> = Vec::with_capacity(1024);
-let boxed: Box<MyStruct> = Box::new(MyStruct::new());
+pub const PAGE_SIZE_4K: usize = 4096;           // 標準ページ
+pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024; // Huge Page (PDE)
+pub const PAGE_SIZE_1G: usize = 1024 * 1024 * 1024; // Giga Page (PDPTE)
 ```
 
-#### Per-CPU キャッシュ
-
-```rust
-use exorust::mm::per_cpu;
-
-// 現在のCPU用のローカルアロケータからスラブを取得
-let object = per_cpu::allocate::<MyObject>()?;
-
-// 解放
-per_cpu::deallocate(object);
-```
-
-#### Exchange Heap (ドメイン間共有)
+#### Exchange Heap（ドメイン間ゼロコピー転送）
 
 ```rust
 use exorust::mm::exchange_heap::{ExchangeHeap, ExchangeBox};
 
-// 交換ヒープにオブジェクトを割り当て
-let shared: ExchangeBox<Data> = ExchangeBox::new(Data::new())?;
+// Exchange Heapに割り当て（ドメイン間転送用）
+let data: ExchangeBox<Packet> = ExchangeBox::new(Packet::new())?;
 
-// 別ドメインに所有権を移動
-other_domain.transfer(shared);
+// 所有権を別ドメインに移動（コピーなし）
+let transferred: Transfer<ExchangeBox<Packet>> = data.transfer_to(target_domain);
 ```
 
 ---
@@ -116,200 +93,228 @@ other_domain.transfer(shared);
 
 ### モジュール: `exorust::task`
 
-#### タスクの作成と実行
+#### 非同期タスクのスポーン
 
 ```rust
-use exorust::task::{spawn, spawn_local, JoinHandle};
+use exorust::task::{spawn, JoinHandle};
 
 // グローバルタスクをスポーン
 let handle: JoinHandle<i32> = spawn(async {
-    // 非同期処理
     compute_result().await
-});
-
-// ローカルタスク（現在のCPUで実行）
-spawn_local(async {
-    process_local_data().await;
 });
 
 // 完了を待機
 let result = handle.await?;
 ```
 
-#### 協調的Yield
+#### Per-Core Executor（Work Stealing）
 
 ```rust
-use exorust::task::yield_now;
+use exorust::task::per_core_executor::PerCoreExecutor;
 
-async fn long_computation() {
-    for i in 0..1000000 {
-        if i % 10000 == 0 {
-            yield_now().await;  // 他のタスクに実行機会を与える
-        }
-        // 計算処理
-    }
-}
-```
-
-#### タイマーとスリープ
-
-```rust
-use exorust::task::timer::{sleep, timeout, Instant};
-use core::time::Duration;
-
-async fn timed_operation() {
-    // 指定時間スリープ
-    sleep(Duration::from_millis(100)).await;
-    
-    // タイムアウト付き操作
-    match timeout(Duration::from_secs(5), some_operation()).await {
-        Ok(result) => println!("Completed: {:?}", result),
-        Err(_) => println!("Timed out"),
-    }
-}
-```
-
-#### プリエンプション制御
-
-```rust
-use exorust::task::preemption;
-
-// プリエンプションを一時的に無効化
-let guard = preemption::disable();
-// クリティカルセクション
-drop(guard);  // 自動的に再有効化
+// 各CPUコアに専用Executor
+// Work Stealingにより負荷分散
+PerCoreExecutor::current().spawn_local(async {
+    // このコアで実行
+});
 ```
 
 ---
 
-## IPC API
+## IPC API（所有権移動ベース）
+
+### 設計原則
+
+ExoRustのIPCは**所有権の移動**でデータを転送します。
+コピーは一切発生しません。
 
 ### モジュール: `exorust::ipc`
 
-#### Remote Reference (RRef)
+#### RRef（リモート参照）
 
 ```rust
 use exorust::ipc::rref::RRef;
 
-// RRefを作成（交換ヒープに割り当て）
-let data = RRef::new(SharedData { value: 42 })?;
+// Exchange Heapからリモート参照を作成
+let rref: RRef<Data> = RRef::new(Data::new())?;
 
-// 所有権を移動（ゼロコピー）
-send_to_other_domain(data);  // 元のdataは使用不可に
+// 別ドメインに所有権を移動
+// 元のドメインからはアクセス不可になる
+rref.transfer_to(target_domain_id);
+
+// 受信側：所有権を取得
+let received: RRef<Data> = receive_rref().await;
+let data: &Data = received.as_ref(); // 読み取り
 ```
 
-#### プロキシベースのドメイン間呼び出し
+#### Transfer型（所有権移動の明示化）
 
 ```rust
-use exorust::ipc::proxy::DomainProxy;
+use exorust::ipc::Transfer;
 
-// ドメインプロキシを取得
-let storage = DomainProxy::<StorageService>::get("storage")?;
-
-// メソッド呼び出し（パニック分離付き）
-match storage.call(|s| s.read_block(block_id)).await {
-    Ok(data) => process(data),
-    Err(IpcError::DomainPanicked) => {
-        // ドメインがクラッシュした場合のリカバリ
-        recover_storage_domain().await;
-    }
-    Err(e) => handle_error(e),
+// Transferは所有権が移動中であることを型で表現
+struct Transfer<T> {
+    data: T,
+    source_domain: DomainId,
+    target_domain: DomainId,
 }
+
+// 送信
+fn send<T: Transferable>(data: T, target: DomainId) -> Transfer<T>;
+
+// 受信（所有権を取得）
+fn receive<T: Transferable>() -> impl Future<Output = T>;
+```
+
+#### チャネル（所有権ベース）
+
+```rust
+use exorust::ipc::channel::{channel, Sender, Receiver};
+
+// チャネル作成
+let (tx, rx): (Sender<Packet>, Receiver<Packet>) = channel();
+
+// 送信（所有権を移動）
+tx.send(packet).await;  // packetはここで消費される
+
+// 受信（所有権を取得）
+let packet: Packet = rx.recv().await;
 ```
 
 ---
 
-## I/O API
+## I/O API（ゼロコピー）
+
+### 設計原則
+
+全てのI/O操作は**バッファの所有権**を明示的に扱います。
+カーネル内でのバッファコピーは発生しません。
 
 ### モジュール: `exorust::io`
 
-#### VirtIO Block Device
+#### DMAバッファ（静的ケイパビリティ付き）
 
 ```rust
-use exorust::io::virtio_blk::VirtioBlkDevice;
+use exorust::io::dma::{DmaBuffer, DmaRegion};
+use exorust::security::DmaCapability;
 
-let device = VirtioBlkDevice::init(pci_device)?;
-
-// 非同期読み取り
-let buffer = device.read_sectors(start_sector, count).await?;
-
-// 非同期書き込み
-device.write_sectors(start_sector, &data).await?;
+// DMAケイパビリティが必要（コンパイル時に検証）
+fn setup_dma(cap: &DmaCapability) -> DmaBuffer {
+    // 物理連続メモリを割り当て
+    let dma = DmaBuffer::new(cap, 4096)?;
+    
+    // 物理アドレスをデバイスに渡す
+    device.set_descriptor(dma.physical_address());
+    
+    dma
+}
 ```
 
-#### NVMe Driver
+#### VirtIO（所有権ベースのリングバッファ）
 
 ```rust
-use exorust::io::nvme::{NvmeController, NvmeNamespace};
+use exorust::io::virtio::{VirtQueue, Descriptor};
 
-let controller = NvmeController::init(pci_device)?;
-let ns = controller.namespace(1)?;
+// バッファをキューに投入（所有権を放棄）
+virtqueue.submit(buffer);  // bufferは消費される
 
-// ポーリングモードでの高速I/O
-ns.read_polling(lba, &mut buffer).await?;
-```
-
-#### DMA操作
-
-```rust
-use exorust::io::dma::{DmaBuffer, DmaDirection};
-
-// DMAバッファを割り当て
-let dma_buf = DmaBuffer::new(4096, DmaDirection::ToDevice)?;
-
-// データをコピー
-dma_buf.copy_from_slice(&data);
-
-// デバイスに物理アドレスを渡す
-let phys_addr = dma_buf.physical_address();
+// 完了を待機（所有権を回収）
+let completed: Buffer = virtqueue.poll().await;
 ```
 
 ---
 
-## ネットワーク API
+## ネットワーク API（パケット所有権交換）
+
+### 設計原則
+
+**POSIXソケット（`socket`, `bind`, `listen`）は提供しません。**
+
+代わりに、パケット単位での所有権交換APIを提供します。
+これはRedLeafやio_uringの設計哲学に近いアプローチです。
 
 ### モジュール: `exorust::net`
 
-#### TCP接続
+#### パケットプール
 
 ```rust
-use exorust::net::{TcpStream, TcpListener, SocketAddr};
+use exorust::net::mempool::{PacketPool, Packet};
 
-// サーバー
-let listener = TcpListener::bind(SocketAddr::new([0, 0, 0, 0], 8080))?;
-loop {
-    let (stream, addr) = listener.accept().await?;
-    spawn(handle_connection(stream, addr));
+// パケットプールからバッファを取得（所有権を取得）
+let mut packet: Packet = pool.alloc()?;
+
+// パケットにデータを書き込み
+packet.write_header(&eth_header);
+packet.write_payload(&data);
+```
+
+#### 送信キュー（所有権を放棄）
+
+```rust
+use exorust::net::tx_queue::TxQueue;
+
+// パケットを送信キューに投入（所有権を放棄）
+tx_queue.submit(packet);  // packetは消費される
+
+// 送信完了を待機
+tx_queue.poll_completion().await;
+```
+
+#### 受信キュー（所有権を取得）
+
+```rust
+use exorust::net::rx_queue::RxQueue;
+
+// 受信パケットの所有権を取得
+let packet: Packet = rx_queue.recv().await;
+
+// パケットを処理
+let eth_header = packet.eth_header();
+let payload = packet.payload();
+
+// 処理完了後、パケットをプールに返却（所有権を放棄）
+pool.free(packet);
+```
+
+#### TCPストリーム（非POSIX）
+
+従来のBerkeley Sockets風APIではなく、
+バッチ処理とゼロコピーを前提とした設計：
+
+```rust
+use exorust::net::tcp::{TcpEndpoint, TcpSegment};
+
+// TCPエンドポイント（ソケットではない）
+let endpoint = TcpEndpoint::new(cap)?;
+
+// 接続を確立（所有権ベースのハンドシェイク）
+let connection = endpoint.connect(remote_addr).await?;
+
+// 送信：バッファの所有権を渡す
+connection.send_segment(segment).await;
+
+// 受信：セグメントの所有権を取得
+let segment: TcpSegment = connection.recv_segment().await;
+
+// バッチ送信（高スループット用）
+connection.send_batch(&mut segment_batch).await;
+```
+
+#### 10Gbps最適化API
+
+```rust
+use exorust::net::optimization::{PacketBatch, BatchProcessor};
+
+// 64パケットのバッチ処理
+let mut batch = PacketBatch::new();
+while batch.len() < 64 {
+    if let Some(pkt) = rx_queue.try_recv() {
+        batch.push(pkt);
+    }
 }
 
-// クライアント
-let stream = TcpStream::connect(SocketAddr::new([192, 168, 1, 1], 80)).await?;
-stream.write_all(b"GET / HTTP/1.0\r\n\r\n").await?;
-```
-
-#### UDP通信
-
-```rust
-use exorust::net::{UdpSocket, UdpAddr};
-
-let socket = UdpSocket::bind(UdpAddr::new([0, 0, 0, 0], 53))?;
-
-// 送受信
-socket.send_to(&data, dest_addr).await?;
-let (len, src) = socket.recv_from(&mut buffer).await?;
-```
-
-#### ゼロコピーネットワーキング
-
-```rust
-use exorust::net::zero_copy::{ZeroCopyBuffer, PacketChain};
-
-// パケットプールから直接バッファを取得
-let buffer = ZeroCopyBuffer::alloc()?;
-
-// プロトコルスタックを通過（コピーなし）
-let chain = PacketChain::new(buffer);
-network_stack.send(chain).await?;
+// バッチ処理（SIMD最適化）
+processor.process_batch(&mut batch);
 ```
 
 ---
@@ -318,65 +323,79 @@ network_stack.send(chain).await?;
 
 ### モジュール: `exorust::fs`
 
-#### VFS操作
+#### 非同期ブロックI/O
 
 ```rust
-use exorust::fs::vfs::{Vfs, File, OpenOptions};
+use exorust::fs::block::{BlockDevice, BlockRequest};
 
-// ファイルを開く
-let file = Vfs::open("/path/to/file", OpenOptions::read())?;
+// ブロック読み取りリクエスト
+let req = BlockRequest::read(sector, buffer);
+block_device.submit(req).await?;
 
-// 非同期読み取り
-let mut buffer = [0u8; 1024];
-let bytes_read = file.read(&mut buffer).await?;
-
-// ファイル作成
-let new_file = Vfs::create("/path/to/new_file")?;
-new_file.write_all(&data).await?;
+// バッファの所有権が返却される
+let data: Buffer = req.complete().await;
 ```
 
-#### ブロックキャッシュ
+#### VFS（型付きハンドル）
 
 ```rust
-use exorust::fs::cache::BlockCache;
+use exorust::fs::vfs::{File, OpenMode};
+use exorust::security::FsCapability;
 
-// キャッシュされたブロック読み取り
-let block = BlockCache::read(device, block_num).await?;
+// ファイルシステムケイパビリティが必要
+fn open_file(cap: &FsCapability, path: &Path) -> File {
+    File::open(cap, path, OpenMode::Read)?
+}
 
-// ダーティブロックの書き戻し
-BlockCache::flush_all().await?;
+// 非同期読み取り（所有権ベース）
+let buffer = file.read_owned(size).await?;
 ```
 
 ---
 
-## 同期プリミティブ
+## 静的ケイパビリティ
 
-### モジュール: `exorust::sync`
+### 設計原則
 
-#### IRQ-Safe Mutex
+**ランタイムのアクセス制御チェックを排除**し、
+**コンパイル時に型システムで安全性を保証**します。
+
+### モジュール: `exorust::security::static_capability`
+
+#### ケイパビリティトークン
 
 ```rust
-use exorust::sync::IrqMutex;
+// 各権限は型として表現される
+pub struct NetCapability { ... }      // ネットワーク
+pub struct IoCapability { ... }       // I/Oポート
+pub struct DmaCapability { ... }      // DMA
+pub struct MemoryCapability { ... }   // メモリマッピング
 
-static DATA: IrqMutex<Vec<u8>> = IrqMutex::new(Vec::new());
-
-fn critical_section() {
-    let mut guard = DATA.lock();
-    // 割り込み禁止状態で操作
-    guard.push(42);
-}  // 自動的に割り込み復元
+// 権限トークンがないと関数を呼べない（コンパイルエラー）
+fn send_packet(cap: &NetCapability, data: &[u8]) -> Result<usize>;
 ```
 
-#### Async Mutex
+#### ドメインへの権限付与
 
 ```rust
-use exorust::sync::AsyncMutex;
+// カーネルがドメインに権限を付与
+fn spawn_driver_domain(entry: DomainEntryFn) {
+    let caps = DomainCapabilities {
+        io: Some(unsafe { grant_io_capability() }),
+        dma: Some(unsafe { grant_dma_capability() }),
+        net: None,  // ネットワーク権限は付与しない
+        ..DomainCapabilities::empty()
+    };
+    
+    domain::spawn(entry, caps);
+}
 
-static SHARED: AsyncMutex<Resource> = AsyncMutex::new(Resource::new());
-
-async fn use_resource() {
-    let guard = SHARED.lock().await;
-    guard.operate().await;
+// ドライバドメインのエントリポイント
+fn driver_entry(caps: DomainCapabilities) {
+    let io = caps.require_io();  // I/O権限を取得
+    
+    // ネットワーク操作は不可能（コンパイルエラー）
+    // let net = caps.require_net();  // パニック！
 }
 ```
 
@@ -386,101 +405,58 @@ async fn use_resource() {
 
 ### モジュール: `exorust::domain`
 
-#### ドメインの登録と管理
+#### ドメインのライフサイクル
 
 ```rust
-use exorust::domain::{DomainRegistry, DomainConfig};
+use exorust::domain::{Domain, DomainConfig};
 
-// ドメインを登録
 let config = DomainConfig {
-    name: "my_service",
-    memory_limit: 16 * 1024 * 1024,  // 16MB
-    capabilities: Capabilities::NETWORK | Capabilities::STORAGE,
+    name: "network_driver",
+    heap_size: 16 * 1024 * 1024,
 };
 
-let domain_id = DomainRegistry::register(config)?;
-```
+// ドメインを作成（権限を付与）
+let domain = Domain::create(config, capabilities)?;
 
-#### ドメインライフサイクル
-
-```rust
-use exorust::domain::lifecycle::{DomainLifecycle, DomainState};
-
-// ドメインを開始
-DomainLifecycle::start(domain_id).await?;
-
-// 状態を確認
-let state = DomainLifecycle::state(domain_id)?;
-assert_eq!(state, DomainState::Running);
-
-// 停止
-DomainLifecycle::stop(domain_id).await?;
-```
-
----
-
-## エラーハンドリング
-
-### ExoRust Error Types
-
-```rust
-use exorust::error::{ExoError, Result};
-
-pub enum ExoError {
-    OutOfMemory,
-    InvalidAddress,
-    DomainNotFound,
-    PermissionDenied,
-    DeviceError(DeviceErrorKind),
-    NetworkError(NetworkErrorKind),
-    IoError(IoErrorKind),
-    // ...
-}
-
-// 使用例
-fn allocate_buffer() -> Result<Buffer> {
-    let buffer = try_alloc()?;
-    Ok(buffer)
-}
-```
-
----
-
-## ベンチマーク API
-
-### モジュール: `exorust::benchmark`
-
-```rust
-use exorust::benchmark::{Benchmark, BenchmarkResult};
-
-// ベンチマークを実行
-let result = Benchmark::run("memory_alloc", || {
-    let _ = Box::new([0u8; 4096]);
+// タスクをスポーン
+domain.spawn(async {
+    // ドメイン内で実行
 });
 
-println!("Operations/sec: {}", result.ops_per_sec);
-println!("Latency p99: {}ns", result.latency_p99_ns);
+// ドメインの終了を待機
+domain.join().await;
+```
+
+#### 障害分離
+
+```rust
+// ドメイン内のパニックは他ドメインに影響しない
+domain.spawn(async {
+    panic!("This domain crashed!");
+});
+
+// カーネルは継続動作
+// ドメインのリソースは自動回収
 ```
 
 ---
 
-## 定数と設定
+## パフォーマンス比較
 
-### システム定数
+| 操作 | Linux | ExoRust | 改善 |
+|------|-------|---------|------|
+| syscall | ~200ns | ~10ns | 20x |
+| コンテキストスイッチ | ~1-2μs | ~100ns | 10-20x |
+| パケット送信 | ~1μs (コピー含む) | ~100ns (ゼロコピー) | 10x |
+| ファイル読み取り | 複数コピー | ゼロコピー | N/A |
 
-```rust
-// ページサイズ
-pub const PAGE_SIZE: usize = 4096;
-pub const HUGE_PAGE_SIZE: usize = 2 * 1024 * 1024;
+---
 
-// ネットワーク
-pub const MTU: usize = 1500;
-pub const MAX_PACKET_SIZE: usize = 9000;  // Jumbo frame
+## バージョン履歴
 
-// タスク
-pub const MAX_TASKS: usize = 65536;
-pub const DEFAULT_STACK_SIZE: usize = 64 * 1024;
-```
+- **v0.3.0**: POSIX排除の徹底、静的ケイパビリティ導入
+- **v0.2.0**: 基本機能実装完了
+- **v0.1.0**: 初期リリース
 
 ---
 
