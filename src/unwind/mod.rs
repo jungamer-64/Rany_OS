@@ -245,42 +245,6 @@ impl Default for Backtrace {
     }
 }
 
-/// DWARF Common Information Entry (CIE)
-#[derive(Debug, Clone)]
-pub struct Cie {
-    /// CIEの長さ
-    pub length: u32,
-    /// バージョン
-    pub version: u8,
-    /// コードアライメント係数
-    pub code_alignment_factor: u64,
-    /// データアライメント係数
-    pub data_alignment_factor: i64,
-    /// リターンアドレスレジスタ
-    pub return_address_register: u64,
-    /// 初期命令列のオフセット
-    pub initial_instructions_offset: usize,
-    /// 初期命令列の長さ
-    pub initial_instructions_length: usize,
-}
-
-/// DWARF Frame Description Entry (FDE)
-#[derive(Debug, Clone)]
-pub struct Fde {
-    /// FDEの長さ
-    pub length: u32,
-    /// 対応するCIEへのポインタ
-    pub cie_pointer: u32,
-    /// PCの開始アドレス
-    pub pc_begin: usize,
-    /// PCの範囲
-    pub pc_range: usize,
-    /// 命令列のオフセット
-    pub instructions_offset: usize,
-    /// 命令列の長さ
-    pub instructions_length: usize,
-}
-
 /// 有効なスタックアドレスかチェック
 fn is_valid_stack_address(addr: usize) -> bool {
     // スタックは通常高位アドレスにある
