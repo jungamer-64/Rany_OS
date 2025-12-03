@@ -126,10 +126,16 @@ pub struct NetworkStack {
 
 impl NetworkStack {
     /// Create a new network stack with configuration
+    /// 
+    /// # パフォーマンス注意
+    /// Ipv4Config が Clone を実装しているが、内部データが Copy なら
+    /// clone() はゼロコストでインライン化される
     pub fn new(config: NetworkConfig) -> Self {
         let mac = config.mac;
         let ip = config.ipv4.address;
         
+        // Note: ipv4.clone() は Ipv4Config が小さい構造体のため
+        // アセンブリでは memcpy やレジスタコピーに展開される
         NetworkStack {
             ethernet: Mutex::new(EthernetProcessor::new(mac)),
             ipv4: Mutex::new(Ipv4Processor::new(config.ipv4.clone())),

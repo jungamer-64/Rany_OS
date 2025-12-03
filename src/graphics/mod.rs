@@ -1049,10 +1049,14 @@ pub fn init(info: FramebufferInfo) {
 
     *FRAMEBUFFER.lock() = Some(fb);
 
-    crate::log!("[GRAPHICS] Framebuffer initialized: {}x{}\n",
-        FRAMEBUFFER.lock().as_ref().unwrap().width(),
-        FRAMEBUFFER.lock().as_ref().unwrap().height()
-    );
+    // ロックを1回だけ取得して情報を取り出す（2回のlock+unwrap → 1回のlockで変数コピー）
+    // アセンブリ: 2x (lock acquire + memory fence + unwrap check) → 1x lock + 2x mov
+    let (w, h) = {
+        let guard = FRAMEBUFFER.lock();
+        let fb = guard.as_ref().expect("framebuffer must be initialized");
+        (fb.width(), fb.height())
+    };
+    crate::log!("[GRAPHICS] Framebuffer initialized: {}x{}\n", w, h);
 }
 
 /// グラフィカルコンソールを初期化

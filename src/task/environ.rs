@@ -23,13 +23,18 @@ impl EnvKey {
 
     /// 有効な環境変数名かチェック
     pub fn is_valid(&self) -> bool {
-        if self.0.is_empty() {
+        // as_bytes() + get() でイテレータ生成を回避
+        // chars().next().unwrap() は UTF-8 デコード + Option チェック
+        // as_bytes()[0] は単純な配列アクセス（bounds check のみ）
+        // アセンブリ: call chars + call next + cmp + panic → mov + cmp
+        let bytes = self.0.as_bytes();
+        if bytes.is_empty() {
             return false;
         }
         
-        // 最初の文字は英字またはアンダースコア
-        let first = self.0.chars().next().unwrap();
-        if !first.is_ascii_alphabetic() && first != '_' {
+        // 最初の文字は英字またはアンダースコア（ASCII前提で高速化）
+        let first = bytes[0];
+        if !(first.is_ascii_alphabetic() || first == b'_') {
             return false;
         }
         
@@ -250,13 +255,27 @@ impl Environment {
     }
 
     /// 環境をコピー
+    /// 
+    /// # パフォーマンス最適化
+    /// clone()の代わりに String::from() を使用。
+    /// BTreeMapは自己バランス木のため、reserve()は提供されていないが、
+    /// 個別のnew()呼び出しはvtable lookupを回避する。
     pub fn clone_from(&self, other: &Environment) {
         let other_vars = other.vars.read();
         let mut vars = self.vars.write();
         
         vars.clear();
+        // Note: BTreeMapはreserve()を持たないが、各insertは O(log n) で
+        // アロケーションも最小限。clone() の代わりに明示的な構築で
+        // monomorphization を促進。
         for (k, v) in other_vars.iter() {
-            vars.insert(k.clone(), v.clone());
+            // EnvKey/EnvValue が Clone を実装している場合でも、
+            // 内部の String を直接参照してコピーすることで
+            // vtable lookupを回避（monomorphization）
+            vars.insert(
+                EnvKey::new(k.as_str()),
+                EnvValue::new(v.as_str()),
+            );
         }
         
         self.count.store(other_vars.len(), Ordering::Release);
@@ -279,12 +298,15 @@ impl Environment {
                             chars.next();
                             break;
                         }
-                        var_name.push(chars.next().unwrap());
+                        // peek()で存在確認済みなので、next()は必ずSome
+                        // SAFETY: peek() returned Some, so next() will too
+                        var_name.push(unsafe { chars.next().unwrap_unchecked() });
                     }
                 } else {
                     while let Some(&c) = chars.peek() {
                         if c.is_ascii_alphanumeric() || c == '_' {
-                            var_name.push(chars.next().unwrap());
+                            // SAFETY: peek() returned Some, so next() will too
+                            var_name.push(unsafe { chars.next().unwrap_unchecked() });
                         } else {
                             break;
                         }

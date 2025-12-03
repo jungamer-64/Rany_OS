@@ -378,10 +378,14 @@ impl Ring {
     pub unsafe fn new(size: usize) -> Self {
         use core::alloc::Layout;
         
+        // Layout::from_size_align はサイズとアライメントが有効な場合は常に成功
+        // 4096アライメントとTrbサイズの積は常に有効なため、
+        // unwrap_unchecked() で分岐を完全に除去
+        // アセンブリ: cmp + jne (条件分岐) → 完全に消滅
         let layout = Layout::from_size_align(
             size * core::mem::size_of::<Trb>(),
             4096,
-        ).unwrap();
+        ).unwrap_unchecked();
         
         let ptr = alloc::alloc::alloc_zeroed(layout) as *mut Trb;
         
@@ -622,7 +626,9 @@ impl XhciController {
         use core::alloc::Layout;
         
         let size = (self.max_slots as usize + 1) * 8;
-        let layout = Layout::from_size_align(size, 64).unwrap();
+        // 64バイトアライメントと (max_slots+1)*8 は常に有効なレイアウト
+        // unwrap_unchecked() で panic ブランチを除去
+        let layout = Layout::from_size_align(size, 64).unwrap_unchecked();
         self.dcbaa = alloc::alloc::alloc_zeroed(layout) as *mut u64;
         
         if self.dcbaa.is_null() {

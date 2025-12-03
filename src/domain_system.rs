@@ -297,13 +297,22 @@ pub fn init() {
 }
 
 /// 新しいドメインを作成
+/// 
+/// # パフォーマンス注意
+/// `name.clone()` は `crate::log!` マクロで使用するために必要。
+/// ドメイン作成は頻繁に呼ばれないため、このコストは許容される。
+/// 代替案: log を先に行い、name を消費するパターン
 pub fn create_domain(name: String) -> DomainId {
     let mut registry = REGISTRY.lock();
     let id = registry.generate_id();
-    let domain = Domain::new(id, name.clone());
+    
+    // name をログで先に使用し、その後 Domain::new に渡す
+    // これにより clone() を回避
+    crate::log!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
+    
+    let domain = Domain::new(id, name);
     registry.domains.insert(id, domain);
     
-    crate::log!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), name);
     id
 }
 
@@ -360,6 +369,9 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
         return Err("Cannot terminate kernel domain");
     }
     
+    // dependents をロック外で使うため clone() が必要
+    // Note: Vec<DomainId> の clone は DomainId が Copy なら
+    // 単純な memcpy に展開される（Vecヘッダーのみアロケート）
     let dependents: Vec<DomainId>;
     
     {
@@ -367,6 +379,8 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
         
         if let Some(domain) = registry.domains.get_mut(&id) {
             domain.state = DomainState::Terminated;
+            // clone() はロックを保持したままの処理を避けるため
+            // デッドロック回避が clone のコストより重要
             dependents = domain.dependents.clone();
         } else {
             return Err("Domain not found");

@@ -285,10 +285,11 @@ impl IommuDomain {
     /// Create a new domain
     pub fn new(id: u16) -> Self {
         // Allocate page table
-        let layout = alloc::alloc::Layout::from_size_align(
+        // SAFETY: 4096アライメントと4096の倍数サイズは常に有効なレイアウト
+        let layout = unsafe { alloc::alloc::Layout::from_size_align(
             PT_ENTRIES * core::mem::size_of::<SlPte>(),
             4096,
-        ).unwrap();
+        ).unwrap_unchecked() };
         
         let page_table = unsafe {
             alloc::alloc::alloc_zeroed(layout) as *mut SlPte
@@ -564,7 +565,8 @@ impl IommuController {
         self.ecap = self.read64(regs::ECAP);
         
         // Allocate root table (4KB, 256 entries)
-        let rt_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap();
+        // SAFETY: 4096 アライメントと4096サイズは常に有効
+        let rt_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap_unchecked();
         self.root_table = alloc::alloc::alloc_zeroed(rt_layout) as *mut RootEntry;
         
         if self.root_table.is_null() {
@@ -573,7 +575,8 @@ impl IommuController {
         
         // Allocate context tables for all buses
         for _ in 0..256 {
-            let ct_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap();
+            // SAFETY: 4096 アライメントと4096サイズは常に有効
+            let ct_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap_unchecked();
             let ct = alloc::alloc::alloc_zeroed(ct_layout) as *mut ContextEntry;
             
             if ct.is_null() {

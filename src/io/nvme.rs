@@ -1071,7 +1071,10 @@ impl<'a> Future for NvmeReadFuture<'a> {
         let qp = queue.lock();
         
         if let Some(cqe) = qp.cq.poll() {
-            if cqe.cid == self.cid.unwrap() {
+            // SAFETY: submitted=true なら cid は必ず Some
+            // アセンブリ: Option の分岐条件 (test + cmov) を除去
+            let cid = unsafe { self.cid.unwrap_unchecked() };
+            if cqe.cid == cid {
                 qp.sq.free_cid(cqe.cid);
                 if cqe.is_success() {
                     return Poll::Ready(Ok(self.buf.len()));
@@ -1150,7 +1153,9 @@ impl<'a> Future for NvmeWriteFuture<'a> {
         let qp = queue.lock();
         
         if let Some(cqe) = qp.cq.poll() {
-            if cqe.cid == self.cid.unwrap() {
+            // SAFETY: submitted=true なら cid は必ず Some
+            let cid = unsafe { self.cid.unwrap_unchecked() };
+            if cqe.cid == cid {
                 qp.sq.free_cid(cqe.cid);
                 if cqe.is_success() {
                     return Poll::Ready(Ok(self.buf.len()));

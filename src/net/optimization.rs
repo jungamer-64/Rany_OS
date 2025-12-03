@@ -941,11 +941,18 @@ static ADAPTIVE_COALESCING: spin::Once<AdaptiveCoalescing> = spin::Once::new();
 static NETWORK_METRICS: NetworkMetrics = NetworkMetrics::new();
 
 /// ネットワーク最適化を初期化
+/// 
+/// # Note
+/// この関数は起動時に1回だけ呼ばれるため、unwrap()のコストは許容される。
+/// ただし、expect()で明示的なエラーメッセージを提供。
 pub fn init() {
     BATCH_PROCESSOR.call_once(|| BatchProcessor::new(BatchConfig::default()));
     NUMA_TOPOLOGY.call_once(NumaTopology::detect);
     
-    let topology = NUMA_TOPOLOGY.get().unwrap();
+    // expect() で明示的なエラーメッセージを提供
+    // init() は起動時のみなので panic ブランチのコストは許容される
+    let topology = NUMA_TOPOLOGY.get()
+        .expect("NUMA topology must be initialized");
     FLOW_AFFINITY.call_once(|| FlowAffinity::new(CpuAffinity::all()));
     
     ADAPTIVE_COALESCING.call_once(|| AdaptiveCoalescing::new(InterruptCoalescing::default()));
