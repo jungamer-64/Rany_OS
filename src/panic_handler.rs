@@ -53,6 +53,9 @@ pub fn get_current_domain() -> u64 {
 pub fn handle_panic(info: &PanicInfo) -> ! {
     // 割り込みを無効化
     x86_64::instructions::interrupts::disable();
+    
+    // パニックモードに入る（ログ出力時のデッドロック回避）
+    crate::io::log::enter_panic_mode();
 
     // パニック回数をインクリメント
     let count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);

@@ -87,9 +87,9 @@ fn init_idt() {
         crate::vga::early_serial_str("[IDT] hw int\n");
         
         // ハードウェア割り込みハンドラの設定
-        idt[InterruptVector::Timer as usize].set_handler_fn(timer_interrupt_handler);
-        idt[InterruptVector::Keyboard as usize].set_handler_fn(keyboard_interrupt_handler);
-        idt[InterruptVector::Com1 as usize].set_handler_fn(com1_interrupt_handler);
+        idt[InterruptVector::Timer as u8].set_handler_fn(timer_interrupt_handler);
+        idt[InterruptVector::Keyboard as u8].set_handler_fn(keyboard_interrupt_handler);
+        idt[InterruptVector::Com1 as u8].set_handler_fn(com1_interrupt_handler);
         
         crate::vga::early_serial_str("[IDT] load\n");
         

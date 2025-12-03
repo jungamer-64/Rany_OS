@@ -28,23 +28,29 @@ path = "src/lib.rs"
 bootloader = { version = "0.9", features = ["map_physical_memory"] }
 
 # x86_64アーキテクチャサポート
-x86_64 = "0.14"
+x86_64 = "0.15"
 
 # スピンロック（no_std互換）
-spin = "0.9"
+spin = "0.10"
 
 # Lazy static for global state
 lazy_static = { version = "1.5", features = ["spin_no_std"] }
 
 # UART シリアル出力（デバッグ用）
-uart_16550 = { version = "0.3", optional = true }
+uart_16550 = { version = "0.4", optional = true }
 
 # ビットフィールド操作
 bitflags = "2.4"
 
 # DWARF情報解析（スタックアンワインド用）
 # no_std対応、eh_frame解析に使用
-gimli = { version = "0.31", default-features = false, features = ["read-core"] }
+gimli = { version = "0.32", default-features = false, features = ["read-core"] }
+
+# no_std向けHashMap (BTreeMapの代替)
+hashbrown = "0.16"
+
+# ログフレームワーク（no_std互換）
+log = "0.4"
 
 # ============================================================================
 # ビルドプロファイル

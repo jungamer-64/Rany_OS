@@ -286,14 +286,17 @@ static HEAP_REGISTRY: Mutex<HeapRegistry> = Mutex::new(HeapRegistry::new());
 
 /// ドメインシステムを初期化（カーネルドメインを作成）
 pub fn init() {
+    crate::vga::early_serial_str("[DOM] lock\n");
     let mut registry = REGISTRY.lock();
+    crate::vga::early_serial_str("[DOM] locked\n");
 
     // カーネルドメインを作成
     let mut kernel = Domain::new(DomainId::KERNEL, "kernel".into());
+    crate::vga::early_serial_str("[DOM] new done\n");
     kernel.state = DomainState::Running;
+    crate::vga::early_serial_str("[DOM] insert\n");
     registry.domains.insert(DomainId::KERNEL, kernel);
-
-    crate::log!("[DOMAIN] Domain system initialized (kernel domain created)\n");
+    crate::vga::early_serial_str("[DOM] done\n");
 }
 
 /// 新しいドメインを作成
