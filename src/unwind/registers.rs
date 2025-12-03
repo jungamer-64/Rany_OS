@@ -457,6 +457,17 @@ impl UnwindContext {
             self.cfa = CfaRule::RegisterOffset { register, offset };
         }
     }
+
+    /// 別のコンテキストから状態をコピー（clone()より高速）
+    /// 
+    /// clone() は新しいメモリを確保するが、copy_from() は既存のメモリに上書きするため、
+    /// アロケーションコストが発生しない。スタック状態の保存/復元に最適。
+    #[inline]
+    pub fn copy_from(&mut self, other: &Self) {
+        self.registers.copy_from(&other.registers);
+        self.cfa = other.cfa;
+        self.pc = other.pc;
+    }
 }
 
 impl Default for UnwindContext {

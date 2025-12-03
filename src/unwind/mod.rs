@@ -1044,9 +1044,16 @@ impl<'a> SafeEhFrameParser<'a> {
 }
 
 /// 型安全なCFIインタプリタ
+/// 
+/// state_stack は Clone の代わりに直接配列 + 有効フラグを使用。
+/// これにより RememberState/RestoreState 時に copy_from() で
+/// インプレースコピーが可能になり、アロケーションが不要。
 pub struct SafeCfiInterpreter {
     context: registers::UnwindContext,
-    state_stack: [Option<registers::UnwindContext>; 4],
+    /// 状態スタック（Clone不要、直接コピー用）
+    state_stack: [registers::UnwindContext; 4],
+    /// 各スタックエントリの有効フラグ
+    state_stack_valid: [bool; 4],
     state_stack_len: usize,
     location: u64,
     code_alignment_factor: u64,
@@ -1057,7 +1064,13 @@ impl SafeCfiInterpreter {
     pub fn new(code_alignment_factor: u64, _data_alignment_factor: i64) -> Self {
         Self {
             context: registers::UnwindContext::new(),
-            state_stack: [None, None, None, None],
+            state_stack: [
+                registers::UnwindContext::new(),
+                registers::UnwindContext::new(),
+                registers::UnwindContext::new(),
+                registers::UnwindContext::new(),
+            ],
+            state_stack_valid: [false; 4],
             state_stack_len: 0,
             location: 0,
             code_alignment_factor,
@@ -1105,16 +1118,21 @@ impl SafeCfiInterpreter {
                 self.location += delta * self.code_alignment_factor;
             }
             SafeCfiInstruction::RememberState => {
+                // clone() ではなく copy_from() を使用
+                // これにより新規メモリ確保が不要になり、CPUサイクルを削減
                 if self.state_stack_len < self.state_stack.len() {
-                    self.state_stack[self.state_stack_len] = Some(self.context.clone());
+                    self.state_stack[self.state_stack_len].copy_from(&self.context);
+                    self.state_stack_valid[self.state_stack_len] = true;
                     self.state_stack_len += 1;
                 }
             }
             SafeCfiInstruction::RestoreState => {
+                // copy_from() でインプレース復元
                 if self.state_stack_len > 0 {
                     self.state_stack_len -= 1;
-                    if let Some(ctx) = self.state_stack[self.state_stack_len].take() {
-                        self.context = ctx;
+                    if self.state_stack_valid[self.state_stack_len] {
+                        self.context.copy_from(&self.state_stack[self.state_stack_len]);
+                        self.state_stack_valid[self.state_stack_len] = false;
                     }
                 }
             }

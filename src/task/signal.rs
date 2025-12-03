@@ -491,8 +491,12 @@ impl<'a> Future for SignalFuture<'a> {
             Poll::Ready(info)
         } else {
             // Wakerを登録
+            // will_wake() で既存のWakerと比較し、同じなら clone() を回避
             let mut wakers = self.ctx.wakers.lock();
-            wakers.push(cx.waker().clone());
+            let new_waker = cx.waker();
+            if !wakers.iter().any(|w| w.will_wake(new_waker)) {
+                wakers.push(new_waker.clone());
+            }
             Poll::Pending
         }
     }
