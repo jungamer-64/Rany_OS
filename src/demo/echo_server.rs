@@ -5,9 +5,14 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::vec;
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 
 use crate::demo::DemoResult;
+use crate::net::endpoint::{
+    SocketAddr, SocketError, OwnedSocket,
+    create_tcp_server,
+};
 
 /// Echo server statistics
 pub struct EchoStats {
@@ -17,6 +22,8 @@ pub struct EchoStats {
     pub bytes_echoed: AtomicU64,
     /// Errors
     pub errors: AtomicU64,
+    /// Active connections
+    pub active_connections: AtomicU64,
 }
 
 impl EchoStats {
@@ -25,7 +32,29 @@ impl EchoStats {
             connections: AtomicU64::new(0),
             bytes_echoed: AtomicU64::new(0),
             errors: AtomicU64::new(0),
+            active_connections: AtomicU64::new(0),
         }
+    }
+    
+    /// Record new connection
+    pub fn on_connect(&self) {
+        self.connections.fetch_add(1, Ordering::Relaxed);
+        self.active_connections.fetch_add(1, Ordering::Relaxed);
+    }
+    
+    /// Record connection close
+    pub fn on_disconnect(&self) {
+        self.active_connections.fetch_sub(1, Ordering::Relaxed);
+    }
+    
+    /// Record bytes echoed
+    pub fn on_echo(&self, bytes: usize) {
+        self.bytes_echoed.fetch_add(bytes as u64, Ordering::Relaxed);
+    }
+    
+    /// Record error
+    pub fn on_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -40,6 +69,8 @@ pub struct EchoConfig {
     pub max_message_size: usize,
     /// Echo prefix
     pub prefix: Option<String>,
+    /// Backlog size for listen()
+    pub backlog: u32,
 }
 
 impl Default for EchoConfig {
@@ -48,11 +79,189 @@ impl Default for EchoConfig {
             port: 7777,
             max_message_size: 65536,
             prefix: None,
+            backlog: 128,
         }
     }
 }
 
-/// Simulated echo connection
+// ============================================================================
+// Real Async TCP Echo Server using endpoint module
+// ============================================================================
+
+/// Run the real async TCP echo server
+/// This uses the actual network stack with OwnedSocket and async/await
+pub async fn run_echo_server() {
+    run_echo_server_on_port(8080).await
+}
+
+/// Run the async TCP echo server on specified port
+pub async fn run_echo_server_on_port(port: u16) {
+    let addr = SocketAddr::new([0, 0, 0, 0], port); // 0.0.0.0:port
+
+    // 1. Create server socket (Bind + Listen)
+    let server = match create_tcp_server(addr, 128) {
+        Ok(s) => s,
+        Err(e) => {
+            crate::serial_println!("Echo Server: Failed to bind on port {}: {:?}", port, e);
+            STATS.on_error();
+            return;
+        }
+    };
+
+    RUNNING.store(true, Ordering::SeqCst);
+    crate::serial_println!("Echo Server: Listening on 0.0.0.0:{}", port);
+
+    // Accept loop
+    loop {
+        if !RUNNING.load(Ordering::SeqCst) {
+            crate::serial_println!("Echo Server: Shutdown requested");
+            break;
+        }
+
+        // 2. Accept connections (Async)
+        if let Some(accept_future) = server.accept_async() {
+            match accept_future.await {
+                Ok((client_socket, client_addr)) => {
+                    STATS.on_connect();
+                    crate::serial_println!(
+                        "Echo Server: New connection from {:?}:{} (total: {})",
+                        client_addr.ip,
+                        client_addr.port,
+                        STATS.connections.load(Ordering::Relaxed)
+                    );
+
+                    // 3. Spawn client handler task
+                    // Note: In a real implementation, this would use the task scheduler
+                    // For now, we handle inline (single-threaded)
+                    handle_echo_client(client_socket).await;
+                }
+                Err(SocketError::Timeout) => {
+                    // No pending connections, yield and try again
+                    // In real async runtime, this would be handled by the Future
+                    continue;
+                }
+                Err(e) => {
+                    crate::serial_println!("Echo Server: Accept error: {:?}", e);
+                    STATS.on_error();
+                }
+            }
+        }
+    }
+
+    RUNNING.store(false, Ordering::SeqCst);
+    crate::serial_println!("Echo Server: Stopped");
+}
+
+/// Handle a single echo client connection
+async fn handle_echo_client(socket: OwnedSocket) {
+    let client_fd = socket.fd();
+    crate::serial_println!("Echo Client {}: Handler started", client_fd.raw());
+
+    loop {
+        // 4. Receive data (Async)
+        let recv_future = match socket.recv_async(1024) {
+            Some(f) => f,
+            None => {
+                crate::serial_println!("Echo Client {}: Socket error", client_fd.raw());
+                STATS.on_error();
+                break;
+            }
+        };
+
+        match recv_future.await {
+            Ok(data) => {
+                if data.is_empty() {
+                    // EOF - connection closed by peer
+                    crate::serial_println!("Echo Client {}: Connection closed by peer", client_fd.raw());
+                    break;
+                }
+
+                let len = data.len();
+                crate::serial_println!(
+                    "Echo Client {}: Received {} bytes",
+                    client_fd.raw(),
+                    len
+                );
+
+                // 5. Send data back (Echo)
+                if let Some(send_future) = socket.send_async(data) {
+                    match send_future.await {
+                        Ok(sent) => {
+                            STATS.on_echo(sent);
+                            crate::serial_println!(
+                                "Echo Client {}: Echoed {} bytes",
+                                client_fd.raw(),
+                                sent
+                            );
+                        }
+                        Err(e) => {
+                            crate::serial_println!(
+                                "Echo Client {}: Send error: {:?}",
+                                client_fd.raw(),
+                                e
+                            );
+                            STATS.on_error();
+                            break;
+                        }
+                    }
+                }
+            }
+            Err(SocketError::Timeout) => {
+                // No data available, continue waiting
+                continue;
+            }
+            Err(e) => {
+                crate::serial_println!("Echo Client {}: Recv error: {:?}", client_fd.raw(), e);
+                STATS.on_error();
+                break;
+            }
+        }
+    }
+
+    STATS.on_disconnect();
+    crate::serial_println!(
+        "Echo Client {}: Handler finished (active: {})",
+        client_fd.raw(),
+        STATS.active_connections.load(Ordering::Relaxed)
+    );
+    // OwnedSocket is dropped here, automatically sending FIN and closing
+}
+
+/// Stop the echo server
+pub fn stop_server() {
+    RUNNING.store(false, Ordering::SeqCst);
+}
+
+/// Check if server is running
+pub fn is_running() -> bool {
+    RUNNING.load(Ordering::SeqCst)
+}
+
+/// Get echo server statistics
+pub fn stats() -> (u64, u64, u64, u64) {
+    (
+        STATS.connections.load(Ordering::Relaxed),
+        STATS.bytes_echoed.load(Ordering::Relaxed),
+        STATS.errors.load(Ordering::Relaxed),
+        STATS.active_connections.load(Ordering::Relaxed),
+    )
+}
+
+/// Print server statistics
+pub fn print_stats() {
+    let (conns, bytes, errors, active) = stats();
+    crate::serial_println!("Echo Server Statistics:");
+    crate::serial_println!("  Total connections: {}", conns);
+    crate::serial_println!("  Active connections: {}", active);
+    crate::serial_println!("  Bytes echoed: {}", bytes);
+    crate::serial_println!("  Errors: {}", errors);
+}
+
+// ============================================================================
+// Legacy Simulation Code (for testing without network hardware)
+// ============================================================================
+
+/// Simulated echo connection (for demo/testing purposes)
 pub struct EchoConnection {
     id: u64,
     remote: String,
@@ -62,7 +271,7 @@ pub struct EchoConnection {
 
 impl EchoConnection {
     pub fn new(id: u64, remote: &str) -> Self {
-        STATS.connections.fetch_add(1, Ordering::Relaxed);
+        STATS.on_connect();
         
         EchoConnection {
             id,
@@ -85,18 +294,19 @@ impl EchoConnection {
         };
         
         self.bytes_out += response.len() as u64;
-        STATS.bytes_echoed.fetch_add(response.len() as u64, Ordering::Relaxed);
+        STATS.on_echo(response.len());
         
         response
     }
     
     pub fn close(self) {
+        STATS.on_disconnect();
         crate::log!("[ECHO] Connection {} closed (in={}, out={})\n", 
             self.id, self.bytes_in, self.bytes_out);
     }
 }
 
-/// Run echo server demo
+/// Run echo server demo (simulation mode)
 pub fn run() -> DemoResult {
     crate::log!("\n");
     crate::log!("================================================================================\n");
@@ -107,12 +317,14 @@ pub fn run() -> DemoResult {
         port: 7777,
         max_message_size: 4096,
         prefix: Some(String::from("[ECHO] ")),
+        backlog: 128,
     };
     
     RUNNING.store(true, Ordering::SeqCst);
     
     crate::log!("[ECHO] Server initialized on port {}\n", config.port);
     crate::log!("[ECHO] Max message size: {} bytes\n", config.max_message_size);
+    crate::log!("[ECHO] Backlog: {} connections\n", config.backlog);
     if let Some(ref prefix) = config.prefix {
         crate::log!("[ECHO] Response prefix: '{}'\n", prefix);
     }
@@ -166,10 +378,12 @@ pub fn run() -> DemoResult {
     conn2.close();
     
     // Print statistics
+    let (conns, bytes, errors, active) = stats();
     crate::log!("\n[ECHO] Server Statistics:\n");
-    crate::log!("       Total connections: {}\n", STATS.connections.load(Ordering::Relaxed));
-    crate::log!("       Bytes echoed: {}\n", STATS.bytes_echoed.load(Ordering::Relaxed));
-    crate::log!("       Errors: {}\n", STATS.errors.load(Ordering::Relaxed));
+    crate::log!("       Total connections: {}\n", conns);
+    crate::log!("       Active connections: {}\n", active);
+    crate::log!("       Bytes echoed: {}\n", bytes);
+    crate::log!("       Errors: {}\n", errors);
     
     RUNNING.store(false, Ordering::SeqCst);
     
@@ -177,18 +391,4 @@ pub fn run() -> DemoResult {
     crate::log!("================================================================================\n\n");
     
     DemoResult::Success
-}
-
-/// Get echo server statistics
-pub fn stats() -> (u64, u64, u64) {
-    (
-        STATS.connections.load(Ordering::Relaxed),
-        STATS.bytes_echoed.load(Ordering::Relaxed),
-        STATS.errors.load(Ordering::Relaxed),
-    )
-}
-
-/// Check if server is running
-pub fn is_running() -> bool {
-    RUNNING.load(Ordering::SeqCst)
 }

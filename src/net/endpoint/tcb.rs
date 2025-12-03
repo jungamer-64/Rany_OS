@@ -8,6 +8,9 @@ use spin::RwLock;
 
 use super::types::{SocketFd, SocketAddr};
 use super::retransmit::check_retransmit_timeouts;
+use super::congestion::CongestionController;
+use super::window_scale::WindowScaleOption;
+use super::flow_control::FlowController;
 
 /// TCPフラグ
 pub mod tcp_flags {
@@ -35,7 +38,7 @@ pub enum TcpConnectionState {
     TimeWait,
 }
 
-/// TCP制御ブロック（軽量版）
+/// TCP制御ブロック（RFC 5681/7323準拠）
 #[derive(Debug, Clone)]
 pub struct TcpControlBlockEntry {
     /// ソケットFD
@@ -52,14 +55,22 @@ pub struct TcpControlBlockEntry {
     pub snd_una: u32,
     /// 受信シーケンス番号（次に期待するバイト）
     pub rcv_nxt: u32,
-    /// 送信ウィンドウサイズ
+    /// 送信ウィンドウサイズ (legacy - 16bit)
     pub snd_wnd: u16,
-    /// 受信ウィンドウサイズ
+    /// 受信ウィンドウサイズ (legacy - 16bit)
     pub rcv_wnd: u16,
     /// 再送回数
     pub retransmit_count: u8,
     /// 最終送信時刻（tick）
     pub last_send_tick: u64,
+    /// 輻輳制御コントローラ
+    pub congestion: CongestionController,
+    /// ウィンドウスケーリングオプション
+    pub window_scale: WindowScaleOption,
+    /// フロー制御コントローラ
+    pub flow_control: FlowController,
+    /// Maximum Segment Size (peer's)
+    pub mss: u32,
 }
 
 impl TcpControlBlockEntry {
@@ -77,6 +88,10 @@ impl TcpControlBlockEntry {
             rcv_wnd: 65535,
             retransmit_count: 0,
             last_send_tick: 0,
+            congestion: CongestionController::new(),
+            window_scale: WindowScaleOption::default_enabled(),
+            flow_control: FlowController::new(),
+            mss: 1460, // Default MSS
         }
     }
     
@@ -84,6 +99,72 @@ impl TcpControlBlockEntry {
     pub fn initialize_seq(&mut self, isn: u32) {
         self.snd_nxt = isn;
         self.snd_una = isn;
+    }
+    
+    /// 実効送信ウィンドウを計算 (cwnd, rwnd, flow control考慮)
+    pub fn effective_send_window(&self) -> u32 {
+        let scaled_rwnd = self.window_scale.scale_snd_window(self.snd_wnd);
+        self.congestion.available_window(scaled_rwnd)
+    }
+    
+    /// 実効受信ウィンドウを取得
+    pub fn effective_recv_window(&self) -> u32 {
+        self.flow_control.advertised_window()
+    }
+    
+    /// 広告用ウィンドウ値を取得 (16bit, スケールダウン済み)
+    pub fn advertised_recv_window(&self) -> u16 {
+        self.window_scale.advertised_window(self.flow_control.advertised_window())
+    }
+    
+    /// ACK受信時の処理
+    pub fn on_ack_received(&mut self, ack_num: u32, is_dup: bool) {
+        let bytes_acked = if ack_num > self.snd_una && !is_dup {
+            ack_num.wrapping_sub(self.snd_una)
+        } else {
+            0
+        };
+        
+        self.congestion.on_ack(bytes_acked, is_dup, self.snd_una);
+        
+        if !is_dup && ack_num > self.snd_una {
+            self.snd_una = ack_num;
+        }
+    }
+    
+    /// データ受信時の処理
+    pub fn on_data_received(&mut self, bytes: u32) {
+        self.flow_control.on_receive(bytes);
+        self.rcv_wnd = self.advertised_recv_window();
+    }
+    
+    /// アプリケーションがデータを消費
+    pub fn on_data_consumed(&mut self, bytes: u32) {
+        self.flow_control.on_consume(bytes);
+        self.rcv_wnd = self.advertised_recv_window();
+    }
+    
+    /// 送信時の処理
+    pub fn on_send(&mut self, bytes: u32) {
+        self.congestion.on_send(bytes);
+    }
+    
+    /// タイムアウト時の処理
+    pub fn on_timeout(&mut self) {
+        self.congestion.on_timeout();
+        self.retransmit_count = self.retransmit_count.saturating_add(1);
+    }
+    
+    /// 相手のウィンドウ更新
+    pub fn update_peer_window(&mut self, window: u16) {
+        self.snd_wnd = window;
+        let scaled = self.window_scale.scale_snd_window(window);
+        self.flow_control.update_peer_window(scaled);
+    }
+    
+    /// 送信可能かどうか
+    pub fn can_send(&self, bytes: u32) -> bool {
+        self.effective_send_window() >= bytes && self.flow_control.can_send()
     }
 }
 
