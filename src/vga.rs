@@ -152,5 +152,8 @@ pub fn _print(args: fmt::Arguments) {
 
 #[macro_export]
 macro_rules! log {
-    ($($arg:tt)*) => ($crate::vga::_print(format_args!($($arg)*)));
+    ($($arg:tt)*) => ({
+        $crate::vga::_print(format_args!($($arg)*));
+        $crate::io::serial::_print(format_args!($($arg)*));
+    });
 }

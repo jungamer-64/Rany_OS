@@ -6,7 +6,7 @@
     Builds and runs the ExoRust kernel in QEMU with configurable options.
 .PARAMETER BuildOnly
     Only build the kernel, do not start QEMU.
-.PARAMETER Debug
+.PARAMETER DebugMode
     Enable QEMU GDB debugging on port 1234.
 .PARAMETER NoKVM
     Disable KVM/WHPX hardware acceleration.
@@ -29,7 +29,7 @@
 [CmdletBinding()]
 param(
     [switch]$BuildOnly,
-    [switch]$Debug,
+    [switch]$DebugMode,
     [switch]$NoKVM,
     [int]$Memory = 512,
     [int]$Cpus = 4,
@@ -43,34 +43,25 @@ param(
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$KERNEL_NAME = "RanyOS"
+$KERNEL_NAME = "exorust_kernel"
 $TARGET = "x86_64-rany_os"
 $BUILD_DIR = "target/$TARGET/debug"
 
-# Colors for output
-function Write-ColorOutput($ForegroundColor) {
-    $fc = $host.UI.RawUI.ForegroundColor
-    $host.UI.RawUI.ForegroundColor = $ForegroundColor
-    if ($args) {
-        Write-Output $args
-    }
-    $host.UI.RawUI.ForegroundColor = $fc
-}
-
+# Colors for output - using Write-Host to avoid polluting return values
 function Write-Info($message) {
-    Write-ColorOutput Cyan "[INFO] $message"
+    Write-Host "[INFO] $message" -ForegroundColor Cyan
 }
 
 function Write-Success($message) {
-    Write-ColorOutput Green "[SUCCESS] $message"
+    Write-Host "[SUCCESS] $message" -ForegroundColor Green
 }
 
-function Write-Error($message) {
-    Write-ColorOutput Red "[ERROR] $message"
+function Write-ErrorMsg($message) {
+    Write-Host "[ERROR] $message" -ForegroundColor Red
 }
 
-function Write-Warning($message) {
-    Write-ColorOutput Yellow "[WARNING] $message"
+function Write-Warn($message) {
+    Write-Host "[WARNING] $message" -ForegroundColor Yellow
 }
 
 # Check prerequisites
@@ -79,7 +70,7 @@ function Test-Prerequisites {
     
     # Check Rust
     if (-not (Get-Command "cargo" -ErrorAction SilentlyContinue)) {
-        Write-Error "Cargo not found. Please install Rust."
+        Write-ErrorMsg "Cargo not found. Please install Rust."
         exit 1
     }
     
@@ -101,8 +92,8 @@ function Test-Prerequisites {
     }
     
     if (-not (Get-Command "qemu-system-x86_64" -ErrorAction SilentlyContinue)) {
-        Write-Warning "QEMU not found in PATH. QEMU execution will fail."
-        Write-Warning "Please install QEMU and add it to PATH."
+        Write-Warn "QEMU not found in PATH. QEMU execution will fail."
+        Write-Warn "Please install QEMU and add it to PATH."
     }
     
     Write-Success "Prerequisites check completed."
@@ -119,17 +110,21 @@ function Build-Kernel {
         $buildArgs += "benchmark"
     }
     
-    $result = & cargo @buildArgs 2>&1
+    # Run cargo build (warnings go to stderr but are not errors)
+    $prevErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    & cargo @buildArgs
+    $buildExitCode = $LASTEXITCODE
+    $ErrorActionPreference = $prevErrorAction
     
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "Build failed!"
-        Write-Output $result
+    if ($buildExitCode -ne 0) {
+        Write-ErrorMsg "Build failed!"
         exit 1
     }
     
     $kernelPath = "$BUILD_DIR/$KERNEL_NAME"
     if (-not (Test-Path $kernelPath)) {
-        Write-Error "Kernel binary not found at: $kernelPath"
+        Write-ErrorMsg "Kernel binary not found at: $kernelPath"
         exit 1
     }
     
@@ -141,24 +136,29 @@ function Build-Kernel {
 function New-BootImage($kernelPath) {
     Write-Info "Creating bootable image..."
     
-    # The bootloader crate should handle this, but we verify the output
-    $imagePath = "$BUILD_DIR/boot-bios-$KERNEL_NAME.img"
+    # Check for existing bootimage output
+    $imagePath = "$BUILD_DIR/bootimage-$KERNEL_NAME.bin"
     
     if (-not (Test-Path $imagePath)) {
-        # Try to create using bootimage if available
-        if (Get-Command "bootimage" -ErrorAction SilentlyContinue) {
-            & bootimage build --target "$TARGET.json"
+        # Try to create using cargo bootimage
+        if (Get-Command "cargo" -ErrorAction SilentlyContinue) {
+            Write-Info "Running cargo bootimage..."
+            $prevErrorAction = $ErrorActionPreference
+            $ErrorActionPreference = "Continue"
+            & cargo bootimage --target "$TARGET.json" | Out-Null
+            $ErrorActionPreference = $prevErrorAction
         } else {
-            Write-Warning "bootimage tool not found. Using kernel binary directly."
+            Write-Warn "cargo not found. Cannot create bootimage."
             return $kernelPath
         }
     }
     
     if (Test-Path $imagePath) {
-        Write-Success "Boot image created: $imagePath"
+        Write-Success "Boot image found: $imagePath"
         return $imagePath
     }
     
+    Write-Warn "Boot image not found, using kernel binary directly."
     return $kernelPath
 }
 
@@ -200,7 +200,7 @@ function Start-Qemu($imagePath) {
     }
     
     # Boot configuration
-    if ($imagePath -match "\.img$") {
+    if ($imagePath -match "\.(img|bin)$") {
         $qemuArgs += @("-drive", "format=raw,file=$imagePath")
     } else {
         $qemuArgs += @("-kernel", $imagePath)
@@ -225,7 +225,7 @@ function Start-Qemu($imagePath) {
     }
     
     # Debug
-    if ($Debug) {
+    if ($DebugMode) {
         $qemuArgs += @("-s", "-S")
         Write-Info "GDB server started on port 1234. Connect with: gdb -ex 'target remote :1234'"
     }
@@ -253,7 +253,7 @@ function Start-Qemu($imagePath) {
         $exited = $process.WaitForExit($Timeout * 1000)
         
         if (-not $exited) {
-            Write-Warning "QEMU timed out after ${Timeout}s"
+            Write-Warn "QEMU timed out after ${Timeout}s"
             $process.Kill()
             return 1
         }
@@ -268,7 +268,7 @@ function Start-Qemu($imagePath) {
             Write-Success "Tests passed!"
             return 0
         } else {
-            Write-Error "Tests failed with exit code: $exitCode"
+            Write-ErrorMsg "Tests failed with exit code: $exitCode"
             return 1
         }
     } else {

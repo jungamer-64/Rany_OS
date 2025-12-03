@@ -67,6 +67,12 @@ pub extern "C" fn _start() -> ! {
     print_logo();
     log!("ExoRust Kernel v0.2.0 - Booting...\n");
 
+    // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
+    // これにより、メモリ初期化中の例外でデバッグ情報が得られる
+    log!("[INIT] Early interrupt system initialization\n");
+    interrupts::init();
+    log!("[OK] Interrupt system initialized (exceptions enabled)\n");
+
     // 1. メモリ管理の初期化
     log!("[INIT] Initializing memory subsystem\n");
     memory::init();
@@ -104,17 +110,12 @@ pub extern "C" fn _start() -> ! {
     kapi::init();
     log!("[OK] Kernel API interface initialized\n");
 
-    // 3. 割り込みシステムの初期化（GDT/TSS + IDT + PIC）
-    log!("[INIT] Initializing interrupt system\n");
-    interrupts::init();
-    log!("[OK] Interrupt system initialized\n");
-
-    // 3.5. キーボードドライバの初期化
+    // 3. キーボードドライバの初期化
     log!("[INIT] Initializing keyboard driver\n");
     io::keyboard::init();
     log!("[OK] Keyboard driver initialized\n");
 
-    // 3.6. シリアルポートの初期化（デバッグ用）
+    // 3.5. シリアルポートの初期化（デバッグ用）
     log!("[INIT] Initializing serial port\n");
     if io::serial::init().is_ok() {
         log!("[OK] Serial port initialized\n");
