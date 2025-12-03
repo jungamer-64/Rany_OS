@@ -27,8 +27,8 @@ pub mod dns;
 // Integrated network stack
 pub mod stack;
 
-// Socket API
-pub mod socket;
+// Endpoint API (旧称: socket → ゼロコピー所有権モデルを反映)
+pub mod endpoint;
 
 // TLS support
 pub mod tls;

@@ -33,8 +33,13 @@ ExoRustは、以下の3つの原則に基づいて設計された次世代高性
 
 全てのコードがRing 0で実行されます。安全性はハードウェアではなく、Rustコンパイラによる静的検証で保証されます。
 
+**重要な設計決定**: SPLアーキテクチャにより、従来の「システムコール」という概念は存在しません。
+代わりに、`kapi`（Kernel API）モジュールが直接関数呼び出しインターフェースを提供します。
+また、「ユーザースペース」という概念も存在せず、`application`モジュールが
+Ring 0で動作するアプリケーション向けの制約付きAPIを提供します。
+
 ```
-Traditional OS                    ExoRust
+Traditional OS                    ExoRust (SPL)
 ┌─────────────────┐              ┌─────────────────┐
 │   User Space    │ Ring 3       │                 │
 │   (untrusted)   │              │  All Code       │
@@ -45,7 +50,7 @@ Traditional OS                    ExoRust
          │                       │  Safe Rust      │
     System Call                  └─────────────────┘
     (mode switch)                        │
-         │                          Function Call
+         │                          KAPI Direct Call
     ~1000 cycles                    ~10 cycles
 ```
 
@@ -309,7 +314,7 @@ Traditional OS                    ExoRust
 
 | 操作 | Linux (μs) | ExoRust (μs) | 改善率 |
 |------|-----------|--------------|--------|
-| システムコール | 0.5-2.0 | 0.01-0.05 | 20-40x |
+| KAPI呼び出し (従来syscall) | 0.5-2.0 | 0.01-0.05 | 20-40x |
 | コンテキストスイッチ | 1.0-5.0 | 0.1-0.3 | 10-17x |
 | ページフォールト | 2.0-10.0 | N/A (SAS) | ∞ |
 | IPCメッセージ | 1.0-3.0 | 0.05-0.2 | 10-20x |
@@ -388,15 +393,30 @@ RanyOS/
 │   ├── task/                # タスク・スケジューラ
 │   ├── io/                  # デバイスドライバ
 │   ├── net/                 # ネットワークスタック
+│   │   └── endpoint.rs      # ネットワークエンドポイント (非POSIXソケット)
 │   ├── fs/                  # ファイルシステム
+│   │   └── fs_abstraction.rs # FSレイヤー抽象化 (オプション、高速パスはバイパス)
 │   ├── ipc/                 # プロセス間通信
 │   ├── domain/              # ドメイン管理
 │   ├── sync/                # 同期プリミティブ
+│   ├── kapi/                # カーネルAPI (SPL直接呼び出し、非syscall)
+│   ├── application/         # アプリケーションAPI (Ring 0制約付き、非userspace)
 │   └── interrupts/          # 割り込み処理
 ├── scripts/                 # ビルド・実行スクリプト
 ├── docs/                    # ドキュメント
 └── tests/                   # テストコード
 ```
+
+### 7.3 モジュール命名規則とSPL/SAS設計哲学
+
+ExoRustでは、POSIX由来の命名を避け、SPL/SASアーキテクチャを反映した命名を採用しています：
+
+| 従来のPOSIX名 | ExoRust名 | 理由 |
+|--------------|-----------|------|
+| syscall | kapi | SPLでは特権境界がないため「システムコール」は不適切。Kernel APIとして直接呼び出し |
+| userspace | application | Ring 3ユーザー空間は存在しない。Rust型システム+Capabilityで制約されたアプリ |
+| socket | endpoint | POSIXソケットのcopy semanticsではなく、所有権移動ベースのゼロコピーエンドポイント |
+| vfs | fs_abstraction | 必須レイヤーではなくオプション。高速パスはNVMeポーリングで直接アクセス |
 
 ---
 

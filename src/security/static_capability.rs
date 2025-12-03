@@ -43,44 +43,75 @@ use core::marker::PhantomData;
 #[derive(Debug)]
 pub struct MemoryCapability {
     /// 外部からの構築を防ぐプライベートフィールド
-    _private: PhantomData<*const ()>,
+    _private: (),
 }
+
+// Safety: MemoryCapabilityはゼロサイズで状態を持たないため、スレッド間で安全に共有可能
+unsafe impl Send for MemoryCapability {}
+unsafe impl Sync for MemoryCapability {}
 
 /// ネットワークアクセス権限
 #[derive(Debug)]
 pub struct NetCapability {
-    _private: PhantomData<*const ()>,
+    _private: (),
 }
+
+unsafe impl Send for NetCapability {}
+unsafe impl Sync for NetCapability {}
 
 /// I/Oポートアクセス権限
 #[derive(Debug)]
 pub struct IoCapability {
-    _private: PhantomData<*const ()>,
+    _private: (),
 }
+
+unsafe impl Send for IoCapability {}
+unsafe impl Sync for IoCapability {}
 
 /// 割り込み登録権限
 #[derive(Debug)]
 pub struct InterruptCapability {
-    _private: PhantomData<*const ()>,
+    _private: (),
 }
+
+unsafe impl Send for InterruptCapability {}
+unsafe impl Sync for InterruptCapability {}
 
 /// DMAアクセス権限
 #[derive(Debug)]
 pub struct DmaCapability {
-    _private: PhantomData<*const ()>,
+    _private: (),
 }
+
+unsafe impl Send for DmaCapability {}
+unsafe impl Sync for DmaCapability {}
 
 /// ファイルシステムアクセス権限
 #[derive(Debug)]
 pub struct FsCapability {
-    _private: PhantomData<*const ()>,
+    _private: (),
 }
+
+unsafe impl Send for FsCapability {}
+unsafe impl Sync for FsCapability {}
 
 /// IPC権限
 #[derive(Debug)]
 pub struct IpcCapability {
-    _private: PhantomData<*const ()>,
+    _private: (),
 }
+
+unsafe impl Send for IpcCapability {}
+unsafe impl Sync for IpcCapability {}
+
+/// タスク生成権限
+#[derive(Debug)]
+pub struct TaskCapability {
+    _private: (),
+}
+
+unsafe impl Send for TaskCapability {}
+unsafe impl Sync for TaskCapability {}
 
 // ============================================================================
 // Capability Constructor - カーネルのみが権限を生成可能
@@ -99,43 +130,49 @@ pub mod kernel_only {
     /// カーネル初期化時にのみ呼び出すこと
     #[inline(always)]
     pub unsafe fn grant_memory_capability() -> MemoryCapability {
-        MemoryCapability { _private: PhantomData }
+        MemoryCapability { _private: () }
     }
     
     /// ネットワーク権限を生成
     #[inline(always)]
     pub unsafe fn grant_net_capability() -> NetCapability {
-        NetCapability { _private: PhantomData }
+        NetCapability { _private: () }
     }
     
     /// I/O権限を生成
     #[inline(always)]
     pub unsafe fn grant_io_capability() -> IoCapability {
-        IoCapability { _private: PhantomData }
+        IoCapability { _private: () }
     }
     
     /// 割り込み権限を生成
     #[inline(always)]
     pub unsafe fn grant_interrupt_capability() -> InterruptCapability {
-        InterruptCapability { _private: PhantomData }
+        InterruptCapability { _private: () }
     }
     
     /// DMA権限を生成
     #[inline(always)]
     pub unsafe fn grant_dma_capability() -> DmaCapability {
-        DmaCapability { _private: PhantomData }
+        DmaCapability { _private: () }
     }
     
     /// ファイルシステム権限を生成
     #[inline(always)]
     pub unsafe fn grant_fs_capability() -> FsCapability {
-        FsCapability { _private: PhantomData }
+        FsCapability { _private: () }
     }
     
     /// IPC権限を生成
     #[inline(always)]
     pub unsafe fn grant_ipc_capability() -> IpcCapability {
-        IpcCapability { _private: PhantomData }
+        IpcCapability { _private: () }
+    }
+    
+    /// タスク生成権限を生成
+    #[inline(always)]
+    pub unsafe fn grant_task_capability() -> TaskCapability {
+        TaskCapability { _private: () }
     }
 }
 
@@ -155,6 +192,7 @@ pub struct DomainCapabilities {
     pub dma: Option<DmaCapability>,
     pub fs: Option<FsCapability>,
     pub ipc: Option<IpcCapability>,
+    pub task: Option<TaskCapability>,
 }
 
 impl DomainCapabilities {
@@ -168,6 +206,7 @@ impl DomainCapabilities {
             dma: None,
             fs: None,
             ipc: None,
+            task: None,
         }
     }
     
@@ -205,6 +244,11 @@ impl DomainCapabilities {
     #[inline]
     pub fn require_ipc(&self) -> &IpcCapability {
         self.ipc.as_ref().expect("IPC capability required")
+    }
+    
+    #[inline]
+    pub fn require_task(&self) -> &TaskCapability {
+        self.task.as_ref().expect("Task capability required")
     }
 }
 
