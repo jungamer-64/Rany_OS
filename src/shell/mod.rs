@@ -25,9 +25,13 @@
 
 pub mod async_shell;
 pub mod exoshell;
+pub mod graphical;
 
 // Re-export ExoShell types
 pub use exoshell::{ExoShell, ExoValue, Capability, CapOperation};
+
+// Re-export graphical shell
+pub use graphical::GraphicalShell;
 
 // ============================================================================
 // Removed: Legacy Shell implementation
