@@ -1265,9 +1265,9 @@ impl ChainParser {
 /// ExoShell REPLインタプリタ
 pub struct ExoShell {
     /// 変数バインディング
-    bindings: BTreeMap<String, ExoValue>,
+    pub bindings: BTreeMap<String, ExoValue>,
     /// カレントディレクトリ
-    cwd: String,
+    pub cwd: String,
     /// コマンド履歴
     history: Vec<String>,
     /// 最後の結果
@@ -1960,7 +1960,7 @@ impl ExoShell {
     }
 
     /// Display help
-    fn help(&self) -> ExoValue {
+    pub fn help(&self) -> ExoValue {
         let help_text = r#"
 ================================================================================
                       ExoShell - Rust-style REPL Environment

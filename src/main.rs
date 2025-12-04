@@ -238,6 +238,25 @@ extern "C" fn kmain() -> ! {
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
     
+    // グラフィックスフレームバッファの初期化（Limine経由）
+    serial_print("[BOOT] Initializing graphics framebuffer...\r\n");
+    if let Some(fb_response) = FRAMEBUFFER_REQUEST.get_response() {
+        if graphics::init_from_limine(fb_response) {
+            serial_print("[BOOT] Graphics framebuffer initialized\r\n");
+            
+            // ブートスプラッシュを表示
+            graphics::show_boot_splash();
+            serial_print("[BOOT] Boot splash displayed\r\n");
+        } else {
+            serial_print("[BOOT] Graphics framebuffer init failed\r\n");
+        }
+    } else {
+        serial_print("[BOOT] No framebuffer response from bootloader\r\n");
+    }
+    
+    // 進捗: 10% - メモリ初期化完了
+    graphics::update_boot_progress_with_message(10, "Memory initialized");
+    
     // アロケーションテスト（シンプル化）
     debug!(target: "test", "Running allocation tests");
     {
@@ -259,6 +278,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing domain system");
     domain_system::init();
     info!(target: "init", "Domain system initialized");
+    graphics::update_boot_progress_with_message(20, "Domain system ready");
 
     // 2.5. SAS（単一アドレス空間）の初期化
     info!(target: "init", "Initializing SAS");
@@ -269,6 +289,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing Spectre mitigations");
     spectre::init();
     info!(target: "init", "Spectre mitigations initialized");
+    graphics::update_boot_progress_with_message(30, "Security initialized");
 
     // 2.7. セキュリティフレームワークの初期化
     info!(target: "init", "Initializing security framework");
@@ -279,6 +300,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing kernel API");
     kapi::init();
     info!(target: "init", "Kernel API initialized");
+    graphics::update_boot_progress_with_message(40, "Kernel API ready");
 
     // 3. キーボードドライバの初期化
     info!(target: "init", "Initializing keyboard driver");
@@ -300,6 +322,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
     info!(target: "init", "Network shell API initialized");
+    graphics::update_boot_progress_with_message(50, "Network stack ready");
 
     // 3.6.1. ネットワークドライバブリッジの初期化
     info!(target: "init", "Initializing network driver bridge");
@@ -313,11 +336,13 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing memory filesystem");
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
+    graphics::update_boot_progress_with_message(60, "Filesystem mounted");
 
     // 4. タスクスケジューラの初期化
     info!(target: "init", "Initializing task scheduler");
     task::init_scheduler(0); // CPU 0
     info!(target: "init", "Task scheduler initialized");
+    graphics::update_boot_progress_with_message(70, "Scheduler started");
 
     // 4.5. Per-Core Executorの初期化（設計書 4.3）
     info!(target: "init", "Initializing per-core executors");
@@ -329,6 +354,7 @@ extern "C" fn kmain() -> ! {
     loader::init_kernel_cell();
     register_kernel_symbols();
     info!(target: "init", "Cell loader initialized");
+    graphics::update_boot_progress_with_message(80, "Loader ready");
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
     info!(target: "init", "Initializing symbol table");
@@ -347,10 +373,12 @@ extern "C" fn kmain() -> ! {
     } else {
         info!(target: "init", "System integration initialized");
     }
+    graphics::update_boot_progress_with_message(90, "Integration complete");
 
     // 6. 割り込みを有効化
     interrupts::enable_interrupts();
     info!(target: "init", "Interrupts enabled");
+    graphics::update_boot_progress_with_message(100, "Ready!");
 
     // 7. システム統計を表示
     print_system_stats();
@@ -512,10 +540,31 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     // }));
 
     // タスク8: 非同期シリアルシェル（IRQ4駆動）
+    // シリアルシェルはバックグラウンドで維持（シリアル接続用）
     executor.spawn(Task::new(async {
         info!(target: "task8", "Async serial shell task starting...");
         // シェルをすぐに開始（デバッグ用）
         shell::async_shell::run_async_shell().await;
+    }));
+
+    // タスク9: グラフィカルシェル（フレームバッファ描画）
+    executor.spawn(Task::new(async {
+        info!(target: "task9", "Graphical shell task starting...");
+        
+        // グラフィカルシェルを初期化
+        shell::graphical::init();
+        shell::graphical::start();
+        
+        info!(target: "task9", "Graphical shell started - polling...");
+        
+        // メインループ（ポーリング方式）
+        loop {
+            // キー入力と描画を処理
+            shell::graphical::poll();
+            
+            // CPUを少し休ませる（約16ms = 60fps程度）
+            task::sleep_ms(16).await;
+        }
     }));
 }
 

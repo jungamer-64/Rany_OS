@@ -834,9 +834,18 @@ pub fn get_real_arp_cache() -> Vec<ArpCacheEntry>
 - [ ] プロセス分離強化
 
 ### 優先度: 低
-- [ ] GPU支援
+- [x] ~~GPU支援~~ (Limineフレームバッファ統合完了)
 - [ ] サウンドサポート
 - [ ] Bluetoothスタック
+
+---
+
+## 最新の変更履歴
+
+### 2025年1月 - v0.3.0-alpha
+- **UEFI対応**: Limineブートローダーによるマルチブート (UEFI/BIOS両対応)
+- **グラフィックス**: Limineフレームバッファ統合、ブートスプラッシュ表示
+- **グラフィカルコンソール**: TextConsoleによるフレームバッファ描画
 
 ---
 
