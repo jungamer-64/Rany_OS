@@ -152,8 +152,8 @@ pub async fn run_async_shell() {
                     break;
                 }
 
-                // Execute command
-                execute_exoshell(&mut exoshell, &line);
+                // Execute command (async)
+                execute_exoshell(&mut exoshell, &line).await;
                 print_prompt(&exoshell);
             }
 
@@ -219,9 +219,9 @@ pub async fn run_async_shell() {
     crate::serial_println!("\n[SHELL] ExoShell terminated");
 }
 
-/// Execute command in ExoShell
-fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
-    let result = exoshell.eval(line);
+/// Execute command in ExoShell (async version)
+async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
+    let result = exoshell.eval(line).await;
     
     match &result {
         ExoValue::Nil => {}

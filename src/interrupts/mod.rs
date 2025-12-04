@@ -219,10 +219,12 @@ fn init_pic() {
         pic2_data.write(ICW4_8086);
         io_wait();
 
-        // 全割り込みをマスク（APIC使用のため）
-        // 0xFF = 全ビットマスク
-        pic1_data.write(0xFF);
-        pic2_data.write(0xFF);
+        // 割り込みマスク設定
+        // PIC1: IRQ0(timer), IRQ1(keyboard), IRQ4(COM1) を有効化
+        // ビット0=IRQ0, ビット1=IRQ1, ビット4=IRQ4
+        // 0=有効, 1=マスク なので: ~(0x01 | 0x02 | 0x10) = 0xEC
+        pic1_data.write(0b11101100); // Timer(0), Keyboard(1), COM1(4) を有効
+        pic2_data.write(0xFF);       // PIC2は全マスク（現状不要）
     }
 }
 
@@ -300,6 +302,10 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // タイマーティックを増加
     let tick = TIMER_TICKS.fetch_add(1, Ordering::SeqCst);
+
+    // タイマーベースのスリープを処理（設計書 4.2）
+    // sleep_ms等で待機中のタスクを起床させる
+    crate::task::timer::handle_timer_interrupt();
 
     // プリエンプションシステムにタイマーティックを通知
     // これにより時間スライスが減少し、必要に応じてプリエンプションが要求される

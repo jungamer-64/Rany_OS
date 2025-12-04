@@ -390,8 +390,7 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     // タスク8: 非同期シリアルシェル（IRQ4駆動）
     executor.spawn(Task::new(async {
         info!(target: "task8", "Async serial shell task starting...");
-        // シェルはすべてのタスクが落ち着いてから開始
-        task::sleep_ms(3000).await;
+        // シェルをすぐに開始（デバッグ用）
         shell::async_shell::run_async_shell().await;
     }));
 }
