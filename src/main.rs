@@ -4,7 +4,8 @@
 
 extern crate alloc;
 
-use bootloader::{entry_point, BootInfo};
+use limine::request::{MemoryMapRequest, HhdmRequest, FramebufferRequest, StackSizeRequest, RequestsStartMarker, RequestsEndMarker};
+use limine::BaseRevision;
 use core::panic::PanicInfo;
 use log::{info, warn, debug, error};
 
@@ -59,60 +60,179 @@ mod application;
 mod benchmark;
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 
-// Note: smp module with bootstrap is included in the main smp module
+// Limine bootloader protocol requests (UEFI/BIOS compatible)
+// Define the start and end markers for Limine requests
+#[used]
+#[unsafe(link_section = ".requests_start_marker")]
+static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
 
-// bootloader 0.9のエントリポイントマクロを使用
-entry_point!(kernel_main);
+#[used]
+#[unsafe(link_section = ".requests_end_marker")]
+static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
 
-fn kernel_main(boot_info: &'static BootInfo) -> ! {
+// Be sure to mark all limine requests with #[used], otherwise they may be removed by the compiler.
+#[used]
+#[unsafe(link_section = ".requests")]
+static BASE_REVISION: BaseRevision = BaseRevision::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new()
+    .with_size(512 * 1024); // 512 KiB stack
+
+#[unsafe(no_mangle)]
+extern "C" fn kmain() -> ! {
+    // Early serial output to confirm kernel loaded
+    unsafe {
+        // Initialize COM1 (0x3F8)
+        let port = 0x3F8u16;
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port + 1,
+            in("al") 0u8,  // Disable interrupts
+        );
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port + 3,
+            in("al") 0x80u8,  // DLAB on
+        );
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port + 0,
+            in("al") 0x03u8,  // Divisor low
+        );
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port + 1,
+            in("al") 0x00u8,  // Divisor high
+        );
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port + 3,
+            in("al") 0x03u8,  // 8N1
+        );
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port + 2,
+            in("al") 0xC7u8,  // FIFO
+        );
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port + 4,
+            in("al") 0x0Bu8,  // RTS/DSR
+        );
+
+        // Send boot message
+        for byte in b"RanyOS UEFI Boot OK!\r\n" {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") port,
+                in("al") *byte,
+            );
+        }
+    }
+
+    // Simple serial print helper for debugging
+    fn serial_print(s: &str) {
+        unsafe {
+            let port = 0x3F8u16;
+            for byte in s.bytes() {
+                core::arch::asm!(
+                    "out dx, al",
+                    in("dx") port,
+                    in("al") byte,
+                );
+            }
+        }
+    }
+
+    serial_print("[BOOT] Checking Limine revision...\r\n");
+
+    // Verify Limine protocol support
+    if !BASE_REVISION.is_supported() {
+        serial_print("[BOOT] Limine revision NOT supported!\r\n");
+        // Limine not available, halt
+        loop { core::hint::spin_loop(); }
+    }
+    serial_print("[BOOT] Limine revision OK\r\n");
+
     // SSE/SSE2を有効化（x86_64ではABIで必須）
-    // CR0のEM(bit 2)をクリア、CR4のOSFXSR(bit 9)とOSXMMEXCPT(bit 10)をセット
+    serial_print("[BOOT] Enabling SSE...\r\n");
     unsafe {
         use core::arch::asm;
-        // CR0: EM=0, TS=0 (浮動小数点エミュレーションを無効化、タスクスイッチビットをクリア)
+        // CR0: EM=0, TS=0
         let mut cr0: u64;
         asm!("mov {}, cr0", out(reg) cr0);
         cr0 &= !(1 << 2); // EM=0
         cr0 &= !(1 << 3); // TS=0
         asm!("mov cr0, {}", in(reg) cr0);
         
-        // CR4: OSFXSR=1, OSXMMEXCPT=1 (SSEサポートを有効化)
+        // CR4: OSFXSR=1, OSXMMEXCPT=1
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4);
         cr4 |= 1 << 9;  // OSFXSR
         cr4 |= 1 << 10; // OSXMMEXCPT  
         asm!("mov cr4, {}", in(reg) cr4);
     }
+    serial_print("[BOOT] SSE enabled\r\n");
     
-    // 物理メモリオフセットを保存（メモリ初期化前に必要）
-    let phys_mem_offset = boot_info.physical_memory_offset;
+    // Get physical memory offset from HHDM (Higher Half Direct Map)
+    serial_print("[BOOT] Getting HHDM offset...\r\n");
+    let phys_mem_offset = HHDM_REQUEST.get_response()
+        .map(|r| r.offset())
+        .unwrap_or(0);
+    serial_print("[BOOT] HHDM offset obtained\r\n");
     
-    // VGAバッファの初期化（ログ出力用）- シリアル出力前に初期化
+    // VGAバッファの初期化（ログ出力用）
+    serial_print("[BOOT] Initializing VGA...\r\n");
     vga::init();
+    serial_print("[BOOT] VGA initialized\r\n");
     
     // ロギングシステムの初期化（最優先、ヒープ不要）
+    serial_print("[BOOT] Initializing logger...\r\n");
     if io::log::init().is_err() {
         io::log::early_print("[FATAL] Logger init failed\n");
+        serial_print("[BOOT] Logger init FAILED!\r\n");
+    } else {
+        serial_print("[BOOT] Logger initialized\r\n");
     }
     
     // 早期ブートログ（log crateを使用）
     info!(target: "boot", "kernel_main started");
     
     // 物理メモリオフセットを設定
+    serial_print("[BOOT] Setting physical memory offset...\r\n");
     memory::set_physical_memory_offset(phys_mem_offset);
+    serial_print("[BOOT] Physical memory offset set\r\n");
     debug!(target: "boot", "physical memory offset set: {:#x}", phys_mem_offset);
 
     print_logo();
 
     // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
     // これにより、メモリ初期化中の例外でデバッグ情報が得られる
+    serial_print("[BOOT] Initializing interrupt system...\r\n");
     info!(target: "init", "Initializing interrupt system");
     interrupts::init();
+    serial_print("[BOOT] Interrupt system initialized\r\n");
     info!(target: "init", "Interrupt system initialized");
 
     // 1. メモリ管理の初期化
+    serial_print("[BOOT] Initializing memory management...\r\n");
     info!(target: "init", "Initializing memory management");
     memory::init();
+    serial_print("[BOOT] Memory management initialized\r\n");
     info!(target: "init", "Memory management initialized");
     
     // ヒープが使用可能になったことを通知

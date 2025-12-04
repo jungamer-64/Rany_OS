@@ -121,6 +121,7 @@ src/
 - Rust nightly (2024年以降推奨)
 - `rust-src` コンポーネント
 - QEMU (テスト用)
+- WSL + xorriso (Windows でのISO作成用、オプション)
 
 ### セットアップ
 
@@ -133,14 +134,40 @@ rustup default nightly
 rustup component add rust-src
 rustup component add llvm-tools-preview
 
-# 3. ビルド
-cargo build --target x86_64-rany_os.json
+# 3. ビルド (通常ターゲット)
+cargo build --target x86_64-unknown-none
 
-# 4. QEMUで実行 (Windows)
-.\run.ps1
+# 4. QEMUで実行 (UEFI/BIOS両対応)
 
-# 4. QEMUで実行 (Linux/macOS)
-./run.sh
+# Windows - Limineブートローダーで実行（推奨）
+.\scripts\run.ps1
+
+# Windows - UEFIモード強制
+.\scripts\run.ps1 -Uefi
+
+# Windows - レガシーBIOSモード
+.\scripts\run.ps1 -Bios
+
+# Linux/macOS
+./scripts/run.sh
+```
+
+### UEFI対応
+
+ExoRustは**Limine bootloader v8.x**を使用してUEFI/BIOSデュアルブートに対応しています。
+
+#### 主な特徴
+- **UEFI**: OVMF (QEMU) / 実機UEFIファームウェア対応
+- **BIOS**: レガシーBIOSブート対応
+- **Higher Half Kernel**: 仮想アドレス `0xffffffff80000000` にロード
+- **Higher Half Direct Map (HHDM)**: 全物理メモリを高位アドレスにマップ
+
+#### ファイル構成
+```
+limine.conf           # Limineブートローダー設定
+linker.ld             # カーネルリンカースクリプト
+assets/limine/        # Limineバイナリ (自動ダウンロード)
+assets/firmware/      # OVMFファームウェア (UEFI用)
 ```
 
 ## 🔧 開発オプション
@@ -149,19 +176,22 @@ cargo build --target x86_64-rany_os.json
 
 ```powershell
 # 基本実行
-.\run.ps1
+.\scripts\run.ps1
 
-# デバッグモード
-.\run.ps1 -Debug
+# デバッグモード（GDBポート1234で待機）
+.\scripts\run.ps1 -GdbDebug
 
-# GDBデバッグ（ポート1234で待機）
-.\run.ps1 -GDB
+# UEFIモード強制
+.\scripts\run.ps1 -Uefi
 
-# ネットワーク有効
-.\run.ps1 -Network
+# レガシーBIOSモード
+.\scripts\run.ps1 -Bios
 
-# カスタムメモリ/CPU
-.\run.ps1 -Memory 1024 -Cpus 4
+# カスタムメモリサイズ
+.\scripts\run.ps1 -Memory 1024
+
+# リリースビルド
+.\scripts\run.ps1 -Release
 ```
 
 ### Makefileターゲット

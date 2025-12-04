@@ -135,19 +135,38 @@ static WRITER: Mutex<Writer> = Mutex::new(Writer {
     buffer: 0xb8000 as *mut Buffer,
 });
 
+static VGA_AVAILABLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
 pub fn init() {
-    // VGAバッファをクリア
-    WRITER.lock().clear_row(BUFFER_HEIGHT - 1);
+    // UEFI環境ではVGAテキストモードバッファは使用不可
+    // Limineのフレームバッファを使用する場合は別途初期化が必要
+    // 今のところはVGAを無効にしておく
+    
+    // 簡易チェック: 0xb8000がマップされているかテスト
+    // UEFI環境ではこのアドレスは通常マップされていない
+    #[cfg(not(feature = "force_vga"))]
+    {
+        // VGAバッファをクリアしない（UEFIでは無効なアドレス）
+        // 代わりにシリアル出力のみを使用
+        VGA_AVAILABLE.store(false, core::sync::atomic::Ordering::Release);
+    }
+    
+    #[cfg(feature = "force_vga")]
+    {
+        VGA_AVAILABLE.store(true, core::sync::atomic::Ordering::Release);
+        WRITER.lock().clear_row(BUFFER_HEIGHT - 1);
+    }
 }
 
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    // unwrap() を expect() ではなく、単に無視することでパニックコード生成を回避
-    // write_fmt は VGA 書き込みで実質的に失敗しないため、
-    // let _ = で結果を破棄しても安全
-    // これにより panic unwind コードが生成されず、コードサイズとブランチ予測ミスを削減
-    let _ = WRITER.lock().write_fmt(args);
+    
+    // VGAが利用可能な場合のみ書き込み
+    if VGA_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
+        let _ = WRITER.lock().write_fmt(args);
+    }
+    // それ以外の場合はシリアル出力を使用（io::logが処理）
 }
 
 /// 早期ブート段階用のシリアル出力（ロックなし、シンプル）

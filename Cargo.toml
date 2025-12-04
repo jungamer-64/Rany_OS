@@ -24,8 +24,8 @@ path = "src/lib.rs"
 # ============================================================================
 
 [dependencies]
-# ブートローダー（物理メモリマッピング機能付き）
-bootloader = { version = "0.9", features = ["map_physical_memory"] }
+# ブートローダーAPI（Limine Protocol - UEFI/BIOS両対応）
+limine = "0.5"
 
 # x86_64アーキテクチャサポート
 x86_64 = "0.15"
