@@ -27,6 +27,7 @@ pub mod cache;
 pub mod devfs;
 pub mod ext2;
 pub mod fat32;
+pub mod memfs;
 pub mod procfs;
 
 #[allow(unused_imports)]
@@ -63,6 +64,12 @@ pub use fs_abstraction::{
     AsyncReadFuture, AsyncWriteFuture, DirEntry, FileAttr, FileHandle, FileMode, FileSystem,
     FileType, FsError, FsResult, FsStats, Inode, MountTable, OpenFlags, PathResolver, SeekFrom,
     mount_table,
+};
+#[allow(unused_imports)]
+pub use memfs::{
+    MemoryFs, MemoryInode, copy_file, create_symlink, init_shell_fs, list_directory,
+    make_directory, move_file, read_file_content, remove_directory, remove_file, resolve_path,
+    shell_fs, stat_file, touch_file, write_file_content,
 };
 #[allow(unused_imports)]
 pub use procfs::{

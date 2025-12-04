@@ -572,12 +572,233 @@ pub struct TsoContext {
 
 ---
 
+## シェルコマンド
+
+### 🆕 ExoShell - Rust式REPL環境 (`src/shell/exoshell.rs`)
+
+**ExoRust設計思想に基づいた新しいシェル環境。**
+
+> Unix互換コマンド（ls, grep, chmod等）をそのまま実装するのではなく、
+> **型付きオブジェクトを直接操作する**Rust式REPLを提供します。
+
+#### 設計原則
+
+1. **型付きオブジェクト**: テキストストリームではなく構造体を直接操作
+2. **ゼロコピー**: SAS（単一アドレス空間）を活かしたポインタ渡し
+3. **Capability**: `chmod`/`chown` ではなく `grant`/`revoke` による権限管理
+4. **メソッドチェーン**: パイプラインではなくイテレータ操作
+
+#### モード切替
+
+| コマンド | 説明 |
+|----------|------|
+| `exo` または `exoshell` | ExoShellモードへ切り替え |
+| `classic` または `shell` | 従来モードへ切り替え |
+
+#### 名前空間とメソッド
+
+**fs.* - ファイルシステム**
+
+| メソッド | 説明 | Unix相当 |
+|----------|------|----------|
+| `fs.entries("/path")` | ディレクトリ内容を取得 | `ls /path` |
+| `fs.read("/path")` | ファイル内容を読み取り | `cat /path` |
+| `fs.stat("/path")` | ファイル情報を取得 | `stat /path` |
+| `fs.mkdir("/path")` | ディレクトリ作成 | `mkdir /path` |
+| `fs.remove("/path")` | ファイル/ディレクトリ削除 | `rm /path` |
+| `fs.cd("/path")` | カレントディレクトリ変更 | `cd /path` |
+| `fs.pwd()` | カレントディレクトリ表示 | `pwd` |
+
+**net.* - ネットワーク**
+
+| メソッド | 説明 | Unix相当 |
+|----------|------|----------|
+| `net.config()` | ネットワーク設定を表示 | `ifconfig` |
+| `net.stats()` | 送受信統計 | `netstat -s` |
+| `net.arp()` | ARPキャッシュ | `arp -a` |
+| `net.ping("ip", count)` | ICMPエコー送信 | `ping -c count ip` |
+
+**proc.* - プロセス/タスク**
+
+| メソッド | 説明 | Unix相当 |
+|----------|------|----------|
+| `proc.list()` | タスク一覧 | `ps` |
+| `proc.info(pid)` | プロセス詳細 | - |
+
+**cap.* - Capability（権限管理）**
+
+| メソッド | 説明 | Unix相当 |
+|----------|------|----------|
+| `cap.list()` | 現在のCapability一覧 | - |
+| `cap.grant(...)` | 権限を付与 | `chmod`の代替 |
+| `cap.revoke(id)` | 権限を剥奪 | - |
+
+**sys.* - システム**
+
+| メソッド | 説明 | Unix相当 |
+|----------|------|----------|
+| `sys.info()` | システム情報 | `uname -a` |
+| `sys.memory()` | メモリ使用量 | `free` |
+| `sys.time()` | 時刻情報 | `uptime` |
+
+#### 変数と評価
+
+```text
+exo:/> let files = fs.entries("/")    # 結果を変数に格納
+exo:/> $files                          # 変数を参照
+exo:/> _                               # 最後の結果を参照
+```
+
+#### Unix式 vs ExoShell式の比較
+
+```text
+# Unix式（テキストストリーム）
+ls -la /home | grep "admin"
+
+# ExoShell式（オブジェクト操作）
+fs.entries("/home").filter(|e| e.owner == "admin")
+```
+
+### ✅ 基本コマンド (`src/shell/mod.rs`)
+
+| コマンド | 説明 | 状態 |
+|----------|------|------|
+| `help` | 利用可能なコマンド一覧 | ✅ 完了 |
+| `clear` | 画面クリア | ✅ 完了 |
+| `echo` | テキスト出力 | ✅ 完了 |
+| `info` | システム情報表示 | ✅ 完了 |
+| `mem` | メモリ使用状況 | ✅ 完了 |
+| `cpu` | CPU情報表示 | ✅ 完了 |
+| `time` | システム時刻表示 | ✅ 完了 |
+
+### ✅ ファイルシステムコマンド (`src/shell/mod.rs`)
+
+| コマンド | 説明 | 状態 |
+|----------|------|------|
+| `ls [path]` | ディレクトリ内容一覧 | ✅ 完了 (memfs連携) |
+| `cd <path>` | カレントディレクトリ変更 | ✅ 完了 (memfs連携) |
+| `pwd` | カレントディレクトリ表示 | ✅ 完了 |
+| `cat <file>` | ファイル内容表示 | ✅ 完了 (memfs連携) |
+| `mkdir <dir>` | ディレクトリ作成 | ✅ 完了 (memfs連携) |
+| `touch <file>` | ファイル作成/更新 | ✅ 完了 (memfs連携) |
+| `rm [-r] <path>` | ファイル/ディレクトリ削除 | ✅ 完了 (memfs連携) |
+| `cp <src> <dst>` | ファイルコピー | ✅ 完了 (memfs連携) |
+| `mv <src> <dst>` | ファイル移動/リネーム | ✅ 完了 (memfs連携) |
+| `stat <path>` | ファイル/ディレクトリ詳細表示 | ✅ 完了 (memfs連携) |
+| `ln -s <target> <link>` | シンボリックリンク作成 | ✅ 完了 (memfs連携) |
+| `write <file> <content>` | ファイルに内容を書き込み | ✅ 完了 (memfs連携) |
+| `echo "text" > file` | 出力をファイルにリダイレクト | ✅ 完了 |
+| `echo "text" >> file` | 出力をファイルに追記 | ✅ 完了 |
+
+### メモリファイルシステム (`src/fs/memfs.rs`)
+
+```rust
+// MemoryFs - インメモリファイルシステム
+pub struct MemoryFs { ... }
+impl FileSystem for MemoryFs { ... }
+
+// MemoryInode - メモリベースinode
+pub struct MemoryInode { ... }
+impl Inode for MemoryInode { ... }
+
+// Shell Integration API
+pub fn init_shell_fs()                                      // 初期化
+pub fn shell_fs() -> Option<&'static Arc<MemoryFs>>         // FSインスタンス取得
+pub fn resolve_path(path, cwd) -> FsResult<Arc<dyn Inode>>  // パス解決
+pub fn list_directory(path, cwd) -> FsResult<Vec<DirEntry>> // ディレクトリ一覧
+pub fn read_file_content(path, cwd) -> FsResult<Vec<u8>>    // ファイル読み取り
+pub fn make_directory(path, cwd) -> FsResult<()>            // ディレクトリ作成
+pub fn touch_file(path, cwd) -> FsResult<()>                // ファイル作成/更新
+pub fn remove_file(path, cwd) -> FsResult<()>               // ファイル削除
+pub fn remove_directory(path, cwd) -> FsResult<()>          // ディレクトリ削除
+pub fn copy_file(src, dst, cwd) -> FsResult<()>             // ファイルコピー
+pub fn move_file(src, dst, cwd) -> FsResult<()>             // ファイル移動
+pub fn write_file_content(path, cwd, content) -> FsResult<()> // ファイル書き込み
+pub fn stat_file(path, cwd) -> FsResult<FileAttr>           // ファイル情報取得
+pub fn create_symlink(target, link, cwd) -> FsResult<()>    // シンボリックリンク作成
+```
+
+> **Note**: MemoryFsは揮発性のインメモリファイルシステムです。
+> 起動時に基本ディレクトリ構造（/bin, /dev, /etc, /home, /proc, /tmp, /var）が自動作成されます。
+
+### ✅ ネットワークコマンド (`src/shell/mod.rs`)
+
+| コマンド | 説明 | 状態 |
+|----------|------|------|
+| `ifconfig` | ネットワークインターフェース設定表示 | ✅ 完了 (デモ) |
+| `ping <host>` | ICMP Echoによる到達性確認 | ✅ 完了 (シミュレート) |
+| `netstat` | TCP/UDP接続状況表示 | ✅ 完了 (デモ) |
+| `dns <hostname>` | DNS名前解決 | ✅ 完了 (ビルトイン) |
+| `dhcp [discover\|request\|release]` | DHCPクライアント操作 | ✅ 完了 (シミュレート) |
+| `arp` | ARPキャッシュ表示 | ✅ 完了 (デモ) |
+
+### ネットワークシェルAPI (`src/net/mod.rs`)
+
+```rust
+// 設定取得
+pub fn get_network_config() -> Option<NetworkConfigSnapshot>
+pub fn get_network_stats() -> NetworkStatsSnapshot
+
+// ICMP操作
+pub fn send_icmp_echo(target_ip: [u8; 4]) -> Result<u64, &'static str>
+
+// DNS解決
+pub fn dns_resolve(hostname: &str) -> Option<[u8; 4]>
+
+// DHCP操作
+pub fn dhcp_discover() -> Option<DhcpOfferInfo>
+pub fn dhcp_request(server_ip: [u8; 4], offered_ip: [u8; 4]) -> bool
+pub fn dhcp_release()
+
+// ARP
+pub fn get_arp_cache() -> Option<alloc::vec::Vec<([u8; 4], [u8; 6])>>
+```
+
+### ✅ VirtIO-Net ドライバブリッジ (`src/net/driver_bridge.rs`)
+
+```rust
+// VirtIO-Net <-> NetworkStack ブリッジ
+// 送信コールバック設定と受信パケット処理を統合
+
+// 初期化
+pub fn init_bridge() -> Result<(), &'static str>
+
+// 送信処理 (NetworkStackからの送信コールバック)
+fn virtio_transmit(data: &[u8]) -> bool
+
+// 受信処理
+pub fn process_received_packet(data: &[u8])
+
+// 統計情報
+pub fn get_bridge_stats() -> BridgeStats
+pub fn get_real_config() -> Option<NetworkConfigSnapshot>
+pub fn get_real_stats() -> Option<NetworkStatsSnapshot>
+
+// ICMP/ARP操作
+pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str>
+pub fn get_real_arp_cache() -> Vec<ArpCacheEntry>
+```
+
+**ブートログ例:**
+```
+[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...
+[NET BRIDGE] Bridge initialized
+  MAC: 52:54:00:12:34:56
+  IP: 10.0.2.15
+```
+
+> **Note**: ドライバブリッジはVirtIO-NetデバイスとNetworkStackを接続し、
+> シェルコマンドAPIを通じてネットワーク操作を可能にします。
+
+---
+
 ## 今後の課題
 
 ### 優先度: 高
 - [ ] 実ハードウェアでのテスト
 - [ ] ストレステスト実施
 - [ ] パフォーマンスプロファイリング
+- [x] ~~ネットワークコマンドの実ドライバ統合~~ (driver_bridge.rs完了)
 
 ### 優先度: 中
 - [ ] USBスタック実装
