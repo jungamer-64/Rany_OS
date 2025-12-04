@@ -377,10 +377,13 @@ pub fn init() {
     crate::vga::early_serial_str("[MEM] exheap done\n");
 
     // 4. Per-CPU データ構造の初期化（BSPのみ）
+    // 注: init_per_cpu() 内部でBSPのGsBaseが設定されるため、
+    //     setup_current_cpu(0) は省略可能（冪等性のため呼んでも問題なし）
     crate::vga::early_serial_str("[MEM] percpu init\n");
     unsafe {
         crate::mm::init_per_cpu(1);
-        crate::mm::setup_current_cpu(0);
+        // BSPのGsBaseはinit_per_cpu内で設定済み
+        // AP（追加プロセッサ）起動時は各APでsetup_current_cpu(cpu_id)を呼ぶ
     }
     crate::vga::early_serial_str("[MEM] percpu done\n");
 

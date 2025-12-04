@@ -176,6 +176,24 @@ fn kernel_main(boot_info: &'static BootInfo) -> ! {
         warn!(target: "init", "Serial port initialization failed");
     }
 
+    // 3.6. ネットワークシェルAPIの初期化
+    info!(target: "init", "Initializing network shell API");
+    net::init_network_shell();
+    info!(target: "init", "Network shell API initialized");
+
+    // 3.6.1. ネットワークドライバブリッジの初期化
+    info!(target: "init", "Initializing network driver bridge");
+    if let Err(e) = net::init_driver_bridge() {
+        warn!(target: "init", "Network driver bridge failed: {}", e);
+    } else {
+        info!(target: "init", "Network driver bridge initialized");
+    };
+
+    // 3.7. ファイルシステム（memfs）の初期化
+    info!(target: "init", "Initializing memory filesystem");
+    fs::init_shell_fs();
+    info!(target: "init", "Memory filesystem initialized");
+
     // 4. タスクスケジューラの初期化
     info!(target: "init", "Initializing task scheduler");
     task::init_scheduler(0); // CPU 0

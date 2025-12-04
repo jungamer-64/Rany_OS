@@ -13,10 +13,18 @@
 //! - タブ補完（基本）
 //! - 環境変数
 //! - 非同期シリアル入力（IRQ4駆動）
+//!
+//! ## ExoShell (New!)
+//! ExoRustの設計思想に基づいたRust式REPL環境も利用可能。
+//! `exoshell` モジュールで型付きオブジェクトを直接操作できます。
 
 #![allow(dead_code)]
 
 pub mod async_shell;
+pub mod exoshell;
+
+// Re-export ExoShell types
+pub use exoshell::{ExoShell, ExoValue, Capability, CapOperation};
 
 use alloc::collections::BTreeMap;
 use alloc::format;
@@ -193,6 +201,24 @@ impl Shell {
                 handler: cmd_touch,
             },
             Command {
+                name: "stat",
+                description: "Display file or directory status",
+                usage: "stat <path>",
+                handler: cmd_stat,
+            },
+            Command {
+                name: "ln",
+                description: "Create links",
+                usage: "ln -s <target> <link_name>",
+                handler: cmd_ln,
+            },
+            Command {
+                name: "write",
+                description: "Write content to a file",
+                usage: "write <file> <content>",
+                handler: cmd_write,
+            },
+            Command {
                 name: "clear",
                 description: "Clear the screen",
                 usage: "clear",
@@ -311,6 +337,43 @@ impl Shell {
                 description: "Search for patterns in files",
                 usage: "grep <pattern> <file>",
                 handler: cmd_grep,
+            },
+            // Network commands
+            Command {
+                name: "ifconfig",
+                description: "Configure network interfaces",
+                usage: "ifconfig [interface]",
+                handler: cmd_ifconfig,
+            },
+            Command {
+                name: "ping",
+                description: "Send ICMP echo requests",
+                usage: "ping <host> [-c count]",
+                handler: cmd_ping,
+            },
+            Command {
+                name: "netstat",
+                description: "Network statistics",
+                usage: "netstat [-a]",
+                handler: cmd_netstat,
+            },
+            Command {
+                name: "dns",
+                description: "DNS lookup",
+                usage: "dns <hostname>",
+                handler: cmd_dns,
+            },
+            Command {
+                name: "dhcp",
+                description: "DHCP client operations",
+                usage: "dhcp [discover|request]",
+                handler: cmd_dhcp,
+            },
+            Command {
+                name: "arp",
+                description: "Show/manipulate ARP cache",
+                usage: "arp [-a]",
+                handler: cmd_arp,
             },
         ];
     }
@@ -449,6 +512,52 @@ impl Shell {
         result
     }
 
+    /// リダイレクト演算子を解析
+    /// 戻り値: (コマンド部分, Option<(ファイルパス, 追記モードか)>)
+    fn parse_redirect(&self, line: &str) -> (String, Option<(String, bool)>) {
+        // >> (追記) を先にチェック
+        if let Some(pos) = line.find(">>") {
+            let command = line[..pos].trim().to_string();
+            let file = line[pos + 2..].trim().to_string();
+            if !file.is_empty() {
+                return (command, Some((file, true)));
+            }
+        }
+        // > (上書き) をチェック
+        if let Some(pos) = line.find('>') {
+            let command = line[..pos].trim().to_string();
+            let file = line[pos + 1..].trim().to_string();
+            if !file.is_empty() {
+                return (command, Some((file, false)));
+            }
+        }
+        (line.to_string(), None)
+    }
+
+    /// 出力をファイルにリダイレクト
+    fn redirect_output(&self, content: &str, file_path: &str, append: bool) -> Result<(), String> {
+        use crate::fs;
+        
+        // 既存の内容を取得（追記モードの場合）
+        let final_content = if append {
+            match fs::read_file_content(file_path, &self.cwd) {
+                Ok(existing) => {
+                    let mut combined = String::from_utf8_lossy(&existing).to_string();
+                    combined.push_str(content);
+                    combined
+                }
+                Err(fs::FsError::NotFound) => content.to_string(),
+                Err(e) => return Err(format!("redirect: {:?}", e)),
+            }
+        } else {
+            content.to_string()
+        };
+        
+        // ファイルに書き込み
+        fs::write_file_content(file_path, &self.cwd, final_content.as_bytes())
+            .map_err(|e| format!("redirect: {:?}", e))
+    }
+
     /// コマンドを実行
     pub fn execute(&mut self, line: &str) -> CommandResult {
         let line = line.trim();
@@ -465,8 +574,11 @@ impl Shell {
             }
         }
 
+        // リダイレクト処理の検出
+        let (command_part, redirect) = self.parse_redirect(line);
+
         // トークンに分解
-        let tokens = self.parse_line(line);
+        let tokens = self.parse_line(&command_part);
         if tokens.is_empty() {
             return CommandResult::Success;
         }
@@ -478,6 +590,22 @@ impl Shell {
         if let Some(cmd) = self.find_command(cmd_name) {
             let handler = cmd.handler;
             let result = handler(self, &args);
+
+            // リダイレクト処理
+            let result = if let Some((file_path, append)) = redirect {
+                match &result {
+                    CommandResult::Output(output) => {
+                        // 出力をファイルに書き込む
+                        match self.redirect_output(output, &file_path, append) {
+                            Ok(_) => CommandResult::Success,
+                            Err(e) => CommandResult::Error(e),
+                        }
+                    }
+                    _ => result,
+                }
+            } else {
+                result
+            };
 
             // 終了コードを更新
             match &result {
@@ -567,17 +695,35 @@ fn cmd_echo(_shell: &mut Shell, args: &[&str]) -> CommandResult {
     CommandResult::Output(output)
 }
 
-fn cmd_ls(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_ls(shell: &mut Shell, args: &[&str]) -> CommandResult {
     let path = args.first().unwrap_or(&".");
 
-    // TODO: 実際のファイルシステムと連携
-    // とりあえずデモ出力
-    let output = format!(
-        "Contents of {}:\n  bin/\n  dev/\n  etc/\n  home/\n  tmp/\n  var/\n",
-        path
-    );
-
-    CommandResult::Output(output)
+    // memfsと連携
+    match crate::fs::list_directory(path, &shell.cwd) {
+        Ok(entries) => {
+            let mut output = String::new();
+            for entry in entries {
+                let suffix = match entry.file_type {
+                    crate::fs::FileType::Directory => "/",
+                    crate::fs::FileType::Symlink => "@",
+                    _ => "",
+                };
+                output.push_str(&format!("  {}{}\n", entry.name, suffix));
+            }
+            if output.is_empty() {
+                output.push_str("  (empty directory)\n");
+            }
+            CommandResult::Output(output)
+        }
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("ls: {}: No such file or directory", path))
+        }
+        Err(crate::fs::FsError::NotDirectory) => {
+            // ファイルの場合はファイル名を表示
+            CommandResult::Output(format!("  {}\n", path))
+        }
+        Err(e) => CommandResult::Error(format!("ls: {:?}", e)),
+    }
 }
 
 fn cmd_cd(shell: &mut Shell, args: &[&str]) -> CommandResult {
@@ -586,7 +732,7 @@ fn cmd_cd(shell: &mut Shell, args: &[&str]) -> CommandResult {
         Some(&"~") | None => shell
             .get_env("HOME")
             .cloned()
-            .unwrap_or_else(|| String::from("/")),
+            .unwrap_or_else(|| String::from("/home/user")),
         Some(path) => {
             if path.starts_with('/') {
                 path.to_string()
@@ -610,66 +756,252 @@ fn cmd_cd(shell: &mut Shell, args: &[&str]) -> CommandResult {
         }
     };
 
-    // TODO: パスの存在確認
-    CommandResult::ChangeDir(path)
+    // パスの存在確認 (memfsと連携)
+    match crate::fs::resolve_path(&path, &shell.cwd) {
+        Ok(inode) => {
+            match inode.getattr() {
+                Ok(attr) => {
+                    if attr.file_type == crate::fs::FileType::Directory {
+                        CommandResult::ChangeDir(path)
+                    } else {
+                        CommandResult::Error(format!("cd: {}: Not a directory", path))
+                    }
+                }
+                Err(_) => CommandResult::ChangeDir(path), // 属性取得に失敗してもディレクトリ変更
+            }
+        }
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("cd: {}: No such file or directory", path))
+        }
+        Err(e) => CommandResult::Error(format!("cd: {:?}", e)),
+    }
 }
 
 fn cmd_pwd(shell: &mut Shell, _args: &[&str]) -> CommandResult {
     CommandResult::Output(format!("{}\n", shell.cwd))
 }
 
-fn cmd_cat(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_cat(shell: &mut Shell, args: &[&str]) -> CommandResult {
     if args.is_empty() {
         return CommandResult::Error(String::from("cat: missing file operand"));
     }
 
-    // TODO: 実際のファイル読み取り
-    CommandResult::Output(format!("(content of {})\n", args[0]))
+    // memfsと連携してファイル内容を読み取り
+    match crate::fs::read_file_content(args[0], &shell.cwd) {
+        Ok(content) => {
+            match core::str::from_utf8(&content) {
+                Ok(text) => CommandResult::Output(text.to_string()),
+                Err(_) => CommandResult::Error(format!("cat: {}: Binary file", args[0])),
+            }
+        }
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("cat: {}: No such file or directory", args[0]))
+        }
+        Err(crate::fs::FsError::IsDirectory) => {
+            CommandResult::Error(format!("cat: {}: Is a directory", args[0]))
+        }
+        Err(e) => CommandResult::Error(format!("cat: {:?}", e)),
+    }
 }
 
-fn cmd_mkdir(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_mkdir(shell: &mut Shell, args: &[&str]) -> CommandResult {
     if args.is_empty() {
         return CommandResult::Error(String::from("mkdir: missing operand"));
     }
 
-    // TODO: 実際のディレクトリ作成
-    CommandResult::Output(format!("Created directory: {}\n", args[0]))
+    // memfsと連携してディレクトリを作成
+    match crate::fs::make_directory(args[0], &shell.cwd) {
+        Ok(()) => CommandResult::Success,
+        Err(crate::fs::FsError::AlreadyExists) => {
+            CommandResult::Error(format!("mkdir: {}: File exists", args[0]))
+        }
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("mkdir: {}: No such file or directory", args[0]))
+        }
+        Err(e) => CommandResult::Error(format!("mkdir: {:?}", e)),
+    }
 }
 
-fn cmd_rm(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_rm(shell: &mut Shell, args: &[&str]) -> CommandResult {
     if args.is_empty() {
         return CommandResult::Error(String::from("rm: missing operand"));
     }
 
-    // TODO: 実際のファイル削除
+    // -r/-R オプションチェック (再帰削除)
+    let recursive = args.iter().any(|a| *a == "-r" || *a == "-R" || *a == "-rf");
+    let paths: Vec<&str> = args.iter().filter(|a| !a.starts_with('-')).copied().collect();
+
+    if paths.is_empty() {
+        return CommandResult::Error(String::from("rm: missing operand"));
+    }
+
+    for path in paths {
+        // まずファイルとして削除を試行
+        match crate::fs::remove_file(path, &shell.cwd) {
+            Ok(()) => continue,
+            Err(crate::fs::FsError::IsDirectory) => {
+                if recursive {
+                    // 再帰削除 (空ディレクトリのみ)
+                    match crate::fs::remove_directory(path, &shell.cwd) {
+                        Ok(()) => continue,
+                        Err(crate::fs::FsError::NotEmpty) => {
+                            return CommandResult::Error(format!("rm: {}: Directory not empty", path));
+                        }
+                        Err(e) => return CommandResult::Error(format!("rm: {:?}", e)),
+                    }
+                } else {
+                    return CommandResult::Error(format!("rm: {}: Is a directory", path));
+                }
+            }
+            Err(crate::fs::FsError::NotFound) => {
+                return CommandResult::Error(format!("rm: {}: No such file or directory", path));
+            }
+            Err(e) => return CommandResult::Error(format!("rm: {:?}", e)),
+        }
+    }
+
     CommandResult::Success
 }
 
-fn cmd_cp(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_cp(shell: &mut Shell, args: &[&str]) -> CommandResult {
     if args.len() < 2 {
         return CommandResult::Error(String::from("cp: missing operand"));
     }
 
-    // TODO: 実際のファイルコピー
-    CommandResult::Success
+    let src = args[0];
+    let dst = args[1];
+
+    match crate::fs::copy_file(src, dst, &shell.cwd) {
+        Ok(()) => CommandResult::Success,
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("cp: {}: No such file or directory", src))
+        }
+        Err(crate::fs::FsError::IsDirectory) => {
+            CommandResult::Error(format!("cp: {}: Is a directory", src))
+        }
+        Err(e) => CommandResult::Error(format!("cp: {:?}", e)),
+    }
 }
 
-fn cmd_mv(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_mv(shell: &mut Shell, args: &[&str]) -> CommandResult {
     if args.len() < 2 {
         return CommandResult::Error(String::from("mv: missing operand"));
     }
 
-    // TODO: 実際のファイル移動
-    CommandResult::Success
+    let src = args[0];
+    let dst = args[1];
+
+    match crate::fs::move_file(src, dst, &shell.cwd) {
+        Ok(()) => CommandResult::Success,
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("mv: {}: No such file or directory", src))
+        }
+        Err(crate::fs::FsError::CrossDeviceLink) => {
+            CommandResult::Error(format!("mv: cannot move across directories"))
+        }
+        Err(e) => CommandResult::Error(format!("mv: {:?}", e)),
+    }
 }
 
-fn cmd_touch(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+fn cmd_touch(shell: &mut Shell, args: &[&str]) -> CommandResult {
     if args.is_empty() {
         return CommandResult::Error(String::from("touch: missing operand"));
     }
 
-    // TODO: 実際のファイル作成/更新
+    for path in args {
+        match crate::fs::touch_file(path, &shell.cwd) {
+            Ok(()) => {}
+            Err(crate::fs::FsError::NotFound) => {
+                return CommandResult::Error(format!("touch: {}: No such file or directory", path));
+            }
+            Err(e) => return CommandResult::Error(format!("touch: {:?}", e)),
+        }
+    }
+
     CommandResult::Success
+}
+
+fn cmd_stat(shell: &mut Shell, args: &[&str]) -> CommandResult {
+    if args.is_empty() {
+        return CommandResult::Error(String::from("stat: missing operand"));
+    }
+
+    let path = args[0];
+    match crate::fs::stat_file(path, &shell.cwd) {
+        Ok(attr) => {
+            let file_type = match attr.file_type {
+                crate::fs::FileType::Regular => "regular file",
+                crate::fs::FileType::Directory => "directory",
+                crate::fs::FileType::Symlink => "symbolic link",
+                crate::fs::FileType::BlockDevice => "block device",
+                crate::fs::FileType::CharDevice => "character device",
+                crate::fs::FileType::Fifo => "FIFO (named pipe)",
+                crate::fs::FileType::Socket => "socket",
+            };
+            
+            let output = format!(
+                "  File: {}\n  Size: {} bytes\n  Type: {}\n  Inode: {}\n  Links: {}\n  Mode: {:o}\n  UID: {}\n  GID: {}\n",
+                path,
+                attr.size,
+                file_type,
+                attr.ino,
+                attr.nlink,
+                attr.mode.0,
+                attr.uid,
+                attr.gid,
+            );
+            CommandResult::Output(output)
+        }
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("stat: {}: No such file or directory", path))
+        }
+        Err(e) => CommandResult::Error(format!("stat: {:?}", e)),
+    }
+}
+
+fn cmd_ln(shell: &mut Shell, args: &[&str]) -> CommandResult {
+    // ln -s <target> <link_name>
+    if args.len() < 3 || args[0] != "-s" {
+        return CommandResult::Error(String::from("ln: usage: ln -s <target> <link_name>"));
+    }
+
+    let target = args[1];
+    let link_name = args[2];
+
+    match crate::fs::create_symlink(target, link_name, &shell.cwd) {
+        Ok(()) => CommandResult::Success,
+        Err(crate::fs::FsError::AlreadyExists) => {
+            CommandResult::Error(format!("ln: {}: File exists", link_name))
+        }
+        Err(crate::fs::FsError::NotFound) => {
+            CommandResult::Error(format!("ln: {}: No such file or directory", link_name))
+        }
+        Err(e) => CommandResult::Error(format!("ln: {:?}", e)),
+    }
+}
+
+fn cmd_write(shell: &mut Shell, args: &[&str]) -> CommandResult {
+    if args.len() < 2 {
+        return CommandResult::Error(String::from("write: usage: write <file> <content>"));
+    }
+
+    let file = args[0];
+    let content = args[1..].join(" ");
+
+    match crate::fs::write_file_content(file, &shell.cwd, content.as_bytes()) {
+        Ok(()) => CommandResult::Success,
+        Err(crate::fs::FsError::NotFound) => {
+            // ファイルが存在しない場合は作成
+            if let Err(e) = crate::fs::touch_file(file, &shell.cwd) {
+                return CommandResult::Error(format!("write: {:?}", e));
+            }
+            match crate::fs::write_file_content(file, &shell.cwd, content.as_bytes()) {
+                Ok(()) => CommandResult::Success,
+                Err(e) => CommandResult::Error(format!("write: {:?}", e)),
+            }
+        }
+        Err(e) => CommandResult::Error(format!("write: {:?}", e)),
+    }
 }
 
 fn cmd_clear(_shell: &mut Shell, _args: &[&str]) -> CommandResult {
@@ -863,6 +1195,373 @@ fn cmd_grep(_shell: &mut Shell, args: &[&str]) -> CommandResult {
 
     // TODO: 実際のパターンマッチング
     CommandResult::Output(String::from("(matching lines)\n"))
+}
+
+// ============================================================================
+// Network Commands
+// ============================================================================
+
+fn cmd_ifconfig(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+    use crate::net;
+    
+    let mut output = String::new();
+    
+    if args.is_empty() || args[0] == "-a" {
+        // Show all interfaces
+        output.push_str("Network Interfaces:\n\n");
+        
+        // eth0 (VirtIO-Net)
+        output.push_str("eth0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>\n");
+        
+        // Try to get actual network config
+        if let Some(config) = net::get_network_config() {
+            output.push_str(&format!(
+                "        inet {}.{}.{}.{}  netmask {}.{}.{}.{}  broadcast {}.{}.{}.255\n",
+                config.ip[0], config.ip[1], config.ip[2], config.ip[3],
+                config.netmask[0], config.netmask[1], config.netmask[2], config.netmask[3],
+                config.ip[0], config.ip[1], config.ip[2]
+            ));
+            output.push_str(&format!(
+                "        ether {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+                config.mac[0], config.mac[1], config.mac[2], 
+                config.mac[3], config.mac[4], config.mac[5]
+            ));
+        } else {
+            // Default demo values
+            output.push_str("        inet 10.0.2.15  netmask 255.255.255.0  broadcast 10.0.2.255\n");
+            output.push_str("        ether 52:54:00:12:34:56\n");
+        }
+        
+        // Statistics
+        if let Some(stats) = net::get_network_stats() {
+            output.push_str(&format!(
+                "        RX packets {}  bytes {} ({} KB)\n",
+                stats.rx_packets,
+                stats.rx_bytes,
+                stats.rx_bytes / 1024
+            ));
+            output.push_str(&format!(
+                "        TX packets {}  bytes {} ({} KB)\n",
+                stats.tx_packets,
+                stats.tx_bytes,
+                stats.tx_bytes / 1024
+            ));
+            output.push_str(&format!(
+                "        RX errors {}  dropped {}\n",
+                stats.rx_errors, stats.rx_dropped
+            ));
+        } else {
+            output.push_str("        RX packets 0  bytes 0 (0 KB)\n");
+            output.push_str("        TX packets 0  bytes 0 (0 KB)\n");
+        }
+        
+        output.push_str("\nlo: flags=73<UP,LOOPBACK,RUNNING>\n");
+        output.push_str("        inet 127.0.0.1  netmask 255.0.0.0\n");
+        output.push_str("        loop  txqueuelen 1000\n");
+    } else {
+        // Show specific interface
+        let iface = args[0];
+        match iface {
+            "eth0" => {
+                output.push_str(&format!("{}: VirtIO Network Interface\n", iface));
+                output.push_str("        Status: UP\n");
+            }
+            "lo" => {
+                output.push_str(&format!("{}: Loopback Interface\n", iface));
+                output.push_str("        inet 127.0.0.1/8\n");
+            }
+            _ => {
+                return CommandResult::Error(format!("{}: interface not found", iface));
+            }
+        }
+    }
+    
+    CommandResult::Output(output)
+}
+
+fn cmd_ping(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+    if args.is_empty() {
+        return CommandResult::Error(String::from("ping: usage: ping <host> [-c count]"));
+    }
+    
+    let host = args[0];
+    
+    // Parse count option
+    let count = if args.len() >= 3 && args[1] == "-c" {
+        args[2].parse::<u32>().unwrap_or(4)
+    } else {
+        4
+    };
+    
+    // Parse IP address or hostname
+    let ip = if host.contains('.') {
+        // IP address
+        let parts: Vec<&str> = host.split('.').collect();
+        if parts.len() != 4 {
+            return CommandResult::Error(format!("ping: invalid IP address: {}", host));
+        }
+        let octets: Result<Vec<u8>, _> = parts.iter()
+            .map(|p| p.parse::<u8>())
+            .collect();
+        match octets {
+            Ok(o) if o.len() == 4 => [o[0], o[1], o[2], o[3]],
+            _ => return CommandResult::Error(format!("ping: invalid IP address: {}", host)),
+        }
+    } else {
+        // Hostname - would need DNS resolution
+        match host {
+            "localhost" => [127, 0, 0, 1],
+            "gateway" => [10, 0, 2, 2],
+            _ => {
+                return CommandResult::Output(format!(
+                    "PING {} - DNS resolution not available in demo\n\
+                     Use IP address directly (e.g., ping 10.0.2.2)\n",
+                    host
+                ));
+            }
+        }
+    };
+    
+    let mut output = String::new();
+    output.push_str(&format!(
+        "PING {}.{}.{}.{} ({}.{}.{}.{}) 56(84) bytes of data.\n",
+        ip[0], ip[1], ip[2], ip[3],
+        ip[0], ip[1], ip[2], ip[3]
+    ));
+    
+    // Attempt actual ping using network stack
+    let mut sent = 0u32;
+    let mut received = 0u32;
+    
+    for seq in 1..=count {
+        sent += 1;
+        
+        // Try to send ICMP echo request via network stack
+        let result = crate::net::send_icmp_echo(ip, seq as u16);
+        
+        match result {
+            Ok(rtt_ms) => {
+                received += 1;
+                output.push_str(&format!(
+                    "64 bytes from {}.{}.{}.{}: icmp_seq={} ttl=64 time={:.1} ms\n",
+                    ip[0], ip[1], ip[2], ip[3], seq, rtt_ms
+                ));
+            }
+            Err(e) => {
+                output.push_str(&format!(
+                    "From {}.{}.{}.{} icmp_seq={}: {}\n",
+                    ip[0], ip[1], ip[2], ip[3], seq, e
+                ));
+            }
+        }
+    }
+    
+    // Statistics
+    let loss = if sent > 0 {
+        ((sent - received) as f32 / sent as f32) * 100.0
+    } else {
+        100.0
+    };
+    
+    output.push_str(&format!(
+        "\n--- {}.{}.{}.{} ping statistics ---\n",
+        ip[0], ip[1], ip[2], ip[3]
+    ));
+    output.push_str(&format!(
+        "{} packets transmitted, {} received, {:.0}% packet loss\n",
+        sent, received, loss
+    ));
+    
+    CommandResult::Output(output)
+}
+
+fn cmd_netstat(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+    let show_all = args.contains(&"-a");
+    
+    let mut output = String::new();
+    output.push_str("Active Internet connections");
+    if show_all {
+        output.push_str(" (including servers)");
+    }
+    output.push_str("\n");
+    output.push_str("Proto  Local Address          Foreign Address        State\n");
+    
+    // Get TCP connections from network stack
+    if let Some(connections) = crate::net::get_tcp_connections() {
+        for conn in connections {
+            if show_all || conn.state != "LISTEN" {
+                output.push_str(&format!(
+                    "{:<6} {:<22} {:<22} {}\n",
+                    "tcp", conn.local_addr, conn.remote_addr, conn.state
+                ));
+            }
+        }
+    } else {
+        // Demo output
+        output.push_str("tcp    0.0.0.0:22             0.0.0.0:*              LISTEN\n");
+        output.push_str("tcp    0.0.0.0:80             0.0.0.0:*              LISTEN\n");
+    }
+    
+    // UDP sockets
+    if let Some(sockets) = crate::net::get_udp_sockets() {
+        for sock in sockets {
+            output.push_str(&format!(
+                "{:<6} {:<22} {:<22} -\n",
+                "udp", sock.local_addr, sock.remote_addr
+            ));
+        }
+    } else {
+        output.push_str("udp    0.0.0.0:68             0.0.0.0:*              -\n");
+    }
+    
+    CommandResult::Output(output)
+}
+
+fn cmd_dns(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+    if args.is_empty() {
+        return CommandResult::Error(String::from("dns: usage: dns <hostname>"));
+    }
+    
+    let hostname = args[0];
+    let mut output = String::new();
+    
+    output.push_str(&format!("Looking up: {}\n", hostname));
+    
+    // Try DNS resolution via network stack
+    match crate::net::dns_resolve(hostname) {
+        Ok(addresses) => {
+            output.push_str(&format!("Name:    {}\n", hostname));
+            for addr in addresses {
+                output.push_str(&format!("Address: {}.{}.{}.{}\n",
+                    addr[0], addr[1], addr[2], addr[3]));
+            }
+        }
+        Err(e) => {
+            // Fallback for well-known addresses
+            let result = match hostname {
+                "localhost" => Some([127, 0, 0, 1]),
+                "gateway" | "router" => Some([10, 0, 2, 2]),
+                _ => None,
+            };
+            
+            if let Some(ip) = result {
+                output.push_str(&format!("Name:    {}\n", hostname));
+                output.push_str(&format!("Address: {}.{}.{}.{}\n",
+                    ip[0], ip[1], ip[2], ip[3]));
+            } else {
+                output.push_str(&format!("DNS resolution error: {}\n", e));
+                output.push_str("DNS server may not be configured.\n");
+                output.push_str("Try 'dhcp discover' to obtain network configuration.\n");
+            }
+        }
+    }
+    
+    CommandResult::Output(output)
+}
+
+fn cmd_dhcp(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+    let action = args.first().unwrap_or(&"status");
+    
+    let mut output = String::new();
+    
+    match *action {
+        "discover" => {
+            output.push_str("DHCP: Sending DISCOVER broadcast...\n");
+            
+            match crate::net::dhcp_discover() {
+                Ok(offer) => {
+                    output.push_str(&format!("DHCP OFFER received:\n"));
+                    output.push_str(&format!("  Your IP:     {}.{}.{}.{}\n",
+                        offer.your_ip[0], offer.your_ip[1], 
+                        offer.your_ip[2], offer.your_ip[3]));
+                    output.push_str(&format!("  Server IP:   {}.{}.{}.{}\n",
+                        offer.server_ip[0], offer.server_ip[1],
+                        offer.server_ip[2], offer.server_ip[3]));
+                    if let Some(gw) = offer.gateway {
+                        output.push_str(&format!("  Gateway:     {}.{}.{}.{}\n",
+                            gw[0], gw[1], gw[2], gw[3]));
+                    }
+                    if let Some(dns) = offer.dns {
+                        output.push_str(&format!("  DNS:         {}.{}.{}.{}\n",
+                            dns[0], dns[1], dns[2], dns[3]));
+                    }
+                    output.push_str("\nUse 'dhcp request' to accept this offer.\n");
+                }
+                Err(e) => {
+                    output.push_str(&format!("DHCP DISCOVER failed: {}\n", e));
+                    output.push_str("No DHCP server found on the network.\n");
+                }
+            }
+        }
+        "request" => {
+            output.push_str("DHCP: Sending REQUEST...\n");
+            
+            match crate::net::dhcp_request() {
+                Ok(ack) => {
+                    output.push_str("DHCP ACK received - IP address bound!\n");
+                    output.push_str(&format!("  Assigned IP: {}.{}.{}.{}\n",
+                        ack.your_ip[0], ack.your_ip[1],
+                        ack.your_ip[2], ack.your_ip[3]));
+                    output.push_str(&format!("  Lease time:  {} seconds\n", ack.lease_time));
+                    output.push_str("\nNetwork configuration updated.\n");
+                }
+                Err(e) => {
+                    output.push_str(&format!("DHCP REQUEST failed: {}\n", e));
+                }
+            }
+        }
+        "release" => {
+            output.push_str("DHCP: Releasing IP address...\n");
+            crate::net::dhcp_release();
+            output.push_str("IP address released.\n");
+        }
+        "status" | _ => {
+            output.push_str("DHCP Client Status:\n");
+            if let Some(state) = crate::net::get_dhcp_state() {
+                output.push_str(&format!("  State:      {}\n", state.state));
+                if let Some(ip) = state.assigned_ip {
+                    output.push_str(&format!("  IP Address: {}.{}.{}.{}\n",
+                        ip[0], ip[1], ip[2], ip[3]));
+                }
+                if let Some(lease) = state.lease_remaining {
+                    output.push_str(&format!("  Lease:      {} seconds remaining\n", lease));
+                }
+            } else {
+                output.push_str("  State:      NOT CONFIGURED\n");
+                output.push_str("  Use 'dhcp discover' to obtain IP address\n");
+            }
+        }
+    }
+    
+    CommandResult::Output(output)
+}
+
+fn cmd_arp(_shell: &mut Shell, args: &[&str]) -> CommandResult {
+    let show_all = args.contains(&"-a");
+    let _ = show_all; // ARP always shows all entries
+    
+    let mut output = String::new();
+    output.push_str("Address                  HWaddress           Flags\n");
+    
+    // Get ARP cache from network stack
+    if let Some(entries) = crate::net::get_arp_cache() {
+        for entry in entries {
+            output.push_str(&format!(
+                "{:<24} {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}  {}\n",
+                format!("{}.{}.{}.{}", 
+                    entry.ip[0], entry.ip[1], entry.ip[2], entry.ip[3]),
+                entry.mac[0], entry.mac[1], entry.mac[2],
+                entry.mac[3], entry.mac[4], entry.mac[5],
+                if entry.complete { "C" } else { "I" }
+            ));
+        }
+    } else {
+        // Demo entries
+        output.push_str("10.0.2.2                 52:55:0a:00:02:02   C\n");
+        output.push_str("10.0.2.3                 52:55:0a:00:02:03   C\n");
+    }
+    
+    CommandResult::Output(output)
 }
 
 // ============================================================================
