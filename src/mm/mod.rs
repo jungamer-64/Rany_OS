@@ -39,7 +39,15 @@ pub use frame_allocator::{
     dealloc_frame, frame_allocator_stats, init_frame_allocator,
 };
 #[allow(unused_imports)]
-pub use mapping::{PHYSICAL_MEMORY_OFFSET, phys_to_virt, virt_to_phys};
+pub use higher_half::{
+    // 既存のエクスポート
+    HigherHalfManager, MapError, PageFlags, PageSize, PageTable, PageTableEntry,
+    PageTableManager, PageTableWalker, PhysAddr, PhysicalMemoryMapper, VirtAddr,
+    flush_tlb, get_cr3, global_map_page, global_translate, global_unmap_page, init,
+    init_page_table_manager, invalidate_page, phys_to_virt, set_cr3, virt_to_phys,
+};
+#[allow(unused_imports)]
+pub use mapping::{PHYSICAL_MEMORY_OFFSET, phys_to_virt as mapping_phys_to_virt, virt_to_phys as mapping_virt_to_phys};
 #[allow(unused_imports)]
 pub use mmap::{
     MappedAddress, MappingFlags, MappingSize, MemoryMapping, MmapError, MmapManager, Protection,
