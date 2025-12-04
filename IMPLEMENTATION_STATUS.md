@@ -588,6 +588,21 @@ pub struct TsoContext {
 3. **Capability**: `chmod`/`chown` ではなく `grant`/`revoke` による権限管理
 4. **メソッドチェーン**: パイプラインではなくイテレータ操作
 
+#### 実装状況
+
+| 機能 | 状態 | 説明 |
+|------|------|------|
+| ExoValue型システム | ✅ 完了 | 13種類の値型（Nil, Bool, Int, Float, String, Bytes, Array, Map, FileEntry, NetConnection, Process, Capability, Iterator） |
+| 5大名前空間 | ✅ 完了 | fs.*, net.*, proc.*, cap.*, sys.* |
+| トークナイザー | ✅ 完了 | 文字列リテラル内の'.'を正しく処理 |
+| メソッドチェーンパーサー | ✅ 完了 | `fs.entries("/").filter("size > 1024").first()` |
+| 配列メソッド | ✅ 完了 | filter, map, take, skip, sort, first, last, reverse, len |
+| 文字列メソッド | ✅ 完了 | len, upper, lower, trim, split, contains |
+| Map/Bytesメソッド | ✅ 完了 | keys, values, len, to_string, hex |
+| 変数バインディング | ✅ 完了 | `let x = ...`, `$x` |
+| Unixエイリアス | ✅ 完了 | ls, cd, cat等の互換コマンド（利便性のため） |
+| モード切替 | ✅ 完了 | `exo`/`classic` コマンド |
+
 #### モード切替
 
 | コマンド | 説明 |

@@ -414,7 +414,281 @@ impl<'a> Future for SerialReadFuture<'a> {
 use alloc::string::String;
 use alloc::vec::Vec;
 
-/// Read a line from serial port asynchronously
+/// Input event returned from advanced line reading
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InputEvent {
+    /// Line submitted (Enter pressed)
+    Line(String),
+    /// Arrow key pressed
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    /// Home key
+    Home,
+    /// End key
+    End,
+    /// Tab key pressed
+    Tab,
+    /// Ctrl+C (interrupt)
+    Interrupt,
+    /// Ctrl+D (EOF)
+    Eof,
+    /// Delete key
+    Delete,
+}
+
+/// Advanced line editor state
+pub struct LineEditor {
+    buffer: Vec<u8>,
+    cursor_pos: usize,
+}
+
+impl LineEditor {
+    pub fn new() -> Self {
+        Self {
+            buffer: Vec::with_capacity(256),
+            cursor_pos: 0,
+        }
+    }
+
+    /// Get current buffer content as string
+    pub fn content(&self) -> String {
+        String::from_utf8_lossy(&self.buffer).into_owned()
+    }
+
+    /// Set buffer content (for history navigation)
+    pub fn set_content(&mut self, s: &str) {
+        self.buffer.clear();
+        self.buffer.extend_from_slice(s.as_bytes());
+        self.cursor_pos = self.buffer.len();
+    }
+
+    /// Clear the buffer
+    pub fn clear(&mut self) {
+        self.buffer.clear();
+        self.cursor_pos = 0;
+    }
+
+    /// Get buffer length
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Insert character at cursor position
+    pub fn insert(&mut self, c: u8) -> bool {
+        if self.buffer.len() >= 255 {
+            return false;
+        }
+        if self.cursor_pos == self.buffer.len() {
+            self.buffer.push(c);
+        } else {
+            self.buffer.insert(self.cursor_pos, c);
+        }
+        self.cursor_pos += 1;
+        true
+    }
+
+    /// Delete character before cursor (backspace)
+    pub fn backspace(&mut self) -> bool {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+            self.buffer.remove(self.cursor_pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Delete character at cursor position
+    pub fn delete(&mut self) -> bool {
+        if self.cursor_pos < self.buffer.len() {
+            self.buffer.remove(self.cursor_pos);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move cursor left
+    pub fn move_left(&mut self) -> bool {
+        if self.cursor_pos > 0 {
+            self.cursor_pos -= 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move cursor right
+    pub fn move_right(&mut self) -> bool {
+        if self.cursor_pos < self.buffer.len() {
+            self.cursor_pos += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Move cursor to start
+    pub fn move_home(&mut self) {
+        self.cursor_pos = 0;
+    }
+
+    /// Move cursor to end
+    pub fn move_end(&mut self) {
+        self.cursor_pos = self.buffer.len();
+    }
+
+    /// Get cursor position
+    pub fn cursor(&self) -> usize {
+        self.cursor_pos
+    }
+}
+
+/// Read a line from serial port with advanced editing support
+/// Returns InputEvent for special keys, allowing shell to handle history
+pub async fn read_line_advanced(editor: &mut LineEditor) -> InputEvent {
+    let port = serial1();
+    
+    loop {
+        let byte = port.read_byte().await;
+        
+        match byte {
+            // Enter (CR or LF)
+            b'\r' | b'\n' => {
+                port.port.send(b'\r');
+                port.port.send(b'\n');
+                let line = editor.content();
+                editor.clear();
+                return InputEvent::Line(line);
+            }
+            // Backspace
+            0x08 | 0x7F => {
+                if editor.backspace() {
+                    // Echo: backspace, space, backspace
+                    port.port.send(0x08);
+                    port.port.send(b' ');
+                    port.port.send(0x08);
+                }
+            }
+            // Tab
+            b'\t' => {
+                return InputEvent::Tab;
+            }
+            // Ctrl+C
+            0x03 => {
+                port.port.send(b'^');
+                port.port.send(b'C');
+                port.port.send(b'\r');
+                port.port.send(b'\n');
+                editor.clear();
+                return InputEvent::Interrupt;
+            }
+            // Ctrl+D (EOF)
+            0x04 => {
+                if editor.len() == 0 {
+                    return InputEvent::Eof;
+                }
+            }
+            // Escape sequence start
+            0x1B => {
+                // Read next byte to determine sequence
+                let next = port.read_byte().await;
+                if next == b'[' {
+                    // CSI sequence
+                    let code = port.read_byte().await;
+                    match code {
+                        b'A' => return InputEvent::ArrowUp,
+                        b'B' => return InputEvent::ArrowDown,
+                        b'C' => {
+                            if editor.move_right() {
+                                port.port.send(0x1B);
+                                port.port.send(b'[');
+                                port.port.send(b'C');
+                            }
+                        }
+                        b'D' => {
+                            if editor.move_left() {
+                                port.port.send(0x1B);
+                                port.port.send(b'[');
+                                port.port.send(b'D');
+                            }
+                        }
+                        b'H' => {
+                            // Home key
+                            let moves = editor.cursor();
+                            editor.move_home();
+                            for _ in 0..moves {
+                                port.port.send(0x1B);
+                                port.port.send(b'[');
+                                port.port.send(b'D');
+                            }
+                        }
+                        b'F' => {
+                            // End key
+                            let moves = editor.len() - editor.cursor();
+                            editor.move_end();
+                            for _ in 0..moves {
+                                port.port.send(0x1B);
+                                port.port.send(b'[');
+                                port.port.send(b'C');
+                            }
+                        }
+                        b'3' => {
+                            // Delete key (ESC [ 3 ~)
+                            let tilde = port.read_byte().await;
+                            if tilde == b'~' && editor.delete() {
+                                // Redraw from cursor to end
+                                redraw_from_cursor(port, editor);
+                            }
+                        }
+                        _ => {
+                            // Unknown sequence, ignore
+                        }
+                    }
+                }
+            }
+            // Printable ASCII
+            0x20..=0x7E => {
+                if editor.insert(byte) {
+                    if editor.cursor() == editor.len() {
+                        // Cursor at end, just echo
+                        port.port.send(byte);
+                    } else {
+                        // Cursor in middle, redraw
+                        redraw_from_cursor(port, editor);
+                    }
+                }
+            }
+            _ => {
+                // Ignore other control characters
+            }
+        }
+    }
+}
+
+/// Helper to redraw line from cursor position
+fn redraw_from_cursor(port: &AsyncSerialPort, editor: &LineEditor) {
+    let pos = editor.cursor();
+    let content = editor.content();
+    
+    // Print from cursor to end
+    for c in content[pos..].bytes() {
+        port.port.send(c);
+    }
+    // Add space to clear any trailing char
+    port.port.send(b' ');
+    // Move cursor back to original position
+    let moves = content.len() - pos + 1;
+    for _ in 0..moves {
+        port.port.send(0x1B);
+        port.port.send(b'[');
+        port.port.send(b'D');
+    }
+}
+
+/// Read a line from serial port asynchronously (simple version)
 /// Returns when Enter is pressed or buffer is full
 pub async fn read_line() -> String {
     let port = serial1();
