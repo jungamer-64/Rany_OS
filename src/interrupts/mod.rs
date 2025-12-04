@@ -91,6 +91,12 @@ fn init_idt() {
         idt[InterruptVector::Keyboard as u8].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptVector::Com1 as u8].set_handler_fn(com1_interrupt_handler);
         
+        // PIC2 の IRQ ハンドラ（動的デバイス用）
+        // IRQ 9, 10, 11 は多くの PCI デバイスで使用される
+        idt[PIC2_OFFSET + 1].set_handler_fn(pci_irq9_handler);  // IRQ9 (Free1)
+        idt[PIC2_OFFSET + 2].set_handler_fn(pci_irq10_handler); // IRQ10 (Free2)
+        idt[PIC2_OFFSET + 3].set_handler_fn(pci_irq11_handler); // IRQ11 (Free3)
+        
         crate::vga::early_serial_str("[IDT] load\n");
         
         // IDTをロード
@@ -220,11 +226,18 @@ fn init_pic() {
         io_wait();
 
         // 割り込みマスク設定
-        // PIC1: IRQ0(timer), IRQ1(keyboard), IRQ4(COM1) を有効化
-        // ビット0=IRQ0, ビット1=IRQ1, ビット4=IRQ4
-        // 0=有効, 1=マスク なので: ~(0x01 | 0x02 | 0x10) = 0xEC
-        pic1_data.write(0b11101100); // Timer(0), Keyboard(1), COM1(4) を有効
-        pic2_data.write(0xFF);       // PIC2は全マスク（現状不要）
+        // PIC1: IRQ0(timer), IRQ1(keyboard), IRQ2(cascade), IRQ4(COM1) を有効化
+        // ビット0=IRQ0, ビット1=IRQ1, ビット2=IRQ2(cascade), ビット4=IRQ4
+        // 0=有効, 1=マスク
+        // ~(0x01 | 0x02 | 0x04 | 0x10) = 0xE8
+        pic1_data.write(0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
+        
+        // PIC2: IRQ9, IRQ10, IRQ11 を有効化（PCI デバイス用）
+        // IRQ8=RTC, IRQ9, IRQ10, IRQ11 は PCI で使用されることが多い
+        // ビット1=IRQ9, ビット2=IRQ10, ビット3=IRQ11
+        // 0=有効, 1=マスク
+        // ~(0x02 | 0x04 | 0x08) = 0xF1
+        pic2_data.write(0b11110001); // IRQ9, IRQ10, IRQ11 を有効
     }
 }
 
@@ -335,10 +348,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
     // キーボードデータポートから読み取り（これをしないと次の割り込みが来ない）
     let mut port = Port::new(0x60);
-    let _scancode: u8 = unsafe { port.read() };
+    let scancode: u8 = unsafe { port.read() };
 
-    // スキャンコードを処理キューに追加
-    // TODO: キーボードドライバの実装（シリアルコンソールを使用中のためログ出力は不要）
+    // スキャンコードをinputモジュールに渡して処理
+    crate::input::handle_scancode(scancode);
 
     // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
     crate::task::interrupt_waker::wake_from_interrupt(
@@ -366,6 +379,42 @@ extern "x86-interrupt" fn com1_interrupt_handler(_stack_frame: InterruptStackFra
     unsafe {
         send_eoi(InterruptVector::Com1 as u8 - PIC1_OFFSET);
     }
+}
+
+// ============================================================================
+// PCI IRQ Handlers (IRQ 9, 10, 11)
+// ============================================================================
+
+/// IRQ 9 ハンドラ (PCI デバイス用)
+extern "x86-interrupt" fn pci_irq9_handler(_stack_frame: InterruptStackFrame) {
+    dispatch_pci_interrupt(9);
+    unsafe { send_eoi(9); }
+}
+
+/// IRQ 10 ハンドラ (PCI デバイス用)
+extern "x86-interrupt" fn pci_irq10_handler(_stack_frame: InterruptStackFrame) {
+    dispatch_pci_interrupt(10);
+    unsafe { send_eoi(10); }
+}
+
+/// IRQ 11 ハンドラ (PCI デバイス用)
+extern "x86-interrupt" fn pci_irq11_handler(_stack_frame: InterruptStackFrame) {
+    dispatch_pci_interrupt(11);
+    unsafe { send_eoi(11); }
+}
+
+/// PCI 割り込みをディスパッチ
+///
+/// 同じ IRQ を共有する可能性のある複数のデバイスをチェックする
+fn dispatch_pci_interrupt(irq: u8) {
+    // HDA ドライバをチェック
+    let hda_irq = crate::io::audio::hda::get_irq();
+    if hda_irq == irq {
+        crate::io::audio::hda::handle_interrupt();
+    }
+    
+    // 将来的には他の PCI デバイスもここに追加
+    // 例: NVMe, ネットワークカードなど
 }
 
 /// 現在のタイマーティック数を取得

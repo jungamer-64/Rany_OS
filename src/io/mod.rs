@@ -5,6 +5,7 @@
 pub mod acpi;
 pub mod ahci;
 pub mod apic;
+pub mod audio;
 pub mod dma;
 pub mod ide;
 pub mod iommu;
