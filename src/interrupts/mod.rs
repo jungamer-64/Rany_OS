@@ -335,11 +335,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 
     // キーボードデータポートから読み取り（これをしないと次の割り込みが来ない）
     let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
+    let _scancode: u8 = unsafe { port.read() };
 
     // スキャンコードを処理キューに追加
-    // TODO: キーボードドライバの実装
-    crate::log!("Key: {:#x}\n", scancode);
+    // TODO: キーボードドライバの実装（シリアルコンソールを使用中のためログ出力は不要）
 
     // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
     crate::task::interrupt_waker::wake_from_interrupt(

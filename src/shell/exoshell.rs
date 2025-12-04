@@ -1959,61 +1959,60 @@ impl ExoShell {
         }
     }
 
-    /// ヘルプ表示
+    /// Display help
     fn help(&self) -> ExoValue {
         let help_text = r#"
-╔══════════════════════════════════════════════════════════════════════════════╗
-║                      ExoShell - Rust式REPL環境                              ║
-╠══════════════════════════════════════════════════════════════════════════════╣
-║ ExoRustの設計思想に基づき、Unixコマンドではなく型付きオブジェクトを操作します ║
-╚══════════════════════════════════════════════════════════════════════════════╝
+================================================================================
+                      ExoShell - Rust-style REPL Environment
+================================================================================
+  Based on ExoRust design: operate on typed objects, not Unix text streams
 
-【名前空間とメソッド】
+[Namespaces and Methods]
 
-  fs.*  - ファイルシステム
-    fs.entries("/path")   - ディレクトリ内容を取得
-    fs.read("/path")      - ファイル内容を読み取り
-    fs.stat("/path")      - ファイル情報を取得
-    fs.mkdir("/path")     - ディレクトリ作成
-    fs.remove("/path")    - ファイル/ディレクトリ削除
-    fs.cd("/path")        - カレントディレクトリ変更
-    fs.pwd()              - カレントディレクトリ表示
+  fs.*  - Filesystem
+    fs.entries("/path")   - List directory contents
+    fs.read("/path")      - Read file contents
+    fs.stat("/path")      - Get file information
+    fs.mkdir("/path")     - Create directory
+    fs.remove("/path")    - Remove file/directory
+    fs.cd("/path")        - Change current directory
+    fs.pwd()              - Print working directory
 
-  net.* - ネットワーク
-    net.config()          - ネットワーク設定を表示
-    net.stats()           - 送受信統計
-    net.arp()             - ARPキャッシュ
-    net.ping("ip", count) - ICMPエコー送信
+  net.* - Network
+    net.config()          - Show network configuration
+    net.stats()           - Show TX/RX statistics
+    net.arp()             - Show ARP cache
+    net.ping("ip", count) - Send ICMP echo
 
-  proc.* - プロセス/タスク
-    proc.list()           - タスク一覧
-    proc.info(pid)        - プロセス詳細
+  proc.* - Process/Task
+    proc.list()           - List tasks
+    proc.info(pid)        - Task details
 
-  cap.* - Capability（権限管理）
-    cap.list()            - 現在のCapability一覧
-    cap.grant(...)        - 権限を付与
-    cap.revoke(id)        - 権限を剥奪
+  cap.* - Capability (permissions)
+    cap.list()            - List current capabilities
+    cap.grant(...)        - Grant permission
+    cap.revoke(id)        - Revoke permission
 
-  sys.* - システム
-    sys.info()            - システム情報
-    sys.memory()          - メモリ使用量
-    sys.time()            - 時刻情報
-    sys.monitor()         - システム監視情報（CPU/メモリ/ネットワーク等）
-    sys.dashboard()       - 監視ダッシュボード表示
-    sys.thermal()         - 温度情報/スロットリング状態
-    sys.watchdog()        - ウォッチドッグ状態
-    sys.power()           - 電源状態/CPUアイドル統計
-    sys.shutdown()        - シャットダウン要求
-    sys.reboot()          - リブート要求
+  sys.* - System
+    sys.info()            - System information
+    sys.memory()          - Memory usage
+    sys.time()            - Time information
+    sys.monitor()         - System monitoring (CPU/Memory/Network)
+    sys.dashboard()       - Monitoring dashboard
+    sys.thermal()         - Temperature/throttling status
+    sys.watchdog()        - Watchdog status
+    sys.power()           - Power state/CPU idle stats
+    sys.shutdown()        - Request shutdown
+    sys.reboot()          - Request reboot
 
-【変数】
-  let x = fs.entries("/")   - 結果を変数に格納
-  $x                        - 変数を参照
-  _                         - 最後の結果
+[Variables]
+  let x = fs.entries("/")   - Store result in variable
+  $x                        - Reference variable
+  _                         - Last result
 
-【エイリアス（互換性）】
-  ls, cd, pwd, cat, mkdir, rm, ps, ifconfig, ping なども使用可能
-  ただし推奨は上記の名前空間式構文です
+[Aliases (Unix compatibility)]
+  ls, cd, pwd, cat, mkdir, rm, ps, ifconfig, ping are also available
+  However, namespace syntax above is recommended
 "#;
         ExoValue::String(help_text.to_string())
     }
