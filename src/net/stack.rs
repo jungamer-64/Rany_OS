@@ -662,6 +662,130 @@ impl NetworkStack {
             .map(|e| (e.ip, e.mac))
             .collect()
     }
+    
+    /// Get configuration (for shell commands)
+    pub fn get_config(&self) -> NetworkConfig {
+        self.config.lock().clone()
+    }
+    
+    /// Update IP address (for DHCP)
+    pub fn update_ip(&self, ip: Ipv4Address) {
+        let mut config = self.config.lock();
+        config.ipv4.address = ip;
+        
+        // Update dependent processors
+        self.ipv4.lock().set_config(config.ipv4.clone());
+        self.arp.lock().set_local(config.mac, ip);
+    }
+    
+    /// Send ICMP echo request (ping)
+    pub fn send_icmp_echo_request(&self, target: Ipv4Address, sequence: u16) -> Result<u64, ()> {
+        let local_ip = self.ipv4_address();
+        let identifier = 0x1234u16; // Fixed identifier for now
+        
+        // Allocate packet buffer
+        let mut buffer = self.tx_pool.alloc().ok_or(())?;
+        let buf = buffer.as_mut_slice();
+        
+        // Build packet: Ethernet + IPv4 + ICMP
+        let eth_hdr_len = 14;
+        let ip_hdr_len = 20;
+        let icmp_hdr_len = 8; // ICMP echo header
+        let total_len = eth_hdr_len + ip_hdr_len + icmp_hdr_len;
+        
+        if buf.len() < total_len {
+            return Err(());
+        }
+        
+        // Need to resolve target MAC via ARP
+        let current_time = self.current_time();
+        let target_mac = {
+            let arp = self.arp.lock();
+            arp.cache().lookup(target, current_time)
+        };
+        
+        let dst_mac = match target_mac {
+            Some(mac) => mac,
+            None => {
+                // For gateway, use broadcast initially
+                // In a real implementation, we'd send ARP request and wait
+                MacAddress::BROADCAST
+            }
+        };
+        
+        // Build Ethernet header
+        let src_mac = self.mac_address();
+        buf[0..6].copy_from_slice(dst_mac.as_bytes());
+        buf[6..12].copy_from_slice(src_mac.as_bytes());
+        buf[12] = 0x08; // EtherType IPv4
+        buf[13] = 0x00;
+        
+        // Build IPv4 header
+        let ip_start = eth_hdr_len;
+        buf[ip_start] = 0x45; // Version 4, IHL 5
+        buf[ip_start + 1] = 0x00; // DSCP/ECN
+        let total_ip_len = (ip_hdr_len + icmp_hdr_len) as u16;
+        buf[ip_start + 2] = (total_ip_len >> 8) as u8;
+        buf[ip_start + 3] = total_ip_len as u8;
+        buf[ip_start + 4..ip_start + 6].copy_from_slice(&[0x00, 0x00]); // ID
+        buf[ip_start + 6..ip_start + 8].copy_from_slice(&[0x40, 0x00]); // Flags + Fragment
+        buf[ip_start + 8] = 64; // TTL
+        buf[ip_start + 9] = 1; // Protocol: ICMP
+        buf[ip_start + 10..ip_start + 12].copy_from_slice(&[0x00, 0x00]); // Checksum placeholder
+        buf[ip_start + 12..ip_start + 16].copy_from_slice(local_ip.as_bytes());
+        buf[ip_start + 16..ip_start + 20].copy_from_slice(target.as_bytes());
+        
+        // Calculate IP checksum
+        let ip_checksum = Self::checksum(&buf[ip_start..ip_start + ip_hdr_len]);
+        buf[ip_start + 10] = (ip_checksum >> 8) as u8;
+        buf[ip_start + 11] = ip_checksum as u8;
+        
+        // Build ICMP echo request manually
+        let icmp_start = ip_start + ip_hdr_len;
+        buf[icmp_start] = 8; // Type: Echo Request
+        buf[icmp_start + 1] = 0; // Code: 0
+        buf[icmp_start + 2..icmp_start + 4].copy_from_slice(&[0, 0]); // Checksum placeholder
+        buf[icmp_start + 4..icmp_start + 6].copy_from_slice(&identifier.to_be_bytes());
+        buf[icmp_start + 6..icmp_start + 8].copy_from_slice(&sequence.to_be_bytes());
+        
+        // Calculate ICMP checksum
+        let icmp_checksum = Self::checksum(&buf[icmp_start..icmp_start + icmp_hdr_len]);
+        buf[icmp_start + 2] = (icmp_checksum >> 8) as u8;
+        buf[icmp_start + 3] = icmp_checksum as u8;
+        
+        // Record send time
+        let send_time = self.current_time();
+        
+        // Transmit
+        if self.transmit(&buf[..total_len]) {
+            // In a real implementation, we'd wait for echo reply
+            // For now, return estimated RTT
+            Ok(send_time)
+        } else {
+            Err(())
+        }
+    }
+    
+    /// Calculate IP/ICMP checksum
+    fn checksum(data: &[u8]) -> u16 {
+        let mut sum: u32 = 0;
+        let mut i = 0;
+        
+        while i < data.len() - 1 {
+            sum += ((data[i] as u32) << 8) | (data[i + 1] as u32);
+            i += 2;
+        }
+        
+        if i < data.len() {
+            sum += (data[i] as u32) << 8;
+        }
+        
+        while sum > 0xFFFF {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
+        
+        !sum as u16
+    }
 
     /// Periodic maintenance (call from timer)
     pub fn periodic(&self) {

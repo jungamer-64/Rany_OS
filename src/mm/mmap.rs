@@ -549,6 +549,114 @@ impl MmapManager {
         }
     }
 
+    /// 物理メモリを割り当てて仮想アドレスにマップ (SAS統合版)
+    /// 
+    /// Buddy Allocatorから物理フレームを割り当て、ページテーブルにマップする。
+    /// これにより、mmap()が実際のページテーブル操作と統合される。
+    pub fn mmap_with_physical_alloc(
+        &self,
+        addr: Option<MappedAddress>,
+        size: MappingSize,
+        protection: Protection,
+        flags: MappingFlags,
+    ) -> Result<MappedAddress, MmapError> {
+        use crate::mm::{buddy_alloc_frame, PageFlags};
+        use x86_64::PhysAddr;
+
+        if size.as_usize() == 0 {
+            return Err(MmapError::InvalidSize);
+        }
+
+        let address = if let Some(a) = addr {
+            if flags.fixed && !a.is_page_aligned() {
+                return Err(MmapError::AlignmentError);
+            }
+            if flags.fixed { a } else { self.find_free_address(size).ok_or(MmapError::OutOfMemory)? }
+        } else {
+            self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
+        };
+
+        let aligned_size = size.page_aligned();
+        let page_count = aligned_size.page_count();
+
+        // ページテーブルフラグを設定
+        let mut pt_flags = PageFlags::new(PageFlags::PRESENT);
+        if protection.can_write() {
+            pt_flags = pt_flags.set(PageFlags::WRITABLE);
+        }
+        if !protection.can_exec() {
+            pt_flags = pt_flags.set(PageFlags::NO_EXECUTE);
+        }
+        // ユーザー空間のマッピングの場合
+        if address.as_usize() < crate::mm::higher_half::VirtAddr::KERNEL_BASE as usize {
+            pt_flags = pt_flags.set(PageFlags::USER);
+        }
+
+        // 各ページに物理フレームを割り当ててマップ
+        let mut allocated_frames = Vec::new();
+        for i in 0..page_count {
+            let frame = buddy_alloc_frame().ok_or(MmapError::OutOfMemory)?;
+            let phys_addr = PhysAddr::new(frame.start_address().as_u64());
+            let virt_addr = crate::mm::higher_half::VirtAddr::new(
+                (address.as_usize() + i * MappingSize::PAGE_SIZE) as u64
+            );
+
+            // ページテーブルにマップ
+            let map_result = unsafe {
+                crate::mm::global_map_page(virt_addr, 
+                    crate::mm::higher_half::PhysAddr::new(phys_addr.as_u64()), 
+                    pt_flags)
+            };
+
+            if map_result.is_err() {
+                // 失敗した場合、これまでに割り当てたフレームを解放
+                for prev_frame in allocated_frames {
+                    crate::mm::buddy_dealloc_frame(prev_frame);
+                }
+                return Err(MmapError::NoResources);
+            }
+
+            allocated_frames.push(frame);
+
+            // ゼロ初期化（フラグが設定されている場合）
+            if flags.zero_init {
+                unsafe {
+                    let ptr = virt_addr.as_u64() as *mut u8;
+                    core::ptr::write_bytes(ptr, 0, MappingSize::PAGE_SIZE);
+                }
+            }
+        }
+
+        // 内部マッピング情報を作成（物理フレームはページテーブルで管理）
+        let mapping = MemoryMapping::anonymous(address, size, protection, flags)?;
+        let mapping_size = mapping.size().as_usize();
+
+        {
+            let mut mappings = self.mappings.write();
+            mappings.insert(address.as_usize(), Arc::new(spin::RwLock::new(mapping)));
+        }
+
+        self.total_mapped.fetch_add(mapping_size, Ordering::Relaxed);
+        Ok(address)
+    }
+
+    /// SASリニアマッピング領域から仮想アドレスを取得
+    /// 
+    /// 物理アドレスを直接マップしている領域（Higher Half）の仮想アドレスを返す。
+    /// これはゼロコピー操作に最適。
+    pub fn get_sas_linear_mapping(&self, phys_addr: u64, size: usize) -> Option<MappedAddress> {
+        // SAS: 物理メモリは physical_memory_offset + phys_addr でアクセス可能
+        let offset = crate::memory::physical_memory_offset();
+        let virt_addr = offset + phys_addr;
+
+        // 範囲チェック
+        if size == 0 {
+            return None;
+        }
+
+        Some(MappedAddress::new(virt_addr as usize))
+    }
+
     /// 匿名マッピングを作成
     pub fn mmap_anonymous(
         &self,
@@ -638,6 +746,54 @@ impl MmapManager {
         self.total_unmapped
             .fetch_add(mapping_size, Ordering::Relaxed);
 
+        Ok(())
+    }
+
+    /// マッピングを解除し、物理フレームも解放する（SAS統合版）
+    ///
+    /// `mmap_with_physical_alloc`で作成したマッピングを解除する際に使用。
+    /// ページテーブルのマッピングを解除し、物理フレームをBuddy Allocatorに返却する。
+    pub fn munmap_with_physical_dealloc(
+        &self,
+        addr: MappedAddress,
+        size: MappingSize,
+    ) -> Result<(), MmapError> {
+        use x86_64::structures::paging::PageSize;
+
+        // マッピング情報を取得・削除
+        let mapping = {
+            let mut mappings = self.mappings.write();
+            mappings.remove(&addr.as_usize())
+                .ok_or(MmapError::NotMapped)?
+        };
+
+        let mapping_guard = mapping.read();
+        let aligned_size = size.page_aligned();
+        let page_count = aligned_size.page_count();
+
+        // 各ページをアンマップして物理フレームを解放
+        for i in 0..page_count {
+            let virt_addr = crate::mm::higher_half::VirtAddr::new(
+                (addr.as_usize() + i * MappingSize::PAGE_SIZE) as u64
+            );
+
+            // ページテーブルから仮想アドレスを物理アドレスに変換
+            if let Some(phys_addr) = crate::mm::global_translate(virt_addr) {
+                // ページテーブルからアンマップ
+                let _ = unsafe { crate::mm::global_unmap_page(virt_addr) };
+
+                // 物理フレームをBuddy Allocatorに返却
+                let frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
+                    x86_64::PhysAddr::new(phys_addr.as_u64())
+                );
+                crate::mm::buddy_dealloc_frame(frame);
+            }
+        }
+
+        let mapping_size = mapping_guard.size().as_usize();
+        drop(mapping_guard);
+
+        self.total_unmapped.fetch_add(mapping_size, Ordering::Relaxed);
         Ok(())
     }
 

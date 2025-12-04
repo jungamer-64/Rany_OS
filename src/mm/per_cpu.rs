@@ -192,28 +192,114 @@ pub fn is_fsgsbase_enabled() -> bool {
     (cr4 & CR4_FSGSBASE) != 0
 }
 
+/// CPUがFSGSBASE命令をサポートしているかチェック
+/// 
+/// CPUID.07H.0H:EBX[0] = 1 の場合サポート
+/// 
+/// # Safety
+/// CPUID命令を実行する
+pub unsafe fn check_fsgsbase_support() -> bool {
+    // まず最大拡張機能番号を確認
+    let max_leaf: u32;
+    unsafe {
+        // ebx/rbxはLLVMが使用するため、xchgで退避
+        asm!(
+            "push rbx",
+            "cpuid",
+            "pop rbx",
+            inout("eax") 0u32 => max_leaf,
+            out("ecx") _,
+            out("edx") _,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    // リーフ7が利用可能かチェック
+    if max_leaf < 7 {
+        return false;
+    }
+    
+    // CPUID.07H.0H でFSGSBASEサポートを確認
+    let ebx_result: u32;
+    unsafe {
+        // rbxを退避してcpuid実行、結果をrdiに移動してrbxを復元
+        asm!(
+            "push rbx",
+            "cpuid",
+            "mov {0:e}, ebx",
+            "pop rbx",
+            out(reg) ebx_result,
+            inout("eax") 7u32 => _,
+            inout("ecx") 0u32 => _,
+            out("edx") _,
+            options(nostack, preserves_flags)
+        );
+    }
+    
+    // EBX bit 0 = FSGSBASE
+    (ebx_result & 1) != 0
+}
+
 /// Per-CPUシステムを初期化
 ///
 /// # Safety
 /// - カーネル初期化時に一度だけ呼ばれる必要がある
 /// - BSP（ブートストラッププロセッサ）から呼ぶ
+///
+/// # 初期化順序
+/// 1. FSGSBASEを有効化（サポートされている場合）
+/// 2. BSPのGsBaseを先に設定（current_cpu_id()が使えるように）
+/// 3. 各CPUのデータを初期化
+///
+/// これにより、初期化中でも `current_cpu_id()` や `try_current_cpu_id()` を
+/// 安全に呼び出すことができる。
 pub unsafe fn init_per_cpu(num_cpus: usize) {
     crate::vga::early_serial_str("[PCPU] init\n");
     INITIALIZED.call_once(|| {
         crate::vga::early_serial_str("[PCPU] once\n");
         let num_cpus = num_cpus.min(MAX_CPUS);
 
-        // FSGSBASEを有効化
+        // 1. FSGSBASEを有効化（サポートされている場合のみ）
         // SAFETY: 初期化時に一度だけ呼ばれる
         crate::vga::early_serial_str("[PCPU] fsgs\n");
-        unsafe {
-            enable_fsgsbase();
+        
+        // CPUIDでFSGSBASEサポートを確認
+        let fsgsbase_supported = unsafe { check_fsgsbase_support() };
+        crate::vga::early_serial_str(if fsgsbase_supported { "[PCPU] fsgs supported\n" } else { "[PCPU] fsgs not supported, using MSR\n" });
+        
+        if fsgsbase_supported {
+            unsafe {
+                enable_fsgsbase();
+            }
+            crate::vga::early_serial_str("[PCPU] fsgs enabled\n");
         }
         crate::vga::early_serial_str("[PCPU] fsgs ok\n");
 
-        // 各CPUのデータを初期化
+        // 2. BSP（CPU 0）のデータを先に初期化してGsBaseを設定
+        // これにより、以降の初期化コード内でcurrent_cpu_id()が使えるようになる
+        crate::vga::early_serial_str("[PCPU] bsp setup\n");
+        unsafe {
+            PER_CPU_DATA[0].cpu_id = 0;
+            PER_CPU_DATA[0].self_ptr = 0;
+            PER_CPU_DATA[0].current_task_id = 0;
+            PER_CPU_DATA[0].alloc_count = 0;
+            PER_CPU_DATA[0].dealloc_count = 0;
+            PER_CPU_DATA[0].set_self_ptr();
+            
+            // BSPのGsBaseを設定（これでcurrent_cpu_id()が動作する）
+            let bsp_ptr = &PER_CPU_DATA[0] as *const _ as u64;
+            // FSGSBASEが有効な場合は高速版、そうでなければMSR版を使用
+            if fsgsbase_supported {
+                write_gs_base(bsp_ptr);
+            } else {
+                write_gs_base_msr(bsp_ptr);
+            }
+        }
+        crate::vga::early_serial_str("[PCPU] bsp ok\n");
+
+        // 3. 残りのCPU（AP）のデータを初期化
         crate::vga::early_serial_str("[PCPU] loop start\n");
-        let mut i = 0usize;
+        let mut i = 1usize; // CPU 0は既に初期化済み
         while i < num_cpus {
             crate::vga::early_serial_str("[PCPU] i=");
             crate::vga::early_serial_char(b'0' + (i as u8));
@@ -239,11 +325,16 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
     crate::vga::early_serial_str("[PCPU] exit\n");
 }
 
-/// 現在のCPUのPer-CPUデータを設定
+/// 現在のCPUのPer-CPUデータを設定（AP用）
+///
+/// BSP（CPU 0）のGsBaseは `init_per_cpu()` 内で自動的に設定されるため、
+/// この関数は主にAP（Application Processor）の起動時に使用する。
+/// BSPに対して呼んでも問題ない（冪等）。
 ///
 /// # Safety
 /// - 各CPUのブート時に一度だけ呼ばれる必要がある
 /// - cpu_idは有効な範囲内である必要がある
+/// - init_per_cpu() が先に呼ばれている必要がある
 pub unsafe fn setup_current_cpu(cpu_id: usize) {
     if cpu_id >= MAX_CPUS {
         return;

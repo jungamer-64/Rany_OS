@@ -711,3 +711,460 @@ pub fn get_cr3() -> PhysAddr {
     }
     PhysAddr::new(cr3 & !0xFFF)
 }
+
+// ============================================================================
+// Page Table Manager
+// 設計書 5.1: ページテーブル管理
+// ============================================================================
+
+/// マッピングエラー
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MapError {
+    /// フレーム割り当て失敗
+    FrameAllocationFailed,
+    /// 既にマップ済み
+    AlreadyMapped,
+    /// マップされていない
+    NotMapped,
+    /// 無効なアドレス
+    InvalidAddress,
+    /// アラインメントエラー
+    AlignmentError,
+    /// 親エントリがHuge Page
+    ParentEntryHugePage,
+}
+
+/// ページテーブルマネージャー
+/// 
+/// 仮想アドレスと物理アドレスのマッピングを管理する。
+/// 4KiB, 2MiB, 1GiBページサイズをサポート。
+pub struct PageTableManager {
+    /// PML4（レベル4ページテーブル）の物理アドレス
+    pml4_phys: PhysAddr,
+    /// 物理メモリマッパー
+    mapper: PhysicalMemoryMapper,
+}
+
+impl PageTableManager {
+    /// 新しいPageTableManagerを作成
+    /// 
+    /// # Safety
+    /// - `pml4_phys` は有効なPML4ページテーブルを指している必要がある
+    /// - `physical_memory_offset` は正しいオフセット値である必要がある
+    pub unsafe fn new(pml4_phys: PhysAddr, physical_memory_offset: u64) -> Self {
+        Self {
+            pml4_phys,
+            mapper: PhysicalMemoryMapper::new(physical_memory_offset),
+        }
+    }
+
+    /// 現在のCR3からPageTableManagerを作成
+    /// 
+    /// # Safety
+    /// カーネルモードで呼び出す必要がある
+    pub unsafe fn from_current_cr3(physical_memory_offset: u64) -> Self {
+        let pml4_phys = get_cr3();
+        unsafe { Self::new(pml4_phys, physical_memory_offset) }
+    }
+
+    /// PML4の物理アドレスを取得
+    pub fn pml4_phys(&self) -> PhysAddr {
+        self.pml4_phys
+    }
+
+    /// 4KiBページをマップ
+    /// 
+    /// # Safety
+    /// - `virt` と `phys` は4KiBアラインされている必要がある
+    /// - 物理フレームは有効なメモリを指している必要がある
+    pub unsafe fn map_page(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: PageFlags,
+    ) -> Result<(), MapError> {
+        if !virt.is_page_aligned() || !phys.is_page_aligned() {
+            return Err(MapError::AlignmentError);
+        }
+
+        let indices = virt.page_table_indices();
+
+        // PML4 -> PDPT -> PD -> PT をウォーク
+        let pml4 = self.get_table_mut(self.pml4_phys);
+        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
+
+        let pdpt = self.get_table_mut(pdpt_phys);
+        if pdpt.entry(indices[1]).is_present() && pdpt.entry(indices[1]).is_huge() {
+            return Err(MapError::ParentEntryHugePage);
+        }
+        let pd_phys = self.ensure_table_entry(pdpt, indices[1], flags)?;
+
+        let pd = self.get_table_mut(pd_phys);
+        if pd.entry(indices[2]).is_present() && pd.entry(indices[2]).is_huge() {
+            return Err(MapError::ParentEntryHugePage);
+        }
+        let pt_phys = self.ensure_table_entry(pd, indices[2], flags)?;
+
+        let pt = self.get_table_mut(pt_phys);
+        let pte = pt.entry_mut(indices[3]);
+
+        if pte.is_present() {
+            return Err(MapError::AlreadyMapped);
+        }
+
+        *pte = PageTableEntry::new(phys, flags.set(PageFlags::PRESENT));
+        
+        // TLBを無効化
+        invalidate_page(virt);
+
+        Ok(())
+    }
+
+    /// 2MiBページをマップ（設計書5.1対応）
+    /// 
+    /// # Safety
+    /// - `virt` と `phys` は2MiBアラインされている必要がある
+    pub unsafe fn map_2mb_page(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: PageFlags,
+    ) -> Result<(), MapError> {
+        const SIZE_2MB: u64 = PageSize::Size2MiB.as_bytes();
+        
+        if virt.as_u64() % SIZE_2MB != 0 || phys.as_u64() % SIZE_2MB != 0 {
+            return Err(MapError::AlignmentError);
+        }
+
+        let indices = virt.page_table_indices();
+
+        // PML4 -> PDPT -> PD をウォーク
+        let pml4 = self.get_table_mut(self.pml4_phys);
+        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
+
+        let pdpt = self.get_table_mut(pdpt_phys);
+        if pdpt.entry(indices[1]).is_present() && pdpt.entry(indices[1]).is_huge() {
+            return Err(MapError::ParentEntryHugePage);
+        }
+        let pd_phys = self.ensure_table_entry(pdpt, indices[1], flags)?;
+
+        let pd = self.get_table_mut(pd_phys);
+        let pde = pd.entry_mut(indices[2]);
+
+        if pde.is_present() {
+            return Err(MapError::AlreadyMapped);
+        }
+
+        // Huge Page フラグを設定
+        *pde = PageTableEntry::huge(phys, flags.set(PageFlags::PRESENT));
+        
+        invalidate_page(virt);
+
+        Ok(())
+    }
+
+    /// 1GiBページをマップ（設計書5.1対応）
+    /// 
+    /// # Safety
+    /// - `virt` と `phys` は1GiBアラインされている必要がある
+    pub unsafe fn map_1gb_page(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: PageFlags,
+    ) -> Result<(), MapError> {
+        const SIZE_1GB: u64 = PageSize::Size1GiB.as_bytes();
+        
+        if virt.as_u64() % SIZE_1GB != 0 || phys.as_u64() % SIZE_1GB != 0 {
+            return Err(MapError::AlignmentError);
+        }
+
+        let indices = virt.page_table_indices();
+
+        // PML4 -> PDPT をウォーク
+        let pml4 = self.get_table_mut(self.pml4_phys);
+        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
+
+        let pdpt = self.get_table_mut(pdpt_phys);
+        let pdpte = pdpt.entry_mut(indices[1]);
+
+        if pdpte.is_present() {
+            return Err(MapError::AlreadyMapped);
+        }
+
+        // Huge Page フラグを設定（1GiBページ）
+        *pdpte = PageTableEntry::huge(phys, flags.set(PageFlags::PRESENT));
+        
+        invalidate_page(virt);
+
+        Ok(())
+    }
+
+    /// ページをアンマップ
+    /// 
+    /// 4KiB, 2MiB, 1GiBページを自動検出してアンマップする。
+    pub unsafe fn unmap_page(&mut self, virt: VirtAddr) -> Result<PhysAddr, MapError> {
+        if !virt.is_page_aligned() {
+            return Err(MapError::AlignmentError);
+        }
+
+        let indices = virt.page_table_indices();
+
+        // PML4
+        let pml4 = self.get_table_mut(self.pml4_phys);
+        let pml4e = pml4.entry(indices[0]);
+        if !pml4e.is_present() {
+            return Err(MapError::NotMapped);
+        }
+
+        // PDPT
+        let pdpt = self.get_table_mut(pml4e.phys_addr());
+        let pdpte = pdpt.entry_mut(indices[1]);
+        if !pdpte.is_present() {
+            return Err(MapError::NotMapped);
+        }
+        if pdpte.is_huge() {
+            // 1GiBページ
+            let phys = pdpte.phys_addr();
+            pdpte.clear();
+            invalidate_page(virt);
+            return Ok(phys);
+        }
+
+        // PD
+        let pd = self.get_table_mut(pdpte.phys_addr());
+        let pde = pd.entry_mut(indices[2]);
+        if !pde.is_present() {
+            return Err(MapError::NotMapped);
+        }
+        if pde.is_huge() {
+            // 2MiBページ
+            let phys = pde.phys_addr();
+            pde.clear();
+            invalidate_page(virt);
+            return Ok(phys);
+        }
+
+        // PT
+        let pt = self.get_table_mut(pde.phys_addr());
+        let pte = pt.entry_mut(indices[3]);
+        if !pte.is_present() {
+            return Err(MapError::NotMapped);
+        }
+
+        // 4KiBページ
+        let phys = pte.phys_addr();
+        pte.clear();
+        invalidate_page(virt);
+
+        Ok(phys)
+    }
+
+    /// 仮想アドレスを物理アドレスに変換
+    pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        let walker = PageTableWalker::new(self.pml4_phys, &self.mapper);
+        walker.translate(virt)
+    }
+
+    /// ページテーブルの保護フラグを変更
+    pub unsafe fn update_flags(
+        &mut self,
+        virt: VirtAddr,
+        flags: PageFlags,
+    ) -> Result<(), MapError> {
+        if !virt.is_page_aligned() {
+            return Err(MapError::AlignmentError);
+        }
+
+        let indices = virt.page_table_indices();
+
+        // テーブルをウォーク
+        let pml4 = self.get_table_mut(self.pml4_phys);
+        let pml4e = pml4.entry(indices[0]);
+        if !pml4e.is_present() {
+            return Err(MapError::NotMapped);
+        }
+
+        let pdpt = self.get_table_mut(pml4e.phys_addr());
+        let pdpte = pdpt.entry_mut(indices[1]);
+        if !pdpte.is_present() {
+            return Err(MapError::NotMapped);
+        }
+        if pdpte.is_huge() {
+            pdpte.set_flags(flags.set(PageFlags::PRESENT).set(PageFlags::HUGE_PAGE));
+            invalidate_page(virt);
+            return Ok(());
+        }
+
+        let pd = self.get_table_mut(pdpte.phys_addr());
+        let pde = pd.entry_mut(indices[2]);
+        if !pde.is_present() {
+            return Err(MapError::NotMapped);
+        }
+        if pde.is_huge() {
+            pde.set_flags(flags.set(PageFlags::PRESENT).set(PageFlags::HUGE_PAGE));
+            invalidate_page(virt);
+            return Ok(());
+        }
+
+        let pt = self.get_table_mut(pde.phys_addr());
+        let pte = pt.entry_mut(indices[3]);
+        if !pte.is_present() {
+            return Err(MapError::NotMapped);
+        }
+
+        pte.set_flags(flags.set(PageFlags::PRESENT));
+        invalidate_page(virt);
+
+        Ok(())
+    }
+
+    /// 連続した仮想アドレス範囲をマップ
+    /// 
+    /// 自動的に最適なページサイズを選択する。
+    pub unsafe fn map_range(
+        &mut self,
+        virt_start: VirtAddr,
+        phys_start: PhysAddr,
+        size: u64,
+        flags: PageFlags,
+    ) -> Result<(), MapError> {
+        let mut virt = virt_start.as_u64();
+        let mut phys = phys_start.as_u64();
+        let end = virt + size;
+
+        while virt < end {
+            let remaining = end - virt;
+
+            // 1GiBページを使用可能かチェック
+            const SIZE_1GB: u64 = PageSize::Size1GiB.as_bytes();
+            if virt % SIZE_1GB == 0 && phys % SIZE_1GB == 0 && remaining >= SIZE_1GB {
+                unsafe { self.map_1gb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
+                virt += SIZE_1GB;
+                phys += SIZE_1GB;
+                continue;
+            }
+
+            // 2MiBページを使用可能かチェック
+            const SIZE_2MB: u64 = PageSize::Size2MiB.as_bytes();
+            if virt % SIZE_2MB == 0 && phys % SIZE_2MB == 0 && remaining >= SIZE_2MB {
+                unsafe { self.map_2mb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
+                virt += SIZE_2MB;
+                phys += SIZE_2MB;
+                continue;
+            }
+
+            // 4KiBページ
+            const SIZE_4KB: u64 = PageSize::Size4KiB.as_bytes();
+            unsafe { self.map_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
+            virt += SIZE_4KB;
+            phys += SIZE_4KB;
+        }
+
+        Ok(())
+    }
+
+    /// 連続した仮想アドレス範囲をアンマップ
+    pub unsafe fn unmap_range(&mut self, virt_start: VirtAddr, size: u64) -> Result<(), MapError> {
+        let mut virt = virt_start.as_u64();
+        let end = virt + size;
+
+        while virt < end {
+            match unsafe { self.unmap_page(VirtAddr::new(virt)) } {
+                Ok(_) => {
+                    // ページサイズを検出してスキップ
+                    // Note: unmap_pageは物理アドレスを返すが、ここではサイズ情報が必要
+                    // 簡単のため4KiB単位で進める
+                    virt += PageSize::Size4KiB.as_bytes();
+                }
+                Err(MapError::NotMapped) => {
+                    // マップされていないページはスキップ
+                    virt += PageSize::Size4KiB.as_bytes();
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(())
+    }
+
+    // --- ヘルパー関数 ---
+
+    /// 物理アドレスからページテーブルの可変参照を取得
+    fn get_table_mut(&self, phys: PhysAddr) -> &mut PageTable {
+        let virt = self.mapper.phys_to_virt(phys);
+        unsafe { &mut *virt.as_mut_ptr() }
+    }
+
+    /// テーブルエントリが存在しない場合は新しいテーブルを割り当て
+    fn ensure_table_entry(
+        &self,
+        table: &mut PageTable,
+        index: usize,
+        _flags: PageFlags,
+    ) -> Result<PhysAddr, MapError> {
+        let entry = table.entry_mut(index);
+
+        if entry.is_present() {
+            if entry.is_huge() {
+                return Err(MapError::ParentEntryHugePage);
+            }
+            return Ok(entry.phys_addr());
+        }
+
+        // 新しいページテーブルを割り当て
+        let new_table_phys = self.alloc_page_table()?;
+
+        // テーブルをゼロクリア
+        let new_table = self.get_table_mut(new_table_phys);
+        new_table.clear();
+
+        // エントリを設定（常にWritableを設定して下位テーブルへのアクセスを許可）
+        let entry_flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
+        *entry = PageTableEntry::new(new_table_phys, entry_flags);
+
+        Ok(new_table_phys)
+    }
+
+    /// 新しいページテーブル用のフレームを割り当て
+    fn alloc_page_table(&self) -> Result<PhysAddr, MapError> {
+        // Buddy Allocatorから4KiBフレームを割り当て
+        crate::mm::buddy_alloc_frame()
+            .map(|frame| PhysAddr::new(frame.start_address().as_u64()))
+            .ok_or(MapError::FrameAllocationFailed)
+    }
+}
+
+/// グローバルなページテーブルマネージャー
+static PAGE_TABLE_MANAGER: Mutex<Option<PageTableManager>> = Mutex::new(None);
+
+/// ページテーブルマネージャーを初期化
+pub fn init_page_table_manager(physical_memory_offset: u64) {
+    let manager = unsafe { PageTableManager::from_current_cr3(physical_memory_offset) };
+    *PAGE_TABLE_MANAGER.lock() = Some(manager);
+}
+
+/// グローバルページテーブルマネージャーでページをマップ
+pub unsafe fn global_map_page(
+    virt: VirtAddr,
+    phys: PhysAddr,
+    flags: PageFlags,
+) -> Result<(), MapError> {
+    let mut guard = PAGE_TABLE_MANAGER.lock();
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    unsafe { manager.map_page(virt, phys, flags) }
+}
+
+/// グローバルページテーブルマネージャーでページをアンマップ
+pub unsafe fn global_unmap_page(virt: VirtAddr) -> Result<PhysAddr, MapError> {
+    let mut guard = PAGE_TABLE_MANAGER.lock();
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    unsafe { manager.unmap_page(virt) }
+}
+
+/// グローバルページテーブルマネージャーで仮想→物理変換
+pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
+    let guard = PAGE_TABLE_MANAGER.lock();
+    let manager = guard.as_ref()?;
+    manager.translate(virt)
+}

@@ -86,6 +86,112 @@ pub use work_stealing_advanced::{
     init as init_work_stealing, schedule as ws_schedule, spawn as ws_spawn,
 };
 
+// ============================================================================
+// Timeout Support (設計書 4.4)
+// ============================================================================
+
+/// タイムアウト結果
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimeoutResult<T> {
+    /// 正常完了
+    Completed(T),
+    /// タイムアウト
+    TimedOut,
+}
+
+impl<T> TimeoutResult<T> {
+    /// 完了したか
+    pub fn is_completed(&self) -> bool {
+        matches!(self, TimeoutResult::Completed(_))
+    }
+
+    /// タイムアウトしたか
+    pub fn is_timed_out(&self) -> bool {
+        matches!(self, TimeoutResult::TimedOut)
+    }
+
+    /// 値を取得（タイムアウト時はNone）
+    pub fn ok(self) -> Option<T> {
+        match self {
+            TimeoutResult::Completed(v) => Some(v),
+            TimeoutResult::TimedOut => None,
+        }
+    }
+}
+
+/// タイムアウト付きFuture
+/// 
+/// 設計書 4.4: タイマーベースのyield
+pub struct TimeoutFuture<F: Future> {
+    inner: F,
+    deadline: u64,
+}
+
+impl<F: Future> TimeoutFuture<F> {
+    /// 新しいタイムアウト付きFutureを作成
+    pub fn new(future: F, timeout_ms: u64) -> Self {
+        Self {
+            inner: future,
+            deadline: current_tick() + timeout_ms,
+        }
+    }
+}
+
+impl<F: Future> Future for TimeoutFuture<F> {
+    type Output = TimeoutResult<F::Output>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // SAFETY: inner futureをpinするためにunsafeが必要
+        let this = unsafe { self.get_unchecked_mut() };
+
+        // タイムアウトチェック
+        if current_tick() >= this.deadline {
+            return Poll::Ready(TimeoutResult::TimedOut);
+        }
+
+        // 内部Futureをpoll
+        // SAFETY: selfがpinnedなので、innerもpinされている
+        let inner_pin = unsafe { Pin::new_unchecked(&mut this.inner) };
+        match inner_pin.poll(cx) {
+            Poll::Ready(result) => Poll::Ready(TimeoutResult::Completed(result)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+/// タイムアウト付きでFutureを実行
+/// 
+/// # 例
+/// ```ignore
+/// let result = with_timeout(some_async_operation(), 1000).await;
+/// match result {
+///     TimeoutResult::Completed(value) => println!("Got: {:?}", value),
+///     TimeoutResult::TimedOut => println!("Operation timed out"),
+/// }
+/// ```
+pub fn with_timeout<F: Future>(future: F, timeout_ms: u64) -> TimeoutFuture<F> {
+    TimeoutFuture::new(future, timeout_ms)
+}
+
+/// タイムアウト付きタスクをスポーン
+/// 
+/// 設計書 4.4対応: タイムアウト後は自動的にキャンセル
+pub fn spawn_with_timeout<F>(future: F, timeout_ms: u64) -> TaskId
+where
+    F: Future<Output = ()> + Send + 'static,
+{
+    let task = Task::new(async move {
+        let result = with_timeout(future, timeout_ms).await;
+        if result.is_timed_out() {
+            crate::log!("[TASK] Task timed out after {}ms\n", timeout_ms);
+        }
+    });
+    
+    let task_id = task.id;
+    Executor::spawn_global(task);
+    task_id
+}
+
 /// タスクID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct TaskId(u64);
