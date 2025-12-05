@@ -14,10 +14,12 @@
 //! - ダブルバッファリング
 //! - 画像描画（BMP）
 //! - Limineブートローダー統合
+//! - ウィンドウコンポジタ
 
 #![allow(dead_code)]
 
 // サブモジュール
+pub mod compositor;
 pub mod image;
 pub mod window;
 
