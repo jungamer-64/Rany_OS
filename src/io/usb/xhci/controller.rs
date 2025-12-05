@@ -79,6 +79,8 @@ pub struct XhciController {
     pub(crate) transfer_rings: Mutex<Vec<Vec<Option<Box<TrbRing>>>>>,
     /// コマンド完了待ち
     command_completions: Mutex<Vec<CommandCompletion>>,
+    /// 転送完了待ち
+    transfer_completions: Mutex<Vec<TransferCompletion>>,
     /// 実行中フラグ
     running: AtomicBool,
 }
@@ -96,6 +98,30 @@ pub(crate) struct CommandCompletion {
 pub(crate) struct CommandCompletionResult {
     pub completion_code: CompletionCode,
     pub slot_id: SlotId,
+}
+
+/// 転送完了情報
+pub(crate) struct TransferCompletion {
+    /// TRBアドレス
+    pub trb_addr: u64,
+    /// スロットID
+    pub slot_id: SlotId,
+    /// エンドポイントID
+    pub endpoint_id: u8,
+    /// 完了コード
+    pub completion_code: CompletionCode,
+    /// 転送バイト数
+    pub transferred: u32,
+    /// Waker
+    pub waker: Option<Waker>,
+    /// 完了フラグ
+    pub completed: bool,
+}
+
+/// 転送完了結果
+pub(crate) struct TransferCompletionResult {
+    pub completion_code: CompletionCode,
+    pub transferred: u32,
 }
 
 impl XhciController {
@@ -160,6 +186,7 @@ impl XhciController {
             device_contexts: Mutex::new(device_contexts),
             transfer_rings: Mutex::new(transfer_rings),
             command_completions: Mutex::new(Vec::new()),
+            transfer_completions: Mutex::new(Vec::new()),
             running: AtomicBool::new(false),
         };
 
@@ -439,10 +466,39 @@ impl XhciController {
 
     /// 転送完了イベントを処理
     fn handle_transfer_completion(&self, trb: &Trb) {
-        let _completion_code = CompletionCode::from_u8(((trb.status >> 24) & 0xFF) as u8);
-        let _slot_id = SlotId(((trb.control >> 24) & 0xFF) as u8);
-        let _endpoint_id = ((trb.control >> 16) & 0x1F) as u8;
-        // 転送完了の処理は別途実装
+        let completion_code = CompletionCode::from_u8(((trb.status >> 24) & 0xFF) as u8);
+        let slot_id = SlotId(((trb.control >> 24) & 0xFF) as u8);
+        let endpoint_id = ((trb.control >> 16) & 0x1F) as u8;
+        let trb_addr = trb.parameter;
+        let transferred = trb.status & 0xFFFFFF; // Transfer Length
+
+        let mut completions = self.transfer_completions.lock();
+        for completion in completions.iter_mut() {
+            // スロットとエンドポイントでマッチング（TRBアドレスも考慮可能）
+            if completion.slot_id == slot_id 
+                && completion.endpoint_id == endpoint_id 
+                && !completion.completed 
+            {
+                completion.completion_code = completion_code;
+                completion.transferred = transferred;
+                completion.completed = true;
+                if let Some(waker) = completion.waker.take() {
+                    waker.wake();
+                }
+                return;
+            }
+        }
+
+        // 未登録の転送完了は新規追加（コールバックがない場合）
+        completions.push(TransferCompletion {
+            trb_addr,
+            slot_id,
+            endpoint_id,
+            completion_code,
+            transferred,
+            waker: None,
+            completed: true,
+        });
     }
 
     /// ポート状態変更イベントを処理
@@ -502,5 +558,49 @@ impl XhciController {
     /// ポート数を取得
     pub fn port_count(&self) -> u8 {
         self.max_ports
+    }
+
+    /// 転送完了待ちを登録
+    pub(crate) fn register_transfer_wait(
+        &self, 
+        slot_id: SlotId, 
+        endpoint_id: u8,
+        waker: Waker,
+    ) {
+        let mut completions = self.transfer_completions.lock();
+        completions.push(TransferCompletion {
+            trb_addr: 0, // TRBアドレスは後で設定可能
+            slot_id,
+            endpoint_id,
+            completion_code: CompletionCode::Invalid,
+            transferred: 0,
+            waker: Some(waker),
+            completed: false,
+        });
+    }
+
+    /// 転送完了を確認
+    pub(crate) fn check_transfer_completion(
+        &self,
+        slot_id: SlotId,
+        endpoint_id: u8,
+    ) -> Option<TransferCompletionResult> {
+        let mut completions = self.transfer_completions.lock();
+        if let Some(pos) = completions.iter().position(|c| {
+            c.slot_id == slot_id && c.endpoint_id == endpoint_id && c.completed
+        }) {
+            let completion = completions.remove(pos);
+            return Some(TransferCompletionResult {
+                completion_code: completion.completion_code,
+                transferred: completion.transferred,
+            });
+        }
+        None
+    }
+
+    /// 転送完了待ちをキャンセル
+    pub(crate) fn cancel_transfer_wait(&self, slot_id: SlotId, endpoint_id: u8) {
+        let mut completions = self.transfer_completions.lock();
+        completions.retain(|c| !(c.slot_id == slot_id && c.endpoint_id == endpoint_id && !c.completed));
     }
 }

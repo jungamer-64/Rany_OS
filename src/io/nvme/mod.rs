@@ -19,7 +19,6 @@
 pub mod defs;
 pub mod commands;
 pub mod regs;
-pub mod queue;
 pub mod queue_types;
 pub mod identify;
 pub mod driver;
@@ -52,12 +51,6 @@ pub use regs::{
     offsets, cc_bits, csts_bits,
     NvmeCapabilities, NvmeControllerConfig, NvmeControllerStatus,
     NvmeAdminQueueAttributes, CmbLocation, CmbSize,
-};
-
-// From queue.rs - Queue structures
-pub use queue::{
-    NvmeSubmissionQueue, NvmeCompletionQueue, NvmeQueuePair, NvmeQueueError,
-    DEFAULT_QUEUE_DEPTH, MAX_QUEUE_DEPTH, SQ_ENTRY_SIZE, CQ_ENTRY_SIZE,
 };
 
 // From identify.rs - Identify structures

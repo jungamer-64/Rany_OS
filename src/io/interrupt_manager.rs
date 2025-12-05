@@ -627,14 +627,52 @@ pub fn configure_ioapic_interrupt(
     let entry = config.ioapic_entry();
     
     // crate::io::apic モジュールの関数を呼び出す
-    // （実際の実装はapic.rsに追加する必要がある）
+    #[cfg(feature = "apic")]
+    unsafe {
+        crate::io::apic::set_ioapic_entry(gsi, entry);
+    }
     
-    // 簡易実装: グローバルIO-APICインスタンスを使用
-    // unsafe {
-    //     crate::io::apic::set_ioapic_entry(gsi, entry);
-    // }
-    
+    let _ = (gsi, entry); // 未使用警告を抑制
     Ok(())
+}
+
+/// Local APICにEOIを送信
+/// 
+/// 割り込みハンドラの最後で呼び出してください
+#[inline]
+pub fn send_eoi() {
+    #[cfg(feature = "apic")]
+    crate::io::apic::local_apic_eoi();
+    
+    // apicが無効な場合は何もしない
+}
+
+/// 特定のCPUにIPIを送信
+pub fn send_ipi(target_apic_id: u8, vector: u8) {
+    #[cfg(feature = "apic")]
+    crate::io::apic::send_ipi(target_apic_id, vector);
+    
+    let _ = (target_apic_id, vector); // 未使用警告を抑制
+}
+
+/// 全CPUにブロードキャストIPIを送信
+pub fn broadcast_ipi(vector: u8) {
+    #[cfg(feature = "apic")]
+    crate::io::apic::broadcast_ipi(vector);
+    
+    let _ = vector;
+}
+
+/// 現在のCPUのAPIC IDを取得
+pub fn current_apic_id() -> u8 {
+    #[cfg(feature = "apic")]
+    {
+        crate::io::apic::local_apic_id()
+    }
+    #[cfg(not(feature = "apic"))]
+    {
+        0 // BSP
+    }
 }
 
 /// 割り込みをマスク

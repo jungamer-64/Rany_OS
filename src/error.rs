@@ -128,6 +128,9 @@ pub enum SasErrorKind {
 }
 
 /// I/O関連エラー
+///
+/// 各ドライバ固有のエラーからの変換をサポート。
+/// より詳細な情報が必要な場合は、元のドライバ固有エラー型を使用すること。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoError {
     /// デバイスが見つからない
@@ -144,6 +147,20 @@ pub enum IoError {
     DmaError,
     /// VirtIOエラー
     VirtIoError,
+    /// NVMeエラー
+    NvmeError,
+    /// AHCIエラー
+    AhciError,
+    /// USBエラー
+    UsbError,
+    /// リソース不足
+    NoResources,
+    /// 無効なパラメータ
+    InvalidParameter,
+    /// 転送エラー
+    TransferError,
+    /// コマンドエラー
+    CommandError,
 }
 
 /// 一般的なエラー
@@ -261,6 +278,13 @@ impl fmt::Display for IoError {
             IoError::WriteError => write!(f, "write error"),
             IoError::DmaError => write!(f, "DMA error"),
             IoError::VirtIoError => write!(f, "VirtIO error"),
+            IoError::NvmeError => write!(f, "NVMe error"),
+            IoError::AhciError => write!(f, "AHCI error"),
+            IoError::UsbError => write!(f, "USB error"),
+            IoError::NoResources => write!(f, "no resources"),
+            IoError::InvalidParameter => write!(f, "invalid parameter"),
+            IoError::TransferError => write!(f, "transfer error"),
+            IoError::CommandError => write!(f, "command error"),
         }
     }
 }
@@ -428,6 +452,103 @@ impl From<crate::mm::exchange_heap::ExchangeHeapError> for KernelError {
             EHE::SliceFull => MemoryError::OutOfMemory,
             EHE::PartiallyInitialized => MemoryError::Uninitialized,
         })
+    }
+}
+
+// ===== ドライバ固有エラーから IoError への変換 =====
+
+// io::ahci::AhciError からの変換
+impl From<crate::io::ahci::AhciError> for IoError {
+    fn from(e: crate::io::ahci::AhciError) -> Self {
+        use crate::io::ahci::AhciError as AE;
+        match e {
+            AE::PortNotAvailable | AE::NoDevice => IoError::DeviceNotFound,
+            AE::NoCommandSlot => IoError::NoResources,
+            AE::Timeout => IoError::Timeout,
+            AE::TaskFileError(_) => IoError::CommandError,
+            AE::DmaError => IoError::DmaError,
+            AE::InvalidParameter => IoError::InvalidParameter,
+            AE::Other(_) => IoError::AhciError,
+        }
+    }
+}
+
+// io::ahci::AhciError からの KernelError への変換
+impl From<crate::io::ahci::AhciError> for KernelError {
+    fn from(e: crate::io::ahci::AhciError) -> Self {
+        KernelError::Io(e.into())
+    }
+}
+
+// io::nvme::defs::NvmeError からの変換
+impl From<crate::io::nvme::defs::NvmeError> for IoError {
+    fn from(e: crate::io::nvme::defs::NvmeError) -> Self {
+        use crate::io::nvme::defs::NvmeError as NE;
+        match e {
+            NE::InitializationFailed(_) => IoError::DeviceNotFound,
+            NE::Timeout => IoError::Timeout,
+            NE::QueueFull => IoError::NoResources,
+            NE::InvalidParameter(_) => IoError::InvalidParameter,
+            NE::CommandFailed(_) => IoError::CommandError,
+            NE::OutOfMemory => IoError::NoResources,
+            NE::DeviceNotFound => IoError::DeviceNotFound,
+            NE::ControllerFatalError => IoError::NvmeError,
+            NE::IoError(_) => IoError::NvmeError,
+        }
+    }
+}
+
+// io::nvme::defs::NvmeError から KernelError への変換
+impl From<crate::io::nvme::defs::NvmeError> for KernelError {
+    fn from(e: crate::io::nvme::defs::NvmeError) -> Self {
+        KernelError::Io(e.into())
+    }
+}
+
+// io::usb::UsbError からの変換
+impl From<crate::io::usb::UsbError> for IoError {
+    fn from(e: crate::io::usb::UsbError) -> Self {
+        use crate::io::usb::UsbError as UE;
+        match e {
+            UE::DeviceNotFound => IoError::DeviceNotFound,
+            UE::EndpointNotFound => IoError::DeviceNotFound,
+            UE::TransferError(_) => IoError::TransferError,
+            UE::Stalled => IoError::TransferError,
+            UE::Timeout => IoError::Timeout,
+            UE::BufferSize => IoError::InvalidParameter,
+            UE::InvalidParameter => IoError::InvalidParameter,
+            UE::NoResources => IoError::NoResources,
+            UE::XhciError(_) => IoError::UsbError,
+            UE::Other(_) => IoError::UsbError,
+        }
+    }
+}
+
+// io::usb::UsbError から KernelError への変換
+impl From<crate::io::usb::UsbError> for KernelError {
+    fn from(e: crate::io::usb::UsbError) -> Self {
+        KernelError::Io(e.into())
+    }
+}
+
+// io::virtio::net::VirtioNetError からの変換
+impl From<crate::io::virtio::net::VirtioNetError> for IoError {
+    fn from(e: crate::io::virtio::net::VirtioNetError) -> Self {
+        use crate::io::virtio::net::VirtioNetError as VE;
+        match e {
+            VE::NotInitialized => IoError::DeviceNotFound,
+            VE::QueueFull => IoError::NoResources,
+            VE::BufferTooSmall => IoError::InvalidParameter,
+            VE::DeviceError => IoError::VirtIoError,
+            VE::Timeout => IoError::Timeout,
+        }
+    }
+}
+
+// io::virtio::net::VirtioNetError から KernelError への変換
+impl From<crate::io::virtio::net::VirtioNetError> for KernelError {
+    fn from(e: crate::io::virtio::net::VirtioNetError) -> Self {
+        KernelError::Io(e.into())
     }
 }
 
