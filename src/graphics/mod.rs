@@ -19,8 +19,10 @@
 #![allow(dead_code)]
 
 // サブモジュール
+pub mod bsod;
 pub mod compositor;
 pub mod image;
+pub mod qrcode;
 pub mod window;
 
 use alloc::vec;
