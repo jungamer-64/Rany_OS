@@ -167,13 +167,13 @@ impl SystemIntegration {
             self.device_manager.register(device_info);
 
             // Count by type
-            match dev.class {
+            match dev.class_code.class {
                 0x01 => storage_count += 1, // Mass Storage
                 0x02 => network_count += 1, // Network
                 _ => {}
             }
 
-            if dev.vendor_id == 0x1AF4 {
+            if dev.is_virtio() {
                 virtio_count += 1;
             }
         }
@@ -215,13 +215,13 @@ impl SystemIntegration {
             for (dev_id, dev_name, pci_loc) in &msi_devices {
                 if pci_loc
                     .map(|l| {
-                        l.bus == pci_dev.bus
-                            && l.device == pci_dev.device
-                            && l.function == pci_dev.function
+                        l.bus == pci_dev.bdf.bus()
+                            && l.device == pci_dev.bdf.device()
+                            && l.function == pci_dev.bdf.function()
                     })
                     .unwrap_or(false)
                 {
-                    if let Some(vector) = crate::io::msi::allocate_vector(pci_dev) {
+                    if let Some(vector) = crate::io::allocate_vector(pci_dev.bdf) {
                         self.interrupt_router.add_msi_route(*dev_id, vector);
                         self.log(&alloc::format!(
                             "    Device {} -> vector {}",
@@ -245,14 +245,14 @@ impl SystemIntegration {
         // Initialize VirtIO devices
         let virtio_devices = crate::io::pci_find_virtio_devices();
         for dev in virtio_devices {
-            match dev.device_id {
+            match dev.device_id.0 {
                 0x1001 | 0x1042 => {
                     // VirtIO Block Device
                     self.log(&alloc::format!(
                         "  Initializing VirtIO-Blk at {:02x}:{:02x}.{}",
-                        dev.bus,
-                        dev.device,
-                        dev.function
+                        dev.bdf.bus(),
+                        dev.bdf.device(),
+                        dev.bdf.function()
                     ));
                     dev.enable_bus_master();
                     dev.enable_memory_space();
@@ -261,9 +261,9 @@ impl SystemIntegration {
                     // VirtIO Network Device
                     self.log(&alloc::format!(
                         "  Initializing VirtIO-Net at {:02x}:{:02x}.{}",
-                        dev.bus,
-                        dev.device,
-                        dev.function
+                        dev.bdf.bus(),
+                        dev.bdf.device(),
+                        dev.bdf.function()
                     ));
                     dev.enable_bus_master();
                     dev.enable_memory_space();
@@ -277,9 +277,9 @@ impl SystemIntegration {
         for dev in nvme_devices {
             self.log(&alloc::format!(
                 "  Initializing NVMe controller at {:02x}:{:02x}.{}",
-                dev.bus,
-                dev.device,
-                dev.function
+                dev.bdf.bus(),
+                dev.bdf.device(),
+                dev.bdf.function()
             ));
             dev.enable_bus_master();
             dev.enable_memory_space();

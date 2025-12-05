@@ -89,6 +89,21 @@ impl BdfAddress {
         }
     }
 
+    /// Get bus number as u8
+    pub const fn bus(&self) -> u8 {
+        self.bus.0
+    }
+
+    /// Get device number as u8
+    pub const fn device(&self) -> u8 {
+        self.device.0
+    }
+
+    /// Get function number as u8
+    pub const fn function(&self) -> u8 {
+        self.function.0
+    }
+
     /// 16ビットBDF表現を取得
     pub const fn to_u16(&self) -> u16 {
         ((self.bus.0 as u16) << 8) | ((self.device.0 as u16) << 3) | (self.function.0 as u16)
@@ -545,6 +560,16 @@ impl Bar {
             Bar::Memory32 { base, .. } => *base,
             Bar::Memory64 { base, .. } => *base,
             Bar::Io { base, .. } => *base,
+        }
+    }
+
+    /// アドレスを取得（旧APIとの互換性）
+    pub fn address(&self) -> Option<u64> {
+        let addr = self.base();
+        if addr == 0 {
+            None
+        } else {
+            Some(addr)
         }
     }
 

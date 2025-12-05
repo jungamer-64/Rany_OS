@@ -4,34 +4,22 @@
 // ============================================================================
 pub mod acpi;
 pub mod ahci;
+pub mod ahci_atapi;   // AHCI ATAPI (CD/DVD) Support
 pub mod apic;
 pub mod audio;
 pub mod dma;
+pub mod hid;         // HID subsystem (directory) - keyboard.rs, ps2.rs
 pub mod ide;
+pub mod io_scheduler; // Polling/Executor連携 I/Oスケジューラ
 pub mod iommu;
-pub mod keyboard;
 pub mod log;
-pub mod msi;
-pub mod nvme;        // NVMe common module (directory)
-pub mod nvme_async;  // NVMe async driver (original nvme.rs)
+pub mod nvme;        // NVMe module (directory) - includes driver.rs
 pub mod pci;         // PCI common module (directory)
-#[path = "pci_old.rs"]
-pub mod pci_compat;  // PCI legacy compatibility (renamed from pci.rs)
-pub mod pcie;
 pub mod polling;
-pub mod ps2;
 pub mod rtc;
 pub mod serial;
 pub mod usb;
-pub mod virtio;
-pub mod virtio_blk;
-pub mod virtio_net;
-
-// Phase 4: High-Performance I/O
-pub mod nvme_polling;
-
-// DMA Cache Coherency Management
-pub mod dma_cache;
+pub mod virtio;      // VirtIO module (directory) - includes net.rs and blk.rs
 
 #[allow(unused_imports)]
 pub use dma::{
@@ -44,17 +32,31 @@ pub use dma::{
     TypedDmaGuard,
     TypedDmaSlice,
     TypedSgList,
+    // Cache coherency management (integrated from dma_cache.rs)
+    CacheMode,
+    CACHE_LINE_SIZE,
+    clflush,
+    clflushopt,
+    clwb,
+    mfence,
+    sfence,
+    lfence,
+    flush_cache_range,
+    invalidate_cache_range,
+    writeback_cache_range,
+    DmaDirection,
+    DmaMemoryAttributes,
+    CoherentDmaBuffer,
+    StreamingDmaMapping,
+    IommuDmaBuffer,
+    supports_clflushopt,
+    supports_clwb,
+    cache_line_size,
 };
 #[allow(unused_imports)]
 pub use iommu::{
     DeviceId, DmaMapping, IommuController, IommuDomain, IommuError, disable_iommu, enable_iommu,
     init_iommu, with_iommu,
-};
-// NVMe async driver exports (from nvme_async.rs)
-#[allow(unused_imports)]
-pub use nvme_async::{
-    NvmeConfig, NvmeController, NvmeError, NvmeNamespace,
-    handle_nvme_interrupt, init_nvme,
 };
 // NVMe common types (from nvme/ directory)
 #[allow(unused_imports)]
@@ -62,38 +64,89 @@ pub use nvme::{
     NvmeCommand, NvmeCompletion, NvmeQueuePair, NvmeStatus,
     IdentifyController, IdentifyNamespace, NvmeCapabilities,
     AdminOpcode, IoOpcode,
+    // Polling driver (from nvme/driver.rs)
+    NvmePollingDriver, PerCoreNvmeQueue, NvmeQueueStats,
+    QueuePair, SubmissionQueue, CompletionQueue,
+    AsyncIoRequest, IoRequestState,
+    PollingNvmeCommand, PollingNvmeCompletion,
+    init_nvme_polling, nvme_poll,
 };
 #[allow(unused_imports)]
 pub use polling::{
     AdaptiveIoController, IoMode, IoStats, PollingConfig, block_io_controller, net_io_controller,
     polling_loop,
 };
+
+// I/O Scheduler exports (Polling/Executor連携)
 #[allow(unused_imports)]
-pub use virtio_blk::{
-    AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtQueue, VirtioBlkDevice, VringDesc,
-    features as blk_features, handle_virtio_blk_interrupt, init_virtio_blk,
-};
-#[allow(unused_imports)]
-pub use virtio_net::{
-    NetVirtQueue, VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VringDesc as NetVringDesc,
-    features as net_features, handle_virtio_net_interrupt, init_virtio_net,
+pub use io_scheduler::{
+    // Types
+    IoOperationType, IoPriority, IoState, IoRequestId, DeviceId as IoDeviceId,
+    IoRequest, IoResult, IoError, IoMode as SchedulerIoMode,
+    // Mode control
+    ModeThresholds, DeviceIoModeController, IoModeStats,
+    // Scheduler
+    IoScheduler, IoSchedulerStats,
+    // Executor
+    PollingExecutor, PollHandler, IoFuture,
+    // Bridge
+    IoInterruptBridge, HybridIoCoordinator,
+    // Global access
+    init_io_scheduler, io_scheduler, hybrid_coordinator,
+    // Convenience API
+    async_read, async_write, async_flush,
 };
 
-// PCI bus support (legacy compatibility from pci_old.rs)
+// VirtIO-Blk exports (from virtio/blk.rs)
 #[allow(unused_imports)]
-pub use pci_compat::{
-    PciBar, PciBus, PciClass, PciDevice, devices as pci_devices,
-    find_by_class as pci_find_by_class, find_virtio_devices as pci_find_virtio_devices,
-    init as pci_init, pci_read, pci_read8, pci_read16, pci_write,
+pub use virtio::{
+    VirtioBlkDevice, BlkVirtQueue as VirtQueue, BlkVringDesc as VringDesc,
+    AsyncBlockDevice, BlockDeviceConfig, BlockError,
+    blk_features, handle_virtio_blk_interrupt, init_virtio_blk,
+};
+// VirtIO-Net exports (from virtio/net.rs)
+#[allow(unused_imports)]
+pub use virtio::{
+    VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VirtioNetConfig,
+    NetVirtQueue, VringDesc as NetVringDesc,
+    net_features, handle_virtio_net_interrupt, init_virtio_net,
+    with_virtio_net,
 };
 
-// PCI common module exports (new unified interface)
+// HID subsystem exports (keyboard, ps2)
+#[allow(unused_imports)]
+pub use hid::{
+    // PS/2 Controller
+    ps2_ports, ps2_status, ps2_commands, ps2_kbd_commands, ps2_mouse_commands,
+    Ps2Controller, Ps2DeviceType, Ps2KeyCode, Ps2KeyEvent, Ps2Modifiers,
+    MouseButton, MouseEvent, KeyboardHandler, MouseHandler,
+    ps2_init, keyboard_interrupt_handler, mouse_interrupt_handler,
+    get_key_event, get_mouse_event, get_modifiers, set_leds,
+    // Keyboard driver
+    KeyCode, KeyState, KeyEvent, KeyboardDriver,
+    KeyEventFuture, CharFuture, LineFuture,
+    keyboard, keyboard_init, handle_keyboard_interrupt,
+};
+
+// PCI common module exports (unified interface)
 #[allow(unused_imports)]
 pub use pci::{
-    ConfigSpaceAccessor, BdfAddress, Bar as PciBarCommon, ClassCode as PciClassCode,
+    // Core traits and types
+    ConfigSpaceAccessor, BdfAddress, Bar, ClassCode as PciClassCode,
     VendorId, DeviceId as PciDeviceId, LegacyPciAccessor, EcamAccess, EcamManager,
     PciBusScanner, PciDeviceInfo, CapabilityId as PciCapabilityId,
+    // Config space helpers
     config_regs as pci_config_regs, command_bits as pci_command_bits, status_bits as pci_status_bits,
+    // Legacy I/O port access
+    pci_read, pci_read8, pci_read16, pci_write, get_legacy_accessor,
+    // Convenience functions
+    scan_all_devices as pci_devices, find_by_class as pci_find_by_class, find_by_id,
+    find_virtio_devices as pci_find_virtio_devices, init as pci_init,
+    // MSI/MSI-X support
+    MsiConfig, MsiCapability, MsixCapability, MsixTableEntry,
+    DeliveryMode, TriggerMode,
+    allocate_vector, allocate_vectors, setup_msi, setup_msix,
+    disable_intx, enable_intx,
 };
 
 // ACPI table parser
@@ -104,19 +157,22 @@ pub use acpi::{
     io_apics, local_apic_address, local_apics, pcie_ecam_regions, processor_count,
 };
 
-// MSI/MSI-X interrupt support
+// AHCI ATAPI exports (CD/DVD support)
 #[allow(unused_imports)]
-pub use msi::{
-    DeliveryMode, MsiCapability, MsiConfig, MsixCapability, MsixTableEntry, TriggerMode,
-    allocate_vector, allocate_vectors, setup_msi, setup_msix,
-};
-
-// Phase 4: High-Performance NVMe Polling
-#[allow(unused_imports)]
-pub use nvme_polling::{
-    AsyncIoRequest, CompletionQueue, IoRequestState, NvmeCommand as PollingNvmeCommand,
-    NvmeCompletion as PollingNvmeCompletion, NvmePollingDriver, NvmeQueueStats, PerCoreNvmeQueue,
-    QueuePair, SubmissionQueue, init as init_nvme_polling, poll as nvme_poll,
+pub use ahci_atapi::{
+    // SCSI CDB
+    ScsiCdb12, ScsiOpcode, TocFormat,
+    // Response structures
+    InquiryResponse, AtapiDeviceType, ReadCapacityResponse,
+    SenseData, SenseKey,
+    // TOC structures
+    TocHeader, TocTrackDescriptor, TableOfContents,
+    // ATAPI Port
+    AtapiPort,
+    // CD/DVD Drive
+    CdDvdDrive, CdDvdDriveInfo,
+    // Constants
+    CD_SECTOR_SIZE, CD_AUDIO_SECTOR_SIZE,
 };
 
 // VirtIO Common Module exports
@@ -139,9 +195,4 @@ pub use virtio::{
     common_features as virtio_common_features,
     VIRTQUEUE_MAX_SIZE,
     VIRTQUEUE_DEFAULT_SIZE,
-    // Async VirtIO-Net
-    VirtioNet as AsyncVirtioNet,
-    async_receive_packet,
-    async_send_packet,
-    async_send_data,
 };

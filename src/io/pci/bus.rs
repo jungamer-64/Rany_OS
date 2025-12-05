@@ -204,6 +204,60 @@ impl PciDeviceInfo {
     pub fn is_pcie(&self) -> bool {
         self.pcie_cap_offset.is_some()
     }
+
+    /// Enable bus master (DMA) capability
+    pub fn enable_bus_master(&self) {
+        use super::legacy::get_legacy_accessor;
+        let accessor = get_legacy_accessor();
+        let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
+        accessor.write16(self.bdf, config_regs::COMMAND, cmd | command_bits::BUS_MASTER);
+    }
+
+    /// Disable bus master (DMA) capability
+    pub fn disable_bus_master(&self) {
+        use super::legacy::get_legacy_accessor;
+        let accessor = get_legacy_accessor();
+        let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
+        accessor.write16(self.bdf, config_regs::COMMAND, cmd & !command_bits::BUS_MASTER);
+    }
+
+    /// Enable memory space access
+    pub fn enable_memory_space(&self) {
+        use super::legacy::get_legacy_accessor;
+        let accessor = get_legacy_accessor();
+        let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
+        accessor.write16(self.bdf, config_regs::COMMAND, cmd | command_bits::MEMORY_SPACE);
+    }
+
+    /// Disable memory space access
+    pub fn disable_memory_space(&self) {
+        use super::legacy::get_legacy_accessor;
+        let accessor = get_legacy_accessor();
+        let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
+        accessor.write16(self.bdf, config_regs::COMMAND, cmd & !command_bits::MEMORY_SPACE);
+    }
+
+    /// Enable I/O space access
+    pub fn enable_io_space(&self) {
+        use super::legacy::get_legacy_accessor;
+        let accessor = get_legacy_accessor();
+        let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
+        accessor.write16(self.bdf, config_regs::COMMAND, cmd | command_bits::IO_SPACE);
+    }
+
+    /// Disable I/O space access
+    pub fn disable_io_space(&self) {
+        use super::legacy::get_legacy_accessor;
+        let accessor = get_legacy_accessor();
+        let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
+        accessor.write16(self.bdf, config_regs::COMMAND, cmd & !command_bits::IO_SPACE);
+    }
+
+    /// Check if VirtIO device
+    pub fn is_virtio(&self) -> bool {
+        self.vendor_id.0 == 0x1AF4 && 
+        (self.device_id.0 >= 0x1000 && self.device_id.0 <= 0x107F)
+    }
 }
 
 // ============================================================================
@@ -531,5 +585,60 @@ impl ClassCode {
             (0x0C, 0x09) => "CANbus Controller",
             _ => "Unknown Subclass",
         }
+    }
+}
+
+// ============================================================================
+// Convenience Functions
+// ============================================================================
+
+use super::legacy::get_legacy_accessor;
+
+/// Scan all PCI devices using legacy I/O port access
+pub fn scan_all_devices() -> Vec<PciDeviceInfo> {
+    let accessor = get_legacy_accessor();
+    let scanner = PciBusScanner::new(&accessor);
+    scanner.scan_all()
+}
+
+/// Find devices by class and subclass using legacy I/O port access
+pub fn find_by_class(class: u8, subclass: u8) -> Vec<PciDeviceInfo> {
+    let accessor = get_legacy_accessor();
+    let scanner = PciBusScanner::new(&accessor);
+    scanner.find_by_class(class, subclass)
+}
+
+/// Find devices by vendor and device ID using legacy I/O port access
+pub fn find_by_id(vendor_id: u16, device_id: u16) -> Vec<PciDeviceInfo> {
+    let accessor = get_legacy_accessor();
+    let scanner = PciBusScanner::new(&accessor);
+    scanner.find_by_id(vendor_id, device_id)
+}
+
+/// Find all VirtIO devices (vendor 0x1AF4)
+pub fn find_virtio_devices() -> Vec<PciDeviceInfo> {
+    scan_all_devices()
+        .into_iter()
+        .filter(|d| d.is_virtio())
+        .collect()
+}
+
+/// Initialize PCI subsystem (scan and log devices)
+pub fn init() {
+    crate::log!("[PCI] Initializing PCI bus...\n");
+    let devices = scan_all_devices();
+    crate::log!("[PCI] Found {} device(s)\n", devices.len());
+    
+    for dev in &devices {
+        crate::log!(
+            "[PCI] {:02x}:{:02x}.{} - {:04x}:{:04x} class {:02x}.{:02x}\n",
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function(),
+            dev.vendor_id.0,
+            dev.device_id.0,
+            dev.class_code.class,
+            dev.class_code.subclass
+        );
     }
 }
