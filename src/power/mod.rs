@@ -147,16 +147,16 @@ impl AcpiPmConfig {
     /// FADTから設定を読み込み
     pub fn from_fadt(fadt: &Fadt) -> Self {
         Self {
-            pm1a_evt_blk: fadt.pm1a_event_block as u16,
-            pm1b_evt_blk: fadt.pm1b_event_block as u16,
-            pm1a_cnt_blk: fadt.pm1a_control_block as u16,
-            pm1b_cnt_blk: fadt.pm1b_control_block as u16,
-            pm2_cnt_blk: fadt.pm2_control_block as u16,
-            pm_tmr_blk: fadt.pm_timer_block as u16,
-            gpe0_blk: fadt.gpe0_block as u16,
-            gpe1_blk: fadt.gpe1_block as u16,
-            pm1_evt_len: fadt.pm1_event_length,
-            pm1_cnt_len: fadt.pm1_control_length,
+            pm1a_evt_blk: fadt.pm1a_evt_blk as u16,
+            pm1b_evt_blk: fadt.pm1b_evt_blk as u16,
+            pm1a_cnt_blk: fadt.pm1a_cnt_blk as u16,
+            pm1b_cnt_blk: fadt.pm1b_cnt_blk as u16,
+            pm2_cnt_blk: fadt.pm2_cnt_blk as u16,
+            pm_tmr_blk: fadt.pm_tmr_blk as u16,
+            gpe0_blk: fadt.gpe0_blk as u16,
+            gpe1_blk: fadt.gpe1_blk as u16,
+            pm1_evt_len: fadt.pm1_evt_len,
+            pm1_cnt_len: fadt.pm1_cnt_len,
             pm_tmr_32bit: (fadt.flags & 0x100) != 0,
             s5_slp_typ_a: 0, // S5テーブルから読む必要あり
             s5_slp_typ_b: 0,
