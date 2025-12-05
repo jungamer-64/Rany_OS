@@ -181,17 +181,17 @@ impl<'a> Lexer<'a> {
 
         match c {
             // 単一文字トークン
-            '(' => Ok(Token::new(TokenKind::LParen, "(", start_line, start_col)),
-            ')' => Ok(Token::new(TokenKind::RParen, ")", start_line, start_col)),
-            '{' => Ok(Token::new(TokenKind::LBrace, "{", start_line, start_col)),
-            '}' => Ok(Token::new(TokenKind::RBrace, "}", start_line, start_col)),
-            '[' => Ok(Token::new(TokenKind::LBracket, "[", start_line, start_col)),
-            ']' => Ok(Token::new(TokenKind::RBracket, "]", start_line, start_col)),
+            '(' => Ok(Token::new(TokenKind::LeftParen, "(", start_line, start_col)),
+            ')' => Ok(Token::new(TokenKind::RightParen, ")", start_line, start_col)),
+            '{' => Ok(Token::new(TokenKind::LeftBrace, "{", start_line, start_col)),
+            '}' => Ok(Token::new(TokenKind::RightBrace, "}", start_line, start_col)),
+            '[' => Ok(Token::new(TokenKind::LeftBracket, "[", start_line, start_col)),
+            ']' => Ok(Token::new(TokenKind::RightBracket, "]", start_line, start_col)),
             ',' => Ok(Token::new(TokenKind::Comma, ",", start_line, start_col)),
             ';' => Ok(Token::new(TokenKind::Semicolon, ";", start_line, start_col)),
             '?' => Ok(Token::new(TokenKind::Question, "?", start_line, start_col)),
             '%' => Ok(Token::new(TokenKind::Percent, "%", start_line, start_col)),
-            '^' => Ok(Token::new(TokenKind::BitXor, "^", start_line, start_col)),
+            '^' => Ok(Token::new(TokenKind::Caret, "^", start_line, start_col)),
 
             // 1-2文字トークン
             '+' => {
@@ -256,14 +256,14 @@ impl<'a> Lexer<'a> {
             }
             '!' => {
                 if self.match_char('=') {
-                    Ok(Token::new(TokenKind::NotEq, "!=", start_line, start_col))
+                    Ok(Token::new(TokenKind::Ne, "!=", start_line, start_col))
                 } else {
-                    Ok(Token::new(TokenKind::Not, "!", start_line, start_col))
+                    Ok(Token::new(TokenKind::Bang, "!", start_line, start_col))
                 }
             }
             '<' => {
                 if self.match_char('=') {
-                    Ok(Token::new(TokenKind::LtEq, "<=", start_line, start_col))
+                    Ok(Token::new(TokenKind::Le, "<=", start_line, start_col))
                 } else if self.match_char('<') {
                     Ok(Token::new(TokenKind::Shl, "<<", start_line, start_col))
                 } else {
@@ -272,7 +272,7 @@ impl<'a> Lexer<'a> {
             }
             '>' => {
                 if self.match_char('=') {
-                    Ok(Token::new(TokenKind::GtEq, ">=", start_line, start_col))
+                    Ok(Token::new(TokenKind::Ge, ">=", start_line, start_col))
                 } else if self.match_char('>') {
                     Ok(Token::new(TokenKind::Shr, ">>", start_line, start_col))
                 } else {
@@ -283,7 +283,7 @@ impl<'a> Lexer<'a> {
                 if self.match_char('&') {
                     Ok(Token::new(TokenKind::And, "&&", start_line, start_col))
                 } else {
-                    Ok(Token::new(TokenKind::BitAnd, "&", start_line, start_col))
+                    Ok(Token::new(TokenKind::Ampersand, "&", start_line, start_col))
                 }
             }
             '|' => {
@@ -295,7 +295,7 @@ impl<'a> Lexer<'a> {
             }
             ':' => {
                 if self.match_char(':') {
-                    Ok(Token::new(TokenKind::ColonColon, "::", start_line, start_col))
+                    Ok(Token::new(TokenKind::DoubleColon, "::", start_line, start_col))
                 } else {
                     Ok(Token::new(TokenKind::Colon, ":", start_line, start_col))
                 }
@@ -470,7 +470,7 @@ impl<'a> Lexer<'a> {
             "match" => TokenKind::Match,
             "struct" => TokenKind::Struct,
             "impl" => TokenKind::Impl,
-            "self" => TokenKind::Self_,
+            "self" => TokenKind::SelfLower,
             "pub" => TokenKind::Pub,
             "true" => TokenKind::True,
             "false" => TokenKind::False,

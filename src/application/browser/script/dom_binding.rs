@@ -183,14 +183,19 @@ impl DomBinding {
                 self.create_element_ref(id)
             }
             DomOperation::AppendChild(parent_id, child_id) => {
+                // まず子要素の情報を取得
+                let old_parent_id = self.element_cache.get(&child_id)
+                    .and_then(|c| c.parent_id);
+
+                // 既存の親から削除
+                if let Some(old_pid) = old_parent_id {
+                    if let Some(old_parent) = self.element_cache.get_mut(&old_pid) {
+                        old_parent.children.retain(|&id| id != child_id);
+                    }
+                }
+
                 // 子要素の親を更新
                 if let Some(child) = self.element_cache.get_mut(&child_id) {
-                    // 既存の親から削除
-                    if let Some(old_parent_id) = child.parent_id {
-                        if let Some(old_parent) = self.element_cache.get_mut(&old_parent_id) {
-                            old_parent.children.retain(|&id| id != child_id);
-                        }
-                    }
                     child.parent_id = Some(parent_id);
                 }
 

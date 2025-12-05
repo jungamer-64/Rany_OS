@@ -150,11 +150,17 @@ impl Parser {
 
         self.consume_statement_terminator()?;
 
+        // pattern を String に変換（単純な識別子の場合）
+        let name = match pattern {
+            Pattern::Identifier(s) => s,
+            _ => return Err(ScriptError::syntax("let文では単純な識別子のみサポートされています", 0, 0)),
+        };
+
         Ok(Stmt::Let {
-            pattern,
-            type_annotation,
-            initializer,
+            name,
             mutable,
+            type_ann: type_annotation,
+            value: initializer,
         })
     }
 
@@ -208,8 +214,8 @@ impl Parser {
 
         Ok(Stmt::If {
             condition,
-            then_block: Box::new(then_block),
-            else_block,
+            then_branch: Box::new(then_block),
+            else_branch: else_block,
         })
     }
 
@@ -237,9 +243,15 @@ impl Parser {
         let iterable = self.parse_expression()?;
         let body = self.parse_block()?;
 
+        // pattern を String に変換
+        let variable = match pattern {
+            Pattern::Identifier(s) => s,
+            _ => return Err(ScriptError::syntax("for文では単純な識別子のみサポートされています", 0, 0)),
+        };
+
         Ok(Stmt::For {
-            pattern,
-            iterable,
+            variable,
+            iterator: iterable,
             body: Box::new(body),
         })
     }
@@ -250,9 +262,7 @@ impl Parser {
 
         let body = self.parse_block()?;
 
-        Ok(Stmt::Loop {
-            body: Box::new(body),
-        })
+        Ok(Stmt::Loop(Box::new(body)))
     }
 
     /// return文
@@ -267,7 +277,7 @@ impl Parser {
 
         self.consume_statement_terminator()?;
 
-        Ok(Stmt::Return { value })
+        Ok(Stmt::Return(value))
     }
 
     /// struct定義
@@ -295,7 +305,8 @@ impl Parser {
 
             fields.push(StructField {
                 name: field_name,
-                type_annotation: field_type,
+                type_ann: field_type,
+                public: false,
             });
 
             // コンマは省略可能
@@ -463,15 +474,15 @@ impl Parser {
             let op = if self.check(TokenKind::EqEq) {
                 BinaryOp::Eq
             } else if self.check(TokenKind::Ne) {
-                BinaryOp::Ne
+                BinaryOp::NotEq
             } else if self.check(TokenKind::Lt) {
                 BinaryOp::Lt
             } else if self.check(TokenKind::Le) {
-                BinaryOp::Le
+                BinaryOp::LtEq
             } else if self.check(TokenKind::Gt) {
                 BinaryOp::Gt
             } else if self.check(TokenKind::Ge) {
-                BinaryOp::Ge
+                BinaryOp::GtEq
             } else {
                 break;
             };
@@ -648,11 +659,11 @@ impl Parser {
             if self.check(TokenKind::LeftParen) {
                 // 関数呼び出し
                 self.advance();
-                let args = self.parse_arguments()?;
+                let call_args = self.parse_arguments()?;
                 self.expect(TokenKind::RightParen)?;
                 expr = Expr::Call {
-                    function: Box::new(expr),
-                    arguments: args,
+                    callee: Box::new(expr),
+                    args: call_args,
                 };
             } else if self.check(TokenKind::LeftBracket) {
                 // インデックスアクセス
@@ -671,12 +682,12 @@ impl Parser {
                 if self.check(TokenKind::LeftParen) {
                     // メソッド呼び出し
                     self.advance();
-                    let args = self.parse_arguments()?;
+                    let method_args = self.parse_arguments()?;
                     self.expect(TokenKind::RightParen)?;
                     expr = Expr::MethodCall {
                         object: Box::new(expr),
                         method: name,
-                        arguments: args,
+                        args: method_args,
                     };
                 } else {
                     // フィールドアクセス
@@ -686,13 +697,26 @@ impl Parser {
                     };
                 }
             } else if self.check(TokenKind::DoubleColon) {
-                // 名前空間アクセス
+                // 名前空間アクセス (Pathとして扱う)
                 self.advance();
                 let member = self.expect_identifier()?;
-                expr = Expr::NamespaceAccess {
-                    namespace: Box::new(expr),
-                    member,
-                };
+                // 既存のPathに追加するか、新しいPathを作成
+                match expr {
+                    Expr::Path(mut segments) => {
+                        segments.push(member);
+                        expr = Expr::Path(segments);
+                    }
+                    Expr::Identifier(first) => {
+                        expr = Expr::Path(vec![first, member]);
+                    }
+                    _ => {
+                        // その他の式の場合はフィールドアクセスとして扱う
+                        expr = Expr::FieldAccess {
+                            object: Box::new(expr),
+                            field: member,
+                        };
+                    }
+                }
             } else {
                 break;
             }
@@ -706,7 +730,7 @@ impl Parser {
         if self.check(TokenKind::Integer) {
             let token = self.advance();
             let value = self.parse_integer(&token.lexeme)?;
-            return Ok(Expr::Literal(Literal::Int(value)));
+            return Ok(Expr::Literal(Literal::Integer(value)));
         }
 
         if self.check(TokenKind::Float) {
@@ -745,7 +769,7 @@ impl Parser {
         // セルフ参照
         if self.check(TokenKind::SelfLower) {
             self.advance();
-            return Ok(Expr::SelfRef);
+            return Ok(Expr::Identifier("self".into()));
         }
 
         // 括弧式またはタプル
@@ -847,7 +871,14 @@ impl Parser {
     /// ブロック式
     fn parse_block_expression(&mut self) -> Result<Expr, ScriptError> {
         let block = self.parse_block()?;
-        Ok(Expr::Block(Box::new(block)))
+        let statements = match block {
+            Stmt::Block(stmts) => stmts,
+            _ => vec![block],
+        };
+        Ok(Expr::Block {
+            statements,
+            value: None,
+        })
     }
 
     /// if式
@@ -861,18 +892,35 @@ impl Parser {
             self.advance();
             if self.check(TokenKind::If) {
                 let else_if = self.parse_if_expression()?;
-                Some(Box::new(Stmt::Expression(else_if)))
+                Some(Box::new(else_if))
             } else {
-                Some(Box::new(self.parse_block()?))
+                let else_stmt = self.parse_block()?;
+                // Block文をBlock式に変換
+                Some(Box::new(Expr::Block {
+                    statements: match else_stmt {
+                        Stmt::Block(stmts) => stmts,
+                        _ => vec![else_stmt],
+                    },
+                    value: None,
+                }))
             }
         } else {
             None
         };
 
+        // then_blockをExprに変換
+        let then_expr = Expr::Block {
+            statements: match then_block {
+                Stmt::Block(stmts) => stmts,
+                _ => vec![then_block],
+            },
+            value: None,
+        };
+
         Ok(Expr::If {
             condition: Box::new(condition),
-            then_block: Box::new(then_block),
-            else_block,
+            then_branch: Box::new(then_expr),
+            else_branch: else_block,
         })
     }
 
@@ -952,7 +1000,7 @@ impl Parser {
                 };
                 params.push(ClosureParam {
                     name,
-                    type_annotation,
+                    type_ann: type_annotation,
                 });
 
                 if !self.check(TokenKind::Comma) {
@@ -964,26 +1012,29 @@ impl Parser {
 
         self.expect(TokenKind::Pipe)?;
 
-        // 戻り値の型
-        let return_type = if self.check(TokenKind::Arrow) {
+        // 戻り値の型（クロージャでは無視）
+        if self.check(TokenKind::Arrow) {
             self.advance();
-            Some(self.parse_type_annotation()?)
-        } else {
-            None
-        };
+            let _ = self.parse_type_annotation()?;
+        }
 
         // 本体
         let body = if self.check(TokenKind::LeftBrace) {
-            Expr::Block(Box::new(self.parse_block()?))
+            let block_stmt = self.parse_block()?;
+            Expr::Block {
+                statements: match block_stmt {
+                    Stmt::Block(stmts) => stmts,
+                    _ => vec![block_stmt],
+                },
+                value: None,
+            }
         } else {
             self.parse_expression()?
         };
 
         Ok(Expr::Closure {
             params,
-            return_type,
             body: Box::new(body),
-            is_move,
         })
     }
 
@@ -1001,23 +1052,23 @@ impl Parser {
         if self.check(TokenKind::Integer) {
             let token = self.advance();
             let value = self.parse_integer(&token.lexeme)?;
-            return Ok(Pattern::Literal(Literal::Int(value)));
+            return Ok(Pattern::Literal(Expr::Literal(Literal::Integer(value))));
         }
 
         if self.check(TokenKind::StringLit) {
             let token = self.advance();
             let value = self.parse_string_literal(&token.lexeme);
-            return Ok(Pattern::Literal(Literal::String(value)));
+            return Ok(Pattern::Literal(Expr::Literal(Literal::String(value))));
         }
 
         if self.check(TokenKind::True) {
             self.advance();
-            return Ok(Pattern::Literal(Literal::Bool(true)));
+            return Ok(Pattern::Literal(Expr::Literal(Literal::Bool(true))));
         }
 
         if self.check(TokenKind::False) {
             self.advance();
-            return Ok(Pattern::Literal(Literal::Bool(false)));
+            return Ok(Pattern::Literal(Expr::Literal(Literal::Bool(false))));
         }
 
         if self.check(TokenKind::LeftParen) {
@@ -1035,23 +1086,6 @@ impl Parser {
             }
             self.expect(TokenKind::RightParen)?;
             return Ok(Pattern::Tuple(patterns));
-        }
-
-        if self.check(TokenKind::LeftBracket) {
-            // 配列パターン
-            self.advance();
-            let mut patterns = Vec::new();
-            if !self.check(TokenKind::RightBracket) {
-                loop {
-                    patterns.push(self.parse_pattern()?);
-                    if !self.check(TokenKind::Comma) {
-                        break;
-                    }
-                    self.advance();
-                }
-            }
-            self.expect(TokenKind::RightBracket)?;
-            return Ok(Pattern::Array(patterns));
         }
 
         // 識別子パターン
@@ -1093,7 +1127,10 @@ impl Parser {
             self.advance();
             let element_type = self.parse_type_annotation()?;
             self.expect(TokenKind::RightBracket)?;
-            return Ok(TypeAnnotation::Array(Box::new(element_type)));
+            return Ok(TypeAnnotation::Array {
+                element: Box::new(element_type),
+                size: None,
+            });
         }
 
         // タプル型
@@ -1182,46 +1219,45 @@ impl Parser {
                 self.advance();
                 params.push(FunctionParam {
                     name: String::from("self"),
-                    type_annotation: None,
-                    default_value: None,
+                    type_ann: None,
+                    mutable: false,
                 });
             } else if self.check(TokenKind::Ampersand) {
                 // &self または &mut self
                 self.advance();
-                let mutable = if self.check(TokenKind::Mut) {
+                let is_mutable = if self.check(TokenKind::Mut) {
                     self.advance();
                     true
                 } else {
                     false
                 };
                 self.expect(TokenKind::SelfLower)?;
-                let name = if mutable {
+                let name = if is_mutable {
                     String::from("&mut self")
                 } else {
                     String::from("&self")
                 };
                 params.push(FunctionParam {
                     name,
-                    type_annotation: None,
-                    default_value: None,
+                    type_ann: None,
+                    mutable: is_mutable,
                 });
             } else {
                 // 通常のパラメータ
-                let name = self.expect_identifier()?;
+                let param_name = self.expect_identifier()?;
                 self.expect(TokenKind::Colon)?;
                 let type_annotation = Some(self.parse_type_annotation()?);
 
-                let default_value = if self.check(TokenKind::Eq) {
+                // デフォルト値は無視（type_annに格納しない）
+                if self.check(TokenKind::Eq) {
                     self.advance();
-                    Some(self.parse_expression()?)
-                } else {
-                    None
-                };
+                    let _ = self.parse_expression()?;
+                }
 
                 params.push(FunctionParam {
-                    name,
-                    type_annotation,
-                    default_value,
+                    name: param_name,
+                    type_ann: type_annotation,
+                    mutable: false,
                 });
             }
 
