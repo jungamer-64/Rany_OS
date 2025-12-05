@@ -948,6 +948,43 @@ impl Display for ParseError {
 }
 
 // ============================================================================
+// Closure Expression Types - クロージャ構文サポート
+// ============================================================================
+
+/// 論理演算子
+#[derive(Debug, Clone, PartialEq)]
+pub enum LogicalOp {
+    /// AND (&&)
+    And,
+    /// OR (||)
+    Or,
+}
+
+/// クロージャ式の単一条件
+/// 例: e.size > 1024 -> { field: "size", op: ">", value: "1024" }
+#[derive(Debug, Clone)]
+pub struct ClosureCondition {
+    /// フィールド名（size, name, type など）
+    pub field: String,
+    /// 演算子（>, <, ==, contains など）
+    pub op: String,
+    /// 比較値
+    pub value: String,
+}
+
+/// パースされたクロージャ式
+/// 例: |e| e.size > 1024 && e.name contains "test"
+#[derive(Debug, Clone)]
+pub struct ClosureExpr {
+    /// パラメータ名（e, item, x など）
+    pub param: String,
+    /// 条件のリスト
+    pub conditions: Vec<ClosureCondition>,
+    /// 条件間の論理演算子
+    pub logical_op: LogicalOp,
+}
+
+// ============================================================================
 // Tokenizer - 引数内の'.'を正しく処理するパーサ
 // ============================================================================
 
@@ -972,6 +1009,8 @@ pub enum Token {
     Comma,
     /// 比較演算子
     Operator(String),
+    /// パイプ（クロージャ用）
+    Pipe,
 }
 
 /// 簡易トークナイザー
@@ -1033,6 +1072,10 @@ impl<'a> Tokenizer<'a> {
                 ',' => {
                     self.advance();
                     tokens.push(Token::Comma);
+                }
+                '|' => {
+                    self.advance();
+                    tokens.push(Token::Pipe);
                 }
                 '"' | '\'' => {
                     tokens.push(self.read_string(c));
@@ -1602,32 +1645,31 @@ impl ExoShell {
                 self.filter_array(list, condition)
             }
             
-            // sort() - ソート
+            // sort() / sort(field) / sort("|e| e.field")
+            // 対応形式:
+            // - 引数なし: sort() - 名前でソート
+            // - 文字列形式: sort("size") - 指定フィールドでソート
+            // - クロージャ形式: sort("|e| e.size") - フィールドを指定してソート
+            // - 降順: sort("size", "desc") / sort("|e| e.size", "desc")
             "sort" => {
-                // 名前でソート（FileEntry対応）
-                let mut sorted = list;
-                sorted.sort_by(|a, b| {
-                    let name_a = match a {
-                        ExoValue::FileEntry(e) => &e.name,
-                        ExoValue::String(s) => s,
-                        _ => "",
-                    };
-                    let name_b = match b {
-                        ExoValue::FileEntry(e) => &e.name,
-                        ExoValue::String(s) => s,
-                        _ => "",
-                    };
-                    name_a.cmp(name_b)
-                });
-                ExoValue::Array(sorted)
+                let field_arg = args.first()
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None });
+                let desc = args.get(1)
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str() == "desc"), _ => None })
+                    .unwrap_or(false);
+                
+                self.sort_array(list, field_arg.as_deref(), desc)
             }
             
             // map(field) - フィールド抽出
+            // 対応形式:
+            // - 文字列形式: map("name")
+            // - クロージャ形式: map("|e| e.name")
             "map" | "select" => {
                 let field = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
-                    .unwrap_or("name");
-                self.map_array(list, field)
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None })
+                    .unwrap_or_else(|| String::from("name"));
+                self.map_array(list, &field)
             }
             
             _ => ExoValue::Error(format!("Array does not have method '{}'", method)),
@@ -1635,7 +1677,148 @@ impl ExoShell {
     }
 
     /// 配列をフィルタリング
+    /// 対応形式:
+    /// - 文字列形式: "size > 1024", "name contains test"
+    /// - クロージャ形式: "|e| e.size > 1024", "|item| item.name contains test"
     fn filter_array(&self, list: Vec<ExoValue>, condition: &str) -> ExoValue {
+        let condition = condition.trim();
+        
+        // クロージャ形式をチェック: |e| e.size > 1024
+        if let Some(closure) = self.parse_closure_expression(condition) {
+            return self.filter_with_closure(list, &closure);
+        }
+        
+        // 従来の文字列形式: "size > 1024"
+        self.filter_with_simple_condition(list, condition)
+    }
+    
+    /// クロージャ式をパース
+    /// "|e| e.size > 1024" -> Some(ClosureExpr { param: "e", field: "size", op: ">", value: "1024" })
+    fn parse_closure_expression(&self, input: &str) -> Option<ClosureExpr> {
+        let input = input.trim();
+        
+        // |param| expr 形式をチェック
+        if !input.starts_with('|') {
+            return None;
+        }
+        
+        // パラメータ部分を抽出: |e| -> "e"
+        let rest = &input[1..];
+        let pipe_end = rest.find('|')?;
+        let param = rest[..pipe_end].trim().to_string();
+        let body = rest[pipe_end + 1..].trim();
+        
+        // 本体をパース: e.size > 1024 または param.field op value
+        // 論理演算子（&&, ||）をサポート
+        if let Some(and_pos) = body.find("&&") {
+            // AND条件
+            let left = body[..and_pos].trim();
+            let right = body[and_pos + 2..].trim();
+            
+            let left_expr = self.parse_closure_body(&param, left)?;
+            let right_expr = self.parse_closure_body(&param, right)?;
+            
+            return Some(ClosureExpr {
+                param,
+                conditions: vec![left_expr, right_expr],
+                logical_op: LogicalOp::And,
+            });
+        }
+        
+        if let Some(or_pos) = body.find("||") {
+            // OR条件
+            let left = body[..or_pos].trim();
+            let right = body[or_pos + 2..].trim();
+            
+            let left_expr = self.parse_closure_body(&param, left)?;
+            let right_expr = self.parse_closure_body(&param, right)?;
+            
+            return Some(ClosureExpr {
+                param,
+                conditions: vec![left_expr, right_expr],
+                logical_op: LogicalOp::Or,
+            });
+        }
+        
+        // 単一条件
+        let cond = self.parse_closure_body(&param, body)?;
+        Some(ClosureExpr {
+            param,
+            conditions: vec![cond],
+            logical_op: LogicalOp::And,
+        })
+    }
+    
+    /// クロージャ本体をパース: "e.size > 1024" -> ClosureCondition
+    fn parse_closure_body(&self, param: &str, body: &str) -> Option<ClosureCondition> {
+        // param.field op value の形式を期待
+        let body = body.trim();
+        
+        // param. を探す
+        let prefix = format!("{}.", param);
+        let field_start = if body.starts_with(&prefix) {
+            prefix.len()
+        } else {
+            // param なしで field op value の形式もサポート
+            0
+        };
+        
+        let rest = &body[field_start..];
+        
+        // 演算子を探す
+        let operators = [">=", "<=", "!=", "==", "=", ">", "<", "contains", "starts_with", "ends_with"];
+        
+        for op in &operators {
+            if let Some(op_pos) = rest.find(op) {
+                let field = rest[..op_pos].trim().to_string();
+                let value = rest[op_pos + op.len()..].trim().trim_matches('"').trim_matches('\'').to_string();
+                
+                return Some(ClosureCondition {
+                    field,
+                    op: op.to_string(),
+                    value,
+                });
+            }
+        }
+        
+        None
+    }
+    
+    /// クロージャ式でフィルタリング
+    fn filter_with_closure(&self, list: Vec<ExoValue>, closure: &ClosureExpr) -> ExoValue {
+        let filtered: Vec<ExoValue> = list.into_iter().filter(|item| {
+            self.evaluate_closure_conditions(item, &closure.conditions, &closure.logical_op)
+        }).collect();
+        
+        ExoValue::Array(filtered)
+    }
+    
+    /// クロージャ条件を評価
+    fn evaluate_closure_conditions(&self, item: &ExoValue, conditions: &[ClosureCondition], logical_op: &LogicalOp) -> bool {
+        match logical_op {
+            LogicalOp::And => conditions.iter().all(|cond| self.evaluate_single_condition(item, cond)),
+            LogicalOp::Or => conditions.iter().any(|cond| self.evaluate_single_condition(item, cond)),
+        }
+    }
+    
+    /// 単一条件を評価
+    fn evaluate_single_condition(&self, item: &ExoValue, cond: &ClosureCondition) -> bool {
+        match item {
+            ExoValue::FileEntry(entry) => {
+                self.check_file_entry_condition(entry, &cond.field, &cond.op, &cond.value)
+            }
+            ExoValue::Process(proc) => {
+                self.check_process_condition(proc, &cond.field, &cond.op, &cond.value)
+            }
+            ExoValue::Map(map) => {
+                self.check_map_condition(map, &cond.field, &cond.op, &cond.value)
+            }
+            _ => true,
+        }
+    }
+    
+    /// 従来の文字列形式でフィルタリング
+    fn filter_with_simple_condition(&self, list: Vec<ExoValue>, condition: &str) -> ExoValue {
         // 条件式をパース: "size > 1024", "name contains test", "type == Directory"
         let parts: Vec<&str> = condition.split_whitespace().collect();
         
@@ -1761,7 +1944,49 @@ impl ExoShell {
     }
 
     /// 配列のフィールドを抽出
-    fn map_array(&self, list: Vec<ExoValue>, field: &str) -> ExoValue {
+    /// 対応形式:
+    /// - 文字列形式: "name", "size"
+    /// - クロージャ形式: "|e| e.name", "|e| e.size"
+    fn map_array(&self, list: Vec<ExoValue>, field_or_closure: &str) -> ExoValue {
+        let field_or_closure = field_or_closure.trim();
+        
+        // クロージャ形式をチェック: |e| e.field
+        if field_or_closure.starts_with('|') {
+            if let Some(field) = self.parse_map_closure(field_or_closure) {
+                return self.map_array_simple(list, &field);
+            }
+        }
+        
+        // 従来の文字列形式
+        self.map_array_simple(list, field_or_closure)
+    }
+    
+    /// mapクロージャをパース: "|e| e.name" -> "name"
+    fn parse_map_closure(&self, input: &str) -> Option<String> {
+        let input = input.trim();
+        
+        if !input.starts_with('|') {
+            return None;
+        }
+        
+        // |param| expr 形式
+        let rest = &input[1..];
+        let pipe_end = rest.find('|')?;
+        let param = rest[..pipe_end].trim();
+        let body = rest[pipe_end + 1..].trim();
+        
+        // param.field 形式を期待
+        let prefix = format!("{}.", param);
+        if body.starts_with(&prefix) {
+            Some(body[prefix.len()..].trim().to_string())
+        } else {
+            // フィールド名のみの場合
+            Some(body.to_string())
+        }
+    }
+    
+    /// シンプルなフィールド抽出
+    fn map_array_simple(&self, list: Vec<ExoValue>, field: &str) -> ExoValue {
         let mapped: Vec<ExoValue> = list.into_iter().map(|item| {
             match item {
                 ExoValue::FileEntry(entry) => {
@@ -1791,6 +2016,83 @@ impl ExoShell {
         }).collect();
         
         ExoValue::Array(mapped)
+    }
+
+    /// 配列をソート
+    /// 対応形式:
+    /// - フィールドなし: 名前でソート
+    /// - 文字列形式: "size" - 指定フィールドでソート
+    /// - クロージャ形式: "|e| e.size" - フィールドを指定してソート
+    fn sort_array(&self, mut list: Vec<ExoValue>, field_or_closure: Option<&str>, desc: bool) -> ExoValue {
+        // ソートキーとなるフィールドを決定
+        let field = match field_or_closure {
+            Some(arg) => {
+                let arg = arg.trim();
+                // クロージャ形式をチェック
+                if arg.starts_with('|') {
+                    self.parse_map_closure(arg).unwrap_or_else(|| "name".to_string())
+                } else {
+                    arg.to_string()
+                }
+            }
+            None => "name".to_string(),
+        };
+        
+        list.sort_by(|a, b| {
+            let order = self.compare_by_field(a, b, &field);
+            if desc { order.reverse() } else { order }
+        });
+        
+        ExoValue::Array(list)
+    }
+    
+    /// フィールドで比較
+    fn compare_by_field(&self, a: &ExoValue, b: &ExoValue, field: &str) -> core::cmp::Ordering {
+        use core::cmp::Ordering;
+        
+        // フィールド値を取得
+        let val_a = self.get_field_value(a, field);
+        let val_b = self.get_field_value(b, field);
+        
+        match (&val_a, &val_b) {
+            (ExoValue::String(s1), ExoValue::String(s2)) => s1.cmp(s2),
+            (ExoValue::Int(i1), ExoValue::Int(i2)) => i1.cmp(i2),
+            (ExoValue::Float(f1), ExoValue::Float(f2)) => {
+                f1.partial_cmp(f2).unwrap_or(Ordering::Equal)
+            }
+            _ => Ordering::Equal,
+        }
+    }
+    
+    /// フィールド値を取得
+    fn get_field_value(&self, value: &ExoValue, field: &str) -> ExoValue {
+        match value {
+            ExoValue::FileEntry(entry) => {
+                match field {
+                    "name" => ExoValue::String(entry.name.clone()),
+                    "size" => ExoValue::Int(entry.size as i64),
+                    "path" => ExoValue::String(entry.path.clone()),
+                    "type" => ExoValue::String(format!("{:?}", entry.file_type)),
+                    "owner" => ExoValue::String(entry.owner.clone()),
+                    _ => ExoValue::Nil,
+                }
+            }
+            ExoValue::Process(proc) => {
+                match field {
+                    "name" => ExoValue::String(proc.name.clone()),
+                    "pid" => ExoValue::Int(proc.pid as i64),
+                    "cpu" => ExoValue::Float(proc.cpu_usage as f64),
+                    "memory" => ExoValue::Int(proc.memory_kb as i64),
+                    _ => ExoValue::Nil,
+                }
+            }
+            ExoValue::Map(map) => {
+                map.get(field).cloned().unwrap_or(ExoValue::Nil)
+            }
+            ExoValue::String(s) => ExoValue::String(s.clone()),
+            ExoValue::Int(i) => ExoValue::Int(*i),
+            _ => ExoValue::Nil,
+        }
     }
 
     /// マップに対するメソッド
@@ -2004,6 +2306,28 @@ impl ExoShell {
     sys.power()           - Power state/CPU idle stats
     sys.shutdown()        - Request shutdown
     sys.reboot()          - Request reboot
+
+[Method Chaining]
+  fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")
+  proc.list().filter("cpu > 50").sort("memory", "desc")
+
+[Array Methods]
+  .filter(cond)    - Filter elements
+                    String: "size > 1024", "name contains log"
+                    Closure: "|e| e.size > 1024 && e.type == file"
+  .map(field)      - Extract field from elements
+                    String: "name", "size"
+                    Closure: "|e| e.name"
+  .sort(field?)    - Sort elements (default: by name)
+                    String: "size", "name"
+                    Closure: "|e| e.size"
+                    Descending: sort("size", "desc")
+  .first()         - Get first element
+  .last()          - Get last element
+  .len()           - Get array length
+  .take(n)         - Take first n elements
+  .skip(n)         - Skip first n elements
+  .reverse()       - Reverse order
 
 [Variables]
   let x = fs.entries("/")   - Store result in variable

@@ -8,6 +8,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::io::pci_compat::PciDevice;
+
 /// Device type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceType {
@@ -79,7 +81,7 @@ pub struct PciLocation {
 
 impl DeviceInfo {
     /// Create device info from PCI device
-    pub fn from_pci_device(dev: &crate::io::pci::PciDevice) -> Self {
+    pub fn from_pci_device(dev: &PciDevice) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
         let device_type = Self::classify_pci_device(dev);
@@ -111,7 +113,7 @@ impl DeviceInfo {
     }
 
     /// Classify PCI device type
-    fn classify_pci_device(dev: &crate::io::pci::PciDevice) -> DeviceType {
+    fn classify_pci_device(dev: &PciDevice) -> DeviceType {
         // Check for VirtIO devices first
         if dev.vendor_id == 0x1AF4 {
             return match dev.device_id {
@@ -141,7 +143,7 @@ impl DeviceInfo {
     }
 
     /// Generate device name
-    fn generate_device_name(dev: &crate::io::pci::PciDevice, device_type: DeviceType) -> String {
+    fn generate_device_name(dev: &PciDevice, device_type: DeviceType) -> String {
         let type_str = match device_type {
             DeviceType::Storage => "storage",
             DeviceType::Network => "net",

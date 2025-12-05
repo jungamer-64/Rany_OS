@@ -3,7 +3,7 @@
 //! This module implements Message Signaled Interrupts (MSI) and MSI-X
 //! for modern PCI device interrupt handling.
 
-use crate::io::pci::{PciDevice, pci_read, pci_read16, pci_write};
+use crate::io::pci_compat::{PciDevice, pci_read, pci_read16, pci_write};
 use alloc::vec::Vec;
 use spin::Mutex;
 

@@ -23,7 +23,7 @@ use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use spin::Mutex;
 
-use crate::io::pci::{find_by_class, PciBar, PciDevice};
+use crate::io::pci_compat::{find_by_class, PciBar, PciDevice};
 use crate::time;
 use crate::task::interrupt_waker;
 

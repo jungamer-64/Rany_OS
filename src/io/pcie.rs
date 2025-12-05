@@ -23,6 +23,9 @@ use alloc::vec::Vec;
 use core::ptr;
 use spin::Mutex;
 
+// Import legacy PCI functions for backward compatibility
+use crate::io::pci_compat::{pci_read, pci_read8, pci_read16, pci_write};
+
 // ============================================================================
 // Type-Safe Identifiers (Newtype Pattern)
 // ============================================================================
@@ -899,7 +902,7 @@ impl PcieManager {
 
     /// 単一デバイスをスキャン（レガシー）
     fn scan_device_legacy(&mut self, bus: u8, device: u8) {
-        let vendor_id = crate::io::pci::pci_read16(bus, device, 0, config_regs::VENDOR_ID as u8);
+        let vendor_id = pci_read16(bus, device, 0, config_regs::VENDOR_ID as u8);
         if vendor_id == 0xFFFF {
             return;
         }
@@ -923,42 +926,42 @@ impl PcieManager {
     /// ファンクションをプローブ（レガシー）
     fn probe_function_legacy(&mut self, bus: u8, device: u8, function: u8) -> Option<PcieDevice> {
         let vendor_id =
-            crate::io::pci::pci_read16(bus, device, function, config_regs::VENDOR_ID as u8);
+            pci_read16(bus, device, function, config_regs::VENDOR_ID as u8);
         if vendor_id == 0xFFFF {
             return None;
         }
 
         let device_id =
-            crate::io::pci::pci_read16(bus, device, function, config_regs::DEVICE_ID as u8);
+            pci_read16(bus, device, function, config_regs::DEVICE_ID as u8);
         let revision_id =
-            crate::io::pci::pci_read8(bus, device, function, config_regs::REVISION_ID as u8);
+            pci_read8(bus, device, function, config_regs::REVISION_ID as u8);
         let class_code =
-            crate::io::pci::pci_read(bus, device, function, config_regs::CLASS_CODE as u8) >> 8;
+            pci_read(bus, device, function, config_regs::CLASS_CODE as u8) >> 8;
         let header_type =
-            crate::io::pci::pci_read8(bus, device, function, config_regs::HEADER_TYPE as u8);
+            pci_read8(bus, device, function, config_regs::HEADER_TYPE as u8);
 
-        let subsystem_vendor_id = crate::io::pci::pci_read16(
+        let subsystem_vendor_id = pci_read16(
             bus,
             device,
             function,
             config_regs::SUBSYSTEM_VENDOR_ID as u8,
         );
         let subsystem_id =
-            crate::io::pci::pci_read16(bus, device, function, config_regs::SUBSYSTEM_ID as u8);
+            pci_read16(bus, device, function, config_regs::SUBSYSTEM_ID as u8);
         let interrupt_line =
-            crate::io::pci::pci_read8(bus, device, function, config_regs::INTERRUPT_LINE as u8);
+            pci_read8(bus, device, function, config_regs::INTERRUPT_LINE as u8);
         let interrupt_pin =
-            crate::io::pci::pci_read8(bus, device, function, config_regs::INTERRUPT_PIN as u8);
+            pci_read8(bus, device, function, config_regs::INTERRUPT_PIN as u8);
 
         // ケーパビリティを列挙
-        let status = crate::io::pci::pci_read16(bus, device, function, config_regs::STATUS as u8);
+        let status = pci_read16(bus, device, function, config_regs::STATUS as u8);
         let mut capabilities = Vec::new();
         let mut pcie_cap_offset = None;
         let mut msi_cap_offset = None;
         let mut msix_cap_offset = None;
 
         if (status & status_bits::CAPABILITIES_LIST) != 0 {
-            let mut cap_ptr = crate::io::pci::pci_read8(
+            let mut cap_ptr = pci_read8(
                 bus,
                 device,
                 function,
@@ -967,8 +970,8 @@ impl PcieManager {
             cap_ptr &= 0xFC; // 下位2ビットをマスク
 
             while cap_ptr != 0 {
-                let cap_id = crate::io::pci::pci_read8(bus, device, function, cap_ptr);
-                let next_ptr = crate::io::pci::pci_read8(bus, device, function, cap_ptr + 1);
+                let cap_id = pci_read8(bus, device, function, cap_ptr);
+                let next_ptr = pci_read8(bus, device, function, cap_ptr + 1);
 
                 if let Some(cap_type) = CapabilityId::from_u8(cap_id) {
                     capabilities.push((cap_type, cap_ptr));
@@ -991,16 +994,16 @@ impl PcieManager {
             let mut bar_idx = 0;
             while bar_idx < 6 {
                 let bar_offset = (config_regs::BAR0 + bar_idx as u16 * 4) as u8;
-                let bar_value = crate::io::pci::pci_read(bus, device, function, bar_offset);
+                let bar_value = pci_read(bus, device, function, bar_offset);
 
                 if bar_value != 0 {
                     // サイズを決定するためにall-1を書き込み
-                    crate::io::pci::pci_write(bus, device, function, bar_offset, 0xFFFFFFFF);
-                    let bar_size = crate::io::pci::pci_read(bus, device, function, bar_offset);
-                    crate::io::pci::pci_write(bus, device, function, bar_offset, bar_value);
+                    pci_write(bus, device, function, bar_offset, 0xFFFFFFFF);
+                    let bar_size = pci_read(bus, device, function, bar_offset);
+                    pci_write(bus, device, function, bar_offset, bar_value);
 
                     let next_bar = if bar_idx < 5 {
-                        Some(crate::io::pci::pci_read(
+                        Some(pci_read(
                             bus,
                             device,
                             function,
@@ -1097,12 +1100,12 @@ impl PcieManager {
 
         // MSI Control レジスタを読み取り
         let control =
-            crate::io::pci::pci_read16(bdf.bus.0, bdf.device.0, bdf.function.0, cap_offset + 2);
+            pci_read16(bdf.bus.0, bdf.device.0, bdf.function.0, cap_offset + 2);
 
         let is_64bit = (control & 0x80) != 0;
 
         // アドレスを書き込み
-        crate::io::pci::pci_write(
+        pci_write(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
@@ -1111,7 +1114,7 @@ impl PcieManager {
         );
 
         if is_64bit {
-            crate::io::pci::pci_write(
+            pci_write(
                 bdf.bus.0,
                 bdf.device.0,
                 bdf.function.0,
@@ -1121,8 +1124,8 @@ impl PcieManager {
             // データを書き込み
             let data_offset = cap_offset + 12;
             let current =
-                crate::io::pci::pci_read(bdf.bus.0, bdf.device.0, bdf.function.0, data_offset);
-            crate::io::pci::pci_write(
+                pci_read(bdf.bus.0, bdf.device.0, bdf.function.0, data_offset);
+            pci_write(
                 bdf.bus.0,
                 bdf.device.0,
                 bdf.function.0,
@@ -1133,8 +1136,8 @@ impl PcieManager {
             // データを書き込み
             let data_offset = cap_offset + 8;
             let current =
-                crate::io::pci::pci_read(bdf.bus.0, bdf.device.0, bdf.function.0, data_offset);
-            crate::io::pci::pci_write(
+                pci_read(bdf.bus.0, bdf.device.0, bdf.function.0, data_offset);
+            pci_write(
                 bdf.bus.0,
                 bdf.device.0,
                 bdf.function.0,
@@ -1147,8 +1150,8 @@ impl PcieManager {
         let vector_bits = (vector_count.trailing_zeros() as u16) & 0x07;
         let new_control = (control & 0xFF8E) | (vector_bits << 4) | 0x0001; // Enable MSI
         let control_dword =
-            crate::io::pci::pci_read(bdf.bus.0, bdf.device.0, bdf.function.0, cap_offset);
-        crate::io::pci::pci_write(
+            pci_read(bdf.bus.0, bdf.device.0, bdf.function.0, cap_offset);
+        pci_write(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
@@ -1162,7 +1165,7 @@ impl PcieManager {
     /// バスマスタを有効化
     pub fn enable_bus_master(&self, device: &PcieDevice) {
         let bdf = &device.bdf;
-        let command = crate::io::pci::pci_read16(
+        let command = pci_read16(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
@@ -1170,13 +1173,13 @@ impl PcieManager {
         );
         let new_command = command | command_bits::BUS_MASTER | command_bits::MEMORY_SPACE;
 
-        let command_dword = crate::io::pci::pci_read(
+        let command_dword = pci_read(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
             config_regs::COMMAND as u8,
         );
-        crate::io::pci::pci_write(
+        pci_write(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
@@ -1188,7 +1191,7 @@ impl PcieManager {
     /// メモリ空間を有効化
     pub fn enable_memory_space(&self, device: &PcieDevice) {
         let bdf = &device.bdf;
-        let command = crate::io::pci::pci_read16(
+        let command = pci_read16(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
@@ -1196,13 +1199,13 @@ impl PcieManager {
         );
         let new_command = command | command_bits::MEMORY_SPACE;
 
-        let command_dword = crate::io::pci::pci_read(
+        let command_dword = pci_read(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
             config_regs::COMMAND as u8,
         );
-        crate::io::pci::pci_write(
+        pci_write(
             bdf.bus.0,
             bdf.device.0,
             bdf.function.0,
