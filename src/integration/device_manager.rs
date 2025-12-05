@@ -8,7 +8,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::io::pci_compat::PciDevice;
+use crate::io::pci::PciDeviceInfo;
 
 /// Device type classification
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +81,7 @@ pub struct PciLocation {
 
 impl DeviceInfo {
     /// Create device info from PCI device
-    pub fn from_pci_device(dev: &PciDevice) -> Self {
+    pub fn from_pci_device(dev: &PciDeviceInfo) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
         let device_type = Self::classify_pci_device(dev);
@@ -90,8 +90,10 @@ impl DeviceInfo {
         // Collect base addresses
         let mut base_addresses = Vec::new();
         for bar in &dev.bars {
-            if let Some(addr) = bar.address() {
-                base_addresses.push(addr);
+            if let Some(b) = bar {
+                if let Some(addr) = b.address() {
+                    base_addresses.push(addr);
+                }
             }
         }
 
@@ -101,22 +103,22 @@ impl DeviceInfo {
             device_type,
             status: DeviceStatus::Detected,
             pci_location: Some(PciLocation {
-                bus: dev.bus,
-                device: dev.device,
-                function: dev.function,
+                bus: dev.bdf.bus(),
+                device: dev.bdf.device(),
+                function: dev.bdf.function(),
             }),
-            msi_capable: dev.msi_capability().is_some(),
-            msix_capable: dev.msix_capability().is_some(),
+            msi_capable: dev.msi_cap_offset.is_some(),
+            msix_capable: dev.msix_cap_offset.is_some(),
             interrupt_vector: None,
             base_addresses,
         }
     }
 
     /// Classify PCI device type
-    fn classify_pci_device(dev: &PciDevice) -> DeviceType {
+    fn classify_pci_device(dev: &PciDeviceInfo) -> DeviceType {
         // Check for VirtIO devices first
-        if dev.vendor_id == 0x1AF4 {
-            return match dev.device_id {
+        if dev.vendor_id.0 == 0x1AF4 {
+            return match dev.device_id.0 {
                 0x1000 | 0x1041 => DeviceType::Network, // VirtIO Network
                 0x1001 | 0x1042 => DeviceType::Storage, // VirtIO Block
                 0x1050 => DeviceType::Display,          // VirtIO GPU
@@ -126,14 +128,14 @@ impl DeviceInfo {
         }
 
         // Classify by PCI class code
-        match dev.class {
+        match dev.class_code.class {
             0x01 => DeviceType::Storage, // Mass Storage
             0x02 => DeviceType::Network, // Network
             0x03 => DeviceType::Display, // Display
             0x06 => DeviceType::Bridge,  // Bridge
             0x0C => {
                 // Serial Bus
-                match dev.subclass {
+                match dev.class_code.subclass {
                     0x03 => DeviceType::Usb, // USB
                     _ => DeviceType::Unknown,
                 }
@@ -143,7 +145,7 @@ impl DeviceInfo {
     }
 
     /// Generate device name
-    fn generate_device_name(dev: &PciDevice, device_type: DeviceType) -> String {
+    fn generate_device_name(dev: &PciDeviceInfo, device_type: DeviceType) -> String {
         let type_str = match device_type {
             DeviceType::Storage => "storage",
             DeviceType::Network => "net",
@@ -159,9 +161,9 @@ impl DeviceInfo {
         alloc::format!(
             "{}{:02x}{:02x}{}",
             type_str,
-            dev.bus,
-            dev.device,
-            dev.function
+            dev.bdf.bus(),
+            dev.bdf.device(),
+            dev.bdf.function()
         )
     }
 }

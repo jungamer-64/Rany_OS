@@ -23,7 +23,7 @@ use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use spin::Mutex;
 
-use crate::io::pci_compat::{find_by_class, PciBar, PciDevice};
+use crate::io::pci::{find_by_class, PciDeviceInfo, Bar};
 use crate::time;
 use crate::task::interrupt_waker;
 
@@ -239,7 +239,7 @@ pub struct CodecInfo {
 /// Intel HD Audio Controller
 pub struct HdaController {
     /// PCI device info
-    pci_device: PciDevice,
+    pci_device: PciDeviceInfo,
     /// Memory-mapped register base address
     mmio_base: u64,
     /// CORB buffer (physical address)
@@ -299,7 +299,7 @@ unsafe impl Sync for HdaController {}
 
 impl HdaController {
     /// Create a new HDA controller instance
-    fn new(pci_device: PciDevice, mmio_base: u64) -> Self {
+    fn new(pci_device: PciDeviceInfo, mmio_base: u64) -> Self {
         Self {
             pci_device,
             mmio_base,
@@ -728,7 +728,7 @@ impl HdaController {
         // before we update the write pointer. This prevents out-of-order writes
         // that could cause the controller to read incomplete command data.
         // On x86_64, this is implemented as the SFENCE instruction.
-        crate::io::dma_cache::sfence();
+        crate::io::dma::sfence();
 
         // Update write pointer
         self.write16(REG_CORBWP, next_wp);
@@ -755,7 +755,7 @@ impl HdaController {
                 // the latest data written by the HDA controller to the RIRB buffer.
                 // While x86_64 provides cache coherency for DMA, the fence ensures
                 // speculative loads don't return stale data.
-                crate::io::dma_cache::lfence();
+                crate::io::dma::lfence();
 
                 // Read response
                 let rirb_entry_addr = self.rirb_addr + (next_rp as u64 * RIRB_ENTRY_SIZE as u64);
@@ -1062,7 +1062,7 @@ impl HdaController {
 
         // SAFETY: SFENCE ensures all BDL entries are visible to the HDA controller
         // before we configure the stream to use this BDL.
-        crate::io::dma_cache::sfence();
+        crate::io::dma::sfence();
 
         // Set BDL address
         self.write32(stream_base + REG_SD_BDPL, bdl_addr as u32);
@@ -1400,11 +1400,11 @@ pub fn init() -> HdaResult<()> {
 
     crate::log!(
         "[HDA] Found device: {:04x}:{:04x} at {:02x}:{:02x}.{}\n",
-        pci_device.vendor_id,
-        pci_device.device_id,
-        pci_device.bus,
-        pci_device.device,
-        pci_device.function
+        pci_device.vendor_id.0,
+        pci_device.device_id.0,
+        pci_device.bdf.bus(),
+        pci_device.bdf.device(),
+        pci_device.bdf.function()
     );
 
     // PCI 割り込みライン（IRQ）を保存
@@ -1417,8 +1417,9 @@ pub fn init() -> HdaResult<()> {
     }
 
     // Get BAR0 (MMIO)
-    let mmio_base = match pci_device.bars[0] {
-        PciBar::Memory { address, .. } => address,
+    let mmio_base = match &pci_device.bars[0] {
+        Some(Bar::Memory32 { base, .. }) => *base as u64,
+        Some(Bar::Memory64 { base, .. }) => *base,
         _ => return Err(HdaError::InvalidBar),
     };
 

@@ -1,5 +1,5 @@
 // ============================================================================
-// src/io/virtio_blk.rs - VirtIO Block Device Driver
+// src/io/virtio/blk.rs - VirtIO Block Device Driver
 // ============================================================================
 //!
 //! VirtIO-blkドライバ実装

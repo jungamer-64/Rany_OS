@@ -127,12 +127,12 @@ pub use driver_bridge::{
     send_real_icmp_echo, get_real_arp_cache,
 };
 
-// VirtIO Netドライバはio/virtio_net.rsにある
+// VirtIO Netドライバはio/virtio/net.rsにある
 // 再エクスポート
 #[allow(unused_imports)]
-pub use crate::io::virtio_net::{
+pub use crate::io::virtio::{
     NetVirtQueue, VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VringDesc as NetVringDesc,
-    features as net_features, handle_virtio_net_interrupt, init_virtio_net,
+    net_features, handle_virtio_net_interrupt, init_virtio_net,
 };
 
 // Re-export Phase 4 High-Performance Networking

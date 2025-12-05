@@ -20,10 +20,20 @@ pub mod types;
 pub mod legacy;
 pub mod ecam;
 pub mod bus;
+pub mod msi;
 
 // Re-exports for convenient access
 pub use traits::ConfigSpaceAccessor;
 pub use types::{BdfAddress, Bar, ClassCode, VendorId, DeviceId};
 pub use legacy::{LegacyPciAccessor, pci_read, pci_write, pci_read16, pci_read8, get_legacy_accessor};
 pub use ecam::{EcamAccess, EcamManager};
-pub use bus::{PciBusScanner, PciDeviceInfo, CapabilityId, config_regs, command_bits, status_bits};
+pub use bus::{
+    PciBusScanner, PciDeviceInfo, CapabilityId, config_regs, command_bits, status_bits,
+    scan_all_devices, find_by_class, find_by_id, find_virtio_devices, init,
+};
+pub use msi::{
+    MsiConfig, MsiCapability, MsixCapability, MsixTableEntry,
+    DeliveryMode, TriggerMode,
+    allocate_vector, allocate_vectors, setup_msi, setup_msix,
+    disable_intx, enable_intx,
+};

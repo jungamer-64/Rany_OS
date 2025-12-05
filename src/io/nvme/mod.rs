@@ -4,8 +4,7 @@
 //!
 //! # NVMe共通モジュール
 //!
-//! NVMe仕様に基づく共通定義を提供。
-//! 各ドライバ（nvme_async.rs, nvme_polling.rs）はこのモジュールの定義を使用する。
+//! NVMe仕様に基づく共通定義とドライバを提供。
 //!
 //! ## モジュール構成
 //! - `defs`: 共通定数・構造体定義
@@ -13,6 +12,7 @@
 //! - `regs`: レジスタ定義
 //! - `queue`: キュー構造体
 //! - `identify`: Identify構造体
+//! - `driver`: 高性能NVMeドライバ（ポーリングモード）
 
 #![allow(dead_code)]
 
@@ -20,7 +20,9 @@ pub mod defs;
 pub mod commands;
 pub mod regs;
 pub mod queue;
+pub mod queue_types;
 pub mod identify;
+pub mod driver;
 
 // ============================================================================
 // Re-exports - Explicit exports to avoid ambiguity
@@ -62,4 +64,13 @@ pub use queue::{
 pub use identify::{
     IdentifyController, IdentifyNamespace, PowerStateDescriptor,
     LbaFormat, RelativePerformance, IdentifyCns,
+};
+
+// From driver.rs - High-performance polling driver
+pub use driver::{
+    NvmePollingDriver, PerCoreNvmeQueue, NvmeQueueStats,
+    QueuePair, SubmissionQueue, CompletionQueue,
+    AsyncIoRequest, IoRequestState,
+    NvmeCommand as PollingNvmeCommand, NvmeCompletion as PollingNvmeCompletion,
+    init as init_nvme_polling, poll as nvme_poll,
 };

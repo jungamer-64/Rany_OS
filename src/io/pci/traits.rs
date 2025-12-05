@@ -395,3 +395,34 @@ pub trait ExtendedConfigSpaceAccessor: ConfigSpaceAccessor {
         self.find_extended_capability(bdf, 0x0015)
     }
 }
+
+// ============================================================================
+// Blanket Implementation for References
+// ============================================================================
+
+/// 参照に対するブランケット実装
+impl<T: ConfigSpaceAccessor> ConfigSpaceAccessor for &T {
+    fn read8(&self, bdf: BdfAddress, offset: u16) -> u8 {
+        (*self).read8(bdf, offset)
+    }
+
+    fn read16(&self, bdf: BdfAddress, offset: u16) -> u16 {
+        (*self).read16(bdf, offset)
+    }
+
+    fn read32(&self, bdf: BdfAddress, offset: u16) -> u32 {
+        (*self).read32(bdf, offset)
+    }
+
+    fn write8(&self, bdf: BdfAddress, offset: u16, value: u8) {
+        (*self).write8(bdf, offset, value)
+    }
+
+    fn write16(&self, bdf: BdfAddress, offset: u16, value: u16) {
+        (*self).write16(bdf, offset, value)
+    }
+
+    fn write32(&self, bdf: BdfAddress, offset: u16, value: u32) {
+        (*self).write32(bdf, offset, value)
+    }
+}

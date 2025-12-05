@@ -1,5 +1,5 @@
 // ============================================================================
-// src/io/virtio_net.rs - VirtIO Network Device Driver
+// src/io/virtio/net.rs - VirtIO Network Device Driver
 // 設計書 6.2: ネットワークスタック：真のゼロコピー
 // 設計書 7.1: VirtIOドライバのRust実装
 // ============================================================================
@@ -13,7 +13,7 @@ use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 
 // Import VirtIO common definitions
-use super::virtio::defs::{mmio_regs, status, VIRTIO_MMIO_MAGIC, VirtioDeviceType};
+use super::defs::{mmio_regs, status, VIRTIO_MMIO_MAGIC, VirtioDeviceType};
 
 // ============================================================================
 // MMIO Access Abstraction
@@ -729,7 +729,7 @@ impl VirtioNetDevice {
         }
 
         // 適応的ポーリングコントローラに通知
-        super::polling::net_io_controller().notify_packet_processed(1);
+        crate::io::polling::net_io_controller().notify_packet_processed(1);
 
         // Interrupt-Wakerブリッジに通知（設計書 4.2）
         // RX/TXで待機中のFutureを起床

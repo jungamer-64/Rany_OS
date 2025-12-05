@@ -5,7 +5,7 @@
 //! VirtIO-NetドライバとNetworkStackを接続するブリッジモジュール。
 //! 送信コールバック設定と受信パケット処理を統合します。
 
-use crate::io::virtio_net::{with_virtio_net, VirtioNetDevice, VirtioNetHeader};
+use crate::io::virtio::{with_virtio_net, VirtioNetDevice, VirtioNetHeader};
 use super::stack::{self, NetworkStack, NetworkConfig};
 use super::ethernet::MacAddress;
 use super::ipv4::{Ipv4Address, Ipv4Config};

@@ -18,6 +18,7 @@
 
 #![allow(dead_code)]
 
+pub mod class;
 pub mod descriptor;
 pub mod device;
 pub mod xhci;
