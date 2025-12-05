@@ -46,6 +46,7 @@ extern crate alloc;
 pub mod system_monitor;
 pub mod terminal;
 pub mod editor;
+pub mod games;
 
 // Re-exports
 pub use system_monitor::{SystemMonitor, ProcessEntry};
