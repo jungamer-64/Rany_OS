@@ -307,6 +307,12 @@ extern "C" fn kmain() -> ! {
     io::keyboard::init();
     info!(target: "init", "Keyboard driver initialized");
     
+    // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）
+    info!(target: "init", "Initializing input devices");
+    input::init();
+    input::init_mouse();
+    info!(target: "init", "Input devices initialized");
+    
     // 完了
     info!(target: "boot", "BOOT COMPLETE!");
 
