@@ -22,13 +22,19 @@
 //! - `context`: デバイスコンテキスト構造体
 //! - `controller`: xHCI コントローラ
 //! - `device`: USB デバイス実装
+//! - `command`: コマンド発行と完了待ち (NEW)
+//! - `event_handler`: イベントリング処理 (NEW)
+//! - `initialization`: コントローラ初期化 (NEW)
 
 #![allow(dead_code)]
 
+pub mod command;
 pub mod context;
 pub mod controller;
 pub mod device;
 pub mod doorbell_manager;
+pub mod event_handler;
+pub mod initialization;
 pub mod port_manager;
 pub mod ring_manager;
 pub mod trb;
@@ -38,10 +44,13 @@ use alloc::sync::Arc;
 use crate::io::usb::{PortNumber, UsbResult};
 
 // Re-exports
+pub use command::{CommandApi, CommandBuilder as CmdBuilder, CommandExecutor, CommandFuture};
 pub use context::{DeviceContext, EndpointContext, InputContext, InputControlContext, SlotContext};
 pub use controller::XhciController;
 pub use device::XhciDevice;
 pub use doorbell_manager::{DoorbellBatch, DoorbellCoordinator, DoorbellTarget, StreamId, XhciDoorbellManager};
+pub use event_handler::{CommandCompletionEvent, DeviceNotificationEvent, EventHandler, PortStatusChangeEvent, ProcessedEvent, TransferEvent};
+pub use initialization::{XhciCapabilities, XhciInitContext};
 pub use port_manager::{PortChangeEvent, PortError, PortInfo, PortLinkState, PortProtocol, PortSpeed, PortState, XhciPortManager};
 pub use ring_manager::{CommandBuilder, ManagedRing, RingType, TransferBuilder, XhciRingManager};
 pub use trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};

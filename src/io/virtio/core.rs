@@ -70,7 +70,7 @@ impl VirtQueue {
         used_ring: *mut VringUsedHeader,
         notify_addr: *mut u16,
         notify_off_multiplier: u32,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, &'static str> { unsafe {
         if queue_size == 0 || !queue_size.is_power_of_two() {
             return Err("Queue size must be a power of 2");
         }
@@ -114,7 +114,7 @@ impl VirtQueue {
             notify_addr,
             notify_off_multiplier,
         })
-    }
+    }}
 
     /// 空きビットマップを初期化
     fn init_free_bitmap(queue_size: u16) -> (u64, u64, u64, u64) {
@@ -241,9 +241,9 @@ impl VirtQueue {
     ///
     /// # Safety
     /// 呼び出し側が排他制御を保証する必要がある
-    pub unsafe fn get_desc_mut(&self, idx: u16) -> &mut VringDesc {
+    pub unsafe fn get_desc_mut(&self, idx: u16) -> &mut VringDesc { unsafe {
         &mut *self.desc_table.as_ptr().add(idx as usize)
-    }
+    }}
 
     /// バッファをキューに追加（単一ディスクリプタ）
     ///
@@ -255,7 +255,7 @@ impl VirtQueue {
         addr: u64,
         len: u32,
         writable: bool,
-    ) -> Result<u16, &'static str> {
+    ) -> Result<u16, &'static str> { unsafe {
         let desc_idx = self.alloc_desc().ok_or("No free descriptors")?;
 
         // ディスクリプタを設定
@@ -269,7 +269,7 @@ impl VirtQueue {
         self.submit_avail(desc_idx);
 
         Ok(desc_idx)
-    }
+    }}
 
     /// バッファチェーンをキューに追加
     ///
@@ -280,7 +280,7 @@ impl VirtQueue {
     pub unsafe fn add_buffer_chain(
         &self,
         buffers: &[(u64, u32, bool)],
-    ) -> Result<u16, &'static str> {
+    ) -> Result<u16, &'static str> { unsafe {
         if buffers.is_empty() {
             return Err("Empty buffer chain");
         }
@@ -312,10 +312,10 @@ impl VirtQueue {
         self.submit_avail(head);
 
         Ok(head)
-    }
+    }}
 
     /// Availリングにディスクリプタを追加
-    unsafe fn submit_avail(&self, head: u16) {
+    unsafe fn submit_avail(&self, head: u16) { unsafe {
         // メモリバリア: ディスクリプタの書き込みを完了させる
         core::sync::atomic::fence(Ordering::Release);
 
@@ -330,7 +330,7 @@ impl VirtQueue {
         core::sync::atomic::fence(Ordering::Release);
 
         (*avail).idx = avail_idx.wrapping_add(1);
-    }
+    }}
 
     /// デバイスに通知
     pub fn notify(&self) {
@@ -426,7 +426,7 @@ impl<T> TrackedVirtQueue<T> {
         used_ring: *mut VringUsedHeader,
         notify_addr: *mut u16,
         notify_off_multiplier: u32,
-    ) -> Result<Self, &'static str> {
+    ) -> Result<Self, &'static str> { unsafe {
         let inner = VirtQueue::new(
             queue_index,
             queue_size,
@@ -446,7 +446,7 @@ impl<T> TrackedVirtQueue<T> {
             inner,
             pending: spin::Mutex::new(pending),
         })
-    }
+    }}
 
     /// 基本VirtQueueへの参照
     pub fn inner(&self) -> &VirtQueue {
@@ -463,7 +463,7 @@ impl<T> TrackedVirtQueue<T> {
         len: u32,
         writable: bool,
         buffer: T,
-    ) -> Result<u16, &'static str> {
+    ) -> Result<u16, &'static str> { unsafe {
         let desc_idx = self.inner.alloc_desc().ok_or("No free descriptors")?;
 
         // ディスクリプタを設定
@@ -487,7 +487,7 @@ impl<T> TrackedVirtQueue<T> {
         self.inner.submit_avail(desc_idx);
 
         Ok(desc_idx)
-    }
+    }}
 
     /// 完了したリクエストをポーリングし、バッファを返却
     ///

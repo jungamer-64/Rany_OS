@@ -240,7 +240,7 @@ impl VirtioMmioTransport {
     ///
     /// # Safety
     /// - `base` 縺ｯ譛牙柑縺ｪMMIO繧｢繝峨Ξ繧ｹ繧呈欠縺吝ｿ・・ｽ・ｽ縺後≠繧・
-    pub unsafe fn new(base: usize) -> TransportResult<Self> {
+    pub unsafe fn new(base: usize) -> TransportResult<Self> { unsafe {
         let magic = Self::read32_raw(base, mmio_regs::MAGIC_VALUE);
         if magic != Self::MAGIC {
             return Err(TransportError::InvalidMagic);
@@ -255,19 +255,19 @@ impl VirtioMmioTransport {
         let device_type = VirtioDeviceType::from(device_id);
         
         Ok(Self { base, device_type })
-    }
+    }}
     
     /// 逕滂ｿｽEMMIO隱ｭ縺ｿ蜿悶ｊ
     #[inline]
-    unsafe fn read32_raw(base: usize, offset: usize) -> u32 {
+    unsafe fn read32_raw(base: usize, offset: usize) -> u32 { unsafe {
         core::ptr::read_volatile((base + offset) as *const u32)
-    }
+    }}
     
     /// 逕滂ｿｽEMMIO譖ｸ縺崎ｾｼ縺ｿ
     #[inline]
-    unsafe fn write32_raw(base: usize, offset: usize, value: u32) {
+    unsafe fn write32_raw(base: usize, offset: usize, value: u32) { unsafe {
         core::ptr::write_volatile((base + offset) as *mut u32, value);
-    }
+    }}
     
     /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ
     #[inline]

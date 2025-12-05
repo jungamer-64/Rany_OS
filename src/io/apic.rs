@@ -13,6 +13,24 @@
 //! - Per-CPU Local APICの初期化
 //! - I/O APICによる外部割り込みルーティング
 //! - APICタイマーによる高精度タイマー
+//!
+//! ## 使用方法
+//! 
+//! **推奨**: ドライバからは [`interrupt_manager`](super::interrupt_manager) を使用してください。
+//! このモジュールは低レベルのハードウェアアクセスを提供しますが、
+//! 直接使用すると他のサブシステムとの競合が発生する可能性があります。
+//!
+//! ```ignore
+//! // 推奨: interrupt_manager経由で使用
+//! use crate::io::interrupt_manager::{interrupt_manager, DeliveryMode};
+//! 
+//! let alloc = interrupt_manager().allocate_msi_vector(bdf, "my_device".into(), None)?;
+//! ```
+//!
+//! ## 内部API（interrupt_manager向け）
+//! 
+//! このモジュールの関数は主に `interrupt_manager` から呼び出されます。
+//! 直接使用する場合は、ベクタ管理との整合性に注意してください。
 
 #![allow(dead_code)]
 

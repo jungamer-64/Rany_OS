@@ -15,7 +15,7 @@ pub mod iommu;
 pub mod log;
 pub mod nvme;        // NVMe module (directory) - includes driver.rs
 pub mod pci;         // PCI common module (directory)
-pub mod polling;
+// polling.rs は削除済み - io_scheduler.rs に統一
 pub mod rtc;
 pub mod serial;
 pub mod usb;
@@ -61,7 +61,7 @@ pub use iommu::{
 // NVMe common types (from nvme/ directory)
 #[allow(unused_imports)]
 pub use nvme::{
-    NvmeCommand, NvmeCompletion, NvmeQueuePair, NvmeStatus,
+    NvmeCommand, NvmeCompletion, NvmeStatus,
     IdentifyController, IdentifyNamespace, NvmeCapabilities,
     AdminOpcode, IoOpcode,
     // Polling driver (from nvme/driver.rs)
@@ -71,11 +71,8 @@ pub use nvme::{
     PollingNvmeCommand, PollingNvmeCompletion,
     init_nvme_polling, nvme_poll,
 };
-#[allow(unused_imports)]
-pub use polling::{
-    AdaptiveIoController, IoMode, IoStats, PollingConfig, block_io_controller, net_io_controller,
-    polling_loop,
-};
+// polling.rs は削除済み - io_scheduler.rs に統一
+// AdaptiveIoController, IoMode 等は io_scheduler から利用可能
 
 // I/O Scheduler exports (Polling/Executor連携)
 #[allow(unused_imports)]

@@ -30,11 +30,19 @@
 
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
 use core::ptr::{read_volatile, write_volatile};
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;
+
+// I/O Scheduler integration
+use crate::io::io_scheduler::{
+    DeviceId as IoDeviceId, IoError, IoRequestId, IoResult, ModeThresholds,
+    PollHandler,
+};
 
 // ============================================================================
 // NVMe Constants
@@ -1815,6 +1823,14 @@ pub struct NvmePollingDriver {
     cmb_info: Option<CmbInfo>,
     /// CMBを使用するかどうか
     use_cmb: bool,
+    /// DMAコンテキスト（Admin/Identify バッファ用）
+    dma_context: crate::io::dma::DeviceDmaContext,
+    /// Admin SQバッファ（動的割り当て）
+    admin_sq_buffer: Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
+    /// Admin CQバッファ（動的割り当て）
+    admin_cq_buffer: Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
+    /// Identifyバッファ（動的割り当て）
+    identify_buffer: Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
 }
 
 impl NvmePollingDriver {
@@ -1840,6 +1856,10 @@ impl NvmePollingDriver {
             interrupt_mode: false, // ポーリングモード
             cmb_info: None,
             use_cmb: true, // デフォルトでCMBを使用（利用可能なら）
+            dma_context: crate::io::dma::DeviceDmaContext::new(),
+            admin_sq_buffer: None,
+            admin_cq_buffer: None,
+            identify_buffer: None,
         }
     }
 
@@ -1997,36 +2017,32 @@ impl NvmePollingDriver {
     /// Admin Queueを初期化
     /// 
     /// NVMe仕様に基づき、Admin Submission Queue (ASQ) と
-    /// Admin Completion Queue (ACQ) を設定する
+    /// Admin Completion Queue (ACQ) を設定する。
+    /// DMAバッファはDeviceDmaContextを使用して動的に割り当てる。
     fn init_admin_queue(&mut self, depth: u16) -> Result<(), &'static str> {
-        // Admin Queueメモリを割り当て
-        // 実際の実装ではDMA可能な物理連続メモリが必要
-        // ここでは静的バッファを使用（実運用では動的割り当て推奨）
-        
+        // Admin Queueメモリサイズを計算
         let sq_size = (depth as usize) * QUEUE_ENTRY_SIZE;
         let cq_size = (depth as usize) * CQ_ENTRY_SIZE;
         
-        // メモリ割り当て（簡略化：実際にはDMA対応メモリアロケータを使用）
-        // NOTE: 実際の実装では以下のようにする
-        // let asq_buffer = dma_alloc(sq_size, PAGE_SIZE);
-        // let acq_buffer = dma_alloc(cq_size, PAGE_SIZE);
+        // DMAコンテキストを使用してバッファを割り当て
+        // TypedDmaSliceは4KBアラインで確保される
+        let asq_buffer = self.dma_context.create_slice(sq_size)
+            .map_err(|_| "Failed to allocate ASQ DMA buffer")?;
+        let acq_buffer = self.dma_context.create_slice(cq_size)
+            .map_err(|_| "Failed to allocate ACQ DMA buffer")?;
         
-        // 静的バッファを使用（デモ用）
-        static mut ASQ_BUFFER: [u8; 16384] = [0; 16384]; // 256 * 64
-        static mut ACQ_BUFFER: [u8; 4096] = [0; 4096];   // 256 * 16
-        
-        let asq_ptr = unsafe { core::ptr::addr_of!(ASQ_BUFFER) as u64 };
-        let acq_ptr = unsafe { core::ptr::addr_of!(ACQ_BUFFER) as u64 };
+        // 物理アドレスを取得
+        let asq_phys = asq_buffer.phys_addr().as_u64();
+        let acq_phys = acq_buffer.phys_addr().as_u64();
         
         // 4KB境界チェック（NVMe仕様要件）
-        if asq_ptr & 0xFFF != 0 || acq_ptr & 0xFFF != 0 {
-            // 静的バッファがアラインされていない場合は調整
-            // 実際の実装ではアラインドアロケータを使用
+        if asq_phys & 0xFFF != 0 || acq_phys & 0xFFF != 0 {
+            return Err("DMA buffer not 4KB aligned");
         }
         
         // Admin Queue Attributesを設定
         unsafe {
-            self.setup_admin_queue(asq_ptr, acq_ptr, depth)?;
+            self.setup_admin_queue(asq_phys, acq_phys, depth)?;
         }
         
         // Admin QueuePairを作成
@@ -2035,8 +2051,8 @@ impl NvmePollingDriver {
         
         let admin_qp = unsafe {
             QueuePair::new(
-                asq_ptr as *mut NvmeCommand,
-                acq_ptr as *mut NvmeCompletion,
+                asq_phys as *mut NvmeCommand,
+                acq_phys as *mut NvmeCompletion,
                 depth,
                 sq_doorbell,
                 cq_doorbell,
@@ -2044,6 +2060,9 @@ impl NvmePollingDriver {
             )
         };
         
+        // DMAバッファをドライバに保持（ドロップ防止）
+        self.admin_sq_buffer = Some(asq_buffer);
+        self.admin_cq_buffer = Some(acq_buffer);
         self.admin_queue = Some(admin_qp);
         
         Ok(())
@@ -2055,9 +2074,10 @@ impl NvmePollingDriver {
         let admin_queue = self.admin_queue.as_ref()
             .ok_or("Admin queue not initialized")?;
         
-        // Identify用データバッファを用意（4KBページ）
-        static mut IDENTIFY_BUFFER: [u8; 4096] = [0; 4096];
-        let buffer_ptr = unsafe { core::ptr::addr_of!(IDENTIFY_BUFFER) as u64 };
+        // Identify用データバッファを動的に割り当て（4KBページ）
+        let identify_buffer = self.dma_context.create_slice(4096)
+            .map_err(|_| "Failed to allocate Identify DMA buffer")?;
+        let buffer_ptr = identify_buffer.phys_addr().as_u64();
         
         // Identify Controllerコマンド (CNS=1)
         let mut cmd = NvmeCommand::default();
@@ -2078,6 +2098,8 @@ impl NvmePollingDriver {
                 if status != 0 {
                     return Err("Identify Controller command failed");
                 }
+                // バッファを保持
+                self.identify_buffer = Some(identify_buffer);
                 return Ok(());
             }
             core::hint::spin_loop();
@@ -2818,12 +2840,154 @@ pub fn get_stats() -> Option<NvmeDriverStats> {
 }
 
 // ============================================================================
+// PollHandler Implementation - IoScheduler Integration
+// ============================================================================
+
+/// NVMe用PollHandlerラッパー
+/// 
+/// IoSchedulerとNvmePollingDriverを接続するアダプタ。
+/// 特定のコアIDに紐付けられる。
+pub struct NvmePollHandler {
+    /// コアID
+    core_id: u32,
+    /// 名前空間ID
+    nsid: u32,
+    /// 保留中のI/OリクエストID → NVMeコマンドID
+    pending: Mutex<alloc::collections::BTreeMap<IoRequestId, u16>>,
+}
+
+impl NvmePollHandler {
+    /// 新しいPollHandlerを作成
+    pub fn new(core_id: u32, nsid: u32) -> Self {
+        Self {
+            core_id,
+            nsid,
+            pending: Mutex::new(alloc::collections::BTreeMap::new()),
+        }
+    }
+
+    /// I/OリクエストIDとNVMeコマンドIDを紐付け
+    pub fn register_request(&self, io_id: IoRequestId, cid: u16) {
+        self.pending.lock().insert(io_id, cid);
+    }
+
+    /// I/OリクエストIDからNVMeコマンドIDを取得
+    pub fn get_cid(&self, io_id: &IoRequestId) -> Option<u16> {
+        self.pending.lock().get(io_id).copied()
+    }
+
+    /// 完了したリクエストを削除
+    pub fn remove_request(&self, io_id: &IoRequestId) -> Option<u16> {
+        self.pending.lock().remove(io_id)
+    }
+}
+
+impl PollHandler for NvmePollHandler {
+    fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
+        let mut results = Vec::new();
+        
+        with_driver(|driver| {
+            // このコアのキューから完了をポーリング
+            if let Some(queue) = driver.get_queue(self.core_id) {
+                // SAFETY: poll は内部で適切に同期されている
+                // 現在のコアがこのキューの所有者であることを呼び出し側が保証
+                while let Some(cqe) = unsafe { queue.poll() } {
+                    let cid = cqe.cid;
+                    
+                    // CIDに対応するIoRequestIdを検索
+                    let pending = self.pending.lock();
+                    if let Some((&io_id, _)) = pending.iter().find(|&(_, &c)| c == cid) {
+                        let result = if cqe.is_success() {
+                            IoResult::Success(512) // セクタサイズを仮定（実際はコマンドから取得）
+                        } else {
+                            IoResult::Error(IoError::DeviceError)
+                        };
+                        results.push((io_id, result));
+                    }
+                }
+            }
+        });
+
+        // 完了したリクエストを削除
+        for (io_id, _) in &results {
+            self.pending.lock().remove(io_id);
+        }
+
+        results
+    }
+
+    fn is_ready(&self) -> bool {
+        with_driver(|d| d.is_active()).unwrap_or(false)
+    }
+}
+
+/// NVMeドライバをIoSchedulerに登録
+/// 
+/// # Arguments
+/// * `controller_id` - NVMeコントローラID
+/// * `namespace_id` - 名前空間ID
+/// * `num_cores` - ポーリングスレッド数
+/// 
+/// # Returns
+/// 登録されたPollHandlerへの参照（各コア用）
+pub fn register_with_io_scheduler(
+    controller_id: u8,
+    namespace_id: u32,
+    num_cores: u32,
+) -> Result<Vec<Arc<NvmePollHandler>>, &'static str> {
+    use crate::io::io_scheduler::{hybrid_coordinator, io_scheduler};
+
+    let scheduler = io_scheduler();
+    let coordinator = hybrid_coordinator();
+
+    let mut handlers = Vec::new();
+
+    for core_id in 0..num_cores {
+        let device_id = IoDeviceId::Nvme {
+            controller: controller_id,
+            namespace: namespace_id,
+        };
+
+        // デフォルトのモード閾値でデバイスを登録
+        scheduler.register_device(device_id, ModeThresholds::default());
+
+        // PollHandlerを作成して登録
+        let handler = Arc::new(NvmePollHandler::new(core_id, namespace_id));
+        coordinator
+            .polling_executor()
+            .register_handler(device_id, Box::new(NvmePollHandlerWrapper {
+                inner: handler.clone(),
+            }));
+
+        handlers.push(handler);
+    }
+
+    Ok(handlers)
+}
+
+/// PollHandlerトレイト実装のラッパー（Box化用）
+struct NvmePollHandlerWrapper {
+    inner: Arc<NvmePollHandler>,
+}
+
+impl PollHandler for NvmePollHandlerWrapper {
+    fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
+        self.inner.poll_completions()
+    }
+
+    fn is_ready(&self) -> bool {
+        self.inner.is_ready()
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     #[test]
     fn test_nvme_command_read() {
