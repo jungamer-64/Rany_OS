@@ -96,6 +96,7 @@ fn init_idt() {
         idt[PIC2_OFFSET + 1].set_handler_fn(pci_irq9_handler);  // IRQ9 (Free1)
         idt[PIC2_OFFSET + 2].set_handler_fn(pci_irq10_handler); // IRQ10 (Free2)
         idt[PIC2_OFFSET + 3].set_handler_fn(pci_irq11_handler); // IRQ11 (Free3)
+        idt[InterruptVector::Mouse as u8].set_handler_fn(mouse_interrupt_handler); // IRQ12 (Mouse)
         
         crate::vga::early_serial_str("[IDT] load\n");
         
@@ -232,12 +233,12 @@ fn init_pic() {
         // ~(0x01 | 0x02 | 0x04 | 0x10) = 0xE8
         pic1_data.write(0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
         
-        // PIC2: IRQ9, IRQ10, IRQ11 を有効化（PCI デバイス用）
-        // IRQ8=RTC, IRQ9, IRQ10, IRQ11 は PCI で使用されることが多い
-        // ビット1=IRQ9, ビット2=IRQ10, ビット3=IRQ11
+        // PIC2: IRQ9, IRQ10, IRQ11, IRQ12 を有効化（PCI デバイス用 + マウス）
+        // IRQ8=RTC, IRQ9, IRQ10, IRQ11, IRQ12=Mouse
+        // ビット1=IRQ9, ビット2=IRQ10, ビット3=IRQ11, ビット4=IRQ12
         // 0=有効, 1=マスク
-        // ~(0x02 | 0x04 | 0x08) = 0xF1
-        pic2_data.write(0b11110001); // IRQ9, IRQ10, IRQ11 を有効
+        // ~(0x02 | 0x04 | 0x08 | 0x10) = 0xE1
+        pic2_data.write(0b11100001); // IRQ9, IRQ10, IRQ11, IRQ12(Mouse) を有効
     }
 }
 
@@ -361,6 +362,29 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     // EOI を送信
     unsafe {
         send_eoi(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
+    }
+}
+
+/// マウス割り込みハンドラ (IRQ12)
+/// PS/2マウスからのデータ受信時に呼ばれる
+extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    use x86_64::instructions::port::Port;
+
+    // マウスデータポートから読み取り（これをしないと次の割り込みが来ない）
+    let mut port = Port::new(0x60);
+    let data: u8 = unsafe { port.read() };
+
+    // データをinputモジュールに渡して処理
+    crate::input::handle_mouse_packet(data);
+
+    // Interrupt-Wakerブリッジにマウス割り込みを通知
+    crate::task::interrupt_waker::wake_from_interrupt(
+        crate::task::interrupt_waker::InterruptSource::Mouse,
+    );
+
+    // EOI を送信 (IRQ12はPIC2のIRQ4)
+    unsafe {
+        send_eoi(InterruptVector::Mouse as u8 - PIC1_OFFSET);
     }
 }
 
