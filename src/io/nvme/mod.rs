@@ -10,7 +10,8 @@
 //! - `defs`: 共通定数・構造体定義
 //! - `commands`: コマンド構造体
 //! - `regs`: レジスタ定義
-//! - `queue`: キュー構造体
+//! - `controller`: コントローラレジスタと設定
+//! - `queue_types`: 型安全なキュー抽象化
 //! - `identify`: Identify構造体
 //! - `driver`: 高性能NVMeドライバ（ポーリングモード）
 
@@ -19,6 +20,7 @@
 pub mod defs;
 pub mod commands;
 pub mod regs;
+pub mod controller;
 pub mod queue_types;
 pub mod identify;
 pub mod driver;

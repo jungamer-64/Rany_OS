@@ -17,181 +17,25 @@ use spin::Mutex;
 use x86_64::PhysAddr;
 
 // Import VirtIO common definitions
-use super::defs::{mmio_regs, status, VIRTIO_MMIO_MAGIC, VirtioDeviceType};
+use super::defs::{status, VirtioDeviceType};
+use super::transport::VirtioTransport;
 use crate::io::dma::{TypedDmaSlice, CpuOwned, DeviceOwned, CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 
 // ============================================================================
-// MMIO Access Abstraction
+// VirtIO Net Transport Helper Functions
 // ============================================================================
 
-/// VirtIO MMIO アクセサ
-/// 
-/// VirtIO MMIO トランスポートへの安全なアクセスを提供する。
-pub struct VirtioMmioAccess {
-    /// MMIOベースアドレス
-    base: usize,
-}
-
-impl VirtioMmioAccess {
-    /// 新しいMMIOアクセサを作成
-    pub const fn new(base: usize) -> Self {
-        Self { base }
-    }
-    
-    /// 32ビットレジスタを読み取り
-    #[inline]
-    pub fn read32(&self, offset: usize) -> u32 {
-        unsafe {
-            core::ptr::read_volatile((self.base + offset) as *const u32)
-        }
-    }
-    
-    /// 32ビットレジスタに書き込み
-    #[inline]
-    pub fn write32(&self, offset: usize, value: u32) {
-        unsafe {
-            core::ptr::write_volatile((self.base + offset) as *mut u32, value);
-        }
-    }
-    
-    /// Magic valueを検証
-    pub fn verify_magic(&self) -> bool {
-        self.read32(mmio_regs::MAGIC_VALUE) == VIRTIO_MMIO_MAGIC
-    }
-    
-    /// バージョンを取得
-    pub fn version(&self) -> u32 {
-        self.read32(mmio_regs::VERSION)
-    }
-    
-    /// デバイスIDを取得
-    pub fn device_id(&self) -> VirtioDeviceType {
-        VirtioDeviceType::from(self.read32(mmio_regs::DEVICE_ID))
-    }
-    
-    /// ベンダーIDを取得
-    pub fn vendor_id(&self) -> u32 {
-        self.read32(mmio_regs::VENDOR_ID)
-    }
-    
-    /// デバイスフィーチャーを取得
-    pub fn device_features(&self, selector: u32) -> u32 {
-        self.write32(mmio_regs::DEVICE_FEATURES_SEL, selector);
-        self.read32(mmio_regs::DEVICE_FEATURES)
-    }
-    
-    /// ドライバフィーチャーを設定
-    pub fn set_driver_features(&self, selector: u32, features: u32) {
-        self.write32(mmio_regs::DRIVER_FEATURES_SEL, selector);
-        self.write32(mmio_regs::DRIVER_FEATURES, features);
-    }
-    
-    /// ステータスを取得
-    pub fn status(&self) -> u8 {
-        self.read32(mmio_regs::STATUS) as u8
-    }
-    
-    /// ステータスを設定
-    pub fn set_status(&self, status: u8) {
-        self.write32(mmio_regs::STATUS, status as u32);
-    }
-    
-    /// デバイスをリセット
-    pub fn reset(&self) {
-        self.set_status(status::VIRTIO_STATUS_RESET);
-    }
-    
-    /// キューを選択
-    pub fn select_queue(&self, index: u16) {
-        self.write32(mmio_regs::QUEUE_SEL, index as u32);
-    }
-    
-    /// 選択されたキューの最大サイズを取得
-    pub fn queue_max_size(&self) -> u16 {
-        self.read32(mmio_regs::QUEUE_NUM_MAX) as u16
-    }
-    
-    /// キューサイズを設定
-    pub fn set_queue_size(&self, size: u16) {
-        self.write32(mmio_regs::QUEUE_NUM, size as u32);
-    }
-    
-    /// キューを有効化
-    pub fn enable_queue(&self) {
-        self.write32(mmio_regs::QUEUE_READY, 1);
-    }
-    
-    /// キューを無効化
-    pub fn disable_queue(&self) {
-        self.write32(mmio_regs::QUEUE_READY, 0);
-    }
-    
-    /// キューにディスクリプタテーブルアドレスを設定
-    pub fn set_queue_desc(&self, addr: u64) {
-        self.write32(mmio_regs::QUEUE_DESC_LOW, addr as u32);
-        self.write32(mmio_regs::QUEUE_DESC_HIGH, (addr >> 32) as u32);
-    }
-    
-    /// キューにAvailリングアドレスを設定
-    pub fn set_queue_avail(&self, addr: u64) {
-        self.write32(mmio_regs::QUEUE_AVAIL_LOW, addr as u32);
-        self.write32(mmio_regs::QUEUE_AVAIL_HIGH, (addr >> 32) as u32);
-    }
-    
-    /// キューにUsedリングアドレスを設定
-    pub fn set_queue_used(&self, addr: u64) {
-        self.write32(mmio_regs::QUEUE_USED_LOW, addr as u32);
-        self.write32(mmio_regs::QUEUE_USED_HIGH, (addr >> 32) as u32);
-    }
-    
-    /// キューに通知
-    pub fn notify_queue(&self, queue_index: u16) {
-        self.write32(mmio_regs::QUEUE_NOTIFY, queue_index as u32);
-    }
-    
-    /// 割り込みステータスを取得
-    pub fn interrupt_status(&self) -> u32 {
-        self.read32(mmio_regs::INTERRUPT_STATUS)
-    }
-    
-    /// 割り込みをACK
-    pub fn interrupt_ack(&self, status: u32) {
-        self.write32(mmio_regs::INTERRUPT_ACK, status);
-    }
-    
-    /// コンフィグ空間から8ビット値を読み取り
-    pub fn read_config8(&self, offset: usize) -> u8 {
-        unsafe {
-            core::ptr::read_volatile((self.base + mmio_regs::CONFIG + offset) as *const u8)
-        }
-    }
-    
-    /// コンフィグ空間から16ビット値を読み取り
-    pub fn read_config16(&self, offset: usize) -> u16 {
-        unsafe {
-            core::ptr::read_volatile((self.base + mmio_regs::CONFIG + offset) as *const u16)
-        }
-    }
-    
-    /// コンフィグ空間から32ビット値を読み取り
-    pub fn read_config32(&self, offset: usize) -> u32 {
-        unsafe {
-            core::ptr::read_volatile((self.base + mmio_regs::CONFIG + offset) as *const u32)
-        }
-    }
-    
-    /// MACアドレスを読み取り（Net device config space）
-    pub fn read_mac_address(&self) -> [u8; 6] {
-        [
-            self.read_config8(0),
-            self.read_config8(1),
-            self.read_config8(2),
-            self.read_config8(3),
-            self.read_config8(4),
-            self.read_config8(5),
-        ]
-    }
+/// トランスポートからMACアドレスを読み取り（Net device config space）
+fn read_mac_address(transport: &dyn VirtioTransport) -> [u8; 6] {
+    [
+        transport.read_config_u8(0),
+        transport.read_config_u8(1),
+        transport.read_config_u8(2),
+        transport.read_config_u8(3),
+        transport.read_config_u8(4),
+        transport.read_config_u8(5),
+    ]
 }
 
 
@@ -536,10 +380,8 @@ impl Default for VirtioNetConfig {
 
 /// VirtIO ネットワークデバイス
 pub struct VirtioNetDevice {
-    /// デバイスベースアドレス
-    base_addr: usize,
-    /// MMIOアクセサ
-    mmio: VirtioMmioAccess,
+    /// トランスポート層（MMIO/PCI共通インターフェース）
+    transport: Box<dyn VirtioTransport>,
     /// 設定
     config: VirtioNetConfig,
     /// 受信キュー
@@ -560,10 +402,13 @@ pub struct VirtioNetDevice {
 
 impl VirtioNetDevice {
     /// 新しいデバイスを作成
-    pub const fn new(base_addr: usize) -> Self {
+    /// 
+    /// # Arguments
+    /// * `transport` - 初期化済みの VirtioTransport 実装（MMIO または PCI）
+    ///   トランスポートはmagic/version検証を通過している必要がある
+    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
         Self {
-            base_addr,
-            mmio: VirtioMmioAccess::new(base_addr),
+            transport,
             config: VirtioNetConfig {
                 mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
                 max_queues: 1,
@@ -581,68 +426,57 @@ impl VirtioNetDevice {
 
     /// デバイスを初期化
     pub fn init(&mut self) -> Result<(), VirtioNetError> {
-        // 1. Magic value検証
-        if !self.mmio.verify_magic() {
+        // 1. デバイスタイプ確認（トランスポートはすでにmagic/version検証済み）
+        if self.transport.device_type() != VirtioDeviceType::Network {
             return Err(VirtioNetError::DeviceError);
         }
         
-        // 2. バージョン確認 (version 2 = modern MMIO)
-        let version = self.mmio.version();
-        if version != 2 && version != 1 {
-            return Err(VirtioNetError::DeviceError);
-        }
+        // 2. デバイスリセット
+        self.transport.reset();
         
-        // 3. デバイスタイプ確認
-        if self.mmio.device_id() != VirtioDeviceType::Network {
-            return Err(VirtioNetError::DeviceError);
-        }
+        // 3. ACKNOWLEDGE ステータスビットを設定
+        self.transport.set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
         
-        // 4. デバイスリセット
-        self.mmio.reset();
-        
-        // 5. ACKNOWLEDGE ステータスビットを設定
-        self.mmio.set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
-        
-        // 6. DRIVER ステータスビットを設定
-        self.mmio.set_status(
+        // 4. DRIVER ステータスビットを設定
+        self.transport.set_status(
             status::VIRTIO_STATUS_ACKNOWLEDGE | status::VIRTIO_STATUS_DRIVER
         );
         
-        // 7. Feature negotiation
-        let device_features_low = self.mmio.device_features(0);
-        let device_features_high = self.mmio.device_features(1);
+        // 5. Feature negotiation
+        let device_features_low = self.transport.get_device_features_low();
+        let device_features_high = self.transport.get_device_features_high();
         
         // 必要なフィーチャーのみを受け入れる
         let accepted_features_low = device_features_low & 
             (features::VIRTIO_NET_F_MAC as u32 | features::VIRTIO_NET_F_CSUM as u32);
         let accepted_features_high = device_features_high;
         
-        self.mmio.set_driver_features(0, accepted_features_low);
-        self.mmio.set_driver_features(1, accepted_features_high);
+        self.transport.set_driver_features_low(accepted_features_low);
+        self.transport.set_driver_features_high(accepted_features_high);
         
-        // 8. FEATURES_OK を設定
-        self.mmio.set_status(
+        // 6. FEATURES_OK を設定
+        self.transport.set_status(
             status::VIRTIO_STATUS_ACKNOWLEDGE | 
             status::VIRTIO_STATUS_DRIVER | 
             status::VIRTIO_STATUS_FEATURES_OK
         );
         
         // FEATURES_OK が設定されたか確認
-        if (self.mmio.status() & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
-            self.mmio.set_status(status::VIRTIO_STATUS_FAILED);
+        if (self.transport.get_status() & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
+            self.transport.set_status(status::VIRTIO_STATUS_FAILED);
             return Err(VirtioNetError::DeviceError);
         }
         
-        // 9. MACアドレスを読み取り
+        // 7. MACアドレスを読み取り
         if (accepted_features_low & features::VIRTIO_NET_F_MAC as u32) != 0 {
-            self.config.mac = self.mmio.read_mac_address();
+            self.config.mac = read_mac_address(self.transport.as_ref());
         }
         
-        // 10. キューの設定
+        // 8. キューの設定
         self.setup_queues()?;
         
-        // 11. DRIVER_OK を設定
-        self.mmio.set_status(
+        // 9. DRIVER_OK を設定
+        self.transport.set_status(
             status::VIRTIO_STATUS_ACKNOWLEDGE | 
             status::VIRTIO_STATUS_DRIVER | 
             status::VIRTIO_STATUS_FEATURES_OK |
@@ -667,31 +501,31 @@ impl VirtioNetDevice {
     /// 単一のキューを設定
     fn setup_single_queue(&mut self, queue_index: u16) -> Result<(), VirtioNetError> {
         // キューを選択
-        self.mmio.select_queue(queue_index);
+        self.transport.select_queue(queue_index);
         
         // 最大キューサイズを取得
-        let max_size = self.mmio.queue_max_size();
+        let max_size = self.transport.get_queue_max_size();
         if max_size == 0 {
             return Err(VirtioNetError::DeviceError);
         }
         
         // キューサイズを設定（最大256エントリに制限）
         let queue_size = max_size.min(256);
-        self.mmio.set_queue_size(queue_size);
+        self.transport.set_queue_size(queue_size);
         
         // メモリをアロケート（実際の実装ではDMA対応メモリが必要）
         // ここでは簡略化のためスキップ
         // 実際のキュー設定はVirtQueueの初期化と連携が必要
         
         // キューを有効化
-        self.mmio.enable_queue();
+        self.transport.enable_queue();
         
         Ok(())
     }
     
     /// デバイスに通知（キュー更新）
-    pub fn notify(&self, queue_index: u16) {
-        self.mmio.notify_queue(queue_index);
+    pub fn notify(&mut self, queue_index: u16) {
+        self.transport.notify_queue(queue_index);
     }
 
     /// パケットを送信（非同期）
@@ -897,11 +731,22 @@ pub struct VirtioNetStats {
 // Global Device Instance
 // ============================================================================
 
+use super::transport::VirtioMmioTransport;
+
 static VIRTIO_NET_DEVICE: Mutex<Option<VirtioNetDevice>> = Mutex::new(None);
 
-/// VirtIO ネットワークデバイスを初期化
+/// VirtIO ネットワークデバイス（MMIO）を初期化
+/// 
+/// # Safety
+/// `base_addr` は有効なVirtIO MMIOデバイスのベースアドレスを指す必要がある
 pub fn init_virtio_net(base_addr: usize) -> Result<(), VirtioNetError> {
-    let mut device = VirtioNetDevice::new(base_addr);
+    // トランスポート作成（magic/version検証含む）
+    let transport = unsafe { 
+        VirtioMmioTransport::new(base_addr)
+            .map_err(|_| VirtioNetError::DeviceError)?
+    };
+    
+    let mut device = VirtioNetDevice::new(Box::new(transport));
     device.init()?;
     *VIRTIO_NET_DEVICE.lock() = Some(device);
     Ok(())
