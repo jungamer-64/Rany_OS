@@ -93,7 +93,7 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 
     *LAST_PANIC.lock() = Some(record);
 
-    // エラー出力
+    // エラー出力（シリアルコンソール用）
     crate::log!("\n");
     crate::log!(
         "================================================================================\n"
@@ -131,6 +131,14 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 
     crate::log!(
         "================================================================================\n"
+    );
+
+    // BSOD表示を試みる（グラフィックモードが利用可能な場合）
+    display_bsod_on_panic(
+        &message,
+        location.as_ref().map(|l| l.file.as_str()),
+        location.as_ref().and_then(|l| Some(l.line)),
+        location.as_ref().and_then(|l| Some(l.column)),
     );
 
     // システム停止
@@ -195,6 +203,9 @@ pub fn handle_double_fault(
         "================================================================================\n"
     );
 
+    // BSOD表示を試みる
+    crate::graphics::bsod::show_double_fault_bsod(stack_frame, error_code);
+
     loop {
         x86_64::instructions::hlt();
     }
@@ -224,4 +235,42 @@ pub fn abort(message: &str) -> ! {
     loop {
         x86_64::instructions::hlt();
     }
+}
+
+// ============================================================================
+// BSOD Display Functions
+// ============================================================================
+
+/// パニック時にBSODを表示
+/// 
+/// グラフィックモードが利用可能な場合、青い画面にエラー情報を表示する。
+/// フレームバッファが未初期化の場合は何もしない。
+fn display_bsod_on_panic(
+    message: &str,
+    file: Option<&str>,
+    line: Option<u32>,
+    column: Option<u32>,
+) {
+    // グラフィックスが初期化されているか確認
+    if crate::graphics::framebuffer().is_none() {
+        crate::log!("[BSOD] Framebuffer not available, skipping BSOD display\n");
+        return;
+    }
+
+    crate::log!("[BSOD] Displaying Blue Screen of Death...\n");
+
+    // BSOD表示
+    crate::graphics::bsod::show_panic_bsod(message, file, line, column);
+}
+
+/// 手動でBSODをテスト表示する
+/// 
+/// デバッグ用途でBSOD表示をテストするための関数
+pub fn test_bsod(message: &str) {
+    crate::graphics::bsod::show_panic_bsod(
+        message,
+        Some("test_file.rs"),
+        Some(42),
+        Some(1),
+    );
 }
