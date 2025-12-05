@@ -2,16 +2,16 @@
 // src/application/games/breakout.rs - Breakout Game
 // ============================================================================
 //!
-//! # ブロック崩し
+//! # ブロチE��崩ぁE
 //!
-//! 物理演算と描画パフォーマンスのベンチマークとして実装。
+//! 物琁E��算と描画パフォーマンスのベンチ�Eークとして実裁E��E
 //!
-//! ## 機能
-//! - ボールの反射物理
-//! - ブロックとの衝突判定
-//! - パドル操作（マウス/キーボード）
-//! - スコアとレベルシステム
-//! - パワーアップアイテム
+//! ## 機�E
+//! - ボ�Eルの反封E��琁E
+//! - ブロチE��との衝突判宁E
+//! - パドル操作（�Eウス/キーボ�Eド！E
+//! - スコアとレベルシスチE��
+//! - パワーアチE�EアイチE��
 
 extern crate alloc;
 
@@ -24,42 +24,87 @@ use core::cmp::{min, max};
 use crate::graphics::{Color, image::Image, Rect};
 
 // ============================================================================
+// no_std Math Functions
+// ============================================================================
+
+/// 簡易的なsin関数�E�Eaylor展開による近似�E�E
+fn sin_approx(x: f32) -> f32 {
+    // xめEπ�E�πに正規化
+    const PI: f32 = 3.14159265;
+    let mut x = x % (2.0 * PI);
+    if x > PI { x -= 2.0 * PI; }
+    if x < -PI { x += 2.0 * PI; }
+    
+    // Taylor展開: sin(x) ≁Ex - x³/6 + x⁵/120
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let x5 = x3 * x2;
+    x - x3 / 6.0 + x5 / 120.0
+}
+
+/// 簡易的なcos関数
+fn cos_approx(x: f32) -> f32 {
+    sin_approx(x + 3.14159265 / 2.0)
+}
+
+/// 簡易的なsqrt関数�E�Eewton法！E
+fn sqrt_approx(x: f32) -> f32 {
+    if x <= 0.0 { return 0.0; }
+    let mut guess = x / 2.0;
+    for _ in 0..10 {
+        guess = (guess + x / guess) / 2.0;
+    }
+    guess
+}
+
+/// ボ�Eルと矩形の衝突判定（スタチE��チE��関数�E�E
+fn ball_rect_collision(ball: &Ball, rect: &Rect) -> bool {
+    let closest_x = ball.x.max(rect.x as f32).min(rect.right() as f32);
+    let closest_y = ball.y.max(rect.y as f32).min(rect.bottom() as f32);
+
+    let dx = ball.x - closest_x;
+    let dy = ball.y - closest_y;
+
+    (dx * dx + dy * dy) < (ball.radius * ball.radius) as f32
+}
+
+// ============================================================================
 // Constants
 // ============================================================================
 
-/// ゲームフィールドの幅
+/// ゲームフィールド�E幁E
 pub const FIELD_WIDTH: u32 = 640;
-/// ゲームフィールドの高さ
+/// ゲームフィールド�E高さ
 pub const FIELD_HEIGHT: u32 = 480;
 
-/// パドルの幅
+/// パドルの幁E
 const PADDLE_WIDTH: u32 = 80;
 /// パドルの高さ
 const PADDLE_HEIGHT: u32 = 12;
 /// パドルのY位置
 const PADDLE_Y: u32 = FIELD_HEIGHT - 40;
 
-/// ボールの半径
+/// ボ�Eルの半征E
 const BALL_RADIUS: u32 = 6;
-/// ボールの初期速度
+/// ボ�Eルの初期速度
 const BALL_SPEED: f32 = 4.0;
-/// ボールの最大速度
+/// ボ�Eルの最大速度
 const BALL_MAX_SPEED: f32 = 12.0;
 
-/// ブロックの幅
+/// ブロチE��の幁E
 const BLOCK_WIDTH: u32 = 50;
-/// ブロックの高さ
+/// ブロチE��の高さ
 const BLOCK_HEIGHT: u32 = 20;
-/// ブロックの行数
+/// ブロチE��の行数
 const BLOCK_ROWS: usize = 6;
-/// ブロックの列数
+/// ブロチE��の列数
 const BLOCK_COLS: usize = 12;
-/// ブロック領域の上端
+/// ブロチE��領域の上端
 const BLOCK_TOP: u32 = 60;
-/// ブロック間の隙間
+/// ブロチE��間�E隙間
 const BLOCK_GAP: u32 = 2;
 
-/// ヘッダー高さ（スコア表示）
+/// ヘッダー高さ�E�スコア表示�E�E
 const HEADER_HEIGHT: u32 = 30;
 
 // ============================================================================
@@ -70,20 +115,20 @@ const HEADER_HEIGHT: u32 = 30;
 const BG_COLOR: Color = Color { red: 20, green: 20, blue: 40, alpha: 255 };
 /// パドル色
 const PADDLE_COLOR: Color = Color { red: 200, green: 200, blue: 200, alpha: 255 };
-/// ボール色
+/// ボ�Eル色
 const BALL_COLOR: Color = Color { red: 255, green: 255, blue: 255, alpha: 255 };
 /// 壁色
 const WALL_COLOR: Color = Color { red: 80, green: 80, blue: 100, alpha: 255 };
-/// テキスト色
+/// チE��スト色
 const TEXT_COLOR: Color = Color { red: 255, green: 255, blue: 255, alpha: 255 };
 
-/// ブロック色（行ごと）
+/// ブロチE��色�E�行ごと�E�E
 const BLOCK_COLORS: [Color; 6] = [
     Color { red: 255, green: 0, blue: 0, alpha: 255 },     // 赤
     Color { red: 255, green: 128, blue: 0, alpha: 255 },   // オレンジ
-    Color { red: 255, green: 255, blue: 0, alpha: 255 },   // 黄
-    Color { red: 0, green: 255, blue: 0, alpha: 255 },     // 緑
-    Color { red: 0, green: 128, blue: 255, alpha: 255 },   // 青
+    Color { red: 255, green: 255, blue: 0, alpha: 255 },   // 黁E
+    Color { red: 0, green: 255, blue: 0, alpha: 255 },     // 緁E
+    Color { red: 0, green: 128, blue: 255, alpha: 255 },   // 靁E
     Color { red: 128, green: 0, blue: 255, alpha: 255 },   // 紫
 ];
 
@@ -91,40 +136,40 @@ const BLOCK_COLORS: [Color; 6] = [
 // Game Types
 // ============================================================================
 
-/// ゲームの状態
+/// ゲームの状慁E
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GameState {
-    /// 開始待ち
+    /// 開始征E��
     Ready,
     /// プレイ中
     Playing,
-    /// ポーズ中
+    /// ポ�Eズ中
     Paused,
-    /// ゲームオーバー
+    /// ゲームオーバ�E
     GameOver,
     /// クリア
     Cleared,
 }
 
-/// ボール
+/// ボ�Eル
 #[derive(Clone, Copy, Debug)]
 pub struct Ball {
-    /// X座標（中心）
+    /// X座標（中忁E��E
     pub x: f32,
-    /// Y座標（中心）
+    /// Y座標（中忁E��E
     pub y: f32,
     /// X方向速度
     pub vx: f32,
     /// Y方向速度
     pub vy: f32,
-    /// 半径
+    /// 半征E
     pub radius: u32,
-    /// アクティブかどうか
+    /// アクチE��ブかどぁE��
     pub active: bool,
 }
 
 impl Ball {
-    /// 新しいボールを作成
+    /// 新しいボ�Eルを作�E
     pub fn new(x: f32, y: f32) -> Self {
         Self {
             x,
@@ -136,14 +181,14 @@ impl Ball {
         }
     }
 
-    /// ボールを発射
+    /// ボ�Eルを発封E
     pub fn launch(&mut self, angle: f32) {
-        self.vx = BALL_SPEED * angle.cos();
-        self.vy = -BALL_SPEED * angle.sin();
+        self.vx = BALL_SPEED * cos_approx(angle);
+        self.vy = -BALL_SPEED * sin_approx(angle);
         self.active = true;
     }
 
-    /// ボールを更新
+    /// ボ�Eルを更新
     pub fn update(&mut self) {
         if self.active {
             self.x += self.vx;
@@ -153,34 +198,34 @@ impl Ball {
 
     /// 速度を正規化
     pub fn normalize_speed(&mut self, speed: f32) {
-        let current = (self.vx * self.vx + self.vy * self.vy).sqrt();
+        let current = sqrt_approx(self.vx * self.vx + self.vy * self.vy);
         if current > 0.0 {
             self.vx = self.vx / current * speed;
             self.vy = self.vy / current * speed;
         }
     }
 
-    /// 現在の速度を取得
+    /// 現在の速度を取征E
     pub fn speed(&self) -> f32 {
-        (self.vx * self.vx + self.vy * self.vy).sqrt()
+        sqrt_approx(self.vx * self.vx + self.vy * self.vy)
     }
 }
 
 /// パドル
 #[derive(Clone, Copy, Debug)]
 pub struct Paddle {
-    /// X座標（左端）
+    /// X座標（左端�E�E
     pub x: f32,
-    /// Y座標
+    /// Y座樁E
     pub y: f32,
-    /// 幅
+    /// 幁E
     pub width: u32,
     /// 高さ
     pub height: u32,
 }
 
 impl Paddle {
-    /// 新しいパドルを作成
+    /// 新しいパドルを作�E
     pub fn new() -> Self {
         Self {
             x: (FIELD_WIDTH / 2 - PADDLE_WIDTH / 2) as f32,
@@ -190,23 +235,23 @@ impl Paddle {
         }
     }
 
-    /// パドルを移動
+    /// パドルを移勁E
     pub fn move_to(&mut self, target_x: f32) {
         self.x = target_x - (self.width as f32 / 2.0);
         self.x = self.x.max(0.0).min((FIELD_WIDTH - self.width) as f32);
     }
 
-    /// パドルを左に移動
+    /// パドルを左に移勁E
     pub fn move_left(&mut self, speed: f32) {
         self.x = (self.x - speed).max(0.0);
     }
 
-    /// パドルを右に移動
+    /// パドルを右に移勁E
     pub fn move_right(&mut self, speed: f32) {
         self.x = (self.x + speed).min((FIELD_WIDTH - self.width) as f32);
     }
 
-    /// 中心X座標
+    /// 中心X座樁E
     pub fn center_x(&self) -> f32 {
         self.x + self.width as f32 / 2.0
     }
@@ -218,27 +263,27 @@ impl Default for Paddle {
     }
 }
 
-/// ブロック
+/// ブロチE��
 #[derive(Clone, Copy, Debug)]
 pub struct Block {
-    /// X座標
+    /// X座樁E
     pub x: u32,
-    /// Y座標
+    /// Y座樁E
     pub y: u32,
-    /// 幅
+    /// 幁E
     pub width: u32,
     /// 高さ
     pub height: u32,
     /// 色
     pub color: Color,
-    /// 耐久度（0で消滅）
+    /// 耐乁E���E�Eで消滁E��E
     pub health: u8,
-    /// ポイント
+    /// ポインチE
     pub points: u32,
 }
 
 impl Block {
-    /// 新しいブロックを作成
+    /// 新しいブロチE��を作�E
     pub fn new(x: u32, y: u32, color: Color, health: u8) -> Self {
         Self {
             x,
@@ -255,7 +300,7 @@ impl Block {
     pub fn hit(&mut self) -> bool {
         if self.health > 0 {
             self.health -= 1;
-            // 色を暗くする
+            // 色を暗くすめE
             self.color = Color {
                 red: self.color.red.saturating_sub(30),
                 green: self.color.green.saturating_sub(30),
@@ -266,44 +311,44 @@ impl Block {
         self.health == 0
     }
 
-    /// 矩形を取得
+    /// 矩形を取征E
     pub fn rect(&self) -> Rect {
         Rect::new(self.x as i32, self.y as i32, self.width, self.height)
     }
 }
 
-/// パワーアップの種類
+/// パワーアチE�Eの種顁E
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PowerUpType {
     /// パドル拡大
     ExpandPaddle,
-    /// パドル縮小
+    /// パドル縮封E
     ShrinkPaddle,
-    /// マルチボール
+    /// マルチ�Eール
     MultiBall,
-    /// スローボール
+    /// スローボ�Eル
     SlowBall,
-    /// ファストボール
+    /// ファスト�Eール
     FastBall,
     /// ライフ追加
     ExtraLife,
 }
 
-/// パワーアップアイテム
+/// パワーアチE�EアイチE��
 #[derive(Clone, Copy, Debug)]
 pub struct PowerUp {
-    /// X座標
+    /// X座樁E
     pub x: f32,
-    /// Y座標
+    /// Y座樁E
     pub y: f32,
-    /// 種類
+    /// 種顁E
     pub power_type: PowerUpType,
     /// 落下速度
     pub speed: f32,
 }
 
 impl PowerUp {
-    /// 新しいパワーアップを作成
+    /// 新しいパワーアチE�Eを作�E
     pub fn new(x: f32, y: f32, power_type: PowerUpType) -> Self {
         Self {
             x,
@@ -318,7 +363,7 @@ impl PowerUp {
         self.y += self.speed;
     }
 
-    /// 色を取得
+    /// 色を取征E
     pub fn color(&self) -> Color {
         match self.power_type {
             PowerUpType::ExpandPaddle => Color { red: 0, green: 255, blue: 0, alpha: 255 },
@@ -335,37 +380,37 @@ impl PowerUp {
 // Breakout Game
 // ============================================================================
 
-/// ブロック崩しゲーム
+/// ブロチE��崩しゲーム
 pub struct Breakout {
-    /// ボール（複数可能）
+    /// ボ�Eル�E�褁E��可能�E�E
     balls: Vec<Ball>,
     /// パドル
     paddle: Paddle,
-    /// ブロック
+    /// ブロチE��
     blocks: Vec<Block>,
-    /// パワーアップ
+    /// パワーアチE�E
     powerups: Vec<PowerUp>,
-    /// ゲーム状態
+    /// ゲーム状慁E
     state: GameState,
     /// スコア
     score: u32,
     /// ハイスコア
     high_score: u32,
-    /// 残りライフ
+    /// 残りライチE
     lives: u32,
     /// 現在のレベル
     level: u32,
-    /// フレームカウント
+    /// フレームカウンチE
     frame_count: u64,
-    /// 乱数シード
+    /// 乱数シーチE
     rng_seed: u64,
-    /// キー入力状態
+    /// キー入力状慁E
     key_left: bool,
     key_right: bool,
 }
 
 impl Breakout {
-    /// 新しいゲームを作成
+    /// 新しいゲームを作�E
     pub fn new() -> Self {
         let mut game = Self {
             balls: Vec::new(),
@@ -387,33 +432,33 @@ impl Breakout {
         game
     }
 
-    /// レベルをセットアップ
+    /// レベルをセチE��アチE�E
     fn setup_level(&mut self, level: u32) {
         self.level = level;
         self.blocks.clear();
         self.powerups.clear();
         self.balls.clear();
 
-        // ボールをパドル上に配置
+        // ボ�Eルをパドル上に配置
         let ball = Ball::new(
             self.paddle.center_x(),
             self.paddle.y - BALL_RADIUS as f32 - 2.0,
         );
         self.balls.push(ball);
 
-        // ブロックを配置
+        // ブロチE��を�E置
         let start_x = (FIELD_WIDTH - (BLOCK_COLS as u32 * (BLOCK_WIDTH + BLOCK_GAP))) / 2;
 
         for row in 0..BLOCK_ROWS {
             let color = BLOCK_COLORS[row % BLOCK_COLORS.len()];
             let health = match row {
-                0 => 2,  // 最上段は耐久2
+                0 => 2,  // 最上段は耐乁E
                 1 => 2,
                 _ => 1,
             };
 
             for col in 0..BLOCK_COLS {
-                // レベルによってブロックのパターンを変える
+                // レベルによってブロチE��のパターンを変えめE
                 let skip = match level % 3 {
                     1 => false,
                     2 => (row + col) % 2 == 0,
@@ -431,18 +476,18 @@ impl Breakout {
         self.state = GameState::Ready;
     }
 
-    /// 乱数生成
+    /// 乱数生�E
     fn rand(&mut self) -> u64 {
         self.rng_seed = self.rng_seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
         self.rng_seed
     }
 
-    /// 0.0〜1.0の乱数
+    /// 0.0、E.0の乱数
     fn rand_float(&mut self) -> f32 {
         (self.rand() % 10000) as f32 / 10000.0
     }
 
-    /// ゲームをリセット
+    /// ゲームをリセチE��
     pub fn reset(&mut self) {
         self.score = 0;
         self.lives = 3;
@@ -450,11 +495,11 @@ impl Breakout {
         self.setup_level(1);
     }
 
-    /// ゲームを開始/再開
+    /// ゲームを開姁E再開
     pub fn start(&mut self) {
         if self.state == GameState::Ready {
-            // ボールを発射（ランダムな角度）
-            let angle = 1.0 + (self.rand_float() - 0.5) * 0.5; // 約45〜135度
+            // ボ�Eルを発封E��ランダムな角度�E�E
+            let angle = 1.0 + (self.rand_float() - 0.5) * 0.5; // 紁E5、E35度
             if let Some(ball) = self.balls.first_mut() {
                 ball.launch(angle);
             }
@@ -464,7 +509,7 @@ impl Breakout {
         }
     }
 
-    /// ポーズ
+    /// ポ�Eズ
     pub fn pause(&mut self) {
         if self.state == GameState::Playing {
             self.state = GameState::Paused;
@@ -479,7 +524,7 @@ impl Breakout {
 
         self.frame_count += 1;
 
-        // キー入力によるパドル移動
+        // キー入力によるパドル移勁E
         let paddle_speed = 8.0;
         if self.key_left {
             self.paddle.move_left(paddle_speed);
@@ -488,7 +533,7 @@ impl Breakout {
             self.paddle.move_right(paddle_speed);
         }
 
-        // ボール更新
+        // ボ�Eル更新
         let mut balls_to_remove = Vec::new();
         for (i, ball) in self.balls.iter_mut().enumerate() {
             if !ball.active {
@@ -497,7 +542,7 @@ impl Breakout {
 
             ball.update();
 
-            // 壁との衝突
+            // 壁との衝突E
             if ball.x - ball.radius as f32 <= 0.0 {
                 ball.x = ball.radius as f32;
                 ball.vx = ball.vx.abs();
@@ -511,18 +556,18 @@ impl Breakout {
                 ball.vy = ball.vy.abs();
             }
 
-            // 落下判定
+            // 落下判宁E
             if ball.y > FIELD_HEIGHT as f32 + ball.radius as f32 {
                 balls_to_remove.push(i);
             }
         }
 
-        // 落下したボールを削除
+        // 落下した�Eールを削除
         for i in balls_to_remove.into_iter().rev() {
             self.balls.remove(i);
         }
 
-        // 全ボールが落下した場合
+        // 全ボ�Eルが落下した場吁E
         if self.balls.is_empty() || self.balls.iter().all(|b| !b.active) {
             self.lives = self.lives.saturating_sub(1);
             if self.lives == 0 {
@@ -531,7 +576,7 @@ impl Breakout {
                     self.high_score = self.score;
                 }
             } else {
-                // ボールをリセット
+                // ボ�EルをリセチE��
                 self.balls.clear();
                 let ball = Ball::new(
                     self.paddle.center_x(),
@@ -543,7 +588,7 @@ impl Breakout {
             return;
         }
 
-        // パドルとの衝突
+        // パドルとの衝突E
         for ball in self.balls.iter_mut() {
             if !ball.active {
                 continue;
@@ -557,14 +602,14 @@ impl Breakout {
                     self.paddle.height,
                 );
 
-                if self.ball_rect_collision(ball, &paddle_rect) {
-                    // パドルの中心からの距離で反射角度を決定
+                if ball_rect_collision(ball, &paddle_rect) {
+                    // パドルの中忁E��ら�E距離で反封E��度を決宁E
                     let hit_pos = (ball.x - self.paddle.center_x()) / (self.paddle.width as f32 / 2.0);
-                    let angle = 1.57 - hit_pos * 1.2; // 約30度〜150度
+                    let angle = 1.57 - hit_pos * 1.2; // 紁E0度、E50度
                     
                     let speed = ball.speed().min(BALL_MAX_SPEED);
-                    ball.vx = speed * angle.cos();
-                    ball.vy = -speed * angle.sin().abs();
+                    ball.vx = speed * cos_approx(angle);
+                    ball.vy = -sin_approx(angle).abs() * speed;
                     ball.y = self.paddle.y - ball.radius as f32 - 1.0;
                 }
             }
@@ -573,6 +618,7 @@ impl Breakout {
         // ブロックとの衝突
         let mut blocks_to_remove = Vec::new();
         let mut spawn_powerup: Option<(f32, f32)> = None;
+        let mut score_add = 0u32;
 
         for ball in self.balls.iter_mut() {
             if !ball.active {
@@ -584,7 +630,7 @@ impl Breakout {
                     continue;
                 }
 
-                if self.ball_rect_collision(ball, &block.rect()) {
+                if ball_rect_collision(ball, &block.rect()) {
                     // 反射方向を決定
                     let ball_center_x = ball.x;
                     let ball_center_y = ball.y;
@@ -607,10 +653,10 @@ impl Breakout {
                     // ブロックにダメージ
                     if block.hit() {
                         blocks_to_remove.push(i);
-                        self.score += block.points;
+                        score_add += block.points;
 
-                        // パワーアップのドロップ（10%の確率）
-                        if self.rand() % 10 == 0 {
+                        // パワーアップのドロップ候補
+                        if spawn_powerup.is_none() {
                             spawn_powerup = Some((
                                 block.x as f32 + block.width as f32 / 2.0,
                                 block.y as f32 + block.height as f32 / 2.0,
@@ -623,26 +669,33 @@ impl Breakout {
             }
         }
 
+        // スコアを加算（ループ外で）
+        self.score += score_add;
+
         // 壊れたブロックを削除
         for i in blocks_to_remove.into_iter().rev() {
             self.blocks.remove(i);
         }
 
-        // パワーアップをスポーン
+        // パワーアップをスポーン（10%の確率）
         if let Some((x, y)) = spawn_powerup {
-            let power_type = match self.rand() % 6 {
-                0 => PowerUpType::ExpandPaddle,
-                1 => PowerUpType::ShrinkPaddle,
-                2 => PowerUpType::MultiBall,
-                3 => PowerUpType::SlowBall,
-                4 => PowerUpType::FastBall,
-                _ => PowerUpType::ExtraLife,
-            };
-            self.powerups.push(PowerUp::new(x, y, power_type));
+            if self.rand() % 10 == 0 {
+                let power_type = match self.rand() % 6 {
+                    0 => PowerUpType::ExpandPaddle,
+                    1 => PowerUpType::ShrinkPaddle,
+                    2 => PowerUpType::MultiBall,
+                    3 => PowerUpType::SlowBall,
+                    4 => PowerUpType::FastBall,
+                    _ => PowerUpType::ExtraLife,
+                };
+                self.powerups.push(PowerUp::new(x, y, power_type));
+            }
         }
 
         // パワーアップの更新
         let mut powerups_to_remove = Vec::new();
+        let mut powerups_to_apply = Vec::new();
+        
         for (i, powerup) in self.powerups.iter_mut().enumerate() {
             powerup.update();
 
@@ -651,37 +704,31 @@ impl Breakout {
                 && powerup.x >= self.paddle.x
                 && powerup.x <= self.paddle.x + self.paddle.width as f32
             {
-                self.apply_powerup(powerup.power_type);
+                powerups_to_apply.push(powerup.power_type);
                 powerups_to_remove.push(i);
             }
-            // 画面外に落下
+            // 画面外に落ちた
             else if powerup.y > FIELD_HEIGHT as f32 {
                 powerups_to_remove.push(i);
             }
+        }
+
+        // パワーアップを適用（ループ外で）
+        for power_type in powerups_to_apply {
+            self.apply_powerup(power_type);
         }
 
         for i in powerups_to_remove.into_iter().rev() {
             self.powerups.remove(i);
         }
 
-        // クリア判定
+        // クリア判宁E
         if self.blocks.iter().all(|b| b.health == 0) || self.blocks.is_empty() {
             self.setup_level(self.level + 1);
         }
     }
 
-    /// ボールと矩形の衝突判定
-    fn ball_rect_collision(&self, ball: &Ball, rect: &Rect) -> bool {
-        let closest_x = ball.x.max(rect.x as f32).min(rect.right() as f32);
-        let closest_y = ball.y.max(rect.y as f32).min(rect.bottom() as f32);
-
-        let dx = ball.x - closest_x;
-        let dy = ball.y - closest_y;
-
-        (dx * dx + dy * dy) < (ball.radius * ball.radius) as f32
-    }
-
-    /// パワーアップを適用
+    /// パワーアチE�Eを適用
     fn apply_powerup(&mut self, power_type: PowerUpType) {
         match power_type {
             PowerUpType::ExpandPaddle => {
@@ -691,7 +738,7 @@ impl Breakout {
                 self.paddle.width = (self.paddle.width.saturating_sub(20)).max(40);
             }
             PowerUpType::MultiBall => {
-                // 現在のボールを複製
+                // 現在のボ�Eルを褁E��
                 if let Some(ball) = self.balls.first().cloned() {
                     let mut new_ball1 = ball;
                     let mut new_ball2 = ball;
@@ -722,15 +769,15 @@ impl Breakout {
     }
 
     // ========================================================================
-    // 入力処理
+    // 入力�E琁E
     // ========================================================================
 
-    /// マウス移動
+    /// マウス移勁E
     pub fn on_mouse_move(&mut self, x: u32, _y: u32) {
         if self.state == GameState::Playing || self.state == GameState::Ready {
             self.paddle.move_to(x as f32);
 
-            // 発射前はボールもパドルに追従
+            // 発封E��はボ�Eルもパドルに追征E
             if self.state == GameState::Ready {
                 for ball in self.balls.iter_mut() {
                     if !ball.active {
@@ -741,7 +788,7 @@ impl Breakout {
         }
     }
 
-    /// マウスクリック
+    /// マウスクリチE��
     pub fn on_mouse_click(&mut self, _x: u32, _y: u32) {
         match self.state {
             GameState::Ready => self.start(),
@@ -750,7 +797,7 @@ impl Breakout {
         }
     }
 
-    /// キー押下
+    /// キー押丁E
     pub fn on_key_down(&mut self, key: char) {
         match key {
             'a' | 'A' => self.key_left = true,
@@ -793,19 +840,19 @@ impl Breakout {
         // ヘッダー
         self.render_header(image);
 
-        // 壁
+        // 壁E
         self.fill_rect(image, 0, HEADER_HEIGHT, 4, FIELD_HEIGHT - HEADER_HEIGHT, WALL_COLOR);
         self.fill_rect(image, FIELD_WIDTH - 4, HEADER_HEIGHT, 4, FIELD_HEIGHT - HEADER_HEIGHT, WALL_COLOR);
         self.fill_rect(image, 0, HEADER_HEIGHT, FIELD_WIDTH, 4, WALL_COLOR);
 
-        // ブロック
+        // ブロチE��
         for block in &self.blocks {
             if block.health > 0 {
                 self.render_block(image, block);
             }
         }
 
-        // パワーアップ
+        // パワーアチE�E
         for powerup in &self.powerups {
             self.render_powerup(image, powerup);
         }
@@ -813,14 +860,14 @@ impl Breakout {
         // パドル
         self.render_paddle(image);
 
-        // ボール
+        // ボ�Eル
         for ball in &self.balls {
             if ball.active || self.state == GameState::Ready {
                 self.render_ball(image, ball);
             }
         }
 
-        // ゲームオーバー/クリア表示
+        // ゲームオーバ�E/クリア表示
         if self.state == GameState::GameOver {
             self.render_message(image, "GAME OVER", "Click to restart");
         } else if self.state == GameState::Cleared {
@@ -845,16 +892,16 @@ impl Breakout {
         let level_text = format!("Level: {}", self.level);
         self.draw_text(image, &level_text, FIELD_WIDTH / 2 - 30, 8, TEXT_COLOR);
 
-        // ライフ
+        // ライチE
         let lives_text = format!("Lives: {}", self.lives);
         self.draw_text(image, &lives_text, FIELD_WIDTH - 80, 8, TEXT_COLOR);
     }
 
-    /// ブロックを描画
+    /// ブロチE��を描画
     fn render_block(&self, image: &mut Image, block: &Block) {
         self.fill_rect(image, block.x, block.y, block.width, block.height, block.color);
 
-        // ハイライト
+        // ハイライチE
         let highlight = Color {
             red: (block.color.red as u16 + 40).min(255) as u8,
             green: (block.color.green as u16 + 40).min(255) as u8,
@@ -892,7 +939,7 @@ impl Breakout {
 
         self.fill_rect(image, x, y, w, h, PADDLE_COLOR);
 
-        // ハイライト
+        // ハイライチE
         let highlight = Color { red: 240, green: 240, blue: 240, alpha: 255 };
         for dx in 0..w {
             image.set_pixel(x + dx, y, highlight);
@@ -905,13 +952,13 @@ impl Breakout {
         }
     }
 
-    /// ボールを描画
+    /// ボ�Eルを描画
     fn render_ball(&self, image: &mut Image, ball: &Ball) {
         let cx = ball.x as i32;
         let cy = ball.y as i32;
         let r = ball.radius as i32;
 
-        // 円を描画（塗りつぶし）
+        // 冁E��描画�E�塗りつぶし！E
         for dy in -r..=r {
             for dx in -r..=r {
                 if dx * dx + dy * dy <= r * r {
@@ -925,7 +972,7 @@ impl Breakout {
         }
     }
 
-    /// パワーアップを描画
+    /// パワーアチE�Eを描画
     fn render_powerup(&self, image: &mut Image, powerup: &PowerUp) {
         let x = powerup.x as u32;
         let y = powerup.y as u32;
@@ -941,18 +988,18 @@ impl Breakout {
         }
     }
 
-    /// メッセージを描画
+    /// メチE��ージを描画
     fn render_message(&self, image: &mut Image, title: &str, subtitle: &str) {
         let box_width = 200u32;
         let box_height = 60u32;
         let box_x = (FIELD_WIDTH - box_width) / 2;
         let box_y = (FIELD_HEIGHT - box_height) / 2;
 
-        // 半透明の背景
+        // 半透�Eの背景
         let bg = Color { red: 0, green: 0, blue: 0, alpha: 200 };
         self.fill_rect(image, box_x, box_y, box_width, box_height, bg);
 
-        // 枠線
+        // 枠緁E
         let border = Color { red: 255, green: 255, blue: 255, alpha: 255 };
         for dx in 0..box_width {
             image.set_pixel(box_x + dx, box_y, border);
@@ -963,16 +1010,16 @@ impl Breakout {
             image.set_pixel(box_x + box_width - 1, box_y + dy, border);
         }
 
-        // テキスト
+        // チE��スチE
         self.draw_text(image, title, box_x + 10, box_y + 15, TEXT_COLOR);
         self.draw_text(image, subtitle, box_x + 10, box_y + 35, TEXT_COLOR);
     }
 
     // ========================================================================
-    // 描画ユーティリティ
+    // 描画ユーチE��リチE��
     // ========================================================================
 
-    /// 矩形を塗りつぶす
+    /// 矩形を塗りつぶぁE
     fn fill_rect(&self, image: &mut Image, x: u32, y: u32, w: u32, h: u32, color: Color) {
         for dy in 0..h {
             for dx in 0..w {
@@ -985,7 +1032,7 @@ impl Breakout {
 
     /// 簡易テキスト描画
     fn draw_text(&self, image: &mut Image, text: &str, x: u32, y: u32, color: Color) {
-        // 簡易的な4x6ピクセルフォント
+        // 簡易的な4x6ピクセルフォンチE
         static FONT_4X6: [[u8; 6]; 95] = [
             [0x0, 0x0, 0x0, 0x0, 0x0, 0x0], // Space
             [0x4, 0x4, 0x4, 0x0, 0x4, 0x0], // !
@@ -1109,37 +1156,37 @@ impl Breakout {
     // アクセサ
     // ========================================================================
 
-    /// ゲーム状態を取得
+    /// ゲーム状態を取征E
     pub fn state(&self) -> GameState {
         self.state
     }
 
-    /// スコアを取得
+    /// スコアを取征E
     pub fn score(&self) -> u32 {
         self.score
     }
 
-    /// ハイスコアを取得
+    /// ハイスコアを取征E
     pub fn high_score(&self) -> u32 {
         self.high_score
     }
 
-    /// 残りライフを取得
+    /// 残りライフを取征E
     pub fn lives(&self) -> u32 {
         self.lives
     }
 
-    /// 現在のレベルを取得
+    /// 現在のレベルを取征E
     pub fn level(&self) -> u32 {
         self.level
     }
 
-    /// ウィンドウの幅を取得
+    /// ウィンドウの幁E��取征E
     pub fn window_width(&self) -> u32 {
         FIELD_WIDTH
     }
 
-    /// ウィンドウの高さを取得
+    /// ウィンドウの高さを取征E
     pub fn window_height(&self) -> u32 {
         FIELD_HEIGHT
     }

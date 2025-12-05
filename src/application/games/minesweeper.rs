@@ -754,7 +754,7 @@ impl Minesweeper {
         for (dy, row) in pattern.iter().enumerate() {
             for (dx, ch) in row.chars().enumerate() {
                 if ch == '#' {
-                    if x + dx as u32 < image.width() && y + dy as u32 < image.height() {
+                    if x + (dx as u32) < image.width() && y + (dy as u32) < image.height() {
                         image.set_pixel(x + dx as u32, y + dy as u32, MINE_COLOR);
                     }
                 }
@@ -817,7 +817,7 @@ impl Minesweeper {
         for (dy, row) in pattern.iter().enumerate() {
             for (dx, ch) in row.chars().enumerate() {
                 if ch == '#' {
-                    if x + dx as u32 < image.width() && y + dy as u32 * 2 < image.height() {
+                    if x + (dx as u32) < image.width() && y + (dy as u32) * 2 < image.height() {
                         image.set_pixel(x + dx as u32, y + dy as u32 * 2, MINE_COLOR);
                         image.set_pixel(x + dx as u32, y + dy as u32 * 2 + 1, MINE_COLOR);
                     }
@@ -950,7 +950,7 @@ impl Minesweeper {
         for (dy, row) in pattern.iter().enumerate() {
             for (dx, ch) in row.chars().enumerate() {
                 if ch == '#' {
-                    if x + dx as u32 < image.width() && y + dy as u32 < image.height() {
+                    if x + (dx as u32) < image.width() && y + (dy as u32) < image.height() {
                         image.set_pixel(x + dx as u32, y + dy as u32, face_color);
                     }
                 }
