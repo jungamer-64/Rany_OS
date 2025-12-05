@@ -42,6 +42,21 @@
 
 extern crate alloc;
 
+// サブモジュール
+pub mod system_monitor;
+pub mod terminal;
+pub mod editor;
+
+// Re-exports
+pub use system_monitor::{SystemMonitor, ProcessEntry};
+pub use editor::{Editor, TextBuffer, Cursor, Selection, SyntaxHighlighter, SpecialKey};
+pub use terminal::{
+    Terminal, Cell, TerminalLine, TerminalBuffer, 
+    AnsiParser, ParseAction, SpecialKey,
+    CommandHistory, LineEditor, Selection,
+    TabCompleter, Clipboard, TerminalApp, CLIPBOARD,
+};
+
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
