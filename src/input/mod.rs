@@ -4,13 +4,13 @@
 //!
 //! # 入力デバイスドライバ
 //!
-//! PS/2キーボード、マウスのドライバ実装。
+//! PS/2キーボード、およびPS/2マウスのドライバ実装。
 //!
 //! ## 機能
-//! - PS/2キーボード入力
-//! - スキャンコード変換
-//! - キーイベントキュー
-//! - 修飾キー状態管理
+//! - PS/2キーボード入力 (Scan Code Set 1)
+//! - PS/2マウス入力 (標準3バイトパケット)
+//! - キー/マウスイベントキュー
+//! - 割り込みコンテキストでの安全な処理
 
 #![allow(dead_code)]
 
@@ -28,6 +28,14 @@ const PS2_DATA_PORT: u16 = 0x60;
 const PS2_STATUS_PORT: u16 = 0x64;
 const PS2_COMMAND_PORT: u16 = 0x64;
 
+/// コントローラコマンド
+const CMD_READ_CONFIG: u8 = 0x20;
+const CMD_WRITE_CONFIG: u8 = 0x60;
+const CMD_ENABLE_AUX: u8 = 0xA8;      // マウス有効化
+const CMD_DISABLE_AUX: u8 = 0xA7;     // マウス無効化
+const CMD_TEST_AUX: u8 = 0xA9;        // マウスポートテスト
+const CMD_WRITE_TO_AUX: u8 = 0xD4;    // 次のバイトをマウスへ送信
+
 /// キーボードコマンド
 const KB_CMD_SET_LEDS: u8 = 0xED;
 const KB_CMD_ECHO: u8 = 0xEE;
@@ -39,10 +47,20 @@ const KB_CMD_DISABLE_SCANNING: u8 = 0xF5;
 const KB_CMD_SET_DEFAULT: u8 = 0xF6;
 const KB_CMD_RESET: u8 = 0xFF;
 
-/// キーボード応答
-const KB_ACK: u8 = 0xFA;
-const KB_RESEND: u8 = 0xFE;
-const KB_ECHO_RESPONSE: u8 = 0xEE;
+/// マウスコマンド
+const MOUSE_CMD_SET_DEFAULTS: u8 = 0xF6;
+const MOUSE_CMD_ENABLE_DATA: u8 = 0xF4;
+const MOUSE_CMD_DISABLE_DATA: u8 = 0xF5;
+const MOUSE_CMD_RESET: u8 = 0xFF;
+const MOUSE_CMD_GET_ID: u8 = 0xF2;
+const MOUSE_CMD_SET_SAMPLE_RATE: u8 = 0xF3;
+
+/// 応答
+const ACK: u8 = 0xFA;
+const RESEND: u8 = 0xFE;
+
+/// イベントキューの最大サイズ
+const MAX_EVENT_QUEUE_SIZE: usize = 128;
 
 // ============================================================================
 // Key Codes
@@ -55,125 +73,46 @@ pub enum KeyCode {
     // 特殊キー
     None = 0,
     Escape = 1,
-    F1 = 2,
-    F2 = 3,
-    F3 = 4,
-    F4 = 5,
-    F5 = 6,
-    F6 = 7,
-    F7 = 8,
-    F8 = 9,
-    F9 = 10,
-    F10 = 11,
-    F11 = 12,
-    F12 = 13,
+    F1 = 2, F2 = 3, F3 = 4, F4 = 5, F5 = 6, F6 = 7,
+    F7 = 8, F8 = 9, F9 = 10, F10 = 11, F11 = 12, F12 = 13,
 
     // 数字キー
-    Key1 = 20,
-    Key2 = 21,
-    Key3 = 22,
-    Key4 = 23,
-    Key5 = 24,
-    Key6 = 25,
-    Key7 = 26,
-    Key8 = 27,
-    Key9 = 28,
-    Key0 = 29,
+    Key1 = 20, Key2 = 21, Key3 = 22, Key4 = 23, Key5 = 24,
+    Key6 = 25, Key7 = 26, Key8 = 27, Key9 = 28, Key0 = 29,
 
     // 文字キー
-    A = 30,
-    B = 31,
-    C = 32,
-    D = 33,
-    E = 34,
-    F = 35,
-    G = 36,
-    H = 37,
-    I = 38,
-    J = 39,
-    K = 40,
-    L = 41,
-    M = 42,
-    N = 43,
-    O = 44,
-    P = 45,
-    Q = 46,
-    R = 47,
-    S = 48,
-    T = 49,
-    U = 50,
-    V = 51,
-    W = 52,
-    X = 53,
-    Y = 54,
-    Z = 55,
+    A = 30, B = 31, C = 32, D = 33, E = 34, F = 35, G = 36,
+    H = 37, I = 38, J = 39, K = 40, L = 41, M = 42, N = 43,
+    O = 44, P = 45, Q = 46, R = 47, S = 48, T = 49, U = 50,
+    V = 51, W = 52, X = 53, Y = 54, Z = 55,
 
     // 記号キー
-    Minus = 60,
-    Equals = 61,
-    LeftBracket = 62,
-    RightBracket = 63,
-    Backslash = 64,
-    Semicolon = 65,
-    Quote = 66,
-    Grave = 67,
-    Comma = 68,
-    Period = 69,
-    Slash = 70,
+    Minus = 60, Equals = 61, LeftBracket = 62, RightBracket = 63,
+    Backslash = 64, Semicolon = 65, Quote = 66, Grave = 67,
+    Comma = 68, Period = 69, Slash = 70,
 
     // 制御キー
-    Backspace = 80,
-    Tab = 81,
-    Enter = 82,
-    Space = 83,
+    Backspace = 80, Tab = 81, Enter = 82, Space = 83,
 
     // 修飾キー
-    LeftShift = 90,
-    RightShift = 91,
-    LeftCtrl = 92,
-    RightCtrl = 93,
-    LeftAlt = 94,
-    RightAlt = 95,
-    LeftSuper = 96,
-    RightSuper = 97,
-    CapsLock = 98,
-    NumLock = 99,
-    ScrollLock = 100,
+    LeftShift = 90, RightShift = 91, LeftCtrl = 92, RightCtrl = 93,
+    LeftAlt = 94, RightAlt = 95, LeftSuper = 96, RightSuper = 97,
+    CapsLock = 98, NumLock = 99, ScrollLock = 100,
 
     // ナビゲーション
-    Insert = 110,
-    Delete = 111,
-    Home = 112,
-    End = 113,
-    PageUp = 114,
-    PageDown = 115,
-    Up = 116,
-    Down = 117,
-    Left = 118,
-    Right = 119,
+    Insert = 110, Delete = 111, Home = 112, End = 113,
+    PageUp = 114, PageDown = 115, Up = 116, Down = 117,
+    Left = 118, Right = 119,
 
     // テンキー
-    Numpad0 = 130,
-    Numpad1 = 131,
-    Numpad2 = 132,
-    Numpad3 = 133,
-    Numpad4 = 134,
-    Numpad5 = 135,
-    Numpad6 = 136,
-    Numpad7 = 137,
-    Numpad8 = 138,
-    Numpad9 = 139,
-    NumpadPlus = 140,
-    NumpadMinus = 141,
-    NumpadMultiply = 142,
-    NumpadDivide = 143,
-    NumpadEnter = 144,
+    Numpad0 = 130, Numpad1 = 131, Numpad2 = 132, Numpad3 = 133,
+    Numpad4 = 134, Numpad5 = 135, Numpad6 = 136, Numpad7 = 137,
+    Numpad8 = 138, Numpad9 = 139, NumpadPlus = 140, NumpadMinus = 141,
+    NumpadMultiply = 142, NumpadDivide = 143, NumpadEnter = 144,
     NumpadPeriod = 145,
 
     // その他
-    PrintScreen = 150,
-    Pause = 151,
-    Menu = 152,
+    PrintScreen = 150, Pause = 151, Menu = 152,
 
     Unknown = 255,
 }
@@ -181,6 +120,7 @@ pub enum KeyCode {
 impl KeyCode {
     /// ASCIIコードに変換（可能な場合）
     pub fn to_ascii(&self, shift: bool, caps_lock: bool) -> Option<char> {
+        // アルファベットはshift XOR caps_lockで大文字小文字を決定
         let shifted = shift ^ caps_lock;
 
         match self {
@@ -212,7 +152,7 @@ impl KeyCode {
             KeyCode::Y => Some(if shifted { 'Y' } else { 'y' }),
             KeyCode::Z => Some(if shifted { 'Z' } else { 'z' }),
 
-            // 数字と記号（USキーボードレイアウト）
+            // 数字と記号（USキーボードレイアウト）- CapsLockは影響しない
             KeyCode::Key1 => Some(if shift { '!' } else { '1' }),
             KeyCode::Key2 => Some(if shift { '@' } else { '2' }),
             KeyCode::Key3 => Some(if shift { '#' } else { '3' }),
@@ -320,12 +260,7 @@ impl KeyEvent {
             None
         };
 
-        Self {
-            key,
-            state,
-            modifiers,
-            char,
-        }
+        Self { key, state, modifiers, char }
     }
 }
 
@@ -421,6 +356,11 @@ fn scancode_to_keycode_set1(scancode: u8) -> KeyCode {
         0x53 => KeyCode::NumpadPeriod,
         0x57 => KeyCode::F11,
         0x58 => KeyCode::F12,
+        // 日本語キーボード固有のキー
+        0x73 => KeyCode::Backslash,  // JP: _ (underscore key)
+        0x7D => KeyCode::Backslash,  // JP: ¥ (yen key / backslash)
+        0x79 => KeyCode::Unknown,    // JP: 変換
+        0x7B => KeyCode::Unknown,    // JP: 無変換
         _ => KeyCode::Unknown,
     }
 }
@@ -450,6 +390,32 @@ fn extended_scancode_to_keycode(scancode: u8) -> KeyCode {
 }
 
 // ============================================================================
+// Helper Functions (Port I/O)
+// ============================================================================
+
+/// ステータスレジスタを読み取り、書き込み準備ができるまで待機
+fn wait_for_write(status_port: &mut Port<u8>) {
+    for _ in 0..100000 {
+        let status = unsafe { status_port.read() };
+        if status & 0x02 == 0 {
+            return; // Input buffer empty
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// ステータスレジスタを読み取り、読み込み準備ができるまで待機
+fn wait_for_read(status_port: &mut Port<u8>) {
+    for _ in 0..100000 {
+        let status = unsafe { status_port.read() };
+        if status & 0x01 != 0 {
+            return; // Output buffer full
+        }
+        core::hint::spin_loop();
+    }
+}
+
+// ============================================================================
 // Keyboard Driver
 // ============================================================================
 
@@ -465,8 +431,6 @@ pub struct Keyboard {
     event_queue: VecDeque<KeyEvent>,
     /// 拡張スキャンコードフラグ
     extended: bool,
-    /// リリースフラグ
-    release: bool,
 }
 
 impl Keyboard {
@@ -486,7 +450,6 @@ impl Keyboard {
             },
             event_queue: VecDeque::new(),
             extended: false,
-            release: false,
         }
     }
 
@@ -494,42 +457,28 @@ impl Keyboard {
     pub fn init(&mut self) {
         // キーボードをリセット
         self.send_command(KB_CMD_RESET);
-
         // スキャンを有効化
         self.send_command(KB_CMD_ENABLE_SCANNING);
-
-        // LEDを消灯
+        // LED状態更新
         self.update_leds();
     }
 
     /// コマンドを送信
     fn send_command(&mut self, cmd: u8) {
-        // キーボードの準備を待つ
-        self.wait_for_write();
+        wait_for_write(&mut self.status_port);
         unsafe {
             self.data_port.write(cmd);
         }
     }
 
-    /// 書き込み準備を待つ
-    fn wait_for_write(&mut self) {
-        for _ in 0..10000 {
-            let status = unsafe { self.status_port.read() };
-            if status & 0x02 == 0 {
-                return;
-            }
-            core::hint::spin_loop();
-        }
-    }
-
-    /// LEDを更新
+    /// LED状態を更新
     fn update_leds(&mut self) {
         let led_state = (self.modifiers.scroll_lock as u8)
             | ((self.modifiers.num_lock as u8) << 1)
             | ((self.modifiers.caps_lock as u8) << 2);
 
         self.send_command(KB_CMD_SET_LEDS);
-        self.wait_for_write();
+        wait_for_write(&mut self.status_port);
         unsafe {
             self.data_port.write(led_state);
         }
@@ -543,21 +492,21 @@ impl Keyboard {
             return;
         }
 
-        // E1プレフィックス（Pauseキー用、今回はスキップ）
+        // E1プレフィックス（Pauseキー用、スキップ）
         if scancode == 0xE1 {
             return;
         }
 
         // リリースビットをチェック
         let released = scancode & 0x80 != 0;
-        let scancode = scancode & 0x7F;
+        let code = scancode & 0x7F;
 
         // キーコードに変換
         let keycode = if self.extended {
             self.extended = false;
-            extended_scancode_to_keycode(scancode)
+            extended_scancode_to_keycode(code)
         } else {
-            scancode_to_keycode_set1(scancode)
+            scancode_to_keycode_set1(code)
         };
 
         if keycode == KeyCode::Unknown {
@@ -575,7 +524,11 @@ impl Keyboard {
 
         // イベントを作成
         let event = KeyEvent::new(keycode, state, self.modifiers);
-        self.event_queue.push_back(event);
+        
+        // バッファ溢れ防止
+        if self.event_queue.len() < MAX_EVENT_QUEUE_SIZE {
+            self.event_queue.push_back(event);
+        }
     }
 
     /// 修飾キーの状態を更新
@@ -640,45 +593,7 @@ impl Keyboard {
 }
 
 // ============================================================================
-// Global State
-// ============================================================================
-
-/// グローバルキーボード
-static KEYBOARD: Mutex<Keyboard> = Mutex::new(Keyboard::new());
-
-/// キーボードを初期化
-pub fn init() {
-    KEYBOARD.lock().init();
-    crate::log!("[INPUT] Keyboard initialized\n");
-}
-
-/// スキャンコードを処理（割り込みハンドラから呼ばれる）
-pub fn handle_scancode(scancode: u8) {
-    KEYBOARD.lock().process_scancode(scancode);
-}
-
-/// イベントを取得
-pub fn poll_event() -> Option<KeyEvent> {
-    KEYBOARD.lock().poll_event()
-}
-
-/// 文字入力を取得
-pub fn poll_char() -> Option<char> {
-    KEYBOARD.lock().poll_char()
-}
-
-/// イベントがあるか
-pub fn has_event() -> bool {
-    KEYBOARD.lock().has_event()
-}
-
-/// 修飾キーの状態を取得
-pub fn modifiers() -> Modifiers {
-    KEYBOARD.lock().modifiers()
-}
-
-// ============================================================================
-// Mouse (stub)
+// Mouse Driver
 // ============================================================================
 
 /// マウスボタン
@@ -692,13 +607,331 @@ pub enum MouseButton {
 /// マウスイベント
 #[derive(Debug, Clone, Copy)]
 pub struct MouseEvent {
+    /// X方向の移動量
     pub dx: i32,
+    /// Y方向の移動量
     pub dy: i32,
-    pub button: Option<MouseButton>,
-    pub pressed: bool,
+    /// 左ボタンが押されているか
+    pub left_down: bool,
+    /// 右ボタンが押されているか
+    pub right_down: bool,
+    /// 中ボタンが押されているか
+    pub middle_down: bool,
 }
 
-// TODO: マウスドライバの実装
+impl MouseEvent {
+    /// いずれかのボタンが押されているか
+    pub fn any_button(&self) -> bool {
+        self.left_down || self.right_down || self.middle_down
+    }
+    
+    /// 移動があるか
+    pub fn has_movement(&self) -> bool {
+        self.dx != 0 || self.dy != 0
+    }
+}
+
+/// PS/2 マウスドライバ
+pub struct Mouse {
+    /// データポート
+    data_port: Port<u8>,
+    /// ステータスポート
+    status_port: Port<u8>,
+    /// パケットバッファ（標準PS/2マウスは3バイト）
+    packet: [u8; 3],
+    /// パケットインデックス
+    packet_index: u8,
+    /// イベントキュー
+    event_queue: VecDeque<MouseEvent>,
+    /// 前回のボタン状態（クリック検出用）
+    prev_buttons: u8,
+    /// マウスが初期化されているか
+    initialized: bool,
+}
+
+impl Mouse {
+    /// 新しいマウスドライバを作成
+    pub const fn new() -> Self {
+        Self {
+            data_port: Port::new(PS2_DATA_PORT),
+            status_port: Port::new(PS2_STATUS_PORT),
+            packet: [0; 3],
+            packet_index: 0,
+            event_queue: VecDeque::new(),
+            prev_buttons: 0,
+            initialized: false,
+        }
+    }
+
+    /// マウスの初期化
+    pub fn init(&mut self) {
+        // 1. Auxiliary Device (マウス) を有効化
+        self.write_controller_command(CMD_ENABLE_AUX);
+
+        // 2. コントローラ設定バイトを読み取り
+        self.write_controller_command(CMD_READ_CONFIG);
+        let mut config = self.read_data_timeout().unwrap_or(0);
+        
+        // IRQ12を有効化 (Bit 1)
+        // マウスクロックを有効化 (Bit 5をクリア)
+        config |= 0x02;   // Enable IRQ12
+        config &= !0x20;  // Enable mouse clock
+        
+        // 設定を書き戻し
+        self.write_controller_command(CMD_WRITE_CONFIG);
+        self.write_data(config);
+
+        // 3. マウスをデフォルト設定にリセット
+        if self.write_mouse_command(MOUSE_CMD_SET_DEFAULTS).is_err() {
+            crate::log!("[INPUT] Mouse: SET_DEFAULTS failed\n");
+            return;
+        }
+
+        // 4. データストリーミング開始
+        if self.write_mouse_command(MOUSE_CMD_ENABLE_DATA).is_err() {
+            crate::log!("[INPUT] Mouse: ENABLE_DATA failed\n");
+            return;
+        }
+
+        self.initialized = true;
+        crate::log!("[INPUT] Mouse initialized (IRQ12 enabled)\n");
+    }
+
+    /// PS/2コントローラへのコマンド書き込み
+    fn write_controller_command(&mut self, cmd: u8) {
+        wait_for_write(&mut self.status_port);
+        unsafe {
+            self.status_port.write(cmd);
+        }
+    }
+
+    /// PS/2データポートへの書き込み
+    fn write_data(&mut self, data: u8) {
+        wait_for_write(&mut self.status_port);
+        unsafe {
+            self.data_port.write(data);
+        }
+    }
+
+    /// PS/2データポートからの読み込み（タイムアウト付き）
+    fn read_data_timeout(&mut self) -> Option<u8> {
+        for _ in 0..100000 {
+            let status = unsafe { self.status_port.read() };
+            if status & 0x01 != 0 {
+                return Some(unsafe { self.data_port.read() });
+            }
+            core::hint::spin_loop();
+        }
+        None
+    }
+
+    /// マウスデバイスへのコマンド送信（0xD4経由）
+    fn write_mouse_command(&mut self, cmd: u8) -> Result<u8, ()> {
+        // コントローラに「次はマウスへのデータだ」と伝える
+        self.write_controller_command(CMD_WRITE_TO_AUX);
+        // データポートにコマンドを書く
+        self.write_data(cmd);
+        
+        // ACKを待つ
+        if let Some(response) = self.read_data_timeout() {
+            if response == ACK {
+                return Ok(response);
+            }
+        }
+        Err(())
+    }
+
+    /// マウスからのデータ（1バイト）を処理
+    pub fn process_packet(&mut self, data: u8) {
+        if !self.initialized {
+            return;
+        }
+
+        // パケットの最初のバイトは常にBit 3が1であるべき
+        if self.packet_index == 0 && (data & 0x08) == 0 {
+            // 同期ズレの可能性、リセット
+            return;
+        }
+
+        self.packet[self.packet_index as usize] = data;
+        self.packet_index += 1;
+
+        // 3バイト揃ったらパケット完了
+        if self.packet_index == 3 {
+            self.packet_index = 0;
+            self.finalize_packet();
+        }
+    }
+
+    /// 受信した3バイトパケットを解析してイベント生成
+    fn finalize_packet(&mut self) {
+        let flags = self.packet[0];
+        let x_raw = self.packet[1];
+        let y_raw = self.packet[2];
+
+        // オーバーフローチェック
+        let x_overflow = (flags & 0x40) != 0;
+        let y_overflow = (flags & 0x80) != 0;
+        
+        if x_overflow || y_overflow {
+            return; // 動きが大きすぎる場合は無視
+        }
+
+        // 移動量の計算（9bit符号付き整数）
+        let mut dx = x_raw as i16;
+        let mut dy = y_raw as i16;
+
+        // 符号拡張
+        if (flags & 0x10) != 0 {
+            dx |= !0xFF; // X Sign extension
+        }
+        if (flags & 0x20) != 0 {
+            dy |= !0xFF; // Y Sign extension
+        }
+
+        // ボタン状態
+        let left = (flags & 0x01) != 0;
+        let right = (flags & 0x02) != 0;
+        let middle = (flags & 0x04) != 0;
+
+        let event = MouseEvent {
+            dx: dx as i32,
+            dy: -(dy as i32), // Y軸を反転（画面座標系に合わせる）
+            left_down: left,
+            right_down: right,
+            middle_down: middle,
+        };
+
+        // ボタン状態を更新
+        self.prev_buttons = flags & 0x07;
+
+        // バッファ溢れ防止
+        if self.event_queue.len() < MAX_EVENT_QUEUE_SIZE {
+            self.event_queue.push_back(event);
+        }
+    }
+
+    /// イベントを取得
+    pub fn poll_event(&mut self) -> Option<MouseEvent> {
+        self.event_queue.pop_front()
+    }
+
+    /// キューにイベントがあるか
+    pub fn has_event(&self) -> bool {
+        !self.event_queue.is_empty()
+    }
+    
+    /// 初期化されているか
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+}
+
+// ============================================================================
+// Global State
+// ============================================================================
+
+/// グローバルキーボード
+static KEYBOARD: Mutex<Keyboard> = Mutex::new(Keyboard::new());
+
+/// グローバルマウス
+static MOUSE: Mutex<Mouse> = Mutex::new(Mouse::new());
+
+// ============================================================================
+// Public API - Initialization
+// ============================================================================
+
+/// 入力デバイスを初期化
+pub fn init() {
+    KEYBOARD.lock().init();
+    crate::log!("[INPUT] Keyboard initialized\n");
+}
+
+/// マウスを初期化（キーボード初期化後に呼ぶこと）
+pub fn init_mouse() {
+    MOUSE.lock().init();
+}
+
+// ============================================================================
+// Public API - Keyboard (割り込みハンドラ用)
+// ============================================================================
+
+/// スキャンコードを処理（IRQ1割り込みハンドラから呼ばれる）
+/// try_lockを使用してデッドロックを防止
+pub fn handle_scancode(scancode: u8) {
+    if let Some(mut guard) = KEYBOARD.try_lock() {
+        guard.process_scancode(scancode);
+    }
+}
+
+// ============================================================================
+// Public API - Mouse (割り込みハンドラ用)
+// ============================================================================
+
+/// マウスパケットバイトを処理（IRQ12割り込みハンドラから呼ばれる）
+/// try_lockを使用してデッドロックを防止
+pub fn handle_mouse_packet(data: u8) {
+    if let Some(mut guard) = MOUSE.try_lock() {
+        guard.process_packet(data);
+    }
+}
+
+// ============================================================================
+// Public API - Keyboard (ユーザーコード用)
+// ============================================================================
+
+/// キーボードイベントを取得（割り込みを無効にして実行）
+pub fn poll_event() -> Option<KeyEvent> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        KEYBOARD.lock().poll_event()
+    })
+}
+
+/// 文字入力を取得（割り込みを無効にして実行）
+pub fn poll_char() -> Option<char> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        KEYBOARD.lock().poll_char()
+    })
+}
+
+/// キーボードイベントがあるか（割り込みを無効にして実行）
+pub fn has_event() -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        KEYBOARD.lock().has_event()
+    })
+}
+
+/// 修飾キーの状態を取得（割り込みを無効にして実行）
+pub fn modifiers() -> Modifiers {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        KEYBOARD.lock().modifiers()
+    })
+}
+
+// ============================================================================
+// Public API - Mouse (ユーザーコード用)
+// ============================================================================
+
+/// マウスイベントを取得（割り込みを無効にして実行）
+pub fn poll_mouse_event() -> Option<MouseEvent> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        MOUSE.lock().poll_event()
+    })
+}
+
+/// マウスイベントがあるか（割り込みを無効にして実行）
+pub fn has_mouse_event() -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        MOUSE.lock().has_event()
+    })
+}
+
+/// マウスが初期化されているか
+pub fn is_mouse_initialized() -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        MOUSE.lock().is_initialized()
+    })
+}
 
 // ============================================================================
 // Tests
@@ -721,5 +954,13 @@ mod tests {
         assert_eq!(scancode_to_keycode_set1(0x1E), KeyCode::A);
         assert_eq!(scancode_to_keycode_set1(0x39), KeyCode::Space);
         assert_eq!(scancode_to_keycode_set1(0x1C), KeyCode::Enter);
+    }
+    
+    #[test]
+    fn test_shift_symbols() {
+        assert_eq!(KeyCode::Key1.to_ascii(true, false), Some('!'));
+        assert_eq!(KeyCode::Key2.to_ascii(true, false), Some('@'));
+        assert_eq!(KeyCode::Minus.to_ascii(true, false), Some('_'));
+        assert_eq!(KeyCode::Equals.to_ascii(true, false), Some('+'));
     }
 }
