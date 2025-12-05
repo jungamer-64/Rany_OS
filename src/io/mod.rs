@@ -12,8 +12,11 @@ pub mod iommu;
 pub mod keyboard;
 pub mod log;
 pub mod msi;
-pub mod nvme;
-pub mod pci;
+pub mod nvme;        // NVMe common module (directory)
+pub mod nvme_async;  // NVMe async driver (original nvme.rs)
+pub mod pci;         // PCI common module (directory)
+#[path = "pci_old.rs"]
+pub mod pci_compat;  // PCI legacy compatibility (renamed from pci.rs)
 pub mod pcie;
 pub mod polling;
 pub mod ps2;
@@ -47,10 +50,18 @@ pub use iommu::{
     DeviceId, DmaMapping, IommuController, IommuDomain, IommuError, disable_iommu, enable_iommu,
     init_iommu, with_iommu,
 };
+// NVMe async driver exports (from nvme_async.rs)
+#[allow(unused_imports)]
+pub use nvme_async::{
+    NvmeConfig, NvmeController, NvmeError, NvmeNamespace,
+    handle_nvme_interrupt, init_nvme,
+};
+// NVMe common types (from nvme/ directory)
 #[allow(unused_imports)]
 pub use nvme::{
-    NvmeCommand, NvmeCompletion, NvmeConfig, NvmeController, NvmeError, NvmeNamespace,
-    NvmeQueuePair, NvmeStatus, handle_nvme_interrupt, init_nvme,
+    NvmeCommand, NvmeCompletion, NvmeQueuePair, NvmeStatus,
+    IdentifyController, IdentifyNamespace, NvmeCapabilities,
+    AdminOpcode, IoOpcode,
 };
 #[allow(unused_imports)]
 pub use polling::{
@@ -68,12 +79,21 @@ pub use virtio_net::{
     features as net_features, handle_virtio_net_interrupt, init_virtio_net,
 };
 
-// PCI bus support
+// PCI bus support (legacy compatibility from pci_old.rs)
 #[allow(unused_imports)]
-pub use pci::{
+pub use pci_compat::{
     PciBar, PciBus, PciClass, PciDevice, devices as pci_devices,
     find_by_class as pci_find_by_class, find_virtio_devices as pci_find_virtio_devices,
     init as pci_init, pci_read, pci_read8, pci_read16, pci_write,
+};
+
+// PCI common module exports (new unified interface)
+#[allow(unused_imports)]
+pub use pci::{
+    ConfigSpaceAccessor, BdfAddress, Bar as PciBarCommon, ClassCode as PciClassCode,
+    VendorId, DeviceId as PciDeviceId, LegacyPciAccessor, EcamAccess, EcamManager,
+    PciBusScanner, PciDeviceInfo, CapabilityId as PciCapabilityId,
+    config_regs as pci_config_regs, command_bits as pci_command_bits, status_bits as pci_status_bits,
 };
 
 // ACPI table parser
@@ -97,4 +117,31 @@ pub use nvme_polling::{
     AsyncIoRequest, CompletionQueue, IoRequestState, NvmeCommand as PollingNvmeCommand,
     NvmeCompletion as PollingNvmeCompletion, NvmePollingDriver, NvmeQueueStats, PerCoreNvmeQueue,
     QueuePair, SubmissionQueue, init as init_nvme_polling, poll as nvme_poll,
+};
+
+// VirtIO Common Module exports
+#[allow(unused_imports)]
+pub use virtio::{
+    // Core types
+    VirtQueue as CommonVirtQueue,
+    TrackedVirtQueue,
+    VringDesc as CommonVringDesc,
+    VringAvailHeader,
+    VringUsedElem as CommonVringUsedElem,
+    VringUsedHeader,
+    VirtioDeviceType,
+    VirtioTransport,
+    VirtioPciCap,
+    // Constants
+    vring_flags,
+    status as virtio_status,
+    mmio_regs as virtio_mmio_regs,
+    common_features as virtio_common_features,
+    VIRTQUEUE_MAX_SIZE,
+    VIRTQUEUE_DEFAULT_SIZE,
+    // Async VirtIO-Net
+    VirtioNet as AsyncVirtioNet,
+    async_receive_packet,
+    async_send_packet,
+    async_send_data,
 };

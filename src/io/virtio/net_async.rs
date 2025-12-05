@@ -1,7 +1,12 @@
 // ============================================================================
-// src/io/virtio.rs - Complete Async VirtIO-Net Driver
+// src/io/virtio/net_async.rs - Async VirtIO-Net Driver
 // 設計書 6.2: NIC Driverのゼロコピーパケット処理
 // ============================================================================
+//!
+//! 非同期VirtIO-Netドライバ
+//!
+//! 旧virtio.rsからの移植。共通モジュールを使用するようにリファクタリング。
+
 #![allow(dead_code)]
 
 use alloc::collections::VecDeque;
@@ -13,23 +18,21 @@ use spin::Mutex;
 use x86_64::PhysAddr;
 
 use crate::net::mempool::{PacketRef, alloc_packet};
+use super::defs::*;
 
 // ============================================================================
-// VirtIO Constants
+// VirtIO-Net Constants
 // ============================================================================
-
-/// VirtIOデバイスステータス
-const VIRTIO_STATUS_ACKNOWLEDGE: u8 = 1;
-const VIRTIO_STATUS_DRIVER: u8 = 2;
-const VIRTIO_STATUS_DRIVER_OK: u8 = 4;
-const VIRTIO_STATUS_FEATURES_OK: u8 = 8;
-const VIRTIO_STATUS_FAILED: u8 = 128;
 
 /// VirtIO-netフィーチャービット
-const VIRTIO_NET_F_MAC: u64 = 1 << 5; // デバイスはMACアドレスを持つ
-const VIRTIO_NET_F_STATUS: u64 = 1 << 16; // リンクステータスを報告
-const VIRTIO_NET_F_MRG_RXBUF: u64 = 1 << 15; // マージ受信バッファ
-const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17; // 制御virtqueue
+pub mod features {
+    pub const VIRTIO_NET_F_MAC: u64 = 1 << 5;           // デバイスはMACアドレスを持つ
+    pub const VIRTIO_NET_F_STATUS: u64 = 1 << 16;       // リンクステータスを報告
+    pub const VIRTIO_NET_F_MRG_RXBUF: u64 = 1 << 15;    // マージ受信バッファ
+    pub const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;      // 制御virtqueue
+    pub const VIRTIO_NET_F_GUEST_CSUM: u64 = 1 << 0;    // ゲストがチェックサムを処理
+    pub const VIRTIO_NET_F_CSUM: u64 = 1 << 0;          // チェックサムオフロード
+}
 
 /// Virtqueueインデックス
 const VIRTQUEUE_RX: u16 = 0;
@@ -40,10 +43,10 @@ const VIRTQUEUE_CTRL: u16 = 2;
 const QUEUE_SIZE: u16 = 256;
 
 // ============================================================================
-// VirtIO Ring Structures
+// Legacy VirtIO Ring Structures (for compatibility)
 // ============================================================================
 
-/// Virtqueueディスクリプタ
+/// Virtqueueディスクリプタ（レガシー互換）
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct VirtqDesc {
@@ -58,9 +61,9 @@ pub struct VirtqDesc {
 }
 
 impl VirtqDesc {
-    pub const FLAG_NEXT: u16 = 1; // チェーンに続くディスクリプタあり
-    pub const FLAG_WRITE: u16 = 2; // デバイスが書き込むバッファ
-    pub const FLAG_INDIRECT: u16 = 4; // 間接ディスクリプタテーブル
+    pub const FLAG_NEXT: u16 = vring_flags::VRING_DESC_F_NEXT;
+    pub const FLAG_WRITE: u16 = vring_flags::VRING_DESC_F_WRITE;
+    pub const FLAG_INDIRECT: u16 = vring_flags::VRING_DESC_F_INDIRECT;
 }
 
 /// Availableリング
@@ -93,7 +96,7 @@ pub struct VirtqUsed {
 // Virtqueue Management
 // ============================================================================
 
-/// Virtqueue
+/// Virtqueue（非同期VirtIO-Net用）
 pub struct Virtqueue {
     /// キューインデックス
     index: u16,
@@ -294,7 +297,7 @@ impl Virtqueue {
 }
 
 // ============================================================================
-// VirtIO-Net Device
+// VirtIO-Net Device Configuration
 // ============================================================================
 
 /// VirtIO-netデバイス設定
@@ -305,6 +308,10 @@ pub struct VirtioNetConfig {
     pub max_virtqueue_pairs: u16,
     pub mtu: u16,
 }
+
+// ============================================================================
+// VirtIO-Net Device
+// ============================================================================
 
 /// VirtIO-netデバイス
 pub struct VirtioNet {
@@ -367,6 +374,8 @@ impl VirtioNet {
 
     /// デバイスを初期化
     fn initialize(&mut self) -> Result<(), &'static str> {
+        use super::defs::status::*;
+
         // 1. デバイスリセット
         self.write_status(0);
 
@@ -377,9 +386,9 @@ impl VirtioNet {
         self.write_status(self.read_status() | VIRTIO_STATUS_DRIVER);
 
         // 4. フィーチャーネゴシエーション
-        let features = self.read_features();
-        let supported = VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS;
-        self.write_features(features & supported);
+        let device_features = self.read_features();
+        let supported = features::VIRTIO_NET_F_MAC | features::VIRTIO_NET_F_STATUS;
+        self.write_features(device_features & supported);
 
         // 5. FEATURES_OK
         self.write_status(self.read_status() | VIRTIO_STATUS_FEATURES_OK);
@@ -403,7 +412,7 @@ impl VirtioNet {
         self.write_status(self.read_status() | VIRTIO_STATUS_DRIVER_OK);
 
         crate::log!(
-            "[VIRTIO-NET] Initialized, MAC={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
+            "[VIRTIO-NET-ASYNC] Initialized, MAC={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}\n",
             self.mac[0],
             self.mac[1],
             self.mac[2],
@@ -415,39 +424,110 @@ impl VirtioNet {
         Ok(())
     }
 
+    /// MMIO読み取りヘルパー
+    fn mmio_read<T>(&self, offset: usize) -> T {
+        unsafe {
+            core::ptr::read_volatile((self.base_addr + offset) as *const T)
+        }
+    }
+
+    /// MMIO書き込みヘルパー
+    fn mmio_write<T>(&self, offset: usize, value: T) {
+        unsafe {
+            core::ptr::write_volatile((self.base_addr + offset) as *mut T, value);
+        }
+    }
+
     /// ステータスレジスタを読み取り
     fn read_status(&self) -> u8 {
-        // TODO: 実際のMMIO読み取り
-        0
+        self.mmio_read::<u8>(mmio_regs::STATUS)
     }
 
     /// ステータスレジスタに書き込み
-    fn write_status(&self, _status: u8) {
-        // TODO: 実際のMMIO書き込み
+    fn write_status(&self, status: u8) {
+        self.mmio_write::<u8>(mmio_regs::STATUS, status);
     }
 
     /// フィーチャーを読み取り
     fn read_features(&self) -> u64 {
-        // TODO: 実際のMMIO読み取り
-        VIRTIO_NET_F_MAC | VIRTIO_NET_F_STATUS
+        // デバイスフィーチャーセレクトを設定してから読み取り
+        self.mmio_write::<u32>(mmio_regs::DEVICE_FEATURES_SEL, 0);
+        let low = self.mmio_read::<u32>(mmio_regs::DEVICE_FEATURES) as u64;
+        
+        self.mmio_write::<u32>(mmio_regs::DEVICE_FEATURES_SEL, 1);
+        let high = self.mmio_read::<u32>(mmio_regs::DEVICE_FEATURES) as u64;
+        
+        low | (high << 32)
     }
 
     /// フィーチャーを書き込み
-    fn write_features(&self, _features: u64) {
-        // TODO: 実際のMMIO書き込み
+    fn write_features(&self, features: u64) {
+        self.mmio_write::<u32>(mmio_regs::DRIVER_FEATURES_SEL, 0);
+        self.mmio_write::<u32>(mmio_regs::DRIVER_FEATURES, features as u32);
+        
+        self.mmio_write::<u32>(mmio_regs::DRIVER_FEATURES_SEL, 1);
+        self.mmio_write::<u32>(mmio_regs::DRIVER_FEATURES, (features >> 32) as u32);
     }
 
     /// MACアドレスを読み取り
     fn read_mac(&mut self) -> Result<(), &'static str> {
-        // TODO: 実際のMMIO読み取り
-        // ここではダミー値
-        self.mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
+        // VirtIO-NetのMACアドレスはconfig空間に存在
+        // オフセット: 0x100 (CONFIG)
+        let config_base = self.base_addr + mmio_regs::CONFIG;
+        
+        for i in 0..6 {
+            self.mac[i] = unsafe {
+                core::ptr::read_volatile((config_base + i) as *const u8)
+            };
+        }
+        
         Ok(())
     }
 
     /// Virtqueueを設定
     fn setup_queues(&self) -> Result<(), &'static str> {
-        // TODO: デバイスにキューアドレスを通知
+        // RXキューを設定
+        self.setup_single_queue(VIRTQUEUE_RX, &self.rx_queue)?;
+        
+        // TXキューを設定
+        self.setup_single_queue(VIRTQUEUE_TX, &self.tx_queue)?;
+        
+        Ok(())
+    }
+
+    /// 単一のVirtqueueを設定
+    fn setup_single_queue(&self, queue_index: u16, queue: &Mutex<Virtqueue>) -> Result<(), &'static str> {
+        let q = queue.lock();
+        
+        // キューセレクトを設定
+        self.mmio_write::<u32>(mmio_regs::QUEUE_SEL, queue_index as u32);
+        
+        // キューサイズを確認
+        let max_size = self.mmio_read::<u32>(mmio_regs::QUEUE_NUM_MAX);
+        if max_size == 0 {
+            return Err("Queue not available");
+        }
+        
+        // キューサイズを設定
+        self.mmio_write::<u32>(mmio_regs::QUEUE_NUM, QUEUE_SIZE as u32);
+        
+        // キューアドレスを設定（v2仕様）
+        let desc_addr = q.desc_phys_addr().as_u64();
+        let avail_addr = q.avail_phys_addr().as_u64();
+        let used_addr = q.used_phys_addr().as_u64();
+        
+        self.mmio_write::<u32>(mmio_regs::QUEUE_DESC_LOW, desc_addr as u32);
+        self.mmio_write::<u32>(mmio_regs::QUEUE_DESC_HIGH, (desc_addr >> 32) as u32);
+        
+        self.mmio_write::<u32>(mmio_regs::QUEUE_AVAIL_LOW, avail_addr as u32);
+        self.mmio_write::<u32>(mmio_regs::QUEUE_AVAIL_HIGH, (avail_addr >> 32) as u32);
+        
+        self.mmio_write::<u32>(mmio_regs::QUEUE_USED_LOW, used_addr as u32);
+        self.mmio_write::<u32>(mmio_regs::QUEUE_USED_HIGH, (used_addr >> 32) as u32);
+        
+        // キューを有効化
+        self.mmio_write::<u32>(mmio_regs::QUEUE_READY, 1);
+        
         Ok(())
     }
 
@@ -466,19 +546,15 @@ impl VirtioNet {
         }
 
         // デバイスに通知
-        self.notify_rx();
+        drop(rx_queue);
+        self.notify_queue(VIRTQUEUE_RX);
 
         Ok(())
     }
 
-    /// デバイスに通知（RXキュー）
-    fn notify_rx(&self) {
-        // TODO: 実際のMMIO書き込み（キュー通知）
-    }
-
-    /// デバイスに通知（TXキュー）
-    fn notify_tx(&self) {
-        // TODO: 実際のMMIO書き込み（キュー通知）
+    /// キューに通知
+    fn notify_queue(&self, queue_index: u16) {
+        self.mmio_write::<u32>(mmio_regs::QUEUE_NOTIFY, queue_index as u32);
     }
 
     /// パケットを送信（ゼロコピー）
@@ -490,7 +566,7 @@ impl VirtioNet {
 
         // デバイスに通知
         drop(tx_queue);
-        self.notify_tx();
+        self.notify_queue(VIRTQUEUE_TX);
 
         self.stats.tx_packets.fetch_add(1, Ordering::Relaxed);
         self.stats.tx_bytes.fetch_add(len as u64, Ordering::Relaxed);
@@ -542,6 +618,16 @@ impl VirtioNet {
             self.stats.tx_bytes.load(Ordering::Relaxed),
         )
     }
+
+    /// 割り込みステータスを確認
+    pub fn read_interrupt_status(&self) -> u32 {
+        self.mmio_read::<u32>(mmio_regs::INTERRUPT_STATUS)
+    }
+
+    /// 割り込みをACK
+    pub fn ack_interrupt(&self, status: u32) {
+        self.mmio_write::<u32>(mmio_regs::INTERRUPT_ACK, status);
+    }
 }
 
 // ============================================================================
@@ -578,8 +664,16 @@ pub fn init_virtio_net(base_addr: usize) -> Result<(), &'static str> {
 
 /// 割り込みハンドラ (ISR)
 pub fn virtio_net_interrupt_handler() {
-    // 1. 割り込み要因のクリア（ドライバ依存）
-    // TODO: VirtIOレジスタからの読み取り処理
+    // 1. 割り込みステータスを読み取り
+    let device_guard = VIRTIO_NET_DEVICE.lock();
+    if let Some(device) = device_guard.as_ref() {
+        let status = device.read_interrupt_status();
+        if status != 0 {
+            // 割り込みをACK
+            device.ack_interrupt(status);
+        }
+    }
+    drop(device_guard);
 
     // 2. フラグをセット
     NET_DEVICE_STATE.ready.store(true, Ordering::SeqCst);
@@ -588,9 +682,6 @@ pub fn virtio_net_interrupt_handler() {
     if let Some(waker) = NET_DEVICE_STATE.waker.lock().take() {
         waker.wake_by_ref();
     }
-
-    // 4. EOI送信
-    // TODO: APIC/PICへのEOI送信処理
 }
 
 /// 非同期パケット受信関数（ゼロコピー）

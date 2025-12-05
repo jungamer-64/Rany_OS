@@ -24,7 +24,7 @@ use alloc::collections::VecDeque;
 use core::fmt::Write;
 
 use crate::graphics::{Color, Framebuffer, BitmapFont};
-use crate::input::{KeyCode, KeyState, KeyEvent, poll_event};
+use crate::input::{KeyCode, KeyState, KeyEvent, poll_event, poll_mouse_event, MouseEvent};
 use crate::shell::exoshell::{ExoShell, ExoValue};
 
 // フォント定数
@@ -244,6 +244,49 @@ impl ConsoleLine {
 }
 
 // ============================================================================
+// Mouse State
+// ============================================================================
+
+/// マウスカーソルの状態
+#[derive(Clone, Copy)]
+struct MouseState {
+    /// X座標（ピクセル）
+    x: i32,
+    /// Y座標（ピクセル）
+    y: i32,
+    /// 左ボタンが押されているか
+    left_down: bool,
+    /// 右ボタンが押されているか
+    right_down: bool,
+    /// 中ボタンが押されているか
+    middle_down: bool,
+}
+
+impl MouseState {
+    fn new() -> Self {
+        Self {
+            x: 400, // 画面中央付近で開始
+            y: 300,
+            left_down: false,
+            right_down: false,
+            middle_down: false,
+        }
+    }
+    
+    /// イベントから状態を更新し、新しい位置を返す
+    fn update(&mut self, event: &MouseEvent, max_x: i32, max_y: i32) {
+        // 位置の更新（境界チェック付き）
+        self.x = (self.x + event.dx).clamp(0, max_x - 1);
+        self.y = (self.y + event.dy).clamp(0, max_y - 1);
+        
+        // ボタン状態の更新
+        self.left_down = event.left_down;
+        self.right_down = event.right_down;
+        self.middle_down = event.middle_down;
+    }
+}
+
+// ============================================================================
 // Graphical Shell
 // ============================================================================
 
@@ -285,6 +328,10 @@ pub struct GraphicalShell {
     completion_index: usize,
     /// 現在実行中のコマンドがあるか
     is_executing: bool,
+    /// マウス状態
+    mouse: MouseState,
+    /// マウスカーソル表示フラグ
+    show_mouse_cursor: bool,
 }
 
 unsafe impl Send for GraphicalShell {}
@@ -319,6 +366,8 @@ impl GraphicalShell {
             completions: Vec::new(),
             completion_index: 0,
             is_executing: false,
+            mouse: MouseState::new(),
+            show_mouse_cursor: true,
         }
     }
 
@@ -621,9 +670,16 @@ impl GraphicalShell {
                 self.completions.clear();
                 self.redraw();
             }
+            KeyCode::Insert => {
+                // インサートモード切り替え（現在は無視）
+            }
+            KeyCode::CapsLock | KeyCode::NumLock | KeyCode::ScrollLock => {
+                // ロックキーは無視（修飾キー状態は自動更新される）
+            }
             _ => {
                 // 文字入力
                 if let Some(c) = event.char {
+                    // 印刷可能なASCII文字をすべて受け入れる（空白0x20から~0x7E）
                     if c >= ' ' && c <= '~' {
                         self.completions.clear();
                         self.input_buffer.insert(c);
@@ -631,6 +687,80 @@ impl GraphicalShell {
                     }
                 }
             }
+        }
+    }
+
+    /// マウスイベントを処理
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
+        let fb = unsafe { &*self.fb };
+        let max_x = fb.width() as i32;
+        let max_y = fb.height() as i32;
+        
+        // 古いカーソル位置を保存（再描画用）
+        let old_x = self.mouse.x;
+        let old_y = self.mouse.y;
+        
+        // マウス状態を更新
+        self.mouse.update(&event, max_x, max_y);
+        
+        // マウスカーソルが表示されている場合、描画を更新
+        if self.show_mouse_cursor {
+            // 古いカーソル位置を消去（背景色で塗りつぶし）
+            self.erase_mouse_cursor(old_x, old_y);
+            
+            // 新しいカーソル位置を描画
+            self.draw_mouse_cursor();
+        }
+        
+        // クリックによるスクロール操作など（将来拡張用）
+        if event.left_down && self.mouse.y < 20 {
+            // 画面上部クリックでスクロールアップ
+            if self.scroll_offset < self.output_lines.len().saturating_sub(1) {
+                self.scroll_offset += 1;
+                self.redraw();
+            }
+        } else if event.right_down && self.mouse.y > max_y - 20 {
+            // 画面下部右クリックでスクロールダウン
+            if self.scroll_offset > 0 {
+                self.scroll_offset -= 1;
+                self.redraw();
+            }
+        }
+    }
+    
+    /// マウスカーソルを描画（シンプルな十字）
+    fn draw_mouse_cursor(&mut self) {
+        let fb = unsafe { &mut *self.fb };
+        let x = self.mouse.x;
+        let y = self.mouse.y;
+        
+        // カーソル色（白）
+        let color = Color::WHITE;
+        
+        // 簡単な十字カーソル（5x5）
+        for i in 0..5i32 {
+            // 横線
+            fb.set_pixel(x + i - 2, y, color);
+        }
+        for i in 0..5i32 {
+            // 縦線
+            fb.set_pixel(x, y + i - 2, color);
+        }
+    }
+    
+    /// マウスカーソルを消去（背景色で上書き）
+    fn erase_mouse_cursor(&mut self, x: i32, y: i32) {
+        let fb = unsafe { &mut *self.fb };
+        
+        // 背景色で上書き
+        let bg = self.theme.background;
+        
+        // 十字カーソル領域を消去
+        for i in 0..5i32 {
+            fb.set_pixel(x + i - 2, y, bg);
+        }
+        for i in 0..5i32 {
+            fb.set_pixel(x, y + i - 2, bg);
         }
     }
 
@@ -686,6 +816,12 @@ impl GraphicalShell {
                 return;
             }
             _ => {}
+        }
+
+        // 既にコマンド実行中の場合は警告を表示して拒否
+        if self.is_executing {
+            self.print_colored("(waiting for previous command...)\n", self.theme.warning);
+            return;
         }
 
         // グローバルキューにコマンドを追加（非同期タスクで処理される）
@@ -914,13 +1050,26 @@ pub async fn run_async_shell() {
     info!(target: "gshell", "Starting async graphical shell task...");
     
     loop {
-        // フェーズ1: キーイベントとUI更新（GraphicalShellロック内）
+        // フェーズ1: キー/マウスイベントとUI更新（GraphicalShellロック内）
         {
             let mut guard = GRAPHICAL_SHELL.lock();
             if let Some(ref mut shell) = *guard {
-                // キーイベントを処理
-                while let Some(event) = poll_event() {
-                    shell.handle_key(event);
+                // キーイベントを処理（最大16イベントずつ処理してUIの応答性を保つ）
+                for _ in 0..16 {
+                    if let Some(event) = poll_event() {
+                        shell.handle_key(event);
+                    } else {
+                        break;
+                    }
+                }
+                
+                // マウスイベントを処理（最大16イベントずつ）
+                for _ in 0..16 {
+                    if let Some(event) = poll_mouse_event() {
+                        shell.handle_mouse(event);
+                    } else {
+                        break;
+                    }
                 }
                 
                 // 結果キューをチェックして表示
@@ -936,8 +1085,11 @@ pub async fn run_async_shell() {
         let request = COMMAND_QUEUE.lock().pop_front();
         
         if let Some(req) = request {
-            // ExoShellを一時的に取り出す
-            let shell_opt = ASYNC_EXOSHELL.lock().take();
+            // ExoShellを一時的に取り出す（ノンブロッキング）
+            let shell_opt = {
+                let mut guard = ASYNC_EXOSHELL.lock();
+                guard.take()
+            };
             
             if let Some(mut exoshell) = shell_opt {
                 // ロック外でasync eval()を呼び出し
@@ -955,12 +1107,11 @@ pub async fn run_async_shell() {
                     is_error,
                 });
             } else {
-                // ExoShellがない場合
-                RESULT_QUEUE.lock().push_back(AsyncCommandResult {
-                    id: req.id,
-                    output: "ExoShell busy or not initialized".to_string(),
-                    is_error: true,
-                });
+                // ExoShellがない場合 - コマンドをキューに戻す
+                COMMAND_QUEUE.lock().push_front(req);
+                // 短い待機後にリトライ
+                crate::task::yield_now().await;
+                continue;
             }
         }
         
