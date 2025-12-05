@@ -139,7 +139,7 @@ impl ScriptRuntime {
         let ast = parser.parse()?;
 
         // コンパイラ
-        let (instructions, constants, functions) = self.compile(&ast)?;
+        let (instructions, constants, _functions) = self.compile(&ast)?;
 
         // 実行
         self.vm.load(instructions, constants);
@@ -149,9 +149,8 @@ impl ScriptRuntime {
             self.vm.set_global(name, value.clone());
         }
 
-        // DOMコールバックを設定
-        let dom = &mut self.dom;
-        self.vm.set_dom_callback(move |op| dom.handle_operation(op));
+        // TODO: DOMコールバックを設定（FnMut対応が必要）
+        // 現時点ではDOM操作は直接DomBindingを通じて行う
 
         let result = self.vm.run()?;
 
@@ -375,30 +374,28 @@ impl Compiler {
 
     fn compile_statement(&mut self, stmt: &Stmt) -> Result<(), ScriptError> {
         match stmt {
-            Stmt::Let { pattern, initializer, .. } => {
+            Stmt::Let { name, value, .. } => {
                 // 初期化子をコンパイル
-                if let Some(init) = initializer {
+                if let Some(init) = value {
                     self.compile_expression(init)?;
                 } else {
                     let const_idx = self.constants.add(ScriptValue::Nil);
                     self.emit(Instruction::Const(const_idx));
                 }
 
-                // パターンマッチング（単純な識別子のみ対応）
-                if let Pattern::Identifier(name) = pattern {
-                    let local_idx = self.define_local(name);
-                    self.emit(Instruction::StoreLocal(local_idx));
-                }
+                // ローカル変数に格納
+                let local_idx = self.define_local(name);
+                self.emit(Instruction::StoreLocal(local_idx));
             }
             Stmt::Assign { target, value } => {
                 self.compile_expression(value)?;
 
                 match target {
-                    Expr::Identifier(name) => {
-                        if let Some(local_idx) = self.resolve_local(name) {
+                    Expr::Identifier(var_name) => {
+                        if let Some(local_idx) = self.resolve_local(var_name) {
                             self.emit(Instruction::StoreLocal(local_idx));
                         } else {
-                            self.emit(Instruction::StoreGlobal(name.clone()));
+                            self.emit(Instruction::StoreGlobal(var_name.clone()));
                         }
                     }
                     Expr::FieldAccess { object, field } => {
@@ -424,14 +421,14 @@ impl Compiler {
                 }
                 self.exit_scope();
             }
-            Stmt::If { condition, then_block, else_block } => {
+            Stmt::If { condition, then_branch, else_branch } => {
                 self.compile_expression(condition)?;
 
                 let jump_if_false = self.emit(Instruction::JumpIfFalse(0));
 
-                self.compile_statement(then_block)?;
+                self.compile_statement(then_branch)?;
 
-                if let Some(else_stmt) = else_block {
+                if let Some(else_stmt) = else_branch {
                     let jump_over_else = self.emit(Instruction::Jump(0));
                     self.patch_jump(jump_if_false);
                     self.compile_statement(else_stmt)?;
@@ -453,9 +450,9 @@ impl Compiler {
                 self.patch_jump(exit_jump);
                 self.emit(Instruction::LoopEnd);
             }
-            Stmt::For { pattern, iterable, body } => {
+            Stmt::For { variable, iterator, body } => {
                 // イテラブルをスタックにプッシュ
-                self.compile_expression(iterable)?;
+                self.compile_expression(iterator)?;
                 self.emit(Instruction::MakeIterator);
 
                 self.emit(Instruction::LoopStart);
@@ -465,13 +462,9 @@ impl Compiler {
                 self.emit(Instruction::IterNext);
                 let exit_jump = self.emit(Instruction::JumpIfTrue(0));
 
-                // パターンに束縛
-                if let Pattern::Identifier(name) = pattern {
-                    let local_idx = self.define_local(name);
-                    self.emit(Instruction::StoreLocal(local_idx));
-                } else {
-                    self.emit(Instruction::Pop);
-                }
+                // 変数に束縛
+                let local_idx = self.define_local(variable);
+                self.emit(Instruction::StoreLocal(local_idx));
 
                 // 本体を実行
                 self.compile_statement(body)?;
@@ -480,7 +473,7 @@ impl Compiler {
                 self.patch_jump(exit_jump);
                 self.emit(Instruction::LoopEnd);
             }
-            Stmt::Loop { body } => {
+            Stmt::Loop(body) => {
                 self.emit(Instruction::LoopStart);
                 let loop_start = self.instructions.len();
 
@@ -523,8 +516,8 @@ impl Compiler {
                 self.emit(Instruction::Const(const_idx));
                 self.emit(Instruction::StoreGlobal(name.clone()));
             }
-            Stmt::Return { value } => {
-                if let Some(v) = value {
+            Stmt::Return(value_opt) => {
+                if let Some(v) = value_opt {
                     self.compile_expression(v)?;
                 } else {
                     let nil_idx = self.constants.add(ScriptValue::Nil);
@@ -550,10 +543,9 @@ impl Compiler {
                 let value = match lit {
                     Literal::Nil => ScriptValue::Nil,
                     Literal::Bool(b) => ScriptValue::Bool(*b),
-                    Literal::Int(i) => ScriptValue::Int(*i),
+                    Literal::Integer(i) => ScriptValue::Int(*i),
                     Literal::Float(f) => ScriptValue::Float(*f),
                     Literal::String(s) => ScriptValue::String(s.clone()),
-                    Literal::Char(c) => ScriptValue::String(String::from(*c)),
                 };
                 let const_idx = self.constants.add(value);
                 self.emit(Instruction::Const(const_idx));
@@ -583,11 +575,11 @@ impl Compiler {
                     BinaryOp::Div => self.emit(Instruction::Div),
                     BinaryOp::Mod => self.emit(Instruction::Mod),
                     BinaryOp::Eq => self.emit(Instruction::Eq),
-                    BinaryOp::Ne => self.emit(Instruction::Ne),
+                    BinaryOp::NotEq => self.emit(Instruction::Ne),
                     BinaryOp::Lt => self.emit(Instruction::Lt),
-                    BinaryOp::Le => self.emit(Instruction::Le),
+                    BinaryOp::LtEq => self.emit(Instruction::Le),
                     BinaryOp::Gt => self.emit(Instruction::Gt),
-                    BinaryOp::Ge => self.emit(Instruction::Ge),
+                    BinaryOp::GtEq => self.emit(Instruction::Ge),
                     BinaryOp::And => self.emit(Instruction::And),
                     BinaryOp::Or => self.emit(Instruction::Or),
                     BinaryOp::BitAnd => self.emit(Instruction::BitAnd),
@@ -597,25 +589,25 @@ impl Compiler {
                     BinaryOp::Shr => self.emit(Instruction::Shr),
                 };
             }
-            Expr::Call { function, arguments } => {
+            Expr::Call { callee, args } => {
                 // 引数をプッシュ
-                for arg in arguments {
+                for arg in args {
                     self.compile_expression(arg)?;
                 }
                 // 関数をプッシュ
-                self.compile_expression(function)?;
+                self.compile_expression(callee)?;
                 // 呼び出し
-                self.emit(Instruction::Call(arguments.len()));
+                self.emit(Instruction::Call(args.len()));
             }
-            Expr::MethodCall { object, method, arguments } => {
+            Expr::MethodCall { object, method, args } => {
                 // 引数をプッシュ
-                for arg in arguments {
+                for arg in args {
                     self.compile_expression(arg)?;
                 }
                 // オブジェクトをプッシュ
                 self.compile_expression(object)?;
                 // メソッド呼び出し
-                self.emit(Instruction::CallMethod(method.clone(), arguments.len()));
+                self.emit(Instruction::CallMethod(method.clone(), args.len()));
             }
             Expr::FieldAccess { object, field } => {
                 self.compile_expression(object)?;
@@ -632,24 +624,24 @@ impl Compiler {
                 }
                 self.emit(Instruction::MakeArray(elements.len()));
             }
-            Expr::Object(pairs) => {
-                for (key, value) in pairs {
+            Expr::StructLit { name: _, fields } => {
+                for (key, value) in fields {
                     let key_const = self.constants.add(ScriptValue::String(key.clone()));
                     self.emit(Instruction::Const(key_const));
                     self.compile_expression(value)?;
                 }
-                self.emit(Instruction::MakeObject(pairs.len()));
+                self.emit(Instruction::MakeObject(fields.len()));
             }
-            Expr::If { condition, then_block, else_block } => {
+            Expr::If { condition, then_branch, else_branch } => {
                 self.compile_expression(condition)?;
                 let jump_if_false = self.emit(Instruction::JumpIfFalse(0));
 
-                self.compile_statement(then_block)?;
+                self.compile_expression(then_branch)?;
 
-                if let Some(else_stmt) = else_block {
+                if let Some(else_expr) = else_branch {
                     let jump_over_else = self.emit(Instruction::Jump(0));
                     self.patch_jump(jump_if_false);
-                    self.compile_statement(else_stmt)?;
+                    self.compile_expression(else_expr)?;
                     self.patch_jump(jump_over_else);
                 } else {
                     self.patch_jump(jump_if_false);
@@ -657,8 +649,18 @@ impl Compiler {
                     self.emit(Instruction::Const(nil_idx));
                 }
             }
-            Expr::Block(stmt) => {
-                self.compile_statement(stmt)?;
+            Expr::Block { statements, value } => {
+                self.enter_scope();
+                for s in statements {
+                    self.compile_statement(s)?;
+                }
+                if let Some(val_expr) = value {
+                    self.compile_expression(val_expr)?;
+                } else {
+                    let nil_idx = self.constants.add(ScriptValue::Nil);
+                    self.emit(Instruction::Const(nil_idx));
+                }
+                self.exit_scope();
             }
             Expr::Closure { params, body, .. } => {
                 // クロージャ本体をスキップするジャンプ
@@ -702,13 +704,6 @@ impl Compiler {
                     self.emit(Instruction::MakeRangeInclusive);
                 } else {
                     self.emit(Instruction::MakeRange);
-                }
-            }
-            Expr::SelfRef => {
-                if let Some(local_idx) = self.resolve_local("self") {
-                    self.emit(Instruction::LoadLocal(local_idx));
-                } else {
-                    self.emit(Instruction::LoadGlobal(String::from("self")));
                 }
             }
             Expr::Tuple(elements) => {
