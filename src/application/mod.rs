@@ -47,10 +47,11 @@ pub mod system_monitor;
 pub mod terminal;
 pub mod editor;
 pub mod games;
+pub mod browser;
 
 // Re-exports
 pub use system_monitor::{SystemMonitor, ProcessEntry};
-pub use editor::{Editor, TextBuffer, Cursor, Selection, SyntaxHighlighter, SpecialKey};
+pub use editor::{Editor, TextBuffer, Cursor, Selection as EditorSelection, SyntaxHighlighter, SpecialKey as EditorSpecialKey};
 pub use terminal::{
     Terminal, Cell, TerminalLine, TerminalBuffer, 
     AnsiParser, ParseAction, SpecialKey,

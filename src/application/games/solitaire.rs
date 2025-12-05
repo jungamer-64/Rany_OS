@@ -22,6 +22,37 @@ use alloc::format;
 use crate::graphics::{Color, image::Image, Rect, Point};
 
 // ============================================================================
+// no_std Math Functions
+// ============================================================================
+
+/// 簡易的なsin関数（Taylor展開による近似）
+fn sin_approx(x: f32) -> f32 {
+    const PI: f32 = 3.14159265;
+    let mut x = x % (2.0 * PI);
+    if x > PI { x -= 2.0 * PI; }
+    if x < -PI { x += 2.0 * PI; }
+    let x2 = x * x;
+    let x3 = x2 * x;
+    let x5 = x3 * x2;
+    x - x3 / 6.0 + x5 / 120.0
+}
+
+/// 簡易的なcos関数
+fn cos_approx(x: f32) -> f32 {
+    sin_approx(x + 3.14159265 / 2.0)
+}
+
+/// 簡易的なsqrt関数（Newton法）
+fn sqrt_approx(x: f32) -> f32 {
+    if x <= 0.0 { return 0.0; }
+    let mut guess = x / 2.0;
+    for _ in 0..10 {
+        guess = (guess + x / guess) / 2.0;
+    }
+    guess
+}
+
+// ============================================================================
 // Constants
 // ============================================================================
 
@@ -1107,8 +1138,8 @@ impl Solitaire {
         // 簡易的な円形矢印
         for angle in 0..360 {
             let rad = (angle as f32) * 3.14159 / 180.0;
-            let px = cx as i32 + (r as f32 * rad.cos()) as i32;
-            let py = cy as i32 + (r as f32 * rad.sin()) as i32;
+            let px = cx as i32 + (r as f32 * cos_approx(rad)) as i32;
+            let py = cy as i32 + (r as f32 * sin_approx(rad)) as i32;
             if px >= 0 && py >= 0 {
                 image.set_pixel(px as u32, py as u32, color);
             }
@@ -1136,7 +1167,10 @@ impl Solitaire {
                     for dx in 0..20u32 {
                         let fx = dx as f32 / 10.0 - 1.0;
                         let fy = dy as f32 / 10.0 - 1.0;
-                        let heart = (fx * fx + fy * fy - 1.0).powi(3) - fx * fx * fy.powi(3);
+                        let fx2 = fx * fx;
+                        let fy2 = fy * fy;
+                        let fy3 = fy2 * fy;
+                        let heart = (fx2 + fy2 - 1.0) * (fx2 + fy2 - 1.0) * (fx2 + fy2 - 1.0) - fx2 * fy3;
                         if heart < 0.0 {
                             image.set_pixel(x + dx, y + dy, color);
                         }
@@ -1169,7 +1203,10 @@ impl Solitaire {
                     for dx in 0..20u32 {
                         let fx = dx as f32 / 10.0 - 1.0;
                         let fy = 1.0 - dy as f32 / 7.0;
-                        let heart = (fx * fx + fy * fy - 1.0).powi(3) - fx * fx * fy.powi(3);
+                        let fx2 = fx * fx;
+                        let fy2 = fy * fy;
+                        let fy3 = fy2 * fy;
+                        let heart = (fx2 + fy2 - 1.0) * (fx2 + fy2 - 1.0) * (fx2 + fy2 - 1.0) - fx2 * fy3;
                         if heart < 0.0 {
                             image.set_pixel(x + dx, y + dy, color);
                         }
