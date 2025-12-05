@@ -555,16 +555,10 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
         shell::graphical::init();
         shell::graphical::start();
         
-        info!(target: "task9", "Graphical shell started - polling...");
+        info!(target: "task9", "Graphical shell started - running async...");
         
-        // メインループ（ポーリング方式）
-        loop {
-            // キー入力と描画を処理
-            shell::graphical::poll();
-            
-            // CPUを少し休ませる（約16ms = 60fps程度）
-            task::sleep_ms(16).await;
-        }
+        // 非同期メインループ（完全async版）
+        shell::graphical::run_async_shell().await;
     }));
 }
 
