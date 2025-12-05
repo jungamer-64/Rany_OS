@@ -19,7 +19,6 @@
 
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec;
 use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 use core::fmt::Write;
@@ -284,6 +283,8 @@ pub struct GraphicalShell {
     completions: Vec<String>,
     /// 補完インデックス
     completion_index: usize,
+    /// 現在実行中のコマンドがあるか
+    is_executing: bool,
 }
 
 unsafe impl Send for GraphicalShell {}
@@ -317,6 +318,7 @@ impl GraphicalShell {
             prompt,
             completions: Vec::new(),
             completion_index: 0,
+            is_executing: false,
         }
     }
 
@@ -657,22 +659,23 @@ impl GraphicalShell {
             self.history_index = self.history.len() as isize;
         }
 
-        // コマンドを実行
-        self.execute_command(&input);
+        // コマンドを非同期キューに追加
+        self.queue_command(&input);
         
         // プロンプトを再表示
         self.draw_prompt();
     }
 
-    /// コマンドを実行
-    fn execute_command(&mut self, input: &str) {
+    /// コマンドを非同期キューに追加
+    /// グローバルキューを使用して、ロック外でasync eval()を呼び出し可能に
+    fn queue_command(&mut self, input: &str) {
         let input = input.trim();
         
         if input.is_empty() {
             return;
         }
 
-        // 特殊コマンド
+        // 特殊コマンド（即時実行）
         match input {
             "clear" | "cls" => {
                 self.clear_screen();
@@ -685,17 +688,9 @@ impl GraphicalShell {
             _ => {}
         }
 
-        // ExoShellで評価（同期的に）
-        // Note: async evalは使用できないため、同期的な代替を使用
-        let result = self.shell.eval_sync(input);
-        
-        // 結果を表示
-        let output = format!("{}\n", result);
-        if output.starts_with("Error") {
-            self.print_colored(&output, self.theme.error);
-        } else {
-            self.print_colored(&output, self.theme.foreground);
-        }
+        // グローバルキューにコマンドを追加（非同期タスクで処理される）
+        let _request_id = submit_command(input.to_string());
+        self.is_executing = true;
     }
 
     /// 履歴を前に
@@ -782,6 +777,7 @@ impl GraphicalShell {
     }
 
     /// メインループの1イテレーション（ポーリングベース）
+    /// 注意: 非同期コマンドはrun_async_shell()タスクで処理される
     pub fn poll(&mut self) {
         // キーイベントを処理
         while let Some(event) = poll_event() {
@@ -800,275 +796,52 @@ impl GraphicalShell {
 }
 
 // ============================================================================
-// ExoShell Synchronous Evaluation Extension
-// ============================================================================
-
-impl ExoShell {
-    /// 同期的にコマンドを評価
-    /// Note: async evalの代替として、簡易的な同期評価を提供
-    pub fn eval_sync(&mut self, input: &str) -> String {
-        use crate::shell::exoshell::*;
-        use alloc::format;
-
-        let input = input.trim();
-        
-        if input.is_empty() {
-            return String::new();
-        }
-
-        // help コマンド
-        if input == "help" {
-            return self.help().to_string();
-        }
-
-        // 変数参照
-        if input.starts_with('$') {
-            let var_name = &input[1..];
-            if var_name == "_" {
-                return format!("{}", self.last_result());
-            }
-            if let Some(val) = self.get_binding(var_name) {
-                return format!("{}", val);
-            }
-            return format!("Variable '{}' not found", var_name);
-        }
-
-        // let 式（同期版では非対応）
-        if input.starts_with("let ") {
-            return String::from("let expressions require async context");
-        }
-
-        // 名前空間メソッド呼び出しを解析
-        if let Some(dot_pos) = input.find('.') {
-            let namespace = &input[..dot_pos];
-            let rest = &input[dot_pos + 1..];
-            
-            match namespace {
-                "sys" => return self.eval_sys_sync(rest),
-                "net" => return self.eval_net_sync(rest),
-                "proc" => return self.eval_proc_sync(rest),
-                "cap" => return self.eval_cap_sync(rest),
-                "fs" => return format!("fs operations require async context. Use aliases: ls, cd, pwd, cat"),
-                _ => return format!("Unknown namespace: {}", namespace),
-            }
-        }
-
-        // エイリアスの同期評価
-        self.eval_alias_sync(input)
-    }
-
-    fn eval_sys_sync(&self, method_call: &str) -> String {
-        use crate::shell::exoshell::SysNamespace;
-
-        // メソッド名を抽出
-        let method = if let Some(paren) = method_call.find('(') {
-            &method_call[..paren]
-        } else {
-            method_call
-        };
-
-        let result = match method {
-            "info" => SysNamespace::info(),
-            "memory" => SysNamespace::memory(),
-            "time" => SysNamespace::time(),
-            "monitor" => SysNamespace::monitor(),
-            "dashboard" => SysNamespace::monitor_dashboard(),
-            "thermal" => SysNamespace::thermal(),
-            "watchdog" => SysNamespace::watchdog(),
-            "power" => SysNamespace::power(),
-            "shutdown" => SysNamespace::shutdown(),
-            "reboot" => SysNamespace::reboot(),
-            _ => return format!("Unknown sys method: {}", method),
-        };
-
-        format!("{}", result)
-    }
-
-    fn eval_net_sync(&self, method_call: &str) -> String {
-        use crate::shell::exoshell::NetNamespace;
-
-        let method = if let Some(paren) = method_call.find('(') {
-            &method_call[..paren]
-        } else {
-            method_call
-        };
-
-        let result = match method {
-            "config" => NetNamespace::config(),
-            "stats" => NetNamespace::stats(),
-            "arp" | "arp_cache" => NetNamespace::arp_cache(),
-            _ => return format!("Unknown net method: {} (ping requires async)", method),
-        };
-
-        format!("{}", result)
-    }
-
-    fn eval_proc_sync(&self, method_call: &str) -> String {
-        use crate::shell::exoshell::ProcNamespace;
-
-        let method = if let Some(paren) = method_call.find('(') {
-            &method_call[..paren]
-        } else {
-            method_call
-        };
-
-        let result = match method {
-            "list" => ProcNamespace::list(),
-            _ => return format!("Unknown proc method: {}", method),
-        };
-
-        format!("{}", result)
-    }
-
-    fn eval_cap_sync(&self, method_call: &str) -> String {
-        use crate::shell::exoshell::CapNamespace;
-
-        let method = if let Some(paren) = method_call.find('(') {
-            &method_call[..paren]
-        } else {
-            method_call
-        };
-
-        let result = match method {
-            "list" => CapNamespace::list(),
-            _ => return format!("Unknown cap method: {}", method),
-        };
-
-        format!("{}", result)
-    }
-
-    fn eval_alias_sync(&mut self, cmd: &str) -> String {
-        let parts: Vec<&str> = cmd.split_whitespace().collect();
-        if parts.is_empty() {
-            return String::new();
-        }
-
-        match parts[0] {
-            "ls" => {
-                let path = parts.get(1).unwrap_or(&".");
-                let p = if *path == "." { self.cwd().to_string() } else { path.to_string() };
-                match crate::fs::list_directory(&p, "/") {
-                    Ok(entries) => {
-                        let mut out = String::new();
-                        for e in entries {
-                            let type_char = match e.file_type {
-                                crate::fs::FileType::Directory => 'd',
-                                crate::fs::FileType::Symlink => 'l',
-                                _ => '-',
-                            };
-                            out.push_str(&format!("{} {}\n", type_char, e.name));
-                        }
-                        out
-                    }
-                    Err(e) => format!("Error: {:?}", e),
-                }
-            }
-            "cd" => {
-                if let Some(path) = parts.get(1) {
-                    self.set_cwd(path);
-                }
-                self.cwd().to_string()
-            }
-            "pwd" => self.cwd().to_string(),
-            "cat" => {
-                if let Some(path) = parts.get(1) {
-                    match crate::fs::read_file_content(path, "/") {
-                        Ok(content) => {
-                            String::from_utf8_lossy(&content).to_string()
-                        }
-                        Err(e) => format!("Error: {:?}", e),
-                    }
-                } else {
-                    String::from("Usage: cat <file>")
-                }
-            }
-            "mkdir" => {
-                if let Some(path) = parts.get(1) {
-                    match crate::fs::make_directory(path, "/") {
-                        Ok(()) => format!("Created directory: {}", path),
-                        Err(e) => format!("Error: {:?}", e),
-                    }
-                } else {
-                    String::from("Usage: mkdir <dir>")
-                }
-            }
-            "rm" => {
-                if let Some(path) = parts.get(1) {
-                    match crate::fs::remove_file(path, "/") {
-                        Ok(()) => format!("Removed: {}", path),
-                        Err(_) => {
-                            match crate::fs::remove_directory(path, "/") {
-                                Ok(()) => format!("Removed directory: {}", path),
-                                Err(e) => format!("Error: {:?}", e),
-                            }
-                        }
-                    }
-                } else {
-                    String::from("Usage: rm <path>")
-                }
-            }
-            "ps" => format!("{}", crate::shell::exoshell::ProcNamespace::list()),
-            "ifconfig" => format!("{}", crate::shell::exoshell::NetNamespace::config()),
-            "arp" => format!("{}", crate::shell::exoshell::NetNamespace::arp_cache()),
-            "uname" => format!("{}", crate::shell::exoshell::SysNamespace::info()),
-            "free" => format!("{}", crate::shell::exoshell::SysNamespace::memory()),
-            "uptime" => format!("{}", crate::shell::exoshell::SysNamespace::time()),
-            "echo" => {
-                parts[1..].join(" ")
-            }
-            _ => format!(
-                "Unknown command: '{}'\nTry 'help' or use ExoShell syntax: sys.info(), net.config(), etc.",
-                cmd
-            ),
-        }
-    }
-
-    /// 最後の結果を取得
-    fn last_result(&self) -> &ExoValue {
-        static NIL: ExoValue = ExoValue::Nil;
-        self.bindings.get("_").unwrap_or(&NIL)
-    }
-
-    /// 変数バインディングを取得
-    fn get_binding(&self, name: &str) -> Option<&ExoValue> {
-        self.bindings.get(name)
-    }
-
-    /// カレントディレクトリを設定
-    fn set_cwd(&mut self, path: &str) {
-        if path.starts_with('/') {
-            self.cwd = path.to_string();
-        } else if path == ".." {
-            let mut segs: Vec<&str> = self.cwd.split('/').filter(|s| !s.is_empty()).collect();
-            segs.pop();
-            if segs.is_empty() {
-                self.cwd = String::from("/");
-            } else {
-                self.cwd = format!("/{}", segs.join("/"));
-            }
-        } else {
-            if self.cwd == "/" {
-                self.cwd = format!("/{}", path);
-            } else {
-                self.cwd = format!("{}/{}", self.cwd, path);
-            }
-        }
-    }
-}
-
-// ============================================================================
-// Global Instance
+// Global Instance and Async Command System
 // ============================================================================
 
 use spin::Mutex;
 
+/// 非同期コマンドリクエスト
+struct AsyncCommandRequest {
+    /// コマンド文字列
+    command: String,
+    /// リクエストID
+    id: u64,
+}
+
+/// 非同期コマンド結果
+struct AsyncCommandResult {
+    /// 対応するリクエストID
+    id: u64,
+    /// 結果文字列
+    output: String,
+    /// エラーかどうか
+    is_error: bool,
+}
+
 static GRAPHICAL_SHELL: Mutex<Option<GraphicalShell>> = Mutex::new(None);
+
+/// 非同期評価用のExoShell（別Mutexで管理）
+static ASYNC_EXOSHELL: Mutex<Option<ExoShell>> = Mutex::new(None);
+
+/// コマンドリクエストキュー（GraphicalShell -> async task）
+static COMMAND_QUEUE: Mutex<VecDeque<AsyncCommandRequest>> = Mutex::new(VecDeque::new());
+
+/// コマンド結果キュー（async task -> GraphicalShell）
+static RESULT_QUEUE: Mutex<VecDeque<AsyncCommandResult>> = Mutex::new(VecDeque::new());
+
+/// 次のリクエストID
+static NEXT_REQUEST_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 /// グラフィカルシェルを初期化
 pub fn init() {
     use log::info;
     
     info!(target: "gshell", "Initializing graphical shell...");
+    
+    // 非同期ExoShellを初期化
+    *ASYNC_EXOSHELL.lock() = Some(ExoShell::new());
+    info!(target: "gshell", "Async ExoShell initialized");
     
     // フレームバッファを取得
     let fb = crate::graphics::framebuffer();
@@ -1112,10 +885,105 @@ where
     GRAPHICAL_SHELL.lock().as_mut().map(f)
 }
 
-/// ポーリング処理
+/// ポーリング処理（デバッグ用・非推奨）
+/// 通常は run_async_shell() を使用してください
+#[allow(dead_code)]
 pub fn poll() {
     if let Some(ref mut shell) = *GRAPHICAL_SHELL.lock() {
         shell.poll();
+    }
+}
+
+/// コマンドを非同期キューに追加
+fn submit_command(command: String) -> u64 {
+    use core::sync::atomic::Ordering;
+    
+    let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::SeqCst);
+    COMMAND_QUEUE.lock().push_back(AsyncCommandRequest {
+        command,
+        id,
+    });
+    id
+}
+
+/// 非同期タスクとしてグラフィカルシェルを実行
+/// ExoShellの所有権を一時的に取り出してasync eval()を呼び出す
+pub async fn run_async_shell() {
+    use log::info;
+    
+    info!(target: "gshell", "Starting async graphical shell task...");
+    
+    loop {
+        // フェーズ1: キーイベントとUI更新（GraphicalShellロック内）
+        {
+            let mut guard = GRAPHICAL_SHELL.lock();
+            if let Some(ref mut shell) = *guard {
+                // キーイベントを処理
+                while let Some(event) = poll_event() {
+                    shell.handle_key(event);
+                }
+                
+                // 結果キューをチェックして表示
+                process_results(shell);
+                
+                // カーソル点滅を更新
+                let current_time = crate::task::timer::current_tick();
+                shell.update_cursor(current_time);
+            }
+        }
+        
+        // フェーズ2: 非同期コマンド実行（ロック外）
+        let request = COMMAND_QUEUE.lock().pop_front();
+        
+        if let Some(req) = request {
+            // ExoShellを一時的に取り出す
+            let shell_opt = ASYNC_EXOSHELL.lock().take();
+            
+            if let Some(mut exoshell) = shell_opt {
+                // ロック外でasync eval()を呼び出し
+                let result = exoshell.eval(&req.command).await;
+                let output = format!("{}", result);
+                let is_error = matches!(result, ExoValue::Error(_));
+                
+                // ExoShellを戻す
+                *ASYNC_EXOSHELL.lock() = Some(exoshell);
+                
+                // 結果をキューに入れる
+                RESULT_QUEUE.lock().push_back(AsyncCommandResult {
+                    id: req.id,
+                    output,
+                    is_error,
+                });
+            } else {
+                // ExoShellがない場合
+                RESULT_QUEUE.lock().push_back(AsyncCommandResult {
+                    id: req.id,
+                    output: "ExoShell busy or not initialized".to_string(),
+                    is_error: true,
+                });
+            }
+        }
+        
+        // 他のタスクに譲る
+        crate::task::yield_now().await;
+    }
+}
+
+/// 結果キューを処理してGraphicalShellに表示
+fn process_results(shell: &mut GraphicalShell) {
+    while let Some(result) = RESULT_QUEUE.lock().pop_front() {
+        let output = format!("{}\n", result.output);
+        
+        if result.is_error {
+            let error_color = shell.theme.error;
+            shell.print_colored(&output, error_color);
+        } else {
+            let fg_color = shell.theme.foreground;
+            shell.print_colored(&output, fg_color);
+        }
+        
+        shell.is_executing = false;
+        shell.draw_prompt();
     }
 }
 
