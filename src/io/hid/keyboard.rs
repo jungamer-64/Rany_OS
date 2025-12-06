@@ -116,6 +116,14 @@ pub enum KeyCode {
     Left = 0x4B,
     Right = 0x4D,
 
+    // ナビゲーションキー（拡張スキャンコード）
+    Insert = 0x52,
+    Delete = 0x53,
+    Home = 0x47,
+    End = 0x4F,
+    PageUp = 0x49,
+    PageDown = 0x51,
+
     // 不明
     Unknown = 0xFF,
 }
@@ -130,6 +138,12 @@ impl KeyCode {
                 0x50 => KeyCode::Down,
                 0x4B => KeyCode::Left,
                 0x4D => KeyCode::Right,
+                0x52 => KeyCode::Insert,
+                0x53 => KeyCode::Delete,
+                0x47 => KeyCode::Home,
+                0x4F => KeyCode::End,
+                0x49 => KeyCode::PageUp,
+                0x51 => KeyCode::PageDown,
                 _ => KeyCode::Unknown,
             }
         } else {
@@ -570,6 +584,23 @@ pub enum KeyState {
     Released,
 }
 
+/// 修飾キーの状態（互換性用）
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Modifiers {
+    pub shift: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub caps_lock: bool,
+    pub num_lock: bool,
+    pub scroll_lock: bool,
+}
+
+impl Modifiers {
+    pub fn any(&self) -> bool {
+        self.shift || self.ctrl || self.alt
+    }
+}
+
 /// キーイベント
 #[derive(Debug, Clone, Copy)]
 pub struct KeyEvent {
@@ -588,6 +619,17 @@ pub struct KeyEvent {
 }
 
 impl KeyEvent {
+    /// 修飾キーの状態を取得（互換性用）
+    pub fn modifiers(&self) -> Modifiers {
+        Modifiers {
+            shift: self.shift,
+            ctrl: self.ctrl,
+            alt: self.alt,
+            caps_lock: self.caps_lock,
+            num_lock: MODIFIER_STATE.num_lock.load(Ordering::Relaxed),
+            scroll_lock: false, // 現状未実装
+        }
+    }
     /// このイベントを文字に変換
     pub fn to_char(&self) -> Option<char> {
         if self.state == KeyState::Released {
@@ -615,8 +657,6 @@ struct ModifierState {
     caps_lock: AtomicBool,
     /// NumLock有効
     num_lock: AtomicBool,
-    /// 拡張スキャンコードモード
-    extended_mode: AtomicBool,
 }
 
 impl ModifierState {
@@ -628,7 +668,6 @@ impl ModifierState {
             left_alt: AtomicBool::new(false),
             caps_lock: AtomicBool::new(false),
             num_lock: AtomicBool::new(false),
-            extended_mode: AtomicBool::new(false),
         }
     }
 
@@ -652,22 +691,28 @@ impl ModifierState {
 /// グローバル修飾キー状態
 static MODIFIER_STATE: ModifierState = ModifierState::new();
 
+/// ISR専用の拡張スキャンコード検知フラグ (Producer専用)
+static ISR_EXTENDED_FLAG: AtomicBool = AtomicBool::new(false);
+
 // ============================================================================
 // スキャンコードキュー（ロックフリー）
 // ============================================================================
 
 const SCANCODE_QUEUE_SIZE: usize = 128;
 
-/// ロックフリーなスキャンコードキュー
+/// 拡張フラグビット (bit 8)
+const EXTENDED_FLAG: u16 = 0x0100;
+
+/// ロックフリーなスキャンコードキュー (u16で拡張フラグを保持)
 struct ScancodeQueue {
-    buffer: [AtomicU8; SCANCODE_QUEUE_SIZE],
+    buffer: [core::sync::atomic::AtomicU16; SCANCODE_QUEUE_SIZE],
     head: AtomicUsize,
     tail: AtomicUsize,
 }
 
 impl ScancodeQueue {
     const fn new() -> Self {
-        const ZERO: AtomicU8 = AtomicU8::new(0);
+        const ZERO: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
         Self {
             buffer: [ZERO; SCANCODE_QUEUE_SIZE],
             head: AtomicUsize::new(0),
@@ -675,8 +720,8 @@ impl ScancodeQueue {
         }
     }
 
-    /// スキャンコードをプッシュ（ISRから呼ばれる）
-    fn push(&self, scancode: u8) -> bool {
+    /// スキャンコードをプッシュ（ISRから呼ばれる、u16でextendedフラグ付き）
+    fn push(&self, data: u16) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
 
@@ -686,13 +731,13 @@ impl ScancodeQueue {
             return false;
         }
 
-        self.buffer[tail].store(scancode, Ordering::Relaxed);
+        self.buffer[tail].store(data, Ordering::Relaxed);
         self.tail.store(next_tail, Ordering::Release);
         true
     }
 
-    /// スキャンコードをポップ
-    fn pop(&self) -> Option<u8> {
+    /// スキャンコードをポップ (u16で拡張フラグ付き)
+    fn pop(&self) -> Option<u16> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
 
@@ -700,10 +745,10 @@ impl ScancodeQueue {
             return None;
         }
 
-        let scancode = self.buffer[head].load(Ordering::Relaxed);
+        let data = self.buffer[head].load(Ordering::Relaxed);
         self.head
             .store((head + 1) % SCANCODE_QUEUE_SIZE, Ordering::Release);
-        Some(scancode)
+        Some(data)
     }
 
     /// キューが空かどうか
@@ -772,12 +817,18 @@ impl KeyboardDriver {
     pub fn handle_scancode(&self, scancode: u8) {
         // 拡張スキャンコードプレフィックスのチェック
         if scancode == 0xE0 {
-            MODIFIER_STATE.extended_mode.store(true, Ordering::Relaxed);
+            ISR_EXTENDED_FLAG.store(true, Ordering::Relaxed);
             return;
         }
 
+        // 拡張フラグを取得してクリア
+        let extended = ISR_EXTENDED_FLAG.swap(false, Ordering::Relaxed);
+        
+        // u16にパッキング (bit 8に拡張フラグ、bit 0-7にスキャンコード)
+        let data: u16 = (scancode as u16) | if extended { EXTENDED_FLAG } else { 0 };
+
         // キューにプッシュ
-        if SCANCODE_QUEUE.push(scancode) {
+        if SCANCODE_QUEUE.push(data) {
             // 待機中のタスクを起床
             wake_waiting();
         }
@@ -785,9 +836,11 @@ impl KeyboardDriver {
 
     /// 次のキーイベントを取得（ノンブロッキング）
     pub fn poll_key_event(&self) -> Option<KeyEvent> {
-        let scancode = SCANCODE_QUEUE.pop()?;
+        let data = SCANCODE_QUEUE.pop()?;
 
-        let extended = MODIFIER_STATE.extended_mode.swap(false, Ordering::Relaxed);
+        // u16から拡張フラグとスキャンコードを分離
+        let extended = (data & EXTENDED_FLAG) != 0;
+        let scancode = (data & 0xFF) as u8;
         let released = (scancode & 0x80) != 0;
         let code = scancode & 0x7F;
 
@@ -993,3 +1046,29 @@ mod tests {
         assert!(queue.is_empty());
     }
 }
+
+// ============================================================================
+// Synchronous Polling API (for non-async contexts)
+// ============================================================================
+
+/// 次のキーイベントをポーリング（非ブロッキング、同期コンテキスト用）
+pub fn poll_key_event() -> Option<KeyEvent> {
+    KEYBOARD_DRIVER.poll_key_event()
+}
+
+/// 次の文字をポーリング（非ブロッキング、同期コンテキスト用）
+pub fn poll_char() -> Option<char> {
+    while let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
+        if let Some(c) = event.to_char() {
+            return Some(c);
+        }
+    }
+    None
+}
+
+/// イベントがあるかチェック
+pub fn has_event() -> bool {
+    !SCANCODE_QUEUE.is_empty()
+}
+
+

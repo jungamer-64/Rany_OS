@@ -1,0 +1,350 @@
+// ============================================================================
+// src/io/hid/mouse.rs - PS/2 Mouse Driver
+// ============================================================================
+//!
+//! # PS/2マウスドライバ
+//!
+//! PS/2マウスからの入力を処理するドライバ。
+//!
+//! ## 機能
+//! - PS/2マウス入力 (標準3バイトパケット)
+//! - マウスイベントキュー
+//! - 割り込みコンテキストでの安全な処理
+
+#![allow(dead_code)]
+
+use alloc::collections::VecDeque;
+use spin::Mutex;
+use x86_64::instructions::port::Port;
+
+// ============================================================================
+// Constants
+// ============================================================================
+
+/// PS/2データポート
+const PS2_DATA_PORT: u16 = 0x60;
+/// PS/2ステータス/コマンドポート
+const PS2_STATUS_PORT: u16 = 0x64;
+
+/// コントローラコマンド
+const CMD_READ_CONFIG: u8 = 0x20;
+const CMD_WRITE_CONFIG: u8 = 0x60;
+const CMD_ENABLE_AUX: u8 = 0xA8;      // マウス有効化
+const CMD_WRITE_TO_AUX: u8 = 0xD4;    // 次のバイトをマウスへ送信
+
+/// マウスコマンド
+const MOUSE_CMD_SET_DEFAULTS: u8 = 0xF6;
+const MOUSE_CMD_ENABLE_DATA: u8 = 0xF4;
+
+/// 応答
+const ACK: u8 = 0xFA;
+
+/// イベントキューの最大サイズ
+const MAX_EVENT_QUEUE_SIZE: usize = 128;
+
+// ============================================================================
+// Mouse Types
+// ============================================================================
+
+/// マウスボタン
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseButton {
+    Left,
+    Right,
+    Middle,
+}
+
+/// マウスイベント
+#[derive(Debug, Clone, Copy)]
+pub struct MouseEvent {
+    /// X方向の移動量
+    pub dx: i32,
+    /// Y方向の移動量
+    pub dy: i32,
+    /// 左ボタンが押されているか
+    pub left_down: bool,
+    /// 右ボタンが押されているか
+    pub right_down: bool,
+    /// 中ボタンが押されているか
+    pub middle_down: bool,
+}
+
+impl MouseEvent {
+    /// いずれかのボタンが押されているか
+    pub fn any_button(&self) -> bool {
+        self.left_down || self.right_down || self.middle_down
+    }
+    
+    /// 移動があるか
+    pub fn has_movement(&self) -> bool {
+        self.dx != 0 || self.dy != 0
+    }
+}
+
+// ============================================================================
+// Helper Functions (Port I/O)
+// ============================================================================
+
+/// ステータスレジスタを読み取り、書き込み準備ができるまで待機
+fn wait_for_write(status_port: &mut Port<u8>) {
+    for _ in 0..100000 {
+        let status = unsafe { status_port.read() };
+        if status & 0x02 == 0 {
+            return; // Input buffer empty
+        }
+        core::hint::spin_loop();
+    }
+}
+
+// ============================================================================
+// Mouse Driver
+// ============================================================================
+
+/// PS/2 マウスドライバ
+pub struct Mouse {
+    /// データポート
+    data_port: Port<u8>,
+    /// ステータスポート
+    status_port: Port<u8>,
+    /// パケットバッファ（標準PS/2マウスは3バイト）
+    packet: [u8; 3],
+    /// パケットインデックス
+    packet_index: u8,
+    /// イベントキュー
+    event_queue: VecDeque<MouseEvent>,
+    /// 前回のボタン状態（クリック検出用）
+    prev_buttons: u8,
+    /// マウスが初期化されているか
+    initialized: bool,
+}
+
+impl Mouse {
+    /// 新しいマウスドライバを作成
+    pub const fn new() -> Self {
+        Self {
+            data_port: Port::new(PS2_DATA_PORT),
+            status_port: Port::new(PS2_STATUS_PORT),
+            packet: [0; 3],
+            packet_index: 0,
+            event_queue: VecDeque::new(),
+            prev_buttons: 0,
+            initialized: false,
+        }
+    }
+
+    /// マウスの初期化
+    pub fn init(&mut self) {
+        // 1. Auxiliary Device (マウス) を有効化
+        self.write_controller_command(CMD_ENABLE_AUX);
+
+        // 2. コントローラ設定バイトを読み取り
+        self.write_controller_command(CMD_READ_CONFIG);
+        let mut config = self.read_data_timeout().unwrap_or(0);
+        
+        // IRQ12を有効化 (Bit 1)
+        // マウスクロックを有効化 (Bit 5をクリア)
+        config |= 0x02;   // Enable IRQ12
+        config &= !0x20;  // Enable mouse clock
+        
+        // 設定を書き戻し
+        self.write_controller_command(CMD_WRITE_CONFIG);
+        self.write_data(config);
+
+        // 3. マウスをデフォルト設定にリセット
+        if self.write_mouse_command(MOUSE_CMD_SET_DEFAULTS).is_err() {
+            crate::log!("[HID] Mouse: SET_DEFAULTS failed\n");
+            return;
+        }
+
+        // 4. データストリーミング開始
+        if self.write_mouse_command(MOUSE_CMD_ENABLE_DATA).is_err() {
+            crate::log!("[HID] Mouse: ENABLE_DATA failed\n");
+            return;
+        }
+
+        self.initialized = true;
+        crate::log!("[HID] Mouse initialized (IRQ12 enabled)\n");
+    }
+
+    /// PS/2コントローラへのコマンド書き込み
+    fn write_controller_command(&mut self, cmd: u8) {
+        wait_for_write(&mut self.status_port);
+        unsafe {
+            self.status_port.write(cmd);
+        }
+    }
+
+    /// PS/2データポートへの書き込み
+    fn write_data(&mut self, data: u8) {
+        wait_for_write(&mut self.status_port);
+        unsafe {
+            self.data_port.write(data);
+        }
+    }
+
+    /// PS/2データポートからの読み込み（タイムアウト付き）
+    fn read_data_timeout(&mut self) -> Option<u8> {
+        for _ in 0..100000 {
+            let status = unsafe { self.status_port.read() };
+            if status & 0x01 != 0 {
+                return Some(unsafe { self.data_port.read() });
+            }
+            core::hint::spin_loop();
+        }
+        None
+    }
+
+    /// マウスデバイスへのコマンド送信（0xD4経由）
+    fn write_mouse_command(&mut self, cmd: u8) -> Result<u8, ()> {
+        // コントローラに「次はマウスへのデータだ」と伝える
+        self.write_controller_command(CMD_WRITE_TO_AUX);
+        // データポートにコマンドを書く
+        self.write_data(cmd);
+        
+        // ACKを待つ
+        if let Some(response) = self.read_data_timeout() {
+            if response == ACK {
+                return Ok(response);
+            }
+        }
+        Err(())
+    }
+
+    /// マウスからのデータ（1バイト）を処理
+    pub fn process_packet(&mut self, data: u8) {
+        if !self.initialized {
+            return;
+        }
+
+        // パケットの最初のバイトは常にBit 3が1であるべき
+        if self.packet_index == 0 && (data & 0x08) == 0 {
+            // 同期ズレの可能性、リセット
+            return;
+        }
+
+        self.packet[self.packet_index as usize] = data;
+        self.packet_index += 1;
+
+        // 3バイト揃ったらパケット完了
+        if self.packet_index == 3 {
+            self.packet_index = 0;
+            self.finalize_packet();
+        }
+    }
+
+    /// 受信した3バイトパケットを解析してイベント生成
+    fn finalize_packet(&mut self) {
+        let flags = self.packet[0];
+        let x_raw = self.packet[1];
+        let y_raw = self.packet[2];
+
+        // オーバーフローチェック
+        let x_overflow = (flags & 0x40) != 0;
+        let y_overflow = (flags & 0x80) != 0;
+        
+        if x_overflow || y_overflow {
+            return; // 動きが大きすぎる場合は無視
+        }
+
+        // 移動量の計算（9bit符号付き整数）
+        let mut dx = x_raw as i16;
+        let mut dy = y_raw as i16;
+
+        // 符号拡張
+        if (flags & 0x10) != 0 {
+            dx |= !0xFF; // X Sign extension
+        }
+        if (flags & 0x20) != 0 {
+            dy |= !0xFF; // Y Sign extension
+        }
+
+        // ボタン状態
+        let left = (flags & 0x01) != 0;
+        let right = (flags & 0x02) != 0;
+        let middle = (flags & 0x04) != 0;
+
+        let event = MouseEvent {
+            dx: dx as i32,
+            dy: -(dy as i32), // Y軸を反転（画面座標系に合わせる）
+            left_down: left,
+            right_down: right,
+            middle_down: middle,
+        };
+
+        // ボタン状態を更新
+        self.prev_buttons = flags & 0x07;
+
+        // バッファ溢れ防止
+        if self.event_queue.len() < MAX_EVENT_QUEUE_SIZE {
+            self.event_queue.push_back(event);
+        }
+    }
+
+    /// イベントを取得
+    pub fn poll_event(&mut self) -> Option<MouseEvent> {
+        self.event_queue.pop_front()
+    }
+
+    /// キューにイベントがあるか
+    pub fn has_event(&self) -> bool {
+        !self.event_queue.is_empty()
+    }
+    
+    /// 初期化されているか
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+}
+
+// ============================================================================
+// Global State
+// ============================================================================
+
+/// グローバルマウス
+static MOUSE: Mutex<Mouse> = Mutex::new(Mouse::new());
+
+// ============================================================================
+// Public API - Initialization
+// ============================================================================
+
+/// マウスを初期化
+pub fn init() {
+    MOUSE.lock().init();
+}
+
+// ============================================================================
+// Public API - Mouse (割り込みハンドラ用)
+// ============================================================================
+
+/// マウスパケットバイトを処理（IRQ12割り込みハンドラから呼ばれる）
+/// try_lockを使用してデッドロックを防止
+pub fn handle_mouse_packet(data: u8) {
+    if let Some(mut guard) = MOUSE.try_lock() {
+        guard.process_packet(data);
+    }
+}
+
+// ============================================================================
+// Public API - Mouse (ユーザーコード用)
+// ============================================================================
+
+/// マウスイベントを取得（割り込みを無効にして実行）
+pub fn poll_mouse_event() -> Option<MouseEvent> {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        MOUSE.lock().poll_event()
+    })
+}
+
+/// マウスイベントがあるか（割り込みを無効にして実行）
+pub fn has_mouse_event() -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        MOUSE.lock().has_event()
+    })
+}
+
+/// マウスが初期化されているか
+pub fn is_mouse_initialized() -> bool {
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        MOUSE.lock().is_initialized()
+    })
+}

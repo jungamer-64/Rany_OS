@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use alloc::collections::VecDeque;
 
 use crate::graphics::{Color, Framebuffer, BitmapFont};
-use crate::input::{poll_event, poll_mouse_event};
+use crate::io::hid::{poll_input_event, poll_mouse_event};
 use crate::shell::exoshell::ExoShell;
 
 use super::types::{
@@ -330,7 +330,7 @@ impl GraphicalShell {
     /// メインループの1イテレーション（ポーリングベース）
     pub fn poll(&mut self) {
         // キーイベントを処理
-        while let Some(event) = poll_event() {
+        while let Some(event) = poll_input_event() {
             self.handle_key(event);
         }
         
