@@ -12,6 +12,7 @@
 //! - `legacy`: 従来のI/Oポートベースのアクセス
 //! - `ecam`: ECAM (Enhanced Configuration Access Mechanism)
 //! - `bus`: PCIバス列挙
+//! - `pcie_ext`: PCIe拡張機能 (SR-IOV, AER, 電源管理, ホットプラグ)
 
 #![allow(dead_code)]
 
@@ -21,6 +22,7 @@ pub mod legacy;
 pub mod ecam;
 pub mod bus;
 pub mod msi;
+pub mod pcie_ext;
 
 // Re-exports for convenient access
 pub use traits::ConfigSpaceAccessor;
@@ -37,3 +39,31 @@ pub use msi::{
     allocate_vector, allocate_vectors, setup_msi, setup_msix,
     disable_intx, enable_intx,
 };
+
+// PCIe拡張機能のエクスポート
+pub use pcie_ext::{
+    // 定数
+    cap_id, ext_cap_id,
+    PCIE_CONFIG_SIZE, PCIE_EXT_CAP_START,
+    // エラー型
+    PcieError, PcieResult,
+    // BDF
+    PcieBdf,
+    // コンフィグアクセス
+    PcieConfig,
+    // SR-IOV
+    SriovCapability, SriovController,
+    // AER
+    CorrectableErrors, UncorrectableErrors, AerCapability, AerController,
+    // 電源管理
+    PciePowerState, PciePowerManager,
+    // MSI-X拡張
+    PcieMsixTableEntry, PcieMsixController,
+    // ホットプラグ
+    HotPlugEvent, HotPlugController,
+    // マネージャ
+    PcieExtDevice, PcieExtManager,
+    // 初期化
+    init_pcie_ext, pcie_ext_manager, pcie_ext_config,
+};
+
