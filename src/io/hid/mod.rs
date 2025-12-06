@@ -8,10 +8,23 @@
 //!
 //! ## モジュール構成
 //! - `ps2` - PS/2コントローラドライバ
-//! - `keyboard` - 非同期キーボードドライバ
+//! - `keyboard` - 非同期キーボードドライバ (SPSC ownership-based)
+//! - `keymap` - キーボードレイアウト抽象化 (i18n対応)
 //! - `mouse` - PS/2マウスドライバ
+//!
+//! ## キーボードドライバ
+//! 同期・非同期両方のインターフェースを提供:
+//! - 同期: `poll_key_event()`, `has_key_event()`
+//! - 非同期: `KeyboardStream` (所有権ベースSPSCコンシューマ)
+//!
+//! ## キーマップサポート
+//! キーマップモジュールはi18n対応のためのキーボードレイアウト抽象化を提供:
+//! - `Keymap` trait: キーボードレイアウトの抽象インターフェース
+//! - `UsQwertyKeymap`: デフォルトUS QWERTYレイアウト
+//! - 追加レイアウト対応可能 (JIS, AZERTY, Dvorak等)
 
 pub mod keyboard;
+pub mod keymap;
 pub mod mouse;
 pub mod ps2;
 
@@ -44,18 +57,31 @@ pub use ps2::{
     set_leds,
 };
 
+// Keymap exports (i18n keyboard layout support)
+#[allow(unused_imports)]
+pub use keymap::{
+    Keymap,
+    UsQwertyKeymap,
+    JisKeymap,
+    DvorakKeymap,
+    DEFAULT_KEYMAP,
+};
+
 // Keyboard driver exports
 #[allow(unused_imports)]
 pub use keyboard::{
-    // Types
+    // Core types
     KeyCode,
     KeyState,
     KeyEvent,
     Modifiers,
+    // Driver and stream
     KeyboardDriver,
+    KeyboardStream,
+    // Async futures (deprecated - use KeyboardStream instead)
     KeyEventFuture,
     CharFuture,
-    LineFuture,
+    // LineFuture is deprecated - use KeyboardStream instead
     // Type aliases for compatibility with old shell code
     KeyCode as InputKeyCode,
     KeyState as InputKeyState,
