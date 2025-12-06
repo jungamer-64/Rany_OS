@@ -63,13 +63,36 @@ pub trait Keymap: Send + Sync {
     /// キーマップ実装者は`to_char_raw()`のみを実装すればよい。
     fn to_char(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char> {
         // Ctrl+文字の制御文字変換（全キーマップ共通）
-        // Ctrl+A = 0x01, Ctrl+B = 0x02, ... Ctrl+Z = 0x1A
+        //
+        // # 制御コード対応表
+        //
+        // | キー       | コード | 16進  | 用途                    |
+        // |------------|--------|-------|-------------------------|
+        // | Ctrl+A..Z  | SOH..SUB | 0x01..0x1A | 各種制御         |
+        // | Ctrl+C     | ETX    | 0x03  | SIGINT (割り込み)       |
+        // | Ctrl+D     | EOT    | 0x04  | EOF (入力終了)          |
+        // | Ctrl+H     | BS     | 0x08  | Backspace               |
+        // | Ctrl+I     | HT     | 0x09  | Tab                     |
+        // | Ctrl+L     | FF     | 0x0C  | 画面クリア              |
+        // | Ctrl+Q     | DC1    | 0x11  | XON (出力再開)          |
+        // | Ctrl+S     | DC3    | 0x13  | XOFF (出力停止)         |
+        // | Ctrl+U     | NAK    | 0x15  | 行削除                  |
+        // | Ctrl+W     | ETB    | 0x17  | 単語削除                |
+        // | Ctrl+Z     | SUB    | 0x1A  | SIGTSTP (一時停止)      |
+        // | Ctrl+[     | ESC    | 0x1B  | エスケープ              |
+        // | Ctrl+\     | FS     | 0x1C  | SIGQUIT (強制終了)      |
+        // | Ctrl+]     | GS     | 0x1D  | -                       |
+        // | Ctrl+6 (^) | RS     | 0x1E  | -                       |
+        // | Ctrl+- (_) | US     | 0x1F  | -                       |
+        // | Ctrl+/ (?) | DEL    | 0x7F  | 削除                    |
+        //
         if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
             return match key {
+                // Ctrl+A..Z = 0x01..0x1A
                 KeyCode::A => Some('\x01'),
                 KeyCode::B => Some('\x02'),
-                KeyCode::C => Some('\x03'),  // ETX (Ctrl+C)
-                KeyCode::D => Some('\x04'),  // EOT (Ctrl+D)
+                KeyCode::C => Some('\x03'),  // ETX (Ctrl+C) - SIGINT
+                KeyCode::D => Some('\x04'),  // EOT (Ctrl+D) - EOF
                 KeyCode::E => Some('\x05'),
                 KeyCode::F => Some('\x06'),
                 KeyCode::G => Some('\x07'),  // BEL
@@ -77,24 +100,28 @@ pub trait Keymap: Send + Sync {
                 KeyCode::I => Some('\x09'),  // HT (Tab)
                 KeyCode::J => Some('\x0A'),  // LF
                 KeyCode::K => Some('\x0B'),
-                KeyCode::L => Some('\x0C'),  // FF (Form Feed)
+                KeyCode::L => Some('\x0C'),  // FF (Form Feed) - 画面クリア
                 KeyCode::M => Some('\x0D'),  // CR
                 KeyCode::N => Some('\x0E'),
                 KeyCode::O => Some('\x0F'),
                 KeyCode::P => Some('\x10'),
-                KeyCode::Q => Some('\x11'),
+                KeyCode::Q => Some('\x11'),  // DC1 (XON)
                 KeyCode::R => Some('\x12'),
-                KeyCode::S => Some('\x13'),
+                KeyCode::S => Some('\x13'),  // DC3 (XOFF)
                 KeyCode::T => Some('\x14'),
-                KeyCode::U => Some('\x15'),
+                KeyCode::U => Some('\x15'),  // NAK - 行削除
                 KeyCode::V => Some('\x16'),
-                KeyCode::W => Some('\x17'),
+                KeyCode::W => Some('\x17'),  // ETB - 単語削除
                 KeyCode::X => Some('\x18'),
                 KeyCode::Y => Some('\x19'),
-                KeyCode::Z => Some('\x1A'),  // SUB (Ctrl+Z)
-                KeyCode::LeftBracket => Some('\x1B'),  // ESC
-                KeyCode::Backslash => Some('\x1C'),
-                KeyCode::RightBracket => Some('\x1D'),
+                KeyCode::Z => Some('\x1A'),  // SUB (Ctrl+Z) - SIGTSTP
+                // 特殊制御コード
+                KeyCode::LeftBracket => Some('\x1B'),   // ESC (0x1B)
+                KeyCode::Backslash => Some('\x1C'),     // FS (0x1C) - SIGQUIT
+                KeyCode::RightBracket => Some('\x1D'),  // GS (0x1D)
+                KeyCode::Key6 => Some('\x1E'),          // RS (0x1E) - Ctrl+^ (Shift+6)
+                KeyCode::Minus => Some('\x1F'),         // US (0x1F) - Ctrl+_
+                KeyCode::Slash => Some('\x7F'),         // DEL (0x7F) - Ctrl+?
                 _ => None,
             };
         }
@@ -210,13 +237,23 @@ impl Keymap for UsQwertyKeymap {
 }
 
 // ============================================================================
-// 将来の拡張用プレースホルダー
+// JIS配列キーマップ
 // ============================================================================
 
-/// JIS配列キーマップ（未実装）
+/// JIS配列キーマップ
 ///
-/// TODO: フェーズ4で実装予定
-#[derive(Debug, Clone, Copy)]
+/// 日本語JIS配列（106/109キー）の実装。
+/// USキーボードとの主な違い:
+/// - 記号キーの配置が異なる
+/// - `@`は`2`ではなくShift+2で`"`
+/// - `^`は`6`ではなく独立キー
+/// - `]`と`[`の位置が異なる
+/// - `¥`キーと`_`キーが追加
+///
+/// # Note
+/// この実装はPS/2スキャンコードSet 1に基づいています。
+/// 実際のJISキーボードはUSキーボードとスキャンコードが異なる場合があります。
+#[derive(Debug, Clone, Copy, Default)]
 pub struct JisKeymap;
 
 impl Keymap for JisKeymap {
@@ -224,17 +261,110 @@ impl Keymap for JisKeymap {
         "JIS (Japanese)"
     }
 
-    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, alt_gr: bool) -> Option<char> {
-        // TODO: JIS配列の実装
-        // 現時点ではUS配列にフォールバック
-        UsQwertyKeymap.to_char_raw(key, shift, caps_lock, alt_gr)
+    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, _alt_gr: bool) -> Option<char> {
+        // JIS配列での記号キー配置
+        // ほとんどのキーはUS配列と同じだが、一部の記号が異なる
+        match key {
+            // 数字キー上段の記号（JIS配列）
+            KeyCode::Key1 => Some(if shift { '!' } else { '1' }),
+            KeyCode::Key2 => Some(if shift { '"' } else { '2' }),  // USは@
+            KeyCode::Key3 => Some(if shift { '#' } else { '3' }),
+            KeyCode::Key4 => Some(if shift { '$' } else { '4' }),
+            KeyCode::Key5 => Some(if shift { '%' } else { '5' }),
+            KeyCode::Key6 => Some(if shift { '&' } else { '6' }),  // USは^
+            KeyCode::Key7 => Some(if shift { '\'' } else { '7' }), // USは&
+            KeyCode::Key8 => Some(if shift { '(' } else { '8' }),  // USは*
+            KeyCode::Key9 => Some(if shift { ')' } else { '9' }),
+            KeyCode::Key0 => Some(if shift { '~' } else { '0' }),  // USは)と0、JISは~と0
+
+            // JIS特有のキー配置
+            KeyCode::Minus => Some(if shift { '=' } else { '-' }),
+            KeyCode::Equals => Some(if shift { '+' } else { '^' }),  // USの=位置にJISは^
+            KeyCode::LeftBracket => Some(if shift { '{' } else { '@' }),  // USの[位置にJISは@
+            KeyCode::RightBracket => Some(if shift { '}' } else { '[' }), // USの]位置にJISは[
+            KeyCode::Backslash => Some(if shift { '|' } else { ']' }),    // USの\位置にJISは]
+            KeyCode::Semicolon => Some(if shift { '+' } else { ';' }),
+            KeyCode::Quote => Some(if shift { '*' } else { ':' }),   // USの'位置にJISは:
+            KeyCode::BackTick => Some(if shift { '~' } else { '`' }),     // 半角/全角キーの代替
+
+            // アルファベット（US配列と同じ）
+            KeyCode::A => Some(Self::apply_caps(shift, caps_lock, 'a')),
+            KeyCode::B => Some(Self::apply_caps(shift, caps_lock, 'b')),
+            KeyCode::C => Some(Self::apply_caps(shift, caps_lock, 'c')),
+            KeyCode::D => Some(Self::apply_caps(shift, caps_lock, 'd')),
+            KeyCode::E => Some(Self::apply_caps(shift, caps_lock, 'e')),
+            KeyCode::F => Some(Self::apply_caps(shift, caps_lock, 'f')),
+            KeyCode::G => Some(Self::apply_caps(shift, caps_lock, 'g')),
+            KeyCode::H => Some(Self::apply_caps(shift, caps_lock, 'h')),
+            KeyCode::I => Some(Self::apply_caps(shift, caps_lock, 'i')),
+            KeyCode::J => Some(Self::apply_caps(shift, caps_lock, 'j')),
+            KeyCode::K => Some(Self::apply_caps(shift, caps_lock, 'k')),
+            KeyCode::L => Some(Self::apply_caps(shift, caps_lock, 'l')),
+            KeyCode::M => Some(Self::apply_caps(shift, caps_lock, 'm')),
+            KeyCode::N => Some(Self::apply_caps(shift, caps_lock, 'n')),
+            KeyCode::O => Some(Self::apply_caps(shift, caps_lock, 'o')),
+            KeyCode::P => Some(Self::apply_caps(shift, caps_lock, 'p')),
+            KeyCode::Q => Some(Self::apply_caps(shift, caps_lock, 'q')),
+            KeyCode::R => Some(Self::apply_caps(shift, caps_lock, 'r')),
+            KeyCode::S => Some(Self::apply_caps(shift, caps_lock, 's')),
+            KeyCode::T => Some(Self::apply_caps(shift, caps_lock, 't')),
+            KeyCode::U => Some(Self::apply_caps(shift, caps_lock, 'u')),
+            KeyCode::V => Some(Self::apply_caps(shift, caps_lock, 'v')),
+            KeyCode::W => Some(Self::apply_caps(shift, caps_lock, 'w')),
+            KeyCode::X => Some(Self::apply_caps(shift, caps_lock, 'x')),
+            KeyCode::Y => Some(Self::apply_caps(shift, caps_lock, 'y')),
+            KeyCode::Z => Some(Self::apply_caps(shift, caps_lock, 'z')),
+
+            // その他（US配列と共通）
+            KeyCode::Space => Some(' '),
+            KeyCode::Enter => Some('\n'),
+            KeyCode::Tab => Some('\t'),
+            KeyCode::Backspace => Some('\x08'),
+            KeyCode::Comma => Some(if shift { '<' } else { ',' }),
+            KeyCode::Period => Some(if shift { '>' } else { '.' }),
+            KeyCode::Slash => Some(if shift { '?' } else { '/' }),
+
+            // テンキーは現在KeyCodeに未定義のためスキップ
+            // TODO: Phase 5でテンキーサポートを追加
+
+            _ => None,
+        }
     }
 }
 
-/// Dvorak配列キーマップ（未実装）
+impl JisKeymap {
+    /// CapsLockとShiftの組み合わせを適用
+    #[inline]
+    fn apply_caps(shift: bool, caps_lock: bool, ch: char) -> char {
+        if shift ^ caps_lock {
+            ch.to_ascii_uppercase()
+        } else {
+            ch
+        }
+    }
+}
+
+// ============================================================================
+// Dvorak配列キーマップ
+// ============================================================================
+
+/// Dvorak配列キーマップ
 ///
-/// TODO: フェーズ4で実装予定
-#[derive(Debug, Clone, Copy)]
+/// Dvorak Simplified Keyboardの実装。
+/// タイピング効率を最適化した配列で、母音を左手ホームポジションに配置。
+///
+/// # QWERTY → Dvorak マッピング
+/// ```text
+/// QWERTY: qwertyuiop[]
+/// Dvorak: ',.pyfgcrl/=
+///
+/// QWERTY: asdfghjkl;'
+/// Dvorak: aoeuidhtns-
+///
+/// QWERTY: zxcvbnm,./
+/// Dvorak: ;qjkxbmwvz
+/// ```
+#[derive(Debug, Clone, Copy, Default)]
 pub struct DvorakKeymap;
 
 impl Keymap for DvorakKeymap {
@@ -242,12 +372,102 @@ impl Keymap for DvorakKeymap {
         "Dvorak"
     }
 
-    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, alt_gr: bool) -> Option<char> {
-        // TODO: Dvorak配列の実装
-        // 現時点ではUS配列にフォールバック
-        UsQwertyKeymap.to_char_raw(key, shift, caps_lock, alt_gr)
+    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, _alt_gr: bool) -> Option<char> {
+        match key {
+            // 数字キー上段（Dvorakでも通常は同じ）
+            KeyCode::Key1 => Some(if shift { '!' } else { '1' }),
+            KeyCode::Key2 => Some(if shift { '@' } else { '2' }),
+            KeyCode::Key3 => Some(if shift { '#' } else { '3' }),
+            KeyCode::Key4 => Some(if shift { '$' } else { '4' }),
+            KeyCode::Key5 => Some(if shift { '%' } else { '5' }),
+            KeyCode::Key6 => Some(if shift { '^' } else { '6' }),
+            KeyCode::Key7 => Some(if shift { '&' } else { '7' }),
+            KeyCode::Key8 => Some(if shift { '*' } else { '8' }),
+            KeyCode::Key9 => Some(if shift { '(' } else { '9' }),
+            KeyCode::Key0 => Some(if shift { ')' } else { '0' }),
+
+            // 上段記号キー
+            KeyCode::Minus => Some(if shift { '{' } else { '[' }),  // QWERTYの-位置
+            KeyCode::Equals => Some(if shift { '}' } else { ']' }), // QWERTYの=位置
+
+            // 上段アルファベット行（QWERTY QWERTYUIOP → Dvorak ',.PYFGCRL）
+            KeyCode::Q => Some(if shift { '"' } else { '\'' }),   // ' "
+            KeyCode::W => Some(if shift { '<' } else { ',' }),    // , <
+            KeyCode::E => Some(if shift { '>' } else { '.' }),    // . >
+            KeyCode::R => Some(Self::apply_caps(shift, caps_lock, 'p')),
+            KeyCode::T => Some(Self::apply_caps(shift, caps_lock, 'y')),
+            KeyCode::Y => Some(Self::apply_caps(shift, caps_lock, 'f')),
+            KeyCode::U => Some(Self::apply_caps(shift, caps_lock, 'g')),
+            KeyCode::I => Some(Self::apply_caps(shift, caps_lock, 'c')),
+            KeyCode::O => Some(Self::apply_caps(shift, caps_lock, 'r')),
+            KeyCode::P => Some(Self::apply_caps(shift, caps_lock, 'l')),
+            KeyCode::LeftBracket => Some(if shift { '?' } else { '/' }),   // / ?
+            KeyCode::RightBracket => Some(if shift { '+' } else { '=' }), // = +
+
+            // 中段アルファベット行（QWERTY ASDFGHJKL;' → Dvorak AOEUIDHTNS-）
+            KeyCode::A => Some(Self::apply_caps(shift, caps_lock, 'a')),
+            KeyCode::S => Some(Self::apply_caps(shift, caps_lock, 'o')),
+            KeyCode::D => Some(Self::apply_caps(shift, caps_lock, 'e')),
+            KeyCode::F => Some(Self::apply_caps(shift, caps_lock, 'u')),
+            KeyCode::G => Some(Self::apply_caps(shift, caps_lock, 'i')),
+            KeyCode::H => Some(Self::apply_caps(shift, caps_lock, 'd')),
+            KeyCode::J => Some(Self::apply_caps(shift, caps_lock, 'h')),
+            KeyCode::K => Some(Self::apply_caps(shift, caps_lock, 't')),
+            KeyCode::L => Some(Self::apply_caps(shift, caps_lock, 'n')),
+            KeyCode::Semicolon => Some(Self::apply_caps(shift, caps_lock, 's')),
+            KeyCode::Quote => Some(if shift { '_' } else { '-' }),  // - _
+
+            // 下段アルファベット行（QWERTY ZXCVBNM,./ → Dvorak ;QJKXBMWVZ）
+            KeyCode::Z => Some(if shift { ':' } else { ';' }),    // ; :
+            KeyCode::X => Some(Self::apply_caps(shift, caps_lock, 'q')),
+            KeyCode::C => Some(Self::apply_caps(shift, caps_lock, 'j')),
+            KeyCode::V => Some(Self::apply_caps(shift, caps_lock, 'k')),
+            KeyCode::B => Some(Self::apply_caps(shift, caps_lock, 'x')),
+            KeyCode::N => Some(Self::apply_caps(shift, caps_lock, 'b')),
+            KeyCode::M => Some(Self::apply_caps(shift, caps_lock, 'm')),
+            KeyCode::Comma => Some(Self::apply_caps(shift, caps_lock, 'w')),
+            KeyCode::Period => Some(Self::apply_caps(shift, caps_lock, 'v')),
+            KeyCode::Slash => Some(Self::apply_caps(shift, caps_lock, 'z')),
+
+            // バックスラッシュ/グレーブキー
+            KeyCode::BackTick => Some(if shift { '~' } else { '`' }),
+            KeyCode::Backslash => Some(if shift { '|' } else { '\\' }),
+
+            // その他（共通）
+            KeyCode::Space => Some(' '),
+            KeyCode::Enter => Some('\n'),
+            KeyCode::Tab => Some('\t'),
+            KeyCode::Backspace => Some('\x08'),
+
+            // テンキーは現在KeyCodeに未定義のためスキップ
+            // TODO: Phase 5でテンキーサポートを追加
+
+            _ => None,
+        }
     }
 }
+
+impl DvorakKeymap {
+    /// CapsLockとShiftの組み合わせを適用
+    #[inline]
+    fn apply_caps(shift: bool, caps_lock: bool, ch: char) -> char {
+        if shift ^ caps_lock {
+            ch.to_ascii_uppercase()
+        } else {
+            ch
+        }
+    }
+}
+
+// ============================================================================
+// グローバルキーマップインスタンス
+// ============================================================================
+
+/// JISキーマップのグローバルインスタンス
+pub static JIS_KEYMAP: JisKeymap = JisKeymap;
+
+/// Dvorakキーマップのグローバルインスタンス
+pub static DVORAK_KEYMAP: DvorakKeymap = DvorakKeymap;
 
 // ============================================================================
 // デフォルトキーマップ
@@ -331,5 +551,121 @@ mod tests {
         assert_eq!(keymap.to_char(KeyCode::D, &mods_ctrl()), Some('\x04'));
         // Ctrl+Z = SUB (0x1A)
         assert_eq!(keymap.to_char(KeyCode::Z, &mods_ctrl()), Some('\x1A'));
+    }
+
+    // =========================================================================
+    // JIS配列テスト (Phase 4)
+    // =========================================================================
+
+    #[test]
+    fn test_jis_keymap_symbols() {
+        let keymap = JisKeymap;
+
+        // JIS: Shift+2 = " (USは@)
+        assert_eq!(keymap.to_char(KeyCode::Key2, &mods(true, false)), Some('"'));
+
+        // JIS: Shift+6 = & (USは^)
+        assert_eq!(keymap.to_char(KeyCode::Key6, &mods(true, false)), Some('&'));
+
+        // JIS: Shift+7 = ' (USは&)
+        assert_eq!(keymap.to_char(KeyCode::Key7, &mods(true, false)), Some('\''));
+
+        // JIS: [キー位置 = @ (USは[)
+        assert_eq!(keymap.to_char(KeyCode::LeftBracket, &mods(false, false)), Some('@'));
+        assert_eq!(keymap.to_char(KeyCode::LeftBracket, &mods(true, false)), Some('{'));
+    }
+
+    #[test]
+    fn test_jis_keymap_letters() {
+        let keymap = JisKeymap;
+
+        // アルファベットはUSと同じ
+        assert_eq!(keymap.to_char(KeyCode::A, &mods(false, false)), Some('a'));
+        assert_eq!(keymap.to_char(KeyCode::A, &mods(true, false)), Some('A'));
+        assert_eq!(keymap.to_char(KeyCode::Z, &mods(false, false)), Some('z'));
+    }
+
+    #[test]
+    fn test_jis_keymap_ctrl() {
+        let keymap = JisKeymap;
+
+        // 制御文字は共通処理（全キーマップで同じ）
+        assert_eq!(keymap.to_char(KeyCode::C, &mods_ctrl()), Some('\x03'));
+        assert_eq!(keymap.to_char(KeyCode::D, &mods_ctrl()), Some('\x04'));
+    }
+
+    // =========================================================================
+    // Dvorak配列テスト (Phase 4)
+    // =========================================================================
+
+    #[test]
+    fn test_dvorak_keymap_home_row() {
+        let keymap = DvorakKeymap;
+
+        // Dvorak中段: AOEUIDHTNS (QWERTY: ASDFGHJKL;)
+        assert_eq!(keymap.to_char(KeyCode::A, &mods(false, false)), Some('a'));
+        assert_eq!(keymap.to_char(KeyCode::S, &mods(false, false)), Some('o'));
+        assert_eq!(keymap.to_char(KeyCode::D, &mods(false, false)), Some('e'));
+        assert_eq!(keymap.to_char(KeyCode::F, &mods(false, false)), Some('u'));
+        assert_eq!(keymap.to_char(KeyCode::G, &mods(false, false)), Some('i'));
+        assert_eq!(keymap.to_char(KeyCode::H, &mods(false, false)), Some('d'));
+        assert_eq!(keymap.to_char(KeyCode::J, &mods(false, false)), Some('h'));
+        assert_eq!(keymap.to_char(KeyCode::K, &mods(false, false)), Some('t'));
+        assert_eq!(keymap.to_char(KeyCode::L, &mods(false, false)), Some('n'));
+        assert_eq!(keymap.to_char(KeyCode::Semicolon, &mods(false, false)), Some('s'));
+    }
+
+    #[test]
+    fn test_dvorak_keymap_top_row() {
+        let keymap = DvorakKeymap;
+
+        // Dvorak上段: ',.PYFGCRL (QWERTY: QWERTYUIOP)
+        assert_eq!(keymap.to_char(KeyCode::Q, &mods(false, false)), Some('\''));
+        assert_eq!(keymap.to_char(KeyCode::W, &mods(false, false)), Some(','));
+        assert_eq!(keymap.to_char(KeyCode::E, &mods(false, false)), Some('.'));
+        assert_eq!(keymap.to_char(KeyCode::R, &mods(false, false)), Some('p'));
+        assert_eq!(keymap.to_char(KeyCode::T, &mods(false, false)), Some('y'));
+        assert_eq!(keymap.to_char(KeyCode::Y, &mods(false, false)), Some('f'));
+    }
+
+    #[test]
+    fn test_dvorak_keymap_bottom_row() {
+        let keymap = DvorakKeymap;
+
+        // Dvorak下段: ;QJKXBMWVZ (QWERTY: ZXCVBNM,./)
+        assert_eq!(keymap.to_char(KeyCode::Z, &mods(false, false)), Some(';'));
+        assert_eq!(keymap.to_char(KeyCode::X, &mods(false, false)), Some('q'));
+        assert_eq!(keymap.to_char(KeyCode::C, &mods(false, false)), Some('j'));
+        assert_eq!(keymap.to_char(KeyCode::Slash, &mods(false, false)), Some('z'));
+    }
+
+    #[test]
+    fn test_dvorak_keymap_caps_lock() {
+        let keymap = DvorakKeymap;
+
+        // CapsLock動作確認
+        assert_eq!(keymap.to_char(KeyCode::S, &mods(false, true)), Some('O'));  // CapsLock -> 大文字
+        assert_eq!(keymap.to_char(KeyCode::S, &mods(true, true)), Some('o'));   // Shift+CapsLock -> 小文字
+    }
+
+    #[test]
+    fn test_dvorak_keymap_ctrl() {
+        let keymap = DvorakKeymap;
+
+        // 制御文字は共通処理（Dvorakでも物理キー位置で判定）
+        // 注: Dvorakでも物理的なCキー（QWERTY配置）でCtrl+C
+        assert_eq!(keymap.to_char(KeyCode::C, &mods_ctrl()), Some('\x03'));
+    }
+
+    // =========================================================================
+    // グローバルインスタンステスト
+    // =========================================================================
+
+    #[test]
+    fn test_global_keymap_instances() {
+        // グローバルインスタンスが正しく初期化されていることを確認
+        assert_eq!(DEFAULT_KEYMAP.name(), "US QWERTY");
+        assert_eq!(JIS_KEYMAP.name(), "JIS (Japanese)");
+        assert_eq!(DVORAK_KEYMAP.name(), "Dvorak");
     }
 }

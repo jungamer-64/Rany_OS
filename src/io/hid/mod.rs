@@ -65,6 +65,8 @@ pub use keymap::{
     JisKeymap,
     DvorakKeymap,
     DEFAULT_KEYMAP,
+    JIS_KEYMAP,
+    DVORAK_KEYMAP,
 };
 
 // Keyboard driver exports
@@ -79,10 +81,9 @@ pub use keyboard::{
     KeyboardDriver,
     KeyboardStream,
     StreamAlreadyTaken,
-    // Async futures (deprecated - use KeyboardStream instead)
+    // Async futures
     KeyEventFuture,
     CharFuture,
-    // LineFuture is deprecated - use KeyboardStream instead
     // Type aliases for compatibility with old shell code
     KeyCode as InputKeyCode,
     KeyState as InputKeyState,
@@ -92,11 +93,17 @@ pub use keyboard::{
     keyboard,
     init as keyboard_init,
     handle_keyboard_interrupt,
-    // Synchronous polling API
+    has_event as has_key_event,
+    // ISR notification processing (for executors)
+    process_pending_wakes,
+};
+
+// Crate-internal re-exports for legacy shell code
+// TODO: Migrate shell code to use KeyboardStream
+#[doc(hidden)]
+pub(crate) use keyboard::{
     poll_key_event,
     poll_char as poll_key_char,
-    has_event as has_key_event,
-    // Compatibility aliases
     poll_key_event as poll_input_event,
 };
 
