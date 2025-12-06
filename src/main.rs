@@ -44,10 +44,8 @@ mod smp_advanced;
 
 // Phase 5: Extended Features & System Integration
 mod gpu;
-mod pcie;
 mod profiler;
 mod thermal;
-mod usb;
 mod watchdog;
 
 // Phase 6: Testing, Demos & System Monitor
