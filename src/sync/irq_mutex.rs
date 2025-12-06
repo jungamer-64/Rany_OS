@@ -99,14 +99,15 @@ impl<T> IrqMutex<T> {
         // 1. 割り込みを禁止（現在の状態を保存）
         let irq_was_enabled = save_and_disable_interrupts();
 
-        // 2. スピンロックを取得
+        // 2. スピンロックを取得（指数バックオフ付き）
+        let mut backoff = super::lockfree::Backoff::new();
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_err()
         {
-            // スピン中にCPUに休憩を与える (電力効率)
-            core::hint::spin_loop();
+            // 指数バックオフでCPU効率を改善
+            backoff.spin();
         }
 
         IrqMutexGuard {

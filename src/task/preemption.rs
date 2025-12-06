@@ -17,6 +17,10 @@ const MIN_TIME_SLICE: u64 = 1;
 /// 最大タイムスライス
 const MAX_TIME_SLICE: u64 = 100;
 
+/// グローバルプリエンプションペンディングフラグ（ISRから軽量にアクセス）
+/// 設計書 4.2: ISR内では重い処理を行わない
+static PREEMPTION_PENDING: AtomicBool = AtomicBool::new(false);
+
 /// プリエンプションコントローラ
 /// 協調的マルチタスクとプリエンプティブの「ハイブリッド」アプローチを実装
 pub struct PreemptionController {
@@ -145,6 +149,32 @@ pub fn should_preempt() -> bool {
 /// 割り込みハンドラ内では実際のyieldを行わず、フラグを立てるだけ
 pub fn request_yield() {
     YIELD_REQUESTED.store(true, Ordering::Release);
+}
+
+/// 時間スライスを減少（ISRから軽量に呼び出し可能）
+/// 設計書 4.2: ISR内では重い処理を行わない
+pub fn decrement_time_slice() {
+    // アトミックに時間スライスを減少
+    let slice = PREEMPTION_CONTROLLER.time_slice.load(Ordering::Relaxed);
+    if slice > 0 {
+        PREEMPTION_CONTROLLER.time_slice.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// プリエンプションペンディングフラグを設定（ISRから）
+/// 設計書 4.2: ISRはフラグを設定するのみ
+pub fn set_preemption_pending() {
+    PREEMPTION_PENDING.store(true, Ordering::Release);
+}
+
+/// プリエンプションペンディングかチェック
+pub fn is_preemption_pending() -> bool {
+    PREEMPTION_PENDING.load(Ordering::Acquire)
+}
+
+/// プリエンプションペンディングをクリア
+pub fn clear_preemption_pending() {
+    PREEMPTION_PENDING.store(false, Ordering::Release);
 }
 
 /// Yield要求をチェックしてクリア

@@ -258,6 +258,12 @@ pub fn wake_from_interrupt(source: InterruptSource) {
     INTERRUPT_WAKER_REGISTRY.wake(source);
 }
 
+/// タイマータスクを起床（タイマーISRから呼ばれる便利関数）
+/// 設計書 4.2: ISR内では軽量な処理のみ実行
+pub fn wake_timer_task() {
+    wake_from_interrupt(InterruptSource::Timer);
+}
+
 // ============================================================================
 // Interrupt-aware Future helpers
 // ============================================================================

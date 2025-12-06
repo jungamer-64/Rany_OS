@@ -72,3 +72,134 @@ pub use slab_cache::{
     per_core_dealloc,
     per_core_dealloc_auto,
 };
+
+// ============================================================================
+// 統一フレームアロケータインターフェース
+// P2修正: 複数アロケータの統合
+// ============================================================================
+
+use x86_64::structures::paging::{PhysFrame, Size4KiB, Size2MiB, Size1GiB};
+
+/// フレームアロケータの種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameAllocatorType {
+    /// ビットマップベースのシンプルなアロケータ
+    Bitmap,
+    /// バディシステムベースの高効率アロケータ
+    Buddy,
+}
+
+/// 統一フレームアロケータAPI
+/// 
+/// 設計書 5.1: 物理メモリは4KBページ単位で管理
+/// ビットマップとバディの両方を透過的に使用可能
+pub struct UnifiedFrameAllocator;
+
+impl UnifiedFrameAllocator {
+    /// 4KBフレームを割り当て
+    /// 
+    /// デフォルトでBuddyを優先し、失敗時にBitmapにフォールバック
+    pub fn alloc_4k() -> Option<PhysFrame<Size4KiB>> {
+        // まずBuddyを試す（高効率）
+        if let Some(frame) = buddy_alloc_frame() {
+            return Some(frame);
+        }
+        // フォールバック
+        alloc_frame()
+    }
+
+    /// 2MBフレームを割り当て
+    pub fn alloc_2m() -> Option<PhysFrame<Size2MiB>> {
+        if let Some(frame) = buddy_alloc_frame_2m() {
+            return Some(frame);
+        }
+        alloc_frame_2m()
+    }
+
+    /// 1GBフレームを割り当て
+    pub fn alloc_1g() -> Option<PhysFrame<Size1GiB>> {
+        if let Some(frame) = buddy_alloc_frame_1g() {
+            return Some(frame);
+        }
+        alloc_frame_1g()
+    }
+
+    /// 4KBフレームを解放
+    /// 
+    /// アドレスを両方のアロケータで試みる
+    pub fn dealloc_4k(frame: PhysFrame<Size4KiB>) {
+        // Buddyで管理されているかチェック
+        if buddy_allocator::is_managed_by_buddy(frame.start_address()) {
+            buddy_dealloc_frame(frame);
+        } else {
+            dealloc_frame(frame);
+        }
+    }
+
+    /// 2MBフレームを解放
+    pub fn dealloc_2m(frame: PhysFrame<Size2MiB>) {
+        if buddy_allocator::is_managed_by_buddy(frame.start_address()) {
+            buddy_dealloc_frame_2m(frame);
+        } else {
+            // Bitmapでは2MB解放は512x4KBとして処理
+            for i in 0..512 {
+                let offset = i * 4096;
+                let addr = x86_64::PhysAddr::new(frame.start_address().as_u64() + offset);
+                if let Some(small_frame) = PhysFrame::<Size4KiB>::from_start_address(addr).ok() {
+                    dealloc_frame(small_frame);
+                }
+            }
+        }
+    }
+
+    /// 1GBフレームを解放
+    pub fn dealloc_1g(frame: PhysFrame<Size1GiB>) {
+        if buddy_allocator::is_managed_by_buddy(frame.start_address()) {
+            buddy_dealloc_frame_1g(frame);
+        }
+        // Bitmapでは1GB解放は複雑すぎるため非サポート
+    }
+
+    /// 統計を取得
+    pub fn stats() -> UnifiedAllocatorStats {
+        let (bitmap_free, bitmap_total_usize) = frame_allocator_stats();
+        let buddy = buddy_allocator_stats();
+        
+        UnifiedAllocatorStats {
+            bitmap_total: bitmap_total_usize as u64,
+            bitmap_used: bitmap_total_usize as u64 - bitmap_free,
+            buddy_total: buddy.total_frames as u64,
+            buddy_used: buddy.total_frames as u64 - buddy.free_frames,
+        }
+    }
+}
+
+/// 統一アロケータ統計
+#[derive(Debug, Clone, Copy)]
+pub struct UnifiedAllocatorStats {
+    /// Bitmapアロケータの総フレーム数
+    pub bitmap_total: u64,
+    /// Bitmapアロケータの使用フレーム数
+    pub bitmap_used: u64,
+    /// Buddyアロケータの総フレーム数
+    pub buddy_total: u64,
+    /// Buddyアロケータの使用フレーム数
+    pub buddy_used: u64,
+}
+
+impl UnifiedAllocatorStats {
+    /// 総フレーム数
+    pub fn total_frames(&self) -> u64 {
+        self.bitmap_total + self.buddy_total
+    }
+
+    /// 使用フレーム数
+    pub fn used_frames(&self) -> u64 {
+        self.bitmap_used + self.buddy_used
+    }
+
+    /// 空きフレーム数
+    pub fn free_frames(&self) -> u64 {
+        self.total_frames() - self.used_frames()
+    }
+}
