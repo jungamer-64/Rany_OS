@@ -527,6 +527,23 @@ pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
     BUDDY_ALLOCATOR.lock().stats()
 }
 
+/// 指定アドレスがBuddy Allocatorで管理されているかチェック
+/// 
+/// 設計書 P2: 統一フレームアロケータのための判定
+/// 注: Buddyアロケータは初期化時に登録された領域のみを管理する
+pub fn is_managed_by_buddy(addr: PhysAddr) -> bool {
+    let allocator = BUDDY_ALLOCATOR.lock();
+    // total_framesが0ならBuddyは初期化されていない
+    if allocator.total_frames == 0 {
+        return false;
+    }
+    
+    // Buddyで管理されているフレーム範囲内かチェック
+    // 注: Buddyは0から始まる連続領域を想定（シンプル化）
+    let max_addr = (allocator.total_frames as u64) * (PAGE_SIZE_4K as u64);
+    addr.as_u64() < max_addr
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

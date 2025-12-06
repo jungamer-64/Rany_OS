@@ -10,24 +10,15 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 use spin::Mutex;
 
-/// ドメインID
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DomainId(u64);
-
-impl DomainId {
-    pub const fn new(id: u64) -> Self {
-        Self(id)
-    }
-
-    pub const fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    pub const KERNEL: DomainId = DomainId(0);
-}
+// DomainIdはdomain_system.rsから使用（P3: 重複定義の排除）
+pub use crate::domain_system::DomainId;
 
 // ============================================================================
 // Heap Registry - 設計書 5.3/8.1: ドメインごとのオブジェクト追跡機構
+// 
+// 注: sas/heap_registry.rs にも同様の実装があります。
+// 将来的には sas::heap_registry を統一されたインターフェースとして使用し、
+// この実装は削除予定です (P3: コード統合)
 // ============================================================================
 
 /// Heap Registry エントリ

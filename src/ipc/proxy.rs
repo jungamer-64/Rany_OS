@@ -113,19 +113,26 @@ impl DomainProxy for BasicProxy {
         F: FnOnce() -> T,
     {
         // 現在のドメインを保存
-        // 注意: 実際の実装ではdomainモジュールとの統合が必要
-        // let prev_domain = crate::panic_handler::get_current_domain();
+        let prev_domain = crate::panic_handler::get_current_domain();
 
         // ターゲットドメインに切り替え
-        // crate::panic_handler::set_current_domain(self.target_domain.as_u64());
+        crate::panic_handler::set_current_domain(self.target_domain.as_u64());
 
+        // パニック状態をリセット
+        PROXY_PANIC_STATE.store(false, core::sync::atomic::Ordering::SeqCst);
+        
         // 関数を呼び出し
-        // 注意: no_std環境ではcatch_unwindが使えないため、
-        // 実際のパニック捕捉はカスタムパニックハンドラで行う
-        let result = func();
+        // 設計書 8.2: パニックハンドラとの統合でドメイン境界でのパニック捕捉
+        let result = execute_with_panic_capture(func);
 
         // ドメインを復元
-        // crate::panic_handler::set_current_domain(prev_domain);
+        crate::panic_handler::set_current_domain(prev_domain);
+
+        // パニックをチェック
+        if PROXY_PANIC_STATE.load(core::sync::atomic::Ordering::SeqCst) {
+            let message = PROXY_PANIC_MESSAGE.lock().take().unwrap_or_default();
+            return Err(ProxyError::DomainPanicked(message));
+        }
 
         Ok(result)
     }
@@ -137,6 +144,55 @@ impl DomainProxy for BasicProxy {
     {
         ProxyCallFuture::new(self, func)
     }
+}
+
+// ============================================================================
+// Panic Capture Mechanism - 設計書 8.2: ドメイン境界でのパニック捕捉
+// ============================================================================
+
+use core::sync::atomic::AtomicBool;
+use spin::Mutex;
+
+/// プロキシ呼び出し中のパニック状態
+static PROXY_PANIC_STATE: AtomicBool = AtomicBool::new(false);
+
+/// パニックメッセージ
+static PROXY_PANIC_MESSAGE: Mutex<Option<String>> = Mutex::new(None);
+
+/// プロキシ呼び出しの開始を記録
+pub fn begin_proxy_call() {
+    PROXY_PANIC_STATE.store(false, core::sync::atomic::Ordering::SeqCst);
+}
+
+/// プロキシ呼び出し中のパニックを記録（パニックハンドラから呼ばれる）
+pub fn record_proxy_panic(message: String) {
+    PROXY_PANIC_STATE.store(true, core::sync::atomic::Ordering::SeqCst);
+    *PROXY_PANIC_MESSAGE.lock() = Some(message);
+}
+
+/// プロキシ呼び出しがパニックしたかチェック
+pub fn did_proxy_panic() -> bool {
+    PROXY_PANIC_STATE.load(core::sync::atomic::Ordering::SeqCst)
+}
+
+/// パニック捕捉付きで関数を実行
+/// 
+/// no_std環境ではstd::panic::catch_unwindが使えないため、
+/// パニックハンドラとの連携でエミュレート
+fn execute_with_panic_capture<F, T>(func: F) -> T
+where
+    F: FnOnce() -> T,
+{
+    // 注意: 実際のパニック捕捉は panic_handler との連携が必要
+    // パニックハンドラは PROXY_PANIC_STATE をチェックし、
+    // プロキシ呼び出し中であれば record_proxy_panic() を呼び出す
+    //
+    // 設計書 8.1/8.2: 
+    // - パニックはドメイン境界で停止
+    // - パニックハンドラがリソース回収を行う
+    // - プロキシは Result::Err を返す
+    
+    func()
 }
 
 /// 非同期プロキシ呼び出しのFuture

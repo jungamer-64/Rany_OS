@@ -309,36 +309,59 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 /// タイマー割り込みハンドラ
 ///
 /// 仕様書 4.2: プリエンプション制御との統合
+/// 設計書 4.2: ISR内では重い処理を行わない。単にタスクをReady状態にするだけ。
 /// - タイマーティックの管理
-/// - タスクの時間スライス減少
-/// - 必要に応じてプリエンプション要求
-/// - Interrupt-Wakerブリッジとの連携
+/// - フラグ設定のみで重い処理は遅延
+/// - Wakerを起床させるだけ
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // タイマーティックを増加
-    let tick = TIMER_TICKS.fetch_add(1, Ordering::SeqCst);
+    // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
+    let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
 
-    // タイマーベースのスリープを処理（設計書 4.2）
-    // sleep_ms等で待機中のタスクを起床させる
-    crate::task::timer::handle_timer_interrupt();
+    // 2. 軽量なフラグ設定のみ（重い処理は遅延）
+    // タイマーイベントペンディングフラグを設定
+    TIMER_EVENT_PENDING.store(true, Ordering::Release);
+    
+    // 3. プリエンプションカウンタを更新（軽量な操作のみ）
+    crate::task::preemption::decrement_time_slice();
 
-    // プリエンプションシステムにタイマーティックを通知
-    // これにより時間スライスが減少し、必要に応じてプリエンプションが要求される
-    crate::task::preemption::handle_timer_tick(tick);
+    // 4. Wakerを起床させる（軽量）
+    crate::task::interrupt_waker::wake_timer_task();
 
-    // Interrupt-Wakerブリッジにタイマー割り込みを通知（設計書 4.2）
-    // これによりsleep_ms等で待機中のタスクが起床される
-    crate::task::interrupt_waker::handle_timer_interrupt_waker();
-
-    // EOI (End Of Interrupt) を送信
+    // 5. EOI (End Of Interrupt) を送信
     unsafe {
         send_eoi(InterruptVector::Timer as u8 - PIC1_OFFSET);
     }
 
-    // プリエンプションが要求されていて、割り込み可能な状態なら
-    // タスク切り替えを試みる
+    // 6. プリエンプションフラグのみ設定（実際のyieldは遅延）
     if crate::task::preemption::should_preempt() {
-        // 協調的yield（割り込みハンドラ終了後に実行）
-        crate::task::preemption::request_yield();
+        crate::task::preemption::set_preemption_pending();
+    }
+}
+
+/// タイマーイベントペンディングフラグ
+static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool = 
+    core::sync::atomic::AtomicBool::new(false);
+
+/// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
+/// 
+/// 設計書 4.2: 重い処理は非ISRコンテキストで実行
+pub fn poll_timer_events() {
+    if TIMER_EVENT_PENDING.swap(false, Ordering::Acquire) {
+        let tick = TIMER_TICKS.load(Ordering::Relaxed);
+        
+        // タイマーベースのスリープを処理
+        crate::task::timer::handle_timer_interrupt();
+        
+        // プリエンプションシステムにタイマーティックを通知
+        crate::task::preemption::handle_timer_tick(tick);
+        
+        // Interrupt-Wakerブリッジの処理
+        crate::task::interrupt_waker::handle_timer_interrupt_waker();
+        
+        // ペンディングのプリエンプションを処理
+        if crate::task::preemption::is_preemption_pending() {
+            crate::task::preemption::request_yield();
+        }
     }
 }
 

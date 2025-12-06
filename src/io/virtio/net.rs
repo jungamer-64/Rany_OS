@@ -21,6 +21,8 @@ use super::defs::{status, VirtioDeviceType};
 use super::transport::VirtioTransport;
 use crate::io::dma::{TypedDmaSlice, CpuOwned, DeviceOwned, CoherentDmaBuffer, DmaMemoryAttributes};
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
+// Import PacketRef for zero-copy
+use crate::net::mempool::PacketRef;
 
 // ============================================================================
 // VirtIO Net Transport Helper Functions
@@ -285,6 +287,37 @@ impl NetVirtQueue {
         Ok(desc_idx)
     }
 
+    /// ゼロコピー送信バッファを追加（設計書 6.2準拠）
+    /// 物理アドレスを直接使用し、メモリコピーを回避
+    pub fn add_tx_buffer_zero_copy(
+        &self,
+        phys_addr: u64,
+        data_len: usize,
+    ) -> Result<u16, VirtioNetError> {
+        let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+
+        unsafe {
+            // ディスクリプタを設定（物理アドレスを直接使用）
+            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
+            desc.addr = phys_addr;
+            desc.len = (VirtioNetHeader::SIZE + data_len) as u32;
+            desc.flags = 0;
+            desc.next = 0;
+
+            // Available Ringに追加
+            let avail = &mut *self.avail_ring.as_ptr();
+            let avail_idx = avail.idx;
+            avail.ring[(avail_idx % self.size) as usize] = desc_idx;
+
+            // メモリバリア
+            core::sync::atomic::fence(Ordering::Release);
+
+            avail.idx = avail_idx.wrapping_add(1);
+        }
+
+        Ok(desc_idx)
+    }
+
     /// 受信バッファを追加
     pub fn add_rx_buffer(&self, buffer: &mut [u8]) -> Result<u16, VirtioNetError> {
         let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
@@ -294,6 +327,36 @@ impl NetVirtQueue {
             let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
             desc.addr = buffer.as_ptr() as u64;
             desc.len = buffer.len() as u32;
+            desc.flags = VringDesc::VRING_DESC_F_WRITE;
+            desc.next = 0;
+
+            // Available Ringに追加
+            let avail = &mut *self.avail_ring.as_ptr();
+            let avail_idx = avail.idx;
+            avail.ring[(avail_idx % self.size) as usize] = desc_idx;
+
+            core::sync::atomic::fence(Ordering::Release);
+
+            avail.idx = avail_idx.wrapping_add(1);
+        }
+
+        Ok(desc_idx)
+    }
+
+    /// ゼロコピー受信バッファを追加（設計書 6.2準拠）
+    /// Mempool物理アドレスを直接使用
+    pub fn add_rx_buffer_zero_copy(
+        &self,
+        phys_addr: u64,
+        buffer_len: usize,
+    ) -> Result<u16, VirtioNetError> {
+        let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+
+        unsafe {
+            // ディスクリプタを設定（書き込み可能、物理アドレス直接使用）
+            let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
+            desc.addr = phys_addr;
+            desc.len = buffer_len as u32;
             desc.flags = VringDesc::VRING_DESC_F_WRITE;
             desc.next = 0;
 
@@ -538,11 +601,37 @@ impl VirtioNetDevice {
         }
     }
 
+    /// ゼロコピーパケット送信（設計書 6.2準拠）
+    /// 
+    /// PacketRefを直接使用し、コピーなしでDMAバッファに渡す。
+    /// 送信完了まで所有権を保持し、完了後に自動解放される。
+    pub fn send_zero_copy(&self, packet: PacketRef) -> ZeroCopySendFuture<'_> {
+        ZeroCopySendFuture {
+            device: self,
+            packet: Some(packet),
+            submitted: false,
+            desc_idx: 0,
+        }
+    }
+
     /// パケットを受信（非同期）
     pub fn recv_async<'a>(&'a self, buffer: &'a mut [u8]) -> RecvFuture<'a> {
         RecvFuture {
             device: self,
             buffer,
+            submitted: false,
+        }
+    }
+
+    /// ゼロコピーパケット受信（設計書 6.2準拠）
+    /// 
+    /// Mempoolから割り当てられたバッファに直接受信し、
+    /// PacketRefとして返却する。
+    pub fn recv_zero_copy(&self, pool: &'static crate::net::mempool::Mempool) -> ZeroCopyRecvFuture<'_> {
+        ZeroCopyRecvFuture {
+            device: self,
+            pool,
+            packet: None,
             submitted: false,
         }
     }
@@ -673,6 +762,125 @@ impl<'a> Future for RecvFuture<'a> {
             let completed = rx_queue.process_used();
             if let Some((_, len)) = completed.first() {
                 Poll::Ready(Ok(*len as usize))
+            } else {
+                rx_queue.register_waker(cx.waker().clone());
+                Poll::Pending
+            }
+        } else {
+            Poll::Ready(Err(VirtioNetError::NotInitialized))
+        }
+    }
+}
+
+// ============================================================================
+// ゼロコピー送受信 Futures（設計書 6.2）
+// ============================================================================
+
+/// ゼロコピー送信用Future
+/// 
+/// PacketRefの所有権を取得し、DMA転送が完了するまで保持する。
+/// 完了後、PacketRefは自動的にMempoolに返却される。
+pub struct ZeroCopySendFuture<'a> {
+    device: &'a VirtioNetDevice,
+    packet: Option<PacketRef>,
+    submitted: bool,
+    desc_idx: u16,
+}
+
+impl<'a> Future for ZeroCopySendFuture<'a> {
+    type Output = Result<usize, VirtioNetError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        
+        if !this.submitted {
+            // 送信をキューに追加
+            if let Some(ref tx_queue) = this.device.tx_queue {
+                if let Some(ref packet) = this.packet {
+                    let data = packet.data();
+                    let phys_addr = packet.phys_addr();
+                    
+                    // ゼロコピー: 物理アドレスを直接VirtQueueに渡す
+                    match tx_queue.add_tx_buffer_zero_copy(phys_addr.as_u64(), data.len()) {
+                        Ok(desc_idx) => {
+                            this.submitted = true;
+                            this.desc_idx = desc_idx;
+                            tx_queue.register_waker(cx.waker().clone());
+                        }
+                        Err(e) => return Poll::Ready(Err(e)),
+                    }
+                } else {
+                    return Poll::Ready(Err(VirtioNetError::BufferTooSmall));
+                }
+            } else {
+                return Poll::Ready(Err(VirtioNetError::NotInitialized));
+            }
+        }
+
+        // 完了を確認
+        if let Some(ref tx_queue) = this.device.tx_queue {
+            if tx_queue.has_pending() {
+                // 送信完了: PacketRefをドロップしてMempoolに返却
+                let packet = this.packet.take();
+                let len = packet.map(|p| p.data().len()).unwrap_or(0);
+                Poll::Ready(Ok(len))
+            } else {
+                tx_queue.register_waker(cx.waker().clone());
+                Poll::Pending
+            }
+        } else {
+            Poll::Ready(Err(VirtioNetError::NotInitialized))
+        }
+    }
+}
+
+/// ゼロコピー受信用Future
+/// 
+/// Mempoolから直接バッファを割り当て、DMAバッファとして使用。
+/// 受信完了後、PacketRefとしてデータを返却する。
+pub struct ZeroCopyRecvFuture<'a> {
+    device: &'a VirtioNetDevice,
+    pool: &'static crate::net::mempool::Mempool,
+    packet: Option<PacketRef>,
+    submitted: bool,
+}
+
+impl<'a> Future for ZeroCopyRecvFuture<'a> {
+    type Output = Result<PacketRef, VirtioNetError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        
+        if !this.submitted {
+            // Mempoolからバッファを割り当て
+            let packet = this.pool.alloc().ok_or(VirtioNetError::BufferTooSmall)?;
+            let phys_addr = packet.phys_addr();
+            
+            // 受信バッファをキューに追加
+            if let Some(ref rx_queue) = this.device.rx_queue {
+                match rx_queue.add_rx_buffer_zero_copy(phys_addr.as_u64(), packet.data().len()) {
+                    Ok(_) => {
+                        this.packet = Some(packet);
+                        this.submitted = true;
+                        rx_queue.register_waker(cx.waker().clone());
+                    }
+                    Err(e) => return Poll::Ready(Err(e)),
+                }
+            } else {
+                return Poll::Ready(Err(VirtioNetError::NotInitialized));
+            }
+        }
+
+        // 完了を確認
+        if let Some(ref rx_queue) = this.device.rx_queue {
+            let completed = rx_queue.process_used();
+            if let Some((_, len)) = completed.first() {
+                // 受信完了: データ長を設定してPacketRefを返却
+                if let Some(packet) = this.packet.take() {
+                    packet.set_len(*len as usize);
+                    return Poll::Ready(Ok(packet));
+                }
+                return Poll::Ready(Err(VirtioNetError::BufferTooSmall));
             } else {
                 rx_queue.register_waker(cx.waker().clone());
                 Poll::Pending
