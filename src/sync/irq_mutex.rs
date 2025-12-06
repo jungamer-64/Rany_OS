@@ -21,7 +21,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 /// # Returns
 /// 元の割り込み有効状態 (true = 有効だった)
 #[inline]
-fn save_and_disable_interrupts() -> bool {
+pub(super) fn save_and_disable_interrupts() -> bool {
     let rflags: u64;
 
     unsafe {
@@ -43,7 +43,7 @@ fn save_and_disable_interrupts() -> bool {
 
 /// 割り込みを復元（元々有効だった場合のみ有効化）
 #[inline]
-fn restore_interrupts(was_enabled: bool) {
+pub(super) fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
         unsafe {
             // 割り込み許可 (sti)

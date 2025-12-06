@@ -14,7 +14,11 @@ pub use pipe::{
     // ゼロコピーチャンネル
     ZeroCopyChannel, ZeroCopySender, ZeroCopyReceiver, ChannelError, zero_copy_channel,
 };
-pub use rref::{DomainId, RRef, reclaim_domain_resources};
+pub use rref::{
+    DomainId, RRef, reclaim_domain_resources,
+    // TypeIdHash: 動的型安全性（設計書 8.1）
+    TypeIdHash, TypeHash, TypeHashError,
+};
 #[allow(unused_imports)]
 pub use shared_mem::{
     SharedMemoryManager, SharedMemoryRegion, ShmError, ShmFlags, ShmHandle, ShmId, ShmKey,

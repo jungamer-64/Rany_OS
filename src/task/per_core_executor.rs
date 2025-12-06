@@ -329,10 +329,21 @@ impl PerCoreExecutor {
     }
 
     /// エグゼキュータのメインループ（1イテレーション）
+    /// 
+    /// 【設計書 4.2】2段階Wake方式:
+    /// タスク実行前に保留中の割り込みイベントを処理
     pub fn run_once(&self) -> bool {
         if self.shutdown.load(Ordering::Acquire) {
             return false;
         }
+
+        // 【重要】保留中の割り込みイベントを処理（2段階Wake方式）
+        // ISRからのwake()はイベントキューに積まれているため、
+        // ここで実際のwake()を実行する
+        crate::task::interrupt_waker::process_interrupt_events();
+        
+        // タイマーからの保留Wakerも処理
+        crate::task::timer::process_pending_timer_wakers();
 
         if let Some(task) = self.next_task() {
             self.run_task(&task);

@@ -13,6 +13,11 @@
 //! - DMA Remapping: デバイスDMAのアドレス変換
 //! - Interrupt Remapping: 割り込みの仮想化
 //! - Posted Interrupts: 効率的な割り込み配送
+//!
+//! ## 【設計書 7.2】IOMMU必須化
+//! 
+//! セキュリティ上の理由から、IOMMUの存在を起動時に必須とするオプションを提供。
+//! `IOMMU_REQUIRED`が`true`の場合、IOMMU未検出でパニック。
 
 #![allow(dead_code)]
 
@@ -20,6 +25,41 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
+
+// ============================================================================
+// Configuration - IOMMU Requirement
+// ============================================================================
+
+/// 【設計書 7.2】IOMMUを起動時に必須とするかどうか
+/// 
+/// セキュリティ要件により、IOMMUがない環境では起動を拒否できる。
+/// - `true`: IOMMU未検出時にパニック
+/// - `false`: IOMMU未検出時も警告のみで続行
+pub static IOMMU_REQUIRED: AtomicBool = AtomicBool::new(false);
+
+/// IOMMUを必須に設定する
+/// 
+/// 起動初期（IOMMU初期化前）に呼び出すこと
+pub fn set_iommu_required(required: bool) {
+    IOMMU_REQUIRED.store(required, Ordering::Release);
+}
+
+/// IOMMUが必須かどうかを確認
+pub fn is_iommu_required() -> bool {
+    IOMMU_REQUIRED.load(Ordering::Acquire)
+}
+
+/// IOMMU要件をチェックし、必要なら停止
+/// 
+/// この関数はIOMMU初期化後に呼び出すべき
+pub fn enforce_iommu_requirement() {
+    if is_iommu_required() && !is_iommu_enabled() {
+        // IOMMUが必須だが検出されなかった
+        panic!("[SECURITY] IOMMU is required but not detected. \
+                DMA attacks are possible without IOMMU protection. \
+                To boot without IOMMU, set IOMMU_REQUIRED=false.");
+    }
+}
 
 // ============================================================================
 // Constants and Register Definitions

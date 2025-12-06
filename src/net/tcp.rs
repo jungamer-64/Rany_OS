@@ -240,14 +240,19 @@ pub enum TcpError {
 // TcpStream - 非同期TCPストリーム
 // ============================================================================
 
-/// 非同期TCPストリーム（POSIXソケット代替）
+/// 非同期TCPストリーム
+/// 
+/// 【設計書】POSIXソケットAPIを模倣しない
+/// connect()の代わりにdial()を使用
 pub struct TcpStream {
     tcb: Arc<Mutex<TcpControlBlock>>,
 }
 
 impl TcpStream {
-    /// 指定アドレスに接続（async版）
-    pub async fn connect(addr: SocketAddr) -> Result<Self, TcpError> {
+    /// 指定アドレスに接続（推奨API）
+    /// 
+    /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
+    pub async fn dial(addr: SocketAddr) -> Result<Self, TcpError> {
         let local_port = allocate_ephemeral_port();
         let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, local_port);
 
@@ -266,6 +271,12 @@ impl TcpStream {
         ConnectFuture { tcb: tcb.clone() }.await?;
 
         Ok(Self { tcb })
+    }
+    
+    /// 【非推奨】connect() - 互換性のために残すが、dial()を使用すべき
+    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。dial()を使用してください")]
+    pub async fn connect(addr: SocketAddr) -> Result<Self, TcpError> {
+        Self::dial(addr).await
     }
 
     /// ローカルアドレスを取得
@@ -384,6 +395,9 @@ impl AsyncWrite for TcpStream {
 // ============================================================================
 
 /// 非同期TCPリスナー
+/// 
+/// 【設計書】POSIXソケットAPIを模倣しない
+/// bind/listen/acceptの代わりにnew/incomingを使用
 pub struct TcpListener {
     local_addr: SocketAddr,
     backlog: Arc<Mutex<VecDeque<TcpStream>>>,
@@ -391,8 +405,10 @@ pub struct TcpListener {
 }
 
 impl TcpListener {
-    /// 指定アドレスでリッスン開始
-    pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
+    /// 指定アドレスで新しいリスナーを作成（推奨API）
+    /// 
+    /// 【設計書】POSIXのbind()ではなく、直接構築する方式を採用
+    pub fn new(addr: SocketAddr) -> Result<Self, TcpError> {
         // ポートが使用中かチェック
         if is_port_in_use(addr.port) {
             return Err(TcpError::AddressInUse);
@@ -404,15 +420,29 @@ impl TcpListener {
             accept_waker: Arc::new(Mutex::new(None)),
         })
     }
+    
+    /// 【非推奨】bind() - 互換性のために残すが、new()を使用すべき
+    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。new()を使用してください")]
+    pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
+        Self::new(addr)
+    }
 
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> SocketAddr {
         self.local_addr
     }
 
-    /// 接続を受け入れ（async版）
-    pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
+    /// 次の接続を非同期で取得（推奨API）
+    /// 
+    /// 【設計書】POSIXのaccept()ではなく、Futureベースの方式を採用
+    pub async fn next_connection(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
         AcceptFuture { listener: self }.await
+    }
+    
+    /// 【非推奨】accept() - 互換性のために残すが、next_connection()を使用すべき
+    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。next_connection()を使用してください")]
+    pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
+        self.next_connection().await
     }
 
     /// 新しい接続をバックログに追加（内部使用）
