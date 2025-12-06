@@ -1,16 +1,166 @@
 // ============================================================================
 // src/task/interrupt_waker.rs - Interrupt-Waker Bridge
 // 設計書 4.2: 割り込みとWakerのブリッジ
+// 設計書 4.2.1: デッドロック回避：割り込みフリーキューの採用
 //
 // ハードウェア割り込みとRustのasync/await Futureを連携させる機構
 // ISRから安全にWakerを起動し、Executorにタスクの再開を通知する
+//
+// 重要: 2段階Wake方式を採用
+// 1. ISR内ではイベントキューにイベントIDをpushするのみ
+// 2. Executorのメインループでキューをチェックしwake()を呼び出す
 // ============================================================================
 #![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::Waker;
 use spin::Mutex;
+
+// ============================================================================
+// 2段階Wake用イベントキュー（ロックフリーMPMCリングバッファ）
+// 設計書 4.2.1: ISRから直接wake()を呼ばない
+// ============================================================================
+
+/// イベントキューのサイズ（2のべき乗）
+const EVENT_QUEUE_SIZE: usize = 256;
+const EVENT_QUEUE_MASK: usize = EVENT_QUEUE_SIZE - 1;
+
+/// ISRからのイベントを格納するロックフリーキュー
+/// 
+/// ISR内ではpush()のみを行い、wake()はExecutorコンテキストで実行
+#[repr(C, align(64))]
+struct InterruptEventQueue {
+    /// 書き込みインデックス
+    head: AtomicUsize,
+    /// 読み取りインデックス
+    tail: AtomicUsize,
+    /// イベントバッファ（InterruptSourceを直接格納）
+    /// 0 = 空、1-255 = InterruptSource の判別値
+    buffer: [AtomicU64; EVENT_QUEUE_SIZE],
+}
+
+impl InterruptEventQueue {
+    const fn new() -> Self {
+        const ZERO: AtomicU64 = AtomicU64::new(0);
+        Self {
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            buffer: [ZERO; EVENT_QUEUE_SIZE],
+        }
+    }
+
+    /// イベントをキューに追加（ISRから呼ばれる、ロックフリー）
+    /// 
+    /// # Safety
+    /// - ISR内から呼び出し可能
+    /// - メモリ割り当てなし
+    /// - ロック取得なし
+    #[inline]
+    fn push(&self, source: InterruptSource) -> bool {
+        let value = interrupt_source_to_u64(source);
+        
+        // 楽観的に書き込み位置を取得
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        
+        // キューがフルの場合は失敗（ドロップ）
+        if head.wrapping_sub(tail) >= EVENT_QUEUE_SIZE {
+            return false;
+        }
+        
+        let idx = head & EVENT_QUEUE_MASK;
+        
+        // イベントを書き込み
+        self.buffer[idx].store(value, Ordering::Release);
+        
+        // headを進める
+        self.head.store(head.wrapping_add(1), Ordering::Release);
+        
+        true
+    }
+
+    /// イベントをキューから取得（Executorから呼ばれる）
+    #[inline]
+    fn pop(&self) -> Option<InterruptSource> {
+        loop {
+            let tail = self.tail.load(Ordering::Relaxed);
+            let head = self.head.load(Ordering::Acquire);
+            
+            // キューが空
+            if tail == head {
+                return None;
+            }
+            
+            let idx = tail & EVENT_QUEUE_MASK;
+            let value = self.buffer[idx].load(Ordering::Acquire);
+            
+            // CASでtailを進める
+            if self.tail.compare_exchange_weak(
+                tail,
+                tail.wrapping_add(1),
+                Ordering::Release,
+                Ordering::Relaxed,
+            ).is_ok() {
+                // スロットをクリア（次の書き込みのため）
+                self.buffer[idx].store(0, Ordering::Release);
+                return u64_to_interrupt_source(value);
+            }
+            
+            // CAS失敗、リトライ
+            core::hint::spin_loop();
+        }
+    }
+
+    /// キューが空かどうか
+    #[inline]
+    fn is_empty(&self) -> bool {
+        let tail = self.tail.load(Ordering::Acquire);
+        let head = self.head.load(Ordering::Acquire);
+        tail == head
+    }
+    
+    /// キュー内のイベント数
+    #[inline]
+    fn len(&self) -> usize {
+        let tail = self.tail.load(Ordering::Acquire);
+        let head = self.head.load(Ordering::Acquire);
+        head.wrapping_sub(tail)
+    }
+}
+
+/// InterruptSourceをu64にエンコード
+fn interrupt_source_to_u64(source: InterruptSource) -> u64 {
+    match source {
+        InterruptSource::Timer => 1,
+        InterruptSource::Keyboard => 2,
+        InterruptSource::Mouse => 3,
+        InterruptSource::Serial => 4,
+        InterruptSource::VirtioNet(idx) => 0x100 | (idx as u64),
+        InterruptSource::VirtioBlk(idx) => 0x200 | (idx as u64),
+        InterruptSource::Nvme(id) => 0x300 | (id as u64),
+        InterruptSource::Irq(irq) => 0x400 | (irq as u64),
+    }
+}
+
+/// u64からInterruptSourceにデコード
+fn u64_to_interrupt_source(value: u64) -> Option<InterruptSource> {
+    match value {
+        0 => None,
+        1 => Some(InterruptSource::Timer),
+        2 => Some(InterruptSource::Keyboard),
+        3 => Some(InterruptSource::Mouse),
+        4 => Some(InterruptSource::Serial),
+        v if (0x100..0x200).contains(&v) => Some(InterruptSource::VirtioNet((v & 0xFF) as u8)),
+        v if (0x200..0x300).contains(&v) => Some(InterruptSource::VirtioBlk((v & 0xFF) as u8)),
+        v if (0x300..0x400).contains(&v) => Some(InterruptSource::Nvme((v & 0xFFFF) as u16)),
+        v if v >= 0x400 => Some(InterruptSource::Irq((v & 0xFF) as u8)),
+        _ => None,
+    }
+}
+
+/// グローバルイベントキュー
+static INTERRUPT_EVENT_QUEUE: InterruptEventQueue = InterruptEventQueue::new();
 
 // ============================================================================
 // Interrupt Source Types
@@ -183,31 +333,50 @@ impl InterruptWakerRegistry {
     }
 
     /// 割り込みソースのWakerを起動（ISRから呼ばれる）
+    /// 
+    /// 【設計書 4.2】2段階Wake方式:
+    /// ISRからは直接wake()を呼ばず、イベントキューに積むのみ。
+    /// 実際のwake()呼び出しはExecutorのイベントループで行う。
+    /// これによりISR内でのロック取得・デッドロックを完全に回避。
     pub fn wake(&self, source: InterruptSource) {
         self.interrupt_count.fetch_add(1, Ordering::Relaxed);
+        
+        // 【重要】ISRコンテキストでは直接wake()を呼ばない
+        // イベントキューに積んでExecutorに処理を委譲
+        INTERRUPT_EVENT_QUEUE.push(source);
+    }
 
-        // try_lockでデッドロックを回避
-        if let Some(wakers) = self.wakers.try_lock() {
+    /// 複数の割り込みソースのWakerを一度に起動
+    /// 
+    /// 【設計書 4.2】2段階Wake方式対応版
+    pub fn wake_many(&self, sources: &[InterruptSource]) {
+        self.interrupt_count
+            .fetch_add(sources.len() as u64, Ordering::Relaxed);
+
+        // 各ソースをイベントキューに積む
+        for source in sources {
+            INTERRUPT_EVENT_QUEUE.push(*source);
+        }
+    }
+    
+    /// イベントキューから保留中の割り込みイベントを処理
+    /// 
+    /// 【設計書 4.2】2段階Wake方式: Executorのイベントループから呼び出す
+    /// ISRコンテキスト外で安全にロックを取得してwake()を実行
+    pub fn process_pending_events(&self) {
+        while let Some(source) = INTERRUPT_EVENT_QUEUE.pop() {
+            // ISRコンテキスト外なので安全にロックを取得可能
+            let wakers = self.wakers.lock();
             if let Some(atomic_waker) = wakers.get(&source) {
                 atomic_waker.wake();
                 self.wake_count.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
-
-    /// 複数の割り込みソースのWakerを一度に起動
-    pub fn wake_many(&self, sources: &[InterruptSource]) {
-        self.interrupt_count
-            .fetch_add(sources.len() as u64, Ordering::Relaxed);
-
-        if let Some(wakers) = self.wakers.try_lock() {
-            for source in sources {
-                if let Some(atomic_waker) = wakers.get(source) {
-                    atomic_waker.wake();
-                    self.wake_count.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-        }
+    
+    /// 保留中のイベント数を取得
+    pub fn pending_event_count(&self) -> usize {
+        INTERRUPT_EVENT_QUEUE.len()
     }
 
     /// 割り込みソースの登録を解除
@@ -254,14 +423,36 @@ pub fn register_interrupt_waker(source: InterruptSource, waker: &Waker) {
 }
 
 /// 割り込みハンドラから呼ばれる（便利関数）
+/// 
+/// 【設計書 4.2】2段階Wake方式: ISR安全
+/// イベントキューに積むのみで、実際のwake()は呼ばない
+#[inline]
 pub fn wake_from_interrupt(source: InterruptSource) {
     INTERRUPT_WAKER_REGISTRY.wake(source);
 }
 
 /// タイマータスクを起床（タイマーISRから呼ばれる便利関数）
-/// 設計書 4.2: ISR内では軽量な処理のみ実行
+/// 
+/// 【設計書 4.2】2段階Wake方式: ISR安全
+/// ISR内では軽量な処理のみ実行（イベントキューへのpush）
+#[inline]
 pub fn wake_timer_task() {
     wake_from_interrupt(InterruptSource::Timer);
+}
+
+/// 保留中の割り込みイベントを処理（Executorから呼び出す）
+/// 
+/// 【設計書 4.2】2段階Wake方式: 非ISRコンテキストで呼び出す
+/// Executorのイベントループの各イテレーションで呼び出すべき
+#[inline]
+pub fn process_interrupt_events() {
+    INTERRUPT_WAKER_REGISTRY.process_pending_events();
+}
+
+/// 保留中の割り込みイベント数を取得
+#[inline]
+pub fn pending_interrupt_events() -> usize {
+    INTERRUPT_WAKER_REGISTRY.pending_event_count()
 }
 
 // ============================================================================

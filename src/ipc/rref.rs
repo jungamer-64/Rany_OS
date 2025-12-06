@@ -179,6 +179,194 @@ impl core::fmt::Display for AccessError {
     }
 }
 
+// ============================================================================
+// TypeIdHash - ABI互換性検証のための型ハッシュ
+// 設計書 3.4: ABIの安定性とType ID Check
+// ============================================================================
+
+/// 型定義ハッシュ値
+/// 
+/// 動的リンク環境でのABI互換性を保証するため、
+/// 構造体のレイアウト情報からハッシュ値を計算する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct TypeHash(u64);
+
+impl TypeHash {
+    /// 新しいTypeHashを作成
+    pub const fn new(hash: u64) -> Self {
+        Self(hash)
+    }
+
+    /// ハッシュ値を取得
+    pub const fn value(&self) -> u64 {
+        self.0
+    }
+
+    /// 2つのTypeHashが互換性があるか検証
+    pub const fn is_compatible(&self, other: &TypeHash) -> bool {
+        self.0 == other.0
+    }
+}
+
+/// 型定義ハッシュを提供するトレイト
+/// 
+/// 【設計書 3.4】ABIの安定性とType ID Check
+/// 
+/// セル間で共有される構造体に実装する。
+/// コンパイル時に型の名前、フィールドの順序・型・オフセット、
+/// 関数の引数・戻り値の型からハッシュを計算する。
+/// 
+/// # 実装方法
+/// 
+/// 1. `#[derive(TypeIdHash)]`マクロを使用（将来実装）
+/// 2. 手動で`const TYPE_HASH`を定義
+/// 
+/// # 例
+/// 
+/// ```ignore
+/// struct MyMessage {
+///     id: u64,
+///     data: [u8; 32],
+/// }
+/// 
+/// impl TypeIdHash for MyMessage {
+///     const TYPE_HASH: TypeHash = TypeHash::new(
+///         // FNV-1aハッシュを使用して計算
+///         compute_type_hash!(MyMessage, id: u64, data: [u8; 32])
+///     );
+/// }
+/// ```
+pub trait TypeIdHash {
+    /// この型のコンパイル時ハッシュ値
+    const TYPE_HASH: TypeHash;
+
+    /// 型名（デバッグ用）
+    fn type_name() -> &'static str {
+        core::any::type_name::<Self>()
+    }
+
+    /// ハッシュ値を取得（インスタンスメソッド版）
+    fn type_hash(&self) -> TypeHash {
+        Self::TYPE_HASH
+    }
+}
+
+/// TypeIdHashの検証エラー
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TypeHashError {
+    /// ハッシュ値が一致しない（ABI非互換）
+    HashMismatch {
+        expected: TypeHash,
+        actual: TypeHash,
+    },
+    /// バージョンが非互換
+    VersionMismatch,
+}
+
+impl core::fmt::Display for TypeHashError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        match self {
+            TypeHashError::HashMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "Type hash mismatch: expected 0x{:016X}, got 0x{:016X}",
+                    expected.value(),
+                    actual.value()
+                )
+            }
+            TypeHashError::VersionMismatch => {
+                write!(f, "Type version mismatch")
+            }
+        }
+    }
+}
+
+/// 2つの型のハッシュ値を検証
+/// 
+/// ロード時検証に使用。ハッシュ値が一致しない場合はエラーを返す。
+pub fn verify_type_hash<T: TypeIdHash>(expected: TypeHash) -> Result<(), TypeHashError> {
+    let actual = T::TYPE_HASH;
+    if expected.is_compatible(&actual) {
+        Ok(())
+    } else {
+        Err(TypeHashError::HashMismatch { expected, actual })
+    }
+}
+
+/// FNV-1aハッシュ計算のヘルパー
+/// 
+/// コンパイル時にconst fnで計算可能
+pub const fn fnv1a_hash(data: &[u8]) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+
+    let mut hash = FNV_OFFSET;
+    let mut i = 0;
+    while i < data.len() {
+        hash ^= data[i] as u64;
+        hash = hash.wrapping_mul(FNV_PRIME);
+        i += 1;
+    }
+    hash
+}
+
+/// 型名とサイズからハッシュを計算
+/// 
+/// 簡易実装。本格的な実装ではフィールド情報も含める。
+pub const fn compute_simple_type_hash(type_name: &str, size: usize, align: usize) -> TypeHash {
+    let name_hash = fnv1a_hash(type_name.as_bytes());
+    let size_bits = (size as u64) << 32;
+    let align_bits = (align as u64) << 48;
+    TypeHash::new(name_hash ^ size_bits ^ align_bits)
+}
+
+// ============================================================================
+// 基本型へのTypeIdHash実装
+// ============================================================================
+
+impl TypeIdHash for u8 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("u8", 1, 1);
+}
+
+impl TypeIdHash for u16 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("u16", 2, 2);
+}
+
+impl TypeIdHash for u32 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("u32", 4, 4);
+}
+
+impl TypeIdHash for u64 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("u64", 8, 8);
+}
+
+impl TypeIdHash for i8 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("i8", 1, 1);
+}
+
+impl TypeIdHash for i16 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("i16", 2, 2);
+}
+
+impl TypeIdHash for i32 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("i32", 4, 4);
+}
+
+impl TypeIdHash for i64 {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("i64", 8, 8);
+}
+
+impl TypeIdHash for bool {
+    const TYPE_HASH: TypeHash = compute_simple_type_hash("bool", 1, 1);
+}
+
+impl<T: TypeIdHash, const N: usize> TypeIdHash for [T; N] {
+    const TYPE_HASH: TypeHash = TypeHash::new(
+        T::TYPE_HASH.value() ^ fnv1a_hash(b"array") ^ (N as u64)
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

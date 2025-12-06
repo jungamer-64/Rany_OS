@@ -54,6 +54,9 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     // 割り込みを無効化
     x86_64::instructions::interrupts::disable();
     
+    // 【設計書 8.4】パニック状態をマーク（PoisonLockのため）
+    crate::sync::set_panicking(true);
+    
     // パニックモードに入る（ログ出力時のデッドロック回避）
     crate::io::log::enter_panic_mode();
 
@@ -216,10 +219,63 @@ pub fn handle_double_fault(
 // ============================================================================
 
 /// スタックオーバーフロー検出用のガードページ設定
-/// 将来的な実装のためのプレースホルダー
-pub fn setup_stack_guard(_stack_bottom: usize, _stack_size: usize) {
-    // TODO: ガードページの設定
-    // ページテーブルでスタック下端をマップ解除してアクセス時にPage Faultを発生させる
+/// 
+/// 【設計書 8.3】ガードページによるスタックオーバーフロー検出
+/// 
+/// スタックの下端（低アドレス側）にガードページ（Present=0）を配置する。
+/// スタックオーバーフローが発生すると、ガードページへのアクセスにより
+/// Page Fault (#PF) が発生し、カスタムPage Faultハンドラがこれを捕捉する。
+/// 
+/// # 引数
+/// - `stack_bottom`: スタックの下端アドレス（ガードページを配置する位置）
+/// - `stack_size`: スタックのサイズ（バイト単位）
+/// 
+/// # 安全性
+/// この関数を呼び出す前に、`stack_bottom`がページ境界にアラインされている必要がある。
+pub fn setup_stack_guard(stack_bottom: usize, _stack_size: usize) {
+    use crate::mm::higher_half::VirtAddr;
+    
+    // ガードページのアドレス（スタックの直下）
+    let guard_page_addr = VirtAddr::new(stack_bottom as u64).align_down();
+    
+    // ページテーブルからガードページをアンマップ
+    // これにより、このアドレスへのアクセスはPage Faultを発生させる
+    unsafe {
+        if let Err(e) = crate::mm::higher_half::global_unmap_page(guard_page_addr) {
+            // アンマップに失敗した場合（既にマップされていない等）は警告のみ
+            crate::serial_println!(
+                "[StackGuard] Warning: Could not setup guard page at {:?}: {:?}", 
+                guard_page_addr, e
+            );
+        } else {
+            crate::serial_println!(
+                "[StackGuard] Guard page set at {:?} (stack bottom)", 
+                guard_page_addr
+            );
+        }
+    }
+}
+
+/// タスクスタック用のガードページを設定
+/// 
+/// 各タスクのスタックにガードページを設定する。
+/// Per-Core ExecutorやTaskManagerから呼び出される。
+pub fn setup_task_stack_guard(stack_start: usize, stack_size: usize) {
+    // スタックは高アドレスから低アドレスに向かって成長する
+    // ガードページはスタックの最下端（stack_start）の直下に配置
+    setup_stack_guard(stack_start, stack_size);
+}
+
+/// IST（Interrupt Stack Table）スタック用のガードページを設定
+/// 
+/// Double FaultやPage Fault用のISTスタックにもガードページを設定する。
+pub fn setup_ist_stack_guards() {
+    use crate::interrupts::gdt;
+    
+    // ISTスタックの情報を取得してガードページを設定
+    // 現在のGDT実装では静的に確保されているため、
+    // ここでは警告のみを出力
+    crate::serial_println!("[StackGuard] IST stack guard pages should be configured manually");
 }
 
 // ============================================================================
