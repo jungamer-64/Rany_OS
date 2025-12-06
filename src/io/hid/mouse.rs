@@ -47,6 +47,13 @@ pub enum MouseInitError {
     /// - マウスがデータストリーミングを拒否
     EnableDataFailed,
 
+    /// IRQ12有効化が失敗
+    ///
+    /// 考えられる原因:
+    /// - PS/2コントローラの設定書き込みが反映されない
+    /// - コントローラがロックされている
+    IrqEnableFailed,
+
     /// タイムアウト
     ///
     /// 指定された回数内にマウスからの応答がない。
@@ -57,15 +64,10 @@ pub enum MouseInitError {
 impl fmt::Display for MouseInitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SetDefaultsFailed => {
-                write!(f, "Mouse SET_DEFAULTS (0xF6) command failed - check physical connection")
-            }
-            Self::EnableDataFailed => {
-                write!(f, "Mouse ENABLE_DATA (0xF4) command failed - device may be in invalid state")
-            }
-            Self::Timeout => {
-                write!(f, "Mouse timeout - no response after 100,000 polling iterations")
-            }
+            Self::SetDefaultsFailed => write!(f, "mouse initialization failed"),
+            Self::EnableDataFailed => write!(f, "mouse data streaming unavailable"),
+            Self::IrqEnableFailed => write!(f, "mouse interrupt enable failed"),
+            Self::Timeout => write!(f, "mouse not responding"),
         }
     }
 }
@@ -210,6 +212,14 @@ impl Mouse {
         // 設定を書き戻し
         self.write_controller_command(CMD_WRITE_CONFIG);
         self.write_data(config);
+
+        // ✅ 設定が正しく書き込まれたか検証
+        self.write_controller_command(CMD_READ_CONFIG);
+        let actual_config = self.read_data_timeout().ok_or(MouseInitError::Timeout)?;
+        if (actual_config & 0x02) == 0 {
+            // IRQ12が有効化されていない
+            return Err(MouseInitError::IrqEnableFailed);
+        }
 
         // 3. マウスをデフォルト設定にリセット
         self.write_mouse_command(MOUSE_CMD_SET_DEFAULTS)
@@ -417,4 +427,310 @@ pub fn is_mouse_initialized() -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| {
         MOUSE.lock().is_initialized()
     })
+}
+
+// ============================================================================
+// テスト
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// テスト用のマウスインスタンスを作成
+    fn test_mouse() -> Mouse {
+        Mouse::new()
+    }
+
+    // =========================================================================
+    // パケット同期回復テスト
+    // =========================================================================
+
+    #[test]
+    fn test_packet_sync_recovery_invalid_first_byte() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // ビット3が0のパケットは無視される（同期外れ）
+        mouse.process_packet(0x00);
+        assert_eq!(mouse.packet_index, 0, "Invalid packet should be ignored");
+
+        // ビット3が1の有効なパケット開始
+        mouse.process_packet(0x08);
+        assert_eq!(mouse.packet_index, 1, "Valid packet should be accepted");
+    }
+
+    #[test]
+    fn test_packet_sync_recovery_multiple_invalid() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 複数の無効パケットを送信
+        for i in 0..5 {
+            mouse.process_packet(i & 0x07);  // ビット3常に0
+        }
+        assert_eq!(mouse.packet_index, 0, "All invalid packets should be ignored");
+
+        // 有効なパケット開始後に続ける
+        mouse.process_packet(0x08);  // 1バイト目
+        assert_eq!(mouse.packet_index, 1);
+        mouse.process_packet(0x10);  // 2バイト目
+        assert_eq!(mouse.packet_index, 2);
+        mouse.process_packet(0x20);  // 3バイト目（完了）
+        assert_eq!(mouse.packet_index, 0, "Packet should complete and reset");
+    }
+
+    // =========================================================================
+    // 移動量符号拡張テスト
+    // =========================================================================
+
+    #[test]
+    fn test_movement_positive() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 正の移動: dx=10, dy=20
+        // flags: 0x08 (ビット3=1, X/Y符号=0)
+        mouse.process_packet(0x08);
+        mouse.process_packet(10);   // X
+        mouse.process_packet(20);   // Y
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert_eq!(event.dx, 10);
+        assert_eq!(event.dy, -20);  // Y軸は反転される
+    }
+
+    #[test]
+    fn test_movement_negative_x() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 負のX移動: dx=-5 (0xFB in 8-bit signed)
+        // flags: 0x18 (ビット3=1, X符号=1)
+        mouse.process_packet(0x18);  // X符号ビット=1
+        mouse.process_packet(0xFB); // -5 in 8-bit
+        mouse.process_packet(0);
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert_eq!(event.dx, -5);
+        assert_eq!(event.dy, 0);
+    }
+
+    #[test]
+    fn test_movement_negative_y() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 負のY移動: dy=-10 (0xF6 in 8-bit signed)
+        // flags: 0x28 (ビット3=1, Y符号=1)
+        mouse.process_packet(0x28);  // Y符号ビット=1
+        mouse.process_packet(0);
+        mouse.process_packet(0xF6); // -10 in 8-bit
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert_eq!(event.dx, 0);
+        // Y軸反転: -(-10) = 10
+        assert_eq!(event.dy, 10);
+    }
+
+    #[test]
+    fn test_movement_both_negative() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 両方負: dx=-1, dy=-1
+        // flags: 0x38 (ビット3=1, X符号=1, Y符号=1)
+        mouse.process_packet(0x38);
+        mouse.process_packet(0xFF); // -1
+        mouse.process_packet(0xFF); // -1
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert_eq!(event.dx, -1);
+        assert_eq!(event.dy, 1);  // Y軸反転
+    }
+
+    // =========================================================================
+    // ボタン状態テスト
+    // =========================================================================
+
+    #[test]
+    fn test_button_left_pressed() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 左ボタン押下: flags bit 0 = 1
+        mouse.process_packet(0x09);  // 0x08 | 0x01
+        mouse.process_packet(0);
+        mouse.process_packet(0);
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert!(event.left_down);
+        assert!(!event.right_down);
+        assert!(!event.middle_down);
+    }
+
+    #[test]
+    fn test_button_right_pressed() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 右ボタン押下: flags bit 1 = 1
+        mouse.process_packet(0x0A);  // 0x08 | 0x02
+        mouse.process_packet(0);
+        mouse.process_packet(0);
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert!(!event.left_down);
+        assert!(event.right_down);
+        assert!(!event.middle_down);
+    }
+
+    #[test]
+    fn test_button_middle_pressed() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 中ボタン押下: flags bit 2 = 1
+        mouse.process_packet(0x0C);  // 0x08 | 0x04
+        mouse.process_packet(0);
+        mouse.process_packet(0);
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert!(!event.left_down);
+        assert!(!event.right_down);
+        assert!(event.middle_down);
+    }
+
+    #[test]
+    fn test_button_all_pressed() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // 全ボタン押下: flags bits 0,1,2 = 1
+        mouse.process_packet(0x0F);  // 0x08 | 0x07
+        mouse.process_packet(0);
+        mouse.process_packet(0);
+
+        let event = mouse.poll_event().expect("Event should be generated");
+        assert!(event.left_down);
+        assert!(event.right_down);
+        assert!(event.middle_down);
+        assert!(event.any_button());
+    }
+
+    // =========================================================================
+    // オーバーフローテスト
+    // =========================================================================
+
+    #[test]
+    fn test_overflow_ignored() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // Xオーバーフローフラグ (bit 6)
+        mouse.process_packet(0x48);  // 0x08 | 0x40
+        mouse.process_packet(0xFF);
+        mouse.process_packet(0);
+
+        assert!(mouse.poll_event().is_none(), "Overflow packet should be ignored");
+    }
+
+    #[test]
+    fn test_y_overflow_ignored() {
+        let mut mouse = test_mouse();
+        mouse.initialized = true;
+
+        // Yオーバーフローフラグ (bit 7)
+        mouse.process_packet(0x88);  // 0x08 | 0x80
+        mouse.process_packet(0);
+        mouse.process_packet(0xFF);
+
+        assert!(mouse.poll_event().is_none(), "Overflow packet should be ignored");
+    }
+
+    // =========================================================================
+    // 未初期化状態テスト
+    // =========================================================================
+
+    #[test]
+    fn test_uninitialized_ignores_packets() {
+        let mut mouse = test_mouse();
+        // initialized = false (デフォルト)
+
+        mouse.process_packet(0x08);
+        mouse.process_packet(10);
+        mouse.process_packet(20);
+
+        assert!(mouse.poll_event().is_none(), "Uninitialized mouse should ignore packets");
+    }
+
+    // =========================================================================
+    // MouseEventヘルパーテスト
+    // =========================================================================
+
+    #[test]
+    fn test_mouse_event_has_movement() {
+        let event_with_movement = MouseEvent {
+            dx: 10,
+            dy: 0,
+            left_down: false,
+            right_down: false,
+            middle_down: false,
+        };
+        assert!(event_with_movement.has_movement());
+
+        let event_no_movement = MouseEvent {
+            dx: 0,
+            dy: 0,
+            left_down: true,
+            right_down: false,
+            middle_down: false,
+        };
+        assert!(!event_no_movement.has_movement());
+    }
+
+    #[test]
+    fn test_mouse_event_any_button() {
+        let event_no_buttons = MouseEvent {
+            dx: 0,
+            dy: 0,
+            left_down: false,
+            right_down: false,
+            middle_down: false,
+        };
+        assert!(!event_no_buttons.any_button());
+
+        let event_left = MouseEvent {
+            dx: 0,
+            dy: 0,
+            left_down: true,
+            right_down: false,
+            middle_down: false,
+        };
+        assert!(event_left.any_button());
+    }
+
+    // =========================================================================
+    // エラー型テスト
+    // =========================================================================
+
+    #[test]
+    fn test_mouse_init_error_display() {
+        assert_eq!(
+            format!("{}", MouseInitError::SetDefaultsFailed),
+            "mouse initialization failed"
+        );
+        assert_eq!(
+            format!("{}", MouseInitError::EnableDataFailed),
+            "mouse data streaming unavailable"
+        );
+        assert_eq!(
+            format!("{}", MouseInitError::IrqEnableFailed),
+            "mouse interrupt enable failed"
+        );
+        assert_eq!(
+            format!("{}", MouseInitError::Timeout),
+            "mouse not responding"
+        );
+    }
 }

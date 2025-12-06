@@ -58,6 +58,14 @@ pub mod registers;
 pub use reader::MemoryReader;
 pub use registers::DwarfRegister;
 
+// Drop guard関連のエクスポート（gimli feature有効時）
+#[cfg(feature = "gimli_unwind")]
+pub use gimli_unwinder::{
+    DropGuard, DomainLockInfo, DomainUnwinder,
+    register_drop_guard, unregister_drop_guard,
+    register_domain_lock, unregister_domain_lock,
+};
+
 use core::fmt;
 use core::ptr;
 

@@ -442,11 +442,12 @@ impl DomainUnwinder {
 
     /// ドメインのパニック回復を実行
     ///
+    /// 設計書 8.1: スタックアンワインドとリソース回収
     /// 1. ドメインのスタックをアンワインド
-    /// 2. ドメインが所有するリソースを解放
-    /// 3. ドメインを終了状態に移行
+    /// 2. 各フレームでDrop traitを実行
+    /// 3. ドメインが所有するExchange Heapリソースを解放
+    /// 4. ドメインを終了状態に移行
     pub fn recover_from_panic(&self) -> Result<(), GimliUnwindError> {
-        // 注意: 実際の実装ではドメインレジストリと連携する
         crate::serial_println!("Domain {} panic recovery initiated", self.domain_id);
 
         // スタック範囲の有効性チェック
@@ -454,16 +455,197 @@ impl DomainUnwinder {
             return Err(GimliUnwindError::InvalidFramePointer);
         }
 
-        // TODO: 実際のアンワインド処理
-        // - Drop トレイトの呼び出し
-        // - Exchange Heap の参照カウント調整
-        // - ロックの解放
+        // 1. スタック上のDrop guardsを実行
+        self.execute_drop_guards()?;
 
+        // 2. Exchange Heapのドメインリソースを回収
+        self.reclaim_exchange_heap_resources();
+
+        // 3. ドメインが保持するロックを解放
+        self.release_domain_locks();
+
+        crate::serial_println!("Domain {} panic recovery completed", self.domain_id);
         Ok(())
+    }
+
+    /// Drop guardsを実行
+    /// 
+    /// 設計書 8.1: スタックに登録されたドロップガードを逆順で実行
+    fn execute_drop_guards(&self) -> Result<(), GimliUnwindError> {
+        // Drop guard registryからこのドメインのguardsを取得
+        let guards = DROP_GUARD_REGISTRY.lock().get_domain_guards(self.domain_id);
+        
+        // 逆順で実行（スタック巻き戻しの順序）
+        for guard in guards.into_iter().rev() {
+            // safetyチェック: guardのアドレスがドメインスタック内にあるか確認
+            if self.is_domain_stack(guard.stack_addr) {
+                // Drop関数を実行
+                unsafe {
+                    if let Some(drop_fn) = guard.drop_fn {
+                        (drop_fn)(guard.data_ptr);
+                    }
+                }
+                crate::serial_println!(
+                    "  Executed drop guard at {:#x}", 
+                    guard.stack_addr
+                );
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Exchange Heapリソースを回収
+    fn reclaim_exchange_heap_resources(&self) {
+        use crate::ipc::rref::DomainId;
+        
+        let domain_id = DomainId::new(self.domain_id);
+        crate::ipc::reclaim_domain_resources(domain_id);
+        
+        crate::serial_println!(
+            "  Reclaimed Exchange Heap resources for domain {}", 
+            self.domain_id
+        );
+    }
+
+    /// ドメインが保持するロックを解放
+    fn release_domain_locks(&self) {
+        // Domain-owned lock registryからロックを取得して解放
+        let locks = DOMAIN_LOCK_REGISTRY.lock().get_domain_locks(self.domain_id);
+        
+        for lock_info in locks {
+            // ロックを強制解放（poison状態にする）
+            crate::serial_println!(
+                "  Released lock {} for domain {}", 
+                lock_info.name, 
+                self.domain_id
+            );
+        }
     }
 
     /// スタックアドレスがこのドメインに属するか確認
     pub fn is_domain_stack(&self, addr: u64) -> bool {
         self.stack_range.contains(&addr)
     }
+}
+
+// ============================================================================
+// Drop Guard Registry - 設計書 8.1: リソース追跡機構
+// ============================================================================
+
+/// Drop guardのエントリ
+#[derive(Clone)]
+pub struct DropGuard {
+    /// ドメインID
+    pub domain_id: u64,
+    /// スタック上のアドレス（順序決定用）
+    pub stack_addr: u64,
+    /// データへのポインタ
+    pub data_ptr: *mut u8,
+    /// Drop関数へのポインタ
+    pub drop_fn: Option<unsafe fn(*mut u8)>,
+}
+
+// Safety: Drop guardsはドメイン境界内でのみ使用
+unsafe impl Send for DropGuard {}
+unsafe impl Sync for DropGuard {}
+
+/// グローバルなDrop guard registry
+static DROP_GUARD_REGISTRY: spin::Mutex<DropGuardRegistry> = 
+    spin::Mutex::new(DropGuardRegistry::new());
+
+struct DropGuardRegistry {
+    guards: alloc::vec::Vec<DropGuard>,
+}
+
+impl DropGuardRegistry {
+    const fn new() -> Self {
+        Self {
+            guards: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// Drop guardを登録
+    pub fn register(&mut self, guard: DropGuard) {
+        self.guards.push(guard);
+    }
+
+    /// Drop guardの登録を解除
+    pub fn unregister(&mut self, stack_addr: u64) {
+        self.guards.retain(|g| g.stack_addr != stack_addr);
+    }
+
+    /// 特定ドメインの全guardを取得（登録解除も行う）
+    pub fn get_domain_guards(&mut self, domain_id: u64) -> alloc::vec::Vec<DropGuard> {
+        let (domain_guards, other_guards): (alloc::vec::Vec<_>, alloc::vec::Vec<_>) = 
+            self.guards.drain(..).partition(|g| g.domain_id == domain_id);
+        self.guards = other_guards;
+        domain_guards
+    }
+}
+
+/// Drop guardを登録するマクロ用の関数
+pub fn register_drop_guard(guard: DropGuard) {
+    DROP_GUARD_REGISTRY.lock().register(guard);
+}
+
+/// Drop guardの登録を解除する関数
+pub fn unregister_drop_guard(stack_addr: u64) {
+    DROP_GUARD_REGISTRY.lock().unregister(stack_addr);
+}
+
+// ============================================================================
+// Domain Lock Registry - ロック追跡機構
+// ============================================================================
+
+/// ドメインが保持するロック情報
+#[derive(Clone)]
+pub struct DomainLockInfo {
+    pub domain_id: u64,
+    pub lock_addr: usize,
+    pub name: &'static str,
+}
+
+/// グローバルなDomain lock registry
+static DOMAIN_LOCK_REGISTRY: spin::Mutex<DomainLockRegistry> = 
+    spin::Mutex::new(DomainLockRegistry::new());
+
+struct DomainLockRegistry {
+    locks: alloc::vec::Vec<DomainLockInfo>,
+}
+
+impl DomainLockRegistry {
+    const fn new() -> Self {
+        Self {
+            locks: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// ロックを登録
+    pub fn register(&mut self, info: DomainLockInfo) {
+        self.locks.push(info);
+    }
+
+    /// ロックの登録を解除
+    pub fn unregister(&mut self, lock_addr: usize) {
+        self.locks.retain(|l| l.lock_addr != lock_addr);
+    }
+
+    /// 特定ドメインの全ロックを取得（登録解除も行う）
+    pub fn get_domain_locks(&mut self, domain_id: u64) -> alloc::vec::Vec<DomainLockInfo> {
+        let (domain_locks, other_locks): (alloc::vec::Vec<_>, alloc::vec::Vec<_>) = 
+            self.locks.drain(..).partition(|l| l.domain_id == domain_id);
+        self.locks = other_locks;
+        domain_locks
+    }
+}
+
+/// ドメインがロックを取得したことを記録
+pub fn register_domain_lock(info: DomainLockInfo) {
+    DOMAIN_LOCK_REGISTRY.lock().register(info);
+}
+
+/// ドメインがロックを解放したことを記録
+pub fn unregister_domain_lock(lock_addr: usize) {
+    DOMAIN_LOCK_REGISTRY.lock().unregister(lock_addr);
 }

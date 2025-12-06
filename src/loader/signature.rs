@@ -260,23 +260,16 @@ impl SignatureVerifier {
     }
 
     /// SHA-256ハッシュを計算
+    /// 
+    /// 設計書 3.3: SHA-256によるコード完全性検証
     fn compute_hash(&self, data: &[u8]) -> [u8; 32] {
-        // TODO: 実際のSHA-256実装
-        // 現在は単純なチェックサム
-        let mut hash = [0u8; 32];
-        for (i, &byte) in data.iter().enumerate() {
-            hash[i % 32] ^= byte;
-        }
-        hash
+        super::sha256::compute(data)
     }
 
     /// Ed25519署名を検証
     ///
-    /// TODO: 実際のEd25519実装（ed25519-dalek等）
+    /// 設計書 3.3: Ed25519による署名検証
     fn verify_ed25519(&self, public_key: &[u8; 32], message: &[u8; 32], signature: &[u8]) -> bool {
-        // 実装予定: ed25519_verify(public_key, message, signature)
-        // 現在はプレースホルダー
-
         // 基本的な形式チェック
         if signature.len() != ED25519_SIGNATURE_SIZE {
             return false;
@@ -292,9 +285,12 @@ impl SignatureVerifier {
             return false;
         }
 
-        // TODO: 実際のEd25519検証
-        // 現在は形式チェックのみでパス
-        true
+        // 署名配列に変換
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(signature);
+
+        // Ed25519検証を実行
+        super::ed25519::verify(public_key, message, &sig_bytes)
     }
 
     /// 統計を取得
