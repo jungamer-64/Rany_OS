@@ -735,6 +735,299 @@ pub fn shm_unlink(name: &str) -> Result<(), ShmError> {
     SHM_MANAGER.remove(id)
 }
 
+// ============================================================================
+// Zero-Copy Shared Memory - 設計書 5.3: RRef<T>によるゼロコピーIPC
+// ============================================================================
+
+use super::rref::{DomainId, RRef};
+
+/// 共有メモリベースのゼロコピーリージョン
+/// 
+/// 設計書 5.3: RRef<T>と統合した共有メモリアクセス
+pub struct ZeroCopyRegion<T> {
+    /// 基底となる共有メモリハンドル
+    handle: ShmHandle,
+    /// 所有ドメイン
+    owner: DomainId,
+    /// データ型のファントム
+    _marker: core::marker::PhantomData<T>,
+}
+
+impl<T: Copy> ZeroCopyRegion<T> {
+    /// 新しいゼロコピーリージョンを作成
+    pub fn new(name: &str, owner: DomainId) -> Result<Self, ShmError> {
+        let size = ShmSize::new(core::mem::size_of::<T>());
+        let id = shm_open(name, size, ShmFlags {
+            create: true,
+            ..Default::default()
+        })?;
+        let handle = shmat(id)?;
+
+        Ok(Self {
+            handle,
+            owner,
+            _marker: core::marker::PhantomData,
+        })
+    }
+
+    /// 既存のリージョンを開く
+    pub fn open(name: &str, owner: DomainId) -> Result<Self, ShmError> {
+        let id = SHM_MANAGER.get_by_name(name).ok_or(ShmError::NotFound)?;
+        let handle = shmat(id)?;
+
+        Ok(Self {
+            handle,
+            owner,
+            _marker: core::marker::PhantomData,
+        })
+    }
+
+    /// RRef<T>として値を読み取り
+    /// 
+    /// 注意: 共有メモリからの読み取りではコピーが発生するが、
+    /// 返されるRRefはExchange Heap上に配置され、以後はゼロコピーで
+    /// 他のドメインに転送可能
+    pub fn read_as_rref(&self) -> Result<RRef<T>, ShmError> {
+        let slice = self.handle.read().ok_or(ShmError::NotAttached)?;
+        
+        if slice.len() < core::mem::size_of::<T>() {
+            return Err(ShmError::InvalidSize);
+        }
+
+        let value: T = unsafe {
+            core::ptr::read(slice.as_ptr() as *const T)
+        };
+
+        Ok(RRef::new(self.owner, value))
+    }
+
+    /// RRef<T>から値を書き込み
+    /// 
+    /// 注意: RRefからの所有権移動後、共有メモリへの書き込みが発生
+    pub fn write_from_rref(&self, rref: RRef<T>) -> Result<(), ShmError> {
+        let value = rref.into_inner();
+        let slice = self.handle.write().ok_or(ShmError::NotAttached)?;
+        
+        if slice.len() < core::mem::size_of::<T>() {
+            return Err(ShmError::InvalidSize);
+        }
+
+        unsafe {
+            core::ptr::write(slice.as_mut_ptr() as *mut T, value);
+        }
+
+        Ok(())
+    }
+
+    /// 生の値を直接書き込み（ゼロコピーではない）
+    pub fn write(&self, value: T) -> Result<(), ShmError> {
+        let slice = self.handle.write().ok_or(ShmError::NotAttached)?;
+        
+        if slice.len() < core::mem::size_of::<T>() {
+            return Err(ShmError::InvalidSize);
+        }
+
+        unsafe {
+            core::ptr::write(slice.as_mut_ptr() as *mut T, value);
+        }
+
+        Ok(())
+    }
+
+    /// 生の値を直接読み取り（ゼロコピーではない）
+    pub fn read(&self) -> Result<T, ShmError> {
+        let slice = self.handle.read().ok_or(ShmError::NotAttached)?;
+        
+        if slice.len() < core::mem::size_of::<T>() {
+            return Err(ShmError::InvalidSize);
+        }
+
+        let value = unsafe {
+            core::ptr::read(slice.as_ptr() as *const T)
+        };
+
+        Ok(value)
+    }
+
+    /// 所有ドメインを取得
+    pub fn owner(&self) -> DomainId {
+        self.owner
+    }
+}
+
+/// 共有メモリ上のリングバッファ（プロデューサー・コンシューマー間のゼロコピー通信）
+/// 
+/// 設計書 5.3: SAS環境での効率的なIPC
+pub struct SharedRingBuffer<T: Copy> {
+    /// 共有メモリハンドル
+    handle: ShmHandle,
+    /// プロデューサードメイン
+    producer: DomainId,
+    /// コンシューマードメイン  
+    consumer: DomainId,
+    /// 容量（要素数）
+    capacity: usize,
+    /// ファントム
+    _marker: core::marker::PhantomData<T>,
+}
+
+/// 共有リングバッファヘッダー
+#[repr(C)]
+struct SharedRingHeader {
+    /// 書き込み位置
+    write_pos: AtomicUsize,
+    /// 読み取り位置
+    read_pos: AtomicUsize,
+    /// 容量
+    capacity: usize,
+    /// 要素サイズ
+    element_size: usize,
+}
+
+impl<T: Copy> SharedRingBuffer<T> {
+    /// 新しい共有リングバッファを作成
+    pub fn create(
+        name: &str,
+        capacity: usize,
+        producer: DomainId,
+        consumer: DomainId,
+    ) -> Result<Self, ShmError> {
+        let element_size = core::mem::size_of::<T>();
+        let header_size = core::mem::size_of::<SharedRingHeader>();
+        let total_size = header_size + capacity * element_size;
+        
+        let id = shm_open(name, ShmSize::new(total_size), ShmFlags {
+            create: true,
+            exclusive: true,
+            ..Default::default()
+        })?;
+        let handle = shmat(id)?;
+
+        // ヘッダーを初期化
+        let slice = handle.write().ok_or(ShmError::NotAttached)?;
+        let header = unsafe { &mut *(slice.as_mut_ptr() as *mut SharedRingHeader) };
+        header.write_pos = AtomicUsize::new(0);
+        header.read_pos = AtomicUsize::new(0);
+        header.capacity = capacity;
+        header.element_size = element_size;
+
+        Ok(Self {
+            handle,
+            producer,
+            consumer,
+            capacity,
+            _marker: core::marker::PhantomData,
+        })
+    }
+
+    /// 既存の共有リングバッファを開く
+    pub fn open(name: &str, producer: DomainId, consumer: DomainId) -> Result<Self, ShmError> {
+        let id = SHM_MANAGER.get_by_name(name).ok_or(ShmError::NotFound)?;
+        let handle = shmat(id)?;
+
+        // ヘッダーから容量を読み取り
+        let slice = handle.read().ok_or(ShmError::NotAttached)?;
+        let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+
+        Ok(Self {
+            handle,
+            producer,
+            consumer,
+            capacity: header.capacity,
+            _marker: core::marker::PhantomData,
+        })
+    }
+
+    /// 要素を書き込み（プロデューサー用）
+    pub fn push(&self, value: T) -> Result<(), ShmError> {
+        let slice = self.handle.write().ok_or(ShmError::NotAttached)?;
+        let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+        
+        let write_pos = header.write_pos.load(Ordering::Acquire);
+        let read_pos = header.read_pos.load(Ordering::Acquire);
+        
+        // フルチェック
+        let next_write = (write_pos + 1) % self.capacity;
+        if next_write == read_pos {
+            return Err(ShmError::OutOfMemory); // バッファフル
+        }
+
+        // データを書き込み
+        let header_size = core::mem::size_of::<SharedRingHeader>();
+        let element_size = core::mem::size_of::<T>();
+        let offset = header_size + write_pos * element_size;
+        
+        unsafe {
+            core::ptr::write(
+                slice.as_ptr().add(offset) as *mut T,
+                value
+            );
+        }
+
+        // write_posを更新
+        header.write_pos.store(next_write, Ordering::Release);
+
+        Ok(())
+    }
+
+    /// 要素を読み取り（コンシューマー用）
+    pub fn pop(&self) -> Result<T, ShmError> {
+        let slice = self.handle.read().ok_or(ShmError::NotAttached)?;
+        let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+        
+        let write_pos = header.write_pos.load(Ordering::Acquire);
+        let read_pos = header.read_pos.load(Ordering::Acquire);
+        
+        // 空チェック
+        if read_pos == write_pos {
+            return Err(ShmError::NotFound); // バッファ空
+        }
+
+        // データを読み取り
+        let header_size = core::mem::size_of::<SharedRingHeader>();
+        let element_size = core::mem::size_of::<T>();
+        let offset = header_size + read_pos * element_size;
+        
+        let value = unsafe {
+            core::ptr::read(slice.as_ptr().add(offset) as *const T)
+        };
+
+        // read_posを更新
+        let next_read = (read_pos + 1) % self.capacity;
+        header.read_pos.store(next_read, Ordering::Release);
+
+        Ok(value)
+    }
+
+    /// RRefとして読み取り（Exchange Heapに移動）
+    pub fn pop_as_rref(&self) -> Result<RRef<T>, ShmError> {
+        let value = self.pop()?;
+        Ok(RRef::new(self.consumer, value))
+    }
+
+    /// バッファが空か
+    pub fn is_empty(&self) -> bool {
+        if let Some(slice) = self.handle.read() {
+            let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+            header.write_pos.load(Ordering::Acquire) == header.read_pos.load(Ordering::Acquire)
+        } else {
+            true
+        }
+    }
+
+    /// バッファがフルか
+    pub fn is_full(&self) -> bool {
+        if let Some(slice) = self.handle.read() {
+            let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+            let write_pos = header.write_pos.load(Ordering::Acquire);
+            let read_pos = header.read_pos.load(Ordering::Acquire);
+            (write_pos + 1) % self.capacity == read_pos
+        } else {
+            true
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -783,5 +1076,20 @@ mod tests {
 
         let id2 = shm_open(name, ShmSize::new(0), ShmFlags::default()).unwrap();
         assert_eq!(id, id2);
+    }
+
+    #[test]
+    fn test_zero_copy_region() {
+        let domain1 = DomainId::new(1);
+        
+        let region: ZeroCopyRegion<u64> = ZeroCopyRegion::new("/zero_copy_test", domain1).unwrap();
+        
+        // 値を書き込み
+        region.write(42u64).unwrap();
+        
+        // RRefとして読み取り
+        let rref = region.read_as_rref().unwrap();
+        assert_eq!(*rref, 42);
+        assert_eq!(rref.owner(), domain1);
     }
 }

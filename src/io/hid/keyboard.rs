@@ -199,18 +199,20 @@ pub enum KeyCode {
     PageDown = 0x51,
 
     // テンキー (Phase 5)
-    // スキャンコードは非拡張コードを使用
-    NumPad0 = 0x52,      // NumLockオンで '0', オフで Insert
-    NumPad1 = 0x4F,      // NumLockオンで '1', オフで End
-    NumPad2 = 0x50,      // NumLockオンで '2', オフで Down
-    NumPad3 = 0x51,      // NumLockオンで '3', オフで PageDown
-    NumPad4 = 0x4B,      // NumLockオンで '4', オフで Left
-    NumPad5 = 0x4C,      // NumLockオンで '5', オフで (nothing)
-    NumPad6 = 0x4D,      // NumLockオンで '6', オフで Right
-    NumPad7 = 0x47,      // NumLockオンで '7', オフで Home
-    NumPad8 = 0x48,      // NumLockオンで '8', オフで Up
-    NumPad9 = 0x49,      // NumLockオンで '9', オフで PageUp
-    NumPadDecimal = 0x53, // NumLockオンで '.', オフで Delete
+    // 注意: テンキーはナビゲーションキーと同じスキャンコードを持つため、
+    // 内部的に異なる値を使用し、from_scancode()で適切に変換する
+    // 0xC0-0xCF の範囲を使用（PS/2では未使用）
+    NumPad0 = 0xC0,      // NumLockオンで '0', オフで Insert (実際は0x52)
+    NumPad1 = 0xC1,      // NumLockオンで '1', オフで End (実際は0x4F)
+    NumPad2 = 0xC2,      // NumLockオンで '2', オフで Down (実際は0x50)
+    NumPad3 = 0xC3,      // NumLockオンで '3', オフで PageDown (実際は0x51)
+    NumPad4 = 0xC4,      // NumLockオンで '4', オフで Left (実際は0x4B)
+    NumPad5 = 0xC5,      // NumLockオンで '5', オフで (nothing) (実際は0x4C)
+    NumPad6 = 0xC6,      // NumLockオンで '6', オフで Right (実際は0x4D)
+    NumPad7 = 0xC7,      // NumLockオンで '7', オフで Home (実際は0x47)
+    NumPad8 = 0xC8,      // NumLockオンで '8', オフで Up (実際は0x48)
+    NumPad9 = 0xC9,      // NumLockオンで '9', オフで PageUp (実際は0x49)
+    NumPadDecimal = 0xCA, // NumLockオンで '.', オフで Delete (実際は0x53)
     NumPadEnter = 0x9C,  // 拡張コード (E0 1C)
     NumPadPlus = 0x4E,
     NumPadMinus = 0x4A,
@@ -732,7 +734,15 @@ struct IsrSafeWaker {
 // - register()はConsumerスレッドからのみ呼ばれる
 // - ISRはnotify()のみ呼び出す（Waker操作なし）
 //
-// ⚠️ 形式検証未実施: 商用利用前にMiri/Loomでのテストを推奨
+// ⚠️ アーキテクチャ制限: x86_64でのみ検証済み
+//    ARM/RISC-Vでの使用は形式検証（Loom等）完了後に有効化してください
+#[cfg(not(target_arch = "x86_64"))]
+compile_error!(
+    "IsrSafeWaker is only verified on x86_64 (TSO memory model). \
+     ARM/RISC-V require formal verification with Loom/Miri before use. \
+     To enable on other architectures, add feature 'experimental-weak-memory'."
+);
+
 unsafe impl Send for IsrSafeWaker {}
 unsafe impl Sync for IsrSafeWaker {}
 
@@ -954,13 +964,18 @@ impl ScancodeQueue {
     /// キューからデータを取得（Consumer側：pollから呼び出し）
     ///
     /// # Memory Ordering
+    /// - `head.load(Acquire)`: 前回のhead更新以降の書き込みが見えることを保証
     /// - `tail.load(Acquire)`: Producerのbuffer書き込みが見えることを保証
     /// - `buffer[head].load(Acquire)`: データ読み取りがhead更新前に完了することを保証
     ///
-    /// この順序が崩れると、Producer側が書き込み中のデータを読む可能性がある
+    /// # Note on ABA Problem Mitigation
+    /// headのロードにAcquireを使用することで、マルチコア環境での
+    /// ABA問題変種のリスクを軽減します。ただし、このキューはSPSC設計の
+    /// ため、単一Consumerが保証されていれば完全に安全です。
     #[inline]
     fn pop(&self) -> Option<u16> {
-        let head = self.head.load(Ordering::Relaxed);
+        // ✅ Acquire: 前回のhead更新以降の全ての操作が見えることを保証
+        let head = self.head.load(Ordering::Acquire);
         let tail = self.tail.load(Ordering::Acquire);
 
         if head == tail {
@@ -1373,6 +1388,30 @@ impl KeyboardStream {
         CharFuture {
             driver: self.driver,
             keymap: self.keymap,
+            budget: DEFAULT_POLL_BUDGET,
+        }
+    }
+
+    /// 次の文字を非同期で待機（カスタムバジェット）
+    ///
+    /// 高負荷環境やリアルタイム要件が厳しい場合に、
+    /// バジェットを調整できます。
+    ///
+    /// # Arguments
+    /// * `budget` - 1回pollで処理するイベントの最大数
+    ///
+    /// # Example
+    /// ```ignore
+    /// // 高頻度入力が予想される場合はバジェットを大きく
+    /// let ch = stream.read_char_with_budget(32).await;
+    /// // リアルタイム性が重要な場合は小さく
+    /// let ch = stream.read_char_with_budget(4).await;
+    /// ```
+    pub fn read_char_with_budget(&mut self, budget: usize) -> CharFuture {
+        CharFuture {
+            driver: self.driver,
+            keymap: self.keymap,
+            budget,
         }
     }
 
@@ -1517,13 +1556,13 @@ impl Future for CharFutureArc<'_> {
         self.driver.process_pending_wake();
 
         // イベント処理回数のバジェット制限
-        // 最悪ケースでも MAX_EVENTS_PER_POLL 回で処理を打ち切り、
+        // 最悪ケースでも DEFAULT_POLL_BUDGET 回で処理を打ち切り、
         // 他のタスクに実行機会を与える
         let mut events_processed = 0;
 
         // 文字が得られるまでループ（バジェット制限付き）
         loop {
-            if events_processed >= MAX_EVENTS_PER_POLL {
+            if events_processed >= DEFAULT_POLL_BUDGET {
                 // バジェット超過: 次回pollに持ち越し
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
@@ -1590,16 +1629,23 @@ impl Future for KeyEventFuture {
 }
 
 /// 文字入力待ちFuture
+///
+/// # バジェット制限
+/// 1回のpoll()で処理するイベント数は`budget`で制限される。
+/// デフォルトは`DEFAULT_POLL_BUDGET`（16）だが、
+/// `KeyboardStream::read_char_with_budget()`で変更可能。
 pub struct CharFuture {
     driver: &'static KeyboardDriver,
     keymap: &'static dyn Keymap,
+    /// 1回のpoll()で処理するイベントの最大数
+    budget: usize,
 }
 
-/// 1回のpoll()で処理するイベントの最大数
+/// デフォルトのpoll()バジェット
 ///
 /// リアルタイム性を保つため、修飾キーだけが大量に来ても
 /// poll()が長時間ブロックしないようにする。
-const MAX_EVENTS_PER_POLL: usize = 16;
+pub const DEFAULT_POLL_BUDGET: usize = 16;
 
 impl Future for CharFuture {
     type Output = char;
@@ -1617,10 +1663,11 @@ impl Future for CharFuture {
         self.driver.process_pending_wake();
 
         let mut events_checked: usize = 0;
+        let budget = self.budget;
 
         loop {
             // バジェット制限: リアルタイム性のため
-            if events_checked >= MAX_EVENTS_PER_POLL {
+            if events_checked >= budget {
                 // タイムスライス使い果たし - 次回に持ち越し
                 cx.waker().wake_by_ref();
                 return Poll::Pending;

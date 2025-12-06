@@ -18,6 +18,79 @@
 use super::KeyCode;
 
 // ============================================================================
+// 制御コード変換（Ctrl+文字）
+// ============================================================================
+
+/// Ctrl+文字の制御コード変換テーブル
+///
+/// キーマップ非依存の共通処理として分離。これにより：
+/// - トレイトのデフォルト実装がシンプルに
+/// - テスト容易性の向上
+/// - 各キーマップで必要ならオーバーライド可能
+///
+/// # 制御コード対応表
+///
+/// | キー       | コード | 16進  | 用途                    |
+/// |------------|--------|-------|-------------------------|
+/// | Ctrl+A..Z  | SOH..SUB | 0x01..0x1A | 各種制御         |
+/// | Ctrl+C     | ETX    | 0x03  | SIGINT (割り込み)       |
+/// | Ctrl+D     | EOT    | 0x04  | EOF (入力終了)          |
+/// | Ctrl+H     | BS     | 0x08  | Backspace               |
+/// | Ctrl+I     | HT     | 0x09  | Tab                     |
+/// | Ctrl+L     | FF     | 0x0C  | 画面クリア              |
+/// | Ctrl+Q     | DC1    | 0x11  | XON (出力再開)          |
+/// | Ctrl+S     | DC3    | 0x13  | XOFF (出力停止)         |
+/// | Ctrl+U     | NAK    | 0x15  | 行削除                  |
+/// | Ctrl+W     | ETB    | 0x17  | 単語削除                |
+/// | Ctrl+Z     | SUB    | 0x1A  | SIGTSTP (一時停止)      |
+/// | Ctrl+[     | ESC    | 0x1B  | エスケープ              |
+/// | Ctrl+\\    | FS     | 0x1C  | SIGQUIT (強制終了)      |
+/// | Ctrl+]     | GS     | 0x1D  | -                       |
+/// | Ctrl+6 (^) | RS     | 0x1E  | -                       |
+/// | Ctrl+- (_) | US     | 0x1F  | -                       |
+/// | Ctrl+/ (?) | DEL    | 0x7F  | 削除                    |
+#[inline]
+pub fn ctrl_char_map(key: KeyCode) -> Option<char> {
+    Some(match key {
+        // Ctrl+A..Z = 0x01..0x1A
+        KeyCode::A => '\x01',
+        KeyCode::B => '\x02',
+        KeyCode::C => '\x03',  // ETX (Ctrl+C) - SIGINT
+        KeyCode::D => '\x04',  // EOT (Ctrl+D) - EOF
+        KeyCode::E => '\x05',
+        KeyCode::F => '\x06',
+        KeyCode::G => '\x07',  // BEL
+        KeyCode::H => '\x08',  // BS (Backspace)
+        KeyCode::I => '\x09',  // HT (Tab)
+        KeyCode::J => '\x0A',  // LF
+        KeyCode::K => '\x0B',
+        KeyCode::L => '\x0C',  // FF (Form Feed) - 画面クリア
+        KeyCode::M => '\x0D',  // CR
+        KeyCode::N => '\x0E',
+        KeyCode::O => '\x0F',
+        KeyCode::P => '\x10',
+        KeyCode::Q => '\x11',  // DC1 (XON)
+        KeyCode::R => '\x12',
+        KeyCode::S => '\x13',  // DC3 (XOFF)
+        KeyCode::T => '\x14',
+        KeyCode::U => '\x15',  // NAK - 行削除
+        KeyCode::V => '\x16',
+        KeyCode::W => '\x17',  // ETB - 単語削除
+        KeyCode::X => '\x18',
+        KeyCode::Y => '\x19',
+        KeyCode::Z => '\x1A',  // SUB (Ctrl+Z) - SIGTSTP
+        // 特殊制御コード
+        KeyCode::LeftBracket => '\x1B',   // ESC (0x1B)
+        KeyCode::Backslash => '\x1C',     // FS (0x1C) - SIGQUIT
+        KeyCode::RightBracket => '\x1D',  // GS (0x1D)
+        KeyCode::Key6 => '\x1E',          // RS (0x1E) - Ctrl+^ (Shift+6)
+        KeyCode::Minus => '\x1F',         // US (0x1F) - Ctrl+_
+        KeyCode::Slash => '\x7F',         // DEL (0x7F) - Ctrl+?
+        _ => return None,
+    })
+}
+
+// ============================================================================
 // Keymap トレイト
 // ============================================================================
 
@@ -97,69 +170,16 @@ pub trait Keymap: Send + Sync {
     /// # Note
     /// 制御コード処理はここで共通化されているため、
     /// キーマップ実装者は`to_char_raw()`のみを実装すればよい。
+    ///
+    /// Ctrl+文字の変換は`ctrl_char_map()`関数に分離されており、
+    /// 必要に応じてオーバーライド可能。
     fn to_char(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char> {
         // Ctrl+文字の制御文字変換（全キーマップ共通）
-        //
-        // # 制御コード対応表
-        //
-        // | キー       | コード | 16進  | 用途                    |
-        // |------------|--------|-------|-------------------------|
-        // | Ctrl+A..Z  | SOH..SUB | 0x01..0x1A | 各種制御         |
-        // | Ctrl+C     | ETX    | 0x03  | SIGINT (割り込み)       |
-        // | Ctrl+D     | EOT    | 0x04  | EOF (入力終了)          |
-        // | Ctrl+H     | BS     | 0x08  | Backspace               |
-        // | Ctrl+I     | HT     | 0x09  | Tab                     |
-        // | Ctrl+L     | FF     | 0x0C  | 画面クリア              |
-        // | Ctrl+Q     | DC1    | 0x11  | XON (出力再開)          |
-        // | Ctrl+S     | DC3    | 0x13  | XOFF (出力停止)         |
-        // | Ctrl+U     | NAK    | 0x15  | 行削除                  |
-        // | Ctrl+W     | ETB    | 0x17  | 単語削除                |
-        // | Ctrl+Z     | SUB    | 0x1A  | SIGTSTP (一時停止)      |
-        // | Ctrl+[     | ESC    | 0x1B  | エスケープ              |
-        // | Ctrl+\     | FS     | 0x1C  | SIGQUIT (強制終了)      |
-        // | Ctrl+]     | GS     | 0x1D  | -                       |
-        // | Ctrl+6 (^) | RS     | 0x1E  | -                       |
-        // | Ctrl+- (_) | US     | 0x1F  | -                       |
-        // | Ctrl+/ (?) | DEL    | 0x7F  | 削除                    |
-        //
+        // Ctrlのみが押されている場合に制御コードを返す
         if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
-            return match key {
-                // Ctrl+A..Z = 0x01..0x1A
-                KeyCode::A => Some('\x01'),
-                KeyCode::B => Some('\x02'),
-                KeyCode::C => Some('\x03'),  // ETX (Ctrl+C) - SIGINT
-                KeyCode::D => Some('\x04'),  // EOT (Ctrl+D) - EOF
-                KeyCode::E => Some('\x05'),
-                KeyCode::F => Some('\x06'),
-                KeyCode::G => Some('\x07'),  // BEL
-                KeyCode::H => Some('\x08'),  // BS (Backspace)
-                KeyCode::I => Some('\x09'),  // HT (Tab)
-                KeyCode::J => Some('\x0A'),  // LF
-                KeyCode::K => Some('\x0B'),
-                KeyCode::L => Some('\x0C'),  // FF (Form Feed) - 画面クリア
-                KeyCode::M => Some('\x0D'),  // CR
-                KeyCode::N => Some('\x0E'),
-                KeyCode::O => Some('\x0F'),
-                KeyCode::P => Some('\x10'),
-                KeyCode::Q => Some('\x11'),  // DC1 (XON)
-                KeyCode::R => Some('\x12'),
-                KeyCode::S => Some('\x13'),  // DC3 (XOFF)
-                KeyCode::T => Some('\x14'),
-                KeyCode::U => Some('\x15'),  // NAK - 行削除
-                KeyCode::V => Some('\x16'),
-                KeyCode::W => Some('\x17'),  // ETB - 単語削除
-                KeyCode::X => Some('\x18'),
-                KeyCode::Y => Some('\x19'),
-                KeyCode::Z => Some('\x1A'),  // SUB (Ctrl+Z) - SIGTSTP
-                // 特殊制御コード
-                KeyCode::LeftBracket => Some('\x1B'),   // ESC (0x1B)
-                KeyCode::Backslash => Some('\x1C'),     // FS (0x1C) - SIGQUIT
-                KeyCode::RightBracket => Some('\x1D'),  // GS (0x1D)
-                KeyCode::Key6 => Some('\x1E'),          // RS (0x1E) - Ctrl+^ (Shift+6)
-                KeyCode::Minus => Some('\x1F'),         // US (0x1F) - Ctrl+_
-                KeyCode::Slash => Some('\x7F'),         // DEL (0x7F) - Ctrl+?
-                _ => None,
-            };
+            if let Some(ctrl_char) = ctrl_char_map(key) {
+                return Some(ctrl_char);
+            }
         }
 
         // 通常の文字変換はキーマップ実装に委譲

@@ -49,20 +49,42 @@ impl Ps2Controller {
     }
 
     /// 出力バッファが空になるまで待機
+    ///
+    /// # Performance
+    /// YIELD_INTERVALごとにspin_loop()を呼び出し、CPUリソースを節約。
+    /// これにより、ハイパースレッド対応プロセッサでは他のスレッドに
+    /// 実行機会を譲ることができる。
     fn wait_output(&self) -> bool {
-        for _ in 0..100_000 {
+        const MAX_ATTEMPTS: u32 = 100_000;
+        const YIELD_INTERVAL: u32 = 1000;
+
+        for i in 0..MAX_ATTEMPTS {
             if (self.read_status() & status::OUTPUT_FULL) != 0 {
                 return true;
+            }
+            // ✅ CPUヒント: ビジーループ中のリソース浪費を減らす
+            if i % YIELD_INTERVAL == 0 {
+                core::hint::spin_loop();
             }
         }
         false
     }
 
     /// 入力バッファが空になるまで待機
+    ///
+    /// # Performance
+    /// YIELD_INTERVALごとにspin_loop()を呼び出し、CPUリソースを節約。
     fn wait_input(&self) -> bool {
-        for _ in 0..100_000 {
+        const MAX_ATTEMPTS: u32 = 100_000;
+        const YIELD_INTERVAL: u32 = 1000;
+
+        for i in 0..MAX_ATTEMPTS {
             if (self.read_status() & status::INPUT_FULL) == 0 {
                 return true;
+            }
+            // ✅ CPUヒント: ビジーループ中のリソース浪費を減らす
+            if i % YIELD_INTERVAL == 0 {
+                core::hint::spin_loop();
             }
         }
         false

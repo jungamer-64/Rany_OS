@@ -7,6 +7,8 @@
 
 pub mod elf;
 pub mod signature;
+pub mod sha256;
+pub mod ed25519;
 
 #[allow(unused_imports)]
 pub use elf::{CellInfo, ElfLoader, LoadedCell};
