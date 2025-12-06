@@ -291,6 +291,18 @@ impl HeapRegistry {
         let _ = self.register(ptr, size, owner, 0);
     }
 
+    /// オブジェクトを登録解除（簡易版、所有者チェックなし）
+    /// RRefのDrop時など、所有者が明らかな場合に使用
+    pub fn unregister_simple(&mut self, ptr: usize) {
+        if let Some(obj) = self.objects.remove(&ptr) {
+            // オーナーインデックスから削除
+            if let Some(addrs) = self.owner_index.get_mut(&obj.owner) {
+                addrs.retain(|&a| a != ptr);
+            }
+            self.stats.total_freed += 1;
+        }
+    }
+
     /// ドメインの全オブジェクトを回収
     pub fn reclaim_all(&mut self, domain: DomainId) -> usize {
         let addrs: Vec<usize> = self.owner_index.remove(&domain).unwrap_or_default();
