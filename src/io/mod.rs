@@ -64,11 +64,10 @@ pub use nvme::{
     NvmeCommand, NvmeCompletion, NvmeStatus,
     IdentifyController, IdentifyNamespace, NvmeCapabilities,
     AdminOpcode, IoOpcode,
-    // Polling driver (from nvme/driver.rs)
+    // Polling driver (from nvme/driver.rs split modules)
     NvmePollingDriver, PerCoreNvmeQueue, NvmeQueueStats,
     QueuePair, SubmissionQueue, CompletionQueue,
     AsyncIoRequest, IoRequestState,
-    PollingNvmeCommand, PollingNvmeCompletion,
     init_nvme_polling, nvme_poll,
 };
 // polling.rs は削除済み - io_scheduler.rs に統一

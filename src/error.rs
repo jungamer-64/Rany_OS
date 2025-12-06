@@ -468,6 +468,8 @@ impl From<crate::io::ahci::AhciError> for IoError {
             AE::TaskFileError(_) => IoError::CommandError,
             AE::DmaError => IoError::DmaError,
             AE::InvalidParameter => IoError::InvalidParameter,
+            AE::AllocationError => IoError::NoResources,
+            AE::PciError(_) => IoError::DeviceNotFound,
             AE::Other(_) => IoError::AhciError,
         }
     }
