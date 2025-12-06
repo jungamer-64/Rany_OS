@@ -13,6 +13,10 @@
 //! - GROv2 (Generic Receive Offload)
 //! - TSOシミュレーション (TCP Segmentation Offload)
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;

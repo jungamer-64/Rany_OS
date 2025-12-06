@@ -4,6 +4,10 @@
 //! performance validation of the kernel components, targeting 10Gbps
 //! line rate verification (Design Doc Section 10).
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 extern crate alloc;
 
 use alloc::string::String;

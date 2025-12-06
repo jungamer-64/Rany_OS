@@ -3,6 +3,10 @@
 //! ExoRust用のシグナルシステム実装
 //! POSIX互換性は排除し、Rustらしいエラーハンドリングと統合
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

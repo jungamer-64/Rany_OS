@@ -3,6 +3,10 @@
 //! DHCPを使用してIPアドレス、サブネットマスク、ゲートウェイ、
 //! DNSサーバーなどのネットワーク設定を自動取得する。
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::Mutex;

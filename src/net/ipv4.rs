@@ -3,6 +3,10 @@
 //! Zero-copy IPv4 packet processing as specified in Section 6.2
 //! of the ExoRust specification.
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use core::fmt;
 
 /// IPv4 address (4 bytes)

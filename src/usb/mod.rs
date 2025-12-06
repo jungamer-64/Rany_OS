@@ -5,6 +5,10 @@
 //! - USBデバイス列挙と設定
 //! - 非同期転送API
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::sync::Arc;

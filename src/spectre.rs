@@ -7,6 +7,10 @@
 //! - LFENCE/分岐予測バリア
 //! - SSBD (Speculative Store Bypass Disable)
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 

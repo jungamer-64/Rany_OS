@@ -2,6 +2,11 @@
 // src/domain/registry.rs - Domain Registry
 // 設計書 3.1: セル（ドメイン）の管理とライフサイクル
 // ============================================================================
+
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use crate::ipc::rref::DomainId;
 use alloc::collections::BTreeMap;
 use alloc::string::String;

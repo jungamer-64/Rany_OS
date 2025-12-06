@@ -2,6 +2,10 @@
 //!
 //! This module implements ICMP for ping/pong and error messages.
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use super::ipv4::{Ipv4Address, data_checksum};
 
 /// ICMP message type

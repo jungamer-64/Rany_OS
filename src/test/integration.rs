@@ -9,6 +9,10 @@
 //! - Memory management
 //! - IPC mechanisms
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 extern crate alloc;
 
 use alloc::string::String;
