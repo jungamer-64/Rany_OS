@@ -15,7 +15,6 @@ mod domain_system;
 mod error;
 mod fs;
 mod graphics;
-mod input;
 mod interrupts;
 mod io;
 mod ipc;
@@ -307,8 +306,8 @@ extern "C" fn kmain() -> ! {
     
     // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）
     info!(target: "init", "Initializing input devices");
-    input::init();
-    input::init_mouse();
+    io::hid::keyboard_init();
+    io::hid::mouse_init();
     info!(target: "init", "Input devices initialized");
     
     // 完了

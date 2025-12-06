@@ -5,7 +5,7 @@
 //! # スクリプト値システム
 //!
 //! RustScriptの実行時値を表現する型システム。
-//! ExoShellのExoValueを参考に、DOM操作に特化した設計。
+//! ExoShellのExoValueと統合し、DOM操作とOS操作の両方をサポート。
 
 extern crate alloc;
 
@@ -17,10 +17,232 @@ use alloc::format;
 use core::fmt::{self, Display};
 
 // ============================================================================
+// OS Resource Types (ExoShellから統合)
+// ============================================================================
+
+/// ファイルシステムエントリ（構造化データ）
+#[derive(Debug, Clone)]
+pub struct FileEntry {
+    pub name: String,
+    pub path: String,
+    pub file_type: FileType,
+    pub size: u64,
+    pub owner: String,
+    pub permissions: Permissions,
+    pub created: u64,
+    pub modified: u64,
+    pub inode: u64,
+}
+
+impl FileEntry {
+    pub fn new(name: String, path: String, file_type: FileType) -> Self {
+        Self {
+            name,
+            path,
+            file_type,
+            size: 0,
+            owner: String::new(),
+            permissions: Permissions::default(),
+            created: 0,
+            modified: 0,
+            inode: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileType {
+    Regular,
+    Directory,
+    Symlink,
+    Device,
+    Socket,
+    Pipe,
+}
+
+/// Capabilityベースのパーミッション
+#[derive(Debug, Clone)]
+pub struct Permissions {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+    pub delete: bool,
+    pub grant: bool,
+}
+
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            read: false,
+            write: false,
+            execute: false,
+            delete: false,
+            grant: false,
+        }
+    }
+}
+
+/// ネットワーク接続情報
+#[derive(Debug, Clone)]
+pub struct NetConnection {
+    pub protocol: String,
+    pub local_addr: [u8; 4],
+    pub local_port: u16,
+    pub remote_addr: [u8; 4],
+    pub remote_port: u16,
+    pub state: String,
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+}
+
+impl NetConnection {
+    pub fn new(protocol: String, local_port: u16, remote_port: u16) -> Self {
+        Self {
+            protocol,
+            local_addr: [0, 0, 0, 0],
+            local_port,
+            remote_addr: [0, 0, 0, 0],
+            remote_port,
+            state: String::from("NEW"),
+            rx_bytes: 0,
+            tx_bytes: 0,
+        }
+    }
+}
+
+/// プロセス情報
+#[derive(Debug, Clone)]
+pub struct ProcessInfo {
+    pub pid: u32,
+    pub name: String,
+    pub state: ProcessState,
+    pub cpu_usage: f32,
+    pub memory_kb: u64,
+    pub domain: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessState {
+    Running,
+    Sleeping,
+    Blocked,
+    Stopped,
+    Zombie,
+}
+
+/// Capability（権限トークン）
+#[derive(Debug, Clone)]
+pub struct CapabilityToken {
+    pub id: u64,
+    pub resource: String,
+    pub operations: Vec<CapOperation>,
+    pub issuer: String,
+    pub expires: Option<u64>,
+    pub delegatable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapOperation {
+    Read,
+    Write,
+    Execute,
+    Delete,
+    Grant,
+    Revoke,
+    Create,
+    List,
+}
+
+// ============================================================================
+// Display implementations for OS types
+// ============================================================================
+
+impl Display for FileEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let type_char = match self.file_type {
+            FileType::Directory => 'd',
+            FileType::Symlink => 'l',
+            FileType::Device => 'c',
+            FileType::Socket => 's',
+            FileType::Pipe => 'p',
+            FileType::Regular => '-',
+        };
+
+        let perm_str = alloc::format!(
+            "{}{}{}",
+            if self.permissions.read { 'r' } else { '-' },
+            if self.permissions.write { 'w' } else { '-' },
+            if self.permissions.execute { 'x' } else { '-' }
+        );
+
+        write!(
+            f,
+            "{}{} {:>8} {} {}",
+            type_char, perm_str, self.size, self.owner, self.name
+        )
+    }
+}
+
+impl Display for NetConnection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {}.{}.{}.{}:{} -> {}.{}.{}.{}:{} [{}]",
+            self.protocol,
+            self.local_addr[0], self.local_addr[1], self.local_addr[2], self.local_addr[3],
+            self.local_port,
+            self.remote_addr[0], self.remote_addr[1], self.remote_addr[2], self.remote_addr[3],
+            self.remote_port,
+            self.state
+        )
+    }
+}
+
+impl Display for ProcessInfo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let state_str = match self.state {
+            ProcessState::Running => "R",
+            ProcessState::Sleeping => "S",
+            ProcessState::Blocked => "D",
+            ProcessState::Stopped => "T",
+            ProcessState::Zombie => "Z",
+        };
+        write!(
+            f,
+            "{:>5} {} {:>5.1}% {:>8}KB {}",
+            self.pid, state_str, self.cpu_usage, self.memory_kb, self.name
+        )
+    }
+}
+
+impl Display for CapabilityToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "Cap#{} {} [{}] from {}",
+            self.id,
+            self.resource,
+            self.operations.iter().map(|op| match op {
+                CapOperation::Read => "R",
+                CapOperation::Write => "W",
+                CapOperation::Execute => "X",
+                CapOperation::Delete => "D",
+                CapOperation::Grant => "G",
+                CapOperation::Revoke => "V",
+                CapOperation::Create => "C",
+                CapOperation::List => "L",
+            }).collect::<Vec<_>>().join(""),
+            self.issuer
+        )
+    }
+}
+
+// ============================================================================
 // Script Value
 // ============================================================================
 
 /// スクリプトの実行時値
+/// ExoShellのExoValueと統合された、OS全体で使用する値型
 #[derive(Debug, Clone)]
 pub enum ScriptValue {
     /// 空値
@@ -37,6 +259,9 @@ pub enum ScriptValue {
 
     /// 文字列
     String(String),
+
+    /// バイト列（ゼロコピー対応）
+    Bytes(Vec<u8>),
 
     /// 配列
     Array(Vec<ScriptValue>),
@@ -59,6 +284,29 @@ pub enum ScriptValue {
     /// 範囲
     Range(RangeValue),
 
+    // ========================================================================
+    // OS Resource Types (ExoShellから統合)
+    // ========================================================================
+
+    /// ファイルエントリ
+    FileEntry(FileEntry),
+
+    /// ネットワーク接続
+    NetConnection(NetConnection),
+
+    /// プロセス情報
+    Process(ProcessInfo),
+
+    /// Capability（権限トークン）
+    Capability(CapabilityToken),
+
+    // ========================================================================
+    // Async Types
+    // ========================================================================
+
+    /// Promise（非同期操作の結果）
+    Promise(PromiseValue),
+
     /// エラー
     Error(String),
 }
@@ -76,6 +324,7 @@ impl ScriptValue {
             ScriptValue::Int(i) => *i != 0,
             ScriptValue::Float(f) => *f != 0.0,
             ScriptValue::String(s) => !s.is_empty(),
+            ScriptValue::Bytes(b) => !b.is_empty(),
             ScriptValue::Array(arr) => !arr.is_empty(),
             ScriptValue::Object(obj) => !obj.is_empty(),
             ScriptValue::Element(_) => true,
@@ -83,6 +332,11 @@ impl ScriptValue {
             ScriptValue::NativeFunction(_) => true,
             ScriptValue::Iterator(_) => true,
             ScriptValue::Range(_) => true,
+            ScriptValue::FileEntry(_) => true,
+            ScriptValue::NetConnection(_) => true,
+            ScriptValue::Process(_) => true,
+            ScriptValue::Capability(_) => true,
+            ScriptValue::Promise(p) => p.is_fulfilled(),
             ScriptValue::Error(_) => false,
         }
     }
@@ -146,6 +400,7 @@ impl ScriptValue {
             ScriptValue::Int(i) => format!("{}", i),
             ScriptValue::Float(f) => format!("{:.6}", f),
             ScriptValue::String(s) => s.clone(),
+            ScriptValue::Bytes(b) => format!("<{} bytes>", b.len()),
             ScriptValue::Array(arr) => {
                 let items: Vec<String> = arr.iter().map(|v| v.to_string_value()).collect();
                 format!("[{}]", items.join(", "))
@@ -161,6 +416,23 @@ impl ScriptValue {
             ScriptValue::NativeFunction(f) => format!("<NativeFunction {}>", f.name),
             ScriptValue::Iterator(_) => String::from("<Iterator>"),
             ScriptValue::Range(r) => format!("{}..{}", r.start, r.end),
+            ScriptValue::FileEntry(e) => format!("{}", e),
+            ScriptValue::NetConnection(c) => format!("{}", c),
+            ScriptValue::Process(p) => format!("{}", p),
+            ScriptValue::Capability(cap) => format!("{}", cap),
+            ScriptValue::Promise(p) => {
+                match p.state {
+                    PromiseState::Pending => format!("<Promise #{} pending>", p.task_id),
+                    PromiseState::Fulfilled => {
+                        let val = p.value.as_ref().map(|v| v.to_string_value()).unwrap_or_default();
+                        format!("<Promise #{} fulfilled: {}>", p.task_id, val)
+                    }
+                    PromiseState::Rejected => {
+                        let err = p.error.as_deref().unwrap_or("unknown");
+                        format!("<Promise #{} rejected: {}>", p.task_id, err)
+                    }
+                }
+            }
             ScriptValue::Error(e) => format!("Error: {}", e),
         }
     }
@@ -173,6 +445,7 @@ impl ScriptValue {
             ScriptValue::Int(_) => "int",
             ScriptValue::Float(_) => "float",
             ScriptValue::String(_) => "string",
+            ScriptValue::Bytes(_) => "bytes",
             ScriptValue::Array(_) => "array",
             ScriptValue::Object(_) => "object",
             ScriptValue::Element(_) => "element",
@@ -180,6 +453,11 @@ impl ScriptValue {
             ScriptValue::NativeFunction(_) => "native_function",
             ScriptValue::Iterator(_) => "iterator",
             ScriptValue::Range(_) => "range",
+            ScriptValue::FileEntry(_) => "file_entry",
+            ScriptValue::NetConnection(_) => "net_connection",
+            ScriptValue::Process(_) => "process",
+            ScriptValue::Capability(_) => "capability",
+            ScriptValue::Promise(_) => "promise",
             ScriptValue::Error(_) => "error",
         }
     }
@@ -542,6 +820,90 @@ impl RangeValue {
 }
 
 // ============================================================================
+// Promise Value (Async Support)
+// ============================================================================
+
+/// Promiseの状態
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromiseState {
+    /// 保留中
+    Pending,
+    /// 完了（成功）
+    Fulfilled,
+    /// 拒否（エラー）
+    Rejected,
+}
+
+/// Promise値（非同期操作を表現）
+#[derive(Debug, Clone)]
+pub struct PromiseValue {
+    /// タスクID
+    pub task_id: u64,
+    /// 状態
+    pub state: PromiseState,
+    /// 結果値（完了時）
+    pub value: Option<Box<ScriptValue>>,
+    /// エラーメッセージ（拒否時）
+    pub error: Option<String>,
+}
+
+impl PromiseValue {
+    /// 新しいPendingなPromiseを作成
+    pub fn new(task_id: u64) -> Self {
+        Self {
+            task_id,
+            state: PromiseState::Pending,
+            value: None,
+            error: None,
+        }
+    }
+
+    /// 成功で解決
+    pub fn resolve(mut self, value: ScriptValue) -> Self {
+        self.state = PromiseState::Fulfilled;
+        self.value = Some(Box::new(value));
+        self
+    }
+
+    /// エラーで拒否
+    pub fn reject(mut self, error: String) -> Self {
+        self.state = PromiseState::Rejected;
+        self.error = Some(error);
+        self
+    }
+
+    /// 保留中かどうか
+    pub fn is_pending(&self) -> bool {
+        self.state == PromiseState::Pending
+    }
+
+    /// 完了したかどうか
+    pub fn is_settled(&self) -> bool {
+        self.state != PromiseState::Pending
+    }
+
+    /// 成功したかどうか
+    pub fn is_fulfilled(&self) -> bool {
+        self.state == PromiseState::Fulfilled
+    }
+
+    /// 拒否されたかどうか
+    pub fn is_rejected(&self) -> bool {
+        self.state == PromiseState::Rejected
+    }
+
+    /// 結果を取得（成功時のみ）
+    pub fn get_value(&self) -> Option<&ScriptValue> {
+        self.value.as_ref().map(|b| b.as_ref())
+    }
+
+    /// エラーを取得（拒否時のみ）
+    pub fn get_error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+}
+
+// ============================================================================
 // Script Type
 // ============================================================================
 
@@ -613,10 +975,21 @@ mod tests {
     #[test]
     fn test_iterator() {
         let mut iter = IteratorValue::from_range(0, 3);
-        assert_eq!(iter.next(), Some(ScriptValue::Int(0)));
-        assert_eq!(iter.next(), Some(ScriptValue::Int(1)));
-        assert_eq!(iter.next(), Some(ScriptValue::Int(2)));
-        assert_eq!(iter.next(), None);
+        
+        // ScriptValueはPartialEqを実装していないので、パターンマッチで確認
+        match iter.next() {
+            Some(ScriptValue::Int(0)) => {}
+            _ => panic!("Expected Int(0)"),
+        }
+        match iter.next() {
+            Some(ScriptValue::Int(1)) => {}
+            _ => panic!("Expected Int(1)"),
+        }
+        match iter.next() {
+            Some(ScriptValue::Int(2)) => {}
+            _ => panic!("Expected Int(2)"),
+        }
+        assert!(iter.next().is_none());
     }
 
     #[test]

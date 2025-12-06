@@ -38,6 +38,7 @@ pub mod vm;
 pub mod value;
 pub mod dom_binding;
 pub mod runtime;
+pub mod shell_bridge;
 
 // Re-exports
 pub use lexer::{Lexer, Token, TokenKind};
@@ -47,6 +48,7 @@ pub use vm::{VirtualMachine, Instruction, ConstantPool};
 pub use value::{ScriptValue, ScriptType};
 pub use dom_binding::{DomBinding, DocumentNode};
 pub use runtime::ScriptRuntime;
+pub use shell_bridge::ShellRuntime;
 
 use alloc::string::String;
 use alloc::format;
