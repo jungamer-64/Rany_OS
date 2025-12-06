@@ -49,6 +49,17 @@ gimli = { version = "0.32", default-features = false, features = ["read-core"] }
 # no_std向けHashMap (BTreeMapの代替)
 hashbrown = "0.16"
 
+# Ed25519署名検証用 (no_std対応)
+# alloc: Vec等のalloc型サポート
+ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+
+# curve25519-dalekの設定（ed25519-dalekの依存関係）
+# simd機能を無効化してno_std環境での互換性を確保
+curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc"] }
+
+# SHA-256ハッシュ計算用 (no_std対応)
+sha2 = { version = "0.10", default-features = false }
+
 # ログフレームワーク（no_std互換）
 log = "0.4"
 
@@ -61,6 +72,11 @@ panic = "abort"
 # デバッグシンボルを保持
 opt-level = 0
 debug = true
+
+# 依存関係（dependencies）のビルド設定を上書き
+[profile.dev.package."*"]
+opt-level = 3
+debug = false  # デバッグ情報を減らすことでLLVMの負担を下げる
 
 [profile.release]
 panic = "abort"
