@@ -10,12 +10,65 @@
 //! - PS/2マウス入力 (標準3バイトパケット)
 //! - マウスイベントキュー
 //! - 割り込みコンテキストでの安全な処理
+//!
+//! ## エラーハンドリング
+//! 初期化処理は`Result<(), MouseInitError>`を返し、
+//! エラーの種類を明確に分類します。
 
-#![allow(dead_code)]
+#![allow(dead_code)]  // API全体を提供するため、未使用警告を抑制
 
 use alloc::collections::VecDeque;
+use core::fmt;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
+
+// ============================================================================
+// Error Types
+// ============================================================================
+
+/// マウス初期化エラー
+///
+/// 初期化処理中に発生しうるエラーを分類。
+/// 各エラーにはリカバリーのヒントを含む。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseInitError {
+    /// SET_DEFAULTS (0xF6) コマンドが失敗
+    ///
+    /// 考えられる原因:
+    /// - マウスが物理的に接続されていない
+    /// - PS/2コントローラが無効化されている
+    /// - マウスが応答しない（故障）
+    SetDefaultsFailed,
+
+    /// ENABLE_DATA (0xF4) コマンドが失敗
+    ///
+    /// 考えられる原因:
+    /// - SET_DEFAULTS後の状態異常
+    /// - マウスがデータストリーミングを拒否
+    EnableDataFailed,
+
+    /// タイムアウト
+    ///
+    /// 指定された回数内にマウスからの応答がない。
+    /// 最大待機回数: 100,000回
+    Timeout,
+}
+
+impl fmt::Display for MouseInitError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SetDefaultsFailed => {
+                write!(f, "Mouse SET_DEFAULTS (0xF6) command failed - check physical connection")
+            }
+            Self::EnableDataFailed => {
+                write!(f, "Mouse ENABLE_DATA (0xF4) command failed - device may be in invalid state")
+            }
+            Self::Timeout => {
+                write!(f, "Mouse timeout - no response after 100,000 polling iterations")
+            }
+        }
+    }
+}
 
 // ============================================================================
 // Constants
@@ -133,13 +186,21 @@ impl Mouse {
     }
 
     /// マウスの初期化
-    pub fn init(&mut self) {
+    ///
+    /// # Returns
+    /// - `Ok(())` - 初期化成功
+    /// - `Err(MouseInitError)` - 初期化失敗（原因はエラー型を参照）
+    ///
+    /// # Note
+    /// この関数は割り込みが有効な状態では呼び出さないでください。
+    /// I/Oタイムアウトループが割り込みにより中断される可能性があります。
+    pub fn init(&mut self) -> Result<(), MouseInitError> {
         // 1. Auxiliary Device (マウス) を有効化
         self.write_controller_command(CMD_ENABLE_AUX);
 
         // 2. コントローラ設定バイトを読み取り
         self.write_controller_command(CMD_READ_CONFIG);
-        let mut config = self.read_data_timeout().unwrap_or(0);
+        let mut config = self.read_data_timeout().ok_or(MouseInitError::Timeout)?;
         
         // IRQ12を有効化 (Bit 1)
         // マウスクロックを有効化 (Bit 5をクリア)
@@ -151,19 +212,16 @@ impl Mouse {
         self.write_data(config);
 
         // 3. マウスをデフォルト設定にリセット
-        if self.write_mouse_command(MOUSE_CMD_SET_DEFAULTS).is_err() {
-            crate::log!("[HID] Mouse: SET_DEFAULTS failed\n");
-            return;
-        }
+        self.write_mouse_command(MOUSE_CMD_SET_DEFAULTS)
+            .map_err(|()| MouseInitError::SetDefaultsFailed)?;
 
         // 4. データストリーミング開始
-        if self.write_mouse_command(MOUSE_CMD_ENABLE_DATA).is_err() {
-            crate::log!("[HID] Mouse: ENABLE_DATA failed\n");
-            return;
-        }
+        self.write_mouse_command(MOUSE_CMD_ENABLE_DATA)
+            .map_err(|()| MouseInitError::EnableDataFailed)?;
 
         self.initialized = true;
         crate::log!("[HID] Mouse initialized (IRQ12 enabled)\n");
+        Ok(())
     }
 
     /// PS/2コントローラへのコマンド書き込み
@@ -308,8 +366,20 @@ static MOUSE: Mutex<Mouse> = Mutex::new(Mouse::new());
 // ============================================================================
 
 /// マウスを初期化
-pub fn init() {
-    MOUSE.lock().init();
+///
+/// # Returns
+/// - `Ok(())` - 初期化成功
+/// - `Err(MouseInitError)` - 初期化失敗
+///
+/// # Example
+/// ```ignore
+/// match mouse::init() {
+///     Ok(()) => log!("Mouse ready"),
+///     Err(e) => log!("Mouse init failed: {}", e),
+/// }
+/// ```
+pub fn init() -> Result<(), MouseInitError> {
+    MOUSE.lock().init()
 }
 
 // ============================================================================
