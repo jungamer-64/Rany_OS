@@ -8,7 +8,7 @@
 
 use alloc::string::{String, ToString};
 use crate::graphics::Color;
-use crate::input::MouseEvent;
+use crate::io::hid::MouseEvt;
 
 // ============================================================================
 // Configuration Constants
@@ -265,7 +265,7 @@ impl MouseState {
     }
     
     /// イベントから状態を更新し、新しい位置を返す
-    pub fn update(&mut self, event: &MouseEvent, max_x: i32, max_y: i32) {
+    pub fn update(&mut self, event: &MouseEvt, max_x: i32, max_y: i32) {
         // 位置の更新（境界チェック付き）
         self.x = (self.x + event.dx).clamp(0, max_x - 1);
         self.y = (self.y + event.dy).clamp(0, max_y - 1);
