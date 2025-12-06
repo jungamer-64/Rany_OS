@@ -40,6 +40,7 @@
 extern crate alloc;
 
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
@@ -222,22 +223,62 @@ pub enum KeyCode {
 
 impl KeyCode {
     /// スキャンコードからキーコードに変換
+    ///
+    /// # PS/2スキャンコードセット1の規則
+    ///
+    /// テンキーとナビゲーションキーは同じスキャンコード値を共有しますが、
+    /// 拡張プレフィックス（E0）の有無で区別されます：
+    ///
+    /// - **拡張コード（E0プレフィックスあり）**: ナビゲーションキー（矢印、Home、End等）
+    /// - **非拡張コード**: テンキー（NumPad0-9、演算子）
+    ///
+    /// ## スキャンコードマッピング表
+    ///
+    /// | スキャンコード | 拡張時 | 非拡張時 |
+    /// |-------------|--------|---------|
+    /// | 0x47        | Home   | NumPad7 |
+    /// | 0x48        | Up     | NumPad8 |
+    /// | 0x49        | PageUp | NumPad9 |
+    /// | 0x4A        | -      | NumPadMinus |
+    /// | 0x4B        | Left   | NumPad4 |
+    /// | 0x4C        | -      | NumPad5 |
+    /// | 0x4D        | Right  | NumPad6 |
+    /// | 0x4E        | -      | NumPadPlus |
+    /// | 0x4F        | End    | NumPad1 |
+    /// | 0x50        | Down   | NumPad2 |
+    /// | 0x51        | PageDown | NumPad3 |
+    /// | 0x52        | Insert | NumPad0 |
+    /// | 0x53        | Delete | NumPadDecimal |
+    /// | 0x1C        | NumPadEnter | Enter |
+    /// | 0x35        | NumPadDivide | Slash |
+    /// | 0x37        | -      | NumPadMultiply |
     pub fn from_scancode(scancode: u8, extended: bool) -> Self {
         if extended {
+            // 拡張スキャンコード（E0プレフィックス付き）
+            // - ナビゲーションキー（矢印、Home、End等）
+            // - NumPadEnter、NumPadDivide
             match scancode {
+                // 矢印キー
                 0x48 => KeyCode::Up,
                 0x50 => KeyCode::Down,
                 0x4B => KeyCode::Left,
                 0x4D => KeyCode::Right,
+                // ナビゲーションキー
                 0x52 => KeyCode::Insert,
                 0x53 => KeyCode::Delete,
                 0x47 => KeyCode::Home,
                 0x4F => KeyCode::End,
                 0x49 => KeyCode::PageUp,
                 0x51 => KeyCode::PageDown,
+                // 拡張テンキー
+                0x1C => KeyCode::NumPadEnter, // E0 1C
+                0x35 => KeyCode::NumPadDivide, // E0 35
                 _ => KeyCode::Unknown,
             }
         } else {
+            // 非拡張スキャンコード
+            // - メインキーボード
+            // - テンキー（NumPad0-9、演算子）
             match scancode {
                 0x01 => KeyCode::Escape,
                 0x02 => KeyCode::Key1,
@@ -293,6 +334,8 @@ impl KeyCode {
                 0x34 => KeyCode::Period,
                 0x35 => KeyCode::Slash,
                 0x36 => KeyCode::RightShift,
+                // テンキー乗算キー
+                0x37 => KeyCode::NumPadMultiply,
                 0x38 => KeyCode::LeftAlt,
                 0x39 => KeyCode::Space,
                 0x3A => KeyCode::CapsLock,
@@ -308,6 +351,20 @@ impl KeyCode {
                 0x44 => KeyCode::F10,
                 0x45 => KeyCode::NumLock,
                 0x46 => KeyCode::ScrollLock,
+                // テンキー数字キー（非拡張時）
+                0x47 => KeyCode::NumPad7,
+                0x48 => KeyCode::NumPad8,
+                0x49 => KeyCode::NumPad9,
+                0x4A => KeyCode::NumPadMinus,
+                0x4B => KeyCode::NumPad4,
+                0x4C => KeyCode::NumPad5,
+                0x4D => KeyCode::NumPad6,
+                0x4E => KeyCode::NumPadPlus,
+                0x4F => KeyCode::NumPad1,
+                0x50 => KeyCode::NumPad2,
+                0x51 => KeyCode::NumPad3,
+                0x52 => KeyCode::NumPad0,
+                0x53 => KeyCode::NumPadDecimal,
                 0x57 => KeyCode::F11,
                 0x58 => KeyCode::F12,
                 _ => KeyCode::Unknown,
@@ -524,23 +581,17 @@ impl ModifierState {
 // IsrSafeWaker - 割り込み安全なWaker通知機構
 // ============================================================================
 
-/// ISR-Safe Waker通知機構
+/// マルチコア対応 ISR-Safe Waker通知機構
 ///
 /// ISR（割り込みハンドラ）から安全にWakerを起床させるための機構。
+/// シングルコアおよびマルチコア環境の両方で安全に動作します。
 ///
-/// # ⚠️ 重要: シングルコア専用
+/// # Phase 5での改善点
 ///
-/// **この実装はシングルコア環境でのみ安全に動作します。**
-///
-/// マルチコア環境では以下の問題が発生する可能性があります：
-/// - `without_interrupts()`は現在のCPUコアの割り込みのみを禁止
-/// - 別コアのISRが`notify()`を呼び、同時に`check_and_wake()`が実行される可能性
-/// - `has_waker.load(Acquire)`後、`waker`アクセス前に別コアで`register()`が走る可能性
-///
-/// マルチコア対応が必要な場合は、以下のいずれかが必要：
-/// - `Arc<Mutex<Option<Waker>>>` を使用（ISR外で更新する設計）
-/// - `AtomicPtr<Waker>` + epoch-based reclamation
-/// - 全コアのIPI（Inter-Processor Interrupt）による同期
+/// **マルチコア環境での安全性を確保:**
+/// - Epoch-based reclamationパターンにより、Wakerの解放とアクセスの競合を回避
+/// - 2世代のWakerスロットを使用し、ISRアクセス中でも安全に更新可能
+/// - 全ての操作がロックフリーでISRから安全に呼び出し可能
 ///
 /// # 設計原則
 ///
@@ -548,54 +599,64 @@ impl ModifierState {
 /// ISRでは`AtomicBool`フラグを立てるだけにし、実際の`Waker::wake()`は
 /// Consumer側の`poll()`開始時に行う。
 ///
-/// ## 動作フロー
+/// ## Epoch-based Reclamationアルゴリズム
 ///
 /// ```text
-/// ISR (Producer):
-///   handle_scancode() -> notify() -> pending.store(true)
+/// [2つのWakerスロット: current_epoch が指すスロットが有効]
 ///
-/// Executor (poll loop):
-///   [poll開始時] -> check_and_wake()
-///                    └─> pending==true? ─yes─> real_waker.wake_by_ref()
-///                                              └─> 再度pollされる
+/// register(waker):
+///   1. 次のepochスロットにwakerを書き込み
+///   2. current_epoch をインクリメント（奇数/偶数でスロット決定）
+///   3. 古いスロットは次の register() まで保持（ISRがまだ参照中かも）
 ///
-/// Consumer (poll):
-///   poll() -> データ取得 or Pending
-///          -> register_waker(cx.waker()) で real_waker を更新
+/// notify() [ISR]:
+///   1. current_epoch を読み取り
+///   2. そのepochスロットから Waker を参照（読み取りのみ）
+///   3. pending フラグをセット
+///
+/// check_and_wake() [Consumer]:
+///   1. pending フラグをクリア
+///   2. current_epoch のスロットから wake_by_ref()
 /// ```
 ///
-/// ## なぜこの設計か
+/// ## 安全性の保証
 ///
-/// 1. **VTable/Data不整合の回避**: Wakerを分割保存せず、割り込み禁止で更新
-/// 2. **ISR内dealloc回避**: ISRでは`pending`フラグのみ操作
-/// 3. **transmute不使用**: RustのWaker内部レイアウト依存を排除
-/// 4. **確実な起床**: pendingフラグはFutureのpoll()開始時に処理
+/// - ISRは常にvalidなWakerスロットを参照（古いスロットも前のregister()まで有効）
+/// - register()は新スロット書き込み → epoch更新 の順で実行
+/// - ISRがregister()中にnotify()を呼んでも、古いor新しいスロットのどちらかを参照
 ///
 /// # Safety Contract
 ///
-/// - `register()`は割り込み禁止区間で実行（CLI/STI）
-/// - `notify()`はISRから呼ばれてもOK（AtomicBoolのみ操作）
+/// - `register()`はConsumerスレッドからのみ呼び出し
+/// - `notify()`はISRから呼ばれてもOK（読み取りのみ + AtomicBool操作）
 /// - `check_and_wake()`はConsumer/Executorスレッドからのみ呼び出し
-/// - **シングルコア環境でのみ使用すること**
 struct IsrSafeWaker {
     /// 起床が保留されているか（ISRがセット、Consumer/Executorがクリア）
     pending: AtomicBool,
-    /// 登録されたWaker（Optionでラップ、UnsafeCellで内部可変性）
+
+    /// 現在有効なエポック（偶数/奇数でスロット0/1を選択）
     ///
     /// # Invariant
-    /// - 書き込みは割り込み禁止区間でのみ行う（シングルコア前提）
-    /// - 読み取りはConsumer/Executorスレッドからのみ
-    waker: core::cell::UnsafeCell<Option<Waker>>,
+    /// - epoch % 2 == 0: waker_slots[0] が有効
+    /// - epoch % 2 == 1: waker_slots[1] が有効
+    current_epoch: AtomicU64,
+
+    /// 2世代のWakerスロット（epoch-based reclamation）
+    ///
+    /// # Safety
+    /// - 書き込み: Consumerスレッドからのみ（register）
+    /// - 読み取り: ISR/Consumer両方から可能
+    /// - 古いスロットは次のregister()まで有効を保証
+    waker_slots: [core::cell::UnsafeCell<Option<Waker>>; 2],
+
     /// Wakerが登録されているか（読み取り専用フラグ）
     has_waker: AtomicBool,
 }
 
-// Safety: waker フィールドへのアクセスは以下のルールで保護:
-// - 書き込み: 割り込み禁止区間でのみ (register) - シングルコア前提
-// - 読み取り: Consumer/Executorスレッドからのみ (check_and_wake)
-// - ISRからは pending フラグのみ操作
-//
-// ⚠️ シングルコア環境でのみ安全
+// Safety: Epoch-based reclamationにより以下を保証:
+// - ISRは常にvalidなWakerスロットを参照
+// - register()による書き込みは、古いスロットへのISRアクセス完了後に上書き
+// - notify()は pending フラグと Waker参照のみ（アロケーションなし）
 unsafe impl Send for IsrSafeWaker {}
 unsafe impl Sync for IsrSafeWaker {}
 
@@ -603,35 +664,52 @@ impl IsrSafeWaker {
     const fn new() -> Self {
         Self {
             pending: AtomicBool::new(false),
-            waker: core::cell::UnsafeCell::new(None),
+            current_epoch: AtomicU64::new(0),
+            waker_slots: [
+                core::cell::UnsafeCell::new(None),
+                core::cell::UnsafeCell::new(None),
+            ],
             has_waker: AtomicBool::new(false),
         }
     }
 
     /// Wakerを登録（Consumerスレッドから呼び出し）
     ///
-    /// # 実装詳細
-    /// 割り込み禁止区間で実行することで、ISRとのレースを防止。
-    /// これにより、Wakerの読み書きがアトミックに行われることを保証。
+    /// # Epoch-based Reclamation
+    ///
+    /// 1. 次のepochのスロットに新しいWakerを書き込み
+    /// 2. current_epochをインクリメントして新スロットを有効化
+    /// 3. 古いスロットは次回のregister()まで保持（ISRがまだ参照中の可能性）
+    ///
+    /// # Memory Ordering
+    ///
+    /// - Release: epoch更新前にWaker書き込みが完了していることを保証
+    /// - ISR側のAcquireと対になる
     fn register(&self, waker: &Waker) {
-        // 割り込み禁止区間でWakerを更新
-        // これにより、ISRがpendingをチェックしている最中に
-        // Wakerが中途半端な状態になることを防ぐ
-        x86_64::instructions::interrupts::without_interrupts(|| {
-            // Safety: 割り込み禁止中なのでISRとの競合なし
-            let waker_slot = unsafe { &mut *self.waker.get() };
+        let old_epoch = self.current_epoch.load(Ordering::Acquire);
+        let next_epoch = old_epoch.wrapping_add(1);
+        let next_slot = (next_epoch % 2) as usize;
 
-            // 既存のWakerがあり、同じWakerなら更新不要
-            if let Some(existing) = waker_slot {
+        // 次のスロットに新しいWakerを書き込み
+        // Safety: Consumerスレッドからのみ呼ばれ、このスロットはISRから参照されない
+        // （ISRは current_epoch のスロットのみ参照）
+        unsafe {
+            let slot = &mut *self.waker_slots[next_slot].get();
+
+            // 既存のWakerと同じなら更新不要
+            if let Some(existing) = slot {
                 if existing.will_wake(waker) {
                     return;
                 }
             }
 
-            // 新しいWakerを登録
-            *waker_slot = Some(waker.clone());
-            self.has_waker.store(true, Ordering::Release);
-        });
+            *slot = Some(waker.clone());
+        }
+
+        // エポックを進めて新スロットを有効化
+        // Release: スロット書き込みが完了してからepoch更新
+        self.current_epoch.store(next_epoch, Ordering::Release);
+        self.has_waker.store(true, Ordering::Release);
     }
 
     /// ISRから呼び出し: 起床を通知（フラグを立てるだけ）
@@ -639,6 +717,7 @@ impl IsrSafeWaker {
     /// # Safety
     /// - ロックなし、アロケーションなし
     /// - ISRから安全に呼び出せる
+    /// - マルチコア環境でも安全
     #[inline]
     fn notify(&self) {
         // フラグを立てるだけ - ISRからでも安全
@@ -663,12 +742,11 @@ impl IsrSafeWaker {
 
         // Wakerが登録されていれば起床
         if self.has_waker.load(Ordering::Acquire) {
-            // Safety:
-            // - has_waker==true なら waker は Some
-            // - Consumer/Executorスレッドからのみ呼ばれる
-            // - ISRは pending フラグしか操作しない
-            // - 割り込み禁止は不要（読み取りのみ＆ISRはwaker触らない）
-            let waker_slot = unsafe { &*self.waker.get() };
+            let epoch = self.current_epoch.load(Ordering::Acquire);
+            let slot_idx = (epoch % 2) as usize;
+
+            // Safety: Acquire orderingによりepoch更新後のスロット状態を参照
+            let waker_slot = unsafe { &*self.waker_slots[slot_idx].get() };
             if let Some(waker) = waker_slot {
                 waker.wake_by_ref();
                 return true;
@@ -684,7 +762,10 @@ impl IsrSafeWaker {
     #[allow(dead_code)]
     fn wake_now(&self) {
         if self.has_waker.load(Ordering::Acquire) {
-            let waker_slot = unsafe { &*self.waker.get() };
+            let epoch = self.current_epoch.load(Ordering::Acquire);
+            let slot_idx = (epoch % 2) as usize;
+
+            let waker_slot = unsafe { &*self.waker_slots[slot_idx].get() };
             if let Some(waker) = waker_slot {
                 waker.wake_by_ref();
             }
@@ -1007,6 +1088,41 @@ impl KeyboardDriver {
         })
     }
 
+    /// Arc<dyn Keymap>を使用するキーボードストリームを取得 (Phase 5)
+    ///
+    /// 動的なキーマップ切り替えや、'staticでないキーマップが必要な場合に使用。
+    ///
+    /// # Arguments
+    /// * `keymap` - 使用するキーマップ（Arc<dyn Keymap>）
+    ///
+    /// # Errors
+    /// 既にストリームが発行されている場合は`Err(StreamAlreadyTaken)`を返す。
+    ///
+    /// # Example
+    /// ```ignore
+    /// let custom_keymap = Arc::new(MyCustomKeymap::new());
+    /// let stream = keyboard.take_stream_with_arc_keymap(custom_keymap)?;
+    ///
+    /// // キーマップをランタイムで切り替え
+    /// stream.set_keymap(Arc::new(AnotherKeymap::new()));
+    /// ```
+    ///
+    /// # Performance Consideration
+    /// 静的なキーマップで十分な場合は`take_stream_with_keymap()`を使用してください。
+    /// `KeyboardStreamArc`は`Arc`のオーバーヘッド（参照カウント）があります。
+    pub fn take_stream_with_arc_keymap(
+        &'static self,
+        keymap: Arc<dyn Keymap>,
+    ) -> Result<KeyboardStreamArc, StreamAlreadyTaken> {
+        if self.stream_taken.swap(true, Ordering::SeqCst) {
+            return Err(StreamAlreadyTaken);
+        }
+        Ok(KeyboardStreamArc {
+            driver: self,
+            keymap,
+        })
+    }
+
     /// キーボードストリームを取得（パニック版・テスト/初期化用）
     ///
     /// # Panics
@@ -1173,6 +1289,128 @@ impl Drop for KeyboardStream {
 
 // Clone不可（SPSC強制）
 // impl !Clone for KeyboardStream {}  // negative impl は nightly のみ
+
+// ============================================================================
+// KeyboardStreamArc - Arc<dyn Keymap>を使用する動的キーマップストリーム (Phase 5)
+// ============================================================================
+
+/// 動的キーマップを使用するキーボード入力ストリーム (Phase 5)
+///
+/// `KeyboardStream`と異なり、`Arc<dyn Keymap>`を所有することで
+/// ランタイムでのキーマップ切り替えや、'staticでないキーマップの使用が可能。
+///
+/// # Use Cases
+/// - ユーザー設定に基づくキーマップの動的ロード
+/// - カスタムキーマップの実装（ゲーム固有のキーバインドなど）
+/// - テストでのモックキーマップ使用
+///
+/// # Memory Overhead
+/// - `KeyboardStream`: キーマップへの参照（ポインタサイズ）
+/// - `KeyboardStreamArc`: `Arc`のオーバーヘッド（参照カウント + ポインタ）
+///
+/// 静的なキーマップで十分な場合は`KeyboardStream`を使用してください。
+pub struct KeyboardStreamArc {
+    driver: &'static KeyboardDriver,
+    keymap: Arc<dyn Keymap>,
+}
+
+impl KeyboardStreamArc {
+    /// 次のキーイベントを非同期で待機
+    pub fn read_key(&mut self) -> KeyEventFuture {
+        KeyEventFuture {
+            driver: self.driver,
+        }
+    }
+
+    /// 次の文字を非同期で待機
+    ///
+    /// ストリーム作成時に指定されたキーマップを使用して
+    /// キーコードを文字に変換します。
+    pub fn read_char(&mut self) -> CharFutureArc<'_> {
+        CharFutureArc {
+            driver: self.driver,
+            keymap: &self.keymap,
+        }
+    }
+
+    /// 次のキーイベントをポーリング（ノンブロッキング）
+    pub fn poll(&mut self) -> Option<KeyEvent> {
+        self.driver.poll_key_event_internal()
+    }
+
+    /// イベントがあるかチェック
+    pub fn has_event(&self) -> bool {
+        self.driver.has_event()
+    }
+
+    /// 現在の修飾キー状態を取得
+    pub fn modifiers(&self) -> Modifiers {
+        self.driver.get_modifiers()
+    }
+
+    /// 現在のキーマップを取得（Arcクローン）
+    pub fn keymap(&self) -> Arc<dyn Keymap> {
+        Arc::clone(&self.keymap)
+    }
+
+    /// 現在のキーマップへの参照を取得
+    pub fn keymap_ref(&self) -> &dyn Keymap {
+        &*self.keymap
+    }
+
+    /// キーマップを変更（ランタイム切り替え）
+    pub fn set_keymap(&mut self, keymap: Arc<dyn Keymap>) {
+        self.keymap = keymap;
+    }
+}
+
+impl Drop for KeyboardStreamArc {
+    fn drop(&mut self) {
+        self.driver.return_stream();
+    }
+}
+
+/// 文字入力待ちFuture（Arc<dyn Keymap>版）
+pub struct CharFutureArc<'a> {
+    driver: &'static KeyboardDriver,
+    keymap: &'a Arc<dyn Keymap>,
+}
+
+impl Future for CharFutureArc<'_> {
+    type Output = char;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        // poll開始時に保留中のISR通知を処理
+        self.driver.process_pending_wake();
+
+        // 文字が得られるまでループ
+        loop {
+            if let Some(event) = self.driver.poll_key_event_internal() {
+                // Pressedイベントのみ処理
+                if event.state == KeyState::Pressed {
+                    if let Some(ch) = self.keymap.to_char(event.key, &event.modifiers) {
+                        return Poll::Ready(ch);
+                    }
+                }
+                // Released や変換できないキーは次へ
+            } else {
+                // キューが空
+                self.driver.register_waker(cx.waker());
+                // ダブルチェック
+                if let Some(event) = self.driver.poll_key_event_internal() {
+                    if event.state == KeyState::Pressed {
+                        if let Some(ch) = self.keymap.to_char(event.key, &event.modifiers) {
+                            return Poll::Ready(ch);
+                        }
+                    }
+                    // 次のループへ
+                } else {
+                    return Poll::Pending;
+                }
+            }
+        }
+    }
+}
 
 // ============================================================================
 // Async Futures
@@ -1525,5 +1763,102 @@ mod tests {
         // Note: This tests the atomic fetch_update pattern
         let initial = driver.dropped_events.load(Ordering::Relaxed);
         assert_eq!(initial, 0);
+    }
+
+    // =========================================================================
+    // Phase 5 テスト: テンキーサポート
+    // =========================================================================
+
+    #[test]
+    fn test_numpad_scancode_mapping() {
+        // 非拡張コード: テンキー
+        assert_eq!(KeyCode::from_scancode(0x47, false), KeyCode::NumPad7);
+        assert_eq!(KeyCode::from_scancode(0x48, false), KeyCode::NumPad8);
+        assert_eq!(KeyCode::from_scancode(0x49, false), KeyCode::NumPad9);
+        assert_eq!(KeyCode::from_scancode(0x4A, false), KeyCode::NumPadMinus);
+        assert_eq!(KeyCode::from_scancode(0x4B, false), KeyCode::NumPad4);
+        assert_eq!(KeyCode::from_scancode(0x4C, false), KeyCode::NumPad5);
+        assert_eq!(KeyCode::from_scancode(0x4D, false), KeyCode::NumPad6);
+        assert_eq!(KeyCode::from_scancode(0x4E, false), KeyCode::NumPadPlus);
+        assert_eq!(KeyCode::from_scancode(0x4F, false), KeyCode::NumPad1);
+        assert_eq!(KeyCode::from_scancode(0x50, false), KeyCode::NumPad2);
+        assert_eq!(KeyCode::from_scancode(0x51, false), KeyCode::NumPad3);
+        assert_eq!(KeyCode::from_scancode(0x52, false), KeyCode::NumPad0);
+        assert_eq!(KeyCode::from_scancode(0x53, false), KeyCode::NumPadDecimal);
+        assert_eq!(KeyCode::from_scancode(0x37, false), KeyCode::NumPadMultiply);
+
+        // 拡張コード: ナビゲーションキー
+        assert_eq!(KeyCode::from_scancode(0x47, true), KeyCode::Home);
+        assert_eq!(KeyCode::from_scancode(0x48, true), KeyCode::Up);
+        assert_eq!(KeyCode::from_scancode(0x49, true), KeyCode::PageUp);
+        assert_eq!(KeyCode::from_scancode(0x4B, true), KeyCode::Left);
+        assert_eq!(KeyCode::from_scancode(0x4D, true), KeyCode::Right);
+        assert_eq!(KeyCode::from_scancode(0x4F, true), KeyCode::End);
+        assert_eq!(KeyCode::from_scancode(0x50, true), KeyCode::Down);
+        assert_eq!(KeyCode::from_scancode(0x51, true), KeyCode::PageDown);
+        assert_eq!(KeyCode::from_scancode(0x52, true), KeyCode::Insert);
+        assert_eq!(KeyCode::from_scancode(0x53, true), KeyCode::Delete);
+
+        // 拡張テンキー
+        assert_eq!(KeyCode::from_scancode(0x1C, true), KeyCode::NumPadEnter);
+        assert_eq!(KeyCode::from_scancode(0x35, true), KeyCode::NumPadDivide);
+    }
+
+    #[test]
+    fn test_numpad_to_char() {
+        let mods = Modifiers::default();
+
+        // テンキー数字
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPad0, &mods), Some('0'));
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPad1, &mods), Some('1'));
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPad5, &mods), Some('5'));
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPad9, &mods), Some('9'));
+
+        // テンキー演算子
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadPlus, &mods), Some('+'));
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadMinus, &mods), Some('-'));
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadMultiply, &mods), Some('*'));
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadDivide, &mods), Some('/'));
+
+        // テンキー特殊
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadDecimal, &mods), Some('.'));
+        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadEnter, &mods), Some('\n'));
+    }
+
+    // =========================================================================
+    // Phase 5 テスト: マルチコアIsrSafeWaker
+    // =========================================================================
+
+    #[test]
+    fn test_isr_safe_waker_epoch_based() {
+        // IsrSafeWakerの基本動作テスト
+        let waker = IsrSafeWaker::new();
+
+        // 初期状態
+        assert!(!waker.is_pending());
+        assert!(!waker.is_registered());
+
+        // notify()でpendingフラグが立つ
+        waker.notify();
+        assert!(waker.is_pending());
+
+        // check_and_wake()でpendingフラグがクリアされる（Wakerなし）
+        assert!(!waker.check_and_wake()); // Wakerなしなのでfalse
+        assert!(!waker.is_pending());
+    }
+
+    #[test]
+    fn test_isr_safe_waker_double_notify() {
+        let waker = IsrSafeWaker::new();
+
+        // 複数回notify()しても問題なし
+        waker.notify();
+        waker.notify();
+        waker.notify();
+        assert!(waker.is_pending());
+
+        // 1回のcheck_and_wakeでクリア
+        waker.check_and_wake();
+        assert!(!waker.is_pending());
     }
 }

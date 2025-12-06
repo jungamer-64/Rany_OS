@@ -80,10 +80,12 @@ pub use keyboard::{
     // Driver and stream
     KeyboardDriver,
     KeyboardStream,
+    KeyboardStreamArc, // Phase 5: Arc<dyn Keymap>サポート
     StreamAlreadyTaken,
     // Async futures
     KeyEventFuture,
     CharFuture,
+    CharFutureArc, // Phase 5: Arc<dyn Keymap>サポート
     // Type aliases for compatibility with old shell code
     KeyCode as InputKeyCode,
     KeyState as InputKeyState,
