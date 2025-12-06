@@ -21,32 +21,102 @@ use super::KeyCode;
 // Keymap トレイト
 // ============================================================================
 
+// Modifiersをインポート
+use super::keyboard::Modifiers;
+
 /// キーボードレイアウトを表すトレイト
+///
+/// # 責務
+/// - **純粋な文字変換のみ**: キーコード → Unicode文字
+/// - **制御コード（Ctrl+C等）は含まない**: それは端末制御層の責務
 ///
 /// # 実装例
 /// ```ignore
 /// struct JisKeymap;
 ///
 /// impl Keymap for JisKeymap {
-///     fn to_char(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
-///         // JIS配列の変換ロジック
+///     fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
+///         // JIS配列の文字変換ロジック（Ctrl等の処理なし）
 ///     }
 /// }
 /// ```
+///
+/// # 設計理由
+/// `Modifiers`構造体ごと渡すことで、将来的に以下の対応が可能:
+/// - AltGr（欧州圏レイアウトの第3レベル文字）
+/// - NumLockの状態に依存するテンキー入力
+///
+/// # Note
+/// Ctrl+文字の制御コード変換は`to_char()`のデフォルト実装で共通処理として提供。
+/// 各キーマップ実装は`to_char_raw()`のみをオーバーライドすればよい。
 pub trait Keymap: Send + Sync {
-    /// キーコードを文字に変換
+    /// キーコードを文字に変換（制御コード処理なし）
     ///
-    /// # Arguments
-    /// * `key` - 変換するキーコード
-    /// * `shift` - Shiftキーが押されているか
-    /// * `caps_lock` - CapsLockが有効か
+    /// キーマップ実装者はこのメソッドのみを実装する。
+    /// Ctrl+文字などの制御コード処理は`to_char()`で共通化されている。
+    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, alt_gr: bool) -> Option<char>;
+
+    /// キーコードを文字に変換（制御コード処理込み）
     ///
-    /// # Returns
-    /// 対応する文字、または変換不可能な場合は`None`
-    fn to_char(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char>;
+    /// # Note
+    /// 制御コード処理はここで共通化されているため、
+    /// キーマップ実装者は`to_char_raw()`のみを実装すればよい。
+    fn to_char(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char> {
+        // Ctrl+文字の制御文字変換（全キーマップ共通）
+        // Ctrl+A = 0x01, Ctrl+B = 0x02, ... Ctrl+Z = 0x1A
+        if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
+            return match key {
+                KeyCode::A => Some('\x01'),
+                KeyCode::B => Some('\x02'),
+                KeyCode::C => Some('\x03'),  // ETX (Ctrl+C)
+                KeyCode::D => Some('\x04'),  // EOT (Ctrl+D)
+                KeyCode::E => Some('\x05'),
+                KeyCode::F => Some('\x06'),
+                KeyCode::G => Some('\x07'),  // BEL
+                KeyCode::H => Some('\x08'),  // BS (Backspace)
+                KeyCode::I => Some('\x09'),  // HT (Tab)
+                KeyCode::J => Some('\x0A'),  // LF
+                KeyCode::K => Some('\x0B'),
+                KeyCode::L => Some('\x0C'),  // FF (Form Feed)
+                KeyCode::M => Some('\x0D'),  // CR
+                KeyCode::N => Some('\x0E'),
+                KeyCode::O => Some('\x0F'),
+                KeyCode::P => Some('\x10'),
+                KeyCode::Q => Some('\x11'),
+                KeyCode::R => Some('\x12'),
+                KeyCode::S => Some('\x13'),
+                KeyCode::T => Some('\x14'),
+                KeyCode::U => Some('\x15'),
+                KeyCode::V => Some('\x16'),
+                KeyCode::W => Some('\x17'),
+                KeyCode::X => Some('\x18'),
+                KeyCode::Y => Some('\x19'),
+                KeyCode::Z => Some('\x1A'),  // SUB (Ctrl+Z)
+                KeyCode::LeftBracket => Some('\x1B'),  // ESC
+                KeyCode::Backslash => Some('\x1C'),
+                KeyCode::RightBracket => Some('\x1D'),
+                _ => None,
+            };
+        }
+
+        // 通常の文字変換はキーマップ実装に委譲
+        self.to_char_raw(key, modifiers.shift, modifiers.caps_lock, modifiers.alt_gr)
+    }
 
     /// レイアウト名を取得
     fn name(&self) -> &'static str;
+
+    /// 簡易変換（後方互換性用）
+    ///
+    /// 新しいコードでは`to_char(key, modifiers)`を使用してください。
+    fn to_char_simple(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
+        let modifiers = Modifiers {
+            shift,
+            caps_lock,
+            ..Default::default()
+        };
+        self.to_char(key, &modifiers)
+    }
 }
 
 // ============================================================================
@@ -64,7 +134,7 @@ impl Keymap for UsQwertyKeymap {
         "US QWERTY"
     }
 
-    fn to_char(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
+    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, _alt_gr: bool) -> Option<char> {
         // 数字キー（Shiftで記号）
         let ch = match key {
             KeyCode::Key1 => return Some(if shift { '!' } else { '1' }),
@@ -154,10 +224,10 @@ impl Keymap for JisKeymap {
         "JIS (Japanese)"
     }
 
-    fn to_char(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
+    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, alt_gr: bool) -> Option<char> {
         // TODO: JIS配列の実装
         // 現時点ではUS配列にフォールバック
-        UsQwertyKeymap.to_char(key, shift, caps_lock)
+        UsQwertyKeymap.to_char_raw(key, shift, caps_lock, alt_gr)
     }
 }
 
@@ -172,10 +242,10 @@ impl Keymap for DvorakKeymap {
         "Dvorak"
     }
 
-    fn to_char(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
+    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, alt_gr: bool) -> Option<char> {
         // TODO: Dvorak配列の実装
         // 現時点ではUS配列にフォールバック
-        UsQwertyKeymap.to_char(key, shift, caps_lock)
+        UsQwertyKeymap.to_char_raw(key, shift, caps_lock, alt_gr)
     }
 }
 
@@ -197,40 +267,48 @@ pub static DEFAULT_KEYMAP: UsQwertyKeymap = UsQwertyKeymap;
 mod tests {
     use super::*;
 
+    fn mods(shift: bool, caps_lock: bool) -> Modifiers {
+        Modifiers { shift, caps_lock, ..Default::default() }
+    }
+
+    fn mods_ctrl() -> Modifiers {
+        Modifiers { ctrl: true, ..Default::default() }
+    }
+
     #[test]
     fn test_us_qwerty_letters() {
         let keymap = UsQwertyKeymap;
 
         // 小文字
-        assert_eq!(keymap.to_char(KeyCode::A, false, false), Some('a'));
-        assert_eq!(keymap.to_char(KeyCode::Z, false, false), Some('z'));
+        assert_eq!(keymap.to_char(KeyCode::A, &mods(false, false)), Some('a'));
+        assert_eq!(keymap.to_char(KeyCode::Z, &mods(false, false)), Some('z'));
 
         // Shift で大文字
-        assert_eq!(keymap.to_char(KeyCode::A, true, false), Some('A'));
+        assert_eq!(keymap.to_char(KeyCode::A, &mods(true, false)), Some('A'));
 
         // CapsLock で大文字
-        assert_eq!(keymap.to_char(KeyCode::A, false, true), Some('A'));
+        assert_eq!(keymap.to_char(KeyCode::A, &mods(false, true)), Some('A'));
 
         // Shift + CapsLock で小文字（XOR）
-        assert_eq!(keymap.to_char(KeyCode::A, true, true), Some('a'));
+        assert_eq!(keymap.to_char(KeyCode::A, &mods(true, true)), Some('a'));
     }
 
     #[test]
     fn test_us_qwerty_numbers() {
         let keymap = UsQwertyKeymap;
 
-        assert_eq!(keymap.to_char(KeyCode::Key1, false, false), Some('1'));
-        assert_eq!(keymap.to_char(KeyCode::Key1, true, false), Some('!'));
-        assert_eq!(keymap.to_char(KeyCode::Key2, true, false), Some('@'));
+        assert_eq!(keymap.to_char(KeyCode::Key1, &mods(false, false)), Some('1'));
+        assert_eq!(keymap.to_char(KeyCode::Key1, &mods(true, false)), Some('!'));
+        assert_eq!(keymap.to_char(KeyCode::Key2, &mods(true, false)), Some('@'));
     }
 
     #[test]
     fn test_us_qwerty_special() {
         let keymap = UsQwertyKeymap;
 
-        assert_eq!(keymap.to_char(KeyCode::Space, false, false), Some(' '));
-        assert_eq!(keymap.to_char(KeyCode::Enter, false, false), Some('\n'));
-        assert_eq!(keymap.to_char(KeyCode::Tab, false, false), Some('\t'));
+        assert_eq!(keymap.to_char(KeyCode::Space, &mods(false, false)), Some(' '));
+        assert_eq!(keymap.to_char(KeyCode::Enter, &mods(false, false)), Some('\n'));
+        assert_eq!(keymap.to_char(KeyCode::Tab, &mods(false, false)), Some('\t'));
     }
 
     #[test]
@@ -238,8 +316,20 @@ mod tests {
         let keymap = UsQwertyKeymap;
 
         // ファンクションキーは文字に変換できない
-        assert_eq!(keymap.to_char(KeyCode::F1, false, false), None);
-        assert_eq!(keymap.to_char(KeyCode::Escape, false, false), None);
-        assert_eq!(keymap.to_char(KeyCode::Up, false, false), None);
+        assert_eq!(keymap.to_char(KeyCode::F1, &mods(false, false)), None);
+        assert_eq!(keymap.to_char(KeyCode::Escape, &mods(false, false)), None);
+        assert_eq!(keymap.to_char(KeyCode::Up, &mods(false, false)), None);
+    }
+
+    #[test]
+    fn test_ctrl_characters() {
+        let keymap = UsQwertyKeymap;
+
+        // Ctrl+C = ETX (0x03)
+        assert_eq!(keymap.to_char(KeyCode::C, &mods_ctrl()), Some('\x03'));
+        // Ctrl+D = EOT (0x04)
+        assert_eq!(keymap.to_char(KeyCode::D, &mods_ctrl()), Some('\x04'));
+        // Ctrl+Z = SUB (0x1A)
+        assert_eq!(keymap.to_char(KeyCode::Z, &mods_ctrl()), Some('\x1A'));
     }
 }

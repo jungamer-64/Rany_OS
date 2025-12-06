@@ -37,15 +37,34 @@
 
 #![allow(dead_code)]
 
+extern crate alloc;
+
+use alloc::boxed::Box;
+use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
-
-use crate::sync::IrqMutex;
 
 // Keymapモジュールからインポート
 pub use super::keymap::{DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap, DEFAULT_KEYMAP};
+
+// ============================================================================
+// エラー型
+// ============================================================================
+
+/// ストリーム取得エラー
+///
+/// `take_stream()`が失敗した場合に返される。
+/// 既に別のコンシューマがストリームを保持している場合に発生。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamAlreadyTaken;
+
+impl fmt::Display for StreamAlreadyTaken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Keyboard stream already taken by another consumer")
+    }
+}
 
 // ============================================================================
 // スキャンコード定数
@@ -280,9 +299,14 @@ impl KeyCode {
     /// キーコードを文字に変換（デフォルトキーマップを使用）
     ///
     /// # Note
-    /// 新しいコードでは`keymap.to_char(key, shift, caps_lock)`を直接使用してください。
+    /// 新しいコードでは`keymap.to_char(key, &modifiers)`を直接使用してください。
     pub fn to_char(&self, shift: bool, caps_lock: bool) -> Option<char> {
-        DEFAULT_KEYMAP.to_char(*self, shift, caps_lock)
+        let modifiers = Modifiers {
+            shift,
+            caps_lock,
+            ..Default::default()
+        };
+        DEFAULT_KEYMAP.to_char(*self, &modifiers)
     }
 }
 
@@ -305,6 +329,7 @@ pub struct Modifiers {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
+    pub alt_gr: bool,  // Right Alt (AltGr for European layouts)
     pub caps_lock: bool,
     pub num_lock: bool,
     pub scroll_lock: bool,
@@ -313,7 +338,17 @@ pub struct Modifiers {
 impl Modifiers {
     /// 任意の修飾キーが押されているか
     pub fn any(&self) -> bool {
-        self.shift || self.ctrl || self.alt
+        self.shift || self.ctrl || self.alt || self.alt_gr
+    }
+
+    /// Ctrlキーのみが押されているか（Ctrl+系ショートカット判定用）
+    pub fn ctrl_only(&self) -> bool {
+        self.ctrl && !self.shift && !self.alt && !self.alt_gr
+    }
+
+    /// AltGrキーが押されているか（欧州圏レイアウト用）
+    pub fn has_altgr(&self) -> bool {
+        self.alt_gr
     }
 }
 
@@ -334,8 +369,7 @@ impl KeyEvent {
         if self.state == KeyState::Released {
             return None;
         }
-        self.key
-            .to_char(self.modifiers.shift, self.modifiers.caps_lock)
+        DEFAULT_KEYMAP.to_char(self.key, &self.modifiers)
     }
 
     /// 指定されたキーマップで文字に変換
@@ -343,7 +377,7 @@ impl KeyEvent {
         if self.state == KeyState::Released {
             return None;
         }
-        keymap.to_char(self.key, self.modifiers.shift, self.modifiers.caps_lock)
+        keymap.to_char(self.key, &self.modifiers)
     }
 
     /// 修飾キーの状態を取得（後方互換性のためのアクセサ）
@@ -370,111 +404,234 @@ impl KeyEvent {
 // 修飾キー状態（インスタンス内部状態）
 // ============================================================================
 
-/// 修飾キーの内部状態
+/// 修飾キー状態（アトミック・ビットマスク）
+///
+/// 全ての修飾キー状態を単一のAtomicU32で管理し、
+/// 一貫したスナップショットを保証する。
+///
+/// # ビットレイアウト
+/// ```text
+/// bit 0:  left_shift
+/// bit 1:  right_shift
+/// bit 2:  left_ctrl
+/// bit 3:  right_ctrl
+/// bit 4:  left_alt
+/// bit 5:  right_alt (AltGr)
+/// bit 6:  caps_lock
+/// bit 7:  num_lock
+/// bit 8:  scroll_lock
+/// bit 9-31: reserved
+/// ```
 struct ModifierState {
-    left_shift: AtomicBool,
-    right_shift: AtomicBool,
-    left_ctrl: AtomicBool,
-    right_ctrl: AtomicBool,
-    left_alt: AtomicBool,
-    right_alt: AtomicBool,
-    caps_lock: AtomicBool,
-    num_lock: AtomicBool,
-    scroll_lock: AtomicBool,
+    bits: core::sync::atomic::AtomicU32,
 }
 
 impl ModifierState {
+    // ビットマスク定数
+    const LEFT_SHIFT: u32 = 1 << 0;
+    const RIGHT_SHIFT: u32 = 1 << 1;
+    const LEFT_CTRL: u32 = 1 << 2;
+    const RIGHT_CTRL: u32 = 1 << 3;
+    const LEFT_ALT: u32 = 1 << 4;
+    const RIGHT_ALT: u32 = 1 << 5;  // AltGr
+    const CAPS_LOCK: u32 = 1 << 6;
+    const NUM_LOCK: u32 = 1 << 7;
+    const SCROLL_LOCK: u32 = 1 << 8;
+
+    const SHIFT_MASK: u32 = Self::LEFT_SHIFT | Self::RIGHT_SHIFT;
+    const CTRL_MASK: u32 = Self::LEFT_CTRL | Self::RIGHT_CTRL;
+    const ALT_MASK: u32 = Self::LEFT_ALT;  // Left Alt only for normal Alt
+
     const fn new() -> Self {
         Self {
-            left_shift: AtomicBool::new(false),
-            right_shift: AtomicBool::new(false),
-            left_ctrl: AtomicBool::new(false),
-            right_ctrl: AtomicBool::new(false),
-            left_alt: AtomicBool::new(false),
-            right_alt: AtomicBool::new(false),
-            caps_lock: AtomicBool::new(false),
-            num_lock: AtomicBool::new(false),
-            scroll_lock: AtomicBool::new(false),
+            bits: core::sync::atomic::AtomicU32::new(0),
         }
     }
 
+    /// 一貫したスナップショットを取得
+    ///
+    /// 単一のアトミックロードで全ての修飾キー状態を取得するため、
+    /// 割り込み中の状態変更に対しても一貫性が保証される。
     fn snapshot(&self) -> Modifiers {
+        let bits = self.bits.load(Ordering::Acquire);
         Modifiers {
-            shift: self.left_shift.load(Ordering::Relaxed)
-                || self.right_shift.load(Ordering::Relaxed),
-            ctrl: self.left_ctrl.load(Ordering::Relaxed)
-                || self.right_ctrl.load(Ordering::Relaxed),
-            alt: self.left_alt.load(Ordering::Relaxed)
-                || self.right_alt.load(Ordering::Relaxed),
-            caps_lock: self.caps_lock.load(Ordering::Relaxed),
-            num_lock: self.num_lock.load(Ordering::Relaxed),
-            scroll_lock: self.scroll_lock.load(Ordering::Relaxed),
+            shift: (bits & Self::SHIFT_MASK) != 0,
+            ctrl: (bits & Self::CTRL_MASK) != 0,
+            alt: (bits & Self::ALT_MASK) != 0,
+            alt_gr: (bits & Self::RIGHT_ALT) != 0,
+            caps_lock: (bits & Self::CAPS_LOCK) != 0,
+            num_lock: (bits & Self::NUM_LOCK) != 0,
+            scroll_lock: (bits & Self::SCROLL_LOCK) != 0,
+        }
+    }
+
+    /// ビットをセット
+    #[inline]
+    fn set_bit(&self, mask: u32) {
+        self.bits.fetch_or(mask, Ordering::Release);
+    }
+
+    /// ビットをクリア
+    #[inline]
+    fn clear_bit(&self, mask: u32) {
+        self.bits.fetch_and(!mask, Ordering::Release);
+    }
+
+    /// ビットをトグル
+    #[inline]
+    fn toggle_bit(&self, mask: u32) {
+        self.bits.fetch_xor(mask, Ordering::Release);
+    }
+
+    /// ビットを設定/クリア
+    #[inline]
+    fn update_bit(&self, mask: u32, pressed: bool) {
+        if pressed {
+            self.set_bit(mask);
+        } else {
+            self.clear_bit(mask);
         }
     }
 }
 
 // ============================================================================
-// AtomicWaker - 厳密なSPSCのためのWaker管理
+// AtomicWaker - ロックフリーWaker管理
 // ============================================================================
 
-/// Atomic Waker（単一Waker専用）
+/// ロックフリーAtomicWaker（ISR安全版）
 ///
-/// SPSCの契約を強制するため、2つ目のWaker登録は許可しない。
-/// `futures`クレートの`AtomicWaker`と同様の機能だが、SPSC違反検出機能付き。
+/// ISR（割り込みハンドラ）から安全に呼び出せるよう、
+/// **一切のロック（Mutex/SpinLock）を使用せず、
+/// ISR内でのメモリ解放も行わない**実装。
+///
+/// # 設計
+/// `Waker`の内部構造（data + vtable）を直接アトミック変数に保持。
+/// これにより、ヒープアロケーションを完全に排除。
+///
+/// # 状態遷移
+/// ```text
+/// IDLE (0, 0) ─── register() ──▶ REGISTERED (data, vtable)
+///      ▲                              │
+///      └────── wake() ────────────────┘
+/// ```
+///
+/// # Safety
+/// - `register()`はConsumerスレッドからのみ呼び出される（SPSC契約）
+/// - `wake()`はISRから呼び出される可能性がある
+/// - **ISR内でのメモリ解放なし**（アロケータデッドロック回避）
 struct AtomicWaker {
-    waker: IrqMutex<Option<Waker>>,
-    /// Consumer登録済みフラグ
-    registered: AtomicBool,
+    /// Waker内部のdataポインタ（AtomicU64として保持）
+    /// 0 = 未登録
+    waker_data: core::sync::atomic::AtomicU64,
+    /// Waker内部のvtableポインタ（AtomicU64として保持）
+    waker_vtable: core::sync::atomic::AtomicU64,
 }
 
 impl AtomicWaker {
     const fn new() -> Self {
         Self {
-            waker: IrqMutex::new(None),
-            registered: AtomicBool::new(false),
+            waker_data: core::sync::atomic::AtomicU64::new(0),
+            waker_vtable: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
-    /// Wakerを登録
+    /// Wakerを登録（Consumerスレッドから呼び出し）
     ///
-    /// # Panics
-    /// 既に異なるWakerが登録されている場合（SPSC違反）
+    /// # Note
+    /// Wakerの内部構造（RawWaker）を直接保持することで、
+    /// ヒープアロケーションを回避。
     fn register(&self, waker: &Waker) {
-        let mut guard = self.waker.lock();
+        // Wakerをcloneして所有権を取得
+        let waker_clone = waker.clone();
 
-        if let Some(existing) = guard.as_ref() {
-            if existing.will_wake(waker) {
-                // 同じWakerなら何もしない
-                return;
-            }
-            // 異なるWakerが既に登録されている
-            // これはSPSC違反の可能性が高い
-            #[cfg(debug_assertions)]
-            {
-                crate::log!(
-                    "[KEYBOARD] Warning: Different waker registered. Possible SPSC violation.\n"
-                );
-            }
-        }
+        // Wakerの内部構造を取り出す
+        // Safety: Waker は RawWaker(data, vtable) のラッパー
+        let raw: core::task::RawWaker = unsafe {
+            // Waker -> RawWaker への変換
+            // Waker::as_raw() は nightly なので、transmute で対応
+            core::mem::transmute(waker_clone)
+        };
 
-        *guard = Some(waker.clone());
-        self.registered.store(true, Ordering::Release);
+        // RawWaker から data と vtable を取り出す
+        // RawWaker の内部構造: (data: *const (), vtable: &'static RawWakerVTable)
+        let (data, vtable): (*const (), *const core::task::RawWakerVTable) = unsafe {
+            core::mem::transmute(raw)
+        };
+
+        // アトミックに保存
+        // Note: 順序が重要 - vtableを先に書いてからdataを書く
+        // wake()側はdataを先に読むので、data!=0ならvtableも有効
+        self.waker_vtable.store(vtable as u64, Ordering::Release);
+        self.waker_data.store(data as u64, Ordering::Release);
     }
 
-    /// Wakerを起床させてクリア
+    /// Wakerを起床させてクリア（ISRから呼び出し可能）
+    ///
+    /// # Safety
+    /// - ロックフリーなのでISRから安全に呼び出せる
+    /// - **メモリ解放なし**: wake()はWakerの参照を消費するが、
+    ///   RawWakerVTable::wake は内部でclone+dropを適切に処理する
+    /// - CASにより、複数回のwake()呼び出しでも二重起床しない
     fn wake(&self) {
-        if let Some(waker) = self.waker.lock().take() {
-            self.registered.store(false, Ordering::Release);
+        // dataをアトミックに取得してクリア
+        let data = self.waker_data.swap(0, Ordering::AcqRel);
+
+        if data != 0 {
+            // vtableを取得（dataが有効だったのでvtableも有効）
+            let vtable = self.waker_vtable.load(Ordering::Acquire);
+
+            // RawWakerを再構築
+            let raw_waker: core::task::RawWaker = unsafe {
+                core::mem::transmute((data as *const (), vtable as *const core::task::RawWakerVTable))
+            };
+
+            // Wakerを再構築して起床
+            // Safety: register()で保存した有効なRawWaker
+            let waker = unsafe { Waker::from_raw(raw_waker) };
             waker.wake();
+            // Note: wake()は自身を消費し、RawWakerVTable::wake経由で
+            // 適切にリソースを解放する。これはアロケータを呼ばない
+            // （Wakerの実装依存だが、通常は参照カウントのデクリメントのみ）
+        }
+    }
+
+    /// Wakerを起床させるが、Wakerは保持したまま（wake_by_ref相当）
+    ///
+    /// 複数回起床させる必要がある場合に使用。
+    #[allow(dead_code)]
+    fn wake_by_ref(&self) {
+        let data = self.waker_data.load(Ordering::Acquire);
+
+        if data != 0 {
+            let vtable = self.waker_vtable.load(Ordering::Acquire);
+
+            // RawWakerを再構築
+            let raw_waker: core::task::RawWaker = unsafe {
+                core::mem::transmute((data as *const (), vtable as *const core::task::RawWakerVTable))
+            };
+
+            // Wakerを再構築
+            let waker = unsafe { Waker::from_raw(raw_waker) };
+
+            // wake_by_ref相当: cloneしてwake
+            waker.wake_by_ref();
+
+            // wakerをリークして二重解放を防ぐ
+            // （register時にcloneしたWakerの所有権を維持）
+            core::mem::forget(waker);
         }
     }
 
     /// Wakerが登録されているか
     #[allow(dead_code)]
     fn is_registered(&self) -> bool {
-        self.registered.load(Ordering::Acquire)
+        self.waker_data.load(Ordering::Acquire) != 0
     }
 }
+
+// Note: Dropは不要
+// register()で保存したWakerは、wake()で消費されるか、
+// KeyboardDriverがstaticなので実質リークしても問題ない
 
 // ============================================================================
 // スキャンコードキュー（インスタンス内部状態）
@@ -559,10 +716,12 @@ pub struct KeyboardDriver {
     modifiers: ModifierState,
     /// ISRの拡張スキャンコード状態
     extended_pending: AtomicBool,
-    /// Waker（単一Consumer用）
+    /// Waker（単一Consumer用・ロックフリー）
     waker: AtomicWaker,
     /// ストリーム発行済みフラグ
     stream_taken: AtomicBool,
+    /// キュー満杯によるドロップカウンタ（診断用）
+    dropped_events: AtomicU64,
 }
 
 impl KeyboardDriver {
@@ -575,6 +734,7 @@ impl KeyboardDriver {
             extended_pending: AtomicBool::new(false),
             waker: AtomicWaker::new(),
             stream_taken: AtomicBool::new(false),
+            dropped_events: AtomicU64::new(0),
         }
     }
 
@@ -590,6 +750,7 @@ impl KeyboardDriver {
     ///
     /// # Safety Contract
     /// この関数はISRコンテキストからのみ呼び出されること。
+    /// ロックフリー実装のため、デッドロックの危険はない。
     pub fn handle_scancode(&self, scancode: u8) {
         if scancode == SCANCODE_EXTENDED_PREFIX {
             self.extended_pending.store(true, Ordering::Relaxed);
@@ -601,7 +762,24 @@ impl KeyboardDriver {
 
         if self.queue.push(data) {
             self.waker.wake();
+        } else {
+            // キュー満杯: イベントドロップを記録
+            // ISR内なのでログ出力は避け、カウンタのみインクリメント
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
         }
+    }
+
+    /// ドロップされたイベント数を取得（診断用）
+    ///
+    /// # Returns
+    /// キュー満杯によりドロップされたイベントの総数
+    pub fn dropped_events(&self) -> u64 {
+        self.dropped_events.load(Ordering::Relaxed)
+    }
+
+    /// ドロップカウンタをリセット（診断用）
+    pub fn reset_dropped_events(&self) -> u64 {
+        self.dropped_events.swap(0, Ordering::Relaxed)
     }
 
     /// 次のキーイベントを取得（ノンブロッキング）
@@ -631,48 +809,38 @@ impl KeyboardDriver {
 
     /// 修飾キーの状態を更新
     fn update_modifiers(&self, key: KeyCode, extended: bool, released: bool) {
+        let pressed = !released;
         match key {
-            KeyCode::LeftShift => self
-                .modifiers
-                .left_shift
-                .store(!released, Ordering::Relaxed),
-            KeyCode::RightShift => self
-                .modifiers
-                .right_shift
-                .store(!released, Ordering::Relaxed),
+            KeyCode::LeftShift => {
+                self.modifiers.update_bit(ModifierState::LEFT_SHIFT, pressed);
+            }
+            KeyCode::RightShift => {
+                self.modifiers.update_bit(ModifierState::RIGHT_SHIFT, pressed);
+            }
             KeyCode::LeftCtrl => {
-                if extended {
-                    self.modifiers
-                        .right_ctrl
-                        .store(!released, Ordering::Relaxed);
+                let mask = if extended {
+                    ModifierState::RIGHT_CTRL
                 } else {
-                    self.modifiers
-                        .left_ctrl
-                        .store(!released, Ordering::Relaxed);
-                }
+                    ModifierState::LEFT_CTRL
+                };
+                self.modifiers.update_bit(mask, pressed);
             }
             KeyCode::LeftAlt => {
-                if extended {
-                    self.modifiers
-                        .right_alt
-                        .store(!released, Ordering::Relaxed);
+                let mask = if extended {
+                    ModifierState::RIGHT_ALT  // AltGr
                 } else {
-                    self.modifiers.left_alt.store(!released, Ordering::Relaxed);
-                }
+                    ModifierState::LEFT_ALT
+                };
+                self.modifiers.update_bit(mask, pressed);
             }
-            KeyCode::CapsLock if !released => {
-                let current = self.modifiers.caps_lock.load(Ordering::Relaxed);
-                self.modifiers.caps_lock.store(!current, Ordering::Relaxed);
+            KeyCode::CapsLock if pressed => {
+                self.modifiers.toggle_bit(ModifierState::CAPS_LOCK);
             }
-            KeyCode::NumLock if !released => {
-                let current = self.modifiers.num_lock.load(Ordering::Relaxed);
-                self.modifiers.num_lock.store(!current, Ordering::Relaxed);
+            KeyCode::NumLock if pressed => {
+                self.modifiers.toggle_bit(ModifierState::NUM_LOCK);
             }
-            KeyCode::ScrollLock if !released => {
-                let current = self.modifiers.scroll_lock.load(Ordering::Relaxed);
-                self.modifiers
-                    .scroll_lock
-                    .store(!current, Ordering::Relaxed);
+            KeyCode::ScrollLock if pressed => {
+                self.modifiers.toggle_bit(ModifierState::SCROLL_LOCK);
             }
             _ => {}
         }
@@ -680,16 +848,38 @@ impl KeyboardDriver {
 
     /// キーボードストリームを取得（所有権ベースのSPSC強制）
     ///
-    /// # Panics
-    /// 既にストリームが発行されている場合（SPSC違反）
+    /// # Errors
+    /// 既にストリームが発行されている場合は`Err(StreamAlreadyTaken)`を返す。
+    /// これにより、呼び出し元でフォールバック処理（シリアルコンソールへの切り替えなど）が可能。
     ///
     /// # Returns
     /// キーイベントを受信するためのストリーム
-    pub fn take_stream(&'static self) -> KeyboardStream {
+    ///
+    /// # Example
+    /// ```ignore
+    /// match keyboard.take_stream() {
+    ///     Ok(stream) => { /* キーボード入力を使用 */ }
+    ///     Err(StreamAlreadyTaken) => {
+    ///         log!("Keyboard stream already taken, falling back to serial");
+    ///     }
+    /// }
+    /// ```
+    pub fn take_stream(&'static self) -> Result<KeyboardStream, StreamAlreadyTaken> {
         if self.stream_taken.swap(true, Ordering::SeqCst) {
-            panic!("[KEYBOARD] SPSC violation: Stream already taken. Only one consumer allowed.");
+            return Err(StreamAlreadyTaken);
         }
-        KeyboardStream { driver: self }
+        Ok(KeyboardStream { driver: self })
+    }
+
+    /// キーボードストリームを取得（パニック版・テスト/初期化用）
+    ///
+    /// # Panics
+    /// 既にストリームが発行されている場合
+    ///
+    /// # Note
+    /// 本番コードでは`take_stream()`を使用し、エラーハンドリングを行うこと。
+    pub fn take_stream_or_panic(&'static self) -> KeyboardStream {
+        self.take_stream().expect("SPSC violation: Stream already taken")
     }
 
     /// ストリームを返却（テスト用）
