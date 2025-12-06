@@ -222,6 +222,26 @@ impl Keymap for UsQwertyKeymap {
             KeyCode::Y => 'y',
             KeyCode::Z => 'z',
 
+            // テンキー
+            // NumLockの状態に関係なく常に数字/記号を返す
+            // NumLockオフ時のナビゲーション機能はKeyCode自体が異なる
+            KeyCode::NumPad0 => return Some('0'),
+            KeyCode::NumPad1 => return Some('1'),
+            KeyCode::NumPad2 => return Some('2'),
+            KeyCode::NumPad3 => return Some('3'),
+            KeyCode::NumPad4 => return Some('4'),
+            KeyCode::NumPad5 => return Some('5'),
+            KeyCode::NumPad6 => return Some('6'),
+            KeyCode::NumPad7 => return Some('7'),
+            KeyCode::NumPad8 => return Some('8'),
+            KeyCode::NumPad9 => return Some('9'),
+            KeyCode::NumPadDecimal => return Some('.'),
+            KeyCode::NumPadEnter => return Some('\n'),
+            KeyCode::NumPadPlus => return Some('+'),
+            KeyCode::NumPadMinus => return Some('-'),
+            KeyCode::NumPadMultiply => return Some('*'),
+            KeyCode::NumPadDivide => return Some('/'),
+
             // その他のキーは文字に変換不可
             _ => return None,
         };
@@ -324,8 +344,23 @@ impl Keymap for JisKeymap {
             KeyCode::Period => Some(if shift { '>' } else { '.' }),
             KeyCode::Slash => Some(if shift { '?' } else { '/' }),
 
-            // テンキーは現在KeyCodeに未定義のためスキップ
-            // TODO: Phase 5でテンキーサポートを追加
+            // テンキー
+            KeyCode::NumPad0 => Some('0'),
+            KeyCode::NumPad1 => Some('1'),
+            KeyCode::NumPad2 => Some('2'),
+            KeyCode::NumPad3 => Some('3'),
+            KeyCode::NumPad4 => Some('4'),
+            KeyCode::NumPad5 => Some('5'),
+            KeyCode::NumPad6 => Some('6'),
+            KeyCode::NumPad7 => Some('7'),
+            KeyCode::NumPad8 => Some('8'),
+            KeyCode::NumPad9 => Some('9'),
+            KeyCode::NumPadDecimal => Some('.'),
+            KeyCode::NumPadEnter => Some('\n'),
+            KeyCode::NumPadPlus => Some('+'),
+            KeyCode::NumPadMinus => Some('-'),
+            KeyCode::NumPadMultiply => Some('*'),
+            KeyCode::NumPadDivide => Some('/'),
 
             _ => None,
         }
@@ -439,8 +474,23 @@ impl Keymap for DvorakKeymap {
             KeyCode::Tab => Some('\t'),
             KeyCode::Backspace => Some('\x08'),
 
-            // テンキーは現在KeyCodeに未定義のためスキップ
-            // TODO: Phase 5でテンキーサポートを追加
+            // テンキー
+            KeyCode::NumPad0 => Some('0'),
+            KeyCode::NumPad1 => Some('1'),
+            KeyCode::NumPad2 => Some('2'),
+            KeyCode::NumPad3 => Some('3'),
+            KeyCode::NumPad4 => Some('4'),
+            KeyCode::NumPad5 => Some('5'),
+            KeyCode::NumPad6 => Some('6'),
+            KeyCode::NumPad7 => Some('7'),
+            KeyCode::NumPad8 => Some('8'),
+            KeyCode::NumPad9 => Some('9'),
+            KeyCode::NumPadDecimal => Some('.'),
+            KeyCode::NumPadEnter => Some('\n'),
+            KeyCode::NumPadPlus => Some('+'),
+            KeyCode::NumPadMinus => Some('-'),
+            KeyCode::NumPadMultiply => Some('*'),
+            KeyCode::NumPadDivide => Some('/'),
 
             _ => None,
         }
@@ -667,5 +717,67 @@ mod tests {
         assert_eq!(DEFAULT_KEYMAP.name(), "US QWERTY");
         assert_eq!(JIS_KEYMAP.name(), "JIS (Japanese)");
         assert_eq!(DVORAK_KEYMAP.name(), "Dvorak");
+    }
+
+    // =========================================================================
+    // テンキーテスト
+    // =========================================================================
+
+    #[test]
+    fn test_numpad_us_qwerty() {
+        let keymap = UsQwertyKeymap;
+
+        // テンキー数字
+        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(false, false)), Some('0'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad1, &mods(false, false)), Some('1'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad2, &mods(false, false)), Some('2'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad3, &mods(false, false)), Some('3'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad4, &mods(false, false)), Some('4'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad5, &mods(false, false)), Some('5'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad6, &mods(false, false)), Some('6'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad7, &mods(false, false)), Some('7'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad8, &mods(false, false)), Some('8'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad9, &mods(false, false)), Some('9'));
+
+        // テンキー演算子
+        assert_eq!(keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)), Some('+'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadMinus, &mods(false, false)), Some('-'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)), Some('*'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)), Some('/'));
+
+        // テンキー特殊
+        assert_eq!(keymap.to_char(KeyCode::NumPadDecimal, &mods(false, false)), Some('.'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)), Some('\n'));
+    }
+
+    #[test]
+    fn test_numpad_jis() {
+        let keymap = JisKeymap;
+
+        // JISキーマップでもテンキーは同じ動作
+        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(false, false)), Some('0'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad5, &mods(false, false)), Some('5'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)), Some('+'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)), Some('\n'));
+    }
+
+    #[test]
+    fn test_numpad_dvorak() {
+        let keymap = DvorakKeymap;
+
+        // Dvorakキーマップでもテンキーは同じ動作
+        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(false, false)), Some('0'));
+        assert_eq!(keymap.to_char(KeyCode::NumPad5, &mods(false, false)), Some('5'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)), Some('*'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)), Some('/'));
+    }
+
+    #[test]
+    fn test_numpad_shift_ignored() {
+        let keymap = UsQwertyKeymap;
+
+        // テンキーはShiftの影響を受けない
+        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(true, false)), Some('0'));
+        assert_eq!(keymap.to_char(KeyCode::NumPadPlus, &mods(true, false)), Some('+'));
     }
 }
