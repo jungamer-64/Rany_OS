@@ -1,6 +1,6 @@
 // ============================================================================
-// src/io/keyboard.rs - Async Keyboard Driver
-// 設計書 フェーズ2: キーボード入力の非同期処理化
+// src/io/hid/keyboard.rs - Async PS/2 Keyboard Driver
+// フェーズ3: インスタンス化、SPSC強制、Keymap分離
 // ============================================================================
 //!
 //! # 非同期キーボードドライバ
@@ -8,21 +8,75 @@
 //! PS/2キーボードからの入力を非同期Futureとして提供。
 //! Interrupt-Wakerブリッジと連携して、割り込み駆動の入力処理を実現。
 //!
+//! ## アーキテクチャ
+//!
+//! ```text
+//! ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+//! │   PS/2 IRQ 1    │────▶│   SPSC Queue    │────▶│  KeyboardStream │
+//! │  (Producer)     │     │  (Lock-Free)    │     │   (Consumer)    │
+//! └─────────────────┘     └─────────────────┘     └─────────────────┘
+//!         │                                               │
+//!         └───────── AtomicWaker (Single) ◀───────────────┘
+//! ```
+//!
 //! ## 設計原則
-//! - ロックフリーなキューによるスキャンコード管理
-//! - async/awaitによるブロッキングなしの入力待ち
-//! - 標準的なUS配列のキーマップ
+//! - **厳密なSPSC**: Single Producer (ISR) - Single Consumer (KeyboardStream holder)
+//! - **所有権ベースの保証**: KeyboardStreamの所有権でConsumer単一性を型レベルで強制
+//! - **IRQ安全**: IrqMutexによるデッドロック防止
+//! - **インスタンス化**: 複数キーボードデバイスのサポート基盤
+//! - **Keymap分離**: 多言語対応のための抽象化
+//!
+//! ## SPSC契約
+//!
+//! このドライバは**厳密なSPSC (Single Producer Single Consumer)** を採用:
+//! - Producer: ISR（割り込みハンドラ）のみ
+//! - Consumer: `KeyboardStream`の所有者のみ
+//!
+//! `KeyboardStream`は`Clone`不可で、所有権の移動によってのみ受け渡し可能。
+//! これにより、コンパイル時にConsumerの単一性が保証される。
 
 #![allow(dead_code)]
 
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
-use spin::Mutex;
+
+use crate::sync::IrqMutex;
+
+// Keymapモジュールからインポート
+pub use super::keymap::{DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap, DEFAULT_KEYMAP};
 
 // ============================================================================
-// スキャンコードとキーコード
+// スキャンコード定数
+// ============================================================================
+
+/// PS/2 スキャンコード: 拡張プレフィックス (0xE0)
+const SCANCODE_EXTENDED_PREFIX: u8 = 0xE0;
+
+/// キューデータ: 拡張フラグビット (bit 8)
+const QUEUE_EXTENDED_FLAG: u16 = 0x0100;
+
+/// スキャンコード: キーリリースビット (bit 7)
+const SCANCODE_RELEASE_BIT: u8 = 0x80;
+
+/// スキャンコードのキーコード部分マスク (bit 0-6)
+const SCANCODE_KEYCODE_MASK: u8 = 0x7F;
+
+/// スキャンコードキューのサイズ（2のべき乗であること）
+const SCANCODE_QUEUE_SIZE: usize = 128;
+
+/// キューサイズのマスク（モジュロ演算の高速化）
+const SCANCODE_QUEUE_MASK: usize = SCANCODE_QUEUE_SIZE - 1;
+
+// サイズが2のべき乗であることを静的に検証
+const _: () = assert!(
+    SCANCODE_QUEUE_SIZE.is_power_of_two(),
+    "SCANCODE_QUEUE_SIZE must be a power of two"
+);
+
+// ============================================================================
+// キーコード
 // ============================================================================
 
 /// スキャンコードセット1のキーコード
@@ -132,7 +186,6 @@ impl KeyCode {
     /// スキャンコードからキーコードに変換
     pub fn from_scancode(scancode: u8, extended: bool) -> Self {
         if extended {
-            // 拡張スキャンコード（0xE0プレフィックス）
             match scancode {
                 0x48 => KeyCode::Up,
                 0x50 => KeyCode::Down,
@@ -147,7 +200,6 @@ impl KeyCode {
                 _ => KeyCode::Unknown,
             }
         } else {
-            // 通常のスキャンコード
             match scancode {
                 0x01 => KeyCode::Escape,
                 0x02 => KeyCode::Key1,
@@ -225,349 +277,12 @@ impl KeyCode {
         }
     }
 
-    /// キーコードをASCII文字に変換（シフトなし）
+    /// キーコードを文字に変換（デフォルトキーマップを使用）
+    ///
+    /// # Note
+    /// 新しいコードでは`keymap.to_char(key, shift, caps_lock)`を直接使用してください。
     pub fn to_char(&self, shift: bool, caps_lock: bool) -> Option<char> {
-        let base = match self {
-            KeyCode::Key1 => {
-                if shift {
-                    '!'
-                } else {
-                    '1'
-                }
-            }
-            KeyCode::Key2 => {
-                if shift {
-                    '@'
-                } else {
-                    '2'
-                }
-            }
-            KeyCode::Key3 => {
-                if shift {
-                    '#'
-                } else {
-                    '3'
-                }
-            }
-            KeyCode::Key4 => {
-                if shift {
-                    '$'
-                } else {
-                    '4'
-                }
-            }
-            KeyCode::Key5 => {
-                if shift {
-                    '%'
-                } else {
-                    '5'
-                }
-            }
-            KeyCode::Key6 => {
-                if shift {
-                    '^'
-                } else {
-                    '6'
-                }
-            }
-            KeyCode::Key7 => {
-                if shift {
-                    '&'
-                } else {
-                    '7'
-                }
-            }
-            KeyCode::Key8 => {
-                if shift {
-                    '*'
-                } else {
-                    '8'
-                }
-            }
-            KeyCode::Key9 => {
-                if shift {
-                    '('
-                } else {
-                    '9'
-                }
-            }
-            KeyCode::Key0 => {
-                if shift {
-                    ')'
-                } else {
-                    '0'
-                }
-            }
-            KeyCode::Minus => {
-                if shift {
-                    '_'
-                } else {
-                    '-'
-                }
-            }
-            KeyCode::Equals => {
-                if shift {
-                    '+'
-                } else {
-                    '='
-                }
-            }
-            KeyCode::LeftBracket => {
-                if shift {
-                    '{'
-                } else {
-                    '['
-                }
-            }
-            KeyCode::RightBracket => {
-                if shift {
-                    '}'
-                } else {
-                    ']'
-                }
-            }
-            KeyCode::Semicolon => {
-                if shift {
-                    ':'
-                } else {
-                    ';'
-                }
-            }
-            KeyCode::Quote => {
-                if shift {
-                    '"'
-                } else {
-                    '\''
-                }
-            }
-            KeyCode::BackTick => {
-                if shift {
-                    '~'
-                } else {
-                    '`'
-                }
-            }
-            KeyCode::Backslash => {
-                if shift {
-                    '|'
-                } else {
-                    '\\'
-                }
-            }
-            KeyCode::Comma => {
-                if shift {
-                    '<'
-                } else {
-                    ','
-                }
-            }
-            KeyCode::Period => {
-                if shift {
-                    '>'
-                } else {
-                    '.'
-                }
-            }
-            KeyCode::Slash => {
-                if shift {
-                    '?'
-                } else {
-                    '/'
-                }
-            }
-            KeyCode::Space => ' ',
-            KeyCode::Enter => '\n',
-            KeyCode::Tab => '\t',
-            KeyCode::Backspace => '\x08',
-
-            // 文字キー
-            KeyCode::Q => {
-                if shift ^ caps_lock {
-                    'Q'
-                } else {
-                    'q'
-                }
-            }
-            KeyCode::W => {
-                if shift ^ caps_lock {
-                    'W'
-                } else {
-                    'w'
-                }
-            }
-            KeyCode::E => {
-                if shift ^ caps_lock {
-                    'E'
-                } else {
-                    'e'
-                }
-            }
-            KeyCode::R => {
-                if shift ^ caps_lock {
-                    'R'
-                } else {
-                    'r'
-                }
-            }
-            KeyCode::T => {
-                if shift ^ caps_lock {
-                    'T'
-                } else {
-                    't'
-                }
-            }
-            KeyCode::Y => {
-                if shift ^ caps_lock {
-                    'Y'
-                } else {
-                    'y'
-                }
-            }
-            KeyCode::U => {
-                if shift ^ caps_lock {
-                    'U'
-                } else {
-                    'u'
-                }
-            }
-            KeyCode::I => {
-                if shift ^ caps_lock {
-                    'I'
-                } else {
-                    'i'
-                }
-            }
-            KeyCode::O => {
-                if shift ^ caps_lock {
-                    'O'
-                } else {
-                    'o'
-                }
-            }
-            KeyCode::P => {
-                if shift ^ caps_lock {
-                    'P'
-                } else {
-                    'p'
-                }
-            }
-            KeyCode::A => {
-                if shift ^ caps_lock {
-                    'A'
-                } else {
-                    'a'
-                }
-            }
-            KeyCode::S => {
-                if shift ^ caps_lock {
-                    'S'
-                } else {
-                    's'
-                }
-            }
-            KeyCode::D => {
-                if shift ^ caps_lock {
-                    'D'
-                } else {
-                    'd'
-                }
-            }
-            KeyCode::F => {
-                if shift ^ caps_lock {
-                    'F'
-                } else {
-                    'f'
-                }
-            }
-            KeyCode::G => {
-                if shift ^ caps_lock {
-                    'G'
-                } else {
-                    'g'
-                }
-            }
-            KeyCode::H => {
-                if shift ^ caps_lock {
-                    'H'
-                } else {
-                    'h'
-                }
-            }
-            KeyCode::J => {
-                if shift ^ caps_lock {
-                    'J'
-                } else {
-                    'j'
-                }
-            }
-            KeyCode::K => {
-                if shift ^ caps_lock {
-                    'K'
-                } else {
-                    'k'
-                }
-            }
-            KeyCode::L => {
-                if shift ^ caps_lock {
-                    'L'
-                } else {
-                    'l'
-                }
-            }
-            KeyCode::Z => {
-                if shift ^ caps_lock {
-                    'Z'
-                } else {
-                    'z'
-                }
-            }
-            KeyCode::X => {
-                if shift ^ caps_lock {
-                    'X'
-                } else {
-                    'x'
-                }
-            }
-            KeyCode::C => {
-                if shift ^ caps_lock {
-                    'C'
-                } else {
-                    'c'
-                }
-            }
-            KeyCode::V => {
-                if shift ^ caps_lock {
-                    'V'
-                } else {
-                    'v'
-                }
-            }
-            KeyCode::B => {
-                if shift ^ caps_lock {
-                    'B'
-                } else {
-                    'b'
-                }
-            }
-            KeyCode::N => {
-                if shift ^ caps_lock {
-                    'N'
-                } else {
-                    'n'
-                }
-            }
-            KeyCode::M => {
-                if shift ^ caps_lock {
-                    'M'
-                } else {
-                    'm'
-                }
-            }
-
-            _ => return None,
-        };
-
-        Some(base)
+        DEFAULT_KEYMAP.to_char(*self, shift, caps_lock)
     }
 }
 
@@ -584,7 +299,7 @@ pub enum KeyState {
     Released,
 }
 
-/// 修飾キーの状態（互換性用）
+/// 修飾キーの状態
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Modifiers {
     pub shift: bool,
@@ -596,6 +311,7 @@ pub struct Modifiers {
 }
 
 impl Modifiers {
+    /// 任意の修飾キーが押されているか
     pub fn any(&self) -> bool {
         self.shift || self.ctrl || self.alt
     }
@@ -608,55 +324,63 @@ pub struct KeyEvent {
     pub key: KeyCode,
     /// 押下/解放状態
     pub state: KeyState,
-    /// シフトキーが押されているか
-    pub shift: bool,
-    /// Ctrlキーが押されているか
-    pub ctrl: bool,
-    /// Altキーが押されているか
-    pub alt: bool,
-    /// CapsLockが有効か
-    pub caps_lock: bool,
+    /// 修飾キーの状態
+    pub modifiers: Modifiers,
 }
 
 impl KeyEvent {
-    /// 修飾キーの状態を取得（互換性用）
-    pub fn modifiers(&self) -> Modifiers {
-        Modifiers {
-            shift: self.shift,
-            ctrl: self.ctrl,
-            alt: self.alt,
-            caps_lock: self.caps_lock,
-            num_lock: MODIFIER_STATE.num_lock.load(Ordering::Relaxed),
-            scroll_lock: false, // 現状未実装
-        }
-    }
-    /// このイベントを文字に変換
+    /// このイベントを文字に変換（デフォルトキーマップ使用）
     pub fn to_char(&self) -> Option<char> {
         if self.state == KeyState::Released {
             return None;
         }
-        self.key.to_char(self.shift, self.caps_lock)
+        self.key
+            .to_char(self.modifiers.shift, self.modifiers.caps_lock)
+    }
+
+    /// 指定されたキーマップで文字に変換
+    pub fn to_char_with_keymap<K: Keymap>(&self, keymap: &K) -> Option<char> {
+        if self.state == KeyState::Released {
+            return None;
+        }
+        keymap.to_char(self.key, self.modifiers.shift, self.modifiers.caps_lock)
+    }
+
+    /// 修飾キーの状態を取得（後方互換性のためのアクセサ）
+    pub fn modifiers(&self) -> Modifiers {
+        self.modifiers
+    }
+
+    /// 後方互換性のためのアクセサ
+    pub fn shift(&self) -> bool {
+        self.modifiers.shift
+    }
+    pub fn ctrl(&self) -> bool {
+        self.modifiers.ctrl
+    }
+    pub fn alt(&self) -> bool {
+        self.modifiers.alt
+    }
+    pub fn caps_lock(&self) -> bool {
+        self.modifiers.caps_lock
     }
 }
 
 // ============================================================================
-// キーボード状態管理
+// 修飾キー状態（インスタンス内部状態）
 // ============================================================================
 
-/// キーボードの修飾キー状態
+/// 修飾キーの内部状態
 struct ModifierState {
-    /// 左シフト押下中
     left_shift: AtomicBool,
-    /// 右シフト押下中
     right_shift: AtomicBool,
-    /// 左Ctrl押下中
     left_ctrl: AtomicBool,
-    /// 左Alt押下中
+    right_ctrl: AtomicBool,
     left_alt: AtomicBool,
-    /// CapsLock有効
+    right_alt: AtomicBool,
     caps_lock: AtomicBool,
-    /// NumLock有効
     num_lock: AtomicBool,
+    scroll_lock: AtomicBool,
 }
 
 impl ModifierState {
@@ -665,49 +389,111 @@ impl ModifierState {
             left_shift: AtomicBool::new(false),
             right_shift: AtomicBool::new(false),
             left_ctrl: AtomicBool::new(false),
+            right_ctrl: AtomicBool::new(false),
             left_alt: AtomicBool::new(false),
+            right_alt: AtomicBool::new(false),
             caps_lock: AtomicBool::new(false),
             num_lock: AtomicBool::new(false),
+            scroll_lock: AtomicBool::new(false),
         }
     }
 
-    fn is_shift(&self) -> bool {
-        self.left_shift.load(Ordering::Relaxed) || self.right_shift.load(Ordering::Relaxed)
-    }
-
-    fn is_ctrl(&self) -> bool {
-        self.left_ctrl.load(Ordering::Relaxed)
-    }
-
-    fn is_alt(&self) -> bool {
-        self.left_alt.load(Ordering::Relaxed)
-    }
-
-    fn is_caps_lock(&self) -> bool {
-        self.caps_lock.load(Ordering::Relaxed)
+    fn snapshot(&self) -> Modifiers {
+        Modifiers {
+            shift: self.left_shift.load(Ordering::Relaxed)
+                || self.right_shift.load(Ordering::Relaxed),
+            ctrl: self.left_ctrl.load(Ordering::Relaxed)
+                || self.right_ctrl.load(Ordering::Relaxed),
+            alt: self.left_alt.load(Ordering::Relaxed)
+                || self.right_alt.load(Ordering::Relaxed),
+            caps_lock: self.caps_lock.load(Ordering::Relaxed),
+            num_lock: self.num_lock.load(Ordering::Relaxed),
+            scroll_lock: self.scroll_lock.load(Ordering::Relaxed),
+        }
     }
 }
 
-/// グローバル修飾キー状態
-static MODIFIER_STATE: ModifierState = ModifierState::new();
-
-/// ISR専用の拡張スキャンコード検知フラグ (Producer専用)
-static ISR_EXTENDED_FLAG: AtomicBool = AtomicBool::new(false);
-
 // ============================================================================
-// スキャンコードキュー（ロックフリー）
+// AtomicWaker - 厳密なSPSCのためのWaker管理
 // ============================================================================
 
-const SCANCODE_QUEUE_SIZE: usize = 128;
+/// Atomic Waker（単一Waker専用）
+///
+/// SPSCの契約を強制するため、2つ目のWaker登録は許可しない。
+/// `futures`クレートの`AtomicWaker`と同様の機能だが、SPSC違反検出機能付き。
+struct AtomicWaker {
+    waker: IrqMutex<Option<Waker>>,
+    /// Consumer登録済みフラグ
+    registered: AtomicBool,
+}
 
-/// 拡張フラグビット (bit 8)
-const EXTENDED_FLAG: u16 = 0x0100;
+impl AtomicWaker {
+    const fn new() -> Self {
+        Self {
+            waker: IrqMutex::new(None),
+            registered: AtomicBool::new(false),
+        }
+    }
 
-/// ロックフリーなスキャンコードキュー (u16で拡張フラグを保持)
+    /// Wakerを登録
+    ///
+    /// # Panics
+    /// 既に異なるWakerが登録されている場合（SPSC違反）
+    fn register(&self, waker: &Waker) {
+        let mut guard = self.waker.lock();
+
+        if let Some(existing) = guard.as_ref() {
+            if existing.will_wake(waker) {
+                // 同じWakerなら何もしない
+                return;
+            }
+            // 異なるWakerが既に登録されている
+            // これはSPSC違反の可能性が高い
+            #[cfg(debug_assertions)]
+            {
+                crate::log!(
+                    "[KEYBOARD] Warning: Different waker registered. Possible SPSC violation.\n"
+                );
+            }
+        }
+
+        *guard = Some(waker.clone());
+        self.registered.store(true, Ordering::Release);
+    }
+
+    /// Wakerを起床させてクリア
+    fn wake(&self) {
+        if let Some(waker) = self.waker.lock().take() {
+            self.registered.store(false, Ordering::Release);
+            waker.wake();
+        }
+    }
+
+    /// Wakerが登録されているか
+    #[allow(dead_code)]
+    fn is_registered(&self) -> bool {
+        self.registered.load(Ordering::Acquire)
+    }
+}
+
+// ============================================================================
+// スキャンコードキュー（インスタンス内部状態）
+// ============================================================================
+
+/// ロックフリーSPSCスキャンコードキュー
+///
+/// # データフォーマット (u16)
+/// ```text
+/// ┌─────────────────────────────────────────┐
+/// │ bit 15-9: Reserved (0)                 │
+/// │ bit 8:    Extended Flag (0xE0 prefix)  │
+/// │ bit 7-0:  Raw Scancode                 │
+/// └─────────────────────────────────────────┘
+/// ```
 struct ScancodeQueue {
     buffer: [core::sync::atomic::AtomicU16; SCANCODE_QUEUE_SIZE],
-    head: AtomicUsize,
     tail: AtomicUsize,
+    head: AtomicUsize,
 }
 
 impl ScancodeQueue {
@@ -715,19 +501,18 @@ impl ScancodeQueue {
         const ZERO: core::sync::atomic::AtomicU16 = core::sync::atomic::AtomicU16::new(0);
         Self {
             buffer: [ZERO; SCANCODE_QUEUE_SIZE],
-            head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
+            head: AtomicUsize::new(0),
         }
     }
 
-    /// スキャンコードをプッシュ（ISRから呼ばれる、u16でextendedフラグ付き）
+    #[inline]
     fn push(&self, data: u16) -> bool {
         let tail = self.tail.load(Ordering::Relaxed);
         let head = self.head.load(Ordering::Acquire);
 
-        let next_tail = (tail + 1) % SCANCODE_QUEUE_SIZE;
+        let next_tail = (tail + 1) & SCANCODE_QUEUE_MASK;
         if next_tail == head {
-            // キューが満杯
             return false;
         }
 
@@ -736,7 +521,7 @@ impl ScancodeQueue {
         true
     }
 
-    /// スキャンコードをポップ (u16で拡張フラグ付き)
+    #[inline]
     fn pop(&self) -> Option<u16> {
         let head = self.head.load(Ordering::Relaxed);
         let tail = self.tail.load(Ordering::Acquire);
@@ -747,50 +532,37 @@ impl ScancodeQueue {
 
         let data = self.buffer[head].load(Ordering::Relaxed);
         self.head
-            .store((head + 1) % SCANCODE_QUEUE_SIZE, Ordering::Release);
+            .store((head + 1) & SCANCODE_QUEUE_MASK, Ordering::Release);
         Some(data)
     }
 
-    /// キューが空かどうか
+    #[inline]
     fn is_empty(&self) -> bool {
         self.head.load(Ordering::Acquire) == self.tail.load(Ordering::Acquire)
     }
 }
 
-/// グローバルスキャンコードキュー
-static SCANCODE_QUEUE: ScancodeQueue = ScancodeQueue::new();
-
 // ============================================================================
-// Waker管理
+// キーボードドライバ（インスタンス化）
 // ============================================================================
 
-/// キーボード入力待ちWaker
-static KEYBOARD_WAKER: Mutex<Option<Waker>> = Mutex::new(None);
-
-/// Wakerを登録
-fn register_waker(waker: &Waker) {
-    let mut guard = KEYBOARD_WAKER.lock();
-    match &*guard {
-        Some(existing) if existing.will_wake(waker) => {}
-        _ => *guard = Some(waker.clone()),
-    }
-}
-
-/// Wakerを起床
-fn wake_waiting() {
-    if let Some(waker) = KEYBOARD_WAKER.lock().take() {
-        waker.wake();
-    }
-}
-
-// ============================================================================
-// キーボードドライバ
-// ============================================================================
-
-/// キーボードドライバ
+/// キーボードドライバの内部状態
+///
+/// 全てのステートがインスタンス内に含まれるため、
+/// 複数のキーボードデバイスを独立して管理可能。
 pub struct KeyboardDriver {
     /// 初期化済みフラグ
     initialized: AtomicBool,
+    /// スキャンコードキュー
+    queue: ScancodeQueue,
+    /// 修飾キー状態
+    modifiers: ModifierState,
+    /// ISRの拡張スキャンコード状態
+    extended_pending: AtomicBool,
+    /// Waker（単一Consumer用）
+    waker: AtomicWaker,
+    /// ストリーム発行済みフラグ
+    stream_taken: AtomicBool,
 }
 
 impl KeyboardDriver {
@@ -798,51 +570,48 @@ impl KeyboardDriver {
     pub const fn new() -> Self {
         Self {
             initialized: AtomicBool::new(false),
+            queue: ScancodeQueue::new(),
+            modifiers: ModifierState::new(),
+            extended_pending: AtomicBool::new(false),
+            waker: AtomicWaker::new(),
+            stream_taken: AtomicBool::new(false),
         }
     }
 
     /// ドライバを初期化
     pub fn init(&self) {
         if self.initialized.swap(true, Ordering::SeqCst) {
-            return; // 既に初期化済み
+            return;
         }
-
-        // PS/2キーボードコントローラの初期化
-        // （基本的な初期化はBIOSが行っているので、ここでは追加設定のみ）
-
-        crate::log!("[KEYBOARD] Keyboard driver initialized\n");
+        crate::log!("[KEYBOARD] Keyboard driver initialized (Instance-based)\n");
     }
 
     /// スキャンコードを処理（ISRから呼ばれる）
+    ///
+    /// # Safety Contract
+    /// この関数はISRコンテキストからのみ呼び出されること。
     pub fn handle_scancode(&self, scancode: u8) {
-        // 拡張スキャンコードプレフィックスのチェック
-        if scancode == 0xE0 {
-            ISR_EXTENDED_FLAG.store(true, Ordering::Relaxed);
+        if scancode == SCANCODE_EXTENDED_PREFIX {
+            self.extended_pending.store(true, Ordering::Relaxed);
             return;
         }
 
-        // 拡張フラグを取得してクリア
-        let extended = ISR_EXTENDED_FLAG.swap(false, Ordering::Relaxed);
-        
-        // u16にパッキング (bit 8に拡張フラグ、bit 0-7にスキャンコード)
-        let data: u16 = (scancode as u16) | if extended { EXTENDED_FLAG } else { 0 };
+        let extended = self.extended_pending.swap(false, Ordering::Relaxed);
+        let data: u16 = (scancode as u16) | if extended { QUEUE_EXTENDED_FLAG } else { 0 };
 
-        // キューにプッシュ
-        if SCANCODE_QUEUE.push(data) {
-            // 待機中のタスクを起床
-            wake_waiting();
+        if self.queue.push(data) {
+            self.waker.wake();
         }
     }
 
     /// 次のキーイベントを取得（ノンブロッキング）
-    pub fn poll_key_event(&self) -> Option<KeyEvent> {
-        let data = SCANCODE_QUEUE.pop()?;
+    fn poll_key_event_internal(&self) -> Option<KeyEvent> {
+        let data = self.queue.pop()?;
 
-        // u16から拡張フラグとスキャンコードを分離
-        let extended = (data & EXTENDED_FLAG) != 0;
+        let extended = (data & QUEUE_EXTENDED_FLAG) != 0;
         let scancode = (data & 0xFF) as u8;
-        let released = (scancode & 0x80) != 0;
-        let code = scancode & 0x7F;
+        let released = (scancode & SCANCODE_RELEASE_BIT) != 0;
+        let code = scancode & SCANCODE_KEYCODE_MASK;
 
         let key = KeyCode::from_scancode(code, extended);
         let state = if released {
@@ -851,94 +620,207 @@ impl KeyboardDriver {
             KeyState::Pressed
         };
 
-        // 修飾キーの状態を更新
-        match key {
-            KeyCode::LeftShift => MODIFIER_STATE
-                .left_shift
-                .store(!released, Ordering::Relaxed),
-            KeyCode::RightShift => MODIFIER_STATE
-                .right_shift
-                .store(!released, Ordering::Relaxed),
-            KeyCode::LeftCtrl => MODIFIER_STATE.left_ctrl.store(!released, Ordering::Relaxed),
-            KeyCode::LeftAlt => MODIFIER_STATE.left_alt.store(!released, Ordering::Relaxed),
-            KeyCode::CapsLock if !released => {
-                let current = MODIFIER_STATE.caps_lock.load(Ordering::Relaxed);
-                MODIFIER_STATE.caps_lock.store(!current, Ordering::Relaxed);
-            }
-            KeyCode::NumLock if !released => {
-                let current = MODIFIER_STATE.num_lock.load(Ordering::Relaxed);
-                MODIFIER_STATE.num_lock.store(!current, Ordering::Relaxed);
-            }
-            _ => {}
-        }
+        self.update_modifiers(key, extended, released);
 
         Some(KeyEvent {
             key,
             state,
-            shift: MODIFIER_STATE.is_shift(),
-            ctrl: MODIFIER_STATE.is_ctrl(),
-            alt: MODIFIER_STATE.is_alt(),
-            caps_lock: MODIFIER_STATE.is_caps_lock(),
+            modifiers: self.modifiers.snapshot(),
         })
     }
 
+    /// 修飾キーの状態を更新
+    fn update_modifiers(&self, key: KeyCode, extended: bool, released: bool) {
+        match key {
+            KeyCode::LeftShift => self
+                .modifiers
+                .left_shift
+                .store(!released, Ordering::Relaxed),
+            KeyCode::RightShift => self
+                .modifiers
+                .right_shift
+                .store(!released, Ordering::Relaxed),
+            KeyCode::LeftCtrl => {
+                if extended {
+                    self.modifiers
+                        .right_ctrl
+                        .store(!released, Ordering::Relaxed);
+                } else {
+                    self.modifiers
+                        .left_ctrl
+                        .store(!released, Ordering::Relaxed);
+                }
+            }
+            KeyCode::LeftAlt => {
+                if extended {
+                    self.modifiers
+                        .right_alt
+                        .store(!released, Ordering::Relaxed);
+                } else {
+                    self.modifiers.left_alt.store(!released, Ordering::Relaxed);
+                }
+            }
+            KeyCode::CapsLock if !released => {
+                let current = self.modifiers.caps_lock.load(Ordering::Relaxed);
+                self.modifiers.caps_lock.store(!current, Ordering::Relaxed);
+            }
+            KeyCode::NumLock if !released => {
+                let current = self.modifiers.num_lock.load(Ordering::Relaxed);
+                self.modifiers.num_lock.store(!current, Ordering::Relaxed);
+            }
+            KeyCode::ScrollLock if !released => {
+                let current = self.modifiers.scroll_lock.load(Ordering::Relaxed);
+                self.modifiers
+                    .scroll_lock
+                    .store(!current, Ordering::Relaxed);
+            }
+            _ => {}
+        }
+    }
+
+    /// キーボードストリームを取得（所有権ベースのSPSC強制）
+    ///
+    /// # Panics
+    /// 既にストリームが発行されている場合（SPSC違反）
+    ///
+    /// # Returns
+    /// キーイベントを受信するためのストリーム
+    pub fn take_stream(&'static self) -> KeyboardStream {
+        if self.stream_taken.swap(true, Ordering::SeqCst) {
+            panic!("[KEYBOARD] SPSC violation: Stream already taken. Only one consumer allowed.");
+        }
+        KeyboardStream { driver: self }
+    }
+
+    /// ストリームを返却（テスト用）
+    fn return_stream(&self) {
+        self.stream_taken.store(false, Ordering::SeqCst);
+    }
+
+    /// Wakerを登録（内部用）
+    fn register_waker(&self, waker: &Waker) {
+        self.waker.register(waker);
+    }
+
+    /// イベントがあるかチェック
+    pub fn has_event(&self) -> bool {
+        !self.queue.is_empty()
+    }
+
+    /// 現在の修飾キー状態を取得
+    pub fn get_modifiers(&self) -> Modifiers {
+        self.modifiers.snapshot()
+    }
+
+    // =========================================================================
+    // 後方互換性API（Deprecated）
+    // =========================================================================
+
+    /// 次のキーイベントを取得（非ブロッキング）
+    ///
+    /// # Warning
+    /// この関数はSPSC契約を型レベルで強制しません。
+    /// 新しいコードでは`take_stream()`を使用してください。
+    pub fn poll_key_event(&self) -> Option<KeyEvent> {
+        self.poll_key_event_internal()
+    }
+
     /// 次のキーイベントを非同期で待機
-    pub fn read_key(&self) -> KeyEventFuture<'_> {
-        KeyEventFuture { _driver: self }
+    ///
+    /// # Deprecated
+    /// 代わりに`take_stream()`を使用してください。
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use take_stream() for ownership-based SPSC guarantee"
+    )]
+    pub fn read_key(&'static self) -> KeyEventFuture {
+        KeyEventFuture { driver: self }
     }
 
     /// 次の文字を非同期で待機
-    pub fn read_char(&self) -> CharFuture<'_> {
-        CharFuture { _driver: self }
+    ///
+    /// # Deprecated
+    /// 代わりに`take_stream()`を使用してください。
+    #[deprecated(
+        since = "0.3.0",
+        note = "Use take_stream() and KeyboardStream::read_char()"
+    )]
+    pub fn read_char(&'static self) -> CharFuture {
+        CharFuture { driver: self }
     }
+}
 
-    /// 行を非同期で読み取り
-    pub fn read_line(&self) -> LineFuture<'_> {
-        LineFuture {
-            _driver: self,
-            buffer: alloc::string::String::new(),
+// ============================================================================
+// KeyboardStream - 所有権ベースのSPSC Consumer
+// ============================================================================
+
+/// キーボード入力ストリーム
+///
+/// このストリームの所有者だけがキーイベントを受信できる。
+/// `Clone`不可なので、所有権の移動によってのみ受け渡し可能。
+/// これにより、コンパイル時にConsumerの単一性が保証される。
+pub struct KeyboardStream {
+    driver: &'static KeyboardDriver,
+}
+
+impl KeyboardStream {
+    /// 次のキーイベントを非同期で待機
+    pub fn read_key(&mut self) -> KeyEventFuture {
+        KeyEventFuture {
+            driver: self.driver,
         }
     }
+
+    /// 次の文字を非同期で待機
+    pub fn read_char(&mut self) -> CharFuture {
+        CharFuture {
+            driver: self.driver,
+        }
+    }
+
+    /// 次のキーイベントをポーリング（ノンブロッキング）
+    pub fn poll(&mut self) -> Option<KeyEvent> {
+        self.driver.poll_key_event_internal()
+    }
+
+    /// イベントがあるかチェック
+    pub fn has_event(&self) -> bool {
+        self.driver.has_event()
+    }
+
+    /// 現在の修飾キー状態を取得
+    pub fn modifiers(&self) -> Modifiers {
+        self.driver.get_modifiers()
+    }
 }
 
-/// グローバルキーボードドライバ
-static KEYBOARD_DRIVER: KeyboardDriver = KeyboardDriver::new();
-
-/// キーボードドライバにアクセス
-pub fn keyboard() -> &'static KeyboardDriver {
-    &KEYBOARD_DRIVER
+impl Drop for KeyboardStream {
+    fn drop(&mut self) {
+        self.driver.return_stream();
+    }
 }
 
-/// キーボードを初期化
-pub fn init() {
-    KEYBOARD_DRIVER.init();
-}
-
-/// 割り込みハンドラから呼ばれる
-pub fn handle_keyboard_interrupt(scancode: u8) {
-    KEYBOARD_DRIVER.handle_scancode(scancode);
-}
+// Clone不可（SPSC強制）
+// impl !Clone for KeyboardStream {}  // negative impl は nightly のみ
 
 // ============================================================================
 // Async Futures
 // ============================================================================
 
 /// キーイベント待ちFuture
-pub struct KeyEventFuture<'a> {
-    _driver: &'a KeyboardDriver,
+pub struct KeyEventFuture {
+    driver: &'static KeyboardDriver,
 }
 
-impl<'a> Future for KeyEventFuture<'a> {
+impl Future for KeyEventFuture {
     type Output = KeyEvent;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
+        if let Some(event) = self.driver.poll_key_event_internal() {
             Poll::Ready(event)
         } else {
-            register_waker(cx.waker());
-
-            // 再度チェック（Wakerを登録した後にイベントが来た可能性）
-            if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
+            self.driver.register_waker(cx.waker());
+            if let Some(event) = self.driver.poll_key_event_internal() {
                 Poll::Ready(event)
             } else {
                 Poll::Pending
@@ -948,75 +830,84 @@ impl<'a> Future for KeyEventFuture<'a> {
 }
 
 /// 文字入力待ちFuture
-pub struct CharFuture<'a> {
-    _driver: &'a KeyboardDriver,
+pub struct CharFuture {
+    driver: &'static KeyboardDriver,
 }
 
-impl<'a> Future for CharFuture<'a> {
+impl Future for CharFuture {
     type Output = char;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {
-            if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
+            if let Some(event) = self.driver.poll_key_event_internal() {
                 if let Some(c) = event.to_char() {
                     return Poll::Ready(c);
                 }
-                // 文字に変換できないキーは無視して続行
                 continue;
             } else {
-                register_waker(cx.waker());
-
-                // 再度チェック
-                if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
+                self.driver.register_waker(cx.waker());
+                if let Some(event) = self.driver.poll_key_event_internal() {
                     if let Some(c) = event.to_char() {
                         return Poll::Ready(c);
                     }
                 }
-
                 return Poll::Pending;
             }
         }
     }
 }
 
-/// 行入力待ちFuture
-pub struct LineFuture<'a> {
-    _driver: &'a KeyboardDriver,
-    buffer: alloc::string::String,
+// ============================================================================
+// グローバルインスタンス（PS/2キーボード用）
+// ============================================================================
+
+/// グローバルPS/2キーボードドライバ
+///
+/// 単一のPS/2キーボードをサポートする場合はこれを使用。
+/// 複数デバイスが必要な場合は、別のインスタンスを作成してください。
+static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
+
+/// PS/2キーボードドライバにアクセス
+pub fn keyboard() -> &'static KeyboardDriver {
+    &PS2_KEYBOARD
 }
 
-impl<'a> Future for LineFuture<'a> {
-    type Output = alloc::string::String;
+/// PS/2キーボードを初期化
+pub fn init() {
+    PS2_KEYBOARD.init();
+}
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        loop {
-            if let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
-                if event.state == KeyState::Released {
-                    continue;
-                }
+/// 割り込みハンドラから呼ばれる（PS/2キーボード用）
+pub fn handle_keyboard_interrupt(scancode: u8) {
+    PS2_KEYBOARD.handle_scancode(scancode);
+}
 
-                match event.key {
-                    KeyCode::Enter => {
-                        let result = core::mem::take(&mut self.buffer);
-                        return Poll::Ready(result);
-                    }
-                    KeyCode::Backspace => {
-                        self.buffer.pop();
-                    }
-                    _ => {
-                        if let Some(c) = event.to_char() {
-                            if c != '\n' && c != '\x08' {
-                                self.buffer.push(c);
-                            }
-                        }
-                    }
-                }
-            } else {
-                register_waker(cx.waker());
-                return Poll::Pending;
-            }
+// ============================================================================
+// 後方互換性API
+// ============================================================================
+
+/// 次のキーイベントをポーリング（非ブロッキング）
+///
+/// # Warning
+/// この関数はSPSC契約を強制しません。
+/// 新しいコードでは`keyboard().take_stream()`を使用してください。
+pub fn poll_key_event() -> Option<KeyEvent> {
+    PS2_KEYBOARD.poll_key_event()
+}
+
+/// 次の文字をポーリング（非ブロッキング）
+pub fn poll_char() -> Option<char> {
+    while let Some(event) = PS2_KEYBOARD.poll_key_event() {
+        if let Some(c) = event.to_char() {
+            return Some(c);
         }
     }
+    None
+}
+
+/// イベントがあるかチェック
+pub fn has_event() -> bool {
+    PS2_KEYBOARD.has_event()
 }
 
 // ============================================================================
@@ -1040,35 +931,18 @@ mod tests {
         let queue = ScancodeQueue::new();
 
         assert!(queue.is_empty());
-        assert!(queue.push(0x1E)); // 'A'
+        assert!(queue.push(0x1E));
         assert!(!queue.is_empty());
         assert_eq!(queue.pop(), Some(0x1E));
         assert!(queue.is_empty());
     }
-}
 
-// ============================================================================
-// Synchronous Polling API (for non-async contexts)
-// ============================================================================
-
-/// 次のキーイベントをポーリング（非ブロッキング、同期コンテキスト用）
-pub fn poll_key_event() -> Option<KeyEvent> {
-    KEYBOARD_DRIVER.poll_key_event()
-}
-
-/// 次の文字をポーリング（非ブロッキング、同期コンテキスト用）
-pub fn poll_char() -> Option<char> {
-    while let Some(event) = KEYBOARD_DRIVER.poll_key_event() {
-        if let Some(c) = event.to_char() {
-            return Some(c);
-        }
+    #[test]
+    fn test_modifier_snapshot() {
+        let state = ModifierState::new();
+        let snap = state.snapshot();
+        assert!(!snap.shift);
+        assert!(!snap.ctrl);
+        assert!(!snap.alt);
     }
-    None
 }
-
-/// イベントがあるかチェック
-pub fn has_event() -> bool {
-    !SCANCODE_QUEUE.is_empty()
-}
-
-

@@ -119,9 +119,11 @@ pub use hid::{
     ps2_init, keyboard_interrupt_handler, mouse_interrupt_handler,
     get_key_event, get_mouse_event, get_modifiers, set_leds,
     // Keyboard driver
-    KeyCode, KeyState, KeyEvent, KeyboardDriver,
-    KeyEventFuture, CharFuture, LineFuture,
+    KeyCode, KeyState, KeyEvent, KeyboardDriver, KeyboardStream,
+    KeyEventFuture, CharFuture,
     keyboard, keyboard_init, handle_keyboard_interrupt,
+    // Keymap support
+    Keymap, UsQwertyKeymap, DEFAULT_KEYMAP,
 };
 
 // PCI common module exports (unified interface)
