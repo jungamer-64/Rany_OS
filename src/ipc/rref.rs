@@ -4,7 +4,6 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use alloc::collections::BTreeMap;
 use core::alloc::Layout;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
@@ -14,82 +13,27 @@ use spin::Mutex;
 pub use crate::domain_system::DomainId;
 
 // ============================================================================
-// Heap Registry - 設計書 5.3/8.1: ドメインごとのオブジェクト追跡機構
-// 
-// 注: sas/heap_registry.rs にも同様の実装があります。
-// 将来的には sas::heap_registry を統一されたインターフェースとして使用し、
-// この実装は削除予定です (P3: コード統合)
+// Heap Registry - sas/heap_registry.rs の統合実装を使用
+// P3完了: 重複実装を削除し、統一されたHeapRegistryを使用
 // ============================================================================
 
-/// Heap Registry エントリ
-#[derive(Debug, Clone, Copy)]
-struct HeapEntry {
-    ptr: usize,
-    layout: Layout,
-    owner: DomainId,
-}
+use crate::sas::heap_registry::HeapRegistry;
 
 /// グローバルなHeap Registry
 /// ドメインクラッシュ時のメモリ回収に使用
+/// sas/heap_registry.rs の完全実装を使用
 static HEAP_REGISTRY: Mutex<HeapRegistry> = Mutex::new(HeapRegistry::new());
-
-struct HeapRegistry {
-    /// ポインタ -> エントリのマッピング
-    entries: BTreeMap<usize, HeapEntry>,
-    /// 次のエントリID
-    next_id: u64,
-}
-
-impl HeapRegistry {
-    const fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            next_id: 0,
-        }
-    }
-
-    /// オブジェクトを登録
-    fn register(&mut self, ptr: usize, layout: Layout, owner: DomainId) {
-        self.entries.insert(ptr, HeapEntry { ptr, layout, owner });
-        self.next_id += 1;
-    }
-
-    /// オブジェクトの登録を解除
-    fn unregister(&mut self, ptr: usize) {
-        self.entries.remove(&ptr);
-    }
-
-    /// オブジェクトの所有者を変更
-    fn change_owner(&mut self, ptr: usize, new_owner: DomainId) {
-        if let Some(entry) = self.entries.get_mut(&ptr) {
-            entry.owner = new_owner;
-        }
-    }
-
-    /// 特定のドメインが所有する全オブジェクトを取得（クラッシュ時の回収用）
-    fn get_owned_by(&self, domain: DomainId) -> alloc::vec::Vec<HeapEntry> {
-        self.entries
-            .values()
-            .filter(|e| e.owner == domain)
-            .cloned()
-            .collect()
-    }
-}
 
 /// 特定のドメインが所有する全オブジェクトを回収
 /// 設計書 8.1: パニック時のリソース回収
 pub fn reclaim_domain_resources(domain: DomainId) {
-    let entries = HEAP_REGISTRY.lock().get_owned_by(domain);
-
-    for entry in entries {
-        // Exchange Heapから解放
-        unsafe {
-            crate::mm::exchange_heap::deallocate_raw(
-                NonNull::new_unchecked(entry.ptr as *mut u8),
-                entry.layout,
-            );
-        }
-        HEAP_REGISTRY.lock().unregister(entry.ptr);
+    let mut registry = HEAP_REGISTRY.lock();
+    
+    // HeapRegistryの統合されたreclaim_allを使用
+    let reclaimed_count = registry.reclaim_all(domain);
+    
+    if reclaimed_count > 0 {
+        crate::log!("[RRef] Reclaimed {} objects from domain {}\n", reclaimed_count, domain.as_u64());
     }
 }
 
@@ -122,10 +66,10 @@ impl<T> RRef<T> {
         let ptr = crate::mm::exchange_heap::allocate_on_exchange(val)
             .expect("Exchange heap allocation failed");
 
-        // Heap Registryに登録
+        // Heap Registryに登録（統合されたAPIを使用）
         HEAP_REGISTRY
             .lock()
-            .register(ptr.as_ptr() as usize, layout, owner);
+            .register_simple(ptr.as_ptr() as usize, layout.size(), owner);
 
         RRef { ptr, owner }
     }
@@ -133,10 +77,10 @@ impl<T> RRef<T> {
     /// 所有権の移動 (Move)
     /// 設計書 5.3: データコピーなしで所有権のみ移動
     pub fn move_to(mut self, new_owner: DomainId) -> Self {
-        // Heap Registryの所有者を更新
-        HEAP_REGISTRY
+        // Heap Registryの所有者を更新（統合されたAPIを使用）
+        let _ = HEAP_REGISTRY
             .lock()
-            .change_owner(self.ptr.as_ptr() as usize, new_owner);
+            .change_owner(self.ptr.as_ptr() as usize, self.owner, new_owner);
         self.owner = new_owner;
         self
     }
@@ -169,8 +113,8 @@ impl<T> RRef<T> {
         let ptr = self.ptr;
         let layout = Layout::new::<T>();
 
-        // Heap Registryから登録解除
-        HEAP_REGISTRY.lock().unregister(ptr.as_ptr() as usize);
+        // Heap Registryから登録解除（統合されたAPIを使用）
+        HEAP_REGISTRY.lock().unregister_simple(ptr.as_ptr() as usize);
 
         // 値を読み出し
         let value = unsafe { ptr.as_ptr().read() };
@@ -203,10 +147,10 @@ impl<T: ?Sized> DerefMut for RRef<T> {
 
 impl<T: ?Sized> Drop for RRef<T> {
     fn drop(&mut self) {
-        // Heap Registryから登録解除
+        // Heap Registryから登録解除（統合されたAPIを使用）
         HEAP_REGISTRY
             .lock()
-            .unregister(self.ptr.as_ptr() as *const () as usize);
+            .unregister_simple(self.ptr.as_ptr() as *const () as usize);
 
         // Exchange Heapから解放
         unsafe {

@@ -164,6 +164,13 @@ impl Domain {
         }
     }
 
+    /// 被依存関係を追加（他のドメインがこのドメインに依存）
+    pub fn add_dependent(&mut self, dep_id: DomainId) {
+        if !self.dependents.contains(&dep_id) {
+            self.dependents.push(dep_id);
+        }
+    }
+
     /// RRef数をインクリメント
     pub fn increment_rref(&mut self) {
         self.rref_count += 1;
@@ -219,66 +226,19 @@ impl DomainRegistry {
 static REGISTRY: Mutex<DomainRegistry> = Mutex::new(DomainRegistry::new());
 
 // ============================================================================
-// ヒープレジストリ（RRef追跡）- sas/heap_registryの統合版を使用
+// ヒープレジストリ（RRef追跡）
+// P3完了: sas::heap_registry::HeapRegistry を統合実装として使用
+// 
+// 役割分担:
+// - sas::heap_registry::HeapRegistry: 完全な所有権追跡（型安全、世代管理、参照カウント）
+// - domain_system.rs: ドメインレベルの統計情報（メモリ量・RRef数）のみ管理
 // ============================================================================
 
-// NOTE: domain_systemレベルのHeapEntryは簡易追跡用
-// 完全版はsas/heap_registryを使用
-
-/// ヒープエントリ（簡易版）
-#[derive(Debug, Clone, Copy)]
-struct HeapEntry {
-    ptr: usize,
-    layout: Layout,
-    owner: DomainId,
-}
-
-/// ドメインレベルのヒープ追跡（簡易版）
-/// 注: より高度な追跡（型安全、世代管理、参照カウント）は
-/// sas::heap_registry::HeapRegistry を使用すること
-struct HeapRegistry {
-    entries: BTreeMap<usize, HeapEntry>,
-}
-
-impl HeapRegistry {
-    const fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-        }
-    }
-
-    /// エントリを登録
-    fn register(&mut self, ptr: usize, layout: Layout, owner: DomainId) {
-        self.entries.insert(ptr, HeapEntry { ptr, layout, owner });
-    }
-
-    /// エントリを削除
-    fn unregister(&mut self, ptr: usize) -> Option<HeapEntry> {
-        self.entries.remove(&ptr)
-    }
-
-    /// 所有者を変更
-    fn change_owner(&mut self, ptr: usize, new_owner: DomainId) -> bool {
-        if let Some(entry) = self.entries.get_mut(&ptr) {
-            entry.owner = new_owner;
-            true
-        } else {
-            false
-        }
-    }
-
-    /// 特定ドメインの全エントリを取得
-    fn get_owned_by(&self, domain: DomainId) -> Vec<HeapEntry> {
-        self.entries
-            .values()
-            .filter(|e| e.owner == domain)
-            .cloned()
-            .collect()
-    }
-}
+use crate::sas::heap_registry::HeapRegistry as SasHeapRegistry;
 
 /// グローバルなヒープレジストリ
-static HEAP_REGISTRY: Mutex<HeapRegistry> = Mutex::new(HeapRegistry::new());
+/// sas::heap_registry::HeapRegistry の完全実装を使用
+static HEAP_REGISTRY: Mutex<SasHeapRegistry> = Mutex::new(SasHeapRegistry::new());
 
 // ============================================================================
 // 公開API - ドメイン管理
@@ -322,6 +282,24 @@ pub fn create_domain(name: String) -> DomainId {
 /// ドメインの状態を取得
 pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
     REGISTRY.lock().domains.get(&id).map(|d| d.state)
+}
+
+/// ドメインに対して読み取り操作を実行
+/// domain/registry.rs からの互換性維持のために追加
+pub fn with_domain<F, R>(id: DomainId, f: F) -> Option<R>
+where
+    F: FnOnce(&Domain) -> R,
+{
+    REGISTRY.lock().domains.get(&id).map(f)
+}
+
+/// ドメインに対して更新操作を実行
+/// domain/registry.rs からの互換性維持のために追加
+pub fn with_domain_mut<F, R>(id: DomainId, f: F) -> Option<R>
+where
+    F: FnOnce(&mut Domain) -> R,
+{
+    REGISTRY.lock().domains.get_mut(&id).map(f)
 }
 
 /// ドメインの状態を変更
@@ -444,7 +422,8 @@ pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
 
 /// Exchange Heap上にオブジェクトを登録
 pub fn register_heap_object(ptr: usize, layout: Layout, owner: DomainId) {
-    HEAP_REGISTRY.lock().register(ptr, layout, owner);
+    // 統合されたHeapRegistryに登録（簡易版APIを使用）
+    HEAP_REGISTRY.lock().register_simple(ptr, layout.size(), owner);
 
     if let Some(domain) = REGISTRY.lock().domains.get_mut(&owner) {
         domain.increment_rref();
@@ -454,60 +433,86 @@ pub fn register_heap_object(ptr: usize, layout: Layout, owner: DomainId) {
 
 /// Exchange Heap上のオブジェクトを解除
 pub fn unregister_heap_object(ptr: usize) {
-    if let Some(entry) = HEAP_REGISTRY.lock().unregister(ptr) {
-        if let Some(domain) = REGISTRY.lock().domains.get_mut(&entry.owner) {
+    // 統合されたHeapRegistryからオブジェクト情報を取得
+    let mut heap_registry = HEAP_REGISTRY.lock();
+    if let Some(obj) = heap_registry.get_object(ptr) {
+        let owner = obj.owner;
+        let size = obj.size;
+        
+        // 登録解除（簡易版APIを使用）
+        heap_registry.unregister_simple(ptr);
+        drop(heap_registry); // ロックを解放
+        
+        // ドメイン統計を更新
+        if let Some(domain) = REGISTRY.lock().domains.get_mut(&owner) {
             domain.decrement_rref();
-            domain.free_memory(entry.layout.size() as u64);
+            domain.free_memory(size as u64);
         }
     }
 }
 
 /// オブジェクトの所有権を移動
 pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
-    let entry_opt = {
-        let heap_registry = HEAP_REGISTRY.lock();
-        heap_registry.entries.get(&ptr).map(|e| (e.owner, e.layout))
-    };
+    // 統合されたHeapRegistryからオブジェクト情報を取得
+    let mut heap_registry = HEAP_REGISTRY.lock();
+    let entry_opt = heap_registry.get_object(ptr).map(|obj| (obj.owner, obj.size));
 
-    if let Some((old_owner, layout)) = entry_opt {
-        // 所有者変更
-        HEAP_REGISTRY.lock().change_owner(ptr, new_owner);
+    if let Some((old_owner, size)) = entry_opt {
+        // 所有者変更（統合されたAPIを使用）
+        let _ = heap_registry.change_owner(ptr, old_owner, new_owner);
+        drop(heap_registry); // ロックを解放
 
         let mut registry = REGISTRY.lock();
 
         // 旧所有者のカウント減少
         if let Some(old_domain) = registry.domains.get_mut(&old_owner) {
             old_domain.decrement_rref();
-            old_domain.free_memory(layout.size() as u64);
+            old_domain.free_memory(size as u64);
         }
 
         // 新所有者のカウント増加
         if let Some(new_domain) = registry.domains.get_mut(&new_owner) {
             new_domain.increment_rref();
-            new_domain.add_memory(layout.size() as u64);
+            new_domain.add_memory(size as u64);
         }
 
         true
     } else {
+        drop(heap_registry); // ロックを解放
         false
     }
 }
 
 /// ドメインが所有する全リソースを回収
 pub fn reclaim_domain_resources(domain: DomainId) {
-    let entries = HEAP_REGISTRY.lock().get_owned_by(domain);
-    let count = entries.len();
-
-    for entry in entries {
-        // Exchange Heapから解放
-        unsafe {
-            crate::mm::exchange_heap::deallocate_raw(
-                NonNull::new_unchecked(entry.ptr as *mut u8),
-                entry.layout,
-            );
+    // 統合されたHeapRegistryのreclaim_allを使用
+    let mut heap_registry = HEAP_REGISTRY.lock();
+    
+    // ドメインのオブジェクトアドレスを取得
+    let addrs: Vec<usize> = heap_registry
+        .get_domain_objects(domain)
+        .map(|v| v.clone())
+        .unwrap_or_default();
+    let count = addrs.len();
+    
+    // 各オブジェクトを回収
+    for addr in &addrs {
+        if let Some(obj) = heap_registry.get_object(*addr) {
+            let size = obj.size;
+            // Exchange Heapから解放
+            unsafe {
+                let layout = Layout::from_size_align_unchecked(size, 8);
+                crate::mm::exchange_heap::deallocate_raw(
+                    NonNull::new_unchecked(*addr as *mut u8),
+                    layout,
+                );
+            }
         }
-        HEAP_REGISTRY.lock().unregister(entry.ptr);
     }
+    
+    // HeapRegistryから一括削除
+    let _ = heap_registry.reclaim_all(domain);
+    drop(heap_registry); // ロックを解放
 
     // ドメインのリソースカウントをリセット
     if let Some(domain) = REGISTRY.lock().domains.get_mut(&domain) {
@@ -565,6 +570,12 @@ pub fn get_domain_stats() -> DomainStats {
     }
 
     stats
+}
+
+/// ドメイン統計を取得（get_domain_statsのエイリアス）
+/// domain/registry.rs からの互換性維持のために追加
+pub fn get_stats() -> DomainStats {
+    get_domain_stats()
 }
 
 /// ドメイン一覧を表示
