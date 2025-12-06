@@ -10,7 +10,9 @@ runner = "pwsh scripts/run-uefi.ps1"
 rustflags = [
     "-C", "code-model=kernel",
     "-C", "relocation-model=static", 
-    "-C", "link-arg=-Tlinker.ld"
+    "-C", "link-arg=-Tlinker.ld",
+    # curve25519-dalekのSIMDバックエンドを無効化（no_std環境）
+    "--cfg", "curve25519_dalek_backend=\"serial\""
 ]
 
 # Alias for xtask commands
