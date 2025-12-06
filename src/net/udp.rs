@@ -3,6 +3,10 @@
 //! This module implements zero-copy UDP packet processing
 //! for the ExoRust networking stack.
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use super::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;

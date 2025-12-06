@@ -3,6 +3,10 @@
 //! ExoRust SAS アーキテクチャにおけるメモリマッピング
 //! ファイルやデバイスを直接メモリにマップ
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

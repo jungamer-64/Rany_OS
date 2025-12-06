@@ -6,6 +6,10 @@
 //! - I/Oレイテンシ測定
 //! - フレームグラフ生成サポート
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;

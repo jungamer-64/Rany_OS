@@ -2,6 +2,9 @@
 //!
 //! process_tcp_segment, network_event_task
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 
 use super::event::event_queue;
 use super::handler::{EventHandleResult, NetworkEventHandler};

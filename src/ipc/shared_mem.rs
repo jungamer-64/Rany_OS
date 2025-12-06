@@ -3,6 +3,10 @@
 //! ExoRust SAS (Single Address Space) アーキテクチャにおける
 //! 高速プロセス間通信の実装
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;

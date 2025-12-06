@@ -2,6 +2,10 @@
 //!
 //! TcpConnectionState, TcpControlBlockEntry, TcbTable, tcp_flags
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use spin::RwLock;

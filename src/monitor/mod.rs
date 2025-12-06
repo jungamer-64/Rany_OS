@@ -3,6 +3,10 @@
 // Real-time system monitoring with CPU, memory, network stats
 // ============================================================================
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 // Note: Individual modules disabled until API stabilization
 // pub mod display;
 // pub mod collectors;

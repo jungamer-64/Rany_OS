@@ -3,6 +3,10 @@
 //! システム時計、高精度タイマー、RTC (Real-Time Clock) の管理。
 //! TSC, HPET, PIT, RTC など複数のタイマーソースをサポート。
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::Port;

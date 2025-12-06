@@ -7,6 +7,10 @@
 //! - MSI-X
 //! - ホットプラグ
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use spin::RwLock;

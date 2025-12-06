@@ -4,6 +4,10 @@
 //! - Window Scale Option (WSopt)
 //! - 最大1GBのウィンドウサイズをサポート
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 /// 最大ウィンドウスケール値 (2^14 = 16384 まで)
 pub const MAX_WINDOW_SCALE: u8 = 14;
 

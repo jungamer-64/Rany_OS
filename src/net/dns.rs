@@ -3,6 +3,10 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;

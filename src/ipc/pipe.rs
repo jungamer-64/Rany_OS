@@ -3,6 +3,10 @@
 //! ExoRust Async-First アーキテクチャに基づくパイプ実装
 //! ゼロコピー転送と非同期I/Oをサポート
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

@@ -13,6 +13,10 @@
 //! - .eh_frame セクション解析
 //! - パニック時のバックトレース生成
 //! - フレームポインタベースのアンワインド（フォールバック）
+
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
 //! - gimliベースの高精度アンワインド（オプション）
 //!
 //! ## アーキテクチャ

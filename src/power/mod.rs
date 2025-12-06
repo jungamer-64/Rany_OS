@@ -3,6 +3,10 @@
 //! ACPI電源管理機能を実装し、スリープ状態、シャットダウン、
 //! 省電力モードなどを制御する。
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use spin::Mutex;
 use x86_64::instructions::port::Port;

@@ -3,6 +3,10 @@
 // 設計書 6.2: ネットワークスタック：真のゼロコピー
 // ============================================================================
 
+#![allow(dead_code)]
+#![allow(unused_imports)]
+#![allow(unused_variables)]
+
 pub mod mempool;
 pub mod tcp;
 
