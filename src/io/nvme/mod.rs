@@ -13,7 +13,14 @@
 //! - `controller`: コントローラレジスタと設定
 //! - `queue_types`: 型安全なキュー抽象化
 //! - `identify`: Identify構造体
-//! - `driver`: 高性能NVMeドライバ（ポーリングモード）
+//! - `queue`: 低レベルキュー実装
+//! - `per_core`: コアごとのキュー管理
+//! - `error`: エラー型
+//! - `polling_driver`: ポーリングモードドライバ
+//! - `async_io`: 非同期I/Oサポート
+//! - `global`: グローバルインスタンス
+//! - `scheduler`: IoScheduler統合
+//! - `driver`: 後方互換性のための再エクスポート
 
 #![allow(dead_code)]
 
@@ -23,6 +30,15 @@ pub mod regs;
 pub mod controller;
 pub mod queue_types;
 pub mod identify;
+
+// New split modules
+pub mod queue;
+pub mod per_core;
+pub mod error;
+pub mod polling_driver;
+pub mod async_io;
+pub mod global;
+pub mod scheduler;
 pub mod driver;
 
 // ============================================================================
@@ -34,7 +50,7 @@ pub use defs::{
     // Opcodes
     AdminOpcode, IoOpcode,
     // Status and Error
-    NvmeStatus, NvmeError,
+    NvmeStatus, NvmeError as DefsNvmeError,
     // Memory structures
     PrpEntry, PrpList, SglDescriptor, SglType,
     // Constants
@@ -61,11 +77,11 @@ pub use identify::{
     LbaFormat, RelativePerformance, IdentifyCns,
 };
 
-// From driver.rs - High-performance polling driver
-pub use driver::{
-    NvmePollingDriver, PerCoreNvmeQueue, NvmeQueueStats,
-    QueuePair, SubmissionQueue, CompletionQueue,
-    AsyncIoRequest, IoRequestState,
-    NvmeCommand as PollingNvmeCommand, NvmeCompletion as PollingNvmeCompletion,
-    init as init_nvme_polling, poll as nvme_poll,
-};
+// From split driver modules
+pub use queue::{SubmissionQueue, CompletionQueue, QueuePair};
+pub use per_core::{PerCoreNvmeQueue, NvmeQueueStats};
+pub use error::NvmeError;
+pub use polling_driver::{NvmePollingDriver, NvmeDriverStats};
+pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
+pub use global::{init as init_nvme_polling, poll as nvme_poll, get_stats, with_driver, with_driver_mut};
+pub use scheduler::{NvmePollHandler, register_with_io_scheduler};
