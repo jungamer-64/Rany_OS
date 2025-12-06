@@ -510,20 +510,75 @@ struct ModifierState {
 }
 
 impl ModifierState {
+    // ビット位置定数（衝突防止のため明示的に定義）
+    const BIT_LEFT_SHIFT: u32 = 0;
+    const BIT_RIGHT_SHIFT: u32 = 1;
+    const BIT_LEFT_CTRL: u32 = 2;
+    const BIT_RIGHT_CTRL: u32 = 3;
+    const BIT_LEFT_ALT: u32 = 4;
+    const BIT_RIGHT_ALT: u32 = 5;
+    const BIT_CAPS_LOCK: u32 = 6;
+    const BIT_NUM_LOCK: u32 = 7;
+    const BIT_SCROLL_LOCK: u32 = 8;
+
     // ビットマスク定数
-    const LEFT_SHIFT: u32 = 1 << 0;
-    const RIGHT_SHIFT: u32 = 1 << 1;
-    const LEFT_CTRL: u32 = 1 << 2;
-    const RIGHT_CTRL: u32 = 1 << 3;
-    const LEFT_ALT: u32 = 1 << 4;
-    const RIGHT_ALT: u32 = 1 << 5;  // AltGr
-    const CAPS_LOCK: u32 = 1 << 6;
-    const NUM_LOCK: u32 = 1 << 7;
-    const SCROLL_LOCK: u32 = 1 << 8;
+    const LEFT_SHIFT: u32 = 1 << Self::BIT_LEFT_SHIFT;
+    const RIGHT_SHIFT: u32 = 1 << Self::BIT_RIGHT_SHIFT;
+    const LEFT_CTRL: u32 = 1 << Self::BIT_LEFT_CTRL;
+    const RIGHT_CTRL: u32 = 1 << Self::BIT_RIGHT_CTRL;
+    const LEFT_ALT: u32 = 1 << Self::BIT_LEFT_ALT;
+    const RIGHT_ALT: u32 = 1 << Self::BIT_RIGHT_ALT;  // AltGr
+    const CAPS_LOCK: u32 = 1 << Self::BIT_CAPS_LOCK;
+    const NUM_LOCK: u32 = 1 << Self::BIT_NUM_LOCK;
+    const SCROLL_LOCK: u32 = 1 << Self::BIT_SCROLL_LOCK;
 
     const SHIFT_MASK: u32 = Self::LEFT_SHIFT | Self::RIGHT_SHIFT;
     const CTRL_MASK: u32 = Self::LEFT_CTRL | Self::RIGHT_CTRL;
     const ALT_MASK: u32 = Self::LEFT_ALT;  // Left Alt only for normal Alt
+
+    // コンパイル時ビット位置検証
+    const _BIT_VALIDATION: () = {
+        // 全ビット位置が32未満であることを確認
+        assert!(Self::BIT_SCROLL_LOCK < 32, "Bit position exceeds u32 range");
+
+        // ビット位置の一意性検証（網羅的）
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_RIGHT_SHIFT);
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_LEFT_CTRL);
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_RIGHT_CTRL);
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_LEFT_ALT);
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_RIGHT_ALT);
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_CAPS_LOCK);
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_NUM_LOCK);
+        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_SCROLL_LOCK);
+        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_LEFT_CTRL);
+        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_RIGHT_CTRL);
+        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_LEFT_ALT);
+        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_RIGHT_ALT);
+        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_CAPS_LOCK);
+        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_NUM_LOCK);
+        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_SCROLL_LOCK);
+        assert!(Self::BIT_LEFT_CTRL != Self::BIT_RIGHT_CTRL);
+        assert!(Self::BIT_LEFT_CTRL != Self::BIT_LEFT_ALT);
+        assert!(Self::BIT_LEFT_CTRL != Self::BIT_RIGHT_ALT);
+        assert!(Self::BIT_LEFT_CTRL != Self::BIT_CAPS_LOCK);
+        assert!(Self::BIT_LEFT_CTRL != Self::BIT_NUM_LOCK);
+        assert!(Self::BIT_LEFT_CTRL != Self::BIT_SCROLL_LOCK);
+        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_LEFT_ALT);
+        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_RIGHT_ALT);
+        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_CAPS_LOCK);
+        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_NUM_LOCK);
+        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_SCROLL_LOCK);
+        assert!(Self::BIT_LEFT_ALT != Self::BIT_RIGHT_ALT);
+        assert!(Self::BIT_LEFT_ALT != Self::BIT_CAPS_LOCK);
+        assert!(Self::BIT_LEFT_ALT != Self::BIT_NUM_LOCK);
+        assert!(Self::BIT_LEFT_ALT != Self::BIT_SCROLL_LOCK);
+        assert!(Self::BIT_RIGHT_ALT != Self::BIT_CAPS_LOCK);
+        assert!(Self::BIT_RIGHT_ALT != Self::BIT_NUM_LOCK);
+        assert!(Self::BIT_RIGHT_ALT != Self::BIT_SCROLL_LOCK);
+        assert!(Self::BIT_CAPS_LOCK != Self::BIT_NUM_LOCK);
+        assert!(Self::BIT_CAPS_LOCK != Self::BIT_SCROLL_LOCK);
+        assert!(Self::BIT_NUM_LOCK != Self::BIT_SCROLL_LOCK);
+    };
 
     const fn new() -> Self {
         Self {
@@ -581,55 +636,69 @@ impl ModifierState {
 // IsrSafeWaker - 割り込み安全なWaker通知機構
 // ============================================================================
 
-/// マルチコア対応 ISR-Safe Waker通知機構
+/// ISR安全なWaker通知機構（ダブルバッファ方式）
 ///
 /// ISR（割り込みハンドラ）から安全にWakerを起床させるための機構。
-/// シングルコアおよびマルチコア環境の両方で安全に動作します。
 ///
-/// # Phase 5での改善点
+/// # 設計
 ///
-/// **マルチコア環境での安全性を確保:**
-/// - Epoch-based reclamationパターンにより、Wakerの解放とアクセスの競合を回避
-/// - 2世代のWakerスロットを使用し、ISRアクセス中でも安全に更新可能
-/// - 全ての操作がロックフリーでISRから安全に呼び出し可能
+/// - ISRは`notify()`でpendingフラグを立てるのみ（アロケーションなし）
+/// - Consumerは`check_and_wake()`で実際の起床処理
+/// - 2スロットバッファで、ISRアクセス中の更新を安全化
 ///
-/// # 設計原則
+/// # ⚠️ 注意: これは真のEpoch-based Reclamationではありません
 ///
-/// **ISR内では絶対にアロケータを呼ばない**ことを保証するため、
-/// ISRでは`AtomicBool`フラグを立てるだけにし、実際の`Waker::wake()`は
-/// Consumer側の`poll()`開始時に行う。
+/// このダブルバッファ方式は、ISRが`notify()`でpendingフラグのみを操作し、
+/// Wakerを直接操作しないことを前提としています。そのため、完全なEBRは不要です。
 ///
-/// ## Epoch-based Reclamationアルゴリズム
+/// ## 動作フロー
 ///
 /// ```text
-/// [2つのWakerスロット: current_epoch が指すスロットが有効]
+/// ISR (Producer):
+///   handle_scancode() -> notify() -> pending.store(true)
+///   [Wakerは触らない]
 ///
-/// register(waker):
-///   1. 次のepochスロットにwakerを書き込み
-///   2. current_epoch をインクリメント（奇数/偶数でスロット決定）
-///   3. 古いスロットは次の register() まで保持（ISRがまだ参照中かも）
+/// Consumer (poll):
+///   poll() -> register(waker) -> 次スロットにWaker書き込み
+///                              -> epoch更新
 ///
-/// notify() [ISR]:
-///   1. current_epoch を読み取り
-///   2. そのepochスロットから Waker を参照（読み取りのみ）
-///   3. pending フラグをセット
-///
-/// check_and_wake() [Consumer]:
-///   1. pending フラグをクリア
-///   2. current_epoch のスロットから wake_by_ref()
+/// Executor/Consumer:
+///   check_and_wake() -> pending確認
+///                    -> current_epochスロットから wake_by_ref()
 /// ```
 ///
 /// ## 安全性の保証
 ///
-/// - ISRは常にvalidなWakerスロットを参照（古いスロットも前のregister()まで有効）
-/// - register()は新スロット書き込み → epoch更新 の順で実行
-/// - ISRがregister()中にnotify()を呼んでも、古いor新しいスロットのどちらかを参照
+/// | 操作 | 呼び出し元 | アクセス対象 | 安全性 |
+/// |------|-----------|-------------|--------|
+/// | notify() | ISR | pendingフラグのみ | ✅ AtomicBoolのみ |
+/// | register() | Consumer | 次スロット書き込み | ✅ 排他アクセス |
+/// | check_and_wake() | Consumer | 現スロット読み取り | ✅ Release-Acquire |
 ///
 /// # Safety Contract
 ///
-/// - `register()`はConsumerスレッドからのみ呼び出し
-/// - `notify()`はISRから呼ばれてもOK（読み取りのみ + AtomicBool操作）
-/// - `check_and_wake()`はConsumer/Executorスレッドからのみ呼び出し
+/// この`unsafe impl Send/Sync`は以下の契約に基づきます：
+///
+/// 1. **`register()`はConsumerスレッドからのみ呼び出す**
+///    - 次スロットへの書き込みは単一スレッドからのみ
+///    - ISRは現スロットのみ参照するため競合なし
+///
+/// 2. **`notify()`はISRから呼ばれても安全**
+///    - `pending: AtomicBool`のみ操作
+///    - Wakerスロットは一切触らない
+///
+/// 3. **`check_and_wake()`はConsumer/Executorからのみ呼び出す**
+///    - `pending.swap(false)`でISRとの同期
+///    - epoch読み取り後のスロット参照はRelease-Acquireで保護
+///
+/// 4. **Waker::clone()とwake_by_ref()はSend/Sync安全**
+///    - Wakerの契約による保証
+///
+/// # 検証状況
+///
+/// - [x] シングルコア環境: 割り込み禁止なしでも安全（ISRがWaker触らない）
+/// - [ ] マルチコア環境: 形式検証未実施（Miri/Loomでのテスト推奨）
+/// - [ ] 弱メモリモデル（ARM/RISC-V）: Release-Acquireで理論上安全だが実機未検証
 struct IsrSafeWaker {
     /// 起床が保留されているか（ISRがセット、Consumer/Executorがクリア）
     pending: AtomicBool,
@@ -653,10 +722,17 @@ struct IsrSafeWaker {
     has_waker: AtomicBool,
 }
 
-// Safety: Epoch-based reclamationにより以下を保証:
-// - ISRは常にvalidなWakerスロットを参照
-// - register()による書き込みは、古いスロットへのISRアクセス完了後に上書き
-// - notify()は pending フラグと Waker参照のみ（アロケーションなし）
+// Safety: ダブルバッファ方式により以下を保証
+//
+// 1. ISRは`notify()`でpendingフラグのみ操作（Wakerスロット触らない）
+// 2. register()は次スロットに書き込み → epoch更新（現スロットは安全）
+// 3. check_and_wake()は現スロットを参照（Release-Acquire同期）
+//
+// 前提条件:
+// - register()はConsumerスレッドからのみ呼ばれる
+// - ISRはnotify()のみ呼び出す（Waker操作なし）
+//
+// ⚠️ 形式検証未実施: 商用利用前にMiri/Loomでのテストを推奨
 unsafe impl Send for IsrSafeWaker {}
 unsafe impl Sync for IsrSafeWaker {}
 
@@ -798,6 +874,42 @@ impl IsrSafeWaker {
 /// │ bit 8:    Extended Flag (0xE0 prefix)  │
 /// │ bit 7-0:  Raw Scancode                 │
 /// └─────────────────────────────────────────┘
+/// ```
+///
+/// # Memory Ordering契約
+///
+/// ## Producer (ISR) → Consumer (poll) の同期
+///
+/// ```text
+/// Producer (push):                    Consumer (pop):
+/// ─────────────────                   ─────────────────
+/// 1. buffer[tail].store(Release)      1. tail.load(Acquire)  ←── 同期点
+/// 2. tail.store(Release) ───────────►
+///                                     2. buffer[head].load(Acquire)
+///                                     3. head.store(Release)
+/// ```
+///
+/// ## 保証
+///
+/// - Release-Acquire同期により、Consumerが新しいtailを見たとき
+///   buffer[old_tail]のデータが確実に見える（C++11メモリモデル準拠）
+///
+/// ## ⚠️ プラットフォーム考慮事項
+///
+/// - **x86-64 (TSO)**: Release-Acquireは自動的に保証される
+/// - **ARM64 (弱メモリモデル)**: 理論上安全だが、実機検証推奨
+/// - **RISC-V**: fence命令が必要な場合あり（コンパイラが挿入）
+///
+/// # 検証推奨
+///
+/// 商用利用前にLoomでのテストを推奨:
+/// ```ignore
+/// #[test]
+/// fn loom_test_queue() {
+///     loom::model(|| {
+///         // Producer/Consumer並行テスト
+///     });
+/// }
 /// ```
 struct ScancodeQueue {
     buffer: [core::sync::atomic::AtomicU16; SCANCODE_QUEUE_SIZE],
@@ -958,12 +1070,29 @@ impl KeyboardDriver {
     /// ドロップされたイベント数を取得（診断用）
     ///
     /// # Returns
-    /// キュー満杯によりドロップされたイベントの総数
+    /// キュー満杯によりドロップされたイベントの総数。
+    ///
+    /// # 飽和動作
+    /// カウンタは飽和加算を使用しており、`u64::MAX`に達すると
+    /// それ以上増加しません。`u64::MAX`は約1845京イベントに相当し、
+    /// 毎秒1000イベントでも約585億年かかるため、実用上は問題になりません。
+    ///
+    /// # 使用例
+    /// ```ignore
+    /// let dropped = driver.dropped_events();
+    /// if dropped > 0 {
+    ///     log!("Warning: {} events dropped due to full queue", dropped);
+    ///     driver.reset_dropped_events();  // 必要に応じてリセット
+    /// }
+    /// ```
     pub fn dropped_events(&self) -> u64 {
         self.dropped_events.load(Ordering::Relaxed)
     }
 
     /// ドロップカウンタをリセット（診断用）
+    ///
+    /// # Returns
+    /// リセット前の値を返す。これにより、アトミックに「読み取りとリセット」を行える。
     pub fn reset_dropped_events(&self) -> u64 {
         self.dropped_events.swap(0, Ordering::Relaxed)
     }
@@ -1371,6 +1500,10 @@ impl Drop for KeyboardStreamArc {
 }
 
 /// 文字入力待ちFuture（Arc<dyn Keymap>版）
+///
+/// # Note
+/// `CharFuture`と同様のバジェット制限（MAX_EVENTS_PER_POLL）を適用。
+/// 詳細は`CharFuture`のドキュメントを参照。
 pub struct CharFutureArc<'a> {
     driver: &'static KeyboardDriver,
     keymap: &'a Arc<dyn Keymap>,
@@ -1383,9 +1516,21 @@ impl Future for CharFutureArc<'_> {
         // poll開始時に保留中のISR通知を処理
         self.driver.process_pending_wake();
 
-        // 文字が得られるまでループ
+        // イベント処理回数のバジェット制限
+        // 最悪ケースでも MAX_EVENTS_PER_POLL 回で処理を打ち切り、
+        // 他のタスクに実行機会を与える
+        let mut events_processed = 0;
+
+        // 文字が得られるまでループ（バジェット制限付き）
         loop {
+            if events_processed >= MAX_EVENTS_PER_POLL {
+                // バジェット超過: 次回pollに持ち越し
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+
             if let Some(event) = self.driver.poll_key_event_internal() {
+                events_processed += 1;
                 // Pressedイベントのみ処理
                 if event.state == KeyState::Pressed {
                     if let Some(ch) = self.keymap.to_char(event.key, &event.modifiers) {
@@ -1450,33 +1595,66 @@ pub struct CharFuture {
     keymap: &'static dyn Keymap,
 }
 
+/// 1回のpoll()で処理するイベントの最大数
+///
+/// リアルタイム性を保つため、修飾キーだけが大量に来ても
+/// poll()が長時間ブロックしないようにする。
+const MAX_EVENTS_PER_POLL: usize = 16;
+
 impl Future for CharFuture {
     type Output = char;
 
+    /// # Performance
+    ///
+    /// - **Best case**: O(1) - 最初のイベントが文字に変換可能
+    /// - **Typical case**: O(数個) - 修飾キーを数個スキップ
+    /// - **Worst case**: O(MAX_EVENTS_PER_POLL) - バジェット制限で中断
+    ///
+    /// バジェット(MAX_EVENTS_PER_POLL=16)を超えた場合は`wake_by_ref()`で
+    /// 次回pollに持ち越し。これによりExecutorの公平性を維持。
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // ✅ poll開始時に保留中のISR通知を処理
+        // poll開始時に保留中のISR通知を処理
         self.driver.process_pending_wake();
 
+        let mut events_checked: usize = 0;
+
         loop {
+            // バジェット制限: リアルタイム性のため
+            if events_checked >= MAX_EVENTS_PER_POLL {
+                // タイムスライス使い果たし - 次回に持ち越し
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
+            }
+
             if let Some(event) = self.driver.poll_key_event_internal() {
-                // 動的キーマップを使用して文字変換
+                events_checked += 1;
+
+                // Releasedイベントはスキップ
                 if event.state == KeyState::Released {
                     continue;
                 }
+                // 文字に変換可能か
                 if let Some(c) = self.keymap.to_char(event.key, &event.modifiers) {
                     return Poll::Ready(c);
                 }
+                // 変換できないキー（修飾キー等）はスキップ
                 continue;
             } else {
+                // キューが空 - Wakerを登録して待機
                 self.driver.register_waker(cx.waker());
+
                 // ダブルチェック: register後にデータが来ていないか
                 if let Some(event) = self.driver.poll_key_event_internal() {
+                    events_checked += 1;
+
                     if event.state == KeyState::Released {
                         continue;
                     }
                     if let Some(c) = self.keymap.to_char(event.key, &event.modifiers) {
                         return Poll::Ready(c);
                     }
+                    // 変換できなければ次のループへ
+                    continue;
                 }
                 return Poll::Pending;
             }

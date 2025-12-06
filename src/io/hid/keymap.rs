@@ -54,7 +54,43 @@ pub trait Keymap: Send + Sync {
     ///
     /// キーマップ実装者はこのメソッドのみを実装する。
     /// Ctrl+文字などの制御コード処理は`to_char()`で共通化されている。
-    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, alt_gr: bool) -> Option<char>;
+    ///
+    /// # Arguments
+    /// * `key` - 変換対象のキーコード
+    /// * `modifiers` - 現在のモディファイア状態（Shift, CapsLock, AltGr等）
+    ///
+    /// # Note (API変更履歴)
+    /// 以前は`(key, shift, caps_lock, alt_gr)`の4引数でしたが、
+    /// 拡張性のため`Modifiers`構造体に統一されました。
+    fn to_char_raw(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char>;
+
+    /// CapsLockとShiftの組み合わせを適用（共通ユーティリティ）
+    ///
+    /// ASCII文字の大文字/小文字変換に使用。
+    /// ShiftとCapsLockのXORで大文字/小文字を決定。
+    ///
+    /// # Examples
+    /// ```ignore
+    /// // Shift=false, CapsLock=false → 小文字
+    /// assert_eq!(Self::apply_case(false, false, 'a'), 'a');
+    /// // Shift=true,  CapsLock=false → 大文字
+    /// assert_eq!(Self::apply_case(true, false, 'a'), 'A');
+    /// // Shift=false, CapsLock=true  → 大文字
+    /// assert_eq!(Self::apply_case(false, true, 'a'), 'A');
+    /// // Shift=true,  CapsLock=true  → 小文字（XOR）
+    /// assert_eq!(Self::apply_case(true, true, 'a'), 'a');
+    /// ```
+    #[inline]
+    fn apply_case(shift: bool, caps_lock: bool, ch: char) -> char
+    where
+        Self: Sized,
+    {
+        if shift ^ caps_lock {
+            ch.to_ascii_uppercase()
+        } else {
+            ch
+        }
+    }
 
     /// キーコードを文字に変換（制御コード処理込み）
     ///
@@ -127,7 +163,7 @@ pub trait Keymap: Send + Sync {
         }
 
         // 通常の文字変換はキーマップ実装に委譲
-        self.to_char_raw(key, modifiers.shift, modifiers.caps_lock, modifiers.alt_gr)
+        self.to_char_raw(key, modifiers)
     }
 
     /// レイアウト名を取得
@@ -136,6 +172,10 @@ pub trait Keymap: Send + Sync {
     /// 簡易変換（後方互換性用）
     ///
     /// 新しいコードでは`to_char(key, modifiers)`を使用してください。
+    #[deprecated(
+        since = "0.2.0",
+        note = "Use to_char(key, &Modifiers { shift, caps_lock, ..Default::default() }) instead"
+    )]
     fn to_char_simple(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
         let modifiers = Modifiers {
             shift,
@@ -161,7 +201,12 @@ impl Keymap for UsQwertyKeymap {
         "US QWERTY"
     }
 
-    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, _alt_gr: bool) -> Option<char> {
+    fn to_char_raw(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char> {
+        let shift = modifiers.shift;
+        let caps_lock = modifiers.caps_lock;
+        // AltGr: USキーマップでは使用しない（将来の拡張用）
+        // let _alt_gr = modifiers.alt_gr;
+
         // 数字キー（Shiftで記号）
         let ch = match key {
             KeyCode::Key1 => return Some(if shift { '!' } else { '1' }),
@@ -281,7 +326,12 @@ impl Keymap for JisKeymap {
         "JIS (Japanese)"
     }
 
-    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, _alt_gr: bool) -> Option<char> {
+    fn to_char_raw(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char> {
+        let shift = modifiers.shift;
+        let caps_lock = modifiers.caps_lock;
+        // AltGr: JISキーマップでは使用しない
+        // let _alt_gr = modifiers.alt_gr;
+
         // JIS配列での記号キー配置
         // ほとんどのキーはUS配列と同じだが、一部の記号が異なる
         match key {
@@ -308,32 +358,33 @@ impl Keymap for JisKeymap {
             KeyCode::BackTick => Some(if shift { '~' } else { '`' }),     // 半角/全角キーの代替
 
             // アルファベット（US配列と同じ）
-            KeyCode::A => Some(Self::apply_caps(shift, caps_lock, 'a')),
-            KeyCode::B => Some(Self::apply_caps(shift, caps_lock, 'b')),
-            KeyCode::C => Some(Self::apply_caps(shift, caps_lock, 'c')),
-            KeyCode::D => Some(Self::apply_caps(shift, caps_lock, 'd')),
-            KeyCode::E => Some(Self::apply_caps(shift, caps_lock, 'e')),
-            KeyCode::F => Some(Self::apply_caps(shift, caps_lock, 'f')),
-            KeyCode::G => Some(Self::apply_caps(shift, caps_lock, 'g')),
-            KeyCode::H => Some(Self::apply_caps(shift, caps_lock, 'h')),
-            KeyCode::I => Some(Self::apply_caps(shift, caps_lock, 'i')),
-            KeyCode::J => Some(Self::apply_caps(shift, caps_lock, 'j')),
-            KeyCode::K => Some(Self::apply_caps(shift, caps_lock, 'k')),
-            KeyCode::L => Some(Self::apply_caps(shift, caps_lock, 'l')),
-            KeyCode::M => Some(Self::apply_caps(shift, caps_lock, 'm')),
-            KeyCode::N => Some(Self::apply_caps(shift, caps_lock, 'n')),
-            KeyCode::O => Some(Self::apply_caps(shift, caps_lock, 'o')),
-            KeyCode::P => Some(Self::apply_caps(shift, caps_lock, 'p')),
-            KeyCode::Q => Some(Self::apply_caps(shift, caps_lock, 'q')),
-            KeyCode::R => Some(Self::apply_caps(shift, caps_lock, 'r')),
-            KeyCode::S => Some(Self::apply_caps(shift, caps_lock, 's')),
-            KeyCode::T => Some(Self::apply_caps(shift, caps_lock, 't')),
-            KeyCode::U => Some(Self::apply_caps(shift, caps_lock, 'u')),
-            KeyCode::V => Some(Self::apply_caps(shift, caps_lock, 'v')),
-            KeyCode::W => Some(Self::apply_caps(shift, caps_lock, 'w')),
-            KeyCode::X => Some(Self::apply_caps(shift, caps_lock, 'x')),
-            KeyCode::Y => Some(Self::apply_caps(shift, caps_lock, 'y')),
-            KeyCode::Z => Some(Self::apply_caps(shift, caps_lock, 'z')),
+            // トレイトの共通apply_case()を使用
+            KeyCode::A => Some(Self::apply_case(shift, caps_lock, 'a')),
+            KeyCode::B => Some(Self::apply_case(shift, caps_lock, 'b')),
+            KeyCode::C => Some(Self::apply_case(shift, caps_lock, 'c')),
+            KeyCode::D => Some(Self::apply_case(shift, caps_lock, 'd')),
+            KeyCode::E => Some(Self::apply_case(shift, caps_lock, 'e')),
+            KeyCode::F => Some(Self::apply_case(shift, caps_lock, 'f')),
+            KeyCode::G => Some(Self::apply_case(shift, caps_lock, 'g')),
+            KeyCode::H => Some(Self::apply_case(shift, caps_lock, 'h')),
+            KeyCode::I => Some(Self::apply_case(shift, caps_lock, 'i')),
+            KeyCode::J => Some(Self::apply_case(shift, caps_lock, 'j')),
+            KeyCode::K => Some(Self::apply_case(shift, caps_lock, 'k')),
+            KeyCode::L => Some(Self::apply_case(shift, caps_lock, 'l')),
+            KeyCode::M => Some(Self::apply_case(shift, caps_lock, 'm')),
+            KeyCode::N => Some(Self::apply_case(shift, caps_lock, 'n')),
+            KeyCode::O => Some(Self::apply_case(shift, caps_lock, 'o')),
+            KeyCode::P => Some(Self::apply_case(shift, caps_lock, 'p')),
+            KeyCode::Q => Some(Self::apply_case(shift, caps_lock, 'q')),
+            KeyCode::R => Some(Self::apply_case(shift, caps_lock, 'r')),
+            KeyCode::S => Some(Self::apply_case(shift, caps_lock, 's')),
+            KeyCode::T => Some(Self::apply_case(shift, caps_lock, 't')),
+            KeyCode::U => Some(Self::apply_case(shift, caps_lock, 'u')),
+            KeyCode::V => Some(Self::apply_case(shift, caps_lock, 'v')),
+            KeyCode::W => Some(Self::apply_case(shift, caps_lock, 'w')),
+            KeyCode::X => Some(Self::apply_case(shift, caps_lock, 'x')),
+            KeyCode::Y => Some(Self::apply_case(shift, caps_lock, 'y')),
+            KeyCode::Z => Some(Self::apply_case(shift, caps_lock, 'z')),
 
             // その他（US配列と共通）
             KeyCode::Space => Some(' '),
@@ -367,17 +418,8 @@ impl Keymap for JisKeymap {
     }
 }
 
-impl JisKeymap {
-    /// CapsLockとShiftの組み合わせを適用
-    #[inline]
-    fn apply_caps(shift: bool, caps_lock: bool, ch: char) -> char {
-        if shift ^ caps_lock {
-            ch.to_ascii_uppercase()
-        } else {
-            ch
-        }
-    }
-}
+// JisKeymap: apply_case()はトレイトのデフォルト実装を使用するため、
+// 個別のimplブロックは不要になりました。
 
 // ============================================================================
 // Dvorak配列キーマップ
@@ -407,7 +449,12 @@ impl Keymap for DvorakKeymap {
         "Dvorak"
     }
 
-    fn to_char_raw(&self, key: KeyCode, shift: bool, caps_lock: bool, _alt_gr: bool) -> Option<char> {
+    fn to_char_raw(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char> {
+        let shift = modifiers.shift;
+        let caps_lock = modifiers.caps_lock;
+        // AltGr: Dvorakキーマップでは使用しない
+        // let _alt_gr = modifiers.alt_gr;
+
         match key {
             // 数字キー上段（Dvorakでも通常は同じ）
             KeyCode::Key1 => Some(if shift { '!' } else { '1' }),
@@ -426,43 +473,44 @@ impl Keymap for DvorakKeymap {
             KeyCode::Equals => Some(if shift { '}' } else { ']' }), // QWERTYの=位置
 
             // 上段アルファベット行（QWERTY QWERTYUIOP → Dvorak ',.PYFGCRL）
+            // トレイトの共通apply_case()を使用
             KeyCode::Q => Some(if shift { '"' } else { '\'' }),   // ' "
             KeyCode::W => Some(if shift { '<' } else { ',' }),    // , <
             KeyCode::E => Some(if shift { '>' } else { '.' }),    // . >
-            KeyCode::R => Some(Self::apply_caps(shift, caps_lock, 'p')),
-            KeyCode::T => Some(Self::apply_caps(shift, caps_lock, 'y')),
-            KeyCode::Y => Some(Self::apply_caps(shift, caps_lock, 'f')),
-            KeyCode::U => Some(Self::apply_caps(shift, caps_lock, 'g')),
-            KeyCode::I => Some(Self::apply_caps(shift, caps_lock, 'c')),
-            KeyCode::O => Some(Self::apply_caps(shift, caps_lock, 'r')),
-            KeyCode::P => Some(Self::apply_caps(shift, caps_lock, 'l')),
+            KeyCode::R => Some(Self::apply_case(shift, caps_lock, 'p')),
+            KeyCode::T => Some(Self::apply_case(shift, caps_lock, 'y')),
+            KeyCode::Y => Some(Self::apply_case(shift, caps_lock, 'f')),
+            KeyCode::U => Some(Self::apply_case(shift, caps_lock, 'g')),
+            KeyCode::I => Some(Self::apply_case(shift, caps_lock, 'c')),
+            KeyCode::O => Some(Self::apply_case(shift, caps_lock, 'r')),
+            KeyCode::P => Some(Self::apply_case(shift, caps_lock, 'l')),
             KeyCode::LeftBracket => Some(if shift { '?' } else { '/' }),   // / ?
             KeyCode::RightBracket => Some(if shift { '+' } else { '=' }), // = +
 
             // 中段アルファベット行（QWERTY ASDFGHJKL;' → Dvorak AOEUIDHTNS-）
-            KeyCode::A => Some(Self::apply_caps(shift, caps_lock, 'a')),
-            KeyCode::S => Some(Self::apply_caps(shift, caps_lock, 'o')),
-            KeyCode::D => Some(Self::apply_caps(shift, caps_lock, 'e')),
-            KeyCode::F => Some(Self::apply_caps(shift, caps_lock, 'u')),
-            KeyCode::G => Some(Self::apply_caps(shift, caps_lock, 'i')),
-            KeyCode::H => Some(Self::apply_caps(shift, caps_lock, 'd')),
-            KeyCode::J => Some(Self::apply_caps(shift, caps_lock, 'h')),
-            KeyCode::K => Some(Self::apply_caps(shift, caps_lock, 't')),
-            KeyCode::L => Some(Self::apply_caps(shift, caps_lock, 'n')),
-            KeyCode::Semicolon => Some(Self::apply_caps(shift, caps_lock, 's')),
+            KeyCode::A => Some(Self::apply_case(shift, caps_lock, 'a')),
+            KeyCode::S => Some(Self::apply_case(shift, caps_lock, 'o')),
+            KeyCode::D => Some(Self::apply_case(shift, caps_lock, 'e')),
+            KeyCode::F => Some(Self::apply_case(shift, caps_lock, 'u')),
+            KeyCode::G => Some(Self::apply_case(shift, caps_lock, 'i')),
+            KeyCode::H => Some(Self::apply_case(shift, caps_lock, 'd')),
+            KeyCode::J => Some(Self::apply_case(shift, caps_lock, 'h')),
+            KeyCode::K => Some(Self::apply_case(shift, caps_lock, 't')),
+            KeyCode::L => Some(Self::apply_case(shift, caps_lock, 'n')),
+            KeyCode::Semicolon => Some(Self::apply_case(shift, caps_lock, 's')),
             KeyCode::Quote => Some(if shift { '_' } else { '-' }),  // - _
 
             // 下段アルファベット行（QWERTY ZXCVBNM,./ → Dvorak ;QJKXBMWVZ）
             KeyCode::Z => Some(if shift { ':' } else { ';' }),    // ; :
-            KeyCode::X => Some(Self::apply_caps(shift, caps_lock, 'q')),
-            KeyCode::C => Some(Self::apply_caps(shift, caps_lock, 'j')),
-            KeyCode::V => Some(Self::apply_caps(shift, caps_lock, 'k')),
-            KeyCode::B => Some(Self::apply_caps(shift, caps_lock, 'x')),
-            KeyCode::N => Some(Self::apply_caps(shift, caps_lock, 'b')),
-            KeyCode::M => Some(Self::apply_caps(shift, caps_lock, 'm')),
-            KeyCode::Comma => Some(Self::apply_caps(shift, caps_lock, 'w')),
-            KeyCode::Period => Some(Self::apply_caps(shift, caps_lock, 'v')),
-            KeyCode::Slash => Some(Self::apply_caps(shift, caps_lock, 'z')),
+            KeyCode::X => Some(Self::apply_case(shift, caps_lock, 'q')),
+            KeyCode::C => Some(Self::apply_case(shift, caps_lock, 'j')),
+            KeyCode::V => Some(Self::apply_case(shift, caps_lock, 'k')),
+            KeyCode::B => Some(Self::apply_case(shift, caps_lock, 'x')),
+            KeyCode::N => Some(Self::apply_case(shift, caps_lock, 'b')),
+            KeyCode::M => Some(Self::apply_case(shift, caps_lock, 'm')),
+            KeyCode::Comma => Some(Self::apply_case(shift, caps_lock, 'w')),
+            KeyCode::Period => Some(Self::apply_case(shift, caps_lock, 'v')),
+            KeyCode::Slash => Some(Self::apply_case(shift, caps_lock, 'z')),
 
             // バックスラッシュ/グレーブキー
             KeyCode::BackTick => Some(if shift { '~' } else { '`' }),
@@ -497,17 +545,8 @@ impl Keymap for DvorakKeymap {
     }
 }
 
-impl DvorakKeymap {
-    /// CapsLockとShiftの組み合わせを適用
-    #[inline]
-    fn apply_caps(shift: bool, caps_lock: bool, ch: char) -> char {
-        if shift ^ caps_lock {
-            ch.to_ascii_uppercase()
-        } else {
-            ch
-        }
-    }
-}
+// DvorakKeymap: apply_case()はトレイトのデフォルト実装を使用するため、
+// 個別のimplブロックは不要になりました。
 
 // ============================================================================
 // グローバルキーマップインスタンス

@@ -307,7 +307,11 @@ extern "C" fn kmain() -> ! {
     // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）
     info!(target: "init", "Initializing input devices");
     io::hid::keyboard_init();
-    io::hid::mouse_init();
+    // マウスは存在しない環境もあるため、エラーでも処理を継続
+    match io::hid::mouse_init() {
+        Ok(()) => info!(target: "init", "Mouse initialized"),
+        Err(e) => warn!(target: "init", "Mouse init failed: {} (continuing without mouse)", e),
+    }
     info!(target: "init", "Input devices initialized");
     
     // 完了
