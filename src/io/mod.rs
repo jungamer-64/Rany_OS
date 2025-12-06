@@ -8,7 +8,7 @@ pub mod ahci_atapi;   // AHCI ATAPI (CD/DVD) Support
 pub mod apic;
 pub mod audio;
 pub mod dma;
-pub mod hid;         // HID subsystem (directory) - keyboard.rs, ps2.rs
+pub mod hid;         // HID subsystem (directory) - keyboard.rs, mouse.rs, ps2.rs
 pub mod ide;
 pub mod io_scheduler; // Polling/Executor連携 I/Oスケジューラ
 pub mod iommu;

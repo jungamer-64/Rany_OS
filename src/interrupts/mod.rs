@@ -351,8 +351,8 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
     let mut port = Port::new(0x60);
     let scancode: u8 = unsafe { port.read() };
 
-    // スキャンコードをinputモジュールに渡して処理
-    crate::input::handle_scancode(scancode);
+    // スキャンコードをhidモジュールに渡して処理
+    crate::io::hid::handle_keyboard_interrupt(scancode);
 
     // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
     crate::task::interrupt_waker::wake_from_interrupt(
@@ -374,8 +374,8 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFr
     let mut port = Port::new(0x60);
     let data: u8 = unsafe { port.read() };
 
-    // データをinputモジュールに渡して処理
-    crate::input::handle_mouse_packet(data);
+    // データをhidモジュールに渡して処理
+    crate::io::hid::handle_mouse_packet(data);
 
     // Interrupt-Wakerブリッジにマウス割り込みを通知
     crate::task::interrupt_waker::wake_from_interrupt(

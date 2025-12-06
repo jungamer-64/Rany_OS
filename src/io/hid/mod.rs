@@ -9,8 +9,10 @@
 //! ## モジュール構成
 //! - `ps2` - PS/2コントローラドライバ
 //! - `keyboard` - 非同期キーボードドライバ
+//! - `mouse` - PS/2マウスドライバ
 
 pub mod keyboard;
+pub mod mouse;
 pub mod ps2;
 
 // PS/2 Controller exports
@@ -49,12 +51,38 @@ pub use keyboard::{
     KeyCode,
     KeyState,
     KeyEvent,
+    Modifiers,
     KeyboardDriver,
     KeyEventFuture,
     CharFuture,
     LineFuture,
+    // Type aliases for compatibility with old shell code
+    KeyCode as InputKeyCode,
+    KeyState as InputKeyState,
+    KeyEvent as InputKeyEvent,
+    Modifiers as InputModifiers,
     // Functions
     keyboard,
     init as keyboard_init,
     handle_keyboard_interrupt,
+    // Synchronous polling API
+    poll_key_event,
+    poll_char as poll_key_char,
+    has_event as has_key_event,
+    // Compatibility aliases
+    poll_key_event as poll_input_event,
+};
+
+// Mouse driver exports
+#[allow(unused_imports)]
+pub use mouse::{
+    // Types
+    MouseButton as MouseBtn,
+    MouseEvent as MouseEvt,
+    // Functions
+    init as mouse_init,
+    handle_mouse_packet,
+    poll_mouse_event,
+    has_mouse_event,
+    is_mouse_initialized,
 };

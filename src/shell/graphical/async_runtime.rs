@@ -14,7 +14,7 @@ use alloc::string::String;
 use spin::Mutex;
 
 use crate::graphics::Color;
-use crate::input::{poll_event, poll_mouse_event};
+use crate::io::hid::{poll_input_event, poll_mouse_event};
 use crate::shell::exoshell::{ExoShell, ExoValue};
 
 use super::shell::GraphicalShell;
@@ -150,7 +150,7 @@ pub async fn run_async_shell() {
             if let Some(ref mut shell) = *guard {
                 // キーイベントを処理（最大16イベントずつ処理してUIの応答性を保つ）
                 for _ in 0..16 {
-                    if let Some(event) = poll_event() {
+                    if let Some(event) = poll_input_event() {
                         shell.handle_key(event);
                     } else {
                         break;
