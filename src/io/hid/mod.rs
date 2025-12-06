@@ -78,6 +78,7 @@ pub use keyboard::{
     // Driver and stream
     KeyboardDriver,
     KeyboardStream,
+    StreamAlreadyTaken,
     // Async futures (deprecated - use KeyboardStream instead)
     KeyEventFuture,
     CharFuture,
