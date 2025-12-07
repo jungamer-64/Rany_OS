@@ -194,6 +194,71 @@ pub struct ElfLoader<'a> {
     header: Elf64Header,
 }
 
+// ============================================================================
+// 【設計書 2.2】安全なメモリ読み取りラッパー関数
+// 生ポインタの直接操作を避け、境界チェック付きの関数を提供
+// ============================================================================
+
+/// 安全に構造体を読み取る
+/// 
+/// 【設計書 2.2】生ポインタ操作を避け、境界チェック付きで構造体を読み取る。
+/// 内部では unsafe を使用するが、呼び出し前に全ての境界チェックを実施。
+#[inline]
+fn read_struct<T: Copy>(data: &[u8], offset: usize) -> Result<T, LoadError> {
+    let size = mem::size_of::<T>();
+    
+    // オーバーフローチェック
+    let end = offset.checked_add(size)
+        .ok_or_else(|| LoadError::InvalidFormat("Offset overflow".into()))?;
+    
+    // 境界チェック
+    if end > data.len() {
+        return Err(LoadError::InvalidFormat(
+            alloc::format!("Read out of bounds: offset={}, size={}, data_len={}", 
+                offset, size, data.len())
+        ));
+    }
+    
+    // アライメントチェック（オプショナルだがより安全）
+    let align = mem::align_of::<T>();
+    let ptr = data.as_ptr().wrapping_add(offset);
+    if (ptr as usize) % align != 0 {
+        // アライメントが合わない場合はコピーして読み取り
+        let mut buf = mem::MaybeUninit::<T>::uninit();
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                data.as_ptr().add(offset),
+                buf.as_mut_ptr() as *mut u8,
+                size
+            );
+            Ok(buf.assume_init())
+        }
+    } else {
+        // アライメントが合う場合は直接読み取り
+        Ok(unsafe { core::ptr::read(ptr as *const T) })
+    }
+}
+
+/// 安全にバイトスライスを取得
+/// 
+/// 【設計書 2.2】境界チェック付きでスライスを取得。
+#[inline]
+fn get_slice(data: &[u8], offset: usize, len: usize) -> Result<&[u8], LoadError> {
+    // オーバーフローチェック
+    let end = offset.checked_add(len)
+        .ok_or_else(|| LoadError::InvalidFormat("Slice offset overflow".into()))?;
+    
+    // 境界チェック
+    if end > data.len() {
+        return Err(LoadError::InvalidFormat(
+            alloc::format!("Slice out of bounds: offset={}, len={}, data_len={}", 
+                offset, len, data.len())
+        ));
+    }
+    
+    Ok(&data[offset..end])
+}
+
 impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
     /// 
@@ -211,8 +276,8 @@ impl<'a> ElfLoader<'a> {
             ));
         }
 
-        // ヘッダーを読み取り
-        let header: Elf64Header = unsafe { core::ptr::read(data.as_ptr() as *const Elf64Header) };
+        // 【設計書 2.2】安全なラッパーを使用してヘッダーを読み取り
+        let header: Elf64Header = read_struct(data, 0)?;
 
         // マジックナンバーの検証
         if header.e_ident[0..4] != ELF_MAGIC {
@@ -258,14 +323,8 @@ impl<'a> ElfLoader<'a> {
             let ph_offset =
                 self.header.e_phoff as usize + (i as usize * self.header.e_phentsize as usize);
 
-            if ph_offset + mem::size_of::<Elf64ProgramHeader>() > self.data.len() {
-                return Err(LoadError::InvalidFormat(
-                    "Program header out of bounds".into(),
-                ));
-            }
-
-            let ph: Elf64ProgramHeader =
-                unsafe { core::ptr::read(self.data.as_ptr().add(ph_offset) as *const _) };
+            // 【設計書 2.2】安全なラッパーを使用
+            let ph: Elf64ProgramHeader = read_struct(self.data, ph_offset)?;
 
             if ph.p_type == PT_LOAD {
                 // 【セキュリティ】セグメントサイズのチェック
@@ -317,12 +376,11 @@ impl<'a> ElfLoader<'a> {
             let sh_offset =
                 self.header.e_shoff as usize + (i as usize * self.header.e_shentsize as usize);
 
-            if sh_offset + mem::size_of::<Elf64SectionHeader>() > self.data.len() {
-                continue;
-            }
-
-            let sh: Elf64SectionHeader =
-                unsafe { core::ptr::read(self.data.as_ptr().add(sh_offset) as *const _) };
+            // 【設計書 2.2】安全なラッパーを使用、エラーはスキップ
+            let sh: Elf64SectionHeader = match read_struct(self.data, sh_offset) {
+                Ok(sh) => sh,
+                Err(_) => continue,
+            };
 
             // シンボルテーブルを処理
             if sh.sh_type == SHT_SYMTAB || sh.sh_type == SHT_DYNSYM {
@@ -346,12 +404,11 @@ impl<'a> ElfLoader<'a> {
         for j in 0..sym_count {
             let sym_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Symbol>();
 
-            if sym_offset + mem::size_of::<Elf64Symbol>() > self.data.len() {
-                continue;
-            }
-
-            let sym: Elf64Symbol =
-                unsafe { core::ptr::read(self.data.as_ptr().add(sym_offset) as *const _) };
+            // 【設計書 2.2】安全なラッパーを使用、エラーはスキップ
+            let sym: Elf64Symbol = match read_struct(self.data, sym_offset) {
+                Ok(sym) => sym,
+                Err(_) => continue,
+            };
 
             // グローバルシンボルのみ処理
             if sym.binding() == STB_GLOBAL && sym.st_name != 0 {
@@ -374,25 +431,14 @@ impl<'a> ElfLoader<'a> {
     fn get_string_table(&self, index: usize) -> Result<&[u8], LoadError> {
         let sh_offset = self.header.e_shoff as usize + (index * self.header.e_shentsize as usize);
 
-        if sh_offset + mem::size_of::<Elf64SectionHeader>() > self.data.len() {
-            return Err(LoadError::InvalidFormat(
-                "String table section out of bounds".into(),
-            ));
-        }
-
-        let sh: Elf64SectionHeader =
-            unsafe { core::ptr::read(self.data.as_ptr().add(sh_offset) as *const _) };
+        // 【設計書 2.2】安全なラッパーを使用
+        let sh: Elf64SectionHeader = read_struct(self.data, sh_offset)?;
 
         let start = sh.sh_offset as usize;
-        let end = start + sh.sh_size as usize;
-
-        if end > self.data.len() {
-            return Err(LoadError::InvalidFormat(
-                "String table data out of bounds".into(),
-            ));
-        }
-
-        Ok(&self.data[start..end])
+        let size = sh.sh_size as usize;
+        
+        // 【設計書 2.2】安全なスライス取得ラッパーを使用
+        get_slice(self.data, start, size)
     }
 
     /// 文字列テーブルから文字列を取得

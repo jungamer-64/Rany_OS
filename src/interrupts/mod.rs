@@ -124,9 +124,9 @@ fn init_idt() {
 pub fn init() {
     crate::vga::early_serial_str("[INT] init\n");
 
-    // 1. GDT と TSS の初期化 - 一時的にスキップ
-    // gdt::init_gdt();
-    crate::vga::early_serial_str("[INT] GDT skip\n");
+    // 1. GDT と TSS の初期化
+    gdt::init_gdt();
+    crate::vga::early_serial_str("[INT] GDT done\n");
 
     // 2. PIC の初期化（ハードウェア割り込みのリマップ）
     crate::vga::early_serial_str("[INT] PIC\n");
