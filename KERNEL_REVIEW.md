@@ -40,16 +40,18 @@
 **設計書参照:** セクション 8.5.2「Triple Faultの防止」
 > Double FaultハンドラにはIST（Interrupt Stack Table）を使用し、メインスタックとは独立した専用スタックを確保します。
 
-**問題:** 
+**問題:**
 Double Faultハンドラに専用スタック（IST）が設定されていません。`src/interrupts/gdt.rs`でISTスタックは正しく定義されていますが、IDTエントリにISTインデックスが設定されていません。
 
 **現在の実装:**
+
 ```rust
 idt.double_fault.set_handler_fn(exceptions::double_fault_handler);
 // ISTインデックスが設定されていない
 ```
 
 **推奨修正:**
+
 ```rust
 unsafe {
     idt.double_fault
@@ -69,10 +71,11 @@ unsafe {
 **設計書参照:** セクション 8.5.1「Double Panic検出」
 > 各CPUコアにパニック中フラグ（AtomicBool）を設置します。パニックハンドラの入口でこのフラグをチェックし、既にtrueであればDouble Panicと判定します。
 
-**問題:** 
+**問題:**
 パニックハンドラ内で再帰的パニック（Double Panic）を検出してabortする機構がありません。`PANIC_COUNT`をインクリメントしていますが、その値を使ってDouble Panicを検出していません。
 
 **現在の実装:**
+
 ```rust
 pub fn handle_panic(info: &PanicInfo) -> ! {
     let count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -82,6 +85,7 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 ```
 
 **推奨修正:**
+
 ```rust
 pub fn handle_panic(info: &PanicInfo) -> ! {
     x86_64::instructions::interrupts::disable();
@@ -106,10 +110,11 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 **設計書参照:** セクション 3.4「ABIの安定性とType ID Check」
 > 各セル（クレート）のコンパイル時に、そのセルが依存するインターフェースの「型定義ハッシュ値」をメタデータとしてELFバイナリに埋め込みます。
 
-**問題:** 
+**問題:**
 設計書で規定されている`TypeIdHash`トレイトが実装されていません。動的リンク環境でのABI非互換によるサイレントなメモリ破壊のリスクがあります。
 
 **推奨実装:**
+
 ```rust
 // src/loader/type_id.rs (新規ファイル)
 pub trait TypeIdHash {
@@ -135,10 +140,11 @@ pub struct CellSignature {
 **設計書参照:** セクション 9.3「リソースアカウンティングとQoS」
 > 各ドメインには、単位時間あたりに使用可能なCPU時間の上限（クォータ）を設定できます。
 
-**問題:** 
+**問題:**
 ドメインごとのCPU時間クォータ、メモリ使用量制限、I/O帯域制限が実装されていません。
 
 **推奨実装:**
+
 ```rust
 // src/domain/quota.rs (新規ファイル)
 pub struct DomainQuota {
@@ -179,6 +185,7 @@ impl DomainQuota {
 ワークスティーリングがNUMAノードを考慮せず、全コアを順番にスティールしています。
 
 **現在の実装:**
+
 ```rust
 fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
     let start = self.poll_counter.fetch_add(1, Ordering::Relaxed) as usize;
@@ -195,6 +202,7 @@ fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
 ```
 
 **推奨修正:**
+
 ```rust
 fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
     // 1. まず同一NUMAノード内のコアからスティールを試行
@@ -246,6 +254,7 @@ fn try_steal_from_others(&self, core_id: u32) -> Option<Box<StealableTask>> {
 これらは複数のドメインからアクセスされる可能性がありますが、標準`Mutex`を使用しています。
 
 **推奨修正:**
+
 ```rust
 // 変更前
 static REGISTRY: Mutex<DomainRegistry> = Mutex::new(DomainRegistry::new());
@@ -289,6 +298,7 @@ let registry = match REGISTRY.lock() {
 | `src/io/ahci/controller.rs` | 137 | 戻り値型 |
 
 **評価:**
+
 - ネットワークスタックが**同一ドメイン内**で動作する想定であれば、現状は許容範囲
 - 将来ネットワークスタックを別ドメインに分離する場合は`RRef<T>`への置き換えが必要
 
@@ -307,6 +317,7 @@ let registry = match REGISTRY.lock() {
 `copy_from_slice`によるユーザーバッファからパケットバッファへのコピーが発生しています。
 
 **現在の実装:**
+
 ```rust
 fn poll_write(...) -> Poll<Result<usize, TcpError>> {
     // ...
@@ -320,6 +331,7 @@ fn poll_write(...) -> Poll<Result<usize, TcpError>> {
 
 **推奨修正:**
 ユーザーが直接`ZeroCopyBuffer`を取得してデータを書き込むAPIを提供：
+
 ```rust
 /// ゼロコピー送信用バッファを取得
 pub async fn acquire_send_buffer(&self, size: usize) -> Result<ZeroCopyBuffer, TcpError> {
@@ -342,6 +354,7 @@ pub async fn send_buffer(&self, buffer: ZeroCopyBuffer) -> Result<(), TcpError> 
 **ファイル:** `src/io/virtio/net.rs` 行83-84
 
 **問題:**
+
 ```rust
 tx_buffer[..VirtioNetHeader::SIZE].copy_from_slice(header_bytes);
 tx_buffer[VirtioNetHeader::SIZE..].copy_from_slice(data);
@@ -363,11 +376,13 @@ Scatter-Gather I/Oを使用してヘッダとペイロードを別々のバッ�
 `IOMMU_REQUIRED`のデフォルト値が`false`です。
 
 **現在の実装:**
+
 ```rust
 pub static IOMMU_REQUIRED: AtomicBool = AtomicBool::new(false);
 ```
 
 **推奨修正:**
+
 ```rust
 // セキュリティ重視の場合
 pub static IOMMU_REQUIRED: AtomicBool = AtomicBool::new(true);
@@ -395,6 +410,7 @@ pub fn check_iommu_status() {
 `core::ptr::read`や`core::ptr::copy`による生ポインタ操作が多用されています。
 
 **現在の実装:**
+
 ```rust
 let header: Elf64Header = unsafe { 
     core::ptr::read(data.as_ptr() as *const Elf64Header) 
@@ -402,6 +418,7 @@ let header: Elf64Header = unsafe {
 ```
 
 **推奨修正:**
+
 ```rust
 fn read_struct<T: Copy>(data: &[u8], offset: usize) -> Result<T, LoadError> {
     let size = core::mem::size_of::<T>();
@@ -429,6 +446,7 @@ let header: Elf64Header = read_struct(data, 0)?;
 公開鍵が通常のメモリ（`Vec<[u8; 32]>`）に保存されています。
 
 **現在の実装:**
+
 ```rust
 pub struct SignatureVerifier {
     trusted_keys: Vec<[u8; ED25519_PUBLIC_KEY_SIZE]>,
@@ -437,6 +455,7 @@ pub struct SignatureVerifier {
 ```
 
 **推奨修正:**
+
 - 専用のセキュアメモリ領域を割り当て
 - 使用後は`zeroize`クレートでゼロクリア
 - 可能であればCPUレジスタまたはセキュアエンクレーブを使用
@@ -514,6 +533,7 @@ pub struct RRef<T: ?Sized> {
 ```
 
 **良い点:**
+
 - `RRef<T>`が所有権追跡付きのリモート参照として実装
 - `HeapRegistry`でオブジェクトの所有者を追跡
 - ドメインクラッシュ時のリソース回収をサポート
@@ -531,13 +551,16 @@ pub struct RRef<T: ?Sized> {
 ### 4.3 NUMA対応 - ⚠️ 部分的
 
 **現状:**
+
 - NUMAトポロジ検出は実装済み（`src/mm/mapping.rs`, `src/smp/numa.rs`）
 - `PerCoreCache`に`numa_node`フィールドが存在
 
 **問題点:**
+
 - `slab_cache.rs`と`buddy_allocator.rs`でメモリ割り当て時にNUMAノードを考慮していない
 
 **推奨修正:**
+
 ```rust
 // src/mm/slab_cache.rs:120 付近 - grow()関数
 // 現在:
@@ -580,6 +603,7 @@ pub fn wake(&self, source: InterruptSource) {
 ```
 
 **良い点:**
+
 - ロックフリーなMPMCリングバッファを使用
 - ISR内では動的メモリ割り当てなし
 - Executorのメインループで遅延wake処理
@@ -633,10 +657,12 @@ impl<T> PoisonLock<T> {
 **該当ファイル:** `src/ipc/proxy.rs`
 
 **良い点:**
+
 - `DomainProxy`でドメイン間呼び出しをラップ（行63-105）
 - パニック状態をアトミック変数で追跡（行155-160）
 
 **注意点:**
+
 - `no_std`環境では`std::panic::catch_unwind`が使えないため、パニック捕捉は概念的な実装のみ
 - パニックハンドラとの連携が不完全
 
@@ -679,6 +705,7 @@ const HIGH_TRAFFIC_THRESHOLD: u64 = ...;
 **該当ファイル:** `src/io/nvme/driver.rs`, `src/io/nvme/queue.rs`
 
 **良い点:**
+
 - コアごとにSubmission/Completion Queueペアを割り当て（行97-100）
 - `interrupt_mode: false`でポーリングモードがデフォルト（行88-89）
 - 64バイトキャッシュライン整列（行45-75）
@@ -844,4 +871,3 @@ Rany_OSは設計案（ExoRustアーキテクチャ）の意図を**概ね正し�
 ---
 
 **レビュー完了**
-
