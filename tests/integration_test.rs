@@ -137,7 +137,7 @@ fn test_string_allocation() {
 // エントリポイント
 // ============================================================================
 
-#[unsafe(no_mangle)]
+#[no_mangle]
 pub extern "C" fn _start() -> ! {
     // TODO: 最小限の初期化
     // rany_os::vga::init();

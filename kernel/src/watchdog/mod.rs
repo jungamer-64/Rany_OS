@@ -130,27 +130,31 @@ impl IntelTcoWatchdog {
         Some(Self::new(0x460))
     }
 
-    unsafe fn read_tco(&self, offset: u16) -> u16 { unsafe {
+    fn read_tco(&self, offset: u16) -> u16 {
         let port = self.tco_base + offset;
         let value: u16;
-        core::arch::asm!(
-            "in ax, dx",
-            out("ax") value,
-            in("dx") port,
-            options(nomem, nostack)
-        );
+        unsafe {
+            core::arch::asm!(
+                "in ax, dx",
+                out("ax") value,
+                in("dx") port,
+                options(nomem, nostack)
+            );
+        }
         value
-    }}
+    }
 
-    unsafe fn write_tco(&self, offset: u16, value: u16) { unsafe {
+    fn write_tco(&self, offset: u16, value: u16) {
         let port = self.tco_base + offset;
-        core::arch::asm!(
-            "out dx, ax",
-            in("ax") value,
-            in("dx") port,
-            options(nomem, nostack)
-        );
-    }}
+        unsafe {
+            core::arch::asm!(
+                "out dx, ax",
+                in("ax") value,
+                in("dx") port,
+                options(nomem, nostack)
+            );
+        }
+    }
 }
 
 impl HardwareWatchdog for IntelTcoWatchdog {

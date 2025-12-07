@@ -267,7 +267,8 @@ impl CpuThermalDriver {
         status
     }
 
-    unsafe fn read_msr(&self, msr: u32) -> ThermalResult<u64> { unsafe {
+    fn read_msr(&self, msr: u32) -> ThermalResult<u64> {
+        unsafe {
         let low: u32;
         let high: u32;
 
@@ -280,7 +281,8 @@ impl CpuThermalDriver {
         );
 
         Ok(((high as u64) << 32) | (low as u64))
-    }}
+    }
+}
 
     fn detect_core_count(&self) -> u32 {
         unsafe {

@@ -26,6 +26,13 @@ pub const NANOS_PER_MILLI: u64 = 1_000_000;
 /// 1マイクロ秒のナノ秒数
 pub const NANOS_PER_MICRO: u64 = 1_000;
 
+/// Read the Time Stamp Counter (TSC)
+#[inline]
+fn rdtsc() -> u64 {
+    // Inline assembly for reading TSC is `unsafe`, encapsulate here
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
+
 /// タイマーソースの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TimerSource {
@@ -361,7 +368,7 @@ impl SystemClock {
 
     /// TSCを読み取り
     pub fn read_tsc(&self) -> u64 {
-        let value = unsafe { core::arch::x86_64::_rdtsc() };
+        let value = rdtsc();
         self.last_tsc.store(value, Ordering::Relaxed);
         value
     }
@@ -471,7 +478,7 @@ pub fn calibrate_tsc() -> Option<TscInfo> {
         // Channel 0, Mode 0 (One-shot), 16-bit
         cmd_port.write(pit::MODE_ONE_SHOT);
 
-        let start_tsc = core::arch::x86_64::_rdtsc();
+        let start_tsc = rdtsc();
 
         // カウント値を設定
         data_port.write((pit_ticks & 0xFF) as u8);
@@ -486,7 +493,7 @@ pub fn calibrate_tsc() -> Option<TscInfo> {
             }
         }
 
-        let end_tsc = core::arch::x86_64::_rdtsc();
+        let end_tsc = rdtsc();
 
         let tsc_diff = end_tsc.saturating_sub(start_tsc);
         let frequency = tsc_diff * 100; // 10ms → 1秒に換算

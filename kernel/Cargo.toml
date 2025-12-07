@@ -19,6 +19,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Kernel API Interface
+# 一時的な措置。移行が終われば直ぐに削除すること
 kernel_api = { path = "../interfaces/kernel_api" }
 
 # ブートローダーAPI（Limine Protocol - UEFI/BIOS両対応）

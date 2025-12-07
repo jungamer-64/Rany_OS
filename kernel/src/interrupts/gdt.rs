@@ -116,7 +116,7 @@ pub fn init_gdt() {
         serial_str("[GDT] z\n");
         
         // 新しいGDTを作成
-        core::ptr::write(gdt_ptr, GlobalDescriptorTable::new());
+        crate::util::write_to_addr(gdt_ptr as usize, GlobalDescriptorTable::new());
         
         serial_str("[GDT] entry\n");
         
@@ -126,7 +126,7 @@ pub fn init_gdt() {
         
         // セレクタを保存
         let selectors_ptr = (*GDT_CONTAINER.selectors.get()).as_mut_ptr();
-        core::ptr::write(selectors_ptr, Selectors {
+        crate::util::write_to_addr(selectors_ptr as usize, Selectors {
             code_selector,
             data_selector,
             tss_selector,

@@ -3,7 +3,9 @@ resolver = "2"
 members = [
     "kernel",
     "interfaces/kernel_api",
+    "libs/app_sdk",
 ]
+
 
 
 [workspace.package]

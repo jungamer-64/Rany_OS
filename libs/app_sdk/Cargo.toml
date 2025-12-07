@@ -1,0 +1,13 @@
+[package]
+name = "app_sdk"
+version = "0.1.0"
+edition = "2024"
+authors = ["ExoRust Team"]
+description = "Application SDK for ExoRust OS - the 'std' library for SPL applications"
+
+[lib]
+name = "app_sdk"
+path = "src/lib.rs"
+
+[dependencies]
+kernel_api = { path = "../../interfaces/kernel_api" }
