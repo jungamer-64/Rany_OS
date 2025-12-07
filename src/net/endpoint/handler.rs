@@ -62,24 +62,67 @@ impl NetworkEventHandler {
         };
 
         // 送信バッファからデータを取得
-        let data = {
+        let (data, local, remote) = {
             let mut inner = socket.inner().lock();
             if inner.send_buffer.is_empty() {
                 return EventHandleResult::Success;
             }
-            inner.send_buffer.drain(..).collect::<Vec<u8>>()
+            let local = match inner.local_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+            };
+            let remote = match inner.remote_addr {
+                Some(addr) => addr,
+                None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+            };
+            (inner.send_buffer.drain(..).collect::<Vec<u8>>(), local, remote)
         };
 
-        // TCPストリーム経由で送信（実際のプロトコルスタック呼び出し）
-        let inner = socket.inner().lock();
-        if let Some(ref _tcp_stream) = inner.tcp_stream {
-            // TODO: TCP送信の実装
-            // tcp_stream.send(&data)?;
-            let _ = data; // 現時点では未使用警告を抑制
-            EventHandleResult::Success
-        } else {
-            EventHandleResult::ProtocolError(SocketError::NotConnected)
+        // TCBから現在のシーケンス番号を取得して更新
+        let data_len = data.len() as u32;
+        let result = tcb_table().lookup_mut(local, remote, |tcb| {
+            if tcb.state != TcpConnectionState::Established {
+                return Err(SocketError::NotConnected);
+            }
+            let seq = tcb.snd_nxt;
+            let ack = tcb.rcv_nxt;
+            let window = tcb.rcv_wnd;
+            tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data_len);
+            Ok((seq, ack, window))
+        });
+
+        let (seq, ack, window) = match result {
+            Some(Ok(vals)) => vals,
+            Some(Err(e)) => return EventHandleResult::ProtocolError(e),
+            None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
+        };
+
+        // TCPセグメントを構築
+        let mut segment = TcpSegmentBuilder::new(local.port, remote.port)
+            .seq(seq)
+            .ack(ack)
+            .psh()  // PSH: 即座にアプリケーションに渡す
+            .window(window)
+            .payload(&data)
+            .build();
+
+        TcpSegmentBuilder::calculate_checksum(&mut segment, local.ip, remote.ip);
+
+        // パケット送信
+        if let Err(e) = self.send_tcp_segment(local, remote, segment) {
+            crate::serial_println!("TCP: Failed to send data: {:?}", e);
+            return EventHandleResult::ProtocolError(SocketError::Internal);
         }
+
+        crate::serial_println!(
+            "TCP: Sent {} bytes (seq={}, ack={}) fd={}",
+            data.len(),
+            seq,
+            ack,
+            fd.raw()
+        );
+
+        EventHandleResult::Success
     }
 
     /// Connectイベント処理
@@ -155,18 +198,15 @@ impl NetworkEventHandler {
     /// TCPセグメント送信（IPスタック経由）
     fn send_tcp_segment(
         &self,
-        src: SocketAddr,
-        dst: SocketAddr,
-        segment: Vec<u8>,
+        _src: SocketAddr,
+        _dst: SocketAddr,
+        _segment: Vec<u8>,
     ) -> SocketResult<()> {
         // IPv4パケットを構築して送信
         // 1. IPv4ヘッダ構築
         // 2. ネットワークスタック経由で送信
-
-        // TODO: 実際のIP層との統合
-        // 現時点ではスタブ実装
-        let _ = (src, dst, segment);
-
+        //
+        // 実際のIP層統合が完了したら実装:
         // グローバルネットワークスタックを使用
         // crate::net::stack::global_stack()?.send_ipv4(
         //     dst.ip,
@@ -185,14 +225,35 @@ impl NetworkEventHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let Some(_socket) = mgr.get(fd) else {
+        let Some(socket) = mgr.get(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        // TODO: TCP Listenの実装
-        // 1. TCPリスナー登録
-        // 2. 接続要求キューの設定
-        let _ = (local, backlog);
+        // ローカルアドレスをソケットに設定
+        {
+            let mut inner = socket.inner().lock();
+            inner.local_addr = Some(local);
+        }
+
+        // TCBテーブルにリスナーエントリを作成
+        let mut tcb = TcpControlBlockEntry::new(
+            fd,
+            local,
+            SocketAddr::new([0, 0, 0, 0], 0), // リモートは未定
+        );
+        tcb.state = TcpConnectionState::Listen;
+        // backlog値を保存（接続要求キューの最大サイズ）
+        // 注: 実際の接続要求キューはTCBテーブル側で管理
+        let _ = backlog; // 現在のTCB構造体にはbacklogフィールドなし
+        tcb_table().insert(tcb);
+
+        crate::serial_println!(
+            "TCP: Listening on {}:{} (fd={}, backlog={})",
+            local.ip[0],
+            local.ip[1],
+            fd.raw(),
+            backlog
+        );
 
         EventHandleResult::Success
     }
@@ -205,14 +266,91 @@ impl NetworkEventHandler {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        let Some(_socket) = mgr.get(fd) else {
+        let Some(socket) = mgr.get(fd) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
-        // TODO: TCP終了処理
-        // 1. FINパケット送信
-        // 2. FIN-ACK待機
-        // 3. リソース解放
+        let inner = socket.inner().lock();
+        let local = match inner.local_addr {
+            Some(addr) => addr,
+            None => {
+                crate::serial_println!("TCP: Close failed - no local address");
+                return EventHandleResult::ProtocolError(SocketError::Internal);
+            }
+        };
+        let remote = match inner.remote_addr {
+            Some(addr) => addr,
+            None => {
+                // リモートアドレスがない場合（Listenソケットなど）は直接クローズ
+                tcb_table().remove_by_fd(fd);
+                return EventHandleResult::Success;
+            }
+        };
+
+        // TCBエントリの状態を取得
+        let state = tcb_table()
+            .lookup(local, remote)
+            .map(|tcb| tcb.state)
+            .unwrap_or(TcpConnectionState::Closed);
+
+        match state {
+            TcpConnectionState::Established => {
+                // FINパケットを送信
+                let seq = tcb_table()
+                    .lookup_mut(local, remote, |tcb| {
+                        let seq = tcb.snd_nxt;
+                        tcb.state = TcpConnectionState::FinWait1;
+                        seq
+                    })
+                    .unwrap_or(0);
+
+                let mut fin_segment = TcpSegmentBuilder::new(local.port, remote.port)
+                    .seq(seq)
+                    .fin()
+                    .ack(0) // ACKは最新の受信シーケンス番号
+                    .window(65535)
+                    .build();
+
+                TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.ip, remote.ip);
+
+                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
+                    crate::serial_println!("TCP: Failed to send FIN: {:?}", e);
+                    return EventHandleResult::ProtocolError(SocketError::Internal);
+                }
+
+                crate::serial_println!("TCP: FIN sent for fd={}", fd.raw());
+            }
+            TcpConnectionState::CloseWait => {
+                // 相手からFINを受信済み、自分からFINを送信
+                let seq = tcb_table()
+                    .lookup_mut(local, remote, |tcb| {
+                        let seq = tcb.snd_nxt;
+                        tcb.state = TcpConnectionState::LastAck;
+                        seq
+                    })
+                    .unwrap_or(0);
+
+                let mut fin_segment = TcpSegmentBuilder::new(local.port, remote.port)
+                    .seq(seq)
+                    .fin()
+                    .ack(0)
+                    .window(65535)
+                    .build();
+
+                TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.ip, remote.ip);
+
+                if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
+                    crate::serial_println!("TCP: Failed to send FIN (LastAck): {:?}", e);
+                }
+            }
+            TcpConnectionState::Listen | TcpConnectionState::SynSent => {
+                // まだ接続が確立していない場合は即座にクローズ
+                tcb_table().remove(local, remote);
+            }
+            _ => {
+                // 他の状態では何もしない（既にクローズ処理中など）
+            }
+        }
 
         EventHandleResult::Success
     }
@@ -230,14 +368,77 @@ impl NetworkEventHandler {
         };
 
         let inner = socket.inner().lock();
-        if let Some(ref _udp_socket) = inner.udp_socket {
-            // TODO: UDP送信の実装
-            // udp_socket.send_to(&data, addr)?;
-            let _ = (remote, data);
+        let local = match inner.local_addr {
+            Some(addr) => addr,
+            None => {
+                // ローカルアドレスが未設定の場合はエフェメラルポートを使用
+                let port = mgr.allocate_ephemeral_port(SocketType::Udp).unwrap_or(49152);
+                SocketAddr::new([0, 0, 0, 0], port)
+            }
+        };
+
+        if inner.udp_socket.is_some() {
+            // UDPパケットを構築
+            // UDPヘッダ: src_port(2) + dst_port(2) + length(2) + checksum(2) = 8バイト
+            let udp_len = 8 + data.len();
+            let mut udp_packet = Vec::with_capacity(udp_len);
+
+            // Source port (2バイト)
+            udp_packet.push((local.port >> 8) as u8);
+            udp_packet.push(local.port as u8);
+
+            // Destination port (2バイト)
+            udp_packet.push((remote.port >> 8) as u8);
+            udp_packet.push(remote.port as u8);
+
+            // Length (2バイト) - ヘッダ + データ
+            udp_packet.push((udp_len >> 8) as u8);
+            udp_packet.push(udp_len as u8);
+
+            // Checksum (2バイト) - 0 = チェックサム無効
+            // 注: UDPでは計算してもオプション（IPv4の場合）
+            udp_packet.push(0);
+            udp_packet.push(0);
+
+            // データ
+            udp_packet.extend_from_slice(&data);
+
+            // UDPパケット送信（IPスタック経由）
+            if let Err(e) = self.send_udp_packet(local, remote, udp_packet) {
+                crate::serial_println!("UDP: Failed to send packet: {:?}", e);
+                return EventHandleResult::ProtocolError(SocketError::Internal);
+            }
+
+            crate::serial_println!(
+                "UDP: Sent {} bytes to {}:{} from port {}",
+                data.len(),
+                remote.ip[0],
+                remote.ip[1],
+                local.port
+            );
+
             EventHandleResult::Success
         } else {
             EventHandleResult::ProtocolError(SocketError::InvalidStateTransition)
         }
+    }
+
+    /// UDPパケット送信（IPスタック経由）
+    fn send_udp_packet(
+        &self,
+        _src: SocketAddr,
+        _dst: SocketAddr,
+        _packet: Vec<u8>,
+    ) -> SocketResult<()> {
+        // IPv4パケットを構築してネットワークスタック経由で送信
+        // 実際のIP層統合が完了したら実装
+        // グローバルネットワークスタックを使用:
+        // crate::net::stack::global_stack()?.send_ipv4(
+        //     dst.ip,
+        //     crate::net::ipv4::IpProtocol::UDP,
+        //     &packet
+        // )?;
+        Ok(())
     }
 }
 

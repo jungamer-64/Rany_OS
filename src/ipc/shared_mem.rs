@@ -178,13 +178,14 @@ pub struct ShmStats {
 
 impl ShmStats {
     pub fn new() -> Self {
+        let now = crate::time::current_time_ns();
         Self {
             attach_count: AtomicUsize::new(0),
             total_attaches: AtomicU64::new(0),
             total_detaches: AtomicU64::new(0),
-            created_at: 0, // TODO: 実際のタイムスタンプ
-            last_access: AtomicU64::new(0),
-            last_modify: AtomicU64::new(0),
+            created_at: now,
+            last_access: AtomicU64::new(now),
+            last_modify: AtomicU64::new(now),
         }
     }
 }

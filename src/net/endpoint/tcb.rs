@@ -249,6 +249,31 @@ impl TcbTable {
     pub fn find_by_fd(&self, fd: SocketFd) -> Option<TcpControlBlockEntry> {
         self.entries.read().values().find(|e| e.fd == fd).cloned()
     }
+
+    /// FDで接続削除
+    pub fn remove_by_fd(&self, fd: SocketFd) -> Option<TcpControlBlockEntry> {
+        let mut entries = self.entries.write();
+        let key = entries
+            .iter()
+            .find(|(_, e)| e.fd == fd)
+            .map(|(k, _)| *k);
+        key.and_then(|k| entries.remove(&k))
+    }
+
+    /// 接続参照取得（イミュータブル）
+    /// 注: RwLockGuardを返すため、短時間でのアクセスに限定すること
+    pub fn lookup(&self, local: SocketAddr, remote: SocketAddr) -> Option<TcpControlBlockEntry> {
+        self.entries.read().get(&(local, remote)).cloned()
+    }
+
+    /// 接続参照取得して更新（クロージャ版）
+    pub fn lookup_mut<R, F>(&self, local: SocketAddr, remote: SocketAddr, f: F) -> Option<R>
+    where
+        F: FnOnce(&mut TcpControlBlockEntry) -> R,
+    {
+        let mut entries = self.entries.write();
+        entries.get_mut(&(local, remote)).map(f)
+    }
 }
 
 /// グローバルTCBテーブル

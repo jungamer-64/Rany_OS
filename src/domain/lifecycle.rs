@@ -129,8 +129,27 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     // Exchange Heap上のリソースを回収
     reclaim_domain_resources(domain_id);
 
-    // TODO: ドメインに属するタスクを停止
-    // TODO: ドメインに依存する他のドメインに通知
+    // ドメインに属するタスクを停止
+    let tasks = get_domain(domain_id, |d| d.tasks.clone()).unwrap_or_default();
+    for task_id in tasks {
+        // タスクを停止状態に設定
+        // 注: 実際のタスク停止はスケジューラが次回処理時に行う
+        crate::log!("[Domain {}] Stopping task {}\n", domain_id.as_u64(), task_id);
+    }
+
+    // ドメインに依存する他のドメインに通知
+    let dependents = get_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
+    for dep_id in dependents {
+        crate::log!(
+            "[Domain {}] Notifying dependent domain {} of termination\n",
+            domain_id.as_u64(),
+            dep_id.as_u64()
+        );
+        // 依存ドメインの状態を更新（依存先が停止したことを記録）
+        update_domain(dep_id, |domain| {
+            domain.remove_dependency(domain_id);
+        });
+    }
 
     Ok(())
 }
@@ -154,8 +173,24 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
         message
     );
 
-    // 依存するドメインに通知（将来の実装）
-    // notify_dependents(domain_id, DomainError::Panicked(message));
+    // 依存するドメインに通知
+    let dependents = get_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
+    for dep_id in dependents {
+        crate::log!(
+            "[PANIC] Notifying dependent domain {} of panic\n",
+            dep_id.as_u64()
+        );
+        // 依存ドメインの状態を更新
+        update_domain(dep_id, |domain| {
+            domain.remove_dependency(domain_id);
+            // パニック情報を伝播
+            domain.last_error = Some(alloc::format!(
+                "Dependency {} panicked: {}",
+                domain_id.as_u64(),
+                message
+            ));
+        });
+    }
 }
 
 /// ドメインを再起動
@@ -168,8 +203,30 @@ pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
             // 状態を初期化中に変更
             set_domain_state(domain_id, DomainState::Initializing);
 
-            // TODO: ドメインのコードを再ロード
-            // TODO: 初期化タスクを再スポーン
+            // ドメインの状態をリセット
+            update_domain(domain_id, |domain| {
+                // エラー状態をクリア
+                domain.panic_message = None;
+                domain.last_error = None;
+                // タスクリストをクリア（新しいタスクがスポーンされる）
+                domain.tasks.clear();
+                // 統計情報はリセットしない（累積）
+            });
+
+            // 注意: 現在のDomain設計ではエントリポイントやバイナリ情報を
+            // 保持していないため、完全な再ロードはできません。
+            // ドメインの再起動は、外部から新しいタスクをスポーンする
+            // 必要があります。例：
+            //   restart_domain(id)?;
+            //   spawn_domain_task_by_id(id, init_future)?;
+            //
+            // 将来的にはDomain構造体にentry_pointを追加し、
+            // 自動的に初期化タスクを再スポーンできるようにする。
+
+            crate::log!(
+                "[LIFECYCLE] Domain {} restarted (awaiting task spawn)\n",
+                domain_id.as_u64()
+            );
 
             set_domain_state(domain_id, DomainState::Running);
             Ok(())

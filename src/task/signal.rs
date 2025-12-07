@@ -579,11 +579,16 @@ impl SignalManager {
         let contexts = self.contexts.read();
         let ctx = contexts.get(&target).ok_or(SignalError::NoSuchTask)?;
 
+        // 現在のプロセスIDを送信元として設定
+        let sender_pid = Some(super::process::get_current_process().as_u64());
+        // タイムスタンプを取得
+        let timestamp = crate::time::current_time_ns();
+
         let info = SignalInfo {
             signal,
-            sender_pid: None, // TODO: 送信元PID
+            sender_pid,
             data,
-            timestamp: 0, // TODO: タイムスタンプ
+            timestamp,
         };
 
         ctx.send(info)?;
@@ -636,9 +641,13 @@ pub fn kill(target: TaskId, signal: Signal) -> Result<(), SignalError> {
 }
 
 /// 自分自身にシグナルを送信 (raise() 相当)
-pub fn raise(_signal: Signal) -> Result<(), SignalError> {
-    // TODO: 現在のタスクID取得
-    Err(SignalError::NoSuchTask)
+pub fn raise(signal: Signal) -> Result<(), SignalError> {
+    // 現在のタスクIDを取得
+    let task_id = TaskId(super::context::current_task_id());
+    if task_id.0 == 0 {
+        return Err(SignalError::NoSuchTask);
+    }
+    SIGNAL_MANAGER.send(task_id, signal)
 }
 
 /// シグナルハンドラを設定 (signal() 相当)

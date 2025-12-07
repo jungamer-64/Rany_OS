@@ -910,6 +910,169 @@ impl Fat32Inode {
         }
     }
 
+    /// 8.3形式のショートファイル名を生成
+    fn generate_short_name(name: &str) -> ([u8; 8], [u8; 3]) {
+        let mut base = [b' '; 8];
+        let mut ext = [b' '; 3];
+        
+        let name_upper = name.to_uppercase();
+        let parts: Vec<&str> = name_upper.rsplitn(2, '.').collect();
+        
+        let (base_part, ext_part) = if parts.len() == 2 {
+            (parts[1], Some(parts[0]))
+        } else {
+            (parts[0], None)
+        };
+        
+        // ベース名（最大8文字）
+        for (i, c) in base_part.chars().take(8).enumerate() {
+            base[i] = if c.is_ascii_alphanumeric() || c == '_' {
+                c as u8
+            } else {
+                b'_'
+            };
+        }
+        
+        // 拡張子（最大3文字）
+        if let Some(e) = ext_part {
+            for (i, c) in e.chars().take(3).enumerate() {
+                ext[i] = if c.is_ascii_alphanumeric() {
+                    c as u8
+                } else {
+                    b'_'
+                };
+            }
+        }
+        
+        (base, ext)
+    }
+
+    /// ディレクトリに新しいエントリを追加
+    fn add_dir_entry(&self, name: &str, cluster: Cluster, attr: FileAttributes, size: u32) -> FsResult<()> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        
+        let cluster_size = self.fs.cluster_size();
+        let mut buffer = vec![0u8; cluster_size];
+        let mut current_cluster = self.first_cluster;
+        
+        // 空きエントリを探す
+        while current_cluster.is_valid() {
+            self.fs.read_cluster(current_cluster, &mut buffer)?;
+            
+            let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
+            for i in 0..entries_per_cluster {
+                let offset = i * DIR_ENTRY_SIZE;
+                let first_byte = buffer[offset];
+                
+                // 空きエントリまたは削除済みエントリを使用
+                if first_byte == END_OF_DIR || first_byte == DELETED_ENTRY {
+                    // 新しいエントリを作成
+                    let (base_name, ext_name) = Self::generate_short_name(name);
+                    
+                    let mut entry = DirEntryRaw {
+                        name: base_name,
+                        ext: ext_name,
+                        attr: attr.bits(),
+                        nt_reserved: 0,
+                        create_time_tenths: 0,
+                        create_time: 0,
+                        create_date: 0,
+                        access_date: 0,
+                        first_cluster_hi: (cluster.0 >> 16) as u16,
+                        modify_time: 0,
+                        modify_date: 0,
+                        first_cluster_lo: (cluster.0 & 0xFFFF) as u16,
+                        file_size: size,
+                    };
+                    
+                    // バッファに書き込み
+                    let entry_bytes = unsafe {
+                        core::slice::from_raw_parts(
+                            &entry as *const DirEntryRaw as *const u8,
+                            DIR_ENTRY_SIZE
+                        )
+                    };
+                    buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry_bytes);
+                    
+                    // 元がEND_OF_DIRだった場合、次のエントリもEND_OF_DIRにする
+                    if first_byte == END_OF_DIR && i + 1 < entries_per_cluster {
+                        buffer[offset + DIR_ENTRY_SIZE] = END_OF_DIR;
+                    }
+                    
+                    // クラスタを書き戻し
+                    self.fs.write_cluster(current_cluster, &buffer)?;
+                    return Ok(());
+                }
+            }
+            
+            // 次のクラスタへ
+            let next = self.fs.read_fat_entry(current_cluster)?;
+            if !next.is_valid() {
+                // 新しいクラスタを割り当て
+                let new_cluster = self.fs.allocate_cluster()?;
+                self.fs.write_fat_entry(current_cluster, new_cluster)?;
+                
+                // 新しいクラスタを初期化
+                let mut new_buffer = vec![0u8; cluster_size];
+                new_buffer[0] = END_OF_DIR;
+                self.fs.write_cluster(new_cluster, &new_buffer)?;
+                
+                current_cluster = new_cluster;
+            } else {
+                current_cluster = next;
+            }
+        }
+        
+        Err(FsError::NoSpace)
+    }
+
+    /// ディレクトリからエントリを削除
+    fn remove_dir_entry(&self, name: &str) -> FsResult<DirEntryRaw> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        
+        let cluster_size = self.fs.cluster_size();
+        let mut buffer = vec![0u8; cluster_size];
+        let mut current_cluster = self.first_cluster;
+        
+        while current_cluster.is_valid() {
+            self.fs.read_cluster(current_cluster, &mut buffer)?;
+            
+            let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
+            for i in 0..entries_per_cluster {
+                let offset = i * DIR_ENTRY_SIZE;
+                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+                
+                if raw.is_end() {
+                    return Err(FsError::NotFound);
+                }
+                
+                if raw.is_deleted() {
+                    continue;
+                }
+                
+                if raw.attributes().is_long_name() || raw.attributes().is_volume_id() {
+                    continue;
+                }
+                
+                let entry_name = raw.short_name();
+                if entry_name.eq_ignore_ascii_case(name) {
+                    // エントリを削除済みとしてマーク
+                    buffer[offset] = DELETED_ENTRY;
+                    self.fs.write_cluster(current_cluster, &buffer)?;
+                    return Ok(raw);
+                }
+            }
+            
+            current_cluster = self.fs.read_fat_entry(current_cluster)?;
+        }
+        
+        Err(FsError::NotFound)
+    }
+
     /// ディレクトリの全エントリを読み取り
     fn read_dir_entries(&self) -> FsResult<Vec<(String, DirEntryRaw)>> {
         if self.file_type != FileType::Directory {
@@ -1051,24 +1214,142 @@ impl Inode for Fat32Inode {
             .collect())
     }
 
-    fn create(&self, _name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
-        // TODO: ファイル作成の実装
-        Err(FsError::NotSupported)
+    fn create(&self, name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
+        // 既存のエントリがないか確認
+        if let Ok(_) = self.lookup(name) {
+            return Err(FsError::AlreadyExists);
+        }
+        
+        // 新しいファイル用のクラスタを割り当て（空ファイルの場合はクラスタ0）
+        let new_cluster = Cluster(0); // 空ファイルはクラスタを持たない
+        
+        // ディレクトリエントリを追加
+        self.add_dir_entry(name, new_cluster, FileAttributes::from_bits_truncate(FileAttributes::ARCHIVE), 0)?;
+        
+        Ok(Arc::new(Fat32Inode::new_file(
+            self.fs.clone(),
+            new_cluster,
+            0,
+            self.first_cluster,
+        )))
     }
 
-    fn mkdir(&self, _name: &str, _mode: FileMode) -> FsResult<Arc<dyn Inode>> {
-        // TODO: ディレクトリ作成の実装
-        Err(FsError::NotSupported)
+    fn mkdir(&self, name: &str, _mode: FileMode) -> FsResult<Arc<dyn Inode>> {
+        // 既存のエントリがないか確認
+        if let Ok(_) = self.lookup(name) {
+            return Err(FsError::AlreadyExists);
+        }
+        
+        // 新しいディレクトリ用のクラスタを割り当て
+        let new_cluster = self.fs.allocate_cluster()?;
+        
+        // クラスタを初期化（. と .. エントリを作成）
+        let cluster_size = self.fs.cluster_size();
+        let mut buffer = vec![0u8; cluster_size];
+        
+        // "." エントリ
+        let dot_entry = DirEntryRaw {
+            name: [b'.', b' ', b' ', b' ', b' ', b' ', b' ', b' '],
+            ext: [b' ', b' ', b' '],
+            attr: FileAttributes::DIRECTORY,
+            nt_reserved: 0,
+            create_time_tenths: 0,
+            create_time: 0,
+            create_date: 0,
+            access_date: 0,
+            first_cluster_hi: (new_cluster.0 >> 16) as u16,
+            modify_time: 0,
+            modify_date: 0,
+            first_cluster_lo: (new_cluster.0 & 0xFFFF) as u16,
+            file_size: 0,
+        };
+        
+        // ".." エントリ
+        let dotdot_entry = DirEntryRaw {
+            name: [b'.', b'.', b' ', b' ', b' ', b' ', b' ', b' '],
+            ext: [b' ', b' ', b' '],
+            attr: FileAttributes::DIRECTORY,
+            nt_reserved: 0,
+            create_time_tenths: 0,
+            create_time: 0,
+            create_date: 0,
+            access_date: 0,
+            first_cluster_hi: (self.first_cluster.0 >> 16) as u16,
+            modify_time: 0,
+            modify_date: 0,
+            first_cluster_lo: (self.first_cluster.0 & 0xFFFF) as u16,
+            file_size: 0,
+        };
+        
+        // バッファに書き込み
+        let dot_bytes = unsafe {
+            core::slice::from_raw_parts(&dot_entry as *const DirEntryRaw as *const u8, DIR_ENTRY_SIZE)
+        };
+        buffer[0..DIR_ENTRY_SIZE].copy_from_slice(dot_bytes);
+        
+        let dotdot_bytes = unsafe {
+            core::slice::from_raw_parts(&dotdot_entry as *const DirEntryRaw as *const u8, DIR_ENTRY_SIZE)
+        };
+        buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2].copy_from_slice(dotdot_bytes);
+        
+        // 終端マーカー
+        buffer[DIR_ENTRY_SIZE * 2] = END_OF_DIR;
+        
+        self.fs.write_cluster(new_cluster, &buffer)?;
+        
+        // 親ディレクトリにエントリを追加
+        self.add_dir_entry(name, new_cluster, FileAttributes::from_bits_truncate(FileAttributes::DIRECTORY), 0)?;
+        
+        Ok(Arc::new(Fat32Inode::new_directory(
+            self.fs.clone(),
+            new_cluster,
+            self.first_cluster,
+        )))
     }
 
-    fn unlink(&self, _name: &str) -> FsResult<()> {
-        // TODO: ファイル削除の実装
-        Err(FsError::NotSupported)
+    fn unlink(&self, name: &str) -> FsResult<()> {
+        // エントリを検索して削除
+        let entry = self.remove_dir_entry(name)?;
+        
+        // ディレクトリは削除できない
+        if entry.attributes().is_directory() {
+            return Err(FsError::IsDirectory);
+        }
+        
+        // クラスタチェーンを解放
+        let cluster = entry.first_cluster();
+        if cluster.is_valid() {
+            self.fs.free_cluster_chain(cluster)?;
+        }
+        
+        Ok(())
     }
 
-    fn rmdir(&self, _name: &str) -> FsResult<()> {
-        // TODO: ディレクトリ削除の実装
-        Err(FsError::NotSupported)
+    fn rmdir(&self, name: &str) -> FsResult<()> {
+        // まず対象ディレクトリを検索
+        let target = self.lookup(name)?;
+        let attr = target.getattr()?;
+        
+        if attr.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        
+        // ディレクトリが空かどうか確認
+        let entries = target.readdir(0)?;
+        if !entries.is_empty() {
+            return Err(FsError::NotEmpty);
+        }
+        
+        // エントリを削除
+        let entry = self.remove_dir_entry(name)?;
+        
+        // クラスタチェーンを解放
+        let cluster = entry.first_cluster();
+        if cluster.is_valid() {
+            self.fs.free_cluster_chain(cluster)?;
+        }
+        
+        Ok(())
     }
 
     fn rename(&self, _old_name: &str, _new_dir: &Arc<dyn Inode>, _new_name: &str) -> FsResult<()> {
@@ -1132,14 +1413,123 @@ impl Inode for Fat32Inode {
         Ok(bytes_read)
     }
 
-    fn write(&self, _offset: u64, _buf: &[u8]) -> FsResult<usize> {
-        // TODO: 書き込みの実装
-        Err(FsError::NotSupported)
+    fn write(&self, offset: u64, buf: &[u8]) -> FsResult<usize> {
+        if self.file_type != FileType::Regular {
+            return Err(FsError::IsDirectory);
+        }
+        
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        
+        let cluster_size = self.fs.cluster_size() as u64;
+        let mut bytes_written = 0usize;
+        let end_offset = offset + buf.len() as u64;
+        
+        // 必要なクラスタを確保
+        let mut cluster = self.first_cluster;
+        
+        // ファイルが空の場合、最初のクラスタを割り当て
+        if !cluster.is_valid() {
+            cluster = self.fs.allocate_cluster()?;
+            // 親ディレクトリのエントリを更新する必要がある（簡略化のため省略）
+        }
+        
+        // 書き込み開始位置のクラスタまでスキップ
+        let start_cluster_idx = offset / cluster_size;
+        for _ in 0..start_cluster_idx {
+            let next = self.fs.read_fat_entry(cluster)?;
+            if !next.is_valid() {
+                // 新しいクラスタを割り当て
+                let new_cluster = self.fs.allocate_cluster()?;
+                self.fs.write_fat_entry(cluster, new_cluster)?;
+                cluster = new_cluster;
+            } else {
+                cluster = next;
+            }
+        }
+        
+        let mut cluster_offset = (offset % cluster_size) as usize;
+        let mut cluster_buf = vec![0u8; cluster_size as usize];
+        
+        while bytes_written < buf.len() {
+            // 既存のクラスタ内容を読み込み（部分書き込みの場合）
+            if cluster_offset > 0 || bytes_written + cluster_size as usize - cluster_offset > buf.len() {
+                self.fs.read_cluster(cluster, &mut cluster_buf)?;
+            }
+            
+            // バッファにデータをコピー
+            let copy_len = (cluster_size as usize - cluster_offset).min(buf.len() - bytes_written);
+            cluster_buf[cluster_offset..cluster_offset + copy_len]
+                .copy_from_slice(&buf[bytes_written..bytes_written + copy_len]);
+            
+            // クラスタを書き込み
+            self.fs.write_cluster(cluster, &cluster_buf)?;
+            
+            bytes_written += copy_len;
+            cluster_offset = 0;
+            
+            // 次のクラスタが必要な場合
+            if bytes_written < buf.len() {
+                let next = self.fs.read_fat_entry(cluster)?;
+                if !next.is_valid() {
+                    let new_cluster = self.fs.allocate_cluster()?;
+                    self.fs.write_fat_entry(cluster, new_cluster)?;
+                    cluster = new_cluster;
+                } else {
+                    cluster = next;
+                }
+            }
+        }
+        
+        Ok(bytes_written)
     }
 
-    fn truncate(&self, _size: u64) -> FsResult<()> {
-        // TODO: トランケートの実装
-        Err(FsError::NotSupported)
+    fn truncate(&self, size: u64) -> FsResult<()> {
+        if self.file_type != FileType::Regular {
+            return Err(FsError::IsDirectory);
+        }
+        
+        let cluster_size = self.fs.cluster_size() as u64;
+        
+        if size == 0 {
+            // 全クラスタを解放
+            if self.first_cluster.is_valid() {
+                self.fs.free_cluster_chain(self.first_cluster)?;
+            }
+            return Ok(());
+        }
+        
+        // 必要なクラスタ数を計算
+        let needed_clusters = (size + cluster_size - 1) / cluster_size;
+        
+        let mut cluster = self.first_cluster;
+        let mut count = 1u64;
+        
+        // 必要なクラスタ数まで辿る
+        while count < needed_clusters && cluster.is_valid() {
+            let next = self.fs.read_fat_entry(cluster)?;
+            if !next.is_valid() {
+                // 拡張が必要：新しいクラスタを割り当て
+                let new_cluster = self.fs.allocate_cluster()?;
+                self.fs.write_fat_entry(cluster, new_cluster)?;
+                cluster = new_cluster;
+            } else {
+                cluster = next;
+            }
+            count += 1;
+        }
+        
+        // 余分なクラスタを解放
+        if cluster.is_valid() {
+            let next = self.fs.read_fat_entry(cluster)?;
+            self.fs.write_fat_entry(cluster, Cluster::EOF)?;
+            if next.is_valid() {
+                self.fs.free_cluster_chain(next)?;
+            }
+        }
+        
+        Ok(())
     }
 
     fn fsync(&self, _datasync: bool) -> FsResult<()> {

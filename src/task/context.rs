@@ -347,6 +347,20 @@ pub unsafe fn schedule_switch(
     }
 }
 
+/// 現在実行中のタスクIDを取得
+///
+/// CPUごとに現在実行中のタスクIDを返す。
+/// タスクが存在しない場合は0を返す。
+pub fn current_task_id() -> u64 {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if let Some(tcb_ptr) = get_current_task(cpu_id) {
+        // SAFETY: get_current_task は有効なTCBポインタを返す
+        unsafe { (*tcb_ptr).id.0 }
+    } else {
+        0 // タスクなし
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

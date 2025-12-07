@@ -30,10 +30,19 @@ impl SysNamespace {
     /// メモリ情報
     pub fn memory() -> ExoValue {
         let mut map = BTreeMap::new();
-        // TODO: 実際のメモリ統計を取得
-        map.insert(String::from("total_kb"), ExoValue::Int(131072));
-        map.insert(String::from("used_kb"), ExoValue::Int(65536));
-        map.insert(String::from("free_kb"), ExoValue::Int(65536));
+        // 実際のメモリ統計を取得
+        let total = crate::memory::total_memory_kb();
+        let free = crate::memory::free_memory_kb();
+        let used = crate::memory::used_memory_kb();
+        
+        map.insert(String::from("total_kb"), ExoValue::Int(total as i64));
+        map.insert(String::from("used_kb"), ExoValue::Int(used as i64));
+        map.insert(String::from("free_kb"), ExoValue::Int(free as i64));
+        
+        // 使用率をパーセントで計算
+        let usage_percent = if total > 0 { (used * 100) / total } else { 0 };
+        map.insert(String::from("usage_percent"), ExoValue::Int(usage_percent as i64));
+        
         ExoValue::Map(map)
     }
 

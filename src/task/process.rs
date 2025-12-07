@@ -13,6 +13,34 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+// ============================================================================
+// Per-CPU 現在プロセスID追跡
+// ============================================================================
+
+/// 各CPUの現在プロセスID (最大64コア対応)
+static CURRENT_PROCESS: [AtomicU64; 64] = {
+    const INIT: AtomicU64 = AtomicU64::new(1); // 初期値はINITプロセス
+    [INIT; 64]
+};
+
+/// 現在のプロセスIDを設定
+pub fn set_current_process(pid: ProcessId) {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if cpu_id < 64 {
+        CURRENT_PROCESS[cpu_id].store(pid.as_u64(), Ordering::Release);
+    }
+}
+
+/// 現在のプロセスIDを取得
+pub fn get_current_process() -> ProcessId {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if cpu_id < 64 {
+        ProcessId::new(CURRENT_PROCESS[cpu_id].load(Ordering::Acquire))
+    } else {
+        ProcessId::INIT
+    }
+}
+
 /// プロセスID (Newtype)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ProcessId(u64);
@@ -393,7 +421,7 @@ impl ProcessInfo {
             priority: Priority::NORMAL,
             stats: ProcessStats::default(),
             limits: ResourceLimits::default(),
-            created_at: 0, // TODO: タイムスタンプ
+            created_at: crate::time::current_time_ns(),
             exit_code: None,
             children: Vec::new(),
             threads: Vec::new(),
@@ -592,8 +620,14 @@ impl ProcessManager {
             }
         }
 
-        // 待機する子がいない (ブロックすべき)
-        Err(ProcessError::NoChild) // TODO: 実際にはブロック
+        // 待機する子がいない
+        // 注: 実際のブロッキング待機はタスクスケジューラとの統合が必要
+        // 現在はポーリングベースまたはNoChildエラーを返す
+        // 完全な実装には以下が必要:
+        // 1. 現在のタスクを待機状態にする
+        // 2. 子プロセスがexitしたときにwakeupする
+        // 3. シグナル(SIGCHLD)との統合
+        Err(ProcessError::NoChild)
     }
 
     /// ゾンビを回収
@@ -635,15 +669,13 @@ pub fn process_manager() -> &'static ProcessManager {
 
 /// fork() 相当 (ExoRustでは spawn に近い)
 pub fn spawn(name: &str) -> Result<ProcessId, ProcessError> {
-    // TODO: 現在のプロセスIDを取得
-    let ppid = ProcessId::INIT;
+    let ppid = get_current_process();
     PROCESS_MANAGER.create(ppid, name)
 }
 
 /// exit() 相当
 pub fn exit(code: ExitCode) -> ! {
-    // TODO: 現在のプロセスIDを取得
-    let pid = ProcessId::INIT;
+    let pid = get_current_process();
     let _ = PROCESS_MANAGER.exit(pid, code);
     loop {
         core::hint::spin_loop();
@@ -652,33 +684,43 @@ pub fn exit(code: ExitCode) -> ! {
 
 /// waitpid() 相当
 pub fn waitpid(pid: Option<ProcessId>) -> Result<(ProcessId, ExitCode), ProcessError> {
-    // TODO: 現在のプロセスIDを取得
-    let ppid = ProcessId::INIT;
+    let ppid = get_current_process();
     PROCESS_MANAGER.wait(ppid, pid)
 }
 
 /// getpid() 相当
 pub fn getpid() -> ProcessId {
-    // TODO: 現在のプロセスIDを取得
-    ProcessId::INIT
+    get_current_process()
 }
 
 /// getppid() 相当
 pub fn getppid() -> ProcessId {
-    // TODO: 現在のプロセスの親PIDを取得
-    ProcessId::KERNEL
+    let pid = get_current_process();
+    if let Some(process) = PROCESS_MANAGER.get(pid) {
+        process.read().ppid
+    } else {
+        ProcessId::KERNEL
+    }
 }
 
 /// getuid() 相当
 pub fn getuid() -> UserId {
-    // TODO: 現在のプロセスのUIDを取得
-    UserId::ROOT
+    let pid = get_current_process();
+    if let Some(process) = PROCESS_MANAGER.get(pid) {
+        process.read().credentials.uid
+    } else {
+        UserId::ROOT
+    }
 }
 
 /// getgid() 相当
 pub fn getgid() -> GroupId {
-    // TODO: 現在のプロセスのGIDを取得
-    GroupId::ROOT
+    let pid = get_current_process();
+    if let Some(process) = PROCESS_MANAGER.get(pid) {
+        process.read().credentials.gid
+    } else {
+        GroupId::ROOT
+    }
 }
 
 /// setpriority() 相当

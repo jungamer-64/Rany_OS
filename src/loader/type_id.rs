@@ -23,7 +23,7 @@
 #![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 /// 型のハッシュ値（64ビット）
@@ -284,17 +284,148 @@ pub struct DependencyEntry {
 ///
 /// セルのメタデータセクション（.rany_type_id）からハッシュ情報を読み取ります。
 pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
+    use crate::loader::elf::{Elf64Header, Elf64SectionHeader};
+    
     // ELFヘッダーの検証
     if elf_data.len() < 64 || &elf_data[0..4] != b"\x7fELF" {
         return None;
     }
     
-    // セクションヘッダーテーブルを走査して .rany_type_id セクションを探す
-    // 簡易実装：実際にはELFパーサーを使用
+    // ELFヘッダーを解析
+    let header = unsafe { &*(elf_data.as_ptr() as *const Elf64Header) };
     
-    // TODO: 実際のELFセクション解析を実装
-    // 現在はプレースホルダー
+    // セクションヘッダーテーブルの位置を確認
+    let sh_offset = header.e_shoff as usize;
+    let sh_entsize = header.e_shentsize as usize;
+    let sh_num = header.e_shnum as usize;
+    let shstrtab_idx = header.e_shstrndx as usize;
+    
+    if sh_offset == 0 || sh_num == 0 || shstrtab_idx >= sh_num {
+        return None;
+    }
+    
+    // セクションヘッダーテーブルの境界チェック
+    if sh_offset + sh_num * sh_entsize > elf_data.len() {
+        return None;
+    }
+    
+    // セクション名文字列テーブルのセクションを取得
+    let shstrtab_header_offset = sh_offset + shstrtab_idx * sh_entsize;
+    let shstrtab_header = unsafe {
+        &*(elf_data.as_ptr().add(shstrtab_header_offset) as *const Elf64SectionHeader)
+    };
+    let shstrtab_start = shstrtab_header.sh_offset as usize;
+    let shstrtab_size = shstrtab_header.sh_size as usize;
+    
+    if shstrtab_start + shstrtab_size > elf_data.len() {
+        return None;
+    }
+    
+    // .rany_type_id セクションを探す
+    for i in 0..sh_num {
+        let sh_header_offset = sh_offset + i * sh_entsize;
+        let section_header = unsafe {
+            &*(elf_data.as_ptr().add(sh_header_offset) as *const Elf64SectionHeader)
+        };
+        
+        let name_offset = section_header.sh_name as usize;
+        if name_offset >= shstrtab_size {
+            continue;
+        }
+        
+        // セクション名を取得
+        let name_start = shstrtab_start + name_offset;
+        let mut name_end = name_start;
+        while name_end < elf_data.len() && elf_data[name_end] != 0 {
+            name_end += 1;
+        }
+        
+        let section_name = core::str::from_utf8(&elf_data[name_start..name_end]).ok()?;
+        
+        if section_name == ".rany_type_id" {
+            // .rany_type_id セクションの内容を解析
+            let data_start = section_header.sh_offset as usize;
+            let data_size = section_header.sh_size as usize;
+            
+            if data_start + data_size > elf_data.len() {
+                return None;
+            }
+            
+            let section_data = &elf_data[data_start..data_start + data_size];
+            return parse_type_id_section(section_data);
+        }
+    }
+    
     None
+}
+
+/// .rany_type_id セクションの内容を解析
+fn parse_type_id_section(data: &[u8]) -> Option<CellDependencies> {
+    // セクションフォーマット:
+    // - 4 bytes: magic ("RTID")
+    // - 4 bytes: version
+    // - 4 bytes: dependency count
+    // - For each dependency:
+    //   - 64 bytes: interface name (null-terminated)
+    //   - 8 bytes: type hash
+    //   - 2 bytes: major version
+    //   - 2 bytes: minor version
+    //   - 2 bytes: patch version
+    
+    if data.len() < 12 {
+        return None;
+    }
+    
+    // Magicチェック
+    if &data[0..4] != b"RTID" {
+        return None;
+    }
+    
+    let _version = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+    let dep_count = u32::from_le_bytes([data[8], data[9], data[10], data[11]]) as usize;
+    
+    let mut dependencies = Vec::new();
+    let mut offset = 12;
+    
+    for _ in 0..dep_count {
+        if offset + 78 > data.len() {
+            break;
+        }
+        
+        // インターフェース名
+        let name_end = data[offset..offset + 64].iter()
+            .position(|&b| b == 0)
+            .unwrap_or(64);
+        let interface = core::str::from_utf8(&data[offset..offset + name_end])
+            .ok()?
+            .to_string();
+        offset += 64;
+        
+        // ハッシュ（u64）
+        let hash = u64::from_le_bytes([
+            data[offset], data[offset + 1], data[offset + 2], data[offset + 3],
+            data[offset + 4], data[offset + 5], data[offset + 6], data[offset + 7],
+        ]);
+        offset += 8;
+        
+        // バージョン
+        let major = u16::from_le_bytes([data[offset], data[offset + 1]]);
+        let minor = u16::from_le_bytes([data[offset + 2], data[offset + 3]]);
+        let patch = u16::from_le_bytes([data[offset + 4], data[offset + 5]]);
+        offset += 6;
+        
+        dependencies.push(DependencyEntry {
+            interface: String::from(interface),
+            hash,
+            min_version: SemVer { major, minor, patch },
+        });
+    }
+    
+    Some(CellDependencies { 
+        cell_name: String::new(),  // セクションには名前がないためデフォルト
+        cell_version: SemVer::new(0, 0, 0),
+        dependencies 
+    })
 }
 
 /// グローバルインターフェースレジストリ

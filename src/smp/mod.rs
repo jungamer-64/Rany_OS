@@ -18,8 +18,8 @@ pub fn cpu_count() -> u32 {
 
 /// Get current CPU ID
 pub fn current_cpu() -> u32 {
-    // In real implementation, read from LAPIC or per-CPU data
-    0
+    // Read from LAPIC ID register
+    crate::io::apic::local_apic().id() as u32
 }
 
 /// Initialize SMP for the system

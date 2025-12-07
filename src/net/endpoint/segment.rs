@@ -74,6 +74,12 @@ impl TcpSegmentBuilder {
         self
     }
 
+    /// PSHフラグ追加
+    pub fn psh(mut self) -> Self {
+        self.flags |= tcp_flags::PSH;
+        self
+    }
+
     /// ウィンドウサイズ設定
     pub fn window(mut self, window: u16) -> Self {
         self.window = window;
@@ -83,6 +89,12 @@ impl TcpSegmentBuilder {
     /// データ設定
     pub fn data(mut self, data: Vec<u8>) -> Self {
         self.data = data;
+        self
+    }
+
+    /// ペイロード設定（スライスから）
+    pub fn payload(mut self, data: &[u8]) -> Self {
+        self.data = data.to_vec();
         self
     }
 

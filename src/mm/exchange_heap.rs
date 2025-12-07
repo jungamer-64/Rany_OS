@@ -149,13 +149,65 @@ impl SimpleFreeListHeap {
         let new_block = addr as *mut FreeBlock;
         unsafe {
             (*new_block).size = size;
-            (*new_block).next = self.free_list_head;
+            (*new_block).next = None;
         }
-        self.free_list_head = NonNull::new(new_block);
 
         self.allocated_bytes = self.allocated_bytes.saturating_sub(size);
 
-        // TODO: 隣接ブロックの合体（将来の最適化）
+        // 隣接ブロックの合体を試みる
+        // フリーリストをアドレス順にソートして挿入位置を見つける
+        let mut prev: Option<NonNull<FreeBlock>> = None;
+        let mut current = self.free_list_head;
+
+        // 挿入位置を見つける（アドレス昇順）
+        while let Some(block_ptr) = current {
+            let block = unsafe { block_ptr.as_ref() };
+            if block_ptr.as_ptr() as usize > addr {
+                break;
+            }
+            prev = current;
+            current = block.next;
+        }
+
+        // 新しいブロックをリストに挿入
+        unsafe {
+            (*new_block).next = current;
+        }
+        
+        if let Some(mut p) = prev {
+            unsafe {
+                p.as_mut().next = NonNull::new(new_block);
+            }
+        } else {
+            self.free_list_head = NonNull::new(new_block);
+        }
+
+        // 後ろの隣接ブロックと合体
+        if let Some(next_ptr) = current {
+            let new_block_end = addr + size;
+            if new_block_end == next_ptr.as_ptr() as usize {
+                // 合体
+                let next_block = unsafe { next_ptr.as_ref() };
+                unsafe {
+                    (*new_block).size += next_block.size;
+                    (*new_block).next = next_block.next;
+                }
+            }
+        }
+
+        // 前の隣接ブロックと合体
+        if let Some(prev_ptr) = prev {
+            let prev_block = unsafe { prev_ptr.as_ref() };
+            let prev_end = prev_ptr.as_ptr() as usize + prev_block.size;
+            if prev_end == addr {
+                // 合体
+                unsafe {
+                    let prev_block_mut = prev_ptr.as_ptr() as *mut FreeBlock;
+                    (*prev_block_mut).size += (*new_block).size;
+                    (*prev_block_mut).next = (*new_block).next;
+                }
+            }
+        }
     }
 
     fn used(&self) -> usize {

@@ -173,6 +173,16 @@ impl Domain {
         }
     }
 
+    /// 依存関係を削除
+    pub fn remove_dependency(&mut self, dep: DomainId) {
+        self.dependencies.retain(|&id| id != dep);
+    }
+
+    /// 被依存関係を削除
+    pub fn remove_dependent(&mut self, dep_id: DomainId) {
+        self.dependents.retain(|&id| id != dep_id);
+    }
+
     /// RRef数をインクリメント
     pub fn increment_rref(&mut self) {
         self.rref_count += 1;
