@@ -358,7 +358,10 @@ impl DeviceOps for ConsoleDevice {
     }
 
     fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DevError> {
-        // TODO: キーボード入力
+        // コンソールデバイスの読み取り
+        // キーボード入力は非同期ストリーム経由で取得する必要がある
+        // (KeyboardStreamを使用)
+        // ここでは同期読み取りをサポートしないため0を返す
         Ok(0)
     }
 

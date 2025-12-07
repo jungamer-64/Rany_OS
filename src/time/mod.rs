@@ -560,3 +560,9 @@ pub fn now() -> u64 {
 pub fn precise_time_nanos() -> u64 {
     SYSTEM_CLOCK.precise_time_nanos()
 }
+
+/// 現在時刻をナノ秒で取得（precise_time_nanosのエイリアス）
+#[inline]
+pub fn current_time_ns() -> u64 {
+    precise_time_nanos()
+}

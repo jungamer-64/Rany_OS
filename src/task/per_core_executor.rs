@@ -674,12 +674,10 @@ fn read_tsc() -> u64 {
 /// 現在のコアIDを取得
 #[inline]
 fn current_core_id() -> u32 {
-    // TODO: 実際のAPIC ID取得に置き換え
     #[cfg(target_arch = "x86_64")]
     {
-        // LAPICレジスタからIDを取得する実装
-        // 簡易実装: GS baseまたはper-CPU変数から取得
-        0
+        // LAPICレジスタからIDを取得
+        crate::io::apic::local_apic().id() as u32
     }
 
     #[cfg(not(target_arch = "x86_64"))]

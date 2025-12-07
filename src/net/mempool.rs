@@ -204,18 +204,29 @@ impl Mempool {
                 return Err("Failed to allocate buffer");
             }
 
-            let buffer = ptr as *mut PacketBuffer;
+            let buffer_ptr = ptr as *mut PacketBuffer;
+            let non_null = unsafe { NonNull::new_unchecked(buffer_ptr) };
 
             // バッファを初期化
             unsafe {
-                (*buffer).pool_id = self.id;
-                (*buffer).index = i as u32;
-                (*buffer).len = AtomicUsize::new(0);
-                (*buffer).ref_count = AtomicU64::new(0);
-                (*buffer).phys_addr = PhysAddr::new(ptr as u64); // TODO: 実際の物理アドレス変換
+                (*buffer_ptr).pool_id = self.id;
+                (*buffer_ptr).index = i as u32;
+                (*buffer_ptr).len = AtomicUsize::new(0);
+                (*buffer_ptr).ref_count = AtomicU64::new(0);
+                // 仮想アドレスから物理アドレスへ変換
+                // カーネルヒープはリニアマッピングされているため、
+                // PHYSICAL_MEMORY_OFFSETを引くことで物理アドレスを得る
+                let virt_addr = ptr as u64;
+                let phys = if virt_addr >= crate::mm::mapping::PHYSICAL_MEMORY_OFFSET {
+                    virt_addr - crate::mm::mapping::PHYSICAL_MEMORY_OFFSET
+                } else {
+                    // PHYSICAL_MEMORY_OFFSET未満の場合はそのままとする
+                    // （カーネルイメージ内のアドレスなど）
+                    virt_addr
+                };
+                (*buffer_ptr).phys_addr = PhysAddr::new(phys);
             }
 
-            let non_null = unsafe { NonNull::new_unchecked(buffer) };
             buffers.push(non_null);
             free_list.push(non_null);
         }

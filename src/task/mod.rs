@@ -24,7 +24,7 @@ mod work_stealing;
 pub mod work_stealing_advanced;
 
 #[allow(unused_imports)]
-pub use context::{CpuContext, KernelStack, TaskControlBlock, TaskState};
+pub use context::{CpuContext, KernelStack, TaskControlBlock, TaskState, current_task_id};
 #[allow(unused_imports)]
 pub use environ::{
     EnvError, EnvKey, EnvValue, Environment, environ, get_home, get_path, get_pwd, get_user,

@@ -210,7 +210,9 @@ impl SystemMonitor {
                     state: info.state,
                     cpu_time_ms: info.stats.user_time.load(Ordering::Relaxed)
                         + info.stats.system_time.load(Ordering::Relaxed),
-                    memory_bytes: 0, // TODO: プロセスごとのメモリ使用量
+                    // ProcessInfoに個別のメモリ使用量フィールドがないため0
+                    // 将来的にはAddressSpaceと連携して取得
+                    memory_bytes: 0,
                 });
             }
         }

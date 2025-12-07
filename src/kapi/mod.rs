@@ -170,8 +170,14 @@ pub mod task_api {
     /// 現在のタスクIDを取得
     #[inline(always)]
     pub fn current_task_id() -> u64 {
-        // TODO: 実際のタスクID取得
-        0
+        // タスクコンテキストから現在のタスクIDを取得
+        // 現在のCPU IDは0を仮定（SMP対応時に修正が必要）
+        let cpu_id = 0;
+        if let Some(tcb_ptr) = crate::task::context::get_current_task(cpu_id) {
+            unsafe { (*tcb_ptr).id.as_u64() }
+        } else {
+            0 // タスクがない場合は0
+        }
     }
 
     /// タスクハンドル

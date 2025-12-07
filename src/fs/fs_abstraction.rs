@@ -583,10 +583,13 @@ impl PathResolver {
             return Err(FsError::InvalidPath);
         }
 
-        let (start, components) = if path.starts_with('/') {
-            (self.root.clone(), path[1..].split('/'))
+        // まずパスを正規化
+        let normalized = self.normalize_path(path);
+        
+        let (start, components) = if normalized.starts_with('/') {
+            (self.root.clone(), normalized[1..].split('/'))
         } else {
-            (self.cwd.clone(), path.split('/'))
+            (self.cwd.clone(), normalized.split('/'))
         };
 
         let mut current = start;
@@ -596,9 +599,8 @@ impl PathResolver {
                 continue;
             }
 
+            // ".."は正規化時に処理済みなので、ここに到達したら無視
             if component == ".." {
-                // TODO: Handle parent directory
-                // For now, stay at current
                 continue;
             }
 
@@ -606,6 +608,36 @@ impl PathResolver {
         }
 
         Ok(current)
+    }
+
+    /// パスを正規化（".."と"."を処理）
+    fn normalize_path(&self, path: &str) -> String {
+        use alloc::string::String;
+        use alloc::vec::Vec;
+        
+        let is_absolute = path.starts_with('/');
+        let mut parts: Vec<&str> = Vec::new();
+        
+        for component in path.split('/') {
+            match component {
+                "" | "." => continue,
+                ".." => {
+                    // 親ディレクトリへ: スタックから一つポップ
+                    if !parts.is_empty() {
+                        parts.pop();
+                    }
+                }
+                name => parts.push(name),
+            }
+        }
+        
+        if is_absolute {
+            let mut result = String::from("/");
+            result.push_str(&parts.join("/"));
+            result
+        } else {
+            parts.join("/")
+        }
     }
 
     /// Resolve parent directory and filename

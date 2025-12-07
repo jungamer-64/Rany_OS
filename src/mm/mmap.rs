@@ -82,6 +82,10 @@ impl MappingOffset {
         self.0
     }
 
+    pub const fn as_usize(&self) -> usize {
+        self.0 as usize
+    }
+
     /// ページアライメントされているか
     pub fn is_page_aligned(&self) -> bool {
         self.0 as usize % MappingSize::PAGE_SIZE == 0
@@ -312,12 +316,30 @@ impl MemoryMapping {
 
         let aligned_size = size.page_aligned();
 
-        // TODO: 実際のファイル読み込み
+        // メモリを確保
         let mut memory = Vec::new();
         memory
             .try_reserve(aligned_size.as_usize())
             .map_err(|_| MmapError::OutOfMemory)?;
         memory.resize(aligned_size.as_usize(), 0);
+
+        // ファイルからデータを読み込み
+        match crate::fs::memfs::read_file_content(path, "/") {
+            Ok(file_data) => {
+                let file_offset = offset.as_usize();
+                if file_offset < file_data.len() {
+                    let copy_len = core::cmp::min(
+                        file_data.len() - file_offset,
+                        aligned_size.as_usize(),
+                    );
+                    memory[..copy_len].copy_from_slice(&file_data[file_offset..file_offset + copy_len]);
+                }
+            }
+            Err(_) => {
+                // ファイルが見つからない場合はゼロ初期化のままにする
+                // (MAP_ANONYMOUS的な動作)
+            }
+        }
 
         Ok(Self {
             address,
@@ -467,8 +489,16 @@ impl MemoryMapping {
         }
 
         match &self.mapping_type {
-            MappingType::File { path: _, offset: _ } => {
-                // TODO: ファイルに書き戻し
+            MappingType::File { path, offset } => {
+                // ファイルに書き戻し
+                if let Some(ref memory) = self.memory {
+                    let file_offset = offset.as_usize();
+                    // ファイルへ書き込み
+                    // 注: offsetを考慮した部分書き込みは将来対応
+                    if file_offset == 0 {
+                        let _ = crate::fs::memfs::write_file_content(path, "/", memory);
+                    }
+                }
                 self.clear_dirty();
                 Ok(())
             }

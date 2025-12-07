@@ -475,3 +475,20 @@ pub fn heap_stats() -> (usize, usize) {
     // ヒープサイズ全体を返す（詳細はbuddy_allocator_stats()を使用）
     (0, HEAP_SIZE)
 }
+
+/// システム総メモリをKB単位で取得
+pub fn total_memory_kb() -> u64 {
+    let stats = crate::mm::buddy_allocator_stats();
+    (stats.total_frames as u64) * 4 // 1フレーム = 4KB
+}
+
+/// 空きメモリをKB単位で取得
+pub fn free_memory_kb() -> u64 {
+    let stats = crate::mm::buddy_allocator_stats();
+    (stats.free_frames as u64) * 4 // 1フレーム = 4KB
+}
+
+/// 使用中メモリをKB単位で取得
+pub fn used_memory_kb() -> u64 {
+    total_memory_kb().saturating_sub(free_memory_kb())
+}
