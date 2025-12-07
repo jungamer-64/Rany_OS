@@ -11,12 +11,29 @@
 //! - FAT32パーティション解析
 //! - ディレクトリ読み取り/作成
 //! - ファイル読み取り/書き込み
-//! - ロングファイルネーム（LFN）サポート
+//! - ロングファイルネーム(LFN)サポート
+//!   - LFNチェックサム検証による完全性確認
 //!
 //! ## 型安全性の改善
-//! - Newtype パターン（Cluster, Sector）による取り違え防止
+//! - Newtype パターン(Cluster, Sector)による取り違え防止
 //! - FileAttributes による属性の型安全な管理
 //! - SafePackedRead トレイトによる packed 構造体への安全なアクセス
+//!
+//! ## セキュリティ機能
+//! - **競合状態対策**: アトミックなクラスタ割り当て(TOCTO脆弱性排除)
+//! - **無限ループ対策**: クラスタチェーン探索に上限を設定
+//! - **算術オーバーフロー対策**: クラスタ番号の検証
+//! - **LFNチェックサム検証**: 悪意のあるファイルシステムイメージ対策
+//! - **パス長制限**: DOS互換の最大260文字制限
+//!
+//! ## 既知の制限事項
+//! - FATテーブル全体をメモリにキャッシュ(大容量ボリュームでOOMの可能性)
+//! - FAT書き込みごとにディスクI/O発生(バッチ処理未実装)
+//!
+//! ## 将来の改善予定
+//! - LRUキャッシュによるFATテーブルのオンデマンド読み込み
+//! - ダーティフラグ管理によるバッチ書き込み
+//! - より高度なフラグメンテーション対策
 
 #![allow(dead_code)]
 
@@ -41,6 +58,22 @@ use super::vfs::{
 const MAX_CLUSTER_CHAIN: usize = 0x10000000; // 268M clusters = 約1TB @ 4KB/cluster
 /// 最大パス長(DOS互換)
 const MAX_PATH_LEN: usize = 260;
+/// 最大ファイル名長(単一コンポーネント)
+const MAX_NAME_LEN: usize = 255;
+
+/// パス長が制限内かチェック
+fn validate_path_length(path: &str) -> FsResult<()> {
+    if path.len() > MAX_PATH_LEN {
+        return Err(FsError::NameTooLong);
+    }
+    // 各パスコンポーネントもチェック
+    for component in path.split('/').filter(|s| !s.is_empty()) {
+        if component.len() > MAX_NAME_LEN {
+            return Err(FsError::NameTooLong);
+        }
+    }
+    Ok(())
+}
 
 // ============================================================================
 // Strong Types (Newtypes)
@@ -473,6 +506,23 @@ impl DirEntryRaw {
     pub fn is_deleted(&self) -> bool {
         self.name[0] == DELETED_ENTRY
     }
+    
+    /// ショートネームのチェックサムを計算(LFN検証用)
+    /// 
+    /// # Algorithm
+    /// MS-DOS標準のチェックサム計算アルゴリズム:
+    /// sum = ((sum >> 1) | (sum << 7)) + name[i]
+    pub fn calculate_checksum(&self) -> u8 {
+        let mut sum: u8 = 0;
+        // 11バイト(8.3形式)のショートネーム全体を使用
+        for i in 0..8 {
+            sum = sum.rotate_right(1).wrapping_add(self.name[i]);
+        }
+        for i in 0..3 {
+            sum = sum.rotate_right(1).wrapping_add(self.ext[i]);
+        }
+        sum
+    }
 
     /// 最後のエントリかどうか
     pub fn is_end(&self) -> bool {
@@ -539,6 +589,11 @@ impl LfnEntry {
     pub fn from_bytes(bytes: &[u8]) -> Self {
         unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const LfnEntry) }
     }
+    
+    /// LFNエントリのチェックサムを取得
+    pub fn checksum(&self) -> u8 {
+        unsafe { self.read_field(|s| core::ptr::addr_of!(s.checksum)) }
+    }
 
     /// このエントリから名前の一部を取得
     pub fn get_name_part(&self) -> String {
@@ -594,6 +649,8 @@ pub struct Fat32FileSystem {
     free_clusters: RwLock<u32>,
     /// FATサイズ（セクタ数）
     fat_size: u32,
+    /// ダーティフラグ(将来的にバッチ書き込みに使用)
+    fat_dirty: RwLock<bool>,
 }
 
 impl Fat32FileSystem {
@@ -635,6 +692,7 @@ impl Fat32FileSystem {
             fat_cache: RwLock::new(Vec::new()),
             free_clusters: RwLock::new(0),
             fat_size,
+            fat_dirty: RwLock::new(false),
         });
 
         // FATをキャッシュに読み込み
@@ -926,6 +984,7 @@ impl Clone for Fat32FileSystem {
             fat_cache: RwLock::new(self.fat_cache.read().clone()),
             free_clusters: RwLock::new(*self.free_clusters.read()),
             fat_size: self.fat_size,
+            fat_dirty: RwLock::new(*self.fat_dirty.read()),
         }
     }
 }
@@ -1161,7 +1220,7 @@ impl Fat32Inode {
         let mut cluster = self.first_cluster;
         let cluster_size = self.fs.cluster_size();
         let mut buffer = vec![0u8; cluster_size];
-        let mut lfn_parts: Vec<(u8, String)> = Vec::new();
+        let mut lfn_parts: Vec<(u8, String, u8)> = Vec::new(); // (sequence, name_part, checksum)
         let mut chain_count = 0;
 
         while cluster.is_valid() {
@@ -1191,7 +1250,7 @@ impl Fat32Inode {
 
                 if attr.is_long_name() {
                     let lfn = LfnEntry::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
-                    lfn_parts.push((lfn.sequence(), lfn.get_name_part()));
+                    lfn_parts.push((lfn.sequence(), lfn.get_name_part(), lfn.checksum()));
                 } else {
                     // ボリュームラベルはスキップ
                     if attr.is_volume_id() {
@@ -1201,10 +1260,22 @@ impl Fat32Inode {
 
                     // ロングネームを構築
                     let name = if !lfn_parts.is_empty() {
-                        lfn_parts.sort_by_key(|&(seq, _)| seq);
-                        let long_name: String = lfn_parts.iter().map(|(_, s)| s.as_str()).collect();
-                        lfn_parts.clear();
-                        long_name
+                        // LFNチェックサム検証
+                        let expected_checksum = raw.calculate_checksum();
+                        let lfn_checksum = lfn_parts.first().map(|(_, _, cs)| *cs).unwrap_or(0);
+                        
+                        // チェックサムが一致しない場合は警告してショートネームを使用
+                        if lfn_checksum != expected_checksum {
+                            // 悪意のあるイメージや破損したファイルシステムの可能性
+                            // セキュリティ上、ショートネームにフォールバック
+                            lfn_parts.clear();
+                            raw.short_name()
+                        } else {
+                            lfn_parts.sort_by_key(|&(seq, _, _)| seq);
+                            let long_name: String = lfn_parts.iter().map(|(_, s, _)| s.as_str()).collect();
+                            lfn_parts.clear();
+                            long_name
+                        }
                     } else {
                         raw.short_name()
                     };
@@ -1261,6 +1332,9 @@ impl Inode for Fat32Inode {
     }
 
     fn lookup(&self, name: &str) -> FsResult<Arc<dyn Inode>> {
+        // パス長検証
+        validate_path_length(name)?;
+        
         let entries = self.read_dir_entries()?;
 
         for (entry_name, raw) in entries {
@@ -1305,6 +1379,9 @@ impl Inode for Fat32Inode {
     }
 
     fn create(&self, name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
+        // パス長検証
+        validate_path_length(name)?;
+        
         // 既存のエントリがないか確認
         if let Ok(_) = self.lookup(name) {
             return Err(FsError::AlreadyExists);
@@ -1325,6 +1402,9 @@ impl Inode for Fat32Inode {
     }
 
     fn mkdir(&self, name: &str, _mode: FileMode) -> FsResult<Arc<dyn Inode>> {
+        // パス長検証
+        validate_path_length(name)?;
+        
         // 既存のエントリがないか確認
         if let Ok(_) = self.lookup(name) {
             return Err(FsError::AlreadyExists);
