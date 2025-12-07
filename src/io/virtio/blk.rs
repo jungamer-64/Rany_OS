@@ -645,6 +645,7 @@ impl VirtioBlkDevice {
             device: self,
             submitted: false,
             desc_id: None,
+            queue_idx: 0,
         }
     }
 
@@ -820,6 +821,58 @@ impl VirtioBlkDevice {
 
         Ok(desc0)
     }
+
+    /// Submit a flush request (internal)
+    fn submit_flush(&self, queue_idx: usize) -> Result<u16, BlockError> {
+        if !self.is_ready() {
+            return Err(BlockError::NotReady);
+        }
+
+        // Check if flush is supported
+        if self.features & features::VIRTIO_BLK_F_FLUSH == 0 {
+            return Err(BlockError::Unsupported);
+        }
+
+        let queue = self.queues.get(queue_idx).ok_or(BlockError::NotReady)?;
+        let queue_guard = queue.lock();
+
+        // Flush only requires 2 descriptors: header and status (no data)
+        let desc0 = queue_guard.alloc_desc().ok_or(BlockError::QueueFull)?;
+        let desc1 = queue_guard.alloc_desc().ok_or_else(|| {
+            queue_guard.free_desc(desc0);
+            BlockError::QueueFull
+        })?;
+
+        let header = VirtioBlkReqHeader {
+            req_type: VirtioBlkReqType::Flush as u32,
+            reserved: 0,
+            sector: 0, // sector is ignored for flush
+        };
+
+        unsafe {
+            let desc_table = queue_guard.desc_table;
+
+            // Descriptor 0: Header (device reads)
+            (*desc_table.add(desc0 as usize)) = VringDesc {
+                addr: &header as *const _ as u64,
+                len: core::mem::size_of::<VirtioBlkReqHeader>() as u32,
+                flags: vring_flags::VRING_DESC_F_NEXT,
+                next: desc1,
+            };
+
+            // Descriptor 1: Status (device writes)
+            (*desc_table.add(desc1 as usize)) = VringDesc {
+                addr: 0, // Status byte location
+                len: 1,
+                flags: vring_flags::VRING_DESC_F_WRITE,
+                next: 0,
+            };
+
+            queue_guard.submit(desc0);
+        }
+
+        Ok(desc0)
+    }
 }
 
 // ============================================================================
@@ -963,24 +1016,59 @@ pub struct FlushFuture<'a> {
     device: &'a VirtioBlkDevice,
     submitted: bool,
     desc_id: Option<u16>,
+    queue_idx: usize,
 }
 
 impl<'a> Future for FlushFuture<'a> {
     type Output = Result<(), BlockError>;
 
-    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.submitted {
+            // Check if flush is supported
             if self.device.features & features::VIRTIO_BLK_F_FLUSH == 0 {
                 return Poll::Ready(Err(BlockError::Unsupported));
             }
 
-            // Submit flush request (simplified)
-            self.submitted = true;
-            // TODO: Actual flush submission
+            // Submit flush request using submit_flush
+            match self.device.submit_flush(self.queue_idx) {
+                Ok(desc_id) => {
+                    self.desc_id = Some(desc_id);
+                    self.submitted = true;
+                    
+                    // Register waker for completion notification
+                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+                    let mut wakers = self.device.pending_wakers.lock();
+                    if let Some(slot) = wakers.get_mut(waker_idx) {
+                        *slot = Some(cx.waker().clone());
+                    }
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
         }
 
-        // For now, flush completes immediately
-        Poll::Ready(Ok(()))
+        // Poll for completion
+        if let Some(desc_id) = self.desc_id {
+            let queue = &self.device.queues[self.queue_idx];
+            let queue_guard = queue.lock();
+
+            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
+                if completed_id == desc_id {
+                    // Flush completed successfully
+                    return Poll::Ready(Ok(()));
+                }
+            }
+        }
+
+        // Re-register waker for next poll
+        if let Some(desc_id) = self.desc_id {
+            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+            let mut wakers = self.device.pending_wakers.lock();
+            if let Some(slot) = wakers.get_mut(waker_idx) {
+                *slot = Some(cx.waker().clone());
+            }
+        }
+
+        Poll::Pending
     }
 }
 

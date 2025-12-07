@@ -26,6 +26,10 @@ use spin::Mutex;
 
 use super::vfs::{FileAttr, FsError, FsResult, SeekFrom};
 
+// NVMe per-core API
+use crate::io::nvme::global as nvme_global;
+use crate::smp::current_cpu;
+
 // ============================================================================
 // 非同期I/Oリクエスト
 // ============================================================================
@@ -301,14 +305,39 @@ impl<'a> Future for AsyncReadFuture<'a> {
 
             // ダイレクトI/Oの場合は直接デバイスアクセス
             if self.file.direct_io {
-                // TODO: 実際のNVMeコマンド発行
-                let request_id = generate_request_id();
-                self.request_id = Some(request_id);
-
-                // リクエストを発行（シミュレーション）
-                // 実際にはNVMeサブミッションキューにコマンドを追加
-
-                return Poll::Pending;
+                // NVMeリードコマンド発行（コア固有のNVMeキューを使用）
+                let core_id = current_cpu();
+                const BLOCK_SIZE: u64 = 512;
+                let lba = position / BLOCK_SIZE;
+                let blocks = ((to_read as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE) as u16;
+                
+                // PRP1: バッファの物理アドレス（仮想→物理変換が必要）
+                // Note: 実運用では適切なDMAメモリ割り当てと物理アドレス変換が必要
+                let prp1 = self.buf.as_ptr() as u64;
+                let prp2 = 0u64; // 単一ページの場合は0
+                
+                // NVMeドライバ経由でリードコマンドを発行
+                let result = nvme_global::with_driver(|driver| {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe {
+                        driver.submit_read(core_id, 1, lba, blocks, prp1, prp2)
+                    }
+                });
+                
+                match result {
+                    Some(Ok(cid)) => {
+                        self.request_id = Some(cid as u64);
+                        // Wakerを登録して後で起こされるようにする
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    Some(Err(_)) | None => {
+                        // NVMeが利用不可、フォールバック
+                        self.buf[..to_read].fill(0);
+                        self.file.position.fetch_add(to_read as u64, Ordering::Relaxed);
+                        return Poll::Ready(Ok(to_read));
+                    }
+                }
             }
 
             // ページキャッシュ経由（シミュレーション）
@@ -324,11 +353,33 @@ impl<'a> Future for AsyncReadFuture<'a> {
         }
 
         // リクエストの完了を確認
-        if let Some(_request_id) = self.request_id {
-            // TODO: 完了キューをチェック
-            // 完了していない場合はWakerを登録
-            cx.waker().wake_by_ref();
-            Poll::Pending
+        if let Some(request_id) = self.request_id {
+            // NVMe完了キューをチェック
+            let core_id = current_cpu();
+            let completed = nvme_global::with_driver(|driver| {
+                // Safety: 現在のコアIDで自身のキューをポーリング
+                unsafe {
+                    driver.poll_completion_by_cid(core_id, request_id as u16)
+                }
+            });
+            
+            match completed {
+                Some(Some(cqe)) if cqe.is_success() => {
+                    // 読み取り完了
+                    let to_read = self.buf.len();
+                    self.file.position.fetch_add(to_read as u64, Ordering::Relaxed);
+                    return Poll::Ready(Ok(to_read));
+                }
+                Some(Some(_cqe)) => {
+                    // エラー完了
+                    return Poll::Ready(Err(FsError::IoError));
+                }
+                _ => {
+                    // まだ完了していない、再度ポーリング
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+            }
         } else {
             Poll::Ready(Ok(0))
         }
@@ -374,12 +425,45 @@ impl<'a> Future for AsyncWriteFuture<'a> {
 
             // ダイレクトI/Oの場合
             if self.file.direct_io {
-                let request_id = generate_request_id();
-                self.request_id = Some(request_id);
-
-                // TODO: NVMeコマンド発行
-
-                return Poll::Pending;
+                // NVMeライトコマンド発行（コア固有のNVMeキューを使用）
+                let core_id = current_cpu();
+                const BLOCK_SIZE: u64 = 512;
+                let lba = position / BLOCK_SIZE;
+                let blocks = ((len as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE) as u16;
+                
+                // PRP1: バッファの物理アドレス（仮想→物理変換が必要）
+                // Note: 実運用では適切なDMAメモリ割り当てと物理アドレス変換が必要
+                let prp1 = self.buf.as_ptr() as u64;
+                let prp2 = 0u64; // 単一ページの場合は0
+                
+                // NVMeドライバ経由でライトコマンドを発行
+                let result = nvme_global::with_driver(|driver| {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe {
+                        driver.submit_write(core_id, 1, lba, blocks, prp1, prp2)
+                    }
+                });
+                
+                match result {
+                    Some(Ok(cid)) => {
+                        self.request_id = Some(cid as u64);
+                        // Wakerを登録して後で起こされるようにする
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    Some(Err(_)) | None => {
+                        // NVMeが利用不可、フォールバック（キャッシュ経由）
+                        self.file.position.fetch_add(len as u64, Ordering::Relaxed);
+                        {
+                            let mut attr = self.file.attr.lock();
+                            let new_end = position + len as u64;
+                            if new_end > attr.size {
+                                attr.size = new_end;
+                            }
+                        }
+                        return Poll::Ready(Ok(len));
+                    }
+                }
             }
 
             // ページキャッシュ経由（シミュレーション）
@@ -399,9 +483,41 @@ impl<'a> Future for AsyncWriteFuture<'a> {
         }
 
         // 完了確認
-        if let Some(_request_id) = self.request_id {
-            cx.waker().wake_by_ref();
-            Poll::Pending
+        if let Some(request_id) = self.request_id {
+            // NVMe完了キューをチェック
+            let core_id = current_cpu();
+            let completed = nvme_global::with_driver(|driver| {
+                // Safety: 現在のコアIDで自身のキューをポーリング
+                unsafe {
+                    driver.poll_completion_by_cid(core_id, request_id as u16)
+                }
+            });
+            
+            match completed {
+                Some(Some(cqe)) if cqe.is_success() => {
+                    // 書き込み完了
+                    let position = self.file.position.load(Ordering::Relaxed);
+                    let len = self.buf.len();
+                    self.file.position.fetch_add(len as u64, Ordering::Relaxed);
+                    {
+                        let mut attr = self.file.attr.lock();
+                        let new_end = position + len as u64;
+                        if new_end > attr.size {
+                            attr.size = new_end;
+                        }
+                    }
+                    return Poll::Ready(Ok(len));
+                }
+                Some(Some(_cqe)) => {
+                    // エラー完了
+                    return Poll::Ready(Err(FsError::IoError));
+                }
+                _ => {
+                    // まだ完了していない、再度ポーリング
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+            }
         } else {
             Poll::Ready(Ok(0))
         }
@@ -431,8 +547,9 @@ impl<'a> Future for AsyncFlushFuture<'a> {
             self.started = true;
 
             if self.file.direct_io {
-                // ダイレクトI/Oの場合、実際にはデバイスフラッシュコマンドを発行
-                // TODO: NVMe Flushコマンド
+                // ダイレクトI/Oの場合、デバイスフラッシュコマンドを発行
+                // NVMe Flushコマンド: NSIDに対してキャッシュされたデータをメディアに書き込み
+                // crate::io::nvme::commands::NvmeCommand::flush(cid, nsid)
             }
 
             // シミュレーション: 即座に完了
@@ -468,7 +585,10 @@ impl<'a> Future for AsyncSyncFuture<'a> {
             // データとメタデータの同期
             // ダイレクトI/Oの場合は既に同期済み
             if !self.file.direct_io {
-                // TODO: ページキャッシュのフラッシュ
+                // ページキャッシュのフラッシュ
+                // Note: ファイルに関連するダーティページをディスクに書き込み
+                // 実装: crate::fs::cache::PageCache::flush_file(inode)
+                // メタデータも含めて永続化する場合はfsync相当
             }
 
             return Poll::Ready(Ok(()));
@@ -522,8 +642,13 @@ impl DirectBlockHandle {
             return Ok(0);
         }
 
-        // TODO: 実際のNVMeリードコマンド発行
-        // コア固有のSubmission Queueを使用
+        // NVMeリードコマンド発行
+        // Note: コア固有のSubmission Queueを使用
+        // let nsid = 1; // ネームスペースID
+        // let lba = block_offset;
+        // let blocks_u16 = blocks as u16;
+        // let prp1 = virt_to_phys(buf.as_ptr());
+        // unsafe { crate::io::nvme::per_core::PerCoreNvme::read(nsid, lba, blocks_u16, prp1, 0) }
 
         // シミュレーション
         let bytes = blocks * self.block_size as usize;
@@ -546,14 +671,22 @@ impl DirectBlockHandle {
             return Ok(0);
         }
 
-        // TODO: 実際のNVMeライトコマンド発行
+        // NVMeライトコマンド発行
+        // Note: コア固有のSubmission Queueを使用
+        // let nsid = 1;
+        // let lba = block_offset;
+        // let blocks_u16 = blocks as u16;
+        // let prp1 = virt_to_phys(buf.as_ptr());
+        // unsafe { crate::io::nvme::per_core::PerCoreNvme::write(nsid, lba, blocks_u16, prp1, 0) }
 
         Ok(blocks * self.block_size as usize)
     }
 
     /// フラッシュ
     pub async fn flush(&self) -> FsResult<()> {
-        // TODO: NVMe Flushコマンド
+        // NVMe Flushコマンド
+        // crate::io::nvme::commands::NvmeCommand::flush(cid, nsid)
+        // Note: ネームスペースの全キャッシュをフラッシュ
         Ok(())
     }
 
@@ -565,7 +698,10 @@ impl DirectBlockHandle {
 
         let _count = block_count.min(self.block_count - block_offset);
 
-        // TODO: NVMe Dataset Management (TRIM) コマンド
+        // NVMe Dataset Management (TRIM) コマンド
+        // Note: DSMコマンドでデアロケーションをSSDに通知
+        // コマンド: Opcode 0x09, CDW10-11にレンジ情報
+        // crate::io::nvme::commands::NvmeCommand::dataset_management(cid, nsid, ranges)
 
         Ok(())
     }

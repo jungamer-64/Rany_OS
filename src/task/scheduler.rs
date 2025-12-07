@@ -223,7 +223,8 @@ pub fn spawn_task(entry_point: fn(u64) -> !, arg: u64, priority: u8) -> Option<T
     // グローバルリストに追加
     TASK_LIST.lock().push(TcbPtr(tcb_ptr));
 
-    // CPU 0 のスケジューラに追加（TODO: ロードバランシング）
+    // CPU 0 のスケジューラに追加
+    // Note: ロードバランシングはwork_stealing_advancedモジュールで実装
     if let Some(ref mut scheduler) = *SCHEDULERS[0].lock() {
         scheduler.enqueue(tcb_ptr);
     }

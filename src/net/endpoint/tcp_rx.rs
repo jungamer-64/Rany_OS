@@ -12,7 +12,7 @@ use super::manager::SOCKET_MANAGER;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
 };
-use super::segment::TcpSegmentBuilder;
+use super::segment::{TcpSegmentBuilder, send_tcp_segment};
 use super::socket::Socket;
 use super::tcb::{TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 use super::types::{
@@ -151,7 +151,8 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
 
     TcpSegmentBuilder::calculate_checksum(&mut ack_segment, tcb.local.ip, tcb.remote.ip);
 
-    // TODO: パケット送信
+    // パケット送信
+    send_tcp_segment(tcb.local, tcb.remote, ack_segment);
     crate::serial_println!(
         "TCP: Connection established {}:{} <-> {}:{}",
         tcb.local.ip[0],
@@ -217,7 +218,8 @@ fn process_tcp_new_connection(
 
     TcpSegmentBuilder::calculate_checksum(&mut syn_ack, local.ip, remote.ip);
 
-    // TODO: パケット送信
+    // パケット送信
+    send_tcp_segment(local, remote, syn_ack);
     crate::serial_println!(
         "TCP: SYN-ACK sent {}:{} -> {}:{}",
         local.ip[0],
@@ -393,7 +395,8 @@ fn handle_data_received(tcb: TcpControlBlockEntry, seq_num: u32, data: &[u8]) {
         .build();
 
     TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.ip, tcb.remote.ip);
-    // TODO: パケット送信
+    // パケット送信
+    send_tcp_segment(tcb.local, tcb.remote, ack);
 }
 
 /// FIN受信処理
@@ -417,7 +420,8 @@ fn handle_fin_received(tcb: TcpControlBlockEntry, seq_num: u32) {
         .build();
 
     TcpSegmentBuilder::calculate_checksum(&mut ack, tcb.local.ip, tcb.remote.ip);
-    // TODO: パケット送信
+    // パケット送信
+    send_tcp_segment(tcb.local, tcb.remote, ack);
 }
 
 /// FIN-ACK受信処理
@@ -497,8 +501,10 @@ pub async fn network_event_task() {
                 crate::serial_println!("Network: Protocol error: {:?}", e);
             }
             EventHandleResult::Retry => {
-                // 再試行が必要な場合は再度キューに入れる
-                // TODO: リトライロジック
+                // 再試行が必要な場合
+                // Note: eventは既にhandle_eventで消費されているため、
+                // 再送信にはイベントのクローンが必要
+                // 現在はリトライロジックはスキップ
             }
         }
 

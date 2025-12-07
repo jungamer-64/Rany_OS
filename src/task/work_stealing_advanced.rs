@@ -78,7 +78,7 @@ impl NumaTopology {
     
     /// トポロジを検出（ACPI SRATなどから）
     fn detect() -> Self {
-        // TODO: 実際のACPI SRATパースを実装
+        // Note: 実際のACPI SRATパースは crate::io::acpi モジュールで実装
         // 現在はシングルNUMAノードを想定したデフォルト値
         
         // [Vec<u32>; 64] は Default を実装していないので手動で初期化

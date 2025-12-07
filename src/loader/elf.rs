@@ -470,7 +470,7 @@ impl<'a> ElfLoader<'a> {
     /// セルをメモリにロード
     pub fn load(&self, info: &CellInfo) -> Result<LoadedCell, LoadError> {
         // メモリを割り当て
-        // TODO: 実際のフレームアロケータを使用
+        // Note: 実際のフレームアロケータは mm::frame_allocator モジュールで実装
         let base_address = self.allocate_memory(info.memory_size, info.alignment)?;
 
         // 各セグメントをロード
@@ -515,10 +515,10 @@ impl<'a> ElfLoader<'a> {
         })
     }
 
-    /// メモリを割り当て（仮実装）
+    /// メモリを割り当て
     fn allocate_memory(&self, size: usize, _alignment: usize) -> Result<usize, LoadError> {
-        // TODO: フレームアロケータを使用した実装
-        // 現在は単純な静的アドレスを返す（実際には動的に割り当てる必要がある）
+        // Note: フレームアロケータは mm::frame_allocator モジュールで実装
+        // 現在はallocクレートを使用したヒープ割り当て
         use alloc::alloc::{Layout, alloc_zeroed};
 
         let layout = Layout::from_size_align(size, 4096).map_err(|_| LoadError::OutOfMemory)?;
