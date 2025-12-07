@@ -1465,6 +1465,33 @@ impl DirEntryRaw {
             file_size: [0; 4],
         }
     }
+    
+    /// 構造体をバイト列として参照
+    /// 
+    /// # Safety (internal)
+    /// 
+    /// この関数は内部で`from_raw_parts`を使用していますが、以下の理由により安全です：
+    /// 
+    /// 1. `#[repr(C, packed)]`によりメモリレイアウトが明確に定義されている
+    /// 2. `DIR_ENTRY_SIZE`は構造体のサイズ(32バイト)と一致
+    /// 3. 返却されるスライスのライフタイムは`&self`に縛られている
+    /// 4. `Copy`トレイトを実装しており、ビットパターンは常に有効
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let entry = DirEntryRaw::new(...);
+    /// buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
+    /// ```
+    #[inline]
+    pub fn as_bytes(&self) -> &[u8] {
+        // SAFETY: 上記のドキュメント参照
+        unsafe {
+            core::slice::from_raw_parts(
+                self as *const DirEntryRaw as *const u8,
+                DIR_ENTRY_SIZE
+            )
+        }
+    }
 
     /// ディレクトリかどうか
     pub fn is_directory(&self) -> bool {
@@ -2058,28 +2085,7 @@ impl<'a> DirectoryIterator<'a> {
     }
 }
 
-/// ディレクトリエントリの種類を表す列挙型
-///
-/// 生のバイト列を解析した結果を型安全に表現する。
-/// if/else の条件分岐をパターンマッチに置き換えることで、
-/// コードの意図が明確になり、網羅性チェックも働く。
-///
-/// # Deprecated
-/// この型は `DirectoryIterator` 内部で使用され、外部に公開する必要はなくなりました。
-#[derive(Debug)]
-#[deprecated(since = "0.1.0", note = "Internal use only, use DirectoryIterator instead")]
-pub enum _DirectoryEntryKind {
-    /// ディレクトリの終端マーカー
-    End,
-    /// 削除済みエントリ
-    Deleted,
-    /// ロングファイルネームエントリ
-    LongName(LfnEntry),
-    /// 通常のディレクトリエントリ
-    Standard(DirEntryRaw),
-    /// ボリュームラベル（スキップ対象）
-    VolumeLabel,
-}
+
 
 impl LfnEntry {
     /// バイト列から安全にLfnEntryを読み取る
@@ -2455,43 +2461,17 @@ impl Fat32FileSystem {
     }
 
     /// クラスタを読み取り（型安全）
+    /// 
+    /// 単一クラスタの読み取りは、連続クラスタ読み取りの特殊ケース(count=1)として実装
     fn read_cluster(&self, cluster: Cluster, buffer: &mut [u8]) -> FsResult<()> {
-        let start_sector = self.cluster_to_sector(cluster);
-        let cluster_size = self.cluster_size();
-
-        if buffer.len() < cluster_size {
-            return Err(FsError::InvalidArgument);
-        }
-
-        for i in 0..self.sectors_per_cluster {
-            let sector = start_sector + i;
-            let offset = (i as usize) * BLOCK_SIZE;
-            self.device
-                .read_sync(sector.as_u64(), &mut buffer[offset..offset + BLOCK_SIZE])
-                .map_err(|_| FsError::IoError)?;
-        }
-
-        Ok(())
+        self.read_contiguous_clusters(cluster, 1, buffer)
     }
 
     /// クラスタを書き込み（型安全）
+    /// 
+    /// 単一クラスタの書き込みは、連続クラスタ書き込みの特殊ケース(count=1)として実装
     fn write_cluster(&self, cluster: Cluster, buffer: &[u8]) -> FsResult<()> {
-        let start_sector = self.cluster_to_sector(cluster);
-        let cluster_size = self.cluster_size();
-
-        if buffer.len() < cluster_size {
-            return Err(FsError::InvalidArgument);
-        }
-
-        for i in 0..self.sectors_per_cluster {
-            let sector = start_sector + i;
-            let offset = (i as usize) * BLOCK_SIZE;
-            self.device
-                .write_sync(sector.as_u64(), &buffer[offset..offset + BLOCK_SIZE])
-                .map_err(|_| FsError::IoError)?;
-        }
-
-        Ok(())
+        self.write_contiguous_clusters(cluster, 1, buffer)
     }
 
     // ========================================================================
@@ -3136,14 +3116,8 @@ impl Fat32Inode {
                     
                     let entry = DirEntryRaw::new(base_name, ext_name, attr, cluster, size);
                     
-                    // バッファに書き込み
-                    let entry_bytes = unsafe {
-                        core::slice::from_raw_parts(
-                            &entry as *const DirEntryRaw as *const u8,
-                            DIR_ENTRY_SIZE
-                        )
-                    };
-                    buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry_bytes);
+                    // バッファに書き込み (as_bytes()で安全にシリアライズ)
+                    buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
                     
                     // 元がEND_OF_DIRだった場合、次のエントリもEND_OF_DIRにする
                     if first_byte == END_OF_DIR && i + 1 < entries_per_cluster {
@@ -3267,36 +3241,26 @@ impl Inode for Fat32Inode {
         // パス長検証
         validate_path_length(name)?;
         
-        // イテレータで検索（見つかったら即終了）
-        let entry = self.entries()?
-            .find(|res| {
-                res.as_ref()
-                    .ok()
-                    .map(|(entry_name, _)| entry_name.eq_ignore_ascii_case(name))
-                    .unwrap_or(false)
-            });
-
-        match entry {
-            Some(Ok((_, raw))) => {
-                let cluster = raw.first_cluster();
-                let attr = raw.attributes();
-                if attr.is_directory() {
-                    Ok(Arc::new(Fat32Inode::new_directory(
-                        self.fs.clone(),
-                        cluster,
-                        self.first_cluster,
-                    )))
-                } else {
-                    Ok(Arc::new(Fat32Inode::new_file(
-                        self.fs.clone(),
-                        cluster,
-                        raw.file_size() as u64,
-                        self.first_cluster,
-                    )))
-                }
-            }
-            Some(Err(e)) => Err(e),
-            None => Err(FsError::NotFound),
+        // find_by_name()を活用した検索（DirectoryIterator拡張を再利用）
+        let raw = self.entries()?
+            .find_by_name(name)?
+            .map(|(_, raw)| raw)
+            .ok_or(FsError::NotFound)?;
+        
+        let cluster = raw.first_cluster();
+        if raw.attributes().is_directory() {
+            Ok(Arc::new(Fat32Inode::new_directory(
+                self.fs.clone(),
+                cluster,
+                self.first_cluster,
+            )))
+        } else {
+            Ok(Arc::new(Fat32Inode::new_file(
+                self.fs.clone(),
+                cluster,
+                raw.file_size() as u64,
+                self.first_cluster,
+            )))
         }
     }
 
@@ -3361,16 +3325,9 @@ impl Inode for Fat32Inode {
         // ".." エントリ - 親ディレクトリを指す
         let dotdot_entry = DirEntryRaw::new_dotdot(self.first_cluster);
         
-        // バッファに書き込み
-        let dot_bytes = unsafe {
-            core::slice::from_raw_parts(&dot_entry as *const DirEntryRaw as *const u8, DIR_ENTRY_SIZE)
-        };
-        buffer[0..DIR_ENTRY_SIZE].copy_from_slice(dot_bytes);
-        
-        let dotdot_bytes = unsafe {
-            core::slice::from_raw_parts(&dotdot_entry as *const DirEntryRaw as *const u8, DIR_ENTRY_SIZE)
-        };
-        buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2].copy_from_slice(dotdot_bytes);
+        // バッファに書き込み (as_bytes()で安全にシリアライズ)
+        buffer[0..DIR_ENTRY_SIZE].copy_from_slice(dot_entry.as_bytes());
+        buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2].copy_from_slice(dotdot_entry.as_bytes());
         
         // 終端マーカー
         buffer[DIR_ENTRY_SIZE * 2] = END_OF_DIR;
