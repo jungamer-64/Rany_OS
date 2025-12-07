@@ -2491,7 +2491,8 @@ impl Fat32FileSystem {
 
         for i in 0..sectors {
             let sector = self.fat_start_sector + i as u32;
-            self.device.read_sync(sector.as_u64(), &mut buffer)?;
+            // Use cached reads to warm the LRU block cache when enabled
+            self.read_sector_cached(sector.as_u64(), &mut buffer)?;
 
             for j in 0..BLOCK_SIZE / 4 {
                 let idx = i * (BLOCK_SIZE / 4) + j;
@@ -2689,17 +2690,17 @@ impl Fat32FileSystem {
                 let new_bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
                 buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&new_bytes);
         } else {
-            // オンデマンド・モードならデバイスから読み取り（必要な部分だけ変更）
-            self.device.read_sync(sector.as_u64(), &mut buffer)?;
+            // オンデマンド・モードならキャッシュ経由で読み取り（必要な部分だけ変更）
+            self.read_sector_cached(sector.as_u64(), &mut buffer)?;
             let bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
             buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&bytes);
         }
 
-        self.device.write_sync(sector.as_u64(), &buffer)?;
+        self.write_sector_cached(sector.as_u64(), &buffer)?;
 
         // バックアップFAT(FAT2)への書き込み
         let fat2_sector = sector + self.fat_size;
-        self.device.write_sync(fat2_sector.as_u64(), &buffer)?;
+        self.write_sector_cached(fat2_sector.as_u64(), &buffer)?;
         
         // このセクタはクリーンとしてマーク
         // 完了したのでダーティフラグをクリア
@@ -2742,13 +2743,13 @@ impl Fat32FileSystem {
                 buffer[j * 4..j * 4 + 4].copy_from_slice(&bytes);
             }
             
-            // プライマリFATへ書き込み
+            // プライマリFATへ書き込み（キャッシュ経由で書き込みとキャッシュ更新）
             let sector = self.fat_start_sector + sector_idx as u32;
-            self.device.write_sync(sector.as_u64(), &buffer)?;
+            self.write_sector_cached(sector.as_u64(), &buffer)?;
             
-            // バックアップFAT(FAT2)への書き込み
+            // バックアップFAT(FAT2)への書き込み（キャッシュ経由）
             let fat2_sector = sector + self.fat_size;
-            self.device.write_sync(fat2_sector.as_u64(), &buffer)?;
+            self.write_sector_cached(fat2_sector.as_u64(), &buffer)?;
             
             dirty[sector_idx] = false;
             flushed_count += 1;
@@ -3178,6 +3179,8 @@ impl Fat32FileSystem {
             let mut data_guard = block_data.write();
             let copy_len = data.len().min(data_guard.len());
             data_guard[..copy_len].copy_from_slice(&data[..copy_len]);
+            // デバイスへ同期済みなのでクリーンとして扱う
+            cached_block.mark_clean();
         } else {
             // キャッシュにない場合は追加
             let mut sector_buf = alloc::vec![0u8; BLOCK_SIZE];

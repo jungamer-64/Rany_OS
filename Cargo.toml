@@ -1,114 +1,18 @@
-[package]
-name = "rany_os"
-version = "0.3.0"
+[workspace]
+resolver = "2"
+members = [
+    "kernel",
+]
+
+[workspace.package]
 edition = "2024"
 authors = ["ExoRust Team"]
-description = "Single Address Space, Async-First Rust OS Kernel - Pure Performance Architecture"
-
-[[bin]]
-name = "exorust_kernel"
-path = "src/main.rs"
-
-[lib]
-name = "rany_os"
-path = "src/lib.rs"
 
 # ============================================================================
-# 依存関係
-# ============================================================================
-# 設計理念:
-# - linked_list_allocator を削除: O(n)探索は性能目標と矛盾
-#   → 自作Buddy Allocator (src/mm/buddy_allocator.rs) を使用
-# - pic8259 を削除: レガシーPICはAPIC/MSI-X専用設計と矛盾
-#   → PIC無効化処理は直接I/Oポート操作で実装
+# ブートイメージ設定（Workspace全体）
 # ============================================================================
 
-[dependencies]
-# ブートローダーAPI（Limine Protocol - UEFI/BIOS両対応）
-limine = "0.5"
-
-# x86_64アーキテクチャサポート
-x86_64 = "0.15"
-
-# スピンロック（no_std互換）
-spin = "0.10"
-
-# Lazy static for global state
-lazy_static = { version = "1.5", features = ["spin_no_std"] }
-
-# UART シリアル出力（デバッグ用）
-uart_16550 = { version = "0.4", optional = true }
-
-# ビットフィールド操作
-bitflags = "2.4"
-
-# DWARF情報解析（スタックアンワインド用）
-# no_std対応、eh_frame解析に使用
-gimli = { version = "0.32", default-features = false, features = ["read-core"] }
-
-# no_std向けHashMap (BTreeMapの代替)
-hashbrown = "0.16"
-
-# Ed25519署名検証用 (no_std対応)
-# alloc: Vec等のalloc型サポート
-ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
-
-# curve25519-dalekの設定（ed25519-dalekの依存関係）
-# simd機能を無効化してno_std環境での互換性を確保
-curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc"] }
-
-# SHA-256ハッシュ計算用 (no_std対応)
-sha2 = { version = "0.10", default-features = false }
-
-# ログフレームワーク（no_std互換）
-log = "0.4"
-
-# ============================================================================
-# ビルドプロファイル
-# ============================================================================
-
-[profile.dev]
-panic = "abort"
-# デバッグシンボルを保持
-opt-level = 0
-debug = true
-
-# 依存関係（dependencies）のビルド設定を上書き
-[profile.dev.package."*"]
-opt-level = 3
-debug = false  # デバッグ情報を減らすことでLLVMの負担を下げる
-
-[profile.release]
-panic = "abort"
-lto = true
-opt-level = 3
-# リリースビルドでもデバッグシンボルを保持
-debug = true
-
-[profile.test]
-panic = "abort"
-opt-level = 1
-
-# ============================================================================
-# フィーチャーフラグ
-# ============================================================================
-
-[features]
-default = []
-# 詳細ログ出力
-verbose_logging = []
-# 署名検証を必須化
-require_signatures = []
-# シリアル出力を有効化
-serial = ["uart_16550"]
-# 統計情報収集
-stats = []
-
-# ============================================================================
-# ブートイメージ設定
-# ============================================================================
-
-[package.metadata.bootimage]
+[workspace.metadata.bootimage]
 build-command = ["build"]
 run-command = [
     "qemu-system-x86_64",
@@ -125,3 +29,26 @@ test-args = [
 ]
 test-success-exit-code = 33
 test-timeout = 300
+
+# ============================================================================
+# ビルドプロファイル
+# ============================================================================
+
+[profile.dev]
+panic = "abort"
+opt-level = 0
+debug = true
+
+[profile.dev.package."*"]
+opt-level = 3
+debug = false
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = 3
+debug = true
+
+[profile.test]
+panic = "abort"
+opt-level = 1
