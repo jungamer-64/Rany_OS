@@ -50,6 +50,7 @@ use spin::RwLock;
 use super::block::BlockError;
 
 use super::block::BlockDevice;
+use super::cache::LRUBlockCache;
 use super::vfs::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     InodeNum, OpenFlags,
@@ -2178,6 +2179,8 @@ impl LfnEntry {
 pub struct Fat32FileSystem {
     /// ブロックデバイス
     device: Arc<dyn BlockDevice>,
+    /// デバイスID（キャッシュキー用）
+    device_id: u64,
     /// FATの開始セクタ（型安全）
     fat_start_sector: Sector,
     /// データ領域の開始セクタ（型安全）
@@ -2199,6 +2202,11 @@ pub struct Fat32FileSystem {
     /// ダーティセクタのビットマップ（バッチ書き込み用）
     /// 各ビットが1セクタ分のダーティ状態を表す
     dirty_sectors: RwLock<Vec<bool>>,
+    /// ブロックキャッシュ（LRU、O(1)操作）
+    /// 
+    /// FATセクタとデータクラスタの両方をキャッシュ。
+    /// デフォルトで32MBまでキャッシュ可能。
+    block_cache: Arc<LRUBlockCache>,
 }
 
 /// クラスタチェーンを走査するイテレータ
@@ -2302,8 +2310,19 @@ impl Fat32FileSystem {
         let sectors_per_cluster = boot_sector.sectors_per_cluster();
         let total_clusters = data_sectors / sectors_per_cluster;
 
+        // デバイスIDを生成（静的カウンタを使用）
+        static DEVICE_ID_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+        let device_id = DEVICE_ID_COUNTER.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
+        
+        // ブロックキャッシュを作成（512バイトブロック、32MB上限）
+        let block_cache = Arc::new(LRUBlockCache::new(
+            BLOCK_SIZE,
+            32 * 1024 * 1024, // 32MB キャッシュ上限
+        ));
+
         let fs = Arc::new(Self {
             device,
+            device_id,
             fat_start_sector,
             data_start_sector,
             sectors_per_cluster,
@@ -2313,6 +2332,7 @@ impl Fat32FileSystem {
             free_clusters: RwLock::new(0),
             fat_size,
             dirty_sectors: RwLock::new(vec![false; fat_size as usize]),
+            block_cache,
         });
 
         // FATをキャッシュに読み込み
@@ -2770,15 +2790,41 @@ impl Fat32FileSystem {
         let start_sector = self.cluster_to_sector(start);
         let total_sectors = count * self.sectors_per_cluster as usize;
         
-        // 各セクタを順番に読み取り
-        // TODO: デバイスドライバがマルチセクタ読み取りをサポートしている場合は
-        //       単一のI/O操作で全セクタを読み取るように最適化できる
+        // 各セクタをキャッシュ経由で読み取り
         for i in 0..total_sectors {
             let sector = start_sector + i as u32;
             let offset = i * BLOCK_SIZE;
-            self.device
-                .read_sync(sector.as_u64(), &mut buffer[offset..offset + BLOCK_SIZE])?;
+            self.read_sector_cached(sector.as_u64(), &mut buffer[offset..offset + BLOCK_SIZE])?;
         }
+        
+        Ok(())
+    }
+    
+    /// キャッシュを使用してセクタを読み取る
+    /// 
+    /// キャッシュにヒットした場合はキャッシュからコピー、
+    /// ミスの場合はデバイスから読み取りキャッシュに追加。
+    fn read_sector_cached(&self, sector: u64, buffer: &mut [u8]) -> FsResult<()> {
+        // キャッシュヒットを試行
+        if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
+            // キャッシュヒット: データをコピー
+            let data = cached_block.data();
+            let data_guard = data.read();
+            let copy_len = buffer.len().min(data_guard.len());
+            buffer[..copy_len].copy_from_slice(&data_guard[..copy_len]);
+            return Ok(());
+        }
+        
+        // キャッシュミス: デバイスから読み取り
+        let mut sector_buf = alloc::vec![0u8; BLOCK_SIZE];
+        self.device.read_sync(sector, &mut sector_buf)?;
+        
+        // バッファにコピー
+        let copy_len = buffer.len().min(sector_buf.len());
+        buffer[..copy_len].copy_from_slice(&sector_buf[..copy_len]);
+        
+        // キャッシュに追加
+        self.block_cache.insert(self.device_id, sector, sector_buf);
         
         Ok(())
     }
@@ -2872,11 +2918,36 @@ impl Fat32FileSystem {
         let start_sector = self.cluster_to_sector(start);
         let total_sectors = count * self.sectors_per_cluster as usize;
         
+        // 各セクタをキャッシュ経由で書き込み（write-through）
         for i in 0..total_sectors {
             let sector = start_sector + i as u32;
             let offset = i * BLOCK_SIZE;
-            self.device
-                .write_sync(sector.as_u64(), &data[offset..offset + BLOCK_SIZE])?;
+            self.write_sector_cached(sector.as_u64(), &data[offset..offset + BLOCK_SIZE])?;
+        }
+        
+        Ok(())
+    }
+    
+    /// キャッシュを使用してセクタを書き込む（write-through方式）
+    /// 
+    /// デバイスに書き込み後、キャッシュも更新する。
+    fn write_sector_cached(&self, sector: u64, data: &[u8]) -> FsResult<()> {
+        // まずデバイスに書き込み（write-through）
+        self.device.write_sync(sector, data)?;
+        
+        // キャッシュにも書き込み（存在する場合は更新、なければ追加）
+        if let Some(cached_block) = self.block_cache.get(self.device_id, sector) {
+            // キャッシュに存在する場合は更新
+            let block_data = cached_block.data();
+            let mut data_guard = block_data.write();
+            let copy_len = data.len().min(data_guard.len());
+            data_guard[..copy_len].copy_from_slice(&data[..copy_len]);
+        } else {
+            // キャッシュにない場合は追加
+            let mut sector_buf = alloc::vec![0u8; BLOCK_SIZE];
+            let copy_len = data.len().min(BLOCK_SIZE);
+            sector_buf[..copy_len].copy_from_slice(&data[..copy_len]);
+            self.block_cache.insert(self.device_id, sector, sector_buf);
         }
         
         Ok(())
@@ -3015,6 +3086,7 @@ impl Clone for Fat32FileSystem {
     fn clone(&self) -> Self {
         Self {
             device: self.device.clone(),
+            device_id: self.device_id,
             fat_start_sector: self.fat_start_sector,
             data_start_sector: self.data_start_sector,
             sectors_per_cluster: self.sectors_per_cluster,
@@ -3024,6 +3096,7 @@ impl Clone for Fat32FileSystem {
             free_clusters: RwLock::new(*self.free_clusters.read()),
             fat_size: self.fat_size,
             dirty_sectors: RwLock::new(self.dirty_sectors.read().clone()),
+            block_cache: Arc::clone(&self.block_cache),
         }
     }
 }

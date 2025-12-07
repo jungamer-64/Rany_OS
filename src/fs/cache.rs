@@ -65,9 +65,15 @@ pub enum PageState {
 }
 
 /// A cached page of data
+/// 
+/// ## 安全性
+/// データは `Arc<RwLock<Box<[u8]>>>` で保護されており、
+/// 読み取り/書き込みは適切にロックされる。
+/// これにより、複数のスレッドからの同時アクセスでも
+/// データ競合（UB）が発生しない。
 pub struct CachedPage {
-    /// Page data
-    data: Arc<Vec<u8>>,
+    /// Page data (RwLock で保護された固定長バッファ)
+    data: Arc<RwLock<Box<[u8]>>>,
     /// Page offset in file (page number)
     page_num: u64,
     /// Page state
@@ -83,8 +89,9 @@ pub struct CachedPage {
 impl CachedPage {
     /// Create a new cached page
     pub fn new(page_num: u64, data: Vec<u8>) -> Self {
+        let boxed: Box<[u8]> = data.into_boxed_slice();
         Self {
-            data: Arc::new(data),
+            data: Arc::new(RwLock::new(boxed)),
             page_num,
             state: Mutex::new(PageState::Clean),
             last_access: AtomicU64::new(0),
@@ -95,32 +102,30 @@ impl CachedPage {
 
     /// Create an empty page
     pub fn new_empty(page_num: u64) -> Self {
-        Self::new(page_num, alloc::vec![0u8; PAGE_SIZE])
+        Self::new(page_num, vec![0u8; PAGE_SIZE])
     }
 
-    /// Get page data (Arc clone for zero-copy)
+    /// Get page data as a cloned Vec (for external use)
     ///
-    /// # パフォーマンス注意
-    /// `Arc::clone()` は参照カウンタの atomic increment を行う。
-    /// ゼロコストではないが、データコピーよりは大幅に高速。
-    /// - データコピー: O(n) memcpy
-    /// - Arc::clone: O(1) atomic add + memory barrier
-    ///
-    /// # 代替案
-    /// - 読み取り専用なら `&[u8]` を返す API を追加することで
-    ///   atomic オーバーヘッドも回避可能
+    /// # 注意
+    /// この操作はデータのコピーを伴う。
+    /// 読み取り専用なら `read_with` を使用することを推奨。
     #[inline]
-    pub fn data(&self) -> Arc<Vec<u8>> {
+    pub fn data(&self) -> Arc<RwLock<Box<[u8]>>> {
         Arc::clone(&self.data)
     }
 
-    /// Get page data as slice (zero-cost, no atomic increment)
+    /// Get page data as slice (read lock required)
     ///
-    /// ゼロコストでデータにアクセスするためのAPI。
-    /// Arc の参照カウンタをインクリメントしない。
+    /// 読み取りロックを取得してスライスにアクセスする。
+    /// コールバック内でのみデータにアクセス可能。
     #[inline]
-    pub fn data_slice(&self) -> &[u8] {
-        &self.data
+    pub fn read_with<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        let guard = self.data.read();
+        f(&guard)
     }
 
     /// Get page number
@@ -180,60 +185,50 @@ impl CachedPage {
         self.pin_count.load(Ordering::Acquire) > 0
     }
 
-    /// Read from page at offset
+    /// Read from page at offset (safe version)
     pub fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
-        let available = self.data.len().saturating_sub(offset);
+        let guard = self.data.read();
+        let available = guard.len().saturating_sub(offset);
         let to_read = buf.len().min(available);
 
         if to_read > 0 {
-            buf[..to_read].copy_from_slice(&self.data[offset..offset + to_read]);
+            buf[..to_read].copy_from_slice(&guard[offset..offset + to_read]);
         }
 
         to_read
     }
 
-    /// Write to page at offset
+    /// Write to page at offset (safe version with RwLock)
     ///
-    /// # 安全性
-    /// この実装ではUnsafeCellを使って内部可変性を実現している。
-    /// Arc<Vec<u8>>の参照カウントが1（排他所有）であることを確認できる場合のみ安全。
-    /// 現在の実装では、ページキャッシュがページの所有権を管理し、
-    /// 同時書き込みはロックで保護されている前提で動作する。
-    ///
-    /// # Note
-    /// Arc::make_mut()はArc<Vec<u8>>ではなくArc<T>でTがCloneの場合にのみ使用可能。
-    /// より安全な実装のためには、dataフィールドをArc<RwLock<Vec<u8>>>に変更することを推奨。
+    /// ## 安全性
+    /// 書き込みロックを取得してから書き込みを行うため、
+    /// 読み取り操作との競合が発生しない。
     pub fn write(&self, offset: usize, buf: &[u8]) -> usize {
-        let available = PAGE_SIZE.saturating_sub(offset);
+        let mut guard = self.data.write();
+        let available = guard.len().saturating_sub(offset);
         let to_write = buf.len().min(available);
 
         if to_write == 0 {
             return 0;
         }
 
-        // Safety: CachedPageはページキャッシュによって排他的に管理される。
-        // ここでの書き込みは、キャッシュのロック（FileCache内のMutex）によって
-        // 保護されている前提で動作する。
-        //
-        // Arc<Vec<u8>>への直接書き込みは本来UBだが、以下の条件で安全と判断:
-        // 1. CachedPageの生成後、dataフィールドは変更されない
-        // 2. 書き込み操作は常に単一スレッドから実行される（ロック保護）
-        // 3. 読み取り操作は書き込みと同時に行われない（RWロック相当の保護）
-        //
-        // 将来的にはArc<RwLock<Vec<u8>>>への移行を推奨
-        let data_ptr = Arc::as_ptr(&self.data) as *mut Vec<u8>;
-        
-        // Safety: 上記のコメント参照。排他アクセスが保証されている前提。
-        unsafe {
-            let data = &mut *data_ptr;
-            let end = (offset + to_write).min(data.len());
-            data[offset..end].copy_from_slice(&buf[..end - offset]);
-        }
+        let end = offset + to_write;
+        guard[offset..end].copy_from_slice(&buf[..to_write]);
+        drop(guard);
 
         // ダーティフラグをセット
         self.mark_dirty();
 
         to_write
+    }
+    
+    /// Get data slice for sync operations (requires external synchronization)
+    /// 
+    /// # Safety Note
+    /// この関数は flush 操作のために読み取りロックを取得してデータをコピーする。
+    pub fn data_for_sync(&self) -> Vec<u8> {
+        let guard = self.data.read();
+        guard.to_vec()
     }
 }
 
@@ -501,7 +496,8 @@ impl PageCache {
 
             for page in dirty_pages {
                 let offset = page.page_num() * PAGE_SIZE as u64;
-                writer(offset, &page.data)?;
+                let data = page.data_for_sync();
+                writer(offset, &data)?;
                 page.mark_clean();
                 synced += 1;
 
@@ -529,7 +525,8 @@ impl PageCache {
 
             for page in dirty_pages {
                 let offset = page.page_num() * PAGE_SIZE as u64;
-                writer(*ino, offset, &page.data)?;
+                let data = page.data_for_sync();
+                writer(*ino, offset, &data)?;
                 page.mark_clean();
                 total_synced += 1;
 
@@ -679,11 +676,15 @@ impl BlockCacheKey {
 }
 
 /// A cached block of data
+/// 
+/// ## 安全性
+/// データは `Arc<RwLock<Box<[u8]>>>` で保護されており、
+/// 読み取り/書き込みは適切にロックされる。
 pub struct CachedBlock {
     /// Block key (device_id, block_num)
     key: BlockCacheKey,
-    /// Block data
-    data: Arc<Vec<u8>>,
+    /// Block data (RwLock で保護された固定長バッファ)
+    data: Arc<RwLock<Box<[u8]>>>,
     /// Block size
     block_size: usize,
     /// State
@@ -697,9 +698,10 @@ pub struct CachedBlock {
 impl CachedBlock {
     /// Create a new cached block
     pub fn new(key: BlockCacheKey, data: Vec<u8>, block_size: usize) -> Self {
+        let boxed: Box<[u8]> = data.into_boxed_slice();
         Self {
             key,
-            data: Arc::new(data),
+            data: Arc::new(RwLock::new(boxed)),
             block_size,
             state: Mutex::new(PageState::Clean),
             last_access: AtomicU64::new(0),
@@ -709,19 +711,29 @@ impl CachedBlock {
 
     /// Create an empty block
     pub fn new_empty(key: BlockCacheKey, block_size: usize) -> Self {
-        Self::new(key, alloc::vec![0u8; block_size], block_size)
+        Self::new(key, vec![0u8; block_size], block_size)
     }
 
-    /// Get block data (Arc clone for zero-copy)
+    /// Get block data (Arc clone)
     #[inline]
-    pub fn data(&self) -> Arc<Vec<u8>> {
+    pub fn data(&self) -> Arc<RwLock<Box<[u8]>>> {
         Arc::clone(&self.data)
     }
 
-    /// Get block data as slice (zero-cost)
+    /// Read with callback (safe access)
     #[inline]
-    pub fn data_slice(&self) -> &[u8] {
-        &self.data
+    pub fn read_with<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&[u8]) -> R,
+    {
+        let guard = self.data.read();
+        f(&guard)
+    }
+
+    /// Get block data for sync operations
+    pub fn data_for_sync(&self) -> Vec<u8> {
+        let guard = self.data.read();
+        guard.to_vec()
     }
 
     /// Get block key
@@ -761,38 +773,36 @@ impl CachedBlock {
         self.last_access.load(Ordering::Acquire)
     }
 
-    /// Read from block at offset
+    /// Read from block at offset (safe version)
     pub fn read(&self, offset: usize, buf: &mut [u8]) -> usize {
-        let available = self.data.len().saturating_sub(offset);
+        let guard = self.data.read();
+        let available = guard.len().saturating_sub(offset);
         let to_read = buf.len().min(available);
 
         if to_read > 0 {
-            buf[..to_read].copy_from_slice(&self.data[offset..offset + to_read]);
+            buf[..to_read].copy_from_slice(&guard[offset..offset + to_read]);
         }
 
         to_read
     }
 
-    /// Write to block at offset
+    /// Write to block at offset (safe version with RwLock)
     ///
-    /// # Safety
-    /// Same safety considerations as CachedPage::write()
+    /// ## 安全性
+    /// 書き込みロックを取得してから書き込みを行うため、
+    /// 読み取り操作との競合が発生しない。
     pub fn write(&self, offset: usize, buf: &[u8]) -> usize {
-        let available = self.block_size.saturating_sub(offset);
+        let mut guard = self.data.write();
+        let available = guard.len().saturating_sub(offset);
         let to_write = buf.len().min(available);
 
         if to_write == 0 {
             return 0;
         }
 
-        // Safety: Same as CachedPage::write() - protected by LRUBlockCache lock
-        let data_ptr = Arc::as_ptr(&self.data) as *mut Vec<u8>;
-        
-        unsafe {
-            let data = &mut *data_ptr;
-            let end = (offset + to_write).min(data.len());
-            data[offset..end].copy_from_slice(&buf[..end - offset]);
-        }
+        let end = offset + to_write;
+        guard[offset..end].copy_from_slice(&buf[..to_write]);
+        drop(guard);
 
         self.mark_dirty();
 
@@ -819,23 +829,221 @@ pub struct BlockCacheStats {
     pub writebacks: u64,
 }
 
+// ============================================================================
+// O(1) LRU Implementation using Index-based Doubly Linked List
+// ============================================================================
+
+/// 無効なインデックスを表す定数
+const INVALID_INDEX: usize = usize::MAX;
+
+/// LRUリストのノード
+#[derive(Clone, Copy)]
+struct LruNode {
+    /// 前のノードのインデックス（INVALID_INDEXは先頭を示す）
+    prev: usize,
+    /// 次のノードのインデックス（INVALID_INDEXは末尾を示す）
+    next: usize,
+    /// キャッシュキー
+    key: BlockCacheKey,
+    /// このノードが有効か（削除済みでないか）
+    valid: bool,
+}
+
+impl Default for LruNode {
+    fn default() -> Self {
+        Self {
+            prev: INVALID_INDEX,
+            next: INVALID_INDEX,
+            key: BlockCacheKey::new(0, 0),
+            valid: false,
+        }
+    }
+}
+
+/// O(1) LRUリスト
+/// 
+/// ## 設計
+/// - Arena (Vec<LruNode>): ノードを連続メモリに格納
+/// - HashMap (BTreeMap<Key, Index>): キーからノードインデックスへのマッピング
+/// - head/tail: リストの先頭/末尾インデックス
+/// - free_list: 再利用可能なノードのリスト
+/// 
+/// ## 計算量
+/// - `insert`: O(1)
+/// - `remove`: O(1)
+/// - `touch` (move to front): O(1)
+/// - `evict_lru` (remove from back): O(1)
+struct LruList {
+    /// ノードのArena
+    nodes: Vec<LruNode>,
+    /// キー → ノードインデックス
+    key_to_index: BTreeMap<BlockCacheKey, usize>,
+    /// リストの先頭（最近使用）
+    head: usize,
+    /// リストの末尾（LRU候補）
+    tail: usize,
+    /// 空きノードのインデックス
+    free_list: Vec<usize>,
+}
+
+impl LruList {
+    /// 新しいLRUリストを作成
+    fn new() -> Self {
+        Self {
+            nodes: Vec::new(),
+            key_to_index: BTreeMap::new(),
+            head: INVALID_INDEX,
+            tail: INVALID_INDEX,
+            free_list: Vec::new(),
+        }
+    }
+
+    /// ノードを先頭に挿入（O(1)）
+    fn insert(&mut self, key: BlockCacheKey) {
+        // 既に存在する場合は先頭に移動
+        if self.key_to_index.contains_key(&key) {
+            self.touch(&key);
+            return;
+        }
+
+        // 新しいノードのインデックスを取得（空きリストから or 新規追加）
+        let new_idx = if let Some(idx) = self.free_list.pop() {
+            idx
+        } else {
+            let idx = self.nodes.len();
+            self.nodes.push(LruNode::default());
+            idx
+        };
+
+        // ノードを初期化
+        self.nodes[new_idx] = LruNode {
+            prev: INVALID_INDEX,
+            next: self.head,
+            key,
+            valid: true,
+        };
+
+        // 先頭に挿入
+        if self.head != INVALID_INDEX {
+            self.nodes[self.head].prev = new_idx;
+        }
+        self.head = new_idx;
+
+        // 最初のノードなら末尾も設定
+        if self.tail == INVALID_INDEX {
+            self.tail = new_idx;
+        }
+
+        // インデックスマップに追加
+        self.key_to_index.insert(key, new_idx);
+    }
+
+    /// キーを先頭に移動（O(1)）
+    fn touch(&mut self, key: &BlockCacheKey) {
+        let Some(&idx) = self.key_to_index.get(key) else {
+            return;
+        };
+
+        // 既に先頭なら何もしない
+        if idx == self.head {
+            return;
+        }
+
+        // リストから削除
+        self.unlink(idx);
+
+        // 先頭に挿入
+        self.nodes[idx].prev = INVALID_INDEX;
+        self.nodes[idx].next = self.head;
+
+        if self.head != INVALID_INDEX {
+            self.nodes[self.head].prev = idx;
+        }
+        self.head = idx;
+
+        // 末尾が無効になった場合は復元
+        if self.tail == INVALID_INDEX {
+            self.tail = idx;
+        }
+    }
+
+    /// キーを削除（O(1)）
+    fn remove(&mut self, key: &BlockCacheKey) -> bool {
+        let Some(idx) = self.key_to_index.remove(key) else {
+            return false;
+        };
+
+        self.unlink(idx);
+        self.nodes[idx].valid = false;
+        self.free_list.push(idx);
+        true
+    }
+
+    /// ノードをリストから切り離す（内部関数）
+    fn unlink(&mut self, idx: usize) {
+        let node = &self.nodes[idx];
+        let prev = node.prev;
+        let next = node.next;
+
+        if prev != INVALID_INDEX {
+            self.nodes[prev].next = next;
+        } else {
+            // 先頭だった
+            self.head = next;
+        }
+
+        if next != INVALID_INDEX {
+            self.nodes[next].prev = prev;
+        } else {
+            // 末尾だった
+            self.tail = prev;
+        }
+    }
+
+    /// LRU（末尾）のキーを取得して削除（O(1)）
+    fn evict_lru(&mut self) -> Option<BlockCacheKey> {
+        if self.tail == INVALID_INDEX {
+            return None;
+        }
+
+        let tail_idx = self.tail;
+        let key = self.nodes[tail_idx].key;
+        self.remove(&key);
+        Some(key)
+    }
+
+    /// キーが存在するか確認
+    fn contains(&self, key: &BlockCacheKey) -> bool {
+        self.key_to_index.contains_key(key)
+    }
+
+    /// 要素数を取得
+    fn len(&self) -> usize {
+        self.key_to_index.len()
+    }
+
+    /// 空かどうか
+    fn is_empty(&self) -> bool {
+        self.key_to_index.is_empty()
+    }
+}
+
 /// LRU Block Cache implementation
 ///
-/// ## 設計
-/// - LRUリスト: 最近アクセスされたブロックが先頭、古いブロックが末尾
-/// - ハッシュマップ: O(1)のブロック検索
-/// - ゼロコピー: Arc<Vec<u8>>でバッファ共有
+/// ## 設計 (v2.0 - O(1) LRU)
+/// - O(1) LRUリスト: Index-based Doubly Linked List + HashMap
+/// - 安全なデータアクセス: RwLockによる排他制御
 /// - Write-back: ダーティブロックは明示的にフラッシュ
 ///
 /// ## LRU操作の計算量
-/// - `get`: O(1) - ハッシュマップ検索 + リストの先頭移動
-/// - `put`: O(1) - ハッシュマップ挿入 + リスト先頭追加
+/// - `get`: O(1) - HashMap検索 + リストの先頭移動
+/// - `insert`: O(1) - HashMap挿入 + リスト先頭追加
 /// - `evict`: O(1) - リスト末尾削除
 pub struct LRUBlockCache {
     /// Cached blocks (key -> block)
     blocks: Mutex<BTreeMap<BlockCacheKey, Arc<CachedBlock>>>,
-    /// LRU list (most recent first)
-    lru_list: Mutex<VecDeque<BlockCacheKey>>,
+    /// O(1) LRU list
+    lru_list: Mutex<LruList>,
     /// Block size
     block_size: usize,
     /// Cache size limit in bytes
@@ -853,7 +1061,7 @@ impl LRUBlockCache {
     pub fn new(block_size: usize, limit: usize) -> Self {
         Self {
             blocks: Mutex::new(BTreeMap::new()),
-            lru_list: Mutex::new(VecDeque::new()),
+            lru_list: Mutex::new(LruList::new()),
             block_size,
             limit,
             current_size: AtomicU64::new(0),
@@ -872,17 +1080,10 @@ impl LRUBlockCache {
         self.time.fetch_add(1, Ordering::AcqRel)
     }
 
-    /// Move a key to the front of LRU list (most recently used)
+    /// Move a key to the front of LRU list (most recently used) - O(1)
     fn touch_lru(&self, key: BlockCacheKey) {
         let mut lru_list = self.lru_list.lock();
-        
-        // Remove key from current position
-        if let Some(pos) = lru_list.iter().position(|&k| k == key) {
-            lru_list.remove(pos);
-        }
-        
-        // Add to front (most recent)
-        lru_list.push_front(key);
+        lru_list.touch(&key);
     }
 
     /// Get a block from cache
@@ -931,7 +1132,11 @@ impl LRUBlockCache {
         blocks.insert(key, block);
         drop(blocks);
         
-        self.touch_lru(key);
+        // Add to LRU list (O(1))
+        {
+            let mut lru_list = self.lru_list.lock();
+            lru_list.insert(key);
+        }
         
         self.current_size
             .fetch_add(self.block_size as u64, Ordering::AcqRel);
@@ -972,21 +1177,21 @@ impl LRUBlockCache {
         Some(written)
     }
 
-    /// Evict blocks to free space
+    /// Evict blocks to free space - O(1) per eviction
     fn evict_blocks(&self, needed: usize) {
         let mut freed = 0;
         let mut lru_list = self.lru_list.lock();
+        let mut blocks = self.blocks.lock();
+        let mut dirty_keys = Vec::new();
 
         while freed < needed && !lru_list.is_empty() {
-            // Get LRU block (from back of list)
-            if let Some(key) = lru_list.pop_back() {
-                let mut blocks = self.blocks.lock();
-                
+            // Get LRU block (from back of list) - O(1)
+            if let Some(key) = lru_list.evict_lru() {
                 // Skip dirty blocks during eviction
                 if let Some(block) = blocks.get(&key) {
                     if block.is_dirty() {
-                        // Put back at end and try next
-                        lru_list.push_back(key);
+                        // Remember dirty key to re-add later
+                        dirty_keys.push(key);
                         continue;
                     }
                 }
@@ -1006,6 +1211,11 @@ impl LRUBlockCache {
                 break;
             }
         }
+
+        // Re-add dirty keys that were skipped
+        for key in dirty_keys {
+            lru_list.insert(key);
+        }
     }
 
     /// Flush all dirty blocks for a device
@@ -1018,7 +1228,8 @@ impl LRUBlockCache {
 
         for (key, block) in blocks.iter() {
             if key.device_id == device_id && block.is_dirty() {
-                writer(key.block_num, block.data_slice())?;
+                let data = block.data_for_sync();
+                writer(key.block_num, &data)?;
                 block.mark_clean();
                 flushed += 1;
 
@@ -1046,7 +1257,8 @@ impl LRUBlockCache {
 
         if let Some(block) = blocks.get(&key) {
             if block.is_dirty() {
-                writer(block.data_slice())?;
+                let data = block.data_for_sync();
+                writer(&data)?;
                 block.mark_clean();
 
                 let mut stats = self.stats.lock();
@@ -1070,7 +1282,8 @@ impl LRUBlockCache {
 
         for (key, block) in blocks.iter() {
             if block.is_dirty() {
-                writer(key.device_id, key.block_num, block.data_slice())?;
+                let data = block.data_for_sync();
+                writer(key.device_id, key.block_num, &data)?;
                 block.mark_clean();
                 flushed += 1;
 
@@ -1097,10 +1310,8 @@ impl LRUBlockCache {
         
         for key in keys_to_remove {
             if blocks.remove(&key).is_some() {
-                // Remove from LRU list
-                if let Some(pos) = lru_list.iter().position(|&k| k == key) {
-                    lru_list.remove(pos);
-                }
+                // Remove from LRU list - O(1)
+                lru_list.remove(&key);
                 
                 self.current_size
                     .fetch_sub(self.block_size as u64, Ordering::AcqRel);
