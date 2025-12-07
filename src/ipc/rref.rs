@@ -1,13 +1,15 @@
 // ============================================================================
 // src/ipc/rref.rs - Zero-Copy Remote Reference (based on RedLeaf OS)
 // 設計書 5.3: 線形型（Linear Types）と交換ヒープ（Exchange Heap）
+// 設計書 8.4: PoisonLockによるパニック時の毒入れ対応
 // ============================================================================
 #![allow(dead_code)]
 
 use core::alloc::Layout;
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
-use spin::Mutex;
+// 【設計書 8.4】跨ドメインアクセスにはPoisonLockを使用
+use crate::sync::PoisonLock;
 
 // DomainIdはdomain_system.rsから使用（P3: 重複定義の排除）
 pub use crate::domain_system::DomainId;
@@ -15,6 +17,7 @@ pub use crate::domain_system::DomainId;
 // ============================================================================
 // Heap Registry - sas/heap_registry.rs の統合実装を使用
 // P3完了: 重複実装を削除し、統一されたHeapRegistryを使用
+// 【設計書 8.4】PoisonLock使用 - 跨ドメインアクセス対応
 // ============================================================================
 
 use crate::sas::heap_registry::HeapRegistry;
@@ -22,12 +25,17 @@ use crate::sas::heap_registry::HeapRegistry;
 /// グローバルなHeap Registry
 /// ドメインクラッシュ時のメモリ回収に使用
 /// sas/heap_registry.rs の完全実装を使用
-static HEAP_REGISTRY: Mutex<HeapRegistry> = Mutex::new(HeapRegistry::new());
+/// 【設計書 8.4】パニック時に毒入れされ、回復可能
+static HEAP_REGISTRY: PoisonLock<HeapRegistry> = PoisonLock::new(HeapRegistry::new());
 
 /// 特定のドメインが所有する全オブジェクトを回収
 /// 設計書 8.1: パニック時のリソース回収
 pub fn reclaim_domain_resources(domain: DomainId) {
-    let mut registry = HEAP_REGISTRY.lock();
+    // 【設計書 8.4】毒入れされていても回復して回収を実行
+    let mut registry = HEAP_REGISTRY.lock().unwrap_or_else(|e| {
+        crate::log!("[RRef] Warning: HEAP_REGISTRY poisoned, recovering for reclaim\n");
+        e.into_inner()
+    });
     
     // HeapRegistryの統合されたreclaim_allを使用
     let reclaimed_count = registry.reclaim_all(domain);
@@ -67,8 +75,10 @@ impl<T> RRef<T> {
             .expect("Exchange heap allocation failed");
 
         // Heap Registryに登録（統合されたAPIを使用）
+        // 【設計書 8.4】PoisonLockの毒入れ対応
         HEAP_REGISTRY
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .register_simple(ptr.as_ptr() as usize, layout.size(), owner);
 
         RRef { ptr, owner }
@@ -78,8 +88,10 @@ impl<T> RRef<T> {
     /// 設計書 5.3: データコピーなしで所有権のみ移動
     pub fn move_to(mut self, new_owner: DomainId) -> Self {
         // Heap Registryの所有者を更新（統合されたAPIを使用）
+        // 【設計書 8.4】PoisonLockの毒入れ対応
         let _ = HEAP_REGISTRY
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .change_owner(self.ptr.as_ptr() as usize, self.owner, new_owner);
         self.owner = new_owner;
         self
@@ -114,7 +126,10 @@ impl<T> RRef<T> {
         let layout = Layout::new::<T>();
 
         // Heap Registryから登録解除（統合されたAPIを使用）
-        HEAP_REGISTRY.lock().unregister_simple(ptr.as_ptr() as usize);
+        // 【設計書 8.4】PoisonLockの毒入れ対応
+        HEAP_REGISTRY.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .unregister_simple(ptr.as_ptr() as usize);
 
         // 値を読み出し
         let value = unsafe { ptr.as_ptr().read() };
@@ -148,8 +163,10 @@ impl<T: ?Sized> DerefMut for RRef<T> {
 impl<T: ?Sized> Drop for RRef<T> {
     fn drop(&mut self) {
         // Heap Registryから登録解除（統合されたAPIを使用）
+        // 【設計書 8.4】PoisonLockの毒入れ対応
         HEAP_REGISTRY
             .lock()
+            .unwrap_or_else(|e| e.into_inner())
             .unregister_simple(self.ptr.as_ptr() as *const () as usize);
 
         // Exchange Heapから解放

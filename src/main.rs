@@ -397,6 +397,16 @@ extern "C" fn kmain() -> ! {
     spawn_kernel_tasks(&mut executor);
     info!(target: "init", "Kernel tasks spawned");
 
+    // =========================================================================
+    // 🚨 STACK OVERFLOW TEST (Double Fault Verification)
+    // このブロックを有効化して、GDT/TSS/IST修正が機能しているか確認してください。
+    // 成功すれば、再起動せず "!!! DOUBLE FAULT !!!" ログが出力されて停止します。
+    // =========================================================================
+    // warn!("!!! INITIATING STACK OVERFLOW TEST !!!");
+    // fn stack_overflow() { stack_overflow(); } // 無限再帰
+    // stack_overflow(); 
+    // =========================================================================
+
     info!(target: "run", "Starting executor main loop");
     info!("================================================================================");
 

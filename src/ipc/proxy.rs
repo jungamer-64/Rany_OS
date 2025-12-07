@@ -130,7 +130,11 @@ impl DomainProxy for BasicProxy {
 
         // パニックをチェック
         if PROXY_PANIC_STATE.load(core::sync::atomic::Ordering::SeqCst) {
-            let message = PROXY_PANIC_MESSAGE.lock().take().unwrap_or_default();
+            // 【設計書 8.4】PoisonLockの毒入れ対応
+            let message = PROXY_PANIC_MESSAGE.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .take()
+                .unwrap_or_default();
             return Err(ProxyError::DomainPanicked(message));
         }
 
@@ -148,16 +152,18 @@ impl DomainProxy for BasicProxy {
 
 // ============================================================================
 // Panic Capture Mechanism - 設計書 8.2: ドメイン境界でのパニック捕捉
+// 設計書 8.4: PoisonLockによるパニック時の毒入れ対応
 // ============================================================================
 
 use core::sync::atomic::AtomicBool;
-use spin::Mutex;
+use crate::sync::PoisonLock;
 
 /// プロキシ呼び出し中のパニック状態
 static PROXY_PANIC_STATE: AtomicBool = AtomicBool::new(false);
 
 /// パニックメッセージ
-static PROXY_PANIC_MESSAGE: Mutex<Option<String>> = Mutex::new(None);
+/// 【設計書 8.4】跨ドメインアクセスにはPoisonLockを使用
+static PROXY_PANIC_MESSAGE: PoisonLock<Option<String>> = PoisonLock::new(None);
 
 /// プロキシ呼び出しの開始を記録
 pub fn begin_proxy_call() {
@@ -167,7 +173,13 @@ pub fn begin_proxy_call() {
 /// プロキシ呼び出し中のパニックを記録（パニックハンドラから呼ばれる）
 pub fn record_proxy_panic(message: String) {
     PROXY_PANIC_STATE.store(true, core::sync::atomic::Ordering::SeqCst);
-    *PROXY_PANIC_MESSAGE.lock() = Some(message);
+    // 【設計書 8.4】PoisonLockの毒入れ対応
+    if let Ok(mut guard) = PROXY_PANIC_MESSAGE.lock() {
+        *guard = Some(message);
+    } else {
+        // 毒入れ時はメッセージを破棄（パニック中のエラーハンドリング）
+        crate::log!("[Proxy] Warning: panic message lost due to poisoned lock\n");
+    }
 }
 
 /// プロキシ呼び出しがパニックしたかチェック
