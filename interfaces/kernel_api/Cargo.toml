@@ -1,0 +1,13 @@
+[package]
+name = "kernel_api"
+version = "0.1.0"
+edition = "2024"
+authors = ["ExoRust Team"]
+description = "Kernel API Interface - Shared types and traits for ExoRust OS"
+
+[lib]
+name = "kernel_api"
+path = "src/lib.rs"
+
+[dependencies]
+# No dependencies - this is a pure interface crate

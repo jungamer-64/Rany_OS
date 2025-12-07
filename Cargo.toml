@@ -2,7 +2,9 @@
 resolver = "2"
 members = [
     "kernel",
+    "interfaces/kernel_api",
 ]
+
 
 [workspace.package]
 edition = "2024"
