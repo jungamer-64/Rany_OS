@@ -984,11 +984,40 @@ impl fmt::Display for FileAttributes {
 }
 
 // ============================================================================
+// Little-Endian Accessor Macro
+// ============================================================================
+
+/// リトルエンディアンバイト配列からプリミティブ型を取得するアクセサメソッドを自動生成するマクロ
+///
+/// # Example
+/// ```ignore
+/// le_accessor! {
+///     impl BiosParameterBlock {
+///         bytes_per_sector: [u8; 2] => u16,
+///         hidden_sectors: [u8; 4] => u32,
+///     }
+/// }
+/// ```
+macro_rules! le_accessor {
+    (impl $struct:ident { $($name:ident : $array:ty => $ty:ty),* $(,)? }) => {
+        impl $struct {
+            $(
+                /// フィールドの値をリトルエンディアンから変換して取得
+                #[inline]
+                pub fn $name(&self) -> $ty {
+                    <$ty>::from_le_bytes(self.$name)
+                }
+            )*
+        }
+    };
+}
+
+// ============================================================================
 // BPB (BIOS Parameter Block)
 // ============================================================================
 
 /// BIOSパラメータブロック
-/// 
+///
 /// # Safety Note
 /// すべての整数型フィールドを `[u8; N]` で表現しています。
 /// これによりアラインメントの問題を物理的に排除し、
@@ -1026,47 +1055,16 @@ pub struct BiosParameterBlock {
     total_sectors_32: [u8; 4],
 }
 
-impl BiosParameterBlock {
-    /// 1セクタあたりのバイト数を取得
-    #[inline]
-    pub fn bytes_per_sector(&self) -> u16 {
-        u16::from_le_bytes(self.bytes_per_sector)
-    }
-    
-    /// 予約セクタ数を取得
-    #[inline]
-    pub fn reserved_sectors(&self) -> u16 {
-        u16::from_le_bytes(self.reserved_sectors)
-    }
-    
-    /// ルートディレクトリエントリ数を取得
-    #[inline]
-    pub fn root_entry_count(&self) -> u16 {
-        u16::from_le_bytes(self.root_entry_count)
-    }
-    
-    /// 総セクタ数（16ビット）を取得
-    #[inline]
-    pub fn total_sectors_16(&self) -> u16 {
-        u16::from_le_bytes(self.total_sectors_16)
-    }
-    
-    /// FATサイズ（16ビット）を取得
-    #[inline]
-    pub fn fat_size_16(&self) -> u16 {
-        u16::from_le_bytes(self.fat_size_16)
-    }
-    
-    /// 隠しセクタ数を取得
-    #[inline]
-    pub fn hidden_sectors(&self) -> u32 {
-        u32::from_le_bytes(self.hidden_sectors)
-    }
-    
-    /// 総セクタ数（32ビット）を取得
-    #[inline]
-    pub fn total_sectors_32(&self) -> u32 {
-        u32::from_le_bytes(self.total_sectors_32)
+// マクロでアクセサメソッドを自動生成
+le_accessor! {
+    impl BiosParameterBlock {
+        bytes_per_sector: [u8; 2] => u16,
+        reserved_sectors: [u8; 2] => u16,
+        root_entry_count: [u8; 2] => u16,
+        total_sectors_16: [u8; 2] => u16,
+        fat_size_16: [u8; 2] => u16,
+        hidden_sectors: [u8; 4] => u32,
+        total_sectors_32: [u8; 4] => u32,
     }
 }
 
@@ -1105,47 +1103,16 @@ pub struct Fat32ExtendedBpb {
     pub fs_type: [u8; 8],
 }
 
-impl Fat32ExtendedBpb {
-    /// FATサイズ（32ビット）を取得
-    #[inline]
-    pub fn fat_size_32(&self) -> u32 {
-        u32::from_le_bytes(self.fat_size_32)
-    }
-    
-    /// 拡張フラグを取得
-    #[inline]
-    pub fn ext_flags(&self) -> u16 {
-        u16::from_le_bytes(self.ext_flags)
-    }
-    
-    /// ファイルシステムバージョンを取得
-    #[inline]
-    pub fn fs_version(&self) -> u16 {
-        u16::from_le_bytes(self.fs_version)
-    }
-    
-    /// ルートクラスタを取得
-    #[inline]
-    pub fn root_cluster(&self) -> u32 {
-        u32::from_le_bytes(self.root_cluster)
-    }
-    
-    /// FSInfoセクタ番号を取得
-    #[inline]
-    pub fn fs_info_sector(&self) -> u16 {
-        u16::from_le_bytes(self.fs_info_sector)
-    }
-    
-    /// バックアップブートセクタを取得
-    #[inline]
-    pub fn backup_boot_sector(&self) -> u16 {
-        u16::from_le_bytes(self.backup_boot_sector)
-    }
-    
-    /// ボリュームシリアル番号を取得
-    #[inline]
-    pub fn volume_serial(&self) -> u32 {
-        u32::from_le_bytes(self.volume_serial)
+// マクロでアクセサメソッドを自動生成
+le_accessor! {
+    impl Fat32ExtendedBpb {
+        fat_size_32: [u8; 4] => u32,
+        ext_flags: [u8; 2] => u16,
+        fs_version: [u8; 2] => u16,
+        root_cluster: [u8; 4] => u32,
+        fs_info_sector: [u8; 2] => u16,
+        backup_boot_sector: [u8; 2] => u16,
+        volume_serial: [u8; 4] => u32,
     }
 }
 
@@ -2160,8 +2127,9 @@ pub struct Fat32FileSystem {
     free_clusters: RwLock<u32>,
     /// FATサイズ（セクタ数）
     fat_size: u32,
-    /// ダーティフラグ(将来的にバッチ書き込みに使用)
-    fat_dirty: RwLock<bool>,
+    /// ダーティセクタのビットマップ（バッチ書き込み用）
+    /// 各ビットが1セクタ分のダーティ状態を表す
+    dirty_sectors: RwLock<Vec<bool>>,
 }
 
 /// クラスタチェーンを走査するイテレータ
@@ -2275,7 +2243,7 @@ impl Fat32FileSystem {
             fat_cache: RwLock::new(Vec::new()),
             free_clusters: RwLock::new(0),
             fat_size,
-            fat_dirty: RwLock::new(false),
+            dirty_sectors: RwLock::new(vec![false; fat_size as usize]),
         });
 
         // FATをキャッシュに読み込み
@@ -2352,7 +2320,10 @@ impl Fat32FileSystem {
         Ok(fat[idx])
     }
 
-    /// FATエントリを書き込み(型安全)
+    /// FATエントリを書き込み(型安全、遅延書き込み対応)
+    ///
+    /// キャッシュへの書き込みと、該当セクタへのダーティマーク付けを行う。
+    /// 実際のディスク書き込みは`flush_dirty_fat_sectors()`または`sync()`で行われる。
     fn write_fat_entry(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
         let idx = cluster.0 as usize;
         {
@@ -2363,12 +2334,23 @@ impl Fat32FileSystem {
             fat[idx] = value;
         }
         
-        // ディスクへの書き込み
-        self.write_fat_entry_to_disk(cluster, value)?;
+        // 該当セクタをダーティとしてマーク
+        let sector_idx = (idx * 4) / BLOCK_SIZE;
+        {
+            let mut dirty = self.dirty_sectors.write();
+            if sector_idx < dirty.len() {
+                dirty[sector_idx] = true;
+            }
+        }
+        
         Ok(())
     }
-    
-    /// FATエントリをディスクに書き込む(内部用)
+
+    /// FATエントリを即座にディスクに書き込む(内部用)
+    ///
+    /// クリティカルな操作（クラスタ割り当て等）で使用。
+    /// 通常の書き込みは`write_fat_entry`を使用し、
+    /// バッチでフラッシュすることを推奨。
     fn write_fat_entry_to_disk(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
         let idx = cluster.0 as usize;
         
@@ -2389,8 +2371,60 @@ impl Fat32FileSystem {
         // バックアップFAT(FAT2)への書き込み
         let fat2_sector = sector + self.fat_size;
         self.device.write_sync(fat2_sector.as_u64(), &buffer)?;
+        
+        // このセクタはクリーンとしてマーク
+        {
+            let mut dirty = self.dirty_sectors.write();
+            if (sector_offset as usize) < dirty.len() {
+                dirty[sector_offset as usize] = false;
+            }
+        }
 
         Ok(())
+    }
+    
+    /// ダーティなFATセクタをまとめてディスクに書き込む
+    ///
+    /// # Performance
+    /// 連続したダーティセクタを検出し、可能な限りまとめてI/Oを行う。
+    /// バックアップFATへの書き込みも同時に行う。
+    ///
+    /// # Returns
+    /// 書き込んだセクタ数
+    fn flush_dirty_fat_sectors(&self) -> FsResult<usize> {
+        let fat = self.fat_cache.read();
+        let mut dirty = self.dirty_sectors.write();
+        
+        let mut flushed_count = 0usize;
+        let mut buffer = [0u8; BLOCK_SIZE];
+        
+        for sector_idx in 0..dirty.len() {
+            if !dirty[sector_idx] {
+                continue;
+            }
+            
+            // セクタの内容を構築
+            let entry_start = sector_idx * (BLOCK_SIZE / 4);
+            let entry_end = (entry_start + BLOCK_SIZE / 4).min(fat.len());
+            
+            for (j, entry_idx) in (entry_start..entry_end).enumerate() {
+                let bytes = (fat[entry_idx].0 & 0x0FFFFFFF).to_le_bytes();
+                buffer[j * 4..j * 4 + 4].copy_from_slice(&bytes);
+            }
+            
+            // プライマリFATへ書き込み
+            let sector = self.fat_start_sector + sector_idx as u32;
+            self.device.write_sync(sector.as_u64(), &buffer)?;
+            
+            // バックアップFAT(FAT2)への書き込み
+            let fat2_sector = sector + self.fat_size;
+            self.device.write_sync(fat2_sector.as_u64(), &buffer)?;
+            
+            dirty[sector_idx] = false;
+            flushed_count += 1;
+        }
+        
+        Ok(flushed_count)
     }
 
     /// 空きクラスタを割り当て(型安全、アトミック)
@@ -2881,11 +2915,10 @@ impl FileSystem for Fat32FileSystem {
     }
 
     fn sync(&self) -> FsResult<()> {
-        // FAT32ではwrite_fat_entry()が個々のエントリを即座にディスクに書き込むため
-        // キャッシュフラッシュは不要。デバイスレベルのflush()のみ実行する。
-        //
-        // Note: パフォーマンスが問題になる場合は、write_fat_entry()でダーティフラグを
-        // 立てて、sync()時にまとめて書き込むようにバッチ処理を検討すること。
+        // ダーティなFATセクタをバッチでフラッシュ
+        self.flush_dirty_fat_sectors()?;
+        
+        // デバイスレベルのflush()を実行
         self.device.flush()?;
         Ok(())
     }
@@ -2907,7 +2940,7 @@ impl Clone for Fat32FileSystem {
             fat_cache: RwLock::new(self.fat_cache.read().clone()),
             free_clusters: RwLock::new(*self.free_clusters.read()),
             fat_size: self.fat_size,
-            fat_dirty: RwLock::new(*self.fat_dirty.read()),
+            dirty_sectors: RwLock::new(self.dirty_sectors.read().clone()),
         }
     }
 }
@@ -2915,6 +2948,7 @@ impl Clone for Fat32FileSystem {
 /// 構造的なデバッグ出力（deviceフィールドは省略）
 impl fmt::Debug for Fat32FileSystem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let dirty_count = self.dirty_sectors.read().iter().filter(|&&x| x).count();
         f.debug_struct("Fat32FileSystem")
             .field("fat_start_sector", &self.fat_start_sector)
             .field("data_start_sector", &self.data_start_sector)
@@ -2923,7 +2957,7 @@ impl fmt::Debug for Fat32FileSystem {
             .field("root_cluster", &self.root_cluster)
             .field("free_clusters", &*self.free_clusters.read())
             .field("fat_size", &self.fat_size)
-            .field("fat_dirty", &*self.fat_dirty.read())
+            .field("dirty_sector_count", &dirty_count)
             .finish_non_exhaustive() // "device" フィールドは省略
     }
 }
