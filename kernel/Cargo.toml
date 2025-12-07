@@ -18,8 +18,12 @@ path = "src/lib.rs"
 # ============================================================================
 
 [dependencies]
+# Kernel API Interface
+kernel_api = { path = "../interfaces/kernel_api" }
+
 # ブートローダーAPI（Limine Protocol - UEFI/BIOS両対応）
 limine = "0.5"
+
 
 # x86_64アーキテクチャサポート
 x86_64 = "0.15"
