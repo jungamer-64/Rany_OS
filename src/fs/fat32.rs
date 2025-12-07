@@ -1388,11 +1388,13 @@ impl DirEntryRaw {
         }
     }
     
-    /// "." エントリを作成
+    /// 特殊ディレクトリエントリを作成するヘルパー（"." または ".."）
+    ///
+    /// # Arguments
+    /// * `name` - エントリ名（最初の1〜2文字が'.'）
+    /// * `cluster` - クラスタ番号
     #[inline]
-    pub fn new_dot(cluster: Cluster) -> Self {
-        let mut name = [b' '; 8];
-        name[0] = b'.';
+    fn new_special_dir(name: [u8; 8], cluster: Cluster) -> Self {
         Self {
             name,
             ext: [b' '; 3],
@@ -1410,27 +1412,16 @@ impl DirEntryRaw {
         }
     }
     
+    /// "." エントリを作成
+    #[inline]
+    pub fn new_dot(cluster: Cluster) -> Self {
+        Self::new_special_dir(*b".       ", cluster)
+    }
+    
     /// ".." エントリを作成
     #[inline]
     pub fn new_dotdot(parent_cluster: Cluster) -> Self {
-        let mut name = [b' '; 8];
-        name[0] = b'.';
-        name[1] = b'.';
-        Self {
-            name,
-            ext: [b' '; 3],
-            attr: FileAttributes::DIRECTORY,
-            nt_reserved: 0,
-            create_time_tenths: 0,
-            create_time: [0; 2],
-            create_date: [0; 2],
-            access_date: [0; 2],
-            first_cluster_hi: ((parent_cluster.0 >> 16) as u16).to_le_bytes(),
-            modify_time: [0; 2],
-            modify_date: [0; 2],
-            first_cluster_lo: ((parent_cluster.0 & 0xFFFF) as u16).to_le_bytes(),
-            file_size: [0; 4],
-        }
+        Self::new_special_dir(*b"..      ", parent_cluster)
     }
     
     /// 構造体をバイト列として参照
@@ -2526,48 +2517,84 @@ impl Fat32FileSystem {
     /// let bytes_read = fs.read_clusters_batch(start_cluster, &mut buffer)?;
     /// ```
     pub fn read_clusters_batch(&self, start_cluster: Cluster, buffer: &mut [u8]) -> FsResult<usize> {
+        let (bytes_read, error) = self.read_clusters_batch_internal(start_cluster, buffer, false);
+        match error {
+            Some(e) => Err(e),
+            None => Ok(bytes_read),
+        }
+    }
+    
+    /// クラスタバッチ読み取りの内部実装
+    /// 
+    /// # Arguments
+    /// * `start_cluster` - 読み取り開始クラスタ
+    /// * `buffer` - 読み取りデータを格納するバッファ
+    /// * `allow_partial` - 部分的な読み取りを許容するか（エラー時の挙動を制御）
+    /// 
+    /// # Returns
+    /// `(bytes_read, first_error)` - 読み取れたバイト数と最初のエラー
+    fn read_clusters_batch_internal(
+        &self,
+        start_cluster: Cluster,
+        buffer: &mut [u8],
+        allow_partial: bool,
+    ) -> (usize, Option<FsError>) {
         let cluster_size = self.cluster_size();
         let max_clusters = self.buffer_cluster_capacity(buffer);
         
         if max_clusters == 0 {
-            return Ok(0);
+            return (0, None);
         }
         
         let mut total_read = 0usize;
         let mut current_cluster = start_cluster;
         let mut clusters_read = 0usize;
+        let mut first_error: Option<FsError> = None;
         
-        while clusters_read < max_clusters {
+        while clusters_read < max_clusters && first_error.is_none() {
             // 連続したクラスタの開始点と長さを検出
-            let (contiguous_start, contiguous_count) = 
-                self.find_contiguous_clusters(current_cluster, max_clusters - clusters_read)?;
-            
-            if contiguous_count == 0 {
-                break;
-            }
-            
-            // 連続したクラスタをバッチ読み取り
-            let batch_size = contiguous_count * cluster_size;
-            let buffer_offset = clusters_read * cluster_size;
-            
-            self.read_contiguous_clusters(
-                contiguous_start,
-                contiguous_count,
-                &mut buffer[buffer_offset..buffer_offset + batch_size],
-            )?;
-            
-            total_read += batch_size;
-            clusters_read += contiguous_count;
-            
-            // 次のクラスタを取得
-            if let Some(next) = self.get_next_cluster_after_batch(contiguous_start, contiguous_count)? {
-                current_cluster = next;
-            } else {
-                break; // チェーン終端
+            match self.find_contiguous_clusters(current_cluster, max_clusters - clusters_read) {
+                Ok((contiguous_start, contiguous_count)) => {
+                    if contiguous_count == 0 {
+                        break;
+                    }
+                    
+                    // 連続したクラスタをバッチ読み取り
+                    let batch_size = contiguous_count * cluster_size;
+                    let buffer_offset = clusters_read * cluster_size;
+                    
+                    if let Err(e) = self.read_contiguous_clusters(
+                        contiguous_start,
+                        contiguous_count,
+                        &mut buffer[buffer_offset..buffer_offset + batch_size],
+                    ) {
+                        first_error = Some(e);
+                        if !allow_partial {
+                            break;
+                        }
+                    } else {
+                        total_read += batch_size;
+                        clusters_read += contiguous_count;
+                    }
+                    
+                    // 次のクラスタを取得
+                    match self.get_next_cluster_after_batch(contiguous_start, contiguous_count) {
+                        Ok(Some(next)) => current_cluster = next,
+                        Ok(None) => break, // チェーン終端
+                        Err(e) => {
+                            first_error = Some(e);
+                            break;
+                        }
+                    }
+                }
+                Err(e) => {
+                    first_error = Some(e);
+                    break;
+                }
             }
         }
         
-        Ok(total_read)
+        (total_read, first_error)
     }
     
     /// 連続したクラスタの数を検出
@@ -2772,60 +2799,7 @@ impl Fat32FileSystem {
         start_cluster: Cluster,
         buffer: &mut [u8],
     ) -> (usize, Option<FsError>) {
-        let cluster_size = self.cluster_size();
-        let max_clusters = self.buffer_cluster_capacity(buffer);
-        
-        if max_clusters == 0 {
-            return (0, None);
-        }
-        
-        let mut total_read = 0usize;
-        let mut current_cluster = start_cluster;
-        let mut clusters_read = 0usize;
-        let mut first_error: Option<FsError> = None;
-        
-        while clusters_read < max_clusters && first_error.is_none() {
-            // 連続したクラスタの開始点と長さを検出
-            match self.find_contiguous_clusters(current_cluster, max_clusters - clusters_read) {
-                Ok((contiguous_start, contiguous_count)) => {
-                    if contiguous_count == 0 {
-                        break;
-                    }
-                    
-                    let batch_size = contiguous_count * cluster_size;
-                    let buffer_offset = clusters_read * cluster_size;
-                    
-                    // 連続したクラスタをバッチ読み取り
-                    if let Err(e) = self.read_contiguous_clusters(
-                        contiguous_start,
-                        contiguous_count,
-                        &mut buffer[buffer_offset..buffer_offset + batch_size],
-                    ) {
-                        first_error = Some(e);
-                        break;
-                    }
-                    
-                    total_read += batch_size;
-                    clusters_read += contiguous_count;
-                    
-                    // 次のクラスタを取得
-                    match self.get_next_cluster_after_batch(contiguous_start, contiguous_count) {
-                        Ok(Some(next)) => current_cluster = next,
-                        Ok(None) => break, // チェーン終端
-                        Err(e) => {
-                            first_error = Some(e);
-                            break;
-                        }
-                    }
-                }
-                Err(e) => {
-                    first_error = Some(e);
-                    break;
-                }
-            }
-        }
-        
-        (total_read, first_error)
+        self.read_clusters_batch_internal(start_cluster, buffer, true)
     }
 
     /// クラスタサイズを取得
@@ -3109,71 +3083,123 @@ impl Fat32Inode {
         (base, ext)
     }
 
+    /// ディレクトリ内のエントリを走査し、条件に一致するエントリを探す
+    ///
+    /// クラスタチェーンを走査する共通ロジックをカプセル化。
+    /// コールバックがSome(T)を返した時点で走査を停止し、その値を返す。
+    ///
+    /// # Arguments
+    /// * `predicate` - エントリとオフセットを受け取り、処理結果を返すコールバック
+    ///
+    /// # Returns
+    /// コールバックが返した値、または走査完了時はNone
+    fn scan_dir_entries<T, F>(&self, mut predicate: F) -> FsResult<Option<(T, Cluster, usize)>>
+    where
+        F: FnMut(&DirEntryRaw, usize) -> Option<T>,
+    {
+        let cluster_size = self.fs.cluster_size();
+        let mut buffer = vec![0u8; cluster_size];
+        let mut current_cluster = self.first_cluster;
+        let mut chain_count = 0;
+        let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
+
+        while current_cluster.is_valid() {
+            chain_count += 1;
+            if chain_count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument);
+            }
+
+            self.fs.read_cluster(current_cluster, &mut buffer)?;
+
+            for i in 0..entries_per_cluster {
+                let offset = i * DIR_ENTRY_SIZE;
+                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+
+                if let Some(result) = predicate(&raw, offset) {
+                    return Ok(Some((result, current_cluster, offset)));
+                }
+
+                if raw.is_end() {
+                    return Ok(None);
+                }
+            }
+
+            current_cluster = self.fs.read_fat_entry(current_cluster)?;
+        }
+
+        Ok(None)
+    }
+
     /// ディレクトリに新しいエントリを追加
     fn add_dir_entry(&self, name: &str, cluster: Cluster, attr: FileAttributes, size: u32) -> FsResult<()> {
         if self.file_type != FileType::Directory {
             return Err(FsError::NotDirectory);
         }
-        
+
         let cluster_size = self.fs.cluster_size();
-        let mut buffer = vec![0u8; cluster_size];
+
+        // 空きエントリを探す
+        let found = self.scan_dir_entries(|raw, _offset| {
+            let first_byte = raw.name[0];
+            if first_byte == END_OF_DIR || first_byte == DELETED_ENTRY {
+                Some(first_byte)
+            } else {
+                None
+            }
+        })?;
+
+        if let Some((first_byte, found_cluster, offset)) = found {
+            // 空きエントリが見つかった - 新しいエントリを作成
+            let (base_name, ext_name) = Self::to_short_name_parts(name);
+            let entry = DirEntryRaw::new(base_name, ext_name, attr, cluster, size);
+
+            let mut buffer = vec![0u8; cluster_size];
+            self.fs.read_cluster(found_cluster, &mut buffer)?;
+
+            buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
+
+            // 元がEND_OF_DIRだった場合、次のエントリもEND_OF_DIRにする
+            let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
+            let entry_idx = offset / DIR_ENTRY_SIZE;
+            if first_byte == END_OF_DIR && entry_idx + 1 < entries_per_cluster {
+                buffer[offset + DIR_ENTRY_SIZE] = END_OF_DIR;
+            }
+
+            self.fs.write_cluster(found_cluster, &buffer)?;
+            return Ok(());
+        }
+
+        // 全クラスタを走査したが空きがない - 新しいクラスタを割り当て
         let mut current_cluster = self.first_cluster;
         let mut chain_count = 0;
         
-        // 空きエントリを探す
+        // 最後のクラスタを見つける
         while current_cluster.is_valid() {
             chain_count += 1;
             if chain_count > MAX_CLUSTER_CHAIN {
-                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+                return Err(FsError::InvalidArgument);
             }
-            
-            self.fs.read_cluster(current_cluster, &mut buffer)?;
-            
-            let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
-            for i in 0..entries_per_cluster {
-                let offset = i * DIR_ENTRY_SIZE;
-                let first_byte = buffer[offset];
-                
-                // 空きエントリまたは削除済みエントリを使用
-                if first_byte == END_OF_DIR || first_byte == DELETED_ENTRY {
-                    // 新しいエントリを作成
-                    let (base_name, ext_name) = Self::to_short_name_parts(name);
-                    
-                    let entry = DirEntryRaw::new(base_name, ext_name, attr, cluster, size);
-                    
-                    // バッファに書き込み (as_bytes()で安全にシリアライズ)
-                    buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
-                    
-                    // 元がEND_OF_DIRだった場合、次のエントリもEND_OF_DIRにする
-                    if first_byte == END_OF_DIR && i + 1 < entries_per_cluster {
-                        buffer[offset + DIR_ENTRY_SIZE] = END_OF_DIR;
-                    }
-                    
-                    // クラスタを書き戻し
-                    self.fs.write_cluster(current_cluster, &buffer)?;
-                    return Ok(());
-                }
-            }
-            
-            // 次のクラスタへ
             let next = self.fs.read_fat_entry(current_cluster)?;
             if !next.is_valid() {
-                // 新しいクラスタを割り当て
-                let new_cluster = self.fs.allocate_cluster()?;
-                self.fs.write_fat_entry(current_cluster, new_cluster)?;
-                
-                // 新しいクラスタを初期化
-                let mut new_buffer = vec![0u8; cluster_size];
-                new_buffer[0] = END_OF_DIR;
-                self.fs.write_cluster(new_cluster, &new_buffer)?;
-                
-                current_cluster = new_cluster;
-            } else {
-                current_cluster = next;
+                break;
             }
+            current_cluster = next;
         }
-        
-        Err(FsError::NoSpace)
+
+        // 新しいクラスタを割り当て
+        let new_cluster = self.fs.allocate_cluster()?;
+        self.fs.write_fat_entry(current_cluster, new_cluster)?;
+
+        // 新しいクラスタにエントリを作成
+        let (base_name, ext_name) = Self::to_short_name_parts(name);
+        let entry = DirEntryRaw::new(base_name, ext_name, attr, cluster, size);
+
+        let mut new_buffer = vec![0u8; cluster_size];
+        new_buffer[0..DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
+        new_buffer[DIR_ENTRY_SIZE] = END_OF_DIR;
+        self.fs.write_cluster(new_cluster, &new_buffer)?;
+
+        Ok(())
     }
 
     /// ディレクトリからエントリを削除
@@ -3181,49 +3207,34 @@ impl Fat32Inode {
         if self.file_type != FileType::Directory {
             return Err(FsError::NotDirectory);
         }
-        
+
         let cluster_size = self.fs.cluster_size();
-        let mut buffer = vec![0u8; cluster_size];
-        let mut current_cluster = self.first_cluster;
-        let mut chain_count = 0;
-        
-        while current_cluster.is_valid() {
-            chain_count += 1;
-            if chain_count > MAX_CLUSTER_CHAIN {
-                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+
+        // 名前が一致するエントリを探す
+        let found = self.scan_dir_entries(|raw, _offset| {
+            if raw.is_deleted() {
+                return None;
             }
-            
-            self.fs.read_cluster(current_cluster, &mut buffer)?;
-            
-            let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
-            for i in 0..entries_per_cluster {
-                let offset = i * DIR_ENTRY_SIZE;
-                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
-                
-                if raw.is_end() {
-                    return Err(FsError::NotFound);
-                }
-                
-                if raw.is_deleted() {
-                    continue;
-                }
-                
-                if raw.attributes().is_long_name() || raw.attributes().is_volume_id() {
-                    continue;
-                }
-                
-                let entry_name = raw.short_name();
-                if entry_name.eq_ignore_ascii_case(name) {
-                    // エントリを削除済みとしてマーク
-                    buffer[offset] = DELETED_ENTRY;
-                    self.fs.write_cluster(current_cluster, &buffer)?;
-                    return Ok(raw);
-                }
+            if raw.attributes().is_long_name() || raw.attributes().is_volume_id() {
+                return None;
             }
-            
-            current_cluster = self.fs.read_fat_entry(current_cluster)?;
+            let entry_name = raw.short_name();
+            if entry_name.eq_ignore_ascii_case(name) {
+                Some(*raw)
+            } else {
+                None
+            }
+        })?;
+
+        if let Some((raw, found_cluster, offset)) = found {
+            // エントリを削除済みとしてマーク
+            let mut buffer = vec![0u8; cluster_size];
+            self.fs.read_cluster(found_cluster, &mut buffer)?;
+            buffer[offset] = DELETED_ENTRY;
+            self.fs.write_cluster(found_cluster, &buffer)?;
+            return Ok(raw);
         }
-        
+
         Err(FsError::NotFound)
     }
 }
