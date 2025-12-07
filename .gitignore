@@ -12,3 +12,5 @@
 /.github/instructions
 *result*
 *.log
+*build*.*
+*error*.*
