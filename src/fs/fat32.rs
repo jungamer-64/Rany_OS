@@ -94,6 +94,12 @@ const MAX_PATH_LEN: usize = 260;
 /// 最大ファイル名長(単一コンポーネント)
 const MAX_NAME_LEN: usize = 255;
 
+/// 最大FAT全体キャッシュサイズ(バイト) - これを超える場合はオンデマンド読み込みを使用
+const MAX_FULL_FAT_CACHE_BYTES: usize = 16 * 1024 * 1024; // 16MB デフォルト閾値
+
+/// LFN のパート数上限 (1パートにつき最大13 UCS-2文字、20パートで255文字)
+const MAX_LFN_PARTS: usize = 26; // 許容範囲: 26で余裕を持たせる
+
 /// パス長が制限内かチェック
 fn validate_path_length(path: &str) -> FsResult<()> {
     if path.len() > MAX_PATH_LEN {
@@ -813,8 +819,8 @@ impl SafePackedRead for DirEntryRaw {
     fn from_bytes_safe(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() >= DIR_ENTRY_SIZE, 
                       "Buffer too small for DirEntryRaw: {} < {}", bytes.len(), DIR_ENTRY_SIZE);
-        // SAFETY: 上記のドキュメント参照
-        unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const DirEntryRaw) }
+        // Delegate to safe field-by-field parser
+        DirEntryRaw::from_bytes(bytes)
     }
 }
 
@@ -831,8 +837,8 @@ impl SafePackedRead for LfnEntry {
     fn from_bytes_safe(bytes: &[u8]) -> Self {
         debug_assert!(bytes.len() >= DIR_ENTRY_SIZE,
                       "Buffer too small for LfnEntry: {} < {}", bytes.len(), DIR_ENTRY_SIZE);
-        // SAFETY: DirEntryRawと同様
-        unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const LfnEntry) }
+        // Delegate to safe field-by-field parser
+        LfnEntry::from_bytes(bytes)
     }
 }
 
@@ -1296,7 +1302,37 @@ impl fmt::Debug for DirEntryRaw {
 impl DirEntryRaw {
     /// バイト列から安全にDirEntryRawを読み取る
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const DirEntryRaw) }
+        // Safe field-by-field copy to avoid relying on #[repr(C, packed)] pointer casting.
+        debug_assert!(bytes.len() >= DIR_ENTRY_SIZE, "Buffer too small for DirEntryRaw");
+        let mut entry = DirEntryRaw {
+            name: [0u8; 8],
+            ext: [0u8; 3],
+            attr: 0,
+            nt_reserved: 0,
+            create_time_tenths: 0,
+            create_time: [0u8; 2],
+            create_date: [0u8; 2],
+            access_date: [0u8; 2],
+            first_cluster_hi: [0u8; 2],
+            modify_time: [0u8; 2],
+            modify_date: [0u8; 2],
+            first_cluster_lo: [0u8; 2],
+            file_size: [0u8; 4],
+        };
+        entry.name.copy_from_slice(&bytes[0..8]);
+        entry.ext.copy_from_slice(&bytes[8..11]);
+        entry.attr = bytes[11];
+        entry.nt_reserved = bytes[12];
+        entry.create_time_tenths = bytes[13];
+        entry.create_time.copy_from_slice(&bytes[14..16]);
+        entry.create_date.copy_from_slice(&bytes[16..18]);
+        entry.access_date.copy_from_slice(&bytes[18..20]);
+        entry.first_cluster_hi.copy_from_slice(&bytes[20..22]);
+        entry.modify_time.copy_from_slice(&bytes[22..24]);
+        entry.modify_date.copy_from_slice(&bytes[24..26]);
+        entry.first_cluster_lo.copy_from_slice(&bytes[26..28]);
+        entry.file_size.copy_from_slice(&bytes[28..32]);
+        entry
     }
 
     /// 開始クラスタを取得（型安全なCluster型を返す）
@@ -1470,16 +1506,23 @@ impl DirEntryRaw {
     /// let entry = DirEntryRaw::new(...);
     /// buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
     /// ```
+    /// 構造体をバイト配列として出力 (安全なコピー版)
     #[inline]
-    pub fn as_bytes(&self) -> &[u8] {
-        // SAFETY: 上記の厳格な前提条件を満たしている
-        // DirEntryRawはPOD型であり、全フィールドがプリミティブバイト配列
-        unsafe {
-            core::slice::from_raw_parts(
-                self as *const DirEntryRaw as *const u8,
-                DIR_ENTRY_SIZE
-            )
-        }
+    pub fn write_bytes_to(&self, dest: &mut [u8]) {
+        debug_assert!(dest.len() >= DIR_ENTRY_SIZE);
+        dest[0..8].copy_from_slice(&self.name);
+        dest[8..11].copy_from_slice(&self.ext);
+        dest[11] = self.attr;
+        dest[12] = self.nt_reserved;
+        dest[13] = self.create_time_tenths;
+        dest[14..16].copy_from_slice(&self.create_time);
+        dest[16..18].copy_from_slice(&self.create_date);
+        dest[18..20].copy_from_slice(&self.access_date);
+        dest[20..22].copy_from_slice(&self.first_cluster_hi);
+        dest[22..24].copy_from_slice(&self.modify_time);
+        dest[24..26].copy_from_slice(&self.modify_date);
+        dest[26..28].copy_from_slice(&self.first_cluster_lo);
+        dest[28..32].copy_from_slice(&self.file_size);
     }
 
     /// ディレクトリかどうか
@@ -1954,6 +1997,11 @@ impl<'a> Iterator for DirectoryIterator<'a> {
                     continue; // 次のエントリへ
                 }
                 DirectoryEntryKind::LongName(lfn) => {
+                    // LFNの過剰なパーツ数をチェックしてDoSを防止
+                    if self.lfn_parts.len() >= MAX_LFN_PARTS {
+                        self.finished = true;
+                        return Some(Err(FsError::CorruptedFs));
+                    }
                     self.lfn_parts.push((lfn.sequence(), lfn.get_name_part(), lfn.checksum()));
                     continue; // LFNをスタックに積むだけ、ループ継続
                 }
@@ -2088,7 +2136,26 @@ impl<'a> DirectoryIterator<'a> {
 impl LfnEntry {
     /// バイト列から安全にLfnEntryを読み取る
     pub fn from_bytes(bytes: &[u8]) -> Self {
-        unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const LfnEntry) }
+        debug_assert!(bytes.len() >= core::mem::size_of::<LfnEntry>());
+        let mut entry = LfnEntry {
+            seq: 0,
+            name1: [0u8; 10],
+            attr: 0,
+            type_: 0,
+            checksum: 0,
+            name2: [0u8; 12],
+            first_cluster: [0u8; 2],
+            name3: [0u8; 4],
+        };
+        entry.seq = bytes[0];
+        entry.name1.copy_from_slice(&bytes[1..11]);
+        entry.attr = bytes[11];
+        entry.type_ = bytes[12];
+        entry.checksum = bytes[13];
+        entry.name2.copy_from_slice(&bytes[14..26]);
+        entry.first_cluster.copy_from_slice(&bytes[26..28]);
+        entry.name3.copy_from_slice(&bytes[28..32]);
+        entry
     }
     
     /// LFNエントリのチェックサムを取得
@@ -2195,6 +2262,8 @@ pub struct Fat32FileSystem {
     /// 
     /// ⚠️ 大容量ボリュームでは大量のメモリを消費します（上記参照）
     fat_cache: RwLock<Vec<Cluster>>,
+    /// FAT全体をメモリに配置しているかフラグ
+    full_fat_cache: bool,
     /// 空きクラスタ数
     free_clusters: RwLock<u32>,
     /// FATサイズ（セクタ数）
@@ -2300,15 +2369,31 @@ impl Fat32FileSystem {
         }
 
         // 各パラメータを計算（型安全）
-        let fat_start_sector = Sector(boot_sector.reserved_sectors());
+        // 型変換と安全性チェック（オーバーフローやゼロ除算を回避）
+        let fat_start_sector = Sector(boot_sector.reserved_sectors() as u32);
         let fat_size = boot_sector.fat_size_32();
-        let num_fats = boot_sector.num_fats();
-        let data_start_sector = fat_start_sector + (num_fats * fat_size);
+        let num_fats = boot_sector.num_fats() as u32;
+
+        // fat_area_size = fat_size * num_fats
+        let fat_area_size = fat_size
+            .checked_mul(num_fats)
+            .ok_or(FsError::CorruptedFs)?;
+
+        let data_start_sector = fat_start_sector + fat_area_size;
 
         let total_sectors = boot_sector.total_sectors();
-        let data_sectors = total_sectors - data_start_sector.0;
-        let sectors_per_cluster = boot_sector.sectors_per_cluster();
-        let total_clusters = data_sectors / sectors_per_cluster;
+        let data_sectors = total_sectors
+            .checked_sub(data_start_sector.0)
+            .ok_or(FsError::CorruptedFs)?;
+
+        let sectors_per_cluster = boot_sector.sectors_per_cluster() as u32;
+        if sectors_per_cluster == 0 {
+            return Err(FsError::CorruptedFs);
+        }
+
+        let total_clusters = data_sectors
+            .checked_div(sectors_per_cluster)
+            .ok_or(FsError::CorruptedFs)?;
 
         // デバイスIDを生成（静的カウンタを使用）
         static DEVICE_ID_COUNTER: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
@@ -2320,6 +2405,10 @@ impl Fat32FileSystem {
             32 * 1024 * 1024, // 32MB キャッシュ上限
         ));
 
+        // Decide whether to fully cache FAT table in RAM or use on-demand mode
+        let fat_entry_count = (fat_size as usize) * (BLOCK_SIZE / 4);
+        let full_fat_cache = fat_entry_count * 4 <= MAX_FULL_FAT_CACHE_BYTES;
+
         let fs = Arc::new(Self {
             device,
             device_id,
@@ -2329,14 +2418,21 @@ impl Fat32FileSystem {
             total_clusters,
             root_cluster: boot_sector.root_cluster(),
             fat_cache: RwLock::new(Vec::new()),
+            full_fat_cache,
             free_clusters: RwLock::new(0),
             fat_size,
             dirty_sectors: RwLock::new(vec![false; fat_size as usize]),
             block_cache,
         });
 
-        // FATをキャッシュに読み込み
-        fs.load_fat()?;
+        // FATをキャッシュに読み込み（必要に応じてオンデマンドモード）
+        if fs.full_fat_cache {
+            fs.load_fat()?;
+        } else {
+            // フルキャッシュではない場合はディスクから空きクラスタ数を集計
+            let free = (&*fs).count_free_clusters_on_disk()?;
+            *fs.free_clusters.write() = free;
+        }
 
         Ok(fs)
     }
@@ -2420,6 +2516,39 @@ impl Fat32FileSystem {
         Ok(())
     }
 
+    /// FATをディスク上から走査して空きクラスタ数をカウントする（オンデマンドモードで使用）
+    fn count_free_clusters_on_disk(&self) -> FsResult<u32> {
+        let sectors = self.fat_size as usize;
+        let entries = sectors * BLOCK_SIZE / 4;
+
+        let mut free: u32 = 0;
+        let mut buffer = [0u8; BLOCK_SIZE];
+
+        for i in 0..sectors {
+            let sector = self.fat_start_sector + i as u32;
+            // キャッシュ経由で読み取り（既にキャッシュが有効な場合はヒットする）
+            self.read_sector_cached(sector.as_u64(), &mut buffer)?;
+
+            for j in 0..(BLOCK_SIZE / 4) {
+                let idx = i * (BLOCK_SIZE / 4) + j;
+                if idx >= entries {
+                    break;
+                }
+                let val = u32::from_le_bytes([
+                    buffer[j * 4],
+                    buffer[j * 4 + 1],
+                    buffer[j * 4 + 2],
+                    buffer[j * 4 + 3],
+                ]) & 0x0FFFFFFF;
+                if val == 0 {
+                    free = free.saturating_add(1);
+                }
+            }
+        }
+
+        Ok(free)
+    }
+
     /// クラスタ番号からセクタ番号を計算(型安全)
     /// 
     /// # Panics
@@ -2432,12 +2561,35 @@ impl Fat32FileSystem {
 
     /// FATエントリを読み取り（型安全）
     fn read_fat_entry(&self, cluster: Cluster) -> FsResult<Cluster> {
-        let fat = self.fat_cache.read();
         let idx = cluster.0 as usize;
-        if idx >= fat.len() {
-            return Err(FsError::InvalidArgument);
+        if self.full_fat_cache {
+            let fat = self.fat_cache.read();
+            if idx >= fat.len() {
+                return Err(FsError::InvalidArgument);
+            }
+            Ok(fat[idx])
+        } else {
+            // オンデマンドモード: 該当セクタのみ読み込む
+            let entries = (self.fat_size as usize) * (BLOCK_SIZE / 4);
+            if idx >= entries {
+                return Err(FsError::InvalidArgument);
+            }
+
+            let fat_offset = idx * 4;
+            let sector_offset = (fat_offset / BLOCK_SIZE) as u32;
+            let sector = self.fat_start_sector + sector_offset;
+            let mut buffer = [0u8; BLOCK_SIZE];
+            self.read_sector_cached(sector.as_u64(), &mut buffer)?;
+
+            let offset_in_sector = fat_offset % BLOCK_SIZE;
+            let val = u32::from_le_bytes([
+                buffer[offset_in_sector],
+                buffer[offset_in_sector + 1],
+                buffer[offset_in_sector + 2],
+                buffer[offset_in_sector + 3],
+            ]) & 0x0FFFFFFF;
+            Ok(Cluster(val))
         }
-        Ok(fat[idx])
     }
 
     /// FATエントリを書き込み(型安全、遅延書き込み対応)
@@ -2446,24 +2598,68 @@ impl Fat32FileSystem {
     /// 実際のディスク書き込みは`flush_dirty_fat_sectors()`または`sync()`で行われる。
     fn write_fat_entry(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
         let idx = cluster.0 as usize;
-        {
-            let mut fat = self.fat_cache.write();
-            if idx >= fat.len() {
+        if self.full_fat_cache {
+            {
+                let mut fat = self.fat_cache.write();
+                if idx >= fat.len() {
+                    return Err(FsError::InvalidArgument);
+                }
+                fat[idx] = value;
+            }
+
+            // 該当セクタをダーティとしてマーク
+            let sector_idx = (idx * 4) / BLOCK_SIZE;
+            {
+                let mut dirty = self.dirty_sectors.write();
+                if sector_idx < dirty.len() {
+                    dirty[sector_idx] = true;
+                }
+            }
+
+            Ok(())
+        } else {
+            // オンデマンドモード: ディスクへ即時書き込み
+            let sectors = self.fat_size as usize;
+            let entries = sectors * BLOCK_SIZE / 4;
+            if idx >= entries {
                 return Err(FsError::InvalidArgument);
             }
-            fat[idx] = value;
-        }
-        
-        // 該当セクタをダーティとしてマーク
-        let sector_idx = (idx * 4) / BLOCK_SIZE;
-        {
-            let mut dirty = self.dirty_sectors.write();
-            if sector_idx < dirty.len() {
-                dirty[sector_idx] = true;
+
+            let fat_offset = idx * 4;
+            let sector_offset = (fat_offset / BLOCK_SIZE) as u32;
+            let sector = self.fat_start_sector + sector_offset;
+            let offset_in_sector = fat_offset % BLOCK_SIZE;
+
+            let mut buffer = [0u8; BLOCK_SIZE];
+            self.read_sector_cached(sector.as_u64(), &mut buffer)?;
+
+            let old_val = u32::from_le_bytes([
+                buffer[offset_in_sector],
+                buffer[offset_in_sector + 1],
+                buffer[offset_in_sector + 2],
+                buffer[offset_in_sector + 3],
+            ]) & 0x0FFFFFFF;
+
+            let bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
+            buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&bytes);
+
+            // primary FAT
+            self.write_sector_cached(sector.as_u64(), &buffer)?;
+            // backup FAT
+            let fat2_sector = sector + self.fat_size;
+            self.write_sector_cached(fat2_sector.as_u64(), &buffer)?;
+
+            // free cluster count を更新
+            if old_val == 0 && value.0 != 0 {
+                let mut free = self.free_clusters.write();
+                *free = free.saturating_sub(1);
+            } else if old_val != 0 && value.0 == 0 {
+                let mut free = self.free_clusters.write();
+                *free = free.saturating_add(1);
             }
+
+            Ok(())
         }
-        
-        Ok(())
     }
 
     /// FATエントリを即座にディスクに書き込む(内部用)
@@ -2473,18 +2669,31 @@ impl Fat32FileSystem {
     /// バッチでフラッシュすることを推奨。
     fn write_fat_entry_to_disk(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
         let idx = cluster.0 as usize;
-        
-        // ディスクにも書き込み
+        // ディスクへの書き込みは2モード対応
         let fat_offset = idx * 4;
         let sector_offset = (fat_offset / BLOCK_SIZE) as u32;
         let sector = self.fat_start_sector + sector_offset;
         let offset_in_sector = fat_offset % BLOCK_SIZE;
 
         let mut buffer = [0u8; BLOCK_SIZE];
-        self.device.read_sync(sector.as_u64(), &mut buffer)?;
-
-        let bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
-        buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&bytes);
+            if self.full_fat_cache {
+            // full cache の場合はメモリ上のfatを元にセクタを組み立てる
+            let fat = self.fat_cache.read();
+            let entry_start = sector_offset as usize * (BLOCK_SIZE / 4);
+            let entry_end = (entry_start + BLOCK_SIZE / 4).min(fat.len());
+            for (j, entry_idx) in (entry_start..entry_end).enumerate() {
+                let bytes = (fat[entry_idx].0 & 0x0FFFFFFF).to_le_bytes();
+                buffer[j * 4..j * 4 + 4].copy_from_slice(&bytes);
+            }
+                // 新しい値を書き込む（メモリ側がまだ更新されていないケースでも対応）
+                let new_bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
+                buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&new_bytes);
+        } else {
+            // オンデマンド・モードならデバイスから読み取り（必要な部分だけ変更）
+            self.device.read_sync(sector.as_u64(), &mut buffer)?;
+            let bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
+            buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&bytes);
+        }
 
         self.device.write_sync(sector.as_u64(), &buffer)?;
 
@@ -2493,6 +2702,7 @@ impl Fat32FileSystem {
         self.device.write_sync(fat2_sector.as_u64(), &buffer)?;
         
         // このセクタはクリーンとしてマーク
+        // 完了したのでダーティフラグをクリア
         {
             let mut dirty = self.dirty_sectors.write();
             if (sector_offset as usize) < dirty.len() {
@@ -2554,24 +2764,44 @@ impl Fat32FileSystem {
     /// 複数スレッドが同じクラスタを確保するTOCTOU脆弱性を防止。
     fn allocate_cluster(&self) -> FsResult<Cluster> {
         // 最初から書き込みロックを取得してアトミック性を確保
-        let mut fat = self.fat_cache.write();
-        
+        let mut fat_guard = self.fat_cache.write();
+
         // クラスタ2から検索開始
-        for i in 2..fat.len() {
-            if fat[i].is_free() {
+        let entries = if self.full_fat_cache {
+            fat_guard.len()
+        } else {
+            (self.fat_size as usize) * (BLOCK_SIZE / 4)
+        };
+
+        for i in 2..entries {
+            let is_free = if self.full_fat_cache {
+                fat_guard[i].is_free()
+            } else {
+                // オンデマンドモード: セクタ読み取りで判定
+                match self.read_fat_entry(Cluster(i as u32)) {
+                    Ok(cluster) => cluster.is_free(),
+                    Err(_) => false,
+                }
+            };
+
+            if is_free {
                 let cluster = Cluster(i as u32);
-                // メモリ上のキャッシュを即座に更新
-                fat[i] = Cluster::EOF;
-                
-                // ロックを保持したまま空きクラスタカウントを更新
+
+                // ディスクに即時書き込み
+                // この処理はロックを保持したまま行う (整合性優先)
+                self.write_fat_entry_to_disk(cluster, Cluster::EOF)?;
+
+                // メモリキャッシュ側を更新(フルキャッシュ時のみ)
+                if self.full_fat_cache {
+                    fat_guard[i] = Cluster::EOF;
+                }
+
+                // 空きカウントを更新
                 let mut free = self.free_clusters.write();
                 *free = free.saturating_sub(1);
                 drop(free);
-                drop(fat);
-                
-                // ディスクへの書き込み(ロック解放後に実行してパフォーマンス改善)
-                self.write_fat_entry_to_disk(cluster, Cluster::EOF)?;
-                
+                drop(fat_guard);
+
                 return Ok(cluster);
             }
         }
@@ -2739,17 +2969,21 @@ impl Fat32FileSystem {
             return Ok((start, 0));
         }
         
-        let fat = self.fat_cache.read();
         let mut count = 1usize;
         let mut current = start;
-        
+
         while count < max_count {
-            let idx = current.0 as usize;
-            if idx >= fat.len() {
-                break;
-            }
-            
-            let next = fat[idx];
+            let next = if self.full_fat_cache {
+                let fat = self.fat_cache.read();
+                let idx = current.0 as usize;
+                if idx >= fat.len() {
+                    break;
+                }
+                fat[idx]
+            } else {
+                // オンデマンド: 個別のFATエントリを読み込む
+                self.read_fat_entry(current)?
+            };
             
             // EOFまたは無効なクラスタで終了
             if next.is_eof() || !next.is_valid() {
@@ -2842,14 +3076,16 @@ impl Fat32FileSystem {
         // バッチの最後のクラスタ
         let last_cluster = Cluster(start.0 + (count as u32) - 1);
         
-        let fat = self.fat_cache.read();
         let idx = last_cluster.0 as usize;
-        
-        if idx >= fat.len() {
-            return Err(FsError::InvalidArgument);
-        }
-        
-        let next = fat[idx];
+        let next = if self.full_fat_cache {
+            let fat = self.fat_cache.read();
+            if idx >= fat.len() {
+                return Err(FsError::InvalidArgument);
+            }
+            fat[idx]
+        } else {
+            self.read_fat_entry(last_cluster)?
+        };
         
         if next.is_eof() || !next.is_valid() {
             Ok(None)
@@ -3039,6 +3275,8 @@ impl Fat32FileSystem {
     pub fn verify_invariants(&self) {}
 }
 
+    
+
 impl FileSystem for Fat32FileSystem {
     fn name(&self) -> &str {
         "fat32"
@@ -3097,6 +3335,7 @@ impl Clone for Fat32FileSystem {
             fat_size: self.fat_size,
             dirty_sectors: RwLock::new(self.dirty_sectors.read().clone()),
             block_cache: Arc::clone(&self.block_cache),
+            full_fat_cache: self.full_fat_cache,
         }
     }
 }
@@ -3338,7 +3577,7 @@ impl Fat32Inode {
             let mut buffer = vec![0u8; cluster_size];
             self.fs.read_cluster(found_cluster, &mut buffer)?;
 
-            buffer[offset..offset + DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
+            entry.write_bytes_to(&mut buffer[offset..offset + DIR_ENTRY_SIZE]);
 
             // 元がEND_OF_DIRだった場合、次のエントリもEND_OF_DIRにする
             let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
@@ -3377,7 +3616,7 @@ impl Fat32Inode {
         let entry = DirEntryRaw::new(base_name, ext_name, attr, cluster, size);
 
         let mut new_buffer = vec![0u8; cluster_size];
-        new_buffer[0..DIR_ENTRY_SIZE].copy_from_slice(entry.as_bytes());
+        entry.write_bytes_to(&mut new_buffer[0..DIR_ENTRY_SIZE]);
         new_buffer[DIR_ENTRY_SIZE] = END_OF_DIR;
         self.fs.write_cluster(new_cluster, &new_buffer)?;
 
@@ -3544,8 +3783,8 @@ impl Inode for Fat32Inode {
         let dotdot_entry = DirEntryRaw::new_dotdot(self.first_cluster);
         
         // バッファに書き込み (as_bytes()で安全にシリアライズ)
-        buffer[0..DIR_ENTRY_SIZE].copy_from_slice(dot_entry.as_bytes());
-        buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2].copy_from_slice(dotdot_entry.as_bytes());
+        dot_entry.write_bytes_to(&mut buffer[0..DIR_ENTRY_SIZE]);
+        dotdot_entry.write_bytes_to(&mut buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2]);
         
         // 終端マーカー
         buffer[DIR_ENTRY_SIZE * 2] = END_OF_DIR;
