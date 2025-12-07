@@ -294,14 +294,46 @@ impl TcpStream {
         self.tcb.lock().stats.clone()
     }
 
-    /// 読み取り用Future
+    /// 読み取り用Future（コピーあり - 互換性用）
     pub fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> ReadFuture<'a> {
         ReadFuture { stream: self, buf }
     }
+    
+    /// 【設計書 6.2】ゼロコピー読み取り
+    /// 
+    /// バッファの所有権をアプリケーションに移動します。
+    /// コピーが発生しないため、高スループットアプリケーションに推奨。
+    /// 
+    /// # 使用例
+    /// ```ignore
+    /// while let Some(packet) = stream.read_zero_copy().await {
+    ///     // パケットを直接処理（コピーなし）
+    ///     process_packet(&packet.data());
+    ///     // パケットはスコープ終了時に自動的にプールに返却
+    /// }
+    /// ```
+    pub async fn read_zero_copy(&mut self) -> Option<PacketRef> {
+        ZeroCopyReadFuture { stream: self }.await
+    }
 
-    /// 書き込み用Future
+    /// 書き込み用Future（コピーあり - 互換性用）
     pub fn write<'a>(&'a mut self, buf: &'a [u8]) -> WriteFuture<'a> {
         WriteFuture { stream: self, buf }
+    }
+    
+    /// 【設計書 6.2】ゼロコピー書き込み
+    /// 
+    /// 事前に割り当てたパケットバッファの所有権をTCPスタックに移動します。
+    /// 
+    /// # 使用例
+    /// ```ignore
+    /// let mut packet = mempool::alloc_packet().unwrap();
+    /// packet.data_mut()[..data.len()].copy_from_slice(data);
+    /// packet.set_len(data.len());
+    /// stream.write_zero_copy(packet).await?;
+    /// ```
+    pub async fn write_zero_copy(&mut self, packet: PacketRef) -> Result<(), TcpError> {
+        ZeroCopyWriteFuture { stream: self, packet: Some(packet) }.await
     }
 
     /// シャットダウン
@@ -547,6 +579,75 @@ impl<'a> Future for ShutdownFuture<'a> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
         Pin::new(&mut *this.stream).poll_shutdown(cx)
+    }
+}
+
+// ============================================================================
+// 【設計書 6.2】ゼロコピーFuture
+// ============================================================================
+
+/// ゼロコピー読み取りFuture
+/// 
+/// パケットバッファの所有権をそのまま返す（コピーなし）
+struct ZeroCopyReadFuture<'a> {
+    stream: &'a mut TcpStream,
+}
+
+impl<'a> Future for ZeroCopyReadFuture<'a> {
+    type Output = Option<PacketRef>;
+    
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut tcb = self.stream.tcb.lock();
+        
+        if tcb.state == TcpState::Closed {
+            return Poll::Ready(None);
+        }
+        
+        if let Some(packet) = tcb.recv_buffer.pop_front() {
+            let len = packet.data().len();
+            tcb.stats.bytes_received += len as u64;
+            // パケットの所有権をそのまま返す（ゼロコピー）
+            Poll::Ready(Some(packet))
+        } else {
+            tcb.read_waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+}
+
+/// ゼロコピー書き込みFuture
+/// 
+/// パケットバッファの所有権をTCPスタックに移動（コピーなし）
+struct ZeroCopyWriteFuture<'a> {
+    stream: &'a mut TcpStream,
+    packet: Option<PacketRef>,
+}
+
+impl<'a> Future for ZeroCopyWriteFuture<'a> {
+    type Output = Result<(), TcpError>;
+    
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = &mut *self;
+        let mut tcb = this.stream.tcb.lock();
+        
+        if tcb.state != TcpState::Established {
+            return Poll::Ready(Err(TcpError::InvalidState));
+        }
+        
+        if !tcb.can_send() {
+            tcb.write_waker = Some(cx.waker().clone());
+            return Poll::Pending;
+        }
+        
+        if let Some(packet) = this.packet.take() {
+            let len = packet.data().len();
+            tcb.send_buffer.push_back(packet);
+            tcb.stats.bytes_sent += len as u64;
+            tcb.stats.packets_sent += 1;
+            Poll::Ready(Ok(()))
+        } else {
+            Poll::Ready(Err(TcpError::InvalidState))
+        }
     }
 }
 

@@ -399,6 +399,7 @@ impl From<crate::loader::LoadError> for KernelError {
             LE::OutOfMemory => LoaderError::LoadFailed,
             LE::UnsafeNotAllowed => LoaderError::LoadFailed,
             LE::AlreadyLoaded => LoaderError::LoadFailed,
+            LE::AbiIncompatible(_) => LoaderError::LoadFailed,
         })
     }
 }

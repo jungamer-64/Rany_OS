@@ -14,7 +14,8 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+// 【設計書 8.1】PoisonLock使用 - パニック時自動毒入れ
+use crate::sync::PoisonLock;
 
 // ============================================================================
 // ドメインID
@@ -81,6 +82,7 @@ impl DomainState {
 // ============================================================================
 
 /// ドメイン: 隔離された実行環境
+#[derive(Debug)]
 pub struct Domain {
     /// ドメインID
     pub id: DomainId,
@@ -199,6 +201,7 @@ impl Domain {
 // ============================================================================
 
 /// ドメインレジストリ
+#[derive(Debug)]
 struct DomainRegistry {
     /// 全ドメインのマップ
     domains: BTreeMap<DomainId, Domain>,
@@ -223,7 +226,8 @@ impl DomainRegistry {
 }
 
 /// グローバルなドメインレジストリ
-static REGISTRY: Mutex<DomainRegistry> = Mutex::new(DomainRegistry::new());
+/// 【設計書 8.1】PoisonLockを使用してパニック時の毒入れを保証
+static REGISTRY: PoisonLock<DomainRegistry> = PoisonLock::new(DomainRegistry::new());
 
 // ============================================================================
 // ヒープレジストリ（RRef追跡）
@@ -238,7 +242,8 @@ use crate::sas::heap_registry::HeapRegistry as SasHeapRegistry;
 
 /// グローバルなヒープレジストリ
 /// sas::heap_registry::HeapRegistry の完全実装を使用
-static HEAP_REGISTRY: Mutex<SasHeapRegistry> = Mutex::new(SasHeapRegistry::new());
+/// 【設計書 8.1】PoisonLockを使用してパニック時の毒入れを保証
+static HEAP_REGISTRY: PoisonLock<SasHeapRegistry> = PoisonLock::new(SasHeapRegistry::new());
 
 // ============================================================================
 // 公開API - ドメイン管理
@@ -247,7 +252,8 @@ static HEAP_REGISTRY: Mutex<SasHeapRegistry> = Mutex::new(SasHeapRegistry::new()
 /// ドメインシステムを初期化（カーネルドメインを作成）
 pub fn init() {
     crate::vga::early_serial_str("[DOM] lock\n");
-    let mut registry = REGISTRY.lock();
+    // 初期化時は毒入れされていないはず
+    let mut registry = REGISTRY.lock().expect("domain registry poisoned during init");
     crate::vga::early_serial_str("[DOM] locked\n");
 
     // カーネルドメインを作成
@@ -266,7 +272,11 @@ pub fn init() {
 /// ドメイン作成は頻繁に呼ばれないため、このコストは許容される。
 /// 代替案: log を先に行い、name を消費するパターン
 pub fn create_domain(name: String) -> DomainId {
-    let mut registry = REGISTRY.lock();
+    // 毒入れされている場合も回復して続行（障害隔離）
+    let mut registry = REGISTRY.lock().unwrap_or_else(|e| {
+        crate::log!("[DOMAIN] Warning: registry poisoned, recovering\n");
+        e.into_inner()
+    });
     let id = registry.generate_id();
 
     // name をログで先に使用し、その後 Domain::new に渡す
@@ -281,7 +291,9 @@ pub fn create_domain(name: String) -> DomainId {
 
 /// ドメインの状態を取得
 pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
-    REGISTRY.lock().domains.get(&id).map(|d| d.state)
+    REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get(&id).map(|d| d.state)
 }
 
 /// ドメインに対して読み取り操作を実行
@@ -290,7 +302,9 @@ pub fn with_domain<F, R>(id: DomainId, f: F) -> Option<R>
 where
     F: FnOnce(&Domain) -> R,
 {
-    REGISTRY.lock().domains.get(&id).map(f)
+    REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get(&id).map(f)
 }
 
 /// ドメインに対して更新操作を実行
@@ -299,12 +313,16 @@ pub fn with_domain_mut<F, R>(id: DomainId, f: F) -> Option<R>
 where
     F: FnOnce(&mut Domain) -> R,
 {
-    REGISTRY.lock().domains.get_mut(&id).map(f)
+    REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get_mut(&id).map(f)
 }
 
 /// ドメインの状態を変更
 pub fn set_domain_state(id: DomainId, state: DomainState) {
-    if let Some(domain) = REGISTRY.lock().domains.get_mut(&id) {
+    if let Some(domain) = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get_mut(&id) {
         let old_state = domain.state;
         domain.state = state;
         crate::log!("[DOMAIN] {} state: {:?} -> {:?}\n", id, old_state, state);
@@ -313,7 +331,8 @@ pub fn set_domain_state(id: DomainId, state: DomainState) {
 
 /// ドメインを開始
 pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
-    let mut registry = REGISTRY.lock();
+    let mut registry = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     if let Some(domain) = registry.domains.get_mut(&id) {
         if domain.state != DomainState::Initializing {
@@ -333,7 +352,8 @@ pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
         return Err("Cannot stop kernel domain");
     }
 
-    let mut registry = REGISTRY.lock();
+    let mut registry = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     if let Some(domain) = registry.domains.get_mut(&id) {
         domain.state = DomainState::Stopped;
@@ -356,7 +376,8 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
     let dependents: Vec<DomainId>;
 
     {
-        let mut registry = REGISTRY.lock();
+        let mut registry = REGISTRY.lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         if let Some(domain) = registry.domains.get_mut(&id) {
             domain.state = DomainState::Terminated;
@@ -373,7 +394,8 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
 
     // 依存するドメインに通知
     {
-        let mut registry = REGISTRY.lock();
+        let mut registry = REGISTRY.lock()
+            .unwrap_or_else(|e| e.into_inner());
         for dep_id in dependents {
             if let Some(dep) = registry.domains.get_mut(&dep_id) {
                 dep.last_error = Some(format!("Dependency {} terminated", id.as_u64()));
@@ -390,7 +412,8 @@ pub fn handle_domain_panic(id: DomainId, message: String) {
     crate::log!("[PANIC] {} crashed: {}\n", id, message);
 
     {
-        let mut registry = REGISTRY.lock();
+        let mut registry = REGISTRY.lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         if let Some(domain) = registry.domains.get_mut(&id) {
             domain.state = DomainState::Stopped;
@@ -404,14 +427,18 @@ pub fn handle_domain_panic(id: DomainId, message: String) {
 
 /// ドメインにタスクを追加
 pub fn add_task_to_domain(domain_id: DomainId, task_id: u64) {
-    if let Some(domain) = REGISTRY.lock().domains.get_mut(&domain_id) {
+    if let Some(domain) = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get_mut(&domain_id) {
         domain.add_task(task_id);
     }
 }
 
 /// ドメインからタスクを削除
 pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
-    if let Some(domain) = REGISTRY.lock().domains.get_mut(&domain_id) {
+    if let Some(domain) = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get_mut(&domain_id) {
         domain.remove_task(task_id);
     }
 }
@@ -423,9 +450,13 @@ pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
 /// Exchange Heap上にオブジェクトを登録
 pub fn register_heap_object(ptr: usize, layout: Layout, owner: DomainId) {
     // 統合されたHeapRegistryに登録（簡易版APIを使用）
-    HEAP_REGISTRY.lock().register_simple(ptr, layout.size(), owner);
+    HEAP_REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .register_simple(ptr, layout.size(), owner);
 
-    if let Some(domain) = REGISTRY.lock().domains.get_mut(&owner) {
+    if let Some(domain) = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get_mut(&owner) {
         domain.increment_rref();
         domain.add_memory(layout.size() as u64);
     }
@@ -434,7 +465,8 @@ pub fn register_heap_object(ptr: usize, layout: Layout, owner: DomainId) {
 /// Exchange Heap上のオブジェクトを解除
 pub fn unregister_heap_object(ptr: usize) {
     // 統合されたHeapRegistryからオブジェクト情報を取得
-    let mut heap_registry = HEAP_REGISTRY.lock();
+    let mut heap_registry = HEAP_REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner());
     if let Some(obj) = heap_registry.get_object(ptr) {
         let owner = obj.owner;
         let size = obj.size;
@@ -444,7 +476,9 @@ pub fn unregister_heap_object(ptr: usize) {
         drop(heap_registry); // ロックを解放
         
         // ドメイン統計を更新
-        if let Some(domain) = REGISTRY.lock().domains.get_mut(&owner) {
+        if let Some(domain) = REGISTRY.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .domains.get_mut(&owner) {
             domain.decrement_rref();
             domain.free_memory(size as u64);
         }
@@ -454,7 +488,8 @@ pub fn unregister_heap_object(ptr: usize) {
 /// オブジェクトの所有権を移動
 pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
     // 統合されたHeapRegistryからオブジェクト情報を取得
-    let mut heap_registry = HEAP_REGISTRY.lock();
+    let mut heap_registry = HEAP_REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner());
     let entry_opt = heap_registry.get_object(ptr).map(|obj| (obj.owner, obj.size));
 
     if let Some((old_owner, size)) = entry_opt {
@@ -462,7 +497,8 @@ pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
         let _ = heap_registry.change_owner(ptr, old_owner, new_owner);
         drop(heap_registry); // ロックを解放
 
-        let mut registry = REGISTRY.lock();
+        let mut registry = REGISTRY.lock()
+            .unwrap_or_else(|e| e.into_inner());
 
         // 旧所有者のカウント減少
         if let Some(old_domain) = registry.domains.get_mut(&old_owner) {
@@ -486,7 +522,8 @@ pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
 /// ドメインが所有する全リソースを回収
 pub fn reclaim_domain_resources(domain: DomainId) {
     // 統合されたHeapRegistryのreclaim_allを使用
-    let mut heap_registry = HEAP_REGISTRY.lock();
+    let mut heap_registry = HEAP_REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner());
     
     // ドメインのオブジェクトアドレスを取得
     let addrs: Vec<usize> = heap_registry
@@ -515,7 +552,9 @@ pub fn reclaim_domain_resources(domain: DomainId) {
     drop(heap_registry); // ロックを解放
 
     // ドメインのリソースカウントをリセット
-    if let Some(domain) = REGISTRY.lock().domains.get_mut(&domain) {
+    if let Some(domain) = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains.get_mut(&domain) {
         domain.rref_count = 0;
         domain.allocated_memory = 0;
     }
@@ -548,7 +587,8 @@ pub struct DomainStats {
 
 /// ドメイン統計を取得
 pub fn get_domain_stats() -> DomainStats {
-    let registry = REGISTRY.lock();
+    let registry = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     let mut stats = DomainStats {
         total: registry.domains.len(),
@@ -580,7 +620,8 @@ pub fn get_stats() -> DomainStats {
 
 /// ドメイン一覧を表示
 pub fn print_domain_list() {
-    let registry = REGISTRY.lock();
+    let registry = REGISTRY.lock()
+        .unwrap_or_else(|e| e.into_inner());
 
     crate::log!("[DOMAIN] === Domain List ===\n");
     for domain in registry.domains.values() {

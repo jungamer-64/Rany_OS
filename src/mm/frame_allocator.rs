@@ -1,15 +1,217 @@
 // ============================================================================
 // src/mm/frame_allocator.rs - Bitmap-based Physical Frame Allocator
 // 設計書 5.2 Tier1: 4KiB/2MiB/1GiB単位の物理フレーム管理
+// 設計書 5.3 NUMAアーキテクチャへの対応
 //
 // 注意: 構造体全体がMutexで保護されているため、内部フィールドは
 // 通常のu64を使用。Mutex + Atomicの二重ロックはオーバーヘッド。
 // ============================================================================
 #![allow(dead_code)]
 
+extern crate alloc;
+
 use crate::sync::IrqMutex;
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
+
+// ============================================================================
+// NUMA対応（設計書 5.3: NUMA-Awareメモリアロケータ）
+// ============================================================================
+
+/// 最大NUMAノード数
+pub const MAX_NUMA_NODES: usize = 8;
+
+/// NUMAノードID
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+pub struct NumaNodeId(pub u8);
+
+impl NumaNodeId {
+    /// ノードIDを作成
+    #[inline]
+    pub const fn new(id: u8) -> Self {
+        Self(id)
+    }
+
+    /// 生の値を取得
+    #[inline]
+    pub const fn as_u8(self) -> u8 {
+        self.0
+    }
+
+    /// usizeとして取得
+    #[inline]
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+}
+
+/// NUMAノード情報
+/// 設計書 5.3.1: NUMAドメインの抽象化
+#[derive(Debug, Clone)]
+pub struct NumaNode {
+    /// ノードID
+    pub id: NumaNodeId,
+    /// このノードのメモリ範囲（開始アドレス、サイズ）
+    pub memory_ranges: [(u64, u64); 4], // 最大4つの不連続範囲をサポート
+    /// 有効なメモリ範囲数
+    pub range_count: usize,
+    /// このノードに属するCPUコアのビットマスク
+    pub cpu_mask: u64,
+    /// 総メモリサイズ（バイト）
+    pub total_memory: u64,
+}
+
+impl NumaNode {
+    /// 空のNUMAノードを作成
+    pub const fn empty(id: NumaNodeId) -> Self {
+        Self {
+            id,
+            memory_ranges: [(0, 0); 4],
+            range_count: 0,
+            cpu_mask: 0,
+            total_memory: 0,
+        }
+    }
+
+    /// メモリ範囲を追加
+    pub fn add_memory_range(&mut self, start: u64, size: u64) {
+        if self.range_count < 4 {
+            self.memory_ranges[self.range_count] = (start, size);
+            self.range_count += 1;
+            self.total_memory += size;
+        }
+    }
+
+    /// CPUコアを追加
+    pub fn add_cpu(&mut self, cpu_id: u8) {
+        if cpu_id < 64 {
+            self.cpu_mask |= 1u64 << cpu_id;
+        }
+    }
+
+    /// 指定アドレスがこのノードに属するか判定
+    pub fn contains_address(&self, addr: u64) -> bool {
+        for i in 0..self.range_count {
+            let (start, size) = self.memory_ranges[i];
+            if addr >= start && addr < start + size {
+                return true;
+            }
+        }
+        false
+    }
+}
+
+/// NUMAトポロジ情報
+/// 設計書 5.3.1: 起動時にACPI SRATから検出
+pub struct NumaTopology {
+    /// 各NUMAノードの情報
+    nodes: [NumaNode; MAX_NUMA_NODES],
+    /// 有効なノード数
+    node_count: usize,
+    /// ノード間距離行列（キャッシュライン考慮）
+    /// 値が大きいほど遠い（レイテンシが高い）
+    distance_matrix: [[u8; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+}
+
+impl NumaTopology {
+    /// 空のトポロジを作成（シングルノードとして初期化）
+    pub const fn new() -> Self {
+        let nodes = [
+            NumaNode::empty(NumaNodeId::new(0)),
+            NumaNode::empty(NumaNodeId::new(1)),
+            NumaNode::empty(NumaNodeId::new(2)),
+            NumaNode::empty(NumaNodeId::new(3)),
+            NumaNode::empty(NumaNodeId::new(4)),
+            NumaNode::empty(NumaNodeId::new(5)),
+            NumaNode::empty(NumaNodeId::new(6)),
+            NumaNode::empty(NumaNodeId::new(7)),
+        ];
+
+        // デフォルトの距離行列（ローカル=10、リモート=20）
+        let distance_matrix = [
+            [10, 20, 20, 20, 20, 20, 20, 20],
+            [20, 10, 20, 20, 20, 20, 20, 20],
+            [20, 20, 10, 20, 20, 20, 20, 20],
+            [20, 20, 20, 10, 20, 20, 20, 20],
+            [20, 20, 20, 20, 10, 20, 20, 20],
+            [20, 20, 20, 20, 20, 10, 20, 20],
+            [20, 20, 20, 20, 20, 20, 10, 20],
+            [20, 20, 20, 20, 20, 20, 20, 10],
+        ];
+
+        Self {
+            nodes,
+            node_count: 1, // デフォルトは1ノード
+            distance_matrix,
+        }
+    }
+
+    /// ノード数を取得
+    #[inline]
+    pub fn node_count(&self) -> usize {
+        self.node_count
+    }
+
+    /// ノード情報を取得
+    pub fn get_node(&self, id: NumaNodeId) -> Option<&NumaNode> {
+        let idx = id.as_usize();
+        if idx < self.node_count {
+            Some(&self.nodes[idx])
+        } else {
+            None
+        }
+    }
+
+    /// CPUコアが属するNUMAノードを取得
+    pub fn cpu_to_node(&self, cpu_id: u8) -> NumaNodeId {
+        for i in 0..self.node_count {
+            if (self.nodes[i].cpu_mask & (1u64 << cpu_id)) != 0 {
+                return NumaNodeId::new(i as u8);
+            }
+        }
+        // 見つからない場合はノード0
+        NumaNodeId::new(0)
+    }
+
+    /// 物理アドレスが属するNUMAノードを取得
+    pub fn addr_to_node(&self, addr: u64) -> NumaNodeId {
+        for i in 0..self.node_count {
+            if self.nodes[i].contains_address(addr) {
+                return NumaNodeId::new(i as u8);
+            }
+        }
+        NumaNodeId::new(0)
+    }
+
+    /// ノード間の距離を取得
+    #[inline]
+    pub fn distance(&self, from: NumaNodeId, to: NumaNodeId) -> u8 {
+        self.distance_matrix[from.as_usize()][to.as_usize()]
+    }
+
+    /// 指定ノードからの優先順位でノードをソート
+    /// 近いノードが先頭に来る
+    pub fn nodes_by_distance(&self, from: NumaNodeId) -> [NumaNodeId; MAX_NUMA_NODES] {
+        let mut result = [NumaNodeId::new(0); MAX_NUMA_NODES];
+        let mut indices: [usize; MAX_NUMA_NODES] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+        // 距離でソート（バブルソート）
+        for i in 0..self.node_count {
+            for j in (i + 1)..self.node_count {
+                let dist_i = self.distance(from, NumaNodeId::new(indices[i] as u8));
+                let dist_j = self.distance(from, NumaNodeId::new(indices[j] as u8));
+                if dist_i > dist_j {
+                    indices.swap(i, j);
+                }
+            }
+        }
+
+        for (i, &idx) in indices.iter().enumerate() {
+            result[i] = NumaNodeId::new(idx as u8);
+        }
+        result
+    }
+}
 
 // ============================================================================
 // 型安全性: フレーム番号のNewtype
@@ -294,11 +496,207 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
     }
 }
 
-/// グローバルなフレームアロケータ
+// ============================================================================
+// NUMA-Aware Frame Allocator
+// 設計書 5.3.2: NUMA-Awareメモリアロケータ
+// ============================================================================
+
+/// NUMA対応フレームアロケータ
+/// 各NUMAノードごとに独立したビットマップアロケータを持つ
+pub struct NumaFrameAllocator {
+    /// 各NUMAノードのアロケータ
+    node_allocators: [BitmapFrameAllocator; MAX_NUMA_NODES],
+    /// NUMAトポロジ情報
+    topology: NumaTopology,
+}
+
+impl NumaFrameAllocator {
+    /// 新しいNUMA対応アロケータを作成
+    pub const fn new() -> Self {
+        Self {
+            node_allocators: [
+                BitmapFrameAllocator::new(),
+                BitmapFrameAllocator::new(),
+                BitmapFrameAllocator::new(),
+                BitmapFrameAllocator::new(),
+                BitmapFrameAllocator::new(),
+                BitmapFrameAllocator::new(),
+                BitmapFrameAllocator::new(),
+                BitmapFrameAllocator::new(),
+            ],
+            topology: NumaTopology::new(),
+        }
+    }
+
+    /// NUMA対応アロケータを初期化
+    ///
+    /// # Safety
+    /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
+    /// - `numa_regions` は各領域とNUMAノードの対応を示す
+    pub unsafe fn init_numa(
+        &mut self,
+        usable_regions: &[(PhysAddr, u64, NumaNodeId)],
+    ) {
+        // NUMAノードごとの領域をグループ化
+        for node_idx in 0..MAX_NUMA_NODES {
+            let node_id = NumaNodeId::new(node_idx as u8);
+            let node_regions: [(PhysAddr, u64); 16] = {
+                let mut regions = [(PhysAddr::zero(), 0u64); 16];
+                let mut count = 0;
+                for &(addr, size, region_node) in usable_regions {
+                    if region_node == node_id && count < 16 {
+                        regions[count] = (addr, size);
+                        count += 1;
+                    }
+                }
+                regions
+            };
+
+            // このノードに領域があれば初期化
+            let mut has_regions = false;
+            for &(_, size) in &node_regions {
+                if size > 0 {
+                    has_regions = true;
+                    break;
+                }
+            }
+
+            if has_regions {
+                let valid_regions: alloc::vec::Vec<_> = node_regions
+                    .iter()
+                    .filter(|&&(_, size)| size > 0)
+                    .copied()
+                    .collect();
+
+                unsafe {
+                    self.node_allocators[node_idx].init(&valid_regions);
+                }
+
+                // トポロジにメモリ範囲を追加
+                for (addr, size) in valid_regions {
+                    self.topology.nodes[node_idx].add_memory_range(addr.as_u64(), size);
+                }
+            }
+        }
+    }
+
+    /// 指定NUMAノードから4KiBフレームを割り当て
+    /// 設計書 5.3.2: 明示的なノード指定
+    pub fn allocate_4k_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
+        let idx = node.as_usize();
+        if idx < MAX_NUMA_NODES {
+            self.node_allocators[idx].allocate_4k_frame()
+        } else {
+            None
+        }
+    }
+
+    /// 現在のCPUに近いノードから4KiBフレームを割り当て
+    /// 設計書 5.3.2: デフォルトポリシー（First-Touch Policy）
+    ///
+    /// 優先順位:
+    /// 1. 現在のCPUが属するNUMAノード
+    /// 2. 距離の近いNUMAノード（順番にフォールバック）
+    pub fn allocate_4k_local(&mut self, current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
+        let preferred_node = self.topology.cpu_to_node(current_cpu);
+        let fallback_order = self.topology.nodes_by_distance(preferred_node);
+
+        // 近いノードから順に試行
+        for i in 0..self.topology.node_count() {
+            let node = fallback_order[i];
+            if let Some(frame) = self.allocate_4k_on_node(node) {
+                return Some(frame);
+            }
+        }
+
+        None
+    }
+
+    /// 指定NUMAノードから2MiBフレームを割り当て
+    pub fn allocate_2m_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
+        let idx = node.as_usize();
+        if idx < MAX_NUMA_NODES {
+            self.node_allocators[idx].allocate_2m_frame()
+        } else {
+            None
+        }
+    }
+
+    /// 現在のCPUに近いノードから2MiBフレームを割り当て
+    pub fn allocate_2m_local(&mut self, current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
+        let preferred_node = self.topology.cpu_to_node(current_cpu);
+        let fallback_order = self.topology.nodes_by_distance(preferred_node);
+
+        for i in 0..self.topology.node_count() {
+            let node = fallback_order[i];
+            if let Some(frame) = self.allocate_2m_on_node(node) {
+                return Some(frame);
+            }
+        }
+
+        None
+    }
+
+    /// フレームが属するNUMAノードを判定して解放
+    pub fn deallocate_4k_frame(&mut self, frame: PhysFrame<Size4KiB>) {
+        let addr = frame.start_address().as_u64();
+        let node = self.topology.addr_to_node(addr);
+        let idx = node.as_usize();
+        if idx < MAX_NUMA_NODES {
+            self.node_allocators[idx].deallocate_4k_frame(frame);
+        }
+    }
+
+    /// 全ノードの統計を取得
+    pub fn stats(&self) -> NumaAllocatorStats {
+        let mut stats = NumaAllocatorStats {
+            per_node: [(0, 0); MAX_NUMA_NODES],
+            total_free: 0,
+            total_frames: 0,
+        };
+
+        for (i, allocator) in self.node_allocators.iter().enumerate() {
+            let free = allocator.free_frame_count();
+            let total = allocator.total_frame_count();
+            stats.per_node[i] = (free, total);
+            stats.total_free += free;
+            stats.total_frames += total;
+        }
+
+        stats
+    }
+
+    /// トポロジ情報への参照を取得
+    pub fn topology(&self) -> &NumaTopology {
+        &self.topology
+    }
+}
+
+/// NUMA統計情報
+#[derive(Debug, Clone)]
+pub struct NumaAllocatorStats {
+    /// 各ノードの(空きフレーム数, 総フレーム数)
+    pub per_node: [(u64, usize); MAX_NUMA_NODES],
+    /// 全ノード合計の空きフレーム数
+    pub total_free: u64,
+    /// 全ノード合計の総フレーム数
+    pub total_frames: usize,
+}
+
+// ============================================================================
+// グローバルアロケータ（後方互換性維持）
+// ============================================================================
+
+/// グローバルなフレームアロケータ（NUMA非対応版、後方互換用）
 /// 割り込み禁止Mutexで保護（デッドロック防止）
 static FRAME_ALLOCATOR: IrqMutex<BitmapFrameAllocator> = IrqMutex::new(BitmapFrameAllocator::new());
 
-/// フレームアロケータを初期化
+/// NUMA対応グローバルフレームアロケータ
+/// 設計書 5.3: NUMAアーキテクチャへの対応
+static NUMA_FRAME_ALLOCATOR: IrqMutex<NumaFrameAllocator> =
+    IrqMutex::new(NumaFrameAllocator::new());
+
+/// フレームアロケータを初期化（後方互換）
 ///
 /// # Safety
 /// カーネル初期化時に一度だけ呼ばれる必要がある
@@ -309,14 +707,48 @@ pub unsafe fn init_frame_allocator(usable_regions: &[(PhysAddr, u64)]) {
     }
 }
 
-/// 4KiB フレームを割り当て
+/// NUMA対応フレームアロケータを初期化
+///
+/// # Safety
+/// カーネル初期化時に一度だけ呼ばれる必要がある
+/// ACPI SRATから取得したNUMA情報を渡す
+pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)]) {
+    // SAFETY: 呼び出し元がregionsの正当性を保証
+    unsafe {
+        NUMA_FRAME_ALLOCATOR.lock().init_numa(regions);
+    }
+}
+
+/// 4KiB フレームを割り当て（後方互換）
 pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
     FRAME_ALLOCATOR.lock().allocate_4k_frame()
 }
 
-/// 2MiB フレームを割り当て
+/// 指定NUMAノードから4KiBフレームを割り当て
+/// 設計書 5.3.2: 明示的なノード指定API
+pub fn alloc_frame_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
+    NUMA_FRAME_ALLOCATOR.lock().allocate_4k_on_node(node)
+}
+
+/// 現在のCPUのローカルNUMAノードから4KiBフレームを割り当て
+/// 設計書 5.3.2: First-Touch Policy
+pub fn alloc_frame_local(current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
+    NUMA_FRAME_ALLOCATOR.lock().allocate_4k_local(current_cpu)
+}
+
+/// 2MiB フレームを割り当て（後方互換）
 pub fn alloc_frame_2m() -> Option<PhysFrame<Size2MiB>> {
     FRAME_ALLOCATOR.lock().allocate_2m_frame()
+}
+
+/// 指定NUMAノードから2MiBフレームを割り当て
+pub fn alloc_frame_2m_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
+    NUMA_FRAME_ALLOCATOR.lock().allocate_2m_on_node(node)
+}
+
+/// 現在のCPUのローカルNUMAノードから2MiBフレームを割り当て
+pub fn alloc_frame_2m_local(current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
+    NUMA_FRAME_ALLOCATOR.lock().allocate_2m_local(current_cpu)
 }
 
 /// 1GiB フレームを割り当て（設計書5.1: TLBエントリの消費を最小限に）
@@ -324,15 +756,30 @@ pub fn alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
     FRAME_ALLOCATOR.lock().allocate_1g_frame()
 }
 
-/// 4KiB フレームを解放
+/// 4KiB フレームを解放（後方互換）
 pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
     FRAME_ALLOCATOR.lock().deallocate_4k_frame(frame);
 }
 
-/// フレームアロケータの統計を取得
+/// NUMAアロケータでフレームを解放
+pub fn dealloc_frame_numa(frame: PhysFrame<Size4KiB>) {
+    NUMA_FRAME_ALLOCATOR.lock().deallocate_4k_frame(frame);
+}
+
+/// フレームアロケータの統計を取得（後方互換）
 pub fn frame_allocator_stats() -> (u64, usize) {
     let allocator = FRAME_ALLOCATOR.lock();
     (allocator.free_frame_count(), allocator.total_frame_count())
+}
+
+/// NUMA対応統計を取得
+pub fn numa_frame_allocator_stats() -> NumaAllocatorStats {
+    NUMA_FRAME_ALLOCATOR.lock().stats()
+}
+
+/// 現在のCPUが属するNUMAノードを取得
+pub fn get_cpu_numa_node(cpu_id: u8) -> NumaNodeId {
+    NUMA_FRAME_ALLOCATOR.lock().topology().cpu_to_node(cpu_id)
 }
 
 #[cfg(test)]

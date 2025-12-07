@@ -9,6 +9,25 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::mem;
 
+// ============================================================================
+// 【セキュリティ】ELFローダー制限定数
+// ============================================================================
+
+/// シンボル名の最大長（DoS攻撃防止）
+const MAX_SYMBOL_NAME_LENGTH: usize = 4096;
+
+/// シンボルの最大数（DoS攻撃防止）
+const MAX_SYMBOLS: usize = 65536;
+
+/// セグメントの最大数
+const MAX_SEGMENTS: usize = 256;
+
+/// ELFファイルの最大サイズ（512MB）
+const MAX_ELF_SIZE: usize = 512 * 1024 * 1024;
+
+/// セグメントの最大サイズ（256MB）
+const MAX_SEGMENT_SIZE: usize = 256 * 1024 * 1024;
+
 /// ELF Magic Number
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 
@@ -177,9 +196,19 @@ pub struct ElfLoader<'a> {
 
 impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
+    /// 
+    /// 【セキュリティ】入力データの境界チェックを厳密に実行
     pub fn new(data: &'a [u8]) -> Result<Self, LoadError> {
+        // ファイルサイズチェック
         if data.len() < mem::size_of::<Elf64Header>() {
             return Err(LoadError::InvalidFormat("File too small".into()));
+        }
+        
+        // 【セキュリティ】最大ファイルサイズチェック
+        if data.len() > MAX_ELF_SIZE {
+            return Err(LoadError::InvalidFormat(
+                alloc::format!("ELF file too large: {} bytes (max {})", data.len(), MAX_ELF_SIZE)
+            ));
         }
 
         // ヘッダーを読み取り
@@ -215,6 +244,14 @@ impl<'a> ElfLoader<'a> {
         let mut imports = Vec::new();
         let mut max_addr = 0usize;
         let mut alignment = 4096usize;
+        
+        // 【セキュリティ】プログラムヘッダー数のチェック
+        if self.header.e_phnum as usize > MAX_SEGMENTS {
+            return Err(LoadError::InvalidFormat(
+                alloc::format!("Too many program headers: {} (max {})", 
+                    self.header.e_phnum, MAX_SEGMENTS)
+            ));
+        }
 
         // プログラムヘッダーを解析
         for i in 0..self.header.e_phnum {
@@ -231,7 +268,18 @@ impl<'a> ElfLoader<'a> {
                 unsafe { core::ptr::read(self.data.as_ptr().add(ph_offset) as *const _) };
 
             if ph.p_type == PT_LOAD {
-                let end_addr = ph.p_vaddr as usize + ph.p_memsz as usize;
+                // 【セキュリティ】セグメントサイズのチェック
+                if ph.p_memsz as usize > MAX_SEGMENT_SIZE {
+                    return Err(LoadError::InvalidFormat(
+                        alloc::format!("Segment too large: {} bytes (max {})",
+                            ph.p_memsz, MAX_SEGMENT_SIZE)
+                    ));
+                }
+                
+                // 【セキュリティ】オーバーフローチェック
+                let end_addr = (ph.p_vaddr as usize).checked_add(ph.p_memsz as usize)
+                    .ok_or_else(|| LoadError::InvalidFormat("Segment address overflow".into()))?;
+                    
                 max_addr = max_addr.max(end_addr);
                 alignment = alignment.max(ph.p_align as usize);
 
@@ -348,14 +396,24 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// 文字列テーブルから文字列を取得
+    /// 
+    /// 【セキュリティ】シンボル名の長さ制限を適用してDoS攻撃を防止
     fn get_string(&self, strtab: &[u8], offset: usize) -> Option<String> {
         if offset >= strtab.len() {
             return None;
         }
 
         let mut end = offset;
-        while end < strtab.len() && strtab[end] != 0 {
+        let max_end = (offset + MAX_SYMBOL_NAME_LENGTH).min(strtab.len());
+        
+        while end < max_end && strtab[end] != 0 {
             end += 1;
+        }
+        
+        // NULL終端が見つからなかった場合（文字列が長すぎる）
+        if end == max_end && (end >= strtab.len() || strtab[end] != 0) {
+            // 警告を記録し、Noneを返す
+            return None;
         }
 
         core::str::from_utf8(&strtab[offset..end])
