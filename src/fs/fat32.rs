@@ -41,6 +41,8 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::convert::TryFrom;
+use core::fmt;
 use core::ops::{Add, Sub};
 use spin::RwLock;
 
@@ -115,6 +117,49 @@ impl Cluster {
     #[inline]
     pub fn as_u32(&self) -> u32 {
         self.0
+    }
+}
+
+/// FATエントリから読み取った次クラスタの状態を表す列挙型
+///
+/// マジックナンバー(0x0FFFFFF8等)を直接扱うのではなく、
+/// 型安全な列挙型で状態を表現する
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NextCluster {
+    /// 有効な次のクラスタ番号
+    Valid(Cluster),
+    /// クラスタチェーンの終端（EOF）
+    Eof,
+    /// 不良クラスタ
+    Bad,
+    /// 空きクラスタ
+    Free,
+}
+
+impl NextCluster {
+    /// FATエントリ値からNextClusterを生成
+    #[inline]
+    pub fn from_fat_entry(cluster: Cluster) -> Self {
+        if cluster.is_free() {
+            NextCluster::Free
+        } else if cluster == Cluster::BAD {
+            NextCluster::Bad
+        } else if cluster.is_eof() {
+            NextCluster::Eof
+        } else if cluster.is_valid() {
+            NextCluster::Valid(cluster)
+        } else {
+            NextCluster::Eof // 予約済み領域はEOFとして扱う
+        }
+    }
+
+    /// 有効なクラスタ番号を取得（Valid以外はNone）
+    #[inline]
+    pub fn as_valid(&self) -> Option<Cluster> {
+        match self {
+            NextCluster::Valid(c) => Some(*c),
+            _ => None,
+        }
     }
 }
 
@@ -239,26 +284,36 @@ impl FileAttributes {
     }
 }
 
-// ============================================================================
-// Safe Access for Packed Structs
-// ============================================================================
-
-/// packed構造体のフィールド読み出しを安全に行うためのトレイト
-///
-/// `#[repr(C, packed)]` 構造体のフィールドへの直接参照は未定義動作を
-/// 引き起こす可能性があるため、このトレイトを使用して安全にアクセスする。
-trait SafePackedRead {
-    /// 指定されたフィールドの値を安全に読み出す
-    ///
-    /// # Safety
-    /// `field_fn` は有効なフィールドへのポインタを返す必要がある
+impl From<u8> for FileAttributes {
     #[inline]
-    unsafe fn read_field<T: Copy, F>(&self, field_fn: F) -> T
-    where
-        F: FnOnce(&Self) -> *const T,
-    { unsafe {
-        core::ptr::read_unaligned(field_fn(self))
-    }}
+    fn from(bits: u8) -> Self {
+        Self(bits)
+    }
+}
+
+impl From<FileAttributes> for u8 {
+    #[inline]
+    fn from(attr: FileAttributes) -> Self {
+        attr.0
+    }
+}
+
+impl fmt::Display for FileAttributes {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut parts = Vec::new();
+        if self.is_read_only() { parts.push("RO"); }
+        if self.is_hidden() { parts.push("HIDDEN"); }
+        if self.is_system() { parts.push("SYSTEM"); }
+        if self.is_volume_id() { parts.push("VOLUME"); }
+        if self.is_directory() { parts.push("DIR"); }
+        // ARCHIVE はほぼすべてのファイルに設定されるので省略
+        
+        if parts.is_empty() {
+            write!(f, "(none)")
+        } else {
+            write!(f, "{}", parts.join(" | "))
+        }
+    }
 }
 
 // ============================================================================
@@ -266,6 +321,11 @@ trait SafePackedRead {
 // ============================================================================
 
 /// BIOSパラメータブロック
+/// 
+/// # Safety Note
+/// すべての整数型フィールドを `[u8; N]` で表現しています。
+/// これによりアラインメントの問題を物理的に排除し、
+/// `unsafe` ブロックなしで安全にアクセスできます。
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct BiosParameterBlock {
@@ -274,47 +334,94 @@ pub struct BiosParameterBlock {
     /// OEM名（8バイト）
     pub oem_name: [u8; 8],
     /// 1セクタあたりのバイト数
-    pub bytes_per_sector: u16,
+    bytes_per_sector: [u8; 2],
     /// 1クラスタあたりのセクタ数
     pub sectors_per_cluster: u8,
     /// 予約セクタ数
-    pub reserved_sectors: u16,
+    reserved_sectors: [u8; 2],
     /// FAT数
     pub num_fats: u8,
     /// ルートディレクトリエントリ数（FAT32では0）
-    pub root_entry_count: u16,
+    root_entry_count: [u8; 2],
     /// 総セクタ数（16ビット、FAT32では0）
-    pub total_sectors_16: u16,
+    total_sectors_16: [u8; 2],
     /// メディアタイプ
     pub media_type: u8,
     /// FATあたりのセクタ数（FAT12/16用、FAT32では0）
-    pub fat_size_16: u16,
+    fat_size_16: [u8; 2],
     /// トラックあたりのセクタ数
-    pub sectors_per_track: u16,
+    sectors_per_track: [u8; 2],
     /// ヘッド数
-    pub num_heads: u16,
+    num_heads: [u8; 2],
     /// 隠しセクタ数
-    pub hidden_sectors: u32,
+    hidden_sectors: [u8; 4],
     /// 総セクタ数（32ビット）
-    pub total_sectors_32: u32,
+    total_sectors_32: [u8; 4],
+}
+
+impl BiosParameterBlock {
+    /// 1セクタあたりのバイト数を取得
+    #[inline]
+    pub fn bytes_per_sector(&self) -> u16 {
+        u16::from_le_bytes(self.bytes_per_sector)
+    }
+    
+    /// 予約セクタ数を取得
+    #[inline]
+    pub fn reserved_sectors(&self) -> u16 {
+        u16::from_le_bytes(self.reserved_sectors)
+    }
+    
+    /// ルートディレクトリエントリ数を取得
+    #[inline]
+    pub fn root_entry_count(&self) -> u16 {
+        u16::from_le_bytes(self.root_entry_count)
+    }
+    
+    /// 総セクタ数（16ビット）を取得
+    #[inline]
+    pub fn total_sectors_16(&self) -> u16 {
+        u16::from_le_bytes(self.total_sectors_16)
+    }
+    
+    /// FATサイズ（16ビット）を取得
+    #[inline]
+    pub fn fat_size_16(&self) -> u16 {
+        u16::from_le_bytes(self.fat_size_16)
+    }
+    
+    /// 隠しセクタ数を取得
+    #[inline]
+    pub fn hidden_sectors(&self) -> u32 {
+        u32::from_le_bytes(self.hidden_sectors)
+    }
+    
+    /// 総セクタ数（32ビット）を取得
+    #[inline]
+    pub fn total_sectors_32(&self) -> u32 {
+        u32::from_le_bytes(self.total_sectors_32)
+    }
 }
 
 /// FAT32拡張BPB
+/// 
+/// # Safety Note
+/// すべての整数型フィールドを `[u8; N]` で表現しています。
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct Fat32ExtendedBpb {
     /// FATあたりのセクタ数
-    pub fat_size_32: u32,
+    fat_size_32: [u8; 4],
     /// 拡張フラグ
-    pub ext_flags: u16,
+    ext_flags: [u8; 2],
     /// ファイルシステムバージョン
-    pub fs_version: u16,
+    fs_version: [u8; 2],
     /// ルートディレクトリの開始クラスタ
-    pub root_cluster: u32,
+    root_cluster: [u8; 4],
     /// FSInfoセクタ番号
-    pub fs_info_sector: u16,
+    fs_info_sector: [u8; 2],
     /// バックアップブートセクタ
-    pub backup_boot_sector: u16,
+    backup_boot_sector: [u8; 2],
     /// 予約
     pub reserved: [u8; 12],
     /// ドライブ番号
@@ -324,80 +431,154 @@ pub struct Fat32ExtendedBpb {
     /// ブートシグネチャ
     pub boot_sig: u8,
     /// ボリュームシリアル番号
-    pub volume_serial: u32,
+    volume_serial: [u8; 4],
     /// ボリュームラベル
     pub volume_label: [u8; 11],
     /// ファイルシステムタイプ
     pub fs_type: [u8; 8],
 }
 
+impl Fat32ExtendedBpb {
+    /// FATサイズ（32ビット）を取得
+    #[inline]
+    pub fn fat_size_32(&self) -> u32 {
+        u32::from_le_bytes(self.fat_size_32)
+    }
+    
+    /// 拡張フラグを取得
+    #[inline]
+    pub fn ext_flags(&self) -> u16 {
+        u16::from_le_bytes(self.ext_flags)
+    }
+    
+    /// ファイルシステムバージョンを取得
+    #[inline]
+    pub fn fs_version(&self) -> u16 {
+        u16::from_le_bytes(self.fs_version)
+    }
+    
+    /// ルートクラスタを取得
+    #[inline]
+    pub fn root_cluster(&self) -> u32 {
+        u32::from_le_bytes(self.root_cluster)
+    }
+    
+    /// FSInfoセクタ番号を取得
+    #[inline]
+    pub fn fs_info_sector(&self) -> u16 {
+        u16::from_le_bytes(self.fs_info_sector)
+    }
+    
+    /// バックアップブートセクタを取得
+    #[inline]
+    pub fn backup_boot_sector(&self) -> u16 {
+        u16::from_le_bytes(self.backup_boot_sector)
+    }
+    
+    /// ボリュームシリアル番号を取得
+    #[inline]
+    pub fn volume_serial(&self) -> u32 {
+        u32::from_le_bytes(self.volume_serial)
+    }
+}
+
 /// ブートセクタ
+/// 
+/// # Safety Note
+/// 内部の整数フィールドはすべて `[u8; N]` 形式で、
+/// 安全なアクセサメソッド経由でアクセスします。
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct BootSector {
     pub bpb: BiosParameterBlock,
     pub fat32: Fat32ExtendedBpb,
     pub boot_code: [u8; 420],
-    pub signature: u16,
+    signature: [u8; 2],
 }
 
-impl SafePackedRead for BootSector {}
+impl TryFrom<&[u8]> for BootSector {
+    type Error = FsError;
 
-impl BootSector {
-    /// バイト列から安全にBootSectorを読み取る
-    pub fn from_bytes(bytes: &[u8]) -> FsResult<Self> {
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         if bytes.len() < BOOT_SECTOR_SIZE {
             return Err(FsError::InvalidArgument);
         }
-        // アライメントの問題を回避するため、read_unalignedを使用
-        let boot_sector = unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const BootSector) };
+        
+        // バイト配列としてコピー（アライメントの問題は発生しない）
+        let boot_sector = unsafe { 
+            core::ptr::read_unaligned(bytes.as_ptr() as *const BootSector) 
+        };
 
         // シグネチャチェック
-        if boot_sector.signature != FAT32_SIGNATURE {
+        if boot_sector.signature() != FAT32_SIGNATURE {
             return Err(FsError::InvalidArgument);
         }
 
         Ok(boot_sector)
     }
+}
+
+impl BootSector {
+    /// バイト列から安全にBootSectorを読み取る
+    /// 
+    /// # Deprecated
+    /// `TryFrom` トレイトを使用してください: `BootSector::try_from(bytes)?`
+    #[deprecated(since = "0.1.0", note = "Use TryFrom trait instead")]
+    pub fn from_bytes(bytes: &[u8]) -> FsResult<Self> {
+        Self::try_from(bytes)
+    }
+    
+    /// シグネチャを取得
+    #[inline]
+    pub fn signature(&self) -> u16 {
+        u16::from_le_bytes(self.signature)
+    }
 
     /// クラスタあたりのセクタ数を安全に取得
+    #[inline]
     pub fn sectors_per_cluster(&self) -> u32 {
-        unsafe { self.read_field(|s| core::ptr::addr_of!(s.bpb.sectors_per_cluster)) as u32 }
+        self.bpb.sectors_per_cluster as u32
     }
 
     /// 予約セクタ数を安全に取得
+    #[inline]
     pub fn reserved_sectors(&self) -> u32 {
-        unsafe { self.read_field(|s| core::ptr::addr_of!(s.bpb.reserved_sectors)) as u32 }
+        self.bpb.reserved_sectors() as u32
     }
 
     /// FAT数を安全に取得
+    #[inline]
     pub fn num_fats(&self) -> u32 {
-        unsafe { self.read_field(|s| core::ptr::addr_of!(s.bpb.num_fats)) as u32 }
+        self.bpb.num_fats as u32
     }
 
     /// FAT32のFATサイズを安全に取得
+    #[inline]
     pub fn fat_size_32(&self) -> u32 {
-        unsafe { self.read_field(|s| core::ptr::addr_of!(s.fat32.fat_size_32)) }
+        self.fat32.fat_size_32()
     }
 
     /// ルートクラスタを安全に取得（型安全なCluster型を返す）
+    #[inline]
     pub fn root_cluster(&self) -> Cluster {
-        Cluster(unsafe { self.read_field(|s| core::ptr::addr_of!(s.fat32.root_cluster)) })
+        Cluster(self.fat32.root_cluster())
     }
 
     /// 総セクタ数を安全に取得
+    #[inline]
     pub fn total_sectors(&self) -> u32 {
-        let ts16: u16 = unsafe { self.read_field(|s| core::ptr::addr_of!(s.bpb.total_sectors_16)) };
+        let ts16 = self.bpb.total_sectors_16();
         if ts16 != 0 {
             ts16 as u32
         } else {
-            unsafe { self.read_field(|s| core::ptr::addr_of!(s.bpb.total_sectors_32)) }
+            self.bpb.total_sectors_32()
         }
     }
 
     /// ファイルシステムタイプを取得
+    #[inline]
     pub fn fs_type(&self) -> [u8; 8] {
-        unsafe { self.read_field(|s| core::ptr::addr_of!(s.fat32.fs_type)) }
+        self.fat32.fs_type
     }
 }
 
@@ -430,6 +611,10 @@ pub struct FsInfo {
 // ============================================================================
 
 /// 標準ディレクトリエントリ（8.3形式）
+/// 
+/// # Safety Note
+/// すべての整数型フィールドを `[u8; N]` で表現しています。
+/// これによりアラインメントの問題を物理的に排除します。
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct DirEntryRaw {
@@ -444,24 +629,22 @@ pub struct DirEntryRaw {
     /// 作成時刻（10ミリ秒単位）
     pub create_time_tenths: u8,
     /// 作成時刻
-    pub create_time: u16,
+    create_time: [u8; 2],
     /// 作成日付
-    pub create_date: u16,
+    create_date: [u8; 2],
     /// 最終アクセス日付
-    pub access_date: u16,
+    access_date: [u8; 2],
     /// 開始クラスタ番号（上位16ビット）
-    pub first_cluster_hi: u16,
+    first_cluster_hi: [u8; 2],
     /// 更新時刻
-    pub modify_time: u16,
+    modify_time: [u8; 2],
     /// 更新日付
-    pub modify_date: u16,
+    modify_date: [u8; 2],
     /// 開始クラスタ番号（下位16ビット）
-    pub first_cluster_lo: u16,
+    first_cluster_lo: [u8; 2],
     /// ファイルサイズ
-    pub file_size: u32,
+    file_size: [u8; 4],
 }
-
-impl SafePackedRead for DirEntryRaw {}
 
 impl DirEntryRaw {
     /// バイト列から安全にDirEntryRawを読み取る
@@ -470,26 +653,138 @@ impl DirEntryRaw {
     }
 
     /// 開始クラスタを取得（型安全なCluster型を返す）
+    #[inline]
     pub fn first_cluster(&self) -> Cluster {
-        let hi: u16 = unsafe { self.read_field(|s| core::ptr::addr_of!(s.first_cluster_hi)) };
-        let lo: u16 = unsafe { self.read_field(|s| core::ptr::addr_of!(s.first_cluster_lo)) };
+        let hi = u16::from_le_bytes(self.first_cluster_hi);
+        let lo = u16::from_le_bytes(self.first_cluster_lo);
         Cluster(((hi as u32) << 16) | (lo as u32))
     }
 
     /// 開始クラスタを設定
+    #[inline]
     pub fn set_first_cluster(&mut self, cluster: Cluster) {
-        self.first_cluster_hi = (cluster.0 >> 16) as u16;
-        self.first_cluster_lo = (cluster.0 & 0xFFFF) as u16;
+        self.first_cluster_hi = ((cluster.0 >> 16) as u16).to_le_bytes();
+        self.first_cluster_lo = ((cluster.0 & 0xFFFF) as u16).to_le_bytes();
     }
 
     /// 属性を取得（型安全なFileAttributes型を返す）
+    #[inline]
     pub fn attributes(&self) -> FileAttributes {
         FileAttributes::from_bits_truncate(self.attr)
     }
 
     /// ファイルサイズを安全に取得
+    #[inline]
     pub fn file_size(&self) -> u32 {
-        unsafe { self.read_field(|s| core::ptr::addr_of!(s.file_size)) }
+        u32::from_le_bytes(self.file_size)
+    }
+    
+    /// ファイルサイズを設定
+    #[inline]
+    pub fn set_file_size(&mut self, size: u32) {
+        self.file_size = size.to_le_bytes();
+    }
+    
+    /// 作成時刻を取得
+    #[inline]
+    pub fn create_time(&self) -> u16 {
+        u16::from_le_bytes(self.create_time)
+    }
+    
+    /// 作成日付を取得
+    #[inline]
+    pub fn create_date(&self) -> u16 {
+        u16::from_le_bytes(self.create_date)
+    }
+    
+    /// 最終アクセス日付を取得
+    #[inline]
+    pub fn access_date(&self) -> u16 {
+        u16::from_le_bytes(self.access_date)
+    }
+    
+    /// 更新時刻を取得
+    #[inline]
+    pub fn modify_time(&self) -> u16 {
+        u16::from_le_bytes(self.modify_time)
+    }
+    
+    /// 更新日付を取得
+    #[inline]
+    pub fn modify_date(&self) -> u16 {
+        u16::from_le_bytes(self.modify_date)
+    }
+    
+    /// 新しいディレクトリエントリを作成
+    /// 
+    /// # Arguments
+    /// * `name` - 8バイトのベース名
+    /// * `ext` - 3バイトの拡張子
+    /// * `attr` - ファイル属性
+    /// * `cluster` - 開始クラスタ
+    /// * `size` - ファイルサイズ
+    #[inline]
+    pub fn new(name: [u8; 8], ext: [u8; 3], attr: FileAttributes, cluster: Cluster, size: u32) -> Self {
+        Self {
+            name,
+            ext,
+            attr: attr.bits(),
+            nt_reserved: 0,
+            create_time_tenths: 0,
+            create_time: [0; 2],
+            create_date: [0; 2],
+            access_date: [0; 2],
+            first_cluster_hi: ((cluster.0 >> 16) as u16).to_le_bytes(),
+            modify_time: [0; 2],
+            modify_date: [0; 2],
+            first_cluster_lo: ((cluster.0 & 0xFFFF) as u16).to_le_bytes(),
+            file_size: size.to_le_bytes(),
+        }
+    }
+    
+    /// "." エントリを作成
+    #[inline]
+    pub fn new_dot(cluster: Cluster) -> Self {
+        let mut name = [b' '; 8];
+        name[0] = b'.';
+        Self {
+            name,
+            ext: [b' '; 3],
+            attr: FileAttributes::DIRECTORY,
+            nt_reserved: 0,
+            create_time_tenths: 0,
+            create_time: [0; 2],
+            create_date: [0; 2],
+            access_date: [0; 2],
+            first_cluster_hi: ((cluster.0 >> 16) as u16).to_le_bytes(),
+            modify_time: [0; 2],
+            modify_date: [0; 2],
+            first_cluster_lo: ((cluster.0 & 0xFFFF) as u16).to_le_bytes(),
+            file_size: [0; 4],
+        }
+    }
+    
+    /// ".." エントリを作成
+    #[inline]
+    pub fn new_dotdot(parent_cluster: Cluster) -> Self {
+        let mut name = [b' '; 8];
+        name[0] = b'.';
+        name[1] = b'.';
+        Self {
+            name,
+            ext: [b' '; 3],
+            attr: FileAttributes::DIRECTORY,
+            nt_reserved: 0,
+            create_time_tenths: 0,
+            create_time: [0; 2],
+            create_date: [0; 2],
+            access_date: [0; 2],
+            first_cluster_hi: ((parent_cluster.0 >> 16) as u16).to_le_bytes(),
+            modify_time: [0; 2],
+            modify_date: [0; 2],
+            first_cluster_lo: ((parent_cluster.0 & 0xFFFF) as u16).to_le_bytes(),
+            file_size: [0; 4],
+        }
     }
 
     /// ディレクトリかどうか
@@ -512,16 +807,16 @@ impl DirEntryRaw {
     /// # Algorithm
     /// MS-DOS標準のチェックサム計算アルゴリズム:
     /// sum = ((sum >> 1) | (sum << 7)) + name[i]
+    /// 
+    /// # Implementation Note
+    /// イテレータとfoldを使用した関数型スタイルで実装。
+    /// ループ変数を管理する必要がなくなり、バグの入り込む余地が減少。
     pub fn calculate_checksum(&self) -> u8 {
-        let mut sum: u8 = 0;
         // 11バイト(8.3形式)のショートネーム全体を使用
-        for i in 0..8 {
-            sum = sum.rotate_right(1).wrapping_add(self.name[i]);
-        }
-        for i in 0..3 {
-            sum = sum.rotate_right(1).wrapping_add(self.ext[i]);
-        }
-        sum
+        self.name
+            .iter()
+            .chain(self.ext.iter())
+            .fold(0u8, |sum, &byte| sum.rotate_right(1).wrapping_add(byte))
     }
 
     /// 最後のエントリかどうか
@@ -561,28 +856,237 @@ impl DirEntryRaw {
 }
 
 /// ロングファイルネームエントリ
+/// 
+/// # Safety Note
+/// UCS-2文字フィールド（name1, name2, name3）を `[u8; N]` で表現しています。
 #[repr(C, packed)]
 #[derive(Clone, Copy)]
 pub struct LfnEntry {
     /// シーケンス番号
     pub seq: u8,
-    /// 名前の1-5文字目（UCS-2）
-    pub name1: [u16; 5],
+    /// 名前の1-5文字目（UCS-2、10バイト）
+    name1: [u8; 10],
     /// 属性（常にATTR_LONG_NAME）
     pub attr: u8,
     /// タイプ（常に0）
     pub type_: u8,
     /// チェックサム
     pub checksum: u8,
-    /// 名前の6-11文字目（UCS-2）
-    pub name2: [u16; 6],
+    /// 名前の6-11文字目（UCS-2、12バイト）
+    name2: [u8; 12],
     /// 常に0
-    pub first_cluster: u16,
-    /// 名前の12-13文字目（UCS-2）
-    pub name3: [u16; 2],
+    first_cluster: [u8; 2],
+    /// 名前の12-13文字目（UCS-2、4バイト）
+    name3: [u8; 4],
 }
 
-impl SafePackedRead for LfnEntry {}
+/// ディレクトリエントリの種類を表す列挙型
+///
+/// 生のバイト列を解析した結果を型安全に表現する。
+/// if/else の条件分岐をパターンマッチに置き換えることで、
+/// コードの意図が明確になり、網羅性チェックも働く。
+#[derive(Debug)]
+pub enum DirectoryEntryKind {
+    /// ディレクトリの終端マーカー
+    End,
+    /// 削除済みエントリ
+    Deleted,
+    /// ロングファイルネームエントリ
+    LongName(LfnEntry),
+    /// 通常のディレクトリエントリ
+    Standard(DirEntryRaw),
+    /// ボリュームラベル（スキップ対象）
+    VolumeLabel,
+}
+
+impl From<&[u8]> for DirectoryEntryKind {
+    fn from(bytes: &[u8]) -> Self {
+        let first_byte = bytes[0];
+
+        if first_byte == END_OF_DIR {
+            return DirectoryEntryKind::End;
+        }
+        if first_byte == DELETED_ENTRY {
+            return DirectoryEntryKind::Deleted;
+        }
+
+        let attr = FileAttributes::from(bytes[11]);
+        if attr.is_long_name() {
+            DirectoryEntryKind::LongName(LfnEntry::from_bytes(bytes))
+        } else if attr.is_volume_id() {
+            DirectoryEntryKind::VolumeLabel
+        } else {
+            DirectoryEntryKind::Standard(DirEntryRaw::from_bytes(bytes))
+        }
+    }
+}
+
+/// ディレクトリエントリを遅延評価で読み込むイテレータ
+///
+/// 従来の `read_dir_entries` は全エントリを `Vec` に読み込んでいたが、
+/// このイテレータは必要な分だけを読み込む。
+///
+/// # メリット
+/// - **メモリ効率**: エントリ数が多い場合でも巨大な Vec を確保しない
+/// - **検索パフォーマンス**: `lookup` で特定ファイルを探す際、見つかった時点で読み込みを停止
+/// - **Rustらしさ**: `find()`, `filter()`, `take()` 等のイテレータメソッドが使用可能
+///
+/// # Example
+/// ```ignore
+/// // 特定のファイルを検索（見つかったら即終了）
+/// let entry = inode.entries()?
+///     .find(|res| res.as_ref().ok()
+///         .map(|e| e.name == "target.txt")
+///         .unwrap_or(false))
+///     .transpose()?;
+/// ```
+pub struct DirectoryIterator<'a> {
+    fs: &'a Fat32FileSystem,
+    chain: ClusterChain<'a>,
+    buffer: Vec<u8>,
+    offset: usize,
+    lfn_parts: Vec<(u8, String, u8)>,
+    finished: bool,
+}
+
+impl<'a> DirectoryIterator<'a> {
+    /// 新しいディレクトリイテレータを作成
+    fn new(fs: &'a Fat32FileSystem, start_cluster: Cluster) -> FsResult<Self> {
+        let cluster_size = fs.cluster_size();
+        let mut chain = fs.clusters(start_cluster);
+        let mut buffer = vec![0u8; cluster_size];
+        
+        // 最初のクラスタを読み込む
+        if let Some(cluster_res) = chain.next() {
+            let cluster = cluster_res?;
+            fs.read_cluster(cluster, &mut buffer)?;
+        }
+        
+        Ok(Self {
+            fs,
+            chain,
+            buffer,
+            offset: 0,
+            lfn_parts: Vec::new(),
+            finished: false,
+        })
+    }
+    
+    /// 次のクラスタを読み込む
+    fn load_next_cluster(&mut self) -> FsResult<bool> {
+        if let Some(cluster_res) = self.chain.next() {
+            let cluster = cluster_res?;
+            self.fs.read_cluster(cluster, &mut self.buffer)?;
+            self.offset = 0;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+}
+
+impl<'a> Iterator for DirectoryIterator<'a> {
+    type Item = FsResult<(String, DirEntryRaw)>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+        
+        let cluster_size = self.fs.cluster_size();
+        
+        loop {
+            // バッファの範囲を超えたら次のクラスタを読み込む
+            if self.offset + DIR_ENTRY_SIZE > cluster_size {
+                match self.load_next_cluster() {
+                    Ok(true) => continue,
+                    Ok(false) => {
+                        self.finished = true;
+                        return None;
+                    }
+                    Err(e) => {
+                        self.finished = true;
+                        return Some(Err(e));
+                    }
+                }
+            }
+            
+            let entry_bytes = &self.buffer[self.offset..self.offset + DIR_ENTRY_SIZE];
+            self.offset += DIR_ENTRY_SIZE;
+            
+            // パターンマッチでエントリの種類を判定
+            match DirectoryEntryKind::from(entry_bytes) {
+                DirectoryEntryKind::End => {
+                    self.finished = true;
+                    return None;
+                }
+                DirectoryEntryKind::Deleted => {
+                    self.lfn_parts.clear();
+                    continue; // 次のエントリへ
+                }
+                DirectoryEntryKind::LongName(lfn) => {
+                    self.lfn_parts.push((lfn.sequence(), lfn.get_name_part(), lfn.checksum()));
+                    continue; // LFNをスタックに積むだけ、ループ継続
+                }
+                DirectoryEntryKind::VolumeLabel => {
+                    self.lfn_parts.clear();
+                    continue; // ボリュームラベルは無視
+                }
+                DirectoryEntryKind::Standard(raw) => {
+                    // ロングネームを構築
+                    let name = if !self.lfn_parts.is_empty() {
+                        // LFNチェックサム検証
+                        let expected_checksum = raw.calculate_checksum();
+                        let lfn_checksum = self.lfn_parts.first().map(|(_, _, cs)| *cs).unwrap_or(0);
+                        
+                        if lfn_checksum != expected_checksum {
+                            // チェックサム不一致：ショートネームにフォールバック
+                            self.lfn_parts.clear();
+                            raw.short_name()
+                        } else {
+                            self.lfn_parts.sort_by_key(|&(seq, _, _)| seq);
+                            let long_name: String = self.lfn_parts.iter().map(|(_, s, _)| s.as_str()).collect();
+                            self.lfn_parts.clear();
+                            long_name
+                        }
+                    } else {
+                        raw.short_name()
+                    };
+
+                    // "." と ".." はスキップ
+                    if name == "." || name == ".." {
+                        continue;
+                    }
+
+                    return Some(Ok((name, raw)));
+                }
+            }
+        }
+    }
+}
+
+/// ディレクトリエントリの種類を表す列挙型
+///
+/// 生のバイト列を解析した結果を型安全に表現する。
+/// if/else の条件分岐をパターンマッチに置き換えることで、
+/// コードの意図が明確になり、網羅性チェックも働く。
+///
+/// # Deprecated
+/// この型は `DirectoryIterator` 内部で使用され、外部に公開する必要はなくなりました。
+#[derive(Debug)]
+#[deprecated(since = "0.1.0", note = "Internal use only, use DirectoryIterator instead")]
+pub enum _DirectoryEntryKind {
+    /// ディレクトリの終端マーカー
+    End,
+    /// 削除済みエントリ
+    Deleted,
+    /// ロングファイルネームエントリ
+    LongName(LfnEntry),
+    /// 通常のディレクトリエントリ
+    Standard(DirEntryRaw),
+    /// ボリュームラベル（スキップ対象）
+    VolumeLabel,
+}
 
 impl LfnEntry {
     /// バイト列から安全にLfnEntryを読み取る
@@ -591,35 +1095,43 @@ impl LfnEntry {
     }
     
     /// LFNエントリのチェックサムを取得
+    #[inline]
     pub fn checksum(&self) -> u8 {
-        unsafe { self.read_field(|s| core::ptr::addr_of!(s.checksum)) }
+        self.checksum
+    }
+    
+    /// バイト配列からUCS-2文字（u16）を読み取るヘルパー
+    #[inline]
+    fn read_ucs2_chars(bytes: &[u8], chars: &mut Vec<u16>) {
+        for chunk in bytes.chunks_exact(2) {
+            let c = u16::from_le_bytes([chunk[0], chunk[1]]);
+            if c == 0 || c == 0xFFFF {
+                return;
+            }
+            chars.push(c);
+        }
     }
 
     /// このエントリから名前の一部を取得
     pub fn get_name_part(&self) -> String {
         let mut chars = Vec::with_capacity(13);
 
-        // SafePackedReadトレイトを使って安全にコピー
-        let name1: [u16; 5] = unsafe { self.read_field(|s| core::ptr::addr_of!(s.name1)) };
-        let name2: [u16; 6] = unsafe { self.read_field(|s| core::ptr::addr_of!(s.name2)) };
-        let name3: [u16; 2] = unsafe { self.read_field(|s| core::ptr::addr_of!(s.name3)) };
-
-        for &c in name1.iter().chain(name2.iter()).chain(name3.iter()) {
-            if c == 0 || c == 0xFFFF {
-                break;
-            }
-            chars.push(c);
-        }
+        // [u8; N] から UCS-2 文字列を安全に読み取り
+        Self::read_ucs2_chars(&self.name1, &mut chars);
+        Self::read_ucs2_chars(&self.name2, &mut chars);
+        Self::read_ucs2_chars(&self.name3, &mut chars);
 
         String::from_utf16_lossy(&chars)
     }
 
     /// 最後のLFNエントリかどうか
+    #[inline]
     pub fn is_last(&self) -> bool {
         self.seq & 0x40 != 0
     }
 
     /// シーケンス番号を取得（1-20）
+    #[inline]
     pub fn sequence(&self) -> u8 {
         self.seq & 0x1F
     }
@@ -653,7 +1165,81 @@ pub struct Fat32FileSystem {
     fat_dirty: RwLock<bool>,
 }
 
+/// クラスタチェーンを走査するイテレータ
+///
+/// FAT32のクラスタチェーンをRustのイテレータとして抽象化。
+/// `while cluster.is_valid() { ... get_next ... }` のループパターンを
+/// 排除し、`for`ループや`skip()`、`take()`等のイテレータメソッドを活用可能にする。
+///
+/// # Example
+/// ```ignore
+/// // 3番目のクラスタから読み取り開始
+/// for cluster_res in fs.clusters(start).skip(2) {
+///     let cluster = cluster_res?;
+///     // クラスタを処理
+/// }
+/// ```
+pub struct ClusterChain<'a> {
+    fs: &'a Fat32FileSystem,
+    current: Cluster,
+    count: usize,
+}
+
+impl<'a> ClusterChain<'a> {
+    /// 新しいクラスタチェーンイテレータを作成
+    fn new(fs: &'a Fat32FileSystem, start: Cluster) -> Self {
+        Self {
+            fs,
+            current: start,
+            count: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for ClusterChain<'a> {
+    type Item = FsResult<Cluster>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // 無効なクラスタは終端
+        if !self.current.is_valid() {
+            return None;
+        }
+
+        // 無限ループ検出
+        self.count += 1;
+        if self.count > MAX_CLUSTER_CHAIN {
+            self.current = Cluster::EOF;
+            return Some(Err(FsError::CorruptedFs));
+        }
+
+        let current = self.current;
+
+        // 次のクラスタを取得して状態を更新
+        match self.fs.read_fat_entry(current) {
+            Ok(next) => {
+                self.current = next;
+                Some(Ok(current))
+            }
+            Err(e) => {
+                self.current = Cluster::EOF; // エラー時は停止
+                Some(Err(e))
+            }
+        }
+    }
+}
+
 impl Fat32FileSystem {
+    /// 指定されたクラスタから始まるクラスタチェーンのイテレータを返す
+    ///
+    /// # Arguments
+    /// * `start` - チェーンの開始クラスタ
+    ///
+    /// # Returns
+    /// クラスタ番号を順に返すイテレータ。各要素は`FsResult<Cluster>`。
+    pub fn clusters(&self, start: Cluster) -> ClusterChain {
+        ClusterChain::new(self, start)
+    }
+
     /// FAT32ファイルシステムをマウント
     pub fn mount(device: Arc<dyn BlockDevice>) -> FsResult<Arc<Self>> {
         // ブートセクタを読み取り
@@ -662,8 +1248,8 @@ impl Fat32FileSystem {
             .read_sync(0, &mut boot_data)
             .map_err(|_| FsError::IoError)?;
 
-        // BootSector::from_bytes で安全にパース
-        let boot_sector = BootSector::from_bytes(&boot_data)?;
+        // TryFrom トレイトで安全にパース
+        let boot_sector = BootSector::try_from(&boot_data[..])?;
 
         // FAT32であることを確認
         let fs_type = boot_sector.fs_type();
@@ -859,22 +1445,17 @@ impl Fat32FileSystem {
 
     /// クラスタチェーンを解放(型安全、無限ループ対策)
     /// 
-    /// # Safety
-    /// ループ検出のため、最大探索数に制限を設けている。
-    /// 悪意のあるファイルシステムイメージによる無限ループを防止。
+    /// # Implementation Note
+    /// `ClusterChain` イテレータを使用することで、
+    /// ループカウンタの手動管理を排除し、コードを簡潔化。
+    /// 無限ループ検出はイテレータ内部で行われる。
     fn free_cluster_chain(&self, start_cluster: Cluster) -> FsResult<()> {
-        let mut cluster = start_cluster;
-        let mut count = 0;
-
-        while cluster.is_valid() {
-            count += 1;
-            if count > MAX_CLUSTER_CHAIN {
-                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
-            }
-            
-            let next = self.read_fat_entry(cluster)?;
+        // collect で先にすべてのクラスタを取得（イテレート中にFATを変更するため）
+        let clusters: Vec<Cluster> = self.clusters(start_cluster)
+            .collect::<FsResult<Vec<_>>>()?;
+        
+        for cluster in clusters {
             self.free_cluster(cluster)?;
-            cluster = next;
         }
 
         Ok(())
@@ -1035,6 +1616,39 @@ impl Fat32Inode {
         }
     }
 
+    /// ディレクトリエントリのイテレータを返す
+    ///
+    /// # 遅延評価のメリット
+    /// - **メモリ効率**: 全エントリを Vec に読み込まない
+    /// - **早期終了**: `lookup` で見つかったら即座に読み込みを停止
+    /// - **標準メソッド**: `find()`, `filter()`, `collect()` 等が使用可能
+    ///
+    /// # Example
+    /// ```ignore
+    /// // 特定ファイルを検索
+    /// let entry = inode.entries()?
+    ///     .find(|res| res.as_ref().ok()
+    ///         .map(|e| e.0 == "target.txt")
+    ///         .unwrap_or(false))
+    ///     .transpose()?;
+    /// ```
+    pub fn entries(&self) -> FsResult<DirectoryIterator> {
+        if self.file_type != FileType::Directory {
+            return Err(FsError::NotDirectory);
+        }
+        DirectoryIterator::new(&self.fs, self.first_cluster)
+    }
+
+    /// ディレクトリの全エントリを読み取り
+    /// 
+    /// # Deprecated
+    /// `entries()` イテレータを使用してください。
+    /// このメソッドは互換性のために残されています。
+    #[deprecated(since = "0.1.0", note = "Use entries() iterator instead for better performance")]
+    fn read_dir_entries(&self) -> FsResult<Vec<(String, DirEntryRaw)>> {
+        self.entries()?.collect()
+    }
+
     /// 8.3形式のショートファイル名を生成
     fn generate_short_name(name: &str) -> ([u8; 8], [u8; 3]) {
         let mut base = [b' '; 8];
@@ -1102,21 +1716,7 @@ impl Fat32Inode {
                     // 新しいエントリを作成
                     let (base_name, ext_name) = Self::generate_short_name(name);
                     
-                    let entry = DirEntryRaw {
-                        name: base_name,
-                        ext: ext_name,
-                        attr: attr.bits(),
-                        nt_reserved: 0,
-                        create_time_tenths: 0,
-                        create_time: 0,
-                        create_date: 0,
-                        access_date: 0,
-                        first_cluster_hi: (cluster.0 >> 16) as u16,
-                        modify_time: 0,
-                        modify_date: 0,
-                        first_cluster_lo: (cluster.0 & 0xFFFF) as u16,
-                        file_size: size,
-                    };
+                    let entry = DirEntryRaw::new(base_name, ext_name, attr, cluster, size);
                     
                     // バッファに書き込み
                     let entry_bytes = unsafe {
@@ -1209,92 +1809,6 @@ impl Fat32Inode {
         
         Err(FsError::NotFound)
     }
-
-    /// ディレクトリの全エントリを読み取り
-    fn read_dir_entries(&self) -> FsResult<Vec<(String, DirEntryRaw)>> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
-        }
-
-        let mut entries = Vec::new();
-        let mut cluster = self.first_cluster;
-        let cluster_size = self.fs.cluster_size();
-        let mut buffer = vec![0u8; cluster_size];
-        let mut lfn_parts: Vec<(u8, String, u8)> = Vec::new(); // (sequence, name_part, checksum)
-        let mut chain_count = 0;
-
-        while cluster.is_valid() {
-            chain_count += 1;
-            if chain_count > MAX_CLUSTER_CHAIN {
-                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
-            }
-            
-            self.fs.read_cluster(cluster, &mut buffer)?;
-
-            let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
-            for i in 0..entries_per_cluster {
-                let offset = i * DIR_ENTRY_SIZE;
-                // バイト列から安全に構造体を復元
-                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
-
-                if raw.is_end() {
-                    return Ok(entries);
-                }
-
-                if raw.is_deleted() {
-                    lfn_parts.clear();
-                    continue;
-                }
-
-                let attr = raw.attributes();
-
-                if attr.is_long_name() {
-                    let lfn = LfnEntry::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
-                    lfn_parts.push((lfn.sequence(), lfn.get_name_part(), lfn.checksum()));
-                } else {
-                    // ボリュームラベルはスキップ
-                    if attr.is_volume_id() {
-                        lfn_parts.clear();
-                        continue;
-                    }
-
-                    // ロングネームを構築
-                    let name = if !lfn_parts.is_empty() {
-                        // LFNチェックサム検証
-                        let expected_checksum = raw.calculate_checksum();
-                        let lfn_checksum = lfn_parts.first().map(|(_, _, cs)| *cs).unwrap_or(0);
-                        
-                        // チェックサムが一致しない場合は警告してショートネームを使用
-                        if lfn_checksum != expected_checksum {
-                            // 悪意のあるイメージや破損したファイルシステムの可能性
-                            // セキュリティ上、ショートネームにフォールバック
-                            lfn_parts.clear();
-                            raw.short_name()
-                        } else {
-                            lfn_parts.sort_by_key(|&(seq, _, _)| seq);
-                            let long_name: String = lfn_parts.iter().map(|(_, s, _)| s.as_str()).collect();
-                            lfn_parts.clear();
-                            long_name
-                        }
-                    } else {
-                        raw.short_name()
-                    };
-
-                    // "." と ".." はスキップ
-                    if name == "." || name == ".." {
-                        continue;
-                    }
-
-                    entries.push((name, raw));
-                }
-            }
-
-            // 次のクラスタへ（型安全）
-            cluster = self.fs.read_fat_entry(cluster)?;
-        }
-
-        Ok(entries)
-    }
 }
 
 impl Inode for Fat32Inode {
@@ -1335,47 +1849,53 @@ impl Inode for Fat32Inode {
         // パス長検証
         validate_path_length(name)?;
         
-        let entries = self.read_dir_entries()?;
+        // イテレータで検索（見つかったら即終了）
+        let entry = self.entries()?
+            .find(|res| {
+                res.as_ref()
+                    .ok()
+                    .map(|(entry_name, _)| entry_name.eq_ignore_ascii_case(name))
+                    .unwrap_or(false)
+            });
 
-        for (entry_name, raw) in entries {
-            if entry_name.eq_ignore_ascii_case(name) {
+        match entry {
+            Some(Ok((_, raw))) => {
                 let cluster = raw.first_cluster();
                 let attr = raw.attributes();
                 if attr.is_directory() {
-                    return Ok(Arc::new(Fat32Inode::new_directory(
+                    Ok(Arc::new(Fat32Inode::new_directory(
                         self.fs.clone(),
                         cluster,
                         self.first_cluster,
-                    )));
+                    )))
                 } else {
-                    return Ok(Arc::new(Fat32Inode::new_file(
+                    Ok(Arc::new(Fat32Inode::new_file(
                         self.fs.clone(),
                         cluster,
                         raw.file_size() as u64,
                         self.first_cluster,
-                    )));
+                    )))
                 }
             }
+            Some(Err(e)) => Err(e),
+            None => Err(FsError::NotFound),
         }
-
-        Err(FsError::NotFound)
     }
 
     fn readdir(&self, _offset: u64) -> FsResult<Vec<DirEntry>> {
-        let entries = self.read_dir_entries()?;
-
-        Ok(entries
-            .into_iter()
-            .map(|(name, raw)| DirEntry {
-                name,
-                ino: raw.first_cluster().as_u32() as InodeNum,
-                file_type: if raw.attributes().is_directory() {
-                    FileType::Directory
-                } else {
-                    FileType::Regular
-                },
+        self.entries()?
+            .map(|res| {
+                res.map(|(name, raw)| DirEntry {
+                    name,
+                    ino: raw.first_cluster().as_u32() as InodeNum,
+                    file_type: if raw.attributes().is_directory() {
+                        FileType::Directory
+                    } else {
+                        FileType::Regular
+                    },
+                })
             })
-            .collect())
+            .collect()
     }
 
     fn create(&self, name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
@@ -1417,39 +1937,11 @@ impl Inode for Fat32Inode {
         let cluster_size = self.fs.cluster_size();
         let mut buffer = vec![0u8; cluster_size];
         
-        // "." エントリ
-        let dot_entry = DirEntryRaw {
-            name: [b'.', b' ', b' ', b' ', b' ', b' ', b' ', b' '],
-            ext: [b' ', b' ', b' '],
-            attr: FileAttributes::DIRECTORY,
-            nt_reserved: 0,
-            create_time_tenths: 0,
-            create_time: 0,
-            create_date: 0,
-            access_date: 0,
-            first_cluster_hi: (new_cluster.0 >> 16) as u16,
-            modify_time: 0,
-            modify_date: 0,
-            first_cluster_lo: (new_cluster.0 & 0xFFFF) as u16,
-            file_size: 0,
-        };
+        // "." エントリ - 新しいディレクトリ自身を指す
+        let dot_entry = DirEntryRaw::new_dot(new_cluster);
         
-        // ".." エントリ
-        let dotdot_entry = DirEntryRaw {
-            name: [b'.', b'.', b' ', b' ', b' ', b' ', b' ', b' '],
-            ext: [b' ', b' ', b' '],
-            attr: FileAttributes::DIRECTORY,
-            nt_reserved: 0,
-            create_time_tenths: 0,
-            create_time: 0,
-            create_date: 0,
-            access_date: 0,
-            first_cluster_hi: (self.first_cluster.0 >> 16) as u16,
-            modify_time: 0,
-            modify_date: 0,
-            first_cluster_lo: (self.first_cluster.0 & 0xFFFF) as u16,
-            file_size: 0,
-        };
+        // ".." エントリ - 親ディレクトリを指す
+        let dotdot_entry = DirEntryRaw::new_dotdot(self.first_cluster);
         
         // バッファに書き込み
         let dot_bytes = unsafe {
@@ -1550,44 +2042,43 @@ impl Inode for Fat32Inode {
         }
 
         let cluster_size = self.fs.cluster_size() as u64;
-        let mut bytes_read = 0usize;
         let to_read = buf.len().min((self.size - offset) as usize);
 
-        // 開始クラスタを見つける
-        let start_cluster_idx = offset / cluster_size;
-        let mut cluster = self.first_cluster;
-        let mut chain_count = 0;
-        for _ in 0..start_cluster_idx {
-            chain_count += 1;
-            if chain_count > MAX_CLUSTER_CHAIN {
-                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
-            }
-            cluster = self.fs.read_fat_entry(cluster)?;
-            if !cluster.is_valid() {
-                return Err(FsError::IoError);
-            }
-        }
+        // 開始クラスタまでスキップ（skip メソッド活用）
+        let start_cluster_idx = (offset / cluster_size) as usize;
+        let chain = self.fs.clusters(self.first_cluster).skip(start_cluster_idx);
 
-        let mut cluster_offset = (offset % cluster_size) as usize;
+        // 最初のクラスタ内でのオフセット
+        let mut current_cluster_offset = (offset % cluster_size) as usize;
         let mut cluster_buf = vec![0u8; cluster_size as usize];
+        
+        // 書き込み先バッファをミュータブルなスライスとして持ち、進めていく
+        let mut remaining_buf = &mut buf[..to_read];
+        let mut bytes_read = 0;
 
-        while bytes_read < to_read && cluster.is_valid() {
-            chain_count += 1;
-            if chain_count > MAX_CLUSTER_CHAIN {
-                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+        // イテレータを使用してクラスタチェーンを走査
+        for cluster_res in chain {
+            if remaining_buf.is_empty() {
+                break;
             }
             
+            let cluster = cluster_res?;
             self.fs.read_cluster(cluster, &mut cluster_buf)?;
 
-            let available = cluster_size as usize - cluster_offset;
-            let copy_len = available.min(to_read - bytes_read);
-
-            buf[bytes_read..bytes_read + copy_len]
-                .copy_from_slice(&cluster_buf[cluster_offset..cluster_offset + copy_len]);
-
+            // このクラスタから読み出せる有効なデータ範囲
+            let available_data = &cluster_buf[current_cluster_offset..];
+            
+            // コピーする長さ（バッファの残りと、クラスタの残りの小さい方）
+            let copy_len = remaining_buf.len().min(available_data.len());
+            
+            // split_at_mut でバッファを分割してコピー
+            let (target, next) = remaining_buf.split_at_mut(copy_len);
+            target.copy_from_slice(&available_data[..copy_len]);
+            
+            // 次のループの準備
+            remaining_buf = next;
             bytes_read += copy_len;
-            cluster_offset = 0;
-            cluster = self.fs.read_fat_entry(cluster)?;
+            current_cluster_offset = 0; // 2つ目以降のクラスタは先頭から読む
         }
 
         Ok(bytes_read)
@@ -1727,12 +2218,12 @@ impl Inode for Fat32Inode {
 // ============================================================================
 
 /// 8.3形式のチェックサムを計算
+///
+/// # Implementation Note
+/// イテレータと fold を使用した関数型スタイルで実装。
+/// ループ変数を管理する必要がなくなり、バグの入り込む余地が減少。
 fn calc_short_name_checksum(name: &[u8; 11]) -> u8 {
-    let mut sum: u8 = 0;
-    for &b in name {
-        sum = sum.rotate_right(1).wrapping_add(b);
-    }
-    sum
+    name.iter().fold(0u8, |sum, &byte| sum.rotate_right(1).wrapping_add(byte))
 }
 
 /// 文字列を8.3形式に変換

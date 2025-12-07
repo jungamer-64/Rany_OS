@@ -73,6 +73,8 @@ pub enum FsError {
     NameTooLong,
     /// Interrupted
     Interrupted,
+    /// Corrupted filesystem (e.g., infinite cluster chain, invalid FAT entries)
+    CorruptedFs,
 }
 
 /// Result type for filesystem operations
