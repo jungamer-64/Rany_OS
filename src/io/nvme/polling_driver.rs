@@ -547,6 +547,65 @@ impl NvmePollingDriver {
         completed
     }
 
+    /// リードコマンドを発行
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// prp1/prp2は有効な物理アドレスである必要がある。
+    pub unsafe fn submit_read(
+        &self,
+        core_id: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> Result<u16, &'static str> {
+        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        unsafe { queue.read(nsid, lba, blocks, prp1, prp2) }
+    }
+
+    /// ライトコマンドを発行
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// prp1/prp2は有効な物理アドレスである必要がある。
+    pub unsafe fn submit_write(
+        &self,
+        core_id: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        prp1: u64,
+        prp2: u64,
+    ) -> Result<u16, &'static str> {
+        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        unsafe { queue.write(nsid, lba, blocks, prp1, prp2) }
+    }
+
+    /// 特定のCIDの完了をポーリング
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    pub unsafe fn poll_completion_by_cid(
+        &self,
+        core_id: u32,
+        cid: u16,
+    ) -> Option<NvmeCompletion> {
+        let queue = self.get_queue(core_id)?;
+        
+        // ポーリングして完了を取得
+        if let Some(cqe) = unsafe { queue.poll() } {
+            // CIDが一致するかチェック
+            if cqe.command_id() == cid {
+                return Some(cqe);
+            }
+            // Note: CIDが一致しない場合は別のリクエストの完了
+            // 完全な実装では、ペンディングキューで管理する必要がある
+        }
+        None
+    }
+
     /// バッチポーリング（高スループット用）
     ///
     /// # Safety

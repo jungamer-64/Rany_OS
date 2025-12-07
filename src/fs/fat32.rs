@@ -34,6 +34,15 @@ use super::vfs::{
 };
 
 // ============================================================================
+// Constants
+// ============================================================================
+
+/// 最大クラスタチェーン長(無限ループ検出用)
+const MAX_CLUSTER_CHAIN: usize = 0x10000000; // 268M clusters = 約1TB @ 4KB/cluster
+/// 最大パス長(DOS互換)
+const MAX_PATH_LEN: usize = 260;
+
+// ============================================================================
 // Strong Types (Newtypes)
 // ============================================================================
 
@@ -635,6 +644,19 @@ impl Fat32FileSystem {
     }
 
     /// FATテーブルを読み込み
+    /// 
+    /// # メモリ枯渇の懸念
+    /// 現在の実装では、FAT全体をメモリにロードしています。
+    /// 大容量ボリューム(32GB以上)では、FATだけで数十MB〜数百MBのRAMを消費します。
+    /// 
+    /// **推奨される改善策:**
+    /// - LRUキャッシュを実装し、必要なFATセクタのみをオンデマンドで読み込む
+    /// - キャッシュサイズを制限し、古いエントリを破棄する
+    /// - 現状は小〜中規模ボリューム(数GB程度)での使用を想定
+    /// 
+    /// # Example
+    /// 32GB, 4KB/cluster => 約8M エントリ => 32MB RAM
+    /// 1TB, 4KB/cluster => 約256M エントリ => 1GB RAM (カーネルヒープを圧迫!)
     fn load_fat(&self) -> FsResult<()> {
         let sectors = self.fat_size as usize;
         let entries = sectors * BLOCK_SIZE / 4;
@@ -671,8 +693,12 @@ impl Fat32FileSystem {
         Ok(())
     }
 
-    /// クラスタ番号からセクタ番号を計算（型安全）
+    /// クラスタ番号からセクタ番号を計算(型安全)
+    /// 
+    /// # Panics
+    /// クラスタ番号が無効な場合(<2)はパニックする
     fn cluster_to_sector(&self, cluster: Cluster) -> Sector {
+        assert!(cluster.0 >= 2, "Invalid cluster number: {}", cluster.0);
         // クラスタ2がデータ領域の先頭
         self.data_start_sector + (cluster.0 - 2) * self.sectors_per_cluster
     }
@@ -687,7 +713,7 @@ impl Fat32FileSystem {
         Ok(fat[idx])
     }
 
-    /// FATエントリを書き込み（型安全）
+    /// FATエントリを書き込み(型安全)
     fn write_fat_entry(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
         let idx = cluster.0 as usize;
         {
@@ -697,7 +723,16 @@ impl Fat32FileSystem {
             }
             fat[idx] = value;
         }
-
+        
+        // ディスクへの書き込み
+        self.write_fat_entry_to_disk(cluster, value)?;
+        Ok(())
+    }
+    
+    /// FATエントリをディスクに書き込む(内部用)
+    fn write_fat_entry_to_disk(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
+        let idx = cluster.0 as usize;
+        
         // ディスクにも書き込み
         let fat_offset = idx * 4;
         let sector_offset = (fat_offset / BLOCK_SIZE) as u32;
@@ -716,7 +751,7 @@ impl Fat32FileSystem {
             .write_sync(sector.as_u64(), &buffer)
             .map_err(|_| FsError::IoError)?;
 
-        // バックアップFAT（FAT2）への書き込み
+        // バックアップFAT(FAT2)への書き込み
         let fat2_sector = sector + self.fat_size;
         self.device
             .write_sync(fat2_sector.as_u64(), &buffer)
@@ -725,24 +760,38 @@ impl Fat32FileSystem {
         Ok(())
     }
 
-    /// 空きクラスタを割り当て（型安全）
+    /// 空きクラスタを割り当て(型安全、アトミック)
+    /// 
+    /// # Race Condition Fix
+    /// 検索と確保を同一の書き込みロック区間内で実行することで、
+    /// 複数スレッドが同じクラスタを確保するTOCTOU脆弱性を防止。
     fn allocate_cluster(&self) -> FsResult<Cluster> {
-        let fat = self.fat_cache.read();
+        // 最初から書き込みロックを取得してアトミック性を確保
+        let mut fat = self.fat_cache.write();
+        
         // クラスタ2から検索開始
-        for (i, entry) in fat.iter().enumerate() {
-            if i >= 2 && entry.is_free() {
-                drop(fat);
+        for i in 2..fat.len() {
+            if fat[i].is_free() {
                 let cluster = Cluster(i as u32);
-                self.write_fat_entry(cluster, Cluster::EOF)?;
+                // メモリ上のキャッシュを即座に更新
+                fat[i] = Cluster::EOF;
+                
+                // ロックを保持したまま空きクラスタカウントを更新
                 let mut free = self.free_clusters.write();
                 *free = free.saturating_sub(1);
+                drop(free);
+                drop(fat);
+                
+                // ディスクへの書き込み(ロック解放後に実行してパフォーマンス改善)
+                self.write_fat_entry_to_disk(cluster, Cluster::EOF)?;
+                
                 return Ok(cluster);
             }
         }
         Err(FsError::NoSpace)
     }
 
-    /// クラスタを解放（型安全）
+    /// クラスタを解放(型安全)
     fn free_cluster(&self, cluster: Cluster) -> FsResult<()> {
         self.write_fat_entry(cluster, Cluster::FREE)?;
         let mut free = self.free_clusters.write();
@@ -750,11 +799,21 @@ impl Fat32FileSystem {
         Ok(())
     }
 
-    /// クラスタチェーンを解放（型安全）
+    /// クラスタチェーンを解放(型安全、無限ループ対策)
+    /// 
+    /// # Safety
+    /// ループ検出のため、最大探索数に制限を設けている。
+    /// 悪意のあるファイルシステムイメージによる無限ループを防止。
     fn free_cluster_chain(&self, start_cluster: Cluster) -> FsResult<()> {
         let mut cluster = start_cluster;
+        let mut count = 0;
 
         while cluster.is_valid() {
+            count += 1;
+            if count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+            }
+            
             let next = self.read_fat_entry(cluster)?;
             self.free_cluster(cluster)?;
             cluster = next;
@@ -839,7 +898,14 @@ impl FileSystem for Fat32FileSystem {
     }
 
     fn sync(&self) -> FsResult<()> {
-        // TODO: キャッシュをフラッシュ
+        // FAT32ではwrite_fat_entry()が個々のエントリを即座にディスクに書き込むため
+        // キャッシュフラッシュは不要。デバイスレベルのflush()のみ実行する。
+        //
+        // Note: パフォーマンスが問題になる場合は、write_fat_entry()でダーティフラグを
+        // 立てて、sync()時にまとめて書き込むようにバッチ処理を検討すること。
+        self.device
+            .flush()
+            .map_err(|_| FsError::IoError)?;
         Ok(())
     }
 
@@ -956,9 +1022,15 @@ impl Fat32Inode {
         let cluster_size = self.fs.cluster_size();
         let mut buffer = vec![0u8; cluster_size];
         let mut current_cluster = self.first_cluster;
+        let mut chain_count = 0;
         
         // 空きエントリを探す
         while current_cluster.is_valid() {
+            chain_count += 1;
+            if chain_count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+            }
+            
             self.fs.read_cluster(current_cluster, &mut buffer)?;
             
             let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
@@ -971,7 +1043,7 @@ impl Fat32Inode {
                     // 新しいエントリを作成
                     let (base_name, ext_name) = Self::generate_short_name(name);
                     
-                    let mut entry = DirEntryRaw {
+                    let entry = DirEntryRaw {
                         name: base_name,
                         ext: ext_name,
                         attr: attr.bits(),
@@ -1037,8 +1109,14 @@ impl Fat32Inode {
         let cluster_size = self.fs.cluster_size();
         let mut buffer = vec![0u8; cluster_size];
         let mut current_cluster = self.first_cluster;
+        let mut chain_count = 0;
         
         while current_cluster.is_valid() {
+            chain_count += 1;
+            if chain_count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+            }
+            
             self.fs.read_cluster(current_cluster, &mut buffer)?;
             
             let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
@@ -1084,8 +1162,14 @@ impl Fat32Inode {
         let cluster_size = self.fs.cluster_size();
         let mut buffer = vec![0u8; cluster_size];
         let mut lfn_parts: Vec<(u8, String)> = Vec::new();
+        let mut chain_count = 0;
 
         while cluster.is_valid() {
+            chain_count += 1;
+            if chain_count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+            }
+            
             self.fs.read_cluster(cluster, &mut buffer)?;
 
             let entries_per_cluster = cluster_size / DIR_ENTRY_SIZE;
@@ -1165,8 +1249,14 @@ impl Inode for Fat32Inode {
         })
     }
 
-    fn setattr(&self, _attr: &FileAttr) -> FsResult<()> {
-        // TODO: 属性の設定
+    fn setattr(&self, attr: &FileAttr) -> FsResult<()> {
+        // FAT32の属性設定
+        // Note: FAT32は限定的な属性のみサポート
+        // - ファイルサイズ（トランケートのみ）
+        // - 更新日時（mtime）
+        // - 属性フラグ（読み取り専用、隠しファイル等）
+        // uid/gid/modeはFAT32ではサポートされない
+        let _ = attr; // 将来の実装用
         Ok(())
     }
 
@@ -1386,7 +1476,12 @@ impl Inode for Fat32Inode {
         // 開始クラスタを見つける
         let start_cluster_idx = offset / cluster_size;
         let mut cluster = self.first_cluster;
+        let mut chain_count = 0;
         for _ in 0..start_cluster_idx {
+            chain_count += 1;
+            if chain_count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+            }
             cluster = self.fs.read_fat_entry(cluster)?;
             if !cluster.is_valid() {
                 return Err(FsError::IoError);
@@ -1397,6 +1492,11 @@ impl Inode for Fat32Inode {
         let mut cluster_buf = vec![0u8; cluster_size as usize];
 
         while bytes_read < to_read && cluster.is_valid() {
+            chain_count += 1;
+            if chain_count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+            }
+            
             self.fs.read_cluster(cluster, &mut cluster_buf)?;
 
             let available = cluster_size as usize - cluster_offset;
@@ -1424,7 +1524,6 @@ impl Inode for Fat32Inode {
         
         let cluster_size = self.fs.cluster_size() as u64;
         let mut bytes_written = 0usize;
-        let end_offset = offset + buf.len() as u64;
         
         // 必要なクラスタを確保
         let mut cluster = self.first_cluster;
@@ -1505,9 +1604,15 @@ impl Inode for Fat32Inode {
         
         let mut cluster = self.first_cluster;
         let mut count = 1u64;
+        let mut chain_count = 0;
         
         // 必要なクラスタ数まで辿る
         while count < needed_clusters && cluster.is_valid() {
+            chain_count += 1;
+            if chain_count > MAX_CLUSTER_CHAIN {
+                return Err(FsError::InvalidArgument); // クラスタチェーンが循環している
+            }
+            
             let next = self.fs.read_fat_entry(cluster)?;
             if !next.is_valid() {
                 // 拡張が必要：新しいクラスタを割り当て

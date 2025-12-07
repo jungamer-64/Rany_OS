@@ -264,7 +264,9 @@ impl TcpStream {
             tcb_guard.remote_addr = Some(addr);
             tcb_guard.state = TcpState::SynSent;
             tcb_guard.snd_nxt = generate_initial_seq();
-            // TODO: 実際のSYNパケット送信
+            // SYNパケット送信
+            send_syn_packet(tcb_guard.local_addr, addr, tcb_guard.snd_nxt);
+            tcb_guard.snd_nxt = tcb_guard.snd_nxt.wrapping_add(1); // SYNは1バイト消費
         }
 
         // 接続完了を待つ
@@ -400,7 +402,25 @@ impl AsyncWrite for TcpStream {
     }
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
-        // TODO: 送信バッファのフラッシュ
+        // 送信バッファのフラッシュ
+        let mut tcb = self.tcb.lock();
+        
+        // 送信バッファ内の全パケットを送信
+        while let Some(packet) = tcb.send_buffer.pop_front() {
+            if let Some(remote) = tcb.remote_addr {
+                let data = packet.data();
+                send_data_packet(
+                    tcb.local_addr,
+                    remote,
+                    tcb.snd_nxt,
+                    tcb.rcv_nxt,
+                    tcb.rcv_wnd,
+                    data,
+                );
+                tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data.len() as u32);
+            }
+        }
+        
         Poll::Ready(Ok(()))
     }
 
@@ -410,11 +430,20 @@ impl AsyncWrite for TcpStream {
         match tcb.state {
             TcpState::Established => {
                 tcb.state = TcpState::FinWait1;
-                // TODO: FIN送信
+                // FIN送信
+                if let Some(remote) = tcb.remote_addr {
+                    send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
+                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FINは1バイト消費
+                }
                 Poll::Ready(Ok(()))
             }
             TcpState::CloseWait => {
                 tcb.state = TcpState::LastAck;
+                // FIN送信
+                if let Some(remote) = tcb.remote_addr {
+                    send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
+                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                }
                 Poll::Ready(Ok(()))
             }
             _ => Poll::Ready(Err(TcpError::InvalidState)),
@@ -685,6 +714,161 @@ fn is_port_in_use(_port: u16) -> bool {
     // 現状はシングルトンTcpProcessorがないため、常にfalseを返す
     // 将来的にはグローバルTcpProcessorの接続リストをチェック
     false
+}
+
+// ============================================================================
+// TCP送信ヘルパー関数
+// ============================================================================
+
+/// TCPセグメントを構築して送信
+fn send_tcp_packet(
+    local: SocketAddr,
+    remote: SocketAddr,
+    seq: u32,
+    ack: u32,
+    flags: u16,
+    window: u16,
+    payload: &[u8],
+) {
+    use alloc::vec;
+    
+    let data_offset: u8 = 5; // 20バイト（オプションなし）
+    let header_len = (data_offset as usize) * 4;
+    let total_len = header_len + payload.len();
+    
+    let mut segment = vec![0u8; total_len];
+    
+    // TCPヘッダ構築
+    // Source port (2バイト)
+    segment[0..2].copy_from_slice(&local.port.to_be_bytes());
+    // Destination port (2バイト)
+    segment[2..4].copy_from_slice(&remote.port.to_be_bytes());
+    // Sequence number (4バイト)
+    segment[4..8].copy_from_slice(&seq.to_be_bytes());
+    // ACK number (4バイト)
+    segment[8..12].copy_from_slice(&ack.to_be_bytes());
+    // Data offset (4bit) + Reserved (4bit) + Flags (8bit)
+    let data_off_flags = ((data_offset as u16) << 12) | (flags & 0x3F);
+    segment[12..14].copy_from_slice(&data_off_flags.to_be_bytes());
+    // Window (2バイト)
+    segment[14..16].copy_from_slice(&window.to_be_bytes());
+    // Checksum (2バイト) - 後で計算
+    segment[16..18].copy_from_slice(&0u16.to_be_bytes());
+    // Urgent pointer (2バイト)
+    segment[18..20].copy_from_slice(&0u16.to_be_bytes());
+    
+    // ペイロード
+    if !payload.is_empty() {
+        segment[header_len..].copy_from_slice(payload);
+    }
+    
+    // チェックサム計算
+    calculate_tcp_checksum(&mut segment, local.ip.0, remote.ip.0);
+    
+    // ネットワークスタック経由で送信
+    let src_ip = crate::net::ipv4::Ipv4Address::new(local.ip.0);
+    let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.ip.0);
+    crate::net::stack::send_tcp(src_ip, dst_ip, &segment);
+}
+
+/// TCPチェックサム計算（疑似ヘッダ込み）
+fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) {
+    // チェックサムフィールドをゼロに
+    segment[16] = 0;
+    segment[17] = 0;
+    
+    let mut sum: u32 = 0;
+    
+    // 疑似ヘッダ
+    sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
+    sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
+    sum += u16::from_be_bytes([dst_ip[0], dst_ip[1]]) as u32;
+    sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
+    sum += 6u32; // Protocol (TCP)
+    sum += segment.len() as u32;
+    
+    // TCPセグメント本体
+    let mut i = 0;
+    while i + 1 < segment.len() {
+        sum += u16::from_be_bytes([segment[i], segment[i + 1]]) as u32;
+        i += 2;
+    }
+    if i < segment.len() {
+        sum += (segment[i] as u32) << 8;
+    }
+    
+    // 1の補数
+    while sum >> 16 != 0 {
+        sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    let checksum = !sum as u16;
+    
+    segment[16..18].copy_from_slice(&checksum.to_be_bytes());
+}
+
+/// SYNパケットを送信
+fn send_syn_packet(local: SocketAddr, remote: SocketAddr, seq: u32) {
+    send_tcp_packet(
+        local,
+        remote,
+        seq,
+        0,
+        TcpHeader::FLAG_SYN,
+        65535,
+        &[],
+    );
+}
+
+/// SYN-ACKパケットを送信
+fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
+    send_tcp_packet(
+        local,
+        remote,
+        seq,
+        ack,
+        TcpHeader::FLAG_SYN | TcpHeader::FLAG_ACK,
+        65535,
+        &[],
+    );
+}
+
+/// ACKパケットを送信
+fn send_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32, window: u16) {
+    send_tcp_packet(
+        local,
+        remote,
+        seq,
+        ack,
+        TcpHeader::FLAG_ACK,
+        window,
+        &[],
+    );
+}
+
+/// FINパケットを送信
+fn send_fin_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
+    send_tcp_packet(
+        local,
+        remote,
+        seq,
+        ack,
+        TcpHeader::FLAG_FIN | TcpHeader::FLAG_ACK,
+        65535,
+        &[],
+    );
+}
+
+/// データパケットを送信（PSH+ACK）
+fn send_data_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32, window: u16, data: &[u8]) {
+    send_tcp_packet(
+        local,
+        remote,
+        seq,
+        ack,
+        TcpHeader::FLAG_PSH | TcpHeader::FLAG_ACK,
+        window,
+        data,
+    );
 }
 
 // ============================================================================

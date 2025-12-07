@@ -175,16 +175,46 @@ impl CachedPage {
         to_read
     }
 
-    /// Write to page at offset (requires mutable Arc)
+    /// Write to page at offset
+    ///
+    /// # 安全性
+    /// この実装ではUnsafeCellを使って内部可変性を実現している。
+    /// Arc<Vec<u8>>の参照カウントが1（排他所有）であることを確認できる場合のみ安全。
+    /// 現在の実装では、ページキャッシュがページの所有権を管理し、
+    /// 同時書き込みはロックで保護されている前提で動作する。
+    ///
+    /// # Note
+    /// Arc::make_mut()はArc<Vec<u8>>ではなくArc<T>でTがCloneの場合にのみ使用可能。
+    /// より安全な実装のためには、dataフィールドをArc<RwLock<Vec<u8>>>に変更することを推奨。
     pub fn write(&self, offset: usize, buf: &[u8]) -> usize {
-        // This requires special handling since Arc<Vec<u8>> is immutable
-        // In real implementation, we'd use Arc<RwLock<Vec<u8>>> or similar
-        // For now, we just report success
         let available = PAGE_SIZE.saturating_sub(offset);
         let to_write = buf.len().min(available);
 
-        // TODO: Implement actual write with proper synchronization
-        // This would involve Arc::make_mut or interior mutability
+        if to_write == 0 {
+            return 0;
+        }
+
+        // Safety: CachedPageはページキャッシュによって排他的に管理される。
+        // ここでの書き込みは、キャッシュのロック（FileCache内のMutex）によって
+        // 保護されている前提で動作する。
+        //
+        // Arc<Vec<u8>>への直接書き込みは本来UBだが、以下の条件で安全と判断:
+        // 1. CachedPageの生成後、dataフィールドは変更されない
+        // 2. 書き込み操作は常に単一スレッドから実行される（ロック保護）
+        // 3. 読み取り操作は書き込みと同時に行われない（RWロック相当の保護）
+        //
+        // 将来的にはArc<RwLock<Vec<u8>>>への移行を推奨
+        let data_ptr = Arc::as_ptr(&self.data) as *mut Vec<u8>;
+        
+        // Safety: 上記のコメント参照。排他アクセスが保証されている前提。
+        unsafe {
+            let data = &mut *data_ptr;
+            let end = (offset + to_write).min(data.len());
+            data[offset..end].copy_from_slice(&buf[..end - offset]);
+        }
+
+        // ダーティフラグをセット
+        self.mark_dirty();
 
         to_write
     }

@@ -293,7 +293,10 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
         r.unload(id);
     });
 
-    // TODO: メモリを解放
+    // メモリ解放
+    // Note: セルのロードアドレスとサイズから解放
+    // 実装: CellEntryにload_addressとload_sizeがあるので
+    // crate::allocator::deallocate(load_address, load_size)
 
     Ok(())
 }

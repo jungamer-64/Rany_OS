@@ -194,9 +194,39 @@ impl TcbTable {
     }
 
     /// 初期シーケンス番号生成（RFC 6528準拠の簡易版）
+    /// タイムスタンプとカウンタを組み合わせたハッシュベースの生成
     pub fn generate_isn(&self) -> u32 {
-        // TODO: より安全なランダム化（タイムスタンプ + ハッシュ）
-        self.seq_counter.fetch_add(64000, Ordering::Relaxed)
+        // タイムスタンプ取得（TSC使用）
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        
+        // カウンタをインクリメント
+        let counter = self.seq_counter.fetch_add(1, Ordering::Relaxed);
+        
+        // 簡易ハッシュ: タイムスタンプとカウンタを組み合わせ
+        // FNV-1aライクなハッシュ関数
+        let mut hash: u32 = 0x811c9dc5; // FNV offset basis
+        const FNV_PRIME: u32 = 0x01000193;
+        
+        // タイムスタンプをバイト単位で混合
+        for byte in tsc.to_le_bytes() {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        
+        // カウンタも混合
+        for byte in counter.to_le_bytes() {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        
+        // 現在のtickも混合して更なるエントロピー追加
+        let tick = self.current_tick.load(Ordering::Relaxed);
+        for byte in tick.to_le_bytes() {
+            hash ^= byte as u32;
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        
+        hash
     }
 
     /// tick更新（タイマー割り込みから呼ばれる）

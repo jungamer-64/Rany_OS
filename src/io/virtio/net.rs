@@ -201,6 +201,8 @@ pub struct NetVirtQueue {
     pending_wakers: Mutex<Vec<Waker>>,
     /// ペンディングバッファの追跡 (desc_id -> callback)
     pending_buffers: Mutex<Vec<Option<PendingBuffer>>>,
+    /// Notify用MMIOアドレス（Option for backward compatibility）
+    notify_addr: Option<*mut u16>,
 }
 
 // NetVirtQueueをSend/Syncにする
@@ -243,6 +245,40 @@ impl NetVirtQueue {
             last_used_idx: AtomicU16::new(0),
             pending_wakers: Mutex::new(Vec::new()),
             pending_buffers: Mutex::new(pending),
+            notify_addr: None,
+        }
+    }
+
+    /// 新しいVirtQueueを作成（notify付き）
+    ///
+    /// # Safety
+    /// desc_table, avail_ring, used_ring, notify_addr は有効なメモリを指している必要がある
+    pub unsafe fn new_with_notify(
+        index: u16,
+        size: u16,
+        desc_table: *mut VringDesc,
+        avail_ring: *mut VringAvail,
+        used_ring: *mut VringUsed,
+        notify_addr: *mut u16,
+    ) -> Self {
+        // Safety: 呼び出し元がdesc_table, avail_ring, used_ringの有効性を保証
+        let mut queue = unsafe { Self::new(index, size, desc_table, avail_ring, used_ring) };
+        queue.notify_addr = Some(notify_addr);
+        queue
+    }
+
+    /// デバイスにキュー更新を通知
+    ///
+    /// notify_addrが設定されている場合、MMIOレジスタに直接書き込む。
+    /// これにより、transportの&mut selfを要求せずに通知が可能。
+    pub fn notify(&self) {
+        if let Some(notify_addr) = self.notify_addr {
+            unsafe {
+                // Memory barrier before notifying device
+                core::sync::atomic::fence(Ordering::Release);
+                // Write queue index to notification register
+                core::ptr::write_volatile(notify_addr, self.index);
+            }
         }
     }
 
@@ -708,7 +744,9 @@ impl<'a> Future for SendFuture<'a> {
                         tx_queue.register_waker(cx.waker().clone());
 
                         // デバイスに通知
-                        // TODO: virtio_notify()
+                        // NetVirtQueue::notify()を使用してMMIOに直接書き込み
+                        // notify_addrが設定されていない場合は、割り込み駆動に依存
+                        tx_queue.notify();
                     }
                     Err(e) => return Poll::Ready(Err(e)),
                 }

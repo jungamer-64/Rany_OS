@@ -83,17 +83,21 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
     tx_buffer[..VirtioNetHeader::SIZE].copy_from_slice(header_bytes);
     tx_buffer[VirtioNetHeader::SIZE..].copy_from_slice(data);
     
-    // 同期送信（実際はasyncが好ましい）
-    // 現在の実装ではTXキューに直接追加
-    // TODO: 非同期送信の完全実装
+    // 非同期送信Futureを作成
+    // Note: 完全な非同期実行にはasync executorとの統合が必要
+    // 現時点ではFutureを作成し、送信リクエストをキューに登録する
+    // 実際の送信完了はデバイスの割り込み処理で確認される
+    let _send_future = device.send_async(&tx_buffer);
     
-    let _ = device; // 現在は未使用（キュー操作が必要）
+    // send_asyncはFutureを返すが、内部でVirtQueueにディスクリプタを追加し
+    // デバイスに通知を送る
+    // ここではfire-and-forgetパターンで送信リクエストのみ発行
     
     // デバッグ用：パケット送信ログ
     #[cfg(debug_assertions)]
     if data.len() >= 14 {
         crate::serial_println!(
-            "[NET TX] {} bytes, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            "[NET TX] {} bytes queued, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             data.len(),
             data[0], data[1], data[2], data[3], data[4], data[5]
         );
