@@ -353,7 +353,7 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
         return None;
     }
 
-    let header: Elf64Header = unsafe { core::ptr::read(elf_data.as_ptr() as *const Elf64Header) };
+    let header: Elf64Header = crate::util::read_struct(elf_data, 0)?;
 
     // ELFマジック検証
     if &header.e_ident[0..4] != b"\x7FELF" {
@@ -369,7 +369,7 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
     }
 
     let shstrtab_sh: Elf64SectionHeader =
-        unsafe { core::ptr::read(elf_data.as_ptr().add(shstrtab_offset) as *const _) };
+        crate::util::read_struct(elf_data, shstrtab_offset)?;
 
     let shstrtab_start = shstrtab_sh.sh_offset as usize;
     let shstrtab_end = shstrtab_start + shstrtab_sh.sh_size as usize;
@@ -389,7 +389,7 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
         }
 
         let sh: Elf64SectionHeader =
-            unsafe { core::ptr::read(elf_data.as_ptr().add(sh_offset) as *const _) };
+            crate::util::read_struct(elf_data, sh_offset)?;
 
         // セクション名を取得
         let name_offset = sh.sh_name as usize;
@@ -429,8 +429,8 @@ fn parse_signature_section(data: &[u8]) -> Result<CellSignature, LoadError> {
         ));
     }
 
-    let header: SignatureHeader =
-        unsafe { core::ptr::read(data.as_ptr() as *const SignatureHeader) };
+    let header: SignatureHeader = crate::util::read_struct(data, 0)
+        .ok_or_else(|| LoadError::InvalidFormat("Invalid signature header".into()))?;
 
     // マジックナンバーの検証
     if header.magic != SIGNATURE_MAGIC {

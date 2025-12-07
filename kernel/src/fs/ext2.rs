@@ -369,7 +369,7 @@ impl Ext2FileSystem {
             .map_err(|_| FsError::IoError)?;
 
         let superblock: Superblock =
-            unsafe { core::ptr::read(buffer.as_ptr() as *const Superblock) };
+            crate::util::read_struct(&buffer, 0).ok_or(FsError::InvalidArgument)?;
 
         // マジックナンバーを確認
         if superblock.magic != EXT2_MAGIC {
@@ -406,9 +406,8 @@ impl Ext2FileSystem {
 
         for i in 0..bg_count as usize {
             let offset = i * mem::size_of::<BlockGroupDescriptor>();
-            let bgd: BlockGroupDescriptor = unsafe {
-                core::ptr::read(bgdt_buffer[offset..].as_ptr() as *const BlockGroupDescriptor)
-            };
+            let bgd: BlockGroupDescriptor = crate::util::read_struct(&bgdt_buffer, offset)
+                .ok_or(FsError::InvalidArgument)?;
             block_groups.push(bgd);
         }
 
@@ -441,7 +440,7 @@ impl Ext2FileSystem {
         self.read_block(block, &mut buffer)?;
 
         let inode: Ext2Inode =
-            unsafe { core::ptr::read(buffer[offset as usize..].as_ptr() as *const Ext2Inode) };
+            crate::util::read_struct(&buffer, offset as usize).ok_or(FsError::InvalidArgument)?;
 
         Ok(inode)
     }
@@ -640,8 +639,8 @@ impl Ext2InodeWrapper {
 
             let mut pos = block_offset;
             while pos < buffer.len() && (offset + (pos - block_offset) as u64) < size {
-                let entry: Ext2DirEntry =
-                    unsafe { core::ptr::read(buffer[pos..].as_ptr() as *const Ext2DirEntry) };
+                    let entry: Ext2DirEntry =
+                        crate::util::read_struct(&buffer, pos).ok_or(FsError::InvalidArgument)?;
 
                 if entry.inode != 0 && entry.rec_len > 0 {
                     let name_start = pos + 8;

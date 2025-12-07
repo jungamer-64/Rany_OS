@@ -203,61 +203,10 @@ pub struct ElfLoader<'a> {
 /// 
 /// 【設計書 2.2】生ポインタ操作を避け、境界チェック付きで構造体を読み取る。
 /// 内部では unsafe を使用するが、呼び出し前に全ての境界チェックを実施。
-#[inline]
-fn read_struct<T: Copy>(data: &[u8], offset: usize) -> Result<T, LoadError> {
-    let size = mem::size_of::<T>();
-    
-    // オーバーフローチェック
-    let end = offset.checked_add(size)
-        .ok_or_else(|| LoadError::InvalidFormat("Offset overflow".into()))?;
-    
-    // 境界チェック
-    if end > data.len() {
-        return Err(LoadError::InvalidFormat(
-            alloc::format!("Read out of bounds: offset={}, size={}, data_len={}", 
-                offset, size, data.len())
-        ));
-    }
-    
-    // アライメントチェック（オプショナルだがより安全）
-    let align = mem::align_of::<T>();
-    let ptr = data.as_ptr().wrapping_add(offset);
-    if (ptr as usize) % align != 0 {
-        // アライメントが合わない場合はコピーして読み取り
-        let mut buf = mem::MaybeUninit::<T>::uninit();
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                data.as_ptr().add(offset),
-                buf.as_mut_ptr() as *mut u8,
-                size
-            );
-            Ok(buf.assume_init())
-        }
-    } else {
-        // アライメントが合う場合は直接読み取り
-        Ok(unsafe { core::ptr::read(ptr as *const T) })
-    }
-}
+// Use the shared util::read_struct helper instead which centralizes
+// unsafe pointer reads and performs bounds/alignment checks.
 
-/// 安全にバイトスライスを取得
-/// 
-/// 【設計書 2.2】境界チェック付きでスライスを取得。
-#[inline]
-fn get_slice(data: &[u8], offset: usize, len: usize) -> Result<&[u8], LoadError> {
-    // オーバーフローチェック
-    let end = offset.checked_add(len)
-        .ok_or_else(|| LoadError::InvalidFormat("Slice offset overflow".into()))?;
-    
-    // 境界チェック
-    if end > data.len() {
-        return Err(LoadError::InvalidFormat(
-            alloc::format!("Slice out of bounds: offset={}, len={}, data_len={}", 
-                offset, len, data.len())
-        ));
-    }
-    
-    Ok(&data[offset..end])
-}
+// Use util::get_slice from the top-level util module
 
 impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
@@ -277,7 +226,8 @@ impl<'a> ElfLoader<'a> {
         }
 
         // 【設計書 2.2】安全なラッパーを使用してヘッダーを読み取り
-        let header: Elf64Header = read_struct(data, 0)?;
+        let header: Elf64Header = crate::util::read_struct(data, 0)
+            .ok_or_else(|| LoadError::InvalidFormat("Failed to read ELF header".into()))?;
 
         // マジックナンバーの検証
         if header.e_ident[0..4] != ELF_MAGIC {
@@ -324,7 +274,8 @@ impl<'a> ElfLoader<'a> {
                 self.header.e_phoff as usize + (i as usize * self.header.e_phentsize as usize);
 
             // 【設計書 2.2】安全なラッパーを使用
-            let ph: Elf64ProgramHeader = read_struct(self.data, ph_offset)?;
+            let ph: Elf64ProgramHeader = crate::util::read_struct(self.data, ph_offset)
+                .ok_or_else(|| LoadError::InvalidFormat("Failed to read program header".into()))?;
 
             if ph.p_type == PT_LOAD {
                 // 【セキュリティ】セグメントサイズのチェック
@@ -377,9 +328,9 @@ impl<'a> ElfLoader<'a> {
                 self.header.e_shoff as usize + (i as usize * self.header.e_shentsize as usize);
 
             // 【設計書 2.2】安全なラッパーを使用、エラーはスキップ
-            let sh: Elf64SectionHeader = match read_struct(self.data, sh_offset) {
-                Ok(sh) => sh,
-                Err(_) => continue,
+            let sh: Elf64SectionHeader = match crate::util::read_struct(self.data, sh_offset) {
+                Some(sh) => sh,
+                None => continue,
             };
 
             // シンボルテーブルを処理
@@ -405,9 +356,9 @@ impl<'a> ElfLoader<'a> {
             let sym_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Symbol>();
 
             // 【設計書 2.2】安全なラッパーを使用、エラーはスキップ
-            let sym: Elf64Symbol = match read_struct(self.data, sym_offset) {
-                Ok(sym) => sym,
-                Err(_) => continue,
+            let sym: Elf64Symbol = match crate::util::read_struct(self.data, sym_offset) {
+                Some(sym) => sym,
+                None => continue,
             };
 
             // グローバルシンボルのみ処理
@@ -432,7 +383,8 @@ impl<'a> ElfLoader<'a> {
         let sh_offset = self.header.e_shoff as usize + (index * self.header.e_shentsize as usize);
 
         // 【設計書 2.2】安全なラッパーを使用
-        let sh: Elf64SectionHeader = read_struct(self.data, sh_offset)?;
+        let sh: Elf64SectionHeader = crate::util::read_struct(self.data, sh_offset)
+            .ok_or_else(|| LoadError::InvalidFormat("Failed to read section header".into()))?;
 
         let start = sh.sh_offset as usize;
         let size = sh.sh_size as usize;
@@ -546,8 +498,8 @@ impl<'a> ElfLoader<'a> {
                 continue;
             }
 
-            let sh: Elf64SectionHeader =
-                unsafe { core::ptr::read(self.data.as_ptr().add(sh_offset) as *const _) };
+            let sh: Elf64SectionHeader = crate::util::read_struct(self.data, sh_offset)
+                .ok_or_else(|| LoadError::InvalidFormat("Failed to read section header".into()))?;
 
             if sh.sh_type == SHT_RELA {
                 self.apply_relocations(&sh, loaded, &resolve)?;
@@ -580,8 +532,8 @@ impl<'a> ElfLoader<'a> {
                 continue;
             }
 
-            let rela: Elf64Rela =
-                unsafe { core::ptr::read(self.data.as_ptr().add(rela_offset) as *const _) };
+            let rela: Elf64Rela = crate::util::read_struct(self.data, rela_offset)
+                .ok_or_else(|| LoadError::InvalidFormat("Failed to read relocation".into()))?;
 
             // シンボルを取得
             let sym_idx = rela.symbol() as usize;
@@ -591,8 +543,8 @@ impl<'a> ElfLoader<'a> {
                 continue;
             }
 
-            let sym: Elf64Symbol =
-                unsafe { core::ptr::read(self.data.as_ptr().add(sym_offset) as *const _) };
+            let sym: Elf64Symbol = crate::util::read_struct(self.data, sym_offset)
+                .ok_or_else(|| LoadError::InvalidFormat("Failed to read symbol".into()))?;
 
             // シンボル値を解決
             let sym_value = if sym.st_shndx == 0 {
@@ -623,7 +575,8 @@ impl<'a> ElfLoader<'a> {
             ));
         }
 
-        Ok(unsafe { core::ptr::read(self.data.as_ptr().add(sh_offset) as *const _) })
+        Ok(crate::util::read_struct(self.data, sh_offset)
+            .ok_or_else(|| LoadError::InvalidFormat("Failed to read section header".into()))?)
     }
 
     /// 単一のリロケーションを適用
@@ -640,25 +593,19 @@ impl<'a> ElfLoader<'a> {
             1 => {
                 // R_X86_64_64: 64-bit absolute
                 let value = sym_value.wrapping_add(rela.r_addend as usize);
-                unsafe {
-                    *(target as *mut u64) = value as u64;
-                }
+                    crate::util::write_to_addr(target, value as u64);
             }
             2 => {
                 // R_X86_64_PC32: 32-bit PC-relative
                 let value = (sym_value as i64)
                     .wrapping_add(rela.r_addend)
                     .wrapping_sub(target as i64);
-                unsafe {
-                    *(target as *mut i32) = value as i32;
-                }
+                crate::util::write_to_addr(target, value as i32);
             }
             10 => {
                 // R_X86_64_32: 32-bit absolute
                 let value = sym_value.wrapping_add(rela.r_addend as usize);
-                unsafe {
-                    *(target as *mut u32) = value as u32;
-                }
+                crate::util::write_to_addr(target, value as u32);
             }
             _ => {
                 // 未対応のリロケーションタイプは無視（警告を出すべき）

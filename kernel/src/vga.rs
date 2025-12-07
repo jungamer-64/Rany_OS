@@ -70,15 +70,7 @@ impl Writer {
                 let col = self.column_position;
 
                 let color_code = self.color_code;
-                unsafe {
-                    core::ptr::write_volatile(
-                        &mut (*self.buffer).chars[row][col],
-                        ScreenChar {
-                            ascii_character: byte,
-                            color_code,
-                        },
-                    );
-                }
+                Self::write_char_volatile(self.buffer, row, col, ScreenChar { ascii_character: byte, color_code });
                 self.column_position += 1;
             }
         }
@@ -96,10 +88,8 @@ impl Writer {
     fn new_line(&mut self) {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
-                unsafe {
-                    let character = core::ptr::read_volatile(&(*self.buffer).chars[row][col]);
-                    core::ptr::write_volatile(&mut (*self.buffer).chars[row - 1][col], character);
-                }
+                let character = Self::read_char_volatile(self.buffer, row, col);
+                Self::write_char_volatile(self.buffer, row - 1, col, character);
             }
         }
         self.clear_row(BUFFER_HEIGHT - 1);
@@ -112,10 +102,20 @@ impl Writer {
             color_code: self.color_code,
         };
         for col in 0..BUFFER_WIDTH {
-            unsafe {
-                core::ptr::write_volatile(&mut (*self.buffer).chars[row][col], blank);
-            }
+            Self::write_char_volatile(self.buffer, row, col, blank);
         }
+    }
+
+    #[inline]
+    fn write_char_volatile(buffer: *mut Buffer, row: usize, col: usize, ch: ScreenChar) {
+        unsafe {
+            core::ptr::write_volatile(&mut (*buffer).chars[row][col], ch);
+        }
+    }
+
+    #[inline]
+    fn read_char_volatile(buffer: *mut Buffer, row: usize, col: usize) -> ScreenChar {
+        unsafe { core::ptr::read_volatile(&(*buffer).chars[row][col]) }
     }
 }
 

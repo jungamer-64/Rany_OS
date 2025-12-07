@@ -7,48 +7,53 @@ ExoRust Kernelに効率的なLRU（Least Recently Used）ブロックキャッ�
 ## 主な機能
 
 ### 1. LRU置換ポリシー
+
 - **O(1)の操作**: ハッシュマップ + 双方向連結リスト（VecDeque）で実装
 - **最近使用されたブロック**: リストの先頭に配置
 - **最も古いブロック**: リストの末尾から削除（eviction）
 
 ### 2. ゼロコピー設計
+
 - `Arc<Vec<u8>>`による参照カウント方式のバッファ共有
 - データのコピーを最小化し、メモリ効率を向上
 
 ### 3. Write-back キャッシュ
+
 - 書き込みはキャッシュに反映し、ダーティフラグを設定
 - `flush_*`メソッドで明示的にディスクに書き戻し
 - ダーティブロックはLRU evictionから保護
 
 ### 4. マルチデバイス対応
+
 - デバイスID + ブロック番号のキーで複数のブロックデバイスを管理
 - デバイス単位でのフラッシュや無効化をサポート
 
 ## アーキテクチャ
 
 ```
-┌─────────────────────────────────────────────────┐
-│           LRUBlockCache                          │
-│                                                   │
-│  ┌────────────┐        ┌──────────────┐         │
-│  │ BTreeMap   │◄──────►│  VecDeque    │         │
-│  │ (Key→Block)│        │  (LRU List)  │         │
-│  └────────────┘        └──────────────┘         │
-│       ▲                        ▲                 │
-│       │                        │                 │
-│       │                        │                 │
-│  ┌────┴────────────────────────┴────┐           │
-│  │      CachedBlock                 │           │
-│  │  - Arc<Vec<u8>> data             │           │
-│  │  - dirty flag                    │           │
-│  │  - last_access timestamp         │           │
-│  └──────────────────────────────────┘           │
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────┐
+│               LRUBlockCache                      │
+│                                                  │
+│      ┌────────────┐        ┌──────────────┐      │
+│      │ BTreeMap   │◄──────►│  VecDeque    │      │
+│      │ (Key→Block)│        │  (LRU List)  │      │
+│      └────────────┘        └──────────────┘      │
+│           ▲                        ▲             │
+│           │                        │             │
+│           │                        │             │
+│      ┌────┴────────────────────────┴────┐        │
+│      │      CachedBlock                 │        │
+│      │  - Arc<Vec<u8>> data             │        │
+│      │  - dirty flag                    │        │
+│      │  - last_access timestamp         │        │
+│      └──────────────────────────────────┘        │
+└──────────────────────────────────────────────────┘
 ```
 
 ## データ構造
 
 ### BlockCacheKey
+
 ```rust
 pub struct BlockCacheKey {
     pub device_id: u64,    // デバイスID
@@ -57,6 +62,7 @@ pub struct BlockCacheKey {
 ```
 
 ### CachedBlock
+
 ```rust
 pub struct CachedBlock {
     key: BlockCacheKey,           // キー
@@ -69,6 +75,7 @@ pub struct CachedBlock {
 ```
 
 ### LRUBlockCache
+
 ```rust
 pub struct LRUBlockCache {
     blocks: Mutex<BTreeMap<BlockCacheKey, Arc<CachedBlock>>>,
@@ -105,6 +112,7 @@ let cache = block_cache();
 ### 基本操作
 
 #### ブロックの取得
+
 ```rust
 // キャッシュからブロックを取得（ヒット時はLRUリストを更新）
 if let Some(block) = cache.get(device_id, block_num) {
@@ -116,6 +124,7 @@ if let Some(block) = cache.get(device_id, block_num) {
 ```
 
 #### ブロックの挿入
+
 ```rust
 // ディスクから読み込んだデータをキャッシュに挿入
 let data = read_from_disk(device_id, block_num)?;
@@ -123,6 +132,7 @@ cache.insert(device_id, block_num, data);
 ```
 
 #### 読み取り
+
 ```rust
 let mut buffer = [0u8; 512];
 
@@ -135,6 +145,7 @@ if let Some(read_size) = cache.read(device_id, block_num, 0, &mut buffer) {
 ```
 
 #### 書き込み
+
 ```rust
 let data = b"Hello, ExoRust!";
 
@@ -147,6 +158,7 @@ if let Some(written) = cache.write(device_id, block_num, 0, data) {
 ### フラッシュ操作
 
 #### 特定ブロックのフラッシュ
+
 ```rust
 cache.flush_block(device_id, block_num, |data| {
     // ディスクへの書き込み処理
@@ -156,6 +168,7 @@ cache.flush_block(device_id, block_num, |data| {
 ```
 
 #### デバイス全体のフラッシュ
+
 ```rust
 let flushed = cache.flush_device(device_id, |block_num, data| {
     disk_write(device_id, block_num, data)?;
@@ -165,6 +178,7 @@ println!("Flushed {} blocks", flushed);
 ```
 
 #### 全デバイスのフラッシュ
+
 ```rust
 let total = cache.flush_all(|device_id, block_num, data| {
     disk_write(device_id, block_num, data)?;
@@ -176,12 +190,14 @@ println!("Flushed {} blocks across all devices", total);
 ### キャッシュ管理
 
 #### キャッシュの無効化
+
 ```rust
 // 特定デバイスのキャッシュを無効化
 cache.invalidate_device(device_id);
 ```
 
 #### 統計情報の取得
+
 ```rust
 let stats = cache.stats();
 println!("Hits: {}", stats.hits);
@@ -282,6 +298,7 @@ impl FileSystem {
 ## パフォーマンス特性
 
 ### 時間計算量
+
 - **get()**: O(1) - ハッシュマップ検索 + VecDeque操作
 - **insert()**: O(1) - ハッシュマップ挿入 + VecDeque追加
 - **evict()**: O(1) - VecDequeの末尾削除
@@ -289,10 +306,12 @@ impl FileSystem {
 - **invalidate_device()**: O(n) - nはそのデバイスのキャッシュブロック数
 
 ### 空間計算量
+
 - キャッシュサイズ = `ブロック数 × ブロックサイズ`
 - デフォルトでは最大32MBまで（約65,536ブロック、512Bブロックの場合）
 
 ### メモリオーバーヘッド
+
 - 各ブロック: 約80バイト（構造体メタデータ + Arc参照カウント）
 - LRUリスト: 16バイト × ブロック数
 - ハッシュマップ: 約24バイト × ブロック数
@@ -300,14 +319,17 @@ impl FileSystem {
 ## ExoRustアーキテクチャとの統合
 
 ### Share-Nothing原則
+
 - 各ドメインは独自のキャッシュインスタンスを持つことができる
 - Exchange Heap経由でブロックデータを共有する場合は`RRef<CachedBlock>`を使用
 
 ### Async-First設計
+
 - 将来的に非同期I/O対応を追加可能
 - `async fn get_async()`, `async fn flush_async()`などを実装予定
 
 ### Fault Isolation
+
 - キャッシュの破損が他のドメインに影響しない
 - ダーティブロックのフラッシュ失敗時も、他のブロックの読み取りは継続可能
 
@@ -347,6 +369,6 @@ TODO: ベンチマーク結果を追加
 
 ## 参考文献
 
-- Linux Page Cache: https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html
-- FreeBSD Buffer Cache: https://docs.freebsd.org/en/books/arch-handbook/
+- Linux Page Cache: <https://www.kernel.org/doc/html/latest/admin-guide/mm/concepts.html>
+- FreeBSD Buffer Cache: <https://docs.freebsd.org/en/books/arch-handbook/>
 - "Operating Systems: Three Easy Pieces" - Chapter 39: Files and Directories

@@ -10,4 +10,6 @@ name = "kernel_api"
 path = "src/lib.rs"
 
 [dependencies]
-# No dependencies - this is a pure interface crate
+# Spinlock for global Once registration
+spin = "0.10"
+

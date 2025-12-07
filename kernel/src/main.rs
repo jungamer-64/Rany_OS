@@ -18,8 +18,8 @@ mod graphics;
 mod interrupts;
 mod io;
 mod ipc;
-mod kapi; // 旧称: syscall → SPL直接呼び出しを反映
 mod loader;
+mod util;
 mod memory;
 mod mm;
 mod net;
@@ -292,11 +292,6 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing security framework");
     security::init();
     info!(target: "init", "Security framework initialized");
-
-    // 2.8. カーネルAPIインターフェースの初期化（旧: syscall）
-    info!(target: "init", "Initializing kernel API");
-    kapi::init();
-    info!(target: "init", "Kernel API initialized");
     graphics::update_boot_progress_with_message(40, "Kernel API ready");
 
     // 3. キーボードドライバの初期化

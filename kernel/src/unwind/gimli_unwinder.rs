@@ -158,7 +158,7 @@ impl<'a> GimliUnwinder<'a> {
                 gimli::RegisterRule::Offset(offset) => {
                     let addr = (cfa as i64 + offset) as u64;
                     // SAFETY: アドレスが有効であることを仮定
-                    unsafe { core::ptr::read(addr as *const u64) }
+                    super::read_u64_checked(addr as usize).unwrap_or(0)
                 }
                 gimli::RegisterRule::ValOffset(offset) => (cfa as i64 + offset) as u64,
                 gimli::RegisterRule::Register(other_reg) => {
@@ -299,7 +299,7 @@ impl RegisterSet {
             regs.set(15, r15);
 
             // RIPはリターンアドレスから推定
-            let rip = core::ptr::read((rbp + 8) as *const u64);
+            let rip = super::read_u64_checked((rbp + 8) as usize).unwrap_or(0);
             regs.set(16, rip);
         }
 

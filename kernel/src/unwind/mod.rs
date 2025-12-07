@@ -190,8 +190,8 @@ impl Backtrace {
             }
 
             // リターンアドレスとスタックポインタを取得
-            let return_addr = unsafe { ptr::read((rbp + 8) as *const usize) };
-            let next_rbp = unsafe { ptr::read(rbp as *const usize) };
+            let return_addr = read_usize_checked(rbp + 8).unwrap_or(0);
+            let next_rbp = read_usize_checked(rbp).unwrap_or(0);
 
             // 無効なリターンアドレスで終了
             if return_addr == 0 || !is_valid_code_address(return_addr) {
@@ -286,6 +286,23 @@ fn is_valid_code_address(addr: usize) -> bool {
 
     // 高位カノニカルアドレスはカーネル空間
     addr >= 0xFFFF_8000_0000_0000 || addr < 0x0000_8000_0000_0000
+}
+
+/// 安全なポインタ読み取り: usize
+pub(crate) fn read_usize_checked(addr: usize) -> Option<usize> {
+    if !is_valid_stack_address(addr) {
+        return None;
+    }
+    // Safety: Caller ensures address is within stack bounds via is_valid_stack_address
+    Some(unsafe { ptr::read(addr as *const usize) })
+}
+
+/// 安全なポインタ読み取り: u64
+pub(crate) fn read_u64_checked(addr: usize) -> Option<u64> {
+    if !is_valid_stack_address(addr) {
+        return None;
+    }
+    Some(unsafe { ptr::read(addr as *const u64) })
 }
 
 // ============================================================================
@@ -551,8 +568,8 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
 
     // フレームチェーンをたどる
     while frame_num < MAX_FRAMES && is_valid_stack_address(current_rbp) {
-        let return_addr = unsafe { ptr::read((current_rbp + 8) as *const usize) };
-        let next_rbp = unsafe { ptr::read(current_rbp as *const usize) };
+        let return_addr = read_usize_checked(current_rbp + 8).unwrap_or(0);
+        let next_rbp = read_usize_checked(current_rbp).unwrap_or(0);
 
         if return_addr == 0 || !is_valid_code_address(return_addr) {
             break;
@@ -667,9 +684,9 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
     // リターンアドレスを取得
     let return_address = match ctx.get_register_rule(DwarfRegister::ReturnAddress) {
         registers::RegisterRule::Offset(off) => {
-            let addr = (cfa as i64 + off) as *const u64;
+            let addr = (cfa as i64 + off) as usize;
             // Safety: CFAから計算されたアドレスからの読み取り
-            unsafe { core::ptr::read(addr) }
+            read_u64_checked(addr).unwrap_or(0)
         }
         _ => return Err(UnwindError::InvalidDwarf),
     };
@@ -677,8 +694,8 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
     // 新しいRBPを取得
     let new_rbp = match ctx.get_register_rule(DwarfRegister::Rbp) {
         registers::RegisterRule::Offset(off) => {
-            let addr = (cfa as i64 + off) as *const u64;
-            unsafe { core::ptr::read(addr) }
+            let addr = (cfa as i64 + off) as usize;
+            read_u64_checked(addr).unwrap_or(0)
         }
         registers::RegisterRule::SameValue => frame.frame_pointer as u64,
         _ => 0,

@@ -63,45 +63,20 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
-
-use crate::kapi;
 use crate::security::static_capability::{
     DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
     NetCapability, TaskCapability,
 };
+
+use kernel_api::kapi;
 
 // ============================================================================
 // Application トレイト
 // ============================================================================
 
 /// ExoRustアプリケーションのエントリポイント
-///
-/// 全てのアプリケーションはこのトレイトを実装する必要があります。
-///
-/// # 例
-///
-/// ```rust
-/// struct MyApp;
-///
-/// impl Application for MyApp {
-///     async fn on_start(&mut self, ctx: AppContext) {
-///         println!("Hello from MyApp!");
-///         
-///         // ネットワーク権限があれば使用
-///         if let Some(net_cap) = ctx.net() {
-///             // ネットワーク操作
-///         }
-///         
-///         // 非同期処理
-///         sleep(1000).await;
-///     }
-/// }
-/// ```
 pub trait Application: Send + Sync {
     /// アプリケーションのメインエントリポイント
-    ///
-    /// # 引数
-    /// - `ctx`: 実行コンテキスト（権限トークン含む）
     fn on_start(&mut self, ctx: AppContext) -> impl Future<Output = ()> + Send;
 
     /// 終了時のクリーンアップ（オプション）
@@ -224,7 +199,7 @@ impl AppContext {
 /// ```
 pub fn print(args: core::fmt::Arguments) {
     let s = format!("{}", args);
-    kapi::sys_api::debug_print(&s);
+    kapi::sys::debug_print(&s);
 }
 
 /// println! マクロの内部実装
@@ -246,26 +221,26 @@ macro_rules! app_println {
 /// sleep(500).await;  // 500ms待機
 /// ```
 pub async fn sleep(ms: u64) {
-    kapi::task_api::sleep_ms(ms).await;
+    kapi::task::sleep_ms(ms).await;
 }
 
 /// CPU譲渡
 ///
 /// 他の実行可能タスクに制御を移します。
 pub async fn yield_now() {
-    kapi::task_api::yield_now().await;
+    kapi::task::yield_now().await;
 }
 
 /// 現在時刻を取得（ミリ秒）
 ///
 /// 起動からの経過時間をミリ秒単位で返します。
 pub fn now() -> u64 {
-    kapi::sys_api::uptime_ms()
+    kapi::sys::uptime_ms()
 }
 
 /// 高精度時刻を取得（ナノ秒）
 pub fn now_nanos() -> u64 {
-    kapi::sys_api::uptime_nanos()
+    kapi::sys::uptime_nanos()
 }
 
 // ============================================================================

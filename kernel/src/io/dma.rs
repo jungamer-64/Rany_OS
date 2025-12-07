@@ -95,9 +95,7 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
         }
 
         // 値を書き込む
-        unsafe {
-            core::ptr::write(ptr as *mut T, value);
-        }
+        crate::util::write_to_addr(ptr as usize, value);
 
         // 物理アドレスを計算
         let phys_addr = PhysAddr::new(ptr as u64);

@@ -794,10 +794,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
-
-        let value: T = unsafe {
-            core::ptr::read(slice.as_ptr() as *const T)
-        };
+        let value: T = crate::util::read_struct(slice, 0).ok_or(ShmError::InvalidSize)?;
 
         Ok(RRef::new(self.owner, value))
     }
@@ -812,10 +809,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
-
-        unsafe {
-            core::ptr::write(slice.as_mut_ptr() as *mut T, value);
-        }
+        crate::util::write_struct(slice, 0, value).ok_or(ShmError::InvalidSize)?;
 
         Ok(())
     }
@@ -827,10 +821,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
-
-        unsafe {
-            core::ptr::write(slice.as_mut_ptr() as *mut T, value);
-        }
+        crate::util::write_struct(slice, 0, value).ok_or(ShmError::InvalidSize)?;
 
         Ok(())
     }
@@ -842,10 +833,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
-
-        let value = unsafe {
-            core::ptr::read(slice.as_ptr() as *const T)
-        };
+        let value = crate::util::read_struct(slice, 0).ok_or(ShmError::InvalidSize)?;
 
         Ok(value)
     }
@@ -942,10 +930,15 @@ impl<T: Copy> SharedRingBuffer<T> {
     /// 要素を書き込み（プロデューサー用）
     pub fn push(&self, value: T) -> Result<(), ShmError> {
         let slice = self.handle.write().ok_or(ShmError::NotAttached)?;
-        let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
-        
-        let write_pos = header.write_pos.load(Ordering::Acquire);
-        let read_pos = header.read_pos.load(Ordering::Acquire);
+        // Read header atomically, then drop the reference before mutably writing
+        let (write_pos, read_pos) = {
+            let header = crate::util::get_ref::<SharedRingHeader>(slice, 0)
+            .ok_or(ShmError::InvalidAddress)?;
+            (
+                header.write_pos.load(Ordering::Acquire),
+                header.read_pos.load(Ordering::Acquire),
+            )
+        };
         
         // フルチェック
         let next_write = (write_pos + 1) % self.capacity;
@@ -958,14 +951,11 @@ impl<T: Copy> SharedRingBuffer<T> {
         let element_size = core::mem::size_of::<T>();
         let offset = header_size + write_pos * element_size;
         
-        unsafe {
-            core::ptr::write(
-                slice.as_ptr().add(offset) as *mut T,
-                value
-            );
-        }
+        crate::util::write_struct(slice, offset, value).ok_or(ShmError::InvalidSize)?;
 
         // write_posを更新
+        let header = crate::util::get_ref::<SharedRingHeader>(slice, 0)
+            .ok_or(ShmError::InvalidAddress)?;
         header.write_pos.store(next_write, Ordering::Release);
 
         Ok(())
@@ -974,7 +964,8 @@ impl<T: Copy> SharedRingBuffer<T> {
     /// 要素を読み取り（コンシューマー用）
     pub fn pop(&self) -> Result<T, ShmError> {
         let slice = self.handle.read().ok_or(ShmError::NotAttached)?;
-        let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+        let header = crate::util::get_ref::<SharedRingHeader>(slice, 0)
+            .ok_or(ShmError::InvalidAddress)?;
         
         let write_pos = header.write_pos.load(Ordering::Acquire);
         let read_pos = header.read_pos.load(Ordering::Acquire);
@@ -989,9 +980,7 @@ impl<T: Copy> SharedRingBuffer<T> {
         let element_size = core::mem::size_of::<T>();
         let offset = header_size + read_pos * element_size;
         
-        let value = unsafe {
-            core::ptr::read(slice.as_ptr().add(offset) as *const T)
-        };
+        let value: T = crate::util::read_struct(slice, offset).ok_or(ShmError::InvalidSize)?;
 
         // read_posを更新
         let next_read = (read_pos + 1) % self.capacity;

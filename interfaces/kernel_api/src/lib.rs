@@ -4,19 +4,7 @@
 //!
 //! # Kernel API Interface Crate
 //!
-//! This crate defines the shared types and traits that form the contract
-//! between the kernel and all other components (drivers, applications, etc.).
-//!
-//! ## Design Philosophy
-//!
-//! - **No kernel dependencies**: This crate has zero dependencies on kernel internals
-//! - **Pure interfaces**: Only trait definitions, error types, and type aliases
-//! - **no_std compatible**: Works in any no_std environment
-//!
-//! ## Modules
-//!
-//! - `error`: Common error types (`KapiError`, `KapiResult`)
-//! - `capability`: Static capability marker types
+//! Shared types and traits for the ExoRust OS kernel.
 
 #![no_std]
 #![allow(dead_code)]
@@ -24,7 +12,15 @@
 extern crate alloc;
 
 pub mod error;
-pub mod capability;
+pub mod services;
+pub mod types;
+pub mod security;
+pub mod kapi;
 
 // Re-export commonly used types
 pub use error::{KapiError, KapiResult};
+pub use services::{KernelServices, kernel, register_kernel, is_kernel_registered};
+pub use types::{TaskHandle, DmaBuffer, Packet, SystemInfo, OpenMode, FileHandle, ChannelHandle, TcpEndpoint};
+pub use security::{DomainCapabilities, MemoryCapability, NetCapability, IoCapability, DmaCapability, FsCapability, IpcCapability, TaskCapability, InterruptCapability};
+
+

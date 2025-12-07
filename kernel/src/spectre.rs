@@ -432,7 +432,8 @@ fn cpuid(eax: u32, ecx: u32) -> (u32, u32, u32, u32) {
 
 /// MSR読み取り
 #[inline]
-unsafe fn read_msr(msr: u32) -> u64 { unsafe {
+fn read_msr(msr: u32) -> u64 {
+    unsafe {
     let (low, high): (u32, u32);
     asm!(
         "rdmsr",
@@ -442,11 +443,13 @@ unsafe fn read_msr(msr: u32) -> u64 { unsafe {
         options(nostack, preserves_flags)
     );
     ((high as u64) << 32) | (low as u64)
-}}
+    }
+}
 
 /// MSR書き込み
 #[inline]
-unsafe fn write_msr(msr: u32, value: u64) { unsafe {
+fn write_msr(msr: u32, value: u64) {
+    unsafe {
     let low = value as u32;
     let high = (value >> 32) as u32;
     asm!(
@@ -456,7 +459,8 @@ unsafe fn write_msr(msr: u32, value: u64) { unsafe {
         in("edx") high,
         options(nostack, preserves_flags)
     );
-}}
+    }
+}
 
 /// グローバルなSpectre緩和マネージャ
 static SPECTRE_MANAGER: spin::Once<SpectreMitigationManager> = spin::Once::new();
