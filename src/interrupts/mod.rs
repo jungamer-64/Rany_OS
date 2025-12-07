@@ -77,7 +77,12 @@ fn init_idt() {
         idt.breakpoint.set_handler_fn(exceptions::breakpoint_handler);
         idt.invalid_opcode.set_handler_fn(exceptions::invalid_opcode_handler);
         idt.device_not_available.set_handler_fn(exceptions::device_not_available_handler);
-        idt.double_fault.set_handler_fn(exceptions::double_fault_handler);
+        
+        // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
+        idt.double_fault
+            .set_handler_fn(exceptions::double_fault_handler)
+            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        
         idt.general_protection_fault.set_handler_fn(exceptions::general_protection_fault_handler);
         idt.page_fault.set_handler_fn(exceptions::page_fault_handler);
         idt.alignment_check.set_handler_fn(exceptions::alignment_check_handler);

@@ -2,6 +2,7 @@
 // src/loader/mod.rs - Cell (Module) Loader
 // 設計書 3.1: 「セル (Cell)」モデルによるモジュール化
 // 設計書 3.3: コンパイラ署名とロード時検証
+// 設計書 3.4: ABIの安定性とType ID Check
 // ============================================================================
 #![allow(dead_code)]
 
@@ -9,6 +10,7 @@ pub mod elf;
 pub mod signature;
 pub mod sha256;
 pub mod ed25519;
+pub mod type_id;
 
 #[allow(unused_imports)]
 pub use elf::{CellInfo, ElfLoader, LoadedCell};
@@ -189,6 +191,8 @@ pub enum LoadError {
     UnsafeNotAllowed,
     /// すでにロード済み
     AlreadyLoaded,
+    /// 【設計書 3.4】ABI非互換
+    AbiIncompatible(String),
 }
 
 impl core::fmt::Display for LoadError {
@@ -200,6 +204,7 @@ impl core::fmt::Display for LoadError {
             LoadError::OutOfMemory => write!(f, "Out of memory"),
             LoadError::UnsafeNotAllowed => write!(f, "Unsafe code not allowed for this cell"),
             LoadError::AlreadyLoaded => write!(f, "Cell already loaded"),
+            LoadError::AbiIncompatible(msg) => write!(f, "ABI incompatibility: {}", msg),
         }
     }
 }
@@ -223,21 +228,30 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
         return Err(LoadError::UnsafeNotAllowed);
     }
 
-    // 2. ELFをパース
+    // 2. 【設計書 3.4】Type ID Check - ABI互換性の検証
+    if let Some(deps) = type_id::extract_type_ids(elf_data) {
+        if let Err(e) = type_id::verify_cell_dependencies(&deps) {
+            crate::log!("[Loader] Type ID verification failed for '{}': {}\n", name, e);
+            return Err(LoadError::AbiIncompatible(alloc::format!("{}", e)));
+        }
+        crate::log!("[Loader] Type ID verified for '{}' ({})\n", name, deps.cell_version);
+    }
+
+    // 3. ELFをパース
     let loader = elf::ElfLoader::new(elf_data)?;
     let cell_info = loader.parse()?;
 
-    // 3. 依存関係のチェック
+    // 4. 依存関係のチェック
     for import in &cell_info.imports {
         if with_registry(|r| r.resolve_symbol(import)).is_none() {
             return Err(LoadError::UnresolvedDependency(import.clone()));
         }
     }
 
-    // 4. メモリ割り当てとロード
+    // 5. メモリ割り当てとロード
     let loaded = loader.load(&cell_info)?;
 
-    // 5. リロケーション
+    // 6. リロケーション
     loader.relocate(&loaded, |sym| with_registry(|r| r.resolve_symbol(sym)))?;
 
     // 6. レジストリに登録

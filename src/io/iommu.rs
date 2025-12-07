@@ -920,6 +920,84 @@ where
 }
 
 // ============================================================================
+// 【設計書 7.2】PCIデバイスへのIOMMU自動設定
+// ============================================================================
+
+/// PCIデバイスにIOMMUドメインを自動設定
+/// 
+/// この関数はPCIデバイス検出時に呼び出され、
+/// IOMMUが有効な場合は自動的にドメインを作成してデバイスをアタッチします。
+/// 
+/// # Arguments
+/// * `device` - 設定対象のPCIデバイス情報（可変参照）
+/// 
+/// # Returns
+/// 成功した場合は割り当てられたドメインID、失敗した場合はNone
+pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
+    if !is_iommu_enabled() {
+        return None;
+    }
+    
+    let bdf = device.bdf;
+    let device_id = DeviceId::new(
+        0, // segment（通常0）
+        bdf.bus.0,
+        bdf.device.0,
+        bdf.function.0,
+    );
+    
+    with_iommu(|iommu| {
+        // 1. 新しいドメインを作成
+        let domain_id = match iommu.create_domain() {
+            Ok(id) => id,
+            Err(e) => {
+                crate::log!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
+                return None;
+            }
+        };
+        
+        // 2. デバイスをドメインにアタッチ
+        if let Err(e) = iommu.attach_device(device_id, domain_id) {
+            crate::log!("[IOMMU] Failed to attach device {:?} to domain {}: {:?}\n", 
+                       bdf, domain_id, e);
+            return None;
+        }
+        
+        // 3. デバイス情報を更新
+        device.iommu_domain_id = Some(domain_id);
+        
+        crate::log!("[IOMMU] Device {:02x}:{:02x}.{} -> Domain {}\n",
+                   bdf.bus.0, bdf.device.0, bdf.function.0, domain_id);
+        
+        Some(domain_id)
+    }).ok().flatten()
+}
+
+/// すべてのPCIデバイスにIOMMUドメインを設定
+/// 
+/// PCI初期化後に呼び出して、全デバイスを保護します。
+pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) {
+    if !is_iommu_enabled() {
+        crate::log!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
+        return;
+    }
+    
+    let mut protected_count = 0;
+    for device in devices.iter_mut() {
+        // ブリッジデバイスはスキップ（ホストブリッジはIOMMUで保護不要）
+        if device.is_pci_bridge() {
+            continue;
+        }
+        
+        if setup_iommu_for_pci_device(device).is_some() {
+            protected_count += 1;
+        }
+    }
+    
+    crate::log!("[IOMMU] Protected {} PCI devices with IOMMU domains\n", protected_count);
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

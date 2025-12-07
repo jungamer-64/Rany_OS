@@ -172,6 +172,8 @@ pub struct PciDeviceInfo {
     pub msix_cap_offset: Option<u8>,
     /// PCIeケーパビリティオフセット
     pub pcie_cap_offset: Option<u8>,
+    /// 【設計書 7.2】IOMMUドメインID（割り当て済みの場合）
+    pub iommu_domain_id: Option<u16>,
 }
 
 impl PciDeviceInfo {
@@ -328,6 +330,8 @@ impl<'a> PciBusScanner<'a> {
             msi_cap_offset,
             msix_cap_offset,
             pcie_cap_offset,
+            // IOMMUドメインは後でsetup_iommu_for_device()で設定
+            iommu_domain_id: None,
         })
     }
 

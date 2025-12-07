@@ -6,8 +6,12 @@
 
 use alloc::string::String;
 use core::panic::PanicInfo;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
+
+/// 【設計書 8.5.1】Double Panic検出用フラグ
+/// 各CPUコアにパニック中フラグを設置（現在は単一コア想定）
+static PANIC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// パニック情報の記録
 #[derive(Debug)]
@@ -53,6 +57,21 @@ pub fn get_current_domain() -> u64 {
 pub fn handle_panic(info: &PanicInfo) -> ! {
     // 割り込みを無効化
     x86_64::instructions::interrupts::disable();
+    
+    // 【設計書 8.5.1】Double Panic検出
+    // パニックハンドラの入口でこのフラグをチェックし、
+    // 既にtrueであればDouble Panicと判定して即座にabort
+    if PANIC_IN_PROGRESS.swap(true, Ordering::SeqCst) {
+        // 既にパニック処理中 → Double Panic検出
+        // 最小限のエラー情報をシリアルポートに出力
+        crate::vga::early_serial_str("\n!!! DOUBLE PANIC DETECTED !!!\n");
+        crate::vga::early_serial_str("Aborting without further processing.\n");
+        
+        // 即座にHALT（スタックアンワインドを試みない）
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
     
     // 【設計書 8.4】パニック状態をマーク（PoisonLockのため）
     crate::sync::set_panicking(true);
