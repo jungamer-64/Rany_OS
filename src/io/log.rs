@@ -263,20 +263,28 @@ impl Log for KernelLogger {
         
         // メッセージ本文
         // format_args!のアロケーションなし出力
-        struct EarlyWriter;
+        // 最後に改行が必要かどうかを追跡
+        struct EarlyWriter {
+            last_char: u8,
+        }
         impl Write for EarlyWriter {
             fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                KernelLogger::write_raw(s);
+                if !s.is_empty() {
+                    KernelLogger::write_raw(s);
+                    self.last_char = s.as_bytes()[s.len() - 1];
+                }
                 Ok(())
             }
         }
         
-        let mut writer = EarlyWriter;
+        let mut writer = EarlyWriter { last_char: 0 };
         let _ = write!(writer, "{}", record.args());
         
-        // 改行
-        Self::write_char_raw(b'\r');
-        Self::write_char_raw(b'\n');
+        // メッセージが改行で終わっていない場合のみ改行を追加
+        if writer.last_char != b'\n' {
+            Self::write_char_raw(b'\r');
+            Self::write_char_raw(b'\n');
+        }
     }
 
     fn flush(&self) {
