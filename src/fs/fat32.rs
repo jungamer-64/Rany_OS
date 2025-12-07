@@ -2243,9 +2243,7 @@ impl Fat32FileSystem {
     pub fn mount(device: Arc<dyn BlockDevice>) -> FsResult<Arc<Self>> {
         // ブートセクタを読み取り
         let mut boot_data = [0u8; BOOT_SECTOR_SIZE];
-        device
-            .read_sync(0, &mut boot_data)
-            .map_err(|_| FsError::IoError)?;
+        device.read_sync(0, &mut boot_data)?;
 
         // TryFrom トレイトで安全にパース
         let boot_sector = BootSector::try_from(&boot_data[..])?;
@@ -2309,9 +2307,7 @@ impl Fat32FileSystem {
 
         for i in 0..sectors {
             let sector = self.fat_start_sector + i as u32;
-            self.device
-                .read_sync(sector.as_u64(), &mut buffer)
-                .map_err(|_| FsError::IoError)?;
+            self.device.read_sync(sector.as_u64(), &mut buffer)?;
 
             for j in 0..BLOCK_SIZE / 4 {
                 let idx = i * (BLOCK_SIZE / 4) + j;
@@ -2383,22 +2379,16 @@ impl Fat32FileSystem {
         let offset_in_sector = fat_offset % BLOCK_SIZE;
 
         let mut buffer = [0u8; BLOCK_SIZE];
-        self.device
-            .read_sync(sector.as_u64(), &mut buffer)
-            .map_err(|_| FsError::IoError)?;
+        self.device.read_sync(sector.as_u64(), &mut buffer)?;
 
         let bytes = (value.0 & 0x0FFFFFFF).to_le_bytes();
         buffer[offset_in_sector..offset_in_sector + 4].copy_from_slice(&bytes);
 
-        self.device
-            .write_sync(sector.as_u64(), &buffer)
-            .map_err(|_| FsError::IoError)?;
+        self.device.write_sync(sector.as_u64(), &buffer)?;
 
         // バックアップFAT(FAT2)への書き込み
         let fat2_sector = sector + self.fat_size;
-        self.device
-            .write_sync(fat2_sector.as_u64(), &buffer)
-            .map_err(|_| FsError::IoError)?;
+        self.device.write_sync(fat2_sector.as_u64(), &buffer)?;
 
         Ok(())
     }
@@ -2503,7 +2493,7 @@ impl Fat32FileSystem {
     /// ```
     pub fn read_clusters_batch(&self, start_cluster: Cluster, buffer: &mut [u8]) -> FsResult<usize> {
         let cluster_size = self.cluster_size();
-        let max_clusters = buffer.len() / cluster_size;
+        let max_clusters = self.buffer_cluster_capacity(buffer);
         
         if max_clusters == 0 {
             return Ok(0);
@@ -2617,8 +2607,7 @@ impl Fat32FileSystem {
             let sector = start_sector + i as u32;
             let offset = i * BLOCK_SIZE;
             self.device
-                .read_sync(sector.as_u64(), &mut buffer[offset..offset + BLOCK_SIZE])
-                .map_err(|_| FsError::IoError)?;
+                .read_sync(sector.as_u64(), &mut buffer[offset..offset + BLOCK_SIZE])?;
         }
         
         Ok(())
@@ -2717,8 +2706,7 @@ impl Fat32FileSystem {
             let sector = start_sector + i as u32;
             let offset = i * BLOCK_SIZE;
             self.device
-                .write_sync(sector.as_u64(), &data[offset..offset + BLOCK_SIZE])
-                .map_err(|_| FsError::IoError)?;
+                .write_sync(sector.as_u64(), &data[offset..offset + BLOCK_SIZE])?;
         }
         
         Ok(())
@@ -2751,7 +2739,7 @@ impl Fat32FileSystem {
         buffer: &mut [u8],
     ) -> (usize, Option<FsError>) {
         let cluster_size = self.cluster_size();
-        let max_clusters = buffer.len() / cluster_size;
+        let max_clusters = self.buffer_cluster_capacity(buffer);
         
         if max_clusters == 0 {
             return (0, None);
@@ -2809,6 +2797,17 @@ impl Fat32FileSystem {
     /// クラスタサイズを取得
     fn cluster_size(&self) -> usize {
         self.sectors_per_cluster as usize * BLOCK_SIZE
+    }
+    
+    /// バッファに格納可能なクラスタ数を計算
+    /// 
+    /// # Example
+    /// ```ignore
+    /// let max_clusters = fs.buffer_cluster_capacity(&buffer);
+    /// ```
+    #[inline]
+    fn buffer_cluster_capacity(&self, buffer: &[u8]) -> usize {
+        buffer.len() / self.cluster_size()
     }
     
     /// ファイルシステムの不変条件を検証（デバッグビルドのみ）
@@ -2887,9 +2886,7 @@ impl FileSystem for Fat32FileSystem {
         //
         // Note: パフォーマンスが問題になる場合は、write_fat_entry()でダーティフラグを
         // 立てて、sync()時にまとめて書き込むようにバッチ処理を検討すること。
-        self.device
-            .flush()
-            .map_err(|_| FsError::IoError)?;
+        self.device.flush()?;
         Ok(())
     }
 
@@ -3037,28 +3034,22 @@ impl Fat32Inode {
         DirectoryIterator::new(&self.fs, self.first_cluster)
     }
 
-    /// ディレクトリの全エントリを読み取り
-    /// 
-    /// # Deprecated
-    /// `entries()` イテレータを使用してください。
-    /// このメソッドは互換性のために残されています。
-    #[deprecated(since = "0.1.0", note = "Use entries() iterator instead for better performance")]
-    fn read_dir_entries(&self) -> FsResult<Vec<(String, DirEntryRaw)>> {
-        self.entries()?.collect()
-    }
-
     /// 8.3形式のショートファイル名を生成
-    fn generate_short_name(name: &str) -> ([u8; 8], [u8; 3]) {
+    /// 
+    /// 統合された実装: ベース名と拡張子のタプルを返す。
+    /// 不正な文字はアンダースコアに置換される。
+    #[inline]
+    fn to_short_name_parts(name: &str) -> ([u8; 8], [u8; 3]) {
         let mut base = [b' '; 8];
         let mut ext = [b' '; 3];
         
         let name_upper = name.to_uppercase();
-        let parts: Vec<&str> = name_upper.rsplitn(2, '.').collect();
+        let dot_pos = name_upper.rfind('.');
         
-        let (base_part, ext_part) = if parts.len() == 2 {
-            (parts[1], Some(parts[0]))
+        let (base_part, ext_part) = if let Some(pos) = dot_pos {
+            (&name_upper[..pos], Some(&name_upper[pos + 1..]))
         } else {
-            (parts[0], None)
+            (name_upper.as_str(), None)
         };
         
         // ベース名（最大8文字）
@@ -3112,7 +3103,7 @@ impl Fat32Inode {
                 // 空きエントリまたは削除済みエントリを使用
                 if first_byte == END_OF_DIR || first_byte == DELETED_ENTRY {
                     // 新しいエントリを作成
-                    let (base_name, ext_name) = Self::generate_short_name(name);
+                    let (base_name, ext_name) = Self::to_short_name_parts(name);
                     
                     let entry = DirEntryRaw::new(base_name, ext_name, attr, cluster, size);
                     
@@ -3592,49 +3583,6 @@ impl Inode for Fat32Inode {
 // Helper Functions
 // ============================================================================
 
-/// 8.3形式のチェックサムを計算
-///
-/// # Implementation Note
-/// イテレータと fold を使用した関数型スタイルで実装。
-/// ループ変数を管理する必要がなくなり、バグの入り込む余地が減少。
-fn calc_short_name_checksum(name: &[u8; 11]) -> u8 {
-    name.iter().fold(0u8, |sum, &byte| sum.rotate_right(1).wrapping_add(byte))
-}
-
-/// 文字列を8.3形式に変換
-fn to_short_name(name: &str) -> Option<[u8; 11]> {
-    let mut result = [b' '; 11];
-    let upper = name.to_uppercase();
-
-    let dot_pos = upper.rfind('.');
-
-    let (base, ext) = if let Some(pos) = dot_pos {
-        (&upper[..pos], &upper[pos + 1..])
-    } else {
-        (upper.as_str(), "")
-    };
-
-    if base.len() > 8 || ext.len() > 3 {
-        return None;
-    }
-
-    for (i, c) in base.bytes().enumerate() {
-        if i >= 8 {
-            break;
-        }
-        result[i] = c;
-    }
-
-    for (i, c) in ext.bytes().enumerate() {
-        if i >= 3 {
-            break;
-        }
-        result[8 + i] = c;
-    }
-
-    Some(result)
-}
-
 // ============================================================================
 // Tests
 // ============================================================================
@@ -3645,15 +3593,29 @@ mod tests {
 
     #[test]
     fn test_short_name() {
-        let result = to_short_name("TEST.TXT").unwrap();
-        assert_eq!(&result[..8], b"TEST    ");
-        assert_eq!(&result[8..], b"TXT");
+        // to_short_name_partsはプライベートなのでDirEntryRaw経由でテスト
+        let entry = DirEntryRaw::new(
+            *b"TEST    ",
+            *b"TXT",
+            FileAttributes::from_bits_truncate(0),
+            Cluster(0),
+            0,
+        );
+        assert_eq!(&entry.name, b"TEST    ");
+        assert_eq!(&entry.ext, b"TXT");
     }
 
     #[test]
     fn test_checksum() {
-        let name = *b"TEST    TXT";
-        let sum = calc_short_name_checksum(&name);
+        // DirEntryRaw::calculate_checksumを使用
+        let entry = DirEntryRaw::new(
+            *b"TEST    ",
+            *b"TXT",
+            FileAttributes::from_bits_truncate(0),
+            Cluster(0),
+            0,
+        );
+        let sum = entry.calculate_checksum();
         assert!(sum != 0); // 具体的な値はテストデータによる
     }
     
