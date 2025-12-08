@@ -273,12 +273,10 @@ impl NetVirtQueue {
     /// これにより、transportの&mut selfを要求せずに通知が可能。
     pub fn notify(&self) {
         if let Some(notify_addr) = self.notify_addr {
-            unsafe {
-                // Memory barrier before notifying device
-                core::sync::atomic::fence(Ordering::Release);
-                // Write queue index to notification register
-                core::ptr::write_volatile(notify_addr, self.index);
-            }
+            // Memory barrier before notifying device
+            core::sync::atomic::fence(Ordering::Release);
+            // Write queue index to notification register
+            crate::io::mmio_write_u16(notify_addr as usize, self.index);
         }
     }
 

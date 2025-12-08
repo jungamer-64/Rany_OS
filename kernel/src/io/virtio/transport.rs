@@ -240,7 +240,7 @@ impl VirtioMmioTransport {
     ///
     /// # Safety
     /// - `base` 縺ｯ譛牙柑縺ｪMMIO繧｢繝峨Ξ繧ｹ繧呈欠縺吝ｿ・・ｽ・ｽ縺後≠繧・
-    pub unsafe fn new(base: usize) -> TransportResult<Self> { unsafe {
+    pub unsafe fn new(base: usize) -> TransportResult<Self> {
         let magic = Self::read32_raw(base, mmio_regs::MAGIC_VALUE);
         if magic != Self::MAGIC {
             return Err(TransportError::InvalidMagic);
@@ -255,30 +255,30 @@ impl VirtioMmioTransport {
         let device_type = VirtioDeviceType::from(device_id);
         
         Ok(Self { base, device_type })
-    }}
+    }
     
     /// 逕滂ｿｽEMMIO隱ｭ縺ｿ蜿悶ｊ
     #[inline]
-    unsafe fn read32_raw(base: usize, offset: usize) -> u32 { unsafe {
-        core::ptr::read_volatile((base + offset) as *const u32)
-    }}
+    fn read32_raw(base: usize, offset: usize) -> u32 {
+        crate::io::mmio_read_u32(base + offset)
+    }
     
     /// 逕滂ｿｽEMMIO譖ｸ縺崎ｾｼ縺ｿ
     #[inline]
-    unsafe fn write32_raw(base: usize, offset: usize, value: u32) { unsafe {
-        core::ptr::write_volatile((base + offset) as *mut u32, value);
-    }}
+    fn write32_raw(base: usize, offset: usize, value: u32) {
+        crate::io::mmio_write_u32(base + offset, value);
+    }
     
     /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
-        unsafe { Self::read32_raw(self.base, offset) }
+        Self::read32_raw(self.base, offset)
     }
     
     /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
-        unsafe { Self::write32_raw(self.base, offset, value) }
+        Self::write32_raw(self.base, offset, value)
     }
 }
 
@@ -379,39 +379,27 @@ impl VirtioTransport for VirtioMmioTransport {
     }
     
     fn read_config_u8(&self, offset: usize) -> u8 {
-        unsafe {
-            core::ptr::read_volatile((self.base + mmio_regs::CONFIG + offset) as *const u8)
-        }
+        crate::io::mmio_read_u8((self.base + mmio_regs::CONFIG + offset) as usize)
     }
     
     fn read_config_u16(&self, offset: usize) -> u16 {
-        unsafe {
-            core::ptr::read_volatile((self.base + mmio_regs::CONFIG + offset) as *const u16)
-        }
+        crate::io::mmio_read_u16((self.base + mmio_regs::CONFIG + offset) as usize)
     }
     
     fn read_config_u32(&self, offset: usize) -> u32 {
-        unsafe {
-            core::ptr::read_volatile((self.base + mmio_regs::CONFIG + offset) as *const u32)
-        }
+        crate::io::mmio_read_u32((self.base + mmio_regs::CONFIG + offset) as usize)
     }
     
     fn write_config_u8(&mut self, offset: usize, value: u8) {
-        unsafe {
-            core::ptr::write_volatile((self.base + mmio_regs::CONFIG + offset) as *mut u8, value);
-        }
+        crate::io::mmio_write_u8((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
     
     fn write_config_u16(&mut self, offset: usize, value: u16) {
-        unsafe {
-            core::ptr::write_volatile((self.base + mmio_regs::CONFIG + offset) as *mut u16, value);
-        }
+        crate::io::mmio_write_u16((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
     
     fn write_config_u32(&mut self, offset: usize, value: u32) {
-        unsafe {
-            core::ptr::write_volatile((self.base + mmio_regs::CONFIG + offset) as *mut u32, value);
-        }
+        crate::io::mmio_write_u32((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
     
     fn transport_type(&self) -> TransportType {
@@ -492,65 +480,49 @@ impl VirtioPciTransport {
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u8(&self, offset: usize) -> u8 {
-        unsafe {
-            core::ptr::read_volatile((self.common_cfg_addr + offset) as *const u8)
-        }
+        crate::io::mmio_read_u8((self.common_cfg_addr + offset) as usize)
     }
     
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE6繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u16(&self, offset: usize) -> u16 {
-        unsafe {
-            core::ptr::read_volatile((self.common_cfg_addr + offset) as *const u16)
-        }
+        crate::io::mmio_read_u16((self.common_cfg_addr + offset) as usize)
     }
     
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE2繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u32(&self, offset: usize) -> u32 {
-        unsafe {
-            core::ptr::read_volatile((self.common_cfg_addr + offset) as *const u32)
-        }
+        crate::io::mmio_read_u32((self.common_cfg_addr + offset) as usize)
     }
     
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE4繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u64(&self, offset: usize) -> u64 {
-        unsafe {
-            core::ptr::read_volatile((self.common_cfg_addr + offset) as *const u64)
-        }
+        crate::io::mmio_read_u64((self.common_cfg_addr + offset) as usize)
     }
     
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u8(&self, offset: usize, value: u8) {
-        unsafe {
-            core::ptr::write_volatile((self.common_cfg_addr + offset) as *mut u8, value);
-        }
+        crate::io::mmio_write_u8((self.common_cfg_addr + offset) as usize, value);
     }
     
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE6繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u16(&self, offset: usize, value: u16) {
-        unsafe {
-            core::ptr::write_volatile((self.common_cfg_addr + offset) as *mut u16, value);
-        }
+        crate::io::mmio_write_u16((self.common_cfg_addr + offset) as usize, value);
     }
     
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE2繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u32(&self, offset: usize, value: u32) {
-        unsafe {
-            core::ptr::write_volatile((self.common_cfg_addr + offset) as *mut u32, value);
-        }
+        crate::io::mmio_write_u32((self.common_cfg_addr + offset) as usize, value);
     }
     
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE4繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u64(&self, offset: usize, value: u64) {
-        unsafe {
-            core::ptr::write_volatile((self.common_cfg_addr + offset) as *mut u64, value);
-        }
+        crate::io::mmio_write_u64((self.common_cfg_addr + offset) as usize, value);
     }
     
     /// 繧ｭ繝･繝ｼ縺ｮ騾夂衍繧ｪ繝輔そ繝・・ｽ・ｽ繧貞叙蠕・
@@ -641,14 +613,12 @@ impl VirtioTransport for VirtioPciTransport {
         let notify_addr = self.notify_addr + notify_off * self.notify_off_multiplier as usize;
         
         // 騾夂衍繧帝∽ｿ｡
-        unsafe {
-            core::ptr::write_volatile(notify_addr as *mut u16, queue_index);
-        }
+        crate::io::mmio_write_u16(notify_addr as usize, queue_index);
     }
     
     fn get_interrupt_status(&self) -> u32 {
         unsafe {
-            core::ptr::read_volatile(self.isr_addr as *const u8) as u32
+            crate::io::mmio_read_u8(self.isr_addr as usize) as u32
         }
     }
     
@@ -659,38 +629,32 @@ impl VirtioTransport for VirtioPciTransport {
     
     fn read_config_u8(&self, offset: usize) -> u8 {
         unsafe {
-            core::ptr::read_volatile((self.device_cfg_addr + offset) as *const u8)
+            crate::io::mmio_read_u8((self.device_cfg_addr + offset) as usize)
         }
     }
     
     fn read_config_u16(&self, offset: usize) -> u16 {
         unsafe {
-            core::ptr::read_volatile((self.device_cfg_addr + offset) as *const u16)
+            crate::io::mmio_read_u16((self.device_cfg_addr + offset) as usize)
         }
     }
     
     fn read_config_u32(&self, offset: usize) -> u32 {
         unsafe {
-            core::ptr::read_volatile((self.device_cfg_addr + offset) as *const u32)
+            crate::io::mmio_read_u32((self.device_cfg_addr + offset) as usize)
         }
     }
     
     fn write_config_u8(&mut self, offset: usize, value: u8) {
-        unsafe {
-            core::ptr::write_volatile((self.device_cfg_addr + offset) as *mut u8, value);
-        }
+        crate::io::mmio::mmio_write_u8((self.device_cfg_addr + offset) as usize, value);
     }
     
     fn write_config_u16(&mut self, offset: usize, value: u16) {
-        unsafe {
-            core::ptr::write_volatile((self.device_cfg_addr + offset) as *mut u16, value);
-        }
+        crate::io::mmio::mmio_write_u16((self.device_cfg_addr + offset) as usize, value);
     }
     
     fn write_config_u32(&mut self, offset: usize, value: u32) {
-        unsafe {
-            core::ptr::write_volatile((self.device_cfg_addr + offset) as *mut u32, value);
-        }
+        crate::io::mmio::mmio_write_u32((self.device_cfg_addr + offset) as usize, value);
     }
     
     fn transport_type(&self) -> TransportType {
