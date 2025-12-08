@@ -9,7 +9,7 @@
 
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use spin::Mutex;
-use x86_64::instructions::port::Port;
+use crate::io::port_io::{PortU16, PortU8, PortU32};
 
 use crate::io::acpi::Fadt;
 
@@ -225,11 +225,9 @@ impl PowerManager {
         let config = self.config.lock();
 
         if config.pm1a_cnt_blk != 0 {
-            unsafe {
-                let mut port: Port<u16> = Port::new(config.pm1a_cnt_blk);
-                let value = port.read();
-                port.write(value | pm1_control::SCI_EN);
-            }
+            let mut port: PortU16 = PortU16::new(config.pm1a_cnt_blk);
+            let value = port.read();
+            port.write(value | pm1_control::SCI_EN);
         }
 
         *self.sci_enabled.lock() = true;
@@ -243,10 +241,8 @@ impl PowerManager {
             return 0;
         }
 
-        unsafe {
-            let mut port: Port<u16> = Port::new(config.pm1a_evt_blk);
-            port.read()
-        }
+        let mut port: PortU16 = PortU16::new(config.pm1a_evt_blk);
+        port.read()
     }
 
     /// PM1ステータスをクリア
@@ -254,10 +250,8 @@ impl PowerManager {
         let config = self.config.lock();
 
         if config.pm1a_evt_blk != 0 {
-            unsafe {
-                let mut port: Port<u16> = Port::new(config.pm1a_evt_blk);
-                port.write(bits); // 1を書くとクリア
-            }
+            let mut port: PortU16 = PortU16::new(config.pm1a_evt_blk);
+            port.write(bits); // 1を書くとクリア
         }
     }
 
@@ -269,16 +263,14 @@ impl PowerManager {
             return 0;
         }
 
-        unsafe {
-            let mut port: Port<u32> = Port::new(config.pm_tmr_blk);
-            let value = port.read();
+        let mut port: PortU32 = PortU32::new(config.pm_tmr_blk);
+        let value = port.read();
 
-            // 24ビットまたは32ビットタイマー
-            if config.pm_tmr_32bit {
-                value
-            } else {
-                value & 0x00FFFFFF
-            }
+        // 24ビットまたは32ビットタイマー
+        if config.pm_tmr_32bit {
+            value
+        } else {
+            value & 0x00FFFFFF
         }
     }
 
@@ -319,20 +311,16 @@ impl PowerManager {
         // 実機では正式なACPI S5遷移が必要
 
         // まずQEMUの直接シャットダウンを試行
-        unsafe {
-            let mut port: Port<u16> = Port::new(0x604);
-            port.write(0x2000);
-        }
+        let mut port: PortU16 = PortU16::new(0x604);
+        port.write(0x2000_u16);
 
         // それでもシャットダウンしない場合、ACPI経由
-        unsafe {
-            // SLP_TYP_S5とSLP_ENを設定
-            let slp_typ_a = (config.s5_slp_typ_a as u16) << pm1_control::SLP_TYP_SHIFT;
-            let value = slp_typ_a | pm1_control::SLP_EN;
+        // SLP_TYP_S5とSLP_ENを設定
+        let slp_typ_a = (config.s5_slp_typ_a as u16) << pm1_control::SLP_TYP_SHIFT;
+        let value = slp_typ_a | pm1_control::SLP_EN;
 
-            let mut port: Port<u16> = Port::new(config.pm1a_cnt_blk);
-            port.write(value);
-        }
+        let mut port: PortU16 = PortU16::new(config.pm1a_cnt_blk);
+        port.write(value);
 
         // シャットダウンに失敗した場合
         Err("Shutdown failed")
@@ -341,21 +329,19 @@ impl PowerManager {
     /// システムリブート
     pub fn reboot(&self) -> Result<(), &'static str> {
         // キーボードコントローラー経由でリブート
-        unsafe {
-            // 8042リセットコマンド
-            let mut cmd_port: Port<u8> = Port::new(0x64);
-            let _data_port: Port<u8> = Port::new(0x60);
+        // 8042リセットコマンド
+        let mut cmd_port: PortU8 = PortU8::new(0x64);
+        let _data_port: PortU8 = PortU8::new(0x60);
 
-            // コントローラー準備待ち
-            for _ in 0..100000 {
-                if cmd_port.read() & 0x02 == 0 {
-                    break;
-                }
+        // コントローラー準備待ち
+        for _ in 0..100000 {
+            if cmd_port.read() & 0x02 == 0 {
+                break;
             }
-
-            // リセットコマンド送信
-            cmd_port.write(0xFE);
         }
+
+        // リセットコマンド送信
+        cmd_port.write(0xFE);
 
         // それでもリブートしない場合、トリプルフォルト
         // (危険なので通常は使用しない)

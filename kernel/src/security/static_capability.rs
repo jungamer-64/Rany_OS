@@ -352,20 +352,16 @@ pub fn allocate_dma_buffer<'cap>(
 /// I/Oポートアクセス（権限トークンが必要）
 #[inline]
 pub fn port_read_u8(_cap: &IoCapability, port: u16) -> u8 {
-    use x86_64::instructions::port::Port;
-    unsafe {
-        let mut p: Port<u8> = Port::new(port);
-        p.read()
-    }
+    use hal::port_io::IoPort;
+    let mut p: IoPort<u8> = IoPort::new(port);
+    p.read()
 }
 
 #[inline]
 pub fn port_write_u8(_cap: &IoCapability, port: u16, value: u8) {
-    use x86_64::instructions::port::Port;
-    unsafe {
-        let mut p: Port<u8> = Port::new(port);
-        p.write(value);
-    }
+    use hal::port_io::IoPort;
+    let mut p: IoPort<u8> = IoPort::new(port);
+    p.write(value);
 }
 
 // ============================================================================
