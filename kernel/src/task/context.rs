@@ -182,12 +182,8 @@ impl KernelStack {
         // ゼロ初期化されたスタックメモリを確保
         // Box::new_zeroed() は allocator_api feature が必要なので代替実装
         let layout = core::alloc::Layout::new::<[u8; Self::SIZE]>();
-        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-
-        if ptr.is_null() {
-            return None;
-        }
-
+        let non_null = crate::util::allocate_zeroed(layout)?;
+        let ptr = non_null.as_ptr();
         // SAFETY: ptr は適切なサイズとアラインメントで割り当てられている
         let memory = unsafe { Box::from_raw(ptr as *mut [u8; Self::SIZE]) };
 
