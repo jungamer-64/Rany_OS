@@ -318,8 +318,7 @@ impl Ipv4Header {
     /// Calculate header checksum
     pub fn compute_checksum(&self) -> u16 {
         let header_len = self.header_len();
-        let header_bytes =
-            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, header_len) };
+        let header_bytes = &crate::util::struct_as_bytes(self)[..header_len];
 
         let mut sum: u32 = 0;
 
@@ -354,8 +353,7 @@ impl Ipv4Header {
     /// Verify checksum
     pub fn verify_checksum(&self) -> bool {
         let header_len = self.header_len();
-        let header_bytes =
-            unsafe { core::slice::from_raw_parts(self as *const _ as *const u8, header_len) };
+        let header_bytes = &crate::util::struct_as_bytes(self)[..header_len];
 
         let mut sum: u32 = 0;
 
@@ -413,8 +411,8 @@ impl<'a> Ipv4Packet<'a> {
 
     /// Get the IPv4 header
     pub fn header(&self) -> &Ipv4Header {
-        // SAFETY: We verified the length in parse()
-        unsafe { &*(self.data.as_ptr() as *const Ipv4Header) }
+        // SAFETY: We verified the length in parse(). Use centralized helper to get a typed ref.
+        crate::util::get_ref::<Ipv4Header>(self.data, 0).expect("IPv4 header slice out of bounds")
     }
 
     /// Get source address
@@ -487,8 +485,8 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut Ipv4Header {
-        // SAFETY: Buffer is large enough
-        unsafe { &mut *(self.data.as_mut_ptr() as *mut Ipv4Header) }
+        // SAFETY: Buffer is large enough; use centralized helper.
+        crate::util::get_mut_ref::<Ipv4Header>(self.data, 0).expect("IPv4 header slice out of bounds")
     }
 
     /// Initialize header with default values
@@ -551,8 +549,10 @@ impl<'a> Ipv4PacketMut<'a> {
 
     /// Get total packet length
     pub fn total_len(&self) -> usize {
-        let header = unsafe { &*(self.data.as_ptr() as *const Ipv4Header) };
-        header.total_length() as usize
+        // Use safe helper to read header
+        crate::util::get_ref::<Ipv4Header>(self.data, 0)
+            .expect("IPv4 header slice out of bounds")
+            .total_length() as usize
     }
 
     /// Get packet as bytes

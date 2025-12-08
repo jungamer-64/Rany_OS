@@ -103,8 +103,9 @@ impl<'a> UdpPacket<'a> {
 
     /// Get the UDP header
     pub fn header(&self) -> &UdpHeader {
-        // SAFETY: We verified the length in parse()
-        unsafe { &*(self.data.as_ptr() as *const UdpHeader) }
+        // SAFETY: We verified the length in parse(). Use the centralized helper
+        // to obtain a typed reference with bounds & alignment checks.
+        crate::util::get_ref::<UdpHeader>(self.data, 0).expect("UDP header slice out of bounds")
     }
 
     /// Get source port
@@ -167,8 +168,8 @@ impl<'a> UdpPacketMut<'a> {
 
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut UdpHeader {
-        // SAFETY: Buffer size checked in new()
-        unsafe { &mut *(self.buffer.as_mut_ptr() as *mut UdpHeader) }
+        // SAFETY: Buffer size checked in new(). Use centralized helper to get a mutable reference.
+        crate::util::get_mut_ref::<UdpHeader>(self.buffer, 0).expect("UDP header slice out of bounds")
     }
 
     /// Set source port

@@ -960,17 +960,18 @@ pub fn process_incoming_packet(packet: PacketRef) {
     }
 
     // Ethernetヘッダ解析
-    let eth_header = unsafe { &*(data.as_ptr() as *const EthernetHeader) };
+    let eth_header = crate::util::get_ref::<EthernetHeader>(data, 0)
+        .expect("Ethernet header slice out of bounds");
 
     let ethertype = u16::from_be(eth_header.ethertype);
     let ip_offset = EthernetHeader::HEADER_LEN;
 
     match ethertype {
         EthernetHeader::ETHERTYPE_IPV4 => {
-            process_ipv4_packet(ip_offset, packet_for_later);
+            process_ipv4_packet(ip_offset, &packet_for_later);
         }
         EthernetHeader::ETHERTYPE_ARP => {
-            process_arp_packet(ip_offset, packet_for_later);
+            process_arp_packet(ip_offset, &packet_for_later);
         }
         _ => {
             // 未知のプロトコル
@@ -979,7 +980,7 @@ pub fn process_incoming_packet(packet: PacketRef) {
 }
 
 /// ARP パケットを処理
-fn process_arp_packet(offset: usize, packet: PacketRef) {
+fn process_arp_packet(offset: usize, packet: &PacketRef) {
     use crate::net::arp::{ArpPacket, ArpOperation};
     
     let data = packet.data();
@@ -988,7 +989,8 @@ fn process_arp_packet(offset: usize, packet: PacketRef) {
     }
     
     let arp_data = &data[offset..];
-    let arp_packet = unsafe { &*(arp_data.as_ptr() as *const ArpPacket) };
+    let arp_packet = crate::util::get_ref::<ArpPacket>(arp_data, 0)
+        .expect("ARP packet slice out of bounds");
     
     // ARPリクエストに応答
     let operation_value = u16::from_be_bytes([arp_packet.operation[0], arp_packet.operation[1]]);
@@ -1008,7 +1010,7 @@ fn process_arp_packet(offset: usize, packet: PacketRef) {
     }
 }
 
-fn process_ipv4_packet(ip_offset: usize, packet: PacketRef) {
+fn process_ipv4_packet(ip_offset: usize, packet: &PacketRef) {
     let data = packet.data();
 
     if data.len() < ip_offset + Ipv4Header::MIN_HEADER_LEN {
@@ -1016,7 +1018,8 @@ fn process_ipv4_packet(ip_offset: usize, packet: PacketRef) {
     }
 
     let ip_data = &data[ip_offset..];
-    let ip_header = unsafe { &*(ip_data.as_ptr() as *const Ipv4Header) };
+    let ip_header = crate::util::get_ref::<Ipv4Header>(ip_data, 0)
+        .expect("IPv4 header slice out of bounds");
 
     let header_len = ip_header.header_len();
     let tcp_offset = ip_offset + header_len;
@@ -1036,7 +1039,7 @@ fn process_ipv4_packet(ip_offset: usize, packet: PacketRef) {
 }
 
 /// UDPパケットを処理
-fn process_udp_packet(udp_offset: usize, packet: PacketRef, _ip_header: &Ipv4Header) {
+fn process_udp_packet(udp_offset: usize, packet: &PacketRef, _ip_header: &Ipv4Header) {
     let data = packet.data();
     
     // UDPヘッダは8バイト
@@ -1053,7 +1056,7 @@ fn process_udp_packet(udp_offset: usize, packet: PacketRef, _ip_header: &Ipv4Hea
 }
 
 /// ICMPパケットを処理
-fn process_icmp_packet(icmp_offset: usize, packet: PacketRef, ip_header: &Ipv4Header) {
+fn process_icmp_packet(icmp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Header) {
     let data = packet.data();
     
     // ICMPヘッダは最低8バイト
@@ -1093,7 +1096,7 @@ fn process_icmp_packet(icmp_offset: usize, packet: PacketRef, ip_header: &Ipv4He
     }
 }
 
-fn process_tcp_packet(tcp_offset: usize, packet: PacketRef, ip_header: &Ipv4Header) {
+fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Header) {
     let data = packet.data();
 
     if data.len() < tcp_offset + TcpHeader::MIN_HEADER_LEN {

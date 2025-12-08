@@ -431,7 +431,8 @@ impl DhcpClient {
         }
 
         // ヘッダを解析
-        let header = unsafe { &*(data.as_ptr() as *const DhcpHeader) };
+        let header = crate::util::get_ref::<DhcpHeader>(data, 0)
+            .expect("Dhcp header slice out of bounds");
 
         // トランザクションIDを確認
         if header.xid() != self.xid.load(Ordering::SeqCst) {

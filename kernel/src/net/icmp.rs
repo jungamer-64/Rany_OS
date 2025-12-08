@@ -193,8 +193,9 @@ impl<'a> IcmpPacket<'a> {
 
     /// Get the ICMP header
     pub fn header(&self) -> &IcmpHeader {
-        // SAFETY: We verified the length in parse()
-        unsafe { &*(self.data.as_ptr() as *const IcmpHeader) }
+        // Use util helper to return a referenced header from the slice
+        crate::util::get_ref::<IcmpHeader>(self.data, 0)
+            .expect("Icmp header slice out of bounds")
     }
 
     /// Get message type
@@ -243,8 +244,8 @@ pub struct IcmpEcho<'a> {
 impl<'a> IcmpEcho<'a> {
     /// Get the echo header
     pub fn header(&self) -> &IcmpEchoHeader {
-        // SAFETY: Validated in IcmpPacket::as_echo()
-        unsafe { &*(self.data.as_ptr() as *const IcmpEchoHeader) }
+        crate::util::get_ref::<IcmpEchoHeader>(self.data, 0)
+            .expect("Icmp echo header slice out of bounds")
     }
 
     /// Get identifier
@@ -293,8 +294,8 @@ impl<'a> IcmpBuilder<'a> {
 
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut IcmpHeader {
-        // SAFETY: Buffer size checked in new()
-        unsafe { &mut *(self.buffer.as_mut_ptr() as *mut IcmpHeader) }
+        crate::util::get_mut_ref::<IcmpHeader>(self.buffer, 0)
+            .expect("Icmp header mutable slice out of bounds")
     }
 
     /// Set message type
@@ -368,8 +369,8 @@ impl<'a> IcmpEchoBuilder<'a> {
 
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut IcmpEchoHeader {
-        // SAFETY: Buffer size checked in new()
-        unsafe { &mut *(self.buffer.as_mut_ptr() as *mut IcmpEchoHeader) }
+        crate::util::get_mut_ref::<IcmpEchoHeader>(self.buffer, 0)
+            .expect("Icmp echo header mutable slice out of bounds")
     }
 
     /// Build echo request
