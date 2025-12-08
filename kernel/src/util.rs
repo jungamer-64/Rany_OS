@@ -6,6 +6,8 @@
 // and alignment checks where possible.
 #![allow(dead_code)]
 use core::mem;
+use core::ptr::NonNull;
+use alloc::alloc::alloc_zeroed as alloc_zeroed;
 
 /// Try to read a value of type T from a byte slice at offset 'offset'.
 /// Returns Some(T) on success, None on bounds/overflow errors.
@@ -97,6 +99,52 @@ pub fn get_ref<'a, T>(data: &'a [u8], offset: usize) -> Option<&'a T> {
     Some(unsafe { &*(ptr as *const T) })
 }
 
+/// Obtain a byte slice view of a struct value.
+/// Centralized to minimize scattered unsafe usage across the codebase.
+pub fn struct_as_bytes<T>(val: &T) -> &[u8] {
+    let ptr = val as *const T as *const u8;
+    unsafe { core::slice::from_raw_parts(ptr, mem::size_of::<T>()) }
+}
+
+/// Obtain a mutable byte slice view of a struct value.
+pub fn struct_as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
+    let ptr = val as *mut T as *mut u8;
+    unsafe { core::slice::from_raw_parts_mut(ptr, mem::size_of::<T>()) }
+}
+
+/// Convert a NonNull<u8> pointer with an offset and length into an immutable slice.
+/// This encapsulates an unsafe pointer -> slice conversion for non-owning buffers.
+pub unsafe fn nonnull_ptr_as_slice<'a>(ptr: core::ptr::NonNull<u8>, offset: usize, len: usize) -> &'a [u8] {
+    unsafe { core::slice::from_raw_parts(ptr.as_ptr().add(offset), len) }
+}
+
+/// Convert a NonNull<u8> pointer with an offset and length into a mutable slice.
+pub unsafe fn nonnull_ptr_as_slice_mut<'a>(ptr: core::ptr::NonNull<u8>, offset: usize, len: usize) -> &'a mut [u8] {
+    unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr().add(offset), len) }
+}
+
+/// Convert a raw pointer (possibly null) to an immutable slice.
+///
+/// Safety: the caller must ensure the pointer is valid for `len` bytes and properly aligned.
+pub unsafe fn raw_ptr_as_slice<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+    unsafe { core::slice::from_raw_parts(ptr, len) }
+}
+
+/// Convert a raw pointer (possibly null) to a mutable slice.
+///
+/// Safety: the caller must ensure the pointer is valid for `len` bytes and properly aligned.
+pub unsafe fn raw_ptr_as_slice_mut<'a>(ptr: *mut u8, len: usize) -> &'a mut [u8] {
+    unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+}
+
+/// Allocate memory zero-initialized and return a NonNull pointer if successful.
+///
+/// This centralizes `alloc::alloc::alloc_zeroed` and converts the raw pointer into a `NonNull`.
+pub fn allocate_zeroed(layout: core::alloc::Layout) -> Option<core::ptr::NonNull<u8>> {
+    let ptr = unsafe { alloc_zeroed(layout) };
+    core::ptr::NonNull::new(ptr)
+}
+
 /// Write a typed value directly to a virtual address. The address must be valid
 /// and mapped for writing. This operation is unsafe and may cause undefined
 /// behaviour if the provided address is invalid; the helper centralizes this
@@ -106,4 +154,19 @@ pub fn write_to_addr<T>(addr: usize, value: T) {
     unsafe {
         core::ptr::write(ptr, value);
     }
+}
+
+/// Read a possibly unaligned value from the given address.
+/// This centralizes `ptr::read_unaligned` usage and reduces scattered unsafe
+/// calls across the codebase. The caller must ensure the address is valid for
+/// a read of T.
+#[inline]
+pub fn read_unaligned_from_addr<T: Copy>(addr: usize) -> T {
+    unsafe { core::ptr::read_unaligned(addr as *const T) }
+}
+
+/// Write a possibly unaligned value to the given address.
+#[inline]
+pub fn write_unaligned_to_addr<T: Copy>(addr: usize, value: T) {
+    unsafe { core::ptr::write_unaligned(addr as *mut T, value); }
 }
