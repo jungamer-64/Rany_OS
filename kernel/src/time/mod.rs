@@ -9,7 +9,8 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
-use x86_64::instructions::port::Port;
+use hal::port_io::{PortU8, PortU16, IoPort};
+use x86_64::instructions::port::{PortRead, PortWrite};
 
 /// ナノ秒単位の時間
 pub type Nanoseconds = u64;
@@ -205,26 +206,22 @@ impl Rtc {
     fn read_cmos(&self, reg: u8) -> u8 {
         let nmi_bit = if self.nmi_disable { 0x80 } else { 0x00 };
 
-        unsafe {
-            let mut addr_port: Port<u8> = Port::new(rtc::CMOS_ADDR);
-            let mut data_port: Port<u8> = Port::new(rtc::CMOS_DATA);
+        let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
+        let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
 
-            addr_port.write(reg | nmi_bit);
-            data_port.read()
-        }
+        addr_port.write(reg | nmi_bit);
+        data_port.read()
     }
 
     /// CMOSレジスタに書き込み
     fn write_cmos(&self, reg: u8, value: u8) {
         let nmi_bit = if self.nmi_disable { 0x80 } else { 0x00 };
 
-        unsafe {
-            let mut addr_port: Port<u8> = Port::new(rtc::CMOS_ADDR);
-            let mut data_port: Port<u8> = Port::new(rtc::CMOS_DATA);
+        let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
+        let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
 
-            addr_port.write(reg | nmi_bit);
-            data_port.write(value);
-        }
+        addr_port.write(reg | nmi_bit);
+        data_port.write(value);
     }
 
     /// RTC更新中かチェック
@@ -414,17 +411,15 @@ impl Pit {
         let divisor = pit::BASE_FREQUENCY / frequency;
         let divisor = divisor.max(1).min(65535) as u16;
 
-        unsafe {
-            let mut cmd_port: Port<u8> = Port::new(pit::COMMAND);
-            let mut data_port: Port<u8> = Port::new(pit::CHANNEL0_DATA);
+        let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
+        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL0_DATA);
 
-            // Channel 0, Mode 3 (Square wave), 16-bit
-            cmd_port.write(pit::MODE_SQUARE_WAVE);
+        // Channel 0, Mode 3 (Square wave), 16-bit
+        cmd_port.write(pit::MODE_SQUARE_WAVE);
 
-            // 分周比を設定 (Low byte, High byte)
-            data_port.write((divisor & 0xFF) as u8);
-            data_port.write((divisor >> 8) as u8);
-        }
+        // 分周比を設定 (Low byte, High byte)
+        data_port.write((divisor & 0xFF) as u8);
+        data_port.write((divisor >> 8) as u8);
 
         let actual_freq = pit::BASE_FREQUENCY / divisor as u64;
         *self.frequency.lock() = actual_freq;
@@ -435,24 +430,22 @@ impl Pit {
         let ticks = (pit::BASE_FREQUENCY * microseconds) / 1_000_000;
         let ticks = ticks.max(1).min(65535) as u16;
 
-        unsafe {
-            let mut cmd_port: Port<u8> = Port::new(pit::COMMAND);
-            let mut data_port: Port<u8> = Port::new(pit::CHANNEL0_DATA);
+        let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
+        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL0_DATA);
 
-            // Channel 0, Mode 0 (One-shot), 16-bit
-            cmd_port.write(pit::MODE_ONE_SHOT);
+        // Channel 0, Mode 0 (One-shot), 16-bit
+        cmd_port.write(pit::MODE_ONE_SHOT);
 
-            // カウント値を設定
-            data_port.write((ticks & 0xFF) as u8);
-            data_port.write((ticks >> 8) as u8);
+        // カウント値を設定
+        data_port.write((ticks & 0xFF) as u8);
+        data_port.write((ticks >> 8) as u8);
 
-            // カウント完了を待機
-            loop {
-                cmd_port.write(pit::READBACK);
-                let status = data_port.read();
-                if status & 0x80 != 0 {
-                    break;
-                }
+        // カウント完了を待機
+        loop {
+            cmd_port.write(pit::READBACK);
+            let status = data_port.read();
+            if status & 0x80 != 0 {
+                break;
             }
         }
     }
@@ -471,41 +464,39 @@ pub fn calibrate_tsc() -> Option<TscInfo> {
     // 10ms間のTSCカウントを測定
     let pit_ticks = (pit::BASE_FREQUENCY / 100) as u16; // 10ms
 
-    unsafe {
-        let mut cmd_port: Port<u8> = Port::new(pit::COMMAND);
-        let mut data_port: Port<u8> = Port::new(pit::CHANNEL0_DATA);
+    let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
+    let mut data_port: PortU8 = IoPort::new(pit::CHANNEL0_DATA);
 
-        // Channel 0, Mode 0 (One-shot), 16-bit
-        cmd_port.write(pit::MODE_ONE_SHOT);
+    // Channel 0, Mode 0 (One-shot), 16-bit
+    cmd_port.write(pit::MODE_ONE_SHOT);
 
-        let start_tsc = rdtsc();
+    let start_tsc = rdtsc();
 
-        // カウント値を設定
-        data_port.write((pit_ticks & 0xFF) as u8);
-        data_port.write((pit_ticks >> 8) as u8);
+    // カウント値を設定
+    data_port.write((pit_ticks & 0xFF) as u8);
+    data_port.write((pit_ticks >> 8) as u8);
 
-        // カウント完了を待機
-        loop {
-            cmd_port.write(0xE2); // Read-back
-            let status = data_port.read();
-            if status & 0x80 != 0 {
-                break;
-            }
+    // カウント完了を待機
+    loop {
+        cmd_port.write(0xE2); // Read-back
+        let status = data_port.read();
+        if status & 0x80 != 0 {
+            break;
         }
-
-        let end_tsc = rdtsc();
-
-        let tsc_diff = end_tsc.saturating_sub(start_tsc);
-        let frequency = tsc_diff * 100; // 10ms → 1秒に換算
-
-        // 不変TSCかどうかはCPUIDで確認 (簡易実装では常にtrue)
-        Some(TscInfo {
-            frequency,
-            invariant: true,
-            nanos_to_tsc_mult: 0,
-            nanos_to_tsc_shift: 0,
-        })
     }
+
+    let end_tsc = rdtsc();
+
+    let tsc_diff = end_tsc.saturating_sub(start_tsc);
+    let frequency = tsc_diff * 100; // 10ms → 1秒に換算
+
+    // 不変TSCかどうかはCPUIDで確認 (簡易実装では常にtrue)
+    Some(TscInfo {
+        frequency,
+        invariant: true,
+        nanos_to_tsc_mult: 0,
+        nanos_to_tsc_shift: 0,
+    })
 }
 
 /// グローバルシステム時計
