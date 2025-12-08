@@ -68,12 +68,10 @@ pub enum QemuExitCode {
 }
 
 pub fn exit_qemu(exit_code: QemuExitCode) -> ! {
-    use x86_64::instructions::port::Port;
+    use hal::port_io::PortU32;
 
-    unsafe {
-        let mut port = Port::new(0xf4);
-        port.write(exit_code as u32);
-    }
+    let mut port = PortU32::new(0xf4);
+    port.write(exit_code as u32);
 
     loop {
         x86_64::instructions::hlt();
