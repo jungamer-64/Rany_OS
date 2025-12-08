@@ -6,7 +6,7 @@
 
 #![allow(dead_code)]
 
-use crate::io::hid::{InputKeyCode, InputKeyState, InputKeyEvent, MouseEvt};
+use crate::io::hid::{InputKeyCode, InputKeyState, InputKeyEvent, MouseEvt, KeyEventExt};
 
 use super::shell::GraphicalShell;
 
