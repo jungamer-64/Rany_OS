@@ -430,6 +430,44 @@ extern "C" fn kmain() -> ! {
         }
     }
 
+    // 3.5.7. USBドライバの初期化（PCIスキャン）
+    info!(target: "init", "Scanning for USB xHCI controllers...");
+    {
+        use usb_driver::driver_impl::UsbDriverWrapper;
+        use driver_registry::register_driver;
+        use pci_driver::find_by_class;
+        use alloc::boxed::Box;
+
+        // xHCIコントローラを検索 (Class 0Ch, Subclass 03h, ProgIF 30h)
+        let devices = find_by_class(0x0C, 0x03);
+        for device_info in devices.iter().filter(|d| d.class_code.is_xhci()) {
+            info!(target: "init", "USB xHCI controller found at {}", device_info.bdf);
+            
+            // BAR0 を取得
+            if let Some(bar0) = device_info.bars[0] {
+                let base_addr = bar0.base();
+                info!(target: "init", "xHCI BAR0: {:#x}", base_addr);
+                
+                // バス制御を有効化
+                device_info.enable_bus_master();
+                device_info.enable_memory_space();
+
+                // ドライバを登録
+                let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_addr)));
+                
+                // プローブと開始
+                if let Err(e) = driver_registry::driver_registry().probe_and_start(usb_handle) {
+                    error!(target: "init", "USB xHCI driver init failed: {:?}", e);
+                } else {
+                    info!(target: "init", "USB xHCI driver initialized via DriverRegistry");
+                }
+            } else {
+                warn!(target: "init", "xHCI controller found but BAR0 is invalid");
+            }
+        }
+    }
+
+
     // 3.6. ネットワークサブシステムの初期化
     info!(target: "init", "Initializing network subsystem");
     net::init_stack_default();

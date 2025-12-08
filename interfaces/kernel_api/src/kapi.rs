@@ -31,7 +31,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use crate::{KapiResult, KapiError};
+use crate::KapiResult;
 use crate::security::{
     DmaCapability, FsCapability, IoCapability, IpcCapability, 
     NetCapability, TaskCapability,
@@ -61,7 +61,10 @@ pub mod task {
     /// Spawn a new async task
     ///
     /// The future is boxed and pinned, then passed to the kernel's executor.
-    pub fn spawn<F>(_cap: &TaskCapability, future: F) -> KapiResult<TaskHandle>
+    ///
+    /// # Errors
+    /// - `KapiError::OutOfMemory` if the kernel cannot allocate resources for the task
+    pub fn spawn<F>(_cap: &TaskCapability, future: F) -> KapiResult<crate::TaskHandle>
     where
         F: Future<Output = ()> + Send + 'static,
     {
@@ -69,10 +72,7 @@ pub mod task {
         let boxed_future = Box::pin(future);
         
         // Delegate to kernel implementation
-        match crate::kernel().spawn_task(boxed_future) {
-            Ok(id) => Ok(TaskHandle::new(id)),
-            Err(e) => Err(e),
-        }
+        crate::kernel().spawn_task(boxed_future)
     }
 
     /// Get current task ID
@@ -81,22 +81,8 @@ pub mod task {
         crate::kernel().current_task_id()
     }
 
-    /// Task handle
-    #[derive(Debug, Clone, Copy)]
-    pub struct TaskHandle {
-        id: u64,
-    }
-
-    impl TaskHandle {
-        /// Create a new TaskHandle (internal use only)
-        pub(crate) fn new(id: u64) -> Self {
-            Self { id }
-        }
-        
-        pub fn id(&self) -> u64 {
-            self.id
-        }
-    }
+    // Re-export the kernel API TaskHandle directly from the types module
+    pub use crate::TaskHandle as KapiTaskHandle;
 
     // Internal Future implementations
     struct YieldFuture {
@@ -169,12 +155,11 @@ pub mod mem {
     use super::*;
 
     /// Allocate DMA buffer
+    ///
+    /// # Errors
+    /// - `KapiError::OutOfMemory` if buffer allocation fails
     pub fn alloc_dma(_cap: &DmaCapability, size: usize) -> KapiResult<crate::DmaBuffer> {
-        let kernel = crate::kernel();
-        match kernel.alloc_dma(size) {
-            Ok((phys, virt)) => Ok(crate::DmaBuffer::new(phys, virt, size)),
-            Err(_) => Err(KapiError::ResourceExhausted),
-        }
+        crate::kernel().alloc_dma(size)
     }
 
     /// Read from I/O port
@@ -199,9 +184,11 @@ pub mod net {
     use super::*;
 
     /// Create TCP endpoint
+    ///
+    /// # Errors
+    /// - `KapiError::ResourceExhausted` if the kernel cannot allocate a socket
     pub fn create_endpoint(_cap: &NetCapability) -> KapiResult<crate::TcpEndpoint> {
-        let id = crate::kernel().net_create_endpoint()?;
-        Ok(crate::TcpEndpoint::new(id))
+        crate::kernel().net_create_endpoint()
     }
 
     /// Receive packet (takes ownership)
@@ -234,9 +221,8 @@ pub mod fs {
     use super::*;
 
     /// Open a file
-    pub async fn open(_cap: &FsCapability, path: &str, mode: crate::OpenMode) -> KapiResult<crate::FileHandle> {
-        let id = crate::kernel().fs_open(path, mode)?;
-        Ok(crate::FileHandle::new(id, mode))
+    pub fn open(_cap: &FsCapability, path: &str, mode: crate::OpenMode) -> KapiResult<crate::FileHandle> {
+        crate::kernel().fs_open(path, mode)
     }
 }
 
@@ -285,8 +271,10 @@ pub mod ipc {
     use super::*;
 
     /// Create IPC channel
+    ///
+    /// # Errors
+    /// - `KapiError::ResourceExhausted` if a channel could not be created
     pub fn create_channel(_cap: &IpcCapability) -> KapiResult<(crate::ChannelHandle, crate::ChannelHandle)> {
-        let (sender_id, receiver_id) = crate::kernel().ipc_create_channel()?;
-        Ok((crate::ChannelHandle::new(sender_id), crate::ChannelHandle::new(receiver_id)))
+        crate::kernel().ipc_create_channel()
     }
 }

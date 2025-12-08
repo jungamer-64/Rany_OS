@@ -27,7 +27,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::error::KapiError;
 use kernel_api::services::KernelServices;
-use kernel_api::OpenMode;
+use kernel_api::{OpenMode, TaskHandle, DmaBuffer, TcpEndpoint, FileHandle, ChannelHandle};
 use spin::Mutex;
 
 use crate::task::per_core_executor::{Task, Priority, executor_manager};
@@ -134,7 +134,7 @@ impl KernelServices for ExoKernel {
     // Task Management
     // ========================================================================
 
-    fn spawn_task(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) -> Result<u64, KapiError> {
+    fn spawn_task(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) -> Result<TaskHandle, KapiError> {
         // Use Task::new_boxed to avoid double-boxing (optimization)
         let task = Task::new_boxed(future, Priority::Normal, None);
         let task_id = task.metadata.id.as_u64();
@@ -142,7 +142,7 @@ impl KernelServices for ExoKernel {
         // Submit to ExecutorManager for load-balanced scheduling
         executor_manager().spawn(task);
         
-        Ok(task_id)
+        Ok(TaskHandle::new(task_id))
     }
 
     fn current_tick(&self) -> u64 {
@@ -157,7 +157,7 @@ impl KernelServices for ExoKernel {
     // Memory Management
     // ========================================================================
 
-    fn alloc_dma(&self, size: usize) -> Result<(u64, *mut u8), KapiError> {
+    fn alloc_dma(&self, size: usize) -> Result<DmaBuffer, KapiError> {
         // Use TypedDmaSlice for coherent DMA allocation
         match dma::TypedDmaSlice::new(size) {
             Some(buffer) => {
@@ -165,15 +165,16 @@ impl KernelServices for ExoKernel {
                 // SAFETY: Leak the buffer to keep it alive for DMA use
                 // TODO: Implement proper DMA buffer registry for tracking/freeing
                 let ptr = Box::into_raw(Box::new(buffer)) as *mut u8;
-                Ok((phys, ptr))
+                Ok(DmaBuffer::new(phys, ptr, size))
             }
             None => Err(KapiError::OutOfMemory),
         }
     }
 
-    fn free_dma(&self, _phys_addr: u64, _size: usize) {
+    fn free_dma(&self, buffer: DmaBuffer) {
         // TODO: Implement proper DMA buffer tracking and deallocation
         // Current implementation leaks memory (acceptable for now)
+        let _ = buffer;
     }
 
     // ========================================================================
@@ -200,7 +201,7 @@ impl KernelServices for ExoKernel {
     // Network (Connected to network stack)
     // ========================================================================
 
-    fn net_create_endpoint(&self) -> Result<u64, KapiError> {
+    fn net_create_endpoint(&self) -> Result<TcpEndpoint, KapiError> {
         use crate::net::endpoint::{create_tcp_socket, SocketFd};
         
         let owned = create_tcp_socket();
@@ -210,13 +211,12 @@ impl KernelServices for ExoKernel {
         // and doesn't close on drop.
         let _ = owned.into_inner(); 
         
-        Ok(fd.raw() as u64)
+        Ok(TcpEndpoint::new(fd.raw() as u64))
     }
-
-    fn net_close_endpoint(&self, endpoint_id: u64) -> Result<(), KapiError> {
+    fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> Result<(), KapiError> {
         use crate::net::endpoint::{socket_manager, SocketFd};
         
-        let fd = SocketFd::from_raw(endpoint_id as u32);
+        let fd = SocketFd::from_raw(endpoint.id() as u32);
         
         if let Some(mgr_lock) = socket_manager() {
             if let Some(mgr) = mgr_lock.read().as_ref() {
@@ -233,7 +233,7 @@ impl KernelServices for ExoKernel {
     // Filesystem (Connected to memfs)
     // ========================================================================
 
-    fn fs_open(&self, path: &str, mode: OpenMode) -> Result<u64, KapiError> {
+    fn fs_open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, KapiError> {
         use crate::fs::memfs;
         
         // Check if file exists
@@ -262,17 +262,17 @@ impl KernelServices for ExoKernel {
             mode,
             position: 0,
         });
-        
-        Ok(handle_id)
+        Ok(FileHandle::new(handle_id, mode))
     }
 
-    fn fs_close(&self, handle_id: u64) -> Result<(), KapiError> {
+    fn fs_close(&self, handle: FileHandle) -> Result<(), KapiError> {
+        let handle_id = handle.id();
         FILE_HANDLE_REGISTRY.unregister(handle_id)
             .ok_or(KapiError::InvalidHandle)?;
         Ok(())
     }
 
-    fn ipc_create_channel(&self) -> Result<(u64, u64), KapiError> {
+    fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
 		// Create a new pipe
         let pipe = crate::ipc::pipe::pipe();
         
@@ -282,10 +282,11 @@ impl KernelServices for ExoKernel {
         
         // info!(target: "ipc", "Created channel: reader={}, writer={}", reader_id, writer_id);
         
-        Ok((writer_id, reader_id)) // Return (Sender, Receiver)
+        Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id))) // Return (Sender, Receiver)
     }
 
-    fn ipc_close(&self, channel_id: u64) -> Result<(), KapiError> {
+    fn ipc_close(&self, channel: ChannelHandle) -> Result<(), KapiError> {
+        let channel_id = channel.id();
         if CHANNEL_REGISTRY.unregister(channel_id).is_some() {
             Ok(())
         } else {

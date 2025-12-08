@@ -21,9 +21,7 @@ impl AhciDmaReadBuffer {
     /// Create buffer for specified number of sectors
     pub fn new(sector_count: usize) -> Option<Self> {
         let size = sector_count * SECTOR_SIZE;
-        let (phys, virt) = kernel().alloc_dma(size).ok()?;
-        
-        let buffer = DmaBuffer::new(phys, virt, size);
+        let buffer = kernel().alloc_dma(size).ok()?;
 
         Some(Self {
             buffer,
@@ -69,8 +67,7 @@ impl AhciDmaWriteBuffer {
         let sector_count = (data.len() + SECTOR_SIZE - 1) / SECTOR_SIZE;
         let size = sector_count * SECTOR_SIZE;
 
-        let (phys, virt) = kernel().alloc_dma(size).ok()?;
-        let mut buffer = DmaBuffer::new(phys, virt, size);
+        let mut buffer = kernel().alloc_dma(size).ok()?;
         
         unsafe { buffer.as_slice_mut()[..data.len()].copy_from_slice(data) };
 
@@ -102,8 +99,7 @@ pub struct AhciIdentifyBuffer {
 impl AhciIdentifyBuffer {
     /// Create 512-byte buffer
     pub fn new() -> Option<Self> {
-        let (phys, virt) = kernel().alloc_dma(512).ok()?;
-        let buffer = DmaBuffer::new(phys, virt, 512);
+        let buffer = kernel().alloc_dma(512).ok()?;
         Some(Self { buffer })
     }
 

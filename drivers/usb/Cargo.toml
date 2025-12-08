@@ -10,3 +10,4 @@ path = "src/lib.rs"
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 spin = "0.9.8"
+kernel_api = { path = "../../interfaces/kernel_api" }

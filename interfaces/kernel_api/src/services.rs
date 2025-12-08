@@ -12,7 +12,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
-use crate::error::KapiError;
+use crate::{KapiResult, TaskHandle, DmaBuffer, TcpEndpoint, FileHandle, ChannelHandle};
 
 /// Kernel services trait - the contract between kernel and all other components
 ///
@@ -25,8 +25,11 @@ pub trait KernelServices: Send + Sync {
 
     /// Spawn a new async task
     ///
-    /// Returns the task ID on success
-    fn spawn_task(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) -> Result<u64, KapiError>;
+    /// Returns the TaskHandle on success.
+    ///
+    /// # Errors
+    /// - `KapiError::OutOfMemory` if the kernel cannot allocate resources for the task
+    fn spawn_task(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) -> KapiResult<TaskHandle>;
 
     /// Get current tick count (milliseconds since boot)
     fn current_tick(&self) -> u64;
@@ -40,11 +43,18 @@ pub trait KernelServices: Send + Sync {
 
     /// Allocate DMA-capable memory
     ///
-    /// Returns (physical_address, virtual_address) on success
-    fn alloc_dma(&self, size: usize) -> Result<(u64, *mut u8), KapiError>;
+    /// Returns a typed `DmaBuffer` that contains the physical and virtual addresses
+    /// of the allocated region.
+    ///
+    /// # Errors
+    /// - `KapiError::OutOfMemory` if allocation fails
+    fn alloc_dma(&self, size: usize) -> KapiResult<DmaBuffer>;
 
     /// Free DMA memory
-    fn free_dma(&self, phys_addr: u64, size: usize);
+    ///
+    /// # Safety
+    /// The provided `DmaBuffer` must have been originally allocated by `alloc_dma`.
+    fn free_dma(&self, buffer: DmaBuffer);
 
     // ========================================================================
     // I/O Operations
@@ -69,11 +79,17 @@ pub trait KernelServices: Send + Sync {
 
     /// Create a TCP endpoint
     ///
-    /// Returns endpoint ID on success
-    fn net_create_endpoint(&self) -> Result<u64, KapiError>;
+    /// Returns a typed `TcpEndpoint` on success.
+    ///
+    /// # Errors
+    /// - `KapiError::ResourceExhausted` if the kernel cannot allocate a socket
+    fn net_create_endpoint(&self) -> KapiResult<TcpEndpoint>;
 
     /// Close a TCP endpoint
-    fn net_close_endpoint(&self, endpoint_id: u64) -> Result<(), KapiError>;
+    ///
+    /// # Errors
+    /// - `KapiError::InvalidHandle` if the endpoint handle is not recognized
+    fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> KapiResult<()>;
 
     // ========================================================================
     // Filesystem
@@ -81,11 +97,18 @@ pub trait KernelServices: Send + Sync {
 
     /// Open a file
     ///
-    /// Returns file handle ID on success
-    fn fs_open(&self, path: &str, mode: crate::OpenMode) -> Result<u64, KapiError>;
+    /// Returns a typed `FileHandle` on success.
+    ///
+    /// # Errors
+    /// - `KapiError::NotFound` if the file does not exist and `Create` is not specified
+    /// - `KapiError::PermissionDenied` if permissions prevent opening
+    fn fs_open(&self, path: &str, mode: crate::OpenMode) -> KapiResult<FileHandle>;
 
     /// Close a file
-    fn fs_close(&self, handle_id: u64) -> Result<(), KapiError>;
+    ///
+    /// # Errors
+    /// - `KapiError::InvalidHandle` if the file handle is not valid
+    fn fs_close(&self, handle: FileHandle) -> KapiResult<()>;
 
     // ========================================================================
     // IPC (Inter-Process Communication)
@@ -93,11 +116,17 @@ pub trait KernelServices: Send + Sync {
 
     /// Create an IPC channel
     ///
-    /// Returns (sender_id, receiver_id) on success
-    fn ipc_create_channel(&self) -> Result<(u64, u64), KapiError>;
+    /// Returns (sender_handle, receiver_handle) on success
+    ///
+    /// # Errors
+    /// - `KapiError::ResourceExhausted` if channel creation fails
+    fn ipc_create_channel(&self) -> KapiResult<(ChannelHandle, ChannelHandle)>;
 
     /// Close an IPC channel endpoint
-    fn ipc_close(&self, channel_id: u64) -> Result<(), KapiError>;
+    ///
+    /// # Errors
+    /// - `KapiError::InvalidHandle` if the channel handle is invalid
+    fn ipc_close(&self, channel: ChannelHandle) -> KapiResult<()>;
 }
 
 // ============================================================================

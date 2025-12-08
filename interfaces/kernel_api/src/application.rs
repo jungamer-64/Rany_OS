@@ -10,7 +10,9 @@
 extern crate alloc;
 
 use alloc::string::String;
+use alloc::boxed::Box;
 use core::future::Future;
+use core::pin::Pin;
 use crate::security::{
     DmaCapability, DomainCapabilities, FsCapability, IoCapability, 
     IpcCapability, MemoryCapability, NetCapability, TaskCapability,
@@ -25,7 +27,7 @@ use crate::security::{
 /// All applications must implement this trait.
 pub trait Application: Send + Sync {
     /// Application main entry point
-    fn on_start(&mut self, ctx: AppContext) -> impl Future<Output = ()> + Send;
+    fn on_start(&mut self, ctx: AppContext) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
     /// Cleanup on stop (optional)
     fn on_stop(&mut self) {

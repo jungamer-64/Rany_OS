@@ -4,7 +4,9 @@
 //!
 //! The core trait that all ExoRust applications must implement.
 
+use alloc::boxed::Box;
 use core::future::Future;
+use core::pin::Pin;
 use super::context::AppContext;
 
 /// ExoRust Application Entry Point
@@ -33,7 +35,7 @@ pub trait Application: Send + Sync {
     ///
     /// Called when the application starts.
     /// The AppContext provides access to capabilities.
-    fn on_start(&mut self, ctx: AppContext) -> impl Future<Output = ()> + Send;
+    fn on_start(&mut self, ctx: AppContext) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
     /// Cleanup on stop (optional)
     fn on_stop(&mut self) {
