@@ -133,20 +133,20 @@ impl LocalApic {
     /// # Safety
     /// Must be valid LAPIC address
     #[inline]
-    pub unsafe fn read(&self, reg: u32) -> u32 { unsafe {
-        let ptr = (self.base_address + reg as u64) as *const u32;
-        core::ptr::read_volatile(ptr)
-    }}
+    pub fn read(&self, reg: u32) -> u32 {
+        let addr = (self.base_address + reg as u64) as usize;
+        crate::io::mmio::mmio_read_u32(addr)
+    }
 
     /// Write LAPIC register
     ///
     /// # Safety
     /// Must be valid LAPIC address
     #[inline]
-    pub unsafe fn write(&self, reg: u32, value: u32) { unsafe {
-        let ptr = (self.base_address + reg as u64) as *mut u32;
-        core::ptr::write_volatile(ptr, value);
-    }}
+    pub fn write(&self, reg: u32, value: u32) {
+        let addr = (self.base_address + reg as u64) as usize;
+        crate::io::mmio::mmio_write_u32(addr, value);
+    }
 
     /// Get LAPIC ID
     pub fn id(&self) -> u32 {
