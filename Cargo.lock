@@ -7,7 +7,6 @@ name = "ahci_driver"
 version = "0.1.0"
 dependencies = [
  "hal",
- "kernel_api",
  "spin 0.9.8",
 ]
 
@@ -175,8 +174,8 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 name = "exorust_apps"
 version = "0.1.0"
 dependencies = [
+ "app_sdk",
  "graphic_types",
- "kernel_api",
 ]
 
 [[package]]
@@ -222,7 +221,6 @@ version = "0.1.0"
 dependencies = [
  "graphic_types",
  "hal",
- "kernel_api",
 ]
 
 [[package]]
@@ -252,7 +250,6 @@ name = "hid_driver"
 version = "0.1.0"
 dependencies = [
  "hal",
- "kernel_api",
 ]
 
 [[package]]
@@ -306,7 +303,6 @@ name = "nvme_driver"
 version = "0.1.0"
 dependencies = [
  "hal",
- "kernel_api",
 ]
 
 [[package]]
@@ -357,6 +353,7 @@ dependencies = [
  "ed25519-dalek",
  "fat32",
  "gimli",
+ "gpu_driver",
  "graphic_types",
  "hal",
  "hashbrown",
@@ -530,7 +527,6 @@ name = "usb_driver"
 version = "0.1.0"
 dependencies = [
  "hal",
- "kernel_api",
  "spin 0.9.8",
 ]
 

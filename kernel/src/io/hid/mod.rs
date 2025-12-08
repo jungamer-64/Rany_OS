@@ -28,6 +28,9 @@ pub mod keymap;
 pub mod mouse;
 pub mod ps2;
 
+// Re-exports from hid_driver crate (error types only - core types exported via keyboard/mouse)
+pub use hid_driver::{HidError, HidResult};
+
 // PS/2 Controller exports
 #[allow(unused_imports)]
 pub use ps2::{

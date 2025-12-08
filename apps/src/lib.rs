@@ -21,4 +21,4 @@ pub mod terminal;
 pub mod system_monitor;
 
 // Re-export main application types
-pub use kernel_api::{Application, AppContext};
+pub use app_sdk::{Application, AppContext};
