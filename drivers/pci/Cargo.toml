@@ -1,0 +1,20 @@
+[package]
+name = "pci_driver"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Lock-free synchronization
+spin = "0.9"
+
+# x86_64 port I/O
+x86_64 = "0.15"
+
+# HAL for MMIO and port I/O wrappers
+hal = { path = "../../hal" }
+
+# Logging facade
+log = "0.4"
