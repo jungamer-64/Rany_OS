@@ -1,0 +1,19 @@
+[package]
+name = "fat32"
+version = "0.1.0"
+edition = "2021"
+authors = ["ExoRust Team"]
+description = "FAT32 Filesystem Implementation"
+
+[lib]
+name = "fat32"
+path = "src/lib.rs"
+
+[dependencies]
+vfs = { path = "../../libs/vfs" }
+spin = "0.9.8"
+log = "0.4"
+
+[features]
+debug-trace = []
+
