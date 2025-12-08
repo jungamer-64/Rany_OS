@@ -1,12 +1,11 @@
-//! AHCIコントローラ実装
+//! AHCI Controller Implementation
 //!
-//! HBAの管理とポートの初期化
+//! Manages HBA and port initialization.
 
 extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::ptr;
 use spin::Mutex;
 
 use super::port::AhciPort;
@@ -16,22 +15,16 @@ use super::types::{
     PORT_BASE, PORT_SIZE, PX_SSTS,
 };
 
-/// AHCIコントローラ
+/// AHCI Controller
 pub struct AhciController {
-    /// ベースアドレス
     base: u64,
-    /// 利用可能なポートのビットマップ
     ports_implemented: u32,
-    /// ポート
     ports: Mutex<[Option<Box<AhciPort>>; 32]>,
-    /// バージョン
     version: u32,
-    /// コマンドスロット数
     command_slots: u8,
 }
 
 impl AhciController {
-    /// 新しいコントローラを作成
     pub fn new(base: u64) -> AhciResult<Self> {
         let cap = hal::mmio::mmio_read_u32((base + GHC_CAP as u64) as usize);
         let pi = hal::mmio::mmio_read_u32((base + GHC_PI as u64) as usize);
@@ -52,34 +45,35 @@ impl AhciController {
         })
     }
 
-    /// コントローラを初期化
     pub fn init(&mut self) -> AhciResult<()> {
-        // AHCIを有効化
         let mut ghc = self.read_ghc(GHC_GHC);
         ghc |= GHC_AE;
         self.write_ghc(GHC_GHC, ghc);
 
-        // 実装されているポートを初期化
         let mut ports = self.ports.lock();
         for i in 0..32 {
             if (self.ports_implemented & (1 << i)) != 0 {
-                let port = PortNumber(i);
-                let mut ahci_port = Box::new(AhciPort::new(self.base, port));
+                let port_num = PortNumber(i);
+                // Try to allocate new port. If fails (OOM), we skip it.
+                if let Some(mut ahci_port) = AhciPort::new(self.base, port_num) {
+                    let ssts = self.read_port_reg(port_num, PX_SSTS);
+                    let det = ssts & 0x0F;
 
-                // ポートステータスを確認
-                let ssts = self.read_port_reg(port, PX_SSTS);
-                let det = ssts & 0x0F;
-
-                if det == 3 {
-                    // デバイスが接続されている
-                    let _ = ahci_port.init();
+                    if det == 3 {
+                         // Device detected, init it
+                         // If init fails, we still keep the port structure but maybe not active
+                         match ahci_port.init() {
+                             Ok(_) => {},
+                             Err(_) => {
+                                 // log error?
+                             }
+                         }
+                    }
+                     ports[i as usize] = Some(Box::new(ahci_port));
                 }
-
-                ports[i as usize] = Some(ahci_port);
             }
         }
 
-        // 割り込みを有効化
         ghc = self.read_ghc(GHC_GHC);
         ghc |= GHC_IE;
         self.write_ghc(GHC_GHC, ghc);
@@ -87,45 +81,64 @@ impl AhciController {
         Ok(())
     }
 
-    /// ポートを取得
-    pub fn port(&self, port: PortNumber) -> Option<&AhciPort> {
-        if !port.is_valid() {
-            return None;
+    pub fn port(&self, port: PortNumber) -> Option<Box<AhciPort>> {
+         // This is tricky with Mutex. We probably want to return a reference or clone if Arc.
+         // But AhciPort is not Clone.
+         // For the driver interface, we usually need to perform operations on the port.
+         // Or we return a locked guard?
+         // For now, let's just make `ports` accessible via a method that takes a closure?
+         // Or maybe we don't return `&AhciPort` but perform operation.
+         
+         // NOTE: The previous `port()` method returned `Option<&AhciPort>` but had lifetime issues.
+         // Since we used `Mutex`, we can't return a reference to the content of the mutex guard after the guard is dropped.
+         
+         // We'll change the design slightly: The controller itself will contain logic to access ports safely, or we expose the Mutex.
+         // Or typically, the driver wrapper holds Arc<Mutex<AhciController>> and we lock it.
+         None 
+    }
+    
+    // Accessor for ports via index, intended to be used when lock is held or by internal methods
+    pub fn get_port_start_index(&self) -> Option<usize> {
+        // finding first implemented port
+        for i in 0..32 {
+            if (self.ports_implemented & (1 << i)) != 0 {
+                return Some(i);
+            }
         }
-        if (self.ports_implemented & (1 << port.as_u8())) == 0 {
-            return None;
-        }
-
-        // Note: 実際の実装では適切なライフタイム管理が必要
         None
     }
+    
+    // Helper to run closure on a port
+    pub fn with_port<F, R>(&self, port_num: PortNumber, f: F) -> Option<R>
+    where F: FnOnce(&mut AhciPort) -> R {
+        let mut ports = self.ports.lock();
+        if let Some(port) = ports[port_num.as_usize()].as_mut() {
+            Some(f(port))
+        } else {
+            None
+        }
+    }
 
-    /// 実装されているポートのビットマップを取得
     pub fn ports_implemented(&self) -> u32 {
         self.ports_implemented
     }
 
-    /// バージョンを取得
     pub fn version(&self) -> u32 {
         self.version
     }
 
-    /// コマンドスロット数を取得
     pub fn command_slots(&self) -> u8 {
         self.command_slots
     }
 
-    /// GHCレジスタを読み取り
     pub fn read_ghc(&self, offset: u32) -> u32 {
         hal::mmio::mmio_read_u32((self.base + offset as u64) as usize)
     }
 
-    /// GHCレジスタを書き込み
     pub fn write_ghc(&self, offset: u32, value: u32) {
         hal::mmio::mmio_write_u32((self.base + offset as u64) as usize, value);
     }
 
-    /// ポートレジスタを読み取り
     pub fn read_port_reg(&self, port: PortNumber, offset: u32) -> u32 {
         let addr =
             self.base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64) + offset as u64;
@@ -133,7 +146,6 @@ impl AhciController {
     }
 }
 
-/// PCIデバイスからAHCIを初期化
 pub fn init_from_pci(base_addr: u64) -> AhciResult<Arc<Mutex<AhciController>>> {
     let mut controller = AhciController::new(base_addr)?;
     controller.init()?;

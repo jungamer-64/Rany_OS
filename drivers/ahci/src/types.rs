@@ -240,6 +240,8 @@ pub enum AhciError {
     PciError(String),
     /// DMAエラー
     DmaError,
+    /// 内部エラー
+    InternalError,
     /// その他のエラー
     Other(String),
 }

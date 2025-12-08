@@ -33,12 +33,15 @@ pub mod identify;
 pub mod error;
 
 // Modules migrated from kernel
+// Modules migrated from kernel
 pub mod controller;
 pub mod queue;
 pub mod per_core;
 
 // Modules with kernel deps - excluded for now
-// pub mod polling_driver;
+pub mod polling_driver; // Uncommented and refactored
+pub mod driver_impl;    // New wrapper
+
 // pub mod async_io;
 // pub mod global;
 // pub mod scheduler;

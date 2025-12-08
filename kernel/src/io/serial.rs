@@ -803,3 +803,84 @@ macro_rules! serial_println {
     () => ($crate::serial_print!("\n"));
     ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
 }
+
+// ============================================================================
+// Serial Driver implementing Driver trait
+// ============================================================================
+
+use kernel_api::driver::{Driver, DriverType, DriverVersion, DeviceId};
+use kernel_api::error::KapiResult;
+
+/// Serial COM1 driver implementing Driver trait
+///
+/// Wraps the existing AsyncSerialPort and integrates with DriverRegistry.
+pub struct SerialDriver {
+    initialized: bool,
+}
+
+impl SerialDriver {
+    /// Create a new Serial driver
+    pub fn new() -> Self {
+        Self {
+            initialized: false,
+        }
+    }
+}
+
+impl Default for SerialDriver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Driver for SerialDriver {
+    fn name(&self) -> &str {
+        "serial-com1"
+    }
+
+    fn version(&self) -> DriverVersion {
+        DriverVersion::new(1, 0, 0)
+    }
+
+    fn driver_type(&self) -> DriverType {
+        DriverType::Serial
+    }
+
+    fn probe(&mut self) -> KapiResult<()> {
+        // Initialize COM1
+        match SERIAL1.init(BaudRate::Baud115200) {
+            Ok(()) => {
+                self.initialized = true;
+                SERIAL1.send_str("[SERIAL] COM1 driver probed via DriverRegistry\n");
+                Ok(())
+            }
+            Err(_) => Err(kernel_api::KapiError::IoError),
+        }
+    }
+
+    fn start(&mut self) -> KapiResult<()> {
+        if !self.initialized {
+            return Err(kernel_api::KapiError::InvalidHandle);
+        }
+
+        // Enable interrupts
+        SERIAL1.port.set_interrupts(true, false);
+        
+        // Unmask IRQ4 (COM1) in the PIC
+        crate::interrupts::unmask_irq(COM1_IRQ);
+        
+        SERIAL1.send_str("[SERIAL] COM1 IRQ4 enabled\n");
+        Ok(())
+    }
+
+    fn stop(&mut self) -> KapiResult<()> {
+        // Disable interrupts
+        SERIAL1.port.set_interrupts(false, false);
+        Ok(())
+    }
+
+    fn supported_devices(&self) -> &[DeviceId] {
+        // ISA device, no PCI/USB ID
+        &[]
+    }
+}
