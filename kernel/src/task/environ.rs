@@ -302,13 +302,13 @@ impl Environment {
                         }
                         // peek()で存在確認済みなので、next()は必ずSome
                         // SAFETY: peek() returned Some, so next() will too
-                        var_name.push(unsafe { chars.next().unwrap_unchecked() });
+                        var_name.push(chars.next().unwrap());
                     }
                 } else {
                     while let Some(&c) = chars.peek() {
                         if c.is_ascii_alphanumeric() || c == '_' {
                             // SAFETY: peek() returned Some, so next() will too
-                            var_name.push(unsafe { chars.next().unwrap_unchecked() });
+                            var_name.push(chars.next().unwrap());
                         } else {
                             break;
                         }
