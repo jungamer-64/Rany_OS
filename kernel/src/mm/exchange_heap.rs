@@ -122,7 +122,7 @@ impl SimpleFreeListHeap {
                 }
 
                 self.allocated_bytes += total_needed;
-                return Ok(unsafe { NonNull::new_unchecked(aligned_addr as *mut u8) });
+                return Ok(NonNull::new(aligned_addr as *mut u8).expect("aligned addr null"));
             }
 
             prev = current;
@@ -320,10 +320,10 @@ pub unsafe fn init_exchange_heap(heap_start: usize, size: usize) {
 /// Exchange Heap経由でメモリを割り当て（RRefで使用）
 pub fn allocate_on_exchange<T>(value: T) -> Option<NonNull<T>> {
     let layout = Layout::new::<T>();
-    EXCHANGE_HEAP.allocate(layout).map(|ptr| unsafe {
+    EXCHANGE_HEAP.allocate(layout).map(|ptr| {
         let typed_ptr = ptr.as_ptr() as *mut T;
-        typed_ptr.write(value);
-        NonNull::new_unchecked(typed_ptr)
+        unsafe { typed_ptr.write(value); }
+        NonNull::new(typed_ptr).expect("typed_ptr null")
     })
 }
 
