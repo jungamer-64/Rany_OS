@@ -22,12 +22,29 @@ path = "src/lib.rs"
 # 一時的な措置。移行が終われば直ぐに削除すること
 kernel_api = { path = "../interfaces/kernel_api" }
 
+# Graphics Types (pure data, no kernel dependency)
+graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }
+
+# Drivers
+pci_driver = { path = "../drivers/pci" }
+ahci_driver = { path = "../drivers/ahci" }
+nvme_driver = { path = "../drivers/nvme" }
+usb_driver = { path = "../drivers/usb" }
+hid_driver = { path = "../drivers/hid" }
+
+# Filesystems
+fat32 = { path = "../filesystems/fat32" }
+vfs = { path = "../libs/vfs" }
+
 # ブートローダーAPI（Limine Protocol - UEFI/BIOS両対応）
 limine = "0.5"
 
 
 # x86_64アーキテクチャサポート
 x86_64 = "0.15"
+
+# Hardware Abstraction Layer (MMIO/Port I/O wrappers)
+hal = { path = "../hal" }
 
 # スピンロック（no_std互換）
 spin = "0.10"
