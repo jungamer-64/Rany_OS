@@ -56,6 +56,8 @@ mod test;
 mod application;
 mod benchmark;
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
+mod service_impl; // KernelServices implementation
+mod driver_registry; // Driver lifecycle management
 
 // Limine bootloader protocol requests (UEFI/BIOS compatible)
 // Define the start and end markers for Limine requests
@@ -234,6 +236,12 @@ extern "C" fn kmain() -> ! {
     
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
+
+    // Register kernel services (SPL契約の有効化)
+    serial_print("[BOOT] Registering kernel services...\r\n");
+    unsafe { service_impl::register_kernel_services(); }
+    serial_print("[BOOT] Kernel services registered\r\n");
+    info!(target: "init", "KernelServices registered");
     
     // グラフィックスフレームバッファの初期化（Limine経由）
     serial_print("[BOOT] Initializing graphics framebuffer...\r\n");

@@ -329,13 +329,19 @@ impl IdeChannel {
     /// ソフトリセット
     pub unsafe fn soft_reset(&self) {
         // SRST=1
-        unsafe { PortU8::new(self.control_base).write(0x04) };
+        {
+            let mut ctrl = PortU8::new(self.control_base);
+            ctrl.write(0x04);
+        }
         // 少なくとも5us待機
         for _ in 0..10 {
             let _ = self.read_alt_status();
         }
         // SRST=0
-        unsafe { PortU8::new(self.control_base).write(0x00) };
+        {
+            let mut ctrl = PortU8::new(self.control_base);
+            ctrl.write(0x00);
+        }
         // 400ns待機
         for _ in 0..4 {
             let _ = self.read_alt_status();
@@ -613,38 +619,45 @@ impl IdeChannel {
         buffer: &[u8],
     ) -> Result<(), IdeError> {
         let drive_head = drive.value() | 0x40;
-        self.write_reg(regs::DRIVE, drive_head);
-
-        for _ in 0..4 {
-            let _ = self.read_alt_status();
+        unsafe {
+            self.write_reg(regs::DRIVE, drive_head);
         }
 
-        unsafe { self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8); }
-        unsafe { self.write_reg(regs::LBA_LOW, (lba >> 24) as u8); }
-        unsafe { self.write_reg(regs::LBA_MID, (lba >> 32) as u8); }
-        unsafe { self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8); }
+        for _ in 0..4 {
+            let _ = unsafe { self.read_alt_status() };
+        }
 
-        unsafe { self.write_reg(regs::SECTOR_COUNT, count as u8); }
-        unsafe { self.write_reg(regs::LBA_LOW, lba as u8); }
-        unsafe { self.write_reg(regs::LBA_MID, (lba >> 8) as u8); }
-        unsafe { self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8); }
+        unsafe {
+            self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8);
+            self.write_reg(regs::LBA_LOW, (lba >> 24) as u8);
+            self.write_reg(regs::LBA_MID, (lba >> 32) as u8);
+            self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8);
 
-        unsafe { self.write_reg(regs::COMMAND, commands::WRITE_SECTORS_EXT); }
+            self.write_reg(regs::SECTOR_COUNT, count as u8);
+            self.write_reg(regs::LBA_LOW, lba as u8);
+            self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
+            self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
+
+            self.write_reg(regs::COMMAND, commands::WRITE_SECTORS_EXT);
+        }
 
         let mut data_port = PortU16::new(self.io_base + regs::DATA);
         let sectors_to_write = if count == 0 { 65536 } else { count as usize };
 
         for i in 0..sectors_to_write {
-            unsafe { self.wait_drq()?; }
-
-            let offset = i * 512;
-            let sector_buffer = &buffer[offset..offset + 512];
-            let word_buffer: &[u16] = unsafe { core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256) };
-            unsafe { data_port.write_words(word_buffer) };
+            unsafe {
+                self.wait_drq()?;
+                let offset = i * 512;
+                let sector_buffer = &buffer[offset..offset + 512];
+                let word_buffer: &[u16] = core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256);
+                data_port.write_words(word_buffer);
+            }
         }
 
-        self.write_reg(regs::COMMAND, commands::CACHE_FLUSH_EXT);
-        self.wait_not_busy()?;
+        unsafe {
+            self.write_reg(regs::COMMAND, commands::CACHE_FLUSH_EXT);
+            self.wait_not_busy()?;
+        }
 
         Ok(())
     }

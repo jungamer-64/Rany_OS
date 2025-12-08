@@ -1,0 +1,217 @@
+// ============================================================================
+// kernel_api/src/driver.rs - Driver Trait Definition
+// ============================================================================
+//!
+//! # Driver Interface
+//!
+//! This module defines the `Driver` trait that all driver cells must implement.
+//! It provides a unified interface for driver lifecycle management,
+//! enabling future hot-swap capabilities and dynamic driver loading.
+//!
+//! ## Design Rationale
+//!
+//! - **Uniform Interface**: All drivers expose the same lifecycle methods
+//! - **Capability-Based**: Drivers request capabilities during probe
+//! - **Hot-Swap Ready**: Clean start/stop semantics for dynamic loading
+//! - **Zero-Copy Friendly**: Uses references where possible
+
+use crate::error::{KapiError, KapiResult};
+
+// ============================================================================
+// Driver Trait
+// ============================================================================
+
+/// すべてのドライバ（セル）が実装すべきトレイト
+///
+/// ドライバのライフサイクル管理を統一化し、
+/// 将来のホットスワップ機能の基盤を提供する。
+///
+/// ## ライフサイクル
+///
+/// ```text
+/// ┌─────────────────────────────────────────────────────┐
+/// │                  Driver Lifecycle                    │
+/// │                                                      │
+/// │   ┌─────────┐    probe()     ┌──────────┐          │
+/// │   │ Created │ ───────────── ▶│ Probed   │          │
+/// │   └─────────┘                └──────────┘          │
+/// │                                   │                 │
+/// │                              start()               │
+/// │                                   ▼                 │
+/// │                              ┌──────────┐          │
+/// │                              │ Running  │          │
+/// │                              └──────────┘          │
+/// │                                   │                 │
+/// │                              stop()                │
+/// │                                   ▼                 │
+/// │                              ┌──────────┐          │
+/// │                              │ Stopped  │          │
+/// │                              └──────────┘          │
+/// └─────────────────────────────────────────────────────┘
+/// ```
+pub trait Driver: Send + Sync {
+    /// ドライバ名（デバッグ・ログ用）
+    ///
+    /// 人間が読みやすい識別子を返す。
+    fn name(&self) -> &str;
+
+    /// ドライバのバージョン
+    fn version(&self) -> DriverVersion {
+        DriverVersion::new(0, 1, 0)
+    }
+
+    /// ドライバの種類
+    fn driver_type(&self) -> DriverType;
+
+    /// デバイスプローブ（初期化）
+    ///
+    /// デバイスの検出と初期設定を行う。
+    /// 必要なケイパビリティの要求もここで行う。
+    ///
+    /// # Returns
+    /// - `Ok(())` - プローブ成功、ドライバ使用可能
+    /// - `Err(KapiError)` - プローブ失敗、ドライバは使用不可
+    fn probe(&mut self) -> KapiResult<()>;
+
+    /// ドライバを開始
+    ///
+    /// probe() 成功後に呼ばれる。
+    /// 割り込みハンドラの登録やポーリング開始など。
+    fn start(&mut self) -> KapiResult<()> {
+        // デフォルト実装: 何もしない
+        Ok(())
+    }
+
+    /// ドライバを停止
+    ///
+    /// ホットスワップやシャットダウン時に呼ばれる。
+    /// リソースの解放、割り込みの無効化など。
+    fn stop(&mut self) -> KapiResult<()> {
+        // デフォルト実装: 何もしない
+        Ok(())
+    }
+
+    /// ドライバがサポートするデバイス情報
+    fn supported_devices(&self) -> &[DeviceId] {
+        &[]
+    }
+}
+
+// ============================================================================
+// Driver Types and Metadata
+// ============================================================================
+
+/// ドライバのバージョン情報
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DriverVersion {
+    pub major: u16,
+    pub minor: u16,
+    pub patch: u16,
+}
+
+impl DriverVersion {
+    pub const fn new(major: u16, minor: u16, patch: u16) -> Self {
+        Self { major, minor, patch }
+    }
+}
+
+impl core::fmt::Display for DriverVersion {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
+    }
+}
+
+/// ドライバの種類
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverType {
+    /// PCIデバイスドライバ
+    Pci,
+    /// USBデバイスドライバ
+    Usb,
+    /// ブロックデバイス（ストレージ）
+    Block,
+    /// ネットワークデバイス
+    Network,
+    /// HID（キーボード、マウス等）
+    Hid,
+    /// グラフィックス
+    Graphics,
+    /// シリアル/UART
+    Serial,
+    /// その他
+    Other,
+}
+
+/// デバイス識別子
+///
+/// PCI Vendor/Device ID、USB VID/PID など
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeviceId {
+    /// ベンダーID
+    pub vendor: u16,
+    /// デバイスID
+    pub device: u16,
+    /// サブシステムベンダーID（オプション）
+    pub subsystem_vendor: Option<u16>,
+    /// サブシステムデバイスID（オプション）
+    pub subsystem_device: Option<u16>,
+}
+
+impl DeviceId {
+    pub const fn new(vendor: u16, device: u16) -> Self {
+        Self {
+            vendor,
+            device,
+            subsystem_vendor: None,
+            subsystem_device: None,
+        }
+    }
+
+    pub const fn with_subsystem(
+        vendor: u16,
+        device: u16,
+        subsystem_vendor: u16,
+        subsystem_device: u16,
+    ) -> Self {
+        Self {
+            vendor,
+            device,
+            subsystem_vendor: Some(subsystem_vendor),
+            subsystem_device: Some(subsystem_device),
+        }
+    }
+
+    /// PCI形式の文字列表現
+    pub fn pci_id_string(&self) -> alloc::string::String {
+        alloc::format!("{:04x}:{:04x}", self.vendor, self.device)
+    }
+}
+
+// ============================================================================
+// Driver Registration (for kernel use)
+// ============================================================================
+
+/// ドライバ登録情報
+pub struct DriverInfo {
+    /// ドライバ名
+    pub name: &'static str,
+    /// ドライバの種類
+    pub driver_type: DriverType,
+    /// サポートするデバイスID一覧
+    pub supported_devices: &'static [DeviceId],
+}
+
+/// ドライバ状態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverState {
+    /// 登録済み（未プローブ）
+    Registered,
+    /// プローブ成功
+    Probed,
+    /// 動作中
+    Running,
+    /// 停止
+    Stopped,
+    /// エラー
+    Error,
+}

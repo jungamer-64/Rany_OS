@@ -187,9 +187,21 @@ impl Task {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        Self::new_boxed(Box::pin(future), priority, domain_id)
+    }
+
+    /// 既にBox化されたFutureからタスクを作成（二重Box回避用）
+    ///
+    /// `KernelServices::spawn_task` など、外部から `Pin<Box<dyn Future>>` を
+    /// 受け取る場合は、このコンストラクタを使用して二重Boxを回避する。
+    pub fn new_boxed(
+        future: Pin<Box<dyn Future<Output = ()> + Send + 'static>>,
+        priority: Priority,
+        domain_id: Option<u64>,
+    ) -> Arc<Self> {
         Arc::new(Self {
             metadata: TaskMetadata::new(priority, domain_id),
-            future: UnsafeCell::new(Box::pin(future)),
+            future: UnsafeCell::new(future),
             state: AtomicUsize::new(TaskState::Ready as usize),
         })
     }

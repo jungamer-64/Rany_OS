@@ -7,7 +7,5 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
-kernel_api = { path = "../../interfaces/kernel_api" }
-
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
