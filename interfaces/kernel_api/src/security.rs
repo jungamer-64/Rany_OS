@@ -5,7 +5,7 @@
 //! Zero-sized capability marker types for compile-time permission checking.
 //! These types are shared between kernel, app_sdk, and applications.
 
-use core::marker::PhantomData;
+// PhantomData is unused - keep import out to avoid warnings
 
 // ============================================================================
 // Capability Marker Types
@@ -233,62 +233,62 @@ pub mod kernel_only {
     /// Only call during kernel initialization
     pub unsafe fn grant_all() -> DomainCapabilities {
         DomainCapabilities {
-            memory: Some(MemoryCapability::new()),
-            net: Some(NetCapability::new()),
-            io: Some(IoCapability::new()),
-            interrupt: Some(InterruptCapability::new()),
-            dma: Some(DmaCapability::new()),
-            fs: Some(FsCapability::new()),
-            ipc: Some(IpcCapability::new()),
-            task: Some(TaskCapability::new()),
+            memory: Some(unsafe { MemoryCapability::new() }),
+            net: Some(unsafe { NetCapability::new() }),
+            io: Some(unsafe { IoCapability::new() }),
+            interrupt: Some(unsafe { InterruptCapability::new() }),
+            dma: Some(unsafe { DmaCapability::new() }),
+            fs: Some(unsafe { FsCapability::new() }),
+            ipc: Some(unsafe { IpcCapability::new() }),
+            task: Some(unsafe { TaskCapability::new() }),
         }
     }
 
     /// Grant memory capability
     #[inline(always)]
     pub unsafe fn grant_memory() -> MemoryCapability {
-        MemoryCapability::new()
+        unsafe { MemoryCapability::new() }
     }
 
     /// Grant network capability
     #[inline(always)]
     pub unsafe fn grant_net() -> NetCapability {
-        NetCapability::new()
+        unsafe { NetCapability::new() }
     }
 
     /// Grant I/O capability
     #[inline(always)]
     pub unsafe fn grant_io() -> IoCapability {
-        IoCapability::new()
+        unsafe { IoCapability::new() }
     }
 
     /// Grant interrupt capability
     #[inline(always)]
     pub unsafe fn grant_interrupt() -> InterruptCapability {
-        InterruptCapability::new()
+        unsafe { InterruptCapability::new() }
     }
 
     /// Grant DMA capability
     #[inline(always)]
     pub unsafe fn grant_dma() -> DmaCapability {
-        DmaCapability::new()
+        unsafe { DmaCapability::new() }
     }
 
     /// Grant filesystem capability
     #[inline(always)]
     pub unsafe fn grant_fs() -> FsCapability {
-        FsCapability::new()
+        unsafe { FsCapability::new() }
     }
 
     /// Grant IPC capability
     #[inline(always)]
     pub unsafe fn grant_ipc() -> IpcCapability {
-        IpcCapability::new()
+        unsafe { IpcCapability::new() }
     }
 
     /// Grant task capability
     #[inline(always)]
     pub unsafe fn grant_task() -> TaskCapability {
-        TaskCapability::new()
+        unsafe { TaskCapability::new() }
     }
 }

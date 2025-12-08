@@ -16,11 +16,13 @@ pub mod services;
 pub mod types;
 pub mod security;
 pub mod kapi;
+pub mod application;
 
 // Re-export commonly used types
 pub use error::{KapiError, KapiResult};
 pub use services::{KernelServices, kernel, register_kernel, is_kernel_registered};
 pub use types::{TaskHandle, DmaBuffer, Packet, SystemInfo, OpenMode, FileHandle, ChannelHandle, TcpEndpoint};
 pub use security::{DomainCapabilities, MemoryCapability, NetCapability, IoCapability, DmaCapability, FsCapability, IpcCapability, TaskCapability, InterruptCapability};
+pub use application::{Application, AppContext};
 
 
