@@ -546,11 +546,11 @@ impl<'a> PageTableWalker<'a> {
     }
 
     /// 現在のCR3からウォーカーを作成
-    pub unsafe fn from_current_cr3(mapper: &'a PhysicalMemoryMapper) -> Self { unsafe {
+    pub unsafe fn from_current_cr3(mapper: &'a PhysicalMemoryMapper) -> Self {
         let cr3: u64;
         core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
         Self::new(PhysAddr::new(cr3 & !0xFFF), mapper)
-    }}
+    }
 
     /// 仮想アドレスを物理アドレスに変換
     pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
@@ -697,10 +697,10 @@ pub fn flush_tlb() {
 }
 
 /// CR3を設定
-#[inline]
-pub unsafe fn set_cr3(pml4_phys: PhysAddr) { unsafe {
-    core::arch::asm!("mov cr3, {}", in(reg) pml4_phys.as_u64(), options(nostack, preserves_flags));
-}}
+    #[inline]
+    pub unsafe fn set_cr3(pml4_phys: PhysAddr) {
+        core::arch::asm!("mov cr3, {}", in(reg) pml4_phys.as_u64(), options(nostack, preserves_flags));
+    }
 
 /// CR3を取得
 #[inline]
@@ -764,7 +764,7 @@ impl PageTableManager {
     /// カーネルモードで呼び出す必要がある
     pub unsafe fn from_current_cr3(physical_memory_offset: u64) -> Self {
         let pml4_phys = get_cr3();
-        unsafe { Self::new(pml4_phys, physical_memory_offset) }
+        Self::new(pml4_phys, physical_memory_offset)
     }
 
     /// PML4の物理アドレスを取得
