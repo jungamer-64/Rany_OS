@@ -292,7 +292,7 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
     }
     
     // ELFヘッダーを解析
-    let header = unsafe { &*(elf_data.as_ptr() as *const Elf64Header) };
+    let header = crate::util::get_ref::<Elf64Header>(elf_data, 0)?;
     
     // セクションヘッダーテーブルの位置を確認
     let sh_offset = header.e_shoff as usize;
@@ -311,9 +311,7 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
     
     // セクション名文字列テーブルのセクションを取得
     let shstrtab_header_offset = sh_offset + shstrtab_idx * sh_entsize;
-    let shstrtab_header = unsafe {
-        &*(elf_data.as_ptr().add(shstrtab_header_offset) as *const Elf64SectionHeader)
-    };
+    let shstrtab_header = crate::util::get_ref::<Elf64SectionHeader>(elf_data, shstrtab_header_offset)?;
     let shstrtab_start = shstrtab_header.sh_offset as usize;
     let shstrtab_size = shstrtab_header.sh_size as usize;
     
@@ -324,9 +322,7 @@ pub fn extract_type_ids(elf_data: &[u8]) -> Option<CellDependencies> {
     // .rany_type_id セクションを探す
     for i in 0..sh_num {
         let sh_header_offset = sh_offset + i * sh_entsize;
-        let section_header = unsafe {
-            &*(elf_data.as_ptr().add(sh_header_offset) as *const Elf64SectionHeader)
-        };
+        let section_header = crate::util::get_ref::<Elf64SectionHeader>(elf_data, sh_header_offset)?;
         
         let name_offset = section_header.sh_name as usize;
         if name_offset >= shstrtab_size {
