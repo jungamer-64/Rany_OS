@@ -186,19 +186,25 @@ impl VirtQueue {
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
         notify_addr: *mut u16,
-    ) -> Self { unsafe {
+    ) -> Self {
         // Initialize descriptor table
         for i in 0..queue_size {
-            (*desc_table.add(i as usize)) = VringDesc::default();
+            unsafe {
+                (*desc_table.add(i as usize)) = VringDesc::default();
+            }
         }
 
         // Initialize available ring
-        (*avail_ring).flags = 0;
-        (*avail_ring).idx = 0;
+        unsafe {
+            (*avail_ring).flags = 0;
+            (*avail_ring).idx = 0;
+        }
 
         // Initialize used ring
-        (*used_ring).flags = 0;
-        (*used_ring).idx = 0;
+        unsafe {
+            (*used_ring).flags = 0;
+            (*used_ring).idx = 0;
+        }
 
         Self {
             queue_size,
@@ -209,7 +215,7 @@ impl VirtQueue {
             last_used_idx: AtomicU32::new(0),
             notify_addr,
         }
-    }}
+    }
 
     /// Allocate a descriptor from the free list
     pub fn alloc_desc(&self) -> Option<u16> {
@@ -252,7 +258,7 @@ impl VirtQueue {
     ///
     /// # Safety
     /// Caller must ensure descriptors are properly set up
-    pub unsafe fn submit(&self, head: u16) { unsafe {
+    pub unsafe fn submit(&self, head: u16) {
         // Memory barrier before making buffer visible to device
         core::sync::atomic::fence(Ordering::Release);
 
@@ -265,9 +271,9 @@ impl VirtQueue {
 
         (*self.avail_ring).idx = avail_idx.wrapping_add(1);
 
-        // Notify device
-        core::ptr::write_volatile(self.notify_addr, 0);
-    }}
+        // Notify device via MMIO write to notification register
+        crate::io::mmio_write_u16(self.notify_addr as usize, 0);
+    }
 
     /// Poll for completed requests
     pub fn poll_completions(&self) -> Option<(u16, u32)> {
@@ -406,7 +412,7 @@ impl VirtioBlkDevice {
     ///
     /// # Safety
     /// Caller must ensure MMIO address is valid
-    pub unsafe fn init(&mut self) -> Result<(), BlockError> { unsafe {
+    pub unsafe fn init(&mut self) -> Result<(), BlockError> {
         // Step 1: Reset device
         self.write_status(0);
 
@@ -470,57 +476,54 @@ impl VirtioBlkDevice {
 
         self.ready.store(true, Ordering::Release);
         Ok(())
-    }}
+    }
 
     /// Read device status register
-    unsafe fn read_status(&self) -> u8 { unsafe {
+    unsafe fn read_status(&self) -> u8 {
         // MMIO offset 0x70 for status
         let ptr = (self.mmio_base + 0x70) as *const u8;
-        core::ptr::read_volatile(ptr)
-    }}
+        crate::io::mmio_read_u8((self.mmio_base + 0x70) as usize)
+    }
 
     /// Write device status register
-    unsafe fn write_status(&self, status: u8) { unsafe {
+    unsafe fn write_status(&self, status: u8) {
         let ptr = (self.mmio_base + 0x70) as *mut u8;
-        core::ptr::write_volatile(ptr, status);
-    }}
+        crate::io::mmio_write_u8((self.mmio_base + 0x70) as usize, status);
+    }
 
     /// Read device features
-    unsafe fn read_device_features(&self) -> u64 { unsafe {
+    unsafe fn read_device_features(&self) -> u64 {
         // MMIO offset 0x10 for device features
-        let ptr = (self.mmio_base + 0x10) as *const u32;
-        let low = core::ptr::read_volatile(ptr) as u64;
-        let high = core::ptr::read_volatile(ptr.add(1)) as u64;
+        let low = crate::io::mmio_read_u32((self.mmio_base + 0x10) as usize) as u64;
+        let high = crate::io::mmio_read_u32((self.mmio_base + 0x10 + 4) as usize) as u64;
         low | (high << 32)
-    }}
+    }
 
     /// Write driver features
-    unsafe fn write_driver_features(&self, features: u64) { unsafe {
+    unsafe fn write_driver_features(&self, features: u64) {
         // MMIO offset 0x20 for driver features
-        let ptr = (self.mmio_base + 0x20) as *mut u32;
-        core::ptr::write_volatile(ptr, features as u32);
-        core::ptr::write_volatile(ptr.add(1), (features >> 32) as u32);
-    }}
+        crate::io::mmio_write_u32((self.mmio_base + 0x20) as usize, features as u32);
+        crate::io::mmio_write_u32((self.mmio_base + 0x20 + 4) as usize, (features >> 32) as u32);
+    }
 
     /// Read device configuration
-    unsafe fn read_config(&mut self) -> Result<(), BlockError> { unsafe {
+    unsafe fn read_config(&mut self) -> Result<(), BlockError> {
         // Configuration space starts at MMIO offset 0x100
         let config_base = self.mmio_base + 0x100;
 
         // Read capacity (8 bytes at offset 0)
-        let capacity_ptr = config_base as *const u64;
-        self.config.capacity = core::ptr::read_volatile(capacity_ptr);
+        self.config.capacity = crate::io::mmio_read_u64(config_base as usize);
 
         // Read block size if feature supported
         if self.features & features::VIRTIO_BLK_F_BLK_SIZE != 0 {
-            let blk_size_ptr = (config_base + 0x14) as *const u32;
-            self.config.block_size = core::ptr::read_volatile(blk_size_ptr);
+            // Block size (u32) at offset 0x14
+            self.config.block_size = crate::io::mmio::mmio_read_u32((config_base + 0x14) as usize);
         }
 
         // Read num_queues if multiqueue supported
         if self.features & features::VIRTIO_BLK_F_MQ != 0 {
-            let mq_ptr = (config_base + 0x22) as *const u16;
-            self.config.num_queues = core::ptr::read_volatile(mq_ptr);
+            // Number of queues (u16) at offset 0x22
+            self.config.num_queues = crate::io::mmio::mmio_read_u16((config_base + 0x22) as usize);
         }
 
         // Check read-only
@@ -529,17 +532,17 @@ impl VirtioBlkDevice {
         }
 
         Ok(())
-    }}
+    }
 
     /// Setup a virtqueue
-    unsafe fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> { unsafe {
+    unsafe fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> {
         // Select queue
-        let queue_sel_ptr = (self.mmio_base + 0x30) as *mut u32;
-        core::ptr::write_volatile(queue_sel_ptr, queue_idx as u32);
+        // Select queue
+        crate::io::mmio::mmio_write_u32((self.mmio_base + 0x30) as usize, queue_idx as u32);
 
         // Read max queue size
-        let queue_num_max_ptr = (self.mmio_base + 0x34) as *const u32;
-        let max_size = core::ptr::read_volatile(queue_num_max_ptr) as u16;
+        // Read max queue size
+        let max_size = crate::io::mmio::mmio_read_u32((self.mmio_base + 0x34) as usize) as u16;
 
         if max_size == 0 {
             return Err(BlockError::NotReady);
@@ -556,44 +559,40 @@ impl VirtioBlkDevice {
         let total_size = desc_size + avail_size + used_size;
         let layout = alloc::alloc::Layout::from_size_align(total_size, 4096)
             .map_err(|_| BlockError::NotReady)?;
-        let ptr = alloc::alloc::alloc_zeroed(layout);
-
-        if ptr.is_null() {
-            return Err(BlockError::NotReady);
-        }
+        let ptr_nn = crate::util::allocate_zeroed(layout).ok_or(BlockError::NotReady)?;
+        let ptr = ptr_nn.as_ptr();
 
         let desc_table = ptr as *mut VringDesc;
         let avail_ring = ptr.add(desc_size) as *mut VringAvail;
         let used_ring = ptr.add(desc_size + avail_size) as *mut VringUsed;
 
         // Write queue configuration
-        let queue_num_ptr = (self.mmio_base + 0x38) as *mut u32;
-        core::ptr::write_volatile(queue_num_ptr, queue_size as u32);
+        // Write queue size
+        crate::io::mmio::mmio_write_u32((self.mmio_base + 0x38) as usize, queue_size as u32);
 
         // Write descriptor table address (split into low/high)
         let desc_addr = desc_table as u64;
-        let desc_low_ptr = (self.mmio_base + 0x80) as *mut u32;
-        let desc_high_ptr = (self.mmio_base + 0x84) as *mut u32;
-        core::ptr::write_volatile(desc_low_ptr, desc_addr as u32);
-        core::ptr::write_volatile(desc_high_ptr, (desc_addr >> 32) as u32);
+        let desc_low_addr = (self.mmio_base + 0x80) as usize;
+        let desc_high_addr = (self.mmio_base + 0x84) as usize;
+        crate::io::mmio::mmio_write_u32(desc_low_addr, desc_addr as u32);
+        crate::io::mmio::mmio_write_u32(desc_high_addr, (desc_addr >> 32) as u32);
 
         // Write available ring address
         let avail_addr = avail_ring as u64;
-        let avail_low_ptr = (self.mmio_base + 0x90) as *mut u32;
-        let avail_high_ptr = (self.mmio_base + 0x94) as *mut u32;
-        core::ptr::write_volatile(avail_low_ptr, avail_addr as u32);
-        core::ptr::write_volatile(avail_high_ptr, (avail_addr >> 32) as u32);
+        let avail_low_addr = (self.mmio_base + 0x90) as usize;
+        let avail_high_addr = (self.mmio_base + 0x94) as usize;
+        crate::io::mmio::mmio_write_u32(avail_low_addr, avail_addr as u32);
+        crate::io::mmio::mmio_write_u32(avail_high_addr, (avail_addr >> 32) as u32);
 
         // Write used ring address
         let used_addr = used_ring as u64;
-        let used_low_ptr = (self.mmio_base + 0xa0) as *mut u32;
-        let used_high_ptr = (self.mmio_base + 0xa4) as *mut u32;
-        core::ptr::write_volatile(used_low_ptr, used_addr as u32);
-        core::ptr::write_volatile(used_high_ptr, (used_addr >> 32) as u32);
+        let used_low_addr = (self.mmio_base + 0xa0) as usize;
+        let used_high_addr = (self.mmio_base + 0xa4) as usize;
+        crate::io::mmio::mmio_write_u32(used_low_addr, used_addr as u32);
+        crate::io::mmio::mmio_write_u32(used_high_addr, (used_addr >> 32) as u32);
 
         // Enable queue
-        let queue_ready_ptr = (self.mmio_base + 0x44) as *mut u32;
-        core::ptr::write_volatile(queue_ready_ptr, 1);
+        crate::io::mmio::mmio_write_u32((self.mmio_base + 0x44) as usize, 1);
 
         // Create notify address for this queue
         let notify_addr = (self.mmio_base + 0x50) as *mut u16;
@@ -603,7 +602,7 @@ impl VirtioBlkDevice {
         self.queues.push(Arc::new(Mutex::new(virtqueue)));
 
         Ok(())
-    }}
+    }
 
     /// Get device configuration
     pub fn config(&self) -> &BlockDeviceConfig {
@@ -1113,7 +1112,7 @@ static VIRTIO_BLK_DEVICE: Mutex<Option<VirtioBlkDevice>> = Mutex::new(None);
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid and device exists
-pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> { unsafe {
+pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
     let mut device = VirtioBlkDevice::new(mmio_base);
     device.init()?;
 
@@ -1125,7 +1124,7 @@ pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> { unsafe
 
     *VIRTIO_BLK_DEVICE.lock() = Some(device);
     Ok(())
-}}
+}
 
 /// Handle VirtIO block device interrupt
 pub fn handle_virtio_blk_interrupt() {
