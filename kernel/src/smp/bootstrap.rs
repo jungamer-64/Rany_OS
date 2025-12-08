@@ -273,7 +273,7 @@ impl ApBootstrap {
     ///
     /// # Safety
     /// Writes to low memory
-    pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> { unsafe {
+    pub unsafe fn setup_trampoline(&self) -> Result<(), &'static str> {
         // Trampoline code (simplified - real code would be in assembly)
         // This is a placeholder for the actual AP startup code
         static TRAMPOLINE_CODE: [u8; 32] = [
@@ -299,7 +299,7 @@ impl ApBootstrap {
         );
 
         Ok(())
-    }}
+    }
 
     /// Start a single AP
     pub fn start_ap(&self, ap_index: usize, apic_id: u32) -> Result<(), &'static str> {
@@ -389,12 +389,12 @@ static AP_BOOTSTRAP: Mutex<Option<ApBootstrap>> = Mutex::new(None);
 ///
 /// # Safety
 /// Modifies low memory and sends IPIs
-pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> { unsafe {
+pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> {
     let bootstrap = ApBootstrap::new(lapic_base, num_aps);
     bootstrap.setup_trampoline()?;
     *AP_BOOTSTRAP.lock() = Some(bootstrap);
     Ok(())
-}}
+}
 
 /// Start all APs
 pub fn start_aps(apic_ids: &[u32]) -> u32 {
