@@ -472,6 +472,7 @@ impl From<crate::io::ahci::AhciError> for IoError {
             AE::AllocationError => IoError::NoResources,
             AE::PciError(_) => IoError::DeviceNotFound,
             AE::Other(_) => IoError::AhciError,
+            AE::InternalError => IoError::AhciError,
         }
     }
 }

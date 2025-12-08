@@ -19,6 +19,7 @@
 use alloc::vec::Vec;
 use hal::mmio;
 use core::sync::atomic::{AtomicBool, Ordering};
+use kernel_api::DmaBuffer;
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::controller::{
@@ -78,14 +79,12 @@ pub struct NvmePollingDriver {
     cmb_info: Option<CmbInfo>,
     /// CMBを使用するかどうか
     use_cmb: bool,
-    /// DMAコンテキスト（Admin/Identify バッファ用）
-    dma_context: crate::io::dma::DeviceDmaContext,
     /// Admin SQバッファ（動的割り当て）
-    admin_sq_buffer: Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
+    admin_sq_buffer: Option<DmaBuffer>,
     /// Admin CQバッファ（動的割り当て）
-    admin_cq_buffer: Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
+    admin_cq_buffer: Option<DmaBuffer>,
     /// Identifyバッファ（動的割り当て）
-    identify_buffer: Option<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
+    identify_buffer: Option<DmaBuffer>,
 }
 
 impl NvmePollingDriver {
@@ -111,7 +110,6 @@ impl NvmePollingDriver {
             interrupt_mode: false, // ポーリングモード
             cmb_info: None,
             use_cmb: true, // デフォルトでCMBを使用（利用可能なら）
-            dma_context: crate::io::dma::DeviceDmaContext::new(),
             admin_sq_buffer: None,
             admin_cq_buffer: None,
             identify_buffer: None,
@@ -267,17 +265,16 @@ impl NvmePollingDriver {
         let sq_size = (depth as usize) * QUEUE_ENTRY_SIZE;
         let cq_size = (depth as usize) * CQ_ENTRY_SIZE;
 
-        let asq_buffer = self
-            .dma_context
-            .create_slice(sq_size)
-            .map_err(|_| "Failed to allocate ASQ DMA buffer")?;
-        let acq_buffer = self
-            .dma_context
-            .create_slice(cq_size)
-            .map_err(|_| "Failed to allocate ACQ DMA buffer")?;
+        let kernel = kernel_api::services::kernel();
 
-        let asq_phys = asq_buffer.phys_addr().as_u64();
-        let acq_phys = acq_buffer.phys_addr().as_u64();
+        // Alloc DMA via KernelServices
+        let (asq_phys, asq_ptr) = kernel.alloc_dma(sq_size)
+            .map_err(|_| "Failed to allocate ASQ DMA buffer")?;
+        let asq_buffer = DmaBuffer::new(asq_phys, asq_ptr, sq_size);
+
+        let (acq_phys, acq_ptr) = kernel.alloc_dma(cq_size)
+            .map_err(|_| "Failed to allocate ACQ DMA buffer")?;
+        let acq_buffer = DmaBuffer::new(acq_phys, acq_ptr, cq_size);
 
         if asq_phys & 0xFFF != 0 || acq_phys & 0xFFF != 0 {
             return Err("DMA buffer not 4KB aligned");
@@ -313,11 +310,11 @@ impl NvmePollingDriver {
     fn identify_controller(&mut self) -> Result<(), &'static str> {
         let admin_queue = self.admin_queue.as_ref().ok_or("Admin queue not initialized")?;
 
-        let identify_buffer = self
-            .dma_context
-            .create_slice(4096)
+        let kernel = kernel_api::services::kernel();
+        let (phys, ptr) = kernel.alloc_dma(4096)
             .map_err(|_| "Failed to allocate Identify DMA buffer")?;
-        let buffer_ptr = identify_buffer.phys_addr().as_u64();
+        let identify_buffer = DmaBuffer::new(phys, ptr, 4096);
+        let buffer_ptr = phys;
 
         let mut cmd = NvmeCommand::default();
         cmd.set_opcode(AdminOpcode::Identify as u8);

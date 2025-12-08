@@ -329,18 +329,116 @@ extern "C" fn kmain() -> ! {
     // 完了
     info!(target: "boot", "BOOT COMPLETE!");
 
-    // 3.5. シリアルポートの初期化（デバッグ用）
-    info!(target: "init", "Initializing serial port");
-    if io::serial::init().is_ok() {
-        info!(target: "init", "Serial port initialized");
-    } else {
-        warn!(target: "init", "Serial port initialization failed");
+    // 3.5. シリアルポートの初期化（デバッグ用）via DriverRegistry
+    info!(target: "init", "Initializing serial port via DriverRegistry");
+    {
+        use io::serial::SerialDriver;
+        use driver_registry::register_driver;
+        use alloc::boxed::Box;
+        
+        // Serialドライバを登録
+        let serial_handle = register_driver(Box::new(SerialDriver::new()));
+        
+        // プローブと開始
+        if let Err(e) = driver_registry::driver_registry().probe_and_start(serial_handle) {
+            warn!(target: "init", "Serial driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "Serial driver initialized via DriverRegistry");
+        }
     }
 
-    // 3.6. ネットワークシェルAPIの初期化
+    // 3.5.5. NVMeドライバの初期化（PCIスキャン）
+    info!(target: "init", "Scanning for NVMe controllers...");
+    {
+        use nvme_driver::driver_impl::NvmeDriverWrapper;
+        use driver_registry::register_driver;
+        use pci_driver::{PciClass, find_by_class};
+        use alloc::boxed::Box;
+
+        // PCIバススキャン（初期化）- すでにカーネルのio::init等で呼ばれている可能性もあるが、
+        // ここで再スキャンしても問題ないか、あるいはfind_by_classが内部でスキャンするか確認が必要。
+        // pci_driver::init(); // 必要なら呼ぶ
+
+        // NVMeコントローラを検索 (Class 01h, Subclass 08h, ProgIF 02h)
+        let devices = find_by_class(0x01, 0x08);
+        if let Some(device_info) = devices.iter().find(|d| d.class_code.prog_if == 0x02) {
+             info!(target: "init", "NVMe controller found at {}", device_info.bdf);
+             
+             // BAR0を取得 (NVMeは64bit BAR0/1を使うことが多い)
+             // bus.rsのPciDeviceInfo定義を見ると bars: [Option<Bar>; 6]
+             if let Some(bar0) = device_info.bars[0] {
+                 let bar0_addr = bar0.base();
+                 info!(target: "init", "NVMe BAR0: {:#x}", bar0_addr);
+                 
+                 // バス制御を有効化
+                 device_info.enable_bus_master();
+                 device_info.enable_memory_space();
+
+                 // ドライバを登録
+                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_addr, 1))); // Core=1 for now
+                 
+                 // プローブと開始
+                 if let Err(e) = driver_registry::driver_registry().probe_and_start(nvme_handle) {
+                     error!(target: "init", "NVMe driver init failed: {:?}", e);
+                 } else {
+                     info!(target: "init", "NVMe driver initialized via DriverRegistry");
+                 }
+             } else {
+                 warn!(target: "init", "NVMe controller found but BAR0 is invalid");
+             }
+        } else {
+            info!(target: "init", "No NVMe controller found");
+        }
+    }
+
+    // 3.5.6. AHCIドライバの初期化（PCIスキャン）
+    info!(target: "init", "Scanning for AHCI controllers...");
+    {
+        use ahci_driver::driver_impl::AhciDriverWrapper;
+        use driver_registry::register_driver;
+        use pci_driver::find_by_class;
+        use alloc::boxed::Box;
+
+        // AHCIコントローラを検索 (Class 01h, Subclass 06h)
+        let devices = find_by_class(0x01, 0x06);
+        if let Some(device_info) = devices.first() {
+             info!(target: "init", "AHCI controller found at {}", device_info.bdf);
+             
+             // BAR5 (ABAR) を取得
+             if let Some(bar5) = device_info.bars[5] {
+                 let abar = bar5.base();
+                 info!(target: "init", "AHCI ABAR: {:#x}", abar);
+                 
+                 // バス制御を有効化
+                 device_info.enable_bus_master();
+                 device_info.enable_memory_space();
+
+                 // ドライバを登録
+                 let ahci_handle = register_driver(Box::new(AhciDriverWrapper::new(abar, 11))); // IRQ hardcoded for now
+                 
+                 // プローブと開始
+                 if let Err(e) = driver_registry::driver_registry().probe_and_start(ahci_handle) {
+                     error!(target: "init", "AHCI driver init failed: {:?}", e);
+                 } else {
+                     info!(target: "init", "AHCI driver initialized via DriverRegistry");
+                 }
+             } else {
+                 warn!(target: "init", "AHCI controller found but BAR5 is invalid");
+             }
+        } else {
+            info!(target: "init", "No AHCI controller found");
+        }
+    }
+
+    // 3.6. ネットワークサブシステムの初期化
+    info!(target: "init", "Initializing network subsystem");
+    net::init_stack_default();
+    net::init_socket_manager();
+    
+    // 3.6.1. ネットワークシェルAPIの初期化
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
-    info!(target: "init", "Network shell API initialized");
+    info!(target: "init", "Network stack initialized");
     graphics::update_boot_progress_with_message(50, "Network stack ready");
 
     // 3.6.1. ネットワークドライバブリッジの初期化

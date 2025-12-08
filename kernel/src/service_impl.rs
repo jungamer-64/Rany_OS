@@ -20,16 +20,92 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::String;
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::error::KapiError;
 use kernel_api::services::KernelServices;
 use kernel_api::OpenMode;
+use spin::Mutex;
 
 use crate::task::per_core_executor::{Task, Priority, executor_manager};
 use crate::task::timer;
 use crate::task::context;
 use crate::io::dma;
+
+// ============================================================================
+// File Handle Registry
+// ============================================================================
+
+/// Entry for an open file handle
+struct FileHandleEntry {
+    path: String,
+    mode: OpenMode,
+    position: u64,
+}
+
+// Channel Registry for IPC
+use crate::ipc::pipe::{PipeReader, PipeWriter};
+
+enum ChannelEntry {
+    Reader(PipeReader),
+    Writer(PipeWriter),
+}
+
+struct ChannelRegistry {
+    channels: Mutex<BTreeMap<u64, ChannelEntry>>,
+    next_id: AtomicU64,
+}
+
+impl ChannelRegistry {
+    const fn new() -> Self {
+        Self {
+            channels: Mutex::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    fn register(&self, entry: ChannelEntry) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.channels.lock().insert(id, entry);
+        id
+    }
+
+    fn unregister(&self, id: u64) -> Option<ChannelEntry> {
+        self.channels.lock().remove(&id)
+    }
+}
+
+/// Registry for tracking open file handles
+struct FileHandleRegistry {
+    handles: Mutex<BTreeMap<u64, FileHandleEntry>>,
+    next_id: AtomicU64,
+}
+
+impl FileHandleRegistry {
+    const fn new() -> Self {
+        Self {
+            handles: Mutex::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    fn register(&self, entry: FileHandleEntry) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.handles.lock().insert(id, entry);
+        id
+    }
+
+    fn unregister(&self, id: u64) -> Option<FileHandleEntry> {
+        self.handles.lock().remove(&id)
+    }
+}
+
+/// Global file handle registry
+static FILE_HANDLE_REGISTRY: FileHandleRegistry = FileHandleRegistry::new();
+static CHANNEL_REGISTRY: ChannelRegistry = ChannelRegistry::new();
 
 // ============================================================================
 // ExoKernel: The KernelServices Implementation
@@ -121,48 +197,103 @@ impl KernelServices for ExoKernel {
     }
 
     // ========================================================================
-    // Network (Stub implementations)
+    // Network (Connected to network stack)
     // ========================================================================
 
     fn net_create_endpoint(&self) -> Result<u64, KapiError> {
-        // TODO: Connect to net/tcp subsystem
-        Err(KapiError::NotSupported)
+        use crate::net::endpoint::{create_tcp_socket, SocketFd};
+        
+        let owned = create_tcp_socket();
+        let fd = owned.fd();
+        
+        // Detach from OwnedSocket so it remains registered in SocketManager
+        // and doesn't close on drop.
+        let _ = owned.into_inner(); 
+        
+        Ok(fd.raw() as u64)
     }
 
-    fn net_close_endpoint(&self, _endpoint_id: u64) -> Result<(), KapiError> {
-        Err(KapiError::NotSupported)
+    fn net_close_endpoint(&self, endpoint_id: u64) -> Result<(), KapiError> {
+        use crate::net::endpoint::{socket_manager, SocketFd};
+        
+        let fd = SocketFd::from_raw(endpoint_id as u32);
+        
+        if let Some(mgr_lock) = socket_manager() {
+            if let Some(mgr) = mgr_lock.read().as_ref() {
+                if mgr.unregister(fd).is_some() {
+                    return Ok(());
+                }
+            }
+        }
+        
+        Err(KapiError::InvalidHandle)
     }
 
     // ========================================================================
-    // Filesystem (Stub implementations)
+    // Filesystem (Connected to memfs)
     // ========================================================================
 
-    fn fs_open(&self, _path: &str, _mode: OpenMode) -> Result<u64, KapiError> {
-        // TODO: Connect to VFS layer (crate::fs)
-        Err(KapiError::NotSupported)
+    fn fs_open(&self, path: &str, mode: OpenMode) -> Result<u64, KapiError> {
+        use crate::fs::memfs;
+        
+        // Check if file exists
+        let path_buf = alloc::string::String::from(path);
+        
+        match mode {
+            OpenMode::Read => {
+                // For read, file must exist
+                if memfs::stat_file(&path_buf, "/").is_err() {
+                    return Err(KapiError::NotFound);
+                }
+            }
+            OpenMode::Write | OpenMode::ReadWrite | OpenMode::Append | OpenMode::Create => {
+                // For write, create if not exists
+                if memfs::stat_file(&path_buf, "/").is_err() {
+                    if let Err(_) = memfs::touch_file(&path_buf, "/") {
+                        return Err(KapiError::IoError);
+                    }
+                }
+            }
+        }
+        
+        // Register in file handle table
+        let handle_id = FILE_HANDLE_REGISTRY.register(FileHandleEntry {
+            path: path_buf,
+            mode,
+            position: 0,
+        });
+        
+        Ok(handle_id)
     }
 
-    fn fs_close(&self, _handle_id: u64) -> Result<(), KapiError> {
-        Err(KapiError::NotSupported)
+    fn fs_close(&self, handle_id: u64) -> Result<(), KapiError> {
+        FILE_HANDLE_REGISTRY.unregister(handle_id)
+            .ok_or(KapiError::InvalidHandle)?;
+        Ok(())
     }
-
-    // ========================================================================
-    // IPC (Stub implementations)
-    // ========================================================================
 
     fn ipc_create_channel(&self) -> Result<(u64, u64), KapiError> {
-        // TODO: Connect to IPC subsystem (crate::ipc)
-        Err(KapiError::NotSupported)
+		// Create a new pipe
+        let pipe = crate::ipc::pipe::pipe();
+        
+        // Register reader and writer
+        let reader_id = CHANNEL_REGISTRY.register(ChannelEntry::Reader(pipe.reader));
+        let writer_id = CHANNEL_REGISTRY.register(ChannelEntry::Writer(pipe.writer));
+        
+        // info!(target: "ipc", "Created channel: reader={}, writer={}", reader_id, writer_id);
+        
+        Ok((writer_id, reader_id)) // Return (Sender, Receiver)
     }
 
-    fn ipc_close(&self, _channel_id: u64) -> Result<(), KapiError> {
-        Err(KapiError::NotSupported)
+    fn ipc_close(&self, channel_id: u64) -> Result<(), KapiError> {
+        if CHANNEL_REGISTRY.unregister(channel_id).is_some() {
+            Ok(())
+        } else {
+            Err(KapiError::InvalidHandle)
+        }
     }
 }
 
-// ============================================================================
-// Global Kernel Instance
-// ============================================================================
 
 /// The global ExoKernel instance
 static EXOKERNEL: ExoKernel = ExoKernel::new();
@@ -172,10 +303,14 @@ static EXOKERNEL: ExoKernel = ExoKernel::new();
 /// # Safety
 /// Must be called exactly once, before any KAPI functions are used.
 pub unsafe fn register_kernel_services() {
-    kernel_api::register_kernel(&EXOKERNEL);
+    unsafe {
+        kernel_api::register_kernel(&EXOKERNEL);
+    }
 }
+
 
 /// Get a reference to the exokernel (for internal use)
 pub fn exokernel() -> &'static ExoKernel {
     &EXOKERNEL
 }
+

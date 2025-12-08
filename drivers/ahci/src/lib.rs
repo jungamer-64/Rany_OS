@@ -29,7 +29,8 @@ pub mod types;
 // Modules with kernel deps - excluded for now
 pub mod controller;
 pub mod port;
-// pub mod dma_buffer;
+pub mod dma_buffer;
+pub mod driver_impl;
 // pub mod poll_handler;
 
 // 主要な型を再エクスポート

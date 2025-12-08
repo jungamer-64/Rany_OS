@@ -1,152 +1,118 @@
-//! AHCI DMA安全バッファ
+//! AHCI DMA safe buffer implementation
 //!
-//! DMA転送中の不正アクセスを防止する型安全なバッファ
+//! Provides type-safe buffers for DMA transfers using kernel_api.
 
-use x86_64::PhysAddr;
-
-use crate::io::dma::{
-    CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, TypedDmaSlice,
-};
+// use x86_64::PhysAddr; // Not used from x86_64 but we use u64 from api
+// use core::slice;
+use kernel_api::services::kernel;
+use kernel_api::DmaBuffer;
+// use kernel_api::types::DmaBuffer as KapiDmaBuffer;
+use x86_64::PhysAddr; // For type conversions if needed
 
 use super::types::SECTOR_SIZE;
 
-/// DMA安全なセクタ読み取り用バッファ
-///
-/// TypedDmaSlice を使用して、DMA転送中の不正アクセスを防止する
+/// DMA-safe buffer for sector reading
 pub struct AhciDmaReadBuffer {
-    /// DMAバッファ (CPU所有状態)
-    buffer: Option<TypedDmaSlice<CpuOwned>>,
-    /// 転送中バッファ (デバイス所有状態)
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
-    /// セクタ数
+    buffer: DmaBuffer,
     sector_count: usize,
 }
 
 impl AhciDmaReadBuffer {
-    /// 指定セクタ数用のバッファを作成
+    /// Create buffer for specified number of sectors
     pub fn new(sector_count: usize) -> Option<Self> {
         let size = sector_count * SECTOR_SIZE;
-        let buffer = TypedDmaSlice::new(size)?;
+        let (phys, virt) = kernel().alloc_dma(size).ok()?;
+        
+        let buffer = DmaBuffer::new(phys, virt, size);
 
         Some(Self {
-            buffer: Some(buffer),
-            inflight: None,
+            buffer,
             sector_count,
         })
     }
 
-    /// 物理アドレスを取得（DMAエンジンに渡す用）
+    /// Get physical address
     pub fn phys_addr(&self) -> Option<PhysAddr> {
-        self.buffer
-            .as_ref()
-            .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+        Some(PhysAddr::new(self.buffer.physical_address()))
     }
 
-    /// DMA転送を開始
-    pub fn start_transfer(&mut self) -> Result<u64, &'static str> {
-        let buffer = self.buffer.take().ok_or("Buffer already in transfer")?;
-        let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
-        Ok(phys)
+    /// Prepare for DMA transfer (invalidate cache if needed)
+    pub fn prepare_transfer(&self) {
+        // x86 is coherent
     }
 
-    /// DMA転送完了
-    pub fn complete_transfer(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No transfer in progress")?;
-        self.buffer = Some(inflight.complete_dma());
-        Ok(())
+    /// Finish transfer (flush cache if needed)
+    pub fn finish_transfer(&self) {
+        // x86 is coherent
     }
 
-    /// 読み取りデータを取得（CPU所有状態でのみ）
-    pub fn data(&self) -> Option<&[u8]> {
-        self.buffer.as_ref().map(|b| b.as_slice())
+    /// Access data slice
+    pub fn data(&self) -> &[u8] {
+        unsafe { self.buffer.as_slice() }
     }
 
-    /// バッファサイズ
+    /// Buffer size
     pub fn size(&self) -> usize {
         self.sector_count * SECTOR_SIZE
     }
 }
 
-/// DMA安全なセクタ書き込み用バッファ
+/// DMA-safe buffer for sector writing
 pub struct AhciDmaWriteBuffer {
-    buffer: Option<TypedDmaSlice<CpuOwned>>,
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
+    buffer: DmaBuffer,
     sector_count: usize,
 }
 
 impl AhciDmaWriteBuffer {
-    /// 書き込みデータでバッファを作成
+    /// Create buffer with initial data
     pub fn with_data(data: &[u8]) -> Option<Self> {
         let sector_count = (data.len() + SECTOR_SIZE - 1) / SECTOR_SIZE;
         let size = sector_count * SECTOR_SIZE;
 
-        let mut buffer = TypedDmaSlice::new(size)?;
-        buffer.as_mut_slice()[..data.len()].copy_from_slice(data);
+        let (phys, virt) = kernel().alloc_dma(size).ok()?;
+        let mut buffer = DmaBuffer::new(phys, virt, size);
+        
+        unsafe { buffer.as_slice_mut()[..data.len()].copy_from_slice(data) };
 
         Some(Self {
-            buffer: Some(buffer),
-            inflight: None,
+            buffer,
             sector_count,
         })
     }
 
-    /// 物理アドレスを取得
+    /// Get physical address
     pub fn phys_addr(&self) -> Option<PhysAddr> {
-        self.buffer
-            .as_ref()
-            .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+        Some(PhysAddr::new(self.buffer.physical_address()))
     }
 
-    /// DMA転送を開始
-    pub fn start_transfer(&mut self) -> Result<u64, &'static str> {
-        let buffer = self.buffer.take().ok_or("Buffer already in transfer")?;
-        let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
-        Ok(phys)
+    /// Prepare transfer
+    pub fn prepare_transfer(&self) {
     }
 
-    /// DMA転送完了
-    pub fn complete_transfer(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No transfer in progress")?;
-        self.buffer = Some(inflight.complete_dma());
-        Ok(())
+    /// Finish transfer
+    pub fn finish_transfer(&self) {
     }
 }
 
-/// コヒーレントDMAバッファを使用したAHCI識別データ読み取り
-///
-/// キャッシュ一貫性を自動管理し、より安全なDMA転送を提供
+/// Helper for IDENTIFY command buffer
 pub struct AhciIdentifyBuffer {
-    buffer: CoherentDmaBuffer,
+    buffer: DmaBuffer,
 }
 
 impl AhciIdentifyBuffer {
-    /// 識別データ用バッファ（512バイト）
+    /// Create 512-byte buffer
     pub fn new() -> Option<Self> {
-        let buffer = CoherentDmaBuffer::new(512, DmaMemoryAttributes::FROM_DEVICE)?;
+        let (phys, virt) = kernel().alloc_dma(512).ok()?;
+        let buffer = DmaBuffer::new(phys, virt, 512);
         Some(Self { buffer })
     }
 
-    /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
-        self.buffer.phys_addr()
+        PhysAddr::new(self.buffer.physical_address())
     }
 
-    /// DMA転送準備
-    pub fn prepare(&self) {
-        // FROM_DEVICE なので prepare では何もしない
-        // buffer.prepare_for_device() は書き込み転送用
-    }
-
-    /// DMA転送完了後のデータ取得
     pub fn finish_and_get_words(&self) -> [u16; 256] {
-        self.buffer.finish_from_device();
-
         let mut words = [0u16; 256];
-        // SAFETY: 転送完了後なので安全にアクセス可能
         let slice = unsafe { self.buffer.as_slice() };
         for (i, word) in words.iter_mut().enumerate() {
             let idx = i * 2;
