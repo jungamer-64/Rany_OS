@@ -12,7 +12,7 @@
 
 #![allow(dead_code)]
 
-use crate::io::usb::UsbSpeed;
+use crate::UsbSpeed;
 
 // ============================================================================
 // Slot Context

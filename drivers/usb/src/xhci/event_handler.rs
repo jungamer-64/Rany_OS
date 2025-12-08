@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use core::task::Waker;
 
 use super::trb::{CompletionCode, Trb, TrbType};
-use crate::io::usb::SlotId;
+use crate::SlotId;
 
 // ============================================================================
 // Event Types

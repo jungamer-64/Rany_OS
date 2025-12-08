@@ -18,7 +18,7 @@
 #![allow(dead_code)]
 
 pub mod hid;
-pub mod hub;
+// pub mod hub;
 pub mod msc;
 
 use alloc::boxed::Box;
@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 
 // Re-exports
 pub use hid::{HidDevice, HidProtocol, HidReport, HidSubclass, UsbKeyboard, UsbMouse};
-pub use hub::{HubCharacteristics, HubDescriptor, HubDevice, HubPortStatus, HubSpeed};
+// pub use hub::{HubCharacteristics, HubDescriptor, HubDevice, HubPortStatus, HubSpeed};
 pub use msc::{MscDevice, MscProtocol, MscSubclass, ScsiCommand, ScsiSense};
 
 // ============================================================================

@@ -30,7 +30,7 @@ use super::{
     PORT_REGISTER_SIZE, USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR,
     USBSTS_HCH,
 };
-use crate::io::usb::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
+use crate::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
 
 // ============================================================================
 // Register Offsets (from Capability Registers)

@@ -27,7 +27,7 @@ use spin::Mutex;
 
 use super::event_handler::CommandCompletionEvent;
 use super::trb::{CompletionCode, Trb, TrbRing};
-use crate::io::usb::{SlotId, UsbError, UsbResult};
+use crate::{SlotId, UsbError, UsbResult};
 
 // ============================================================================
 // Command Builder

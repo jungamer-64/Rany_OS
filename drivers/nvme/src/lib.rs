@@ -15,7 +15,8 @@
 //! - `error`: エラー型
 //!
 //! ## Kernel-Dependent (excluded)
-//! - `controller`, `queue`, `per_core`, `polling_driver`
+//! ## Kernel-Dependent (excluded)
+//! - `polling_driver`
 //! - `async_io`, `global`, `scheduler`, `driver`
 
 #![no_std]
@@ -30,6 +31,18 @@ pub mod regs;
 pub mod queue_types;
 pub mod identify;
 pub mod error;
+
+// Modules migrated from kernel
+pub mod controller;
+pub mod queue;
+pub mod per_core;
+
+// Modules with kernel deps - excluded for now
+// pub mod polling_driver;
+// pub mod async_io;
+// pub mod global;
+// pub mod scheduler;
+// pub mod driver;
 
 // Re-exports
 pub use defs::{

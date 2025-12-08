@@ -15,7 +15,7 @@
 use alloc::boxed::Box;
 use alloc::vec;
 
-use crate::io::usb::{SetupPacket, SlotId, TransferStatus};
+use crate::{SetupPacket, SlotId, TransferStatus};
 
 // ============================================================================
 // TRB Types

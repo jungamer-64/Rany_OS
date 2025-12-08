@@ -18,7 +18,7 @@ use super::{
     CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN, IR0,
     USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
 };
-use crate::io::usb::{UsbError, UsbResult};
+use crate::{UsbError, UsbResult};
 
 // Register offsets from Capability Registers
 const CAPLENGTH: usize = 0x00;

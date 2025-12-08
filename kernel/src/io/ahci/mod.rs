@@ -14,15 +14,17 @@
 //! - `dma_buffer` - DMA安全バッファ (kernel local)
 
 // Local modules (kernel implementation)
-pub mod controller;
+// pub mod controller; // Migrated to ahci_driver
 pub mod dma_buffer;
 pub mod poll_handler;
-pub mod port;
+// pub mod port; // Migrated to ahci_driver
 
 // Re-export modules from ahci_driver
 pub use ahci_driver::command;
+pub use ahci_driver::controller;
 pub use ahci_driver::fis;
 pub use ahci_driver::identify;
+pub use ahci_driver::port;
 pub use ahci_driver::types;
 
 // Re-export types from ahci_driver for convenience

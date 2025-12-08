@@ -11,3 +11,4 @@ kernel_api = { path = "../../interfaces/kernel_api" }
 
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
+spin = "0.9"
