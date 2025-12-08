@@ -198,17 +198,12 @@ impl Mempool {
         for i in 0..capacity {
             // バッファを割り当て
             let layout = alloc::alloc::Layout::new::<PacketBuffer>();
-            let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-
-            if ptr.is_null() {
-                return Err("Failed to allocate buffer");
-            }
-
-            let buffer_ptr = ptr as *mut PacketBuffer;
-            let non_null = unsafe { NonNull::new_unchecked(buffer_ptr) };
+            let nn = crate::util::allocate_zeroed(layout).ok_or("Failed to allocate buffer")?;
+            let non_null = nn.cast::<PacketBuffer>();
 
             // バッファを初期化
             unsafe {
+                let buffer_ptr = non_null.as_ptr();
                 (*buffer_ptr).pool_id = self.id;
                 (*buffer_ptr).index = i as u32;
                 (*buffer_ptr).len = AtomicUsize::new(0);
@@ -216,7 +211,7 @@ impl Mempool {
                 // 仮想アドレスから物理アドレスへ変換
                 // カーネルヒープはリニアマッピングされているため、
                 // PHYSICAL_MEMORY_OFFSETを引くことで物理アドレスを得る
-                let virt_addr = ptr as u64;
+                let virt_addr = buffer_ptr as u64;
                 let phys = if virt_addr >= crate::mm::mapping::PHYSICAL_MEMORY_OFFSET {
                     virt_addr - crate::mm::mapping::PHYSICAL_MEMORY_OFFSET
                 } else {

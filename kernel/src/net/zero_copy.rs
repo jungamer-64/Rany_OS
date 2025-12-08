@@ -219,12 +219,14 @@ unsafe impl Sync for ZeroCopyBuffer {}
 impl ZeroCopyBuffer {
     /// データスライスを取得
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.data.as_ptr().add(self.headroom), self.len) }
+        // Use central helper to build a slice from NonNull pointer with offset and length.
+        unsafe { crate::util::nonnull_ptr_as_slice(self.data, self.headroom, self.len) }
     }
 
     /// データスライスを取得（可変）
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { core::slice::from_raw_parts_mut(self.data.as_ptr().add(self.headroom), self.len) }
+        // Use central helper to build a mutable slice from NonNull pointer with offset and length.
+        unsafe { crate::util::nonnull_ptr_as_slice_mut(self.data, self.headroom, self.len) }
     }
 
     /// データ長を取得
@@ -298,7 +300,8 @@ impl ZeroCopyBuffer {
         }
 
         let second_half = Self {
-            data: unsafe { NonNull::new_unchecked(self.data.as_ptr().add(self.headroom + mid)) },
+            data: NonNull::new(unsafe { self.data.as_ptr().add(self.headroom + mid) })
+                .expect("split pointer resulted in null"),
             len: self.len - mid,
             capacity: self.capacity - mid,
             headroom: 0,
@@ -578,7 +581,7 @@ impl EthernetHeaderView {
         if buffer.len() < 14 {
             return None;
         }
-        unsafe { Some(&*(buffer.as_slice().as_ptr() as *const Self)) }
+        crate::util::get_ref::<Self>(buffer.as_slice(), 0)
     }
 
     /// EtherTypeを取得
@@ -609,7 +612,7 @@ impl Ipv4HeaderView {
             // 14 (eth) + 20 (ip)
             return None;
         }
-        unsafe { Some(&*(buffer.as_slice().as_ptr().add(14) as *const Self)) }
+        crate::util::get_ref::<Self>(buffer.as_slice(), 14)
     }
 
     /// ヘッダ長を取得（バイト）
