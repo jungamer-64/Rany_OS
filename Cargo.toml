@@ -1,9 +1,25 @@
 [workspace]
 resolver = "2"
 members = [
+    # Core
     "kernel",
+    "hal",
     "interfaces/kernel_api",
+    # Libs
     "libs/app_sdk",
+    "libs/graphic_types",
+    "libs/vfs",
+    # Filesystems
+    "filesystems/fat32",
+    # Drivers
+    "drivers/pci",
+    "drivers/ahci",
+    "drivers/usb",
+    "drivers/nvme",
+    "drivers/gpu",
+    "drivers/hid",
+    # Apps
+    "apps",
 ]
 
 
