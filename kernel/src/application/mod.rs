@@ -1,272 +1,51 @@
 // ============================================================================
-// src/application/mod.rs - Application Runtime & Domain Management
+// kernel/src/application/mod.rs - Domain Manager (Kernel-Side)
 // ============================================================================
 //!
-//! # Application Runtime for ExoRust
+//! # Application Domain Manager
 //!
-//! ## 設計思想
-//!
-//! ExoRustにおける「アプリケーション」は、従来のOSにおける「ユーザープロセス」とは
-//! 根本的に異なります。
-//!
-//! ### 従来OS vs ExoRust
-//!
-//! ```text
-//! 従来OS (Linux等):
-//!   - User Process: Ring 3で実行、カーネルとは隔離
-//!   - 安全性: ハードウェア（ページテーブル、特権レベル）で保証
-//!   - システムコール経由でのみカーネル機能にアクセス
-//!
-//! ExoRust (SPL):
-//!   - Application: Ring 0で実行、カーネルと同じアドレス空間
-//!   - 安全性: Rustコンパイラ（型システム、所有権）で保証
-//!   - KAPI経由で直接カーネル関数を呼び出し
-//! ```
-//!
-//! ## アプリケーションの定義
-//!
-//! アプリケーションは「ドメイン内で実行される非同期タスクの集合体」です：
-//! - 独立した`Domain`内で実行
-//! - カーネルから付与された`DomainCapabilities`のみ使用可能
-//! - `Application`トレイトを実装
-//!
-//! ## このモジュールの役割
-//!
-//! 1. **Application Trait**: アプリケーションのエントリポイント定義
-//! 2. **AppContext**: 実行時コンテキスト（権限トークン保持）
-//! 3. **DomainManager**: アプリケーションのライフサイクル管理
-//! 4. **SDK Functions**: アプリケーション開発者向けユーティリティ
+//! This module provides kernel-side application lifecycle management.
+//! Application types (trait, context) are in `kernel_api`.
+//! User-facing applications are in the `apps` crate.
 
 #![allow(dead_code)]
 #![allow(unused_variables)]
 
 extern crate alloc;
 
-// サブモジュール
-pub mod system_monitor;
-pub mod terminal;
-pub mod editor;
-pub mod games;
-pub mod browser;
-
-// Re-exports
-pub use system_monitor::{SystemMonitor, ProcessEntry};
-pub use editor::{Editor, TextBuffer, Cursor, Selection as EditorSelection, SyntaxHighlighter, SpecialKey as EditorSpecialKey};
-pub use terminal::{
-    Terminal, Cell, TerminalLine, TerminalBuffer, 
-    AnsiParser, ParseAction, SpecialKey,
-    CommandHistory, LineEditor, Selection,
-    TabCompleter, Clipboard, TerminalApp, CLIPBOARD,
-};
-
-use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::future::Future;
-use crate::security::static_capability::{
-    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
-    NetCapability, TaskCapability,
-};
-
-use kernel_api::kapi;
-
-// ============================================================================
-// Application トレイト
-// ============================================================================
-
-/// ExoRustアプリケーションのエントリポイント
-pub trait Application: Send + Sync {
-    /// アプリケーションのメインエントリポイント
-    fn on_start(&mut self, ctx: AppContext) -> impl Future<Output = ()> + Send;
-
-    /// 終了時のクリーンアップ（オプション）
-    ///
-    /// アプリケーション終了時に呼び出されます。
-    /// デフォルトでは何もしません。
-    fn on_stop(&mut self) {
-        // デフォルト: 何もしない
-    }
-
-    /// アプリケーション名
-    fn name(&self) -> &str {
-        "unnamed"
-    }
-}
-
-// ============================================================================
-// AppContext - 実行時コンテキスト
-// ============================================================================
-
-/// アプリケーション実行コンテキスト
-///
-/// このコンテキストは、アプリケーション起動時にカーネルから渡されます。
-/// アプリケーションは、このコンテキスト経由でのみKAPIにアクセスできます。
-///
-/// ## 権限アクセス
-///
-/// 各権限は`Option`型で提供され、`None`の場合はその機能を使用できません。
-/// これにより、**コンパイル時に権限の有無が検証**されます。
-pub struct AppContext {
-    /// アプリケーションID
-    pub app_id: u64,
-    /// アプリケーション名
-    pub name: String,
-    /// ドメインID
-    pub domain_id: u64,
-    /// 権限トークン束
-    capabilities: DomainCapabilities,
-}
-
-impl AppContext {
-    /// 新しいコンテキストを作成（カーネル内部用）
-    pub(crate) fn new(
-        app_id: u64,
-        name: String,
-        domain_id: u64,
-        capabilities: DomainCapabilities,
-    ) -> Self {
-        Self {
-            app_id,
-            name,
-            domain_id,
-            capabilities,
-        }
-    }
-
-    // --- 権限アクセサ ---
-
-    /// ネットワーク権限を取得
-    ///
-    /// # 戻り値
-    /// - `Some(&NetCapability)`: ネットワークアクセス許可
-    /// - `None`: ネットワークアクセス不許可
-    #[inline]
-    pub fn net(&self) -> Option<&NetCapability> {
-        self.capabilities.net.as_ref()
-    }
-
-    /// ファイルシステム権限を取得
-    #[inline]
-    pub fn fs(&self) -> Option<&FsCapability> {
-        self.capabilities.fs.as_ref()
-    }
-
-    /// I/O権限を取得
-    #[inline]
-    pub fn io(&self) -> Option<&IoCapability> {
-        self.capabilities.io.as_ref()
-    }
-
-    /// タスク生成権限を取得
-    #[inline]
-    pub fn task(&self) -> Option<&TaskCapability> {
-        self.capabilities.task.as_ref()
-    }
-
-    /// IPC権限を取得
-    #[inline]
-    pub fn ipc(&self) -> Option<&IpcCapability> {
-        self.capabilities.ipc.as_ref()
-    }
-
-    /// DMA権限を取得
-    #[inline]
-    pub fn dma(&self) -> Option<&DmaCapability> {
-        self.capabilities.dma.as_ref()
-    }
-
-    /// メモリ権限を取得
-    #[inline]
-    pub fn memory(&self) -> Option<&MemoryCapability> {
-        self.capabilities.memory.as_ref()
-    }
-
-    /// 全権限へのアクセス
-    pub fn capabilities(&self) -> &DomainCapabilities {
-        &self.capabilities
-    }
-}
-
-// ============================================================================
-// SDK ヘルパー関数
-// ============================================================================
-
-/// コンソール出力（フォーマット付き）
-///
-/// # 例
-/// ```rust
-/// print(format_args!("Value: {}", 42));
-/// ```
-pub fn print(args: core::fmt::Arguments) {
-    let s = format!("{}", args);
-    kapi::sys::debug_print(&s);
-}
-
-/// println! マクロの内部実装
-#[macro_export]
-macro_rules! app_println {
-    () => ($crate::application::print(format_args!("\n")));
-    ($($arg:tt)*) => ({
-        $crate::application::print(format_args!("{}\n", format_args!($($arg)*)));
-    })
-}
-
-/// 非同期スリープ
-///
-/// 指定ミリ秒間、現在のタスクを一時停止します。
-/// 他のタスクは実行を継続します（非ブロッキング）。
-///
-/// # 例
-/// ```rust
-/// sleep(500).await;  // 500ms待機
-/// ```
-pub async fn sleep(ms: u64) {
-    kapi::task::sleep_ms(ms).await;
-}
-
-/// CPU譲渡
-///
-/// 他の実行可能タスクに制御を移します。
-pub async fn yield_now() {
-    kapi::task::yield_now().await;
-}
-
-/// 現在時刻を取得（ミリ秒）
-///
-/// 起動からの経過時間をミリ秒単位で返します。
-pub fn now() -> u64 {
-    kapi::sys::uptime_ms()
-}
-
-/// 高精度時刻を取得（ナノ秒）
-pub fn now_nanos() -> u64 {
-    kapi::sys::uptime_nanos()
-}
-
-// ============================================================================
-// DomainManager - ドメインライフサイクル管理
-// ============================================================================
-
 use spin::Mutex;
 
-/// ドメイン状態
+// Re-export from kernel_api
+pub use kernel_api::{Application, AppContext};
+pub use kernel_api::security::DomainCapabilities;
+
+// Re-export from apps crate (when available)
+// pub use exorust_apps::{browser, editor, games, terminal, system_monitor};
+
+// ============================================================================
+// Domain State
+// ============================================================================
+
+/// Domain state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainState {
-    /// 作成済み、未開始
+    /// Created, not started
     Created,
-    /// 初期化中
+    /// Initializing
     Initializing,
-    /// 実行中
+    /// Running
     Running,
-    /// 停止中
+    /// Stopping
     Stopping,
-    /// 停止完了
+    /// Stopped
     Stopped,
-    /// 異常終了
+    /// Crashed
     Crashed,
 }
 
-/// ドメイン情報
+/// Domain information
 pub struct DomainInfo {
     pub id: u64,
     pub name: String,
@@ -274,20 +53,21 @@ pub struct DomainInfo {
     pub app_id: u64,
 }
 
-/// ドメインマネージャ
+// ============================================================================
+// DomainManager
+// ============================================================================
+
+/// Domain manager
 ///
-/// アプリケーション（ドメイン）のライフサイクルを管理します。
+/// Manages application (domain) lifecycle.
 pub struct DomainManager {
-    /// 登録済みドメイン
     domains: Vec<DomainInfo>,
-    /// 次のドメインID
     next_domain_id: u64,
-    /// 次のアプリID
     next_app_id: u64,
 }
 
 impl DomainManager {
-    /// 新しいマネージャを作成
+    /// Create new manager
     pub fn new() -> Self {
         Self {
             domains: Vec::new(),
@@ -296,18 +76,8 @@ impl DomainManager {
         }
     }
 
-    /// アプリケーションをロードして起動
-    ///
-    /// # 引数
-    /// - `app`: アプリケーションインスタンス
-    /// - `name`: アプリケーション名
-    /// - `caps`: 付与する権限
-    ///
-    /// # 動作
-    /// 1. 新しいドメインを作成
-    /// 2. 権限を設定
-    /// 3. バックグラウンドタスクとして起動
-    pub fn load_and_start<A>(&mut self, app: A, name: String, caps: DomainCapabilities)
+    /// Load and start an application
+    pub fn load_and_start<A>(&mut self, _app: A, name: String, _caps: DomainCapabilities)
     where
         A: Application + 'static,
     {
@@ -317,7 +87,6 @@ impl DomainManager {
         let app_id = self.next_app_id;
         self.next_app_id += 1;
 
-        // ドメイン情報を登録
         self.domains.push(DomainInfo {
             id: domain_id,
             name: name.clone(),
@@ -325,38 +94,26 @@ impl DomainManager {
             app_id,
         });
 
-        // コンテキストを作成
-        let ctx = AppContext::new(app_id, name.clone(), domain_id, caps);
-
-        // バックグラウンドタスクとして起動
-        // Note: 実際の実装ではExecutorに登録
-        let domain_name = name.clone();
-
         crate::log!(
             "[Domain:{}] Loading application '{}'\n",
             domain_id,
-            domain_name
+            name
         );
 
-        // 将来的にはタスクスポーンで実行
-        // let future = async move {
-        //     app.on_start(ctx).await;
-        //     app.on_stop();
-        // };
-        // crate::task::spawn(future);
+        // TODO: Spawn task with app.on_start(ctx)
     }
 
-    /// ドメイン数を取得
+    /// Get domain count
     pub fn count(&self) -> usize {
         self.domains.len()
     }
 
-    /// 全ドメイン情報をイテレート
+    /// Iterate all domains
     pub fn iter(&self) -> impl Iterator<Item = &DomainInfo> {
         self.domains.iter()
     }
 
-    /// 特定ドメインの状態を更新
+    /// Set domain state
     pub fn set_state(&mut self, domain_id: u64, state: DomainState) {
         if let Some(domain) = self.domains.iter_mut().find(|d| d.id == domain_id) {
             domain.state = state;
@@ -371,19 +128,18 @@ impl Default for DomainManager {
 }
 
 // ============================================================================
-// グローバルインスタンス
+// Global Instance
 // ============================================================================
 
-/// グローバルドメインマネージャ
 static DOMAIN_MANAGER: Mutex<Option<DomainManager>> = Mutex::new(None);
 
-/// ドメインマネージャを初期化
+/// Initialize domain manager
 pub fn init() {
     *DOMAIN_MANAGER.lock() = Some(DomainManager::new());
     crate::log!("[Application] Runtime initialized (SPL Domain Model)\n");
 }
 
-/// ドメインマネージャにアクセス
+/// Access domain manager
 pub fn with_manager<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut DomainManager) -> R,
@@ -391,7 +147,7 @@ where
     DOMAIN_MANAGER.lock().as_mut().map(f)
 }
 
-/// アプリケーションを起動
+/// Start an application
 pub fn start_application<A>(app: A, name: &str, caps: DomainCapabilities)
 where
     A: Application + 'static,
@@ -401,7 +157,7 @@ where
     });
 }
 
-/// 登録ドメイン数を取得
+/// Get domain count
 pub fn domain_count() -> usize {
     DOMAIN_MANAGER
         .lock()
@@ -411,89 +167,10 @@ pub fn domain_count() -> usize {
 }
 
 // ============================================================================
-// サンプルアプリケーション
+// Backward Compatibility
 // ============================================================================
 
-/// サンプルアプリケーション
-///
-/// ExoRustアプリケーションの書き方のデモンストレーション。
-pub struct ExampleApp {
-    counter: u32,
-}
-
-impl ExampleApp {
-    pub fn new() -> Self {
-        Self { counter: 0 }
-    }
-}
-
-impl Default for ExampleApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Application for ExampleApp {
-    fn name(&self) -> &str {
-        "ExampleApp"
-    }
-
-    async fn on_start(&mut self, ctx: AppContext) {
-        crate::log!(
-            "[{}] Starting (app_id: {}, domain_id: {})\n",
-            self.name(),
-            ctx.app_id,
-            ctx.domain_id
-        );
-
-        // 権限チェックのデモ
-        if let Some(_net_cap) = ctx.net() {
-            crate::log!("[{}] Network access: GRANTED\n", self.name());
-            // ネットワーク操作が可能
-            // let endpoint = kapi::net_api::create_endpoint(net_cap)?;
-        } else {
-            crate::log!("[{}] Network access: DENIED\n", self.name());
-        }
-
-        if let Some(_fs_cap) = ctx.fs() {
-            crate::log!("[{}] Filesystem access: GRANTED\n", self.name());
-        } else {
-            crate::log!("[{}] Filesystem access: DENIED\n", self.name());
-        }
-
-        // 非同期ループのデモ
-        for i in 0..3 {
-            self.counter += 1;
-            crate::log!(
-                "[{}] Working... iteration {} (counter: {})\n",
-                self.name(),
-                i,
-                self.counter
-            );
-            sleep(100).await;
-        }
-
-        crate::log!("[{}] Completed successfully\n", self.name());
-    }
-
-    fn on_stop(&mut self) {
-        crate::log!(
-            "[{}] Cleanup complete (final counter: {})\n",
-            self.name(),
-            self.counter
-        );
-    }
-}
-
-// ============================================================================
-// 後方互換性
-// ============================================================================
-
-/// 後方互換性: 旧AppCapabilities
-#[deprecated(note = "Use DomainCapabilities from security::static_capability")]
-pub type AppCapabilities = DomainCapabilities;
-
-/// 後方互換性: 旧AppHandle
+/// Backward compatibility: AppHandle
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppHandle(pub u64);
 
@@ -507,11 +184,7 @@ impl AppHandle {
     }
 }
 
-/// 後方互換性: 旧AppState
-#[deprecated(note = "Use DomainState")]
-pub type AppState = DomainState;
-
-/// 後方互換性: アプリ数取得
+/// Backward compatibility: app count
 pub fn app_count() -> usize {
     domain_count()
 }
