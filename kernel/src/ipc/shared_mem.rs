@@ -372,7 +372,7 @@ impl ShmHandle {
         unsafe {
             let ptr = self.base_addr as *const u8;
             let size = self.size();
-            Some(core::slice::from_raw_parts(ptr, size))
+            Some(crate::util::raw_ptr_as_slice(ptr, size))
         }
     }
 
@@ -385,7 +385,7 @@ impl ShmHandle {
         unsafe {
             let ptr = self.base_addr as *mut u8;
             let size = self.size();
-            Some(core::slice::from_raw_parts_mut(ptr, size))
+            Some(crate::util::raw_ptr_as_slice_mut(ptr, size))
         }
     }
 
@@ -490,9 +490,8 @@ impl SharedMemoryManager {
                     return Err(ShmError::AlreadyExists);
                 }
                 // contains_key() で確認済みなので get() は必ず Some
-                // SAFETY: contains_key() returned true
-                // アセンブリ: Option の cmp + panic branch を除去
-                return Ok(unsafe { *key_map.get(&key).unwrap_unchecked() });
+                // get() の結果を安全に unwrap します
+                return Ok(*key_map.get(&key).unwrap());
             }
         }
 
@@ -533,9 +532,8 @@ impl SharedMemoryManager {
                 if flags.exclusive {
                     return Err(ShmError::AlreadyExists);
                 }
-                // SAFETY: contains_key() returned true
-                // アセンブリ: 条件分岐の除去によりパイプラインストールを回避
-                return Ok(unsafe { *name_map.get(name).unwrap_unchecked() });
+                // get() の結果を安全に unwrap します
+                return Ok(*name_map.get(name).unwrap());
             }
         }
 
@@ -894,7 +892,8 @@ impl<T: Copy> SharedRingBuffer<T> {
 
         // ヘッダーを初期化
         let slice = handle.write().ok_or(ShmError::NotAttached)?;
-        let header = unsafe { &mut *(slice.as_mut_ptr() as *mut SharedRingHeader) };
+        let header = crate::util::get_mut_ref::<SharedRingHeader>(slice, 0)
+            .ok_or(ShmError::InvalidAddress)?;
         header.write_pos = AtomicUsize::new(0);
         header.read_pos = AtomicUsize::new(0);
         header.capacity = capacity;
@@ -914,15 +913,19 @@ impl<T: Copy> SharedRingBuffer<T> {
         let id = SHM_MANAGER.get_by_name(name).ok_or(ShmError::NotFound)?;
         let handle = shmat(id)?;
 
-        // ヘッダーから容量を読み取り
-        let slice = handle.read().ok_or(ShmError::NotAttached)?;
-        let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+        // ヘッダーから容量を読み取り（Borrowを短く保つ）
+        let capacity_val = {
+            let slice = handle.read().ok_or(ShmError::NotAttached)?;
+            let header = crate::util::get_ref::<SharedRingHeader>(slice, 0)
+                .ok_or(ShmError::InvalidAddress)?;
+            header.capacity
+        };
 
         Ok(Self {
             handle,
             producer,
             consumer,
-            capacity: header.capacity,
+            capacity: capacity_val,
             _marker: core::marker::PhantomData,
         })
     }
@@ -998,8 +1001,11 @@ impl<T: Copy> SharedRingBuffer<T> {
     /// バッファが空か
     pub fn is_empty(&self) -> bool {
         if let Some(slice) = self.handle.read() {
-            let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
-            header.write_pos.load(Ordering::Acquire) == header.read_pos.load(Ordering::Acquire)
+            if let Some(header) = crate::util::get_ref::<SharedRingHeader>(slice, 0) {
+                header.write_pos.load(Ordering::Acquire) == header.read_pos.load(Ordering::Acquire)
+            } else {
+                true
+            }
         } else {
             true
         }
@@ -1008,10 +1014,13 @@ impl<T: Copy> SharedRingBuffer<T> {
     /// バッファがフルか
     pub fn is_full(&self) -> bool {
         if let Some(slice) = self.handle.read() {
-            let header = unsafe { &*(slice.as_ptr() as *const SharedRingHeader) };
+            if let Some(header) = crate::util::get_ref::<SharedRingHeader>(slice, 0) {
             let write_pos = header.write_pos.load(Ordering::Acquire);
             let read_pos = header.read_pos.load(Ordering::Acquire);
             (write_pos + 1) % self.capacity == read_pos
+            } else {
+                true
+            }
         } else {
             true
         }
