@@ -116,8 +116,8 @@ impl CallStack {
                 }
 
                 // 戻りアドレスはフレームポインタ + 8
-                let ret_addr = core::ptr::read_volatile((fp + 8) as *const u64);
-                let prev_fp = core::ptr::read_volatile(fp as *const u64);
+                let ret_addr = crate::io::mmio::mmio_read_u64((fp + 8) as usize);
+                let prev_fp = crate::io::mmio::mmio_read_u64(fp as usize);
 
                 if ret_addr == 0 {
                     break;
