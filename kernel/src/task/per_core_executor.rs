@@ -16,6 +16,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use spin::Mutex;
+use super::raw;
 
 // ============================================================================
 // Generic Work-Stealing Queue (for Per-Core Executor)
@@ -577,7 +578,7 @@ unsafe fn waker_clone(data: *const ()) -> RawWaker {
     let data = &*(data as *const TaskWakerData);
 
     // タスクの参照カウントを増やす
-    let task = Arc::from_raw(data.task as *const Task);
+    let task = unsafe { raw::arc_from_raw(data.task as *const Task) };
     let _ = task.clone();
     core::mem::forget(task);
 
@@ -598,7 +599,7 @@ unsafe fn waker_wake_by_ref(data: *const ()) {
     let data = &*(data as *const TaskWakerData);
 
     // タスクを復元
-    let task = Arc::from_raw(data.task as *const Task);
+    let task = unsafe { raw::arc_from_raw(data.task as *const Task) };
     let task_clone = task.clone();
     core::mem::forget(task); // 参照カウントを維持
 
@@ -612,10 +613,10 @@ unsafe fn waker_wake_by_ref(data: *const ()) {
 }
 
 unsafe fn waker_drop(data: *const ()) {
-    let data = Box::from_raw(data as *mut TaskWakerData);
+    let data = unsafe { raw::box_from_raw(data as *mut TaskWakerData) };
 
     // タスクの参照カウントを減らす
-    let _ = Arc::from_raw(data.task as *const Task);
+    let _ = unsafe { raw::arc_from_raw(data.task as *const Task) };
 }
 
 // ============================================================================
