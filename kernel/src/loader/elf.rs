@@ -390,7 +390,8 @@ impl<'a> ElfLoader<'a> {
         let size = sh.sh_size as usize;
         
         // 【設計書 2.2】安全なスライス取得ラッパーを使用
-        get_slice(self.data, start, size)
+        crate::util::get_slice(self.data, start, size)
+            .ok_or_else(|| LoadError::InvalidFormat("String table out of bounds".into()))
     }
 
     /// 文字列テーブルから文字列を取得
@@ -471,17 +472,12 @@ impl<'a> ElfLoader<'a> {
     fn allocate_memory(&self, size: usize, _alignment: usize) -> Result<usize, LoadError> {
         // Note: フレームアロケータは mm::frame_allocator モジュールで実装
         // 現在はallocクレートを使用したヒープ割り当て
-        use alloc::alloc::{Layout, alloc_zeroed};
+        use alloc::alloc::Layout;
 
         let layout = Layout::from_size_align(size, 4096).map_err(|_| LoadError::OutOfMemory)?;
 
-        let ptr = unsafe { alloc_zeroed(layout) };
-
-        if ptr.is_null() {
-            Err(LoadError::OutOfMemory)
-        } else {
-            Ok(ptr as usize)
-        }
+        let ptr = crate::util::allocate_zeroed(layout).ok_or(LoadError::OutOfMemory)?;
+        Ok(ptr.as_ptr() as usize)
     }
 
     /// リロケーションを適用
