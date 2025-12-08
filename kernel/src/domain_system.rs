@@ -550,7 +550,7 @@ pub fn reclaim_domain_resources(domain: DomainId) {
             unsafe {
                 let layout = Layout::from_size_align_unchecked(size, 8);
                 crate::mm::exchange_heap::deallocate_raw(
-                    NonNull::new_unchecked(*addr as *mut u8),
+                    NonNull::new(*addr as *mut u8).expect("address null"),
                     layout,
                 );
             }
