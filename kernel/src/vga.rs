@@ -7,7 +7,7 @@ use spin::Mutex;
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 
-#[allow(dead_code)]
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Color {
@@ -108,14 +108,20 @@ impl Writer {
 
     #[inline]
     fn write_char_volatile(buffer: *mut Buffer, row: usize, col: usize, ch: ScreenChar) {
-        unsafe {
-            core::ptr::write_volatile(&mut (*buffer).chars[row][col], ch);
-        }
+        // Compute the address and use the centralized mmio volatile write wrapper
+        let base = buffer as usize;
+        let index = row * BUFFER_WIDTH + col;
+        let addr = base + index * core::mem::size_of::<ScreenChar>();
+        crate::io::mmio::volatile_write::<ScreenChar>(addr, ch);
     }
 
     #[inline]
     fn read_char_volatile(buffer: *mut Buffer, row: usize, col: usize) -> ScreenChar {
-        unsafe { core::ptr::read_volatile(&(*buffer).chars[row][col]) }
+        // Compute the character index and address without dereferencing the pointer
+        let base = buffer as usize;
+        let index = row * BUFFER_WIDTH + col;
+        let addr = base + index * core::mem::size_of::<ScreenChar>();
+        crate::io::mmio::volatile_read::<ScreenChar>(addr)
     }
 }
 
