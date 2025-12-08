@@ -205,12 +205,12 @@ impl LocalApic {
     }
 
     /// Wait for IPI delivery
-    unsafe fn wait_for_delivery(&self) { unsafe {
+    unsafe fn wait_for_delivery(&self) {
         // Bit 12 = Delivery Status (0 = idle, 1 = pending)
         while (self.read(Self::ICR_LOW) & (1 << 12)) != 0 {
             core::hint::spin_loop();
         }
-    }}
+    }
 
     /// Send IPI to specific CPU
     pub fn send_ipi(&self, target_apic_id: u32, vector: u8) {
