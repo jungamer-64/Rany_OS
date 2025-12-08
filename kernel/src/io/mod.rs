@@ -20,6 +20,12 @@ pub mod rtc;
 pub mod serial;
 pub mod usb;
 pub mod virtio;      // VirtIO module (directory) - includes net.rs and blk.rs
+// Use `hal` crate for low-level MMIO and port I/O wrappers to centralize
+// unsafe operations across kernel and drivers. The `hal` crate provides the
+// safe functions `mmio_*` and `inb/outb` wrappers which are re-exported here
+// for convenience.
+pub use hal::port_io;
+pub use hal::mmio;
 
 #[allow(unused_imports)]
 pub use dma::{
@@ -146,6 +152,10 @@ pub use pci::{
     allocate_vector, allocate_vectors, setup_msi, setup_msix,
     disable_intx, enable_intx,
 };
+
+#[allow(unused_imports)]
+pub use port_io::{inb, outb, inw, outw, inl, outl};
+pub use mmio::{mmio_read_u8, mmio_read_u16, mmio_read_u32, mmio_read_u64, mmio_write_u8, mmio_write_u16, mmio_write_u32, mmio_write_u64, volatile_read, volatile_write};
 
 // ACPI table parser
 #[allow(unused_imports)]

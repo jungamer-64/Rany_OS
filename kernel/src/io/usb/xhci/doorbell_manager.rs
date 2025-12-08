@@ -140,10 +140,7 @@ impl XhciDoorbellManager {
         let addr = self.doorbell_address(slot_id);
         let value = (target as u32) | ((stream_id as u32) << 16);
         
-        unsafe {
-            let ptr = addr as *mut u32;
-            core::ptr::write_volatile(ptr, value);
-        }
+        crate::io::mmio::mmio_write_u32(addr as usize, value);
         
         self.ring_count.fetch_add(1, Ordering::Relaxed);
     }

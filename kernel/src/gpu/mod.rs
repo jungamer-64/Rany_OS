@@ -451,35 +451,30 @@ impl VirtioGpu {
     }
 
     fn reset(&self) -> GpuResult<()> {
-        unsafe {
-            let status = (self.base + 0x70) as *mut u32;
-            core::ptr::write_volatile(status, 0);
-        }
+        crate::io::mmio_write_u32((self.base + 0x70) as usize, 0);
         Ok(())
     }
 
     fn acknowledge(&self) -> GpuResult<()> {
-        unsafe {
-            let status = (self.base + 0x70) as *mut u32;
-            let current = core::ptr::read_volatile(status);
-            core::ptr::write_volatile(status, current | 1); // ACKNOWLEDGE
+        {
+            let current = crate::io::mmio_read_u32((self.base + 0x70) as usize);
+            crate::io::mmio_write_u32((self.base + 0x70) as usize, current | 1); // ACKNOWLEDGE
         }
         Ok(())
     }
 
     fn negotiate_features(&mut self) -> GpuResult<()> {
-        unsafe {
             // ホストフィーチャーを読み取り
-            let feature_sel = (self.base + 0x14) as *mut u32;
-            let feature = (self.base + 0x10) as *const u32;
+            let feature_sel_addr = (self.base + 0x14) as usize;
+            let feature_addr = (self.base + 0x10) as usize;
 
             // Low 32 bits
-            core::ptr::write_volatile(feature_sel, 0);
-            let low = core::ptr::read_volatile(feature);
+            crate::io::mmio_write_u32(feature_sel_addr, 0);
+            let low = crate::io::mmio_read_u32(feature_addr);
 
             // High 32 bits
-            core::ptr::write_volatile(feature_sel, 1);
-            let high = core::ptr::read_volatile(feature);
+            crate::io::mmio_write_u32(feature_sel_addr, 1);
+            let high = crate::io::mmio_read_u32(feature_addr);
 
             let host_features = ((high as u64) << 32) | (low as u64);
 
@@ -488,20 +483,19 @@ impl VirtioGpu {
             self.has_3d = (self.features & VIRTIO_GPU_F_VIRGL) != 0;
 
             // ドライバフィーチャーを書き込み
-            let driver_feature_sel = (self.base + 0x24) as *mut u32;
-            let driver_feature = (self.base + 0x20) as *mut u32;
+            let driver_feature_sel_addr = (self.base + 0x24) as usize;
+            let driver_feature_addr = (self.base + 0x20) as usize;
 
-            core::ptr::write_volatile(driver_feature_sel, 0);
-            core::ptr::write_volatile(driver_feature, self.features as u32);
+            crate::io::mmio_write_u32(driver_feature_sel_addr, 0);
+            crate::io::mmio_write_u32(driver_feature_addr, self.features as u32);
 
-            core::ptr::write_volatile(driver_feature_sel, 1);
-            core::ptr::write_volatile(driver_feature, (self.features >> 32) as u32);
+            crate::io::mmio_write_u32(driver_feature_sel_addr, 1);
+            crate::io::mmio_write_u32(driver_feature_addr, (self.features >> 32) as u32);
 
             // FEATURES_OK を設定
-            let status = (self.base + 0x70) as *mut u32;
-            let current = core::ptr::read_volatile(status);
-            core::ptr::write_volatile(status, current | 8); // FEATURES_OK
-        }
+            let status_addr = (self.base + 0x70) as usize;
+            let current = crate::io::mmio_read_u32(status_addr);
+            crate::io::mmio_write_u32(status_addr, current | 8); // FEATURES_OK
         Ok(())
     }
 
@@ -511,10 +505,10 @@ impl VirtioGpu {
     }
 
     fn driver_ok(&self) -> GpuResult<()> {
-        unsafe {
-            let status = (self.base + 0x70) as *mut u32;
-            let current = core::ptr::read_volatile(status);
-            core::ptr::write_volatile(status, current | 4); // DRIVER_OK
+        {
+            let status_addr = (self.base + 0x70) as usize;
+            let current = crate::io::mmio_read_u32(status_addr);
+            crate::io::mmio_write_u32(status_addr, current | 4); // DRIVER_OK
         }
         Ok(())
     }

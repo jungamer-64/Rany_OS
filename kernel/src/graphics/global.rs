@@ -11,7 +11,7 @@
 use spin::Mutex;
 use limine::response::FramebufferResponse;
 
-use super::types::{Color, FramebufferInfo, PixelFormat};
+use super::{Color, FramebufferInfo, PixelFormat};
 use super::framebuffer::Framebuffer;
 use super::console::TextConsole;
 

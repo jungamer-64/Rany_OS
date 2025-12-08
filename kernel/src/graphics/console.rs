@@ -11,7 +11,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::types::Color;
+use super::Color;
 use super::framebuffer::Framebuffer;
 use super::font::BitmapFont;
 

@@ -65,6 +65,7 @@ pub fn inp(port: u16) -> u32 {
 /// callers that need to use `unsafe { ... }` blocks for port I/O.
 pub struct IoPort<T> {
     inner: XPort<T>,
+    port: u16,
 }
 
 impl<T> IoPort<T>
@@ -72,7 +73,7 @@ where
     T: Copy + PortRead + PortWrite,
 {
     pub const fn new(port: u16) -> Self {
-        Self { inner: XPort::new(port) }
+        Self { inner: XPort::new(port), port }
     }
 
     pub fn read(&mut self) -> T {
@@ -84,6 +85,44 @@ where
     }
 }
 
+// Provide REP INSW/OUTSW for word transfers (16-bit) on IoPort<u16>
+impl IoPort<u16> {
+    /// REP INSW - read `buffer.len()` u16 words from the given port.
+    ///
+    /// # Safety
+    /// - The caller must ensure `buffer` is valid for writes and is properly aligned.
+    /// - This uses the `rep insw` instruction and therefore depends on `x86_64` PIO semantics.
+    #[inline]
+    pub unsafe fn read_words(&mut self, buffer: &mut [u16]) {
+        unsafe {
+            core::arch::asm!(
+                "rep insw",
+                in("dx") self.port,
+                in("rdi") buffer.as_mut_ptr(),
+                in("rcx") buffer.len(),
+                options(nostack)
+            );
+        }
+    }
+
+    /// REP OUTSW - write `buffer.len()` u16 words to the given port.
+    ///
+    /// # Safety
+    /// - The caller must ensure `buffer` is valid for reads.
+    /// - This uses the `rep outsw` instruction and relies on `x86_64` PIO semantics.
+    #[inline]
+    pub unsafe fn write_words(&mut self, buffer: &[u16]) {
+        unsafe {
+            core::arch::asm!(
+                "rep outsw",
+                in("dx") self.port,
+                in("rsi") buffer.as_ptr(),
+                in("rcx") buffer.len(),
+                options(nostack)
+            );
+        }
+    }
+}
 // Convenience aliases for common types
 pub type PortU8 = IoPort<u8>;
 pub type PortU16 = IoPort<u16>;

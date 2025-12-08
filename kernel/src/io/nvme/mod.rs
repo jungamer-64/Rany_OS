@@ -7,39 +7,40 @@
 //! NVMe仕様に基づく共通定義とドライバを提供。
 //!
 //! ## モジュール構成
-//! - `defs`: 共通定数・構造体定義
-//! - `commands`: コマンド構造体
-//! - `regs`: レジスタ定義
-//! - `controller`: コントローラレジスタと設定
-//! - `queue_types`: 型安全なキュー抽象化
-//! - `identify`: Identify構造体
-//! - `queue`: 低レベルキュー実装
-//! - `per_core`: コアごとのキュー管理
-//! - `error`: エラー型
-//! - `polling_driver`: ポーリングモードドライバ
-//! - `async_io`: 非同期I/Oサポート
-//! - `global`: グローバルインスタンス
-//! - `scheduler`: IoScheduler統合
-//! - `driver`: 後方互換性のための再エクスポート
+//! - `defs`: 共通定数・構造体定義 (from nvme_driver)
+//! - `commands`: コマンド構造体 (from nvme_driver)
+//! - `regs`: レジスタ定義 (from nvme_driver)
+//! - `queue_types`: 型安全なキュー抽象化 (from nvme_driver)
+//! - `identify`: Identify構造体 (from nvme_driver)
+//! - `error`: エラー型 (from nvme_driver)
+//! - `controller`: コントローラレジスタと設定 (kernel local)
+//! - `queue`: 低レベルキュー実装 (kernel local)
+//! - `per_core`: コアごとのキュー管理 (kernel local)
+//! - `polling_driver`: ポーリングモードドライバ (kernel local)
+//! - `async_io`: 非同期I/Oサポート (kernel local)
+//! - `global`: グローバルインスタンス (kernel local)
+//! - `scheduler`: IoScheduler統合 (kernel local)
+//! - `driver`: 後方互換性のための再エクスポート (kernel local)
 
 #![allow(dead_code)]
 
-pub mod defs;
-pub mod commands;
-pub mod regs;
+// Local modules (kernel implementation)
 pub mod controller;
-pub mod queue_types;
-pub mod identify;
-
-// New split modules
 pub mod queue;
 pub mod per_core;
-pub mod error;
 pub mod polling_driver;
 pub mod async_io;
 pub mod global;
 pub mod scheduler;
 pub mod driver;
+
+// Re-export modules from nvme_driver
+pub use nvme_driver::defs;
+pub use nvme_driver::commands;
+pub use nvme_driver::regs;
+pub use nvme_driver::queue_types;
+pub use nvme_driver::identify;
+pub use nvme_driver::error;
 
 // ============================================================================
 // Re-exports - Explicit exports to avoid ambiguity
@@ -77,10 +78,12 @@ pub use identify::{
     LbaFormat, RelativePerformance, IdentifyCns,
 };
 
-// From split driver modules
+// From error.rs
+pub use error::NvmeError;
+
+// From split driver modules (local)
 pub use queue::{SubmissionQueue, CompletionQueue, QueuePair};
 pub use per_core::{PerCoreNvmeQueue, NvmeQueueStats};
-pub use error::NvmeError;
 pub use polling_driver::{NvmePollingDriver, NvmeDriverStats};
 pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
 pub use global::{init as init_nvme_polling, poll as nvme_poll, get_stats, with_driver, with_driver_mut};

@@ -56,7 +56,7 @@ fn convert_file_type(ft: VfsFileType) -> FileType {
         VfsFileType::Symlink => FileType::Symlink,
         VfsFileType::BlockDevice => FileType::BlockDevice,
         VfsFileType::CharDevice => FileType::CharDevice,
-        VfsFileType::NamedPipe => FileType::Fifo,
+        VfsFileType::Pipe => FileType::Fifo,
         VfsFileType::Socket => FileType::Socket,
     }
 }
@@ -68,7 +68,7 @@ fn convert_to_vfs_file_type(ft: FileType) -> VfsFileType {
         FileType::Symlink => VfsFileType::Symlink,
         FileType::BlockDevice => VfsFileType::BlockDevice,
         FileType::CharDevice => VfsFileType::CharDevice,
-        FileType::Fifo => VfsFileType::NamedPipe,
+        FileType::Fifo => VfsFileType::Pipe,
         FileType::Socket => VfsFileType::Socket,
     }
 }

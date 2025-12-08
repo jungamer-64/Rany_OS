@@ -210,7 +210,7 @@ impl InterruptRouter {
     ///
     /// # Safety
     /// This writes to MMIO registers
-    pub unsafe fn program_ioapic_entry(&self, route: &IrqRoute) { unsafe {
+    pub unsafe fn program_ioapic_entry(&self, route: &IrqRoute) {
         if route.is_msi {
             return; // MSI doesn't use IOAPIC
         }
@@ -225,7 +225,7 @@ impl InterruptRouter {
         // IOREGSEL (0x00) - Index register
         // IOWIN (0x10) - Data window
 
-        let base = apic.address as *mut u32;
+        let base_addr = apic.address as usize;
 
         // Redirection entry registers start at 0x10 (2 per entry)
         let entry_offset = 0x10 + (route.ioapic_pin as u32 * 2);
@@ -251,13 +251,13 @@ impl InterruptRouter {
         let high: u32 = 0;
 
         // Write low dword
-        core::ptr::write_volatile(base, entry_offset);
-        core::ptr::write_volatile(base.add(4), low);
+        crate::io::mmio::mmio_write_u32(base_addr, entry_offset);
+        crate::io::mmio::mmio_write_u32(base_addr + 0x10, low);
 
         // Write high dword
-        core::ptr::write_volatile(base, entry_offset + 1);
-        core::ptr::write_volatile(base.add(4), high);
-    }}
+        crate::io::mmio::mmio_write_u32(base_addr, entry_offset + 1);
+        crate::io::mmio::mmio_write_u32(base_addr + 0x10, high);
+    }
 }
 
 impl Default for InterruptRouter {

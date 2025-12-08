@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
+use super::raw;
 use core::arch::naked_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;
@@ -185,7 +186,7 @@ impl KernelStack {
         let non_null = crate::util::allocate_zeroed(layout)?;
         let ptr = non_null.as_ptr();
         // SAFETY: ptr は適切なサイズとアラインメントで割り当てられている
-        let memory = unsafe { Box::from_raw(ptr as *mut [u8; Self::SIZE]) };
+        let memory = unsafe { raw::box_from_raw(ptr as *mut [u8; Self::SIZE]) };
 
         Some(Self { memory })
     }

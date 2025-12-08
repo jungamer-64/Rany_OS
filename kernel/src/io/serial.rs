@@ -23,7 +23,10 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
-use x86_64::instructions::port::Port;
+// Use hal port wrappers instead of raw x86_64 port to centralize unsafe
+
+use hal::port_io::{PortU8, PortU16, PortU32, IoPort};
+use x86_64::instructions::port::{PortRead, PortWrite};
 
 // ============================================================================
 // Serial port constants and type definitions
@@ -144,9 +147,12 @@ impl SerialPort {
     }
 
     /// Port access helper
-    /// Safety: Race conditions must be managed by caller, but Port itself is stateless
-    unsafe fn port_at<T>(&self, offset: u16) -> Port<T> {
-        Port::new(self.base + offset)
+    /// Returns a safe IoPort wrapper for the given port offset.
+    fn port_at<T>(&self, offset: u16) -> IoPort<T>
+    where
+        T: Copy + x86_64::instructions::port::PortRead + x86_64::instructions::port::PortWrite,
+    {
+        IoPort::new(self.base + offset)
     }
 
     /// Initialize the serial port
@@ -157,67 +163,63 @@ impl SerialPort {
         stop_bits: StopBits,
         parity: Parity
     ) -> Result<(), SerialError> {
-        unsafe {
-            let mut data_port: Port<u8> = self.port_at(reg::DATA);
-            let mut ier_port: Port<u8>  = self.port_at(reg::IER);
-            let mut fcr_port: Port<u8>  = self.port_at(reg::FCR);
-            let mut lcr_port: Port<u8>  = self.port_at(reg::LCR);
-            let mut mcr_port: Port<u8>  = self.port_at(reg::MCR);
-            let mut sr_port: Port<u8>   = self.port_at(reg::SCRATCH);
+        let mut data_port: PortU8 = self.port_at(reg::DATA);
+        let mut ier_port: PortU8  = self.port_at(reg::IER);
+        let mut fcr_port: PortU8  = self.port_at(reg::FCR);
+        let mut lcr_port: PortU8  = self.port_at(reg::LCR);
+        let mut mcr_port: PortU8  = self.port_at(reg::MCR);
+        let mut sr_port: PortU8   = self.port_at(reg::SCRATCH);
 
-            // Disable interrupts
-            ier_port.write(0x00);
+        // Disable interrupts
+        ier_port.write(0x00);
 
-            // Set DLAB bit to enable baud rate setting
-            const DLAB: u8 = 1 << 7;
-            lcr_port.write(DLAB);
+        // Set DLAB bit to enable baud rate setting
+        const DLAB: u8 = 1 << 7;
+        lcr_port.write(DLAB);
 
-            // Set baud rate
-            let divisor = baud_rate as u16;
-            data_port.write((divisor & 0xFF) as u8); // DLL
-            ier_port.write(((divisor >> 8) & 0xFF) as u8); // DLH
+        // Set baud rate
+        let divisor = baud_rate as u16;
+        data_port.write((divisor & 0xFF) as u8); // DLL
+        ier_port.write(((divisor >> 8) & 0xFF) as u8); // DLH
 
-            // Line configuration (clear DLAB while setting)
-            let lcr_val = (data_bits as u8) | (stop_bits as u8) | (parity as u8);
-            lcr_port.write(lcr_val);
+        // Line configuration (clear DLAB while setting)
+        let lcr_val = (data_bits as u8) | (stop_bits as u8) | (parity as u8);
+        lcr_port.write(lcr_val);
 
-            // FIFO configuration: enable, clear RX/TX, 14-byte trigger
-            // Bit definitions: ENABLE(1) | RX_CLEAR(2) | TX_CLEAR(4) | TRIGGER_14(0xC0)
-            fcr_port.write(0x01 | 0x02 | 0x04 | 0xC0);
+        // FIFO configuration: enable, clear RX/TX, 14-byte trigger
+        // Bit definitions: ENABLE(1) | RX_CLEAR(2) | TX_CLEAR(4) | TRIGGER_14(0xC0)
+        fcr_port.write(0x01 | 0x02 | 0x04 | 0xC0);
 
-            // Modem control: DTR(1) | RTS(2) | OUT2(8, interrupt gate)
-            mcr_port.write(0x01 | 0x02 | 0x08);
+        // Modem control: DTR(1) | RTS(2) | OUT2(8, interrupt gate)
+        mcr_port.write(0x01 | 0x02 | 0x08);
 
-            // Loopback test
-            // LOOPBACK(0x10) | DTR | RTS | OUT2
-            mcr_port.write(0x10 | 0x01 | 0x02 | 0x08);
-            
-            data_port.write(0xAE);
-            if data_port.read() != 0xAE {
-                return Err(SerialError::InitFailed);
-            }
-
-            // Return to normal mode
-            mcr_port.write(0x01 | 0x02 | 0x08);
-            
-            // Scratch register test
-            sr_port.write(0x55);
-            if sr_port.read() != 0x55 {
-                return Err(SerialError::InitFailed);
-            }
-
-            self.initialized.store(true, Ordering::SeqCst);
+        // Loopback test
+        // LOOPBACK(0x10) | DTR | RTS | OUT2
+        mcr_port.write(0x10 | 0x01 | 0x02 | 0x08);
+        
+        data_port.write(0xAE);
+        if data_port.read() != 0xAE {
+            return Err(SerialError::InitFailed);
         }
+
+        // Return to normal mode
+        mcr_port.write(0x01 | 0x02 | 0x08);
+            
+        // Scratch register test
+        sr_port.write(0x55);
+        if sr_port.read() != 0x55 {
+            return Err(SerialError::InitFailed);
+        }
+
+        self.initialized.store(true, Ordering::SeqCst);
 
         Ok(())
     }
 
     /// Get line status
     pub fn line_status(&self) -> LineStatus {
-        unsafe {
-            let mut lsr_port: Port<u8> = self.port_at(reg::LSR);
-            LineStatus::from_u8(lsr_port.read())
-        }
+        let mut lsr_port: IoPort<u8> = self.port_at(reg::LSR);
+        LineStatus::from_u8(lsr_port.read())
     }
 
     /// Check if ready to transmit
@@ -236,10 +238,8 @@ impl SerialPort {
             core::hint::spin_loop();
         }
 
-        unsafe {
-            let mut data_port: Port<u8> = self.port_at(reg::DATA);
-            data_port.write(byte);
-        }
+        let mut data_port: IoPort<u8> = self.port_at(reg::DATA);
+        data_port.write(byte);
     }
 
     /// Send a string
@@ -252,10 +252,8 @@ impl SerialPort {
     /// Receive a byte (non-blocking)
     pub fn try_receive(&self) -> Result<u8, SerialError> {
         if self.can_receive() {
-            unsafe {
-                let mut data_port: Port<u8> = self.port_at(reg::DATA);
-                Ok(data_port.read())
-            }
+            let mut data_port: IoPort<u8> = self.port_at(reg::DATA);
+            Ok(data_port.read())
         } else {
             Err(SerialError::NoData)
         }
@@ -267,10 +265,8 @@ impl SerialPort {
         if rx { flags |= InterruptEnable::RX_AVAILABLE; }
         if tx { flags |= InterruptEnable::TX_EMPTY; }
 
-        unsafe {
-            let mut ier_port: Port<u8> = self.port_at(reg::IER);
-            ier_port.write(flags);
-        }
+        let mut ier_port: IoPort<u8> = self.port_at(reg::IER);
+        ier_port.write(flags);
     }
 }
 

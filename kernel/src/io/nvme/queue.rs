@@ -9,7 +9,7 @@
 
 #![allow(dead_code)]
 
-use core::ptr::{read_volatile, write_volatile};
+// Centralized volatile read/write provided by mmio.rs
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
@@ -69,10 +69,9 @@ impl SubmissionQueue {
         // 注：実際にはCQ Headとの比較が必要
 
         unsafe {
-            let entry = self.buffer.add(tail as usize);
-            write_volatile(entry, *cmd);
-
-            // メモリバリア（コマンドの書き込みがドアベル前に完了することを保証）
+            let entry_addr = self.buffer.add(tail as usize) as usize;
+            crate::io::mmio::volatile_write::<NvmeCommand>(entry_addr, *cmd);
+            // Memory barrier
             core::sync::atomic::fence(Ordering::Release);
         }
 
@@ -86,10 +85,8 @@ impl SubmissionQueue {
     #[inline]
     pub fn ring_doorbell(&self) {
         let tail = self.tail.load(Ordering::Acquire);
-        unsafe {
-            // MMIO書き込み（高コスト）
-            write_volatile(self.doorbell, tail as u32);
-        }
+        // MMIO write
+        crate::io::mmio::mmio_write_u32(self.doorbell as usize, tail as u32);
     }
 
     /// キューIDを取得
@@ -157,7 +154,10 @@ impl CompletionQueue {
         let head = self.head.load(Ordering::Acquire);
         let expected_phase = self.phase.load(Ordering::Acquire);
 
-        let entry = unsafe { read_volatile(self.buffer.add(head as usize)) };
+        let entry = unsafe { 
+            // Volatile read
+            crate::io::mmio::volatile_read::<NvmeCompletion>(self.buffer.add(head as usize) as usize) 
+        };
 
         // フェーズビットをチェック
         if entry.phase() != expected_phase {
@@ -179,9 +179,7 @@ impl CompletionQueue {
     /// ドアベルを更新（完了処理後に呼ぶ）
     pub fn update_doorbell(&self) {
         let head = self.head.load(Ordering::Acquire);
-        unsafe {
-            write_volatile(self.doorbell, head as u32);
-        }
+        crate::io::mmio::mmio_write_u32(self.doorbell as usize, head as u32);
     }
 
     /// キューIDを取得

@@ -326,12 +326,15 @@ impl IommuDomain {
     pub fn new(id: u16) -> Self {
         // Allocate page table
         // SAFETY: 4096アライメントと4096の倍数サイズは常に有効なレイアウト
-        let layout = unsafe {
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .unwrap_unchecked()
-        };
+        let layout = alloc::alloc::Layout::from_size_align(
+            PT_ENTRIES * core::mem::size_of::<SlPte>(),
+            4096,
+        )
+        .expect("Invalid layout for page table");
 
-        let page_table = unsafe { alloc::alloc::alloc_zeroed(layout) as *mut SlPte };
+        let page_table = crate::util::allocate_zeroed(layout)
+            .expect("Failed to allocate IOMMU page table")
+            .as_ptr() as *mut SlPte;
 
         Self {
             id,
@@ -591,42 +594,41 @@ impl IommuController {
     }
 
     /// Read 32-bit register
-    unsafe fn read32(&self, offset: u64) -> u32 { unsafe {
-        let ptr = (self.mmio_base + offset) as *const u32;
-        core::ptr::read_volatile(ptr)
-    }}
+    fn read32(&self, offset: u64) -> u32 {
+        crate::io::mmio::mmio_read_u32((self.mmio_base + offset) as usize)
+    }
 
     /// Write 32-bit register
-    unsafe fn write32(&self, offset: u64, value: u32) { unsafe {
-        let ptr = (self.mmio_base + offset) as *mut u32;
-        core::ptr::write_volatile(ptr, value);
-    }}
+    fn write32(&self, offset: u64, value: u32) {
+        crate::io::mmio::mmio_write_u32((self.mmio_base + offset) as usize, value);
+    }
 
     /// Read 64-bit register
-    unsafe fn read64(&self, offset: u64) -> u64 { unsafe {
-        let ptr = (self.mmio_base + offset) as *const u64;
-        core::ptr::read_volatile(ptr)
-    }}
+    fn read64(&self, offset: u64) -> u64 {
+        crate::io::mmio::mmio_read_u64((self.mmio_base + offset) as usize)
+    }
 
     /// Write 64-bit register
-    unsafe fn write64(&self, offset: u64, value: u64) { unsafe {
-        let ptr = (self.mmio_base + offset) as *mut u64;
-        core::ptr::write_volatile(ptr, value);
-    }}
+    fn write64(&self, offset: u64, value: u64) {
+        crate::io::mmio::mmio_write_u64((self.mmio_base + offset) as usize, value);
+    }
 
     /// Initialize the IOMMU
     ///
     /// # Safety
     /// Caller must ensure MMIO address is valid
-    pub unsafe fn init(&mut self) -> Result<(), IommuError> { unsafe {
+    pub unsafe fn init(&mut self) -> Result<(), IommuError> {
         // Read capabilities
         self.cap = self.read64(regs::CAP);
         self.ecap = self.read64(regs::ECAP);
 
         // Allocate root table (4KB, 256 entries)
         // SAFETY: 4096 アライメントと4096サイズは常に有効
-        let rt_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap_unchecked();
-        self.root_table = alloc::alloc::alloc_zeroed(rt_layout) as *mut RootEntry;
+        let rt_layout = alloc::alloc::Layout::from_size_align(4096, 4096)
+            .expect("Invalid layout for root table");
+        self.root_table = crate::util::allocate_zeroed(rt_layout)
+            .expect("Failed to allocate root table")
+            .as_ptr() as *mut RootEntry;
 
         if self.root_table.is_null() {
             return Err(IommuError::HardwareError);
@@ -635,8 +637,11 @@ impl IommuController {
         // Allocate context tables for all buses
         for _ in 0..256 {
             // SAFETY: 4096 アライメントと4096サイズは常に有効
-            let ct_layout = alloc::alloc::Layout::from_size_align(4096, 4096).unwrap_unchecked();
-            let ct = alloc::alloc::alloc_zeroed(ct_layout) as *mut ContextEntry;
+            let ct_layout = alloc::alloc::Layout::from_size_align(4096, 4096)
+                .expect("Invalid layout for context entry");
+            let ct = crate::util::allocate_zeroed(ct_layout)
+                .expect("Failed to allocate ContextEntry")
+                .as_ptr() as *mut ContextEntry;
 
             if ct.is_null() {
                 return Err(IommuError::HardwareError);
@@ -659,10 +664,10 @@ impl IommuController {
         }
 
         Ok(())
-    }}
+    }
 
     /// Enable DMA remapping
-    pub unsafe fn enable(&self) -> Result<(), IommuError> { unsafe {
+    pub unsafe fn enable(&self) -> Result<(), IommuError> {
         // Write buffer flush if required
         if self.cap & cap_bits::CAP_RWBF != 0 {
             self.write32(regs::GCMD, gcmd_bits::GCMD_WBF);
@@ -686,10 +691,10 @@ impl IommuController {
         }
 
         Err(IommuError::Timeout)
-    }}
+    }
 
     /// Disable DMA remapping
-    pub unsafe fn disable(&self) -> Result<(), IommuError> { unsafe {
+    pub unsafe fn disable(&self) -> Result<(), IommuError> {
         // Clear translation enable
         let gcmd = self.read32(regs::GCMD);
         self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_TE);
@@ -703,7 +708,7 @@ impl IommuController {
         }
 
         Err(IommuError::Timeout)
-    }}
+    }
 
     /// Check if translation is enabled
     pub fn is_enabled(&self) -> bool {
@@ -813,7 +818,7 @@ impl IommuController {
     }
 
     /// Invalidate IOTLB for a domain
-    pub unsafe fn invalidate_iotlb(&self, domain_id: u16) { unsafe {
+    pub unsafe fn invalidate_iotlb(&self, domain_id: u16) {
         // Context command register invalidation
         let cmd: u64 = (1u64 << 63) |          // ICC (Invalidate context-cache)
                        (1u64 << 61) |          // Global invalidation
@@ -827,7 +832,7 @@ impl IommuController {
                 break;
             }
         }
-    }}
+    }
 }
 
 // ============================================================================
@@ -840,7 +845,7 @@ static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid
-pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> { unsafe {
+pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     let mut controller = IommuController::new(mmio_base);
     controller.init()?;
 
@@ -848,7 +853,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> { unsafe {
 
     *IOMMU.lock() = Some(controller);
     Ok(())
-}}
+}
 
 /// Enable IOMMU translation
 pub fn enable_iommu() -> Result<(), IommuError> {
