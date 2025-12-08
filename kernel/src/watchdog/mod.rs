@@ -694,11 +694,8 @@ impl WatchdogManager {
 
     fn send_nmi(&self) {
         // ローカルAPICでNMIを送信
-        unsafe {
-            // APIC ICR Low (0xFEE00300) にNMIを書き込み
-            let apic_icr = 0xFEE00300 as *mut u32;
-            core::ptr::write_volatile(apic_icr, 0x000C4500); // NMI to self
-        }
+        // APIC ICR Low (0xFEE00300) にNMIを書き込み
+        crate::io::mmio::mmio_write_u32(0xFEE00300usize, 0x000C4500);
     }
 
     /// ソフトウェアウォッチドッグを取得
