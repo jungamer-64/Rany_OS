@@ -70,7 +70,7 @@ impl VirtQueue {
         used_ring: *mut VringUsedHeader,
         notify_addr: *mut u16,
         notify_off_multiplier: u32,
-    ) -> Result<Self, &'static str> { unsafe {
+    ) -> Result<Self, &'static str> {
         if queue_size == 0 || !queue_size.is_power_of_two() {
             return Err("Queue size must be a power of 2");
         }
@@ -80,22 +80,28 @@ impl VirtQueue {
 
         // ディスクリプタテーブルを初期化（チェーン形式で連結）
         for i in 0..queue_size {
-            let desc = desc_table.add(i as usize);
-            (*desc) = VringDesc {
-                addr: 0,
-                len: 0,
-                flags: vring_flags::VRING_DESC_F_NEXT,
-                next: if i + 1 < queue_size { i + 1 } else { 0 },
-            };
+            unsafe {
+                let desc = desc_table.add(i as usize);
+                (*desc) = VringDesc {
+                    addr: 0,
+                    len: 0,
+                    flags: vring_flags::VRING_DESC_F_NEXT,
+                    next: if i + 1 < queue_size { i + 1 } else { 0 },
+                };
+            }
         }
 
         // Availableリングを初期化
-        (*avail_ring).flags = 0;
-        (*avail_ring).idx = 0;
+        unsafe {
+            (*avail_ring).flags = 0;
+            (*avail_ring).idx = 0;
+        }
 
         // Usedリングを初期化
-        (*used_ring).flags = 0;
-        (*used_ring).idx = 0;
+        unsafe {
+            (*used_ring).flags = 0;
+            (*used_ring).idx = 0;
+        }
 
         // 空きビットマップを初期化（全て空き）
         let (bitmap0, bitmap1, bitmap2, bitmap3) = Self::init_free_bitmap(queue_size);
@@ -103,9 +109,9 @@ impl VirtQueue {
         Ok(Self {
             queue_index,
             queue_size,
-            desc_table: NonNull::new_unchecked(desc_table),
-            avail_ring: NonNull::new_unchecked(avail_ring),
-            used_ring: NonNull::new_unchecked(used_ring),
+            desc_table: NonNull::new(desc_table).expect("desc_table is null"),
+            avail_ring: NonNull::new(avail_ring).expect("avail_ring is null"),
+            used_ring: NonNull::new(used_ring).expect("used_ring is null"),
             free_bitmap: AtomicU64::new(bitmap0),
             free_bitmap_ext: AtomicU64::new(bitmap1),
             free_bitmap_ext2: AtomicU64::new(bitmap2),
@@ -114,7 +120,7 @@ impl VirtQueue {
             notify_addr,
             notify_off_multiplier,
         })
-    }}
+    }
 
     /// 空きビットマップを初期化
     fn init_free_bitmap(queue_size: u16) -> (u64, u64, u64, u64) {
@@ -241,9 +247,9 @@ impl VirtQueue {
     ///
     /// # Safety
     /// 呼び出し側が排他制御を保証する必要がある
-    pub unsafe fn get_desc_mut(&self, idx: u16) -> &mut VringDesc { unsafe {
+    pub unsafe fn get_desc_mut(&self, idx: u16) -> &mut VringDesc {
         &mut *self.desc_table.as_ptr().add(idx as usize)
-    }}
+    }
 
     /// バッファをキューに追加（単一ディスクリプタ）
     ///
@@ -255,7 +261,7 @@ impl VirtQueue {
         addr: u64,
         len: u32,
         writable: bool,
-    ) -> Result<u16, &'static str> { unsafe {
+    ) -> Result<u16, &'static str> {
         let desc_idx = self.alloc_desc().ok_or("No free descriptors")?;
 
         // ディスクリプタを設定
@@ -266,10 +272,10 @@ impl VirtQueue {
         desc.next = 0;
 
         // Availリングに追加
-        self.submit_avail(desc_idx);
+        unsafe { self.submit_avail(desc_idx); }
 
         Ok(desc_idx)
-    }}
+    }
 
     /// バッファチェーンをキューに追加
     ///
@@ -280,7 +286,7 @@ impl VirtQueue {
     pub unsafe fn add_buffer_chain(
         &self,
         buffers: &[(u64, u32, bool)],
-    ) -> Result<u16, &'static str> { unsafe {
+    ) -> Result<u16, &'static str> {
         if buffers.is_empty() {
             return Err("Empty buffer chain");
         }
@@ -312,10 +318,10 @@ impl VirtQueue {
         self.submit_avail(head);
 
         Ok(head)
-    }}
+    }
 
     /// Availリングにディスクリプタを追加
-    unsafe fn submit_avail(&self, head: u16) { unsafe {
+    unsafe fn submit_avail(&self, head: u16) {
         // メモリバリア: ディスクリプタの書き込みを完了させる
         core::sync::atomic::fence(Ordering::Release);
 
@@ -330,16 +336,14 @@ impl VirtQueue {
         core::sync::atomic::fence(Ordering::Release);
 
         (*avail).idx = avail_idx.wrapping_add(1);
-    }}
+    }
 
     /// デバイスに通知
     pub fn notify(&self) {
         // メモリバリア: 全ての書き込みが完了してから通知
         core::sync::atomic::fence(Ordering::SeqCst);
 
-        unsafe {
-            core::ptr::write_volatile(self.notify_addr, self.queue_index);
-        }
+        crate::io::mmio_write_u16(self.notify_addr as usize, self.queue_index);
     }
 
     /// 完了したリクエストをポーリング
@@ -426,8 +430,8 @@ impl<T> TrackedVirtQueue<T> {
         used_ring: *mut VringUsedHeader,
         notify_addr: *mut u16,
         notify_off_multiplier: u32,
-    ) -> Result<Self, &'static str> { unsafe {
-        let inner = VirtQueue::new(
+    ) -> Result<Self, &'static str> {
+        let inner = unsafe { VirtQueue::new(
             queue_index,
             queue_size,
             desc_table,
@@ -435,7 +439,7 @@ impl<T> TrackedVirtQueue<T> {
             used_ring,
             notify_addr,
             notify_off_multiplier,
-        )?;
+        )? };
 
         let mut pending = VecDeque::with_capacity(queue_size as usize);
         for _ in 0..queue_size {
@@ -446,7 +450,7 @@ impl<T> TrackedVirtQueue<T> {
             inner,
             pending: spin::Mutex::new(pending),
         })
-    }}
+    }
 
     /// 基本VirtQueueへの参照
     pub fn inner(&self) -> &VirtQueue {
@@ -463,12 +467,12 @@ impl<T> TrackedVirtQueue<T> {
         len: u32,
         writable: bool,
         buffer: T,
-    ) -> Result<u16, &'static str> { unsafe {
+    ) -> Result<u16, &'static str> {
         let desc_idx = self.inner.alloc_desc().ok_or("No free descriptors")?;
 
         // ディスクリプタを設定
         {
-            let desc = self.inner.get_desc_mut(desc_idx);
+            let desc = unsafe { self.inner.get_desc_mut(desc_idx) };
             desc.addr = addr;
             desc.len = len;
             desc.flags = if writable { vring_flags::VRING_DESC_F_WRITE } else { 0 };
@@ -487,7 +491,7 @@ impl<T> TrackedVirtQueue<T> {
         self.inner.submit_avail(desc_idx);
 
         Ok(desc_idx)
-    }}
+    }
 
     /// 完了したリクエストをポーリングし、バッファを返却
     ///
