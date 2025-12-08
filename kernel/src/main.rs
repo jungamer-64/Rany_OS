@@ -307,13 +307,22 @@ extern "C" fn kmain() -> ! {
     io::keyboard::init();
     info!(target: "init", "Keyboard driver initialized");
     
-    // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）
-    info!(target: "init", "Initializing input devices");
-    io::hid::keyboard_init();
-    // マウスは存在しない環境もあるため、エラーでも処理を継続
-    match io::hid::mouse_init() {
-        Ok(()) => info!(target: "init", "Mouse initialized"),
-        Err(e) => warn!(target: "init", "Mouse init failed: {} (continuing without mouse)", e),
+    // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）using DriverRegistry
+    info!(target: "init", "Initializing input devices via DriverRegistry");
+    {
+        use io::hid::ps2::Ps2Driver;
+        use driver_registry::register_driver;
+        use alloc::boxed::Box;
+        
+        // PS/2ドライバを登録
+        let ps2_handle = register_driver(Box::new(Ps2Driver::new()));
+        
+        // プローブと開始
+        if let Err(e) = driver_registry::driver_registry().probe_and_start(ps2_handle) {
+            warn!(target: "init", "PS/2 driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "PS/2 driver initialized via DriverRegistry");
+        }
     }
     info!(target: "init", "Input devices initialized");
     
