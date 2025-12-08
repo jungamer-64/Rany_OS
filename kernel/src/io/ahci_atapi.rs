@@ -833,11 +833,11 @@ impl AtapiPort {
     }
 
     fn read_port(&self, offset: u32) -> u32 {
-        unsafe { ptr::read_volatile((self.port_base + offset as u64) as *const u32) }
+        crate::io::mmio::mmio_read_u32((self.port_base + offset as u64) as usize)
     }
 
     fn write_port(&self, offset: u32, value: u32) {
-        unsafe { ptr::write_volatile((self.port_base + offset as u64) as *mut u32, value) }
+        crate::io::mmio::mmio_write_u32((self.port_base + offset as u64) as usize, value);
     }
 }
 

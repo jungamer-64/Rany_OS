@@ -27,7 +27,6 @@
 #![allow(dead_code)]
 
 // コア機能モジュール
-pub mod types;
 pub mod framebuffer;
 pub mod font;
 pub mod console;
@@ -37,12 +36,14 @@ pub mod boot_splash;
 // 既存のサブモジュール
 pub mod bsod;
 pub mod compositor;
-pub mod image;
 pub mod qrcode;
 pub mod window;
 
+// Re-exports from graphic_types
+pub use graphic_types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
+pub use graphic_types::image;
+
 // 型の再エクスポート
-pub use types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
 pub use framebuffer::Framebuffer;
 pub use font::{BitmapFont, FONT_WIDTH, FONT_HEIGHT};
 pub use console::TextConsole;

@@ -26,7 +26,9 @@ pub mod block;
 pub mod cache;
 pub mod devfs;
 pub mod ext2;
-pub mod fat32;
+pub mod fat32_adapter;
+#[allow(unused_imports)]
+pub use fat32_adapter::Fat32FileSystemAdapter as Fat32FileSystem;
 pub mod memfs;
 pub mod procfs;
 
@@ -58,7 +60,7 @@ pub use devfs::{
 #[allow(unused_imports)]
 pub use ext2::Ext2FileSystem;
 #[allow(unused_imports)]
-pub use fat32::Fat32FileSystem;
+
 #[allow(unused_imports)]
 pub use fs_abstraction::{
     AsyncReadFuture, AsyncWriteFuture, DirEntry, FileAttr, FileHandle, FileMode, FileSystem,

@@ -21,10 +21,12 @@
 //! ```
 
 use core::fmt::Write;
+use hal::IoPort;
+
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use spin::Mutex;
-use x86_64::instructions::port::Port;
+use hal::port_io::PortU8;
 
 // ============================================================================
 // 定数定義
@@ -111,47 +113,45 @@ pub fn init_serial() {
         return; // 既に初期化済み
     }
     
-    unsafe {
-        let base = SERIAL_PORT_BASE;
-        
-        // 割り込み無効化
-        let mut ier: Port<u8> = Port::new(base + 1);
-        ier.write(0x00);
-        
-        // DLAB有効化（ボーレート設定用）
-        let mut lcr: Port<u8> = Port::new(base + 3);
-        lcr.write(0x80);
-        
-        // ボーレート設定: 115200 (divisor = 1)
-        let mut dll: Port<u8> = Port::new(base + 0);
-        let mut dlh: Port<u8> = Port::new(base + 1);
-        dll.write(0x01); // Divisor low byte
-        dlh.write(0x00); // Divisor high byte
-        
-        // ライン設定: 8 data bits, no parity, 1 stop bit (8N1)
-        lcr.write(0x03);
-        
-        // FIFO有効化、バッファクリア、14バイトスレッショルド
-        let mut fcr: Port<u8> = Port::new(base + 2);
-        fcr.write(0xC7);
-        
-        // モデム制御: DTR, RTS, OUT2（割り込みゲート）
-        let mut mcr: Port<u8> = Port::new(base + 4);
-        mcr.write(0x0B);
-        
-        // ループバックテスト
-        mcr.write(0x1E); // loopback mode
-        let mut data: Port<u8> = Port::new(base);
-        data.write(0xAE);
-        if data.read() != 0xAE {
-            // テスト失敗、初期化フラグをリセット
-            SERIAL_INITIALIZED.store(false, Ordering::SeqCst);
-            return;
-        }
-        
-        // 通常モードに戻す
-        mcr.write(0x0F);
+    let base = SERIAL_PORT_BASE;
+
+    // 割り込み無効化
+    let mut ier: PortU8 = IoPort::new(base + 1);
+    ier.write(0x00);
+
+    // DLAB有効化（ボーレート設定用）
+    let mut lcr: PortU8 = IoPort::new(base + 3);
+    lcr.write(0x80);
+
+    // ボーレート設定: 115200 (divisor = 1)
+    let mut dll: PortU8 = IoPort::new(base + 0);
+    let mut dlh: PortU8 = IoPort::new(base + 1);
+    dll.write(0x01); // Divisor low byte
+    dlh.write(0x00); // Divisor high byte
+
+    // ライン設定: 8 data bits, no parity, 1 stop bit (8N1)
+    lcr.write(0x03);
+
+    // FIFO有効化、バッファクリア、14バイトスレッショルド
+    let mut fcr: PortU8 = IoPort::new(base + 2);
+    fcr.write(0xC7);
+
+    // モデム制御: DTR, RTS, OUT2（割り込みゲート）
+    let mut mcr: PortU8 = IoPort::new(base + 4);
+    mcr.write(0x0B);
+
+    // ループバックテスト
+    mcr.write(0x1E); // loopback mode
+    let mut data: PortU8 = IoPort::new(base);
+    data.write(0xAE);
+    if data.read() != 0xAE {
+        // テスト失敗、初期化フラグをリセット
+        SERIAL_INITIALIZED.store(false, Ordering::SeqCst);
+        return;
     }
+
+    // 通常モードに戻す
+    mcr.write(0x0F);
 }
 
 // ============================================================================
@@ -168,9 +168,8 @@ impl KernelLogger {
     /// タイムアウト時は書き込みをスキップする。
     #[inline]
     fn write_byte_raw(byte: u8) {
-        unsafe {
-            let mut status_port: Port<u8> = Port::new(SERIAL_PORT_BASE + SERIAL_LSR_OFFSET);
-            let mut data_port: Port<u8> = Port::new(SERIAL_PORT_BASE + SERIAL_DATA_OFFSET);
+        let mut status_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_LSR_OFFSET);
+        let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_DATA_OFFSET);
             
             // 送信バッファが空になるまで待つ（タイムアウト付き）
             let mut timeout = TX_TIMEOUT_LOOPS;
@@ -182,7 +181,7 @@ impl KernelLogger {
             if timeout > 0 {
                 data_port.write(byte);
             }
-        }
+        
     }
     
     /// シリアルポートに直接書き込み（ロックなし、早期ブート/パニック用）

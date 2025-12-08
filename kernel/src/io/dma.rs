@@ -101,7 +101,7 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
         let phys_addr = PhysAddr::new(ptr as u64);
 
         Some(Self {
-            ptr: unsafe { NonNull::new_unchecked(ptr as *mut T) },
+            ptr: NonNull::new(ptr as *mut T).expect("alloc returned null pointer"),
             phys_addr,
             layout,
             _state: PhantomData,
@@ -238,20 +238,13 @@ impl TypedDmaSlice<CpuOwned> {
     pub fn new(size: usize) -> Option<Self> {
         let layout = Layout::from_size_align(size, DMA_ALIGNMENT).ok()?;
 
-        let ptr = unsafe { alloc(layout) };
-        if ptr.is_null() {
-            return None;
-        }
-
-        // ゼロで初期化
-        unsafe {
-            core::ptr::write_bytes(ptr, 0, size);
-        }
+        let non_null = crate::util::allocate_zeroed(layout)?;
+        let ptr = non_null.as_ptr();
 
         let phys_addr = PhysAddr::new(ptr as u64);
 
         Some(Self {
-            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
             phys_addr,
             size,
             layout,
@@ -261,12 +254,12 @@ impl TypedDmaSlice<CpuOwned> {
 
     /// スライスとして取得（CPU所有時のみ）
     pub fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.size) }
+        unsafe { crate::util::raw_ptr_as_slice(self.ptr.as_ptr(), self.size) }
     }
 
     /// 可変スライスとして取得（CPU所有時のみ）
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size) }
+        unsafe { crate::util::raw_ptr_as_slice_mut(self.ptr.as_ptr(), self.size) }
     }
 
     /// DMA転送を開始
@@ -644,7 +637,7 @@ impl CoherentDmaBuffer {
         let phys_addr = PhysAddr::new(ptr as u64);
 
         Some(Self {
-            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
             size, layout, phys_addr, attributes,
         })
     }
@@ -903,7 +896,7 @@ impl DmaAllocator for GlobalDmaAllocator {
         };
         
         Ok(DmaAllocation {
-            ptr: unsafe { NonNull::new_unchecked(ptr) },
+            ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
             phys_addr,
             device_addr,
             size,

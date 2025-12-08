@@ -195,7 +195,7 @@ pub struct Rtc {
 
 impl Rtc {
     /// CMOSレジスタを読み取り
-    unsafe fn read_cmos(reg: u8) -> u8 { unsafe {
+    unsafe fn read_cmos(reg: u8) -> u8 {
         // NMIを無効化しながらアドレスを設定
         let address = (reg & 0x7F) | 0x80;
         core::arch::asm!(
@@ -215,10 +215,10 @@ impl Rtc {
             options(nomem, nostack)
         );
         value
-    }}
+    }
 
     /// CMOSレジスタに書き込み
-    unsafe fn write_cmos(reg: u8, value: u8) { unsafe {
+    unsafe fn write_cmos(reg: u8, value: u8) {
         let address = (reg & 0x7F) | 0x80;
         core::arch::asm!(
             "out dx, al",
@@ -233,12 +233,12 @@ impl Rtc {
             in("al") value,
             options(nomem, nostack)
         );
-    }}
+    }
 
     /// 更新中かどうかを確認
-    unsafe fn is_update_in_progress() -> bool { unsafe {
+    unsafe fn is_update_in_progress() -> bool {
         (Self::read_cmos(regs::STATUS_A) & status_a::UPDATE_IN_PROGRESS) != 0
-    }}
+    }
 
     /// BCDをバイナリに変換
     fn bcd_to_binary(bcd: u8) -> u8 {

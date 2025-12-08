@@ -33,9 +33,9 @@ pub struct AhciController {
 impl AhciController {
     /// 新しいコントローラを作成
     pub fn new(base: u64) -> AhciResult<Self> {
-        let cap = unsafe { ptr::read_volatile((base + GHC_CAP as u64) as *const u32) };
-        let pi = unsafe { ptr::read_volatile((base + GHC_PI as u64) as *const u32) };
-        let vs = unsafe { ptr::read_volatile((base + GHC_VS as u64) as *const u32) };
+        let cap = crate::io::mmio_read_u32((base + GHC_CAP as u64) as usize);
+        let pi = crate::io::mmio_read_u32((base + GHC_PI as u64) as usize);
+        let vs = crate::io::mmio_read_u32((base + GHC_VS as u64) as usize);
 
         let command_slots = ((cap >> 8) & 0x1F) as u8 + 1;
         let _version_major = (vs >> 16) & 0xFFFF;
@@ -117,19 +117,19 @@ impl AhciController {
 
     /// GHCレジスタを読み取り
     pub fn read_ghc(&self, offset: u32) -> u32 {
-        unsafe { ptr::read_volatile((self.base + offset as u64) as *const u32) }
+        crate::io::mmio_read_u32((self.base + offset as u64) as usize)
     }
 
     /// GHCレジスタを書き込み
     pub fn write_ghc(&self, offset: u32, value: u32) {
-        unsafe { ptr::write_volatile((self.base + offset as u64) as *mut u32, value) }
+        crate::io::mmio_write_u32((self.base + offset as u64) as usize, value);
     }
 
     /// ポートレジスタを読み取り
     pub fn read_port_reg(&self, port: PortNumber, offset: u32) -> u32 {
         let addr =
             self.base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64) + offset as u64;
-        unsafe { ptr::read_volatile(addr as *const u32) }
+        crate::io::mmio_read_u32(addr as usize)
     }
 }
 

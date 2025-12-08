@@ -147,16 +147,16 @@ impl LocalApic {
     }
 
     /// レジスタを読み取り
-    unsafe fn read(&self, reg: u32) -> u32 { unsafe {
+    unsafe fn read(&self, reg: u32) -> u32 {
         let addr = self.base_address + reg as u64;
-        core::ptr::read_volatile(addr as *const u32)
-    }}
+        crate::io::mmio_read_u32(addr as usize)
+    }
 
     /// レジスタに書き込み
-    unsafe fn write(&self, reg: u32, value: u32) { unsafe {
+    unsafe fn write(&self, reg: u32, value: u32) {
         let addr = self.base_address + reg as u64;
-        core::ptr::write_volatile(addr as *mut u32, value);
-    }}
+        crate::io::mmio_write_u32(addr as usize, value);
+    }
 
     /// Local APICを初期化
     pub fn init(&self) {
@@ -368,24 +368,24 @@ impl IoApic {
     }
 
     /// レジスタを選択
-    unsafe fn select(&self, reg: u8) { unsafe {
+    unsafe fn select(&self, reg: u8) {
         let addr = self.base_address + ioapic_reg::IOREGSEL as u64;
-        core::ptr::write_volatile(addr as *mut u32, reg as u32);
-    }}
+        crate::io::mmio_write_u32(addr as usize, reg as u32);
+    }
 
     /// 選択したレジスタを読み取り
-    unsafe fn read(&self, reg: u8) -> u32 { unsafe {
+    unsafe fn read(&self, reg: u8) -> u32 {
         self.select(reg);
         let addr = self.base_address + ioapic_reg::IOWIN as u64;
-        core::ptr::read_volatile(addr as *const u32)
-    }}
+        crate::io::mmio_read_u32(addr as usize)
+    }
 
     /// 選択したレジスタに書き込み
-    unsafe fn write(&self, reg: u8, value: u32) { unsafe {
+    unsafe fn write(&self, reg: u8, value: u32) {
         self.select(reg);
         let addr = self.base_address + ioapic_reg::IOWIN as u64;
-        core::ptr::write_volatile(addr as *mut u32, value);
-    }}
+        crate::io::mmio_write_u32(addr as usize, value);
+    }
 
     /// I/O APICを初期化
     pub fn init(&self) {
@@ -573,16 +573,15 @@ pub fn init() {
 
 /// 8259 PICを無効化
 fn disable_pic() {
-    unsafe {
-        use x86_64::instructions::port::Port;
+    // Use our HAL port wrapper to avoid scattered unsafe usage
+    use hal::port_io::PortU8;
 
-        let mut pic1_data: Port<u8> = Port::new(0x21);
-        let mut pic2_data: Port<u8> = Port::new(0xA1);
+    let mut pic1_data: PortU8 = PortU8::new(0x21);
+    let mut pic2_data: PortU8 = PortU8::new(0xA1);
 
-        // すべての割り込みをマスク
-        pic1_data.write(0xFF);
-        pic2_data.write(0xFF);
-    }
+    // すべての割り込みをマスク
+    pic1_data.write(0xFF);
+    pic2_data.write(0xFF);
 
     crate::log!("[APIC] Legacy PIC disabled\n");
 }

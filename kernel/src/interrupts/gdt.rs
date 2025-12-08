@@ -88,7 +88,7 @@ pub fn init_gdt() {
         let tss_bytes = tss_ptr as *mut u8;
         let tss_size = core::mem::size_of::<TaskStateSegment>();
         for i in 0..tss_size {
-            core::ptr::write_volatile(tss_bytes.add(i), 0);
+            crate::io::mmio::volatile_write::<u8>(tss_bytes.add(i) as usize, 0);
         }
         
         serial_str("[GDT] done\n");
@@ -111,7 +111,7 @@ pub fn init_gdt() {
         let gdt_bytes = gdt_ptr as *mut u8;
         let gdt_size = core::mem::size_of::<GlobalDescriptorTable>();
         for i in 0..gdt_size {
-            core::ptr::write_volatile(gdt_bytes.add(i), 0);
+            crate::io::mmio::volatile_write::<u8>(gdt_bytes.add(i) as usize, 0);
         }
         serial_str("[GDT] z\n");
         

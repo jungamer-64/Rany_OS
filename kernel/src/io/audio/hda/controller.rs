@@ -14,7 +14,7 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::ptr::{read_volatile, write_volatile};
+// Volatile memory reads/writes centralized via mmio helpers
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use crate::io::pci::PciDeviceInfo;
@@ -122,9 +122,7 @@ impl HdaController {
     /// - offset must be within the HDA register space
     #[inline]
     pub fn read8(&self, offset: u32) -> u8 {
-        // SAFETY: mmio_base was validated during new() from PCI BAR0.
-        // read_volatile ensures the read is not optimized away and is atomic for u8.
-        unsafe { read_volatile((self.mmio_base + offset as u64) as *const u8) }
+        crate::io::mmio::mmio_read_u8((self.mmio_base + offset as u64) as usize)
     }
 
     /// Write a 8-bit register
@@ -134,9 +132,7 @@ impl HdaController {
     /// - offset must be within the HDA register space
     #[inline]
     pub fn write8(&self, offset: u32, value: u8) {
-        // SAFETY: mmio_base was validated during new() from PCI BAR0.
-        // write_volatile ensures the write is not optimized away and is atomic for u8.
-        unsafe { write_volatile((self.mmio_base + offset as u64) as *mut u8, value) }
+        crate::io::mmio::mmio_write_u8((self.mmio_base + offset as u64) as usize, value);
     }
 
     /// Read a 16-bit register
@@ -146,10 +142,7 @@ impl HdaController {
     /// - offset must be 2-byte aligned and within the HDA register space
     #[inline]
     pub fn read16(&self, offset: u32) -> u16 {
-        // SAFETY: mmio_base was validated during new() from PCI BAR0.
-        // HDA spec defines 16-bit registers at 2-byte aligned offsets.
-        // read_volatile ensures the read is not optimized away.
-        unsafe { read_volatile((self.mmio_base + offset as u64) as *const u16) }
+        crate::io::mmio::mmio_read_u16((self.mmio_base + offset as u64) as usize)
     }
 
     /// Write a 16-bit register
@@ -159,10 +152,7 @@ impl HdaController {
     /// - offset must be 2-byte aligned and within the HDA register space
     #[inline]
     pub fn write16(&self, offset: u32, value: u16) {
-        // SAFETY: mmio_base was validated during new() from PCI BAR0.
-        // HDA spec defines 16-bit registers at 2-byte aligned offsets.
-        // write_volatile ensures the write is not optimized away.
-        unsafe { write_volatile((self.mmio_base + offset as u64) as *mut u16, value) }
+        crate::io::mmio::mmio_write_u16((self.mmio_base + offset as u64) as usize, value);
     }
 
     /// Read a 32-bit register
@@ -172,10 +162,7 @@ impl HdaController {
     /// - offset must be 4-byte aligned and within the HDA register space
     #[inline]
     pub fn read32(&self, offset: u32) -> u32 {
-        // SAFETY: mmio_base was validated during new() from PCI BAR0.
-        // HDA spec defines 32-bit registers at 4-byte aligned offsets.
-        // read_volatile ensures the read is not optimized away.
-        unsafe { read_volatile((self.mmio_base + offset as u64) as *const u32) }
+        crate::io::mmio::mmio_read_u32((self.mmio_base + offset as u64) as usize)
     }
 
     /// Write a 32-bit register
@@ -185,10 +172,7 @@ impl HdaController {
     /// - offset must be 4-byte aligned and within the HDA register space
     #[inline]
     pub fn write32(&self, offset: u32, value: u32) {
-        // SAFETY: mmio_base was validated during new() from PCI BAR0.
-        // HDA spec defines 32-bit registers at 4-byte aligned offsets.
-        // write_volatile ensures the write is not optimized away.
-        unsafe { write_volatile((self.mmio_base + offset as u64) as *mut u32, value) }
+        crate::io::mmio::mmio_write_u32((self.mmio_base + offset as u64) as usize, value);
     }
 
     // ========================================================================
@@ -325,10 +309,8 @@ impl HdaController {
         // SAFETY: Layout is valid (size > 0, align is 128 which is a power of 2).
         // The allocated buffer will be used for DMA with the HDA controller.
         // alloc_zeroed returns a valid pointer or null, which we check below.
-        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
-        if ptr.is_null() {
-            return Err(HdaError::AllocFailed);
-        }
+        let nn = crate::util::allocate_zeroed(layout).ok_or(HdaError::AllocFailed)?;
+        let ptr = nn.as_ptr();
 
         // Note: On x86_64 with PCIe, hardware cache coherency is maintained.
         // For other architectures, consider cache flush here.
@@ -512,7 +494,7 @@ impl HdaController {
         // SAFETY: corb_entry_addr points to a valid DMA buffer entry allocated by alloc_dma_buffer.
         // The buffer is 128-byte aligned and within bounds (next_wp < corb_size).
         unsafe {
-            write_volatile(corb_entry_addr as *mut u32, cmd);
+            crate::io::mmio::mmio_write_u32(corb_entry_addr as usize, cmd);
         }
 
         // SAFETY: SFENCE ensures the CORB entry write is visible to the HDA controller
@@ -552,7 +534,7 @@ impl HdaController {
                 let rirb_entry_addr = self.rirb_addr + (next_rp as u64 * RIRB_ENTRY_SIZE as u64);
                 // SAFETY: rirb_entry_addr points to a valid DMA buffer entry allocated by alloc_dma_buffer.
                 // The buffer is 128-byte aligned and within bounds (next_rp < rirb_size).
-                let response = unsafe { read_volatile(rirb_entry_addr as *const u32) };
+                let response = hal::mmio::mmio_read_u32(rirb_entry_addr as usize);
 
                 // Update read pointer
                 self.rirb_rp.store(next_rp, Ordering::SeqCst);

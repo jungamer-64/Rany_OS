@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use super::types::Color;
+use super::Color;
 use super::framebuffer::Framebuffer;
 
 /// 8x16フォントの幅定数

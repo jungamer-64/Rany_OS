@@ -77,6 +77,7 @@ pub use keyboard::{
     KeyState,
     KeyEvent,
     Modifiers,
+    KeyEventExt,
     // Driver and stream
     KeyboardDriver,
     KeyboardStream,

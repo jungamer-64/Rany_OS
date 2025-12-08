@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use super::types::{Color, Rect};
+use super::{Color, Rect};
 use super::framebuffer::Framebuffer;
 use super::font::FONT_HEIGHT;
 use super::global::with_framebuffer;

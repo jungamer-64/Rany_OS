@@ -128,15 +128,12 @@ impl XhciController {
     /// 新しいxHCIコントローラを作成
     pub fn new(base_addr: u64) -> UsbResult<Self> {
         // Capability Registers を読み取り
-        let caplength = unsafe { ptr::read_volatile((base_addr + CAPLENGTH as u64) as *const u8) };
-        let hciversion =
-            unsafe { ptr::read_volatile((base_addr + HCIVERSION as u64) as *const u16) };
-        let hcsparams1 =
-            unsafe { ptr::read_volatile((base_addr + HCSPARAMS1 as u64) as *const u32) };
-        let hccparams1 =
-            unsafe { ptr::read_volatile((base_addr + HCCPARAMS1 as u64) as *const u32) };
-        let dboff = unsafe { ptr::read_volatile((base_addr + DBOFF as u64) as *const u32) };
-        let rtsoff = unsafe { ptr::read_volatile((base_addr + RTSOFF as u64) as *const u32) };
+        let caplength = crate::io::mmio_read_u8((base_addr + CAPLENGTH as u64) as usize);
+        let hciversion = crate::io::mmio_read_u16((base_addr + HCIVERSION as u64) as usize);
+        let hcsparams1 = crate::io::mmio_read_u32((base_addr + HCSPARAMS1 as u64) as usize);
+        let hccparams1 = crate::io::mmio_read_u32((base_addr + HCCPARAMS1 as u64) as usize);
+        let dboff = crate::io::mmio_read_u32((base_addr + DBOFF as u64) as usize);
+        let rtsoff = crate::io::mmio_read_u32((base_addr + RTSOFF as u64) as usize);
 
         let _ = hciversion;
 
@@ -402,7 +399,7 @@ impl XhciController {
 
         loop {
             let idx = event_ring.dequeue_index;
-            let trb = unsafe { ptr::read_volatile(&event_ring.trbs[idx] as *const Trb) };
+            let trb = unsafe { hal::mmio::volatile_read::<Trb>(&event_ring.trbs[idx] as *const Trb as usize) };
 
             if trb.cycle_bit() != expected_cycle {
                 break;
@@ -510,22 +507,20 @@ impl XhciController {
     /// ドアベルを鳴らす
     pub(crate) fn ring_doorbell(&self, slot_id: u8, target: u8) {
         let offset = self.db_offset + (slot_id as u64) * 4;
-        unsafe {
-            ptr::write_volatile(offset as *mut u32, target as u32);
-        }
+        crate::io::mmio::mmio_write_u32(offset as usize, target as u32);
     }
 
     // レジスタアクセスヘルパー
     fn read_op(&self, offset: usize) -> u32 {
-        unsafe { ptr::read_volatile((self.op_offset + offset as u64) as *const u32) }
+        crate::io::mmio_read_u32((self.op_offset + offset as u64) as usize)
     }
 
     fn write_op(&self, offset: usize, value: u32) {
-        unsafe { ptr::write_volatile((self.op_offset + offset as u64) as *mut u32, value) }
+        crate::io::mmio::mmio_write_u32((self.op_offset + offset as u64) as usize, value);
     }
 
     fn write_op_64(&self, offset: usize, value: u64) {
-        unsafe { ptr::write_volatile((self.op_offset + offset as u64) as *mut u64, value) }
+        crate::io::mmio::mmio_write_u64((self.op_offset + offset as u64) as usize, value);
     }
 
     fn read_portsc(&self, port: PortNumber) -> u32 {
@@ -534,25 +529,15 @@ impl XhciController {
     }
 
     fn read_runtime(&self, offset: usize) -> u32 {
-        unsafe { ptr::read_volatile((self.rt_offset + IR0 as u64 + offset as u64) as *const u32) }
+        crate::io::mmio_read_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize)
     }
 
     fn write_runtime(&self, offset: usize, value: u32) {
-        unsafe {
-            ptr::write_volatile(
-                (self.rt_offset + IR0 as u64 + offset as u64) as *mut u32,
-                value,
-            )
-        }
+        crate::io::mmio::mmio_write_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize, value);
     }
 
     fn write_runtime_64(&self, offset: usize, value: u64) {
-        unsafe {
-            ptr::write_volatile(
-                (self.rt_offset + IR0 as u64 + offset as u64) as *mut u64,
-                value,
-            )
-        }
+        crate::io::mmio::mmio_write_u64((self.rt_offset + IR0 as u64 + offset as u64) as usize, value);
     }
 
     /// ポート数を取得

@@ -17,7 +17,7 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use core::ptr::{read_volatile, write_volatile};
+// Use mmio volatile read/write helpers via crate::io::mmio
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
@@ -123,23 +123,23 @@ impl NvmePollingDriver {
     // ========================================================================
 
     /// レジスタを読む
-    unsafe fn read_reg32(&self, offset: usize) -> u32 {
-        unsafe { read_volatile((self.bar0 + offset as u64) as *const u32) }
+    fn read_reg32(&self, offset: usize) -> u32 {
+        crate::io::mmio::mmio_read_u32((self.bar0 + offset as u64) as usize)
     }
 
     /// レジスタを書く
-    unsafe fn write_reg32(&self, offset: usize, value: u32) {
-        unsafe { write_volatile((self.bar0 + offset as u64) as *mut u32, value) }
+    fn write_reg32(&self, offset: usize, value: u32) {
+        crate::io::mmio::mmio_write_u32((self.bar0 + offset as u64) as usize, value);
     }
 
     /// 64ビットレジスタを読む
-    unsafe fn read_reg64(&self, offset: usize) -> u64 {
-        unsafe { read_volatile((self.bar0 + offset as u64) as *const u64) }
+    fn read_reg64(&self, offset: usize) -> u64 {
+        crate::io::mmio::mmio_read_u64((self.bar0 + offset as u64) as usize)
     }
 
     /// 64ビットレジスタを書く
-    unsafe fn write_reg64(&self, offset: usize, value: u64) {
-        unsafe { write_volatile((self.bar0 + offset as u64) as *mut u64, value) }
+    fn write_reg64(&self, offset: usize, value: u64) {
+        crate::io::mmio::mmio_write_u64((self.bar0 + offset as u64) as usize, value);
     }
 
     /// コントローラステータスを取得

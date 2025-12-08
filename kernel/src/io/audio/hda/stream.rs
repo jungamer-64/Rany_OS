@@ -12,7 +12,7 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use core::ptr::write_volatile;
+// centralize volatile writes via mmio helper
 
 use super::controller::HdaController;
 use super::regs::*;
@@ -147,7 +147,7 @@ impl HdaController {
             // BdlEntry is repr(C, align(16)) ensuring proper alignment.
             // The write is within bounds (i < num_entries).
             unsafe {
-                write_volatile(entry_addr as *mut BdlEntry, entry);
+                crate::io::mmio::volatile_write::<BdlEntry>(entry_addr as usize, entry);
             }
         }
 

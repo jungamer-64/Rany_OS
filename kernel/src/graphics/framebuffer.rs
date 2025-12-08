@@ -12,7 +12,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
 
-use super::types::{Color, FramebufferInfo, PixelFormat, Point, Rect};
+use super::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 use super::font::BitmapFont;
 
 // ============================================================================
@@ -123,21 +123,21 @@ impl Framebuffer {
 
         match self.info.format {
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => unsafe {
-                let pixel = buffer.add(offset) as *mut u32;
-                ptr::write_volatile(pixel, color.to_u32());
+                let pixel_addr = buffer.add(offset) as usize;
+                crate::io::mmio::mmio_write_u32(pixel_addr, color.to_u32());
             },
             PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
-                ptr::write_volatile(buffer.add(offset), color.blue);
-                ptr::write_volatile(buffer.add(offset + 1), color.green);
-                ptr::write_volatile(buffer.add(offset + 2), color.red);
+                crate::io::mmio::volatile_write::<u8>(buffer.add(offset) as usize, color.blue);
+                crate::io::mmio::volatile_write::<u8>(buffer.add(offset + 1) as usize, color.green);
+                crate::io::mmio::volatile_write::<u8>(buffer.add(offset + 2) as usize, color.red);
             },
             PixelFormat::Rgb565 => unsafe {
                 let r = (color.red as u16 >> 3) & 0x1F;
                 let g = (color.green as u16 >> 2) & 0x3F;
                 let b = (color.blue as u16 >> 3) & 0x1F;
                 let pixel = (r << 11) | (g << 5) | b;
-                let ptr = buffer.add(offset) as *mut u16;
-                ptr::write_volatile(ptr, pixel);
+                let ptr_addr = buffer.add(offset) as usize;
+                crate::io::mmio::mmio_write_u16(ptr_addr, pixel);
             },
         }
     }
@@ -153,17 +153,17 @@ impl Framebuffer {
 
         match self.info.format {
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => unsafe {
-                let pixel = *(self.buffer.add(offset) as *const u32);
+                let pixel = crate::io::mmio::mmio_read_u32(self.buffer.add(offset) as usize);
                 Color::from_u32(pixel)
             },
             PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
-                let b = *self.buffer.add(offset);
-                let g = *self.buffer.add(offset + 1);
-                let r = *self.buffer.add(offset + 2);
+                let b = crate::io::mmio::volatile_read::<u8>(self.buffer.add(offset) as usize);
+                let g = crate::io::mmio::volatile_read::<u8>(self.buffer.add(offset + 1) as usize);
+                let r = crate::io::mmio::volatile_read::<u8>(self.buffer.add(offset + 2) as usize);
                 Color::new(r, g, b)
             },
             PixelFormat::Rgb565 => unsafe {
-                let pixel = *(self.buffer.add(offset) as *const u16);
+                let pixel = crate::io::mmio::mmio_read_u16(self.buffer.add(offset) as usize);
                 let r = ((pixel >> 11) & 0x1F) as u8 * 8;
                 let g = ((pixel >> 5) & 0x3F) as u8 * 4;
                 let b = (pixel & 0x1F) as u8 * 8;
@@ -183,21 +183,21 @@ impl Framebuffer {
 
                 match self.info.format {
                     PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => unsafe {
-                        let pixel = buffer.add(offset) as *mut u32;
-                        ptr::write_volatile(pixel, color.to_u32());
+                        let pixel_addr = buffer.add(offset) as usize;
+                        crate::io::mmio::mmio_write_u32(pixel_addr, color.to_u32());
                     },
                     PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
-                        ptr::write_volatile(buffer.add(offset), color.blue);
-                        ptr::write_volatile(buffer.add(offset + 1), color.green);
-                        ptr::write_volatile(buffer.add(offset + 2), color.red);
+                        crate::io::mmio::volatile_write::<u8>(buffer.add(offset) as usize, color.blue);
+                        crate::io::mmio::volatile_write::<u8>(buffer.add(offset + 1) as usize, color.green);
+                        crate::io::mmio::volatile_write::<u8>(buffer.add(offset + 2) as usize, color.red);
                     },
                     PixelFormat::Rgb565 => unsafe {
                         let r = (color.red as u16 >> 3) & 0x1F;
                         let g = (color.green as u16 >> 2) & 0x3F;
                         let b = (color.blue as u16 >> 3) & 0x1F;
                         let pixel = (r << 11) | (g << 5) | b;
-                        let ptr = buffer.add(offset) as *mut u16;
-                        ptr::write_volatile(ptr, pixel);
+                        let ptr_addr = buffer.add(offset) as usize;
+                        crate::io::mmio::mmio_write_u16(ptr_addr, pixel);
                     },
                 }
             }
@@ -371,6 +371,18 @@ impl Framebuffer {
             }
             
             cx += font.width() as i32;
+        }
+    }
+
+    /// 画像を描画
+    pub fn draw_image(&mut self, image: &super::image::Image, x: i32, y: i32) {
+        for py in 0..image.height() as i32 {
+            for px in 0..image.width() as i32 {
+                let color = image.get_pixel(px as u32, py as u32);
+                if color.alpha > 0 {
+                    self.set_pixel(x + px, y + py, color);
+                }
+            }
         }
     }
 }

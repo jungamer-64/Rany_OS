@@ -20,7 +20,7 @@
 use alloc::collections::VecDeque;
 use core::fmt;
 use spin::Mutex;
-use x86_64::instructions::port::Port;
+use hal::port_io::PortU8;
 
 // ============================================================================
 // Error Types
@@ -101,49 +101,17 @@ const MAX_EVENT_QUEUE_SIZE: usize = 128;
 // Mouse Types
 // ============================================================================
 
-/// マウスボタン
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MouseButton {
-    Left,
-    Right,
-    Middle,
-}
-
-/// マウスイベント
-#[derive(Debug, Clone, Copy)]
-pub struct MouseEvent {
-    /// X方向の移動量
-    pub dx: i32,
-    /// Y方向の移動量
-    pub dy: i32,
-    /// 左ボタンが押されているか
-    pub left_down: bool,
-    /// 右ボタンが押されているか
-    pub right_down: bool,
-    /// 中ボタンが押されているか
-    pub middle_down: bool,
-}
-
-impl MouseEvent {
-    /// いずれかのボタンが押されているか
-    pub fn any_button(&self) -> bool {
-        self.left_down || self.right_down || self.middle_down
-    }
-    
-    /// 移動があるか
-    pub fn has_movement(&self) -> bool {
-        self.dx != 0 || self.dy != 0
-    }
-}
+// Imports from hid_driver
+pub use hid_driver::{MouseButton, MouseEvent};
 
 // ============================================================================
 // Helper Functions (Port I/O)
 // ============================================================================
 
 /// ステータスレジスタを読み取り、書き込み準備ができるまで待機
-fn wait_for_write(status_port: &mut Port<u8>) {
+fn wait_for_write(status_port: &mut PortU8) {
     for _ in 0..100000 {
-        let status = unsafe { status_port.read() };
+        let status = status_port.read();
         if status & 0x02 == 0 {
             return; // Input buffer empty
         }
@@ -158,9 +126,9 @@ fn wait_for_write(status_port: &mut Port<u8>) {
 /// PS/2 マウスドライバ
 pub struct Mouse {
     /// データポート
-    data_port: Port<u8>,
+    data_port: PortU8,
     /// ステータスポート
-    status_port: Port<u8>,
+    status_port: PortU8,
     /// パケットバッファ（標準PS/2マウスは3バイト）
     packet: [u8; 3],
     /// パケットインデックス
@@ -177,8 +145,8 @@ impl Mouse {
     /// 新しいマウスドライバを作成
     pub const fn new() -> Self {
         Self {
-            data_port: Port::new(PS2_DATA_PORT),
-            status_port: Port::new(PS2_STATUS_PORT),
+            data_port: PortU8::new(PS2_DATA_PORT),
+            status_port: PortU8::new(PS2_STATUS_PORT),
             packet: [0; 3],
             packet_index: 0,
             event_queue: VecDeque::new(),
@@ -237,25 +205,21 @@ impl Mouse {
     /// PS/2コントローラへのコマンド書き込み
     fn write_controller_command(&mut self, cmd: u8) {
         wait_for_write(&mut self.status_port);
-        unsafe {
-            self.status_port.write(cmd);
-        }
+        self.status_port.write(cmd);
     }
 
     /// PS/2データポートへの書き込み
     fn write_data(&mut self, data: u8) {
         wait_for_write(&mut self.status_port);
-        unsafe {
-            self.data_port.write(data);
-        }
+        self.data_port.write(data);
     }
 
     /// PS/2データポートからの読み込み（タイムアウト付き）
     fn read_data_timeout(&mut self) -> Option<u8> {
         for _ in 0..100000 {
-            let status = unsafe { self.status_port.read() };
+            let status = self.status_port.read();
             if status & 0x01 != 0 {
-                return Some(unsafe { self.data_port.read() });
+                return Some(self.data_port.read());
             }
             core::hint::spin_loop();
         }

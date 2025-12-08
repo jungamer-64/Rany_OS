@@ -707,7 +707,7 @@ impl WindowManager {
     pub fn compose(&self, fb: &mut Framebuffer) {
         // デスクトップ背景を描画
         if let Some(ref wallpaper) = self.wallpaper {
-            wallpaper.draw_to_framebuffer(fb, 0, 0);
+            fb.draw_image(wallpaper, 0, 0);
         } else {
             fb.clear(self.desktop_color);
         }
@@ -756,7 +756,7 @@ impl WindowManager {
 
         // コンテンツを描画
         let client = window.client_rect();
-        window.content().draw_to_framebuffer(fb, client.x, client.y);
+        fb.draw_image(window.content(), client.x, client.y);
     }
 
     /// すべてのダーティウィンドウをクリア

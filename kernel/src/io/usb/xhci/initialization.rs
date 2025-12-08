@@ -65,13 +65,13 @@ pub struct XhciCapabilities {
 impl XhciCapabilities {
     /// ケーパビリティレジスタを読み取り
     pub fn read(base_addr: u64) -> Self {
-        let caplength = unsafe { ptr::read_volatile((base_addr + CAPLENGTH as u64) as *const u8) };
-        let hciversion = unsafe { ptr::read_volatile((base_addr + HCIVERSION as u64) as *const u16) };
-        let hcsparams1 = unsafe { ptr::read_volatile((base_addr + HCSPARAMS1 as u64) as *const u32) };
-        let hcsparams2 = unsafe { ptr::read_volatile((base_addr + HCSPARAMS2 as u64) as *const u32) };
-        let hccparams1 = unsafe { ptr::read_volatile((base_addr + HCCPARAMS1 as u64) as *const u32) };
-        let dboff = unsafe { ptr::read_volatile((base_addr + DBOFF as u64) as *const u32) };
-        let rtsoff = unsafe { ptr::read_volatile((base_addr + RTSOFF as u64) as *const u32) };
+        let caplength = crate::io::mmio_read_u8((base_addr + CAPLENGTH as u64) as usize);
+        let hciversion = crate::io::mmio_read_u16((base_addr + HCIVERSION as u64) as usize);
+        let hcsparams1 = crate::io::mmio_read_u32((base_addr + HCSPARAMS1 as u64) as usize);
+        let hcsparams2 = crate::io::mmio_read_u32((base_addr + HCSPARAMS2 as u64) as usize);
+        let hccparams1 = crate::io::mmio_read_u32((base_addr + HCCPARAMS1 as u64) as usize);
+        let dboff = crate::io::mmio_read_u32((base_addr + DBOFF as u64) as usize);
+        let rtsoff = crate::io::mmio_read_u32((base_addr + RTSOFF as u64) as usize);
 
         let max_slots = (hcsparams1 & 0xFF) as u8;
         let max_interrupters = ((hcsparams1 >> 8) & 0x7FF) as u16;
@@ -245,26 +245,26 @@ impl XhciInitContext {
 
     // ヘルパー関数
     fn read_op(&self, offset: usize) -> u32 {
-        unsafe { ptr::read_volatile((self.op_offset + offset as u64) as *const u32) }
+        crate::io::mmio_read_u32((self.op_offset + offset as u64) as usize)
     }
 
     fn write_op(&self, offset: usize, value: u32) {
-        unsafe { ptr::write_volatile((self.op_offset + offset as u64) as *mut u32, value) }
+        crate::io::mmio_write_u32((self.op_offset + offset as u64) as usize, value);
     }
 
     fn write_op_64(&self, offset: usize, value: u64) {
-        unsafe { ptr::write_volatile((self.op_offset + offset as u64) as *mut u64, value) }
+        crate::io::mmio_write_u64((self.op_offset + offset as u64) as usize, value);
     }
 
     fn read_runtime(&self, offset: usize) -> u32 {
-        unsafe { ptr::read_volatile((self.rt_offset + IR0 as u64 + offset as u64) as *const u32) }
+        crate::io::mmio_read_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize)
     }
 
     fn write_runtime(&self, offset: usize, value: u32) {
-        unsafe { ptr::write_volatile((self.rt_offset + IR0 as u64 + offset as u64) as *mut u32, value) }
+        crate::io::mmio_write_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize, value);
     }
 
     fn write_runtime_64(&self, offset: usize, value: u64) {
-        unsafe { ptr::write_volatile((self.rt_offset + IR0 as u64 + offset as u64) as *mut u64, value) }
+        crate::io::mmio_write_u64((self.rt_offset + IR0 as u64 + offset as u64) as usize, value);
     }
 }

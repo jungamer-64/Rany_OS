@@ -61,7 +61,7 @@ fn init_idt() {
         let idt_size = core::mem::size_of::<InterruptDescriptorTable>();
         // 小さなチャンクで初期化
         for i in 0..idt_size {
-            core::ptr::write_volatile(idt_bytes.add(i), 0);
+            crate::io::mmio::volatile_write::<u8>(idt_bytes.add(i) as usize, 0);
         }
         crate::vga::early_serial_str("[IDT] zeroed\n");
         
@@ -177,7 +177,7 @@ where
 // - 全ての割り込みはAPIC/IO APICで処理
 // ============================================================================
 
-use x86_64::instructions::port::Port;
+// use hal::port_io::PortU8; // previously used x86_64 Port, replaced by crate::io::inb/outb usage
 
 /// PICのI/Oポートアドレス
 const PIC1_COMMAND: u16 = 0x20;
@@ -199,36 +199,34 @@ const ICW4_8086: u8 = 0x01;
 /// - PICは初期化後に全マスクして無効化
 fn init_pic() {
     unsafe {
-        let mut pic1_cmd: Port<u8> = Port::new(PIC1_COMMAND);
-        let mut pic1_data: Port<u8> = Port::new(PIC1_DATA);
-        let mut pic2_cmd: Port<u8> = Port::new(PIC2_COMMAND);
-        let mut pic2_data: Port<u8> = Port::new(PIC2_DATA);
+        // Intentionally keep creation of Port inside unsafe, but use wrapper functions
+        // for the actual read/write operations to minimize scattered unsafe usage.
 
         // PICの初期化シーケンス（リマップ）
         // これは必要: BIOSがPIC割り込みをCPU例外と衝突する位置に設定するため
 
         // ICW1: 初期化開始
-        pic1_cmd.write(ICW1_INIT | ICW1_ICW4);
+        crate::io::outb(PIC1_COMMAND, ICW1_INIT | ICW1_ICW4);
         io_wait();
-        pic2_cmd.write(ICW1_INIT | ICW1_ICW4);
+        crate::io::outb(PIC2_COMMAND, ICW1_INIT | ICW1_ICW4);
         io_wait();
 
         // ICW2: ベクタオフセット設定（例外との衝突を回避）
-        pic1_data.write(PIC1_OFFSET);
+        crate::io::outb(PIC1_DATA, PIC1_OFFSET);
         io_wait();
-        pic2_data.write(PIC2_OFFSET);
+        crate::io::outb(PIC2_DATA, PIC2_OFFSET);
         io_wait();
 
         // ICW3: カスケード設定
-        pic1_data.write(4); // IRQ2にスレーブ接続
+        crate::io::outb(PIC1_DATA, 4); // IRQ2にスレーブ接続
         io_wait();
-        pic2_data.write(2); // カスケードID
+        crate::io::outb(PIC2_DATA, 2); // カスケードID
         io_wait();
 
         // ICW4: 8086モード
-        pic1_data.write(ICW4_8086);
+        crate::io::outb(PIC1_DATA, ICW4_8086);
         io_wait();
-        pic2_data.write(ICW4_8086);
+        crate::io::outb(PIC2_DATA, ICW4_8086);
         io_wait();
 
         // 割り込みマスク設定
@@ -236,14 +234,14 @@ fn init_pic() {
         // ビット0=IRQ0, ビット1=IRQ1, ビット2=IRQ2(cascade), ビット4=IRQ4
         // 0=有効, 1=マスク
         // ~(0x01 | 0x02 | 0x04 | 0x10) = 0xE8
-        pic1_data.write(0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
+        crate::io::outb(PIC1_DATA, 0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
         
         // PIC2: IRQ9, IRQ10, IRQ11, IRQ12 を有効化（PCI デバイス用 + マウス）
         // IRQ8=RTC, IRQ9, IRQ10, IRQ11, IRQ12=Mouse
         // ビット1=IRQ9, ビット2=IRQ10, ビット3=IRQ11, ビット4=IRQ12
         // 0=有効, 1=マスク
         // ~(0x02 | 0x04 | 0x08 | 0x10) = 0xE1
-        pic2_data.write(0b11100001); // IRQ9, IRQ10, IRQ11, IRQ12(Mouse) を有効
+        crate::io::outb(PIC2_DATA, 0b11100001); // IRQ9, IRQ10, IRQ11, IRQ12(Mouse) を有効
     }
 }
 
@@ -252,8 +250,7 @@ fn init_pic() {
 fn io_wait() {
     unsafe {
         // 未使用ポートへのI/Oで遅延を発生
-        let mut port: Port<u8> = Port::new(0x80);
-        port.write(0);
+        crate::io::outb(0x80, 0);
     }
 }
 
@@ -261,27 +258,22 @@ fn io_wait() {
 ///
 /// # Safety
 /// 割り込みハンドラ内でのみ呼び出すこと
-pub unsafe fn send_eoi(irq: u8) { unsafe {
-    let mut pic1_cmd: Port<u8> = Port::new(PIC1_COMMAND);
-    let mut pic2_cmd: Port<u8> = Port::new(PIC2_COMMAND);
-
+pub unsafe fn send_eoi(irq: u8) {
     if irq >= 8 {
-        pic2_cmd.write(0x20); // スレーブPICにEOI
+        crate::io::outb(PIC2_COMMAND, 0x20); // スレーブPICにEOI
     }
-    pic1_cmd.write(0x20); // マスターPICにEOI
-}}
+    crate::io::outb(PIC1_COMMAND, 0x20); // マスターPICにEOI
+}
 
 /// 特定の割り込みをアンマスク（APIC移行までの暫定）
 pub fn unmask_irq(irq: u8) {
     unsafe {
         if irq < 8 {
-            let mut port: Port<u8> = Port::new(PIC1_DATA);
-            let mask = port.read();
-            port.write(mask & !(1 << irq));
+            let mask = crate::io::inb(PIC1_DATA);
+            crate::io::outb(PIC1_DATA, mask & !(1 << irq));
         } else {
-            let mut port: Port<u8> = Port::new(PIC2_DATA);
-            let mask = port.read();
-            port.write(mask & !(1 << (irq - 8)));
+            let mask = crate::io::inb(PIC2_DATA);
+            crate::io::outb(PIC2_DATA, mask & !(1 << (irq - 8)));
         }
     }
 }
@@ -290,13 +282,11 @@ pub fn unmask_irq(irq: u8) {
 pub fn mask_irq(irq: u8) {
     unsafe {
         if irq < 8 {
-            let mut port: Port<u8> = Port::new(PIC1_DATA);
-            let mask = port.read();
-            port.write(mask | (1 << irq));
+            let mask = crate::io::inb(PIC1_DATA);
+            crate::io::outb(PIC1_DATA, mask | (1 << irq));
         } else {
-            let mut port: Port<u8> = Port::new(PIC2_DATA);
-            let mask = port.read();
-            port.write(mask | (1 << (irq - 8)));
+            let mask = crate::io::inb(PIC2_DATA);
+            crate::io::outb(PIC2_DATA, mask | (1 << (irq - 8)));
         }
     }
 }
@@ -373,11 +363,10 @@ pub fn poll_timer_events() {
 /// キーボード割り込みハンドラ
 /// Interrupt-Wakerブリッジとの連携
 extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use x86_64::instructions::port::Port;
+    // Port import not needed; use crate::io::inb for port reads
 
     // キーボードデータポートから読み取り（これをしないと次の割り込みが来ない）
-    let mut port = Port::new(0x60);
-    let scancode: u8 = unsafe { port.read() };
+    let scancode: u8 = crate::io::inb(0x60);
 
     // スキャンコードをhidモジュールに渡して処理
     crate::io::hid::handle_keyboard_interrupt(scancode);
@@ -396,11 +385,10 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
 /// マウス割り込みハンドラ (IRQ12)
 /// PS/2マウスからのデータ受信時に呼ばれる
 extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    use x86_64::instructions::port::Port;
+    // Port import not needed; use crate::io::inb for port reads
 
     // マウスデータポートから読み取り（これをしないと次の割り込みが来ない）
-    let mut port = Port::new(0x60);
-    let data: u8 = unsafe { port.read() };
+    let data: u8 = crate::io::inb(0x60);
 
     // データをhidモジュールに渡して処理
     crate::io::hid::handle_mouse_packet(data);
