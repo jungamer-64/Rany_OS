@@ -1,0 +1,17 @@
+[package]
+name = "graphic_types"
+version = "0.1.0"
+edition = "2024"
+authors = ["ExoRust Team"]
+description = "Graphics type definitions for ExoRust OS"
+
+[lib]
+name = "graphic_types"
+path = "src/lib.rs"
+
+[dependencies]
+# No dependencies - pure types
+
+[features]
+default = []
+alloc = []
