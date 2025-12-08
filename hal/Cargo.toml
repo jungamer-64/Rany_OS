@@ -1,0 +1,14 @@
+[package]
+name = "hal"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# No standard library dependencies, keep it no_std
+x86_64 = "0.15"
+
+[features]
+default = []
