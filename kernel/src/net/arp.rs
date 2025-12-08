@@ -530,8 +530,9 @@ impl ArpProcessor {
             return ArpResult::Invalid;
         }
 
-        // SAFETY: We checked the length
-        let packet = unsafe { &*(data.as_ptr() as *const ArpPacket) };
+        // SAFETY: We checked the length. Use centralized helper for bounds/alignment check.
+        let packet = crate::util::get_ref::<ArpPacket>(data, 0)
+            .expect("ARP packet slice out of bounds");
 
         if !packet.is_valid() {
             return ArpResult::Invalid;
@@ -573,7 +574,8 @@ impl ArpProcessor {
         }
 
         // SAFETY: Buffer is large enough
-        let packet = unsafe { &mut *(buffer.as_mut_ptr() as *mut ArpPacket) };
+        let packet = crate::util::get_mut_ref::<ArpPacket>(buffer, 0)
+            .expect("ARP packet slice out of bounds");
 
         packet.init_request(self.local_mac, self.local_ip, target_ip);
         Some(ArpPacket::SIZE)
@@ -591,7 +593,8 @@ impl ArpProcessor {
         }
 
         // SAFETY: Buffer is large enough
-        let packet = unsafe { &mut *(buffer.as_mut_ptr() as *mut ArpPacket) };
+        let packet = crate::util::get_mut_ref::<ArpPacket>(buffer, 0)
+            .expect("ARP packet slice out of bounds");
 
         packet.init_reply(self.local_mac, self.local_ip, target_mac, target_ip);
         Some(ArpPacket::SIZE)
@@ -642,7 +645,8 @@ mod tests {
     #[test]
     fn test_arp_packet() {
         let mut buffer = [0u8; ArpPacket::SIZE];
-        let packet = unsafe { &mut *(buffer.as_mut_ptr() as *mut ArpPacket) };
+        let packet = crate::util::get_mut_ref::<ArpPacket>(&mut buffer, 0)
+            .expect("Arp packet mutable slice out of bounds");
 
         let sender_mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
         let sender_ip = Ipv4Address::from_octets(192, 168, 1, 1);

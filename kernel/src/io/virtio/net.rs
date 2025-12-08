@@ -734,7 +734,7 @@ impl<'a> Future for SendFuture<'a> {
             // 送信をキューに追加
             if let Some(ref tx_queue) = self.device.tx_queue {
                 let header = VirtioNetHeader::new_tx();
-                let data = unsafe { core::slice::from_raw_parts(self.data, self.len) };
+                let data = unsafe { crate::util::raw_ptr_as_slice(self.data, self.len) };
 
                 match tx_queue.add_tx_buffer(&header, data) {
                     Ok(_) => {

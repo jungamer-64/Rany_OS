@@ -74,12 +74,7 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
     
     // ヘッダ（デフォルト値でOK）
     let header = VirtioNetHeader::new_tx();
-    let header_bytes: &[u8] = unsafe {
-        core::slice::from_raw_parts(
-            &header as *const _ as *const u8,
-            VirtioNetHeader::SIZE
-        )
-    };
+    let header_bytes: &[u8] = &crate::util::struct_as_bytes(&header)[..VirtioNetHeader::SIZE];
     tx_buffer[..VirtioNetHeader::SIZE].copy_from_slice(header_bytes);
     tx_buffer[VirtioNetHeader::SIZE..].copy_from_slice(data);
     
