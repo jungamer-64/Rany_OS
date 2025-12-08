@@ -43,12 +43,10 @@ impl AhciPort {
         let port_base = base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64);
 
         // Allocate DMA memory for Command List (32 headers * 32 bytes = 1024 bytes)
-        let (cl_phys, cl_virt) = kernel().alloc_dma(1024).ok()?;
-        let command_list = DmaBuffer::new(cl_phys, cl_virt, 1024);
+        let command_list = kernel().alloc_dma(1024).ok()?;
         
         // Allocate DMA memory for Received FIS (256 bytes)
-        let (rf_phys, rf_virt) = kernel().alloc_dma(256).ok()?;
-        let received_fis = DmaBuffer::new(rf_phys, rf_virt, 256);
+        let received_fis = kernel().alloc_dma(256).ok()?;
 
         Some(Self {
             port,
@@ -146,8 +144,7 @@ impl AhciPort {
         let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
 
         // Allocate Command Table
-        let (ct_phys, ct_virt) = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
-        let cmd_table_buf = DmaBuffer::new(ct_phys, ct_virt, core::mem::size_of::<CommandTable>());
+        let cmd_table_buf = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
         
         // Setup DMA-safe result buffer
         let identify_buf = AhciIdentifyBuffer::new().ok_or(AhciError::InternalError)?;
@@ -202,8 +199,7 @@ impl AhciPort {
         let dma_buf = AhciDmaReadBuffer::new(count.0 as usize).ok_or(AhciError::InternalError)?;
         let buffer_phys = dma_buf.phys_addr().ok_or(AhciError::InternalError)?.as_u64();
         
-        let (ct_phys, ct_virt) = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
-        let cmd_table_buf = DmaBuffer::new(ct_phys, ct_virt, core::mem::size_of::<CommandTable>());
+        let cmd_table_buf = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
         
         {
             let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };
@@ -251,8 +247,7 @@ impl AhciPort {
         let dma_buf = AhciDmaWriteBuffer::with_data(buffer).ok_or(AhciError::InternalError)?;
         let buffer_phys = dma_buf.phys_addr().ok_or(AhciError::InternalError)?.as_u64();
 
-        let (ct_phys, ct_virt) = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
-        let cmd_table_buf = DmaBuffer::new(ct_phys, ct_virt, core::mem::size_of::<CommandTable>());
+        let cmd_table_buf = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
 
         {
             let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };

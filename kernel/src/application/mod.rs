@@ -77,7 +77,7 @@ impl DomainManager {
     }
 
     /// Load and start an application
-    pub fn load_and_start<A>(&mut self, _app: A, name: String, _caps: DomainCapabilities)
+    pub fn load_and_start<A>(&mut self, mut app: A, name: String, caps: DomainCapabilities)
     where
         A: Application + 'static,
     {
@@ -112,7 +112,14 @@ impl DomainManager {
     pub fn iter(&self) -> impl Iterator<Item = &DomainInfo> {
         self.domains.iter()
     }
+                    // Create application context
+                    let ctx = AppContext::new(app_id, name.clone(), domain_id, caps);
 
+                    // Spawn the application start future via kernel services
+                    let start_future = app.on_start(ctx);
+                    if let Err(e) = crate::kernel().spawn_task(start_future) {
+                        crate::log!("[Domain:{}] Failed to spawn app task: {:?}\n", domain_id, e);
+                    }
     /// Set domain state
     pub fn set_state(&mut self, domain_id: u64, state: DomainState) {
         if let Some(domain) = self.domains.iter_mut().find(|d| d.id == domain_id) {

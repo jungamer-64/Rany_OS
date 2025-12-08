@@ -268,13 +268,15 @@ impl NvmePollingDriver {
         let kernel = kernel_api::services::kernel();
 
         // Alloc DMA via KernelServices
-        let (asq_phys, asq_ptr) = kernel.alloc_dma(sq_size)
+        let asq_buffer = kernel.alloc_dma(sq_size)
             .map_err(|_| "Failed to allocate ASQ DMA buffer")?;
-        let asq_buffer = DmaBuffer::new(asq_phys, asq_ptr, sq_size);
+        let asq_phys = asq_buffer.physical_address();
+        let asq_ptr = asq_buffer.as_ptr();
 
-        let (acq_phys, acq_ptr) = kernel.alloc_dma(cq_size)
+        let acq_buffer = kernel.alloc_dma(cq_size)
             .map_err(|_| "Failed to allocate ACQ DMA buffer")?;
-        let acq_buffer = DmaBuffer::new(acq_phys, acq_ptr, cq_size);
+        let acq_phys = acq_buffer.physical_address();
+        let acq_ptr = acq_buffer.as_ptr();
 
         if asq_phys & 0xFFF != 0 || acq_phys & 0xFFF != 0 {
             return Err("DMA buffer not 4KB aligned");
@@ -311,16 +313,15 @@ impl NvmePollingDriver {
         let admin_queue = self.admin_queue.as_ref().ok_or("Admin queue not initialized")?;
 
         let kernel = kernel_api::services::kernel();
-        let (phys, ptr) = kernel.alloc_dma(4096)
+        let identify_buffer = kernel.alloc_dma(4096)
             .map_err(|_| "Failed to allocate Identify DMA buffer")?;
-        let identify_buffer = DmaBuffer::new(phys, ptr, 4096);
-        let buffer_ptr = phys;
+        let buffer_phys = identify_buffer.physical_address();
 
         let mut cmd = NvmeCommand::default();
         cmd.set_opcode(AdminOpcode::Identify as u8);
         cmd.set_cid(0);
         cmd.nsid = 0;
-        cmd.set_prp(buffer_ptr, 0);
+        cmd.set_prp(buffer_phys, 0);
         cmd.cdw10 = 1; // CNS = 1 (Identify Controller)
 
         admin_queue.submit(&cmd)?;

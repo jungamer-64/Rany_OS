@@ -194,4 +194,14 @@ impl TcpEndpoint {
     pub fn set_connected(&mut self, connected: bool) {
         self.connected = connected;
     }
+
+    /// Get raw endpoint id
+    pub fn id(&self) -> u64 {
+        self.id
+    }
+
+    /// Consume the endpoint and return its raw id
+    pub fn into_raw(self) -> u64 {
+        self.id
+    }
 }
