@@ -150,18 +150,16 @@ impl BuddyHeapAllocator {
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
         // アドレスに次のフリーブロックへのポインタを格納
-        let ptr = addr as *mut usize;
-        unsafe {
-            core::ptr::write_volatile(ptr, self.free_lists[order].unwrap_or(0));
-        }
+        let ptr_addr = addr as usize;
+        crate::io::mmio::volatile_write::<usize>(ptr_addr, self.free_lists[order].unwrap_or(0));
         self.free_lists[order] = Some(addr);
     }
 
     /// フリーリストからブロックを取得
     fn remove_from_free_list(&mut self, order: usize) -> Option<usize> {
         self.free_lists[order].take().map(|addr| {
-            let ptr = addr as *const usize;
-            let next = unsafe { *ptr };
+            let ptr_addr = addr as usize;
+            let next = crate::io::mmio::volatile_read::<usize>(ptr_addr);
             self.free_lists[order] = if next == 0 { None } else { Some(next) };
             addr
         })
@@ -175,14 +173,12 @@ impl BuddyHeapAllocator {
         while let Some(curr_addr) = current {
             if curr_addr == addr {
                 // 見つかった - リストから削除
-                let next_ptr = curr_addr as *const usize;
-                let next = unsafe { *next_ptr };
+                let next_ptr = curr_addr as usize;
+                let next = crate::io::mmio::volatile_read::<usize>(next_ptr);
                 let next_opt = if next == 0 { None } else { Some(next) };
 
                 if let Some(prev_addr) = prev {
-                    unsafe {
-                        *(prev_addr as *mut usize) = next;
-                    }
+                    crate::io::mmio::volatile_write::<usize>(prev_addr, next);
                 } else {
                     self.free_lists[order] = next_opt;
                 }
