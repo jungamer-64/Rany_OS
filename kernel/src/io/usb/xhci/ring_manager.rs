@@ -119,17 +119,15 @@ impl ManagedRing {
         let trb_addr = self.ring.physical_address() + (self.enqueue_index as u64) * 16;
         
         unsafe {
-            let trb_ptr = trb_addr as *mut Trb;
+            let trb_ptr_addr = trb_addr as usize;
             let mut trb_with_cycle = trb;
-            
-            // サイクルビットを設定
+            // Set cycle bit
             if self.cycle_bit {
-                trb_with_cycle.control |= 1; // Cycle bit
+                trb_with_cycle.control |= 1;
             } else {
                 trb_with_cycle.control &= !1;
             }
-            
-            ptr::write_volatile(trb_ptr, trb_with_cycle);
+            crate::io::mmio::volatile_write::<Trb>(trb_ptr_addr, trb_with_cycle);
         }
         
         let result_addr = trb_addr;
@@ -142,10 +140,7 @@ impl ManagedRing {
     pub fn dequeue(&mut self) -> Option<Trb> {
         let trb_addr = self.ring.physical_address() + (self.dequeue_index as u64) * 16;
         
-        let trb = unsafe {
-            let trb_ptr = trb_addr as *const Trb;
-            ptr::read_volatile(trb_ptr)
-        };
+        let trb = crate::io::mmio::volatile_read::<Trb>(trb_addr as usize);
         
         // サイクルビットをチェック
         let trb_cycle = (trb.control & 1) != 0;
@@ -172,8 +167,8 @@ impl ManagedRing {
         
         let link_addr = self.ring.physical_address() + ((self.size - 1) as u64) * 16;
         unsafe {
-            let trb_ptr = link_addr as *mut Trb;
-            ptr::write_volatile(trb_ptr, link_trb);
+            let trb_ptr_addr = link_addr as usize;
+            crate::io::mmio::volatile_write::<Trb>(trb_ptr_addr, link_trb);
         }
     }
     
