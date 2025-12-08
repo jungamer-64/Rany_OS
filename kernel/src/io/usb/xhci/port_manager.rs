@@ -315,10 +315,8 @@ impl XhciPortManager {
         if port < 1 || port > self.num_ports {
             return 0;
         }
-        unsafe {
-            let addr = self.portsc_address(port) as *const u32;
-            core::ptr::read_volatile(addr)
-        }
+        let addr = self.portsc_address(port) as usize;
+        crate::io::mmio::mmio_read_u32(addr)
     }
     
     /// PORTSCに書き込む
@@ -326,10 +324,8 @@ impl XhciPortManager {
         if port < 1 || port > self.num_ports {
             return;
         }
-        unsafe {
-            let addr = self.portsc_address(port) as *mut u32;
-            core::ptr::write_volatile(addr, value);
-        }
+        let addr = self.portsc_address(port) as usize;
+        crate::io::mmio::mmio_write_u32(addr, value);
     }
     
     /// PORTSCの変更ビットをクリア
