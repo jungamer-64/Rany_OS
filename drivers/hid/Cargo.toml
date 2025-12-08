@@ -1,0 +1,13 @@
+[package]
+name = "hid_driver"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+kernel_api = { path = "../../interfaces/kernel_api" }
+
+# HAL for MMIO and port I/O wrappers
+hal = { path = "../../hal" }
