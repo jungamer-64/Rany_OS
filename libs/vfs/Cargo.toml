@@ -1,0 +1,13 @@
+[package]
+name = "vfs"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bitflags = "2.4"
+spin = "0.9"
+
+
+[features]
+default = ["alloc"]
+alloc = []
