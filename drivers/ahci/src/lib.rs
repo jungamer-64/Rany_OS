@@ -27,8 +27,8 @@ pub mod identify;
 pub mod types;
 
 // Modules with kernel deps - excluded for now
-// pub mod controller;
-// pub mod port;
+pub mod controller;
+pub mod port;
 // pub mod dma_buffer;
 // pub mod poll_handler;
 

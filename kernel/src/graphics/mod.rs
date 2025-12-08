@@ -43,6 +43,9 @@ pub mod window;
 pub use graphic_types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
 pub use graphic_types::image;
 
+// Re-exports from gpu_driver
+pub use gpu_driver::{DisplayMode, DamagedRegion, GpuError, GpuResult, colors};
+
 // 型の再エクスポート
 pub use framebuffer::Framebuffer;
 pub use font::{BitmapFont, FONT_WIDTH, FONT_HEIGHT};

@@ -41,7 +41,7 @@ pub mod trb;
 
 use alloc::sync::Arc;
 
-use crate::io::usb::{PortNumber, UsbResult};
+use crate::{PortNumber, UsbResult};
 
 // Re-exports
 pub use command::{CommandApi, CommandBuilder as CmdBuilder, CommandExecutor, CommandFuture};

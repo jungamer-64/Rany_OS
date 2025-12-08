@@ -21,8 +21,8 @@ use core::task::{Context, Poll};
 
 use super::controller::XhciController;
 use super::trb::{CompletionCode, Trb};
-use crate::io::usb::descriptor::{DeviceDescriptor, ParsedConfiguration};
-use crate::io::usb::{
+use crate::descriptor::{DeviceDescriptor, ParsedConfiguration};
+use crate::{
     DeviceAddress, EndpointAddress, SetupPacket, SlotId, UsbDevice, UsbError, UsbResult, UsbSpeed,
 };
 
@@ -197,7 +197,7 @@ impl Future for ControlTransferFuture {
                 }
                 cc => {
                     return Poll::Ready(Err(UsbError::TransferError(
-                        crate::io::usb::TransferStatus::Error(cc as u8)
+                        crate::TransferStatus::Error(cc as u8)
                     )));
                 }
             }
@@ -252,7 +252,7 @@ impl Future for BulkTransferFuture {
                 }
                 cc => {
                     return Poll::Ready(Err(UsbError::TransferError(
-                        crate::io::usb::TransferStatus::Error(cc as u8)
+                        crate::TransferStatus::Error(cc as u8)
                     )));
                 }
             }

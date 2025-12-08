@@ -25,9 +25,9 @@
 #![allow(dead_code)]
 
 // Local modules (kernel implementation)
-pub mod controller;
-pub mod queue;
-pub mod per_core;
+// pub mod controller; // Migrated to nvme_driver
+// pub mod queue; // Migrated to nvme_driver
+// pub mod per_core; // Migrated to nvme_driver
 pub mod polling_driver;
 pub mod async_io;
 pub mod global;
@@ -41,6 +41,9 @@ pub use nvme_driver::regs;
 pub use nvme_driver::queue_types;
 pub use nvme_driver::identify;
 pub use nvme_driver::error;
+pub use nvme_driver::controller;
+pub use nvme_driver::queue;
+pub use nvme_driver::per_core;
 
 // ============================================================================
 // Re-exports - Explicit exports to avoid ambiguity
