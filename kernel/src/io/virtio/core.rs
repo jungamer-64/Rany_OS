@@ -248,7 +248,7 @@ impl VirtQueue {
     /// # Safety
     /// 呼び出し側が排他制御を保証する必要がある
     pub unsafe fn get_desc_mut(&self, idx: u16) -> &mut VringDesc {
-        &mut *self.desc_table.as_ptr().add(idx as usize)
+        unsafe { &mut *self.desc_table.as_ptr().add(idx as usize) }
     }
 
     /// バッファをキューに追加（単一ディスクリプタ）
@@ -265,7 +265,7 @@ impl VirtQueue {
         let desc_idx = self.alloc_desc().ok_or("No free descriptors")?;
 
         // ディスクリプタを設定
-        let desc = self.get_desc_mut(desc_idx);
+        let desc = unsafe { self.get_desc_mut(desc_idx) };
         desc.addr = addr;
         desc.len = len;
         desc.flags = if writable { vring_flags::VRING_DESC_F_WRITE } else { 0 };
@@ -300,7 +300,7 @@ impl VirtQueue {
 
         // ディスクリプタチェーンを構築
         for (i, (addr, len, writable)) in buffers.iter().enumerate() {
-            let desc = self.get_desc_mut(indices[i]);
+            let desc = unsafe { self.get_desc_mut(indices[i]) };
             desc.addr = *addr;
             desc.len = *len;
             desc.flags = if *writable { vring_flags::VRING_DESC_F_WRITE } else { 0 };
@@ -315,7 +315,7 @@ impl VirtQueue {
 
         // Availリングに追加
         let head = indices[0];
-        self.submit_avail(head);
+        unsafe { self.submit_avail(head); }
 
         Ok(head)
     }
@@ -326,16 +326,16 @@ impl VirtQueue {
         core::sync::atomic::fence(Ordering::Release);
 
         let avail = self.avail_ring.as_ptr();
-        let avail_idx = (*avail).idx;
+        let avail_idx = unsafe { (*avail).idx };
         
         // リング配列はヘッダの直後に配置されている
-        let ring_ptr = (avail as *mut u16).add(2); // flags + idx をスキップ
-        *ring_ptr.add((avail_idx % self.queue_size) as usize) = head;
+        let ring_ptr = unsafe { (avail as *mut u16).add(2) }; // flags + idx をスキップ
+        unsafe { *ring_ptr.add((avail_idx % self.queue_size) as usize) = head; }
 
         // メモリバリア: リングエントリの書き込み後にidxを更新
         core::sync::atomic::fence(Ordering::Release);
 
-        (*avail).idx = avail_idx.wrapping_add(1);
+        unsafe { (*avail).idx = avail_idx.wrapping_add(1); }
     }
 
     /// デバイスに通知
@@ -488,7 +488,7 @@ impl<T> TrackedVirtQueue<T> {
         }
 
         // Availリングに追加
-        self.inner.submit_avail(desc_idx);
+        unsafe { self.inner.submit_avail(desc_idx); }
 
         Ok(desc_idx)
     }

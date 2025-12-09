@@ -222,12 +222,12 @@ impl BatchProcessor {
         if !self.enabled.load(Ordering::Relaxed) {
             // バッチ処理無効時は即座に単一パケットバッチを返す
             let mut batch = PacketBatch::new();
-            batch.push(buffer, length);
+            unsafe { batch.push(buffer, length); }
             return Some(batch);
         }
 
         let mut batch = self.current_batch.lock();
-        batch.push(buffer, length);
+        unsafe { batch.push(buffer, length); }
 
         if batch.is_full() {
             let ready_batch = core::mem::take(&mut *batch);
@@ -371,7 +371,7 @@ impl NumaMempool {
             for _ in 0..buffers_per_node {
                 let layout =
                     alloc::alloc::Layout::from_size_align(buffer_size, 64).expect("Invalid layout");
-                let ptr = alloc::alloc::alloc(layout);
+                let ptr = unsafe { alloc::alloc::alloc(layout) };
                 if !ptr.is_null() {
                     node_pool.push(ptr as usize);
                 }

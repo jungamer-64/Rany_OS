@@ -15,10 +15,10 @@ use alloc::boxed::Box;
 /// These functions are thin wrappers over the standard-library `unsafe` functions.
 #[inline]
 pub unsafe fn arc_from_raw<T>(ptr: *const T) -> Arc<T> {
-    Arc::from_raw(ptr)
+    unsafe { Arc::from_raw(ptr) }
 }
 
 #[inline]
 pub unsafe fn box_from_raw<T>(ptr: *mut T) -> Box<T> {
-    Box::from_raw(ptr)
+    unsafe { Box::from_raw(ptr) }
 }

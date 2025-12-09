@@ -991,7 +991,7 @@ pub fn init_virtio_net(base_addr: usize) -> Result<(), VirtioNetError> {
     };
     
     let mut device = VirtioNetDevice::new(Box::new(transport));
-    device.init()?;
+    unsafe { device.init()? };
     *VIRTIO_NET_DEVICE.lock() = Some(device);
     Ok(())
 }

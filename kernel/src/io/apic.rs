@@ -375,14 +375,14 @@ impl IoApic {
 
     /// 選択したレジスタを読み取り
     unsafe fn read(&self, reg: u8) -> u32 {
-        self.select(reg);
+        unsafe { self.select(reg); }
         let addr = self.base_address + ioapic_reg::IOWIN as u64;
         crate::io::mmio_read_u32(addr as usize)
     }
 
     /// 選択したレジスタに書き込み
     unsafe fn write(&self, reg: u8, value: u32) {
-        self.select(reg);
+        unsafe { self.select(reg); }
         let addr = self.base_address + ioapic_reg::IOWIN as u64;
         crate::io::mmio_write_u32(addr as usize, value);
     }

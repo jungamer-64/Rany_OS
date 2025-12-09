@@ -226,7 +226,7 @@ impl Task {
     /// # Safety
     /// 同一のTaskに対して複数のスレッドから同時にpollしてはいけない
     unsafe fn poll(&self, waker: &Waker) -> Poll<()> {
-        let future = &mut *self.future.get();
+        let future = unsafe { &mut *self.future.get() };
         let mut cx = Context::from_waker(waker);
         future.as_mut().poll(&mut cx)
     }
@@ -587,7 +587,7 @@ const WAKER_VTABLE: RawWakerVTable =
     RawWakerVTable::new(waker_clone, waker_wake, waker_wake_by_ref, waker_drop);
 
 unsafe fn waker_clone(data: *const ()) -> RawWaker {
-    let data = &*(data as *const TaskWakerData);
+    let data = unsafe { &*(data as *const TaskWakerData) };
 
     // タスクの参照カウントを増やす
     let task = unsafe { raw::arc_from_raw(data.task as *const Task) };
@@ -603,12 +603,12 @@ unsafe fn waker_clone(data: *const ()) -> RawWaker {
     }
 
 unsafe fn waker_wake(data: *const ()) {
-    waker_wake_by_ref(data);
-    waker_drop(data);
+    unsafe { waker_wake_by_ref(data); }
+    unsafe { waker_drop(data); }
 }
 
 unsafe fn waker_wake_by_ref(data: *const ()) {
-    let data = &*(data as *const TaskWakerData);
+    let data = unsafe { &*(data as *const TaskWakerData) };
 
     // タスクを復元
     let task = unsafe { raw::arc_from_raw(data.task as *const Task) };

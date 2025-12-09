@@ -263,27 +263,28 @@ impl IdeChannel {
 
     /// レジスタを読み取り
     #[inline]
-    unsafe fn read_reg(&self, reg: u16) -> u8 {
-        // 8-bit I/O registers
-        unsafe { PortU8::new(self.io_base + reg).read() }
+    fn read_reg(&self, reg: u16) -> u8 {
+        // 8-bit I/O registers. PortU8::read() is a safe wrapper around the
+        // architecture-specific inb instruction; therefore this is safe.
+        PortU8::new(self.io_base + reg).read()
     }
 
     /// レジスタに書き込み
     #[inline]
-    unsafe fn write_reg(&self, reg: u16, value: u8) {
-        unsafe { PortU8::new(self.io_base + reg).write(value) }
+    fn write_reg(&self, reg: u16, value: u8) {
+        PortU8::new(self.io_base + reg).write(value);
     }
 
     /// ステータスを読み取り
     #[inline]
-    unsafe fn read_status(&self) -> u8 {
+    fn read_status(&self) -> u8 {
         self.read_reg(regs::STATUS)
     }
 
     /// 代替ステータスを読み取り（割り込みクリアなし）
     #[inline]
-    unsafe fn read_alt_status(&self) -> u8 {
-        unsafe { PortU8::new(self.control_base).read() }
+    fn read_alt_status(&self) -> u8 {
+        PortU8::new(self.control_base).read()
     }
 
     /// ビジーフラグが解除されるまで待機
@@ -393,13 +394,13 @@ impl IdeChannel {
         let device_type = if lba_mid == 0x14 && lba_high == 0xEB {
             // ATAPI
             unsafe { self.write_reg(regs::COMMAND, commands::IDENTIFY_PACKET); }
-            if self.wait_drq().is_err() {
+            if unsafe { self.wait_drq() }.is_err() {
                 return None;
             }
             DeviceType::Atapi
         } else if lba_mid == 0 && lba_high == 0 {
             // ATA
-            if self.wait_drq().is_err() {
+            if unsafe { self.wait_drq() }.is_err() {
                 return None;
             }
             DeviceType::Ata
@@ -477,13 +478,14 @@ impl IdeChannel {
         let sectors_to_read = if count == 0 { 256 } else { count as usize };
 
         for i in 0..sectors_to_read {
-            self.wait_drq()?;
+            unsafe { self.wait_drq()?; }
 
             // ワード単位で読み取り
             let offset = i * 512;
             let sector_buffer = &mut buffer[offset..offset + 512];
-            let word_buffer: &mut [u16] =
-                core::slice::from_raw_parts_mut(sector_buffer.as_mut_ptr() as *mut u16, 256);
+            let word_buffer: &mut [u16] = unsafe {
+                core::slice::from_raw_parts_mut(sector_buffer.as_mut_ptr() as *mut u16, 256)
+            };
             unsafe { data_port.read_words(word_buffer) };
         }
 
@@ -525,12 +527,13 @@ impl IdeChannel {
         let sectors_to_read = if count == 0 { 65536 } else { count as usize };
 
         for i in 0..sectors_to_read {
-            self.wait_drq()?;
+            unsafe { self.wait_drq()?; }
 
             let offset = i * 512;
             let sector_buffer = &mut buffer[offset..offset + 512];
-            let word_buffer: &mut [u16] =
-                core::slice::from_raw_parts_mut(sector_buffer.as_mut_ptr() as *mut u16, 256);
+            let word_buffer: &mut [u16] = unsafe {
+                core::slice::from_raw_parts_mut(sector_buffer.as_mut_ptr() as *mut u16, 256)
+            };
             unsafe { data_port.read_words(word_buffer) };
         }
 
@@ -594,18 +597,19 @@ impl IdeChannel {
         let sectors_to_write = if count == 0 { 256 } else { count as usize };
 
         for i in 0..sectors_to_write {
-            self.wait_drq()?;
+            unsafe { self.wait_drq()?; }
 
             let offset = i * 512;
             let sector_buffer = &buffer[offset..offset + 512];
-            let word_buffer: &[u16] =
-                core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256);
+            let word_buffer: &[u16] = unsafe {
+                core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256)
+            };
             unsafe { data_port.write_words(word_buffer) };
         }
 
         // キャッシュフラッシュ
         self.write_reg(regs::COMMAND, commands::CACHE_FLUSH);
-        self.wait_not_busy()?;
+        unsafe { self.wait_not_busy()?; }
 
         Ok(())
     }
@@ -649,7 +653,7 @@ impl IdeChannel {
                 self.wait_drq()?;
                 let offset = i * 512;
                 let sector_buffer = &buffer[offset..offset + 512];
-                let word_buffer: &[u16] = core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256);
+                let word_buffer: &[u16] = unsafe { core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256) };
                 data_port.write_words(word_buffer);
             }
         }

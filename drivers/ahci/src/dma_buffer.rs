@@ -55,6 +55,17 @@ impl AhciDmaReadBuffer {
     }
 }
 
+impl Drop for AhciDmaReadBuffer {
+    fn drop(&mut self) {
+        // Replace with placeholder and free original via kernel
+        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
+        let buf = core::mem::replace(&mut self.buffer, placeholder);
+        if buf.size() > 0 {
+            kernel().free_dma(buf);
+        }
+    }
+}
+
 /// DMA-safe buffer for sector writing
 pub struct AhciDmaWriteBuffer {
     buffer: DmaBuffer,
@@ -91,6 +102,16 @@ impl AhciDmaWriteBuffer {
     }
 }
 
+impl Drop for AhciDmaWriteBuffer {
+    fn drop(&mut self) {
+        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
+        let buf = core::mem::replace(&mut self.buffer, placeholder);
+        if buf.size() > 0 {
+            kernel().free_dma(buf);
+        }
+    }
+}
+
 /// Helper for IDENTIFY command buffer
 pub struct AhciIdentifyBuffer {
     buffer: DmaBuffer,
@@ -117,6 +138,16 @@ impl AhciIdentifyBuffer {
             }
         }
         words
+    }
+}
+
+impl Drop for AhciIdentifyBuffer {
+    fn drop(&mut self) {
+        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
+        let buf = core::mem::replace(&mut self.buffer, placeholder);
+        if buf.size() > 0 {
+            kernel().free_dma(buf);
+        }
     }
 }
 

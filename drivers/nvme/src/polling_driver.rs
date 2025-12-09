@@ -419,6 +419,8 @@ impl NvmePollingDriver {
         }
     }
 
+    
+
     // ========================================================================
     // I/O Queue Management
     // ========================================================================
@@ -683,6 +685,23 @@ impl NvmePollingDriver {
 // ============================================================================
 // Helper Functions
 // ============================================================================
+
+impl Drop for NvmePollingDriver {
+    fn drop(&mut self) {
+        // Free any allocated DMA buffers via KernelServices
+        let kernel = kernel_api::services::kernel();
+
+        if let Some(buf) = self.admin_sq_buffer.take() {
+            kernel.free_dma(buf);
+        }
+        if let Some(buf) = self.admin_cq_buffer.take() {
+            kernel.free_dma(buf);
+        }
+        if let Some(buf) = self.identify_buffer.take() {
+            kernel.free_dma(buf);
+        }
+    }
+}
 
 /// CPU PAUSE命令（スピン待機の電力効率化）
 #[inline(always)]
