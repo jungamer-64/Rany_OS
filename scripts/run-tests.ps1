@@ -151,6 +151,20 @@ function Invoke-IntegrationTests {
     }
     
     Write-TestResult "Module structure" $allModulesExist
+
+    # Driver dependency validation
+    Write-Host "Checking driver dependency policy..." -ForegroundColor Gray
+    $checkScript = Join-Path $PSScriptRoot '..' | Join-Path -ChildPath 'scripts/check-driver-deps.ps1'
+    if (-not (Test-Path $checkScript)) {
+        Write-TestSkipped "Driver dependencies check" "No check script found"
+    } else {
+        $res = & $checkScript
+        if ($LASTEXITCODE -ne 0) {
+            Write-TestResult "Driver dependencies check" $false "Drivers violate dependency policy"
+        } else {
+            Write-TestResult "Driver dependencies check" $true
+        }
+    }
 }
 
 # QEMU Boot Tests

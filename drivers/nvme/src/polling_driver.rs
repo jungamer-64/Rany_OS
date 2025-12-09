@@ -142,7 +142,7 @@ impl NvmePollingDriver {
 
     /// コントローラステータスを取得
     fn get_status(&self) -> NvmeControllerStatus {
-        unsafe { NvmeControllerStatus::new(self.read_reg32(0x1C)) }
+        NvmeControllerStatus::new(self.read_reg32(0x1C))
     }
 
     /// ドアベルアドレスを計算
@@ -211,9 +211,9 @@ impl NvmePollingDriver {
     ) -> Result<(), &'static str> {
         let mut aqa = NvmeAdminQueueAttributes::new();
         aqa.set_asqs(depth - 1).set_acqs(depth - 1);
-        unsafe { self.write_reg32(0x24, aqa.raw()) };
-        unsafe { self.write_reg64(0x28, asq) };
-        unsafe { self.write_reg64(0x30, acq) };
+        self.write_reg32(0x24, aqa.raw());
+        self.write_reg64(0x28, asq);
+        self.write_reg64(0x30, acq);
         Ok(())
     }
 
@@ -224,7 +224,7 @@ impl NvmePollingDriver {
     /// コントローラを初期化
     pub fn init(&mut self) -> Result<(), &'static str> {
         // CAP レジスタを読む
-        let cap_raw = unsafe { self.read_reg64(0x00) };
+        let cap_raw = self.read_reg64(0x00);
         self.cap = NvmeCapabilities::new(cap_raw);
 
         // ドアベルストライドを計算
@@ -233,14 +233,14 @@ impl NvmePollingDriver {
 
         // CMB情報を取得
         if self.use_cmb {
-            let cmbloc = unsafe { self.read_reg32(0x38) };
-            let cmbsz = unsafe { self.read_reg32(0x3C) };
+            let cmbloc = self.read_reg32(0x38);
+            let cmbsz = self.read_reg32(0x3C);
             let cmb_info = CmbInfo::from_registers(self.bar0, cmbloc, cmbsz, &self.cap);
 
             if cmb_info.supported {
                 if cmb_info.base_addr != 0 {
-                    let cmbmsc = unsafe { self.read_reg64(0x50) };
-                    unsafe { self.write_reg64(0x50, cmbmsc | 1) };
+                    let cmbmsc = self.read_reg64(0x50);
+                    self.write_reg64(0x50, cmbmsc | 1);
                 }
                 self.cmb_info = Some(cmb_info);
             }

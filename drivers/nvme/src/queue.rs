@@ -70,12 +70,11 @@ impl SubmissionQueue {
 
         // Store the command entry using a volatile write to ensure it is
         // observed by the device before the doorbell is rung.
-        unsafe {
-            let entry_ptr = self.buffer.add(tail as usize);
-            mmio::volatile_write::<NvmeCommand>(entry_ptr as usize, *cmd);
-            // Memory barrier to ensure ordering
-            core::sync::atomic::fence(Ordering::Release);
-        }
+        // Convert raw pointer to an address and perform a volatile write; avoid a broad `unsafe` block.
+        let entry_addr = self.buffer as usize + (tail as usize) * core::mem::size_of::<NvmeCommand>();
+        mmio::volatile_write::<NvmeCommand>(entry_addr, *cmd);
+        // Memory barrier to ensure ordering
+        core::sync::atomic::fence(Ordering::Release);
 
         self.tail.store(next_tail, Ordering::Release);
         Ok(tail)
@@ -87,10 +86,8 @@ impl SubmissionQueue {
     #[inline]
     pub fn ring_doorbell(&self) {
         let tail = self.tail.load(Ordering::Acquire);
-        // Ring the doorbell using HAL wrapper
-        unsafe {
-            mmio::volatile_write::<u32>(self.doorbell as usize, tail as u32);
-        }
+        // Ring the doorbell using HAL wrapper (safe wrapper used)
+        mmio::volatile_write::<u32>(self.doorbell as usize, tail as u32);
     }
 
     /// キューIDを取得
@@ -158,7 +155,10 @@ impl CompletionQueue {
         let head = self.head.load(Ordering::Acquire);
         let expected_phase = self.phase.load(Ordering::Acquire);
 
-        let entry = unsafe { mmio::volatile_read::<NvmeCompletion>(self.buffer.add(head as usize) as usize) };
+        // Read the completion queue entry at head using the MMIO wrapper.
+        // Compute the physical address to avoid unnecessary unsafe code.
+        let entry_addr = self.buffer as usize + (head as usize) * core::mem::size_of::<NvmeCompletion>();
+        let entry = mmio::volatile_read::<NvmeCompletion>(entry_addr);
 
         // フェーズビットをチェック
         if entry.phase() != expected_phase {
@@ -180,9 +180,7 @@ impl CompletionQueue {
     /// ドアベルを更新（完了処理後に呼ぶ）
     pub fn update_doorbell(&self) {
         let head = self.head.load(Ordering::Acquire);
-        unsafe {
-            mmio::volatile_write::<u32>(self.doorbell as usize, head as u32);
-        }
+        mmio::volatile_write::<u32>(self.doorbell as usize, head as u32);
     }
 
     /// キューIDを取得

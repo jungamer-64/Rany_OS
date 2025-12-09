@@ -661,7 +661,7 @@ impl AtapiPort {
 
         self.packet_command(&cdb, &mut buffer, false)?;
 
-        let response = unsafe { ptr::read_unaligned(buffer.as_ptr() as *const InquiryResponse) };
+        let response = crate::util::read_unaligned_from_addr::<InquiryResponse>(buffer.as_ptr() as usize);
         self.inquiry_cache = Some(response);
 
         Ok(response)
@@ -674,7 +674,7 @@ impl AtapiPort {
 
         self.packet_command(&cdb, &mut buffer, false)?;
 
-        Ok(unsafe { ptr::read_unaligned(buffer.as_ptr() as *const SenseData) })
+        Ok(crate::util::read_unaligned_from_addr::<SenseData>(buffer.as_ptr() as usize))
     }
 
     /// Read Capacityを実行
@@ -684,7 +684,7 @@ impl AtapiPort {
 
         self.packet_command(&cdb, &mut buffer, false)?;
 
-        Ok(unsafe { ptr::read_unaligned(buffer.as_ptr() as *const ReadCapacityResponse) })
+        Ok(crate::util::read_unaligned_from_addr::<ReadCapacityResponse>(buffer.as_ptr() as usize))
     }
 
     /// セクタを読み取り
@@ -726,8 +726,7 @@ impl AtapiPort {
         let mut header_buf = [0u8; 4];
         self.packet_command(&cdb, &mut header_buf, false)?;
 
-        let header =
-            unsafe { ptr::read_unaligned(header_buf.as_ptr() as *const TocHeader) };
+        let header = crate::util::read_unaligned_from_addr::<TocHeader>(header_buf.as_ptr() as usize);
         let data_length = header.data_length();
 
         // 全TOCデータを読み取り
@@ -738,8 +737,7 @@ impl AtapiPort {
         self.packet_command(&cdb, &mut toc_buf, false)?;
 
         // TOCをパース
-        let header =
-            unsafe { ptr::read_unaligned(toc_buf.as_ptr() as *const TocHeader) };
+        let header = crate::util::read_unaligned_from_addr::<TocHeader>(toc_buf.as_ptr() as usize);
 
         let track_data = &toc_buf[4..];
         let track_count = track_data.len() / 8;
@@ -747,11 +745,9 @@ impl AtapiPort {
 
         for i in 0..track_count {
             let offset = i * 8;
-            let track = unsafe {
-                ptr::read_unaligned(
-                    track_data[offset..].as_ptr() as *const TocTrackDescriptor
-                )
-            };
+            let track = crate::util::read_unaligned_from_addr::<TocTrackDescriptor>(
+                track_data[offset..].as_ptr() as usize
+            );
             tracks.push(track);
         }
 

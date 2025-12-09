@@ -222,12 +222,12 @@ impl BatchProcessor {
         if !self.enabled.load(Ordering::Relaxed) {
             // バッチ処理無効時は即座に単一パケットバッチを返す
             let mut batch = PacketBatch::new();
-            unsafe { batch.push(buffer, length); }
+            batch.push(buffer, length);
             return Some(batch);
         }
 
         let mut batch = self.current_batch.lock();
-        unsafe { batch.push(buffer, length); }
+        batch.push(buffer, length);
 
         if batch.is_full() {
             let ready_batch = core::mem::take(&mut *batch);
