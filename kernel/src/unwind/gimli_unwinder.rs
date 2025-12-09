@@ -409,6 +409,9 @@ impl EhFrameSection {
 
     pub fn data(&self) -> &'static [u8] {
         let len = (self.end - self.start) as usize;
+        // TODO: Consider centralizing EH frame memory mapping checks and exposing a safe
+        // API for retrieving section slices. This operation must remain unsafe until we
+        // can guarantee the linker's symbol address and memory mapping validity.
         unsafe { core::slice::from_raw_parts(self.start as *const u8, len) }
     }
 

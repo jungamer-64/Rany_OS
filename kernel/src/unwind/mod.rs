@@ -293,8 +293,8 @@ pub(crate) fn read_usize_checked(addr: usize) -> Option<usize> {
     if !is_valid_stack_address(addr) {
         return None;
     }
-    // Safety: Caller ensures address is within stack bounds via is_valid_stack_address
-    Some(unsafe { ptr::read(addr as *const usize) })
+    // Use centralized util to read from an address, which performs the unsafe read internally
+    Some(crate::util::read_unaligned_from_addr::<usize>(addr))
 }
 
 /// 安全なポインタ読み取り: u64
@@ -302,7 +302,7 @@ pub(crate) fn read_u64_checked(addr: usize) -> Option<u64> {
     if !is_valid_stack_address(addr) {
         return None;
     }
-    Some(unsafe { ptr::read(addr as *const u64) })
+    Some(crate::util::read_unaligned_from_addr::<u64>(addr))
 }
 
 // ============================================================================
@@ -402,10 +402,15 @@ impl KernelSymbolTable {
 
         let mut offset = 0;
         while self.base + offset < self.end {
+            // TODO: Centralize pointer->struct dereference validation. `self.table.base` is
+            // an address provided by the linker and may not be validated here. Consider
+            // a safe helper that verifies memory mapping and data size before returning
+            // a reference. For now, this operation is inherently unsafe.
             let sym = unsafe { &*((self.base + offset) as *const KernelSymbol) };
 
             // シンボル名を取得
             let name_ptr = (self.base + offset + core::mem::size_of::<KernelSymbol>()) as *const u8;
+            // TODO: See note above about centralizing memory validation.
             let name = unsafe {
                 core::str::from_utf8_unchecked(core::slice::from_raw_parts(
                     name_ptr,
@@ -481,6 +486,7 @@ impl<'a> Iterator for KernelSymbolIter<'a> {
             return None;
         }
 
+        // TODO: See note above about centralizing memory validation for symbol table reads.
         let sym = unsafe { &*((self.table.base + self.offset) as *const KernelSymbol) };
         let name_ptr =
             (self.table.base + self.offset + core::mem::size_of::<KernelSymbol>()) as *const u8;

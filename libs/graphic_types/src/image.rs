@@ -341,6 +341,19 @@ pub enum ImageError {
 
 pub type ImageResult<T> = Result<T, ImageError>;
 
+/// Helper to read a Copy struct from a byte slice at a given offset.
+/// Centralizes the unsafe bytes->struct conversion.
+fn read_struct_from_slice<T: Copy>(data: &[u8], offset: usize) -> Option<T> {
+    use core::mem;
+    let size = mem::size_of::<T>();
+    let end = offset.checked_add(size)?;
+    if end > data.len() {
+        return None;
+    }
+    let ptr = unsafe { data.as_ptr().add(offset) as *const T };
+    Some(unsafe { core::ptr::read_unaligned(ptr) })
+}
+
 /// BMPファイルをデコード
 pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     if data.len() < 54 {
@@ -353,9 +366,9 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     }
 
     // ヘッダを読み取り
-    let file_header = unsafe { *(data.as_ptr() as *const BmpFileHeader) };
+    let file_header = read_struct_from_slice::<BmpFileHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
 
-    let info_header = unsafe { *(data.as_ptr().add(14) as *const BmpInfoHeader) };
+    let info_header = read_struct_from_slice::<BmpInfoHeader>(data, 14).ok_or(ImageError::InvalidFormat)?;
 
     let width = info_header.width.abs() as u32;
     let height = info_header.height.abs() as u32;
@@ -641,7 +654,7 @@ pub fn decode_ico(data: &[u8]) -> ImageResult<Vec<Image>> {
         return Err(ImageError::InvalidFormat);
     }
 
-    let header = unsafe { *(data.as_ptr() as *const IcoHeader) };
+    let header = read_struct_from_slice::<IcoHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
 
     if header.reserved != 0 || (header.image_type != 1 && header.image_type != 2) {
         return Err(ImageError::InvalidFormat);
@@ -656,7 +669,7 @@ pub fn decode_ico(data: &[u8]) -> ImageResult<Vec<Image>> {
             break;
         }
 
-        let entry = unsafe { *(data.as_ptr().add(entry_offset) as *const IcoDirEntry) };
+        let entry = read_struct_from_slice::<IcoDirEntry>(data, entry_offset).ok_or(ImageError::InvalidFormat)?;
 
         let image_offset = entry.image_offset as usize;
         let image_size = entry.image_size as usize;
@@ -692,7 +705,7 @@ fn decode_ico_bmp(data: &[u8], width_hint: u8, height_hint: u8) -> ImageResult<I
         return Err(ImageError::InvalidFormat);
     }
 
-    let header = unsafe { *(data.as_ptr() as *const BmpInfoHeader) };
+    let header = read_struct_from_slice::<BmpInfoHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
 
     let width = if width_hint == 0 {
         256

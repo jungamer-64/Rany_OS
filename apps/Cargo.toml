@@ -11,4 +11,4 @@ path = "src/lib.rs"
 
 [dependencies]
 app_sdk = { path = "../libs/app_sdk" }
-graphic_types = { path = "../libs/graphic_types" }
+graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }

@@ -55,11 +55,15 @@ pub fn mmio_write_u64(addr: usize, val: u64) {
 /// custom-sized types from memory-mapped or volatile memory locations.
 #[inline]
 pub fn volatile_read<T: Copy>(addr: usize) -> T {
+    // TODO: Consider adding optional runtime or compile-time checks to validate
+    // that `addr` points to a valid mmio region for this device/driver. For now
+    // the caller is expected to ensure the address is correct.
     unsafe { core::ptr::read_volatile(addr as *const T) }
 }
 
 /// Generic volatile write for Copy types.
 #[inline]
 pub fn volatile_write<T: Copy>(addr: usize, val: T) {
+    // TODO: Consider adding optional address validation to MMIO writes.
     unsafe { core::ptr::write_volatile(addr as *mut T, val); }
 }

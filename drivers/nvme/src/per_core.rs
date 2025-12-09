@@ -332,7 +332,7 @@ impl PerCoreNvmeQueue {
             }
             // PAUSE命令でCPUリソースを節約
             #[cfg(target_arch = "x86_64")]
-            unsafe { core::arch::x86_64::_mm_pause() };
+            core::arch::x86_64::_mm_pause();
         }
         None
     }

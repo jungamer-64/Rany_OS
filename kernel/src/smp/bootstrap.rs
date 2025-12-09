@@ -150,61 +150,59 @@ impl LocalApic {
 
     /// Get LAPIC ID
     pub fn id(&self) -> u32 {
-        unsafe { self.read(Self::ID) >> 24 }
+        self.read(Self::ID) >> 24
     }
 
     /// Send End of Interrupt
     pub fn eoi(&self) {
-        unsafe { self.write(Self::EOI, 0) };
+        self.write(Self::EOI, 0);
     }
 
     /// Enable LAPIC
     pub fn enable(&self) {
-        unsafe {
-            let spurious = self.read(Self::SPURIOUS);
-            self.write(Self::SPURIOUS, spurious | 0x100);
-        }
+        let spurious = self.read(Self::SPURIOUS);
+        self.write(Self::SPURIOUS, spurious | 0x100);
     }
 
     /// Send INIT IPI to target AP
     pub fn send_init(&self, target_apic_id: u32) {
-        unsafe {
-            // Set destination
-            self.write(Self::ICR_HIGH, target_apic_id << 24);
+        // Set destination
+        self.write(Self::ICR_HIGH, target_apic_id << 24);
 
-            // Send INIT assert
-            self.write(
-                Self::ICR_LOW,
-                Self::DELIVERY_INIT | Self::LEVEL_ASSERT | Self::TRIGGER_LEVEL,
-            );
+        // Send INIT assert
+        self.write(
+            Self::ICR_LOW,
+            Self::DELIVERY_INIT | Self::LEVEL_ASSERT | Self::TRIGGER_LEVEL,
+        );
 
-            // Wait for delivery
-            self.wait_for_delivery();
+        // Wait for delivery
+        unsafe { self.wait_for_delivery(); }
 
-            // Send INIT deassert
-            self.write(
-                Self::ICR_LOW,
-                Self::DELIVERY_INIT | Self::LEVEL_DEASSERT | Self::TRIGGER_LEVEL,
-            );
+        // Send INIT deassert
+        self.write(
+            Self::ICR_LOW,
+            Self::DELIVERY_INIT | Self::LEVEL_DEASSERT | Self::TRIGGER_LEVEL,
+        );
 
-            self.wait_for_delivery();
-        }
+        unsafe { self.wait_for_delivery(); }
     }
 
     /// Send SIPI (Startup IPI) to target AP
     pub fn send_sipi(&self, target_apic_id: u32, vector: u8) {
-        unsafe {
-            // Set destination
-            self.write(Self::ICR_HIGH, target_apic_id << 24);
+        // Set destination
+        self.write(Self::ICR_HIGH, target_apic_id << 24);
 
-            // Send SIPI with vector (address = vector * 0x1000)
-            self.write(Self::ICR_LOW, Self::DELIVERY_STARTUP | (vector as u32));
+        // Send SIPI with vector (address = vector * 0x1000)
+        self.write(Self::ICR_LOW, Self::DELIVERY_STARTUP | (vector as u32));
 
-            self.wait_for_delivery();
-        }
+        unsafe { self.wait_for_delivery(); }
     }
 
     /// Wait for IPI delivery
+    // NOTE: This function interacts with APIC registers and is architecture-specific.
+    // TODO: Consider providing a HAL-level safe abstraction that ensures address
+    // mapping and side-effect ordering for APIC MMIO accesses rather than exposing
+    // unsafe functions across the kernel.
     unsafe fn wait_for_delivery(&self) {
         // Bit 12 = Delivery Status (0 = idle, 1 = pending)
         while (self.read(Self::ICR_LOW) & (1 << 12)) != 0 {
@@ -214,20 +212,16 @@ impl LocalApic {
 
     /// Send IPI to specific CPU
     pub fn send_ipi(&self, target_apic_id: u32, vector: u8) {
-        unsafe {
-            self.write(Self::ICR_HIGH, target_apic_id << 24);
-            self.write(Self::ICR_LOW, vector as u32);
-            self.wait_for_delivery();
-        }
+        self.write(Self::ICR_HIGH, target_apic_id << 24);
+        self.write(Self::ICR_LOW, vector as u32);
+        unsafe { self.wait_for_delivery(); }
     }
 
     /// Broadcast IPI (excluding self)
     pub fn broadcast_ipi(&self, vector: u8) {
-        unsafe {
-            // All excluding self
-            self.write(Self::ICR_LOW, (vector as u32) | (3 << 18)); // Destination shorthand: All excluding self
-            self.wait_for_delivery();
-        }
+        // All excluding self
+        self.write(Self::ICR_LOW, (vector as u32) | (3 << 18)); // Destination shorthand: All excluding self
+        unsafe { self.wait_for_delivery(); }
     }
 }
 
@@ -292,13 +286,11 @@ impl ApBootstrap {
 
         // Copy trampoline code to low memory
         let trampoline_ptr = TRAMPOLINE_BASE as *mut u8;
-        unsafe {
-            core::ptr::copy_nonoverlapping(
-                TRAMPOLINE_CODE.as_ptr(),
-                trampoline_ptr,
-                TRAMPOLINE_CODE.len(),
-            );
-        }
+        core::ptr::copy_nonoverlapping(
+            TRAMPOLINE_CODE.as_ptr(),
+            trampoline_ptr,
+            TRAMPOLINE_CODE.len(),
+        );
 
         Ok(())
     }
@@ -393,7 +385,7 @@ static AP_BOOTSTRAP: Mutex<Option<ApBootstrap>> = Mutex::new(None);
 /// Modifies low memory and sends IPIs
 pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> {
     let bootstrap = ApBootstrap::new(lapic_base, num_aps);
-    unsafe { bootstrap.setup_trampoline()? };
+    bootstrap.setup_trampoline()?;
     *AP_BOOTSTRAP.lock() = Some(bootstrap);
     Ok(())
 }

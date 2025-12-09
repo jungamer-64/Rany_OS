@@ -169,8 +169,14 @@ stats:
 
 .PHONY: ci
 
-ci: fmt-check check build
+ci: fmt-check check-driver-deps check build
 	@echo "CI checks passed!"
+
+# Driver dependency policy check
+.PHONY: check-driver-deps
+check-driver-deps:
+	@echo "Checking driver dependencies..."
+	@powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-driver-deps.ps1
 
 # ==============================================================================
 # ヘルプ

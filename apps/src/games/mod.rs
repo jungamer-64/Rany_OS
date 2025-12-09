@@ -3,8 +3,7 @@
 //! Simple games collection implementing the Application trait.
 
 #![allow(dead_code)]
-
-extern crate alloc;
+#![allow(unused_imports)]
 
 use alloc::boxed::Box;
 use core::future::Future;

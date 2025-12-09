@@ -115,6 +115,10 @@ pub fn struct_as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
 /// Convert a NonNull<u8> pointer with an offset and length into an immutable slice.
 /// This encapsulates an unsafe pointer -> slice conversion for non-owning buffers.
 pub unsafe fn nonnull_ptr_as_slice<'a>(ptr: core::ptr::NonNull<u8>, offset: usize, len: usize) -> &'a [u8] {
+    // TODO: We currently trust the caller to ensure the pointer and range are valid.
+    // In the future, consider adding architecture-specific checks (page table mapping,
+    // domain/kernel privileges) before returning a slice to reduce the spread of
+    // `unsafe` callsites.
     unsafe { core::slice::from_raw_parts(ptr.as_ptr().add(offset), len) }
 }
 
@@ -127,6 +131,8 @@ pub unsafe fn nonnull_ptr_as_slice_mut<'a>(ptr: core::ptr::NonNull<u8>, offset: 
 ///
 /// Safety: the caller must ensure the pointer is valid for `len` bytes and properly aligned.
 pub unsafe fn raw_ptr_as_slice<'a>(ptr: *const u8, len: usize) -> &'a [u8] {
+    // TODO: Centralize validation for raw virtual addresses (e.g., verify that the
+    // address is mapped and accessible). For now the caller must ensure safety.
     unsafe { core::slice::from_raw_parts(ptr, len) }
 }
 
