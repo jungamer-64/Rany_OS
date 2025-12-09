@@ -185,6 +185,12 @@ impl AhciPort {
         self.write_port(PX_CI, 1 << slot.as_u8());
         self.wait_completion(slot)?;
 
+        // Free Command Table buffer for this slot (we allocated it above)
+        let kernel = kernel_api::services::kernel();
+        if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
+            kernel.free_dma(cmd_buf);
+        }
+
         Ok(IdentifyData::from_words(&identify_buf.finish_and_get_words()))
     }
 
@@ -233,6 +239,13 @@ impl AhciPort {
 
         // Copy data back
         buffer.copy_from_slice(dma_buf.data());
+
+        // Free the command table buffer for this slot
+        let kernel = kernel_api::services::kernel();
+        if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
+            kernel.free_dma(cmd_buf);
+        }
+
         Ok(())
     }
 
@@ -277,7 +290,15 @@ impl AhciPort {
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
 
         self.write_port(PX_CI, 1 << slot.as_u8());
-        self.wait_completion(slot)
+        let result = self.wait_completion(slot);
+
+        // Free the command table buffer for this slot regardless of result
+        let kernel = kernel_api::services::kernel();
+        if let Some(cmd_buf) = self.command_tables[slot.as_usize()].take() {
+            kernel.free_dma(cmd_buf);
+        }
+
+        result
     }
 
     pub fn wait_completion(&self, slot: SlotNumber) -> AhciResult<()> {
@@ -317,5 +338,33 @@ impl AhciPort {
 
     pub fn write_port(&self, offset: u32, value: u32) {
         hal::mmio::mmio_write_u32((self.port_base + offset as u64) as usize, value)
+    }
+}
+
+impl Drop for AhciPort {
+    fn drop(&mut self) {
+        // Release any DMA buffers owned by this port via KernelServices
+        let kernel = kernel_api::services::kernel();
+
+        // command_list
+        let placeholder = DmaBuffer::new(0, core::ptr::null_mut(), 0);
+        let cmd = core::mem::replace(&mut self.command_list, placeholder);
+        if cmd.size() > 0 {
+            kernel.free_dma(cmd);
+        }
+
+        // received_fis
+        let placeholder2 = DmaBuffer::new(0, core::ptr::null_mut(), 0);
+        let fis = core::mem::replace(&mut self.received_fis, placeholder2);
+        if fis.size() > 0 {
+            kernel.free_dma(fis);
+        }
+
+        // Command tables
+        for entry in self.command_tables.iter_mut() {
+            if let Some(buf) = entry.take() {
+                kernel.free_dma(buf);
+            }
+        }
     }
 }

@@ -107,6 +107,31 @@ impl FileHandleRegistry {
 static FILE_HANDLE_REGISTRY: FileHandleRegistry = FileHandleRegistry::new();
 static CHANNEL_REGISTRY: ChannelRegistry = ChannelRegistry::new();
 
+// DMA registry stores heap allocated TypedDmaSlice instances keyed by
+// the virtual pointer to the buffer so we can free them later.
+struct DmaRegistry {
+    buffers: Mutex<BTreeMap<usize, Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>>>,
+}
+
+impl DmaRegistry {
+    const fn new() -> Self {
+        Self { buffers: Mutex::new(BTreeMap::new()) }
+    }
+
+    fn register(&self, mut buf: Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>) -> usize {
+        // Get the virtual address of the slice
+        let virt_ptr = buf.as_mut_slice().as_mut_ptr() as usize;
+        self.buffers.lock().insert(virt_ptr, buf);
+        virt_ptr
+    }
+
+    fn unregister(&self, virt_ptr: usize) -> Option<Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>> {
+        self.buffers.lock().remove(&virt_ptr)
+    }
+}
+
+static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
+
 // ============================================================================
 // ExoKernel: The KernelServices Implementation
 // ============================================================================
@@ -162,19 +187,25 @@ impl KernelServices for ExoKernel {
         match dma::TypedDmaSlice::new(size) {
             Some(buffer) => {
                 let phys = buffer.phys_addr().as_u64();
-                // SAFETY: Leak the buffer to keep it alive for DMA use
-                // TODO: Implement proper DMA buffer registry for tracking/freeing
-                let ptr = Box::into_raw(Box::new(buffer)) as *mut u8;
-                Ok(DmaBuffer::new(phys, ptr, size))
+                // Box up the buffer and register it so it can be freed later
+                let boxed = Box::new(buffer);
+                let virt_ptr = DMA_REGISTRY.register(boxed);
+                Ok(DmaBuffer::new(phys, virt_ptr as *mut u8, size))
             }
             None => Err(KapiError::OutOfMemory),
         }
     }
 
     fn free_dma(&self, buffer: DmaBuffer) {
-        // TODO: Implement proper DMA buffer tracking and deallocation
-        // Current implementation leaks memory (acceptable for now)
-        let _ = buffer;
+        // Try to lookup the registered buffer by its virtual pointer
+        let virt_ptr = buffer.as_ptr() as usize;
+        if DMA_REGISTRY.unregister(virt_ptr).is_some() {
+            // Successfully unregistered and dropped
+            return;
+        }
+
+        // If we couldn't find it, quietly ignore (or log) — do not panic in kernel
+        crate::log!("[KAPI] free_dma: unknown buffer: {:x}\n", virt_ptr);
     }
 
     // ========================================================================

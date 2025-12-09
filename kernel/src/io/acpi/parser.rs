@@ -42,15 +42,15 @@ impl AcpiParser {
     /// This function reads from physical memory addresses
     pub unsafe fn find_rsdp() -> Option<u64> {
         // Search in EBDA (Extended BIOS Data Area)
-        let ebda_ptr = *(0x40E as *const u16) as u64;
+        let ebda_ptr = unsafe { *(0x40E as *const u16) } as u64;
         let ebda_start = ebda_ptr << 4;
 
-        if let Some(addr) = Self::search_region(ebda_start, ebda_start + 1024) {
+        if let Some(addr) = unsafe { Self::search_region(ebda_start, ebda_start + 1024) } {
             return Some(addr);
         }
 
         // Search in BIOS ROM area (0xE0000 - 0xFFFFF)
-        Self::search_region(0xE0000, 0x100000)
+        unsafe { Self::search_region(0xE0000, 0x100000) }
     }
 
     /// Search for RSDP signature in a memory region
@@ -58,11 +58,13 @@ impl AcpiParser {
         let mut addr = start;
         while addr < end {
             let ptr = addr as *const [u8; 8];
-            if &*ptr == RSDP_SIGNATURE {
-                // Validate checksum
-                let rsdp = &*(addr as *const Rsdp);
-                if rsdp.validate() {
-                    return Some(addr);
+            unsafe {
+                if &*ptr == RSDP_SIGNATURE {
+                    // Validate checksum
+                    let rsdp = &*(addr as *const Rsdp);
+                    if rsdp.validate() {
+                        return Some(addr);
+                    }
                 }
             }
             addr += 16; // RSDP is always aligned to 16 bytes
@@ -75,7 +77,7 @@ impl AcpiParser {
     /// # Safety
     /// This function reads from physical memory addresses
     pub unsafe fn parse(&mut self) -> Result<&AcpiInfo, AcpiError> {
-        let rsdp = &*(self.rsdp_address as *const Rsdp);
+        let rsdp = unsafe { &*(self.rsdp_address as *const Rsdp) };
 
         if !rsdp.validate() {
             return Err(AcpiError::InvalidRsdpChecksum);
@@ -84,20 +86,22 @@ impl AcpiParser {
         let mut info = AcpiInfo::new(rsdp.revision);
 
         // Get table addresses from XSDT (ACPI 2.0+) or RSDT (ACPI 1.0)
-        let table_addresses = if rsdp.is_xsdt_available() {
-            self.parse_xsdt(rsdp.xsdt_address)?
-        } else {
-            self.parse_rsdt(rsdp.rsdt_address as u64)?
+        let table_addresses = unsafe {
+            if rsdp.is_xsdt_available() {
+                self.parse_xsdt(rsdp.xsdt_address)?
+            } else {
+                self.parse_rsdt(rsdp.rsdt_address as u64)?
+            }
         };
 
         // Parse individual tables
         for &table_addr in &table_addresses {
-            let header = &*(table_addr as *const AcpiSdtHeader);
+            let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
 
             if header.signature == signature::MADT {
-                self.parse_madt(table_addr, &mut info)?;
+                unsafe { self.parse_madt(table_addr, &mut info)? };
             } else if header.signature == signature::MCFG {
-                self.parse_mcfg(table_addr, &mut info)?;
+                unsafe { self.parse_mcfg(table_addr, &mut info)? };
             }
         }
 
@@ -108,7 +112,7 @@ impl AcpiParser {
 
     /// Parse RSDT (Root System Description Table)
     unsafe fn parse_rsdt(&self, rsdt_address: u64) -> Result<Vec<u64>, AcpiError> {
-        let header = &*(rsdt_address as *const AcpiSdtHeader);
+        let header = unsafe { &*(rsdt_address as *const AcpiSdtHeader) };
 
         if header.signature != signature::RSDT {
             return Err(AcpiError::InvalidTable);
@@ -119,12 +123,13 @@ impl AcpiParser {
         }
 
         let entry_count = (header.length as usize - core::mem::size_of::<AcpiSdtHeader>()) / 4;
-        let entries_ptr =
-            (rsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u32;
+        let entries_ptr = unsafe {
+            (rsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u32
+        };
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
-            let addr = ptr::read_unaligned(entries_ptr.add(i));
+            let addr = unsafe { ptr::read_unaligned(entries_ptr.add(i)) };
             addresses.push(addr as u64);
         }
 
@@ -133,7 +138,7 @@ impl AcpiParser {
 
     /// Parse XSDT (Extended System Description Table)
     unsafe fn parse_xsdt(&self, xsdt_address: u64) -> Result<Vec<u64>, AcpiError> {
-        let header = &*(xsdt_address as *const AcpiSdtHeader);
+        let header = unsafe { &*(xsdt_address as *const AcpiSdtHeader) };
 
         if header.signature != signature::XSDT {
             return Err(AcpiError::InvalidTable);
@@ -144,12 +149,13 @@ impl AcpiParser {
         }
 
         let entry_count = (header.length as usize - core::mem::size_of::<AcpiSdtHeader>()) / 8;
-        let entries_ptr =
-            (xsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u64;
+        let entries_ptr = unsafe {
+            (xsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u64
+        };
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
-            let addr = ptr::read_unaligned(entries_ptr.add(i));
+            let addr = unsafe { ptr::read_unaligned(entries_ptr.add(i)) };
             addresses.push(addr);
         }
 
@@ -158,7 +164,7 @@ impl AcpiParser {
 
     /// Parse MADT (Multiple APIC Description Table)
     unsafe fn parse_madt(&self, madt_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
-        let madt = &*(madt_address as *const Madt);
+        let madt = unsafe { &*(madt_address as *const Madt) };
 
         if !madt.header.validate() {
             return Err(AcpiError::InvalidTableChecksum);
@@ -168,17 +174,17 @@ impl AcpiParser {
         info.has_legacy_pics = madt.has_legacy_pics();
 
         // Parse MADT entries
-        let entries_start = madt_address as usize + core::mem::size_of::<Madt>();
+        let entries_start = unsafe { madt_address as usize + core::mem::size_of::<Madt>() };
         let entries_end = madt_address as usize + madt.header.length as usize;
 
         let mut offset = entries_start;
         while offset < entries_end {
-            let entry_header = &*(offset as *const MadtEntryHeader);
+            let entry_header = unsafe { &*(offset as *const MadtEntryHeader) };
 
             match entry_header.entry_type {
                 0 => {
                     // Local APIC
-                    let entry = &*(offset as *const MadtLocalApic);
+                    let entry = unsafe { &*(offset as *const MadtLocalApic) };
                     info.local_apics.push(LocalApicInfo {
                         processor_id: entry.processor_id,
                         apic_id: entry.apic_id,
@@ -188,7 +194,7 @@ impl AcpiParser {
                 }
                 1 => {
                     // I/O APIC
-                    let entry = &*(offset as *const MadtIoApic);
+                    let entry = unsafe { &*(offset as *const MadtIoApic) };
                     info.io_apics.push(IoApicInfo {
                         id: entry.io_apic_id,
                         address: entry.io_apic_address as u64,
@@ -197,7 +203,7 @@ impl AcpiParser {
                 }
                 2 => {
                     // Interrupt Source Override
-                    let entry = &*(offset as *const MadtInterruptOverride);
+                    let entry = unsafe { &*(offset as *const MadtInterruptOverride) };
                     info.interrupt_overrides.push(InterruptOverrideInfo {
                         bus: entry.bus,
                         source: entry.source,
@@ -208,7 +214,7 @@ impl AcpiParser {
                 }
                 5 => {
                     // Local APIC Address Override
-                    let entry = &*(offset as *const MadtLocalApicOverride);
+                    let entry = unsafe { &*(offset as *const MadtLocalApicOverride) };
                     info.local_apic_address = entry.address;
                 }
                 _ => {}
@@ -225,21 +231,21 @@ impl AcpiParser {
 
     /// Parse MCFG (Memory-mapped Configuration space)
     unsafe fn parse_mcfg(&self, mcfg_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
-        let mcfg = &*(mcfg_address as *const Mcfg);
+        let mcfg = unsafe { &*(mcfg_address as *const Mcfg) };
 
         if !mcfg.header.validate() {
             return Err(AcpiError::InvalidTableChecksum);
         }
 
         // Parse MCFG entries
-        let entries_start = mcfg_address as usize + core::mem::size_of::<Mcfg>();
+        let entries_start = unsafe { mcfg_address as usize + core::mem::size_of::<Mcfg>() };
         let entries_end = mcfg_address as usize + mcfg.header.length as usize;
 
         let entry_size = core::mem::size_of::<McfgEntry>();
         let mut offset = entries_start;
 
         while offset + entry_size <= entries_end {
-            let entry = &*(offset as *const McfgEntry);
+            let entry = unsafe { &*(offset as *const McfgEntry) };
             info.pcie_ecam.push(PcieEcamInfo {
                 base_address: entry.base_address,
                 segment: entry.segment_group,
@@ -271,7 +277,7 @@ static ACPI_INFO: Mutex<Option<AcpiInfo>> = Mutex::new(None);
 /// The rsdp_address must point to a valid RSDP structure
     pub unsafe fn init(rsdp_address: u64) -> Result<(), AcpiError> {
     let mut parser = AcpiParser::new(rsdp_address);
-    let info = parser.parse()?;
+    let info = unsafe { parser.parse()? };
     *ACPI_INFO.lock() = Some(info.clone());
     Ok(())
     }

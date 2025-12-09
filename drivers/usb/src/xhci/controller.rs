@@ -399,7 +399,7 @@ impl XhciController {
 
         loop {
             let idx = event_ring.dequeue_index;
-            let trb = unsafe { hal::mmio::volatile_read::<Trb>(&event_ring.trbs[idx] as *const Trb as usize) };
+            let trb = hal::mmio::volatile_read::<Trb>(&event_ring.trbs[idx] as *const Trb as usize);
 
             if trb.cycle_bit() != expected_cycle {
                 break;
@@ -507,9 +507,7 @@ impl XhciController {
     /// ドアベルを鳴らす
     pub(crate) fn ring_doorbell(&self, slot_id: u8, target: u8) {
         let offset = self.db_offset + (slot_id as u64) * 4;
-        unsafe {
-            hal::mmio::mmio_write_u32(offset as usize, target as u32);
-        }
+        hal::mmio::mmio_write_u32(offset as usize, target as u32);
     }
 
     // レジスタアクセスヘルパー

@@ -118,19 +118,17 @@ impl ManagedRing {
         // TRBを書き込み
         let trb_addr = self.ring.physical_address() + (self.enqueue_index as u64) * 16;
         
-        unsafe {
-            let trb_ptr = trb_addr as *mut Trb;
-            let mut trb_with_cycle = trb;
-            
-            // サイクルビットを設定
-            if self.cycle_bit {
-                trb_with_cycle.control |= 1; // Cycle bit
-            } else {
-                trb_with_cycle.control &= !1;
-            }
-            
-            hal::mmio::volatile_write::<Trb>(trb_ptr as usize, trb_with_cycle);
+        let trb_ptr = trb_addr as *mut Trb;
+        let mut trb_with_cycle = trb;
+        
+        // サイクルビットを設定
+        if self.cycle_bit {
+            trb_with_cycle.control |= 1; // Cycle bit
+        } else {
+            trb_with_cycle.control &= !1;
         }
+        
+        hal::mmio::volatile_write::<Trb>(trb_ptr as usize, trb_with_cycle);
         
         let result_addr = trb_addr;
         self.enqueue_index += 1;
@@ -142,10 +140,8 @@ impl ManagedRing {
     pub fn dequeue(&mut self) -> Option<Trb> {
         let trb_addr = self.ring.physical_address() + (self.dequeue_index as u64) * 16;
         
-        let trb = unsafe {
-            let trb_ptr = trb_addr as *const Trb;
-            hal::mmio::volatile_read::<Trb>(trb_ptr as usize)
-        };
+        let trb_ptr = trb_addr as *const Trb;
+        let trb = hal::mmio::volatile_read::<Trb>(trb_ptr as usize);
         
         // サイクルビットをチェック
         let trb_cycle = (trb.control & 1) != 0;
@@ -171,10 +167,8 @@ impl ManagedRing {
         };
         
         let link_addr = self.ring.physical_address() + ((self.size - 1) as u64) * 16;
-        unsafe {
-            let trb_ptr = link_addr as *mut Trb;
-            hal::mmio::volatile_write::<Trb>(trb_ptr as usize, link_trb);
-        }
+        let trb_ptr = link_addr as *mut Trb;
+        hal::mmio::volatile_write::<Trb>(trb_ptr as usize, link_trb);
     }
     
     /// リングが空かどうか

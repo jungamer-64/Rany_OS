@@ -292,11 +292,13 @@ impl ApBootstrap {
 
         // Copy trampoline code to low memory
         let trampoline_ptr = TRAMPOLINE_BASE as *mut u8;
-        core::ptr::copy_nonoverlapping(
-            TRAMPOLINE_CODE.as_ptr(),
-            trampoline_ptr,
-            TRAMPOLINE_CODE.len(),
-        );
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                TRAMPOLINE_CODE.as_ptr(),
+                trampoline_ptr,
+                TRAMPOLINE_CODE.len(),
+            );
+        }
 
         Ok(())
     }
@@ -391,7 +393,7 @@ static AP_BOOTSTRAP: Mutex<Option<ApBootstrap>> = Mutex::new(None);
 /// Modifies low memory and sends IPIs
 pub unsafe fn init(lapic_base: u64, num_aps: u32) -> Result<(), &'static str> {
     let bootstrap = ApBootstrap::new(lapic_base, num_aps);
-    bootstrap.setup_trampoline()?;
+    unsafe { bootstrap.setup_trampoline()? };
     *AP_BOOTSTRAP.lock() = Some(bootstrap);
     Ok(())
 }

@@ -847,7 +847,7 @@ static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
 /// Caller must ensure MMIO address is valid
 pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     let mut controller = IommuController::new(mmio_base);
-    controller.init()?;
+    unsafe { controller.init()?; }
 
     crate::log!("IOMMU initialized at 0x{:X}\n", mmio_base);
 

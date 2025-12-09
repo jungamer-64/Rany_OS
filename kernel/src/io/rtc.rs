@@ -198,46 +198,54 @@ impl Rtc {
     unsafe fn read_cmos(reg: u8) -> u8 {
         // NMIを無効化しながらアドレスを設定
         let address = (reg & 0x7F) | 0x80;
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") CMOS_ADDRESS,
-            in("al") address,
-            options(nomem, nostack)
-        );
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") CMOS_ADDRESS,
+                in("al") address,
+                options(nomem, nostack)
+            );
+        }
         // 少し待機
-        core::arch::asm!("jmp 2f", "2:", options(nomem, nostack));
+        unsafe { core::arch::asm!("jmp 2f", "2:", options(nomem, nostack)); }
 
         let value: u8;
-        core::arch::asm!(
-            "in al, dx",
-            out("al") value,
-            in("dx") CMOS_DATA,
-            options(nomem, nostack)
-        );
+        unsafe {
+            core::arch::asm!(
+                "in al, dx",
+                out("al") value,
+                in("dx") CMOS_DATA,
+                options(nomem, nostack)
+            );
+        }
         value
     }
 
     /// CMOSレジスタに書き込み
     unsafe fn write_cmos(reg: u8, value: u8) {
         let address = (reg & 0x7F) | 0x80;
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") CMOS_ADDRESS,
-            in("al") address,
-            options(nomem, nostack)
-        );
-        core::arch::asm!("jmp 2f", "2:", options(nomem, nostack));
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") CMOS_DATA,
-            in("al") value,
-            options(nomem, nostack)
-        );
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") CMOS_ADDRESS,
+                in("al") address,
+                options(nomem, nostack)
+            );
+        }
+        unsafe { core::arch::asm!("jmp 2f", "2:", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!(
+                "out dx, al",
+                in("dx") CMOS_DATA,
+                in("al") value,
+                options(nomem, nostack)
+            );
+        }
     }
 
     /// 更新中かどうかを確認
     unsafe fn is_update_in_progress() -> bool {
-        (Self::read_cmos(regs::STATUS_A) & status_a::UPDATE_IN_PROGRESS) != 0
+        unsafe { (Self::read_cmos(regs::STATUS_A) & status_a::UPDATE_IN_PROGRESS) != 0 }
     }
 
     /// BCDをバイナリに変換
