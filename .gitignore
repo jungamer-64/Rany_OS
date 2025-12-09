@@ -10,6 +10,6 @@
 
 /.serena
 /.github/instructions
+.agent*
 *.log
 *.txt
-*.json
