@@ -18,9 +18,9 @@ fn nvme_name() -> &'static str { "nvme" }
 
 // Export the ABI vtable using the provided macro.
 // The driver type is Block (storage), and we pack a trivial version.
-// Manually define the exported entrypoint instead of using the macro to
-// validate that a plain `#[export_name = "_exorust_driver_entry"]` entrypoint is accepted.
-#[export_name = "_exorust_driver_entry"]
+// Manually define the exported entrypoint instead of using the macro.
+// Changed to #[unsafe(no_mangle)] for Rust 2024 edition compatibility.
+#[unsafe(no_mangle)]
 pub extern "C" fn _exorust_driver_entry() -> *const kernel_api::driver_abi::DriverVTable {
     extern "C" fn probe_adapter(_ctx: *mut kernel_api::driver_abi::DriverContext) -> i32 { 0 }
     extern "C" fn start_adapter(_ctx: *mut kernel_api::driver_abi::DriverContext) -> i32 { 0 }

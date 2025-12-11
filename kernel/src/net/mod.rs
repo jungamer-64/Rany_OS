@@ -34,6 +34,9 @@ pub mod stack;
 // VirtIO-Net driver bridge
 pub mod driver_bridge;
 
+// VirtIO-Net driver for DriverRegistry
+pub mod driver;
+
 // Endpoint API (旧称: socket → ゼロコピー所有権モデルを反映)
 pub mod endpoint;
 
