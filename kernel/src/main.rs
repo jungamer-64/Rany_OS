@@ -466,7 +466,17 @@ extern "C" fn kmain() -> ! {
             }
         }
     }
-
+    // 3.5.8. ドライバ初期化サマリ
+    {
+        let registry = driver_registry::driver_registry();
+        let drivers = registry.list();
+        info!(target: "init", "=== Driver Registry Summary ===");
+        info!(target: "init", "Registered: {} drivers, Running: {}", registry.count(), registry.running_count());
+        for (handle, name, dtype, state) in drivers {
+            info!(target: "init", "  [{:?}] {} ({:?}): {:?}", handle, name, dtype, state);
+        }
+        info!(target: "init", "==============================");
+    }
 
     // 3.6. ネットワークサブシステムの初期化
     info!(target: "init", "Initializing network subsystem");
@@ -479,13 +489,21 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Network stack initialized");
     graphics::update_boot_progress_with_message(50, "Network stack ready");
 
-    // 3.6.1. ネットワークドライバブリッジの初期化
-    info!(target: "init", "Initializing network driver bridge");
-    if let Err(e) = net::init_driver_bridge() {
-        warn!(target: "init", "Network driver bridge failed: {}", e);
-    } else {
-        info!(target: "init", "Network driver bridge initialized");
-    };
+    // 3.6.2. VirtIO-Net driver via DriverRegistry
+    info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
+    {
+        use net::driver::VirtioNetDriver;
+        use driver_registry::register_driver;
+        use alloc::boxed::Box;
+        
+        let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
+        
+        if let Err(e) = driver_registry::driver_registry().probe_and_start(net_handle) {
+            warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
+        }
+    }
 
     // 3.7. ファイルシステム（memfs）の初期化
     info!(target: "init", "Initializing memory filesystem");

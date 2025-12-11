@@ -75,7 +75,7 @@ extern "C" fn ahci_request_capabilities(caps: *mut DriverCapabilities) {
 /// The ABI-stable driver entry point.
 ///
 /// The kernel calls this to get the driver's vtable.
-#[export_name = "_exorust_driver_entry"]
+#[unsafe(no_mangle)]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
