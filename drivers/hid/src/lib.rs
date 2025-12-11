@@ -19,6 +19,8 @@
 
 extern crate alloc;
 
+pub mod ffi;
+
 use alloc::string::String;
 
 // ============================================================================

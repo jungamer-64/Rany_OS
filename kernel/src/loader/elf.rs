@@ -165,8 +165,8 @@ pub struct CellInfo {
     pub memory_size: usize,
     /// アライメント要件
     pub alignment: usize,
-    /// エクスポートされたシンボル
-    pub exports: Vec<String>,
+    /// エクスポートされたシンボル (name, value)
+    pub exports: Vec<(String, u64)>,
     /// インポートしているシンボル
     pub imports: Vec<String>,
     /// ロードするセグメント情報
@@ -255,7 +255,7 @@ impl<'a> ElfLoader<'a> {
     /// ELFをパースしてセル情報を取得
     pub fn parse(&self) -> Result<CellInfo, LoadError> {
         let mut segments = Vec::new();
-        let mut exports = Vec::new();
+        let mut exports: Vec<(String, u64)> = Vec::new();
         let mut imports = Vec::new();
         let mut max_addr = 0usize;
         let mut alignment = 4096usize;
@@ -319,7 +319,7 @@ impl<'a> ElfLoader<'a> {
     /// シンボルを解析
     fn parse_symbols(
         &self,
-        exports: &mut Vec<String>,
+        exports: &mut Vec<(String, u64)>,
         imports: &mut Vec<String>,
     ) -> Result<(), LoadError> {
         // セクションヘッダーを探索
@@ -346,7 +346,7 @@ impl<'a> ElfLoader<'a> {
     fn process_symbol_table(
         &self,
         sh: &Elf64SectionHeader,
-        exports: &mut Vec<String>,
+        exports: &mut Vec<(String, u64)>,
         imports: &mut Vec<String>,
     ) -> Result<(), LoadError> {
         let sym_count = sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
@@ -367,9 +367,9 @@ impl<'a> ElfLoader<'a> {
                     if sym.st_shndx == 0 {
                         // 未定義シンボル = インポート
                         imports.push(name);
-                    } else {
+                        } else {
                         // 定義済みシンボル = エクスポート
-                        exports.push(name);
+                        exports.push((name, sym.st_value));
                     }
                 }
             }

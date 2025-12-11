@@ -16,6 +16,7 @@
 //! - `dma_buffer` - DMA安全バッファ (requires kernel dma module)
 
 #![no_std]
+#![allow(unsafe_attr_outside_unsafe)]
 #![allow(dead_code)]
 
 extern crate alloc;
@@ -31,6 +32,7 @@ pub mod controller;
 pub mod port;
 pub mod dma_buffer;
 pub mod driver_impl;
+pub mod ffi;
 // pub mod poll_handler;
 
 // 主要な型を再エクスポート

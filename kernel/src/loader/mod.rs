@@ -21,6 +21,8 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use spin::Mutex;
+use crate::driver_registry::{register_abi_driver, DriverHandle};
+use kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL;
 
 /// セルの状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,7 +79,8 @@ pub struct CellEntry {
     /// エントリポイント
     pub entry_point: Option<usize>,
     /// エクスポートされたシンボル
-    pub exports: Vec<String>,
+    /// (名前, アドレス)
+    pub exports: Vec<(String, usize)>,
     /// インポートしているシンボル（依存関係）
     pub imports: Vec<String>,
     /// 依存するセル
@@ -86,6 +89,8 @@ pub struct CellEntry {
     pub is_safe: bool,
     /// 署名が検証済みかどうか
     pub signature_verified: bool,
+    /// 登録されたドライバ（このセルに依存するドライバ）
+    pub registered_drivers: Vec<DriverHandle>,
 }
 
 impl CellRegistry {
@@ -107,8 +112,8 @@ impl CellRegistry {
     /// セルを登録
     pub fn register(&mut self, entry: CellEntry) {
         // シンボルテーブルにエクスポートを追加
-        for symbol in &entry.exports {
-            self.symbol_table.insert(symbol.clone(), entry.load_address);
+        for (symbol, addr) in &entry.exports {
+            self.symbol_table.insert(symbol.clone(), *addr);
         }
         self.cells.insert(entry.id, entry);
     }
@@ -132,7 +137,7 @@ impl CellRegistry {
     pub fn unload(&mut self, id: CellId) -> Option<CellEntry> {
         if let Some(entry) = self.cells.remove(&id) {
             // シンボルテーブルからエクスポートを削除
-            for symbol in &entry.exports {
+            for (symbol, _) in &entry.exports {
                 self.symbol_table.remove(symbol);
             }
             Some(entry)
@@ -264,11 +269,16 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
             load_address: loaded.base_address,
             load_size: loaded.size,
             entry_point: loaded.entry_point,
-            exports: cell_info.exports,
+            exports: cell_info
+                .exports
+                .iter()
+                .map(|(n, v)| (n.clone(), loaded.base_address + *v as usize))
+                .collect(),
             imports: cell_info.imports,
             dependencies: Vec::new(),
             is_safe: !signature.contains_unsafe,
             signature_verified: true,
+            registered_drivers: Vec::new(),
         };
         r.register(entry);
         id
@@ -277,14 +287,58 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
     Ok(id)
 }
 
+/// Load a driver artifact and register it as an ABI driver with the DriverRegistry.
+pub fn load_driver(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<DriverHandle, LoadError> {
+    // Load the cell first
+    let cell_id = load_cell(name, elf_data, allow_unsafe)?;
+
+    // Resolve driver entry symbol address
+    let entry_addr = with_registry(|r| r.resolve_symbol(DRIVER_ENTRY_SYMBOL));
+    let entry_addr = match entry_addr {
+        Some(a) => a,
+        None => return Err(LoadError::InvalidFormat("Driver entry symbol not found".into())),
+    };
+
+    // Cast address to function pointer
+    let entry_fn: kernel_api::driver_abi::DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
+
+    // Register with driver registry
+    match register_abi_driver(entry_fn) {
+        Ok(handle) => {
+            // record driver handle in the cell entry so the cell cannot be unloaded
+            with_registry_mut(|r| {
+                if let Some(entry) = r.get_mut(cell_id) {
+                    entry.registered_drivers.push(handle);
+                    crate::log!("[Loader] Driver registered: {:?} for cell {:?}\n", handle, cell_id.as_u64());
+                }
+            });
+            Ok(handle)
+        }
+        Err(_) => {
+            // registration failed - unload cell to clean up
+            with_registry_mut(|r| {
+                r.unload(cell_id);
+            });
+            Err(LoadError::InvalidFormat("Failed to register ABI driver".into()))
+        }
+    }
+}
+
 /// セルをアンロード
 pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     // 依存しているセルがないかチェック
     let has_dependents = with_registry(|r| r.all_cells().any(|c| c.dependencies.contains(&id)));
+    // Check if this cell has any registered drivers
+    let has_drivers = with_registry(|r| r.get(id).map(|c| !c.registered_drivers.is_empty()).unwrap_or(false));
 
     if has_dependents {
         return Err(LoadError::UnresolvedDependency(
             "Cell has active dependents".into(),
+        ));
+    }
+    if has_drivers {
+        return Err(LoadError::UnresolvedDependency(
+            "Cell has registered drivers".into(),
         ));
     }
 
@@ -297,6 +351,36 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     // Note: セルのロードアドレスとサイズから解放
     // 実装: CellEntryにload_addressとload_sizeがあるので
     // crate::allocator::deallocate(load_address, load_size)
+
+    Ok(())
+}
+
+/// Unload a registered driver by handle, unregistering from the DriverRegistry
+/// and removing it from the cell's registered_drivers. This ensures the cell
+/// can be unloaded safely by freeing the driver reference.
+pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
+    // Unregister from driver registry first
+    match crate::driver_registry::unregister_driver(handle) {
+        Ok(()) => {}
+        Err(_) => return Err(LoadError::InvalidFormat("Failed to unregister driver".into())),
+    }
+
+    // Remove handle from cell entries
+    let mut found = false;
+    with_registry_mut(|r| {
+        for entry in r.cells.values_mut() {
+            if let Some(pos) = entry.registered_drivers.iter().position(|h| *h == handle) {
+                entry.registered_drivers.remove(pos);
+                found = true;
+                crate::log!("[Loader] Removed driver handle {:?} from cell {}\n", handle, entry.id.as_u64());
+                break;
+            }
+        }
+    });
+
+    if !found {
+        return Err(LoadError::InvalidFormat("Driver handle not found in any cell".into()));
+    }
 
     Ok(())
 }
@@ -316,6 +400,7 @@ pub fn init_kernel_cell() {
             dependencies: Vec::new(),
             is_safe: false, // カーネルはunsafeを含む
             signature_verified: true,
+                registered_drivers: Vec::new(),
         };
         r.register(entry);
     });

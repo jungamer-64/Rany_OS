@@ -1,0 +1,17 @@
+[package]
+name = "example_abi_driver"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "example_abi"
+path = "src/lib.rs"
+crate-type = ["staticlib"]
+
+[dependencies]
+kernel_api = { path = "../../interfaces/kernel_api" }
+
+[features]
+# Standalone: build the driver as a standalone no_std artifact (adds panic/alloc handlers and a dummy allocator)
+default = []
+standalone = []
