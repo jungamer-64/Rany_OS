@@ -18,6 +18,7 @@ pub mod security;
 pub mod kapi;
 pub mod application;
 pub mod driver;
+pub mod driver_abi;
 
 // Re-export commonly used types
 pub use error::{KapiError, KapiResult};
@@ -26,5 +27,8 @@ pub use types::{TaskHandle, DmaBuffer, Packet, SystemInfo, OpenMode, FileHandle,
 pub use security::{DomainCapabilities, MemoryCapability, NetCapability, IoCapability, DmaCapability, FsCapability, IpcCapability, TaskCapability, InterruptCapability};
 pub use application::{Application, AppContext};
 pub use driver::{Driver, DriverVersion, DriverType, DeviceId, DriverInfo, DriverState};
-
-
+pub use driver_abi::{
+    DRIVER_ABI_VERSION, DRIVER_ENTRY_SYMBOL,
+    DriverVTable, DriverContext, DriverCapabilities, DriverEntryFn,
+    AbiError, AbiDriverType, pack_version, unpack_version,
+};

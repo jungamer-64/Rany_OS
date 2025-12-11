@@ -165,6 +165,56 @@ jobs:
         grep -rn "TODO\|FIXME" src --include="*.rs" || echo "None found"
 
   # ============================================================================
+  # Driver Isolation Check
+  # ============================================================================
+  driver-isolation:
+    name: Driver Isolation Check
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Verify drivers don't depend on kernel
+      run: |
+        echo "=== Checking driver dependencies ==="
+        FAILED=0
+        for driver in drivers/*/Cargo.toml; do
+          if [ -f "$driver" ]; then
+            DRIVER_NAME=$(dirname "$driver")
+            if grep -q 'rany_kernel' "$driver" || grep -q 'path.*kernel' "$driver"; then
+              echo "❌ $DRIVER_NAME: depends on kernel crate!"
+              FAILED=1
+            else
+              echo "✅ $DRIVER_NAME: properly isolated"
+            fi
+          fi
+        done
+        if [ $FAILED -eq 1 ]; then
+          echo ""
+          echo "ERROR: Drivers must only depend on kernel_api, not kernel!"
+          exit 1
+        fi
+    
+    - name: Verify drivers export ABI symbols
+      run: |
+        echo "=== Checking for ABI exports ==="
+        for driver in drivers/*/src/ffi.rs; do
+          if [ -f "$driver" ]; then
+            if grep -q '_exorust_driver_entry' "$driver"; then
+              echo "✅ $(dirname $(dirname $driver)): exports _exorust_driver_entry"
+            else
+              echo "⚠️  $(dirname $(dirname $driver)): no _exorust_driver_entry found"
+            fi
+          fi
+        done
+    
+    - name: Check ABI version consistency
+      run: |
+        echo "=== ABI version check ==="
+        ABI_VERSION=$(grep 'DRIVER_ABI_VERSION.*=' interfaces/kernel_api/src/driver_abi.rs | head -1)
+        echo "kernel_api: $ABI_VERSION"
+
+  # ============================================================================
   # Security Audit Job
   # ============================================================================
   security:

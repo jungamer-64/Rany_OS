@@ -11,3 +11,4 @@ graphic_types = { path = "../../libs/graphic_types" }
 
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
+kernel_api = { path = "../../interfaces/kernel_api" }

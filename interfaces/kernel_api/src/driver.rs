@@ -91,6 +91,14 @@ pub trait Driver: Send + Sync {
         Ok(())
     }
 
+    /// ドライバを削除/アンレジスター
+    ///
+    /// ドライバのリソース解放や、ホットアンロード時のクリーンアップを行う。
+    /// デフォルトでは何もしない（`Ok(())` を返す）。
+    fn remove(&mut self) -> KapiResult<()> {
+        Ok(())
+    }
+
     /// ドライバがサポートするデバイス情報
     fn supported_devices(&self) -> &[DeviceId] {
         &[]
@@ -122,6 +130,7 @@ impl core::fmt::Display for DriverVersion {
 }
 
 /// ドライバの種類
+#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DriverType {
     /// PCIデバイスドライバ
@@ -140,6 +149,13 @@ pub enum DriverType {
     Serial,
     /// その他
     Other,
+}
+
+impl DriverType {
+    /// Convert to ABI-stable u32 representation
+    pub const fn as_u32(self) -> u32 {
+        self as u32
+    }
 }
 
 /// デバイス識別子
@@ -214,4 +230,6 @@ pub enum DriverState {
     Stopped,
     /// エラー
     Error,
+    /// 削除済み（ドライバがアンレジスターされた、またはロード解除済み）
+    Removed,
 }

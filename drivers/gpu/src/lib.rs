@@ -20,6 +20,8 @@
 
 extern crate alloc;
 
+pub mod ffi;
+
 pub use graphic_types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
 
 // ============================================================================

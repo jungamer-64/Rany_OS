@@ -18,6 +18,7 @@ members = [
     "drivers/nvme",
     "drivers/gpu",
     "drivers/hid",
+    "drivers/example_abi",
     # Apps
     "apps",
 ]

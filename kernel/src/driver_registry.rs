@@ -28,6 +28,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
 use kernel_api::driver::{Driver, DriverType, DeviceId, DriverState};
+use kernel_api::driver_abi::{DriverEntryFn as AbiEntryFn, DriverVTable as AbiDriverVTable, DriverContext as AbiDriverContext, DriverCapabilities as AbiDriverCapabilities, AbiError as AbiErrorCode, AbiDriverType};
+use kernel_api::error::{KapiError, KapiResult};
 use spin::Mutex;
 
 // ============================================================================
@@ -249,6 +251,58 @@ impl DriverRegistry {
             }
         }
     }
+
+    /// Initialize all drivers (probe + start in one call)
+    /// 
+    /// This is the main entry point for bulk driver initialization.
+    /// Logs success/failure for each driver.
+    pub fn init_all(&self) {
+        let count = self.count();
+        crate::log!("[DRIVER] Initializing {} registered drivers...\n", count);
+        
+        for i in 0..count {
+            let handle = DriverHandle(i);
+            let name = self.name(handle).unwrap_or_else(|| alloc::string::String::from("unknown"));
+            
+            crate::log!("[DRIVER] Initializing: {}\n", name);
+            
+            match self.probe_and_start(handle) {
+                Ok(()) => {
+                    crate::log!("[DRIVER] {} initialized successfully\n", name);
+                }
+                Err(e) => {
+                    crate::log!("[DRIVER] {} initialization failed: {:?}\n", name, e);
+                }
+            }
+        }
+        
+        crate::log!("[DRIVER] Driver initialization complete: {}/{} running\n", 
+                   self.running_count(), count);
+    }
+
+    /// Unregister a driver and replace it with a null driver to allow cell unloading
+    pub fn unregister(&self, handle: DriverHandle) -> Result<(), DriverError> {
+        let mut drivers = self.drivers.lock();
+        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+
+        if entry.state == DriverState::Running {
+            return Err(DriverError::InvalidState);
+        }
+
+        // Preserve driver name and type for logging
+        let old_name = alloc::string::String::from(entry.driver.name());
+        let old_ty = entry.driver.driver_type();
+
+        // Try to remove driver resources first
+        let _ = entry.driver.remove();
+
+        // Replace the driver with a null implementation and mark removed
+        entry.driver = Box::new(NullDriver::new(&old_name, old_ty));
+        entry.state = DriverState::Removed;
+
+        crate::log!("[DRIVER] Unregistered driver: {}\n", old_name);
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -312,4 +366,272 @@ pub fn driver_registry() -> &'static DriverRegistry {
 /// Register a driver (convenience function)
 pub fn register_driver(driver: Box<dyn Driver>) -> DriverHandle {
     DRIVER_REGISTRY.register(driver)
+}
+
+/// Initialize all registered drivers (probe + start)
+/// 
+/// This is the simplified API for main.rs to call after registering all drivers.
+pub fn init_all_drivers() {
+    DRIVER_REGISTRY.init_all()
+}
+
+/// Register a driver implemented as an ABI vtable
+pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverError> {
+    // Call the entry to get vtable pointer
+    let vtable_ptr = entry();
+    if vtable_ptr.is_null() {
+        return Err(DriverError::InvalidState);
+    }
+
+    let vtable = unsafe { &*vtable_ptr };
+
+    // Validate ABI version
+    match vtable.validate() {
+        Ok(()) => {}
+        Err(_) => return Err(DriverError::InvalidState),
+    }
+
+    // Read name
+    let name_ptr = (vtable.name)();
+    let name_len = (vtable.name_len)();
+    let name = if name_ptr.is_null() || name_len == 0 {
+        alloc::string::String::from("abi_driver")
+    } else {
+        let bytes = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+        alloc::string::String::from_utf8_lossy(bytes).into_owned()
+    };
+
+    // Build AbiDriver wrapper
+    let abi_driver = Box::new(AbiDriver {
+        vtable: vtable_ptr,
+        name,
+        ctx: AbiDriverContext::new(),
+    });
+
+    Ok(DRIVER_REGISTRY.register(abi_driver))
+}
+
+/// Unregister a driver by handle
+pub fn unregister_driver(handle: DriverHandle) -> Result<(), DriverError> {
+    DRIVER_REGISTRY.unregister(handle)
+}
+
+// Adapter to delegate trait calls to ABI vtable
+struct AbiDriver {
+    vtable: *const AbiDriverVTable,
+    name: alloc::string::String,
+    ctx: AbiDriverContext,
+}
+
+// Safety: AbiDriver contains a raw pointer to a statically allocated vtable that
+// is anchored in the driver binary memory. We ensure that the pointer remains
+// valid during the driver lifetime (loader must hold driver loaded) and so
+// it is safe to mark Send/Sync for sharing across kernel threads.
+unsafe impl Send for AbiDriver {}
+unsafe impl Sync for AbiDriver {}
+
+impl AbiDriver {
+    fn vtable(&self) -> &AbiDriverVTable {
+        unsafe { &*self.vtable }
+    }
+
+    fn map_abi_error(code: i32) -> Result<(), KapiError> {
+        let abi = AbiErrorCode::from_raw(code);
+        match abi {
+            AbiErrorCode::Success => Ok(()),
+            AbiErrorCode::DeviceNotFound => Err(KapiError::NotFound),
+            AbiErrorCode::OutOfMemory => Err(KapiError::OutOfMemory),
+            AbiErrorCode::NotSupported => Err(KapiError::NotSupported),
+            // generic fallback
+            _ => Err(KapiError::Internal(code)),
+        }
+    }
+}
+
+/// A null driver used to replace unregistered drivers in the registry.
+struct NullDriver {
+    name: alloc::string::String,
+    ty: DriverType,
+}
+
+impl NullDriver {
+    fn new(name: &str, ty: DriverType) -> Self {
+        Self { name: alloc::string::String::from(name), ty }
+    }
+}
+
+impl Driver for NullDriver {
+    fn name(&self) -> &str { &self.name }
+
+    fn version(&self) -> kernel_api::driver::DriverVersion { kernel_api::driver::DriverVersion::new(0,0,0) }
+
+    fn driver_type(&self) -> DriverType { self.ty }
+
+    fn probe(&mut self) -> KapiResult<()> { Err(KapiError::NotSupported) }
+
+    fn start(&mut self) -> KapiResult<()> { Err(KapiError::NotSupported) }
+
+    fn stop(&mut self) -> KapiResult<()> { Ok(()) }
+
+    fn supported_devices(&self) -> &[kernel_api::driver::DeviceId] { &[] }
+}
+
+impl Driver for AbiDriver {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn version(&self) -> kernel_api::driver::DriverVersion {
+        let v = (self.vtable().version)();
+        let (major, minor, patch) = kernel_api::driver_abi::unpack_version(v);
+        kernel_api::driver::DriverVersion::new(major, minor, patch)
+    }
+
+    fn driver_type(&self) -> DriverType {
+        let t = (self.vtable().driver_type)();
+        match t {
+            x if x == AbiDriverType::Pci as u32 => DriverType::Pci,
+            x if x == AbiDriverType::Usb as u32 => DriverType::Usb,
+            x if x == AbiDriverType::Block as u32 => DriverType::Block,
+            x if x == AbiDriverType::Network as u32 => DriverType::Network,
+            x if x == AbiDriverType::Hid as u32 => DriverType::Hid,
+            x if x == AbiDriverType::Graphics as u32 => DriverType::Graphics,
+            x if x == AbiDriverType::Serial as u32 => DriverType::Serial,
+            _ => DriverType::Other,
+        }
+    }
+
+    fn probe(&mut self) -> KapiResult<()> {
+        // Request capabilities if present
+        if let Some(req) = self.vtable().request_capabilities {
+            let mut caps = AbiDriverCapabilities::default();
+            req(&mut caps);
+            // We ignore capabilities for now; future work: map to kernel capabilities
+        }
+
+        let res = (self.vtable().probe)(&mut self.ctx as *mut _);
+        match Self::map_abi_error(res) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
+
+    fn start(&mut self) -> KapiResult<()> {
+        let res = (self.vtable().start)(&mut self.ctx as *mut _);
+        Self::map_abi_error(res)
+    }
+
+    fn stop(&mut self) -> KapiResult<()> {
+        let res = (self.vtable().stop)(&mut self.ctx as *mut _);
+        Self::map_abi_error(res)
+    }
+
+    fn remove(&mut self) -> KapiResult<()> {
+        let res = (self.vtable().remove)(&mut self.ctx as *mut _);
+        Self::map_abi_error(res)
+    }
+
+    fn supported_devices(&self) -> &[DeviceId] {
+        &[]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::{with_registry_mut, unload_cell, CellId};
+    use alloc::string::String;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use kernel_api::driver_abi::{DriverVTable, DriverContext, DriverEntryFn, DRIVER_ABI_VERSION, AbiDriverType};
+    use core::ptr;
+
+    static PROBE_CALLED: AtomicBool = AtomicBool::new(false);
+        static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn probe(_ctx: *mut DriverContext) -> i32 {
+        PROBE_CALLED.store(true, Ordering::SeqCst);
+        0
+    }
+
+    extern "C" fn start(_ctx: *mut DriverContext) -> i32 { 0 }
+    extern "C" fn stop(_ctx: *mut DriverContext) -> i32 { 0 }
+    extern "C" fn remove(_ctx: *mut DriverContext) -> i32 { REMOVE_CALLED.store(true, Ordering::SeqCst); 0 }
+
+    static NAME_BYTES: &[u8] = b"test_abi_driver\0";
+
+    extern "C" fn name_fn() -> *const u8 { NAME_BYTES.as_ptr() }
+    extern "C" fn name_len_fn() -> usize { NAME_BYTES.len() - 1 }
+    extern "C" fn type_fn() -> u32 { AbiDriverType::Block as u32 }
+    extern "C" fn version_fn() -> u64 { 0 }
+
+    static VTABLE: DriverVTable = DriverVTable::new(
+        DRIVER_ABI_VERSION,
+        probe,
+        start,
+        stop,
+        remove,
+        name_fn,
+        name_len_fn,
+        type_fn,
+        version_fn,
+        None,
+        None,
+    );
+
+    extern "C" fn entry_fn() -> *const DriverVTable { &VTABLE }
+
+    #[test]
+    fn test_register_abi_driver_and_block_unload() {
+        // Register driver
+        let handle = register_abi_driver(entry_fn).expect("register failed");
+
+        // Probe driver
+        let _ = DRIVER_REGISTRY.probe(handle);
+        assert!(PROBE_CALLED.load(Ordering::SeqCst));
+
+        // Allocate and register a fake cell
+        let cell_id = with_registry_mut(|r| {
+            let id = r.allocate_id();
+            let entry = crate::loader::CellEntry {
+                id,
+                name: String::from("test-cell"),
+                state: crate::loader::CellState::Loaded,
+                load_address: 0x1000,
+                load_size: 0x2000,
+                entry_point: None,
+                exports: Vec::new(),
+                imports: Vec::new(),
+                dependencies: Vec::new(),
+                is_safe: true,
+                signature_verified: true,
+                registered_drivers: vec![handle],
+            };
+            r.register(entry);
+            id
+        });
+
+        // Attempt to unload - should fail because driver is registered
+        let res = unload_cell(cell_id);
+        assert!(res.is_err());
+
+        // Unregister the driver and try again
+        let _ = crate::loader::unload_driver(handle).expect("unregister failed");
+        assert!(REMOVE_CALLED.load(Ordering::SeqCst));
+        let res2 = unload_cell(cell_id);
+        assert!(res2.is_ok());
+    }
+
+    #[test]
+    fn test_unregister_running_fails() {
+        // Register driver
+        let handle = register_abi_driver(entry_fn).expect("register failed");
+
+        // Probe and start driver
+        let _ = DRIVER_REGISTRY.probe(handle);
+        let _ = DRIVER_REGISTRY.start(handle);
+
+        // Attempt to unload driver while running - should fail
+        let res = crate::loader::unload_driver(handle);
+        assert!(res.is_err());
+    }
 }

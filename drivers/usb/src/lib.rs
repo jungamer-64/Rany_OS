@@ -26,6 +26,7 @@ pub mod descriptor;
 pub mod device;
 pub mod xhci;
 pub mod driver_impl;
+pub mod ffi;
 
 use alloc::boxed::Box;
 use alloc::string::String;

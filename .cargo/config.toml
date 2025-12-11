@@ -1,20 +1,3 @@
-[build]
-target = "x86_64-unknown-none"
-
-[unstable]
-build-std = ["core", "compiler_builtins", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
-
-[target.x86_64-unknown-none]
-runner = "pwsh scripts/run-uefi.ps1"
-rustflags = [
-    "-C", "code-model=kernel",
-    "-C", "relocation-model=static", 
-    "-C", "link-arg=-Tlinker.ld",
-    # curve25519-dalekのSIMDバックエンドを無効化（no_std環境）
-    "--cfg", "curve25519_dalek_backend=\"serial\""
-]
-
-# Alias for xtask commands
 [alias]
+# Alias for xtask commands
 xtask = "run --package xtask --"
