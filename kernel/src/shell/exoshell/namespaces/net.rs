@@ -6,38 +6,43 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::borrow::Cow;
 
 use crate::shell::exoshell::types::ExoValue;
+use crate::task::process::getpid;
+use crate::security::capability::{manager, CAP_NET_RAW};
+use super::{ShellNamespace, BoxFuture};
+use alloc::boxed::Box;
 
 /// ネットワーク名前空間
 pub struct NetNamespace;
 
 impl NetNamespace {
     /// ネットワーク設定を取得
-    pub fn config() -> ExoValue {
+    pub fn config() -> ExoValue<'static> {
         if let Some(cfg) = crate::net::get_network_config() {
             let mut map = BTreeMap::new();
             map.insert(
                 String::from("ip"),
-                ExoValue::String(format!(
+                ExoValue::String(Cow::Owned(format!(
                     "{}.{}.{}.{}",
                     cfg.ip[0], cfg.ip[1], cfg.ip[2], cfg.ip[3]
-                )),
+                ))),
             );
             map.insert(
                 String::from("netmask"),
-                ExoValue::String(format!(
+                ExoValue::String(Cow::Owned(format!(
                     "{}.{}.{}.{}",
                     cfg.netmask[0], cfg.netmask[1], cfg.netmask[2], cfg.netmask[3]
-                )),
+                ))),
             );
             map.insert(
                 String::from("mac"),
-                ExoValue::String(format!(
+                ExoValue::String(Cow::Owned(format!(
                     "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                     cfg.mac[0], cfg.mac[1], cfg.mac[2],
                     cfg.mac[3], cfg.mac[4], cfg.mac[5]
-                )),
+                ))),
             );
             ExoValue::Map(map)
         } else {
@@ -46,7 +51,7 @@ impl NetNamespace {
     }
 
     /// ネットワーク統計
-    pub fn stats() -> ExoValue {
+    pub fn stats() -> ExoValue<'static> {
         if let Some(stats) = crate::net::get_network_stats() {
             let mut map = BTreeMap::new();
             map.insert(String::from("rx_packets"), ExoValue::Int(stats.rx_packets as i64));
@@ -62,7 +67,7 @@ impl NetNamespace {
     }
 
     /// ARP キャッシュ
-    pub fn arp_cache() -> ExoValue {
+    pub fn arp_cache() -> ExoValue<'static> {
         if let Some(entries) = crate::net::get_arp_cache() {
             let values: Vec<ExoValue> = entries
                 .into_iter()
@@ -70,18 +75,18 @@ impl NetNamespace {
                     let mut map = BTreeMap::new();
                     map.insert(
                         String::from("ip"),
-                        ExoValue::String(format!(
+                        ExoValue::String(Cow::Owned(format!(
                             "{}.{}.{}.{}",
                             e.ip[0], e.ip[1], e.ip[2], e.ip[3]
-                        )),
+                        ))),
                     );
                     map.insert(
                         String::from("mac"),
-                        ExoValue::String(format!(
+                        ExoValue::String(Cow::Owned(format!(
                             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
                             e.mac[0], e.mac[1], e.mac[2],
                             e.mac[3], e.mac[4], e.mac[5]
-                        )),
+                        ))),
                     );
                     map.insert(String::from("complete"), ExoValue::Bool(e.complete));
                     ExoValue::Map(map)
@@ -94,7 +99,14 @@ impl NetNamespace {
     }
 
     /// ICMP エコー送信（async版 - パケット間でyield）
-    pub async fn ping(ip: [u8; 4], count: u16) -> ExoValue {
+    /// Requires CAP_NET_RAW
+    pub async fn ping(ip: [u8; 4], count: u16) -> ExoValue<'static> {
+        // セキュリティチェック
+        let pid = getpid().as_u64();
+        if !manager().has_capability(pid, CAP_NET_RAW) {
+            return ExoValue::Error(String::from("Permission denied: CAP_NET_RAW required"));
+        }
+
         let mut results = Vec::new();
         for seq in 1..=count {
             // 各パケット送信前にyield（他タスクに機会を与える）
@@ -111,7 +123,7 @@ impl NetNamespace {
                 Err(e) => {
                     let mut map = BTreeMap::new();
                     map.insert(String::from("seq"), ExoValue::Int(seq as i64));
-                    map.insert(String::from("error"), ExoValue::String(e));
+                    map.insert(String::from("error"), ExoValue::String(Cow::Owned(e)));
                     map.insert(String::from("success"), ExoValue::Bool(false));
                     results.push(ExoValue::Map(map));
                 }

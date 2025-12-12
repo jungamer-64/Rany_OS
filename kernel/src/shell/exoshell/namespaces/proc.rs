@@ -4,15 +4,20 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::format;
 
 use crate::shell::exoshell::types::*;
+use crate::task::process::{getpid, getuid};
+use crate::security::capability::{manager, CAP_KILL};
+use super::{ShellNamespace, BoxFuture};
+use alloc::boxed::Box;
 
 /// プロセス/タスク名前空間
 pub struct ProcNamespace;
 
 impl ProcNamespace {
     /// 実行中のタスク一覧
-    pub fn list() -> ExoValue {
+    pub fn list() -> ExoValue<'static> {
         let mut processes = Vec::new();
         
         // プロセスマネージャから全プロセスIDを取得して情報を取得
@@ -64,7 +69,7 @@ impl ProcNamespace {
     }
 
     /// 特定プロセスの情報
-    pub fn info(pid: u32) -> ExoValue {
+    pub fn info(pid: u32) -> ExoValue<'static> {
         let proc_id = crate::task::ProcessId::new(pid as u64);
         
         if let Some(process) = crate::task::process_manager().get(proc_id) {
@@ -102,14 +107,26 @@ impl ProcNamespace {
     }
 
     /// プロセスを終了（シグナル送信）
-    pub fn kill(pid: u32, _signal: i32) -> ExoValue {
+    /// Requires owner or CAP_KILL
+    pub fn kill(pid: u32, _signal: i32) -> ExoValue<'static> {
         if pid == 0 {
             return ExoValue::Error(String::from("Cannot kill kernel process"));
         }
         
         let proc_id = crate::task::ProcessId::new(pid as u64);
+        let pm = crate::task::process_manager();
         
-        if let Some(process) = crate::task::process_manager().get(proc_id) {
+        if let Some(process) = pm.get(proc_id) {
+            // 権限チェック
+            let current_uid = getuid();
+            let target_uid = process.read().credentials.uid;
+            let current_pid = getpid().as_u64();
+            
+            // 自分のプロセスか、CAP_KILLを持っている場合に許可
+            if current_uid != target_uid && !manager().has_capability(current_pid, CAP_KILL) {
+                return ExoValue::Error(String::from("Permission denied: Owner or CAP_KILL required"));
+            }
+
             // プロセスを終了状態に設定
             let mut p = process.write();
             p.state = crate::task::ProcessState::Stopped;
