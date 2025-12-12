@@ -359,6 +359,7 @@ impl Ps2Controller {
         if port1_ok {
             self.write_command(commands::ENABLE_PORT1);
             config |= 0x01; // ポート1割り込み有効
+            config |= 0x40; // 変換有効 (Set 2 -> Set 1)
         }
 
         if port2_ok {

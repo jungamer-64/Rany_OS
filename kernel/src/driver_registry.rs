@@ -147,7 +147,7 @@ impl DriverRegistry {
                 entry.state = DriverState::Stopped;
                 Ok(())
             }
-            Err(e) => {
+            Err(_e) => {
                 entry.state = DriverState::Error;
                 Err(DriverError::StopFailed)
             }

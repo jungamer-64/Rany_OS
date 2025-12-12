@@ -52,16 +52,60 @@ impl Framebuffer {
         self.back_buffer = Some(vec![0u8; size]);
     }
 
+    /// ダブルバッファリングを外部バッファで有効化（デッドロック回避用）
+    pub fn enable_double_buffering_from_vec(&mut self, buffer: Vec<u8>) {
+        if buffer.len() == self.info.size() {
+            self.back_buffer = Some(buffer);
+        } else {
+             // サイズ不一致だけどパニックさせるとまたロックの問題が出るかも？
+             // ログ出さずにリターンするか、あるいはパニック（ロック保持中なのでパニックハンドラがデッドロックするリスクあり）
+             // ここはリターンしてエラー状態にするのが安全
+        }
+    }
+
     /// ダブルバッファリングが有効かどうかを取得
     pub fn is_double_buffered(&self) -> bool {
         self.back_buffer.is_some()
     }
 
-    /// バックバッファをフロントにコピー
+    /// バックバッファをフロントにコピー（全画面）
     pub fn swap_buffers(&mut self) {
         if let Some(ref back) = self.back_buffer {
             unsafe {
                 ptr::copy_nonoverlapping(back.as_ptr(), self.buffer, self.info.size());
+            }
+        }
+    }
+    
+    /// 指定領域のみバックバッファからVRAMへコピー（部分Blit）
+    /// 全画面コピーより効率的
+    /// 注: "Swap"ではなく"Blit"（一方向コピー）
+    pub fn blit_rect(&mut self, rect: Rect) {
+        if let Some(ref back) = self.back_buffer {
+            let stride = self.info.stride as usize;
+            let bytes_per_pixel = (self.info.bpp / 8) as usize;
+            
+            // 境界チェック
+            let x = (rect.x.max(0) as u32).min(self.info.width) as usize;
+            let y = (rect.y.max(0) as u32).min(self.info.height) as usize;
+            let w = (rect.width as usize).min(self.info.width as usize - x);
+            let h = (rect.height as usize).min(self.info.height as usize - y);
+            
+            if w == 0 || h == 0 {
+                return;
+            }
+            
+            let row_bytes = w * bytes_per_pixel;
+            
+            unsafe {
+                for row in 0..h {
+                    let offset = (y + row) * stride + x * bytes_per_pixel;
+                    ptr::copy_nonoverlapping(
+                        back.as_ptr().add(offset),
+                        self.buffer.add(offset),
+                        row_bytes
+                    );
+                }
             }
         }
     }
@@ -98,6 +142,11 @@ impl Framebuffer {
     /// クリップ領域をリセット
     pub fn reset_clip(&mut self) {
         self.clip = Rect::new(0, 0, self.info.width, self.info.height);
+    }
+
+    /// 現在のクリップ領域を取得
+    pub fn clip_rect(&self) -> Rect {
+        self.clip
     }
 
     /// ピクセルをセット
@@ -270,11 +319,125 @@ impl Framebuffer {
         self.draw_vline(rect.right() - 1, rect.y, rect.bottom() - 1, color);
     }
 
-    /// 塗りつぶし矩形を描画
+    /// 矩形領域をコピー（スクロール等に使用）
+    pub fn copy_rect(&mut self, src: Rect, dst_x: i32, dst_y: i32) {
+        // クリップ処理
+        let mut s = src;
+        // srcのクリップ
+        s.x = s.x.max(self.clip.x);
+        s.y = s.y.max(self.clip.y);
+        let s_right = s.right().min(self.clip.right());
+        let s_bottom = s.bottom().min(self.clip.bottom());
+        s.width = (s_right - s.x).max(0) as u32;
+        s.height = (s_bottom - s.y).max(0) as u32;
+        
+        // dstのクリップ（srcと連動）
+        let mut d_x = dst_x + (s.x - src.x);
+        let mut d_y = dst_y + (s.y - src.y);
+        
+        // dstが画面外にはみ出す場合の調整
+        let clip_left = self.clip.x;
+        let clip_top = self.clip.y;
+        let clip_right = self.clip.right();
+        let clip_bottom = self.clip.bottom();
+
+        if d_x < clip_left {
+            let diff = clip_left - d_x;
+            s.x += diff;
+            s.width = s.width.saturating_sub(diff as u32);
+            d_x = clip_left;
+        }
+        if d_y < clip_top {
+            let diff = clip_top - d_y;
+            s.y += diff;
+            s.height = s.height.saturating_sub(diff as u32);
+            d_y = clip_top;
+        }
+        
+        // 右/下のはみ出し
+        let d_right = d_x + s.width as i32;
+        if d_right > clip_right {
+             let diff = d_right - clip_right;
+             s.width = s.width.saturating_sub(diff as u32);
+        }
+        let d_bottom = d_y + s.height as i32;
+        if d_bottom > clip_bottom {
+             let diff = d_bottom - clip_bottom;
+             s.height = s.height.saturating_sub(diff as u32);
+        }
+
+        if s.width == 0 || s.height == 0 {
+            return;
+        }
+
+        let buffer = self.draw_buffer();
+        let stride = self.info.stride as usize;
+        let bpp = self.info.format.bytes_per_pixel();
+        let copy_bytes = s.width as usize * bpp;
+        
+        unsafe {
+            if d_y > s.y {
+                // 下方向へのコピー（後ろから）
+                for i in (0..s.height).rev() {
+                     let src_row_y = s.y + i as i32;
+                     let dst_row_y = d_y + i as i32;
+                     
+                     let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
+                     let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
+                     
+                     ptr::copy(buffer.add(src_offset), buffer.add(dst_offset), copy_bytes);
+                }
+            } else {
+                // 上方向へのコピー（前から）
+                for i in 0..s.height {
+                     let src_row_y = s.y + i as i32;
+                     let dst_row_y = d_y + i as i32;
+                     
+                     let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
+                     let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
+                     
+                     ptr::copy(buffer.add(src_offset), buffer.add(dst_offset), copy_bytes);
+                }
+            }
+        }
+    }
+
+    /// 塗りつぶし矩形を描画（高速化版）
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        for y in rect.y..rect.bottom() {
-            for x in rect.x..rect.right() {
-                self.set_pixel(x, y, color);
+        // クリップ処理
+        let mut r = rect;
+        r.x = r.x.max(self.clip.x);
+        r.y = r.y.max(self.clip.y);
+        let right = r.right().min(self.clip.right());
+        let bottom = r.bottom().min(self.clip.bottom());
+        r.width = (right - r.x).max(0) as u32;
+        r.height = (bottom - r.y).max(0) as u32;
+
+        if r.width == 0 || r.height == 0 {
+            return;
+        }
+
+        let buffer = self.draw_buffer();
+        let bytes_per_pixel = self.info.format.bytes_per_pixel();
+        let stride = self.info.stride;
+
+        match self.info.format {
+            PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => unsafe {
+                let color_u32 = color.to_u32();
+                for y in r.y..r.bottom() {
+                    let offset = (y as usize * stride as usize) + (r.x as usize * 4);
+                    let row_ptr = buffer.add(offset) as *mut u32;
+                    let row_slice = core::slice::from_raw_parts_mut(row_ptr, r.width as usize);
+                    row_slice.fill(color_u32);
+                }
+            },
+            _ => {
+                // その他のフォーマットはピクセルごとに描画 (簡易実装)
+                for y in r.y..r.bottom() {
+                    for x in r.x..r.right() {
+                        self.set_pixel(x, y, color);
+                    }
+                }
             }
         }
     }

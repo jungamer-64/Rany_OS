@@ -308,7 +308,7 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 
 /// ヒープのサイズ
-pub const HEAP_SIZE: usize = 1024 * 1024; // 1 MiB
+pub const HEAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
 
 /// Exchange Heap のサイズ
 pub const EXCHANGE_HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB

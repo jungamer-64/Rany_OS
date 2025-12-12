@@ -97,8 +97,8 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
         // 値を書き込む
         crate::util::write_to_addr(ptr as usize, value);
 
-        // 物理アドレスを計算
-        let phys_addr = PhysAddr::new_truncate(ptr as u64);
+        // 仮想アドレスを物理アドレスに変換
+        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         Some(Self {
             ptr: NonNull::new(ptr as *mut T).expect("alloc returned null pointer"),
@@ -241,7 +241,8 @@ impl TypedDmaSlice<CpuOwned> {
         let non_null = crate::util::allocate_zeroed(layout)?;
         let ptr = non_null.as_ptr();
 
-        let phys_addr = PhysAddr::new_truncate(ptr as u64);
+        // 仮想アドレスを物理アドレスに変換
+        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         Some(Self {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
@@ -634,7 +635,8 @@ impl CoherentDmaBuffer {
         let ptr = unsafe { alloc(layout) };
         if ptr.is_null() { return None; }
         unsafe { core::ptr::write_bytes(ptr, 0, size); }
-        let phys_addr = PhysAddr::new_truncate(ptr as u64);
+        // 仮想アドレスを物理アドレスに変換
+        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         Some(Self {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
@@ -697,7 +699,7 @@ pub struct StreamingDmaMapping<'a> {
 
 impl<'a> StreamingDmaMapping<'a> {
     pub fn map(buffer: &'a [u8], direction: DmaDirection) -> Self {
-        let phys_addr = PhysAddr::new_truncate(buffer.as_ptr() as u64);
+        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(buffer.as_ptr() as u64));
         match direction {
             DmaDirection::ToDevice | DmaDirection::Bidirectional => {
                 flush_cache_range(buffer.as_ptr(), buffer.len());
@@ -880,7 +882,8 @@ impl DmaAllocator for GlobalDmaAllocator {
         // ゼロ初期化
         unsafe { core::ptr::write_bytes(ptr, 0, size); }
         
-        let phys_addr = PhysAddr::new_truncate(ptr as u64);
+        // 仮想アドレスを物理アドレスに変換
+        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
         
         // IOMMUマッピング
         let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
@@ -908,7 +911,7 @@ impl DmaAllocator for GlobalDmaAllocator {
     fn map_streaming(&self, buffer: &[u8], direction: DmaDirection) -> Result<StreamingMapping, DmaError> {
         let host_addr = buffer.as_ptr();
         let size = buffer.len();
-        let phys_addr = PhysAddr::new_truncate(host_addr as u64);
+        let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(host_addr as u64));
         
         // キャッシュ操作
         match direction {
