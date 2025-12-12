@@ -5,6 +5,7 @@ edition = "2024"
 
 [lib]
 path = "src/lib.rs"
+# Note: Use 'cargo build --features standalone' with custom linker to produce standalone .a
 
 [dependencies]
 graphic_types = { path = "../../libs/graphic_types" }
@@ -12,3 +13,8 @@ graphic_types = { path = "../../libs/graphic_types" }
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
+
+[features]
+default = []
+# Enables panic handler and dummy allocator for freestanding build
+standalone = []

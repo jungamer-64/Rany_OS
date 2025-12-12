@@ -7,9 +7,11 @@ pub mod net;
 pub mod proc;
 pub mod cap;
 pub mod sys;
+pub mod driver;
 
 pub use fs::FsNamespace;
 pub use net::NetNamespace;
 pub use proc::ProcNamespace;
 pub use cap::CapNamespace;
 pub use sys::SysNamespace;
+pub use driver::DriverNamespace;

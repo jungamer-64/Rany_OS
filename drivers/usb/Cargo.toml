@@ -5,9 +5,16 @@ edition = "2024"
 
 [lib]
 path = "src/lib.rs"
+# Note: Use 'cargo build --features standalone' with custom linker to produce standalone .a
+# For normal static linking with kernel, rlib is sufficient
 
 [dependencies]
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 spin = "0.9.8"
 kernel_api = { path = "../../interfaces/kernel_api" }
+
+[features]
+default = []
+# Enables panic handler and dummy allocator for freestanding build
+standalone = []
