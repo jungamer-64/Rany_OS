@@ -38,7 +38,7 @@ pub mod shell;
 // Re-exports
 pub use types::*;
 pub use display::format_size;
-pub use parser::{ParseError, LogicalOp, ClosureCondition, ClosureExpr, Token, Tokenizer, MethodCall, ChainParser};
+pub use parser::{ParseError, Token, Tokenizer};
 pub use shell::ExoShell;
 
 // ============================================================================

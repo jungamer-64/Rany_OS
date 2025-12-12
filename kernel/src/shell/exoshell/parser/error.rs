@@ -15,10 +15,11 @@ pub enum ParseError {
     },
     /// 予期しないトークン
     UnexpectedToken {
-        expected: &'static str,
+        expected: String,
         found: String,
-        position: usize,
     },
+    /// 予期しない入力終端
+    UnexpectedEof,
     /// 未知の名前空間
     UnknownNamespace {
         name: String,
@@ -57,8 +58,11 @@ impl Display for ParseError {
             ParseError::UnterminatedString { position, start_quote } => {
                 write!(f, "文字列が閉じられていません (位置 {}, 開始引用符: '{}')", position, start_quote)
             }
-            ParseError::UnexpectedToken { expected, found, position } => {
-                write!(f, "予期しないトークン: '{}' (期待: {}, 位置: {})", found, expected, position)
+            ParseError::UnexpectedToken { expected, found } => {
+                write!(f, "予期しないトークン: '{}' (期待: {})", found, expected)
+            }
+            ParseError::UnexpectedEof => {
+                write!(f, "予期しない入力終端")
             }
             ParseError::UnknownNamespace { name } => {
                 write!(f, "未知の名前空間: '{}'\n有効な名前空間: fs, net, proc, cap, sys", name)
