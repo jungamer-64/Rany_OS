@@ -31,7 +31,7 @@ impl AhciDmaReadBuffer {
 
     /// Get physical address
     pub fn phys_addr(&self) -> Option<PhysAddr> {
-        Some(PhysAddr::new(self.buffer.physical_address()))
+        Some(PhysAddr::new_truncate(self.buffer.physical_address()))
     }
 
     /// Prepare for DMA transfer (invalidate cache if needed)
@@ -90,7 +90,7 @@ impl AhciDmaWriteBuffer {
 
     /// Get physical address
     pub fn phys_addr(&self) -> Option<PhysAddr> {
-        Some(PhysAddr::new(self.buffer.physical_address()))
+        Some(PhysAddr::new_truncate(self.buffer.physical_address()))
     }
 
     /// Prepare transfer
@@ -125,7 +125,7 @@ impl AhciIdentifyBuffer {
     }
 
     pub fn phys_addr(&self) -> PhysAddr {
-        PhysAddr::new(self.buffer.physical_address())
+        PhysAddr::new_truncate(self.buffer.physical_address())
     }
 
     pub fn finish_and_get_words(&self) -> [u16; 256] {

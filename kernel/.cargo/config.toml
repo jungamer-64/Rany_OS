@@ -13,7 +13,7 @@ runner = "pwsh ../scripts/run-uefi.ps1"
 rustflags = [
     "-C", "code-model=kernel",
     "-C", "relocation-model=static",
-    # Linker file lives in workspace root
+    # Linker file lives in workspace root (relative from kernel/Cargo.toml)
     "-C", "link-arg=-T../linker.ld",
     # Disable curve25519-dalek SIMD backend for no_std environment
     "--cfg", "curve25519_dalek_backend=\"serial\""

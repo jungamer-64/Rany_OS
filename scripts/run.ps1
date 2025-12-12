@@ -38,7 +38,8 @@ $OVMF_DIR = "assets/firmware/ovmf-x64"
 if ($Release) {
     $PROFILE = "release"
     $BUILD_FLAGS = "--release"
-} else {
+}
+else {
     $PROFILE = "debug"
     $BUILD_FLAGS = ""
 }
@@ -77,13 +78,15 @@ function Get-Limine {
                 Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -ErrorAction Stop
             }
             Write-Success "Limine downloaded successfully"
-        } catch {
+        }
+        catch {
             Write-ErrorMsg "Failed to download Limine: $_"
             Write-Info "Please download manually from: https://github.com/limine-bootloader/limine/releases"
             Write-Info "Or clone the v8.x-binary branch"
             exit 1
         }
-    } else {
+    }
+    else {
         Write-Info "Limine bootloader found"
     }
 }
@@ -91,7 +94,7 @@ function Get-Limine {
 # Build kernel
 function Build-Kernel {
     Write-Info "Building kernel..."
-    $buildCmd = "cargo build --target $TARGET $BUILD_FLAGS".Trim()
+    $buildCmd = "cargo build -p rany_kernel --target $TARGET $BUILD_FLAGS".Trim()
     
     Invoke-Expression $buildCmd
     if ($LASTEXITCODE -ne 0) {
@@ -122,7 +125,8 @@ function New-BootableDisk {
     $stream = [System.IO.File]::Create($diskImage)
     try {
         $stream.SetLength($diskSizeBytes)
-    } finally {
+    }
+    finally {
         $stream.Close()
     }
     
@@ -201,7 +205,8 @@ function New-BootableIso {
             $wslAvailable = $true
             Write-Info "Found xorriso in WSL"
         }
-    } catch {}
+    }
+    catch {}
     
     if (-not $xorrisoNative -and -not $wslAvailable) {
         Write-Info "xorriso not found - using FAT image instead"
@@ -241,7 +246,8 @@ function New-BootableIso {
         $absPath = (Resolve-Path $WindowsPath -ErrorAction SilentlyContinue)
         if (-not $absPath) {
             $absPath = $WindowsPath
-        } else {
+        }
+        else {
             $absPath = $absPath.Path
         }
         $wslPath = $absPath -replace '\\', '/'
@@ -274,7 +280,8 @@ function New-BootableIso {
             Write-ErrorMsg "xorriso failed!"
             return $null
         }
-    } else {
+    }
+    else {
         Write-Info "Running native xorriso..."
         & xorriso -as mkisofs `
             -b boot/limine/limine-bios-cd.bin `
@@ -287,7 +294,8 @@ function New-BootableIso {
     if (Test-Path $ISO_PATH) {
         Write-Success "ISO created: $ISO_PATH"
         return $ISO_PATH
-    } else {
+    }
+    else {
         Write-ErrorMsg "ISO creation failed!"
         return $null
     }
@@ -329,7 +337,8 @@ function Start-Qemu {
         
         # Add boot menu for debugging
         $qemuArgs += @("-boot", "menu=on,splash-time=3000")
-    } else {
+    }
+    else {
         Write-Info "Boot mode: Legacy BIOS"
     }
     
@@ -338,7 +347,8 @@ function Start-Qemu {
         if ($BootSource -match "\.iso$") {
             # ISO image
             $qemuArgs += @("-cdrom", $BootSource)
-        } elseif (Test-Path $BootSource -PathType Container) {
+        }
+        elseif (Test-Path $BootSource -PathType Container) {
             # Directory - use vvfat with AHCI for better UEFI compatibility
             Write-Info "Using QEMU vvfat for FAT directory"
             $absolutePath = (Resolve-Path $BootSource).Path
@@ -348,13 +358,15 @@ function Start-Qemu {
                 "-drive", "file=fat:rw:$absolutePath,format=raw,if=none,id=fatdisk"
                 "-device", "ide-hd,drive=fatdisk,bus=ahci.0"
             )
-        } else {
+        }
+        else {
             # Raw disk image
             $qemuArgs += @(
                 "-drive", "file=$BootSource,format=raw,if=virtio"
             )
         }
-    } else {
+    }
+    else {
         Write-ErrorMsg "No bootable media found!"
         exit 1
     }
@@ -365,10 +377,12 @@ function Start-Qemu {
         if ($hypervisor -and $hypervisor.State -eq "Enabled") {
             $qemuArgs += @("-accel", "whpx,kernel-irqchip=off")
             Write-Info "Using WHPX acceleration"
-        } else {
+        }
+        else {
             $qemuArgs += @("-accel", "tcg,thread=multi")
         }
-    } catch {
+    }
+    catch {
         $qemuArgs += @("-accel", "tcg,thread=multi")
     }
     
