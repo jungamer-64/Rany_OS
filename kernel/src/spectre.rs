@@ -48,6 +48,9 @@ pub struct CpuFeatures {
     pub l1d_flush: bool,
     /// MD_CLEAR サポート (MDS緩和)
     pub md_clear: bool,
+    /// PKU (Protection Keys for Userspace) サポート
+    /// 設計書 9.2.2: MPK/PKU
+    pub has_pku: bool,
 }
 
 /// IA32_SPEC_CTRL MSR
@@ -379,7 +382,7 @@ fn detect_cpu_features() -> CpuFeatures {
 
     // CPUID を使用して機能を検出
     // EAX=7, ECX=0 の EDX でSpectre関連機能を確認
-    let (_, _, _, edx) = cpuid(7, 0);
+    let (_, _, ecx, edx) = cpuid(7, 0);
 
     // Bit 26: IBRS/IBPB
     features.ibrs_ibpb = (edx & (1 << 26)) != 0;
@@ -394,6 +397,9 @@ fn detect_cpu_features() -> CpuFeatures {
 
     // MD_CLEAR (Bit 10 in EDX of CPUID 7.0)
     features.md_clear = (edx & (1 << 10)) != 0;
+
+    // PKU (Bit 3 in ECX of CPUID 7.0) - 設計書 9.2.2
+    features.has_pku = (ecx & (1 << 3)) != 0;
 
     // IA32_ARCH_CAPABILITIES MSR から追加情報を取得
     if has_arch_cap {

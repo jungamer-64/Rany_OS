@@ -1,3 +1,22 @@
 [alias]
 # Alias for xtask commands
 xtask = "run --package xtask --"
+
+# Kernel target for cross-compilation (used when building from workspace root)
+[build]
+target = "x86_64-unknown-none"
+
+[unstable]
+# Build stdlibs for kernel target
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-unknown-none]
+rustflags = [
+    "-C", "code-model=kernel",
+    "-C", "relocation-model=static",
+    # Linker file lives in workspace root
+    "-C", "link-arg=-Tlinker.ld",
+    # Disable curve25519-dalek SIMD backend for no_std environment
+    "--cfg", "curve25519_dalek_backend=\"serial\""
+]

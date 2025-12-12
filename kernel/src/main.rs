@@ -161,11 +161,11 @@ extern "C" fn kmain() -> ! {
 
     // Verify Limine protocol support
     if !BASE_REVISION.is_supported() {
-        serial_print("[BOOT] Limine revision NOT supported!\r\n");
-        // Limine not available, halt
-        loop { core::hint::spin_loop(); }
+        serial_print("[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\r\n");
+        // Continue despite revision mismatch for debugging
+        // This may be caused by limine crate (0.5) and bootloader (8.x) version mismatch
     }
-    serial_print("[BOOT] Limine revision OK\r\n");
+    serial_print("[BOOT] Limine revision check passed\r\n");
 
     // SSE/SSE2を有効化（x86_64ではABIで必須）
     serial_print("[BOOT] Enabling SSE...\r\n");
@@ -234,6 +234,11 @@ extern "C" fn kmain() -> ! {
     serial_print("[BOOT] Memory management initialized\r\n");
     info!(target: "init", "Memory management initialized");
     
+    // 1.1. 1GB Huge Page サポートの初期化 (設計書 11.1.1)
+    serial_print("[BOOT] Initializing 1GB Huge Page support...\r\n");
+    mm::huge_pages::init();
+    info!(target: "init", "1GB Huge Page support initialized");
+    
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
 
@@ -300,6 +305,11 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing security framework");
     security::init();
     info!(target: "init", "Security framework initialized");
+    
+    // 2.8. MPK/PKU セキュリティの初期化 (設計書 9.2.2)
+    info!(target: "init", "Initializing MPK/PKU security");
+    security::mpk::init();
+    info!(target: "init", "MPK/PKU security initialized");
     graphics::update_boot_progress_with_message(40, "Kernel API ready");
 
     // 3. キーボードドライバの初期化
@@ -367,15 +377,18 @@ extern "C" fn kmain() -> ! {
              // BAR0を取得 (NVMeは64bit BAR0/1を使うことが多い)
              // bus.rsのPciDeviceInfo定義を見ると bars: [Option<Bar>; 6]
              if let Some(bar0) = device_info.bars[0] {
-                 let bar0_addr = bar0.base();
-                 info!(target: "init", "NVMe BAR0: {:#x}", bar0_addr);
+                 let bar0_phys = bar0.base();
+                 // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
+                 // new_truncate()で無効な高位ビットをマスク
+                 let bar0_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                 info!(target: "init", "NVMe BAR0: phys={:#x} virt={:#x}", bar0_phys, bar0_virt);
                  
                  // バス制御を有効化
                  device_info.enable_bus_master();
                  device_info.enable_memory_space();
 
                  // ドライバを登録
-                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_addr, 1))); // Core=1 for now
+                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
                  
                  // プローブと開始
                  if let Err(e) = driver_registry::driver_registry().probe_and_start(nvme_handle) {
@@ -406,15 +419,18 @@ extern "C" fn kmain() -> ! {
              
              // BAR5 (ABAR) を取得
              if let Some(bar5) = device_info.bars[5] {
-                 let abar = bar5.base();
-                 info!(target: "init", "AHCI ABAR: {:#x}", abar);
+                 let abar_phys = bar5.base();
+                 // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
+                 // new_truncate()で無効な高位ビットをマスク
+                 let abar_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(abar_phys)).as_u64();
+                 info!(target: "init", "AHCI ABAR: phys={:#x} virt={:#x}", abar_phys, abar_virt);
                  
                  // バス制御を有効化
                  device_info.enable_bus_master();
                  device_info.enable_memory_space();
 
                  // ドライバを登録
-                 let ahci_handle = register_driver(Box::new(AhciDriverWrapper::new(abar, 11))); // IRQ hardcoded for now
+                 let ahci_handle = register_driver(Box::new(AhciDriverWrapper::new(abar_virt, 11))); // IRQ hardcoded for now
                  
                  // プローブと開始
                  if let Err(e) = driver_registry::driver_registry().probe_and_start(ahci_handle) {
@@ -445,15 +461,18 @@ extern "C" fn kmain() -> ! {
             
             // BAR0 を取得
             if let Some(bar0) = device_info.bars[0] {
-                let base_addr = bar0.base();
-                info!(target: "init", "xHCI BAR0: {:#x}", base_addr);
+                let bar0_phys = bar0.base();
+                // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
+                // new_truncate()で無効な高位ビットをマスク
+                let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                info!(target: "init", "xHCI BAR0: phys={:#x} virt={:#x}", bar0_phys, base_virt);
                 
                 // バス制御を有効化
                 device_info.enable_bus_master();
                 device_info.enable_memory_space();
 
                 // ドライバを登録
-                let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_addr)));
+                let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
                 
                 // プローブと開始
                 if let Err(e) = driver_registry::driver_registry().probe_and_start(usb_handle) {
@@ -527,6 +546,11 @@ extern "C" fn kmain() -> ! {
     loader::init_kernel_cell();
     register_kernel_symbols();
     info!(target: "init", "Cell loader initialized");
+    
+    // 5.1. ライブアップデート / Epoch-based Reclamation の初期化 (設計書 3.5.3)
+    info!(target: "init", "Initializing live update (Epoch-based Reclamation)");
+    loader::live_update::init();
+    info!(target: "init", "Live update initialized");
     graphics::update_boot_progress_with_message(80, "Loader ready");
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）

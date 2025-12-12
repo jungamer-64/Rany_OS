@@ -6,6 +6,7 @@ pub mod buddy_allocator;
 pub mod exchange_heap;
 pub mod frame_allocator;
 pub mod higher_half;
+pub mod huge_pages; // 新: 1GB Huge Page サポート (設計書 11.1.1)
 pub mod mapping;
 pub mod mmap;
 pub mod per_cpu;

@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 pub mod elf;
+pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
 pub mod signature;
 pub mod sha256;
 pub mod ed25519;
@@ -16,6 +17,12 @@ pub mod type_id;
 pub use elf::{CellInfo, ElfLoader, LoadedCell};
 #[allow(unused_imports)]
 pub use signature::{CellSignature, SignatureVerifier, verify_cell};
+#[allow(unused_imports)]
+pub use live_update::{
+    LiveUpdateManager, LiveUpdateState, LiveUpdateError, RequestTracker,
+    enter_critical_section, leave_critical_section, enter_quiescent_state,
+    wait_for_quiescent_state, current_epoch, live_update_manager,
+};
 
 use alloc::collections::BTreeMap;
 use alloc::string::String;
@@ -325,6 +332,11 @@ pub fn load_driver(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Dr
 }
 
 /// セルをアンロード
+///
+/// 設計書 3.5.3: Epoch-based Reclamation
+/// - アンロード前にグローバルエポックをインクリメント
+/// - 全コアがQuiescent Stateに到達するまで待機
+/// - その後にメモリを安全に解放
 pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     // 依存しているセルがないかチェック
     let has_dependents = with_registry(|r| r.all_cells().any(|c| c.dependencies.contains(&id)));
@@ -341,6 +353,13 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
             "Cell has registered drivers".into(),
         ));
     }
+
+    // Epoch-based Reclamation: グローバルエポックをインクリメント
+    let old_epoch = live_update::current_epoch();
+    crate::log!("[Loader] Unloading cell {:?}, waiting for epoch {} quiescence\n", id.as_u64(), old_epoch);
+
+    // 全コアがQuiescent Stateに到達するまで待機
+    live_update::wait_for_quiescent_state(old_epoch);
 
     // レジストリから削除
     with_registry_mut(|r| {

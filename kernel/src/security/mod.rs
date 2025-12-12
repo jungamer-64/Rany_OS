@@ -30,8 +30,15 @@
 pub mod audit;
 pub mod capability;
 pub mod mac;
+pub mod mpk; // 新: MPK/PKU セキュリティ (設計書 9.2.2)
 pub mod policy;
 pub mod static_capability; // 新: 静的ケイパビリティシステム
+
+// Re-export MPK API
+pub use mpk::{
+    DomainCallError, DomainPermissions, MpkManager, PkruValue, ProtectionKeyClass,
+    domain_transition_prologue, is_pku_enabled, secure_domain_call,
+};
 
 // Re-export static capability system (preferred API)
 
