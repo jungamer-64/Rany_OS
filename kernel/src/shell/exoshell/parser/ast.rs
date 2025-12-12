@@ -15,7 +15,8 @@
 //! 4. `+`, `-` (加減算)
 //! 5. `*`, `/`, `%` (乗除算)
 //! 6. `!`, `-` (単項演算子)
-
+//! 
+use alloc::borrow::Cow;
 use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::boxed::Box;
@@ -42,10 +43,10 @@ use crate::shell::exoshell::types::ExoValue;
 /// Ident  Literal Ident  Literal
 /// "size"  1024   "name"  "log"
 /// ```
-#[derive(Debug, Clone)]
-pub enum Expr {
+#[derive(Debug, Clone, PartialEq)]
+pub enum Expr<'a> {
     /// リテラル値 (数値、文字列、真偽値など)
-    Literal(ExoValue),
+    Literal(ExoValue<'a>),
     
     /// 識別子（変数参照）
     /// 例: `size`, `name`, `e`
@@ -54,42 +55,42 @@ pub enum Expr {
     /// フィールドアクセス
     /// 例: `e.size`, `file.name`
     FieldAccess {
-        object: Box<Expr>,
+        object: Box<Expr<'a>>,
         field: String,
     },
     
     /// メソッド呼び出し
     /// 例: `name.contains("log")`, `list.filter(predicate)`
     MethodCall {
-        object: Box<Expr>,
+        object: Box<Expr<'a>>,
         method: String,
-        args: Vec<Expr>,
+        args: Vec<Expr<'a>>,
     },
     
     /// 二項演算
     /// 例: `a + b`, `size > 1024`, `a && b`
     Binary {
-        left: Box<Expr>,
+        left: Box<Expr<'a>>,
         op: BinaryOp,
-        right: Box<Expr>,
+        right: Box<Expr<'a>>,
     },
     
     /// 単項演算
     /// 例: `!valid`, `-count`
     Unary {
         op: UnaryOp,
-        operand: Box<Expr>,
+        operand: Box<Expr<'a>>,
     },
     
     /// 括弧によるグループ化
     /// 例: `(a || b) && c`
-    Group(Box<Expr>),
+    Group(Box<Expr<'a>>),
     
     /// クロージャ式（ラムダ）
     /// 例: `|e| e.size > 1024`
     Closure {
         param: String,
-        body: Box<Expr>,
+        body: Box<Expr<'a>>,
     },
 }
 
@@ -269,7 +270,7 @@ impl UnaryOp {
 // Helper Constructors
 // ============================================================================
 
-impl Expr {
+impl<'a> Expr<'a> {
     /// リテラル整数を作成
     #[inline]
     pub fn int(n: i64) -> Self {
@@ -285,7 +286,7 @@ impl Expr {
     /// リテラル文字列を作成
     #[inline]
     pub fn string(s: impl Into<String>) -> Self {
-        Self::Literal(ExoValue::String(s.into()))
+        Self::Literal(ExoValue::String(Cow::Owned(s.into())))
     }
     
     /// リテラル真偽値を作成
@@ -302,7 +303,7 @@ impl Expr {
     
     /// フィールドアクセスを作成
     #[inline]
-    pub fn field(object: Expr, field: impl Into<String>) -> Self {
+    pub fn field(object: Expr<'a>, field: impl Into<String>) -> Self {
         Self::FieldAccess {
             object: Box::new(object),
             field: field.into(),
@@ -311,7 +312,7 @@ impl Expr {
     
     /// 二項演算を作成
     #[inline]
-    pub fn binary(left: Expr, op: BinaryOp, right: Expr) -> Self {
+    pub fn binary(left: Expr<'a>, op: BinaryOp, right: Expr<'a>) -> Self {
         Self::Binary {
             left: Box::new(left),
             op,
@@ -321,7 +322,7 @@ impl Expr {
     
     /// 単項演算を作成
     #[inline]
-    pub fn unary(op: UnaryOp, operand: Expr) -> Self {
+    pub fn unary(op: UnaryOp, operand: Expr<'a>) -> Self {
         Self::Unary {
             op,
             operand: Box::new(operand),
@@ -330,13 +331,13 @@ impl Expr {
     
     /// グループ（括弧）を作成
     #[inline]
-    pub fn group(inner: Expr) -> Self {
+    pub fn group(inner: Expr<'a>) -> Self {
         Self::Group(Box::new(inner))
     }
     
     /// クロージャを作成
     #[inline]
-    pub fn closure(param: impl Into<String>, body: Expr) -> Self {
+    pub fn closure(param: impl Into<String>, body: Expr<'a>) -> Self {
         Self::Closure {
             param: param.into(),
             body: Box::new(body),

@@ -6,20 +6,25 @@ use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::borrow::Cow;
 
 use crate::shell::exoshell::types::ExoValue;
+use crate::task::process::getpid;
+use crate::security::capability::{manager, CAP_SYS_BOOT};
+use super::{ShellNamespace, BoxFuture};
+use alloc::boxed::Box;
 
 /// システム名前空間
 pub struct SysNamespace;
 
 impl SysNamespace {
     /// システム情報
-    pub fn info() -> ExoValue {
+    pub fn info() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        map.insert(String::from("os"), ExoValue::String(String::from("RanyOS")));
-        map.insert(String::from("arch"), ExoValue::String(String::from("x86_64")));
-        map.insert(String::from("version"), ExoValue::String(String::from("0.3.0-alpha")));
-        map.insert(String::from("kernel"), ExoValue::String(String::from("ExoRust")));
+        map.insert(String::from("os"), ExoValue::String(Cow::Borrowed("RanyOS")));
+        map.insert(String::from("arch"), ExoValue::String(Cow::Borrowed("x86_64")));
+        map.insert(String::from("version"), ExoValue::String(Cow::Borrowed("0.3.0-alpha")));
+        map.insert(String::from("kernel"), ExoValue::String(Cow::Borrowed("ExoRust")));
         
         let ticks = crate::task::timer::current_tick();
         map.insert(String::from("uptime_ms"), ExoValue::Int(ticks as i64));
@@ -28,7 +33,7 @@ impl SysNamespace {
     }
 
     /// メモリ情報
-    pub fn memory() -> ExoValue {
+    pub fn memory() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         // 実際のメモリ統計を取得
         let total = crate::memory::total_memory_kb();
@@ -47,7 +52,7 @@ impl SysNamespace {
     }
 
     /// 時刻情報
-    pub fn time() -> ExoValue {
+    pub fn time() -> ExoValue<'static> {
         let ticks = crate::task::timer::current_tick();
         let seconds = ticks / 1000;
         let mut map = BTreeMap::new();
@@ -59,7 +64,7 @@ impl SysNamespace {
     }
 
     /// システムモニター情報
-    pub fn monitor() -> ExoValue {
+    pub fn monitor() -> ExoValue<'static> {
         let snap = crate::monitor::snapshot();
         let mut map = BTreeMap::new();
         
@@ -101,14 +106,14 @@ impl SysNamespace {
     }
 
     /// モニターダッシュボードを表示
-    pub fn monitor_dashboard() -> ExoValue {
+    pub fn monitor_dashboard() -> ExoValue<'static> {
         let snap = crate::monitor::snapshot();
         crate::monitor::print_snapshot(&snap);
-        ExoValue::String(String::from("Dashboard displayed"))
+        ExoValue::String(Cow::Borrowed("Dashboard displayed"))
     }
 
     /// 温度情報
-    pub fn thermal() -> ExoValue {
+    pub fn thermal() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         
         // CPU温度を取得
@@ -116,7 +121,7 @@ impl SysNamespace {
             map.insert(String::from("cpu_celsius"), ExoValue::Int(temp.celsius() as i64));
             map.insert(String::from("cpu_millicelsius"), ExoValue::Int(temp.millicelsius() as i64));
         } else {
-            map.insert(String::from("cpu_celsius"), ExoValue::String(String::from("N/A")));
+            map.insert(String::from("cpu_celsius"), ExoValue::String(Cow::Borrowed("N/A")));
         }
         
         // サーマルマネージャから詳細情報
@@ -128,7 +133,7 @@ impl SysNamespace {
         // スロットリング情報
         let throttle = tm.throttle_controller();
         let policy = throttle.current_policy();
-        map.insert(String::from("throttle_policy"), ExoValue::String(format!("{:?}", policy)));
+        map.insert(String::from("throttle_policy"), ExoValue::String(Cow::Owned(format!("{:?}", policy))));
         map.insert(String::from("throttle_count"), ExoValue::Int(throttle.throttle_count() as i64));
         
         // センサー情報
@@ -137,7 +142,7 @@ impl SysNamespace {
         for sensor in sensors.iter() {
             let mut s = BTreeMap::new();
             s.insert(String::from("id"), ExoValue::Int(sensor.id as i64));
-            s.insert(String::from("name"), ExoValue::String(sensor.name.clone()));
+            s.insert(String::from("name"), ExoValue::String(Cow::Owned(sensor.name.clone())));
             if sensor.current.is_valid() {
                 s.insert(String::from("current_c"), ExoValue::Int(sensor.current.celsius() as i64));
             }
@@ -151,7 +156,7 @@ impl SysNamespace {
     }
 
     /// ウォッチドッグ情報
-    pub fn watchdog() -> ExoValue {
+    pub fn watchdog() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         
         let wm = crate::watchdog::watchdog_manager();
@@ -170,12 +175,12 @@ impl SysNamespace {
     }
 
     /// 電源情報
-    pub fn power() -> ExoValue {
+    pub fn power() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         
         let pm = crate::power::power_manager();
         let state = pm.current_state();
-        map.insert(String::from("state"), ExoValue::String(format!("{:?}", state)));
+        map.insert(String::from("state"), ExoValue::String(Cow::Owned(format!("{:?}", state))));
         
         let stats = pm.stats();
         map.insert(String::from("power_button_presses"), 
@@ -196,16 +201,54 @@ impl SysNamespace {
     }
 
     /// システムシャットダウン
-    pub fn shutdown() -> ExoValue {
+    /// Requires CAP_SYS_BOOT
+    pub fn shutdown() -> ExoValue<'static> {
+        let pid = getpid().as_u64();
+        if !manager().has_capability(pid, CAP_SYS_BOOT) {
+            return ExoValue::Error(String::from("Permission denied: CAP_SYS_BOOT required"));
+        }
+
         crate::log!("[SYS] Shutdown requested via shell\n");
         // 実際のシャットダウンは危険なのでメッセージのみ
-        ExoValue::String(String::from("Shutdown command received. Use Ctrl+Alt+Del or power button to actually shutdown."))
+        ExoValue::String(Cow::Borrowed("Shutdown command received. Use Ctrl+Alt+Del or power button to actually shutdown."))
     }
 
     /// システムリブート
-    pub fn reboot() -> ExoValue {
+    /// Requires CAP_SYS_BOOT
+    pub fn reboot() -> ExoValue<'static> {
+        let pid = getpid().as_u64();
+        if !manager().has_capability(pid, CAP_SYS_BOOT) {
+            return ExoValue::Error(String::from("Permission denied: CAP_SYS_BOOT required"));
+        }
+
         crate::log!("[SYS] Reboot requested via shell\n");
         // 実際のリブートは危険なのでメッセージのみ
-        ExoValue::String(String::from("Reboot command received. Use Ctrl+Alt+Del to actually reboot."))
+        ExoValue::String(Cow::Borrowed("Reboot command received. Use Ctrl+Alt+Del to actually reboot."))
+    }
+}
+
+impl ShellNamespace for SysNamespace {
+    fn name(&self) -> &str {
+        "sys"
+    }
+
+    fn call<'a>(&'a self, method: &'a str, _args: &'a [ExoValue]) -> BoxFuture<'a, ExoValue<'static>> {
+        Box::pin(async move {
+            match method {
+                "info" => Self::info(),
+                "memory" | "mem" => Self::memory(),
+                "time" => Self::time(),
+                "monitor" => Self::monitor(),
+                "dashboard" => Self::monitor_dashboard(),
+                "thermal" | "temp" => Self::thermal(),
+                "watchdog" | "wd" => Self::watchdog(),
+                "power" => Self::power(),
+                "shutdown" => Self::shutdown(),
+                "reboot" => Self::reboot(),
+                _ => ExoValue::Error(
+                    format!("Unknown method 'sys.{}'\nValid methods: info, memory, time, monitor, dashboard, thermal, watchdog, power, shutdown, reboot", method)
+                ),
+            }
+        })
     }
 }

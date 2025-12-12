@@ -9,22 +9,27 @@
 //! - `driver.load(path)` - Load driver from ELF file
 //! - `driver.unload(id)` - Unload a driver
 //! - `driver.status(id)` - Get driver status
-
+//! 
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
+use alloc::borrow::Cow;
 
 use crate::shell::exoshell::types::ExoValue;
 use crate::driver_registry;
 use crate::loader;
+use crate::task::process::getpid;
+use crate::security::capability::{manager, CAP_SYS_MODULE};
+use super::{ShellNamespace, BoxFuture};
+use alloc::boxed::Box;
 
 /// ドライバ名前空間
 pub struct DriverNamespace;
 
 impl DriverNamespace {
     /// 登録済みドライバの一覧
-    pub fn list() -> ExoValue {
+    pub fn list() -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
         
@@ -32,9 +37,9 @@ impl DriverNamespace {
         for (handle, name, dtype, state) in drivers {
             let mut map = BTreeMap::new();
             map.insert(String::from("id"), ExoValue::Int(handle.index() as i64));
-            map.insert(String::from("name"), ExoValue::String(name));
-            map.insert(String::from("type"), ExoValue::String(format!("{:?}", dtype)));
-            map.insert(String::from("state"), ExoValue::String(format!("{:?}", state)));
+            map.insert(String::from("name"), ExoValue::String(Cow::Owned(name)));
+            map.insert(String::from("type"), ExoValue::String(Cow::Owned(format!("{:?}", dtype))));
+            map.insert(String::from("state"), ExoValue::String(Cow::Owned(format!("{:?}", state))));
             list.push(ExoValue::Map(map));
         }
         
@@ -42,7 +47,7 @@ impl DriverNamespace {
     }
 
     /// ドライバの統計情報
-    pub fn stats() -> ExoValue {
+    pub fn stats() -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
         let mut map = BTreeMap::new();
         map.insert(String::from("total"), ExoValue::Int(registry.count() as i64));
@@ -51,7 +56,7 @@ impl DriverNamespace {
     }
 
     /// ドライバの状態を取得
-    pub fn status(id: i64) -> ExoValue {
+    pub fn status(id: i64) -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
         let handle = driver_registry::DriverHandle::from_index(id as usize);
         
@@ -59,9 +64,9 @@ impl DriverNamespace {
             Some(state) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("id"), ExoValue::Int(id));
-                map.insert(String::from("state"), ExoValue::String(format!("{:?}", state)));
+                map.insert(String::from("state"), ExoValue::String(Cow::Owned(format!("{:?}", state))));
                 if let Some(name) = registry.name(handle) {
-                    map.insert(String::from("name"), ExoValue::String(name));
+                    map.insert(String::from("name"), ExoValue::String(Cow::Owned(name)));
                 }
                 ExoValue::Map(map)
             }
@@ -70,7 +75,13 @@ impl DriverNamespace {
     }
 
     /// ファイルからドライバをロード
-    pub fn load(path: &str) -> ExoValue {
+    /// Requires CAP_SYS_MODULE
+    pub fn load(path: &str) -> ExoValue<'static> {
+        let pid = getpid().as_u64();
+        if !manager().has_capability(pid, CAP_SYS_MODULE) {
+            return ExoValue::Error(String::from("Permission denied: CAP_SYS_MODULE required"));
+        }
+
         if path.is_empty() {
             return ExoValue::Error(String::from("Path is required. Usage: driver.load(\"/path/to/driver.elf\")"));
         }
@@ -95,10 +106,10 @@ impl DriverNamespace {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
                 map.insert(String::from("driver_id"), ExoValue::Int(handle.index() as i64));
-                map.insert(String::from("name"), ExoValue::String(driver_name.into()));
-                map.insert(String::from("message"), ExoValue::String(
+                map.insert(String::from("name"), ExoValue::String(Cow::Owned(driver_name.into())));
+                map.insert(String::from("message"), ExoValue::String(Cow::Owned(
                     format!("Driver '{}' loaded successfully with ID {}", driver_name, handle.index())
-                ));
+                )));
                 ExoValue::Map(map)
             }
             Err(e) => ExoValue::Error(format!("Failed to load driver: {}", e)),
@@ -106,7 +117,13 @@ impl DriverNamespace {
     }
 
     /// ドライバをアンロード
-    pub fn unload(id: i64) -> ExoValue {
+    /// Requires CAP_SYS_MODULE
+    pub fn unload(id: i64) -> ExoValue<'static> {
+        let pid = getpid().as_u64();
+        if !manager().has_capability(pid, CAP_SYS_MODULE) {
+            return ExoValue::Error(String::from("Permission denied: CAP_SYS_MODULE required"));
+        }
+
         let handle = driver_registry::DriverHandle::from_index(id as usize);
         
         // まずドライバが存在するか確認
@@ -121,9 +138,9 @@ impl DriverNamespace {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
                 map.insert(String::from("driver_id"), ExoValue::Int(id));
-                map.insert(String::from("message"), ExoValue::String(
+                map.insert(String::from("message"), ExoValue::String(Cow::Owned(
                     format!("Driver {} unloaded successfully", id)
-                ));
+                )));
                 ExoValue::Map(map)
             }
             Err(e) => ExoValue::Error(format!("Failed to unload driver {}: {}", id, e)),

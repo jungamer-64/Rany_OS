@@ -101,7 +101,7 @@ impl ExprParser {
     /// 式をパース
     /// 
     /// トップレベルのエントリポイント。演算子優先順位を考慮して式を解析。
-    pub fn parse_expr(&mut self) -> Result<Expr, ParseError> {
+    pub fn parse_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         self.parse_or_expr()
     }
     
@@ -110,7 +110,7 @@ impl ExprParser {
     // ========================================================================
     
     /// Level 1: OR 式 (`a || b`)
-    fn parse_or_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_or_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_and_expr()?;
         
         while self.match_operator("||") {
@@ -126,7 +126,7 @@ impl ExprParser {
     }
     
     /// Level 2: AND 式 (`a && b`)
-    fn parse_and_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_and_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_compare_expr()?;
         
         while self.match_operator("&&") {
@@ -142,7 +142,7 @@ impl ExprParser {
     }
     
     /// Level 3: 比較式 (`a > b`, `a == b`, `name.contains("log")`)
-    fn parse_compare_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_compare_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let left = self.parse_add_expr()?;
         
         // 比較演算子をチェック
@@ -198,7 +198,7 @@ impl ExprParser {
     }
     
     /// Level 4: 加減算式 (`a + b`, `a - b`)
-    fn parse_add_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_add_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_mul_expr()?;
         
         loop {
@@ -222,7 +222,7 @@ impl ExprParser {
     }
     
     /// Level 5: 乗除算式 (`a * b`, `a / b`, `a % b`)
-    fn parse_mul_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_mul_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_unary_expr()?;
         
         loop {
@@ -248,7 +248,7 @@ impl ExprParser {
     }
     
     /// Level 6: 単項演算式 (`!a`, `-a`)
-    fn parse_unary_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_unary_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         // NOT 演算子
         if self.match_operator("!") {
             let operand = self.parse_unary_expr()?;
@@ -271,7 +271,7 @@ impl ExprParser {
     }
     
     /// Level 7: 後置式（フィールドアクセス、メソッド呼び出し）
-    fn parse_postfix_expr(&mut self) -> Result<Expr, ParseError> {
+    fn parse_postfix_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut expr = self.parse_primary()?;
         
         // `.field` または `.method(args)` を繰り返しパース
@@ -306,7 +306,7 @@ impl ExprParser {
     }
     
     /// 基本式（リテラル、識別子、括弧、クロージャ）
-    fn parse_primary(&mut self) -> Result<Expr, ParseError> {
+    fn parse_primary(&mut self) -> Result<Expr<'static>, ParseError> {
         match self.peek().cloned() {
             // 数値リテラル
             Some(Token::Number(n)) => {
@@ -323,7 +323,7 @@ impl ExprParser {
             // 文字列リテラル
             Some(Token::StringLit(s)) => {
                 self.advance();
-                Ok(Expr::Literal(ExoValue::String(s)))
+                Ok(Expr::string(s))
             }
             
             // 識別子
@@ -406,7 +406,7 @@ impl ExprParser {
     }
     
     /// 引数リストをパース
-    fn parse_args(&mut self) -> Result<Vec<Expr>, ParseError> {
+    fn parse_args(&mut self) -> Result<Vec<Expr<'static>>, ParseError> {
         let mut args = Vec::new();
         
         // 空の引数リスト
@@ -441,7 +441,7 @@ impl ExprParser {
 /// 文字列から直接式をパース
 /// 
 /// トークナイザと式パーサーを組み合わせて使用。
-pub fn parse_expression(input: &str) -> Result<Expr, ParseError> {
+pub fn parse_expression(input: &str) -> Result<Expr<'static>, ParseError> {
     let mut tokenizer = super::tokenizer::Tokenizer::new(input);
     let tokens = tokenizer.tokenize();
     let mut parser = ExprParser::new(tokens);
