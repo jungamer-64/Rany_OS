@@ -92,7 +92,23 @@ impl<'a> Tokenizer<'a> {
                 }
                 '|' => {
                     self.advance();
-                    tokens.push(Token::Pipe);
+                    // Check for || (logical OR)
+                    if self.peek() == Some('|') {
+                        self.advance();
+                        tokens.push(Token::Operator("||".into()));
+                    } else {
+                        tokens.push(Token::Pipe);
+                    }
+                }
+                '&' => {
+                    self.advance();
+                    // Check for && (logical AND)
+                    if self.peek() == Some('&') {
+                        self.advance();
+                        tokens.push(Token::Operator("&&".into()));
+                    } else {
+                        tokens.push(Token::Operator("&".into()));
+                    }
                 }
                 '"' | '\'' => {
                     tokens.push(self.read_string(c));
@@ -100,7 +116,28 @@ impl<'a> Tokenizer<'a> {
                 '>' | '<' | '=' | '!' => {
                     tokens.push(self.read_operator());
                 }
-                c if c.is_ascii_digit() || c == '-' => {
+                '+' | '*' | '/' | '%' => {
+                    // Arithmetic operators (single character)
+                    self.advance();
+                    tokens.push(Token::Operator(c.to_string()));
+                }
+                '-' => {
+                    // Minus: could be negative number or subtraction operator
+                    // If previous token is a value (Number, Float, Ident, RParen), treat as operator
+                    let is_operator = matches!(
+                        tokens.last(),
+                        Some(Token::Number(_)) | Some(Token::Float(_)) | 
+                        Some(Token::Ident(_)) | Some(Token::RParen) | Some(Token::StringLit(_))
+                    );
+                    
+                    if is_operator {
+                        self.advance();
+                        tokens.push(Token::Operator("-".into()));
+                    } else {
+                        tokens.push(self.read_number());
+                    }
+                }
+                c if c.is_ascii_digit() => {
                     tokens.push(self.read_number());
                 }
                 c if c.is_alphabetic() || c == '_' || c == '$' => {

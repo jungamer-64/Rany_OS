@@ -164,24 +164,32 @@ impl GraphicalShell {
         }
     }
 
-    /// マウスイベントを処理
+    /// マウスイベントを処理（最適化版）
+    /// 
+    /// マウス移動時は全画面再描画ではなく、古い位置と新しい位置の
+    /// 2領域のみを更新することで、高解像度環境でのパフォーマンスを向上。
     pub fn handle_mouse(&mut self, event: MouseEvt, fb: &mut Framebuffer) {
         let max_x = self.resources.fb_width as i32;
         let max_y = self.resources.fb_height as i32;
         
+        // 移動前のマウス領域を保存
+        let old_rect = self.state.mouse_rect();
         let old_x = self.state.mouse.x;
         let old_y = self.state.mouse.y;
         
+        // マウス状態を更新
         self.state.mouse.update(&event, max_x, max_y);
         
         // マウス位置が変わった場合のみ再描画
         if self.state.show_mouse_cursor && (self.state.mouse.x != old_x || self.state.mouse.y != old_y) {
-            // 本来はマウス領域のみの再描画が望ましいが、Z-Orderを保つため現行は全体リロード
-            // または、マウスの古い位置と新しい位置のみを blit する最適化が可能
-            self.redraw(fb); 
+            // 最適化: 古い位置と新しい位置の2領域のみ再描画
+            // - 古い位置: 背景を復元するため
+            // - 新しい位置: 新しいカーソルを描画するため
+            // full redraw() より大幅に高速
+            self.redraw_mouse_region(fb, old_rect);
         }
         
-        // 左クリックでスクロール（簡易実装）
+        // 左クリックでスクロール（画面上部）
         if event.left_down && self.state.mouse.y < 20 {
             let max_scroll = self.state.output_lines.len().saturating_sub(1);
             if self.state.scroll_offset < max_scroll {
@@ -189,7 +197,7 @@ impl GraphicalShell {
                 self.redraw(fb);
             }
         } 
-        // 右クリックで逆スクロール
+        // 右クリックで逆スクロール（画面下部）
         else if event.right_down && self.state.mouse.y > max_y - 20 {
             if self.state.scroll_offset > 0 {
                 self.state.scroll_offset -= 1;
