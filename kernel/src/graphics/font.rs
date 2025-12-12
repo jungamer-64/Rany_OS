@@ -77,7 +77,7 @@ impl BitmapFont {
         }
     }
 
-    /// 文字列を描画
+    /// 文字列を描画し、描画終了位置（次の文字の開始X座標）を返す
     pub fn draw_string(
         &self,
         fb: &mut Framebuffer,
@@ -86,7 +86,7 @@ impl BitmapFont {
         s: &str,
         color: Color,
         bg: Option<Color>,
-    ) {
+    ) -> i32 {
         let mut cx = x;
 
         for c in s.chars() {
@@ -98,6 +98,8 @@ impl BitmapFont {
             self.draw_char(fb, cx, y, c, color, bg);
             cx += self.width as i32;
         }
+        
+        cx // 描画終了X座標を返す
     }
 
     /// 文字幅を取得
@@ -118,6 +120,33 @@ impl BitmapFont {
     /// フォントデータを取得
     pub fn get_data(&self, index: usize) -> u8 {
         self.data[index]
+    }
+
+    /// 単一文字の描画幅（ピクセル）を取得
+    /// draw_string での進行量と一致させる
+    pub fn char_width(&self, c: char) -> u32 {
+        // このフォントでは改行のみ進行しない
+        if c == '\n' {
+            0
+        } else {
+            // 全ての文字（非ASCII含む）は同じ幅で進行
+            // ※描画されるかどうかは別問題
+            self.width
+        }
+    }
+
+    /// 文字列全体の描画幅（ピクセル）を計算
+    pub fn text_width(&self, text: &str) -> u32 {
+        text.chars()
+            .map(|c| self.char_width(c))
+            .sum()
+    }
+
+    /// イテレータから描画幅を計算（ゼロアロケーション）
+    pub fn iter_width<I>(&self, chars: I) -> u32 
+    where I: Iterator<Item = char> 
+    {
+        chars.map(|c| self.char_width(c)).sum()
     }
 }
 

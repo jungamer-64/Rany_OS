@@ -6,9 +6,134 @@
 
 #![allow(dead_code)]
 
+
 use alloc::string::{String, ToString};
-use crate::graphics::Color;
+use crate::graphics::{Color, Framebuffer, BitmapFont, Rect};
 use crate::io::hid::MouseEvt;
+
+// ============================================================================
+
+
+/// 入力行の描画状態（キャッシュ済みデータ）
+pub struct RenderInputState<'a> {
+    /// プロンプト文字列
+    pub prompt: &'a str,
+    /// 入力テキスト
+    pub input_text: &'a str,
+    /// カーソルのピクセルX座標（キャッシュ済み）
+    pub cursor_pixel_x: i32,
+    /// カーソル位置の文字（反転表示用）
+    pub cursor_char: Option<char>,
+    /// カーソル表示フラグ
+    pub cursor_visible: bool,
+    /// プロンプト終了X座標（キャッシュ済み）
+    pub prompt_end_x: i32,
+}
+
+/// マウスカーソルの描画状態
+pub struct RenderMouseState {
+    /// 表示するか
+    pub visible: bool,
+    /// X座標
+    pub x: i32,
+    /// Y座標
+    pub y: i32,
+}
+
+// ============================================================================
+// Split Borrows Pattern (ゼロアロケーション描画のため)
+// ============================================================================
+
+/// シェル状態（可変データ）
+/// 描画中に変更される可能性のあるデータ
+pub struct ShellState {
+    /// 出力行
+    pub output_lines: alloc::collections::VecDeque<ConsoleLine>,
+    /// 入力バッファ
+    pub input_buffer: LineBuffer,
+    /// コマンド履歴
+    pub history: alloc::vec::Vec<String>,
+    /// 履歴インデックス（-1 = 履歴なし）
+    pub history_index: isize,
+    /// 履歴検索バッファ
+    pub history_search_buffer: Option<String>,
+    /// スクロールオフセット
+    pub scroll_offset: usize,
+    /// カーソル表示フラグ
+    pub cursor_visible: bool,
+    /// 最終カーソル切り替え時刻
+    pub last_cursor_toggle: u64,
+    /// プロンプト文字列
+    pub prompt: String,
+    /// 補完候補
+    pub completions: alloc::vec::Vec<String>,
+    /// 補完インデックス
+    pub completion_index: usize,
+    /// コマンド実行中フラグ
+    pub is_executing: bool,
+    /// マウス状態
+    pub mouse: MouseState,
+    /// マウスカーソル表示
+    pub show_mouse_cursor: bool,
+    /// 一時フォーマットバッファ
+    pub temp_fmt_buffer: String,
+    
+    // ========== 描画キャッシュ ==========
+    /// プロンプト終了X座標
+    pub cached_prompt_end_x: i32,
+    /// カーソルのピクセルX座標
+    pub cached_cursor_pixel_x: i32,
+    /// カーソル位置の文字
+    pub cached_cursor_char: Option<char>,
+    
+    /// 前回の補完描画領域（部分更新の消去用）
+    pub last_completion_rect: Rect,
+}
+
+/// シェルリソース（不変データ）
+/// 描画中に変更されないリソース
+pub struct ShellResources {
+    /// フォント
+    pub font: BitmapFont,
+    /// テーマ
+    pub theme: ShellTheme,
+    /// フレームバッファ幅
+    pub fb_width: u32,
+    /// フレームバッファ高さ
+    pub fb_height: u32,
+    /// 列数
+    pub cols: u32,
+    /// 行数
+    pub rows: u32,
+}
+
+impl ShellResources {
+    /// 入力行のY座標
+    #[inline]
+    pub fn input_line_y(&self) -> i32 {
+        (self.rows - 2) as i32 * self.font.height() as i32
+    }
+    
+    /// フォント高さ
+    #[inline]
+    pub fn font_height(&self) -> i32 {
+        self.font.height() as i32
+    }
+}
+
+impl ShellState {
+    /// カーソルのX座標
+    #[inline]
+    pub fn cursor_x(&self) -> i32 {
+        self.cached_prompt_end_x + self.cached_cursor_pixel_x
+    }
+    
+    /// マウスカーソルのRect
+    #[inline]
+    pub fn mouse_rect(&self) -> crate::graphics::Rect {
+        crate::graphics::Rect::new(self.mouse.x - 2, self.mouse.y - 2, 5, 5)
+    }
+}
 
 // ============================================================================
 // Configuration Constants

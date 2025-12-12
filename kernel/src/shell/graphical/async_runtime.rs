@@ -5,6 +5,7 @@
 //! # グラフィカルシェル非同期ランタイム
 //!
 //! グローバルインスタンスと非同期コマンドシステムの管理
+//! fb は with_framebuffer で取得し、shell メソッドに渡す（unsafe なし）
 
 #![allow(dead_code)]
 
@@ -25,19 +26,14 @@ use super::shell::GraphicalShell;
 
 /// 非同期コマンドリクエスト
 struct AsyncCommandRequest {
-    /// コマンド文字列
     command: String,
-    /// リクエストID
     id: u64,
 }
 
 /// 非同期コマンド結果
 struct AsyncCommandResult {
-    /// 対応するリクエストID
     id: u64,
-    /// 結果文字列
     output: String,
-    /// エラーかどうか
     is_error: bool,
 }
 
@@ -46,17 +42,9 @@ struct AsyncCommandResult {
 // ============================================================================
 
 static GRAPHICAL_SHELL: Mutex<Option<GraphicalShell>> = Mutex::new(None);
-
-/// 非同期評価用のExoShell（別Mutexで管理）
 static ASYNC_EXOSHELL: Mutex<Option<ExoShell>> = Mutex::new(None);
-
-/// コマンドリクエストキュー（GraphicalShell -> async task）
 static COMMAND_QUEUE: Mutex<VecDeque<AsyncCommandRequest>> = Mutex::new(VecDeque::new());
-
-/// コマンド結果キュー（async task -> GraphicalShell）
 static RESULT_QUEUE: Mutex<VecDeque<AsyncCommandResult>> = Mutex::new(VecDeque::new());
-
-/// 次のリクエストID
 static NEXT_REQUEST_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // ============================================================================
@@ -83,9 +71,11 @@ pub fn init() {
     info!(target: "gshell", "Framebuffer found, creating shell...");
 
     // グラフィカルシェルを作成
-    let shell = crate::graphics::with_framebuffer(|fb| {
-        GraphicalShell::new(fb)
+    let dims = crate::graphics::with_framebuffer(|fb| {
+        (fb.width(), fb.height())
     });
+    
+    let shell = dims.map(|(w, h)| GraphicalShell::new(w, h));
 
     if let Some(shell) = shell {
         *GRAPHICAL_SHELL.lock() = Some(shell);
@@ -98,13 +88,35 @@ pub fn init() {
 /// グラフィカルシェルを開始
 pub fn start() {
     use log::info;
+    use alloc::vec;
+
+    // 1. 必要なバッファサイズを取得（ロックは一瞬だけ）
+    let buffer_size = crate::graphics::with_framebuffer(|fb| fb.info().size()).unwrap_or(0);
     
-    if let Some(ref mut shell) = *GRAPHICAL_SHELL.lock() {
-        shell.start();
-        info!(target: "gshell", "Graphical shell started");
+    // 2. バッファを確保（ロック外で行うため、アロケーションログによるデッドロックを回避）
+    let backing_buffer = if buffer_size > 0 {
+        Some(vec![0u8; buffer_size])
     } else {
-        info!(target: "gshell", "Cannot start - no shell instance");
-    }
+        None
+    };
+    
+    // 3. シェルを開始（バッファを渡す）
+    crate::graphics::with_framebuffer(|fb| {
+        // 確保したバッファがあれば設定
+        if let Some(buf) = backing_buffer {
+            fb.enable_double_buffering_from_vec(buf);
+        } else {
+            // サイズ取得失敗時は従来通り（リスクありだがフォールバック）
+            fb.enable_double_buffering();
+        }
+
+        if let Some(ref mut shell) = *GRAPHICAL_SHELL.lock() {
+            shell.start(fb);
+            info!(target: "gshell", "Graphical shell started");
+        } else {
+            info!(target: "gshell", "Cannot start - no shell instance");
+        }
+    });
 }
 
 /// グラフィカルシェルにアクセス
@@ -113,15 +125,6 @@ where
     F: FnOnce(&mut GraphicalShell) -> R,
 {
     GRAPHICAL_SHELL.lock().as_mut().map(f)
-}
-
-/// ポーリング処理（デバッグ用・非推奨）
-/// 通常は run_async_shell() を使用してください
-#[allow(dead_code)]
-pub fn poll() {
-    if let Some(ref mut shell) = *GRAPHICAL_SHELL.lock() {
-        shell.poll();
-    }
 }
 
 /// コマンドを非同期キューに追加
@@ -137,21 +140,20 @@ pub fn submit_command(command: String) -> u64 {
 }
 
 /// 非同期タスクとしてグラフィカルシェルを実行
-/// ExoShellの所有権を一時的に取り出してasync eval()を呼び出す
 pub async fn run_async_shell() {
     use log::info;
     
     info!(target: "gshell", "Starting async graphical shell task...");
     
     loop {
-        // フェーズ1: キー/マウスイベントとUI更新（GraphicalShellロック内）
-        {
+        // フェーズ1: キー/マウスイベントとUI更新
+        crate::graphics::with_framebuffer(|fb| {
             let mut guard = GRAPHICAL_SHELL.lock();
             if let Some(ref mut shell) = *guard {
-                // キーイベントを処理（最大16イベントずつ処理してUIの応答性を保つ）
+                // キーイベントを処理（最大16イベントずつ）
                 for _ in 0..16 {
                     if let Some(event) = poll_input_event() {
-                        shell.handle_key(event);
+                        shell.handle_key(event, fb);
                     } else {
                         break;
                     }
@@ -160,75 +162,68 @@ pub async fn run_async_shell() {
                 // マウスイベントを処理（最大16イベントずつ）
                 for _ in 0..16 {
                     if let Some(event) = poll_mouse_event() {
-                        shell.handle_mouse(event);
+                        shell.handle_mouse(event, fb);
                     } else {
                         break;
                     }
                 }
                 
                 // 結果キューをチェックして表示
-                process_results(shell);
+                process_results(shell, fb);
                 
                 // カーソル点滅を更新
                 let current_time = crate::task::timer::current_tick();
-                shell.update_cursor(current_time);
+                shell.update_cursor(current_time, fb);
             }
-        }
+        });
         
         // フェーズ2: 非同期コマンド実行（ロック外）
         let request = COMMAND_QUEUE.lock().pop_front();
         
         if let Some(req) = request {
-            // ExoShellを一時的に取り出す（ノンブロッキング）
             let shell_opt = {
                 let mut guard = ASYNC_EXOSHELL.lock();
                 guard.take()
             };
             
             if let Some(mut exoshell) = shell_opt {
-                // ロック外でasync eval()を呼び出し
                 let result = exoshell.eval(&req.command).await;
                 let output = format!("{}", result);
                 let is_error = matches!(result, ExoValue::Error(_));
                 
-                // ExoShellを戻す
                 *ASYNC_EXOSHELL.lock() = Some(exoshell);
                 
-                // 結果をキューに入れる
                 RESULT_QUEUE.lock().push_back(AsyncCommandResult {
                     id: req.id,
                     output,
                     is_error,
                 });
             } else {
-                // ExoShellがない場合 - コマンドをキューに戻す
                 COMMAND_QUEUE.lock().push_front(req);
-                // 短い待機後にリトライ
                 crate::task::yield_now().await;
                 continue;
             }
         }
         
-        // 他のタスクに譲る
         crate::task::yield_now().await;
     }
 }
 
 /// 結果キューを処理してGraphicalShellに表示
-fn process_results(shell: &mut GraphicalShell) {
+fn process_results(shell: &mut GraphicalShell, fb: &mut crate::graphics::Framebuffer) {
     while let Some(result) = RESULT_QUEUE.lock().pop_front() {
         let output = format!("{}\n", result.output);
         
         if result.is_error {
-            let error_color = shell.theme.error;
+            let error_color = shell.resources.theme.error;
             shell.print_colored(&output, error_color);
         } else {
-            let fg_color = shell.theme.foreground;
+            let fg_color = shell.resources.theme.foreground;
             shell.print_colored(&output, fg_color);
         }
         
-        shell.is_executing = false;
-        shell.draw_prompt();
+        shell.state.is_executing = false;
+        shell.redraw(fb);
     }
 }
 

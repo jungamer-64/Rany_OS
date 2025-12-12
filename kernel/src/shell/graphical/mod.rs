@@ -20,10 +20,12 @@ mod shell;
 mod render;
 mod input;
 mod async_runtime;
+pub mod utils;
 
 // Re-export types
 pub use types::{
     ShellTheme, LineBuffer, ConsoleLine, MouseState,
+    RenderInputState, RenderMouseState,
     MAX_HISTORY, MAX_LINE_LENGTH, SCROLLBACK_LINES, CURSOR_BLINK_MS,
     FONT_WIDTH, FONT_HEIGHT,
 };
@@ -33,7 +35,7 @@ pub use shell::GraphicalShell;
 
 // Re-export async runtime functions
 pub use async_runtime::{
-    init, start, with_shell, poll,
+    init, start, with_shell,
     submit_command, run_async_shell,
     print, print_colored,
 };

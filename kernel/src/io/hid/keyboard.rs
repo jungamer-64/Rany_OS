@@ -1586,7 +1586,7 @@ pub fn process_pending_wakes() -> bool {
 /// 新しいコードでは`keyboard().take_stream()`を使用してください。
 #[doc(hidden)]
 pub(crate) fn poll_key_event() -> Option<KeyEvent> {
-    PS2_KEYBOARD.poll_key_event()
+    PS2_KEYBOARD.poll_key_event_internal()
 }
 
 /// 次の文字をポーリング（非ブロッキング）
@@ -1595,7 +1595,7 @@ pub(crate) fn poll_key_event() -> Option<KeyEvent> {
 /// 内部使用向け。新しいコードでは`KeyboardStream`を使用してください。
 #[doc(hidden)]
 pub(crate) fn poll_char() -> Option<char> {
-    while let Some(event) = PS2_KEYBOARD.poll_key_event() {
+    while let Some(event) = PS2_KEYBOARD.poll_key_event_internal() {
         if let Some(c) = event.to_char() {
             return Some(c);
         }
