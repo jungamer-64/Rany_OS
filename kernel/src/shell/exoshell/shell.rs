@@ -122,6 +122,7 @@ impl ExoShell {
             "proc" => self.eval_proc_method(&method.name, &method.args),
             "cap" => self.eval_cap_method(&method.name, &method.args),
             "sys" => self.eval_sys_method(&method.name, &method.args),
+            "driver" => self.eval_driver_method(&method.name, &method.args),
             "_" => self.last_result.clone(),
             name if name.starts_with('$') => {
                 self.bindings.get(&name[1..]).cloned().unwrap_or(ExoValue::Nil)
@@ -296,6 +297,38 @@ impl ExoShell {
                     namespace: String::from("sys"),
                     method: name.to_string(),
                 }.to_string() + "\n有効なメソッド: info, memory, time, monitor, dashboard, thermal, watchdog, power, shutdown, reboot"
+            ),
+        }
+    }
+
+    /// driver.* メソッド（ドライバ管理）
+    fn eval_driver_method(&self, name: &str, args: &[ExoValue]) -> ExoValue {
+        match name {
+            "list" => DriverNamespace::list(),
+            "stats" => DriverNamespace::stats(),
+            "status" => {
+                let id = args.first()
+                    .and_then(|v| match v { ExoValue::Int(n) => Some(*n), _ => None })
+                    .unwrap_or(0);
+                DriverNamespace::status(id)
+            }
+            "load" => {
+                let path = args.first()
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
+                    .unwrap_or("");
+                DriverNamespace::load(path)
+            }
+            "unload" => {
+                let id = args.first()
+                    .and_then(|v| match v { ExoValue::Int(n) => Some(*n), _ => None })
+                    .unwrap_or(0);
+                DriverNamespace::unload(id)
+            }
+            _ => ExoValue::Error(
+                ParseError::UnknownMethod {
+                    namespace: String::from("driver"),
+                    method: name.to_string(),
+                }.to_string() + "\n有効なメソッド: list, stats, status, load, unload"
             ),
         }
     }
@@ -939,11 +972,18 @@ impl ExoShell {
     sys.time()            - Time information
     sys.monitor()         - System monitoring (CPU/Memory/Network)
     sys.dashboard()       - Monitoring dashboard
-    sys.thermal()         - Temperature/throttling status
+    sys.thermal()          - Temperature/throttling status
     sys.watchdog()        - Watchdog status
     sys.power()           - Power state/CPU idle stats
     sys.shutdown()        - Request shutdown
     sys.reboot()          - Request reboot
+
+  driver.* - Driver Management
+    driver.list()         - List registered drivers
+    driver.stats()        - Driver statistics
+    driver.status(id)     - Get driver status by ID
+    driver.load(path)     - Load driver from ELF file
+    driver.unload(id)     - Unload driver by ID
 
 [Method Chaining]
   fs.entries("/").filter("|e| e.size > 1024").map("|e| e.name")
@@ -993,7 +1033,7 @@ impl ExoShell {
             return completions;
         }
 
-        let namespaces = ["fs", "net", "proc", "cap", "sys"];
+        let namespaces = ["fs", "net", "proc", "cap", "sys", "driver"];
         
         if !input.contains('.') {
             return namespaces.iter()
@@ -1016,6 +1056,7 @@ impl ExoShell {
             "proc" => &["list", "info"],
             "cap" => &["list", "grant", "revoke"],
             "sys" => &["info", "memory", "time", "monitor", "dashboard", "thermal", "watchdog", "power", "shutdown", "reboot"],
+            "driver" => &["list", "stats", "status", "load", "unload"],
             _ => return Vec::new(),
         };
 

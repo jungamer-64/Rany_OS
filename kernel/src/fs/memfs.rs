@@ -480,6 +480,7 @@ pub fn init_shell_fs() {
             let _ = root.mkdir("proc", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("tmp", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("var", FileMode::DEFAULT_DIR);
+            let _ = root.mkdir("drivers", FileMode::DEFAULT_DIR);  // For dynamic driver loading
 
             // /etc/hostname を作成
             if let Ok(etc) = root.lookup("etc") {

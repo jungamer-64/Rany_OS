@@ -318,6 +318,11 @@ impl DriverHandle {
     pub fn index(&self) -> usize {
         self.0
     }
+
+    /// Create a handle from an index (for shell commands)
+    pub fn from_index(index: usize) -> Self {
+        Self(index)
+    }
 }
 
 // ============================================================================
