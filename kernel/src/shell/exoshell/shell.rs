@@ -15,8 +15,13 @@ use alloc::vec::Vec;
 use super::namespaces::*;
 use super::parser::*;
 use super::types::*;
+use crate::security::CapabilitySet;
 
 /// ExoShell REPLインタプリタ
+/// 
+/// ## Capability-based Security
+/// シェルインスタンス自体が CapabilitySet を保持し、
+/// 名前空間呼び出し時にこれを証明として渡す。
 pub struct ExoShell {
     /// 変数バインディング
     pub bindings: BTreeMap<String, ExoValue<'static>>,
@@ -28,11 +33,19 @@ pub struct ExoShell {
     last_result: ExoValue<'static>,
     /// 登録済み名前空間（動的登録対応）
     namespaces: BTreeMap<String, Box<dyn super::namespaces::ShellNamespace>>,
+    /// シェルインスタンスの権限
+    capabilities: CapabilitySet,
 }
 
 impl ExoShell {
     const MAX_RECURSION_DEPTH: usize = 256;
+    /// フル権限でシェルを作成
     pub fn new() -> Self {
+        Self::with_capabilities(CapabilitySet::full())
+    }
+
+    /// 指定された権限でシェルを作成
+    pub fn with_capabilities(capabilities: CapabilitySet) -> Self {
         Self {
             bindings: BTreeMap::new(),
             cwd: String::from("/"),
@@ -66,6 +79,7 @@ impl ExoShell {
                 );
                 m
             },
+            capabilities,
         }
     }
 
@@ -313,7 +327,7 @@ impl ExoShell {
         }
 
         match self.namespaces.get(namespace) {
-            Some(ns) => ns.call(method, &final_args).await,
+            Some(ns) => ns.call(method, &final_args, &self.capabilities).await,
             None => ExoValue::Error(format!("Unknown namespace: {}", namespace)),
         }
     }
