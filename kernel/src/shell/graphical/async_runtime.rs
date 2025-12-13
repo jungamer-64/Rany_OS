@@ -185,28 +185,35 @@ pub async fn run_async_shell() {
         // ========================================
         // Phase 2: コマンド実行（Waker駆動）
         // ========================================
-        // 非ブロッキングでコマンドキューをチェック
-        // 実際のWaker統合は今後のselect!マクロで行う
-        use core::future::Future;
-        use core::pin::Pin;
-        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+        // 非ブロッキングでコマンドキューをポーリング
+        // Context はawaitをまたげないので、ポーリング結果を先に取得
+        let maybe_request = {
+            use core::future::Future;
+            use core::pin::Pin;
+            use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-        // ダミーWakerでコマンドキューをポーリング
-        fn dummy_raw_waker() -> RawWaker {
-            fn no_op(_: *const ()) {}
-            fn clone_fn(ptr: *const ()) -> RawWaker {
-                RawWaker::new(ptr, &VTABLE)
+            fn dummy_raw_waker() -> RawWaker {
+                fn no_op(_: *const ()) {}
+                fn clone_fn(ptr: *const ()) -> RawWaker {
+                    RawWaker::new(ptr, &VTABLE)
+                }
+                static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, no_op, no_op, no_op);
+                RawWaker::new(core::ptr::null(), &VTABLE)
             }
-            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, no_op, no_op, no_op);
-            RawWaker::new(core::ptr::null(), &VTABLE)
-        }
 
-        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
-        let mut cx = Context::from_waker(&waker);
+            let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+            let mut cx = Context::from_waker(&waker);
 
-        let mut cmd_future = cmd_stream.next();
-        if let Poll::Ready(req) = Pin::new(&mut cmd_future).poll(&mut cx) {
-            // コマンドを実行
+            let mut cmd_future = cmd_stream.next();
+            match Pin::new(&mut cmd_future).poll(&mut cx) {
+                Poll::Ready(req) => Some(req),
+                Poll::Pending => None,
+            }
+            // waker と cx はここでドロップ
+        };
+
+        // awaitの外でコマンドを実行
+        if let Some(req) = maybe_request {
             let shell_opt = {
                 let mut guard = ASYNC_EXOSHELL.lock();
                 guard.take()
