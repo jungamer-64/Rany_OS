@@ -406,8 +406,8 @@ impl Ext2FileSystem {
 
         for i in 0..bg_count as usize {
             let offset = i * mem::size_of::<BlockGroupDescriptor>();
-            let bgd: BlockGroupDescriptor = crate::util::read_struct(&bgdt_buffer, offset)
-                .ok_or(FsError::InvalidArgument)?;
+            let bgd: BlockGroupDescriptor =
+                crate::util::read_struct(&bgdt_buffer, offset).ok_or(FsError::InvalidArgument)?;
             block_groups.push(bgd);
         }
 
@@ -580,9 +580,7 @@ impl FileSystem for Ext2FileSystem {
         // 1. スーパーブロックのダーティフラグを管理し、変更時のみ書き戻す
         // 2. ブロックグループディスクリプタのダーティトラッキング
         // 3. inodeテーブルのライトバックキャッシュ
-        self.device
-            .flush()
-            .map_err(|_| FsError::IoError)?;
+        self.device.flush().map_err(|_| FsError::IoError)?;
         Ok(())
     }
 
@@ -639,8 +637,8 @@ impl Ext2InodeWrapper {
 
             let mut pos = block_offset;
             while pos < buffer.len() && (offset + (pos - block_offset) as u64) < size {
-                    let entry: Ext2DirEntry =
-                        crate::util::read_struct(&buffer, pos).ok_or(FsError::InvalidArgument)?;
+                let entry: Ext2DirEntry =
+                    crate::util::read_struct(&buffer, pos).ok_or(FsError::InvalidArgument)?;
 
                 if entry.inode != 0 && entry.rec_len > 0 {
                     let name_start = pos + 8;

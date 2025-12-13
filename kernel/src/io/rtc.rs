@@ -207,7 +207,9 @@ impl Rtc {
             );
         }
         // 少し待機
-        unsafe { core::arch::asm!("jmp 2f", "2:", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("jmp 2f", "2:", options(nomem, nostack));
+        }
 
         let value: u8;
         unsafe {
@@ -232,7 +234,9 @@ impl Rtc {
                 options(nomem, nostack)
             );
         }
-        unsafe { core::arch::asm!("jmp 2f", "2:", options(nomem, nostack)); }
+        unsafe {
+            core::arch::asm!("jmp 2f", "2:", options(nomem, nostack));
+        }
         unsafe {
             core::arch::asm!(
                 "out dx, al",

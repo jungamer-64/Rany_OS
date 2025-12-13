@@ -278,7 +278,12 @@ impl CapabilityManager {
     /// This mirrors the logic used by the ExoShell's `cap.grant` helper and
     /// centralises it so it can be tested without pulling in the full shell
     /// machinery.
-    pub fn grant_capability(&self, caller_domain: u64, target_domain: u64, cap: Capability) -> Result<(), CapabilityError> {
+    pub fn grant_capability(
+        &self,
+        caller_domain: u64,
+        target_domain: u64,
+        cap: Capability,
+    ) -> Result<(), CapabilityError> {
         // Check caller permissions
         let caller_caps = self.get_capabilities(caller_domain);
         if !self.has_capability(caller_domain, CAP_SYS_ADMIN) && !caller_caps.is_permitted(cap) {
@@ -415,7 +420,10 @@ mod tests {
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
         let res = manager().grant_capability(caller, target, CAP_NET_BIND);
-        assert!(res.is_ok(), "Expected grant to succeed when caller is permitted");
+        assert!(
+            res.is_ok(),
+            "Expected grant to succeed when caller is permitted"
+        );
 
         // target should now have effective capability
         assert!(manager().has_capability(target, CAP_NET_BIND));

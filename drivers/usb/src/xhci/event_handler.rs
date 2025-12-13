@@ -132,7 +132,11 @@ impl EventHandler {
 
     /// コマンド完了を確認
     pub fn check_command_completion(&mut self, trb_address: u64) -> Option<CommandCompletionEvent> {
-        if let Some(pos) = self.pending_commands.iter().position(|c| c.trb_address == trb_address) {
+        if let Some(pos) = self
+            .pending_commands
+            .iter()
+            .position(|c| c.trb_address == trb_address)
+        {
             if self.pending_commands[pos].result.is_some() {
                 let cmd = self.pending_commands.remove(pos);
                 return cmd.result;
@@ -174,16 +178,14 @@ impl EventHandler {
                     command_completion_parameter: (trb.status & 0xFFFFFF),
                 })
             }
-            Some(TrbType::Transfer) => {
-                ProcessedEvent::Transfer(TransferEvent {
-                    trb_pointer: trb.parameter,
-                    completion_code,
-                    transfer_length: trb.status & 0xFFFFFF,
-                    slot_id: SlotId(((trb.control >> 24) & 0xFF) as u8),
-                    endpoint_id: ((trb.control >> 16) & 0x1F) as u8,
-                    event_data: (trb.control & (1 << 2)) != 0,
-                })
-            }
+            Some(TrbType::Transfer) => ProcessedEvent::Transfer(TransferEvent {
+                trb_pointer: trb.parameter,
+                completion_code,
+                transfer_length: trb.status & 0xFFFFFF,
+                slot_id: SlotId(((trb.control >> 24) & 0xFF) as u8),
+                endpoint_id: ((trb.control >> 16) & 0x1F) as u8,
+                event_data: (trb.control & (1 << 2)) != 0,
+            }),
             Some(TrbType::PortStatusChange) => {
                 ProcessedEvent::PortStatusChange(PortStatusChangeEvent {
                     port_id: ((trb.parameter >> 24) & 0xFF) as u8,
@@ -197,9 +199,7 @@ impl EventHandler {
                     notification_data: trb.parameter >> 8,
                 })
             }
-            Some(TrbType::HostController) => {
-                ProcessedEvent::HostController { completion_code }
-            }
+            Some(TrbType::HostController) => ProcessedEvent::HostController { completion_code },
             _ => ProcessedEvent::Unknown { trb_type },
         }
     }

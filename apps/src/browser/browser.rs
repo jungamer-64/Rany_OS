@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // apps/src/browser/browser.rs - Browser Application
 // ============================================================================
 //!
@@ -15,12 +15,12 @@ use alloc::vec::Vec;
 
 use graphic_types::{Color, Image};
 
+use super::css::{CssColor, CssParser, Stylesheet};
 use super::dom::Node;
 use super::html::HtmlParser;
-use super::css::{Stylesheet, CssParser, CssColor};
+use super::layout::{Dimensions, Rect, layout_tree};
+use super::render::{DisplayCommand, DisplayList, build_display_list};
 use super::style::style_tree;
-use super::layout::{layout_tree, Dimensions, Rect};
-use super::render::{build_display_list, DisplayList, DisplayCommand};
 
 // ============================================================================
 // Constants
@@ -39,14 +39,54 @@ const URL_BAR_PADDING: u32 = 4;
 const BUTTON_SIZE: u32 = 28;
 
 // Colors
-const TOOLBAR_BG: Color = Color { red: 240, green: 240, blue: 240, alpha: 255 };
-const URL_BAR_BG: Color = Color { red: 255, green: 255, blue: 255, alpha: 255 };
-const URL_BAR_BORDER: Color = Color { red: 180, green: 180, blue: 180, alpha: 255 };
-const BUTTON_BG: Color = Color { red: 220, green: 220, blue: 220, alpha: 255 };
-const BUTTON_HOVER: Color = Color { red: 200, green: 200, blue: 200, alpha: 255 };
-const TEXT_COLOR: Color = Color { red: 0, green: 0, blue: 0, alpha: 255 };
-const CONTENT_BG: Color = Color { red: 255, green: 255, blue: 255, alpha: 255 };
-const LINK_COLOR: Color = Color { red: 0, green: 0, blue: 238, alpha: 255 };
+const TOOLBAR_BG: Color = Color {
+    red: 240,
+    green: 240,
+    blue: 240,
+    alpha: 255,
+};
+const URL_BAR_BG: Color = Color {
+    red: 255,
+    green: 255,
+    blue: 255,
+    alpha: 255,
+};
+const URL_BAR_BORDER: Color = Color {
+    red: 180,
+    green: 180,
+    blue: 180,
+    alpha: 255,
+};
+const BUTTON_BG: Color = Color {
+    red: 220,
+    green: 220,
+    blue: 220,
+    alpha: 255,
+};
+const BUTTON_HOVER: Color = Color {
+    red: 200,
+    green: 200,
+    blue: 200,
+    alpha: 255,
+};
+const TEXT_COLOR: Color = Color {
+    red: 0,
+    green: 0,
+    blue: 0,
+    alpha: 255,
+};
+const CONTENT_BG: Color = Color {
+    red: 255,
+    green: 255,
+    blue: 255,
+    alpha: 255,
+};
+const LINK_COLOR: Color = Color {
+    red: 0,
+    green: 0,
+    blue: 238,
+    alpha: 255,
+};
 
 // ============================================================================
 // Browser State
@@ -149,16 +189,16 @@ impl Browser {
     /// Load HTML content
     pub fn load_html(&mut self, html: &str) {
         self.state = BrowserState::Loading;
-        
+
         // Parse HTML
         let dom = HtmlParser::parse(html);
-        
+
         // Parse CSS
         let stylesheet = CssParser::parse("");
-        
+
         // Build style tree
         let style_tree = style_tree(&dom, &stylesheet);
-        
+
         // Build layout tree
         let viewport = Dimensions {
             content: Rect::new(
@@ -170,11 +210,11 @@ impl Browser {
             ..Default::default()
         };
         let _layout_tree = layout_tree(&style_tree, viewport);
-        
+
         // Build display list
         self.display_list = Vec::new();
         self.content_height = 0.0;
-        
+
         // Store DOM
         self.dom = Some(dom);
         self.stylesheet = stylesheet;
@@ -187,14 +227,14 @@ impl Browser {
         self.url = url.into();
         self.url_input = url.into();
         self.cursor_pos = url.len();
-        
+
         // Add to history
         if self.history_pos < self.history.len() {
             self.history.truncate(self.history_pos);
         }
         self.history.push(url.into());
         self.history_pos = self.history.len();
-        
+
         // Load content based on URL
         if url == "about:home" || url.is_empty() {
             self.load_default_page();
@@ -342,7 +382,10 @@ impl Browser {
     fn is_in_url_bar(&self, x: u32, y: u32) -> bool {
         let url_x = BUTTON_SIZE * 2 + URL_BAR_PADDING * 3;
         let url_w = BROWSER_WIDTH - url_x - URL_BAR_PADDING;
-        x >= url_x && x < url_x + url_w && y >= URL_BAR_PADDING && y < TOOLBAR_HEIGHT - URL_BAR_PADDING
+        x >= url_x
+            && x < url_x + url_w
+            && y >= URL_BAR_PADDING
+            && y < TOOLBAR_HEIGHT - URL_BAR_PADDING
     }
 
     // ========================================================================
@@ -366,13 +409,33 @@ impl Browser {
         self.fill_rect(image, 0, 0, BROWSER_WIDTH, TOOLBAR_HEIGHT, TOOLBAR_BG);
 
         // Back button
-        let back_color = if self.back_hover { BUTTON_HOVER } else { BUTTON_BG };
-        self.draw_button(image, URL_BAR_PADDING, URL_BAR_PADDING, BUTTON_SIZE, back_color);
+        let back_color = if self.back_hover {
+            BUTTON_HOVER
+        } else {
+            BUTTON_BG
+        };
+        self.draw_button(
+            image,
+            URL_BAR_PADDING,
+            URL_BAR_PADDING,
+            BUTTON_SIZE,
+            back_color,
+        );
 
         // Forward button
         let forward_x = URL_BAR_PADDING + BUTTON_SIZE + 2;
-        let forward_color = if self.forward_hover { BUTTON_HOVER } else { BUTTON_BG };
-        self.draw_button(image, forward_x, URL_BAR_PADDING, BUTTON_SIZE, forward_color);
+        let forward_color = if self.forward_hover {
+            BUTTON_HOVER
+        } else {
+            BUTTON_BG
+        };
+        self.draw_button(
+            image,
+            forward_x,
+            URL_BAR_PADDING,
+            BUTTON_SIZE,
+            forward_color,
+        );
 
         // URL bar
         let url_x = BUTTON_SIZE * 2 + URL_BAR_PADDING * 3;
@@ -382,7 +445,14 @@ impl Browser {
         self.draw_rect_border(image, url_x, URL_BAR_PADDING, url_w, url_h, URL_BAR_BORDER);
 
         // Toolbar bottom border
-        self.fill_rect(image, 0, TOOLBAR_HEIGHT - 1, BROWSER_WIDTH, 1, URL_BAR_BORDER);
+        self.fill_rect(
+            image,
+            0,
+            TOOLBAR_HEIGHT - 1,
+            BROWSER_WIDTH,
+            1,
+            URL_BAR_BORDER,
+        );
     }
 
     fn render_content(&self, _image: &mut Image) {
@@ -458,10 +528,10 @@ mod tests {
     fn test_history() {
         let mut browser = Browser::new();
         browser.navigate("http://example.com");
-        
+
         assert!(browser.can_go_back());
         assert!(!browser.can_go_forward());
-        
+
         browser.go_back();
         assert!(!browser.can_go_back());
         assert!(browser.can_go_forward());

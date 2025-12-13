@@ -12,8 +12,8 @@ use alloc::vec::Vec;
 use core::ptr;
 use spin::Mutex;
 
-use super::tables::*;
 use super::info::*;
+use super::tables::*;
 
 // ============================================================================
 // ACPI Parser
@@ -275,12 +275,12 @@ static ACPI_INFO: Mutex<Option<AcpiInfo>> = Mutex::new(None);
 ///
 /// # Safety
 /// The rsdp_address must point to a valid RSDP structure
-    pub unsafe fn init(rsdp_address: u64) -> Result<(), AcpiError> {
+pub unsafe fn init(rsdp_address: u64) -> Result<(), AcpiError> {
     let mut parser = AcpiParser::new(rsdp_address);
     let info = unsafe { parser.parse()? };
     *ACPI_INFO.lock() = Some(info.clone());
     Ok(())
-    }
+}
 
 /// Get local APIC address
 pub fn local_apic_address() -> Option<u64> {

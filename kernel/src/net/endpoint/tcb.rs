@@ -198,34 +198,34 @@ impl TcbTable {
     pub fn generate_isn(&self) -> u32 {
         // タイムスタンプ取得（TSC使用）
         let tsc = unsafe { core::arch::x86_64::_rdtsc() };
-        
+
         // カウンタをインクリメント
         let counter = self.seq_counter.fetch_add(1, Ordering::Relaxed);
-        
+
         // 簡易ハッシュ: タイムスタンプとカウンタを組み合わせ
         // FNV-1aライクなハッシュ関数
         let mut hash: u32 = 0x811c9dc5; // FNV offset basis
         const FNV_PRIME: u32 = 0x01000193;
-        
+
         // タイムスタンプをバイト単位で混合
         for byte in tsc.to_le_bytes() {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        
+
         // カウンタも混合
         for byte in counter.to_le_bytes() {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        
+
         // 現在のtickも混合して更なるエントロピー追加
         let tick = self.current_tick.load(Ordering::Relaxed);
         for byte in tick.to_le_bytes() {
             hash ^= byte as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
         }
-        
+
         hash
     }
 
@@ -283,10 +283,7 @@ impl TcbTable {
     /// FDで接続削除
     pub fn remove_by_fd(&self, fd: SocketFd) -> Option<TcpControlBlockEntry> {
         let mut entries = self.entries.write();
-        let key = entries
-            .iter()
-            .find(|(_, e)| e.fd == fd)
-            .map(|(k, _)| *k);
+        let key = entries.iter().find(|(_, e)| e.fd == fd).map(|(k, _)| *k);
         key.and_then(|k| entries.remove(&k))
     }
 

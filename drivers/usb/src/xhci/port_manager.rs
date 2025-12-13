@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use spin::Mutex;
 
 // ============================================================================
@@ -82,8 +82,8 @@ pub const PORTSC_DR: u32 = 1 << 30;
 pub const PORTSC_WPR: u32 = 1 << 31;
 
 /// Write-1-to-clear ビット
-pub const PORTSC_W1C_BITS: u32 = PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC 
-    | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC;
+pub const PORTSC_W1C_BITS: u32 =
+    PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_OCC | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC;
 
 /// 保持すべきビット（読み取り後の書き戻し時）
 pub const PORTSC_PRESERVE_BITS: u32 = PORTSC_PP | PORTSC_PIC_MASK;
@@ -176,7 +176,7 @@ impl PortSpeed {
             _ => None,
         }
     }
-    
+
     /// 速度をMbps単位で取得
     pub fn mbps(&self) -> u32 {
         match self {
@@ -187,7 +187,7 @@ impl PortSpeed {
             Self::SuperSpeedPlus => 10000,
         }
     }
-    
+
     /// USB 3.xかどうか
     pub fn is_usb3(&self) -> bool {
         matches!(self, Self::SuperSpeed | Self::SuperSpeedPlus)
@@ -287,7 +287,7 @@ impl XhciPortManager {
     ) -> Self {
         let port_slots = (0..num_ports).map(|_| None).collect();
         let port_states = (0..num_ports).map(|_| PortState::Disconnected).collect();
-        
+
         Self {
             operational_base,
             num_ports,
@@ -299,17 +299,17 @@ impl XhciPortManager {
             port_states: Mutex::new(port_states),
         }
     }
-    
+
     // ========================================================================
     // レジスタアクセス
     // ========================================================================
-    
+
     /// PORTSCレジスタのアドレスを計算
     fn portsc_address(&self, port: u8) -> u64 {
         debug_assert!(port >= 1 && port <= self.num_ports);
         self.operational_base + PORTSC_BASE as u64 + (port as u64 - 1) * PORTSC_STRIDE as u64
     }
-    
+
     /// PORTSCを読み取る
     pub fn read_portsc(&self, port: u8) -> u32 {
         if port < 1 || port > self.num_ports {
@@ -317,7 +317,7 @@ impl XhciPortManager {
         }
         hal::mmio::mmio_read_u32(self.portsc_address(port) as usize)
     }
-    
+
     /// PORTSCに書き込む
     fn write_portsc(&self, port: u8, value: u32) {
         if port < 1 || port > self.num_ports {
@@ -325,7 +325,7 @@ impl XhciPortManager {
         }
         hal::mmio::mmio_write_u32(self.portsc_address(port) as usize, value);
     }
-    
+
     /// PORTSCの変更ビットをクリア
     pub fn clear_port_change_bits(&self, port: u8) {
         let portsc = self.read_portsc(port);
@@ -333,17 +333,17 @@ impl XhciPortManager {
         let clear_value = (portsc & PORTSC_PRESERVE_BITS) | PORTSC_W1C_BITS;
         self.write_portsc(port, clear_value);
     }
-    
+
     // ========================================================================
     // ポート情報取得
     // ========================================================================
-    
+
     /// ポート情報を取得
     pub fn get_port_info(&self, port: u8) -> Option<PortInfo> {
         if port < 1 || port > self.num_ports {
             return None;
         }
-        
+
         let portsc = self.read_portsc(port);
         let protocol = self.get_port_protocol(port);
         let state = self.interpret_port_state(portsc);
@@ -359,7 +359,7 @@ impl XhciPortManager {
         };
         let powered = (portsc & PORTSC_PP) != 0;
         let slot_id = self.port_slots.lock()[(port - 1) as usize];
-        
+
         Some(PortInfo {
             port_number: port,
             protocol,
@@ -370,7 +370,7 @@ impl XhciPortManager {
             slot_id,
         })
     }
-    
+
     /// ポートプロトコルを取得
     pub fn get_port_protocol(&self, port: u8) -> PortProtocol {
         if port >= self.usb3_port_start && port < self.usb3_port_start + self.usb3_port_count {
@@ -379,7 +379,7 @@ impl XhciPortManager {
             PortProtocol::Usb2
         }
     }
-    
+
     /// PORTSCから状態を解釈
     fn interpret_port_state(&self, portsc: u32) -> PortState {
         if (portsc & PORTSC_OCA) != 0 {
@@ -399,14 +399,14 @@ impl XhciPortManager {
             PortState::Disconnected
         }
     }
-    
+
     /// 全ポート情報を取得
     pub fn get_all_ports(&self) -> Vec<PortInfo> {
         (1..=self.num_ports)
             .filter_map(|p| self.get_port_info(p))
             .collect()
     }
-    
+
     /// 接続済みポートを取得
     pub fn get_connected_ports(&self) -> Vec<u8> {
         (1..=self.num_ports)
@@ -416,24 +416,24 @@ impl XhciPortManager {
             })
             .collect()
     }
-    
+
     // ========================================================================
     // ポート制御
     // ========================================================================
-    
+
     /// ポートをリセット
     pub fn reset_port(&self, port: u8) -> Result<(), PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);
         }
-        
+
         let portsc = self.read_portsc(port);
-        
+
         // デバイスが接続されているか確認
         if (portsc & PORTSC_CCS) == 0 {
             return Err(PortError::NoDevice);
         }
-        
+
         // リセットを発行
         let protocol = self.get_port_protocol(port);
         if protocol == PortProtocol::Usb3 {
@@ -445,21 +445,21 @@ impl XhciPortManager {
             let reset_value = (portsc & PORTSC_PRESERVE_BITS) | PORTSC_PR;
             self.write_portsc(port, reset_value);
         }
-        
+
         self.port_states.lock()[(port - 1) as usize] = PortState::Resetting;
         Ok(())
     }
-    
+
     /// ポートリセット完了を待機（ポーリング版）
     pub fn wait_reset_complete(&self, port: u8, timeout_ms: u32) -> Result<PortSpeed, PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);
         }
-        
+
         // 簡易的なポーリング待機（実際はタイマー使用）
         for _ in 0..timeout_ms * 100 {
             let portsc = self.read_portsc(port);
-            
+
             // リセット完了をチェック
             if (portsc & PORTSC_PR) == 0 {
                 // リセット完了
@@ -475,14 +475,14 @@ impl XhciPortManager {
                 }
                 return Err(PortError::ResetFailed);
             }
-            
+
             // 短い遅延
             core::hint::spin_loop();
         }
-        
+
         Err(PortError::Timeout)
     }
-    
+
     /// ポート電源をオン
     pub fn power_on(&self, port: u8) {
         if port < 1 || port > self.num_ports {
@@ -493,7 +493,7 @@ impl XhciPortManager {
             self.write_portsc(port, portsc | PORTSC_PP);
         }
     }
-    
+
     /// ポート電源をオフ
     pub fn power_off(&self, port: u8) {
         if port < 1 || port > self.num_ports {
@@ -504,64 +504,64 @@ impl XhciPortManager {
             self.write_portsc(port, portsc & !PORTSC_PP);
         }
     }
-    
+
     /// ポートをサスペンド
     pub fn suspend_port(&self, port: u8) -> Result<(), PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);
         }
-        
+
         let portsc = self.read_portsc(port);
         if (portsc & PORTSC_PED) == 0 {
             return Err(PortError::PortDisabled);
         }
-        
+
         // Link State を U3 (Suspended) に設定
-        let new_portsc = (portsc & !PORTSC_PLS_MASK) 
+        let new_portsc = (portsc & !PORTSC_PLS_MASK)
             | ((PortLinkState::U3 as u32) << PORTSC_PLS_SHIFT)
             | PORTSC_LWS;
         self.write_portsc(port, new_portsc);
-        
+
         self.port_states.lock()[(port - 1) as usize] = PortState::Suspended;
         Ok(())
     }
-    
+
     /// ポートをレジューム
     pub fn resume_port(&self, port: u8) -> Result<(), PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);
         }
-        
+
         let portsc = self.read_portsc(port);
-        
+
         // Link State を U0 (Active) に設定
-        let new_portsc = (portsc & !PORTSC_PLS_MASK) 
+        let new_portsc = (portsc & !PORTSC_PLS_MASK)
             | ((PortLinkState::U0 as u32) << PORTSC_PLS_SHIFT)
             | PORTSC_LWS;
         self.write_portsc(port, new_portsc);
-        
+
         self.port_states.lock()[(port - 1) as usize] = PortState::Enabled;
         Ok(())
     }
-    
+
     // ========================================================================
     // スロット管理
     // ========================================================================
-    
+
     /// ポートにスロットを割り当て
     pub fn assign_slot(&self, port: u8, slot_id: u8) {
         if port >= 1 && port <= self.num_ports {
             self.port_slots.lock()[(port - 1) as usize] = Some(slot_id);
         }
     }
-    
+
     /// ポートのスロット割り当てを解除
     pub fn release_slot(&self, port: u8) {
         if port >= 1 && port <= self.num_ports {
             self.port_slots.lock()[(port - 1) as usize] = None;
         }
     }
-    
+
     /// スロットIDからポートを検索
     pub fn find_port_by_slot(&self, slot_id: u8) -> Option<u8> {
         let slots = self.port_slots.lock();
@@ -572,20 +572,20 @@ impl XhciPortManager {
         }
         None
     }
-    
+
     // ========================================================================
     // イベント処理
     // ========================================================================
-    
+
     /// ポート状態変更イベントを処理
     pub fn handle_port_status_change(&self, port: u8) -> PortChangeEvent {
         if port < 1 || port > self.num_ports {
             return PortChangeEvent::None;
         }
-        
+
         let portsc = self.read_portsc(port);
         let mut event = PortChangeEvent::None;
-        
+
         // 接続状態変更
         if (portsc & PORTSC_CSC) != 0 {
             event = if (portsc & PORTSC_CCS) != 0 {
@@ -597,7 +597,7 @@ impl XhciPortManager {
                 PortChangeEvent::Disconnected
             };
         }
-        
+
         // リセット完了
         if (portsc & PORTSC_PRC) != 0 {
             if (portsc & PORTSC_PED) != 0 {
@@ -605,7 +605,7 @@ impl XhciPortManager {
                 event = PortChangeEvent::ResetComplete;
             }
         }
-        
+
         // 過電流
         if (portsc & PORTSC_OCC) != 0 {
             if (portsc & PORTSC_OCA) != 0 {
@@ -613,17 +613,17 @@ impl XhciPortManager {
                 event = PortChangeEvent::OverCurrent;
             }
         }
-        
+
         // 変更ビットをクリア
         self.clear_port_change_bits(port);
-        
+
         event
     }
-    
+
     /// 全ポートの変更をスキャン
     pub fn scan_all_ports(&self) -> Vec<(u8, PortChangeEvent)> {
         let mut changes = Vec::new();
-        
+
         for port in 1..=self.num_ports {
             let portsc = self.read_portsc(port);
             if (portsc & PORTSC_W1C_BITS) != 0 {
@@ -633,7 +633,7 @@ impl XhciPortManager {
                 }
             }
         }
-        
+
         changes
     }
 }

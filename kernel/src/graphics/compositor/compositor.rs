@@ -11,15 +11,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
-use crate::graphics::{Color, Framebuffer, Point, Rect};
 use crate::graphics::image::Image;
+use crate::graphics::{Color, Framebuffer, Point, Rect};
 
 use super::constants::{BLUR_RADIUS, BORDER_WIDTH, SHADOW_SIZE, TITLE_BAR_HEIGHT};
 use super::cursor::{CursorType, MouseCursor};
 use super::dirty_rect::{DirtyRect, DirtyRegionManager};
-use super::types::{
-    CompositorWindowId, CompositorWindowStyle, DragState, ResizeEdge, ZOrder,
-};
+use super::types::{CompositorWindowId, CompositorWindowStyle, DragState, ResizeEdge, ZOrder};
 use super::window::CompositorWindow;
 
 // ============================================================================
@@ -123,7 +121,11 @@ impl Compositor {
 
     /// Z-orderリストに挿入
     fn insert_z_order(&mut self, id: CompositorWindowId) {
-        let z_order = self.windows.get(&id).map(|w| w.z_order()).unwrap_or(ZOrder::NORMAL);
+        let z_order = self
+            .windows
+            .get(&id)
+            .map(|w| w.z_order())
+            .unwrap_or(ZOrder::NORMAL);
 
         // 適切な位置を見つける
         let mut insert_pos = self.z_order_list.len();
@@ -397,8 +399,7 @@ impl Compositor {
 
             window.prev_rect = window.rect;
             window.rect = new_rect;
-            window.client_rect =
-                CompositorWindow::calculate_client_rect(&new_rect, &window.style);
+            window.client_rect = CompositorWindow::calculate_client_rect(&new_rect, &window.style);
 
             // コンテンツバッファをリサイズ
             window.content = Image::filled(
@@ -495,8 +496,10 @@ impl Compositor {
         if let Some(ref wallpaper) = self.wallpaper {
             self.back_buffer.blit(wallpaper, 0, 0);
         } else {
-            self.back_buffer
-                .fill_rect(Rect::new(0, 0, self.screen_width, self.screen_height), self.desktop_color);
+            self.back_buffer.fill_rect(
+                Rect::new(0, 0, self.screen_width, self.screen_height),
+                self.desktop_color,
+            );
         }
     }
 
@@ -504,9 +507,11 @@ impl Compositor {
     fn draw_desktop_region(&mut self, region: Rect) {
         if let Some(ref wallpaper) = self.wallpaper {
             // 壁紙から領域をコピー
-            for y in region.y.max(0)..(region.y + region.height as i32).min(self.screen_height as i32)
+            for y in
+                region.y.max(0)..(region.y + region.height as i32).min(self.screen_height as i32)
             {
-                for x in region.x.max(0)..(region.x + region.width as i32).min(self.screen_width as i32)
+                for x in
+                    region.x.max(0)..(region.x + region.width as i32).min(self.screen_width as i32)
                 {
                     let color = wallpaper.get_pixel(x as u32, y as u32);
                     self.back_buffer.set_pixel(x as u32, y as u32, color);
@@ -550,7 +555,8 @@ impl Compositor {
         self.draw_window_decoration(rect, &style, is_focused, &title);
 
         // コンテンツを描画
-        self.back_buffer.blit(&content_clone, client_rect.x, client_rect.y);
+        self.back_buffer
+            .blit(&content_clone, client_rect.x, client_rect.y);
     }
 
     /// ウィンドウの一部をバックバッファに描画
@@ -560,7 +566,13 @@ impl Compositor {
     }
 
     /// ウィンドウ装飾を描画
-    fn draw_window_decoration(&mut self, rect: Rect, style: &CompositorWindowStyle, is_focused: bool, _title: &str) {
+    fn draw_window_decoration(
+        &mut self,
+        rect: Rect,
+        style: &CompositorWindowStyle,
+        is_focused: bool,
+        _title: &str,
+    ) {
         let title_bar_color = if is_focused {
             Color::new(0, 120, 215) // アクティブ（青）
         } else {
@@ -574,14 +586,22 @@ impl Compositor {
         if style.border {
             // 外枠
             for x in rect.x..(rect.x + rect.width as i32) {
-                self.back_buffer.set_pixel(x as u32, rect.y as u32, border_color);
                 self.back_buffer
-                    .set_pixel(x as u32, (rect.y + rect.height as i32 - 1) as u32, border_color);
+                    .set_pixel(x as u32, rect.y as u32, border_color);
+                self.back_buffer.set_pixel(
+                    x as u32,
+                    (rect.y + rect.height as i32 - 1) as u32,
+                    border_color,
+                );
             }
             for y in rect.y..(rect.y + rect.height as i32) {
-                self.back_buffer.set_pixel(rect.x as u32, y as u32, border_color);
                 self.back_buffer
-                    .set_pixel((rect.x + rect.width as i32 - 1) as u32, y as u32, border_color);
+                    .set_pixel(rect.x as u32, y as u32, border_color);
+                self.back_buffer.set_pixel(
+                    (rect.x + rect.width as i32 - 1) as u32,
+                    y as u32,
+                    border_color,
+                );
             }
         }
 
@@ -602,15 +622,18 @@ impl Compositor {
                 let btn_rect = Rect::new(btn_x, btn_y, 28, 24);
 
                 // ボタン背景（ホバー時は赤）
-                self.back_buffer.fill_rect(btn_rect, Color::new(196, 43, 28));
+                self.back_buffer
+                    .fill_rect(btn_rect, Color::new(196, 43, 28));
 
                 // X マーク
                 let cx = btn_x + 14;
                 let cy = btn_y + 12;
                 let white = Color::WHITE;
                 for i in -5..=5 {
-                    self.back_buffer.set_pixel((cx + i) as u32, (cy + i) as u32, white);
-                    self.back_buffer.set_pixel((cx + i) as u32, (cy - i) as u32, white);
+                    self.back_buffer
+                        .set_pixel((cx + i) as u32, (cy + i) as u32, white);
+                    self.back_buffer
+                        .set_pixel((cx + i) as u32, (cy - i) as u32, white);
                 }
             }
         }
@@ -618,7 +641,13 @@ impl Compositor {
         // クライアント領域の背景
         let client_bg_rect = Rect::new(
             rect.x + BORDER_WIDTH as i32,
-            rect.y + BORDER_WIDTH as i32 + if style.title_bar { TITLE_BAR_HEIGHT as i32 } else { 0 },
+            rect.y
+                + BORDER_WIDTH as i32
+                + if style.title_bar {
+                    TITLE_BAR_HEIGHT as i32
+                } else {
+                    0
+                },
             rect.width - BORDER_WIDTH * 2,
             rect.height - BORDER_WIDTH * 2 - if style.title_bar { TITLE_BAR_HEIGHT } else { 0 },
         );
@@ -706,7 +735,8 @@ impl Compositor {
 
         // 領域をブラーバッファにコピー
         for y in region.y.max(0)..(region.y + region.height as i32).min(self.screen_height as i32) {
-            for x in region.x.max(0)..(region.x + region.width as i32).min(self.screen_width as i32) {
+            for x in region.x.max(0)..(region.x + region.width as i32).min(self.screen_width as i32)
+            {
                 let color = self.back_buffer.get_pixel(x as u32, y as u32);
                 self.blur_buffer.set_pixel(x as u32, y as u32, color);
             }
@@ -720,9 +750,10 @@ impl Compositor {
         let tint_alpha = 180u8;
 
         for y in region.y.max(0)..(region.y + region.height as i32).min(self.screen_height as i32) {
-            for x in region.x.max(0)..(region.x + region.width as i32).min(self.screen_width as i32) {
+            for x in region.x.max(0)..(region.x + region.width as i32).min(self.screen_width as i32)
+            {
                 let blurred = self.blur_buffer.get_pixel(x as u32, y as u32);
-                
+
                 // ティントとブレンド
                 let r = ((blurred.red as u32 * (255 - tint_alpha) as u32
                     + tint.red as u32 * tint_alpha as u32)
@@ -734,7 +765,8 @@ impl Compositor {
                     + tint.blue as u32 * tint_alpha as u32)
                     / 255) as u8;
 
-                self.back_buffer.set_pixel(x as u32, y as u32, Color::new(r, g, b));
+                self.back_buffer
+                    .set_pixel(x as u32, y as u32, Color::new(r, g, b));
             }
         }
     }
@@ -797,7 +829,8 @@ impl Compositor {
 
             // 結果を書き戻し
             for x in x_start..x_end {
-                self.blur_buffer.set_pixel(x as u32, y as u32, row_buffer[x as usize]);
+                self.blur_buffer
+                    .set_pixel(x as u32, y as u32, row_buffer[x as usize]);
             }
         }
     }
@@ -851,7 +884,8 @@ impl Compositor {
 
             // 結果を書き戻し
             for y in y_start..y_end {
-                self.blur_buffer.set_pixel(x as u32, y as u32, col_buffer[y as usize]);
+                self.blur_buffer
+                    .set_pixel(x as u32, y as u32, col_buffer[y as usize]);
             }
         }
     }
@@ -865,7 +899,7 @@ impl Compositor {
 #[allow(dead_code)]
 mod simd_blur {
     //! SIMD最適化されたブラー処理（将来の最適化用）
-    //! 
+    //!
     //! 現在は標準のスカラー実装を使用。
     //! SSE2/AVX2が利用可能な環境では、この実装に切り替えることで
     //! 大幅なパフォーマンス向上が期待できる。

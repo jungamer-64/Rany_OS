@@ -22,7 +22,7 @@ use super::lockfree::Backoff;
 // ============================================================================
 
 /// ロックが毒入れされた場合のエラー
-/// 
+///
 /// 設計書 8.4: 次にそのMutexをロックしようとしたドメインには、
 /// `Result::Err(PoisonError)` が返される。
 #[derive(Debug)]
@@ -38,7 +38,7 @@ impl<T> PoisonError<T> {
     }
 
     /// 毒入れされたデータへのアクセスを取得
-    /// 
+    ///
     /// # 注意
     /// このメソッドを使用すると、不整合な状態のデータにアクセスする可能性があります。
     /// 呼び出し側は、データの整合性を確認・修復する責任があります。
@@ -71,19 +71,19 @@ pub type LockResult<Guard> = Result<Guard, PoisonError<Guard>>;
 // ============================================================================
 
 /// パニック時自動毒入れMutex
-/// 
+///
 /// 設計書 8.4: 共有リソースへのアクセスには、標準的な `Mutex<T>` の代わりに
 /// 「Poisoning対応ラッパー」（`PoisonLock<T>`）の使用を必須とする。
-/// 
+///
 /// # 特徴
 /// - ロック保持中にパニックが発生すると自動的にpoisoned状態になる
 /// - poisoned状態のロックにアクセスするとエラーが返される
 /// - 呼び出し側はエラー処理（リトライ、代替リソースの使用、縮退運転等）が可能
-/// 
+///
 /// # 使用例
 /// ```ignore
 /// let lock = PoisonLock::new(MyData::new());
-/// 
+///
 /// match lock.lock() {
 ///     Ok(guard) => {
 ///         // 正常にロックを取得
@@ -121,7 +121,7 @@ impl<T> PoisonLock<T> {
     }
 
     /// ロックを取得
-    /// 
+    ///
     /// ロックが毒入れされている場合は`Err(PoisonError)`を返す。
     /// 呼び出し側は`into_inner()`で回復を試みることができる。
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
@@ -181,7 +181,7 @@ impl<T> PoisonLock<T> {
     }
 
     /// 毒入れ状態をクリア（回復後）
-    /// 
+    ///
     /// # Safety
     /// 呼び出し側は、データの整合性が回復されたことを保証する必要がある
     pub fn clear_poison(&self) {
@@ -189,7 +189,7 @@ impl<T> PoisonLock<T> {
     }
 
     /// 内部データへの参照を取得（ロックなし、unsafeのみ）
-    /// 
+    ///
     /// # Safety
     /// 呼び出し側は、排他的アクセスを保証する必要がある
     pub unsafe fn get_unchecked(&self) -> &T {
@@ -197,7 +197,7 @@ impl<T> PoisonLock<T> {
     }
 
     /// 内部データへの可変参照を取得（ロックなし、unsafeのみ）
-    /// 
+    ///
     /// # Safety
     /// 呼び出し側は、排他的アクセスを保証する必要がある
     pub unsafe fn get_unchecked_mut(&self) -> &mut T {
@@ -215,7 +215,7 @@ impl<T: fmt::Debug> fmt::Debug for PoisonLock<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let poisoned = self.poisoned.load(Ordering::Relaxed);
         let locked = self.locked.load(Ordering::Relaxed);
-        
+
         f.debug_struct("PoisonLock")
             .field("poisoned", &poisoned)
             .field("locked", &locked)
@@ -228,7 +228,7 @@ impl<T: fmt::Debug> fmt::Debug for PoisonLock<T> {
 // ============================================================================
 
 /// PoisonLockのガード
-/// 
+///
 /// ドロップ時にロックを解放する。
 /// パニック中にドロップされると、ロックが毒入れされる。
 pub struct PoisonLockGuard<'a, T: ?Sized> {
@@ -258,7 +258,7 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
         // パニック中かどうかをチェック
         // std::thread::panicking()の代わりにカスタム実装を使用
         let panicking = is_panicking();
-        
+
         if panicking {
             // 設計書 8.4: パニック時のPoisoning
             // ドメインがMutexを保持したままパニックすると、
@@ -266,7 +266,7 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
             self.lock.poisoned.store(true, Ordering::Release);
             crate::serial_println!("[PoisonLock] Lock poisoned due to panic");
         }
-        
+
         // スピンロックを解放
         self.lock.locked.store(false, Ordering::Release);
     }
@@ -299,7 +299,7 @@ fn is_panicking() -> bool {
     if core_id >= 32 {
         return false;
     }
-    
+
     let mask = PANICKING_CORES.load(Ordering::Acquire);
     (mask & (1 << core_id)) != 0
 }
@@ -310,7 +310,7 @@ pub fn set_panicking(panicking: bool) {
     if core_id >= 32 {
         return;
     }
-    
+
     let bit = 1u32 << core_id;
     if panicking {
         PANICKING_CORES.fetch_or(bit, Ordering::Release);
@@ -338,7 +338,7 @@ fn get_current_core_id() -> u32 {
         }
         aux
     }
-    
+
     #[cfg(not(target_arch = "x86_64"))]
     {
         0
@@ -350,7 +350,7 @@ fn get_current_core_id() -> u32 {
 // ============================================================================
 
 /// 割り込み禁止 + パニック時毒入れMutex
-/// 
+///
 /// IrqMutexとPoisonLockを組み合わせた実装。
 /// ISRからのアクセスが必要かつ、パニック耐性も必要な場合に使用。
 pub struct IrqPoisonLock<T: ?Sized> {
@@ -379,7 +379,7 @@ impl<T> IrqPoisonLock<T> {
     pub fn lock(&self) -> LockResult<IrqPoisonLockGuard<'_, T>> {
         // 1. 割り込みを禁止
         let irq_was_enabled = super::irq_mutex::save_and_disable_interrupts();
-        
+
         // 2. スピンロックを取得
         let mut backoff = Backoff::new();
         while self
@@ -441,10 +441,10 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
             self.lock.poisoned.store(true, Ordering::Release);
             crate::serial_println!("[IrqPoisonLock] Lock poisoned due to panic");
         }
-        
+
         // スピンロックを解放
         self.lock.locked.store(false, Ordering::Release);
-        
+
         // 割り込み状態を復元
         super::irq_mutex::restore_interrupts(self.irq_was_enabled);
     }
@@ -461,11 +461,11 @@ mod tests {
     #[test]
     fn test_basic_lock() {
         let lock = PoisonLock::new(42);
-        
+
         let guard = lock.lock().unwrap();
         assert_eq!(*guard, 42);
         drop(guard);
-        
+
         assert!(!lock.is_locked());
         assert!(!lock.is_poisoned());
     }
@@ -473,16 +473,16 @@ mod tests {
     #[test]
     fn test_poisoned_after_simulated_panic() {
         let lock = PoisonLock::new(42);
-        
+
         // パニックをシミュレート
         {
             let _guard = lock.lock().unwrap();
             set_panicking(true);
         } // ドロップ時に毒入れされる
         set_panicking(false);
-        
+
         assert!(lock.is_poisoned());
-        
+
         // 毒入れ後のアクセス
         match lock.lock() {
             Ok(_) => panic!("Expected PoisonError"),

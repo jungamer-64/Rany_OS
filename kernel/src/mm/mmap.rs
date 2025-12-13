@@ -328,11 +328,10 @@ impl MemoryMapping {
             Ok(file_data) => {
                 let file_offset = offset.as_usize();
                 if file_offset < file_data.len() {
-                    let copy_len = core::cmp::min(
-                        file_data.len() - file_offset,
-                        aligned_size.as_usize(),
-                    );
-                    memory[..copy_len].copy_from_slice(&file_data[file_offset..file_offset + copy_len]);
+                    let copy_len =
+                        core::cmp::min(file_data.len() - file_offset, aligned_size.as_usize());
+                    memory[..copy_len]
+                        .copy_from_slice(&file_data[file_offset..file_offset + copy_len]);
                 }
             }
             Err(_) => {
@@ -584,7 +583,7 @@ impl MmapManager {
     }
 
     /// 物理メモリを割り当てて仮想アドレスにマップ (SAS統合版)
-    /// 
+    ///
     /// Buddy Allocatorから物理フレームを割り当て、ページテーブルにマップする。
     /// これにより、mmap()が実際のページテーブル操作と統合される。
     pub fn mmap_with_physical_alloc(
@@ -594,7 +593,7 @@ impl MmapManager {
         protection: Protection,
         flags: MappingFlags,
     ) -> Result<MappedAddress, MmapError> {
-        use crate::mm::{buddy_alloc_frame, PageFlags};
+        use crate::mm::{PageFlags, buddy_alloc_frame};
         use x86_64::PhysAddr;
 
         if size.as_usize() == 0 {
@@ -605,7 +604,11 @@ impl MmapManager {
             if flags.fixed && !a.is_page_aligned() {
                 return Err(MmapError::AlignmentError);
             }
-            if flags.fixed { a } else { self.find_free_address(size).ok_or(MmapError::OutOfMemory)? }
+            if flags.fixed {
+                a
+            } else {
+                self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
+            }
         } else {
             self.find_free_address(size).ok_or(MmapError::OutOfMemory)?
         };
@@ -632,14 +635,16 @@ impl MmapManager {
             let frame = buddy_alloc_frame().ok_or(MmapError::OutOfMemory)?;
             let phys_addr = PhysAddr::new(frame.start_address().as_u64());
             let virt_addr = crate::mm::higher_half::VirtAddr::new(
-                (address.as_usize() + i * MappingSize::PAGE_SIZE) as u64
+                (address.as_usize() + i * MappingSize::PAGE_SIZE) as u64,
             );
 
             // ページテーブルにマップ
             let map_result = unsafe {
-                crate::mm::global_map_page(virt_addr, 
-                    crate::mm::higher_half::PhysAddr::new(phys_addr.as_u64()), 
-                    pt_flags)
+                crate::mm::global_map_page(
+                    virt_addr,
+                    crate::mm::higher_half::PhysAddr::new(phys_addr.as_u64()),
+                    pt_flags,
+                )
             };
 
             if map_result.is_err() {
@@ -675,7 +680,7 @@ impl MmapManager {
     }
 
     /// SASリニアマッピング領域から仮想アドレスを取得
-    /// 
+    ///
     /// 物理アドレスを直接マップしている領域（Higher Half）の仮想アドレスを返す。
     /// これはゼロコピー操作に最適。
     pub fn get_sas_linear_mapping(&self, phys_addr: u64, size: usize) -> Option<MappedAddress> {
@@ -797,7 +802,8 @@ impl MmapManager {
         // マッピング情報を取得・削除
         let mapping = {
             let mut mappings = self.mappings.write();
-            mappings.remove(&addr.as_usize())
+            mappings
+                .remove(&addr.as_usize())
                 .ok_or(MmapError::NotMapped)?
         };
 
@@ -808,7 +814,7 @@ impl MmapManager {
         // 各ページをアンマップして物理フレームを解放
         for i in 0..page_count {
             let virt_addr = crate::mm::higher_half::VirtAddr::new(
-                (addr.as_usize() + i * MappingSize::PAGE_SIZE) as u64
+                (addr.as_usize() + i * MappingSize::PAGE_SIZE) as u64,
             );
 
             // ページテーブルから仮想アドレスを物理アドレスに変換
@@ -817,9 +823,11 @@ impl MmapManager {
                 let _ = unsafe { crate::mm::global_unmap_page(virt_addr) };
 
                 // 物理フレームをBuddy Allocatorに返却
-                let frame = x86_64::structures::paging::PhysFrame::<x86_64::structures::paging::Size4KiB>::containing_address(
-                    x86_64::PhysAddr::new(phys_addr.as_u64())
-                );
+                let frame = x86_64::structures::paging::PhysFrame::<
+                    x86_64::structures::paging::Size4KiB,
+                >::containing_address(x86_64::PhysAddr::new(
+                    phys_addr.as_u64(),
+                ));
                 crate::mm::buddy_dealloc_frame(frame);
             }
         }
@@ -827,7 +835,8 @@ impl MmapManager {
         let mapping_size = mapping_guard.size().as_usize();
         drop(mapping_guard);
 
-        self.total_unmapped.fetch_add(mapping_size, Ordering::Relaxed);
+        self.total_unmapped
+            .fetch_add(mapping_size, Ordering::Relaxed);
         Ok(())
     }
 

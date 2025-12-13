@@ -42,11 +42,17 @@ pub struct CapabilitySet {
 
 impl CapabilitySet {
     pub fn empty() -> Self {
-        Self { permitted: 0, effective: 0 }
+        Self {
+            permitted: 0,
+            effective: 0,
+        }
     }
 
     pub fn with_permitted(bit: Capability) -> Self {
-        Self { permitted: bit, effective: 0 }
+        Self {
+            permitted: bit,
+            effective: 0,
+        }
     }
 
     pub fn is_permitted(&self, bit: Capability) -> bool {
@@ -83,7 +89,11 @@ pub struct Manager {
 }
 
 impl Manager {
-    pub fn new() -> Self { Self { map: HashMap::new() } }
+    pub fn new() -> Self {
+        Self {
+            map: HashMap::new(),
+        }
+    }
 
     pub fn get_capabilities(&self, domain: u64) -> CapabilitySet {
         self.map.get(&domain).cloned().unwrap_or_default()
@@ -108,7 +118,13 @@ fn resource_to_capability(resource: &str) -> Capability {
     }
 }
 
-pub fn grant(manager: &mut Manager, caller_pid: u64, resource: &str, _ops: &[CapOperation], target_domain: u64) -> Result<CapabilityItem, String> {
+pub fn grant(
+    manager: &mut Manager,
+    caller_pid: u64,
+    resource: &str,
+    _ops: &[CapOperation],
+    target_domain: u64,
+) -> Result<CapabilityItem, String> {
     // parse target domain id provided by caller (already u64)
 
     let cap_bit = resource_to_capability(resource);
@@ -119,7 +135,9 @@ pub fn grant(manager: &mut Manager, caller_pid: u64, resource: &str, _ops: &[Cap
     // check caller permissions: must be CAP_SYS_ADMIN or have the capability permitted
     let caller_caps = manager.get_capabilities(caller_pid);
     if !manager.has_capability(caller_pid, CAP_SYS_ADMIN) && !caller_caps.is_permitted(cap_bit) {
-        return Err(String::from("Permission denied: insufficient capability to grant this resource"));
+        return Err(String::from(
+            "Permission denied: insufficient capability to grant this resource",
+        ));
     }
 
     let mut caps = manager.get_capabilities(target_domain);

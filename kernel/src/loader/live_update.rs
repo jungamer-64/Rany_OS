@@ -134,7 +134,9 @@ pub fn wait_for_quiescent_state(old_epoch: u64) {
     loop {
         let all_departed = (0..active_cores.min(MAX_CORES)).all(|cpu| {
             let core_epoch = PER_CORE_EPOCHS[cpu].local_epoch.load(Ordering::Acquire);
-            let in_cs = PER_CORE_EPOCHS[cpu].in_critical_section.load(Ordering::Acquire);
+            let in_cs = PER_CORE_EPOCHS[cpu]
+                .in_critical_section
+                .load(Ordering::Acquire);
 
             // コアがクリティカルセクション外か、新エポックに移行済み
             !in_cs || core_epoch > old_epoch
@@ -319,7 +321,11 @@ impl LiveUpdateManager {
 
         // Step 2: グローバルエポックをインクリメント
         let old_epoch = GLOBAL_EPOCH.fetch_add(1, Ordering::SeqCst);
-        crate::log!("[LIVE_UPDATE] Epoch incremented: {} -> {}\n", old_epoch, old_epoch + 1);
+        crate::log!(
+            "[LIVE_UPDATE] Epoch incremented: {} -> {}\n",
+            old_epoch,
+            old_epoch + 1
+        );
 
         // Step 3: 切り替え
         *self.state.lock() = LiveUpdateState::Switching;

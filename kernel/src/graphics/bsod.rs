@@ -16,12 +16,12 @@
 
 #![allow(dead_code)]
 
-use alloc::string::String;
 use alloc::format;
+use alloc::string::String;
 use core::fmt::Write;
 
-use super::{Color, Framebuffer, Rect, with_framebuffer, BitmapFont};
 use super::qrcode::QrCode;
+use super::{BitmapFont, Color, Framebuffer, Rect, with_framebuffer};
 use crate::unwind::{Backtrace, StackFrame};
 
 // ============================================================================
@@ -411,9 +411,7 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
             let _ = write!(
                 frame_str,
                 "#{:2} {:#018x} (SP: {:#018x})",
-                entry.frame_number,
-                entry.frame.instruction_pointer,
-                entry.frame.stack_pointer
+                entry.frame_number, entry.frame.instruction_pointer, entry.frame.stack_pointer
             );
             font.draw_string(fb, margin_x, y, &frame_str, colors::TEXT_SECONDARY, None);
             y += 18;
@@ -425,7 +423,14 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
             y += 18;
         }
     } else {
-        font.draw_string(fb, margin_x, y, "  (no backtrace available)", colors::TEXT_SECONDARY, None);
+        font.draw_string(
+            fb,
+            margin_x,
+            y,
+            "  (no backtrace available)",
+            colors::TEXT_SECONDARY,
+            None,
+        );
         y += 18;
     }
 
@@ -439,38 +444,19 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
         let col_width = (content_width / 3) as i32;
 
         // 汎用レジスタ（3列）
-        let regs_row1 = [
-            ("RAX", regs.rax),
-            ("RBX", regs.rbx),
-            ("RCX", regs.rcx),
-        ];
-        let regs_row2 = [
-            ("RDX", regs.rdx),
-            ("RSI", regs.rsi),
-            ("RDI", regs.rdi),
-        ];
-        let regs_row3 = [
-            ("RBP", regs.rbp),
-            ("RSP", regs.rsp),
-            ("RIP", regs.rip),
-        ];
-        let regs_row4 = [
-            ("R8 ", regs.r8),
-            ("R9 ", regs.r9),
-            ("R10", regs.r10),
-        ];
-        let regs_row5 = [
-            ("R11", regs.r11),
-            ("R12", regs.r12),
-            ("R13", regs.r13),
-        ];
-        let regs_row6 = [
-            ("R14", regs.r14),
-            ("R15", regs.r15),
-            ("FLG", regs.rflags),
-        ];
+        let regs_row1 = [("RAX", regs.rax), ("RBX", regs.rbx), ("RCX", regs.rcx)];
+        let regs_row2 = [("RDX", regs.rdx), ("RSI", regs.rsi), ("RDI", regs.rdi)];
+        let regs_row3 = [("RBP", regs.rbp), ("RSP", regs.rsp), ("RIP", regs.rip)];
+        let regs_row4 = [("R8 ", regs.r8), ("R9 ", regs.r9), ("R10", regs.r10)];
+        let regs_row5 = [("R11", regs.r11), ("R12", regs.r12), ("R13", regs.r13)];
+        let regs_row6 = [("R14", regs.r14), ("R15", regs.r15), ("FLG", regs.rflags)];
 
-        for (i, row) in [regs_row1, regs_row2, regs_row3, regs_row4, regs_row5, regs_row6].iter().enumerate() {
+        for (i, row) in [
+            regs_row1, regs_row2, regs_row3, regs_row4, regs_row5, regs_row6,
+        ]
+        .iter()
+        .enumerate()
+        {
             for (j, (name, value)) in row.iter().enumerate() {
                 draw_register(fb, margin_x + (j as i32 * col_width), y, name, *value);
             }
@@ -483,17 +469,20 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
 
         // 制御レジスタ
         y += 5;
-        let cr_row = [
-            ("CR0", regs.cr0),
-            ("CR2", regs.cr2),
-            ("CR3", regs.cr3),
-        ];
+        let cr_row = [("CR0", regs.cr0), ("CR2", regs.cr2), ("CR3", regs.cr3)];
         for (j, (name, value)) in cr_row.iter().enumerate() {
             draw_register(fb, margin_x + (j as i32 * col_width), y, name, *value);
         }
         y += 18;
     } else {
-        font.draw_string(fb, margin_x, y, "  (registers not captured)", colors::TEXT_SECONDARY, None);
+        font.draw_string(
+            fb,
+            margin_x,
+            y,
+            "  (registers not captured)",
+            colors::TEXT_SECONDARY,
+            None,
+        );
         y += 18;
     }
 
@@ -572,14 +561,9 @@ fn wrap_text(text: &str, max_width: usize) -> alloc::vec::Vec<String> {
 // ============================================================================
 
 /// パニック情報からBSODを表示
-/// 
+///
 /// パニックハンドラから呼び出されることを想定
-pub fn show_panic_bsod(
-    message: &str,
-    file: Option<&str>,
-    line: Option<u32>,
-    column: Option<u32>,
-) {
+pub fn show_panic_bsod(message: &str, file: Option<&str>, line: Option<u32>, column: Option<u32>) {
     // レジスタをキャプチャ
     let registers = RegisterDump::capture();
 
@@ -608,15 +592,12 @@ pub fn show_panic_bsod(
 /// メッセージからエラーコードを生成
 fn generate_error_code(message: &str) -> String {
     // メッセージの最初の単語を取得してエラーコードに変換
-    let first_word = message
-        .split_whitespace()
-        .next()
-        .unwrap_or("UNKNOWN");
+    let first_word = message.split_whitespace().next().unwrap_or("UNKNOWN");
 
     // 簡単なハッシュでコードを生成
-    let hash: u32 = first_word.bytes().fold(0u32, |acc, b| {
-        acc.wrapping_mul(31).wrapping_add(b as u32)
-    });
+    let hash: u32 = first_word
+        .bytes()
+        .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(b as u32));
 
     format!("0x{:08X}", hash)
 }
@@ -626,10 +607,7 @@ pub fn show_double_fault_bsod(
     stack_frame: &x86_64::structures::idt::InterruptStackFrame,
     error_code: u64,
 ) {
-    let message = format!(
-        "DOUBLE FAULT: Error code {:#x}",
-        error_code
-    );
+    let message = format!("DOUBLE FAULT: Error code {:#x}", error_code);
 
     let registers = RegisterDump::capture();
 

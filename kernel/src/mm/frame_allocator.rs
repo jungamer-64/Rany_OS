@@ -533,10 +533,7 @@ impl NumaFrameAllocator {
     /// # Safety
     /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
     /// - `numa_regions` は各領域とNUMAノードの対応を示す
-    pub unsafe fn init_numa(
-        &mut self,
-        usable_regions: &[(PhysAddr, u64, NumaNodeId)],
-    ) {
+    pub unsafe fn init_numa(&mut self, usable_regions: &[(PhysAddr, u64, NumaNodeId)]) {
         // NUMAノードごとの領域をグループ化
         for node_idx in 0..MAX_NUMA_NODES {
             let node_id = NumaNodeId::new(node_idx as u8);

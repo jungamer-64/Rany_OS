@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // src/io/virtio/mod.rs - VirtIO Common Definitions and Core Implementation
 // ============================================================================
 //!
@@ -16,11 +16,11 @@
 
 #![allow(dead_code)]
 
+pub mod blk;
 pub mod core;
 pub mod defs;
-pub mod transport;
 pub mod net;
-pub mod blk;
+pub mod transport;
 
 // Re-export common types
 pub use self::core::*;
@@ -28,38 +28,19 @@ pub use self::defs::*;
 
 // Re-exports for Transport
 pub use transport::{
-    VirtioTransport,
-    VirtioMmioTransport,
-    VirtioPciTransport,
-    TransportType,
-    TransportError,
-    TransportResult,
-    VirtioDeviceInit,
+    TransportError, TransportResult, TransportType, VirtioDeviceInit, VirtioMmioTransport,
+    VirtioPciTransport, VirtioTransport,
 };
 
 // Re-exports for VirtIO-Net
 pub use net::{
-    VirtioNetDevice,
-    VirtioNetHeader,
-    VirtioNetStats,
-    VirtioNetConfig,
-    NetVirtQueue,
-    VringDesc,
-    init_virtio_net,
-    handle_virtio_net_interrupt,
-    with_virtio_net,
-    features as net_features,
+    NetVirtQueue, VirtioNetConfig, VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VringDesc,
+    features as net_features, handle_virtio_net_interrupt, init_virtio_net, with_virtio_net,
 };
 
 // Re-exports for VirtIO-Blk
 pub use blk::{
-    VirtioBlkDevice,
-    VirtQueue as BlkVirtQueue,
-    VringDesc as BlkVringDesc,
-    AsyncBlockDevice,
-    BlockDeviceConfig,
-    BlockError,
+    AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtQueue as BlkVirtQueue, VirtioBlkDevice,
+    VringDesc as BlkVringDesc, features as blk_features, handle_virtio_blk_interrupt,
     init_virtio_blk,
-    handle_virtio_blk_interrupt,
-    features as blk_features,
 };

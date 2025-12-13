@@ -49,16 +49,16 @@ pub use mpk::{
 // lightweight `log!` macro that forwards to `println!`.
 
 #[cfg(test)]
-use std::vec::Vec;
-#[cfg(test)]
 use std::string::String as KernelString;
+#[cfg(test)]
+use std::vec::Vec;
 
 #[cfg(not(test))]
 extern crate alloc;
 #[cfg(not(test))]
-use alloc::vec::Vec;
-#[cfg(not(test))]
 use alloc::string::String as KernelString;
+#[cfg(not(test))]
+use alloc::vec::Vec;
 
 // Provide a simple log macro for tests so `crate::log!` calls resolve
 // without pulling in the full VGA/serial logging subsystems.

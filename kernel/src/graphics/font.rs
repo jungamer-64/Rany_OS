@@ -98,7 +98,7 @@ impl BitmapFont {
             self.draw_char(fb, cx, y, c, color, bg);
             cx += self.width as i32;
         }
-        
+
         cx // 描画終了X座標を返す
     }
 
@@ -137,14 +137,13 @@ impl BitmapFont {
 
     /// 文字列全体の描画幅（ピクセル）を計算
     pub fn text_width(&self, text: &str) -> u32 {
-        text.chars()
-            .map(|c| self.char_width(c))
-            .sum()
+        text.chars().map(|c| self.char_width(c)).sum()
     }
 
     /// イテレータから描画幅を計算（ゼロアロケーション）
-    pub fn iter_width<I>(&self, chars: I) -> u32 
-    where I: Iterator<Item = char> 
+    pub fn iter_width<I>(&self, chars: I) -> u32
+    where
+        I: Iterator<Item = char>,
     {
         chars.map(|c| self.char_width(c)).sum()
     }

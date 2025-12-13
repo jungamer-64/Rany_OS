@@ -709,7 +709,7 @@ pub enum ChannelError {
 }
 
 /// ゼロコピーチャンネル - RRef<T>を介したデータ転送
-/// 
+///
 /// 設計書 5.3: データコピーなしで所有権のみ移動
 pub struct ZeroCopyChannel<T> {
     /// 内部キュー
@@ -740,7 +740,7 @@ impl<T> ZeroCopyChannel<T> {
     }
 
     /// 送信（所有権を移動）
-    /// 
+    ///
     /// データは一切コピーされない。RRefの所有権のみが移動する。
     pub fn send(&self, data: RRef<T>) -> Result<(), ChannelError> {
         if !self.receiver_open.load(Ordering::Acquire) {
@@ -753,7 +753,7 @@ impl<T> ZeroCopyChannel<T> {
         }
 
         queue.push_back(data);
-        
+
         // 受信待ちタスクを起床
         let mut wakers = self.recv_wakers.lock();
         if let Some(waker) = wakers.pop_front() {
@@ -764,7 +764,7 @@ impl<T> ZeroCopyChannel<T> {
     }
 
     /// 受信（所有権を取得）
-    /// 
+    ///
     /// データは一切コピーされない。RRefの所有権のみが移動する。
     pub fn recv(&self) -> Result<RRef<T>, ChannelError> {
         if !self.sender_open.load(Ordering::Acquire) {
@@ -918,7 +918,7 @@ impl<T> Drop for ZeroCopyReceiver<T> {
 }
 
 /// ゼロコピーチャンネルのペアを作成
-/// 
+///
 /// 設計書 5.3に準拠したゼロコピーIPC
 pub fn zero_copy_channel<T>(
     capacity: usize,
@@ -968,12 +968,12 @@ mod tests {
     fn test_zero_copy_channel() {
         let domain1 = DomainId::new(1);
         let domain2 = DomainId::new(2);
-        
+
         let (sender, receiver) = zero_copy_channel::<u32>(16, domain1, domain2);
-        
+
         // 送信
         sender.send(42).unwrap();
-        
+
         // 受信
         let rref = receiver.recv().unwrap();
         assert_eq!(*rref, 42);

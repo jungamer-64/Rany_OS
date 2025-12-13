@@ -31,11 +31,10 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use crate::KapiResult;
 use crate::security::{
-    DmaCapability, FsCapability, IoCapability, IpcCapability, 
-    NetCapability, TaskCapability,
+    DmaCapability, FsCapability, IoCapability, IpcCapability, NetCapability, TaskCapability,
 };
+use crate::KapiResult;
 
 // ============================================================================
 // Task API
@@ -70,7 +69,7 @@ pub mod task {
     {
         // Box and pin the future for the kernel
         let boxed_future = Box::pin(future);
-        
+
         // Delegate to kernel implementation
         crate::kernel().spawn_task(boxed_future)
     }
@@ -128,7 +127,7 @@ pub mod task {
 
         fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
             let kernel = crate::kernel();
-            
+
             if !self.started {
                 self.started = true;
                 let current = kernel.current_tick();
@@ -221,7 +220,11 @@ pub mod fs {
     use super::*;
 
     /// Open a file
-    pub fn open(_cap: &FsCapability, path: &str, mode: crate::OpenMode) -> KapiResult<crate::FileHandle> {
+    pub fn open(
+        _cap: &FsCapability,
+        path: &str,
+        mode: crate::OpenMode,
+    ) -> KapiResult<crate::FileHandle> {
         crate::kernel().fs_open(path, mode)
     }
 }
@@ -274,7 +277,9 @@ pub mod ipc {
     ///
     /// # Errors
     /// - `KapiError::ResourceExhausted` if a channel could not be created
-    pub fn create_channel(_cap: &IpcCapability) -> KapiResult<(crate::ChannelHandle, crate::ChannelHandle)> {
+    pub fn create_channel(
+        _cap: &IpcCapability,
+    ) -> KapiResult<(crate::ChannelHandle, crate::ChannelHandle)> {
         crate::kernel().ipc_create_channel()
     }
 }

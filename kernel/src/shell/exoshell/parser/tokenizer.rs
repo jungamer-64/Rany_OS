@@ -73,10 +73,10 @@ impl<'a> Tokenizer<'a> {
 
     pub fn tokenize(&mut self) -> Vec<Token> {
         let mut tokens = Vec::new();
-        
+
         while self.pos < self.input.len() {
             self.skip_whitespace();
-            
+
             if self.pos >= self.input.len() {
                 break;
             }
@@ -163,10 +163,13 @@ impl<'a> Tokenizer<'a> {
                     // If previous token is a value (Number, Float, Ident, RParen), treat as operator
                     let is_operator = matches!(
                         tokens.last(),
-                        Some(Token::Number(_)) | Some(Token::Float(_)) | 
-                        Some(Token::Ident(_)) | Some(Token::RParen) | Some(Token::StringLit(_))
+                        Some(Token::Number(_))
+                            | Some(Token::Float(_))
+                            | Some(Token::Ident(_))
+                            | Some(Token::RParen)
+                            | Some(Token::StringLit(_))
                     );
-                    
+
                     if is_operator {
                         self.advance();
                         tokens.push(Token::Operator("-".into()));
@@ -186,14 +189,14 @@ impl<'a> Tokenizer<'a> {
                 }
             }
         }
-        
+
         tokens
     }
 
     fn read_string(&mut self, quote: char) -> Token {
         self.advance(); // skip opening quote
         let start = self.pos;
-        
+
         while let Some(c) = self.peek() {
             if c == quote {
                 let s = self.input[start..self.pos].to_string();
@@ -202,7 +205,7 @@ impl<'a> Tokenizer<'a> {
             }
             self.advance();
         }
-        
+
         // 閉じクォートがない場合
         Token::StringLit(self.input[start..].to_string())
     }
@@ -210,12 +213,12 @@ impl<'a> Tokenizer<'a> {
     fn read_number(&mut self) -> Token {
         let start = self.pos;
         let mut has_dot = false;
-        
+
         // 負号
         if self.peek() == Some('-') {
             self.advance();
         }
-        
+
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.advance();
@@ -226,7 +229,7 @@ impl<'a> Tokenizer<'a> {
                 break;
             }
         }
-        
+
         let s = &self.input[start..self.pos];
         if has_dot {
             Token::Float(s.parse().unwrap_or(0.0))
@@ -237,7 +240,7 @@ impl<'a> Tokenizer<'a> {
 
     fn read_ident(&mut self) -> Token {
         let start = self.pos;
-        
+
         while let Some(c) = self.peek() {
             if c.is_alphanumeric() || c == '_' || c == '$' || c == '/' {
                 self.advance();
@@ -245,13 +248,13 @@ impl<'a> Tokenizer<'a> {
                 break;
             }
         }
-        
+
         Token::Ident(self.input[start..self.pos].to_string())
     }
 
     fn read_operator(&mut self) -> Token {
         let start = self.pos;
-        
+
         while let Some(c) = self.peek() {
             if c == '>' || c == '<' || c == '=' || c == '!' {
                 self.advance();
@@ -259,7 +262,7 @@ impl<'a> Tokenizer<'a> {
                 break;
             }
         }
-        
+
         Token::Operator(self.input[start..self.pos].to_string())
     }
 }

@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // apps/src/browser/dom.rs - DOM Types
 // ============================================================================
 //!
@@ -7,9 +7,9 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 
 /// DOM Node
 #[derive(Debug, Clone)]
@@ -74,9 +74,7 @@ impl Node {
     pub fn inner_text(&self) -> String {
         match &self.node_type {
             NodeType::Text(s) => s.clone(),
-            NodeType::Element(_) => {
-                self.children.iter().map(|c| c.inner_text()).collect()
-            }
+            NodeType::Element(_) => self.children.iter().map(|c| c.inner_text()).collect(),
         }
     }
 }

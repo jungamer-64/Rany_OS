@@ -8,12 +8,12 @@
 
 #![allow(dead_code)]
 
-use spin::Mutex;
 use limine::response::FramebufferResponse;
+use spin::Mutex;
 
-use super::{Color, FramebufferInfo, PixelFormat};
-use super::framebuffer::Framebuffer;
 use super::console::TextConsole;
+use super::framebuffer::Framebuffer;
+use super::{Color, FramebufferInfo, PixelFormat};
 
 // ============================================================================
 // Global State
@@ -43,7 +43,7 @@ pub fn init(info: FramebufferInfo) {
 }
 
 /// Limineフレームバッファレスポンスからグラフィックスを初期化
-/// 
+///
 /// ブートローダーから提供されたフレームバッファ情報を使用して
 /// グラフィックスサブシステムを初期化します。
 pub fn init_from_limine(response: &FramebufferResponse) -> bool {

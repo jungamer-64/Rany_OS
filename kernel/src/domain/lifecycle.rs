@@ -3,9 +3,7 @@
 // 設計書 8: フォールトアイソレーションと回復メカニズム
 // 設計書 8.1: スタックアンワインドとリソース回収
 // ============================================================================
-use super::registry::{
-    DomainState, get_domain, register_domain, set_domain_state, update_domain,
-};
+use super::registry::{DomainState, get_domain, register_domain, set_domain_state, update_domain};
 use crate::ipc::rref::{DomainId, reclaim_domain_resources};
 use crate::task::Task;
 use alloc::string::String;
@@ -134,7 +132,11 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     for task_id in tasks {
         // タスクを停止状態に設定
         // 注: 実際のタスク停止はスケジューラが次回処理時に行う
-        crate::log!("[Domain {}] Stopping task {}\n", domain_id.as_u64(), task_id);
+        crate::log!(
+            "[Domain {}] Stopping task {}\n",
+            domain_id.as_u64(),
+            task_id
+        );
     }
 
     // ドメインに依存する他のドメインに通知

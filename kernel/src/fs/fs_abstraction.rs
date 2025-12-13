@@ -587,7 +587,7 @@ impl PathResolver {
 
         // まずパスを正規化
         let normalized = self.normalize_path(path);
-        
+
         let (start, components) = if normalized.starts_with('/') {
             (self.root.clone(), normalized[1..].split('/'))
         } else {
@@ -616,10 +616,10 @@ impl PathResolver {
     fn normalize_path(&self, path: &str) -> String {
         use alloc::string::String;
         use alloc::vec::Vec;
-        
+
         let is_absolute = path.starts_with('/');
         let mut parts: Vec<&str> = Vec::new();
-        
+
         for component in path.split('/') {
             match component {
                 "" | "." => continue,
@@ -632,7 +632,7 @@ impl PathResolver {
                 name => parts.push(name),
             }
         }
-        
+
         if is_absolute {
             let mut result = String::from("/");
             result.push_str(&parts.join("/"));

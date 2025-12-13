@@ -440,15 +440,15 @@ fn cpuid(eax: u32, ecx: u32) -> (u32, u32, u32, u32) {
 #[inline]
 fn read_msr(msr: u32) -> u64 {
     unsafe {
-    let (low, high): (u32, u32);
-    asm!(
-        "rdmsr",
-        in("ecx") msr,
-        out("eax") low,
-        out("edx") high,
-        options(nostack, preserves_flags)
-    );
-    ((high as u64) << 32) | (low as u64)
+        let (low, high): (u32, u32);
+        asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") low,
+            out("edx") high,
+            options(nostack, preserves_flags)
+        );
+        ((high as u64) << 32) | (low as u64)
     }
 }
 
@@ -456,15 +456,15 @@ fn read_msr(msr: u32) -> u64 {
 #[inline]
 fn write_msr(msr: u32, value: u64) {
     unsafe {
-    let low = value as u32;
-    let high = (value >> 32) as u32;
-    asm!(
-        "wrmsr",
-        in("ecx") msr,
-        in("eax") low,
-        in("edx") high,
-        options(nostack, preserves_flags)
-    );
+        let low = value as u32;
+        let high = (value >> 32) as u32;
+        asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") low,
+            in("edx") high,
+            options(nostack, preserves_flags)
+        );
     }
 }
 

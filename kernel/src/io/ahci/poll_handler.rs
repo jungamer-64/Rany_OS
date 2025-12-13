@@ -12,11 +12,11 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use crate::io::io_scheduler::{
-    hybrid_coordinator, DeviceId, IoError, IoRequestId, IoResult, PollHandler,
+    DeviceId, IoError, IoRequestId, IoResult, PollHandler, hybrid_coordinator,
 };
 
 use super::controller::AhciController;
-use super::types::{PortNumber, SlotNumber, PX_CI, PX_TFD};
+use super::types::{PX_CI, PX_TFD, PortNumber, SlotNumber};
 
 /// AHCI PollHandler 実装
 pub struct AhciPollHandler {

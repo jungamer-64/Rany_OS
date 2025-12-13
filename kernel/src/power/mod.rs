@@ -7,9 +7,9 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use crate::io::port_io::{PortU8, PortU16, PortU32};
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use spin::Mutex;
-use crate::io::port_io::{PortU16, PortU8, PortU32};
 
 use crate::io::acpi::Fadt;
 

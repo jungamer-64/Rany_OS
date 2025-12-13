@@ -194,8 +194,7 @@ impl<'a> IcmpPacket<'a> {
     /// Get the ICMP header
     pub fn header(&self) -> &IcmpHeader {
         // Use util helper to return a referenced header from the slice
-        crate::util::get_ref::<IcmpHeader>(self.data, 0)
-            .expect("Icmp header slice out of bounds")
+        crate::util::get_ref::<IcmpHeader>(self.data, 0).expect("Icmp header slice out of bounds")
     }
 
     /// Get message type

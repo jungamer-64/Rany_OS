@@ -415,8 +415,8 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let header = crate::util::get_ref::<DnsHeader>(data, 0)
-            .expect("DNS header slice out of bounds");
+        let header =
+            crate::util::get_ref::<DnsHeader>(data, 0).expect("DNS header slice out of bounds");
 
         if !header.is_response() {
             return Err(DnsResponseCode::FormatError);

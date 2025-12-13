@@ -18,8 +18,8 @@ use alloc::vec::Vec;
 use spin::Mutex;
 
 // Re-export from kernel_api
-pub use kernel_api::{Application, AppContext};
 pub use kernel_api::security::DomainCapabilities;
+pub use kernel_api::{AppContext, Application};
 
 // Re-export from apps crate (when available)
 // pub use exorust_apps::{browser, editor, games, terminal, system_monitor};
@@ -94,11 +94,7 @@ impl DomainManager {
             app_id,
         });
 
-        crate::log!(
-            "[Domain:{}] Loading application '{}'\n",
-            domain_id,
-            name
-        );
+        crate::log!("[Domain:{}] Loading application '{}'\n", domain_id, name);
 
         // Create application context
         let ctx = AppContext::new(app_id, name.clone(), domain_id, caps);
@@ -119,7 +115,7 @@ impl DomainManager {
     pub fn iter(&self) -> impl Iterator<Item = &DomainInfo> {
         self.domains.iter()
     }
-    
+
     /// Set domain state
     pub fn set_state(&mut self, domain_id: u64, state: DomainState) {
         if let Some(domain) = self.domains.iter_mut().find(|d| d.id == domain_id) {

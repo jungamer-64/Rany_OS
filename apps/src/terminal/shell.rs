@@ -27,12 +27,12 @@ pub enum ShellResult {
 }
 
 /// Parse and execute a shell command
-/// 
+///
 /// This is a stub that can be connected to the kernel's ExoShell
 /// via KernelServices or IPC.
 pub async fn execute_command(cmd: &str, cwd: &str) -> ShellResult {
     let parts: Vec<&str> = cmd.split_whitespace().collect();
-    
+
     if parts.is_empty() {
         return ShellResult::None;
     }
@@ -62,24 +62,24 @@ pub async fn execute_command(cmd: &str, cwd: &str) -> ShellResult {
             // TODO: Connect to networking via AppContext
             ShellResult::Output(format!("(net not yet connected to network stack)"))
         }
-        _ => {
-            ShellResult::Error(format!("command not found: {}", parts[0]))
-        }
+        _ => ShellResult::Error(format!("command not found: {}", parts[0])),
     }
 }
 
 /// Get tab completions for the current input
 pub fn get_completions(input: &str, cwd: &str) -> Vec<String> {
     let mut completions = Vec::new();
-    
+
     // Built-in command completions
-    let builtins = ["help", "exit", "quit", "clear", "pwd", "cd", "echo", "ls", "cat", "ps", "net"];
-    
+    let builtins = [
+        "help", "exit", "quit", "clear", "pwd", "cd", "echo", "ls", "cat", "ps", "net",
+    ];
+
     for cmd in &builtins {
         if cmd.starts_with(input) {
             completions.push(String::from(*cmd));
         }
     }
-    
+
     completions
 }

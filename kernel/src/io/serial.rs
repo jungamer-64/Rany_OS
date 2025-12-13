@@ -25,7 +25,7 @@ use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 // Use hal port wrappers instead of raw x86_64 port to centralize unsafe
 
-use hal::port_io::{PortU8, PortU16, PortU32, IoPort};
+use hal::port_io::{IoPort, PortU8, PortU16, PortU32};
 use x86_64::instructions::port::{PortRead, PortWrite};
 
 // ============================================================================
@@ -44,14 +44,14 @@ pub enum ComPort {
 
 /// Register offsets (DLAB=0/1 share same offsets for different registers)
 mod reg {
-    pub const DATA: u16 = 0;    // R/W: Data Register (DLAB=0)
-    pub const DLL: u16 = 0;     // W:   Divisor Latch Low (DLAB=1)
-    pub const DLH: u16 = 1;     // W:   Divisor Latch High (DLAB=1)
-    pub const IER: u16 = 1;     // R/W: Interrupt Enable Register (DLAB=0)
-    pub const FCR: u16 = 2;     // W:   FIFO Control Register
-    pub const LCR: u16 = 3;     // R/W: Line Control Register
-    pub const MCR: u16 = 4;     // R/W: Modem Control Register
-    pub const LSR: u16 = 5;     // R:   Line Status Register
+    pub const DATA: u16 = 0; // R/W: Data Register (DLAB=0)
+    pub const DLL: u16 = 0; // W:   Divisor Latch Low (DLAB=1)
+    pub const DLH: u16 = 1; // W:   Divisor Latch High (DLAB=1)
+    pub const IER: u16 = 1; // R/W: Interrupt Enable Register (DLAB=0)
+    pub const FCR: u16 = 2; // W:   FIFO Control Register
+    pub const LCR: u16 = 3; // R/W: Line Control Register
+    pub const MCR: u16 = 4; // R/W: Modem Control Register
+    pub const LSR: u16 = 5; // R:   Line Status Register
     pub const SCRATCH: u16 = 7; // R/W: Scratch Register
 }
 
@@ -77,10 +77,10 @@ pub enum StopBits {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Parity {
-    None  = 0b000 << 3,
-    Odd   = 0b001 << 3,
-    Even  = 0b011 << 3,
-    Mark  = 0b101 << 3,
+    None = 0b000 << 3,
+    Odd = 0b001 << 3,
+    Even = 0b011 << 3,
+    Mark = 0b101 << 3,
     Space = 0b111 << 3,
 }
 
@@ -89,18 +89,24 @@ pub enum Parity {
 pub struct LineStatus(u8);
 
 impl LineStatus {
-    pub const DATA_READY: u8       = 1 << 0;
-    pub const OVERRUN_ERROR: u8    = 1 << 1;
-    pub const PARITY_ERROR: u8     = 1 << 2;
-    pub const FRAMING_ERROR: u8    = 1 << 3;
-    pub const BREAK_INTERRUPT: u8  = 1 << 4;
+    pub const DATA_READY: u8 = 1 << 0;
+    pub const OVERRUN_ERROR: u8 = 1 << 1;
+    pub const PARITY_ERROR: u8 = 1 << 2;
+    pub const FRAMING_ERROR: u8 = 1 << 3;
+    pub const BREAK_INTERRUPT: u8 = 1 << 4;
     pub const TX_HOLDING_EMPTY: u8 = 1 << 5;
-    pub const TX_EMPTY: u8         = 1 << 6;
-    pub const FIFO_ERROR: u8       = 1 << 7;
+    pub const TX_EMPTY: u8 = 1 << 6;
+    pub const FIFO_ERROR: u8 = 1 << 7;
 
-    pub fn from_u8(val: u8) -> Self { Self(val) }
-    pub fn is_data_ready(&self) -> bool { self.0 & Self::DATA_READY != 0 }
-    pub fn is_tx_ready(&self) -> bool { self.0 & Self::TX_HOLDING_EMPTY != 0 }
+    pub fn from_u8(val: u8) -> Self {
+        Self(val)
+    }
+    pub fn is_data_ready(&self) -> bool {
+        self.0 & Self::DATA_READY != 0
+    }
+    pub fn is_tx_ready(&self) -> bool {
+        self.0 & Self::TX_HOLDING_EMPTY != 0
+    }
 }
 
 /// Interrupt enable flags (IER)
@@ -109,8 +115,8 @@ pub struct InterruptEnable(u8);
 
 impl InterruptEnable {
     pub const RX_AVAILABLE: u8 = 1 << 0;
-    pub const TX_EMPTY: u8     = 1 << 1;
-    pub const LINE_STATUS: u8  = 1 << 2;
+    pub const TX_EMPTY: u8 = 1 << 1;
+    pub const LINE_STATUS: u8 = 1 << 2;
     pub const MODEM_STATUS: u8 = 1 << 3;
 }
 
@@ -118,13 +124,13 @@ impl InterruptEnable {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BaudRate {
     Baud115200 = 1,
-    Baud57600  = 2,
-    Baud38400  = 3,
-    Baud19200  = 6,
-    Baud9600   = 12,
-    Baud4800   = 24,
-    Baud2400   = 48,
-    Baud1200   = 96,
+    Baud57600 = 2,
+    Baud38400 = 3,
+    Baud19200 = 6,
+    Baud9600 = 12,
+    Baud4800 = 24,
+    Baud2400 = 48,
+    Baud1200 = 96,
 }
 
 // ============================================================================
@@ -161,14 +167,14 @@ impl SerialPort {
         baud_rate: BaudRate,
         data_bits: DataBits,
         stop_bits: StopBits,
-        parity: Parity
+        parity: Parity,
     ) -> Result<(), SerialError> {
         let mut data_port: PortU8 = self.port_at(reg::DATA);
-        let mut ier_port: PortU8  = self.port_at(reg::IER);
-        let mut fcr_port: PortU8  = self.port_at(reg::FCR);
-        let mut lcr_port: PortU8  = self.port_at(reg::LCR);
-        let mut mcr_port: PortU8  = self.port_at(reg::MCR);
-        let mut sr_port: PortU8   = self.port_at(reg::SCRATCH);
+        let mut ier_port: PortU8 = self.port_at(reg::IER);
+        let mut fcr_port: PortU8 = self.port_at(reg::FCR);
+        let mut lcr_port: PortU8 = self.port_at(reg::LCR);
+        let mut mcr_port: PortU8 = self.port_at(reg::MCR);
+        let mut sr_port: PortU8 = self.port_at(reg::SCRATCH);
 
         // Disable interrupts
         ier_port.write(0x00);
@@ -196,7 +202,7 @@ impl SerialPort {
         // Loopback test
         // LOOPBACK(0x10) | DTR | RTS | OUT2
         mcr_port.write(0x10 | 0x01 | 0x02 | 0x08);
-        
+
         data_port.write(0xAE);
         if data_port.read() != 0xAE {
             return Err(SerialError::InitFailed);
@@ -204,7 +210,7 @@ impl SerialPort {
 
         // Return to normal mode
         mcr_port.write(0x01 | 0x02 | 0x08);
-            
+
         // Scratch register test
         sr_port.write(0x55);
         if sr_port.read() != 0x55 {
@@ -262,8 +268,12 @@ impl SerialPort {
     /// Interrupt control
     pub fn set_interrupts(&self, rx: bool, tx: bool) {
         let mut flags = 0u8;
-        if rx { flags |= InterruptEnable::RX_AVAILABLE; }
-        if tx { flags |= InterruptEnable::TX_EMPTY; }
+        if rx {
+            flags |= InterruptEnable::RX_AVAILABLE;
+        }
+        if tx {
+            flags |= InterruptEnable::TX_EMPTY;
+        }
 
         let mut ier_port: IoPort<u8> = self.port_at(reg::IER);
         ier_port.write(flags);
@@ -327,7 +337,8 @@ impl RxBuffer {
         }
 
         let byte = self.buffer[head].load(Ordering::Relaxed);
-        self.head.store((head + 1) % RX_BUFFER_SIZE, Ordering::Release);
+        self.head
+            .store((head + 1) % RX_BUFFER_SIZE, Ordering::Release);
         Some(byte)
     }
 }
@@ -350,7 +361,8 @@ impl AsyncSerialPort {
 
     pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> {
         // Standard configuration: 8N1
-        self.port.init(baud_rate, DataBits::Bits8, StopBits::Stop1, Parity::None)
+        self.port
+            .init(baud_rate, DataBits::Bits8, StopBits::Stop1, Parity::None)
     }
 
     pub fn handle_interrupt(&self) {
@@ -368,7 +380,7 @@ impl AsyncSerialPort {
     pub fn send_str(&self, s: &str) {
         self.port.send_str(s);
     }
-    
+
     pub fn read_byte(&self) -> SerialReadFuture<'_> {
         SerialReadFuture { port: self }
     }
@@ -546,10 +558,10 @@ impl LineEditor {
 /// Returns InputEvent for special keys, allowing shell to handle history
 pub async fn read_line_advanced(editor: &mut LineEditor) -> InputEvent {
     let port = serial1();
-    
+
     loop {
         let byte = port.read_byte().await;
-        
+
         match byte {
             // Enter (CR or LF)
             b'\r' | b'\n' => {
@@ -668,7 +680,7 @@ pub async fn read_line_advanced(editor: &mut LineEditor) -> InputEvent {
 fn redraw_from_cursor(port: &AsyncSerialPort, editor: &LineEditor) {
     let pos = editor.cursor();
     let content = editor.content();
-    
+
     // Print from cursor to end
     for c in content[pos..].bytes() {
         port.port.send(c);
@@ -689,10 +701,10 @@ fn redraw_from_cursor(port: &AsyncSerialPort, editor: &LineEditor) {
 pub async fn read_line() -> String {
     let port = serial1();
     let mut buffer = Vec::with_capacity(256);
-    
+
     loop {
         let byte = port.read_byte().await;
-        
+
         match byte {
             // Enter (CR or LF)
             b'\r' | b'\n' => {
@@ -739,7 +751,7 @@ pub async fn read_line() -> String {
             }
         }
     }
-    
+
     String::from_utf8_lossy(&buffer).into_owned()
 }
 
@@ -755,10 +767,10 @@ const COM1_IRQ: u8 = 4;
 pub fn init() -> Result<(), SerialError> {
     SERIAL1.init(BaudRate::Baud115200)?;
     SERIAL1.port.set_interrupts(true, false);
-    
+
     // Unmask IRQ4 (COM1) in the PIC
     crate::interrupts::unmask_irq(COM1_IRQ);
-    
+
     // Using literal string to avoid circular reference with formatter
     SERIAL1.send_str("[SERIAL] COM1 initialized (IRQ4 enabled)\n");
     Ok(())
@@ -808,7 +820,7 @@ macro_rules! serial_println {
 // Serial Driver implementing Driver trait
 // ============================================================================
 
-use kernel_api::driver::{Driver, DriverType, DriverVersion, DeviceId};
+use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::KapiResult;
 
 /// Serial COM1 driver implementing Driver trait
@@ -821,9 +833,7 @@ pub struct SerialDriver {
 impl SerialDriver {
     /// Create a new Serial driver
     pub fn new() -> Self {
-        Self {
-            initialized: false,
-        }
+        Self { initialized: false }
     }
 }
 
@@ -865,10 +875,10 @@ impl Driver for SerialDriver {
 
         // Enable interrupts
         SERIAL1.port.set_interrupts(true, false);
-        
+
         // Unmask IRQ4 (COM1) in the PIC
         crate::interrupts::unmask_irq(COM1_IRQ);
-        
+
         SERIAL1.send_str("[SERIAL] COM1 IRQ4 enabled\n");
         Ok(())
     }

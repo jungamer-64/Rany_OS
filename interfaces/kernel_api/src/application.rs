@@ -9,14 +9,14 @@
 
 extern crate alloc;
 
-use alloc::string::String;
+use crate::security::{
+    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
+    NetCapability, TaskCapability,
+};
 use alloc::boxed::Box;
+use alloc::string::String;
 use core::future::Future;
 use core::pin::Pin;
-use crate::security::{
-    DmaCapability, DomainCapabilities, FsCapability, IoCapability, 
-    IpcCapability, MemoryCapability, NetCapability, TaskCapability,
-};
 
 // ============================================================================
 // Application Trait

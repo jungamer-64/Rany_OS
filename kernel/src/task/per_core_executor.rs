@@ -7,6 +7,7 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use super::raw;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -16,7 +17,6 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use spin::Mutex;
-use super::raw;
 
 // ============================================================================
 // Generic Work-Stealing Queue (for Per-Core Executor)
@@ -342,7 +342,7 @@ impl PerCoreExecutor {
     }
 
     /// エグゼキュータのメインループ（1イテレーション）
-    /// 
+    ///
     /// 【設計書 4.2】2段階Wake方式:
     /// タスク実行前に保留中の割り込みイベントを処理
     pub fn run_once(&self) -> bool {
@@ -354,7 +354,7 @@ impl PerCoreExecutor {
         // ISRからのwake()はイベントキューに積まれているため、
         // ここで実際のwake()を実行する
         crate::task::interrupt_waker::process_interrupt_events();
-        
+
         // タイマーからの保留Wakerも処理
         crate::task::timer::process_pending_timer_wakers();
 
@@ -600,11 +600,15 @@ unsafe fn waker_clone(data: *const ()) -> RawWaker {
     });
 
     RawWaker::new(Box::into_raw(new_data) as *const (), &WAKER_VTABLE)
-    }
+}
 
 unsafe fn waker_wake(data: *const ()) {
-    unsafe { waker_wake_by_ref(data); }
-    unsafe { waker_drop(data); }
+    unsafe {
+        waker_wake_by_ref(data);
+    }
+    unsafe {
+        waker_drop(data);
+    }
 }
 
 unsafe fn waker_wake_by_ref(data: *const ()) {

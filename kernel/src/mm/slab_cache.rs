@@ -42,7 +42,7 @@ impl FreeList {
     unsafe fn push(&mut self, ptr: NonNull<u8>) {
         let node = ptr.as_ptr() as *mut FreeNode;
         // SAFETY: ptrはFreeNodeとして使用可能なメモリを指している
-            unsafe {
+        unsafe {
             (*node).next = self.head;
             self.head = Some(NonNull::new(node).expect("node pointer null"));
         }
@@ -136,8 +136,8 @@ impl SlabCache {
         let phys_addr = frame.start_address();
         let virt_addr = crate::mm::mapping::phys_to_virt(phys_addr);
 
-        let page_ptr = NonNull::new(virt_addr.as_u64() as *mut u8)
-            .expect("virt_addr returned null");
+        let page_ptr =
+            NonNull::new(virt_addr.as_u64() as *mut u8).expect("virt_addr returned null");
 
         // ページ内をオブジェクトに分割して空きリストに追加
         let objects_per_page = SLAB_PAGE_SIZE / self.object_size;

@@ -324,11 +324,11 @@ impl NvmeControllerConfig {
 
     /// 標準的なNVMe設定を適用
     pub fn standard_config(&mut self) -> &mut Self {
-        self.set_css(0)      // NVM Command Set
-            .set_ams(0)      // Round Robin
-            .set_mps(0)      // 4KB pages
-            .set_iosqes(6)   // 64-byte SQ entries
-            .set_iocqes(4)   // 16-byte CQ entries
+        self.set_css(0) // NVM Command Set
+            .set_ams(0) // Round Robin
+            .set_mps(0) // 4KB pages
+            .set_iosqes(6) // 64-byte SQ entries
+            .set_iocqes(4) // 16-byte CQ entries
     }
 }
 

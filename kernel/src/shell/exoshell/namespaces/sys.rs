@@ -2,16 +2,16 @@
 // src/shell/exoshell/namespaces/sys.rs - System Namespace
 // ============================================================================
 
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::borrow::Cow;
 
+use super::{BoxFuture, ShellNamespace};
+use crate::security::capability::{CAP_SYS_BOOT, manager};
 use crate::shell::exoshell::types::ExoValue;
 use crate::task::process::getpid;
-use crate::security::capability::{manager, CAP_SYS_BOOT};
-use super::{ShellNamespace, BoxFuture};
 use alloc::boxed::Box;
 
 /// システム名前空間
@@ -21,14 +21,26 @@ impl SysNamespace {
     /// システム情報
     pub fn info() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        map.insert(String::from("os"), ExoValue::String(Cow::Borrowed("RanyOS")));
-        map.insert(String::from("arch"), ExoValue::String(Cow::Borrowed("x86_64")));
-        map.insert(String::from("version"), ExoValue::String(Cow::Borrowed("0.3.0-alpha")));
-        map.insert(String::from("kernel"), ExoValue::String(Cow::Borrowed("ExoRust")));
-        
+        map.insert(
+            String::from("os"),
+            ExoValue::String(Cow::Borrowed("RanyOS")),
+        );
+        map.insert(
+            String::from("arch"),
+            ExoValue::String(Cow::Borrowed("x86_64")),
+        );
+        map.insert(
+            String::from("version"),
+            ExoValue::String(Cow::Borrowed("0.3.0-alpha")),
+        );
+        map.insert(
+            String::from("kernel"),
+            ExoValue::String(Cow::Borrowed("ExoRust")),
+        );
+
         let ticks = crate::task::timer::current_tick();
         map.insert(String::from("uptime_ms"), ExoValue::Int(ticks as i64));
-        
+
         ExoValue::Map(map)
     }
 
@@ -39,15 +51,18 @@ impl SysNamespace {
         let total = crate::memory::total_memory_kb();
         let free = crate::memory::free_memory_kb();
         let used = crate::memory::used_memory_kb();
-        
+
         map.insert(String::from("total_kb"), ExoValue::Int(total as i64));
         map.insert(String::from("used_kb"), ExoValue::Int(used as i64));
         map.insert(String::from("free_kb"), ExoValue::Int(free as i64));
-        
+
         // 使用率をパーセントで計算
         let usage_percent = if total > 0 { (used * 100) / total } else { 0 };
-        map.insert(String::from("usage_percent"), ExoValue::Int(usage_percent as i64));
-        
+        map.insert(
+            String::from("usage_percent"),
+            ExoValue::Int(usage_percent as i64),
+        );
+
         ExoValue::Map(map)
     }
 
@@ -58,8 +73,14 @@ impl SysNamespace {
         let mut map = BTreeMap::new();
         map.insert(String::from("ticks"), ExoValue::Int(ticks as i64));
         map.insert(String::from("seconds"), ExoValue::Int(seconds as i64));
-        map.insert(String::from("hours"), ExoValue::Int((seconds / 3600) as i64));
-        map.insert(String::from("minutes"), ExoValue::Int(((seconds % 3600) / 60) as i64));
+        map.insert(
+            String::from("hours"),
+            ExoValue::Int((seconds / 3600) as i64),
+        );
+        map.insert(
+            String::from("minutes"),
+            ExoValue::Int(((seconds % 3600) / 60) as i64),
+        );
         ExoValue::Map(map)
     }
 
@@ -67,41 +88,89 @@ impl SysNamespace {
     pub fn monitor() -> ExoValue<'static> {
         let snap = crate::monitor::snapshot();
         let mut map = BTreeMap::new();
-        
+
         // 基本情報
-        map.insert(String::from("timestamp"), ExoValue::Int(snap.timestamp as i64));
-        map.insert(String::from("cpu_usage"), ExoValue::Int(snap.cpu_usage as i64));
-        
+        map.insert(
+            String::from("timestamp"),
+            ExoValue::Int(snap.timestamp as i64),
+        );
+        map.insert(
+            String::from("cpu_usage"),
+            ExoValue::Int(snap.cpu_usage as i64),
+        );
+
         // メモリ情報
         let mut mem = BTreeMap::new();
-        mem.insert(String::from("heap_used"), ExoValue::Int(snap.memory.heap_used as i64));
-        mem.insert(String::from("heap_free"), ExoValue::Int(snap.memory.heap_free as i64));
-        mem.insert(String::from("heap_total"), ExoValue::Int(snap.memory.heap_total as i64));
-        mem.insert(String::from("usage_percent"), ExoValue::Int(snap.memory.usage_percent as i64));
+        mem.insert(
+            String::from("heap_used"),
+            ExoValue::Int(snap.memory.heap_used as i64),
+        );
+        mem.insert(
+            String::from("heap_free"),
+            ExoValue::Int(snap.memory.heap_free as i64),
+        );
+        mem.insert(
+            String::from("heap_total"),
+            ExoValue::Int(snap.memory.heap_total as i64),
+        );
+        mem.insert(
+            String::from("usage_percent"),
+            ExoValue::Int(snap.memory.usage_percent as i64),
+        );
         map.insert(String::from("memory"), ExoValue::Map(mem));
-        
+
         // ドメイン情報
         let mut domains = BTreeMap::new();
-        domains.insert(String::from("total"), ExoValue::Int(snap.domains.total as i64));
-        domains.insert(String::from("running"), ExoValue::Int(snap.domains.running as i64));
-        domains.insert(String::from("stopped"), ExoValue::Int(snap.domains.stopped as i64));
+        domains.insert(
+            String::from("total"),
+            ExoValue::Int(snap.domains.total as i64),
+        );
+        domains.insert(
+            String::from("running"),
+            ExoValue::Int(snap.domains.running as i64),
+        );
+        domains.insert(
+            String::from("stopped"),
+            ExoValue::Int(snap.domains.stopped as i64),
+        );
         map.insert(String::from("domains"), ExoValue::Map(domains));
-        
+
         // タスク情報
         let mut tasks = BTreeMap::new();
-        tasks.insert(String::from("context_switches"), ExoValue::Int(snap.tasks.context_switches as i64));
-        tasks.insert(String::from("voluntary_yields"), ExoValue::Int(snap.tasks.voluntary_yields as i64));
-        tasks.insert(String::from("forced_preemptions"), ExoValue::Int(snap.tasks.forced_preemptions as i64));
+        tasks.insert(
+            String::from("context_switches"),
+            ExoValue::Int(snap.tasks.context_switches as i64),
+        );
+        tasks.insert(
+            String::from("voluntary_yields"),
+            ExoValue::Int(snap.tasks.voluntary_yields as i64),
+        );
+        tasks.insert(
+            String::from("forced_preemptions"),
+            ExoValue::Int(snap.tasks.forced_preemptions as i64),
+        );
         map.insert(String::from("tasks"), ExoValue::Map(tasks));
-        
+
         // ネットワーク情報
         let mut net = BTreeMap::new();
-        net.insert(String::from("rx_packets"), ExoValue::Int(snap.network.rx_packets as i64));
-        net.insert(String::from("tx_packets"), ExoValue::Int(snap.network.tx_packets as i64));
-        net.insert(String::from("rx_bytes"), ExoValue::Int(snap.network.rx_bytes as i64));
-        net.insert(String::from("tx_bytes"), ExoValue::Int(snap.network.tx_bytes as i64));
+        net.insert(
+            String::from("rx_packets"),
+            ExoValue::Int(snap.network.rx_packets as i64),
+        );
+        net.insert(
+            String::from("tx_packets"),
+            ExoValue::Int(snap.network.tx_packets as i64),
+        );
+        net.insert(
+            String::from("rx_bytes"),
+            ExoValue::Int(snap.network.rx_bytes as i64),
+        );
+        net.insert(
+            String::from("tx_bytes"),
+            ExoValue::Int(snap.network.tx_bytes as i64),
+        );
         map.insert(String::from("network"), ExoValue::Map(net));
-        
+
         ExoValue::Map(map)
     }
 
@@ -115,79 +184,127 @@ impl SysNamespace {
     /// 温度情報
     pub fn thermal() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        
+
         // CPU温度を取得
         if let Some(temp) = crate::thermal::cpu_temperature() {
-            map.insert(String::from("cpu_celsius"), ExoValue::Int(temp.celsius() as i64));
-            map.insert(String::from("cpu_millicelsius"), ExoValue::Int(temp.millicelsius() as i64));
+            map.insert(
+                String::from("cpu_celsius"),
+                ExoValue::Int(temp.celsius() as i64),
+            );
+            map.insert(
+                String::from("cpu_millicelsius"),
+                ExoValue::Int(temp.millicelsius() as i64),
+            );
         } else {
-            map.insert(String::from("cpu_celsius"), ExoValue::String(Cow::Borrowed("N/A")));
+            map.insert(
+                String::from("cpu_celsius"),
+                ExoValue::String(Cow::Borrowed("N/A")),
+            );
         }
-        
+
         // サーマルマネージャから詳細情報
         let tm = crate::thermal::thermal_manager();
         let (polling_count, trip_events) = tm.stats();
-        map.insert(String::from("polling_count"), ExoValue::Int(polling_count as i64));
-        map.insert(String::from("trip_events"), ExoValue::Int(trip_events as i64));
-        
+        map.insert(
+            String::from("polling_count"),
+            ExoValue::Int(polling_count as i64),
+        );
+        map.insert(
+            String::from("trip_events"),
+            ExoValue::Int(trip_events as i64),
+        );
+
         // スロットリング情報
         let throttle = tm.throttle_controller();
         let policy = throttle.current_policy();
-        map.insert(String::from("throttle_policy"), ExoValue::String(Cow::Owned(format!("{:?}", policy))));
-        map.insert(String::from("throttle_count"), ExoValue::Int(throttle.throttle_count() as i64));
-        
+        map.insert(
+            String::from("throttle_policy"),
+            ExoValue::String(Cow::Owned(format!("{:?}", policy))),
+        );
+        map.insert(
+            String::from("throttle_count"),
+            ExoValue::Int(throttle.throttle_count() as i64),
+        );
+
         // センサー情報
         let sensors = tm.sensors();
         let mut sensor_list = Vec::new();
         for sensor in sensors.iter() {
             let mut s = BTreeMap::new();
             s.insert(String::from("id"), ExoValue::Int(sensor.id as i64));
-            s.insert(String::from("name"), ExoValue::String(Cow::Owned(sensor.name.clone())));
+            s.insert(
+                String::from("name"),
+                ExoValue::String(Cow::Owned(sensor.name.clone())),
+            );
             if sensor.current.is_valid() {
-                s.insert(String::from("current_c"), ExoValue::Int(sensor.current.celsius() as i64));
+                s.insert(
+                    String::from("current_c"),
+                    ExoValue::Int(sensor.current.celsius() as i64),
+                );
             }
             s.insert(String::from("is_hot"), ExoValue::Bool(sensor.is_hot()));
-            s.insert(String::from("is_critical"), ExoValue::Bool(sensor.is_critical()));
+            s.insert(
+                String::from("is_critical"),
+                ExoValue::Bool(sensor.is_critical()),
+            );
             sensor_list.push(ExoValue::Map(s));
         }
         map.insert(String::from("sensors"), ExoValue::Array(sensor_list));
-        
+
         ExoValue::Map(map)
     }
 
     /// ウォッチドッグ情報
     pub fn watchdog() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        
+
         let wm = crate::watchdog::watchdog_manager();
         let sw = wm.software();
         let (heartbeats, timeouts, checks) = sw.stats();
-        
+
         map.insert(String::from("heartbeats"), ExoValue::Int(heartbeats as i64));
         map.insert(String::from("timeouts"), ExoValue::Int(timeouts as i64));
         map.insert(String::from("checks"), ExoValue::Int(checks as i64));
-        
+
         // デッドロック検出情報
         let dd = wm.deadlock_detector();
-        map.insert(String::from("deadlocks_detected"), ExoValue::Int(dd.deadlocks_detected() as i64));
-        
+        map.insert(
+            String::from("deadlocks_detected"),
+            ExoValue::Int(dd.deadlocks_detected() as i64),
+        );
+
         ExoValue::Map(map)
     }
 
     /// 電源情報
     pub fn power() -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        
+
         let pm = crate::power::power_manager();
         let state = pm.current_state();
-        map.insert(String::from("state"), ExoValue::String(Cow::Owned(format!("{:?}", state))));
-        
+        map.insert(
+            String::from("state"),
+            ExoValue::String(Cow::Owned(format!("{:?}", state))),
+        );
+
         let stats = pm.stats();
-        map.insert(String::from("power_button_presses"), 
-            ExoValue::Int(stats.power_button_presses.load(core::sync::atomic::Ordering::Relaxed) as i64));
-        map.insert(String::from("sleep_button_presses"), 
-            ExoValue::Int(stats.sleep_button_presses.load(core::sync::atomic::Ordering::Relaxed) as i64));
-        
+        map.insert(
+            String::from("power_button_presses"),
+            ExoValue::Int(
+                stats
+                    .power_button_presses
+                    .load(core::sync::atomic::Ordering::Relaxed) as i64,
+            ),
+        );
+        map.insert(
+            String::from("sleep_button_presses"),
+            ExoValue::Int(
+                stats
+                    .sleep_button_presses
+                    .load(core::sync::atomic::Ordering::Relaxed) as i64,
+            ),
+        );
+
         // CPUアイドル統計
         let idle = crate::power::cpu_idle();
         let (c1, c2, c3) = idle.stats();
@@ -196,7 +313,7 @@ impl SysNamespace {
         idle_stats.insert(String::from("c2_count"), ExoValue::Int(c2 as i64));
         idle_stats.insert(String::from("c3_count"), ExoValue::Int(c3 as i64));
         map.insert(String::from("cpu_idle"), ExoValue::Map(idle_stats));
-        
+
         ExoValue::Map(map)
     }
 
@@ -210,7 +327,9 @@ impl SysNamespace {
 
         crate::log!("[SYS] Shutdown requested via shell\n");
         // 実際のシャットダウンは危険なのでメッセージのみ
-        ExoValue::String(Cow::Borrowed("Shutdown command received. Use Ctrl+Alt+Del or power button to actually shutdown."))
+        ExoValue::String(Cow::Borrowed(
+            "Shutdown command received. Use Ctrl+Alt+Del or power button to actually shutdown.",
+        ))
     }
 
     /// システムリブート
@@ -223,7 +342,9 @@ impl SysNamespace {
 
         crate::log!("[SYS] Reboot requested via shell\n");
         // 実際のリブートは危険なのでメッセージのみ
-        ExoValue::String(Cow::Borrowed("Reboot command received. Use Ctrl+Alt+Del to actually reboot."))
+        ExoValue::String(Cow::Borrowed(
+            "Reboot command received. Use Ctrl+Alt+Del to actually reboot.",
+        ))
     }
 }
 
@@ -232,7 +353,11 @@ impl ShellNamespace for SysNamespace {
         "sys"
     }
 
-    fn call<'a>(&'a self, method: &'a str, _args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+    fn call<'a>(
+        &'a self,
+        method: &'a str,
+        _args: &'a [ExoValue<'static>],
+    ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
                 "info" => Self::info(),
@@ -245,9 +370,10 @@ impl ShellNamespace for SysNamespace {
                 "power" => Self::power(),
                 "shutdown" => Self::shutdown(),
                 "reboot" => Self::reboot(),
-                _ => ExoValue::Error(
-                    format!("Unknown method 'sys.{}'\nValid methods: info, memory, time, monitor, dashboard, thermal, watchdog, power, shutdown, reboot", method)
-                ),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, monitor, dashboard, thermal, watchdog, power, shutdown, reboot",
+                    method
+                )),
             }
         })
     }

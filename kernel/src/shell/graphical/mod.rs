@@ -15,31 +15,25 @@
 //! - ANSIカラーサポート
 //! - スクロールバック
 
-mod types;
-mod shell;
-mod render;
-mod input;
 mod async_runtime;
+mod input;
+mod render;
+mod shell;
 pub mod streams;
+mod types;
 pub mod utils;
 
 // Re-export types
 pub use types::{
-    ShellTheme, LineBuffer, ConsoleLine, MouseState,
-    RenderInputState, RenderMouseState,
-    MAX_HISTORY, MAX_LINE_LENGTH, SCROLLBACK_LINES, CURSOR_BLINK_MS,
-    FONT_WIDTH, FONT_HEIGHT,
+    CURSOR_BLINK_MS, ConsoleLine, FONT_HEIGHT, FONT_WIDTH, LineBuffer, MAX_HISTORY,
+    MAX_LINE_LENGTH, MouseState, RenderInputState, RenderMouseState, SCROLLBACK_LINES, ShellTheme,
 };
 
 // Re-export shell
 pub use shell::GraphicalShell;
 
 // Re-export async runtime functions
-pub use async_runtime::{
-    init, start, with_shell,
-    run_async_shell,
-    print, print_colored,
-};
+pub use async_runtime::{init, print, print_colored, run_async_shell, start, with_shell};
 
 // Re-export stream types (for submit_command)
-pub use streams::{submit_command, CommandRequest, CommandResult};
+pub use streams::{CommandRequest, CommandResult, submit_command};

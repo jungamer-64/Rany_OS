@@ -5,7 +5,7 @@
 //! # グラフィカルシェル非同期ランタイム
 //!
 //! グローバルインスタンスと非同期コマンドシステムの管理
-//! 
+//!
 //! ## Async-First設計
 //! - Waker駆動のコマンドキュー
 //! - 割り込みベースのキーボード入力
@@ -13,20 +13,17 @@
 
 #![allow(dead_code)]
 
-use alloc::format;
 use alloc::boxed::Box;
+use alloc::format;
 use alloc::vec;
 use spin::Mutex;
 
 use crate::graphics::Color;
-use crate::io::hid::{poll_mouse_event, keyboard};
+use crate::io::hid::{keyboard, poll_mouse_event};
 use crate::shell::exoshell::{ExoShell, ExoValue};
 
 use super::shell::GraphicalShell;
-use super::streams::{
-    CommandQueueStream, CommandResult,
-    push_result, poll_result,
-};
+use super::streams::{CommandQueueStream, CommandResult, poll_result, push_result};
 
 // ============================================================================
 // Global State
@@ -42,27 +39,25 @@ static ASYNC_EXOSHELL: Mutex<Option<ExoShell>> = Mutex::new(None);
 /// グラフィカルシェルを初期化
 pub fn init() {
     use log::info;
-    
+
     info!(target: "gshell", "Initializing graphical shell...");
-    
+
     // 非同期ExoShellを初期化
     *ASYNC_EXOSHELL.lock() = Some(ExoShell::new());
     info!(target: "gshell", "Async ExoShell initialized");
-    
+
     // フレームバッファを取得
     let fb = crate::graphics::framebuffer();
     if fb.is_none() {
         info!(target: "gshell", "No framebuffer available - skipping graphical shell");
         return;
     }
-    
+
     info!(target: "gshell", "Framebuffer found, creating shell...");
 
     // グラフィカルシェルを作成
-    let dims = crate::graphics::with_framebuffer(|fb| {
-        (fb.width(), fb.height())
-    });
-    
+    let dims = crate::graphics::with_framebuffer(|fb| (fb.width(), fb.height()));
+
     let shell = dims.map(|(w, h)| GraphicalShell::new(w, h));
 
     if let Some(shell) = shell {
@@ -79,14 +74,14 @@ pub fn start() {
 
     // 1. 必要なバッファサイズを取得（ロックは一瞬だけ）
     let buffer_size = crate::graphics::with_framebuffer(|fb| fb.info().size()).unwrap_or(0);
-    
+
     // 2. バッファを確保（ロック外で行うため、アロケーションログによるデッドロックを回避）
     let backing_buffer = if buffer_size > 0 {
         Some(vec![0u8; buffer_size])
     } else {
         None
     };
-    
+
     // 3. シェルを開始（バッファを渡す）
     crate::graphics::with_framebuffer(|fb| {
         // 確保したバッファがあれば設定
@@ -115,21 +110,21 @@ where
 }
 
 /// 非同期タスクとしてグラフィカルシェルを実行
-/// 
+///
 /// ## 設計
 /// - コマンドキューは Waker 駆動（イベント到着時のみ起床）
 /// - キーボードは KeyboardStream で Waker 駆動
 /// - マウスは従来のポーリング（TODO: MouseStream化）
 /// - カーソル点滅は定期的なyieldで処理
 pub async fn run_async_shell() {
-    use log::info;
     use crate::io::hid::poll_input_event;
-    
+    use log::info;
+
     info!(target: "gshell", "Starting async graphical shell task (event-driven)...");
-    
+
     let mut cmd_stream = CommandQueueStream::new();
     let mut input_poll_counter = 0u32;
-    
+
     loop {
         // ========================================
         // Phase 1: 入力イベント処理
@@ -152,7 +147,7 @@ pub async fn run_async_shell() {
                         }
                     }
                 }
-                
+
                 // マウス: ポーリング（TODO: MouseStream）
                 for _ in 0..8 {
                     if let Some(event) = poll_mouse_event() {
@@ -161,11 +156,11 @@ pub async fn run_async_shell() {
                         break;
                     }
                 }
-                
+
                 // 結果キューをチェックして表示
                 while let Some(result) = poll_result() {
                     let output = format!("{}\n", result.output);
-                    
+
                     if result.is_error {
                         let error_color = shell.resources.theme.error;
                         shell.print_colored(&output, error_color);
@@ -173,11 +168,11 @@ pub async fn run_async_shell() {
                         let fg_color = shell.resources.theme.foreground;
                         shell.print_colored(&output, fg_color);
                     }
-                    
+
                     shell.state.is_executing = false;
                     shell.redraw(fb);
                 }
-                
+
                 // カーソル点滅を更新（定期的）
                 input_poll_counter = input_poll_counter.wrapping_add(1);
                 if input_poll_counter % 10 == 0 {
@@ -186,7 +181,7 @@ pub async fn run_async_shell() {
                 }
             }
         });
-        
+
         // ========================================
         // Phase 2: コマンド実行（Waker駆動）
         // ========================================
@@ -195,18 +190,20 @@ pub async fn run_async_shell() {
         use core::future::Future;
         use core::pin::Pin;
         use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-        
+
         // ダミーWakerでコマンドキューをポーリング
         fn dummy_raw_waker() -> RawWaker {
             fn no_op(_: *const ()) {}
-            fn clone_fn(ptr: *const ()) -> RawWaker { RawWaker::new(ptr, &VTABLE) }
+            fn clone_fn(ptr: *const ()) -> RawWaker {
+                RawWaker::new(ptr, &VTABLE)
+            }
             static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, no_op, no_op, no_op);
             RawWaker::new(core::ptr::null(), &VTABLE)
         }
-        
+
         let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
         let mut cx = Context::from_waker(&waker);
-        
+
         let mut cmd_future = cmd_stream.next();
         if let Poll::Ready(req) = Pin::new(&mut cmd_future).poll(&mut cx) {
             // コマンドを実行
@@ -214,14 +211,14 @@ pub async fn run_async_shell() {
                 let mut guard = ASYNC_EXOSHELL.lock();
                 guard.take()
             };
-            
+
             if let Some(mut exoshell) = shell_opt {
                 let result = exoshell.eval(&req.command).await;
                 let output = format!("{}", result);
                 let is_error = matches!(result, ExoValue::Error(_));
-                
+
                 *ASYNC_EXOSHELL.lock() = Some(exoshell);
-                
+
                 push_result(CommandResult {
                     id: req.id,
                     output,
@@ -232,7 +229,7 @@ pub async fn run_async_shell() {
                 super::streams::submit_command(req.command);
             }
         }
-        
+
         // ========================================
         // Phase 3: 他のタスクに譲る
         // ========================================

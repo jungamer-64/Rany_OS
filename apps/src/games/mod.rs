@@ -9,7 +9,7 @@ use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
 
-use app_sdk::{Application, AppContext, print};
+use app_sdk::{AppContext, Application, print};
 
 /// Games launcher application
 pub struct Games;
@@ -26,7 +26,7 @@ impl Games {
         print(format_args!("  2. Tetris\n"));
         print(format_args!("  3. Minesweeper\n"));
         print(format_args!("\nSelect a game (1-3): "));
-        
+
         // Game selection loop would go here
     }
 }

@@ -120,7 +120,7 @@ impl DomainProxy for BasicProxy {
 
         // パニック状態をリセット
         PROXY_PANIC_STATE.store(false, core::sync::atomic::Ordering::SeqCst);
-        
+
         // 関数を呼び出し
         // 設計書 8.2: パニックハンドラとの統合でドメイン境界でのパニック捕捉
         let result = execute_with_panic_capture(func);
@@ -131,7 +131,8 @@ impl DomainProxy for BasicProxy {
         // パニックをチェック
         if PROXY_PANIC_STATE.load(core::sync::atomic::Ordering::SeqCst) {
             // 【設計書 8.4】PoisonLockの毒入れ対応
-            let message = PROXY_PANIC_MESSAGE.lock()
+            let message = PROXY_PANIC_MESSAGE
+                .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .take()
                 .unwrap_or_default();
@@ -155,8 +156,8 @@ impl DomainProxy for BasicProxy {
 // 設計書 8.4: PoisonLockによるパニック時の毒入れ対応
 // ============================================================================
 
-use core::sync::atomic::AtomicBool;
 use crate::sync::PoisonLock;
+use core::sync::atomic::AtomicBool;
 
 /// プロキシ呼び出し中のパニック状態
 static PROXY_PANIC_STATE: AtomicBool = AtomicBool::new(false);
@@ -188,7 +189,7 @@ pub fn did_proxy_panic() -> bool {
 }
 
 /// パニック捕捉付きで関数を実行
-/// 
+///
 /// no_std環境ではstd::panic::catch_unwindが使えないため、
 /// パニックハンドラとの連携でエミュレート
 fn execute_with_panic_capture<F, T>(func: F) -> T
@@ -199,11 +200,11 @@ where
     // パニックハンドラは PROXY_PANIC_STATE をチェックし、
     // プロキシ呼び出し中であれば record_proxy_panic() を呼び出す
     //
-    // 設計書 8.1/8.2: 
+    // 設計書 8.1/8.2:
     // - パニックはドメイン境界で停止
     // - パニックハンドラがリソース回収を行う
     // - プロキシは Result::Err を返す
-    
+
     func()
 }
 

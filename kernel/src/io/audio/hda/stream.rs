@@ -110,7 +110,7 @@ impl HdaController {
             44100 => format |= FMT_BASE,
             96000 => format |= (1 << FMT_MULT_SHIFT), // 48kHz * 2
             192000 => format |= (3 << FMT_MULT_SHIFT), // 48kHz * 4
-            _ => {} // Default to 48kHz
+            _ => {}                                   // Default to 48kHz
         }
 
         format
@@ -228,9 +228,9 @@ impl HdaController {
             .find(|c| c.address == codec_addr)
             .ok_or(HdaError::NoCodec)?;
 
-        let beep_node = codec.beep_node.ok_or_else(|| {
-            HdaError::InitFailed("No beep generator found".into())
-        })?;
+        let beep_node = codec
+            .beep_node
+            .ok_or_else(|| HdaError::InitFailed("No beep generator found".into()))?;
 
         crate::log!(
             "[HDA] Beep: codec={}, node={}, div={}\n",
@@ -271,7 +271,12 @@ impl HdaController {
     }
 
     /// Play a beep for a specified duration (blocking)
-    pub fn beep_duration(&self, codec_addr: u8, frequency_hz: u32, duration_ms: u32) -> HdaResult<()> {
+    pub fn beep_duration(
+        &self,
+        codec_addr: u8,
+        frequency_hz: u32,
+        duration_ms: u32,
+    ) -> HdaResult<()> {
         // Calculate frequency divisor: N = 48000 / (freq * 4)
         let divisor = if frequency_hz > 0 {
             (48000 / (frequency_hz * 4)).clamp(1, 255) as u8
@@ -313,11 +318,7 @@ impl HdaController {
     }
 
     /// Play a square wave beep using stream output
-    pub fn play_square_wave(
-        &mut self,
-        frequency: u32,
-        duration_ms: u32,
-    ) -> HdaResult<()> {
+    pub fn play_square_wave(&mut self, frequency: u32, duration_ms: u32) -> HdaResult<()> {
         const SAMPLE_RATE: u32 = 48000;
         const BITS: u8 = 16;
         const CHANNELS: u8 = 2;
@@ -349,7 +350,11 @@ impl HdaController {
                 let samples_per_period = SAMPLE_RATE / frequency;
                 let half_period = samples_per_period / 2;
                 let pos = i as u32 % samples_per_period;
-                if pos < half_period { 16000i16 } else { -16000i16 }
+                if pos < half_period {
+                    16000i16
+                } else {
+                    -16000i16
+                }
             })
             .collect();
 

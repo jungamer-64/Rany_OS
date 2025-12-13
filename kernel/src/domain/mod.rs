@@ -5,8 +5,7 @@
 // 設計書 9.3: リソースアカウンティングとQoS
 // ============================================================================
 pub mod lifecycle;
-pub mod registry;
 pub mod quota;
+pub mod registry;
 
-pub use quota::{DomainQuota, DomainPriority, QuotaError, quota_manager};
-
+pub use quota::{DomainPriority, DomainQuota, QuotaError, quota_manager};

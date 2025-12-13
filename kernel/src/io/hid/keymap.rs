@@ -55,37 +55,37 @@ pub fn ctrl_char_map(key: KeyCode) -> Option<char> {
         // Ctrl+A..Z = 0x01..0x1A
         KeyCode::A => '\x01',
         KeyCode::B => '\x02',
-        KeyCode::C => '\x03',  // ETX (Ctrl+C) - SIGINT
-        KeyCode::D => '\x04',  // EOT (Ctrl+D) - EOF
+        KeyCode::C => '\x03', // ETX (Ctrl+C) - SIGINT
+        KeyCode::D => '\x04', // EOT (Ctrl+D) - EOF
         KeyCode::E => '\x05',
         KeyCode::F => '\x06',
-        KeyCode::G => '\x07',  // BEL
-        KeyCode::H => '\x08',  // BS (Backspace)
-        KeyCode::I => '\x09',  // HT (Tab)
-        KeyCode::J => '\x0A',  // LF
+        KeyCode::G => '\x07', // BEL
+        KeyCode::H => '\x08', // BS (Backspace)
+        KeyCode::I => '\x09', // HT (Tab)
+        KeyCode::J => '\x0A', // LF
         KeyCode::K => '\x0B',
-        KeyCode::L => '\x0C',  // FF (Form Feed) - 画面クリア
-        KeyCode::M => '\x0D',  // CR
+        KeyCode::L => '\x0C', // FF (Form Feed) - 画面クリア
+        KeyCode::M => '\x0D', // CR
         KeyCode::N => '\x0E',
         KeyCode::O => '\x0F',
         KeyCode::P => '\x10',
-        KeyCode::Q => '\x11',  // DC1 (XON)
+        KeyCode::Q => '\x11', // DC1 (XON)
         KeyCode::R => '\x12',
-        KeyCode::S => '\x13',  // DC3 (XOFF)
+        KeyCode::S => '\x13', // DC3 (XOFF)
         KeyCode::T => '\x14',
-        KeyCode::U => '\x15',  // NAK - 行削除
+        KeyCode::U => '\x15', // NAK - 行削除
         KeyCode::V => '\x16',
-        KeyCode::W => '\x17',  // ETB - 単語削除
+        KeyCode::W => '\x17', // ETB - 単語削除
         KeyCode::X => '\x18',
         KeyCode::Y => '\x19',
-        KeyCode::Z => '\x1A',  // SUB (Ctrl+Z) - SIGTSTP
+        KeyCode::Z => '\x1A', // SUB (Ctrl+Z) - SIGTSTP
         // 特殊制御コード
-        KeyCode::LeftBracket => '\x1B',   // ESC (0x1B)
-        KeyCode::Backslash => '\x1C',     // FS (0x1C) - SIGQUIT
-        KeyCode::RightBracket => '\x1D',  // GS (0x1D)
-        KeyCode::Key6 => '\x1E',          // RS (0x1E) - Ctrl+^ (Shift+6)
-        KeyCode::Minus => '\x1F',         // US (0x1F) - Ctrl+_
-        KeyCode::Slash => '\x7F',         // DEL (0x7F) - Ctrl+?
+        KeyCode::LeftBracket => '\x1B',  // ESC (0x1B)
+        KeyCode::Backslash => '\x1C',    // FS (0x1C) - SIGQUIT
+        KeyCode::RightBracket => '\x1D', // GS (0x1D)
+        KeyCode::Key6 => '\x1E',         // RS (0x1E) - Ctrl+^ (Shift+6)
+        KeyCode::Minus => '\x1F',        // US (0x1F) - Ctrl+_
+        KeyCode::Slash => '\x7F',        // DEL (0x7F) - Ctrl+?
         _ => return None,
     })
 }
@@ -357,25 +357,25 @@ impl Keymap for JisKeymap {
         match key {
             // 数字キー上段の記号（JIS配列）
             KeyCode::Key1 => Some(if shift { '!' } else { '1' }),
-            KeyCode::Key2 => Some(if shift { '"' } else { '2' }),  // USは@
+            KeyCode::Key2 => Some(if shift { '"' } else { '2' }), // USは@
             KeyCode::Key3 => Some(if shift { '#' } else { '3' }),
             KeyCode::Key4 => Some(if shift { '$' } else { '4' }),
             KeyCode::Key5 => Some(if shift { '%' } else { '5' }),
-            KeyCode::Key6 => Some(if shift { '&' } else { '6' }),  // USは^
+            KeyCode::Key6 => Some(if shift { '&' } else { '6' }), // USは^
             KeyCode::Key7 => Some(if shift { '\'' } else { '7' }), // USは&
-            KeyCode::Key8 => Some(if shift { '(' } else { '8' }),  // USは*
+            KeyCode::Key8 => Some(if shift { '(' } else { '8' }), // USは*
             KeyCode::Key9 => Some(if shift { ')' } else { '9' }),
-            KeyCode::Key0 => Some(if shift { '~' } else { '0' }),  // USは)と0、JISは~と0
+            KeyCode::Key0 => Some(if shift { '~' } else { '0' }), // USは)と0、JISは~と0
 
             // JIS特有のキー配置
             KeyCode::Minus => Some(if shift { '=' } else { '-' }),
-            KeyCode::Equals => Some(if shift { '+' } else { '^' }),  // USの=位置にJISは^
-            KeyCode::LeftBracket => Some(if shift { '{' } else { '@' }),  // USの[位置にJISは@
+            KeyCode::Equals => Some(if shift { '+' } else { '^' }), // USの=位置にJISは^
+            KeyCode::LeftBracket => Some(if shift { '{' } else { '@' }), // USの[位置にJISは@
             KeyCode::RightBracket => Some(if shift { '}' } else { '[' }), // USの]位置にJISは[
-            KeyCode::Backslash => Some(if shift { '|' } else { ']' }),    // USの\位置にJISは]
+            KeyCode::Backslash => Some(if shift { '|' } else { ']' }), // USの\位置にJISは]
             KeyCode::Semicolon => Some(if shift { '+' } else { ';' }),
-            KeyCode::Quote => Some(if shift { '*' } else { ':' }),   // USの'位置にJISは:
-            KeyCode::BackTick => Some(if shift { '~' } else { '`' }),     // 半角/全角キーの代替
+            KeyCode::Quote => Some(if shift { '*' } else { ':' }), // USの'位置にJISは:
+            KeyCode::BackTick => Some(if shift { '~' } else { '`' }), // 半角/全角キーの代替
 
             // アルファベット（US配列と同じ）
             // トレイトの共通apply_case()を使用
@@ -489,14 +489,14 @@ impl Keymap for DvorakKeymap {
             KeyCode::Key0 => Some(if shift { ')' } else { '0' }),
 
             // 上段記号キー
-            KeyCode::Minus => Some(if shift { '{' } else { '[' }),  // QWERTYの-位置
+            KeyCode::Minus => Some(if shift { '{' } else { '[' }), // QWERTYの-位置
             KeyCode::Equals => Some(if shift { '}' } else { ']' }), // QWERTYの=位置
 
             // 上段アルファベット行（QWERTY QWERTYUIOP → Dvorak ',.PYFGCRL）
             // トレイトの共通apply_case()を使用
-            KeyCode::Q => Some(if shift { '"' } else { '\'' }),   // ' "
-            KeyCode::W => Some(if shift { '<' } else { ',' }),    // , <
-            KeyCode::E => Some(if shift { '>' } else { '.' }),    // . >
+            KeyCode::Q => Some(if shift { '"' } else { '\'' }), // ' "
+            KeyCode::W => Some(if shift { '<' } else { ',' }),  // , <
+            KeyCode::E => Some(if shift { '>' } else { '.' }),  // . >
             KeyCode::R => Some(Self::apply_case(shift, caps_lock, 'p')),
             KeyCode::T => Some(Self::apply_case(shift, caps_lock, 'y')),
             KeyCode::Y => Some(Self::apply_case(shift, caps_lock, 'f')),
@@ -504,7 +504,7 @@ impl Keymap for DvorakKeymap {
             KeyCode::I => Some(Self::apply_case(shift, caps_lock, 'c')),
             KeyCode::O => Some(Self::apply_case(shift, caps_lock, 'r')),
             KeyCode::P => Some(Self::apply_case(shift, caps_lock, 'l')),
-            KeyCode::LeftBracket => Some(if shift { '?' } else { '/' }),   // / ?
+            KeyCode::LeftBracket => Some(if shift { '?' } else { '/' }), // / ?
             KeyCode::RightBracket => Some(if shift { '+' } else { '=' }), // = +
 
             // 中段アルファベット行（QWERTY ASDFGHJKL;' → Dvorak AOEUIDHTNS-）
@@ -518,10 +518,10 @@ impl Keymap for DvorakKeymap {
             KeyCode::K => Some(Self::apply_case(shift, caps_lock, 't')),
             KeyCode::L => Some(Self::apply_case(shift, caps_lock, 'n')),
             KeyCode::Semicolon => Some(Self::apply_case(shift, caps_lock, 's')),
-            KeyCode::Quote => Some(if shift { '_' } else { '-' }),  // - _
+            KeyCode::Quote => Some(if shift { '_' } else { '-' }), // - _
 
             // 下段アルファベット行（QWERTY ZXCVBNM,./ → Dvorak ;QJKXBMWVZ）
-            KeyCode::Z => Some(if shift { ':' } else { ';' }),    // ; :
+            KeyCode::Z => Some(if shift { ':' } else { ';' }), // ; :
             KeyCode::X => Some(Self::apply_case(shift, caps_lock, 'q')),
             KeyCode::C => Some(Self::apply_case(shift, caps_lock, 'j')),
             KeyCode::V => Some(Self::apply_case(shift, caps_lock, 'k')),
@@ -597,11 +597,18 @@ mod tests {
     use super::*;
 
     fn mods(shift: bool, caps_lock: bool) -> Modifiers {
-        Modifiers { shift, caps_lock, ..Default::default() }
+        Modifiers {
+            shift,
+            caps_lock,
+            ..Default::default()
+        }
     }
 
     fn mods_ctrl() -> Modifiers {
-        Modifiers { ctrl: true, ..Default::default() }
+        Modifiers {
+            ctrl: true,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -626,7 +633,10 @@ mod tests {
     fn test_us_qwerty_numbers() {
         let keymap = UsQwertyKeymap;
 
-        assert_eq!(keymap.to_char(KeyCode::Key1, &mods(false, false)), Some('1'));
+        assert_eq!(
+            keymap.to_char(KeyCode::Key1, &mods(false, false)),
+            Some('1')
+        );
         assert_eq!(keymap.to_char(KeyCode::Key1, &mods(true, false)), Some('!'));
         assert_eq!(keymap.to_char(KeyCode::Key2, &mods(true, false)), Some('@'));
     }
@@ -635,9 +645,18 @@ mod tests {
     fn test_us_qwerty_special() {
         let keymap = UsQwertyKeymap;
 
-        assert_eq!(keymap.to_char(KeyCode::Space, &mods(false, false)), Some(' '));
-        assert_eq!(keymap.to_char(KeyCode::Enter, &mods(false, false)), Some('\n'));
-        assert_eq!(keymap.to_char(KeyCode::Tab, &mods(false, false)), Some('\t'));
+        assert_eq!(
+            keymap.to_char(KeyCode::Space, &mods(false, false)),
+            Some(' ')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::Enter, &mods(false, false)),
+            Some('\n')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::Tab, &mods(false, false)),
+            Some('\t')
+        );
     }
 
     #[test]
@@ -677,11 +696,20 @@ mod tests {
         assert_eq!(keymap.to_char(KeyCode::Key6, &mods(true, false)), Some('&'));
 
         // JIS: Shift+7 = ' (USは&)
-        assert_eq!(keymap.to_char(KeyCode::Key7, &mods(true, false)), Some('\''));
+        assert_eq!(
+            keymap.to_char(KeyCode::Key7, &mods(true, false)),
+            Some('\'')
+        );
 
         // JIS: [キー位置 = @ (USは[)
-        assert_eq!(keymap.to_char(KeyCode::LeftBracket, &mods(false, false)), Some('@'));
-        assert_eq!(keymap.to_char(KeyCode::LeftBracket, &mods(true, false)), Some('{'));
+        assert_eq!(
+            keymap.to_char(KeyCode::LeftBracket, &mods(false, false)),
+            Some('@')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::LeftBracket, &mods(true, false)),
+            Some('{')
+        );
     }
 
     #[test]
@@ -721,7 +749,10 @@ mod tests {
         assert_eq!(keymap.to_char(KeyCode::J, &mods(false, false)), Some('h'));
         assert_eq!(keymap.to_char(KeyCode::K, &mods(false, false)), Some('t'));
         assert_eq!(keymap.to_char(KeyCode::L, &mods(false, false)), Some('n'));
-        assert_eq!(keymap.to_char(KeyCode::Semicolon, &mods(false, false)), Some('s'));
+        assert_eq!(
+            keymap.to_char(KeyCode::Semicolon, &mods(false, false)),
+            Some('s')
+        );
     }
 
     #[test]
@@ -745,7 +776,10 @@ mod tests {
         assert_eq!(keymap.to_char(KeyCode::Z, &mods(false, false)), Some(';'));
         assert_eq!(keymap.to_char(KeyCode::X, &mods(false, false)), Some('q'));
         assert_eq!(keymap.to_char(KeyCode::C, &mods(false, false)), Some('j'));
-        assert_eq!(keymap.to_char(KeyCode::Slash, &mods(false, false)), Some('z'));
+        assert_eq!(
+            keymap.to_char(KeyCode::Slash, &mods(false, false)),
+            Some('z')
+        );
     }
 
     #[test]
@@ -753,8 +787,8 @@ mod tests {
         let keymap = DvorakKeymap;
 
         // CapsLock動作確認
-        assert_eq!(keymap.to_char(KeyCode::S, &mods(false, true)), Some('O'));  // CapsLock -> 大文字
-        assert_eq!(keymap.to_char(KeyCode::S, &mods(true, true)), Some('o'));   // Shift+CapsLock -> 小文字
+        assert_eq!(keymap.to_char(KeyCode::S, &mods(false, true)), Some('O')); // CapsLock -> 大文字
+        assert_eq!(keymap.to_char(KeyCode::S, &mods(true, true)), Some('o')); // Shift+CapsLock -> 小文字
     }
 
     #[test]
@@ -787,26 +821,74 @@ mod tests {
         let keymap = UsQwertyKeymap;
 
         // テンキー数字
-        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(false, false)), Some('0'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad1, &mods(false, false)), Some('1'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad2, &mods(false, false)), Some('2'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad3, &mods(false, false)), Some('3'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad4, &mods(false, false)), Some('4'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad5, &mods(false, false)), Some('5'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad6, &mods(false, false)), Some('6'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad7, &mods(false, false)), Some('7'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad8, &mods(false, false)), Some('8'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad9, &mods(false, false)), Some('9'));
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad0, &mods(false, false)),
+            Some('0')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad1, &mods(false, false)),
+            Some('1')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad2, &mods(false, false)),
+            Some('2')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad3, &mods(false, false)),
+            Some('3')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad4, &mods(false, false)),
+            Some('4')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad5, &mods(false, false)),
+            Some('5')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad6, &mods(false, false)),
+            Some('6')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad7, &mods(false, false)),
+            Some('7')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad8, &mods(false, false)),
+            Some('8')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad9, &mods(false, false)),
+            Some('9')
+        );
 
         // テンキー演算子
-        assert_eq!(keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)), Some('+'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadMinus, &mods(false, false)), Some('-'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)), Some('*'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)), Some('/'));
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)),
+            Some('+')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadMinus, &mods(false, false)),
+            Some('-')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)),
+            Some('*')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)),
+            Some('/')
+        );
 
         // テンキー特殊
-        assert_eq!(keymap.to_char(KeyCode::NumPadDecimal, &mods(false, false)), Some('.'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)), Some('\n'));
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadDecimal, &mods(false, false)),
+            Some('.')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)),
+            Some('\n')
+        );
     }
 
     #[test]
@@ -814,10 +896,22 @@ mod tests {
         let keymap = JisKeymap;
 
         // JISキーマップでもテンキーは同じ動作
-        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(false, false)), Some('0'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad5, &mods(false, false)), Some('5'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)), Some('+'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)), Some('\n'));
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad0, &mods(false, false)),
+            Some('0')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad5, &mods(false, false)),
+            Some('5')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadPlus, &mods(false, false)),
+            Some('+')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadEnter, &mods(false, false)),
+            Some('\n')
+        );
     }
 
     #[test]
@@ -825,10 +919,22 @@ mod tests {
         let keymap = DvorakKeymap;
 
         // Dvorakキーマップでもテンキーは同じ動作
-        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(false, false)), Some('0'));
-        assert_eq!(keymap.to_char(KeyCode::NumPad5, &mods(false, false)), Some('5'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)), Some('*'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)), Some('/'));
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad0, &mods(false, false)),
+            Some('0')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad5, &mods(false, false)),
+            Some('5')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadMultiply, &mods(false, false)),
+            Some('*')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadDivide, &mods(false, false)),
+            Some('/')
+        );
     }
 
     #[test]
@@ -836,7 +942,13 @@ mod tests {
         let keymap = UsQwertyKeymap;
 
         // テンキーはShiftの影響を受けない
-        assert_eq!(keymap.to_char(KeyCode::NumPad0, &mods(true, false)), Some('0'));
-        assert_eq!(keymap.to_char(KeyCode::NumPadPlus, &mods(true, false)), Some('+'));
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPad0, &mods(true, false)),
+            Some('0')
+        );
+        assert_eq!(
+            keymap.to_char(KeyCode::NumPadPlus, &mods(true, false)),
+            Some('+')
+        );
     }
 }

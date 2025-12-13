@@ -111,7 +111,10 @@ impl HugePageAllocator {
     /// - `base`: 管理する物理メモリ領域の開始アドレス（1GB境界）
     /// - `count`: 利用可能な1GBページの数（最大64）
     pub fn init(&mut self, base: PhysAddr, count: usize) {
-        assert!(base.as_u64() % HUGE_PAGE_SIZE_1G as u64 == 0, "Base must be 1GB aligned");
+        assert!(
+            base.as_u64() % HUGE_PAGE_SIZE_1G as u64 == 0,
+            "Base must be 1GB aligned"
+        );
         assert!(count <= 64, "Maximum 64 huge pages supported");
 
         self.base_address = base;
@@ -136,7 +139,8 @@ impl HugePageAllocator {
         let index = free.trailing_zeros() as usize;
         self.allocated |= 1 << index;
 
-        let addr = PhysAddr::new(self.base_address.as_u64() + (index as u64 * HUGE_PAGE_SIZE_1G as u64));
+        let addr =
+            PhysAddr::new(self.base_address.as_u64() + (index as u64 * HUGE_PAGE_SIZE_1G as u64));
         Some(addr)
     }
 

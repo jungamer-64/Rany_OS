@@ -548,7 +548,9 @@ impl<'a> PageTableWalker<'a> {
     /// 現在のCR3からウォーカーを作成
     pub unsafe fn from_current_cr3(mapper: &'a PhysicalMemoryMapper) -> Self {
         let cr3: u64;
-        unsafe { core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)); }
+        unsafe {
+            core::arch::asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags));
+        }
         Self::new(PhysAddr::new(cr3 & !0xFFF), mapper)
     }
 
@@ -697,10 +699,12 @@ pub fn flush_tlb() {
 }
 
 /// CR3を設定
-    #[inline]
-    pub unsafe fn set_cr3(pml4_phys: PhysAddr) {
-        unsafe { core::arch::asm!("mov cr3, {}", in(reg) pml4_phys.as_u64(), options(nostack, preserves_flags)); }
+#[inline]
+pub unsafe fn set_cr3(pml4_phys: PhysAddr) {
+    unsafe {
+        core::arch::asm!("mov cr3, {}", in(reg) pml4_phys.as_u64(), options(nostack, preserves_flags));
     }
+}
 
 /// CR3を取得
 #[inline]
@@ -735,7 +739,7 @@ pub enum MapError {
 }
 
 /// ページテーブルマネージャー
-/// 
+///
 /// 仮想アドレスと物理アドレスのマッピングを管理する。
 /// 4KiB, 2MiB, 1GiBページサイズをサポート。
 pub struct PageTableManager {
@@ -747,7 +751,7 @@ pub struct PageTableManager {
 
 impl PageTableManager {
     /// 新しいPageTableManagerを作成
-    /// 
+    ///
     /// # Safety
     /// - `pml4_phys` は有効なPML4ページテーブルを指している必要がある
     /// - `physical_memory_offset` は正しいオフセット値である必要がある
@@ -759,7 +763,7 @@ impl PageTableManager {
     }
 
     /// 現在のCR3からPageTableManagerを作成
-    /// 
+    ///
     /// # Safety
     /// カーネルモードで呼び出す必要がある
     pub unsafe fn from_current_cr3(physical_memory_offset: u64) -> Self {
@@ -773,7 +777,7 @@ impl PageTableManager {
     }
 
     /// 4KiBページをマップ
-    /// 
+    ///
     /// # Safety
     /// - `virt` と `phys` は4KiBアラインされている必要がある
     /// - 物理フレームは有効なメモリを指している必要がある
@@ -813,7 +817,7 @@ impl PageTableManager {
         }
 
         *pte = PageTableEntry::new(phys, flags.set(PageFlags::PRESENT));
-        
+
         // TLBを無効化
         invalidate_page(virt);
 
@@ -821,7 +825,7 @@ impl PageTableManager {
     }
 
     /// 2MiBページをマップ（設計書5.1対応）
-    /// 
+    ///
     /// # Safety
     /// - `virt` と `phys` は2MiBアラインされている必要がある
     pub unsafe fn map_2mb_page(
@@ -831,7 +835,7 @@ impl PageTableManager {
         flags: PageFlags,
     ) -> Result<(), MapError> {
         const SIZE_2MB: u64 = PageSize::Size2MiB.as_bytes();
-        
+
         if virt.as_u64() % SIZE_2MB != 0 || phys.as_u64() % SIZE_2MB != 0 {
             return Err(MapError::AlignmentError);
         }
@@ -857,14 +861,14 @@ impl PageTableManager {
 
         // Huge Page フラグを設定
         *pde = PageTableEntry::huge(phys, flags.set(PageFlags::PRESENT));
-        
+
         invalidate_page(virt);
 
         Ok(())
     }
 
     /// 1GiBページをマップ（設計書5.1対応）
-    /// 
+    ///
     /// # Safety
     /// - `virt` と `phys` は1GiBアラインされている必要がある
     pub unsafe fn map_1gb_page(
@@ -874,7 +878,7 @@ impl PageTableManager {
         flags: PageFlags,
     ) -> Result<(), MapError> {
         const SIZE_1GB: u64 = PageSize::Size1GiB.as_bytes();
-        
+
         if virt.as_u64() % SIZE_1GB != 0 || phys.as_u64() % SIZE_1GB != 0 {
             return Err(MapError::AlignmentError);
         }
@@ -894,14 +898,14 @@ impl PageTableManager {
 
         // Huge Page フラグを設定（1GiBページ）
         *pdpte = PageTableEntry::huge(phys, flags.set(PageFlags::PRESENT));
-        
+
         invalidate_page(virt);
 
         Ok(())
     }
 
     /// ページをアンマップ
-    /// 
+    ///
     /// 4KiB, 2MiB, 1GiBページを自動検出してアンマップする。
     pub unsafe fn unmap_page(&mut self, virt: VirtAddr) -> Result<PhysAddr, MapError> {
         if !virt.is_page_aligned() {
@@ -1020,7 +1024,7 @@ impl PageTableManager {
     }
 
     /// 連続した仮想アドレス範囲をマップ
-    /// 
+    ///
     /// 自動的に最適なページサイズを選択する。
     pub unsafe fn map_range(
         &mut self,
@@ -1120,7 +1124,8 @@ impl PageTableManager {
         new_table.clear();
 
         // エントリを設定（常にWritableを設定して下位テーブルへのアクセスを許可）
-        let entry_flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
+        let entry_flags =
+            PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
         *entry = PageTableEntry::new(new_table_phys, entry_flags);
 
         Ok(new_table_phys)

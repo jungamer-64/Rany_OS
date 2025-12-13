@@ -28,22 +28,22 @@
 // pub mod controller; // Migrated to nvme_driver
 // pub mod queue; // Migrated to nvme_driver
 // pub mod per_core; // Migrated to nvme_driver
-pub mod polling_driver;
 pub mod async_io;
-pub mod global;
-pub mod scheduler;
 pub mod driver;
+pub mod global;
+pub mod polling_driver;
+pub mod scheduler;
 
 // Re-export modules from nvme_driver
-pub use nvme_driver::defs;
 pub use nvme_driver::commands;
-pub use nvme_driver::regs;
-pub use nvme_driver::queue_types;
-pub use nvme_driver::identify;
-pub use nvme_driver::error;
 pub use nvme_driver::controller;
-pub use nvme_driver::queue;
+pub use nvme_driver::defs;
+pub use nvme_driver::error;
+pub use nvme_driver::identify;
 pub use nvme_driver::per_core;
+pub use nvme_driver::queue;
+pub use nvme_driver::queue_types;
+pub use nvme_driver::regs;
 
 // ============================================================================
 // Re-exports - Explicit exports to avoid ambiguity
@@ -51,18 +51,30 @@ pub use nvme_driver::per_core;
 
 // From defs.rs - Opcodes, Status, Constants
 pub use defs::{
+    ADMIN_QUEUE_DEPTH,
     // Opcodes
-    AdminOpcode, IoOpcode,
-    // Status and Error
-    NvmeStatus, NvmeError as DefsNvmeError,
-    // Memory structures
-    PrpEntry, PrpList, SglDescriptor, SglType,
+    AdminOpcode,
     // Constants
-    CACHE_LINE_SIZE, SQE_SIZE, CQE_SIZE, SECTOR_SIZE, PAGE_SIZE,
-    MAX_QUEUE_DEPTH as DEFS_MAX_QUEUE_DEPTH,
+    CACHE_LINE_SIZE,
+    CONTROLLER_READY_TIMEOUT_MS,
+    CQE_SIZE,
     DEFAULT_QUEUE_DEPTH as DEFS_DEFAULT_QUEUE_DEPTH,
-    ADMIN_QUEUE_DEPTH, MAX_TRANSFER_SIZE, POLL_BATCH_SIZE,
-    DOORBELL_BATCH_THRESHOLD, CONTROLLER_READY_TIMEOUT_MS,
+    DOORBELL_BATCH_THRESHOLD,
+    IoOpcode,
+    MAX_QUEUE_DEPTH as DEFS_MAX_QUEUE_DEPTH,
+    MAX_TRANSFER_SIZE,
+    NvmeError as DefsNvmeError,
+    // Status and Error
+    NvmeStatus,
+    PAGE_SIZE,
+    POLL_BATCH_SIZE,
+    // Memory structures
+    PrpEntry,
+    PrpList,
+    SECTOR_SIZE,
+    SQE_SIZE,
+    SglDescriptor,
+    SglType,
 };
 
 // From commands.rs - Command/Completion structures
@@ -70,24 +82,25 @@ pub use commands::{NvmeCommand, NvmeCompletion};
 
 // From regs.rs - Register definitions
 pub use regs::{
-    offsets, cc_bits, csts_bits,
-    NvmeCapabilities, NvmeControllerConfig, NvmeControllerStatus,
-    NvmeAdminQueueAttributes, CmbLocation, CmbSize,
+    CmbLocation, CmbSize, NvmeAdminQueueAttributes, NvmeCapabilities, NvmeControllerConfig,
+    NvmeControllerStatus, cc_bits, csts_bits, offsets,
 };
 
 // From identify.rs - Identify structures
 pub use identify::{
-    IdentifyController, IdentifyNamespace, PowerStateDescriptor,
-    LbaFormat, RelativePerformance, IdentifyCns,
+    IdentifyCns, IdentifyController, IdentifyNamespace, LbaFormat, PowerStateDescriptor,
+    RelativePerformance,
 };
 
 // From error.rs
 pub use error::NvmeError;
 
 // From split driver modules (local)
-pub use queue::{SubmissionQueue, CompletionQueue, QueuePair};
-pub use per_core::{PerCoreNvmeQueue, NvmeQueueStats};
-pub use polling_driver::{NvmePollingDriver, NvmeDriverStats};
 pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
-pub use global::{init as init_nvme_polling, poll as nvme_poll, get_stats, with_driver, with_driver_mut};
+pub use global::{
+    get_stats, init as init_nvme_polling, poll as nvme_poll, with_driver, with_driver_mut,
+};
+pub use per_core::{NvmeQueueStats, PerCoreNvmeQueue};
+pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};
+pub use queue::{CompletionQueue, QueuePair, SubmissionQueue};
 pub use scheduler::{NvmePollHandler, register_with_io_scheduler};

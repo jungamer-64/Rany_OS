@@ -3,18 +3,18 @@
 // ============================================================================
 //!
 //! カーネル用ロギングシステム。
-//! 
+//!
 //! ## 機能
 //! - `log`クレートを使用した標準的なログインターフェース
 //! - 早期ブート時の直接シリアル出力（ヒープ不要）
 //! - 初期化後はシリアルポートへの非同期出力
 //! - コンパイル時のログレベルフィルタリング
 //! - マルチコア安全なSpinlock保護
-//! 
+//!
 //! ## 使用方法
 //! ```rust
 //! use log::{info, debug, warn, error, trace};
-//! 
+//!
 //! info!("システム起動");
 //! debug!("デバッグ情報: {}", value);
 //! error!("エラー発生: {:?}", err);
@@ -24,9 +24,9 @@ use core::fmt::Write;
 use hal::IoPort;
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use hal::port_io::PortU8;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use spin::Mutex;
-use hal::port_io::PortU8;
 
 // ============================================================================
 // 定数定義
@@ -45,21 +45,21 @@ const SERIAL_LSR_OFFSET: u16 = 5;
 const LSR_TX_EMPTY: u8 = 0x20;
 
 /// 送信待機タイムアウト（ループ回数）
-/// 
+///
 /// ## 注意: CPU周波数依存
 /// この値はCPU周波数に依存します。
 /// - 1GHz CPUで約100μs
 /// - 3GHz CPUで約33μs
 /// の待機時間となります。
-/// 
+///
 /// ## 将来の改善方針
 /// 早期ブート時はタイマーが利用できないためループカウンタを使用していますが、
 /// ヒープ初期化後・タイマー初期化後は以下の改善が可能です：
-/// 
+///
 /// 1. **タイマーベースの待機**: HPETやAPICタイマーを使用した正確なタイムアウト
 /// 2. **非同期ロギング**: リングバッファへの書き込み + 割り込みベースの送信
 /// 3. **ロギングレベルの切り替え**: 初期化完了後に高機能ロガーへ移行
-/// 
+///
 /// 現時点では、パニック時の信頼性を優先してシンプルなポーリング方式を維持しています。
 const TX_TIMEOUT_LOOPS: u32 = 100_000;
 
@@ -88,7 +88,7 @@ static CURRENT_LOG_LEVEL: AtomicU8 = AtomicU8::new(LevelFilter::Info as u8);
 static HEAP_AVAILABLE: AtomicBool = AtomicBool::new(false);
 
 /// シリアルポート排他制御用Spinlock
-/// 
+///
 /// マルチコア環境や割り込みコンテキストでの同時アクセスを防ぐ。
 /// 注意: パニックハンドラからの出力時はデッドロック回避のため
 /// ロックを試行せず直接出力する（try_lockを使用）。
@@ -105,14 +105,14 @@ static IN_PANIC: AtomicBool = AtomicBool::new(false);
 static SERIAL_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// シリアルポートを初期化（COM1, 115200 baud, 8N1）
-/// 
+///
 /// 早期ブート時に一度だけ呼び出される。
 /// 既に初期化済みの場合は何もしない。
 pub fn init_serial() {
     if SERIAL_INITIALIZED.swap(true, Ordering::SeqCst) {
         return; // 既に初期化済み
     }
-    
+
     let base = SERIAL_PORT_BASE;
 
     // 割り込み無効化
@@ -163,29 +163,28 @@ struct KernelLogger;
 
 impl KernelLogger {
     /// シリアルポートに1バイト書き込み（内部用、ロックなし）
-    /// 
+    ///
     /// 送信バッファが空になるまで待機してから書き込む。
     /// タイムアウト時は書き込みをスキップする。
     #[inline]
     fn write_byte_raw(byte: u8) {
         let mut status_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_LSR_OFFSET);
         let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_DATA_OFFSET);
-            
-            // 送信バッファが空になるまで待つ（タイムアウト付き）
-            let mut timeout = TX_TIMEOUT_LOOPS;
-            while (status_port.read() & LSR_TX_EMPTY) == 0 && timeout > 0 {
-                core::hint::spin_loop(); // CPU省電力ヒント
-                timeout -= 1;
-            }
-            
-            if timeout > 0 {
-                data_port.write(byte);
-            }
-        
+
+        // 送信バッファが空になるまで待つ（タイムアウト付き）
+        let mut timeout = TX_TIMEOUT_LOOPS;
+        while (status_port.read() & LSR_TX_EMPTY) == 0 && timeout > 0 {
+            core::hint::spin_loop(); // CPU省電力ヒント
+            timeout -= 1;
+        }
+
+        if timeout > 0 {
+            data_port.write(byte);
+        }
     }
-    
+
     /// シリアルポートに直接書き込み（ロックなし、早期ブート/パニック用）
-    /// 
+    ///
     /// ロックは `Log::log()` 実装側で取得するため、この関数自体はロックを取らない。
     /// 早期ブート時やパニック時に直接呼び出される。
     fn write_raw(s: &str) {
@@ -197,33 +196,33 @@ impl KernelLogger {
             Self::write_byte_raw(byte);
         }
     }
-    
+
     /// シリアルポートに1文字書き込み（ロックなし）
-    /// 
+    ///
     /// `write_byte_raw`のエイリアス。早期ブート用関数からの呼び出しに使用。
     #[inline]
     fn write_char_raw(c: u8) {
         Self::write_byte_raw(c);
     }
-    
+
     /// ログレベルのプレフィックスを取得
     fn level_prefix(level: Level) -> &'static str {
         match level {
             Level::Error => "[ERROR] ",
-            Level::Warn  => "[WARN]  ",
-            Level::Info  => "[INFO]  ",
+            Level::Warn => "[WARN]  ",
+            Level::Info => "[INFO]  ",
             Level::Debug => "[DEBUG] ",
             Level::Trace => "[TRACE] ",
         }
     }
-    
+
     /// ログレベルに応じた色コード（ANSIエスケープシーケンス）
     #[allow(dead_code)]
     fn level_color(level: Level) -> &'static str {
         match level {
             Level::Error => "\x1b[31m", // 赤
-            Level::Warn  => "\x1b[33m", // 黄
-            Level::Info  => "\x1b[32m", // 緑
+            Level::Warn => "\x1b[33m",  // 黄
+            Level::Info => "\x1b[32m",  // 緑
             Level::Debug => "\x1b[36m", // シアン
             Level::Trace => "\x1b[37m", // 白
         }
@@ -242,24 +241,24 @@ impl Log for KernelLogger {
         if !self.enabled(record.metadata()) {
             return;
         }
-        
+
         // パニック中でなければロックを取得
         let _guard = if IN_PANIC.load(Ordering::Relaxed) {
             None
         } else {
             Some(SERIAL_LOCK.lock())
         };
-        
+
         // ログレベルプレフィックス
         Self::write_raw(Self::level_prefix(record.level()));
-        
+
         // モジュールパス（オプション）
         if let Some(module) = record.module_path() {
             Self::write_raw("[");
             Self::write_raw(module);
             Self::write_raw("] ");
         }
-        
+
         // メッセージ本文
         // format_args!のアロケーションなし出力
         // 最後に改行が必要かどうかを追跡
@@ -275,10 +274,10 @@ impl Log for KernelLogger {
                 Ok(())
             }
         }
-        
+
         let mut writer = EarlyWriter { last_char: 0 };
         let _ = write!(writer, "{}", record.args());
-        
+
         // メッセージが改行で終わっていない場合のみ改行を追加
         if writer.last_char != b'\n' {
             Self::write_char_raw(b'\r');
@@ -299,7 +298,7 @@ static LOGGER: KernelLogger = KernelLogger;
 // ============================================================================
 
 /// ロギングシステムを初期化
-/// 
+///
 /// カーネル起動の早い段階で呼び出す。ヒープ初期化前でも動作する。
 pub fn init() -> Result<(), SetLoggerError> {
     log::set_logger(&LOGGER)?;
@@ -310,14 +309,14 @@ pub fn init() -> Result<(), SetLoggerError> {
 }
 
 /// ヒープが使用可能になったことを通知
-/// 
+///
 /// メモリアロケータ初期化後に呼び出す。
 pub fn notify_heap_available() {
     HEAP_AVAILABLE.store(true, Ordering::SeqCst);
 }
 
 /// パニック状態を設定（デッドロック回避用）
-/// 
+///
 /// パニックハンドラの最初で呼び出す。
 /// これにより、ロガーはロックを取得せずに直接出力する。
 pub fn enter_panic_mode() {
@@ -358,7 +357,7 @@ pub fn is_initialized() -> bool {
 // ============================================================================
 
 /// 早期ブート用の直接シリアル出力
-/// 
+///
 /// ヒープやログシステム初期化前に使用する。
 /// log!マクロの代わりに使用。
 /// ロックなしで直接出力するため、早期ブートやパニック時のみ使用。
@@ -368,7 +367,7 @@ pub fn early_print(s: &str) {
 }
 
 /// 早期ブート用の直接シリアル文字出力
-#[inline] 
+#[inline]
 pub fn early_print_char(c: u8) {
     KernelLogger::write_char_raw(c);
 }
@@ -389,17 +388,17 @@ pub fn early_print_dec(value: u64) {
         KernelLogger::write_char_raw(b'0');
         return;
     }
-    
+
     let mut buf = [0u8; 20];
     let mut pos = 0;
     let mut v = value;
-    
+
     while v > 0 {
         buf[pos] = b'0' + (v % 10) as u8;
         v /= 10;
         pos += 1;
     }
-    
+
     while pos > 0 {
         pos -= 1;
         KernelLogger::write_char_raw(buf[pos]);

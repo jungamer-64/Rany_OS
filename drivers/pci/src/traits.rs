@@ -7,7 +7,7 @@
 //! このトレイトにより、Legacy I/O ポートアクセスと ECAM アクセスを
 //! 同一のインターフェースで扱うことができる。
 
-use crate::types::{BdfAddress, BarInfo, BarType, CapabilityId, config_regs, command_bits};
+use crate::types::{BarInfo, BarType, BdfAddress, CapabilityId, command_bits, config_regs};
 
 // ============================================================================
 // Configuration Space Accessor Trait

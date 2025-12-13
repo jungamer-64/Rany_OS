@@ -9,19 +9,19 @@
 //! - `driver.load(path)` - Load driver from ELF file
 //! - `driver.unload(id)` - Unload a driver
 //! - `driver.status(id)` - Get driver status
-//! 
+//!
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::borrow::Cow;
 
-use crate::shell::exoshell::types::ExoValue;
+use super::{BoxFuture, ShellNamespace};
 use crate::driver_registry;
 use crate::loader;
+use crate::security::capability::{CAP_SYS_MODULE, manager};
+use crate::shell::exoshell::types::ExoValue;
 use crate::task::process::getpid;
-use crate::security::capability::{manager, CAP_SYS_MODULE};
-use super::{ShellNamespace, BoxFuture};
 use alloc::boxed::Box;
 
 /// ドライバ名前空間
@@ -32,17 +32,23 @@ impl DriverNamespace {
     pub fn list() -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
-        
+
         let mut list = Vec::new();
         for (handle, name, dtype, state) in drivers {
             let mut map = BTreeMap::new();
             map.insert(String::from("id"), ExoValue::Int(handle.index() as i64));
             map.insert(String::from("name"), ExoValue::String(Cow::Owned(name)));
-            map.insert(String::from("type"), ExoValue::String(Cow::Owned(format!("{:?}", dtype))));
-            map.insert(String::from("state"), ExoValue::String(Cow::Owned(format!("{:?}", state))));
+            map.insert(
+                String::from("type"),
+                ExoValue::String(Cow::Owned(format!("{:?}", dtype))),
+            );
+            map.insert(
+                String::from("state"),
+                ExoValue::String(Cow::Owned(format!("{:?}", state))),
+            );
             list.push(ExoValue::Map(map));
         }
-        
+
         ExoValue::Array(list)
     }
 
@@ -50,8 +56,14 @@ impl DriverNamespace {
     pub fn stats() -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
         let mut map = BTreeMap::new();
-        map.insert(String::from("total"), ExoValue::Int(registry.count() as i64));
-        map.insert(String::from("running"), ExoValue::Int(registry.running_count() as i64));
+        map.insert(
+            String::from("total"),
+            ExoValue::Int(registry.count() as i64),
+        );
+        map.insert(
+            String::from("running"),
+            ExoValue::Int(registry.running_count() as i64),
+        );
         ExoValue::Map(map)
     }
 
@@ -59,12 +71,15 @@ impl DriverNamespace {
     pub fn status(id: i64) -> ExoValue<'static> {
         let registry = driver_registry::driver_registry();
         let handle = driver_registry::DriverHandle::from_index(id as usize);
-        
+
         match registry.state(handle) {
             Some(state) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("id"), ExoValue::Int(id));
-                map.insert(String::from("state"), ExoValue::String(Cow::Owned(format!("{:?}", state))));
+                map.insert(
+                    String::from("state"),
+                    ExoValue::String(Cow::Owned(format!("{:?}", state))),
+                );
                 if let Some(name) = registry.name(handle) {
                     map.insert(String::from("name"), ExoValue::String(Cow::Owned(name)));
                 }
@@ -83,7 +98,9 @@ impl DriverNamespace {
         }
 
         if path.is_empty() {
-            return ExoValue::Error(String::from("Path is required. Usage: driver.load(\"/path/to/driver.elf\")"));
+            return ExoValue::Error(String::from(
+                "Path is required. Usage: driver.load(\"/path/to/driver.elf\")",
+            ));
         }
 
         // ファイルからELFデータを読み込み
@@ -105,11 +122,22 @@ impl DriverNamespace {
             Ok(handle) => {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
-                map.insert(String::from("driver_id"), ExoValue::Int(handle.index() as i64));
-                map.insert(String::from("name"), ExoValue::String(Cow::Owned(driver_name.into())));
-                map.insert(String::from("message"), ExoValue::String(Cow::Owned(
-                    format!("Driver '{}' loaded successfully with ID {}", driver_name, handle.index())
-                )));
+                map.insert(
+                    String::from("driver_id"),
+                    ExoValue::Int(handle.index() as i64),
+                );
+                map.insert(
+                    String::from("name"),
+                    ExoValue::String(Cow::Owned(driver_name.into())),
+                );
+                map.insert(
+                    String::from("message"),
+                    ExoValue::String(Cow::Owned(format!(
+                        "Driver '{}' loaded successfully with ID {}",
+                        driver_name,
+                        handle.index()
+                    ))),
+                );
                 ExoValue::Map(map)
             }
             Err(e) => ExoValue::Error(format!("Failed to load driver: {}", e)),
@@ -125,7 +153,7 @@ impl DriverNamespace {
         }
 
         let handle = driver_registry::DriverHandle::from_index(id as usize);
-        
+
         // まずドライバが存在するか確認
         let registry = driver_registry::driver_registry();
         if registry.state(handle).is_none() {
@@ -138,9 +166,10 @@ impl DriverNamespace {
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
                 map.insert(String::from("driver_id"), ExoValue::Int(id));
-                map.insert(String::from("message"), ExoValue::String(Cow::Owned(
-                    format!("Driver {} unloaded successfully", id)
-                )));
+                map.insert(
+                    String::from("message"),
+                    ExoValue::String(Cow::Owned(format!("Driver {} unloaded successfully", id))),
+                );
                 ExoValue::Map(map)
             }
             Err(e) => ExoValue::Error(format!("Failed to unload driver {}: {}", id, e)),
@@ -153,24 +182,49 @@ impl ShellNamespace for DriverNamespace {
         "driver"
     }
 
-    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+    fn call<'a>(
+        &'a self,
+        method: &'a str,
+        args: &'a [ExoValue<'static>],
+    ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
                 "list" => Self::list(),
                 "stats" => Self::stats(),
                 "status" => {
-                    let id = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as i64), _ => None }).unwrap_or(0);
+                    let id = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as i64),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
                     Self::status(id)
                 }
                 "load" => {
-                    let path = args.first().and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None }).unwrap_or("");
+                    let path = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::String(s) => Some(s.as_ref()),
+                            _ => None,
+                        })
+                        .unwrap_or("");
                     Self::load(path)
                 }
                 "unload" => {
-                    let id = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as i64), _ => None }).unwrap_or(0);
+                    let id = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as i64),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
                     Self::unload(id)
                 }
-                _ => ExoValue::Error(format!("Unknown method 'driver.{}'\nValid methods: list, stats, status, load, unload", method)),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'driver.{}'\nValid methods: list, stats, status, load, unload",
+                    method
+                )),
             }
         })
     }

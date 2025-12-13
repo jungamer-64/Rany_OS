@@ -243,14 +243,7 @@ impl NvmeCommand {
     // ========================================
 
     /// Read コマンドを作成
-    pub fn read(
-        cid: u16,
-        nsid: u32,
-        slba: u64,
-        nlb: u16,
-        prp1: u64,
-        prp2: u64,
-    ) -> Self {
+    pub fn read(cid: u16, nsid: u32, slba: u64, nlb: u16, prp1: u64, prp2: u64) -> Self {
         let mut cmd = Self::with_opcode_and_cid(IoOpcode::Read as u8, cid);
         cmd.nsid = nsid;
         cmd.set_prp(prp1, prp2);
@@ -261,14 +254,7 @@ impl NvmeCommand {
     }
 
     /// Write コマンドを作成
-    pub fn write(
-        cid: u16,
-        nsid: u32,
-        slba: u64,
-        nlb: u16,
-        prp1: u64,
-        prp2: u64,
-    ) -> Self {
+    pub fn write(cid: u16, nsid: u32, slba: u64, nlb: u16, prp1: u64, prp2: u64) -> Self {
         let mut cmd = Self::with_opcode_and_cid(IoOpcode::Write as u8, cid);
         cmd.nsid = nsid;
         cmd.set_prp(prp1, prp2);

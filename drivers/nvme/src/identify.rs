@@ -195,23 +195,17 @@ pub struct IdentifyController {
 impl IdentifyController {
     /// シリアル番号を文字列として取得
     pub fn serial_number(&self) -> &str {
-        core::str::from_utf8(&self.sn)
-            .unwrap_or("")
-            .trim()
+        core::str::from_utf8(&self.sn).unwrap_or("").trim()
     }
 
     /// モデル番号を文字列として取得
     pub fn model_number(&self) -> &str {
-        core::str::from_utf8(&self.mn)
-            .unwrap_or("")
-            .trim()
+        core::str::from_utf8(&self.mn).unwrap_or("").trim()
     }
 
     /// ファームウェアリビジョンを文字列として取得
     pub fn firmware_revision(&self) -> &str {
-        core::str::from_utf8(&self.fr)
-            .unwrap_or("")
-            .trim()
+        core::str::from_utf8(&self.fr).unwrap_or("").trim()
     }
 
     /// 最大データ転送サイズ（バイト）
@@ -454,11 +448,7 @@ pub struct LbaFormat {
 impl LbaFormat {
     /// データサイズ（バイト）
     pub fn data_size(&self) -> usize {
-        if self.lbads == 0 {
-            0
-        } else {
-            1 << self.lbads
-        }
+        if self.lbads == 0 { 0 } else { 1 << self.lbads }
     }
 
     /// 相対パフォーマンス

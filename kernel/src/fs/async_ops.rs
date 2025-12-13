@@ -310,20 +310,18 @@ impl<'a> Future for AsyncReadFuture<'a> {
                 const BLOCK_SIZE: u64 = 512;
                 let lba = position / BLOCK_SIZE;
                 let blocks = ((to_read as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE) as u16;
-                
+
                 // PRP1: バッファの物理アドレス（仮想→物理変換が必要）
                 // Note: 実運用では適切なDMAメモリ割り当てと物理アドレス変換が必要
                 let prp1 = self.buf.as_ptr() as u64;
                 let prp2 = 0u64; // 単一ページの場合は0
-                
+
                 // NVMeドライバ経由でリードコマンドを発行
                 let result = nvme_global::with_driver(|driver| {
                     // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe {
-                        driver.submit_read(core_id, 1, lba, blocks, prp1, prp2)
-                    }
+                    unsafe { driver.submit_read(core_id, 1, lba, blocks, prp1, prp2) }
                 });
-                
+
                 match result {
                     Some(Ok(cid)) => {
                         self.request_id = Some(cid as u64);
@@ -334,7 +332,9 @@ impl<'a> Future for AsyncReadFuture<'a> {
                     Some(Err(_)) | None => {
                         // NVMeが利用不可、フォールバック
                         self.buf[..to_read].fill(0);
-                        self.file.position.fetch_add(to_read as u64, Ordering::Relaxed);
+                        self.file
+                            .position
+                            .fetch_add(to_read as u64, Ordering::Relaxed);
                         return Poll::Ready(Ok(to_read));
                     }
                 }
@@ -358,16 +358,16 @@ impl<'a> Future for AsyncReadFuture<'a> {
             let core_id = current_cpu();
             let completed = nvme_global::with_driver(|driver| {
                 // Safety: 現在のコアIDで自身のキューをポーリング
-                unsafe {
-                    driver.poll_completion_by_cid(core_id, request_id as u16)
-                }
+                unsafe { driver.poll_completion_by_cid(core_id, request_id as u16) }
             });
-            
+
             match completed {
                 Some(Some(cqe)) if cqe.is_success() => {
                     // 読み取り完了
                     let to_read = self.buf.len();
-                    self.file.position.fetch_add(to_read as u64, Ordering::Relaxed);
+                    self.file
+                        .position
+                        .fetch_add(to_read as u64, Ordering::Relaxed);
                     return Poll::Ready(Ok(to_read));
                 }
                 Some(Some(_cqe)) => {
@@ -430,20 +430,18 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                 const BLOCK_SIZE: u64 = 512;
                 let lba = position / BLOCK_SIZE;
                 let blocks = ((len as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE) as u16;
-                
+
                 // PRP1: バッファの物理アドレス（仮想→物理変換が必要）
                 // Note: 実運用では適切なDMAメモリ割り当てと物理アドレス変換が必要
                 let prp1 = self.buf.as_ptr() as u64;
                 let prp2 = 0u64; // 単一ページの場合は0
-                
+
                 // NVMeドライバ経由でライトコマンドを発行
                 let result = nvme_global::with_driver(|driver| {
                     // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe {
-                        driver.submit_write(core_id, 1, lba, blocks, prp1, prp2)
-                    }
+                    unsafe { driver.submit_write(core_id, 1, lba, blocks, prp1, prp2) }
                 });
-                
+
                 match result {
                     Some(Ok(cid)) => {
                         self.request_id = Some(cid as u64);
@@ -488,11 +486,9 @@ impl<'a> Future for AsyncWriteFuture<'a> {
             let core_id = current_cpu();
             let completed = nvme_global::with_driver(|driver| {
                 // Safety: 現在のコアIDで自身のキューをポーリング
-                unsafe {
-                    driver.poll_completion_by_cid(core_id, request_id as u16)
-                }
+                unsafe { driver.poll_completion_by_cid(core_id, request_id as u16) }
             });
-            
+
             match completed {
                 Some(Some(cqe)) if cqe.is_success() => {
                     // 書き込み完了

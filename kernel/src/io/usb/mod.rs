@@ -20,10 +20,7 @@
 
 // Re-exports from usb_driver
 pub use usb_driver::{
-    UsbSpeed, DeviceAddress, SlotId, EndpointAddress, PortNumber,
-    TransferType, TransferDirection, TransferStatus,
-    SetupPacket, UsbError, UsbResult, PortStatus,
-    descriptor, class, device, xhci,
-    UsbDevice, UsbClassDriver, UsbManager,
-    usb_manager, init,
+    DeviceAddress, EndpointAddress, PortNumber, PortStatus, SetupPacket, SlotId, TransferDirection,
+    TransferStatus, TransferType, UsbClassDriver, UsbDevice, UsbError, UsbManager, UsbResult,
+    UsbSpeed, class, descriptor, device, init, usb_manager, xhci,
 };

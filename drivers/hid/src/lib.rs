@@ -130,18 +130,18 @@ pub enum KeyCode {
     // 注意: テンキーはナビゲーションキーと同じスキャンコードを持つため、
     // 内部的に異なる値を使用し、from_scancode()で適切に変換する
     // 0xC0-0xCF の範囲を使用（PS/2では未使用）
-    NumPad0 = 0xC0,      // NumLockオンで '0', オフで Insert (実際は0x52)
-    NumPad1 = 0xC1,      // NumLockオンで '1', オフで End (実際は0x4F)
-    NumPad2 = 0xC2,      // NumLockオンで '2', オフで Down (実際は0x50)
-    NumPad3 = 0xC3,      // NumLockオンで '3', オフで PageDown (実際は0x51)
-    NumPad4 = 0xC4,      // NumLockオンで '4', オフで Left (実際は0x4B)
-    NumPad5 = 0xC5,      // NumLockオンで '5', オフで (nothing) (実際は0x4C)
-    NumPad6 = 0xC6,      // NumLockオンで '6', オフで Right (実際は0x4D)
-    NumPad7 = 0xC7,      // NumLockオンで '7', オフで Home (実際は0x47)
-    NumPad8 = 0xC8,      // NumLockオンで '8', オフで Up (実際は0x48)
-    NumPad9 = 0xC9,      // NumLockオンで '9', オフで PageUp (実際は0x49)
+    NumPad0 = 0xC0,       // NumLockオンで '0', オフで Insert (実際は0x52)
+    NumPad1 = 0xC1,       // NumLockオンで '1', オフで End (実際は0x4F)
+    NumPad2 = 0xC2,       // NumLockオンで '2', オフで Down (実際は0x50)
+    NumPad3 = 0xC3,       // NumLockオンで '3', オフで PageDown (実際は0x51)
+    NumPad4 = 0xC4,       // NumLockオンで '4', オフで Left (実際は0x4B)
+    NumPad5 = 0xC5,       // NumLockオンで '5', オフで (nothing) (実際は0x4C)
+    NumPad6 = 0xC6,       // NumLockオンで '6', オフで Right (実際は0x4D)
+    NumPad7 = 0xC7,       // NumLockオンで '7', オフで Home (実際は0x47)
+    NumPad8 = 0xC8,       // NumLockオンで '8', オフで Up (実際は0x48)
+    NumPad9 = 0xC9,       // NumLockオンで '9', オフで PageUp (実際は0x49)
     NumPadDecimal = 0xCA, // NumLockオンで '.', オフで Delete (実際は0x53)
-    NumPadEnter = 0x9C,  // 拡張コード (E0 1C)
+    NumPadEnter = 0x9C,   // 拡張コード (E0 1C)
     NumPadPlus = 0x4E,
     NumPadMinus = 0x4A,
     NumPadMultiply = 0x37,
@@ -170,7 +170,7 @@ pub struct Modifiers {
     pub shift: bool,
     pub ctrl: bool,
     pub alt: bool,
-    pub alt_gr: bool,  // Right Alt (AltGr for European layouts)
+    pub alt_gr: bool, // Right Alt (AltGr for European layouts)
     pub caps_lock: bool,
     pub num_lock: bool,
     pub scroll_lock: bool,
@@ -264,7 +264,7 @@ impl MouseEvent {
     pub fn any_button(&self) -> bool {
         self.left_down || self.right_down || self.middle_down
     }
-    
+
     /// 移動があるか
     pub fn has_movement(&self) -> bool {
         self.dx != 0 || self.dy != 0

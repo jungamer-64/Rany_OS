@@ -1,7 +1,7 @@
 // ============================================================================
 // src/task/timer.rs - Timer-based async sleep implementation
 // 設計書 4.2: Interrupt-Waker Bridge の実装例
-// 
+//
 // 【重要】2段階Wake方式:
 // ISRから直接waker.wake()を呼ばず、保留リストに追加のみ。
 // 実際のwake()はExecutorのイベントループで行う。
@@ -27,7 +27,7 @@ static SLEEP_REGISTRY: Mutex<BTreeMap<u64, Waker>> = Mutex::new(BTreeMap::new())
 static PENDING_TIMER_WAKERS: Mutex<Vec<Waker>> = Mutex::new(Vec::new());
 
 /// タイマー割り込みハンドラから呼ばれる
-/// 
+///
 /// 【設計書 4.2】2段階Wake方式:
 /// ISRコンテキストでは直接wake()を呼ばず、保留リストに追加のみ
 pub fn handle_timer_interrupt() {
@@ -36,8 +36,7 @@ pub fn handle_timer_interrupt() {
     // 起床すべきタスクを探して保留リストに追加
     // 【重要】ISRコンテキストではwake()を呼ばない
     if let Some(mut registry) = SLEEP_REGISTRY.try_lock() {
-        let wake_keys: Vec<u64> =
-            registry.range(..=current_tick).map(|(k, _)| *k).collect();
+        let wake_keys: Vec<u64> = registry.range(..=current_tick).map(|(k, _)| *k).collect();
 
         if !wake_keys.is_empty() {
             if let Some(mut pending) = PENDING_TIMER_WAKERS.try_lock() {
@@ -53,7 +52,7 @@ pub fn handle_timer_interrupt() {
 }
 
 /// 保留中のタイマーWakerを処理（Executorから呼び出す）
-/// 
+///
 /// 【設計書 4.2】2段階Wake方式: 非ISRコンテキストで呼び出す
 /// process_interrupt_events()の後に呼び出すべき
 pub fn process_pending_timer_wakers() {
@@ -62,7 +61,7 @@ pub fn process_pending_timer_wakers() {
         let mut pending = PENDING_TIMER_WAKERS.lock();
         core::mem::take(&mut *pending)
     };
-    
+
     // 非ISRコンテキストなので安全にwake()を呼び出す
     for waker in wakers {
         waker.wake();

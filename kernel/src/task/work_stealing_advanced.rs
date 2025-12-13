@@ -75,15 +75,15 @@ impl NumaTopology {
         static TOPOLOGY: spin::Once<NumaTopology> = spin::Once::new();
         TOPOLOGY.call_once(|| NumaTopology::detect())
     }
-    
+
     /// トポロジを検出（ACPI SRATなどから）
     fn detect() -> Self {
         // Note: 実際のACPI SRATパースは crate::io::acpi モジュールで実装
         // 現在はシングルNUMAノードを想定したデフォルト値
-        
+
         // [Vec<u32>; 64] は Default を実装していないので手動で初期化
         const EMPTY_VEC: Vec<u32> = Vec::new();
-        
+
         let mut topology = Self {
             core_to_node: [0; MAX_CORES],
             node_cores: [EMPTY_VEC; MAX_NUMA_NODES],
@@ -91,16 +91,16 @@ impl NumaTopology {
             num_nodes: 1,
             num_cores: 1,
         };
-        
+
         // CPUコア数を検出（仮実装）
         let core_count = core::cmp::min(crate::smp::cpu_count() as usize, MAX_CORES);
         topology.num_cores = core_count;
-        
+
         // シングルNUMAノードとしてすべてのコアを登録
         for i in 0..core_count {
             topology.core_to_node[i] = 0;
             topology.node_cores[0].push(i as u32);
-            
+
             // HyperThreadingペアを推測（偶数/奇数ペア）
             // 実際にはCPUID命令で検出すべき
             let sibling = if i % 2 == 0 { i + 1 } else { i - 1 };
@@ -109,10 +109,10 @@ impl NumaTopology {
             }
             topology.llc_siblings[i].push(i as u32);
         }
-        
+
         topology
     }
-    
+
     /// コアが所属するNUMAノードを取得
     pub fn get_numa_node(&self, core_id: u32) -> usize {
         if (core_id as usize) < MAX_CORES {
@@ -121,7 +121,7 @@ impl NumaTopology {
             0
         }
     }
-    
+
     /// 指定NUMAノード内のコアリストを取得
     pub fn get_cores_in_node(&self, node: usize) -> &[u32] {
         if node < MAX_NUMA_NODES {
@@ -130,7 +130,7 @@ impl NumaTopology {
             &[]
         }
     }
-    
+
     /// LLCを共有するコアのリストを取得
     pub fn get_llc_siblings(&self, core_id: u32) -> &[u32] {
         if (core_id as usize) < MAX_CORES {
@@ -139,7 +139,7 @@ impl NumaTopology {
             &[]
         }
     }
-    
+
     /// 2つのコアがLLCを共有しているかチェック
     pub fn shares_llc(&self, core_a: u32, core_b: u32) -> bool {
         if (core_a as usize) < MAX_CORES {
@@ -148,12 +148,12 @@ impl NumaTopology {
             false
         }
     }
-    
+
     /// NUMAノード数を取得
     pub fn num_nodes(&self) -> usize {
         self.num_nodes
     }
-    
+
     /// コア数を取得
     pub fn num_cores(&self) -> usize {
         self.num_cores
@@ -686,10 +686,10 @@ impl GlobalScheduler {
         if num_workers <= 1 {
             return None;
         }
-        
+
         // NUMAトポロジ情報を取得
         let numa_info = NumaTopology::get();
-        
+
         // Phase 1: 同一LLCを共有するコア（Hyperthread sibling）からスチール
         for &sibling_id in numa_info.get_llc_siblings(core_id) {
             if sibling_id == core_id || sibling_id as usize >= num_workers {
@@ -699,7 +699,7 @@ impl GlobalScheduler {
                 return Some(task);
             }
         }
-        
+
         // Phase 2: 同一NUMAノード内の他コアからスチール
         let my_numa_node = numa_info.get_numa_node(core_id);
         for &target_core in numa_info.get_cores_in_node(my_numa_node) {
@@ -714,7 +714,7 @@ impl GlobalScheduler {
                 return Some(task);
             }
         }
-        
+
         // Phase 3: 他のNUMAノードからスチール（最後の手段）
         for node in 0..numa_info.num_nodes() {
             if node == my_numa_node {
@@ -734,19 +734,19 @@ impl GlobalScheduler {
                 }
             }
         }
-        
+
         None
     }
-    
+
     /// 特定のコアからタスクをスチール
     fn try_steal_from_core(&self, victim_id: u32, thief_id: u32) -> Option<Box<StealableTask>> {
         let victim = &self.workers[victim_id as usize];
-        
+
         // 被害者のキューが十分にある場合のみスチール
         if victim.queue_size() <= STEAL_BATCH_SIZE {
             return None;
         }
-        
+
         // バッチスチール
         for _ in 0..STEAL_BATCH_SIZE {
             if let Some(task) = victim.steal_task() {

@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // apps/src/browser/html.rs - HTML Parser
 // ============================================================================
 //!
@@ -7,11 +7,11 @@
 #![allow(dead_code)]
 #![allow(unused_imports)]
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::collections::BTreeMap;
 
-use super::dom::{Node, NodeType, ElementData};
+use super::dom::{ElementData, Node, NodeType};
 
 /// HTML Parser
 pub struct HtmlParser {

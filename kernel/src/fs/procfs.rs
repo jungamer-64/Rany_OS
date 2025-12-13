@@ -190,7 +190,13 @@ impl ProcFs {
             // アイドル時間（簡易実装：稼働時間の90%と仮定）
             let idle_secs = uptime_secs * 9 / 10;
             let idle_frac = uptime_frac * 9 / 10;
-            alloc::format!("{}.{:02} {}.{:02}\n", uptime_secs, uptime_frac, idle_secs, idle_frac)
+            alloc::format!(
+                "{}.{:02} {}.{:02}\n",
+                uptime_secs,
+                uptime_frac,
+                idle_secs,
+                idle_frac
+            )
         });
 
         // /proc/meminfo
@@ -278,7 +284,7 @@ impl ProcFs {
         let dev_entry = ProcEntry::file(dev_inode, "dev", || {
             let mut output = alloc::string::String::from(
                 "Inter-|   Receive                                                |  Transmit\n\
-                 face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n"
+                 face |bytes    packets errs drop fifo frame compressed multicast|bytes    packets errs drop fifo colls carrier compressed\n",
             );
             // 仮想ネットワーク統計（将来的にはNetworkStackから取得）
             output.push_str("    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n");
@@ -295,7 +301,7 @@ impl ProcFs {
         let tcp_inode = self.allocate_inode();
         let tcp_entry = ProcEntry::file(tcp_inode, "tcp", || {
             let mut output = alloc::string::String::from(
-                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
             );
             // 将来的にはTcpProcessorから取得
             output
@@ -310,7 +316,7 @@ impl ProcFs {
         let udp_inode = self.allocate_inode();
         let udp_entry = ProcEntry::file(udp_inode, "udp", || {
             alloc::string::String::from(
-                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n"
+                "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
             )
         });
         let mut root = self.root.write();
@@ -323,7 +329,7 @@ impl ProcFs {
         let arp_inode = self.allocate_inode();
         let arp_entry = ProcEntry::file(arp_inode, "arp", || {
             alloc::string::String::from(
-                "IP address       HW type     Flags       HW address            Mask     Device\n"
+                "IP address       HW type     Flags       HW address            Mask     Device\n",
             )
         });
         let mut root = self.root.write();
@@ -486,7 +492,7 @@ impl ProcFs {
         let buffers_kb = used_kb / 8; // バッファの推定
         let active_kb = used_kb / 2;
         let inactive_kb = used_kb / 4;
-        
+
         alloc::format!(
             "MemTotal:       {:8} kB\n\
              MemFree:        {:8} kB\n\
@@ -498,7 +504,13 @@ impl ProcFs {
              Inactive:       {:8} kB\n\
              SwapTotal:             0 kB\n\
              SwapFree:              0 kB\n",
-            total_kb, free_kb, available_kb, buffers_kb, cached_kb, active_kb, inactive_kb
+            total_kb,
+            free_kb,
+            available_kb,
+            buffers_kb,
+            cached_kb,
+            active_kb,
+            inactive_kb
         )
     }
 
@@ -506,7 +518,7 @@ impl ProcFs {
         // 実際のCPU情報を取得
         let cpu_count = crate::smp::cpu_count();
         let mut info = String::new();
-        
+
         for cpu_id in 0..cpu_count {
             use core::fmt::Write;
             let _ = write!(
@@ -534,10 +546,10 @@ impl ProcFs {
                 cpu_count,
                 cpu_id,
                 cpu_count,
-                6000.0  // bogomips
+                6000.0 // bogomips
             );
         }
-        
+
         info
     }
 
@@ -548,22 +560,31 @@ impl ProcFs {
         let boot_time = crate::time::now().saturating_sub(crate::time::current_tick() / 1000);
         let cpu_count = crate::smp::cpu_count();
         let process_count = crate::task::process_manager().count();
-        
+
         use core::fmt::Write;
         let mut output = String::new();
-        
+
         // 総CPU時間
-        let _ = write!(output, "cpu  {} 0 {} 0 0 0 {} 0 0 0\n", 
-            timer_ticks / 10, timer_ticks / 5, timer_ticks / 20);
-        
+        let _ = write!(
+            output,
+            "cpu  {} 0 {} 0 0 0 {} 0 0 0\n",
+            timer_ticks / 10,
+            timer_ticks / 5,
+            timer_ticks / 20
+        );
+
         // 各CPUの時間
         for i in 0..cpu_count {
-            let _ = write!(output, "cpu{} {} 0 {} 0 0 0 {} 0 0 0\n",
-                i, timer_ticks / (10 * cpu_count as u64), 
+            let _ = write!(
+                output,
+                "cpu{} {} 0 {} 0 0 0 {} 0 0 0\n",
+                i,
+                timer_ticks / (10 * cpu_count as u64),
                 timer_ticks / (5 * cpu_count as u64),
-                timer_ticks / (20 * cpu_count as u64));
+                timer_ticks / (20 * cpu_count as u64)
+            );
         }
-        
+
         let _ = write!(output, "intr {}\n", timer_ticks);
         let _ = write!(output, "ctxt {}\n", ctx_switches);
         let _ = write!(output, "btime {}\n", boot_time);
@@ -571,7 +592,7 @@ impl ProcFs {
         let _ = write!(output, "procs_running 1\n");
         let _ = write!(output, "procs_blocked 0\n");
         let _ = write!(output, "softirq 0 0 0 0 0 0 0 0 0 0 0\n");
-        
+
         output
     }
 
@@ -607,12 +628,25 @@ impl ProcFs {
                  Threads:\t{}\n",
                 p.name,
                 state_char,
-                match state_char { 'R' => "running", 'S' => "sleeping", 'T' => "stopped", 'Z' => "zombie", 'X' => "dead", _ => "unknown" },
+                match state_char {
+                    'R' => "running",
+                    'S' => "sleeping",
+                    'T' => "stopped",
+                    'Z' => "zombie",
+                    'X' => "dead",
+                    _ => "unknown",
+                },
                 pid.as_u32(),
                 pid.as_u32(),
                 p.ppid.as_u64(),
-                p.credentials.uid.as_u32(), p.credentials.uid.as_u32(), p.credentials.uid.as_u32(), p.credentials.uid.as_u32(),
-                p.credentials.gid.as_u32(), p.credentials.gid.as_u32(), p.credentials.gid.as_u32(), p.credentials.gid.as_u32(),
+                p.credentials.uid.as_u32(),
+                p.credentials.uid.as_u32(),
+                p.credentials.uid.as_u32(),
+                p.credentials.uid.as_u32(),
+                p.credentials.gid.as_u32(),
+                p.credentials.gid.as_u32(),
+                p.credentials.gid.as_u32(),
+                p.credentials.gid.as_u32(),
                 p.threads().len().max(1)
             )
         } else {
@@ -659,8 +693,8 @@ impl ProcFs {
                 p.name,
                 state_char,
                 p.ppid.as_u64(),
-                pid.as_u32(), // pgid
-                pid.as_u32(), // sid
+                pid.as_u32(),                   // pgid
+                pid.as_u32(),                   // sid
                 p.priority.as_i8() as i32 + 20, // nice value
                 p.threads().len().max(1)
             )
@@ -682,7 +716,9 @@ impl ProcFs {
              00601000-00602000 rw-p 00001000 00:00 0          /bin/process{}\n\
              7ffff7ff8000-7ffff7ffa000 r-xp 00000000 00:00 0  [vdso]\n\
              7ffffffde000-7ffffffff000 rw-p 00000000 00:00 0  [stack]\n",
-            pid.as_u32(), pid.as_u32(), pid.as_u32()
+            pid.as_u32(),
+            pid.as_u32(),
+            pid.as_u32()
         )
     }
 
@@ -773,9 +809,18 @@ fn get_cpu_vendor() -> &'static str {
         // SAFETY: CPUIDは常に安全
         let result = unsafe { __cpuid(0) };
         let vendor_bytes = [
-            (result.ebx as u8), ((result.ebx >> 8) as u8), ((result.ebx >> 16) as u8), ((result.ebx >> 24) as u8),
-            (result.edx as u8), ((result.edx >> 8) as u8), ((result.edx >> 16) as u8), ((result.edx >> 24) as u8),
-            (result.ecx as u8), ((result.ecx >> 8) as u8), ((result.ecx >> 16) as u8), ((result.ecx >> 24) as u8),
+            (result.ebx as u8),
+            ((result.ebx >> 8) as u8),
+            ((result.ebx >> 16) as u8),
+            ((result.ebx >> 24) as u8),
+            (result.edx as u8),
+            ((result.edx >> 8) as u8),
+            ((result.edx >> 16) as u8),
+            ((result.edx >> 24) as u8),
+            (result.ecx as u8),
+            ((result.ecx >> 8) as u8),
+            ((result.ecx >> 16) as u8),
+            ((result.ecx >> 24) as u8),
         ];
         // 一般的なベンダーIDをチェック
         if &vendor_bytes[..12] == b"GenuineIntel" {

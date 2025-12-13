@@ -7,16 +7,16 @@
 //! 抽象構文木 (AST) を評価して `ExoValue` に変換する。
 //! フィルタ式やクロージャの評価に使用。
 
-use alloc::string::{String, ToString};
-use alloc::format;
-use alloc::vec::Vec;
 use alloc::borrow::Cow;
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
-use super::ast::{Expr, BinaryOp, UnaryOp};
+use super::ast::{BinaryOp, Expr, UnaryOp};
 use crate::shell::exoshell::types::*;
 
 /// AST 評価コンテキスト
-/// 
+///
 /// クロージャのパラメータなど、変数の解決に使用。
 pub struct EvalContext<'a> {
     /// クロージャパラメータ名（例: "e"）
@@ -36,7 +36,7 @@ impl<'a> EvalContext<'a> {
             target: None,
         }
     }
-    
+
     /// クロージャコンテキストを作成
     pub fn with_param(name: &'a str, value: &'a ExoValue<'a>) -> Self {
         Self {
@@ -70,7 +70,7 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
         // リテラル値はそのまま返す
         // リテラルがCow::Ownedなら、cloneしてもOwned。
         Expr::Literal(val) => val.clone(),
-        
+
         // 識別子の解決
         Expr::Ident(name) => {
             // 1. 予約キーワード
@@ -87,7 +87,7 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
                     return param_value.clone();
                 }
             }
-            
+
             // 3. 暗黙のターゲットのフィールドとして検索
             if let Some(target) = ctx.target {
                 let val = get_field(target, name);
@@ -95,55 +95,61 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
                     return val;
                 }
             }
-            
+
             ExoValue::Error(format!("Unknown identifier: '{}'", name))
         }
-        
+
         // フィールドアクセス
         Expr::FieldAccess { object, field } => {
             let obj = eval_expr_with_depth(object, ctx, depth + 1);
             get_field(&obj, field)
         }
-        
+
         // メソッド呼び出し
-        Expr::MethodCall { object, method, args } => {
+        Expr::MethodCall {
+            object,
+            method,
+            args,
+        } => {
             let obj = eval_expr_with_depth(object, ctx, depth + 1);
-            let evaluated_args: Vec<ExoValue<'a>> = args.iter()
+            let evaluated_args: Vec<ExoValue<'a>> = args
+                .iter()
                 .map(|arg| eval_expr_with_depth(arg, ctx, depth + 1))
                 .collect();
-            
+
             apply_method(&obj, method, &evaluated_args)
         }
-        
+
         // 二項演算
         Expr::Binary { left, op, right } => {
             let l = eval_expr_with_depth(left, ctx, depth + 1);
             let r = eval_expr_with_depth(right, ctx, depth + 1);
             eval_binary_op(&l, *op, &r)
         }
-        
+
         // 単項演算
         Expr::Unary { op, operand } => {
             let val = eval_expr_with_depth(operand, ctx, depth + 1);
             eval_unary_op(*op, &val)
         }
-        
+
         // グループ（括弧）
         Expr::Group(inner) => eval_expr_with_depth(inner, ctx, depth + 1),
-        
+
         // 配列リテラル
         Expr::Array(elements) => {
-            let values: Vec<ExoValue<'a>> = elements.iter()
+            let values: Vec<ExoValue<'a>> = elements
+                .iter()
                 .map(|e| eval_expr_with_depth(e, ctx, depth + 1))
                 .collect();
             ExoValue::Array(values)
         }
-        
+
         // インデックスアクセス
         Expr::Index { object, index } => {
             let obj = eval_expr_with_depth(object, ctx, depth + 1);
             let idx = eval_expr_with_depth(index, ctx, depth + 1);
-            
+
             match (&obj, &idx) {
                 (ExoValue::Array(arr), ExoValue::Int(i)) => {
                     let i = *i as usize;
@@ -164,7 +170,7 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
                 _ => ExoValue::Error(format!("Cannot index {:?} with {:?}", obj, idx)),
             }
         }
-        
+
         // マップリテラル
         Expr::Map(pairs) => {
             let mut map = alloc::collections::BTreeMap::new();
@@ -174,11 +180,12 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
             }
             ExoValue::Map(map)
         }
-        
+
         // クロージャ（遅延評価のため、ここでは本体を評価しない）
-        Expr::Closure { param, body: _ } => {
-            ExoValue::Error(format!("Closure '|{}|' cannot be directly evaluated", param))
-        }
+        Expr::Closure { param, body: _ } => ExoValue::Error(format!(
+            "Closure '|{}|' cannot be directly evaluated",
+            param
+        )),
     }
 }
 
@@ -227,7 +234,7 @@ pub fn get_field<'a>(value: &ExoValue<'a>, field: &str) -> ExoValue<'a> {
             "inode" => ExoValue::Int(entry.inode as i64),
             _ => ExoValue::Error(format!("FileEntry has no field '{}'", field)),
         },
-        
+
         ExoValue::Process(proc) => match field {
             "pid" => ExoValue::Int(proc.pid as i64),
             "name" => ExoValue::String(Cow::Owned(proc.name.clone())),
@@ -237,7 +244,7 @@ pub fn get_field<'a>(value: &ExoValue<'a>, field: &str) -> ExoValue<'a> {
             "domain" => ExoValue::String(Cow::Owned(proc.domain.clone())),
             _ => ExoValue::Error(format!("Process has no field '{}'", field)),
         },
-        
+
         ExoValue::NetConnection(conn) => match field {
             "protocol" => ExoValue::String(Cow::Owned(conn.protocol.clone())),
             "local_port" => ExoValue::Int(conn.local_port as i64),
@@ -247,7 +254,7 @@ pub fn get_field<'a>(value: &ExoValue<'a>, field: &str) -> ExoValue<'a> {
             "tx_bytes" => ExoValue::Int(conn.tx_bytes as i64),
             _ => ExoValue::Error(format!("NetConnection has no field '{}'", field)),
         },
-        
+
         ExoValue::Capability(cap) => match field {
             "id" => ExoValue::Int(cap.id as i64),
             "resource" => ExoValue::String(Cow::Owned(cap.resource.clone())),
@@ -255,11 +262,9 @@ pub fn get_field<'a>(value: &ExoValue<'a>, field: &str) -> ExoValue<'a> {
             "delegatable" => ExoValue::Bool(cap.delegatable),
             _ => ExoValue::Error(format!("Capability has no field '{}'", field)),
         },
-        
-        ExoValue::Map(map) => {
-            map.get(field).cloned().unwrap_or(ExoValue::Nil)
-        }
-        
+
+        ExoValue::Map(map) => map.get(field).cloned().unwrap_or(ExoValue::Nil),
+
         _ => ExoValue::Error(format!("Value does not support field access")),
     }
 }
@@ -280,31 +285,43 @@ fn apply_method<'a>(value: &ExoValue<'a>, method: &str, args: &[ExoValue<'a>]) -
 fn apply_string_method<'a>(s: &str, method: &str, args: &[ExoValue<'a>]) -> ExoValue<'a> {
     match method {
         "len" | "length" => ExoValue::Int(s.len() as i64),
-        
+
         "contains" => {
-            let pattern = args.first()
-                .and_then(|v| match v { ExoValue::String(p) => Some(p.as_ref()), _ => None })
+            let pattern = args
+                .first()
+                .and_then(|v| match v {
+                    ExoValue::String(p) => Some(p.as_ref()),
+                    _ => None,
+                })
                 .unwrap_or("");
             ExoValue::Bool(s.contains(pattern))
         }
-        
+
         "starts_with" => {
-            let pattern = args.first()
-                .and_then(|v| match v { ExoValue::String(p) => Some(p.as_ref()), _ => None })
+            let pattern = args
+                .first()
+                .and_then(|v| match v {
+                    ExoValue::String(p) => Some(p.as_ref()),
+                    _ => None,
+                })
                 .unwrap_or("");
             ExoValue::Bool(s.starts_with(pattern))
         }
-        
+
         "ends_with" => {
-            let pattern = args.first()
-                .and_then(|v| match v { ExoValue::String(p) => Some(p.as_ref()), _ => None })
+            let pattern = args
+                .first()
+                .and_then(|v| match v {
+                    ExoValue::String(p) => Some(p.as_ref()),
+                    _ => None,
+                })
                 .unwrap_or("");
             ExoValue::Bool(s.ends_with(pattern))
         }
-        
+
         "to_lower" | "lowercase" => ExoValue::String(Cow::Owned(s.to_ascii_lowercase())),
         "to_upper" | "uppercase" => ExoValue::String(Cow::Owned(s.to_ascii_uppercase())),
-        
+
         _ => ExoValue::Error(format!("String has no method '{}'", method)),
     }
 }
@@ -322,11 +339,11 @@ pub fn eval_binary_op<'a>(left: &ExoValue<'a>, op: BinaryOp, right: &ExoValue<'a
             // shell.rs の evaluate_expr で特別処理される
             ExoValue::Error("Pipe operator must be evaluated in shell context".into())
         }
-        
+
         // 論理演算
         BinaryOp::And => eval_logical_and(left, right),
         BinaryOp::Or => eval_logical_or(left, right),
-        
+
         // 比較演算
         BinaryOp::Eq => ExoValue::Bool(values_equal(left, right)),
         BinaryOp::Ne => ExoValue::Bool(!values_equal(left, right)),
@@ -334,12 +351,12 @@ pub fn eval_binary_op<'a>(left: &ExoValue<'a>, op: BinaryOp, right: &ExoValue<'a
         BinaryOp::Le => eval_comparison(left, right, |a, b| a <= b),
         BinaryOp::Gt => eval_comparison(left, right, |a, b| a > b),
         BinaryOp::Ge => eval_comparison(left, right, |a, b| a >= b),
-        
+
         // 文字列比較
         BinaryOp::Contains => eval_string_op(left, right, |s, p| s.contains(p)),
         BinaryOp::StartsWith => eval_string_op(left, right, |s, p| s.starts_with(p)),
         BinaryOp::EndsWith => eval_string_op(left, right, |s, p| s.ends_with(p)),
-        
+
         // 算術演算
         BinaryOp::Add => eval_arithmetic(left, right, |a, b| a + b, |a, b| a + b),
         BinaryOp::Sub => eval_arithmetic(left, right, |a, b| a - b, |a, b| a - b),
@@ -491,9 +508,9 @@ pub fn eval_unary_op<'a>(op: UnaryOp, value: &ExoValue<'a>) -> ExoValue<'a> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::expr_parser::parse_expression;
-    
+    use super::*;
+
     #[test]
     fn test_eval_literal() {
         let expr = parse_expression("42").unwrap();
@@ -501,7 +518,7 @@ mod tests {
         let result = eval_expr(&expr, &ctx);
         assert!(matches!(result, ExoValue::Int(42)));
     }
-    
+
     #[test]
     fn test_eval_comparison() {
         let expr = parse_expression("100 > 50").unwrap();
@@ -509,7 +526,7 @@ mod tests {
         let result = eval_expr(&expr, &ctx);
         assert!(matches!(result, ExoValue::Bool(true)));
     }
-    
+
     #[test]
     fn test_eval_arithmetic() {
         let expr = parse_expression("10 + 5 * 2").unwrap();
@@ -518,7 +535,7 @@ mod tests {
         // Should be 10 + (5 * 2) = 20 due to operator precedence
         assert!(matches!(result, ExoValue::Int(20)));
     }
-    
+
     #[test]
     fn test_eval_logical() {
         let expr = parse_expression("true && false").unwrap();

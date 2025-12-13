@@ -4,10 +4,10 @@
 //!
 //! The core trait that all ExoRust applications must implement.
 
+use super::context::AppContext;
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
-use super::context::AppContext;
 
 /// ExoRust Application Entry Point
 ///

@@ -17,9 +17,11 @@ use spin::Mutex;
 use x86_64::PhysAddr;
 
 // Import VirtIO common definitions
-use super::defs::{status, VirtioDeviceType};
+use super::defs::{VirtioDeviceType, status};
 use super::transport::VirtioTransport;
-use crate::io::dma::{TypedDmaSlice, CpuOwned, DeviceOwned, CoherentDmaBuffer, DmaMemoryAttributes};
+use crate::io::dma::{
+    CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, TypedDmaSlice,
+};
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 // Import PacketRef for zero-copy
 use crate::net::mempool::PacketRef;
@@ -39,7 +41,6 @@ fn read_mac_address(transport: &dyn VirtioTransport) -> [u8; 6] {
         transport.read_config_u8(5),
     ]
 }
-
 
 // ============================================================================
 // VirtIO Net Device Feature Flags
@@ -499,7 +500,7 @@ pub struct VirtioNetDevice {
 
 impl VirtioNetDevice {
     /// 新しいデバイスを作成
-    /// 
+    ///
     /// # Arguments
     /// * `transport` - 初期化済みの VirtioTransport 実装（MMIO または PCI）
     ///   トランスポートはmagic/version検証を通過している必要がある
@@ -527,99 +528,100 @@ impl VirtioNetDevice {
         if self.transport.device_type() != VirtioDeviceType::Network {
             return Err(VirtioNetError::DeviceError);
         }
-        
+
         // 2. デバイスリセット
         self.transport.reset();
-        
+
         // 3. ACKNOWLEDGE ステータスビットを設定
         self.transport.set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
-        
+
         // 4. DRIVER ステータスビットを設定
-        self.transport.set_status(
-            status::VIRTIO_STATUS_ACKNOWLEDGE | status::VIRTIO_STATUS_DRIVER
-        );
-        
+        self.transport
+            .set_status(status::VIRTIO_STATUS_ACKNOWLEDGE | status::VIRTIO_STATUS_DRIVER);
+
         // 5. Feature negotiation
         let device_features_low = self.transport.get_device_features_low();
         let device_features_high = self.transport.get_device_features_high();
-        
+
         // 必要なフィーチャーのみを受け入れる
-        let accepted_features_low = device_features_low & 
-            (features::VIRTIO_NET_F_MAC as u32 | features::VIRTIO_NET_F_CSUM as u32);
+        let accepted_features_low = device_features_low
+            & (features::VIRTIO_NET_F_MAC as u32 | features::VIRTIO_NET_F_CSUM as u32);
         let accepted_features_high = device_features_high;
-        
-        self.transport.set_driver_features_low(accepted_features_low);
-        self.transport.set_driver_features_high(accepted_features_high);
-        
+
+        self.transport
+            .set_driver_features_low(accepted_features_low);
+        self.transport
+            .set_driver_features_high(accepted_features_high);
+
         // 6. FEATURES_OK を設定
         self.transport.set_status(
-            status::VIRTIO_STATUS_ACKNOWLEDGE | 
-            status::VIRTIO_STATUS_DRIVER | 
-            status::VIRTIO_STATUS_FEATURES_OK
+            status::VIRTIO_STATUS_ACKNOWLEDGE
+                | status::VIRTIO_STATUS_DRIVER
+                | status::VIRTIO_STATUS_FEATURES_OK,
         );
-        
+
         // FEATURES_OK が設定されたか確認
         if (self.transport.get_status() & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
             self.transport.set_status(status::VIRTIO_STATUS_FAILED);
             return Err(VirtioNetError::DeviceError);
         }
-        
+
         // 7. MACアドレスを読み取り
         if (accepted_features_low & features::VIRTIO_NET_F_MAC as u32) != 0 {
             self.config.mac = read_mac_address(self.transport.as_ref());
         }
-        
+
         // 8. キューの設定
         self.setup_queues()?;
-        
+
         // 9. DRIVER_OK を設定
         self.transport.set_status(
-            status::VIRTIO_STATUS_ACKNOWLEDGE | 
-            status::VIRTIO_STATUS_DRIVER | 
-            status::VIRTIO_STATUS_FEATURES_OK |
-            status::VIRTIO_STATUS_DRIVER_OK
+            status::VIRTIO_STATUS_ACKNOWLEDGE
+                | status::VIRTIO_STATUS_DRIVER
+                | status::VIRTIO_STATUS_FEATURES_OK
+                | status::VIRTIO_STATUS_DRIVER_OK,
         );
 
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
-    
+
     /// VirtQueueを設定
     fn setup_queues(&mut self) -> Result<(), VirtioNetError> {
         // RX queue (queue 0)
         self.setup_single_queue(0)?;
-        
+
         // TX queue (queue 1)
         self.setup_single_queue(1)?;
-        
+
         Ok(())
     }
-    
+
     /// 単一のキューを設定
     fn setup_single_queue(&mut self, queue_index: u16) -> Result<(), VirtioNetError> {
         // キューを選択
         self.transport.select_queue(queue_index);
-        
+
         // 最大キューサイズを取得
         let max_size = self.transport.get_queue_max_size();
         if max_size == 0 {
             return Err(VirtioNetError::DeviceError);
         }
-        
+
         // キューサイズを設定（最大256エントリに制限）
         let queue_size = max_size.min(256);
         self.transport.set_queue_size(queue_size);
-        
+
         // メモリをアロケート（実際の実装ではDMA対応メモリが必要）
         // ここでは簡略化のためスキップ
         // 実際のキュー設定はVirtQueueの初期化と連携が必要
-        
+
         // キューを有効化
         self.transport.enable_queue();
-        
+
         Ok(())
     }
-    
+
     /// デバイスに通知（キュー更新）
     pub fn notify(&mut self, queue_index: u16) {
         self.transport.notify_queue(queue_index);
@@ -636,7 +638,7 @@ impl VirtioNetDevice {
     }
 
     /// ゼロコピーパケット送信（設計書 6.2準拠）
-    /// 
+    ///
     /// PacketRefを直接使用し、コピーなしでDMAバッファに渡す。
     /// 送信完了まで所有権を保持し、完了後に自動解放される。
     pub fn send_zero_copy(&self, packet: PacketRef) -> ZeroCopySendFuture<'_> {
@@ -658,10 +660,13 @@ impl VirtioNetDevice {
     }
 
     /// ゼロコピーパケット受信（設計書 6.2準拠）
-    /// 
+    ///
     /// Mempoolから割り当てられたバッファに直接受信し、
     /// PacketRefとして返却する。
-    pub fn recv_zero_copy(&self, pool: &'static crate::net::mempool::Mempool) -> ZeroCopyRecvFuture<'_> {
+    pub fn recv_zero_copy(
+        &self,
+        pool: &'static crate::net::mempool::Mempool,
+    ) -> ZeroCopyRecvFuture<'_> {
         ZeroCopyRecvFuture {
             device: self,
             pool,
@@ -813,7 +818,7 @@ impl<'a> Future for RecvFuture<'a> {
 // ============================================================================
 
 /// ゼロコピー送信用Future
-/// 
+///
 /// PacketRefの所有権を取得し、DMA転送が完了するまで保持する。
 /// 完了後、PacketRefは自動的にMempoolに返却される。
 pub struct ZeroCopySendFuture<'a> {
@@ -828,14 +833,14 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
-        
+
         if !this.submitted {
             // 送信をキューに追加
             if let Some(ref tx_queue) = this.device.tx_queue {
                 if let Some(ref packet) = this.packet {
                     let data = packet.data();
                     let phys_addr = packet.phys_addr();
-                    
+
                     // ゼロコピー: 物理アドレスを直接VirtQueueに渡す
                     match tx_queue.add_tx_buffer_zero_copy(phys_addr.as_u64(), data.len()) {
                         Ok(desc_idx) => {
@@ -871,7 +876,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
 }
 
 /// ゼロコピー受信用Future
-/// 
+///
 /// Mempoolから直接バッファを割り当て、DMAバッファとして使用。
 /// 受信完了後、PacketRefとしてデータを返却する。
 pub struct ZeroCopyRecvFuture<'a> {
@@ -886,12 +891,12 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
-        
+
         if !this.submitted {
             // Mempoolからバッファを割り当て
             let packet = this.pool.alloc().ok_or(VirtioNetError::BufferTooSmall)?;
             let phys_addr = packet.phys_addr();
-            
+
             // 受信バッファをキューに追加
             if let Some(ref rx_queue) = this.device.rx_queue {
                 match rx_queue.add_rx_buffer_zero_copy(phys_addr.as_u64(), packet.data().len()) {
@@ -980,16 +985,14 @@ use super::transport::VirtioMmioTransport;
 static VIRTIO_NET_DEVICE: Mutex<Option<VirtioNetDevice>> = Mutex::new(None);
 
 /// VirtIO ネットワークデバイス（MMIO）を初期化
-/// 
+///
 /// # Safety
 /// `base_addr` は有効なVirtIO MMIOデバイスのベースアドレスを指す必要がある
 pub fn init_virtio_net(base_addr: usize) -> Result<(), VirtioNetError> {
     // トランスポート作成（magic/version検証含む）
-    let transport = unsafe { 
-        VirtioMmioTransport::new(base_addr)
-            .map_err(|_| VirtioNetError::DeviceError)?
-    };
-    
+    let transport =
+        unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
+
     let mut device = VirtioNetDevice::new(Box::new(transport));
     unsafe { device.init()? };
     *VIRTIO_NET_DEVICE.lock() = Some(device);
@@ -1048,17 +1051,17 @@ impl VirtioNetPollHandler {
             next_request_id: AtomicU64::new(1),
         }
     }
-    
+
     /// 新しいリクエストIDを生成
     pub fn next_request_id(&self) -> IoRequestId {
         IoRequestId(self.next_request_id.fetch_add(1, Ordering::SeqCst))
     }
-    
+
     /// RX リクエストを追加
     pub fn add_pending_rx(&self, id: IoRequestId, buffer_idx: u16) {
         self.pending_rx.lock().insert(id, buffer_idx);
     }
-    
+
     /// TX リクエストを追加
     pub fn add_pending_tx(&self, id: IoRequestId, buffer_idx: u16) {
         self.pending_tx.lock().insert(id, buffer_idx);
@@ -1068,13 +1071,13 @@ impl VirtioNetPollHandler {
 impl PollHandler for VirtioNetPollHandler {
     fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
         let mut results = Vec::new();
-        
+
         if let Some(ref device) = *self.device_lock.lock() {
             // RX 完了をチェック - rx_queue が存在するか確認
             if let Some(ref rx_queue) = device.rx_queue {
                 let mut pending = self.pending_rx.lock();
                 let mut completed = Vec::new();
-                
+
                 // 簡略化: キューにリクエストがあれば完了とみなす
                 // 実際の実装では used ring のインデックスを追跡
                 for (&id, &_buf_idx) in pending.iter() {
@@ -1084,33 +1087,33 @@ impl PollHandler for VirtioNetPollHandler {
                     completed.push(id);
                     break; // 1つずつ処理
                 }
-                
+
                 for id in completed {
                     pending.remove(&id);
                 }
             }
-            
+
             // TX 完了をチェック
             if let Some(ref tx_queue) = device.tx_queue {
                 let mut pending = self.pending_tx.lock();
                 let mut completed = Vec::new();
-                
+
                 for (&id, &_buf_idx) in pending.iter() {
                     let _ = tx_queue;
                     results.push((id, IoResult::Success(0)));
                     completed.push(id);
                     break;
                 }
-                
+
                 for id in completed {
                     pending.remove(&id);
                 }
             }
         }
-        
+
         results
     }
-    
+
     fn is_ready(&self) -> bool {
         self.device_lock.lock().is_some()
     }
@@ -1125,7 +1128,7 @@ unsafe impl Sync for VirtioNetPollHandler {}
 pub fn register_virtio_net_with_io_scheduler(index: u8) {
     let handler = VirtioNetPollHandler::new();
     let handler: Box<dyn PollHandler + Send + Sync> = Box::new(handler);
-    
+
     let coordinator = hybrid_coordinator();
     let executor = coordinator.polling_executor();
     executor.register_handler(DeviceId::VirtioNet { index }, handler);
@@ -1139,7 +1142,7 @@ pub fn register_virtio_net_with_io_scheduler(index: u8) {
 const VIRTIO_NET_MTU: usize = 1514;
 
 /// VirtIO ネットワーク受信用DMAバッファ
-/// 
+///
 /// 型状態パターンで DMA 転送中の不正アクセスを防止
 pub struct VirtioNetRxDmaBuffer {
     /// CPU所有状態のバッファ
@@ -1154,19 +1157,21 @@ impl VirtioNetRxDmaBuffer {
         // VirtIO net header + MTU
         let size = core::mem::size_of::<VirtioNetHeader>() + VIRTIO_NET_MTU;
         let buffer = TypedDmaSlice::new(size)?;
-        
+
         Some(Self {
             buffer: Some(buffer),
             inflight: None,
         })
     }
-    
+
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> Option<PhysAddr> {
-        self.buffer.as_ref().map(|b| b.phys_addr())
+        self.buffer
+            .as_ref()
+            .map(|b| b.phys_addr())
             .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
     }
-    
+
     /// DMA転送を開始（VirtQueueへのバッファ追加時）
     pub fn start_receive(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in use")?;
@@ -1174,14 +1179,14 @@ impl VirtioNetRxDmaBuffer {
         self.inflight = Some(buffer.start_dma());
         Ok(phys)
     }
-    
+
     /// DMA転送完了（受信完了時）
     pub fn complete_receive(&mut self) -> Result<(), &'static str> {
         let inflight = self.inflight.take().ok_or("No receive in progress")?;
         self.buffer = Some(inflight.complete_dma());
         Ok(())
     }
-    
+
     /// 受信データを取得（完了後のみ）
     pub fn received_data(&self) -> Option<&[u8]> {
         self.buffer.as_ref().map(|b| {
@@ -1191,7 +1196,7 @@ impl VirtioNetRxDmaBuffer {
             &slice[header_size..]
         })
     }
-    
+
     /// バッファ全体のサイズ
     pub fn size(&self) -> usize {
         core::mem::size_of::<VirtioNetHeader>() + VIRTIO_NET_MTU
@@ -1216,9 +1221,9 @@ impl VirtioNetTxDmaBuffer {
     pub fn with_data(data: &[u8]) -> Option<Self> {
         let header_size = core::mem::size_of::<VirtioNetHeader>();
         let total_size = header_size + data.len();
-        
+
         let mut buffer = TypedDmaSlice::new(total_size)?;
-        
+
         {
             let slice = buffer.as_mut_slice();
             // VirtIO net header をゼロクリア（初期化済み）
@@ -1226,20 +1231,22 @@ impl VirtioNetTxDmaBuffer {
             // データをコピー
             slice[header_size..].copy_from_slice(data);
         }
-        
+
         Some(Self {
             buffer: Some(buffer),
             inflight: None,
             data_len: data.len(),
         })
     }
-    
+
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> Option<PhysAddr> {
-        self.buffer.as_ref().map(|b| b.phys_addr())
+        self.buffer
+            .as_ref()
+            .map(|b| b.phys_addr())
             .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
     }
-    
+
     /// DMA転送を開始
     pub fn start_transmit(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in use")?;
@@ -1247,19 +1254,19 @@ impl VirtioNetTxDmaBuffer {
         self.inflight = Some(buffer.start_dma());
         Ok(phys)
     }
-    
+
     /// DMA転送完了
     pub fn complete_transmit(&mut self) -> Result<(), &'static str> {
         let inflight = self.inflight.take().ok_or("No transmit in progress")?;
         self.buffer = Some(inflight.complete_dma());
         Ok(())
     }
-    
+
     /// 送信データ長
     pub fn data_len(&self) -> usize {
         self.data_len
     }
-    
+
     /// 合計バッファサイズ（ヘッダー含む）
     pub fn total_size(&self) -> usize {
         core::mem::size_of::<VirtioNetHeader>() + self.data_len
@@ -1267,7 +1274,7 @@ impl VirtioNetTxDmaBuffer {
 }
 
 /// コヒーレントDMAバッファを使用したVirtQueue
-/// 
+///
 /// VirtQueueの記述子テーブル、Availableリング、Usedリングに使用
 pub struct VirtQueueDmaBuffers {
     /// 記述子テーブル
@@ -1280,35 +1287,35 @@ pub struct VirtQueueDmaBuffers {
 
 impl VirtQueueDmaBuffers {
     /// VirtQueue用のDMAバッファセットを作成
-    /// 
+    ///
     /// # Arguments
     /// * `queue_size` - キューサイズ（記述子数）
     pub fn new(queue_size: u16) -> Option<Self> {
         let desc_size = queue_size as usize * 16; // VirtqDesc は 16 バイト
         let avail_size = 6 + queue_size as usize * 2; // header + entries
-        let used_size = 6 + queue_size as usize * 8;  // header + entries
-        
+        let used_size = 6 + queue_size as usize * 8; // header + entries
+
         let desc_table = CoherentDmaBuffer::new(desc_size, DmaMemoryAttributes::MMIO)?;
         let avail_ring = CoherentDmaBuffer::new(avail_size, DmaMemoryAttributes::MMIO)?;
         let used_ring = CoherentDmaBuffer::new(used_size, DmaMemoryAttributes::FROM_DEVICE)?;
-        
+
         Some(Self {
             desc_table,
             avail_ring,
             used_ring,
         })
     }
-    
+
     /// 記述子テーブルの物理アドレス
     pub fn desc_table_addr(&self) -> u64 {
         self.desc_table.phys_addr().as_u64()
     }
-    
+
     /// Available リングの物理アドレス
     pub fn avail_ring_addr(&self) -> u64 {
         self.avail_ring.phys_addr().as_u64()
     }
-    
+
     /// Used リングの物理アドレス
     pub fn used_ring_addr(&self) -> u64 {
         self.used_ring.phys_addr().as_u64()

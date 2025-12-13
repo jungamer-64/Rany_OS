@@ -8,8 +8,8 @@ extern crate alloc;
 
 use alloc::string::String;
 
-use crate::graphics::{Color, Point, Rect};
 use crate::graphics::image::Image;
+use crate::graphics::{Color, Point, Rect};
 
 use super::constants::{BORDER_WIDTH, RESIZE_HANDLE_SIZE, TITLE_BAR_HEIGHT};
 use super::types::{

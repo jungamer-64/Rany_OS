@@ -38,8 +38,8 @@ pub use super::polling_driver::{NvmeDriverStats, NvmePollingDriver};
 // Re-exports from async_io.rs
 // ============================================================================
 pub use super::async_io::{
-    async_read, async_write, AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture,
-    WriteFuture,
+    AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture, async_read,
+    async_write,
 };
 
 // ============================================================================
@@ -55,7 +55,7 @@ pub use super::global::{get_stats, init, poll, poll_batch, with_driver, with_dri
 // ============================================================================
 // Re-exports from scheduler.rs
 // ============================================================================
-pub use super::scheduler::{register_with_io_scheduler, NvmePollHandler};
+pub use super::scheduler::{NvmePollHandler, register_with_io_scheduler};
 
 // ============================================================================
 // Re-exports from commands.rs (for backward compatibility)
@@ -68,9 +68,9 @@ pub use super::commands::{NvmeCommand, NvmeCompletion};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::controller::NvmeCapabilities;
     use super::super::defs::PrpList;
+    use super::*;
 
     #[test]
     fn test_nvme_command_read() {

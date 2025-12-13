@@ -358,7 +358,12 @@ impl IoModeStats {
             }
             if self
                 .min_latency
-                .compare_exchange_weak(current_min, latency_us, Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange_weak(
+                    current_min,
+                    latency_us,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 break;
@@ -372,7 +377,12 @@ impl IoModeStats {
             }
             if self
                 .max_latency
-                .compare_exchange_weak(current_max, latency_us, Ordering::Relaxed, Ordering::Relaxed)
+                .compare_exchange_weak(
+                    current_max,
+                    latency_us,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 break;
@@ -478,13 +488,16 @@ impl IoScheduler {
     /// デバイスのモードコントローラを登録
     pub fn register_device(&self, device: DeviceId, thresholds: ModeThresholds) {
         let controller = Arc::new(DeviceIoModeController::new(device, thresholds));
-        self.mode_controllers
-            .write()
-            .insert(device, controller);
+        self.mode_controllers.write().insert(device, controller);
     }
 
     /// I/Oリクエストをサブミット
-    pub fn submit(&self, device: DeviceId, operation: IoOperationType, priority: IoPriority) -> IoRequestId {
+    pub fn submit(
+        &self,
+        device: DeviceId,
+        operation: IoOperationType,
+        priority: IoPriority,
+    ) -> IoRequestId {
         let id = IoRequestId::next();
         let request = IoRequest {
             id,
@@ -507,7 +520,11 @@ impl IoScheduler {
 
         // 統計更新
         self.stats.total_submitted.fetch_add(1, Ordering::Relaxed);
-        let depth = self.stats.current_queue_depth.fetch_add(1, Ordering::Relaxed) + 1;
+        let depth = self
+            .stats
+            .current_queue_depth
+            .fetch_add(1, Ordering::Relaxed)
+            + 1;
 
         // 最大キュー長を更新
         loop {
@@ -571,7 +588,9 @@ impl IoScheduler {
 
                 // 統計更新
                 self.stats.total_completed.fetch_add(1, Ordering::Relaxed);
-                self.stats.current_queue_depth.fetch_sub(1, Ordering::Relaxed);
+                self.stats
+                    .current_queue_depth
+                    .fetch_sub(1, Ordering::Relaxed);
 
                 if matches!(result, IoResult::Error(_)) {
                     self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
@@ -605,7 +624,9 @@ impl IoScheduler {
                 if request.state == IoState::Pending {
                     request.state = IoState::Cancelled;
                     request.result = Some(IoResult::Error(IoError::Cancelled));
-                    self.stats.current_queue_depth.fetch_sub(1, Ordering::Relaxed);
+                    self.stats
+                        .current_queue_depth
+                        .fetch_sub(1, Ordering::Relaxed);
                     request.waker.take()
                 } else {
                     None
@@ -827,7 +848,8 @@ impl Future for IoFuture {
                 IoState::Pending | IoState::InProgress => {
                     // Wakerを登録
                     if !self.registered {
-                        self.scheduler.set_waker(self.request_id, cx.waker().clone());
+                        self.scheduler
+                            .set_waker(self.request_id, cx.waker().clone());
                         self.registered = true;
                     }
                     return Poll::Pending;
@@ -877,9 +899,7 @@ impl IoInterruptBridge {
 
         // 保留リストからも削除
         if let Some(pending) = self.pending_requests.write().get_mut(&device) {
-            pending.retain(|id| {
-                results.iter().all(|(rid, _)| rid != id)
-            });
+            pending.retain(|id| results.iter().all(|(rid, _)| rid != id));
         }
     }
 
@@ -1019,9 +1039,7 @@ static HYBRID_COORDINATOR: spin::Once<Arc<HybridIoCoordinator>> = spin::Once::ne
 /// I/Oスケジューラを初期化
 pub fn init_io_scheduler() {
     IO_SCHEDULER.call_once(|| Arc::new(IoScheduler::new()));
-    HYBRID_COORDINATOR.call_once(|| {
-        Arc::new(HybridIoCoordinator::new(io_scheduler()))
-    });
+    HYBRID_COORDINATOR.call_once(|| Arc::new(HybridIoCoordinator::new(io_scheduler())));
 }
 
 /// グローバルI/Oスケジューラを取得

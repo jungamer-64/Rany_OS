@@ -103,7 +103,12 @@ impl CommandBuilder {
     }
 
     /// Reset Endpoint コマンド
-    pub fn reset_endpoint(slot_id: SlotId, endpoint_id: u8, preserve_tsp: bool, cycle: bool) -> Trb {
+    pub fn reset_endpoint(
+        slot_id: SlotId,
+        endpoint_id: u8,
+        preserve_tsp: bool,
+        cycle: bool,
+    ) -> Trb {
         Trb {
             parameter: 0,
             status: 0,
@@ -240,10 +245,7 @@ impl CommandExecutor {
         // ドアベルを鳴らす
         ring_doorbell();
 
-        Ok(CommandFuture {
-            executor: self,
-            id,
-        })
+        Ok(CommandFuture { executor: self, id })
     }
 
     /// コマンド完了を通知
@@ -263,7 +265,9 @@ impl CommandExecutor {
 
     /// 完了したコマンドをクリーンアップ
     pub fn cleanup_completed(&self) {
-        self.pending.lock().retain(|cmd| !cmd.completed.load(Ordering::Acquire));
+        self.pending
+            .lock()
+            .retain(|cmd| !cmd.completed.load(Ordering::Acquire));
     }
 }
 
@@ -284,12 +288,12 @@ impl<'a> Future for CommandFuture<'a> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let pending = self.executor.pending.lock();
-        
+
         if let Some(cmd) = pending.iter().find(|c| c.id == self.id) {
             if cmd.completed.load(Ordering::Acquire) {
                 let result = cmd.result.lock().take();
                 drop(pending);
-                
+
                 if let Some(event) = result {
                     if event.completion_code == CompletionCode::Success {
                         Poll::Ready(Ok(event))
@@ -342,7 +346,8 @@ impl<'a> CommandApi<'a> {
         let trb = CommandBuilder::enable_slot(cycle);
         let future = {
             let mut ring = self.command_ring.lock();
-            self.executor.send_command(&mut ring, trb, self.ring_doorbell)?
+            self.executor
+                .send_command(&mut ring, trb, self.ring_doorbell)?
         };
         let result = future.await?;
         Ok(result.slot_id)
@@ -354,7 +359,8 @@ impl<'a> CommandApi<'a> {
         let trb = CommandBuilder::disable_slot(slot_id, cycle);
         let future = {
             let mut ring = self.command_ring.lock();
-            self.executor.send_command(&mut ring, trb, self.ring_doorbell)?
+            self.executor
+                .send_command(&mut ring, trb, self.ring_doorbell)?
         };
         future.await?;
         Ok(())
@@ -368,10 +374,12 @@ impl<'a> CommandApi<'a> {
         block_set_address: bool,
     ) -> UsbResult<()> {
         let cycle = self.command_ring.lock().cycle_bit();
-        let trb = CommandBuilder::address_device(input_context_ptr, slot_id, block_set_address, cycle);
+        let trb =
+            CommandBuilder::address_device(input_context_ptr, slot_id, block_set_address, cycle);
         let future = {
             let mut ring = self.command_ring.lock();
-            self.executor.send_command(&mut ring, trb, self.ring_doorbell)?
+            self.executor
+                .send_command(&mut ring, trb, self.ring_doorbell)?
         };
         future.await?;
         Ok(())
@@ -385,10 +393,12 @@ impl<'a> CommandApi<'a> {
         deconfigure: bool,
     ) -> UsbResult<()> {
         let cycle = self.command_ring.lock().cycle_bit();
-        let trb = CommandBuilder::configure_endpoint(input_context_ptr, slot_id, deconfigure, cycle);
+        let trb =
+            CommandBuilder::configure_endpoint(input_context_ptr, slot_id, deconfigure, cycle);
         let future = {
             let mut ring = self.command_ring.lock();
-            self.executor.send_command(&mut ring, trb, self.ring_doorbell)?
+            self.executor
+                .send_command(&mut ring, trb, self.ring_doorbell)?
         };
         future.await?;
         Ok(())
@@ -400,7 +410,8 @@ impl<'a> CommandApi<'a> {
         let trb = CommandBuilder::reset_endpoint(slot_id, endpoint_id, false, cycle);
         let future = {
             let mut ring = self.command_ring.lock();
-            self.executor.send_command(&mut ring, trb, self.ring_doorbell)?
+            self.executor
+                .send_command(&mut ring, trb, self.ring_doorbell)?
         };
         future.await?;
         Ok(())
@@ -412,7 +423,8 @@ impl<'a> CommandApi<'a> {
         let trb = CommandBuilder::reset_device(slot_id, cycle);
         let future = {
             let mut ring = self.command_ring.lock();
-            self.executor.send_command(&mut ring, trb, self.ring_doorbell)?
+            self.executor
+                .send_command(&mut ring, trb, self.ring_doorbell)?
         };
         future.await?;
         Ok(())

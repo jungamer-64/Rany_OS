@@ -20,7 +20,7 @@
 
 use super::{Task, TaskId, create_waker};
 use alloc::collections::{BTreeMap, VecDeque};
-use core::sync::atomic::{AtomicU64, AtomicUsize, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 use spin::Mutex;
 use x86_64::instructions::interrupts;
@@ -227,7 +227,9 @@ static ACTIVE_CPU_COUNT: AtomicUsize = AtomicUsize::new(1);
 /// CPUをアクティブとして登録
 pub fn register_cpu(cpu_id: usize) {
     if cpu_id < MAX_CPUS {
-        PER_CORE_STORES[cpu_id].active.store(true, Ordering::Release);
+        PER_CORE_STORES[cpu_id]
+            .active
+            .store(true, Ordering::Release);
         ACTIVE_CPU_COUNT.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -476,7 +478,7 @@ impl Executor {
                     self.local_queue.push_back(task);
                     stolen += 1;
                     EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
-                    
+
                     // バッチ上限
                     if stolen >= self.batch_size / 2 {
                         break;

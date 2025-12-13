@@ -66,11 +66,7 @@ impl XhciDevice {
     }
 
     /// 転送を開始（TRBをエンキュー）
-    fn start_control_transfer(
-        &self,
-        setup: &SetupPacket,
-        data_len: usize,
-    ) -> UsbResult<u8> {
+    fn start_control_transfer(&self, setup: &SetupPacket, data_len: usize) -> UsbResult<u8> {
         let direction_in = (setup.bm_request_type & 0x80) != 0;
         let actual_data_len = setup.w_length;
 
@@ -100,8 +96,12 @@ impl XhciDevice {
         if actual_data_len > 0 && data_len > 0 {
             let data_buffer = alloc::vec![0u8; data_len];
             let data_ptr = data_buffer.as_ptr() as u64;
-            let data_trb =
-                Trb::data_stage(data_ptr, actual_data_len as u32, direction_in, ring.cycle_bit());
+            let data_trb = Trb::data_stage(
+                data_ptr,
+                actual_data_len as u32,
+                direction_in,
+                ring.cycle_bit(),
+            );
             ring.enqueue(data_trb);
             core::mem::forget(data_buffer);
         }
@@ -144,7 +144,8 @@ impl XhciDevice {
         // Allocate buffer
         let mut buffer = alloc::vec![0u8; buffer_len];
         if let Some(src_data) = data {
-            buffer[..src_data.len().min(buffer_len)].copy_from_slice(&src_data[..src_data.len().min(buffer_len)]);
+            buffer[..src_data.len().min(buffer_len)]
+                .copy_from_slice(&src_data[..src_data.len().min(buffer_len)]);
         }
         let data_ptr = buffer.as_ptr() as u64;
 
@@ -185,11 +186,16 @@ impl Future for ControlTransferFuture {
         self.controller.process_events();
 
         // 完了を確認
-        if let Some(result) = self.controller.check_transfer_completion(self.slot_id, self.endpoint_id) {
+        if let Some(result) = self
+            .controller
+            .check_transfer_completion(self.slot_id, self.endpoint_id)
+        {
             // 完了コードを確認
             match result.completion_code {
                 CompletionCode::Success | CompletionCode::ShortPacket => {
-                    let transferred = self.expected_len.saturating_sub(result.transferred as usize);
+                    let transferred = self
+                        .expected_len
+                        .saturating_sub(result.transferred as usize);
                     return Poll::Ready(Ok(transferred));
                 }
                 CompletionCode::StallError => {
@@ -197,7 +203,7 @@ impl Future for ControlTransferFuture {
                 }
                 cc => {
                     return Poll::Ready(Err(UsbError::TransferError(
-                        crate::TransferStatus::Error(cc as u8)
+                        crate::TransferStatus::Error(cc as u8),
                     )));
                 }
             }
@@ -220,7 +226,8 @@ impl Future for ControlTransferFuture {
 impl Drop for ControlTransferFuture {
     fn drop(&mut self) {
         // キャンセル時に待機をクリーンアップ
-        self.controller.cancel_transfer_wait(self.slot_id, self.endpoint_id);
+        self.controller
+            .cancel_transfer_wait(self.slot_id, self.endpoint_id);
     }
 }
 
@@ -241,10 +248,15 @@ impl Future for BulkTransferFuture {
         self.controller.process_events();
 
         // 完了を確認
-        if let Some(result) = self.controller.check_transfer_completion(self.slot_id, self.endpoint_id) {
+        if let Some(result) = self
+            .controller
+            .check_transfer_completion(self.slot_id, self.endpoint_id)
+        {
             match result.completion_code {
                 CompletionCode::Success | CompletionCode::ShortPacket => {
-                    let transferred = self.expected_len.saturating_sub(result.transferred as usize);
+                    let transferred = self
+                        .expected_len
+                        .saturating_sub(result.transferred as usize);
                     return Poll::Ready(Ok(transferred));
                 }
                 CompletionCode::StallError => {
@@ -252,7 +264,7 @@ impl Future for BulkTransferFuture {
                 }
                 cc => {
                     return Poll::Ready(Err(UsbError::TransferError(
-                        crate::TransferStatus::Error(cc as u8)
+                        crate::TransferStatus::Error(cc as u8),
                     )));
                 }
             }
@@ -274,7 +286,8 @@ impl Future for BulkTransferFuture {
 
 impl Drop for BulkTransferFuture {
     fn drop(&mut self) {
-        self.controller.cancel_transfer_wait(self.slot_id, self.endpoint_id);
+        self.controller
+            .cancel_transfer_wait(self.slot_id, self.endpoint_id);
     }
 }
 
@@ -326,7 +339,7 @@ impl UsbDevice for XhciDevice {
 
         Box::pin(async move {
             let endpoint_id = start_result?;
-            
+
             // 真の非同期 Future を作成
             ControlTransferFuture {
                 controller,
@@ -334,7 +347,8 @@ impl UsbDevice for XhciDevice {
                 endpoint_id,
                 expected_len: data_len,
                 started: false,
-            }.await
+            }
+            .await
         })
     }
 
@@ -352,14 +366,15 @@ impl UsbDevice for XhciDevice {
 
         Box::pin(async move {
             let endpoint_id = start_result?;
-            
+
             BulkTransferFuture {
                 controller,
                 slot_id,
                 endpoint_id,
                 expected_len: len,
                 started: false,
-            }.await
+            }
+            .await
         })
     }
 
@@ -378,14 +393,15 @@ impl UsbDevice for XhciDevice {
 
         Box::pin(async move {
             let endpoint_id = start_result?;
-            
+
             BulkTransferFuture {
                 controller,
                 slot_id,
                 endpoint_id,
                 expected_len: len,
                 started: false,
-            }.await
+            }
+            .await
         })
     }
 
@@ -403,14 +419,15 @@ impl UsbDevice for XhciDevice {
 
         Box::pin(async move {
             let endpoint_id = start_result?;
-            
+
             BulkTransferFuture {
                 controller,
                 slot_id,
                 endpoint_id,
                 expected_len: len,
                 started: false,
-            }.await
+            }
+            .await
         })
     }
 
@@ -428,14 +445,15 @@ impl UsbDevice for XhciDevice {
 
         Box::pin(async move {
             let endpoint_id = start_result?;
-            
+
             BulkTransferFuture {
                 controller,
                 slot_id,
                 endpoint_id,
                 expected_len: len,
                 started: false,
-            }.await
+            }
+            .await
         })
     }
 }

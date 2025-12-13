@@ -36,7 +36,12 @@ impl<'a> Display for ExoValue<'a> {
             ExoValue::NetConnection(c) => c.fmt(f),
             ExoValue::Process(p) => p.fmt(f),
             ExoValue::Capability(cap) => cap.fmt(f),
-            ExoValue::Iterator(it) => write!(f, "<Iterator: {} -> {} filters>", it.source, it.filters.len()),
+            ExoValue::Iterator(it) => write!(
+                f,
+                "<Iterator: {} -> {} filters>",
+                it.source,
+                it.filters.len()
+            ),
             ExoValue::Error(e) => write!(f, "Error: {}", e),
         }
     }
@@ -76,11 +81,15 @@ impl Display for NetConnection {
             f,
             "{:<5} {}.{}.{}.{}:{:<5} -> {}.{}.{}.{}:{:<5} [{}]",
             self.protocol,
-            self.local_addr[0], self.local_addr[1], 
-            self.local_addr[2], self.local_addr[3],
+            self.local_addr[0],
+            self.local_addr[1],
+            self.local_addr[2],
+            self.local_addr[3],
             self.local_port,
-            self.remote_addr[0], self.remote_addr[1],
-            self.remote_addr[2], self.remote_addr[3],
+            self.remote_addr[0],
+            self.remote_addr[1],
+            self.remote_addr[2],
+            self.remote_addr[3],
             self.remote_port,
             self.state
         )
@@ -103,7 +112,9 @@ impl Display for ProcessInfo {
 
 impl Display for Capability {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let ops: Vec<&str> = self.operations.iter()
+        let ops: Vec<&str> = self
+            .operations
+            .iter()
             .map(|op| match op {
                 CapOperation::Read => "R",
                 CapOperation::Write => "W",
@@ -132,7 +143,7 @@ pub fn format_size(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
     const GB: u64 = MB * 1024;
-    
+
     if bytes >= GB {
         format!("{:.1}G", bytes as f64 / GB as f64)
     } else if bytes >= MB {

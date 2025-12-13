@@ -22,7 +22,7 @@ extern crate alloc;
 
 pub mod ffi;
 
-pub use graphic_types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
+pub use graphic_types::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 
 // ============================================================================
 // Display Types
@@ -68,7 +68,7 @@ pub type GpuResult<T> = Result<T, GpuError>;
 /// 色定数
 pub mod colors {
     use super::Color;
-    
+
     pub const BLACK: Color = Color::new(0, 0, 0);
     pub const WHITE: Color = Color::new(255, 255, 255);
     pub const RED: Color = Color::new(255, 0, 0);

@@ -11,24 +11,28 @@
 
 extern crate alloc;
 
-pub mod error;
-pub mod services;
-pub mod types;
-pub mod security;
-pub mod kapi;
 pub mod application;
 pub mod driver;
 pub mod driver_abi;
+pub mod error;
+pub mod kapi;
+pub mod security;
+pub mod services;
+pub mod types;
 
 // Re-export commonly used types
-pub use error::{KapiError, KapiResult};
-pub use services::{KernelServices, kernel, register_kernel, is_kernel_registered};
-pub use types::{TaskHandle, DmaBuffer, Packet, SystemInfo, OpenMode, FileHandle, ChannelHandle, TcpEndpoint};
-pub use security::{DomainCapabilities, MemoryCapability, NetCapability, IoCapability, DmaCapability, FsCapability, IpcCapability, TaskCapability, InterruptCapability};
-pub use application::{Application, AppContext};
-pub use driver::{Driver, DriverVersion, DriverType, DeviceId, DriverInfo, DriverState};
+pub use application::{AppContext, Application};
+pub use driver::{DeviceId, Driver, DriverInfo, DriverState, DriverType, DriverVersion};
 pub use driver_abi::{
-    DRIVER_ABI_VERSION, DRIVER_ENTRY_SYMBOL,
-    DriverVTable, DriverContext, DriverCapabilities, DriverEntryFn,
-    AbiError, AbiDriverType, pack_version, unpack_version,
+    pack_version, unpack_version, AbiDriverType, AbiError, DriverCapabilities, DriverContext,
+    DriverEntryFn, DriverVTable, DRIVER_ABI_VERSION, DRIVER_ENTRY_SYMBOL,
+};
+pub use error::{KapiError, KapiResult};
+pub use security::{
+    DmaCapability, DomainCapabilities, FsCapability, InterruptCapability, IoCapability,
+    IpcCapability, MemoryCapability, NetCapability, TaskCapability,
+};
+pub use services::{is_kernel_registered, kernel, register_kernel, KernelServices};
+pub use types::{
+    ChannelHandle, DmaBuffer, FileHandle, OpenMode, Packet, SystemInfo, TaskHandle, TcpEndpoint,
 };

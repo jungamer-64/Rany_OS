@@ -27,11 +27,11 @@
 #![allow(dead_code)]
 
 // コア機能モジュール
-pub mod framebuffer;
-pub mod font;
-pub mod console;
-pub mod global;
 pub mod boot_splash;
+pub mod console;
+pub mod font;
+pub mod framebuffer;
+pub mod global;
 
 // 既存のサブモジュール
 pub mod bsod;
@@ -40,31 +40,22 @@ pub mod qrcode;
 pub mod window;
 
 // Re-exports from graphic_types
-pub use graphic_types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
 pub use graphic_types::image;
+pub use graphic_types::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 
 // Re-exports from gpu_driver
-pub use gpu_driver::{DisplayMode, DamagedRegion, GpuError, GpuResult, colors};
+pub use gpu_driver::{DamagedRegion, DisplayMode, GpuError, GpuResult, colors};
 
 // 型の再エクスポート
-pub use framebuffer::Framebuffer;
-pub use font::{BitmapFont, FONT_WIDTH, FONT_HEIGHT};
 pub use console::TextConsole;
+pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH};
+pub use framebuffer::Framebuffer;
 
 // グローバル関数の再エクスポート
 pub use global::{
-    init,
-    init_from_limine,
-    init_console,
+    console_print, framebuffer, init, init_console, init_from_limine, with_console,
     with_framebuffer,
-    with_console,
-    framebuffer,
-    console_print,
 };
 
 // ブートスプラッシュ関数の再エクスポート
-pub use boot_splash::{
-    show_boot_splash,
-    update_boot_progress,
-    update_boot_progress_with_message,
-};
+pub use boot_splash::{show_boot_splash, update_boot_progress, update_boot_progress_with_message};

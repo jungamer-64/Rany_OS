@@ -75,7 +75,11 @@ impl NetworkEventHandler {
                 Some(addr) => addr,
                 None => return EventHandleResult::ProtocolError(SocketError::NotConnected),
             };
-            (inner.send_buffer.drain(..).collect::<Vec<u8>>(), local, remote)
+            (
+                inner.send_buffer.drain(..).collect::<Vec<u8>>(),
+                local,
+                remote,
+            )
         };
 
         // TCBから現在のシーケンス番号を取得して更新
@@ -101,7 +105,7 @@ impl NetworkEventHandler {
         let mut segment = TcpSegmentBuilder::new(local.port, remote.port)
             .seq(seq)
             .ack(ack)
-            .psh()  // PSH: 即座にアプリケーションに渡す
+            .psh() // PSH: 即座にアプリケーションに渡す
             .window(window)
             .payload(&data)
             .build();
@@ -372,7 +376,9 @@ impl NetworkEventHandler {
             Some(addr) => addr,
             None => {
                 // ローカルアドレスが未設定の場合はエフェメラルポートを使用
-                let port = mgr.allocate_ephemeral_port(SocketType::Udp).unwrap_or(49152);
+                let port = mgr
+                    .allocate_ephemeral_port(SocketType::Udp)
+                    .unwrap_or(49152);
                 SocketAddr::new([0, 0, 0, 0], port)
             }
         };
@@ -455,7 +461,7 @@ pub fn init_network_event_handler() {
     // Note: network_event_taskはasync関数なので、per_core_executor経由でspawnする
     // ネットワークイベント処理はCPU 0で実行（ネットワーク割り込みと同じコア）
     crate::serial_println!("Network: Event handler initialized");
-    
+
     // タスクスポーン（実行時にエグゼキュータが初期化されている必要がある）
     // crate::task::per_core_executor::spawn(super::tcp_rx::network_event_task());
     // 上記は起動シーケンスで呼び出される必要があるため、ここではログのみ

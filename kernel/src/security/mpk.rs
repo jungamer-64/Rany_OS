@@ -454,7 +454,10 @@ impl MpkManager {
             PKU_ENABLED.store(true, Ordering::Release);
             self.pku_enabled = true;
 
-            crate::log!("[MPK] PKU enabled, initial PKRU: 0x{:08X}\n", initial_pkru.0);
+            crate::log!(
+                "[MPK] PKU enabled, initial PKRU: 0x{:08X}\n",
+                initial_pkru.0
+            );
         }
 
         #[cfg(not(target_arch = "x86_64"))]
@@ -542,7 +545,12 @@ mod tests {
         // Sandboxed should have access to keys 0-5 (trust levels up to Sandboxed)
         for i in 0..=5 {
             let bits = (i * 2) as u32;
-            assert_eq!((sandboxed_pkru.0 >> bits) & 0b11, 0b00, "Key {} should be accessible", i);
+            assert_eq!(
+                (sandboxed_pkru.0 >> bits) & 0b11,
+                0b00,
+                "Key {} should be accessible",
+                i
+            );
         }
     }
 }

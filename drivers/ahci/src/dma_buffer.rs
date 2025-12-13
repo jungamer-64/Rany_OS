@@ -4,8 +4,8 @@
 
 // use x86_64::PhysAddr; // Not used from x86_64 but we use u64 from api
 // use core::slice;
-use kernel_api::services::kernel;
 use kernel_api::DmaBuffer;
+use kernel_api::services::kernel;
 // use kernel_api::types::DmaBuffer as KapiDmaBuffer;
 use x86_64::PhysAddr; // For type conversions if needed
 
@@ -79,7 +79,7 @@ impl AhciDmaWriteBuffer {
         let size = sector_count * SECTOR_SIZE;
 
         let mut buffer = kernel().alloc_dma(size).ok()?;
-        
+
         unsafe { buffer.as_slice_mut()[..data.len()].copy_from_slice(data) };
 
         Some(Self {
@@ -94,12 +94,10 @@ impl AhciDmaWriteBuffer {
     }
 
     /// Prepare transfer
-    pub fn prepare_transfer(&self) {
-    }
+    pub fn prepare_transfer(&self) {}
 
     /// Finish transfer
-    pub fn finish_transfer(&self) {
-    }
+    pub fn finish_transfer(&self) {}
 }
 
 impl Drop for AhciDmaWriteBuffer {

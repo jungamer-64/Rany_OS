@@ -44,10 +44,7 @@ impl MemoryFs {
 
     /// ルートから検索してディレクトリを作成（パス全体）
     pub fn create_path(&self, path: &str) -> FsResult<()> {
-        let components: Vec<&str> = path
-            .split('/')
-            .filter(|s| !s.is_empty())
-            .collect();
+        let components: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
 
         let mut current: Arc<dyn Inode> = self.root.clone();
 
@@ -393,9 +390,7 @@ impl Inode for MemoryInode {
         }
 
         let data = self.data.read();
-        data.symlink_target
-            .clone()
-            .ok_or(FsError::InvalidArgument)
+        data.symlink_target.clone().ok_or(FsError::InvalidArgument)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
@@ -480,15 +475,19 @@ pub fn init_shell_fs() {
             let _ = root.mkdir("proc", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("tmp", FileMode::DEFAULT_DIR);
             let _ = root.mkdir("var", FileMode::DEFAULT_DIR);
-            let _ = root.mkdir("drivers", FileMode::DEFAULT_DIR);  // For dynamic driver loading
+            let _ = root.mkdir("drivers", FileMode::DEFAULT_DIR); // For dynamic driver loading
 
             // /etc/hostname を作成
             if let Ok(etc) = root.lookup("etc") {
-                if let Ok(hostname_file) = etc.create("hostname", FileMode::DEFAULT_FILE, OpenFlags::default()) {
+                if let Ok(hostname_file) =
+                    etc.create("hostname", FileMode::DEFAULT_FILE, OpenFlags::default())
+                {
                     let _ = hostname_file.write(0, b"ranyos\n");
                 }
                 // /etc/version を作成
-                if let Ok(version_file) = etc.create("version", FileMode::DEFAULT_FILE, OpenFlags::default()) {
+                if let Ok(version_file) =
+                    etc.create("version", FileMode::DEFAULT_FILE, OpenFlags::default())
+                {
                     let _ = version_file.write(0, b"ExoRust/RanyOS v0.3.0-alpha\n");
                 }
             }
@@ -706,7 +705,7 @@ pub fn stat_file(path: &str, cwd: &str) -> FsResult<FileAttr> {
 pub fn create_symlink(target: &str, link_name: &str, cwd: &str) -> FsResult<()> {
     let (parent_path, name) = split_path(link_name, cwd);
     let parent = resolve_path(&parent_path, cwd)?;
-    
+
     parent.symlink(&name, target)?;
     Ok(())
 }

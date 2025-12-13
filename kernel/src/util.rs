@@ -5,9 +5,9 @@
 // These functions centralize unsafe operations, reduce duplication, and perform boundary
 // and alignment checks where possible.
 #![allow(dead_code)]
+use alloc::alloc::alloc_zeroed;
 use core::mem;
 use core::ptr::NonNull;
-use alloc::alloc::alloc_zeroed as alloc_zeroed;
 
 /// Try to read a value of type T from a byte slice at offset 'offset'.
 /// Returns Some(T) on success, None on bounds/overflow errors.
@@ -64,14 +64,18 @@ pub fn write_struct<T: Copy>(data: &mut [u8], offset: usize, value: T) -> Option
 /// Try to return a subslice of `data` with bounds checking.
 pub fn get_slice<'a>(data: &'a [u8], offset: usize, len: usize) -> Option<&'a [u8]> {
     let end = offset.checked_add(len)?;
-    if end > data.len() { return None; }
+    if end > data.len() {
+        return None;
+    }
     Some(&data[offset..end])
 }
 
 /// Try to return a mutable subslice of `data` with bounds checking.
 pub fn get_slice_mut<'a>(data: &'a mut [u8], offset: usize, len: usize) -> Option<&'a mut [u8]> {
     let end = offset.checked_add(len)?;
-    if end > data.len() { return None; }
+    if end > data.len() {
+        return None;
+    }
     Some(&mut data[offset..end])
 }
 
@@ -80,10 +84,14 @@ pub fn get_slice_mut<'a>(data: &'a mut [u8], offset: usize, len: usize) -> Optio
 pub fn get_mut_ref<'a, T>(data: &'a mut [u8], offset: usize) -> Option<&'a mut T> {
     let size = mem::size_of::<T>();
     let end = offset.checked_add(size)?;
-    if end > data.len() { return None; }
+    if end > data.len() {
+        return None;
+    }
     let ptr = unsafe { data.as_mut_ptr().add(offset) };
     let align = mem::align_of::<T>();
-    if (ptr as usize) % align != 0 { return None; }
+    if (ptr as usize) % align != 0 {
+        return None;
+    }
     Some(unsafe { &mut *(ptr as *mut T) })
 }
 
@@ -92,10 +100,14 @@ pub fn get_mut_ref<'a, T>(data: &'a mut [u8], offset: usize) -> Option<&'a mut T
 pub fn get_ref<'a, T>(data: &'a [u8], offset: usize) -> Option<&'a T> {
     let size = mem::size_of::<T>();
     let end = offset.checked_add(size)?;
-    if end > data.len() { return None; }
+    if end > data.len() {
+        return None;
+    }
     let ptr = unsafe { data.as_ptr().add(offset) };
     let align = mem::align_of::<T>();
-    if (ptr as usize) % align != 0 { return None; }
+    if (ptr as usize) % align != 0 {
+        return None;
+    }
     Some(unsafe { &*(ptr as *const T) })
 }
 
@@ -114,7 +126,11 @@ pub fn struct_as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
 
 /// Convert a NonNull<u8> pointer with an offset and length into an immutable slice.
 /// This encapsulates an unsafe pointer -> slice conversion for non-owning buffers.
-pub unsafe fn nonnull_ptr_as_slice<'a>(ptr: core::ptr::NonNull<u8>, offset: usize, len: usize) -> &'a [u8] {
+pub unsafe fn nonnull_ptr_as_slice<'a>(
+    ptr: core::ptr::NonNull<u8>,
+    offset: usize,
+    len: usize,
+) -> &'a [u8] {
     // TODO: We currently trust the caller to ensure the pointer and range are valid.
     // In the future, consider adding architecture-specific checks (page table mapping,
     // domain/kernel privileges) before returning a slice to reduce the spread of
@@ -123,7 +139,11 @@ pub unsafe fn nonnull_ptr_as_slice<'a>(ptr: core::ptr::NonNull<u8>, offset: usiz
 }
 
 /// Convert a NonNull<u8> pointer with an offset and length into a mutable slice.
-pub unsafe fn nonnull_ptr_as_slice_mut<'a>(ptr: core::ptr::NonNull<u8>, offset: usize, len: usize) -> &'a mut [u8] {
+pub unsafe fn nonnull_ptr_as_slice_mut<'a>(
+    ptr: core::ptr::NonNull<u8>,
+    offset: usize,
+    len: usize,
+) -> &'a mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(ptr.as_ptr().add(offset), len) }
 }
 
@@ -174,5 +194,7 @@ pub fn read_unaligned_from_addr<T: Copy>(addr: usize) -> T {
 /// Write a possibly unaligned value to the given address.
 #[inline]
 pub fn write_unaligned_to_addr<T: Copy>(addr: usize, value: T) {
-    unsafe { core::ptr::write_unaligned(addr as *mut T, value); }
+    unsafe {
+        core::ptr::write_unaligned(addr as *mut T, value);
+    }
 }

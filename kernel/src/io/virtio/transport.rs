@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // src/io/virtio/transport.rs - VirtIO Transport Layer Abstraction
 // ============================================================================
 //!
@@ -68,115 +68,115 @@ pub type TransportResult<T> = Result<T, TransportError>;
 pub trait VirtioTransport: Send + Sync {
     /// 繝・・ｽ・ｽ繧､繧ｹ繧ｿ繧､繝励ｒ蜿門ｾ・
     fn device_type(&self) -> VirtioDeviceType;
-    
+
     /// 繝・・ｽ・ｽ繧､繧ｹ繧ｹ繝・・ｽE繧ｿ繧ｹ繧貞叙蠕・
     fn get_status(&self) -> u8;
-    
+
     /// 繝・・ｽ・ｽ繧､繧ｹ繧ｹ繝・・ｽE繧ｿ繧ｹ繧定ｨｭ螳・
     fn set_status(&mut self, status: u8);
-    
+
     /// 繝・・ｽ・ｽ繧､繧ｹ繧偵Μ繧ｻ繝・・ｽ・ｽ
     fn reset(&mut self) {
         self.set_status(status::VIRTIO_STATUS_RESET);
     }
-    
+
     /// 繝・・ｽ・ｽ繧､繧ｹ繝輔ぅ繝ｼ繝√Ε繧貞叙蠕暦ｼ医ン繝・・ｽ・ｽ0-31・ｽE・ｽE
     fn get_device_features_low(&self) -> u32;
-    
+
     /// 繝・・ｽ・ｽ繧､繧ｹ繝輔ぅ繝ｼ繝√Ε繧貞叙蠕暦ｼ医ン繝・・ｽ・ｽ32-63・ｽE・ｽE
     fn get_device_features_high(&self) -> u32;
-    
+
     /// 繝・・ｽ・ｽ繧､繧ｹ繝輔ぅ繝ｼ繝√Ε繧貞叙蠕暦ｼ・4繝薙ャ繝茨ｼ・
     fn get_device_features(&self) -> u64 {
         let low = self.get_device_features_low() as u64;
         let high = self.get_device_features_high() as u64;
         low | (high << 32)
     }
-    
+
     /// 繝峨Λ繧､繝舌ヵ繧｣繝ｼ繝√Ε繧定ｨｭ螳夲ｼ医ン繝・・ｽ・ｽ0-31・ｽE・ｽE
     fn set_driver_features_low(&mut self, features: u32);
-    
+
     /// 繝峨Λ繧､繝舌ヵ繧｣繝ｼ繝√Ε繧定ｨｭ螳夲ｼ医ン繝・・ｽ・ｽ32-63・ｽE・ｽE
     fn set_driver_features_high(&mut self, features: u32);
-    
+
     /// 繝峨Λ繧､繝舌ヵ繧｣繝ｼ繝√Ε繧定ｨｭ螳夲ｼ・4繝薙ャ繝茨ｼ・
     fn set_driver_features(&mut self, features: u64) {
         self.set_driver_features_low(features as u32);
         self.set_driver_features_high((features >> 32) as u32);
     }
-    
+
     /// 繧ｭ繝･繝ｼ謨ｰ繧貞叙蠕・
     fn get_num_queues(&self) -> u16;
-    
+
     /// 繧ｭ繝･繝ｼ繧帝∈謚・
     fn select_queue(&mut self, queue_index: u16);
-    
+
     /// 驕ｸ謚槭＆繧後◆繧ｭ繝･繝ｼ縺ｮ譛螟ｧ繧ｵ繧､繧ｺ繧貞叙蠕・
     fn get_queue_max_size(&self) -> u16;
-    
+
     /// 繧ｭ繝･繝ｼ繧ｵ繧､繧ｺ繧定ｨｭ螳・
     fn set_queue_size(&mut self, size: u16);
-    
+
     /// 繧ｭ繝･繝ｼ縺梧怏蜉ｹ縺九←縺・・ｽ・ｽ繧堤｢ｺ隱・
     fn is_queue_ready(&self) -> bool;
-    
+
     /// 繧ｭ繝･繝ｼ繧呈怏蜉ｹ蛹・
     fn enable_queue(&mut self);
-    
+
     /// 繧ｭ繝･繝ｼ繧堤┌蜉ｹ蛹・
     fn disable_queue(&mut self);
-    
+
     /// 繧ｭ繝･繝ｼ縺ｮ繝・・ｽ・ｽ繧ｹ繧ｯ繝ｪ繝励ち繝・・ｽE繝悶Ν繧｢繝峨Ξ繧ｹ繧定ｨｭ螳・
     fn set_queue_desc_addr(&mut self, addr: u64);
-    
+
     /// 繧ｭ繝･繝ｼ縺ｮAvail繝ｪ繝ｳ繧ｰ繧｢繝峨Ξ繧ｹ繧定ｨｭ螳・
     fn set_queue_avail_addr(&mut self, addr: u64);
-    
+
     /// 繧ｭ繝･繝ｼ縺ｮUsed繝ｪ繝ｳ繧ｰ繧｢繝峨Ξ繧ｹ繧定ｨｭ螳・
     fn set_queue_used_addr(&mut self, addr: u64);
-    
+
     /// 繧ｭ繝･繝ｼ縺ｫ騾夂衍
     fn notify_queue(&mut self, queue_index: u16);
-    
+
     /// 蜑ｲ繧願ｾｼ縺ｿ繧ｹ繝・・ｽE繧ｿ繧ｹ繧貞叙蠕・
     fn get_interrupt_status(&self) -> u32;
-    
+
     /// 蜑ｲ繧願ｾｼ縺ｿ繧但CK
     fn ack_interrupt(&mut self, status: u32);
-    
+
     /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
     fn read_config_u8(&self, offset: usize) -> u8;
-    
+
     /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・6繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
     fn read_config_u16(&self, offset: usize) -> u16;
-    
+
     /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・2繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
     fn read_config_u32(&self, offset: usize) -> u32;
-    
+
     /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・4繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
     fn read_config_u64(&self, offset: usize) -> u64 {
         let low = self.read_config_u32(offset) as u64;
         let high = self.read_config_u32(offset + 4) as u64;
         low | (high << 32)
     }
-    
+
     /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙↓8繝薙ャ繝亥､繧呈嶌縺崎ｾｼ縺ｿ
     fn write_config_u8(&mut self, offset: usize, value: u8);
-    
+
     /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙↓16繝薙ャ繝亥､繧呈嶌縺崎ｾｼ縺ｿ
     fn write_config_u16(&mut self, offset: usize, value: u16);
-    
+
     /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙↓32繝薙ャ繝亥､繧呈嶌縺崎ｾｼ縺ｿ
     fn write_config_u32(&mut self, offset: usize, value: u32);
-    
+
     /// 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝育ｨｮ蛻･繧貞叙蠕・
     fn transport_type(&self) -> TransportType;
-    
+
     /// MSI-X蟇ｾ蠢懊°縺ｩ縺・・ｽ・ｽ・ｽE・ｽECI transport逕ｨ・ｽE・ｽE
     fn supports_msix(&self) -> bool {
         false
     }
-    
+
     /// MSI-X繧定ｨｭ螳夲ｼ・CI transport逕ｨ・ｽE・ｽE
     fn configure_msix(&mut self, _queue_index: u16, _vector: u16) -> TransportResult<()> {
         Err(TransportError::UnsupportedVersion)
@@ -235,7 +235,7 @@ pub struct VirtioMmioTransport {
 
 impl VirtioMmioTransport {
     const MAGIC: u32 = 0x74726976; // "virt"
-    
+
     /// 譁ｰ縺励＞MMIO繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝医ｒ菴懶ｿｽE
     ///
     /// # Safety
@@ -245,36 +245,36 @@ impl VirtioMmioTransport {
         if magic != Self::MAGIC {
             return Err(TransportError::InvalidMagic);
         }
-        
+
         let version = Self::read32_raw(base, mmio_regs::VERSION);
         if version != 1 && version != 2 {
             return Err(TransportError::UnsupportedVersion);
         }
-        
+
         let device_id = Self::read32_raw(base, mmio_regs::DEVICE_ID);
         let device_type = VirtioDeviceType::from(device_id);
-        
+
         Ok(Self { base, device_type })
     }
-    
+
     /// 逕滂ｿｽEMMIO隱ｭ縺ｿ蜿悶ｊ
     #[inline]
     fn read32_raw(base: usize, offset: usize) -> u32 {
         crate::io::mmio_read_u32(base + offset)
     }
-    
+
     /// 逕滂ｿｽEMMIO譖ｸ縺崎ｾｼ縺ｿ
     #[inline]
     fn write32_raw(base: usize, offset: usize, value: u32) {
         crate::io::mmio_write_u32(base + offset, value);
     }
-    
+
     /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ
     #[inline]
     fn read32(&self, offset: usize) -> u32 {
         Self::read32_raw(self.base, offset)
     }
-    
+
     /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ
     #[inline]
     fn write32(&self, offset: usize, value: u32) {
@@ -286,35 +286,35 @@ impl VirtioTransport for VirtioMmioTransport {
     fn device_type(&self) -> VirtioDeviceType {
         self.device_type
     }
-    
+
     fn get_status(&self) -> u8 {
         self.read32(mmio_regs::STATUS) as u8
     }
-    
+
     fn set_status(&mut self, status: u8) {
         self.write32(mmio_regs::STATUS, status as u32);
     }
-    
+
     fn get_device_features_low(&self) -> u32 {
         self.write32(mmio_regs::DEVICE_FEATURES_SEL, 0);
         self.read32(mmio_regs::DEVICE_FEATURES)
     }
-    
+
     fn get_device_features_high(&self) -> u32 {
         self.write32(mmio_regs::DEVICE_FEATURES_SEL, 1);
         self.read32(mmio_regs::DEVICE_FEATURES)
     }
-    
+
     fn set_driver_features_low(&mut self, features: u32) {
         self.write32(mmio_regs::DRIVER_FEATURES_SEL, 0);
         self.write32(mmio_regs::DRIVER_FEATURES, features);
     }
-    
+
     fn set_driver_features_high(&mut self, features: u32) {
         self.write32(mmio_regs::DRIVER_FEATURES_SEL, 1);
         self.write32(mmio_regs::DRIVER_FEATURES, features);
     }
-    
+
     fn get_num_queues(&self) -> u16 {
         // MMIO縺ｧ縺ｯ譏守､ｺ逧・・ｽ・ｽ繧ｭ繝･繝ｼ謨ｰ繝輔ぅ繝ｼ繝ｫ繝峨′縺ｪ縺・・ｽ・ｽ繧√・
         // 蜷・・ｽ・ｽ繝･繝ｼ繧帝∈謚槭＠縺ｦ繧ｵ繧､繧ｺ繧堤｢ｺ隱阪☆繧・
@@ -326,82 +326,82 @@ impl VirtioTransport for VirtioMmioTransport {
         }
         16
     }
-    
+
     fn select_queue(&mut self, queue_index: u16) {
         self.write32(mmio_regs::QUEUE_SEL, queue_index as u32);
     }
-    
+
     fn get_queue_max_size(&self) -> u16 {
         self.read32(mmio_regs::QUEUE_NUM_MAX) as u16
     }
-    
+
     fn set_queue_size(&mut self, size: u16) {
         self.write32(mmio_regs::QUEUE_NUM, size as u32);
     }
-    
+
     fn is_queue_ready(&self) -> bool {
         self.read32(mmio_regs::QUEUE_READY) != 0
     }
-    
+
     fn enable_queue(&mut self) {
         self.write32(mmio_regs::QUEUE_READY, 1);
     }
-    
+
     fn disable_queue(&mut self) {
         self.write32(mmio_regs::QUEUE_READY, 0);
     }
-    
+
     fn set_queue_desc_addr(&mut self, addr: u64) {
         self.write32(mmio_regs::QUEUE_DESC_LOW, addr as u32);
         self.write32(mmio_regs::QUEUE_DESC_HIGH, (addr >> 32) as u32);
     }
-    
+
     fn set_queue_avail_addr(&mut self, addr: u64) {
         self.write32(mmio_regs::QUEUE_AVAIL_LOW, addr as u32);
         self.write32(mmio_regs::QUEUE_AVAIL_HIGH, (addr >> 32) as u32);
     }
-    
+
     fn set_queue_used_addr(&mut self, addr: u64) {
         self.write32(mmio_regs::QUEUE_USED_LOW, addr as u32);
         self.write32(mmio_regs::QUEUE_USED_HIGH, (addr >> 32) as u32);
     }
-    
+
     fn notify_queue(&mut self, queue_index: u16) {
         self.write32(mmio_regs::QUEUE_NOTIFY, queue_index as u32);
     }
-    
+
     fn get_interrupt_status(&self) -> u32 {
         self.read32(mmio_regs::INTERRUPT_STATUS)
     }
-    
+
     fn ack_interrupt(&mut self, status: u32) {
         self.write32(mmio_regs::INTERRUPT_ACK, status);
     }
-    
+
     fn read_config_u8(&self, offset: usize) -> u8 {
         crate::io::mmio_read_u8((self.base + mmio_regs::CONFIG + offset) as usize)
     }
-    
+
     fn read_config_u16(&self, offset: usize) -> u16 {
         crate::io::mmio_read_u16((self.base + mmio_regs::CONFIG + offset) as usize)
     }
-    
+
     fn read_config_u32(&self, offset: usize) -> u32 {
         crate::io::mmio_read_u32((self.base + mmio_regs::CONFIG + offset) as usize)
     }
-    
+
     fn write_config_u8(&mut self, offset: usize, value: u8) {
         crate::io::mmio_write_u8((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
-    
+
     fn write_config_u16(&mut self, offset: usize, value: u16) {
         crate::io::mmio_write_u16((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
-    
+
     fn write_config_u32(&mut self, offset: usize, value: u32) {
         crate::io::mmio_write_u32((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
-    
+
     fn transport_type(&self) -> TransportType {
         TransportType::Mmio
     }
@@ -476,55 +476,55 @@ impl VirtioPciTransport {
             msix_enabled: false,
         })
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u8(&self, offset: usize) -> u8 {
         crate::io::mmio_read_u8((self.common_cfg_addr + offset) as usize)
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE6繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u16(&self, offset: usize) -> u16 {
         crate::io::mmio_read_u16((self.common_cfg_addr + offset) as usize)
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE2繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u32(&self, offset: usize) -> u32 {
         crate::io::mmio_read_u32((self.common_cfg_addr + offset) as usize)
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE4繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u64(&self, offset: usize) -> u64 {
         crate::io::mmio_read_u64((self.common_cfg_addr + offset) as usize)
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u8(&self, offset: usize, value: u8) {
         crate::io::mmio_write_u8((self.common_cfg_addr + offset) as usize, value);
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE6繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u16(&self, offset: usize, value: u16) {
         crate::io::mmio_write_u16((self.common_cfg_addr + offset) as usize, value);
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE2繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u32(&self, offset: usize, value: u32) {
         crate::io::mmio_write_u32((self.common_cfg_addr + offset) as usize, value);
     }
-    
+
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE4繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u64(&self, offset: usize, value: u64) {
         crate::io::mmio_write_u64((self.common_cfg_addr + offset) as usize, value);
     }
-    
+
     /// 繧ｭ繝･繝ｼ縺ｮ騾夂衍繧ｪ繝輔そ繝・・ｽ・ｽ繧貞叙蠕・
     fn get_queue_notify_offset(&self) -> u16 {
         self.read_common_u16(pci_common_cfg::QUEUE_NOTIFY_OFF)
@@ -535,140 +535,132 @@ impl VirtioTransport for VirtioPciTransport {
     fn device_type(&self) -> VirtioDeviceType {
         self.device_type
     }
-    
+
     fn get_status(&self) -> u8 {
         self.read_common_u8(pci_common_cfg::DEVICE_STATUS)
     }
-    
+
     fn set_status(&mut self, status: u8) {
         self.write_common_u8(pci_common_cfg::DEVICE_STATUS, status);
     }
-    
+
     fn get_device_features_low(&self) -> u32 {
         self.write_common_u32(pci_common_cfg::DEVICE_FEATURE_SELECT, 0);
         self.read_common_u32(pci_common_cfg::DEVICE_FEATURE)
     }
-    
+
     fn get_device_features_high(&self) -> u32 {
         self.write_common_u32(pci_common_cfg::DEVICE_FEATURE_SELECT, 1);
         self.read_common_u32(pci_common_cfg::DEVICE_FEATURE)
     }
-    
+
     fn set_driver_features_low(&mut self, features: u32) {
         self.write_common_u32(pci_common_cfg::DRIVER_FEATURE_SELECT, 0);
         self.write_common_u32(pci_common_cfg::DRIVER_FEATURE, features);
     }
-    
+
     fn set_driver_features_high(&mut self, features: u32) {
         self.write_common_u32(pci_common_cfg::DRIVER_FEATURE_SELECT, 1);
         self.write_common_u32(pci_common_cfg::DRIVER_FEATURE, features);
     }
-    
+
     fn get_num_queues(&self) -> u16 {
         self.read_common_u16(pci_common_cfg::NUM_QUEUES)
     }
-    
+
     fn select_queue(&mut self, queue_index: u16) {
         self.write_common_u16(pci_common_cfg::QUEUE_SELECT, queue_index);
     }
-    
+
     fn get_queue_max_size(&self) -> u16 {
         self.read_common_u16(pci_common_cfg::QUEUE_SIZE)
     }
-    
+
     fn set_queue_size(&mut self, size: u16) {
         self.write_common_u16(pci_common_cfg::QUEUE_SIZE, size);
     }
-    
+
     fn is_queue_ready(&self) -> bool {
         self.read_common_u16(pci_common_cfg::QUEUE_ENABLE) != 0
     }
-    
+
     fn enable_queue(&mut self) {
         self.write_common_u16(pci_common_cfg::QUEUE_ENABLE, 1);
     }
-    
+
     fn disable_queue(&mut self) {
         self.write_common_u16(pci_common_cfg::QUEUE_ENABLE, 0);
     }
-    
+
     fn set_queue_desc_addr(&mut self, addr: u64) {
         self.write_common_u64(pci_common_cfg::QUEUE_DESC, addr);
     }
-    
+
     fn set_queue_avail_addr(&mut self, addr: u64) {
         self.write_common_u64(pci_common_cfg::QUEUE_AVAIL, addr);
     }
-    
+
     fn set_queue_used_addr(&mut self, addr: u64) {
         self.write_common_u64(pci_common_cfg::QUEUE_USED, addr);
     }
-    
+
     fn notify_queue(&mut self, queue_index: u16) {
         // 繧ｭ繝･繝ｼ繧帝∈謚槭＠縺ｦ騾夂衍繧ｪ繝輔そ繝・・ｽ・ｽ繧貞叙蠕・
         self.write_common_u16(pci_common_cfg::QUEUE_SELECT, queue_index);
         let notify_off = self.get_queue_notify_offset() as usize;
-        
+
         // 騾夂衍繧｢繝峨Ξ繧ｹ繧定ｨ育ｮ・
         let notify_addr = self.notify_addr + notify_off * self.notify_off_multiplier as usize;
-        
+
         // 騾夂衍繧帝∽ｿ｡
         crate::io::mmio_write_u16(notify_addr as usize, queue_index);
     }
-    
+
     fn get_interrupt_status(&self) -> u32 {
-        unsafe {
-            crate::io::mmio_read_u8(self.isr_addr as usize) as u32
-        }
+        unsafe { crate::io::mmio_read_u8(self.isr_addr as usize) as u32 }
     }
-    
+
     fn ack_interrupt(&mut self, _status: u32) {
         // PCI transport縺ｧ縺ｯISR繧定ｪｭ繧縺縺代〒ACK縺ｫ縺ｪ繧・
         let _ = self.get_interrupt_status();
     }
-    
+
     fn read_config_u8(&self, offset: usize) -> u8 {
-        unsafe {
-            crate::io::mmio_read_u8((self.device_cfg_addr + offset) as usize)
-        }
+        unsafe { crate::io::mmio_read_u8((self.device_cfg_addr + offset) as usize) }
     }
-    
+
     fn read_config_u16(&self, offset: usize) -> u16 {
-        unsafe {
-            crate::io::mmio_read_u16((self.device_cfg_addr + offset) as usize)
-        }
+        unsafe { crate::io::mmio_read_u16((self.device_cfg_addr + offset) as usize) }
     }
-    
+
     fn read_config_u32(&self, offset: usize) -> u32 {
-        unsafe {
-            crate::io::mmio_read_u32((self.device_cfg_addr + offset) as usize)
-        }
+        unsafe { crate::io::mmio_read_u32((self.device_cfg_addr + offset) as usize) }
     }
-    
+
     fn write_config_u8(&mut self, offset: usize, value: u8) {
         crate::io::mmio::mmio_write_u8((self.device_cfg_addr + offset) as usize, value);
     }
-    
+
     fn write_config_u16(&mut self, offset: usize, value: u16) {
         crate::io::mmio::mmio_write_u16((self.device_cfg_addr + offset) as usize, value);
     }
-    
+
     fn write_config_u32(&mut self, offset: usize, value: u32) {
         crate::io::mmio::mmio_write_u32((self.device_cfg_addr + offset) as usize, value);
     }
-    
+
     fn transport_type(&self) -> TransportType {
         TransportType::PciModern
     }
-    
+
     fn supports_msix(&self) -> bool {
         true
     }
-    
+
     fn configure_msix(&mut self, queue_index: u16, vector: u16) -> TransportResult<()> {
         self.write_common_u16(pci_common_cfg::QUEUE_SELECT, queue_index);
         self.write_common_u16(pci_common_cfg::QUEUE_MSIX_VECTOR, vector);
-        
+
         // 險ｭ螳壹′謌仙粥縺励◆縺狗｢ｺ隱・
         let configured = self.read_common_u16(pci_common_cfg::QUEUE_MSIX_VECTOR);
         if configured == vector {
@@ -694,52 +686,52 @@ impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
     pub fn new(transport: &'a mut T) -> Self {
         Self { transport }
     }
-    
+
     /// 讓呎ｺ也噪縺ｪ蛻晄悄蛹悶す繝ｼ繧ｱ繝ｳ繧ｹ繧貞ｮ溯｡・
     pub fn initialize(&mut self, required_features: u64) -> TransportResult<u64> {
         // 1. 繝・・ｽ・ｽ繧､繧ｹ繧偵Μ繧ｻ繝・・ｽ・ｽ
         self.transport.reset();
-        
+
         // 2. ACKNOWLEDGE 繧定ｨｭ螳・
         self.transport.set_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
-        
+
         // 3. DRIVER 繧定ｨｭ螳・
         let mut current_status = self.transport.get_status();
         current_status |= status::VIRTIO_STATUS_DRIVER;
         self.transport.set_status(current_status);
-        
+
         // 4. 繝輔ぅ繝ｼ繝√Ε繝阪ざ繧ｷ繧ｨ繝ｼ繧ｷ繝ｧ繝ｳ
         let device_features = self.transport.get_device_features();
         let negotiated_features = device_features & required_features;
         self.transport.set_driver_features(negotiated_features);
-        
+
         // 5. FEATURES_OK 繧定ｨｭ螳・
         current_status = self.transport.get_status();
         current_status |= status::VIRTIO_STATUS_FEATURES_OK;
         self.transport.set_status(current_status);
-        
+
         // 6. FEATURES_OK 縺瑚ｨｭ螳壹＆繧後◆縺薙→繧堤｢ｺ隱・
         let status_check = self.transport.get_status();
         if (status_check & status::VIRTIO_STATUS_FEATURES_OK) == 0 {
             self.transport.set_status(status::VIRTIO_STATUS_FAILED);
             return Err(TransportError::FeatureNegotiationFailed);
         }
-        
+
         Ok(negotiated_features)
     }
-    
+
     /// DRIVER_OK 繧定ｨｭ螳壹＠縺ｦ繝・・ｽ・ｽ繧､繧ｹ繧剃ｽｿ逕ｨ蜿ｯ閭ｽ縺ｫ縺吶ｋ
     pub fn finish_init(&mut self) -> TransportResult<()> {
         let mut current_status = self.transport.get_status();
         current_status |= status::VIRTIO_STATUS_DRIVER_OK;
         self.transport.set_status(current_status);
-        
+
         // 繝・・ｽ・ｽ繧､繧ｹ縺後お繝ｩ繝ｼ迥ｶ諷九〒縺ｪ縺・・ｽ・ｽ縺ｨ繧堤｢ｺ隱・
         let final_status = self.transport.get_status();
         if (final_status & status::VIRTIO_STATUS_FAILED) != 0 {
             return Err(TransportError::DeviceError);
         }
-        
+
         Ok(())
     }
 }
@@ -751,7 +743,7 @@ impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     // 繝｢繝・・ｽ・ｽ繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝・for testing
     struct MockTransport {
         status: u8,
@@ -760,7 +752,7 @@ mod tests {
         queue_sizes: [u16; 8],
         selected_queue: u16,
     }
-    
+
     impl MockTransport {
         fn new() -> Self {
             Self {
@@ -772,81 +764,92 @@ mod tests {
             }
         }
     }
-    
+
     impl VirtioTransport for MockTransport {
         fn device_type(&self) -> VirtioDeviceType {
             VirtioDeviceType::Network
         }
-        
+
         fn get_status(&self) -> u8 {
             self.status
         }
-        
+
         fn set_status(&mut self, status: u8) {
             self.status = status;
         }
-        
+
         fn get_device_features_low(&self) -> u32 {
             self.device_features as u32
         }
-        
+
         fn get_device_features_high(&self) -> u32 {
             (self.device_features >> 32) as u32
         }
-        
+
         fn set_driver_features_low(&mut self, features: u32) {
             self.driver_features = (self.driver_features & 0xFFFFFFFF00000000) | features as u64;
         }
-        
+
         fn set_driver_features_high(&mut self, features: u32) {
-            self.driver_features = (self.driver_features & 0x00000000FFFFFFFF) | ((features as u64) << 32);
+            self.driver_features =
+                (self.driver_features & 0x00000000FFFFFFFF) | ((features as u64) << 32);
         }
-        
+
         fn get_num_queues(&self) -> u16 {
             8
         }
-        
+
         fn select_queue(&mut self, queue_index: u16) {
             self.selected_queue = queue_index;
         }
-        
+
         fn get_queue_max_size(&self) -> u16 {
             self.queue_sizes[self.selected_queue as usize]
         }
-        
+
         fn set_queue_size(&mut self, size: u16) {
             self.queue_sizes[self.selected_queue as usize] = size;
         }
-        
+
         fn is_queue_ready(&self) -> bool {
             false
         }
-        
+
         fn enable_queue(&mut self) {}
         fn disable_queue(&mut self) {}
         fn set_queue_desc_addr(&mut self, _addr: u64) {}
         fn set_queue_avail_addr(&mut self, _addr: u64) {}
         fn set_queue_used_addr(&mut self, _addr: u64) {}
         fn notify_queue(&mut self, _queue_index: u16) {}
-        fn get_interrupt_status(&self) -> u32 { 0 }
+        fn get_interrupt_status(&self) -> u32 {
+            0
+        }
         fn ack_interrupt(&mut self, _status: u32) {}
-        fn read_config_u8(&self, _offset: usize) -> u8 { 0 }
-        fn read_config_u16(&self, _offset: usize) -> u16 { 0 }
-        fn read_config_u32(&self, _offset: usize) -> u32 { 0 }
+        fn read_config_u8(&self, _offset: usize) -> u8 {
+            0
+        }
+        fn read_config_u16(&self, _offset: usize) -> u16 {
+            0
+        }
+        fn read_config_u32(&self, _offset: usize) -> u32 {
+            0
+        }
         fn write_config_u8(&mut self, _offset: usize, _value: u8) {}
         fn write_config_u16(&mut self, _offset: usize, _value: u16) {}
         fn write_config_u32(&mut self, _offset: usize, _value: u32) {}
-        fn transport_type(&self) -> TransportType { TransportType::Mmio }
+        fn transport_type(&self) -> TransportType {
+            TransportType::Mmio
+        }
     }
-    
+
     #[test]
     fn test_init_sequence() {
         let mut transport = MockTransport::new();
         let mut init = VirtioDeviceInit::new(&mut transport);
-        
+
         let result = init.initialize(0xFFFF);
         assert!(result.is_ok());
-        
+
         let negotiated = result.unwrap();
         assert_eq!(negotiated, 0xFFFF);
     }

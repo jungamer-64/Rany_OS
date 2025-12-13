@@ -23,7 +23,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
-use super::defs::{AdminOpcode, IoOpcode, SQE_SIZE, CQE_SIZE};
+use super::defs::{AdminOpcode, CQE_SIZE, IoOpcode, SQE_SIZE};
 
 // ============================================================================
 // Queue Type Markers
@@ -93,7 +93,7 @@ impl AdminCommandTrait for IdentifyCommand {
     fn admin_opcode(&self) -> AdminOpcode {
         AdminOpcode::Identify
     }
-    
+
     fn to_nvme_command(&self, cid: u16, nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(AdminOpcode::Identify as u8, cid);
         cmd.nsid = nsid;
@@ -123,13 +123,12 @@ impl AdminCommandTrait for CreateIoCqCommand {
     fn admin_opcode(&self) -> AdminOpcode {
         AdminOpcode::CreateIOCQ
     }
-    
+
     fn to_nvme_command(&self, cid: u16, _nsid: u32) -> NvmeCommand {
         let cdw10 = (self.qid as u32) | ((self.qsize as u32) << 16);
-        let cdw11 = (self.iv as u32) 
-            | if self.ien { 1 << 1 } else { 0 }
-            | if self.pc { 1 } else { 0 };
-        
+        let cdw11 =
+            (self.iv as u32) | if self.ien { 1 << 1 } else { 0 } | if self.pc { 1 } else { 0 };
+
         let mut cmd = NvmeCommand::with_opcode_and_cid(AdminOpcode::CreateIOCQ as u8, cid);
         cmd.dptr1 = self.prp1;
         cmd.cdw10 = cdw10;
@@ -158,13 +157,11 @@ impl AdminCommandTrait for CreateIoSqCommand {
     fn admin_opcode(&self) -> AdminOpcode {
         AdminOpcode::CreateIOSQ
     }
-    
+
     fn to_nvme_command(&self, cid: u16, _nsid: u32) -> NvmeCommand {
         let cdw10 = (self.qid as u32) | ((self.qsize as u32) << 16);
-        let cdw11 = (self.cqid as u32) 
-            | ((self.qprio as u32) << 1)
-            | if self.pc { 1 } else { 0 };
-        
+        let cdw11 = (self.cqid as u32) | ((self.qprio as u32) << 1) | if self.pc { 1 } else { 0 };
+
         let mut cmd = NvmeCommand::with_opcode_and_cid(AdminOpcode::CreateIOSQ as u8, cid);
         cmd.dptr1 = self.prp1;
         cmd.cdw10 = cdw10;
@@ -182,7 +179,7 @@ impl AdminCommandTrait for DeleteIoSqCommand {
     fn admin_opcode(&self) -> AdminOpcode {
         AdminOpcode::DeleteIOSQ
     }
-    
+
     fn to_nvme_command(&self, cid: u16, _nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(AdminOpcode::DeleteIOSQ as u8, cid);
         cmd.cdw10 = self.qid as u32;
@@ -199,7 +196,7 @@ impl AdminCommandTrait for DeleteIoCqCommand {
     fn admin_opcode(&self) -> AdminOpcode {
         AdminOpcode::DeleteIOCQ
     }
-    
+
     fn to_nvme_command(&self, cid: u16, _nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(AdminOpcode::DeleteIOCQ as u8, cid);
         cmd.cdw10 = self.qid as u32;
@@ -217,7 +214,7 @@ impl AdminCommandTrait for SetFeaturesCommand {
     fn admin_opcode(&self) -> AdminOpcode {
         AdminOpcode::SetFeatures
     }
-    
+
     fn to_nvme_command(&self, cid: u16, nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(AdminOpcode::SetFeatures as u8, cid);
         cmd.nsid = nsid;
@@ -237,7 +234,7 @@ impl AdminCommandTrait for GetFeaturesCommand {
     fn admin_opcode(&self) -> AdminOpcode {
         AdminOpcode::GetFeatures
     }
-    
+
     fn to_nvme_command(&self, cid: u16, nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(AdminOpcode::GetFeatures as u8, cid);
         cmd.nsid = nsid;
@@ -266,7 +263,7 @@ impl IoCommandTrait for ReadCommand {
     fn io_opcode(&self) -> IoOpcode {
         IoOpcode::Read
     }
-    
+
     fn to_nvme_command(&self, cid: u16, nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(IoOpcode::Read as u8, cid);
         cmd.nsid = nsid;
@@ -295,7 +292,7 @@ impl IoCommandTrait for WriteCommand {
     fn io_opcode(&self) -> IoOpcode {
         IoOpcode::Write
     }
-    
+
     fn to_nvme_command(&self, cid: u16, nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(IoOpcode::Write as u8, cid);
         cmd.nsid = nsid;
@@ -315,7 +312,7 @@ impl IoCommandTrait for FlushCommand {
     fn io_opcode(&self) -> IoOpcode {
         IoOpcode::Flush
     }
-    
+
     fn to_nvme_command(&self, cid: u16, nsid: u32) -> NvmeCommand {
         let mut cmd = NvmeCommand::with_opcode_and_cid(IoOpcode::Flush as u8, cid);
         cmd.nsid = nsid;
@@ -346,7 +343,7 @@ impl<T: QueueType> TypedSubmissionQueue<T> {
     pub fn new(qid: u16, depth: u16) -> Self {
         let depth = depth.min(T::MAX_DEPTH);
         let buffer = vec![NvmeCommand::new(); depth as usize].into_boxed_slice();
-        
+
         Self {
             buffer,
             tail: AtomicU16::new(0),
@@ -355,37 +352,37 @@ impl<T: QueueType> TypedSubmissionQueue<T> {
             _marker: PhantomData,
         }
     }
-    
+
     /// コマンドをキューに追加
     pub fn submit(&self, cmd: NvmeCommand) -> Option<u16> {
         let tail = self.tail.load(Ordering::Acquire);
         let next_tail = (tail + 1) % self.depth;
-        
+
         // コマンドを書き込み
         unsafe {
             let ptr = self.buffer.as_ptr() as *mut NvmeCommand;
             hal::mmio::volatile_write::<NvmeCommand>(ptr.add(tail as usize) as usize, cmd);
         }
-        
+
         self.tail.store(next_tail, Ordering::Release);
         Some(tail)
     }
-    
+
     /// 現在のTail位置を取得
     pub fn tail(&self) -> u16 {
         self.tail.load(Ordering::Acquire)
     }
-    
+
     /// バッファアドレスを取得
     pub fn buffer_addr(&self) -> u64 {
         self.buffer.as_ptr() as u64
     }
-    
+
     /// キューIDを取得
     pub fn qid(&self) -> u16 {
         self.qid
     }
-    
+
     /// キュー深度を取得
     pub fn depth(&self) -> u16 {
         self.depth
@@ -417,7 +414,7 @@ impl<T: QueueType> TypedCompletionQueue<T> {
     pub fn new(qid: u16, depth: u16) -> Self {
         let depth = depth.min(T::MAX_DEPTH);
         let buffer = vec![NvmeCompletion::default(); depth as usize].into_boxed_slice();
-        
+
         Self {
             buffer,
             head: AtomicU16::new(0),
@@ -427,24 +424,24 @@ impl<T: QueueType> TypedCompletionQueue<T> {
             _marker: PhantomData,
         }
     }
-    
+
     /// 完了エントリをポーリング
     pub fn poll(&self) -> Option<NvmeCompletion> {
         let head = self.head.load(Ordering::Acquire);
         let phase = self.phase.load(Ordering::Acquire);
-        
+
         // 完了エントリを読み取り
         let cqe = unsafe {
             let ptr = self.buffer.as_ptr().add(head as usize);
             hal::mmio::volatile_read::<NvmeCompletion>(ptr as usize)
         };
-        
+
         // フェーズビットを確認
         let cqe_phase = (cqe.status >> 0) & 1;
         if cqe_phase != phase {
             return None;
         }
-        
+
         // Headを進める
         let next_head = (head + 1) % self.depth;
         if next_head == 0 {
@@ -452,39 +449,39 @@ impl<T: QueueType> TypedCompletionQueue<T> {
             self.phase.store(1 - phase, Ordering::Release);
         }
         self.head.store(next_head, Ordering::Release);
-        
+
         Some(cqe)
     }
-    
+
     /// 複数の完了エントリをポーリング
     pub fn poll_batch(&self, max: usize) -> Vec<NvmeCompletion> {
         let mut completions = Vec::with_capacity(max);
-        
+
         for _ in 0..max {
             match self.poll() {
                 Some(cqe) => completions.push(cqe),
                 None => break,
             }
         }
-        
+
         completions
     }
-    
+
     /// 現在のHead位置を取得
     pub fn head(&self) -> u16 {
         self.head.load(Ordering::Acquire)
     }
-    
+
     /// バッファアドレスを取得
     pub fn buffer_addr(&self) -> u64 {
         self.buffer.as_ptr() as u64
     }
-    
+
     /// キューIDを取得
     pub fn qid(&self) -> u16 {
         self.qid
     }
-    
+
     /// キュー深度を取得
     pub fn depth(&self) -> u16 {
         self.depth
@@ -514,12 +511,12 @@ impl<T: QueueType> TypedQueuePair<T> {
             cid_counter: AtomicU16::new(0),
         }
     }
-    
+
     /// 次のコマンドIDを取得
     pub fn next_cid(&self) -> u16 {
         self.cid_counter.fetch_add(1, Ordering::Relaxed)
     }
-    
+
     /// キューIDを取得
     pub fn qid(&self) -> u16 {
         self.sq.qid()
@@ -542,7 +539,7 @@ impl AdminQueuePair {
             inner: TypedQueuePair::new(0, depth),
         }
     }
-    
+
     /// Adminコマンドを発行
     pub fn submit_admin<C: AdminCommandTrait>(&self, cmd: &C, nsid: u32) -> u16 {
         let cid = self.inner.next_cid();
@@ -550,27 +547,27 @@ impl AdminQueuePair {
         self.inner.sq.submit(nvme_cmd);
         cid
     }
-    
+
     /// 完了をポーリング
     pub fn poll(&self) -> Option<NvmeCompletion> {
         self.inner.cq.poll()
     }
-    
+
     /// SQバッファアドレスを取得
     pub fn sq_addr(&self) -> u64 {
         self.inner.sq.buffer_addr()
     }
-    
+
     /// CQバッファアドレスを取得
     pub fn cq_addr(&self) -> u64 {
         self.inner.cq.buffer_addr()
     }
-    
+
     /// SQ Tailを取得
     pub fn sq_tail(&self) -> u16 {
         self.inner.sq.tail()
     }
-    
+
     /// CQ Headを取得
     pub fn cq_head(&self) -> u16 {
         self.inner.cq.head()
@@ -593,7 +590,7 @@ impl IoQueuePair {
             inner: TypedQueuePair::new(qid, depth),
         }
     }
-    
+
     /// I/Oコマンドを発行
     pub fn submit_io<C: IoCommandTrait>(&self, cmd: &C, nsid: u32) -> u16 {
         let cid = self.inner.next_cid();
@@ -601,37 +598,37 @@ impl IoQueuePair {
         self.inner.sq.submit(nvme_cmd);
         cid
     }
-    
+
     /// 完了をポーリング
     pub fn poll(&self) -> Option<NvmeCompletion> {
         self.inner.cq.poll()
     }
-    
+
     /// 複数の完了をポーリング
     pub fn poll_batch(&self, max: usize) -> Vec<NvmeCompletion> {
         self.inner.cq.poll_batch(max)
     }
-    
+
     /// キューIDを取得
     pub fn qid(&self) -> u16 {
         self.inner.qid()
     }
-    
+
     /// SQバッファアドレスを取得
     pub fn sq_addr(&self) -> u64 {
         self.inner.sq.buffer_addr()
     }
-    
+
     /// CQバッファアドレスを取得
     pub fn cq_addr(&self) -> u64 {
         self.inner.cq.buffer_addr()
     }
-    
+
     /// SQ Tailを取得
     pub fn sq_tail(&self) -> u16 {
         self.inner.sq.tail()
     }
-    
+
     /// CQ Headを取得
     pub fn cq_head(&self) -> u16 {
         self.inner.cq.head()
@@ -661,24 +658,24 @@ impl NvmeQueueManager {
             max_io_queues: 0,
         }
     }
-    
+
     /// Admin Queueを取得
     pub fn admin(&self) -> &AdminQueuePair {
         &self.admin
     }
-    
+
     /// I/O Queueを作成
     pub fn create_io_queue(&mut self, depth: u16) -> Option<u16> {
         let qid = (self.io_queues.len() + 1) as u16;
-        
+
         if qid > self.max_io_queues && self.max_io_queues > 0 {
             return None;
         }
-        
+
         self.io_queues.push(IoQueuePair::new(qid, depth));
         Some(qid)
     }
-    
+
     /// I/O Queueを取得
     pub fn io_queue(&self, qid: u16) -> Option<&IoQueuePair> {
         if qid == 0 || qid as usize > self.io_queues.len() {
@@ -686,12 +683,12 @@ impl NvmeQueueManager {
         }
         Some(&self.io_queues[qid as usize - 1])
     }
-    
+
     /// 最大I/Oキュー数を設定
     pub fn set_max_io_queues(&mut self, max: u16) {
         self.max_io_queues = max;
     }
-    
+
     /// I/Oキュー数を取得
     pub fn io_queue_count(&self) -> usize {
         self.io_queues.len()
@@ -716,7 +713,10 @@ mod tests {
 
     #[test]
     fn test_identify_command() {
-        let cmd = IdentifyCommand { cns: 1, prp1: 0x1000 };
+        let cmd = IdentifyCommand {
+            cns: 1,
+            prp1: 0x1000,
+        };
         let nvme_cmd = cmd.to_nvme_command(42, 0);
         assert_eq!(nvme_cmd.opcode(), AdminOpcode::Identify as u8);
         assert_eq!(nvme_cmd.cid(), 42);

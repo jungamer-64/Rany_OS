@@ -22,7 +22,7 @@ unsafe impl Sync for MemoryCapability {}
 
 impl MemoryCapability {
     /// Create a new capability (kernel-only)
-    /// 
+    ///
     /// # Safety
     /// Only the kernel should create capabilities.
     #[inline(always)]
@@ -228,7 +228,7 @@ pub mod kernel_only {
     use super::*;
 
     /// Grant all capabilities (for kernel itself)
-    /// 
+    ///
     /// # Safety
     /// Only call during kernel initialization
     pub unsafe fn grant_all() -> DomainCapabilities {

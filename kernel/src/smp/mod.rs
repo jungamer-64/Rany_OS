@@ -7,9 +7,7 @@
 
 pub mod bootstrap;
 
-pub use bootstrap::{
-    init, online_aps, start_aps,
-};
+pub use bootstrap::{init, online_aps, start_aps};
 
 /// Get total CPU count (BSP + APs)
 pub fn cpu_count() -> u32 {

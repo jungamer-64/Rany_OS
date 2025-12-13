@@ -50,7 +50,7 @@ impl Path {
 
         Some(Path::new(&parent))
     }
-    
+
     pub fn join(&self, path: &str) -> Path {
         let mut new_path = self.inner.clone();
         if !new_path.ends_with('/') {

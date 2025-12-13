@@ -32,30 +32,29 @@
 
 #![allow(dead_code)]
 
+mod compositor;
 mod constants;
+mod cursor;
 mod dirty_rect;
 mod types;
-mod cursor;
 mod window;
-mod compositor;
 
 // Re-exports
+pub use compositor::Compositor;
 pub use constants::*;
+pub use cursor::{CursorType, MouseCursor};
 pub use dirty_rect::{DirtyRect, DirtyRegionManager};
 pub use types::{
-    CompositorWindowId, CompositorWindowState, CompositorWindowStyle,
-    DragState, ResizeEdge, ZOrder,
+    CompositorWindowId, CompositorWindowState, CompositorWindowStyle, DragState, ResizeEdge, ZOrder,
 };
-pub use cursor::{CursorType, MouseCursor};
 pub use window::CompositorWindow;
-pub use compositor::Compositor;
 
 // ============================================================================
 // Global State
 // ============================================================================
 
-use spin::Mutex;
 use crate::graphics::Framebuffer;
+use spin::Mutex;
 
 /// グローバルコンポジタ
 static COMPOSITOR: Mutex<Option<Compositor>> = Mutex::new(None);

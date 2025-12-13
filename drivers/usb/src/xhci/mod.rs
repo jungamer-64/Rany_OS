@@ -48,10 +48,18 @@ pub use command::{CommandApi, CommandBuilder as CmdBuilder, CommandExecutor, Com
 pub use context::{DeviceContext, EndpointContext, InputContext, InputControlContext, SlotContext};
 pub use controller::XhciController;
 pub use device::XhciDevice;
-pub use doorbell_manager::{DoorbellBatch, DoorbellCoordinator, DoorbellTarget, StreamId, XhciDoorbellManager};
-pub use event_handler::{CommandCompletionEvent, DeviceNotificationEvent, EventHandler, PortStatusChangeEvent, ProcessedEvent, TransferEvent};
+pub use doorbell_manager::{
+    DoorbellBatch, DoorbellCoordinator, DoorbellTarget, StreamId, XhciDoorbellManager,
+};
+pub use event_handler::{
+    CommandCompletionEvent, DeviceNotificationEvent, EventHandler, PortStatusChangeEvent,
+    ProcessedEvent, TransferEvent,
+};
 pub use initialization::{XhciCapabilities, XhciInitContext};
-pub use port_manager::{PortChangeEvent, PortError, PortInfo, PortLinkState, PortProtocol, PortSpeed, PortState, XhciPortManager};
+pub use port_manager::{
+    PortChangeEvent, PortError, PortInfo, PortLinkState, PortProtocol, PortSpeed, PortState,
+    XhciPortManager,
+};
 pub use ring_manager::{CommandBuilder, ManagedRing, RingType, TransferBuilder, XhciRingManager};
 pub use trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
 

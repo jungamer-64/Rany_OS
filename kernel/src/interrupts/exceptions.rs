@@ -4,10 +4,10 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::io::log::{early_print, early_print_dec, early_print_hex};
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::registers::control::Cr2;
 use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
-use crate::io::log::{early_print, early_print_hex, early_print_dec};
 
 /// 例外統計
 pub struct ExceptionStats {
@@ -79,21 +79,44 @@ fn dump_registers() {
         core::arch::asm!("mov {}, r15", out(reg) r15, options(nomem, nostack));
     }
 
-    early_print("  RAX: "); early_print_hex(rax);
-    early_print("  RBX: "); early_print_hex(rbx); early_print("\n");
-    early_print("  RCX: "); early_print_hex(rcx);
-    early_print("  RDX: "); early_print_hex(rdx); early_print("\n");
-    early_print("  RSI: "); early_print_hex(rsi);
-    early_print("  RDI: "); early_print_hex(rdi); early_print("\n");
-    early_print("  RBP: "); early_print_hex(rbp); early_print("\n");
-    early_print("  R8:  "); early_print_hex(r8);
-    early_print("  R9:  "); early_print_hex(r9); early_print("\n");
-    early_print("  R10: "); early_print_hex(r10);
-    early_print("  R11: "); early_print_hex(r11); early_print("\n");
-    early_print("  R12: "); early_print_hex(r12);
-    early_print("  R13: "); early_print_hex(r13); early_print("\n");
-    early_print("  R14: "); early_print_hex(r14);
-    early_print("  R15: "); early_print_hex(r15); early_print("\n");
+    early_print("  RAX: ");
+    early_print_hex(rax);
+    early_print("  RBX: ");
+    early_print_hex(rbx);
+    early_print("\n");
+    early_print("  RCX: ");
+    early_print_hex(rcx);
+    early_print("  RDX: ");
+    early_print_hex(rdx);
+    early_print("\n");
+    early_print("  RSI: ");
+    early_print_hex(rsi);
+    early_print("  RDI: ");
+    early_print_hex(rdi);
+    early_print("\n");
+    early_print("  RBP: ");
+    early_print_hex(rbp);
+    early_print("\n");
+    early_print("  R8:  ");
+    early_print_hex(r8);
+    early_print("  R9:  ");
+    early_print_hex(r9);
+    early_print("\n");
+    early_print("  R10: ");
+    early_print_hex(r10);
+    early_print("  R11: ");
+    early_print_hex(r11);
+    early_print("\n");
+    early_print("  R12: ");
+    early_print_hex(r12);
+    early_print("  R13: ");
+    early_print_hex(r13);
+    early_print("\n");
+    early_print("  R14: ");
+    early_print_hex(r14);
+    early_print("  R15: ");
+    early_print_hex(r15);
+    early_print("\n");
 }
 
 /// コントロールレジスタのダンプ
@@ -126,7 +149,9 @@ fn dump_control_registers() {
 
 /// Divide Error (#DE)
 pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    EXCEPTION_STATS.divide_errors.fetch_add(1, Ordering::Relaxed);
+    EXCEPTION_STATS
+        .divide_errors
+        .fetch_add(1, Ordering::Relaxed);
 
     early_print("\n[EXCEPTION] DIVIDE ERROR (#DE)\n");
     dump_stack_frame(&stack_frame);
@@ -152,7 +177,9 @@ pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFram
 
 /// Invalid Opcode (#UD)
 pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    EXCEPTION_STATS.invalid_opcodes.fetch_add(1, Ordering::Relaxed);
+    EXCEPTION_STATS
+        .invalid_opcodes
+        .fetch_add(1, Ordering::Relaxed);
 
     early_print("\n[EXCEPTION] INVALID OPCODE (#UD)\n");
     dump_stack_frame(&stack_frame);
@@ -166,8 +193,16 @@ pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStack
         // 16進数でバイトを表示
         let high = (byte >> 4) & 0xF;
         let low = byte & 0xF;
-        let high_char = if high < 10 { b'0' + high } else { b'a' + high - 10 };
-        let low_char = if low < 10 { b'0' + low } else { b'a' + low - 10 };
+        let high_char = if high < 10 {
+            b'0' + high
+        } else {
+            b'a' + high - 10
+        };
+        let low_char = if low < 10 {
+            b'0' + low
+        } else {
+            b'a' + low - 10
+        };
         crate::io::log::early_print_char(high_char);
         crate::io::log::early_print_char(low_char);
         early_print(" ");
@@ -193,7 +228,9 @@ pub extern "x86-interrupt" fn double_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) -> ! {
-    EXCEPTION_STATS.double_faults.fetch_add(1, Ordering::Relaxed);
+    EXCEPTION_STATS
+        .double_faults
+        .fetch_add(1, Ordering::Relaxed);
 
     early_print("\n");
     early_print("========================================================\n");
@@ -225,7 +262,9 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
     stack_frame: InterruptStackFrame,
     error_code: u64,
 ) {
-    EXCEPTION_STATS.general_protection_faults.fetch_add(1, Ordering::Relaxed);
+    EXCEPTION_STATS
+        .general_protection_faults
+        .fetch_add(1, Ordering::Relaxed);
 
     early_print("\n[EXCEPTION] GENERAL PROTECTION FAULT (#GP)\n");
     early_print("Error Code: ");
@@ -275,15 +314,35 @@ pub extern "x86-interrupt" fn page_fault_handler(
     // エラーコードの詳細解析
     let error_bits = error_code.bits();
     early_print("  Present: ");
-    early_print(if (error_bits & 0x1) != 0 { "true" } else { "false" });
+    early_print(if (error_bits & 0x1) != 0 {
+        "true"
+    } else {
+        "false"
+    });
     early_print("\n  Write: ");
-    early_print(if (error_bits & 0x2) != 0 { "true" } else { "false" });
+    early_print(if (error_bits & 0x2) != 0 {
+        "true"
+    } else {
+        "false"
+    });
     early_print("\n  User Mode: ");
-    early_print(if (error_bits & 0x4) != 0 { "true" } else { "false" });
+    early_print(if (error_bits & 0x4) != 0 {
+        "true"
+    } else {
+        "false"
+    });
     early_print("\n  Reserved Write: ");
-    early_print(if (error_bits & 0x8) != 0 { "true" } else { "false" });
+    early_print(if (error_bits & 0x8) != 0 {
+        "true"
+    } else {
+        "false"
+    });
     early_print("\n  Instruction Fetch: ");
-    early_print(if (error_bits & 0x10) != 0 { "true" } else { "false" });
+    early_print(if (error_bits & 0x10) != 0 {
+        "true"
+    } else {
+        "false"
+    });
     early_print("\n");
 
     early_print("\nStack Frame:\n");
@@ -342,7 +401,9 @@ pub extern "x86-interrupt" fn simd_floating_point_handler(stack_frame: Interrupt
 pub fn get_exception_stats() -> (u64, u64, u64, u64, u64, u64) {
     (
         EXCEPTION_STATS.page_faults.load(Ordering::Relaxed),
-        EXCEPTION_STATS.general_protection_faults.load(Ordering::Relaxed),
+        EXCEPTION_STATS
+            .general_protection_faults
+            .load(Ordering::Relaxed),
         EXCEPTION_STATS.double_faults.load(Ordering::Relaxed),
         EXCEPTION_STATS.breakpoints.load(Ordering::Relaxed),
         EXCEPTION_STATS.invalid_opcodes.load(Ordering::Relaxed),

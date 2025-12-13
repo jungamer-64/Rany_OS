@@ -1,5 +1,5 @@
-use alloc::sync::Arc;
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 
 /// Small helper utilities for dealing with raw pointer conversions to Arc/Box.
 ///

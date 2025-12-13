@@ -30,12 +30,9 @@ pub enum NvmeError {
 impl core::fmt::Display for NvmeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            NvmeError::CommandError(cqe) => write!(
-                f,
-                "NVMe command error: SCT={}, SC={}",
-                cqe.sct(),
-                cqe.sc()
-            ),
+            NvmeError::CommandError(cqe) => {
+                write!(f, "NVMe command error: SCT={}, SC={}", cqe.sct(), cqe.sc())
+            }
             NvmeError::QueueNotFound => write!(f, "NVMe queue not found"),
             NvmeError::Timeout => write!(f, "NVMe command timeout"),
             NvmeError::QueueFull => write!(f, "NVMe queue full"),

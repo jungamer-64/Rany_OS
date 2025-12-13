@@ -28,21 +28,16 @@ pub mod window_scale;
 
 // Re-exports: types
 pub use types::{
-    AcceptedConnection, SocketAddr, SocketError, SocketFd, SocketResult, SocketState,
-    SocketType,
+    AcceptedConnection, SocketAddr, SocketError, SocketFd, SocketResult, SocketState, SocketType,
 };
 
 // Re-exports: event
-pub use event::{
-    EventWaitFuture, NetworkEvent, NetworkEventQueue, event_queue,
-};
+pub use event::{EventWaitFuture, NetworkEvent, NetworkEventQueue, event_queue};
 
 // Re-exports: inner
 
 // Re-exports: tcb
-pub use tcb::{
-    TcbTable, TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags,
-};
+pub use tcb::{TcbTable, TcpConnectionState, TcpControlBlockEntry, tcb_table, tcp_flags};
 
 // Re-exports: retransmit
 pub use retransmit::{
@@ -59,8 +54,8 @@ pub use manager::{SocketManager, init_socket_manager, socket_manager};
 
 // Re-exports: socket
 pub use socket::{
-    OwnedSocket, Socket, create_tcp_server, create_tcp_socket,
-    create_udp_socket, tcp_connect, udp_bind,
+    OwnedSocket, Socket, create_tcp_server, create_tcp_socket, create_udp_socket, tcp_connect,
+    udp_bind,
 };
 
 // Re-exports: futures

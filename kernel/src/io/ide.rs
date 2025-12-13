@@ -16,13 +16,12 @@
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
 use hal::port_io::{IoPort, PortU8, PortU16, PortU32};
+use spin::Mutex;
 
 // ============================================================================
 // Type-Safe I/O Ports
 // ============================================================================
-
 
 // ============================================================================
 // IDE Constants
@@ -320,7 +319,9 @@ impl IdeChannel {
 
     /// ドライブを選択
     unsafe fn select_drive(&self, drive: DriveSel) {
-        unsafe { self.write_reg(regs::DRIVE, drive.value()); }
+        unsafe {
+            self.write_reg(regs::DRIVE, drive.value());
+        }
         // 400ns待機（4回のステータス読み取り）
         for _ in 0..4 {
             let _ = self.read_alt_status();
@@ -360,7 +361,9 @@ impl IdeChannel {
 
     /// デバイスを識別
     unsafe fn identify_device(&self, drive: DriveSel) -> Option<IdentifyData> {
-        unsafe { self.select_drive(drive); }
+        unsafe {
+            self.select_drive(drive);
+        }
 
         // フローティングバスチェック
         if self.read_status() == 0xFF {
@@ -368,14 +371,26 @@ impl IdeChannel {
         }
 
         // ドライブ選択後の待機
-        unsafe { self.select_drive(drive); }
-        unsafe { self.write_reg(regs::SECTOR_COUNT, 0); }
-        unsafe { self.write_reg(regs::LBA_LOW, 0); }
-        unsafe { self.write_reg(regs::LBA_MID, 0); }
-        unsafe { self.write_reg(regs::LBA_HIGH, 0); }
+        unsafe {
+            self.select_drive(drive);
+        }
+        unsafe {
+            self.write_reg(regs::SECTOR_COUNT, 0);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_LOW, 0);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_MID, 0);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_HIGH, 0);
+        }
 
         // IDENTIFYコマンドを発行
-        unsafe { self.write_reg(regs::COMMAND, commands::IDENTIFY); }
+        unsafe {
+            self.write_reg(regs::COMMAND, commands::IDENTIFY);
+        }
 
         // ステータスが0ならデバイスなし
         let status = unsafe { self.read_status() };
@@ -393,7 +408,9 @@ impl IdeChannel {
         let lba_high = self.read_reg(regs::LBA_HIGH);
         let device_type = if lba_mid == 0x14 && lba_high == 0xEB {
             // ATAPI
-            unsafe { self.write_reg(regs::COMMAND, commands::IDENTIFY_PACKET); }
+            unsafe {
+                self.write_reg(regs::COMMAND, commands::IDENTIFY_PACKET);
+            }
             if unsafe { self.wait_drq() }.is_err() {
                 return None;
             }
@@ -461,24 +478,38 @@ impl IdeChannel {
     ) -> Result<(), IdeError> {
         // ドライブとLBA上位4ビットを選択
         let drive_head = drive.value() | 0x40 | ((lba >> 24) & 0x0F) as u8;
-        unsafe { self.write_reg(regs::DRIVE, drive_head); }
+        unsafe {
+            self.write_reg(regs::DRIVE, drive_head);
+        }
 
         // 400ns待機
         for _ in 0..4 {
             let _ = self.read_alt_status();
         }
 
-        unsafe { self.write_reg(regs::SECTOR_COUNT, count); }
-        unsafe { self.write_reg(regs::LBA_LOW, lba as u8); }
-        unsafe { self.write_reg(regs::LBA_MID, (lba >> 8) as u8); }
-        unsafe { self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8); }
-        unsafe { self.write_reg(regs::COMMAND, commands::READ_SECTORS); }
+        unsafe {
+            self.write_reg(regs::SECTOR_COUNT, count);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_LOW, lba as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
+        }
+        unsafe {
+            self.write_reg(regs::COMMAND, commands::READ_SECTORS);
+        }
 
         let mut data_port = PortU16::new(self.io_base + regs::DATA);
         let sectors_to_read = if count == 0 { 256 } else { count as usize };
 
         for i in 0..sectors_to_read {
-            unsafe { self.wait_drq()?; }
+            unsafe {
+                self.wait_drq()?;
+            }
 
             // ワード単位で読み取り
             let offset = i * 512;
@@ -502,7 +533,9 @@ impl IdeChannel {
     ) -> Result<(), IdeError> {
         // ドライブを選択（LBAモード）
         let drive_head = drive.value() | 0x40;
-        unsafe { self.write_reg(regs::DRIVE, drive_head); }
+        unsafe {
+            self.write_reg(regs::DRIVE, drive_head);
+        }
 
         // 400ns待機
         for _ in 0..4 {
@@ -510,24 +543,44 @@ impl IdeChannel {
         }
 
         // 高位バイトを先に書き込み
-        unsafe { self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8); }
-        unsafe { self.write_reg(regs::LBA_LOW, (lba >> 24) as u8); }
-        unsafe { self.write_reg(regs::LBA_MID, (lba >> 32) as u8); }
-        unsafe { self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8); }
+        unsafe {
+            self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_LOW, (lba >> 24) as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_MID, (lba >> 32) as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8);
+        }
 
         // 低位バイトを書き込み
-        unsafe { self.write_reg(regs::SECTOR_COUNT, count as u8); }
-        unsafe { self.write_reg(regs::LBA_LOW, lba as u8); }
-        unsafe { self.write_reg(regs::LBA_MID, (lba >> 8) as u8); }
-        unsafe { self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8); }
+        unsafe {
+            self.write_reg(regs::SECTOR_COUNT, count as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_LOW, lba as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
+        }
+        unsafe {
+            self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
+        }
 
-        unsafe { self.write_reg(regs::COMMAND, commands::READ_SECTORS_EXT); }
+        unsafe {
+            self.write_reg(regs::COMMAND, commands::READ_SECTORS_EXT);
+        }
 
         let mut data_port = PortU16::new(self.io_base + regs::DATA);
         let sectors_to_read = if count == 0 { 65536 } else { count as usize };
 
         for i in 0..sectors_to_read {
-            unsafe { self.wait_drq()?; }
+            unsafe {
+                self.wait_drq()?;
+            }
 
             let offset = i * 512;
             let sector_buffer = &mut buffer[offset..offset + 512];
@@ -597,19 +650,22 @@ impl IdeChannel {
         let sectors_to_write = if count == 0 { 256 } else { count as usize };
 
         for i in 0..sectors_to_write {
-            unsafe { self.wait_drq()?; }
+            unsafe {
+                self.wait_drq()?;
+            }
 
             let offset = i * 512;
             let sector_buffer = &buffer[offset..offset + 512];
-            let word_buffer: &[u16] = unsafe {
-                core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256)
-            };
+            let word_buffer: &[u16] =
+                unsafe { core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256) };
             unsafe { data_port.write_words(word_buffer) };
         }
 
         // キャッシュフラッシュ
         self.write_reg(regs::COMMAND, commands::CACHE_FLUSH);
-        unsafe { self.wait_not_busy()?; }
+        unsafe {
+            self.wait_not_busy()?;
+        }
 
         Ok(())
     }
@@ -653,7 +709,9 @@ impl IdeChannel {
                 self.wait_drq()?;
                 let offset = i * 512;
                 let sector_buffer = &buffer[offset..offset + 512];
-                let word_buffer: &[u16] = unsafe { core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256) };
+                let word_buffer: &[u16] = unsafe {
+                    core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256)
+                };
                 data_port.write_words(word_buffer);
             }
         }

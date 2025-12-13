@@ -24,11 +24,10 @@ use spin::Mutex;
 use super::context::DeviceContext;
 use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
 use super::{
-    COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN,
-    IR0, MAX_ENDPOINTS, MAX_SLOTS, PAGESIZE, PORTSC_BASE, PORTSC_CCS, PORTSC_CHANGE_MASK,
-    PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR, PORTSC_PRC,
-    PORT_REGISTER_SIZE, USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR,
-    USBSTS_HCH,
+    COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN, IR0,
+    MAX_ENDPOINTS, MAX_SLOTS, PAGESIZE, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS,
+    PORTSC_CHANGE_MASK, PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR,
+    PORTSC_PRC, USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
 };
 use crate::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
 
@@ -472,9 +471,9 @@ impl XhciController {
         let mut completions = self.transfer_completions.lock();
         for completion in completions.iter_mut() {
             // スロットとエンドポイントでマッチング（TRBアドレスも考慮可能）
-            if completion.slot_id == slot_id 
-                && completion.endpoint_id == endpoint_id 
-                && !completion.completed 
+            if completion.slot_id == slot_id
+                && completion.endpoint_id == endpoint_id
+                && !completion.completed
             {
                 completion.completion_code = completion_code;
                 completion.transferred = transferred;
@@ -533,11 +532,17 @@ impl XhciController {
     }
 
     fn write_runtime(&self, offset: usize, value: u32) {
-        hal::mmio::mmio_write_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize, value);
+        hal::mmio::mmio_write_u32(
+            (self.rt_offset + IR0 as u64 + offset as u64) as usize,
+            value,
+        );
     }
 
     fn write_runtime_64(&self, offset: usize, value: u64) {
-        hal::mmio::mmio_write_u64((self.rt_offset + IR0 as u64 + offset as u64) as usize, value);
+        hal::mmio::mmio_write_u64(
+            (self.rt_offset + IR0 as u64 + offset as u64) as usize,
+            value,
+        );
     }
 
     /// ポート数を取得
@@ -546,12 +551,7 @@ impl XhciController {
     }
 
     /// 転送完了待ちを登録
-    pub(crate) fn register_transfer_wait(
-        &self, 
-        slot_id: SlotId, 
-        endpoint_id: u8,
-        waker: Waker,
-    ) {
+    pub(crate) fn register_transfer_wait(&self, slot_id: SlotId, endpoint_id: u8, waker: Waker) {
         let mut completions = self.transfer_completions.lock();
         completions.push(TransferCompletion {
             trb_addr: 0, // TRBアドレスは後で設定可能
@@ -571,9 +571,10 @@ impl XhciController {
         endpoint_id: u8,
     ) -> Option<TransferCompletionResult> {
         let mut completions = self.transfer_completions.lock();
-        if let Some(pos) = completions.iter().position(|c| {
-            c.slot_id == slot_id && c.endpoint_id == endpoint_id && c.completed
-        }) {
+        if let Some(pos) = completions
+            .iter()
+            .position(|c| c.slot_id == slot_id && c.endpoint_id == endpoint_id && c.completed)
+        {
             let completion = completions.remove(pos);
             return Some(TransferCompletionResult {
                 completion_code: completion.completion_code,
@@ -586,6 +587,7 @@ impl XhciController {
     /// 転送完了待ちをキャンセル
     pub(crate) fn cancel_transfer_wait(&self, slot_id: SlotId, endpoint_id: u8) {
         let mut completions = self.transfer_completions.lock();
-        completions.retain(|c| !(c.slot_id == slot_id && c.endpoint_id == endpoint_id && !c.completed));
+        completions
+            .retain(|c| !(c.slot_id == slot_id && c.endpoint_id == endpoint_id && !c.completed));
     }
 }

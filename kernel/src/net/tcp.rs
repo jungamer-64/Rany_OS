@@ -241,7 +241,7 @@ pub enum TcpError {
 // ============================================================================
 
 /// 非同期TCPストリーム
-/// 
+///
 /// 【設計書】POSIXソケットAPIを模倣しない
 /// connect()の代わりにdial()を使用
 pub struct TcpStream {
@@ -250,7 +250,7 @@ pub struct TcpStream {
 
 impl TcpStream {
     /// 指定アドレスに接続（推奨API）
-    /// 
+    ///
     /// 【設計書】POSIXのconnect()ではなく、dial()という名前を採用
     pub async fn dial(addr: SocketAddr) -> Result<Self, TcpError> {
         let local_port = allocate_ephemeral_port();
@@ -274,9 +274,12 @@ impl TcpStream {
 
         Ok(Self { tcb })
     }
-    
+
     /// 【非推奨】connect() - 互換性のために残すが、dial()を使用すべき
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。dial()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。dial()を使用してください"
+    )]
     pub async fn connect(addr: SocketAddr) -> Result<Self, TcpError> {
         Self::dial(addr).await
     }
@@ -300,12 +303,12 @@ impl TcpStream {
     pub fn read<'a>(&'a mut self, buf: &'a mut [u8]) -> ReadFuture<'a> {
         ReadFuture { stream: self, buf }
     }
-    
+
     /// 【設計書 6.2】ゼロコピー読み取り
-    /// 
+    ///
     /// バッファの所有権をアプリケーションに移動します。
     /// コピーが発生しないため、高スループットアプリケーションに推奨。
-    /// 
+    ///
     /// # 使用例
     /// ```ignore
     /// while let Some(packet) = stream.read_zero_copy().await {
@@ -322,11 +325,11 @@ impl TcpStream {
     pub fn write<'a>(&'a mut self, buf: &'a [u8]) -> WriteFuture<'a> {
         WriteFuture { stream: self, buf }
     }
-    
+
     /// 【設計書 6.2】ゼロコピー書き込み
-    /// 
+    ///
     /// 事前に割り当てたパケットバッファの所有権をTCPスタックに移動します。
-    /// 
+    ///
     /// # 使用例
     /// ```ignore
     /// let mut packet = mempool::alloc_packet().unwrap();
@@ -335,7 +338,11 @@ impl TcpStream {
     /// stream.write_zero_copy(packet).await?;
     /// ```
     pub async fn write_zero_copy(&mut self, packet: PacketRef) -> Result<(), TcpError> {
-        ZeroCopyWriteFuture { stream: self, packet: Some(packet) }.await
+        ZeroCopyWriteFuture {
+            stream: self,
+            packet: Some(packet),
+        }
+        .await
     }
 
     /// シャットダウン
@@ -404,7 +411,7 @@ impl AsyncWrite for TcpStream {
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
         // 送信バッファのフラッシュ
         let mut tcb = self.tcb.lock();
-        
+
         // 送信バッファ内の全パケットを送信
         while let Some(packet) = tcb.send_buffer.pop_front() {
             if let Some(remote) = tcb.remote_addr {
@@ -420,7 +427,7 @@ impl AsyncWrite for TcpStream {
                 tcb.snd_nxt = tcb.snd_nxt.wrapping_add(data.len() as u32);
             }
         }
-        
+
         Poll::Ready(Ok(()))
     }
 
@@ -456,7 +463,7 @@ impl AsyncWrite for TcpStream {
 // ============================================================================
 
 /// 非同期TCPリスナー
-/// 
+///
 /// 【設計書】POSIXソケットAPIを模倣しない
 /// bind/listen/acceptの代わりにnew/incomingを使用
 pub struct TcpListener {
@@ -467,7 +474,7 @@ pub struct TcpListener {
 
 impl TcpListener {
     /// 指定アドレスで新しいリスナーを作成（推奨API）
-    /// 
+    ///
     /// 【設計書】POSIXのbind()ではなく、直接構築する方式を採用
     pub fn new(addr: SocketAddr) -> Result<Self, TcpError> {
         // ポートが使用中かチェック
@@ -481,9 +488,12 @@ impl TcpListener {
             accept_waker: Arc::new(Mutex::new(None)),
         })
     }
-    
+
     /// 【非推奨】bind() - 互換性のために残すが、new()を使用すべき
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。new()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。new()を使用してください"
+    )]
     pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
         Self::new(addr)
     }
@@ -494,14 +504,17 @@ impl TcpListener {
     }
 
     /// 次の接続を非同期で取得（推奨API）
-    /// 
+    ///
     /// 【設計書】POSIXのaccept()ではなく、Futureベースの方式を採用
     pub async fn next_connection(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
         AcceptFuture { listener: self }.await
     }
-    
+
     /// 【非推奨】accept() - 互換性のために残すが、next_connection()を使用すべき
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。next_connection()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。next_connection()を使用してください"
+    )]
     pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
         self.next_connection().await
     }
@@ -616,7 +629,7 @@ impl<'a> Future for ShutdownFuture<'a> {
 // ============================================================================
 
 /// ゼロコピー読み取りFuture
-/// 
+///
 /// パケットバッファの所有権をそのまま返す（コピーなし）
 struct ZeroCopyReadFuture<'a> {
     stream: &'a mut TcpStream,
@@ -624,14 +637,14 @@ struct ZeroCopyReadFuture<'a> {
 
 impl<'a> Future for ZeroCopyReadFuture<'a> {
     type Output = Option<PacketRef>;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut tcb = self.stream.tcb.lock();
-        
+
         if tcb.state == TcpState::Closed {
             return Poll::Ready(None);
         }
-        
+
         if let Some(packet) = tcb.recv_buffer.pop_front() {
             let len = packet.data().len();
             tcb.stats.bytes_received += len as u64;
@@ -645,7 +658,7 @@ impl<'a> Future for ZeroCopyReadFuture<'a> {
 }
 
 /// ゼロコピー書き込みFuture
-/// 
+///
 /// パケットバッファの所有権をTCPスタックに移動（コピーなし）
 struct ZeroCopyWriteFuture<'a> {
     stream: &'a mut TcpStream,
@@ -654,20 +667,20 @@ struct ZeroCopyWriteFuture<'a> {
 
 impl<'a> Future for ZeroCopyWriteFuture<'a> {
     type Output = Result<(), TcpError>;
-    
+
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
         let mut tcb = this.stream.tcb.lock();
-        
+
         if tcb.state != TcpState::Established {
             return Poll::Ready(Err(TcpError::InvalidState));
         }
-        
+
         if !tcb.can_send() {
             tcb.write_waker = Some(cx.waker().clone());
             return Poll::Pending;
         }
-        
+
         if let Some(packet) = this.packet.take() {
             let len = packet.data().len();
             tcb.send_buffer.push_back(packet);
@@ -731,13 +744,13 @@ fn send_tcp_packet(
     payload: &[u8],
 ) {
     use alloc::vec;
-    
+
     let data_offset: u8 = 5; // 20バイト（オプションなし）
     let header_len = (data_offset as usize) * 4;
     let total_len = header_len + payload.len();
-    
+
     let mut segment = vec![0u8; total_len];
-    
+
     // TCPヘッダ構築
     // Source port (2バイト)
     segment[0..2].copy_from_slice(&local.port.to_be_bytes());
@@ -756,15 +769,15 @@ fn send_tcp_packet(
     segment[16..18].copy_from_slice(&0u16.to_be_bytes());
     // Urgent pointer (2バイト)
     segment[18..20].copy_from_slice(&0u16.to_be_bytes());
-    
+
     // ペイロード
     if !payload.is_empty() {
         segment[header_len..].copy_from_slice(payload);
     }
-    
+
     // チェックサム計算
     calculate_tcp_checksum(&mut segment, local.ip.0, remote.ip.0);
-    
+
     // ネットワークスタック経由で送信
     let src_ip = crate::net::ipv4::Ipv4Address::new(local.ip.0);
     let dst_ip = crate::net::ipv4::Ipv4Address::new(remote.ip.0);
@@ -776,9 +789,9 @@ fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) 
     // チェックサムフィールドをゼロに
     segment[16] = 0;
     segment[17] = 0;
-    
+
     let mut sum: u32 = 0;
-    
+
     // 疑似ヘッダ
     sum += u16::from_be_bytes([src_ip[0], src_ip[1]]) as u32;
     sum += u16::from_be_bytes([src_ip[2], src_ip[3]]) as u32;
@@ -786,7 +799,7 @@ fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) 
     sum += u16::from_be_bytes([dst_ip[2], dst_ip[3]]) as u32;
     sum += 6u32; // Protocol (TCP)
     sum += segment.len() as u32;
-    
+
     // TCPセグメント本体
     let mut i = 0;
     while i + 1 < segment.len() {
@@ -796,27 +809,19 @@ fn calculate_tcp_checksum(segment: &mut [u8], src_ip: [u8; 4], dst_ip: [u8; 4]) 
     if i < segment.len() {
         sum += (segment[i] as u32) << 8;
     }
-    
+
     // 1の補数
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
     let checksum = !sum as u16;
-    
+
     segment[16..18].copy_from_slice(&checksum.to_be_bytes());
 }
 
 /// SYNパケットを送信
 fn send_syn_packet(local: SocketAddr, remote: SocketAddr, seq: u32) {
-    send_tcp_packet(
-        local,
-        remote,
-        seq,
-        0,
-        TcpHeader::FLAG_SYN,
-        65535,
-        &[],
-    );
+    send_tcp_packet(local, remote, seq, 0, TcpHeader::FLAG_SYN, 65535, &[]);
 }
 
 /// SYN-ACKパケットを送信
@@ -834,15 +839,7 @@ fn send_syn_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32
 
 /// ACKパケットを送信
 fn send_ack_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32, window: u16) {
-    send_tcp_packet(
-        local,
-        remote,
-        seq,
-        ack,
-        TcpHeader::FLAG_ACK,
-        window,
-        &[],
-    );
+    send_tcp_packet(local, remote, seq, ack, TcpHeader::FLAG_ACK, window, &[]);
 }
 
 /// FINパケットを送信
@@ -859,7 +856,14 @@ fn send_fin_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32) {
 }
 
 /// データパケットを送信（PSH+ACK）
-fn send_data_packet(local: SocketAddr, remote: SocketAddr, seq: u32, ack: u32, window: u16, data: &[u8]) {
+fn send_data_packet(
+    local: SocketAddr,
+    remote: SocketAddr,
+    seq: u32,
+    ack: u32,
+    window: u16,
+    data: &[u8],
+) {
     send_tcp_packet(
         local,
         remote,
@@ -981,31 +985,35 @@ pub fn process_incoming_packet(packet: PacketRef) {
 
 /// ARP パケットを処理
 fn process_arp_packet(offset: usize, packet: &PacketRef) {
-    use crate::net::arp::{ArpPacket, ArpOperation};
-    
+    use crate::net::arp::{ArpOperation, ArpPacket};
+
     let data = packet.data();
     if data.len() < offset + ArpPacket::SIZE {
         return;
     }
-    
+
     let arp_data = &data[offset..];
-    let arp_packet = crate::util::get_ref::<ArpPacket>(arp_data, 0)
-        .expect("ARP packet slice out of bounds");
-    
+    let arp_packet =
+        crate::util::get_ref::<ArpPacket>(arp_data, 0).expect("ARP packet slice out of bounds");
+
     // ARPリクエストに応答
     let operation_value = u16::from_be_bytes([arp_packet.operation[0], arp_packet.operation[1]]);
     let operation = ArpOperation::from(operation_value);
-    
+
     if matches!(operation, ArpOperation::Request) {
         // ARPリプライを生成する必要があるが、
         // 現在は受信したパケットをログに記録するのみ
         // 完全な実装にはネットワークインターフェースの参照が必要
         crate::log!(
             "[ARP] Request from {}.{}.{}.{} for {}.{}.{}.{}\n",
-            arp_packet.sender_ip[0], arp_packet.sender_ip[1],
-            arp_packet.sender_ip[2], arp_packet.sender_ip[3],
-            arp_packet.target_ip[0], arp_packet.target_ip[1],
-            arp_packet.target_ip[2], arp_packet.target_ip[3]
+            arp_packet.sender_ip[0],
+            arp_packet.sender_ip[1],
+            arp_packet.sender_ip[2],
+            arp_packet.sender_ip[3],
+            arp_packet.target_ip[0],
+            arp_packet.target_ip[1],
+            arp_packet.target_ip[2],
+            arp_packet.target_ip[3]
         );
     }
 }
@@ -1018,8 +1026,8 @@ fn process_ipv4_packet(ip_offset: usize, packet: &PacketRef) {
     }
 
     let ip_data = &data[ip_offset..];
-    let ip_header = crate::util::get_ref::<Ipv4Header>(ip_data, 0)
-        .expect("IPv4 header slice out of bounds");
+    let ip_header =
+        crate::util::get_ref::<Ipv4Header>(ip_data, 0).expect("IPv4 header slice out of bounds");
 
     let header_len = ip_header.header_len();
     let tcp_offset = ip_offset + header_len;
@@ -1041,16 +1049,16 @@ fn process_ipv4_packet(ip_offset: usize, packet: &PacketRef) {
 /// UDPパケットを処理
 fn process_udp_packet(udp_offset: usize, packet: &PacketRef, _ip_header: &Ipv4Header) {
     let data = packet.data();
-    
+
     // UDPヘッダは8バイト
     if data.len() < udp_offset + 8 {
         return;
     }
-    
+
     let _src_port = u16::from_be_bytes([data[udp_offset], data[udp_offset + 1]]);
     let _dst_port = u16::from_be_bytes([data[udp_offset + 2], data[udp_offset + 3]]);
     let _length = u16::from_be_bytes([data[udp_offset + 4], data[udp_offset + 5]]);
-    
+
     // UDPソケットテーブルがないため、現時点ではドロップ
     // 将来的にはUDPソケットマネージャーに転送
 }
@@ -1058,15 +1066,15 @@ fn process_udp_packet(udp_offset: usize, packet: &PacketRef, _ip_header: &Ipv4He
 /// ICMPパケットを処理
 fn process_icmp_packet(icmp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Header) {
     let data = packet.data();
-    
+
     // ICMPヘッダは最低8バイト
     if data.len() < icmp_offset + 8 {
         return;
     }
-    
+
     let icmp_type = data[icmp_offset];
     let icmp_code = data[icmp_offset + 1];
-    
+
     match icmp_type {
         8 => {
             // Echo Request (ping)
@@ -1075,7 +1083,10 @@ fn process_icmp_packet(icmp_offset: usize, packet: &PacketRef, ip_header: &Ipv4H
             let src_bytes = ip_header.src_addr;
             crate::log!(
                 "[ICMP] Echo Request from {}.{}.{}.{}\n",
-                src_bytes[0], src_bytes[1], src_bytes[2], src_bytes[3]
+                src_bytes[0],
+                src_bytes[1],
+                src_bytes[2],
+                src_bytes[3]
             );
         }
         0 => {
@@ -1104,7 +1115,7 @@ fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Hea
     }
 
     let tcp_data = &data[tcp_offset..];
-    
+
     // TCPヘッダフィールドを読み取り
     let src_port = u16::from_be_bytes([tcp_data[0], tcp_data[1]]);
     let dst_port = u16::from_be_bytes([tcp_data[2], tcp_data[3]]);
@@ -1112,7 +1123,7 @@ fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Hea
     let ack_num = u32::from_be_bytes([tcp_data[8], tcp_data[9], tcp_data[10], tcp_data[11]]);
     let data_offset_flags = u16::from_be_bytes([tcp_data[12], tcp_data[13]]);
     let flags = data_offset_flags & 0x003F;
-    
+
     // ソケットアドレスを構築
     let src_addr = SocketAddr::new(
         Ipv4Addr::new(
@@ -1123,7 +1134,7 @@ fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Hea
         ),
         src_port,
     );
-    
+
     let dst_addr = SocketAddr::new(
         Ipv4Addr::new(
             ip_header.dst_addr[0],
@@ -1144,19 +1155,24 @@ fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Hea
     if syn && !ack {
         crate::log!(
             "[TCP] SYN from {} to {} (seq: {})\n",
-            src_addr, dst_addr, seq_num
+            src_addr,
+            dst_addr,
+            seq_num
         );
     } else if syn && ack {
         crate::log!(
             "[TCP] SYN-ACK from {} to {} (seq: {}, ack: {})\n",
-            src_addr, dst_addr, seq_num, ack_num
+            src_addr,
+            dst_addr,
+            seq_num,
+            ack_num
         );
     } else if fin {
         crate::log!("[TCP] FIN from {} to {}\n", src_addr, dst_addr);
     } else if rst {
         crate::log!("[TCP] RST from {} to {}\n", src_addr, dst_addr);
     }
-    
+
     // 将来的にはグローバルTcpProcessorにパケットを転送
 }
 
@@ -1191,21 +1207,29 @@ impl TcpProcessor {
     }
 
     /// Initiate a connection to a remote address
-    pub fn connect(&mut self, local_addr: SocketAddr, remote_addr: SocketAddr) -> Result<(), TcpError> {
+    pub fn connect(
+        &mut self,
+        local_addr: SocketAddr,
+        remote_addr: SocketAddr,
+    ) -> Result<(), TcpError> {
         let mut tcb = TcpControlBlock::new(local_addr);
         tcb.remote_addr = Some(remote_addr);
         tcb.state = TcpState::SynSent;
         // Generate initial sequence number (simplified: use tick count)
         tcb.snd_nxt = crate::task::current_tick() as u32;
         tcb.snd_una = tcb.snd_nxt;
-        
+
         self.connections.insert((local_addr, remote_addr), tcb);
         // Note: Caller should send SYN packet after this
         Ok(())
     }
 
     /// Find a connection by local and remote addresses
-    fn find_connection(&mut self, local: SocketAddr, remote: SocketAddr) -> Option<&mut TcpControlBlock> {
+    fn find_connection(
+        &mut self,
+        local: SocketAddr,
+        remote: SocketAddr,
+    ) -> Option<&mut TcpControlBlock> {
         self.connections.get_mut(&(local, remote))
     }
 
@@ -1345,7 +1369,7 @@ impl TcpProcessor {
                 tcb.snd_nxt = crate::task::current_tick() as u32;
                 tcb.snd_una = tcb.snd_nxt;
                 tcb.snd_wnd = window;
-                
+
                 self.connections.insert((local_addr, remote_addr), tcb);
                 // Note: Caller should send SYN-ACK
                 return;
@@ -1533,7 +1557,8 @@ impl TcpProcessor {
 
     /// Remove closed connections
     pub fn cleanup_closed(&mut self) {
-        self.connections.retain(|_, tcb| tcb.state != TcpState::Closed);
+        self.connections
+            .retain(|_, tcb| tcb.state != TcpState::Closed);
     }
 }
 

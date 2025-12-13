@@ -22,9 +22,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::controller::{
-    CmbInfo, NvmeAdminQueueAttributes, NvmeCapabilities, NvmeControllerConfig,
-    NvmeControllerStatus, CQ_ENTRY_SIZE, DEFAULT_QUEUE_DEPTH, MAX_QUEUE_DEPTH,
-    MAX_TRANSFER_SIZE, POLL_BATCH_SIZE, QUEUE_ENTRY_SIZE, FEATURE_NUM_QUEUES,
+    CQ_ENTRY_SIZE, CmbInfo, DEFAULT_QUEUE_DEPTH, FEATURE_NUM_QUEUES, MAX_QUEUE_DEPTH,
+    MAX_TRANSFER_SIZE, NvmeAdminQueueAttributes, NvmeCapabilities, NvmeControllerConfig,
+    NvmeControllerStatus, POLL_BATCH_SIZE, QUEUE_ENTRY_SIZE,
 };
 use super::defs::AdminOpcode;
 use super::per_core::PerCoreNvmeQueue;
@@ -311,7 +311,10 @@ impl NvmePollingDriver {
     /// Identify Controllerコマンドを発行
     #[allow(dead_code)]
     fn identify_controller(&mut self) -> Result<(), &'static str> {
-        let admin_queue = self.admin_queue.as_ref().ok_or("Admin queue not initialized")?;
+        let admin_queue = self
+            .admin_queue
+            .as_ref()
+            .ok_or("Admin queue not initialized")?;
 
         let identify_buffer = self
             .dma_context
@@ -346,7 +349,10 @@ impl NvmePollingDriver {
     /// Set Features - Number of Queuesを設定
     #[allow(dead_code)]
     fn set_num_queues(&mut self, num_sq: u16, num_cq: u16) -> Result<(u16, u16), &'static str> {
-        let admin_queue = self.admin_queue.as_ref().ok_or("Admin queue not initialized")?;
+        let admin_queue = self
+            .admin_queue
+            .as_ref()
+            .ok_or("Admin queue not initialized")?;
 
         let mut cmd = NvmeCommand::default();
         cmd.set_opcode(AdminOpcode::SetFeatures as u8);
@@ -378,12 +384,16 @@ impl NvmePollingDriver {
 
     /// CMBからSQバッファを割り当て（利用可能な場合）
     pub fn allocate_sq_from_cmb(&mut self, depth: u16) -> Option<u64> {
-        self.cmb_info.as_mut().and_then(|cmb| cmb.allocate_sq(depth))
+        self.cmb_info
+            .as_mut()
+            .and_then(|cmb| cmb.allocate_sq(depth))
     }
 
     /// CMBからCQバッファを割り当て（利用可能な場合）
     pub fn allocate_cq_from_cmb(&mut self, depth: u16) -> Option<u64> {
-        self.cmb_info.as_mut().and_then(|cmb| cmb.allocate_cq(depth))
+        self.cmb_info
+            .as_mut()
+            .and_then(|cmb| cmb.allocate_cq(depth))
     }
 
     /// CMBがサポートされているか
@@ -435,12 +445,16 @@ impl NvmePollingDriver {
         cq_phys: u64,
         depth: u16,
     ) -> Result<u16, &'static str> {
-        let admin_queue = self.admin_queue.as_ref().ok_or("Admin queue not initialized")?;
+        let admin_queue = self
+            .admin_queue
+            .as_ref()
+            .ok_or("Admin queue not initialized")?;
 
         let qid = (core_id + 1) as u16;
 
         // Create I/O Completion Queue (cid=0 for first admin command of this queue)
-        let create_cq_cmd = NvmeCommand::create_io_cq(0, qid, depth, cq_phys, 0, self.interrupt_mode);
+        let create_cq_cmd =
+            NvmeCommand::create_io_cq(0, qid, depth, cq_phys, 0, self.interrupt_mode);
         admin_queue.submit(&create_cq_cmd)?;
         self.poll_admin_completion()?;
 
@@ -486,7 +500,10 @@ impl NvmePollingDriver {
 
     /// Admin完了をポーリング
     fn poll_admin_completion(&self) -> Result<NvmeCompletion, &'static str> {
-        let admin_queue = self.admin_queue.as_ref().ok_or("Admin queue not initialized")?;
+        let admin_queue = self
+            .admin_queue
+            .as_ref()
+            .ok_or("Admin queue not initialized")?;
 
         for _ in 0..100000 {
             if let Some(cqe) = admin_queue.poll_completion() {
@@ -587,13 +604,9 @@ impl NvmePollingDriver {
     ///
     /// # Safety
     /// 現在のコアIDが正しいことを呼び出し側が保証。
-    pub unsafe fn poll_completion_by_cid(
-        &self,
-        core_id: u32,
-        cid: u16,
-    ) -> Option<NvmeCompletion> {
+    pub unsafe fn poll_completion_by_cid(&self, core_id: u32, cid: u16) -> Option<NvmeCompletion> {
         let queue = self.get_queue(core_id)?;
-        
+
         // ポーリングして完了を取得
         if let Some(cqe) = unsafe { queue.poll() } {
             // CIDが一致するかチェック

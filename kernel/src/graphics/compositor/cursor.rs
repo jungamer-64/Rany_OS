@@ -8,8 +8,8 @@ extern crate alloc;
 
 use alloc::collections::BTreeMap;
 
-use crate::graphics::{Color, Rect};
 use crate::graphics::image::Image;
+use crate::graphics::{Color, Rect};
 
 // ============================================================================
 // Cursor Type
@@ -75,8 +75,7 @@ impl MouseCursor {
     /// デフォルトカーソルを生成
     fn create_default_cursors(&mut self) {
         // Arrow cursor (16x24)
-        self.images
-            .insert(CursorType::Arrow, create_arrow_cursor());
+        self.images.insert(CursorType::Arrow, create_arrow_cursor());
         self.hotspots.insert(CursorType::Arrow, (0, 0));
 
         // Hand cursor
@@ -137,13 +136,12 @@ impl MouseCursor {
     /// カーソルの矩形を取得
     pub fn get_rect(&self) -> Rect {
         if let Some(image) = self.images.get(&self.cursor_type) {
-            let (hx, hy) = self.hotspots.get(&self.cursor_type).copied().unwrap_or((0, 0));
-            Rect::new(
-                self.x - hx,
-                self.y - hy,
-                image.width(),
-                image.height(),
-            )
+            let (hx, hy) = self
+                .hotspots
+                .get(&self.cursor_type)
+                .copied()
+                .unwrap_or((0, 0));
+            Rect::new(self.x - hx, self.y - hy, image.width(), image.height())
         } else {
             Rect::new(self.x, self.y, 16, 24)
         }
@@ -153,7 +151,11 @@ impl MouseCursor {
     #[allow(dead_code)]
     pub fn get_prev_rect(&self) -> Rect {
         if let Some(image) = self.images.get(&self.cursor_type) {
-            let (hx, hy) = self.hotspots.get(&self.cursor_type).copied().unwrap_or((0, 0));
+            let (hx, hy) = self
+                .hotspots
+                .get(&self.cursor_type)
+                .copied()
+                .unwrap_or((0, 0));
             Rect::new(
                 self.prev_x - hx,
                 self.prev_y - hy,
@@ -172,7 +174,11 @@ impl MouseCursor {
         }
 
         if let Some(cursor_image) = self.images.get(&self.cursor_type) {
-            let (hx, hy) = self.hotspots.get(&self.cursor_type).copied().unwrap_or((0, 0));
+            let (hx, hy) = self
+                .hotspots
+                .get(&self.cursor_type)
+                .copied()
+                .unwrap_or((0, 0));
             target.blit(cursor_image, self.x - hx, self.y - hy);
         }
     }

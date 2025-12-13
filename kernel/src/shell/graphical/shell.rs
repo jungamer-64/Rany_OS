@@ -11,20 +11,19 @@
 
 #![allow(dead_code)]
 
+use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use alloc::collections::VecDeque;
 
-use crate::graphics::{Color, Framebuffer, BitmapFont, Rect};
+use crate::graphics::{BitmapFont, Color, Framebuffer, Rect};
 use crate::shell::exoshell::ExoShell;
 
-use super::types::{
-    ShellTheme, LineBuffer, ConsoleLine, MouseState,
-    ShellState, ShellResources,
-    MAX_HISTORY, SCROLLBACK_LINES, CURSOR_BLINK_MS,
-};
 use super::streams::submit_command;
+use super::types::{
+    CURSOR_BLINK_MS, ConsoleLine, LineBuffer, MAX_HISTORY, MouseState, SCROLLBACK_LINES,
+    ShellResources, ShellState, ShellTheme,
+};
 
 // ============================================================================
 // Graphical Shell (Split Borrows Design)
@@ -45,7 +44,7 @@ impl GraphicalShell {
     pub fn new(width: u32, height: u32) -> Self {
         use log::info;
         info!(target: "gshell", "DEBUG: GraphicalShell::new called with {}x{}", width, height);
-        
+
         let font = BitmapFont::default_8x16();
         let fb_width = width;
         let fb_height = height;
@@ -56,10 +55,10 @@ impl GraphicalShell {
         let shell = ExoShell::new();
         let prompt = shell.prompt();
         info!(target: "gshell", "DEBUG: ExoShell created, prompt len={}", prompt.len());
-        
+
         // プロンプト幅を事前計算
         let cached_prompt_end_x = font.iter_width(prompt.chars()) as i32;
-        
+
         info!(target: "gshell", "DEBUG: Returning new GraphicalShell");
 
         Self {
@@ -78,10 +77,10 @@ impl GraphicalShell {
                 is_executing: false,
                 mouse: MouseState::new(),
                 show_mouse_cursor: true,
-                
+
                 // ゼロアロケーション用バッファ（十分な容量を確保）
                 temp_fmt_buffer: String::with_capacity(4096),
-                
+
                 cached_prompt_end_x,
                 cached_cursor_pixel_x: 0,
                 cached_cursor_char: None,
@@ -98,69 +97,87 @@ impl GraphicalShell {
             shell,
         }
     }
-    
+
     // ========================================================================
     // Convenience Accessors (既存コードとの互換性)
     // ========================================================================
-    
+
     #[inline]
-    pub(crate) fn fb_width(&self) -> u32 { self.resources.fb_width }
+    pub(crate) fn fb_width(&self) -> u32 {
+        self.resources.fb_width
+    }
     #[inline]
-    pub(crate) fn fb_height(&self) -> u32 { self.resources.fb_height }
+    pub(crate) fn fb_height(&self) -> u32 {
+        self.resources.fb_height
+    }
     #[inline]
-    pub(crate) fn cols(&self) -> u32 { self.resources.cols }
+    pub(crate) fn cols(&self) -> u32 {
+        self.resources.cols
+    }
     #[inline]
-    pub(crate) fn rows(&self) -> u32 { self.resources.rows }
-    
+    pub(crate) fn rows(&self) -> u32 {
+        self.resources.rows
+    }
+
     /// 入力変更時にキャッシュを更新
     #[inline]
     pub(crate) fn update_cursor_cache(&mut self) {
         self.state.cached_cursor_pixel_x = self.resources.font.iter_width(
-            self.state.input_buffer.content.chars().take(self.state.input_buffer.cursor)
+            self.state
+                .input_buffer
+                .content
+                .chars()
+                .take(self.state.input_buffer.cursor),
         ) as i32;
-        self.state.cached_cursor_char = self.state.input_buffer.content.chars().nth(self.state.input_buffer.cursor);
+        self.state.cached_cursor_char = self
+            .state
+            .input_buffer
+            .content
+            .chars()
+            .nth(self.state.input_buffer.cursor);
     }
-    
+
     /// プロンプト変更時にキャッシュを更新
     #[inline]
     pub(crate) fn update_prompt_cache(&mut self) {
-        self.state.cached_prompt_end_x = self.resources.font.iter_width(self.state.prompt.chars()) as i32;
+        self.state.cached_prompt_end_x =
+            self.resources.font.iter_width(self.state.prompt.chars()) as i32;
     }
-    
+
     // ========================================================================
     // Layout Helpers (DRY)
     // ========================================================================
-    
+
     #[inline]
     pub(crate) fn input_line_y(&self) -> i32 {
         self.resources.input_line_y()
     }
-    
+
     #[inline]
     pub(crate) fn cursor_x(&self) -> i32 {
         self.state.cursor_x()
     }
-    
+
     #[inline]
     pub(crate) fn cursor_rect(&self) -> Rect {
         Rect::new(
             self.cursor_x(),
             self.input_line_y(),
             self.resources.font.width(),
-            self.resources.font.height()
+            self.resources.font.height(),
         )
     }
-    
+
     #[inline]
     pub(crate) fn input_line_rect(&self) -> Rect {
         Rect::new(
             0,
             self.input_line_y(),
             self.resources.fb_width,
-            self.resources.font.height()
+            self.resources.font.height(),
         )
     }
-    
+
     /// 表示すべき行のイテレータを返す（ロジックと描画の分離）
     pub(crate) fn visible_lines(&self) -> impl Iterator<Item = &ConsoleLine> {
         let max_visible = (self.resources.rows - 2) as usize;
@@ -206,25 +223,40 @@ impl GraphicalShell {
     /// シェルを開始（ウェルカムメッセージ表示）
     pub fn start(&mut self, fb: &mut Framebuffer) {
         self.clear_screen();
-        
+
         // ウェルカムメッセージ
         let theme = self.resources.theme;
-        self.print_colored("╔══════════════════════════════════════════════════════════════╗\n", theme.info);
-        self.print_colored("║                                                              ║\n", theme.info);
+        self.print_colored(
+            "╔══════════════════════════════════════════════════════════════╗\n",
+            theme.info,
+        );
+        self.print_colored(
+            "║                                                              ║\n",
+            theme.info,
+        );
         self.print_colored("║     ", theme.info);
         self.print_colored("RanyOS ExoShell v0.3.0", theme.success);
         self.print_colored("                                   ║\n", theme.info);
         self.print_colored("║     ", theme.info);
         self.print_colored("Graphical REPL Environment", theme.foreground);
         self.print_colored("                              ║\n", theme.info);
-        self.print_colored("║                                                              ║\n", theme.info);
+        self.print_colored(
+            "║                                                              ║\n",
+            theme.info,
+        );
         self.print_colored("║     ", theme.info);
         self.print_colored("Type 'help' for available commands", theme.warning);
         self.print_colored("                     ║\n", theme.info);
-        self.print_colored("║                                                              ║\n", theme.info);
-        self.print_colored("╚══════════════════════════════════════════════════════════════╝\n", theme.info);
+        self.print_colored(
+            "║                                                              ║\n",
+            theme.info,
+        );
+        self.print_colored(
+            "╚══════════════════════════════════════════════════════════════╝\n",
+            theme.info,
+        );
         self.print("\n");
-        
+
         // 初回描画（画面全体を更新してブートロゴを消去）
         self.redraw(fb);
     }
@@ -246,8 +278,10 @@ impl GraphicalShell {
     pub fn print_colored(&mut self, text: &str, color: Color) {
         for line in text.split('\n') {
             if !line.is_empty() || text.contains('\n') {
-                self.state.output_lines.push_back(ConsoleLine::new(line.to_string(), color));
-                
+                self.state
+                    .output_lines
+                    .push_back(ConsoleLine::new(line.to_string(), color));
+
                 // スクロールバック制限
                 while self.state.output_lines.len() > SCROLLBACK_LINES {
                     self.state.output_lines.pop_front();
@@ -269,23 +303,25 @@ impl GraphicalShell {
         if current_time - self.state.last_cursor_toggle >= CURSOR_BLINK_MS {
             self.state.cursor_visible = !self.state.cursor_visible;
             self.state.last_cursor_toggle = current_time;
-            self.redraw_cursor_only(fb);  // 全画面ではなくカーソルのみ
+            self.redraw_cursor_only(fb); // 全画面ではなくカーソルのみ
         }
     }
 
     /// 入力を確定
     pub(crate) fn submit_input(&mut self, fb: &mut Framebuffer) {
         let input = self.state.input_buffer.as_str().to_string();
-        
+
         // 入力行を出力に追加
         let full_line = format!("{}{}", self.state.prompt, input);
-        self.state.output_lines.push_back(ConsoleLine::new(full_line, self.resources.theme.input));
-        
+        self.state
+            .output_lines
+            .push_back(ConsoleLine::new(full_line, self.resources.theme.input));
+
         // 入力バッファをクリア
         self.state.input_buffer.clear();
         self.state.completions.clear();
         self.state.history_search_buffer = None;
-        
+
         // 空でなければ履歴に追加
         if !input.trim().is_empty() {
             // 重複を避ける
@@ -300,7 +336,7 @@ impl GraphicalShell {
 
         // コマンドを非同期キューに追加
         self.queue_command(&input);
-        
+
         // プロンプトを再表示（履歴更新のため全画面再描画）
         self.update_cursor_cache();
         self.redraw(fb);
@@ -309,7 +345,7 @@ impl GraphicalShell {
     /// コマンドを非同期キューに追加
     pub(crate) fn queue_command(&mut self, input: &str) {
         let input = input.trim();
-        
+
         if input.is_empty() {
             return;
         }
@@ -387,27 +423,34 @@ impl GraphicalShell {
     pub(crate) fn handle_tab(&mut self, fb: &mut Framebuffer) {
         // self.shell.complete内でselfを借用する可能性があるため、入力をコピー
         let input = self.state.input_buffer.as_str().to_string();
-        
+
         if self.state.completions.is_empty() {
             self.state.completions = self.shell.complete(&input);
             self.state.completion_index = 0;
-            
+
             if self.state.completions.len() == 1 {
                 self.state.input_buffer.set(&self.state.completions[0]);
                 self.state.completions.clear();
             }
         } else {
-            self.state.completion_index = (self.state.completion_index + 1) % self.state.completions.len();
-            self.state.input_buffer.set(&self.state.completions[self.state.completion_index]);
+            self.state.completion_index =
+                (self.state.completion_index + 1) % self.state.completions.len();
+            self.state
+                .input_buffer
+                .set(&self.state.completions[self.state.completion_index]);
         }
-        
+
         self.update_cursor_cache();
         self.redraw(fb);
     }
 
     /// 上にスクロール
     pub(crate) fn scroll_up(&mut self, fb: &mut Framebuffer) {
-        let max_scroll = self.state.output_lines.len().saturating_sub((self.resources.rows - 2) as usize);
+        let max_scroll = self
+            .state
+            .output_lines
+            .len()
+            .saturating_sub((self.resources.rows - 2) as usize);
         if self.state.scroll_offset < max_scroll {
             self.state.scroll_offset += 3;
             self.state.scroll_offset = self.state.scroll_offset.min(max_scroll);

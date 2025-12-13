@@ -2,8 +2,8 @@
 use alloc::sync::Arc;
 use spin::Mutex;
 
-use kernel_api::driver::{Driver, DriverType};
 use kernel_api::KapiResult;
+use kernel_api::driver::{Driver, DriverType};
 
 use super::controller::{AhciController, init_from_pci};
 
@@ -33,16 +33,16 @@ impl Driver for AhciDriverWrapper {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        let controller = init_from_pci(self.base_addr)
-            .map_err(|_| kernel_api::KapiError::Internal(-1))?;
-        
+        let controller =
+            init_from_pci(self.base_addr).map_err(|_| kernel_api::KapiError::Internal(-1))?;
+
         self.controller = Some(controller);
         Ok(())
     }
 
     fn start(&mut self) -> KapiResult<()> {
         if let Some(_ctrl) = &self.controller {
-             // Example: registering interrupt handler would go here
+            // Example: registering interrupt handler would go here
         }
         Ok(())
     }

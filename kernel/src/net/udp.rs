@@ -169,7 +169,8 @@ impl<'a> UdpPacketMut<'a> {
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut UdpHeader {
         // SAFETY: Buffer size checked in new(). Use centralized helper to get a mutable reference.
-        crate::util::get_mut_ref::<UdpHeader>(self.buffer, 0).expect("UDP header slice out of bounds")
+        crate::util::get_mut_ref::<UdpHeader>(self.buffer, 0)
+            .expect("UDP header slice out of bounds")
     }
 
     /// Set source port

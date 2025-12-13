@@ -30,22 +30,57 @@ pub use ahci_driver::types;
 // Re-export types from ahci_driver for convenience
 pub use command::{CommandHeader, CommandTable, PhysicalRegionDescriptor, ReceivedFis};
 pub use fis::{
-    FisRegH2D, FisType, ATA_CMD_FLUSH_CACHE, ATA_CMD_FLUSH_CACHE_EXT, ATA_CMD_IDENTIFY,
-    ATA_CMD_READ_DMA_EXT, ATA_CMD_WRITE_DMA_EXT,
+    ATA_CMD_FLUSH_CACHE, ATA_CMD_FLUSH_CACHE_EXT, ATA_CMD_IDENTIFY, ATA_CMD_READ_DMA_EXT,
+    ATA_CMD_WRITE_DMA_EXT, FisRegH2D, FisType,
 };
 pub use identify::IdentifyData;
 pub use types::{
-    AhciError, AhciResult, DeviceType, Lba, PortNumber, SectorCount, SlotNumber,
+    AhciError,
+    AhciResult,
+    DeviceType,
     // レジスタ定数
-    GHC_AE, GHC_CAP, GHC_GHC, GHC_HR, GHC_IE, GHC_IS, GHC_PI, GHC_VS,
-    PORT_BASE, PORT_SIZE, PX_CI, PX_CLB, PX_CLBU, PX_CMD, PX_CMD_CR, PX_CMD_FR,
-    PX_CMD_FRE, PX_CMD_ST, PX_FB, PX_FBU, PX_IE, PX_IS, PX_IS_DHRS, PX_IS_DSS,
-    PX_IS_PSS, PX_IS_SDBS, PX_IS_TFES, PX_SACT, PX_SCTL, PX_SERR, PX_SIG, PX_SSTS,
-    PX_TFD, SECTOR_SIZE,
+    GHC_AE,
+    GHC_CAP,
+    GHC_GHC,
+    GHC_HR,
+    GHC_IE,
+    GHC_IS,
+    GHC_PI,
+    GHC_VS,
+    Lba,
+    PORT_BASE,
+    PORT_SIZE,
+    PX_CI,
+    PX_CLB,
+    PX_CLBU,
+    PX_CMD,
+    PX_CMD_CR,
+    PX_CMD_FR,
+    PX_CMD_FRE,
+    PX_CMD_ST,
+    PX_FB,
+    PX_FBU,
+    PX_IE,
+    PX_IS,
+    PX_IS_DHRS,
+    PX_IS_DSS,
+    PX_IS_PSS,
+    PX_IS_SDBS,
+    PX_IS_TFES,
+    PX_SACT,
+    PX_SCTL,
+    PX_SERR,
+    PX_SIG,
+    PX_SSTS,
+    PX_TFD,
+    PortNumber,
+    SECTOR_SIZE,
+    SectorCount,
+    SlotNumber,
 };
 
 // Re-export types from local modules
-pub use controller::{init_from_pci, AhciController};
+pub use controller::{AhciController, init_from_pci};
 pub use dma_buffer::{AhciDmaReadBuffer, AhciDmaWriteBuffer, AhciIdentifyBuffer};
-pub use poll_handler::{register_ahci_with_io_scheduler, AhciPollHandler};
+pub use poll_handler::{AhciPollHandler, register_ahci_with_io_scheduler};
 pub use port::AhciPort;

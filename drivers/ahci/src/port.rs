@@ -16,10 +16,10 @@ use super::dma_buffer::{AhciDmaReadBuffer, AhciDmaWriteBuffer, AhciIdentifyBuffe
 use super::fis::FisRegH2D;
 use super::identify::IdentifyData;
 use super::types::{
-    AhciError, AhciResult, DeviceType, Lba, PortNumber, SectorCount, SlotNumber,
-    PORT_BASE, PORT_SIZE, PX_CI, PX_CLB, PX_CLBU, PX_CMD, PX_CMD_CR, PX_CMD_FR,
-    PX_CMD_FRE, PX_CMD_ST, PX_FB, PX_FBU, PX_IE, PX_IS, PX_IS_DHRS, PX_IS_DSS,
-    PX_IS_PSS, PX_IS_SDBS, PX_IS_TFES, PX_SACT, PX_SERR, PX_SIG, PX_TFD,
+    AhciError, AhciResult, DeviceType, Lba, PORT_BASE, PORT_SIZE, PX_CI, PX_CLB, PX_CLBU, PX_CMD,
+    PX_CMD_CR, PX_CMD_FR, PX_CMD_FRE, PX_CMD_ST, PX_FB, PX_FBU, PX_IE, PX_IS, PX_IS_DHRS,
+    PX_IS_DSS, PX_IS_PSS, PX_IS_SDBS, PX_IS_TFES, PX_SACT, PX_SERR, PX_SIG, PX_TFD, PortNumber,
+    SectorCount, SlotNumber,
 };
 
 /// AHCI Port
@@ -44,7 +44,7 @@ impl AhciPort {
 
         // Allocate DMA memory for Command List (32 headers * 32 bytes = 1024 bytes)
         let command_list = kernel().alloc_dma(1024).ok()?;
-        
+
         // Allocate DMA memory for Received FIS (256 bytes)
         let received_fis = kernel().alloc_dma(256).ok()?;
 
@@ -144,22 +144,24 @@ impl AhciPort {
         let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
 
         // Allocate Command Table
-        let cmd_table_buf = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
-        
+        let cmd_table_buf = kernel()
+            .alloc_dma(core::mem::size_of::<CommandTable>())
+            .map_err(|_| AhciError::InternalError)?;
+
         // Setup DMA-safe result buffer
         let identify_buf = AhciIdentifyBuffer::new().ok_or(AhciError::InternalError)?;
-        let buffer_phys = identify_buf.phys_addr().as_u64();    
+        let buffer_phys = identify_buf.phys_addr().as_u64();
 
         // Build Command Table in DMA memory
         {
             let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };
             // Clear
             unsafe { ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1) };
-            
+
             // Setup FIS
             let fis = FisRegH2D::identify();
             unsafe {
-                 ptr::copy_nonoverlapping(
+                ptr::copy_nonoverlapping(
                     &fis as *const _ as *const u8,
                     cmd_table.cfis.as_mut_ptr(),
                     core::mem::size_of::<FisRegH2D>(),
@@ -172,12 +174,14 @@ impl AhciPort {
 
         // Setup Command Header
         {
-             let headers = unsafe { slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32) };
-             let header = &mut headers[slot.as_usize()];
-             header.set_flags(5, false, false, false);
-             header.prdtl = 1;
-             header.prdbc = 0;
-             header.set_ctba(cmd_table_buf.physical_address());
+            let headers = unsafe {
+                slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32)
+            };
+            let header = &mut headers[slot.as_usize()];
+            header.set_flags(5, false, false, false);
+            header.prdtl = 1;
+            header.prdbc = 0;
+            header.set_ctba(cmd_table_buf.physical_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
@@ -191,11 +195,18 @@ impl AhciPort {
             kernel.free_dma(cmd_buf);
         }
 
-        Ok(IdentifyData::from_words(&identify_buf.finish_and_get_words()))
+        Ok(IdentifyData::from_words(
+            &identify_buf.finish_and_get_words(),
+        ))
     }
 
     /// Read sectors
-    pub fn read_sectors(&mut self, lba: Lba, count: SectorCount, buffer: &mut [u8]) -> AhciResult<()> {
+    pub fn read_sectors(
+        &mut self,
+        lba: Lba,
+        count: SectorCount,
+        buffer: &mut [u8],
+    ) -> AhciResult<()> {
         if buffer.len() < count.to_bytes() as usize {
             return Err(AhciError::InvalidParameter);
         }
@@ -203,33 +214,41 @@ impl AhciPort {
         let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
 
         let dma_buf = AhciDmaReadBuffer::new(count.0 as usize).ok_or(AhciError::InternalError)?;
-        let buffer_phys = dma_buf.phys_addr().ok_or(AhciError::InternalError)?.as_u64();
-        
-        let cmd_table_buf = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
-        
+        let buffer_phys = dma_buf
+            .phys_addr()
+            .ok_or(AhciError::InternalError)?
+            .as_u64();
+
+        let cmd_table_buf = kernel()
+            .alloc_dma(core::mem::size_of::<CommandTable>())
+            .map_err(|_| AhciError::InternalError)?;
+
         {
             let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };
             unsafe { ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1) };
 
             let fis = FisRegH2D::read_dma_ext(lba, count);
             unsafe {
-                 ptr::copy_nonoverlapping(
+                ptr::copy_nonoverlapping(
                     &fis as *const _ as *const u8,
                     cmd_table.cfis.as_mut_ptr(),
                     core::mem::size_of::<FisRegH2D>(),
                 );
             }
 
-            cmd_table.prdt[0] = PhysicalRegionDescriptor::new(buffer_phys, count.to_bytes() as u32, true);
+            cmd_table.prdt[0] =
+                PhysicalRegionDescriptor::new(buffer_phys, count.to_bytes() as u32, true);
         }
 
         {
-             let headers = unsafe { slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32) };
-             let header = &mut headers[slot.as_usize()];
-             header.set_flags(5, false, false, false);
-             header.prdtl = 1;
-             header.prdbc = 0;
-             header.set_ctba(cmd_table_buf.physical_address());
+            let headers = unsafe {
+                slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32)
+            };
+            let header = &mut headers[slot.as_usize()];
+            header.set_flags(5, false, false, false);
+            header.prdtl = 1;
+            header.prdbc = 0;
+            header.set_ctba(cmd_table_buf.physical_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);
@@ -258,33 +277,41 @@ impl AhciPort {
         let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
 
         let dma_buf = AhciDmaWriteBuffer::with_data(buffer).ok_or(AhciError::InternalError)?;
-        let buffer_phys = dma_buf.phys_addr().ok_or(AhciError::InternalError)?.as_u64();
+        let buffer_phys = dma_buf
+            .phys_addr()
+            .ok_or(AhciError::InternalError)?
+            .as_u64();
 
-        let cmd_table_buf = kernel().alloc_dma(core::mem::size_of::<CommandTable>()).map_err(|_| AhciError::InternalError)?;
+        let cmd_table_buf = kernel()
+            .alloc_dma(core::mem::size_of::<CommandTable>())
+            .map_err(|_| AhciError::InternalError)?;
 
         {
             let cmd_table = unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) };
             unsafe { ptr::write_bytes(cmd_table as *mut CommandTable, 0, 1) };
 
             let fis = FisRegH2D::write_dma_ext(lba, count);
-             unsafe {
-                 ptr::copy_nonoverlapping(
+            unsafe {
+                ptr::copy_nonoverlapping(
                     &fis as *const _ as *const u8,
                     cmd_table.cfis.as_mut_ptr(),
                     core::mem::size_of::<FisRegH2D>(),
                 );
             }
 
-            cmd_table.prdt[0] = PhysicalRegionDescriptor::new(buffer_phys, count.to_bytes() as u32, true);
+            cmd_table.prdt[0] =
+                PhysicalRegionDescriptor::new(buffer_phys, count.to_bytes() as u32, true);
         }
 
         {
-             let headers = unsafe { slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32) };
-             let header = &mut headers[slot.as_usize()];
-             header.set_flags(5, true, false, false); // W=1
-             header.prdtl = 1;
-             header.prdbc = 0;
-             header.set_ctba(cmd_table_buf.physical_address());
+            let headers = unsafe {
+                slice::from_raw_parts_mut(self.command_list.as_ptr() as *mut CommandHeader, 32)
+            };
+            let header = &mut headers[slot.as_usize()];
+            header.set_flags(5, true, false, false); // W=1
+            header.prdtl = 1;
+            header.prdbc = 0;
+            header.set_ctba(cmd_table_buf.physical_address());
         }
 
         self.command_tables[slot.as_usize()] = Some(cmd_table_buf);

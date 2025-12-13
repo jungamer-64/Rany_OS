@@ -120,7 +120,7 @@ impl<T> TimeoutResult<T> {
 }
 
 /// タイムアウト付きFuture
-/// 
+///
 /// 設計書 4.4: タイマーベースのyield
 pub struct TimeoutFuture<F: Future> {
     inner: F,
@@ -160,7 +160,7 @@ impl<F: Future> Future for TimeoutFuture<F> {
 }
 
 /// タイムアウト付きでFutureを実行
-/// 
+///
 /// # 例
 /// ```ignore
 /// let result = with_timeout(some_async_operation(), 1000).await;
@@ -174,7 +174,7 @@ pub fn with_timeout<F: Future>(future: F, timeout_ms: u64) -> TimeoutFuture<F> {
 }
 
 /// タイムアウト付きタスクをスポーン
-/// 
+///
 /// 設計書 4.4対応: タイムアウト後は自動的にキャンセル
 pub fn spawn_with_timeout<F>(future: F, timeout_ms: u64) -> TaskId
 where
@@ -186,7 +186,7 @@ where
             crate::log!("[TASK] Task timed out after {}ms\n", timeout_ms);
         }
     });
-    
+
     let task_id = task.id;
     Executor::spawn_global(task);
     task_id

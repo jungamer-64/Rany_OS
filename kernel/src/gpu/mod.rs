@@ -464,38 +464,38 @@ impl VirtioGpu {
     }
 
     fn negotiate_features(&mut self) -> GpuResult<()> {
-            // ホストフィーチャーを読み取り
-            let feature_sel_addr = (self.base + 0x14) as usize;
-            let feature_addr = (self.base + 0x10) as usize;
+        // ホストフィーチャーを読み取り
+        let feature_sel_addr = (self.base + 0x14) as usize;
+        let feature_addr = (self.base + 0x10) as usize;
 
-            // Low 32 bits
-            crate::io::mmio_write_u32(feature_sel_addr, 0);
-            let low = crate::io::mmio_read_u32(feature_addr);
+        // Low 32 bits
+        crate::io::mmio_write_u32(feature_sel_addr, 0);
+        let low = crate::io::mmio_read_u32(feature_addr);
 
-            // High 32 bits
-            crate::io::mmio_write_u32(feature_sel_addr, 1);
-            let high = crate::io::mmio_read_u32(feature_addr);
+        // High 32 bits
+        crate::io::mmio_write_u32(feature_sel_addr, 1);
+        let high = crate::io::mmio_read_u32(feature_addr);
 
-            let host_features = ((high as u64) << 32) | (low as u64);
+        let host_features = ((high as u64) << 32) | (low as u64);
 
-            // サポートするフィーチャーを選択
-            self.features = host_features & (VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_EDID);
-            self.has_3d = (self.features & VIRTIO_GPU_F_VIRGL) != 0;
+        // サポートするフィーチャーを選択
+        self.features = host_features & (VIRTIO_GPU_F_VIRGL | VIRTIO_GPU_F_EDID);
+        self.has_3d = (self.features & VIRTIO_GPU_F_VIRGL) != 0;
 
-            // ドライバフィーチャーを書き込み
-            let driver_feature_sel_addr = (self.base + 0x24) as usize;
-            let driver_feature_addr = (self.base + 0x20) as usize;
+        // ドライバフィーチャーを書き込み
+        let driver_feature_sel_addr = (self.base + 0x24) as usize;
+        let driver_feature_addr = (self.base + 0x20) as usize;
 
-            crate::io::mmio_write_u32(driver_feature_sel_addr, 0);
-            crate::io::mmio_write_u32(driver_feature_addr, self.features as u32);
+        crate::io::mmio_write_u32(driver_feature_sel_addr, 0);
+        crate::io::mmio_write_u32(driver_feature_addr, self.features as u32);
 
-            crate::io::mmio_write_u32(driver_feature_sel_addr, 1);
-            crate::io::mmio_write_u32(driver_feature_addr, (self.features >> 32) as u32);
+        crate::io::mmio_write_u32(driver_feature_sel_addr, 1);
+        crate::io::mmio_write_u32(driver_feature_addr, (self.features >> 32) as u32);
 
-            // FEATURES_OK を設定
-            let status_addr = (self.base + 0x70) as usize;
-            let current = crate::io::mmio_read_u32(status_addr);
-            crate::io::mmio_write_u32(status_addr, current | 8); // FEATURES_OK
+        // FEATURES_OK を設定
+        let status_addr = (self.base + 0x70) as usize;
+        let current = crate::io::mmio_read_u32(status_addr);
+        crate::io::mmio_write_u32(status_addr, current | 8); // FEATURES_OK
         Ok(())
     }
 

@@ -6,30 +6,30 @@
 // ============================================================================
 #![allow(dead_code)]
 
+pub mod ed25519;
 pub mod elf;
 pub mod live_update; // 新: ライブアップデート・Epoch-based Reclamation (設計書 3.5)
-pub mod signature;
 pub mod sha256;
-pub mod ed25519;
+pub mod signature;
 pub mod type_id;
 
 #[allow(unused_imports)]
 pub use elf::{CellInfo, ElfLoader, LoadedCell};
 #[allow(unused_imports)]
-pub use signature::{CellSignature, SignatureVerifier, verify_cell};
-#[allow(unused_imports)]
 pub use live_update::{
-    LiveUpdateManager, LiveUpdateState, LiveUpdateError, RequestTracker,
-    enter_critical_section, leave_critical_section, enter_quiescent_state,
-    wait_for_quiescent_state, current_epoch, live_update_manager,
+    LiveUpdateError, LiveUpdateManager, LiveUpdateState, RequestTracker, current_epoch,
+    enter_critical_section, enter_quiescent_state, leave_critical_section, live_update_manager,
+    wait_for_quiescent_state,
 };
+#[allow(unused_imports)]
+pub use signature::{CellSignature, SignatureVerifier, verify_cell};
 
+use crate::driver_registry::{DriverHandle, register_abi_driver};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
-use spin::Mutex;
-use crate::driver_registry::{register_abi_driver, DriverHandle};
 use kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL;
+use spin::Mutex;
 
 /// セルの状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -243,10 +243,18 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
     // 2. 【設計書 3.4】Type ID Check - ABI互換性の検証
     if let Some(deps) = type_id::extract_type_ids(elf_data) {
         if let Err(e) = type_id::verify_cell_dependencies(&deps) {
-            crate::log!("[Loader] Type ID verification failed for '{}': {}\n", name, e);
+            crate::log!(
+                "[Loader] Type ID verification failed for '{}': {}\n",
+                name,
+                e
+            );
             return Err(LoadError::AbiIncompatible(alloc::format!("{}", e)));
         }
-        crate::log!("[Loader] Type ID verified for '{}' ({})\n", name, deps.cell_version);
+        crate::log!(
+            "[Loader] Type ID verified for '{}' ({})\n",
+            name,
+            deps.cell_version
+        );
     }
 
     // 3. ELFをパース
@@ -295,7 +303,11 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
 }
 
 /// Load a driver artifact and register it as an ABI driver with the DriverRegistry.
-pub fn load_driver(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<DriverHandle, LoadError> {
+pub fn load_driver(
+    name: &str,
+    elf_data: &[u8],
+    allow_unsafe: bool,
+) -> Result<DriverHandle, LoadError> {
     // Load the cell first
     let cell_id = load_cell(name, elf_data, allow_unsafe)?;
 
@@ -303,11 +315,16 @@ pub fn load_driver(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Dr
     let entry_addr = with_registry(|r| r.resolve_symbol(DRIVER_ENTRY_SYMBOL));
     let entry_addr = match entry_addr {
         Some(a) => a,
-        None => return Err(LoadError::InvalidFormat("Driver entry symbol not found".into())),
+        None => {
+            return Err(LoadError::InvalidFormat(
+                "Driver entry symbol not found".into(),
+            ));
+        }
     };
 
     // Cast address to function pointer
-    let entry_fn: kernel_api::driver_abi::DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
+    let entry_fn: kernel_api::driver_abi::DriverEntryFn =
+        unsafe { core::mem::transmute(entry_addr) };
 
     // Register with driver registry
     match register_abi_driver(entry_fn) {
@@ -316,7 +333,11 @@ pub fn load_driver(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Dr
             with_registry_mut(|r| {
                 if let Some(entry) = r.get_mut(cell_id) {
                     entry.registered_drivers.push(handle);
-                    crate::log!("[Loader] Driver registered: {:?} for cell {:?}\n", handle, cell_id.as_u64());
+                    crate::log!(
+                        "[Loader] Driver registered: {:?} for cell {:?}\n",
+                        handle,
+                        cell_id.as_u64()
+                    );
                 }
             });
             Ok(handle)
@@ -326,7 +347,9 @@ pub fn load_driver(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Dr
             with_registry_mut(|r| {
                 r.unload(cell_id);
             });
-            Err(LoadError::InvalidFormat("Failed to register ABI driver".into()))
+            Err(LoadError::InvalidFormat(
+                "Failed to register ABI driver".into(),
+            ))
         }
     }
 }
@@ -341,7 +364,11 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     // 依存しているセルがないかチェック
     let has_dependents = with_registry(|r| r.all_cells().any(|c| c.dependencies.contains(&id)));
     // Check if this cell has any registered drivers
-    let has_drivers = with_registry(|r| r.get(id).map(|c| !c.registered_drivers.is_empty()).unwrap_or(false));
+    let has_drivers = with_registry(|r| {
+        r.get(id)
+            .map(|c| !c.registered_drivers.is_empty())
+            .unwrap_or(false)
+    });
 
     if has_dependents {
         return Err(LoadError::UnresolvedDependency(
@@ -356,7 +383,11 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
 
     // Epoch-based Reclamation: グローバルエポックをインクリメント
     let old_epoch = live_update::current_epoch();
-    crate::log!("[Loader] Unloading cell {:?}, waiting for epoch {} quiescence\n", id.as_u64(), old_epoch);
+    crate::log!(
+        "[Loader] Unloading cell {:?}, waiting for epoch {} quiescence\n",
+        id.as_u64(),
+        old_epoch
+    );
 
     // 全コアがQuiescent Stateに到達するまで待機
     live_update::wait_for_quiescent_state(old_epoch);
@@ -381,7 +412,11 @@ pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
     // Unregister from driver registry first
     match crate::driver_registry::unregister_driver(handle) {
         Ok(()) => {}
-        Err(_) => return Err(LoadError::InvalidFormat("Failed to unregister driver".into())),
+        Err(_) => {
+            return Err(LoadError::InvalidFormat(
+                "Failed to unregister driver".into(),
+            ));
+        }
     }
 
     // Remove handle from cell entries
@@ -391,14 +426,20 @@ pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
             if let Some(pos) = entry.registered_drivers.iter().position(|h| *h == handle) {
                 entry.registered_drivers.remove(pos);
                 found = true;
-                crate::log!("[Loader] Removed driver handle {:?} from cell {}\n", handle, entry.id.as_u64());
+                crate::log!(
+                    "[Loader] Removed driver handle {:?} from cell {}\n",
+                    handle,
+                    entry.id.as_u64()
+                );
                 break;
             }
         }
     });
 
     if !found {
-        return Err(LoadError::InvalidFormat("Driver handle not found in any cell".into()));
+        return Err(LoadError::InvalidFormat(
+            "Driver handle not found in any cell".into(),
+        ));
     }
 
     Ok(())
@@ -419,7 +460,7 @@ pub fn init_kernel_cell() {
             dependencies: Vec::new(),
             is_safe: false, // カーネルはunsafeを含む
             signature_verified: true,
-                registered_drivers: Vec::new(),
+            registered_drivers: Vec::new(),
         };
         r.register(entry);
     });

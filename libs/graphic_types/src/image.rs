@@ -366,9 +366,11 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     }
 
     // ヘッダを読み取り
-    let file_header = read_struct_from_slice::<BmpFileHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
+    let file_header =
+        read_struct_from_slice::<BmpFileHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
 
-    let info_header = read_struct_from_slice::<BmpInfoHeader>(data, 14).ok_or(ImageError::InvalidFormat)?;
+    let info_header =
+        read_struct_from_slice::<BmpInfoHeader>(data, 14).ok_or(ImageError::InvalidFormat)?;
 
     let width = info_header.width.abs() as u32;
     let height = info_header.height.abs() as u32;
@@ -669,7 +671,8 @@ pub fn decode_ico(data: &[u8]) -> ImageResult<Vec<Image>> {
             break;
         }
 
-        let entry = read_struct_from_slice::<IcoDirEntry>(data, entry_offset).ok_or(ImageError::InvalidFormat)?;
+        let entry = read_struct_from_slice::<IcoDirEntry>(data, entry_offset)
+            .ok_or(ImageError::InvalidFormat)?;
 
         let image_offset = entry.image_offset as usize;
         let image_size = entry.image_size as usize;
@@ -705,7 +708,8 @@ fn decode_ico_bmp(data: &[u8], width_hint: u8, height_hint: u8) -> ImageResult<I
         return Err(ImageError::InvalidFormat);
     }
 
-    let header = read_struct_from_slice::<BmpInfoHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
+    let header =
+        read_struct_from_slice::<BmpInfoHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
 
     let width = if width_hint == 0 {
         256
