@@ -357,6 +357,7 @@ impl ShellNamespace for SysNamespace {
         &'a self,
         method: &'a str,
         _args: &'a [ExoValue<'static>],
+        _caps: &'a crate::security::CapabilitySet,
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
