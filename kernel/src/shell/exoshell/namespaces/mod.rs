@@ -34,6 +34,6 @@ pub trait ShellNamespace: Send + Sync {
 
     /// メソッド呼び出し
     /// method: メソッド名
-    /// args: 評価済みの引数リスト
-    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue]) -> BoxFuture<'a, ExoValue<'static>>;
+    /// args: 評価済みの引数リスト（所有権を持つ静的な ExoValue）
+    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>>;
 }

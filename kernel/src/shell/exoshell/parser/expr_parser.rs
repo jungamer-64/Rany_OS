@@ -102,12 +102,28 @@ impl ExprParser {
     /// 
     /// トップレベルのエントリポイント。演算子優先順位を考慮して式を解析。
     pub fn parse_expr(&mut self) -> Result<Expr<'static>, ParseError> {
-        self.parse_or_expr()
+        self.parse_pipe_expr()
     }
     
     // ========================================================================
     // Precedence Levels (低→高)
     // ========================================================================
+    
+    /// Level 0: パイプ式 (`a |> f()`)
+    fn parse_pipe_expr(&mut self) -> Result<Expr<'static>, ParseError> {
+        let mut left = self.parse_or_expr()?;
+        
+        while self.match_operator("|>") {
+            let right = self.parse_or_expr()?;
+            left = Expr::Binary {
+                left: Box::new(left),
+                op: BinaryOp::Pipe,
+                right: Box::new(right),
+            };
+        }
+        
+        Ok(left)
+    }
     
     /// Level 1: OR 式 (`a || b`)
     fn parse_or_expr(&mut self) -> Result<Expr<'static>, ParseError> {
@@ -270,35 +286,53 @@ impl ExprParser {
         self.parse_postfix_expr()
     }
     
-    /// Level 7: 後置式（フィールドアクセス、メソッド呼び出し）
+    /// Level 7: 後置式（フィールドアクセス、メソッド呼び出し、インデックスアクセス）
     fn parse_postfix_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut expr = self.parse_primary()?;
         
-        // `.field` または `.method(args)` を繰り返しパース
-        while self.match_token(&Token::Dot) {
-            if let Some(Token::Ident(name)) = self.peek().cloned() {
-                self.advance();
-                
-                // メソッド呼び出し？
-                if self.match_token(&Token::LParen) {
-                    let args = self.parse_args()?;
-                    expr = Expr::MethodCall {
-                        object: Box::new(expr),
-                        method: name,
-                        args,
-                    };
+        loop {
+            // `.field` または `.method(args)`
+            if self.match_token(&Token::Dot) {
+                if let Some(Token::Ident(name)) = self.peek().cloned() {
+                    self.advance();
+                    
+                    // メソッド呼び出し？
+                    if self.match_token(&Token::LParen) {
+                        let args = self.parse_args()?;
+                        expr = Expr::MethodCall {
+                            object: Box::new(expr),
+                            method: name,
+                            args,
+                        };
+                    } else {
+                        // フィールドアクセス
+                        expr = Expr::FieldAccess {
+                            object: Box::new(expr),
+                            field: name,
+                        };
+                    }
                 } else {
-                    // フィールドアクセス
-                    expr = Expr::FieldAccess {
-                        object: Box::new(expr),
-                        field: name,
-                    };
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "identifier after '.'".to_string(),
+                        found: format!("{:?}", self.peek()),
+                    });
                 }
+            }
+            // `[index]` インデックスアクセス
+            else if self.match_token(&Token::LBracket) {
+                let index = self.parse_expr()?;
+                if !self.match_token(&Token::RBracket) {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "']'".to_string(),
+                        found: format!("{:?}", self.peek()),
+                    });
+                }
+                expr = Expr::Index {
+                    object: Box::new(expr),
+                    index: Box::new(index),
+                };
             } else {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "identifier after '.'".to_string(),
-                    found: format!("{:?}", self.peek()),
-                });
+                break;
             }
         }
         
@@ -362,6 +396,96 @@ impl ExprParser {
                     });
                 }
                 Ok(Expr::Group(Box::new(inner)))
+            }
+            
+            // 配列リテラル: [expr, expr, ...]
+            Some(Token::LBracket) => {
+                self.advance();
+                let mut elements = Vec::new();
+                
+                // 空配列チェック
+                if !self.match_token(&Token::RBracket) {
+                    // 最初の要素
+                    elements.push(self.parse_expr()?);
+                    
+                    // カンマ区切りで残りの要素
+                    while self.match_token(&Token::Comma) {
+                        // 末尾カンマ対応
+                        if matches!(self.peek(), Some(Token::RBracket)) {
+                            break;
+                        }
+                        elements.push(self.parse_expr()?);
+                    }
+                    
+                    if !self.match_token(&Token::RBracket) {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "']'".to_string(),
+                            found: format!("{:?}", self.peek()),
+                        });
+                    }
+                }
+                
+                Ok(Expr::Array(elements))
+            }
+            
+            // マップリテラル: {key: value, ...}
+            Some(Token::LBrace) => {
+                self.advance();
+                let mut pairs = Vec::new();
+                
+                // 空マップチェック
+                if !self.match_token(&Token::RBrace) {
+                    loop {
+                        // キー（識別子または文字列）
+                        let key = match self.peek().cloned() {
+                            Some(Token::Ident(k)) => {
+                                self.advance();
+                                k
+                            }
+                            Some(Token::StringLit(k)) => {
+                                self.advance();
+                                k
+                            }
+                            _ => {
+                                return Err(ParseError::UnexpectedToken {
+                                    expected: "map key (identifier or string)".to_string(),
+                                    found: format!("{:?}", self.peek()),
+                                });
+                            }
+                        };
+                        
+                        // コロン
+                        if !self.match_token(&Token::Colon) {
+                            return Err(ParseError::UnexpectedToken {
+                                expected: "':'".to_string(),
+                                found: format!("{:?}", self.peek()),
+                            });
+                        }
+                        
+                        // 値
+                        let value = self.parse_expr()?;
+                        pairs.push((key, value));
+                        
+                        // カンマまたは閉じ波括弧
+                        if self.match_token(&Token::Comma) {
+                            // 末尾カンマ対応
+                            if matches!(self.peek(), Some(Token::RBrace)) {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    
+                    if !self.match_token(&Token::RBrace) {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "'}'".to_string(),
+                            found: format!("{:?}", self.peek()),
+                        });
+                    }
+                }
+                
+                Ok(Expr::Map(pairs))
             }
             
             // クロージャ: |e| expr

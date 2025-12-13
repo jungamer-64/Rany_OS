@@ -2,21 +2,13 @@
 # Alias for xtask commands
 xtask = "run --package xtask --"
 
-# Kernel target for cross-compilation (used when building from workspace root)
+# Temporarily enable building standard library components from source for the
+# entire workspace to avoid mixing sysroot-provided std artifacts with
+# locally-built ones during host test runs. This is an experimental change to
+# investigate and potentially work around duplicate-lang-item (E0152) errors
+# that occur when `core`/`alloc` are linked from both the sysroot and
+# workspace target dir.
 [build]
-target = "x86_64-unknown-none"
-
-[unstable]
-# Build stdlibs for kernel target
+# Build core, alloc, and compiler_builtins locally when requested
 build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
-
-[target.x86_64-unknown-none]
-rustflags = [
-    "-C", "code-model=kernel",
-    "-C", "relocation-model=static",
-    # Linker file lives in workspace root
-    "-C", "link-arg=-Tlinker.ld",
-    # Disable curve25519-dalek SIMD backend for no_std environment
-    "--cfg", "curve25519_dalek_backend=\"serial\""
-]

@@ -24,7 +24,7 @@ use super::types::{
     ShellState, ShellResources,
     MAX_HISTORY, SCROLLBACK_LINES, CURSOR_BLINK_MS,
 };
-use super::async_runtime::submit_command;
+use super::streams::submit_command;
 
 // ============================================================================
 // Graphical Shell (Split Borrows Design)

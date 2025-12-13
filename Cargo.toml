@@ -7,6 +7,7 @@ members = [
     "interfaces/kernel_api",
     # Libs
     "libs/app_sdk",
+    "libs/security",
     "libs/graphic_types",
     "libs/vfs",
     # Filesystems
@@ -21,6 +22,7 @@ members = [
     "drivers/example_abi",
     # Apps
     "apps",
+    "tools/cap_harness",
 ]
 
 
@@ -56,13 +58,16 @@ test-timeout = 300
 # ============================================================================
 
 [profile.dev]
-panic = "abort"
+panic = "unwind"
 opt-level = 0
 debug = true
 
-[profile.dev.package."*"]
-opt-level = 3
-debug = false
+#[profile.dev.package."*"]
+#opt-level = 3
+#debug = false
+#NOTE: package-specific dev overrides are intentionally disabled because
+#they caused build profile inconsistencies between dev and test which led
+#to duplicate compilation of core with differing panic strategies.
 
 [profile.release]
 panic = "abort"
@@ -71,5 +76,5 @@ opt-level = 3
 debug = true
 
 [profile.test]
-panic = "abort"
+panic = "unwind"
 opt-level = 1

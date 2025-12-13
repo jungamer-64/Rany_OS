@@ -1,0 +1,109 @@
+name: CI — Format, Lint, Tests, Audit
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+jobs:
+  fmt-clippy:
+    name: Format & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+          override: true
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
+
+      - name: rustfmt check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+  tests:
+    name: Tests
+    runs-on: ubuntu-latest
+    needs: fmt-clippy
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          components: rustfmt, clippy
+          override: true
+
+      - name: Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-${{ hashFiles('**/rust-toolchain.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}-
+
+      - name: Run security crate tests
+        run: cargo test -p security --verbose
+
+      - name: Run cap_harness tests
+        run: cargo test -p cap_harness --verbose
+
+      - name: Run kernel lib tests
+        run: cargo test --manifest-path kernel/Cargo.toml --lib --verbose
+
+  audit:
+    name: Security & static audit (optional)
+    runs-on: ubuntu-latest
+    needs: tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: nightly
+          components: clippy
+          override: true
+
+      - name: Try running serena_audit
+        run: |
+          if command -v serena_audit >/dev/null 2>&1; then
+            serena_audit --rootPath "$GITHUB_WORKSPACE" --mode strict || (echo "serena_audit failed" && exit 1)
+          else
+            echo "serena_audit not installed; skipping. See docs/ for instructions to enable it.";
+          fi
+
+      - name: Try running codacy_cli_analyze
+        run: |
+          if command -v codacy_cli_analyze >/dev/null 2>&1; then
+            codacy_cli_analyze --rootPath "$GITHUB_WORKSPACE" || (echo "codacy_cli_analyze failed" && exit 1)
+          else
+            echo "codacy_cli_analyze not installed; skipping. See docs/ for instructions to enable it.";
+          fi
+
+      - name: cargo audit (optional)
+        run: |
+          if ! command -v cargo-audit >/dev/null 2>&1; then
+            cargo install cargo-audit --locked
+          fi
+          cargo audit

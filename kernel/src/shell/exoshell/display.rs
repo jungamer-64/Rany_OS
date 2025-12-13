@@ -9,7 +9,7 @@ use core::fmt::{self, Display};
 
 use super::types::*;
 
-impl Display for ExoValue {
+impl<'a> Display for ExoValue<'a> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ExoValue::Nil => write!(f, "nil"),

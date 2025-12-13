@@ -3,8 +3,19 @@
 //! This module implements comprehensive security auditing for
 //! tracking security-relevant events in the kernel.
 
+#[cfg(test)]
+use std::collections::VecDeque;
+#[cfg(not(test))]
 use alloc::collections::VecDeque;
+
+#[cfg(test)]
+use std::string::String;
+#[cfg(not(test))]
 use alloc::string::String;
+
+#[cfg(test)]
+use std::vec::Vec;
+#[cfg(not(test))]
 use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -126,9 +137,14 @@ impl AuditRecord {
     pub fn new(event_type: AuditEventType, domain_id: u64, success: bool) -> Self {
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
+        #[cfg(not(test))]
+        let timestamp = crate::task::timer::current_tick();
+        #[cfg(test)]
+        let timestamp = 0u64;
+
         AuditRecord {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
-            timestamp: crate::task::timer::current_tick(),
+            timestamp,
             event_type,
             domain_id,
             success,

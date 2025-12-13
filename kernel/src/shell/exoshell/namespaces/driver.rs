@@ -147,3 +147,31 @@ impl DriverNamespace {
         }
     }
 }
+
+impl ShellNamespace for DriverNamespace {
+    fn name(&self) -> &str {
+        "driver"
+    }
+
+    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+        Box::pin(async move {
+            match method {
+                "list" => Self::list(),
+                "stats" => Self::stats(),
+                "status" => {
+                    let id = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as i64), _ => None }).unwrap_or(0);
+                    Self::status(id)
+                }
+                "load" => {
+                    let path = args.first().and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None }).unwrap_or("");
+                    Self::load(path)
+                }
+                "unload" => {
+                    let id = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as i64), _ => None }).unwrap_or(0);
+                    Self::unload(id)
+                }
+                _ => ExoValue::Error(format!("Unknown method 'driver.{}'\nValid methods: list, stats, status, load, unload", method)),
+            }
+        })
+    }
+}

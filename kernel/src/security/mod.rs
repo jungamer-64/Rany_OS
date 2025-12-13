@@ -42,7 +42,33 @@ pub use mpk::{
 
 // Re-export static capability system (preferred API)
 
+// When building tests we compile the kernel as a std crate and some
+// modules (like `vga`) that export logging macros are not included.
+// To make the security module test-friendly we alias alloc types to
+// their std counterparts when cfg(test) is active and provide a
+// lightweight `log!` macro that forwards to `println!`.
+
+#[cfg(test)]
+use std::vec::Vec;
+#[cfg(test)]
+use std::string::String as KernelString;
+
+#[cfg(not(test))]
+extern crate alloc;
+#[cfg(not(test))]
 use alloc::vec::Vec;
+#[cfg(not(test))]
+use alloc::string::String as KernelString;
+
+// Provide a simple log macro for tests so `crate::log!` calls resolve
+// without pulling in the full VGA/serial logging subsystems.
+#[cfg(test)]
+#[macro_export]
+macro_rules! log {
+    ($($arg:tt)*) => ({
+        println!($($arg)*);
+    });
+}
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
@@ -265,7 +291,7 @@ impl AccessControlManager {
 #[derive(Debug, Clone)]
 pub struct SecurityViolation {
     pub domain_id: u64,
-    pub operation: alloc::string::String,
+    pub operation: KernelString,
 }
 
 impl core::fmt::Display for SecurityViolation {
@@ -483,7 +509,7 @@ pub struct AuditEvent {
     /// ドメインID
     pub domain_id: u64,
     /// 詳細情報
-    pub details: Option<alloc::string::String>,
+    pub details: Option<KernelString>,
 }
 
 /// 監査ログ

@@ -137,3 +137,21 @@ impl NetNamespace {
         ExoValue::Array(results)
     }
 }
+
+impl ShellNamespace for NetNamespace {
+    fn name(&self) -> &str {
+        "net"
+    }
+
+    fn call<'a>(&'a self, method: &'a str, _args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+        Box::pin(async move {
+            match method {
+                "config" => Self::config(),
+                "stats" => Self::stats(),
+                "arp" => Self::arp_cache(),
+                // ping is async and takes args; it is handled at shell level usually
+                _ => ExoValue::Error(format!("Unknown method 'net.{}'\nValid methods: config, stats, arp, ping", method)),
+            }
+        })
+    }
+}

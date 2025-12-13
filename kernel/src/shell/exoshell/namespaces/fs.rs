@@ -138,12 +138,12 @@ impl ShellNamespace for FsNamespace {
         "fs"
     }
 
-    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue]) -> BoxFuture<'a, ExoValue<'static>> {
+    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
                 "entries" | "ls" => {
                     let path = args.first()
-                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
+                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                         .unwrap_or("."); 
                     // Note: "." handling usually requires cwd from shell.
                     // But here we only receive args. Shell should resolve relative paths BEFORE calling,
@@ -161,25 +161,25 @@ impl ShellNamespace for FsNamespace {
                 }
                 "read" | "cat" => {
                     let path = args.first()
-                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
+                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                         .unwrap_or("");
                     Self::read(path).await
                 }
                 "stat" => {
                     let path = args.first()
-                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
+                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                         .unwrap_or("");
                     Self::stat(path).await
                 }
                 "mkdir" => {
                     let path = args.first()
-                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
+                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                         .unwrap_or("");
                     Self::mkdir(path).await
                 }
                 "remove" | "rm" => {
                     let path = args.first()
-                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
+                        .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                         .unwrap_or("");
                     Self::remove(path).await
                 }
