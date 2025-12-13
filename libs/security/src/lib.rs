@@ -5,8 +5,6 @@
 //! Provides Capability, CapabilitySet, and CapabilityManager with tests.
 
 #[cfg(feature = "std")]
-use std::string::String as KernelString;
-#[cfg(feature = "std")]
 use std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
@@ -265,6 +263,12 @@ static MANAGER: CapabilityManager = CapabilityManager::new();
 
 pub fn manager() -> &'static CapabilityManager {
     &MANAGER
+}
+
+impl Default for CapabilityManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub fn init() {
