@@ -50,9 +50,15 @@ public class ChunkDecodeCompare {
                 dec.reset();
                 CharBuffer cb = CharBuffer.allocate(chunkSize);
                 // simulate incorrect usage: endOfInput=true for every chunk
-                CoderResult cr = dec.decode(bb, cb, true);
-                if (cr.isError()) cr.throwException();
-                dec.flush(cb);
+                try {
+                    System.err.println("badDecode: chunk start=" + pos + " r=" + r + " bytes=" + toHex(bb));
+                    CoderResult cr = dec.decode(bb, cb, true);
+                    if (cr.isError()) cr.throwException();
+                    dec.flush(cb);
+                } catch (CharacterCodingException e) {
+                    System.err.println("badDecode exception at chunk start=" + pos + " bytesRemaining=" + toHex(bb));
+                    throw e;
+                }
                 pos += r;
             }
             return true;
@@ -70,12 +76,19 @@ public class ChunkDecodeCompare {
             dec.onUnmappableCharacter(CodingErrorAction.REPORT);
             dec.reset();
             CharBuffer cb = CharBuffer.allocate(chunkSize * 2);
+            int chunkNo = 0;
             while (fc.read(bb) > 0) {
+                chunkNo++;
                 bb.flip();
-                while (true) {
-                    CoderResult cr = dec.decode(bb, cb, false);
-                    if (cr.isError()) cr.throwException();
-                    if (cr.isUnderflow()) break;
+                try {
+                    while (true) {
+                        CoderResult cr = dec.decode(bb, cb, false);
+                        if (cr.isError()) cr.throwException();
+                        if (cr.isUnderflow()) break;
+                    }
+                } catch (CharacterCodingException e) {
+                    System.err.println("fixedDecode exception during streaming at chunk=" + chunkNo + " bytesRemaining=" + toHex(bb));
+                    throw e;
                 }
                 bb.compact();
             }
@@ -88,5 +101,13 @@ public class ChunkDecodeCompare {
             System.err.println("fixedDecode error: " + e.toString());
             return false;
         }
+    }
+
+    private static String toHex(ByteBuffer bb) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = bb.position(); i < bb.limit(); i++) {
+            sb.append(String.format("%02x ", bb.get(i) & 0xff));
+        }
+        return sb.toString();
     }
 }
