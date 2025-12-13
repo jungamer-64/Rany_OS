@@ -20,7 +20,7 @@ public class ChunkDecodeFixed {
         int chunkSize = Integer.parseInt(args[1]);
 
         try (FileChannel fc = FileChannel.open(p, StandardOpenOption.READ)) {
-            ByteBuffer bb = ByteBuffer.allocate(chunkSize);
+            ByteBuffer bb = ByteBuffer.allocate(Math.max(64, chunkSize * 2));
             CharsetDecoder dec = StandardCharsets.UTF_8.newDecoder();
             dec.onMalformedInput(CodingErrorAction.REPORT);
             dec.onUnmappableCharacter(CodingErrorAction.REPORT);
@@ -41,6 +41,14 @@ public class ChunkDecodeFixed {
                 }
                 // preserve any trailing partial bytes for the next read
                 bb.compact();
+                // If the buffer is full of trailing bytes (no room to read more), grow it
+                if (bb.position() == bb.capacity()) {
+                    int newCap = bb.capacity() * 2;
+                    ByteBuffer nb = ByteBuffer.allocate(newCap);
+                    bb.flip(); // prepare to read remaining
+                    nb.put(bb);
+                    bb = nb;
+                }
             }
 
             // final decode of any remaining bytes

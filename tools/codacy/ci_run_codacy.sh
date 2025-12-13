@@ -53,4 +53,24 @@ done
 echo "Failed read files: $REPO_DIR/tools/codacy/failed_read_files_metrics.txt, $REPO_DIR/tools/codacy/failed_read_files_full.txt"
 echo "UTF8 diagnostics collected in $REPO_DIR/tools/codacy/utf8_issues/ (if any)"
 
+# If we have the Java reproducer, run chunked-decode comparisons on failing files
+if [ -f "$REPO_DIR/tools/codacy/java_repro/ChunkDecodeCompare.java" ] && command -v java >/dev/null 2>&1 && command -v javac >/dev/null 2>&1; then
+  echo "Compiling Java reproducer..."
+  javac "$REPO_DIR/tools/codacy/java_repro/ChunkDecodeCompare.java" -d "$REPO_DIR/tools/codacy/java_repro" || true
+  for f in $(cat "$REPO_DIR/tools/codacy/failed_read_files_metrics.txt" 2>/dev/null || true); do
+    for cs in 4 8 16 32; do
+      out="$REPO_DIR/tools/codacy/utf8_issues/$(basename "$f").metrics.chunk${cs}.compare.txt"
+      echo "Running chunk-compare on $f (chunk=$cs) -> $out"
+      java -cp "$REPO_DIR/tools/codacy/java_repro" ChunkDecodeCompare "$f" "$cs" > "$out" 2>&1 || true
+    done
+  done
+  for f in $(cat "$REPO_DIR/tools/codacy/failed_read_files_full.txt" 2>/dev/null || true); do
+    for cs in 4 8 16 32; do
+      out="$REPO_DIR/tools/codacy/utf8_issues/$(basename "$f").full.chunk${cs}.compare.txt"
+      echo "Running chunk-compare on $f (chunk=$cs) -> $out"
+      java -cp "$REPO_DIR/tools/codacy/java_repro" ChunkDecodeCompare "$f" "$cs" > "$out" 2>&1 || true
+    done
+  done
+fi
+
 exit 0
