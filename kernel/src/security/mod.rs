@@ -40,6 +40,9 @@ pub use mpk::{
     domain_transition_prologue, is_pku_enabled, secure_domain_call,
 };
 
+// Re-export capability types for convenience
+pub use capability::CapabilitySet;
+
 // Re-export static capability system (preferred API)
 
 // When building tests we compile the kernel as a std crate and some

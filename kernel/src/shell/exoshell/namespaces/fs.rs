@@ -65,13 +65,21 @@ impl FsNamespace {
     }
 
     /// ファイルを読み取り（ゼロコピー対応）
-    /// NOTE: 現状のカーネルAPIは Vec<u8> を返すため、Cow::Owned でラップする。
-    /// 将来的には RRef やカーネルバッファへの参照を直接扱えるようにするべき。
+    /// 
+    /// KernelBufferView を使用し、データは Arc でラップ。
+    /// 複数回参照してもコピーは発生せず、参照カウントのみ増加。
     pub async fn read(path: &str) -> ExoValue<'static> {
+        use crate::shell::exoshell::buffer_view::KernelBufferView;
+        
         crate::task::yield_now().await;
 
         match crate::fs::read_file_content(path, "/") {
-            Ok(content) => ExoValue::Bytes(Cow::Owned(content)),
+            Ok(content) => {
+                // ゼロコピービューとしてラップ
+                // NOTE: read_file_content は Vec<u8> を返すため、一度だけコピーが発生。
+                // 将来的にはカーネルのページキャッシュから直接参照を取得する。
+                ExoValue::BufferRef(KernelBufferView::new(content))
+            }
             Err(e) => ExoValue::Error(format!("{:?}", e)),
         }
     }

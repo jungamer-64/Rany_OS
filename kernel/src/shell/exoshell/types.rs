@@ -40,6 +40,13 @@ pub enum ExoValue<'a> {
     Capability(Capability),
     /// イテレータ（遅延評価）
     Iterator(ExoIterator),
+    /// ゼロコピーバッファ参照（カーネルバッファへの参照）
+    /// 
+    /// NOTE: Arc でラップされているため Clone が安価。
+    /// データはコピーせず、参照カウントのみ増加。
+    BufferRef(super::buffer_view::KernelBufferView),
+    /// ゼロコピー文字列参照
+    StringRef(super::buffer_view::StringView),
     /// エラー
     Error(String),
 }
@@ -69,6 +76,9 @@ impl<'a> ExoValue<'a> {
             ExoValue::Process(p) => ExoValue::Process(p),
             ExoValue::Capability(c) => ExoValue::Capability(c),
             ExoValue::Iterator(i) => ExoValue::Iterator(i),
+            // BufferRef はゼロコピー - Arc のクローンのみ
+            ExoValue::BufferRef(b) => ExoValue::BufferRef(b),
+            ExoValue::StringRef(s) => ExoValue::StringRef(s),
             ExoValue::Error(e) => ExoValue::Error(e),
         }
     }
