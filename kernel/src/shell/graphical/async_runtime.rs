@@ -5,37 +5,28 @@
 //! # グラフィカルシェル非同期ランタイム
 //!
 //! グローバルインスタンスと非同期コマンドシステムの管理
-//! fb は with_framebuffer で取得し、shell メソッドに渡す（unsafe なし）
+//! 
+//! ## Async-First設計
+//! - Waker駆動のコマンドキュー
+//! - 割り込みベースのキーボード入力
+//! - 省電力（C-state対応）
 
 #![allow(dead_code)]
 
-use alloc::collections::VecDeque;
 use alloc::format;
-use alloc::string::String;
+use alloc::boxed::Box;
+use alloc::vec;
 use spin::Mutex;
 
 use crate::graphics::Color;
-use crate::io::hid::{poll_input_event, poll_mouse_event};
+use crate::io::hid::{poll_mouse_event, keyboard};
 use crate::shell::exoshell::{ExoShell, ExoValue};
 
 use super::shell::GraphicalShell;
-
-// ============================================================================
-// Async Command Types
-// ============================================================================
-
-/// 非同期コマンドリクエスト
-struct AsyncCommandRequest {
-    command: String,
-    id: u64,
-}
-
-/// 非同期コマンド結果
-struct AsyncCommandResult {
-    id: u64,
-    output: String,
-    is_error: bool,
-}
+use super::streams::{
+    CommandQueueStream, CommandResult,
+    push_result, poll_result,
+};
 
 // ============================================================================
 // Global State
@@ -43,9 +34,6 @@ struct AsyncCommandResult {
 
 static GRAPHICAL_SHELL: Mutex<Option<GraphicalShell>> = Mutex::new(None);
 static ASYNC_EXOSHELL: Mutex<Option<ExoShell>> = Mutex::new(None);
-static COMMAND_QUEUE: Mutex<VecDeque<AsyncCommandRequest>> = Mutex::new(VecDeque::new());
-static RESULT_QUEUE: Mutex<VecDeque<AsyncCommandResult>> = Mutex::new(VecDeque::new());
-static NEXT_REQUEST_ID: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
 // ============================================================================
 // Public API
@@ -88,7 +76,6 @@ pub fn init() {
 /// グラフィカルシェルを開始
 pub fn start() {
     use log::info;
-    use alloc::vec;
 
     // 1. 必要なバッファサイズを取得（ロックは一瞬だけ）
     let buffer_size = crate::graphics::with_framebuffer(|fb| fb.info().size()).unwrap_or(0);
@@ -127,40 +114,47 @@ where
     GRAPHICAL_SHELL.lock().as_mut().map(f)
 }
 
-/// コマンドを非同期キューに追加
-pub fn submit_command(command: String) -> u64 {
-    use core::sync::atomic::Ordering;
-    
-    let id = NEXT_REQUEST_ID.fetch_add(1, Ordering::SeqCst);
-    COMMAND_QUEUE.lock().push_back(AsyncCommandRequest {
-        command,
-        id,
-    });
-    id
-}
-
 /// 非同期タスクとしてグラフィカルシェルを実行
+/// 
+/// ## 設計
+/// - コマンドキューは Waker 駆動（イベント到着時のみ起床）
+/// - キーボードは KeyboardStream で Waker 駆動
+/// - マウスは従来のポーリング（TODO: MouseStream化）
+/// - カーソル点滅は定期的なyieldで処理
 pub async fn run_async_shell() {
     use log::info;
+    use crate::io::hid::poll_input_event;
     
-    info!(target: "gshell", "Starting async graphical shell task...");
+    info!(target: "gshell", "Starting async graphical shell task (event-driven)...");
+    
+    let mut cmd_stream = CommandQueueStream::new();
+    let mut input_poll_counter = 0u32;
     
     loop {
-        // フェーズ1: キー/マウスイベントとUI更新
+        // ========================================
+        // Phase 1: 入力イベント処理
+        // ========================================
         crate::graphics::with_framebuffer(|fb| {
             let mut guard = GRAPHICAL_SHELL.lock();
             if let Some(ref mut shell) = *guard {
-                // キーイベントを処理（最大16イベントずつ）
-                for _ in 0..16 {
-                    if let Some(event) = poll_input_event() {
-                        shell.handle_key(event, fb);
-                    } else {
-                        break;
+                // キーボード: KeyboardStreamを試行
+                if let Ok(mut stream) = keyboard().take_stream() {
+                    if let Some(key_event) = stream.poll() {
+                        shell.handle_key(key_event, fb);
+                    }
+                } else {
+                    // フォールバック: ポーリング
+                    for _ in 0..8 {
+                        if let Some(event) = poll_input_event() {
+                            shell.handle_key(event, fb);
+                        } else {
+                            break;
+                        }
                     }
                 }
                 
-                // マウスイベントを処理（最大16イベントずつ）
-                for _ in 0..16 {
+                // マウス: ポーリング（TODO: MouseStream）
+                for _ in 0..8 {
                     if let Some(event) = poll_mouse_event() {
                         shell.handle_mouse(event, fb);
                     } else {
@@ -169,18 +163,53 @@ pub async fn run_async_shell() {
                 }
                 
                 // 結果キューをチェックして表示
-                process_results(shell, fb);
+                while let Some(result) = poll_result() {
+                    let output = format!("{}\n", result.output);
+                    
+                    if result.is_error {
+                        let error_color = shell.resources.theme.error;
+                        shell.print_colored(&output, error_color);
+                    } else {
+                        let fg_color = shell.resources.theme.foreground;
+                        shell.print_colored(&output, fg_color);
+                    }
+                    
+                    shell.state.is_executing = false;
+                    shell.redraw(fb);
+                }
                 
-                // カーソル点滅を更新
-                let current_time = crate::task::timer::current_tick();
-                shell.update_cursor(current_time, fb);
+                // カーソル点滅を更新（定期的）
+                input_poll_counter = input_poll_counter.wrapping_add(1);
+                if input_poll_counter % 10 == 0 {
+                    let current_time = crate::task::timer::current_tick();
+                    shell.update_cursor(current_time, fb);
+                }
             }
         });
         
-        // フェーズ2: 非同期コマンド実行（ロック外）
-        let request = COMMAND_QUEUE.lock().pop_front();
+        // ========================================
+        // Phase 2: コマンド実行（Waker駆動）
+        // ========================================
+        // 非ブロッキングでコマンドキューをチェック
+        // 実際のWaker統合は今後のselect!マクロで行う
+        use core::future::Future;
+        use core::pin::Pin;
+        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
         
-        if let Some(req) = request {
+        // ダミーWakerでコマンドキューをポーリング
+        fn dummy_raw_waker() -> RawWaker {
+            fn no_op(_: *const ()) {}
+            fn clone_fn(ptr: *const ()) -> RawWaker { RawWaker::new(ptr, &VTABLE) }
+            static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, no_op, no_op, no_op);
+            RawWaker::new(core::ptr::null(), &VTABLE)
+        }
+        
+        let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
+        let mut cx = Context::from_waker(&waker);
+        
+        let mut cmd_future = cmd_stream.next();
+        if let Poll::Ready(req) = Pin::new(&mut cmd_future).poll(&mut cx) {
+            // コマンドを実行
             let shell_opt = {
                 let mut guard = ASYNC_EXOSHELL.lock();
                 guard.take()
@@ -193,37 +222,21 @@ pub async fn run_async_shell() {
                 
                 *ASYNC_EXOSHELL.lock() = Some(exoshell);
                 
-                RESULT_QUEUE.lock().push_back(AsyncCommandResult {
+                push_result(CommandResult {
                     id: req.id,
                     output,
                     is_error,
                 });
             } else {
-                COMMAND_QUEUE.lock().push_front(req);
-                crate::task::yield_now().await;
-                continue;
+                // ExoShellがビジー - リクエストを再キュー
+                super::streams::submit_command(req.command);
             }
         }
         
+        // ========================================
+        // Phase 3: 他のタスクに譲る
+        // ========================================
         crate::task::yield_now().await;
-    }
-}
-
-/// 結果キューを処理してGraphicalShellに表示
-fn process_results(shell: &mut GraphicalShell, fb: &mut crate::graphics::Framebuffer) {
-    while let Some(result) = RESULT_QUEUE.lock().pop_front() {
-        let output = format!("{}\n", result.output);
-        
-        if result.is_error {
-            let error_color = shell.resources.theme.error;
-            shell.print_colored(&output, error_color);
-        } else {
-            let fg_color = shell.resources.theme.foreground;
-            shell.print_colored(&output, fg_color);
-        }
-        
-        shell.state.is_executing = false;
-        shell.redraw(fb);
     }
 }
 

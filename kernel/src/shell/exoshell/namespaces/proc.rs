@@ -136,3 +136,26 @@ impl ProcNamespace {
         }
     }
 }
+
+impl ShellNamespace for ProcNamespace {
+    fn name(&self) -> &str {
+        "proc"
+    }
+
+    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+        Box::pin(async move {
+            match method {
+                "list" | "ps" => Self::list(),
+                "info" => {
+                    let pid = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as u32), _ => None }).unwrap_or(0);
+                    Self::info(pid)
+                }
+                "kill" => {
+                    let pid = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as u32), _ => None }).unwrap_or(0);
+                    Self::kill(pid, 9)
+                }
+                _ => ExoValue::Error(format!("Unknown method 'proc.{}'\nValid methods: list, info, kill", method)),
+            }
+        })
+    }
+}

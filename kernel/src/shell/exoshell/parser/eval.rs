@@ -131,6 +131,50 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
         // グループ（括弧）
         Expr::Group(inner) => eval_expr_with_depth(inner, ctx, depth + 1),
         
+        // 配列リテラル
+        Expr::Array(elements) => {
+            let values: Vec<ExoValue<'a>> = elements.iter()
+                .map(|e| eval_expr_with_depth(e, ctx, depth + 1))
+                .collect();
+            ExoValue::Array(values)
+        }
+        
+        // インデックスアクセス
+        Expr::Index { object, index } => {
+            let obj = eval_expr_with_depth(object, ctx, depth + 1);
+            let idx = eval_expr_with_depth(index, ctx, depth + 1);
+            
+            match (&obj, &idx) {
+                (ExoValue::Array(arr), ExoValue::Int(i)) => {
+                    let i = *i as usize;
+                    if i < arr.len() {
+                        arr[i].clone()
+                    } else {
+                        ExoValue::Error(format!("Index {} out of bounds (len={})", i, arr.len()))
+                    }
+                }
+                (ExoValue::String(s), ExoValue::Int(i)) => {
+                    let i = *i as usize;
+                    if let Some(c) = s.chars().nth(i) {
+                        ExoValue::String(Cow::Owned(c.to_string()))
+                    } else {
+                        ExoValue::Error(format!("String index {} out of bounds", i))
+                    }
+                }
+                _ => ExoValue::Error(format!("Cannot index {:?} with {:?}", obj, idx)),
+            }
+        }
+        
+        // マップリテラル
+        Expr::Map(pairs) => {
+            let mut map = alloc::collections::BTreeMap::new();
+            for (key, value_expr) in pairs.iter() {
+                let value = eval_expr_with_depth(value_expr, ctx, depth + 1);
+                map.insert(key.clone(), value);
+            }
+            ExoValue::Map(map)
+        }
+        
         // クロージャ（遅延評価のため、ここでは本体を評価しない）
         Expr::Closure { param, body: _ } => {
             ExoValue::Error(format!("Closure '|{}|' cannot be directly evaluated", param))
@@ -139,7 +183,7 @@ fn eval_expr_with_depth<'a>(expr: &Expr<'a>, ctx: &EvalContext<'a>, depth: usize
 }
 
 /// クロージャ式を評価（フィルタ等で使用）
-pub fn eval_closure<'a>(closure: &Expr<'a>, item: &ExoValue<'a>) -> ExoValue<'a> {
+pub fn eval_closure<'a>(closure: &'a Expr<'a>, item: &'a ExoValue<'a>) -> ExoValue<'a> {
     match closure {
         Expr::Closure { param, body } => {
             let ctx = EvalContext::with_param(param, item);
@@ -272,6 +316,13 @@ fn apply_string_method<'a>(s: &str, method: &str, args: &[ExoValue<'a>]) -> ExoV
 /// 二項演算の評価
 pub fn eval_binary_op<'a>(left: &ExoValue<'a>, op: BinaryOp, right: &ExoValue<'a>) -> ExoValue<'a> {
     match op {
+        // パイプ演算子（実際の評価は shell.rs で行う）
+        BinaryOp::Pipe => {
+            // パイプは eval.rs では評価できない（右辺を関数として扱う必要がある）
+            // shell.rs の evaluate_expr で特別処理される
+            ExoValue::Error("Pipe operator must be evaluated in shell context".into())
+        }
+        
         // 論理演算
         BinaryOp::And => eval_logical_and(left, right),
         BinaryOp::Or => eval_logical_or(left, right),

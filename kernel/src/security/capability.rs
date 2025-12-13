@@ -270,6 +270,29 @@ impl CapabilityManager {
         self.get_capabilities(domain_id).has_capability(cap)
     }
 
+    /// Grant a capability to a target domain on behalf of caller.
+    ///
+    /// Permission rule: caller must either have `CAP_SYS_ADMIN` or be
+    /// permitted the capability being granted.
+    ///
+    /// This mirrors the logic used by the ExoShell's `cap.grant` helper and
+    /// centralises it so it can be tested without pulling in the full shell
+    /// machinery.
+    pub fn grant_capability(&self, caller_domain: u64, target_domain: u64, cap: Capability) -> Result<(), CapabilityError> {
+        // Check caller permissions
+        let caller_caps = self.get_capabilities(caller_domain);
+        if !self.has_capability(caller_domain, CAP_SYS_ADMIN) && !caller_caps.is_permitted(cap) {
+            return Err(CapabilityError::NotPermitted);
+        }
+
+        // Add to permitted and effective (raise) for the target
+        let mut caps = self.get_capabilities(target_domain);
+        caps.permitted |= cap;
+        caps.raise(cap)?;
+        self.set_capabilities(target_domain, caps);
+        Ok(())
+    }
+
     /// Require a capability (returns error if not present)
     pub fn require_capability(
         &self,
@@ -368,5 +391,33 @@ mod tests {
         let mut caps = CapabilitySet::with_permitted(CAP_NET_BIND);
 
         assert!(caps.raise(CAP_SYS_ADMIN).is_err());
+    }
+
+    #[test]
+    fn test_grant_requires_permissions_manager() {
+        // Use numeric domain ids to avoid depending on process_manager here
+        let caller: u64 = 1000;
+        let target: u64 = 2000;
+
+        // caller has no capabilities
+        manager().set_capabilities(caller, CapabilitySet::empty());
+
+        let res = manager().grant_capability(caller, target, CAP_NET_BIND);
+        assert!(res.is_err(), "Expected grant to fail without permissions");
+    }
+
+    #[test]
+    fn test_grant_with_permitted_manager() {
+        let caller: u64 = 1001;
+        let target: u64 = 2001;
+
+        // give caller permitted CAP_NET_BIND
+        manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
+
+        let res = manager().grant_capability(caller, target, CAP_NET_BIND);
+        assert!(res.is_ok(), "Expected grant to succeed when caller is permitted");
+
+        // target should now have effective capability
+        assert!(manager().has_capability(target, CAP_NET_BIND));
     }
 }

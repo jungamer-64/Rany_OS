@@ -232,7 +232,7 @@ impl ShellNamespace for SysNamespace {
         "sys"
     }
 
-    fn call<'a>(&'a self, method: &'a str, _args: &'a [ExoValue]) -> BoxFuture<'a, ExoValue<'static>> {
+    fn call<'a>(&'a self, method: &'a str, _args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
                 "info" => Self::info(),

@@ -86,4 +86,14 @@ mod tests {
         let val = ExoValue::String(alloc::string::String::from("hello"));
         assert_eq!(alloc::format!("{}", val), "hello");
     }
+
+    #[test]
+    fn test_namespace_registration() {
+        let shell = ExoShell::new();
+        assert!(shell.is_namespace("fs"));
+        assert!(shell.is_namespace("cap"));
+        assert!(shell.is_namespace("net"));
+        assert!(shell.is_namespace("sys"));
+        assert!(shell.is_namespace("driver"));
+    }
 }

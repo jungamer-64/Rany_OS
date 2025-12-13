@@ -92,6 +92,21 @@ pub enum Expr<'a> {
         param: String,
         body: Box<Expr<'a>>,
     },
+    
+    /// 配列リテラル
+    /// 例: `[1, 2, 3]`, `["a", "b"]`
+    Array(Vec<Expr<'a>>),
+    
+    /// インデックスアクセス
+    /// 例: `arr[0]`, `list[i]`
+    Index {
+        object: Box<Expr<'a>>,
+        index: Box<Expr<'a>>,
+    },
+    
+    /// マップリテラル
+    /// 例: `{name: "foo", value: 42}`
+    Map(Vec<(String, Expr<'a>)>),
 }
 
 // ============================================================================
@@ -108,7 +123,14 @@ pub enum Expr<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
     // -------------------------------------------------------------------------
-    // Logical operators (優先順位: 最低)
+    // Pipe operator (優先順位: 最低)
+    // -------------------------------------------------------------------------
+    
+    /// Pipe: `a |> f()`
+    Pipe,
+    
+    // -------------------------------------------------------------------------
+    // Logical operators (優先順位: 低)
     // -------------------------------------------------------------------------
     
     /// Logical OR: `a || b`
@@ -167,6 +189,7 @@ impl BinaryOp {
     #[must_use]
     pub const fn precedence(self) -> u8 {
         match self {
+            Self::Pipe => 0,
             Self::Or => 1,
             Self::And => 2,
             Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge 
@@ -188,6 +211,7 @@ impl BinaryOp {
     #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
+            "|>" => Some(Self::Pipe),
             "||" => Some(Self::Or),
             "&&" => Some(Self::And),
             "==" => Some(Self::Eq),
@@ -212,6 +236,7 @@ impl BinaryOp {
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::Pipe => "|>",
             Self::Or => "||",
             Self::And => "&&",
             Self::Eq => "==",

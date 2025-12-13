@@ -9,6 +9,8 @@ use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
+use alloc::vec;
+use alloc::borrow::Cow;
 
 use super::types::*;
 use super::namespaces::*;
@@ -17,27 +19,40 @@ use super::parser::*;
 /// ExoShell REPLインタプリタ
 pub struct ExoShell {
     /// 変数バインディング
-    pub bindings: BTreeMap<String, ExoValue>,
+    pub bindings: BTreeMap<String, ExoValue<'static>>,
     /// カレントディレクトリ
     pub cwd: String,
     /// コマンド履歴
     history: Vec<String>,
     /// 最後の結果
-    last_result: ExoValue,
+    last_result: ExoValue<'static>,
+    /// 登録済み名前空間（動的登録対応）
+    namespaces: BTreeMap<String, Box<dyn super::namespaces::ShellNamespace>>,
 }
 
 impl ExoShell {
+    const MAX_RECURSION_DEPTH: usize = 256;
     pub fn new() -> Self {
         Self {
             bindings: BTreeMap::new(),
             cwd: String::from("/"),
             history: Vec::new(),
             last_result: ExoValue::Nil,
+            namespaces: {
+                let mut m = BTreeMap::new();
+                m.insert(String::from("fs"), Box::new(FsNamespace) as Box<dyn super::namespaces::ShellNamespace>);
+                m.insert(String::from("net"), Box::new(NetNamespace) as Box<dyn super::namespaces::ShellNamespace>);
+                m.insert(String::from("proc"), Box::new(ProcNamespace) as Box<dyn super::namespaces::ShellNamespace>);
+                m.insert(String::from("cap"), Box::new(CapNamespace) as Box<dyn super::namespaces::ShellNamespace>);
+                m.insert(String::from("sys"), Box::new(SysNamespace) as Box<dyn super::namespaces::ShellNamespace>);
+                m.insert(String::from("driver"), Box::new(DriverNamespace) as Box<dyn super::namespaces::ShellNamespace>);
+                m
+            },
         }
     }
 
     /// 式を評価（メソッドチェーン対応）- async版
-    pub async fn eval(&mut self, input: &str) -> ExoValue {
+    pub async fn eval(&mut self, input: &str) -> ExoValue<'static> {
         let input = input.trim();
         
         if input.is_empty() || input.starts_with('#') {
@@ -72,7 +87,7 @@ impl ExoShell {
     }
 
     /// メソッドチェーンを評価（async版）
-    async fn eval_chain(&mut self, input: &str) -> ExoValue {
+    async fn eval_chain(&mut self, input: &str) -> ExoValue<'static> {
         // 式をパース
         let expr = match parse_expression(input) {
             Ok(e) => e,
@@ -89,10 +104,18 @@ impl ExoShell {
     }
 
     /// AST式を評価（非同期・副作用あり）
-    async fn evaluate_expr(&mut self, expr: &Expr) -> ExoValue {
+    async fn evaluate_expr(&mut self, expr: &Expr<'_>) -> ExoValue<'static> {
+        self.evaluate_expr_inner(expr, 0).await
+    }
+
+    async fn evaluate_expr_inner(&mut self, expr: &Expr<'_>, depth: usize) -> ExoValue<'static> {
+        if depth > Self::MAX_RECURSION_DEPTH {
+            return ExoValue::Error("Stack overflow: expression too complex".to_string());
+        }
+
         match expr {
-            Expr::Literal(val) => val.clone(),
-            
+            Expr::Literal(val) => val.clone().into_owned(),
+
             Expr::Ident(name) => {
                 // 変数参照 ($var) または予約語
                 if name.starts_with('$') {
@@ -104,70 +127,150 @@ impl ExoShell {
                     "nil" => ExoValue::Nil,
                     _ => {
                         // binding にあるかチェック
-                        if let Some(val) = self.bindings.get(name) {
+                        if let Some(val) = self.bindings.get(name.as_str()) {
                             return val.clone();
                         }
                         // 名前空間の可能性（fs 等）は MethodCall で処理されるが、
                         // 単体で `fs` と入力された場合などはここでエラーにするか、文字列にするか？
                         // エイリアスの可能性もある
-                        self.eval_alias(name).await
+                        self.eval_alias(&name).await
                     }
                 }
             }
-            
+
             Expr::Binary { left, op, right } => {
-                let l = Box::pin(self.evaluate_expr(left)).await;
-                let r = Box::pin(self.evaluate_expr(right)).await;
-                eval::eval_binary_op(&l, *op, &r)
-            }
-            
-            Expr::Unary { op, operand } => {
-                let val = Box::pin(self.evaluate_expr(operand)).await;
-                eval::eval_unary_op(*op, &val)
-            }
-            
-            Expr::Group(inner) => Box::pin(self.evaluate_expr(inner)).await,
-            
-            Expr::MethodCall { object, method, args } => {
-                // 名前空間メソッドの特別扱い
-                if let Expr::Ident(name) = &**object {
-                     if self.is_namespace(name) {
-                         return self.dispatch_namespace_method(name, method, args).await;
-                     }
+                // パイプ演算子は特別扱い: 左辺の結果を右辺の関数/メソッドの第一引数として渡す
+                if *op == BinaryOp::Pipe {
+                    let left_val = Box::pin(self.evaluate_expr_inner(left, depth + 1)).await;
+                    
+                    // 右辺がメソッド呼び出しの場合、左辺を最初の引数として挿入
+                    match right.as_ref() {
+                        Expr::MethodCall { object, method, args } => {
+                            // 左辺をリテラルとして、argsの先頭に挿入
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(Expr::Literal(left_val));
+                            new_args.extend(args.iter().cloned());
+                            
+                            // 名前空間メソッドか通常メソッドかを判定
+                            if let Expr::Ident(ns_name) = object.as_ref() {
+                                if self.is_namespace(ns_name) {
+                                    return self.dispatch_namespace_method(ns_name, method, &new_args).await;
+                                }
+                            }
+                            
+                            let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
+                            return self.apply_method(obj, method, &new_args).await;
+                        }
+                        // 右辺が識別子の場合（関数名として扱う）
+                        Expr::Ident(func_name) => {
+                            // 配列メソッドとして呼び出し
+                            let new_args = vec![Expr::Literal(left_val.clone())];
+                            return self.apply_method(left_val, func_name, &new_args).await;
+                        }
+                        _ => {
+                            return ExoValue::Error(format!("Pipe operator requires method call on right side"));
+                        }
+                    }
                 }
                 
-                let obj = Box::pin(self.evaluate_expr(object)).await;
+                let l = Box::pin(self.evaluate_expr_inner(left, depth + 1)).await;
+                let r = Box::pin(self.evaluate_expr_inner(right, depth + 1)).await;
+                eval::eval_binary_op(&l, *op, &r)
+            }
+
+            Expr::Unary { op, operand } => {
+                let val = Box::pin(self.evaluate_expr_inner(operand, depth + 1)).await;
+                eval::eval_unary_op(*op, &val)
+            }
+
+            Expr::Group(inner) => Box::pin(self.evaluate_expr_inner(inner, depth + 1)).await,
+
+            Expr::MethodCall { object, method, args } => {
+                // 名前空間メソッドの特別扱い
+                if let Expr::Ident(name) = object.as_ref() {
+                     if self.is_namespace(&name) {
+                         return self.dispatch_namespace_method(&name, method, args).await;
+                     }
+                }
+
+                let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
                 self.apply_method(obj, method, args).await
             }
-            
+
             Expr::FieldAccess { object, field } => {
-                let obj = Box::pin(self.evaluate_expr(object)).await;
-                eval::get_field(&obj, field)
+                let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
+                eval::get_field(&obj, &field)
             }
-            
+
+            Expr::Array(elements) => {
+                let mut values: Vec<ExoValue<'static>> = Vec::new();
+                for e in elements.iter() {
+                    values.push(Box::pin(self.evaluate_expr_inner(e, depth + 1)).await);
+                }
+                ExoValue::Array(values)
+            }
+
+            Expr::Index { object, index } => {
+                let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
+                let idx = Box::pin(self.evaluate_expr_inner(index, depth + 1)).await;
+
+                match (&obj, &idx) {
+                    (ExoValue::Array(arr), ExoValue::Int(i)) => {
+                        let i = *i as usize;
+                        if i < arr.len() {
+                            arr[i].clone()
+                        } else {
+                            ExoValue::Error(format!("Index {} out of bounds (len={})", i, arr.len()))
+                        }
+                    }
+                    (ExoValue::String(s), ExoValue::Int(i)) => {
+                        let i = *i as usize;
+                        if let Some(c) = s.chars().nth(i) {
+                            ExoValue::String(Cow::Owned(c.to_string()))
+                        } else {
+                            ExoValue::Error(format!("String index {} out of bounds", i))
+                        }
+                    }
+                    _ => ExoValue::Error(format!("Cannot index {:?} with {:?}", obj, idx)),
+                }
+            }
+
+            Expr::Map(pairs) => {
+                let mut map = BTreeMap::new();
+                for (key, value_expr) in pairs.iter() {
+                    let value = Box::pin(self.evaluate_expr_inner(value_expr, depth + 1)).await;
+                    map.insert(key.clone(), value);
+                }
+                ExoValue::Map(map)
+            }
+
             // クロージャは値として評価できない（メソッド引数としてのみ有効）
             Expr::Closure { .. } => ExoValue::Error("Closures are only allowed in method arguments".to_string()),
         }
     }
 
     fn is_namespace(&self, name: &str) -> bool {
-        matches!(name, "fs" | "net" | "proc" | "cap" | "sys" | "driver")
+        self.namespaces.contains_key(name)
     }
 
-    async fn dispatch_namespace_method(&mut self, namespace: &str, method: &str, args: &[Expr]) -> ExoValue {
-        match namespace {
-            "fs" => self.eval_fs_method(method, args).await,
-            "net" => self.eval_net_method(method, args).await,
-            "proc" => self.eval_proc_method(method, args).await,
-            "cap" => self.eval_cap_method(method, args).await,
-            "sys" => self.eval_sys_method(method, args).await,
-            "driver" => self.eval_driver_method(method, args).await,
-            _ => ExoValue::Error(format!("Unknown namespace: {}", namespace)),
+    async fn dispatch_namespace_method(&mut self, namespace: &str, method: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+        // Evaluate arguments first
+        let evaluated = self.evaluate_args(args).await;
+
+        // If FS.entries and no args were passed, default to shell cwd to preserve legacy behavior
+        let mut final_args = evaluated;
+        if namespace == "fs" && method == "entries" && final_args.is_empty() {
+            final_args.push(ExoValue::String(Cow::Owned(self.cwd.clone())));
+        }
+
+        match self.namespaces.get(namespace) {
+            Some(ns) => ns.call(method, &final_args).await,
+            None => ExoValue::Error(format!("Unknown namespace: {}", namespace)),
         }
     }
     
-    async fn evaluate_args(&mut self, args: &[Expr]) -> Vec<ExoValue> {
-        let mut values = Vec::new();
+    async fn evaluate_args(&mut self, args: &[Expr<'_>]) -> Vec<ExoValue<'static>> {
+        let mut values: Vec<ExoValue<'static>> = Vec::new();
         for arg in args {
             values.push(Box::pin(self.evaluate_expr(arg)).await);
         }
@@ -175,14 +278,14 @@ impl ExoShell {
     }
 
     /// fs.* メソッド（構造化版）- async版
-    async fn eval_fs_method(&mut self, name: &str, args: &[Expr]) -> ExoValue {
+    async fn eval_fs_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
         
         match name {
             "entries" => {
                 let path = args.first()
                     .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.clone()),
+                        ExoValue::String(s) => Some(s.as_ref().to_string()),
                         _ => None,
                     })
                     .unwrap_or_else(|| self.cwd.clone());
@@ -190,40 +293,40 @@ impl ExoShell {
             }
             "read" => {
                 let path = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None })
                     .unwrap_or_default();
                 FsNamespace::read(&path).await
             }
             "stat" => {
                 let path = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None })
                     .unwrap_or_default();
                 FsNamespace::stat(&path).await
             }
             "mkdir" => {
                 let path = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None })
                     .unwrap_or_default();
                 FsNamespace::mkdir(&path).await
             }
             "remove" | "rm" => {
                 let path = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None })
                     .unwrap_or_default();
                 FsNamespace::remove(&path).await
             }
             "cd" => {
                 let path = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None })
                     .unwrap_or_else(|| String::from("/"));
                 self.cwd = if path.starts_with('/') {
                     path
                 } else {
                     format!("{}/{}", self.cwd, path)
                 };
-                ExoValue::String(self.cwd.clone())
+                ExoValue::String(Cow::Owned(self.cwd.clone()))
             }
-            "pwd" => ExoValue::String(self.cwd.clone()),
+            "pwd" => ExoValue::String(Cow::Owned(self.cwd.clone())),
             _ => ExoValue::Error(
                 ParseError::UnknownMethod {
                     namespace: String::from("fs"),
@@ -234,7 +337,7 @@ impl ExoShell {
     }
 
     /// net.* メソッド（構造化版）- async版
-    async fn eval_net_method(&mut self, name: &str, args: &[Expr]) -> ExoValue {
+    async fn eval_net_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
 
         match name {
@@ -243,7 +346,7 @@ impl ExoShell {
             "arp" => NetNamespace::arp_cache(),
             "ping" => {
                 let ip_str = match args.first() {
-                    Some(ExoValue::String(s)) => s.clone(),
+                    Some(ExoValue::String(s)) => s.as_ref().to_string(),
                     Some(other) => return ExoValue::Error(
                         ParseError::InvalidArgumentType {
                             method: String::from("ping"),
@@ -286,7 +389,7 @@ impl ExoShell {
     }
 
     /// proc.* メソッド（構造化版）
-    async fn eval_proc_method(&mut self, name: &str, args: &[Expr]) -> ExoValue {
+    async fn eval_proc_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
         
         match name {
@@ -307,7 +410,7 @@ impl ExoShell {
     }
 
     /// cap.* メソッド（構造化版）
-    async fn eval_cap_method(&mut self, name: &str, args: &[Expr]) -> ExoValue {
+    async fn eval_cap_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
         
         match name {
@@ -332,7 +435,7 @@ impl ExoShell {
 
     /// sys.* メソッド（構造化版）
     /// sys.* メソッド（構造化版）
-    async fn eval_sys_method(&mut self, name: &str, _args: &[Expr]) -> ExoValue {
+    async fn eval_sys_method(&mut self, name: &str, _args: &[Expr<'_>]) -> ExoValue<'static> {
         match name {
             "info" => SysNamespace::info(),
             "memory" | "mem" => SysNamespace::memory(),
@@ -354,14 +457,14 @@ impl ExoShell {
     }
 
     /// driver.* メソッド（ドライバ管理）
-    async fn eval_driver_method(&mut self, name: &str, args: &[Expr]) -> ExoValue {
+    async fn eval_driver_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         let args = self.evaluate_args(args).await;
         
         match name {
             "list" => DriverNamespace::list(),
             "load" => {
                 let path = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                     .unwrap_or("");
                 DriverNamespace::load(path)
             }
@@ -378,7 +481,7 @@ impl ExoShell {
     /// args は AST (未評価) のまま受け取り、メソッドに応じて評価戦略を変える
     /// 値に対してメソッドを適用（メソッドチェーン）
     /// args は AST (未評価) のまま受け取り、メソッドに応じて評価戦略を変える
-    async fn apply_method(&mut self, target: ExoValue, method: &str, args: &[Expr]) -> ExoValue {
+    async fn apply_method(&mut self, target: ExoValue<'static>, method: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         match target {
             ExoValue::Array(list) => self.apply_array_method(list, method, args).await,
             ExoValue::Map(map) => {
@@ -391,7 +494,7 @@ impl ExoShell {
             }
             ExoValue::String(s) => {
                  let evaluated_args = self.evaluate_args(args).await;
-                 self.apply_string_method(s, method, &evaluated_args)
+                 self.apply_string_method(s.into_owned(), method, &evaluated_args)
             }
             ExoValue::Error(e) => ExoValue::Error(e), // エラーは伝播
             _ => ExoValue::Error(format!("Method '{}' not supported on type {:?}", method, target)),
@@ -399,7 +502,7 @@ impl ExoShell {
     }
 
     /// 配列に対するメソッド
-    async fn apply_array_method(&mut self, list: Vec<ExoValue>, method: &str, args: &[Expr]) -> ExoValue {
+    async fn apply_array_method(&mut self, list: Vec<ExoValue<'static>>, method: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
         match method {
             "len" | "count" => ExoValue::Int(list.len() as i64),
             "first" | "head" => list.first().cloned().unwrap_or(ExoValue::Nil),
@@ -433,7 +536,7 @@ impl ExoShell {
             "map" | "select" => {
                 let args = self.evaluate_args(args).await;
                 let field = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None })
                     .unwrap_or_else(|| String::from("name"));
                 self.map_array(list, &field)
             }
@@ -441,43 +544,143 @@ impl ExoShell {
             "sort" | "order" => {
                 let args = self.evaluate_args(args).await;
                 let field = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.clone()), _ => None });
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None });
                 let desc = args.get(1)
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_str() == "desc"), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref() == "desc"), _ => None })
                     .unwrap_or(false);
                     
                 self.sort_array(list, field.as_deref(), desc)
             }
             
-            _ => ExoValue::Error(format!("Array does not have method '{}'", method)),
+            // 集約メソッド
+            "sum" => {
+                let sum: i64 = list.iter().filter_map(|v| match v {
+                    ExoValue::Int(n) => Some(*n),
+                    ExoValue::Float(f) => Some(*f as i64),
+                    _ => None,
+                }).sum();
+                ExoValue::Int(sum)
+            }
+            
+            "avg" | "average" => {
+                let nums: Vec<f64> = list.iter().filter_map(|v| match v {
+                    ExoValue::Int(n) => Some(*n as f64),
+                    ExoValue::Float(f) => Some(*f),
+                    _ => None,
+                }).collect();
+                if nums.is_empty() {
+                    ExoValue::Nil
+                } else {
+                    ExoValue::Float(nums.iter().sum::<f64>() / nums.len() as f64)
+                }
+            }
+            
+            "min" => {
+                list.iter().filter_map(|v| match v {
+                    ExoValue::Int(n) => Some(*n),
+                    _ => None,
+                }).min().map(ExoValue::Int).unwrap_or(ExoValue::Nil)
+            }
+            
+            "max" => {
+                list.iter().filter_map(|v| match v {
+                    ExoValue::Int(n) => Some(*n),
+                    _ => None,
+                }).max().map(ExoValue::Int).unwrap_or(ExoValue::Nil)
+            }
+            
+            "join" => {
+                let args = self.evaluate_args(args).await;
+                let sep = args.first()
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref().to_string()), _ => None })
+                    .unwrap_or_else(|| String::from(", "));
+                let joined: String = list.iter()
+                    .map(|v| format!("{}", v))
+                    .collect::<Vec<_>>()
+                    .join(&sep);
+                ExoValue::String(Cow::Owned(joined))
+            }
+            
+            "find" => {
+                let condition_expr = match args.first() {
+                    Some(e) => e,
+                    None => return ExoValue::Error("find requires a condition argument".to_string()),
+                };
+                list.into_iter().find(|item| {
+                    eval_closure_as_bool(condition_expr, item)
+                }).unwrap_or(ExoValue::Nil)
+            }
+            
+            "any" => {
+                let condition_expr = match args.first() {
+                    Some(e) => e,
+                    None => return ExoValue::Error("any requires a condition argument".to_string()),
+                };
+                ExoValue::Bool(list.iter().any(|item| {
+                    eval_closure_as_bool(condition_expr, item)
+                }))
+            }
+            
+            "all" => {
+                let condition_expr = match args.first() {
+                    Some(e) => e,
+                    None => return ExoValue::Error("all requires a condition argument".to_string()),
+                };
+                ExoValue::Bool(list.iter().all(|item| {
+                    eval_closure_as_bool(condition_expr, item)
+                }))
+            }
+            
+            "contains" => {
+                let args = self.evaluate_args(args).await;
+                let target = args.first();
+                let found = match target {
+                    Some(v) => list.iter().any(|item| item == v),
+                    None => false,
+                };
+                ExoValue::Bool(found)
+            }
+            
+            "flatten" => {
+                let mut result = Vec::new();
+                for item in list {
+                    match item {
+                        ExoValue::Array(inner) => result.extend(inner),
+                        other => result.push(other),
+                    }
+                }
+                ExoValue::Array(result)
+            }
+            
+            _ => ExoValue::Error(format!("Array does not have method '{}'\nValid methods: len, first, last, reverse, take, skip, filter, map, sort, sum, avg, min, max, join, find, any, all, contains, flatten", method)),
         }
     }
 
     /// 配列をフィルタリング (AST版)
-    fn filter_array(&self, list: Vec<ExoValue>, condition: &Expr) -> ExoValue {
+    fn filter_array(&self, list: Vec<ExoValue<'static>>, condition: &Expr<'_>) -> ExoValue<'static> {
         // 文字列リテラルの場合はレガシーモード
         if let Expr::Literal(ExoValue::String(s)) = condition {
-             return self.filter_with_simple_condition(list, s);
+             return self.filter_with_simple_condition(list, s.as_ref());
         }
         
-        let filtered: Vec<ExoValue> = list.into_iter().filter(|item| {
+        let filtered: Vec<ExoValue<'static>> = list.into_iter().filter(|item| {
             eval_closure_as_bool(condition, item)
         }).collect();
         ExoValue::Array(filtered)
     }
 
     /// Map に対するメソッド
-    fn apply_map_method(&self, map: BTreeMap<String, ExoValue>, method: &str, args: &[ExoValue]) -> ExoValue {
+    fn apply_map_method(&self, map: BTreeMap<String, ExoValue<'static>>, method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
         match method {
             "get" => {
                  let empty = String::new();
                  let key = args.first()
-                     .and_then(|v| match v { ExoValue::String(s) => Some(s), _ => None })
+                     .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                      .unwrap_or(&empty);
                  map.get(key).cloned().unwrap_or(ExoValue::Nil)
             }
             "keys" => {
-                let keys: Vec<ExoValue> = map.keys().map(|k| ExoValue::String(k.clone())).collect();
+                let keys: Vec<ExoValue<'static>> = map.keys().map(|k| ExoValue::String(Cow::Owned(k.clone()))).collect();
                 ExoValue::Array(keys)
             }
             "len" | "size" => ExoValue::Int(map.len() as i64),
@@ -486,48 +689,48 @@ impl ExoShell {
     }
 
     /// Bytes に対するメソッド
-    fn apply_bytes_method(&self, bytes: Vec<u8>, method: &str, _args: &[ExoValue]) -> ExoValue {
+    fn apply_bytes_method(&self, bytes: Cow<'static, [u8]>, method: &str, _args: &[ExoValue<'static>]) -> ExoValue<'static> {
         match method {
             "len" => ExoValue::Int(bytes.len() as i64),
             "utf8" | "string" | "to_string" | "text" => {
-                match String::from_utf8(bytes) {
-                    Ok(s) => ExoValue::String(s),
+                match String::from_utf8(bytes.into_owned()) {
+                    Ok(s) => ExoValue::String(Cow::Owned(s)),
                     Err(_) => ExoValue::Error("Invalid UTF-8 sequence".to_string()),
                 }
             }
             "hex" => {
                 let hex: String = bytes.iter().map(|b| format!("{:02x}", b)).collect();
-                ExoValue::String(hex)
+                ExoValue::String(Cow::Owned(hex))
             }
             _ => ExoValue::Error(format!("Bytes does not have method '{}'", method)),
         }
     }
 
     /// String に対するメソッド
-    fn apply_string_method(&self, s: String, method: &str, args: &[ExoValue]) -> ExoValue {
+    fn apply_string_method(&self, s: String, method: &str, args: &[ExoValue<'static>]) -> ExoValue<'static> {
          match method {
             "len" | "length" => ExoValue::Int(s.len() as i64),
-            "trim" => ExoValue::String(s.trim().to_string()),
-            "upper" => ExoValue::String(s.to_uppercase()),
-            "lower" => ExoValue::String(s.to_lowercase()),
+            "trim" => ExoValue::String(Cow::Owned(s.trim().to_string())),
+            "upper" => ExoValue::String(Cow::Owned(s.to_uppercase())),
+            "lower" => ExoValue::String(Cow::Owned(s.to_lowercase())),
             "lines" => {
-                let lines = s.lines().map(|l| ExoValue::String(l.to_string())).collect();
+                let lines: Vec<ExoValue<'static>> = s.lines().map(|l| ExoValue::String(Cow::Owned(l.to_string()))).collect();
                 ExoValue::Array(lines)
             }
             "split" => {
                 let empty = String::from(" ");
                 let sep = args.first()
-                    .and_then(|v| match v { ExoValue::String(s) => Some(s), _ => None })
+                    .and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None })
                     .unwrap_or(&empty);
-                ExoValue::Array(s.split(sep).map(|p| ExoValue::String(p.to_string())).collect())
+                ExoValue::Array(s.split(sep).map(|p| ExoValue::String(Cow::Owned(p.to_string()))).collect())
             }
-            "contains" => {
-                 let sub = args.first().and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None }).unwrap_or("");
-                 ExoValue::Bool(s.contains(sub))
-            }
-            "starts_with" => {
-                 let sub = args.first().and_then(|v| match v { ExoValue::String(s) => Some(s.as_str()), _ => None }).unwrap_or("");
-                 ExoValue::Bool(s.starts_with(sub))
+              "contains" => {
+                  let sub = args.first().and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None }).unwrap_or("");
+                  ExoValue::Bool(s.contains(sub))
+              }
+              "starts_with" => {
+                  let sub = args.first().and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None }).unwrap_or("");
+                  ExoValue::Bool(s.starts_with(sub))
             }
              _ => ExoValue::Error(format!("String method '{}' not found", method)),
          }
@@ -535,7 +738,7 @@ impl ExoShell {
     
     
     /// 従来の文字列形式でフィルタリング
-    fn filter_with_simple_condition(&self, list: Vec<ExoValue>, condition: &str) -> ExoValue {
+    fn filter_with_simple_condition(&self, list: Vec<ExoValue<'static>>, condition: &str) -> ExoValue<'static> {
         let parts: Vec<&str> = condition.split_whitespace().collect();
         
         if parts.len() < 3 {
@@ -546,7 +749,7 @@ impl ExoShell {
         let op = parts[1];
         let value = parts[2..].join(" ");
         
-        let filtered: Vec<ExoValue> = list.into_iter().filter(|item| {
+        let filtered: Vec<ExoValue<'static>> = list.into_iter().filter(|item| {
             match item {
                 ExoValue::FileEntry(entry) => {
                     self.check_file_entry_condition(entry, field, op, &value)
@@ -616,7 +819,7 @@ impl ExoShell {
     }
 
     /// Mapの条件チェック
-    fn check_map_condition(&self, map: &BTreeMap<String, ExoValue>, field: &str, op: &str, value: &str) -> bool {
+    fn check_map_condition(&self, map: &BTreeMap<String, ExoValue<'static>>, field: &str, op: &str, value: &str) -> bool {
         if let Some(field_val) = map.get(field) {
             match field_val {
                 ExoValue::Int(n) => {
@@ -659,7 +862,7 @@ impl ExoShell {
     }
 
     /// 配列のフィールドを抽出
-    fn map_array(&self, list: Vec<ExoValue>, field_or_closure: &str) -> ExoValue {
+    fn map_array(&self, list: Vec<ExoValue<'static>>, field_or_closure: &str) -> ExoValue<'static> {
         let field_or_closure = field_or_closure.trim();
         
         if field_or_closure.starts_with('|') {
@@ -693,22 +896,22 @@ impl ExoShell {
     }
     
     /// シンプルなフィールド抽出
-    fn map_array_simple(&self, list: Vec<ExoValue>, field: &str) -> ExoValue {
-        let mapped: Vec<ExoValue> = list.into_iter().map(|item| {
+    fn map_array_simple(&self, list: Vec<ExoValue<'static>>, field: &str) -> ExoValue<'static> {
+        let mapped: Vec<ExoValue<'static>> = list.into_iter().map(|item| {
             match item {
                 ExoValue::FileEntry(entry) => {
                     match field {
-                        "name" => ExoValue::String(entry.name),
+                        "name" => ExoValue::String(Cow::Owned(entry.name)),
                         "size" => ExoValue::Int(entry.size as i64),
-                        "path" => ExoValue::String(entry.path),
-                        "type" => ExoValue::String(format!("{:?}", entry.file_type)),
-                        "owner" => ExoValue::String(entry.owner),
+                        "path" => ExoValue::String(Cow::Owned(entry.path)),
+                        "type" => ExoValue::String(Cow::Owned(format!("{:?}", entry.file_type))),
+                        "owner" => ExoValue::String(Cow::Owned(entry.owner)),
                         _ => ExoValue::Nil,
                     }
                 }
                 ExoValue::Process(proc) => {
                     match field {
-                        "name" => ExoValue::String(proc.name),
+                        "name" => ExoValue::String(Cow::Owned(proc.name)),
                         "pid" => ExoValue::Int(proc.pid as i64),
                         "cpu" => ExoValue::Float(proc.cpu_usage as f64),
                         "memory" => ExoValue::Int(proc.memory_kb as i64),
@@ -726,7 +929,7 @@ impl ExoShell {
     }
 
     /// 配列をソート
-    fn sort_array(&self, mut list: Vec<ExoValue>, field_or_closure: Option<&str>, desc: bool) -> ExoValue {
+    fn sort_array(&self, mut list: Vec<ExoValue<'static>>, field_or_closure: Option<&str>, desc: bool) -> ExoValue<'static> {
         let field = match field_or_closure {
             Some(arg) => {
                 let arg = arg.trim();
@@ -748,7 +951,7 @@ impl ExoShell {
     }
     
     /// フィールドで比較
-    fn compare_by_field(&self, a: &ExoValue, b: &ExoValue, field: &str) -> core::cmp::Ordering {
+    fn compare_by_field(&self, a: &ExoValue<'static>, b: &ExoValue<'static>, field: &str) -> core::cmp::Ordering {
         use core::cmp::Ordering;
         
         let val_a = self.get_field_value(a, field);
@@ -765,21 +968,21 @@ impl ExoShell {
     }
     
     /// フィールド値を取得
-    fn get_field_value(&self, value: &ExoValue, field: &str) -> ExoValue {
+    fn get_field_value(&self, value: &ExoValue<'static>, field: &str) -> ExoValue<'static> {
         match value {
             ExoValue::FileEntry(entry) => {
                 match field {
-                    "name" => ExoValue::String(entry.name.clone()),
+                    "name" => ExoValue::String(Cow::Owned(entry.name.clone())),
                     "size" => ExoValue::Int(entry.size as i64),
-                    "path" => ExoValue::String(entry.path.clone()),
-                    "type" => ExoValue::String(format!("{:?}", entry.file_type)),
-                    "owner" => ExoValue::String(entry.owner.clone()),
+                    "path" => ExoValue::String(Cow::Owned(entry.path.clone())),
+                    "type" => ExoValue::String(Cow::Owned(format!("{:?}", entry.file_type))),
+                    "owner" => ExoValue::String(Cow::Owned(entry.owner.clone())),
                     _ => ExoValue::Nil,
                 }
             }
             ExoValue::Process(proc) => {
                 match field {
-                    "name" => ExoValue::String(proc.name.clone()),
+                    "name" => ExoValue::String(Cow::Owned(proc.name.clone())),
                     "pid" => ExoValue::Int(proc.pid as i64),
                     "cpu" => ExoValue::Float(proc.cpu_usage as f64),
                     "memory" => ExoValue::Int(proc.memory_kb as i64),
@@ -789,7 +992,7 @@ impl ExoShell {
             ExoValue::Map(map) => {
                 map.get(field).cloned().unwrap_or(ExoValue::Nil)
             }
-            ExoValue::String(s) => ExoValue::String(s.clone()),
+            ExoValue::String(s) => ExoValue::String(Cow::Owned(s.clone().into_owned())),
             ExoValue::Int(i) => ExoValue::Int(*i),
             _ => ExoValue::Nil,
         }
@@ -798,7 +1001,7 @@ impl ExoShell {
 
 
     /// let 式を評価（async版）
-    async fn eval_let(&mut self, expr: &str) -> ExoValue {
+    async fn eval_let(&mut self, expr: &str) -> ExoValue<'static> {
         if let Some(eq_pos) = expr.find('=') {
             let name = expr[..eq_pos].trim().to_string();
             let value_expr = expr[eq_pos + 1..].trim();
@@ -811,7 +1014,7 @@ impl ExoShell {
     }
 
     /// 互換性エイリアス（利便性のため）- async版
-    async fn eval_alias(&mut self, cmd: &str) -> ExoValue {
+    async fn eval_alias(&mut self, cmd: &str) -> ExoValue<'static> {
         let parts: Vec<&str> = cmd.split_whitespace().collect();
         if parts.is_empty() {
             return ExoValue::Nil;
@@ -843,9 +1046,9 @@ impl ExoShell {
                         }
                     };
                 }
-                ExoValue::String(self.cwd.clone())
+                ExoValue::String(Cow::Owned(self.cwd.clone()))
             }
-            "pwd" => ExoValue::String(self.cwd.clone()),
+            "pwd" => ExoValue::String(Cow::Owned(self.cwd.clone())),
             "cat" => {
                 if let Some(path) = parts.get(1) {
                     FsNamespace::read(path).await
@@ -900,7 +1103,7 @@ impl ExoShell {
     }
 
     /// Display help
-    pub fn help(&self) -> ExoValue {
+    pub fn help(&self) -> ExoValue<'static> {
         let help_text = r#"
 ================================================================================
                       ExoShell - Rust-style REPL Environment
@@ -975,7 +1178,7 @@ impl ExoShell {
 [Aliases (Unix compatibility)]
   ls, cd, pwd, cat, mkdir, rm, ps, ifconfig, ping are also available
 "#;
-        ExoValue::String(help_text.to_string())
+        ExoValue::String(Cow::Owned(help_text.to_string()))
     }
 
     /// カレントディレクトリを取得

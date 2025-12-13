@@ -20,6 +20,7 @@ mod shell;
 mod render;
 mod input;
 mod async_runtime;
+pub mod streams;
 pub mod utils;
 
 // Re-export types
@@ -36,6 +37,9 @@ pub use shell::GraphicalShell;
 // Re-export async runtime functions
 pub use async_runtime::{
     init, start, with_shell,
-    submit_command, run_async_shell,
+    run_async_shell,
     print, print_colored,
 };
+
+// Re-export stream types (for submit_command)
+pub use streams::{submit_command, CommandRequest, CommandResult};

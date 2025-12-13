@@ -28,6 +28,16 @@ pub enum Token {
     Operator(String),
     /// パイプ（クロージャ用）
     Pipe,
+    /// 開き角括弧
+    LBracket,
+    /// 閉じ角括弧
+    RBracket,
+    /// 開き波括弧
+    LBrace,
+    /// 閉じ波括弧
+    RBrace,
+    /// コロン
+    Colon,
 }
 
 /// 簡易トークナイザー
@@ -90,14 +100,41 @@ impl<'a> Tokenizer<'a> {
                     self.advance();
                     tokens.push(Token::Comma);
                 }
+                '[' => {
+                    self.advance();
+                    tokens.push(Token::LBracket);
+                }
+                ']' => {
+                    self.advance();
+                    tokens.push(Token::RBracket);
+                }
+                '{' => {
+                    self.advance();
+                    tokens.push(Token::LBrace);
+                }
+                '}' => {
+                    self.advance();
+                    tokens.push(Token::RBrace);
+                }
+                ':' => {
+                    self.advance();
+                    tokens.push(Token::Colon);
+                }
                 '|' => {
                     self.advance();
-                    // Check for || (logical OR)
-                    if self.peek() == Some('|') {
-                        self.advance();
-                        tokens.push(Token::Operator("||".into()));
-                    } else {
-                        tokens.push(Token::Pipe);
+                    match self.peek() {
+                        // || (logical OR)
+                        Some('|') => {
+                            self.advance();
+                            tokens.push(Token::Operator("||".into()));
+                        }
+                        // |> (pipe operator)
+                        Some('>') => {
+                            self.advance();
+                            tokens.push(Token::Operator("|>".into()));
+                        }
+                        // | (closure delimiter)
+                        _ => tokens.push(Token::Pipe),
                     }
                 }
                 '&' => {

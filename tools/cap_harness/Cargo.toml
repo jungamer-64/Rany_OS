@@ -1,0 +1,7 @@
+[package]
+name = "cap_harness"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# No external dependencies; keep this host-only and minimal
