@@ -69,6 +69,10 @@ impl CellId {
     pub fn as_u64(&self) -> u64 {
         self.0
     }
+
+    pub fn from_u64(id: u64) -> Self {
+        Self(id)
+    }
 }
 
 /// セルエントリ
@@ -311,11 +315,22 @@ pub fn load_driver(
     // Load the cell first
     let cell_id = load_cell(name, elf_data, allow_unsafe)?;
 
-    // Resolve driver entry symbol address
-    let entry_addr = with_registry(|r| r.resolve_symbol(DRIVER_ENTRY_SYMBOL));
+    // Resolve driver entry symbol address from the specific cell
+    let entry_addr = with_registry(|r| {
+        let cell = r.get(cell_id)?;
+        cell.exports
+            .iter()
+            .find(|(n, _)| n == DRIVER_ENTRY_SYMBOL)
+            .map(|(_, addr)| *addr)
+    });
+
     let entry_addr = match entry_addr {
         Some(a) => a,
         None => {
+            // Unload cell if entry not found
+            with_registry_mut(|r| {
+                 r.unload(cell_id);
+            });
             return Err(LoadError::InvalidFormat(
                 "Driver entry symbol not found".into(),
             ));
@@ -443,6 +458,18 @@ pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
     }
 
     Ok(())
+}
+
+/// Find the CellId that owns the given driver handle
+pub fn find_cell_by_driver(handle: DriverHandle) -> Option<CellId> {
+    with_registry(|r| {
+        for entry in r.cells.values() {
+            if entry.registered_drivers.contains(&handle) {
+                return Some(entry.id);
+            }
+        }
+        None
+    })
 }
 
 /// カーネルセルを初期化（起動時に呼ばれる）

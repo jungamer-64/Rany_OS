@@ -138,7 +138,7 @@ impl Future for AcceptFuture {
     type Output = SocketResult<(OwnedSocket, SocketAddr)>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.socket.accept() {
+        match self.socket.next_incoming() {
             Ok((socket, addr)) => Poll::Ready(Ok((OwnedSocket::from_socket(socket), addr))),
             Err(SocketError::Timeout) => {
                 // Wakerを登録してPending

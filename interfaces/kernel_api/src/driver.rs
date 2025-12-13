@@ -15,7 +15,7 @@
 //! - **Hot-Swap Ready**: Clean start/stop semantics for dynamic loading
 //! - **Zero-Copy Friendly**: Uses references where possible
 
-use crate::error::{KapiError, KapiResult};
+use crate::error::KapiResult;
 use crate::driver_abi::DriverContext;
 use alloc::boxed::Box;
 use core::future::Future;

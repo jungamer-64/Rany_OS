@@ -18,6 +18,18 @@
 //! to a static `DriverVTable`. The kernel loads this symbol and uses the
 //! vtable to call driver functions.
 //!
+//! ## ABI Stability Guidelines
+//!
+//! To maintain the validity of the text-based ABI hash verification in `build.rs`,
+//! all ABI-critical structs (e.g., `DriverContext`, `DriverVTable`) MUST adhere to these rules:
+//!
+//! 1.  **Primitives Only**: Use only primitive types (`u64`, `u32`, `*mut T`, etc.) or types defined within this file.
+//! 2.  **No External Types**: Do not produce fields using `type` aliases or structs defined in other modules.
+//! 3.  **Self-Contained**: Ensure all types used in function signatures `extern "C"` are defined in this file.
+//!
+//! Violated this rule may cause the ABI hash to remain unchanged even when the memory layout changes,
+//! leading to undefined behavior during driver loading.
+//!
 //! ## Safety
 //!
 //! All functions in the vtable use `extern "C"` calling convention and
@@ -28,8 +40,6 @@ mod tests {
     use super::*;
     use crate::export_driver;
 
-    // Driver functions for the test vtable
-    // Driver functions for the test vtable
     fn test_probe(_ctx: &mut DriverContext) -> i32 {
         0
     }
@@ -46,9 +56,6 @@ mod tests {
         true
     }
 
-    // Single exported driver used by the tests. Note: the macro exports a symbol
-    // named `_exorust_driver_entry`, which must be unique per crate; therefore
-    // we only invoke it once for all tests in this module.
     export_driver!(
         probe: test_probe,
         remove: test_remove,
@@ -61,31 +68,25 @@ mod tests {
 
     #[test]
     fn vtable_has_expected_values() {
-        // Access the exported entry and its vtable
         let entry: DriverEntryFn = _exorust_driver_entry;
         let vtbl_ptr = entry();
         assert!(!vtbl_ptr.is_null());
         let v = unsafe { &*vtbl_ptr };
 
-        // ABI version check
         assert_eq!(v.abi_version, DRIVER_ABI_VERSION);
         assert_eq!(v.type_hash, DRIVER_TYPE_HASH);
 
-        // Start should call our custom start and return 123
         let mut ctx = DriverContext::new();
         let res_start = (v.start)(&mut ctx as *mut _);
         assert_eq!(res_start, 123);
 
-        // Stop was not provided in the macro invocation -> default should be 0
         let res_stop = (v.stop)(&mut ctx as *mut _);
         assert_eq!(res_stop, 0);
 
-        // IRQ handler should be present and return true
         assert!(v.handle_irq.is_some());
         let irq_fn = v.handle_irq.unwrap();
         assert!(irq_fn(&mut ctx as *mut _));
 
-        // Name pointer and length
         let name_ptr = (v.name)();
         let name_len = (v.name_len)();
         let name_slice = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
@@ -687,10 +688,14 @@ macro_rules! export_async_driver {
             // IRQ Adapter
             extern "C" fn irq_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> bool {
                 let ctx_safe = unsafe { &mut *ctx };
-                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                let driver_ptr = ctx_safe.driver_data as *mut $crate::driver_abi::AsyncDriverWrapper<$driver_type>;
                 if driver_ptr.is_null() { return false; }
-                let drv = unsafe { &mut *driver_ptr };
-                ($irq)(drv)
+                let wrapper = unsafe { &mut *driver_ptr };
+                // Optional: Check busy? IRQs usually are high priority.
+                // Assuming IRQ handler is safe to run concurrent with async task logic 
+                // OR implementation must handle it. 
+                // However, safe bet: access wrapper.driver
+                ($irq)(&mut wrapper.driver)
             }
 
             static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
@@ -754,26 +759,37 @@ macro_rules! export_async_driver {
         version = $version:expr
     ) => {
             use $crate::driver::{AsyncDriver, DriverType};
-            use $crate::driver_abi::{DriverContext, DriverVTable, DRIVER_ABI_VERSION};
+            use $crate::driver_abi::{DriverContext, DriverVTable, DRIVER_ABI_VERSION, AsyncDriverWrapper};
             use $crate::services::kernel;
             use alloc::boxed::Box;
+            use core::sync::atomic::Ordering;
 
             extern "C" fn probe_adapter(ctx: *mut DriverContext) -> i32 {
                 let ctx_safe = unsafe { &mut *ctx };
-                let driver = Box::new($constructor);
+                
+                // 1. Create the driver instance wrapped
+                let driver = Box::new(AsyncDriverWrapper::new($constructor));
                 let driver_ptr = Box::into_raw(driver);
                 ctx_safe.driver_data = driver_ptr as u64;
 
-                // We must use 'static future or handle params safely.
-                // ctx is unsafe to pass if not static. Assume static/heap.
-                // driver_ptr is safe.
-                
+                // 2. Spawn async probe
                 let future = async move {
-                    let drv = unsafe { &mut *driver_ptr };
+                    let wrapper = unsafe { &mut *driver_ptr };
                     let ctx_ref = unsafe { &mut *ctx };
-                    if let Err(_) = drv.probe(ctx_ref).await {
-                         // TODO: Proper error logging
+                    
+                    // Mark busy
+                    if wrapper.busy.swap(true, Ordering::Acquire) {
+                        kernel().log("Async probe blocked: Driver busy");
+                        return;
                     }
+
+                    if let Err(_) = wrapper.driver.probe(ctx_ref).await {
+                         // TODO: Proper error handling
+                         kernel().log("Async probe failed");
+                    }
+                    
+                    // Release busy
+                    wrapper.busy.store(false, Ordering::Release);
                 };
 
                 match kernel().spawn_task(Box::pin(future)) {
@@ -784,44 +800,89 @@ macro_rules! export_async_driver {
 
             extern "C" fn start_adapter(ctx: *mut DriverContext) -> i32 {
                 let ctx_safe = unsafe { &mut *ctx };
-                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                let driver_ptr = ctx_safe.driver_data as *mut AsyncDriverWrapper<$driver_type>;
                 if driver_ptr.is_null() { return -1; }
+                
+                // Check busy synchronously first (optimization)
+                // CAUTION: Determining busy here is racy versus the task starting.
+                // However, if we return -3 (DeviceBusy) synchronously, the kernel knows.
+                // But the busy flag is set IN the task in probe_adapter.
+                // So if we check here, we might miss it.
+                // Ideally, we should set busy HERE?
+                // If we set busy here, we own the state.
+                let wrapper_ref = unsafe { &*driver_ptr };
+                if wrapper_ref.busy.swap(true, Ordering::Acquire) {
+                    return -3; // DeviceBusy
+                }
+
+                // We own the busy lock now. Pass it to task.
                 let future = async move {
-                    let drv = unsafe { &mut *driver_ptr };
-                    let _ = drv.start().await;
+                    let wrapper = unsafe { &mut *driver_ptr };
+                    let _ = wrapper.driver.start().await;
+                    wrapper.busy.store(false, Ordering::Release);
                 };
+                
+                // If spawn fails, we must release lock!
                 match kernel().spawn_task(Box::pin(future)) {
                     Ok(_) => 0,
-                    Err(_) => -1,
+                    Err(_) => {
+                        unsafe { (*driver_ptr).busy.store(false, Ordering::Release); }
+                        -1
+                    }
                 }
             }
 
             extern "C" fn stop_adapter(ctx: *mut DriverContext) -> i32 {
                 let ctx_safe = unsafe { &mut *ctx };
-                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                let driver_ptr = ctx_safe.driver_data as *mut AsyncDriverWrapper<$driver_type>;
                 if driver_ptr.is_null() { return 0; }
+
+                let wrapper_ref = unsafe { &*driver_ptr };
+                if wrapper_ref.busy.swap(true, Ordering::Acquire) {
+                    return -3; // DeviceBusy
+                }
+
                 let future = async move {
-                    let drv = unsafe { &mut *driver_ptr };
-                    let _ = drv.stop().await;
+                    let wrapper = unsafe { &mut *driver_ptr };
+                    let _ = wrapper.driver.stop().await;
+                    wrapper.busy.store(false, Ordering::Release);
                 };
+
                 match kernel().spawn_task(Box::pin(future)) {
                     Ok(_) => 0,
-                    Err(_) => -1,
+                    Err(_) => {
+                         unsafe { (*driver_ptr).busy.store(false, Ordering::Release); }
+                        -1
+                    }
                 }
             }
 
             extern "C" fn remove_adapter(ctx: *mut DriverContext) -> i32 {
                 let ctx_safe = unsafe { &mut *ctx };
-                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                let driver_ptr = ctx_safe.driver_data as *mut AsyncDriverWrapper<$driver_type>;
                 if driver_ptr.is_null() { return 0; }
+                
+                // Remove logic should perhaps wait or force?
+                // Let's try to take lock.
+                let wrapper_ref = unsafe { &*driver_ptr };
+                if wrapper_ref.busy.swap(true, Ordering::Acquire) {
+                     return -3; 
+                }
+
                 let future = async move {
-                    let drv = unsafe { &mut *driver_ptr };
-                    let _ = drv.remove().await;
+                    let wrapper = unsafe { &mut *driver_ptr };
+                    let _ = wrapper.driver.remove().await;
+                    // Drop wrapper (and driver)
                     unsafe { let _ = Box::from_raw(driver_ptr); }
+                    // No need to unlock busy, wrapper is gone.
                 };
+
                 match kernel().spawn_task(Box::pin(future)) {
                     Ok(_) => 0,
-                    Err(_) => -1,
+                    Err(_) => {
+                        unsafe { (*driver_ptr).busy.store(false, Ordering::Release); }
+                        -1
+                    }
                 }
             }
 

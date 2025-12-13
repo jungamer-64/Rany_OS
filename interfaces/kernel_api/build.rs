@@ -1,6 +1,7 @@
 use std::env;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 fn main() {
     // Rerun this script if driver_abi.rs changes
@@ -27,12 +28,26 @@ fn main() {
 fn calculate_abi_hash(content: &str) -> u64 {
     let mut hasher = Fnv1aHasher::new();
 
-    // extract_struct(content, "DriverContext", &mut hasher); // DriverContext is layout stable but fields matter
-    // extract_struct(content, "DriverVTable", &mut hasher);
-    // Actually, simply hashing the "meaningful" lines of the file might be safer/easier
-    // to catch *any* definition change.
-    // Let's look for the structs specifically to avoid comment changes affecting hash.
+    // 1. Mix in rustc version
+    // This ensures that if the compiler changes (potentially affecting layout), the hash changes.
+    let rustc_version = Command::new("rustc")
+        .arg("--version")
+        .output()
+        .expect("Failed to get rustc version")
+        .stdout;
+    hasher.write(&rustc_version);
 
+    // 2. Hash all `#[repr(...)]` attributes found in the file
+    // This catches if a struct loses #[repr(C)] or changes packing, 
+    // even if the struct body parser doesn't catch it.
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#[repr") {
+            hasher.write(trimmed.as_bytes());
+        }
+    }
+
+    // 3. Extract and hash specific ABI types
     extract_and_hash_decl(content, "pub struct DriverContext", &mut hasher);
     extract_and_hash_decl(content, "pub struct DriverVTable", &mut hasher);
     extract_and_hash_decl(content, "pub struct DriverCapabilities", &mut hasher);
@@ -43,27 +58,46 @@ fn calculate_abi_hash(content: &str) -> u64 {
 }
 
 fn extract_and_hash_decl(content: &str, decl_start: &str, hasher: &mut Fnv1aHasher) {
-    if let Some(start) = content.find(decl_start) {
-        let rest = &content[start..];
-        // Find closing brace. Simple counter.
+    if let Some(start_idx) = content.find(decl_start) {
+        let rest = &content[start_idx..];
         let mut depth = 0;
         let mut check = false;
-        for (i, c) in rest.char_indices() {
-            if c == '{' {
-                depth += 1;
-                check = true;
-            } else if c == '}' {
-                depth -= 1;
-                if check && depth == 0 {
-                    // decl body ends here
-                    let body = &rest[..=i];
-                    // Clean up whitespace to avoid formatting affecting hash too much?
-                    // For now, strict hashing of the text is fine.
-                    hasher.write(body.as_bytes());
-                    return;
+        
+        let mut buffer = String::new();
+        
+        for line in rest.lines() {
+            // Strip comments
+            let line_content = if let Some(idx) = line.find("//") {
+                &line[..idx]
+            } else {
+                line
+            };
+            
+            // Count braces in the effective content
+            for c in line_content.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        check = true;
+                    }
+                    '}' => {
+                        depth -= 1;
+                    }
+                    _ => {}
                 }
             }
+            
+            // Normalize: remove all whitespace for the hash
+            let normalized: String = line_content.chars().filter(|c| !c.is_whitespace()).collect();
+            buffer.push_str(&normalized);
+            
+            // If we have entered the block and returned to depth 0, we can stop
+            if check && depth == 0 {
+                break;
+            }
         }
+        
+        hasher.write(buffer.as_bytes());
     }
 }
 
