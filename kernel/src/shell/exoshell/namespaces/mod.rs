@@ -7,6 +7,7 @@ pub mod driver;
 pub mod fs;
 pub mod net;
 pub mod proc;
+pub mod registry;
 pub mod sys;
 
 pub use cap::CapNamespace;

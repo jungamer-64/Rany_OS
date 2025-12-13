@@ -58,7 +58,7 @@ test-timeout = 300
 # ============================================================================
 
 [profile.dev]
-panic = "unwind"
+panic = "abort"
 opt-level = 0
 debug = true
 
@@ -76,5 +76,5 @@ opt-level = 3
 debug = true
 
 [profile.test]
-panic = "unwind"
+panic = "abort"
 opt-level = 1

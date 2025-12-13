@@ -372,8 +372,8 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     let info_header =
         read_struct_from_slice::<BmpInfoHeader>(data, 14).ok_or(ImageError::InvalidFormat)?;
 
-    let width = info_header.width.abs() as u32;
-    let height = info_header.height.abs() as u32;
+    let width = info_header.width.unsigned_abs();
+    let height = info_header.height.unsigned_abs();
     let bpp = info_header.bpp;
     let compression = info_header.compression;
     let data_offset = file_header.data_offset as usize;
@@ -392,7 +392,7 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     let pixel_data = &data[data_offset..];
 
     // 行のパディングを計算
-    let row_size = ((bpp as u32 * width + 31) / 32 * 4) as usize;
+    let row_size = ((bpp as u32 * width).div_ceil(32) * 4) as usize;
 
     match bpp {
         24 => {
@@ -508,7 +508,7 @@ pub fn decode_tga(data: &[u8]) -> ImageResult<Image> {
             // カラーマップをスキップ
             let cm_length = u16::from_le_bytes([data[5], data[6]]) as usize;
             let cm_entry_size = data[7] as usize;
-            cm_length * ((cm_entry_size + 7) / 8)
+            cm_length * cm_entry_size.div_ceil(8)
         } else {
             0
         };
@@ -897,8 +897,8 @@ impl IconGenerator {
         for y in 0..size {
             for x in 0..size {
                 let in_corner = |cx: u32, cy: u32| -> bool {
-                    let dx = if x < cx { cx - x } else { x - cx };
-                    let dy = if y < cy { cy - y } else { y - cy };
+                    let dx = cx.abs_diff(x);
+                    let dy = cy.abs_diff(y);
                     dx * dx + dy * dy <= r * r
                 };
 
