@@ -42,6 +42,8 @@ impl<'a> Display for ExoValue<'a> {
                 it.source,
                 it.filters.len()
             ),
+            ExoValue::BufferRef(b) => write!(f, "<BufferRef: {} bytes, zero-copy>", b.len()),
+            ExoValue::StringRef(s) => write!(f, "{}", s.as_str()),
             ExoValue::Error(e) => write!(f, "Error: {}", e),
         }
     }
