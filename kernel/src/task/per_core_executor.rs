@@ -377,6 +377,9 @@ impl PerCoreExecutor {
             .store(start_cycles, Ordering::Relaxed);
         task.metadata.schedule_count.fetch_add(1, Ordering::Relaxed);
 
+        // Refill Fuel
+        crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
+
         // Wakerを作成
         let waker = task_waker(task.clone(), self.core_id);
 

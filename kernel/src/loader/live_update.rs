@@ -309,17 +309,41 @@ impl LiveUpdateManager {
 
     fn perform_update_inner(
         &self,
-        _cell_id: u64,
-        _new_elf_data: &[u8],
+        old_id_u64: u64,
+        new_elf_data: &[u8],
     ) -> Result<u64, LiveUpdateError> {
-        // Step 1: 新セルをロード
+        let old_cell_id = crate::loader::CellId::from_u64(old_id_u64);
+
+        // Step 0: Identify target driver(s) from old cell
+        let old_drivers = crate::loader::with_registry(|r| {
+            r.get(old_cell_id).map(|c| c.registered_drivers.clone())
+        });
+        
+        let old_drivers = match old_drivers {
+            Some(d) => d,
+            None => return Err(LiveUpdateError::CellNotFound),
+        };
+        
+        if old_drivers.is_empty() {
+            return Err(LiveUpdateError::CellNotFound); // Or invalid state
+        }
+
+        // Step 1: Load new cell
         *self.state.lock() = LiveUpdateState::Loading;
         crate::log!("[LIVE_UPDATE] Loading new cell version...\n");
 
-        // TODO: 実際のセルロード処理
-        // let new_cell_id = crate::loader::load_cell(...)?;
+        // Generate a name for the new cell based on old cell?
+        // For now, use "update-<epoch>"
+        let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
+        let name = alloc::format!("update-{}", epoch);
+        
+        // Load the cell (unsafe allowed for updates)
+        let new_cell_id = match crate::loader::load_cell(&name, new_elf_data, true) {
+            Ok(id) => id,
+            Err(_) => return Err(LiveUpdateError::LoadFailed),
+        };
 
-        // Step 2: グローバルエポックをインクリメント
+        // Step 2: Global Epoch Increment (Pre-swap)
         let old_epoch = GLOBAL_EPOCH.fetch_add(1, Ordering::SeqCst);
         crate::log!(
             "[LIVE_UPDATE] Epoch incremented: {} -> {}\n",
@@ -327,23 +351,67 @@ impl LiveUpdateManager {
             old_epoch + 1
         );
 
-        // Step 3: 切り替え
+        // Step 3: Swap (Update Driver Registry)
         *self.state.lock() = LiveUpdateState::Switching;
-        // TODO: GOTのアトミック更新
+        
+        // Resolve entry symbol in NEW cell
+        let entry_addr = crate::loader::with_registry(|r| {
+             let cell = r.get(new_cell_id)?;
+             cell.exports.iter()
+                 .find(|(n, _)| n == kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL)
+                 .map(|(_, addr)| *addr)
+        });
+        
+        let entry_addr = match entry_addr {
+            Some(a) => a,
+            None => {
+                // Cleanup new cell?
+                 crate::loader::with_registry_mut(|r| r.unload(new_cell_id).unwrap_or(()));
+                 return Err(LiveUpdateError::LoadFailed);
+            }
+        };
+        
+        let entry_fn: kernel_api::driver_abi::DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
 
-        // Step 4: Quiescent State待ち
+        // Update all drivers registered to the old cell
+        for handle in &old_drivers {
+             match crate::driver_registry::update_abi_driver(*handle, entry_fn) {
+                 Ok(_) => {},
+                 Err(_) => {
+                     return Err(LiveUpdateError::StateMigrationFailed);
+                 }
+             }
+        }
+        
+        // Step 3.5: Migrate ownership in Cell Registry
+        crate::loader::with_registry_mut(|r| {
+            if let Some(old_c) = r.get_mut(old_cell_id) {
+                old_c.registered_drivers.clear();
+            }
+            if let Some(new_c) = r.get_mut(new_cell_id) {
+                 for h in &old_drivers {
+                     new_c.registered_drivers.push(*h);
+                 }
+            }
+        });
+
+        // Step 4: Wait for Quiescent State
         *self.state.lock() = LiveUpdateState::WaitingQuiescent;
         crate::log!("[LIVE_UPDATE] Waiting for quiescent state...\n");
         wait_for_quiescent_state(old_epoch);
         crate::log!("[LIVE_UPDATE] All cores reached quiescent state\n");
 
-        // Step 5: 完了
+        // Step 5: Complete & Free Old Cell
         *self.state.lock() = LiveUpdateState::Complete;
         self.rollback_epoch.store(old_epoch + 1, Ordering::Release);
 
-        // TODO: 旧セルのメモリを解放（猶予期間後）
+        // Unload old cell
+        match crate::loader::unload_cell(old_cell_id) {
+            Ok(_) => crate::log!("[LIVE_UPDATE] Old cell unloaded\n"),
+            Err(e) => crate::log!("[LIVE_UPDATE] Warning: Failed to unload old cell: {:?}\n", e),
+        }
 
-        Ok(0) // 仮の新セルID
+        Ok(new_cell_id.as_u64())
     }
 
     /// ロールバックを実行

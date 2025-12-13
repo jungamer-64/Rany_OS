@@ -318,6 +318,36 @@ impl DriverRegistry {
         crate::log!("[DRIVER] Unregistered driver: {}\n", old_name);
         Ok(())
     }
+
+    /// Replace a driver implementation with a new one (Hot Swap)
+    ///
+    /// # Safety
+    /// Caller must ensure that the new driver is compatible with the old one's state requirements
+    /// if state migration is needed (currently starts fresh).
+    /// The old driver instance is dropped, but its code memory must valid until quiescent state.
+    pub fn replace_driver(&self, handle: DriverHandle, new_driver: Box<dyn Driver>) -> Result<(), DriverError> {
+        let mut drivers = self.drivers.lock();
+        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+
+        crate::log!(
+            "[DRIVER] Replacing driver {} ({}) with new version\n",
+            entry.driver.name(),
+            handle.index()
+        );
+
+        // We assume the new driver is in Registered state initially? 
+        // Or do we expect it to be Probed/Started if the old one was?
+        // For simplicity, we just swap the implementation and keep the *Registry* state as is?
+        // No, the new driver instance is fresh. Its internal state is uninitialized.
+        // So we should likely transition the entry state to `Registered`.
+        // The caller (LiveUpdateManager) is responsible for re-probing/re-starting if needed.
+        
+        // Swap the driver
+        entry.driver = new_driver;
+        entry.state = DriverState::Registered; // Reset state to Registered
+
+        Ok(())
+    }
 }
 
 // ============================================================================
@@ -434,6 +464,42 @@ pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverErro
 /// Unregister a driver by handle
 pub fn unregister_driver(handle: DriverHandle) -> Result<(), DriverError> {
     DRIVER_REGISTRY.unregister(handle)
+}
+
+/// Update an existing driver with a new ABI implementation
+pub fn update_abi_driver(handle: DriverHandle, entry: AbiEntryFn) -> Result<(), DriverError> {
+    // Call the entry to get vtable pointer
+    let vtable_ptr = entry();
+    if vtable_ptr.is_null() {
+        return Err(DriverError::InvalidState);
+    }
+
+    let vtable = unsafe { &*vtable_ptr };
+
+    // Validate ABI version
+    match vtable.validate() {
+        Ok(()) => {}
+        Err(_) => return Err(DriverError::InvalidState),
+    }
+
+    // Read name
+    let name_ptr = (vtable.name)();
+    let name_len = (vtable.name_len)();
+    let name = if name_ptr.is_null() || name_len == 0 {
+        alloc::string::String::from("abi_driver")
+    } else {
+        let bytes = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+        alloc::string::String::from_utf8_lossy(bytes).into_owned()
+    };
+
+    // Build AbiDriver wrapper
+    let abi_driver = Box::new(AbiDriver {
+        vtable: vtable_ptr,
+        name,
+        ctx: AbiDriverContext::new(),
+    });
+
+    DRIVER_REGISTRY.replace_driver(handle, abi_driver)
 }
 
 // Adapter to delegate trait calls to ABI vtable

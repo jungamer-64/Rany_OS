@@ -184,6 +184,48 @@ impl DriverNamespace {
             Err(e) => ExoValue::Error(format!("Failed to unload driver {}: {}", id, e)),
         }
     }
+
+    /// ドライバをライブアップデート
+    /// Requires CAP_SYS_MODULE
+    fn update_with_caps(id: i64, path: &str, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+        if !caps.has_capability(CAP_SYS_MODULE) {
+            return ExoValue::Error(String::from("Permission denied: CAP_SYS_MODULE required"));
+        }
+
+        if path.is_empty() {
+             return ExoValue::Error(String::from("Path is required"));
+        }
+
+        let handle = driver_registry::DriverHandle::from_index(id as usize);
+        
+        // Find owning cell
+        let cell_id = match loader::find_cell_by_driver(handle) {
+            Some(id) => id,
+            None => return ExoValue::Error(format!("Driver {} not found or not associated with a cell", id)),
+        };
+
+        // Read ELF
+        let elf_data = match crate::fs::memfs::read_file_content(path, "/") {
+            Ok(data) => data,
+            Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {:?}", path, e)),
+        };
+
+        // Perform Update
+        match loader::live_update_manager().perform_update(cell_id.as_u64(), &elf_data) {
+             Ok(new_cell_id) => {
+                 let mut map = BTreeMap::new();
+                 map.insert(String::from("success"), ExoValue::Bool(true));
+                 map.insert(String::from("old_driver_id"), ExoValue::Int(id));
+                 map.insert(String::from("new_cell_id"), ExoValue::Int(new_cell_id as i64));
+                 map.insert(
+                     String::from("message"),
+                     ExoValue::String(Cow::Owned(format!("Driver {} updated successfully. New Cell ID: {}", id, new_cell_id))),
+                 );
+                 ExoValue::Map(map)
+             }
+             Err(e) => ExoValue::Error(format!("Live update failed: {}", e)),
+        }
+    }
 }
 
 impl ShellNamespace for DriverNamespace {
@@ -231,8 +273,13 @@ impl ShellNamespace for DriverNamespace {
                         .unwrap_or(0);
                     Self::unload_with_caps(id, caps)
                 }
+                "update" => {
+                    let id = args.get(0).and_then(|v| v.as_int()).unwrap_or(0);
+                    let path = args.get(1).and_then(|v| v.as_str()).unwrap_or("");
+                    Self::update_with_caps(id, path, caps)
+                }
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'driver.{}'\nValid methods: list, stats, status, load, unload",
+                    "Unknown method 'driver.{}'\nValid methods: list, stats, status, load, unload, update",
                     method
                 )),
             }

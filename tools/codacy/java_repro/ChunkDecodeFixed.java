@@ -1,8 +1,14 @@
-import java.nio.*;
-import java.nio.channels.*;
-import java.nio.charset.*;
-import java.nio.file.*;
-import java.io.*;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.channels.FileChannel;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CharsetDecoder;
+import java.nio.charset.CoderResult;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
 
 public class ChunkDecodeFixed {
     public static void main(String[] args) throws Exception {
@@ -21,10 +27,7 @@ public class ChunkDecodeFixed {
             dec.reset();
             CharBuffer cb = CharBuffer.allocate(chunkSize * 2);
             while (fc.read(bb) > 0) {
-                long chunkStart = fc.position() - bb.position();
                 bb.flip();
-                System.err.println(String.format("read chunk pos=%d limit=%d capacity=%d", bb.position(), bb.limit(), bb.capacity()));
-                System.err.println("chunk hex: " + toHex(bb));
                 try {
                     while (true) {
                         CoderResult cr = dec.decode(bb, cb, false);
@@ -32,7 +35,7 @@ public class ChunkDecodeFixed {
                         if (cr.isUnderflow()) break;
                     }
                 } catch (CharacterCodingException e) {
-                    System.err.println("Decode failure (fixed decoder) on chunk starting at file position " + chunkStart);
+                    System.err.println("Decode failure (fixed decoder) during streaming decode");
                     e.printStackTrace();
                     System.exit(1);
                 }
