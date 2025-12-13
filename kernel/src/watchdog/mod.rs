@@ -177,11 +177,9 @@ impl HardwareWatchdog for IntelTcoWatchdog {
 
         self.set_timeout(timeout_secs)?;
 
-        unsafe {
-            // TCO1_CNTのTMR_HLTビットをクリア
-            let cnt = self.read_tco(0x08);
-            self.write_tco(0x08, cnt & !0x0800);
-        }
+        // TCO1_CNTのTMR_HLTビットをクリア
+        let cnt = self.read_tco(0x08);
+        self.write_tco(0x08, cnt & !0x0800);
 
         self.enabled = true;
         Ok(())
@@ -192,11 +190,9 @@ impl HardwareWatchdog for IntelTcoWatchdog {
             return Err(WatchdogError::AlreadyDisabled);
         }
 
-        unsafe {
-            // TCO1_CNTのTMR_HLTビットをセット
-            let cnt = self.read_tco(0x08);
-            self.write_tco(0x08, cnt | 0x0800);
-        }
+        // TCO1_CNTのTMR_HLTビットをセット
+        let cnt = self.read_tco(0x08);
+        self.write_tco(0x08, cnt | 0x0800);
 
         self.enabled = false;
         Ok(())
@@ -207,10 +203,8 @@ impl HardwareWatchdog for IntelTcoWatchdog {
             return Err(WatchdogError::AlreadyDisabled);
         }
 
-        unsafe {
-            // TCO_RLDに書き込んでタイマーリロード
-            self.write_tco(0x00, 0x0001);
-        }
+        // TCO_RLDに書き込んでタイマーリロード
+        self.write_tco(0x00, 0x0001);
 
         Ok(())
     }
@@ -223,10 +217,8 @@ impl HardwareWatchdog for IntelTcoWatchdog {
         // TCOタイマーティック（0.6秒/ティック）に変換
         let ticks = (secs * 10 / 6) as u16;
 
-        unsafe {
-            // TCO_TMRに書き込み
-            self.write_tco(0x12, ticks);
-        }
+        // TCO_TMRに書き込み
+        self.write_tco(0x12, ticks);
 
         self.timeout = secs;
         Ok(())

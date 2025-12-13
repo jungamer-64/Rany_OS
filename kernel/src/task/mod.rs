@@ -11,6 +11,7 @@ use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 pub mod context;
 pub mod environ;
 mod executor;
+pub mod fuel;
 pub mod interrupt_waker;
 pub mod per_core_executor;
 pub mod preemption;

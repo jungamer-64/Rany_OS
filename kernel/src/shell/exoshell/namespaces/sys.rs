@@ -9,9 +9,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::security::capability::{CAP_SYS_BOOT, manager};
+use crate::security::capability::CAP_SYS_BOOT;
 use crate::shell::exoshell::types::ExoValue;
-use crate::task::process::getpid;
 use alloc::boxed::Box;
 
 /// システム名前空間
@@ -319,9 +318,8 @@ impl SysNamespace {
 
     /// システムシャットダウン
     /// Requires CAP_SYS_BOOT
-    pub fn shutdown() -> ExoValue<'static> {
-        let pid = getpid().as_u64();
-        if !manager().has_capability(pid, CAP_SYS_BOOT) {
+    fn shutdown_with_caps(caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+        if !caps.has_capability(CAP_SYS_BOOT) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_BOOT required"));
         }
 
@@ -334,9 +332,8 @@ impl SysNamespace {
 
     /// システムリブート
     /// Requires CAP_SYS_BOOT
-    pub fn reboot() -> ExoValue<'static> {
-        let pid = getpid().as_u64();
-        if !manager().has_capability(pid, CAP_SYS_BOOT) {
+    fn reboot_with_caps(caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+        if !caps.has_capability(CAP_SYS_BOOT) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_BOOT required"));
         }
 
@@ -357,7 +354,7 @@ impl ShellNamespace for SysNamespace {
         &'a self,
         method: &'a str,
         _args: &'a [ExoValue<'static>],
-        _caps: &'a crate::security::CapabilitySet,
+        caps: &'a crate::security::CapabilitySet,
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
@@ -369,8 +366,8 @@ impl ShellNamespace for SysNamespace {
                 "thermal" | "temp" => Self::thermal(),
                 "watchdog" | "wd" => Self::watchdog(),
                 "power" => Self::power(),
-                "shutdown" => Self::shutdown(),
-                "reboot" => Self::reboot(),
+                "shutdown" => Self::shutdown_with_caps(caps),
+                "reboot" => Self::reboot_with_caps(caps),
                 _ => ExoValue::Error(format!(
                     "Unknown method 'sys.{}'\nValid methods: info, memory, time, monitor, dashboard, thermal, watchdog, power, shutdown, reboot",
                     method

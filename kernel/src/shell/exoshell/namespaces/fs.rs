@@ -9,6 +9,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
+use crate::security::capability::CAP_DAC_OVERRIDE;
 use crate::shell::exoshell::types::*;
 use alloc::boxed::Box;
 
@@ -156,7 +157,7 @@ impl ShellNamespace for FsNamespace {
         &'a self,
         method: &'a str,
         args: &'a [ExoValue<'static>],
-        _caps: &'a crate::security::CapabilitySet,
+        caps: &'a crate::security::CapabilitySet,
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
@@ -203,6 +204,12 @@ impl ShellNamespace for FsNamespace {
                     Self::stat(path).await
                 }
                 "mkdir" => {
+                    // Requires write permission
+                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
+                        return ExoValue::Error(String::from(
+                            "Permission denied: CAP_DAC_OVERRIDE required for mkdir"
+                        ));
+                    }
                     let path = args
                         .first()
                         .and_then(|v| match v {
@@ -213,6 +220,12 @@ impl ShellNamespace for FsNamespace {
                     Self::mkdir(path).await
                 }
                 "remove" | "rm" => {
+                    // Requires write permission
+                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
+                        return ExoValue::Error(String::from(
+                            "Permission denied: CAP_DAC_OVERRIDE required for remove"
+                        ));
+                    }
                     let path = args
                         .first()
                         .and_then(|v| match v {

@@ -263,6 +263,9 @@ impl PageSize {
 // ============================================================================
 
 /// ページテーブルエントリのフラグ
+///
+/// 設計書 9.2.2: MPK (Memory Protection Keys) を第一級市民として追加
+/// x86_64 ではビット 59-62 が Protection Key (PKEY) として使用される
 #[derive(Debug, Clone, Copy)]
 pub struct PageFlags(u64);
 
@@ -287,6 +290,17 @@ impl PageFlags {
     pub const GLOBAL: u64 = 1 << 8;
     /// No execute
     pub const NO_EXECUTE: u64 = 1 << 63;
+
+    // ========================================================================
+    // MPK (Memory Protection Keys) Support - 設計書 9.2.2
+    // ========================================================================
+
+    /// Protection Key マスク (ビット 59-62)
+    /// x86_64 では 16 個の Protection Key (0-15) をサポート
+    pub const PROTECTION_KEY_MASK: u64 = 0xF << 59;
+
+    /// Protection Key のビットシフト量
+    const PKEY_SHIFT: u64 = 59;
 
     /// 新しいフラグを作成
     #[inline]
@@ -352,6 +366,69 @@ impl PageFlags {
     #[inline]
     pub const fn contains(&self, flag: u64) -> bool {
         (self.0 & flag) == flag
+    }
+
+    // ========================================================================
+    // MPK API - 設計書 9.2.2.1
+    // ========================================================================
+
+    /// Protection Key を設定
+    ///
+    /// 設計書: 各ドメインの信頼レベルに応じた PKEY を自動的にページテーブルに適用
+    ///
+    /// # Arguments
+    /// * `pkey` - Protection Key (0-15)
+    ///
+    /// # Panics
+    /// `pkey` が 16 以上の場合
+    #[inline]
+    pub const fn set_pkey(self, pkey: u8) -> Self {
+        assert!(pkey < 16, "Protection Key must be 0-15");
+        // 既存の PKEY ビットをクリアしてから新しい値を設定
+        let cleared = self.0 & !Self::PROTECTION_KEY_MASK;
+        Self(cleared | ((pkey as u64) << Self::PKEY_SHIFT))
+    }
+
+    /// Protection Key を取得
+    #[inline]
+    pub const fn get_pkey(&self) -> u8 {
+        ((self.0 & Self::PROTECTION_KEY_MASK) >> Self::PKEY_SHIFT) as u8
+    }
+
+    /// Protection Key が設定されているか
+    #[inline]
+    pub const fn has_pkey(&self) -> bool {
+        (self.0 & Self::PROTECTION_KEY_MASK) != 0
+    }
+
+    /// 信頼レベルに基づいた Protection Key を設定
+    ///
+    /// 設計書 9.2.2.1: Protection Key の割り当て戦略
+    /// - Key 0-7: 信頼レベル (0=最も信頼, 7=最も信頼されない)
+    /// - Key 8-15: 機密性クラス (8=公開, 15=最高機密)
+    #[inline]
+    pub fn with_trust_level(self, trust_level: u8) -> Self {
+        assert!(trust_level < 8, "Trust level must be 0-7");
+        self.set_pkey(trust_level)
+    }
+
+    /// 機密性クラスに基づいた Protection Key を設定
+    #[inline]
+    pub fn with_confidentiality_class(self, class: u8) -> Self {
+        assert!(class < 8, "Confidentiality class must be 0-7");
+        self.set_pkey(8 + class)
+    }
+
+    /// ドメイン用フラグ（PKEY付き）
+    #[inline]
+    pub fn domain_data(trust_level: u8) -> Self {
+        Self::user_data().with_trust_level(trust_level)
+    }
+
+    /// ドメインコード用フラグ（PKEY付き）
+    #[inline]
+    pub fn domain_code(trust_level: u8) -> Self {
+        Self::user_code().with_trust_level(trust_level)
     }
 }
 

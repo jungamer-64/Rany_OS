@@ -3,6 +3,7 @@
 // 設計書 5: メモリ管理戦略 - 階層型アロケータ設計
 // ============================================================================
 pub mod buddy_allocator;
+pub mod domain_ownership; // 新: ドメインオーナーシップ追跡 (設計書 5.4, 8.1)
 pub mod exchange_heap;
 pub mod frame_allocator;
 pub mod higher_half;

@@ -7,6 +7,9 @@
 // ============================================================================
 #![allow(dead_code)]
 
+// OOM Killer サブモジュール (設計書 9.3.4)
+pub mod oom_killer;
+
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
