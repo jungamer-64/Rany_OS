@@ -22,7 +22,7 @@ pub async fn sleep(ms: u64) {
     // In a real implementation, this would register with a timer queue
     let start = kernel().current_tick();
     let target = start + ms;
-    
+
     loop {
         if kernel().current_tick() >= target {
             break;
@@ -37,7 +37,8 @@ pub async fn yield_now() {
     core::future::poll_fn(|cx| {
         cx.waker().wake_by_ref();
         core::task::Poll::Ready(())
-    }).await;
+    })
+    .await;
 }
 
 /// Print formatted output

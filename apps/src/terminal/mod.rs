@@ -22,7 +22,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
-use app_sdk::{Application, AppContext, print};
+use app_sdk::{AppContext, Application, print};
 
 pub mod shell;
 
@@ -143,16 +143,31 @@ impl Terminal {
     /// Run the terminal REPL
     async fn run(&mut self, _ctx: AppContext) {
         print(format_args!("\n"));
-        print(format_args!("{}{}  RanyOS Terminal v0.3                            {}{}\n", 
-            ansi::CYAN, ansi::WHITE, ansi::CYAN, ansi::RESET));
-        print(format_args!("{}{}  Type 'help' for available commands              {}{}\n", 
-            ansi::CYAN, ansi::WHITE, ansi::CYAN, ansi::RESET));
-        print(format_args!("{}{}  Use ↑/↓ for history, Tab for completion         {}{}\n", 
-            ansi::CYAN, ansi::WHITE, ansi::CYAN, ansi::RESET));
+        print(format_args!(
+            "{}{}  RanyOS Terminal v0.3                            {}{}\n",
+            ansi::CYAN,
+            ansi::WHITE,
+            ansi::CYAN,
+            ansi::RESET
+        ));
+        print(format_args!(
+            "{}{}  Type 'help' for available commands              {}{}\n",
+            ansi::CYAN,
+            ansi::WHITE,
+            ansi::CYAN,
+            ansi::RESET
+        ));
+        print(format_args!(
+            "{}{}  Use ↑/↓ for history, Tab for completion         {}{}\n",
+            ansi::CYAN,
+            ansi::WHITE,
+            ansi::CYAN,
+            ansi::RESET
+        ));
         print(format_args!("\n"));
-        
+
         self.print_prompt();
-        
+
         // Main REPL loop - in a real implementation this would:
         // 1. Read keyboard input via AppContext
         // 2. Handle special keys (history, completion, etc.)
@@ -162,15 +177,20 @@ impl Terminal {
 
     /// Print the colored prompt
     fn print_prompt(&self) {
-        print(format_args!("{}exo{}:{}{}{}> ", 
-            ansi::MAGENTA, ansi::RESET,
-            ansi::CYAN, self.cwd, ansi::RESET));
+        print(format_args!(
+            "{}exo{}:{}{}{}> ",
+            ansi::MAGENTA,
+            ansi::RESET,
+            ansi::CYAN,
+            self.cwd,
+            ansi::RESET
+        ));
     }
 
     /// Execute a command line
     pub async fn execute(&mut self, line: &str) {
         let trimmed = line.trim();
-        
+
         if trimmed.is_empty() {
             return;
         }
@@ -204,8 +224,12 @@ impl Terminal {
                 print(format_args!("Changed to: {}\n", self.cwd));
             }
             _ => {
-                print(format_args!("{}Unknown command: {}{}\n", 
-                    ansi::RED, trimmed, ansi::RESET));
+                print(format_args!(
+                    "{}Unknown command: {}{}\n",
+                    ansi::RED,
+                    trimmed,
+                    ansi::RESET
+                ));
             }
         }
     }

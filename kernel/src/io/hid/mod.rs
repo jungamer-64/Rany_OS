@@ -34,72 +34,66 @@ pub use hid_driver::{HidError, HidResult};
 // PS/2 Controller exports
 #[allow(unused_imports)]
 pub use ps2::{
-    // Constants
-    ports as ps2_ports,
-    status as ps2_status,
-    commands as ps2_commands,
-    kbd_commands as ps2_kbd_commands,
-    mouse_commands as ps2_mouse_commands,
-    // Types
-    Ps2Controller,
     DeviceType as Ps2DeviceType,
     KeyCode as Ps2KeyCode,
     KeyEvent as Ps2KeyEvent,
+    KeyboardHandler,
     Modifiers as Ps2Modifiers,
     MouseButton,
     MouseEvent,
-    KeyboardHandler,
     MouseHandler,
+    // Types
+    Ps2Controller,
+    commands as ps2_commands,
+    get_key_event,
+    get_modifiers,
+    get_mouse_event,
     // Functions
     init as ps2_init,
+    kbd_commands as ps2_kbd_commands,
     keyboard_interrupt_handler,
+    mouse_commands as ps2_mouse_commands,
     mouse_interrupt_handler,
-    get_key_event,
-    get_mouse_event,
-    get_modifiers,
+    // Constants
+    ports as ps2_ports,
     set_leds,
+    status as ps2_status,
 };
 
 // Keymap exports (i18n keyboard layout support)
 #[allow(unused_imports)]
 pub use keymap::{
-    Keymap,
-    UsQwertyKeymap,
-    JisKeymap,
-    DvorakKeymap,
-    DEFAULT_KEYMAP,
-    JIS_KEYMAP,
-    DVORAK_KEYMAP,
+    DEFAULT_KEYMAP, DVORAK_KEYMAP, DvorakKeymap, JIS_KEYMAP, JisKeymap, Keymap, UsQwertyKeymap,
 };
 
 // Keyboard driver exports
 #[allow(unused_imports)]
 pub use keyboard::{
+    CharFuture,
+    CharFutureArc, // Phase 5: Arc<dyn Keymap>サポート
     // Core types
     KeyCode,
-    KeyState,
+    // Type aliases for compatibility with old shell code
+    KeyCode as InputKeyCode,
     KeyEvent,
-    Modifiers,
+    KeyEvent as InputKeyEvent,
     KeyEventExt,
+    // Async futures
+    KeyEventFuture,
+    KeyState,
+    KeyState as InputKeyState,
     // Driver and stream
     KeyboardDriver,
     KeyboardStream,
     KeyboardStreamArc, // Phase 5: Arc<dyn Keymap>サポート
-    StreamAlreadyTaken,
-    // Async futures
-    KeyEventFuture,
-    CharFuture,
-    CharFutureArc, // Phase 5: Arc<dyn Keymap>サポート
-    // Type aliases for compatibility with old shell code
-    KeyCode as InputKeyCode,
-    KeyState as InputKeyState,
-    KeyEvent as InputKeyEvent,
+    Modifiers,
     Modifiers as InputModifiers,
-    // Functions
-    keyboard,
-    init as keyboard_init,
+    StreamAlreadyTaken,
     handle_keyboard_interrupt,
     has_event as has_key_event,
+    init as keyboard_init,
+    // Functions
+    keyboard,
     // ISR notification processing (for executors)
     process_pending_wakes,
 };
@@ -108,9 +102,7 @@ pub use keyboard::{
 // TODO: Migrate shell code to use KeyboardStream
 #[doc(hidden)]
 pub(crate) use keyboard::{
-    poll_key_event,
-    poll_char as poll_key_char,
-    poll_key_event as poll_input_event,
+    poll_char as poll_key_char, poll_key_event, poll_key_event as poll_input_event,
 };
 
 // Mouse driver exports
@@ -119,10 +111,10 @@ pub use mouse::{
     // Types
     MouseButton as MouseBtn,
     MouseEvent as MouseEvt,
+    handle_mouse_packet,
+    has_mouse_event,
     // Functions
     init as mouse_init,
-    handle_mouse_packet,
-    poll_mouse_event,
-    has_mouse_event,
     is_mouse_initialized,
+    poll_mouse_event,
 };

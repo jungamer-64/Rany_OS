@@ -6,8 +6,8 @@
 
 use alloc::string::String;
 use kernel_api::{
-    DomainCapabilities, NetCapability, FsCapability, IoCapability,
-    DmaCapability, IpcCapability, TaskCapability, MemoryCapability,
+    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
+    NetCapability, TaskCapability,
 };
 
 /// Application Runtime Context
@@ -33,7 +33,12 @@ impl AppContext {
         domain_id: u64,
         capabilities: DomainCapabilities,
     ) -> Self {
-        Self { app_id, name, domain_id, capabilities }
+        Self {
+            app_id,
+            name,
+            domain_id,
+            capabilities,
+        }
     }
 
     // --- Capability Accessors ---

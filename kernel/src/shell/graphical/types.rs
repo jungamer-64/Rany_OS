@@ -6,13 +6,11 @@
 
 #![allow(dead_code)]
 
-
-use alloc::string::{String, ToString};
-use crate::graphics::{Color, Framebuffer, BitmapFont, Rect};
+use crate::graphics::{BitmapFont, Color, Framebuffer, Rect};
 use crate::io::hid::MouseEvt;
+use alloc::string::{String, ToString};
 
 // ============================================================================
-
 
 /// 入力行の描画状態（キャッシュ済みデータ）
 pub struct RenderInputState<'a> {
@@ -77,7 +75,7 @@ pub struct ShellState {
     pub show_mouse_cursor: bool,
     /// 一時フォーマットバッファ
     pub temp_fmt_buffer: String,
-    
+
     // ========== 描画キャッシュ ==========
     /// プロンプト終了X座標
     pub cached_prompt_end_x: i32,
@@ -85,7 +83,7 @@ pub struct ShellState {
     pub cached_cursor_pixel_x: i32,
     /// カーソル位置の文字
     pub cached_cursor_char: Option<char>,
-    
+
     /// 前回の補完描画領域（部分更新の消去用）
     pub last_completion_rect: Rect,
 }
@@ -113,7 +111,7 @@ impl ShellResources {
     pub fn input_line_y(&self) -> i32 {
         (self.rows - 2) as i32 * self.font.height() as i32
     }
-    
+
     /// フォント高さ
     #[inline]
     pub fn font_height(&self) -> i32 {
@@ -127,7 +125,7 @@ impl ShellState {
     pub fn cursor_x(&self) -> i32 {
         self.cached_prompt_end_x + self.cached_cursor_pixel_x
     }
-    
+
     /// マウスカーソルのRect
     #[inline]
     pub fn mouse_rect(&self) -> crate::graphics::Rect {
@@ -189,16 +187,16 @@ pub struct ShellTheme {
 impl Default for ShellTheme {
     fn default() -> Self {
         Self {
-            background: Color::new(24, 24, 32),      // ダークブルーグレー
-            foreground: Color::new(220, 220, 220),   // ライトグレー
-            prompt: Color::new(80, 200, 255),        // シアン
-            input: Color::WHITE,                     // 白
-            error: Color::new(255, 80, 80),          // 赤
-            success: Color::new(80, 255, 80),        // 緑
-            info: Color::new(100, 180, 255),         // 青
-            warning: Color::new(255, 200, 80),       // オレンジ
-            cursor: Color::new(255, 255, 255),       // 白
-            selection: Color::new(60, 80, 120),      // 選択背景
+            background: Color::new(24, 24, 32),    // ダークブルーグレー
+            foreground: Color::new(220, 220, 220), // ライトグレー
+            prompt: Color::new(80, 200, 255),      // シアン
+            input: Color::WHITE,                   // 白
+            error: Color::new(255, 80, 80),        // 赤
+            success: Color::new(80, 255, 80),      // 緑
+            info: Color::new(100, 180, 255),       // 青
+            warning: Color::new(255, 200, 80),     // オレンジ
+            cursor: Color::new(255, 255, 255),     // 白
+            selection: Color::new(60, 80, 120),    // 選択背景
         }
     }
 }
@@ -388,13 +386,13 @@ impl MouseState {
             middle_down: false,
         }
     }
-    
+
     /// イベントから状態を更新し、新しい位置を返す
     pub fn update(&mut self, event: &MouseEvt, max_x: i32, max_y: i32) {
         // 位置の更新（境界チェック付き）
         self.x = (self.x + event.dx).clamp(0, max_x - 1);
         self.y = (self.y + event.dy).clamp(0, max_y - 1);
-        
+
         // ボタン状態の更新
         self.left_down = event.left_down;
         self.right_down = event.right_down;

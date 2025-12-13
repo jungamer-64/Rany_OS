@@ -5,16 +5,16 @@
 //! Provides Capability, CapabilitySet, and CapabilityManager with tests.
 
 #[cfg(feature = "std")]
-use std::vec::Vec;
-#[cfg(feature = "std")]
 use std::string::String as KernelString;
+#[cfg(feature = "std")]
+use std::vec::Vec;
 
 #[cfg(not(feature = "std"))]
 extern crate alloc;
 #[cfg(not(feature = "std"))]
-use alloc::vec::Vec;
-#[cfg(not(feature = "std"))]
 use alloc::string::String as KernelString;
+#[cfg(not(feature = "std"))]
+use alloc::vec::Vec;
 
 use core::fmt;
 use spin::Mutex;
@@ -56,15 +56,30 @@ pub struct CapabilitySet {
 
 impl CapabilitySet {
     pub const fn empty() -> Self {
-        CapabilitySet { effective: CAP_NONE, permitted: CAP_NONE, inheritable: CAP_NONE, ambient: CAP_NONE }
+        CapabilitySet {
+            effective: CAP_NONE,
+            permitted: CAP_NONE,
+            inheritable: CAP_NONE,
+            ambient: CAP_NONE,
+        }
     }
 
     pub const fn full() -> Self {
-        CapabilitySet { effective: CAP_ALL, permitted: CAP_ALL, inheritable: CAP_ALL, ambient: CAP_ALL }
+        CapabilitySet {
+            effective: CAP_ALL,
+            permitted: CAP_ALL,
+            inheritable: CAP_ALL,
+            ambient: CAP_ALL,
+        }
     }
 
     pub const fn with_permitted(permitted: Capability) -> Self {
-        CapabilitySet { effective: permitted, permitted, inheritable: CAP_NONE, ambient: CAP_NONE }
+        CapabilitySet {
+            effective: permitted,
+            permitted,
+            inheritable: CAP_NONE,
+            ambient: CAP_NONE,
+        }
     }
 
     pub fn has_capability(&self, cap: Capability) -> bool {
@@ -99,7 +114,9 @@ impl CapabilitySet {
     }
 
     pub fn set_inheritable(&mut self, caps: Capability) -> Result<(), CapabilityError> {
-        if (caps & !self.permitted) != 0 { return Err(CapabilityError::NotPermitted); }
+        if (caps & !self.permitted) != 0 {
+            return Err(CapabilityError::NotPermitted);
+        }
         self.inheritable = caps;
         Ok(())
     }
@@ -108,15 +125,28 @@ impl CapabilitySet {
         let new_permitted = (self.inheritable & file_inheritable) | file_permitted;
         let new_effective = new_permitted;
         let new_inheritable = self.inheritable;
-        CapabilitySet { effective: new_effective, permitted: new_permitted, inheritable: new_inheritable, ambient: self.ambient & new_permitted }
+        CapabilitySet {
+            effective: new_effective,
+            permitted: new_permitted,
+            inheritable: new_inheritable,
+            ambient: self.ambient & new_permitted,
+        }
     }
 }
 
-impl Default for CapabilitySet { fn default() -> Self { Self::empty() } }
+impl Default for CapabilitySet {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
 
 impl fmt::Display for CapabilitySet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CapabilitySet {{ eff: {:016x}, perm: {:016x}, inh: {:016x} }}", self.effective, self.permitted, self.inheritable)
+        write!(
+            f,
+            "CapabilitySet {{ eff: {:016x}, perm: {:016x}, inh: {:016x} }}",
+            self.effective, self.permitted, self.inheritable
+        )
     }
 }
 
@@ -137,32 +167,66 @@ impl fmt::Display for CapabilityError {
     }
 }
 
-struct DomainCapabilities { domain_id: u64, caps: CapabilitySet }
+struct DomainCapabilities {
+    domain_id: u64,
+    caps: CapabilitySet,
+}
 
-pub struct CapabilityManager { domains: Mutex<Vec<DomainCapabilities>>, bounding_set: Mutex<Capability> }
+pub struct CapabilityManager {
+    domains: Mutex<Vec<DomainCapabilities>>,
+    bounding_set: Mutex<Capability>,
+}
 
 impl CapabilityManager {
     pub const fn new() -> Self {
-        CapabilityManager { domains: Mutex::new(Vec::new()), bounding_set: Mutex::new(CAP_ALL) }
+        CapabilityManager {
+            domains: Mutex::new(Vec::new()),
+            bounding_set: Mutex::new(CAP_ALL),
+        }
     }
 
     pub fn get_capabilities(&self, domain_id: u64) -> CapabilitySet {
         let domains = self.domains.lock();
-        domains.iter().find(|d| d.domain_id == domain_id).map(|d| d.caps).unwrap_or(CapabilitySet::empty())
+        domains
+            .iter()
+            .find(|d| d.domain_id == domain_id)
+            .map(|d| d.caps)
+            .unwrap_or(CapabilitySet::empty())
     }
 
     pub fn set_capabilities(&self, domain_id: u64, caps: CapabilitySet) {
         let mut domains = self.domains.lock();
         let bounding = *self.bounding_set.lock();
-        let bounded_caps = CapabilitySet { effective: caps.effective & bounding, permitted: caps.permitted & bounding, inheritable: caps.inheritable & bounding, ambient: caps.ambient & bounding };
-        if let Some(domain) = domains.iter_mut().find(|d| d.domain_id == domain_id) { domain.caps = bounded_caps; } else { domains.push(DomainCapabilities { domain_id, caps: bounded_caps }); }
+        let bounded_caps = CapabilitySet {
+            effective: caps.effective & bounding,
+            permitted: caps.permitted & bounding,
+            inheritable: caps.inheritable & bounding,
+            ambient: caps.ambient & bounding,
+        };
+        if let Some(domain) = domains.iter_mut().find(|d| d.domain_id == domain_id) {
+            domain.caps = bounded_caps;
+        } else {
+            domains.push(DomainCapabilities {
+                domain_id,
+                caps: bounded_caps,
+            });
+        }
     }
 
-    pub fn has_capability(&self, domain_id: u64, cap: Capability) -> bool { self.get_capabilities(domain_id).has_capability(cap) }
+    pub fn has_capability(&self, domain_id: u64, cap: Capability) -> bool {
+        self.get_capabilities(domain_id).has_capability(cap)
+    }
 
-    pub fn grant_capability(&self, caller_domain: u64, target_domain: u64, cap: Capability) -> Result<(), CapabilityError> {
+    pub fn grant_capability(
+        &self,
+        caller_domain: u64,
+        target_domain: u64,
+        cap: Capability,
+    ) -> Result<(), CapabilityError> {
         let caller_caps = self.get_capabilities(caller_domain);
-        if !self.has_capability(caller_domain, CAP_SYS_ADMIN) && !caller_caps.is_permitted(cap) { return Err(CapabilityError::NotPermitted); }
+        if !self.has_capability(caller_domain, CAP_SYS_ADMIN) && !caller_caps.is_permitted(cap) {
+            return Err(CapabilityError::NotPermitted);
+        }
         let mut caps = self.get_capabilities(target_domain);
         caps.permitted |= cap;
         caps.raise(cap)?;
@@ -170,22 +234,42 @@ impl CapabilityManager {
         Ok(())
     }
 
-    pub fn require_capability(&self, domain_id: u64, cap: Capability) -> Result<(), CapabilityError> {
-        if self.has_capability(domain_id, cap) { Ok(()) } else { Err(CapabilityError::CapabilityRequired) }
+    pub fn require_capability(
+        &self,
+        domain_id: u64,
+        cap: Capability,
+    ) -> Result<(), CapabilityError> {
+        if self.has_capability(domain_id, cap) {
+            Ok(())
+        } else {
+            Err(CapabilityError::CapabilityRequired)
+        }
     }
 
-    pub fn drop_from_bounding(&self, cap: Capability) { let mut bounding = self.bounding_set.lock(); *bounding &= !cap; }
+    pub fn drop_from_bounding(&self, cap: Capability) {
+        let mut bounding = self.bounding_set.lock();
+        *bounding &= !cap;
+    }
 
-    pub fn bounding_set(&self) -> Capability { *self.bounding_set.lock() }
+    pub fn bounding_set(&self) -> Capability {
+        *self.bounding_set.lock()
+    }
 
-    pub fn remove_domain(&self, domain_id: u64) { let mut domains = self.domains.lock(); domains.retain(|d| d.domain_id != domain_id); }
+    pub fn remove_domain(&self, domain_id: u64) {
+        let mut domains = self.domains.lock();
+        domains.retain(|d| d.domain_id != domain_id);
+    }
 }
 
 static MANAGER: CapabilityManager = CapabilityManager::new();
 
-pub fn manager() -> &'static CapabilityManager { &MANAGER }
+pub fn manager() -> &'static CapabilityManager {
+    &MANAGER
+}
 
-pub fn init() { MANAGER.set_capabilities(0, CapabilitySet::full()); }
+pub fn init() {
+    MANAGER.set_capabilities(0, CapabilitySet::full());
+}
 
 #[cfg(test)]
 mod tests {
@@ -232,7 +316,10 @@ mod tests {
         manager().set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
         let res = manager().grant_capability(caller, target, CAP_NET_BIND);
-        assert!(res.is_ok(), "Expected grant to succeed when caller is permitted");
+        assert!(
+            res.is_ok(),
+            "Expected grant to succeed when caller is permitted"
+        );
 
         assert!(manager().has_capability(target, CAP_NET_BIND));
     }

@@ -260,7 +260,7 @@ impl SignatureVerifier {
     }
 
     /// SHA-256ハッシュを計算
-    /// 
+    ///
     /// 設計書 3.3: SHA-256によるコード完全性検証
     fn compute_hash(&self, data: &[u8]) -> [u8; 32] {
         super::sha256::compute(data)
@@ -368,8 +368,7 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
         return None;
     }
 
-    let shstrtab_sh: Elf64SectionHeader =
-        crate::util::read_struct(elf_data, shstrtab_offset)?;
+    let shstrtab_sh: Elf64SectionHeader = crate::util::read_struct(elf_data, shstrtab_offset)?;
 
     let shstrtab_start = shstrtab_sh.sh_offset as usize;
     let shstrtab_end = shstrtab_start + shstrtab_sh.sh_size as usize;
@@ -388,8 +387,7 @@ fn find_signature_section(elf_data: &[u8]) -> Option<&[u8]> {
             continue;
         }
 
-        let sh: Elf64SectionHeader =
-            crate::util::read_struct(elf_data, sh_offset)?;
+        let sh: Elf64SectionHeader = crate::util::read_struct(elf_data, sh_offset)?;
 
         // セクション名を取得
         let name_offset = sh.sh_name as usize;

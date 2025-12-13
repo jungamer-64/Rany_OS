@@ -121,22 +121,22 @@ impl UsbClass {
 pub trait UsbClassDriver: Send + Sync {
     /// ドライバ名を取得
     fn name(&self) -> &'static str;
-    
+
     /// クラスコードを取得
     fn class_code(&self) -> UsbClass;
-    
+
     /// このドライバがデバイスに対応しているか判定
     fn probe(&self, class: u8, subclass: u8, protocol: u8) -> bool;
-    
+
     /// デバイスを初期化
     fn init(&mut self, slot_id: u8) -> Result<(), ClassDriverError>;
-    
+
     /// デバイスを解放
     fn release(&mut self) -> Result<(), ClassDriverError>;
-    
+
     /// ポーリング処理（非割り込みモード用）
     fn poll(&mut self) -> Result<(), ClassDriverError>;
-    
+
     /// イベント通知を受信
     fn on_event(&mut self, event: ClassDriverEvent);
 }
@@ -151,13 +151,9 @@ pub enum ClassDriverEvent {
         bytes_transferred: usize,
     },
     /// 接続状態変更
-    ConnectionChange {
-        connected: bool,
-    },
+    ConnectionChange { connected: bool },
     /// サスペンド/レジューム
-    PowerStateChange {
-        suspended: bool,
-    },
+    PowerStateChange { suspended: bool },
     /// その他
     Custom(u32),
 }
@@ -223,12 +219,12 @@ impl ClassDriverRegistry {
             drivers: Vec::new(),
         }
     }
-    
+
     /// ドライバを登録
     pub fn register(&mut self, driver: Box<dyn UsbClassDriver>) {
         self.drivers.push(driver);
     }
-    
+
     /// デバイスに対応するドライバを検索
     pub fn find_driver(&self, class: u8, subclass: u8, protocol: u8) -> Option<usize> {
         for (idx, driver) in self.drivers.iter().enumerate() {
@@ -238,17 +234,17 @@ impl ClassDriverRegistry {
         }
         None
     }
-    
+
     /// インデックスでドライバを取得
     pub fn get(&self, index: usize) -> Option<&dyn UsbClassDriver> {
         self.drivers.get(index).map(|d| d.as_ref())
     }
-    
+
     /// インデックスで可変参照を取得
     pub fn get_mut(&mut self, index: usize) -> Option<&mut Box<dyn UsbClassDriver>> {
         self.drivers.get_mut(index)
     }
-    
+
     /// 登録ドライバ数
     pub fn count(&self) -> usize {
         self.drivers.len()
@@ -273,21 +269,17 @@ impl EndpointHelper {
     pub fn endpoint_number(addr: u8) -> u8 {
         addr & 0x0F
     }
-    
+
     /// エンドポイントアドレスがIN方向か判定
     pub fn is_in(addr: u8) -> bool {
         (addr & 0x80) != 0
     }
-    
+
     /// エンドポイントアドレスを作成
     pub fn make_address(number: u8, direction_in: bool) -> u8 {
-        if direction_in {
-            number | 0x80
-        } else {
-            number
-        }
+        if direction_in { number | 0x80 } else { number }
     }
-    
+
     /// DCI (Device Context Index) を計算
     pub fn to_dci(addr: u8) -> u8 {
         let ep_num = Self::endpoint_number(addr);
@@ -328,7 +320,7 @@ impl ClassRequest {
             length,
         }
     }
-    
+
     /// SET_DESCRIPTOR (Class) を構築
     pub fn set_descriptor(descriptor_type: u8, index: u8, length: u16) -> SetupPacket {
         SetupPacket {
@@ -363,7 +355,7 @@ impl SetupPacket {
         bytes[6..8].copy_from_slice(&self.length.to_le_bytes());
         bytes
     }
-    
+
     /// バイト配列から作成
     pub fn from_bytes(bytes: &[u8; 8]) -> Self {
         Self {

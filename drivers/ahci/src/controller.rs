@@ -10,9 +10,8 @@ use spin::Mutex;
 
 use super::port::AhciPort;
 use super::types::{
-    AhciResult, PortNumber,
-    GHC_AE, GHC_CAP, GHC_GHC, GHC_IE, GHC_PI, GHC_VS,
-    PORT_BASE, PORT_SIZE, PX_SSTS,
+    AhciResult, GHC_AE, GHC_CAP, GHC_GHC, GHC_IE, GHC_PI, GHC_VS, PORT_BASE, PORT_SIZE, PX_SSTS,
+    PortNumber,
 };
 
 /// AHCI Controller
@@ -60,16 +59,16 @@ impl AhciController {
                     let det = ssts & 0x0F;
 
                     if det == 3 {
-                         // Device detected, init it
-                         // If init fails, we still keep the port structure but maybe not active
-                         match ahci_port.init() {
-                             Ok(_) => {},
-                             Err(_) => {
-                                 // log error?
-                             }
-                         }
+                        // Device detected, init it
+                        // If init fails, we still keep the port structure but maybe not active
+                        match ahci_port.init() {
+                            Ok(_) => {}
+                            Err(_) => {
+                                // log error?
+                            }
+                        }
                     }
-                     ports[i as usize] = Some(Box::new(ahci_port));
+                    ports[i as usize] = Some(Box::new(ahci_port));
                 }
             }
         }
@@ -82,21 +81,21 @@ impl AhciController {
     }
 
     pub fn port(&self, port: PortNumber) -> Option<Box<AhciPort>> {
-         // This is tricky with Mutex. We probably want to return a reference or clone if Arc.
-         // But AhciPort is not Clone.
-         // For the driver interface, we usually need to perform operations on the port.
-         // Or we return a locked guard?
-         // For now, let's just make `ports` accessible via a method that takes a closure?
-         // Or maybe we don't return `&AhciPort` but perform operation.
-         
-         // NOTE: The previous `port()` method returned `Option<&AhciPort>` but had lifetime issues.
-         // Since we used `Mutex`, we can't return a reference to the content of the mutex guard after the guard is dropped.
-         
-         // We'll change the design slightly: The controller itself will contain logic to access ports safely, or we expose the Mutex.
-         // Or typically, the driver wrapper holds Arc<Mutex<AhciController>> and we lock it.
-         None 
+        // This is tricky with Mutex. We probably want to return a reference or clone if Arc.
+        // But AhciPort is not Clone.
+        // For the driver interface, we usually need to perform operations on the port.
+        // Or we return a locked guard?
+        // For now, let's just make `ports` accessible via a method that takes a closure?
+        // Or maybe we don't return `&AhciPort` but perform operation.
+
+        // NOTE: The previous `port()` method returned `Option<&AhciPort>` but had lifetime issues.
+        // Since we used `Mutex`, we can't return a reference to the content of the mutex guard after the guard is dropped.
+
+        // We'll change the design slightly: The controller itself will contain logic to access ports safely, or we expose the Mutex.
+        // Or typically, the driver wrapper holds Arc<Mutex<AhciController>> and we lock it.
+        None
     }
-    
+
     // Accessor for ports via index, intended to be used when lock is held or by internal methods
     pub fn get_port_start_index(&self) -> Option<usize> {
         // finding first implemented port
@@ -107,10 +106,12 @@ impl AhciController {
         }
         None
     }
-    
+
     // Helper to run closure on a port
     pub fn with_port<F, R>(&self, port_num: PortNumber, f: F) -> Option<R>
-    where F: FnOnce(&mut AhciPort) -> R {
+    where
+        F: FnOnce(&mut AhciPort) -> R,
+    {
         let mut ports = self.ports.lock();
         if let Some(port) = ports[port_num.as_usize()].as_mut() {
             Some(f(port))

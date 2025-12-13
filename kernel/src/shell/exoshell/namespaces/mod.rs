@@ -2,26 +2,26 @@
 // src/shell/exoshell/namespaces/mod.rs - Namespace module exports
 // ============================================================================
 
+pub mod cap;
+pub mod driver;
 pub mod fs;
 pub mod net;
 pub mod proc;
-pub mod cap;
 pub mod sys;
-pub mod driver;
 
+pub use cap::CapNamespace;
+pub use driver::DriverNamespace;
 pub use fs::FsNamespace;
 pub use net::NetNamespace;
 pub use proc::ProcNamespace;
-pub use cap::CapNamespace;
 pub use sys::SysNamespace;
-pub use driver::DriverNamespace;
 
+use crate::shell::exoshell::types::ExoValue;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use crate::shell::exoshell::types::ExoValue;
 
 /// Box化されたFuture (no_std環境でのasync trait用)
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -35,5 +35,9 @@ pub trait ShellNamespace: Send + Sync {
     /// メソッド呼び出し
     /// method: メソッド名
     /// args: 評価済みの引数リスト（所有権を持つ静的な ExoValue）
-    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>>;
+    fn call<'a>(
+        &'a self,
+        method: &'a str,
+        args: &'a [ExoValue<'static>],
+    ) -> BoxFuture<'a, ExoValue<'static>>;
 }

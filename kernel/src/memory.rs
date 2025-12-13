@@ -93,11 +93,11 @@ impl BuddyHeapAllocator {
             if remaining < Self::MIN_BLOCK_SIZE {
                 break;
             }
-            
+
             // このアドレスで使用可能な最大オーダーを計算
             // アドレスは block_size でアラインされている必要がある
             let mut order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
-            
+
             // アラインメント条件を満たすまでオーダーを下げる
             while order > 0 {
                 let block_size = Self::order_to_size(order);
@@ -106,7 +106,7 @@ impl BuddyHeapAllocator {
                 }
                 order -= 1;
             }
-            
+
             // Order 0のアラインメントチェック（MIN_BLOCK_SIZE=64バイト）
             let block_size = Self::order_to_size(order);
             if current % block_size != 0 {
@@ -118,7 +118,7 @@ impl BuddyHeapAllocator {
                 current = aligned;
                 continue;
             }
-            
+
             if current + block_size <= end {
                 crate::vga::early_serial_str("[BUD] add\n");
                 self.add_to_free_list(current, order);
@@ -202,7 +202,7 @@ impl BuddyHeapAllocator {
         // size と align の両方を満たす最小のブロックを使用
         let align = layout.align();
         let size = layout.size();
-        
+
         // 必要なサイズ: sizeとalignの大きい方（最低 MIN_BLOCK_SIZE）
         // Buddyアロケータでは、ブロックは常に2のべき乗サイズで、
         // 自身のサイズでアラインされているため、
@@ -219,7 +219,7 @@ impl BuddyHeapAllocator {
             if let Some(block) = self.remove_from_free_list(current_order) {
                 // 必要に応じて分割
                 self.split_block(block, current_order, order);
-                
+
                 // Buddyブロックは自身のサイズでアラインされているため、
                 // block_size >= align なら自動的にアラインメントを満たす
                 return block as *mut u8;

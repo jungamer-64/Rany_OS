@@ -17,7 +17,7 @@
 use alloc::vec::Vec;
 use spin::Mutex;
 
-use crate::bus::{PciDeviceInfo, config_regs, command_bits};
+use crate::bus::{PciDeviceInfo, command_bits, config_regs};
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::BdfAddress;
 
@@ -576,13 +576,21 @@ pub fn setup_msix<A: ConfigSpaceAccessor>(
 /// Disable legacy INTx interrupts for a device
 pub fn disable_intx<A: ConfigSpaceAccessor>(accessor: &A, device: &PciDeviceInfo) {
     let command = accessor.read16(device.bdf, config_regs::COMMAND);
-    accessor.write16(device.bdf, config_regs::COMMAND, command | command_bits::INTERRUPT_DISABLE);
+    accessor.write16(
+        device.bdf,
+        config_regs::COMMAND,
+        command | command_bits::INTERRUPT_DISABLE,
+    );
 }
 
 /// Enable legacy INTx interrupts for a device
 pub fn enable_intx<A: ConfigSpaceAccessor>(accessor: &A, device: &PciDeviceInfo) {
     let command = accessor.read16(device.bdf, config_regs::COMMAND);
-    accessor.write16(device.bdf, config_regs::COMMAND, command & !command_bits::INTERRUPT_DISABLE);
+    accessor.write16(
+        device.bdf,
+        config_regs::COMMAND,
+        command & !command_bits::INTERRUPT_DISABLE,
+    );
 }
 
 #[cfg(test)]

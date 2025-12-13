@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // src/shell/mod.rs - ExoShell Module
 // ============================================================================
 //!
@@ -28,7 +28,7 @@ pub mod exoshell;
 pub mod graphical;
 
 // Re-export ExoShell types
-pub use exoshell::{ExoShell, ExoValue, Capability, CapOperation};
+pub use exoshell::{CapOperation, Capability, ExoShell, ExoValue};
 
 // Re-export graphical shell
 pub use graphical::GraphicalShell;
@@ -38,7 +38,7 @@ pub use graphical::GraphicalShell;
 // ============================================================================
 // The classic Unix-style shell (Shell, ShellRunner, CommandResult, etc.)
 // has been removed in favor of ExoShell.
-// 
+//
 // If you need classic shell commands, use ExoShell's alias feature:
 //   ls, cd, pwd, cat, mkdir, rm, ps, ifconfig, ping, etc.
 // are still available as convenience aliases.

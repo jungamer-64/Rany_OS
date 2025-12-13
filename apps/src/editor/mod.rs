@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
-use app_sdk::{Application, AppContext, print};
+use app_sdk::{AppContext, Application, print};
 
 /// Editor application
 pub struct Editor {
@@ -33,16 +33,16 @@ impl Editor {
 
     async fn run_editor(&mut self, ctx: AppContext) {
         print(format_args!("ExoRust Editor v0.1.0\n"));
-        
+
         // Check if we have filesystem capability
         if ctx.fs().is_some() {
             print(format_args!("Filesystem capability available\n"));
         } else {
             print(format_args!("Warning: No filesystem capability\n"));
         }
-        
+
         print(format_args!("Commands: Ctrl+S save, Ctrl+Q quit\n"));
-        
+
         // Editor main loop would go here
     }
 }

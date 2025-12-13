@@ -15,7 +15,7 @@
 //! - Posted Interrupts: 効率的な割り込み配送
 //!
 //! ## 【設計書 7.2】IOMMU必須化
-//! 
+//!
 //! セキュリティ上の理由から、IOMMUの存在を起動時に必須とするオプションを提供。
 //! `IOMMU_REQUIRED`が`true`の場合、IOMMU未検出でパニック。
 
@@ -31,14 +31,14 @@ use spin::Mutex;
 // ============================================================================
 
 /// 【設計書 7.2】IOMMUを起動時に必須とするかどうか
-/// 
+///
 /// セキュリティ要件により、IOMMUがない環境では起動を拒否できる。
 /// - `true`: IOMMU未検出時にパニック
 /// - `false`: IOMMU未検出時も警告のみで続行
 pub static IOMMU_REQUIRED: AtomicBool = AtomicBool::new(false);
 
 /// IOMMUを必須に設定する
-/// 
+///
 /// 起動初期（IOMMU初期化前）に呼び出すこと
 pub fn set_iommu_required(required: bool) {
     IOMMU_REQUIRED.store(required, Ordering::Release);
@@ -50,14 +50,16 @@ pub fn is_iommu_required() -> bool {
 }
 
 /// IOMMU要件をチェックし、必要なら停止
-/// 
+///
 /// この関数はIOMMU初期化後に呼び出すべき
 pub fn enforce_iommu_requirement() {
     if is_iommu_required() && !is_iommu_enabled() {
         // IOMMUが必須だが検出されなかった
-        panic!("[SECURITY] IOMMU is required but not detected. \
+        panic!(
+            "[SECURITY] IOMMU is required but not detected. \
                 DMA attacks are possible without IOMMU protection. \
-                To boot without IOMMU, set IOMMU_REQUIRED=false.");
+                To boot without IOMMU, set IOMMU_REQUIRED=false."
+        );
     }
 }
 
@@ -326,11 +328,9 @@ impl IommuDomain {
     pub fn new(id: u16) -> Self {
         // Allocate page table
         // SAFETY: 4096アライメントと4096の倍数サイズは常に有効なレイアウト
-        let layout = alloc::alloc::Layout::from_size_align(
-            PT_ENTRIES * core::mem::size_of::<SlPte>(),
-            4096,
-        )
-        .expect("Invalid layout for page table");
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .expect("Invalid layout for page table");
 
         let page_table = crate::util::allocate_zeroed(layout)
             .expect("Failed to allocate IOMMU page table")
@@ -847,7 +847,9 @@ static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
 /// Caller must ensure MMIO address is valid
 pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     let mut controller = IommuController::new(mmio_base);
-    unsafe { controller.init()?; }
+    unsafe {
+        controller.init()?;
+    }
 
     crate::log!("IOMMU initialized at 0x{:X}\n", mmio_base);
 
@@ -929,20 +931,20 @@ where
 // ============================================================================
 
 /// PCIデバイスにIOMMUドメインを自動設定
-/// 
+///
 /// この関数はPCIデバイス検出時に呼び出され、
 /// IOMMUが有効な場合は自動的にドメインを作成してデバイスをアタッチします。
-/// 
+///
 /// # Arguments
 /// * `device` - 設定対象のPCIデバイス情報（可変参照）
-/// 
+///
 /// # Returns
 /// 成功した場合は割り当てられたドメインID、失敗した場合はNone
 pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
     if !is_iommu_enabled() {
         return None;
     }
-    
+
     let bdf = device.bdf;
     let device_id = DeviceId::new(
         0, // segment（通常0）
@@ -950,7 +952,7 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         bdf.device.0,
         bdf.function.0,
     );
-    
+
     with_iommu(|iommu| {
         // 1. 新しいドメインを作成
         let domain_id = match iommu.create_domain() {
@@ -960,46 +962,60 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
                 return None;
             }
         };
-        
+
         // 2. デバイスをドメインにアタッチ
         if let Err(e) = iommu.attach_device(device_id, domain_id) {
-            crate::log!("[IOMMU] Failed to attach device {:?} to domain {}: {:?}\n", 
-                       bdf, domain_id, e);
+            crate::log!(
+                "[IOMMU] Failed to attach device {:?} to domain {}: {:?}\n",
+                bdf,
+                domain_id,
+                e
+            );
             return None;
         }
-        
+
         // 3. デバイス情報を更新
         device.iommu_domain_id = Some(domain_id);
-        
-        crate::log!("[IOMMU] Device {:02x}:{:02x}.{} -> Domain {}\n",
-                   bdf.bus.0, bdf.device.0, bdf.function.0, domain_id);
-        
+
+        crate::log!(
+            "[IOMMU] Device {:02x}:{:02x}.{} -> Domain {}\n",
+            bdf.bus.0,
+            bdf.device.0,
+            bdf.function.0,
+            domain_id
+        );
+
         Some(domain_id)
-    }).ok().flatten()
+    })
+    .ok()
+    .flatten()
 }
 
 /// すべてのPCIデバイスにIOMMUドメインを設定
-/// 
+///
 /// PCI初期化後に呼び出して、全デバイスを保護します。
 pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) {
     if !is_iommu_enabled() {
         crate::log!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
         return;
     }
-    
+
     let mut protected_count = 0;
     for device in devices.iter_mut() {
         // ブリッジデバイスはスキップ（ホストブリッジはIOMMUで保護不要）
         if device.is_pci_bridge() {
             continue;
         }
-        
+
         if setup_iommu_for_pci_device(device).is_some() {
             protected_count += 1;
         }
     }
-    
-    crate::log!("[IOMMU] Protected {} PCI devices with IOMMU domains\n", protected_count);
+
+    crate::log!(
+        "[IOMMU] Protected {} PCI devices with IOMMU domains\n",
+        protected_count
+    );
 }
 
 // ============================================================================

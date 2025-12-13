@@ -214,15 +214,15 @@ impl Rect {
 
         Some(Rect::new(x, y, (right - x) as u32, (bottom - y) as u32))
     }
-    
+
     /// 他の矩形を完全に含むか
     pub fn contains_rect(&self, other: &Rect) -> bool {
-        other.x >= self.x 
-            && other.y >= self.y 
-            && other.right() <= self.right() 
+        other.x >= self.x
+            && other.y >= self.y
+            && other.right() <= self.right()
             && other.bottom() <= self.bottom()
     }
-    
+
     /// 2つの矩形を含む最小の矩形を返す
     pub fn union(&self, other: &Rect) -> Rect {
         let x = self.x.min(other.x);
@@ -231,9 +231,9 @@ impl Rect {
         let bottom = self.bottom().max(other.bottom());
         Rect::new(x, y, (right - x) as u32, (bottom - y) as u32)
     }
-    
+
     /// Returns true if this rectangle has non-zero area.
-    /// 
+    ///
     /// A valid rectangle has positive width AND height.
     /// Zero-size rectangles (width=0 or height=0) are considered invalid
     /// and are typically filtered out during rendering.
@@ -241,9 +241,9 @@ impl Rect {
     pub const fn is_valid(&self) -> bool {
         self.width > 0 && self.height > 0
     }
-    
+
     /// Returns true if this rectangle has zero area.
-    /// 
+    ///
     /// Convenience method, equivalent to `!self.is_valid()`.
     #[inline]
     pub const fn is_zero_size(&self) -> bool {

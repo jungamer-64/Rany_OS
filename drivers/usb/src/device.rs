@@ -12,8 +12,8 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::descriptor::{
-    DeviceDescriptor, EndpointDescriptor,
-    ParsedConfiguration, SafePackedRead, parse_configuration, parse_string_descriptor,
+    DeviceDescriptor, EndpointDescriptor, ParsedConfiguration, SafePackedRead, parse_configuration,
+    parse_string_descriptor,
 };
 use super::{
     DeviceAddress, EndpointAddress, SetupPacket, UsbDevice, UsbError, UsbResult, UsbSpeed,
@@ -351,9 +351,9 @@ pub mod hub_class {
     pub async fn get_hub_descriptor(device: &dyn UsbDevice) -> UsbResult<HubDescriptor> {
         let mut buffer = [0u8; 8];
         let setup = SetupPacket::class_request(
-            true,        // IN
-            0,           // Device
-            0x06,        // GET_DESCRIPTOR
+            true,      // IN
+            0,         // Device
+            0x06,      // GET_DESCRIPTOR
             0x29 << 8, // Hub descriptor type
             0,
             8,

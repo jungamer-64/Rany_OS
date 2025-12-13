@@ -8,8 +8,8 @@
 #![allow(unused_variables)]
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use hal::port_io::{IoPort, PortU8, PortU16};
 use spin::Mutex;
-use hal::port_io::{PortU8, PortU16, IoPort};
 use x86_64::instructions::port::{PortRead, PortWrite};
 
 /// ナノ秒単位の時間

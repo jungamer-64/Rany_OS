@@ -7,16 +7,16 @@
 //! PCIe設定空間へのメモリマップドアクセスを提供。
 //! 4KBの設定空間にアクセス可能（PCIe拡張設定空間を含む）。
 
-use core::ptr;
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::BdfAddress;
+use core::ptr;
 
 // ============================================================================
 // ECAM Implementation
 // ============================================================================
 
 /// ECAM (Enhanced Configuration Access Mechanism)
-/// 
+///
 /// PCIe設定空間へのメモリマップドアクセスを提供します。
 /// ACPIのMCFGテーブルからベースアドレスを取得して初期化します。
 pub struct EcamAccess {
@@ -73,7 +73,7 @@ impl EcamAccess {
     }
 
     /// ECAM設定空間アドレスを計算
-    /// 
+    ///
     /// ECAM アドレス計算:
     /// Address = Base + ((Bus - StartBus) << 20) + (Device << 15) + (Function << 12) + Offset
     fn config_address(&self, bdf: BdfAddress, offset: u16) -> Option<u64> {
@@ -147,7 +147,7 @@ impl ConfigSpaceAccessor for EcamAccess {
 // ============================================================================
 
 /// ECAMマネージャ
-/// 
+///
 /// 複数のPCIセグメントに対応するECAMアクセスを管理
 pub struct EcamManager {
     /// ECAM領域のリスト（最大16セグメント）
@@ -239,7 +239,7 @@ impl Default for EcamManager {
 pub mod ext_config {
     /// 拡張ケーパビリティヘッダの開始
     pub const EXT_CAP_START: u16 = 0x100;
-    
+
     /// 拡張設定空間の終端
     pub const EXT_CAP_END: u16 = 0xFFF;
 }

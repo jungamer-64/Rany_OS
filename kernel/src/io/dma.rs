@@ -515,19 +515,25 @@ pub fn clwb(addr: *const u8) {
 /// MFENCE: メモリフェンス - 全てのロード/ストア操作が完了するまで待機
 #[inline(always)]
 pub fn mfence() {
-    unsafe { asm!("mfence", options(nostack, preserves_flags)); }
+    unsafe {
+        asm!("mfence", options(nostack, preserves_flags));
+    }
 }
 
 /// SFENCE: ストアフェンス - DMA転送開始前（CPU→デバイス）に使用
 #[inline(always)]
 pub fn sfence() {
-    unsafe { asm!("sfence", options(nostack, preserves_flags)); }
+    unsafe {
+        asm!("sfence", options(nostack, preserves_flags));
+    }
 }
 
 /// LFENCE: ロードフェンス - DMA転送完了後（デバイス→CPU）に使用
 #[inline(always)]
 pub fn lfence() {
-    unsafe { asm!("lfence", options(nostack, preserves_flags)); }
+    unsafe {
+        asm!("lfence", options(nostack, preserves_flags));
+    }
 }
 
 // ============================================================================
@@ -633,14 +639,21 @@ impl CoherentDmaBuffer {
     pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
         let layout = Layout::from_size_align(size, Self::DMA_ALIGNMENT).ok()?;
         let ptr = unsafe { alloc(layout) };
-        if ptr.is_null() { return None; }
-        unsafe { core::ptr::write_bytes(ptr, 0, size); }
+        if ptr.is_null() {
+            return None;
+        }
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, size);
+        }
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
         Some(Self {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
-            size, layout, phys_addr, attributes,
+            size,
+            layout,
+            phys_addr,
+            attributes,
         })
     }
 
@@ -674,13 +687,19 @@ impl CoherentDmaBuffer {
         unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.size) }
     }
 
-    pub fn phys_addr(&self) -> PhysAddr { self.phys_addr }
-    pub fn size(&self) -> usize { self.size }
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.phys_addr
+    }
+    pub fn size(&self) -> usize {
+        self.size
+    }
 }
 
 impl Drop for CoherentDmaBuffer {
     fn drop(&mut self) {
-        unsafe { dealloc(self.ptr.as_ptr(), self.layout); }
+        unsafe {
+            dealloc(self.ptr.as_ptr(), self.layout);
+        }
     }
 }
 
@@ -706,12 +725,22 @@ impl<'a> StreamingDmaMapping<'a> {
             }
             DmaDirection::FromDevice => {}
         }
-        Self { buffer, phys_addr, direction }
+        Self {
+            buffer,
+            phys_addr,
+            direction,
+        }
     }
 
-    pub fn phys_addr(&self) -> PhysAddr { self.phys_addr }
-    pub fn len(&self) -> usize { self.buffer.len() }
-    pub fn is_empty(&self) -> bool { self.buffer.is_empty() }
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.phys_addr
+    }
+    pub fn len(&self) -> usize {
+        self.buffer.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
 
     pub fn sync_for_cpu(&self) {
         match self.direction {
@@ -724,7 +753,9 @@ impl<'a> StreamingDmaMapping<'a> {
 }
 
 impl Drop for StreamingDmaMapping<'_> {
-    fn drop(&mut self) { self.sync_for_cpu(); }
+    fn drop(&mut self) {
+        self.sync_for_cpu();
+    }
 }
 
 // ============================================================================
@@ -742,7 +773,9 @@ impl IommuDmaBuffer {
         let inner = CoherentDmaBuffer::new(size, attributes)?;
         let iova = if crate::io::iommu::is_iommu_enabled() {
             crate::io::iommu::map_for_dma(inner.phys_addr(), size as u64).ok()
-        } else { None };
+        } else {
+            None
+        };
         Some(Self { inner, iova })
     }
 
@@ -751,8 +784,12 @@ impl IommuDmaBuffer {
         self.iova.unwrap_or(self.inner.phys_addr().as_u64())
     }
 
-    pub fn prepare_for_device(&self) { self.inner.prepare_for_device(); }
-    pub fn finish_from_device(&self) { self.inner.finish_from_device(); }
+    pub fn prepare_for_device(&self) {
+        self.inner.prepare_for_device();
+    }
+    pub fn finish_from_device(&self) {
+        self.inner.finish_from_device();
+    }
 }
 
 impl Drop for IommuDmaBuffer {
@@ -788,22 +825,30 @@ pub enum DmaError {
 }
 
 /// DMAアロケータトレイト
-/// 
+///
 /// 全てのドライバはこのトレイトを通じてDMAメモリを割り当てる。
 /// IOMMU対応・非対応を透過的に扱う。
 pub trait DmaAllocator: Send + Sync {
     /// コヒーレントDMAバッファを割り当て
-    fn allocate_coherent(&self, size: usize, direction: DmaDirection) -> Result<DmaAllocation, DmaError>;
-    
+    fn allocate_coherent(
+        &self,
+        size: usize,
+        direction: DmaDirection,
+    ) -> Result<DmaAllocation, DmaError>;
+
     /// ストリーミングDMAマッピングを作成
-    fn map_streaming(&self, buffer: &[u8], direction: DmaDirection) -> Result<StreamingMapping, DmaError>;
-    
+    fn map_streaming(
+        &self,
+        buffer: &[u8],
+        direction: DmaDirection,
+    ) -> Result<StreamingMapping, DmaError>;
+
     /// ストリーミングDMAマッピングを解除
     fn unmap_streaming(&self, mapping: StreamingMapping);
-    
+
     /// デバイスアドレスを取得（IOVAまたは物理アドレス）
     fn device_address(&self, phys_addr: PhysAddr) -> u64;
-    
+
     /// IOMMUが有効かどうか
     fn iommu_enabled(&self) -> bool;
 }
@@ -862,42 +907,52 @@ impl GlobalDmaAllocator {
     pub const fn new() -> Self {
         Self { device_id: None }
     }
-    
+
     /// デバイスIDを設定（IOMMU連携用）
     pub fn with_device(device_id: crate::io::iommu::DeviceId) -> Self {
-        Self { device_id: Some(device_id) }
+        Self {
+            device_id: Some(device_id),
+        }
     }
 }
 
 impl DmaAllocator for GlobalDmaAllocator {
-    fn allocate_coherent(&self, size: usize, _direction: DmaDirection) -> Result<DmaAllocation, DmaError> {
-        let layout = Layout::from_size_align(size, DMA_ALIGNMENT)
-            .map_err(|_| DmaError::InvalidAlignment)?;
-        
+    fn allocate_coherent(
+        &self,
+        size: usize,
+        _direction: DmaDirection,
+    ) -> Result<DmaAllocation, DmaError> {
+        let layout =
+            Layout::from_size_align(size, DMA_ALIGNMENT).map_err(|_| DmaError::InvalidAlignment)?;
+
         let ptr = unsafe { alloc(layout) };
         if ptr.is_null() {
             return Err(DmaError::OutOfMemory);
         }
-        
+
         // ゼロ初期化
-        unsafe { core::ptr::write_bytes(ptr, 0, size); }
-        
+        unsafe {
+            core::ptr::write_bytes(ptr, 0, size);
+        }
+
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
-        
+
         // IOMMUマッピング
         let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
             match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
                 Ok(iova) => (iova, true),
                 Err(_) => {
-                    unsafe { dealloc(ptr, layout); }
+                    unsafe {
+                        dealloc(ptr, layout);
+                    }
                     return Err(DmaError::IommuMappingFailed);
                 }
             }
         } else {
             (phys_addr.as_u64(), false)
         };
-        
+
         Ok(DmaAllocation {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
             phys_addr,
@@ -907,12 +962,16 @@ impl DmaAllocator for GlobalDmaAllocator {
             iova_mapped,
         })
     }
-    
-    fn map_streaming(&self, buffer: &[u8], direction: DmaDirection) -> Result<StreamingMapping, DmaError> {
+
+    fn map_streaming(
+        &self,
+        buffer: &[u8],
+        direction: DmaDirection,
+    ) -> Result<StreamingMapping, DmaError> {
         let host_addr = buffer.as_ptr();
         let size = buffer.len();
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(host_addr as u64));
-        
+
         // キャッシュ操作
         match direction {
             DmaDirection::ToDevice | DmaDirection::Bidirectional => {
@@ -920,7 +979,7 @@ impl DmaAllocator for GlobalDmaAllocator {
             }
             DmaDirection::FromDevice => {}
         }
-        
+
         // IOMMUマッピング
         let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
             match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
@@ -930,7 +989,7 @@ impl DmaAllocator for GlobalDmaAllocator {
         } else {
             (phys_addr.as_u64(), false)
         };
-        
+
         Ok(StreamingMapping {
             host_addr,
             device_addr,
@@ -939,7 +998,7 @@ impl DmaAllocator for GlobalDmaAllocator {
             iova_mapped,
         })
     }
-    
+
     fn unmap_streaming(&self, mapping: StreamingMapping) {
         // キャッシュ操作
         match mapping.direction {
@@ -948,18 +1007,18 @@ impl DmaAllocator for GlobalDmaAllocator {
             }
             DmaDirection::ToDevice => {}
         }
-        
+
         // IOMMUマッピング解除
         if mapping.iova_mapped {
             let _ = crate::io::iommu::unmap_dma(mapping.device_addr, mapping.size as u64);
         }
     }
-    
+
     fn device_address(&self, phys_addr: PhysAddr) -> u64 {
         // 既存のマッピングから検索するか、Identity mappingを返す
         phys_addr.as_u64()
     }
-    
+
     fn iommu_enabled(&self) -> bool {
         crate::io::iommu::is_iommu_enabled()
     }
@@ -978,7 +1037,7 @@ pub fn global_dma_allocator() -> &'static dyn DmaAllocator {
 // ============================================================================
 
 /// デバイス固有のDMAコンテキスト
-/// 
+///
 /// 各ドライバはこれを保持してDMA操作を行う。
 /// IOMMUドメインやデバイス固有の設定を管理。
 pub struct DeviceDmaContext {
@@ -999,7 +1058,7 @@ impl DeviceDmaContext {
             allocator: Arc::new(GlobalDmaAllocator::new()),
         }
     }
-    
+
     /// デバイスIDを設定してIOMMU連携を有効化
     pub fn with_device(device_id: crate::io::iommu::DeviceId) -> Result<Self, DmaError> {
         let domain_id = if crate::io::iommu::is_iommu_enabled() {
@@ -1008,28 +1067,34 @@ impl DeviceDmaContext {
                 let domain_id = iommu.create_domain().ok()?;
                 iommu.attach_device(device_id, domain_id).ok()?;
                 Some(domain_id)
-            }).ok().flatten()
+            })
+            .ok()
+            .flatten()
         } else {
             None
         };
-        
+
         Ok(Self {
             device_id: Some(device_id),
             domain_id,
             allocator: Arc::new(GlobalDmaAllocator::with_device(device_id)),
         })
     }
-    
+
     /// コヒーレントDMAバッファを割り当て
-    pub fn allocate(&self, size: usize, direction: DmaDirection) -> Result<DmaAllocation, DmaError> {
+    pub fn allocate(
+        &self,
+        size: usize,
+        direction: DmaDirection,
+    ) -> Result<DmaAllocation, DmaError> {
         self.allocator.allocate_coherent(size, direction)
     }
-    
+
     /// 便利なメソッド: TypedDmaBufferを作成
     pub fn create_buffer<T>(&self, value: T) -> Result<TypedDmaBuffer<T, CpuOwned>, DmaError> {
         TypedDmaBuffer::new(value).ok_or(DmaError::OutOfMemory)
     }
-    
+
     /// 便利なメソッド: TypedDmaSliceを作成
     pub fn create_slice(&self, size: usize) -> Result<TypedDmaSlice<CpuOwned>, DmaError> {
         TypedDmaSlice::new(size).ok_or(DmaError::OutOfMemory)

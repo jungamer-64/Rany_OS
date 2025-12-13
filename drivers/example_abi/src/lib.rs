@@ -1,8 +1,8 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(feature = "standalone", feature(alloc_error_handler))]
 
-use kernel_api::driver_abi::{DriverContext, AbiDriverType};
 use core::alloc::{GlobalAlloc, Layout};
+use kernel_api::driver_abi::{AbiDriverType, DriverContext};
 
 #[cfg(all(feature = "standalone", target_os = "none"))]
 struct DummyAllocator;

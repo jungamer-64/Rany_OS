@@ -176,7 +176,9 @@ impl LocalApic {
         );
 
         // Wait for delivery
-        unsafe { self.wait_for_delivery(); }
+        unsafe {
+            self.wait_for_delivery();
+        }
 
         // Send INIT deassert
         self.write(
@@ -184,7 +186,9 @@ impl LocalApic {
             Self::DELIVERY_INIT | Self::LEVEL_DEASSERT | Self::TRIGGER_LEVEL,
         );
 
-        unsafe { self.wait_for_delivery(); }
+        unsafe {
+            self.wait_for_delivery();
+        }
     }
 
     /// Send SIPI (Startup IPI) to target AP
@@ -195,7 +199,9 @@ impl LocalApic {
         // Send SIPI with vector (address = vector * 0x1000)
         self.write(Self::ICR_LOW, Self::DELIVERY_STARTUP | (vector as u32));
 
-        unsafe { self.wait_for_delivery(); }
+        unsafe {
+            self.wait_for_delivery();
+        }
     }
 
     /// Wait for IPI delivery
@@ -214,14 +220,18 @@ impl LocalApic {
     pub fn send_ipi(&self, target_apic_id: u32, vector: u8) {
         self.write(Self::ICR_HIGH, target_apic_id << 24);
         self.write(Self::ICR_LOW, vector as u32);
-        unsafe { self.wait_for_delivery(); }
+        unsafe {
+            self.wait_for_delivery();
+        }
     }
 
     /// Broadcast IPI (excluding self)
     pub fn broadcast_ipi(&self, vector: u8) {
         // All excluding self
         self.write(Self::ICR_LOW, (vector as u32) | (3 << 18)); // Destination shorthand: All excluding self
-        unsafe { self.wait_for_delivery(); }
+        unsafe {
+            self.wait_for_delivery();
+        }
     }
 }
 

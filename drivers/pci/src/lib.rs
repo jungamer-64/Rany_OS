@@ -18,12 +18,12 @@
 extern crate alloc;
 
 // Core modules
-pub mod types;
 pub mod traits;
+pub mod types;
 
 // Access methods
-pub mod legacy;
 pub mod ecam;
+pub mod legacy;
 
 // Bus scanning
 pub mod bus;
@@ -36,45 +36,30 @@ pub mod pcie_ext;
 
 // Re-export core types
 pub use types::{
-    BdfAddress, BusNumber, DeviceNumber, FunctionNumber,
-    VendorId, DeviceId, ClassCode,
-    Bar, BarInfo, BarType,
-    CapabilityId, ExtendedCapabilityId,
-    PciClass,
-    config_regs, command_bits, status_bits,
+    Bar, BarInfo, BarType, BdfAddress, BusNumber, CapabilityId, ClassCode, DeviceId, DeviceNumber,
+    ExtendedCapabilityId, FunctionNumber, PciClass, VendorId, command_bits, config_regs,
+    status_bits,
 };
 
 pub use traits::{ConfigSpaceAccessor, ExtendedConfigSpaceAccessor};
 
 // Re-export convenience APIs from internal modules for kernel-level usage
-pub use legacy::{LegacyPciAccessor, pci_read, pci_write, pci_read16, pci_read8, get_legacy_accessor};
+pub use bus::{
+    PciBusScanner, PciDeviceInfo, find_by_class, find_by_id, find_virtio_devices, init,
+    scan_all_devices,
+};
 pub use ecam::{EcamAccess, EcamManager};
-pub use bus::{PciBusScanner, PciDeviceInfo, scan_all_devices, find_by_class, find_by_id, find_virtio_devices, init};
-pub use msi::{MsiConfig, MsiCapability, MsixCapability, MsixTableEntry, DeliveryMode, TriggerMode, allocate_vector, allocate_vectors, setup_msi, setup_msix, disable_intx, enable_intx};
+pub use legacy::{
+    LegacyPciAccessor, get_legacy_accessor, pci_read, pci_read8, pci_read16, pci_write,
+};
+pub use msi::{
+    DeliveryMode, MsiCapability, MsiConfig, MsixCapability, MsixTableEntry, TriggerMode,
+    allocate_vector, allocate_vectors, disable_intx, enable_intx, setup_msi, setup_msix,
+};
 pub use pcie_ext::{
-    init_pcie_ext,
-    pcie_ext_manager,
-    PcieExtManager,
-    PcieConfig,
-    PcieError,
-    PcieResult,
-    PcieBdf,
-    CorrectableErrors,
-    UncorrectableErrors,
-    AerCapability,
-    AerController,
-    PciePowerState,
-    PciePowerManager,
-    PcieMsixTableEntry,
-    PcieMsixController,
-    HotPlugController,
-    HotPlugEvent,
-    PcieExtDevice,
-    pcie_ext_config,
-    cap_id,
-    ext_cap_id,
-    PCIE_CONFIG_SIZE,
-    PCIE_EXT_CAP_START,
-    SriovCapability,
-    SriovController,
+    AerCapability, AerController, CorrectableErrors, HotPlugController, HotPlugEvent,
+    PCIE_CONFIG_SIZE, PCIE_EXT_CAP_START, PcieBdf, PcieConfig, PcieError, PcieExtDevice,
+    PcieExtManager, PcieMsixController, PcieMsixTableEntry, PciePowerManager, PciePowerState,
+    PcieResult, SriovCapability, SriovController, UncorrectableErrors, cap_id, ext_cap_id,
+    init_pcie_ext, pcie_ext_config, pcie_ext_manager,
 };

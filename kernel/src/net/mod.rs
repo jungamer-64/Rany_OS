@@ -129,9 +129,9 @@ pub use stack::{
 // Re-export VirtIO-Net driver bridge
 #[allow(unused_imports)]
 pub use driver_bridge::{
-    BridgeStats, init_bridge as init_driver_bridge, is_initialized as driver_bridge_initialized,
-    process_received_packet, get_bridge_stats, get_real_config, get_real_stats,
-    send_real_icmp_echo, get_real_arp_cache,
+    BridgeStats, get_bridge_stats, get_real_arp_cache, get_real_config, get_real_stats,
+    init_bridge as init_driver_bridge, is_initialized as driver_bridge_initialized,
+    process_received_packet, send_real_icmp_echo,
 };
 
 // VirtIO Netドライバはio/virtio/net.rsにある
@@ -139,7 +139,7 @@ pub use driver_bridge::{
 #[allow(unused_imports)]
 pub use crate::io::virtio::{
     NetVirtQueue, VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VringDesc as NetVringDesc,
-    net_features, handle_virtio_net_interrupt, init_virtio_net,
+    handle_virtio_net_interrupt, init_virtio_net, net_features,
 };
 
 // Re-export Phase 4 High-Performance Networking
@@ -355,7 +355,7 @@ pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
             rx_dropped: stats.rx_dropped.load(Ordering::Relaxed),
         });
     }
-    
+
     // Fallback to demo stats
     Some(*NETWORK_STATS.lock())
 }
@@ -365,7 +365,7 @@ pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
     // Try to use real NetworkStack
     if let Some(stack_guard) = stack::stack().lock().as_ref() {
         let target_ip = ipv4::Ipv4Address::new(target);
-        
+
         // Attempt to send ICMP echo via stack
         if stack_guard.send_icmp_echo_request(target_ip, seq).is_ok() {
             // For now, return simulated RTT (real RTT would require async wait)
@@ -377,7 +377,7 @@ pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
             };
         }
     }
-    
+
     // Fallback to demo implementation
     let _ = seq;
     match target {
@@ -419,17 +419,17 @@ pub fn dhcp_discover() -> Result<DhcpOfferInfo, String> {
         gateway: Some([10, 0, 2, 2]),
         dns: Some([10, 0, 2, 3]),
     };
-    
+
     // Cache the offer
     *LAST_DHCP_OFFER.lock() = Some(offer.clone());
-    
+
     Ok(offer)
 }
 
 /// DHCP request (accept offer)
 pub fn dhcp_request() -> Result<DhcpAckInfo, String> {
     let offer = LAST_DHCP_OFFER.lock().clone();
-    
+
     match offer {
         Some(offer_info) => {
             // Update network config
@@ -439,13 +439,15 @@ pub fn dhcp_request() -> Result<DhcpAckInfo, String> {
                 gateway: offer_info.gateway.unwrap_or([10, 0, 2, 2]),
                 mac: [0x52, 0x54, 0x00, 0x12, 0x34, 0x56],
             });
-            
+
             Ok(DhcpAckInfo {
                 your_ip: offer_info.your_ip,
                 lease_time: 86400,
             })
         }
-        None => Err(String::from("No DHCP offer available. Run 'dhcp discover' first.")),
+        None => Err(String::from(
+            "No DHCP offer available. Run 'dhcp discover' first.",
+        )),
     }
 }
 
@@ -458,13 +460,13 @@ pub fn dhcp_release() {
 /// Get DHCP state
 pub fn get_dhcp_state() -> Option<DhcpStateInfo> {
     let offer = LAST_DHCP_OFFER.lock().clone();
-    
+
     let (state_str, assigned_ip) = if let Some(offer_info) = offer {
         ("BOUND", Some(offer_info.your_ip))
     } else {
         ("INIT", None)
     };
-    
+
     Some(DhcpStateInfo {
         state: String::from(state_str),
         assigned_ip,
@@ -477,7 +479,7 @@ pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     // Try to get real ARP cache from NetworkStack
     if let Some(stack_guard) = stack::stack().lock().as_ref() {
         let arp_entries = stack_guard.arp_cache();
-        
+
         let entries: Vec<ArpCacheEntry> = arp_entries
             .iter()
             .map(|(ip, mac)| ArpCacheEntry {
@@ -486,12 +488,12 @@ pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
                 complete: true,
             })
             .collect();
-        
+
         if !entries.is_empty() {
             return Some(entries);
         }
     }
-    
+
     // Return None to show demo output in shell
     None
 }

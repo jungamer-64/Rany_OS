@@ -10,11 +10,11 @@
 #![allow(unused_variables)]
 
 pub mod browser;
+pub mod css;
 pub mod dom;
 pub mod html;
-pub mod css;
-pub mod style;
 pub mod layout;
 pub mod render;
+pub mod style;
 
 pub use browser::Browser;

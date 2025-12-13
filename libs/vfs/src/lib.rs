@@ -26,21 +26,21 @@ use alloc::string::String;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
+pub mod block;
+pub mod cache;
 pub mod error;
 pub mod path;
 pub mod types;
-pub mod block;
-pub mod cache;
 
 pub use error::{VfsError, VfsResult};
 pub use path::Path;
-pub use types::{FileMode, FileType, Metadata, SeekFrom, OpenFlags, InodeNum};
+pub use types::{FileMode, FileType, InodeNum, Metadata, OpenFlags, SeekFrom};
 
 /// ファイルシステムトレイト
 pub trait FileSystem: Send + Sync {
     /// ルートディレクトリを取得
     fn root_dir(&self) -> VfsResult<Box<dyn VfsNode>>;
-    
+
     /// ファイルシステム名
     fn name(&self) -> &str;
 }
@@ -49,13 +49,13 @@ pub trait FileSystem: Send + Sync {
 pub trait VfsNode: Send + Sync {
     /// メタデータを取得
     fn metadata(&self) -> VfsResult<Metadata>;
-    
+
     /// ファイルとして開く
     fn open(&self, flags: OpenFlags) -> VfsResult<Box<dyn File>>;
-    
+
     /// ディレクトリとして開く
     fn as_dir(&self) -> VfsResult<Box<dyn Directory>>;
-    
+
     /// 名前を取得
     fn name(&self) -> String;
 }
@@ -64,16 +64,16 @@ pub trait VfsNode: Send + Sync {
 pub trait File: Send + Sync {
     /// 読み込み
     fn read(&mut self, buf: &mut [u8]) -> VfsResult<usize>;
-    
+
     /// 書き込み
     fn write(&mut self, buf: &[u8]) -> VfsResult<usize>;
-    
+
     /// シーク
     fn seek(&mut self, pos: SeekFrom) -> VfsResult<u64>;
-    
+
     /// フラッシュ
     fn flush(&mut self) -> VfsResult<()>;
-    
+
     /// サイズ変更
     fn set_len(&mut self, size: u64) -> VfsResult<()>;
 }
@@ -82,13 +82,13 @@ pub trait File: Send + Sync {
 pub trait Directory: Send + Sync {
     /// エントリを検索
     fn lookup(&self, name: &str) -> VfsResult<Box<dyn VfsNode>>;
-    
+
     /// エントリを作成
     fn create(&mut self, name: &str, file_type: FileType) -> VfsResult<Box<dyn VfsNode>>;
-    
+
     /// エントリを削除
     fn remove(&mut self, name: &str) -> VfsResult<()>;
-    
+
     /// エントリを列挙
     fn read_dir(&mut self) -> VfsResult<Vec<DirEntry>>;
 }

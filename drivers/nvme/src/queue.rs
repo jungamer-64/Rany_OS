@@ -9,8 +9,8 @@
 
 #![allow(dead_code)]
 
-use hal::mmio;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use hal::mmio;
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 
@@ -71,7 +71,8 @@ impl SubmissionQueue {
         // Store the command entry using a volatile write to ensure it is
         // observed by the device before the doorbell is rung.
         // Convert raw pointer to an address and perform a volatile write; avoid a broad `unsafe` block.
-        let entry_addr = self.buffer as usize + (tail as usize) * core::mem::size_of::<NvmeCommand>();
+        let entry_addr =
+            self.buffer as usize + (tail as usize) * core::mem::size_of::<NvmeCommand>();
         mmio::volatile_write::<NvmeCommand>(entry_addr, *cmd);
         // Memory barrier to ensure ordering
         core::sync::atomic::fence(Ordering::Release);
@@ -157,7 +158,8 @@ impl CompletionQueue {
 
         // Read the completion queue entry at head using the MMIO wrapper.
         // Compute the physical address to avoid unnecessary unsafe code.
-        let entry_addr = self.buffer as usize + (head as usize) * core::mem::size_of::<NvmeCompletion>();
+        let entry_addr =
+            self.buffer as usize + (head as usize) * core::mem::size_of::<NvmeCompletion>();
         let entry = mmio::volatile_read::<NvmeCompletion>(entry_addr);
 
         // フェーズビットをチェック

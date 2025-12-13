@@ -29,17 +29,17 @@
 extern crate alloc;
 
 // サブモジュール
-pub mod types;
 pub mod display;
 pub mod namespaces;
 pub mod parser;
 pub mod shell;
+pub mod types;
 
 // Re-exports
-pub use types::*;
 pub use display::format_size;
 pub use parser::{ParseError, Token, Tokenizer};
 pub use shell::ExoShell;
+pub use types::*;
 
 // ============================================================================
 // Global ExoShell instance
@@ -82,7 +82,7 @@ mod tests {
     fn test_exovalue_display() {
         let val = ExoValue::Int(42);
         assert_eq!(alloc::format!("{}", val), "42");
-        
+
         let val = ExoValue::String(alloc::string::String::from("hello"));
         assert_eq!(alloc::format!("{}", val), "hello");
     }

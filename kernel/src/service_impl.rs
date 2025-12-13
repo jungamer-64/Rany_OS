@@ -27,13 +27,13 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::error::KapiError;
 use kernel_api::services::KernelServices;
-use kernel_api::{OpenMode, TaskHandle, DmaBuffer, TcpEndpoint, FileHandle, ChannelHandle};
+use kernel_api::{ChannelHandle, DmaBuffer, FileHandle, OpenMode, TaskHandle, TcpEndpoint};
 use spin::Mutex;
 
-use crate::task::per_core_executor::{Task, Priority, executor_manager};
-use crate::task::timer;
-use crate::task::context;
 use crate::io::dma;
+use crate::task::context;
+use crate::task::per_core_executor::{Priority, Task, executor_manager};
+use crate::task::timer;
 
 // ============================================================================
 // File Handle Registry
@@ -115,17 +115,25 @@ struct DmaRegistry {
 
 impl DmaRegistry {
     const fn new() -> Self {
-        Self { buffers: Mutex::new(BTreeMap::new()) }
+        Self {
+            buffers: Mutex::new(BTreeMap::new()),
+        }
     }
 
-    fn register(&self, mut buf: Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>) -> usize {
+    fn register(
+        &self,
+        mut buf: Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>,
+    ) -> usize {
         // Get the virtual address of the slice
         let virt_ptr = buf.as_mut_slice().as_mut_ptr() as usize;
         self.buffers.lock().insert(virt_ptr, buf);
         virt_ptr
     }
 
-    fn unregister(&self, virt_ptr: usize) -> Option<Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>> {
+    fn unregister(
+        &self,
+        virt_ptr: usize,
+    ) -> Option<Box<crate::io::dma::TypedDmaSlice<crate::io::dma::CpuOwned>>> {
         self.buffers.lock().remove(&virt_ptr)
     }
 }
@@ -159,14 +167,17 @@ impl KernelServices for ExoKernel {
     // Task Management
     // ========================================================================
 
-    fn spawn_task(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) -> Result<TaskHandle, KapiError> {
+    fn spawn_task(
+        &self,
+        future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) -> Result<TaskHandle, KapiError> {
         // Use Task::new_boxed to avoid double-boxing (optimization)
         let task = Task::new_boxed(future, Priority::Normal, None);
         let task_id = task.metadata.id.as_u64();
-        
+
         // Submit to ExecutorManager for load-balanced scheduling
         executor_manager().spawn(task);
-        
+
         Ok(TaskHandle::new(task_id))
     }
 
@@ -233,22 +244,22 @@ impl KernelServices for ExoKernel {
     // ========================================================================
 
     fn net_create_endpoint(&self) -> Result<TcpEndpoint, KapiError> {
-        use crate::net::endpoint::{create_tcp_socket, SocketFd};
-        
+        use crate::net::endpoint::{SocketFd, create_tcp_socket};
+
         let owned = create_tcp_socket();
         let fd = owned.fd();
-        
+
         // Detach from OwnedSocket so it remains registered in SocketManager
         // and doesn't close on drop.
-        let _ = owned.into_inner(); 
-        
+        let _ = owned.into_inner();
+
         Ok(TcpEndpoint::new(fd.raw() as u64))
     }
     fn net_close_endpoint(&self, endpoint: TcpEndpoint) -> Result<(), KapiError> {
-        use crate::net::endpoint::{socket_manager, SocketFd};
-        
+        use crate::net::endpoint::{SocketFd, socket_manager};
+
         let fd = SocketFd::from_raw(endpoint.id() as u32);
-        
+
         if let Some(mgr_lock) = socket_manager() {
             if let Some(mgr) = mgr_lock.read().as_ref() {
                 if mgr.unregister(fd).is_some() {
@@ -256,7 +267,7 @@ impl KernelServices for ExoKernel {
                 }
             }
         }
-        
+
         Err(KapiError::InvalidHandle)
     }
 
@@ -266,10 +277,10 @@ impl KernelServices for ExoKernel {
 
     fn fs_open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, KapiError> {
         use crate::fs::memfs;
-        
+
         // Check if file exists
         let path_buf = alloc::string::String::from(path);
-        
+
         match mode {
             OpenMode::Read => {
                 // For read, file must exist
@@ -286,7 +297,7 @@ impl KernelServices for ExoKernel {
                 }
             }
         }
-        
+
         // Register in file handle table
         let handle_id = FILE_HANDLE_REGISTRY.register(FileHandleEntry {
             path: path_buf,
@@ -298,21 +309,22 @@ impl KernelServices for ExoKernel {
 
     fn fs_close(&self, handle: FileHandle) -> Result<(), KapiError> {
         let handle_id = handle.id();
-        FILE_HANDLE_REGISTRY.unregister(handle_id)
+        FILE_HANDLE_REGISTRY
+            .unregister(handle_id)
             .ok_or(KapiError::InvalidHandle)?;
         Ok(())
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
-		// Create a new pipe
+        // Create a new pipe
         let pipe = crate::ipc::pipe::pipe();
-        
+
         // Register reader and writer
         let reader_id = CHANNEL_REGISTRY.register(ChannelEntry::Reader(pipe.reader));
         let writer_id = CHANNEL_REGISTRY.register(ChannelEntry::Writer(pipe.writer));
-        
+
         // info!(target: "ipc", "Created channel: reader={}, writer={}", reader_id, writer_id);
-        
+
         Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id))) // Return (Sender, Receiver)
     }
 
@@ -325,7 +337,6 @@ impl KernelServices for ExoKernel {
         }
     }
 }
-
 
 /// The global ExoKernel instance
 static EXOKERNEL: ExoKernel = ExoKernel::new();
@@ -340,9 +351,7 @@ pub unsafe fn register_kernel_services() {
     }
 }
 
-
 /// Get a reference to the exokernel (for internal use)
 pub fn exokernel() -> &'static ExoKernel {
     &EXOKERNEL
 }
-

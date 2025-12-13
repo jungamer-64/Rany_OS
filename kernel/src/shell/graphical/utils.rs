@@ -10,9 +10,9 @@ use crate::graphics::Rect;
 
 /// A fixed-capacity list of Rects, used for avoiding heap allocations
 /// during rendering pass calculations.
-/// 
+///
 /// # Design Notes
-/// 
+///
 /// - `Copy` trait is intentionally NOT implemented to prevent accidental
 ///   large stack copies (N=64 would be 1KB).
 /// - Zero-size rectangles are silently filtered out during push operations.
@@ -56,16 +56,15 @@ impl<const N: usize> RectList<N> {
     fn validate(&self) {
         assert!(self.count <= N, "RectList count exceeds capacity");
         for (i, r) in self.as_slice().iter().enumerate() {
-            assert!(r.is_valid(), 
-                "Invalid rect at index {}: {:?}", i, r);
+            assert!(r.is_valid(), "Invalid rect at index {}: {:?}", i, r);
         }
     }
 
     /// Attempts to push a rectangle into the list.
-    /// 
+    ///
     /// Returns `Ok(())` if successful, `Err(())` if the list is full.
     /// Zero-size rectangles are silently ignored and return `Ok(())`.
-    /// 
+    ///
     /// # Example
     /// ```ignore
     /// let mut list = RectList::<4>::new();
@@ -78,27 +77,27 @@ impl<const N: usize> RectList<N> {
         if !r.is_valid() {
             return Ok(()); // Zero-size rectangles are silently ignored
         }
-        
+
         if self.is_full() {
             return Err(());
         }
-        
+
         self.rects[self.count] = r;
         self.count += 1;
 
         #[cfg(debug_assertions)]
         self.validate();
-        
+
         Ok(())
     }
 
     /// Pushes a rectangle into the list.
-    /// 
+    ///
     /// # Panics
     /// Panics if the list is full.
-    /// 
+    ///
     /// For fallback-capable code, use `try_push` instead.
-    /// 
+    ///
     /// Zero-size rectangles are silently ignored (intentional filtering).
     #[track_caller]
     pub fn push(&mut self, r: Rect) {
@@ -111,9 +110,9 @@ impl<const N: usize> RectList<N> {
     }
 
     /// Attempts to push a rectangle, merging with any existing overlapping rectangle.
-    /// 
+    ///
     /// Returns `Err(())` if the list is full and no merge is possible.
-    /// 
+    ///
     /// If the new rectangle overlaps with an existing one, they are merged
     /// into a single bounding rectangle. This reduces overdraw at the cost
     /// of potentially drawing some pixels that weren't strictly dirty.
@@ -121,7 +120,7 @@ impl<const N: usize> RectList<N> {
         if !r.is_valid() {
             return Ok(()); // Zero-size rectangles are silently ignored
         }
-        
+
         // Check if this rect overlaps with any existing rect
         for i in 0..self.count {
             if self.rects[i].intersects(&r) {
@@ -130,15 +129,15 @@ impl<const N: usize> RectList<N> {
                 return Ok(());
             }
         }
-        
+
         // No overlap - push as new entry
         self.try_push(r)
     }
 
     /// Pushes a rectangle, merging with any existing overlapping rectangle.
-    /// 
+    ///
     /// Zero-size rectangles are silently ignored.
-    /// 
+    ///
     /// # Panics
     /// Panics if the list is full and no merge is possible.
     #[track_caller]
@@ -161,7 +160,7 @@ impl<const N: usize> RectList<N> {
     }
 
     /// Extends this list with rectangles from an iterator.
-    /// 
+    ///
     /// # Panics
     /// Panics if appending would exceed capacity.
     pub fn extend(&mut self, iter: impl IntoIterator<Item = Rect>) {
@@ -169,9 +168,9 @@ impl<const N: usize> RectList<N> {
             self.push(rect);
         }
     }
-    
+
     /// Extends this list with rectangles from an iterator, with fallback.
-    /// 
+    ///
     /// Returns `Err(())` if any push would exceed capacity.
     pub fn try_extend(&mut self, iter: impl IntoIterator<Item = Rect>) -> Result<(), ()> {
         for rect in iter {

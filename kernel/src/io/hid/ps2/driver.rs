@@ -7,9 +7,9 @@
 //! Wrapper around PS/2 controller implementing the `kernel_api::Driver` trait.
 //! This is the pilot driver demonstrating the new driver architecture.
 
-use kernel_api::driver::{Driver, DriverType, DriverVersion, DeviceId};
+use super::controller::{DeviceType, Ps2Controller};
+use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::KapiResult;
-use super::controller::{Ps2Controller, DeviceType};
 
 /// PS/2ドライバ - Driver trait 実装のパイロット
 pub struct Ps2Driver {
@@ -84,16 +84,20 @@ impl Driver for Ps2Driver {
     fn probe(&mut self) -> KapiResult<()> {
         if self.controller.initialize() {
             self.initialized = true;
-            
+
             // ログ出力
-            let kb = if self.has_keyboard() { "Keyboard" } else { "None" };
+            let kb = if self.has_keyboard() {
+                "Keyboard"
+            } else {
+                "None"
+            };
             let mouse_type = match self.controller.port2_type {
                 Some(DeviceType::StandardMouse) => "Standard Mouse",
                 Some(DeviceType::ScrollMouse) => "Scroll Mouse",
                 Some(DeviceType::FiveButtonMouse) => "5-Button Mouse",
                 _ => "None",
             };
-            
+
             crate::log!("[PS2] Port1: {}, Port2: {}\n", kb, mouse_type);
             Ok(())
         } else {

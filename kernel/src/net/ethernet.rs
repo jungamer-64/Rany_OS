@@ -191,7 +191,8 @@ impl<'a> EthernetFrame<'a> {
     pub fn header(&self) -> &EthernetHeader {
         // SAFETY: We verified the length in parse(). Use the centralized helper
         // to obtain a typed reference with bounds and alignment checks.
-        crate::util::get_ref::<EthernetHeader>(self.data, 0).expect("Ethernet header slice out of bounds")
+        crate::util::get_ref::<EthernetHeader>(self.data, 0)
+            .expect("Ethernet header slice out of bounds")
     }
 
     /// Get destination MAC address
@@ -243,7 +244,8 @@ impl<'a> EthernetFrameMut<'a> {
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut EthernetHeader {
         // SAFETY: Buffer is large enough (checked in new()). Use centralized helper.
-        crate::util::get_mut_ref::<EthernetHeader>(self.data, 0).expect("Ethernet header slice out of bounds")
+        crate::util::get_mut_ref::<EthernetHeader>(self.data, 0)
+            .expect("Ethernet header slice out of bounds")
     }
 
     /// Set destination MAC address

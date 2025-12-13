@@ -21,7 +21,7 @@ use crate::io::pci::PciDeviceInfo;
 use crate::time;
 
 use super::regs::*;
-use super::types::{make_corb_entry, CodecInfo, HdaError, HdaResult};
+use super::types::{CodecInfo, HdaError, HdaResult, make_corb_entry};
 
 // ============================================================================
 // HDA Controller
@@ -303,8 +303,8 @@ impl HdaController {
     /// to 128 bytes for proper DMA operation.
     pub fn alloc_dma_buffer(size: usize) -> HdaResult<u64> {
         // Allocate memory aligned to 128 bytes as required by HDA spec
-        let layout = core::alloc::Layout::from_size_align(size, 128)
-            .map_err(|_| HdaError::AllocFailed)?;
+        let layout =
+            core::alloc::Layout::from_size_align(size, 128).map_err(|_| HdaError::AllocFailed)?;
 
         // SAFETY: Layout is valid (size > 0, align is 128 which is a power of 2).
         // The allocated buffer will be used for DMA with the HDA controller.

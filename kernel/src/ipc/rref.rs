@@ -36,12 +36,16 @@ pub fn reclaim_domain_resources(domain: DomainId) {
         crate::log!("[RRef] Warning: HEAP_REGISTRY poisoned, recovering for reclaim\n");
         e.into_inner()
     });
-    
+
     // HeapRegistryの統合されたreclaim_allを使用
     let reclaimed_count = registry.reclaim_all(domain);
-    
+
     if reclaimed_count > 0 {
-        crate::log!("[RRef] Reclaimed {} objects from domain {}\n", reclaimed_count, domain.as_u64());
+        crate::log!(
+            "[RRef] Reclaimed {} objects from domain {}\n",
+            reclaimed_count,
+            domain.as_u64()
+        );
     }
 }
 
@@ -127,7 +131,8 @@ impl<T> RRef<T> {
 
         // Heap Registryから登録解除（統合されたAPIを使用）
         // 【設計書 8.4】PoisonLockの毒入れ対応
-        HEAP_REGISTRY.lock()
+        HEAP_REGISTRY
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .unregister_simple(ptr.as_ptr() as usize);
 
@@ -202,7 +207,7 @@ impl core::fmt::Display for AccessError {
 // ============================================================================
 
 /// 型定義ハッシュ値
-/// 
+///
 /// 動的リンク環境でのABI互換性を保証するため、
 /// 構造体のレイアウト情報からハッシュ値を計算する。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -227,26 +232,26 @@ impl TypeHash {
 }
 
 /// 型定義ハッシュを提供するトレイト
-/// 
+///
 /// 【設計書 3.4】ABIの安定性とType ID Check
-/// 
+///
 /// セル間で共有される構造体に実装する。
 /// コンパイル時に型の名前、フィールドの順序・型・オフセット、
 /// 関数の引数・戻り値の型からハッシュを計算する。
-/// 
+///
 /// # 実装方法
-/// 
+///
 /// 1. `#[derive(TypeIdHash)]`マクロを使用（将来実装）
 /// 2. 手動で`const TYPE_HASH`を定義
-/// 
+///
 /// # 例
-/// 
+///
 /// ```ignore
 /// struct MyMessage {
 ///     id: u64,
 ///     data: [u8; 32],
 /// }
-/// 
+///
 /// impl TypeIdHash for MyMessage {
 ///     const TYPE_HASH: TypeHash = TypeHash::new(
 ///         // FNV-1aハッシュを使用して計算
@@ -300,7 +305,7 @@ impl core::fmt::Display for TypeHashError {
 }
 
 /// 2つの型のハッシュ値を検証
-/// 
+///
 /// ロード時検証に使用。ハッシュ値が一致しない場合はエラーを返す。
 pub fn verify_type_hash<T: TypeIdHash>(expected: TypeHash) -> Result<(), TypeHashError> {
     let actual = T::TYPE_HASH;
@@ -312,7 +317,7 @@ pub fn verify_type_hash<T: TypeIdHash>(expected: TypeHash) -> Result<(), TypeHas
 }
 
 /// FNV-1aハッシュ計算のヘルパー
-/// 
+///
 /// コンパイル時にconst fnで計算可能
 pub const fn fnv1a_hash(data: &[u8]) -> u64 {
     const FNV_OFFSET: u64 = 0xcbf29ce484222325;
@@ -329,7 +334,7 @@ pub const fn fnv1a_hash(data: &[u8]) -> u64 {
 }
 
 /// 型名とサイズからハッシュを計算
-/// 
+///
 /// 簡易実装。本格的な実装ではフィールド情報も含める。
 pub const fn compute_simple_type_hash(type_name: &str, size: usize, align: usize) -> TypeHash {
     let name_hash = fnv1a_hash(type_name.as_bytes());
@@ -379,9 +384,8 @@ impl TypeIdHash for bool {
 }
 
 impl<T: TypeIdHash, const N: usize> TypeIdHash for [T; N] {
-    const TYPE_HASH: TypeHash = TypeHash::new(
-        T::TYPE_HASH.value() ^ fnv1a_hash(b"array") ^ (N as u64)
-    );
+    const TYPE_HASH: TypeHash =
+        TypeHash::new(T::TYPE_HASH.value() ^ fnv1a_hash(b"array") ^ (N as u64));
 }
 
 #[cfg(test)]

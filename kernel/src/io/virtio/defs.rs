@@ -107,32 +107,32 @@ impl VringDesc {
             next: 0,
         }
     }
-    
+
     /// 読み取り専用バッファ（デバイスが読む）として設定
     pub fn set_readable(&mut self, addr: u64, len: u32) {
         self.addr = addr;
         self.len = len;
         self.flags = 0;
     }
-    
+
     /// 書き込み可能バッファ（デバイスが書く）として設定
     pub fn set_writable(&mut self, addr: u64, len: u32) {
         self.addr = addr;
         self.len = len;
         self.flags = vring_flags::VRING_DESC_F_WRITE;
     }
-    
+
     /// 次のディスクリプタを設定
     pub fn set_next(&mut self, next: u16) {
         self.flags |= vring_flags::VRING_DESC_F_NEXT;
         self.next = next;
     }
-    
+
     /// 次のディスクリプタがあるか
     pub fn has_next(&self) -> bool {
         self.flags & vring_flags::VRING_DESC_F_NEXT != 0
     }
-    
+
     /// デバイスが書き込むバッファか
     pub fn is_writable(&self) -> bool {
         self.flags & vring_flags::VRING_DESC_F_WRITE != 0

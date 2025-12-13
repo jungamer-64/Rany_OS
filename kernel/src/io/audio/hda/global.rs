@@ -14,7 +14,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
-use crate::io::pci::{find_by_class, Bar};
+use crate::io::pci::{Bar, find_by_class};
 use crate::task::interrupt_waker;
 
 use super::controller::HdaController;
@@ -68,9 +68,16 @@ pub fn init() -> HdaResult<()> {
     let irq = pci_device.interrupt_line;
     if irq > 0 && irq < 16 {
         HDA_IRQ.store(irq, Ordering::SeqCst);
-        crate::log!("[HDA] IRQ: {} (interrupt_pin: {})\n", irq, pci_device.interrupt_pin);
+        crate::log!(
+            "[HDA] IRQ: {} (interrupt_pin: {})\n",
+            irq,
+            pci_device.interrupt_pin
+        );
     } else {
-        crate::log!("[HDA] Warning: Invalid IRQ {} (will use polling mode)\n", irq);
+        crate::log!(
+            "[HDA] Warning: Invalid IRQ {} (will use polling mode)\n",
+            irq
+        );
     }
 
     // Get BAR0 (MMIO)
@@ -160,12 +167,12 @@ pub fn test_beep() -> HdaResult<()> {
 /// 割り込みステータスをクリアし、必要に応じて待機中のタスクを起床させる。
 pub fn handle_interrupt() {
     let count = HDA_INTERRUPT_COUNT.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-    
+
     // コントローラーの割り込みステータスを読み取り・クリア
     if let Some(driver) = HDA_DRIVER.lock().as_ref() {
         // INTSTS レジスタを読み取り
         let intsts = driver.read32(REG_INTSTS);
-        
+
         if intsts != 0 {
             // ストリーム完了割り込みの処理
             if intsts & INTSTS_SIS_MASK != 0 {
@@ -180,10 +187,10 @@ pub fn handle_interrupt() {
                     }
                 }
             }
-            
+
             // Controller Interrupt Status をクリア (Write-1-to-clear)
             driver.write32(REG_INTSTS, intsts);
-            
+
             // ペンディングフラグを設定
             HDA_INTERRUPT_PENDING.store(true, Ordering::SeqCst);
         }

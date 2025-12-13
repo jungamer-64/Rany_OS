@@ -173,7 +173,7 @@ impl SimpleFreeListHeap {
         unsafe {
             (*new_block).next = current;
         }
-        
+
         if let Some(mut p) = prev {
             unsafe {
                 p.as_mut().next = NonNull::new(new_block);
@@ -322,7 +322,9 @@ pub fn allocate_on_exchange<T>(value: T) -> Option<NonNull<T>> {
     let layout = Layout::new::<T>();
     EXCHANGE_HEAP.allocate(layout).map(|ptr| {
         let typed_ptr = ptr.as_ptr() as *mut T;
-        unsafe { typed_ptr.write(value); }
+        unsafe {
+            typed_ptr.write(value);
+        }
         NonNull::new(typed_ptr).expect("typed_ptr null")
     })
 }

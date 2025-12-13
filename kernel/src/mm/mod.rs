@@ -42,13 +42,34 @@ pub use frame_allocator::{
 #[allow(unused_imports)]
 pub use higher_half::{
     // 既存のエクスポート
-    HigherHalfManager, MapError, PageFlags, PageSize, PageTable, PageTableEntry,
-    PageTableManager, PageTableWalker, PhysAddr, PhysicalMemoryMapper, VirtAddr,
-    flush_tlb, get_cr3, global_map_page, global_translate, global_unmap_page, init,
-    init_page_table_manager, invalidate_page, phys_to_virt, set_cr3, virt_to_phys,
+    HigherHalfManager,
+    MapError,
+    PageFlags,
+    PageSize,
+    PageTable,
+    PageTableEntry,
+    PageTableManager,
+    PageTableWalker,
+    PhysAddr,
+    PhysicalMemoryMapper,
+    VirtAddr,
+    flush_tlb,
+    get_cr3,
+    global_map_page,
+    global_translate,
+    global_unmap_page,
+    init,
+    init_page_table_manager,
+    invalidate_page,
+    phys_to_virt,
+    set_cr3,
+    virt_to_phys,
 };
 #[allow(unused_imports)]
-pub use mapping::{PHYSICAL_MEMORY_OFFSET, phys_to_virt as mapping_phys_to_virt, virt_to_phys as mapping_virt_to_phys};
+pub use mapping::{
+    PHYSICAL_MEMORY_OFFSET, phys_to_virt as mapping_phys_to_virt,
+    virt_to_phys as mapping_virt_to_phys,
+};
 #[allow(unused_imports)]
 pub use mmap::{
     MappedAddress, MappingFlags, MappingSize, MemoryMapping, MmapError, MmapManager, Protection,
@@ -77,14 +98,14 @@ pub use slab_cache::{
 // ============================================================================
 // 統一フレームアロケータインターフェース
 // P3完了: ビットマップ/バディアロケータの統合
-// 
+//
 // 設計方針:
 // - BuddyAllocator を優先使用（O(log n)、連続領域確保が効率的）
 // - BitmapAllocator はフォールバック/レガシー用途
 // - 新規コードは UnifiedFrameAllocator を使用すること
 // ============================================================================
 
-use x86_64::structures::paging::{PhysFrame, Size4KiB, Size2MiB, Size1GiB};
+use x86_64::structures::paging::{PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
 /// フレームアロケータの種類
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,14 +117,14 @@ pub enum FrameAllocatorType {
 }
 
 /// 統一フレームアロケータAPI
-/// 
+///
 /// 設計書 5.1: 物理メモリは4KBページ単位で管理
 /// ビットマップとバディの両方を透過的に使用可能
 pub struct UnifiedFrameAllocator;
 
 impl UnifiedFrameAllocator {
     /// 4KBフレームを割り当て
-    /// 
+    ///
     /// デフォルトでBuddyを優先し、失敗時にBitmapにフォールバック
     pub fn alloc_4k() -> Option<PhysFrame<Size4KiB>> {
         // まずBuddyを試す（高効率）
@@ -131,7 +152,7 @@ impl UnifiedFrameAllocator {
     }
 
     /// 4KBフレームを解放
-    /// 
+    ///
     /// アドレスを両方のアロケータで試みる
     pub fn dealloc_4k(frame: PhysFrame<Size4KiB>) {
         // Buddyで管理されているかチェック
@@ -170,7 +191,7 @@ impl UnifiedFrameAllocator {
     pub fn stats() -> UnifiedAllocatorStats {
         let (bitmap_free, bitmap_total_usize) = frame_allocator_stats();
         let buddy = buddy_allocator_stats();
-        
+
         UnifiedAllocatorStats {
             bitmap_total: bitmap_total_usize as u64,
             bitmap_used: bitmap_total_usize as u64 - bitmap_free,

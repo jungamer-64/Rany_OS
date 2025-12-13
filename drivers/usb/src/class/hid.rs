@@ -24,8 +24,8 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
 use super::{
-    ClassDriverError, ClassDriverEvent, SetupPacket, TransferStatus, UsbClass, UsbClassDriver,
-    REQUEST_DIR_IN, REQUEST_DIR_OUT, REQUEST_TYPE_CLASS_INTERFACE,
+    ClassDriverError, ClassDriverEvent, REQUEST_DIR_IN, REQUEST_DIR_OUT,
+    REQUEST_TYPE_CLASS_INTERFACE, SetupPacket, TransferStatus, UsbClass, UsbClassDriver,
 };
 
 // ============================================================================
@@ -159,13 +159,13 @@ impl HidReport {
             data: Vec::new(),
         }
     }
-    
+
     /// レポートIDを設定
     pub fn with_id(mut self, id: u8) -> Self {
         self.report_id = id;
         self
     }
-    
+
     /// データを設定
     pub fn with_data(mut self, data: Vec<u8>) -> Self {
         self.data = data;
@@ -247,57 +247,66 @@ impl HidDevice {
             initialized: AtomicBool::new(false),
         }
     }
-    
+
     /// プロトコルを取得
     pub fn protocol(&self) -> HidProtocol {
         self.protocol
     }
-    
+
     /// Boot Protocol に切り替え
     pub fn set_boot_protocol(&self) -> Result<(), ClassDriverError> {
         // SET_PROTOCOL(0) を送信
         self.report_protocol.store(false, Ordering::SeqCst);
         Ok(())
     }
-    
+
     /// Report Protocol に切り替え
     pub fn set_report_protocol(&self) -> Result<(), ClassDriverError> {
         // SET_PROTOCOL(1) を送信
         self.report_protocol.store(true, Ordering::SeqCst);
         Ok(())
     }
-    
+
     /// アイドルレートを設定
     pub fn set_idle(&self, _duration: u8, _report_id: u8) -> Result<(), ClassDriverError> {
         // SET_IDLE を送信
         Ok(())
     }
-    
+
     /// レポートを取得
-    pub fn get_report(&self, report_type: u8, report_id: u8) -> Result<HidReport, ClassDriverError> {
+    pub fn get_report(
+        &self,
+        report_type: u8,
+        report_id: u8,
+    ) -> Result<HidReport, ClassDriverError> {
         // GET_REPORT を送信
         let report = HidReport::new(report_type).with_id(report_id);
         Ok(report)
     }
-    
+
     /// レポートを設定
     pub fn set_report(&self, _report: &HidReport) -> Result<(), ClassDriverError> {
         // SET_REPORT を送信
         Ok(())
     }
-    
+
     /// 最新のレポートを取得
     pub fn last_report(&self) -> Vec<u8> {
         self.last_report.lock().clone()
     }
-    
+
     /// レポートを更新（内部用）
     pub fn update_report(&self, data: &[u8]) {
         *self.last_report.lock() = data.to_vec();
     }
-    
+
     /// GET_REPORT セットアップパケットを構築
-    pub fn build_get_report(report_type: u8, report_id: u8, length: u16, interface: u8) -> SetupPacket {
+    pub fn build_get_report(
+        report_type: u8,
+        report_id: u8,
+        length: u16,
+        interface: u8,
+    ) -> SetupPacket {
         SetupPacket {
             request_type: REQUEST_TYPE_CLASS_INTERFACE | REQUEST_DIR_IN,
             request: HID_GET_REPORT,
@@ -306,9 +315,14 @@ impl HidDevice {
             length,
         }
     }
-    
+
     /// SET_REPORT セットアップパケットを構築
-    pub fn build_set_report(report_type: u8, report_id: u8, length: u16, interface: u8) -> SetupPacket {
+    pub fn build_set_report(
+        report_type: u8,
+        report_id: u8,
+        length: u16,
+        interface: u8,
+    ) -> SetupPacket {
         SetupPacket {
             request_type: REQUEST_TYPE_CLASS_INTERFACE | REQUEST_DIR_OUT,
             request: HID_SET_REPORT,
@@ -317,7 +331,7 @@ impl HidDevice {
             length,
         }
     }
-    
+
     /// SET_IDLE セットアップパケットを構築
     pub fn build_set_idle(duration: u8, report_id: u8, interface: u8) -> SetupPacket {
         SetupPacket {
@@ -328,7 +342,7 @@ impl HidDevice {
             length: 0,
         }
     }
-    
+
     /// SET_PROTOCOL セットアップパケットを構築
     pub fn build_set_protocol(protocol: bool, interface: u8) -> SetupPacket {
         SetupPacket {
@@ -345,47 +359,52 @@ impl UsbClassDriver for HidDevice {
     fn name(&self) -> &'static str {
         "USB HID Device"
     }
-    
+
     fn class_code(&self) -> UsbClass {
         UsbClass::Hid
     }
-    
+
     fn probe(&self, class: u8, subclass: u8, protocol: u8) -> bool {
         class == HID_CLASS
             && (subclass == HID_SUBCLASS_NONE || subclass == HID_SUBCLASS_BOOT)
-            && (protocol == HID_PROTOCOL_NONE 
-                || protocol == HID_PROTOCOL_KEYBOARD 
+            && (protocol == HID_PROTOCOL_NONE
+                || protocol == HID_PROTOCOL_KEYBOARD
                 || protocol == HID_PROTOCOL_MOUSE)
     }
-    
+
     fn init(&mut self, slot_id: u8) -> Result<(), ClassDriverError> {
         self.slot_id.store(slot_id, Ordering::SeqCst);
-        
+
         // Boot プロトコルの場合、Boot Protocol モードに設定
         if self.subclass == HidSubclass::Boot {
             self.set_boot_protocol()?;
         }
-        
+
         // アイドルレートを0に設定（変更があった時だけ報告）
         self.set_idle(0, 0)?;
-        
+
         self.initialized.store(true, Ordering::SeqCst);
         Ok(())
     }
-    
+
     fn release(&mut self) -> Result<(), ClassDriverError> {
         self.initialized.store(false, Ordering::SeqCst);
         Ok(())
     }
-    
+
     fn poll(&mut self) -> Result<(), ClassDriverError> {
         // INエンドポイントからデータを読み取り
         // 実際の実装ではxHCIドライバとの連携が必要
         Ok(())
     }
-    
+
     fn on_event(&mut self, event: ClassDriverEvent) {
-        if let ClassDriverEvent::TransferComplete { endpoint, status, bytes_transferred } = event {
+        if let ClassDriverEvent::TransferComplete {
+            endpoint,
+            status,
+            bytes_transferred,
+        } = event
+        {
             if endpoint == self.in_endpoint && status == TransferStatus::Success {
                 // レポートを処理
                 let _ = bytes_transferred;
@@ -415,18 +434,15 @@ impl BootKeyboardReport {
     pub fn is_modifier_pressed(&self, modifier: KeyboardModifier) -> bool {
         (self.modifiers & modifier as u8) != 0
     }
-    
+
     /// 指定されたキーが押されているか
     pub fn is_key_pressed(&self, keycode: u8) -> bool {
         self.keycodes.contains(&keycode)
     }
-    
+
     /// 押されているキーのリストを取得
     pub fn pressed_keys(&self) -> Vec<u8> {
-        self.keycodes.iter()
-            .filter(|&&k| k != 0)
-            .copied()
-            .collect()
+        self.keycodes.iter().filter(|&&k| k != 0).copied().collect()
     }
 }
 
@@ -472,7 +488,7 @@ impl UsbKeyboard {
             key_callback: Mutex::new(None),
         }
     }
-    
+
     /// キーイベントコールバックを設定
     pub fn set_key_callback<F>(&self, callback: F)
     where
@@ -480,34 +496,39 @@ impl UsbKeyboard {
     {
         *self.key_callback.lock() = Some(Box::new(callback));
     }
-    
+
     /// LEDステータスを設定
-    pub fn set_leds(&self, num_lock: bool, caps_lock: bool, scroll_lock: bool) -> Result<(), ClassDriverError> {
+    pub fn set_leds(
+        &self,
+        num_lock: bool,
+        caps_lock: bool,
+        scroll_lock: bool,
+    ) -> Result<(), ClassDriverError> {
         let status = (if num_lock { 1 } else { 0 })
             | (if caps_lock { 2 } else { 0 })
             | (if scroll_lock { 4 } else { 0 });
-        
+
         self.led_status.store(status, Ordering::SeqCst);
-        
+
         // SET_REPORTでLEDステータスを送信
         let report = HidReport::new(HID_REPORT_TYPE_OUTPUT).with_data(vec![status]);
         self.hid.set_report(&report)
     }
-    
+
     /// レポートを処理
     pub fn process_report(&self, data: &[u8]) {
         if data.len() < 8 {
             return;
         }
-        
+
         let report = BootKeyboardReport {
             modifiers: data[0],
             reserved: data[1],
             keycodes: [data[2], data[3], data[4], data[5], data[6], data[7]],
         };
-        
+
         let prev = *self.prev_report.lock();
-        
+
         // キー押下/解放を検出
         if let Some(ref callback) = *self.key_callback.lock() {
             // 新しく押されたキー
@@ -516,7 +537,7 @@ impl UsbKeyboard {
                     callback(keycode, true);
                 }
             }
-            
+
             // 解放されたキー
             for &keycode in &prev.keycodes {
                 if keycode != 0 && !report.keycodes.contains(&keycode) {
@@ -524,7 +545,7 @@ impl UsbKeyboard {
                 }
             }
         }
-        
+
         *self.prev_report.lock() = report;
     }
 }
@@ -550,12 +571,12 @@ impl BootMouseReport {
     pub fn left_button(&self) -> bool {
         (self.buttons & 0x01) != 0
     }
-    
+
     /// 右ボタンが押されているか
     pub fn right_button(&self) -> bool {
         (self.buttons & 0x02) != 0
     }
-    
+
     /// 中ボタンが押されているか
     pub fn middle_button(&self) -> bool {
         (self.buttons & 0x04) != 0
@@ -620,7 +641,7 @@ impl UsbMouse {
             mouse_callback: Mutex::new(None),
         }
     }
-    
+
     /// マウスイベントコールバックを設定
     pub fn set_mouse_callback<F>(&self, callback: F)
     where
@@ -628,38 +649,42 @@ impl UsbMouse {
     {
         *self.mouse_callback.lock() = Some(Box::new(callback));
     }
-    
+
     /// 累積移動量を取得してリセット
     pub fn get_and_reset_movement(&self) -> (i32, i32) {
         let x = core::mem::replace(&mut *self.accumulated_x.lock(), 0);
         let y = core::mem::replace(&mut *self.accumulated_y.lock(), 0);
         (x, y)
     }
-    
+
     /// レポートを処理
     pub fn process_report(&self, data: &[u8]) {
         if data.len() < 3 {
             return;
         }
-        
+
         let buttons = data[0];
         let dx = data[1] as i8 as i32;
         let dy = data[2] as i8 as i32;
-        let wheel = if data.len() > 3 { data[3] as i8 as i32 } else { 0 };
-        
+        let wheel = if data.len() > 3 {
+            data[3] as i8 as i32
+        } else {
+            0
+        };
+
         // 移動量を累積
         *self.accumulated_x.lock() += dx;
         *self.accumulated_y.lock() += dy;
         *self.accumulated_wheel.lock() += wheel;
-        
+
         let prev_buttons = self.prev_buttons.swap(buttons, Ordering::SeqCst);
-        
+
         if let Some(ref callback) = *self.mouse_callback.lock() {
             // 移動イベント
             if dx != 0 || dy != 0 {
                 callback(MouseEvent::Move { dx, dy });
             }
-            
+
             // ボタンイベント
             for (bit, button) in [
                 (0x01, MouseButton::Left),
@@ -674,7 +699,7 @@ impl UsbMouse {
                     callback(MouseEvent::ButtonUp(button));
                 }
             }
-            
+
             // ホイールイベント
             if wheel != 0 {
                 callback(MouseEvent::Wheel(wheel));

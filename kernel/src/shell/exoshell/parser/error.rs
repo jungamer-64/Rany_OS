@@ -9,26 +9,15 @@ use core::fmt::{self, Display};
 #[derive(Debug, Clone)]
 pub enum ParseError {
     /// 文字列リテラルが閉じられていない
-    UnterminatedString {
-        position: usize,
-        start_quote: char,
-    },
+    UnterminatedString { position: usize, start_quote: char },
     /// 予期しないトークン
-    UnexpectedToken {
-        expected: String,
-        found: String,
-    },
+    UnexpectedToken { expected: String, found: String },
     /// 予期しない入力終端
     UnexpectedEof,
     /// 未知の名前空間
-    UnknownNamespace {
-        name: String,
-    },
+    UnknownNamespace { name: String },
     /// 未知のメソッド
-    UnknownMethod {
-        namespace: String,
-        method: String,
-    },
+    UnknownMethod { namespace: String, method: String },
     /// 引数の型が不正
     InvalidArgumentType {
         method: String,
@@ -41,13 +30,9 @@ pub enum ParseError {
         argument: &'static str,
     },
     /// 不正な数値
-    InvalidNumber {
-        value: String,
-    },
+    InvalidNumber { value: String },
     /// 不正なIPアドレス
-    InvalidIpAddress {
-        value: String,
-    },
+    InvalidIpAddress { value: String },
     /// 空の入力
     EmptyInput,
 }
@@ -55,8 +40,15 @@ pub enum ParseError {
 impl Display for ParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ParseError::UnterminatedString { position, start_quote } => {
-                write!(f, "文字列が閉じられていません (位置 {}, 開始引用符: '{}')", position, start_quote)
+            ParseError::UnterminatedString {
+                position,
+                start_quote,
+            } => {
+                write!(
+                    f,
+                    "文字列が閉じられていません (位置 {}, 開始引用符: '{}')",
+                    position, start_quote
+                )
             }
             ParseError::UnexpectedToken { expected, found } => {
                 write!(f, "予期しないトークン: '{}' (期待: {})", found, expected)
@@ -65,13 +57,25 @@ impl Display for ParseError {
                 write!(f, "予期しない入力終端")
             }
             ParseError::UnknownNamespace { name } => {
-                write!(f, "未知の名前空間: '{}'\n有効な名前空間: fs, net, proc, cap, sys", name)
+                write!(
+                    f,
+                    "未知の名前空間: '{}'\n有効な名前空間: fs, net, proc, cap, sys",
+                    name
+                )
             }
             ParseError::UnknownMethod { namespace, method } => {
                 write!(f, "未知のメソッド: '{}.{}()'", namespace, method)
             }
-            ParseError::InvalidArgumentType { method, expected, found } => {
-                write!(f, "{}() の引数型が不正: 期待 {}, 実際 {}", method, expected, found)
+            ParseError::InvalidArgumentType {
+                method,
+                expected,
+                found,
+            } => {
+                write!(
+                    f,
+                    "{}() の引数型が不正: 期待 {}, 実際 {}",
+                    method, expected, found
+                )
             }
             ParseError::MissingArgument { method, argument } => {
                 write!(f, "{}() に引数 '{}' がありません", method, argument)

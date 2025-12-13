@@ -269,20 +269,20 @@ impl CpuThermalDriver {
 
     fn read_msr(&self, msr: u32) -> ThermalResult<u64> {
         unsafe {
-        let low: u32;
-        let high: u32;
+            let low: u32;
+            let high: u32;
 
-        core::arch::asm!(
-            "rdmsr",
-            out("eax") low,
-            out("edx") high,
-            in("ecx") msr,
-            options(nomem, nostack)
-        );
+            core::arch::asm!(
+                "rdmsr",
+                out("eax") low,
+                out("edx") high,
+                in("ecx") msr,
+                options(nomem, nostack)
+            );
 
-        Ok(((high as u64) << 32) | (low as u64))
+            Ok(((high as u64) << 32) | (low as u64))
+        }
     }
-}
 
     fn detect_core_count(&self) -> u32 {
         unsafe {

@@ -18,7 +18,7 @@ extern crate alloc;
 mod types;
 
 // Re-export all types
-pub use types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
+pub use types::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 
 // Image module depends on allocation support; enable it only when the
 // `alloc` feature is enabled.
@@ -26,5 +26,6 @@ pub use types::{Color, PixelFormat, FramebufferInfo, Point, Rect};
 pub mod image;
 
 #[cfg(feature = "alloc")]
-pub use image::{Image, ImageError, ImageResult, IconGenerator, decode_bmp, decode_tga, decode_ico};
-
+pub use image::{
+    IconGenerator, Image, ImageError, ImageResult, decode_bmp, decode_ico, decode_tga,
+};

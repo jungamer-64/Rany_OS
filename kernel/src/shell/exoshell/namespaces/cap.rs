@@ -2,22 +2,21 @@
 // src/shell/exoshell/namespaces/cap.rs - Capability Namespace
 // ============================================================================
 
-use alloc::string::{String, ToString};
 use alloc::borrow::Cow;
+use alloc::format;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
-use alloc::format;
 
+use super::{BoxFuture, ShellNamespace};
 use crate::security::capability::{
-    self, manager, capability_name, CapabilitySet,
-    CAP_NET_BIND, CAP_NET_RAW, CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_BOOT,
-    CAP_SYS_TIME, CAP_SYS_PTRACE, CAP_DAC_OVERRIDE, CAP_KILL, CAP_SETUID,
-    CAP_SETGID, CAP_CHOWN, CAP_FOWNER, CAP_SYS_RAWIO, CAP_IPC_LOCK,
-    CAP_SYS_NICE, CAP_SYS_MODULE, CAP_SYS_PHYSMEM, CAP_DMA, CAP_IOMMU, CAP_INTERRUPT,
+    self, CAP_CHOWN, CAP_DAC_OVERRIDE, CAP_DMA, CAP_FOWNER, CAP_INTERRUPT, CAP_IOMMU, CAP_IPC_LOCK,
+    CAP_KILL, CAP_NET_ADMIN, CAP_NET_BIND, CAP_NET_RAW, CAP_SETGID, CAP_SETUID, CAP_SYS_ADMIN,
+    CAP_SYS_BOOT, CAP_SYS_MODULE, CAP_SYS_NICE, CAP_SYS_PHYSMEM, CAP_SYS_PTRACE, CAP_SYS_RAWIO,
+    CAP_SYS_TIME, CapabilitySet, capability_name, manager,
 };
 use crate::shell::exoshell::types::*;
 use crate::task::process::getpid;
-use super::{ShellNamespace, BoxFuture};
 use alloc::boxed::Box;
 
 /// Capability 名前空間（権限管理）
@@ -29,34 +28,70 @@ impl CapNamespace {
         // 現在のプロセス（ドメイン）の権限を取得
         let pid = getpid().as_u64();
         let cap_set = manager().get_capabilities(pid);
-        
+
         let mut caps = Vec::new();
-        
+
         // 各Capability bitをチェックして有効なものをリストアップ
         let all_caps = [
             (CAP_NET_BIND, "/net/bind", vec![CapOperation::Execute]),
-            (CAP_NET_RAW, "/net/raw", vec![CapOperation::Read, CapOperation::Write]),
-            (CAP_NET_ADMIN, "/net/admin", vec![CapOperation::Execute, CapOperation::Write]),
+            (
+                CAP_NET_RAW,
+                "/net/raw",
+                vec![CapOperation::Read, CapOperation::Write],
+            ),
+            (
+                CAP_NET_ADMIN,
+                "/net/admin",
+                vec![CapOperation::Execute, CapOperation::Write],
+            ),
             (CAP_SYS_ADMIN, "/sys/admin", vec![CapOperation::Execute]),
             (CAP_SYS_BOOT, "/sys/boot", vec![CapOperation::Execute]),
             (CAP_SYS_TIME, "/sys/time", vec![CapOperation::Write]),
-            (CAP_SYS_PTRACE, "/proc/*/trace", vec![CapOperation::Read, CapOperation::Write]),
-            (CAP_DAC_OVERRIDE, "/", vec![CapOperation::Read, CapOperation::Write, CapOperation::Delete]),
+            (
+                CAP_SYS_PTRACE,
+                "/proc/*/trace",
+                vec![CapOperation::Read, CapOperation::Write],
+            ),
+            (
+                CAP_DAC_OVERRIDE,
+                "/",
+                vec![
+                    CapOperation::Read,
+                    CapOperation::Write,
+                    CapOperation::Delete,
+                ],
+            ),
             (CAP_KILL, "/proc/*/signal", vec![CapOperation::Execute]),
             (CAP_SETUID, "/identity/uid", vec![CapOperation::Write]),
             (CAP_SETGID, "/identity/gid", vec![CapOperation::Write]),
             (CAP_CHOWN, "/fs/*/owner", vec![CapOperation::Write]),
-            (CAP_FOWNER, "/fs/*", vec![CapOperation::Write, CapOperation::Delete]),
-            (CAP_SYS_RAWIO, "/io/raw", vec![CapOperation::Read, CapOperation::Write]),
+            (
+                CAP_FOWNER,
+                "/fs/*",
+                vec![CapOperation::Write, CapOperation::Delete],
+            ),
+            (
+                CAP_SYS_RAWIO,
+                "/io/raw",
+                vec![CapOperation::Read, CapOperation::Write],
+            ),
             (CAP_IPC_LOCK, "/mem/lock", vec![CapOperation::Execute]),
             (CAP_SYS_NICE, "/proc/*/priority", vec![CapOperation::Write]),
             (CAP_SYS_MODULE, "/sys/module", vec![CapOperation::Execute]),
-            (CAP_SYS_PHYSMEM, "/mem/phys", vec![CapOperation::Read, CapOperation::Write]),
+            (
+                CAP_SYS_PHYSMEM,
+                "/mem/phys",
+                vec![CapOperation::Read, CapOperation::Write],
+            ),
             (CAP_DMA, "/dma", vec![CapOperation::Execute]),
-            (CAP_IOMMU, "/iommu", vec![CapOperation::Execute, CapOperation::Write]),
+            (
+                CAP_IOMMU,
+                "/iommu",
+                vec![CapOperation::Execute, CapOperation::Write],
+            ),
             (CAP_INTERRUPT, "/irq", vec![CapOperation::Execute]),
         ];
-        
+
         let mut id = 1u64;
         for (cap_bit, resource, ops) in all_caps {
             if cap_set.has_capability(cap_bit) {
@@ -71,7 +106,7 @@ impl CapNamespace {
                 id += 1;
             }
         }
-        
+
         ExoValue::Array(caps.into_iter().map(ExoValue::Capability).collect())
     }
 
@@ -80,33 +115,58 @@ impl CapNamespace {
         // 他ドメインの権限確認には CAP_SYS_PTRACE または CAP_SYS_ADMIN が必要かもしれないが、
         // とりあえず読み取りは許可する方針とする（psコマンド同様）
         let cap_set = manager().get_capabilities(domain_id);
-        
+
         // 権限ビットマップを文字列リストに変換
         let mut cap_names = Vec::new();
         let bits = [
-            CAP_NET_BIND, CAP_NET_RAW, CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_BOOT,
-            CAP_SYS_TIME, CAP_SYS_PTRACE, CAP_DAC_OVERRIDE, CAP_KILL, CAP_SETUID,
-            CAP_SETGID, CAP_CHOWN, CAP_FOWNER, CAP_SYS_RAWIO, CAP_IPC_LOCK,
-            CAP_SYS_NICE, CAP_SYS_MODULE, CAP_SYS_PHYSMEM, CAP_DMA, CAP_IOMMU, CAP_INTERRUPT,
+            CAP_NET_BIND,
+            CAP_NET_RAW,
+            CAP_NET_ADMIN,
+            CAP_SYS_ADMIN,
+            CAP_SYS_BOOT,
+            CAP_SYS_TIME,
+            CAP_SYS_PTRACE,
+            CAP_DAC_OVERRIDE,
+            CAP_KILL,
+            CAP_SETUID,
+            CAP_SETGID,
+            CAP_CHOWN,
+            CAP_FOWNER,
+            CAP_SYS_RAWIO,
+            CAP_IPC_LOCK,
+            CAP_SYS_NICE,
+            CAP_SYS_MODULE,
+            CAP_SYS_PHYSMEM,
+            CAP_DMA,
+            CAP_IOMMU,
+            CAP_INTERRUPT,
         ];
-        
+
         for bit in bits {
             if cap_set.has_capability(bit) {
-                cap_names.push(ExoValue::String(Cow::Owned(capability_name(bit).to_string())));
+                cap_names.push(ExoValue::String(Cow::Owned(
+                    capability_name(bit).to_string(),
+                )));
             }
         }
-        
+
         ExoValue::Array(cap_names)
     }
 
     /// 権限を付与 (Requires CAP_SYS_ADMIN)
-    pub fn grant(resource: &str, operations: &[CapOperation], target_domain: &str) -> ExoValue<'static> {
+    pub fn grant(
+        resource: &str,
+        operations: &[CapOperation],
+        target_domain: &str,
+    ) -> ExoValue<'static> {
         let caller_pid = getpid().as_u64();
 
         // target_domainをu64に解析
         let domain_id: u64 = match target_domain.parse() {
             Ok(v) => v,
-            Err(_) => return ExoValue::Error(format!("Invalid target domain id: {}", target_domain)),
+            Err(_) => {
+                return ExoValue::Error(format!("Invalid target domain id: {}", target_domain));
+            }
         };
 
         // リソースパスからCapabilityビットを特定
@@ -131,7 +191,13 @@ impl CapNamespace {
             delegatable: caller_caps.is_permitted(cap_bit),
         };
 
-        crate::log!("[CAP] Granted {} on {} to domain {} by domain {}\n", capability_name(cap_bit), resource, domain_id, caller_pid);
+        crate::log!(
+            "[CAP] Granted {} on {} to domain {} by domain {}\n",
+            capability_name(cap_bit),
+            resource,
+            domain_id,
+            caller_pid
+        );
         ExoValue::Capability(cap)
     }
 
@@ -139,7 +205,7 @@ impl CapNamespace {
     pub fn revoke(cap_id: u64) -> ExoValue<'static> {
         let pid = getpid().as_u64();
         let mut caps = manager().get_capabilities(pid);
-        
+
         // cap_idはここでの実装ではCapabilityビットと仮定
         // IDからビットへの変換が必要だが、ここでは簡略化して cap_id = bit とする
         // あるいは `list` で返した ID (1..N) とのマッピングが必要。
@@ -147,14 +213,14 @@ impl CapNamespace {
         // 実際には cap_id はビットマスクか、名前で指定させるべき。
         // ここでは ExoShell の仕様上 cap_id が渡されるので、ビットとして扱うか、
         // 名前解決ロジックが必要だが、とりあえずビットとして扱う（既存コード準拠）
-        
+
         caps.drop(cap_id);
         // 永続的に放棄するか、effectiveだけ落とすか？
         // 通常 revoke と言えば二度と使えないようにすること
         caps.drop_permanently(cap_id);
-        
+
         manager().set_capabilities(pid, caps);
-        
+
         crate::log!("[CAP] Revoked capability bit {} from self\n", cap_id);
         ExoValue::Bool(true)
     }
@@ -177,7 +243,7 @@ impl CapNamespace {
         if cap_bit == 0 {
             return ExoValue::Error(format!("Unknown capability: {}", cap_name));
         }
-        
+
         ExoValue::Bool(manager().has_capability(domain_id, cap_bit))
     }
 
@@ -242,7 +308,7 @@ impl CapNamespace {
 mod tests {
     use super::*;
     use crate::security::capability::*;
-    use crate::task::process::{process_manager, set_current_process, ProcessId};
+    use crate::task::process::{ProcessId, process_manager, set_current_process};
 
     #[test]
     fn test_grant_requires_permissions() {
@@ -262,12 +328,16 @@ mod tests {
 
     #[test]
     fn test_grant_with_permitted() {
-        let caller = process_manager().create(ProcessId::INIT, "caller2").unwrap();
+        let caller = process_manager()
+            .create(ProcessId::INIT, "caller2")
+            .unwrap();
         set_current_process(caller);
         // give caller permitted CAP_NET_BIND
         manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
 
-        let target = process_manager().create(ProcessId::INIT, "target2").unwrap();
+        let target = process_manager()
+            .create(ProcessId::INIT, "target2")
+            .unwrap();
 
         let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()));
 
@@ -287,22 +357,38 @@ impl ShellNamespace for CapNamespace {
         "cap"
     }
 
-    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+    fn call<'a>(
+        &'a self,
+        method: &'a str,
+        args: &'a [ExoValue<'static>],
+    ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
                 "list" => Self::list(),
                 "revoke" => {
-                    let id = args.first()
-                        .and_then(|v| match v { ExoValue::Int(n) => Some(*n as u64), _ => None })
+                    let id = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as u64),
+                            _ => None,
+                        })
                         .unwrap_or(0);
                     Self::revoke(id)
                 }
                 "grant" => {
                     // grant(resource: &str, ops: &[CapOperation], target: &str)
                     // Parse args: resource (string), ops (array|string) optional, target (int|string)
-                    let resource = args.get(0).and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None }).unwrap_or("");
+                    let resource = args
+                        .get(0)
+                        .and_then(|v| match v {
+                            ExoValue::String(s) => Some(s.as_ref()),
+                            _ => None,
+                        })
+                        .unwrap_or("");
                     if resource.is_empty() {
-                        return ExoValue::Error(String::from("grant(resource, [ops], target) requires a resource string"));
+                        return ExoValue::Error(String::from(
+                            "grant(resource, [ops], target) requires a resource string",
+                        ));
                     }
 
                     // Helper to parse a single operation string
@@ -358,25 +444,46 @@ impl ShellNamespace for CapNamespace {
                     let target = match target_arg {
                         Some(ExoValue::Int(n)) => n.to_string(),
                         Some(ExoValue::String(s)) => s.to_string(),
-                        _ => return ExoValue::Error(String::from("grant requires target domain id as second or third argument")),
+                        _ => {
+                            return ExoValue::Error(String::from(
+                                "grant requires target domain id as second or third argument",
+                            ));
+                        }
                     };
 
                     Self::grant(resource, &ops, target.as_str())
                 }
                 "revoke_all" => {
-                     let domain_id = args.first()
-                        .and_then(|v| match v { ExoValue::Int(n) => Some(*n as u64), _ => None })
+                    let domain_id = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as u64),
+                            _ => None,
+                        })
                         .unwrap_or(0);
                     Self::revoke_all(domain_id)
                 }
                 "check" => {
-                     let domain_id = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as u64), _ => None }).unwrap_or(0);
-                     let cap = args.get(1).and_then(|v| match v { ExoValue::String(s) => Some(s.as_ref()), _ => None }).unwrap_or("");
-                     Self::check(domain_id, cap)
+                    let domain_id = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as u64),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
+                    let cap = args
+                        .get(1)
+                        .and_then(|v| match v {
+                            ExoValue::String(s) => Some(s.as_ref()),
+                            _ => None,
+                        })
+                        .unwrap_or("");
+                    Self::check(domain_id, cap)
                 }
-                _ => ExoValue::Error(
-                    format!("Unknown method 'cap.{}'\nValid methods: list, revoke, grant, check", method)
-                ),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'cap.{}'\nValid methods: list, revoke, grant, check",
+                    method
+                )),
             }
         })
     }

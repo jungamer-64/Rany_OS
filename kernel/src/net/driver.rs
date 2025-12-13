@@ -7,9 +7,9 @@
 //! This wraps the existing driver_bridge functionality to work with the
 //! unified DriverRegistry system.
 
-use kernel_api::driver::{Driver, DriverType, DriverVersion, DeviceId};
-use kernel_api::error::{KapiError, KapiResult};
 use alloc::vec::Vec;
+use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
+use kernel_api::error::{KapiError, KapiResult};
 
 /// VirtIO-Net driver wrapper for DriverRegistry
 pub struct VirtioNetDriver {
@@ -42,7 +42,7 @@ impl Driver for VirtioNetDriver {
             self.initialized = true;
             return Ok(());
         }
-        
+
         // Try to initialize the bridge
         match super::driver_bridge::init_bridge() {
             Ok(()) => {
@@ -57,7 +57,7 @@ impl Driver for VirtioNetDriver {
         if !self.initialized {
             return Err(KapiError::NotSupported);
         }
-        
+
         // Bridge is already started during probe
         log::info!(target: "net", "VirtIO-Net driver started");
         Ok(())
@@ -70,14 +70,12 @@ impl Driver for VirtioNetDriver {
 
     fn supported_devices(&self) -> &[DeviceId] {
         // VirtIO-Net PCI device ID
-        static DEVICES: [DeviceId; 1] = [
-            DeviceId {
-                vendor: 0x1AF4,
-                device: 0x1000, // VirtIO-Net (legacy)
-                subsystem_vendor: None,
-                subsystem_device: None,
-            },
-        ];
+        static DEVICES: [DeviceId; 1] = [DeviceId {
+            vendor: 0x1AF4,
+            device: 0x1000, // VirtIO-Net (legacy)
+            subsystem_vendor: None,
+            subsystem_device: None,
+        }];
         &DEVICES
     }
 }

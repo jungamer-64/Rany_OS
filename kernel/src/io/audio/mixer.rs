@@ -119,7 +119,7 @@ impl BitDepth {
     /// 最大値（正規化用）
     pub fn max_value(&self) -> f32 {
         match self {
-            BitDepth::U8 => 127.0,  // centered at 128
+            BitDepth::U8 => 127.0, // centered at 128
             BitDepth::S16 => 32767.0,
             BitDepth::S24 => 8388607.0,
             BitDepth::S32 => 2147483647.0,
@@ -368,11 +368,7 @@ impl Mixer {
     // ========================================================================
 
     /// サンプルをチャンネルに送信（生バイト形式）
-    pub fn submit_samples_raw(
-        &mut self,
-        channel_id: u64,
-        data: &[u8],
-    ) -> MixerResult<()> {
+    pub fn submit_samples_raw(&mut self, channel_id: u64, data: &[u8]) -> MixerResult<()> {
         let channel = self
             .channels
             .get_mut(&channel_id)
@@ -380,7 +376,7 @@ impl Mixer {
 
         // Convert raw bytes to f32 based on bit depth
         let samples = Self::convert_to_f32(data, channel.config.bit_depth);
-        
+
         // Convert to stereo if mono
         let stereo_samples = if channel.config.channels == 1 {
             Self::mono_to_stereo(&samples)
@@ -393,11 +389,7 @@ impl Mixer {
     }
 
     /// サンプルをチャンネルに送信（i16形式）
-    pub fn submit_samples_i16(
-        &mut self,
-        channel_id: u64,
-        samples: &[i16],
-    ) -> MixerResult<()> {
+    pub fn submit_samples_i16(&mut self, channel_id: u64, samples: &[i16]) -> MixerResult<()> {
         let channel = self
             .channels
             .get_mut(&channel_id)
@@ -405,7 +397,7 @@ impl Mixer {
 
         // Convert i16 to f32
         let f32_samples: Vec<f32> = samples.iter().map(|&s| s as f32 / 32767.0).collect();
-        
+
         // Convert to stereo if mono
         let stereo_samples = if channel.config.channels == 1 {
             Self::mono_to_stereo(&f32_samples)
@@ -418,11 +410,7 @@ impl Mixer {
     }
 
     /// サンプルをチャンネルに送信（f32形式）
-    pub fn submit_samples_f32(
-        &mut self,
-        channel_id: u64,
-        samples: &[f32],
-    ) -> MixerResult<()> {
+    pub fn submit_samples_f32(&mut self, channel_id: u64, samples: &[f32]) -> MixerResult<()> {
         let channel = self
             .channels
             .get_mut(&channel_id)
@@ -446,17 +434,14 @@ impl Mixer {
     /// 生バイトをf32に変換
     fn convert_to_f32(data: &[u8], bit_depth: BitDepth) -> Vec<f32> {
         match bit_depth {
-            BitDepth::U8 => {
-                data.iter().map(|&b| (b as f32 - 128.0) / 127.0).collect()
-            }
-            BitDepth::S16 => {
-                data.chunks_exact(2)
-                    .map(|chunk| {
-                        let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
-                        sample as f32 / 32767.0
-                    })
-                    .collect()
-            }
+            BitDepth::U8 => data.iter().map(|&b| (b as f32 - 128.0) / 127.0).collect(),
+            BitDepth::S16 => data
+                .chunks_exact(2)
+                .map(|chunk| {
+                    let sample = i16::from_le_bytes([chunk[0], chunk[1]]);
+                    sample as f32 / 32767.0
+                })
+                .collect(),
             BitDepth::S24 => {
                 data.chunks_exact(3)
                     .map(|chunk| {
@@ -473,21 +458,17 @@ impl Mixer {
                     })
                     .collect()
             }
-            BitDepth::S32 => {
-                data.chunks_exact(4)
-                    .map(|chunk| {
-                        let sample = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
-                        sample as f32 / 2147483647.0
-                    })
-                    .collect()
-            }
-            BitDepth::F32 => {
-                data.chunks_exact(4)
-                    .map(|chunk| {
-                        f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]])
-                    })
-                    .collect()
-            }
+            BitDepth::S32 => data
+                .chunks_exact(4)
+                .map(|chunk| {
+                    let sample = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+                    sample as f32 / 2147483647.0
+                })
+                .collect(),
+            BitDepth::F32 => data
+                .chunks_exact(4)
+                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .collect(),
         }
     }
 
@@ -508,7 +489,7 @@ impl Mixer {
     /// 線形補間によるリサンプリング
     fn resample_channel(channel: &mut MixerChannel, output_frames: usize) -> Vec<f32> {
         let ratio = channel.resample_ratio();
-        
+
         // No resampling needed if same sample rate
         if (ratio - 1.0).abs() < 0.0001 {
             let needed = output_frames * 2; // stereo
@@ -588,7 +569,7 @@ impl Mixer {
         // Using constant power panning
         let pan_normalized = (pan + 1.0) * 0.5; // 0.0 to 1.0
         let angle = pan_normalized * core::f32::consts::FRAC_PI_2;
-        
+
         // Use Taylor series approximation for sin/cos in no_std
         let left_gain = volume * cos_approx(angle);
         let right_gain = volume * sin_approx(angle);
@@ -640,14 +621,18 @@ impl Mixer {
     // ========================================================================
 
     /// ソフトリミッターを適用
-    fn apply_limiter_to_buffer(limiter: &mut LimiterState, limiter_enabled: bool, samples: &mut [f32]) {
+    fn apply_limiter_to_buffer(
+        limiter: &mut LimiterState,
+        limiter_enabled: bool,
+        samples: &mut [f32],
+    ) {
         if !limiter_enabled {
             return;
         }
 
         for sample in samples.iter_mut() {
             let abs_sample = sample.abs();
-            
+
             // Update peak with attack (instant) and release
             if abs_sample > limiter.peak {
                 limiter.peak = abs_sample;
@@ -664,7 +649,7 @@ impl Mixer {
                 // Soft knee compression
                 let over_threshold = limiter.peak - LIMITER_THRESHOLD;
                 let knee_start = LIMITER_THRESHOLD - LIMITER_KNEE_WIDTH / 2.0;
-                
+
                 if limiter.peak > knee_start {
                     // In the knee region, apply gradual compression
                     let knee_factor = if over_threshold < LIMITER_KNEE_WIDTH {
@@ -675,7 +660,7 @@ impl Mixer {
                         // Full limiting above knee
                         LIMITER_THRESHOLD / limiter.peak
                     };
-                    
+
                     // Smoothly transition to target gain
                     let target_gain = knee_factor;
                     limiter.current_gain += (target_gain - limiter.current_gain) * 0.1;
@@ -695,7 +680,11 @@ impl Mixer {
 
     /// リミッターを適用（SIMD版、バッチ処理）
     #[cfg(target_feature = "avx")]
-    fn apply_limiter_simd_static(_limiter: &mut LimiterState, limiter_enabled: bool, samples: &mut [f32]) {
+    fn apply_limiter_simd_static(
+        _limiter: &mut LimiterState,
+        limiter_enabled: bool,
+        samples: &mut [f32],
+    ) {
         use core::arch::x86_64::*;
 
         if !limiter_enabled {
@@ -712,15 +701,15 @@ impl Mixer {
             for i in 0..chunks {
                 let ptr = samples.as_mut_ptr().add(i * 8);
                 let data = _mm256_loadu_ps(ptr);
-                
+
                 // Soft clip using tanh approximation: x / (1 + |x|)
                 let abs_data = _mm256_andnot_ps(neg_one, data);
                 let denom = _mm256_add_ps(one, abs_data);
                 let result = _mm256_div_ps(data, denom);
-                
+
                 // Scale back to threshold range
                 let scaled = _mm256_mul_ps(result, threshold);
-                
+
                 _mm256_storeu_ps(ptr, scaled);
             }
 
@@ -741,7 +730,7 @@ impl Mixer {
     #[cfg(not(any(target_feature = "sse2", target_feature = "avx")))]
     pub fn mix(&mut self) -> &[f32] {
         let output_frames = self.config.buffer_size;
-        
+
         // Clear output buffer
         for sample in self.output_buffer.iter_mut() {
             *sample = 0.0;
@@ -773,7 +762,11 @@ impl Mixer {
         }
 
         // Apply limiter
-        Self::apply_limiter_to_buffer(&mut self.limiter, self.config.limiter_enabled, &mut self.output_buffer);
+        Self::apply_limiter_to_buffer(
+            &mut self.limiter,
+            self.config.limiter_enabled,
+            &mut self.output_buffer,
+        );
 
         &self.output_buffer
     }
@@ -784,7 +777,7 @@ impl Mixer {
         use core::arch::x86_64::*;
 
         let output_frames = self.config.buffer_size;
-        
+
         // Clear output buffer using SIMD
         // SAFETY: SSE2 is available, buffer is aligned for f32.
         unsafe {
@@ -822,7 +815,8 @@ impl Mixer {
                 }
 
                 let remaining_start = chunks * 4;
-                for i in remaining_start..core::cmp::min(resampled.len(), self.output_buffer.len()) {
+                for i in remaining_start..core::cmp::min(resampled.len(), self.output_buffer.len())
+                {
                     self.output_buffer[i] += resampled[i];
                 }
             }
@@ -844,7 +838,11 @@ impl Mixer {
             }
         }
 
-        Self::apply_limiter_to_buffer(&mut self.limiter, self.config.limiter_enabled, &mut self.output_buffer);
+        Self::apply_limiter_to_buffer(
+            &mut self.limiter,
+            self.config.limiter_enabled,
+            &mut self.output_buffer,
+        );
 
         &self.output_buffer
     }
@@ -855,7 +853,7 @@ impl Mixer {
         use core::arch::x86_64::*;
 
         let output_frames = self.config.buffer_size;
-        
+
         // Clear output buffer using AVX
         // SAFETY: AVX is available, buffer is aligned for f32.
         unsafe {
@@ -893,7 +891,8 @@ impl Mixer {
                 }
 
                 let remaining_start = chunks * 8;
-                for i in remaining_start..core::cmp::min(resampled.len(), self.output_buffer.len()) {
+                for i in remaining_start..core::cmp::min(resampled.len(), self.output_buffer.len())
+                {
                     self.output_buffer[i] += resampled[i];
                 }
             }
@@ -915,7 +914,11 @@ impl Mixer {
             }
         }
 
-        Self::apply_limiter_simd_static(&mut self.limiter, self.config.limiter_enabled, &mut self.output_buffer);
+        Self::apply_limiter_simd_static(
+            &mut self.limiter,
+            self.config.limiter_enabled,
+            &mut self.output_buffer,
+        );
 
         &self.output_buffer
     }
@@ -927,10 +930,7 @@ impl Mixer {
     /// ミックス出力をi16形式で取得
     pub fn mix_to_i16(&mut self) -> Vec<i16> {
         let f32_output = self.mix();
-        f32_output
-            .iter()
-            .map(|&s| (s * 32767.0) as i16)
-            .collect()
+        f32_output.iter().map(|&s| (s * 32767.0) as i16).collect()
     }
 
     /// ミックス出力を生バイト（i16 LE）で取得
@@ -1107,7 +1107,11 @@ mod tests {
         let mut mixer = Mixer::default_mixer();
         mixer.output_buffer = vec![1.5, -1.5, 0.5, -0.5];
         let mut buffer_copy = mixer.output_buffer.clone();
-        Mixer::apply_limiter_to_buffer(&mut mixer.limiter, mixer.config.limiter_enabled, &mut buffer_copy);
+        Mixer::apply_limiter_to_buffer(
+            &mut mixer.limiter,
+            mixer.config.limiter_enabled,
+            &mut buffer_copy,
+        );
         // All samples should be within -1.0 to 1.0
         for sample in &buffer_copy {
             assert!(*sample >= -1.0 && *sample <= 1.0);

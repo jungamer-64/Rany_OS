@@ -15,12 +15,12 @@
 //! 初期化処理は`Result<(), MouseInitError>`を返し、
 //! エラーの種類を明確に分類します。
 
-#![allow(dead_code)]  // API全体を提供するため、未使用警告を抑制
+#![allow(dead_code)] // API全体を提供するため、未使用警告を抑制
 
 use alloc::collections::VecDeque;
 use core::fmt;
-use spin::Mutex;
 use hal::port_io::PortU8;
+use spin::Mutex;
 
 // ============================================================================
 // Error Types
@@ -84,8 +84,8 @@ const PS2_STATUS_PORT: u16 = 0x64;
 /// コントローラコマンド
 const CMD_READ_CONFIG: u8 = 0x20;
 const CMD_WRITE_CONFIG: u8 = 0x60;
-const CMD_ENABLE_AUX: u8 = 0xA8;      // マウス有効化
-const CMD_WRITE_TO_AUX: u8 = 0xD4;    // 次のバイトをマウスへ送信
+const CMD_ENABLE_AUX: u8 = 0xA8; // マウス有効化
+const CMD_WRITE_TO_AUX: u8 = 0xD4; // 次のバイトをマウスへ送信
 
 /// マウスコマンド
 const MOUSE_CMD_SET_DEFAULTS: u8 = 0xF6;
@@ -171,12 +171,12 @@ impl Mouse {
         // 2. コントローラ設定バイトを読み取り
         self.write_controller_command(CMD_READ_CONFIG);
         let mut config = self.read_data_timeout().ok_or(MouseInitError::Timeout)?;
-        
+
         // IRQ12を有効化 (Bit 1)
         // マウスクロックを有効化 (Bit 5をクリア)
-        config |= 0x02;   // Enable IRQ12
-        config &= !0x20;  // Enable mouse clock
-        
+        config |= 0x02; // Enable IRQ12
+        config &= !0x20; // Enable mouse clock
+
         // 設定を書き戻し
         self.write_controller_command(CMD_WRITE_CONFIG);
         self.write_data(config);
@@ -232,7 +232,7 @@ impl Mouse {
         self.write_controller_command(CMD_WRITE_TO_AUX);
         // データポートにコマンドを書く
         self.write_data(cmd);
-        
+
         // ACKを待つ
         if let Some(response) = self.read_data_timeout() {
             if response == ACK {
@@ -273,7 +273,7 @@ impl Mouse {
         // オーバーフローチェック
         let x_overflow = (flags & 0x40) != 0;
         let y_overflow = (flags & 0x80) != 0;
-        
+
         if x_overflow || y_overflow {
             return; // 動きが大きすぎる場合は無視
         }
@@ -321,7 +321,7 @@ impl Mouse {
     pub fn has_event(&self) -> bool {
         !self.event_queue.is_empty()
     }
-    
+
     /// 初期化されているか
     pub fn is_initialized(&self) -> bool {
         self.initialized
@@ -374,23 +374,17 @@ pub fn handle_mouse_packet(data: u8) {
 
 /// マウスイベントを取得（割り込みを無効にして実行）
 pub fn poll_mouse_event() -> Option<MouseEvent> {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        MOUSE.lock().poll_event()
-    })
+    x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().poll_event())
 }
 
 /// マウスイベントがあるか（割り込みを無効にして実行）
 pub fn has_mouse_event() -> bool {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        MOUSE.lock().has_event()
-    })
+    x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().has_event())
 }
 
 /// マウスが初期化されているか
 pub fn is_mouse_initialized() -> bool {
-    x86_64::instructions::interrupts::without_interrupts(|| {
-        MOUSE.lock().is_initialized()
-    })
+    x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().is_initialized())
 }
 
 // ============================================================================
@@ -431,16 +425,19 @@ mod tests {
 
         // 複数の無効パケットを送信
         for i in 0..5 {
-            mouse.process_packet(i & 0x07);  // ビット3常に0
+            mouse.process_packet(i & 0x07); // ビット3常に0
         }
-        assert_eq!(mouse.packet_index, 0, "All invalid packets should be ignored");
+        assert_eq!(
+            mouse.packet_index, 0,
+            "All invalid packets should be ignored"
+        );
 
         // 有効なパケット開始後に続ける
-        mouse.process_packet(0x08);  // 1バイト目
+        mouse.process_packet(0x08); // 1バイト目
         assert_eq!(mouse.packet_index, 1);
-        mouse.process_packet(0x10);  // 2バイト目
+        mouse.process_packet(0x10); // 2バイト目
         assert_eq!(mouse.packet_index, 2);
-        mouse.process_packet(0x20);  // 3バイト目（完了）
+        mouse.process_packet(0x20); // 3バイト目（完了）
         assert_eq!(mouse.packet_index, 0, "Packet should complete and reset");
     }
 
@@ -456,12 +453,12 @@ mod tests {
         // 正の移動: dx=10, dy=20
         // flags: 0x08 (ビット3=1, X/Y符号=0)
         mouse.process_packet(0x08);
-        mouse.process_packet(10);   // X
-        mouse.process_packet(20);   // Y
+        mouse.process_packet(10); // X
+        mouse.process_packet(20); // Y
 
         let event = mouse.poll_event().expect("Event should be generated");
         assert_eq!(event.dx, 10);
-        assert_eq!(event.dy, -20);  // Y軸は反転される
+        assert_eq!(event.dy, -20); // Y軸は反転される
     }
 
     #[test]
@@ -471,7 +468,7 @@ mod tests {
 
         // 負のX移動: dx=-5 (0xFB in 8-bit signed)
         // flags: 0x18 (ビット3=1, X符号=1)
-        mouse.process_packet(0x18);  // X符号ビット=1
+        mouse.process_packet(0x18); // X符号ビット=1
         mouse.process_packet(0xFB); // -5 in 8-bit
         mouse.process_packet(0);
 
@@ -487,7 +484,7 @@ mod tests {
 
         // 負のY移動: dy=-10 (0xF6 in 8-bit signed)
         // flags: 0x28 (ビット3=1, Y符号=1)
-        mouse.process_packet(0x28);  // Y符号ビット=1
+        mouse.process_packet(0x28); // Y符号ビット=1
         mouse.process_packet(0);
         mouse.process_packet(0xF6); // -10 in 8-bit
 
@@ -510,7 +507,7 @@ mod tests {
 
         let event = mouse.poll_event().expect("Event should be generated");
         assert_eq!(event.dx, -1);
-        assert_eq!(event.dy, 1);  // Y軸反転
+        assert_eq!(event.dy, 1); // Y軸反転
     }
 
     // =========================================================================
@@ -523,7 +520,7 @@ mod tests {
         mouse.initialized = true;
 
         // 左ボタン押下: flags bit 0 = 1
-        mouse.process_packet(0x09);  // 0x08 | 0x01
+        mouse.process_packet(0x09); // 0x08 | 0x01
         mouse.process_packet(0);
         mouse.process_packet(0);
 
@@ -539,7 +536,7 @@ mod tests {
         mouse.initialized = true;
 
         // 右ボタン押下: flags bit 1 = 1
-        mouse.process_packet(0x0A);  // 0x08 | 0x02
+        mouse.process_packet(0x0A); // 0x08 | 0x02
         mouse.process_packet(0);
         mouse.process_packet(0);
 
@@ -555,7 +552,7 @@ mod tests {
         mouse.initialized = true;
 
         // 中ボタン押下: flags bit 2 = 1
-        mouse.process_packet(0x0C);  // 0x08 | 0x04
+        mouse.process_packet(0x0C); // 0x08 | 0x04
         mouse.process_packet(0);
         mouse.process_packet(0);
 
@@ -571,7 +568,7 @@ mod tests {
         mouse.initialized = true;
 
         // 全ボタン押下: flags bits 0,1,2 = 1
-        mouse.process_packet(0x0F);  // 0x08 | 0x07
+        mouse.process_packet(0x0F); // 0x08 | 0x07
         mouse.process_packet(0);
         mouse.process_packet(0);
 
@@ -592,11 +589,14 @@ mod tests {
         mouse.initialized = true;
 
         // Xオーバーフローフラグ (bit 6)
-        mouse.process_packet(0x48);  // 0x08 | 0x40
+        mouse.process_packet(0x48); // 0x08 | 0x40
         mouse.process_packet(0xFF);
         mouse.process_packet(0);
 
-        assert!(mouse.poll_event().is_none(), "Overflow packet should be ignored");
+        assert!(
+            mouse.poll_event().is_none(),
+            "Overflow packet should be ignored"
+        );
     }
 
     #[test]
@@ -605,11 +605,14 @@ mod tests {
         mouse.initialized = true;
 
         // Yオーバーフローフラグ (bit 7)
-        mouse.process_packet(0x88);  // 0x08 | 0x80
+        mouse.process_packet(0x88); // 0x08 | 0x80
         mouse.process_packet(0);
         mouse.process_packet(0xFF);
 
-        assert!(mouse.poll_event().is_none(), "Overflow packet should be ignored");
+        assert!(
+            mouse.poll_event().is_none(),
+            "Overflow packet should be ignored"
+        );
     }
 
     // =========================================================================
@@ -625,7 +628,10 @@ mod tests {
         mouse.process_packet(10);
         mouse.process_packet(20);
 
-        assert!(mouse.poll_event().is_none(), "Uninitialized mouse should ignore packets");
+        assert!(
+            mouse.poll_event().is_none(),
+            "Uninitialized mouse should ignore packets"
+        );
     }
 
     // =========================================================================

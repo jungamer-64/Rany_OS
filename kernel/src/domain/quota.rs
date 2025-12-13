@@ -19,7 +19,7 @@
 #![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 /// ドメインID（他モジュールとの連携用に再定義）
 pub type DomainId = u64;
@@ -69,7 +69,7 @@ impl CpuQuota {
     pub fn new(limit_percent: u64, period_ms: u64) -> Self {
         let period_ns = period_ms * 1_000_000;
         let limit_per_period_ns = (period_ns * limit_percent) / 100;
-        
+
         Self {
             limit_per_period_ns,
             period_ns,
@@ -78,7 +78,7 @@ impl CpuQuota {
             exceeded: AtomicBool::new(false),
         }
     }
-    
+
     /// 無制限のCPUクォータ
     pub fn unlimited() -> Self {
         Self {
@@ -89,7 +89,7 @@ impl CpuQuota {
             exceeded: AtomicBool::new(false),
         }
     }
-    
+
     /// CPU時間を消費
     ///
     /// # Arguments
@@ -100,18 +100,22 @@ impl CpuQuota {
     /// クォータ超過の場合 `true`
     pub fn consume(&self, elapsed_ns: u64, current_time_ns: u64) -> bool {
         let period_start = self.period_start_ns.load(Ordering::Relaxed);
-        
+
         // 新しい期間の開始チェック
         if current_time_ns >= period_start + self.period_ns {
-            self.period_start_ns.store(current_time_ns, Ordering::Relaxed);
+            self.period_start_ns
+                .store(current_time_ns, Ordering::Relaxed);
             self.used_this_period.store(elapsed_ns, Ordering::Relaxed);
             self.exceeded.store(false, Ordering::Relaxed);
             return false;
         }
-        
+
         // 累計使用時間を更新
-        let used = self.used_this_period.fetch_add(elapsed_ns, Ordering::Relaxed) + elapsed_ns;
-        
+        let used = self
+            .used_this_period
+            .fetch_add(elapsed_ns, Ordering::Relaxed)
+            + elapsed_ns;
+
         if used > self.limit_per_period_ns {
             self.exceeded.store(true, Ordering::Relaxed);
             true
@@ -119,12 +123,12 @@ impl CpuQuota {
             false
         }
     }
-    
+
     /// クォータ超過しているかチェック
     pub fn is_exceeded(&self) -> bool {
         self.exceeded.load(Ordering::Relaxed)
     }
-    
+
     /// 使用率を取得（0.0-1.0）
     pub fn usage_ratio(&self) -> f64 {
         let used = self.used_this_period.load(Ordering::Relaxed);
@@ -133,7 +137,7 @@ impl CpuQuota {
         }
         (used as f64) / (self.limit_per_period_ns as f64)
     }
-    
+
     /// リセット
     pub fn reset(&self) {
         self.used_this_period.store(0, Ordering::Relaxed);
@@ -161,7 +165,7 @@ impl MemoryQuota {
             warning_threshold_percent: 80,
         }
     }
-    
+
     /// 無制限のメモリクォータ
     pub fn unlimited() -> Self {
         Self {
@@ -170,7 +174,7 @@ impl MemoryQuota {
             warning_threshold_percent: 100,
         }
     }
-    
+
     /// メモリ割り当てを試行
     ///
     /// # Returns
@@ -178,7 +182,7 @@ impl MemoryQuota {
     pub fn try_allocate(&self, bytes: u64) -> Result<(), QuotaError> {
         let current = self.used_bytes.load(Ordering::Relaxed);
         let new_total = current.saturating_add(bytes);
-        
+
         if new_total > self.limit_bytes {
             return Err(QuotaError::MemoryExceeded {
                 requested: bytes,
@@ -186,7 +190,7 @@ impl MemoryQuota {
                 limit: self.limit_bytes,
             });
         }
-        
+
         // CAS操作で安全に更新
         match self.used_bytes.compare_exchange(
             current,
@@ -201,17 +205,20 @@ impl MemoryQuota {
             }
         }
     }
-    
+
     /// メモリ解放を記録
     pub fn deallocate(&self, bytes: u64) {
-        self.used_bytes.fetch_sub(bytes.min(self.used_bytes.load(Ordering::Relaxed)), Ordering::Relaxed);
+        self.used_bytes.fetch_sub(
+            bytes.min(self.used_bytes.load(Ordering::Relaxed)),
+            Ordering::Relaxed,
+        );
     }
-    
+
     /// 現在の使用量を取得
     pub fn used(&self) -> u64 {
         self.used_bytes.load(Ordering::Relaxed)
     }
-    
+
     /// 使用率を取得（0.0-1.0）
     pub fn usage_ratio(&self) -> f64 {
         if self.limit_bytes == 0 {
@@ -219,7 +226,7 @@ impl MemoryQuota {
         }
         (self.used_bytes.load(Ordering::Relaxed) as f64) / (self.limit_bytes as f64)
     }
-    
+
     /// 警告閾値を超えているかチェック
     pub fn is_warning(&self) -> bool {
         let threshold = (self.limit_bytes * self.warning_threshold_percent) / 100;
@@ -251,7 +258,7 @@ impl IoQuota {
     pub fn new(rate_mbps: u64, burst_mb: u64) -> Self {
         let rate_bytes_per_sec = rate_mbps * 1024 * 1024;
         let bucket_size = burst_mb * 1024 * 1024;
-        
+
         Self {
             rate_bytes_per_sec,
             bucket_size,
@@ -259,7 +266,7 @@ impl IoQuota {
             last_refill_ns: AtomicU64::new(0),
         }
     }
-    
+
     /// 無制限のI/Oクォータ
     pub fn unlimited() -> Self {
         Self {
@@ -269,7 +276,7 @@ impl IoQuota {
             last_refill_ns: AtomicU64::new(0),
         }
     }
-    
+
     /// I/O操作を試行
     ///
     /// # Arguments
@@ -283,10 +290,10 @@ impl IoQuota {
         if self.rate_bytes_per_sec == u64::MAX {
             return Ok(());
         }
-        
+
         // トークンを補充
         self.refill_tokens(current_time_ns);
-        
+
         let current_tokens = self.tokens.load(Ordering::Relaxed);
         if bytes > current_tokens {
             return Err(QuotaError::IoBandwidthExceeded {
@@ -294,31 +301,32 @@ impl IoQuota {
                 available: current_tokens,
             });
         }
-        
+
         // トークンを消費
         self.tokens.fetch_sub(bytes, Ordering::Relaxed);
         Ok(())
     }
-    
+
     /// トークンを補充
     fn refill_tokens(&self, current_time_ns: u64) {
         let last_refill = self.last_refill_ns.load(Ordering::Relaxed);
         if current_time_ns <= last_refill {
             return;
         }
-        
+
         let elapsed_ns = current_time_ns - last_refill;
         // 1秒 = 1_000_000_000 ナノ秒
         let tokens_to_add = (self.rate_bytes_per_sec * elapsed_ns) / 1_000_000_000;
-        
+
         if tokens_to_add > 0 {
             let current = self.tokens.load(Ordering::Relaxed);
             let new_tokens = (current + tokens_to_add).min(self.bucket_size);
             self.tokens.store(new_tokens, Ordering::Relaxed);
-            self.last_refill_ns.store(current_time_ns, Ordering::Relaxed);
+            self.last_refill_ns
+                .store(current_time_ns, Ordering::Relaxed);
         }
     }
-    
+
     /// 利用可能なトークン数を取得
     pub fn available_tokens(&self) -> u64 {
         self.tokens.load(Ordering::Relaxed)
@@ -352,14 +360,14 @@ impl DomainQuota {
         Self {
             domain_id,
             priority,
-            cpu: CpuQuota::new(100, 100), // デフォルト: 100ms期間で100%
+            cpu: CpuQuota::new(100, 100),  // デフォルト: 100ms期間で100%
             memory: MemoryQuota::new(256), // デフォルト: 256MB
             network_io: IoQuota::new(100, 10), // デフォルト: 100MB/s, 10MBバースト
             storage_io: IoQuota::new(50, 5), // デフォルト: 50MB/s, 5MBバースト
             violation_count: AtomicU64::new(0),
         }
     }
-    
+
     /// カーネルドメイン用（無制限）
     pub fn kernel() -> Self {
         Self {
@@ -372,33 +380,33 @@ impl DomainQuota {
             violation_count: AtomicU64::new(0),
         }
     }
-    
+
     /// 違反カウントをインクリメント
     pub fn record_violation(&self) {
         self.violation_count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// 違反カウントを取得
     pub fn violation_count(&self) -> u64 {
         self.violation_count.load(Ordering::Relaxed)
     }
-    
+
     /// クォータビルダー
     pub fn with_cpu_limit(mut self, limit_percent: u64, period_ms: u64) -> Self {
         self.cpu = CpuQuota::new(limit_percent, period_ms);
         self
     }
-    
+
     pub fn with_memory_limit(mut self, limit_mb: u64) -> Self {
         self.memory = MemoryQuota::new(limit_mb);
         self
     }
-    
+
     pub fn with_network_limit(mut self, rate_mbps: u64, burst_mb: u64) -> Self {
         self.network_io = IoQuota::new(rate_mbps, burst_mb);
         self
     }
-    
+
     pub fn with_storage_limit(mut self, rate_mbps: u64, burst_mb: u64) -> Self {
         self.storage_io = IoQuota::new(rate_mbps, burst_mb);
         self
@@ -409,9 +417,7 @@ impl DomainQuota {
 #[derive(Debug, Clone)]
 pub enum QuotaError {
     /// CPU時間超過
-    CpuTimeExceeded {
-        domain_id: DomainId,
-    },
+    CpuTimeExceeded { domain_id: DomainId },
     /// メモリ超過
     MemoryExceeded {
         requested: u64,
@@ -419,10 +425,7 @@ pub enum QuotaError {
         limit: u64,
     },
     /// I/O帯域超過
-    IoBandwidthExceeded {
-        requested: u64,
-        available: u64,
-    },
+    IoBandwidthExceeded { requested: u64, available: u64 },
     /// 割り当て競合（再試行が必要）
     AllocationRace,
 }
@@ -433,14 +436,21 @@ impl core::fmt::Display for QuotaError {
             QuotaError::CpuTimeExceeded { domain_id } => {
                 write!(f, "CPU quota exceeded for domain {}", domain_id)
             }
-            QuotaError::MemoryExceeded { requested, available, limit } => {
+            QuotaError::MemoryExceeded {
+                requested,
+                available,
+                limit,
+            } => {
                 write!(
                     f,
                     "Memory quota exceeded: requested {} bytes, available {} of {} limit",
                     requested, available, limit
                 )
             }
-            QuotaError::IoBandwidthExceeded { requested, available } => {
+            QuotaError::IoBandwidthExceeded {
+                requested,
+                available,
+            } => {
                 write!(
                     f,
                     "I/O bandwidth exceeded: requested {} bytes, available {} tokens",
@@ -475,15 +485,15 @@ pub struct OomVictim {
 /// 3. Critical優先度のドメインは対象外
 pub fn select_oom_victim(quotas: &BTreeMap<DomainId, DomainQuota>) -> Option<OomVictim> {
     let mut victim: Option<(DomainId, DomainPriority, u64)> = None;
-    
+
     for (domain_id, quota) in quotas.iter() {
         // Critical優先度は対象外
         if quota.priority == DomainPriority::Critical {
             continue;
         }
-        
+
         let memory_usage = quota.memory.used();
-        
+
         match &victim {
             None => {
                 victim = Some((*domain_id, quota.priority, memory_usage));
@@ -498,7 +508,7 @@ pub fn select_oom_victim(quotas: &BTreeMap<DomainId, DomainQuota>) -> Option<Oom
             }
         }
     }
-    
+
     victim.map(|(domain_id, priority, memory_usage)| OomVictim {
         domain_id,
         priority,
@@ -523,19 +533,19 @@ impl QuotaManager {
             quotas: spin::Mutex::new(BTreeMap::new()),
         }
     }
-    
+
     /// ドメインのクォータを登録
     pub fn register(&self, quota: DomainQuota) {
         let mut quotas = self.quotas.lock();
         quotas.insert(quota.domain_id, quota);
     }
-    
+
     /// ドメインのクォータを削除
     pub fn unregister(&self, domain_id: DomainId) {
         let mut quotas = self.quotas.lock();
         quotas.remove(&domain_id);
     }
-    
+
     /// メモリ割り当てを試行
     pub fn try_allocate_memory(&self, domain_id: DomainId, bytes: u64) -> Result<(), QuotaError> {
         let quotas = self.quotas.lock();
@@ -546,7 +556,7 @@ impl QuotaManager {
             Ok(())
         }
     }
-    
+
     /// メモリ解放を記録
     pub fn deallocate_memory(&self, domain_id: DomainId, bytes: u64) {
         let quotas = self.quotas.lock();
@@ -554,9 +564,14 @@ impl QuotaManager {
             quota.memory.deallocate(bytes);
         }
     }
-    
+
     /// CPU時間を消費
-    pub fn consume_cpu_time(&self, domain_id: DomainId, elapsed_ns: u64, current_time_ns: u64) -> bool {
+    pub fn consume_cpu_time(
+        &self,
+        domain_id: DomainId,
+        elapsed_ns: u64,
+        current_time_ns: u64,
+    ) -> bool {
         let quotas = self.quotas.lock();
         if let Some(quota) = quotas.get(&domain_id) {
             let exceeded = quota.cpu.consume(elapsed_ns, current_time_ns);
@@ -568,9 +583,14 @@ impl QuotaManager {
             false
         }
     }
-    
+
     /// I/O操作を試行
-    pub fn try_network_io(&self, domain_id: DomainId, bytes: u64, current_time_ns: u64) -> Result<(), QuotaError> {
+    pub fn try_network_io(
+        &self,
+        domain_id: DomainId,
+        bytes: u64,
+        current_time_ns: u64,
+    ) -> Result<(), QuotaError> {
         let quotas = self.quotas.lock();
         if let Some(quota) = quotas.get(&domain_id) {
             quota.network_io.try_io(bytes, current_time_ns)
@@ -578,8 +598,13 @@ impl QuotaManager {
             Ok(())
         }
     }
-    
-    pub fn try_storage_io(&self, domain_id: DomainId, bytes: u64, current_time_ns: u64) -> Result<(), QuotaError> {
+
+    pub fn try_storage_io(
+        &self,
+        domain_id: DomainId,
+        bytes: u64,
+        current_time_ns: u64,
+    ) -> Result<(), QuotaError> {
         let quotas = self.quotas.lock();
         if let Some(quota) = quotas.get(&domain_id) {
             quota.storage_io.try_io(bytes, current_time_ns)
@@ -587,13 +612,13 @@ impl QuotaManager {
             Ok(())
         }
     }
-    
+
     /// OOMキラーによる犠牲ドメイン選択
     pub fn select_oom_victim(&self) -> Option<OomVictim> {
         let quotas = self.quotas.lock();
         select_oom_victim(&quotas)
     }
-    
+
     /// ドメインの統計情報を取得
     pub fn get_stats(&self, domain_id: DomainId) -> Option<DomainStats> {
         let quotas = self.quotas.lock();
@@ -641,51 +666,51 @@ pub fn init() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_cpu_quota() {
         let quota = CpuQuota::new(50, 100); // 50%, 100ms period
-        
+
         // 50%使用は許可
         assert!(!quota.consume(50_000_000, 0));
-        
+
         // さらに10%追加で超過
         assert!(quota.is_exceeded() == false);
         assert!(quota.consume(10_000_000, 50_000_000));
         assert!(quota.is_exceeded());
     }
-    
+
     #[test]
     fn test_memory_quota() {
         let quota = MemoryQuota::new(1); // 1MB
-        
+
         // 512KB割り当て成功
         assert!(quota.try_allocate(512 * 1024).is_ok());
-        
+
         // さらに768KB割り当て失敗
         assert!(quota.try_allocate(768 * 1024).is_err());
-        
+
         // 解放後は割り当て可能
         quota.deallocate(256 * 1024);
         assert!(quota.try_allocate(512 * 1024).is_ok());
     }
-    
+
     #[test]
     fn test_oom_victim_selection() {
         let mut quotas = BTreeMap::new();
-        
+
         let mut q1 = DomainQuota::new(1, DomainPriority::Normal);
         let _ = q1.memory.try_allocate(100 * 1024 * 1024);
-        
+
         let mut q2 = DomainQuota::new(2, DomainPriority::Low);
         let _ = q2.memory.try_allocate(50 * 1024 * 1024);
-        
+
         let q3 = DomainQuota::new(3, DomainPriority::Critical);
-        
+
         quotas.insert(1, q1);
         quotas.insert(2, q2);
         quotas.insert(3, q3);
-        
+
         // Low優先度のドメイン2が選択される
         let victim = select_oom_victim(&quotas).unwrap();
         assert_eq!(victim.domain_id, 2);

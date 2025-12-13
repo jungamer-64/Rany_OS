@@ -35,7 +35,7 @@ use super::regs;
 
 // 型の再エクスポート
 pub use types::{
-    make_corb_entry, BdlEntry, CodecInfo, HdaError, HdaResult, NodeType, RirbEntry, WidgetCaps,
+    BdlEntry, CodecInfo, HdaError, HdaResult, NodeType, RirbEntry, WidgetCaps, make_corb_entry,
 };
 
 // コントローラの再エクスポート

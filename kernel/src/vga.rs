@@ -7,7 +7,6 @@ use spin::Mutex;
 const BUFFER_HEIGHT: usize = 25;
 const BUFFER_WIDTH: usize = 80;
 
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Color {
@@ -70,7 +69,15 @@ impl Writer {
                 let col = self.column_position;
 
                 let color_code = self.color_code;
-                Self::write_char_volatile(self.buffer, row, col, ScreenChar { ascii_character: byte, color_code });
+                Self::write_char_volatile(
+                    self.buffer,
+                    row,
+                    col,
+                    ScreenChar {
+                        ascii_character: byte,
+                        color_code,
+                    },
+                );
                 self.column_position += 1;
             }
         }
@@ -147,7 +154,7 @@ pub fn init() {
     // UEFI環境ではVGAテキストモードバッファは使用不可
     // Limineのフレームバッファを使用する場合は別途初期化が必要
     // 今のところはVGAを無効にしておく
-    
+
     // 簡易チェック: 0xb8000がマップされているかテスト
     // UEFI環境ではこのアドレスは通常マップされていない
     #[cfg(not(feature = "force_vga"))]
@@ -156,7 +163,7 @@ pub fn init() {
         // 代わりにシリアル出力のみを使用
         VGA_AVAILABLE.store(false, core::sync::atomic::Ordering::Release);
     }
-    
+
     #[cfg(feature = "force_vga")]
     {
         VGA_AVAILABLE.store(true, core::sync::atomic::Ordering::Release);
@@ -167,7 +174,7 @@ pub fn init() {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    
+
     // VGAが利用可能な場合のみ書き込み
     if VGA_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
         let _ = WRITER.lock().write_fmt(args);
@@ -176,7 +183,7 @@ pub fn _print(args: fmt::Arguments) {
 }
 
 /// 早期ブート段階用のシリアル出力（ロックなし、シンプル）
-/// 
+///
 /// 注意: この関数は後方互換性のために残されています。
 /// 新規コードでは `io::log::early_print` または `log` クレートを使用してください。
 pub fn early_serial_char(c: u8) {
@@ -184,7 +191,7 @@ pub fn early_serial_char(c: u8) {
 }
 
 /// 早期ブート段階用のシリアル文字列出力
-/// 
+///
 /// 注意: この関数は後方互換性のために残されています。
 /// 新規コードでは `io::log::early_print` または `log` クレートを使用してください。
 pub fn early_serial_str(s: &str) {

@@ -44,11 +44,11 @@ use alloc::sync::Arc;
 use core::fmt;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 
 // Keymapモジュールからインポート
-pub use super::keymap::{DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap, DEFAULT_KEYMAP};
+pub use super::keymap::{DEFAULT_KEYMAP, DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap};
 
 // ============================================================================
 // エラー型
@@ -100,7 +100,7 @@ const _: () = assert!(
 // ============================================================================
 
 // Imports from hid_driver
-pub use hid_driver::{KeyCode, KeyState, Modifiers, KeyEvent};
+pub use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
 
 // ============================================================================
 // Extension Traits
@@ -111,7 +111,6 @@ pub trait KeyCodeExt {
     fn from_scancode(scancode: u8, extended: bool) -> Self;
     fn to_char(&self, shift: bool, caps_lock: bool) -> Option<char>;
 }
-
 
 impl KeyCodeExt for KeyCode {
     /// スキャンコードからキーコードに変換
@@ -163,7 +162,7 @@ impl KeyCodeExt for KeyCode {
                 0x49 => KeyCode::PageUp,
                 0x51 => KeyCode::PageDown,
                 // 拡張テンキー
-                0x1C => KeyCode::NumPadEnter, // E0 1C
+                0x1C => KeyCode::NumPadEnter,  // E0 1C
                 0x35 => KeyCode::NumPadDivide, // E0 35
                 _ => KeyCode::Unknown,
             }
@@ -306,7 +305,6 @@ impl KeyEventExt for KeyEvent {
     }
 }
 
-
 // ============================================================================
 // 修飾キー状態（インスタンス内部状態）
 // ============================================================================
@@ -351,14 +349,14 @@ impl ModifierState {
     const LEFT_CTRL: u32 = 1 << Self::BIT_LEFT_CTRL;
     const RIGHT_CTRL: u32 = 1 << Self::BIT_RIGHT_CTRL;
     const LEFT_ALT: u32 = 1 << Self::BIT_LEFT_ALT;
-    const RIGHT_ALT: u32 = 1 << Self::BIT_RIGHT_ALT;  // AltGr
+    const RIGHT_ALT: u32 = 1 << Self::BIT_RIGHT_ALT; // AltGr
     const CAPS_LOCK: u32 = 1 << Self::BIT_CAPS_LOCK;
     const NUM_LOCK: u32 = 1 << Self::BIT_NUM_LOCK;
     const SCROLL_LOCK: u32 = 1 << Self::BIT_SCROLL_LOCK;
 
     const SHIFT_MASK: u32 = Self::LEFT_SHIFT | Self::RIGHT_SHIFT;
     const CTRL_MASK: u32 = Self::LEFT_CTRL | Self::RIGHT_CTRL;
-    const ALT_MASK: u32 = Self::LEFT_ALT;  // Left Alt only for normal Alt
+    const ALT_MASK: u32 = Self::LEFT_ALT; // Left Alt only for normal Alt
 
     // コンパイル時ビット位置検証
     const _BIT_VALIDATION: () = {
@@ -893,11 +891,11 @@ impl KeyboardDriver {
             // キュー満杯: イベントドロップを記録
             // ISR内なのでログ出力は避け、カウンタのみインクリメント
             // 飽和加算: オーバーフロー時は u64::MAX で固定
-            let _ = self.dropped_events.fetch_update(
-                Ordering::Relaxed,
-                Ordering::Relaxed,
-                |v| v.checked_add(1).or(Some(u64::MAX)),
-            );
+            let _ = self
+                .dropped_events
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+                    v.checked_add(1).or(Some(u64::MAX))
+                });
             // ✅ キュー満杯でもConsumerに通知
             // キューにデータがあることを知らせ、Consumerが処理を進められるようにする
             self.waker.notify();
@@ -969,10 +967,12 @@ impl KeyboardDriver {
         let pressed = !released;
         match key {
             KeyCode::LeftShift => {
-                self.modifiers.update_bit(ModifierState::LEFT_SHIFT, pressed);
+                self.modifiers
+                    .update_bit(ModifierState::LEFT_SHIFT, pressed);
             }
             KeyCode::RightShift => {
-                self.modifiers.update_bit(ModifierState::RIGHT_SHIFT, pressed);
+                self.modifiers
+                    .update_bit(ModifierState::RIGHT_SHIFT, pressed);
             }
             KeyCode::LeftCtrl => {
                 let mask = if extended {
@@ -984,7 +984,7 @@ impl KeyboardDriver {
             }
             KeyCode::LeftAlt => {
                 let mask = if extended {
-                    ModifierState::RIGHT_ALT  // AltGr
+                    ModifierState::RIGHT_ALT // AltGr
                 } else {
                     ModifierState::LEFT_ALT
                 };
@@ -1097,7 +1097,8 @@ impl KeyboardDriver {
     /// # Note
     /// 本番コードでは`take_stream()`を使用し、エラーハンドリングを行うこと。
     pub fn take_stream_or_panic(&'static self) -> KeyboardStream {
-        self.take_stream().expect("SPSC violation: Stream already taken")
+        self.take_stream()
+            .expect("SPSC violation: Stream already taken")
     }
 
     /// ストリームを返却（テスト用）
@@ -1649,7 +1650,12 @@ mod tests {
 
         // Verify all items can be popped in order
         for i in 0..SCANCODE_QUEUE_SIZE {
-            assert_eq!(queue.pop(), Some(i as u16), "Pop should return correct value at index {}", i);
+            assert_eq!(
+                queue.pop(),
+                Some(i as u16),
+                "Pop should return correct value at index {}",
+                i
+            );
         }
 
         // Queue should be empty
@@ -1760,7 +1766,10 @@ mod tests {
         let shifted = KeyEvent {
             key: KeyCode::A,
             state: KeyState::Pressed,
-            modifiers: Modifiers { shift: true, ..Modifiers::default() },
+            modifiers: Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
             raw_scancode: 0x1E,
         };
         assert_eq!(shifted.to_char(), Some('A'));
@@ -1768,20 +1777,32 @@ mod tests {
 
     #[test]
     fn test_control_characters() {
-        let mods = Modifiers { ctrl: true, ..Modifiers::default() };
+        let mods = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
 
         // Ctrl+A through Ctrl+Z
         assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::A, &mods), Some('\x01'));
         assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::Z, &mods), Some('\x1A'));
 
         // Ctrl+[ = Escape
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::LeftBracket, &mods), Some('\x1B'));
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::LeftBracket, &mods),
+            Some('\x1B')
+        );
 
         // Ctrl+\ = FS
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::Backslash, &mods), Some('\x1C'));
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::Backslash, &mods),
+            Some('\x1C')
+        );
 
         // Ctrl+] = GS
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::RightBracket, &mods), Some('\x1D'));
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::RightBracket, &mods),
+            Some('\x1D')
+        );
 
         // Ctrl+^ = RS
         assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::Key6, &mods), Some('\x1E'));
@@ -1799,7 +1820,10 @@ mod tests {
         assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::Space, &mods), Some(' '));
         assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::Enter, &mods), Some('\n'));
         assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::Tab, &mods), Some('\t'));
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::Backspace, &mods), Some('\x08'));
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::Backspace, &mods),
+            Some('\x08')
+        );
     }
 
     #[test]
@@ -1862,14 +1886,32 @@ mod tests {
         assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPad9, &mods), Some('9'));
 
         // テンキー演算子
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadPlus, &mods), Some('+'));
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadMinus, &mods), Some('-'));
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadMultiply, &mods), Some('*'));
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadDivide, &mods), Some('/'));
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::NumPadPlus, &mods),
+            Some('+')
+        );
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::NumPadMinus, &mods),
+            Some('-')
+        );
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::NumPadMultiply, &mods),
+            Some('*')
+        );
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::NumPadDivide, &mods),
+            Some('/')
+        );
 
         // テンキー特殊
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadDecimal, &mods), Some('.'));
-        assert_eq!(DEFAULT_KEYMAP.to_char(KeyCode::NumPadEnter, &mods), Some('\n'));
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::NumPadDecimal, &mods),
+            Some('.')
+        );
+        assert_eq!(
+            DEFAULT_KEYMAP.to_char(KeyCode::NumPadEnter, &mods),
+            Some('\n')
+        );
     }
 
     // =========================================================================

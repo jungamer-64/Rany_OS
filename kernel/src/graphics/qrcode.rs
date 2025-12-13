@@ -172,13 +172,21 @@ impl QrCode {
         // 右上（水平）
         for i in 0..8 {
             let bit = ((format_bits >> (14 - i)) & 1) == 1;
-            self.set_module(QR_SIZE - 1 - i, 8, if bit { Module::Dark } else { Module::Light });
+            self.set_module(
+                QR_SIZE - 1 - i,
+                8,
+                if bit { Module::Dark } else { Module::Light },
+            );
         }
 
         // 左下（垂直）
         for i in 0..7 {
             let bit = ((format_bits >> (6 - i)) & 1) == 1;
-            self.set_module(8, QR_SIZE - 1 - i, if bit { Module::Dark } else { Module::Light });
+            self.set_module(
+                8,
+                QR_SIZE - 1 - i,
+                if bit { Module::Dark } else { Module::Light },
+            );
         }
 
         // ダークモジュール（固定位置）
@@ -312,10 +320,7 @@ impl QrCode {
         let total_size = (self.size + quiet_zone * 2) as u32 * module_size;
 
         // 背景（ライトカラー）
-        fb.fill_rect(
-            Rect::new(x, y, total_size, total_size),
-            light_color,
-        );
+        fb.fill_rect(Rect::new(x, y, total_size, total_size), light_color);
 
         // モジュールを描画
         for row in 0..self.size {
@@ -323,10 +328,7 @@ impl QrCode {
                 if self.is_dark(col, row) {
                     let px = x + ((quiet_zone + col) as u32 * module_size) as i32;
                     let py = y + ((quiet_zone + row) as u32 * module_size) as i32;
-                    fb.fill_rect(
-                        Rect::new(px, py, module_size, module_size),
-                        dark_color,
-                    );
+                    fb.fill_rect(Rect::new(px, py, module_size, module_size), dark_color);
                 }
             }
         }
@@ -350,10 +352,7 @@ fn encode_alphanumeric(data: &str) -> Option<[u8; 26]> {
     bit_count += 9;
 
     // 英数字データをエンコード
-    let chars: alloc::vec::Vec<u8> = data
-        .chars()
-        .filter_map(|c| alphanumeric_value(c))
-        .collect();
+    let chars: alloc::vec::Vec<u8> = data.chars().filter_map(|c| alphanumeric_value(c)).collect();
 
     if chars.len() != data.len() {
         return None; // 無効な文字が含まれている
@@ -444,7 +443,7 @@ fn alphanumeric_value(c: char) -> Option<u8> {
 }
 
 /// エラー訂正コードワードを計算（簡易版）
-/// 
+///
 /// 注: これは完全なReed-Solomon実装ではなく、
 /// デモンストレーション用の簡易実装です。
 fn calculate_ec_codewords(data: &[u8]) -> [u8; 7] {

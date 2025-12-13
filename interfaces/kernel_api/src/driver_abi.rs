@@ -363,35 +363,48 @@ macro_rules! export_driver {
         driver_type = $driver_type:expr,
         version = $version:expr
     ) => {
-            #[export_name = "_exorust_driver_entry"]
+        #[export_name = "_exorust_driver_entry"]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
             extern "C" fn probe_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
                 ($probe)(ctx)
             }
 
-            extern "C" fn start_adapter(_ctx: *mut $crate::driver_abi::DriverContext) -> i32 { 0 }
-            extern "C" fn stop_adapter(_ctx: *mut $crate::driver_abi::DriverContext) -> i32 { 0 }
+            extern "C" fn start_adapter(_ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                0
+            }
+            extern "C" fn stop_adapter(_ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                0
+            }
 
-            extern "C" fn remove_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 { ($remove)(ctx) }
-            extern "C" fn name_adapter() -> *const u8 { ($name)().as_ptr() }
-            extern "C" fn name_len_adapter() -> usize { ($name)().len() }
-            extern "C" fn type_adapter() -> u32 { ($driver_type) as u32 }
-            extern "C" fn version_adapter() -> u64 { $version as u64 }
+            extern "C" fn remove_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                ($remove)(ctx)
+            }
+            extern "C" fn name_adapter() -> *const u8 {
+                ($name)().as_ptr()
+            }
+            extern "C" fn name_len_adapter() -> usize {
+                ($name)().len()
+            }
+            extern "C" fn type_adapter() -> u32 {
+                ($driver_type) as u32
+            }
+            extern "C" fn version_adapter() -> u64 {
+                $version as u64
+            }
 
-            static VTABLE: $crate::driver_abi::DriverVTable = 
-                $crate::driver_abi::DriverVTable::new(
-                    $crate::driver_abi::DRIVER_ABI_VERSION,
-                    probe_adapter,
-                    start_adapter,
-                    stop_adapter,
-                    remove_adapter,
-                    name_adapter,
-                    name_len_adapter,
-                    type_adapter,
-                    version_adapter,
-                    None,
-                    None,
-                );
+            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
+                $crate::driver_abi::DRIVER_ABI_VERSION,
+                probe_adapter,
+                start_adapter,
+                stop_adapter,
+                remove_adapter,
+                name_adapter,
+                name_len_adapter,
+                type_adapter,
+                version_adapter,
+                None,
+                None,
+            );
 
             &VTABLE
         }

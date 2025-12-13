@@ -7,9 +7,9 @@
 //! PCIデバイスの検出と列挙機能を提供。
 //! レガシーPCIとPCIe両方のアクセス方式に対応。
 
-use alloc::vec::Vec;
 use crate::traits::ConfigSpaceAccessor;
-use crate::types::{BdfAddress, ClassCode, Bar, VendorId, DeviceId};
+use crate::types::{Bar, BdfAddress, ClassCode, DeviceId, VendorId};
+use alloc::vec::Vec;
 
 // ============================================================================
 // Configuration Space Register Offsets
@@ -212,7 +212,11 @@ impl PciDeviceInfo {
         use crate::legacy::get_legacy_accessor;
         let accessor = get_legacy_accessor();
         let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
-        accessor.write16(self.bdf, config_regs::COMMAND, cmd | command_bits::BUS_MASTER);
+        accessor.write16(
+            self.bdf,
+            config_regs::COMMAND,
+            cmd | command_bits::BUS_MASTER,
+        );
     }
 
     /// Disable bus master (DMA) capability
@@ -220,7 +224,11 @@ impl PciDeviceInfo {
         use crate::legacy::get_legacy_accessor;
         let accessor = get_legacy_accessor();
         let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
-        accessor.write16(self.bdf, config_regs::COMMAND, cmd & !command_bits::BUS_MASTER);
+        accessor.write16(
+            self.bdf,
+            config_regs::COMMAND,
+            cmd & !command_bits::BUS_MASTER,
+        );
     }
 
     /// Enable memory space access
@@ -228,7 +236,11 @@ impl PciDeviceInfo {
         use crate::legacy::get_legacy_accessor;
         let accessor = get_legacy_accessor();
         let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
-        accessor.write16(self.bdf, config_regs::COMMAND, cmd | command_bits::MEMORY_SPACE);
+        accessor.write16(
+            self.bdf,
+            config_regs::COMMAND,
+            cmd | command_bits::MEMORY_SPACE,
+        );
     }
 
     /// Disable memory space access
@@ -236,7 +248,11 @@ impl PciDeviceInfo {
         use crate::legacy::get_legacy_accessor;
         let accessor = get_legacy_accessor();
         let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
-        accessor.write16(self.bdf, config_regs::COMMAND, cmd & !command_bits::MEMORY_SPACE);
+        accessor.write16(
+            self.bdf,
+            config_regs::COMMAND,
+            cmd & !command_bits::MEMORY_SPACE,
+        );
     }
 
     /// Enable I/O space access
@@ -252,13 +268,16 @@ impl PciDeviceInfo {
         use crate::legacy::get_legacy_accessor;
         let accessor = get_legacy_accessor();
         let cmd = accessor.read16(self.bdf, config_regs::COMMAND);
-        accessor.write16(self.bdf, config_regs::COMMAND, cmd & !command_bits::IO_SPACE);
+        accessor.write16(
+            self.bdf,
+            config_regs::COMMAND,
+            cmd & !command_bits::IO_SPACE,
+        );
     }
 
     /// Check if VirtIO device
     pub fn is_virtio(&self) -> bool {
-        self.vendor_id.0 == 0x1AF4 && 
-        (self.device_id.0 >= 0x1000 && self.device_id.0 <= 0x107F)
+        self.vendor_id.0 == 0x1AF4 && (self.device_id.0 >= 0x1000 && self.device_id.0 <= 0x107F)
     }
 }
 
@@ -267,7 +286,7 @@ impl PciDeviceInfo {
 // ============================================================================
 
 /// PCIバススキャナ
-/// 
+///
 /// ConfigSpaceAccessorトレイトを使用してPCIバスをスキャンし、
 /// デバイスを列挙します。
 pub struct PciBusScanner<'a> {
@@ -307,7 +326,7 @@ impl<'a> PciBusScanner<'a> {
         let bars = self.read_bars(bdf);
 
         // ケーパビリティ読み取り
-        let (capabilities, msi_cap_offset, msix_cap_offset, pcie_cap_offset) = 
+        let (capabilities, msi_cap_offset, msix_cap_offset, pcie_cap_offset) =
             self.read_capabilities(bdf);
 
         Some(PciDeviceInfo {
@@ -376,7 +395,11 @@ impl<'a> PciBusScanner<'a> {
                         // 32-bit Memory
                         let base = (bar_value & !0x0F) as u64;
                         let size = (!(size_mask & !0x0F) + 1) as u64;
-                        bars[i] = Some(Bar::Memory32 { base, size, prefetchable });
+                        bars[i] = Some(Bar::Memory32 {
+                            base,
+                            size,
+                            prefetchable,
+                        });
                     }
                     0b10 => {
                         // 64-bit Memory
@@ -394,7 +417,11 @@ impl<'a> PciBusScanner<'a> {
                             let size_64 = ((high_size << 32) | ((size_mask & !0x0F) as u64));
                             let size = !size_64 + 1;
 
-                            bars[i] = Some(Bar::Memory64 { base, size, prefetchable });
+                            bars[i] = Some(Bar::Memory64 {
+                                base,
+                                size,
+                                prefetchable,
+                            });
                             i += 1; // 次のBARをスキップ
                         }
                     }
@@ -409,7 +436,10 @@ impl<'a> PciBusScanner<'a> {
     }
 
     /// ケーパビリティを読み取り
-    fn read_capabilities(&self, bdf: BdfAddress) -> (Vec<(CapabilityId, u8)>, Option<u8>, Option<u8>, Option<u8>) {
+    fn read_capabilities(
+        &self,
+        bdf: BdfAddress,
+    ) -> (Vec<(CapabilityId, u8)>, Option<u8>, Option<u8>, Option<u8>) {
         let mut capabilities = Vec::new();
         let mut msi_cap_offset = None;
         let mut msix_cap_offset = None;
@@ -418,7 +448,12 @@ impl<'a> PciBusScanner<'a> {
         // ステータスレジスタでケーパビリティリストがあるか確認
         let status = self.accessor.read16(bdf, config_regs::STATUS);
         if (status & status_bits::CAPABILITIES_LIST) == 0 {
-            return (capabilities, msi_cap_offset, msix_cap_offset, pcie_cap_offset);
+            return (
+                capabilities,
+                msi_cap_offset,
+                msix_cap_offset,
+                pcie_cap_offset,
+            );
         }
 
         // ケーパビリティポインタ取得
@@ -445,7 +480,12 @@ impl<'a> PciBusScanner<'a> {
             visited += 1;
         }
 
-        (capabilities, msi_cap_offset, msix_cap_offset, pcie_cap_offset)
+        (
+            capabilities,
+            msi_cap_offset,
+            msix_cap_offset,
+            pcie_cap_offset,
+        )
     }
 
     /// 全バスをスキャン
@@ -632,7 +672,7 @@ pub fn init() {
     log::info!("[PCI] Initializing PCI bus...");
     let devices = scan_all_devices();
     log::info!("[PCI] Found {} device(s)", devices.len());
-    
+
     for dev in &devices {
         log::info!(
             "[PCI] {:02x}:{:02x}.{} - {:04x}:{:04x} class {:02x}.{:02x}",

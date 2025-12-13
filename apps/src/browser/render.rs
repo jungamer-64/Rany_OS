@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // apps/src/browser/render.rs - Rendering Engine
 // ============================================================================
 //!
@@ -10,8 +10,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use super::layout::{LayoutBox, Rect};
 use super::css::CssColor;
+use super::layout::{LayoutBox, Rect};
 
 /// Display list
 pub type DisplayList = Vec<DisplayCommand>;
@@ -20,7 +20,7 @@ pub type DisplayList = Vec<DisplayCommand>;
 #[derive(Debug, Clone)]
 pub enum DisplayCommand {
     SolidColor(CssColor, Rect),
-    Text(String, CssColor, f32, f32, f32),  // text, color, x, y, font_size
+    Text(String, CssColor, f32, f32, f32), // text, color, x, y, font_size
     HorizontalRule(CssColor, f32, f32, f32), // color, x, y, width
 }
 

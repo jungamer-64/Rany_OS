@@ -2,14 +2,14 @@
 // src/shell/exoshell/namespaces/proc.rs - Process Namespace
 // ============================================================================
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::format;
 
+use super::{BoxFuture, ShellNamespace};
+use crate::security::capability::{CAP_KILL, manager};
 use crate::shell::exoshell::types::*;
 use crate::task::process::{getpid, getuid};
-use crate::security::capability::{manager, CAP_KILL};
-use super::{ShellNamespace, BoxFuture};
 use alloc::boxed::Box;
 
 /// プロセス/タスク名前空間
@@ -19,10 +19,10 @@ impl ProcNamespace {
     /// 実行中のタスク一覧
     pub fn list() -> ExoValue<'static> {
         let mut processes = Vec::new();
-        
+
         // プロセスマネージャから全プロセスIDを取得して情報を取得
         let pm = crate::task::process_manager();
-        
+
         // 既知のプロセスIDをチェック（0-100の範囲）
         for pid in 0..100u64 {
             let proc_id = crate::task::ProcessId::new(pid);
@@ -36,7 +36,7 @@ impl ProcNamespace {
                     crate::task::ProcessState::Zombie => ProcessState::Zombie,
                     _ => ProcessState::Sleeping,
                 };
-                
+
                 processes.push(ProcessInfo {
                     pid: pid as u32,
                     name: p.name.clone(),
@@ -47,7 +47,7 @@ impl ProcNamespace {
                 });
             }
         }
-        
+
         // プロセスが空の場合はカーネルプロセスを追加
         if processes.is_empty() {
             processes.push(ProcessInfo {
@@ -59,19 +59,14 @@ impl ProcNamespace {
                 domain: String::from("kernel"),
             });
         }
-        
-        ExoValue::Array(
-            processes
-                .into_iter()
-                .map(ExoValue::Process)
-                .collect()
-        )
+
+        ExoValue::Array(processes.into_iter().map(ExoValue::Process).collect())
     }
 
     /// 特定プロセスの情報
     pub fn info(pid: u32) -> ExoValue<'static> {
         let proc_id = crate::task::ProcessId::new(pid as u64);
-        
+
         if let Some(process) = crate::task::process_manager().get(proc_id) {
             let p = process.read();
             let state = match p.state {
@@ -82,7 +77,7 @@ impl ProcNamespace {
                 crate::task::ProcessState::Zombie => ProcessState::Zombie,
                 _ => ProcessState::Sleeping,
             };
-            
+
             ExoValue::Process(ProcessInfo {
                 pid,
                 name: p.name.clone(),
@@ -112,19 +107,21 @@ impl ProcNamespace {
         if pid == 0 {
             return ExoValue::Error(String::from("Cannot kill kernel process"));
         }
-        
+
         let proc_id = crate::task::ProcessId::new(pid as u64);
         let pm = crate::task::process_manager();
-        
+
         if let Some(process) = pm.get(proc_id) {
             // 権限チェック
             let current_uid = getuid();
             let target_uid = process.read().credentials.uid;
             let current_pid = getpid().as_u64();
-            
+
             // 自分のプロセスか、CAP_KILLを持っている場合に許可
             if current_uid != target_uid && !manager().has_capability(current_pid, CAP_KILL) {
-                return ExoValue::Error(String::from("Permission denied: Owner or CAP_KILL required"));
+                return ExoValue::Error(String::from(
+                    "Permission denied: Owner or CAP_KILL required",
+                ));
             }
 
             // プロセスを終了状態に設定
@@ -142,19 +139,38 @@ impl ShellNamespace for ProcNamespace {
         "proc"
     }
 
-    fn call<'a>(&'a self, method: &'a str, args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+    fn call<'a>(
+        &'a self,
+        method: &'a str,
+        args: &'a [ExoValue<'static>],
+    ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
                 "list" | "ps" => Self::list(),
                 "info" => {
-                    let pid = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as u32), _ => None }).unwrap_or(0);
+                    let pid = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
                     Self::info(pid)
                 }
                 "kill" => {
-                    let pid = args.first().and_then(|v| match v { ExoValue::Int(n) => Some(*n as u32), _ => None }).unwrap_or(0);
+                    let pid = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as u32),
+                            _ => None,
+                        })
+                        .unwrap_or(0);
                     Self::kill(pid, 9)
                 }
-                _ => ExoValue::Error(format!("Unknown method 'proc.{}'\nValid methods: list, info, kill", method)),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'proc.{}'\nValid methods: list, info, kill",
+                    method
+                )),
             }
         })
     }

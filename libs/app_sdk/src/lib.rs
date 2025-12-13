@@ -25,11 +25,10 @@ mod sdk;
 // Re-export public API
 pub use application::Application;
 pub use context::AppContext;
-pub use sdk::{sleep, yield_now, print, now, now_nanos};
+pub use sdk::{now, now_nanos, print, sleep, yield_now};
 
 // Re-export kernel_api types for convenience
 pub use kernel_api::{
-    DomainCapabilities, NetCapability, FsCapability, IoCapability, 
-    DmaCapability, IpcCapability, TaskCapability, MemoryCapability,
-    KapiError, KapiResult,
+    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, KapiError,
+    KapiResult, MemoryCapability, NetCapability, TaskCapability,
 };

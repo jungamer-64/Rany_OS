@@ -15,11 +15,11 @@
 //! 4. `+`, `-` (加減算)
 //! 5. `*`, `/`, `%` (乗除算)
 //! 6. `!`, `-` (単項演算子)
-//! 
+//!
 use alloc::borrow::Cow;
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::boxed::Box;
 
 use crate::shell::exoshell::types::ExoValue;
 
@@ -28,13 +28,13 @@ use crate::shell::exoshell::types::ExoValue;
 // ============================================================================
 
 /// 抽象構文木 (AST) のノード
-/// 
+///
 /// 式を木構造で表現し、演算子優先順位を正しく処理する。
-/// 
+///
 /// # Example
-/// 
+///
 /// `size > 1024 && name.contains("log")` は以下のように表現される:
-/// 
+///
 /// ```text
 ///         Binary(And)
 ///        /          \
@@ -47,18 +47,18 @@ use crate::shell::exoshell::types::ExoValue;
 pub enum Expr<'a> {
     /// リテラル値 (数値、文字列、真偽値など)
     Literal(ExoValue<'a>),
-    
+
     /// 識別子（変数参照）
     /// 例: `size`, `name`, `e`
     Ident(String),
-    
+
     /// フィールドアクセス
     /// 例: `e.size`, `file.name`
     FieldAccess {
         object: Box<Expr<'a>>,
         field: String,
     },
-    
+
     /// メソッド呼び出し
     /// 例: `name.contains("log")`, `list.filter(predicate)`
     MethodCall {
@@ -66,7 +66,7 @@ pub enum Expr<'a> {
         method: String,
         args: Vec<Expr<'a>>,
     },
-    
+
     /// 二項演算
     /// 例: `a + b`, `size > 1024`, `a && b`
     Binary {
@@ -74,36 +74,30 @@ pub enum Expr<'a> {
         op: BinaryOp,
         right: Box<Expr<'a>>,
     },
-    
+
     /// 単項演算
     /// 例: `!valid`, `-count`
-    Unary {
-        op: UnaryOp,
-        operand: Box<Expr<'a>>,
-    },
-    
+    Unary { op: UnaryOp, operand: Box<Expr<'a>> },
+
     /// 括弧によるグループ化
     /// 例: `(a || b) && c`
     Group(Box<Expr<'a>>),
-    
+
     /// クロージャ式（ラムダ）
     /// 例: `|e| e.size > 1024`
-    Closure {
-        param: String,
-        body: Box<Expr<'a>>,
-    },
-    
+    Closure { param: String, body: Box<Expr<'a>> },
+
     /// 配列リテラル
     /// 例: `[1, 2, 3]`, `["a", "b"]`
     Array(Vec<Expr<'a>>),
-    
+
     /// インデックスアクセス
     /// 例: `arr[0]`, `list[i]`
     Index {
         object: Box<Expr<'a>>,
         index: Box<Expr<'a>>,
     },
-    
+
     /// マップリテラル
     /// 例: `{name: "foo", value: 42}`
     Map(Vec<(String, Expr<'a>)>),
@@ -114,7 +108,7 @@ pub enum Expr<'a> {
 // ============================================================================
 
 /// 二項演算子
-/// 
+///
 /// 優先順位順（低→高）で定義:
 /// 1. Logical: Or, And
 /// 2. Comparison: Eq, Ne, Lt, Le, Gt, Ge, Contains, StartsWith, EndsWith
@@ -125,23 +119,20 @@ pub enum BinaryOp {
     // -------------------------------------------------------------------------
     // Pipe operator (優先順位: 最低)
     // -------------------------------------------------------------------------
-    
     /// Pipe: `a |> f()`
     Pipe,
-    
+
     // -------------------------------------------------------------------------
     // Logical operators (優先順位: 低)
     // -------------------------------------------------------------------------
-    
     /// Logical OR: `a || b`
     Or,
     /// Logical AND: `a && b`
     And,
-    
+
     // -------------------------------------------------------------------------
     // Comparison operators (優先順位: 中)
     // -------------------------------------------------------------------------
-    
     /// Equal: `a == b`
     Eq,
     /// Not equal: `a != b`
@@ -160,11 +151,10 @@ pub enum BinaryOp {
     StartsWith,
     /// String ends with: `name.ends_with(".rs")`
     EndsWith,
-    
+
     // -------------------------------------------------------------------------
     // Arithmetic operators (優先順位: 高)
     // -------------------------------------------------------------------------
-    
     /// Addition: `a + b`
     Add,
     /// Subtraction: `a - b`
@@ -179,7 +169,7 @@ pub enum BinaryOp {
 
 impl BinaryOp {
     /// 演算子の優先順位を返す（数値が大きいほど優先順位が高い）
-    /// 
+    ///
     /// 優先順位レベル:
     /// - 1: Or
     /// - 2: And
@@ -192,21 +182,28 @@ impl BinaryOp {
             Self::Pipe => 0,
             Self::Or => 1,
             Self::And => 2,
-            Self::Eq | Self::Ne | Self::Lt | Self::Le | Self::Gt | Self::Ge 
-                | Self::Contains | Self::StartsWith | Self::EndsWith => 3,
+            Self::Eq
+            | Self::Ne
+            | Self::Lt
+            | Self::Le
+            | Self::Gt
+            | Self::Ge
+            | Self::Contains
+            | Self::StartsWith
+            | Self::EndsWith => 3,
             Self::Add | Self::Sub => 4,
             Self::Mul | Self::Div | Self::Mod => 5,
         }
     }
-    
+
     /// 演算子が左結合かどうか
-    /// 
+    ///
     /// ほとんどの二項演算子は左結合（`a + b + c` = `(a + b) + c`）
     #[must_use]
     pub const fn is_left_associative(self) -> bool {
         true // 全て左結合
     }
-    
+
     /// 文字列から BinaryOp への変換を試みる
     #[must_use]
     pub fn from_str(s: &str) -> Option<Self> {
@@ -231,7 +228,7 @@ impl BinaryOp {
             _ => None,
         }
     }
-    
+
     /// BinaryOp を文字列表現に変換
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -280,7 +277,7 @@ impl UnaryOp {
             _ => None,
         }
     }
-    
+
     /// UnaryOp を文字列表現に変換
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -301,31 +298,31 @@ impl<'a> Expr<'a> {
     pub fn int(n: i64) -> Self {
         Self::Literal(ExoValue::Int(n))
     }
-    
+
     /// リテラル浮動小数点を作成
     #[inline]
     pub fn float(f: f64) -> Self {
         Self::Literal(ExoValue::Float(f))
     }
-    
+
     /// リテラル文字列を作成
     #[inline]
     pub fn string(s: impl Into<String>) -> Self {
         Self::Literal(ExoValue::String(Cow::Owned(s.into())))
     }
-    
+
     /// リテラル真偽値を作成
     #[inline]
     pub fn bool(b: bool) -> Self {
         Self::Literal(ExoValue::Bool(b))
     }
-    
+
     /// 識別子を作成
     #[inline]
     pub fn ident(name: impl Into<String>) -> Self {
         Self::Ident(name.into())
     }
-    
+
     /// フィールドアクセスを作成
     #[inline]
     pub fn field(object: Expr<'a>, field: impl Into<String>) -> Self {
@@ -334,7 +331,7 @@ impl<'a> Expr<'a> {
             field: field.into(),
         }
     }
-    
+
     /// 二項演算を作成
     #[inline]
     pub fn binary(left: Expr<'a>, op: BinaryOp, right: Expr<'a>) -> Self {
@@ -344,7 +341,7 @@ impl<'a> Expr<'a> {
             right: Box::new(right),
         }
     }
-    
+
     /// 単項演算を作成
     #[inline]
     pub fn unary(op: UnaryOp, operand: Expr<'a>) -> Self {
@@ -353,13 +350,13 @@ impl<'a> Expr<'a> {
             operand: Box::new(operand),
         }
     }
-    
+
     /// グループ（括弧）を作成
     #[inline]
     pub fn group(inner: Expr<'a>) -> Self {
         Self::Group(Box::new(inner))
     }
-    
+
     /// クロージャを作成
     #[inline]
     pub fn closure(param: impl Into<String>, body: Expr<'a>) -> Self {
@@ -377,7 +374,7 @@ impl<'a> Expr<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_binary_op_precedence() {
         assert!(BinaryOp::Mul.precedence() > BinaryOp::Add.precedence());
@@ -385,7 +382,7 @@ mod tests {
         assert!(BinaryOp::Gt.precedence() > BinaryOp::And.precedence());
         assert!(BinaryOp::And.precedence() > BinaryOp::Or.precedence());
     }
-    
+
     #[test]
     fn test_binary_op_from_str() {
         assert_eq!(BinaryOp::from_str("&&"), Some(BinaryOp::And));
@@ -393,16 +390,12 @@ mod tests {
         assert_eq!(BinaryOp::from_str(">"), Some(BinaryOp::Gt));
         assert_eq!(BinaryOp::from_str("invalid"), None);
     }
-    
+
     #[test]
     fn test_expr_construction() {
         // size > 1024
-        let expr = Expr::binary(
-            Expr::ident("size"),
-            BinaryOp::Gt,
-            Expr::int(1024)
-        );
-        
+        let expr = Expr::binary(Expr::ident("size"), BinaryOp::Gt, Expr::int(1024));
+
         match expr {
             Expr::Binary { left, op, right } => {
                 assert_eq!(op, BinaryOp::Gt);

@@ -486,7 +486,8 @@ impl<'a> Ipv4PacketMut<'a> {
     /// Get mutable header
     pub fn header_mut(&mut self) -> &mut Ipv4Header {
         // SAFETY: Buffer is large enough; use centralized helper.
-        crate::util::get_mut_ref::<Ipv4Header>(self.data, 0).expect("IPv4 header slice out of bounds")
+        crate::util::get_mut_ref::<Ipv4Header>(self.data, 0)
+            .expect("IPv4 header slice out of bounds")
     }
 
     /// Initialize header with default values

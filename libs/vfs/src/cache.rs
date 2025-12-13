@@ -65,7 +65,7 @@ pub enum PageState {
 }
 
 /// A cached page of data
-/// 
+///
 /// ## 安全性
 /// データは `Arc<RwLock<Box<[u8]>>>` で保護されており、
 /// 読み取り/書き込みは適切にロックされる。
@@ -221,9 +221,9 @@ impl CachedPage {
 
         to_write
     }
-    
+
     /// Get data slice for sync operations (requires external synchronization)
-    /// 
+    ///
     /// # Safety Note
     /// この関数は flush 操作のために読み取りロックを取得してデータをコピーする。
     pub fn data_for_sync(&self) -> Vec<u8> {
@@ -676,7 +676,7 @@ impl BlockCacheKey {
 }
 
 /// A cached block of data
-/// 
+///
 /// ## 安全性
 /// データは `Arc<RwLock<Box<[u8]>>>` で保護されており、
 /// 読み取り/書き込みは適切にロックされる。
@@ -861,13 +861,13 @@ impl Default for LruNode {
 }
 
 /// O(1) LRUリスト
-/// 
+///
 /// ## 設計
 /// - Arena (Vec<LruNode>): ノードを連続メモリに格納
 /// - HashMap (BTreeMap<Key, Index>): キーからノードインデックスへのマッピング
 /// - head/tail: リストの先頭/末尾インデックス
 /// - free_list: 再利用可能なノードのリスト
-/// 
+///
 /// ## 計算量
 /// - `insert`: O(1)
 /// - `remove`: O(1)
@@ -1092,18 +1092,18 @@ impl LRUBlockCache {
         let time = self.tick();
 
         let blocks = self.blocks.lock();
-        
+
         if let Some(block) = blocks.get(&key) {
             // Cache hit
             let block_clone = Arc::clone(block);
             block_clone.touch(time);
             drop(blocks); // Release lock before touching LRU
-            
+
             self.touch_lru(key);
-            
+
             let mut stats = self.stats.lock();
             stats.hits += 1;
-            
+
             return Some(block_clone);
         }
 
@@ -1111,14 +1111,14 @@ impl LRUBlockCache {
         drop(blocks);
         let mut stats = self.stats.lock();
         stats.misses += 1;
-        
+
         None
     }
 
     /// Insert a block into cache
     pub fn insert(&self, device_id: u64, block_num: u64, data: Vec<u8>) {
         let key = BlockCacheKey::new(device_id, block_num);
-        
+
         // Check if we need to evict
         let current = self.current_size.load(Ordering::Acquire) as usize;
         if current + self.block_size > self.limit {
@@ -1131,13 +1131,13 @@ impl LRUBlockCache {
         let mut blocks = self.blocks.lock();
         blocks.insert(key, block);
         drop(blocks);
-        
+
         // Add to LRU list (O(1))
         {
             let mut lru_list = self.lru_list.lock();
             lru_list.insert(key);
         }
-        
+
         self.current_size
             .fetch_add(self.block_size as u64, Ordering::AcqRel);
 
@@ -1168,12 +1168,12 @@ impl LRUBlockCache {
     ) -> Option<usize> {
         let block = self.get(device_id, block_num)?;
         let written = block.write(offset, buf);
-        
+
         if written > 0 {
             let mut stats = self.stats.lock();
             stats.dirty_blocks += 1;
         }
-        
+
         Some(written)
     }
 
@@ -1195,7 +1195,7 @@ impl LRUBlockCache {
                         continue;
                     }
                 }
-                
+
                 // Remove clean block
                 if blocks.remove(&key).is_some() {
                     freed += self.block_size;
@@ -1243,12 +1243,7 @@ impl LRUBlockCache {
     }
 
     /// Flush a specific block
-    pub fn flush_block<F>(
-        &self,
-        device_id: u64,
-        block_num: u64,
-        mut writer: F,
-    ) -> Result<bool, ()>
+    pub fn flush_block<F>(&self, device_id: u64, block_num: u64, mut writer: F) -> Result<bool, ()>
     where
         F: FnMut(&[u8]) -> Result<(), ()>,
     {
@@ -1300,19 +1295,19 @@ impl LRUBlockCache {
     pub fn invalidate_device(&self, device_id: u64) {
         let mut blocks = self.blocks.lock();
         let mut lru_list = self.lru_list.lock();
-        
+
         // Remove all blocks for this device
         let keys_to_remove: Vec<_> = blocks
             .keys()
             .filter(|k| k.device_id == device_id)
             .copied()
             .collect();
-        
+
         for key in keys_to_remove {
             if blocks.remove(&key).is_some() {
                 // Remove from LRU list - O(1)
                 lru_list.remove(&key);
-                
+
                 self.current_size
                     .fetch_sub(self.block_size as u64, Ordering::AcqRel);
 
@@ -1391,7 +1386,7 @@ mod block_cache_tests {
         // Insert blocks
         let data1 = alloc::vec![0x11u8; 512];
         let data2 = alloc::vec![0x22u8; 512];
-        
+
         cache.insert(0, 0, data1);
         cache.insert(0, 1, data2);
 
@@ -1419,7 +1414,7 @@ mod block_cache_tests {
 
         // Block 0 should be evicted
         assert!(cache.get(0, 0).is_none());
-        
+
         // Blocks 1 and 2 should still be in cache
         assert!(cache.get(0, 1).is_some());
         assert!(cache.get(0, 2).is_some());
@@ -1430,7 +1425,7 @@ mod block_cache_tests {
         let cache = LRUBlockCache::new(512, 4096);
 
         cache.insert(0, 0, alloc::vec![0x11u8; 512]);
-        
+
         // Write to block (marks as dirty)
         let buf = [0xFFu8; 10];
         let result = cache.write(0, 0, 0, &buf);

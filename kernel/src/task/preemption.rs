@@ -157,7 +157,9 @@ pub fn decrement_time_slice() {
     // アトミックに時間スライスを減少
     let slice = PREEMPTION_CONTROLLER.time_slice.load(Ordering::Relaxed);
     if slice > 0 {
-        PREEMPTION_CONTROLLER.time_slice.fetch_sub(1, Ordering::Relaxed);
+        PREEMPTION_CONTROLLER
+            .time_slice
+            .fetch_sub(1, Ordering::Relaxed);
     }
 }
 

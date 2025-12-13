@@ -107,7 +107,11 @@ fn enumerate_codec(controller: &mut HdaController, codec_addr: u8) -> HdaResult<
         if node_type == 0x01 {
             // Audio Function Group
             // Find codec in our list
-            if let Some(codec) = controller.codecs.iter_mut().find(|c| c.address == codec_addr) {
+            if let Some(codec) = controller
+                .codecs
+                .iter_mut()
+                .find(|c| c.address == codec_addr)
+            {
                 codec.afg_node = Some(node_id);
             }
 
@@ -141,14 +145,14 @@ fn enumerate_afg(controller: &mut HdaController, codec_addr: u8, afg_node: u8) -
         let caps = controller.get_parameter(codec_addr, node_id, PARAM_WIDGET_CAPS)?;
         let widget_caps = WidgetCaps::from(caps);
 
-        crate::log!(
-            "[HDA] Widget {}: {:?}\n",
-            node_id,
-            widget_caps.widget_type
-        );
+        crate::log!("[HDA] Widget {}: {:?}\n", node_id, widget_caps.widget_type);
 
         // Find codec and add node to appropriate list
-        if let Some(codec) = controller.codecs.iter_mut().find(|c| c.address == codec_addr) {
+        if let Some(codec) = controller
+            .codecs
+            .iter_mut()
+            .find(|c| c.address == codec_addr)
+        {
             match widget_caps.widget_type {
                 NodeType::AudioOutput => codec.output_nodes.push(node_id),
                 NodeType::AudioInput => codec.input_nodes.push(node_id),
@@ -179,14 +183,18 @@ pub fn configure_codec_output(
         .ok_or(HdaError::NoCodec)?;
 
     // Find an output DAC
-    let dac_node = codec.output_nodes.first().copied().ok_or_else(|| {
-        HdaError::InitFailed("No DAC found".into())
-    })?;
+    let dac_node = codec
+        .output_nodes
+        .first()
+        .copied()
+        .ok_or_else(|| HdaError::InitFailed("No DAC found".into()))?;
 
     // Find an output pin
-    let pin_node = codec.pin_nodes.first().copied().ok_or_else(|| {
-        HdaError::InitFailed("No output pin found".into())
-    })?;
+    let pin_node = codec
+        .pin_nodes
+        .first()
+        .copied()
+        .ok_or_else(|| HdaError::InitFailed("No output pin found".into()))?;
 
     crate::log!(
         "[HDA] Configuring DAC {} -> Pin {} for stream {}\n",

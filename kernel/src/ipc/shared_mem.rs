@@ -741,7 +741,7 @@ pub fn shm_unlink(name: &str) -> Result<(), ShmError> {
 use super::rref::{DomainId, RRef};
 
 /// 共有メモリベースのゼロコピーリージョン
-/// 
+///
 /// 設計書 5.3: RRef<T>と統合した共有メモリアクセス
 pub struct ZeroCopyRegion<T> {
     /// 基底となる共有メモリハンドル
@@ -756,10 +756,14 @@ impl<T: Copy> ZeroCopyRegion<T> {
     /// 新しいゼロコピーリージョンを作成
     pub fn new(name: &str, owner: DomainId) -> Result<Self, ShmError> {
         let size = ShmSize::new(core::mem::size_of::<T>());
-        let id = shm_open(name, size, ShmFlags {
-            create: true,
-            ..Default::default()
-        })?;
+        let id = shm_open(
+            name,
+            size,
+            ShmFlags {
+                create: true,
+                ..Default::default()
+            },
+        )?;
         let handle = shmat(id)?;
 
         Ok(Self {
@@ -782,13 +786,13 @@ impl<T: Copy> ZeroCopyRegion<T> {
     }
 
     /// RRef<T>として値を読み取り
-    /// 
+    ///
     /// 注意: 共有メモリからの読み取りではコピーが発生するが、
     /// 返されるRRefはExchange Heap上に配置され、以後はゼロコピーで
     /// 他のドメインに転送可能
     pub fn read_as_rref(&self) -> Result<RRef<T>, ShmError> {
         let slice = self.handle.read().ok_or(ShmError::NotAttached)?;
-        
+
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
@@ -798,12 +802,12 @@ impl<T: Copy> ZeroCopyRegion<T> {
     }
 
     /// RRef<T>から値を書き込み
-    /// 
+    ///
     /// 注意: RRefからの所有権移動後、共有メモリへの書き込みが発生
     pub fn write_from_rref(&self, rref: RRef<T>) -> Result<(), ShmError> {
         let value = rref.into_inner();
         let slice = self.handle.write().ok_or(ShmError::NotAttached)?;
-        
+
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
@@ -815,7 +819,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
     /// 生の値を直接書き込み（ゼロコピーではない）
     pub fn write(&self, value: T) -> Result<(), ShmError> {
         let slice = self.handle.write().ok_or(ShmError::NotAttached)?;
-        
+
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
@@ -827,7 +831,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
     /// 生の値を直接読み取り（ゼロコピーではない）
     pub fn read(&self) -> Result<T, ShmError> {
         let slice = self.handle.read().ok_or(ShmError::NotAttached)?;
-        
+
         if slice.len() < core::mem::size_of::<T>() {
             return Err(ShmError::InvalidSize);
         }
@@ -843,7 +847,7 @@ impl<T: Copy> ZeroCopyRegion<T> {
 }
 
 /// 共有メモリ上のリングバッファ（プロデューサー・コンシューマー間のゼロコピー通信）
-/// 
+///
 /// 設計書 5.3: SAS環境での効率的なIPC
 pub struct SharedRingBuffer<T: Copy> {
     /// 共有メモリハンドル
@@ -882,12 +886,16 @@ impl<T: Copy> SharedRingBuffer<T> {
         let element_size = core::mem::size_of::<T>();
         let header_size = core::mem::size_of::<SharedRingHeader>();
         let total_size = header_size + capacity * element_size;
-        
-        let id = shm_open(name, ShmSize::new(total_size), ShmFlags {
-            create: true,
-            exclusive: true,
-            ..Default::default()
-        })?;
+
+        let id = shm_open(
+            name,
+            ShmSize::new(total_size),
+            ShmFlags {
+                create: true,
+                exclusive: true,
+                ..Default::default()
+            },
+        )?;
         let handle = shmat(id)?;
 
         // ヘッダーを初期化
@@ -936,13 +944,13 @@ impl<T: Copy> SharedRingBuffer<T> {
         // Read header atomically, then drop the reference before mutably writing
         let (write_pos, read_pos) = {
             let header = crate::util::get_ref::<SharedRingHeader>(slice, 0)
-            .ok_or(ShmError::InvalidAddress)?;
+                .ok_or(ShmError::InvalidAddress)?;
             (
                 header.write_pos.load(Ordering::Acquire),
                 header.read_pos.load(Ordering::Acquire),
             )
         };
-        
+
         // フルチェック
         let next_write = (write_pos + 1) % self.capacity;
         if next_write == read_pos {
@@ -953,12 +961,12 @@ impl<T: Copy> SharedRingBuffer<T> {
         let header_size = core::mem::size_of::<SharedRingHeader>();
         let element_size = core::mem::size_of::<T>();
         let offset = header_size + write_pos * element_size;
-        
+
         crate::util::write_struct(slice, offset, value).ok_or(ShmError::InvalidSize)?;
 
         // write_posを更新
-        let header = crate::util::get_ref::<SharedRingHeader>(slice, 0)
-            .ok_or(ShmError::InvalidAddress)?;
+        let header =
+            crate::util::get_ref::<SharedRingHeader>(slice, 0).ok_or(ShmError::InvalidAddress)?;
         header.write_pos.store(next_write, Ordering::Release);
 
         Ok(())
@@ -967,12 +975,12 @@ impl<T: Copy> SharedRingBuffer<T> {
     /// 要素を読み取り（コンシューマー用）
     pub fn pop(&self) -> Result<T, ShmError> {
         let slice = self.handle.read().ok_or(ShmError::NotAttached)?;
-        let header = crate::util::get_ref::<SharedRingHeader>(slice, 0)
-            .ok_or(ShmError::InvalidAddress)?;
-        
+        let header =
+            crate::util::get_ref::<SharedRingHeader>(slice, 0).ok_or(ShmError::InvalidAddress)?;
+
         let write_pos = header.write_pos.load(Ordering::Acquire);
         let read_pos = header.read_pos.load(Ordering::Acquire);
-        
+
         // 空チェック
         if read_pos == write_pos {
             return Err(ShmError::NotFound); // バッファ空
@@ -982,7 +990,7 @@ impl<T: Copy> SharedRingBuffer<T> {
         let header_size = core::mem::size_of::<SharedRingHeader>();
         let element_size = core::mem::size_of::<T>();
         let offset = header_size + read_pos * element_size;
-        
+
         let value: T = crate::util::read_struct(slice, offset).ok_or(ShmError::InvalidSize)?;
 
         // read_posを更新
@@ -1015,9 +1023,9 @@ impl<T: Copy> SharedRingBuffer<T> {
     pub fn is_full(&self) -> bool {
         if let Some(slice) = self.handle.read() {
             if let Some(header) = crate::util::get_ref::<SharedRingHeader>(slice, 0) {
-            let write_pos = header.write_pos.load(Ordering::Acquire);
-            let read_pos = header.read_pos.load(Ordering::Acquire);
-            (write_pos + 1) % self.capacity == read_pos
+                let write_pos = header.write_pos.load(Ordering::Acquire);
+                let read_pos = header.read_pos.load(Ordering::Acquire);
+                (write_pos + 1) % self.capacity == read_pos
             } else {
                 true
             }
@@ -1080,12 +1088,12 @@ mod tests {
     #[test]
     fn test_zero_copy_region() {
         let domain1 = DomainId::new(1);
-        
+
         let region: ZeroCopyRegion<u64> = ZeroCopyRegion::new("/zero_copy_test", domain1).unwrap();
-        
+
         // 値を書き込み
         region.write(42u64).unwrap();
-        
+
         // RRefとして読み取り
         let rref = region.read_as_rref().unwrap();
         assert_eq!(*rref, 42);

@@ -25,15 +25,15 @@ extern crate alloc;
 pub mod browser;
 pub mod editor;
 pub mod games;
-pub mod terminal;
 pub mod system_monitor;
+pub mod terminal;
 
 // Re-export main application types
-pub use app_sdk::{Application, AppContext};
+pub use app_sdk::{AppContext, Application};
 
 // Re-export specific applications
 pub use browser::Browser;
 pub use editor::Editor;
 pub use games::Games;
-pub use terminal::Terminal;
 pub use system_monitor::SystemMonitor;
+pub use terminal::Terminal;

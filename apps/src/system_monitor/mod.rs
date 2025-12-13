@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 
-use app_sdk::{Application, AppContext, print};
+use app_sdk::{AppContext, Application, print};
 
 /// System Monitor application
 pub struct SystemMonitor {

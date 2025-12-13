@@ -9,10 +9,10 @@
 
 extern crate alloc;
 
+use crate::{ChannelHandle, DmaBuffer, FileHandle, KapiResult, TaskHandle, TcpEndpoint};
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
-use crate::{KapiResult, TaskHandle, DmaBuffer, TcpEndpoint, FileHandle, ChannelHandle};
 
 /// Kernel services trait - the contract between kernel and all other components
 ///
@@ -29,7 +29,10 @@ pub trait KernelServices: Send + Sync {
     ///
     /// # Errors
     /// - `KapiError::OutOfMemory` if the kernel cannot allocate resources for the task
-    fn spawn_task(&self, future: Pin<Box<dyn Future<Output = ()> + Send>>) -> KapiResult<TaskHandle>;
+    fn spawn_task(
+        &self,
+        future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    ) -> KapiResult<TaskHandle>;
 
     /// Get current tick count (milliseconds since boot)
     fn current_tick(&self) -> u64;
@@ -38,7 +41,7 @@ pub trait KernelServices: Send + Sync {
     fn current_task_id(&self) -> u64;
 
     // ========================================================================
-    // Memory Management  
+    // Memory Management
     // ========================================================================
 
     /// Allocate DMA-capable memory
@@ -153,7 +156,9 @@ pub unsafe fn register_kernel(services: &'static dyn KernelServices) {
 /// Panics if called before `register_kernel`
 #[inline]
 pub fn kernel() -> &'static dyn KernelServices {
-    *KERNEL.get().expect("Kernel not initialized! Call register_kernel first.")
+    *KERNEL
+        .get()
+        .expect("Kernel not initialized! Call register_kernel first.")
 }
 
 /// Check if kernel is registered

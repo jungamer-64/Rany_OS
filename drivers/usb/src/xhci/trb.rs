@@ -235,10 +235,10 @@ impl Trb {
         Self {
             parameter,
             status: 8, // Transfer length = 8
-            control: ((TrbType::SetupStage as u32) << 10) 
-                   | ((transfer_type as u32) << 16) 
-                   | (1 << 6)  // IDT
-                   | if cycle { 1 } else { 0 },
+            control: ((TrbType::SetupStage as u32) << 10)
+                | ((transfer_type as u32) << 16)
+                | (1 << 6) // IDT
+                | if cycle { 1 } else { 0 },
         }
     }
 
@@ -248,9 +248,9 @@ impl Trb {
             parameter: data_ptr,
             status: length & 0x1FFFF,
             control: ((TrbType::DataStage as u32) << 10)
-                   | ((dir_in as u32) << 16)
-                   | (1 << 5)  // IOC
-                   | if cycle { 1 } else { 0 },
+                | ((dir_in as u32) << 16)
+                | (1 << 5) // IOC
+                | if cycle { 1 } else { 0 },
         }
     }
 

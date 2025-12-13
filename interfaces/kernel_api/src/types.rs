@@ -40,7 +40,11 @@ unsafe impl Send for DmaBuffer {}
 impl DmaBuffer {
     /// Create a new DMA buffer (kernel-only)
     pub const fn new(phys_addr: u64, virt_addr: *mut u8, size: usize) -> Self {
-        Self { phys_addr, virt_addr, size }
+        Self {
+            phys_addr,
+            virt_addr,
+            size,
+        }
     }
 
     /// Physical address of the buffer
@@ -59,7 +63,7 @@ impl DmaBuffer {
     }
 
     /// Access as byte slice
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure the buffer is valid and properly initialized
     pub unsafe fn as_slice(&self) -> &[u8] {
@@ -67,7 +71,7 @@ impl DmaBuffer {
     }
 
     /// Access as mutable byte slice
-    /// 
+    ///
     /// # Safety
     /// Caller must ensure exclusive access and buffer validity
     pub unsafe fn as_slice_mut(&mut self) -> &mut [u8] {
@@ -85,12 +89,20 @@ pub struct Packet {
 impl Packet {
     /// Create a new packet
     pub fn new(data: Vec<u8>) -> Self {
-        Self { data, src_port: 0, dst_port: 0 }
+        Self {
+            data,
+            src_port: 0,
+            dst_port: 0,
+        }
     }
 
     /// Create with port info
     pub fn with_ports(data: Vec<u8>, src_port: u16, dst_port: u16) -> Self {
-        Self { data, src_port, dst_port }
+        Self {
+            data,
+            src_port,
+            dst_port,
+        }
     }
 
     /// Get packet data
@@ -182,7 +194,10 @@ pub struct TcpEndpoint {
 impl TcpEndpoint {
     /// Create new TCP endpoint
     pub fn new(id: u64) -> Self {
-        Self { id, connected: false }
+        Self {
+            id,
+            connected: false,
+        }
     }
 
     /// Check if connected

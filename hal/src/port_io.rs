@@ -73,7 +73,10 @@ where
     T: Copy + PortRead + PortWrite,
 {
     pub const fn new(port: u16) -> Self {
-        Self { inner: XPort::new(port), port }
+        Self {
+            inner: XPort::new(port),
+            port,
+        }
     }
 
     pub fn read(&mut self) -> T {

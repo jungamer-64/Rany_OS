@@ -793,16 +793,15 @@ impl TlsConnection {
             if data.len() < 3 {
                 return Err(TlsError::DecodeError);
             }
-            
+
             // 証明書チェーン長（3バイト）
-            let certs_len = ((data[0] as usize) << 16) 
-                          | ((data[1] as usize) << 8) 
-                          | (data[2] as usize);
-            
+            let certs_len =
+                ((data[0] as usize) << 16) | ((data[1] as usize) << 8) | (data[2] as usize);
+
             if data.len() < 3 + certs_len {
                 return Err(TlsError::DecodeError);
             }
-            
+
             // 最低限の検証: 証明書データが存在することを確認
             // 完全な実装にはRSA/ECDSA署名検証が必要
             if certs_len == 0 {
@@ -821,34 +820,34 @@ impl TlsConnection {
         // - public_key_length (1 byte)
         // - public_key (variable)
         // - signature (variable)
-        
+
         if data.len() < 4 {
             return Err(TlsError::DecodeError);
         }
-        
+
         let curve_type = data[0];
         if curve_type != 0x03 {
             // named_curveのみサポート
             return Err(TlsError::UnsupportedCipherSuite);
         }
-        
+
         let named_curve = ((data[1] as u16) << 8) | (data[2] as u16);
         let pubkey_len = data[3] as usize;
-        
+
         if data.len() < 4 + pubkey_len {
             return Err(TlsError::DecodeError);
         }
-        
+
         // サーバーの公開鍵を保存（完全な実装ではECDH共有秘密計算に使用）
         let _server_pubkey = &data[4..4 + pubkey_len];
-        
+
         // Note: 完全な実装には以下が必要:
         // 1. クライアント側のECDHキーペア生成
         // 2. 共有秘密の計算
         // 3. マスターシークレットの導出
-        
+
         let _ = named_curve; // 将来の使用のために保持
-        
+
         Ok(())
     }
 
@@ -871,46 +870,46 @@ impl TlsConnection {
         // - explicit_nonce (8 bytes, TLS 1.2)
         // - ciphertext (variable)
         // - auth_tag (16 bytes)
-        
+
         if data.len() < 24 {
             // 最小: nonce(8) + tag(16)
             return Err(TlsError::DecodeError);
         }
-        
+
         // Nonce: implicit_iv (4 bytes from key derivation) || explicit_nonce (8 bytes from record)
         let explicit_nonce = &data[0..8];
         let ciphertext_with_tag = &data[8..];
-        
+
         if ciphertext_with_tag.len() < 16 {
             return Err(TlsError::DecryptError);
         }
-        
+
         let ciphertext_len = ciphertext_with_tag.len() - 16;
         let ciphertext = &ciphertext_with_tag[0..ciphertext_len];
         let auth_tag = &ciphertext_with_tag[ciphertext_len..];
-        
+
         // キーが設定されていない場合はプレースホルダー動作
         if self.read_key.is_empty() || self.read_iv.len() < 4 {
             self.read_seq += 1;
             return Ok(ciphertext.to_vec());
         }
-        
+
         // 12バイトのnonceを構築: implicit_iv(4) || explicit_nonce(8)
         let mut nonce = [0u8; 12];
         nonce[0..4].copy_from_slice(&self.read_iv[0..4]);
         nonce[4..12].copy_from_slice(explicit_nonce);
-        
+
         // AAD: seq_num(8) || type(1) || version(2) || length(2)
         let mut aad = Vec::with_capacity(13);
         aad.extend_from_slice(&self.read_seq.to_be_bytes());
         aad.push(ContentType::ApplicationData as u8);
         aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
         aad.extend_from_slice(&(ciphertext_len as u16).to_be_bytes());
-        
+
         // 認証タグを配列に変換
         let mut tag = [0u8; 16];
         tag.copy_from_slice(auth_tag);
-        
+
         // AES-GCM復号
         match aes_gcm_decrypt(&self.read_key, &nonce, &aad, ciphertext, &tag) {
             Some(plaintext) => {
@@ -935,10 +934,10 @@ impl TlsConnection {
         // - explicit_nonce (8 bytes)
         // - ciphertext (same as plaintext length)
         // - auth_tag (16 bytes)
-        
+
         // explicit nonceの生成（シーケンス番号ベース）
         let explicit_nonce = self.write_seq.to_be_bytes();
-        
+
         // キーが設定されていない場合はプレースホルダー動作
         let (ciphertext, auth_tag) = if self.write_key.is_empty() || self.write_iv.len() < 4 {
             (data.to_vec(), [0u8; 16])
@@ -947,21 +946,21 @@ impl TlsConnection {
             let mut nonce = [0u8; 12];
             nonce[0..4].copy_from_slice(&self.write_iv[0..4]);
             nonce[4..12].copy_from_slice(&explicit_nonce);
-            
+
             // AAD: seq_num(8) || type(1) || version(2) || length(2)
             let mut aad = Vec::with_capacity(13);
             aad.extend_from_slice(&self.write_seq.to_be_bytes());
             aad.push(ContentType::ApplicationData as u8);
             aad.extend_from_slice(&[0x03, 0x03]); // TLS 1.2
             aad.extend_from_slice(&(data.len() as u16).to_be_bytes());
-            
+
             // AES-GCM暗号化
             aes_gcm_encrypt(&self.write_key, &nonce, &aad, data)
         };
-        
+
         // レコード長: nonce(8) + ciphertext + tag(16)
         let record_len = 8 + ciphertext.len() + 16;
-        
+
         let mut record = vec![
             ContentType::ApplicationData as u8,
             0x03,
@@ -1058,23 +1057,23 @@ const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x
 fn aes_key_expansion(key: &[u8; 16]) -> [[u8; 16]; 11] {
     let mut round_keys = [[0u8; 16]; 11];
     round_keys[0].copy_from_slice(key);
-    
+
     for i in 1..11 {
         // 前のラウンドキーをコピーして借用問題を回避
         let prev = round_keys[i - 1];
         let mut temp = [prev[12], prev[13], prev[14], prev[15]];
-        
+
         // RotWord
         temp.rotate_left(1);
-        
+
         // SubWord
         for b in &mut temp {
             *b = AES_SBOX[*b as usize];
         }
-        
+
         // XOR with Rcon
         temp[0] ^= RCON[i - 1];
-        
+
         for j in 0..4 {
             for k in 0..4 {
                 round_keys[i][j * 4 + k] = if j == 0 {
@@ -1085,7 +1084,7 @@ fn aes_key_expansion(key: &[u8; 16]) -> [[u8; 16]; 11] {
             }
         }
     }
-    
+
     round_keys
 }
 
@@ -1142,7 +1141,7 @@ fn aes_mix_columns(state: &mut [u8; 16]) {
         let s1 = state[i + 1];
         let s2 = state[i + 2];
         let s3 = state[i + 3];
-        
+
         state[i] = gf_mul(0x02, s0) ^ gf_mul(0x03, s1) ^ s2 ^ s3;
         state[i + 1] = s0 ^ gf_mul(0x02, s1) ^ gf_mul(0x03, s2) ^ s3;
         state[i + 2] = s0 ^ s1 ^ gf_mul(0x02, s2) ^ gf_mul(0x03, s3);
@@ -1160,10 +1159,10 @@ fn aes_add_round_key(state: &mut [u8; 16], round_key: &[u8; 16]) {
 /// AES-128 ブロック暗号化
 fn aes_encrypt_block(block: &[u8; 16], round_keys: &[[u8; 16]; 11]) -> [u8; 16] {
     let mut state = *block;
-    
+
     // Initial round
     aes_add_round_key(&mut state, &round_keys[0]);
-    
+
     // Main rounds
     for i in 1..10 {
         aes_sub_bytes(&mut state);
@@ -1171,12 +1170,12 @@ fn aes_encrypt_block(block: &[u8; 16], round_keys: &[[u8; 16]; 11]) -> [u8; 16] 
         aes_mix_columns(&mut state);
         aes_add_round_key(&mut state, &round_keys[i]);
     }
-    
+
     // Final round (no MixColumns)
     aes_sub_bytes(&mut state);
     aes_shift_rows(&mut state);
     aes_add_round_key(&mut state, &round_keys[10]);
-    
+
     state
 }
 
@@ -1185,36 +1184,36 @@ fn aes_ctr(key: &[u8], nonce: &[u8], data: &[u8]) -> Vec<u8> {
     if key.len() != 16 || nonce.len() != 12 {
         return Vec::new();
     }
-    
+
     let mut key_arr = [0u8; 16];
     key_arr.copy_from_slice(key);
     let round_keys = aes_key_expansion(&key_arr);
-    
+
     let mut result = Vec::with_capacity(data.len());
     let mut counter_block = [0u8; 16];
     counter_block[0..12].copy_from_slice(nonce);
-    
+
     for (chunk_idx, chunk) in data.chunks(16).enumerate() {
         // Set counter (big-endian)
         let counter = (chunk_idx as u32 + 1).to_be_bytes();
         counter_block[12..16].copy_from_slice(&counter);
-        
+
         // Encrypt counter block
         let keystream = aes_encrypt_block(&counter_block, &round_keys);
-        
+
         // XOR with data
         for (i, &byte) in chunk.iter().enumerate() {
             result.push(byte ^ keystream[i]);
         }
     }
-    
+
     result
 }
 
 /// GCM GHASH演算
 fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
     let mut y = [0u8; 16];
-    
+
     // Process AAD
     for chunk in aad.chunks(16) {
         let mut block = [0u8; 16];
@@ -1224,7 +1223,7 @@ fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
         }
         y = gf128_mul(&y, h);
     }
-    
+
     // Process ciphertext
     for chunk in ciphertext.chunks(16) {
         let mut block = [0u8; 16];
@@ -1234,19 +1233,19 @@ fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
         }
         y = gf128_mul(&y, h);
     }
-    
+
     // Process length block
     let aad_bits = (aad.len() as u64) * 8;
     let ct_bits = (ciphertext.len() as u64) * 8;
     let mut len_block = [0u8; 16];
     len_block[0..8].copy_from_slice(&aad_bits.to_be_bytes());
     len_block[8..16].copy_from_slice(&ct_bits.to_be_bytes());
-    
+
     for i in 0..16 {
         y[i] ^= len_block[i];
     }
     y = gf128_mul(&y, h);
-    
+
     y
 }
 
@@ -1254,29 +1253,29 @@ fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
 fn gf128_mul(x: &[u8; 16], h: &[u8; 16]) -> [u8; 16] {
     let mut z = [0u8; 16];
     let mut v = *h;
-    
+
     for i in 0..128 {
         let byte_idx = i / 8;
         let bit_idx = 7 - (i % 8);
-        
+
         if (x[byte_idx] >> bit_idx) & 1 == 1 {
             for j in 0..16 {
                 z[j] ^= v[j];
             }
         }
-        
+
         // V = V >> 1 in GF(2^128)
         let lsb = v[15] & 1;
         for j in (1..16).rev() {
             v[j] = (v[j] >> 1) | ((v[j - 1] & 1) << 7);
         }
         v[0] >>= 1;
-        
+
         if lsb == 1 {
             v[0] ^= 0xe1; // R = 0xe1 << 120
         }
     }
-    
+
     z
 }
 
@@ -1285,70 +1284,76 @@ fn aes_gcm_encrypt(key: &[u8], nonce: &[u8], aad: &[u8], plaintext: &[u8]) -> (V
     if key.len() != 16 || nonce.len() != 12 {
         return (Vec::new(), [0u8; 16]);
     }
-    
+
     let mut key_arr = [0u8; 16];
     key_arr.copy_from_slice(key);
     let round_keys = aes_key_expansion(&key_arr);
-    
+
     // Generate H = AES(K, 0^128)
     let h = aes_encrypt_block(&[0u8; 16], &round_keys);
-    
+
     // Encrypt plaintext with CTR mode
     let ciphertext = aes_ctr(key, nonce, plaintext);
-    
+
     // Calculate GHASH
     let s = ghash(&h, aad, &ciphertext);
-    
+
     // Calculate tag: T = GHASH XOR AES(K, Y0)
     let mut y0 = [0u8; 16];
     y0[0..12].copy_from_slice(nonce);
     y0[15] = 1; // Counter = 1
     let encrypted_y0 = aes_encrypt_block(&y0, &round_keys);
-    
+
     let mut tag = [0u8; 16];
     for i in 0..16 {
         tag[i] = s[i] ^ encrypted_y0[i];
     }
-    
+
     (ciphertext, tag)
 }
 
 /// AES-GCM 復号
-fn aes_gcm_decrypt(key: &[u8], nonce: &[u8], aad: &[u8], ciphertext: &[u8], tag: &[u8; 16]) -> Option<Vec<u8>> {
+fn aes_gcm_decrypt(
+    key: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+    ciphertext: &[u8],
+    tag: &[u8; 16],
+) -> Option<Vec<u8>> {
     if key.len() != 16 || nonce.len() != 12 {
         return None;
     }
-    
+
     let mut key_arr = [0u8; 16];
     key_arr.copy_from_slice(key);
     let round_keys = aes_key_expansion(&key_arr);
-    
+
     // Generate H
     let h = aes_encrypt_block(&[0u8; 16], &round_keys);
-    
+
     // Calculate expected tag
     let s = ghash(&h, aad, ciphertext);
-    
+
     let mut y0 = [0u8; 16];
     y0[0..12].copy_from_slice(nonce);
     y0[15] = 1;
     let encrypted_y0 = aes_encrypt_block(&y0, &round_keys);
-    
+
     let mut expected_tag = [0u8; 16];
     for i in 0..16 {
         expected_tag[i] = s[i] ^ encrypted_y0[i];
     }
-    
+
     // Verify tag (constant-time comparison)
     let mut diff = 0u8;
     for i in 0..16 {
         diff |= tag[i] ^ expected_tag[i];
     }
-    
+
     if diff != 0 {
         return None; // Authentication failed
     }
-    
+
     // Decrypt
     let plaintext = aes_ctr(key, nonce, ciphertext);
     Some(plaintext)
@@ -1374,4 +1379,3 @@ fn generate_random() -> [u8; 32] {
 
     result
 }
-

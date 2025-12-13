@@ -531,8 +531,8 @@ impl ArpProcessor {
         }
 
         // SAFETY: We checked the length. Use centralized helper for bounds/alignment check.
-        let packet = crate::util::get_ref::<ArpPacket>(data, 0)
-            .expect("ARP packet slice out of bounds");
+        let packet =
+            crate::util::get_ref::<ArpPacket>(data, 0).expect("ARP packet slice out of bounds");
 
         if !packet.is_valid() {
             return ArpResult::Invalid;

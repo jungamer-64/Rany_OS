@@ -9,8 +9,8 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::graphics::Rect;
 use super::constants::MAX_DIRTY_RECTS;
+use crate::graphics::Rect;
 
 // ============================================================================
 // Dirty Rectangle

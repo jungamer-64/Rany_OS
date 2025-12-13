@@ -3,23 +3,23 @@
 //! This module implements comprehensive security auditing for
 //! tracking security-relevant events in the kernel.
 
-#[cfg(test)]
-use std::collections::VecDeque;
 #[cfg(not(test))]
 use alloc::collections::VecDeque;
-
 #[cfg(test)]
-use std::string::String;
+use std::collections::VecDeque;
+
 #[cfg(not(test))]
 use alloc::string::String;
-
 #[cfg(test)]
-use std::vec::Vec;
+use std::string::String;
+
 #[cfg(not(test))]
 use alloc::vec::Vec;
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
+#[cfg(test)]
+use std::vec::Vec;
 
 extern crate alloc;
 

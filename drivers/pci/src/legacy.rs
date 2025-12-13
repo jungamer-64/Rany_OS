@@ -9,8 +9,8 @@
 
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::BdfAddress;
-use spin::Mutex;
 use hal::port_io::PortU32;
+use spin::Mutex;
 
 // ============================================================================
 // Constants

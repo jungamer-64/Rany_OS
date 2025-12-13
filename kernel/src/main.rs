@@ -4,10 +4,13 @@
 
 extern crate alloc;
 
-use limine::request::{MemoryMapRequest, HhdmRequest, FramebufferRequest, StackSizeRequest, RequestsStartMarker, RequestsEndMarker};
-use limine::BaseRevision;
 use core::panic::PanicInfo;
-use log::{info, warn, debug, error};
+use limine::BaseRevision;
+use limine::request::{
+    FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
+    StackSizeRequest,
+};
+use log::{debug, error, info, warn};
 
 mod allocator;
 mod domain;
@@ -19,7 +22,6 @@ mod interrupts;
 mod io;
 mod ipc;
 mod loader;
-mod util;
 mod memory;
 mod mm;
 mod net;
@@ -34,6 +36,7 @@ mod sync;
 mod task;
 mod time;
 mod unwind;
+mod util;
 mod vga;
 
 // Phase 4: High-Performance & Advanced Features
@@ -55,9 +58,9 @@ mod test;
 // Phase 7: System Integration & Application Support
 mod application;
 mod benchmark;
+mod driver_registry;
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
-mod service_impl; // KernelServices implementation
-mod driver_registry; // Driver lifecycle management
+mod service_impl; // KernelServices implementation // Driver lifecycle management
 
 // Limine bootloader protocol requests (UEFI/BIOS compatible)
 // Define the start and end markers for Limine requests
@@ -88,8 +91,7 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 
 #[used]
 #[unsafe(link_section = ".requests")]
-static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new()
-    .with_size(512 * 1024); // 512 KiB stack
+static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(512 * 1024); // 512 KiB stack
 
 #[unsafe(no_mangle)]
 extern "C" fn kmain() -> ! {
@@ -161,7 +163,9 @@ extern "C" fn kmain() -> ! {
 
     // Verify Limine protocol support
     if !BASE_REVISION.is_supported() {
-        serial_print("[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\r\n");
+        serial_print(
+            "[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\r\n",
+        );
         // Continue despite revision mismatch for debugging
         // This may be caused by limine crate (0.5) and bootloader (8.x) version mismatch
     }
@@ -177,28 +181,26 @@ extern "C" fn kmain() -> ! {
         cr0 &= !(1 << 2); // EM=0
         cr0 &= !(1 << 3); // TS=0
         asm!("mov cr0, {}", in(reg) cr0);
-        
+
         // CR4: OSFXSR=1, OSXMMEXCPT=1
         let mut cr4: u64;
         asm!("mov {}, cr4", out(reg) cr4);
-        cr4 |= 1 << 9;  // OSFXSR
+        cr4 |= 1 << 9; // OSFXSR
         cr4 |= 1 << 10; // OSXMMEXCPT  
         asm!("mov cr4, {}", in(reg) cr4);
     }
     serial_print("[BOOT] SSE enabled\r\n");
-    
+
     // Get physical memory offset from HHDM (Higher Half Direct Map)
     serial_print("[BOOT] Getting HHDM offset...\r\n");
-    let phys_mem_offset = HHDM_REQUEST.get_response()
-        .map(|r| r.offset())
-        .unwrap_or(0);
+    let phys_mem_offset = HHDM_REQUEST.get_response().map(|r| r.offset()).unwrap_or(0);
     serial_print("[BOOT] HHDM offset obtained\r\n");
-    
+
     // VGAバッファの初期化（ログ出力用）
     serial_print("[BOOT] Initializing VGA...\r\n");
     vga::init();
     serial_print("[BOOT] VGA initialized\r\n");
-    
+
     // ロギングシステムの初期化（最優先、ヒープ不要）
     serial_print("[BOOT] Initializing logger...\r\n");
     if io::log::init().is_err() {
@@ -207,10 +209,10 @@ extern "C" fn kmain() -> ! {
     } else {
         serial_print("[BOOT] Logger initialized\r\n");
     }
-    
+
     // 早期ブートログ（log crateを使用）
     info!(target: "boot", "kernel_main started");
-    
+
     // 物理メモリオフセットを設定
     serial_print("[BOOT] Setting physical memory offset...\r\n");
     memory::set_physical_memory_offset(phys_mem_offset);
@@ -233,27 +235,29 @@ extern "C" fn kmain() -> ! {
     memory::init();
     serial_print("[BOOT] Memory management initialized\r\n");
     info!(target: "init", "Memory management initialized");
-    
+
     // 1.1. 1GB Huge Page サポートの初期化 (設計書 11.1.1)
     serial_print("[BOOT] Initializing 1GB Huge Page support...\r\n");
     mm::huge_pages::init();
     info!(target: "init", "1GB Huge Page support initialized");
-    
+
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
 
     // Register kernel services (SPL契約の有効化)
     serial_print("[BOOT] Registering kernel services...\r\n");
-    unsafe { service_impl::register_kernel_services(); }
+    unsafe {
+        service_impl::register_kernel_services();
+    }
     serial_print("[BOOT] Kernel services registered\r\n");
     info!(target: "init", "KernelServices registered");
-    
+
     // グラフィックスフレームバッファの初期化（Limine経由）
     serial_print("[BOOT] Initializing graphics framebuffer...\r\n");
     if let Some(fb_response) = FRAMEBUFFER_REQUEST.get_response() {
         if graphics::init_from_limine(fb_response) {
             serial_print("[BOOT] Graphics framebuffer initialized\r\n");
-            
+
             // ブートスプラッシュを表示
             graphics::show_boot_splash();
             serial_print("[BOOT] Boot splash displayed\r\n");
@@ -263,10 +267,10 @@ extern "C" fn kmain() -> ! {
     } else {
         serial_print("[BOOT] No framebuffer response from bootloader\r\n");
     }
-    
+
     // 進捗: 10% - メモリ初期化完了
     graphics::update_boot_progress_with_message(10, "Memory initialized");
-    
+
     // アロケーションテスト（シンプル化）
     debug!(target: "test", "Running allocation tests");
     {
@@ -274,7 +278,7 @@ extern "C" fn kmain() -> ! {
         debug!(target: "test", "Vec allocation OK");
         let _sum: u8 = v.iter().sum();
         debug!(target: "test", "Vec iteration OK");
-        
+
         // BTreeMapテスト
         debug!(target: "test", "Testing BTreeMap");
         let mut map: alloc::collections::BTreeMap<u64, u64> = alloc::collections::BTreeMap::new();
@@ -305,7 +309,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing security framework");
     security::init();
     info!(target: "init", "Security framework initialized");
-    
+
     // 2.8. MPK/PKU セキュリティの初期化 (設計書 9.2.2)
     info!(target: "init", "Initializing MPK/PKU security");
     security::mpk::init();
@@ -316,17 +320,17 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing keyboard driver");
     io::keyboard::init();
     info!(target: "init", "Keyboard driver initialized");
-    
+
     // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）using DriverRegistry
     info!(target: "init", "Initializing input devices via DriverRegistry");
     {
-        use io::hid::ps2::Ps2Driver;
-        use driver_registry::register_driver;
         use alloc::boxed::Box;
-        
+        use driver_registry::register_driver;
+        use io::hid::ps2::Ps2Driver;
+
         // PS/2ドライバを登録
         let ps2_handle = register_driver(Box::new(Ps2Driver::new()));
-        
+
         // プローブと開始
         if let Err(e) = driver_registry::driver_registry().probe_and_start(ps2_handle) {
             warn!(target: "init", "PS/2 driver init failed: {:?}", e);
@@ -335,20 +339,20 @@ extern "C" fn kmain() -> ! {
         }
     }
     info!(target: "init", "Input devices initialized");
-    
+
     // 完了
     info!(target: "boot", "BOOT COMPLETE!");
 
     // 3.5. シリアルポートの初期化（デバッグ用）via DriverRegistry
     info!(target: "init", "Initializing serial port via DriverRegistry");
     {
-        use io::serial::SerialDriver;
-        use driver_registry::register_driver;
         use alloc::boxed::Box;
-        
+        use driver_registry::register_driver;
+        use io::serial::SerialDriver;
+
         // Serialドライバを登録
         let serial_handle = register_driver(Box::new(SerialDriver::new()));
-        
+
         // プローブと開始
         if let Err(e) = driver_registry::driver_registry().probe_and_start(serial_handle) {
             warn!(target: "init", "Serial driver init failed: {:?}", e);
@@ -360,10 +364,10 @@ extern "C" fn kmain() -> ! {
     // 3.5.5. NVMeドライバの初期化（PCIスキャン）
     info!(target: "init", "Scanning for NVMe controllers...");
     {
-        use nvme_driver::driver_impl::NvmeDriverWrapper;
-        use driver_registry::register_driver;
-        use pci_driver::{PciClass, find_by_class};
         use alloc::boxed::Box;
+        use driver_registry::register_driver;
+        use nvme_driver::driver_impl::NvmeDriverWrapper;
+        use pci_driver::{PciClass, find_by_class};
 
         // PCIバススキャン（初期化）- すでにカーネルのio::init等で呼ばれている可能性もあるが、
         // ここで再スキャンしても問題ないか、あるいはfind_by_classが内部でスキャンするか確認が必要。
@@ -372,33 +376,34 @@ extern "C" fn kmain() -> ! {
         // NVMeコントローラを検索 (Class 01h, Subclass 08h, ProgIF 02h)
         let devices = find_by_class(0x01, 0x08);
         if let Some(device_info) = devices.iter().find(|d| d.class_code.prog_if == 0x02) {
-             info!(target: "init", "NVMe controller found at {}", device_info.bdf);
-             
-             // BAR0を取得 (NVMeは64bit BAR0/1を使うことが多い)
-             // bus.rsのPciDeviceInfo定義を見ると bars: [Option<Bar>; 6]
-             if let Some(bar0) = device_info.bars[0] {
-                 let bar0_phys = bar0.base();
-                 // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
-                 // new_truncate()で無効な高位ビットをマスク
-                 let bar0_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
-                 info!(target: "init", "NVMe BAR0: phys={:#x} virt={:#x}", bar0_phys, bar0_virt);
-                 
-                 // バス制御を有効化
-                 device_info.enable_bus_master();
-                 device_info.enable_memory_space();
+            info!(target: "init", "NVMe controller found at {}", device_info.bdf);
 
-                 // ドライバを登録
-                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
-                 
-                 // プローブと開始
-                 if let Err(e) = driver_registry::driver_registry().probe_and_start(nvme_handle) {
-                     error!(target: "init", "NVMe driver init failed: {:?}", e);
-                 } else {
-                     info!(target: "init", "NVMe driver initialized via DriverRegistry");
-                 }
-             } else {
-                 warn!(target: "init", "NVMe controller found but BAR0 is invalid");
-             }
+            // BAR0を取得 (NVMeは64bit BAR0/1を使うことが多い)
+            // bus.rsのPciDeviceInfo定義を見ると bars: [Option<Bar>; 6]
+            if let Some(bar0) = device_info.bars[0] {
+                let bar0_phys = bar0.base();
+                // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
+                // new_truncate()で無効な高位ビットをマスク
+                let bar0_virt =
+                    memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                info!(target: "init", "NVMe BAR0: phys={:#x} virt={:#x}", bar0_phys, bar0_virt);
+
+                // バス制御を有効化
+                device_info.enable_bus_master();
+                device_info.enable_memory_space();
+
+                // ドライバを登録
+                let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
+
+                // プローブと開始
+                if let Err(e) = driver_registry::driver_registry().probe_and_start(nvme_handle) {
+                    error!(target: "init", "NVMe driver init failed: {:?}", e);
+                } else {
+                    info!(target: "init", "NVMe driver initialized via DriverRegistry");
+                }
+            } else {
+                warn!(target: "init", "NVMe controller found but BAR0 is invalid");
+            }
         } else {
             info!(target: "init", "No NVMe controller found");
         }
@@ -408,39 +413,40 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Scanning for AHCI controllers...");
     {
         use ahci_driver::driver_impl::AhciDriverWrapper;
+        use alloc::boxed::Box;
         use driver_registry::register_driver;
         use pci_driver::find_by_class;
-        use alloc::boxed::Box;
 
         // AHCIコントローラを検索 (Class 01h, Subclass 06h)
         let devices = find_by_class(0x01, 0x06);
         if let Some(device_info) = devices.first() {
-             info!(target: "init", "AHCI controller found at {}", device_info.bdf);
-             
-             // BAR5 (ABAR) を取得
-             if let Some(bar5) = device_info.bars[5] {
-                 let abar_phys = bar5.base();
-                 // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
-                 // new_truncate()で無効な高位ビットをマスク
-                 let abar_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(abar_phys)).as_u64();
-                 info!(target: "init", "AHCI ABAR: phys={:#x} virt={:#x}", abar_phys, abar_virt);
-                 
-                 // バス制御を有効化
-                 device_info.enable_bus_master();
-                 device_info.enable_memory_space();
+            info!(target: "init", "AHCI controller found at {}", device_info.bdf);
 
-                 // ドライバを登録
-                 let ahci_handle = register_driver(Box::new(AhciDriverWrapper::new(abar_virt, 11))); // IRQ hardcoded for now
-                 
-                 // プローブと開始
-                 if let Err(e) = driver_registry::driver_registry().probe_and_start(ahci_handle) {
-                     error!(target: "init", "AHCI driver init failed: {:?}", e);
-                 } else {
-                     info!(target: "init", "AHCI driver initialized via DriverRegistry");
-                 }
-             } else {
-                 warn!(target: "init", "AHCI controller found but BAR5 is invalid");
-             }
+            // BAR5 (ABAR) を取得
+            if let Some(bar5) = device_info.bars[5] {
+                let abar_phys = bar5.base();
+                // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
+                // new_truncate()で無効な高位ビットをマスク
+                let abar_virt =
+                    memory::phys_to_virt(x86_64::PhysAddr::new_truncate(abar_phys)).as_u64();
+                info!(target: "init", "AHCI ABAR: phys={:#x} virt={:#x}", abar_phys, abar_virt);
+
+                // バス制御を有効化
+                device_info.enable_bus_master();
+                device_info.enable_memory_space();
+
+                // ドライバを登録
+                let ahci_handle = register_driver(Box::new(AhciDriverWrapper::new(abar_virt, 11))); // IRQ hardcoded for now
+
+                // プローブと開始
+                if let Err(e) = driver_registry::driver_registry().probe_and_start(ahci_handle) {
+                    error!(target: "init", "AHCI driver init failed: {:?}", e);
+                } else {
+                    info!(target: "init", "AHCI driver initialized via DriverRegistry");
+                }
+            } else {
+                warn!(target: "init", "AHCI controller found but BAR5 is invalid");
+            }
         } else {
             info!(target: "init", "No AHCI controller found");
         }
@@ -449,31 +455,32 @@ extern "C" fn kmain() -> ! {
     // 3.5.7. USBドライバの初期化（PCIスキャン）
     info!(target: "init", "Scanning for USB xHCI controllers...");
     {
-        use usb_driver::driver_impl::UsbDriverWrapper;
+        use alloc::boxed::Box;
         use driver_registry::register_driver;
         use pci_driver::find_by_class;
-        use alloc::boxed::Box;
+        use usb_driver::driver_impl::UsbDriverWrapper;
 
         // xHCIコントローラを検索 (Class 0Ch, Subclass 03h, ProgIF 30h)
         let devices = find_by_class(0x0C, 0x03);
         for device_info in devices.iter().filter(|d| d.class_code.is_xhci()) {
             info!(target: "init", "USB xHCI controller found at {}", device_info.bdf);
-            
+
             // BAR0 を取得
             if let Some(bar0) = device_info.bars[0] {
                 let bar0_phys = bar0.base();
                 // BARは物理アドレスなのでHHDMオフセットを加えて仮想アドレスに変換
                 // new_truncate()で無効な高位ビットをマスク
-                let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                let base_virt =
+                    memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
                 info!(target: "init", "xHCI BAR0: phys={:#x} virt={:#x}", bar0_phys, base_virt);
-                
+
                 // バス制御を有効化
                 device_info.enable_bus_master();
                 device_info.enable_memory_space();
 
                 // ドライバを登録
                 let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
-                
+
                 // プローブと開始
                 if let Err(e) = driver_registry::driver_registry().probe_and_start(usb_handle) {
                     error!(target: "init", "USB xHCI driver init failed: {:?}", e);
@@ -501,7 +508,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing network subsystem");
     net::init_stack_default();
     net::init_socket_manager();
-    
+
     // 3.6.1. ネットワークシェルAPIの初期化
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
@@ -511,12 +518,12 @@ extern "C" fn kmain() -> ! {
     // 3.6.2. VirtIO-Net driver via DriverRegistry
     info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
     {
-        use net::driver::VirtioNetDriver;
-        use driver_registry::register_driver;
         use alloc::boxed::Box;
-        
+        use driver_registry::register_driver;
+        use net::driver::VirtioNetDriver;
+
         let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
-        
+
         if let Err(e) = driver_registry::driver_registry().probe_and_start(net_handle) {
             warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
         } else {
@@ -546,7 +553,7 @@ extern "C" fn kmain() -> ! {
     loader::init_kernel_cell();
     register_kernel_symbols();
     info!(target: "init", "Cell loader initialized");
-    
+
     // 5.1. ライブアップデート / Epoch-based Reclamation の初期化 (設計書 3.5.3)
     info!(target: "init", "Initializing live update (Epoch-based Reclamation)");
     loader::live_update::init();
@@ -594,7 +601,7 @@ extern "C" fn kmain() -> ! {
     // =========================================================================
     // warn!("!!! INITIATING STACK OVERFLOW TEST !!!");
     // fn stack_overflow() { stack_overflow(); } // 無限再帰
-    // stack_overflow(); 
+    // stack_overflow();
     // =========================================================================
 
     info!(target: "run", "Starting executor main loop");
@@ -757,13 +764,13 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     // タスク9: グラフィカルシェル（フレームバッファ描画）
     executor.spawn(Task::new(async {
         info!(target: "task9", "Graphical shell task starting...");
-        
+
         // グラフィカルシェルを初期化
         shell::graphical::init();
         shell::graphical::start();
-        
+
         info!(target: "task9", "Graphical shell started - running async...");
-        
+
         // 非同期メインループ（完全async版）
         shell::graphical::run_async_shell().await;
     }));

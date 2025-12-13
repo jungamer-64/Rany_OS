@@ -42,7 +42,7 @@ impl CommandQueueWaker {
             has_pending: AtomicBool::new(false),
         }
     }
-    
+
     /// Wakerを登録（コンシューマ側）
     fn register(&self, waker: &Waker) {
         let mut guard = self.waker.lock();
@@ -53,7 +53,7 @@ impl CommandQueueWaker {
         }
         *guard = Some(waker.clone());
     }
-    
+
     /// Wakeをトリガー（プロデューサ側）
     fn notify(&self) {
         self.has_pending.store(true, Ordering::Release);
@@ -61,7 +61,7 @@ impl CommandQueueWaker {
             waker.wake();
         }
     }
-    
+
     /// 保留中のWakeを処理
     fn take_pending(&self) -> bool {
         self.has_pending.swap(false, Ordering::Acquire)
@@ -75,7 +75,9 @@ static NEXT_COMMAND_ID: AtomicU64 = AtomicU64::new(0);
 /// コマンドをキューに追加（プロデューサAPI）
 pub fn submit_command(command: String) -> u64 {
     let id = NEXT_COMMAND_ID.fetch_add(1, Ordering::SeqCst);
-    COMMAND_QUEUE.lock().push_back(CommandRequest { command, id });
+    COMMAND_QUEUE
+        .lock()
+        .push_back(CommandRequest { command, id });
     COMMAND_WAKER.notify();
     id
 }
@@ -96,24 +98,24 @@ pub struct CommandQueueFuture;
 
 impl Future for CommandQueueFuture {
     type Output = CommandRequest;
-    
+
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // 保留中の通知を処理
         COMMAND_WAKER.take_pending();
-        
+
         // キューをチェック
         if let Some(req) = COMMAND_QUEUE.lock().pop_front() {
             return Poll::Ready(req);
         }
-        
+
         // Wakerを登録
         COMMAND_WAKER.register(cx.waker());
-        
+
         // ダブルチェック
         if let Some(req) = COMMAND_QUEUE.lock().pop_front() {
             return Poll::Ready(req);
         }
-        
+
         Poll::Pending
     }
 }
@@ -144,12 +146,10 @@ impl BlinkTimer {
             last_tick: crate::task::timer::current_tick(),
         }
     }
-    
+
     /// 次のティックまで待機
     pub fn tick(&mut self) -> BlinkTimerFuture {
-        BlinkTimerFuture {
-            timer: self,
-        }
+        BlinkTimerFuture { timer: self }
     }
 }
 
@@ -159,11 +159,11 @@ pub struct BlinkTimerFuture<'a> {
 
 impl<'a> Future for BlinkTimerFuture<'a> {
     type Output = u64;
-    
+
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
         let current = crate::task::timer::current_tick();
         let elapsed = current.saturating_sub(self.timer.last_tick);
-        
+
         if elapsed >= self.timer.interval_ticks {
             self.timer.last_tick = current;
             Poll::Ready(current)

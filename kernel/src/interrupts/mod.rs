@@ -51,10 +51,10 @@ pub enum InterruptVector {
 /// IDTを初期化する関数
 fn init_idt() {
     crate::vga::early_serial_str("[IDT] init\n");
-    
+
     unsafe {
         let idt_ptr = (*IDT_CONTAINER.0.get()).as_mut_ptr();
-        
+
         // IDTをゼロクリア（大きなstructなので慎重に）
         crate::vga::early_serial_str("[IDT] zero start\n");
         let idt_bytes = idt_ptr as *mut u8;
@@ -64,47 +64,56 @@ fn init_idt() {
             crate::io::mmio::volatile_write::<u8>(idt_bytes.add(i) as usize, 0);
         }
         crate::vga::early_serial_str("[IDT] zeroed\n");
-        
+
         // IDTはすでにゼロ初期化されているので、ハンドラだけ設定
         // InterruptDescriptorTable::new()を呼ばずに直接設定
         let idt = &mut *(idt_ptr as *mut InterruptDescriptorTable);
-        
+
         crate::vga::early_serial_str("[IDT] handlers\n");
-        
+
         // CPU例外ハンドラの設定
-        idt.divide_error.set_handler_fn(exceptions::divide_error_handler);
+        idt.divide_error
+            .set_handler_fn(exceptions::divide_error_handler);
         idt.debug.set_handler_fn(exceptions::debug_handler);
-        idt.breakpoint.set_handler_fn(exceptions::breakpoint_handler);
-        idt.invalid_opcode.set_handler_fn(exceptions::invalid_opcode_handler);
-        idt.device_not_available.set_handler_fn(exceptions::device_not_available_handler);
-        
+        idt.breakpoint
+            .set_handler_fn(exceptions::breakpoint_handler);
+        idt.invalid_opcode
+            .set_handler_fn(exceptions::invalid_opcode_handler);
+        idt.device_not_available
+            .set_handler_fn(exceptions::device_not_available_handler);
+
         // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
         idt.double_fault
             .set_handler_fn(exceptions::double_fault_handler)
             .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
-        
-        idt.general_protection_fault.set_handler_fn(exceptions::general_protection_fault_handler);
-        idt.page_fault.set_handler_fn(exceptions::page_fault_handler);
-        idt.alignment_check.set_handler_fn(exceptions::alignment_check_handler);
-        idt.machine_check.set_handler_fn(exceptions::machine_check_handler);
-        idt.simd_floating_point.set_handler_fn(exceptions::simd_floating_point_handler);
-        
+
+        idt.general_protection_fault
+            .set_handler_fn(exceptions::general_protection_fault_handler);
+        idt.page_fault
+            .set_handler_fn(exceptions::page_fault_handler);
+        idt.alignment_check
+            .set_handler_fn(exceptions::alignment_check_handler);
+        idt.machine_check
+            .set_handler_fn(exceptions::machine_check_handler);
+        idt.simd_floating_point
+            .set_handler_fn(exceptions::simd_floating_point_handler);
+
         crate::vga::early_serial_str("[IDT] hw int\n");
-        
+
         // ハードウェア割り込みハンドラの設定
         idt[InterruptVector::Timer as u8].set_handler_fn(timer_interrupt_handler);
         idt[InterruptVector::Keyboard as u8].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptVector::Com1 as u8].set_handler_fn(com1_interrupt_handler);
-        
+
         // PIC2 の IRQ ハンドラ（動的デバイス用）
         // IRQ 9, 10, 11 は多くの PCI デバイスで使用される
-        idt[PIC2_OFFSET + 1].set_handler_fn(pci_irq9_handler);  // IRQ9 (Free1)
+        idt[PIC2_OFFSET + 1].set_handler_fn(pci_irq9_handler); // IRQ9 (Free1)
         idt[PIC2_OFFSET + 2].set_handler_fn(pci_irq10_handler); // IRQ10 (Free2)
         idt[PIC2_OFFSET + 3].set_handler_fn(pci_irq11_handler); // IRQ11 (Free3)
         idt[InterruptVector::Mouse as u8].set_handler_fn(mouse_interrupt_handler); // IRQ12 (Mouse)
-        
+
         crate::vga::early_serial_str("[IDT] load\n");
-        
+
         // IDTをロード
         idt.load();
         crate::vga::early_serial_str("[IDT] done\n");
@@ -235,7 +244,7 @@ fn init_pic() {
         // 0=有効, 1=マスク
         // ~(0x01 | 0x02 | 0x04 | 0x10) = 0xE8
         crate::io::outb(PIC1_DATA, 0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
-        
+
         // PIC2: IRQ9, IRQ10, IRQ11, IRQ12 を有効化（PCI デバイス用 + マウス）
         // IRQ8=RTC, IRQ9, IRQ10, IRQ11, IRQ12=Mouse
         // ビット1=IRQ9, ビット2=IRQ10, ビット3=IRQ11, ビット4=IRQ12
@@ -315,7 +324,7 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // 2. 軽量なフラグ設定のみ（重い処理は遅延）
     // タイマーイベントペンディングフラグを設定
     TIMER_EVENT_PENDING.store(true, Ordering::Release);
-    
+
     // 3. プリエンプションカウンタを更新（軽量な操作のみ）
     crate::task::preemption::decrement_time_slice();
 
@@ -334,25 +343,25 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
 }
 
 /// タイマーイベントペンディングフラグ
-static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool = 
+static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
 /// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
-/// 
+///
 /// 設計書 4.2: 重い処理は非ISRコンテキストで実行
 pub fn poll_timer_events() {
     if TIMER_EVENT_PENDING.swap(false, Ordering::Acquire) {
         let tick = TIMER_TICKS.load(Ordering::Relaxed);
-        
+
         // タイマーベースのスリープを処理
         crate::task::timer::handle_timer_interrupt();
-        
+
         // プリエンプションシステムにタイマーティックを通知
         crate::task::preemption::handle_timer_tick(tick);
-        
+
         // Interrupt-Wakerブリッジの処理
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
-        
+
         // ペンディングのプリエンプションを処理
         if crate::task::preemption::is_preemption_pending() {
             crate::task::preemption::request_yield();
@@ -428,19 +437,25 @@ extern "x86-interrupt" fn com1_interrupt_handler(_stack_frame: InterruptStackFra
 /// IRQ 9 ハンドラ (PCI デバイス用)
 extern "x86-interrupt" fn pci_irq9_handler(_stack_frame: InterruptStackFrame) {
     dispatch_pci_interrupt(9);
-    unsafe { send_eoi(9); }
+    unsafe {
+        send_eoi(9);
+    }
 }
 
 /// IRQ 10 ハンドラ (PCI デバイス用)
 extern "x86-interrupt" fn pci_irq10_handler(_stack_frame: InterruptStackFrame) {
     dispatch_pci_interrupt(10);
-    unsafe { send_eoi(10); }
+    unsafe {
+        send_eoi(10);
+    }
 }
 
 /// IRQ 11 ハンドラ (PCI デバイス用)
 extern "x86-interrupt" fn pci_irq11_handler(_stack_frame: InterruptStackFrame) {
     dispatch_pci_interrupt(11);
-    unsafe { send_eoi(11); }
+    unsafe {
+        send_eoi(11);
+    }
 }
 
 /// PCI 割り込みをディスパッチ
@@ -452,7 +467,7 @@ fn dispatch_pci_interrupt(irq: u8) {
     if hda_irq == irq {
         crate::io::audio::hda::handle_interrupt();
     }
-    
+
     // 将来的には他の PCI デバイスもここに追加
     // 例: NVMe, ネットワークカードなど
 }

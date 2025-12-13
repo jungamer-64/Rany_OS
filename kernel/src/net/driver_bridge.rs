@@ -9,13 +9,13 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
-use crate::io::virtio::{with_virtio_net, VirtioNetDevice, VirtioNetHeader};
-use super::stack::{self, NetworkStack, NetworkConfig};
 use super::ethernet::MacAddress;
 use super::ipv4::{Ipv4Address, Ipv4Config};
+use super::stack::{self, NetworkConfig, NetworkStack};
+use crate::io::virtio::{VirtioNetDevice, VirtioNetHeader, with_virtio_net};
 use alloc::vec::Vec;
-use spin::Mutex;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use spin::Mutex;
 
 extern crate alloc;
 
@@ -48,7 +48,7 @@ fn virtio_transmit(data: &[u8]) -> bool {
         // 実際にはsend_asyncを使用するが、ここではシンプルな実装
         transmit_packet(device, data)
     });
-    
+
     match result {
         Some(Ok(())) => {
             TX_PACKETS.fetch_add(1, Ordering::Relaxed);
@@ -71,33 +71,38 @@ fn virtio_transmit(data: &[u8]) -> bool {
 fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static str> {
     // VirtIO-Netヘッダを先頭に追加
     let mut tx_buffer = alloc::vec![0u8; VirtioNetHeader::SIZE + data.len()];
-    
+
     // ヘッダ（デフォルト値でOK）
     let header = VirtioNetHeader::new_tx();
     let header_bytes: &[u8] = &crate::util::struct_as_bytes(&header)[..VirtioNetHeader::SIZE];
     tx_buffer[..VirtioNetHeader::SIZE].copy_from_slice(header_bytes);
     tx_buffer[VirtioNetHeader::SIZE..].copy_from_slice(data);
-    
+
     // 非同期送信Futureを作成
     // Note: 完全な非同期実行にはasync executorとの統合が必要
     // 現時点ではFutureを作成し、送信リクエストをキューに登録する
     // 実際の送信完了はデバイスの割り込み処理で確認される
     let _send_future = device.send_async(&tx_buffer);
-    
+
     // send_asyncはFutureを返すが、内部でVirtQueueにディスクリプタを追加し
     // デバイスに通知を送る
     // ここではfire-and-forgetパターンで送信リクエストのみ発行
-    
+
     // デバッグ用：パケット送信ログ
     #[cfg(debug_assertions)]
     if data.len() >= 14 {
         crate::serial_println!(
             "[NET TX] {} bytes queued, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             data.len(),
-            data[0], data[1], data[2], data[3], data[4], data[5]
+            data[0],
+            data[1],
+            data[2],
+            data[3],
+            data[4],
+            data[5]
         );
     }
-    
+
     Ok(())
 }
 
@@ -112,21 +117,25 @@ pub fn process_received_packet(data: &[u8]) {
     if data.len() <= VirtioNetHeader::SIZE {
         return;
     }
-    
+
     let ethernet_data = &data[VirtioNetHeader::SIZE..];
-    
+
     RX_PACKETS.fetch_add(1, Ordering::Relaxed);
-    
+
     // NetworkStackに渡す
     stack::receive(ethernet_data);
-    
+
     #[cfg(debug_assertions)]
     if ethernet_data.len() >= 14 {
         crate::serial_println!(
             "[NET RX] {} bytes, src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             ethernet_data.len(),
-            ethernet_data[6], ethernet_data[7], ethernet_data[8],
-            ethernet_data[9], ethernet_data[10], ethernet_data[11]
+            ethernet_data[6],
+            ethernet_data[7],
+            ethernet_data[8],
+            ethernet_data[9],
+            ethernet_data[10],
+            ethernet_data[11]
         );
     }
 }
@@ -141,47 +150,58 @@ pub fn init_bridge() -> Result<(), &'static str> {
     if BRIDGE_INITIALIZED.swap(true, Ordering::SeqCst) {
         return Ok(()); // Already initialized
     }
-    
+
     crate::serial_println!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
-    
+
     // Get MAC address from VirtIO-Net if available
     let mac = with_virtio_net(|device| {
         let mac_bytes = device.mac_address();
         MacAddress::from_octets(
-            mac_bytes[0], mac_bytes[1], mac_bytes[2],
-            mac_bytes[3], mac_bytes[4], mac_bytes[5]
+            mac_bytes[0],
+            mac_bytes[1],
+            mac_bytes[2],
+            mac_bytes[3],
+            mac_bytes[4],
+            mac_bytes[5],
         )
-    }).unwrap_or_else(|| {
+    })
+    .unwrap_or_else(|| {
         // Default MAC for QEMU user mode networking
         MacAddress::from_octets(0x52, 0x54, 0x00, 0x12, 0x34, 0x56)
     });
-    
+
     // Initialize NetworkStack with configuration
     let config = NetworkConfig {
         mac,
         ipv4: Ipv4Config {
-            address: Ipv4Address::new([10, 0, 2, 15]),  // QEMU default
+            address: Ipv4Address::new([10, 0, 2, 15]), // QEMU default
             subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
-            gateway: Ipv4Address::new([10, 0, 2, 2]),  // QEMU gateway
+            gateway: Ipv4Address::new([10, 0, 2, 2]), // QEMU gateway
             dns: Some(Ipv4Address::new([10, 0, 2, 3])),
         },
         icmp_echo_enabled: true,
     };
-    
+
     // Initialize the stack
     stack::init(config);
-    
+
     // Set transmit callback
     if let Some(ref stack) = *stack::stack().lock() {
         stack.set_transmit_fn(virtio_transmit);
     }
-    
+
     crate::serial_println!("[NET BRIDGE] Bridge initialized");
-    crate::serial_println!("  MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-        mac.as_bytes()[0], mac.as_bytes()[1], mac.as_bytes()[2],
-        mac.as_bytes()[3], mac.as_bytes()[4], mac.as_bytes()[5]);
+    crate::serial_println!(
+        "  MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+        mac.as_bytes()[0],
+        mac.as_bytes()[1],
+        mac.as_bytes()[2],
+        mac.as_bytes()[3],
+        mac.as_bytes()[4],
+        mac.as_bytes()[5]
+    );
     crate::serial_println!("  IP: 10.0.2.15");
-    
+
     Ok(())
 }
 
@@ -215,9 +235,9 @@ pub struct BridgeStats {
 pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
     let stack_guard = stack::stack().lock();
     let stack = stack_guard.as_ref()?;
-    
+
     let config = stack.config();
-    
+
     Some(super::NetworkConfigSnapshot {
         ip: *config.ipv4.address.as_bytes(),
         netmask: *config.ipv4.subnet_mask.as_bytes(),
@@ -230,9 +250,9 @@ pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
 pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
     let stack_guard = stack::stack().lock();
     let stack = stack_guard.as_ref()?;
-    
+
     let stats = stack.stats();
-    
+
     Some(super::NetworkStatsSnapshot {
         rx_packets: stats.rx_packets.load(Ordering::Relaxed),
         tx_packets: stats.tx_packets.load(Ordering::Relaxed),
@@ -246,11 +266,14 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
 /// Send ICMP echo via real NetworkStack
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
     let stack_guard = stack::stack().lock();
-    let stack = stack_guard.as_ref().ok_or("Network stack not initialized")?;
-    
+    let stack = stack_guard
+        .as_ref()
+        .ok_or("Network stack not initialized")?;
+
     let target_ip = Ipv4Address::new(target);
-    
-    stack.send_icmp_echo_request(target_ip, seq)
+
+    stack
+        .send_icmp_echo_request(target_ip, seq)
         .map_err(|_| "Failed to send ICMP echo request")
 }
 
@@ -261,10 +284,10 @@ pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
         Some(s) => s,
         None => return Vec::new(),
     };
-    
+
     let arp_cache = stack.arp_cache();
     let mut entries = Vec::new();
-    
+
     for (ip, mac) in arp_cache {
         entries.push(super::ArpCacheEntry {
             ip: *ip.as_bytes(),
@@ -272,6 +295,6 @@ pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
             complete: true,
         });
     }
-    
+
     entries
 }

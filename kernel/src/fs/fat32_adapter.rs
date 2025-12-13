@@ -21,8 +21,8 @@ use crate::fs::fs_abstraction::{
 // Import from the new crate
 use fat32::Fat32FileSystem;
 use vfs::{
-    Directory as VfsDirectory, File as VfsFile, FileSystem as VfsFileSystem, FileType as VfsFileType,
-    Metadata as VfsMetadata, VfsError, VfsNode,
+    Directory as VfsDirectory, File as VfsFile, FileSystem as VfsFileSystem,
+    FileType as VfsFileType, Metadata as VfsMetadata, VfsError, VfsNode,
 };
 
 // ============================================================================
@@ -78,7 +78,10 @@ fn convert_metadata(meta: VfsMetadata, ino: u64) -> FileAttr {
         ino,
         size: meta.size,
         blocks: (meta.size + 511) / 512, // Approximate
-        file_type: meta.file_type.map(convert_file_type).unwrap_or(FileType::Regular),
+        file_type: meta
+            .file_type
+            .map(convert_file_type)
+            .unwrap_or(FileType::Regular),
         mode: FileMode::default(), // FAT32 doesn't support modes really
         nlink: 1,
         uid: 0,
@@ -119,19 +122,19 @@ impl FileSystem for Fat32FileSystemAdapter {
         // Since Box<dyn VfsNode> owns the node, we can put it in Arc<Mutex>?
         // Or better, Fat32Inode is likely Arc internally or we can just wrap the Box.
         // But Inode needs Send+Sync.
-        
+
         // Strategy: Wrap Box<dyn VfsNode> in Arc<Fat32InodeAdapter>
         // But Fat32InodeAdapter needs to hold the VfsNode.
         // Since VfsNode is a trait object, we can hold Box<dyn VfsNode>.
         // But we need Arc<Fat32InodeAdapter> to return.
-        
+
         Ok(Arc::new(Fat32InodeAdapter {
             inner: spin::Mutex::new(root_node),
         }))
     }
 
     fn statfs(&self) -> FsResult<FsStats> {
-        // FAT32 crate doesn't implement statfs yet in VFS trait, 
+        // FAT32 crate doesn't implement statfs yet in VFS trait,
         // but Fat32FileSystem might have methods.
         // For now return dummy or implement if possible.
         Ok(FsStats::default())
@@ -151,8 +154,8 @@ impl FileSystem for Fat32FileSystemAdapter {
 // ============================================================================
 
 pub struct Fat32InodeAdapter {
-    // We use Mutex because VfsNode methods take &self (immutable), 
-    // but some operations like open/as_dir might need internal mutability 
+    // We use Mutex because VfsNode methods take &self (immutable),
+    // but some operations like open/as_dir might need internal mutability
     // or we just hold the Box.
     // Actually VfsNode methods take &self.
     // But we need to put it in a struct that can be Arc'd.
@@ -178,7 +181,7 @@ impl Inode for Fat32InodeAdapter {
         let node = self.inner.lock();
         let dir = node.as_dir().map_err(FsError::from)?;
         let child = dir.lookup(name).map_err(FsError::from)?;
-        
+
         Ok(Arc::new(Fat32InodeAdapter {
             inner: spin::Mutex::new(child),
         }))
@@ -188,19 +191,22 @@ impl Inode for Fat32InodeAdapter {
         let mut node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let entries = dir.read_dir().map_err(FsError::from)?;
-        
-        Ok(entries.into_iter().map(|e| DirEntry {
-            name: e.name,
-            ino: 0, // TODO
-            file_type: convert_file_type(e.file_type),
-        }).collect())
+
+        Ok(entries
+            .into_iter()
+            .map(|e| DirEntry {
+                name: e.name,
+                ino: 0, // TODO
+                file_type: convert_file_type(e.file_type),
+            })
+            .collect())
     }
 
     fn create(&self, name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
         let mut node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let child = dir.create(name, VfsFileType::File).map_err(FsError::from)?;
-        
+
         Ok(Arc::new(Fat32InodeAdapter {
             inner: spin::Mutex::new(child),
         }))
@@ -209,8 +215,10 @@ impl Inode for Fat32InodeAdapter {
     fn mkdir(&self, name: &str, _mode: FileMode) -> FsResult<Arc<dyn Inode>> {
         let mut node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
-        let child = dir.create(name, VfsFileType::Directory).map_err(FsError::from)?;
-        
+        let child = dir
+            .create(name, VfsFileType::Directory)
+            .map_err(FsError::from)?;
+
         Ok(Arc::new(Fat32InodeAdapter {
             inner: spin::Mutex::new(child),
         }))
@@ -247,14 +255,16 @@ impl Inode for Fat32InodeAdapter {
     fn read(&self, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
         let node = self.inner.lock();
         let mut file = node.open(vfs::OpenFlags::empty()).map_err(FsError::from)?;
-        file.seek(vfs::SeekFrom::Start(offset)).map_err(FsError::from)?;
+        file.seek(vfs::SeekFrom::Start(offset))
+            .map_err(FsError::from)?;
         file.read(buf).map_err(FsError::from)
     }
 
     fn write(&self, offset: u64, buf: &[u8]) -> FsResult<usize> {
         let node = self.inner.lock();
         let mut file = node.open(vfs::OpenFlags::empty()).map_err(FsError::from)?;
-        file.seek(vfs::SeekFrom::Start(offset)).map_err(FsError::from)?;
+        file.seek(vfs::SeekFrom::Start(offset))
+            .map_err(FsError::from)?;
         file.write(buf).map_err(FsError::from)
     }
 

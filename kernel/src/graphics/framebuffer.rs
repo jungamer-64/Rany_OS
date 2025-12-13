@@ -12,8 +12,8 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ptr;
 
-use super::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 use super::font::BitmapFont;
+use super::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 
 // ============================================================================
 // Framebuffer
@@ -57,9 +57,9 @@ impl Framebuffer {
         if buffer.len() == self.info.size() {
             self.back_buffer = Some(buffer);
         } else {
-             // サイズ不一致だけどパニックさせるとまたロックの問題が出るかも？
-             // ログ出さずにリターンするか、あるいはパニック（ロック保持中なのでパニックハンドラがデッドロックするリスクあり）
-             // ここはリターンしてエラー状態にするのが安全
+            // サイズ不一致だけどパニックさせるとまたロックの問題が出るかも？
+            // ログ出さずにリターンするか、あるいはパニック（ロック保持中なのでパニックハンドラがデッドロックするリスクあり）
+            // ここはリターンしてエラー状態にするのが安全
         }
     }
 
@@ -76,7 +76,7 @@ impl Framebuffer {
             }
         }
     }
-    
+
     /// 指定領域のみバックバッファからVRAMへコピー（部分Blit）
     /// 全画面コピーより効率的
     /// 注: "Swap"ではなく"Blit"（一方向コピー）
@@ -84,26 +84,26 @@ impl Framebuffer {
         if let Some(ref back) = self.back_buffer {
             let stride = self.info.stride as usize;
             let bytes_per_pixel = (self.info.bpp / 8) as usize;
-            
+
             // 境界チェック
             let x = (rect.x.max(0) as u32).min(self.info.width) as usize;
             let y = (rect.y.max(0) as u32).min(self.info.height) as usize;
             let w = (rect.width as usize).min(self.info.width as usize - x);
             let h = (rect.height as usize).min(self.info.height as usize - y);
-            
+
             if w == 0 || h == 0 {
                 return;
             }
-            
+
             let row_bytes = w * bytes_per_pixel;
-            
+
             unsafe {
                 for row in 0..h {
                     let offset = (y + row) * stride + x * bytes_per_pixel;
                     ptr::copy_nonoverlapping(
                         back.as_ptr().add(offset),
                         self.buffer.add(offset),
-                        row_bytes
+                        row_bytes,
                     );
                 }
             }
@@ -236,9 +236,18 @@ impl Framebuffer {
                         crate::io::mmio::mmio_write_u32(pixel_addr, color.to_u32());
                     },
                     PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
-                        crate::io::mmio::volatile_write::<u8>(buffer.add(offset) as usize, color.blue);
-                        crate::io::mmio::volatile_write::<u8>(buffer.add(offset + 1) as usize, color.green);
-                        crate::io::mmio::volatile_write::<u8>(buffer.add(offset + 2) as usize, color.red);
+                        crate::io::mmio::volatile_write::<u8>(
+                            buffer.add(offset) as usize,
+                            color.blue,
+                        );
+                        crate::io::mmio::volatile_write::<u8>(
+                            buffer.add(offset + 1) as usize,
+                            color.green,
+                        );
+                        crate::io::mmio::volatile_write::<u8>(
+                            buffer.add(offset + 2) as usize,
+                            color.red,
+                        );
                     },
                     PixelFormat::Rgb565 => unsafe {
                         let r = (color.red as u16 >> 3) & 0x1F;
@@ -330,11 +339,11 @@ impl Framebuffer {
         let s_bottom = s.bottom().min(self.clip.bottom());
         s.width = (s_right - s.x).max(0) as u32;
         s.height = (s_bottom - s.y).max(0) as u32;
-        
+
         // dstのクリップ（srcと連動）
         let mut d_x = dst_x + (s.x - src.x);
         let mut d_y = dst_y + (s.y - src.y);
-        
+
         // dstが画面外にはみ出す場合の調整
         let clip_left = self.clip.x;
         let clip_top = self.clip.y;
@@ -353,17 +362,17 @@ impl Framebuffer {
             s.height = s.height.saturating_sub(diff as u32);
             d_y = clip_top;
         }
-        
+
         // 右/下のはみ出し
         let d_right = d_x + s.width as i32;
         if d_right > clip_right {
-             let diff = d_right - clip_right;
-             s.width = s.width.saturating_sub(diff as u32);
+            let diff = d_right - clip_right;
+            s.width = s.width.saturating_sub(diff as u32);
         }
         let d_bottom = d_y + s.height as i32;
         if d_bottom > clip_bottom {
-             let diff = d_bottom - clip_bottom;
-             s.height = s.height.saturating_sub(diff as u32);
+            let diff = d_bottom - clip_bottom;
+            s.height = s.height.saturating_sub(diff as u32);
         }
 
         if s.width == 0 || s.height == 0 {
@@ -374,29 +383,29 @@ impl Framebuffer {
         let stride = self.info.stride as usize;
         let bpp = self.info.format.bytes_per_pixel();
         let copy_bytes = s.width as usize * bpp;
-        
+
         unsafe {
             if d_y > s.y {
                 // 下方向へのコピー（後ろから）
                 for i in (0..s.height).rev() {
-                     let src_row_y = s.y + i as i32;
-                     let dst_row_y = d_y + i as i32;
-                     
-                     let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
-                     let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
-                     
-                     ptr::copy(buffer.add(src_offset), buffer.add(dst_offset), copy_bytes);
+                    let src_row_y = s.y + i as i32;
+                    let dst_row_y = d_y + i as i32;
+
+                    let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
+                    let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
+
+                    ptr::copy(buffer.add(src_offset), buffer.add(dst_offset), copy_bytes);
                 }
             } else {
                 // 上方向へのコピー（前から）
                 for i in 0..s.height {
-                     let src_row_y = s.y + i as i32;
-                     let dst_row_y = d_y + i as i32;
-                     
-                     let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
-                     let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
-                     
-                     ptr::copy(buffer.add(src_offset), buffer.add(dst_offset), copy_bytes);
+                    let src_row_y = s.y + i as i32;
+                    let dst_row_y = d_y + i as i32;
+
+                    let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
+                    let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
+
+                    ptr::copy(buffer.add(src_offset), buffer.add(dst_offset), copy_bytes);
                 }
             }
         }
@@ -493,7 +502,7 @@ impl Framebuffer {
     }
 
     /// テキストを描画（組み込み8x16フォントを使用）
-    /// 
+    ///
     /// # Arguments
     /// * `x` - 開始X座標
     /// * `y` - 開始Y座標
@@ -513,7 +522,7 @@ impl Framebuffer {
             let c_index = c as usize;
             if c_index < 128 {
                 let glyph_start = c_index * font.height() as usize;
-                
+
                 for row in 0..font.height() {
                     let glyph_row = glyph_start + row as usize;
                     if glyph_row < font.data_len() {
@@ -522,7 +531,7 @@ impl Framebuffer {
                             let pixel_on = (byte >> (7 - col)) & 1 != 0;
                             let px = cx + col as i32;
                             let py = y + row as i32;
-                            
+
                             if pixel_on {
                                 self.set_pixel(px, py, color);
                             } else {
@@ -532,7 +541,7 @@ impl Framebuffer {
                     }
                 }
             }
-            
+
             cx += font.width() as i32;
         }
     }

@@ -5,8 +5,8 @@
 extern crate alloc;
 
 use alloc::sync::Arc;
-use kernel_api::{KapiResult, KapiError};
 use kernel_api::driver::{Driver, DriverType};
+use kernel_api::{KapiError, KapiResult};
 
 use crate::xhci::{XhciController, init_from_pci};
 
@@ -36,9 +36,8 @@ impl Driver for UsbDriverWrapper {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        let controller = init_from_pci(self.base_addr)
-            .map_err(|_| KapiError::Internal(-1))?;
-        
+        let controller = init_from_pci(self.base_addr).map_err(|_| KapiError::Internal(-1))?;
+
         self.controller = Some(controller);
         Ok(())
     }

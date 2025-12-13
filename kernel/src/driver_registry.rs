@@ -27,8 +27,12 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
-use kernel_api::driver::{Driver, DriverType, DeviceId, DriverState};
-use kernel_api::driver_abi::{DriverEntryFn as AbiEntryFn, DriverVTable as AbiDriverVTable, DriverContext as AbiDriverContext, DriverCapabilities as AbiDriverCapabilities, AbiError as AbiErrorCode, AbiDriverType};
+use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
+use kernel_api::driver_abi::{
+    AbiDriverType, AbiError as AbiErrorCode, DriverCapabilities as AbiDriverCapabilities,
+    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn,
+    DriverVTable as AbiDriverVTable,
+};
 use kernel_api::error::{KapiError, KapiResult};
 use spin::Mutex;
 
@@ -71,10 +75,13 @@ impl DriverRegistry {
     pub fn register(&self, driver: Box<dyn Driver>) -> DriverHandle {
         let mut drivers = self.drivers.lock();
         let id = drivers.len();
-        
-        crate::log!("[DRIVER] Registering driver: {} (type: {:?})\n", 
-                   driver.name(), driver.driver_type());
-        
+
+        crate::log!(
+            "[DRIVER] Registering driver: {} (type: {:?})\n",
+            driver.name(),
+            driver.driver_type()
+        );
+
         drivers.push(DriverEntry::new(driver));
         DriverHandle(id)
     }
@@ -82,15 +89,14 @@ impl DriverRegistry {
     /// Probe a specific driver
     pub fn probe(&self, handle: DriverHandle) -> Result<(), DriverError> {
         let mut drivers = self.drivers.lock();
-        let entry = drivers.get_mut(handle.0)
-            .ok_or(DriverError::NotFound)?;
-        
+        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+
         if entry.state != DriverState::Registered {
             return Err(DriverError::InvalidState);
         }
-        
+
         crate::log!("[DRIVER] Probing driver: {}\n", entry.driver.name());
-        
+
         match entry.driver.probe() {
             Ok(()) => {
                 entry.state = DriverState::Probed;
@@ -108,15 +114,14 @@ impl DriverRegistry {
     /// Start a probed driver
     pub fn start(&self, handle: DriverHandle) -> Result<(), DriverError> {
         let mut drivers = self.drivers.lock();
-        let entry = drivers.get_mut(handle.0)
-            .ok_or(DriverError::NotFound)?;
-        
+        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+
         if entry.state != DriverState::Probed && entry.state != DriverState::Stopped {
             return Err(DriverError::InvalidState);
         }
-        
+
         crate::log!("[DRIVER] Starting driver: {}\n", entry.driver.name());
-        
+
         match entry.driver.start() {
             Ok(()) => {
                 entry.state = DriverState::Running;
@@ -133,15 +138,14 @@ impl DriverRegistry {
     /// Stop a running driver
     pub fn stop(&self, handle: DriverHandle) -> Result<(), DriverError> {
         let mut drivers = self.drivers.lock();
-        let entry = drivers.get_mut(handle.0)
-            .ok_or(DriverError::NotFound)?;
-        
+        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+
         if entry.state != DriverState::Running {
             return Err(DriverError::InvalidState);
         }
-        
+
         crate::log!("[DRIVER] Stopping driver: {}\n", entry.driver.name());
-        
+
         match entry.driver.stop() {
             Ok(()) => {
                 entry.state = DriverState::Stopped;
@@ -162,21 +166,21 @@ impl DriverRegistry {
 
     /// Get driver state
     pub fn state(&self, handle: DriverHandle) -> Option<DriverState> {
-        self.drivers.lock()
-            .get(handle.0)
-            .map(|e| e.state)
+        self.drivers.lock().get(handle.0).map(|e| e.state)
     }
 
     /// Get driver name
     pub fn name(&self, handle: DriverHandle) -> Option<String> {
-        self.drivers.lock()
+        self.drivers
+            .lock()
             .get(handle.0)
             .map(|e| String::from(e.driver.name()))
     }
 
     /// Find drivers by type
     pub fn find_by_type(&self, driver_type: DriverType) -> Vec<DriverHandle> {
-        self.drivers.lock()
+        self.drivers
+            .lock()
             .iter()
             .enumerate()
             .filter(|(_, e)| e.driver.driver_type() == driver_type)
@@ -186,13 +190,15 @@ impl DriverRegistry {
 
     /// Find driver that supports a device
     pub fn find_for_device(&self, device_id: &DeviceId) -> Option<DriverHandle> {
-        self.drivers.lock()
+        self.drivers
+            .lock()
             .iter()
             .enumerate()
             .find(|(_, e)| {
-                e.driver.supported_devices().iter().any(|d| {
-                    d.vendor == device_id.vendor && d.device == device_id.device
-                })
+                e.driver
+                    .supported_devices()
+                    .iter()
+                    .any(|d| d.vendor == device_id.vendor && d.device == device_id.device)
             })
             .map(|(i, _)| DriverHandle(i))
     }
@@ -204,7 +210,8 @@ impl DriverRegistry {
 
     /// Get count of running drivers
     pub fn running_count(&self) -> usize {
-        self.drivers.lock()
+        self.drivers
+            .lock()
             .iter()
             .filter(|e| e.state == DriverState::Running)
             .count()
@@ -212,15 +219,18 @@ impl DriverRegistry {
 
     /// List all drivers with their states
     pub fn list(&self) -> Vec<(DriverHandle, String, DriverType, DriverState)> {
-        self.drivers.lock()
+        self.drivers
+            .lock()
             .iter()
             .enumerate()
-            .map(|(i, e)| (
-                DriverHandle(i),
-                String::from(e.driver.name()),
-                e.driver.driver_type(),
-                e.state,
-            ))
+            .map(|(i, e)| {
+                (
+                    DriverHandle(i),
+                    String::from(e.driver.name()),
+                    e.driver.driver_type(),
+                    e.state,
+                )
+            })
             .collect()
     }
 
@@ -253,19 +263,21 @@ impl DriverRegistry {
     }
 
     /// Initialize all drivers (probe + start in one call)
-    /// 
+    ///
     /// This is the main entry point for bulk driver initialization.
     /// Logs success/failure for each driver.
     pub fn init_all(&self) {
         let count = self.count();
         crate::log!("[DRIVER] Initializing {} registered drivers...\n", count);
-        
+
         for i in 0..count {
             let handle = DriverHandle(i);
-            let name = self.name(handle).unwrap_or_else(|| alloc::string::String::from("unknown"));
-            
+            let name = self
+                .name(handle)
+                .unwrap_or_else(|| alloc::string::String::from("unknown"));
+
             crate::log!("[DRIVER] Initializing: {}\n", name);
-            
+
             match self.probe_and_start(handle) {
                 Ok(()) => {
                     crate::log!("[DRIVER] {} initialized successfully\n", name);
@@ -275,9 +287,12 @@ impl DriverRegistry {
                 }
             }
         }
-        
-        crate::log!("[DRIVER] Driver initialization complete: {}/{} running\n", 
-                   self.running_count(), count);
+
+        crate::log!(
+            "[DRIVER] Driver initialization complete: {}/{} running\n",
+            self.running_count(),
+            count
+        );
     }
 
     /// Unregister a driver and replace it with a null driver to allow cell unloading
@@ -374,7 +389,7 @@ pub fn register_driver(driver: Box<dyn Driver>) -> DriverHandle {
 }
 
 /// Initialize all registered drivers (probe + start)
-/// 
+///
 /// This is the simplified API for main.rs to call after registering all drivers.
 pub fn init_all_drivers() {
     DRIVER_REGISTRY.init_all()
@@ -461,24 +476,41 @@ struct NullDriver {
 
 impl NullDriver {
     fn new(name: &str, ty: DriverType) -> Self {
-        Self { name: alloc::string::String::from(name), ty }
+        Self {
+            name: alloc::string::String::from(name),
+            ty,
+        }
     }
 }
 
 impl Driver for NullDriver {
-    fn name(&self) -> &str { &self.name }
+    fn name(&self) -> &str {
+        &self.name
+    }
 
-    fn version(&self) -> kernel_api::driver::DriverVersion { kernel_api::driver::DriverVersion::new(0,0,0) }
+    fn version(&self) -> kernel_api::driver::DriverVersion {
+        kernel_api::driver::DriverVersion::new(0, 0, 0)
+    }
 
-    fn driver_type(&self) -> DriverType { self.ty }
+    fn driver_type(&self) -> DriverType {
+        self.ty
+    }
 
-    fn probe(&mut self) -> KapiResult<()> { Err(KapiError::NotSupported) }
+    fn probe(&mut self) -> KapiResult<()> {
+        Err(KapiError::NotSupported)
+    }
 
-    fn start(&mut self) -> KapiResult<()> { Err(KapiError::NotSupported) }
+    fn start(&mut self) -> KapiResult<()> {
+        Err(KapiError::NotSupported)
+    }
 
-    fn stop(&mut self) -> KapiResult<()> { Ok(()) }
+    fn stop(&mut self) -> KapiResult<()> {
+        Ok(())
+    }
 
-    fn supported_devices(&self) -> &[kernel_api::driver::DeviceId] { &[] }
+    fn supported_devices(&self) -> &[kernel_api::driver::DeviceId] {
+        &[]
+    }
 }
 
 impl Driver for AbiDriver {
@@ -544,30 +576,47 @@ impl Driver for AbiDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loader::{with_registry_mut, unload_cell, CellId};
+    use crate::loader::{CellId, unload_cell, with_registry_mut};
     use alloc::string::String;
-    use core::sync::atomic::{AtomicBool, Ordering};
-    use kernel_api::driver_abi::{DriverVTable, DriverContext, DriverEntryFn, DRIVER_ABI_VERSION, AbiDriverType};
     use core::ptr;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use kernel_api::driver_abi::{
+        AbiDriverType, DRIVER_ABI_VERSION, DriverContext, DriverEntryFn, DriverVTable,
+    };
 
     static PROBE_CALLED: AtomicBool = AtomicBool::new(false);
-        static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);
+    static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);
 
     extern "C" fn probe(_ctx: *mut DriverContext) -> i32 {
         PROBE_CALLED.store(true, Ordering::SeqCst);
         0
     }
 
-    extern "C" fn start(_ctx: *mut DriverContext) -> i32 { 0 }
-    extern "C" fn stop(_ctx: *mut DriverContext) -> i32 { 0 }
-    extern "C" fn remove(_ctx: *mut DriverContext) -> i32 { REMOVE_CALLED.store(true, Ordering::SeqCst); 0 }
+    extern "C" fn start(_ctx: *mut DriverContext) -> i32 {
+        0
+    }
+    extern "C" fn stop(_ctx: *mut DriverContext) -> i32 {
+        0
+    }
+    extern "C" fn remove(_ctx: *mut DriverContext) -> i32 {
+        REMOVE_CALLED.store(true, Ordering::SeqCst);
+        0
+    }
 
     static NAME_BYTES: &[u8] = b"test_abi_driver\0";
 
-    extern "C" fn name_fn() -> *const u8 { NAME_BYTES.as_ptr() }
-    extern "C" fn name_len_fn() -> usize { NAME_BYTES.len() - 1 }
-    extern "C" fn type_fn() -> u32 { AbiDriverType::Block as u32 }
-    extern "C" fn version_fn() -> u64 { 0 }
+    extern "C" fn name_fn() -> *const u8 {
+        NAME_BYTES.as_ptr()
+    }
+    extern "C" fn name_len_fn() -> usize {
+        NAME_BYTES.len() - 1
+    }
+    extern "C" fn type_fn() -> u32 {
+        AbiDriverType::Block as u32
+    }
+    extern "C" fn version_fn() -> u64 {
+        0
+    }
 
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
@@ -583,7 +632,9 @@ mod tests {
         None,
     );
 
-    extern "C" fn entry_fn() -> *const DriverVTable { &VTABLE }
+    extern "C" fn entry_fn() -> *const DriverVTable {
+        &VTABLE
+    }
 
     #[test]
     fn test_register_abi_driver_and_block_unload() {

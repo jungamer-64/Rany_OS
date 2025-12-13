@@ -9,26 +9,62 @@ pub mod shared_mem;
 
 #[allow(unused_imports)]
 pub use pipe::{
-    Pipe, PipeError, PipeFd, PipeFlags, PipeId, PipeManager, PipeReader, PipeWriter, mkfifo, pipe,
-    pipe_manager, pipe2,
+    ChannelError,
+    Pipe,
+    PipeError,
+    PipeFd,
+    PipeFlags,
+    PipeId,
+    PipeManager,
+    PipeReader,
+    PipeWriter,
     // ゼロコピーチャンネル
-    ZeroCopyChannel, ZeroCopySender, ZeroCopyReceiver, ChannelError, zero_copy_channel,
-};
-pub use rref::{
-    DomainId, RRef, reclaim_domain_resources,
-    // TypeIdHash: 動的型安全性（設計書 8.1）
-    TypeIdHash, TypeHash, TypeHashError,
-};
-#[allow(unused_imports)]
-pub use shared_mem::{
-    SharedMemoryManager, SharedMemoryRegion, ShmError, ShmFlags, ShmHandle, ShmId, ShmKey,
-    shm_manager, shm_open, shm_unlink, shmat, shmctl_remove, shmctl_stat, shmget,
-    // ゼロコピー共有メモリ
-    ZeroCopyRegion, SharedRingBuffer,
+    ZeroCopyChannel,
+    ZeroCopyReceiver,
+    ZeroCopySender,
+    mkfifo,
+    pipe,
+    pipe_manager,
+    pipe2,
+    zero_copy_channel,
 };
 #[allow(unused_imports)]
 pub use proxy::{
-    BasicProxy, DomainProxy, ProxyError, ProxyResult,
+    BasicProxy,
+    DomainProxy,
+    ProxyError,
+    ProxyResult,
     // パニック捕捉
-    begin_proxy_call, record_proxy_panic, did_proxy_panic,
+    begin_proxy_call,
+    did_proxy_panic,
+    record_proxy_panic,
+};
+pub use rref::{
+    DomainId,
+    RRef,
+    TypeHash,
+    TypeHashError,
+    // TypeIdHash: 動的型安全性（設計書 8.1）
+    TypeIdHash,
+    reclaim_domain_resources,
+};
+#[allow(unused_imports)]
+pub use shared_mem::{
+    SharedMemoryManager,
+    SharedMemoryRegion,
+    SharedRingBuffer,
+    ShmError,
+    ShmFlags,
+    ShmHandle,
+    ShmId,
+    ShmKey,
+    // ゼロコピー共有メモリ
+    ZeroCopyRegion,
+    shm_manager,
+    shm_open,
+    shm_unlink,
+    shmat,
+    shmctl_remove,
+    shmctl_stat,
+    shmget,
 };

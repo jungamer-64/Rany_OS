@@ -585,7 +585,7 @@ impl AtapiPort {
             flags: 0x80, // Command
             command: ATA_CMD_PACKET,
             feature_lo: if write { 0x00 } else { 0x00 },
-            lba1: (buffer.len() & 0xFF) as u8,        // Byte count low
+            lba1: (buffer.len() & 0xFF) as u8, // Byte count low
             lba2: ((buffer.len() >> 8) & 0xFF) as u8, // Byte count high
             device: 0,
             ..Default::default()
@@ -661,7 +661,8 @@ impl AtapiPort {
 
         self.packet_command(&cdb, &mut buffer, false)?;
 
-        let response = crate::util::read_unaligned_from_addr::<InquiryResponse>(buffer.as_ptr() as usize);
+        let response =
+            crate::util::read_unaligned_from_addr::<InquiryResponse>(buffer.as_ptr() as usize);
         self.inquiry_cache = Some(response);
 
         Ok(response)
@@ -674,7 +675,9 @@ impl AtapiPort {
 
         self.packet_command(&cdb, &mut buffer, false)?;
 
-        Ok(crate::util::read_unaligned_from_addr::<SenseData>(buffer.as_ptr() as usize))
+        Ok(crate::util::read_unaligned_from_addr::<SenseData>(
+            buffer.as_ptr() as usize,
+        ))
     }
 
     /// Read Capacityを実行
@@ -688,12 +691,7 @@ impl AtapiPort {
     }
 
     /// セクタを読み取り
-    pub fn read_sectors(
-        &mut self,
-        lba: u32,
-        count: u16,
-        buffer: &mut [u8],
-    ) -> AhciResult<usize> {
+    pub fn read_sectors(&mut self, lba: u32, count: u16, buffer: &mut [u8]) -> AhciResult<usize> {
         let expected = count as usize * CD_SECTOR_SIZE as usize;
         if buffer.len() < expected {
             return Err(AhciError::InvalidParameter);
@@ -726,7 +724,8 @@ impl AtapiPort {
         let mut header_buf = [0u8; 4];
         self.packet_command(&cdb, &mut header_buf, false)?;
 
-        let header = crate::util::read_unaligned_from_addr::<TocHeader>(header_buf.as_ptr() as usize);
+        let header =
+            crate::util::read_unaligned_from_addr::<TocHeader>(header_buf.as_ptr() as usize);
         let data_length = header.data_length();
 
         // 全TOCデータを読み取り
@@ -746,7 +745,7 @@ impl AtapiPort {
         for i in 0..track_count {
             let offset = i * 8;
             let track = crate::util::read_unaligned_from_addr::<TocTrackDescriptor>(
-                track_data[offset..].as_ptr() as usize
+                track_data[offset..].as_ptr() as usize,
             );
             tracks.push(track);
         }

@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // apps/src/browser/layout.rs - Layout Engine
 // ============================================================================
 //!
@@ -31,7 +31,12 @@ pub struct Rect {
 
 impl Rect {
     pub fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
-        Self { x, y, width, height }
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
     }
 
     pub fn bottom(&self) -> f32 {
@@ -69,7 +74,9 @@ pub fn layout_tree<'a>(style_root: &'a StyledNode, containing_block: Dimensions)
     LayoutBox {
         dimensions: containing_block,
         box_type: BoxType::BlockNode(style_root),
-        children: style_root.children.iter()
+        children: style_root
+            .children
+            .iter()
             .map(|child| layout_tree(child, Dimensions::default()))
             .collect(),
     }

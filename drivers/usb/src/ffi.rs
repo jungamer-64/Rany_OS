@@ -6,8 +6,10 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
-use kernel_api::driver_abi::{DriverContext, DriverVTable, DriverCapabilities, DRIVER_ABI_VERSION, pack_version};
 use kernel_api::driver::DriverType;
+use kernel_api::driver_abi::{
+    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
+};
 
 // ============================================================================
 // Driver Lifecycle Functions

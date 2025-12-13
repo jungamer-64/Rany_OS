@@ -15,8 +15,8 @@
 use core::ptr;
 
 use super::{
-    CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN, IR0,
-    USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
+    CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN, IR0, USBCMD, USBCMD_HCRST, USBCMD_INTE,
+    USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
 };
 use crate::{UsbError, UsbResult};
 
@@ -261,10 +261,16 @@ impl XhciInitContext {
     }
 
     fn write_runtime(&self, offset: usize, value: u32) {
-        hal::mmio::mmio_write_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize, value)
+        hal::mmio::mmio_write_u32(
+            (self.rt_offset + IR0 as u64 + offset as u64) as usize,
+            value,
+        )
     }
 
     fn write_runtime_64(&self, offset: usize, value: u64) {
-        hal::mmio::mmio_write_u64((self.rt_offset + IR0 as u64 + offset as u64) as usize, value)
+        hal::mmio::mmio_write_u64(
+            (self.rt_offset + IR0 as u64 + offset as u64) as usize,
+            value,
+        )
     }
 }

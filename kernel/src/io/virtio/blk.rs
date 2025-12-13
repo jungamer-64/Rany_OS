@@ -264,12 +264,16 @@ impl VirtQueue {
 
         let avail_idx = unsafe { (*self.avail_ring).idx };
         let ring_ptr = unsafe { (self.avail_ring as *mut u16).add(2) }; // Skip flags and idx
-        unsafe { *ring_ptr.add((avail_idx % self.queue_size) as usize) = head; }
+        unsafe {
+            *ring_ptr.add((avail_idx % self.queue_size) as usize) = head;
+        }
 
         // Memory barrier before updating index
         core::sync::atomic::fence(Ordering::Release);
 
-        unsafe { (*self.avail_ring).idx = avail_idx.wrapping_add(1); }
+        unsafe {
+            (*self.avail_ring).idx = avail_idx.wrapping_add(1);
+        }
 
         // Notify device via MMIO write to notification register
         crate::io::mmio_write_u16(self.notify_addr as usize, 0);
@@ -414,13 +418,21 @@ impl VirtioBlkDevice {
     /// Caller must ensure MMIO address is valid
     pub unsafe fn init(&mut self) -> Result<(), BlockError> {
         // Step 1: Reset device
-        unsafe { self.write_status(0); }
+        unsafe {
+            self.write_status(0);
+        }
 
         // Step 2: Acknowledge device
-        unsafe { self.write_status(VirtioDeviceStatus::Acknowledge as u8); }
+        unsafe {
+            self.write_status(VirtioDeviceStatus::Acknowledge as u8);
+        }
 
         // Step 3: Driver loaded
-        unsafe { self.write_status(VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8); }
+        unsafe {
+            self.write_status(
+                VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8,
+            );
+        }
 
         // Step 4: Negotiate features
         let device_features = unsafe { self.read_device_features() };
@@ -430,20 +442,26 @@ impl VirtioBlkDevice {
                 | features::VIRTIO_BLK_F_BLK_SIZE
                 | features::VIRTIO_BLK_F_FLUSH
                 | features::VIRTIO_BLK_F_MQ);
-        unsafe { self.write_driver_features(driver_features); }
+        unsafe {
+            self.write_driver_features(driver_features);
+        }
         self.features = driver_features;
 
         // Step 5: Features OK
-        unsafe { self.write_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8,
-        ); }
+        unsafe {
+            self.write_status(
+                VirtioDeviceStatus::Acknowledge as u8
+                    | VirtioDeviceStatus::Driver as u8
+                    | VirtioDeviceStatus::FeaturesOk as u8,
+            );
+        }
 
         // Verify features accepted
         let status = unsafe { self.read_status() };
         if (status & VirtioDeviceStatus::FeaturesOk as u8) == 0 {
-            unsafe { self.write_status(VirtioDeviceStatus::Failed as u8); }
+            unsafe {
+                self.write_status(VirtioDeviceStatus::Failed as u8);
+            }
             return Err(BlockError::NotReady);
         }
 
@@ -458,7 +476,9 @@ impl VirtioBlkDevice {
         };
 
         for i in 0..num_queues {
-            unsafe { self.setup_queue(i)?; }
+            unsafe {
+                self.setup_queue(i)?;
+            }
         }
 
         // Initialize pending wakers
@@ -467,12 +487,14 @@ impl VirtioBlkDevice {
         drop(wakers);
 
         // Step 8: Driver OK
-        unsafe { self.write_status(
-            VirtioDeviceStatus::Acknowledge as u8
-                | VirtioDeviceStatus::Driver as u8
-                | VirtioDeviceStatus::FeaturesOk as u8
-                | VirtioDeviceStatus::DriverOk as u8,
-        ); }
+        unsafe {
+            self.write_status(
+                VirtioDeviceStatus::Acknowledge as u8
+                    | VirtioDeviceStatus::Driver as u8
+                    | VirtioDeviceStatus::FeaturesOk as u8
+                    | VirtioDeviceStatus::DriverOk as u8,
+            );
+        }
 
         self.ready.store(true, Ordering::Release);
         Ok(())
@@ -503,7 +525,10 @@ impl VirtioBlkDevice {
     unsafe fn write_driver_features(&self, features: u64) {
         // MMIO offset 0x20 for driver features
         crate::io::mmio_write_u32((self.mmio_base + 0x20) as usize, features as u32);
-        crate::io::mmio_write_u32((self.mmio_base + 0x20 + 4) as usize, (features >> 32) as u32);
+        crate::io::mmio_write_u32(
+            (self.mmio_base + 0x20 + 4) as usize,
+            (features >> 32) as u32,
+        );
     }
 
     /// Read device configuration
@@ -597,7 +622,8 @@ impl VirtioBlkDevice {
         // Create notify address for this queue
         let notify_addr = (self.mmio_base + 0x50) as *mut u16;
 
-        let virtqueue = unsafe { VirtQueue::new(queue_size, desc_table, avail_ring, used_ring, notify_addr) };
+        let virtqueue =
+            unsafe { VirtQueue::new(queue_size, desc_table, avail_ring, used_ring, notify_addr) };
 
         self.queues.push(Arc::new(Mutex::new(virtqueue)));
 
@@ -740,8 +766,10 @@ impl VirtioBlkDevice {
                 next: 0,
             };
 
-                // Submit to available ring
-                unsafe { queue_guard.submit(desc0); }
+            // Submit to available ring
+            unsafe {
+                queue_guard.submit(desc0);
+            }
         }
 
         Ok(desc0)
@@ -1033,7 +1061,7 @@ impl<'a> Future for FlushFuture<'a> {
                 Ok(desc_id) => {
                     self.desc_id = Some(desc_id);
                     self.submitted = true;
-                    
+
                     // Register waker for completion notification
                     let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
                     let mut wakers = self.device.pending_wakers.lock();

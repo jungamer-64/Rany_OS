@@ -1,6 +1,6 @@
-use kernel_api::driver::{Driver, DriverType};
-use kernel_api::KapiResult;
 use crate::polling_driver::NvmePollingDriver;
+use kernel_api::KapiResult;
+use kernel_api::driver::{Driver, DriverType};
 use spin::Mutex;
 
 pub struct NvmeDriverWrapper {
@@ -10,7 +10,7 @@ pub struct NvmeDriverWrapper {
 impl NvmeDriverWrapper {
     pub fn new(bar0: u64, cores: u32) -> Self {
         Self {
-            inner: Mutex::new(NvmePollingDriver::new(bar0, cores))
+            inner: Mutex::new(NvmePollingDriver::new(bar0, cores)),
         }
     }
 }

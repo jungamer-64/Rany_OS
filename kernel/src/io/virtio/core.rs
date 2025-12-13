@@ -125,16 +125,38 @@ impl VirtQueue {
     /// 空きビットマップを初期化
     fn init_free_bitmap(queue_size: u16) -> (u64, u64, u64, u64) {
         let size = queue_size as u64;
-        let bitmap0 = if size >= 64 { u64::MAX } else { (1u64 << size) - 1 };
+        let bitmap0 = if size >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << size) - 1
+        };
         let bitmap1 = if size > 64 {
-            if size >= 128 { u64::MAX } else { (1u64 << (size - 64)) - 1 }
-        } else { 0 };
+            if size >= 128 {
+                u64::MAX
+            } else {
+                (1u64 << (size - 64)) - 1
+            }
+        } else {
+            0
+        };
         let bitmap2 = if size > 128 {
-            if size >= 192 { u64::MAX } else { (1u64 << (size - 128)) - 1 }
-        } else { 0 };
+            if size >= 192 {
+                u64::MAX
+            } else {
+                (1u64 << (size - 128)) - 1
+            }
+        } else {
+            0
+        };
         let bitmap3 = if size > 192 {
-            if size >= 256 { u64::MAX } else { (1u64 << (size - 192)) - 1 }
-        } else { 0 };
+            if size >= 256 {
+                u64::MAX
+            } else {
+                (1u64 << (size - 192)) - 1
+            }
+        } else {
+            0
+        };
         (bitmap0, bitmap1, bitmap2, bitmap3)
     }
 
@@ -228,9 +250,9 @@ impl VirtQueue {
             let desc = unsafe { &*self.desc_table.as_ptr().add(idx as usize) };
             let next = desc.next;
             let has_next = desc.has_next();
-            
+
             self.free_desc(idx);
-            
+
             if !has_next {
                 break;
             }
@@ -268,11 +290,17 @@ impl VirtQueue {
         let desc = unsafe { self.get_desc_mut(desc_idx) };
         desc.addr = addr;
         desc.len = len;
-        desc.flags = if writable { vring_flags::VRING_DESC_F_WRITE } else { 0 };
+        desc.flags = if writable {
+            vring_flags::VRING_DESC_F_WRITE
+        } else {
+            0
+        };
         desc.next = 0;
 
         // Availリングに追加
-        unsafe { self.submit_avail(desc_idx); }
+        unsafe {
+            self.submit_avail(desc_idx);
+        }
 
         Ok(desc_idx)
     }
@@ -303,8 +331,12 @@ impl VirtQueue {
             let desc = unsafe { self.get_desc_mut(indices[i]) };
             desc.addr = *addr;
             desc.len = *len;
-            desc.flags = if *writable { vring_flags::VRING_DESC_F_WRITE } else { 0 };
-            
+            desc.flags = if *writable {
+                vring_flags::VRING_DESC_F_WRITE
+            } else {
+                0
+            };
+
             if i + 1 < buffers.len() {
                 desc.flags |= vring_flags::VRING_DESC_F_NEXT;
                 desc.next = indices[i + 1];
@@ -315,7 +347,9 @@ impl VirtQueue {
 
         // Availリングに追加
         let head = indices[0];
-        unsafe { self.submit_avail(head); }
+        unsafe {
+            self.submit_avail(head);
+        }
 
         Ok(head)
     }
@@ -327,15 +361,19 @@ impl VirtQueue {
 
         let avail = self.avail_ring.as_ptr();
         let avail_idx = unsafe { (*avail).idx };
-        
+
         // リング配列はヘッダの直後に配置されている
         let ring_ptr = unsafe { (avail as *mut u16).add(2) }; // flags + idx をスキップ
-        unsafe { *ring_ptr.add((avail_idx % self.queue_size) as usize) = head; }
+        unsafe {
+            *ring_ptr.add((avail_idx % self.queue_size) as usize) = head;
+        }
 
         // メモリバリア: リングエントリの書き込み後にidxを更新
         core::sync::atomic::fence(Ordering::Release);
 
-        unsafe { (*avail).idx = avail_idx.wrapping_add(1); }
+        unsafe {
+            (*avail).idx = avail_idx.wrapping_add(1);
+        }
     }
 
     /// デバイスに通知
@@ -362,9 +400,8 @@ impl VirtQueue {
         }
 
         // Usedリング配列を読み取り
-        let ring_ptr = unsafe {
-            (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem
-        };
+        let ring_ptr =
+            unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
         let elem = unsafe { *ring_ptr.add((last_used % self.queue_size) as usize) };
 
         // last_used_idxを更新
@@ -431,15 +468,17 @@ impl<T> TrackedVirtQueue<T> {
         notify_addr: *mut u16,
         notify_off_multiplier: u32,
     ) -> Result<Self, &'static str> {
-        let inner = unsafe { VirtQueue::new(
-            queue_index,
-            queue_size,
-            desc_table,
-            avail_ring,
-            used_ring,
-            notify_addr,
-            notify_off_multiplier,
-        )? };
+        let inner = unsafe {
+            VirtQueue::new(
+                queue_index,
+                queue_size,
+                desc_table,
+                avail_ring,
+                used_ring,
+                notify_addr,
+                notify_off_multiplier,
+            )?
+        };
 
         let mut pending = VecDeque::with_capacity(queue_size as usize);
         for _ in 0..queue_size {
@@ -475,7 +514,11 @@ impl<T> TrackedVirtQueue<T> {
             let desc = unsafe { self.inner.get_desc_mut(desc_idx) };
             desc.addr = addr;
             desc.len = len;
-            desc.flags = if writable { vring_flags::VRING_DESC_F_WRITE } else { 0 };
+            desc.flags = if writable {
+                vring_flags::VRING_DESC_F_WRITE
+            } else {
+                0
+            };
             desc.next = 0;
         }
 
@@ -488,7 +531,9 @@ impl<T> TrackedVirtQueue<T> {
         }
 
         // Availリングに追加
-        unsafe { self.inner.submit_avail(desc_idx); }
+        unsafe {
+            self.inner.submit_avail(desc_idx);
+        }
 
         Ok(desc_idx)
     }

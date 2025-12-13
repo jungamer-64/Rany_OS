@@ -2,16 +2,16 @@
 // src/shell/exoshell/namespaces/net.rs - Network Namespace
 // ============================================================================
 
+use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
-use alloc::borrow::Cow;
 
+use super::{BoxFuture, ShellNamespace};
+use crate::security::capability::{CAP_NET_RAW, manager};
 use crate::shell::exoshell::types::ExoValue;
 use crate::task::process::getpid;
-use crate::security::capability::{manager, CAP_NET_RAW};
-use super::{ShellNamespace, BoxFuture};
 use alloc::boxed::Box;
 
 /// ネットワーク名前空間
@@ -40,8 +40,7 @@ impl NetNamespace {
                 String::from("mac"),
                 ExoValue::String(Cow::Owned(format!(
                     "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                    cfg.mac[0], cfg.mac[1], cfg.mac[2],
-                    cfg.mac[3], cfg.mac[4], cfg.mac[5]
+                    cfg.mac[0], cfg.mac[1], cfg.mac[2], cfg.mac[3], cfg.mac[4], cfg.mac[5]
                 ))),
             );
             ExoValue::Map(map)
@@ -54,12 +53,30 @@ impl NetNamespace {
     pub fn stats() -> ExoValue<'static> {
         if let Some(stats) = crate::net::get_network_stats() {
             let mut map = BTreeMap::new();
-            map.insert(String::from("rx_packets"), ExoValue::Int(stats.rx_packets as i64));
-            map.insert(String::from("tx_packets"), ExoValue::Int(stats.tx_packets as i64));
-            map.insert(String::from("rx_bytes"), ExoValue::Int(stats.rx_bytes as i64));
-            map.insert(String::from("tx_bytes"), ExoValue::Int(stats.tx_bytes as i64));
-            map.insert(String::from("rx_errors"), ExoValue::Int(stats.rx_errors as i64));
-            map.insert(String::from("rx_dropped"), ExoValue::Int(stats.rx_dropped as i64));
+            map.insert(
+                String::from("rx_packets"),
+                ExoValue::Int(stats.rx_packets as i64),
+            );
+            map.insert(
+                String::from("tx_packets"),
+                ExoValue::Int(stats.tx_packets as i64),
+            );
+            map.insert(
+                String::from("rx_bytes"),
+                ExoValue::Int(stats.rx_bytes as i64),
+            );
+            map.insert(
+                String::from("tx_bytes"),
+                ExoValue::Int(stats.tx_bytes as i64),
+            );
+            map.insert(
+                String::from("rx_errors"),
+                ExoValue::Int(stats.rx_errors as i64),
+            );
+            map.insert(
+                String::from("rx_dropped"),
+                ExoValue::Int(stats.rx_dropped as i64),
+            );
             ExoValue::Map(map)
         } else {
             ExoValue::Error(String::from("No network statistics"))
@@ -84,8 +101,7 @@ impl NetNamespace {
                         String::from("mac"),
                         ExoValue::String(Cow::Owned(format!(
                             "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                            e.mac[0], e.mac[1], e.mac[2],
-                            e.mac[3], e.mac[4], e.mac[5]
+                            e.mac[0], e.mac[1], e.mac[2], e.mac[3], e.mac[4], e.mac[5]
                         ))),
                     );
                     map.insert(String::from("complete"), ExoValue::Bool(e.complete));
@@ -111,7 +127,7 @@ impl NetNamespace {
         for seq in 1..=count {
             // 各パケット送信前にyield（他タスクに機会を与える）
             crate::task::yield_now().await;
-            
+
             match crate::net::send_icmp_echo(ip, seq) {
                 Ok(rtt) => {
                     let mut map = BTreeMap::new();
@@ -128,7 +144,7 @@ impl NetNamespace {
                     results.push(ExoValue::Map(map));
                 }
             }
-            
+
             // パケット間に少し待機（async sleep）
             if seq < count {
                 crate::task::sleep_ms(100).await;
@@ -143,14 +159,21 @@ impl ShellNamespace for NetNamespace {
         "net"
     }
 
-    fn call<'a>(&'a self, method: &'a str, _args: &'a [ExoValue<'static>]) -> BoxFuture<'a, ExoValue<'static>> {
+    fn call<'a>(
+        &'a self,
+        method: &'a str,
+        _args: &'a [ExoValue<'static>],
+    ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
                 "config" => Self::config(),
                 "stats" => Self::stats(),
                 "arp" => Self::arp_cache(),
                 // ping is async and takes args; it is handled at shell level usually
-                _ => ExoValue::Error(format!("Unknown method 'net.{}'\nValid methods: config, stats, arp, ping", method)),
+                _ => ExoValue::Error(format!(
+                    "Unknown method 'net.{}'\nValid methods: config, stats, arp, ping",
+                    method
+                )),
             }
         })
     }

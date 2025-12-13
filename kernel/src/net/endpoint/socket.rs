@@ -85,7 +85,7 @@ impl Socket {
     }
 
     /// ローカルアドレスを設定（推奨API）
-    /// 
+    ///
     /// 【設計書】POSIXのbind()ではなく、set_local_addr()を使用
     pub fn set_local_addr(&self, addr: SocketAddr) -> SocketResult<()> {
         let mut inner = self.inner.lock();
@@ -100,13 +100,16 @@ impl Socket {
     }
 
     /// 【非推奨】バインド - 互換性のために残すが、set_local_addr()を使用すべき
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。set_local_addr()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。set_local_addr()を使用してください"
+    )]
     pub fn bind(&self, addr: SocketAddr) -> SocketResult<()> {
         self.set_local_addr(addr)
     }
 
     /// リモートアドレスへ接続を開始（推奨API）
-    /// 
+    ///
     /// 【設計書】POSIXのconnect()ではなく、open_connection()を使用
     pub fn open_connection(&self, addr: SocketAddr) -> SocketResult<()> {
         let local_addr;
@@ -135,13 +138,16 @@ impl Socket {
     }
 
     /// 【非推奨】接続（TCP用）- 互換性のために残すが、open_connection()を使用すべき
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。open_connection()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。open_connection()を使用してください"
+    )]
     pub fn connect(&self, addr: SocketAddr) -> SocketResult<()> {
         self.open_connection(addr)
     }
 
     /// リッスンモードを開始（推奨API）
-    /// 
+    ///
     /// 【設計書】POSIXのlisten()ではなく、start_listening()を使用
     pub fn start_listening(&self, backlog: u32) -> SocketResult<()> {
         if self.socket_type != SocketType::Tcp {
@@ -184,13 +190,16 @@ impl Socket {
     }
 
     /// 【非推奨】リッスン開始（TCP用）- 互換性のために残すが、start_listening()を使用すべき
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。start_listening()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。start_listening()を使用してください"
+    )]
     pub fn listen(&self, backlog: u32) -> SocketResult<()> {
         self.start_listening(backlog)
     }
 
     /// 次の接続を取得（推奨API）
-    /// 
+    ///
     /// 【設計書】POSIXのaccept()ではなく、next_incoming()を使用
     /// Acceptキューから接続を取得、空の場合はTimeoutを返す
     pub fn next_incoming(&self) -> SocketResult<(Socket, SocketAddr)> {
@@ -234,7 +243,10 @@ impl Socket {
     }
 
     /// 【非推奨】接続受け入れ（TCP用）- 互換性のために残すが、next_incoming()を使用すべき
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。next_incoming()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。next_incoming()を使用してください"
+    )]
     pub fn accept(&self) -> SocketResult<(Socket, SocketAddr)> {
         self.next_incoming()
     }
@@ -511,7 +523,10 @@ impl OwnedSocket {
     }
 
     /// 【非推奨】バインド
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。set_local_addr()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。set_local_addr()を使用してください"
+    )]
     #[allow(deprecated)]
     pub fn bind(&self, addr: SocketAddr) -> SocketResult<()> {
         self.socket
@@ -529,7 +544,10 @@ impl OwnedSocket {
     }
 
     /// 【非推奨】接続
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。open_connection()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。open_connection()を使用してください"
+    )]
     #[allow(deprecated)]
     pub fn connect(&self, addr: SocketAddr) -> SocketResult<()> {
         self.socket
@@ -547,7 +565,10 @@ impl OwnedSocket {
     }
 
     /// 【非推奨】リッスン
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。start_listening()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。start_listening()を使用してください"
+    )]
     #[allow(deprecated)]
     pub fn listen(&self, backlog: u32) -> SocketResult<()> {
         self.socket
@@ -567,7 +588,10 @@ impl OwnedSocket {
     }
 
     /// 【非推奨】接続受け入れ
-    #[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。next_incoming()を使用してください")]
+    #[deprecated(
+        since = "0.4.0",
+        note = "設計書: POSIXソケットAPIを使用しない。next_incoming()を使用してください"
+    )]
     #[allow(deprecated)]
     pub fn accept(&self) -> SocketResult<(OwnedSocket, SocketAddr)> {
         let (socket, addr) = self
@@ -642,7 +666,7 @@ pub fn create_raw_socket() -> OwnedSocket {
 }
 
 /// TCPサーバー作成（推奨API）
-/// 
+///
 /// 【設計書】POSIXソケットAPIを模倣しない
 pub fn create_tcp_server(addr: SocketAddr, backlog: u32) -> SocketResult<OwnedSocket> {
     let socket = create_tcp_socket();
@@ -652,7 +676,7 @@ pub fn create_tcp_server(addr: SocketAddr, backlog: u32) -> SocketResult<OwnedSo
 }
 
 /// TCP接続（推奨API）
-/// 
+///
 /// 【設計書】POSIXソケットAPIを模倣しない
 pub fn open_tcp_connection(addr: SocketAddr) -> SocketResult<OwnedSocket> {
     let socket = create_tcp_socket();
@@ -661,7 +685,10 @@ pub fn open_tcp_connection(addr: SocketAddr) -> SocketResult<OwnedSocket> {
 }
 
 /// 【非推奨】TCP接続
-#[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。open_tcp_connection()を使用してください")]
+#[deprecated(
+    since = "0.4.0",
+    note = "設計書: POSIXソケットAPIを使用しない。open_tcp_connection()を使用してください"
+)]
 pub fn tcp_connect(addr: SocketAddr) -> SocketResult<OwnedSocket> {
     open_tcp_connection(addr)
 }
@@ -674,7 +701,10 @@ pub fn create_udp_endpoint(addr: SocketAddr) -> SocketResult<OwnedSocket> {
 }
 
 /// 【非推奨】UDPバインド
-#[deprecated(since = "0.4.0", note = "設計書: POSIXソケットAPIを使用しない。create_udp_endpoint()を使用してください")]
+#[deprecated(
+    since = "0.4.0",
+    note = "設計書: POSIXソケットAPIを使用しない。create_udp_endpoint()を使用してください"
+)]
 pub fn udp_bind(addr: SocketAddr) -> SocketResult<OwnedSocket> {
     create_udp_endpoint(addr)
 }

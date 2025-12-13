@@ -127,7 +127,7 @@ impl BdfAddress {
             | 0x80000000 // Enable bit
     }
 
-        /// ECAM オフセットを計算
+    /// ECAM オフセットを計算
     pub fn ecam_offset(&self, register: u16) -> u64 {
         ((self.bus.0 as u64) << 20)
             | ((self.device.0 as u64) << 15)
@@ -472,17 +472,13 @@ impl From<u8> for PciClass {
 // BAR Types
 // ============================================================================
 
-    /// BAR タイプ
+/// BAR タイプ
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarType {
     /// Memory-mapped I/O (32-bit)
-    Memory32 {
-        prefetchable: bool,
-    },
+    Memory32 { prefetchable: bool },
     /// Memory-mapped I/O (64-bit)
-    Memory64 {
-        prefetchable: bool,
-    },
+    Memory64 { prefetchable: bool },
     /// I/O port
     Io,
     /// Unused/Invalid
@@ -518,7 +514,10 @@ impl BarInfo {
 
     /// メモリマップドかどうか
     pub fn is_memory(&self) -> bool {
-        matches!(self.bar_type, BarType::Memory32 { .. } | BarType::Memory64 { .. })
+        matches!(
+            self.bar_type,
+            BarType::Memory32 { .. } | BarType::Memory64 { .. }
+        )
     }
 
     /// I/Oポートかどうか
@@ -547,10 +546,7 @@ pub enum Bar {
         prefetchable: bool,
     },
     /// I/Oポート
-    Io {
-        base: u64,
-        size: u64,
-    },
+    Io { base: u64, size: u64 },
 }
 
 impl Bar {
@@ -566,11 +562,7 @@ impl Bar {
     /// アドレスを取得（旧APIとの互換性のため）
     pub fn address(&self) -> Option<u64> {
         let addr = self.base();
-        if addr == 0 {
-            None
-        } else {
-            Some(addr)
-        }
+        if addr == 0 { None } else { Some(addr) }
     }
 
     /// サイズを取得
@@ -596,7 +588,13 @@ impl Bar {
     pub fn is_prefetchable(&self) -> bool {
         matches!(
             self,
-            Bar::Memory32 { prefetchable: true, .. } | Bar::Memory64 { prefetchable: true, .. }
+            Bar::Memory32 {
+                prefetchable: true,
+                ..
+            } | Bar::Memory64 {
+                prefetchable: true,
+                ..
+            }
         )
     }
 }
@@ -658,7 +656,11 @@ pub struct ClassCode {
 impl ClassCode {
     /// 新しいクラスコードを作成
     pub const fn new(class: u8, subclass: u8, prog_if: u8) -> Self {
-        Self { class, subclass, prog_if }
+        Self {
+            class,
+            subclass,
+            prog_if,
+        }
     }
 
     /// 32ビットクラスコードレジスタから作成
@@ -682,7 +684,7 @@ impl ClassCode {
 
     /// VirtIOデバイスかどうか
     pub fn is_virtio(&self) -> bool {
-        self.class == 0xFF  // VirtIO uses vendor-specific class
+        self.class == 0xFF // VirtIO uses vendor-specific class
     }
 
     /// ネットワークコントローラかどうか
@@ -703,6 +705,10 @@ impl ClassCode {
 
 impl fmt::Display for ClassCode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:02x}:{:02x}.{:02x}", self.class, self.subclass, self.prog_if)
+        write!(
+            f,
+            "{:02x}:{:02x}.{:02x}",
+            self.class, self.subclass, self.prog_if
+        )
     }
 }

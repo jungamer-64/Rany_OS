@@ -25,22 +25,22 @@
 extern crate alloc;
 
 // Core modules (no kernel deps)
-pub mod defs;
 pub mod commands;
-pub mod regs;
-pub mod queue_types;
-pub mod identify;
+pub mod defs;
 pub mod error;
+pub mod identify;
+pub mod queue_types;
+pub mod regs;
 
 // Modules migrated from kernel
 // Modules migrated from kernel
 pub mod controller;
-pub mod queue;
 pub mod per_core;
+pub mod queue;
 
 // Modules with kernel deps - excluded for now
-pub mod polling_driver; // Uncommented and refactored
-pub mod driver_impl;    // New wrapper
+pub mod driver_impl;
+pub mod polling_driver; // Uncommented and refactored // New wrapper
 
 // pub mod async_io;
 // pub mod global;
@@ -49,26 +49,22 @@ pub mod driver_impl;    // New wrapper
 
 // Re-exports
 pub use defs::{
-    AdminOpcode, IoOpcode,
-    NvmeStatus, NvmeError as DefsNvmeError,
-    PrpEntry, PrpList, SglDescriptor, SglType,
-    CACHE_LINE_SIZE, SQE_SIZE, CQE_SIZE, SECTOR_SIZE, PAGE_SIZE,
-    MAX_QUEUE_DEPTH, DEFAULT_QUEUE_DEPTH, ADMIN_QUEUE_DEPTH,
-    MAX_TRANSFER_SIZE, POLL_BATCH_SIZE,
-    DOORBELL_BATCH_THRESHOLD, CONTROLLER_READY_TIMEOUT_MS,
+    ADMIN_QUEUE_DEPTH, AdminOpcode, CACHE_LINE_SIZE, CONTROLLER_READY_TIMEOUT_MS, CQE_SIZE,
+    DEFAULT_QUEUE_DEPTH, DOORBELL_BATCH_THRESHOLD, IoOpcode, MAX_QUEUE_DEPTH, MAX_TRANSFER_SIZE,
+    NvmeError as DefsNvmeError, NvmeStatus, PAGE_SIZE, POLL_BATCH_SIZE, PrpEntry, PrpList,
+    SECTOR_SIZE, SQE_SIZE, SglDescriptor, SglType,
 };
 
 pub use commands::{NvmeCommand, NvmeCompletion};
 
 pub use regs::{
-    offsets, cc_bits, csts_bits,
-    NvmeCapabilities, NvmeControllerConfig, NvmeControllerStatus,
-    NvmeAdminQueueAttributes, CmbLocation, CmbSize,
+    CmbLocation, CmbSize, NvmeAdminQueueAttributes, NvmeCapabilities, NvmeControllerConfig,
+    NvmeControllerStatus, cc_bits, csts_bits, offsets,
 };
 
 pub use identify::{
-    IdentifyController, IdentifyNamespace, PowerStateDescriptor,
-    LbaFormat, RelativePerformance, IdentifyCns,
+    IdentifyCns, IdentifyController, IdentifyNamespace, LbaFormat, PowerStateDescriptor,
+    RelativePerformance,
 };
 
 pub use error::NvmeError;

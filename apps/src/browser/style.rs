@@ -1,4 +1,4 @@
-﻿// ============================================================================
+// ============================================================================
 // apps/src/browser/style.rs - Style Tree
 // ============================================================================
 //!
@@ -9,8 +9,8 @@
 
 use alloc::vec::Vec;
 
-use super::dom::Node;
 use super::css::Stylesheet;
+use super::dom::Node;
 
 /// Styled Node
 #[derive(Debug, Clone)]
@@ -21,8 +21,13 @@ pub struct StyledNode<'a> {
 
 /// Build style tree from DOM and stylesheet
 pub fn style_tree<'a>(root: &'a Node, _stylesheet: &Stylesheet) -> StyledNode<'a> {
-    let children = root.children.iter()
+    let children = root
+        .children
+        .iter()
         .map(|c| style_tree(c, _stylesheet))
         .collect();
-    StyledNode { node: root, children }
+    StyledNode {
+        node: root,
+        children,
+    }
 }
