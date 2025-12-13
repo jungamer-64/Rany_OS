@@ -15,6 +15,7 @@ pub mod application;
 pub mod driver;
 pub mod driver_abi;
 pub mod error;
+pub mod gui;
 pub mod kapi;
 pub mod security;
 pub mod services;

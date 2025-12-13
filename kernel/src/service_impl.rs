@@ -336,6 +336,64 @@ impl KernelServices for ExoKernel {
             Err(KapiError::InvalidHandle)
         }
     }
+
+    fn gui(&self) -> Option<&dyn kernel_api::gui::GuiServices> {
+        // GUI services are always available if framebuffer exists
+        if crate::graphics::framebuffer().is_some() {
+            Some(self)
+        } else {
+            None
+        }
+    }
+}
+
+// ============================================================================
+// GuiServices Implementation
+// ============================================================================
+
+use kernel_api::gui::{FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle, PixelFormat as KapiPixelFormat};
+use kernel_api::security::DomainCapabilities;
+
+impl GuiServices for ExoKernel {
+    fn request_framebuffer(
+        &self,
+        access_token: &DomainCapabilities,
+    ) -> Result<KapiFramebufferInfo, KapiError> {
+        // Security check: require DMA or I/O capability for direct framebuffer access
+        if !access_token.has_dma() && !access_token.has_io() {
+            return Err(KapiError::PermissionDenied);
+        }
+
+        // Get framebuffer info from global
+        crate::graphics::with_framebuffer(|fb| {
+            let info = fb.info();
+            
+            // Convert graphic_types::PixelFormat to kernel_api::gui::PixelFormat
+            let format = match info.format {
+                crate::graphics::PixelFormat::Rgba8888 => KapiPixelFormat::Rgb32,
+                crate::graphics::PixelFormat::Bgra8888 => KapiPixelFormat::Bgr32,
+                crate::graphics::PixelFormat::Rgb888 => KapiPixelFormat::Rgb24,
+                crate::graphics::PixelFormat::Bgr888 => KapiPixelFormat::Bgr24,
+                _ => KapiPixelFormat::Unknown,
+            };
+
+            Ok(KapiFramebufferInfo {
+                width: info.width as usize,
+                height: info.height as usize,
+                stride: info.stride as usize,
+                format,
+                vaddr: info.address as usize,
+                size: info.size(),
+            })
+        })
+        .unwrap_or(Err(KapiError::ResourceExhausted))
+    }
+
+    fn get_input_stream_handle(&self) -> Result<InputStreamHandle, KapiError> {
+        // Return a fixed handle ID for the global HID input stream
+        // In a full implementation, this would register with an input manager
+        Ok(InputStreamHandle(1))
+    }
 }
 
 /// The global ExoKernel instance

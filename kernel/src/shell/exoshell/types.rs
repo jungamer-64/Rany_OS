@@ -82,6 +82,23 @@ impl<'a> ExoValue<'a> {
             ExoValue::Error(e) => ExoValue::Error(e),
         }
     }
+
+    /// Extract string value if this is a String variant
+    pub fn as_str(&self) -> Option<&str> {
+        match self {
+            ExoValue::String(s) => Some(s.as_ref()),
+            ExoValue::StringRef(s) => Some(s.as_str()),
+            _ => None,
+        }
+    }
+
+    /// Extract integer value if this is an Int variant
+    pub fn as_int(&self) -> Option<i64> {
+        match self {
+            ExoValue::Int(n) => Some(*n),
+            _ => None,
+        }
+    }
 }
 
 /// ファイルシステムエントリ（構造化データ）

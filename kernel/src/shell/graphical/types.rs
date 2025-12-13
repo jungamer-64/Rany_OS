@@ -29,6 +29,7 @@ pub struct RenderInputState<'a> {
 }
 
 /// マウスカーソルの描画状態
+#[cfg(feature = "mouse")]
 pub struct RenderMouseState {
     /// 表示するか
     pub visible: bool,
@@ -70,8 +71,10 @@ pub struct ShellState {
     /// コマンド実行中フラグ
     pub is_executing: bool,
     /// マウス状態
+    #[cfg(feature = "mouse")]
     pub mouse: MouseState,
     /// マウスカーソル表示
+    #[cfg(feature = "mouse")]
     pub show_mouse_cursor: bool,
     /// 一時フォーマットバッファ
     pub temp_fmt_buffer: String,
@@ -128,6 +131,7 @@ impl ShellState {
 
     /// マウスカーソルのRect
     #[inline]
+    #[cfg(feature = "mouse")]
     pub fn mouse_rect(&self) -> crate::graphics::Rect {
         crate::graphics::Rect::new(self.mouse.x - 2, self.mouse.y - 2, 5, 5)
     }
@@ -362,6 +366,7 @@ impl ConsoleLine {
 // ============================================================================
 
 /// マウスカーソルの状態
+#[cfg(feature = "mouse")]
 #[derive(Clone, Copy)]
 pub struct MouseState {
     /// X座標（ピクセル）
@@ -376,6 +381,7 @@ pub struct MouseState {
     pub middle_down: bool,
 }
 
+#[cfg(feature = "mouse")]
 impl MouseState {
     pub fn new() -> Self {
         Self {
@@ -399,6 +405,16 @@ impl MouseState {
         self.middle_down = event.middle_down;
     }
 }
+
+// MouseState itself needs to be guarded if it is not used elsewhere.
+// However, the plan said "Guard RenderMouseState struct/impls".
+// Let's guard the impl block for MouseState as well just to be safe/clean?
+// Actually checking the plan... "Guard `mouse: MouseState` field in `ShellState`".
+// If MouseState structure is used in `ShellState`, and `ShellState`'s field is guarded, `MouseState` struct definition technically can stay
+// or be guarded. If I guard the struct definition, I must be sure no one else uses it.
+// The file is `shell/graphical/types.rs`, specific to graphical shell.
+// So safe to guard `MouseState` struct and impl too?
+// Let's modify the struct definition too in a separate chunk.
 
 impl Default for MouseState {
     fn default() -> Self {

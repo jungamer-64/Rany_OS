@@ -19,7 +19,9 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::graphics::Color;
-use crate::io::hid::{keyboard, poll_mouse_event};
+use crate::io::hid::keyboard;
+#[cfg(feature = "mouse")]
+use crate::io::hid::poll_mouse_event;
 use crate::shell::exoshell::{ExoShell, ExoValue};
 
 use super::shell::GraphicalShell;
@@ -38,6 +40,7 @@ static ASYNC_EXOSHELL: Mutex<Option<ExoShell>> = Mutex::new(None);
 
 /// グラフィカルシェルを初期化
 pub fn init() {
+    use kernel_api::services::kernel;
     use log::info;
 
     info!(target: "gshell", "Initializing graphical shell...");
@@ -46,26 +49,34 @@ pub fn init() {
     *ASYNC_EXOSHELL.lock() = Some(ExoShell::new());
     info!(target: "gshell", "Async ExoShell initialized");
 
-    // フレームバッファを取得
-    let fb = crate::graphics::framebuffer();
-    if fb.is_none() {
-        info!(target: "gshell", "No framebuffer available - skipping graphical shell");
+    // GuiServices経由でフレームバッファ可用性をチェック
+    let gui_services = kernel().gui();
+    if gui_services.is_none() {
+        info!(target: "gshell", "No GUI services available - skipping graphical shell");
         return;
     }
-
-    info!(target: "gshell", "Framebuffer found, creating shell...");
-
-    // グラフィカルシェルを作成
-    let dims = crate::graphics::with_framebuffer(|fb| (fb.width(), fb.height()));
-
-    let shell = dims.map(|(w, h)| GraphicalShell::new(w, h));
-
-    if let Some(shell) = shell {
-        *GRAPHICAL_SHELL.lock() = Some(shell);
-        info!(target: "gshell", "Graphical shell created successfully");
-    } else {
-        info!(target: "gshell", "Failed to create graphical shell");
+    
+    // CapabilityでFramebufferInfoを取得（デモ用: カーネル権限を使用）
+    let fb_info = {
+        // SAFETY: Kernel context has full capabilities
+        let caps = unsafe { kernel_api::security::kernel_only::grant_all() };
+        gui_services.unwrap().request_framebuffer(&caps)
+    };
+    
+    if let Err(e) = fb_info {
+        info!(target: "gshell", "Failed to request framebuffer via GuiServices: {:?}", e);
+        return;
     }
+    
+    let fb_info = fb_info.unwrap();
+    info!(target: "gshell", "Framebuffer via GuiServices: {}x{} stride={}", 
+          fb_info.width, fb_info.height, fb_info.stride);
+
+    // グラフィカルシェルを作成（既存のdims取得を継続）
+    let shell = GraphicalShell::new(fb_info.width as u32, fb_info.height as u32);
+
+    *GRAPHICAL_SHELL.lock() = Some(shell);
+    info!(target: "gshell", "Graphical shell created successfully");
 }
 
 /// グラフィカルシェルを開始
@@ -148,12 +159,16 @@ pub async fn run_async_shell() {
                     }
                 }
 
-                // マウス: ポーリング（TODO: MouseStream）
-                for _ in 0..8 {
-                    if let Some(event) = poll_mouse_event() {
-                        shell.handle_mouse(event, fb);
-                    } else {
-                        break;
+
+                #[cfg(feature = "mouse")]
+                {
+                    // マウス: ポーリング（TODO: MouseStream）
+                    for _ in 0..8 {
+                        if let Some(event) = poll_mouse_event() {
+                            shell.handle_mouse(event, fb);
+                        } else {
+                            break;
+                        }
                     }
                 }
 
