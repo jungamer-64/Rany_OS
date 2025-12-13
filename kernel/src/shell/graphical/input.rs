@@ -168,6 +168,7 @@ impl GraphicalShell {
     ///
     /// マウス移動時は全画面再描画ではなく、古い位置と新しい位置の
     /// 2領域のみを更新することで、高解像度環境でのパフォーマンスを向上。
+    #[cfg(feature = "mouse")]
     pub fn handle_mouse(&mut self, event: MouseEvt, fb: &mut Framebuffer) {
         let max_x = self.resources.fb_width as i32;
         let max_y = self.resources.fb_height as i32;

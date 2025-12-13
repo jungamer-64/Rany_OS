@@ -130,6 +130,13 @@ pub trait KernelServices: Send + Sync {
     /// # Errors
     /// - `KapiError::InvalidHandle` if the channel handle is invalid
     fn ipc_close(&self, channel: ChannelHandle) -> KapiResult<()>;
+
+    // ========================================================================
+    // GUI Services (Optional)
+    // ========================================================================
+
+    /// Access GUI services if available
+    fn gui(&self) -> Option<&dyn crate::gui::GuiServices>;
 }
 
 // ============================================================================

@@ -144,6 +144,10 @@ impl<'a, 'b> RenderContext<'a, 'b> {
         self.draw_input_line();
         self.draw_text_cursor();
         self.draw_completions();
+        self.draw_input_line();
+        self.draw_text_cursor();
+        self.draw_completions();
+        #[cfg(feature = "mouse")]
         self.draw_mouse_cursor();
 
         self.fb.blit_rect(clip_rect);
@@ -338,6 +342,7 @@ impl<'a, 'b> RenderContext<'a, 'b> {
     }
 
     /// Draws a simple crosshair mouse cursor with culling.
+    #[cfg(feature = "mouse")]
     fn draw_mouse_cursor(&mut self) {
         if !self.state.show_mouse_cursor {
             return;
@@ -487,6 +492,7 @@ impl GraphicalShell {
     /// 2. The new mouse position (to draw the cursor)
     ///
     /// The two regions are merged if they overlap, further reducing draw calls.
+    #[cfg(feature = "mouse")]
     pub fn redraw_mouse_region(&mut self, fb: &mut Framebuffer, old_rect: Rect) {
         if !self.state.show_mouse_cursor {
             return;
@@ -529,6 +535,9 @@ impl GraphicalShell {
 
         // Pre-merge: Add mouse cursor to dirty regions if visible.
         // push_or_merge will automatically merge with overlapping regions.
+        // Pre-merge: Add mouse cursor to dirty regions if visible.
+        // push_or_merge will automatically merge with overlapping regions.
+        #[cfg(feature = "mouse")]
         if self.state.show_mouse_cursor {
             dirty_regions.push_or_merge(self.state.mouse_rect());
         }

@@ -365,9 +365,9 @@ impl LiveUpdateManager {
         let entry_addr = match entry_addr {
             Some(a) => a,
             None => {
-                // Cleanup new cell?
-                 crate::loader::with_registry_mut(|r| r.unload(new_cell_id).unwrap_or(()));
-                 return Err(LiveUpdateError::LoadFailed);
+                // Cleanup new cell
+                let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
+                return Err(LiveUpdateError::LoadFailed);
             }
         };
         

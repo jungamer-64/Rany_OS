@@ -75,7 +75,9 @@ impl GraphicalShell {
                 completions: Vec::new(),
                 completion_index: 0,
                 is_executing: false,
+                #[cfg(feature = "mouse")]
                 mouse: MouseState::new(),
+                #[cfg(feature = "mouse")]
                 show_mouse_cursor: true,
 
                 // ゼロアロケーション用バッファ（十分な容量を確保）
