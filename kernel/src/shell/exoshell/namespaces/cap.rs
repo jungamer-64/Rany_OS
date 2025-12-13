@@ -361,6 +361,7 @@ impl ShellNamespace for CapNamespace {
         &'a self,
         method: &'a str,
         args: &'a [ExoValue<'static>],
+        _caps: &'a crate::security::CapabilitySet,
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
