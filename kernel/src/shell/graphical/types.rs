@@ -416,6 +416,7 @@ impl MouseState {
 // So safe to guard `MouseState` struct and impl too?
 // Let's modify the struct definition too in a separate chunk.
 
+#[cfg(feature = "mouse")]
 impl Default for MouseState {
     fn default() -> Self {
         Self::new()

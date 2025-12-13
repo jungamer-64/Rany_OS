@@ -26,8 +26,10 @@ pub mod utils;
 // Re-export types
 pub use types::{
     CURSOR_BLINK_MS, ConsoleLine, FONT_HEIGHT, FONT_WIDTH, LineBuffer, MAX_HISTORY,
-    MAX_LINE_LENGTH, MouseState, RenderInputState, RenderMouseState, SCROLLBACK_LINES, ShellTheme,
+    MAX_LINE_LENGTH, RenderInputState, SCROLLBACK_LINES, ShellTheme,
 };
+#[cfg(feature = "mouse")]
+pub use types::{MouseState, RenderMouseState};
 
 // Re-export shell
 pub use shell::GraphicalShell;
