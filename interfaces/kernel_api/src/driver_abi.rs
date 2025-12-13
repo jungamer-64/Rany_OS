@@ -23,6 +23,76 @@
 //! All functions in the vtable use `extern "C"` calling convention and
 //! only pass C-compatible types across the ABI boundary.
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::export_driver;
+
+    // Driver functions for the test vtable
+    // Driver functions for the test vtable
+    fn test_probe(_ctx: &mut DriverContext) -> i32 {
+        0
+    }
+    fn test_remove(_ctx: &mut DriverContext) -> i32 {
+        0
+    }
+    fn test_start(_ctx: &mut DriverContext) -> i32 {
+        123
+    }
+    fn test_name() -> &'static str {
+        "testdrv"
+    }
+    fn test_irq(_ctx: &mut DriverContext) -> bool {
+        true
+    }
+
+    // Single exported driver used by the tests. Note: the macro exports a symbol
+    // named `_exorust_driver_entry`, which must be unique per crate; therefore
+    // we only invoke it once for all tests in this module.
+    export_driver!(
+        probe: test_probe,
+        remove: test_remove,
+        name: test_name,
+        driver_type: (AbiDriverType::Unknown as u32),
+        version: 0,
+        start: test_start,
+        irq: test_irq
+    );
+
+    #[test]
+    fn vtable_has_expected_values() {
+        // Access the exported entry and its vtable
+        let entry: DriverEntryFn = _exorust_driver_entry;
+        let vtbl_ptr = entry();
+        assert!(!vtbl_ptr.is_null());
+        let v = unsafe { &*vtbl_ptr };
+
+        // ABI version check
+        assert_eq!(v.abi_version, DRIVER_ABI_VERSION);
+        assert_eq!(v.type_hash, DRIVER_TYPE_HASH);
+
+        // Start should call our custom start and return 123
+        let mut ctx = DriverContext::new();
+        let res_start = (v.start)(&mut ctx as *mut _);
+        assert_eq!(res_start, 123);
+
+        // Stop was not provided in the macro invocation -> default should be 0
+        let res_stop = (v.stop)(&mut ctx as *mut _);
+        assert_eq!(res_stop, 0);
+
+        // IRQ handler should be present and return true
+        assert!(v.handle_irq.is_some());
+        let irq_fn = v.handle_irq.unwrap();
+        assert!(irq_fn(&mut ctx as *mut _));
+
+        // Name pointer and length
+        let name_ptr = (v.name)();
+        let name_len = (v.name_len)();
+        let name_slice = unsafe { core::slice::from_raw_parts(name_ptr, name_len) };
+        assert_eq!(name_slice, b"testdrv");
+    }
+}
+
 // ============================================================================
 // ABI Version
 // ============================================================================
@@ -31,7 +101,14 @@
 ///
 /// Increment this when making breaking changes to the vtable layout.
 /// Drivers compiled with a different ABI version will be rejected.
+/// Current ABI version for compatibility checking.
+///
+/// Increment this when making breaking changes to the vtable layout.
+/// Drivers compiled with a different ABI version will be rejected.
 pub const DRIVER_ABI_VERSION: u64 = 1;
+
+// Include the generated type hash
+include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
 
 /// The symbol name that all dynamically loadable drivers must export.
 pub const DRIVER_ENTRY_SYMBOL: &str = "_exorust_driver_entry";
@@ -150,8 +227,10 @@ pub struct DriverContext {
     pub device_id: u16,
     /// PCI Class code (if applicable)
     pub class_code: u32,
+    /// Driver-specific data pointer (used to store Box<Driver> raw pointer)
+    pub driver_data: u64,
     /// Reserved for future use
-    _reserved: [u64; 4],
+    pub _reserved: [u64; 3],
 }
 
 impl DriverContext {
@@ -165,7 +244,8 @@ impl DriverContext {
             vendor_id: 0,
             device_id: 0,
             class_code: 0,
-            _reserved: [0; 4],
+            driver_data: 0,
+            _reserved: [0; 3],
         }
     }
 
@@ -185,7 +265,8 @@ impl DriverContext {
             vendor_id,
             device_id,
             class_code,
-            _reserved: [0; 4],
+            driver_data: 0,
+            _reserved: [0; 3],
         }
     }
 }
@@ -229,10 +310,21 @@ pub struct DriverVTable {
     /// ABI version - MUST be first field for compatibility checking
     pub abi_version: u64,
 
+    /// Type definition hash for ensuring layout compatibility
+    pub type_hash: u64,
+
     /// Initialize and probe the device.
     pub probe: extern "C" fn(ctx: *mut DriverContext) -> i32,
 
     /// Start the driver after successful probe.
+    ///
+    /// # Asynchronous / Non-blocking Requirement
+    ///
+    /// This function MUST be non-blocking. It should only initiate the startup sequence
+    /// (e.g., enabling interrupts, spawning a background task) and return immediately.
+    ///
+    /// If long-running initialization is required, it must be performed asynchronously.
+    /// Blocking this function will stall the kernel executor.
     pub start: extern "C" fn(ctx: *mut DriverContext) -> i32,
 
     /// Stop the driver.
@@ -260,7 +352,7 @@ pub struct DriverVTable {
     pub handle_irq: Option<extern "C" fn(ctx: *mut DriverContext) -> bool>,
 
     /// Reserved for future expansion
-    _reserved: [usize; 8],
+    pub _reserved: [u64; 7],
 }
 
 impl DriverVTable {
@@ -268,6 +360,9 @@ impl DriverVTable {
     pub fn validate(&self) -> Result<(), AbiError> {
         if self.abi_version != DRIVER_ABI_VERSION {
             return Err(AbiError::NotSupported);
+        }
+        if self.type_hash != DRIVER_TYPE_HASH {
+            return Err(AbiError::InvalidParam); // Or specific mismatch error
         }
         Ok(())
     }
@@ -292,6 +387,7 @@ impl DriverVTable {
     ) -> Self {
         Self {
             abi_version,
+            type_hash: DRIVER_TYPE_HASH,
             probe,
             start,
             stop,
@@ -302,7 +398,7 @@ impl DriverVTable {
             version,
             request_capabilities,
             handle_irq,
-            _reserved: [0usize; 8],
+            _reserved: [0; 7],
         }
     }
 }
@@ -347,37 +443,57 @@ pub const fn unpack_version(packed: u64) -> (u16, u16, u16) {
 /// Example:
 /// ```rust
 /// export_driver!(
-///     probe = crate::probe_fn,
-///     remove = crate::remove_fn,
-///     name = crate::driver_name,
-///     driver_type = (crate::driver::DriverType::Block as u32),
-///     version = 0x00010000_00010000, // optional packed version field
+///     probe: crate::probe_fn,
+///     remove: crate::remove_fn,
+///     name: crate::driver_name,
+///     driver_type: (crate::driver::DriverType::Block as u32),
+///     version: 0x00010000_00010000, // optional packed version field
+/// );
+/// ```
+///
+/// Optional arguments supported:
+/// - `start: my_start_fn` — called after a successful `probe` to start the device
+/// - `stop: my_stop_fn` — called to stop the device
+/// - `irq: my_irq_fn` — optional IRQ handler; included in the vtable when provided
+///
+/// Example with optional handlers:
+/// ```rust
+/// export_driver!(
+///     probe: my_probe,
+///     remove: my_remove,
+///     name: my_name,
+///     driver_type: (crate::driver::DriverType::Pci as u32),
+///     version: 1,
+///     start: my_start,
+///     irq: my_irq_handler,
 /// );
 /// ```
 #[macro_export]
 macro_rules! export_driver {
-    (
-        probe = $probe:path,
-        remove = $remove:path,
-        name = $name:path,
+    // Internal implementation entrypoint that receives explicit Option values
+    // Implementation when an IRQ handler is provided
+    (@impl
+        probe = $probe:expr,
+        remove = $remove:expr,
+        name = $name:expr,
         driver_type = $driver_type:expr,
         version = $version:expr
+        $(, start = $start:path)?
+        $(, stop = $stop:path)?
+        , irq = $irq:path
     ) => {
-        #[export_name = "_exorust_driver_entry"]
+            #[export_name = "_exorust_driver_entry"]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+            // --- Mandatory Adapters ---
             extern "C" fn probe_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
-                ($probe)(ctx)
+                // SAFETY: The kernel guarantees ctx is valid when calling probe
+                let ctx_safe = unsafe { &mut *ctx };
+                ($probe)(ctx_safe)
             }
-
-            extern "C" fn start_adapter(_ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
-                0
-            }
-            extern "C" fn stop_adapter(_ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
-                0
-            }
-
             extern "C" fn remove_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
-                ($remove)(ctx)
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                ($remove)(ctx_safe)
             }
             extern "C" fn name_adapter() -> *const u8 {
                 ($name)().as_ptr()
@@ -390,6 +506,99 @@ macro_rules! export_driver {
             }
             extern "C" fn version_adapter() -> u64 {
                 $version as u64
+            }
+
+            // --- Optional Adapters (start/stop) ---
+            extern "C" fn start_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                let mut rv: i32 = 0;
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                $( rv = ($start)(ctx_safe); )?
+                rv
+            }
+            extern "C" fn stop_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                let mut rv: i32 = 0;
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                $( rv = ($stop)(ctx_safe); )?
+                rv
+            }
+
+            // IRQ adapter that wraps the user's IRQ handler
+            extern "C" fn irq_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> bool {
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                ($irq)(ctx_safe)
+            }
+
+            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
+                $crate::driver_abi::DRIVER_ABI_VERSION,
+                probe_adapter,
+                start_adapter,
+                stop_adapter,
+                remove_adapter,
+                name_adapter,
+                name_len_adapter,
+                type_adapter,
+                version_adapter,
+                None,
+                Some(irq_adapter),
+            );
+
+            &VTABLE
+        }
+    };
+
+    // Implementation when no IRQ handler is provided
+    (@impl
+        probe = $probe:expr,
+        remove = $remove:expr,
+        name = $name:expr,
+        driver_type = $driver_type:expr,
+        version = $version:expr
+        $(, start = $start:path)?
+        $(, stop = $stop:path)?
+    ) => {
+        #[export_name = "_exorust_driver_entry"]
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+            // --- Mandatory Adapters ---
+            extern "C" fn probe_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                ($probe)(ctx_safe)
+            }
+            extern "C" fn remove_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                ($remove)(ctx_safe)
+            }
+            extern "C" fn name_adapter() -> *const u8 {
+                ($name)().as_ptr()
+            }
+            extern "C" fn name_len_adapter() -> usize {
+                ($name)().len()
+            }
+            extern "C" fn type_adapter() -> u32 {
+                ($driver_type) as u32
+            }
+            extern "C" fn version_adapter() -> u64 {
+                $version as u64
+            }
+
+            // --- Optional Adapters (start/stop) ---
+            extern "C" fn start_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                let mut rv: i32 = 0;
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                $( rv = ($start)(ctx_safe); )?
+                rv
+            }
+            extern "C" fn stop_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {
+                let mut rv: i32 = 0;
+                // SAFETY: The kernel guarantees ctx is valid
+                let ctx_safe = unsafe { &mut *ctx };
+                $( rv = ($stop)(ctx_safe); )?
+                rv
             }
 
             static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
@@ -408,5 +617,225 @@ macro_rules! export_driver {
 
             &VTABLE
         }
+    };
+
+    // Public entry point - parses named arguments and builds Option values for optional fields
+    (
+        probe: $probe:path,
+        remove: $remove:path,
+        name: $name:path,
+        driver_type: $driver_type:expr,
+        version: $version:expr
+        $(, start: $start:path)? // Optional start
+        $(, stop: $stop:path)?   // Optional stop
+        $(, irq: $irq:path)?     // Optional irq
+    ) => {
+        $crate::export_driver!(@impl
+            probe = $probe,
+            remove = $remove,
+            name = $name,
+            driver_type = $driver_type,
+            version = $version
+            $(, start = $start)?
+            $(, stop = $stop)?
+            $(, irq = $irq)?
+        );
+    };
+}
+
+/// Export an `AsyncDriver` implementation as a C-compatible `DriverVTable`.
+#[macro_export]
+macro_rules! export_async_driver {
+    // Entry point: parse args and delegate to @impl
+    (
+        type: $driver_type:ty,
+        constructor: $constructor:expr,
+        name: $name:expr,
+        driver_type: $dtype:expr,
+        version: $version:expr
+        $(, irq: $irq:path)?
+    ) => {
+        $crate::export_async_driver!(@impl
+            type = $driver_type,
+            constructor = $constructor,
+            name = $name,
+            driver_type = $dtype,
+            version = $version
+            $(, irq = $irq)?
+        );
+    };
+
+    // Impl with IRQ
+    (@impl
+        type = $driver_type:ty,
+        constructor = $constructor:expr,
+        name = $name:expr,
+        driver_type = $dtype:expr,
+        version = $version:expr,
+        irq = $irq:path
+    ) => {
+        #[export_name = "_exorust_driver_entry"]
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+            $crate::export_async_driver!(@common_adapters
+                type = $driver_type,
+                constructor = $constructor,
+                name = $name,
+                driver_type = $dtype,
+                version = $version
+            );
+
+            // IRQ Adapter
+            extern "C" fn irq_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> bool {
+                let ctx_safe = unsafe { &mut *ctx };
+                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                if driver_ptr.is_null() { return false; }
+                let drv = unsafe { &mut *driver_ptr };
+                ($irq)(drv)
+            }
+
+            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
+                $crate::driver_abi::DRIVER_ABI_VERSION,
+                probe_adapter,
+                start_adapter,
+                stop_adapter,
+                remove_adapter,
+                name_adapter,
+                name_len_adapter,
+                type_adapter,
+                version_adapter,
+                None,
+                Some(irq_adapter),
+            );
+            &VTABLE
+        }
+    };
+
+    // Impl without IRQ
+    (@impl
+        type = $driver_type:ty,
+        constructor = $constructor:expr,
+        name = $name:expr,
+        driver_type = $dtype:expr,
+        version = $version:expr
+    ) => {
+        #[export_name = "_exorust_driver_entry"]
+        pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
+             $crate::export_async_driver!(@common_adapters
+                type = $driver_type,
+                constructor = $constructor,
+                name = $name,
+                driver_type = $dtype,
+                version = $version
+            );
+
+            static VTABLE: $crate::driver_abi::DriverVTable = $crate::driver_abi::DriverVTable::new(
+                $crate::driver_abi::DRIVER_ABI_VERSION,
+                probe_adapter,
+                start_adapter,
+                stop_adapter,
+                remove_adapter,
+                name_adapter,
+                name_len_adapter,
+                type_adapter,
+                version_adapter,
+                None,
+                None,
+            );
+            &VTABLE
+        }
+    };
+
+    // Common adapters generation
+    (@common_adapters
+        type = $driver_type:ty,
+        constructor = $constructor:expr,
+        name = $name:expr,
+        driver_type = $dtype:expr,
+        version = $version:expr
+    ) => {
+            use $crate::driver::{AsyncDriver, DriverType};
+            use $crate::driver_abi::{DriverContext, DriverVTable, DRIVER_ABI_VERSION};
+            use $crate::services::kernel;
+            use alloc::boxed::Box;
+
+            extern "C" fn probe_adapter(ctx: *mut DriverContext) -> i32 {
+                let ctx_safe = unsafe { &mut *ctx };
+                let driver = Box::new($constructor);
+                let driver_ptr = Box::into_raw(driver);
+                ctx_safe.driver_data = driver_ptr as u64;
+
+                // We must use 'static future or handle params safely.
+                // ctx is unsafe to pass if not static. Assume static/heap.
+                // driver_ptr is safe.
+                
+                let future = async move {
+                    let drv = unsafe { &mut *driver_ptr };
+                    let ctx_ref = unsafe { &mut *ctx };
+                    if let Err(_) = drv.probe(ctx_ref).await {
+                         // TODO: Proper error logging
+                    }
+                };
+
+                match kernel().spawn_task(Box::pin(future)) {
+                    Ok(_) => 0,
+                    Err(_) => -1,
+                }
+            }
+
+            extern "C" fn start_adapter(ctx: *mut DriverContext) -> i32 {
+                let ctx_safe = unsafe { &mut *ctx };
+                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                if driver_ptr.is_null() { return -1; }
+                let future = async move {
+                    let drv = unsafe { &mut *driver_ptr };
+                    let _ = drv.start().await;
+                };
+                match kernel().spawn_task(Box::pin(future)) {
+                    Ok(_) => 0,
+                    Err(_) => -1,
+                }
+            }
+
+            extern "C" fn stop_adapter(ctx: *mut DriverContext) -> i32 {
+                let ctx_safe = unsafe { &mut *ctx };
+                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                if driver_ptr.is_null() { return 0; }
+                let future = async move {
+                    let drv = unsafe { &mut *driver_ptr };
+                    let _ = drv.stop().await;
+                };
+                match kernel().spawn_task(Box::pin(future)) {
+                    Ok(_) => 0,
+                    Err(_) => -1,
+                }
+            }
+
+            extern "C" fn remove_adapter(ctx: *mut DriverContext) -> i32 {
+                let ctx_safe = unsafe { &mut *ctx };
+                let driver_ptr = ctx_safe.driver_data as *mut $driver_type;
+                if driver_ptr.is_null() { return 0; }
+                let future = async move {
+                    let drv = unsafe { &mut *driver_ptr };
+                    let _ = drv.remove().await;
+                    unsafe { let _ = Box::from_raw(driver_ptr); }
+                };
+                match kernel().spawn_task(Box::pin(future)) {
+                    Ok(_) => 0,
+                    Err(_) => -1,
+                }
+            }
+
+            extern "C" fn name_adapter() -> *const u8 {
+                ($name)().as_ptr()
+            }
+            extern "C" fn name_len_adapter() -> usize {
+                ($name)().len()
+            }
+            extern "C" fn type_adapter() -> u32 {
+                ($dtype) as u32
+            }
+            extern "C" fn version_adapter() -> u64 {
+                $version as u64
+            }
     };
 }

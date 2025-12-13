@@ -1,0 +1,45 @@
+name: Codacy analysis (Docker)
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  codacy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Ensure Docker is available
+        run: |
+          docker version
+
+      - name: Run Codacy analysis
+        run: |
+          chmod +x tools/codacy/ci_run_codacy.sh
+          ./tools/codacy/ci_run_codacy.sh
+        env:
+          CI: true
+
+      - name: Upload Codacy results and logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: codacy-results
+          path: |
+            tools/codacy/results_*_ci.json
+            tools/codacy/ci_metrics.log
+            tools/codacy/ci_full.log
+            tools/codacy/failed_read_files_metrics.txt
+            tools/codacy/failed_read_files_full.txt
+            tools/codacy/utf8_issues/**

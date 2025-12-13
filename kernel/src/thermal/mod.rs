@@ -195,12 +195,10 @@ impl CpuThermalDriver {
     /// 初期化
     pub fn init(&mut self) -> ThermalResult<()> {
         // TJmaxを読み取り
-        unsafe {
-            let target = self.read_msr(msr::IA32_TEMPERATURE_TARGET)?;
-            let tj_target = ((target >> 16) & 0xFF) as i32;
-            if tj_target > 0 {
-                self.tj_max = tj_target * 1000;
-            }
+        let target = self.read_msr(msr::IA32_TEMPERATURE_TARGET)?;
+        let tj_target = ((target >> 16) & 0xFF) as i32;
+        if tj_target > 0 {
+            self.tj_max = tj_target * 1000;
         }
 
         // コア数を検出（CPUID使用）
@@ -211,57 +209,51 @@ impl CpuThermalDriver {
 
     /// パッケージ温度を読み取り
     pub fn read_package_temp(&self) -> ThermalResult<Temperature> {
-        unsafe {
-            let status = self.read_msr(msr::IA32_PACKAGE_THERM_STATUS)?;
+        let status = self.read_msr(msr::IA32_PACKAGE_THERM_STATUS)?;
 
-            // Reading validビットをチェック
-            if (status & (1 << 31)) == 0 {
-                return Err(ThermalError::ReadFailed);
-            }
-
-            // デジタル読み取り値を取得
-            let reading = ((status >> 16) & 0x7F) as i32;
-            let temp = self.tj_max - (reading * 1000);
-
-            Ok(Temperature::from_millicelsius(temp))
+        // Reading validビットをチェック
+        if (status & (1 << 31)) == 0 {
+            return Err(ThermalError::ReadFailed);
         }
+
+        // デジタル読み取り値を取得
+        let reading = ((status >> 16) & 0x7F) as i32;
+        let temp = self.tj_max - (reading * 1000);
+
+        Ok(Temperature::from_millicelsius(temp))
     }
 
     /// コア温度を読み取り
     pub fn read_core_temp(&self, _core: u32) -> ThermalResult<Temperature> {
         // 特定のコアへのアフィニティ設定が必要
         // ここでは現在のコアの温度を読む
-        unsafe {
-            let status = self.read_msr(msr::IA32_THERM_STATUS)?;
+        let status = self.read_msr(msr::IA32_THERM_STATUS)?;
 
-            if (status & (1 << 31)) == 0 {
-                return Err(ThermalError::ReadFailed);
-            }
-
-            let reading = ((status >> 16) & 0x7F) as i32;
-            let temp = self.tj_max - (reading * 1000);
-
-            Ok(Temperature::from_millicelsius(temp))
+        if (status & (1 << 31)) == 0 {
+            return Err(ThermalError::ReadFailed);
         }
+
+        let reading = ((status >> 16) & 0x7F) as i32;
+        let temp = self.tj_max - (reading * 1000);
+
+        Ok(Temperature::from_millicelsius(temp))
     }
 
     /// サーマルステータスを取得
     pub fn thermal_status(&self) -> ThermalStatus {
         let mut status = ThermalStatus::default();
 
-        unsafe {
-            if let Ok(therm) = self.read_msr(msr::IA32_THERM_STATUS) {
-                status.thermal_status = (therm & 1) != 0;
-                status.thermal_log = (therm & 2) != 0;
-                status.prochot = (therm & 4) != 0;
-                status.prochot_log = (therm & 8) != 0;
-                status.critical_temp = (therm & 0x10) != 0;
-                status.critical_temp_log = (therm & 0x20) != 0;
-                status.threshold1 = (therm & 0x40) != 0;
-                status.threshold2 = (therm & 0x100) != 0;
-                status.power_limit = (therm & 0x400) != 0;
-                status.current_limit = (therm & 0x1000) != 0;
-            }
+        if let Ok(therm) = self.read_msr(msr::IA32_THERM_STATUS) {
+            status.thermal_status = (therm & 1) != 0;
+            status.thermal_log = (therm & 2) != 0;
+            status.prochot = (therm & 4) != 0;
+            status.prochot_log = (therm & 8) != 0;
+            status.critical_temp = (therm & 0x10) != 0;
+            status.critical_temp_log = (therm & 0x20) != 0;
+            status.threshold1 = (therm & 0x40) != 0;
+            status.threshold2 = (therm & 0x100) != 0;
+            status.power_limit = (therm & 0x400) != 0;
+            status.current_limit = (therm & 0x1000) != 0;
         }
 
         status

@@ -16,6 +16,13 @@
 //! - **Zero-Copy Friendly**: Uses references where possible
 
 use crate::error::{KapiError, KapiResult};
+use crate::driver_abi::DriverContext;
+use alloc::boxed::Box;
+use core::future::Future;
+use core::pin::Pin;
+
+/// Future type returned by AsyncDriver methods
+pub type DriverFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // ============================================================================
 // Driver Trait
@@ -100,6 +107,60 @@ pub trait Driver: Send + Sync {
     }
 
     /// ドライバがサポートするデバイス情報
+    fn supported_devices(&self) -> &[DeviceId] {
+        &[]
+    }
+
+}
+
+// ============================================================================
+// Async Driver Trait
+// ============================================================================
+
+/// 非同期ドライバ（セル）のためのトレイト
+///
+/// `Driver`トレイトの非同期版であり、`async/await`構文を利用して
+/// 初期化処理やデバイス操作を行うことができる。
+///
+/// # Async-First Design
+/// RanyOSは非同期中心主義を採用しているため、長時間かかる初期化処理（ハードウェア待ちなど）は
+/// 必ず非同期で行う必要がある。
+pub trait AsyncDriver: Send + Sync {
+    /// ドライバ名
+    fn name(&self) -> &str;
+
+    /// ドライバのバージョン
+    fn version(&self) -> DriverVersion {
+        DriverVersion::new(0, 1, 0)
+    }
+
+    /// ドライバの種類
+    fn driver_type(&self) -> DriverType;
+
+    /// 非同期プローブ
+    ///
+    /// デバイスの初期化を行う。
+    fn probe(&mut self, ctx: &mut DriverContext) -> DriverFuture<'_, KapiResult<()>>;
+
+    /// 非同期開始
+    ///
+    /// 割り込み待ち受けやバックグラウンドタスクの起動を行う。
+    /// `kernel_api::services::kernel().spawn_task()` を使用してタスクを生成できる。
+    fn start(&mut self) -> DriverFuture<'_, KapiResult<()>> {
+        Box::pin(core::future::ready(Ok(())))
+    }
+
+    /// 非同期停止
+    fn stop(&mut self) -> DriverFuture<'_, KapiResult<()>> {
+        Box::pin(core::future::ready(Ok(())))
+    }
+
+    /// 非同期削除
+    fn remove(&mut self) -> DriverFuture<'_, KapiResult<()>> {
+        Box::pin(core::future::ready(Ok(())))
+    }
+
+    /// サポートするデバイス
     fn supported_devices(&self) -> &[DeviceId] {
         &[]
     }

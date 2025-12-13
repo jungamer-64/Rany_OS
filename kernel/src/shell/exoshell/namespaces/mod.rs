@@ -4,6 +4,7 @@
 
 pub mod cap;
 pub mod driver;
+pub mod dynamic_driver;
 pub mod fs;
 pub mod net;
 pub mod proc;

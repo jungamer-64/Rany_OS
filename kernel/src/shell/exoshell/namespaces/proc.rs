@@ -7,9 +7,9 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
-use crate::security::capability::{CAP_KILL, manager};
+use crate::security::capability::CAP_KILL;
 use crate::shell::exoshell::types::*;
-use crate::task::process::{getpid, getuid};
+use crate::task::process::getuid;
 use alloc::boxed::Box;
 
 /// プロセス/タスク名前空間
@@ -103,7 +103,7 @@ impl ProcNamespace {
 
     /// プロセスを終了（シグナル送信）
     /// Requires owner or CAP_KILL
-    pub fn kill(pid: u32, _signal: i32) -> ExoValue<'static> {
+    fn kill_with_caps(pid: u32, _signal: i32, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
         if pid == 0 {
             return ExoValue::Error(String::from("Cannot kill kernel process"));
         }
@@ -112,13 +112,12 @@ impl ProcNamespace {
         let pm = crate::task::process_manager();
 
         if let Some(process) = pm.get(proc_id) {
-            // 権限チェック
+            // 権限チェック: caps パラメータを使用
             let current_uid = getuid();
             let target_uid = process.read().credentials.uid;
-            let current_pid = getpid().as_u64();
 
             // 自分のプロセスか、CAP_KILLを持っている場合に許可
-            if current_uid != target_uid && !manager().has_capability(current_pid, CAP_KILL) {
+            if current_uid != target_uid && !caps.has_capability(CAP_KILL) {
                 return ExoValue::Error(String::from(
                     "Permission denied: Owner or CAP_KILL required",
                 ));
@@ -143,7 +142,7 @@ impl ShellNamespace for ProcNamespace {
         &'a self,
         method: &'a str,
         args: &'a [ExoValue<'static>],
-        _caps: &'a crate::security::CapabilitySet,
+        caps: &'a crate::security::CapabilitySet,
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
@@ -166,7 +165,7 @@ impl ShellNamespace for ProcNamespace {
                             _ => None,
                         })
                         .unwrap_or(0);
-                    Self::kill(pid, 9)
+                    Self::kill_with_caps(pid, 9, caps)
                 }
                 _ => ExoValue::Error(format!(
                     "Unknown method 'proc.{}'\nValid methods: list, info, kill",

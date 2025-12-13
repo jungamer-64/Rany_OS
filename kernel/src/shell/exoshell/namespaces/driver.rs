@@ -19,9 +19,8 @@ use alloc::vec::Vec;
 use super::{BoxFuture, ShellNamespace};
 use crate::driver_registry;
 use crate::loader;
-use crate::security::capability::{CAP_SYS_MODULE, manager};
+use crate::security::capability::CAP_SYS_MODULE;
 use crate::shell::exoshell::types::ExoValue;
-use crate::task::process::getpid;
 use alloc::boxed::Box;
 
 /// ドライバ名前空間
@@ -91,9 +90,8 @@ impl DriverNamespace {
 
     /// ファイルからドライバをロード
     /// Requires CAP_SYS_MODULE
-    pub fn load(path: &str) -> ExoValue<'static> {
-        let pid = getpid().as_u64();
-        if !manager().has_capability(pid, CAP_SYS_MODULE) {
+    fn load_with_caps(path: &str, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+        if !caps.has_capability(CAP_SYS_MODULE) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_MODULE required"));
         }
 
@@ -120,6 +118,17 @@ impl DriverNamespace {
         // ローダーでドライバをロード
         match loader::load_driver(driver_name, &elf_data, true) {
             Ok(handle) => {
+                // 動的名前空間を自動登録
+                use super::dynamic_driver::DynamicDriverNamespace;
+                use super::registry;
+                use alloc::sync::Arc;
+                
+                let dynamic_ns = Arc::new(DynamicDriverNamespace::new(
+                    String::from(driver_name),
+                    handle,
+                ));
+                registry::register_namespace(dynamic_ns);
+                
                 let mut map = BTreeMap::new();
                 map.insert(String::from("success"), ExoValue::Bool(true));
                 map.insert(
@@ -133,9 +142,10 @@ impl DriverNamespace {
                 map.insert(
                     String::from("message"),
                     ExoValue::String(Cow::Owned(format!(
-                        "Driver '{}' loaded successfully with ID {}",
+                        "Driver '{}' loaded successfully with ID {}. Namespace '{}' registered.",
                         driver_name,
-                        handle.index()
+                        handle.index(),
+                        driver_name
                     ))),
                 );
                 ExoValue::Map(map)
@@ -146,9 +156,8 @@ impl DriverNamespace {
 
     /// ドライバをアンロード
     /// Requires CAP_SYS_MODULE
-    pub fn unload(id: i64) -> ExoValue<'static> {
-        let pid = getpid().as_u64();
-        if !manager().has_capability(pid, CAP_SYS_MODULE) {
+    fn unload_with_caps(id: i64, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
+        if !caps.has_capability(CAP_SYS_MODULE) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_MODULE required"));
         }
 
@@ -186,7 +195,7 @@ impl ShellNamespace for DriverNamespace {
         &'a self,
         method: &'a str,
         args: &'a [ExoValue<'static>],
-        _caps: &'a crate::security::CapabilitySet,
+        caps: &'a crate::security::CapabilitySet,
     ) -> BoxFuture<'a, ExoValue<'static>> {
         Box::pin(async move {
             match method {
@@ -210,7 +219,7 @@ impl ShellNamespace for DriverNamespace {
                             _ => None,
                         })
                         .unwrap_or("");
-                    Self::load(path)
+                    Self::load_with_caps(path, caps)
                 }
                 "unload" => {
                     let id = args
@@ -220,7 +229,7 @@ impl ShellNamespace for DriverNamespace {
                             _ => None,
                         })
                         .unwrap_or(0);
-                    Self::unload(id)
+                    Self::unload_with_caps(id, caps)
                 }
                 _ => ExoValue::Error(format!(
                     "Unknown method 'driver.{}'\nValid methods: list, stats, status, load, unload",

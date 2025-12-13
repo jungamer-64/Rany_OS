@@ -51,9 +51,17 @@ use spin::Mutex;
 static EXOSHELL: Mutex<Option<ExoShell>> = Mutex::new(None);
 
 /// ExoShellを初期化
+/// 
+/// ビルトイン名前空間をレジストリに登録し、グローバルシェルインスタンスを作成。
 pub fn init() {
+    // ビルトイン名前空間を先に登録
+    namespaces::registry::register_builtin_namespaces();
+    
+    // シェルインスタンスを作成（レジストリから名前空間を取得）
     *EXOSHELL.lock() = Some(ExoShell::new());
-    crate::log!("[EXOSHELL] ExoShell REPL initialized\n");
+    
+    crate::log!("[EXOSHELL] ExoShell REPL initialized with {} namespaces\n", 
+        namespaces::registry::list_namespaces().len());
 }
 
 /// ExoShellにアクセス（同期操作のみ）

@@ -16,6 +16,33 @@ use super::namespaces::*;
 use super::parser::*;
 use super::types::*;
 use crate::security::CapabilitySet;
+use alloc::sync::Arc;
+
+// ============================================================================
+// Arc Namespace Wrapper
+// ============================================================================
+
+/// Arc<dyn ShellNamespace> を Box<dyn ShellNamespace> として使うためのラッパー
+/// 
+/// レジストリは Arc で名前空間を保持するが、既存のシェル API は Box を期待する。
+/// このラッパーにより両方の API を統一できる。
+struct ArcNamespaceWrapper(Arc<dyn ShellNamespace>);
+
+impl ShellNamespace for ArcNamespaceWrapper {
+    fn name(&self) -> &str {
+        self.0.name()
+    }
+
+    fn call<'a>(
+        &'a self,
+        method: &'a str,
+        args: &'a [ExoValue<'static>],
+        caps: &'a CapabilitySet,
+    ) -> BoxFuture<'a, ExoValue<'static>> {
+        self.0.call(method, args, caps)
+    }
+}
+
 
 /// ExoShell REPLインタプリタ
 /// 
@@ -45,40 +72,34 @@ impl ExoShell {
     }
 
     /// 指定された権限でシェルを作成
+    /// 
+    /// グローバルレジストリから名前空間を取得。
+    /// レジストリが空の場合はビルトイン名前空間を登録してから取得。
     pub fn with_capabilities(capabilities: CapabilitySet) -> Self {
+        use super::namespaces::registry;
+        
+        // レジストリが空なら初期化
+        if registry::list_namespaces().is_empty() {
+            registry::register_builtin_namespaces();
+        }
+        
+        // レジストリから名前空間を取得（Arc -> Box への変換）
+        let namespaces = {
+            let mut m = BTreeMap::new();
+            for (name, ns) in registry::get_all_namespaces() {
+                // Arc<dyn ShellNamespace> を Box<dyn ShellNamespace> にラップ
+                // ArcをそのままBoxに入れることで、共有参照を維持
+                m.insert(name, Box::new(ArcNamespaceWrapper(ns)) as Box<dyn super::namespaces::ShellNamespace>);
+            }
+            m
+        };
+        
         Self {
             bindings: BTreeMap::new(),
             cwd: String::from("/"),
             history: Vec::new(),
             last_result: ExoValue::Nil,
-            namespaces: {
-                let mut m = BTreeMap::new();
-                m.insert(
-                    String::from("fs"),
-                    Box::new(FsNamespace) as Box<dyn super::namespaces::ShellNamespace>,
-                );
-                m.insert(
-                    String::from("net"),
-                    Box::new(NetNamespace) as Box<dyn super::namespaces::ShellNamespace>,
-                );
-                m.insert(
-                    String::from("proc"),
-                    Box::new(ProcNamespace) as Box<dyn super::namespaces::ShellNamespace>,
-                );
-                m.insert(
-                    String::from("cap"),
-                    Box::new(CapNamespace) as Box<dyn super::namespaces::ShellNamespace>,
-                );
-                m.insert(
-                    String::from("sys"),
-                    Box::new(SysNamespace) as Box<dyn super::namespaces::ShellNamespace>,
-                );
-                m.insert(
-                    String::from("driver"),
-                    Box::new(DriverNamespace) as Box<dyn super::namespaces::ShellNamespace>,
-                );
-                m
-            },
+            namespaces,
             capabilities,
         }
     }
@@ -332,6 +353,19 @@ impl ExoShell {
         }
     }
 
+    /// 名前空間メソッドを直接呼び出し（引数は評価済み）
+    async fn call_namespace(
+        &self,
+        namespace: &str,
+        method: &str,
+        args: &[ExoValue<'static>],
+    ) -> ExoValue<'static> {
+        match self.namespaces.get(namespace) {
+            Some(ns) => ns.call(method, args, &self.capabilities).await,
+            None => ExoValue::Error(format!("Unknown namespace: {}", namespace)),
+        }
+    }
+
     async fn evaluate_args(&mut self, args: &[Expr<'_>]) -> Vec<ExoValue<'static>> {
         let mut values: Vec<ExoValue<'static>> = Vec::new();
         for arg in args {
@@ -544,56 +578,16 @@ impl ExoShell {
         }
     }
 
-    /// sys.* メソッド（構造化版）
-    /// sys.* メソッド（構造化版）
-    async fn eval_sys_method(&mut self, name: &str, _args: &[Expr<'_>]) -> ExoValue<'static> {
-        match name {
-            "info" => SysNamespace::info(),
-            "memory" | "mem" => SysNamespace::memory(),
-            "time" => SysNamespace::time(),
-            "monitor" => SysNamespace::monitor(),
-            "dashboard" => SysNamespace::monitor_dashboard(),
-            "thermal" | "temp" => SysNamespace::thermal(),
-            "watchdog" | "wd" => SysNamespace::watchdog(),
-            "power" => SysNamespace::power(),
-            "shutdown" => SysNamespace::shutdown(),
-            "reboot" => SysNamespace::reboot(),
-            _ => ExoValue::Error(
-                ParseError::UnknownMethod {
-                    namespace: String::from("sys"),
-                    method: name.to_string(),
-                }
-                .to_string()
-                    + "\n有効なメソッド: info, time, mem, shutdown, reboot",
-            ),
-        }
+    /// sys.* メソッド（名前空間経由）
+    async fn eval_sys_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
+        let evaluated = self.evaluate_args(args).await;
+        self.call_namespace("sys", name, &evaluated).await
     }
 
-    /// driver.* メソッド（ドライバ管理）
+    /// driver.* メソッド（名前空間経由）
     async fn eval_driver_method(&mut self, name: &str, args: &[Expr<'_>]) -> ExoValue<'static> {
-        let args = self.evaluate_args(args).await;
-
-        match name {
-            "list" => DriverNamespace::list(),
-            "load" => {
-                let path = args
-                    .first()
-                    .and_then(|v| match v {
-                        ExoValue::String(s) => Some(s.as_ref()),
-                        _ => None,
-                    })
-                    .unwrap_or("");
-                DriverNamespace::load(path)
-            }
-            _ => ExoValue::Error(
-                ParseError::UnknownMethod {
-                    namespace: String::from("driver"),
-                    method: name.to_string(),
-                }
-                .to_string()
-                    + "\n有効なメソッド: list, load",
-            ),
-        }
+        let evaluated = self.evaluate_args(args).await;
+        self.call_namespace("driver", name, &evaluated).await
     }
 
     /// 値に対してメソッドを適用（メソッドチェーン）
