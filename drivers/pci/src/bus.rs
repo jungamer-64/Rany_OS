@@ -414,7 +414,7 @@ impl<'a> PciBusScanner<'a> {
                             let high_size = self.accessor.read32(bdf, next_bar_offset) as u64;
                             self.accessor.write32(bdf, next_bar_offset, high as u32);
 
-                            let size_64 = ((high_size << 32) | ((size_mask & !0x0F) as u64));
+                            let size_64 = (high_size << 32) | ((size_mask & !0x0F) as u64);
                             let size = !size_64 + 1;
 
                             bars[i] = Some(Bar::Memory64 {

@@ -2,6 +2,11 @@
 
 This small crate provides quick and reproducible micro/criterion benchmarks for the framebuffer draw paths.
 
+Note: this crate has been intentionally left out of the workspace members and contains a local
+`.cargo/config.toml` that clears `build-std` so it runs against the toolchain-provided `std`/`core`.
+This prevents workspace `build-std` settings from causing duplicate-lang-item (E0152) errors
+when running release/criterion benches.
+
 Quick runs (no Criterion statistics):
 
 ```powershell

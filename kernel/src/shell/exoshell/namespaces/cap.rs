@@ -16,7 +16,6 @@ use crate::security::capability::{
     CAP_SYS_TIME, CapabilitySet, capability_name, manager,
 };
 use crate::shell::exoshell::types::*;
-use crate::task::process::getpid;
 use alloc::boxed::Box;
 
 /// Capability 名前空間（権限管理）
@@ -26,7 +25,10 @@ impl CapNamespace {
     /// 現在のCapabilityを一覧
     pub fn list() -> ExoValue<'static> {
         // 現在のプロセス（ドメイン）の権限を取得
-        let pid = getpid().as_u64();
+        let pid = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_pid())
+            .unwrap_or(0);
         let cap_set = manager().get_capabilities(pid);
 
         let mut caps = Vec::new();
@@ -159,7 +161,10 @@ impl CapNamespace {
         operations: &[CapOperation],
         target_domain: &str,
     ) -> ExoValue<'static> {
-        let caller_pid = getpid().as_u64();
+        let caller_pid = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_pid())
+            .unwrap_or(0);
 
         // target_domainをu64に解析
         let domain_id: u64 = match target_domain.parse() {
@@ -203,7 +208,10 @@ impl CapNamespace {
 
     /// 自分の権限を放棄 (Revoke from self)
     pub fn revoke(cap_id: u64) -> ExoValue<'static> {
-        let pid = getpid().as_u64();
+        let pid = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_pid())
+            .unwrap_or(0);
         let mut caps = manager().get_capabilities(pid);
 
         // cap_idはここでの実装ではCapabilityビットと仮定
@@ -227,7 +235,10 @@ impl CapNamespace {
 
     /// ドメインの権限を完全に剥奪 (Requires CAP_SYS_ADMIN)
     pub fn revoke_all(domain_id: u64) -> ExoValue<'static> {
-        let caller_pid = getpid().as_u64();
+        let caller_pid = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_pid())
+            .unwrap_or(0);
         if !manager().has_capability(caller_pid, CAP_SYS_ADMIN) {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_ADMIN required"));
         }

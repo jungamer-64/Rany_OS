@@ -158,7 +158,6 @@ impl NvmePollingDriver {
 
     /// コントローラを無効化
     fn disable_controller(&self) -> Result<(), &'static str> {
-        unsafe {
             let mut cc = NvmeControllerConfig::from_raw(self.read_reg32(0x14));
             cc.set_enable(false);
             self.write_reg32(0x14, cc.raw());
@@ -170,13 +169,11 @@ impl NvmePollingDriver {
                 }
                 core::hint::spin_loop();
             }
-        }
         Err("Controller disable timeout")
     }
 
     /// コントローラを有効化
     fn enable_controller(&self) -> Result<(), &'static str> {
-        unsafe {
             let mut cc = NvmeControllerConfig::new();
             cc.set_enable(true)
                 .set_css(0) // NVM Command Set
@@ -198,7 +195,6 @@ impl NvmePollingDriver {
                 }
                 core::hint::spin_loop();
             }
-        }
         Err("Controller enable timeout")
     }
 
@@ -272,13 +268,13 @@ impl NvmePollingDriver {
             .alloc_dma(sq_size)
             .map_err(|_| "Failed to allocate ASQ DMA buffer")?;
         let asq_phys = asq_buffer.physical_address();
-        let asq_ptr = asq_buffer.as_ptr();
+        let _asq_ptr = asq_buffer.as_ptr();
 
         let acq_buffer = kernel
             .alloc_dma(cq_size)
             .map_err(|_| "Failed to allocate ACQ DMA buffer")?;
         let acq_phys = acq_buffer.physical_address();
-        let acq_ptr = acq_buffer.as_ptr();
+        let _acq_ptr = acq_buffer.as_ptr();
 
         if asq_phys & 0xFFF != 0 || acq_phys & 0xFFF != 0 {
             return Err("DMA buffer not 4KB aligned");
@@ -720,12 +716,5 @@ impl Drop for NvmePollingDriver {
 /// CPU PAUSE命令（スピン待機の電力効率化）
 #[inline(always)]
 fn cpu_pause() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::x86_64::_mm_pause();
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        core::hint::spin_loop();
-    }
+    core::hint::spin_loop();
 }

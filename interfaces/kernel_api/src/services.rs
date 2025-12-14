@@ -137,6 +137,13 @@ pub trait KernelServices: Send + Sync {
 
     /// Access GUI services if available
     fn gui(&self) -> Option<&dyn crate::gui::GuiServices>;
+
+    // ========================================================================
+    // Shell Services (Optional)
+    // ========================================================================
+
+    /// Access shell services if available
+    fn shell(&self) -> Option<&dyn crate::shell::ShellServices>;
 }
 
 // ============================================================================

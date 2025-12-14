@@ -102,9 +102,14 @@ impl DriverNamespace {
         }
 
         // ファイルからELFデータを読み込み
-        let elf_data = match crate::fs::memfs::read_file_content(path, "/") {
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+        
+        let elf_data = match shell.read_file(path) {
             Ok(data) => data,
-            Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {:?}", path, e)),
+            Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };
 
         // ドライバ名をパスから抽出
@@ -205,9 +210,14 @@ impl DriverNamespace {
         };
 
         // Read ELF
-        let elf_data = match crate::fs::memfs::read_file_content(path, "/") {
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+        
+        let elf_data = match shell.read_file(path) {
             Ok(data) => data,
-            Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {:?}", path, e)),
+            Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };
 
         // Perform Update

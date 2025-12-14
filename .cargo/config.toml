@@ -2,13 +2,8 @@
 # Alias for xtask commands
 xtask = "run --package xtask --"
 
-# Temporarily enable building standard library components from source for the
-# entire workspace to avoid mixing sysroot-provided std artifacts with
-# locally-built ones during host test runs. This is an experimental change to
-# investigate and potentially work around duplicate-lang-item (E0152) errors
-# that occur when `core`/`alloc` are linked from both the sysroot and
-# workspace target dir.
-[build]
-# Build core, alloc, and compiler_builtins locally when requested
-build-std = ["core", "compiler_builtins", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
+[unstable]
+# Build-std is intentionally moved to `.cargo/config.build-std.toml` and must be
+# opted into explicitly when cross-building or when local std components must
+# be compiled. Keeping it enabled by default caused duplicate-lang-item E0152
+# issues in host-side release/criterion benches.

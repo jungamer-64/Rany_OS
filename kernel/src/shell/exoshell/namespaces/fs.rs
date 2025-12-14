@@ -23,11 +23,25 @@ impl FsNamespace {
         // Yield point: 他のタスクに実行機会を与える
         crate::task::yield_now().await;
 
-        match crate::fs::list_directory(path, "/") {
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        match shell.list_directory(path) {
             Ok(entries) => {
                 let values: Vec<ExoValue> = entries
                     .into_iter()
                     .map(|e| {
+                        let file_type = match e.file_type {
+                            kernel_api::shell::FileType::Directory => FileType::Directory,
+                            kernel_api::shell::FileType::Symlink => FileType::Symlink,
+                            kernel_api::shell::FileType::CharDevice | 
+                            kernel_api::shell::FileType::BlockDevice => FileType::Device,
+                            kernel_api::shell::FileType::Socket => FileType::Socket,
+                            kernel_api::shell::FileType::Fifo => FileType::Pipe,
+                            _ => FileType::Regular,
+                        };
                         ExoValue::FileEntry(FileEntry {
                             name: e.name.clone(),
                             path: if path == "/" {
@@ -35,21 +49,13 @@ impl FsNamespace {
                             } else {
                                 format!("{}/{}", path, e.name)
                             },
-                            file_type: match e.file_type {
-                                crate::fs::FileType::Directory => FileType::Directory,
-                                crate::fs::FileType::Symlink => FileType::Symlink,
-                                crate::fs::FileType::CharDevice => FileType::Device,
-                                crate::fs::FileType::BlockDevice => FileType::Device,
-                                crate::fs::FileType::Socket => FileType::Socket,
-                                crate::fs::FileType::Fifo => FileType::Pipe,
-                                _ => FileType::Regular,
-                            },
-                            size: 0, // DirEntry doesn't have size, need stat for that
+                            file_type,
+                            size: e.size,
                             owner: String::from("root"),
                             permissions: Permissions {
                                 read: true,
                                 write: true,
-                                execute: e.file_type == crate::fs::FileType::Directory,
+                                execute: e.file_type == kernel_api::shell::FileType::Directory,
                                 delete: true,
                                 grant: false,
                             },
@@ -61,27 +67,24 @@ impl FsNamespace {
                     .collect();
                 ExoValue::Array(values)
             }
-            Err(e) => ExoValue::Error(format!("{:?}", e)),
+            Err(e) => ExoValue::Error(String::from(e)),
         }
     }
 
     /// ファイルを読み取り（ゼロコピー対応）
-    /// 
-    /// KernelBufferView を使用し、データは Arc でラップ。
-    /// 複数回参照してもコピーは発生せず、参照カウントのみ増加。
     pub async fn read(path: &str) -> ExoValue<'static> {
         use crate::shell::exoshell::buffer_view::KernelBufferView;
         
         crate::task::yield_now().await;
 
-        match crate::fs::read_file_content(path, "/") {
-            Ok(content) => {
-                // ゼロコピービューとしてラップ
-                // NOTE: read_file_content は Vec<u8> を返すため、一度だけコピーが発生。
-                // 将来的にはカーネルのページキャッシュから直接参照を取得する。
-                ExoValue::BufferRef(KernelBufferView::new(content))
-            }
-            Err(e) => ExoValue::Error(format!("{:?}", e)),
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        match shell.read_file(path) {
+            Ok(content) => ExoValue::BufferRef(KernelBufferView::new(content)),
+            Err(e) => ExoValue::Error(String::from(e)),
         }
     }
 
@@ -89,9 +92,14 @@ impl FsNamespace {
     pub async fn write(path: &str, data: &[u8]) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        match crate::fs::write_file_content(path, "/", data) {
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        match shell.write_file(path, data) {
             Ok(()) => ExoValue::Bool(true),
-            Err(e) => ExoValue::Error(format!("{:?}", e)),
+            Err(e) => ExoValue::Error(String::from(e)),
         }
     }
 
@@ -99,7 +107,12 @@ impl FsNamespace {
     pub async fn stat(path: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        match crate::fs::stat_file(path, "/") {
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        match shell.stat_file(path) {
             Ok(attr) => {
                 let mut map = BTreeMap::new();
                 map.insert(
@@ -115,7 +128,7 @@ impl FsNamespace {
                 );
                 ExoValue::Map(map)
             }
-            Err(e) => ExoValue::Error(format!("{:?}", e)),
+            Err(e) => ExoValue::Error(String::from(e)),
         }
     }
 
@@ -123,9 +136,14 @@ impl FsNamespace {
     pub async fn mkdir(path: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
-        match crate::fs::make_directory(path, "/") {
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        match shell.make_directory(path) {
             Ok(()) => ExoValue::Bool(true),
-            Err(e) => ExoValue::Error(format!("{:?}", e)),
+            Err(e) => ExoValue::Error(String::from(e)),
         }
     }
 
@@ -133,17 +151,21 @@ impl FsNamespace {
     pub async fn remove(path: &str) -> ExoValue<'static> {
         crate::task::yield_now().await;
 
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
         // まずファイルとして削除を試行
-        match crate::fs::remove_file(path, "/") {
+        match shell.remove_file(path) {
             Ok(()) => ExoValue::Bool(true),
-            Err(crate::fs::FsError::IsDirectory) => {
+            Err(_) => {
                 // ディレクトリとして削除
-                match crate::fs::remove_directory(path, "/") {
+                match shell.remove_directory(path) {
                     Ok(()) => ExoValue::Bool(true),
-                    Err(e) => ExoValue::Error(format!("{:?}", e)),
+                    Err(e) => ExoValue::Error(String::from(e)),
                 }
             }
-            Err(e) => ExoValue::Error(format!("{:?}", e)),
         }
     }
 }

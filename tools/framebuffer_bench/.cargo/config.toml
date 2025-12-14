@@ -1,0 +1,9 @@
+# Local override for the framebuffer_bench crate to avoid inheriting
+# workspace-wide unstable `build-std` settings. This ensures benches
+# compile against the toolchain-provided std/core rather than attempting
+# to build local copies, which can lead to duplicate lang-item E0152 errors.
+
+[unstable]
+# Explicitly clear build-std so parent settings are not applied to this crate
+build-std = []
+build-std-features = []
