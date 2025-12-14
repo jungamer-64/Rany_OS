@@ -50,6 +50,11 @@ What we changed in this branch
 ------------------------------
 - Added `libs/security` crate with the capability manager and tests (tests exist but running them is blocked by the duplicate lang item problem).
 - Kept `tools/cap_harness` as the host-only testing harness (independent and passing).
+ - Removed `tools/framebuffer_bench` from the workspace and added a local
+    `.cargo/config.toml` in that crate to explicitly clear `build-std` so it
+    runs against the toolchain-provided std/core. This isolates the Criterion
+    benchmark harness from workspace `build-std` settings which can cause
+    duplicate-lang-item E0152 in some release/bench configurations.
 
 Next steps I can take (pick one or more):
 - Try to reproduce the duplicate-lang-item issue with a minimal sample project and file a bug upstream (I can prepare a minimal repro and open an issue).
@@ -57,3 +62,11 @@ Next steps I can take (pick one or more):
 - Keep the current host-only tests and move forward with more test coverage in `tools/*` while the cargo issue is investigated.
 
 If you'd like, I can take the next step of creating a minimal repro and opening an issue with the Rust/Cargo teams, or I can try the workspace `build-std` change and test the outcome locally.
+
+Actions taken in this branch
+---------------------------
+- Disabled the workspace-wide `build-std` settings in `.cargo/config.toml` and moved them into a separate
+   file `.cargo/config.build-std.toml` (so building local `core`/`alloc` must be explicitly opted into). This
+   resolved the E0152 errors observed for many host test runs; however, a full release-mode Criterion run still
+   triggered a duplicate-lang-item error in some environments. If the issue reproduces consistently, the next
+   step is to extract a minimal repro and file an issue with the rust-lang/cargo team.

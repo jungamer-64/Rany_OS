@@ -8,4 +8,5 @@ pub mod lifecycle;
 pub mod quota;
 pub mod registry;
 
+#[allow(unused_imports)]
 pub use quota::{DomainPriority, DomainQuota, QuotaError, quota_manager};

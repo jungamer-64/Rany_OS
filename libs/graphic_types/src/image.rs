@@ -19,7 +19,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::{Color, Rect};
+use crate::{Color, PixelFormat, Rect};
 
 // ============================================================================
 // Math Helpers
@@ -47,6 +47,195 @@ fn fast_sqrt(x: f32) -> f32 {
 // Image Types
 // ============================================================================
 
+/// Immutable view into pixel data (slice-backed, no allocation)
+///
+/// Enables zero-copy access to image data stored in arbitrary memory
+/// regions such as VRAM, DMA buffers, or Exchange Heap.
+#[repr(C)]
+pub struct ImageView<'a> {
+    data: &'a [u8],
+    width: u32,
+    height: u32,
+    /// Bytes per row (may be larger than width * bytes_per_pixel for alignment)
+    stride: u32,
+    format: PixelFormat,
+}
+
+impl<'a> ImageView<'a> {
+    /// Create a new immutable image view
+    ///
+    /// # Safety
+    /// The caller must ensure `data` has at least `stride * height` bytes.
+    pub fn new(
+        data: &'a [u8],
+        width: u32,
+        height: u32,
+        stride: u32,
+        format: PixelFormat,
+    ) -> Option<Self> {
+        let required = (stride as usize).checked_mul(height as usize)?;
+        if data.len() < required {
+            return None;
+        }
+        Some(Self {
+            data,
+            width,
+            height,
+            stride,
+            format,
+        })
+    }
+
+    /// Get the width in pixels
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Get the height in pixels
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Get the stride (bytes per row)
+    #[inline]
+    pub fn stride(&self) -> u32 {
+        self.stride
+    }
+
+    /// Get the pixel format
+    #[inline]
+    pub fn format(&self) -> PixelFormat {
+        self.format
+    }
+
+    /// Get the raw pixel data slice
+    #[inline]
+    pub fn data(&self) -> &[u8] {
+        self.data
+    }
+
+    /// Get a pixel at (x, y)
+    pub fn get_pixel(&self, x: u32, y: u32) -> Color {
+        if x >= self.width || y >= self.height {
+            return Color::TRANSPARENT;
+        }
+        let bpp = self.format.bytes_per_pixel();
+        let offset = (y as usize) * (self.stride as usize) + (x as usize) * bpp;
+        self.format.decode_color_bytes(&self.data[offset..])
+    }
+}
+
+/// Mutable view into pixel data (for VRAM/DMA buffer access)
+///
+/// Enables zero-copy manipulation of image data in arbitrary memory
+/// regions, eliminating the need for intermediate copies.
+#[repr(C)]
+pub struct ImageViewMut<'a> {
+    data: &'a mut [u8],
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: PixelFormat,
+}
+
+impl<'a> ImageViewMut<'a> {
+    /// Create a new mutable image view
+    ///
+    /// # Safety
+    /// The caller must ensure `data` has at least `stride * height` bytes.
+    pub fn new(
+        data: &'a mut [u8],
+        width: u32,
+        height: u32,
+        stride: u32,
+        format: PixelFormat,
+    ) -> Option<Self> {
+        let required = (stride as usize).checked_mul(height as usize)?;
+        if data.len() < required {
+            return None;
+        }
+        Some(Self {
+            data,
+            width,
+            height,
+            stride,
+            format,
+        })
+    }
+
+    /// Get the width in pixels
+    #[inline]
+    pub fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Get the height in pixels
+    #[inline]
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Get the stride (bytes per row)
+    #[inline]
+    pub fn stride(&self) -> u32 {
+        self.stride
+    }
+
+    /// Get the pixel format
+    #[inline]
+    pub fn format(&self) -> PixelFormat {
+        self.format
+    }
+
+    /// Get the raw pixel data slice (immutable)
+    #[inline]
+    pub fn data(&self) -> &[u8] {
+        self.data
+    }
+
+    /// Get the raw pixel data slice (mutable)
+    #[inline]
+    pub fn data_mut(&mut self) -> &mut [u8] {
+        self.data
+    }
+
+    /// Get a pixel at (x, y)
+    pub fn get_pixel(&self, x: u32, y: u32) -> Color {
+        if x >= self.width || y >= self.height {
+            return Color::TRANSPARENT;
+        }
+        let bpp = self.format.bytes_per_pixel();
+        let offset = (y as usize) * (self.stride as usize) + (x as usize) * bpp;
+        self.format.decode_color_bytes(&self.data[offset..])
+    }
+
+    /// Set a pixel at (x, y)
+    pub fn set_pixel(&mut self, x: u32, y: u32, color: Color) {
+        if x >= self.width || y >= self.height {
+            return;
+        }
+        let bpp = self.format.bytes_per_pixel();
+        let offset = (y as usize) * (self.stride as usize) + (x as usize) * bpp;
+        self.format.encode_color_bytes(color, &mut self.data[offset..]);
+    }
+
+    /// Fill a rectangle with a solid color
+    pub fn fill_rect(&mut self, rect: Rect, color: Color) {
+        let x_start = rect.x.max(0) as u32;
+        let y_start = rect.y.max(0) as u32;
+        let x_end = (rect.x + rect.width as i32).min(self.width as i32) as u32;
+        let y_end = (rect.y + rect.height as i32).min(self.height as i32) as u32;
+
+        for y in y_start..y_end {
+            for x in x_start..x_end {
+                self.set_pixel(x, y, color);
+            }
+        }
+    }
+}
+
 /// 画像データ
 #[derive(Clone)]
 pub struct Image {
@@ -58,34 +247,66 @@ pub struct Image {
     height: u32,
 }
 
+
 impl Image {
-    /// 空の画像を作成
-    pub fn new(width: u32, height: u32) -> Self {
-        let size = (width * height * 4) as usize;
-        Self {
+    /// Try to create an empty image with checked arithmetic
+    ///
+    /// Returns `Err(ImageError::DimensionsTooLarge)` if:
+    /// - The dimensions would cause integer overflow
+    /// - The total size exceeds `MAX_IMAGE_SIZE`
+    pub fn try_new(width: u32, height: u32) -> ImageResult<Self> {
+        let size = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|s| s.checked_mul(4))
+            .ok_or(ImageError::DimensionsTooLarge)?;
+
+        if size > MAX_IMAGE_SIZE {
+            return Err(ImageError::DimensionsTooLarge);
+        }
+
+        Ok(Self {
             data: vec![0u8; size],
             width,
             height,
-        }
+        })
     }
 
-    /// 単色で塗りつぶした画像を作成
-    pub fn filled(width: u32, height: u32, color: Color) -> Self {
-        let size = (width * height) as usize;
-        let mut data = Vec::with_capacity(size * 4);
+    /// Create an empty image (panics on overflow, prefer `try_new`)
+    pub fn new(width: u32, height: u32) -> Self {
+        Self::try_new(width, height).expect("Image dimensions too large")
+    }
 
-        for _ in 0..size {
+    /// Try to create a solid-color filled image with checked arithmetic
+    pub fn try_filled(width: u32, height: u32, color: Color) -> ImageResult<Self> {
+        let pixel_count = (width as usize)
+            .checked_mul(height as usize)
+            .ok_or(ImageError::DimensionsTooLarge)?;
+        let byte_size = pixel_count
+            .checked_mul(4)
+            .ok_or(ImageError::DimensionsTooLarge)?;
+
+        if byte_size > MAX_IMAGE_SIZE {
+            return Err(ImageError::DimensionsTooLarge);
+        }
+
+        let mut data = Vec::with_capacity(byte_size);
+        for _ in 0..pixel_count {
             data.push(color.red);
             data.push(color.green);
             data.push(color.blue);
             data.push(color.alpha);
         }
 
-        Self {
+        Ok(Self {
             data,
             width,
             height,
-        }
+        })
+    }
+
+    /// Create a solid-color filled image (panics on overflow, prefer `try_filled`)
+    pub fn filled(width: u32, height: u32, color: Color) -> Self {
+        Self::try_filled(width, height, color).expect("Image dimensions too large")
     }
 
     /// 幅を取得
@@ -106,6 +327,32 @@ impl Image {
     /// ピクセルデータをミュータブルに取得
     pub fn data_mut(&mut self) -> &mut [u8] {
         &mut self.data
+    }
+
+    /// Get an immutable view of this image
+    ///
+    /// The returned view uses RGBA8888 format with no padding (stride = width * 4).
+    pub fn as_view(&self) -> ImageView<'_> {
+        ImageView {
+            data: &self.data,
+            width: self.width,
+            height: self.height,
+            stride: self.width * 4,
+            format: PixelFormat::Rgba8888,
+        }
+    }
+
+    /// Get a mutable view of this image
+    ///
+    /// The returned view uses RGBA8888 format with no padding (stride = width * 4).
+    pub fn as_view_mut(&mut self) -> ImageViewMut<'_> {
+        ImageViewMut {
+            data: &mut self.data,
+            width: self.width,
+            height: self.height,
+            stride: self.width * 4,
+            format: PixelFormat::Rgba8888,
+        }
     }
 
     /// ピクセルを取得
@@ -337,9 +584,14 @@ pub enum ImageError {
     UnsupportedFormat,
     InvalidData,
     DecompressionError,
+    /// Image dimensions would cause integer overflow or exceed maximum size
+    DimensionsTooLarge,
 }
 
 pub type ImageResult<T> = Result<T, ImageError>;
+
+/// Maximum allowed image size in bytes (256 MB) to prevent DoS attacks
+pub const MAX_IMAGE_SIZE: usize = 256 * 1024 * 1024;
 
 /// Helper to read a Copy struct from a byte slice at a given offset.
 /// Centralizes the unsafe bytes->struct conversion.
@@ -388,7 +640,7 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
         return Err(ImageError::UnsupportedFormat);
     }
 
-    let mut image = Image::new(width, height);
+    let mut image = Image::try_new(width, height)?;
     let pixel_data = &data[data_offset..];
 
     // 行のパディングを計算
@@ -473,6 +725,97 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     Ok(image)
 }
 
+/// Decode BMP into a pre-allocated buffer (zero-allocation variant)
+///
+/// This function decodes a BMP image directly into the provided `ImageViewMut`,
+/// avoiding any heap allocation. Useful for:
+/// - Kernel bootstrap (before allocator is ready)
+/// - VRAM/DMA buffer direct writes
+/// - Exchange Heap integration
+///
+/// # Errors
+/// Returns error if:
+/// - BMP format is invalid
+/// - Output buffer dimensions don't match the image
+pub fn decode_bmp_into(data: &[u8], output: &mut ImageViewMut) -> ImageResult<()> {
+    if data.len() < 54 {
+        return Err(ImageError::InvalidFormat);
+    }
+
+    if data[0] != b'B' || data[1] != b'M' {
+        return Err(ImageError::InvalidFormat);
+    }
+
+    let file_header =
+        read_struct_from_slice::<BmpFileHeader>(data, 0).ok_or(ImageError::InvalidFormat)?;
+
+    let info_header =
+        read_struct_from_slice::<BmpInfoHeader>(data, 14).ok_or(ImageError::InvalidFormat)?;
+
+    let width = info_header.width.unsigned_abs();
+    let height = info_header.height.unsigned_abs();
+    let bpp = info_header.bpp;
+    let compression = info_header.compression;
+    let data_offset = file_header.data_offset as usize;
+    let top_down = info_header.height < 0;
+
+    // Check output buffer matches image dimensions
+    if output.width() != width || output.height() != height {
+        return Err(ImageError::InvalidData);
+    }
+
+    if compression != BI_RGB && compression != BI_BITFIELDS {
+        return Err(ImageError::UnsupportedFormat);
+    }
+
+    if bpp != 24 && bpp != 32 {
+        return Err(ImageError::UnsupportedFormat);
+    }
+
+    let pixel_data = &data[data_offset..];
+    let row_size = ((bpp as u32 * width).div_ceil(32) * 4) as usize;
+
+    match bpp {
+        24 => {
+            for y in 0..height {
+                let src_y = if top_down { y } else { height - 1 - y };
+                let row_start = src_y as usize * row_size;
+
+                for x in 0..width {
+                    let idx = row_start + x as usize * 3;
+                    if idx + 2 < pixel_data.len() {
+                        let color =
+                            Color::new(pixel_data[idx + 2], pixel_data[idx + 1], pixel_data[idx]);
+                        output.set_pixel(x, y, color);
+                    }
+                }
+            }
+        }
+        32 => {
+            for y in 0..height {
+                let src_y = if top_down { y } else { height - 1 - y };
+                let row_start = src_y as usize * row_size;
+
+                for x in 0..width {
+                    let idx = row_start + x as usize * 4;
+                    if idx + 3 < pixel_data.len() {
+                        let color = Color::with_alpha(
+                            pixel_data[idx + 2],
+                            pixel_data[idx + 1],
+                            pixel_data[idx],
+                            pixel_data[idx + 3],
+                        );
+                        output.set_pixel(x, y, color);
+                    }
+                }
+            }
+        }
+        _ => return Err(ImageError::UnsupportedFormat),
+    }
+
+    Ok(())
+}
+
 // ============================================================================
 // TGA Decoder (Simple)
 // ============================================================================
@@ -513,7 +856,7 @@ pub fn decode_tga(data: &[u8]) -> ImageResult<Image> {
             0
         };
 
-    let mut image = Image::new(width, height);
+    let mut image = Image::try_new(width, height)?;
     let bytes_per_pixel = bpp as usize / 8;
 
     if image_type == 2 {
@@ -723,7 +1066,7 @@ fn decode_ico_bmp(data: &[u8], width_hint: u8, height_hint: u8) -> ImageResult<I
     };
     let bpp = header.bpp;
 
-    let mut image = Image::new(width, height);
+    let mut image = Image::try_new(width, height)?;
 
     let pixel_data_offset = header.header_size as usize;
     let pixel_data = &data[pixel_data_offset..];
@@ -998,5 +1341,142 @@ impl IconGenerator {
         }
 
         image
+    }
+}
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_try_new_overflow_protection() {
+        // u32::MAX * u32::MAX would overflow
+        let result = Image::try_new(u32::MAX, u32::MAX);
+        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
+    }
+
+    #[test]
+    fn test_try_new_max_size_limit() {
+        // 16384 x 16384 x 4 = 1GB > MAX_IMAGE_SIZE (256MB)
+        let result = Image::try_new(16384, 16384);
+        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
+    }
+
+    #[test]
+    fn test_try_new_valid_size() {
+        // 100 x 100 = 40KB < MAX_IMAGE_SIZE
+        let result = Image::try_new(100, 100);
+        assert!(result.is_ok());
+        let img = result.unwrap();
+        assert_eq!(img.width(), 100);
+        assert_eq!(img.height(), 100);
+    }
+
+    #[test]
+    fn test_try_filled_overflow_protection() {
+        let result = Image::try_filled(u32::MAX, 2, Color::RED);
+        assert!(matches!(result, Err(ImageError::DimensionsTooLarge)));
+    }
+
+    #[test]
+    fn test_image_view_basic() {
+        let mut img = Image::new(10, 10);
+        img.set_pixel(5, 5, Color::RED);
+
+        let view = img.as_view();
+        assert_eq!(view.width(), 10);
+        assert_eq!(view.height(), 10);
+        assert_eq!(view.stride(), 40); // 10 * 4
+
+        let pixel = view.get_pixel(5, 5);
+        assert_eq!(pixel.red, 255);
+        assert_eq!(pixel.green, 0);
+        assert_eq!(pixel.blue, 0);
+    }
+
+    #[test]
+    fn test_image_view_mut_set_pixel() {
+        let mut img = Image::new(10, 10);
+        
+        {
+            let mut view = img.as_view_mut();
+            view.set_pixel(3, 3, Color::BLUE);
+        }
+        
+        let pixel = img.get_pixel(3, 3);
+        assert_eq!(pixel.blue, 255);
+        assert_eq!(pixel.red, 0);
+    }
+
+    #[test]
+    fn test_image_view_mut_fill_rect() {
+        let mut img = Image::new(10, 10);
+        
+        {
+            let mut view = img.as_view_mut();
+            view.fill_rect(Rect::new(2, 2, 3, 3), Color::GREEN);
+        }
+        
+        // Inside rect
+        assert_eq!(img.get_pixel(3, 3).green, 255);
+        // Outside rect
+        assert_eq!(img.get_pixel(0, 0).green, 0);
+    }
+
+    #[test]
+    fn test_image_view_out_of_bounds() {
+        let img = Image::new(10, 10);
+        let view = img.as_view();
+        
+        // Should return TRANSPARENT for out-of-bounds
+        let pixel = view.get_pixel(100, 100);
+        assert_eq!(pixel.alpha, 0);
+    }
+
+    #[test]
+    fn test_image_view_external_buffer() {
+        // Simulate VRAM buffer
+        let mut buffer = vec![0u8; 100 * 4]; // 10x10 RGBA
+        
+        let mut view = ImageViewMut::new(
+            &mut buffer,
+            10, 10, 40,
+            PixelFormat::Rgba8888
+        ).unwrap();
+        
+        view.set_pixel(0, 0, Color::RED);
+        
+        // Check raw buffer was modified
+        assert_eq!(buffer[0], 255); // R
+        assert_eq!(buffer[1], 0);   // G
+        assert_eq!(buffer[2], 0);   // B
+        assert_eq!(buffer[3], 255); // A
+    }
+
+    #[test]
+    fn test_image_view_stride() {
+        // Buffer with padding (stride 48 instead of 40 for 10 pixels)
+        let mut buffer = vec![0u8; 48 * 10]; // 10 rows with 8 byte padding each
+        
+        let mut view = ImageViewMut::new(
+            &mut buffer,
+            10, 10, 48,
+            PixelFormat::Rgba8888
+        ).unwrap();
+        
+        // Set pixel on second row
+        view.set_pixel(0, 1, Color::BLUE);
+        
+        // Should be at offset 48 (stride), not 40
+        assert_eq!(buffer[48 + 2], 255); // B at row 1
+    }
+
+    #[test]
+    fn test_max_image_size_constant() {
+        assert_eq!(MAX_IMAGE_SIZE, 256 * 1024 * 1024);
     }
 }

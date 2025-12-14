@@ -27,23 +27,23 @@
 #![allow(dead_code)]
 
 // コア機能モジュール
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub mod boot_splash;
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub mod console;
 pub mod font;
 pub mod framebuffer;
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub mod global;
 
 // 既存のサブモジュール
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub mod bsod;
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub mod compositor;
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub mod qrcode;
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub mod window;
 
 // Re-exports from graphic_types
@@ -54,18 +54,18 @@ pub use graphic_types::{Color, FramebufferInfo, PixelFormat, Point, Rect};
 pub use gpu_driver::{DamagedRegion, DisplayMode, GpuError, GpuResult, colors};
 
 // 型の再エクスポート
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub use console::TextConsole;
 pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH};
 pub use framebuffer::Framebuffer;
 
 // グローバル関数の再エクスポート
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub use global::{
     console_print, framebuffer, init, init_console, init_from_limine, with_console,
     with_framebuffer,
 };
 
 // ブートスプラッシュ関数の再エクスポート
-#[cfg(not(test))]
+#[cfg(not(any(test, feature = "bench")))]
 pub use boot_splash::{show_boot_splash, update_boot_progress, update_boot_progress_with_message};

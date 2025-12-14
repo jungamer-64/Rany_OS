@@ -14,8 +14,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::fs::fs_abstraction::{
-    DirEntry, FileAttr, FileHandle, FileMode, FileSystem, FileType, FsError, FsResult, FsStats,
-    Inode, OpenFlags, SeekFrom,
+    DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats,
+    Inode, OpenFlags,
 };
 
 // Import from the new crate

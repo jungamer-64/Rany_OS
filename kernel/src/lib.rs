@@ -27,7 +27,7 @@ pub mod graphics;
 #[cfg(any(test, feature = "bench"))]
 extern crate alloc;
 
-#[cfg(any(test, feature = "bench"))]
+#[cfg(test)]
 pub mod unwind;
 
 #[cfg(any(test, feature = "bench"))]

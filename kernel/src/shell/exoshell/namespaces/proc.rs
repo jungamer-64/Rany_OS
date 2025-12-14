@@ -9,7 +9,6 @@ use alloc::vec::Vec;
 use super::{BoxFuture, ShellNamespace};
 use crate::security::capability::CAP_KILL;
 use crate::shell::exoshell::types::*;
-use crate::task::process::getuid;
 use alloc::boxed::Box;
 
 /// プロセス/タスク名前空間
@@ -18,83 +17,53 @@ pub struct ProcNamespace;
 impl ProcNamespace {
     /// 実行中のタスク一覧
     pub fn list() -> ExoValue<'static> {
-        let mut processes = Vec::new();
+        let processes = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.list_processes())
+            .unwrap_or_default();
 
-        // プロセスマネージャから全プロセスIDを取得して情報を取得
-        let pm = crate::task::process_manager();
+        let result: Vec<ExoValue<'static>> = processes.into_iter().map(|p| {
+            let state = match p.state {
+                kernel_api::shell::ProcessState::Running => ProcessState::Running,
+                kernel_api::shell::ProcessState::Sleeping => ProcessState::Sleeping,
+                kernel_api::shell::ProcessState::Blocked => ProcessState::Blocked,
+                kernel_api::shell::ProcessState::Stopped => ProcessState::Stopped,
+                kernel_api::shell::ProcessState::Zombie => ProcessState::Zombie,
+            };
+            ExoValue::Process(ProcessInfo {
+                pid: p.pid as u32,
+                name: p.name,
+                state,
+                cpu_usage: p.cpu_usage,
+                memory_kb: p.memory_kb as u64,
+                domain: p.domain,
+            })
+        }).collect();
 
-        // 既知のプロセスIDをチェック（0-100の範囲）
-        for pid in 0..100u64 {
-            let proc_id = crate::task::ProcessId::new(pid);
-            if let Some(process) = pm.get(proc_id) {
-                let p = process.read();
-                let state = match p.state {
-                    crate::task::ProcessState::Running => ProcessState::Running,
-                    crate::task::ProcessState::Ready => ProcessState::Running,
-                    crate::task::ProcessState::Blocked => ProcessState::Blocked,
-                    crate::task::ProcessState::Stopped => ProcessState::Stopped,
-                    crate::task::ProcessState::Zombie => ProcessState::Zombie,
-                    _ => ProcessState::Sleeping,
-                };
-
-                processes.push(ProcessInfo {
-                    pid: pid as u32,
-                    name: p.name.clone(),
-                    state,
-                    cpu_usage: 0.0,
-                    memory_kb: 0,
-                    domain: String::from("user"),
-                });
-            }
-        }
-
-        // プロセスが空の場合はカーネルプロセスを追加
-        if processes.is_empty() {
-            processes.push(ProcessInfo {
-                pid: 0,
-                name: String::from("kernel"),
-                state: ProcessState::Running,
-                cpu_usage: 0.0,
-                memory_kb: crate::memory::used_memory_kb(),
-                domain: String::from("kernel"),
-            });
-        }
-
-        ExoValue::Array(processes.into_iter().map(ExoValue::Process).collect())
+        ExoValue::Array(result)
     }
 
     /// 特定プロセスの情報
     pub fn info(pid: u32) -> ExoValue<'static> {
-        let proc_id = crate::task::ProcessId::new(pid as u64);
+        let process = kernel_api::services::kernel()
+            .shell()
+            .and_then(|s| s.get_process(pid as u64));
 
-        if let Some(process) = crate::task::process_manager().get(proc_id) {
-            let p = process.read();
+        if let Some(p) = process {
             let state = match p.state {
-                crate::task::ProcessState::Running => ProcessState::Running,
-                crate::task::ProcessState::Ready => ProcessState::Running,
-                crate::task::ProcessState::Blocked => ProcessState::Blocked,
-                crate::task::ProcessState::Stopped => ProcessState::Stopped,
-                crate::task::ProcessState::Zombie => ProcessState::Zombie,
-                _ => ProcessState::Sleeping,
+                kernel_api::shell::ProcessState::Running => ProcessState::Running,
+                kernel_api::shell::ProcessState::Sleeping => ProcessState::Sleeping,
+                kernel_api::shell::ProcessState::Blocked => ProcessState::Blocked,
+                kernel_api::shell::ProcessState::Stopped => ProcessState::Stopped,
+                kernel_api::shell::ProcessState::Zombie => ProcessState::Zombie,
             };
-
             ExoValue::Process(ProcessInfo {
-                pid,
-                name: p.name.clone(),
+                pid: p.pid as u32,
+                name: p.name,
                 state,
-                cpu_usage: 0.0,
-                memory_kb: 0,
-                domain: String::from("user"),
-            })
-        } else if pid == 0 {
-            // PID 0 はカーネル
-            ExoValue::Process(ProcessInfo {
-                pid: 0,
-                name: String::from("kernel"),
-                state: ProcessState::Running,
-                cpu_usage: 0.0,
-                memory_kb: crate::memory::used_memory_kb(),
-                domain: String::from("kernel"),
+                cpu_usage: p.cpu_usage,
+                memory_kb: p.memory_kb as u64,
+                domain: p.domain,
             })
         } else {
             ExoValue::Error(alloc::format!("Process {} not found", pid))
@@ -104,31 +73,16 @@ impl ProcNamespace {
     /// プロセスを終了（シグナル送信）
     /// Requires owner or CAP_KILL
     fn kill_with_caps(pid: u32, _signal: i32, caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
-        if pid == 0 {
-            return ExoValue::Error(String::from("Cannot kill kernel process"));
-        }
-
-        let proc_id = crate::task::ProcessId::new(pid as u64);
-        let pm = crate::task::process_manager();
-
-        if let Some(process) = pm.get(proc_id) {
-            // 権限チェック: caps パラメータを使用
-            let current_uid = getuid();
-            let target_uid = process.read().credentials.uid;
-
-            // 自分のプロセスか、CAP_KILLを持っている場合に許可
-            if current_uid != target_uid && !caps.has_capability(CAP_KILL) {
-                return ExoValue::Error(String::from(
-                    "Permission denied: Owner or CAP_KILL required",
-                ));
+        if let Some(shell) = kernel_api::services::kernel().shell() {
+            let caller_uid = shell.current_uid();
+            let has_cap_kill = caps.has_capability(CAP_KILL);
+            
+            match shell.kill_process(pid as u64, caller_uid, has_cap_kill) {
+                Ok(()) => ExoValue::Bool(true),
+                Err(e) => ExoValue::Error(String::from(e)),
             }
-
-            // プロセスを終了状態に設定
-            let mut p = process.write();
-            p.state = crate::task::ProcessState::Stopped;
-            ExoValue::Bool(true)
         } else {
-            ExoValue::Error(alloc::format!("Process {} not found", pid))
+            ExoValue::Error(String::from("Shell services unavailable"))
         }
     }
 }

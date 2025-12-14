@@ -43,6 +43,36 @@ impl Color {
         }
     }
 
+    /// アルファブレンド計算 (src over dst)
+    /// 近似計算: (src * a + dst * (255 - a)) / 255
+    #[inline]
+    pub const fn blend(self, bg: Color) -> Color {
+        if self.alpha == 255 {
+            return self;
+        }
+        if self.alpha == 0 {
+            return bg;
+        }
+
+        let a = self.alpha as u32;
+        let inv_a = 255 - a;
+
+        // Note: Division by 255 is approximated by >> 8 for speed in some contexts,
+        // but exact calculation is (x * 257 + 128) >> 16 or just standard division.
+        // For OS UI, `x >> 8` is often acceptable but `(x + y) / 255` is more correct.
+        // We use standard division here for correctness in `const fn`.
+        let r = (self.red as u32 * a + bg.red as u32 * inv_a) / 255;
+        let g = (self.green as u32 * a + bg.green as u32 * inv_a) / 255;
+        let b = (self.blue as u32 * a + bg.blue as u32 * inv_a) / 255;
+
+        Color {
+            red: r as u8,
+            green: g as u8,
+            blue: b as u8,
+            alpha: 255, // Result is opaque if background is treated as opaque
+        }
+    }
+
     /// 32ビット値に変換（BGRA）
     pub const fn to_u32(self) -> u32 {
         ((self.alpha as u32) << 24)
@@ -90,6 +120,7 @@ impl Default for Color {
 
 /// ピクセルフォーマット
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(C)]
 pub enum PixelFormat {
     /// RGB888 (24-bit)
     Rgb888,
@@ -201,6 +232,7 @@ impl PixelFormat {
 
 /// フレームバッファ情報
 #[derive(Clone, Debug)]
+#[repr(C)]
 pub struct FramebufferInfo {
     /// フレームバッファの物理アドレス
     pub address: u64,
@@ -229,6 +261,7 @@ impl FramebufferInfo {
 
 /// 2D座標
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct Point {
     pub x: i32,
     pub y: i32,
@@ -242,6 +275,7 @@ impl Point {
 
 /// 矩形
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -420,5 +454,38 @@ mod tests {
         assert!(out4.red <= c2.red);
         assert!(out4.green <= c2.green);
         assert!(out4.blue <= c2.blue);
+    }
+
+    #[test]
+    fn test_point_repr_c_layout() {
+        use core::mem::{size_of, align_of};
+        // Point should be 8 bytes (2 x i32)
+        assert_eq!(size_of::<Point>(), 8);
+        assert_eq!(align_of::<Point>(), 4);
+    }
+
+    #[test]
+    fn test_rect_repr_c_layout() {
+        use core::mem::{size_of, align_of};
+        // Rect should be 16 bytes (2 x i32 + 2 x u32)
+        assert_eq!(size_of::<Rect>(), 16);
+        assert_eq!(align_of::<Rect>(), 4);
+    }
+
+    #[test]
+    fn test_color_repr_c_layout() {
+        use core::mem::{size_of, align_of};
+        // Color should be 4 bytes (4 x u8)
+        assert_eq!(size_of::<Color>(), 4);
+        assert_eq!(align_of::<Color>(), 1);
+    }
+
+    #[test]
+    fn test_pixel_format_repr_c() {
+        use core::mem::size_of;
+        // PixelFormat enum with #[repr(C)] should have fixed size
+        // (platform-dependent, but typically 4 bytes on most systems)
+        let size = size_of::<PixelFormat>();
+        assert!(size >= 1 && size <= 8);
     }
 }

@@ -30,6 +30,7 @@ pub mod fat32_adapter;
 #[allow(unused_imports)]
 pub use fat32_adapter::Fat32FileSystemAdapter as Fat32FileSystem;
 pub mod memfs;
+pub mod async_memfs;
 pub mod procfs;
 
 #[allow(unused_imports)]
@@ -75,4 +76,14 @@ pub use memfs::{
 #[allow(unused_imports)]
 pub use procfs::{
     Pid as ProcPid, ProcEntry, ProcError, ProcFileHandle, ProcFileType, ProcFs, ProcInode, procfs,
+};
+#[allow(unused_imports)]
+pub use async_memfs::{
+    // Async Inode trait and wrapper
+    AsyncInode, AsyncMemoryInode, AsyncMemoryFs, Bytes,
+    // Async shell integration APIs
+    copy_file_async, list_directory_async, make_directory_async,
+    read_file_content_async, read_file_zero_copy_async, remove_directory_async,
+    remove_file_async, resolve_path_async, stat_file_async, touch_file_async,
+    write_file_content_async,
 };

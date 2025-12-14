@@ -11,7 +11,6 @@ use alloc::vec::Vec;
 use super::{BoxFuture, ShellNamespace};
 use crate::security::capability::{CAP_NET_RAW, manager};
 use crate::shell::exoshell::types::ExoValue;
-use crate::task::process::getpid;
 use alloc::boxed::Box;
 
 /// ネットワーク名前空間
@@ -118,7 +117,10 @@ impl NetNamespace {
     /// Requires CAP_NET_RAW
     pub async fn ping(ip: [u8; 4], count: u16) -> ExoValue<'static> {
         // セキュリティチェック
-        let pid = getpid().as_u64();
+        let pid = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_pid())
+            .unwrap_or(0);
         if !manager().has_capability(pid, CAP_NET_RAW) {
             return ExoValue::Error(String::from("Permission denied: CAP_NET_RAW required"));
         }

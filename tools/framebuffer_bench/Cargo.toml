@@ -3,6 +3,16 @@ name = "framebuffer_bench"
 version = "0.1.0"
 edition = "2024"
 
+[workspace]
+# This package intentionally declares its own empty workspace so it is
+# independent from the repository workspace. This helps avoid inheriting
+# workspace-level `.cargo/config.toml` settings (such as `build-std`) and
+# prevents duplicate-lang-item E0152 when running release/criterion benches.
+
 [dependencies]
 criterion = "0.4"
-rany_kernel = { path = "../../kernel", features = ["bench"] }
+rany_kernel = { path = "../../kernel", features = ["bench", "std"] }
+
+[[bench]]
+name = "framebuffer"
+harness = false

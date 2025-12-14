@@ -19,6 +19,7 @@ pub mod gui;
 pub mod kapi;
 pub mod security;
 pub mod services;
+pub mod shell;
 pub mod types;
 
 // Re-export commonly used types

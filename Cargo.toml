@@ -23,7 +23,9 @@ members = [
     # Apps
     "apps",
     "tools/cap_harness",
-    "tools/framebuffer_bench",
+    # NOTE: `tools/framebuffer_bench` is intentionally not a workspace member anymore
+    # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues
+    # when running Criterion benches. It is runnable via its manifest path.
 ]
 
 
@@ -79,3 +81,6 @@ debug = true
 [profile.test]
 panic = "abort"
 opt-level = 1
+
+[patch.crates-io]
+curve25519-dalek = { path = "libs/curve25519-dalek" }
