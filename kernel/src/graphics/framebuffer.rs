@@ -2573,13 +2573,98 @@ impl Framebuffer {
                         }
 
                         // 24-bit handled above (Bgr/Rgb branches)
-                        // Now write out the packed bytes to the destination (back-buffer or MMIO)
-                        let total_bytes = run_len * 3;
-                        if let Some(ref mut back) = self.back_buffer {
-                            unsafe { ptr::copy_nonoverlapping(self.scratch_u8.as_ptr(), back.as_mut_ptr().add(dst_byte_offset), total_bytes); }
-                        } else {
-                            let addr = self.buffer as usize + dst_byte_offset;
-                            self.write_bytes_mmio(addr, &self.scratch_u8[..total_bytes]);
+                        // For large runs, process and emit in chunks to reduce peak
+                        // scratch buffer usage and improve cache locality.
+                        const CHUNK_24_PIXELS: usize = 512;
+                        let mut processed = 0usize;
+                        while processed < run_len {
+                            let chunk = core::cmp::min(CHUNK_24_PIXELS, run_len - processed);
+                            let chunk_bytes = chunk * 3;
+                            // Ensure scratch capacity for this chunk
+                            self.ensure_scratch_u8(chunk_bytes);
+                            // Re-pack the chunk into scratch_u8
+                            let mut src_idx = (src_base + processed) * 4;
+                            let mut dst_off = 0usize;
+                            match self.info.format {
+                                PixelFormat::Bgr888 => {
+                                    let mut i = 0usize;
+                                    while i + 3 < chunk {
+                                        self.scratch_u8[dst_off] = imgdata[src_idx + 2];
+                                        self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
+                                        self.scratch_u8[dst_off + 2] = imgdata[src_idx + 0];
+
+                                        self.scratch_u8[dst_off + 3] = imgdata[src_idx + 6];
+                                        self.scratch_u8[dst_off + 4] = imgdata[src_idx + 5];
+                                        self.scratch_u8[dst_off + 5] = imgdata[src_idx + 4];
+
+                                        self.scratch_u8[dst_off + 6] = imgdata[src_idx + 10];
+                                        self.scratch_u8[dst_off + 7] = imgdata[src_idx + 9];
+                                        self.scratch_u8[dst_off + 8] = imgdata[src_idx + 8];
+
+                                        self.scratch_u8[dst_off + 9] = imgdata[src_idx + 14];
+                                        self.scratch_u8[dst_off + 10] = imgdata[src_idx + 13];
+                                        self.scratch_u8[dst_off + 11] = imgdata[src_idx + 12];
+
+                                        src_idx += 16;
+                                        dst_off += 12;
+                                        i += 4;
+                                    }
+
+                                    while i < chunk {
+                                        self.scratch_u8[dst_off] = imgdata[src_idx + 2];
+                                        self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
+                                        self.scratch_u8[dst_off + 2] = imgdata[src_idx + 0];
+                                        src_idx += 4;
+                                        dst_off += 3;
+                                        i += 1;
+                                    }
+                                }
+                                PixelFormat::Rgb888 => {
+                                    let mut i = 0usize;
+                                    while i + 3 < chunk {
+                                        self.scratch_u8[dst_off] = imgdata[src_idx + 0];
+                                        self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
+                                        self.scratch_u8[dst_off + 2] = imgdata[src_idx + 2];
+
+                                        self.scratch_u8[dst_off + 3] = imgdata[src_idx + 4];
+                                        self.scratch_u8[dst_off + 4] = imgdata[src_idx + 5];
+                                        self.scratch_u8[dst_off + 5] = imgdata[src_idx + 6];
+
+                                        self.scratch_u8[dst_off + 6] = imgdata[src_idx + 8];
+                                        self.scratch_u8[dst_off + 7] = imgdata[src_idx + 9];
+                                        self.scratch_u8[dst_off + 8] = imgdata[src_idx + 10];
+
+                                        self.scratch_u8[dst_off + 9] = imgdata[src_idx + 12];
+                                        self.scratch_u8[dst_off + 10] = imgdata[src_idx + 13];
+                                        self.scratch_u8[dst_off + 11] = imgdata[src_idx + 14];
+
+                                        src_idx += 16;
+                                        dst_off += 12;
+                                        i += 4;
+                                    }
+
+                                    while i < chunk {
+                                        self.scratch_u8[dst_off] = imgdata[src_idx + 0];
+                                        self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
+                                        self.scratch_u8[dst_off + 2] = imgdata[src_idx + 2];
+                                        src_idx += 4;
+                                        dst_off += 3;
+                                        i += 1;
+                                    }
+                                }
+                                _ => unreachable!(),
+                            }
+
+                            // Emit the chunk
+                            let chunk_bytes = chunk * 3;
+                            if let Some(ref mut back) = self.back_buffer {
+                                unsafe { ptr::copy_nonoverlapping(self.scratch_u8.as_ptr(), back.as_mut_ptr().add(dst_byte_offset + processed * 3), chunk_bytes); }
+                            } else {
+                                let addr = self.buffer as usize + dst_byte_offset + processed * 3;
+                                self.write_bytes_mmio(addr, &self.scratch_u8[..chunk_bytes]);
+                            }
+
+                            processed += chunk;
                         }
                     }
                     _ => {
