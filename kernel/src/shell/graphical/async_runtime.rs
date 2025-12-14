@@ -273,7 +273,11 @@ pub async fn run_async_shell() {
         // ========================================
         // Phase 3: 他のタスクに譲る
         // ========================================
-        crate::task::yield_now().await;
+        if let Some(gui_services) = kernel().gui() {
+            gui_services.yield_control();
+        } else {
+            crate::task::yield_now().await;
+        }
     }
 }
 

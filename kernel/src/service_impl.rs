@@ -459,6 +459,12 @@ impl GuiServices for ExoKernel {
 
         None
     }
+
+    fn yield_control(&self) {
+        // Synchronous yield - just hint to the scheduler that we're willing to yield
+        // In an async context, the caller should use `.await` on yield_now() instead
+        core::hint::spin_loop();
+    }
 }
 
 /// The global ExoKernel instance
