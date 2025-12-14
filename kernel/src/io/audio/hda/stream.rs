@@ -37,7 +37,7 @@ impl HdaController {
 
         let stream_base = stream_offset(true, self.num_input_streams, stream_index);
 
-        crate::log!(
+        log::info!(
             "[HDA] Setting up output stream {} at offset 0x{:x}\n",
             stream_index,
             stream_base
@@ -70,7 +70,7 @@ impl HdaController {
 
         // Calculate format
         let format = self.calculate_stream_format(sample_rate, bits, channels);
-        crate::log!("[HDA] Stream format: 0x{:04x}\n", format);
+        log::info!("[HDA] Stream format: 0x{:04x}\n", format);
 
         // Set stream format
         self.write16(stream_base + REG_SD_FMT, format);
@@ -165,7 +165,7 @@ impl HdaController {
         // Set last valid index
         self.write16(stream_base + REG_SD_LVI, (num_entries - 1) as u16);
 
-        crate::log!(
+        log::info!(
             "[HDA] BDL configured: {} entries, {} bytes total\n",
             num_entries,
             buffer_size
@@ -195,7 +195,7 @@ impl HdaController {
             intctl | (1 << (self.num_input_streams + stream_index)),
         );
 
-        crate::log!("[HDA] Stream {} started\n", stream_index);
+        log::info!("[HDA] Stream {} started\n", stream_index);
         Ok(())
     }
 
@@ -210,7 +210,7 @@ impl HdaController {
         // Disable stream run
         self.write8(stream_base + REG_SD_CTL0, 0);
 
-        crate::log!("[HDA] Stream {} stopped\n", stream_index);
+        log::info!("[HDA] Stream {} stopped\n", stream_index);
         Ok(())
     }
 }
@@ -232,7 +232,7 @@ impl HdaController {
             .beep_node
             .ok_or_else(|| HdaError::InitFailed("No beep generator found".into()))?;
 
-        crate::log!(
+        log::info!(
             "[HDA] Beep: codec={}, node={}, div={}\n",
             codec_addr,
             beep_node,
@@ -382,7 +382,7 @@ impl HdaController {
         // Stop playback
         self.stop_stream(0)?;
 
-        crate::log!("[HDA] Square wave playback complete\n");
+        log::info!("[HDA] Square wave playback complete\n");
         Ok(())
     }
 }

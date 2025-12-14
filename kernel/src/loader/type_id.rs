@@ -546,7 +546,7 @@ pub fn init_kernel_interfaces() {
     registry.register::<TaskSchedulerInterface>();
     registry.register::<IpcInterface>();
 
-    crate::log!("[TypeID] Registered {} kernel interfaces\n", registry.len());
+    log::info!("[TypeID] Registered {} kernel interfaces\n", registry.len());
 }
 
 // ============================================================================

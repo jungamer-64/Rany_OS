@@ -23,6 +23,7 @@ members = [
     # Apps
     "apps",
     "tools/cap_harness",
+    "tools/framebuffer_bench",
 ]
 
 

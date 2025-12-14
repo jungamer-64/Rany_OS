@@ -330,7 +330,7 @@ impl LiveUpdateManager {
 
         // Step 1: Load new cell
         *self.state.lock() = LiveUpdateState::Loading;
-        crate::log!("[LIVE_UPDATE] Loading new cell version...\n");
+        log::info!("[LIVE_UPDATE] Loading new cell version...\n");
 
         // Generate a name for the new cell based on old cell?
         // For now, use "update-<epoch>"
@@ -345,7 +345,7 @@ impl LiveUpdateManager {
 
         // Step 2: Global Epoch Increment (Pre-swap)
         let old_epoch = GLOBAL_EPOCH.fetch_add(1, Ordering::SeqCst);
-        crate::log!(
+        log::info!(
             "[LIVE_UPDATE] Epoch incremented: {} -> {}\n",
             old_epoch,
             old_epoch + 1
@@ -397,9 +397,9 @@ impl LiveUpdateManager {
 
         // Step 4: Wait for Quiescent State
         *self.state.lock() = LiveUpdateState::WaitingQuiescent;
-        crate::log!("[LIVE_UPDATE] Waiting for quiescent state...\n");
+        log::info!("[LIVE_UPDATE] Waiting for quiescent state...\n");
         wait_for_quiescent_state(old_epoch);
-        crate::log!("[LIVE_UPDATE] All cores reached quiescent state\n");
+        log::info!("[LIVE_UPDATE] All cores reached quiescent state\n");
 
         // Step 5: Complete & Free Old Cell
         *self.state.lock() = LiveUpdateState::Complete;
@@ -407,8 +407,8 @@ impl LiveUpdateManager {
 
         // Unload old cell
         match crate::loader::unload_cell(old_cell_id) {
-            Ok(_) => crate::log!("[LIVE_UPDATE] Old cell unloaded\n"),
-            Err(e) => crate::log!("[LIVE_UPDATE] Warning: Failed to unload old cell: {:?}\n", e),
+            Ok(_) => log::info!("[LIVE_UPDATE] Old cell unloaded\n"),
+            Err(e) => log::info!("[LIVE_UPDATE] Warning: Failed to unload old cell: {:?}\n", e),
         }
 
         Ok(new_cell_id.as_u64())
@@ -416,7 +416,7 @@ impl LiveUpdateManager {
 
     /// ロールバックを実行
     pub fn rollback(&self) -> Result<(), LiveUpdateError> {
-        crate::log!("[LIVE_UPDATE] Rollback requested\n");
+        log::info!("[LIVE_UPDATE] Rollback requested\n");
         // TODO: ロールバック実装
         Ok(())
     }
@@ -454,7 +454,7 @@ pub fn current_epoch() -> u64 {
 pub fn init() {
     // 初期エポックを1に設定
     GLOBAL_EPOCH.store(1, Ordering::Release);
-    crate::log!("[LIVE_UPDATE] Epoch-based reclamation initialized\n");
+    log::info!("[LIVE_UPDATE] Epoch-based reclamation initialized\n");
 }
 
 // ============================================================================

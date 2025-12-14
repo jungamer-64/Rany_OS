@@ -87,6 +87,10 @@ require_signatures = []
 serial = ["uart_16550"]
 stats = []
 mouse = []
+bench = []
+
+[dev-dependencies]
+criterion = "0.4"
 
 # ============================================================================
 # ブートイメージ設定

@@ -423,15 +423,15 @@ fn get_default_memory_regions() -> Vec<(PhysAddr, u64)> {
 fn print_memory_stats() {
     let buddy_stats = crate::mm::buddy_allocator_stats();
 
-    crate::log!("[MEM] === Memory Statistics ===\n");
-    crate::log!("[MEM] Total Frames: {}\n", buddy_stats.total_frames);
-    crate::log!(
+    log::info!("[MEM] === Memory Statistics ===\n");
+    log::info!("[MEM] Total Frames: {}\n", buddy_stats.total_frames);
+    log::info!(
         "[MEM] Free Frames: {} ({} KB)\n",
         buddy_stats.free_frames,
         buddy_stats.free_frames * 4
     );
-    crate::log!("[MEM] Split Operations: {}\n", buddy_stats.split_count);
-    crate::log!(
+    log::info!("[MEM] Split Operations: {}\n", buddy_stats.split_count);
+    log::info!(
         "[MEM] Coalesce Operations: {}\n",
         buddy_stats.coalesce_count
     );
@@ -440,7 +440,7 @@ fn print_memory_stats() {
     for (order, (blocks, _frames)) in buddy_stats.order_stats.iter().enumerate() {
         if *blocks > 0 {
             let block_size_kb = (1usize << order) * 4;
-            crate::log!(
+            log::info!(
                 "[MEM]   Order {}: {} blocks ({}KB each)\n",
                 order,
                 blocks,

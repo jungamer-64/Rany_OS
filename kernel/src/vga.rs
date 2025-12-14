@@ -198,14 +198,7 @@ pub fn early_serial_str(s: &str) {
     crate::io::log::early_print(s);
 }
 
-#[macro_export]
-macro_rules! log {
-    ($($arg:tt)*) => ({
-        $crate::vga::_print(format_args!($($arg)*));
-        // 早期ブート段階ではシンプルなシリアル出力を使用
-        // format_args!を直接使うのは複雑なので、一旦VGAのみ
-    });
-}
+
 
 /// VGAとシリアル両方に出力するマクロ（シリアル初期化後用）
 #[macro_export]

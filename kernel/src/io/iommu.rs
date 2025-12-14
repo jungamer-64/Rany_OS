@@ -851,7 +851,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
         controller.init()?;
     }
 
-    crate::log!("IOMMU initialized at 0x{:X}\n", mmio_base);
+    log::info!("IOMMU initialized at 0x{:X}\n", mmio_base);
 
     *IOMMU.lock() = Some(controller);
     Ok(())
@@ -958,14 +958,14 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         let domain_id = match iommu.create_domain() {
             Ok(id) => id,
             Err(e) => {
-                crate::log!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
+                log::info!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
                 return None;
             }
         };
 
         // 2. デバイスをドメインにアタッチ
         if let Err(e) = iommu.attach_device(device_id, domain_id) {
-            crate::log!(
+            log::info!(
                 "[IOMMU] Failed to attach device {:?} to domain {}: {:?}\n",
                 bdf,
                 domain_id,
@@ -977,7 +977,7 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         // 3. デバイス情報を更新
         device.iommu_domain_id = Some(domain_id);
 
-        crate::log!(
+        log::info!(
             "[IOMMU] Device {:02x}:{:02x}.{} -> Domain {}\n",
             bdf.bus.0,
             bdf.device.0,
@@ -996,7 +996,7 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 /// PCI初期化後に呼び出して、全デバイスを保護します。
 pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) {
     if !is_iommu_enabled() {
-        crate::log!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
+        log::info!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
         return;
     }
 
@@ -1012,7 +1012,7 @@ pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceI
         }
     }
 
-    crate::log!(
+    log::info!(
         "[IOMMU] Protected {} PCI devices with IOMMU domains\n",
         protected_count
     );

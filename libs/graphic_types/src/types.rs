@@ -112,6 +112,87 @@ impl PixelFormat {
             PixelFormat::Rgb565 => 2,
         }
     }
+
+    /// 指定フォーマットでカラーをバイト列へエンコードする
+    /// `out` の長さは必ず `self.bytes_per_pixel()` 以上であること
+    pub fn encode_color_bytes(&self, color: Color, out: &mut [u8]) {
+        match self {
+            PixelFormat::Bgra8888 => {
+                out[0] = color.blue;
+                out[1] = color.green;
+                out[2] = color.red;
+                out[3] = color.alpha;
+            }
+            PixelFormat::Rgba8888 => {
+                out[0] = color.red;
+                out[1] = color.green;
+                out[2] = color.blue;
+                out[3] = color.alpha;
+            }
+            PixelFormat::Bgr888 => {
+                out[0] = color.blue;
+                out[1] = color.green;
+                out[2] = color.red;
+            }
+            PixelFormat::Rgb888 => {
+                out[0] = color.red;
+                out[1] = color.green;
+                out[2] = color.blue;
+            }
+            PixelFormat::Rgb565 => {
+                let r = (color.red as u16 >> 3) & 0x1F;
+                let g = (color.green as u16 >> 2) & 0x3F;
+                let b = (color.blue as u16 >> 3) & 0x1F;
+                let val = (r << 11) | (g << 5) | b;
+                let bytes = val.to_le_bytes();
+                out[0] = bytes[0];
+                out[1] = bytes[1];
+            }
+        }
+    }
+
+    /// バイト列から Color を復元する
+    /// `bytes` は `self.bytes_per_pixel()` 以上の長さが必要
+    pub fn decode_color_bytes(&self, bytes: &[u8]) -> Color {
+        match self {
+            PixelFormat::Bgra8888 => Color::with_alpha(bytes[2], bytes[1], bytes[0], bytes[3]),
+            PixelFormat::Rgba8888 => Color::with_alpha(bytes[0], bytes[1], bytes[2], bytes[3]),
+            PixelFormat::Bgr888 => Color::new(bytes[2], bytes[1], bytes[0]),
+            PixelFormat::Rgb888 => Color::new(bytes[0], bytes[1], bytes[2]),
+            PixelFormat::Rgb565 => {
+                let val = u16::from_le_bytes([bytes[0], bytes[1]]);
+                let r = ((val >> 11) & 0x1F) as u8 * 8;
+                let g = ((val >> 5) & 0x3F) as u8 * 4;
+                let b = (val & 0x1F) as u8 * 8;
+                Color::new(r, g, b)
+            }
+        }
+    }
+
+    /// 32bitとしてエンコード可能なら u32 を返す（メモリ上のバイト順を想定したLE表現）
+    pub fn encode_u32(&self, color: Color) -> Option<u32> {
+        match self {
+            PixelFormat::Bgra8888 => Some(color.to_u32()),
+            PixelFormat::Rgba8888 => {
+                let b = [color.red, color.green, color.blue, color.alpha];
+                Some(u32::from_le_bytes(b))
+            }
+            _ => None,
+        }
+    }
+
+    /// 16bitとしてエンコード可能なら u16 を返す（LE）
+    pub fn encode_u16(&self, color: Color) -> Option<u16> {
+        match self {
+            PixelFormat::Rgb565 => {
+                let r = (color.red as u16 >> 3) & 0x1F;
+                let g = (color.green as u16 >> 2) & 0x3F;
+                let b = (color.blue as u16 >> 3) & 0x1F;
+                Some((r << 11) | (g << 5) | b)
+            }
+            _ => None,
+        }
+    }
 }
 
 // ============================================================================
@@ -304,5 +385,40 @@ mod tests {
         assert_eq!(PixelFormat::Rgb888.bytes_per_pixel(), 3);
         assert_eq!(PixelFormat::Bgra8888.bytes_per_pixel(), 4);
         assert_eq!(PixelFormat::Rgb565.bytes_per_pixel(), 2);
+    }
+
+    #[test]
+    fn test_encode_decode_roundtrip() {
+        let c = Color::with_alpha(0x12, 0x34, 0x56, 0xAA);
+
+        // BGRA 32-bit
+        let mut buf = [0u8; 4];
+        PixelFormat::Bgra8888.encode_color_bytes(c, &mut buf);
+        assert_eq!(buf, [c.blue, c.green, c.red, c.alpha]);
+        let out = PixelFormat::Bgra8888.decode_color_bytes(&buf);
+        assert_eq!(out.alpha, c.alpha);
+
+        // RGBA 32-bit
+        PixelFormat::Rgba8888.encode_color_bytes(c, &mut buf);
+        assert_eq!(buf, [c.red, c.green, c.blue, c.alpha]);
+        let out2 = PixelFormat::Rgba8888.decode_color_bytes(&buf);
+        assert_eq!(out2.alpha, c.alpha);
+
+        // 24-bit BGR
+        let mut buf3 = [0u8; 3];
+        let c2 = Color::new(0x12, 0x34, 0x56);
+        PixelFormat::Bgr888.encode_color_bytes(c2, &mut buf3);
+        assert_eq!(buf3, [c2.blue, c2.green, c2.red]);
+        let out3 = PixelFormat::Bgr888.decode_color_bytes(&buf3);
+        assert_eq!(out3, c2);
+
+        // RGB565 - lossy roundtrip
+        let mut buf2 = [0u8; 2];
+        PixelFormat::Rgb565.encode_color_bytes(c2, &mut buf2);
+        let out4 = PixelFormat::Rgb565.decode_color_bytes(&buf2);
+        // RGB565 is lossy; ensure values are in expected reduced range
+        assert!(out4.red <= c2.red);
+        assert!(out4.green <= c2.green);
+        assert!(out4.blue <= c2.blue);
     }
 }

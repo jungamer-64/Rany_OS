@@ -292,9 +292,9 @@ impl BenchmarkRunner {
 
     /// Print results summary
     pub fn print_summary(&self) {
-        crate::log!("\n=== Benchmark Results ===\n");
+        log::info!("\n=== Benchmark Results ===\n");
         for result in &self.results {
-            crate::log!(
+            log::info!(
                 "{}: {} ops/sec (avg: {} ns, min: {} ns, max: {} ns)",
                 result.name,
                 result.ops_per_sec,
@@ -303,9 +303,9 @@ impl BenchmarkRunner {
                 result.max_ns
             );
             if result.bytes_per_sec.is_some() {
-                crate::log!("  Throughput: {}", result.format_throughput());
+                log::info!("  Throughput: {}", result.format_throughput());
             }
-            crate::log!("\n");
+            log::info!("\n");
         }
     }
 }
@@ -514,27 +514,27 @@ fn internet_checksum(data: &[u8]) -> u16 {
 pub fn run_all_benchmarks() -> Vec<BenchmarkResult> {
     let mut runner = BenchmarkRunner::new();
 
-    crate::log!("[BENCH] Starting comprehensive benchmark suite...\n");
+    log::info!("[BENCH] Starting comprehensive benchmark suite...\n");
 
-    crate::log!("[BENCH] Memory allocation benchmarks\n");
+    log::info!("[BENCH] Memory allocation benchmarks\n");
     bench_memory_allocation(&mut runner);
 
-    crate::log!("[BENCH] Context switch benchmarks\n");
+    log::info!("[BENCH] Context switch benchmarks\n");
     bench_context_switch(&mut runner);
 
-    crate::log!("[BENCH] Atomic operations benchmarks\n");
+    log::info!("[BENCH] Atomic operations benchmarks\n");
     bench_atomics(&mut runner);
 
-    crate::log!("[BENCH] Lock benchmarks\n");
+    log::info!("[BENCH] Lock benchmarks\n");
     bench_locks(&mut runner);
 
-    crate::log!("[BENCH] Memory throughput benchmarks\n");
+    log::info!("[BENCH] Memory throughput benchmarks\n");
     bench_memory_throughput(&mut runner);
 
-    crate::log!("[BENCH] IPC benchmarks\n");
+    log::info!("[BENCH] IPC benchmarks\n");
     bench_ipc(&mut runner);
 
-    crate::log!("[BENCH] Network processing benchmarks\n");
+    log::info!("[BENCH] Network processing benchmarks\n");
     bench_network_processing(&mut runner);
 
     runner.print_summary();
@@ -544,7 +544,7 @@ pub fn run_all_benchmarks() -> Vec<BenchmarkResult> {
 
 /// 10Gbps line rate verification
 pub fn verify_line_rate() -> bool {
-    crate::log!("[BENCH] Verifying 10Gbps line rate capability...\n");
+    log::info!("[BENCH] Verifying 10Gbps line rate capability...\n");
 
     let mut runner = BenchmarkRunner::new();
 
@@ -566,7 +566,7 @@ pub fn verify_line_rate() -> bool {
     let achieved_bps = result.bytes_per_sec.unwrap_or(0);
     let achieved_gbps = (achieved_bps as f64 * 8.0) / 1_000_000_000.0;
 
-    crate::log!(
+    log::info!(
         "[BENCH] Target: {:.2} Gbps, Achieved: {:.2} Gbps ({:.1}%)\n",
         TARGET_GBPS,
         achieved_gbps,

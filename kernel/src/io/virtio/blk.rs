@@ -1144,7 +1144,7 @@ pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
     let mut device = VirtioBlkDevice::new(mmio_base);
     unsafe { device.init()? };
 
-    crate::log!(
+    log::info!(
         "VirtIO-blk initialized: {} sectors, {} bytes/sector\n",
         device.config().capacity,
         device.config().block_size

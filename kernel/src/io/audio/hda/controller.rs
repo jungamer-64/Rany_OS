@@ -181,7 +181,7 @@ impl HdaController {
 
     /// Initialize the HDA controller
     pub fn init(&mut self) -> HdaResult<()> {
-        crate::log!("[HDA] Initializing Intel HD Audio controller\n");
+        log::info!("[HDA] Initializing Intel HD Audio controller\n");
 
         // Enable PCI bus mastering and memory space
         self.pci_device.enable_bus_master();
@@ -212,7 +212,7 @@ impl HdaController {
         self.init_codecs()?;
 
         self.initialized.store(true, Ordering::SeqCst);
-        crate::log!("[HDA] Controller initialized successfully\n");
+        log::info!("[HDA] Controller initialized successfully\n");
 
         Ok(())
     }
@@ -235,7 +235,7 @@ impl HdaController {
         self.num_output_streams = ((gcap >> 12) & 0x0F) as u32;
         self.num_bidir_streams = ((gcap >> 3) & 0x03) as u32;
 
-        crate::log!(
+        log::info!(
             "[HDA] Version: {}.{}, Streams: {} in, {} out, {} bidir\n",
             vmaj,
             vmin,
@@ -249,7 +249,7 @@ impl HdaController {
 
     /// Reset the HDA controller
     fn reset_controller(&mut self) -> HdaResult<()> {
-        crate::log!("[HDA] Resetting controller...\n");
+        log::info!("[HDA] Resetting controller...\n");
 
         // Enter reset: clear CRST bit
         let gctl = self.read32(REG_GCTL);
@@ -293,7 +293,7 @@ impl HdaController {
         // Wait for codec detection
         Self::delay_us(CODEC_TIMEOUT_US);
 
-        crate::log!("[HDA] Controller reset complete\n");
+        log::info!("[HDA] Controller reset complete\n");
         Ok(())
     }
 
@@ -319,7 +319,7 @@ impl HdaController {
 
     /// Initialize CORB (Command Output Ring Buffer)
     fn init_corb(&mut self) -> HdaResult<()> {
-        crate::log!("[HDA] Initializing CORB...\n");
+        log::info!("[HDA] Initializing CORB...\n");
 
         // Stop CORB if running
         self.write8(REG_CORBCTL, 0);
@@ -344,7 +344,7 @@ impl HdaController {
         let buffer_size = size_entries * CORB_ENTRY_SIZE;
         self.corb_addr = Self::alloc_dma_buffer(buffer_size)?;
 
-        crate::log!(
+        log::info!(
             "[HDA] CORB: {} entries at 0x{:016x}\n",
             size_entries,
             self.corb_addr
@@ -385,13 +385,13 @@ impl HdaController {
         self.write16(REG_CORBWP, 0);
         self.corb_wp.store(0, Ordering::SeqCst);
 
-        crate::log!("[HDA] CORB initialized\n");
+        log::info!("[HDA] CORB initialized\n");
         Ok(())
     }
 
     /// Initialize RIRB (Response Input Ring Buffer)
     fn init_rirb(&mut self) -> HdaResult<()> {
-        crate::log!("[HDA] Initializing RIRB...\n");
+        log::info!("[HDA] Initializing RIRB...\n");
 
         // Stop RIRB if running
         self.write8(REG_RIRBCTL, 0);
@@ -416,7 +416,7 @@ impl HdaController {
         let buffer_size = size_entries * RIRB_ENTRY_SIZE;
         self.rirb_addr = Self::alloc_dma_buffer(buffer_size)?;
 
-        crate::log!(
+        log::info!(
             "[HDA] RIRB: {} entries at 0x{:016x}\n",
             size_entries,
             self.rirb_addr
@@ -438,7 +438,7 @@ impl HdaController {
         // Reset read pointer
         self.rirb_rp.store(0, Ordering::SeqCst);
 
-        crate::log!("[HDA] RIRB initialized\n");
+        log::info!("[HDA] RIRB initialized\n");
         Ok(())
     }
 
@@ -450,7 +450,7 @@ impl HdaController {
 
     /// Start CORB and RIRB DMA engines
     fn start_corb_rirb(&self) -> HdaResult<()> {
-        crate::log!("[HDA] Starting CORB/RIRB DMA...\n");
+        log::info!("[HDA] Starting CORB/RIRB DMA...\n");
 
         // Start RIRB DMA
         self.write8(REG_RIRBCTL, RIRBCTL_DMAEN | RIRBCTL_RINTCTL);
@@ -472,7 +472,7 @@ impl HdaController {
             return Err(HdaError::InitFailed("RIRB DMA failed to start".into()));
         }
 
-        crate::log!("[HDA] CORB/RIRB DMA started\n");
+        log::info!("[HDA] CORB/RIRB DMA started\n");
         Ok(())
     }
 

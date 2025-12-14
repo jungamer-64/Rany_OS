@@ -488,20 +488,20 @@ pub fn trigger_breakpoint() {
 
 /// 割り込みシステムの状態をダンプ
 pub fn dump_interrupt_state() {
-    crate::log!("[INT] === Interrupt System State ===\n");
-    crate::log!(
+    log::info!("[INT] === Interrupt System State ===\n");
+    log::info!(
         "  IDT Initialized: {}\n",
         IDT_INITIALIZED.load(Ordering::SeqCst)
     );
-    crate::log!("  Interrupts Enabled: {}\n", are_interrupts_enabled());
-    crate::log!("  Timer Ticks: {}\n", get_timer_ticks());
+    log::info!("  Interrupts Enabled: {}\n", are_interrupts_enabled());
+    log::info!("  Timer Ticks: {}\n", get_timer_ticks());
 
     let (pf, gpf, df, bp, ud, de) = exceptions::get_exception_stats();
-    crate::log!("  Exception Stats:\n");
-    crate::log!("    Page Faults: {}\n", pf);
-    crate::log!("    GP Faults: {}\n", gpf);
-    crate::log!("    Double Faults: {}\n", df);
-    crate::log!("    Breakpoints: {}\n", bp);
-    crate::log!("    Invalid Opcodes: {}\n", ud);
-    crate::log!("    Divide Errors: {}\n", de);
+    log::info!("  Exception Stats:\n");
+    log::info!("    Page Faults: {}\n", pf);
+    log::info!("    GP Faults: {}\n", gpf);
+    log::info!("    Double Faults: {}\n", df);
+    log::info!("    Breakpoints: {}\n", bp);
+    log::info!("    Invalid Opcodes: {}\n", ud);
+    log::info!("    Divide Errors: {}\n", de);
 }

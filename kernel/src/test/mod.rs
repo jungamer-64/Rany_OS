@@ -94,12 +94,12 @@ impl TestRunner {
 
     /// Run all tests
     pub fn run_all(&self) -> TestSummary {
-        crate::log!("\n");
-        crate::log!(
+        log::info!("\n");
+        log::info!(
             "================================================================================\n"
         );
-        crate::log!("                          ExoRust Integration Test Suite\n");
-        crate::log!(
+        log::info!("                          ExoRust Integration Test Suite\n");
+        log::info!(
             "================================================================================\n\n"
         );
 
@@ -108,7 +108,7 @@ impl TestRunner {
         let mut results = Vec::new();
 
         for (i, test) in tests.iter().enumerate() {
-            crate::log!(
+            log::info!(
                 "[{}/{}] Running test: {}::{}\n",
                 i + 1,
                 total,
@@ -121,20 +121,20 @@ impl TestRunner {
             match &result {
                 TestResult::Passed => {
                     self.passed.fetch_add(1, Ordering::SeqCst);
-                    crate::log!("  [PASS] {}\n", test.name);
+                    log::info!("  [PASS] {}\n", test.name);
                 }
                 TestResult::Failed(msg) => {
                     self.failed.fetch_add(1, Ordering::SeqCst);
-                    crate::log!("  [FAIL] {}: {}\n", test.name, msg);
+                    log::info!("  [FAIL] {}: {}\n", test.name, msg);
 
                     if self.stop_on_failure.load(Ordering::SeqCst) {
-                        crate::log!("\n[ABORT] Stopping test run due to failure\n");
+                        log::info!("\n[ABORT] Stopping test run due to failure\n");
                         break;
                     }
                 }
                 TestResult::Skipped(reason) => {
                     self.skipped.fetch_add(1, Ordering::SeqCst);
-                    crate::log!("  [SKIP] {}: {}\n", test.name, reason);
+                    log::info!("  [SKIP] {}: {}\n", test.name, reason);
                 }
             }
 
@@ -146,27 +146,27 @@ impl TestRunner {
         let failed = self.failed.load(Ordering::SeqCst);
         let skipped = self.skipped.load(Ordering::SeqCst);
 
-        crate::log!("\n");
-        crate::log!(
+        log::info!("\n");
+        log::info!(
             "================================================================================\n"
         );
-        crate::log!("                              Test Summary\n");
-        crate::log!(
+        log::info!("                              Test Summary\n");
+        log::info!(
             "================================================================================\n"
         );
-        crate::log!("  Total:   {}\n", total);
+        log::info!("  Total:   {}\n", total);
         if total > 0 {
-            crate::log!(
+            log::info!(
                 "  Passed:  {} ({}%)\n",
                 passed,
                 (passed * 100) / total as u64
             );
         } else {
-            crate::log!("  Passed:  {}\n", passed);
+            log::info!("  Passed:  {}\n", passed);
         }
-        crate::log!("  Failed:  {}\n", failed);
-        crate::log!("  Skipped: {}\n", skipped);
-        crate::log!(
+        log::info!("  Failed:  {}\n", failed);
+        log::info!("  Skipped: {}\n", skipped);
+        log::info!(
             "================================================================================\n\n"
         );
 
@@ -184,7 +184,7 @@ impl TestRunner {
         let tests = self.tests.lock();
         let filtered: Vec<_> = tests.iter().filter(|t| t.category == category).collect();
 
-        crate::log!(
+        log::info!(
             "\n[TEST] Running {} tests in category '{}'\n\n",
             filtered.len(),
             category
@@ -193,21 +193,21 @@ impl TestRunner {
         let mut results = Vec::new();
 
         for test in &filtered {
-            crate::log!("  Running: {}\n", test.name);
+            log::info!("  Running: {}\n", test.name);
             let result = (test.func)();
 
             match &result {
                 TestResult::Passed => {
                     self.passed.fetch_add(1, Ordering::SeqCst);
-                    crate::log!("    [PASS]\n");
+                    log::info!("    [PASS]\n");
                 }
                 TestResult::Failed(msg) => {
                     self.failed.fetch_add(1, Ordering::SeqCst);
-                    crate::log!("    [FAIL] {}\n", msg);
+                    log::info!("    [FAIL] {}\n", msg);
                 }
                 TestResult::Skipped(reason) => {
                     self.skipped.fetch_add(1, Ordering::SeqCst);
-                    crate::log!("    [SKIP] {}\n", reason);
+                    log::info!("    [SKIP] {}\n", reason);
                 }
             }
 
@@ -260,7 +260,7 @@ pub fn init() {
         runner
     });
 
-    crate::log!("[TEST] Test framework initialized\n");
+    log::info!("[TEST] Test framework initialized\n");
 }
 
 /// Get test runner

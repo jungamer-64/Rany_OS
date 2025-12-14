@@ -102,14 +102,14 @@ where
 
     // タスク開始をログ
     #[cfg(feature = "verbose_logging")]
-    crate::log!("[Domain {}] Task started\n", domain_id.as_u64());
+    log::info!("[Domain {}] Task started\n", domain_id.as_u64());
 
     // Futureを実行
     future.await;
 
     // 正常終了
     #[cfg(feature = "verbose_logging")]
-    crate::log!("[Domain {}] Task completed normally\n", domain_id.as_u64());
+    log::info!("[Domain {}] Task completed normally\n", domain_id.as_u64());
 }
 
 /// ドメインを終了させる
@@ -132,7 +132,7 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     for task_id in tasks {
         // タスクを停止状態に設定
         // 注: 実際のタスク停止はスケジューラが次回処理時に行う
-        crate::log!(
+        log::info!(
             "[Domain {}] Stopping task {}\n",
             domain_id.as_u64(),
             task_id
@@ -142,7 +142,7 @@ pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
     // ドメインに依存する他のドメインに通知
     let dependents = get_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
     for dep_id in dependents {
-        crate::log!(
+        log::info!(
             "[Domain {}] Notifying dependent domain {} of termination\n",
             domain_id.as_u64(),
             dep_id.as_u64()
@@ -169,7 +169,7 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
     reclaim_domain_resources(domain_id);
 
     // ログ出力
-    crate::log!(
+    log::info!(
         "[PANIC] Domain {} crashed: {}\n",
         domain_id.as_u64(),
         message
@@ -178,7 +178,7 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
     // 依存するドメインに通知
     let dependents = get_domain(domain_id, |d| d.dependents.clone()).unwrap_or_default();
     for dep_id in dependents {
-        crate::log!(
+        log::info!(
             "[PANIC] Notifying dependent domain {} of panic\n",
             dep_id.as_u64()
         );
@@ -225,7 +225,7 @@ pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
             // 将来的にはDomain構造体にentry_pointを追加し、
             // 自動的に初期化タスクを再スポーンできるようにする。
 
-            crate::log!(
+            log::info!(
                 "[LIFECYCLE] Domain {} restarted (awaiting task spawn)\n",
                 domain_id.as_u64()
             );

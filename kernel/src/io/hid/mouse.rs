@@ -198,7 +198,7 @@ impl Mouse {
             .map_err(|()| MouseInitError::EnableDataFailed)?;
 
         self.initialized = true;
-        crate::log!("[HID] Mouse initialized (IRQ12 enabled)\n");
+        log::info!("[HID] Mouse initialized (IRQ12 enabled)\n");
         Ok(())
     }
 

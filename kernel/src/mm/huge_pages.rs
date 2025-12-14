@@ -44,9 +44,9 @@ pub fn detect_1g_page_support() -> bool {
         HUGE_PAGE_1G_AVAILABLE.store(supported, Ordering::Release);
 
         if supported {
-            crate::log!("[HUGE_PAGE] 1GB page support detected\n");
+            log::info!("[HUGE_PAGE] 1GB page support detected\n");
         } else {
-            crate::log!("[HUGE_PAGE] 1GB page not supported, using 2MB pages\n");
+            log::info!("[HUGE_PAGE] 1GB page not supported, using 2MB pages\n");
         }
 
         supported
@@ -54,7 +54,7 @@ pub fn detect_1g_page_support() -> bool {
 
     #[cfg(not(target_arch = "x86_64"))]
     {
-        crate::log!("[HUGE_PAGE] 1GB page not available on this architecture\n");
+        log::info!("[HUGE_PAGE] 1GB page not available on this architecture\n");
         false
     }
 }
@@ -121,7 +121,7 @@ impl HugePageAllocator {
         self.available = (1u64 << count) - 1;
         self.allocated = 0;
 
-        crate::log!(
+        log::info!(
             "[HUGE_PAGE] Allocator initialized: base=0x{:X}, count={}\n",
             base.as_u64(),
             count
@@ -205,12 +205,12 @@ pub struct HugePageStats {
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn setup_linear_mapping_1g(total_memory: usize) -> usize {
     if !is_1g_page_supported() {
-        crate::log!("[HUGE_PAGE] Falling back to 2MB pages for linear mapping\n");
+        log::info!("[HUGE_PAGE] Falling back to 2MB pages for linear mapping\n");
         return setup_linear_mapping_2m(total_memory);
     }
 
     let pages_needed = (total_memory + HUGE_PAGE_SIZE_1G - 1) / HUGE_PAGE_SIZE_1G;
-    crate::log!(
+    log::info!(
         "[HUGE_PAGE] Setting up linear mapping with {} 1GB pages for {} bytes\n",
         pages_needed,
         total_memory
@@ -225,7 +225,7 @@ pub unsafe fn setup_linear_mapping_1g(total_memory: usize) -> usize {
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn setup_linear_mapping_2m(total_memory: usize) -> usize {
     let pages_needed = (total_memory + HUGE_PAGE_SIZE_2M - 1) / HUGE_PAGE_SIZE_2M;
-    crate::log!(
+    log::info!(
         "[HUGE_PAGE] Setting up linear mapping with {} 2MB pages for {} bytes\n",
         pages_needed,
         total_memory

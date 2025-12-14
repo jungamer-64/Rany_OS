@@ -98,7 +98,7 @@ impl Driver for Ps2Driver {
                 _ => "None",
             };
 
-            crate::log!("[PS2] Port1: {}, Port2: {}\n", kb, mouse_type);
+            log::info!("[PS2] Port1: {}, Port2: {}\n", kb, mouse_type);
             Ok(())
         } else {
             Err(kernel_api::KapiError::IoError)

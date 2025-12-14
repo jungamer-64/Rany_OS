@@ -303,7 +303,7 @@ impl AuditLog {
 
         // Print critical events immediately
         if event.event_type.is_critical() {
-            crate::log!("[AUDIT] {}\n", record.format());
+            log::info!("[AUDIT] {}\n", record.format());
         }
 
         let mut records = self.records.lock();
@@ -329,7 +329,7 @@ impl AuditLog {
         }
 
         if record.event_type.is_critical() {
-            crate::log!("[AUDIT] {}\n", record.format());
+            log::info!("[AUDIT] {}\n", record.format());
         }
 
         let mut records = self.records.lock();
@@ -447,7 +447,7 @@ pub fn stats() -> AuditStats {
 
 /// Initialize audit subsystem
 pub fn init() {
-    crate::log!(
+    log::info!(
         "[AUDIT] Audit subsystem initialized (max {} records)\n",
         10000
     );

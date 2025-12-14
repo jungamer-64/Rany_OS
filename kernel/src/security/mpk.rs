@@ -419,16 +419,16 @@ impl MpkManager {
             self.pku_detected = (result.ecx & (1 << 3)) != 0;
 
             if self.pku_detected {
-                crate::log!("[MPK] PKU support detected\n");
+                log::info!("[MPK] PKU support detected\n");
             } else {
-                crate::log!("[MPK] PKU not supported by CPU\n");
+                log::info!("[MPK] PKU not supported by CPU\n");
             }
         }
 
         #[cfg(not(target_arch = "x86_64"))]
         {
             self.pku_detected = false;
-            crate::log!("[MPK] PKU not available on this architecture\n");
+            log::info!("[MPK] PKU not available on this architecture\n");
         }
     }
 
@@ -454,7 +454,7 @@ impl MpkManager {
             PKU_ENABLED.store(true, Ordering::Release);
             self.pku_enabled = true;
 
-            crate::log!(
+            log::info!(
                 "[MPK] PKU enabled, initial PKRU: 0x{:08X}\n",
                 initial_pkru.0
             );

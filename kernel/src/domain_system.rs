@@ -286,14 +286,14 @@ pub fn init() {
 pub fn create_domain(name: String) -> DomainId {
     // 毒入れされている場合も回復して続行（障害隔離）
     let mut registry = REGISTRY.lock().unwrap_or_else(|e| {
-        crate::log!("[DOMAIN] Warning: registry poisoned, recovering\n");
+        log::info!("[DOMAIN] Warning: registry poisoned, recovering\n");
         e.into_inner()
     });
     let id = registry.generate_id();
 
     // name をログで先に使用し、その後 Domain::new に渡す
     // これにより clone() を回避
-    crate::log!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
+    log::info!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
 
     let domain = Domain::new(id, name);
     registry.domains.insert(id, domain);
@@ -349,7 +349,7 @@ pub fn set_domain_state(id: DomainId, state: DomainState) {
     {
         let old_state = domain.state;
         domain.state = state;
-        crate::log!("[DOMAIN] {} state: {:?} -> {:?}\n", id, old_state, state);
+        log::info!("[DOMAIN] {} state: {:?} -> {:?}\n", id, old_state, state);
     }
 }
 
@@ -362,7 +362,7 @@ pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
             return Err("Domain is not in initializing state");
         }
         domain.state = DomainState::Running;
-        crate::log!("[DOMAIN] Started {}\n", id);
+        log::info!("[DOMAIN] Started {}\n", id);
         Ok(())
     } else {
         Err("Domain not found")
@@ -379,7 +379,7 @@ pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
 
     if let Some(domain) = registry.domains.get_mut(&id) {
         domain.state = DomainState::Stopped;
-        crate::log!("[DOMAIN] Stopped {}\n", id);
+        log::info!("[DOMAIN] Stopped {}\n", id);
         Ok(())
     } else {
         Err("Domain not found")
@@ -423,13 +423,13 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
         }
     }
 
-    crate::log!("[DOMAIN] Terminated {} and reclaimed resources\n", id);
+    log::info!("[DOMAIN] Terminated {} and reclaimed resources\n", id);
     Ok(())
 }
 
 /// ドメインがパニックした場合の処理
 pub fn handle_domain_panic(id: DomainId, message: String) {
-    crate::log!("[PANIC] {} crashed: {}\n", id, message);
+    log::info!("[PANIC] {} crashed: {}\n", id, message);
 
     {
         let mut registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
@@ -593,7 +593,7 @@ pub fn reclaim_domain_resources(domain: DomainId) {
     }
 
     if count > 0 {
-        crate::log!("[DOMAIN] Reclaimed {} resources from {}\n", count, domain);
+        log::info!("[DOMAIN] Reclaimed {} resources from {}\n", count, domain);
     }
 }
 
@@ -654,9 +654,9 @@ pub fn get_stats() -> DomainStats {
 pub fn print_domain_list() {
     let registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
 
-    crate::log!("[DOMAIN] === Domain List ===\n");
+    log::info!("[DOMAIN] === Domain List ===\n");
     for domain in registry.domains.values() {
-        crate::log!(
+        log::info!(
             "[DOMAIN] {} '{}': {:?}, tasks={}, rrefs={}, mem={}KB\n",
             domain.id,
             domain.name,

@@ -579,7 +579,7 @@ pub fn init() {
     policy.set_enabled(true);
     load_policy(policy);
 
-    crate::log!("[POLICY] Policy engine initialized\n");
+    log::info!("[POLICY] Policy engine initialized\n");
 }
 
 #[cfg(test)]

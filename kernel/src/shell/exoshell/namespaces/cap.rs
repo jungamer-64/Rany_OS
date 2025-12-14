@@ -191,7 +191,7 @@ impl CapNamespace {
             delegatable: caller_caps.is_permitted(cap_bit),
         };
 
-        crate::log!(
+        log::info!(
             "[CAP] Granted {} on {} to domain {} by domain {}\n",
             capability_name(cap_bit),
             resource,
@@ -221,7 +221,7 @@ impl CapNamespace {
 
         manager().set_capabilities(pid, caps);
 
-        crate::log!("[CAP] Revoked capability bit {} from self\n", cap_id);
+        log::info!("[CAP] Revoked capability bit {} from self\n", cap_id);
         ExoValue::Bool(true)
     }
 
@@ -233,7 +233,7 @@ impl CapNamespace {
         }
 
         manager().set_capabilities(domain_id, CapabilitySet::empty());
-        crate::log!("[CAP] Revoked all capabilities from domain {}\n", domain_id);
+        log::info!("[CAP] Revoked all capabilities from domain {}\n", domain_id);
         ExoValue::Bool(true)
     }
 

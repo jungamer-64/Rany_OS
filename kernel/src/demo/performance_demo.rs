@@ -48,13 +48,13 @@ impl PerformanceDemo {
 
 /// Run the performance demonstration
 pub fn run() -> DemoResult {
-    crate::log!("\n");
-    crate::log!("================================================================================\n");
-    crate::log!("               ExoRust Performance Characteristics Demo\n");
-    crate::log!("================================================================================\n\n");
+    log::info!("\n");
+    log::info!("================================================================================\n");
+    log::info!("               ExoRust Performance Characteristics Demo\n");
+    log::info!("================================================================================\n\n");
     
-    crate::log!("This demonstration highlights the performance benefits of ExoRust's\n");
-    crate::log!("Single Address Space (SAS) and Single Privilege Level (SPL) architecture.\n\n");
+    log::info!("This demonstration highlights the performance benefits of ExoRust's\n");
+    log::info!("Single Address Space (SAS) and Single Privilege Level (SPL) architecture.\n\n");
     
     // Demo 1: System Call Elimination
     demo_syscall_elimination();
@@ -71,28 +71,28 @@ pub fn run() -> DemoResult {
     // Demo 5: Memory Management
     demo_memory_management();
     
-    crate::log!("================================================================================\n");
-    crate::log!("                     Performance Demo Completed\n");
-    crate::log!("================================================================================\n\n");
+    log::info!("================================================================================\n");
+    log::info!("                     Performance Demo Completed\n");
+    log::info!("================================================================================\n\n");
     
     DemoResult::Success
 }
 
 /// Demo: System call elimination
 fn demo_syscall_elimination() {
-    crate::log!("┌────────────────────────────────────────────────────────────────────────────┐\n");
-    crate::log!("│  Demo 1: System Call Elimination (SPL)                                    │\n");
-    crate::log!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
+    log::info!("┌────────────────────────────────────────────────────────────────────────────┐\n");
+    log::info!("│  Demo 1: System Call Elimination (SPL)                                    │\n");
+    log::info!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
     
-    crate::log!("In traditional OSes, system calls involve:\n");
-    crate::log!("  1. SYSCALL instruction (~100-200 cycles)\n");
-    crate::log!("  2. Privilege level switch (Ring 3 → Ring 0)\n");
-    crate::log!("  3. Stack switch\n");
-    crate::log!("  4. Register save/restore\n");
-    crate::log!("  5. KPTI overhead (~400-1000 cycles extra)\n");
-    crate::log!("  Total: ~500-2000+ CPU cycles\n\n");
+    log::info!("In traditional OSes, system calls involve:\n");
+    log::info!("  1. SYSCALL instruction (~100-200 cycles)\n");
+    log::info!("  2. Privilege level switch (Ring 3 → Ring 0)\n");
+    log::info!("  3. Stack switch\n");
+    log::info!("  4. Register save/restore\n");
+    log::info!("  5. KPTI overhead (~400-1000 cycles extra)\n");
+    log::info!("  Total: ~500-2000+ CPU cycles\n\n");
     
-    crate::log!("In ExoRust, 'system calls' are just function calls:\n");
+    log::info!("In ExoRust, 'system calls' are just function calls:\n");
     
     // Measure function call overhead
     const ITERATIONS: usize = 100000;
@@ -108,26 +108,26 @@ fn demo_syscall_elimination() {
     
     let avg_cycles = total_cycles / ITERATIONS as u64;
     
-    crate::log!("  Measured: {} cycles average (function call)\n", avg_cycles);
-    crate::log!("  Speedup: ~{}x faster than traditional syscalls\n\n", 
+    log::info!("  Measured: {} cycles average (function call)\n", avg_cycles);
+    log::info!("  Speedup: ~{}x faster than traditional syscalls\n\n", 
         1500 / avg_cycles.max(1));
     
-    crate::log!("This eliminates:\n");
-    crate::log!("  ✓ Mode switch overhead\n");
-    crate::log!("  ✓ KPTI page table switching\n");
-    crate::log!("  ✓ Spectre/Meltdown mitigations in syscall path\n\n");
+    log::info!("This eliminates:\n");
+    log::info!("  ✓ Mode switch overhead\n");
+    log::info!("  ✓ KPTI page table switching\n");
+    log::info!("  ✓ Spectre/Meltdown mitigations in syscall path\n\n");
 }
 
 /// Demo: Zero-copy communication
 fn demo_zero_copy() {
     use crate::ipc::{RRef, DomainId};
     
-    crate::log!("┌────────────────────────────────────────────────────────────────────────────┐\n");
-    crate::log!("│  Demo 2: Zero-Copy Inter-Domain Communication                             │\n");
-    crate::log!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
+    log::info!("┌────────────────────────────────────────────────────────────────────────────┐\n");
+    log::info!("│  Demo 2: Zero-Copy Inter-Domain Communication                             │\n");
+    log::info!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
     
-    crate::log!("Traditional IPC requires copying data between address spaces.\n");
-    crate::log!("ExoRust uses ownership transfer in a single address space.\n\n");
+    log::info!("Traditional IPC requires copying data between address spaces.\n");
+    log::info!("ExoRust uses ownership transfer in a single address space.\n\n");
     
     const DATA_SIZE: usize = 4096;
     const ITERATIONS: usize = 10000;
@@ -157,32 +157,32 @@ fn demo_zero_copy() {
     }
     let avg_transfer = transfer_cycles / ITERATIONS as u64;
     
-    crate::log!("  Data size: {} bytes\n", DATA_SIZE);
-    crate::log!("  Traditional (copy): {} cycles\n", avg_copy);
-    crate::log!("  ExoRust (RRef transfer): {} cycles\n", avg_transfer);
-    crate::log!("  Speedup: {:.1}x faster\n\n", avg_copy as f64 / avg_transfer.max(1) as f64);
+    log::info!("  Data size: {} bytes\n", DATA_SIZE);
+    log::info!("  Traditional (copy): {} cycles\n", avg_copy);
+    log::info!("  ExoRust (RRef transfer): {} cycles\n", avg_transfer);
+    log::info!("  Speedup: {:.1}x faster\n\n", avg_copy as f64 / avg_transfer.max(1) as f64);
     
-    crate::log!("Benefits:\n");
-    crate::log!("  ✓ O(1) transfer regardless of data size\n");
-    crate::log!("  ✓ Memory bandwidth preserved\n");
-    crate::log!("  ✓ Cache contents remain valid\n\n");
+    log::info!("Benefits:\n");
+    log::info!("  ✓ O(1) transfer regardless of data size\n");
+    log::info!("  ✓ Memory bandwidth preserved\n");
+    log::info!("  ✓ Cache contents remain valid\n\n");
 }
 
 /// Demo: TLB efficiency
 fn demo_tlb_efficiency() {
-    crate::log!("┌────────────────────────────────────────────────────────────────────────────┐\n");
-    crate::log!("│  Demo 3: TLB Efficiency (SAS)                                             │\n");
-    crate::log!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
+    log::info!("┌────────────────────────────────────────────────────────────────────────────┐\n");
+    log::info!("│  Demo 3: TLB Efficiency (SAS)                                             │\n");
+    log::info!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
     
-    crate::log!("Traditional OS context switches flush TLB entries:\n");
-    crate::log!("  - Each CR3 write can invalidate hundreds of TLB entries\n");
-    crate::log!("  - TLB miss penalty: ~50-100 cycles per access\n");
-    crate::log!("  - Working set must be re-cached after each switch\n\n");
+    log::info!("Traditional OS context switches flush TLB entries:\n");
+    log::info!("  - Each CR3 write can invalidate hundreds of TLB entries\n");
+    log::info!("  - TLB miss penalty: ~50-100 cycles per access\n");
+    log::info!("  - Working set must be re-cached after each switch\n\n");
     
-    crate::log!("ExoRust's Single Address Space:\n");
-    crate::log!("  - NO CR3 writes during task switching\n");
-    crate::log!("  - TLB entries persist across all tasks\n");
-    crate::log!("  - Effective TLB size = physical TLB size\n\n");
+    log::info!("ExoRust's Single Address Space:\n");
+    log::info!("  - NO CR3 writes during task switching\n");
+    log::info!("  - TLB entries persist across all tasks\n");
+    log::info!("  - Effective TLB size = physical TLB size\n\n");
     
     // Demonstrate memory access patterns
     const REGION_SIZE: usize = 1024 * 1024; // 1MB
@@ -208,33 +208,33 @@ fn demo_tlb_efficiency() {
     
     let pages = REGION_SIZE / 4096;
     
-    crate::log!("  Memory region: {} bytes ({} pages)\n", REGION_SIZE, pages);
-    crate::log!("  Cold access: {} cycles ({} per page)\n", cold_cycles, cold_cycles / pages as u64);
-    crate::log!("  Warm access: {} cycles ({} per page)\n", warm_cycles, warm_cycles / pages as u64);
-    crate::log!("  TLB hit speedup: {:.1}x\n\n", cold_cycles as f64 / warm_cycles.max(1) as f64);
+    log::info!("  Memory region: {} bytes ({} pages)\n", REGION_SIZE, pages);
+    log::info!("  Cold access: {} cycles ({} per page)\n", cold_cycles, cold_cycles / pages as u64);
+    log::info!("  Warm access: {} cycles ({} per page)\n", warm_cycles, warm_cycles / pages as u64);
+    log::info!("  TLB hit speedup: {:.1}x\n\n", cold_cycles as f64 / warm_cycles.max(1) as f64);
     
     core::hint::black_box(sum1);
     core::hint::black_box(sum2);
     
-    crate::log!("In ExoRust, TLB stays warm across ALL domain switches!\n\n");
+    log::info!("In ExoRust, TLB stays warm across ALL domain switches!\n\n");
 }
 
 /// Demo: Async task efficiency
 fn demo_async_efficiency() {
-    crate::log!("┌────────────────────────────────────────────────────────────────────────────┐\n");
-    crate::log!("│  Demo 4: Async Task Efficiency                                            │\n");
-    crate::log!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
+    log::info!("┌────────────────────────────────────────────────────────────────────────────┐\n");
+    log::info!("│  Demo 4: Async Task Efficiency                                            │\n");
+    log::info!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
     
-    crate::log!("Traditional OS thread context switch:\n");
-    crate::log!("  - Save all registers (~16 GP + FPU/SSE state)\n");
-    crate::log!("  - Switch stacks (typically 8KB each)\n");
-    crate::log!("  - Update scheduler data structures\n");
-    crate::log!("  - Typical cost: 3000-10000 cycles\n\n");
+    log::info!("Traditional OS thread context switch:\n");
+    log::info!("  - Save all registers (~16 GP + FPU/SSE state)\n");
+    log::info!("  - Switch stacks (typically 8KB each)\n");
+    log::info!("  - Update scheduler data structures\n");
+    log::info!("  - Typical cost: 3000-10000 cycles\n\n");
     
-    crate::log!("ExoRust async task switch:\n");
-    crate::log!("  - State machine transition (poll returns Pending)\n");
-    crate::log!("  - No stack switch (stackless coroutines)\n");
-    crate::log!("  - Minimal register usage\n");
+    log::info!("ExoRust async task switch:\n");
+    log::info!("  - State machine transition (poll returns Pending)\n");
+    log::info!("  - No stack switch (stackless coroutines)\n");
+    log::info!("  - Minimal register usage\n");
     
     // Measure yield_point overhead
     const ITERATIONS: usize = 100000;
@@ -249,8 +249,8 @@ fn demo_async_efficiency() {
     
     let avg_cycles = total_cycles / ITERATIONS as u64;
     
-    crate::log!("  Measured yield_point: {} cycles\n", avg_cycles);
-    crate::log!("  Compared to thread switch: ~{}x faster\n\n", 5000 / avg_cycles.max(1));
+    log::info!("  Measured yield_point: {} cycles\n", avg_cycles);
+    log::info!("  Compared to thread switch: ~{}x faster\n\n", 5000 / avg_cycles.max(1));
     
     // Task creation
     let mut create_cycles: u64 = 0;
@@ -262,15 +262,15 @@ fn demo_async_efficiency() {
         core::hint::black_box(task);
     }
     
-    crate::log!("  Task creation: {} cycles avg\n", create_cycles / 1000);
-    crate::log!("  (Traditional thread creation: ~10000-50000 cycles)\n\n");
+    log::info!("  Task creation: {} cycles avg\n", create_cycles / 1000);
+    log::info!("  (Traditional thread creation: ~10000-50000 cycles)\n\n");
 }
 
 /// Demo: Memory management efficiency
 fn demo_memory_management() {
-    crate::log!("┌────────────────────────────────────────────────────────────────────────────┐\n");
-    crate::log!("│  Demo 5: Memory Management                                                │\n");
-    crate::log!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
+    log::info!("┌────────────────────────────────────────────────────────────────────────────┐\n");
+    log::info!("│  Demo 5: Memory Management                                                │\n");
+    log::info!("└────────────────────────────────────────────────────────────────────────────┘\n\n");
     
     // Small allocation benchmark
     const SMALL_SIZE: usize = 64;
@@ -290,9 +290,9 @@ fn demo_memory_management() {
         dealloc_cycles += end - mid;
     }
     
-    crate::log!("  Small allocation ({} bytes):\n", SMALL_SIZE);
-    crate::log!("    Alloc: {} cycles avg\n", alloc_cycles / ITERATIONS as u64);
-    crate::log!("    Dealloc: {} cycles avg\n", dealloc_cycles / ITERATIONS as u64);
+    log::info!("  Small allocation ({} bytes):\n", SMALL_SIZE);
+    log::info!("    Alloc: {} cycles avg\n", alloc_cycles / ITERATIONS as u64);
+    log::info!("    Dealloc: {} cycles avg\n", dealloc_cycles / ITERATIONS as u64);
     
     // Medium allocation benchmark
     const MEDIUM_SIZE: usize = 4096;
@@ -306,12 +306,12 @@ fn demo_memory_management() {
         core::hint::black_box(data);
     }
     
-    crate::log!("\n  Medium allocation ({} bytes):\n", MEDIUM_SIZE);
-    crate::log!("    Alloc: {} cycles avg\n", med_alloc / ITERATIONS as u64);
+    log::info!("\n  Medium allocation ({} bytes):\n", MEDIUM_SIZE);
+    log::info!("    Alloc: {} cycles avg\n", med_alloc / ITERATIONS as u64);
     
     // Show heap stats
     let (used, free) = crate::memory::heap_stats();
-    crate::log!("\n  Current heap state:\n");
-    crate::log!("    Used: {} bytes\n", used);
-    crate::log!("    Free: {} bytes\n\n", free);
+    log::info!("\n  Current heap state:\n");
+    log::info!("    Used: {} bytes\n", used);
+    log::info!("    Free: {} bytes\n\n", free);
 }

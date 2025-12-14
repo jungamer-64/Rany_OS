@@ -63,8 +63,8 @@ impl SingleAddressSpaceManager {
         self.cell_regions
             .insert(DomainId::KERNEL, alloc::vec![kernel_region]);
 
-        crate::log!("[SAS] Single Address Space Manager initialized\n");
-        crate::log!("[SAS] Base address: {:#x}\n", SAS_BASE_ADDRESS);
+        log::info!("[SAS] Single Address Space Manager initialized\n");
+        log::info!("[SAS] Base address: {:#x}\n", SAS_BASE_ADDRESS);
     }
 
     /// セル用のメモリ領域を割り当て
@@ -92,7 +92,7 @@ impl SingleAddressSpaceManager {
             .or_insert_with(Vec::new)
             .push(region.clone());
 
-        crate::log!(
+        log::info!(
             "[SAS] Allocated region for {}: {:#x} - {:#x}\n",
             domain_id,
             region.start,
@@ -116,7 +116,7 @@ impl SingleAddressSpaceManager {
         // Heap Registryで所有者のみ変更
         self.heap_registry.change_owner(ptr, from, to)?;
 
-        crate::log!(
+        log::info!(
             "[SAS] Transferred ownership: {:#x} from {} to {}\n",
             ptr,
             from,
@@ -168,7 +168,7 @@ impl SingleAddressSpaceManager {
         let count = self.heap_registry.reclaim_all(domain_id);
         self.cell_regions.remove(&domain_id);
 
-        crate::log!("[SAS] Reclaimed {} objects from {}\n", count, domain_id);
+        log::info!("[SAS] Reclaimed {} objects from {}\n", count, domain_id);
         count
     }
 

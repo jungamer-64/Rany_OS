@@ -203,7 +203,7 @@ pub fn reclaim_domain_allocations(domain_id: DomainId) -> usize {
     }
 
     if freed_bytes > 0 {
-        crate::log!(
+        log::info!(
             "[OWNERSHIP] Reclaimed {} bytes from domain {}\n",
             freed_bytes,
             domain_id

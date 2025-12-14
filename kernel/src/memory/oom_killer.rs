@@ -115,7 +115,7 @@ impl OomKiller {
     pub fn try_free_memory(&self) -> Option<u64> {
         // 再入防止
         if self.in_progress.swap(true, Ordering::SeqCst) {
-            crate::log!("[OOM] Already in progress, skipping\n");
+            log::info!("[OOM] Already in progress, skipping\n");
             return None;
         }
 
@@ -149,7 +149,7 @@ impl OomKiller {
 
         match victim {
             Some(victim) => {
-                crate::log!(
+                log::info!(
                     "[OOM] Killing domain '{}' (id={}, priority={:?}, memory={}KB)\n",
                     victim.name,
                     victim.domain_id,
@@ -165,7 +165,7 @@ impl OomKiller {
                 Some(freed)
             }
             None => {
-                crate::log!("[OOM] No killable domains (all critical)\n");
+                log::info!("[OOM] No killable domains (all critical)\n");
                 None
             }
         }
@@ -183,7 +183,7 @@ impl OomKiller {
         // - リソースの解放
         // - パニックハンドラの呼び出し
 
-        crate::log!(
+        log::info!(
             "[OOM] Domain '{}' killed, freed {}KB\n",
             victim.name,
             freed / 1024

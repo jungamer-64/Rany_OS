@@ -309,7 +309,7 @@ impl ApBootstrap {
     pub fn start_ap(&self, ap_index: usize, apic_id: u32) -> Result<(), &'static str> {
         let info = self.ap_info.get(ap_index).ok_or("Invalid AP index")?;
 
-        crate::log!("[SMP] Starting AP {} (APIC ID: {})\n", ap_index, apic_id);
+        log::info!("[SMP] Starting AP {} (APIC ID: {})\n", ap_index, apic_id);
 
         // Setup boot info
         info.set_state(ApState::InitSent);
@@ -343,7 +343,7 @@ impl ApBootstrap {
         if info.started.load(Ordering::Acquire) {
             info.set_state(ApState::Online);
             self.aps_started.fetch_add(1, Ordering::Relaxed);
-            crate::log!("[SMP] AP {} online\n", ap_index);
+            log::info!("[SMP] AP {} online\n", ap_index);
             Ok(())
         } else {
             info.set_state(ApState::Failed);
@@ -358,7 +358,7 @@ impl ApBootstrap {
         for (i, &apic_id) in apic_ids.iter().enumerate() {
             match self.start_ap(i, apic_id) {
                 Ok(()) => started += 1,
-                Err(e) => crate::log!("[SMP] Failed to start AP {}: {}\n", i, e),
+                Err(e) => log::info!("[SMP] Failed to start AP {}: {}\n", i, e),
             }
         }
 
@@ -424,7 +424,7 @@ pub fn online_aps() -> u32 {
 /// has switched to long mode and set up a stack.
 #[unsafe(no_mangle)]
 pub extern "C" fn ap_entry(ap_index: u32) {
-    crate::log!("[SMP] AP {} entered kernel\n", ap_index);
+    log::info!("[SMP] AP {} entered kernel\n", ap_index);
 
     // Mark as started
     if let Some(bootstrap) = AP_BOOTSTRAP.lock().as_ref() {
@@ -450,7 +450,7 @@ pub extern "C" fn ap_entry(ap_index: u32) {
     }
 
     // Enter scheduler loop
-    crate::log!("[SMP] AP {} entering scheduler\n", ap_index);
+    log::info!("[SMP] AP {} entering scheduler\n", ap_index);
 
     loop {
         // Run executor for this core

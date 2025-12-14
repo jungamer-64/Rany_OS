@@ -186,7 +186,7 @@ impl LocalApic {
             self.is_enabled.store(true, Ordering::SeqCst);
         }
 
-        crate::log!(
+        log::info!(
             "[APIC] Local APIC initialized at 0x{:X}\n",
             self.base_address
         );
@@ -221,7 +221,7 @@ impl LocalApic {
             self.ticks_per_ms
                 .store(ticks_per_ms as u64, Ordering::SeqCst);
 
-            crate::log!("[APIC] Timer calibrated: {} ticks/ms\n", ticks_per_ms);
+            log::info!("[APIC] Timer calibrated: {} ticks/ms\n", ticks_per_ms);
         }
     }
 
@@ -229,7 +229,7 @@ impl LocalApic {
     pub fn start_timer(&self, vector: u8, interval_ms: u32) {
         let ticks_per_ms = self.ticks_per_ms.load(Ordering::SeqCst);
         if ticks_per_ms == 0 {
-            crate::log!("[APIC] Warning: Timer not calibrated\n");
+            log::info!("[APIC] Warning: Timer not calibrated\n");
             return;
         }
 
@@ -249,7 +249,7 @@ impl LocalApic {
             self.write(lapic_reg::TIMER_ICR, count);
         }
 
-        crate::log!(
+        log::info!(
             "[APIC] Timer started: vector={}, interval={}ms\n",
             vector,
             interval_ms
@@ -400,7 +400,7 @@ impl IoApic {
             self.set_irq_mask(i, true);
         }
 
-        crate::log!(
+        log::info!(
             "[APIC] I/O APIC initialized at 0x{:X}, {} entries\n",
             self.base_address,
             max_entries + 1
@@ -542,7 +542,7 @@ pub fn check_apic_support() -> bool {
         // EDXのビット9がAPICサポート
         let apic_supported = (edx & (1 << 9)) != 0;
 
-        crate::log!("[APIC] CPUID: APIC supported = {}\n", apic_supported);
+        log::info!("[APIC] CPUID: APIC supported = {}\n", apic_supported);
         apic_supported
     }
 }
@@ -550,7 +550,7 @@ pub fn check_apic_support() -> bool {
 /// APICを初期化
 pub fn init() {
     if !check_apic_support() {
-        crate::log!("[APIC] APIC not supported, using legacy PIC\n");
+        log::info!("[APIC] APIC not supported, using legacy PIC\n");
         return;
     }
 
@@ -572,7 +572,7 @@ pub fn init() {
 
     APIC_ENABLED.store(true, Ordering::SeqCst);
 
-    crate::log!("[APIC] APIC system initialized\n");
+    log::info!("[APIC] APIC system initialized\n");
 }
 
 /// 8259 PICを無効化
@@ -587,7 +587,7 @@ fn disable_pic() {
     pic1_data.write(0xFF);
     pic2_data.write(0xFF);
 
-    crate::log!("[APIC] Legacy PIC disabled\n");
+    log::info!("[APIC] Legacy PIC disabled\n");
 }
 
 /// APICタイマーを開始

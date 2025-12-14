@@ -60,7 +60,7 @@ pub fn init() {
     // シェルインスタンスを作成（レジストリから名前空間を取得）
     *EXOSHELL.lock() = Some(ExoShell::new());
     
-    crate::log!("[EXOSHELL] ExoShell REPL initialized with {} namespaces\n", 
+    log::info!("[EXOSHELL] ExoShell REPL initialized with {} namespaces\n", 
         namespaces::registry::list_namespaces().len());
 }
 

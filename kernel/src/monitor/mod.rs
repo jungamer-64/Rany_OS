@@ -112,19 +112,19 @@ pub struct IoStats {
 
 /// Initialize monitor
 pub fn init() {
-    crate::log!("[MONITOR] System monitor initialized\n");
+    log::info!("[MONITOR] System monitor initialized\n");
 }
 
 /// Start monitoring
 pub fn start() {
     RUNNING.store(true, Ordering::SeqCst);
-    crate::log!("[MONITOR] Monitoring started\n");
+    log::info!("[MONITOR] Monitoring started\n");
 }
 
 /// Stop monitoring
 pub fn stop() {
     RUNNING.store(false, Ordering::SeqCst);
-    crate::log!("[MONITOR] Monitoring stopped\n");
+    log::info!("[MONITOR] Monitoring stopped\n");
 }
 
 /// Check if monitoring is active
@@ -198,32 +198,32 @@ fn collect_network_stats() -> NetworkStats {
 
 /// Print snapshot to console
 pub fn print_snapshot(snap: &SystemSnapshot) {
-    crate::log!("\n");
-    crate::log!("┌──────────────────────────────────────────────────────────────────────┐\n");
-    crate::log!("│                    ExoRust System Monitor                            │\n");
-    crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
+    log::info!("\n");
+    log::info!("┌──────────────────────────────────────────────────────────────────────┐\n");
+    log::info!("│                    ExoRust System Monitor                            │\n");
+    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
 
     // Timestamp and CPU
-    crate::log!(
+    log::info!(
         "│  Tick: {:>12}  │  CPU: {:>3}%                                   │\n",
         snap.timestamp,
         snap.cpu_usage
     );
 
-    crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
+    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
 
     // Memory
-    crate::log!("│  MEMORY                                                              │\n");
-    crate::log!(
+    log::info!("│  MEMORY                                                              │\n");
+    log::info!(
         "│    Used:  {:>10} bytes ({:>2}%)                                  │\n",
         snap.memory.heap_used,
         snap.memory.usage_percent
     );
-    crate::log!(
+    log::info!(
         "│    Free:  {:>10} bytes                                          │\n",
         snap.memory.heap_free
     );
-    crate::log!(
+    log::info!(
         "│    Total: {:>10} bytes                                          │\n",
         snap.memory.heap_total
     );
@@ -231,65 +231,65 @@ pub fn print_snapshot(snap: &SystemSnapshot) {
     // Memory bar
     let bar_width = 40;
     let filled = (snap.memory.usage_percent as usize * bar_width) / 100;
-    crate::log!("│    [");
+    log::info!("│    [");
     for i in 0..bar_width {
         if i < filled {
-            crate::log!("█");
+            log::info!("█");
         } else {
-            crate::log!("░");
+            log::info!("░");
         }
     }
-    crate::log!("]   │\n");
+    log::info!("]   │\n");
 
-    crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
+    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
 
     // Domains
-    crate::log!("│  DOMAINS                                                             │\n");
-    crate::log!(
+    log::info!("│  DOMAINS                                                             │\n");
+    log::info!(
         "│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │\n",
         snap.domains.total,
         snap.domains.running,
         snap.domains.stopped
     );
 
-    crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
+    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
 
     // Tasks
-    crate::log!("│  TASKS                                                               │\n");
-    crate::log!(
+    log::info!("│  TASKS                                                               │\n");
+    log::info!(
         "│    Context Switches: {:>10}                                     │\n",
         snap.tasks.context_switches
     );
-    crate::log!(
+    log::info!(
         "│    Voluntary Yields: {:>10}                                     │\n",
         snap.tasks.voluntary_yields
     );
-    crate::log!(
+    log::info!(
         "│    Forced Preempts:  {:>10}                                     │\n",
         snap.tasks.forced_preemptions
     );
 
-    crate::log!("├──────────────────────────────────────────────────────────────────────┤\n");
+    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
 
     // Network
-    crate::log!("│  NETWORK                                                             │\n");
-    crate::log!(
+    log::info!("│  NETWORK                                                             │\n");
+    log::info!(
         "│    RX: {:>8} pkts ({:>12} bytes)                            │\n",
         snap.network.rx_packets,
         snap.network.rx_bytes
     );
-    crate::log!(
+    log::info!(
         "│    TX: {:>8} pkts ({:>12} bytes)                            │\n",
         snap.network.tx_packets,
         snap.network.tx_bytes
     );
 
-    crate::log!("└──────────────────────────────────────────────────────────────────────┘\n");
+    log::info!("└──────────────────────────────────────────────────────────────────────┘\n");
 }
 
 /// Print compact one-line status
 pub fn print_status_line(snap: &SystemSnapshot) {
-    crate::log!(
+    log::info!(
         "[STATS] T={} CPU={}% MEM={}% DOM={}/{} CTX={}\n",
         snap.timestamp,
         snap.cpu_usage,
@@ -302,7 +302,7 @@ pub fn print_status_line(snap: &SystemSnapshot) {
 
 /// Run continuous monitoring (for async task)
 pub async fn monitor_loop() {
-    crate::log!("[MONITOR] Starting monitor loop\n");
+    log::info!("[MONITOR] Starting monitor loop\n");
 
     while is_running() {
         let snap = snapshot();
@@ -311,7 +311,7 @@ pub async fn monitor_loop() {
         crate::task::sleep_ms(REFRESH_RATE_MS).await;
     }
 
-    crate::log!("[MONITOR] Monitor loop stopped\n");
+    log::info!("[MONITOR] Monitor loop stopped\n");
 }
 
 /// Run single snapshot
