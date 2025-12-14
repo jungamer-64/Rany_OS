@@ -222,4 +222,42 @@ mod tests {
         let buffer = KernelBufferView::new(data);
         assert!(StringView::new(buffer).is_none());
     }
+
+    #[test]
+    fn test_buffer_view_from_arc() {
+        let data = vec![10, 20, 30, 40, 50];
+        let arc_data = Arc::new(data);
+        
+        // Create view from existing Arc (zero-copy)
+        let view = KernelBufferView::from_arc(arc_data.clone());
+        
+        assert_eq!(view.len(), 5);
+        assert_eq!(view.as_bytes(), &[10, 20, 30, 40, 50]);
+        
+        // Arc reference count should be 2 (original + view)
+        assert_eq!(Arc::strong_count(&arc_data), 2);
+    }
+
+    #[test]
+    fn test_buffer_view_from_arc_shares_data() {
+        let original = vec![1, 2, 3];
+        let arc = Arc::new(original);
+        
+        let view1 = KernelBufferView::from_arc(arc.clone());
+        let view2 = KernelBufferView::from_arc(arc.clone());
+        
+        // All three should share the same data
+        assert_eq!(Arc::strong_count(&arc), 3);
+        assert_eq!(view1.as_bytes(), view2.as_bytes());
+    }
+
+    #[test]
+    fn test_buffer_view_from_arc_slice() {
+        let arc = Arc::new(vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        let view = KernelBufferView::from_arc(arc);
+        
+        // Slice still shares the same Arc
+        let slice = view.slice(3, 7).unwrap();
+        assert_eq!(slice.as_bytes(), &[3, 4, 5, 6]);
+    }
 }

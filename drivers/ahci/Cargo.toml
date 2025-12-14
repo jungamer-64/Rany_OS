@@ -17,4 +17,6 @@ x86_64 = "0.15"
 [features]
 default = []
 # Enables panic handler and dummy allocator for freestanding build
-standalone = []
+standalone = ["export_driver_entry"]
+# When building as a standalone plugin, export the C ABI driver entry symbol
+export_driver_entry = []

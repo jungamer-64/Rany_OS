@@ -169,6 +169,79 @@ impl FsNamespace {
             }
         }
     }
+
+    /// ファイルコピー（ゼロコピー読み取り → 書き込み）
+    pub async fn copy(src: &str, dst: &str) -> ExoValue<'static> {
+        crate::task::yield_now().await;
+
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        // ゼロコピーで読み取り
+        let content = match shell.read_file_zero_copy(src) {
+            Ok(c) => c,
+            Err(e) => return ExoValue::Error(String::from(e)),
+        };
+
+        // 書き込み (コピーは write_file 呼び出し時に発生)
+        match shell.write_file(dst, &content) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(String::from(e)),
+        }
+    }
+
+    /// 空ファイル作成（touch）
+    pub async fn touch(path: &str) -> ExoValue<'static> {
+        crate::task::yield_now().await;
+
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        // ファイルが存在するか確認
+        if shell.stat_file(path).is_ok() {
+            // 既存ファイルは成功扱い（タイムスタンプ更新は未実装）
+            return ExoValue::Bool(true);
+        }
+
+        // 存在しない場合は空ファイル作成
+        match shell.write_file(path, &[]) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(String::from(e)),
+        }
+    }
+
+    /// ファイル移動（コピー + 元ファイル削除）
+    pub async fn mv(src: &str, dst: &str) -> ExoValue<'static> {
+        crate::task::yield_now().await;
+
+        let shell = match kernel_api::services::kernel().shell() {
+            Some(s) => s,
+            None => return ExoValue::Error(String::from("Shell services unavailable")),
+        };
+
+        // まずコピー（ゼロコピー読み取り）
+        let content = match shell.read_file_zero_copy(src) {
+            Ok(c) => c,
+            Err(e) => return ExoValue::Error(String::from(e)),
+        };
+
+        if let Err(e) = shell.write_file(dst, &content) {
+            return ExoValue::Error(String::from(e));
+        }
+
+        // 成功後に元ファイルを削除
+        match shell.remove_file(src) {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => {
+                // 注意: 宛先ファイルは作成済み、アトミックではない
+                ExoValue::Error(format!("Move incomplete: source deletion failed: {}", e))
+            }
+        }
+    }
 }
 
 impl ShellNamespace for FsNamespace {
@@ -258,11 +331,79 @@ impl ShellNamespace for FsNamespace {
                         .unwrap_or("");
                     Self::remove(path).await
                 }
+                "copy" | "cp" => {
+                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
+                        return ExoValue::Error(String::from(
+                            "Permission denied: CAP_DAC_OVERRIDE required for copy"
+                        ));
+                    }
+                    let src = args.first().and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    }).unwrap_or("");
+                    let dst = args.get(1).and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    }).unwrap_or("");
+                    if dst.is_empty() {
+                        return ExoValue::Error(String::from("Usage: fs.copy(src, dst)"));
+                    }
+                    Self::copy(src, dst).await
+                }
+                "touch" => {
+                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
+                        return ExoValue::Error(String::from(
+                            "Permission denied: CAP_DAC_OVERRIDE required for touch"
+                        ));
+                    }
+                    let path = args.first().and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    }).unwrap_or("");
+                    Self::touch(path).await
+                }
+                "write" => {
+                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
+                        return ExoValue::Error(String::from(
+                            "Permission denied: CAP_DAC_OVERRIDE required for write"
+                        ));
+                    }
+                    let path = args.first().and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    }).unwrap_or("");
+                    // データは第2引数（文字列またはバッファ）
+                    let data: Vec<u8> = args.get(1).map(|v| match v {
+                        ExoValue::String(s) => s.as_bytes().to_vec(),
+                        ExoValue::BufferRef(buf) => buf.to_vec(),
+                        _ => Vec::new(),
+                    }).unwrap_or_default();
+                    Self::write(path, &data).await
+                }
+                "move" | "mv" => {
+                    if !caps.has_capability(CAP_DAC_OVERRIDE) {
+                        return ExoValue::Error(String::from(
+                            "Permission denied: CAP_DAC_OVERRIDE required for move"
+                        ));
+                    }
+                    let src = args.first().and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    }).unwrap_or("");
+                    let dst = args.get(1).and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    }).unwrap_or("");
+                    if dst.is_empty() {
+                        return ExoValue::Error(String::from("Usage: fs.move(src, dst)"));
+                    }
+                    Self::mv(src, dst).await
+                }
                 // 'cd' is handled by shell built-in logic generally, but if called here it does nothing stateful
                 "cd" => ExoValue::Error(String::from("cd is a shell built-in")),
                 "pwd" => ExoValue::Error(String::from("pwd is a shell built-in")),
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'fs.{}'\nValid methods: entries, read, stat, mkdir, remove",
+                    "Unknown method 'fs.{}'\nValid methods: entries, read, write, stat, mkdir, remove, copy, touch, move",
                     method
                 )),
             }

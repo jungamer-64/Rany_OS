@@ -191,6 +191,23 @@ pub trait AsyncInode: Send + Sync {
         &self,
         size: u64,
     ) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>>;
+
+    /// ファイル/ディレクトリを非同期に名前変更
+    fn rename_async(
+        &self,
+        old_name: &str,
+        new_name: &str,
+    ) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>>;
+
+    /// シンボリックリンクを非同期に作成
+    fn symlink_async(
+        &self,
+        name: &str,
+        target: &str,
+    ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>>;
+
+    /// シンボリックリンクのターゲットを非同期に読み取り
+    fn readlink_async(&self) -> Pin<Box<dyn Future<Output = FsResult<String>> + Send + '_>>;
 }
 
 // ============================================================================
@@ -295,8 +312,27 @@ impl AsyncInode for AsyncMemoryInode {
         offset: u64,
         len: usize,
     ) -> Pin<Box<dyn Future<Output = FsResult<Bytes>> + Send + '_>> {
+        use super::page::{PAGE_SIZE, PAGE_SHIFT, PAGE_MASK};
+        
+        let page_idx = offset >> PAGE_SHIFT;
+        let offset_in_page = (offset as usize) & PAGE_MASK;
+        
+        // 単一ページ内の読み取りならゼロコピー可能
+        if offset_in_page + len <= PAGE_SIZE {
+            if let Some(page) = self.inner.get_page(page_idx) {
+                // Arc<Page>からスライスを取得してBytesを作成
+                let slice = &page[offset_in_page..offset_in_page + len];
+                let bytes = Bytes::new(slice.to_vec());
+                return Box::pin(ImmediateFuture::new(Ok(bytes)));
+            } else {
+                // スパース領域: ゼロで埋める
+                let bytes = Bytes::new(vec![0u8; len]);
+                return Box::pin(ImmediateFuture::new(Ok(bytes)));
+            }
+        }
+        
+        // ページ境界をまたぐ場合は従来のコピー
         use super::fs_abstraction::Inode;
-        // 現段階ではコピーするが、インターフェースはゼロコピー対応
         let mut buf = vec![0u8; len];
         let result = self.inner.read(offset, &mut buf).map(|n| {
             buf.truncate(n);
@@ -357,6 +393,29 @@ impl AsyncInode for AsyncMemoryInode {
         use super::fs_abstraction::Inode;
         let result = self.inner.truncate(size);
         Box::pin(ImmediateFuture::new(result))
+    }
+
+    fn rename_async(
+        &self,
+        _old_name: &str,
+        _new_name: &str,
+    ) -> Pin<Box<dyn Future<Output = FsResult<()>> + Send + '_>> {
+        // TODO: Implement when Inode::rename is added
+        Box::pin(ImmediateFuture::new(Err(FsError::NotSupported)))
+    }
+
+    fn symlink_async(
+        &self,
+        _name: &str,
+        _target: &str,
+    ) -> Pin<Box<dyn Future<Output = FsResult<Arc<dyn AsyncInode>>> + Send + '_>> {
+        // TODO: Implement when Inode::symlink is added
+        Box::pin(ImmediateFuture::new(Err(FsError::NotSupported)))
+    }
+
+    fn readlink_async(&self) -> Pin<Box<dyn Future<Output = FsResult<String>> + Send + '_>> {
+        // TODO: Implement when Inode::readlink is added
+        Box::pin(ImmediateFuture::new(Err(FsError::NotSupported)))
     }
 }
 

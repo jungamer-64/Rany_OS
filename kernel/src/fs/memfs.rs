@@ -13,6 +13,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::RwLock;
 
+use super::page::PagedContent;
+
 use super::fs_abstraction::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     OpenFlags,
@@ -113,83 +115,85 @@ impl FileSystem for MemoryFs {
 // MemoryInode
 // ============================================================================
 
-/// メモリinode内部データ
-struct MemoryInodeData {
-    /// ファイル内容（ファイルの場合）
-    content: Vec<u8>,
-    /// 子エントリ（ディレクトリの場合）
-    children: BTreeMap<String, Arc<MemoryInode>>,
-    /// シンボリックリンクターゲット
-    symlink_target: Option<String>,
+/// Inodeの種類ごとのデータ保持（メモリ効率化）
+///
+/// 従来の `MemoryInodeData` は全てのフィールドを持っていましたが、
+/// Enumにすることで必要なデータのみをヒープに確保します。
+enum InodeKind {
+    /// 通常ファイル: ページベースのコンテンツ
+    File(PagedContent),
+    /// ディレクトリ: 子エントリのマップ
+    Directory(BTreeMap<String, Arc<MemoryInode>>),
+    /// シンボリックリンク: ターゲットパス
+    Symlink(String),
 }
 
 /// メモリベースのinode
 pub struct MemoryInode {
     /// inode番号
-    ino: u64,
-    /// ファイル名
+    pub(crate) ino: u64,
+    /// ファイル名（デバッグ用）
     name: String,
-    /// ファイルタイプ
-    file_type: FileType,
     /// パーミッション
-    mode: FileMode,
-    /// サイズ
-    size: AtomicU64,
-    /// データ
-    data: RwLock<MemoryInodeData>,
+    mode: RwLock<FileMode>,
+    /// タイムスタンプ（ナノ秒）
+    atime: AtomicU64,
+    mtime: AtomicU64,
+    ctime: AtomicU64,
+    /// サイズ（ファイルの場合のみ使用、論理サイズ）
+    pub(crate) size: AtomicU64,
+    /// ファイル種別ごとのデータ
+    kind: RwLock<InodeKind>,
     /// 次のinode番号（ディレクトリ作成時用）
     next_child_ino: AtomicU64,
 }
 
 impl MemoryInode {
-    /// 新しいディレクトリinodeを作成
+    /// 新しいディレクトリを作成
     pub fn new_dir(ino: u64, name: &str, mode: FileMode) -> Self {
+        let now = crate::time::now() as u64 * 1_000_000_000; // nanoseconds
         Self {
             ino,
-            name: name.to_string(),
-            file_type: FileType::Directory,
-            mode,
+            kind: RwLock::new(InodeKind::Directory(BTreeMap::new())),
+            mode: RwLock::new(mode),
             size: AtomicU64::new(0),
-            data: RwLock::new(MemoryInodeData {
-                content: Vec::new(),
-                children: BTreeMap::new(),
-                symlink_target: None,
-            }),
-            next_child_ino: AtomicU64::new(ino + 1000), // 子inode用のベース
+            atime: AtomicU64::new(now),
+            mtime: AtomicU64::new(now),
+            ctime: AtomicU64::new(now),
+            name: name.to_string(),
+            next_child_ino: AtomicU64::new(ino.wrapping_shl(20)),
         }
     }
 
-    /// 新しいファイルinodeを作成
+    /// 新しいファイルを作成
     pub fn new_file(ino: u64, name: &str, mode: FileMode) -> Self {
+        let now = crate::time::now() as u64 * 1_000_000_000;
         Self {
             ino,
-            name: name.to_string(),
-            file_type: FileType::Regular,
-            mode,
+            kind: RwLock::new(InodeKind::File(PagedContent::new())),
+            mode: RwLock::new(mode),
             size: AtomicU64::new(0),
-            data: RwLock::new(MemoryInodeData {
-                content: Vec::new(),
-                children: BTreeMap::new(),
-                symlink_target: None,
-            }),
-            next_child_ino: AtomicU64::new(0),
+            atime: AtomicU64::new(now),
+            mtime: AtomicU64::new(now),
+            ctime: AtomicU64::new(now),
+            name: name.to_string(),
+            next_child_ino: AtomicU64::new(ino.wrapping_shl(20)),
         }
     }
 
-    /// 新しいシンボリックリンクinodeを作成
+    /// 新しいシンボリックリンクを作成
     pub fn new_symlink(ino: u64, name: &str, target: &str) -> Self {
+        let now = crate::time::now() as u64 * 1_000_000_000;
         Self {
             ino,
-            name: name.to_string(),
-            file_type: FileType::Symlink,
-            mode: FileMode(0o777),
+            kind: RwLock::new(InodeKind::Symlink(target.to_string())),
+            mode: RwLock::new(FileMode::DEFAULT_LINK),
             size: AtomicU64::new(target.len() as u64),
-            data: RwLock::new(MemoryInodeData {
-                content: Vec::new(),
-                children: BTreeMap::new(),
-                symlink_target: Some(target.to_string()),
-            }),
-            next_child_ino: AtomicU64::new(0),
+            atime: AtomicU64::new(now),
+            mtime: AtomicU64::new(now),
+            ctime: AtomicU64::new(now),
+            name: name.to_string(),
+            next_child_ino: AtomicU64::new(ino.wrapping_shl(20)),
         }
     }
 
@@ -197,19 +201,64 @@ impl MemoryInode {
     fn alloc_child_ino(&self) -> u64 {
         self.next_child_ino.fetch_add(1, Ordering::SeqCst)
     }
+
+    /// ファイルタイプを取得
+    pub fn file_type(&self) -> FileType {
+        match &*self.kind.read() {
+            InodeKind::File(_) => FileType::Regular,
+            InodeKind::Directory(_) => FileType::Directory,
+            InodeKind::Symlink(_) => FileType::Symlink,
+        }
+    }
+
+    /// ページを直接取得（ゼロコピー読み取り用）
+    pub fn get_page(&self, page_idx: u64) -> Option<Arc<super::page::Page>> {
+        let guard = self.kind.read();
+        if let InodeKind::File(content) = &*guard {
+            content.get_page(page_idx)
+        } else {
+            None
+        }
+    }
+
+    /// ファイルコンテンツの参照を取得（CoWコピー用）
+    pub fn content(&self) -> Option<PagedContent> {
+        let guard = self.kind.read();
+        if let InodeKind::File(content) = &*guard {
+            Some(content.clone())
+        } else {
+            None
+        }
+    }
+
+    /// ファイルコンテンツをCoWで設定（O(1)コピー）
+    pub fn set_content_cow(&self, new_content: PagedContent, size: u64) {
+        let mut guard = self.kind.write();
+        if let InodeKind::File(content) = &mut *guard {
+            *content = new_content;
+            self.size.store(size, Ordering::Relaxed);
+            self.mtime.store(0, Ordering::Relaxed); // TODO: update time
+        }
+    }
 }
 
 impl Inode for MemoryInode {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
     fn getattr(&self) -> FsResult<FileAttr> {
+        let mode = *self.mode.read();
+        let file_type = self.file_type();
         Ok(FileAttr {
             ino: self.ino,
             size: self.size.load(Ordering::Relaxed),
             blocks: (self.size.load(Ordering::Relaxed) + 511) / 512,
-            atime: 0,
-            mtime: 0,
-            ctime: 0,
-            file_type: self.file_type,
-            mode: self.mode,
+            atime: self.atime.load(Ordering::Relaxed),
+            mtime: self.mtime.load(Ordering::Relaxed),
+            ctime: self.ctime.load(Ordering::Relaxed),
+            file_type,
+            mode,
             nlink: 1,
             uid: 0,
             gid: 0,
@@ -218,151 +267,217 @@ impl Inode for MemoryInode {
         })
     }
 
+    // ... (setattr - unchanged) ...
     fn setattr(&self, _attr: &FileAttr) -> FsResult<()> {
         // メモリFSでは現状無視
         Ok(())
     }
 
+    // ... (lookup - unchanged) ...
     fn lookup(&self, name: &str) -> FsResult<Arc<dyn Inode>> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
+        let guard = self.kind.read();
+        match &*guard {
+            InodeKind::Directory(children) => {
+                children.get(name)
+                    .map(|inode| inode.clone() as Arc<dyn Inode>)
+                    .ok_or(FsError::NotFound)
+            }
+            _ => Err(FsError::NotDirectory),
         }
-
-        let data = self.data.read();
-        data.children
-            .get(name)
-            .map(|inode| inode.clone() as Arc<dyn Inode>)
-            .ok_or(FsError::NotFound)
     }
 
+    // ... (readdir - unchanged) ...
     fn readdir(&self, _offset: u64) -> FsResult<Vec<DirEntry>> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
+        let guard = self.kind.read();
+        match &*guard {
+            InodeKind::Directory(children) => {
+                let mut entries = Vec::new();
+
+                // . と ..
+                entries.push(DirEntry {
+                    ino: self.ino,
+                    file_type: FileType::Directory,
+                    name: ".".to_string(),
+                });
+                entries.push(DirEntry {
+                    ino: self.ino,
+                    file_type: FileType::Directory,
+                    name: "..".to_string(),
+                });
+
+                // 子エントリ
+                for (name, inode) in children.iter() {
+                    entries.push(DirEntry {
+                        ino: inode.ino,
+                        file_type: inode.file_type(),
+                        name: name.clone(),
+                    });
+                }
+                Ok(entries)
+            }
+            _ => Err(FsError::NotDirectory),
         }
-
-        let data = self.data.read();
-        let mut entries = Vec::new();
-
-        // . と ..
-        entries.push(DirEntry {
-            ino: self.ino,
-            file_type: FileType::Directory,
-            name: ".".to_string(),
-        });
-        entries.push(DirEntry {
-            ino: self.ino, // 親の場合は親のino
-            file_type: FileType::Directory,
-            name: "..".to_string(),
-        });
-
-        // 子エントリ
-        for (name, inode) in data.children.iter() {
-            entries.push(DirEntry {
-                ino: inode.ino,
-                file_type: inode.file_type,
-                name: name.clone(),
-            });
-        }
-
-        Ok(entries)
     }
+
+    // ... (readdir - unchanged) ...
 
     fn create(&self, name: &str, mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
+        let mut guard = self.kind.write();
+        match &mut *guard {
+            InodeKind::Directory(children) => {
+                if children.contains_key(name) {
+                    return Err(FsError::AlreadyExists);
+                }
+                let ino = self.alloc_child_ino();
+                let inode = Arc::new(MemoryInode::new_file(ino, name, mode));
+                children.insert(name.to_string(), inode.clone());
+                
+                // Update timestamps
+                let now = crate::time::now() as u64 * 1_000_000_000;
+                self.mtime.store(now, Ordering::Relaxed);
+                self.ctime.store(now, Ordering::Relaxed);
+                
+                Ok(inode)
+            }
+            _ => Err(FsError::NotDirectory),
         }
-
-        let mut data = self.data.write();
-
-        if data.children.contains_key(name) {
-            return Err(FsError::AlreadyExists);
-        }
-
-        let ino = self.alloc_child_ino();
-        let inode = Arc::new(MemoryInode::new_file(ino, name, mode));
-        data.children.insert(name.to_string(), inode.clone());
-
-        Ok(inode)
     }
 
     fn mkdir(&self, name: &str, mode: FileMode) -> FsResult<Arc<dyn Inode>> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
+        let mut guard = self.kind.write();
+        match &mut *guard {
+            InodeKind::Directory(children) => {
+                if children.contains_key(name) {
+                    return Err(FsError::AlreadyExists);
+                }
+                let ino = self.alloc_child_ino();
+                let inode = Arc::new(MemoryInode::new_dir(ino, name, mode));
+                children.insert(name.to_string(), inode.clone());
+                
+                // Update timestamps
+                let now = crate::time::now() as u64 * 1_000_000_000;
+                self.mtime.store(now, Ordering::Relaxed);
+                self.ctime.store(now, Ordering::Relaxed);
+                
+                Ok(inode)
+            }
+            _ => Err(FsError::NotDirectory),
         }
-
-        let mut data = self.data.write();
-
-        if data.children.contains_key(name) {
-            return Err(FsError::AlreadyExists);
-        }
-
-        let ino = self.alloc_child_ino();
-        let inode = Arc::new(MemoryInode::new_dir(ino, name, mode));
-        data.children.insert(name.to_string(), inode.clone());
-
-        Ok(inode)
     }
 
     fn unlink(&self, name: &str) -> FsResult<()> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
-        }
+        let mut guard = self.kind.write();
+        match &mut *guard {
+            InodeKind::Directory(children) => {
+                if !children.contains_key(name) {
+                    return Err(FsError::NotFound);
+                }
+                
+                // ディレクトリかどうかチェックしたいが、ロック中に子を取得するのはデッドロックのリスクはない
+                // (MemoryInode内での単純なBTreeMap保持なので)
+                // ただし、もし子がディレクトリで空でない場合はエラーにすべきだが
+                // `unlink`は通常ファイル用、`rmdir`はディレクトリ用という使い分けが一般的
+                // ここではシンプルに削除する（ディレクトリでも削除できてしまう実装とするか、厳密にするか）
+                // POSIXでは unlink(dir) は EPERM だが、簡易実装として削除を許可するかチェックを入れる
+                
+                let is_dir = if let Some(child) = children.get(name) {
+                     child.file_type() == FileType::Directory
+                } else {
+                     return Err(FsError::NotFound);
+                };
 
-        let mut data = self.data.write();
-
-        if let Some(inode) = data.children.get(name) {
-            if inode.file_type == FileType::Directory {
-                return Err(FsError::IsDirectory);
+                if is_dir {
+                    return Err(FsError::IsDirectory);
+                }
+                
+                children.remove(name);
+                
+                // Update timestamps
+                let now = crate::time::now() as u64 * 1_000_000_000;
+                self.mtime.store(now, Ordering::Relaxed);
+                self.ctime.store(now, Ordering::Relaxed);
+                
+                Ok(())
             }
-            data.children.remove(name);
-            Ok(())
-        } else {
-            Err(FsError::NotFound)
+            _ => Err(FsError::NotDirectory),
         }
     }
 
     fn rmdir(&self, name: &str) -> FsResult<()> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
-        }
+        let mut guard = self.kind.write();
+        match &mut *guard {
+            InodeKind::Directory(children) => {
+                let is_empty = if let Some(child) = children.get(name) {
+                     if child.file_type() != FileType::Directory {
+                         return Err(FsError::NotDirectory);
+                     }
+                     // 空かどうかチェック
+                     let child_guard = child.kind.read();
+                     if let InodeKind::Directory(grand_children) = &*child_guard {
+                         !grand_children.is_empty()
+                     } else {
+                         false // Should not happen given file_type check
+                     }
+                } else {
+                     return Err(FsError::NotFound);
+                };
 
-        let mut data = self.data.write();
-
-        if let Some(inode) = data.children.get(name) {
-            if inode.file_type != FileType::Directory {
-                return Err(FsError::NotDirectory);
+                if is_empty {
+                    return Err(FsError::NotEmpty);
+                }
+                
+                children.remove(name);
+                
+                // Update timestamps
+                let now = crate::time::now() as u64 * 1_000_000_000;
+                self.mtime.store(now, Ordering::Relaxed);
+                self.ctime.store(now, Ordering::Relaxed);
+                
+                Ok(())
             }
-
-            // ディレクトリが空か確認
-            let child_data = inode.data.read();
-            if !child_data.children.is_empty() {
-                return Err(FsError::NotEmpty);
-            }
-            drop(child_data);
-
-            data.children.remove(name);
-            Ok(())
-        } else {
-            Err(FsError::NotFound)
+            _ => Err(FsError::NotDirectory),
         }
     }
 
     fn rename(&self, old_name: &str, new_dir: &Arc<dyn Inode>, new_name: &str) -> FsResult<()> {
-        // 簡略化: 同一ディレクトリ内のリネームのみ対応
-        // inode番号は getattr() から取得
-        let new_dir_ino = new_dir.getattr().map(|a| a.ino).unwrap_or(0);
-        if self.ino != new_dir_ino {
-            return Err(FsError::CrossDeviceLink);
+        // Step 1: 自身からエントリを取り出す（ロック保持期間を最小化）
+        let entry = {
+            let mut guard = self.kind.write();
+            match &mut *guard {
+                InodeKind::Directory(children) => {
+                    children.remove(old_name).ok_or(FsError::NotFound)?
+                }
+                _ => return Err(FsError::NotDirectory),
+            }
+        }; // guard drop
+
+        // Step 2: 移動先への挿入
+        
+        // 移動先が MemoryInode かどうか確認
+        if let Some(new_mem_dir) = new_dir.as_any().downcast_ref::<MemoryInode>() {
+             let mut dest_guard = new_mem_dir.kind.write();
+             if let InodeKind::Directory(dest_children) = &mut *dest_guard {
+                 dest_children.insert(new_name.to_string(), entry);
+                 return Ok(());
+             } else {
+                 // 移動先がディレクトリでない
+                 // 補償: 元に戻す
+                 let mut self_guard = self.kind.write();
+                 if let InodeKind::Directory(children) = &mut *self_guard {
+                     children.insert(old_name.to_string(), entry);
+                 }
+                 return Err(FsError::NotDirectory);
+             }
         }
 
-        let mut data = self.data.write();
-
-        if let Some(inode) = data.children.remove(old_name) {
-            data.children.insert(new_name.to_string(), inode);
-            Ok(())
-        } else {
-            Err(FsError::NotFound)
+        // 移動先が MemoryInode でない場合（FS間移動）
+        // 現状は非対応（CrossDeviceLink）として、元に戻す
+        let mut self_guard = self.kind.write();
+        if let InodeKind::Directory(children) = &mut *self_guard {
+            children.insert(old_name.to_string(), entry);
         }
+        
+        Err(FsError::CrossDeviceLink)
     }
 
     fn link(&self, _name: &str, _inode: &Arc<dyn Inode>) -> FsResult<()> {
@@ -370,84 +485,81 @@ impl Inode for MemoryInode {
     }
 
     fn symlink(&self, name: &str, target: &str) -> FsResult<Arc<dyn Inode>> {
-        if self.file_type != FileType::Directory {
-            return Err(FsError::NotDirectory);
+        let mut guard = self.kind.write();
+        match &mut *guard {
+            InodeKind::Directory(children) => {
+                if children.contains_key(name) {
+                    return Err(FsError::AlreadyExists);
+                }
+                let ino = self.alloc_child_ino();
+                let inode = Arc::new(MemoryInode::new_symlink(ino, name, target));
+                children.insert(name.to_string(), inode.clone());
+                Ok(inode)
+            }
+            _ => Err(FsError::NotDirectory),
         }
-
-        let mut data = self.data.write();
-
-        if data.children.contains_key(name) {
-            return Err(FsError::AlreadyExists);
-        }
-
-        let ino = self.alloc_child_ino();
-        let inode = Arc::new(MemoryInode::new_symlink(ino, name, target));
-        data.children.insert(name.to_string(), inode.clone());
-
-        Ok(inode)
     }
 
     fn readlink(&self) -> FsResult<String> {
-        if self.file_type != FileType::Symlink {
-            return Err(FsError::InvalidArgument);
+        let guard = self.kind.read();
+        match &*guard {
+            InodeKind::Symlink(target) => Ok(target.clone()),
+            _ => Err(FsError::InvalidArgument),
         }
-
-        let data = self.data.read();
-        data.symlink_target.clone().ok_or(FsError::InvalidArgument)
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
-        if self.file_type != FileType::Regular {
-            return Err(FsError::IsDirectory);
+        let guard = self.kind.read();
+        match &*guard {
+            InodeKind::File(content) => {
+                let size = self.size.load(Ordering::Relaxed);
+                if offset >= size {
+                    return Ok(0);
+                }
+                let available = (size - offset) as usize;
+                let to_read = buf.len().min(available);
+                self.atime.store(crate::time::now() as u64 * 1_000_000_000, Ordering::Relaxed);
+                Ok(content.read(offset, &mut buf[..to_read]))
+            }
+            InodeKind::Directory(_) => Err(FsError::IsDirectory),
+            _ => Err(FsError::InvalidArgument),
         }
-
-        let data = self.data.read();
-        let content = &data.content;
-
-        if offset >= content.len() as u64 {
-            return Ok(0);
-        }
-
-        let start = offset as usize;
-        let end = core::cmp::min(start + buf.len(), content.len());
-        let len = end - start;
-
-        buf[..len].copy_from_slice(&content[start..end]);
-        Ok(len)
     }
 
     fn write(&self, offset: u64, buf: &[u8]) -> FsResult<usize> {
-        if self.file_type != FileType::Regular {
-            return Err(FsError::IsDirectory);
+        let mut guard = self.kind.write();
+        match &mut *guard {
+            InodeKind::File(content) => {
+                let written = content.write(offset, buf);
+                let new_size = offset + written as u64;
+                let current_size = self.size.load(Ordering::Relaxed);
+                if new_size > current_size {
+                    self.size.store(new_size, Ordering::Relaxed);
+                }
+                let now = crate::time::now() as u64 * 1_000_000_000;
+                self.mtime.store(now, Ordering::Relaxed);
+                self.ctime.store(now, Ordering::Relaxed);
+                Ok(written)
+            }
+            InodeKind::Directory(_) => Err(FsError::IsDirectory),
+            _ => Err(FsError::InvalidArgument),
         }
-
-        let mut data = self.data.write();
-        let content = &mut data.content;
-
-        let offset = offset as usize;
-        let end = offset + buf.len();
-
-        // 必要に応じてコンテンツを拡張
-        if end > content.len() {
-            content.resize(end, 0);
-        }
-
-        content[offset..end].copy_from_slice(buf);
-        self.size.store(content.len() as u64, Ordering::Relaxed);
-
-        Ok(buf.len())
     }
 
     fn truncate(&self, size: u64) -> FsResult<()> {
-        if self.file_type != FileType::Regular {
-            return Err(FsError::IsDirectory);
+        let mut guard = self.kind.write();
+        match &mut *guard {
+            InodeKind::File(content) => {
+                content.truncate(size);
+                self.size.store(size, Ordering::Relaxed);
+                let now = crate::time::now() as u64 * 1_000_000_000;
+                self.mtime.store(now, Ordering::Relaxed);
+                self.ctime.store(now, Ordering::Relaxed);
+                Ok(())
+            }
+            InodeKind::Directory(_) => Err(FsError::IsDirectory),
+            _ => Err(FsError::InvalidArgument),
         }
-
-        let mut data = self.data.write();
-        data.content.resize(size as usize, 0);
-        self.size.store(size, Ordering::Relaxed);
-
-        Ok(())
     }
 
     fn fsync(&self, _datasync: bool) -> FsResult<()> {
@@ -632,7 +744,9 @@ pub fn move_file(src: &str, dst: &str, cwd: &str) -> FsResult<()> {
     src_parent.rename(&src_name, &dst_parent, &dst_name)
 }
 
-/// ファイルをコピー
+/// ファイルをコピー（従来方式 - PagedContentで高速化済み）
+///
+/// 注: memfs内でのCoW直接コピーには `copy_file_cow` を使用してください。
 pub fn copy_file(src: &str, dst: &str, cwd: &str) -> FsResult<()> {
     // ソースを読み取り
     let content = read_file_content(src, cwd)?;
@@ -653,6 +767,19 @@ pub fn copy_file(src: &str, dst: &str, cwd: &str) -> FsResult<()> {
     dst_inode.write(0, &content)?;
 
     Ok(())
+}
+
+/// ファイルをCoWコピー（O(1) - memfs専用）
+///
+/// PagedContentのclone()により実際のデータコピーは発生しません。
+/// 書き込み時にのみArc::make_mut()でページが分離されます。
+///
+/// 大容量ファイルのコピーに最適。
+pub fn copy_file_cow(src_inode: &MemoryInode, dst_inode: &MemoryInode) {
+    if let Some(content) = src_inode.content() {
+        let size = src_inode.size.load(core::sync::atomic::Ordering::Relaxed);
+        dst_inode.set_content_cow(content, size);
+    }
 }
 
 /// ファイルに内容を書き込み
@@ -712,3 +839,121 @@ pub fn create_symlink(target: &str, link_name: &str, cwd: &str) -> FsResult<()> 
     parent.symlink(&name, target)?;
     Ok(())
 }
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_paged_content_in_inode() {
+        let inode = MemoryInode::new_file(1, "test.txt", FileMode::DEFAULT_FILE);
+        
+        // 書き込み
+        inode.write(0, b"Hello, World!").unwrap();
+        
+        // 読み取り
+        let mut buf = [0u8; 13];
+        let n = inode.read(0, &mut buf).unwrap();
+        assert_eq!(n, 13);
+        assert_eq!(&buf, b"Hello, World!");
+    }
+
+    #[test]
+    fn test_large_file_paging() {
+        use super::super::page::PAGE_SIZE;
+        
+        let inode = MemoryInode::new_file(1, "large.bin", FileMode::DEFAULT_FILE);
+        
+        // 複数ページにまたがるデータ
+        let data = vec![0xABu8; PAGE_SIZE * 3 + 100];
+        inode.write(0, &data).unwrap();
+        
+        // サイズ確認
+        let attr = inode.getattr().unwrap();
+        assert_eq!(attr.size, data.len() as u64);
+        
+        // 読み取り確認
+        let mut buf = vec![0u8; data.len()];
+        inode.read(0, &mut buf).unwrap();
+        assert_eq!(buf, data);
+    }
+
+    #[test]
+    fn test_cow_copy() {
+        let src = MemoryInode::new_file(1, "src.txt", FileMode::DEFAULT_FILE);
+        src.write(0, b"Original content").unwrap();
+
+        let dst = MemoryInode::new_file(2, "dst.txt", FileMode::DEFAULT_FILE);
+        
+        // CoWコピー
+        copy_file_cow(&src, &dst);
+        
+        // 内容が一致
+        let mut buf = [0u8; 16];
+        dst.read(0, &mut buf).unwrap();
+        assert_eq!(&buf, b"Original content");
+        
+        // ソースを変更してもdstに影響なし（CoW）
+        src.write(0, b"Modified content").unwrap();
+        
+        let mut buf2 = [0u8; 16];
+        dst.read(0, &mut buf2).unwrap();
+        assert_eq!(&buf2, b"Original content");
+    }
+
+    #[test]
+    fn test_sparse_file() {
+        let inode = MemoryInode::new_file(1, "sparse.bin", FileMode::DEFAULT_FILE);
+        
+        // オフセット1MBに書き込み（中間領域はスパース）
+        let offset = 1024 * 1024;
+        inode.write(offset, b"sparse data").unwrap();
+        
+        // 中間領域はゼロ
+        let mut buf = [0xFFu8; 10];
+        inode.read(1000, &mut buf).unwrap();
+        assert_eq!(&buf, &[0u8; 10]);
+        
+        // 書き込み領域は正常
+        let mut buf2 = [0u8; 11];
+        inode.read(offset, &mut buf2).unwrap();
+        assert_eq!(&buf2, b"sparse data");
+    }
+
+    #[test]
+    fn test_truncate_releases_pages() {
+        use super::super::page::PAGE_SIZE;
+        
+        let inode = MemoryInode::new_file(1, "truncate.bin", FileMode::DEFAULT_FILE);
+        
+        // 3ページ分書き込み
+        let data = vec![0xCDu8; PAGE_SIZE * 3];
+        inode.write(0, &data).unwrap();
+        
+        // 1ページに切り詰め
+        inode.truncate(PAGE_SIZE as u64).unwrap();
+        
+        let attr = inode.getattr().unwrap();
+        assert_eq!(attr.size, PAGE_SIZE as u64);
+    }
+
+    #[test]
+    fn test_get_page_zero_copy() {
+        let inode = MemoryInode::new_file(1, "zero_copy.bin", FileMode::DEFAULT_FILE);
+        inode.write(0, b"Page data for test").unwrap();
+        
+        // ページ直接取得
+        let page = inode.get_page(0);
+        assert!(page.is_some());
+        assert_eq!(&page.unwrap()[..18], b"Page data for test");
+        
+        // 存在しないページ
+        let no_page = inode.get_page(100);
+        assert!(no_page.is_none());
+    }
+}
+

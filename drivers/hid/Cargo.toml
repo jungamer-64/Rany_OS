@@ -14,5 +14,5 @@ kernel_api = { path = "../../interfaces/kernel_api" }
 
 [features]
 default = []
-# Enables panic handler and dummy allocator for freestanding build
-standalone = []
+standalone = ["export_driver_entry"]
+export_driver_entry = []

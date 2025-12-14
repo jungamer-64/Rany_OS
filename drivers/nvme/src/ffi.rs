@@ -18,10 +18,9 @@ fn nvme_name() -> &'static str { "nvme" }
 
 // Export the ABI vtable using the provided macro.
 // The driver type is Block (storage), and we pack a trivial version.
-// Manually define the exported entrypoint instead of using the macro to
-// validate that a plain `#[export_name = "_exorust_driver_entry"]` entrypoint is accepted.
-#[export_name = "_exorust_driver_entry"]
-pub extern "C" fn _exorust_driver_entry() -> *const kernel_api::driver_abi::DriverVTable {
+// Provide the vtable; export canonical symbol for standalone builds and
+// a crate-unique symbol when compiled into the kernel to avoid collisions.
+fn nvme_driver_vtable() -> *const kernel_api::driver_abi::DriverVTable {
     extern "C" fn probe_adapter(_ctx: *mut kernel_api::driver_abi::DriverContext) -> i32 { 0 }
     extern "C" fn start_adapter(_ctx: *mut kernel_api::driver_abi::DriverContext) -> i32 { 0 }
     extern "C" fn stop_adapter(_ctx: *mut kernel_api::driver_abi::DriverContext) -> i32 { 0 }
@@ -47,4 +46,16 @@ pub extern "C" fn _exorust_driver_entry() -> *const kernel_api::driver_abi::Driv
     };
 
     &VTABLE
+}
+
+#[cfg(feature = "export_driver_entry")]
+#[unsafe(export_name = "_exorust_driver_entry")]
+pub extern "C" fn _exorust_driver_entry() -> *const kernel_api::driver_abi::DriverVTable {
+    nvme_driver_vtable()
+}
+
+#[cfg(not(feature = "export_driver_entry"))]
+#[unsafe(export_name = concat!("_exorust_driver_entry_", env!("CARGO_PKG_NAME")))]
+pub extern "C" fn _exorust_driver_entry_unique() -> *const kernel_api::driver_abi::DriverVTable {
+    nvme_driver_vtable()
 }

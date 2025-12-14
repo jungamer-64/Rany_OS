@@ -111,6 +111,11 @@ fn init_idt() {
         idt[PIC2_OFFSET + 2].set_handler_fn(pci_irq10_handler); // IRQ10 (Free2)
         idt[PIC2_OFFSET + 3].set_handler_fn(pci_irq11_handler); // IRQ11 (Free3)
         idt[InterruptVector::Mouse as u8].set_handler_fn(mouse_interrupt_handler); // IRQ12 (Mouse)
+        
+        // Spurious Interrupt Vector (0xFF)
+        // APICによって生成される偽の割り込みを処理
+        // OSクラッシュ（#GP/#DF）を防ぐために必須
+        idt[0xFF].set_handler_fn(spurious_interrupt_handler);
 
         crate::vga::early_serial_str("[IDT] load\n");
 
@@ -456,6 +461,16 @@ extern "x86-interrupt" fn pci_irq11_handler(_stack_frame: InterruptStackFrame) {
     unsafe {
         send_eoi(11);
     }
+}
+
+/// Spurious Interrupt Handler (0xFF)
+/// APICノイズによる偽の割り込みを処理
+/// 何もせず単にリターンする（EOIも送らないのが一般的だが、ISR上はiretが必要）
+extern "x86-interrupt" fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
+    // 偽割り込みに対してはEOIを送らないのがIntel仕様での推奨
+    // (ただし、Local APICのSIVRのビット8がクリアされている場合などは挙動が異なるが、
+    // ここではSoft Enableされている前提)
+    // ログも出さない（頻発すると遅くなるため）
 }
 
 /// PCI 割り込みをディスパッチ

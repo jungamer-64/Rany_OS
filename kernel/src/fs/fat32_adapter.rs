@@ -163,6 +163,10 @@ pub struct Fat32InodeAdapter {
 }
 
 impl Inode for Fat32InodeAdapter {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
     fn getattr(&self) -> FsResult<FileAttr> {
         let node = self.inner.lock();
         let meta = node.metadata().map_err(FsError::from)?;

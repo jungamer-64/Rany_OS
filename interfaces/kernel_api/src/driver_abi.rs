@@ -483,6 +483,7 @@ macro_rules! export_driver {
         $(, stop = $stop:path)?
         , irq = $irq:path
     ) => {
+            #[cfg(feature = "export_driver_entry")]
             #[export_name = "_exorust_driver_entry"]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
             // --- Mandatory Adapters ---
@@ -560,6 +561,7 @@ macro_rules! export_driver {
         $(, start = $start:path)?
         $(, stop = $stop:path)?
     ) => {
+        #[cfg(feature = "export_driver_entry")]
         #[export_name = "_exorust_driver_entry"]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
             // --- Mandatory Adapters ---
@@ -675,6 +677,7 @@ macro_rules! export_async_driver {
         version = $version:expr,
         irq = $irq:path
     ) => {
+        #[cfg(feature = "export_driver_entry")]
         #[export_name = "_exorust_driver_entry"]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
             $crate::export_async_driver!(@common_adapters
@@ -723,6 +726,7 @@ macro_rules! export_async_driver {
         driver_type = $dtype:expr,
         version = $version:expr
     ) => {
+        #[cfg(feature = "export_driver_entry")]
         #[export_name = "_exorust_driver_entry"]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
              $crate::export_async_driver!(@common_adapters

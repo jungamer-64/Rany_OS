@@ -669,6 +669,10 @@ impl Ext2InodeWrapper {
 }
 
 impl Inode for Ext2InodeWrapper {
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
     fn getattr(&self) -> FsResult<FileAttr> {
         Ok(FileAttr {
             ino: self.inode_num as InodeNum,
