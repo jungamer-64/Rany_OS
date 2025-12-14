@@ -45,6 +45,19 @@ impl KernelBufferView {
         }
     }
 
+    /// 既存のArc<Vec<u8>>からバッファビューを作成（ゼロコピー）
+    /// 
+    /// ShellServices::read_file_zero_copy()との統合用。
+    /// データのコピーは一切発生しない。
+    pub fn from_arc(data: Arc<Vec<u8>>) -> Self {
+        let len = data.len();
+        Self {
+            data,
+            offset: 0,
+            len,
+        }
+    }
+
     /// 既存のビューからスライスを作成
     pub fn slice(&self, start: usize, end: usize) -> Option<Self> {
         if start > end || end > self.len {
