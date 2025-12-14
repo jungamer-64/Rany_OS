@@ -43,8 +43,7 @@ extern "C" fn hid_request_capabilities(caps: *mut DriverCapabilities) {
     }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
+fn hid_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
         hid_probe,
@@ -59,4 +58,16 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
         None,
     );
     &VTABLE
+}
+
+#[cfg(feature = "export_driver_entry")]
+#[unsafe(export_name = "_exorust_driver_entry")]
+pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
+    hid_driver_vtable()
+}
+
+#[cfg(not(feature = "export_driver_entry"))]
+#[unsafe(export_name = concat!("_exorust_driver_entry_", env!("CARGO_PKG_NAME")))]
+pub extern "C" fn _exorust_driver_entry_unique() -> *const DriverVTable {
+    hid_driver_vtable()
 }

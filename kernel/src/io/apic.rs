@@ -195,33 +195,59 @@ impl LocalApic {
     /// APICタイマーを較正
     pub fn calibrate_timer(&self) {
         unsafe {
-            // PITを使用して較正（1/100秒 = 10ms）
-            // ここでは簡易的に固定値を使用
-            // 実際の実装ではPITまたはACPI PMタイマーで較正する
+            use hal::port_io::PortU8;
 
-            // 分周器を16に設定
+            // PIT (Legacy Programmable Interval Timer) を使用して較正
+            // Channel 2, Gate High制御で計測して精度を確保
+            // OSDev Wiki 及び Minix 3 / Linux の初期化コードを参考
+            
+            // 1. PITの初期化 (Channel 2, Mode 0 - Interrupt on Terminal Count)
+            // 0xB0 = 10110000b => Channel 2, Access Lo/Hi, Mode 0, Binary
+            let mut pit_cmd = PortU8::new(0x43);
+            let mut pit_data = PortU8::new(0x42); 
+            let mut pit_gate = PortU8::new(0x61);
+
+            // Channel 2 Gate High (カウント有効化)
+            // Port 0x61 Bit 0 = Timer 2 Gate
+            let gate_val = pit_gate.read();
+            pit_gate.write(gate_val | 1);
+
+            pit_cmd.write(0xB0);
+
+            // 10ms (100Hz) 待機用カウント設定 
+            // Base: 1.193182 MHz
+            // Count = 1193182 / 100 = 11931.82 => 11932 (approx 0x2E9C)
+            let count = 11932_u16;
+            pit_data.write((count & 0xFF) as u8);   // Low
+            pit_data.write((count >> 8) as u8);     // High
+
+            // 2. APICタイマー準備 (最大値からカウントダウン)
+            // 分周器を16に設定 (精度とオーバーフロー回避のバランス)
             self.write(lapic_reg::TIMER_DCR, timer_divisor::DIV_16);
+            self.write(lapic_reg::TIMER_ICR, 0xFFFFFFFF); // 開始
 
-            // 初期カウントを最大値に設定
-            self.write(lapic_reg::TIMER_ICR, 0xFFFFFFFF);
-
-            // 簡易的なビジーウェイト（約10ms）
-            for _ in 0..10_000_000 {
+            // 3. PITのカウント終了（Outピン High）を待つ
+            // Mode 0 ではカウント終了で Port 0x61 bit 5 (OUT2) が High になる
+             while (pit_gate.read() & 0x20) == 0 {
                 core::hint::spin_loop();
             }
 
-            // 経過カウントを取得
-            let elapsed = 0xFFFFFFFF - self.read(lapic_reg::TIMER_CCR);
+            // 4. APICタイマーの現在値を読む
+            let current_count = self.read(lapic_reg::TIMER_CCR);
+            let elapsed = 0xFFFFFFFF - current_count;
 
-            // タイマーを停止
+            // タイマー停止
             self.write(lapic_reg::LVT_TIMER, lvt_flags::MASKED);
 
-            // 1msあたりのティック数を計算（10msで測定したので/10）
+             // Gate Low (無効化)
+             pit_gate.write(gate_val & !1);
+
+            // 1msあたりのティック数 (10ms計測なので /10)
             let ticks_per_ms = elapsed / 10;
             self.ticks_per_ms
                 .store(ticks_per_ms as u64, Ordering::SeqCst);
 
-            log::info!("[APIC] Timer calibrated: {} ticks/ms\n", ticks_per_ms);
+            log::info!("[APIC] Timer calibrated using PIT: {} ticks/ms\n", ticks_per_ms);
         }
     }
 
@@ -449,10 +475,17 @@ impl IoApic {
     /// リダイレクションエントリを書き込み
     fn write_redirection_entry(&self, irq: u8, entry: u64) {
         let reg = ioapic_reg::IOREDTBL_BASE + irq * 2;
+        let low = entry as u32;
+        let high = (entry >> 32) as u32;
 
         unsafe {
-            self.write(reg, entry as u32);
-            self.write(reg + 1, (entry >> 32) as u32);
+            // アトミック性を高めるため、64bit書き込みの手順を遵守
+            // 1. マスクビット(bit 16)をセットしてエントリを無効化 (Low)
+            self.write(reg, low | (1 << 16));
+            // 2. 上位32bitを書き込み (High)
+            self.write(reg + 1, high);
+            // 3. 元の値（マスク解除されている可能性あり）で下位32bitを書き込み (Low)
+            self.write(reg, low);
         }
     }
 
@@ -599,7 +632,14 @@ pub fn start_apic_timer(interval_ms: u32) {
 /// End of Interrupt（割り込み完了）
 pub fn end_of_interrupt() {
     if is_apic_enabled() {
-        local_apic().end_of_interrupt();
+        // Deadlock回避:
+        // 割り込みハンドラ内で呼ばれるが、メインスレッドがLocalApicをロックしている間に
+        // 割り込みが入るとデッドロックする可能性がある。
+        // without_interrupts で囲むことで、ロック取得中の割り込みを防ぐ
+        // (注: 本来ISR内はIF=0だが、ネスト許可設定時等の安全策)
+        x86_64::instructions::interrupts::without_interrupts(|| {
+             local_apic().end_of_interrupt();
+        });
     }
 }
 

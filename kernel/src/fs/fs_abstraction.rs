@@ -131,6 +131,8 @@ impl FileMode {
     pub const DEFAULT_FILE: FileMode = FileMode(0o644);
     /// Default directory mode (rwxr-xr-x)
     pub const DEFAULT_DIR: FileMode = FileMode(0o755);
+    /// Default symlink mode (rwxrwxrwx)
+    pub const DEFAULT_LINK: FileMode = FileMode(0o777);
 
     /// Check if owner can read
     pub fn owner_read(&self) -> bool {
@@ -290,8 +292,15 @@ pub struct DirEntry {
 // Inode Trait
 // ============================================================================
 
+use core::any::Any;
+
+// ... (existing imports)
+
 /// Inode operations trait
-pub trait Inode: Send + Sync {
+pub trait Inode: Send + Sync + Any {
+    /// Downcast to concrete type
+    fn as_any(&self) -> &dyn Any;
+
     /// Get file attributes
     fn getattr(&self) -> FsResult<FileAttr>;
 

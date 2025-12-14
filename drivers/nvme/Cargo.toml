@@ -16,4 +16,5 @@ spin = "0.10"
 [features]
 default = []
 # Enables panic handler and dummy allocator for freestanding build
-standalone = []
+standalone = ["export_driver_entry"]
+export_driver_entry = []

@@ -31,6 +31,7 @@ pub mod fat32_adapter;
 pub use fat32_adapter::Fat32FileSystemAdapter as Fat32FileSystem;
 pub mod memfs;
 pub mod async_memfs;
+pub mod page;
 pub mod procfs;
 
 #[allow(unused_imports)]
@@ -69,7 +70,7 @@ pub use fs_abstraction::{
 };
 #[allow(unused_imports)]
 pub use memfs::{
-    MemoryFs, MemoryInode, copy_file, create_symlink, init_shell_fs, list_directory,
+    MemoryFs, MemoryInode, copy_file, copy_file_cow, create_symlink, init_shell_fs, list_directory,
     make_directory, move_file, read_file_content, remove_directory, remove_file, resolve_path,
     shell_fs, stat_file, touch_file, write_file_content,
 };
@@ -87,3 +88,5 @@ pub use async_memfs::{
     remove_file_async, resolve_path_async, stat_file_async, touch_file_async,
     write_file_content_async,
 };
+#[allow(unused_imports)]
+pub use page::{Page, PagedContent, PAGE_SIZE, PAGE_SHIFT, PAGE_MASK, new_zero_page};
