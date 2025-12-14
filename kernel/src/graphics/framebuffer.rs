@@ -1305,35 +1305,44 @@ impl Framebuffer {
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
     unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
-        // Implement using 32-bit word reordering (works on little-endian).
-        // For each pixel word (RGBA in little-endian), transform to BGRA by
-        // swapping low and mid byte lanes. This avoids per-byte shuffles
-        // and is efficient on aarch64.
-        #[inline]
-        fn swap_rgba_to_bgra(v: u32) -> u32 {
-            ((v & 0x000000FF) << 16) | (v & 0x0000FF00) | ((v & 0x00FF0000) >> 16) | (v & 0xFF000000)
-        }
+        use core::arch::aarch64::*;
 
+        // Vectorized 32-bit lane byte-swizzle:
+        // For each u32 lane (little-endian RGBA), produce BGRA by shifting
+        // low and high byte lanes and OR-ing the parts.
         let mut i = 0usize;
 
-        // Process 4 pixels at a time when possible
+        // Process 4 pixels (16 bytes) per iteration using 32-bit vector ops
         while i + 16 <= bytes {
-            let p0 = core::ptr::read_unaligned(src.add(i) as *const u32);
-            let p1 = core::ptr::read_unaligned(src.add(i + 4) as *const u32);
-            let p2 = core::ptr::read_unaligned(src.add(i + 8) as *const u32);
-            let p3 = core::ptr::read_unaligned(src.add(i + 12) as *const u32);
+            // Load 4 lanes (may be unaligned)
+            let v = vld1q_u32(src.add(i) as *const u32);
 
-            core::ptr::write_unaligned(dst.add(i) as *mut u32, swap_rgba_to_bgra(p0));
-            core::ptr::write_unaligned(dst.add(i + 4) as *mut u32, swap_rgba_to_bgra(p1));
-            core::ptr::write_unaligned(dst.add(i + 8) as *mut u32, swap_rgba_to_bgra(p2));
-            core::ptr::write_unaligned(dst.add(i + 12) as *mut u32, swap_rgba_to_bgra(p3));
+            // Masks
+            let low_mask = vdupq_n_u32(0x000000FF);
+            let mid_mask = vdupq_n_u32(0x0000FF00);
+            let high_mask = vdupq_n_u32(0x00FF0000);
+            let alpha_mask = vdupq_n_u32(0xFF000000);
 
+            let low = vandq_u32(v, low_mask);
+            let mid = vandq_u32(v, mid_mask);
+            let high = vandq_u32(v, high_mask);
+            let alpha = vandq_u32(v, alpha_mask);
+
+            // swap: low << 16 | mid | high >> 16 | alpha
+            let low_shift = vshlq_n_u32(low, 16);
+            let high_shift = vshrq_n_u32(high, 16);
+            let tmp = vorrq_u32(low_shift, mid);
+            let swapped = vorrq_u32(vorrq_u32(tmp, high_shift), alpha);
+
+            vst1q_u32(dst.add(i) as *mut u32, swapped);
             i += 16;
         }
 
+        // Tail: scalar per-pixel
         while i + 4 <= bytes {
             let p = core::ptr::read_unaligned(src.add(i) as *const u32);
-            core::ptr::write_unaligned(dst.add(i) as *mut u32, swap_rgba_to_bgra(p));
+            let swapped = ((p & 0x000000FF) << 16) | (p & 0x0000FF00) | ((p & 0x00FF0000) >> 16) | (p & 0xFF000000);
+            core::ptr::write_unaligned(dst.add(i) as *mut u32, swapped);
             i += 4;
         }
     }

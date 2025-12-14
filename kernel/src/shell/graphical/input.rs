@@ -23,7 +23,10 @@ impl GraphicalShell {
 
         // カーソルを表示
         self.state.cursor_visible = true;
-        self.state.last_cursor_toggle = crate::task::timer::current_tick();
+        self.state.last_cursor_toggle = kernel_api::services::kernel()
+            .gui()
+            .map(|g| g.current_tick())
+            .unwrap_or(0);
 
         // Ctrl修飾キーの処理
         if event.modifiers().ctrl {

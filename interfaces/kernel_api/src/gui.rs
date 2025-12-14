@@ -143,4 +143,11 @@ pub trait GuiServices: Send + Sync {
     ///
     /// Returns `None` if no event is pending.
     fn poll_input_event(&self) -> Option<InputEvent>;
+
+    /// Yield control to allow other tasks to run
+    ///
+    /// This is called at the end of each iteration to cooperatively yield
+    /// to the scheduler. The implementation should arrange for the caller
+    /// to be resumed later.
+    fn yield_control(&self);
 }

@@ -143,7 +143,10 @@ impl BlinkTimer {
         // タイマーティックをミリ秒に換算（1ティック = 約1ms想定）
         Self {
             interval_ticks: interval_ms,
-            last_tick: crate::task::timer::current_tick(),
+            last_tick: kernel_api::services::kernel()
+                .gui()
+                .map(|g| g.current_tick())
+                .unwrap_or(0),
         }
     }
 
@@ -161,7 +164,10 @@ impl<'a> Future for BlinkTimerFuture<'a> {
     type Output = u64;
 
     fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let current = crate::task::timer::current_tick();
+        let current = kernel_api::services::kernel()
+            .gui()
+            .map(|g| g.current_tick())
+            .unwrap_or(0);
         let elapsed = current.saturating_sub(self.timer.last_tick);
 
         if elapsed >= self.timer.interval_ticks {
