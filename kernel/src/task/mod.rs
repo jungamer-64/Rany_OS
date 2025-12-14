@@ -184,7 +184,7 @@ where
     let task = Task::new(async move {
         let result = with_timeout(future, timeout_ms).await;
         if result.is_timed_out() {
-            crate::log!("[TASK] Task timed out after {}ms\n", timeout_ms);
+            log::info!("[TASK] Task timed out after {}ms\n", timeout_ms);
         }
     });
 

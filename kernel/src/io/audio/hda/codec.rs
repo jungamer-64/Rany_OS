@@ -22,20 +22,20 @@ use super::types::{CodecInfo, HdaError, HdaResult, NodeType, WidgetCaps};
 
 /// Detect connected codecs
 pub fn detect_codecs(controller: &mut HdaController) -> HdaResult<()> {
-    crate::log!("[HDA] Detecting codecs...\n");
+    log::info!("[HDA] Detecting codecs...\n");
 
     let statests = controller.read16(REG_STATESTS);
 
     for codec_addr in 0..15 {
         if (statests & (1 << codec_addr)) != 0 {
-            crate::log!("[HDA] Codec found at address {}\n", codec_addr);
+            log::info!("[HDA] Codec found at address {}\n", codec_addr);
 
             // Read vendor/device ID
             let vendor_id = controller.get_parameter(codec_addr as u8, 0, PARAM_VENDOR_ID)?;
             let vendor = (vendor_id >> 16) as u16;
             let device = vendor_id as u16;
 
-            crate::log!(
+            log::info!(
                 "[HDA] Codec {}: Vendor={:04x}, Device={:04x}\n",
                 codec_addr,
                 vendor,
@@ -80,14 +80,14 @@ pub fn init_codecs(controller: &mut HdaController) -> HdaResult<()> {
 
 /// Enumerate codec nodes
 fn enumerate_codec(controller: &mut HdaController, codec_addr: u8) -> HdaResult<()> {
-    crate::log!("[HDA] Enumerating codec {}...\n", codec_addr);
+    log::info!("[HDA] Enumerating codec {}...\n", codec_addr);
 
     // Get subordinate node count from root node (node 0)
     let sub_nodes = controller.get_parameter(codec_addr, 0, PARAM_SUB_NODE_COUNT)?;
     let start_node = ((sub_nodes >> 16) & 0xFF) as u8;
     let num_nodes = (sub_nodes & 0xFF) as u8;
 
-    crate::log!(
+    log::info!(
         "[HDA] Root node: start={}, count={}\n",
         start_node,
         num_nodes
@@ -98,7 +98,7 @@ fn enumerate_codec(controller: &mut HdaController, codec_addr: u8) -> HdaResult<
         let func_type = controller.get_parameter(codec_addr, node_id, PARAM_FUNC_GROUP_TYPE)?;
         let node_type = func_type & 0xFF;
 
-        crate::log!(
+        log::info!(
             "[HDA] Node {}: type={}\n",
             node_id,
             if node_type == 1 { "AFG" } else { "other" }
@@ -134,7 +134,7 @@ fn enumerate_afg(controller: &mut HdaController, codec_addr: u8, afg_node: u8) -
     let start_node = ((sub_nodes >> 16) & 0xFF) as u8;
     let num_nodes = (sub_nodes & 0xFF) as u8;
 
-    crate::log!(
+    log::info!(
         "[HDA] AFG {}: widgets {}..{}\n",
         afg_node,
         start_node,
@@ -145,7 +145,7 @@ fn enumerate_afg(controller: &mut HdaController, codec_addr: u8, afg_node: u8) -
         let caps = controller.get_parameter(codec_addr, node_id, PARAM_WIDGET_CAPS)?;
         let widget_caps = WidgetCaps::from(caps);
 
-        crate::log!("[HDA] Widget {}: {:?}\n", node_id, widget_caps.widget_type);
+        log::info!("[HDA] Widget {}: {:?}\n", node_id, widget_caps.widget_type);
 
         // Find codec and add node to appropriate list
         if let Some(codec) = controller
@@ -196,7 +196,7 @@ pub fn configure_codec_output(
         .copied()
         .ok_or_else(|| HdaError::InitFailed("No output pin found".into()))?;
 
-    crate::log!(
+    log::info!(
         "[HDA] Configuring DAC {} -> Pin {} for stream {}\n",
         dac_node,
         pin_node,
@@ -237,6 +237,6 @@ pub fn configure_codec_output(
     // Unmute pin output amplifier
     controller.send_command(codec_addr, pin_node, VERB_SET_AMP_GAIN | amp_val as u32)?;
 
-    crate::log!("[HDA] Codec output configured\n");
+    log::info!("[HDA] Codec output configured\n");
     Ok(())
 }

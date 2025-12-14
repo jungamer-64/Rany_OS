@@ -329,7 +329,7 @@ pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
         #[cfg(not(feature = "require_signatures"))]
         {
             // 開発モード: 署名なしでもロードを許可（ただし制限付き）
-            crate::log!("[SIGNATURE] Warning: Loading unsigned cell (dev mode)\n");
+            log::info!("[SIGNATURE] Warning: Loading unsigned cell (dev mode)\n");
             Ok(CellSignature {
                 version: SIGNATURE_VERSION,
                 contains_unsafe: false,
@@ -497,7 +497,7 @@ pub fn init_verifier() {
     let mut verifier = GLOBAL_VERIFIER.lock();
     if verifier.is_none() {
         *verifier = Some(SignatureVerifier::new());
-        crate::log!("[SIGNATURE] Signature verifier initialized\n");
+        log::info!("[SIGNATURE] Signature verifier initialized\n");
     }
 }
 
@@ -505,7 +505,7 @@ pub fn init_verifier() {
 pub fn init_verifier_production() {
     let mut verifier = GLOBAL_VERIFIER.lock();
     *verifier = Some(SignatureVerifier::production());
-    crate::log!("[SIGNATURE] Signature verifier initialized (production mode)\n");
+    log::info!("[SIGNATURE] Signature verifier initialized (production mode)\n");
 }
 
 /// 信頼された公開鍵を追加

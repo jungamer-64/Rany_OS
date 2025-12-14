@@ -1,0 +1,41 @@
+name: Performance Bench
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch: {}
+
+jobs:
+  bench:
+    name: Run framebuffer benchmarks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Run Criterion benches (programmatic runner)
+        run: |
+          cargo run --manifest-path tools/framebuffer_bench/Cargo.toml --release -- criterion
+
+      - name: Upload Criterion artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: framebuffer-criterion-results
+          path: target/criterion

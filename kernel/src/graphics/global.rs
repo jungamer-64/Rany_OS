@@ -39,7 +39,7 @@ pub fn init(info: FramebufferInfo) {
         let fb = guard.as_ref().expect("framebuffer must be initialized");
         (fb.width(), fb.height())
     };
-    crate::log!("[GRAPHICS] Framebuffer initialized: {}x{}\n", w, h);
+    log::info!("[GRAPHICS] Framebuffer initialized: {}x{}\n", w, h);
 }
 
 /// Limineフレームバッファレスポンスからグラフィックスを初期化
@@ -50,7 +50,7 @@ pub fn init_from_limine(response: &FramebufferResponse) -> bool {
     // 最初のフレームバッファを使用
     let mut iter = response.framebuffers();
     let Some(fb) = iter.next() else {
-        crate::log!("[GRAPHICS] No framebuffer available from bootloader\n");
+        log::info!("[GRAPHICS] No framebuffer available from bootloader\n");
         return false;
     };
 
@@ -75,7 +75,7 @@ pub fn init_from_limine(response: &FramebufferResponse) -> bool {
         bpp: fb.bpp() as u8,
     };
 
-    crate::log!(
+    log::info!(
         "[GRAPHICS] Limine framebuffer: {}x{}@{}bpp pitch={} format={:?}\n",
         info.width,
         info.height,
@@ -137,7 +137,7 @@ pub fn init_console() {
         let console = TextConsole::new(fb);
         drop(fb_guard);
         *CONSOLE.lock() = Some(console);
-        crate::log!("[GRAPHICS] Text console initialized\n");
+        log::info!("[GRAPHICS] Text console initialized\n");
     }
 }
 

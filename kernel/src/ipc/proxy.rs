@@ -179,7 +179,7 @@ pub fn record_proxy_panic(message: String) {
         *guard = Some(message);
     } else {
         // 毒入れ時はメッセージを破棄（パニック中のエラーハンドリング）
-        crate::log!("[Proxy] Warning: panic message lost due to poisoned lock\n");
+        log::info!("[Proxy] Warning: panic message lost due to poisoned lock\n");
     }
 }
 

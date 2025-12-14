@@ -33,7 +33,7 @@ static HEAP_REGISTRY: PoisonLock<HeapRegistry> = PoisonLock::new(HeapRegistry::n
 pub fn reclaim_domain_resources(domain: DomainId) {
     // 【設計書 8.4】毒入れされていても回復して回収を実行
     let mut registry = HEAP_REGISTRY.lock().unwrap_or_else(|e| {
-        crate::log!("[RRef] Warning: HEAP_REGISTRY poisoned, recovering for reclaim\n");
+        log::info!("[RRef] Warning: HEAP_REGISTRY poisoned, recovering for reclaim\n");
         e.into_inner()
     });
 
@@ -41,7 +41,7 @@ pub fn reclaim_domain_resources(domain: DomainId) {
     let reclaimed_count = registry.reclaim_all(domain);
 
     if reclaimed_count > 0 {
-        crate::log!(
+        log::info!(
             "[RRef] Reclaimed {} objects from domain {}\n",
             reclaimed_count,
             domain.as_u64()

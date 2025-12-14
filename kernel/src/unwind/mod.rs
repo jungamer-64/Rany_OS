@@ -512,12 +512,12 @@ pub fn init_symbol_table() {
     KERNEL_SYMBOLS.call_once(|| KernelSymbolTable::new());
 
     if let Some(Some(table)) = KERNEL_SYMBOLS.get() {
-        crate::log!(
+        log::info!(
             "[UNWIND] Kernel symbol table loaded: {} symbols\n",
             table.symbol_count()
         );
     } else {
-        crate::log!("[UNWIND] No kernel symbol table available\n");
+        log::info!("[UNWIND] No kernel symbol table available\n");
     }
 }
 

@@ -148,6 +148,11 @@ pub extern "C" fn _start() -> ! {
     }
 }
 
+// The custom panic handler is used when running as a standalone kernel binary
+// on target hardware/QEMU. When running `cargo test` on the host we must not
+// define a panic handler here because the Rust test harness (std) provides
+// its own panic implementation.
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     serial_println!("[FAILED]");

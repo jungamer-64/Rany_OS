@@ -6,8 +6,8 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use super::raw;
 use alloc::boxed::Box;
+use super::raw;
 use core::arch::naked_asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::VirtAddr;

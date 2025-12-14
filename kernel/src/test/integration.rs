@@ -59,11 +59,11 @@ impl IntegrationTestSuite {
     }
 
     pub fn print_summary(&self) {
-        crate::log!("\n=== {} Test Suite ===\n", self.name);
+        log::info!("\n=== {} Test Suite ===\n", self.name);
 
         for test in &self.tests {
             let status = if test.passed { "[PASS]" } else { "[FAIL]" };
-            crate::log!(
+            log::info!(
                 "{} {} ({} us): {}\n",
                 status,
                 test.name,
@@ -72,7 +72,7 @@ impl IntegrationTestSuite {
             );
         }
 
-        crate::log!(
+        log::info!(
             "Total: {} passed, {} failed, {} total\n\n",
             self.passed(),
             self.failed(),
@@ -253,9 +253,9 @@ pub fn test_network() -> IntegrationTestSuite {
 
 /// Run all integration tests
 pub fn run_all_integration_tests() -> (usize, usize) {
-    crate::log!("\n========================================\n");
-    crate::log!("   ExoRust Integration Test Suite\n");
-    crate::log!("========================================\n");
+    log::info!("\n========================================\n");
+    log::info!("   ExoRust Integration Test Suite\n");
+    log::info!("========================================\n");
 
     let mut total_passed = 0;
     let mut total_failed = 0;
@@ -277,13 +277,13 @@ pub fn run_all_integration_tests() -> (usize, usize) {
         total_failed += suite.failed();
     }
 
-    crate::log!("========================================\n");
-    crate::log!(
+    log::info!("========================================\n");
+    log::info!(
         "   TOTAL: {} passed, {} failed\n",
         total_passed,
         total_failed
     );
-    crate::log!("========================================\n\n");
+    log::info!("========================================\n\n");
 
     (total_passed, total_failed)
 }

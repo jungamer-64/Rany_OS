@@ -19,10 +19,12 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::graphics::Color;
-use crate::io::hid::keyboard;
+use crate::io::hid::{keyboard, poll_input_event, KeyEvent, KeyCode, KeyState, Modifiers};
 #[cfg(feature = "mouse")]
 use crate::io::hid::poll_mouse_event;
 use crate::shell::exoshell::{ExoShell, ExoValue};
+use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState};
+use kernel_api::services::kernel;
 
 use super::shell::GraphicalShell;
 use super::streams::{CommandQueueStream, CommandResult, poll_result, push_result};
@@ -140,6 +142,9 @@ pub async fn run_async_shell() {
         // ========================================
         // Phase 1: 入力イベント処理
         // ========================================
+        // Get current tick via GuiServices before entering framebuffer lock
+        let current_time = kernel().gui().map(|g| g.current_tick()).unwrap_or(0);
+        
         crate::graphics::with_framebuffer(|fb| {
             let mut guard = GRAPHICAL_SHELL.lock();
             if let Some(ref mut shell) = *guard {
@@ -149,12 +154,50 @@ pub async fn run_async_shell() {
                         shell.handle_key(key_event, fb);
                     }
                 } else {
-                    // フォールバック: ポーリング
-                    for _ in 0..8 {
-                        if let Some(event) = poll_input_event() {
-                            shell.handle_key(event, fb);
-                        } else {
-                            break;
+                    // フォールバック: GuiServices経由でポーリング (Cell分離アーキテクチャ)
+                    if let Some(gui_services) = kernel().gui() {
+                        for _ in 0..8 {
+                            if let Some(input_event) = gui_services.poll_input_event() {
+                                match input_event {
+                                    InputEvent::Key(kapi_key) => {
+                                        // Convert kernel_api::gui::KeyEvent to internal HID KeyEvent
+                                        let state = match kapi_key.state {
+                                            KapiKeyState::Pressed => KeyState::Pressed,
+                                            KapiKeyState::Released => KeyState::Released,
+                                        };
+                                        let modifiers = Modifiers {
+                                            shift: (kapi_key.modifiers & 0x01) != 0,
+                                            ctrl: (kapi_key.modifiers & 0x02) != 0,
+                                            alt: (kapi_key.modifiers & 0x04) != 0,
+                                            alt_gr: (kapi_key.modifiers & 0x08) != 0,
+                                            caps_lock: (kapi_key.modifiers & 0x10) != 0,
+                                            num_lock: false,
+                                            scroll_lock: false,
+                                        };
+                                        let hid_event = KeyEvent {
+                                            key: KeyCode::Unknown,
+                                            state,
+                                            modifiers,
+                                            raw_scancode: kapi_key.scancode,
+                                        };
+                                        shell.handle_key(hid_event, fb);
+                                    }
+                                    InputEvent::Mouse(_mouse) => {
+                                        // Mouse handled below via feature flag
+                                    }
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    } else {
+                        // No GuiServices - fallback to direct HID polling
+                        for _ in 0..8 {
+                            if let Some(event) = poll_input_event() {
+                                shell.handle_key(event, fb);
+                            } else {
+                                break;
+                            }
                         }
                     }
                 }
@@ -162,7 +205,7 @@ pub async fn run_async_shell() {
 
                 #[cfg(feature = "mouse")]
                 {
-                    // マウス: ポーリング（TODO: MouseStream）
+                    // マウス: ポーリング（TODO: GuiServices経由）
                     for _ in 0..8 {
                         if let Some(event) = poll_mouse_event() {
                             shell.handle_mouse(event, fb);
@@ -191,7 +234,6 @@ pub async fn run_async_shell() {
                 // カーソル点滅を更新（定期的）
                 input_poll_counter = input_poll_counter.wrapping_add(1);
                 if input_poll_counter % 10 == 0 {
-                    let current_time = crate::task::timer::current_tick();
                     shell.update_cursor(current_time, fb);
                 }
             }

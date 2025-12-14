@@ -39,11 +39,11 @@ pub fn init_smp() -> Result<(), &'static str> {
     let num_aps = ap_apic_ids.len() as u32;
 
     if num_aps == 0 {
-        crate::log!("[SMP] No APs detected, running uniprocessor\n");
+        log::info!("[SMP] No APs detected, running uniprocessor\n");
         return Ok(());
     }
 
-    crate::log!("[SMP] Detected {} AP(s), starting bootstrap\n", num_aps);
+    log::info!("[SMP] Detected {} AP(s), starting bootstrap\n", num_aps);
 
     // Initialize bootstrap
     unsafe {
@@ -53,7 +53,7 @@ pub fn init_smp() -> Result<(), &'static str> {
     // Start all APs
     let started = start_aps(&ap_apic_ids);
 
-    crate::log!("[SMP] Started {}/{} APs\n", started, num_aps);
+    log::info!("[SMP] Started {}/{} APs\n", started, num_aps);
 
     Ok(())
 }

@@ -863,10 +863,10 @@ impl KeyboardDriver {
     pub fn init(&self) {
         if self.initialized.swap(true, Ordering::SeqCst) {
             // 2回目以降の呼び出し - 警告を出力
-            crate::log!("[KEYBOARD] WARNING: init() called multiple times (ignored)\n");
+            log::info!("[KEYBOARD] WARNING: init() called multiple times (ignored)\n");
             return;
         }
-        crate::log!("[KEYBOARD] Keyboard driver initialized (Instance-based, Single-core only)\n");
+        log::info!("[KEYBOARD] Keyboard driver initialized (Instance-based, Single-core only)\n");
     }
 
     /// スキャンコードを処理（ISRから呼ばれる）

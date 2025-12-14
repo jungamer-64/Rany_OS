@@ -354,62 +354,62 @@ fn handle_connection(data: &[u8], router: &Router) -> Vec<u8> {
 
 /// Run HTTP server demo
 pub fn run() -> DemoResult {
-    crate::log!("\n");
-    crate::log!("================================================================================\n");
-    crate::log!("                    ExoRust HTTP Server Demo\n");
-    crate::log!("================================================================================\n\n");
+    log::info!("\n");
+    log::info!("================================================================================\n");
+    log::info!("                    ExoRust HTTP Server Demo\n");
+    log::info!("================================================================================\n\n");
     
     let router = create_router();
     
     RUNNING.store(true, Ordering::SeqCst);
     
-    crate::log!("[HTTP] Server initialized\n");
-    crate::log!("[HTTP] Routes registered:\n");
-    crate::log!("       GET /        - Welcome page\n");
-    crate::log!("       GET /stats   - Server statistics\n");
-    crate::log!("       GET /health  - Health check\n");
-    crate::log!("       GET /info    - System information\n\n");
+    log::info!("[HTTP] Server initialized\n");
+    log::info!("[HTTP] Routes registered:\n");
+    log::info!("       GET /        - Welcome page\n");
+    log::info!("       GET /stats   - Server statistics\n");
+    log::info!("       GET /health  - Health check\n");
+    log::info!("       GET /info    - System information\n\n");
     
     // Simulate some test requests
-    crate::log!("[HTTP] Running test requests...\n\n");
+    log::info!("[HTTP] Running test requests...\n\n");
     
     // Test 1: Index page
     let request1 = b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n";
     let response1 = handle_connection(request1, &router);
-    crate::log!("[HTTP] GET / - Response: {} bytes\n", response1.len());
+    log::info!("[HTTP] GET / - Response: {} bytes\n", response1.len());
     
     // Test 2: Stats endpoint
     let request2 = b"GET /stats HTTP/1.1\r\nHost: localhost\r\n\r\n";
     let response2 = handle_connection(request2, &router);
-    crate::log!("[HTTP] GET /stats - Response: {} bytes\n", response2.len());
+    log::info!("[HTTP] GET /stats - Response: {} bytes\n", response2.len());
     
     // Show stats JSON
     if let Ok(body) = core::str::from_utf8(&response2) {
         if let Some(json_start) = body.find('{') {
-            crate::log!("[HTTP] Stats response:\n{}\n", &body[json_start..]);
+            log::info!("[HTTP] Stats response:\n{}\n", &body[json_start..]);
         }
     }
     
     // Test 3: Health check
     let request3 = b"GET /health HTTP/1.1\r\nHost: localhost\r\n\r\n";
     let response3 = handle_connection(request3, &router);
-    crate::log!("[HTTP] GET /health - Response: {} bytes\n", response3.len());
+    log::info!("[HTTP] GET /health - Response: {} bytes\n", response3.len());
     
     // Test 4: 404
     let request4 = b"GET /nonexistent HTTP/1.1\r\nHost: localhost\r\n\r\n";
     let response4 = handle_connection(request4, &router);
-    crate::log!("[HTTP] GET /nonexistent - Response: {} bytes (404)\n", response4.len());
+    log::info!("[HTTP] GET /nonexistent - Response: {} bytes (404)\n", response4.len());
     
     // Print final stats
-    crate::log!("\n[HTTP] Final Statistics:\n");
-    crate::log!("       Requests: {}\n", STATS.requests.load(Ordering::Relaxed));
-    crate::log!("       Bytes RX: {}\n", STATS.bytes_rx.load(Ordering::Relaxed));
-    crate::log!("       Bytes TX: {}\n", STATS.bytes_tx.load(Ordering::Relaxed));
+    log::info!("\n[HTTP] Final Statistics:\n");
+    log::info!("       Requests: {}\n", STATS.requests.load(Ordering::Relaxed));
+    log::info!("       Bytes RX: {}\n", STATS.bytes_rx.load(Ordering::Relaxed));
+    log::info!("       Bytes TX: {}\n", STATS.bytes_tx.load(Ordering::Relaxed));
     
     RUNNING.store(false, Ordering::SeqCst);
     
-    crate::log!("\n[HTTP] Server demo completed successfully\n");
-    crate::log!("================================================================================\n\n");
+    log::info!("\n[HTTP] Server demo completed successfully\n");
+    log::info!("================================================================================\n\n");
     
     DemoResult::Success
 }

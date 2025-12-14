@@ -63,12 +63,12 @@ impl BenchmarkResult {
     }
     
     pub fn report(&self) {
-        crate::log!("  Benchmark: {}\n", self.name);
-        crate::log!("    Iterations: {}\n", self.iterations);
-        crate::log!("    Total cycles: {}\n", self.total_cycles);
-        crate::log!("    Min cycles: {}\n", self.min_cycles);
-        crate::log!("    Max cycles: {}\n", self.max_cycles);
-        crate::log!("    Avg cycles: {}\n", self.avg_cycles);
+        log::info!("  Benchmark: {}\n", self.name);
+        log::info!("    Iterations: {}\n", self.iterations);
+        log::info!("    Total cycles: {}\n", self.total_cycles);
+        log::info!("    Min cycles: {}\n", self.min_cycles);
+        log::info!("    Max cycles: {}\n", self.max_cycles);
+        log::info!("    Avg cycles: {}\n", self.avg_cycles);
     }
 }
 
@@ -77,7 +77,7 @@ pub fn bench_memory_throughput() -> TestResult {
     const ITERATIONS: usize = 1000;
     const BLOCK_SIZE: usize = 4096;
     
-    crate::log!("\n[BENCH] Memory Throughput Benchmark\n");
+    log::info!("\n[BENCH] Memory Throughput Benchmark\n");
     
     // Benchmark: Small allocations
     let mut small_alloc = BenchmarkResult::new("small_alloc_64b");
@@ -137,7 +137,7 @@ pub fn bench_memory_throughput() -> TestResult {
     }
     vec_push.report();
     
-    crate::log!("[BENCH] Memory throughput benchmark completed\n\n");
+    log::info!("[BENCH] Memory throughput benchmark completed\n\n");
     
     TestResult::Passed
 }
@@ -146,7 +146,7 @@ pub fn bench_memory_throughput() -> TestResult {
 pub fn bench_task_switch() -> TestResult {
     const ITERATIONS: usize = 10000;
     
-    crate::log!("\n[BENCH] Task Switch Benchmark\n");
+    log::info!("\n[BENCH] Task Switch Benchmark\n");
     
     // Benchmark: Yield point overhead
     let mut yield_bench = BenchmarkResult::new("yield_point");
@@ -191,7 +191,7 @@ pub fn bench_task_switch() -> TestResult {
     }
     atomic_bench.report();
     
-    crate::log!("[BENCH] Task switch benchmark completed\n\n");
+    log::info!("[BENCH] Task switch benchmark completed\n\n");
     
     TestResult::Passed
 }
@@ -200,8 +200,8 @@ pub fn bench_task_switch() -> TestResult {
 pub fn bench_function_call() -> TestResult {
     const ITERATIONS: usize = 100000;
     
-    crate::log!("\n[BENCH] Function Call Performance Benchmark\n");
-    crate::log!("  (Demonstrating ExoRust's advantage: syscalls are just function calls)\n\n");
+    log::info!("\n[BENCH] Function Call Performance Benchmark\n");
+    log::info!("  (Demonstrating ExoRust's advantage: syscalls are just function calls)\n\n");
     
     // Simple function call (baseline)
     #[inline(never)]
@@ -272,13 +272,13 @@ pub fn bench_function_call() -> TestResult {
     syscall_bench.report();
     
     // Comparison summary
-    crate::log!("\n  Summary:\n");
-    crate::log!("    Simple call: {} cycles avg\n", simple_call.avg_cycles);
-    crate::log!("    Memory call: {} cycles avg\n", memory_call.avg_cycles);
-    crate::log!("    Trait call:  {} cycles avg\n", trait_call.avg_cycles);
-    crate::log!("    ExoRust syscall: {} cycles avg\n", syscall_bench.avg_cycles);
-    crate::log!("    (Traditional Linux syscall: ~1000-10000 cycles)\n");
-    crate::log!("\n[BENCH] Function call benchmark completed\n\n");
+    log::info!("\n  Summary:\n");
+    log::info!("    Simple call: {} cycles avg\n", simple_call.avg_cycles);
+    log::info!("    Memory call: {} cycles avg\n", memory_call.avg_cycles);
+    log::info!("    Trait call:  {} cycles avg\n", trait_call.avg_cycles);
+    log::info!("    ExoRust syscall: {} cycles avg\n", syscall_bench.avg_cycles);
+    log::info!("    (Traditional Linux syscall: ~1000-10000 cycles)\n");
+    log::info!("\n[BENCH] Function call benchmark completed\n\n");
     
     TestResult::Passed
 }
@@ -289,7 +289,7 @@ pub fn bench_ipc() -> TestResult {
     
     const ITERATIONS: usize = 10000;
     
-    crate::log!("\n[BENCH] IPC Performance Benchmark\n");
+    log::info!("\n[BENCH] IPC Performance Benchmark\n");
     
     // RRef creation
     let mut rref_create = BenchmarkResult::new("rref_create");
@@ -327,7 +327,7 @@ pub fn bench_ipc() -> TestResult {
     }
     rref_access.report();
     
-    crate::log!("[BENCH] IPC benchmark completed\n\n");
+    log::info!("[BENCH] IPC benchmark completed\n\n");
     
     TestResult::Passed
 }
@@ -339,7 +339,7 @@ pub fn bench_network() -> TestResult {
     
     const ITERATIONS: usize = 10000;
     
-    crate::log!("\n[BENCH] Network Stack Benchmark\n");
+    log::info!("\n[BENCH] Network Stack Benchmark\n");
     
     // Ethernet frame parsing
     let mut eth_parse = BenchmarkResult::new("ethernet_parse");
@@ -396,17 +396,17 @@ pub fn bench_network() -> TestResult {
     }
     mac_cmp.report();
     
-    crate::log!("[BENCH] Network benchmark completed\n\n");
+    log::info!("[BENCH] Network benchmark completed\n\n");
     
     TestResult::Passed
 }
 
 /// Run all benchmarks
 pub fn run_all_benchmarks() {
-    crate::log!("\n");
-    crate::log!("================================================================================\n");
-    crate::log!("                        ExoRust Performance Benchmark Suite\n");
-    crate::log!("================================================================================\n\n");
+    log::info!("\n");
+    log::info!("================================================================================\n");
+    log::info!("                        ExoRust Performance Benchmark Suite\n");
+    log::info!("================================================================================\n\n");
     
     let _ = bench_memory_throughput();
     let _ = bench_task_switch();
@@ -414,7 +414,7 @@ pub fn run_all_benchmarks() {
     let _ = bench_ipc();
     let _ = bench_network();
     
-    crate::log!("================================================================================\n");
-    crate::log!("                          Benchmark Suite Completed\n");
-    crate::log!("================================================================================\n\n");
+    log::info!("================================================================================\n");
+    log::info!("                          Benchmark Suite Completed\n");
+    log::info!("================================================================================\n\n");
 }

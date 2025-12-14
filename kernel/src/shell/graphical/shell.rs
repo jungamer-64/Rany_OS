@@ -39,12 +39,16 @@ pub struct GraphicalShell {
     pub resources: ShellResources,
     /// ExoShell（コマンド実行エンジン）
     pub(crate) shell: ExoShell,
+    /// フレームバッファ（所有）
+    pub framebuffer: Framebuffer,
 }
 
 impl GraphicalShell {
     /// 新しいグラフィカルシェルを作成
-    pub fn new(width: u32, height: u32) -> Self {
+    pub fn new(framebuffer: Framebuffer) -> Self {
         use log::info;
+        let width = framebuffer.info().width;
+        let height = framebuffer.info().height;
         info!(target: "gshell", "DEBUG: GraphicalShell::new called with {}x{}", width, height);
 
         let font = BitmapFont::default_8x16();
@@ -99,6 +103,7 @@ impl GraphicalShell {
                 rows,
             },
             shell,
+            framebuffer,
         }
     }
 

@@ -216,7 +216,7 @@ impl KernelServices for ExoKernel {
         }
 
         // If we couldn't find it, quietly ignore (or log) — do not panic in kernel
-        crate::log!("[KAPI] free_dma: unknown buffer: {:x}\n", virt_ptr);
+        log::info!("[KAPI] free_dma: unknown buffer: {:x}\n", virt_ptr);
     }
 
     // ========================================================================
@@ -236,7 +236,7 @@ impl KernelServices for ExoKernel {
     // ========================================================================
 
     fn log(&self, message: &str) {
-        crate::log!("{}", message);
+        log::info!("{}", message);
     }
 
     // ========================================================================
@@ -393,6 +393,71 @@ impl GuiServices for ExoKernel {
         // Return a fixed handle ID for the global HID input stream
         // In a full implementation, this would register with an input manager
         Ok(InputStreamHandle(1))
+    }
+
+    fn current_tick(&self) -> u64 {
+        crate::task::timer::current_tick()
+    }
+
+    fn poll_input_event(&self) -> Option<kernel_api::gui::InputEvent> {
+        use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState, MouseEvent as KapiMouseEvent, MouseButtons};
+        // Bring the KeyEventExt trait into scope so we can call `.to_char()`
+        use crate::io::hid::keyboard::KeyEventExt;
+
+        // Try keyboard first
+        if let Some(hid_event) = crate::io::hid::poll_input_event() {
+            let kapi_state = match hid_event.state {
+                crate::io::hid::KeyState::Pressed => KapiKeyState::Pressed,
+                crate::io::hid::KeyState::Released => KapiKeyState::Released,
+            };
+
+            // Encode modifiers as bitfield
+            let mod_bits = {
+                let mut bits = 0u8;
+                if hid_event.modifiers.shift { bits |= 0x01; }
+                if hid_event.modifiers.ctrl { bits |= 0x02; }
+                if hid_event.modifiers.alt { bits |= 0x04; }
+                if hid_event.modifiers.alt_gr { bits |= 0x08; }
+                if hid_event.modifiers.caps_lock { bits |= 0x10; }
+                bits
+            };
+
+            // `to_char()` returns an `Option<char>`. Convert to an ASCII
+            // `u8` (0 if not printable) to match the `char_value` field in
+            // the kernel API `KeyEvent` (which stores ASCII bytes).
+            let char_value = hid_event.to_char().map(|c| c as u8).unwrap_or(0u8);
+
+            let kapi_event = KapiKeyEvent {
+                scancode: hid_event.raw_scancode,
+                char_value,
+                state: kapi_state,
+                modifiers: mod_bits,
+            };
+
+            return Some(InputEvent::Key(kapi_event));
+        }
+
+        // Try mouse (if feature enabled)
+        #[cfg(feature = "mouse")]
+        {
+            if let Some(mouse_event) = crate::io::hid::poll_mouse_event() {
+                let buttons = MouseButtons(
+                    if mouse_event.buttons.left() { MouseButtons::LEFT } else { 0 }
+                    | if mouse_event.buttons.right() { MouseButtons::RIGHT } else { 0 }
+                    | if mouse_event.buttons.middle() { MouseButtons::MIDDLE } else { 0 }
+                );
+
+                let kapi_mouse = KapiMouseEvent {
+                    dx: mouse_event.delta_x,
+                    dy: mouse_event.delta_y,
+                    buttons,
+                };
+
+                return Some(InputEvent::Mouse(kapi_mouse));
+            }
+        }
+
+        None
     }
 }
 

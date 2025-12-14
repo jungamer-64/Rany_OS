@@ -656,7 +656,7 @@ pub fn quota_manager() -> &'static QuotaManager {
 pub fn init() {
     // カーネルドメインを登録
     QUOTA_MANAGER.register(DomainQuota::kernel());
-    crate::log!("[Quota] Resource quota system initialized\n");
+    log::info!("[Quota] Resource quota system initialized\n");
 }
 
 // ============================================================================

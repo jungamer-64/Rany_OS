@@ -1004,7 +1004,7 @@ fn process_arp_packet(offset: usize, packet: &PacketRef) {
         // ARPリプライを生成する必要があるが、
         // 現在は受信したパケットをログに記録するのみ
         // 完全な実装にはネットワークインターフェースの参照が必要
-        crate::log!(
+        log::info!(
             "[ARP] Request from {}.{}.{}.{} for {}.{}.{}.{}\n",
             arp_packet.sender_ip[0],
             arp_packet.sender_ip[1],
@@ -1081,7 +1081,7 @@ fn process_icmp_packet(icmp_offset: usize, packet: &PacketRef, ip_header: &Ipv4H
             // Echo Replyを生成する必要があるが、
             // 送信機能が必要なため現時点ではログのみ
             let src_bytes = ip_header.src_addr;
-            crate::log!(
+            log::info!(
                 "[ICMP] Echo Request from {}.{}.{}.{}\n",
                 src_bytes[0],
                 src_bytes[1],
@@ -1091,15 +1091,15 @@ fn process_icmp_packet(icmp_offset: usize, packet: &PacketRef, ip_header: &Ipv4H
         }
         0 => {
             // Echo Reply
-            crate::log!("[ICMP] Echo Reply received\n");
+            log::info!("[ICMP] Echo Reply received\n");
         }
         3 => {
             // Destination Unreachable
-            crate::log!("[ICMP] Destination Unreachable (code: {})\n", icmp_code);
+            log::info!("[ICMP] Destination Unreachable (code: {})\n", icmp_code);
         }
         11 => {
             // Time Exceeded
-            crate::log!("[ICMP] Time Exceeded\n");
+            log::info!("[ICMP] Time Exceeded\n");
         }
         _ => {
             // 他のICMPタイプ
@@ -1153,14 +1153,14 @@ fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Hea
     let rst = flags & TcpHeader::FLAG_RST != 0;
 
     if syn && !ack {
-        crate::log!(
+        log::info!(
             "[TCP] SYN from {} to {} (seq: {})\n",
             src_addr,
             dst_addr,
             seq_num
         );
     } else if syn && ack {
-        crate::log!(
+        log::info!(
             "[TCP] SYN-ACK from {} to {} (seq: {}, ack: {})\n",
             src_addr,
             dst_addr,
@@ -1168,9 +1168,9 @@ fn process_tcp_packet(tcp_offset: usize, packet: &PacketRef, ip_header: &Ipv4Hea
             ack_num
         );
     } else if fin {
-        crate::log!("[TCP] FIN from {} to {}\n", src_addr, dst_addr);
+        log::info!("[TCP] FIN from {} to {}\n", src_addr, dst_addr);
     } else if rst {
-        crate::log!("[TCP] RST from {} to {}\n", src_addr, dst_addr);
+        log::info!("[TCP] RST from {} to {}\n", src_addr, dst_addr);
     }
 
     // 将来的にはグローバルTcpProcessorにパケットを転送

@@ -1,0 +1,8 @@
+[package]
+name = "framebuffer_bench"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+criterion = "0.4"
+rany_kernel = { path = "../../kernel", features = ["bench"] }

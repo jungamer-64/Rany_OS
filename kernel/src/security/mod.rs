@@ -65,11 +65,14 @@ use alloc::vec::Vec;
 
 // Provide a simple log macro for tests so `crate::log!` calls resolve
 // without pulling in the full VGA/serial logging subsystems.
+// Provide a test-time log macro that forwards to the host's stdout
+// via the standard `println!` macro. Use the fully-qualified path
+// `::std::println!` to avoid macro hygiene issues in nested modules.
 #[cfg(test)]
 #[macro_export]
 macro_rules! log {
     ($($arg:tt)*) => ({
-        println!($($arg)*);
+        ::std::println!($($arg)*);
     });
 }
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -271,7 +274,7 @@ impl AccessControlManager {
         self.violations.fetch_add(1, Ordering::Relaxed);
 
         if self.audit_enabled.load(Ordering::Relaxed) {
-            crate::log!(
+            log::info!(
                 "[SECURITY] Violation: domain {} attempted {}\n",
                 domain_id,
                 operation
@@ -608,8 +611,8 @@ pub fn init() {
     // カーネルドメイン（ID=0）の権限を設定
     ACCESS_CONTROL.set_capabilities(0, SecurityCapabilities::KERNEL);
 
-    crate::log!("[SECURITY] Security framework initialized\n");
-    crate::log!("[SECURITY] Audit logging: enabled\n");
+    log::info!("[SECURITY] Security framework initialized\n");
+    log::info!("[SECURITY] Audit logging: enabled\n");
 }
 
 #[cfg(test)]

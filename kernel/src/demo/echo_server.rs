@@ -300,7 +300,7 @@ impl EchoConnection {
 
     pub fn close(self) {
         STATS.on_disconnect();
-        crate::log!(
+        log::info!(
             "[ECHO] Connection {} closed (in={}, out={})\n",
             self.id,
             self.bytes_in,
@@ -311,12 +311,12 @@ impl EchoConnection {
 
 /// Run echo server demo (simulation mode)
 pub fn run() -> DemoResult {
-    crate::log!("\n");
-    crate::log!(
+    log::info!("\n");
+    log::info!(
         "================================================================================\n"
     );
-    crate::log!("                    ExoRust TCP Echo Server Demo\n");
-    crate::log!(
+    log::info!("                    ExoRust TCP Echo Server Demo\n");
+    log::info!(
         "================================================================================\n\n"
     );
 
@@ -329,56 +329,56 @@ pub fn run() -> DemoResult {
 
     RUNNING.store(true, Ordering::SeqCst);
 
-    crate::log!("[ECHO] Server initialized on port {}\n", config.port);
-    crate::log!(
+    log::info!("[ECHO] Server initialized on port {}\n", config.port);
+    log::info!(
         "[ECHO] Max message size: {} bytes\n",
         config.max_message_size
     );
-    crate::log!("[ECHO] Backlog: {} connections\n", config.backlog);
+    log::info!("[ECHO] Backlog: {} connections\n", config.backlog);
     if let Some(ref prefix) = config.prefix {
-        crate::log!("[ECHO] Response prefix: '{}'\n", prefix);
+        log::info!("[ECHO] Response prefix: '{}'\n", prefix);
     }
-    crate::log!("\n");
+    log::info!("\n");
 
     // Simulate connections and echo operations
-    crate::log!("[ECHO] Simulating echo connections...\n\n");
+    log::info!("[ECHO] Simulating echo connections...\n\n");
 
     // Connection 1
     let mut conn1 = EchoConnection::new(1, "192.168.1.100:54321");
-    crate::log!("[ECHO] Connection 1 from {}\n", conn1.remote);
+    log::info!("[ECHO] Connection 1 from {}\n", conn1.remote);
 
     let msg1 = b"Hello, ExoRust!";
     let response1 = conn1.echo(msg1, config.prefix.as_deref());
-    crate::log!(
+    log::info!(
         "[ECHO] Received: '{}'\n",
         core::str::from_utf8(msg1).unwrap()
     );
-    crate::log!(
+    log::info!(
         "[ECHO] Sent: '{}'\n",
         core::str::from_utf8(&response1).unwrap_or("<binary>")
     );
 
     // Connection 2
     let mut conn2 = EchoConnection::new(2, "10.0.0.50:12345");
-    crate::log!("\n[ECHO] Connection 2 from {}\n", conn2.remote);
+    log::info!("\n[ECHO] Connection 2 from {}\n", conn2.remote);
 
     let msg2 = b"Testing zero-copy networking";
     let response2 = conn2.echo(msg2, config.prefix.as_deref());
-    crate::log!(
+    log::info!(
         "[ECHO] Received: '{}'\n",
         core::str::from_utf8(msg2).unwrap()
     );
-    crate::log!(
+    log::info!(
         "[ECHO] Sent: '{}'\n",
         core::str::from_utf8(&response2).unwrap_or("<binary>")
     );
 
     // Multiple messages on connection 1
-    crate::log!("\n[ECHO] Multiple messages on connection 1:\n");
+    log::info!("\n[ECHO] Multiple messages on connection 1:\n");
     for i in 0..5 {
         let msg = alloc::format!("Message {}", i);
         let response = conn1.echo(msg.as_bytes(), config.prefix.as_deref());
-        crate::log!(
+        log::info!(
             "  [{}] Echo: {}\n",
             i,
             core::str::from_utf8(&response).unwrap_or("<binary>")
@@ -386,19 +386,19 @@ pub fn run() -> DemoResult {
     }
 
     // Binary data test
-    crate::log!("\n[ECHO] Binary data test:\n");
+    log::info!("\n[ECHO] Binary data test:\n");
     let binary_data: [u8; 16] = [
         0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE,
         0xFF,
     ];
     let response_binary = conn2.echo(&binary_data, None);
-    crate::log!("[ECHO] Sent {} bytes of binary data\n", binary_data.len());
-    crate::log!("[ECHO] Received {} bytes back\n", response_binary.len());
+    log::info!("[ECHO] Sent {} bytes of binary data\n", binary_data.len());
+    log::info!("[ECHO] Received {} bytes back\n", response_binary.len());
 
     if response_binary == binary_data {
-        crate::log!("[ECHO] Binary data integrity verified ✓\n");
+        log::info!("[ECHO] Binary data integrity verified ✓\n");
     } else {
-        crate::log!("[ECHO] WARNING: Binary data mismatch!\n");
+        log::info!("[ECHO] WARNING: Binary data mismatch!\n");
     }
 
     // Close connections
@@ -407,16 +407,16 @@ pub fn run() -> DemoResult {
 
     // Print statistics
     let (conns, bytes, errors, active) = stats();
-    crate::log!("\n[ECHO] Server Statistics:\n");
-    crate::log!("       Total connections: {}\n", conns);
-    crate::log!("       Active connections: {}\n", active);
-    crate::log!("       Bytes echoed: {}\n", bytes);
-    crate::log!("       Errors: {}\n", errors);
+    log::info!("\n[ECHO] Server Statistics:\n");
+    log::info!("       Total connections: {}\n", conns);
+    log::info!("       Active connections: {}\n", active);
+    log::info!("       Bytes echoed: {}\n", bytes);
+    log::info!("       Errors: {}\n", errors);
 
     RUNNING.store(false, Ordering::SeqCst);
 
-    crate::log!("\n[ECHO] Echo server demo completed successfully\n");
-    crate::log!(
+    log::info!("\n[ECHO] Echo server demo completed successfully\n");
+    log::info!(
         "================================================================================\n\n"
     );
 

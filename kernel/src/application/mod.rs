@@ -94,7 +94,7 @@ impl DomainManager {
             app_id,
         });
 
-        crate::log!("[Domain:{}] Loading application '{}'\n", domain_id, name);
+        log::info!("[Domain:{}] Loading application '{}'\n", domain_id, name);
 
         // Create application context
         let ctx = AppContext::new(app_id, name.clone(), domain_id, caps);
@@ -102,7 +102,7 @@ impl DomainManager {
         // Spawn the application start future via kernel services
         let start_future = app.on_start(ctx);
         if let Err(e) = kernel_api::kernel().spawn_task(start_future) {
-            crate::log!("[Domain:{}] Failed to spawn app task: {:?}\n", domain_id, e);
+            log::info!("[Domain:{}] Failed to spawn app task: {:?}\n", domain_id, e);
         }
     }
 
@@ -139,7 +139,7 @@ static DOMAIN_MANAGER: Mutex<Option<DomainManager>> = Mutex::new(None);
 /// Initialize domain manager
 pub fn init() {
     *DOMAIN_MANAGER.lock() = Some(DomainManager::new());
-    crate::log!("[Application] Runtime initialized (SPL Domain Model)\n");
+    log::info!("[Application] Runtime initialized (SPL Domain Model)\n");
 }
 
 /// Access domain manager

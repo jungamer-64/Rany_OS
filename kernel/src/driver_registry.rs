@@ -76,7 +76,7 @@ impl DriverRegistry {
         let mut drivers = self.drivers.lock();
         let id = drivers.len();
 
-        crate::log!(
+        log::info!(
             "[DRIVER] Registering driver: {} (type: {:?})\n",
             driver.name(),
             driver.driver_type()
@@ -95,17 +95,17 @@ impl DriverRegistry {
             return Err(DriverError::InvalidState);
         }
 
-        crate::log!("[DRIVER] Probing driver: {}\n", entry.driver.name());
+        log::info!("[DRIVER] Probing driver: {}\n", entry.driver.name());
 
         match entry.driver.probe() {
             Ok(()) => {
                 entry.state = DriverState::Probed;
-                crate::log!("[DRIVER] Probe successful: {}\n", entry.driver.name());
+                log::info!("[DRIVER] Probe successful: {}\n", entry.driver.name());
                 Ok(())
             }
             Err(e) => {
                 entry.state = DriverState::Error;
-                crate::log!("[DRIVER] Probe failed: {} - {:?}\n", entry.driver.name(), e);
+                log::info!("[DRIVER] Probe failed: {} - {:?}\n", entry.driver.name(), e);
                 Err(DriverError::ProbeFailed)
             }
         }
@@ -120,7 +120,7 @@ impl DriverRegistry {
             return Err(DriverError::InvalidState);
         }
 
-        crate::log!("[DRIVER] Starting driver: {}\n", entry.driver.name());
+        log::info!("[DRIVER] Starting driver: {}\n", entry.driver.name());
 
         match entry.driver.start() {
             Ok(()) => {
@@ -129,7 +129,7 @@ impl DriverRegistry {
             }
             Err(e) => {
                 entry.state = DriverState::Error;
-                crate::log!("[DRIVER] Start failed: {} - {:?}\n", entry.driver.name(), e);
+                log::info!("[DRIVER] Start failed: {} - {:?}\n", entry.driver.name(), e);
                 Err(DriverError::StartFailed)
             }
         }
@@ -144,7 +144,7 @@ impl DriverRegistry {
             return Err(DriverError::InvalidState);
         }
 
-        crate::log!("[DRIVER] Stopping driver: {}\n", entry.driver.name());
+        log::info!("[DRIVER] Stopping driver: {}\n", entry.driver.name());
 
         match entry.driver.stop() {
             Ok(()) => {
@@ -268,7 +268,7 @@ impl DriverRegistry {
     /// Logs success/failure for each driver.
     pub fn init_all(&self) {
         let count = self.count();
-        crate::log!("[DRIVER] Initializing {} registered drivers...\n", count);
+        log::info!("[DRIVER] Initializing {} registered drivers...\n", count);
 
         for i in 0..count {
             let handle = DriverHandle(i);
@@ -276,19 +276,19 @@ impl DriverRegistry {
                 .name(handle)
                 .unwrap_or_else(|| alloc::string::String::from("unknown"));
 
-            crate::log!("[DRIVER] Initializing: {}\n", name);
+            log::info!("[DRIVER] Initializing: {}\n", name);
 
             match self.probe_and_start(handle) {
                 Ok(()) => {
-                    crate::log!("[DRIVER] {} initialized successfully\n", name);
+                    log::info!("[DRIVER] {} initialized successfully\n", name);
                 }
                 Err(e) => {
-                    crate::log!("[DRIVER] {} initialization failed: {:?}\n", name, e);
+                    log::info!("[DRIVER] {} initialization failed: {:?}\n", name, e);
                 }
             }
         }
 
-        crate::log!(
+        log::info!(
             "[DRIVER] Driver initialization complete: {}/{} running\n",
             self.running_count(),
             count
@@ -315,7 +315,7 @@ impl DriverRegistry {
         entry.driver = Box::new(NullDriver::new(&old_name, old_ty));
         entry.state = DriverState::Removed;
 
-        crate::log!("[DRIVER] Unregistered driver: {}\n", old_name);
+        log::info!("[DRIVER] Unregistered driver: {}\n", old_name);
         Ok(())
     }
 
@@ -329,7 +329,7 @@ impl DriverRegistry {
         let mut drivers = self.drivers.lock();
         let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
-        crate::log!(
+        log::info!(
             "[DRIVER] Replacing driver {} ({}) with new version\n",
             entry.driver.name(),
             handle.index()

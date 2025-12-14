@@ -200,7 +200,7 @@ pub fn process_deferred_frees() -> usize {
             //     core::ptr::drop_in_place(entry.address as *mut u8);
             //     // または適切なデアロケータを呼び出す
             // }
-            crate::log!(
+            log::info!(
                 "[EPOCH] Freed deferred memory: addr=0x{:x}, size={}\n",
                 entry.address,
                 entry.size
@@ -258,7 +258,7 @@ impl LiveUpdateController {
     pub fn begin_update(&mut self) -> u64 {
         self.state = LiveUpdateState::Loading;
         self.start_epoch = advance_epoch();
-        crate::log!(
+        log::info!(
             "[LIVE_UPDATE] Started update at epoch {}\n",
             self.start_epoch
         );
@@ -275,10 +275,10 @@ impl LiveUpdateController {
         let attempts = max_wait_ms * 1000; // おおよその反復回数
         if wait_for_quiescent_state(self.start_epoch, attempts) {
             self.state = LiveUpdateState::Completed;
-            crate::log!("[LIVE_UPDATE] Switch completed\n");
+            log::info!("[LIVE_UPDATE] Switch completed\n");
             true
         } else {
-            crate::log!("[LIVE_UPDATE] Quiescent wait timeout, rolling back\n");
+            log::info!("[LIVE_UPDATE] Quiescent wait timeout, rolling back\n");
             self.rollback();
             false
         }
@@ -287,7 +287,7 @@ impl LiveUpdateController {
     /// ロールバック
     pub fn rollback(&mut self) {
         self.state = LiveUpdateState::RolledBack;
-        crate::log!("[LIVE_UPDATE] Rolled back\n");
+        log::info!("[LIVE_UPDATE] Rolled back\n");
     }
 
     /// 現在の状態を取得

@@ -116,29 +116,29 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     *LAST_PANIC.lock() = Some(record);
 
     // エラー出力（シリアルコンソール用）
-    crate::log!("\n");
-    crate::log!(
+    log::info!("\n");
+    log::info!(
         "================================================================================\n"
     );
-    crate::log!("                            !!! KERNEL PANIC !!!\n");
-    crate::log!(
+    log::info!("                            !!! KERNEL PANIC !!!\n");
+    log::info!(
         "================================================================================\n"
     );
-    crate::log!("Panic #{}\n", count + 1);
+    log::info!("Panic #{}\n", count + 1);
 
     if let Some(loc) = &location {
-        crate::log!("Location: {}:{}:{}\n", loc.file, loc.line, loc.column);
+        log::info!("Location: {}:{}:{}\n", loc.file, loc.line, loc.column);
     }
 
-    crate::log!("Message: {}\n", message);
+    log::info!("Message: {}\n", message);
 
     if domain_id > 0 {
-        crate::log!("Domain ID: {}\n", domain_id);
+        log::info!("Domain ID: {}\n", domain_id);
 
         // ドメイン固有のパニック処理を試みる
         if try_handle_domain_panic(domain_id, &message) {
             // ドメインのリソースを回収して続行を試みる
-            crate::log!(
+            log::info!(
                 "Domain {} terminated, attempting to continue...\n",
                 domain_id
             );
@@ -151,7 +151,7 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         }
     }
 
-    crate::log!(
+    log::info!(
         "================================================================================\n"
     );
 
@@ -211,17 +211,17 @@ pub fn handle_double_fault(
 ) -> ! {
     x86_64::instructions::interrupts::disable();
 
-    crate::log!("\n");
-    crate::log!(
+    log::info!("\n");
+    log::info!(
         "================================================================================\n"
     );
-    crate::log!("                         !!! DOUBLE FAULT !!!\n");
-    crate::log!(
+    log::info!("                         !!! DOUBLE FAULT !!!\n");
+    log::info!(
         "================================================================================\n"
     );
-    crate::log!("Error Code: {}\n", error_code);
-    crate::log!("Stack Frame:\n{:#?}\n", stack_frame);
-    crate::log!(
+    log::info!("Error Code: {}\n", error_code);
+    log::info!("Stack Frame:\n{:#?}\n", stack_frame);
+    log::info!(
         "================================================================================\n"
     );
 
@@ -306,7 +306,7 @@ pub fn setup_ist_stack_guards() {
 pub fn abort(message: &str) -> ! {
     x86_64::instructions::interrupts::disable();
 
-    crate::log!("\n!!! ABORT: {} !!!\n", message);
+    log::info!("\n!!! ABORT: {} !!!\n", message);
 
     loop {
         x86_64::instructions::hlt();
@@ -329,11 +329,11 @@ fn display_bsod_on_panic(
 ) {
     // グラフィックスが初期化されているか確認
     if crate::graphics::framebuffer().is_none() {
-        crate::log!("[BSOD] Framebuffer not available, skipping BSOD display\n");
+        log::info!("[BSOD] Framebuffer not available, skipping BSOD display\n");
         return;
     }
 
-    crate::log!("[BSOD] Displaying Blue Screen of Death...\n");
+    log::info!("[BSOD] Displaying Blue Screen of Death...\n");
 
     // BSOD表示
     crate::graphics::bsod::show_panic_bsod(message, file, line, column);

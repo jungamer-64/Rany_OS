@@ -323,7 +323,7 @@ impl SysNamespace {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_BOOT required"));
         }
 
-        crate::log!("[SYS] Shutdown requested via shell\n");
+        log::info!("[SYS] Shutdown requested via shell\n");
         // 実際のシャットダウンは危険なのでメッセージのみ
         ExoValue::String(Cow::Borrowed(
             "Shutdown command received. Use Ctrl+Alt+Del or power button to actually shutdown.",
@@ -337,7 +337,7 @@ impl SysNamespace {
             return ExoValue::Error(String::from("Permission denied: CAP_SYS_BOOT required"));
         }
 
-        crate::log!("[SYS] Reboot requested via shell\n");
+        log::info!("[SYS] Reboot requested via shell\n");
         // 実際のリブートは危険なのでメッセージのみ
         ExoValue::String(Cow::Borrowed(
             "Reboot command received. Use Ctrl+Alt+Del to actually reboot.",

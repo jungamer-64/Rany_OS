@@ -43,19 +43,19 @@ static HDA_DRIVER: Mutex<Option<HdaController>> = Mutex::new(None);
 
 /// Initialize the HDA driver
 pub fn init() -> HdaResult<()> {
-    crate::log!("[HDA] Searching for Intel HD Audio device...\n");
+    log::info!("[HDA] Searching for Intel HD Audio device...\n");
 
     // Search for HDA device (class 04, subclass 03)
     let devices = find_by_class(HDA_CLASS, HDA_SUBCLASS);
 
     if devices.is_empty() {
-        crate::log!("[HDA] No HD Audio device found\n");
+        log::info!("[HDA] No HD Audio device found\n");
         return Err(HdaError::NoDevice);
     }
 
     let pci_device = devices.into_iter().next().unwrap();
 
-    crate::log!(
+    log::info!(
         "[HDA] Found device: {:04x}:{:04x} at {:02x}:{:02x}.{}\n",
         pci_device.vendor_id.0,
         pci_device.device_id.0,
@@ -68,13 +68,13 @@ pub fn init() -> HdaResult<()> {
     let irq = pci_device.interrupt_line;
     if irq > 0 && irq < 16 {
         HDA_IRQ.store(irq, Ordering::SeqCst);
-        crate::log!(
+        log::info!(
             "[HDA] IRQ: {} (interrupt_pin: {})\n",
             irq,
             pci_device.interrupt_pin
         );
     } else {
-        crate::log!(
+        log::info!(
             "[HDA] Warning: Invalid IRQ {} (will use polling mode)\n",
             irq
         );
@@ -87,7 +87,7 @@ pub fn init() -> HdaResult<()> {
         _ => return Err(HdaError::InvalidBar),
     };
 
-    crate::log!("[HDA] MMIO base: 0x{:016x}\n", mmio_base);
+    log::info!("[HDA] MMIO base: 0x{:016x}\n", mmio_base);
 
     // Create and initialize controller
     let mut controller = HdaController::new(pci_device, mmio_base);
@@ -136,7 +136,7 @@ pub fn play_tone(frequency_hz: u32, duration_ms: u32) -> HdaResult<()> {
 
 /// Quick test: play a startup beep sequence
 pub fn test_beep() -> HdaResult<()> {
-    crate::log!("[HDA] Playing test beep sequence...\n");
+    log::info!("[HDA] Playing test beep sequence...\n");
 
     // Try beep generator first
     if beep(440, 200).is_ok() {
@@ -203,7 +203,7 @@ pub fn handle_interrupt() {
 
     // デバッグ出力（最初の数回のみ）
     if count < 5 {
-        crate::log!("[HDA] Interrupt #{}\n", count);
+        log::info!("[HDA] Interrupt #{}\n", count);
     }
 }
 
@@ -227,7 +227,7 @@ pub fn enable_irq() {
     let irq = HDA_IRQ.load(Ordering::SeqCst);
     if irq > 0 && irq < 16 {
         crate::interrupts::unmask_irq(irq);
-        crate::log!("[HDA] IRQ {} unmasked\n", irq);
+        log::info!("[HDA] IRQ {} unmasked\n", irq);
     }
 }
 
@@ -236,6 +236,6 @@ pub fn disable_irq() {
     let irq = HDA_IRQ.load(Ordering::SeqCst);
     if irq > 0 && irq < 16 {
         crate::interrupts::mask_irq(irq);
-        crate::log!("[HDA] IRQ {} masked\n", irq);
+        log::info!("[HDA] IRQ {} masked\n", irq);
     }
 }

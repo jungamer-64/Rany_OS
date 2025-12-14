@@ -19,23 +19,23 @@ pub enum DemoResult {
 
 /// Initialize demo module
 pub fn init() {
-    crate::log!("[DEMO] Demo applications module initialized\n");
+    log::info!("[DEMO] Demo applications module initialized\n");
 }
 
 /// List available demos
 pub fn list_demos() {
-    crate::log!("\nAvailable Demos:\n");
-    crate::log!("  1. http_server  - Simple HTTP server (zero-copy) [WIP]\n");
-    crate::log!("  2. echo_server  - TCP echo server [Ready]\n");
-    crate::log!("  3. performance  - Performance demonstration [WIP]\n");
-    crate::log!("\n");
+    log::info!("\nAvailable Demos:\n");
+    log::info!("  1. http_server  - Simple HTTP server (zero-copy) [WIP]\n");
+    log::info!("  2. echo_server  - TCP echo server [Ready]\n");
+    log::info!("  3. performance  - Performance demonstration [WIP]\n");
+    log::info!("\n");
 }
 
 /// Run demo by name
 pub fn run_demo(name: &str) -> DemoResult {
     match name {
         "http" | "http_server" => {
-            crate::log!("[DEMO] HTTP server demo not yet implemented\n");
+            log::info!("[DEMO] HTTP server demo not yet implemented\n");
             DemoResult::Error(String::from("Not implemented"))
         }
         "echo" | "echo_server" => {
@@ -49,12 +49,12 @@ pub fn run_demo(name: &str) -> DemoResult {
 
 /// Run basic performance demonstration
 fn run_basic_perf_demo() -> DemoResult {
-    crate::log!("\n");
-    crate::log!(
+    log::info!("\n");
+    log::info!(
         "================================================================================\n"
     );
-    crate::log!("                    ExoRust Performance Demonstration\n");
-    crate::log!(
+    log::info!("                    ExoRust Performance Demonstration\n");
+    log::info!(
         "================================================================================\n\n"
     );
 
@@ -71,17 +71,17 @@ fn run_basic_perf_demo() -> DemoResult {
     let end = rdtsc();
     let cycles = end - start;
 
-    crate::log!(
+    log::info!(
         "[PERF] 10000 iterations: {} cycles ({} cycles/iter)\n",
         cycles,
         cycles / 10000
     );
-    crate::log!(
+    log::info!(
         "[PERF] Estimated time: ~{} ns (assuming 2GHz CPU)\n",
         cycles / 2
     );
 
-    crate::log!(
+    log::info!(
         "\n================================================================================\n\n"
     );
 

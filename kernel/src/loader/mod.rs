@@ -247,14 +247,14 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
     // 2. 【設計書 3.4】Type ID Check - ABI互換性の検証
     if let Some(deps) = type_id::extract_type_ids(elf_data) {
         if let Err(e) = type_id::verify_cell_dependencies(&deps) {
-            crate::log!(
+            log::info!(
                 "[Loader] Type ID verification failed for '{}': {}\n",
                 name,
                 e
             );
             return Err(LoadError::AbiIncompatible(alloc::format!("{}", e)));
         }
-        crate::log!(
+        log::info!(
             "[Loader] Type ID verified for '{}' ({})\n",
             name,
             deps.cell_version
@@ -348,7 +348,7 @@ pub fn load_driver(
             with_registry_mut(|r| {
                 if let Some(entry) = r.get_mut(cell_id) {
                     entry.registered_drivers.push(handle);
-                    crate::log!(
+                    log::info!(
                         "[Loader] Driver registered: {:?} for cell {:?}\n",
                         handle,
                         cell_id.as_u64()
@@ -398,7 +398,7 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
 
     // Epoch-based Reclamation: グローバルエポックをインクリメント
     let old_epoch = live_update::current_epoch();
-    crate::log!(
+    log::info!(
         "[Loader] Unloading cell {:?}, waiting for epoch {} quiescence\n",
         id.as_u64(),
         old_epoch
@@ -441,7 +441,7 @@ pub fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
             if let Some(pos) = entry.registered_drivers.iter().position(|h| *h == handle) {
                 entry.registered_drivers.remove(pos);
                 found = true;
-                crate::log!(
+                log::info!(
                     "[Loader] Removed driver handle {:?} from cell {}\n",
                     handle,
                     entry.id.as_u64()
