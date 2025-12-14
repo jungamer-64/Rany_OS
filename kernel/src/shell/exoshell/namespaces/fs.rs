@@ -82,8 +82,9 @@ impl FsNamespace {
             None => return ExoValue::Error(String::from("Shell services unavailable")),
         };
 
-        match shell.read_file(path) {
-            Ok(content) => ExoValue::BufferRef(KernelBufferView::new(content)),
+        // ゼロコピー読み取りを使用（Arc<Vec<u8>>を直接受け取る）
+        match shell.read_file_zero_copy(path) {
+            Ok(content) => ExoValue::BufferRef(KernelBufferView::from_arc(content)),
             Err(e) => ExoValue::Error(String::from(e)),
         }
     }
