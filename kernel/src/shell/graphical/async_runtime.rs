@@ -19,9 +19,7 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::graphics::Color;
-use crate::io::hid::{keyboard, poll_input_event, KeyEvent, KeyCode, KeyState, Modifiers};
-#[cfg(feature = "mouse")]
-use crate::io::hid::poll_mouse_event;
+use crate::io::hid::{KeyEvent, KeyCode, KeyState, Modifiers};
 use crate::shell::exoshell::{ExoShell, ExoValue};
 use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState};
 use kernel_api::services::kernel;
@@ -74,8 +72,13 @@ pub fn init() {
     info!(target: "gshell", "Framebuffer via GuiServices: {}x{} stride={}", 
           fb_info.width, fb_info.height, fb_info.stride);
 
-    // グラフィカルシェルを作成（既存のdims取得を継続）
-    let shell = GraphicalShell::new(fb_info.width as u32, fb_info.height as u32);
+    // Create owned Framebuffer from KAPI info
+    let framebuffer = unsafe { 
+        crate::graphics::Framebuffer::from_kapi_info(&fb_info)
+    };
+
+    // グラフィカルシェルを作成（フレームバッファを所有）
+    let shell = GraphicalShell::new(framebuffer);
 
     *GRAPHICAL_SHELL.lock() = Some(shell);
     info!(target: "gshell", "Graphical shell created successfully");
@@ -85,33 +88,22 @@ pub fn init() {
 pub fn start() {
     use log::info;
 
-    // 1. 必要なバッファサイズを取得（ロックは一瞬だけ）
-    let buffer_size = crate::graphics::with_framebuffer(|fb| fb.info().size()).unwrap_or(0);
-
-    // 2. バッファを確保（ロック外で行うため、アロケーションログによるデッドロックを回避）
-    let backing_buffer = if buffer_size > 0 {
-        Some(vec![0u8; buffer_size])
+    let mut guard = GRAPHICAL_SHELL.lock();
+    if let Some(ref mut shell) = *guard {
+        // Enable double buffering on the shell's owned framebuffer
+        let buffer_size = shell.framebuffer.info().size();
+        if buffer_size > 0 {
+            let backing_buffer = vec![0u8; buffer_size];
+            shell.framebuffer.enable_double_buffering_from_vec(backing_buffer);
+        } else {
+            shell.framebuffer.enable_double_buffering();
+        }
+        
+        shell.start();
+        info!(target: "gshell", "Graphical shell started");
     } else {
-        None
-    };
-
-    // 3. シェルを開始（バッファを渡す）
-    crate::graphics::with_framebuffer(|fb| {
-        // 確保したバッファがあれば設定
-        if let Some(buf) = backing_buffer {
-            fb.enable_double_buffering_from_vec(buf);
-        } else {
-            // サイズ取得失敗時は従来通り（リスクありだがフォールバック）
-            fb.enable_double_buffering();
-        }
-
-        if let Some(ref mut shell) = *GRAPHICAL_SHELL.lock() {
-            shell.start(fb);
-            info!(target: "gshell", "Graphical shell started");
-        } else {
-            info!(target: "gshell", "Cannot start - no shell instance");
-        }
-    });
+        info!(target: "gshell", "Cannot start - no shell instance");
+    }
 }
 
 /// グラフィカルシェルにアクセス
@@ -130,7 +122,6 @@ where
 /// - マウスは従来のポーリング（TODO: MouseStream化）
 /// - カーソル点滅は定期的なyieldで処理
 pub async fn run_async_shell() {
-    use crate::io::hid::poll_input_event;
     use log::info;
 
     info!(target: "gshell", "Starting async graphical shell task (event-driven)...");
@@ -142,73 +133,58 @@ pub async fn run_async_shell() {
         // ========================================
         // Phase 1: 入力イベント処理
         // ========================================
-        // Get current tick via GuiServices before entering framebuffer lock
+        // Get current tick via GuiServices
         let current_time = kernel().gui().map(|g| g.current_tick()).unwrap_or(0);
         
-        crate::graphics::with_framebuffer(|fb| {
+        // Shell owns its framebuffer - no need for with_framebuffer wrapper
+        {
             let mut guard = GRAPHICAL_SHELL.lock();
             if let Some(ref mut shell) = *guard {
-                // キーボード: KeyboardStreamを試行
-                if let Ok(mut stream) = keyboard().take_stream() {
-                    if let Some(key_event) = stream.poll() {
-                        shell.handle_key(key_event, fb);
-                    }
-                } else {
-                    // フォールバック: GuiServices経由でポーリング (Cell分離アーキテクチャ)
-                    if let Some(gui_services) = kernel().gui() {
-                        for _ in 0..8 {
-                            if let Some(input_event) = gui_services.poll_input_event() {
-                                match input_event {
-                                    InputEvent::Key(kapi_key) => {
-                                        // Convert kernel_api::gui::KeyEvent to internal HID KeyEvent
-                                        let state = match kapi_key.state {
-                                            KapiKeyState::Pressed => KeyState::Pressed,
-                                            KapiKeyState::Released => KeyState::Released,
+                // 入力処理: GuiServices経由 (Cell分離アーキテクチャ)
+                if let Some(gui_services) = kernel().gui() {
+                    for _ in 0..8 {
+                        if let Some(input_event) = gui_services.poll_input_event() {
+                            match input_event {
+                                InputEvent::Key(kapi_key) => {
+                                    // Convert kernel_api::gui::KeyEvent to internal HID KeyEvent
+                                    let state = match kapi_key.state {
+                                        KapiKeyState::Pressed => KeyState::Pressed,
+                                        KapiKeyState::Released => KeyState::Released,
+                                    };
+                                    let modifiers = Modifiers {
+                                        shift: (kapi_key.modifiers & 0x01) != 0,
+                                        ctrl: (kapi_key.modifiers & 0x02) != 0,
+                                        alt: (kapi_key.modifiers & 0x04) != 0,
+                                        alt_gr: (kapi_key.modifiers & 0x08) != 0,
+                                        caps_lock: (kapi_key.modifiers & 0x10) != 0,
+                                        num_lock: false,
+                                        scroll_lock: false,
+                                    };
+                                    let hid_event = KeyEvent {
+                                        key: KeyCode::Unknown,
+                                        state,
+                                        modifiers,
+                                        raw_scancode: kapi_key.scancode,
+                                    };
+                                    shell.handle_key(hid_event);
+                                }
+                                InputEvent::Mouse(kapi_mouse) => {
+                                    #[cfg(feature = "mouse")]
+                                    {
+                                        use crate::io::hid::MouseEvt;
+                                        use kernel_api::gui::MouseButtons;
+                                        // Convert KAPI MouseEvent to internal MouseEvent
+                                        let hid_mouse = MouseEvt {
+                                            dx: kapi_mouse.dx as i32,
+                                            dy: kapi_mouse.dy as i32,
+                                            left_down: kapi_mouse.buttons.left(),
+                                            right_down: kapi_mouse.buttons.right(),
+                                            middle_down: kapi_mouse.buttons.middle(),
                                         };
-                                        let modifiers = Modifiers {
-                                            shift: (kapi_key.modifiers & 0x01) != 0,
-                                            ctrl: (kapi_key.modifiers & 0x02) != 0,
-                                            alt: (kapi_key.modifiers & 0x04) != 0,
-                                            alt_gr: (kapi_key.modifiers & 0x08) != 0,
-                                            caps_lock: (kapi_key.modifiers & 0x10) != 0,
-                                            num_lock: false,
-                                            scroll_lock: false,
-                                        };
-                                        let hid_event = KeyEvent {
-                                            key: KeyCode::Unknown,
-                                            state,
-                                            modifiers,
-                                            raw_scancode: kapi_key.scancode,
-                                        };
-                                        shell.handle_key(hid_event, fb);
-                                    }
-                                    InputEvent::Mouse(_mouse) => {
-                                        // Mouse handled below via feature flag
+                                        shell.handle_mouse(hid_mouse);
                                     }
                                 }
-                            } else {
-                                break;
                             }
-                        }
-                    } else {
-                        // No GuiServices - fallback to direct HID polling
-                        for _ in 0..8 {
-                            if let Some(event) = poll_input_event() {
-                                shell.handle_key(event, fb);
-                            } else {
-                                break;
-                            }
-                        }
-                    }
-                }
-
-
-                #[cfg(feature = "mouse")]
-                {
-                    // マウス: ポーリング（TODO: GuiServices経由）
-                    for _ in 0..8 {
-                        if let Some(event) = poll_mouse_event() {
-                            shell.handle_mouse(event, fb);
                         } else {
                             break;
                         }
@@ -228,16 +204,16 @@ pub async fn run_async_shell() {
                     }
 
                     shell.state.is_executing = false;
-                    shell.redraw(fb);
+                    shell.redraw();
                 }
 
                 // カーソル点滅を更新（定期的）
                 input_poll_counter = input_poll_counter.wrapping_add(1);
                 if input_poll_counter % 10 == 0 {
-                    shell.update_cursor(current_time, fb);
+                    shell.update_cursor(current_time);
                 }
             }
-        });
+        }
 
         // ========================================
         // Phase 2: コマンド実行（Waker駆動）

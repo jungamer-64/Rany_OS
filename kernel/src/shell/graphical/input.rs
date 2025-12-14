@@ -16,7 +16,7 @@ use super::shell::GraphicalShell;
 
 impl GraphicalShell {
     /// キーイベントを処理
-    pub fn handle_key(&mut self, event: InputKeyEvent, fb: &mut Framebuffer) {
+    pub fn handle_key(&mut self, event: InputKeyEvent) {
         if event.state != InputKeyState::Pressed {
             return;
         }
@@ -32,42 +32,42 @@ impl GraphicalShell {
                     self.state.input_buffer.clear();
                     self.update_cursor_cache();
                     self.print("^C\n");
-                    self.draw_prompt(fb);
+                    self.draw_prompt();
                     return;
                 }
                 InputKeyCode::L => {
                     self.clear_screen();
-                    self.draw_prompt(fb);
+                    self.draw_prompt();
                     return;
                 }
                 InputKeyCode::A => {
                     self.state.input_buffer.move_home();
                     self.update_cursor_cache();
-                    self.redraw(fb);
+                    self.redraw();
                     return;
                 }
                 InputKeyCode::E => {
                     self.state.input_buffer.move_end();
                     self.update_cursor_cache();
-                    self.redraw(fb);
+                    self.redraw();
                     return;
                 }
                 InputKeyCode::K => {
                     self.state.input_buffer.clear_to_end();
                     self.update_cursor_cache();
-                    self.redraw(fb);
+                    self.redraw();
                     return;
                 }
                 InputKeyCode::U => {
                     self.state.input_buffer.clear_to_start();
                     self.update_cursor_cache();
-                    self.redraw(fb);
+                    self.redraw();
                     return;
                 }
                 InputKeyCode::W => {
                     self.state.input_buffer.delete_word();
                     self.update_cursor_cache();
-                    self.redraw(fb);
+                    self.redraw();
                     return;
                 }
                 _ => {}
@@ -80,13 +80,13 @@ impl GraphicalShell {
                 InputKeyCode::Left => {
                     self.state.input_buffer.move_word_left();
                     self.update_cursor_cache();
-                    self.redraw(fb);
+                    self.redraw();
                     return;
                 }
                 InputKeyCode::Right => {
                     self.state.input_buffer.move_word_right();
                     self.update_cursor_cache();
-                    self.redraw(fb);
+                    self.redraw();
                     return;
                 }
                 _ => {}
@@ -96,58 +96,58 @@ impl GraphicalShell {
         // 通常キー処理
         match event.key {
             InputKeyCode::Enter => {
-                self.submit_input(fb);
+                self.submit_input();
             }
             InputKeyCode::Backspace => {
                 self.state.completions.clear();
                 self.state.input_buffer.backspace();
                 self.update_cursor_cache();
-                self.redraw_input_only(fb); // 入力行のみ再描画（高速化）
+                self.redraw_input_only(); // 入力行のみ再描画（高速化）
             }
             InputKeyCode::Delete => {
                 self.state.completions.clear();
                 self.state.input_buffer.delete();
                 self.update_cursor_cache();
-                self.redraw_input_only(fb);
+                self.redraw_input_only();
             }
             InputKeyCode::Left => {
                 self.state.input_buffer.move_left();
                 self.update_cursor_cache();
-                self.redraw_cursor_only(fb); // カーソルのみ移動（高速化）
+                self.redraw_cursor_only(); // カーソルのみ移動（高速化）
             }
             InputKeyCode::Right => {
                 self.state.input_buffer.move_right();
                 self.update_cursor_cache();
-                self.redraw_cursor_only(fb);
+                self.redraw_cursor_only();
             }
             InputKeyCode::Home => {
                 self.state.input_buffer.move_home();
                 self.update_cursor_cache();
-                self.redraw_input_only(fb);
+                self.redraw_input_only();
             }
             InputKeyCode::End => {
                 self.state.input_buffer.move_end();
                 self.update_cursor_cache();
-                self.redraw_input_only(fb);
+                self.redraw_input_only();
             }
             InputKeyCode::Up => {
-                self.history_prev(fb);
+                self.history_prev();
             }
             InputKeyCode::Down => {
-                self.history_next(fb);
+                self.history_next();
             }
             InputKeyCode::Tab => {
-                self.handle_tab(fb);
+                self.handle_tab();
             }
             InputKeyCode::PageUp => {
-                self.scroll_up(fb);
+                self.scroll_up();
             }
             InputKeyCode::PageDown => {
-                self.scroll_down(fb);
+                self.scroll_down();
             }
             InputKeyCode::Escape => {
                 self.state.completions.clear();
-                self.redraw(fb);
+                self.redraw();
             }
             InputKeyCode::Insert => {}
             InputKeyCode::CapsLock | InputKeyCode::NumLock | InputKeyCode::ScrollLock => {}
@@ -157,7 +157,7 @@ impl GraphicalShell {
                         self.state.completions.clear();
                         self.state.input_buffer.insert(c);
                         self.update_cursor_cache();
-                        self.redraw_input_only(fb);
+                        self.redraw_input_only();
                     }
                 }
             }
@@ -169,7 +169,7 @@ impl GraphicalShell {
     /// マウス移動時は全画面再描画ではなく、古い位置と新しい位置の
     /// 2領域のみを更新することで、高解像度環境でのパフォーマンスを向上。
     #[cfg(feature = "mouse")]
-    pub fn handle_mouse(&mut self, event: MouseEvt, fb: &mut Framebuffer) {
+    pub fn handle_mouse(&mut self, event: MouseEvt) {
         let max_x = self.resources.fb_width as i32;
         let max_y = self.resources.fb_height as i32;
 
@@ -197,14 +197,14 @@ impl GraphicalShell {
             let max_scroll = self.state.output_lines.len().saturating_sub(1);
             if self.state.scroll_offset < max_scroll {
                 self.state.scroll_offset += 1;
-                self.redraw(fb);
+                self.redraw();
             }
         }
         // 右クリックで逆スクロール（画面下部）
         else if event.right_down && self.state.mouse.y > max_y - 20 {
             if self.state.scroll_offset > 0 {
                 self.state.scroll_offset -= 1;
-                self.redraw(fb);
+                self.redraw();
             }
         }
     }

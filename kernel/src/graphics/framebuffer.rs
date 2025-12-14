@@ -670,6 +670,37 @@ mod tests {
     }
 
     #[test]
+    fn test_write_bgr_run_large() {
+        // Ensure large runs of a single color are written correctly
+        let width = 1024u32;
+        let height = 1u32;
+        let info = FramebufferInfo {
+            address: 0,
+            width,
+            height,
+            stride: width * 3,
+            format: PixelFormat::Bgr888,
+            bpp: 24,
+        };
+
+        let mut mem = vec![0u8; info.size()];
+        let addr = mem.as_mut_ptr() as u64;
+        let mut info2 = info.clone();
+        info2.address = addr;
+
+        let mut fb = unsafe { Framebuffer::new(info2) };
+
+        fb.write_bgr_run(0, width as usize, Color::with_alpha(5, 6, 7, 255));
+
+        for x in 0..(width as usize) {
+            let off = x * 3;
+            assert_eq!(mem[off], 7); // b
+            assert_eq!(mem[off + 1], 6); // g
+            assert_eq!(mem[off + 2], 5); // r
+        }
+    }
+
+    #[test]
     fn test_pack_rgba_to_bgra_basic() {
         // Build a simple RGBA pattern and verify BGRA result matches expected
         let mut src = Vec::new();
@@ -714,6 +745,97 @@ mod tests {
             Framebuffer::pack_rgba_to_bgra(&src, &mut dst_scalar);
 
             assert_eq!(dst_simd, dst_scalar);
+        }
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
+        // Only run AVX2 check when available
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        for len in [4usize, 12, 16, 20, 48, 64, 100].iter() {
+            let mut src = vec![0u8; *len * 4];
+            for i in 0..(src.len()) {
+                src[i] = (i * 97 % 251) as u8;
+            }
+            let mut dst_avx = vec![0u8; src.len()];
+            let mut dst_scalar = vec![0u8; src.len()];
+
+            unsafe { Framebuffer::pack_rgba_to_bgra_avx2(src.as_ptr(), dst_avx.as_mut_ptr(), src.len()); }
+            Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst_scalar);
+
+            assert_eq!(dst_avx, dst_scalar);
+        }
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_pack_rgba_to_bgra_neon_matches_scalar() {
+        // Only run NEON check when available (bench/test builds)
+        if !std::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+
+        for len in [4usize, 12, 16, 20, 48, 64, 100].iter() {
+            let mut src = vec![0u8; *len * 4];
+            for i in 0..(src.len()) {
+                src[i] = (i * 61 % 251) as u8;
+            }
+            let mut dst_neon = vec![0u8; src.len()];
+            let mut dst_scalar = vec![0u8; src.len()];
+
+            unsafe { Framebuffer::pack_rgba_to_bgra_neon(src.as_ptr(), dst_neon.as_mut_ptr(), src.len()); }
+            Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst_scalar);
+
+            assert_eq!(dst_neon, dst_scalar);
+        }
+
+        #[test]
+        fn test_draw_image_bgra_stream_matches_backbuffer() {
+            use crate::super::image::Image;
+
+            let width = 16u32;
+            let height = 4u32;
+            let mut img = Image::new(width, height);
+
+            // Fill with a pattern of opaque pixels
+            for y in 0..height {
+                for x in 0..width {
+                    let r = ((x * 13 + y * 7) & 0xFF) as u8;
+                    let g = ((x * 17 + y * 11) & 0xFF) as u8;
+                    let b = ((x * 19 + y * 23) & 0xFF) as u8;
+                    img.set_pixel(x, y, Color::with_alpha(r, g, b, 255));
+                }
+            }
+
+            let mut info = FramebufferInfo {
+                address: 0,
+                width,
+                height,
+                stride: width * 4,
+                format: PixelFormat::Bgra8888,
+                bpp: 32,
+            };
+
+            // Back-buffered framebuffer
+            let mut mem_back = vec![0u8; info.size()];
+            info.address = mem_back.as_mut_ptr() as u64;
+            let mut fb_back = unsafe { Framebuffer::new(info.clone()) };
+            fb_back.enable_double_buffering();
+            fb_back.draw_image(&img, 0, 0);
+            fb_back.swap_buffers();
+
+            // MMIO-path framebuffer (no back buffer)
+            let mut mem_mmio = vec![0u8; info.size()];
+            info.address = mem_mmio.as_mut_ptr() as u64;
+            let mut fb_mmio = unsafe { Framebuffer::new(info) };
+            fb_mmio.draw_image(&img, 0, 0);
+
+            // Compare byte-by-byte
+            assert_eq!(mem_back, mem_mmio);
         }
     }
 
@@ -766,6 +888,41 @@ impl Framebuffer {
             scratch_u8: Vec::new(),
             scratch_u32: Vec::new(),
         }
+    }
+
+    /// Create a framebuffer from kernel_api::gui::FramebufferInfo
+    ///
+    /// # Safety
+    /// The vaddr in kapi_info must be a valid readable/writable framebuffer address
+    pub unsafe fn from_kapi_info(kapi_info: &kernel_api::gui::FramebufferInfo) -> Self {
+        use kernel_api::gui::PixelFormat as KapiPixelFormat;
+        
+        // Convert pixel format
+        let format = match kapi_info.format {
+            KapiPixelFormat::Rgb32 => PixelFormat::Rgba8888,
+            KapiPixelFormat::Bgr32 => PixelFormat::Bgra8888,
+            KapiPixelFormat::Rgb24 => PixelFormat::Rgb888,
+            KapiPixelFormat::Bgr24 => PixelFormat::Bgr888,
+            KapiPixelFormat::Unknown => PixelFormat::Bgra8888, // Default fallback
+        };
+        
+        let bpp = match format.bytes_per_pixel() {
+            4 => 32,
+            3 => 24,
+            2 => 16,
+            _ => 32,
+        };
+        
+        let info = FramebufferInfo {
+            address: kapi_info.vaddr as u64,
+            width: kapi_info.width as u32,
+            height: kapi_info.height as u32,
+            stride: kapi_info.stride as u32,
+            format,
+            bpp,
+        };
+        
+        Self::new(info)
     }
 
     /// Ensure scratch_u32 has at least `capacity` elements
@@ -919,6 +1076,47 @@ impl Framebuffer {
         }
     }
 
+    /// Stream-pack RGBA bytes into BGRA bytes and write them to MMIO in
+    /// moderate-size chunks. This avoids allocating a large `scratch_u32`
+    /// buffer for very long runs and allows SIMD packers to operate on
+    /// small temporaries which are then emitted via `write_bytes_mmio`.
+    fn write_rgba_packed_to_mmio_stream(&mut self, addr: usize, src: &[u8]) {
+        // Process in pixel-based chunks to allow direct u32 writes. Use
+        // 512 pixels per chunk (512 * 4 = 2048 bytes) as a trade-off between
+        // temporary buffer size and write granularity; larger chunks can reduce
+        // per-chunk overhead for very large runs.
+        const CHUNK_PIXELS: usize = 512;
+
+        if src.is_empty() {
+            return;
+        }
+
+        let total_pixels = src.len() / 4;
+        let mut processed_pixels = 0usize;
+
+        while processed_pixels < total_pixels {
+            let remaining_pixels = total_pixels - processed_pixels;
+            let chunk_pixels = core::cmp::min(CHUNK_PIXELS, remaining_pixels);
+
+            // Ensure a u32-backed scratch buffer for this chunk
+            self.ensure_scratch_u32(chunk_pixels);
+            let src_offset = processed_pixels * 4;
+
+            {
+                // Mutable borrow scope for packer
+                let src_chunk = &src[src_offset..src_offset + chunk_pixels * 4];
+                let dst_bytes = unsafe { core::slice::from_raw_parts_mut(self.scratch_u32.as_mut_ptr() as *mut u8, chunk_pixels * 4) };
+                Self::pack_rgba_to_bgra(src_chunk, dst_bytes);
+            }
+
+            // Emit packed u32 words as aligned u64/u32 writes
+            let addr_chunk = addr + processed_pixels * 4;
+            self.write_u32_slice_mmio(addr_chunk, &self.scratch_u32[..chunk_pixels]);
+
+            processed_pixels += chunk_pixels;
+        }
+    }
+
     /// Pack RGBA byte buffer into BGRA byte buffer. Prefer SIMD (SSSE3) when
     /// available on x86/x86_64; otherwise use scalar fallback.
     /// Pack RGBA byte buffer into BGRA byte buffer. Prefer SIMD (SSSE3) when
@@ -927,29 +1125,216 @@ impl Framebuffer {
     /// Note: made an associated function (no &self) so callers can pass a
     /// mutable borrow of scratch buffers without conflicting with an immutable
     /// borrow of `self` during method calls.
-    fn pack_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
+    /// Public packer: RGBA -> BGRA. Dispatches to AVX2/SSSE3/NEON implementations
+    /// when available; otherwise falls back to a scalar implementation.
+    pub fn pack_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
         let pixels = core::cmp::min(src.len(), dst.len()) / 4;
         let bytes = pixels * 4;
+        use core::sync::atomic::{AtomicU8, Ordering};
 
-        // Try SSSE3 path on x86/x86_64 (only available in test due to std requirement)
-        #[cfg(all(any(test, feature = "bench"), any(target_arch = "x86", target_arch = "x86_64")))]
-        {
-            // is_x86_feature_detected! is available when std is present; in
-            // bench builds we also enable std via the `bench` feature so we
-            // can use runtime detection and the SSSE3 implementation.
-            if std::is_x86_feature_detected!("ssse3") {
-                unsafe { Self::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes); }
-                return;
-            }
+        // Quick scalar path for very small buffers to avoid SIMD call/dispatch overhead.
+        // Keep this small so streaming chunks (e.g., 1024 bytes) still use SIMD.
+        const SMALL_BYTES_THRESHOLD: usize = 256; // 64 pixels
+        if bytes <= SMALL_BYTES_THRESHOLD {
+            Self::pack_rgba_to_bgra_scalar(src, dst);
+            return;
         }
 
-        // Scalar fallback
+        // Runtime-detected, cached packer selection to minimize dispatch overhead.
+        // 0 = unknown, 1 = scalar, 2 = ssse3, 3 = avx2, 4 = neon
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            static PACKER_MODE: AtomicU8 = AtomicU8::new(0);
+            let mut mode = PACKER_MODE.load(Ordering::Relaxed);
+            if mode == 0 {
+                // Detect in first call only (restricted to bench/test builds where
+                // runtime cpuid detection is available). Fallback to scalar
+                // if detection is not enabled for the current build.
+                #[cfg(all(any(test, feature = "bench")))]
+                {
+                    if std::is_x86_feature_detected!("avx2") {
+                        mode = 3;
+                    } else if std::is_x86_feature_detected!("ssse3") {
+                        mode = 2;
+                    } else {
+                        mode = 1;
+                    }
+                }
+                #[cfg(not(any(test, feature = "bench")))]
+                {
+                    mode = 1; // stable scalar-only builds
+                }
+                PACKER_MODE.store(mode, Ordering::Relaxed);
+            }
+
+            match mode {
+                3 => unsafe { Self::pack_rgba_to_bgra_avx2(src.as_ptr(), dst.as_mut_ptr(), bytes); },
+                2 => unsafe { Self::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes); },
+                _ => Self::pack_rgba_to_bgra_scalar(src, dst),
+            }
+            return;
+        }
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            static PACKER_MODE: AtomicU8 = AtomicU8::new(0);
+            let mut mode = PACKER_MODE.load(Ordering::Relaxed);
+            if mode == 0 {
+                #[cfg(all(any(test, feature = "bench")))]
+                {
+                    if std::is_aarch64_feature_detected!("neon") {
+                        mode = 4;
+                    } else {
+                        mode = 1;
+                    }
+                }
+                #[cfg(not(any(test, feature = "bench")))]
+                {
+                    mode = 1;
+                }
+                PACKER_MODE.store(mode, Ordering::Relaxed);
+            }
+
+            match mode {
+                4 => unsafe { Self::pack_rgba_to_bgra_neon(src.as_ptr(), dst.as_mut_ptr(), bytes); },
+                _ => Self::pack_rgba_to_bgra_scalar(src, dst),
+            }
+            return;
+        }
+
+        // Fallback scalar for other platforms
+        Self::pack_rgba_to_bgra_scalar(src, dst);
+    }
+
+    /// Scalar packer implementation (public so benches can call it directly).
+    pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
+        let pixels = core::cmp::min(src.len(), dst.len()) / 4;
         for i in 0..pixels {
             let s = i * 4;
             dst[s] = src[s + 2];
             dst[s + 1] = src[s + 1];
             dst[s + 2] = src[s + 0];
             dst[s + 3] = src[s + 3];
+        }
+    }
+
+    /// AVX2 implementation (unsafe). Processes 32-byte blocks using 256-bit
+    /// byte shuffles and falls back to SSSE3 / scalar for tails.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[target_feature(enable = "avx2")]
+    unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
+        use core::arch::x86_64::*;
+        // 32-byte shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
+        let mask = _mm256_setr_epi8(
+            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
+            18, 17, 16, 19, 22, 21, 20, 23, 26, 25, 24, 27, 30, 29, 28, 31,
+        );
+
+        let mut i = 0usize;
+
+        // Fast path when both src and dst are 32-byte aligned: use aligned loads/stores
+        let src_aligned = (src as usize) & 31 == 0;
+        let dst_aligned = (dst as usize) & 31 == 0;
+
+        if src_aligned && dst_aligned {
+            // Unroll 64-byte per iteration to reduce loop overhead
+            while i + 64 <= bytes {
+                let v0 = _mm256_load_si256(src.add(i) as *const __m256i);
+                let v1 = _mm256_load_si256(src.add(i + 32) as *const __m256i);
+                let r0 = _mm256_shuffle_epi8(v0, mask);
+                let r1 = _mm256_shuffle_epi8(v1, mask);
+                _mm256_store_si256(dst.add(i) as *mut __m256i, r0);
+                _mm256_store_si256(dst.add(i + 32) as *mut __m256i, r1);
+                i += 64;
+            }
+
+            while i + 32 <= bytes {
+                let v = _mm256_load_si256(src.add(i) as *const __m256i);
+                let r = _mm256_shuffle_epi8(v, mask);
+                _mm256_store_si256(dst.add(i) as *mut __m256i, r);
+                i += 32;
+            }
+        } else {
+            // Unaligned (general) path
+            while i + 64 <= bytes {
+                let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
+                let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
+                let r0 = _mm256_shuffle_epi8(v0, mask);
+                let r1 = _mm256_shuffle_epi8(v1, mask);
+                _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
+                _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
+                i += 64;
+            }
+
+            while i + 32 <= bytes {
+                let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
+                let r = _mm256_shuffle_epi8(v, mask);
+                _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
+                i += 32;
+            }
+        }
+
+        // Process remaining 16-byte block(s) via SSSE3-style shuffle
+        while i + 16 <= bytes {
+            let v = _mm_loadu_si128(src.add(i) as *const __m128i);
+            let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+            let r = _mm_shuffle_epi8(v, m);
+            _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+            i += 16;
+        }
+
+        // Tail: scalar
+        while i < bytes {
+            let pixel_idx = i / 4;
+            let s = pixel_idx * 4;
+            let r = *src.add(s + 0);
+            let g = *src.add(s + 1);
+            let b = *src.add(s + 2);
+            let a = *src.add(s + 3);
+            *dst.add(s + 0) = b;
+            *dst.add(s + 1) = g;
+            *dst.add(s + 2) = r;
+            *dst.add(s + 3) = a;
+            i += 4;
+        }
+    }
+
+    /// NEON implementation placeholder (aarch64). For now this falls back to
+    /// a scalar loop for correctness; a NEON tbl-based implementation can be
+    /// added later for further speedups.
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
+        // Implement using 32-bit word reordering (works on little-endian).
+        // For each pixel word (RGBA in little-endian), transform to BGRA by
+        // swapping low and mid byte lanes. This avoids per-byte shuffles
+        // and is efficient on aarch64.
+        #[inline]
+        fn swap_rgba_to_bgra(v: u32) -> u32 {
+            ((v & 0x000000FF) << 16) | (v & 0x0000FF00) | ((v & 0x00FF0000) >> 16) | (v & 0xFF000000)
+        }
+
+        let mut i = 0usize;
+
+        // Process 4 pixels at a time when possible
+        while i + 16 <= bytes {
+            let p0 = core::ptr::read_unaligned(src.add(i) as *const u32);
+            let p1 = core::ptr::read_unaligned(src.add(i + 4) as *const u32);
+            let p2 = core::ptr::read_unaligned(src.add(i + 8) as *const u32);
+            let p3 = core::ptr::read_unaligned(src.add(i + 12) as *const u32);
+
+            core::ptr::write_unaligned(dst.add(i) as *mut u32, swap_rgba_to_bgra(p0));
+            core::ptr::write_unaligned(dst.add(i + 4) as *mut u32, swap_rgba_to_bgra(p1));
+            core::ptr::write_unaligned(dst.add(i + 8) as *mut u32, swap_rgba_to_bgra(p2));
+            core::ptr::write_unaligned(dst.add(i + 12) as *mut u32, swap_rgba_to_bgra(p3));
+
+            i += 16;
+        }
+
+        while i + 4 <= bytes {
+            let p = core::ptr::read_unaligned(src.add(i) as *const u32);
+            core::ptr::write_unaligned(dst.add(i) as *mut u32, swap_rgba_to_bgra(p));
+            i += 4;
         }
     }
 
@@ -966,6 +1351,18 @@ impl Framebuffer {
         );
 
         let mut i = 0usize;
+
+        // Unroll 32-byte per iteration (two 16-byte lanes) to reduce loop overhead
+        while i + 32 <= bytes {
+            let v0 = _mm_loadu_si128(src.add(i) as *const __m128i);
+            let v1 = _mm_loadu_si128(src.add(i + 16) as *const __m128i);
+            let r0 = _mm_shuffle_epi8(v0, mask);
+            let r1 = _mm_shuffle_epi8(v1, mask);
+            _mm_storeu_si128(dst.add(i) as *mut __m128i, r0);
+            _mm_storeu_si128(dst.add(i + 16) as *mut __m128i, r1);
+            i += 32;
+        }
+
         while i + 16 <= bytes {
             let v = _mm_loadu_si128(src.add(i) as *const __m128i);
             let r = _mm_shuffle_epi8(v, mask);
@@ -1046,11 +1443,25 @@ impl Framebuffer {
         let total = run_len_pixels * 3;
         // Prepare scratch buffer first to avoid holding a mutable borrow to self
         self.ensure_scratch_u8(total);
-        for i in 0..run_len_pixels {
-            let idx = i * 3;
-            self.scratch_u8[idx] = b;
-            self.scratch_u8[idx + 1] = g;
-            self.scratch_u8[idx + 2] = r;
+        if run_len_pixels > 0 {
+            // Exponential fill: write first pixel then copy already-filled region
+            // repeatedly to build the rest of the buffer. This reduces per-pixel
+            // overhead for large fills of a single color.
+            self.scratch_u8[0] = b;
+            self.scratch_u8[1] = g;
+            self.scratch_u8[2] = r;
+
+            let mut filled = 1usize;
+            while filled < run_len_pixels {
+                let copy_pixels = core::cmp::min(filled, run_len_pixels - filled);
+                let copy_bytes = copy_pixels * 3;
+                let dst_offset = filled * 3;
+                unsafe {
+                    // Use ptr::copy for overlapping-safe copy
+                    ptr::copy(self.scratch_u8.as_ptr(), self.scratch_u8.as_mut_ptr().add(dst_offset), copy_bytes);
+                }
+                filled += copy_pixels;
+            }
         }
 
         if let Some(ref mut back) = self.back_buffer {
@@ -1908,6 +2319,16 @@ impl Framebuffer {
 
         let bytes_per_pixel = self.info.format.bytes_per_pixel();
 
+        // Pre-detect CPU features once per draw to avoid repeated CPUID calls
+        let mut avx2_available = false;
+        #[cfg(all(any(test, feature = "bench"), any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            avx2_available = std::is_x86_feature_detected!("avx2");
+        }
+
+        // Threshold to prefer streaming packing for sufficiently long opaque runs.
+        const STREAM_THRESHOLD_PIXELS: usize = 256;
+
         for dst_row in dst_y0..dst_y1 {
             let src_row = (dst_row - y) as u32;
             let row_start = (dst_x0 - x) as u32;
@@ -1975,24 +2396,39 @@ impl Framebuffer {
                             // the optimized write_bytes_mmio which prefers u64 writes.
                             match self.info.format {
                                 PixelFormat::Bgra8888 => {
-                                    // Pack RGBA -> BGRA into u32 words (LE order) so we
-                                    // can use write_u32_slice_mmio which emits u64 pair
-                                    // writes when possible. Use the generic pack helper
-                                    // which can leverage SIMD in bench builds.
-                                    self.ensure_scratch_u32(run_len);
-                                    let src_slice = &imgdata[src_base * 4..src_base * 4 + run_len * 4];
+                                                // Pack RGBA -> BGRA into bytes and copy. When MMIO
+                                                // is used (no back buffer) and AVX2 is available,
+                                                // stream-pack into a small temporary buffer and
+                                                // emit via `write_bytes_mmio` in chunks to avoid
+                                                // allocating a large scratch_u32 for long runs.
+                                                let src_slice = &imgdata[src_base * 4..src_base * 4 + run_len * 4];
 
-                                    // Obtain a mutable byte view of the u32 scratch buffer
-                                    let dst_bytes = unsafe { core::slice::from_raw_parts_mut(self.scratch_u32.as_mut_ptr() as *mut u8, run_len * 4) };
-                                    Self::pack_rgba_to_bgra(src_slice, dst_bytes);
+                                                if self.back_buffer.is_some() {
+                                                    // Back-buffered path: pack into u32 scratch then copy
+                                                    self.ensure_scratch_u32(run_len);
+                                                    {
+                                                        let dst_bytes = unsafe { core::slice::from_raw_parts_mut(self.scratch_u32.as_mut_ptr() as *mut u8, run_len * 4) };
+                                                        Self::pack_rgba_to_bgra(src_slice, dst_bytes);
+                                                    }
+                                                    let back = self.back_buffer.as_mut().unwrap();
+                                                    let dst_ptr = unsafe { back.as_mut_ptr().add(dst_byte_offset) as *mut u32 };
+                                                    unsafe { ptr::copy_nonoverlapping(self.scratch_u32.as_ptr(), dst_ptr, run_len); }
+                                                } else {
+                                                    // Prefer a streaming AVX2-assisted path in bench/test
+                                                    // builds when runtime CPU features are present.
+                                                    if avx2_available && run_len >= STREAM_THRESHOLD_PIXELS {
+                                                        let addr = self.buffer as usize + dst_byte_offset;
+                                                        self.write_rgba_packed_to_mmio_stream(addr, src_slice);
+                                                        continue;
+                                                    }
 
-                                    if let Some(ref mut back) = self.back_buffer {
-                                        let dst_ptr = unsafe { back.as_mut_ptr().add(dst_byte_offset) as *mut u32 };
-                                        unsafe { ptr::copy_nonoverlapping(self.scratch_u32.as_ptr(), dst_ptr, run_len); }
-                                    } else {
-                                        let addr = self.buffer as usize + dst_byte_offset;
-                                        self.write_u32_slice_mmio(addr, &self.scratch_u32[..run_len]);
-                                    }
+                                                    // Fallback: pack into u32 scratch and write as u32 slice
+                                                    self.ensure_scratch_u32(run_len);
+                                                    let dst_bytes = unsafe { core::slice::from_raw_parts_mut(self.scratch_u32.as_mut_ptr() as *mut u8, run_len * 4) };
+                                                    Self::pack_rgba_to_bgra(src_slice, dst_bytes);
+                                                    let addr = self.buffer as usize + dst_byte_offset;
+                                                    self.write_u32_slice_mmio(addr, &self.scratch_u32[..run_len]);
+                                                }
                                 }
                                 PixelFormat::Rgba8888 => {
                                     let byte_len = run_len * 4;
