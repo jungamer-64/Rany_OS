@@ -1,7 +1,7 @@
 FrameBuffer Bench Baseline
 ==========================
 
-Recorded on: 2025-12-14
+Recorded on: 2025-12-15
 Host: Windows (local dev environment)
 
 Command used:
@@ -11,10 +11,10 @@ cargo run --manifest-path tools/framebuffer_bench/Cargo.toml --release -- "crite
 
 Results (99% CI ranges from Criterion):
 
-- draw_image_bgra: time: [274.13 µs 280.51 µs 288.23 µs]
-- draw_image_bgr24: time: [1.1955 ms 1.2250 ms 1.2597 ms]
-- draw_image_rgba: time: [779.29 µs 803.49 µs 831.85 µs]
-- draw_line_many: time: [944.46 µs 965.60 µs 990.13 µs]
+- draw_image_bgra: time: [276.99 µs 281.63 µs 287.43 µs]
+- draw_image_bgr24: time: [1.1322 ms 1.1512 ms 1.1722 ms]
+- draw_image_rgba: time: [723.42 µs 729.59 µs 737.17 µs]
+- draw_line_many: time: [862.75 µs 868.24 µs 874.10 µs]
 
 Notes:
 - BGRA and RGBA paths use u32/u64-aligned bulk writes when possible.

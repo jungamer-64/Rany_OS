@@ -31,11 +31,45 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Run Criterion benches (programmatic runner)
+        id: run_bench
         run: |
           cargo run --manifest-path tools/framebuffer_bench/Cargo.toml --release -- criterion
 
       - name: Upload Criterion artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: framebuffer-criterion-results
           path: target/criterion
+
+      - name: Compare against baseline
+        id: compare
+        continue-on-error: true
+        run: |
+          # Capture compare output and make it available to later steps via GITHUB_OUTPUT
+          set +e
+          python3 tools/framebuffer_bench/compare_bench.py --threshold 0.10 | tee compare_output.txt
+          rc=${PIPESTATUS[0]}
+          echo "report<<EOF" >> $GITHUB_OUTPUT
+          cat compare_output.txt >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+          if [ "$rc" -ne 0 ]; then exit 1; fi
+
+      - name: Create PR comment with benchmark results
+        if: github.event_name == 'pull_request'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            **Framebuffer Benchmark Report**
+
+            Status: ${{ steps.compare.conclusion }}
+
+            ${{ steps.compare.outputs.report }}
+
+      - name: Fail on regression
+        if: steps.compare.conclusion == 'failure'
+        run: |
+          echo "Regression detected by compare_bench.py; failing job"
+          exit 1

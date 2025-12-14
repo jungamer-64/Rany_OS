@@ -79,6 +79,35 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
             fb_lines.draw_line_naive(x1, y1, x2, y2, Color::with_alpha(10, 20, 30, 255));
         }
     }));
+
+    // Packer micro-bench: measure pure packer throughput
+    let pack_width = 1280u32;
+    let pack_height = 720u32;
+    let buf_len = (pack_width * pack_height * 4) as usize;
+    let mut src_pack = vec![0u8; buf_len];
+    for i in 0..buf_len {
+        src_pack[i] = (i * 73 % 251) as u8;
+    }
+    let mut dst_pack = vec![0u8; buf_len];
+    let mut dst_pack2 = vec![0u8; buf_len];
+
+    c.bench_function("pack_rgba_scalar", |b| b.iter(|| {
+        Framebuffer::pack_rgba_to_bgra_scalar(&src_pack, &mut dst_pack);
+    }));
+
+    c.bench_function("pack_rgba_dispatch", |b| b.iter(|| {
+        Framebuffer::pack_rgba_to_bgra(&src_pack, &mut dst_pack2);
+    }));
+
+    // If AVX2 present, benchmark it specifically
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    if std::is_x86_feature_detected!("avx2") {
+        // Measure dispatch path when AVX2 is available (will hit AVX2 implementation)
+        let mut dst_dispatch = vec![0u8; buf_len];
+        c.bench_function("pack_rgba_dispatch_avx2", |b| b.iter(|| {
+            Framebuffer::pack_rgba_to_bgra(&src_pack, &mut dst_dispatch);
+        }));
+    }
 }
 
 fn main() {

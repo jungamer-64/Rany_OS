@@ -441,8 +441,8 @@ impl GraphicalShell {
     // --- Public API ---
 
     /// Performs a full screen redraw.
-    pub fn redraw(&mut self, fb: &mut Framebuffer) {
-        self.perform_draw(fb, |shell| {
+    pub fn redraw(&mut self) {
+        self.perform_draw( |shell| {
             RectList::<1>::from_element(Rect::new(
                 0,
                 0,
@@ -453,15 +453,15 @@ impl GraphicalShell {
     }
 
     /// Redraws only the cursor region (for blink updates).
-    pub fn redraw_cursor_only(&mut self, fb: &mut Framebuffer) {
-        self.perform_draw(fb, |shell| {
+    pub fn redraw_cursor_only(&mut self) {
+        self.perform_draw( |shell| {
             RectList::<1>::from_element(shell.current_cursor_rect())
         });
     }
 
     /// Redraws the input line and completion window.
-    pub fn redraw_input_line(&mut self, fb: &mut Framebuffer) {
-        self.perform_draw(fb, |shell| {
+    pub fn redraw_input_line(&mut self) {
+        self.perform_draw( |shell| {
             let layout = Layout::compute(&shell.state, &shell.resources);
             let new_comp = shell.completion_rect_from_layout(&layout);
             let old_comp = shell.state.last_completion_rect;
@@ -481,8 +481,8 @@ impl GraphicalShell {
     }
 
     /// Alias for `redraw_input_line` (backwards compatibility).
-    pub fn redraw_input_only(&mut self, fb: &mut Framebuffer) {
-        self.redraw_input_line(fb);
+    pub fn redraw_input_only(&mut self) {
+        self.redraw_input_line();
     }
 
     /// Redraws only the mouse cursor region (optimized for mouse movement).
@@ -505,7 +505,7 @@ impl GraphicalShell {
             return;
         }
 
-        self.perform_draw(fb, |_| {
+        self.perform_draw( |_| {
             let mut regions = RectList::<2>::new();
             regions.push_or_merge(old_rect);
             regions.push_or_merge(new_rect);
@@ -525,7 +525,7 @@ impl GraphicalShell {
     /// 1. Mouse is never drawn multiple times
     /// 2. Overlapping dirty regions don't overwrite the mouse cursor
     /// 3. No state tracking variables needed in the drawing loop
-    fn perform_draw<F, const N: usize>(&mut self, fb: &mut Framebuffer, get_dirty_regions: F)
+    fn perform_draw<F, const N: usize>(&mut self, get_dirty_regions: F)
     where
         F: FnOnce(&mut Self) -> RectList<N>,
     {
@@ -547,7 +547,7 @@ impl GraphicalShell {
 
         // Simple drawing loop - no mouse_drawn tracking needed
         for dirty in &dirty_regions {
-            RenderContext::with_layout(fb, &self.state, &self.resources, layout)
+            RenderContext::with_layout(&mut self.framebuffer, &self.state, &self.resources, layout)
                 .run_pipeline(*dirty);
         }
 

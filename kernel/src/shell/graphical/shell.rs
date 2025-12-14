@@ -230,7 +230,7 @@ impl GraphicalShell {
     }
 
     /// シェルを開始（ウェルカムメッセージ表示）
-    pub fn start(&mut self, fb: &mut Framebuffer) {
+    pub fn start(&mut self) {
         self.clear_screen();
 
         // ウェルカムメッセージ
@@ -267,7 +267,7 @@ impl GraphicalShell {
         self.print("\n");
 
         // 初回描画（画面全体を更新してブートロゴを消去）
-        self.redraw(fb);
+        self.redraw();
     }
 
     /// 画面をクリア（状態のみ更新、描画はredraw時）
@@ -302,22 +302,22 @@ impl GraphicalShell {
     }
 
     /// プロンプト領域を描画（実際には入力行再描画）
-    pub fn draw_prompt(&mut self, fb: &mut Framebuffer) {
+    pub fn draw_prompt(&mut self) {
         self.state.prompt = self.shell.prompt();
-        self.redraw_input_only(fb);
+        self.redraw_input_only();
     }
 
     /// カーソルの点滅を更新（部分更新 - 効率的）
-    pub fn update_cursor(&mut self, current_time: u64, fb: &mut Framebuffer) {
+    pub fn update_cursor(&mut self, current_time: u64) {
         if current_time - self.state.last_cursor_toggle >= CURSOR_BLINK_MS {
             self.state.cursor_visible = !self.state.cursor_visible;
             self.state.last_cursor_toggle = current_time;
-            self.redraw_cursor_only(fb); // 全画面ではなくカーソルのみ
+            self.redraw_cursor_only(); // 全画面ではなくカーソルのみ
         }
     }
 
     /// 入力を確定
-    pub(crate) fn submit_input(&mut self, fb: &mut Framebuffer) {
+    pub(crate) fn submit_input(&mut self) {
         let input = self.state.input_buffer.as_str().to_string();
 
         // 入力行を出力に追加
@@ -348,7 +348,7 @@ impl GraphicalShell {
 
         // プロンプトを再表示（履歴更新のため全画面再描画）
         self.update_cursor_cache();
-        self.redraw(fb);
+        self.redraw();
     }
 
     /// コマンドを非同期キューに追加
@@ -386,7 +386,7 @@ impl GraphicalShell {
     }
 
     /// 履歴を前に
-    pub(crate) fn history_prev(&mut self, fb: &mut Framebuffer) {
+    pub(crate) fn history_prev(&mut self) {
         if self.state.history.is_empty() {
             return;
         }
@@ -401,12 +401,12 @@ impl GraphicalShell {
             let entry = self.state.history[self.state.history_index as usize].clone();
             self.state.input_buffer.set(&entry);
             self.update_cursor_cache();
-            self.redraw(fb);
+            self.redraw();
         }
     }
 
     /// 履歴を次に
-    pub(crate) fn history_next(&mut self, fb: &mut Framebuffer) {
+    pub(crate) fn history_next(&mut self) {
         if self.state.history.is_empty() {
             return;
         }
@@ -425,11 +425,11 @@ impl GraphicalShell {
             self.state.history_search_buffer = None;
         }
         self.update_cursor_cache();
-        self.redraw(fb);
+        self.redraw();
     }
 
     /// Tab補完処理
-    pub(crate) fn handle_tab(&mut self, fb: &mut Framebuffer) {
+    pub(crate) fn handle_tab(&mut self) {
         // self.shell.complete内でselfを借用する可能性があるため、入力をコピー
         let input = self.state.input_buffer.as_str().to_string();
 
@@ -450,11 +450,11 @@ impl GraphicalShell {
         }
 
         self.update_cursor_cache();
-        self.redraw(fb);
+        self.redraw();
     }
 
     /// 上にスクロール
-    pub(crate) fn scroll_up(&mut self, fb: &mut Framebuffer) {
+    pub(crate) fn scroll_up(&mut self) {
         let max_scroll = self
             .state
             .output_lines
@@ -463,15 +463,15 @@ impl GraphicalShell {
         if self.state.scroll_offset < max_scroll {
             self.state.scroll_offset += 3;
             self.state.scroll_offset = self.state.scroll_offset.min(max_scroll);
-            self.redraw(fb);
+            self.redraw();
         }
     }
 
     /// 下にスクロール
-    pub(crate) fn scroll_down(&mut self, fb: &mut Framebuffer) {
+    pub(crate) fn scroll_down(&mut self) {
         if self.state.scroll_offset > 0 {
             self.state.scroll_offset = self.state.scroll_offset.saturating_sub(3);
-            self.redraw(fb);
+            self.redraw();
         }
     }
 
