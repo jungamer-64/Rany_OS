@@ -101,7 +101,8 @@ require_signatures = []
 serial = ["uart_16550"]
 stats = []
 mouse = []
-bench = []
+bench = ["std"]
+
 std = ["hal/std"]
 
 

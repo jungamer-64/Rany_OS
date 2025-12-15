@@ -14,6 +14,17 @@ use std::time::Duration;
 // Configuration
 // =============================================================================
 
+/// Initialize SIMD level based on host CPU features
+fn init_host_simd() {
+    unsafe {
+        if std::is_x86_feature_detected!("avx2") {
+            rany_os::hal::mmio::set_simd_level(rany_os::hal::mmio::simd_level::AVX2);
+        } else if std::is_x86_feature_detected!("avx") {
+            rany_os::hal::mmio::set_simd_level(rany_os::hal::mmio::simd_level::AVX);
+        }
+    }
+}
+
 /// Returns a custom Criterion configuration with longer measurement time
 /// to reduce noise in CI environments.
 fn criterion_config() -> Criterion {
@@ -35,6 +46,9 @@ fn criterion_config() -> Criterion {
         "Criterion config: measurement={}s sample_size={} warmup={}s",
         measurement_secs, sample_size, warm_up_secs
     );
+
+    // Ensure SIMD is enabled for MMIO benchmarks
+    init_host_simd();
 
     Criterion::default()
         .measurement_time(Duration::from_secs(measurement_secs))

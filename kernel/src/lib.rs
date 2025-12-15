@@ -2,7 +2,7 @@
 // enable the standard library so benchmark harnesses (Criterion) and
 // alloc-dependent graphics helpers can build and run under the host test
 // runner.
-#![cfg_attr(not(any(test, feature = "bench")), no_std)]
+#![cfg_attr(not(any(test, feature = "std")), no_std)]
 
 // For unit testing we expose a small set of modules via the library entry
 // point. This keeps most of the kernel as a binary-only crate while still
@@ -19,6 +19,9 @@ pub mod security;
 // convenient benching during development.
 #[cfg(any(test, feature = "bench"))]
 pub mod graphics;
+
+#[cfg(any(test, feature = "bench"))]
+pub use hal;
 
 // Some graphics modules depend on the `alloc` crate and other internal
 // modules (e.g. unwind). When compiling benches we need to make these

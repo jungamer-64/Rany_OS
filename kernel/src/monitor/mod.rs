@@ -196,95 +196,145 @@ fn collect_network_stats() -> NetworkStats {
     NetworkStats::default()
 }
 
-/// Print snapshot to console
-pub fn print_snapshot(snap: &SystemSnapshot) {
-    log::info!("\n");
-    log::info!("┌──────────────────────────────────────────────────────────────────────┐\n");
-    log::info!("│                    ExoRust System Monitor                            │\n");
-    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
+/// Format snapshot as string
+pub fn format_snapshot(snap: &SystemSnapshot) -> String {
+    use alloc::fmt::Write;
+    let mut s = String::new();
+
+    let _ = writeln!(
+        s,
+        "\n┌──────────────────────────────────────────────────────────────────────┐"
+    );
+    let _ = writeln!(
+        s,
+        "│                    ExoRust System Monitor                            │"
+    );
+    let _ = writeln!(
+        s,
+        "├──────────────────────────────────────────────────────────────────────┤"
+    );
 
     // Timestamp and CPU
-    log::info!(
-        "│  Tick: {:>12}  │  CPU: {:>3}%                                   │\n",
-        snap.timestamp,
-        snap.cpu_usage
+    let _ = writeln!(
+        s,
+        "│  Tick: {:>12}  │  CPU: {:>3}%                                   │",
+        snap.timestamp, snap.cpu_usage
     );
 
-    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
+    let _ = writeln!(
+        s,
+        "├──────────────────────────────────────────────────────────────────────┤"
+    );
 
     // Memory
-    log::info!("│  MEMORY                                                              │\n");
-    log::info!(
-        "│    Used:  {:>10} bytes ({:>2}%)                                  │\n",
-        snap.memory.heap_used,
-        snap.memory.usage_percent
+    let _ = writeln!(
+        s,
+        "│  MEMORY                                                              │"
     );
-    log::info!(
-        "│    Free:  {:>10} bytes                                          │\n",
+    let _ = writeln!(
+        s,
+        "│    Used:  {:>10} bytes ({:>2}%)                                  │",
+        snap.memory.heap_used, snap.memory.usage_percent
+    );
+    let _ = writeln!(
+        s,
+        "│    Free:  {:>10} bytes                                          │",
         snap.memory.heap_free
     );
-    log::info!(
-        "│    Total: {:>10} bytes                                          │\n",
+    let _ = writeln!(
+        s,
+        "│    Total: {:>10} bytes                                          │",
         snap.memory.heap_total
     );
 
     // Memory bar
     let bar_width = 40;
     let filled = (snap.memory.usage_percent as usize * bar_width) / 100;
-    log::info!("│    [");
+    let _ = write!(s, "│    [");
     for i in 0..bar_width {
         if i < filled {
-            log::info!("█");
+            let _ = write!(s, "█");
         } else {
-            log::info!("░");
+            let _ = write!(s, "░");
         }
     }
-    log::info!("]   │\n");
+    let _ = writeln!(s, "]   │");
 
-    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
+    let _ = writeln!(
+        s,
+        "├──────────────────────────────────────────────────────────────────────┤"
+    );
 
     // Domains
-    log::info!("│  DOMAINS                                                             │\n");
-    log::info!(
-        "│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │\n",
-        snap.domains.total,
-        snap.domains.running,
-        snap.domains.stopped
+    let _ = writeln!(
+        s,
+        "│  DOMAINS                                                             │"
+    );
+    let _ = writeln!(
+        s,
+        "│    Total:   {:>6}  │  Running: {:>6}  │  Stopped: {:>6}         │",
+        snap.domains.total, snap.domains.running, snap.domains.stopped
     );
 
-    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
+    let _ = writeln!(
+        s,
+        "├──────────────────────────────────────────────────────────────────────┤"
+    );
 
     // Tasks
-    log::info!("│  TASKS                                                               │\n");
-    log::info!(
-        "│    Context Switches: {:>10}                                     │\n",
+    let _ = writeln!(
+        s,
+        "│  TASKS                                                               │"
+    );
+    let _ = writeln!(
+        s,
+        "│    Context Switches: {:>10}                                     │",
         snap.tasks.context_switches
     );
-    log::info!(
-        "│    Voluntary Yields: {:>10}                                     │\n",
+    let _ = writeln!(
+        s,
+        "│    Voluntary Yields: {:>10}                                     │",
         snap.tasks.voluntary_yields
     );
-    log::info!(
-        "│    Forced Preempts:  {:>10}                                     │\n",
+    let _ = writeln!(
+        s,
+        "│    Forced Preempts:  {:>10}                                     │",
         snap.tasks.forced_preemptions
     );
 
-    log::info!("├──────────────────────────────────────────────────────────────────────┤\n");
+    let _ = writeln!(
+        s,
+        "├──────────────────────────────────────────────────────────────────────┤"
+    );
 
     // Network
-    log::info!("│  NETWORK                                                             │\n");
-    log::info!(
-        "│    RX: {:>8} pkts ({:>12} bytes)                            │\n",
-        snap.network.rx_packets,
-        snap.network.rx_bytes
+    let _ = writeln!(
+        s,
+        "│  NETWORK                                                             │"
     );
-    log::info!(
-        "│    TX: {:>8} pkts ({:>12} bytes)                            │\n",
-        snap.network.tx_packets,
-        snap.network.tx_bytes
+    let _ = writeln!(
+        s,
+        "│    RX: {:>8} pkts ({:>12} bytes)                            │",
+        snap.network.rx_packets, snap.network.rx_bytes
+    );
+    let _ = writeln!(
+        s,
+        "│    TX: {:>8} pkts ({:>12} bytes)                            │",
+        snap.network.tx_packets, snap.network.tx_bytes
     );
 
-    log::info!("└──────────────────────────────────────────────────────────────────────┘\n");
+    let _ = writeln!(
+        s,
+        "└──────────────────────────────────────────────────────────────────────┘"
+    );
+
+    s
+}
+
+/// Print snapshot to console
+pub fn print_snapshot(snap: &SystemSnapshot) {
+    let s = format_snapshot(snap);
+    log::info!("{}", s);
 }
 
 /// Print compact one-line status
