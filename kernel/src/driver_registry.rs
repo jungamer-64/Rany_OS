@@ -727,6 +727,7 @@ mod tests {
                 is_safe: true,
                 signature_verified: true,
                 registered_drivers: vec![handle],
+                stats: crate::loader::ModuleStats::default(),
             };
             r.register(entry);
             id

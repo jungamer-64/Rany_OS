@@ -748,7 +748,10 @@ impl Framebuffer {
         let mut i = 0usize;
 
         #[cfg(all(feature = "std", feature = "bench"))]
-        if crate::graphics::mmio::bench_debug_print_allowed() {
+        let bench_debug_env = std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1");
+
+        #[cfg(all(feature = "std", feature = "bench"))]
+        if bench_debug_env && crate::graphics::mmio::bench_debug_print_allowed() {
             eprintln!(
                 "write_u32_run_streaming: addr=0x{:x} count={} value=0x{:x}",
                 addr, count, value
@@ -758,7 +761,7 @@ impl Framebuffer {
         // Align to 8-bytes boundary
         if (ptr & 7) == 4 && i < count {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if crate::graphics::mmio::bench_debug_print_allowed() {
+            if bench_debug_env && crate::graphics::mmio::bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, value);
             }
             mmio::stream_write_u32(ptr, value);
@@ -770,7 +773,7 @@ impl Framebuffer {
         let val64 = (value as u64) | ((value as u64) << 32);
         while i + 1 < count {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if crate::graphics::mmio::bench_debug_print_allowed() {
+            if bench_debug_env && crate::graphics::mmio::bench_debug_print_allowed() {
                 eprintln!("  stream_write_u64 at 0x{:x} val=0x{:x}", ptr, val64);
             }
             mmio::stream_write_u64(ptr, val64);
@@ -781,7 +784,7 @@ impl Framebuffer {
         // Trailing u32
         if i < count {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if crate::graphics::mmio::bench_debug_print_allowed() {
+            if bench_debug_env && crate::graphics::mmio::bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, value);
             }
             mmio::stream_write_u32(ptr, value);
