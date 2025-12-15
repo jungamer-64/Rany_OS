@@ -1505,6 +1505,118 @@ impl Framebuffer {
         self.write_bytes_mmio(addr, data);
     }
 
+    /// Bench helper: draw a single 8x16 glyph without marking dirty or
+    /// performing per-char background fills. This allows bench code to
+    /// emulate `draw_text` behavior (prefill background once) and then
+    /// draw glyphs individually without per-char dirty updates.
+    #[cfg(feature = "bench")]
+    pub fn bench_draw_char_no_dirty(&mut self, x: i32, y: i32, c: char, color: Color, bg: Option<Color>) {
+        let font = BitmapFont::default_8x16();
+        let c_index = c as usize;
+        if c_index >= 128 {
+            return;
+        }
+
+        let glyph_start = c_index * font.height() as usize;
+        let stride = self.info.stride as usize;
+        let bpp = self.info.format.bytes_per_pixel();
+        let char_w = font.width() as u32;
+
+        for row in 0..font.height() {
+            let dst_y = y + row as i32;
+            if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
+                continue;
+            }
+
+            let glyph_row = glyph_start + row as usize;
+            if glyph_row >= font.data_len() {
+                continue;
+            }
+
+            let byte = font.get_data(glyph_row);
+
+            match bpp {
+                4 => {
+                    let fg_u32 = self.info.format.encode_u32(color).unwrap_or(color.to_u32());
+
+                    if bg.is_some() {
+                        let dst_x = x;
+                        if dst_x >= self.clip.x && (dst_x + char_w as i32) <= self.clip.right() {
+                            let dst_offset = (dst_y as usize * stride) + (dst_x as usize * 4);
+                            let bg_color = bg.unwrap();
+                            let bg_u32 = self
+                                .info
+                                .format
+                                .encode_u32(bg_color)
+                                .unwrap_or(bg_color.to_u32());
+                            self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                            continue;
+                        }
+                    }
+
+                    for col in 0..8 {
+                        let px = x + col as i32;
+                        if px < self.clip.x || px >= self.clip.right() {
+                            continue;
+                        }
+                        let is_on = (byte >> (7 - col)) & 1 != 0;
+                        if is_on {
+                            self.set_pixel_raw(px, dst_y, color);
+                        }
+                    }
+                }
+                3 => {
+                    let mut col = 0usize;
+                    while col < 8 {
+                        while col < 8 {
+                            let pixel_on = (byte >> (7 - col)) & 1 != 0;
+                            if pixel_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+
+                        let run_start = col;
+                        while col < 8 {
+                            let pixel_on = (byte >> (7 - col)) & 1 != 0;
+                            if !pixel_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+
+                        let run_len = col.saturating_sub(run_start);
+                        if run_len == 0 {
+                            continue;
+                        }
+
+                        let dst_x = x + run_start as i32;
+                        if dst_x < self.clip.x || dst_x >= self.clip.right() {
+                            continue;
+                        }
+
+                        let clipped_end = (dst_x + run_len as i32 - 1).min(self.clip.right() - 1);
+                        let clipped_len = (clipped_end - dst_x + 1) as usize;
+                        let start_offset = (dst_y as usize * stride) + (dst_x as usize * 3);
+                        self.write_bgr_run(start_offset, clipped_len, color);
+                    }
+                }
+                _ => {
+                    for col in 0..8 {
+                        let px = x + col as i32;
+                        if px < self.clip.x || px >= self.clip.right() {
+                            continue;
+                        }
+                        let is_on = (byte >> (7 - col)) & 1 != 0;
+                        if is_on {
+                            self.set_pixel_raw(px, dst_y, color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// bitマスクを32bitカラーアレイに展開して書き込む（テキスト描画用）
     /// AVX2最適化のための構造を備えるが、現在はスカラ実装（unrolled loop & u64 writes）を使用。
     #[inline(always)]
