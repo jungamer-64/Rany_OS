@@ -97,6 +97,3 @@ debug = true
 [profile.test]
 panic = "abort"
 opt-level = 1
-
-[patch.crates-io]
-curve25519-dalek = { path = "libs/curve25519-dalek" }
