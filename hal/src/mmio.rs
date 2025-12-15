@@ -322,6 +322,21 @@ pub fn get_simd_level() -> u8 {
     SIMD_LEVEL.load(core::sync::atomic::Ordering::Relaxed)
 }
 
+/// Check if debug printing is allowed during benchmarks.
+/// Use this instead of direct env var checks to allow use in no_std context.
+/// Returns true if `std` feature is enabled AND `RANY_DEBUG_DRAW` == "1".
+#[inline]
+pub fn bench_debug_print_allowed() -> bool {
+    #[cfg(feature = "std")]
+    {
+        std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1")
+    }
+    #[cfg(not(feature = "std"))]
+    {
+        false
+    }
+}
+
 /// Fallback for non-x86 architectures: just use volatile writes
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {

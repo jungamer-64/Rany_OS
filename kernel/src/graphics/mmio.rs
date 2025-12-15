@@ -5,6 +5,8 @@
 
 use core::marker::PhantomData;
 use hal::mmio;
+#[cfg(all(feature = "std", feature = "bench"))]
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A safe wrapper for writing to an MMIO region.
 /// Wraps a raw pointer and ensures bounds checking (if length is provided)
@@ -13,6 +15,52 @@ pub struct MmioWriter<'a> {
     base: usize,
     len: usize,
     _phantom: PhantomData<&'a mut [u8]>,
+}
+
+// Bench debug printing throttle. When `RANY_DEBUG_DRAW=1` this limits the
+// number of per-write debug messages that are emitted so benchmarks don't
+// get overwhelmed by millions of lines and appear to run forever.
+#[cfg(all(feature = "std", feature = "bench"))]
+static BENCH_DEBUG_PRINTS_LEFT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(all(feature = "std", feature = "bench"))]
+/// Returns true when a debug print is allowed. This respects the
+/// `RANY_DEBUG_DRAW` env var and an optional `RANY_DEBUG_DRAW_LIMIT` which
+/// sets how many individual per-write messages are allowed (defaults to 128).
+pub(crate) fn bench_debug_print_allowed() -> bool {
+    if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() != Some("1") {
+        return false;
+    }
+
+    // Initialize the counter on first use.
+    let cur = BENCH_DEBUG_PRINTS_LEFT.load(Ordering::Relaxed);
+    if cur == 0 {
+        let limit = std::env::var("RANY_DEBUG_DRAW_LIMIT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(128usize);
+        BENCH_DEBUG_PRINTS_LEFT.store(limit, Ordering::Relaxed);
+    }
+
+    // Try to decrement once; if zero then no prints allowed.
+    loop {
+        let old = BENCH_DEBUG_PRINTS_LEFT.load(Ordering::Acquire);
+        if old == 0 {
+            return false;
+        }
+        if BENCH_DEBUG_PRINTS_LEFT
+            .compare_exchange(old, old - 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return true;
+        }
+    }
+}
+
+#[cfg(not(all(feature = "std", feature = "bench")))]
+/// Stub for non-bench builds: never allow per-write bench debug prints.
+pub(crate) fn bench_debug_print_allowed() -> bool {
+    false
 }
 
 impl<'a> MmioWriter<'a> {
@@ -262,7 +310,7 @@ impl<'a> MmioWriter<'a> {
         // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment
         if (ptr & 7) == 4 && i < len {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            if bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
             }
             mmio::stream_write_u32(ptr, data[i]);
@@ -274,7 +322,7 @@ impl<'a> MmioWriter<'a> {
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             #[cfg(all(feature = "std", feature = "bench"))]
-            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            if bench_debug_print_allowed() {
                 eprintln!("  stream_write_u64 at 0x{:x} pair=0x{:x}", ptr, pair);
             }
             mmio::stream_write_u64(ptr, pair);
@@ -285,7 +333,7 @@ impl<'a> MmioWriter<'a> {
         // Handle odd trailing u32
         if i < len {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            if bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
             }
             mmio::stream_write_u32(ptr, data[i]);
