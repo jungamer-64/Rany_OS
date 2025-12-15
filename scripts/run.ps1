@@ -94,7 +94,7 @@ function Get-Limine {
 # Build kernel
 function Build-Kernel {
     Write-Info "Building kernel..."
-    $buildCmd = "cargo build -p rany_kernel --target $TARGET $BUILD_FLAGS".Trim()
+    $buildCmd = "cargo build -p rany_kernel --target $TARGET $BUILD_FLAGS -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem".Trim()
     
     Invoke-Expression $buildCmd
     if ($LASTEXITCODE -ne 0) {
