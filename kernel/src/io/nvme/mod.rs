@@ -13,34 +13,31 @@
 //! - `queue_types`: 型安全なキュー抽象化 (from nvme_driver)
 //! - `identify`: Identify構造体 (from nvme_driver)
 //! - `error`: エラー型 (from nvme_driver)
-//! - `controller`: コントローラレジスタと設定 (kernel local)
-//! - `queue`: 低レベルキュー実装 (kernel local)
-//! - `per_core`: コアごとのキュー管理 (kernel local)
-//! - `polling_driver`: ポーリングモードドライバ (kernel local)
-//! - `async_io`: 非同期I/Oサポート (kernel local)
-//! - `global`: グローバルインスタンス (kernel local)
-//! - `scheduler`: IoScheduler統合 (kernel local)
+//! - `controller`: コントローラレジスタと設定 (from nvme_driver)
+//! - `queue`: 低レベルキュー実装 (from nvme_driver)
+//! - `per_core`: コアごとのキュー管理 (from nvme_driver)
+//! - `polling_driver`: ポーリングモードドライバ (from nvme_driver)
+//! - `async_io`: 非同期I/Oサポート (from nvme_driver)
+//! - `global`: グローバルインスタンス (from nvme_driver)
+//! - `scheduler`: IoScheduler統合 (kernel local - depends on io_scheduler)
 //! - `driver`: 後方互換性のための再エクスポート (kernel local)
 
 #![allow(dead_code)]
 
-// Local modules (kernel implementation)
-// pub mod controller; // Migrated to nvme_driver
-// pub mod queue; // Migrated to nvme_driver
-// pub mod per_core; // Migrated to nvme_driver
-pub mod async_io;
+// Kernel-local modules (depend on kernel's io_scheduler)
 pub mod driver;
-pub mod global;
-pub mod polling_driver;
 pub mod scheduler;
 
 // Re-export modules from nvme_driver
+pub use nvme_driver::async_io;
 pub use nvme_driver::commands;
 pub use nvme_driver::controller;
 pub use nvme_driver::defs;
 pub use nvme_driver::error;
+pub use nvme_driver::global;
 pub use nvme_driver::identify;
 pub use nvme_driver::per_core;
+pub use nvme_driver::polling_driver;
 pub use nvme_driver::queue;
 pub use nvme_driver::queue_types;
 pub use nvme_driver::regs;
@@ -95,7 +92,7 @@ pub use identify::{
 // From error.rs
 pub use error::NvmeError;
 
-// From split driver modules (local)
+// From nvme_driver modules
 pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
 pub use global::{
     get_stats, init as init_nvme_polling, poll as nvme_poll, with_driver, with_driver_mut,
@@ -103,4 +100,7 @@ pub use global::{
 pub use per_core::{NvmeQueueStats, PerCoreNvmeQueue};
 pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};
 pub use queue::{CompletionQueue, QueuePair, SubmissionQueue};
+
+// From kernel-local scheduler
 pub use scheduler::{NvmePollHandler, register_with_io_scheduler};
+
