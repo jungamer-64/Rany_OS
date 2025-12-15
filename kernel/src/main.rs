@@ -12,5 +12,6 @@ include!("kernel_content.rs");
 fn main() {}
 
 // Provide a no-op main when building with std (e.g., for tests)
-#[cfg(feature = "std")]
+// Avoid defining multiple `main` entries when `bench` and `std` are both enabled
+#[cfg(all(feature = "std", not(feature = "bench")))]
 fn main() {}

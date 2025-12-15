@@ -1193,8 +1193,7 @@ impl Framebuffer {
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[target_feature(enable = "avx2")]
     unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
-        unsafe {
-            use core::arch::x86_64::*;
+        use core::arch::x86_64::*;
             // 32-byte shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
             let mask = _mm256_setr_epi8(
                 2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 18, 17, 16, 19, 22, 21, 20,
@@ -1226,25 +1225,25 @@ impl Framebuffer {
                     unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
                     i += 32;
                 }
-            } else {
-                // Unaligned (general) path
-                while i + 64 <= bytes {
-                    let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                    let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
-                    let r0 = unsafe { _mm256_shuffle_epi8(v0, mask) };
-                    let r1 = unsafe { _mm256_shuffle_epi8(v1, mask) };
-                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
-                    unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
-                    i += 64;
-                }
+                } else {
+                    // Unaligned (general) path
+                    while i + 64 <= bytes {
+                        let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                        let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
+                        let r0 = unsafe { _mm256_shuffle_epi8(v0, mask) };
+                        let r1 = unsafe { _mm256_shuffle_epi8(v1, mask) };
+                        unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
+                        unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
+                        i += 64;
+                    }
 
-                while i + 32 <= bytes {
-                    let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                    let r = unsafe { _mm256_shuffle_epi8(v, mask) };
-                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
-                    i += 32;
+                    while i + 32 <= bytes {
+                        let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                        let r = unsafe { _mm256_shuffle_epi8(v, mask) };
+                        unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
+                        i += 32;
+                    }
                 }
-            }
 
             // Process remaining 16-byte block(s) via SSSE3-style shuffle
             while i + 16 <= bytes {
@@ -1269,7 +1268,6 @@ impl Framebuffer {
                 *dst.add(s + 3) = a;
                 i += 4;
             }
-        }
     }
 
     /// AVX2 helper: pack exactly 8 RGBA pixels (32 bytes) into 24 BGR bytes.
@@ -1305,17 +1303,17 @@ impl Framebuffer {
         // - store next 8 bytes of lane0 -> dst[8..15]
         // - store low 4 bytes of lane1 -> dst[12..15] (overwrite middle)
         // - store low 8 bytes of lane1 -> dst[16..23]
-        unsafe { _mm_storel_epi64(dst as *mut __m128i, lane0) };
-        let lane0_hi = unsafe { _mm_srli_si128(lane0, 8) };
-        unsafe { _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi) };
+        _mm_storel_epi64(dst as *mut __m128i, lane0);
+        let lane0_hi = _mm_srli_si128(lane0, 8);
+        _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi);
 
         // low 32 bits of lane1 -> bytes 12..15
-        let low32 = unsafe { _mm_cvtsi128_si32(lane1) as i32 };
-        unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
+        let low32 = _mm_cvtsi128_si32(lane1) as i32;
+        core::ptr::write_unaligned(dst.add(12) as *mut i32, low32);
 
         // store bytes 16..23: use lane1 >> 4 bytes so we get r1[4..11]
-        let lane1_shift = unsafe { _mm_srli_si128(lane1, 4) };
-        unsafe { _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift) };
+        let lane1_shift = _mm_srli_si128(lane1, 4);
+        _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift);
     }
 
     /// SSSE3 implementation of 8-pixel RGBA -> 24-byte BGR/RGB compression.
@@ -2485,9 +2483,7 @@ impl Framebuffer {
                     let base_addr = self.draw_buffer() as usize;
                     for i in 0..run_len {
                         let off = base_addr + offset + i * 2;
-                        unsafe {
-                            mmio::mmio_write_u16(off, pixel);
-                        }
+                        mmio::mmio_write_u16(off, pixel);
                     }
                 }
             }
@@ -2544,9 +2540,7 @@ impl Framebuffer {
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = base_addr + y * stride + x_off * 4;
-                        unsafe {
-                            mmio::mmio_write_u32(off, color_u32);
-                        }
+                        mmio::mmio_write_u32(off, color_u32);
                     }
                 }
             }
@@ -2568,11 +2562,9 @@ impl Framebuffer {
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = base_addr + y * stride + x_off * 3;
-                        unsafe {
-                            mmio::volatile_write(off, color.blue);
-                            mmio::volatile_write(off + 1, color.green);
-                            mmio::volatile_write(off + 2, color.red);
-                        }
+                        mmio::volatile_write(off, color.blue);
+                        mmio::volatile_write(off + 1, color.green);
+                        mmio::volatile_write(off + 2, color.red);
                     }
                 }
             }
@@ -2595,9 +2587,7 @@ impl Framebuffer {
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = base_addr + y * stride + x_off * 2;
-                        unsafe {
-                            mmio::mmio_write_u16(off, pixel);
-                        }
+                        mmio::mmio_write_u16(off, pixel);
                     }
                 }
             }
