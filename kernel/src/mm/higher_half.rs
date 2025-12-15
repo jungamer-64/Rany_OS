@@ -288,6 +288,11 @@ impl PageFlags {
     pub const HUGE_PAGE: u64 = 1 << 7;
     /// Global
     pub const GLOBAL: u64 = 1 << 8;
+    /// PAT (Page Attribute Table) bit for 4KB pages
+    /// Combined with PWT and PCD to select memory type
+    pub const PAT: u64 = 1 << 7;
+    /// PAT bit for large pages (2MB/1GB) - bit 12 instead of bit 7
+    pub const PAT_LARGE: u64 = 1 << 12;
     /// No execute
     pub const NO_EXECUTE: u64 = 1 << 63;
 
@@ -342,6 +347,37 @@ impl PageFlags {
     #[inline]
     pub const fn user_code() -> Self {
         Self(Self::PRESENT | Self::USER)
+    }
+
+    /// MMIO/VRAM用 Write-Combining (WC)
+    ///
+    /// Write-Combining enables efficient streaming writes to VRAM by
+    /// combining multiple writes into larger bursts.
+    /// Uses PAT=1, PWT=1, PCD=0 to select WC memory type (PAT entry 5).
+    #[inline]
+    pub const fn write_combining() -> Self {
+        Self(
+            Self::PRESENT
+                | Self::WRITABLE
+                | Self::PAT
+                | Self::WRITE_THROUGH
+                | Self::NO_EXECUTE
+                | Self::GLOBAL,
+        )
+    }
+
+    /// Large page (2MB/1GB) MMIO/VRAM用 Write-Combining
+    #[inline]
+    pub const fn write_combining_large() -> Self {
+        Self(
+            Self::PRESENT
+                | Self::WRITABLE
+                | Self::PAT_LARGE
+                | Self::WRITE_THROUGH
+                | Self::HUGE_PAGE
+                | Self::NO_EXECUTE
+                | Self::GLOBAL,
+        )
     }
 
     /// 生の値を取得
