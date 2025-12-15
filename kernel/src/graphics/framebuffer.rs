@@ -22,6 +22,12 @@ use hal::mmio;
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 static PACKER_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+// Cache AVX2 availability to avoid repeated CPUID queries during heavy
+// drawing loops (e.g., per-row detection is expensive). 0 = unknown,
+// 1 = not available, 2 = available.
+#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+static AVX2_AVAILABLE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
 #[cfg(target_arch = "aarch64")]
 static PACKER_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
@@ -1095,6 +1101,47 @@ mod tests {
         }
     }
 
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
+        // Only run AVX2 check when available
+        if !std::is_x86_feature_detected!("avx2") {
+            return;
+        }
+
+        // 8 pixels (24 bytes) input
+        let len = 8usize;
+        let mut src = vec![0u8; len * 4];
+        for i in 0..src.len() { src[i] = (i * 97 % 251) as u8; }
+        let mut dst_simd = vec![0u8; len * 3];
+        unsafe { Framebuffer::pack_rgba_to_bgr24_avx2_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true); }
+
+        // scalar pack
+        let mut dst_scalar = vec![0u8; len * 3];
+        for p in 0..len { let s = p * 4; dst_scalar[p*3] = src[s+2]; dst_scalar[p*3+1] = src[s+1]; dst_scalar[p*3+2] = src[s+0]; }
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[test]
+    fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
+        if !std::is_x86_feature_detected!("ssse3") {
+            return;
+        }
+
+        let len = 8usize;
+        let mut src = vec![0u8; len * 4];
+        for i in 0..src.len() { src[i] = (i * 61 % 251) as u8; }
+        let mut dst_simd = vec![0u8; len * 3];
+        unsafe { Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true); }
+
+        let mut dst_scalar = vec![0u8; len * 3];
+        for p in 0..len { let s = p * 4; dst_scalar[p*3] = src[s+2]; dst_scalar[p*3+1] = src[s+1]; dst_scalar[p*3+2] = src[s+0]; }
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn test_pack_rgba_to_bgra_neon_matches_scalar() {
@@ -1835,6 +1882,30 @@ impl Framebuffer {
         Self::pack_rgba_to_bgra_scalar(src, dst);
     }
 
+        /// Query AVX2 availability once and cache result to avoid repeated
+        /// CPUID calls. Only used on x86-family builds and when `std` is
+        /// available for runtime detection.
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        fn get_avx2_available() -> bool {
+            use core::sync::atomic::Ordering;
+            let v = AVX2_AVAILABLE.load(Ordering::Relaxed);
+            if v == 0 {
+                #[cfg(feature = "std")]
+                {
+                    let avail = std::is_x86_feature_detected!("avx2");
+                    AVX2_AVAILABLE.store(if avail { 2 } else { 1 }, Ordering::Relaxed);
+                    avail
+                }
+                #[cfg(not(feature = "std"))]
+                {
+                    AVX2_AVAILABLE.store(1, Ordering::Relaxed);
+                    false
+                }
+            } else {
+                v == 2
+            }
+        }
+
     /// Scalar packer implementation (public so benches can call it directly).
     #[inline(always)]
     pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
@@ -1971,6 +2042,84 @@ impl Framebuffer {
             i += 4;
         }
     }}
+
+    /// AVX2 helper: pack exactly 8 RGBA pixels (32 bytes) into 24 BGR bytes.
+    /// `is_bgr` selects whether output order is BGR (true) or RGB (false).
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[target_feature(enable = "avx2")]
+    unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
+        use core::arch::x86_64::*;
+
+        // Masks select bytes per 128-bit lane. For BGR each pixel maps [r,g,b,a] -> [b,g,r]
+        let mask_bgr = _mm256_setr_epi8(
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
+        );
+
+        // Masks for RGB ordering: [r,g,b]
+        let mask_rgb = _mm256_setr_epi8(
+            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
+            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
+        );
+
+        let v = unsafe { _mm256_loadu_si256(src as *const __m256i) };
+        let mask = if is_bgr { mask_bgr } else { mask_rgb };
+        let shuffled = unsafe { _mm256_shuffle_epi8(v, mask) };
+
+        // Extract lanes and write: store lane0 at dst, lane1 at dst+12 (overlap)
+        let lane0 = unsafe { _mm256_extracti128_si256(shuffled, 0) };
+        let lane1 = unsafe { _mm256_extracti128_si256(shuffled, 1) };
+
+        // Store 24 bytes safely without overrunning the destination buffer:
+        // - store low 8 bytes of lane0 -> dst[0..7]
+        // - store next 8 bytes of lane0 -> dst[8..15]
+        // - store low 4 bytes of lane1 -> dst[12..15] (overwrite middle)
+        // - store low 8 bytes of lane1 -> dst[16..23]
+        unsafe { _mm_storel_epi64(dst as *mut __m128i, lane0) };
+        let lane0_hi = unsafe { _mm_srli_si128(lane0, 8) };
+        unsafe { _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi) };
+
+        // low 32 bits of lane1 -> bytes 12..15
+        let low32 = unsafe { _mm_cvtsi128_si32(lane1) } as i32;
+        unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
+
+        // store bytes 16..23: use lane1 >> 4 bytes so we get r1[4..11]
+        let lane1_shift = unsafe { _mm_srli_si128(lane1, 4) };
+        unsafe { _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift) };
+    }
+
+    /// SSSE3 implementation of 8-pixel RGBA -> 24-byte BGR/RGB compression.
+    /// Uses pshufb on 16-byte lanes and overlapping stores to emit 24 bytes.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[target_feature(enable = "ssse3")]
+    unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
+        use core::arch::x86_64::*;
+
+        // Masks select bytes per 128-bit lane. For BGR each pixel maps [r,g,b,a] -> [b,g,r]
+        let mask_bgr = _mm_setr_epi8(
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
+        );
+
+        // Masks for RGB ordering: [r,g,b]
+        let mask_rgb = _mm_setr_epi8(
+            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
+        );
+
+        let v0 = _mm_loadu_si128(src as *const __m128i);
+        let v1 = _mm_loadu_si128(src.add(16) as *const __m128i);
+        let mask = if is_bgr { mask_bgr } else { mask_rgb };
+        let r0 = _mm_shuffle_epi8(v0, mask);
+        let r1 = _mm_shuffle_epi8(v1, mask);
+
+        // Store 24 bytes safely as described in AVX2 helper to avoid overruns
+        _mm_storel_epi64(dst as *mut __m128i, r0);
+        let r0_hi = _mm_srli_si128(r0, 8);
+        _mm_storel_epi64(dst.add(8) as *mut __m128i, r0_hi);
+        let low32 = _mm_cvtsi128_si32(r1) as i32;
+        unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
+        let r1_shift = _mm_srli_si128(r1, 4);
+        _mm_storel_epi64(dst.add(16) as *mut __m128i, r1_shift);
+    }
 
     /// NEON implementation placeholder (aarch64). For now this falls back to
     /// a scalar loop for correctness; a NEON tbl-based implementation can be
@@ -2456,11 +2605,29 @@ impl Framebuffer {
             unsafe {
                 for row in 0..h {
                     let offset = (y + row) * stride + x * bytes_per_pixel;
-                    ptr::copy_nonoverlapping(
-                        back.as_ptr().add(offset),
-                        self.buffer.add(offset),
-                        row_bytes,
-                    );
+                    let addr = self.buffer.add(offset) as usize;
+
+                    // Use optimized per-format writers to leverage aligned MMIO
+                    // write helpers where possible (u32/u64 writes) instead of
+                    // a generic memcpy which may be suboptimal for volatile MMIO.
+                    match bytes_per_pixel {
+                        4 => {
+                            let src_ptr = back.as_ptr().add(offset) as *const u32;
+                            let src_slice = core::slice::from_raw_parts(src_ptr, w);
+                            self.write_u32_slice_mmio(addr, src_slice);
+                        }
+                        3 => {
+                            let src_bytes = &back[offset..offset + row_bytes];
+                            self.write_bytes_mmio(addr, src_bytes);
+                        }
+                        _ => {
+                            ptr::copy_nonoverlapping(
+                                back.as_ptr().add(offset),
+                                self.buffer.add(offset),
+                                row_bytes,
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -2690,27 +2857,29 @@ impl Framebuffer {
         match bytes_per_pixel {
             4 => {
                 let color_u32 = color.to_u32();
+                // Delegate to write_u32_run which already handles backbuffer/MMIO paths efficiently
                 self.write_u32_run(offset, run_len, color_u32);
             }
             3 => {
                 self.write_bgr_run(offset, run_len, color);
             }
             2 => {
-                // rgb565 per-pixel write
-                let mut addr = self.draw_buffer();
-                for i in 0..run_len {
-                    let off = offset + i * 2;
-                    let r = (color.red as u16 >> 3) & 0x1F;
-                    let g = (color.green as u16 >> 2) & 0x3F;
-                    let b = (color.blue as u16 >> 3) & 0x1F;
-                    let pixel = (r << 11) | (g << 5) | b;
-                    if self.back_buffer.is_some() {
-                        unsafe {
-                            let ptr = addr.add(off) as *mut u16;
-                            ptr::write(ptr, pixel);
-                        }
-                    } else {
-                        unsafe { mmio::mmio_write_u16(addr.add(off) as usize, pixel); }
+                // rgb565 per-pixel write. Branch once on presence of back buffer
+                let r = (color.red as u16 >> 3) & 0x1F;
+                let g = (color.green as u16 >> 2) & 0x3F;
+                let b = (color.blue as u16 >> 3) & 0x1F;
+                let pixel = (r << 11) | (g << 5) | b;
+                if let Some(_) = self.back_buffer {
+                    let base = self.draw_buffer();
+                    for i in 0..run_len {
+                        let off = offset + i * 2;
+                        unsafe { ptr::write(base.add(off) as *mut u16, pixel); }
+                    }
+                } else {
+                    let base_addr = self.draw_buffer() as usize;
+                    for i in 0..run_len {
+                        let off = base_addr + offset + i * 2;
+                        unsafe { mmio::mmio_write_u16(off, pixel); }
                     }
                 }
             }
@@ -2751,52 +2920,68 @@ impl Framebuffer {
         match bytes_per_pixel {
             4 => {
                 let color_u32 = color.to_u32();
-                // For vertical lines we must step by stride for each row
-                for i in 0..run_len {
-                    let y = (start_y as usize) + i;
-                    let off = y * stride + x_off * 4;
-                    if self.back_buffer.is_some() {
-                        unsafe {
-                            let ptr = self.draw_buffer().add(off) as *mut u32;
-                            ptr::write(ptr, color_u32);
-                        }
-                    } else {
-                        unsafe { mmio::mmio_write_u32(self.draw_buffer().add(off) as usize, color_u32); }
+                // Branch once: either write to back buffer (fast pointer writes)
+                // or write via MMIO helper.
+                if let Some(_) = self.back_buffer {
+                    let base = self.draw_buffer();
+                    for i in 0..run_len {
+                        let y = (start_y as usize) + i;
+                        let off = y * stride + x_off * 4;
+                        unsafe { ptr::write(base.add(off) as *mut u32, color_u32); }
+                    }
+                } else {
+                    let base_addr = self.draw_buffer() as usize;
+                    for i in 0..run_len {
+                        let y = (start_y as usize) + i;
+                        let off = base_addr + y * stride + x_off * 4;
+                        unsafe { mmio::mmio_write_u32(off, color_u32); }
                     }
                 }
             }
             3 => {
-                for i in 0..run_len {
-                    let y = (start_y as usize) + i;
-                    let off = y * stride + x_off * 3;
-                    if self.back_buffer.is_some() {
+                if let Some(_) = self.back_buffer {
+                    let base = self.draw_buffer();
+                    for i in 0..run_len {
+                        let y = (start_y as usize) + i;
+                        let off = y * stride + x_off * 3;
                         unsafe {
-                            let ptr = self.draw_buffer().add(off);
+                            let ptr = base.add(off);
                             ptr::write(ptr, color.blue);
                             ptr::write(ptr.add(1), color.green);
                             ptr::write(ptr.add(2), color.red);
                         }
-                    } else {
+                    }
+                } else {
+                    let base_addr = self.draw_buffer() as usize;
+                    for i in 0..run_len {
+                        let y = (start_y as usize) + i;
+                        let off = base_addr + y * stride + x_off * 3;
                         unsafe {
-                            mmio::volatile_write(self.draw_buffer().add(off) as usize, color.blue);
-                            mmio::volatile_write(self.draw_buffer().add(off + 1) as usize, color.green);
-                            mmio::volatile_write(self.draw_buffer().add(off + 2) as usize, color.red);
+                            mmio::volatile_write(off, color.blue);
+                            mmio::volatile_write(off + 1, color.green);
+                            mmio::volatile_write(off + 2, color.red);
                         }
                     }
                 }
             }
             2 => {
-                for i in 0..run_len {
-                    let y = (start_y as usize) + i;
-                    let off = y * stride + x_off * 2;
-                    let r = (color.red as u16 >> 3) & 0x1F;
-                    let g = (color.green as u16 >> 2) & 0x3F;
-                    let b = (color.blue as u16 >> 3) & 0x1F;
-                    let pixel = (r << 11) | (g << 5) | b;
-                    if self.back_buffer.is_some() {
-                        unsafe { ptr::write(self.draw_buffer().add(off) as *mut u16, pixel); }
-                    } else {
-                        unsafe { mmio::mmio_write_u16(self.draw_buffer().add(off) as usize, pixel); }
+                let r = (color.red as u16 >> 3) & 0x1F;
+                let g = (color.green as u16 >> 2) & 0x3F;
+                let b = (color.blue as u16 >> 3) & 0x1F;
+                let pixel = (r << 11) | (g << 5) | b;
+                if let Some(_) = self.back_buffer {
+                    let base = self.draw_buffer();
+                    for i in 0..run_len {
+                        let y = (start_y as usize) + i;
+                        let off = y * stride + x_off * 2;
+                        unsafe { ptr::write(base.add(off) as *mut u16, pixel); }
+                    }
+                } else {
+                    let base_addr = self.draw_buffer() as usize;
+                    for i in 0..run_len {
+                        let y = (start_y as usize) + i;
+                        let off = base_addr + y * stride + x_off * 2;
+                        unsafe { mmio::mmio_write_u16(off, pixel); }
                     }
                 }
             }
@@ -3487,7 +3672,7 @@ impl Framebuffer {
     /// 24-bit不透明ランの描画
     fn write_opaque_run_24bit(&mut self, image: &super::image::Image, 
                              src_row: u32, run_start: u32, run_len: usize, 
-                             dst_byte_offset: usize, x: i32, dst_row: i32) {
+                             dst_byte_offset: usize, x: i32, dst_row: i32, avx2_available: bool) {
         let total_bytes = run_len * 3;
         self.ensure_scratch_u8(total_bytes);
         let src_base = (src_row * image.width() + run_start) as usize;
@@ -3501,10 +3686,92 @@ impl Framebuffer {
         match self.info.format {
             PixelFormat::Bgr888 => {
                 handled_in_scratch = true;
+                // AVX2 fast-path: process 8 pixels (24 bytes) per iteration using
+                // byte-shuffle (pshufb) to compress RGBA -> BGR triplets. This
+                // writes overlapping 16-byte stores (at dst and dst+12) to
+                // produce contiguous 24-byte output for 8 pixels.
+                #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
+                {
+                    if avx2_available && run_len >= 8 {
+                        // AVX2: Process chunks of 8 pixels
+                        let mut processed = 0usize;
+                        let src_ptr = unsafe { imgdata.as_ptr().add(src_base * 4) };
+                        let dst_ptr = self.scratch_u8.as_mut_ptr();
+                        while processed + 8 <= run_len {
+                            unsafe {
+                                Self::pack_rgba_to_bgr24_avx2_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), true);
+                            }
+                            processed += 8;
+                        }
+
+                        // Advance indices to account for SIMD-processed pixels
+                        src_idx += processed * 4;
+                        dst_off += processed * 3;
+                        i += processed;
+                    } else if std::is_x86_feature_detected!("ssse3") && run_len >= 8 {
+                        // SSSE3 fallback: process 8-pixel chunks using 128-bit shuffles
+                        let mut processed = 0usize;
+                        let src_ptr = unsafe { imgdata.as_ptr().add(src_base * 4) };
+                        let dst_ptr = self.scratch_u8.as_mut_ptr();
+                        while processed + 8 <= run_len {
+                            unsafe {
+                                Self::pack_rgba_to_bgr24_ssse3_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), true);
+                            }
+                            processed += 8;
+                        }
+
+                        src_idx += processed * 4;
+                        dst_off += processed * 3;
+                        i += processed;
+                    }
+                }
                 // Process pairs of pixels at a time to emit 6-byte chunks using
                 // one u32 + one u16 write (b0 g0 r0 b1) + (g1 r1)
                 let src_ptr = imgdata.as_ptr();
                 let dst_ptr = self.scratch_u8.as_mut_ptr();
+                // Unroll pair processing to handle two pairs (4 pixels) per iteration
+                while i + 3 < run_len {
+                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
+                    let p2 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32) };
+                    let p3 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32) };
+
+                    let b0 = ((p0 >> 16) & 0xFF) as u32;
+                    let g0 = ((p0 >> 8) & 0xFF) as u32;
+                    let r0 = (p0 & 0xFF) as u32;
+
+                    let b1 = ((p1 >> 16) & 0xFF) as u32;
+                    let g1 = ((p1 >> 8) & 0xFF) as u32;
+                    let r1 = (p1 & 0xFF) as u32;
+
+                    let b2 = ((p2 >> 16) & 0xFF) as u32;
+                    let g2 = ((p2 >> 8) & 0xFF) as u32;
+                    let r2 = (p2 & 0xFF) as u32;
+
+                    let b3 = ((p3 >> 16) & 0xFF) as u32;
+                    let g3 = ((p3 >> 8) & 0xFF) as u32;
+                    let r3 = (p3 & 0xFF) as u32;
+
+                    // First pair
+                    let v32_0 = (b0) | (g0 << 8) | (r0 << 16) | (b1 << 24);
+                    let v16_0 = (g1 as u16) | ((r1 as u16) << 8);
+                    // Second pair
+                    let v32_1 = (b2) | (g2 << 8) | (r2 << 16) | (b3 << 24);
+                    let v16_1 = (g3 as u16) | ((r3 as u16) << 8);
+
+                    unsafe {
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off) as *mut u32, v32_0);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 4) as *mut u16, v16_0);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 6) as *mut u32, v32_1);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 10) as *mut u16, v16_1);
+                    }
+
+                    src_idx += 16;
+                    dst_off += 12;
+                    i += 4;
+                }
+
+                // Remaining pairs
                 while i + 1 < run_len {
                     let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
                     let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
@@ -3545,9 +3812,85 @@ impl Framebuffer {
             }
             PixelFormat::Rgb888 => {
                 handled_in_scratch = true;
-                // Similar pair-based packing for RGB order: emit (r0 g0 b0 r1) + (g1 b1)
+                #[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
+                {
+                    if avx2_available && run_len >= 8 {
+                        // AVX2: process chunks of 8 pixels
+                        let mut processed = 0usize;
+                        let src_ptr = unsafe { imgdata.as_ptr().add(src_base * 4) };
+                        let dst_ptr = self.scratch_u8.as_mut_ptr();
+                        while processed + 8 <= run_len {
+                            unsafe {
+                                Self::pack_rgba_to_bgr24_avx2_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), false);
+                            }
+                            processed += 8;
+                        }
+
+                        src_idx += processed * 4;
+                        dst_off += processed * 3;
+                        i += processed;
+                    } else if std::is_x86_feature_detected!("ssse3") && run_len >= 8 {
+                        // SSSE3 fallback
+                        let mut processed = 0usize;
+                        let src_ptr = unsafe { imgdata.as_ptr().add(src_base * 4) };
+                        let dst_ptr = self.scratch_u8.as_mut_ptr();
+                        while processed + 8 <= run_len {
+                            unsafe {
+                                Self::pack_rgba_to_bgr24_ssse3_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), false);
+                            }
+                            processed += 8;
+                        }
+
+                        src_idx += processed * 4;
+                        dst_off += processed * 3;
+                        i += processed;
+                    }
+                }
+                // Unroll pair processing for RGB order to handle two pairs (4 pixels) per iteration
                 let src_ptr = imgdata.as_ptr();
                 let dst_ptr = self.scratch_u8.as_mut_ptr();
+                while i + 3 < run_len {
+                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
+                    let p2 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32) };
+                    let p3 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32) };
+
+                    let r0 = (p0 & 0xFF) as u32;
+                    let g0 = ((p0 >> 8) & 0xFF) as u32;
+                    let b0 = ((p0 >> 16) & 0xFF) as u32;
+
+                    let r1 = (p1 & 0xFF) as u32;
+                    let g1 = ((p1 >> 8) & 0xFF) as u32;
+                    let b1 = ((p1 >> 16) & 0xFF) as u32;
+
+                    let r2 = (p2 & 0xFF) as u32;
+                    let g2 = ((p2 >> 8) & 0xFF) as u32;
+                    let b2 = ((p2 >> 16) & 0xFF) as u32;
+
+                    let r3 = (p3 & 0xFF) as u32;
+                    let g3 = ((p3 >> 8) & 0xFF) as u32;
+                    let b3 = ((p3 >> 16) & 0xFF) as u32;
+
+                    // First pair
+                    let v32_0 = (r0) | (g0 << 8) | (b0 << 16) | (r1 << 24);
+                    let v16_0 = (g1 as u16) | ((b1 as u16) << 8);
+                    // Second pair
+                    let v32_1 = (r2) | (g2 << 8) | (b2 << 16) | (r3 << 24);
+                    let v16_1 = (g3 as u16) | ((b3 as u16) << 8);
+
+                    unsafe {
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off) as *mut u32, v32_0);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 4) as *mut u16, v16_0);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 6) as *mut u32, v32_1);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 10) as *mut u16, v16_1);
+                    }
+
+                    src_idx += 16;
+                    dst_off += 12;
+                    i += 4;
+                }
+
+                // Remaining pairs
                 while i + 1 < run_len {
                     let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
                     let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
@@ -3647,19 +3990,20 @@ impl Framebuffer {
         let bytes_per_pixel = self.info.format.bytes_per_pixel();
         let dst_row_offset = (dst_row as u32 * self.info.stride) as usize;
         let mut col = row_start;
+        let img_ptr = image.data().as_ptr();
 
         while col < row_end {
             // Skip non-opaque pixels (alpha != 255) by falling back to per-pixel set_pixel
             while col < row_end {
                 let idx = ((src_row * image.width() + col) * 4) as usize;
-                let alpha = image.data()[idx + 3];
+                let alpha = unsafe { *img_ptr.add(idx + 3) };
                 if alpha == 255 {
                     break;
                 }
                 // fallback: preserve original semantic (write if alpha > 0)
                 if alpha > 0 {
                     let c = image.get_pixel(col, src_row);
-                    self.blend_pixel((x + col as i32), dst_row, c);
+                    self.blend_pixel(x + col as i32, dst_row, c);
                 }
                 col += 1;
             }
@@ -3668,7 +4012,7 @@ impl Framebuffer {
             let run_start = col;
             while col < row_end {
                 let idx = ((src_row * image.width() + col) * 4) as usize;
-                let alpha = image.data()[idx + 3];
+                let alpha = unsafe { *img_ptr.add(idx + 3) };
                 if alpha != 255 {
                     break;
                 }
@@ -3687,7 +4031,7 @@ impl Framebuffer {
 
             match bytes_per_pixel {
                 4 => self.write_opaque_run_32bit(image, src_row, run_start, run_len, dst_byte_offset, avx2_available),
-                3 => self.write_opaque_run_24bit(image, src_row, run_start, run_len, dst_byte_offset, x, dst_row),
+                3 => self.write_opaque_run_24bit(image, src_row, run_start, run_len, dst_byte_offset, x, dst_row, avx2_available),
                 _ => {
                     // Fallback
                     for i in 0..run_len {
@@ -3715,12 +4059,16 @@ impl Framebuffer {
         let dst_y1 = draw_rect.bottom();
 
         // Pre-detect CPU features once per draw to avoid repeated CPUID calls
-        let mut avx2_available = false;
-        #[cfg(feature = "std")]
-        if std::is_x86_feature_detected!("avx2") {
-            avx2_available = true;
-        }
-
+        let avx2_available = {
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            {
+                Self::get_avx2_available()
+            }
+            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+            {
+                false
+            }
+        };
         for dst_row in dst_y0..dst_y1 {
             let src_row = (dst_row - y) as u32;
             let row_start = (dst_x0 - x) as u32;

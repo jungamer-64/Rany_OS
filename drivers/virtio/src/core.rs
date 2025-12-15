@@ -13,7 +13,9 @@ use alloc::collections::VecDeque;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 
-use super::defs::*;
+// use super::defs::*; // Removed
+use crate::defs::*;
+
 
 // ============================================================================
 // VirtQueue - Generic Implementation
@@ -381,7 +383,7 @@ impl VirtQueue {
         // メモリバリア: 全ての書き込みが完了してから通知
         core::sync::atomic::fence(Ordering::SeqCst);
 
-        crate::io::mmio_write_u16(self.notify_addr as usize, self.queue_index);
+        hal::mmio::mmio_write_u16(self.notify_addr as usize, self.queue_index);
     }
 
     /// 完了したリクエストをポーリング

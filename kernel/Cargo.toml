@@ -31,6 +31,8 @@ nvme_driver = { path = "../drivers/nvme" }
 usb_driver = { path = "../drivers/usb" }
 hid_driver = { path = "../drivers/hid" }
 gpu_driver = { path = "../drivers/gpu" }
+virtio_driver = { path = "../drivers/virtio" }
+acpi_driver = { path = "../drivers/acpi" }
 
 # Filesystems
 fat32 = { path = "../filesystems/fat32" }
@@ -92,6 +94,7 @@ std = []
 
 [dev-dependencies]
 criterion = "0.4"
+graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }
 
 # ============================================================================
 # ブートイメージ設定
@@ -114,3 +117,8 @@ test-args = [
 ]
 test-success-exit-code = 33
 test-timeout = 300
+
+[[bench]]
+name = "framebuffer_bench"
+harness = false
+required-features = ["bench"]

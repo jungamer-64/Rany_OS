@@ -1,0 +1,18 @@
+[package]
+name = "virtio_driver"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# HAL for MMIO and port I/O wrappers
+hal = { path = "../../hal" }
+kernel_api = { path = "../../interfaces/kernel_api" }
+spin = "0.9"
+
+[features]
+default = []
+standalone = ["export_driver_entry"]
+export_driver_entry = []

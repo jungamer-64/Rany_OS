@@ -812,8 +812,8 @@ macro_rules! serial_print {
 
 #[macro_export]
 macro_rules! serial_println {
-    () => ($crate::serial_print!("\n"));
-    ($($arg:tt)*) => ($crate::serial_print!("{}\n", format_args!($($arg)*)));
+    () => ($crate::io::serial::_print(format_args!("\n")));
+    ($($arg:tt)*) => ($crate::io::serial::_print(format_args!("{}\n", format_args!($($arg)*))));
 }
 
 // ============================================================================
