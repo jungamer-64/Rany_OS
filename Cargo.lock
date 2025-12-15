@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "acpi_driver"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "spin 0.9.8",
+]
+
+[[package]]
 name = "ahci_driver"
 version = "0.1.0"
 dependencies = [
@@ -649,6 +657,7 @@ dependencies = [
 name = "rany_kernel"
 version = "0.3.0"
 dependencies = [
+ "acpi_driver",
  "ahci_driver",
  "bitflags 2.10.0",
  "criterion",
@@ -672,6 +681,7 @@ dependencies = [
  "uart_16550",
  "usb_driver",
  "vfs",
+ "virtio_driver",
  "x86_64",
 ]
 
@@ -946,6 +956,15 @@ name = "vfs"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.10.0",
+ "spin 0.9.8",
+]
+
+[[package]]
+name = "virtio_driver"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "kernel_api",
  "spin 0.9.8",
 ]
 

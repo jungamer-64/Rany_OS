@@ -129,7 +129,7 @@ impl AcpiParser {
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
-            let addr = crate::util::read_unaligned_from_addr::<u32>(entries_ptr.add(i) as usize);
+            let addr = unsafe { core::ptr::read_unaligned(entries_ptr.add(i) as *const u32) };
             addresses.push(addr as u64);
         }
 
@@ -155,7 +155,7 @@ impl AcpiParser {
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
-            let addr = crate::util::read_unaligned_from_addr::<u64>(entries_ptr.add(i) as usize);
+            let addr = unsafe { core::ptr::read_unaligned(entries_ptr.add(i) as *const u64) };
             addresses.push(addr);
         }
 

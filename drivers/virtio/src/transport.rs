@@ -23,7 +23,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 
-use super::defs::{VirtioDeviceType, status};
+use crate::defs::{VirtioDeviceType, status};
 
 // ============================================================================
 // Transport Error
@@ -260,13 +260,13 @@ impl VirtioMmioTransport {
     /// 逕滂ｿｽEMMIO隱ｭ縺ｿ蜿悶ｊ
     #[inline]
     fn read32_raw(base: usize, offset: usize) -> u32 {
-        crate::io::mmio_read_u32(base + offset)
+        hal::mmio::mmio_read_u32(base + offset)
     }
 
     /// 逕滂ｿｽEMMIO譖ｸ縺崎ｾｼ縺ｿ
     #[inline]
     fn write32_raw(base: usize, offset: usize, value: u32) {
-        crate::io::mmio_write_u32(base + offset, value);
+        hal::mmio::mmio_write_u32(base + offset, value);
     }
 
     /// 32繝薙ャ繝医Ξ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ
@@ -379,27 +379,27 @@ impl VirtioTransport for VirtioMmioTransport {
     }
 
     fn read_config_u8(&self, offset: usize) -> u8 {
-        crate::io::mmio_read_u8((self.base + mmio_regs::CONFIG + offset) as usize)
+        hal::mmio::mmio_read_u8((self.base + mmio_regs::CONFIG + offset) as usize)
     }
 
     fn read_config_u16(&self, offset: usize) -> u16 {
-        crate::io::mmio_read_u16((self.base + mmio_regs::CONFIG + offset) as usize)
+        hal::mmio::mmio_read_u16((self.base + mmio_regs::CONFIG + offset) as usize)
     }
 
     fn read_config_u32(&self, offset: usize) -> u32 {
-        crate::io::mmio_read_u32((self.base + mmio_regs::CONFIG + offset) as usize)
+        hal::mmio::mmio_read_u32((self.base + mmio_regs::CONFIG + offset) as usize)
     }
 
     fn write_config_u8(&mut self, offset: usize, value: u8) {
-        crate::io::mmio_write_u8((self.base + mmio_regs::CONFIG + offset) as usize, value);
+        hal::mmio::mmio_write_u8((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
 
     fn write_config_u16(&mut self, offset: usize, value: u16) {
-        crate::io::mmio_write_u16((self.base + mmio_regs::CONFIG + offset) as usize, value);
+        hal::mmio::mmio_write_u16((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
 
     fn write_config_u32(&mut self, offset: usize, value: u32) {
-        crate::io::mmio_write_u32((self.base + mmio_regs::CONFIG + offset) as usize, value);
+        hal::mmio::mmio_write_u32((self.base + mmio_regs::CONFIG + offset) as usize, value);
     }
 
     fn transport_type(&self) -> TransportType {
@@ -480,49 +480,49 @@ impl VirtioPciTransport {
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u8(&self, offset: usize) -> u8 {
-        crate::io::mmio_read_u8((self.common_cfg_addr + offset) as usize)
+        hal::mmio::mmio_read_u8((self.common_cfg_addr + offset) as usize)
     }
 
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE6繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u16(&self, offset: usize) -> u16 {
-        crate::io::mmio_read_u16((self.common_cfg_addr + offset) as usize)
+        hal::mmio::mmio_read_u16((self.common_cfg_addr + offset) as usize)
     }
 
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE2繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u32(&self, offset: usize) -> u32 {
-        crate::io::mmio_read_u32((self.common_cfg_addr + offset) as usize)
+        hal::mmio::mmio_read_u32((self.common_cfg_addr + offset) as usize)
     }
 
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ繧定ｪｭ縺ｿ蜿悶ｊ・ｽE・ｽE4繝薙ャ繝茨ｼ・
     #[inline]
     fn read_common_u64(&self, offset: usize) -> u64 {
-        crate::io::mmio_read_u64((self.common_cfg_addr + offset) as usize)
+        hal::mmio::mmio_read_u64((self.common_cfg_addr + offset) as usize)
     }
 
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u8(&self, offset: usize, value: u8) {
-        crate::io::mmio_write_u8((self.common_cfg_addr + offset) as usize, value);
+        hal::mmio::mmio_write_u8((self.common_cfg_addr + offset) as usize, value);
     }
 
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE6繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u16(&self, offset: usize, value: u16) {
-        crate::io::mmio_write_u16((self.common_cfg_addr + offset) as usize, value);
+        hal::mmio::mmio_write_u16((self.common_cfg_addr + offset) as usize, value);
     }
 
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE2繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u32(&self, offset: usize, value: u32) {
-        crate::io::mmio_write_u32((self.common_cfg_addr + offset) as usize, value);
+        hal::mmio::mmio_write_u32((self.common_cfg_addr + offset) as usize, value);
     }
 
     /// Common Configuration 繝ｬ繧ｸ繧ｹ繧ｿ縺ｫ譖ｸ縺崎ｾｼ縺ｿ・ｽE・ｽE4繝薙ャ繝茨ｼ・
     #[inline]
     fn write_common_u64(&self, offset: usize, value: u64) {
-        crate::io::mmio_write_u64((self.common_cfg_addr + offset) as usize, value);
+        hal::mmio::mmio_write_u64((self.common_cfg_addr + offset) as usize, value);
     }
 
     /// 繧ｭ繝･繝ｼ縺ｮ騾夂衍繧ｪ繝輔そ繝・・ｽ・ｽ繧貞叙蠕・
@@ -613,11 +613,11 @@ impl VirtioTransport for VirtioPciTransport {
         let notify_addr = self.notify_addr + notify_off * self.notify_off_multiplier as usize;
 
         // 騾夂衍繧帝∽ｿ｡
-        crate::io::mmio_write_u16(notify_addr as usize, queue_index);
+        hal::mmio::mmio_write_u16(notify_addr as usize, queue_index);
     }
 
     fn get_interrupt_status(&self) -> u32 {
-        unsafe { crate::io::mmio_read_u8(self.isr_addr as usize) as u32 }
+        unsafe { hal::mmio::mmio_read_u8(self.isr_addr as usize) as u32 }
     }
 
     fn ack_interrupt(&mut self, _status: u32) {
@@ -626,27 +626,27 @@ impl VirtioTransport for VirtioPciTransport {
     }
 
     fn read_config_u8(&self, offset: usize) -> u8 {
-        unsafe { crate::io::mmio_read_u8((self.device_cfg_addr + offset) as usize) }
+        unsafe { hal::mmio::mmio_read_u8((self.device_cfg_addr + offset) as usize) }
     }
 
     fn read_config_u16(&self, offset: usize) -> u16 {
-        unsafe { crate::io::mmio_read_u16((self.device_cfg_addr + offset) as usize) }
+        unsafe { hal::mmio::mmio_read_u16((self.device_cfg_addr + offset) as usize) }
     }
 
     fn read_config_u32(&self, offset: usize) -> u32 {
-        unsafe { crate::io::mmio_read_u32((self.device_cfg_addr + offset) as usize) }
+        unsafe { hal::mmio::mmio_read_u32((self.device_cfg_addr + offset) as usize) }
     }
 
     fn write_config_u8(&mut self, offset: usize, value: u8) {
-        crate::io::mmio::mmio_write_u8((self.device_cfg_addr + offset) as usize, value);
+        hal::mmio::mmio_write_u8((self.device_cfg_addr + offset) as usize, value);
     }
 
     fn write_config_u16(&mut self, offset: usize, value: u16) {
-        crate::io::mmio::mmio_write_u16((self.device_cfg_addr + offset) as usize, value);
+        hal::mmio::mmio_write_u16((self.device_cfg_addr + offset) as usize, value);
     }
 
     fn write_config_u32(&mut self, offset: usize, value: u32) {
-        crate::io::mmio::mmio_write_u32((self.device_cfg_addr + offset) as usize, value);
+        hal::mmio::mmio_write_u32((self.device_cfg_addr + offset) as usize, value);
     }
 
     fn transport_type(&self) -> TransportType {

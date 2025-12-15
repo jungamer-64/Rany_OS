@@ -17,17 +17,19 @@
 #![allow(dead_code)]
 
 pub mod blk;
-pub mod core;
-pub mod defs;
 pub mod net;
-pub mod transport;
+
+// Re-export defs from virtio_driver crate
+pub use virtio_driver::defs;
+pub use virtio_driver::core;
+pub use virtio_driver::transport;
 
 // Re-export common types
-pub use self::core::*;
-pub use self::defs::*;
+pub use virtio_driver::core::*;
+pub use virtio_driver::defs::*;
 
 // Re-exports for Transport
-pub use transport::{
+pub use virtio_driver::transport::{
     TransportError, TransportResult, TransportType, VirtioDeviceInit, VirtioMmioTransport,
     VirtioPciTransport, VirtioTransport,
 };

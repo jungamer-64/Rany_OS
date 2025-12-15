@@ -1,9 +1,8 @@
 [package]
-name = "repro_align"
+name = "acpi_driver"
 version = "0.1.0"
 edition = "2021"
 
-[workspace]
-
 [dependencies]
-limine = "0.5"
+spin = "0.9"
+log = "0.4"

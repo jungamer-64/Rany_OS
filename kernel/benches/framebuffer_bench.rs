@@ -1,7 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use rany_os::graphics::framebuffer::Framebuffer;
-use rany_os::graphics::framebuffer::FramebufferInfo;
-use rany_os::graphic_types::types::{PixelFormat, Color};
+use graphic_types::{FramebufferInfo, PixelFormat, Color};
 use rany_os::graphics::image::Image;
 
 fn bench_draw_image_bgra_mmio(c: &mut Criterion) {

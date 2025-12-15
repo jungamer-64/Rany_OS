@@ -15,17 +15,18 @@
 
 #![allow(dead_code)]
 
-pub mod info;
-pub mod parser;
-pub mod tables;
+// Re-export from acpi_driver crate
+pub use acpi_driver::info;
+pub use acpi_driver::parser;
+pub use acpi_driver::tables;
 
-// Re-export commonly used items
-pub use info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
-pub use parser::{
+// Re-export commonly used items from the driver
+pub use acpi_driver::info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
+pub use acpi_driver::parser::{
     AcpiParser, init, interrupt_overrides, io_apics, local_apic_address, local_apics,
     pcie_ecam_regions, processor_count,
 };
-pub use tables::{
+pub use acpi_driver::tables::{
     AcpiError, AcpiSdtHeader, Fadt, Madt, MadtEntryHeader, MadtEntryType, MadtInterruptOverride,
     MadtIoApic, MadtLocalApic, MadtLocalApicOverride, Mcfg, McfgEntry, RSDP_SIGNATURE, Rsdp,
     signature,
