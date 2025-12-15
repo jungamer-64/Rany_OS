@@ -53,6 +53,32 @@ fn bench_draw_image_24bit(c: &mut Criterion) {
     }));
 }
 
+fn bench_write_u32_streams(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let back = vec![0u8; info.size()];
+    fb.enable_double_buffering_from_vec(back);
+
+    // small and large runs to isolate u32 streaming write performance
+    for &sz in &[1usize, 1024usize, 8192usize] {
+        let mut vec_u32 = vec![0u32; sz];
+        for i in 0..sz { vec_u32[i] = i as u32; }
+        let name = format!("write_u32_stream_{}", sz);
+        c.bench_function(&name, |b| b.iter(|| {
+            fb.bench_write_u32_slice_streaming(0, 0, &vec_u32);
+        }));
+    }
+}
 fn bench_draw_image_rgba(c: &mut Criterion) {
     let width = 800u32;
     let height = 600u32;
@@ -230,6 +256,7 @@ criterion_group!{
               bench_draw_text_32bit,
               bench_draw_text_manual,
               bench_draw_image_alpha,
+              bench_write_u32_streams,
               bench_fill_rect_full,
               bench_draw_char_with_bg,
               bench_draw_char_no_bg
