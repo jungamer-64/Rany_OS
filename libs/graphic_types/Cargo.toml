@@ -1,14 +1,14 @@
 [package]
 name = "graphic_types"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
 description = "Graphics primitives and types for RanyOS"
 license.workspace = true
 repository.workspace = true
 readme.workspace = true
 keywords.workspace = true
 categories.workspace = true
-authors = ["ExoRust Team"]
+authors.workspace = true
 
 [lib]
 name = "graphic_types"

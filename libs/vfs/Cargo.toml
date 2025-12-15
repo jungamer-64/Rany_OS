@@ -1,7 +1,8 @@
 [package]
 name = "vfs"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
 description = "Virtual File System for RanyOS"
 license.workspace = true
 repository.workspace = true

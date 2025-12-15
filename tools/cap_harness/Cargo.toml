@@ -1,7 +1,14 @@
 [package]
 name = "cap_harness"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Capability Test Harness for RanyOS"
 
 [dependencies]
 # No external dependencies; keep this host-only and minimal

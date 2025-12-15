@@ -1,8 +1,13 @@
 [package]
 name = "rany_kernel"
 version = "0.3.0"
-edition = "2024"
-authors = ["ExoRust Team"]
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 description = "Single Address Space, Async-First Rust OS Kernel - Pure Performance Architecture"
 
 [[bin]]
