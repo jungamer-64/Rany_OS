@@ -422,6 +422,16 @@ impl GraphicalShell {
                 }
                 return;
             }
+            "monitor" => {
+                use crate::monitor;
+                let snap = monitor::snapshot();
+                let output = monitor::format_snapshot(&snap);
+                // Print using theme colors if possible, but the formatter has its own structure.
+                // Just print raw for now.
+                self.print(&output);
+                self.print("\n");
+                return;
+            }
             _ => {}
         }
 
