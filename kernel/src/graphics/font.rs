@@ -69,6 +69,14 @@ pub trait Font {
     fn text_width(&self, text: &str) -> u32 {
         text.chars().map(|c| self.char_width(c)).sum()
     }
+
+    /// イテレータから描画幅を計算
+    fn iter_width<I>(&self, chars: I) -> u32
+    where
+        I: Iterator<Item = char>,
+    {
+        chars.map(|c| self.char_width(c)).sum()
+    }
 }
 
 /// 8x16ビットマップフォント（基本ASCII）

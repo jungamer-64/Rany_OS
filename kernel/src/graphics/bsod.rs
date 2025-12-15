@@ -21,7 +21,7 @@ use alloc::string::String;
 use core::fmt::Write;
 
 use super::qrcode::QrCode;
-use super::{BitmapFont, Color, Framebuffer, Rect, with_framebuffer};
+use super::{BitmapFont, Color, Font, Framebuffer, Rect, with_framebuffer};
 use crate::unwind::{Backtrace, StackFrame};
 
 // ============================================================================
