@@ -590,8 +590,22 @@ impl Framebuffer {
         let mut ptr = addr;
         let mut i = 0usize;
 
+        #[cfg(all(feature = "std", feature = "bench"))]
+        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            eprintln!(
+                "write_u32_run_streaming: addr=0x{:x} count={} value=0x{:x}",
+                addr,
+                count,
+                value
+            );
+        }
+
         // Align to 8-bytes boundary
         if (ptr & 7) == 4 && i < count {
+            #[cfg(all(feature = "std", feature = "bench"))]
+            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, value);
+            }
             mmio::stream_write_u32(ptr, value);
             ptr += 4;
             i += 1;
@@ -600,6 +614,10 @@ impl Framebuffer {
         // Write u64 pairs (repeating value)
         let val64 = (value as u64) | ((value as u64) << 32);
         while i + 1 < count {
+            #[cfg(all(feature = "std", feature = "bench"))]
+            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                eprintln!("  stream_write_u64 at 0x{:x} val=0x{:x}", ptr, val64);
+            }
             mmio::stream_write_u64(ptr, val64);
             ptr += 8;
             i += 2;
@@ -607,6 +625,10 @@ impl Framebuffer {
 
         // Trailing u32
         if i < count {
+            #[cfg(all(feature = "std", feature = "bench"))]
+            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, value);
+            }
             mmio::stream_write_u32(ptr, value);
         }
     }
@@ -2573,6 +2595,18 @@ impl Framebuffer {
         let _bytes_per_pixel = self.info.format.bytes_per_pixel();
         let stride = self.info.stride;
 
+        #[cfg(feature = "std")]
+        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            eprintln!(
+                "fill_rect start: back_present={} buffer_ptr=0x{:x} info_size={} stride={} rect={:?}",
+                self.back_buffer.is_some(),
+                self.buffer as usize,
+                self.info.size(),
+                stride,
+                r
+            );
+        }
+
         match self.info.format {
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => {
                 let color_u32 = color.to_u32();
@@ -2625,7 +2659,8 @@ impl Framebuffer {
                     // MMIO path: use aligned streaming write helper
                     for y in r.y..r.bottom() {
                         let offset = (y as usize * stride as usize) + (r.x as usize * 4);
-                        self.write_u32_run_streaming(offset, r.width as usize, color_u32);
+                        let addr = self.buffer as usize + offset;
+                        self.write_u32_run_streaming(addr, r.width as usize, color_u32);
                     }
                     mmio::sfence();
                 }
