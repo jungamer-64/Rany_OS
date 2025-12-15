@@ -19,3 +19,4 @@ x86_64 = "0.15"
 
 [features]
 default = []
+std = []

@@ -10,7 +10,6 @@
 
 extern crate alloc;
 
-use super::mmio::MmioWriter;
 use super::{BitmapFont, Color, FramebufferInfo, PixelFormat, Point, Rect};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -592,7 +591,7 @@ impl Framebuffer {
         let mut i = 0usize;
 
         #[cfg(all(feature = "std", feature = "bench"))]
-        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+        if crate::graphics::mmio::bench_debug_print_allowed() {
             eprintln!(
                 "write_u32_run_streaming: addr=0x{:x} count={} value=0x{:x}",
                 addr, count, value
@@ -602,7 +601,7 @@ impl Framebuffer {
         // Align to 8-bytes boundary
         if (ptr & 7) == 4 && i < count {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            if crate::graphics::mmio::bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, value);
             }
             mmio::stream_write_u32(ptr, value);
@@ -614,7 +613,7 @@ impl Framebuffer {
         let val64 = (value as u64) | ((value as u64) << 32);
         while i + 1 < count {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            if crate::graphics::mmio::bench_debug_print_allowed() {
                 eprintln!("  stream_write_u64 at 0x{:x} val=0x{:x}", ptr, val64);
             }
             mmio::stream_write_u64(ptr, val64);
@@ -625,11 +624,51 @@ impl Framebuffer {
         // Trailing u32
         if i < count {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            if crate::graphics::mmio::bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, value);
             }
             mmio::stream_write_u32(ptr, value);
         }
+        // Ensure streaming stores are visible to device
+        mmio::sfence();
+        // Note: callers that want to batch many rows together can use
+        // `write_u32_run_streaming_nofence` and call `mmio::sfence()` once
+        // after the batch for better throughput.
+    }
+
+    /// Like `write_u32_run_streaming` but does not issue an sfence at the end.
+    /// Useful when batching multiple row writes and issuing a single sfence
+    /// after the entire batch for improved throughput.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn write_u32_run_streaming_nofence(&self, addr: usize, count: usize, value: u32) {
+        let mut ptr = addr;
+        let mut i = 0usize;
+
+        // Align to 8-bytes boundary
+        if (ptr & 7) == 4 && i < count {
+            mmio::stream_write_u32(ptr, value);
+            ptr += 4;
+            i += 1;
+        }
+
+        // Write u64 pairs (repeating value)
+        let val64 = (value as u64) | ((value as u64) << 32);
+        while i + 1 < count {
+            mmio::stream_write_u64(ptr, val64);
+            ptr += 8;
+            i += 2;
+        }
+
+        // Trailing u32
+        if i < count {
+            mmio::stream_write_u32(ptr, value);
+        }
+    }
+
+    /// Non-x86 fallback: use regular u32 writes (no special streaming stores).
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    fn write_u32_run_streaming_nofence(&self, addr: usize, count: usize, value: u32) {
+        self.write_u32_run(addr, count, value);
     }
 
     /// Fallback for non-x86
@@ -684,11 +723,11 @@ impl Framebuffer {
             // Emit packed u32 words using streaming stores
             let addr_chunk = addr + processed_pixels * 4;
             self.write_u32_slice_mmio_streaming(addr_chunk, &self.scratch_u32[..chunk_pixels]);
-            // Ensure global visibility for this chunk
-            mmio::sfence();
 
             processed_pixels += chunk_pixels;
         }
+        // Ensure global visibility once after the full stream
+        mmio::sfence();
     }
 
     /// Pack RGBA byte buffer into BGRA byte buffer. Prefer SIMD (SSSE3) when
@@ -1096,30 +1135,30 @@ impl Framebuffer {
             13, 14, -1, -1, -1, -1,
         );
 
-        let v = unsafe { _mm256_loadu_si256(src as *const __m256i) };
+        let v = _mm256_loadu_si256(src as *const __m256i);
         let mask = if is_bgr { mask_bgr } else { mask_rgb };
-        let shuffled = unsafe { _mm256_shuffle_epi8(v, mask) };
+        let shuffled = _mm256_shuffle_epi8(v, mask);
 
         // Extract lanes and write: store lane0 at dst, lane1 at dst+12 (overlap)
-        let lane0 = unsafe { _mm256_extracti128_si256(shuffled, 0) };
-        let lane1 = unsafe { _mm256_extracti128_si256(shuffled, 1) };
+        let lane0 = _mm256_extracti128_si256(shuffled, 0);
+        let lane1 = _mm256_extracti128_si256(shuffled, 1);
 
         // Store 24 bytes safely without overrunning the destination buffer:
         // - store low 8 bytes of lane0 -> dst[0..7]
         // - store next 8 bytes of lane0 -> dst[8..15]
         // - store low 4 bytes of lane1 -> dst[12..15] (overwrite middle)
         // - store low 8 bytes of lane1 -> dst[16..23]
-        unsafe { _mm_storel_epi64(dst as *mut __m128i, lane0) };
-        let lane0_hi = unsafe { _mm_srli_si128(lane0, 8) };
-        unsafe { _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi) };
+        _mm_storel_epi64(dst as *mut __m128i, lane0);
+        let lane0_hi = _mm_srli_si128(lane0, 8);
+        _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi);
 
         // low 32 bits of lane1 -> bytes 12..15
-        let low32 = unsafe { _mm_cvtsi128_si32(lane1) } as i32;
+        let low32 = _mm_cvtsi128_si32(lane1) as i32;
         unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
 
         // store bytes 16..23: use lane1 >> 4 bytes so we get r1[4..11]
-        let lane1_shift = unsafe { _mm_srli_si128(lane1, 4) };
-        unsafe { _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift) };
+        let lane1_shift = _mm_srli_si128(lane1, 4);
+        _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift);
     }
 
     /// SSSE3 implementation of 8-pixel RGBA -> 24-byte BGR/RGB compression.
@@ -1460,7 +1499,6 @@ impl Framebuffer {
 
                 // Align to 8-byte boundary by writing up to 7 initial bytes
                 let align8 = addr & 7;
-                let mut comp_idx = 0usize;
                 let mut to_align_total = 0usize;
                 if align8 != 0 {
                     let to_align = core::cmp::min(8 - align8, remaining);
@@ -1476,7 +1514,7 @@ impl Framebuffer {
                     addr += to_align;
                     remaining -= to_align;
                 }
-                comp_idx = to_align_total % 3;
+                let mut comp_idx = to_align_total % 3;
 
                 // Precompute 8-byte patterns for each possible component
                 // starting index (0..2). This allows us to emit correctly
@@ -2103,32 +2141,113 @@ impl Framebuffer {
     pub fn clear(&mut self, color: Color) {
         // Mark entire screen as dirty
         self.mark_dirty(Rect::new(0, 0, self.info.width, self.info.height));
-
         let buffer = self.draw_buffer();
         let bytes_per_pixel = self.info.format.bytes_per_pixel();
+        let width = self.info.width as usize;
+        let stride = self.info.stride as usize;
 
-        for y in 0..self.info.height {
-            for x in 0..self.info.width {
-                let offset = (y * self.info.stride) as usize + x as usize * bytes_per_pixel;
+        match self.info.format {
+            PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => {
+                let color_u32 = color.to_u32();
+                if self.back_buffer.is_some() {
+                    for y in 0..self.info.height as usize {
+                        let offset = y * stride;
+                        let row_ptr = unsafe { buffer.add(offset) as *mut u32 };
+                        let row_slice = unsafe { core::slice::from_raw_parts_mut(row_ptr, width) };
+                        row_slice.fill(color_u32);
+                    }
+                } else {
+                    for y in 0..self.info.height as usize {
+                        let offset = y * stride;
+                        let addr = self.buffer as usize + offset;
+                        // Use a no-fence variant to batch sfence after full clear
+                        self.write_u32_run_streaming_nofence(addr, width, color_u32);
+                    }
+                    mmio::sfence();
+                }
+            }
+            PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
+                let b = color.blue;
+                let g = color.green;
+                let r = color.red;
+                let row_bytes = width * 3;
+                // Prepare one scratch row and reuse for every row
+                self.ensure_scratch_u8(row_bytes);
+                // Exponential fill into scratch
+                self.scratch_u8[0] = b;
+                if row_bytes > 1 {
+                    self.scratch_u8[1] = g;
+                }
+                if row_bytes > 2 {
+                    self.scratch_u8[2] = r;
+                }
+                let mut filled = 1usize; // number of pixels filled
+                while filled < width {
+                    let copy_pixels = core::cmp::min(filled, width - filled);
+                    let copy_bytes = copy_pixels * 3;
+                    let dst_offset = filled * 3;
+                    unsafe {
+                        ptr::copy(
+                            self.scratch_u8.as_ptr(),
+                            self.scratch_u8.as_mut_ptr().add(dst_offset),
+                            copy_bytes,
+                        );
+                    }
+                    filled += copy_pixels;
+                }
 
-                match self.info.format {
-                    PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => unsafe {
-                        let pixel_addr = buffer.add(offset) as usize;
-                        mmio::mmio_write_u32(pixel_addr, color.to_u32());
-                    },
-                    PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
-                        mmio::volatile_write::<u8>(buffer.add(offset) as usize, color.blue);
-                        mmio::volatile_write::<u8>(buffer.add(offset + 1) as usize, color.green);
-                        mmio::volatile_write::<u8>(buffer.add(offset + 2) as usize, color.red);
-                    },
-                    PixelFormat::Rgb565 => unsafe {
-                        let r = (color.red as u16 >> 3) & 0x1F;
-                        let g = (color.green as u16 >> 2) & 0x3F;
-                        let b = (color.blue as u16 >> 3) & 0x1F;
-                        let pixel = (r << 11) | (g << 5) | b;
-                        let ptr_addr = buffer.add(offset) as usize;
-                        mmio::mmio_write_u16(ptr_addr, pixel);
-                    },
+                if let Some(ref mut back) = self.back_buffer {
+                    for y in 0..self.info.height as usize {
+                        let offset = y * stride;
+                        unsafe {
+                            ptr::copy_nonoverlapping(
+                                self.scratch_u8.as_ptr(),
+                                back.as_mut_ptr().add(offset),
+                                row_bytes,
+                            );
+                        }
+                    }
+                } else {
+                    for y in 0..self.info.height as usize {
+                        let offset = y * stride;
+                        let addr = self.buffer as usize + offset;
+                        self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..row_bytes]);
+                    }
+                    mmio::sfence();
+                }
+            }
+            PixelFormat::Rgb565 => {
+                let r = (color.red as u16 >> 3) & 0x1F;
+                let g = (color.green as u16 >> 2) & 0x3F;
+                let b = (color.blue as u16 >> 3) & 0x1F;
+                let pixel = (r << 11) | (g << 5) | b;
+                let row_bytes = width * 2;
+                // Build scratch row as little-endian u16 bytes
+                self.ensure_scratch_u8(row_bytes);
+                for i in 0..width {
+                    let off = i * 2;
+                    self.scratch_u8[off] = (pixel & 0xFF) as u8;
+                    self.scratch_u8[off + 1] = (pixel >> 8) as u8;
+                }
+
+                if let Some(ref mut back) = self.back_buffer {
+                    for y in 0..self.info.height as usize {
+                        let offset = y * stride;
+                        unsafe {
+                            ptr::copy_nonoverlapping(
+                                self.scratch_u8.as_ptr(),
+                                back.as_mut_ptr().add(offset),
+                                row_bytes,
+                            );
+                        }
+                    }
+                } else {
+                    for y in 0..self.info.height as usize {
+                        let offset = y * stride;
+                        let addr = self.buffer as usize + offset;
+                        self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..row_bytes]);
+                    }
+                    mmio::sfence();
                 }
             }
         }
@@ -2717,10 +2836,107 @@ impl Framebuffer {
                 }
             }
             _ => {
-                // その他のフォーマットはピクセルごとに描画 (簡易実装)
-                for y in r.y..r.bottom() {
-                    for x in r.x..r.right() {
-                        self.set_pixel(x, y, color);
+                // その他のフォーマット: try to use per-row bulk writes when
+                // possible (24-bit and 16-bit) to avoid per-pixel overhead.
+                match self.info.format {
+                    PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
+                        let b = color.blue;
+                        let g = color.green;
+                        let rcol = color.red;
+                        let row_bytes = (r.width as usize) * 3;
+                        self.ensure_scratch_u8(row_bytes);
+
+                        // Build scratch row with repeated BGR pixels
+                        // Initialize first pixel
+                        self.scratch_u8[0] = b;
+                        if row_bytes > 1 {
+                            self.scratch_u8[1] = g;
+                        }
+                        if row_bytes > 2 {
+                            self.scratch_u8[2] = rcol;
+                        }
+                        let mut filled_pixels = 1usize;
+                        while filled_pixels < r.width as usize {
+                            let copy_pixels =
+                                core::cmp::min(filled_pixels, r.width as usize - filled_pixels);
+                            let copy_bytes = copy_pixels * 3;
+                            let dst_offset = filled_pixels * 3;
+                            unsafe {
+                                ptr::copy(
+                                    self.scratch_u8.as_ptr(),
+                                    self.scratch_u8.as_mut_ptr().add(dst_offset),
+                                    copy_bytes,
+                                );
+                            }
+                            filled_pixels += copy_pixels;
+                        }
+
+                        if let Some(ref mut back) = self.back_buffer {
+                            for y in r.y..r.bottom() {
+                                let offset = (y as usize * stride as usize) + (r.x as usize * 3);
+                                unsafe {
+                                    ptr::copy_nonoverlapping(
+                                        self.scratch_u8.as_ptr(),
+                                        back.as_mut_ptr().add(offset),
+                                        row_bytes,
+                                    );
+                                }
+                            }
+                        } else {
+                            for y in r.y..r.bottom() {
+                                let offset = (y as usize * stride as usize) + (r.x as usize * 3);
+                                let addr = self.buffer as usize + offset;
+                                self.write_bytes_mmio_streaming(
+                                    addr,
+                                    &self.scratch_u8[..row_bytes],
+                                );
+                            }
+                            mmio::sfence();
+                        }
+                    }
+                    PixelFormat::Rgb565 => {
+                        let r16 = (color.red as u16 >> 3) & 0x1F;
+                        let g16 = (color.green as u16 >> 2) & 0x3F;
+                        let b16 = (color.blue as u16 >> 3) & 0x1F;
+                        let pixel = (r16 << 11) | (g16 << 5) | b16;
+                        let row_bytes = (r.width as usize) * 2;
+                        self.ensure_scratch_u8(row_bytes);
+                        for i in 0..r.width as usize {
+                            let off = i * 2;
+                            self.scratch_u8[off] = (pixel & 0xFF) as u8;
+                            self.scratch_u8[off + 1] = (pixel >> 8) as u8;
+                        }
+
+                        if let Some(ref mut back) = self.back_buffer {
+                            for y in r.y..r.bottom() {
+                                let offset = (y as usize * stride as usize) + (r.x as usize * 2);
+                                unsafe {
+                                    ptr::copy_nonoverlapping(
+                                        self.scratch_u8.as_ptr(),
+                                        back.as_mut_ptr().add(offset),
+                                        row_bytes,
+                                    );
+                                }
+                            }
+                        } else {
+                            for y in r.y..r.bottom() {
+                                let offset = (y as usize * stride as usize) + (r.x as usize * 2);
+                                let addr = self.buffer as usize + offset;
+                                self.write_bytes_mmio_streaming(
+                                    addr,
+                                    &self.scratch_u8[..row_bytes],
+                                );
+                            }
+                            mmio::sfence();
+                        }
+                    }
+                    _ => {
+                        // Fallback to per-pixel writes
+                        for y in r.y..r.bottom() {
+                            for x in r.x..r.right() {
+                                self.set_pixel(x, y, color);
+                            }
+                        }
                     }
                 }
             }
@@ -2981,6 +3197,221 @@ impl Framebuffer {
             }
 
             cx += font.width() as i32;
+        }
+    }
+
+    /// Draw a generic bitmap glyph.
+    ///
+    /// Optimized for 32bpp and 24bpp formats using bulk writes/runs where possible.
+    /// `glyph` is expected to be row-major, byte-aligned (stride = (width + 7) / 8).
+    pub fn draw_glyph_bitmap(
+        &mut self,
+        x: i32,
+        y: i32,
+        glyph: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+        bg: Option<Color>,
+    ) {
+        let stride = self.info.stride as usize;
+        let bpp = self.info.format.bytes_per_pixel();
+
+        // Mark dirty
+        self.mark_dirty(Rect::new(x, y, width, height));
+
+        // Fill background if specified
+        if let Some(bg_color) = bg {
+            self.fill_rect(Rect::new(x, y, width, height), bg_color);
+        }
+
+        let bytes_per_row = ((width + 7) / 8) as usize;
+
+        // Pre-encode colors for 32-bit optimization
+        let (fg_u32, bg_u32) = if bpp == 4 {
+            (
+                self.info.format.encode_u32(color).unwrap_or(color.to_u32()),
+                bg.map(|c| self.info.format.encode_u32(c).unwrap_or(c.to_u32()))
+                    .unwrap_or(0),
+            )
+        } else {
+            (0, 0)
+        };
+
+        for row in 0..height {
+            let dst_y = y + row as i32;
+            if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
+                continue;
+            }
+
+            let row_offset = row as usize * bytes_per_row;
+            if row_offset >= glyph.len() {
+                break;
+            }
+            let row_data =
+                &glyph[row_offset..core::cmp::min(row_offset + bytes_per_row, glyph.len())];
+
+            for (byte_idx, &byte) in row_data.iter().enumerate() {
+                let px_start = x + (byte_idx * 8) as i32;
+
+                // 32-bit Optimization: Write 8 pixels at once if fully visible and fits in width
+                if bpp == 4 {
+                    // Check bounds: visible horizontally AND within glyph width
+                    // (Ensure we don't write extra pixels if width % 8 != 0)
+                    if bg.is_some()
+                        && px_start >= self.clip.x
+                        && (px_start + 8) <= self.clip.right()
+                        && (px_start + 8) <= (x + width as i32)
+                    {
+                        let dst_offset = (dst_y as usize * stride) + (px_start as usize * 4);
+                        self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                        continue;
+                    }
+                } else if bpp == 3 {
+                    // 24-bit Optimization: Find runs of ON bits
+                    let mut col = 0usize;
+                    while col < 8 {
+                        // Check bound against glyph width
+                        if (byte_idx * 8 + col) >= width as usize {
+                            break;
+                        }
+
+                        // Skip OFF pixels
+                        while col < 8 {
+                            if (byte_idx * 8 + col) >= width as usize {
+                                break;
+                            }
+                            let is_on = (byte >> (7 - col)) & 1 != 0;
+                            if is_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+
+                        let run_start = col;
+                        while col < 8 {
+                            if (byte_idx * 8 + col) >= width as usize {
+                                break;
+                            }
+                            let is_on = (byte >> (7 - col)) & 1 != 0;
+                            if !is_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+
+                        let run_len = col - run_start;
+                        if run_len == 0 {
+                            continue;
+                        }
+
+                        let dst_x = px_start + run_start as i32;
+
+                        // Clipping
+                        let dst_start_x = dst_x.max(self.clip.x);
+                        let dst_end_x = (dst_x + run_len as i32 - 1).min(self.clip.right() - 1);
+
+                        if dst_end_x >= dst_start_x {
+                            let clipped_len = (dst_end_x - dst_start_x + 1) as usize;
+                            let start_offset =
+                                (dst_y as usize * stride) + (dst_start_x as usize * 3);
+                            self.write_bgr_run(start_offset, clipped_len, color);
+                        }
+                    }
+                    continue;
+                } else if bpp == 2 {
+                    // 16-bit Optimization (e.g. RGB565)
+                    let mut col = 0usize;
+                    while col < 8 {
+                        if (byte_idx * 8 + col) >= width as usize {
+                            break;
+                        }
+
+                        while col < 8 {
+                            if (byte_idx * 8 + col) >= width as usize {
+                                break;
+                            }
+                            let is_on = (byte >> (7 - col)) & 1 != 0;
+                            if is_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+
+                        let run_start = col;
+                        while col < 8 {
+                            if (byte_idx * 8 + col) >= width as usize {
+                                break;
+                            }
+                            let is_on = (byte >> (7 - col)) & 1 != 0;
+                            if !is_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+
+                        let run_len = col - run_start;
+                        if run_len == 0 {
+                            continue;
+                        }
+
+                        let dst_x = px_start + run_start as i32;
+
+                        let dst_start_x = dst_x.max(self.clip.x);
+                        let dst_end_x = (dst_x + run_len as i32 - 1).min(self.clip.right() - 1);
+
+                        if dst_end_x >= dst_start_x {
+                            let clipped_len = (dst_end_x - dst_start_x + 1) as usize;
+                            let start_offset =
+                                (dst_y as usize * stride) + (dst_start_x as usize * 2);
+
+                            // Encode 16-bit pixel
+                            let r16 = (color.red as u16 >> 3) & 0x1F;
+                            let g16 = (color.green as u16 >> 2) & 0x3F;
+                            let b16 = (color.blue as u16 >> 3) & 0x1F;
+                            let pixel = (r16 << 11) | (g16 << 5) | b16;
+
+                            self.ensure_scratch_u8(clipped_len * 2);
+                            for i in 0..clipped_len {
+                                self.scratch_u8[i * 2] = (pixel & 0xFF) as u8;
+                                self.scratch_u8[i * 2 + 1] = (pixel >> 8) as u8;
+                            }
+
+                            if let Some(ref mut back) = self.back_buffer {
+                                unsafe {
+                                    ptr::copy_nonoverlapping(
+                                        self.scratch_u8.as_ptr(),
+                                        back.as_mut_ptr().add(start_offset),
+                                        clipped_len * 2,
+                                    );
+                                }
+                            } else {
+                                let addr = self.buffer as usize + start_offset;
+                                self.write_bytes_mmio_streaming(
+                                    addr,
+                                    &self.scratch_u8[..clipped_len * 2],
+                                );
+                                mmio::sfence();
+                            }
+                        }
+                    }
+                    continue;
+                }
+
+                // Fallback / Partial / 16-bit path
+                for bit in 0..8 {
+                    let px = px_start + bit;
+                    // Check bounds against clip AND glyph width
+                    if px < self.clip.x || px >= self.clip.right() || px >= x + width as i32 {
+                        continue;
+                    }
+
+                    let is_on = (byte >> (7 - bit)) & 1 != 0;
+                    if is_on {
+                        self.set_pixel_raw(px, dst_y, color);
+                    }
+                }
+            }
         }
     }
 
@@ -3308,9 +3739,12 @@ impl Framebuffer {
                 } else {
                     let addr = self.buffer as usize + dst_byte_offset + start;
                     self.write_bytes_mmio_streaming(addr, &self.scratch_u8[start..end]);
-                    mmio::sfence();
                 }
                 processed += chunk;
+            }
+            // Ensure streaming stores are globally visible after the full run
+            if self.back_buffer.is_none() {
+                mmio::sfence();
             }
         }
     }

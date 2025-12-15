@@ -1,5 +1,5 @@
 // hal/src/lib.rs - Minimal Hardware Abstraction Layer for MMIO/Port I/O
-#![no_std]
+#![cfg_attr(not(feature = "std"), no_std)]
 
 // re-export modules
 pub mod mmio;
