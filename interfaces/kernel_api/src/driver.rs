@@ -15,8 +15,8 @@
 //! - **Hot-Swap Ready**: Clean start/stop semantics for dynamic loading
 //! - **Zero-Copy Friendly**: Uses references where possible
 
-use crate::error::KapiResult;
 use crate::driver_abi::DriverContext;
+use crate::error::KapiResult;
 use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
@@ -110,7 +110,6 @@ pub trait Driver: Send + Sync {
     fn supported_devices(&self) -> &[DeviceId] {
         &[]
     }
-
 }
 
 // ============================================================================

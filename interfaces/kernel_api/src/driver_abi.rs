@@ -695,8 +695,8 @@ macro_rules! export_async_driver {
                 if driver_ptr.is_null() { return false; }
                 let wrapper = unsafe { &mut *driver_ptr };
                 // Optional: Check busy? IRQs usually are high priority.
-                // Assuming IRQ handler is safe to run concurrent with async task logic 
-                // OR implementation must handle it. 
+                // Assuming IRQ handler is safe to run concurrent with async task logic
+                // OR implementation must handle it.
                 // However, safe bet: access wrapper.driver
                 ($irq)(&mut wrapper.driver)
             }
@@ -770,7 +770,7 @@ macro_rules! export_async_driver {
 
             extern "C" fn probe_adapter(ctx: *mut DriverContext) -> i32 {
                 let ctx_safe = unsafe { &mut *ctx };
-                
+
                 // 1. Create the driver instance wrapped
                 let driver = Box::new(AsyncDriverWrapper::new($constructor));
                 let driver_ptr = Box::into_raw(driver);
@@ -780,7 +780,7 @@ macro_rules! export_async_driver {
                 let future = async move {
                     let wrapper = unsafe { &mut *driver_ptr };
                     let ctx_ref = unsafe { &mut *ctx };
-                    
+
                     // Mark busy
                     if wrapper.busy.swap(true, Ordering::Acquire) {
                         kernel().log("Async probe blocked: Driver busy");
@@ -791,7 +791,7 @@ macro_rules! export_async_driver {
                          // TODO: Proper error handling
                          kernel().log("Async probe failed");
                     }
-                    
+
                     // Release busy
                     wrapper.busy.store(false, Ordering::Release);
                 };
@@ -806,7 +806,7 @@ macro_rules! export_async_driver {
                 let ctx_safe = unsafe { &mut *ctx };
                 let driver_ptr = ctx_safe.driver_data as *mut AsyncDriverWrapper<$driver_type>;
                 if driver_ptr.is_null() { return -1; }
-                
+
                 // Check busy synchronously first (optimization)
                 // CAUTION: Determining busy here is racy versus the task starting.
                 // However, if we return -3 (DeviceBusy) synchronously, the kernel knows.
@@ -825,7 +825,7 @@ macro_rules! export_async_driver {
                     let _ = wrapper.driver.start().await;
                     wrapper.busy.store(false, Ordering::Release);
                 };
-                
+
                 // If spawn fails, we must release lock!
                 match kernel().spawn_task(Box::pin(future)) {
                     Ok(_) => 0,
@@ -865,12 +865,12 @@ macro_rules! export_async_driver {
                 let ctx_safe = unsafe { &mut *ctx };
                 let driver_ptr = ctx_safe.driver_data as *mut AsyncDriverWrapper<$driver_type>;
                 if driver_ptr.is_null() { return 0; }
-                
+
                 // Remove logic should perhaps wait or force?
                 // Let's try to take lock.
                 let wrapper_ref = unsafe { &*driver_ptr };
                 if wrapper_ref.busy.swap(true, Ordering::Acquire) {
-                     return -3; 
+                     return -3;
                 }
 
                 let future = async move {

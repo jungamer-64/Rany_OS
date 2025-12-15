@@ -594,9 +594,7 @@ impl Framebuffer {
         if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
             eprintln!(
                 "write_u32_run_streaming: addr=0x{:x} count={} value=0x{:x}",
-                addr,
-                count,
-                value
+                addr, count, value
             );
         }
 
@@ -1550,28 +1548,21 @@ impl Framebuffer {
         bg: Option<Color>,
     ) {
         let font = BitmapFont::default_8x16();
-        let c_index = c as usize;
-        if c_index >= 128 {
-            return;
-        }
-
-        let glyph_start = c_index * font.height() as usize;
         let stride = self.info.stride as usize;
         let bpp = self.info.format.bytes_per_pixel();
+
+        // Get glyph bytes (unscaled). If missing, don't draw.
+        let glyph = match font.glyph(c) {
+            Some(g) => g,
+            None => return,
+        };
         let char_w = font.width() as u32;
 
-        for row in 0..font.height() {
+        for (row, &byte) in glyph.iter().enumerate() {
             let dst_y = y + row as i32;
             if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
                 continue;
             }
-
-            let glyph_row = glyph_start + row as usize;
-            if glyph_row >= font.data_len() {
-                continue;
-            }
-
-            let byte = font.get_data(glyph_row);
 
             match bpp {
                 4 => {
@@ -1715,10 +1706,7 @@ impl Framebuffer {
             if dst_offset_bytes + required > back_len {
                 panic!(
                     "OOB glyph write to back buffer: dst_offset={} required={} back_len={} stride={}",
-                    dst_offset_bytes,
-                    required,
-                    back_len,
-                    self.info.stride
+                    dst_offset_bytes, required, back_len, self.info.stride
                 );
             }
 
@@ -2618,7 +2606,8 @@ impl Framebuffer {
                         // Optional per-run diagnostics
                         #[cfg(feature = "std")]
                         if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
-                            let first_offset = (r.y as usize * stride as usize) + (r.x as usize * 4);
+                            let first_offset =
+                                (r.y as usize * stride as usize) + (r.x as usize * 4);
                             eprintln!(
                                 "fill_rect: back_len={} r.y={} r.bottom={} stride={} row_bytes={} first_offset={}",
                                 back_len,
@@ -2777,83 +2766,53 @@ impl Framebuffer {
                 if c == '\n' {
                     continue;
                 }
-                let c_index = c as usize;
-                if c_index >= 128 {
-                    cx += font.width() as i32;
-                    continue;
-                }
 
-                let glyph_start = c_index * font.height() as usize;
-
-                // Determine clipping for this character
                 let char_x = cx;
-                let char_w = font.width() as i32; // Assuming 8
+                let char_w_i32 = font.width() as i32;
 
-                // Simple clipping check: if fully visible and aligned to 8 pixels?
-                // Actually, `write_glyph_row_32bit` handles 8 pixels.
-                // We just need to check if the char is fully within clip on X axis
-                // to avoid per-pixel clipping logic.
-                if char_x >= self.clip.x && (char_x + char_w) <= self.clip.right() {
-                    // Fully visible horizontally
-                    for row in 0..font.height() {
+                // Obtain glyph bytes for this character (unscaled rows)
+                let glyph = match font.glyph(c) {
+                    Some(g) => g,
+                    None => {
+                        cx += font.width() as i32;
+                        continue;
+                    }
+                };
+
+                // Fast path: fully visible horizontally
+                if char_x >= self.clip.x && (char_x + char_w_i32) <= self.clip.right() {
+                    for (row, &byte) in glyph.iter().enumerate() {
                         let dst_y = y + row as i32;
                         if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
                             continue;
                         }
-
-                        let glyph_row = glyph_start + row as usize;
-                        if glyph_row >= font.data_len() {
-                            continue;
-                        }
-                        let byte = font.get_data(glyph_row);
 
                         let dst_offset = (dst_y as usize * stride) + (char_x as usize * 4);
                         #[cfg(feature = "std")]
                         if debug_draw.as_deref() == Some("1") {
                             eprintln!(
-                                "draw_text: char='{}' idx={} row={} dst_y={} dst_offset={}",
-                                c, c_index, row, dst_y, dst_offset
+                                "draw_text: char='{}' row={} dst_y={} dst_offset={}",
+                                c, row, dst_y, dst_offset
                             );
                         }
                         self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
-                        #[cfg(feature = "std")]
-                        if debug_draw.as_deref() == Some("1") {
-                            eprintln!(
-                                "draw_text: wrote glyph idx={} row={} dst_offset={}",
-                                c_index, row, dst_offset
-                            );
-                        }
                     }
                 } else {
-                    // Partially clipped horizontally: fallback to slow path for this char
-                    // Re-implement simplified version of original slow loop just for this char?
-                    // Or we could execute the original logic for clipped chars.
-                    // To do this cleanly without code duplication is tricky.
-                    // For now, let's just duplicate the bit-check logic here for clipped case.
-                    for row in 0..font.height() {
+                    // Partially clipped horizontally: per-pixel fallback
+                    for (row, &byte) in glyph.iter().enumerate() {
                         let dst_y = y + row as i32;
                         if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
                             continue;
                         }
 
-                        let glyph_row = glyph_start + row as usize;
-                        if glyph_row >= font.data_len() {
-                            continue;
-                        }
-                        let byte = font.get_data(glyph_row);
-
                         for col in 0..8 {
-                            // Check clipping for each pixel
-                            let px = char_x + col;
+                            let px = char_x + col as i32;
                             if px < self.clip.x || px >= self.clip.right() {
                                 continue;
                             }
 
                             let is_on = (byte >> (7 - col)) & 1 != 0;
                             let c_val = if is_on { color } else { bg_color };
-                            // We've already marked the whole text region dirty; use
-                            // the raw pixel writer to avoid redundant dirty updates
-                            // and extra bounds checks.
                             self.set_pixel_raw(px, dst_y, c_val);
                         }
                     }
@@ -2871,22 +2830,15 @@ impl Framebuffer {
                 continue;
             }
 
-            let c_index = c as usize;
-            if c_index >= 128 {
-                cx += font.width() as i32;
-                continue;
-            }
-
-            let glyph_start = c_index * font.height() as usize;
-
-            for row in 0..font.height() {
-                let glyph_row = glyph_start + row as usize;
-                if glyph_row >= font.data_len() {
+            let glyph = match font.glyph(c) {
+                Some(g) => g,
+                None => {
+                    cx += font.width() as i32;
                     continue;
                 }
+            };
 
-                let byte = font.get_data(glyph_row);
-
+            for (row, &byte) in glyph.iter().enumerate() {
                 let mut col = 0usize;
                 while col < font.width() as usize {
                     // Skip off pixels
@@ -2978,12 +2930,10 @@ impl Framebuffer {
     /// framebuffers to minimize per-pixel overhead.
     pub fn draw_char_8x16(&mut self, x: i32, y: i32, c: char, color: Color, bg: Option<Color>) {
         let font = BitmapFont::default_8x16();
-        let c_index = c as usize;
-        if c_index >= 128 {
-            return;
-        }
-
-        let glyph_start = c_index * font.height() as usize;
+        let glyph = match font.glyph(c) {
+            Some(g) => g,
+            None => return,
+        };
         let stride = self.info.stride as usize;
         let bpp = self.info.format.bytes_per_pixel();
 
@@ -2998,18 +2948,11 @@ impl Framebuffer {
             self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
         }
 
-        for row in 0..font.height() {
+        for (row, &byte) in glyph.iter().enumerate() {
             let dst_y = y + row as i32;
             if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
                 continue;
             }
-
-            let glyph_row = glyph_start + row as usize;
-            if glyph_row >= font.data_len() {
-                continue;
-            }
-
-            let byte = font.get_data(glyph_row);
 
             match bpp {
                 4 => {

@@ -34,32 +34,32 @@ pub use transport::{
 
 // Re-export commonly used types from defs
 pub use defs::{
-    // Status
-    VirtioDeviceStatus,
-    status,
+    VIRTIO_MMIO_MAGIC,
     // Queue constants
     VIRTQUEUE_DEFAULT_SIZE,
     VIRTQUEUE_MAX_SIZE,
-    // Descriptor types
-    VringDesc,
-    VringAvailHeader,
-    VringUsedElem,
-    VringUsedHeader,
-    vring_flags,
-    avail_flags,
-    used_flags,
-    // Fixed-size rings
-    VringAvail256,
-    VringUsed256,
+    // Status
+    VirtioDeviceStatus,
     // Transport types
     // VirtioTransport is defined in `defs` and re-exported below to avoid duplicate definitions.
     VirtioDeviceType,
-    // MMIO
-    mmio_regs,
-    VIRTIO_MMIO_MAGIC,
+    VirtioPciCap,
     // PCI
     VirtioPciCapType,
-    VirtioPciCap,
+    // Fixed-size rings
+    VringAvail256,
+    VringAvailHeader,
+    // Descriptor types
+    VringDesc,
+    VringUsed256,
+    VringUsedElem,
+    VringUsedHeader,
+    avail_flags,
     // Features
     common_features,
+    // MMIO
+    mmio_regs,
+    status,
+    used_flags,
+    vring_flags,
 };

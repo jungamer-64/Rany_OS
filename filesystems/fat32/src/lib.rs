@@ -1808,11 +1808,7 @@ impl DirEntryBuilder {
     where
         F: FnOnce(Self) -> Self,
     {
-        if condition {
-            f(self)
-        } else {
-            self
-        }
+        if condition { f(self) } else { self }
     }
 
     /// 現在時刻で作成日時と更新日時を設定（DOS形式）

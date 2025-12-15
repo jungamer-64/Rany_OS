@@ -158,43 +158,43 @@ impl NvmePollingDriver {
 
     /// コントローラを無効化
     fn disable_controller(&self) -> Result<(), &'static str> {
-            let mut cc = NvmeControllerConfig::from_raw(self.read_reg32(0x14));
-            cc.set_enable(false);
-            self.write_reg32(0x14, cc.raw());
+        let mut cc = NvmeControllerConfig::from_raw(self.read_reg32(0x14));
+        cc.set_enable(false);
+        self.write_reg32(0x14, cc.raw());
 
-            for _ in 0..1000 {
-                let status = self.get_status();
-                if !status.rdy() {
-                    return Ok(());
-                }
-                core::hint::spin_loop();
+        for _ in 0..1000 {
+            let status = self.get_status();
+            if !status.rdy() {
+                return Ok(());
             }
+            core::hint::spin_loop();
+        }
         Err("Controller disable timeout")
     }
 
     /// コントローラを有効化
     fn enable_controller(&self) -> Result<(), &'static str> {
-            let mut cc = NvmeControllerConfig::new();
-            cc.set_enable(true)
-                .set_css(0) // NVM Command Set
-                .set_mps(0) // 4KB pages
-                .set_ams(0) // Round Robin
-                .set_iosqes(6) // 64 bytes (2^6)
-                .set_iocqes(4); // 16 bytes (2^4)
+        let mut cc = NvmeControllerConfig::new();
+        cc.set_enable(true)
+            .set_css(0) // NVM Command Set
+            .set_mps(0) // 4KB pages
+            .set_ams(0) // Round Robin
+            .set_iosqes(6) // 64 bytes (2^6)
+            .set_iocqes(4); // 16 bytes (2^4)
 
-            self.write_reg32(0x14, cc.raw());
+        self.write_reg32(0x14, cc.raw());
 
-            let timeout = self.cap.to() as u64 * 500;
-            for _ in 0..timeout {
-                let status = self.get_status();
-                if status.cfs() {
-                    return Err("Controller fatal status");
-                }
-                if status.rdy() {
-                    return Ok(());
-                }
-                core::hint::spin_loop();
+        let timeout = self.cap.to() as u64 * 500;
+        for _ in 0..timeout {
+            let status = self.get_status();
+            if status.cfs() {
+                return Err("Controller fatal status");
             }
+            if status.rdy() {
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
         Err("Controller enable timeout")
     }
 

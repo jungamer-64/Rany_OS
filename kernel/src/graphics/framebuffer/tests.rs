@@ -1027,11 +1027,7 @@ fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
         let mut dst_scalar = vec![0u8; src.len()];
 
         unsafe {
-            Framebuffer::pack_rgba_to_bgra_ssse3(
-                src.as_ptr(),
-                dst_simd.as_mut_ptr(),
-                src.len(),
-            );
+            Framebuffer::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst_simd.as_mut_ptr(), src.len());
         }
         Framebuffer::pack_rgba_to_bgra(&src, &mut dst_scalar);
 
@@ -1109,11 +1105,7 @@ fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
     }
     let mut dst_simd = vec![0u8; len * 3];
     unsafe {
-        Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels(
-            src.as_ptr(),
-            dst_simd.as_mut_ptr(),
-            true,
-        );
+        Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true);
     }
 
     let mut dst_scalar = vec![0u8; len * 3];
@@ -1195,11 +1187,7 @@ fn test_pack_rgba_to_bgr24_neon_matches_scalar_rgb() {
     }
     let mut dst_simd = vec![0u8; len * 3];
     unsafe {
-        Framebuffer::pack_rgba_to_bgr24_neon_8pixels(
-            src.as_ptr(),
-            dst_simd.as_mut_ptr(),
-            false,
-        );
+        Framebuffer::pack_rgba_to_bgr24_neon_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), false);
     }
 
     let mut dst_scalar = vec![0u8; len * 3];

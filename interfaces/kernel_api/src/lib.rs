@@ -26,15 +26,15 @@ pub mod types;
 pub use application::{AppContext, Application};
 pub use driver::{DeviceId, Driver, DriverInfo, DriverState, DriverType, DriverVersion};
 pub use driver_abi::{
-    pack_version, unpack_version, AbiDriverType, AbiError, DriverCapabilities, DriverContext,
-    DriverEntryFn, DriverVTable, DRIVER_ABI_VERSION, DRIVER_ENTRY_SYMBOL,
+    AbiDriverType, AbiError, DRIVER_ABI_VERSION, DRIVER_ENTRY_SYMBOL, DriverCapabilities,
+    DriverContext, DriverEntryFn, DriverVTable, pack_version, unpack_version,
 };
 pub use error::{KapiError, KapiResult};
 pub use security::{
     DmaCapability, DomainCapabilities, FsCapability, InterruptCapability, IoCapability,
     IpcCapability, MemoryCapability, NetCapability, TaskCapability,
 };
-pub use services::{is_kernel_registered, kernel, register_kernel, KernelServices};
+pub use services::{KernelServices, is_kernel_registered, kernel, register_kernel};
 pub use types::{
     ChannelHandle, DmaBuffer, FileHandle, OpenMode, Packet, SystemInfo, TaskHandle, TcpEndpoint,
 };
