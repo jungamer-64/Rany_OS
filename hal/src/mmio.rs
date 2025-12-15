@@ -316,6 +316,12 @@ pub unsafe fn set_simd_level(level: u8) {
     SIMD_LEVEL.store(level, core::sync::atomic::Ordering::Relaxed);
 }
 
+/// Get the current SIMD support level.
+#[inline]
+pub fn get_simd_level() -> u8 {
+    SIMD_LEVEL.load(core::sync::atomic::Ordering::Relaxed)
+}
+
 /// Fallback for non-x86 architectures: just use volatile writes
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {

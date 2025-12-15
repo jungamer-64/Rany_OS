@@ -49,6 +49,7 @@ impl Color {
     /// 近似計算: (src * a + dst * (255 - a)) / 255
     #[inline]
     #[must_use]
+    #[allow(clippy::cast_possible_truncation)]
     pub const fn blend(self, bg: Self) -> Self {
         if self.alpha == 255 {
             return self;

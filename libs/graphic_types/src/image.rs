@@ -130,6 +130,9 @@ impl<'a> ImageView<'a> {
         }
         let bpp = self.format.bytes_per_pixel();
         let offset = (y as usize) * (self.stride as usize) + (x as usize) * bpp;
+        if offset + bpp > self.data.len() {
+            return Color::TRANSPARENT;
+        }
         self.format.decode_color_bytes(&self.data[offset..])
     }
 }
@@ -222,6 +225,9 @@ impl<'a> ImageViewMut<'a> {
         }
         let bpp = self.format.bytes_per_pixel();
         let offset = (y as usize) * (self.stride as usize) + (x as usize) * bpp;
+        if offset + bpp > self.data.len() {
+            return Color::TRANSPARENT;
+        }
         self.format.decode_color_bytes(&self.data[offset..])
     }
 
@@ -413,6 +419,7 @@ impl Image {
     }
 
     /// 領域を塗りつぶし
+    #[allow(clippy::cast_sign_loss)]
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         for y in rect.y.max(0)..(rect.y + rect.height as i32).min(self.height as i32) {
             for x in rect.x.max(0)..(rect.x + rect.width as i32).min(self.width as i32) {
@@ -422,7 +429,8 @@ impl Image {
     }
 
     /// 別の画像を描画
-    pub fn blit(&mut self, src: &Image, dst_x: i32, dst_y: i32) {
+    #[allow(clippy::cast_sign_loss)]
+    pub fn blit(&mut self, src: &Self, dst_x: i32, dst_y: i32) {
         for y in 0..src.height as i32 {
             let dst_py = dst_y + y;
             if dst_py < 0 || dst_py >= self.height as i32 {
@@ -446,8 +454,9 @@ impl Image {
     // draw_to_framebuffer removed (moved to kernel Framebuffer::draw_image)
 
     /// リサイズ（最近傍補間）
-    pub fn resize_nearest(&self, new_width: u32, new_height: u32) -> Image {
-        let mut result = Image::new(new_width, new_height);
+    #[allow(clippy::similar_names)]
+    pub fn resize_nearest(&self, new_width: u32, new_height: u32) -> Self {
+        let mut result = Self::new(new_width, new_height);
 
         for y in 0..new_height {
             for x in 0..new_width {
@@ -462,8 +471,11 @@ impl Image {
     }
 
     /// リサイズ（バイリニア補間）
-    pub fn resize_bilinear(&self, new_width: u32, new_height: u32) -> Image {
-        let mut result = Image::new(new_width, new_height);
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::similar_names)]
+    pub fn resize_bilinear(&self, new_width: u32, new_height: u32) -> Self {
+        let mut result = Self::new(new_width, new_height);
 
         let x_ratio = (self.width as f32 - 1.0) / new_width as f32;
         let y_ratio = (self.height as f32 - 1.0) / new_height as f32;
@@ -495,8 +507,8 @@ impl Image {
     }
 
     /// 水平反転
-    pub fn flip_horizontal(&self) -> Image {
-        let mut result = Image::new(self.width, self.height);
+    pub fn flip_horizontal(&self) -> Self {
+        let mut result = Self::new(self.width, self.height);
 
         for y in 0..self.height {
             for x in 0..self.width {
@@ -509,8 +521,8 @@ impl Image {
     }
 
     /// 垂直反転
-    pub fn flip_vertical(&self) -> Image {
-        let mut result = Image::new(self.width, self.height);
+    pub fn flip_vertical(&self) -> Self {
+        let mut result = Self::new(self.width, self.height);
 
         for y in 0..self.height {
             for x in 0..self.width {
@@ -523,8 +535,8 @@ impl Image {
     }
 
     /// 90度時計回りに回転
-    pub fn rotate_90_cw(&self) -> Image {
-        let mut result = Image::new(self.height, self.width);
+    pub fn rotate_90_cw(&self) -> Self {
+        let mut result = Self::new(self.height, self.width);
 
         for y in 0..self.height {
             for x in 0..self.width {
@@ -537,8 +549,9 @@ impl Image {
     }
 
     /// グレースケールに変換
-    pub fn to_grayscale(&self) -> Image {
-        let mut result = Image::new(self.width, self.height);
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn to_grayscale(&self) -> Self {
+        let mut result = Self::new(self.width, self.height);
 
         for y in 0..self.height {
             for x in 0..self.width {
@@ -625,6 +638,11 @@ fn read_struct_from_slice<T: Copy>(data: &[u8], offset: usize) -> Option<T> {
 }
 
 /// BMPファイルをデコード
+///
+/// # Errors
+/// Returns error if format is invalid or unsupported.
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_sign_loss)]
 pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
     if data.len() < 54 {
         return Err(ImageError::InvalidFormat);
@@ -755,6 +773,8 @@ pub fn decode_bmp(data: &[u8]) -> ImageResult<Image> {
 /// Returns error if:
 /// - BMP format is invalid
 /// - Output buffer dimensions don't match the image
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_sign_loss)]
 pub fn decode_bmp_into(data: &[u8], output: &mut ImageViewMut) -> ImageResult<()> {
     if data.len() < 54 {
         return Err(ImageError::InvalidFormat);
@@ -839,6 +859,9 @@ pub fn decode_bmp_into(data: &[u8], output: &mut ImageViewMut) -> ImageResult<()
 // ============================================================================
 
 /// TGAファイルをデコード（簡易実装）
+///
+/// # Errors
+/// Returns error if format is invalid or unsupported.
 #[allow(clippy::too_many_lines)]
 pub fn decode_tga(data: &[u8]) -> ImageResult<Image> {
     if data.len() < 18 {
@@ -1013,6 +1036,9 @@ struct IcoDirEntry {
 }
 
 /// ICOファイルをデコード
+///
+/// # Errors
+/// Returns error if format is invalid or unsupported.
 pub fn decode_ico(data: &[u8]) -> ImageResult<Vec<Image>> {
     if data.len() < 6 {
         return Err(ImageError::InvalidFormat);
@@ -1049,19 +1075,19 @@ pub fn decode_ico(data: &[u8]) -> ImageResult<Vec<Image>> {
         if image_data.len() >= 8 && &image_data[0..8] == b"\x89PNG\r\n\x1a\n" {
             // PNG形式（簡易対応は省略）
             continue;
-        } else {
-            // BMP形式（DIBヘッダから）
-            if let Ok(image) = decode_ico_bmp(image_data, entry.width, entry.height) {
-                images.push(image);
-            }
+        }
+
+        // BMP形式（DIBヘッダから）
+        if let Ok(image) = decode_ico_bmp(image_data, entry.width, entry.height) {
+            images.push(image);
         }
     }
 
     if images.is_empty() {
-        Err(ImageError::InvalidData)
-    } else {
-        Ok(images)
+        return Err(ImageError::InvalidData);
     }
+
+    Ok(images)
 }
 
 /// ICO内のBMPをデコード
@@ -1162,6 +1188,7 @@ fn decode_ico_bmp(data: &[u8], width_hint: u8, height_hint: u8) -> ImageResult<I
 // ============================================================================
 
 /// アルファブレンディング
+#[allow(clippy::cast_possible_truncation)]
 pub fn alpha_blend(bg: Color, fg: Color) -> Color {
     if fg.alpha == 255 {
         return fg;
@@ -1183,6 +1210,8 @@ pub fn alpha_blend(bg: Color, fg: Color) -> Color {
 
 /// バイリニア補間
 #[allow(clippy::many_single_char_names)]
+#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_sign_loss)]
 fn bilinear_interpolate(c00: Color, c10: Color, c01: Color, c11: Color, x: f32, y: f32) -> Color {
     let inv_x = 1.0 - x;
     let inv_y = 1.0 - y;
@@ -1219,6 +1248,8 @@ pub struct IconGenerator;
 
 impl IconGenerator {
     /// 円形アイコンを生成
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
     pub fn circle(size: u32, color: Color) -> Image {
         let mut image = Image::new(size, size);
         let center = size as i32 / 2;
@@ -1287,6 +1318,8 @@ impl IconGenerator {
     }
 
     /// 三角形アイコンを生成（上向き）
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
     pub fn triangle(size: u32, color: Color) -> Image {
         let mut image = Image::new(size, size);
         let center = size as f32 / 2.0;
@@ -1307,6 +1340,7 @@ impl IconGenerator {
     }
 
     /// フォルダアイコンを生成
+    #[allow(clippy::cast_possible_wrap)]
     pub fn folder(size: u32, color: Color) -> Image {
         let mut image = Image::new(size, size);
 
@@ -1323,6 +1357,8 @@ impl IconGenerator {
     }
 
     /// ファイルアイコンを生成
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_possible_wrap)]
     pub fn file(size: u32, color: Color) -> Image {
         let mut image = Image::new(size, size);
         let corner_size = size / 4;
