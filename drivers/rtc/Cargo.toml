@@ -1,8 +1,8 @@
 [package]
-name = "acpi_driver"
+name = "rtc_driver"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 spin = "0.9"
-log = "0.4"
+hal = { path = "../../hal" }

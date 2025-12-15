@@ -9,14 +9,21 @@ use limine::request::{
 use log::{debug, error, info, warn};
 
 mod allocator;
+
 mod domain;
 mod domain_system;
 mod epoch;
 mod error;
 mod fs;
+// ============================================================================
+// Macro Re-exports (from drivers)
+// ============================================================================
+pub use serial_driver::serial_print;
+pub use serial_driver::serial_println;
+
 mod graphics;
-mod interrupts;
-mod io;
+pub mod interrupts;
+pub mod io;
 mod ipc;
 mod loader;
 mod memory;
@@ -223,6 +230,15 @@ extern "C" fn kmain() -> ! {
     serial_print("[BOOT] Initializing interrupt system...\r\n");
     info!(target: "init", "Initializing interrupt system");
     interrupts::init();
+
+    // Serial Driver Initialization (Enables UART interrupts)
+    // interrupts::init() already unmasked IRQ4 (COM1) in PIC
+    if let Err(e) = io::serial::init() {
+        error!(target: "init", "Serial driver init failed: {:?}", e);
+    } else {
+        info!(target: "init", "Serial driver initialized");
+    }
+
     serial_print("[BOOT] Interrupt system initialized\r\n");
     info!(target: "init", "Interrupt system initialized");
 

@@ -10,9 +10,9 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use super::{BitmapFont, Color, FramebufferInfo, PixelFormat, Point, Rect};
 use alloc::vec;
-use super::{Color, FramebufferInfo, PixelFormat, Point, Rect, BitmapFont};
+use alloc::vec::Vec;
 use core::ptr;
 use hal::mmio;
 
@@ -228,7 +228,12 @@ mod tests {
 
         let start = Instant::now();
         for y in 0..height {
-            fb.draw_hline(0, width as i32 - 1, y as i32, Color::with_alpha(10, 20, 30, 255));
+            fb.draw_hline(
+                0,
+                width as i32 - 1,
+                y as i32,
+                Color::with_alpha(10, 20, 30, 255),
+            );
         }
         let elapsed = start.elapsed();
         log::info!("bench_draw_hline_bulk: {:?}", elapsed);
@@ -422,7 +427,7 @@ mod tests {
         assert_eq!(_test_get_packer_mode(), 1);
         std::env::remove_var("RANY_PACKER");
     }
-    
+
     #[test]
     #[cfg(not(feature = "std"))]
     fn test_packer_env_override_no_std() {
@@ -456,7 +461,13 @@ mod tests {
 
         let start = Instant::now();
         for _ in 0..50 {
-            fb.draw_text(0, 0, "The quick brown fox jumps over the lazy dog", Color::with_alpha(1, 2, 3, 255), Color::with_alpha(100, 110, 120, 255));
+            fb.draw_text(
+                0,
+                0,
+                "The quick brown fox jumps over the lazy dog",
+                Color::with_alpha(1, 2, 3, 255),
+                Color::with_alpha(100, 110, 120, 255),
+            );
         }
         let elapsed = start.elapsed();
         log::info!("bench_draw_text_bulk: {:?}", elapsed);
@@ -535,8 +546,18 @@ mod tests {
                 for y in 0..info.height as usize {
                     for x in 0..info.width as usize {
                         let off = y * stride + x * 4;
-                        let o = (buf_opt[off], buf_opt[off + 1], buf_opt[off + 2], buf_opt[off + 3]);
-                        let n = (buf_naive[off], buf_naive[off + 1], buf_naive[off + 2], buf_naive[off + 3]);
+                        let o = (
+                            buf_opt[off],
+                            buf_opt[off + 1],
+                            buf_opt[off + 2],
+                            buf_opt[off + 3],
+                        );
+                        let n = (
+                            buf_naive[off],
+                            buf_naive[off + 1],
+                            buf_naive[off + 2],
+                            buf_naive[off + 3],
+                        );
                         if o != (0, 0, 0, 0) {
                             opt_pixels.push((x as i32, y as i32, o));
                         }
@@ -713,12 +734,7 @@ mod tests {
 
         let color = Color::with_alpha(11, 22, 33, 255);
 
-        let cases = [
-            (0, 0, 15, 3),
-            (0, 0, 3, 15),
-            (15, 0, 0, 15),
-            (2, 14, 13, 4),
-        ];
+        let cases = [(0, 0, 15, 3), (0, 0, 3, 15), (15, 0, 0, 15), (2, 14, 13, 4)];
 
         for (x1, y1, x2, y2) in cases.iter() {
             fb_opt.draw_line(*x1, *y1, *x2, *y2, color);
@@ -1071,7 +1087,13 @@ mod tests {
             let mut dst_simd = vec![0u8; src.len()];
             let mut dst_scalar = vec![0u8; src.len()];
 
-            unsafe { Framebuffer::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst_simd.as_mut_ptr(), src.len()); }
+            unsafe {
+                Framebuffer::pack_rgba_to_bgra_ssse3(
+                    src.as_ptr(),
+                    dst_simd.as_mut_ptr(),
+                    src.len(),
+                );
+            }
             Framebuffer::pack_rgba_to_bgra(&src, &mut dst_scalar);
 
             assert_eq!(dst_simd, dst_scalar);
@@ -1094,7 +1116,9 @@ mod tests {
             let mut dst_avx = vec![0u8; src.len()];
             let mut dst_scalar = vec![0u8; src.len()];
 
-            unsafe { Framebuffer::pack_rgba_to_bgra_avx2(src.as_ptr(), dst_avx.as_mut_ptr(), src.len()); }
+            unsafe {
+                Framebuffer::pack_rgba_to_bgra_avx2(src.as_ptr(), dst_avx.as_mut_ptr(), src.len());
+            }
             Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst_scalar);
 
             assert_eq!(dst_avx, dst_scalar);
@@ -1112,13 +1136,22 @@ mod tests {
         // 8 pixels (24 bytes) input
         let len = 8usize;
         let mut src = vec![0u8; len * 4];
-        for i in 0..src.len() { src[i] = (i * 97 % 251) as u8; }
+        for i in 0..src.len() {
+            src[i] = (i * 97 % 251) as u8;
+        }
         let mut dst_simd = vec![0u8; len * 3];
-        unsafe { Framebuffer::pack_rgba_to_bgr24_avx2_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true); }
+        unsafe {
+            Framebuffer::pack_rgba_to_bgr24_avx2_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true);
+        }
 
         // scalar pack
         let mut dst_scalar = vec![0u8; len * 3];
-        for p in 0..len { let s = p * 4; dst_scalar[p*3] = src[s+2]; dst_scalar[p*3+1] = src[s+1]; dst_scalar[p*3+2] = src[s+0]; }
+        for p in 0..len {
+            let s = p * 4;
+            dst_scalar[p * 3] = src[s + 2];
+            dst_scalar[p * 3 + 1] = src[s + 1];
+            dst_scalar[p * 3 + 2] = src[s + 0];
+        }
 
         assert_eq!(dst_simd, dst_scalar);
     }
@@ -1132,12 +1165,25 @@ mod tests {
 
         let len = 8usize;
         let mut src = vec![0u8; len * 4];
-        for i in 0..src.len() { src[i] = (i * 61 % 251) as u8; }
+        for i in 0..src.len() {
+            src[i] = (i * 61 % 251) as u8;
+        }
         let mut dst_simd = vec![0u8; len * 3];
-        unsafe { Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true); }
+        unsafe {
+            Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels(
+                src.as_ptr(),
+                dst_simd.as_mut_ptr(),
+                true,
+            );
+        }
 
         let mut dst_scalar = vec![0u8; len * 3];
-        for p in 0..len { let s = p * 4; dst_scalar[p*3] = src[s+2]; dst_scalar[p*3+1] = src[s+1]; dst_scalar[p*3+2] = src[s+0]; }
+        for p in 0..len {
+            let s = p * 4;
+            dst_scalar[p * 3] = src[s + 2];
+            dst_scalar[p * 3 + 1] = src[s + 1];
+            dst_scalar[p * 3 + 2] = src[s + 0];
+        }
 
         assert_eq!(dst_simd, dst_scalar);
     }
@@ -1158,37 +1204,101 @@ mod tests {
             let mut dst_neon = vec![0u8; src.len()];
             let mut dst_scalar = vec![0u8; src.len()];
 
-            unsafe { Framebuffer::pack_rgba_to_bgra_neon(src.as_ptr(), dst_neon.as_mut_ptr(), src.len()); }
+            unsafe {
+                Framebuffer::pack_rgba_to_bgra_neon(src.as_ptr(), dst_neon.as_mut_ptr(), src.len());
+            }
             Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst_scalar);
 
             assert_eq!(dst_neon, dst_scalar);
         }
     }
 
-        #[test]
-        fn test_pack_rgba_to_bgra_scalar_random() {
-            // Randomized verification to guard against bit-twiddling regressions
-            let mut src = vec![0u8; 256];
-            for seed in 0..16u8 {
-                for i in 0..src.len() {
-                    src[i] = (i.wrapping_mul(seed as usize) as u8).wrapping_add(i as u8);
-                }
-                let mut dst1 = vec![0u8; src.len()];
-                let mut dst2 = vec![0u8; src.len()];
-
-                // naive copy
-                for p in 0..(src.len() / 4) {
-                    let s = p * 4;
-                    dst1[s] = src[s + 2];
-                    dst1[s + 1] = src[s + 1];
-                    dst1[s + 2] = src[s + 0];
-                    dst1[s + 3] = src[s + 3];
-                }
-
-                Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst2);
-                assert_eq!(dst1, dst2);
-            }
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_pack_rgba_to_bgr24_neon_matches_scalar() {
+        // Only run NEON check when available
+        if !std::is_aarch64_feature_detected!("neon") {
+            return;
         }
+
+        let len = 8usize;
+        let mut src = vec![0u8; len * 4];
+        for i in 0..src.len() {
+            src[i] = (i * 97 % 251) as u8;
+        }
+        let mut dst_simd = vec![0u8; len * 3];
+        unsafe {
+            Framebuffer::pack_rgba_to_bgr24_neon_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true);
+        }
+
+        let mut dst_scalar = vec![0u8; len * 3];
+        for p in 0..len {
+            let s = p * 4;
+            dst_scalar[p * 3] = src[s + 2];
+            dst_scalar[p * 3 + 1] = src[s + 1];
+            dst_scalar[p * 3 + 2] = src[s + 0];
+        }
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    #[test]
+    fn test_pack_rgba_to_bgr24_neon_matches_scalar_rgb() {
+        if !std::is_aarch64_feature_detected!("neon") {
+            return;
+        }
+
+        let len = 8usize;
+        let mut src = vec![0u8; len * 4];
+        for i in 0..src.len() {
+            src[i] = (i * 113 % 251) as u8;
+        }
+        let mut dst_simd = vec![0u8; len * 3];
+        unsafe {
+            Framebuffer::pack_rgba_to_bgr24_neon_8pixels(
+                src.as_ptr(),
+                dst_simd.as_mut_ptr(),
+                false,
+            );
+        }
+
+        let mut dst_scalar = vec![0u8; len * 3];
+        // RGB order: r,g,b triplets
+        for p in 0..len {
+            let s = p * 4;
+            dst_scalar[p * 3] = src[s + 0];
+            dst_scalar[p * 3 + 1] = src[s + 1];
+            dst_scalar[p * 3 + 2] = src[s + 2];
+        }
+
+        assert_eq!(dst_simd, dst_scalar);
+    }
+
+    #[test]
+    fn test_pack_rgba_to_bgra_scalar_random() {
+        // Randomized verification to guard against bit-twiddling regressions
+        let mut src = vec![0u8; 256];
+        for seed in 0..16u8 {
+            for i in 0..src.len() {
+                src[i] = (i.wrapping_mul(seed as usize) as u8).wrapping_add(i as u8);
+            }
+            let mut dst1 = vec![0u8; src.len()];
+            let mut dst2 = vec![0u8; src.len()];
+
+            // naive copy
+            for p in 0..(src.len() / 4) {
+                let s = p * 4;
+                dst1[s] = src[s + 2];
+                dst1[s + 1] = src[s + 1];
+                dst1[s + 2] = src[s + 0];
+                dst1[s + 3] = src[s + 3];
+            }
+
+            Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst2);
+            assert_eq!(dst1, dst2);
+        }
+    }
 
     #[test]
     fn test_draw_image_bgra_stream_matches_backbuffer() {
@@ -1282,7 +1392,7 @@ mod tests {
         };
 
         let mut fb = unsafe { Framebuffer::new(info.clone()) };
-        
+
         // Initial state: dirty_rect is None
         assert!(fb.dirty_rect.is_none());
 
@@ -1326,18 +1436,22 @@ mod tests {
         let mut fb = unsafe { Framebuffer::new(info2) };
         let mut back = vec![0u8; info.size()];
         // Fill back buffer with white
-        for i in 0..back.len() { back[i] = 255; }
+        for i in 0..back.len() {
+            back[i] = 255;
+        }
         fb.enable_double_buffering_from_vec(back);
 
         // Clear vram to black (simulating initial state)
-        for i in 0..vram.len() { vram[i] = 0; }
+        for i in 0..vram.len() {
+            vram[i] = 0;
+        }
 
         // Mark a small area as dirty manually (to simulate drawing)
         // Let's modify back buffer at (5,5)
         let offset = (5 * 10 + 5) * 4;
         let dst = unsafe { fb.back_buffer.as_mut().unwrap().as_mut_ptr().add(offset) };
-        unsafe { 
-            *dst = 0xAA; 
+        unsafe {
+            *dst = 0xAA;
             *dst.add(1) = 0xBB;
         }
 
@@ -1353,7 +1467,7 @@ mod tests {
 
         // Check that other VRAM areas are STILL 0 (not overwritten by the 255s in backbuffer)
         // e.g. (0,0)
-        assert_eq!(vram[0], 0); 
+        assert_eq!(vram[0], 0);
     }
 
     #[test]
@@ -1434,7 +1548,7 @@ impl Framebuffer {
     /// The vaddr in kapi_info must be a valid readable/writable framebuffer address
     pub unsafe fn from_kapi_info(kapi_info: &kernel_api::gui::FramebufferInfo) -> Self {
         use kernel_api::gui::PixelFormat as KapiPixelFormat;
-        
+
         // Convert pixel format
         let format = match kapi_info.format {
             KapiPixelFormat::Rgb32 => PixelFormat::Rgba8888,
@@ -1443,14 +1557,14 @@ impl Framebuffer {
             KapiPixelFormat::Bgr24 => PixelFormat::Bgr888,
             KapiPixelFormat::Unknown => PixelFormat::Bgra8888, // Default fallback
         };
-        
+
         let bpp = match format.bytes_per_pixel() {
             4 => 32,
             3 => 24,
             2 => 16,
             _ => 32,
         };
-        
+
         let info = FramebufferInfo {
             address: kapi_info.vaddr as u64,
             width: kapi_info.width as u32,
@@ -1459,7 +1573,7 @@ impl Framebuffer {
             format,
             bpp,
         };
-        
+
         unsafe { Self::new(info) }
     }
 
@@ -1514,9 +1628,12 @@ impl Framebuffer {
             #[cfg(target_endian = "little")]
             {
                 let v0 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i) as *const u64) };
-                let v1 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u64) };
-                let v2 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 16) as *const u64) };
-                let v3 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 24) as *const u64) };
+                let v1 =
+                    unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u64) };
+                let v2 =
+                    unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 16) as *const u64) };
+                let v3 =
+                    unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 24) as *const u64) };
                 mmio::mmio_write_u64(ptr, v0);
                 mmio::mmio_write_u64(ptr + 8, v1);
                 mmio::mmio_write_u64(ptr + 16, v2);
@@ -1525,20 +1642,44 @@ impl Framebuffer {
             #[cfg(not(target_endian = "little"))]
             {
                 let v0 = u64::from_le_bytes([
-                    data[i], data[i + 1], data[i + 2], data[i + 3], data[i + 4], data[i + 5],
-                    data[i + 6], data[i + 7],
+                    data[i],
+                    data[i + 1],
+                    data[i + 2],
+                    data[i + 3],
+                    data[i + 4],
+                    data[i + 5],
+                    data[i + 6],
+                    data[i + 7],
                 ]);
                 let v1 = u64::from_le_bytes([
-                    data[i + 8], data[i + 9], data[i + 10], data[i + 11], data[i + 12], data[i + 13],
-                    data[i + 14], data[i + 15],
+                    data[i + 8],
+                    data[i + 9],
+                    data[i + 10],
+                    data[i + 11],
+                    data[i + 12],
+                    data[i + 13],
+                    data[i + 14],
+                    data[i + 15],
                 ]);
                 let v2 = u64::from_le_bytes([
-                    data[i + 16], data[i + 17], data[i + 18], data[i + 19], data[i + 20], data[i + 21],
-                    data[i + 22], data[i + 23],
+                    data[i + 16],
+                    data[i + 17],
+                    data[i + 18],
+                    data[i + 19],
+                    data[i + 20],
+                    data[i + 21],
+                    data[i + 22],
+                    data[i + 23],
                 ]);
                 let v3 = u64::from_le_bytes([
-                    data[i + 24], data[i + 25], data[i + 26], data[i + 27], data[i + 28], data[i + 29],
-                    data[i + 30], data[i + 31],
+                    data[i + 24],
+                    data[i + 25],
+                    data[i + 26],
+                    data[i + 27],
+                    data[i + 28],
+                    data[i + 29],
+                    data[i + 30],
+                    data[i + 31],
                 ]);
                 mmio::mmio_write_u64(ptr, v0);
                 mmio::mmio_write_u64(ptr + 8, v1);
@@ -1558,8 +1699,14 @@ impl Framebuffer {
             #[cfg(not(target_endian = "little"))]
             {
                 let v = u64::from_le_bytes([
-                    data[i], data[i + 1], data[i + 2], data[i + 3], data[i + 4], data[i + 5],
-                    data[i + 6], data[i + 7],
+                    data[i],
+                    data[i + 1],
+                    data[i + 2],
+                    data[i + 3],
+                    data[i + 4],
+                    data[i + 5],
+                    data[i + 6],
+                    data[i + 7],
                 ]);
                 mmio::mmio_write_u64(ptr, v);
             }
@@ -1572,9 +1719,12 @@ impl Framebuffer {
             #[cfg(target_endian = "little")]
             {
                 let v0 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32) };
-                let v1 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 4) as *const u32) };
-                let v2 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u32) };
-                let v3 = unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 12) as *const u32) };
+                let v1 =
+                    unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 4) as *const u32) };
+                let v2 =
+                    unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u32) };
+                let v3 =
+                    unsafe { core::ptr::read_unaligned(data.as_ptr().add(i + 12) as *const u32) };
                 mmio::mmio_write_u32(ptr, v0);
                 mmio::mmio_write_u32(ptr + 4, v1);
                 mmio::mmio_write_u32(ptr + 8, v2);
@@ -1585,7 +1735,8 @@ impl Framebuffer {
                 let v0 = u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
                 let v1 = u32::from_le_bytes([data[i + 4], data[i + 5], data[i + 6], data[i + 7]]);
                 let v2 = u32::from_le_bytes([data[i + 8], data[i + 9], data[i + 10], data[i + 11]]);
-                let v3 = u32::from_le_bytes([data[i + 12], data[i + 13], data[i + 14], data[i + 15]]);
+                let v3 =
+                    u32::from_le_bytes([data[i + 12], data[i + 13], data[i + 14], data[i + 15]]);
                 mmio::mmio_write_u32(ptr, v0);
                 mmio::mmio_write_u32(ptr + 4, v1);
                 mmio::mmio_write_u32(ptr + 8, v2);
@@ -1667,7 +1818,10 @@ impl Framebuffer {
         // chunk size is 512 pixels (2048 bytes); bench runs may override this
         // via the `RANY_CHUNK_PIXELS` environment variable for tuning.
         #[cfg(all(feature = "std", feature = "bench"))]
-        let chunk_pixels: usize = std::env::var("RANY_CHUNK_PIXELS").ok().and_then(|s| s.parse().ok()).unwrap_or(512);
+        let chunk_pixels: usize = std::env::var("RANY_CHUNK_PIXELS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(512);
         #[cfg(not(all(feature = "std", feature = "bench")))]
         let chunk_pixels: usize = 512;
 
@@ -1689,7 +1843,12 @@ impl Framebuffer {
             {
                 // Mutable borrow scope for packer
                 let src_chunk = &src[src_offset..src_offset + chunk_pixels * 4];
-                let dst_bytes = unsafe { core::slice::from_raw_parts_mut(self.scratch_u32.as_mut_ptr() as *mut u8, chunk_pixels * 4) };
+                let dst_bytes = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        self.scratch_u32.as_mut_ptr() as *mut u8,
+                        chunk_pixels * 4,
+                    )
+                };
                 Self::pack_rgba_to_bgra(src_chunk, dst_bytes);
             }
 
@@ -1718,8 +1877,14 @@ impl Framebuffer {
 
         // Quick scalar path for very small buffers to avoid SIMD call/dispatch overhead.
         // Keep this small so streaming chunks (e.g., 1024 bytes) still use SIMD.
-        const SMALL_BYTES_THRESHOLD: usize = 256; // 64 pixels
-        if bytes <= SMALL_BYTES_THRESHOLD {
+        #[cfg(feature = "std")]
+        let small_bytes_threshold: usize = std::env::var("RANY_SMALL_BYTES_THRESHOLD")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(256);
+        #[cfg(not(feature = "std"))]
+        let small_bytes_threshold: usize = 256;
+        if bytes <= small_bytes_threshold {
             Self::pack_rgba_to_bgra_scalar(src, dst);
             return;
         }
@@ -1802,7 +1967,9 @@ impl Framebuffer {
                             let s = Instant::now();
                             Self::pack_rgba_to_bgra_scalar(&src_sample, &mut dst);
                             let d = s.elapsed();
-                            if d < m { m = d; }
+                            if d < m {
+                                m = d;
+                            }
                         }
                         best_time = m;
                     }
@@ -1811,30 +1978,64 @@ impl Framebuffer {
                     if std::is_x86_feature_detected!("ssse3") {
                         let mut dst_s = vec![0u8; SAMPLE_BYTES];
                         // warm-up
-                        unsafe { Self::pack_rgba_to_bgra_ssse3(src_sample.as_ptr(), dst_s.as_mut_ptr(), SAMPLE_BYTES); }
+                        unsafe {
+                            Self::pack_rgba_to_bgra_ssse3(
+                                src_sample.as_ptr(),
+                                dst_s.as_mut_ptr(),
+                                SAMPLE_BYTES,
+                            );
+                        }
                         let mut m = core::time::Duration::MAX;
                         for _ in 0..2 {
                             let s = Instant::now();
-                            unsafe { Self::pack_rgba_to_bgra_ssse3(src_sample.as_ptr(), dst_s.as_mut_ptr(), SAMPLE_BYTES); }
+                            unsafe {
+                                Self::pack_rgba_to_bgra_ssse3(
+                                    src_sample.as_ptr(),
+                                    dst_s.as_mut_ptr(),
+                                    SAMPLE_BYTES,
+                                );
+                            }
                             let d = s.elapsed();
-                            if d < m { m = d; }
+                            if d < m {
+                                m = d;
+                            }
                         }
-                        if m < best_time { best_time = m; best = 2; }
+                        if m < best_time {
+                            best_time = m;
+                            best = 2;
+                        }
                     }
 
                     // AVX2 candidate
                     if std::is_x86_feature_detected!("avx2") {
                         let mut dst_a = vec![0u8; SAMPLE_BYTES];
                         // warm-up
-                        unsafe { Self::pack_rgba_to_bgra_avx2(src_sample.as_ptr(), dst_a.as_mut_ptr(), SAMPLE_BYTES); }
+                        unsafe {
+                            Self::pack_rgba_to_bgra_avx2(
+                                src_sample.as_ptr(),
+                                dst_a.as_mut_ptr(),
+                                SAMPLE_BYTES,
+                            );
+                        }
                         let mut m = core::time::Duration::MAX;
                         for _ in 0..2 {
                             let s = Instant::now();
-                            unsafe { Self::pack_rgba_to_bgra_avx2(src_sample.as_ptr(), dst_a.as_mut_ptr(), SAMPLE_BYTES); }
+                            unsafe {
+                                Self::pack_rgba_to_bgra_avx2(
+                                    src_sample.as_ptr(),
+                                    dst_a.as_mut_ptr(),
+                                    SAMPLE_BYTES,
+                                );
+                            }
                             let d = s.elapsed();
-                            if d < m { m = d; }
+                            if d < m {
+                                m = d;
+                            }
                         }
-                        if m < best_time { best_time = m; best = 3; }
+                        if m < best_time {
+                            best_time = m;
+                            best = 3;
+                        }
                     }
 
                     mode = best;
@@ -1844,8 +2045,12 @@ impl Framebuffer {
             }
 
             match mode {
-                3 => unsafe { Self::pack_rgba_to_bgra_avx2(src.as_ptr(), dst.as_mut_ptr(), bytes); },
-                2 => unsafe { Self::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes); },
+                3 => unsafe {
+                    Self::pack_rgba_to_bgra_avx2(src.as_ptr(), dst.as_mut_ptr(), bytes);
+                },
+                2 => unsafe {
+                    Self::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes);
+                },
                 _ => Self::pack_rgba_to_bgra_scalar(src, dst),
             }
             return;
@@ -1872,7 +2077,9 @@ impl Framebuffer {
             }
 
             match mode {
-                4 => unsafe { Self::pack_rgba_to_bgra_neon(src.as_ptr(), dst.as_mut_ptr(), bytes); },
+                4 => unsafe {
+                    Self::pack_rgba_to_bgra_neon(src.as_ptr(), dst.as_mut_ptr(), bytes);
+                },
                 _ => Self::pack_rgba_to_bgra_scalar(src, dst),
             }
             return;
@@ -1882,29 +2089,29 @@ impl Framebuffer {
         Self::pack_rgba_to_bgra_scalar(src, dst);
     }
 
-        /// Query AVX2 availability once and cache result to avoid repeated
-        /// CPUID calls. Only used on x86-family builds and when `std` is
-        /// available for runtime detection.
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        fn get_avx2_available() -> bool {
-            use core::sync::atomic::Ordering;
-            let v = AVX2_AVAILABLE.load(Ordering::Relaxed);
-            if v == 0 {
-                #[cfg(feature = "std")]
-                {
-                    let avail = std::is_x86_feature_detected!("avx2");
-                    AVX2_AVAILABLE.store(if avail { 2 } else { 1 }, Ordering::Relaxed);
-                    avail
-                }
-                #[cfg(not(feature = "std"))]
-                {
-                    AVX2_AVAILABLE.store(1, Ordering::Relaxed);
-                    false
-                }
-            } else {
-                v == 2
+    /// Query AVX2 availability once and cache result to avoid repeated
+    /// CPUID calls. Only used on x86-family builds and when `std` is
+    /// available for runtime detection.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn get_avx2_available() -> bool {
+        use core::sync::atomic::Ordering;
+        let v = AVX2_AVAILABLE.load(Ordering::Relaxed);
+        if v == 0 {
+            #[cfg(feature = "std")]
+            {
+                let avail = std::is_x86_feature_detected!("avx2");
+                AVX2_AVAILABLE.store(if avail { 2 } else { 1 }, Ordering::Relaxed);
+                avail
             }
+            #[cfg(not(feature = "std"))]
+            {
+                AVX2_AVAILABLE.store(1, Ordering::Relaxed);
+                false
+            }
+        } else {
+            v == 2
         }
+    }
 
     /// Scalar packer implementation (public so benches can call it directly).
     #[inline(always)]
@@ -1950,14 +2157,18 @@ impl Framebuffer {
             let s0 = (v0 & 0xFF00FF00) | ((v0 & 0x000000FF) << 16) | ((v0 & 0x00FF0000) >> 16);
             let s1 = (v1 & 0xFF00FF00) | ((v1 & 0x000000FF) << 16) | ((v1 & 0x00FF0000) >> 16);
             let p = (s0 as u64) | ((s1 as u64) << 32);
-            unsafe { core::ptr::write_unaligned(dst.as_mut_ptr().add(i) as *mut u64, p); }
+            unsafe {
+                core::ptr::write_unaligned(dst.as_mut_ptr().add(i) as *mut u64, p);
+            }
             i += 8;
         }
 
         while i + 4 <= bytes {
             let v = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i) as *const u32) };
             let swapped = (v & 0xFF00FF00) | ((v & 0x000000FF) << 16) | ((v & 0x00FF0000) >> 16);
-            unsafe { core::ptr::write_unaligned(dst.as_mut_ptr().add(i) as *mut u32, swapped); }
+            unsafe {
+                core::ptr::write_unaligned(dst.as_mut_ptr().add(i) as *mut u32, swapped);
+            }
             i += 4;
         }
     }
@@ -1966,82 +2177,84 @@ impl Framebuffer {
     /// byte shuffles and falls back to SSSE3 / scalar for tails.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[target_feature(enable = "avx2")]
-    unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) { unsafe {
-        use core::arch::x86_64::*;
-        // 32-byte shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
-        let mask = _mm256_setr_epi8(
-            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
-            18, 17, 16, 19, 22, 21, 20, 23, 26, 25, 24, 27, 30, 29, 28, 31,
-        );
+    unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
+        unsafe {
+            use core::arch::x86_64::*;
+            // 32-byte shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
+            let mask = _mm256_setr_epi8(
+                2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 18, 17, 16, 19, 22, 21, 20,
+                23, 26, 25, 24, 27, 30, 29, 28, 31,
+            );
 
-        let mut i = 0usize;
+            let mut i = 0usize;
 
-        // Fast path when both src and dst are 32-byte aligned: use aligned loads/stores
-        let src_aligned = (src as usize) & 31 == 0;
-        let dst_aligned = (dst as usize) & 31 == 0;
+            // Fast path when both src and dst are 32-byte aligned: use aligned loads/stores
+            let src_aligned = (src as usize) & 31 == 0;
+            let dst_aligned = (dst as usize) & 31 == 0;
 
-        if src_aligned && dst_aligned {
-            // Unroll 64-byte per iteration to reduce loop overhead
-            while i + 64 <= bytes {
-                let v0 = _mm256_load_si256(src.add(i) as *const __m256i);
-                let v1 = _mm256_load_si256(src.add(i + 32) as *const __m256i);
-                let r0 = _mm256_shuffle_epi8(v0, mask);
-                let r1 = _mm256_shuffle_epi8(v1, mask);
-                _mm256_store_si256(dst.add(i) as *mut __m256i, r0);
-                _mm256_store_si256(dst.add(i + 32) as *mut __m256i, r1);
-                i += 64;
+            if src_aligned && dst_aligned {
+                // Unroll 64-byte per iteration to reduce loop overhead
+                while i + 64 <= bytes {
+                    let v0 = _mm256_load_si256(src.add(i) as *const __m256i);
+                    let v1 = _mm256_load_si256(src.add(i + 32) as *const __m256i);
+                    let r0 = _mm256_shuffle_epi8(v0, mask);
+                    let r1 = _mm256_shuffle_epi8(v1, mask);
+                    _mm256_store_si256(dst.add(i) as *mut __m256i, r0);
+                    _mm256_store_si256(dst.add(i + 32) as *mut __m256i, r1);
+                    i += 64;
+                }
+
+                while i + 32 <= bytes {
+                    let v = _mm256_load_si256(src.add(i) as *const __m256i);
+                    let r = _mm256_shuffle_epi8(v, mask);
+                    _mm256_store_si256(dst.add(i) as *mut __m256i, r);
+                    i += 32;
+                }
+            } else {
+                // Unaligned (general) path
+                while i + 64 <= bytes {
+                    let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
+                    let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
+                    let r0 = _mm256_shuffle_epi8(v0, mask);
+                    let r1 = _mm256_shuffle_epi8(v1, mask);
+                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
+                    _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
+                    i += 64;
+                }
+
+                while i + 32 <= bytes {
+                    let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
+                    let r = _mm256_shuffle_epi8(v, mask);
+                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
+                    i += 32;
+                }
             }
 
-            while i + 32 <= bytes {
-                let v = _mm256_load_si256(src.add(i) as *const __m256i);
-                let r = _mm256_shuffle_epi8(v, mask);
-                _mm256_store_si256(dst.add(i) as *mut __m256i, r);
-                i += 32;
-            }
-        } else {
-            // Unaligned (general) path
-            while i + 64 <= bytes {
-                let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
-                let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
-                let r0 = _mm256_shuffle_epi8(v0, mask);
-                let r1 = _mm256_shuffle_epi8(v1, mask);
-                _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
-                _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
-                i += 64;
+            // Process remaining 16-byte block(s) via SSSE3-style shuffle
+            while i + 16 <= bytes {
+                let v = _mm_loadu_si128(src.add(i) as *const __m128i);
+                let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+                let r = _mm_shuffle_epi8(v, m);
+                _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+                i += 16;
             }
 
-            while i + 32 <= bytes {
-                let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
-                let r = _mm256_shuffle_epi8(v, mask);
-                _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
-                i += 32;
+            // Tail: scalar
+            while i < bytes {
+                let pixel_idx = i / 4;
+                let s = pixel_idx * 4;
+                let r = *src.add(s + 0);
+                let g = *src.add(s + 1);
+                let b = *src.add(s + 2);
+                let a = *src.add(s + 3);
+                *dst.add(s + 0) = b;
+                *dst.add(s + 1) = g;
+                *dst.add(s + 2) = r;
+                *dst.add(s + 3) = a;
+                i += 4;
             }
         }
-
-        // Process remaining 16-byte block(s) via SSSE3-style shuffle
-        while i + 16 <= bytes {
-            let v = _mm_loadu_si128(src.add(i) as *const __m128i);
-            let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
-            let r = _mm_shuffle_epi8(v, m);
-            _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
-            i += 16;
-        }
-
-        // Tail: scalar
-        while i < bytes {
-            let pixel_idx = i / 4;
-            let s = pixel_idx * 4;
-            let r = *src.add(s + 0);
-            let g = *src.add(s + 1);
-            let b = *src.add(s + 2);
-            let a = *src.add(s + 3);
-            *dst.add(s + 0) = b;
-            *dst.add(s + 1) = g;
-            *dst.add(s + 2) = r;
-            *dst.add(s + 3) = a;
-            i += 4;
-        }
-    }}
+    }
 
     /// AVX2 helper: pack exactly 8 RGBA pixels (32 bytes) into 24 BGR bytes.
     /// `is_bgr` selects whether output order is BGR (true) or RGB (false).
@@ -2052,14 +2265,14 @@ impl Framebuffer {
 
         // Masks select bytes per 128-bit lane. For BGR each pixel maps [r,g,b,a] -> [b,g,r]
         let mask_bgr = _mm256_setr_epi8(
-            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
-            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
+            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1, 2, 1, 0, 6, 5, 4, 10, 9, 8, 14,
+            13, 12, -1, -1, -1, -1,
         );
 
         // Masks for RGB ordering: [r,g,b]
         let mask_rgb = _mm256_setr_epi8(
-            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
-            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
+            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5, 6, 8, 9, 10, 12,
+            13, 14, -1, -1, -1, -1,
         );
 
         let v = unsafe { _mm256_loadu_si256(src as *const __m256i) };
@@ -2096,14 +2309,10 @@ impl Framebuffer {
         use core::arch::x86_64::*;
 
         // Masks select bytes per 128-bit lane. For BGR each pixel maps [r,g,b,a] -> [b,g,r]
-        let mask_bgr = _mm_setr_epi8(
-            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1,
-        );
+        let mask_bgr = _mm_setr_epi8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1);
 
         // Masks for RGB ordering: [r,g,b]
-        let mask_rgb = _mm_setr_epi8(
-            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1,
-        );
+        let mask_rgb = _mm_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
 
         let v0 = _mm_loadu_si128(src as *const __m128i);
         let v1 = _mm_loadu_si128(src.add(16) as *const __m128i);
@@ -2121,101 +2330,160 @@ impl Framebuffer {
         _mm_storel_epi64(dst.add(16) as *mut __m128i, r1_shift);
     }
 
+    /// NEON implementation (aarch64) for packing exactly 8 RGBA pixels into
+    /// 24 BGR or RGB bytes. Implemented as a small, unrolled scalar loop for
+    /// correctness initially; can be replaced with a table-based tbl variant
+    /// later for better performance.
+    #[cfg(target_arch = "aarch64")]
+    #[target_feature(enable = "neon")]
+    unsafe fn pack_rgba_to_bgr24_neon_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
+        use core::arch::aarch64::*;
+
+        // Table masks: for each 16-byte lane pick bytes [2,1,0,6,5,4,10,9,8,14,13,12, -1,-1,-1,-1]
+        // -1 (255) picks zero when using tbl/vqtbl intrinsics.
+        let mask_bgr: [u8; 16] = [2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 255, 255, 255, 255];
+        let mask_rgb: [u8; 16] = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 255, 255, 255, 255];
+
+        let tbl = vld1q_u8(if is_bgr {
+            mask_bgr.as_ptr()
+        } else {
+            mask_rgb.as_ptr()
+        });
+
+        // Load 8 pixels (32 bytes)
+        let v0 = vld1q_u8(src as *const u8);
+        let v1 = vld1q_u8(src.add(16) as *const u8);
+
+        // Shuffle each 16-byte lane to compress RGBA->BGR triples
+        // Use vqtbl1q_u8 to perform a byte-wise table lookup; out-of-range
+        // indices (255) produce zero bytes (which we overwrite or ignore).
+        let r0 = vqtbl1q_u8(v0, tbl);
+        let r1 = vqtbl1q_u8(v1, tbl);
+
+        // Store bytes safely as in SSSE3/AVX2 helpers:
+        // - store low 8 bytes of r0 -> dst[0..7]
+        // - store next 8 bytes of r0 -> dst[8..15]
+        // - store low 4 bytes of r1 -> dst[12..15] (overwrite middle)
+        // - store low 8 bytes of (r1 >> 4) -> dst[16..23]
+
+        // dst[0..7]
+        vst1_u8(dst, vget_low_u8(r0));
+        // dst[8..15]
+        let r0_hi = vextq_u8(r0, r0, 8);
+        vst1_u8(dst.add(8), vget_low_u8(r0_hi));
+
+        // materialize r1 into a temp buffer so we can copy the required slices
+        let mut tmp: [u8; 16] = core::mem::MaybeUninit::uninit().assume_init();
+        vst1q_u8(tmp.as_mut_ptr(), r1);
+
+        // low 4 bytes of r1 -> dst[12..15]
+        let low32 = u32::from_le_bytes([tmp[0], tmp[1], tmp[2], tmp[3]]);
+        core::ptr::write_unaligned(dst.add(12) as *mut u32, low32);
+
+        // dst[16..23] <- tmp[4..12]
+        core::ptr::copy_nonoverlapping(tmp.as_ptr().add(4), dst.add(16), 8);
+    }
+
     /// NEON implementation placeholder (aarch64). For now this falls back to
     /// a scalar loop for correctness; a NEON tbl-based implementation can be
     /// added later for further speedups.
     #[cfg(target_arch = "aarch64")]
     #[target_feature(enable = "neon")]
-    unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) { unsafe {
-        use core::arch::aarch64::*;
+    unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
+        unsafe {
+            use core::arch::aarch64::*;
 
-        // Vectorized 32-bit lane byte-swizzle:
-        // For each u32 lane (little-endian RGBA), produce BGRA by shifting
-        // low and high byte lanes and OR-ing the parts.
-        let mut i = 0usize;
+            // Vectorized 32-bit lane byte-swizzle:
+            // For each u32 lane (little-endian RGBA), produce BGRA by shifting
+            // low and high byte lanes and OR-ing the parts.
+            let mut i = 0usize;
 
-        // Prepare masks once to avoid redundant vdupq calls in the loop
-        let low_mask = vdupq_n_u32(0x000000FF);
-        let mid_mask = vdupq_n_u32(0x0000FF00);
-        let high_mask = vdupq_n_u32(0x00FF0000);
-        let alpha_mask = vdupq_n_u32(0xFF000000);
+            // Prepare masks once to avoid redundant vdupq calls in the loop
+            let low_mask = vdupq_n_u32(0x000000FF);
+            let mid_mask = vdupq_n_u32(0x0000FF00);
+            let high_mask = vdupq_n_u32(0x00FF0000);
+            let alpha_mask = vdupq_n_u32(0xFF000000);
 
-        // Process 4 pixels (16 bytes) per iteration using 32-bit vector ops
-        while i + 16 <= bytes {
-            // Load 4 lanes (may be unaligned)
-            let v = vld1q_u32(src.add(i) as *const u32);
+            // Process 4 pixels (16 bytes) per iteration using 32-bit vector ops
+            while i + 16 <= bytes {
+                // Load 4 lanes (may be unaligned)
+                let v = vld1q_u32(src.add(i) as *const u32);
 
-            let low = vandq_u32(v, low_mask);
-            let mid = vandq_u32(v, mid_mask);
-            let high = vandq_u32(v, high_mask);
-            let alpha = vandq_u32(v, alpha_mask);
+                let low = vandq_u32(v, low_mask);
+                let mid = vandq_u32(v, mid_mask);
+                let high = vandq_u32(v, high_mask);
+                let alpha = vandq_u32(v, alpha_mask);
 
-            // swap: low << 16 | mid | high >> 16 | alpha
-            let low_shift = vshlq_n_u32(low, 16);
-            let high_shift = vshrq_n_u32(high, 16);
-            let tmp = vorrq_u32(low_shift, mid);
-            let swapped = vorrq_u32(vorrq_u32(tmp, high_shift), alpha);
+                // swap: low << 16 | mid | high >> 16 | alpha
+                let low_shift = vshlq_n_u32(low, 16);
+                let high_shift = vshrq_n_u32(high, 16);
+                let tmp = vorrq_u32(low_shift, mid);
+                let swapped = vorrq_u32(vorrq_u32(tmp, high_shift), alpha);
 
-            vst1q_u32(dst.add(i) as *mut u32, swapped);
-            i += 16;
+                vst1q_u32(dst.add(i) as *mut u32, swapped);
+                i += 16;
+            }
+
+            // Tail: scalar per-pixel
+            while i + 4 <= bytes {
+                let p = core::ptr::read_unaligned(src.add(i) as *const u32);
+                let swapped = ((p & 0x000000FF) << 16)
+                    | (p & 0x0000FF00)
+                    | ((p & 0x00FF0000) >> 16)
+                    | (p & 0xFF000000);
+                core::ptr::write_unaligned(dst.add(i) as *mut u32, swapped);
+                i += 4;
+            }
         }
-
-        // Tail: scalar per-pixel
-        while i + 4 <= bytes {
-            let p = core::ptr::read_unaligned(src.add(i) as *const u32);
-            let swapped = ((p & 0x000000FF) << 16) | (p & 0x0000FF00) | ((p & 0x00FF0000) >> 16) | (p & 0xFF000000);
-            core::ptr::write_unaligned(dst.add(i) as *mut u32, swapped);
-            i += 4;
-        }
-    }}
+    }
 
     /// SSSE3 implementation (unsafe). Processes `bytes` bytes (must be multiple
     /// of 4). Uses pshufb to permute bytes inside 16-byte lanes.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     #[target_feature(enable = "ssse3")]
-    unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) { unsafe {
-        use core::arch::x86_64::*;
+    unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) {
+        unsafe {
+            use core::arch::x86_64::*;
 
-        // shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
-        let mask = _mm_setr_epi8(
-            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15,
-        );
+            // shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
+            let mask = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
 
-        let mut i = 0usize;
+            let mut i = 0usize;
 
-        // Unroll 32-byte per iteration (two 16-byte lanes) to reduce loop overhead
-        while i + 32 <= bytes {
-            let v0 = _mm_loadu_si128(src.add(i) as *const __m128i);
-            let v1 = _mm_loadu_si128(src.add(i + 16) as *const __m128i);
-            let r0 = _mm_shuffle_epi8(v0, mask);
-            let r1 = _mm_shuffle_epi8(v1, mask);
-            _mm_storeu_si128(dst.add(i) as *mut __m128i, r0);
-            _mm_storeu_si128(dst.add(i + 16) as *mut __m128i, r1);
-            i += 32;
+            // Unroll 32-byte per iteration (two 16-byte lanes) to reduce loop overhead
+            while i + 32 <= bytes {
+                let v0 = _mm_loadu_si128(src.add(i) as *const __m128i);
+                let v1 = _mm_loadu_si128(src.add(i + 16) as *const __m128i);
+                let r0 = _mm_shuffle_epi8(v0, mask);
+                let r1 = _mm_shuffle_epi8(v1, mask);
+                _mm_storeu_si128(dst.add(i) as *mut __m128i, r0);
+                _mm_storeu_si128(dst.add(i + 16) as *mut __m128i, r1);
+                i += 32;
+            }
+
+            while i + 16 <= bytes {
+                let v = _mm_loadu_si128(src.add(i) as *const __m128i);
+                let r = _mm_shuffle_epi8(v, mask);
+                _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+                i += 16;
+            }
+
+            // Tail: scalar for remaining (will be multiple of 4)
+            while i < bytes {
+                let pixel_idx = i / 4;
+                let s = pixel_idx * 4;
+                let r = *src.add(s + 0);
+                let g = *src.add(s + 1);
+                let b = *src.add(s + 2);
+                let a = *src.add(s + 3);
+                *dst.add(s + 0) = b;
+                *dst.add(s + 1) = g;
+                *dst.add(s + 2) = r;
+                *dst.add(s + 3) = a;
+                i += 4;
+            }
         }
-
-        while i + 16 <= bytes {
-            let v = _mm_loadu_si128(src.add(i) as *const __m128i);
-            let r = _mm_shuffle_epi8(v, mask);
-            _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
-            i += 16;
-        }
-
-        // Tail: scalar for remaining (will be multiple of 4)
-        while i < bytes {
-            let pixel_idx = i / 4;
-            let s = pixel_idx * 4;
-            let r = *src.add(s + 0);
-            let g = *src.add(s + 1);
-            let b = *src.add(s + 2);
-            let a = *src.add(s + 3);
-            *dst.add(s + 0) = b;
-            *dst.add(s + 1) = g;
-            *dst.add(s + 2) = r;
-            *dst.add(s + 3) = a;
-            i += 4;
-        }
-    }}
+    }
 
     /// Write a run of u32 pixels (color already packed) to destination offset
     fn write_u32_run(&mut self, dst_offset_bytes: usize, run_len_pixels: usize, color_u32: u32) {
@@ -2281,7 +2549,10 @@ impl Framebuffer {
         fn small_bgr_direct_threshold() -> usize {
             #[cfg(all(feature = "std", feature = "bench"))]
             {
-                std::env::var("RANY_SMALL_BGR_DIRECT_MMIO").ok().and_then(|s| s.parse().ok()).unwrap_or(16)
+                std::env::var("RANY_SMALL_BGR_DIRECT_MMIO")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(16)
             }
             #[cfg(not(all(feature = "std", feature = "bench")))]
             {
@@ -2300,7 +2571,10 @@ impl Framebuffer {
                 {
                     if (addr & 3) == 0 && run_len_pixels >= 2 {
                         let pairs = run_len_pixels / 2;
-                        let pair_u32 = (b as u32) | ((g as u32) << 8) | ((r as u32) << 16) | ((b as u32) << 24);
+                        let pair_u32 = (b as u32)
+                            | ((g as u32) << 8)
+                            | ((r as u32) << 16)
+                            | ((b as u32) << 24);
                         let pair_u16 = (g as u16) | ((r as u16) << 8);
                         let mut off = addr;
                         for _ in 0..pairs {
@@ -2339,7 +2613,10 @@ impl Framebuffer {
                 // regressions for moderate-large runs (1k..8k). Use a
                 // conservative default so most workloads use the
                 // scratch+write_bytes_mmio path which is more stable.
-                std::env::var("RANY_LARGE_BGR_DIRECT_MMIO").ok().and_then(|s| s.parse().ok()).unwrap_or(4096)
+                std::env::var("RANY_LARGE_BGR_DIRECT_MMIO")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(4096)
             }
             #[cfg(not(all(feature = "std", feature = "bench")))]
             {
@@ -2360,7 +2637,11 @@ impl Framebuffer {
                     let to_align = core::cmp::min(8 - align8, remaining);
                     to_align_total = to_align;
                     for i in 0..to_align {
-                        let comp = match i % 3 { 0 => b, 1 => g, _ => r };
+                        let comp = match i % 3 {
+                            0 => b,
+                            1 => g,
+                            _ => r,
+                        };
                         mmio::volatile_write::<u8>(addr + i, comp);
                     }
                     addr += to_align;
@@ -2376,7 +2657,11 @@ impl Framebuffer {
                 for k in 0..3 {
                     let mut patt = 0u64;
                     for j in 0..8 {
-                        let byte = match (k + j) % 3 { 0 => b, 1 => g, _ => r } as u64;
+                        let byte = match (k + j) % 3 {
+                            0 => b,
+                            1 => g,
+                            _ => r,
+                        } as u64;
                         patt |= byte << (8 * j);
                     }
                     patterns[k] = patt;
@@ -2404,7 +2689,11 @@ impl Framebuffer {
 
                 // Handle remaining bytes
                 while remaining > 0 {
-                    let comp = match comp_idx % 3 { 0 => b, 1 => g, _ => r };
+                    let comp = match comp_idx % 3 {
+                        0 => b,
+                        1 => g,
+                        _ => r,
+                    };
                     mmio::volatile_write::<u8>(addr, comp);
                     addr += 1;
                     remaining -= 1;
@@ -2429,7 +2718,11 @@ impl Framebuffer {
                 let dst_offset = filled * 3;
                 unsafe {
                     // Use ptr::copy for overlapping-safe copy
-                    ptr::copy(self.scratch_u8.as_ptr(), self.scratch_u8.as_mut_ptr().add(dst_offset), copy_bytes);
+                    ptr::copy(
+                        self.scratch_u8.as_ptr(),
+                        self.scratch_u8.as_mut_ptr().add(dst_offset),
+                        copy_bytes,
+                    );
                 }
                 filled += copy_pixels;
             }
@@ -2437,7 +2730,11 @@ impl Framebuffer {
 
         if let Some(ref mut back) = self.back_buffer {
             unsafe {
-                ptr::copy_nonoverlapping(self.scratch_u8.as_ptr(), back.as_mut_ptr().add(dst_offset_bytes), total);
+                ptr::copy_nonoverlapping(
+                    self.scratch_u8.as_ptr(),
+                    back.as_mut_ptr().add(dst_offset_bytes),
+                    total,
+                );
             }
         } else {
             // MMIO path: write bytes using bulk u32 when possible
@@ -2449,7 +2746,13 @@ impl Framebuffer {
     /// Bench helper: expose targeted BGR run write for micro-bench timing.
     /// Only compiled when the `bench` feature is enabled.
     #[cfg(feature = "bench")]
-    pub fn bench_write_bgr_run_pixels(&mut self, x: usize, y: usize, run_len_pixels: usize, color: Color) {
+    pub fn bench_write_bgr_run_pixels(
+        &mut self,
+        x: usize,
+        y: usize,
+        run_len_pixels: usize,
+        color: Color,
+    ) {
         let dst_offset = y * self.info.stride as usize + x * 3;
         self.write_bgr_run(dst_offset, run_len_pixels, color);
     }
@@ -2466,11 +2769,13 @@ impl Framebuffer {
     /// bitマスクを32bitカラーアレイに展開して書き込む（テキスト描画用）
     /// AVX2最適化のための構造を備えるが、現在はスカラ実装（unrolled loop & u64 writes）を使用。
     #[inline(always)]
-    fn write_glyph_row_32bit(&mut self, 
-                            bits: u8, 
-                            dst_offset_bytes: usize, 
-                            fg_u32: u32, 
-                            bg_u32: u32) {
+    fn write_glyph_row_32bit(
+        &mut self,
+        bits: u8,
+        dst_offset_bytes: usize,
+        fg_u32: u32,
+        bg_u32: u32,
+    ) {
         let mut addr = self.buffer as usize + dst_offset_bytes;
 
         if let Some(ref mut back) = self.back_buffer {
@@ -2554,7 +2859,7 @@ impl Framebuffer {
             Some(r) => r,
             None => return,
         };
-        
+
         if !draw_rect.is_valid() {
             return;
         }
@@ -2690,15 +2995,15 @@ impl Framebuffer {
 
         // Mark the single-pixel area as dirty first
         self.mark_dirty(Rect::new(x as i32, y as i32, 1, 1));
-        
+
         self.set_pixel_raw(x as i32, y as i32, color);
     }
 
     /// Dirty Rectangle更新を行わない内部用メソッド
     fn set_pixel_raw(&mut self, x: i32, y: i32, color: Color) {
         // No debug printing in production; tests may provide diagnostics when needed
-        let offset =
-            (y as usize * self.info.stride as usize) + (x as usize * self.info.format.bytes_per_pixel());
+        let offset = (y as usize * self.info.stride as usize)
+            + (x as usize * self.info.format.bytes_per_pixel());
 
         if let Some(ref mut back) = self.back_buffer {
             // Write to back buffer: use simple pointer writes (no volatile needed)
@@ -2725,7 +3030,7 @@ impl Framebuffer {
         } else {
             // Write to MMIO: use volatile writes via mmio module
             let buffer = self.buffer;
-            
+
             // Safety check for tests or unmapped framebuffer
             if buffer.is_null() {
                 return;
@@ -2802,18 +3107,9 @@ impl Framebuffer {
                         mmio::mmio_write_u32(pixel_addr, color.to_u32());
                     },
                     PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
-                                mmio::volatile_write::<u8>(
-                                    buffer.add(offset) as usize,
-                                    color.blue,
-                                );
-                                mmio::volatile_write::<u8>(
-                                    buffer.add(offset + 1) as usize,
-                                    color.green,
-                                );
-                                mmio::volatile_write::<u8>(
-                                    buffer.add(offset + 2) as usize,
-                                    color.red,
-                                );
+                        mmio::volatile_write::<u8>(buffer.add(offset) as usize, color.blue);
+                        mmio::volatile_write::<u8>(buffer.add(offset + 1) as usize, color.green);
+                        mmio::volatile_write::<u8>(buffer.add(offset + 2) as usize, color.red);
                     },
                     PixelFormat::Rgb565 => unsafe {
                         let r = (color.red as u16 >> 3) & 0x1F;
@@ -2821,7 +3117,7 @@ impl Framebuffer {
                         let b = (color.blue as u16 >> 3) & 0x1F;
                         let pixel = (r << 11) | (g << 5) | b;
                         let ptr_addr = buffer.add(offset) as usize;
-                                mmio::mmio_write_u16(ptr_addr, pixel);
+                        mmio::mmio_write_u16(ptr_addr, pixel);
                     },
                 }
             }
@@ -2873,13 +3169,17 @@ impl Framebuffer {
                     let base = self.draw_buffer();
                     for i in 0..run_len {
                         let off = offset + i * 2;
-                        unsafe { ptr::write(base.add(off) as *mut u16, pixel); }
+                        unsafe {
+                            ptr::write(base.add(off) as *mut u16, pixel);
+                        }
                     }
                 } else {
                     let base_addr = self.draw_buffer() as usize;
                     for i in 0..run_len {
                         let off = base_addr + offset + i * 2;
-                        unsafe { mmio::mmio_write_u16(off, pixel); }
+                        unsafe {
+                            mmio::mmio_write_u16(off, pixel);
+                        }
                     }
                 }
             }
@@ -2909,7 +3209,7 @@ impl Framebuffer {
         self.mark_dirty(Rect::new(x, start_y, 1, (end_y - start_y + 1) as u32));
         self.draw_vline_raw(x, start_y, end_y, color);
     }
-    
+
     /// Dirty Rectangle更新を行わない垂直線描画（クリッピング済み前提）
     fn draw_vline_raw(&mut self, x: i32, start_y: i32, end_y: i32, color: Color) {
         let bytes_per_pixel = self.info.format.bytes_per_pixel();
@@ -2927,14 +3227,18 @@ impl Framebuffer {
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = y * stride + x_off * 4;
-                        unsafe { ptr::write(base.add(off) as *mut u32, color_u32); }
+                        unsafe {
+                            ptr::write(base.add(off) as *mut u32, color_u32);
+                        }
                     }
                 } else {
                     let base_addr = self.draw_buffer() as usize;
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = base_addr + y * stride + x_off * 4;
-                        unsafe { mmio::mmio_write_u32(off, color_u32); }
+                        unsafe {
+                            mmio::mmio_write_u32(off, color_u32);
+                        }
                     }
                 }
             }
@@ -2974,14 +3278,18 @@ impl Framebuffer {
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = y * stride + x_off * 2;
-                        unsafe { ptr::write(base.add(off) as *mut u16, pixel); }
+                        unsafe {
+                            ptr::write(base.add(off) as *mut u16, pixel);
+                        }
                     }
                 } else {
                     let base_addr = self.draw_buffer() as usize;
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = base_addr + y * stride + x_off * 2;
-                        unsafe { mmio::mmio_write_u16(off, pixel); }
+                        unsafe {
+                            mmio::mmio_write_u16(off, pixel);
+                        }
                     }
                 }
             }
@@ -3038,7 +3346,11 @@ impl Framebuffer {
 
                 loop {
                     // Ensure we only call raw write for pixels inside clip
-                    if x >= self.clip.x && x < self.clip.right() && y >= self.clip.y && y < self.clip.bottom() {
+                    if x >= self.clip.x
+                        && x < self.clip.right()
+                        && y >= self.clip.y
+                        && y < self.clip.bottom()
+                    {
                         self.set_pixel_raw(x, y, color);
                     }
                     if x == x2 && y == y2 {
@@ -3056,27 +3368,31 @@ impl Framebuffer {
                 }
             }
         } else {
-             // Primarily horizontal
+            // Primarily horizontal
             let dx = abs_dx;
             let dy = -(abs_dy);
             let sx = if x1 < x2 { 1 } else { -1 };
             let sy = if y1 < y2 { 1 } else { -1 };
             let mut err = dx + dy;
-    
+
             let mut x = x1;
             let mut y = y1;
-    
+
             // Track a current horizontal run starting at `run_start` on row `run_y`.
             let mut run_start = x;
             let mut run_y = y;
             let mut run_len = 1usize;
-    
+
             loop {
                 // If we've reached the destination, flush the pending run and exit.
                 if x == x2 && y == y2 {
                     if run_len == 1 {
                         // Single-pixel run: ensure it's inside clip before raw write
-                        if x >= self.clip.x && x < self.clip.right() && y >= self.clip.y && y < self.clip.bottom() {
+                        if x >= self.clip.x
+                            && x < self.clip.right()
+                            && y >= self.clip.y
+                            && y < self.clip.bottom()
+                        {
                             self.set_pixel_raw(x, y, color);
                         }
                     } else {
@@ -3099,7 +3415,7 @@ impl Framebuffer {
                     }
                     break;
                 }
-    
+
                 let e2 = 2 * err;
                 if e2 >= dy {
                     err += dy;
@@ -3112,7 +3428,7 @@ impl Framebuffer {
                     // If ONLY x changes, we extend run.
                     // If y changes, we flush run.
                 }
-                
+
                 let y_changed = if e2 <= dx {
                     err += dx;
                     y += sy;
@@ -3123,9 +3439,13 @@ impl Framebuffer {
 
                 if y_changed {
                     // Flush current run
-                     if run_len == 1 {
+                    if run_len == 1 {
                         // Ensure single-pixel run is within clip before raw write
-                        if run_start >= self.clip.x && run_start < self.clip.right() && run_y >= self.clip.y && run_y < self.clip.bottom() {
+                        if run_start >= self.clip.x
+                            && run_start < self.clip.right()
+                            && run_y >= self.clip.y
+                            && run_y < self.clip.bottom()
+                        {
                             self.set_pixel_raw(run_start, run_y, color);
                         }
                     } else {
@@ -3156,8 +3476,6 @@ impl Framebuffer {
             }
         }
     }
-
-
 
     /// Naive per-pixel Bresenham implementation useful for benchmarking and
     /// correctness comparisons. Enabled when `bench` feature is active.
@@ -3322,7 +3640,8 @@ impl Framebuffer {
                     for y in r.y..r.bottom() {
                         let offset = (y as usize * stride as usize) + (r.x as usize * 4);
                         let row_ptr = unsafe { buffer.add(offset) as *mut u32 };
-                        let row_slice = unsafe { core::slice::from_raw_parts_mut(row_ptr, r.width as usize) };
+                        let row_slice =
+                            unsafe { core::slice::from_raw_parts_mut(row_ptr, r.width as usize) };
                         row_slice.fill(color_u32);
                     }
                 } else {
@@ -3430,7 +3749,9 @@ impl Framebuffer {
 
             let mut cx = x;
             for c in text.chars() {
-                if c == '\n' { continue; }
+                if c == '\n' {
+                    continue;
+                }
                 let c_index = c as usize;
                 if c_index >= 128 {
                     cx += font.width() as i32;
@@ -3438,11 +3759,11 @@ impl Framebuffer {
                 }
 
                 let glyph_start = c_index * font.height() as usize;
-                
+
                 // Determine clipping for this character
                 let char_x = cx;
                 let char_w = font.width() as i32; // Assuming 8
-                
+
                 // Simple clipping check: if fully visible and aligned to 8 pixels?
                 // Actually, `write_glyph_row_32bit` handles 8 pixels.
                 // We just need to check if the char is fully within clip on X axis
@@ -3450,44 +3771,52 @@ impl Framebuffer {
                 if char_x >= self.clip.x && (char_x + char_w) <= self.clip.right() {
                     // Fully visible horizontally
                     for row in 0..font.height() {
-                         let dst_y = y + row as i32;
-                         if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
-                             continue;
-                         }
+                        let dst_y = y + row as i32;
+                        if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
+                            continue;
+                        }
 
-                         let glyph_row = glyph_start + row as usize;
-                         if glyph_row >= font.data_len() { continue; }
-                         let byte = font.get_data(glyph_row);
+                        let glyph_row = glyph_start + row as usize;
+                        if glyph_row >= font.data_len() {
+                            continue;
+                        }
+                        let byte = font.get_data(glyph_row);
 
-                         let dst_offset = (dst_y as usize * stride) + (char_x as usize * 4);
-                         self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                        let dst_offset = (dst_y as usize * stride) + (char_x as usize * 4);
+                        self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
                     }
                 } else {
                     // Partially clipped horizontally: fallback to slow path for this char
                     // Re-implement simplified version of original slow loop just for this char?
-                    // Or we could execute the original logic for clipped chars. 
+                    // Or we could execute the original logic for clipped chars.
                     // To do this cleanly without code duplication is tricky.
                     // For now, let's just duplicate the bit-check logic here for clipped case.
                     for row in 0..font.height() {
                         let dst_y = y + row as i32;
-                         if dst_y < self.clip.y || dst_y >= self.clip.bottom() { continue; }
+                        if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
+                            continue;
+                        }
 
-                         let glyph_row = glyph_start + row as usize;
-                         if glyph_row >= font.data_len() { continue; }
-                         let byte = font.get_data(glyph_row);
-                         
-                            for col in 0..8 {
-                             // Check clipping for each pixel
-                             let px = char_x + col;
-                             if px < self.clip.x || px >= self.clip.right() { continue; }
-                             
-                             let is_on = (byte >> (7 - col)) & 1 != 0;
-                             let c_val = if is_on { color } else { bg_color };
-                             // We've already marked the whole text region dirty; use
-                             // the raw pixel writer to avoid redundant dirty updates
-                             // and extra bounds checks.
-                             self.set_pixel_raw(px, dst_y, c_val);
-                         }
+                        let glyph_row = glyph_start + row as usize;
+                        if glyph_row >= font.data_len() {
+                            continue;
+                        }
+                        let byte = font.get_data(glyph_row);
+
+                        for col in 0..8 {
+                            // Check clipping for each pixel
+                            let px = char_x + col;
+                            if px < self.clip.x || px >= self.clip.right() {
+                                continue;
+                            }
+
+                            let is_on = (byte >> (7 - col)) & 1 != 0;
+                            let c_val = if is_on { color } else { bg_color };
+                            // We've already marked the whole text region dirty; use
+                            // the raw pixel writer to avoid redundant dirty updates
+                            // and extra bounds checks.
+                            self.set_pixel_raw(px, dst_y, c_val);
+                        }
                     }
                 }
 
@@ -3573,13 +3902,20 @@ impl Framebuffer {
                                 let b = (color.blue as u16 >> 3) & 0x1F;
                                 let pixel = (r << 11) | (g << 5) | b;
                                 if self.back_buffer.is_some() {
-                                    unsafe { ptr::write(self.draw_buffer().add(off) as *mut u16, pixel); }
+                                    unsafe {
+                                        ptr::write(self.draw_buffer().add(off) as *mut u16, pixel);
+                                    }
                                 } else {
-                                    unsafe { mmio::mmio_write_u16(self.draw_buffer().add(off) as usize, pixel); }
+                                    unsafe {
+                                        mmio::mmio_write_u16(
+                                            self.draw_buffer().add(off) as usize,
+                                            pixel,
+                                        );
+                                    }
                                 }
                             }
                         }
-                            _ => {
+                        _ => {
                             // Fallback
                             for i in 0..clipped_len {
                                 // We have already marked the text region dirty above;
@@ -3596,7 +3932,12 @@ impl Framebuffer {
     }
 
     /// 画像描画用のクリッピング計算 helper
-    fn calculate_image_clip(&self, image: &super::image::Image, x: i32, y: i32) -> Option<(Rect, u32, u32)> {
+    fn calculate_image_clip(
+        &self,
+        image: &super::image::Image,
+        x: i32,
+        y: i32,
+    ) -> Option<(Rect, u32, u32)> {
         // Compute intersection between image destination rect and clip/bounds
         let dst_x0 = x.max(self.clip.x).max(0);
         let dst_y0 = y.max(self.clip.y).max(0);
@@ -3623,19 +3964,40 @@ impl Framebuffer {
     }
 
     /// 32-bit不透明ランの描画
-    fn write_opaque_run_32bit(&mut self, image: &super::image::Image, 
-                             src_row: u32, run_start: u32, run_len: usize, 
-                             dst_byte_offset: usize, avx2_available: bool) {
+    fn write_opaque_run_32bit(
+        &mut self,
+        image: &super::image::Image,
+        src_row: u32,
+        run_start: u32,
+        run_len: usize,
+        dst_byte_offset: usize,
+        avx2_available: bool,
+    ) {
         let src_base = (src_row * image.width() + run_start) as usize;
         let imgdata = image.data();
-        const STREAM_THRESHOLD_PIXELS: usize = 2048;
+        // Allow tuning the stream threshold via environment variable for
+        // bench-driven experiments (RANY_STREAM_THRESHOLD_PIXELS). Use a
+        // sensible default when `std` is not available.
+        #[cfg(feature = "std")]
+        let stream_threshold_pixels: usize = std::env::var("RANY_STREAM_THRESHOLD_PIXELS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(2048);
+        #[cfg(not(feature = "std"))]
+        let stream_threshold_pixels: usize = 2048;
 
         if self.info.format == PixelFormat::Rgba8888 {
             let byte_len = run_len * 4;
             let src_slice = &imgdata[src_base * 4..src_base * 4 + byte_len];
 
             if let Some(ref mut back) = self.back_buffer {
-                unsafe { ptr::copy_nonoverlapping(src_slice.as_ptr(), back.as_mut_ptr().add(dst_byte_offset), byte_len); }
+                unsafe {
+                    ptr::copy_nonoverlapping(
+                        src_slice.as_ptr(),
+                        back.as_mut_ptr().add(dst_byte_offset),
+                        byte_len,
+                    );
+                }
             } else {
                 let addr = self.buffer as usize + dst_byte_offset;
                 self.write_bytes_mmio(addr, src_slice);
@@ -3646,22 +4008,33 @@ impl Framebuffer {
             if self.back_buffer.is_some() {
                 self.ensure_scratch_u32(run_len);
                 {
-                    let dst_bytes = unsafe { core::slice::from_raw_parts_mut(self.scratch_u32.as_mut_ptr() as *mut u8, run_len * 4) };
+                    let dst_bytes = unsafe {
+                        core::slice::from_raw_parts_mut(
+                            self.scratch_u32.as_mut_ptr() as *mut u8,
+                            run_len * 4,
+                        )
+                    };
                     Self::pack_rgba_to_bgra(src_slice, dst_bytes);
                 }
                 let back = self.back_buffer.as_mut().unwrap();
                 let dst_ptr = unsafe { back.as_mut_ptr().add(dst_byte_offset) as *mut u32 };
-                unsafe { ptr::copy_nonoverlapping(self.scratch_u32.as_ptr(), dst_ptr, run_len); }
+                unsafe {
+                    ptr::copy_nonoverlapping(self.scratch_u32.as_ptr(), dst_ptr, run_len);
+                }
             } else {
-                #[cfg(feature = "std")]
-                if avx2_available && run_len >= STREAM_THRESHOLD_PIXELS {
+                if avx2_available && run_len >= stream_threshold_pixels {
                     let addr = self.buffer as usize + dst_byte_offset;
                     self.write_rgba_packed_to_mmio_stream(addr, src_slice);
                     return;
                 }
 
                 self.ensure_scratch_u32(run_len);
-                let dst_bytes = unsafe { core::slice::from_raw_parts_mut(self.scratch_u32.as_mut_ptr() as *mut u8, run_len * 4) };
+                let dst_bytes = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        self.scratch_u32.as_mut_ptr() as *mut u8,
+                        run_len * 4,
+                    )
+                };
                 Self::pack_rgba_to_bgra(src_slice, dst_bytes);
                 let addr = self.buffer as usize + dst_byte_offset;
                 self.write_u32_slice_mmio(addr, &self.scratch_u32[..run_len]);
@@ -3670,9 +4043,17 @@ impl Framebuffer {
     }
 
     /// 24-bit不透明ランの描画
-    fn write_opaque_run_24bit(&mut self, image: &super::image::Image, 
-                             src_row: u32, run_start: u32, run_len: usize, 
-                             dst_byte_offset: usize, x: i32, dst_row: i32, avx2_available: bool) {
+    fn write_opaque_run_24bit(
+        &mut self,
+        image: &super::image::Image,
+        src_row: u32,
+        run_start: u32,
+        run_len: usize,
+        dst_byte_offset: usize,
+        x: i32,
+        dst_row: i32,
+        avx2_available: bool,
+    ) {
         let total_bytes = run_len * 3;
         self.ensure_scratch_u8(total_bytes);
         let src_base = (src_row * image.width() + run_start) as usize;
@@ -3699,7 +4080,11 @@ impl Framebuffer {
                         let dst_ptr = self.scratch_u8.as_mut_ptr();
                         while processed + 8 <= run_len {
                             unsafe {
-                                Self::pack_rgba_to_bgr24_avx2_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), true);
+                                Self::pack_rgba_to_bgr24_avx2_8pixels(
+                                    src_ptr.add(processed * 4),
+                                    dst_ptr.add(processed * 3),
+                                    true,
+                                );
                             }
                             processed += 8;
                         }
@@ -3715,7 +4100,37 @@ impl Framebuffer {
                         let dst_ptr = self.scratch_u8.as_mut_ptr();
                         while processed + 8 <= run_len {
                             unsafe {
-                                Self::pack_rgba_to_bgr24_ssse3_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), true);
+                                Self::pack_rgba_to_bgr24_ssse3_8pixels(
+                                    src_ptr.add(processed * 4),
+                                    dst_ptr.add(processed * 3),
+                                    true,
+                                );
+                            }
+                            processed += 8;
+                        }
+
+                        src_idx += processed * 4;
+                        dst_off += processed * 3;
+                        i += processed;
+                    }
+                }
+
+                // AArch64 NEON fast-path: process 8-pixel chunks using an
+                // unrolled 8-pixel packer. Requires `std` for runtime feature
+                // detection; on `no_std` builds this will fall back to scalar.
+                #[cfg(all(target_arch = "aarch64", feature = "std"))]
+                {
+                    if std::is_aarch64_feature_detected!("neon") && run_len >= 8 {
+                        let mut processed = 0usize;
+                        let src_ptr = unsafe { imgdata.as_ptr().add(src_base * 4) };
+                        let dst_ptr = self.scratch_u8.as_mut_ptr();
+                        while processed + 8 <= run_len {
+                            unsafe {
+                                Self::pack_rgba_to_bgr24_neon_8pixels(
+                                    src_ptr.add(processed * 4),
+                                    dst_ptr.add(processed * 3),
+                                    true,
+                                );
                             }
                             processed += 8;
                         }
@@ -3731,10 +4146,17 @@ impl Framebuffer {
                 let dst_ptr = self.scratch_u8.as_mut_ptr();
                 // Unroll pair processing to handle two pairs (4 pixels) per iteration
                 while i + 3 < run_len {
-                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
-                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
-                    let p2 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32) };
-                    let p3 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32) };
+                    let p0 =
+                        unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32)
+                    };
+                    let p2 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32)
+                    };
+                    let p3 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32)
+                    };
 
                     let b0 = ((p0 >> 16) & 0xFF) as u32;
                     let g0 = ((p0 >> 8) & 0xFF) as u32;
@@ -3773,8 +4195,11 @@ impl Framebuffer {
 
                 // Remaining pairs
                 while i + 1 < run_len {
-                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
-                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
+                    let p0 =
+                        unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32)
+                    };
 
                     let b0 = ((p0 >> 16) & 0xFF) as u32;
                     let g0 = ((p0 >> 8) & 0xFF) as u32;
@@ -3798,7 +4223,9 @@ impl Framebuffer {
                 }
                 // Tail pixel
                 while i < run_len {
-                    let p0 = unsafe { core::ptr::read_unaligned(imgdata.as_ptr().add(src_idx) as *const u32) };
+                    let p0 = unsafe {
+                        core::ptr::read_unaligned(imgdata.as_ptr().add(src_idx) as *const u32)
+                    };
                     let b0 = ((p0 >> 16) & 0xFF) as u8;
                     let g0 = ((p0 >> 8) & 0xFF) as u8;
                     let r0 = (p0 & 0xFF) as u8;
@@ -3807,7 +4234,9 @@ impl Framebuffer {
                         *dst_ptr.add(dst_off + 1) = g0;
                         *dst_ptr.add(dst_off + 2) = r0;
                     }
-                    src_idx += 4; dst_off += 3; i += 1;
+                    src_idx += 4;
+                    dst_off += 3;
+                    i += 1;
                 }
             }
             PixelFormat::Rgb888 => {
@@ -3821,7 +4250,11 @@ impl Framebuffer {
                         let dst_ptr = self.scratch_u8.as_mut_ptr();
                         while processed + 8 <= run_len {
                             unsafe {
-                                Self::pack_rgba_to_bgr24_avx2_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), false);
+                                Self::pack_rgba_to_bgr24_avx2_8pixels(
+                                    src_ptr.add(processed * 4),
+                                    dst_ptr.add(processed * 3),
+                                    false,
+                                );
                             }
                             processed += 8;
                         }
@@ -3836,7 +4269,11 @@ impl Framebuffer {
                         let dst_ptr = self.scratch_u8.as_mut_ptr();
                         while processed + 8 <= run_len {
                             unsafe {
-                                Self::pack_rgba_to_bgr24_ssse3_8pixels(src_ptr.add(processed * 4), dst_ptr.add(processed * 3), false);
+                                Self::pack_rgba_to_bgr24_ssse3_8pixels(
+                                    src_ptr.add(processed * 4),
+                                    dst_ptr.add(processed * 3),
+                                    false,
+                                );
                             }
                             processed += 8;
                         }
@@ -3850,10 +4287,17 @@ impl Framebuffer {
                 let src_ptr = imgdata.as_ptr();
                 let dst_ptr = self.scratch_u8.as_mut_ptr();
                 while i + 3 < run_len {
-                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
-                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
-                    let p2 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32) };
-                    let p3 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32) };
+                    let p0 =
+                        unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32)
+                    };
+                    let p2 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32)
+                    };
+                    let p3 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32)
+                    };
 
                     let r0 = (p0 & 0xFF) as u32;
                     let g0 = ((p0 >> 8) & 0xFF) as u32;
@@ -3892,8 +4336,11 @@ impl Framebuffer {
 
                 // Remaining pairs
                 while i + 1 < run_len {
-                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
-                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
+                    let p0 =
+                        unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe {
+                        core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32)
+                    };
 
                     let r0 = (p0 & 0xFF) as u32;
                     let g0 = ((p0 >> 8) & 0xFF) as u32;
@@ -3917,7 +4364,9 @@ impl Framebuffer {
                 }
 
                 while i < run_len {
-                    let p0 = unsafe { core::ptr::read_unaligned(imgdata.as_ptr().add(src_idx) as *const u32) };
+                    let p0 = unsafe {
+                        core::ptr::read_unaligned(imgdata.as_ptr().add(src_idx) as *const u32)
+                    };
                     let r0 = (p0 & 0xFF) as u8;
                     let g0 = ((p0 >> 8) & 0xFF) as u8;
                     let b0 = ((p0 >> 16) & 0xFF) as u8;
@@ -3926,29 +4375,51 @@ impl Framebuffer {
                         *dst_ptr.add(dst_off + 1) = g0;
                         *dst_ptr.add(dst_off + 2) = b0;
                     }
-                    src_idx += 4; dst_off += 3; i += 1;
+                    src_idx += 4;
+                    dst_off += 3;
+                    i += 1;
                 }
             }
             _ => {
                 // Fallback — use raw writes since caller has already marked dirty
                 for j in 0..run_len {
                     let idx2 = (src_base + j) * 4;
-                    let c = Color::with_alpha(imgdata[idx2], imgdata[idx2 + 1], imgdata[idx2 + 2], imgdata[idx2 + 3]);
+                    let c = Color::with_alpha(
+                        imgdata[idx2],
+                        imgdata[idx2 + 1],
+                        imgdata[idx2 + 2],
+                        imgdata[idx2 + 3],
+                    );
                     self.set_pixel_raw(x + (run_start as i32 + j as i32), dst_row, c);
                 }
             }
         }
 
         if handled_in_scratch {
-            const CHUNK_24_PIXELS: usize = 1024;
+            // Tunable chunk size for 24-bit writes; use `RANY_CHUNK_24_PIXELS`
+            // to experiment with different chunk sizes when benching.
+            #[cfg(feature = "std")]
+            let chunk_24_pixels: usize = std::env::var("RANY_CHUNK_24_PIXELS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(1024);
+            #[cfg(not(feature = "std"))]
+            let chunk_24_pixels: usize = 1024;
+
             let mut processed = 0usize;
             while processed < run_len {
-                let chunk = core::cmp::min(CHUNK_24_PIXELS, run_len - processed);
+                let chunk = core::cmp::min(chunk_24_pixels, run_len - processed);
                 let chunk_bytes = chunk * 3;
                 let start = processed * 3;
                 let end = start + chunk_bytes;
                 if let Some(ref mut back) = self.back_buffer {
-                    unsafe { core::ptr::copy_nonoverlapping(self.scratch_u8.as_ptr().add(start), back.as_mut_ptr().add(dst_byte_offset + start), chunk_bytes); }
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            self.scratch_u8.as_ptr().add(start),
+                            back.as_mut_ptr().add(dst_byte_offset + start),
+                            chunk_bytes,
+                        );
+                    }
                 } else {
                     let addr = self.buffer as usize + dst_byte_offset + start;
                     self.write_bytes_mmio(addr, &self.scratch_u8[start..end]);
@@ -3969,24 +4440,33 @@ impl Framebuffer {
         }
 
         if let Some(ref back) = self.back_buffer {
-             if !self.clip.contains(Point::new(x, y)) { return; }
-             let offset = (y as usize * self.info.stride as usize) + (x as usize * self.info.format.bytes_per_pixel());
-             let bpp = self.info.format.bytes_per_pixel();
-             let bg_bytes = &back[offset..offset+bpp];
-             let bg = self.info.format.decode_color_bytes(bg_bytes);
-             let result = color.blend(bg);
-             self.set_pixel(x, y, result);
+            if !self.clip.contains(Point::new(x, y)) {
+                return;
+            }
+            let offset = (y as usize * self.info.stride as usize)
+                + (x as usize * self.info.format.bytes_per_pixel());
+            let bpp = self.info.format.bytes_per_pixel();
+            let bg_bytes = &back[offset..offset + bpp];
+            let bg = self.info.format.decode_color_bytes(bg_bytes);
+            let result = color.blend(bg);
+            self.set_pixel(x, y, result);
         } else {
-             // Fallback for MMIO: just overwrite (no readback)
-             self.set_pixel(x, y, color);
+            // Fallback for MMIO: just overwrite (no readback)
+            self.set_pixel(x, y, color);
         }
     }
 
     /// 画像描画用のスキャンライン処理
-    fn draw_image_scanline(&mut self, image: &super::image::Image, 
-                          src_row: u32, dst_row: i32, 
-                          row_start: u32, row_end: u32, 
-                          x: i32, avx2_available: bool) {
+    fn draw_image_scanline(
+        &mut self,
+        image: &super::image::Image,
+        src_row: u32,
+        dst_row: i32,
+        row_start: u32,
+        row_end: u32,
+        x: i32,
+        avx2_available: bool,
+    ) {
         let bytes_per_pixel = self.info.format.bytes_per_pixel();
         let dst_row_offset = (dst_row as u32 * self.info.stride) as usize;
         let mut col = row_start;
@@ -4030,8 +4510,24 @@ impl Framebuffer {
             let dst_byte_offset = dst_row_offset + abs_x * bytes_per_pixel;
 
             match bytes_per_pixel {
-                4 => self.write_opaque_run_32bit(image, src_row, run_start, run_len, dst_byte_offset, avx2_available),
-                3 => self.write_opaque_run_24bit(image, src_row, run_start, run_len, dst_byte_offset, x, dst_row, avx2_available),
+                4 => self.write_opaque_run_32bit(
+                    image,
+                    src_row,
+                    run_start,
+                    run_len,
+                    dst_byte_offset,
+                    avx2_available,
+                ),
+                3 => self.write_opaque_run_24bit(
+                    image,
+                    src_row,
+                    run_start,
+                    run_len,
+                    dst_byte_offset,
+                    x,
+                    dst_row,
+                    avx2_available,
+                ),
                 _ => {
                     // Fallback
                     for i in 0..run_len {
@@ -4073,9 +4569,16 @@ impl Framebuffer {
             let src_row = (dst_row - y) as u32;
             let row_start = (dst_x0 - x) as u32;
             let row_end = (dst_x1 - x) as u32; // exclusive
-            
-            self.draw_image_scanline(image, src_row, dst_row, row_start, row_end, x, avx2_available);
+
+            self.draw_image_scanline(
+                image,
+                src_row,
+                dst_row,
+                row_start,
+                row_end,
+                x,
+                avx2_available,
+            );
         }
     }
 }
-

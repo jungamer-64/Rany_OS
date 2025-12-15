@@ -17,10 +17,13 @@ members = [
     "drivers/ahci",
     "drivers/usb",
     "drivers/nvme",
+    "drivers/serial",
     "drivers/gpu",
     "drivers/hid",
     "drivers/virtio",
     "drivers/acpi",
+    "drivers/rtc",
+    "drivers/ide",
     "drivers/example_abi",
     # Apps
     "apps",
@@ -29,7 +32,6 @@ members = [
     # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues
     # when running Criterion benches. It is runnable via its manifest path.
 ]
-
 
 
 [workspace.package]
@@ -44,16 +46,23 @@ authors = ["ExoRust Team"]
 build-command = ["build"]
 run-command = [
     "qemu-system-x86_64",
-    "-drive", "format=raw,file={}",
-    "-serial", "stdio",
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-display", "none"
+    "-drive",
+    "format=raw,file={}",
+    "-serial",
+    "stdio",
+    "-device",
+    "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-display",
+    "none",
 ]
 
 test-args = [
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-serial", "stdio",
-    "-display", "none"
+    "-device",
+    "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-serial",
+    "stdio",
+    "-display",
+    "none",
 ]
 test-success-exit-code = 33
 test-timeout = 300

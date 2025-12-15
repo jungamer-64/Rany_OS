@@ -2,7 +2,6 @@
 #![cfg_attr(not(feature = "bench"), no_main)]
 #![feature(abi_x86_interrupt)]
 #![feature(thread_local)]
-#![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 
 // Include the actual kernel logic only when NOT benchmarking
 #[cfg(not(feature = "bench"))]
