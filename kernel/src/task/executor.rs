@@ -304,6 +304,10 @@ impl Executor {
     /// メインループ
     pub fn run(&mut self) -> ! {
         loop {
+            // 0. Interrupt-Waker Bridgeを処理（設計書 4.2）
+            // ISRからキューに追加された割り込みイベントを処理し、Wakerを起床
+            crate::io::interrupt_manager::process_pending_interrupts();
+
             // 1. ローカルキューのタスクを処理
             self.run_ready_tasks();
 
@@ -329,6 +333,7 @@ impl Executor {
             }
         }
     }
+
 
     /// ローカルキューのタスクを実行
     fn run_ready_tasks(&mut self) {

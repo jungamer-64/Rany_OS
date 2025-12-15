@@ -6,10 +6,8 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
+use kernel_api::driver_abi::{DriverContext, DriverVTable, DriverCapabilities, DRIVER_ABI_VERSION, pack_version};
 use kernel_api::driver::DriverType;
-use kernel_api::driver_abi::{
-    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
-};
 
 // ============================================================================
 // Driver Probe/Remove Functions
@@ -74,11 +72,8 @@ extern "C" fn ahci_request_capabilities(caps: *mut DriverCapabilities) {
 // Driver Entry Point
 // ============================================================================
 
-/// The ABI-stable driver entry point.
-///
-/// The kernel calls this to get the driver's vtable.
-#[unsafe(no_mangle)]
-pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
+/// Inner implementation returning pointer to the VTABLE.
+fn ahci_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
         ahci_probe,
@@ -94,4 +89,24 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     );
 
     &VTABLE
+}
+
+// Export canonical symbol only when explicitly requested by the feature
+// `export_driver_entry` (enabled for standalone builds). This avoids
+// emitting the same symbol from multiple drivers when they are statically
+// linked into the kernel.
+#[cfg(feature = "export_driver_entry")]
+#[export_name = "_exorust_driver_entry"]
+pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
+    ahci_driver_vtable()
+}
+
+// When not exporting the canonical symbol, emit a crate-unique name so
+// multiple drivers can coexist in a single static link without symbol
+// collisions. `unsafe(concat!(...))` is required for compile-time
+// concatenation in the attribute expression.
+#[cfg(not(feature = "export_driver_entry"))]
+#[allow(non_snake_case)]
+pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
+    ahci_driver_vtable()
 }

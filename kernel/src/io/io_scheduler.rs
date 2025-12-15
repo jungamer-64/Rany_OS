@@ -980,10 +980,14 @@ impl HybridIoCoordinator {
 
     /// メインループの1回の反復
     pub fn tick(&self, current_tick: u64) {
-        // モード評価
+        // 0. Interrupt-Waker Bridge処理（設計書 4.2: 2段階Wake方式）
+        // ISRからキューに追加された割り込みイベントを処理し、Wakerを起床
+        super::interrupt_manager::process_pending_interrupts();
+
+        // 1. モード評価
         self.scheduler.evaluate_modes(current_tick);
 
-        // ポーリングモードならポーリング実行
+        // 2. ポーリングモードならポーリング実行
         let global_mode = match self.global_mode.load(Ordering::Acquire) {
             0 => IoMode::Interrupt,
             1 => IoMode::Polling,
@@ -1003,6 +1007,7 @@ impl HybridIoCoordinator {
             }
         }
     }
+
 
     /// グローバルモードを設定
     pub fn set_global_mode(&self, mode: IoMode) {

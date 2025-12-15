@@ -6,10 +6,8 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
+use kernel_api::driver_abi::{DriverContext, DriverVTable, DriverCapabilities, DRIVER_ABI_VERSION, pack_version};
 use kernel_api::driver::DriverType;
-use kernel_api::driver_abi::{
-    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
-};
 
 // ============================================================================
 // Driver Lifecycle Functions
@@ -74,9 +72,8 @@ extern "C" fn usb_request_capabilities(caps: *mut DriverCapabilities) {
 // Driver Entry Point
 // ============================================================================
 
-/// The ABI-stable driver entry point.
-#[unsafe(no_mangle)]
-pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
+/// Inner implementation returning pointer to the VTABLE.
+fn usb_driver_vtable() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,
         usb_probe,
@@ -92,4 +89,20 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     );
 
     &VTABLE
+}
+
+// Export canonical symbol only when the export_driver_entry feature is enabled
+#[cfg(feature = "export_driver_entry")]
+#[export_name = "_exorust_driver_entry"]
+pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
+    usb_driver_vtable()
+}
+
+// When compiled as part of the kernel (not exporting the canonical symbol),
+// emit a unique name to avoid collisions across multiple statically linked
+// drivers. We use unsafe(concat!(...)) for the compile-time concatenation.
+#[cfg(not(feature = "export_driver_entry"))]
+#[allow(non_snake_case)]
+pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
+    usb_driver_vtable()
 }

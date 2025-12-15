@@ -263,38 +263,42 @@ impl LocalApic {
     }
 
     // ========================================================================
-    // Type-Safe Register Access (Private)
+    // Type-Safe Register Access (Using MmioReg - Safe API)
     // ========================================================================
 
-    /// レジスタを読み取り（型安全版）
+    /// レジスタアクセサを取得
     #[inline]
-    unsafe fn read_reg(&self, reg: LapicRegister) -> u32 {
-        let addr = self.base_address + reg as u64;
-        crate::io::mmio_read_u32(addr as usize)
+    fn reg(&self, reg: LapicRegister) -> hal::MmioReg<u32> {
+        hal::MmioReg::new(self.base_address as usize, reg as usize)
     }
 
-    /// レジスタに書き込み（型安全版）
+    /// レジスタを読み取り
     #[inline]
-    unsafe fn write_reg(&self, reg: LapicRegister, value: u32) {
-        let addr = self.base_address + reg as u64;
-        crate::io::mmio_write_u32(addr as usize, value);
+    fn read_reg(&self, reg: LapicRegister) -> u32 {
+        self.reg(reg).read()
+    }
+
+    /// レジスタに書き込み
+    #[inline]
+    fn write_reg(&self, reg: LapicRegister, value: u32) {
+        self.reg(reg).write(value);
     }
 
     /// LVTレジスタにフラグ付きで書き込み
     #[inline]
-    unsafe fn write_lvt(&self, reg: LapicRegister, flags: LvtFlags) {
+    fn write_lvt(&self, reg: LapicRegister, flags: LvtFlags) {
         self.write_reg(reg, flags.bits());
     }
 
     /// LVTレジスタにフラグとベクタを書き込み
     #[inline]
-    unsafe fn write_lvt_vector(&self, reg: LapicRegister, flags: LvtFlags, vector: u8) {
+    fn write_lvt_vector(&self, reg: LapicRegister, flags: LvtFlags, vector: u8) {
         self.write_reg(reg, flags.with_vector(vector));
     }
 
-    /// 分周器を設定（型安全版）
+    /// 分周器を設定
     #[inline]
-    unsafe fn set_timer_divisor(&self, divisor: TimerDivisor) {
+    fn set_timer_divisor(&self, divisor: TimerDivisor) {
         self.write_reg(LapicRegister::TimerDcr, divisor as u32);
     }
 
@@ -304,31 +308,34 @@ impl LocalApic {
 
     /// Local APICを初期化
     pub fn init(&self) {
-        unsafe {
-            // Spurious Interrupt Vectorを設定してAPICを有効化
-            // ベクタ0xFF、APICソフトウェア有効化ビット
-            self.write_reg(LapicRegister::Sivr, 0xFF | (1 << 8));
+        // Spurious Interrupt Vectorを設定してAPICを有効化
+        // ベクタ0xFF、APICソフトウェア有効化ビット
+        self.write_reg(LapicRegister::Sivr, 0xFF | (1 << 8));
 
-            // タスク優先度を0に設定（すべての割り込みを許可）
-            self.write_reg(LapicRegister::Tpr, 0);
+        // タスク優先度を0に設定（すべての割り込みを許可）
+        self.write_reg(LapicRegister::Tpr, 0);
 
-            // LVTエントリをマスク
-            self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
-            self.write_lvt(LapicRegister::LvtLint0, LvtFlags::MASKED);
-            self.write_lvt(LapicRegister::LvtLint1, LvtFlags::MASKED);
-            self.write_lvt(LapicRegister::LvtError, LvtFlags::MASKED);
-            self.write_lvt(LapicRegister::LvtPmc, LvtFlags::MASKED);
-            self.write_lvt(LapicRegister::LvtThermal, LvtFlags::MASKED);
-
-            // エラーステータスをクリア
-            self.write_reg(LapicRegister::Esr, 0);
-            self.write_reg(LapicRegister::Esr, 0);
-
-            // 保留中の割り込みをEOIでクリア
-            self.send_eoi();
-
-            self.is_enabled.store(true, Ordering::SeqCst);
+        // LVTエントリをマスク
+        let mask_targets = [
+            LapicRegister::LvtTimer,
+            LapicRegister::LvtLint0,
+            LapicRegister::LvtLint1,
+            LapicRegister::LvtError,
+            LapicRegister::LvtPmc,
+            LapicRegister::LvtThermal,
+        ];
+        for reg in mask_targets {
+            self.write_lvt(reg, LvtFlags::MASKED);
         }
+
+        // エラーステータスをクリア
+        self.write_reg(LapicRegister::Esr, 0);
+        self.write_reg(LapicRegister::Esr, 0);
+
+        // 保留中の割り込みをEOIでクリア
+        self.send_eoi();
+
+        self.is_enabled.store(true, Ordering::SeqCst);
 
         log::info!(
             "[APIC] Local APIC initialized at 0x{:X}\n",
@@ -339,17 +346,16 @@ impl LocalApic {
     /// End of Interruptを送信（専用メソッド）
     #[inline]
     pub fn send_eoi(&self) {
-        unsafe {
-            self.write_reg(LapicRegister::Eoi, 0);
-        }
+        self.write_reg(LapicRegister::Eoi, 0);
     }
 
     /// APICタイマーを較正
     pub fn calibrate_timer(&self) {
-        unsafe {
-            use hal::port_io::PortU8;
+        use hal::port_io::PortU8;
 
-            // PIT (Legacy Programmable Interval Timer) を使用して較正
+        // PIT (Legacy Programmable Interval Timer) を使用して較正
+        // Note: PIT port I/O requires unsafe
+        let (gate_val, elapsed) = unsafe {
             let mut pit_cmd = PortU8::new(0x43);
             let mut pit_data = PortU8::new(0x42); 
             let mut pit_gate = PortU8::new(0x61);
@@ -366,7 +372,7 @@ impl LocalApic {
             pit_data.write((count & 0xFF) as u8);
             pit_data.write((count >> 8) as u8);
 
-            // APICタイマー準備
+            // APICタイマー準備 (safe - uses MmioReg)
             self.set_timer_divisor(TimerDivisor::Div16);
             self.write_reg(LapicRegister::TimerIcr, 0xFFFFFFFF);
 
@@ -375,22 +381,25 @@ impl LocalApic {
                 core::hint::spin_loop();
             }
 
-            // APICタイマーの現在値を読む
+            // APICタイマーの現在値を読む (safe - uses MmioReg)
             let current_count = self.read_reg(LapicRegister::TimerCcr);
             let elapsed = 0xFFFFFFFF - current_count;
-
-            // タイマー停止
-            self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
 
             // Gate Low (無効化)
             pit_gate.write(gate_val & !1);
 
-            // 1msあたりのティック数 (10ms計測なので /10)
-            let ticks_per_ms = elapsed / 10;
-            self.ticks_per_ms.store(ticks_per_ms as u64, Ordering::SeqCst);
+            (gate_val, elapsed)
+        };
 
-            log::info!("[APIC] Timer calibrated using PIT: {} ticks/ms\n", ticks_per_ms);
-        }
+        // タイマー停止 (safe - uses MmioReg)
+        self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
+
+        // 1msあたりのティック数 (10ms計測なので /10)
+        let ticks_per_ms = elapsed / 10;
+        self.ticks_per_ms.store(ticks_per_ms as u64, Ordering::SeqCst);
+
+        let _ = gate_val; // suppress unused warning
+        log::info!("[APIC] Timer calibrated using PIT: {} ticks/ms\n", ticks_per_ms);
     }
 
     /// APICタイマーを設定（周期的割り込み）
@@ -403,11 +412,9 @@ impl LocalApic {
 
         let count = ticks_per_ms as u32 * interval_ms;
 
-        unsafe {
-            self.set_timer_divisor(TimerDivisor::Div16);
-            self.write_lvt_vector(LapicRegister::LvtTimer, LvtFlags::TIMER_PERIODIC, vector);
-            self.write_reg(LapicRegister::TimerIcr, count);
-        }
+        self.set_timer_divisor(TimerDivisor::Div16);
+        self.write_lvt_vector(LapicRegister::LvtTimer, LvtFlags::TIMER_PERIODIC, vector);
+        self.write_reg(LapicRegister::TimerIcr, count);
 
         log::info!(
             "[APIC] Timer started: vector={}, interval={}ms\n",
@@ -418,10 +425,8 @@ impl LocalApic {
 
     /// APICタイマーを停止
     pub fn stop_timer(&self) {
-        unsafe {
-            self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
-            self.write_reg(LapicRegister::TimerIcr, 0);
-        }
+        self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
+        self.write_reg(LapicRegister::TimerIcr, 0);
     }
 
     /// End of Interruptを送信（後方互換性のためのエイリアス）
@@ -432,68 +437,60 @@ impl LocalApic {
 
     /// Local APIC IDを取得
     pub fn id(&self) -> u8 {
-        unsafe { ((self.read_reg(LapicRegister::Id) >> 24) & 0xFF) as u8 }
+        ((self.read_reg(LapicRegister::Id) >> 24) & 0xFF) as u8
     }
 
     /// Local APICバージョンを取得
     pub fn version(&self) -> u8 {
-        unsafe { (self.read_reg(LapicRegister::Version) & 0xFF) as u8 }
+        (self.read_reg(LapicRegister::Version) & 0xFF) as u8
     }
 
     /// IPIを送信
     pub fn send_ipi(&self, target_apic_id: u8, vector: u8) {
-        unsafe {
-            self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
-            self.write_reg(
-                LapicRegister::IcrLow,
-                LvtFlags::DELIVERY_FIXED.with_vector(vector),
-            );
+        self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            LvtFlags::DELIVERY_FIXED.with_vector(vector),
+        );
 
-            // 送信完了を待機
-            while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
-                core::hint::spin_loop();
-            }
+        // 送信完了を待機
+        while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
+            core::hint::spin_loop();
         }
     }
 
     /// ブロードキャストIPI（自分以外）
     pub fn send_ipi_all_excluding_self(&self, vector: u8) {
-        unsafe {
-            self.write_reg(LapicRegister::IcrHigh, 0);
-            self.write_reg(
-                LapicRegister::IcrLow,
-                (vector as u32) | (0b11 << 18) | LvtFlags::DELIVERY_FIXED.bits(),
-            );
-        }
+        self.write_reg(LapicRegister::IcrHigh, 0);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            (vector as u32) | (0b11 << 18) | LvtFlags::DELIVERY_FIXED.bits(),
+        );
     }
 
     /// INIT IPIを送信
     pub fn send_init(&self, target_apic_id: u8) {
-        unsafe {
-            self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
-            self.write_reg(
-                LapicRegister::IcrLow,
-                (LvtFlags::DELIVERY_INIT | LvtFlags::LEVEL_TRIGGERED).bits(),
-            );
+        self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            (LvtFlags::DELIVERY_INIT | LvtFlags::LEVEL_TRIGGERED).bits(),
+        );
 
-            while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
-                core::hint::spin_loop();
-            }
+        while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
+            core::hint::spin_loop();
         }
     }
 
     /// SIPI (Startup IPI)を送信
     pub fn send_sipi(&self, target_apic_id: u8, vector: u8) {
-        unsafe {
-            self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
-            self.write_reg(
-                LapicRegister::IcrLow,
-                (vector as u32) | (0b110 << 8), // Startup delivery mode
-            );
+        self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
+        self.write_reg(
+            LapicRegister::IcrLow,
+            (vector as u32) | (0b110 << 8), // Startup delivery mode
+        );
 
-            while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
-                core::hint::spin_loop();
-            }
+        while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
+            core::hint::spin_loop();
         }
     }
 }
@@ -706,28 +703,34 @@ impl IoApic {
         self.global_irq_base = irq_base;
     }
 
-    /// レジスタを選択
-    unsafe fn select(&self, reg: u8) {
-        let addr = self.base_address + ioapic_reg::IOREGSEL as u64;
-        crate::io::mmio_write_u32(addr as usize, reg as u32);
+    // ========================================================================
+    // Type-Safe Register Access (Using MmioReg - Safe API)
+    // ========================================================================
+
+    /// IOREGSELレジスタアクセサ
+    #[inline]
+    fn select_reg(&self) -> hal::MmioReg<u32> {
+        hal::MmioReg::from_addr(self.base_address as usize + ioapic_reg::IOREGSEL as usize)
     }
 
-    /// 選択したレジスタを読み取り
-    unsafe fn read(&self, reg: u8) -> u32 {
-        unsafe {
-            self.select(reg);
-        }
-        let addr = self.base_address + ioapic_reg::IOWIN as u64;
-        crate::io::mmio_read_u32(addr as usize)
+    /// IOWINレジスタアクセサ
+    #[inline]
+    fn data_reg(&self) -> hal::MmioReg<u32> {
+        hal::MmioReg::from_addr(self.base_address as usize + ioapic_reg::IOWIN as usize)
     }
 
-    /// 選択したレジスタに書き込み
-    unsafe fn write(&self, reg: u8, value: u32) {
-        unsafe {
-            self.select(reg);
-        }
-        let addr = self.base_address + ioapic_reg::IOWIN as u64;
-        crate::io::mmio_write_u32(addr as usize, value);
+    /// レジスタを読み取り
+    #[inline]
+    fn read(&self, reg: u8) -> u32 {
+        self.select_reg().write(reg as u32);
+        self.data_reg().read()
+    }
+
+    /// レジスタに書き込み
+    #[inline]
+    fn write(&self, reg: u8, value: u32) {
+        self.select_reg().write(reg as u32);
+        self.data_reg().write(value);
     }
 
     /// I/O APICを初期化
@@ -748,17 +751,17 @@ impl IoApic {
 
     /// I/O APIC IDを取得
     pub fn id(&self) -> u8 {
-        unsafe { ((self.read(ioapic_reg::IOAPICID) >> 24) & 0xF) as u8 }
+        ((self.read(ioapic_reg::IOAPICID) >> 24) & 0xF) as u8
     }
 
     /// I/O APICバージョンを取得
     pub fn version(&self) -> u8 {
-        unsafe { (self.read(ioapic_reg::IOAPICVER) & 0xFF) as u8 }
+        (self.read(ioapic_reg::IOAPICVER) & 0xFF) as u8
     }
 
     /// 最大リダイレクションエントリ数を取得
     pub fn max_redirection_entries(&self) -> u8 {
-        unsafe { ((self.read(ioapic_reg::IOAPICVER) >> 16) & 0xFF) as u8 }
+        ((self.read(ioapic_reg::IOAPICVER) >> 16) & 0xFF) as u8
     }
 
     // ========================================================================
@@ -769,15 +772,13 @@ impl IoApic {
     pub fn write_entry(&self, irq: u8, entry: RedirectionEntry) {
         let reg = ioapic_reg::IOREDTBL_BASE + irq * 2;
 
-        unsafe {
-            // アトミック性を高めるため、64bit書き込みの手順を遵守
-            // 1. マスクビット(bit 16)をセットしてエントリを無効化 (Low)
-            self.write(reg, entry.low() | RedirectionFlags::MASKED.bits());
-            // 2. 上位32bitを書き込み (High)
-            self.write(reg + 1, entry.high());
-            // 3. 元の値（マスク解除されている可能性あり）で下位32bitを書き込み (Low)
-            self.write(reg, entry.low());
-        }
+        // アトミック性を高めるため、64bit書き込みの手順を遵守
+        // 1. マスクビット(bit 16)をセットしてエントリを無効化 (Low)
+        self.write(reg, entry.low() | RedirectionFlags::MASKED.bits());
+        // 2. 上位32bitを書き込み (High)
+        self.write(reg + 1, entry.high());
+        // 3. 元の値（マスク解除されている可能性あり）で下位32bitを書き込み (Low)
+        self.write(reg, entry.low());
     }
 
     /// RedirectionEntryを読み取り（型安全版）

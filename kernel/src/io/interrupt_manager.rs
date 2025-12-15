@@ -717,7 +717,256 @@ pub fn unmask_interrupt(vector: u8) -> Result<(), InterruptError> {
     }
 }
 
-#[cfg(test)]
+// ============================================================================
+// Interrupt-Waker Bridge (設計書 4.2節)
+// ============================================================================
+//
+// ISR内でロックを取得するとデッドロックが発生するため、2段階Wake方式を採用:
+// 1. ISR: push_interrupt_event() でロックフリーキューにpush
+// 2. Executor: process_pending_interrupts() で通常コンテキストでwake()
+//
+// これにより割り込みコンテキストと通常コンテキスト間のロック競合を根本的に回避
+
+use core::task::Waker;
+
+/// ロックフリー割り込みイベントキュー
+/// 
+/// ISRから安全に呼び出せるよう、Atomic操作のみを使用
+pub struct InterruptQueue {
+    /// リングバッファ本体
+    buffer: [AtomicU32; Self::CAPACITY],
+    /// 書き込み位置（ISRからインクリメント）
+    write_pos: AtomicU32,
+    /// 読み取り位置（Executorからインクリメント）
+    read_pos: AtomicU32,
+}
+
+impl InterruptQueue {
+    /// キューのサイズ（2の冪乗）
+    const CAPACITY: usize = 1024;
+    const MASK: u32 = (Self::CAPACITY - 1) as u32;
+    /// 空エントリを示す値
+    const EMPTY: u32 = 0xFFFFFFFF;
+
+    /// 新しいキューを作成
+    pub const fn new() -> Self {
+        const EMPTY_SLOT: AtomicU32 = AtomicU32::new(InterruptQueue::EMPTY);
+        Self {
+            buffer: [EMPTY_SLOT; Self::CAPACITY],
+            write_pos: AtomicU32::new(0),
+            read_pos: AtomicU32::new(0),
+        }
+    }
+
+    /// 割り込みイベントをキューに追加（ISR用 - ロックフリー）
+    /// 
+    /// # Safety
+    /// ISRコンテキストから呼び出し可能。ロックを取得しない。
+    #[inline]
+    pub fn push(&self, vector: u8) -> bool {
+        loop {
+            let write = self.write_pos.load(Ordering::Relaxed);
+            let read = self.read_pos.load(Ordering::Acquire);
+            
+            // キューがフルかチェック
+            if write.wrapping_sub(read) >= Self::CAPACITY as u32 {
+                return false; // キューフル
+            }
+            
+            let idx = (write & Self::MASK) as usize;
+            
+            // CASでスロットを確保
+            match self.write_pos.compare_exchange_weak(
+                write,
+                write.wrapping_add(1),
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    // スロット確保成功、値を書き込み
+                    self.buffer[idx].store(vector as u32, Ordering::Release);
+                    return true;
+                }
+                Err(_) => continue, // リトライ
+            }
+        }
+    }
+
+    /// 割り込みイベントをキューから取得（Executor用）
+    /// 
+    /// 通常コンテキストから呼び出すこと
+    #[inline]
+    pub fn pop(&self) -> Option<u8> {
+        loop {
+            let read = self.read_pos.load(Ordering::Relaxed);
+            let write = self.write_pos.load(Ordering::Acquire);
+            
+            // キューが空かチェック
+            if read == write {
+                return None;
+            }
+            
+            let idx = (read & Self::MASK) as usize;
+            let value = self.buffer[idx].load(Ordering::Acquire);
+            
+            // まだ書き込み途中の可能性
+            if value == Self::EMPTY {
+                core::hint::spin_loop();
+                continue;
+            }
+            
+            // CASで読み取り位置を進める
+            match self.read_pos.compare_exchange_weak(
+                read,
+                read.wrapping_add(1),
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => {
+                    // スロットをクリア
+                    self.buffer[idx].store(Self::EMPTY, Ordering::Release);
+                    return Some(value as u8);
+                }
+                Err(_) => continue, // リトライ
+            }
+        }
+    }
+
+    /// キューが空か確認
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        let read = self.read_pos.load(Ordering::Acquire);
+        let write = self.write_pos.load(Ordering::Acquire);
+        read == write
+    }
+}
+
+/// WakerレジストリのエントリID
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WakerId(pub u8);
+
+/// Wakerレジストリ（ベクタ → Waker の対応表）
+/// 
+/// 通常コンテキストでのみアクセスされる（Mutex保護）
+pub struct WakerRegistry {
+    wakers: Mutex<BTreeMap<u8, Waker>>,
+}
+
+impl WakerRegistry {
+    /// 新しいレジストリを作成
+    pub const fn new() -> Self {
+        Self {
+            wakers: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Wakerを登録
+    /// 
+    /// ドライバが非同期操作を開始する際に呼び出す
+    pub fn register(&self, vector: u8, waker: Waker) {
+        self.wakers.lock().insert(vector, waker);
+    }
+
+    /// Waker登録を解除
+    pub fn unregister(&self, vector: u8) {
+        self.wakers.lock().remove(&vector);
+    }
+
+    /// 指定されたベクタのWakerを起床
+    /// 
+    /// 通常コンテキストから呼び出すこと
+    pub fn wake(&self, vector: u8) {
+        if let Some(waker) = self.wakers.lock().get(&vector) {
+            waker.wake_by_ref();
+        }
+    }
+
+    /// 登録されているWakerの数
+    pub fn count(&self) -> usize {
+        self.wakers.lock().len()
+    }
+}
+
+// ============================================================================
+// Global Waker Bridge Instances
+// ============================================================================
+
+/// グローバル割り込みイベントキュー
+static INTERRUPT_QUEUE: InterruptQueue = InterruptQueue::new();
+
+/// グローバルWakerレジストリ
+static WAKER_REGISTRY: WakerRegistry = WakerRegistry::new();
+
+// ============================================================================
+// Public Waker Bridge API
+// ============================================================================
+
+/// 割り込みイベントをキューに追加（ISR用）
+/// 
+/// **ISRから安全に呼び出し可能** - ロックを取得しない
+/// 
+/// # Example
+/// ```ignore
+/// // 割り込みハンドラ内で使用
+/// fn keyboard_handler(_: InterruptStackFrame) {
+///     push_interrupt_event(33); // キーボード割り込みベクタ
+///     send_eoi(1);
+/// }
+/// ```
+#[inline]
+pub fn push_interrupt_event(vector: u8) -> bool {
+    INTERRUPT_QUEUE.push(vector)
+}
+
+/// 保留中の割り込みを処理（Executor用）
+/// 
+/// Executorのメインループの先頭で呼び出す。
+/// キューからイベントを取り出し、対応するWakerを起床する。
+/// 
+/// # Example
+/// ```ignore
+/// // Executorメインループ
+/// loop {
+///     // 1. 保留中の割り込みを処理
+///     process_pending_interrupts();
+///     
+///     // 2. Ready状態のタスクをポーリング
+///     poll_ready_tasks();
+/// }
+/// ```
+pub fn process_pending_interrupts() {
+    while let Some(vector) = INTERRUPT_QUEUE.pop() {
+        // 統計を記録
+        INTERRUPT_MANAGER.record_interrupt(vector);
+        // 対応するWakerを起床
+        WAKER_REGISTRY.wake(vector);
+    }
+}
+
+/// Wakerを登録（ドライバ用）
+/// 
+/// 非同期操作の開始時に呼び出し、割り込み完了時にWakerが起床されるようにする
+pub fn register_waker(vector: u8, waker: Waker) {
+    WAKER_REGISTRY.register(vector, waker);
+}
+
+/// Waker登録を解除（ドライバ用）
+pub fn unregister_waker(vector: u8) {
+    WAKER_REGISTRY.unregister(vector);
+}
+
+/// 保留中の割り込みがあるか確認
+#[inline]
+pub fn has_pending_interrupts() -> bool {
+    !INTERRUPT_QUEUE.is_empty()
+}
+
+/// 登録されているWaker数を取得
+pub fn waker_count() -> usize {
+    WAKER_REGISTRY.count()
+}
+
+
 mod tests {
     use super::*;
     
@@ -777,4 +1026,69 @@ mod tests {
         // 空いているベクタが割り当てられる
         assert!(alloc2.vector >= MSI_VECTORS_START);
     }
+
+    // ========================================================================
+    // InterruptQueue Tests (設計書 4.2: ロックフリーキュー)
+    // ========================================================================
+
+    #[test]
+    fn test_interrupt_queue_push_pop() {
+        let queue = InterruptQueue::new();
+        
+        // Push some vectors
+        assert!(queue.push(32)); // Timer
+        assert!(queue.push(33)); // Keyboard
+        assert!(queue.push(44)); // Mouse
+        
+        // Pop in FIFO order
+        assert_eq!(queue.pop(), Some(32));
+        assert_eq!(queue.pop(), Some(33));
+        assert_eq!(queue.pop(), Some(44));
+        
+        // Empty
+        assert_eq!(queue.pop(), None);
+    }
+
+    #[test]
+    fn test_interrupt_queue_empty() {
+        let queue = InterruptQueue::new();
+        
+        assert!(queue.is_empty());
+        assert_eq!(queue.len(), 0);
+        
+        queue.push(32);
+        assert!(!queue.is_empty());
+        assert_eq!(queue.len(), 1);
+        
+        queue.pop();
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn test_interrupt_queue_full() {
+        let queue = InterruptQueue::new();
+        
+        // Fill the queue (1024 - 1 slots usable due to ring buffer design)
+        for i in 0..1023 {
+            assert!(queue.push(i as u8), "Failed at {}", i);
+        }
+        
+        // Should reject when full
+        assert!(!queue.push(255));
+    }
+
+    // ========================================================================
+    // WakerRegistry Tests (設計書 4.2: Waker管理)
+    // ========================================================================
+
+    #[test]
+    fn test_waker_registry_register_count() {
+        let registry = WakerRegistry::new();
+        
+        assert_eq!(registry.count(), 0);
+        
+        // We can't easily create real Wakers in tests without an executor,
+        // so we just test the count functionality
+    }
 }
+

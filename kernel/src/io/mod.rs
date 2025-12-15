@@ -10,6 +10,7 @@ pub mod audio;
 pub mod dma;
 pub mod hid; // HID subsystem (directory) - keyboard.rs, mouse.rs, ps2.rs
 pub mod ide;
+pub mod interrupt_manager; // Unified interrupt management with Waker bridge (設計書 4.2)
 pub mod io_scheduler; // Polling/Executor連携 I/Oスケジューラ
 pub mod iommu;
 pub mod log;
