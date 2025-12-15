@@ -1,0 +1,10 @@
+[package]
+name = "serial_driver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+spin = "0.9"
+x86_64 = "0.15"
+hal = { path = "../../hal" }
+kernel_api = { path = "../../interfaces/kernel_api" }

@@ -33,6 +33,9 @@ hid_driver = { path = "../drivers/hid" }
 gpu_driver = { path = "../drivers/gpu" }
 virtio_driver = { path = "../drivers/virtio" }
 acpi_driver = { path = "../drivers/acpi" }
+rtc_driver = { path = "../drivers/rtc" }
+ide_driver = { path = "../drivers/ide" }
+serial_driver = { path = "../drivers/serial" }
 
 # Filesystems
 fat32 = { path = "../filesystems/fat32" }
@@ -67,10 +70,14 @@ gimli = { version = "0.32", default-features = false, features = ["read-core"] }
 hashbrown = "0.16"
 
 # Ed25519署名検証用
-ed25519-dalek = { version = "2.1", default-features = false, features = ["alloc"] }
+ed25519-dalek = { version = "2.1", default-features = false, features = [
+    "alloc",
+] }
 
 # curve25519-dalekの設定
-curve25519-dalek = { version = "4.1", default-features = false, features = ["alloc"] }
+curve25519-dalek = { version = "4.1", default-features = false, features = [
+    "alloc",
+] }
 
 # SHA-256ハッシュ計算用
 sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
@@ -104,16 +111,23 @@ graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }
 build-command = ["build"]
 run-command = [
     "qemu-system-x86_64",
-    "-drive", "format=raw,file={}",
-    "-serial", "stdio",
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-display", "none"
+    "-drive",
+    "format=raw,file={}",
+    "-serial",
+    "stdio",
+    "-device",
+    "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-display",
+    "none",
 ]
 
 test-args = [
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=0x04",
-    "-serial", "stdio",
-    "-display", "none"
+    "-device",
+    "isa-debug-exit,iobase=0xf4,iosize=0x04",
+    "-serial",
+    "stdio",
+    "-display",
+    "none",
 ]
 test-success-exit-code = 33
 test-timeout = 300

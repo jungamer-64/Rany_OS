@@ -1,0 +1,186 @@
+//! MMIO Access Optimization
+//!
+//! Provides optimized writers for Memory Mapped I/O, handling alignment and
+//! ensuring efficient bus transactions (e.g. using u64 pair writes).
+
+use core::marker::PhantomData;
+use hal::mmio;
+
+/// A safe wrapper for writing to an MMIO region.
+/// Wraps a raw pointer and ensures bounds checking (if length is provided)
+/// and proper alignment handling.
+pub struct MmioWriter<'a> {
+    base: usize,
+    len: usize,
+    _phantom: PhantomData<&'a mut [u8]>,
+}
+
+impl<'a> MmioWriter<'a> {
+    /// Create a new MmioWriter from a raw pointer and length.
+    ///
+    /// # Safety
+    /// The caller must ensure that [base, base + len) is a valid MMIO region.
+    #[inline]
+    pub unsafe fn new(base: usize, len: usize) -> Self {
+        Self {
+            base,
+            len,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Create a new MmioWriter from a mutable slice.
+    #[inline]
+    pub fn from_slice(slice: &mut [u8]) -> Self {
+        unsafe { Self::new(slice.as_mut_ptr() as usize, slice.len()) }
+    }
+
+    /// Write a slice of bytes to the MMIO region efficiently.
+    ///
+    /// This will attempt to perform aligned 32-bit/64-bit writes when possible to
+    /// reduce the number of volatile writes. It never performs unaligned
+    /// u32 writes: any leading bytes to reach 4-byte alignment are emitted
+    /// as u8 writes.
+    #[inline]
+    pub fn write_bytes(&mut self, offset: usize, data: &[u8]) {
+        if offset + data.len() > self.len {
+            // Panic or ignore? panic is safer for now.
+            panic!("MmioWriter::write_bytes: out of bounds");
+        }
+        let mut ptr = self.base + offset;
+        let mut i = 0usize;
+        let len = data.len();
+
+        // Align to 8-bytes boundary by writing 1..=7 initial bytes
+        let align8 = ptr & 7;
+        if align8 != 0 {
+            let to_align = core::cmp::min(8 - align8, len);
+            for _ in 0..to_align {
+                unsafe { mmio::volatile_write::<u8>(ptr, data[i]) };
+                ptr += 1;
+                i += 1;
+            }
+        }
+
+        // Bulk write u64 when possible. Unroll 4 u64 writes per iteration.
+        while i + 32 <= len {
+            unsafe {
+                #[cfg(target_endian = "little")]
+                {
+                    let v0 = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u64);
+                    let v1 = core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u64);
+                    let v2 = core::ptr::read_unaligned(data.as_ptr().add(i + 16) as *const u64);
+                    let v3 = core::ptr::read_unaligned(data.as_ptr().add(i + 24) as *const u64);
+                    mmio::mmio_write_u64(ptr, v0);
+                    mmio::mmio_write_u64(ptr + 8, v1);
+                    mmio::mmio_write_u64(ptr + 16, v2);
+                    mmio::mmio_write_u64(ptr + 24, v3);
+                }
+                #[cfg(not(target_endian = "little"))]
+                {
+                    // Fallback for big endian if ever supported
+                    // ... (omitted for brevity, existing code had it but little endian is dominant)
+                    let v0 = u64::from_le_bytes(data[i..i + 8].try_into().unwrap());
+                    let v1 = u64::from_le_bytes(data[i + 8..i + 16].try_into().unwrap());
+                    let v2 = u64::from_le_bytes(data[i + 16..i + 24].try_into().unwrap());
+                    let v3 = u64::from_le_bytes(data[i + 24..i + 32].try_into().unwrap());
+                    mmio::mmio_write_u64(ptr, v0);
+                    mmio::mmio_write_u64(ptr + 8, v1);
+                    mmio::mmio_write_u64(ptr + 16, v2);
+                    mmio::mmio_write_u64(ptr + 24, v3);
+                }
+            }
+            ptr += 32;
+            i += 32;
+        }
+
+        while i + 8 <= len {
+            unsafe {
+                let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u64);
+                mmio::mmio_write_u64(ptr, v);
+            }
+            ptr += 8;
+            i += 8;
+        }
+
+        // Remaining u32-aligned writes; unroll 4 at a time
+        while i + 16 <= len {
+            unsafe {
+                let v0 = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
+                let v1 = core::ptr::read_unaligned(data.as_ptr().add(i + 4) as *const u32);
+                let v2 = core::ptr::read_unaligned(data.as_ptr().add(i + 8) as *const u32);
+                let v3 = core::ptr::read_unaligned(data.as_ptr().add(i + 12) as *const u32);
+                mmio::mmio_write_u32(ptr, v0);
+                mmio::mmio_write_u32(ptr + 4, v1);
+                mmio::mmio_write_u32(ptr + 8, v2);
+                mmio::mmio_write_u32(ptr + 12, v3);
+            }
+            ptr += 16;
+            i += 16;
+        }
+
+        while i + 4 <= len {
+            unsafe {
+                let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
+                mmio::mmio_write_u32(ptr, v);
+            }
+            ptr += 4;
+            i += 4;
+        }
+
+        // Remaining tail bytes
+        while i < len {
+            unsafe { mmio::volatile_write::<u8>(ptr, data[i]) };
+            ptr += 1;
+            i += 1;
+        }
+    }
+
+    /// Write a slice of u32 pixels to an MMIO destination, using u64 pair writes
+    /// when possible for improved throughput.
+    #[inline]
+    pub fn write_u32_slice(&mut self, offset: usize, data: &[u32]) {
+        let byte_len = data.len() * 4;
+        if offset + byte_len > self.len {
+            panic!("MmioWriter::write_u32_slice: out of bounds");
+        }
+
+        let mut ptr = self.base + offset;
+        let mut i = 0usize;
+        let len = data.len();
+
+        // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment
+        if (ptr & 7) == 4 && i < len {
+            unsafe { mmio::mmio_write_u32(ptr, data[i]) };
+            ptr += 4;
+            i += 1;
+        }
+
+        // Write u64 pairs; unroll 4 pairs at a time for throughput.
+        while i + 7 < len {
+            let p0 = (data[i] as u64) | ((data[i + 1] as u64) << 32);
+            let p1 = (data[i + 2] as u64) | ((data[i + 3] as u64) << 32);
+            let p2 = (data[i + 4] as u64) | ((data[i + 5] as u64) << 32);
+            let p3 = (data[i + 6] as u64) | ((data[i + 7] as u64) << 32);
+            unsafe {
+                mmio::mmio_write_u64(ptr, p0);
+                mmio::mmio_write_u64(ptr + 8, p1);
+                mmio::mmio_write_u64(ptr + 16, p2);
+                mmio::mmio_write_u64(ptr + 24, p3);
+            }
+            ptr += 32;
+            i += 8;
+        }
+
+        while i + 1 < len {
+            let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
+            unsafe { mmio::mmio_write_u64(ptr, pair) };
+            ptr += 8;
+            i += 2;
+        }
+
+        if i < len {
+            unsafe { mmio::mmio_write_u32(ptr, data[i]) };
+        }
+    }
+}

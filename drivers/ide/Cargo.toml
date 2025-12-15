@@ -1,8 +1,9 @@
 [package]
-name = "acpi_driver"
+name = "ide_driver"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 spin = "0.9"
+hal = { path = "../../hal" }
 log = "0.4"

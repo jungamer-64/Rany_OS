@@ -35,6 +35,7 @@ pub mod font;
 pub mod framebuffer;
 #[cfg(not(any(test, feature = "bench")))]
 pub mod global;
+pub mod mmio;
 
 // 既存のサブモジュール
 #[cfg(not(any(test, feature = "bench")))]
