@@ -48,6 +48,29 @@ pub enum CellState {
     Error,
 }
 
+/// モジュール統計情報
+///
+/// ロードされたモジュールのパフォーマンスとリソース使用状況を追跡
+#[derive(Debug, Clone, Default)]
+pub struct ModuleStats {
+    /// ロード時刻（TSCタイムスタンプ）
+    pub load_timestamp: u64,
+    /// ロードにかかった時間（TSCサイクル）
+    pub load_duration_cycles: u64,
+    /// シンボル数
+    pub symbol_count: usize,
+    /// リロケーション適用数
+    pub relocation_count: usize,
+    /// メモリ使用量（バイト）
+    pub memory_usage: usize,
+    /// セグメント数
+    pub segment_count: usize,
+    /// ASLRオフセット
+    pub aslr_offset: usize,
+    /// W^X違反のチェック回数
+    pub wx_check_count: usize,
+}
+
 /// ロードされたセルの管理情報
 #[derive(Debug)]
 pub struct CellRegistry {
@@ -102,6 +125,8 @@ pub struct CellEntry {
     pub signature_verified: bool,
     /// 登録されたドライバ（このセルに依存するドライバ）
     pub registered_drivers: Vec<DriverHandle>,
+    /// モジュール統計情報
+    pub stats: ModuleStats,
 }
 
 impl CellRegistry {
@@ -307,6 +332,12 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
             is_safe: !signature.contains_unsafe,
             signature_verified: true,
             registered_drivers: Vec::new(),
+            stats: ModuleStats {
+                memory_usage: loaded.size,
+                segment_count: cell_info.segments.len(),
+                symbol_count: cell_info.exports.len(),
+                ..Default::default()
+            },
         };
         r.register(entry);
         id
@@ -515,6 +546,7 @@ pub fn init_kernel_cell() {
             is_safe: false, // カーネルはunsafeを含む
             signature_verified: true,
             registered_drivers: Vec::new(),
+            stats: ModuleStats::default(),
         };
         r.register(entry);
     });

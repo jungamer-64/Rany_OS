@@ -298,7 +298,10 @@ impl<'a> MmioWriter<'a> {
         let len = data.len();
 
         #[cfg(all(feature = "std", feature = "bench"))]
-        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+        let bench_debug_env = std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1");
+
+        #[cfg(all(feature = "std", feature = "bench"))]
+        if bench_debug_env {
             eprintln!(
                 "write_u32_slice_mmio_streaming: addr=0x{:x} len={}",
                 ptr, len
@@ -308,7 +311,7 @@ impl<'a> MmioWriter<'a> {
         // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment
         if (ptr & 7) == 4 && i < len {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if bench_debug_print_allowed() {
+            if bench_debug_env && bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
             }
             mmio::stream_write_u32(ptr, data[i]);
@@ -320,7 +323,7 @@ impl<'a> MmioWriter<'a> {
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
             #[cfg(all(feature = "std", feature = "bench"))]
-            if bench_debug_print_allowed() {
+            if bench_debug_env && bench_debug_print_allowed() {
                 eprintln!("  stream_write_u64 at 0x{:x} pair=0x{:x}", ptr, pair);
             }
             mmio::stream_write_u64(ptr, pair);
@@ -331,7 +334,7 @@ impl<'a> MmioWriter<'a> {
         // Handle odd trailing u32
         if i < len {
             #[cfg(all(feature = "std", feature = "bench"))]
-            if bench_debug_print_allowed() {
+            if bench_debug_env && bench_debug_print_allowed() {
                 eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
             }
             mmio::stream_write_u32(ptr, data[i]);
