@@ -1,7 +1,14 @@
 [package]
 name = "ahci_driver"
 version = "0.1.0"
-edition = "2024"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "AHCI Driver for RanyOS"
 
 [lib]
 path = "src/lib.rs"

@@ -1,7 +1,14 @@
 [package]
 name = "serial_driver"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Serial Driver for RanyOS"
 
 [dependencies]
 spin = "0.9"

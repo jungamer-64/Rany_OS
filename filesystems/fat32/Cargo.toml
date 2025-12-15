@@ -1,9 +1,14 @@
 [package]
 name = "fat32"
 version = "0.1.0"
-edition = "2021"
-authors = ["ExoRust Team"]
-description = "FAT32 Filesystem Implementation"
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+description = "FAT32 Filesystem implementation for RanyOS"
+categories.workspace = true
 
 [lib]
 name = "fat32"
@@ -16,4 +21,3 @@ log = "0.4"
 
 [features]
 debug-trace = []
-
