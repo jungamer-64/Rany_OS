@@ -36,4 +36,6 @@ pub mod unwind;
 #[cfg(any(test, feature = "bench"))]
 pub mod loader;
 #[cfg(any(test, feature = "bench"))]
+pub mod driver_registry;
+#[cfg(any(test, feature = "bench"))]
 pub mod util;

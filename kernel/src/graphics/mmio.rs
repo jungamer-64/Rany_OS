@@ -124,7 +124,7 @@ impl<'a> MmioWriter<'a> {
             } else {
                 let to_align = core::cmp::min(8 - align8, len - i);
                 for _ in 0..to_align {
-                    unsafe { mmio::volatile_write::<u8>(ptr, data[i]) };
+                    mmio::volatile_write::<u8>(ptr, data[i]);
                     ptr += 1;
                     i += 1;
                 }
@@ -199,7 +199,7 @@ impl<'a> MmioWriter<'a> {
 
         // Remaining tail bytes
         while i < len {
-            unsafe { mmio::volatile_write::<u8>(ptr, data[i]) };
+            mmio::volatile_write::<u8>(ptr, data[i]);
             ptr += 1;
             i += 1;
         }
@@ -220,7 +220,7 @@ impl<'a> MmioWriter<'a> {
 
         // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment
         if (ptr & 7) == 4 && i < len {
-            unsafe { mmio::mmio_write_u32(ptr, data[i]) };
+            mmio::mmio_write_u32(ptr, data[i]);
             ptr += 4;
             i += 1;
         }
@@ -231,25 +231,23 @@ impl<'a> MmioWriter<'a> {
             let p1 = (data[i + 2] as u64) | ((data[i + 3] as u64) << 32);
             let p2 = (data[i + 4] as u64) | ((data[i + 5] as u64) << 32);
             let p3 = (data[i + 6] as u64) | ((data[i + 7] as u64) << 32);
-            unsafe {
-                mmio::mmio_write_u64(ptr, p0);
-                mmio::mmio_write_u64(ptr + 8, p1);
-                mmio::mmio_write_u64(ptr + 16, p2);
-                mmio::mmio_write_u64(ptr + 24, p3);
-            }
+            mmio::mmio_write_u64(ptr, p0);
+            mmio::mmio_write_u64(ptr + 8, p1);
+            mmio::mmio_write_u64(ptr + 16, p2);
+            mmio::mmio_write_u64(ptr + 24, p3);
             ptr += 32;
             i += 8;
         }
 
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
-            unsafe { mmio::mmio_write_u64(ptr, pair) };
+            mmio::mmio_write_u64(ptr, pair);
             ptr += 8;
             i += 2;
         }
 
         if i < len {
-            unsafe { mmio::mmio_write_u32(ptr, data[i]) };
+            mmio::mmio_write_u32(ptr, data[i]);
         }
     }
 

@@ -26,7 +26,11 @@
 //! | `R_X86_64_64` | 1 | 64-bit absolute |
 //! | `R_X86_64_PC32` | 2 | 32-bit PC-relative |
 //! | `R_X86_64_PLT32` | 4 | 32-bit PLT-relative |
+//! | `R_X86_64_COPY` | 5 | Copy symbol (no-op) |
+//! | `R_X86_64_GLOB_DAT` | 6 | GOT entry for global data |
+//! | `R_X86_64_JUMP_SLOT` | 7 | PLT entry for function calls |
 //! | `R_X86_64_RELATIVE` | 8 | Base + addend |
+//! | `R_X86_64_GOTPCREL` | 9 | GOT-relative PC32 |
 //! | `R_X86_64_32` | 10 | 32-bit absolute (zero-extended) |
 //! | `R_X86_64_32S` | 11 | 32-bit absolute (sign-extended) |
 //!
@@ -710,10 +714,36 @@ impl<'a> ElfLoader<'a> {
                     .wrapping_sub(target as i64);
                 crate::util::write_to_addr(target, value as i32);
             }
+            5 => {
+                // R_X86_64_COPY: Copy symbol at runtime (no-op in kernel loader)
+                // This is used by dynamic linkers for copy relocations
+                log::debug!("[ELF] R_X86_64_COPY at {:#x} (no-op)", target);
+            }
+            6 => {
+                // R_X86_64_GLOB_DAT: GOT entry for global data
+                // Used for accessing global variables through the GOT
+                let value = sym_value.wrapping_add(rela.r_addend as usize);
+                crate::util::write_to_addr(target, value as u64);
+            }
+            7 => {
+                // R_X86_64_JUMP_SLOT: PLT entry for function calls
+                // Used for lazy binding in dynamic linking
+                let value = sym_value.wrapping_add(rela.r_addend as usize);
+                crate::util::write_to_addr(target, value as u64);
+            }
             8 => {
                 // R_X86_64_RELATIVE: Base address + addend
                 let value = base.wrapping_add(rela.r_addend as usize);
                 crate::util::write_to_addr(target, value as u64);
+            }
+            9 => {
+                // R_X86_64_GOTPCREL: GOT-relative PC32
+                // S + A - P where S = symbol value (GOT entry address)
+                // Note: In our simple loader, we treat GOT as pointing directly to symbol
+                let value = (sym_value as i64)
+                    .wrapping_add(rela.r_addend)
+                    .wrapping_sub(target as i64);
+                crate::util::write_to_addr(target, value as i32);
             }
             10 => {
                 // R_X86_64_32: 32-bit absolute (zero-extended)
