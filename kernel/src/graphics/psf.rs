@@ -7,7 +7,7 @@
 //!
 
 use super::framebuffer::Framebuffer;
-use super::{Color, Font, Rect};
+use super::{Color, Font};
 use alloc::collections::BTreeMap;
 use core::str::from_utf8;
 
@@ -97,7 +97,7 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
             let header_size = 4;
             let bytes_per_glyph = header.charsize as u32;
 
-            let mut unicode_map = None;
+            let unicode_map = None;
             if (mode & PSF1_MODEHASTAB) != 0 {
                 // PSF1 Unicode table parsing could be added here
                 // For now, we only implement PSF2 table parsing as it's more common for large fonts
