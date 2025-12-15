@@ -21,7 +21,7 @@
 use super::shell::GraphicalShell;
 use super::types::{ShellResources, ShellState};
 use super::utils::RectList;
-use crate::graphics::{Color, Framebuffer, Rect};
+use crate::graphics::{Color, Font, Framebuffer, Rect};
 
 /// Maximum number of completions to display at once.
 const COMPLETION_LIMIT: usize = 5;
@@ -442,7 +442,7 @@ impl GraphicalShell {
 
     /// Performs a full screen redraw.
     pub fn redraw(&mut self) {
-        self.perform_draw( |shell| {
+        self.perform_draw(|shell| {
             RectList::<1>::from_element(Rect::new(
                 0,
                 0,
@@ -454,14 +454,12 @@ impl GraphicalShell {
 
     /// Redraws only the cursor region (for blink updates).
     pub fn redraw_cursor_only(&mut self) {
-        self.perform_draw( |shell| {
-            RectList::<1>::from_element(shell.current_cursor_rect())
-        });
+        self.perform_draw(|shell| RectList::<1>::from_element(shell.current_cursor_rect()));
     }
 
     /// Redraws the input line and completion window.
     pub fn redraw_input_line(&mut self) {
-        self.perform_draw( |shell| {
+        self.perform_draw(|shell| {
             let layout = Layout::compute(&shell.state, &shell.resources);
             let new_comp = shell.completion_rect_from_layout(&layout);
             let old_comp = shell.state.last_completion_rect;
@@ -505,7 +503,7 @@ impl GraphicalShell {
             return;
         }
 
-        self.perform_draw( |_| {
+        self.perform_draw(|_| {
             let mut regions = RectList::<2>::new();
             regions.push_or_merge(old_rect);
             regions.push_or_merge(new_rect);

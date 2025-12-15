@@ -16,16 +16,16 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::graphics::{BitmapFont, Color, Framebuffer, Rect};
+use crate::graphics::{Color, Font, Framebuffer, Rect};
 use crate::shell::exoshell::ExoShell;
 
 use super::streams::submit_command;
-use super::types::{
-    CURSOR_BLINK_MS, ConsoleLine, LineBuffer, MAX_HISTORY, SCROLLBACK_LINES,
-    ShellResources, ShellState, ShellTheme,
-};
 #[cfg(feature = "mouse")]
 use super::types::MouseState;
+use super::types::{
+    CURSOR_BLINK_MS, ConsoleLine, LineBuffer, MAX_HISTORY, SCROLLBACK_LINES, ShellResources,
+    ShellState, ShellTheme,
+};
 
 // ============================================================================
 // Graphical Shell (Split Borrows Design)

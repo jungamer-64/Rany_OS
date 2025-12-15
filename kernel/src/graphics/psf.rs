@@ -123,13 +123,19 @@ impl<'a> PsfFont<'a> {
     pub fn version(&self) -> &PsfVersion {
         &self.version
     }
-}
 
-impl<'a> Font for PsfFont<'a> {
-    fn width(&self) -> u32 {
+    /// Get font width
+    pub fn width(&self) -> u32 {
         self.width
     }
 
+    /// Get font height
+    pub fn height(&self) -> u32 {
+        self.height
+    }
+}
+
+impl<'a> Font for PsfFont<'a> {
     fn height(&self) -> u32 {
         self.height
     }
