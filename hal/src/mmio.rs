@@ -1,4 +1,6 @@
+// ============================================================================
 // hal/src/mmio.rs - Minimal wrappers for MMIO volatile reads/writes
+// ============================================================================
 #![allow(dead_code)]
 
 use core::marker::Copy;
@@ -271,8 +273,11 @@ pub fn stream_write_u64(addr: usize, val: u64) {
 #[inline]
 pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
     use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_stream_si128};
-    let v = _mm_loadu_si128(data.as_ptr().cast::<__m128i>());
-    _mm_stream_si128(addr as *mut __m128i, v);
+    // SAFETY: Caller ensures SSE2 is available and address is 16-byte aligned
+    unsafe {
+        let v = _mm_loadu_si128(data.as_ptr().cast::<__m128i>());
+        _mm_stream_si128(addr as *mut __m128i, v);
+    }
 }
 
 /// Write 256 bits (32 bytes) using AVX non-temporal store.
@@ -286,6 +291,7 @@ pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
 #[inline]
 pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
     use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_stream_si256};
+    // SAFETY: Caller ensures AVX is available and address is 32-byte aligned
     unsafe {
         let v = _mm256_loadu_si256(data.as_ptr().cast::<__m256i>());
         _mm256_stream_si256(addr as *mut __m256i, v);
