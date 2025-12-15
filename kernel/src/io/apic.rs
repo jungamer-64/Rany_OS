@@ -47,34 +47,60 @@ const LOCAL_APIC_BASE: u64 = 0xFEE0_0000;
 /// I/O APICのデフォルトベースアドレス
 const IO_APIC_BASE: u64 = 0xFEC0_0000;
 
-// Local APICレジスタオフセット
-mod lapic_reg {
-    pub const ID: u32 = 0x020;
-    pub const VERSION: u32 = 0x030;
-    pub const TPR: u32 = 0x080; // Task Priority Register
-    pub const APR: u32 = 0x090; // Arbitration Priority Register
-    pub const PPR: u32 = 0x0A0; // Processor Priority Register
-    pub const EOI: u32 = 0x0B0; // End of Interrupt
-    pub const RRD: u32 = 0x0C0; // Remote Read Register
-    pub const LDR: u32 = 0x0D0; // Logical Destination Register
-    pub const DFR: u32 = 0x0E0; // Destination Format Register
-    pub const SIVR: u32 = 0x0F0; // Spurious Interrupt Vector Register
-    pub const ISR_BASE: u32 = 0x100; // In-Service Register (8 registers)
-    pub const TMR_BASE: u32 = 0x180; // Trigger Mode Register (8 registers)
-    pub const IRR_BASE: u32 = 0x200; // Interrupt Request Register (8 registers)
-    pub const ESR: u32 = 0x280; // Error Status Register
-    pub const LVT_CMCI: u32 = 0x2F0; // LVT CMCI
-    pub const ICR_LOW: u32 = 0x300; // Interrupt Command Register (低32bit)
-    pub const ICR_HIGH: u32 = 0x310; // Interrupt Command Register (高32bit)
-    pub const LVT_TIMER: u32 = 0x320; // LVT Timer
-    pub const LVT_THERMAL: u32 = 0x330; // LVT Thermal Sensor
-    pub const LVT_PMC: u32 = 0x340; // LVT Performance Counter
-    pub const LVT_LINT0: u32 = 0x350; // LVT LINT0
-    pub const LVT_LINT1: u32 = 0x360; // LVT LINT1
-    pub const LVT_ERROR: u32 = 0x370; // LVT Error
-    pub const TIMER_ICR: u32 = 0x380; // Timer Initial Count Register
-    pub const TIMER_CCR: u32 = 0x390; // Timer Current Count Register
-    pub const TIMER_DCR: u32 = 0x3E0; // Timer Divide Configuration Register
+// ============================================================================
+// Local APIC Register Enum (Type-Safe)
+// ============================================================================
+
+/// Local APICレジスタ（型安全なEnum）
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LapicRegister {
+    /// APIC ID Register
+    Id = 0x020,
+    /// APIC Version Register
+    Version = 0x030,
+    /// Task Priority Register
+    Tpr = 0x080,
+    /// Arbitration Priority Register
+    Apr = 0x090,
+    /// Processor Priority Register
+    Ppr = 0x0A0,
+    /// End of Interrupt Register
+    Eoi = 0x0B0,
+    /// Remote Read Register
+    Rrd = 0x0C0,
+    /// Logical Destination Register
+    Ldr = 0x0D0,
+    /// Destination Format Register
+    Dfr = 0x0E0,
+    /// Spurious Interrupt Vector Register
+    Sivr = 0x0F0,
+    /// Error Status Register
+    Esr = 0x280,
+    /// LVT CMCI Register
+    LvtCmci = 0x2F0,
+    /// Interrupt Command Register (Low 32-bit)
+    IcrLow = 0x300,
+    /// Interrupt Command Register (High 32-bit)
+    IcrHigh = 0x310,
+    /// LVT Timer Register
+    LvtTimer = 0x320,
+    /// LVT Thermal Sensor Register
+    LvtThermal = 0x330,
+    /// LVT Performance Counter Register
+    LvtPmc = 0x340,
+    /// LVT LINT0 Register
+    LvtLint0 = 0x350,
+    /// LVT LINT1 Register
+    LvtLint1 = 0x360,
+    /// LVT Error Register
+    LvtError = 0x370,
+    /// Timer Initial Count Register
+    TimerIcr = 0x380,
+    /// Timer Current Count Register
+    TimerCcr = 0x390,
+    /// Timer Divide Configuration Register
+    TimerDcr = 0x3E0,
 }
 
 // I/O APICレジスタ
@@ -89,35 +115,125 @@ mod ioapic_reg {
     pub const IOREDTBL_BASE: u8 = 0x10; // Redirection Table (24 entries, each 64-bit)
 }
 
-// LVTエントリのビットフィールド
-mod lvt_flags {
-    pub const MASKED: u32 = 1 << 16;
-    pub const LEVEL_TRIGGERED: u32 = 1 << 15;
-    pub const REMOTE_IRR: u32 = 1 << 14;
-    pub const LOW_POLARITY: u32 = 1 << 13;
-    pub const DELIVERY_STATUS: u32 = 1 << 12;
+// ============================================================================
+// LVT Flags (Type-Safe Bitflags)
+// ============================================================================
 
-    pub const DELIVERY_MODE_FIXED: u32 = 0b000 << 8;
-    pub const DELIVERY_MODE_SMI: u32 = 0b010 << 8;
-    pub const DELIVERY_MODE_NMI: u32 = 0b100 << 8;
-    pub const DELIVERY_MODE_INIT: u32 = 0b101 << 8;
-    pub const DELIVERY_MODE_EXTINT: u32 = 0b111 << 8;
+use bitflags::bitflags;
 
-    pub const TIMER_MODE_ONESHOT: u32 = 0b00 << 17;
-    pub const TIMER_MODE_PERIODIC: u32 = 0b01 << 17;
-    pub const TIMER_MODE_TSC_DEADLINE: u32 = 0b10 << 17;
+bitflags! {
+    /// LVT (Local Vector Table) エントリのフラグ
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LvtFlags: u32 {
+        /// 割り込みマスク（1 = マスク済み）
+        const MASKED = 1 << 16;
+        /// レベルトリガー（1 = レベル, 0 = エッジ）
+        const LEVEL_TRIGGERED = 1 << 15;
+        /// Remote IRR（読み取り専用）
+        const REMOTE_IRR = 1 << 14;
+        /// 極性（1 = Low Active, 0 = High Active）
+        const LOW_POLARITY = 1 << 13;
+        /// 配送ステータス（読み取り専用）
+        const DELIVERY_STATUS = 1 << 12;
+        
+        // Delivery Mode (bits 10:8)
+        /// Fixed delivery mode
+        const DELIVERY_FIXED = 0b000 << 8;
+        /// SMI delivery mode
+        const DELIVERY_SMI = 0b010 << 8;
+        /// NMI delivery mode
+        const DELIVERY_NMI = 0b100 << 8;
+        /// INIT delivery mode
+        const DELIVERY_INIT = 0b101 << 8;
+        /// ExtINT delivery mode
+        const DELIVERY_EXTINT = 0b111 << 8;
+        
+        // Timer Mode (bits 18:17)
+        /// One-shot timer mode
+        const TIMER_ONESHOT = 0b00 << 17;
+        /// Periodic timer mode
+        const TIMER_PERIODIC = 0b01 << 17;
+        /// TSC-Deadline timer mode
+        const TIMER_TSC_DEADLINE = 0b10 << 17;
+    }
 }
 
-// タイマー分周器
-mod timer_divisor {
-    pub const DIV_1: u32 = 0b1011;
-    pub const DIV_2: u32 = 0b0000;
-    pub const DIV_4: u32 = 0b0001;
-    pub const DIV_8: u32 = 0b0010;
-    pub const DIV_16: u32 = 0b0011;
-    pub const DIV_32: u32 = 0b1000;
-    pub const DIV_64: u32 = 0b1001;
-    pub const DIV_128: u32 = 0b1010;
+impl LvtFlags {
+    /// ベクタ番号をフラグに設定（下位8ビット）
+    #[inline]
+    pub fn with_vector(self, vector: u8) -> u32 {
+        self.bits() | (vector as u32)
+    }
+}
+
+// ============================================================================
+// Interrupt Trigger and Polarity (Type-Safe Enums)
+// ============================================================================
+
+/// 割り込みトリガーモード
+/// 
+/// `bool` 引数の代わりに使用することで、コードの可読性が向上します。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TriggerMode {
+    /// エッジトリガー（立ち上がり/立ち下がりで割り込み発生）
+    #[default]
+    Edge,
+    /// レベルトリガー（信号がアクティブな間割り込み状態を維持）
+    Level,
+}
+
+impl TriggerMode {
+    /// レベルトリガーかどうか
+    #[inline]
+    pub const fn is_level(self) -> bool {
+        matches!(self, Self::Level)
+    }
+}
+
+/// 割り込み極性
+/// 
+/// `bool` 引数の代わりに使用することで、コードの可読性が向上します。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Polarity {
+    /// アクティブハイ（信号がHighで割り込みアクティブ）
+    #[default]
+    HighActive,
+    /// アクティブロー（信号がLowで割り込みアクティブ）
+    LowActive,
+}
+
+impl Polarity {
+    /// ローアクティブかどうか
+    #[inline]
+    pub const fn is_low_active(self) -> bool {
+        matches!(self, Self::LowActive)
+    }
+}
+
+// ============================================================================
+// Timer Divisor Enum (Type-Safe)
+// ============================================================================
+
+/// APICタイマー分周器（型安全なEnum）
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimerDivisor {
+    /// Divide by 1
+    Div1 = 0b1011,
+    /// Divide by 2
+    Div2 = 0b0000,
+    /// Divide by 4
+    Div4 = 0b0001,
+    /// Divide by 8
+    Div8 = 0b0010,
+    /// Divide by 16
+    Div16 = 0b0011,
+    /// Divide by 32
+    Div32 = 0b1000,
+    /// Divide by 64
+    Div64 = 0b1001,
+    /// Divide by 128
+    Div128 = 0b1010,
 }
 
 // ============================================================================
@@ -146,42 +262,70 @@ impl LocalApic {
         self.base_address = addr;
     }
 
-    /// レジスタを読み取り
-    unsafe fn read(&self, reg: u32) -> u32 {
+    // ========================================================================
+    // Type-Safe Register Access (Private)
+    // ========================================================================
+
+    /// レジスタを読み取り（型安全版）
+    #[inline]
+    unsafe fn read_reg(&self, reg: LapicRegister) -> u32 {
         let addr = self.base_address + reg as u64;
         crate::io::mmio_read_u32(addr as usize)
     }
 
-    /// レジスタに書き込み
-    unsafe fn write(&self, reg: u32, value: u32) {
+    /// レジスタに書き込み（型安全版）
+    #[inline]
+    unsafe fn write_reg(&self, reg: LapicRegister, value: u32) {
         let addr = self.base_address + reg as u64;
         crate::io::mmio_write_u32(addr as usize, value);
     }
+
+    /// LVTレジスタにフラグ付きで書き込み
+    #[inline]
+    unsafe fn write_lvt(&self, reg: LapicRegister, flags: LvtFlags) {
+        self.write_reg(reg, flags.bits());
+    }
+
+    /// LVTレジスタにフラグとベクタを書き込み
+    #[inline]
+    unsafe fn write_lvt_vector(&self, reg: LapicRegister, flags: LvtFlags, vector: u8) {
+        self.write_reg(reg, flags.with_vector(vector));
+    }
+
+    /// 分周器を設定（型安全版）
+    #[inline]
+    unsafe fn set_timer_divisor(&self, divisor: TimerDivisor) {
+        self.write_reg(LapicRegister::TimerDcr, divisor as u32);
+    }
+
+    // ========================================================================
+    // Public API
+    // ========================================================================
 
     /// Local APICを初期化
     pub fn init(&self) {
         unsafe {
             // Spurious Interrupt Vectorを設定してAPICを有効化
             // ベクタ0xFF、APICソフトウェア有効化ビット
-            self.write(lapic_reg::SIVR, 0xFF | (1 << 8));
+            self.write_reg(LapicRegister::Sivr, 0xFF | (1 << 8));
 
             // タスク優先度を0に設定（すべての割り込みを許可）
-            self.write(lapic_reg::TPR, 0);
+            self.write_reg(LapicRegister::Tpr, 0);
 
             // LVTエントリをマスク
-            self.write(lapic_reg::LVT_TIMER, lvt_flags::MASKED);
-            self.write(lapic_reg::LVT_LINT0, lvt_flags::MASKED);
-            self.write(lapic_reg::LVT_LINT1, lvt_flags::MASKED);
-            self.write(lapic_reg::LVT_ERROR, lvt_flags::MASKED);
-            self.write(lapic_reg::LVT_PMC, lvt_flags::MASKED);
-            self.write(lapic_reg::LVT_THERMAL, lvt_flags::MASKED);
+            self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
+            self.write_lvt(LapicRegister::LvtLint0, LvtFlags::MASKED);
+            self.write_lvt(LapicRegister::LvtLint1, LvtFlags::MASKED);
+            self.write_lvt(LapicRegister::LvtError, LvtFlags::MASKED);
+            self.write_lvt(LapicRegister::LvtPmc, LvtFlags::MASKED);
+            self.write_lvt(LapicRegister::LvtThermal, LvtFlags::MASKED);
 
             // エラーステータスをクリア
-            self.write(lapic_reg::ESR, 0);
-            self.write(lapic_reg::ESR, 0);
+            self.write_reg(LapicRegister::Esr, 0);
+            self.write_reg(LapicRegister::Esr, 0);
 
             // 保留中の割り込みをEOIでクリア
-            self.write(lapic_reg::EOI, 0);
+            self.send_eoi();
 
             self.is_enabled.store(true, Ordering::SeqCst);
         }
@@ -192,60 +336,58 @@ impl LocalApic {
         );
     }
 
+    /// End of Interruptを送信（専用メソッド）
+    #[inline]
+    pub fn send_eoi(&self) {
+        unsafe {
+            self.write_reg(LapicRegister::Eoi, 0);
+        }
+    }
+
     /// APICタイマーを較正
     pub fn calibrate_timer(&self) {
         unsafe {
             use hal::port_io::PortU8;
 
             // PIT (Legacy Programmable Interval Timer) を使用して較正
-            // Channel 2, Gate High制御で計測して精度を確保
-            // OSDev Wiki 及び Minix 3 / Linux の初期化コードを参考
-            
-            // 1. PITの初期化 (Channel 2, Mode 0 - Interrupt on Terminal Count)
-            // 0xB0 = 10110000b => Channel 2, Access Lo/Hi, Mode 0, Binary
             let mut pit_cmd = PortU8::new(0x43);
             let mut pit_data = PortU8::new(0x42); 
             let mut pit_gate = PortU8::new(0x61);
 
             // Channel 2 Gate High (カウント有効化)
-            // Port 0x61 Bit 0 = Timer 2 Gate
             let gate_val = pit_gate.read();
             pit_gate.write(gate_val | 1);
 
+            // 0xB0 = Channel 2, Access Lo/Hi, Mode 0, Binary
             pit_cmd.write(0xB0);
 
-            // 10ms (100Hz) 待機用カウント設定 
-            // Base: 1.193182 MHz
-            // Count = 1193182 / 100 = 11931.82 => 11932 (approx 0x2E9C)
+            // 10ms 待機用カウント設定 (1.193182 MHz / 100 = 11932)
             let count = 11932_u16;
-            pit_data.write((count & 0xFF) as u8);   // Low
-            pit_data.write((count >> 8) as u8);     // High
+            pit_data.write((count & 0xFF) as u8);
+            pit_data.write((count >> 8) as u8);
 
-            // 2. APICタイマー準備 (最大値からカウントダウン)
-            // 分周器を16に設定 (精度とオーバーフロー回避のバランス)
-            self.write(lapic_reg::TIMER_DCR, timer_divisor::DIV_16);
-            self.write(lapic_reg::TIMER_ICR, 0xFFFFFFFF); // 開始
+            // APICタイマー準備
+            self.set_timer_divisor(TimerDivisor::Div16);
+            self.write_reg(LapicRegister::TimerIcr, 0xFFFFFFFF);
 
-            // 3. PITのカウント終了（Outピン High）を待つ
-            // Mode 0 ではカウント終了で Port 0x61 bit 5 (OUT2) が High になる
-             while (pit_gate.read() & 0x20) == 0 {
+            // PITのカウント終了を待つ
+            while (pit_gate.read() & 0x20) == 0 {
                 core::hint::spin_loop();
             }
 
-            // 4. APICタイマーの現在値を読む
-            let current_count = self.read(lapic_reg::TIMER_CCR);
+            // APICタイマーの現在値を読む
+            let current_count = self.read_reg(LapicRegister::TimerCcr);
             let elapsed = 0xFFFFFFFF - current_count;
 
             // タイマー停止
-            self.write(lapic_reg::LVT_TIMER, lvt_flags::MASKED);
+            self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
 
-             // Gate Low (無効化)
-             pit_gate.write(gate_val & !1);
+            // Gate Low (無効化)
+            pit_gate.write(gate_val & !1);
 
             // 1msあたりのティック数 (10ms計測なので /10)
             let ticks_per_ms = elapsed / 10;
-            self.ticks_per_ms
-                .store(ticks_per_ms as u64, Ordering::SeqCst);
+            self.ticks_per_ms.store(ticks_per_ms as u64, Ordering::SeqCst);
 
             log::info!("[APIC] Timer calibrated using PIT: {} ticks/ms\n", ticks_per_ms);
         }
@@ -255,24 +397,16 @@ impl LocalApic {
     pub fn start_timer(&self, vector: u8, interval_ms: u32) {
         let ticks_per_ms = self.ticks_per_ms.load(Ordering::SeqCst);
         if ticks_per_ms == 0 {
-            log::info!("[APIC] Warning: Timer not calibrated\n");
+            log::warn!("[APIC] Timer not calibrated\n");
             return;
         }
 
         let count = ticks_per_ms as u32 * interval_ms;
 
         unsafe {
-            // 分周器を設定
-            self.write(lapic_reg::TIMER_DCR, timer_divisor::DIV_16);
-
-            // LVTタイマーを設定（周期モード）
-            self.write(
-                lapic_reg::LVT_TIMER,
-                vector as u32 | lvt_flags::TIMER_MODE_PERIODIC,
-            );
-
-            // 初期カウントを設定（タイマー開始）
-            self.write(lapic_reg::TIMER_ICR, count);
+            self.set_timer_divisor(TimerDivisor::Div16);
+            self.write_lvt_vector(LapicRegister::LvtTimer, LvtFlags::TIMER_PERIODIC, vector);
+            self.write_reg(LapicRegister::TimerIcr, count);
         }
 
         log::info!(
@@ -285,42 +419,38 @@ impl LocalApic {
     /// APICタイマーを停止
     pub fn stop_timer(&self) {
         unsafe {
-            self.write(lapic_reg::LVT_TIMER, lvt_flags::MASKED);
-            self.write(lapic_reg::TIMER_ICR, 0);
+            self.write_lvt(LapicRegister::LvtTimer, LvtFlags::MASKED);
+            self.write_reg(LapicRegister::TimerIcr, 0);
         }
     }
 
-    /// End of Interruptを送信
+    /// End of Interruptを送信（後方互換性のためのエイリアス）
+    #[inline]
     pub fn end_of_interrupt(&self) {
-        unsafe {
-            self.write(lapic_reg::EOI, 0);
-        }
+        self.send_eoi();
     }
 
     /// Local APIC IDを取得
     pub fn id(&self) -> u8 {
-        unsafe { ((self.read(lapic_reg::ID) >> 24) & 0xFF) as u8 }
+        unsafe { ((self.read_reg(LapicRegister::Id) >> 24) & 0xFF) as u8 }
     }
 
     /// Local APICバージョンを取得
     pub fn version(&self) -> u8 {
-        unsafe { (self.read(lapic_reg::VERSION) & 0xFF) as u8 }
+        unsafe { (self.read_reg(LapicRegister::Version) & 0xFF) as u8 }
     }
 
     /// IPIを送信
     pub fn send_ipi(&self, target_apic_id: u8, vector: u8) {
         unsafe {
-            // 送信先を設定
-            self.write(lapic_reg::ICR_HIGH, (target_apic_id as u32) << 24);
-
-            // 割り込みコマンドを発行
-            self.write(
-                lapic_reg::ICR_LOW,
-                vector as u32 | lvt_flags::DELIVERY_MODE_FIXED,
+            self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
+            self.write_reg(
+                LapicRegister::IcrLow,
+                LvtFlags::DELIVERY_FIXED.with_vector(vector),
             );
 
             // 送信完了を待機
-            while (self.read(lapic_reg::ICR_LOW) & lvt_flags::DELIVERY_STATUS) != 0 {
+            while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
                 core::hint::spin_loop();
             }
         }
@@ -329,10 +459,10 @@ impl LocalApic {
     /// ブロードキャストIPI（自分以外）
     pub fn send_ipi_all_excluding_self(&self, vector: u8) {
         unsafe {
-            self.write(lapic_reg::ICR_HIGH, 0);
-            self.write(
-                lapic_reg::ICR_LOW,
-                vector as u32 | (0b11 << 18) | lvt_flags::DELIVERY_MODE_FIXED,
+            self.write_reg(LapicRegister::IcrHigh, 0);
+            self.write_reg(
+                LapicRegister::IcrLow,
+                (vector as u32) | (0b11 << 18) | LvtFlags::DELIVERY_FIXED.bits(),
             );
         }
     }
@@ -340,13 +470,13 @@ impl LocalApic {
     /// INIT IPIを送信
     pub fn send_init(&self, target_apic_id: u8) {
         unsafe {
-            self.write(lapic_reg::ICR_HIGH, (target_apic_id as u32) << 24);
-            self.write(
-                lapic_reg::ICR_LOW,
-                lvt_flags::DELIVERY_MODE_INIT | lvt_flags::LEVEL_TRIGGERED,
+            self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
+            self.write_reg(
+                LapicRegister::IcrLow,
+                (LvtFlags::DELIVERY_INIT | LvtFlags::LEVEL_TRIGGERED).bits(),
             );
 
-            while (self.read(lapic_reg::ICR_LOW) & lvt_flags::DELIVERY_STATUS) != 0 {
+            while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
                 core::hint::spin_loop();
             }
         }
@@ -355,15 +485,198 @@ impl LocalApic {
     /// SIPI (Startup IPI)を送信
     pub fn send_sipi(&self, target_apic_id: u8, vector: u8) {
         unsafe {
-            self.write(lapic_reg::ICR_HIGH, (target_apic_id as u32) << 24);
-            self.write(
-                lapic_reg::ICR_LOW,
-                vector as u32 | (0b110 << 8), // Startup delivery mode
+            self.write_reg(LapicRegister::IcrHigh, (target_apic_id as u32) << 24);
+            self.write_reg(
+                LapicRegister::IcrLow,
+                (vector as u32) | (0b110 << 8), // Startup delivery mode
             );
 
-            while (self.read(lapic_reg::ICR_LOW) & lvt_flags::DELIVERY_STATUS) != 0 {
+            while (self.read_reg(LapicRegister::IcrLow) & LvtFlags::DELIVERY_STATUS.bits()) != 0 {
                 core::hint::spin_loop();
             }
+        }
+    }
+}
+
+// ============================================================================
+// I/O APIC Redirection Entry (Type-Safe)
+// ============================================================================
+
+bitflags! {
+    /// I/O APIC Redirection Entry フラグ（下位32ビット用）
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct RedirectionFlags: u32 {
+        /// 割り込みマスク（1 = マスク済み）
+        const MASKED = 1 << 16;
+        /// レベルトリガー（1 = レベル, 0 = エッジ）
+        const LEVEL_TRIGGERED = 1 << 15;
+        /// Remote IRR（読み取り専用）
+        const REMOTE_IRR = 1 << 14;
+        /// 極性（1 = Low Active, 0 = High Active）
+        const LOW_POLARITY = 1 << 13;
+        /// 配送ステータス（読み取り専用）
+        const DELIVERY_STATUS = 1 << 12;
+        /// 送信先モード（1 = Logical, 0 = Physical）
+        const DESTINATION_LOGICAL = 1 << 11;
+        
+        // Delivery Mode (bits 10:8)
+        /// Fixed delivery mode
+        const DELIVERY_FIXED = 0b000 << 8;
+        /// Lowest priority delivery mode
+        const DELIVERY_LOWEST = 0b001 << 8;
+        /// SMI delivery mode
+        const DELIVERY_SMI = 0b010 << 8;
+        /// NMI delivery mode
+        const DELIVERY_NMI = 0b100 << 8;
+        /// INIT delivery mode
+        const DELIVERY_INIT = 0b101 << 8;
+        /// ExtINT delivery mode
+        const DELIVERY_EXTINT = 0b111 << 8;
+    }
+}
+
+/// I/O APIC Redirection Table Entry（型安全）
+/// 
+/// ビルダーパターンを使用して、割り込みルーティングを設定。
+/// 
+/// # Example
+/// ```ignore
+/// let entry = RedirectionEntry::new(0x21)
+///     .destination(cpu_apic_id)
+///     .level_triggered()
+///     .low_active();
+/// io_apic.write_entry(irq, entry);
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct RedirectionEntry {
+    low: u32,
+    high: u32,
+}
+
+impl RedirectionEntry {
+    /// 新しいRedirectionEntryを作成（ベクタ指定）
+    #[inline]
+    pub const fn new(vector: u8) -> Self {
+        Self {
+            low: vector as u32,
+            high: 0,
+        }
+    }
+
+    /// マスク済みの空エントリを作成
+    #[inline]
+    pub const fn masked() -> Self {
+        Self {
+            low: RedirectionFlags::MASKED.bits(),
+            high: 0,
+        }
+    }
+
+    /// 64ビット値から復元
+    #[inline]
+    pub const fn from_raw(raw: u64) -> Self {
+        Self {
+            low: raw as u32,
+            high: (raw >> 32) as u32,
+        }
+    }
+
+    /// 64ビット値に変換
+    #[inline]
+    pub const fn to_raw(self) -> u64 {
+        (self.low as u64) | ((self.high as u64) << 32)
+    }
+
+    /// 送信先APIC IDを設定（Physical mode）
+    #[inline]
+    pub const fn destination(mut self, apic_id: u8) -> Self {
+        self.high = (apic_id as u32) << 24;
+        self
+    }
+
+    /// レベルトリガーを設定
+    #[inline]
+    pub const fn level_triggered(mut self) -> Self {
+        self.low |= RedirectionFlags::LEVEL_TRIGGERED.bits();
+        self
+    }
+
+    /// エッジトリガーを設定（デフォルト）
+    #[inline]
+    pub const fn edge_triggered(mut self) -> Self {
+        self.low &= !RedirectionFlags::LEVEL_TRIGGERED.bits();
+        self
+    }
+
+    /// Low Activeを設定
+    #[inline]
+    pub const fn low_active(mut self) -> Self {
+        self.low |= RedirectionFlags::LOW_POLARITY.bits();
+        self
+    }
+
+    /// High Activeを設定（デフォルト）
+    #[inline]
+    pub const fn high_active(mut self) -> Self {
+        self.low &= !RedirectionFlags::LOW_POLARITY.bits();
+        self
+    }
+
+    /// マスクを設定
+    #[inline]
+    pub const fn mask(mut self) -> Self {
+        self.low |= RedirectionFlags::MASKED.bits();
+        self
+    }
+
+    /// マスクを解除
+    #[inline]
+    pub const fn unmask(mut self) -> Self {
+        self.low &= !RedirectionFlags::MASKED.bits();
+        self
+    }
+
+    /// マスク状態を取得
+    #[inline]
+    pub const fn is_masked(self) -> bool {
+        (self.low & RedirectionFlags::MASKED.bits()) != 0
+    }
+
+    /// ベクタを取得
+    #[inline]
+    pub const fn vector(self) -> u8 {
+        (self.low & 0xFF) as u8
+    }
+
+    /// 下位32ビットを取得
+    #[inline]
+    pub const fn low(self) -> u32 {
+        self.low
+    }
+
+    /// 上位32ビットを取得
+    #[inline]
+    pub const fn high(self) -> u32 {
+        self.high
+    }
+
+    /// トリガーモードを設定（enum版）
+    #[inline]
+    #[must_use]
+    pub const fn with_trigger_mode(self, mode: TriggerMode) -> Self {
+        match mode {
+            TriggerMode::Edge => self.edge_triggered(),
+            TriggerMode::Level => self.level_triggered(),
+        }
+    }
+
+    /// 極性を設定（enum版）
+    #[inline]
+    #[must_use]
+    pub const fn with_polarity(self, polarity: Polarity) -> Self {
+        match polarity {
+            Polarity::HighActive => self.high_active(),
+            Polarity::LowActive => self.low_active(),
         }
     }
 }
@@ -448,7 +761,37 @@ impl IoApic {
         unsafe { ((self.read(ioapic_reg::IOAPICVER) >> 16) & 0xFF) as u8 }
     }
 
-    /// IRQをCPUにルーティング
+    // ========================================================================
+    // Type-Safe Redirection Entry API
+    // ========================================================================
+
+    /// RedirectionEntryを書き込み（型安全版）
+    pub fn write_entry(&self, irq: u8, entry: RedirectionEntry) {
+        let reg = ioapic_reg::IOREDTBL_BASE + irq * 2;
+
+        unsafe {
+            // アトミック性を高めるため、64bit書き込みの手順を遵守
+            // 1. マスクビット(bit 16)をセットしてエントリを無効化 (Low)
+            self.write(reg, entry.low() | RedirectionFlags::MASKED.bits());
+            // 2. 上位32bitを書き込み (High)
+            self.write(reg + 1, entry.high());
+            // 3. 元の値（マスク解除されている可能性あり）で下位32bitを書き込み (Low)
+            self.write(reg, entry.low());
+        }
+    }
+
+    /// RedirectionEntryを読み取り（型安全版）
+    pub fn read_entry(&self, irq: u8) -> RedirectionEntry {
+        let reg = ioapic_reg::IOREDTBL_BASE + irq * 2;
+
+        unsafe {
+            let low = self.read(reg);
+            let high = self.read(reg + 1);
+            RedirectionEntry::from_raw((low as u64) | ((high as u64) << 32))
+        }
+    }
+
+    /// IRQをCPUにルーティング（bool版、後方互換）
     pub fn route_irq(
         &self,
         irq: u8,
@@ -457,60 +800,60 @@ impl IoApic {
         level_triggered: bool,
         low_active: bool,
     ) {
-        let mut entry: u64 = vector as u64;
+        let mut entry = RedirectionEntry::new(vector).destination(apic_id);
 
         if level_triggered {
-            entry |= 1 << 15;
+            entry = entry.level_triggered();
         }
         if low_active {
-            entry |= 1 << 13;
+            entry = entry.low_active();
         }
 
-        // 送信先APIC IDを設定
-        entry |= (apic_id as u64) << 56;
-
-        self.write_redirection_entry(irq, entry);
+        self.write_entry(irq, entry);
     }
 
-    /// リダイレクションエントリを書き込み
-    fn write_redirection_entry(&self, irq: u8, entry: u64) {
-        let reg = ioapic_reg::IOREDTBL_BASE + irq * 2;
-        let low = entry as u32;
-        let high = (entry >> 32) as u32;
+    /// IRQをCPUにルーティング（enum版、推奨API）
+    /// 
+    /// # Example
+    /// ```ignore
+    /// io_apic.route_irq_typed(1, 0x21, 0, TriggerMode::Edge, Polarity::HighActive);
+    /// ```
+    pub fn route_irq_typed(
+        &self,
+        irq: u8,
+        vector: u8,
+        apic_id: u8,
+        trigger_mode: TriggerMode,
+        polarity: Polarity,
+    ) {
+        let entry = RedirectionEntry::new(vector)
+            .destination(apic_id)
+            .with_trigger_mode(trigger_mode)
+            .with_polarity(polarity);
 
-        unsafe {
-            // アトミック性を高めるため、64bit書き込みの手順を遵守
-            // 1. マスクビット(bit 16)をセットしてエントリを無効化 (Low)
-            self.write(reg, low | (1 << 16));
-            // 2. 上位32bitを書き込み (High)
-            self.write(reg + 1, high);
-            // 3. 元の値（マスク解除されている可能性あり）で下位32bitを書き込み (Low)
-            self.write(reg, low);
-        }
+        self.write_entry(irq, entry);
     }
 
-    /// リダイレクションエントリを読み取り
-    pub fn read_redirection_entry(&self, irq: u8) -> u64 {
-        let reg = ioapic_reg::IOREDTBL_BASE + irq * 2;
-
-        unsafe {
-            let low = self.read(reg) as u64;
-            let high = self.read(reg + 1) as u64;
-            low | (high << 32)
-        }
-    }
-
-    /// IRQをマスク/アンマスク
+    /// IRQをマスク/アンマスク（型安全版）
     pub fn set_irq_mask(&self, irq: u8, masked: bool) {
-        let mut entry = self.read_redirection_entry(irq);
+        let entry = self.read_entry(irq);
+        let new_entry = if masked { entry.mask() } else { entry.unmask() };
+        self.write_entry(irq, new_entry);
+    }
 
-        if masked {
-            entry |= 1 << 16;
-        } else {
-            entry &= !(1 << 16);
-        }
+    // ========================================================================
+    // Legacy API (後方互換性のため)
+    // ========================================================================
 
-        self.write_redirection_entry(irq, entry);
+    /// リダイレクションエントリを書き込み（u64版、後方互換）
+    #[deprecated(note = "Use write_entry with RedirectionEntry instead")]
+    fn write_redirection_entry(&self, irq: u8, entry: u64) {
+        self.write_entry(irq, RedirectionEntry::from_raw(entry));
+    }
+
+    /// リダイレクションエントリを読み取り（u64版、後方互換）
+    pub fn read_redirection_entry(&self, irq: u8) -> u64 {
+        self.read_entry(irq).to_raw()
     }
 }
 
@@ -540,6 +883,109 @@ pub fn io_apic() -> spin::MutexGuard<'static, IoApic> {
 /// APICが有効かどうか
 pub fn is_apic_enabled() -> bool {
     APIC_ENABLED.load(Ordering::SeqCst)
+}
+
+// ============================================================================
+// GSI to I/O APIC Mapping
+// ============================================================================
+
+/// GSI (Global System Interrupt) を担当するI/O APICを特定
+/// 
+/// 複数のI/O APICが存在する場合、各I/O APICはgsi_baseから始まる
+/// 連続したGSI範囲を担当する。この関数は指定されたGSIを
+/// 担当するI/O APICのインデックスと、そのI/O APIC内での
+/// ローカルIRQ番号を返す。
+/// 
+/// # Returns
+/// - `Some((ioapic_index, local_irq))` - 担当するI/O APICが見つかった場合
+/// - `None` - 該当するI/O APICが見つからない場合
+pub fn map_gsi_to_ioapic(gsi: u32) -> Option<(usize, u8)> {
+    let io_apics = crate::io::acpi::io_apics();
+    
+    if io_apics.is_empty() {
+        // ACPIが初期化されていない場合、デフォルトのI/O APICを使用
+        return Some((0, gsi as u8));
+    }
+    
+    // イテレータを使用した関数型スタイル
+    io_apics.iter().enumerate().find_map(|(index, ioapic)| {
+        // 次のI/O APICのgsi_baseを取得、なければu32::MAX
+        let gsi_end = io_apics
+            .get(index + 1)
+            .map(|next| next.gsi_base)
+            .unwrap_or(u32::MAX);
+        
+        // 範囲チェックにRustの範囲パターンを使用
+        (ioapic.gsi_base..gsi_end).contains(&gsi).then(|| {
+            let local_irq = (gsi - ioapic.gsi_base) as u8;
+            (index, local_irq)
+        })
+    })
+}
+
+/// ISA IRQからGSIへの変換（Interrupt Source Override考慮）
+/// 
+/// ACPIのInterrupt Source Overrideテーブルを参照し、
+/// 標準のISA IRQ番号を実際のGSI番号に変換する。
+/// オーバーライドが存在しない場合、ISA IRQはそのままGSIとして扱う。
+/// 
+/// # Returns
+/// - `(gsi, trigger_mode, polarity)` - 変換後のGSIと割り込み属性
+pub fn isa_irq_to_gsi(irq: u8) -> (u32, TriggerMode, Polarity) {
+    let overrides = crate::io::acpi::interrupt_overrides();
+    
+    // イテレータを使用した関数型スタイル
+    overrides
+        .iter()
+        .find(|ov| ov.source == irq && ov.bus == 0)
+        .map(|ov| {
+            let trigger = if ov.trigger_mode == 3 { TriggerMode::Level } else { TriggerMode::Edge };
+            let polarity = if ov.polarity == 3 { Polarity::LowActive } else { Polarity::HighActive };
+            (ov.gsi, trigger, polarity)
+        })
+        .unwrap_or((irq as u32, TriggerMode::Edge, Polarity::HighActive))
+}
+
+/// GSIをCPUにルーティング（マルチI/O APIC対応）
+/// 
+/// 指定されたGSIを、ACPIテーブルの情報に基づいて適切なI/O APICに
+/// ルーティングする。現在の実装では最初のI/O APICのみサポート。
+/// 
+/// # Arguments
+/// - `gsi` - Global System Interrupt番号
+/// - `vector` - 割り込みベクタ
+/// - `apic_id` - 送信先CPUのLocal APIC ID
+pub fn route_gsi(gsi: u32, vector: u8, apic_id: u8) {
+    if let Some((ioapic_index, local_irq)) = map_gsi_to_ioapic(gsi) {
+        if ioapic_index == 0 {
+            // 現在は最初のI/O APICのみサポート
+            let (_, trigger_mode, polarity) = isa_irq_to_gsi(local_irq);
+            io_apic().route_irq_typed(local_irq, vector, apic_id, trigger_mode, polarity);
+        } else {
+            log::warn!(
+                "[APIC] GSI {} requires I/O APIC {}, but only I/O APIC 0 is supported\n",
+                gsi,
+                ioapic_index
+            );
+        }
+    } else {
+        log::warn!("[APIC] No I/O APIC found for GSI {}\n", gsi);
+    }
+}
+
+/// GSIをマスク/アンマスク（マルチI/O APIC対応）
+pub fn set_gsi_mask(gsi: u32, masked: bool) {
+    if let Some((ioapic_index, local_irq)) = map_gsi_to_ioapic(gsi) {
+        if ioapic_index == 0 {
+            io_apic().set_irq_mask(local_irq, masked);
+        } else {
+            log::warn!(
+                "[APIC] GSI {} requires I/O APIC {}, but only I/O APIC 0 is supported\n",
+                gsi,
+                ioapic_index
+            );
+        }
+    }
 }
 
 // ============================================================================
@@ -590,11 +1036,45 @@ pub fn init() {
     // 8259 PICを無効化
     disable_pic();
 
-    // Local APICを初期化
-    local_apic().init();
+    // ACPIテーブルからAPICアドレスを取得
+    let mut local_apic_addr: Option<u64> = None;
+    let mut io_apic_config: Option<(u64, u32)> = None; // (address, gsi_base)
 
-    // I/O APICを初期化
-    io_apic().init();
+    // ACPIが既に初期化されているか確認し、情報を取得
+    if let Some(lapic_addr) = crate::io::acpi::local_apic_address() {
+        local_apic_addr = Some(lapic_addr);
+        log::info!("[APIC] ACPI: Local APIC at 0x{:X}\n", lapic_addr);
+    }
+
+    let io_apics_list = crate::io::acpi::io_apics();
+    if !io_apics_list.is_empty() {
+        // 最初のIO APICを使用（一般的なケース）
+        let first_io_apic = &io_apics_list[0];
+        io_apic_config = Some((first_io_apic.address, first_io_apic.gsi_base));
+        log::info!(
+            "[APIC] ACPI: I/O APIC at 0x{:X}, GSI base {}\n",
+            first_io_apic.address,
+            first_io_apic.gsi_base
+        );
+    }
+
+    // Local APICを初期化（ACPIアドレスまたはデフォルト）
+    {
+        let mut lapic = local_apic();
+        if let Some(addr) = local_apic_addr {
+            lapic.set_base_address(addr);
+        }
+        lapic.init();
+    }
+
+    // I/O APICを初期化（ACPIアドレスまたはデフォルト）
+    {
+        let mut ioapic = io_apic();
+        if let Some((addr, gsi_base)) = io_apic_config {
+            ioapic.set_base_address(addr, gsi_base);
+        }
+        ioapic.init();
+    }
 
     // タイマーを較正
     local_apic().calibrate_timer();

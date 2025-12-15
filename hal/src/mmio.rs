@@ -77,3 +77,127 @@ pub fn volatile_write<T: Copy>(addr: usize, val: T) {
         core::ptr::write_volatile(addr as *mut T, val);
     }
 }
+
+// ============================================================================
+// MmioReg - Type-Safe MMIO Register Access
+// ============================================================================
+
+/// MMIO Register accessor for type-safe register operations.
+/// 
+/// Encapsulates unsafe volatile operations, allowing callers to perform
+/// register access without explicit `unsafe` blocks.
+/// 
+/// # Type Parameter
+/// - `T`: The register width type (u8, u16, u32, u64)
+/// 
+/// # Example
+/// ```ignore
+/// let sivr = MmioReg::<u32>::new(0xFEE00000, 0x0F0);
+/// sivr.write(0xFF | (1 << 8));
+/// let val = sivr.read();
+/// ```
+#[derive(Clone, Copy)]
+pub struct MmioReg<T> {
+    addr: usize,
+    _marker: core::marker::PhantomData<T>,
+}
+
+impl<T> MmioReg<T> {
+    /// Create a new MMIO register accessor.
+    /// 
+    /// # Safety Considerations
+    /// The caller must ensure that `base + offset` points to a valid
+    /// memory-mapped I/O register for the lifetime of this accessor.
+    #[inline]
+    pub const fn new(base: usize, offset: usize) -> Self {
+        Self {
+            addr: base + offset,
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    /// Create a new MMIO register accessor from a direct address.
+    #[inline]
+    pub const fn from_addr(addr: usize) -> Self {
+        Self {
+            addr,
+            _marker: core::marker::PhantomData,
+        }
+    }
+
+    /// Get the raw address of this register.
+    #[inline]
+    pub const fn addr(&self) -> usize {
+        self.addr
+    }
+}
+
+impl MmioReg<u8> {
+    /// Read from the register.
+    #[inline]
+    pub fn read(&self) -> u8 {
+        unsafe { core::ptr::read_volatile(self.addr as *const u8) }
+    }
+
+    /// Write to the register.
+    #[inline]
+    pub fn write(&self, value: u8) {
+        unsafe { core::ptr::write_volatile(self.addr as *mut u8, value) }
+    }
+}
+
+impl MmioReg<u16> {
+    /// Read from the register.
+    #[inline]
+    pub fn read(&self) -> u16 {
+        unsafe { core::ptr::read_volatile(self.addr as *const u16) }
+    }
+
+    /// Write to the register.
+    #[inline]
+    pub fn write(&self, value: u16) {
+        unsafe { core::ptr::write_volatile(self.addr as *mut u16, value) }
+    }
+}
+
+impl MmioReg<u32> {
+    /// Read from the register.
+    #[inline]
+    pub fn read(&self) -> u32 {
+        unsafe { core::ptr::read_volatile(self.addr as *const u32) }
+    }
+
+    /// Write to the register.
+    #[inline]
+    pub fn write(&self, value: u32) {
+        unsafe { core::ptr::write_volatile(self.addr as *mut u32, value) }
+    }
+
+    /// Modify the register using a closure.
+    #[inline]
+    pub fn modify<F: FnOnce(u32) -> u32>(&self, f: F) {
+        let val = self.read();
+        self.write(f(val));
+    }
+}
+
+impl MmioReg<u64> {
+    /// Read from the register.
+    #[inline]
+    pub fn read(&self) -> u64 {
+        unsafe { core::ptr::read_volatile(self.addr as *const u64) }
+    }
+
+    /// Write to the register.
+    #[inline]
+    pub fn write(&self, value: u64) {
+        unsafe { core::ptr::write_volatile(self.addr as *mut u64, value) }
+    }
+
+    /// Modify the register using a closure.
+    #[inline]
+    pub fn modify<F: FnOnce(u64) -> u64>(&self, f: F) {
+        let val = self.read();
+        self.write(f(val));
+    }
+}
