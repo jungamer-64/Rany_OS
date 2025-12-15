@@ -35,6 +35,12 @@ pub trait Font {
     /// 文字幅を取得
     fn char_width(&self, c: char) -> u32;
 
+    /// 文字幅（固定幅フォント用の利便性メソッド）
+    /// デフォルト実装は代表文字 'M' の幅を返します。
+    fn width(&self) -> u32 {
+        self.char_width('M')
+    }
+
     /// フォントの高さを取得
     fn height(&self) -> u32;
 
@@ -70,6 +76,13 @@ pub trait Font {
         text.chars().map(|c| self.char_width(c)).sum()
     }
 
+    /// 文字のグリフデータを取得（生ビットマップデータへの参照）
+    /// 戻り値はフォント形式に依存（例：8x16なら16バイトの配列）
+    fn glyph(&self, c: char) -> Option<&[u8]>;
+}
+
+/// フォントトレイトの拡張メソッド
+pub trait FontExt: Font {
     /// イテレータから描画幅を計算
     fn iter_width<I>(&self, chars: I) -> u32
     where
@@ -77,10 +90,9 @@ pub trait Font {
     {
         chars.map(|c| self.char_width(c)).sum()
     }
-    /// 文字のグリフデータを取得（生ビットマップデータへの参照）
-    /// 戻り値はフォント形式に依存（例：8x16なら16バイトの配列）
-    fn glyph(&self, c: char) -> Option<&[u8]>;
 }
+
+impl<T: Font + ?Sized> FontExt for T {}
 
 /// 8x16ビットマップフォント（基本ASCII）
 #[derive(Copy, Clone)]

@@ -144,7 +144,8 @@ macro_rules! simd_pack_dispatch {
             // Environment override logic
                 #[cfg(feature = "std")]
                 if let Ok(val) = std::env::var("RANY_PACKER") {
-                    let forced = match val.to_ascii_lowercase().as_str() {
+                    let low = val.to_ascii_lowercase();
+                    let forced: Option<u8> = match low.as_str() {
                         "scalar" => Some(1u8),
                         "ssse3" => Some(2u8),
                         "avx2" => Some(3u8),
@@ -702,7 +703,67 @@ impl Framebuffer {
     /// when available; otherwise falls back to a scalar implementation.
     /// Pack RGBA byte buffer into BGRA byte buffer. Prefer scalar fallback for now as SIMD is 24-bit focused.
     pub fn pack_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
-        Self::pack_rgba_to_bgra_scalar(src, dst);
+        // Determine how many bytes we can safely process
+        let bytes = core::cmp::min(src.len(), dst.len());
+
+        // Small-run fast-path: scalar implementation is cheaper for tiny buffers
+        if bytes < 16 {
+            Self::pack_rgba_to_bgra_scalar(src, dst);
+            return;
+        }
+
+        use core::sync::atomic::Ordering;
+        let mut mode = PACKER_MODE.load(Ordering::Relaxed);
+
+        // Environment override (tests/bench harness may set RANY_PACKER)
+        #[cfg(feature = "std")]
+        if let Ok(val) = std::env::var("RANY_PACKER") {
+            let low = val.to_ascii_lowercase();
+            let forced: Option<u8> = match low.as_str() {
+                "scalar" => Some(1u8),
+                "ssse3" => Some(2u8),
+                "avx2" => Some(3u8),
+                "neon" => Some(4u8),
+                s => s.parse::<u8>().ok(),
+            };
+            if let Some(f) = forced {
+                PACKER_MODE.store(f, Ordering::Relaxed);
+                mode = f;
+            }
+        }
+
+        if mode == 0 {
+            // Runtime detection
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            {
+                if cfg!(target_feature = "avx2") {
+                    mode = 3;
+                } else if cfg!(target_feature = "ssse3") {
+                    mode = 2;
+                } else {
+                    mode = 1;
+                }
+            }
+            #[cfg(target_arch = "aarch64")]
+            {
+                if cfg!(target_feature = "neon") {
+                    mode = 4;
+                } else {
+                    mode = 1;
+                }
+            }
+            PACKER_MODE.store(mode, Ordering::Relaxed);
+        }
+
+        match mode {
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            3 => unsafe { Self::pack_rgba_to_bgra_avx2(src.as_ptr(), dst.as_mut_ptr(), bytes) },
+            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+            2 => unsafe { Self::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes) },
+            #[cfg(target_arch = "aarch64")]
+            4 => unsafe { Self::pack_rgba_to_bgra_neon(src.as_ptr(), dst.as_mut_ptr(), bytes) },
+            _ => Self::pack_rgba_to_bgra_scalar(src, dst),
+        }
     }
 
     /// Public dispatcher for 24-bit packing (uses SIMD if available)
@@ -953,19 +1014,20 @@ impl Framebuffer {
             if src_aligned && dst_aligned {
                 // Unroll 64-byte per iteration to reduce loop overhead
                 while i + 64 <= bytes {
-                    let v0 = _mm256_load_si256(src.add(i) as *const __m256i);
-                    let v1 = _mm256_load_si256(src.add(i + 32) as *const __m256i);
+                    // Use unaligned loads/stores to avoid strict alignment requirements
+                    let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
+                    let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
                     let r0 = _mm256_shuffle_epi8(v0, mask);
                     let r1 = _mm256_shuffle_epi8(v1, mask);
-                    _mm256_store_si256(dst.add(i) as *mut __m256i, r0);
-                    _mm256_store_si256(dst.add(i + 32) as *mut __m256i, r1);
+                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
+                    _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
                     i += 64;
                 }
 
                 while i + 32 <= bytes {
-                    let v = _mm256_load_si256(src.add(i) as *const __m256i);
+                    let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
                     let r = _mm256_shuffle_epi8(v, mask);
-                    _mm256_store_si256(dst.add(i) as *mut __m256i, r);
+                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
                     i += 32;
                 }
             } else {
@@ -3090,7 +3152,7 @@ impl Framebuffer {
         #[cfg(feature = "std")]
         let stream_threshold_pixels: usize = std::env::var("RANY_STREAM_THRESHOLD_PIXELS")
             .ok()
-            .and_then(|s| s.parse().ok())
+            .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(2048);
         #[cfg(not(feature = "std"))]
         let stream_threshold_pixels: usize = 2048;
@@ -3210,7 +3272,7 @@ impl Framebuffer {
             #[cfg(feature = "std")]
             let chunk_24_pixels: usize = std::env::var("RANY_CHUNK_24_PIXELS")
                 .ok()
-                .and_then(|s| s.parse().ok())
+                .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or_else(|| {
                     if run_len >= 8192 {
                         4096

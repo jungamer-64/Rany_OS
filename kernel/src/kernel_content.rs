@@ -978,7 +978,8 @@ fn print_logo() {
 }
 
 /// Panicハンドラ
+#[cfg(all(not(test), not(feature = "std")))]
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     panic_handler::handle_panic(info)
 }

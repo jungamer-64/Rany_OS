@@ -59,6 +59,7 @@ pub use gpu_driver::{DamagedRegion, DisplayMode, GpuError, GpuResult, colors};
 #[cfg(not(any(test, feature = "bench")))]
 pub use console::TextConsole;
 pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH, Font};
+pub use font::FontExt;
 pub use framebuffer::Framebuffer;
 
 // グローバル関数の再エクスポート
