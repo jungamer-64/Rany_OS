@@ -195,6 +195,64 @@ extern "C" fn kmain() -> ! {
     }
     serial_print("[BOOT] SSE enabled\r\n");
 
+    // Enable AVX/AVX2 if available
+    unsafe {
+        use core::arch::x86_64::{__cpuid, __cpuid_count};
+
+        // 1. Check AVX support (CPUID.1:ECX.AVX[bit 28])
+        let res = __cpuid(1);
+        let has_avx = (res.ecx & (1 << 28)) != 0;
+        let has_osxsave = (res.ecx & (1 << 27)) != 0; // OSXSAVE support
+
+        if has_avx && has_osxsave {
+            serial_print("[BOOT] Enabling AVX...\r\n");
+
+            // 2. Enable OSXSAVE in CR4 (bit 18)
+            let mut cr4: u64;
+            core::arch::asm!("mov {}, cr4", out(reg) cr4);
+            cr4 |= 1 << 18;
+            core::arch::asm!("mov cr4, {}", in(reg) cr4);
+
+            // 3. Enable YMM state in XCR0 (bits 2)
+            // XCR0 bits: 0=x87, 1=SSE, 2=AVX
+            // We need to set bit 2. Bit 0 and 1 must be set.
+            let xcr0_low: u32;
+            let xcr0_high: u32;
+
+            // XGETBV (ecx=0)
+            core::arch::asm!(
+                "xgetbv",
+                in("ecx") 0,
+                out("eax") xcr0_low,
+                out("edx") xcr0_high,
+            );
+
+            let new_xcr0_low = xcr0_low | 6; // Set bit 1 (SSE) and 2 (AVX)
+
+            // XSETBV (ecx=0)
+            core::arch::asm!(
+                "xsetbv",
+                in("ecx") 0,
+                in("eax") new_xcr0_low,
+                in("edx") xcr0_high,
+            );
+
+            serial_print("[BOOT] AVX enabled (XCR0 set)\r\n");
+
+            // 4. Notify HAL
+            hal::mmio::set_simd_level(hal::mmio::simd_level::AVX);
+
+            // 5. Check AVX2 (CPUID.7:EBX.AVX2[bit 5])
+            let res7 = __cpuid_count(7, 0);
+            if (res7.ebx & (1 << 5)) != 0 {
+                serial_print("[BOOT] AVX2 detected\r\n");
+                hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
+            }
+        } else {
+            serial_print("[BOOT] AVX not supported\r\n");
+        }
+    }
+
     // Get physical memory offset from HHDM (Higher Half Direct Map)
     serial_print("[BOOT] Getting HHDM offset...\r\n");
     let phys_mem_offset = HHDM_REQUEST.get_response().map(|r| r.offset()).unwrap_or(0);

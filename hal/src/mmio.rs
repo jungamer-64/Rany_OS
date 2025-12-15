@@ -293,8 +293,44 @@ pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
     }
 }
 
+// ============================================================================
+// SIMD Support Level
+// ============================================================================
+
+static SIMD_LEVEL: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// SIMD support level
+pub mod simd_level {
+    pub const NONE: u8 = 0;
+    pub const SSE2: u8 = 0; // Baseline for x86_64
+    pub const AVX: u8 = 1;
+    pub const AVX2: u8 = 2; // For future use
+}
+
+/// Set the supported SIMD level for optimized MMIO operations.
+///
+/// # Safety
+/// Caller must ensure the CPU supports the specified level.
+/// - level >= 1 requires AVX support
+pub unsafe fn set_simd_level(level: u8) {
+    SIMD_LEVEL.store(level, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// Fallback for non-x86 architectures: just use volatile writes
+#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
+    unsafe {
+        for &byte in data {
+            core::ptr::write_volatile(addr as *mut u8, byte);
+            addr += 1;
+        }
+    }
+}
+
 /// Write a contiguous slice of bytes using streaming stores.
 /// Handles alignment and falls back to volatile writes for unaligned portions.
+///
+/// Automatically uses AVX (256-bit) stores if `set_simd_level` was called with >= 1.
 ///
 /// # Safety
 /// - Caller must ensure the destination address range is valid for writing
@@ -302,16 +338,47 @@ pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
 pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
     let mut i = 0usize;
     let len = data.len();
+    let level = SIMD_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
 
     unsafe {
-        // Handle leading unaligned bytes (write as u8 until 8-byte aligned)
-        while i < len && (addr & 7) != 0 {
-            core::ptr::write_volatile(addr as *mut u8, data[i]);
-            addr += 1;
-            i += 1;
+        if level >= simd_level::AVX {
+            // AVX Path: Align to 32 bytes and use 256-bit stores
+
+            // 1. Align to 32 bytes
+            while i < len && (addr & 31) != 0 {
+                core::ptr::write_volatile(addr as *mut u8, data[i]);
+                addr += 1;
+                i += 1;
+            }
+
+            // 2. Bulk 32-byte (256-bit) streaming writes
+            while i + 32 <= len {
+                let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 32]>();
+                stream_write_256(addr, &*chunk_ptr);
+                addr += 32;
+                i += 32;
+            }
+        } else {
+            // SSE2 Path: Align to 16 bytes
+            while i < len && (addr & 15) != 0 {
+                core::ptr::write_volatile(addr as *mut u8, data[i]);
+                addr += 1;
+                i += 1;
+            }
         }
 
-        // Bulk streaming writes using u64 (8 bytes at a time)
+        // SSE2 Fallback / Cleanup (also runs if AVX path didn't consume everything or wasn't taken)
+        // If AVX path ran, we are 32-byte aligned, which is also 16-byte aligned.
+
+        // Bulk streaming writes using u128 (16 bytes at a time) via SSE2
+        while i + 16 <= len {
+            let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 16]>();
+            stream_write_128(addr, &*chunk_ptr);
+            addr += 16;
+            i += 16;
+        }
+
+        // Handle remaining bytes via u64 streaming if possible (for 8-byte chunks)
         while i + 8 <= len {
             let v = core::ptr::read_unaligned(data.as_ptr().add(i).cast::<u64>());
             stream_write_u64(addr, v);
@@ -324,17 +391,6 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
             core::ptr::write_volatile(addr as *mut u8, data[i]);
             addr += 1;
             i += 1;
-        }
-    }
-}
-
-/// Fallback for non-x86 architectures: just use volatile writes
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
-    unsafe {
-        for &byte in data {
-            core::ptr::write_volatile(addr as *mut u8, byte);
-            addr += 1;
         }
     }
 }

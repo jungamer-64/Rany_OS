@@ -1617,6 +1617,44 @@ impl Framebuffer {
         }
     }
 
+    /// Bench helper: write a slice of u32 pixels using streaming stores
+    /// (when available). This exposes the internal streaming path to benches
+    /// for micro-benchmarking MMIO u32 writes.
+    #[cfg(feature = "bench")]
+    pub fn bench_write_u32_slice_streaming(&mut self, x: usize, y: usize, data: &[u32]) {
+        let dst_offset = y * self.info.stride as usize + x * self.info.format.bytes_per_pixel();
+        let addr = self.buffer as usize + dst_offset;
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            // If the framebuffer base address is 0 (bench harness common case),
+            // allocate a temporary buffer and exercise the streaming path
+            // against a valid heap buffer to avoid access violations on hosts
+            // where address 0 isn't writable.
+            if addr == 0 {
+                let mut tmp = vec![0u8; data.len() * 4];
+                let tmp_addr = tmp.as_mut_ptr() as usize;
+                self.write_u32_slice_mmio_streaming(tmp_addr, data);
+                mmio::sfence();
+                // tmp dropped here
+            } else {
+                self.write_u32_slice_mmio_streaming(addr, data);
+                mmio::sfence();
+            }
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            // For non-x86, avoid writing to address 0 (unmapped) by using a
+            // temporary buffer when addr == 0.
+            if addr == 0 {
+                let mut tmp = vec![0u8; data.len() * 4];
+                let tmp_addr = tmp.as_mut_ptr() as usize;
+                self.write_u32_slice_mmio(tmp_addr, data);
+            } else {
+                self.write_u32_slice_mmio(addr, data);
+            }
+        }
+    }
+
     /// bitマスクを32bitカラーアレイに展開して書き込む（テキスト描画用）
     /// AVX2最適化のための構造を備えるが、現在はスカラ実装（unrolled loop & u64 writes）を使用。
     #[inline(always)]
