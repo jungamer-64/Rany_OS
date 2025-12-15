@@ -15,10 +15,61 @@ use super::{Color, Rect};
 pub const FONT_WIDTH: u32 = 8;
 /// 8x16フォントの高さ定数
 pub const FONT_HEIGHT: u32 = 16;
+// ============================================================================
+// Font Trait
+// ============================================================================
 
-// ============================================================================
-// Bitmap Font
-// ============================================================================
+/// フォントトレイト: 異なるフォント形式（Bitmap, PSF, TrueTypeなど）を抽象化
+pub trait Font {
+    /// 文字を描画
+    fn draw_char(
+        &self,
+        fb: &mut Framebuffer,
+        x: i32,
+        y: i32,
+        c: char,
+        color: Color,
+        bg: Option<Color>,
+    );
+
+    /// 文字幅を取得
+    fn char_width(&self, c: char) -> u32;
+
+    /// フォントの高さを取得
+    fn height(&self) -> u32;
+
+    /// ベースライン位置を取得（上端からのピクセル数）
+    /// デフォルトは高さと同じ（下端揃え）
+    fn baseline(&self) -> u32 {
+        self.height()
+    }
+
+    /// 文字列を描画し、描画終了位置（次の文字の開始X座標）を返す
+    fn draw_string(
+        &self,
+        fb: &mut Framebuffer,
+        x: i32,
+        y: i32,
+        s: &str,
+        color: Color,
+        bg: Option<Color>,
+    ) -> i32 {
+        let mut cx = x;
+        for c in s.chars() {
+            if c == '\n' {
+                continue;
+            }
+            self.draw_char(fb, cx, y, c, color, bg);
+            cx += self.char_width(c) as i32;
+        }
+        cx
+    }
+
+    /// 文字列全体の描画幅（ピクセル）を計算
+    fn text_width(&self, text: &str) -> u32 {
+        text.chars().map(|c| self.char_width(c)).sum()
+    }
+}
 
 /// 8x16ビットマップフォント（基本ASCII）
 pub struct BitmapFont {
@@ -34,6 +85,32 @@ pub struct BitmapFont {
 
 // 標準VGAフォントバイナリ
 static FONT_RAW: &[u8] = include_bytes!("../../../assets/fonts/vga_8x16.bin");
+
+// ============================================================================
+// Bitmap Font
+// ============================================================================
+
+impl Font for BitmapFont {
+    fn draw_char(
+        &self,
+        fb: &mut Framebuffer,
+        x: i32,
+        y: i32,
+        c: char,
+        color: Color,
+        bg: Option<Color>,
+    ) {
+        self.draw_char_internal(fb, x, y, c, color, bg);
+    }
+
+    fn char_width(&self, c: char) -> u32 {
+        if c == '\n' { 0 } else { self.width() }
+    }
+
+    fn height(&self) -> u32 {
+        self.height * self.scale as u32
+    }
+}
 
 impl BitmapFont {
     /// 組み込みの8x16フォントを取得
@@ -51,8 +128,8 @@ impl BitmapFont {
         self.scale = if scale == 0 { 1 } else { scale };
     }
 
-    /// 文字を描画
-    pub fn draw_char(
+    /// 文字を描画 (Internal implementation)
+    fn draw_char_internal(
         &self,
         fb: &mut Framebuffer,
         x: i32,
@@ -108,31 +185,6 @@ impl BitmapFont {
         }
     }
 
-    /// 文字列を描画し、描画終了位置（次の文字の開始X座標）を返す
-    pub fn draw_string(
-        &self,
-        fb: &mut Framebuffer,
-        x: i32,
-        y: i32,
-        s: &str,
-        color: Color,
-        bg: Option<Color>,
-    ) -> i32 {
-        let mut cx = x;
-
-        for c in s.chars() {
-            if c == '\n' {
-                // 改行は無視（必要に応じて対応）
-                continue;
-            }
-
-            self.draw_char(fb, cx, y, c, color, bg);
-            cx += self.width as i32;
-        }
-
-        cx // 描画終了X座標を返す
-    }
-
     /// 文字幅を取得 (スケール考慮)
     pub fn width(&self) -> u32 {
         self.width * self.scale as u32
@@ -151,24 +203,5 @@ impl BitmapFont {
     /// フォントデータを取得
     pub fn get_data(&self, index: usize) -> u8 {
         self.data[index]
-    }
-
-    /// 単一文字の描画幅（ピクセル）を取得
-    /// draw_string での進行量と一致させる
-    pub fn char_width(&self, c: char) -> u32 {
-        if c == '\n' { 0 } else { self.width() }
-    }
-
-    /// 文字列全体の描画幅（ピクセル）を計算
-    pub fn text_width(&self, text: &str) -> u32 {
-        text.chars().map(|c| self.char_width(c)).sum()
-    }
-
-    /// イテレータから描画幅を計算（ゼロアロケーション）
-    pub fn iter_width<I>(&self, chars: I) -> u32
-    where
-        I: Iterator<Item = char>,
-    {
-        chars.map(|c| self.char_width(c)).sum()
     }
 }

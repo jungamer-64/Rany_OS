@@ -1,6 +1,68 @@
-# すべてのテキストファイルをLFに自動変換してコミットする（推奨）
+# デフォルトの挙動：すべてのテキストファイルをLFに強制変換してコミット
+# チェックアウト時はOSの設定に従わずLFのままにする（クロスプラットフォームでの事故防止）
 * text=auto eol=lf
 
-# WindowsのバッチファイルだけはCRLFを強制したい場合
+# ---------------------------------------------------------
+# Windows固有のファイル
+# ---------------------------------------------------------
+# バッチファイルはCRLFでないと動かない場合があるため例外設定
 *.bat text eol=crlf
 *.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# ---------------------------------------------------------
+# Linux/Unix固有のファイル（OS自作で重要）
+# ---------------------------------------------------------
+# シェルスクリプトは絶対にLFである必要がある
+*.sh text eol=lf
+
+# MakefileやリンカスクリプトもLF推奨
+Makefile text eol=lf
+*.mk     text eol=lf
+*.ld     text eol=lf
+
+# ---------------------------------------------------------
+# 言語ごとの明示的な指定（念のため）
+# ---------------------------------------------------------
+*.rs text eol=lf
+*.toml text eol=lf
+*.c text eol=lf
+*.h text eol=lf
+*.cpp text eol=lf
+*.asm text eol=lf
+*.S text eol=lf
+
+# ---------------------------------------------------------
+# バイナリファイル（Gitに改行コードを変換させない設定）
+# ---------------------------------------------------------
+# 画像やフォント、コンパイル済みバイナリが壊れるのを防ぐ
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.mov binary
+*.mp4 binary
+*.mp3 binary
+*.flac binary
+*.pdf binary
+*.doc binary
+*.docx binary
+*.xls binary
+*.xlsx binary
+*.ppt binary
+*.pptx binary
+*.zip binary
+*.tar.gz binary
+*.7z binary
+
+# OS自作で扱う可能性のあるバイナリ系
+*.bin binary
+*.img binary
+*.iso binary
+*.o binary
+*.a binary
+*.so binary
+*.dll binary
+*.exe binary
+*.class binary
