@@ -2,6 +2,12 @@
 name = "vfs"
 version = "0.1.0"
 edition = "2024"
+description = "Virtual File System for RanyOS"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 bitflags = "2.4"

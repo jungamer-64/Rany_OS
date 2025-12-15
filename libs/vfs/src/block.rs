@@ -508,7 +508,15 @@ impl BlockDeviceManager {
             devices: Mutex::new(Vec::new()),
         }
     }
+}
 
+impl Default for BlockDeviceManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl BlockDeviceManager {
     /// Register a block device
     pub fn register(&self, name: &'static str, device: Arc<dyn BlockDevice>) {
         self.devices.lock().push(DeviceEntry { name, device });

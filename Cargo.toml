@@ -37,6 +37,11 @@ members = [
 [workspace.package]
 edition = "2024"
 authors = ["ExoRust Team"]
+license = "MIT"
+repository = "https://github.com/Start-Rany-OS/Rany_OS"
+readme = "README.md"
+keywords = ["os", "kernel", "rust"]
+categories = ["os"]
 
 # ============================================================================
 # ブートイメージ設定（Workspace全体）

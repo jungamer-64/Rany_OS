@@ -113,6 +113,9 @@ impl CapabilitySet {
         self.effective = CAP_NONE;
     }
 
+    /// # Errors
+    ///
+    /// * `CapabilityError::NotPermitted` - If trying to set a capability not present in permitted set
     pub fn set_inheritable(&mut self, caps: Capability) -> Result<(), CapabilityError> {
         if (caps & !self.permitted) != 0 {
             return Err(CapabilityError::NotPermitted);

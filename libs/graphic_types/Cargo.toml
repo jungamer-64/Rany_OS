@@ -2,8 +2,13 @@
 name = "graphic_types"
 version = "0.1.0"
 edition = "2024"
+description = "Graphics primitives and types for RanyOS"
+license.workspace = true
+repository.workspace = true
+readme.workspace = true
+keywords.workspace = true
+categories.workspace = true
 authors = ["ExoRust Team"]
-description = "Graphics type definitions for ExoRust OS"
 
 [lib]
 name = "graphic_types"
