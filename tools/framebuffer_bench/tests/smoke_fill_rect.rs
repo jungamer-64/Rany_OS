@@ -33,3 +33,46 @@ fn fill_rect_mmio_writes_to_heap_buffer() {
     // Ensure pixel is not all zeros
     assert!(pixel.iter().any(|&b| b != 0));
 }
+
+#[test]
+fn draw_text_writes_to_heap_buffer() {
+    let width = 100u32;
+    let height = 100u32;
+    let info = FramebufferInfo {
+        address: 0, // will be patched by test
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    // Heap-backed framebuffer
+    let mut mem = vec![0u8; (info.size() as usize)];
+    let addr = mem.as_mut_ptr() as u64;
+    let mut info2 = info.clone();
+    info2.address = addr;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+
+    // Draw a single glyph and ensure it modified framebuffer memory
+    fb.draw_text(10, 10, "A", Color::with_alpha(0xFF, 0xFF, 0xFF, 0xFF), Color::BLACK);
+
+    let stride = info.stride as usize;
+    let mut found = false;
+    for y in 10..(10 + 16) {
+        for x in 10..(10 + 8) {
+            let px_offset = (y as usize * stride) + (x as usize * 4);
+            let pixel = &mem[px_offset..px_offset + 4];
+            if pixel.iter().any(|&b| b != 0) {
+                found = true;
+                break;
+            }
+        }
+        if found {
+            break;
+        }
+    }
+
+    assert!(found, "draw_text did not modify any pixels in glyph box");
+}

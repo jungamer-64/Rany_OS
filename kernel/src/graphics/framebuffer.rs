@@ -1794,6 +1794,24 @@ impl Framebuffer {
         fg_u32: u32,
         bg_u32: u32,
     ) {
+        // Delegate to no-fence variant and fence if it performed MMIO writes
+        if self.write_glyph_row_32bit_nofence(bits, dst_offset_bytes, fg_u32, bg_u32) {
+            mmio::sfence();
+        }
+    }
+
+    /// Like `write_glyph_row_32bit` but does not issue an sfence. Returns
+    /// true if MMIO streaming writes were performed (i.e., when not
+    /// double-buffered). This allows callers to batch many glyph row writes
+    /// and issue a single fence for better throughput.
+    #[inline(always)]
+    fn write_glyph_row_32bit_nofence(
+        &mut self,
+        bits: u8,
+        dst_offset_bytes: usize,
+        fg_u32: u32,
+        bg_u32: u32,
+    ) -> bool {
         let addr = self.buffer as usize + dst_offset_bytes;
 
         if let Some(ref mut back) = self.back_buffer {
@@ -1831,50 +1849,54 @@ impl Framebuffer {
                 core::ptr::write_unaligned(base.add(16) as *mut u64, v2);
                 core::ptr::write_unaligned(base.add(24) as *mut u64, v3);
             }
-        } else {
-            // Sanity-check: when writing to a heap-backed framebuffer (not
-            // double-buffered), ensure the destination range is within the
-            // allocated framebuffer to avoid silent OOB writes that cause
-            // hard crashes on the host.
-            let required = 32usize; // we will write 4 u64 values (32 bytes)
-            if self.buffer != ptr::null_mut() as *mut u8 {
-                let buf_start = self.buffer as usize;
-                let buf_end = buf_start + self.info.size();
-                if addr + required > buf_end {
-                    panic!(
-                        "OOB glyph write: addr=0x{:x} needed={} buf_end=0x{:x} stride={} dst_offset={}",
-                        addr, required, buf_end, self.info.stride, dst_offset_bytes
-                    );
-                }
-            }
 
-            // Write to MMIO using 64-bit streaming writes where possible
-            // 0x80 -> pixel 0, 0x40 -> pixel 1
-            let p0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
-            let p1 = if (bits & 0x40) != 0 { fg_u32 } else { bg_u32 };
-            let v0 = (p0 as u64) | ((p1 as u64) << 32);
-            mmio::stream_write_u64(addr, v0);
-
-            // 0x20 -> pixel 2, 0x10 -> pixel 3
-            let p2 = if (bits & 0x20) != 0 { fg_u32 } else { bg_u32 };
-            let p3 = if (bits & 0x10) != 0 { fg_u32 } else { bg_u32 };
-            let v1 = (p2 as u64) | ((p3 as u64) << 32);
-            mmio::stream_write_u64(addr + 8, v1);
-
-            // 0x08 -> pixel 4, 0x04 -> pixel 5
-            let p4 = if (bits & 0x08) != 0 { fg_u32 } else { bg_u32 };
-            let p5 = if (bits & 0x04) != 0 { fg_u32 } else { bg_u32 };
-            let v2 = (p4 as u64) | ((p5 as u64) << 32);
-            mmio::stream_write_u64(addr + 16, v2);
-
-            // 0x02 -> pixel 6, 0x01 -> pixel 7
-            let p6 = if (bits & 0x02) != 0 { fg_u32 } else { bg_u32 };
-            let p7 = if (bits & 0x01) != 0 { fg_u32 } else { bg_u32 };
-            let v3 = (p6 as u64) | ((p7 as u64) << 32);
-            mmio::stream_write_u64(addr + 24, v3);
-
-            mmio::sfence();
+            // Back buffer writes are not MMIO
+            return false;
         }
+
+        // Sanity-check: when writing to a heap-backed framebuffer (not
+        // double-buffered), ensure the destination range is within the
+        // allocated framebuffer to avoid silent OOB writes that cause
+        // hard crashes on the host.
+        let required = 32usize; // we will write 4 u64 values (32 bytes)
+        if self.buffer != ptr::null_mut() as *mut u8 {
+            let buf_start = self.buffer as usize;
+            let buf_end = buf_start + self.info.size();
+            if addr + required > buf_end {
+                panic!(
+                    "OOB glyph write: addr=0x{:x} needed={} buf_end=0x{:x} stride={} dst_offset={}",
+                    addr, required, buf_end, self.info.stride, dst_offset_bytes
+                );
+            }
+        }
+
+        // Write to MMIO using 64-bit streaming writes where possible
+        // 0x80 -> pixel 0, 0x40 -> pixel 1
+        let p0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
+        let p1 = if (bits & 0x40) != 0 { fg_u32 } else { bg_u32 };
+        let v0 = (p0 as u64) | ((p1 as u64) << 32);
+        mmio::stream_write_u64(addr, v0);
+
+        // 0x20 -> pixel 2, 0x10 -> pixel 3
+        let p2 = if (bits & 0x20) != 0 { fg_u32 } else { bg_u32 };
+        let p3 = if (bits & 0x10) != 0 { fg_u32 } else { bg_u32 };
+        let v1 = (p2 as u64) | ((p3 as u64) << 32);
+        mmio::stream_write_u64(addr + 8, v1);
+
+        // 0x08 -> pixel 4, 0x04 -> pixel 5
+        let p4 = if (bits & 0x08) != 0 { fg_u32 } else { bg_u32 };
+        let p5 = if (bits & 0x04) != 0 { fg_u32 } else { bg_u32 };
+        let v2 = (p4 as u64) | ((p5 as u64) << 32);
+        mmio::stream_write_u64(addr + 16, v2);
+
+        // 0x02 -> pixel 6, 0x01 -> pixel 7
+        let p6 = if (bits & 0x02) != 0 { fg_u32 } else { bg_u32 };
+        let p7 = if (bits & 0x01) != 0 { fg_u32 } else { bg_u32 };
+        let v3 = (p6 as u64) | ((p7 as u64) << 32);
+        mmio::stream_write_u64(addr + 24, v3);
+
+        // Caller will issue sfence once per-batch
+        true
     }
 
     /// ダブルバッファリングを有効化
@@ -2784,11 +2806,23 @@ impl Framebuffer {
                     let row_bytes = (r.width as usize) * 4;
                     if let Some(ref back) = self.back_buffer {
                         let back_len = back.len();
-                        // Optional per-run diagnostics
+                        let first_offset = (r.y as usize * stride as usize) + (r.x as usize * 4);
+                        let last_row = (r.bottom() - 1) as usize;
+                        let last_offset = (last_row * stride as usize) + (r.x as usize * 4);
+
+                        // Quick bounds check for first/last row to avoid an O(height)
+                        // loop on large rectangle fills while still catching OOB
+                        // errors early. Keep optional verbose per-row diagnostics
+                        // when RANY_DEBUG_DRAW is enabled.
+                        if row_bytes == 0 || last_offset + row_bytes > back_len {
+                            panic!(
+                                "OOB fill_rect to back buffer: r={:?} back_len={} stride={} row_bytes={} first_offset={} last_offset={}",
+                                r, back_len, stride, row_bytes, first_offset, last_offset
+                            );
+                        }
+
                         #[cfg(feature = "std")]
                         if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
-                            let first_offset =
-                                (r.y as usize * stride as usize) + (r.x as usize * 4);
                             eprintln!(
                                 "fill_rect: back_len={} r.y={} r.bottom={} stride={} row_bytes={} first_offset={}",
                                 back_len,
@@ -2798,19 +2832,10 @@ impl Framebuffer {
                                 row_bytes,
                                 first_offset
                             );
-                        }
 
-                        for y in r.y..r.bottom() {
-                            let offset = (y as usize * stride as usize) + (r.x as usize * 4);
-                            if offset + row_bytes > back_len {
-                                panic!(
-                                    "OOB fill_rect to back buffer: y={} offset={} row_bytes={} back_len={} stride={} rect={:?}",
-                                    y, offset, row_bytes, back_len, stride, r
-                                );
-                            }
-                            #[cfg(feature = "std")]
-                            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                            for y in r.y..r.bottom() {
                                 if (y - r.y) % 4 == 0 {
+                                    let offset = (y as usize * stride as usize) + (r.x as usize * 4);
                                     eprintln!("fill_rect: row {} offset {}", y, offset);
                                 }
                             }
@@ -2830,7 +2855,9 @@ impl Framebuffer {
                     for y in r.y..r.bottom() {
                         let offset = (y as usize * stride as usize) + (r.x as usize * 4);
                         let addr = self.buffer as usize + offset;
-                        self.write_u32_run_streaming(addr, r.width as usize, color_u32);
+                        // Use the no-fence variant per-row and issue a single
+                        // sfence after the loop for better throughput.
+                        self.write_u32_run_streaming_nofence(addr, r.width as usize, color_u32);
                     }
                     mmio::sfence();
                 }
@@ -3040,6 +3067,7 @@ impl Framebuffer {
             let bg_u32 = bg_color.to_u32();
 
             let mut cx = x;
+            let mut mmio_wrote = false;
             for c in text.chars() {
                 if c == '\n' {
                     continue;
@@ -3073,7 +3101,9 @@ impl Framebuffer {
                                 c, row, dst_y, dst_offset
                             );
                         }
-                        self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                        if self.write_glyph_row_32bit_nofence(byte, dst_offset, fg_u32, bg_u32) {
+                            mmio_wrote = true;
+                        }
                     }
                 } else {
                     // Partially clipped horizontally: per-pixel fallback
@@ -3097,6 +3127,9 @@ impl Framebuffer {
                 }
 
                 cx += font.width() as i32;
+            }
+            if mmio_wrote {
+                mmio::sfence();
             }
             return;
         }
@@ -3238,6 +3271,7 @@ impl Framebuffer {
             (0, 0)
         };
 
+        let mut mmio_wrote = false;
         for row in 0..height {
             let dst_y = y + row as i32;
             if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
@@ -3264,7 +3298,9 @@ impl Framebuffer {
                         && (px_start + 8) <= (x + width as i32)
                     {
                         let dst_offset = (dst_y as usize * stride) + (px_start as usize * 4);
-                        self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                        if self.write_glyph_row_32bit_nofence(byte, dst_offset, fg_u32, bg_u32) {
+                            mmio_wrote = true;
+                        }
                         continue;
                     }
                 } else if bpp == 3 {
@@ -3412,6 +3448,10 @@ impl Framebuffer {
                     }
                 }
             }
+        }
+
+        if mmio_wrote {
+            mmio::sfence();
         }
     }
 
