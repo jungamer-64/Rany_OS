@@ -24,9 +24,11 @@
 //! - 追加レイアウト対応可能 (JIS, AZERTY, Dvorak等)
 
 pub mod keyboard;
-pub mod keymap;
 pub mod mouse;
 pub mod ps2;
+
+// Re-export keymap from hid_driver
+pub use hid_driver::keymap;
 
 // Re-exports from hid_driver crate (error types only - core types exported via keyboard/mouse)
 pub use hid_driver::{HidError, HidResult};

@@ -15,7 +15,7 @@
 
 #![allow(dead_code)]
 
-use super::KeyCode;
+use crate::KeyCode;
 
 // ============================================================================
 // 制御コード変換（Ctrl+文字）
@@ -95,7 +95,7 @@ pub fn ctrl_char_map(key: KeyCode) -> Option<char> {
 // ============================================================================
 
 // Modifiersをインポート
-use super::keyboard::Modifiers;
+use crate::Modifiers;
 
 /// キーボードレイアウトを表すトレイト
 ///

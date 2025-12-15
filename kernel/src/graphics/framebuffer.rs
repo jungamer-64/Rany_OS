@@ -964,6 +964,67 @@ mod tests {
     }
 
     #[test]
+    fn test_write_opaque_run_24bit_even_odd_mmio() {
+        use crate::graphics::image::Image;
+
+        let width = 5u32;
+        let height = 1u32;
+        let mut img = Image::new(width, height);
+
+        // Set distinct colors per pixel
+        let cols = [
+            Color::with_alpha(1, 2, 3, 255),
+            Color::with_alpha(4, 5, 6, 255),
+            Color::with_alpha(7, 8, 9, 255),
+            Color::with_alpha(10, 11, 12, 255),
+            Color::with_alpha(13, 14, 15, 255),
+        ];
+
+        for x in 0..width {
+            img.set_pixel(x, 0, cols[x as usize]);
+        }
+
+        let info = FramebufferInfo {
+            address: 0,
+            width,
+            height,
+            stride: width * 3,
+            format: PixelFormat::Bgr888,
+            bpp: 24,
+        };
+
+        // MMIO path
+        let mut mem = vec![0u8; info.size()];
+        let addr = mem.as_mut_ptr() as u64;
+        let mut info2 = info.clone();
+        info2.address = addr;
+        let mut fb = unsafe { Framebuffer::new(info2) };
+        fb.draw_image(&img, 0, 0);
+
+        for x in 0..(width as usize) {
+            let off = x * 3;
+            let c = cols[x];
+            assert_eq!(mem[off], c.blue);
+            assert_eq!(mem[off + 1], c.green);
+            assert_eq!(mem[off + 2], c.red);
+        }
+
+        // Backbuffer path
+        let mut fb2 = unsafe { Framebuffer::new(info.clone()) };
+        let back = vec![0u8; info.size()];
+        fb2.enable_double_buffering_from_vec(back);
+        fb2.draw_image(&img, 0, 0);
+        let back_ref = fb2.back_buffer.as_ref().unwrap();
+        for x in 0..(width as usize) {
+            let off = x * 3;
+            let c = cols[x];
+            assert_eq!(back_ref[off], c.blue);
+            assert_eq!(back_ref[off + 1], c.green);
+            assert_eq!(back_ref[off + 2], c.red);
+        }
+    }
+
+    #[test]
     fn test_pack_rgba_to_bgra_basic() {
         // Build a simple RGBA pattern and verify BGRA result matches expected
         let mut src = Vec::new();
@@ -1246,6 +1307,57 @@ mod tests {
         // Check that other VRAM areas are STILL 0 (not overwritten by the 255s in backbuffer)
         // e.g. (0,0)
         assert_eq!(vram[0], 0); 
+    }
+
+    #[test]
+    fn test_draw_text_partial_left_clip_32bit_backbuffer() {
+        // Draw a '!' partially off the left edge and ensure visible pixels
+        // come from the glyph foreground where expected.
+        let width = 6u32;
+        let height = 16u32;
+        let info = FramebufferInfo {
+            address: 0,
+            width,
+            height,
+            stride: width * 4,
+            format: PixelFormat::Bgra8888,
+            bpp: 32,
+        };
+
+        let mut fb = unsafe { Framebuffer::new(info.clone()) };
+        let mut back = vec![0u8; info.size()];
+        fb.enable_double_buffering_from_vec(back);
+
+        let fg = Color::with_alpha(10, 20, 30, 255);
+        let bg = Color::with_alpha(100, 110, 120, 255);
+
+        // Position the char at x = -3 so that glyph columns 3 and 4 map to
+        // framebuffer x = 0 and x = 1 respectively for row where '!' has
+        // bits (font row index 2 contains 0x18 => bits at cols 3 and 4).
+        fb.draw_text(-3, 0, "!", fg, bg);
+
+        let stride = info.stride as usize;
+        let row = 2usize;
+        let off0 = row * stride + 0 * 4;
+        let off1 = row * stride + 1 * 4;
+        let off2 = row * stride + 2 * 4;
+
+        let back_ref = fb.back_buffer.as_ref().unwrap();
+
+        // px 0 should be fg (column 3 of glyph)
+        assert_eq!(back_ref[off0], fg.blue);
+        assert_eq!(back_ref[off0 + 1], fg.green);
+        assert_eq!(back_ref[off0 + 2], fg.red);
+
+        // px 1 should be fg (column 4 of glyph)
+        assert_eq!(back_ref[off1], fg.blue);
+        assert_eq!(back_ref[off1 + 1], fg.green);
+        assert_eq!(back_ref[off1 + 2], fg.red);
+
+        // px 2 should be background
+        assert_eq!(back_ref[off2], bg.blue);
+        assert_eq!(back_ref[off2 + 1], bg.green);
+        assert_eq!(back_ref[off2 + 2], bg.red);
     }
 }
 
@@ -1569,7 +1681,6 @@ impl Framebuffer {
         // 0 = unknown, 1 = scalar, 2 = ssse3, 3 = avx2, 4 = neon
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
         {
-            use core::sync::atomic::AtomicU8;
             // Use module-level PACKER_MODE static declared at file scope
             let mut mode = PACKER_MODE.load(Ordering::Relaxed);
 
@@ -1874,16 +1985,16 @@ impl Framebuffer {
         // low and high byte lanes and OR-ing the parts.
         let mut i = 0usize;
 
+        // Prepare masks once to avoid redundant vdupq calls in the loop
+        let low_mask = vdupq_n_u32(0x000000FF);
+        let mid_mask = vdupq_n_u32(0x0000FF00);
+        let high_mask = vdupq_n_u32(0x00FF0000);
+        let alpha_mask = vdupq_n_u32(0xFF000000);
+
         // Process 4 pixels (16 bytes) per iteration using 32-bit vector ops
         while i + 16 <= bytes {
             // Load 4 lanes (may be unaligned)
             let v = vld1q_u32(src.add(i) as *const u32);
-
-            // Masks
-            let low_mask = vdupq_n_u32(0x000000FF);
-            let mid_mask = vdupq_n_u32(0x0000FF00);
-            let high_mask = vdupq_n_u32(0x00FF0000);
-            let alpha_mask = vdupq_n_u32(0xFF000000);
 
             let low = vandq_u32(v, low_mask);
             let mid = vandq_u32(v, mid_mask);
@@ -2214,18 +2325,28 @@ impl Framebuffer {
         let mut addr = self.buffer as usize + dst_offset_bytes;
 
         if let Some(ref mut back) = self.back_buffer {
-            // Write to back buffer
-            let dst_ptr = unsafe { back.as_mut_ptr().add(dst_offset_bytes) as *mut u32 };
-            // Unroll loop manually
+            // Write to back buffer: pack into u64 writes to reduce the
+            // number of memory operations compared to eight separate u32 writes.
+            let base = unsafe { back.as_mut_ptr().add(dst_offset_bytes) } as *mut u8;
             unsafe {
-                *dst_ptr.add(0) = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
-                *dst_ptr.add(1) = if (bits & 0x40) != 0 { fg_u32 } else { bg_u32 };
-                *dst_ptr.add(2) = if (bits & 0x20) != 0 { fg_u32 } else { bg_u32 };
-                *dst_ptr.add(3) = if (bits & 0x10) != 0 { fg_u32 } else { bg_u32 };
-                *dst_ptr.add(4) = if (bits & 0x08) != 0 { fg_u32 } else { bg_u32 };
-                *dst_ptr.add(5) = if (bits & 0x04) != 0 { fg_u32 } else { bg_u32 };
-                *dst_ptr.add(6) = if (bits & 0x02) != 0 { fg_u32 } else { bg_u32 };
-                *dst_ptr.add(7) = if (bits & 0x01) != 0 { fg_u32 } else { bg_u32 };
+                let s0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
+                let s1 = if (bits & 0x40) != 0 { fg_u32 } else { bg_u32 };
+                let s2 = if (bits & 0x20) != 0 { fg_u32 } else { bg_u32 };
+                let s3 = if (bits & 0x10) != 0 { fg_u32 } else { bg_u32 };
+                let s4 = if (bits & 0x08) != 0 { fg_u32 } else { bg_u32 };
+                let s5 = if (bits & 0x04) != 0 { fg_u32 } else { bg_u32 };
+                let s6 = if (bits & 0x02) != 0 { fg_u32 } else { bg_u32 };
+                let s7 = if (bits & 0x01) != 0 { fg_u32 } else { bg_u32 };
+
+                let v0 = (s0 as u64) | ((s1 as u64) << 32);
+                let v1 = (s2 as u64) | ((s3 as u64) << 32);
+                let v2 = (s4 as u64) | ((s5 as u64) << 32);
+                let v3 = (s6 as u64) | ((s7 as u64) << 32);
+
+                core::ptr::write_unaligned(base as *mut u64, v0);
+                core::ptr::write_unaligned(base.add(8) as *mut u64, v1);
+                core::ptr::write_unaligned(base.add(16) as *mut u64, v2);
+                core::ptr::write_unaligned(base.add(24) as *mut u64, v3);
             }
         } else {
             // Write to MMIO using 64-bit writes where possible
@@ -3098,7 +3219,6 @@ impl Framebuffer {
     /// * `bg_color` - 背景色
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: Color, bg_color: Color) {
         let font = BitmapFont::default_8x16();
-        let mut cx = x;
         // First fill the background rectangle for the whole text span. This
         // leverages the optimized `fill_rect` path for broad formats.
         let char_count = text.chars().filter(|&c| c != '\n').count() as u32;
@@ -3171,14 +3291,17 @@ impl Framebuffer {
                          if glyph_row >= font.data_len() { continue; }
                          let byte = font.get_data(glyph_row);
                          
-                         for col in 0..8 {
+                            for col in 0..8 {
                              // Check clipping for each pixel
                              let px = char_x + col;
                              if px < self.clip.x || px >= self.clip.right() { continue; }
                              
                              let is_on = (byte >> (7 - col)) & 1 != 0;
                              let c_val = if is_on { color } else { bg_color };
-                             self.set_pixel(px, dst_y, c_val);
+                             // We've already marked the whole text region dirty; use
+                             // the raw pixel writer to avoid redundant dirty updates
+                             // and extra bounds checks.
+                             self.set_pixel_raw(px, dst_y, c_val);
                          }
                     }
                 }
@@ -3271,10 +3394,12 @@ impl Framebuffer {
                                 }
                             }
                         }
-                        _ => {
+                            _ => {
                             // Fallback
                             for i in 0..clipped_len {
-                                self.set_pixel(clipped_start + i as i32, dst_y, color);
+                                // We have already marked the text region dirty above;
+                                // use raw pixel write to avoid redundant dirty updates.
+                                self.set_pixel_raw(clipped_start + i as i32, dst_y, color);
                             }
                         }
                     }
@@ -3376,58 +3501,97 @@ impl Framebuffer {
         match self.info.format {
             PixelFormat::Bgr888 => {
                 handled_in_scratch = true;
-                while i + 3 < run_len {
-                    self.scratch_u8[dst_off] = imgdata[src_idx + 2];
-                    self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
-                    self.scratch_u8[dst_off + 2] = imgdata[src_idx + 0];
-                    self.scratch_u8[dst_off + 3] = imgdata[src_idx + 6];
-                    self.scratch_u8[dst_off + 4] = imgdata[src_idx + 5];
-                    self.scratch_u8[dst_off + 5] = imgdata[src_idx + 4];
-                    self.scratch_u8[dst_off + 6] = imgdata[src_idx + 10];
-                    self.scratch_u8[dst_off + 7] = imgdata[src_idx + 9];
-                    self.scratch_u8[dst_off + 8] = imgdata[src_idx + 8];
-                    self.scratch_u8[dst_off + 9] = imgdata[src_idx + 14];
-                    self.scratch_u8[dst_off + 10] = imgdata[src_idx + 13];
-                    self.scratch_u8[dst_off + 11] = imgdata[src_idx + 12];
-                    src_idx += 16; dst_off += 12; i += 4;
+                // Process pairs of pixels at a time to emit 6-byte chunks using
+                // one u32 + one u16 write (b0 g0 r0 b1) + (g1 r1)
+                let src_ptr = imgdata.as_ptr();
+                let dst_ptr = self.scratch_u8.as_mut_ptr();
+                while i + 1 < run_len {
+                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
+
+                    let b0 = ((p0 >> 16) & 0xFF) as u32;
+                    let g0 = ((p0 >> 8) & 0xFF) as u32;
+                    let r0 = (p0 & 0xFF) as u32;
+
+                    let b1 = ((p1 >> 16) & 0xFF) as u32;
+                    let g1 = ((p1 >> 8) & 0xFF) as u32;
+                    let r1 = (p1 & 0xFF) as u32;
+
+                    let v32 = (b0) | (g0 << 8) | (r0 << 16) | (b1 << 24);
+                    let v16 = (g1 as u16) | ((r1 as u16) << 8);
+
+                    unsafe {
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off) as *mut u32, v32);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 4) as *mut u16, v16);
+                    }
+
+                    src_idx += 8;
+                    dst_off += 6;
+                    i += 2;
                 }
+                // Tail pixel
                 while i < run_len {
-                    self.scratch_u8[dst_off] = imgdata[src_idx + 2];
-                    self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
-                    self.scratch_u8[dst_off + 2] = imgdata[src_idx + 0];
+                    let p0 = unsafe { core::ptr::read_unaligned(imgdata.as_ptr().add(src_idx) as *const u32) };
+                    let b0 = ((p0 >> 16) & 0xFF) as u8;
+                    let g0 = ((p0 >> 8) & 0xFF) as u8;
+                    let r0 = (p0 & 0xFF) as u8;
+                    unsafe {
+                        *dst_ptr.add(dst_off) = b0;
+                        *dst_ptr.add(dst_off + 1) = g0;
+                        *dst_ptr.add(dst_off + 2) = r0;
+                    }
                     src_idx += 4; dst_off += 3; i += 1;
                 }
             }
             PixelFormat::Rgb888 => {
                 handled_in_scratch = true;
-                while i + 3 < run_len {
-                    self.scratch_u8[dst_off] = imgdata[src_idx + 0];
-                    self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
-                    self.scratch_u8[dst_off + 2] = imgdata[src_idx + 2];
-                    self.scratch_u8[dst_off + 3] = imgdata[src_idx + 4];
-                    self.scratch_u8[dst_off + 4] = imgdata[src_idx + 5];
-                    self.scratch_u8[dst_off + 5] = imgdata[src_idx + 6];
-                    self.scratch_u8[dst_off + 6] = imgdata[src_idx + 8];
-                    self.scratch_u8[dst_off + 7] = imgdata[src_idx + 9];
-                    self.scratch_u8[dst_off + 8] = imgdata[src_idx + 10];
-                    self.scratch_u8[dst_off + 9] = imgdata[src_idx + 12];
-                    self.scratch_u8[dst_off + 10] = imgdata[src_idx + 13];
-                    self.scratch_u8[dst_off + 11] = imgdata[src_idx + 14];
-                    src_idx += 16; dst_off += 12; i += 4;
+                // Similar pair-based packing for RGB order: emit (r0 g0 b0 r1) + (g1 b1)
+                let src_ptr = imgdata.as_ptr();
+                let dst_ptr = self.scratch_u8.as_mut_ptr();
+                while i + 1 < run_len {
+                    let p0 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32) };
+                    let p1 = unsafe { core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32) };
+
+                    let r0 = (p0 & 0xFF) as u32;
+                    let g0 = ((p0 >> 8) & 0xFF) as u32;
+                    let b0 = ((p0 >> 16) & 0xFF) as u32;
+
+                    let r1 = (p1 & 0xFF) as u32;
+                    let g1 = ((p1 >> 8) & 0xFF) as u32;
+                    let b1 = ((p1 >> 16) & 0xFF) as u32;
+
+                    let v32 = (r0) | (g0 << 8) | (b0 << 16) | (r1 << 24);
+                    let v16 = (g1 as u16) | ((b1 as u16) << 8);
+
+                    unsafe {
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off) as *mut u32, v32);
+                        core::ptr::write_unaligned(dst_ptr.add(dst_off + 4) as *mut u16, v16);
+                    }
+
+                    src_idx += 8;
+                    dst_off += 6;
+                    i += 2;
                 }
+
                 while i < run_len {
-                    self.scratch_u8[dst_off] = imgdata[src_idx + 0];
-                    self.scratch_u8[dst_off + 1] = imgdata[src_idx + 1];
-                    self.scratch_u8[dst_off + 2] = imgdata[src_idx + 2];
+                    let p0 = unsafe { core::ptr::read_unaligned(imgdata.as_ptr().add(src_idx) as *const u32) };
+                    let r0 = (p0 & 0xFF) as u8;
+                    let g0 = ((p0 >> 8) & 0xFF) as u8;
+                    let b0 = ((p0 >> 16) & 0xFF) as u8;
+                    unsafe {
+                        *dst_ptr.add(dst_off) = r0;
+                        *dst_ptr.add(dst_off + 1) = g0;
+                        *dst_ptr.add(dst_off + 2) = b0;
+                    }
                     src_idx += 4; dst_off += 3; i += 1;
                 }
             }
             _ => {
-                // Fallback
+                // Fallback — use raw writes since caller has already marked dirty
                 for j in 0..run_len {
                     let idx2 = (src_base + j) * 4;
                     let c = Color::with_alpha(imgdata[idx2], imgdata[idx2 + 1], imgdata[idx2 + 2], imgdata[idx2 + 3]);
-                    self.set_pixel(x + (run_start as i32 + j as i32), dst_row, c);
+                    self.set_pixel_raw(x + (run_start as i32 + j as i32), dst_row, c);
                 }
             }
         }
