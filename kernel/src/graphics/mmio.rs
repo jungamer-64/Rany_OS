@@ -66,12 +66,8 @@ impl<'a> MmioWriter<'a> {
                     }
                     #[cfg(not(target_endian = "little"))]
                     {
-                        let v = u32::from_le_bytes([
-                            data[i],
-                            data[i + 1],
-                            data[i + 2],
-                            data[i + 3],
-                        ]);
+                        let v =
+                            u32::from_le_bytes([data[i], data[i + 1], data[i + 2], data[i + 3]]);
                         mmio::mmio_write_u32(ptr, v);
                     }
                 }
@@ -257,7 +253,10 @@ impl<'a> MmioWriter<'a> {
 
         #[cfg(all(feature = "std", feature = "bench"))]
         if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
-            eprintln!("write_u32_slice_mmio_streaming: addr=0x{:x} len={}", ptr, len);
+            eprintln!(
+                "write_u32_slice_mmio_streaming: addr=0x{:x} len={}",
+                ptr, len
+            );
         }
 
         // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment

@@ -31,10 +31,10 @@ use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
+use crate::KapiResult;
 use crate::security::{
     DmaCapability, FsCapability, IoCapability, IpcCapability, NetCapability, TaskCapability,
 };
-use crate::KapiResult;
 
 // ============================================================================
 // Task API

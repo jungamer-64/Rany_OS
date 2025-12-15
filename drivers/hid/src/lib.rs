@@ -290,7 +290,6 @@ pub type HidResult<T> = Result<T, HidError>;
 // Keymap Re-exports
 // ============================================================================
 pub use keymap::{
-    ctrl_char_map, DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap, DEFAULT_KEYMAP, DVORAK_KEYMAP,
-    JIS_KEYMAP,
+    DEFAULT_KEYMAP, DVORAK_KEYMAP, DvorakKeymap, JIS_KEYMAP, JisKeymap, Keymap, UsQwertyKeymap,
+    ctrl_char_map,
 };
-

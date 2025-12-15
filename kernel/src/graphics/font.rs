@@ -77,15 +77,19 @@ pub trait Font {
     {
         chars.map(|c| self.char_width(c)).sum()
     }
+    /// 文字のグリフデータを取得（生ビットマップデータへの参照）
+    /// 戻り値はフォント形式に依存（例：8x16なら16バイトの配列）
+    fn glyph(&self, c: char) -> Option<&[u8]>;
 }
 
 /// 8x16ビットマップフォント（基本ASCII）
+#[derive(Copy, Clone)]
 pub struct BitmapFont {
     /// フォントデータ（Code Page 437など、256文字 * 16バイト = 4096バイトを想定）
     data: &'static [u8],
     /// 文字幅
     width: u32,
-    /// 文字高さ
+    /// 文字高さ (unscaled, in bytes per glyph)
     height: u32,
     /// 表示スケール (1x, 2x, 3x...)
     scale: u8,
@@ -117,6 +121,18 @@ impl Font for BitmapFont {
 
     fn height(&self) -> u32 {
         self.height * self.scale as u32
+    }
+
+    fn glyph(&self, c: char) -> Option<&[u8]> {
+        let idx = c as usize;
+        let glyph_h = self.height as usize;
+        let start = idx.checked_mul(glyph_h)?;
+        let end = start + glyph_h;
+        if end <= self.data.len() {
+            Some(&self.data[start..end])
+        } else {
+            None
+        }
     }
 }
 
@@ -154,13 +170,19 @@ impl BitmapFont {
 
         // スケーリング描画
         let idx = c as usize;
+        let glyph_h = self.height as usize;
         // フォントデータ範囲外の文字は無視 (または置換文字)
-        if idx * 16 >= self.data.len() {
+        if idx.checked_mul(glyph_h).is_none() {
+            return;
+        }
+
+        let start = idx * glyph_h;
+        if start + glyph_h > self.data.len() {
             return;
         }
 
         // グリフデータの取得
-        let glyph = &self.data[idx * 16..(idx + 1) * 16];
+        let glyph = &self.data[start..start + glyph_h];
         let scale = self.scale as i32;
 
         // 背景描画
@@ -211,5 +233,58 @@ impl BitmapFont {
     /// フォントデータを取得
     pub fn get_data(&self, index: usize) -> u8 {
         self.data[index]
+    }
+
+    /// 指定文字のグリフデータを返す（アンスケール、行バイト配列）
+    pub fn glyph(&self, c: char) -> Option<&[u8]> {
+        let idx = c as usize;
+        let glyph_h = self.height as usize;
+        let start = idx.checked_mul(glyph_h)?;
+        let end = start + glyph_h;
+        if end <= self.data.len() {
+            Some(&self.data[start..end])
+        } else {
+            None
+        }
+    }
+
+    /// 登録されているグリフの数
+    pub fn glyph_count(&self) -> usize {
+        let glyph_h = self.height as usize;
+        if glyph_h == 0 {
+            0
+        } else {
+            self.data.len() / glyph_h
+        }
+    }
+}
+
+// Unit tests for font helpers
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_font_properties() {
+        let f = BitmapFont::default_8x16();
+        assert_eq!(f.width(), 8);
+        assert_eq!(f.height(), 16);
+        assert!(f.data_len() >= 2048);
+    }
+
+    #[test]
+    fn glyph_accessors() {
+        let f = BitmapFont::default_8x16();
+        // Printable ASCII should exist
+        let g = f.glyph('A');
+        assert!(g.is_some());
+        let g = g.unwrap();
+        assert_eq!(g.len(), f.height as usize);
+
+        // High codepoint likely out of range for ASCII-only fonts
+        let maybe = f.glyph('\u{80}');
+        if f.data_len() < (128 * f.height as usize) {
+            assert!(maybe.is_none());
+        }
     }
 }

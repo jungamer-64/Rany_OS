@@ -93,9 +93,15 @@ impl MouseButtons {
     pub const RIGHT: u8 = 0x02;
     pub const MIDDLE: u8 = 0x04;
 
-    pub fn left(&self) -> bool { self.0 & Self::LEFT != 0 }
-    pub fn right(&self) -> bool { self.0 & Self::RIGHT != 0 }
-    pub fn middle(&self) -> bool { self.0 & Self::MIDDLE != 0 }
+    pub fn left(&self) -> bool {
+        self.0 & Self::LEFT != 0
+    }
+    pub fn right(&self) -> bool {
+        self.0 & Self::RIGHT != 0
+    }
+    pub fn middle(&self) -> bool {
+        self.0 & Self::MIDDLE != 0
+    }
 }
 
 /// Mouse event
@@ -127,7 +133,8 @@ pub trait GuiServices: Send + Sync {
     ///
     /// # Arguments
     /// * `access_token` - Proof of capability to access hardware/DMA
-    fn request_framebuffer(&self, access_token: &DomainCapabilities) -> KapiResult<FramebufferInfo>;
+    fn request_framebuffer(&self, access_token: &DomainCapabilities)
+    -> KapiResult<FramebufferInfo>;
 
     /// Get a handle to the input event stream
     ///

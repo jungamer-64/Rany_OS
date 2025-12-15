@@ -16,7 +16,6 @@ use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
 // use super::defs::*; // Removed
 use crate::defs::*;
 
-
 // ============================================================================
 // VirtQueue - Generic Implementation
 // ============================================================================

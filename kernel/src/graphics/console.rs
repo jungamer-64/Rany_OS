@@ -11,10 +11,8 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
-use super::Color;
-use super::font::BitmapFont;
 use super::framebuffer::Framebuffer;
-use super::{BitmapFont, Color, FONT_HEIGHT, FONT_WIDTH, Font};
+use super::{BitmapFont, Color, Font};
 // ============================================================================
 // Text Console
 // ============================================================================

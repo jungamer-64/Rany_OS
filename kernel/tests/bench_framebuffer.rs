@@ -1,6 +1,6 @@
 #![cfg(feature = "bench")]
 
-use rany_os::graphics::{Framebuffer, FramebufferInfo, PixelFormat, Color};
+use rany_os::graphics::{Color, Framebuffer, FramebufferInfo, PixelFormat};
 use rany_os::image::Image;
 
 #[test]
@@ -45,7 +45,12 @@ fn bench_draw_image_integration() {
     // 3. Text Draw
     let start = Instant::now();
     for _ in 0..100 {
-        fb.draw_text(10, 10, "Hello, World! This is a benchmark for text rendering.", Color::WHITE);
+        fb.draw_text(
+            10,
+            10,
+            "Hello, World! This is a benchmark for text rendering.",
+            Color::WHITE,
+        );
     }
     let elapsed = start.elapsed();
     println!("bench_draw_text:         {:?}", elapsed);

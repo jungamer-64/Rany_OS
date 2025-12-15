@@ -752,14 +752,24 @@ pub fn init() {
     for (i, device) in primary.devices.iter().enumerate() {
         if let Some(dev) = device {
             let drive = if i == 0 { "Master" } else { "Slave" };
-             log::info!("Primary {}: {} ({} MB)", drive, dev.model, dev.capacity() / (1024 * 1024));
+            log::info!(
+                "Primary {}: {} ({} MB)",
+                drive,
+                dev.model,
+                dev.capacity() / (1024 * 1024)
+            );
         }
     }
 
     for (i, device) in secondary.devices.iter().enumerate() {
         if let Some(dev) = device {
-             let drive = if i == 0 { "Master" } else { "Slave" };
-             log::info!("Secondary {}: {} ({} MB)", drive, dev.model, dev.capacity() / (1024 * 1024));
+            let drive = if i == 0 { "Master" } else { "Slave" };
+            log::info!(
+                "Secondary {}: {} ({} MB)",
+                drive,
+                dev.model,
+                dev.capacity() / (1024 * 1024)
+            );
         }
     }
 

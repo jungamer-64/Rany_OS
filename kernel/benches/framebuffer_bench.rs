@@ -52,7 +52,10 @@ fn bench_repeat_for_pixels(pixels: usize) -> usize {
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_TARGET_PIXELS);
     let repeats = core::cmp::max(1usize, target / core::cmp::max(1usize, pixels));
-    eprintln!("bench_repeat_for_pixels: pixels={} -> repeats={}", pixels, repeats);
+    eprintln!(
+        "bench_repeat_for_pixels: pixels={} -> repeats={}",
+        pixels, repeats
+    );
     repeats
 }
 
@@ -376,7 +379,13 @@ fn bench_pack_rgba_to_bgr24_avx2_8pix_micro(c: &mut Criterion) {
     c.bench_function("pack_rgba_bgr24_avx2_8pix_micro", |b| {
         b.iter(|| {
             for _ in 0..reps {
-                unsafe { Framebuffer::bench_pack_rgba_to_bgr24_avx2_8pixels(src.as_ptr(), dst.as_mut_ptr(), true) }
+                unsafe {
+                    Framebuffer::bench_pack_rgba_to_bgr24_avx2_8pixels(
+                        src.as_ptr(),
+                        dst.as_mut_ptr(),
+                        true,
+                    )
+                }
             }
         })
     });
@@ -394,7 +403,13 @@ fn bench_pack_rgba_to_bgr24_ssse3_8pix_micro(c: &mut Criterion) {
     c.bench_function("pack_rgba_bgr24_ssse3_8pix_micro", |b| {
         b.iter(|| {
             for _ in 0..reps {
-                unsafe { Framebuffer::bench_pack_rgba_to_bgr24_ssse3_8pixels(src.as_ptr(), dst.as_mut_ptr(), true) }
+                unsafe {
+                    Framebuffer::bench_pack_rgba_to_bgr24_ssse3_8pixels(
+                        src.as_ptr(),
+                        dst.as_mut_ptr(),
+                        true,
+                    )
+                }
             }
         })
     });
@@ -412,7 +427,13 @@ fn bench_pack_rgba_to_bgr24_neon_8pix_micro(c: &mut Criterion) {
     c.bench_function("pack_rgba_bgr24_neon_8pix_micro", |b| {
         b.iter(|| {
             for _ in 0..reps {
-                unsafe { Framebuffer::pack_rgba_to_bgr24_neon_8pixels(src.as_ptr(), dst.as_mut_ptr(), true) }
+                unsafe {
+                    Framebuffer::pack_rgba_to_bgr24_neon_8pixels(
+                        src.as_ptr(),
+                        dst.as_mut_ptr(),
+                        true,
+                    )
+                }
             }
         })
     });
@@ -428,7 +449,10 @@ fn bench_pack_rgba_to_bgr24_scalar_sizes(c: &mut Criterion) {
         c.bench_function(&id, |b| {
             b.iter(|| {
                 for _ in 0..repeats {
-                    Framebuffer::bench_pack_rgba_to_bgr24_scalar(black_box(&src), black_box(&mut dst))
+                    Framebuffer::bench_pack_rgba_to_bgr24_scalar(
+                        black_box(&src),
+                        black_box(&mut dst),
+                    )
                 }
             })
         });
@@ -449,7 +473,12 @@ fn bench_pack_rgba_to_bgr24_avx2_sizes(c: &mut Criterion) {
             b.iter(|| {
                 for _ in 0..repeats {
                     unsafe {
-                        Framebuffer::bench_pack_rgba_to_bgr24_avx2(black_box(&src), black_box(&mut dst), pixels, true)
+                        Framebuffer::bench_pack_rgba_to_bgr24_avx2(
+                            black_box(&src),
+                            black_box(&mut dst),
+                            pixels,
+                            true,
+                        )
                     }
                 }
             })
@@ -474,7 +503,12 @@ fn bench_pack_rgba_to_bgr24_ssse3_sizes(c: &mut Criterion) {
             b.iter(|| {
                 for _ in 0..repeats {
                     unsafe {
-                        Framebuffer::bench_pack_rgba_to_bgr24_ssse3(black_box(&src), black_box(&mut dst), pixels, true)
+                        Framebuffer::bench_pack_rgba_to_bgr24_ssse3(
+                            black_box(&src),
+                            black_box(&mut dst),
+                            pixels,
+                            true,
+                        )
                     }
                 }
             })

@@ -16,7 +16,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::graphics::{Color, Font, Framebuffer, Rect};
+use crate::graphics::{BitmapFont, Color, Font, Framebuffer, Rect};
 use crate::shell::exoshell::ExoShell;
 
 use super::streams::submit_command;

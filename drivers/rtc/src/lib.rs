@@ -1,8 +1,8 @@
 #![no_std]
 
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 use hal::port_io::PortU8;
+use spin::Mutex;
 
 // ============================================================================
 // RTC Constants
@@ -187,15 +187,15 @@ impl Rtc {
         let address = (reg & 0x7F) | 0x80;
         let mut port_address = PortU8::new(CMOS_ADDRESS);
         let mut port_data = PortU8::new(CMOS_DATA);
-        
+
         port_address.write(address);
-        
-        // 少し待機 (hal::port_io doesn't expose io_wait, but Port IO usually doesn't strictly need it on modern HW for RTC, 
+
+        // 少し待機 (hal::port_io doesn't expose io_wait, but Port IO usually doesn't strictly need it on modern HW for RTC,
         // or the write itself is slow enough. Original code had `jmp 2f` which is io_wait.
-        // We will assume basic write/read is sufficient or we should implement a wait. 
+        // We will assume basic write/read is sufficient or we should implement a wait.
         // For strict correctness with the original asm, let's just do a dummy read or spin loop if needed.
         // But `hal` PortU8 methods are basically `outb`/`inb`.
-        
+
         port_data.read()
     }
 

@@ -8,7 +8,7 @@
 
 #![allow(dead_code)]
 
-use super::font::FONT_HEIGHT;
+use super::font::{FONT_HEIGHT, FONT_WIDTH};
 use super::framebuffer::Framebuffer;
 use super::global::with_framebuffer;
 use super::{Color, Rect};
@@ -252,7 +252,7 @@ fn draw_logo_char(
 /// 中央揃えテキストを描画
 fn draw_centered_text(fb: &mut Framebuffer, text: &str, y: i32, color: Color) {
     let width = fb.width();
-    let font_width = 8u32; // FONT_WIDTH
+    let font_width = FONT_WIDTH;
     let text_width = text.len() as u32 * font_width;
     let x = ((width - text_width) / 2) as i32;
     fb.draw_text(x, y, text, color, splash_colors::BG_COLOR);

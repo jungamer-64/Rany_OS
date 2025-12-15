@@ -20,8 +20,12 @@ fn main() {
     let dest_path = Path::new(&out_dir).join("abi_hash.rs");
     fs::write(
         &dest_path,
-        format!("/// Hash of the ABI struct definitions\npub const DRIVER_TYPE_HASH: u64 = {};", hash),
-    ).unwrap();
+        format!(
+            "/// Hash of the ABI struct definitions\npub const DRIVER_TYPE_HASH: u64 = {};",
+            hash
+        ),
+    )
+    .unwrap();
     println!("cargo:rerun-if-changed=build.rs");
 }
 
@@ -38,7 +42,7 @@ fn calculate_abi_hash(content: &str) -> u64 {
     hasher.write(&rustc_version);
 
     // 2. Hash all `#[repr(...)]` attributes found in the file
-    // This catches if a struct loses #[repr(C)] or changes packing, 
+    // This catches if a struct loses #[repr(C)] or changes packing,
     // even if the struct body parser doesn't catch it.
     for line in content.lines() {
         let trimmed = line.trim();
@@ -62,9 +66,9 @@ fn extract_and_hash_decl(content: &str, decl_start: &str, hasher: &mut Fnv1aHash
         let rest = &content[start_idx..];
         let mut depth = 0;
         let mut check = false;
-        
+
         let mut buffer = String::new();
-        
+
         for line in rest.lines() {
             // Strip comments
             let line_content = if let Some(idx) = line.find("//") {
@@ -72,7 +76,7 @@ fn extract_and_hash_decl(content: &str, decl_start: &str, hasher: &mut Fnv1aHash
             } else {
                 line
             };
-            
+
             // Count braces in the effective content
             for c in line_content.chars() {
                 match c {
@@ -86,17 +90,20 @@ fn extract_and_hash_decl(content: &str, decl_start: &str, hasher: &mut Fnv1aHash
                     _ => {}
                 }
             }
-            
+
             // Normalize: remove all whitespace for the hash
-            let normalized: String = line_content.chars().filter(|c| !c.is_whitespace()).collect();
+            let normalized: String = line_content
+                .chars()
+                .filter(|c| !c.is_whitespace())
+                .collect();
             buffer.push_str(&normalized);
-            
+
             // If we have entered the block and returned to depth 0, we can stop
             if check && depth == 0 {
                 break;
             }
         }
-        
+
         hasher.write(buffer.as_bytes());
     }
 }
@@ -108,7 +115,9 @@ struct Fnv1aHasher {
 
 impl Fnv1aHasher {
     fn new() -> Self {
-        Self { state: 0xcbf29ce484222325 }
+        Self {
+            state: 0xcbf29ce484222325,
+        }
     }
 
     fn write(&mut self, bytes: &[u8]) {

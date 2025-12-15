@@ -144,6 +144,19 @@ impl<'a> Font for PsfFont<'a> {
         if c == '\n' { 0 } else { self.width }
     }
 
+    fn glyph(&self, c: char) -> Option<&[u8]> {
+        let idx = c as u32; // Simplified mapping
+        if idx >= self.num_glyphs {
+            return None;
+        }
+
+        let glyph_offset = self.header_size + (idx as usize * self.bytes_per_glyph as usize);
+        if glyph_offset + self.bytes_per_glyph as usize > self.data.len() {
+            return None;
+        }
+        Some(&self.data[glyph_offset..glyph_offset + self.bytes_per_glyph as usize])
+    }
+
     fn draw_char(
         &self,
         fb: &mut Framebuffer,

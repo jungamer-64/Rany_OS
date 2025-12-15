@@ -153,11 +153,9 @@ pub const SCROLLBACK_LINES: usize = 500;
 /// カーソル点滅間隔（ミリ秒）
 pub const CURSOR_BLINK_MS: u64 = 500;
 
-/// フォント幅（定数）
-pub const FONT_WIDTH: usize = 8;
-
-/// フォント高さ（定数）
-pub const FONT_HEIGHT: usize = 16;
+// フォントサイズは `graphics::font` 側の定義を使う（型を usize に合わせて再定義）
+pub const FONT_WIDTH: usize = crate::graphics::FONT_WIDTH as usize;
+pub const FONT_HEIGHT: usize = crate::graphics::FONT_HEIGHT as usize;
 
 // ============================================================================
 // Theme Colors

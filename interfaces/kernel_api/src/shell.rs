@@ -207,40 +207,45 @@ pub struct CpuIdleInfo {
 /// requiring direct `crate::` dependencies.
 pub trait ShellServices: Send + Sync {
     // --- Memory ---
-    
+
     /// Get current memory statistics
     fn memory_stats(&self) -> MemoryStats;
 
     // --- Timer ---
-    
+
     /// Get current system tick count
     fn current_tick(&self) -> u64;
 
     // --- Process ---
-    
+
     /// List all processes
     fn list_processes(&self) -> Vec<ProcessInfo>;
-    
+
     /// Get process by PID
     fn get_process(&self, pid: u64) -> Option<ProcessInfo>;
-    
+
     /// Kill a process by PID
-    fn kill_process(&self, pid: u64, caller_uid: u32, has_cap_kill: bool) -> Result<(), &'static str>;
-    
+    fn kill_process(
+        &self,
+        pid: u64,
+        caller_uid: u32,
+        has_cap_kill: bool,
+    ) -> Result<(), &'static str>;
+
     /// Get current user ID
     fn current_uid(&self) -> u32;
-    
+
     /// Get current process ID
     fn current_pid(&self) -> u64;
 
     // --- System ---
-    
+
     /// Get system information
     fn system_info(&self) -> SystemInfo;
 
     /// Get detailed system monitor snapshot
     fn monitor_info(&self) -> MonitorInfo;
-    
+
     /// Get thermal information
     fn thermal_info(&self) -> ThermalInfo;
 
@@ -249,28 +254,28 @@ pub trait ShellServices: Send + Sync {
 
     /// Get power information
     fn power_info(&self) -> PowerInfo;
-    
+
     /// Get CPU temperature if available
     fn cpu_temperature(&self) -> Option<f32>;
-    
+
     // --- Power Control ---
-    
+
     /// Initiate system shutdown
     fn shutdown(&self) -> !;
-    
+
     /// Initiate system reboot
     fn reboot(&self) -> !;
 
     // --- Filesystem ---
-    
+
     /// List directory entries
     fn list_directory(&self, path: &str) -> Result<Vec<DirEntry>, &'static str>;
-    
+
     /// Read file contents
     fn read_file(&self, path: &str) -> Result<Vec<u8>, &'static str>;
-    
+
     /// Read file contents with zero-copy semantics
-    /// 
+    ///
     /// Returns an Arc-wrapped buffer that can be shared without copying.
     /// This is preferred for large files or when the content will be
     /// passed to multiple consumers.
@@ -278,19 +283,19 @@ pub trait ShellServices: Send + Sync {
         // Default implementation wraps standard read
         self.read_file(path).map(alloc::sync::Arc::new)
     }
-    
+
     /// Write file contents
     fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str>;
-    
+
     /// Get file attributes
     fn stat_file(&self, path: &str) -> Result<FileAttributes, &'static str>;
-    
+
     /// Create a directory
     fn make_directory(&self, path: &str) -> Result<(), &'static str>;
-    
+
     /// Remove a file
     fn remove_file(&self, path: &str) -> Result<(), &'static str>;
-    
+
     /// Remove a directory
     fn remove_directory(&self, path: &str) -> Result<(), &'static str>;
 }
