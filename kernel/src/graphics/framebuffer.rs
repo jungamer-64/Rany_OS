@@ -584,6 +584,39 @@ impl Framebuffer {
         self.write_u32_slice_mmio(addr, data);
     }
 
+    /// Write a repeating u32 value to MMIO using non-temporal (streaming) stores.
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    fn write_u32_run_streaming(&self, addr: usize, count: usize, value: u32) {
+        let mut ptr = addr;
+        let mut i = 0usize;
+
+        // Align to 8-bytes boundary
+        if (ptr & 7) == 4 && i < count {
+            mmio::stream_write_u32(ptr, value);
+            ptr += 4;
+            i += 1;
+        }
+
+        // Write u64 pairs (repeating value)
+        let val64 = (value as u64) | ((value as u64) << 32);
+        while i + 1 < count {
+            mmio::stream_write_u64(ptr, val64);
+            ptr += 8;
+            i += 2;
+        }
+
+        // Trailing u32
+        if i < count {
+            mmio::stream_write_u32(ptr, value);
+        }
+    }
+
+    /// Fallback for non-x86
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    fn write_u32_run_streaming(&self, addr: usize, count: usize, value: u32) {
+        self.write_u32_run(addr, count, value);
+    }
+
     /// Stream-pack RGBA bytes into BGRA bytes and write them to MMIO in
     /// moderate-size chunks. This avoids allocating a large `scratch_u32`
     /// buffer for very long runs and allows SIMD packers to operate on
@@ -627,9 +660,11 @@ impl Framebuffer {
                 Self::pack_rgba_to_bgra(src_chunk, dst_bytes);
             }
 
-            // Emit packed u32 words as aligned u64/u32 writes
+            // Emit packed u32 words using streaming stores
             let addr_chunk = addr + processed_pixels * 4;
-            self.write_u32_slice_mmio(addr_chunk, &self.scratch_u32[..chunk_pixels]);
+            self.write_u32_slice_mmio_streaming(addr_chunk, &self.scratch_u32[..chunk_pixels]);
+            // Ensure global visibility for this chunk
+            mmio::sfence();
 
             processed_pixels += chunk_pixels;
         }
@@ -1374,9 +1409,9 @@ impl Framebuffer {
                 // possible. Writing three patterns per loop keeps the
                 // component rotation aligned (24 % 3 == 0).
                 while remaining >= 24 {
-                    mmio::mmio_write_u64(addr, patterns[comp_idx % 3]);
-                    mmio::mmio_write_u64(addr + 8, patterns[(comp_idx + 8) % 3]);
-                    mmio::mmio_write_u64(addr + 16, patterns[(comp_idx + 16) % 3]);
+                    mmio::stream_write_u64(addr, patterns[comp_idx % 3]);
+                    mmio::stream_write_u64(addr + 8, patterns[(comp_idx + 8) % 3]);
+                    mmio::stream_write_u64(addr + 16, patterns[(comp_idx + 16) % 3]);
                     addr += 24;
                     remaining -= 24;
                     // comp_idx cycles back to same value after +24
@@ -1384,7 +1419,7 @@ impl Framebuffer {
 
                 // Handle remaining full 8-byte blocks
                 while remaining >= 8 {
-                    mmio::mmio_write_u64(addr, patterns[comp_idx % 3]);
+                    mmio::stream_write_u64(addr, patterns[comp_idx % 3]);
                     addr += 8;
                     remaining -= 8;
                     comp_idx = (comp_idx + 8) % 3;
@@ -1403,6 +1438,7 @@ impl Framebuffer {
                     comp_idx = (comp_idx + 1) % 3;
                 }
 
+                mmio::sfence();
                 return;
             }
         }
@@ -1479,7 +1515,7 @@ impl Framebuffer {
         fg_u32: u32,
         bg_u32: u32,
     ) {
-        let mut addr = self.buffer as usize + dst_offset_bytes;
+        let addr = self.buffer as usize + dst_offset_bytes;
 
         if let Some(ref mut back) = self.back_buffer {
             // Write to back buffer: pack into u64 writes to reduce the
@@ -1506,30 +1542,32 @@ impl Framebuffer {
                 core::ptr::write_unaligned(base.add(24) as *mut u64, v3);
             }
         } else {
-            // Write to MMIO using 64-bit writes where possible
+            // Write to MMIO using 64-bit streaming writes where possible
             // 0x80 -> pixel 0, 0x40 -> pixel 1
             let p0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
             let p1 = if (bits & 0x40) != 0 { fg_u32 } else { bg_u32 };
             let v0 = (p0 as u64) | ((p1 as u64) << 32);
-            mmio::mmio_write_u64(addr, v0);
+            mmio::stream_write_u64(addr, v0);
 
             // 0x20 -> pixel 2, 0x10 -> pixel 3
             let p2 = if (bits & 0x20) != 0 { fg_u32 } else { bg_u32 };
             let p3 = if (bits & 0x10) != 0 { fg_u32 } else { bg_u32 };
             let v1 = (p2 as u64) | ((p3 as u64) << 32);
-            mmio::mmio_write_u64(addr + 8, v1);
+            mmio::stream_write_u64(addr + 8, v1);
 
             // 0x08 -> pixel 4, 0x04 -> pixel 5
             let p4 = if (bits & 0x08) != 0 { fg_u32 } else { bg_u32 };
             let p5 = if (bits & 0x04) != 0 { fg_u32 } else { bg_u32 };
             let v2 = (p4 as u64) | ((p5 as u64) << 32);
-            mmio::mmio_write_u64(addr + 16, v2);
+            mmio::stream_write_u64(addr + 16, v2);
 
             // 0x02 -> pixel 6, 0x01 -> pixel 7
             let p6 = if (bits & 0x02) != 0 { fg_u32 } else { bg_u32 };
             let p7 = if (bits & 0x01) != 0 { fg_u32 } else { bg_u32 };
             let v3 = (p6 as u64) | ((p7 as u64) << 32);
-            mmio::mmio_write_u64(addr + 24, v3);
+            mmio::stream_write_u64(addr + 24, v3);
+
+            mmio::sfence();
         }
     }
 
@@ -2352,11 +2390,12 @@ impl Framebuffer {
                         row_slice.fill(color_u32);
                     }
                 } else {
-                    // MMIO path: use aligned write helper
+                    // MMIO path: use aligned streaming write helper
                     for y in r.y..r.bottom() {
                         let offset = (y as usize * stride as usize) + (r.x as usize * 4);
-                        self.write_u32_run(offset, r.width as usize, color_u32);
+                        self.write_u32_run_streaming(offset, r.width as usize, color_u32);
                     }
+                    mmio::sfence();
                 }
             }
             _ => {
@@ -2692,7 +2731,11 @@ impl Framebuffer {
                         if dst_x >= self.clip.x && (dst_x + char_w_i32) <= self.clip.right() {
                             let dst_offset = (dst_y as usize * stride) + (dst_x as usize * 4);
                             let bg_color = bg.unwrap();
-                            let bg_u32 = self.info.format.encode_u32(bg_color).unwrap_or(bg_color.to_u32());
+                            let bg_u32 = self
+                                .info
+                                .format
+                                .encode_u32(bg_color)
+                                .unwrap_or(bg_color.to_u32());
                             self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
                             continue;
                         }
@@ -2830,7 +2873,8 @@ impl Framebuffer {
                 }
             } else {
                 let addr = self.buffer as usize + dst_byte_offset;
-                self.write_bytes_mmio(addr, src_slice);
+                self.write_bytes_mmio_streaming(addr, src_slice);
+                mmio::sfence();
             }
         } else if self.info.format == PixelFormat::Bgra8888 {
             let src_slice = &imgdata[src_base * 4..src_base * 4 + run_len * 4];
@@ -2965,7 +3009,8 @@ impl Framebuffer {
                     }
                 } else {
                     let addr = self.buffer as usize + dst_byte_offset + start;
-                    self.write_bytes_mmio(addr, &self.scratch_u8[start..end]);
+                    self.write_bytes_mmio_streaming(addr, &self.scratch_u8[start..end]);
+                    mmio::sfence();
                 }
                 processed += chunk;
             }
