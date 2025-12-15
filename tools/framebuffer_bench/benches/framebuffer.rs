@@ -123,6 +123,54 @@ fn bench_draw_text_32bit(c: &mut Criterion) {
     }));
 }
 
+fn bench_draw_text_32bit_mmio_batch(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let mut info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    // Create a front buffer region to safely perform streaming MMIO writes
+    let mut front = vec![0u8; info.size()];
+    info.address = front.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+
+    let text = "The quick brown fox jumps over the lazy dog. 0123456789!@#$%^&*()";
+    c.bench_function("draw_text_32bit_mmio_batch", |b| b.iter(|| {
+        fb.draw_text(100, 100, text, Color::WHITE, Color::BLACK);
+    }));
+}
+
+fn bench_draw_text_32bit_mmio_per_glyph_fenced(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let mut info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    // Front buffer for MMIO-like streaming writes
+    let mut front = vec![0u8; info.size()];
+    info.address = front.as_mut_ptr() as u64;
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+
+    let text = "The quick brown fox jumps over the lazy dog. 0123456789!@#$%^&*()";
+    c.bench_function("draw_text_32bit_mmio_per_glyph_fenced", |b| b.iter(|| {
+        fb.bench_draw_text_per_glyph_fenced(100, 100, text, Color::WHITE, Color::BLACK);
+    }));
+}
+
 fn bench_draw_image_alpha(c: &mut Criterion) {
     let width = 800u32;
     let height = 600u32;
@@ -240,6 +288,48 @@ fn bench_fill_rect_full(c: &mut Criterion) {
     }));
 }
 
+fn bench_fill_rect_full_mmio_batch(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let mut info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut front = vec![0u8; info.size()];
+    info.address = front.as_mut_ptr() as u64;
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+
+    c.bench_function("fill_rect_full_mmio_batch", |b| b.iter(|| {
+        fb.fill_rect(rany_os::graphics::Rect::new(0, 0, width, height), Color::BLUE);
+    }));
+}
+
+fn bench_fill_rect_full_mmio_per_row_fenced(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let mut info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut front = vec![0u8; info.size()];
+    info.address = front.as_mut_ptr() as u64;
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+
+    c.bench_function("fill_rect_full_mmio_per_row_fenced", |b| b.iter(|| {
+        fb.bench_fill_rect_per_row_fenced(rany_os::graphics::Rect::new(0, 0, width, height), Color::BLUE);
+    }));
+}
+
 fn criterion_config() -> Criterion {
     // Longer measurement time and moderate sample size to reduce noise in CI
     Criterion::default()
@@ -254,10 +344,14 @@ criterion_group!{
               bench_draw_image_24bit, 
               bench_draw_image_rgba,
               bench_draw_text_32bit,
+              bench_draw_text_32bit_mmio_batch,
+              bench_draw_text_32bit_mmio_per_glyph_fenced,
               bench_draw_text_manual,
               bench_draw_image_alpha,
               bench_write_u32_streams,
               bench_fill_rect_full,
+              bench_fill_rect_full_mmio_batch,
+              bench_fill_rect_full_mmio_per_row_fenced,
               bench_draw_char_with_bg,
               bench_draw_char_no_bg
 }

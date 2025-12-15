@@ -267,13 +267,12 @@ pub fn stream_write_u64(addr: usize, val: u64) {
 /// - Caller must ensure the address is 16-byte aligned
 /// - Caller must ensure SSE2 is available (standard on `x86_64`)
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[target_feature(enable = "sse2")]
 #[inline]
 pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
     use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_stream_si128};
-    unsafe {
-        let v = _mm_loadu_si128(data.as_ptr().cast::<__m128i>());
-        _mm_stream_si128(addr as *mut __m128i, v);
-    }
+    let v = _mm_loadu_si128(data.as_ptr().cast::<__m128i>());
+    _mm_stream_si128(addr as *mut __m128i, v);
 }
 
 /// Write 256 bits (32 bytes) using AVX non-temporal store.
