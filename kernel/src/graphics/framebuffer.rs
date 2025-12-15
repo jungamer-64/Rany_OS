@@ -1212,8 +1212,8 @@ impl Framebuffer {
                     // Use unaligned loads/stores to avoid strict alignment requirements
                     let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
                     let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
-                    let r0 = unsafe { _mm256_shuffle_epi8(v0, mask) };
-                    let r1 = unsafe { _mm256_shuffle_epi8(v1, mask) };
+                    let r0 = _mm256_shuffle_epi8(v0, mask);
+                    let r1 = _mm256_shuffle_epi8(v1, mask);
                     unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
                     unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
                     i += 64;
@@ -1221,7 +1221,7 @@ impl Framebuffer {
 
                 while i + 32 <= bytes {
                     let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                    let r = unsafe { _mm256_shuffle_epi8(v, mask) };
+                    let r = _mm256_shuffle_epi8(v, mask);
                     unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
                     i += 32;
                 }
@@ -1230,8 +1230,8 @@ impl Framebuffer {
                     while i + 64 <= bytes {
                         let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
                         let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
-                        let r0 = unsafe { _mm256_shuffle_epi8(v0, mask) };
-                        let r1 = unsafe { _mm256_shuffle_epi8(v1, mask) };
+                        let r0 = _mm256_shuffle_epi8(v0, mask);
+                        let r1 = _mm256_shuffle_epi8(v1, mask);
                         unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
                         unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
                         i += 64;
@@ -1239,7 +1239,7 @@ impl Framebuffer {
 
                     while i + 32 <= bytes {
                         let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                        let r = unsafe { _mm256_shuffle_epi8(v, mask) };
+                        let r = _mm256_shuffle_epi8(v, mask);
                         unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
                         i += 32;
                     }
@@ -1247,10 +1247,10 @@ impl Framebuffer {
 
             // Process remaining 16-byte block(s) via SSSE3-style shuffle
             while i + 16 <= bytes {
-                let v = _mm_loadu_si128(src.add(i) as *const __m128i);
+                let v = unsafe { _mm_loadu_si128(src.add(i) as *const __m128i) };
                 let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
                 let r = _mm_shuffle_epi8(v, m);
-                _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+                unsafe { _mm_storeu_si128(dst.add(i) as *mut __m128i, r) };
                 i += 16;
             }
 
@@ -1258,14 +1258,16 @@ impl Framebuffer {
             while i < bytes {
                 let pixel_idx = i / 4;
                 let s = pixel_idx * 4;
-                let r = *src.add(s + 0);
-                let g = *src.add(s + 1);
-                let b = *src.add(s + 2);
-                let a = *src.add(s + 3);
-                *dst.add(s + 0) = b;
-                *dst.add(s + 1) = g;
-                *dst.add(s + 2) = r;
-                *dst.add(s + 3) = a;
+                unsafe {
+                    let r = *src.add(s + 0);
+                    let g = *src.add(s + 1);
+                    let b = *src.add(s + 2);
+                    let a = *src.add(s + 3);
+                    *dst.add(s + 0) = b;
+                    *dst.add(s + 1) = g;
+                    *dst.add(s + 2) = r;
+                    *dst.add(s + 3) = a;
+                }
                 i += 4;
             }
     }
@@ -1290,7 +1292,7 @@ impl Framebuffer {
             13, 14, -1, -1, -1, -1,
         );
 
-        let v = _mm256_loadu_si256(src as *const __m256i);
+        let v = unsafe { _mm256_loadu_si256(src as *const __m256i) };
         let mask = if is_bgr { mask_bgr } else { mask_rgb };
         let shuffled = _mm256_shuffle_epi8(v, mask);
 
@@ -1303,17 +1305,17 @@ impl Framebuffer {
         // - store next 8 bytes of lane0 -> dst[8..15]
         // - store low 4 bytes of lane1 -> dst[12..15] (overwrite middle)
         // - store low 8 bytes of lane1 -> dst[16..23]
-        _mm_storel_epi64(dst as *mut __m128i, lane0);
+        unsafe { _mm_storel_epi64(dst as *mut __m128i, lane0) };
         let lane0_hi = _mm_srli_si128(lane0, 8);
-        _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi);
+        unsafe { _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi) };
 
         // low 32 bits of lane1 -> bytes 12..15
         let low32 = _mm_cvtsi128_si32(lane1) as i32;
-        core::ptr::write_unaligned(dst.add(12) as *mut i32, low32);
+        unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
 
         // store bytes 16..23: use lane1 >> 4 bytes so we get r1[4..11]
         let lane1_shift = _mm_srli_si128(lane1, 4);
-        _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift);
+        unsafe { _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift) };
     }
 
     /// SSSE3 implementation of 8-pixel RGBA -> 24-byte BGR/RGB compression.

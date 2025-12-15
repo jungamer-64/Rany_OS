@@ -85,6 +85,61 @@ const PF_W: u32 = 0x2;
 /// プログラムフラグ: Execute
 const PF_X: u32 = 0x1;
 
+// ============================================================================
+// 【セキュリティ】ASLR (Address Space Layout Randomization)
+// ============================================================================
+
+/// ASLRを有効にするかどうかのフラグ
+/// 実行時にset_aslr_enabled()で設定可能
+static ASLR_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(true);
+
+/// ASLRのランダムオフセットの最大値（16MB）
+/// ページアラインメントを維持するため4KBの倍数
+const ASLR_MAX_OFFSET: usize = 16 * 1024 * 1024;
+
+/// ASLR用の簡易乱数シード
+/// RDTSC命令などから初期化される
+static ASLR_SEED: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0x5DEECE66D);
+
+/// ASLRを有効/無効にする
+pub fn set_aslr_enabled(enabled: bool) {
+    ASLR_ENABLED.store(enabled, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// ASLRが有効かどうかを取得
+pub fn is_aslr_enabled() -> bool {
+    ASLR_ENABLED.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+/// ASLR用のランダムオフセットを生成（ページアラインメント）
+///
+/// 簡易的なLCG（線形合同法）を使用
+fn generate_aslr_offset() -> usize {
+    use core::sync::atomic::Ordering;
+
+    // RDTSCからシードを更新（利用可能な場合）
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    {
+        let tsc = unsafe { core::arch::x86_64::_rdtsc() };
+        let old = ASLR_SEED.load(Ordering::Relaxed);
+        let _ = ASLR_SEED.compare_exchange(
+            old,
+            old.wrapping_add(tsc),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        );
+    }
+
+    // LCG: next = (a * seed + c) mod m
+    let seed = ASLR_SEED.fetch_add(1, Ordering::Relaxed);
+    let next = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+    ASLR_SEED.store(next, Ordering::Relaxed);
+
+    // ページアラインメント（4KB）を維持しつつMAX_OFFSET以内に制限
+    let offset = (next as usize) % ASLR_MAX_OFFSET;
+    offset & !0xFFF // 4KB aligned
+}
+
 /// ELF Magic Number
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
 
@@ -569,15 +624,41 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// メモリを割り当て
+    ///
+    /// ASLRが有効な場合、ランダムなオフセットを加算してベースアドレスを予測困難にする
     fn allocate_memory(&self, size: usize, _alignment: usize) -> Result<usize, LoadError> {
         // Note: フレームアロケータは mm::frame_allocator モジュールで実装
         // 現在はallocクレートを使用したヒープ割り当て
         use alloc::alloc::Layout;
 
-        let layout = Layout::from_size_align(size, 4096).map_err(|_| LoadError::OutOfMemory)?;
+        // ASLRが有効な場合、追加のパディング領域を確保
+        let aslr_offset = if is_aslr_enabled() {
+            generate_aslr_offset()
+        } else {
+            0
+        };
+
+        // サイズオーバーフローチェック
+        let total_size = size
+            .checked_add(aslr_offset)
+            .ok_or(LoadError::OutOfMemory)?;
+
+        let layout =
+            Layout::from_size_align(total_size, 4096).map_err(|_| LoadError::OutOfMemory)?;
 
         let ptr = crate::util::allocate_zeroed(layout).ok_or(LoadError::OutOfMemory)?;
-        Ok(ptr.as_ptr() as usize)
+
+        // ASLRオフセットを適用したアドレスを返す
+        let base_address = ptr.as_ptr() as usize + aslr_offset;
+
+        log::debug!(
+            "[ELF] Allocated {} bytes at {:#x} (ASLR offset: {:#x})",
+            size,
+            base_address,
+            aslr_offset
+        );
+
+        Ok(base_address)
     }
 
     /// リロケーションを適用
@@ -969,5 +1050,36 @@ mod tests {
         };
         assert_eq!(sym.binding(), 1); // STB_GLOBAL
         assert_eq!(sym.symbol_type(), 2); // STT_FUNC
+    }
+
+    /// ASLR オフセット生成のテスト
+    #[test]
+    fn test_aslr_offset_generation() {
+        // ASLRを有効にして2つのオフセットを生成
+        set_aslr_enabled(true);
+        let offset1 = generate_aslr_offset();
+        let offset2 = generate_aslr_offset();
+
+        // オフセットはページアラインメント（4KB）されている
+        assert_eq!(offset1 & 0xFFF, 0);
+        assert_eq!(offset2 & 0xFFF, 0);
+
+        // オフセットは最大値以内
+        assert!(offset1 < ASLR_MAX_OFFSET);
+        assert!(offset2 < ASLR_MAX_OFFSET);
+
+        // 連続する2つのオフセットは異なる（確率的）
+        // 注意: 非常に稀に同じになる可能性があるのでこのアサーションは緩い
+        // assert_ne!(offset1, offset2);
+    }
+
+    /// ASLR 有効/無効テスト
+    #[test]
+    fn test_aslr_enable_disable() {
+        set_aslr_enabled(false);
+        assert!(!is_aslr_enabled());
+
+        set_aslr_enabled(true);
+        assert!(is_aslr_enabled());
     }
 }
