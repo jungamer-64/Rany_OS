@@ -55,13 +55,18 @@ struct Psf2Header {
 // PsfFont
 // ============================================================================
 
+// ============================================================================
+// PsfFont
+// ============================================================================
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PsfVersion {
     Psf1,
     Psf2,
 }
 
-pub struct PsfFont<'a> {
-    data: &'a [u8],
+pub struct PsfFont<T: AsRef<[u8]>> {
+    data: T,
     version: PsfVersion,
     width: u32,
     height: u32,
@@ -70,16 +75,17 @@ pub struct PsfFont<'a> {
     header_size: usize,
 }
 
-impl<'a> PsfFont<'a> {
-    /// Create a new PsfFont from a byte slice.
-    pub fn new(data: &'a [u8]) -> Option<Self> {
-        if data.len() < 4 {
+impl<T: AsRef<[u8]>> PsfFont<T> {
+    /// Create a new PsfFont from a byte slice or owned Vec.
+    pub fn new(data: T) -> Option<Self> {
+        let slice = data.as_ref();
+        if slice.len() < 4 {
             return None;
         }
 
         // Check PSF1
-        if data[0] == PSF1_MAGIC0 && data[1] == PSF1_MAGIC1 {
-            let header: &Psf1Header = unsafe { &*(data.as_ptr() as *const Psf1Header) };
+        if slice[0] == PSF1_MAGIC0 && slice[1] == PSF1_MAGIC1 {
+            let header: &Psf1Header = unsafe { &*(slice.as_ptr() as *const Psf1Header) };
             let mode = header.mode;
             let num_glyphs = if (mode & PSF1_MODE512) != 0 { 512 } else { 256 };
 
@@ -95,15 +101,15 @@ impl<'a> PsfFont<'a> {
         }
 
         // Check PSF2
-        if data[0] == PSF2_MAGIC0
-            && data[1] == PSF2_MAGIC1
-            && data[2] == PSF2_MAGIC2
-            && data[3] == PSF2_MAGIC3
+        if slice[0] == PSF2_MAGIC0
+            && slice[1] == PSF2_MAGIC1
+            && slice[2] == PSF2_MAGIC2
+            && slice[3] == PSF2_MAGIC3
         {
-            if data.len() < core::mem::size_of::<Psf2Header>() {
+            if slice.len() < core::mem::size_of::<Psf2Header>() {
                 return None;
             }
-            let header: &Psf2Header = unsafe { &*(data.as_ptr() as *const Psf2Header) };
+            let header: &Psf2Header = unsafe { &*(slice.as_ptr() as *const Psf2Header) };
 
             return Some(Self {
                 data,
@@ -135,7 +141,7 @@ impl<'a> PsfFont<'a> {
     }
 }
 
-impl<'a> Font for PsfFont<'a> {
+impl<T: AsRef<[u8]>> Font for PsfFont<T> {
     fn height(&self) -> u32 {
         self.height
     }
@@ -150,11 +156,12 @@ impl<'a> Font for PsfFont<'a> {
             return None;
         }
 
+        let slice = self.data.as_ref();
         let glyph_offset = self.header_size + (idx as usize * self.bytes_per_glyph as usize);
-        if glyph_offset + self.bytes_per_glyph as usize > self.data.len() {
+        if glyph_offset + self.bytes_per_glyph as usize > slice.len() {
             return None;
         }
-        Some(&self.data[glyph_offset..glyph_offset + self.bytes_per_glyph as usize])
+        Some(&slice[glyph_offset..glyph_offset + self.bytes_per_glyph as usize])
     }
 
     fn draw_char(
@@ -173,12 +180,13 @@ impl<'a> Font for PsfFont<'a> {
             return;
         }
 
+        let slice = self.data.as_ref();
         let glyph_offset = self.header_size + (idx as usize * self.bytes_per_glyph as usize);
-        if glyph_offset + self.bytes_per_glyph as usize > self.data.len() {
+        if glyph_offset + self.bytes_per_glyph as usize > slice.len() {
             return;
         }
 
-        let glyph_data = &self.data[glyph_offset..glyph_offset + self.bytes_per_glyph as usize];
+        let glyph_data = &slice[glyph_offset..glyph_offset + self.bytes_per_glyph as usize];
 
         // Draw background
         if let Some(bg_color) = bg {

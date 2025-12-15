@@ -11,11 +11,13 @@
 
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+use crate::graphics::font::FontExt;
 use crate::graphics::{BitmapFont, Color, Font, Framebuffer, Rect};
 use crate::shell::exoshell::ExoShell;
 
@@ -51,10 +53,10 @@ impl GraphicalShell {
         let height = framebuffer.info().height;
         info!(target: "gshell", "DEBUG: GraphicalShell::new called with {}x{}", width, height);
 
-        let font = BitmapFont::default_8x16();
+        let font: Box<dyn Font + Send + Sync> = Box::new(BitmapFont::default_8x16());
         let fb_width = width;
         let fb_height = height;
-        let cols = fb_width / font.width();
+        let cols = fb_width / font.char_width(' ');
         let rows = fb_height / font.height();
 
         info!(target: "gshell", "DEBUG: Creating ExoShell instance...");
@@ -128,6 +130,22 @@ impl GraphicalShell {
         self.resources.rows
     }
 
+    /// フォントを変更
+    pub fn set_font(&mut self, font: Box<dyn Font + Send + Sync>) {
+        self.resources.font = font;
+        // レイアウト再計算
+        let char_w = self.resources.font.char_width(' ');
+        let char_h = self.resources.font.height();
+        // 0除算防止
+        if char_w > 0 && char_h > 0 {
+            self.resources.cols = self.resources.fb_width / char_w;
+            self.resources.rows = self.resources.fb_height / char_h;
+        }
+        // 画面クリア（サイズ変更対応）
+        self.clear_screen();
+        // 描画は呼び出し側で行うか、redrawを呼ぶ
+    }
+
     /// 入力変更時にキャッシュを更新
     #[inline]
     pub(crate) fn update_cursor_cache(&mut self) {
@@ -172,7 +190,7 @@ impl GraphicalShell {
         Rect::new(
             self.cursor_x(),
             self.input_line_y(),
-            self.resources.font.width(),
+            self.resources.font.char_width(' '),
             self.resources.font.height(),
         )
     }
@@ -368,6 +386,40 @@ impl GraphicalShell {
             "exit" | "quit" => {
                 let success = self.resources.theme.success;
                 self.print_colored("Goodbye!\n", success);
+                return;
+            }
+            s if s.starts_with("load_font ") => {
+                let path = s["load_font ".len()..].trim();
+                if path.is_empty() {
+                    let err = self.resources.theme.error;
+                    self.print_colored("Usage: load_font <path>\n", err);
+                    return;
+                }
+
+                // ファイル読み込み (同期)
+                use crate::fs::read_file_content;
+                use crate::graphics::psf::PsfFont;
+
+                match read_file_content(path, &self.shell.cwd) {
+                    Ok(data) => {
+                        // PsfFontとして解析試行
+                        match PsfFont::new(data) {
+                            Some(font) => {
+                                self.set_font(Box::new(font));
+                                let success = self.resources.theme.success;
+                                self.print_colored("Font loaded successfully.\n", success);
+                            }
+                            None => {
+                                let err = self.resources.theme.error;
+                                self.print_colored("Invalid font file (PSF parsing failed)\n", err);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        let err = self.resources.theme.error;
+                        self.print_colored(&alloc::format!("Failed to read file: {:?}\n", e), err);
+                    }
+                }
                 return;
             }
             _ => {}

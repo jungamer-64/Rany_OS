@@ -8,6 +8,7 @@
 
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -21,8 +22,8 @@ use super::{BitmapFont, Color, Font};
 pub struct TextConsole {
     /// フレームバッファへの参照
     fb: *mut Framebuffer,
-    /// フォント
-    font: BitmapFont,
+    /// フォント (dynamic dispatch for polyglot support)
+    font: Box<dyn Font + Send + Sync>,
     /// 現在のカーソル位置（文字単位）
     cursor_x: u32,
     cursor_y: u32,
@@ -43,7 +44,7 @@ unsafe impl Sync for TextConsole {}
 impl TextConsole {
     /// 新しいコンソールを作成
     pub fn new(fb: &mut Framebuffer) -> Self {
-        let font = BitmapFont::default_8x16();
+        let font = Box::new(BitmapFont::default_8x16());
         let cols = fb.width() / font.width();
         let rows = fb.height() / font.height();
 
@@ -61,6 +62,21 @@ impl TextConsole {
             bg_color: Color::BLACK,
             buffer,
         }
+    }
+
+    /// フォントを変更
+    pub fn set_font(&mut self, font: Box<dyn Font + Send + Sync>) {
+        self.font = font;
+        // Recalculate dimensions
+        unsafe {
+            let fb = &*self.fb;
+            self.cols = fb.width() / self.font.width();
+            self.rows = fb.height() / self.font.height();
+        }
+        // Resize buffer (clearing it for simplicity when font changes)
+        let buffer_size = (self.cols * self.rows) as usize;
+        self.buffer = vec![' '; buffer_size];
+        self.clear();
     }
 
     /// 画面をクリア

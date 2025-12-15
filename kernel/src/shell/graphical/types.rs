@@ -6,8 +6,9 @@
 
 #![allow(dead_code)]
 
-use crate::graphics::{BitmapFont, Color, Framebuffer, Rect};
+use crate::graphics::{BitmapFont, Color, Font, Framebuffer, Rect};
 use crate::io::hid::MouseEvt;
+use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 
 // ============================================================================
@@ -95,7 +96,7 @@ pub struct ShellState {
 /// 描画中に変更されないリソース
 pub struct ShellResources {
     /// フォント
-    pub font: BitmapFont,
+    pub font: Box<dyn Font + Send + Sync>,
     /// テーマ
     pub theme: ShellTheme,
     /// フレームバッファ幅

@@ -359,12 +359,12 @@ pub fn _test_get_packer_mode() -> u8 {
 #[cfg(feature = "std")]
 fn test_packer_env_override() {
     // Ensure RANY_PACKER override sets the PACKER_MODE
-    std::env::set_var("RANY_PACKER", "scalar");
+    unsafe { std::env::set_var("RANY_PACKER", "scalar"); }
     let src = vec![0u8; 1024];
     let mut dst = vec![0u8; 1024];
     Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
     assert_eq!(_test_get_packer_mode(), 1);
-    std::env::remove_var("RANY_PACKER");
+    unsafe { std::env::remove_var("RANY_PACKER"); }
 }
 
 #[test]
