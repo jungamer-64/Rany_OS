@@ -336,6 +336,9 @@ extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFr
     // 4. Wakerを起床させる（軽量）
     crate::task::interrupt_waker::wake_timer_task();
 
+    // 4.5. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
+
     // 5. EOI (End Of Interrupt) を送信
     unsafe {
         send_eoi(InterruptVector::Timer as u8 - PIC1_OFFSET);
@@ -390,6 +393,9 @@ extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStac
         crate::task::interrupt_waker::InterruptSource::Keyboard,
     );
 
+    // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Keyboard as u8);
+
     // EOI を送信
     unsafe {
         send_eoi(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
@@ -412,6 +418,9 @@ extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFr
         crate::task::interrupt_waker::InterruptSource::Mouse,
     );
 
+    // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Mouse as u8);
+
     // EOI を送信 (IRQ12はPIC2のIRQ4)
     unsafe {
         send_eoi(InterruptVector::Mouse as u8 - PIC1_OFFSET);
@@ -428,6 +437,9 @@ extern "x86-interrupt" fn com1_interrupt_handler(_stack_frame: InterruptStackFra
     crate::task::interrupt_waker::wake_from_interrupt(
         crate::task::interrupt_waker::InterruptSource::Serial,
     );
+
+    // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Com1 as u8);
 
     // EOI を送信 (IRQ4 = COM1)
     unsafe {

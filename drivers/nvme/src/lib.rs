@@ -38,14 +38,14 @@ pub mod controller;
 pub mod per_core;
 pub mod queue;
 
-// Modules with kernel deps - excluded for now
+// Modules migrated from kernel - now enabled
+pub mod async_io;
 pub mod driver_impl;
-pub mod polling_driver; // Uncommented and refactored // New wrapper
+pub mod global;
+pub mod polling_driver;
 
-// pub mod async_io;
-// pub mod global;
-// pub mod scheduler;
-// pub mod driver;
+// pub mod scheduler; // Requires kernel io_scheduler - stays local to kernel
+// pub mod driver; // Re-exports only - stays local to kernel
 
 // Re-exports
 pub use defs::{
@@ -68,3 +68,12 @@ pub use identify::{
 };
 
 pub use error::NvmeError;
+
+// Async I/O exports
+pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
+
+// Global driver exports
+pub use global::{get_stats, init, poll, poll_batch, with_driver, with_driver_mut};
+
+// Polling driver exports
+pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};

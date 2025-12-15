@@ -8,18 +8,18 @@ ExoRustは、以下の3つの原則に基づいて設計された次世代高性
 
 ```
 ┌───────────────────────────────────────────────────────────────────────┐
-│                    64-bit Virtual Address Space                        │
+│                    64-bit Virtual Address Space                       │
 ├───────────────────────────────────────────────────────────────────────┤
 │  0x0000_0000_0000_0000 ─────────────────────────────────────────────  │
 │  │ User Space (Applications & Services)                               │
 │  │ ├── Domain A: Web Server                                           │
 │  │ ├── Domain B: Database Engine                                      │
 │  │ └── Domain C: Network Stack                                        │
-│  │                                                                     │
+│  │                                                                    │
 │  0xFFFF_8000_0000_0000 ─────────────────────────────────────────────  │
 │  │ Kernel Direct Mapping (Physical Memory)                            │
 │  │ └── 1:1 mapping with 1GB huge pages                                │
-│  │                                                                     │
+│  │                                                                    │
 │  0xFFFF_FFFF_8000_0000 ─────────────────────────────────────────────  │
 │  │ Kernel Code & Data                                                 │
 │  │ ├── .text (read-only, executable)                                  │
@@ -58,25 +58,25 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Per-CPU Executor                              │
+│                        Per-CPU Executor                             │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│    Ready Queue          Running          Waiting                     │
+│                                                                     │
+│    Ready Queue          Running          Waiting                    │
 │   ┌───┬───┬───┐        ┌─────┐         ┌───────────┐                │
 │   │ T1│ T2│ T3│ ──────>│  T4 │         │ T5 (I/O)  │                │
 │   └───┴───┴───┘        └─────┘         │ T6 (Timer)│                │
 │         │                   │          └───────────┘                │
-│         │                   │                │                       │
+│         │                   │                │                      │
 │         │    Yield/Await    │     Waker.wake()                      │
-│         └───────────────────┘                │                       │
-│                                              │                       │
-│   ┌──────────────────────────────────────────┘                       │
-│   │                                                                  │
-│   │  Interrupt Handler                                               │
+│         └───────────────────┘                │                      │
+│                                              │                      │
+│   ┌──────────────────────────────────────────┘                      │
+│   │                                                                 │
+│   │  Interrupt Handler                                              │
 │   │  ├── Timer IRQ → Wake sleeping tasks                            │
 │   │  ├── Network IRQ → Wake network waiters                         │
 │   │  └── Disk IRQ → Wake I/O waiters                                │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -88,37 +88,37 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     Memory Allocation Hierarchy                      │
+│                     Memory Allocation Hierarchy                     │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
+│                                                                     │
 │  Tier 3: Per-CPU Slab Cache (Lock-free, fastest)                    │
-│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐            │
-│  │  CPU 0   │  │  CPU 1   │  │  CPU 2   │  │  CPU 3   │            │
-│  │ ┌──────┐ │  │ ┌──────┐ │  │ ┌──────┐ │  │ ┌──────┐ │            │
-│  │ │ 32B  │ │  │ │ 32B  │ │  │ │ 32B  │ │  │ │ 32B  │ │            │
-│  │ │ 64B  │ │  │ │ 64B  │ │  │ │ 64B  │ │  │ │ 64B  │ │            │
-│  │ │ 128B │ │  │ │ 128B │ │  │ │ 128B │ │  │ │ 128B │ │            │
-│  │ │ 256B │ │  │ │ 256B │ │  │ │ 256B │ │  │ │ 256B │ │            │
-│  │ └──────┘ │  │ └──────┘ │  │ └──────┘ │  │ └──────┘ │            │
-│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘            │
-│       │             │             │             │                    │
-│       └─────────────┼─────────────┼─────────────┘                    │
-│                     ▼                                                │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐             │
+│  │  CPU 0   │  │  CPU 1   │  │  CPU 2   │  │  CPU 3   │             │
+│  │ ┌──────┐ │  │ ┌──────┐ │  │ ┌──────┐ │  │ ┌──────┐ │             │
+│  │ │ 32B  │ │  │ │ 32B  │ │  │ │ 32B  │ │  │ │ 32B  │ │             │
+│  │ │ 64B  │ │  │ │ 64B  │ │  │ │ 64B  │ │  │ │ 64B  │ │             │
+│  │ │ 128B │ │  │ │ 128B │ │  │ │ 128B │ │  │ │ 128B │ │             │
+│  │ │ 256B │ │  │ │ 256B │ │  │ │ 256B │ │  │ │ 256B │ │             │
+│  │ └──────┘ │  │ └──────┘ │  │ └──────┘ │  │ └──────┘ │             │
+│  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘             │
+│       │             │             │             │                   │
+│       └─────────────┼─────────────┼─────────────┘                   │
+│                     ▼                                               │
 │  Tier 2: Global Buddy Allocator (Thread-safe)                       │
 │  ┌────────────────────────────────────────────────────────────────┐ │
-│  │  Orders: 0 (4KB) | 1 (8KB) | 2 (16KB) | ... | 9 (2MB)         │ │
-│  │  ┌─┐ ┌─┐ ┌─┐    ┌──┐ ┌──┐    ┌────┐    ...   ┌────────────┐   │ │
-│  │  │ │ │ │ │ │    │  │ │  │    │    │          │            │   │ │
-│  │  └─┘ └─┘ └─┘    └──┘ └──┘    └────┘          └────────────┘   │ │
+│  │  Orders: 0 (4KB) | 1 (8KB) | 2 (16KB) | ... | 9 (2MB)          │ │
+│  │  ┌─┐ ┌─┐ ┌─┐    ┌──┐ ┌──┐    ┌────┐    ...   ┌────────────┐    │ │
+│  │  │ │ │ │ │ │    │  │ │  │    │    │          │            │    │ │
+│  │  └─┘ └─┘ └─┘    └──┘ └──┘    └────┘          └────────────┘    │ │
 │  └────────────────────────────────────────────────────────────────┘ │
-│                     │                                                │
-│                     ▼                                                │
+│                     │                                               │
+│                     ▼                                               │
 │  Tier 1: Physical Frame Allocator (Bitmap-based)                    │
 │  ┌────────────────────────────────────────────────────────────────┐ │
 │  │  Physical Memory: 4KB | 2MB | 1GB frames                       │ │
 │  │  [1111000011110000...] bitmap                                  │ │
 │  └────────────────────────────────────────────────────────────────┘ │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -126,10 +126,10 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                        Exchange Heap System                          │
+│                        Exchange Heap System                         │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│   Domain A                    Exchange Heap              Domain B    │
+│                                                                     │
+│   Domain A                    Exchange Heap              Domain B   │
 │  ┌──────────┐               ┌─────────────┐            ┌──────────┐ │
 │  │ Private  │               │             │            │ Private  │ │
 │  │  Heap    │               │  ┌───────┐  │            │  Heap    │ │
@@ -137,17 +137,17 @@ Traditional OS                    ExoRust (SPL)
 │  │          │    Move ──────┼─►│ <T>   │  │            │          │ │
 │  │          │               │  └───────┘  │            │          │ │
 │  └──────────┘               │             │            └──────────┘ │
-│                             │  Heap       │                          │
-│                             │  Registry   │                          │
-│                             │  (owner     │                          │
-│                             │   tracking) │                          │
-│                             └─────────────┘                          │
-│                                                                      │
-│  Key Properties:                                                     │
+│                             │  Heap       │                         │
+│                             │  Registry   │                         │
+│                             │  (owner     │                         │
+│                             │   tracking) │                         │
+│                             └─────────────┘                         │
+│                                                                     │
+│  Key Properties:                                                    │
 │  • Ownership moves atomically (no copies)                           │
 │  • Original accessor loses access after move                        │
 │  • Registry tracks owner for crash recovery                         │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -159,11 +159,11 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    Adaptive Polling System                           │
+│                    Adaptive Polling System                          │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Packet Rate                                                         │
-│       ▲                                                              │
+│                                                                     │
+│  Packet Rate                                                        │
+│       ▲                                                             │
 │       │                    ┌─────────────────────┐                  │
 │ High  │    ________________│  Polling Mode       │                  │
 │       │   /                │  (Busy Poll)        │                  │
@@ -175,11 +175,11 @@ Traditional OS                    ExoRust (SPL)
 │       │                    │  - Low latency      │                  │
 │       │                    │  - Power efficient  │                  │
 │       └────────────────────└─────────────────────┘──────► Time      │
-│                                                                      │
+│                                                                     │
 │  Transition thresholds:                                             │
 │  • Switch to polling: > 100K pps                                    │
 │  • Switch to interrupt: < 10K pps                                   │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -187,44 +187,44 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    Zero-Copy Network Path                            │
+│                    Zero-Copy Network Path                           │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  ┌─────────────┐                                                     │
+│                                                                     │
+│  ┌─────────────┐                                                    │
 │  │   NIC HW    │  DMA to pre-allocated buffers                      │
-│  └──────┬──────┘                                                     │
-│         │ (ownership: NIC → Driver)                                  │
-│         ▼                                                            │
-│  ┌─────────────┐                                                     │
+│  └──────┬──────┘                                                    │
+│         │ (ownership: NIC → Driver)                                 │
+│         ▼                                                           │
+│  ┌─────────────┐                                                    │
 │  │  Mempool    │  Lock-free buffer management                       │
-│  │  (per-core) │                                                     │
-│  └──────┬──────┘                                                     │
-│         │ (ownership: Mempool → Ethernet)                            │
-│         ▼                                                            │
-│  ┌─────────────┐                                                     │
+│  │  (per-core) │                                                    │
+│  └──────┬──────┘                                                    │
+│         │ (ownership: Mempool → Ethernet)                           │
+│         ▼                                                           │
+│  ┌─────────────┐                                                    │
 │  │  Ethernet   │  Parse header, validate                            │
-│  │   Layer     │                                                     │
-│  └──────┬──────┘                                                     │
-│         │ (ownership: Ethernet → IP)                                 │
-│         ▼                                                            │
-│  ┌─────────────┐                                                     │
+│  │   Layer     │                                                    │
+│  └──────┬──────┘                                                    │
+│         │ (ownership: Ethernet → IP)                                │
+│         ▼                                                           │
+│  ┌─────────────┐                                                    │
 │  │    IP       │  Route, fragment handling                          │
-│  │   Layer     │                                                     │
-│  └──────┬──────┘                                                     │
-│         │ (ownership: IP → TCP/UDP)                                  │
-│         ▼                                                            │
-│  ┌─────────────┐                                                     │
+│  │   Layer     │                                                    │
+│  └──────┬──────┘                                                    │
+│         │ (ownership: IP → TCP/UDP)                                 │
+│         ▼                                                           │
+│  ┌─────────────┐                                                    │
 │  │  TCP/UDP    │  Connection state, checksum                        │
-│  │   Layer     │                                                     │
-│  └──────┬──────┘                                                     │
-│         │ (ownership: Transport → Application)                       │
-│         ▼                                                            │
-│  ┌─────────────┐                                                     │
+│  │   Layer     │                                                    │
+│  └──────┬──────┘                                                    │
+│         │ (ownership: Transport → Application)                      │
+│         ▼                                                           │
+│  ┌─────────────┐                                                    │
 │  │ Application │  Process data, then Drop → back to Mempool         │
-│  └─────────────┘                                                     │
-│                                                                      │
+│  └─────────────┘                                                    │
+│                                                                     │
 │  Total copies: 0 (data stays in original DMA buffer)                │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -236,11 +236,11 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                       Domain Isolation Model                         │
+│                       Domain Isolation Model                        │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
+│                                                                     │
 │  ┌──────────────────────────────────────────────────────────────┐   │
-│  │                     Domain Registry                           │   │
+│  │                     Domain Registry                          │   │
 │  │  ┌────────────────────────────────────────────────────────┐  │   │
 │  │  │ ID │ Name       │ State    │ Capabilities │ Memory     │  │   │
 │  │  ├────┼────────────┼──────────┼──────────────┼────────────┤  │   │
@@ -250,18 +250,18 @@ Traditional OS                    ExoRust (SPL)
 │  │  │ 3  │ app_server │ Running  │ NET          │ 64MB       │  │   │
 │  │  └────┴────────────┴──────────┴──────────────┴────────────┘  │   │
 │  └──────────────────────────────────────────────────────────────┘   │
-│                                                                      │
-│  Domain Lifecycle:                                                   │
-│                                                                      │
+│                                                                     │
+│  Domain Lifecycle:                                                  │
+│                                                                     │
 │      Created ──► Initializing ──► Running ──► Stopping ──► Stopped  │
-│         │              │             │            │            │     │
-│         │              │             │            │            │     │
-│         │              ▼             ▼            │            │     │
-│         │           Failed        Crashed ───────┘            │     │
-│         │              │             │                         │     │
-│         └──────────────┴─────────────┴─────────────────────────┘     │
-│                           (Restart possible)                         │
-│                                                                      │
+│         │              │             │            │            │    │
+│         │              │             │            │            │    │
+│         │              ▼             ▼            │            │    │
+│         │           Failed        Crashed ───────┘             │    │
+│         │              │             │                         │    │
+│         └──────────────┴─────────────┴─────────────────────────┘    │
+│                           (Restart possible)                        │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -269,10 +269,10 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     Panic Isolation & Recovery                       │
+│                     Panic Isolation & Recovery                      │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Domain A (Caller)              Domain B (Service)                   │
+│                                                                     │
+│  Domain A (Caller)              Domain B (Service)                  │
 │  ┌──────────────────┐          ┌──────────────────┐                 │
 │  │                  │  call()  │                  │                 │
 │  │    client_code() ├─────────►│  service_method()│                 │
@@ -296,13 +296,13 @@ Traditional OS                    ExoRust (SPL)
 │                                │  │  Restart   │  │                 │
 │                                │  └────────────┘  │                 │
 │                                └──────────────────┘                 │
-│                                                                      │
+│                                                                     │
 │  Key Points:                                                        │
-│  • Panic does not propagate to caller                              │
-│  • Caller receives Err(DomainPanicked)                             │
-│  • Crashed domain's resources are reclaimed                        │
-│  • Domain can be restarted automatically                           │
-│                                                                      │
+│  • Panic does not propagate to caller                               │
+│  • Caller receives Err(DomainPanicked)                              │
+│  • Crashed domain's resources are reclaimed                         │
+│  • Domain can be restarted automatically                            │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -333,35 +333,35 @@ Traditional OS                    ExoRust (SPL)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                    Language-Based Security                           │
+│                    Language-Based Security                          │
 ├─────────────────────────────────────────────────────────────────────┤
-│                                                                      │
-│  Source Code                                                         │
-│      │                                                               │
-│      ▼                                                               │
+│                                                                     │
+│  Source Code                                                        │
+│      │                                                              │
+│      ▼                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    Rust Compiler                             │    │
-│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐   │    │
-│  │  │ Borrow Check  │  │ Type Check    │  │ Unsafe Audit  │   │    │
-│  │  │ (ownership)   │  │ (soundness)   │  │ (TCB minimal) │   │    │
-│  │  └───────────────┘  └───────────────┘  └───────────────┘   │    │
+│  │                    Rust Compiler                            │    │
+│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐    │    │
+│  │  │ Borrow Check  │  │ Type Check    │  │ Unsafe Audit  │    │    │
+│  │  │ (ownership)   │  │ (soundness)   │  │ (TCB minimal) │    │    │
+│  │  └───────────────┘  └───────────────┘  └───────────────┘    │    │
 │  └─────────────────────────────────────────────────────────────┘    │
-│      │                                                               │
-│      ▼                                                               │
+│      │                                                              │
+│      ▼                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    Signed Binary                             │    │
-│  │  • Cryptographic signature                                   │    │
-│  │  • Safe Rust attestation                                     │    │
+│  │                    Signed Binary                            │    │
+│  │  • Cryptographic signature                                  │    │
+│  │  • Safe Rust attestation                                    │    │
 │  └─────────────────────────────────────────────────────────────┘    │
-│      │                                                               │
-│      ▼                                                               │
+│      │                                                              │
+│      ▼                                                              │
 │  ┌─────────────────────────────────────────────────────────────┐    │
-│  │                    Kernel Loader                             │    │
-│  │  • Verify signature                                          │    │
-│  │  • Check Safe Rust compliance                                │    │
-│  │  • Load into SAS                                             │    │
+│  │                    Kernel Loader                            │    │
+│  │  • Verify signature                                         │    │
+│  │  • Check Safe Rust compliance                               │    │
+│  │  • Load into SAS                                            │    │
 │  └─────────────────────────────────────────────────────────────┘    │
-│                                                                      │
+│                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -422,7 +422,7 @@ ExoRustでは、POSIX由来の命名を避け、SPL/SASアーキテクチャを�
 
 ## 参考文献
 
-1. Theseus OS - https://www.theseus-os.com/
-2. RedLeaf - https://www.usenix.org/conference/osdi20/presentation/narayanan-vikram
-3. Asterinas - https://asterinas.github.io/
-4. phil-opp's Writing an OS in Rust - https://os.phil-opp.com/
+1. Theseus OS - <https://www.theseus-os.com/>
+2. RedLeaf - <https://www.usenix.org/conference/osdi20/presentation/narayanan-vikram>
+3. Asterinas - <https://asterinas.github.io/>
+4. phil-opp's Writing an OS in Rust - <https://os.phil-opp.com/>
