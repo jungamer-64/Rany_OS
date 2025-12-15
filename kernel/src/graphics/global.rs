@@ -103,36 +103,44 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
     let offset = physical_memory_offset();
     let mut manager = unsafe { PageTableManager::from_current_cr3(offset) };
 
-    const PAGE_SIZE: u64 = 4096;
-    let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+    // 仮想アドレスと物理アドレスの開始位置を取得
+    let virt_start = VirtAddr::new(virt_addr);
 
-    let mut remapped_count = 0;
+    // カーネル空間（Higher Half）にマップされていると仮定して物理アドレスを計算
+    // Limineはリニアにマップしてくれているはずだが、念のためtranslateで確認
+    let phys_start = if let Some(phys) = manager.translate(virt_start) {
+        phys
+    } else {
+        log::error!(
+            "[GRAPHICS] Failed to translate framebuffer virtual address {:#x}\n",
+            virt_addr
+        );
+        return;
+    };
 
-    for i in 0..num_pages {
-        let virt = VirtAddr::new(virt_addr + i * PAGE_SIZE);
+    log::info!(
+        "[GRAPHICS] Remapping framebuffer: Virt={:#x} Phys={:#x} Size={:#x}\n",
+        virt_start.as_u64(),
+        phys_start.as_u64(),
+        size
+    );
 
-        // 現在の物理アドレスを取得（安全のためtranslateを使用）
-        if let Some(phys) = manager.translate(virt) {
-            unsafe {
-                // 一旦アンマップしてからWC属性で再マップ
-                // エラーは無視（クリティカルではないため）
-                if manager.unmap_page(virt).is_ok() {
-                    if manager
-                        .map_page(virt, phys, PageFlags::write_combining())
-                        .is_ok()
-                    {
-                        remapped_count += 1;
-                    }
-                }
+    unsafe {
+        // 1. 既存のマッピングを範囲解除
+        // エラーは無視（一部マップされていない可能性もあるため許容）
+        let _ = manager.unmap_range(virt_start, size);
+
+        // 2. Write-Combining属性で範囲マップ
+        // map_rangeはアラインメントとサイズに基づいて自動的にHuge Page (2MiB/1GiB)を使用する
+        match manager.map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
+            Ok(_) => {
+                log::info!("[GRAPHICS] Framebuffer remapped successfully with WC attributes\n");
+            }
+            Err(e) => {
+                log::error!("[GRAPHICS] Failed to remap framebuffer: {:?}\n", e);
             }
         }
     }
-
-    log::info!(
-        "[GRAPHICS] Framebuffer remapped with Write-Combining ({} / {} pages)\n",
-        remapped_count,
-        num_pages
-    );
 }
 
 /// マスク情報からピクセルフォーマットを判定

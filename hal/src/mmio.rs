@@ -5,24 +5,28 @@ use core::marker::Copy;
 
 /// Read an 8-bit value from the MMIO address
 #[inline]
+#[must_use]
 pub fn mmio_read_u8(addr: usize) -> u8 {
     unsafe { core::ptr::read_volatile(addr as *const u8) }
 }
 
 /// Read a 16-bit value from the MMIO address
 #[inline]
+#[must_use]
 pub fn mmio_read_u16(addr: usize) -> u16 {
     unsafe { core::ptr::read_volatile(addr as *const u16) }
 }
 
 /// Read a 32-bit value from the MMIO address
 #[inline]
+#[must_use]
 pub fn mmio_read_u32(addr: usize) -> u32 {
     unsafe { core::ptr::read_volatile(addr as *const u32) }
 }
 
 /// Read a 64-bit value from the MMIO address
 #[inline]
+#[must_use]
 pub fn mmio_read_u64(addr: usize) -> u64 {
     unsafe { core::ptr::read_volatile(addr as *const u64) }
 }
@@ -62,6 +66,7 @@ pub fn mmio_write_u64(addr: usize, val: u64) {
 /// Generic volatile read for Copy types. Useful for reading struct types or
 /// custom-sized types from memory-mapped or volatile memory locations.
 #[inline]
+#[must_use]
 pub fn volatile_read<T: Copy>(addr: usize) -> T {
     // TODO: Consider adding optional runtime or compile-time checks to validate
     // that `addr` points to a valid mmio region for this device/driver. For now
@@ -109,6 +114,7 @@ impl<T> MmioReg<T> {
     /// The caller must ensure that `base + offset` points to a valid
     /// memory-mapped I/O register for the lifetime of this accessor.
     #[inline]
+    #[must_use]
     pub const fn new(base: usize, offset: usize) -> Self {
         Self {
             addr: base + offset,
@@ -118,6 +124,7 @@ impl<T> MmioReg<T> {
 
     /// Create a new MMIO register accessor from a direct address.
     #[inline]
+    #[must_use]
     pub const fn from_addr(addr: usize) -> Self {
         Self {
             addr,
@@ -127,6 +134,7 @@ impl<T> MmioReg<T> {
 
     /// Get the raw address of this register.
     #[inline]
+    #[must_use]
     pub const fn addr(&self) -> usize {
         self.addr
     }
@@ -135,6 +143,7 @@ impl<T> MmioReg<T> {
 impl MmioReg<u8> {
     /// Read from the register.
     #[inline]
+    #[must_use]
     pub fn read(&self) -> u8 {
         unsafe { core::ptr::read_volatile(self.addr as *const u8) }
     }
@@ -149,6 +158,7 @@ impl MmioReg<u8> {
 impl MmioReg<u16> {
     /// Read from the register.
     #[inline]
+    #[must_use]
     pub fn read(&self) -> u16 {
         unsafe { core::ptr::read_volatile(self.addr as *const u16) }
     }
@@ -163,6 +173,7 @@ impl MmioReg<u16> {
 impl MmioReg<u32> {
     /// Read from the register.
     #[inline]
+    #[must_use]
     pub fn read(&self) -> u32 {
         unsafe { core::ptr::read_volatile(self.addr as *const u32) }
     }
@@ -184,6 +195,7 @@ impl MmioReg<u32> {
 impl MmioReg<u64> {
     /// Read from the register.
     #[inline]
+    #[must_use]
     pub fn read(&self) -> u64 {
         unsafe { core::ptr::read_volatile(self.addr as *const u64) }
     }
@@ -253,13 +265,15 @@ pub fn stream_write_u64(addr: usize, val: u64) {
 ///
 /// # Safety
 /// - Caller must ensure the address is 16-byte aligned
-/// - Caller must ensure SSE2 is available (standard on x86_64)
+/// - Caller must ensure SSE2 is available (standard on `x86_64`)
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
 pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
-    use core::arch::x86_64::*;
-    let v = _mm_loadu_si128(data.as_ptr() as *const __m128i);
-    _mm_stream_si128(addr as *mut __m128i, v);
+    use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_stream_si128};
+    unsafe {
+        let v = _mm_loadu_si128(data.as_ptr().cast::<__m128i>());
+        _mm_stream_si128(addr as *mut __m128i, v);
+    }
 }
 
 /// Write 256 bits (32 bytes) using AVX non-temporal store.
@@ -272,9 +286,11 @@ pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
 #[target_feature(enable = "avx")]
 #[inline]
 pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
-    use core::arch::x86_64::*;
-    let v = _mm256_loadu_si256(data.as_ptr() as *const __m256i);
-    _mm256_stream_si256(addr as *mut __m256i, v);
+    use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_stream_si256};
+    unsafe {
+        let v = _mm256_loadu_si256(data.as_ptr().cast::<__m256i>());
+        _mm256_stream_si256(addr as *mut __m256i, v);
+    }
 }
 
 /// Write a contiguous slice of bytes using streaming stores.
@@ -287,34 +303,38 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
     let mut i = 0usize;
     let len = data.len();
 
-    // Handle leading unaligned bytes (write as u8 until 8-byte aligned)
-    while i < len && (addr & 7) != 0 {
-        core::ptr::write_volatile(addr as *mut u8, data[i]);
-        addr += 1;
-        i += 1;
-    }
+    unsafe {
+        // Handle leading unaligned bytes (write as u8 until 8-byte aligned)
+        while i < len && (addr & 7) != 0 {
+            core::ptr::write_volatile(addr as *mut u8, data[i]);
+            addr += 1;
+            i += 1;
+        }
 
-    // Bulk streaming writes using u64 (8 bytes at a time)
-    while i + 8 <= len {
-        let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u64);
-        stream_write_u64(addr, v);
-        addr += 8;
-        i += 8;
-    }
+        // Bulk streaming writes using u64 (8 bytes at a time)
+        while i + 8 <= len {
+            let v = core::ptr::read_unaligned(data.as_ptr().add(i).cast::<u64>());
+            stream_write_u64(addr, v);
+            addr += 8;
+            i += 8;
+        }
 
-    // Handle trailing bytes
-    while i < len {
-        core::ptr::write_volatile(addr as *mut u8, data[i]);
-        addr += 1;
-        i += 1;
+        // Handle trailing bytes
+        while i < len {
+            core::ptr::write_volatile(addr as *mut u8, data[i]);
+            addr += 1;
+            i += 1;
+        }
     }
 }
 
 /// Fallback for non-x86 architectures: just use volatile writes
 #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
 pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
-    for &byte in data {
-        core::ptr::write_volatile(addr as *mut u8, byte);
-        addr += 1;
+    unsafe {
+        for &byte in data {
+            core::ptr::write_volatile(addr as *mut u8, byte);
+            addr += 1;
+        }
     }
 }

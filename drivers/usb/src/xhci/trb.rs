@@ -220,6 +220,8 @@ impl Trb {
 
     /// Setup Stage TRB を作成
     pub fn setup_stage(setup: &SetupPacket, transfer_type: u8, cycle: bool) -> Self {
+        // SAFETY: 'setup' is a valid reference to SetupPacket, which is 8 bytes.
+        // Reinterpreting as u8 slice of length 8 is safe.
         let setup_bytes = unsafe { core::slice::from_raw_parts(setup as *const _ as *const u8, 8) };
         let parameter = u64::from_le_bytes([
             setup_bytes[0],

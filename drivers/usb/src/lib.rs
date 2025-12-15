@@ -18,6 +18,7 @@
 
 #![no_std]
 #![allow(dead_code)]
+#![deny(clippy::missing_safety_doc)]
 
 extern crate alloc;
 

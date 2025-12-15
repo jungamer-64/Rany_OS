@@ -50,31 +50,9 @@ impl BitmapFont {
         color: Color,
         bg: Option<Color>,
     ) {
-        let c = c as usize;
-        if c >= 128 {
-            return;
-        }
-
-        let glyph_start = c * self.height as usize;
-        let glyph_end = glyph_start + self.height as usize;
-
-        if glyph_end > self.data.len() {
-            return;
-        }
-
-        for (row, &byte) in self.data[glyph_start..glyph_end].iter().enumerate() {
-            for col in 0..self.width {
-                let pixel_on = (byte >> (7 - col)) & 1 != 0;
-                let py = y + row as i32;
-                let px = x + col as i32;
-
-                if pixel_on {
-                    fb.set_pixel(px, py, color);
-                } else if let Some(bg_color) = bg {
-                    fb.set_pixel(px, py, bg_color);
-                }
-            }
-        }
+        // Delegate to Framebuffer's optimized single-glyph path which uses
+        // 64-bit writes / run-write helpers when possible.
+        fb.draw_char_8x16(x, y, c, color, bg);
     }
 
     /// 文字列を描画し、描画終了位置（次の文字の開始X座標）を返す

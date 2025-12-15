@@ -51,14 +51,39 @@ impl<'a> MmioWriter<'a> {
         let mut i = 0usize;
         let len = data.len();
 
-        // Align to 8-bytes boundary by writing 1..=7 initial bytes
+        // Align to 8-bytes boundary. If pointer is 4 mod 8 and at least
+        // 4 bytes remain, write a single u32 to reach 8-byte alignment
+        // (faster than 4 u8 volatile writes). Otherwise emit up to 7 u8
+        // writes to reach the 8-byte boundary.
         let align8 = ptr & 7;
         if align8 != 0 {
-            let to_align = core::cmp::min(8 - align8, len);
-            for _ in 0..to_align {
-                unsafe { mmio::volatile_write::<u8>(ptr, data[i]) };
-                ptr += 1;
-                i += 1;
+            if align8 == 4 && i + 4 <= len {
+                unsafe {
+                    #[cfg(target_endian = "little")]
+                    {
+                        let v = core::ptr::read_unaligned(data.as_ptr().add(i) as *const u32);
+                        mmio::mmio_write_u32(ptr, v);
+                    }
+                    #[cfg(not(target_endian = "little"))]
+                    {
+                        let v = u32::from_le_bytes([
+                            data[i],
+                            data[i + 1],
+                            data[i + 2],
+                            data[i + 3],
+                        ]);
+                        mmio::mmio_write_u32(ptr, v);
+                    }
+                }
+                ptr += 4;
+                i += 4;
+            } else {
+                let to_align = core::cmp::min(8 - align8, len - i);
+                for _ in 0..to_align {
+                    unsafe { mmio::volatile_write::<u8>(ptr, data[i]) };
+                    ptr += 1;
+                    i += 1;
+                }
             }
         }
 

@@ -12,8 +12,11 @@ use alloc::vec::Vec;
 use core::ptr;
 use spin::Mutex;
 
-use super::info::*;
-use super::tables::*;
+use super::info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
+use super::tables::{
+    AcpiError, AcpiSdtHeader, Madt, MadtEntryHeader, MadtInterruptOverride, MadtIoApic,
+    MadtLocalApic, MadtLocalApicOverride, Mcfg, McfgEntry, RSDP_SIGNATURE, Rsdp, signature,
+};
 
 // ============================================================================
 // ACPI Parser
@@ -29,7 +32,7 @@ pub struct AcpiParser {
 
 impl AcpiParser {
     /// Create a new ACPI parser
-    pub fn new(rsdp_address: u64) -> Self {
+    pub const fn new(rsdp_address: u64) -> Self {
         AcpiParser {
             rsdp_address,
             info: None,
@@ -58,13 +61,31 @@ impl AcpiParser {
         let mut addr = start;
         while addr < end {
             let ptr = addr as *const [u8; 8];
-            unsafe {
-                if &*ptr == RSDP_SIGNATURE {
-                    // Validate checksum
-                    let rsdp = &*(addr as *const Rsdp);
-                    if rsdp.validate() {
-                        return Some(addr);
-                    }
+            // Safety: We are scanning physical memory regions that are known to be mapped or accessible.
+            // However, since this is a raw pointer dereference, we keep the unsafe block for the dereference itself.
+            // The lint complained about "unnecessary unsafe block" which usually means the block is around safe code,
+            // or we are already in an unsafe block/fn and wrapping safe operations in unsafe.
+            // BUT: search_region IS unsafe. So operations inside it don't need `unsafe {}` unless they are unsafe operations.
+            // Dereferencing raw pointer `*ptr` IS unsafe. So `unsafe { }` is required unless the function body is treated as unsafe block (which it is in older Rust, but with `unsafe_op_in_unsafe_fn` lint, it might require explicit block).
+            // Wait, the lint says "unnecessary unsafe block".
+            // If `unsafe_op_in_unsafe_fn` is NOT enabled/triggered, then the whole body is unsafe.
+            // If the lint says it's unnecessary, then likely we are in a context where it's redundant.
+            // "unnecessary unsafe block ... from rustc".
+
+            // Checking line 126 in original file:
+            // 126:         let entries_ptr = unsafe {
+            // 127:             (rsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u32
+            // 128:         };
+            // This is just pointer arithmetic (safe) and casting (safe). No unsafe op here.
+
+            // Let's fix line 126, 152, 177, 241 as per the lint report.
+
+            // SAFETY: We checked that addr is valid for access in search_region
+            if unsafe { &*ptr } == RSDP_SIGNATURE {
+                // Validate checksum
+                let rsdp = unsafe { &*(addr as *const Rsdp) };
+                if rsdp.validate() {
+                    return Some(addr);
                 }
             }
             addr += 16; // RSDP is always aligned to 16 bytes
@@ -86,12 +107,10 @@ impl AcpiParser {
         let mut info = AcpiInfo::new(rsdp.revision);
 
         // Get table addresses from XSDT (ACPI 2.0+) or RSDT (ACPI 1.0)
-        let table_addresses = unsafe {
-            if rsdp.is_xsdt_available() {
-                self.parse_xsdt(rsdp.xsdt_address)?
-            } else {
-                self.parse_rsdt(rsdp.rsdt_address as u64)?
-            }
+        let table_addresses = if rsdp.is_xsdt_available() {
+            self.parse_xsdt(rsdp.xsdt_address)?
+        } else {
+            self.parse_rsdt(rsdp.rsdt_address as u64)?
         };
 
         // Parse individual tables
@@ -99,9 +118,9 @@ impl AcpiParser {
             let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
 
             if header.signature == signature::MADT {
-                unsafe { self.parse_madt(table_addr, &mut info)? };
+                self.parse_madt(table_addr, &mut info)?;
             } else if header.signature == signature::MCFG {
-                unsafe { self.parse_mcfg(table_addr, &mut info)? };
+                self.parse_mcfg(table_addr, &mut info)?;
             }
         }
 
@@ -123,9 +142,10 @@ impl AcpiParser {
         }
 
         let entry_count = (header.length as usize - core::mem::size_of::<AcpiSdtHeader>()) / 4;
-        let entries_ptr = unsafe {
-            (rsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u32
-        };
+
+        // Removed unnecessary unsafe block around pointer arithmetic
+        let entries_ptr =
+            (rsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u32;
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
@@ -149,9 +169,10 @@ impl AcpiParser {
         }
 
         let entry_count = (header.length as usize - core::mem::size_of::<AcpiSdtHeader>()) / 8;
-        let entries_ptr = unsafe {
-            (xsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u64
-        };
+
+        // Removed unnecessary unsafe block
+        let entries_ptr =
+            (xsdt_address as usize + core::mem::size_of::<AcpiSdtHeader>()) as *const u64;
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
@@ -174,7 +195,8 @@ impl AcpiParser {
         info.has_legacy_pics = madt.has_legacy_pics();
 
         // Parse MADT entries
-        let entries_start = unsafe { madt_address as usize + core::mem::size_of::<Madt>() };
+        // Removed unnecessary unsafe block
+        let entries_start = madt_address as usize + core::mem::size_of::<Madt>();
         let entries_end = madt_address as usize + madt.header.length as usize;
 
         let mut offset = entries_start;
@@ -238,7 +260,8 @@ impl AcpiParser {
         }
 
         // Parse MCFG entries
-        let entries_start = unsafe { mcfg_address as usize + core::mem::size_of::<Mcfg>() };
+        // Removed unnecessary unsafe block
+        let entries_start = mcfg_address as usize + core::mem::size_of::<Mcfg>();
         let entries_end = mcfg_address as usize + mcfg.header.length as usize;
 
         let entry_size = core::mem::size_of::<McfgEntry>();

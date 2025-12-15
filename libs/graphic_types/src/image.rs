@@ -33,7 +33,7 @@ fn fast_sqrt(x: f32) -> f32 {
 
     // 初期推定値（ビット操作による高速近似）
     let mut i = x.to_bits();
-    i = 0x5f3759df - (i >> 1);
+    i = 0x5f37_59df - (i >> 1);
     let mut y = f32::from_bits(i);
 
     // ニュートン法で精度を上げる
@@ -218,7 +218,8 @@ impl<'a> ImageViewMut<'a> {
         }
         let bpp = self.format.bytes_per_pixel();
         let offset = (y as usize) * (self.stride as usize) + (x as usize) * bpp;
-        self.format.encode_color_bytes(color, &mut self.data[offset..]);
+        self.format
+            .encode_color_bytes(color, &mut self.data[offset..]);
     }
 
     /// Fill a rectangle with a solid color
@@ -246,7 +247,6 @@ pub struct Image {
     /// 高さ
     height: u32,
 }
-
 
 impl Image {
     /// Try to create an empty image with checked arithmetic
@@ -527,7 +527,7 @@ impl Image {
                 let color = self.get_pixel(x, y);
                 let gray =
                     (color.red as u32 * 299 + color.green as u32 * 587 + color.blue as u32 * 114)
-                        / 1000;
+                        / 1_000;
                 result.set_pixel(
                     x,
                     y,
@@ -1163,6 +1163,7 @@ pub fn alpha_blend(bg: Color, fg: Color) -> Color {
 }
 
 /// バイリニア補間
+#[allow(clippy::many_single_char_names)]
 fn bilinear_interpolate(c00: Color, c10: Color, c01: Color, c11: Color, x: f32, y: f32) -> Color {
     let inv_x = 1.0 - x;
     let inv_y = 1.0 - y;
@@ -1401,12 +1402,12 @@ mod tests {
     #[test]
     fn test_image_view_mut_set_pixel() {
         let mut img = Image::new(10, 10);
-        
+
         {
             let mut view = img.as_view_mut();
             view.set_pixel(3, 3, Color::BLUE);
         }
-        
+
         let pixel = img.get_pixel(3, 3);
         assert_eq!(pixel.blue, 255);
         assert_eq!(pixel.red, 0);
@@ -1415,12 +1416,12 @@ mod tests {
     #[test]
     fn test_image_view_mut_fill_rect() {
         let mut img = Image::new(10, 10);
-        
+
         {
             let mut view = img.as_view_mut();
             view.fill_rect(Rect::new(2, 2, 3, 3), Color::GREEN);
         }
-        
+
         // Inside rect
         assert_eq!(img.get_pixel(3, 3).green, 255);
         // Outside rect
@@ -1431,7 +1432,7 @@ mod tests {
     fn test_image_view_out_of_bounds() {
         let img = Image::new(10, 10);
         let view = img.as_view();
-        
+
         // Should return TRANSPARENT for out-of-bounds
         let pixel = view.get_pixel(100, 100);
         assert_eq!(pixel.alpha, 0);
@@ -1441,19 +1442,15 @@ mod tests {
     fn test_image_view_external_buffer() {
         // Simulate VRAM buffer
         let mut buffer = vec![0u8; 100 * 4]; // 10x10 RGBA
-        
-        let mut view = ImageViewMut::new(
-            &mut buffer,
-            10, 10, 40,
-            PixelFormat::Rgba8888
-        ).unwrap();
-        
+
+        let mut view = ImageViewMut::new(&mut buffer, 10, 10, 40, PixelFormat::Rgba8888).unwrap();
+
         view.set_pixel(0, 0, Color::RED);
-        
+
         // Check raw buffer was modified
         assert_eq!(buffer[0], 255); // R
-        assert_eq!(buffer[1], 0);   // G
-        assert_eq!(buffer[2], 0);   // B
+        assert_eq!(buffer[1], 0); // G
+        assert_eq!(buffer[2], 0); // B
         assert_eq!(buffer[3], 255); // A
     }
 
@@ -1461,16 +1458,12 @@ mod tests {
     fn test_image_view_stride() {
         // Buffer with padding (stride 48 instead of 40 for 10 pixels)
         let mut buffer = vec![0u8; 48 * 10]; // 10 rows with 8 byte padding each
-        
-        let mut view = ImageViewMut::new(
-            &mut buffer,
-            10, 10, 48,
-            PixelFormat::Rgba8888
-        ).unwrap();
-        
+
+        let mut view = ImageViewMut::new(&mut buffer, 10, 10, 48, PixelFormat::Rgba8888).unwrap();
+
         // Set pixel on second row
         view.set_pixel(0, 1, Color::BLUE);
-        
+
         // Should be at offset 48 (stride), not 40
         assert_eq!(buffer[48 + 2], 255); // B at row 1
     }
