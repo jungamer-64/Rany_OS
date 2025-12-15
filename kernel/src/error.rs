@@ -400,6 +400,9 @@ impl From<crate::loader::LoadError> for KernelError {
             LE::UnsafeNotAllowed => LoaderError::LoadFailed,
             LE::AlreadyLoaded => LoaderError::LoadFailed,
             LE::AbiIncompatible(_) => LoaderError::LoadFailed,
+            LE::CellNotFound => LoaderError::LoadFailed,
+            LE::RelocationFailed(_) => LoaderError::RelocationFailed,
+            LE::InvalidPermissions(_) => LoaderError::InvalidSecurityLevel,
         })
     }
 }

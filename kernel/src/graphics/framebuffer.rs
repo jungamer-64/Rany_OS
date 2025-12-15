@@ -49,10 +49,158 @@ pub fn current_packer_mode() -> u8 {
 // These are gated behind `feature = "bench"` to avoid exposing internals
 // in production builds.
 #[cfg(feature = "bench")]
+// Bench-only counter for sfence calls issued by this module. Tests and
+// benchmarks can query/reset this to verify batching behavior.
+static SFENCE_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(feature = "bench")]
 impl Framebuffer {
+    #[inline]
+    fn counted_sfence(&self) {
+        use core::sync::atomic::Ordering;
+        SFENCE_COUNT.fetch_add(1, Ordering::SeqCst);
+        mmio::sfence();
+    }
     /// Call scalar packer directly for micro-benchmarks
     pub fn bench_pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8]) {
         Self::pack_rgba_to_bgr24_scalar(src, dst);
+    }
+
+    /// Bench-only: get the current sfence call count recorded by hal::mmio
+    #[cfg(feature = "bench")]
+    pub fn bench_get_sfence_count(&self) -> usize {
+        use core::sync::atomic::Ordering;
+        SFENCE_COUNT.load(Ordering::SeqCst)
+    }
+
+    /// Bench-only: reset the sfence call count recorded by hal::mmio
+    #[cfg(feature = "bench")]
+    pub fn bench_reset_sfence_count(&self) {
+        use core::sync::atomic::Ordering;
+        SFENCE_COUNT.store(0, Ordering::SeqCst);
+    }
+
+    /// Bench-only helper that fills a rect but performs a per-row sfence
+    /// on each MMIO write (simulates the older, less efficient behavior).
+    #[cfg(feature = "bench")]
+    pub fn bench_fill_rect_per_row_fenced(&mut self, rect: Rect, color: Color) {
+        // Clip
+        let mut r = rect;
+        r.x = r.x.max(self.clip.x);
+        r.y = r.y.max(self.clip.y);
+        let right = r.right().min(self.clip.right());
+        let bottom = r.bottom().min(self.clip.bottom());
+        r.width = (right - r.x).max(0) as u32;
+        r.height = (bottom - r.y).max(0) as u32;
+        if r.width == 0 || r.height == 0 {
+            return;
+        }
+
+        self.stats.rectangles_drawn += 1;
+        self.stats.pixels_drawn += (r.width * r.height) as usize;
+        self.mark_dirty(r);
+
+        let stride = self.info.stride as usize;
+
+        // Only implement for 32-bit formats for bench
+        if self.info.format.bytes_per_pixel() == 4 {
+            let color_u32 = color.to_u32();
+            // Simulate per-row fenced writes
+            for y in r.y..r.bottom() {
+                let offset = (y as usize * stride as usize) + (r.x as usize * 4);
+                let addr = self.buffer as usize + offset;
+                // This helper issues an sfence per call
+                self.write_u32_run_streaming(addr, r.width as usize, color_u32);
+            }
+        } else {
+            // Fallback to existing fill_rect behavior for other formats
+            self.fill_rect(r, color);
+        }
+    }
+
+    // Bench-only helper: simulate the old per-glyph fenced behavior for
+    // 32-bit formats. This is compiled only with `--features bench` and
+    // is used by the benchmarking harness to measure the difference
+    // between issuing an sfence per glyph row vs batching a single
+    // sfence after many writes.
+    #[cfg(feature = "bench")]
+    pub fn bench_draw_text_per_glyph_fenced(
+        &mut self,
+        x: i32,
+        y: i32,
+        text: &str,
+        color: Color,
+        bg_color: Color,
+    ) {
+        let font = BitmapFont::default_8x16();
+        let char_count = text.chars().filter(|&c| c != '\n').count() as u32;
+        if char_count == 0 {
+            return;
+        }
+
+        let text_w = char_count * font.width() as u32;
+        let text_h = font.height() as u32;
+
+        self.mark_dirty(Rect::new(x, y, text_w, text_h));
+        self.fill_rect(Rect::new(x, y, text_w, text_h), bg_color);
+
+        let stride = self.info.stride as usize;
+
+        // Only implement the 32-bit fast path for the bench helper
+        if self.info.format.bytes_per_pixel() == 4 {
+            let fg_u32 = color.to_u32();
+            let bg_u32 = bg_color.to_u32();
+            let mut cx = x;
+
+            for c in text.chars() {
+                if c == '\n' {
+                    continue;
+                }
+
+                let char_x = cx;
+
+                let glyph = match font.glyph(c) {
+                    Some(g) => g,
+                    None => {
+                        cx += font.width() as i32;
+                        continue;
+                    }
+                };
+
+                if char_x >= self.clip.x && (char_x + font.width() as i32) <= self.clip.right() {
+                    for (row, &byte) in glyph.iter().enumerate() {
+                        let dst_y = y + row as i32;
+                        if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
+                            continue;
+                        }
+                        let dst_offset = (dst_y as usize * stride) + (char_x as usize * 4);
+                        // This will perform MMIO writes and issue an sfence
+                        // per glyph row (old behavior).
+                        self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                    }
+                } else {
+                    for (row, &byte) in glyph.iter().enumerate() {
+                        let dst_y = y + row as i32;
+                        if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
+                            continue;
+                        }
+
+                        for col in 0..8 {
+                            let px = char_x + col as i32;
+                            if px < self.clip.x || px >= self.clip.right() {
+                                continue;
+                            }
+
+                            let is_on = (byte >> (7 - col)) & 1 != 0;
+                            let c_val = if is_on { color } else { bg_color };
+                            self.set_pixel_raw(px, dst_y, c_val);
+                        }
+                    }
+                }
+
+                cx += font.width() as i32;
+            }
+        }
     }
 
     /// Call dispatcher (runtime-selected) packer for micro-benchmarks
@@ -127,6 +275,15 @@ impl Framebuffer {
         is_bgr: bool,
     ) {
         unsafe { Self::pack_rgba_to_bgr24_neon_8pixels(src, dst, is_bgr) };
+    }
+}
+
+// Non-bench version of counted_sfence - just calls sfence without counting
+#[cfg(not(feature = "bench"))]
+impl Framebuffer {
+    #[inline]
+    fn counted_sfence(&self) {
+        mmio::sfence();
     }
 }
 
@@ -629,8 +786,8 @@ impl Framebuffer {
             }
             mmio::stream_write_u32(ptr, value);
         }
-        // Ensure streaming stores are visible to device
-        mmio::sfence();
+                // Ensure streaming stores are visible to device
+                self.counted_sfence();
         // Note: callers that want to batch many rows together can use
         // `write_u32_run_streaming_nofence` and call `mmio::sfence()` once
         // after the batch for better throughput.
@@ -727,7 +884,7 @@ impl Framebuffer {
             processed_pixels += chunk_pixels;
         }
         // Ensure global visibility once after the full stream
-        mmio::sfence();
+        self.counted_sfence();
     }
 
     /// Pack RGBA byte buffer into BGRA byte buffer. Prefer SIMD (SSSE3) when
@@ -1054,37 +1211,37 @@ impl Framebuffer {
                 // Unroll 64-byte per iteration to reduce loop overhead
                 while i + 64 <= bytes {
                     // Use unaligned loads/stores to avoid strict alignment requirements
-                    let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
-                    let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
-                    let r0 = _mm256_shuffle_epi8(v0, mask);
-                    let r1 = _mm256_shuffle_epi8(v1, mask);
-                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
-                    _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
+                    let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                    let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
+                    let r0 = unsafe { _mm256_shuffle_epi8(v0, mask) };
+                    let r1 = unsafe { _mm256_shuffle_epi8(v1, mask) };
+                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
+                    unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
                     i += 64;
                 }
 
                 while i + 32 <= bytes {
-                    let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
-                    let r = _mm256_shuffle_epi8(v, mask);
-                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
+                    let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                    let r = unsafe { _mm256_shuffle_epi8(v, mask) };
+                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
                     i += 32;
                 }
             } else {
                 // Unaligned (general) path
                 while i + 64 <= bytes {
-                    let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
-                    let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
-                    let r0 = _mm256_shuffle_epi8(v0, mask);
-                    let r1 = _mm256_shuffle_epi8(v1, mask);
-                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
-                    _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
+                    let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                    let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
+                    let r0 = unsafe { _mm256_shuffle_epi8(v0, mask) };
+                    let r1 = unsafe { _mm256_shuffle_epi8(v1, mask) };
+                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
+                    unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
                     i += 64;
                 }
 
                 while i + 32 <= bytes {
-                    let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
-                    let r = _mm256_shuffle_epi8(v, mask);
-                    _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
+                    let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                    let r = unsafe { _mm256_shuffle_epi8(v, mask) };
+                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
                     i += 32;
                 }
             }
@@ -1148,17 +1305,17 @@ impl Framebuffer {
         // - store next 8 bytes of lane0 -> dst[8..15]
         // - store low 4 bytes of lane1 -> dst[12..15] (overwrite middle)
         // - store low 8 bytes of lane1 -> dst[16..23]
-        _mm_storel_epi64(dst as *mut __m128i, lane0);
-        let lane0_hi = _mm_srli_si128(lane0, 8);
-        _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi);
+        unsafe { _mm_storel_epi64(dst as *mut __m128i, lane0) };
+        let lane0_hi = unsafe { _mm_srli_si128(lane0, 8) };
+        unsafe { _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi) };
 
         // low 32 bits of lane1 -> bytes 12..15
-        let low32 = _mm_cvtsi128_si32(lane1) as i32;
+        let low32 = unsafe { _mm_cvtsi128_si32(lane1) as i32 };
         unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
 
         // store bytes 16..23: use lane1 >> 4 bytes so we get r1[4..11]
-        let lane1_shift = _mm_srli_si128(lane1, 4);
-        _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift);
+        let lane1_shift = unsafe { _mm_srli_si128(lane1, 4) };
+        unsafe { _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift) };
     }
 
     /// SSSE3 implementation of 8-pixel RGBA -> 24-byte BGR/RGB compression.
@@ -1396,8 +1553,8 @@ impl Framebuffer {
                 mmio::stream_write_u32(addr, color_u32);
             }
 
-            // Ensure streaming stores are globally visible
-            mmio::sfence();
+                // Ensure streaming stores are globally visible
+                self.counted_sfence();
         }
     }
 
@@ -2835,7 +2992,8 @@ impl Framebuffer {
 
                             for y in r.y..r.bottom() {
                                 if (y - r.y) % 4 == 0 {
-                                    let offset = (y as usize * stride as usize) + (r.x as usize * 4);
+                                    let offset =
+                                        (y as usize * stride as usize) + (r.x as usize * 4);
                                     eprintln!("fill_rect: row {} offset {}", y, offset);
                                 }
                             }
@@ -3129,7 +3287,7 @@ impl Framebuffer {
                 cx += font.width() as i32;
             }
             if mmio_wrote {
-                mmio::sfence();
+                self.counted_sfence();
             }
             return;
         }

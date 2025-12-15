@@ -14,7 +14,7 @@ pub mod signature;
 pub mod type_id;
 
 #[allow(unused_imports)]
-pub use elf::{CellInfo, ElfLoader, LoadedCell};
+pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
 #[allow(unused_imports)]
 pub use live_update::{
     LiveUpdateError, LiveUpdateManager, LiveUpdateState, RequestTracker, current_epoch,
@@ -209,6 +209,12 @@ pub enum LoadError {
     AlreadyLoaded,
     /// 【設計書 3.4】ABI非互換
     AbiIncompatible(String),
+    /// セルが見つからない
+    CellNotFound,
+    /// リロケーション失敗
+    RelocationFailed(String),
+    /// セグメント権限エラー（W^X違反など）
+    InvalidPermissions(String),
 }
 
 impl core::fmt::Display for LoadError {
@@ -221,6 +227,9 @@ impl core::fmt::Display for LoadError {
             LoadError::UnsafeNotAllowed => write!(f, "Unsafe code not allowed for this cell"),
             LoadError::AlreadyLoaded => write!(f, "Cell already loaded"),
             LoadError::AbiIncompatible(msg) => write!(f, "ABI incompatibility: {}", msg),
+            LoadError::CellNotFound => write!(f, "Cell not found"),
+            LoadError::RelocationFailed(msg) => write!(f, "Relocation failed: {}", msg),
+            LoadError::InvalidPermissions(msg) => write!(f, "Invalid permissions: {}", msg),
         }
     }
 }
@@ -329,7 +338,7 @@ pub fn load_driver(
         None => {
             // Unload cell if entry not found
             with_registry_mut(|r| {
-                 r.unload(cell_id);
+                r.unload(cell_id);
             });
             return Err(LoadError::InvalidFormat(
                 "Driver entry symbol not found".into(),
@@ -396,6 +405,13 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
         ));
     }
 
+    // セルのメモリ情報を取得（unload前に必要）
+    let (load_address, load_size) = with_registry(|r| {
+        r.get(id)
+            .map(|c| (c.load_address, c.load_size))
+            .ok_or(LoadError::CellNotFound)
+    })?;
+
     // Epoch-based Reclamation: グローバルエポックをインクリメント
     let old_epoch = live_update::current_epoch();
     log::info!(
@@ -413,9 +429,20 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     });
 
     // メモリ解放
-    // Note: セルのロードアドレスとサイズから解放
-    // 実装: CellEntryにload_addressとload_sizeがあるので
-    // crate::allocator::deallocate(load_address, load_size)
+    if load_address != 0 && load_size > 0 {
+        unsafe {
+            use alloc::alloc::{Layout, dealloc};
+            // ELFローダーは4096バイトアライメントでメモリを割り当てている
+            let layout = Layout::from_size_align_unchecked(load_size, 4096);
+            dealloc(load_address as *mut u8, layout);
+            log::debug!(
+                "[Loader] Deallocated {} bytes at {:#x} for cell {:?}",
+                load_size,
+                load_address,
+                id.as_u64()
+            );
+        }
+    }
 
     Ok(())
 }

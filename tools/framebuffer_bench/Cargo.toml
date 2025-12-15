@@ -13,6 +13,9 @@ edition = "2024"
 criterion = "0.4"
 rany_kernel = { path = "../../kernel", features = ["bench", "std"] }
 
+[features]
+bench = ["rany_kernel/bench"]
+
 [[bench]]
 name = "framebuffer"
 harness = false

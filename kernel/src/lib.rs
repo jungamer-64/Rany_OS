@@ -34,6 +34,6 @@ extern crate alloc;
 pub mod unwind;
 
 #[cfg(any(test, feature = "bench"))]
+pub mod loader;
+#[cfg(any(test, feature = "bench"))]
 pub mod util;
-
-// Remove lib.rs as we're using a binary-only structure

@@ -318,12 +318,12 @@ impl LiveUpdateManager {
         let old_drivers = crate::loader::with_registry(|r| {
             r.get(old_cell_id).map(|c| c.registered_drivers.clone())
         });
-        
+
         let old_drivers = match old_drivers {
             Some(d) => d,
             None => return Err(LiveUpdateError::CellNotFound),
         };
-        
+
         if old_drivers.is_empty() {
             return Err(LiveUpdateError::CellNotFound); // Or invalid state
         }
@@ -336,7 +336,7 @@ impl LiveUpdateManager {
         // For now, use "update-<epoch>"
         let epoch = GLOBAL_EPOCH.load(Ordering::Relaxed);
         let name = alloc::format!("update-{}", epoch);
-        
+
         // Load the cell (unsafe allowed for updates)
         let new_cell_id = match crate::loader::load_cell(&name, new_elf_data, true) {
             Ok(id) => id,
@@ -353,15 +353,16 @@ impl LiveUpdateManager {
 
         // Step 3: Swap (Update Driver Registry)
         *self.state.lock() = LiveUpdateState::Switching;
-        
+
         // Resolve entry symbol in NEW cell
         let entry_addr = crate::loader::with_registry(|r| {
-             let cell = r.get(new_cell_id)?;
-             cell.exports.iter()
-                 .find(|(n, _)| n == kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL)
-                 .map(|(_, addr)| *addr)
+            let cell = r.get(new_cell_id)?;
+            cell.exports
+                .iter()
+                .find(|(n, _)| n == kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL)
+                .map(|(_, addr)| *addr)
         });
-        
+
         let entry_addr = match entry_addr {
             Some(a) => a,
             None => {
@@ -370,28 +371,29 @@ impl LiveUpdateManager {
                 return Err(LiveUpdateError::LoadFailed);
             }
         };
-        
-        let entry_fn: kernel_api::driver_abi::DriverEntryFn = unsafe { core::mem::transmute(entry_addr) };
+
+        let entry_fn: kernel_api::driver_abi::DriverEntryFn =
+            unsafe { core::mem::transmute(entry_addr) };
 
         // Update all drivers registered to the old cell
         for handle in &old_drivers {
-             match crate::driver_registry::update_abi_driver(*handle, entry_fn) {
-                 Ok(_) => {},
-                 Err(_) => {
-                     return Err(LiveUpdateError::StateMigrationFailed);
-                 }
-             }
+            match crate::driver_registry::update_abi_driver(*handle, entry_fn) {
+                Ok(_) => {}
+                Err(_) => {
+                    return Err(LiveUpdateError::StateMigrationFailed);
+                }
+            }
         }
-        
+
         // Step 3.5: Migrate ownership in Cell Registry
         crate::loader::with_registry_mut(|r| {
             if let Some(old_c) = r.get_mut(old_cell_id) {
                 old_c.registered_drivers.clear();
             }
             if let Some(new_c) = r.get_mut(new_cell_id) {
-                 for h in &old_drivers {
-                     new_c.registered_drivers.push(*h);
-                 }
+                for h in &old_drivers {
+                    new_c.registered_drivers.push(*h);
+                }
             }
         });
 
@@ -408,7 +410,10 @@ impl LiveUpdateManager {
         // Unload old cell
         match crate::loader::unload_cell(old_cell_id) {
             Ok(_) => log::info!("[LIVE_UPDATE] Old cell unloaded\n"),
-            Err(e) => log::info!("[LIVE_UPDATE] Warning: Failed to unload old cell: {:?}\n", e),
+            Err(e) => log::info!(
+                "[LIVE_UPDATE] Warning: Failed to unload old cell: {:?}\n",
+                e
+            ),
         }
 
         Ok(new_cell_id.as_u64())

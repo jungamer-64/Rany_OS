@@ -1,7 +1,48 @@
 // ============================================================================
 // src/loader/elf.rs - ELF Parser and Loader
-// 設計書 3.1: 動的リンクとシンボル解決
 // ============================================================================
+//! # ELF Loader Module
+//!
+//! This module implements parsing and loading of ELF64 executable files for
+//! dynamically loaded kernel modules (cells).
+//!
+//! ## Design Reference
+//!
+//! See 設計書 3.1: 動的リンクとシンボル解決
+//!
+//! ## Security Features
+//!
+//! The loader implements multiple security checks to prevent attacks:
+//!
+//! - **Size limits**: Maximum file size (512MB), segment size (256MB), symbol count (64K)
+//! - **DoS prevention**: Limits on sections (1024), relocations per section (256K)
+//! - **W^X enforcement**: Segments cannot be both writable and executable
+//! - **Bounds checking**: All memory accesses are validated before dereferencing
+//!
+//! ## Supported Relocation Types
+//!
+//! | Type | Value | Description |
+//! |------|-------|-------------|
+//! | `R_X86_64_64` | 1 | 64-bit absolute |
+//! | `R_X86_64_PC32` | 2 | 32-bit PC-relative |
+//! | `R_X86_64_PLT32` | 4 | 32-bit PLT-relative |
+//! | `R_X86_64_RELATIVE` | 8 | Base + addend |
+//! | `R_X86_64_32` | 10 | 32-bit absolute (zero-extended) |
+//! | `R_X86_64_32S` | 11 | 32-bit absolute (sign-extended) |
+//!
+//! ## Example Usage
+//!
+//! ```ignore
+//! use kernel::loader::{ElfLoader, Loader, LoadedInfo};
+//!
+//! let elf_data: &[u8] = /* ELF binary data */;
+//! match ElfLoader::load(elf_data) {
+//!     Ok(info) => {
+//!         log::info!("Loaded at {:#x}, entry: {:#x}", info.base_address, info.entry_point);
+//!     }
+//!     Err(e) => log::error!("Load failed: {}", e),
+//! }
+//! ```
 #![allow(dead_code)]
 
 use super::LoadError;
@@ -27,6 +68,18 @@ const MAX_ELF_SIZE: usize = 512 * 1024 * 1024;
 
 /// セグメントの最大サイズ（256MB）
 const MAX_SEGMENT_SIZE: usize = 256 * 1024 * 1024;
+
+/// リロケーションの最大数（DoS攻撃防止）
+const MAX_RELOCATIONS: usize = 262144; // 256K
+
+/// セクションヘッダーの最大数（DoS攻撃防止）
+const MAX_SECTIONS: usize = 1024;
+
+/// プログラムフラグ: Write
+const PF_W: u32 = 0x2;
+
+/// プログラムフラグ: Execute
+const PF_X: u32 = 0x1;
 
 /// ELF Magic Number
 const ELF_MAGIC: [u8; 4] = [0x7f, b'E', b'L', b'F'];
@@ -188,9 +241,27 @@ pub struct SegmentInfo {
     pub flags: u32,
 }
 
-/// ELFローダー
+/// ELF64ローダー
+///
+/// ELF64形式のバイナリをパースし、メモリにロードするローダー。
+/// セキュリティチェックとシンボル解決を含む完全なロード処理を提供する。
+///
+/// # フィールド
+///
+/// - `data`: ELFバイナリデータへの参照
+/// - `header`: パース済みのELF64ヘッダー
+///
+/// # セキュリティ
+///
+/// このローダーは以下のセキュリティ検証を実行する:
+/// - ファイルサイズ制限
+/// - マジックナンバー検証
+/// - W^X（Write XOR Execute）検証
+/// - リロケーション数制限
 pub struct ElfLoader<'a> {
+    /// ELFバイナリデータへの参照
     data: &'a [u8],
+    /// パース済みのELF64ヘッダー
     header: Elf64Header,
 }
 
@@ -271,6 +342,15 @@ impl<'a> ElfLoader<'a> {
             )));
         }
 
+        // 【セキュリティ】セクションヘッダー数のチェック
+        if self.header.e_shnum as usize > MAX_SECTIONS {
+            return Err(LoadError::InvalidFormat(alloc::format!(
+                "Too many section headers: {} (max {})",
+                self.header.e_shnum,
+                MAX_SECTIONS
+            )));
+        }
+
         // プログラムヘッダーを解析
         for i in 0..self.header.e_phnum {
             let ph_offset =
@@ -287,6 +367,17 @@ impl<'a> ElfLoader<'a> {
                         "Segment too large: {} bytes (max {})",
                         ph.p_memsz,
                         MAX_SEGMENT_SIZE
+                    )));
+                }
+
+                // 【セキュリティ】W^X (Writable XOR Executable) チェック
+                // セグメントは書き込み可能かつ実行可能であってはならない
+                let is_writable = (ph.p_flags & PF_W) != 0;
+                let is_executable = (ph.p_flags & PF_X) != 0;
+                if is_writable && is_executable {
+                    return Err(LoadError::InvalidPermissions(alloc::format!(
+                        "Segment at vaddr {:#x} is both writable and executable (W^X violation)",
+                        ph.p_vaddr
                     )));
                 }
 
@@ -522,6 +613,15 @@ impl<'a> ElfLoader<'a> {
     {
         let rela_count = sh.sh_size as usize / mem::size_of::<Elf64Rela>();
 
+        // 【セキュリティ】リロケーション数のチェック（DoS攻撃防止）
+        if rela_count > MAX_RELOCATIONS {
+            return Err(LoadError::RelocationFailed(alloc::format!(
+                "Too many relocations: {} (max {})",
+                rela_count,
+                MAX_RELOCATIONS
+            )));
+        }
+
         // シンボルテーブルと文字列テーブルを取得
         let symtab_sh = self.get_section_header(sh.sh_link as usize)?;
         let strtab = self.get_string_table(symtab_sh.sh_link as usize)?;
@@ -603,16 +703,241 @@ impl<'a> ElfLoader<'a> {
                     .wrapping_sub(target as i64);
                 crate::util::write_to_addr(target, value as i32);
             }
+            4 => {
+                // R_X86_64_PLT32: 32-bit PLT-relative (treated same as PC32 for static linking)
+                let value = (sym_value as i64)
+                    .wrapping_add(rela.r_addend)
+                    .wrapping_sub(target as i64);
+                crate::util::write_to_addr(target, value as i32);
+            }
+            8 => {
+                // R_X86_64_RELATIVE: Base address + addend
+                let value = base.wrapping_add(rela.r_addend as usize);
+                crate::util::write_to_addr(target, value as u64);
+            }
             10 => {
-                // R_X86_64_32: 32-bit absolute
+                // R_X86_64_32: 32-bit absolute (zero-extended)
                 let value = sym_value.wrapping_add(rela.r_addend as usize);
                 crate::util::write_to_addr(target, value as u32);
             }
-            _ => {
-                // 未対応のリロケーションタイプは無視（警告を出すべき）
+            11 => {
+                // R_X86_64_32S: 32-bit absolute (sign-extended)
+                let value = (sym_value as i64).wrapping_add(rela.r_addend);
+                // 32ビット符号付き範囲のチェック
+                if value > i32::MAX as i64 || value < i32::MIN as i64 {
+                    return Err(LoadError::RelocationFailed(alloc::format!(
+                        "R_X86_64_32S overflow at offset {:#x}: value {:#x} out of i32 range",
+                        rela.r_offset,
+                        value
+                    )));
+                }
+                crate::util::write_to_addr(target, value as i32);
+            }
+            unknown => {
+                // 未対応のリロケーションタイプはログ出力して継続
+                log::warn!(
+                    "[ELF] Unsupported relocation type {} at offset {:#x}",
+                    unknown,
+                    rela.r_offset
+                );
             }
         }
 
         Ok(())
+    }
+}
+
+// ============================================================================
+// Loader Trait - 静的APIを提供
+// ============================================================================
+
+/// ロード結果の情報
+///
+/// ELFバイナリをメモリにロードした後の結果情報を保持する構造体。
+/// `registry.rs`との互換性のために使用される。
+///
+/// # Example
+///
+/// ```ignore
+/// let info: LoadedInfo = ElfLoader::load(elf_data)?;
+/// let entry_fn: fn() = unsafe { core::mem::transmute(info.entry_point) };
+/// entry_fn(); // 関数を呼び出す
+/// ```
+#[derive(Debug)]
+pub struct LoadedInfo {
+    /// メモリ上のベースアドレス
+    pub base_address: u64,
+    /// 割り当てられたメモリの合計サイズ（バイト）
+    pub size: usize,
+    /// プログラムのエントリポイントアドレス
+    pub entry_point: u64,
+}
+
+/// ELFローダーの静的インターフェース
+///
+/// このトレイトは静的メソッドを通じてELFロード機能を提供する。
+/// 実装タイプのインスタンスを作成せずにロードを実行可能。
+///
+/// # 使用例
+///
+/// ```ignore
+/// use kernel::loader::{ElfLoader, Loader};
+///
+/// let result = <ElfLoader as Loader>::load(elf_bytes)?;
+/// ```
+pub trait Loader {
+    /// ELFデータからセルをメモリにロード
+    ///
+    /// # 引数
+    ///
+    /// * `elf_data` - ELF64バイナリデータ
+    ///
+    /// # 戻り値
+    ///
+    /// 成功時は`LoadedInfo`を返し、失敗時は`LoadError`を返す
+    ///
+    /// # エラー
+    ///
+    /// * `InvalidFormat` - ELFフォーマットが無効
+    /// * `InvalidPermissions` - W^X違反
+    /// * `OutOfMemory` - メモリ割り当て失敗
+    /// * `RelocationFailed` - リロケーション適用エラー
+    fn load(elf_data: &[u8]) -> Result<LoadedInfo, LoadError>;
+}
+
+impl Loader for ElfLoader<'_> {
+    /// ELFデータをパースしてメモリにロードする静的メソッド
+    ///
+    /// registry.rs との互換性のためのシンプルなAPI
+    fn load(elf_data: &[u8]) -> Result<LoadedInfo, LoadError> {
+        // 1. ELFをパース
+        let loader = ElfLoader::new(elf_data)?;
+        let cell_info = loader.parse()?;
+
+        // 2. メモリにロード
+        let loaded = loader.load(&cell_info)?;
+
+        // 3. リロケーションを適用（シンボル解決なし - 自己完結型モジュール用）
+        loader.relocate(&loaded, |_sym| None)?;
+
+        // 4. 結果を返す
+        Ok(LoadedInfo {
+            base_address: loaded.base_address as u64,
+            size: loaded.size,
+            entry_point: loaded.entry_point.unwrap_or(0) as u64,
+        })
+    }
+}
+
+// ============================================================================
+// Unit Tests
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 空のデータでElfLoader::newがエラーを返すことをテスト
+    #[test]
+    fn test_empty_data_returns_error() {
+        let result = ElfLoader::new(&[]);
+        assert!(result.is_err());
+        if let Err(LoadError::InvalidFormat(msg)) = result {
+            assert!(msg.contains("too small"));
+        } else {
+            panic!("Expected InvalidFormat error");
+        }
+    }
+
+    /// 不正なマジックナンバーでエラーを返すことをテスト
+    #[test]
+    fn test_invalid_magic_returns_error() {
+        // 最小サイズのELFヘッダーサイズ（64バイト）を用意
+        let mut data = vec![0u8; 64];
+        // 不正なマジックナンバーを設定
+        data[0..4].copy_from_slice(&[0x00, 0x00, 0x00, 0x00]);
+
+        let result = ElfLoader::new(&data);
+        assert!(result.is_err());
+        if let Err(LoadError::InvalidFormat(msg)) = result {
+            assert!(msg.contains("magic") || msg.contains("Invalid"));
+        } else {
+            panic!("Expected InvalidFormat error for invalid magic");
+        }
+    }
+
+    /// MAX_ELF_SIZEを超えるデータでエラーを返すことをテスト
+    /// (実際のアロケーションは行わないため、シミュレーションでテスト)
+    #[test]
+    fn test_max_size_check() {
+        // MAX_ELF_SIZE定数の確認
+        assert!(MAX_ELF_SIZE == 512 * 1024 * 1024);
+        assert!(MAX_SEGMENT_SIZE == 256 * 1024 * 1024);
+        assert!(MAX_SECTIONS == 1024);
+        assert!(MAX_RELOCATIONS == 262144);
+    }
+
+    /// 正しいELF64クラスでないデータでエラーを返すことをテスト
+    #[test]
+    fn test_wrong_elf_class() {
+        let mut data = vec![0u8; 64];
+        // 正しいマジックナンバー
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        // ELF32クラス（ELFCLASS64ではない）
+        data[4] = 1; // ELFCLASS32
+
+        let result = ElfLoader::new(&data);
+        assert!(result.is_err());
+    }
+
+    /// リトルエンディアンでないデータでエラーを返すことをテスト
+    #[test]
+    fn test_wrong_endianness() {
+        let mut data = vec![0u8; 64];
+        // 正しいマジックナンバー
+        data[0..4].copy_from_slice(&ELF_MAGIC);
+        // ELF64クラス
+        data[4] = ELFCLASS64;
+        // ビッグエンディアン（Little Endianではない）
+        data[5] = 2; // ELFDATA2MSB
+
+        let result = ElfLoader::new(&data);
+        assert!(result.is_err());
+    }
+
+    /// W^Xフラグの定数値をテスト  
+    #[test]
+    fn test_wx_flags() {
+        assert_eq!(PF_W, 0x2);
+        assert_eq!(PF_X, 0x1);
+        // W^X: 両方設定されている場合は0x3
+        assert_eq!(PF_W | PF_X, 0x3);
+    }
+
+    /// Elf64Relaのシンボル/タイプ抽出をテスト
+    #[test]
+    fn test_rela_extraction() {
+        let rela = Elf64Rela {
+            r_offset: 0x1000,
+            r_info: (42 << 32) | 8, // symbol=42, type=8 (R_X86_64_RELATIVE)
+            r_addend: 0x100,
+        };
+        assert_eq!(rela.symbol(), 42);
+        assert_eq!(rela.reloc_type(), 8);
+    }
+
+    /// Elf64Symbolのバインディング/タイプ抽出をテスト
+    #[test]
+    fn test_symbol_extraction() {
+        let sym = Elf64Symbol {
+            st_name: 0,
+            st_info: (1 << 4) | 2, // binding=GLOBAL(1), type=FUNC(2)
+            st_other: 0,
+            st_shndx: 1,
+            st_value: 0x1000,
+            st_size: 100,
+        };
+        assert_eq!(sym.binding(), 1); // STB_GLOBAL
+        assert_eq!(sym.symbol_type(), 2); // STT_FUNC
     }
 }

@@ -76,3 +76,35 @@ fn draw_text_writes_to_heap_buffer() {
 
     assert!(found, "draw_text did not modify any pixels in glyph box");
 }
+
+#[test]
+#[cfg(feature = "bench")]
+fn draw_text_sfence_batching() {
+    let width = 200u32;
+    let height = 200u32;
+    let mut info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut front = vec![0u8; info.size() as usize];
+    info.address = front.as_mut_ptr() as u64;
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+
+    fb.bench_reset_sfence_count();
+    fb.draw_text(10, 10, "The quick brown fox jumps", Color::WHITE, Color::BLACK);
+    let batched = fb.bench_get_sfence_count();
+
+    fb.bench_reset_sfence_count();
+    fb.bench_draw_text_per_glyph_fenced(10, 10, "The quick brown fox jumps", Color::WHITE, Color::BLACK);
+    let per_glyph = fb.bench_get_sfence_count();
+
+    // Expect at least as many fences in per-glyph version as batched
+    assert!(per_glyph >= batched, "expected per-glyph fenced >= batched ({} >= {})", per_glyph, batched);
+    // Expect batching to result in fewer fences than per-glyph in typical case
+    assert!(batched < per_glyph, "expected batching to reduce sfence calls ({} < {})", batched, per_glyph);
+}
