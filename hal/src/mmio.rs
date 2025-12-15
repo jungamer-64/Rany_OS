@@ -357,7 +357,18 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
                 i += 1;
             }
 
-            // 2. Bulk 32-byte (256-bit) streaming writes
+            // 2. Loop unrolling: 4x 32-byte (128 bytes per iteration)
+            while i + 128 <= len {
+                let ptr = data.as_ptr().add(i);
+                stream_write_256(addr, &*(ptr.cast::<[u8; 32]>()));
+                stream_write_256(addr + 32, &*(ptr.add(32).cast::<[u8; 32]>()));
+                stream_write_256(addr + 64, &*(ptr.add(64).cast::<[u8; 32]>()));
+                stream_write_256(addr + 96, &*(ptr.add(96).cast::<[u8; 32]>()));
+                addr += 128;
+                i += 128;
+            }
+
+            // 3. Handle remaining 32-byte chunks
             while i + 32 <= len {
                 let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 32]>();
                 stream_write_256(addr, &*chunk_ptr);
@@ -376,7 +387,18 @@ pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
         // SSE2 Fallback / Cleanup (also runs if AVX path didn't consume everything or wasn't taken)
         // If AVX path ran, we are 32-byte aligned, which is also 16-byte aligned.
 
-        // Bulk streaming writes using u128 (16 bytes at a time) via SSE2
+        // Loop unrolling: 4x 16-byte (64 bytes per iteration)
+        while i + 64 <= len {
+            let ptr = data.as_ptr().add(i);
+            stream_write_128(addr, &*(ptr.cast::<[u8; 16]>()));
+            stream_write_128(addr + 16, &*(ptr.add(16).cast::<[u8; 16]>()));
+            stream_write_128(addr + 32, &*(ptr.add(32).cast::<[u8; 16]>()));
+            stream_write_128(addr + 48, &*(ptr.add(48).cast::<[u8; 16]>()));
+            addr += 64;
+            i += 64;
+        }
+
+        // Handle remaining 16-byte chunks
         while i + 16 <= len {
             let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 16]>();
             stream_write_128(addr, &*chunk_ptr);

@@ -224,6 +224,15 @@ impl<'a> MmioWriter<'a> {
             panic!("MmioWriter::write_bytes_streaming: out of bounds");
         }
         let addr = self.base + offset;
+        #[cfg(all(feature = "std", feature = "bench"))]
+        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            eprintln!(
+                "write_bytes_streaming: addr=0x{:x} len={} first4={:02x?}",
+                addr,
+                data.len(),
+                &data[..core::cmp::min(4, data.len())]
+            );
+        }
         unsafe {
             mmio::stream_write_bytes(addr, data);
         }
@@ -246,8 +255,17 @@ impl<'a> MmioWriter<'a> {
         let mut i = 0usize;
         let len = data.len();
 
+        #[cfg(all(feature = "std", feature = "bench"))]
+        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+            eprintln!("write_u32_slice_mmio_streaming: addr=0x{:x} len={}", ptr, len);
+        }
+
         // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment
         if (ptr & 7) == 4 && i < len {
+            #[cfg(all(feature = "std", feature = "bench"))]
+            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
+            }
             mmio::stream_write_u32(ptr, data[i]);
             ptr += 4;
             i += 1;
@@ -256,6 +274,10 @@ impl<'a> MmioWriter<'a> {
         // Write u64 pairs using streaming stores
         while i + 1 < len {
             let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
+            #[cfg(all(feature = "std", feature = "bench"))]
+            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                eprintln!("  stream_write_u64 at 0x{:x} pair=0x{:x}", ptr, pair);
+            }
             mmio::stream_write_u64(ptr, pair);
             ptr += 8;
             i += 2;
@@ -263,6 +285,10 @@ impl<'a> MmioWriter<'a> {
 
         // Handle odd trailing u32
         if i < len {
+            #[cfg(all(feature = "std", feature = "bench"))]
+            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                eprintln!("  stream_write_u32 at 0x{:x} val=0x{:x}", ptr, data[i]);
+            }
             mmio::stream_write_u32(ptr, data[i]);
         }
     }
