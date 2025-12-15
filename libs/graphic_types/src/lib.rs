@@ -4,7 +4,7 @@
 //!
 //! # Graphics Types
 //!
-//! Pure data types for graphics: Color, PixelFormat, Point, Rect.
+//! Pure data types for graphics: `Color`, `PixelFormat`, `Point`, `Rect`.
 //! No kernel dependencies - can be used by kernel, drivers, and apps.
 
 #![no_std]

@@ -2638,6 +2638,129 @@ impl Framebuffer {
         }
     }
 
+    /// Draw a single 8x16 bitmap glyph (convenience optimized path).
+    ///
+    /// This method exposes a compact and faster path for single-character
+    /// drawing used by `BitmapFont::draw_char`. It attempts to use
+    /// 64-bit writes on 32-bit framebuffers and `write_bgr_run` on 24-bit
+    /// framebuffers to minimize per-pixel overhead.
+    pub fn draw_char_8x16(&mut self, x: i32, y: i32, c: char, color: Color, bg: Option<Color>) {
+        let font = BitmapFont::default_8x16();
+        let c_index = c as usize;
+        if c_index >= 128 {
+            return;
+        }
+
+        let glyph_start = c_index * font.height() as usize;
+        let stride = self.info.stride as usize;
+        let bpp = self.info.format.bytes_per_pixel();
+
+        // Mark entire character area dirty to avoid per-pixel dirty updates
+        let char_w_i32 = font.width() as i32;
+        let char_w = font.width() as u32;
+        let char_h = font.height() as u32;
+        self.mark_dirty(Rect::new(x, y, char_w, char_h));
+
+        // If background specified, fill the rectangle first using optimized path
+        if let Some(bg_color) = bg {
+            self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
+        }
+
+        for row in 0..font.height() {
+            let dst_y = y + row as i32;
+            if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
+                continue;
+            }
+
+            let glyph_row = glyph_start + row as usize;
+            if glyph_row >= font.data_len() {
+                continue;
+            }
+
+            let byte = font.get_data(glyph_row);
+
+            match bpp {
+                4 => {
+                    // 32-bit formats: if background provided we already filled it
+                    // and can simply write foreground pixels; otherwise write
+                    // only on-bit pixels.
+                    let fg_u32 = self.info.format.encode_u32(color).unwrap_or(color.to_u32());
+
+                    if bg.is_some() {
+                        // If fully visible horizontally, write whole 8-pixel row
+                        let dst_x = x;
+                        if dst_x >= self.clip.x && (dst_x + char_w_i32) <= self.clip.right() {
+                            let dst_offset = (dst_y as usize * stride) + (dst_x as usize * 4);
+                            let bg_color = bg.unwrap();
+                            let bg_u32 = self.info.format.encode_u32(bg_color).unwrap_or(bg_color.to_u32());
+                            self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                            continue;
+                        }
+                    }
+
+                    // Partially clipped or no-background case: set pixels individually
+                    for col in 0..8 {
+                        let px = x + col as i32;
+                        if px < self.clip.x || px >= self.clip.right() {
+                            continue;
+                        }
+                        let is_on = (byte >> (7 - col)) & 1 != 0;
+                        if is_on {
+                            self.set_pixel_raw(px, dst_y, color);
+                        }
+                    }
+                }
+                3 => {
+                    // 24-bit formats: write runs of on-bits with write_bgr_run
+                    let mut col = 0usize;
+                    while col < 8 {
+                        // Skip off pixels
+                        while col < 8 {
+                            let pixel_on = (byte >> (7 - col)) & 1 != 0;
+                            if pixel_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+                        let run_start = col;
+                        while col < 8 {
+                            let pixel_on = (byte >> (7 - col)) & 1 != 0;
+                            if !pixel_on {
+                                break;
+                            }
+                            col += 1;
+                        }
+                        let run_len = col.saturating_sub(run_start);
+                        if run_len == 0 {
+                            continue;
+                        }
+                        let dst_x = x + run_start as i32;
+                        if dst_x < self.clip.x || dst_x >= self.clip.right() {
+                            continue;
+                        }
+                        let clipped_end = (dst_x + run_len as i32 - 1).min(self.clip.right() - 1);
+                        let clipped_len = (clipped_end - dst_x + 1) as usize;
+                        let start_offset = (dst_y as usize * stride) + (dst_x as usize * 3);
+                        self.write_bgr_run(start_offset, clipped_len, color);
+                    }
+                }
+                _ => {
+                    // Fallback: per-pixel writes (e.g., RGB565)
+                    for col in 0..8 {
+                        let px = x + col as i32;
+                        if px < self.clip.x || px >= self.clip.right() {
+                            continue;
+                        }
+                        let is_on = (byte >> (7 - col)) & 1 != 0;
+                        if is_on {
+                            self.set_pixel_raw(px, dst_y, color);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// 画像描画用のクリッピング計算 helper
     fn calculate_image_clip(
         &self,

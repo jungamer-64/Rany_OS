@@ -6,8 +6,10 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
-use kernel_api::driver_abi::{DriverContext, DriverVTable, DriverCapabilities, DRIVER_ABI_VERSION, pack_version};
 use kernel_api::driver::DriverType;
+use kernel_api::driver_abi::{
+    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, pack_version,
+};
 
 // ============================================================================
 // Driver Lifecycle Functions
@@ -60,6 +62,7 @@ extern "C" fn usb_version() -> u64 {
 
 extern "C" fn usb_request_capabilities(caps: *mut DriverCapabilities) {
     if !caps.is_null() {
+        // SAFETY: We checked that caps is not null. Caller guarantees it points to valid memory.
         unsafe {
             (*caps).needs_dma = true;
             (*caps).needs_irq = true;
@@ -103,6 +106,7 @@ pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
 // drivers. We use unsafe(concat!(...)) for the compile-time concatenation.
 #[cfg(not(feature = "export_driver_entry"))]
 #[allow(non_snake_case)]
+#[allow(clippy::missing_safety_doc)]
 pub(crate) fn _exorust_driver_entry_unique() -> *const DriverVTable {
     usb_driver_vtable()
 }

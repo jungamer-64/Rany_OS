@@ -953,6 +953,14 @@ impl PageTableManager {
             return Err(MapError::AlignmentError);
         }
 
+        // PAT bit handling:
+        // For 4KB pages, PAT is bit 7.
+        // For Huge Pages (2MB/1GB), bit 7 is PS (Page Size), so PAT moves to bit 12.
+        let mut actual_flags = flags;
+        if actual_flags.contains(PageFlags::PAT) {
+            actual_flags = actual_flags.clear(PageFlags::PAT).set(PageFlags::PAT_LARGE);
+        }
+
         let indices = virt.page_table_indices();
 
         // PML4 -> PDPT -> PD をウォーク
@@ -973,7 +981,7 @@ impl PageTableManager {
         }
 
         // Huge Page フラグを設定
-        *pde = PageTableEntry::huge(phys, flags.set(PageFlags::PRESENT));
+        *pde = PageTableEntry::huge(phys, actual_flags.set(PageFlags::PRESENT));
 
         invalidate_page(virt);
 
@@ -996,6 +1004,12 @@ impl PageTableManager {
             return Err(MapError::AlignmentError);
         }
 
+        // PAT bit handling (same as 2MB pages)
+        let mut actual_flags = flags;
+        if actual_flags.contains(PageFlags::PAT) {
+            actual_flags = actual_flags.clear(PageFlags::PAT).set(PageFlags::PAT_LARGE);
+        }
+
         let indices = virt.page_table_indices();
 
         // PML4 -> PDPT をウォーク
@@ -1010,7 +1024,7 @@ impl PageTableManager {
         }
 
         // Huge Page フラグを設定（1GiBページ）
-        *pdpte = PageTableEntry::huge(phys, flags.set(PageFlags::PRESENT));
+        *pdpte = PageTableEntry::huge(phys, actual_flags.set(PageFlags::PRESENT));
 
         invalidate_page(virt);
 

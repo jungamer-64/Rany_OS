@@ -5,6 +5,7 @@ use x86_64::instructions::port::{Port as XPort, PortRead, PortWrite};
 
 /// Read a byte from a port
 #[inline]
+#[must_use]
 pub fn inb(port: u16) -> u8 {
     unsafe { XPort::new(port).read() }
 }
@@ -17,6 +18,7 @@ pub fn outb(port: u16, value: u8) {
 
 /// Read a 16-bit word from a port
 #[inline]
+#[must_use]
 pub fn inw(port: u16) -> u16 {
     unsafe { XPort::new(port).read() }
 }
@@ -29,6 +31,7 @@ pub fn outw(port: u16, value: u16) {
 
 /// Read a 32-bit word from a port
 #[inline]
+#[must_use]
 pub fn inl(port: u16) -> u32 {
     unsafe { XPort::new(port).read() }
 }
@@ -45,7 +48,7 @@ pub fn outl(port: u16, value: u32) {
 pub fn out(port: u16, data: u32) {
     // choose width based on value range (simple approximation)
     if data <= 0xFF {
-        outb(port, data as u8)
+        outb(port, data as u8);
     } else if data <= 0xFFFF {
         outw(port, data as u16)
     } else {

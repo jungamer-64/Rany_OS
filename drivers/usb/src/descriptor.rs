@@ -76,6 +76,9 @@ pub trait SafePackedRead: Sized {
 /// フィールドの安全な読み取りマクロ
 macro_rules! read_field {
     ($ptr:expr, $field:ident) => {{
+        // SAFETY: We rely on the caller to ensure $ptr is valid for the struct type.
+        // The addr_of! is safe, but dereferencing field_ptr requires it to be valid.
+        // Since we are reading from unaligned packed struct, we use read_unaligned.
         let field_ptr = unsafe { core::ptr::addr_of!((*$ptr).$field) };
         unsafe { core::ptr::read_unaligned(field_ptr) }
     }};

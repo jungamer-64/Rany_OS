@@ -117,6 +117,46 @@ fn bench_draw_image_alpha(c: &mut Criterion) {
     }));
 }
 
+fn bench_draw_char_with_bg(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let back = vec![0u8; info.size()];
+    fb.enable_double_buffering_from_vec(back);
+
+    c.bench_function("draw_char_with_bg", |b| b.iter(|| {
+        fb.draw_char_8x16(100, 100, 'A', Color::WHITE, Some(Color::BLACK));
+    }));
+}
+
+fn bench_draw_char_no_bg(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let back = vec![0u8; info.size()];
+    fb.enable_double_buffering_from_vec(back);
+
+    c.bench_function("draw_char_no_bg", |b| b.iter(|| {
+        fb.draw_char_8x16(100, 100, 'A', Color::WHITE, None);
+    }));
+}
+
 fn bench_fill_rect_full(c: &mut Criterion) {
     let width = 800u32;
     let height = 600u32;
@@ -152,6 +192,8 @@ criterion_group!{
               bench_draw_image_rgba,
               bench_draw_text_32bit,
               bench_draw_image_alpha,
-              bench_fill_rect_full
+              bench_fill_rect_full,
+              bench_draw_char_with_bg,
+              bench_draw_char_no_bg
 }
 criterion_main!(framebuffer_benches);

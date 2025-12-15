@@ -80,10 +80,12 @@ impl CapabilitySet {
         }
     }
 
+    #[must_use]
     pub fn has_capability(&self, cap: Capability) -> bool {
         (self.effective & cap) == cap
     }
 
+    #[must_use]
     pub fn is_permitted(&self, cap: Capability) -> bool {
         (self.permitted & cap) == cap
     }
@@ -119,6 +121,7 @@ impl CapabilitySet {
         Ok(())
     }
 
+    #[must_use]
     pub fn after_exec(&self, file_permitted: Capability, file_inheritable: Capability) -> Self {
         let new_permitted = (self.inheritable & file_inheritable) | file_permitted;
         let new_effective = new_permitted;
