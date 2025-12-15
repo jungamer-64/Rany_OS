@@ -3,6 +3,14 @@
 version = 4
 
 [[package]]
+name = "acpi_driver"
+version = "0.1.0"
+dependencies = [
+ "log",
+ "spin 0.9.8",
+]
+
+[[package]]
 name = "ahci_driver"
 version = "0.1.0"
 dependencies = [
@@ -441,6 +449,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ide_driver"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "log",
+ "spin 0.9.8",
+]
+
+[[package]]
 name = "indexmap"
 version = "1.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -633,6 +650,7 @@ dependencies = [
 name = "rany_kernel"
 version = "0.3.0"
 dependencies = [
+ "acpi_driver",
  "ahci_driver",
  "bitflags 2.10.0",
  "curve25519-dalek",
@@ -644,12 +662,15 @@ dependencies = [
  "hal",
  "hashbrown 0.16.1",
  "hid_driver",
+ "ide_driver",
  "kernel_api",
  "lazy_static",
  "limine",
  "log",
  "nvme_driver",
  "pci_driver",
+ "rtc_driver",
+ "serial_driver",
  "sha2",
  "spin 0.10.0",
  "usb_driver",
@@ -706,6 +727,14 @@ name = "regex-syntax"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7a2d987857b319362043e95f5353c0535c1f58eec5336fdfcf626430af7def58"
+
+[[package]]
+name = "rtc_driver"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "spin 0.9.8",
+]
 
 [[package]]
 name = "rustc_version"
@@ -790,6 +819,16 @@ dependencies = [
  "ryu",
  "serde",
  "serde_core",
+]
+
+[[package]]
+name = "serial_driver"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "kernel_api",
+ "spin 0.9.8",
+ "x86_64",
 ]
 
 [[package]]

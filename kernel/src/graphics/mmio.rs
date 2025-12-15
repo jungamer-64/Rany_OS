@@ -183,4 +183,69 @@ impl<'a> MmioWriter<'a> {
             unsafe { mmio::mmio_write_u32(ptr, data[i]) };
         }
     }
+
+    /// Write a slice of bytes using non-temporal (streaming) stores.
+    ///
+    /// This bypasses the CPU cache and writes directly to memory, which is
+    /// optimal for VRAM writes where the data will not be read back immediately.
+    /// Uses HAL streaming store functions on x86/x86_64, falls back to volatile
+    /// writes on other architectures.
+    ///
+    /// After calling this method, you should call `mmio::sfence()` to ensure
+    /// all streaming stores are globally visible.
+    #[inline]
+    pub fn write_bytes_streaming(&mut self, offset: usize, data: &[u8]) {
+        if offset + data.len() > self.len {
+            panic!("MmioWriter::write_bytes_streaming: out of bounds");
+        }
+        let addr = self.base + offset;
+        unsafe {
+            mmio::stream_write_bytes(addr, data);
+        }
+    }
+
+    /// Write a slice of u32 pixels using non-temporal (streaming) stores.
+    ///
+    /// This bypasses the CPU cache for better VRAM write throughput.
+    /// After calling this method, you should call `mmio::sfence()` to ensure
+    /// all streaming stores are globally visible.
+    #[inline]
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub fn write_u32_slice_streaming(&mut self, offset: usize, data: &[u32]) {
+        let byte_len = data.len() * 4;
+        if offset + byte_len > self.len {
+            panic!("MmioWriter::write_u32_slice_streaming: out of bounds");
+        }
+
+        let mut ptr = self.base + offset;
+        let mut i = 0usize;
+        let len = data.len();
+
+        // If ptr is 4 mod 8, write a single u32 to reach 8-byte alignment
+        if (ptr & 7) == 4 && i < len {
+            mmio::stream_write_u32(ptr, data[i]);
+            ptr += 4;
+            i += 1;
+        }
+
+        // Write u64 pairs using streaming stores
+        while i + 1 < len {
+            let pair = (data[i] as u64) | ((data[i + 1] as u64) << 32);
+            mmio::stream_write_u64(ptr, pair);
+            ptr += 8;
+            i += 2;
+        }
+
+        // Handle odd trailing u32
+        if i < len {
+            mmio::stream_write_u32(ptr, data[i]);
+        }
+    }
+
+    /// Fallback for non-x86: just use volatile writes
+    #[inline]
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    pub fn write_u32_slice_streaming(&mut self, offset: usize, data: &[u32]) {
+        self.write_u32_slice(offset, data);
+    }
 }

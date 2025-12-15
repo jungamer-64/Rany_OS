@@ -14,6 +14,8 @@ use spin::Mutex;
 use super::console::TextConsole;
 use super::framebuffer::Framebuffer;
 use super::{Color, FramebufferInfo, PixelFormat};
+use crate::memory::physical_memory_offset;
+use crate::mm::higher_half::{PageFlags, PageTableManager, VirtAddr};
 
 // ============================================================================
 // Global State
@@ -84,8 +86,53 @@ pub fn init_from_limine(response: &FramebufferResponse) -> bool {
         info.format
     );
 
+    // Write-Combiningで再マッピング
+    // これによりVRAMへの書き込みパフォーマンスが大幅に向上する
+    let fb_size = (info.stride as u64) * (info.height as u64);
+    remap_framebuffer_wc(info.address, fb_size);
+
     init(info);
     true
+}
+
+/// フレームバッファをWrite-Combiningで再マッピング
+///
+/// デフォルトのキャッシュ属性（通常はUncacheableまたはWrite-Through）を
+/// Write-Combiningに変更して、描画パフォーマンスを向上させる。
+fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
+    let offset = physical_memory_offset();
+    let mut manager = unsafe { PageTableManager::from_current_cr3(offset) };
+
+    const PAGE_SIZE: u64 = 4096;
+    let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    let mut remapped_count = 0;
+
+    for i in 0..num_pages {
+        let virt = VirtAddr::new(virt_addr + i * PAGE_SIZE);
+
+        // 現在の物理アドレスを取得（安全のためtranslateを使用）
+        if let Some(phys) = manager.translate(virt) {
+            unsafe {
+                // 一旦アンマップしてからWC属性で再マップ
+                // エラーは無視（クリティカルではないため）
+                if manager.unmap_page(virt).is_ok() {
+                    if manager
+                        .map_page(virt, phys, PageFlags::write_combining())
+                        .is_ok()
+                    {
+                        remapped_count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    log::info!(
+        "[GRAPHICS] Framebuffer remapped with Write-Combining ({} / {} pages)\n",
+        remapped_count,
+        num_pages
+    );
 }
 
 /// マスク情報からピクセルフォーマットを判定
