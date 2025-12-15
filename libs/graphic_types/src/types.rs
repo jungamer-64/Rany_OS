@@ -24,21 +24,23 @@ pub struct Color {
 
 impl Color {
     /// 新しいカラーを作成
+    #[must_use]
     pub const fn new(red: u8, green: u8, blue: u8) -> Self {
         Self {
-            red,
-            green,
             blue,
+            green,
+            red,
             alpha: 255,
         }
     }
 
     /// アルファ付きカラーを作成
+    #[must_use]
     pub const fn with_alpha(red: u8, green: u8, blue: u8, alpha: u8) -> Self {
         Self {
-            red,
-            green,
             blue,
+            green,
+            red,
             alpha,
         }
     }
@@ -46,7 +48,8 @@ impl Color {
     /// アルファブレンド計算 (src over dst)
     /// 近似計算: (src * a + dst * (255 - a)) / 255
     #[inline]
-    pub const fn blend(self, bg: Color) -> Color {
+    #[must_use]
+    pub const fn blend(self, bg: Self) -> Self {
         if self.alpha == 255 {
             return self;
         }
@@ -92,20 +95,21 @@ impl Color {
     }
 
     // 基本色定義
-    pub const BLACK: Color = Color::new(0, 0, 0);
-    pub const WHITE: Color = Color::new(255, 255, 255);
-    pub const RED: Color = Color::new(255, 0, 0);
-    pub const GREEN: Color = Color::new(0, 255, 0);
-    pub const BLUE: Color = Color::new(0, 0, 255);
-    pub const YELLOW: Color = Color::new(255, 255, 0);
-    pub const CYAN: Color = Color::new(0, 255, 255);
-    pub const MAGENTA: Color = Color::new(255, 0, 255);
-    pub const GRAY: Color = Color::new(128, 128, 128);
-    pub const DARK_GRAY: Color = Color::new(64, 64, 64);
-    pub const LIGHT_GRAY: Color = Color::new(192, 192, 192);
-    pub const ORANGE: Color = Color::new(255, 165, 0);
-    pub const PURPLE: Color = Color::new(128, 0, 128);
-    pub const TRANSPARENT: Color = Color::with_alpha(0, 0, 0, 0);
+    // 基本色定義
+    pub const BLACK: Self = Self::new(0, 0, 0);
+    pub const WHITE: Self = Self::new(255, 255, 255);
+    pub const RED: Self = Self::new(255, 0, 0);
+    pub const GREEN: Self = Self::new(0, 255, 0);
+    pub const BLUE: Self = Self::new(0, 0, 255);
+    pub const YELLOW: Self = Self::new(255, 255, 0);
+    pub const CYAN: Self = Self::new(0, 255, 255);
+    pub const MAGENTA: Self = Self::new(255, 0, 255);
+    pub const GRAY: Self = Self::new(128, 128, 128);
+    pub const DARK_GRAY: Self = Self::new(64, 64, 64);
+    pub const LIGHT_GRAY: Self = Self::new(192, 192, 192);
+    pub const ORANGE: Self = Self::new(255, 165, 0);
+    pub const PURPLE: Self = Self::new(128, 0, 128);
+    pub const TRANSPARENT: Self = Self::with_alpha(0, 0, 0, 0);
 }
 
 impl Default for Color {
@@ -136,6 +140,7 @@ pub enum PixelFormat {
 
 impl PixelFormat {
     /// バイト数を取得
+    #[must_use]
     pub const fn bytes_per_pixel(&self) -> usize {
         match self {
             PixelFormat::Rgb888 | PixelFormat::Bgr888 => 3,
@@ -171,9 +176,9 @@ impl PixelFormat {
                 out[2] = color.blue;
             }
             PixelFormat::Rgb565 => {
-                let r = (color.red as u16 >> 3) & 0x1F;
-                let g = (color.green as u16 >> 2) & 0x3F;
-                let b = (color.blue as u16 >> 3) & 0x1F;
+                let r = (u16::from(color.red) >> 3) & 0x1F;
+                let g = (u16::from(color.green) >> 2) & 0x3F;
+                let b = (u16::from(color.blue) >> 3) & 0x1F;
                 let val = (r << 11) | (g << 5) | b;
                 let bytes = val.to_le_bytes();
                 out[0] = bytes[0];
@@ -184,6 +189,7 @@ impl PixelFormat {
 
     /// バイト列から Color を復元する
     /// `bytes` は `self.bytes_per_pixel()` 以上の長さが必要
+    #[must_use]
     pub fn decode_color_bytes(&self, bytes: &[u8]) -> Color {
         match self {
             PixelFormat::Bgra8888 => Color::with_alpha(bytes[2], bytes[1], bytes[0], bytes[3]),
@@ -201,7 +207,8 @@ impl PixelFormat {
     }
 
     /// 32bitとしてエンコード可能なら u32 を返す（メモリ上のバイト順を想定したLE表現）
-    pub fn encode_u32(&self, color: Color) -> Option<u32> {
+    #[must_use]
+    pub const fn encode_u32(&self, color: Color) -> Option<u32> {
         match self {
             PixelFormat::Bgra8888 => Some(color.to_u32()),
             PixelFormat::Rgba8888 => {
@@ -213,7 +220,8 @@ impl PixelFormat {
     }
 
     /// 16bitとしてエンコード可能なら u16 を返す（LE）
-    pub fn encode_u16(&self, color: Color) -> Option<u16> {
+    #[must_use]
+    pub const fn encode_u16(&self, color: Color) -> Option<u16> {
         match self {
             PixelFormat::Rgb565 => {
                 let r = (color.red as u16 >> 3) & 0x1F;
@@ -250,7 +258,8 @@ pub struct FramebufferInfo {
 
 impl FramebufferInfo {
     /// フレームバッファの総バイト数
-    pub fn size(&self) -> usize {
+    #[must_use]
+    pub const fn size(&self) -> usize {
         self.stride as usize * self.height as usize
     }
 }
@@ -268,6 +277,7 @@ pub struct Point {
 }
 
 impl Point {
+    #[must_use]
     pub const fn new(x: i32, y: i32) -> Self {
         Self { x, y }
     }
@@ -284,6 +294,7 @@ pub struct Rect {
 }
 
 impl Rect {
+    #[must_use]
     pub const fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
         Self {
             x,
@@ -294,22 +305,26 @@ impl Rect {
     }
 
     /// 右端のX座標
-    pub fn right(&self) -> i32 {
+    #[must_use]
+    pub const fn right(&self) -> i32 {
         self.x + self.width as i32
     }
 
     /// 下端のY座標
-    pub fn bottom(&self) -> i32 {
+    #[must_use]
+    pub const fn bottom(&self) -> i32 {
         self.y + self.height as i32
     }
 
     /// 点が矩形内にあるか
-    pub fn contains(&self, point: Point) -> bool {
+    #[must_use]
+    pub const fn contains(&self, point: Point) -> bool {
         point.x >= self.x && point.x < self.right() && point.y >= self.y && point.y < self.bottom()
     }
 
     /// 矩形が交差するか
-    pub fn intersects(&self, other: &Rect) -> bool {
+    #[must_use]
+    pub const fn intersects(&self, other: &Rect) -> bool {
         self.x < other.right()
             && self.right() > other.x
             && self.y < other.bottom()
@@ -331,7 +346,8 @@ impl Rect {
     }
 
     /// 他の矩形を完全に含むか
-    pub fn contains_rect(&self, other: &Rect) -> bool {
+    #[must_use]
+    pub const fn contains_rect(&self, other: &Rect) -> bool {
         other.x >= self.x
             && other.y >= self.y
             && other.right() <= self.right()
@@ -458,7 +474,7 @@ mod tests {
 
     #[test]
     fn test_point_repr_c_layout() {
-        use core::mem::{size_of, align_of};
+        use core::mem::{align_of, size_of};
         // Point should be 8 bytes (2 x i32)
         assert_eq!(size_of::<Point>(), 8);
         assert_eq!(align_of::<Point>(), 4);
@@ -466,7 +482,7 @@ mod tests {
 
     #[test]
     fn test_rect_repr_c_layout() {
-        use core::mem::{size_of, align_of};
+        use core::mem::{align_of, size_of};
         // Rect should be 16 bytes (2 x i32 + 2 x u32)
         assert_eq!(size_of::<Rect>(), 16);
         assert_eq!(align_of::<Rect>(), 4);
@@ -474,7 +490,7 @@ mod tests {
 
     #[test]
     fn test_color_repr_c_layout() {
-        use core::mem::{size_of, align_of};
+        use core::mem::{align_of, size_of};
         // Color should be 4 bytes (4 x u8)
         assert_eq!(size_of::<Color>(), 4);
         assert_eq!(align_of::<Color>(), 1);

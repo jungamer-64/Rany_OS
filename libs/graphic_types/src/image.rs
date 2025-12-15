@@ -66,6 +66,7 @@ impl<'a> ImageView<'a> {
     ///
     /// # Safety
     /// The caller must ensure `data` has at least `stride * height` bytes.
+    #[must_use]
     pub fn new(
         data: &'a [u8],
         width: u32,
@@ -88,35 +89,41 @@ impl<'a> ImageView<'a> {
 
     /// Get the width in pixels
     #[inline]
-    pub fn width(&self) -> u32 {
+    #[must_use]
+    pub const fn width(&self) -> u32 {
         self.width
     }
 
     /// Get the height in pixels
     #[inline]
-    pub fn height(&self) -> u32 {
+    #[must_use]
+    pub const fn height(&self) -> u32 {
         self.height
     }
 
     /// Get the stride (bytes per row)
     #[inline]
-    pub fn stride(&self) -> u32 {
+    #[must_use]
+    pub const fn stride(&self) -> u32 {
         self.stride
     }
 
     /// Get the pixel format
     #[inline]
-    pub fn format(&self) -> PixelFormat {
+    #[must_use]
+    pub const fn format(&self) -> PixelFormat {
         self.format
     }
 
     /// Get the raw pixel data slice
     #[inline]
-    pub fn data(&self) -> &[u8] {
+    #[must_use]
+    pub const fn data(&self) -> &[u8] {
         self.data
     }
 
     /// Get a pixel at (x, y)
+    #[must_use]
     pub fn get_pixel(&self, x: u32, y: u32) -> Color {
         if x >= self.width || y >= self.height {
             return Color::TRANSPARENT;
@@ -145,6 +152,7 @@ impl<'a> ImageViewMut<'a> {
     ///
     /// # Safety
     /// The caller must ensure `data` has at least `stride * height` bytes.
+    #[must_use]
     pub fn new(
         data: &'a mut [u8],
         width: u32,
@@ -167,30 +175,35 @@ impl<'a> ImageViewMut<'a> {
 
     /// Get the width in pixels
     #[inline]
-    pub fn width(&self) -> u32 {
+    #[must_use]
+    pub const fn width(&self) -> u32 {
         self.width
     }
 
     /// Get the height in pixels
     #[inline]
-    pub fn height(&self) -> u32 {
+    #[must_use]
+    pub const fn height(&self) -> u32 {
         self.height
     }
 
     /// Get the stride (bytes per row)
     #[inline]
-    pub fn stride(&self) -> u32 {
+    #[must_use]
+    pub const fn stride(&self) -> u32 {
         self.stride
     }
 
     /// Get the pixel format
     #[inline]
-    pub fn format(&self) -> PixelFormat {
+    #[must_use]
+    pub const fn format(&self) -> PixelFormat {
         self.format
     }
 
     /// Get the raw pixel data slice (immutable)
     #[inline]
+    #[must_use]
     pub fn data(&self) -> &[u8] {
         self.data
     }
@@ -202,6 +215,7 @@ impl<'a> ImageViewMut<'a> {
     }
 
     /// Get a pixel at (x, y)
+    #[must_use]
     pub fn get_pixel(&self, x: u32, y: u32) -> Color {
         if x >= self.width || y >= self.height {
             return Color::TRANSPARENT;
@@ -272,6 +286,7 @@ impl Image {
     }
 
     /// Create an empty image (panics on overflow, prefer `try_new`)
+    #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Self::try_new(width, height).expect("Image dimensions too large")
     }
@@ -305,17 +320,20 @@ impl Image {
     }
 
     /// Create a solid-color filled image (panics on overflow, prefer `try_filled`)
+    #[must_use]
     pub fn filled(width: u32, height: u32, color: Color) -> Self {
         Self::try_filled(width, height, color).expect("Image dimensions too large")
     }
 
     /// 幅を取得
-    pub fn width(&self) -> u32 {
+    #[must_use]
+    pub const fn width(&self) -> u32 {
         self.width
     }
 
     /// 高さを取得
-    pub fn height(&self) -> u32 {
+    #[must_use]
+    pub const fn height(&self) -> u32 {
         self.height
     }
 
@@ -821,6 +839,7 @@ pub fn decode_bmp_into(data: &[u8], output: &mut ImageViewMut) -> ImageResult<()
 // ============================================================================
 
 /// TGAファイルをデコード（簡易実装）
+#[allow(clippy::too_many_lines)]
 pub fn decode_tga(data: &[u8]) -> ImageResult<Image> {
     if data.len() < 18 {
         return Err(ImageError::InvalidFormat);

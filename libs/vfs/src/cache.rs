@@ -239,10 +239,12 @@ impl CachedPage {
 /// Cache for a single file
 struct FileCache {
     /// Inode number
+    #[allow(dead_code)]
     ino: InodeNum,
     /// Cached pages by page number
     pages: BTreeMap<u64, Arc<CachedPage>>,
     /// File size
+    #[allow(dead_code)]
     file_size: u64,
 }
 
@@ -352,9 +354,9 @@ impl PageCache {
     /// Get or allocate file cache
     fn get_or_create_file_cache(&self, ino: InodeNum, file_size: u64) -> Option<()> {
         let mut files = self.files.write();
-        if !files.contains_key(&ino) {
-            files.insert(ino, FileCache::new(ino, file_size));
-        }
+        files
+            .entry(ino)
+            .or_insert_with(|| FileCache::new(ino, file_size));
         Some(())
     }
 
@@ -484,6 +486,10 @@ impl PageCache {
     }
 
     /// Sync all dirty pages for a file
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` if the writer function fails.
     pub fn sync_file<F>(&self, ino: InodeNum, mut writer: F) -> Result<usize, ()>
     where
         F: FnMut(u64, &[u8]) -> Result<(), ()>,
@@ -513,6 +519,10 @@ impl PageCache {
     }
 
     /// Sync all dirty pages
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err(())` if the writer function fails.
     pub fn sync_all<F>(&self, mut writer: F) -> Result<usize, ()>
     where
         F: FnMut(InodeNum, u64, &[u8]) -> Result<(), ()>,

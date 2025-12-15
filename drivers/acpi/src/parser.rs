@@ -53,7 +53,7 @@ impl AcpiParser {
         }
 
         // Search in BIOS ROM area (0xE0000 - 0xFFFFF)
-        unsafe { Self::search_region(0xE0000, 0x100000) }
+        unsafe { Self::search_region(0xE0_000, 0x100_000) }
     }
 
     /// Search for RSDP signature in a memory region
@@ -108,9 +108,9 @@ impl AcpiParser {
 
         // Get table addresses from XSDT (ACPI 2.0+) or RSDT (ACPI 1.0)
         let table_addresses = if rsdp.is_xsdt_available() {
-            self.parse_xsdt(rsdp.xsdt_address)?
+            unsafe { self.parse_xsdt(rsdp.xsdt_address)? }
         } else {
-            self.parse_rsdt(rsdp.rsdt_address as u64)?
+            unsafe { self.parse_rsdt(rsdp.rsdt_address as u64)? }
         };
 
         // Parse individual tables
@@ -118,9 +118,9 @@ impl AcpiParser {
             let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
 
             if header.signature == signature::MADT {
-                self.parse_madt(table_addr, &mut info)?;
+                unsafe { self.parse_madt(table_addr, &mut info)? };
             } else if header.signature == signature::MCFG {
-                self.parse_mcfg(table_addr, &mut info)?;
+                unsafe { self.parse_mcfg(table_addr, &mut info)? };
             }
         }
 
