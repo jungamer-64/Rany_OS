@@ -823,22 +823,31 @@ impl Framebuffer {
     /// available for runtime detection.
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     fn get_avx2_available() -> bool {
-        use core::sync::atomic::Ordering;
-        let v = AVX2_AVAILABLE.load(Ordering::Relaxed);
-        if v == 0 {
-            #[cfg(feature = "std")]
-            {
+        #[cfg(not(feature = "std"))]
+        {
+            hal::mmio::get_simd_level() >= hal::mmio::simd_level::AVX2
+        }
+        #[cfg(feature = "std")]
+        {
+            use core::sync::atomic::Ordering;
+            let v = AVX2_AVAILABLE.load(Ordering::Relaxed);
+            if v == 0 {
                 let avail = std::is_x86_feature_detected!("avx2");
+                if avail {
+                    // Sync with HAL for benchmarks
+                    unsafe {
+                        hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
+                    }
+                } else if std::is_x86_feature_detected!("avx") {
+                    unsafe {
+                        hal::mmio::set_simd_level(hal::mmio::simd_level::AVX);
+                    }
+                }
                 AVX2_AVAILABLE.store(if avail { 2 } else { 1 }, Ordering::Relaxed);
                 avail
+            } else {
+                v == 2
             }
-            #[cfg(not(feature = "std"))]
-            {
-                AVX2_AVAILABLE.store(1, Ordering::Relaxed);
-                false
-            }
-        } else {
-            v == 2
         }
     }
 
@@ -1510,7 +1519,14 @@ impl Framebuffer {
     /// emulate `draw_text` behavior (prefill background once) and then
     /// draw glyphs individually without per-char dirty updates.
     #[cfg(feature = "bench")]
-    pub fn bench_draw_char_no_dirty(&mut self, x: i32, y: i32, c: char, color: Color, bg: Option<Color>) {
+    pub fn bench_draw_char_no_dirty(
+        &mut self,
+        x: i32,
+        y: i32,
+        c: char,
+        color: Color,
+        bg: Option<Color>,
+    ) {
         let font = BitmapFont::default_8x16();
         let c_index = c as usize;
         if c_index >= 128 {
@@ -1670,6 +1686,20 @@ impl Framebuffer {
         if let Some(ref mut back) = self.back_buffer {
             // Write to back buffer: pack into u64 writes to reduce the
             // number of memory operations compared to eight separate u32 writes.
+            // Sanity-check bounds to convert potential silent OOB writes into
+            // an actionable panic with diagnostics during bench runs.
+            let back_len = back.len();
+            let required = 32usize; // 4 * u64
+            if dst_offset_bytes + required > back_len {
+                panic!(
+                    "OOB glyph write to back buffer: dst_offset={} required={} back_len={} stride={}",
+                    dst_offset_bytes,
+                    required,
+                    back_len,
+                    self.info.stride
+                );
+            }
+
             let base = unsafe { back.as_mut_ptr().add(dst_offset_bytes) } as *mut u8;
             unsafe {
                 let s0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
@@ -1692,6 +1722,22 @@ impl Framebuffer {
                 core::ptr::write_unaligned(base.add(24) as *mut u64, v3);
             }
         } else {
+            // Sanity-check: when writing to a heap-backed framebuffer (not
+            // double-buffered), ensure the destination range is within the
+            // allocated framebuffer to avoid silent OOB writes that cause
+            // hard crashes on the host.
+            let required = 32usize; // we will write 4 u64 values (32 bytes)
+            if self.buffer != ptr::null_mut() as *mut u8 {
+                let buf_start = self.buffer as usize;
+                let buf_end = buf_start + self.info.size();
+                if addr + required > buf_end {
+                    panic!(
+                        "OOB glyph write: addr=0x{:x} needed={} buf_end=0x{:x} stride={} dst_offset={}",
+                        addr, required, buf_end, self.info.stride, dst_offset_bytes
+                    );
+                }
+            }
+
             // Write to MMIO using 64-bit streaming writes where possible
             // 0x80 -> pixel 0, 0x40 -> pixel 1
             let p0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
@@ -2531,7 +2577,43 @@ impl Framebuffer {
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => {
                 let color_u32 = color.to_u32();
                 if self.back_buffer.is_some() {
-                    // Backed buffer: safe bulk fill via slice
+                    // Backed buffer: sanity-check rows won't exceed backing buffer
+                    let row_bytes = (r.width as usize) * 4;
+                    if let Some(ref back) = self.back_buffer {
+                        let back_len = back.len();
+                        // Optional per-run diagnostics
+                        #[cfg(feature = "std")]
+                        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                            let first_offset = (r.y as usize * stride as usize) + (r.x as usize * 4);
+                            eprintln!(
+                                "fill_rect: back_len={} r.y={} r.bottom={} stride={} row_bytes={} first_offset={}",
+                                back_len,
+                                r.y,
+                                r.bottom(),
+                                stride,
+                                row_bytes,
+                                first_offset
+                            );
+                        }
+
+                        for y in r.y..r.bottom() {
+                            let offset = (y as usize * stride as usize) + (r.x as usize * 4);
+                            if offset + row_bytes > back_len {
+                                panic!(
+                                    "OOB fill_rect to back buffer: y={} offset={} row_bytes={} back_len={} stride={} rect={:?}",
+                                    y, offset, row_bytes, back_len, stride, r
+                                );
+                            }
+                            #[cfg(feature = "std")]
+                            if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
+                                if (y - r.y) % 4 == 0 {
+                                    eprintln!("fill_rect: row {} offset {}", y, offset);
+                                }
+                            }
+                        }
+                    }
+
+                    // Bulk fill via slice
                     for y in r.y..r.bottom() {
                         let offset = (y as usize * stride as usize) + (r.x as usize * 4);
                         let row_ptr = unsafe { buffer.add(offset) as *mut u32 };
@@ -2619,6 +2701,10 @@ impl Framebuffer {
     /// * `bg_color` - 背景色
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: Color, bg_color: Color) {
         let font = BitmapFont::default_8x16();
+        // Optional debug tracing for bench-time diagnostics. Set RANY_DEBUG_DRAW=1
+        // in the environment to enable verbose per-glyph logging.
+        #[cfg(feature = "std")]
+        let debug_draw = std::env::var("RANY_DEBUG_DRAW").ok();
         // First fill the background rectangle for the whole text span. This
         // leverages the optimized `fill_rect` path for broad formats.
         let char_count = text.chars().filter(|&c| c != '\n').count() as u32;
@@ -2631,6 +2717,14 @@ impl Framebuffer {
 
         // Mark dirty (background + foreground)
         self.mark_dirty(Rect::new(x, y, text_w, text_h));
+
+        #[cfg(feature = "std")]
+        if debug_draw.as_deref() == Some("1") {
+            eprintln!(
+                "draw_text: x={} y={} text_w={} text_h={} text='{}'",
+                x, y, text_w, text_h, text
+            );
+        }
 
         self.fill_rect(Rect::new(x, y, text_w, text_h), bg_color);
 
@@ -2679,7 +2773,21 @@ impl Framebuffer {
                         let byte = font.get_data(glyph_row);
 
                         let dst_offset = (dst_y as usize * stride) + (char_x as usize * 4);
+                        #[cfg(feature = "std")]
+                        if debug_draw.as_deref() == Some("1") {
+                            eprintln!(
+                                "draw_text: char='{}' idx={} row={} dst_y={} dst_offset={}",
+                                c, c_index, row, dst_y, dst_offset
+                            );
+                        }
                         self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                        #[cfg(feature = "std")]
+                        if debug_draw.as_deref() == Some("1") {
+                            eprintln!(
+                                "draw_text: wrote glyph idx={} row={} dst_offset={}",
+                                c_index, row, dst_offset
+                            );
+                        }
                     }
                 } else {
                     // Partially clipped horizontally: fallback to slow path for this char

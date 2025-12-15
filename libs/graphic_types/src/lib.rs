@@ -27,6 +27,6 @@ pub mod image;
 
 #[cfg(feature = "alloc")]
 pub use image::{
-    IconGenerator, Image, ImageError, ImageResult, ImageView, ImageViewMut, MAX_IMAGE_SIZE,
-    decode_bmp, decode_bmp_into, decode_ico, decode_tga,
+    Image, ImageError, ImageResult, ImageView, ImageViewMut, MAX_IMAGE_SIZE,
+    decode_bmp, decode_bmp_into,
 };
