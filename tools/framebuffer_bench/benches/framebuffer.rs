@@ -3,6 +3,7 @@ use criterion::{criterion_group, criterion_main, Criterion};
 use std::time::Duration;
 
 use rany_os::graphics::framebuffer::Framebuffer;
+use rany_os::graphics::font::BitmapFont;
 use rany_os::graphics::image::Image;
 use rany_os::graphics::{FramebufferInfo, PixelFormat, Color};
 
@@ -157,6 +158,42 @@ fn bench_draw_char_no_bg(c: &mut Criterion) {
     }));
 }
 
+fn bench_draw_text_manual(c: &mut Criterion) {
+    let width = 800u32;
+    let height = 600u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 4,
+        format: PixelFormat::Bgra8888,
+        bpp: 32,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let back = vec![0u8; info.size()];
+    fb.enable_double_buffering_from_vec(back);
+
+    let text = "The quick brown fox jumps over the lazy dog. 0123456789!@#$%^&*()";
+    let font = BitmapFont::default_8x16();
+
+    c.bench_function("draw_text_manual", |b| b.iter(|| {
+        // Fill background for the whole span (same as draw_text)
+        let char_count = text.chars().filter(|&c| c != '\n').count() as u32;
+        let text_w = char_count * font.width() as u32;
+        let text_h = font.height() as u32;
+        fb.fill_rect(rany_os::graphics::Rect::new(100, 100, text_w, text_h), Color::BLACK);
+
+        // Draw each glyph without per-char dirty updates (bench helper)
+        let mut cx = 100i32;
+        for ch in text.chars() {
+            if ch == '\n' { continue; }
+            fb.bench_draw_char_no_dirty(cx, 100, ch, Color::WHITE, Some(Color::BLACK));
+            cx += font.width() as i32;
+        }
+    }));
+}
+
 fn bench_fill_rect_full(c: &mut Criterion) {
     let width = 800u32;
     let height = 600u32;
@@ -191,6 +228,7 @@ criterion_group!{
               bench_draw_image_24bit, 
               bench_draw_image_rgba,
               bench_draw_text_32bit,
+              bench_draw_text_manual,
               bench_draw_image_alpha,
               bench_fill_rect_full,
               bench_draw_char_with_bg,
