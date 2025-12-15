@@ -36,6 +36,7 @@ pub mod framebuffer;
 #[cfg(not(any(test, feature = "bench")))]
 pub mod global;
 pub mod mmio;
+pub mod psf;
 
 // 既存のサブモジュール
 #[cfg(not(any(test, feature = "bench")))]
@@ -57,7 +58,7 @@ pub use gpu_driver::{DamagedRegion, DisplayMode, GpuError, GpuResult, colors};
 // 型の再エクスポート
 #[cfg(not(any(test, feature = "bench")))]
 pub use console::TextConsole;
-pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH};
+pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH, Font};
 pub use framebuffer::Framebuffer;
 
 // グローバル関数の再エクスポート
