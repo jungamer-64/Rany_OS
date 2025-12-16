@@ -14,6 +14,7 @@
 #![allow(dead_code)]
 
 use crate::sync::IrqMutex;
+use alloc::collections::BTreeMap;
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
@@ -157,6 +158,10 @@ pub struct BuddyFrameAllocator {
     split_count: u64,
     /// 統計: 合体回数
     coalesce_count: u64,
+    /// NUMA node -> list of managed (start_frame, end_frame) ranges
+    /// This is optional so the allocator can remain const-constructible; it is
+    /// initialized during `init` or when regions are registered.
+    numa_regions: Option<BTreeMap<usize, alloc::vec::Vec<(FrameIndex, FrameIndex)>>>,
 }
 
 impl BuddyFrameAllocator {
@@ -169,6 +174,7 @@ impl BuddyFrameAllocator {
             free_frames: 0,
             split_count: 0,
             coalesce_count: 0,
+            numa_regions: None,
         }
     }
 
@@ -193,6 +199,11 @@ impl BuddyFrameAllocator {
 
             // 領域を最大オーダーのブロックに分割して登録
             self.add_region(start_frame, end_frame);
+        }
+
+        // Initialize NUMA regions mapping
+        if self.numa_regions.is_none() {
+            self.numa_regions = Some(BTreeMap::new());
         }
 
         self.total_frames = total;
@@ -430,6 +441,142 @@ impl BuddyFrameAllocator {
             .map(|frame| PhysAddr::new(frame.to_phys_addr()))
     }
 
+    /// Register a NUMA region for a node and add it to the allocator
+    pub fn register_numa_region(&mut self, node: usize, start: FrameIndex, end: FrameIndex) {
+        // Ensure internal structures are initialized if allocator wasn't inited
+        if self.total_frames == 0 {
+            for word in self.bitmap.iter_mut() {
+                *word = u64::MAX;
+            }
+        }
+
+        if self.numa_regions.is_none() {
+            self.numa_regions = Some(BTreeMap::new());
+        }
+        let map = self.numa_regions.as_mut().unwrap();
+        map.entry(node).or_insert_with(|| alloc::vec![]).push((start, end));
+
+        // Add the region to the global free lists
+        self.add_region(start, end);
+
+        // Update total_frames to cover the new region
+        self.total_frames = self.total_frames.max(end.as_usize());
+    }
+
+    /// Allocate an order block restricted to [start_frame, end_frame)
+    fn allocate_order_in_range(&mut self, order: usize, start_frame: usize, end_frame: usize) -> Option<FrameIndex> {
+        for current_order in order..=MAX_ORDER {
+            let block_size = 1 << current_order;
+            let fl = &mut self.free_lists[current_order];
+            let mut i = 0usize;
+            while i < fl.count {
+                if let Some(frame) = fl.entries[i] {
+                    if frame.as_usize() >= start_frame && (frame.as_usize() + block_size) <= end_frame {
+                        // remove the entry by swapping with last
+                        fl.entries[i] = fl.entries[fl.count - 1].take();
+                        fl.count -= 1;
+
+                        // split down to target order and allocate
+                        self.split_block(frame, current_order, order);
+
+                        let target_size = 1 << order;
+                        for j in 0..target_size {
+                            self.mark_frame_used(FrameIndex::new(frame.as_usize() + j));
+                        }
+                        self.free_frames -= target_size as u64;
+
+                        return Some(frame);
+                    }
+                }
+                i += 1;
+            }
+        }
+        None
+    }
+
+    /// Try to allocate a 4KiB frame on a preferred NUMA node; fallback to others and global
+    pub fn allocate_4k_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size4KiB>> {
+        if let Some(map) = self.numa_regions.as_ref() {
+            if let Some(ranges) = map.get(&node) {
+                for &(start, end) in ranges.iter() {
+                    if let Some(frame) = self.allocate_order_in_range(0, start.as_usize(), end.as_usize()) {
+                        let addr = PhysAddr::new(frame.to_phys_addr());
+                        return Some(PhysFrame::containing_address(addr));
+                    }
+                }
+            }
+
+            // fallback to other nodes
+            for (&other, ranges) in map.iter() {
+                if other == node {
+                    continue;
+                }
+                for &(start, end) in ranges.iter() {
+                    if let Some(frame) = self.allocate_order_in_range(0, start.as_usize(), end.as_usize()) {
+                        let addr = PhysAddr::new(frame.to_phys_addr());
+                        return Some(PhysFrame::containing_address(addr));
+                    }
+                }
+            }
+        }
+
+        // global fallback
+        self.allocate_4k_frame()
+    }
+
+    /// 2MiB allocation on a preferred NUMA node
+    pub fn allocate_2m_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size2MiB>> {
+        let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
+        if let Some(map) = self.numa_regions.as_ref() {
+            if let Some(ranges) = map.get(&node) {
+                for &(start, end) in ranges.iter() {
+                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                        let addr = PhysAddr::new(frame.to_phys_addr());
+                        return Some(PhysFrame::containing_address(addr));
+                    }
+                }
+            }
+
+            for (&other, ranges) in map.iter() {
+                if other == node { continue; }
+                for &(start, end) in ranges.iter() {
+                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                        let addr = PhysAddr::new(frame.to_phys_addr());
+                        return Some(PhysFrame::containing_address(addr));
+                    }
+                }
+            }
+        }
+        self.allocate_2m_frame()
+    }
+
+    /// 1GiB allocation on a preferred NUMA node
+    pub fn allocate_1g_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size1GiB>> {
+        let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
+        if let Some(map) = self.numa_regions.as_ref() {
+            if let Some(ranges) = map.get(&node) {
+                for &(start, end) in ranges.iter() {
+                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                        let addr = PhysAddr::new(frame.to_phys_addr());
+                        return Some(PhysFrame::containing_address(addr));
+                    }
+                }
+            }
+
+            for (&other, ranges) in map.iter() {
+                if other == node { continue; }
+                for &(start, end) in ranges.iter() {
+                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                        let addr = PhysAddr::new(frame.to_phys_addr());
+                        return Some(PhysFrame::containing_address(addr));
+                    }
+                }
+            }
+        }
+
+        self.allocate_1g_frame()
+    }
+
     /// 空きフレーム数を取得
     pub fn free_frame_count(&self) -> u64 {
         self.free_frames
@@ -527,19 +674,54 @@ pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
     BUDDY_ALLOCATOR.lock().stats()
 }
 
+/// Register a NUMA region with the global Buddy Allocator
+pub fn buddy_register_numa_region(node: usize, start: PhysAddr, size: u64) {
+    let mut allocator = BUDDY_ALLOCATOR.lock();
+    let start_frame = FrameIndex::from_phys_addr(start.as_u64());
+    let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
+    allocator.register_numa_region(node, start_frame, end_frame);
+}
+
+/// Allocate a 4KiB frame preferring the given NUMA node (best-effort)
+pub fn buddy_alloc_frame_on_node(node: usize) -> Option<PhysFrame<Size4KiB>> {
+    BUDDY_ALLOCATOR.lock().allocate_4k_frame_on_node(node)
+}
+
+/// Allocate a 2MiB frame preferring the given NUMA node (best-effort)
+pub fn buddy_alloc_frame_2m_on_node(node: usize) -> Option<PhysFrame<Size2MiB>> {
+    BUDDY_ALLOCATOR.lock().allocate_2m_frame_on_node(node)
+}
+
+/// Allocate a 1GiB frame preferring the given NUMA node (best-effort)
+pub fn buddy_alloc_frame_1g_on_node(node: usize) -> Option<PhysFrame<Size1GiB>> {
+    BUDDY_ALLOCATOR.lock().allocate_1g_frame_on_node(node)
+}
+
 /// 指定アドレスがBuddy Allocatorで管理されているかチェック
 ///
 /// 設計書 P2: 統一フレームアロケータのための判定
 /// 注: Buddyアロケータは初期化時に登録された領域のみを管理する
 pub fn is_managed_by_buddy(addr: PhysAddr) -> bool {
     let allocator = BUDDY_ALLOCATOR.lock();
-    // total_framesが0ならBuddyは初期化されていない
+
+    // If NUMA regions are recorded, check them first
+    if let Some(map) = allocator.numa_regions.as_ref() {
+        for (_node, ranges) in map.iter() {
+            for &(start, end) in ranges.iter() {
+                let start_addr = start.to_phys_addr();
+                let end_addr = end.to_phys_addr();
+                if addr.as_u64() >= start_addr && addr.as_u64() < end_addr {
+                    return true;
+                }
+            }
+        }
+    }
+
+    // Fallback: contiguous region assumption
     if allocator.total_frames == 0 {
         return false;
     }
 
-    // Buddyで管理されているフレーム範囲内かチェック
-    // 注: Buddyは0から始まる連続領域を想定（シンプル化）
     let max_addr = (allocator.total_frames as u64) * (PAGE_SIZE_4K as u64);
     addr.as_u64() < max_addr
 }
@@ -589,4 +771,41 @@ mod tests {
         assert_eq!(BuddyFrameAllocator::frames_to_order(512), 9);
         assert_eq!(BuddyFrameAllocator::frames_to_order(262144), 18);
     }
+
+    #[test]
+    fn test_numa_register_and_alloc_local() {
+        let mut allocator = BuddyFrameAllocator::new();
+
+        // Register a NUMA region (small area)
+        let start = PhysAddr::new(0x1000_0000);
+        let size = 0x20_000; // 128 KiB
+        let start_frame = FrameIndex::from_phys_addr(start.as_u64());
+        let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
+
+        allocator.register_numa_region(0, start_frame, end_frame);
+
+        // Allocate a 4K frame preferring node 0
+        let frame = allocator.allocate_4k_frame_on_node(0).expect("alloc local");
+        assert!(frame.start_address().as_u64() >= start.as_u64());
+        assert!(frame.start_address().as_u64() < start.as_u64() + size);
+    }
+
+    #[test]
+    fn test_numa_2m_alloc_local() {
+        let mut allocator = BuddyFrameAllocator::new();
+
+        // Register a larger NUMA region suitable for 2MiB allocations
+        let start = PhysAddr::new(0x2000_0000);
+        let size = 0x10_0000; // 1 MiB (smaller than 2MiB but for test we can still allocate a 4K)
+        let start_frame = FrameIndex::from_phys_addr(start.as_u64());
+        let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
+
+        allocator.register_numa_region(1, start_frame, end_frame);
+
+        // Try 4K allocation on node 1 (2M allocation may fail due to size)
+        let frame = allocator.allocate_4k_frame_on_node(1).expect("alloc 4K local");
+        assert!(frame.start_address().as_u64() >= start.as_u64());
+        assert!(frame.start_address().as_u64() < start.as_u64() + size);
+    }
 }
+
