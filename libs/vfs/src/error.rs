@@ -24,19 +24,19 @@ pub enum VfsError {
 impl fmt::Display for VfsError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VfsError::NotFound => write!(f, "File or directory not found"),
-            VfsError::PermissionDenied => write!(f, "Permission denied"),
-            VfsError::AlreadyExists => write!(f, "File or directory already exists"),
-            VfsError::DirectoryNotEmpty => write!(f, "Directory not empty"),
-            VfsError::NotADirectory => write!(f, "Not a directory"),
-            VfsError::IsADirectory => write!(f, "Is a directory"),
-            VfsError::InvalidInput => write!(f, "Invalid input"),
-            VfsError::StorageFull => write!(f, "Storage full"),
-            VfsError::IoError => write!(f, "I/O error"),
-            VfsError::NotSupported => write!(f, "Operation not supported"),
-            VfsError::ReadOnly => write!(f, "Read-only file system"),
-            VfsError::FileSystemCorrupted => write!(f, "File system corrupted"),
-            VfsError::Other => write!(f, "Other error"),
+            Self::NotFound => write!(f, "File or directory not found"),
+            Self::PermissionDenied => write!(f, "Permission denied"),
+            Self::AlreadyExists => write!(f, "File or directory already exists"),
+            Self::DirectoryNotEmpty => write!(f, "Directory not empty"),
+            Self::NotADirectory => write!(f, "Not a directory"),
+            Self::IsADirectory => write!(f, "Is a directory"),
+            Self::InvalidInput => write!(f, "Invalid input"),
+            Self::StorageFull => write!(f, "Storage full"),
+            Self::IoError => write!(f, "I/O error"),
+            Self::NotSupported => write!(f, "Operation not supported"),
+            Self::ReadOnly => write!(f, "Read-only file system"),
+            Self::FileSystemCorrupted => write!(f, "File system corrupted"),
+            Self::Other => write!(f, "Other error"),
         }
     }
 }

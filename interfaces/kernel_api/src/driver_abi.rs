@@ -634,6 +634,7 @@ macro_rules! export_driver {
         $(, start: $start:path)? // Optional start
         $(, stop: $stop:path)?   // Optional stop
         $(, irq: $irq:path)?     // Optional irq
+        $(,)? // allow optional trailing comma so doc examples can use a trailing comma
     ) => {
         $crate::export_driver!(@impl
             probe = $probe,
