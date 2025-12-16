@@ -638,8 +638,6 @@ impl PasidDirectoryEntry {
     }
 }
 
-
-
 impl InterruptRemapEntry {
     /// Entry present (bit 0)
     pub const PRESENT: u64 = 1 << 0;
@@ -1211,6 +1209,66 @@ impl ScalableContextEntry {
     }
 }
 
+/// PASID Table Entry (64 bytes)
+///
+/// Each entry in the PASID table defines the address translation
+/// for a specific PASID.
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug)]
+pub struct PasidTableEntry {
+    /// 8 QWORDs
+    pub qwords: [u64; 8],
+}
+
+impl Default for PasidTableEntry {
+    fn default() -> Self {
+        Self { qwords: [0; 8] }
+    }
+}
+
+impl PasidTableEntry {
+    /// Present bit (QWORD 0, bit 0)
+    pub const PRESENT: u64 = 1 << 0;
+    /// Page Walk Disable (QWORD 0, bit 3)
+    pub const PWD: u64 = 1 << 3;
+    /// First Level Page Table Pointer (QWORD 0, bits 12-63)
+    pub const FLPT_MASK: u64 = !0xFFF;
+    /// Address Width (QWORD 1, bits 0-2)
+    pub const AW_SHIFT: u64 = 0;
+    /// Supervisor Request (QWORD 1, bit 5)
+    pub const SRE: u64 = 1 << 5;
+    /// Execute Enable (QWORD 1, bit 6)
+    pub const EAFE: u64 = 1 << 6;
+
+    /// Create a new empty entry
+    pub const fn new() -> Self {
+        Self { qwords: [0; 8] }
+    }
+
+    /// Check if present
+    pub fn is_present(&self) -> bool {
+        (self.qwords[0] & Self::PRESENT) != 0
+    }
+
+    /// Set first level page table pointer
+    pub fn set_fl_pt(&mut self, addr: u64, address_width: u8) {
+        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
+        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
+    }
+
+    /// Set second level page table pointer (for nested translation)
+    pub fn set_sl_pt(&mut self, addr: u64, address_width: u8) {
+        // Set PWD = 0 (page walk enabled) and point to SL PT
+        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
+        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
+    }
+
+    /// Get first level page table address
+    pub fn fl_pt_addr(&self) -> u64 {
+        self.qwords[0] & Self::FLPT_MASK
+    }
+}
+
 /// PASID Table
 ///
 /// Manages PASID entries for Scalable Mode.
@@ -1301,66 +1359,6 @@ impl PasidTable {
         } else {
             None
         }
-    }
-}
-
-/// PASID Table Entry (64 bytes)
-///
-/// Each entry in the PASID table defines the address translation
-/// for a specific PASID.
-#[repr(C, align(64))]
-#[derive(Clone, Copy, Debug)]
-pub struct PasidTableEntry {
-    /// 8 QWORDs
-    pub qwords: [u64; 8],
-}
-
-impl Default for PasidTableEntry {
-    fn default() -> Self {
-        Self { qwords: [0; 8] }
-    }
-}
-
-impl PasidTableEntry {
-    /// Present bit (QWORD 0, bit 0)
-    pub const PRESENT: u64 = 1 << 0;
-    /// Page Walk Disable (QWORD 0, bit 3)
-    pub const PWD: u64 = 1 << 3;
-    /// First Level Page Table Pointer (QWORD 0, bits 12-63)
-    pub const FLPT_MASK: u64 = !0xFFF;
-    /// Address Width (QWORD 1, bits 0-2)
-    pub const AW_SHIFT: u64 = 0;
-    /// Supervisor Request (QWORD 1, bit 5)
-    pub const SRE: u64 = 1 << 5;
-    /// Execute Enable (QWORD 1, bit 6)
-    pub const EAFE: u64 = 1 << 6;
-
-    /// Create a new empty entry
-    pub const fn new() -> Self {
-        Self { qwords: [0; 8] }
-    }
-
-    /// Check if present
-    pub fn is_present(&self) -> bool {
-        (self.qwords[0] & Self::PRESENT) != 0
-    }
-
-    /// Set first level page table pointer
-    pub fn set_fl_pt(&mut self, addr: u64, address_width: u8) {
-        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
-        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
-    }
-
-    /// Set second level page table pointer (for nested translation)
-    pub fn set_sl_pt(&mut self, addr: u64, address_width: u8) {
-        // Set PWD = 0 (page walk enabled) and point to SL PT
-        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
-        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
-    }
-
-    /// Get first level page table address
-    pub fn fl_pt_addr(&self) -> u64 {
-        self.qwords[0] & Self::FLPT_MASK
     }
 }
 
@@ -4333,7 +4331,8 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     let domain_id = match iommu.create_domain(numa_hint, domain_type) {
         Ok(id) => id,
         Err(e) => {
-            log::info!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
+            // Debug: report creation failure in test output
+            log::error!("Failed to create domain for {:?}: {:?}\\n", bdf, e);
             return None;
         }
     };
@@ -4342,8 +4341,8 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
     // 2. デバイスをドメインにアタッチ
     if let Err(e) = iommu.attach_device(device_id, domain_id) {
-        log::info!(
-            "[IOMMU] Failed to attach device {:?} to domain {}: {:?}\n",
+        log::error!(
+            "[IOMMU] Failed to attach device {:?} to domain {}: {:?}\\n",
             bdf,
             domain_id,
             e
