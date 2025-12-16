@@ -538,6 +538,44 @@ impl InvalidationQueueEntry {
         Self::iec_invalidate(0, 0, 0)
     }
 
+    /// Create a Device-TLB Invalidation descriptor
+    /// Used to invalidate ATS translations cached in PCIe devices
+    ///
+    /// # Arguments
+    /// * `source_id` - PCIe Requester ID (Bus/Device/Function)
+    /// * `global` - If true, invalidates all entries for the device
+    /// * `iova` - IOVA to invalidate (when not global)
+    /// * `size` - Size of invalidation range in pages (when not global)
+    /// * `domain_id` - Domain ID for domain-selective invalidation
+    pub fn device_tlb_invalidate(
+        source_id: u16,
+        global: bool,
+        iova: u64,
+        size: u8,
+        domain_id: u16,
+    ) -> Self {
+        let lo = qi_desc_type::DEV_TLB_INV
+            | ((source_id as u64) << 32)
+            | ((domain_id as u64) << 16)
+            | if global { 1 << 4 } else { 0 }; // G bit
+        let hi = if global {
+            0
+        } else {
+            (iova & !0xFFF) | ((size as u64) & 0x3F)
+        };
+        Self { lo, hi }
+    }
+
+    /// Create a Global Device-TLB Invalidation for a specific device
+    pub fn device_tlb_invalidate_device(source_id: u16, domain_id: u16) -> Self {
+        Self::device_tlb_invalidate(source_id, true, 0, 0, domain_id)
+    }
+
+    /// Create a Page-selective Device-TLB Invalidation
+    pub fn device_tlb_invalidate_page(source_id: u16, domain_id: u16, iova: u64, size: u8) -> Self {
+        Self::device_tlb_invalidate(source_id, false, iova, size, domain_id)
+    }
+
     /// Create an Invalidation Wait descriptor
     /// Used to signal completion of previous descriptors
     pub fn wait(status_addr: u64, status_data: u32, interrupt: bool, fence: bool) -> Self {
@@ -716,12 +754,16 @@ impl SlPte {
     pub const READ: u64 = 1 << 0;
     /// Write permission
     pub const WRITE: u64 = 1 << 1;
+    /// Access bit (A) - set by hardware when page is accessed
+    pub const ACCESSED: u64 = 1 << 5;
+    /// Dirty bit (D) - set by hardware when page is written
+    pub const DIRTY: u64 = 1 << 6;
+    /// Super-Page (PS) bit - marks entry as large page (2MB at PD level, 1GB at PDP level)
+    pub const SUPER_PAGE: u64 = 1 << 7;
     /// Snoop behavior
     pub const SNOOP: u64 = 1 << 11;
     /// Transient mapping hint
     pub const TRANSIENT: u64 = 1 << 62;
-    /// Super-Page (PS) bit - marks entry as large page (2MB at PD level, 1GB at PDP level)
-    pub const SUPER_PAGE: u64 = 1 << 7;
 
     /// Create a new entry
     pub const fn new() -> Self {
@@ -791,6 +833,37 @@ impl SlPte {
     /// Check write permission
     pub fn can_write(&self) -> bool {
         (self.0 & Self::WRITE) != 0
+    }
+
+    /// Check if page has been accessed
+    pub fn is_accessed(&self) -> bool {
+        (self.0 & Self::ACCESSED) != 0
+    }
+
+    /// Check if page has been written (dirty)
+    pub fn is_dirty(&self) -> bool {
+        (self.0 & Self::DIRTY) != 0
+    }
+
+    /// Clear accessed bit (returns old value)
+    pub fn clear_accessed(&mut self) -> bool {
+        let was_set = self.is_accessed();
+        self.0 &= !Self::ACCESSED;
+        was_set
+    }
+
+    /// Clear dirty bit (returns old value)
+    pub fn clear_dirty(&mut self) -> bool {
+        let was_set = self.is_dirty();
+        self.0 &= !Self::DIRTY;
+        was_set
+    }
+
+    /// Clear both accessed and dirty bits
+    pub fn clear_accessed_dirty(&mut self) -> (bool, bool) {
+        let accessed = self.clear_accessed();
+        let dirty = self.clear_dirty();
+        (accessed, dirty)
     }
 }
 
@@ -1092,7 +1165,7 @@ impl IommuDomain {
     }
 
     /// Map a 2MB super-page
-    /// 
+    ///
     /// Uses 3-level page table walking (PML4 -> PDP -> PD) and sets super-page at PD level.
     /// Both iova and phys must be 2MB-aligned.
     pub unsafe fn map_page_2mb(
@@ -1103,7 +1176,7 @@ impl IommuDomain {
         write: bool,
     ) -> Result<(), IommuError> {
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
-        
+
         if iova % SIZE_2MB != 0 || phys % SIZE_2MB != 0 {
             return Err(IommuError::InvalidAddress);
         }
@@ -1114,42 +1187,46 @@ impl IommuDomain {
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
 
         let pml4_table = self.page_table;
-        let pml4_entry = pml4_table.add(pml4_idx);
+        let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
 
         // Ensure PDP exists
-        if !(*pml4_entry).is_present() {
+        if !(unsafe { *pml4_entry }).is_present() {
             let pdp = Self::allocate_page_table(self.numa_node)?;
-            *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+            unsafe {
+                *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
+            };
         }
 
-        let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
-        let pdp_entry = pdp_table.add(pdp_idx);
+        let pdp_table = ((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
+        let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
 
         // Ensure PD exists
-        if !(*pdp_entry).is_present() {
+        if !(unsafe { *pdp_entry }).is_present() {
             let pd = Self::allocate_page_table(self.numa_node)?;
-            *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
-        } else if (*pdp_entry).is_super_page() {
+            unsafe {
+                *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
+            };
+        } else if (unsafe { *pdp_entry }).is_super_page() {
             // Already a 1GB super-page at this level
             return Err(IommuError::AlreadyMapped);
         }
 
-        let pd_table = ((*pdp_entry).phys_addr()) as *mut SlPte;
-        let pd_entry = pd_table.add(pd_idx);
+        let pd_table = ((unsafe { *pdp_entry }).phys_addr()) as *mut SlPte;
+        let pd_entry = unsafe { pd_table.add(pd_idx) };
 
         // Check if already mapped
-        if (*pd_entry).is_present() {
+        if !(unsafe { *pd_entry }).is_present() {
             return Err(IommuError::AlreadyMapped);
         }
 
         // Create 2MB super-page entry
-        *pd_entry = SlPte::super_page_2mb(phys, read, write);
+        unsafe { *pd_entry = SlPte::super_page_2mb(phys, read, write) };
 
         Ok(())
     }
 
     /// Map a 1GB super-page
-    /// 
+    ///
     /// Uses 2-level page table walking (PML4 -> PDP) and sets super-page at PDP level.
     /// Both iova and phys must be 1GB-aligned.
     pub unsafe fn map_page_1gb(
@@ -1160,7 +1237,7 @@ impl IommuDomain {
         write: bool,
     ) -> Result<(), IommuError> {
         const SIZE_1GB: u64 = 1024 * 1024 * 1024;
-        
+
         if iova % SIZE_1GB != 0 || phys % SIZE_1GB != 0 {
             return Err(IommuError::InvalidAddress);
         }
@@ -1170,24 +1247,26 @@ impl IommuDomain {
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
 
         let pml4_table = self.page_table;
-        let pml4_entry = pml4_table.add(pml4_idx);
+        let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
 
         // Ensure PDP exists
-        if !(*pml4_entry).is_present() {
+        if !(unsafe { *pml4_entry }).is_present() {
             let pdp = Self::allocate_page_table(self.numa_node)?;
-            *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+            unsafe {
+                *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
+            };
         }
 
-        let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
-        let pdp_entry = pdp_table.add(pdp_idx);
+        let pdp_table = ((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
+        let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
 
         // Check if already mapped
-        if (*pdp_entry).is_present() {
+        if !(unsafe { *pdp_entry }).is_present() {
             return Err(IommuError::AlreadyMapped);
         }
 
         // Create 1GB super-page entry
-        *pdp_entry = SlPte::super_page_1gb(phys, read, write);
+        unsafe { *pdp_entry = SlPte::super_page_1gb(phys, read, write) };
 
         Ok(())
     }
@@ -1334,6 +1413,10 @@ impl DeviceId {
     }
 }
 
+// =========================================================================
+// IOVA Allocator - see enhanced definition below after IommuCapabilities
+// =========================================================================
+
 /// IOMMU Controller
 pub struct IommuController {
     /// MMIO base address
@@ -1386,6 +1469,7 @@ impl IommuController {
             ir_enabled: AtomicBool::new(false),
             invalidation_queue: None,
             qi_enabled: AtomicBool::new(false),
+            iova_allocator: None,
         }
     }
 
@@ -1906,121 +1990,38 @@ impl IommuController {
         Ok(())
     }
 
-    // =========================================================================
-    // IOVA Allocator (simple page-granular bitmap allocator)
-    // =========================================================================
-
-    /// Simple page-granular IOVA allocator (bitmap)
-    #[derive(Debug)]
-    pub struct IovaAllocator {
-        base: u64,
-        size: u64,
-        page_size: u64,
-        pages: usize,
-        bitmap: alloc::vec::Vec<u64>,
-    }
-
-    impl IovaAllocator {
-        pub fn new(base: u64, size: u64, page_size: u64) -> Option<Self> {
-            if page_size == 0 || base % page_size != 0 || size % page_size != 0 {
-                return None;
-            }
-            let pages = (size / page_size) as usize;
-            let words = (pages + 63) / 64;
-            Some(Self {
-                base,
-                size,
-                page_size,
-                pages,
-                bitmap: alloc::vec![0u64; words],
-            })
-        }
-
-        /// Allocate a contiguous IOVA range of `size` bytes (page-aligned)
-        pub fn allocate(&mut self, size: u64) -> Option<u64> {
-            if size == 0 || size > self.size {
-                return None;
-            }
-            let needed = ((size + self.page_size - 1) / self.page_size) as usize;
-            if needed == 0 || needed > self.pages {
-                return None;
-            }
-
-            let mut run = 0usize;
-            let mut start = 0usize;
-            for i in 0..self.pages {
-                let w = i / 64;
-                let b = i % 64;
-                let occupied = ((self.bitmap[w] >> b) & 1u64) != 0;
-                if !occupied {
-                    if run == 0 {
-                        start = i;
-                    }
-                    run += 1;
-                    if run == needed {
-                        // mark bits
-                        for j in start..start + needed {
-                            let ww = j / 64;
-                            let bb = j % 64;
-                            self.bitmap[ww] |= 1u64 << bb;
-                        }
-                        return Some(self.base + (start as u64 * self.page_size));
-                    }
-                } else {
-                    run = 0;
-                }
-            }
-            None
-        }
-
-        /// Free a previously allocated IOVA range
-        pub fn free(&mut self, addr: u64, size: u64) -> bool {
-            if addr < self.base || addr + size > self.base + self.size {
-                return false;
-            }
-            if addr % self.page_size != 0 {
-                return false;
-            }
-            let start = ((addr - self.base) / self.page_size) as usize;
-            let needed = ((size + self.page_size - 1) / self.page_size) as usize;
-            if start + needed > self.pages {
-                return false;
-            }
-            for j in start..start + needed {
-                let ww = j / 64;
-                let bb = j % 64;
-                self.bitmap[ww] &= !(1u64 << bb);
-            }
-            true
-        }
-    }
-
     // IOVA management on IOMMU controller
-    impl IommuController {
-        /// Initialize controller IOVA allocator
-        pub fn init_iova(&mut self, base: u64, size: u64) -> Result<(), IommuError> {
-            self.iova_allocator = IovaAllocator::new(base, size, 4096);
-            if self.iova_allocator.is_none() {
-                return Err(IommuError::HardwareError);
-            }
-            Ok(())
-        }
 
-        /// Allocate an IOVA range from controller's allocator
-        pub fn allocate_iova(&mut self, size: u64) -> Result<u64, IommuError> {
-            let alloc = self.iova_allocator.as_mut().ok_or(IommuError::NotPresent)?;
-            alloc.allocate(size).ok_or(IommuError::HardwareError)
-        }
+    /// Initialize controller IOVA allocator
+    pub fn init_iova(&mut self, base: u64, size: u64) -> Result<(), IommuError> {
+        self.iova_allocator = Some(IovaAllocator::new(base, size));
+        Ok(())
+    }
 
-        /// Free an IOVA range
-        pub fn free_iova(&mut self, addr: u64, size: u64) -> Result<(), IommuError> {
-            let alloc = self.iova_allocator.as_mut().ok_or(IommuError::NotPresent)?;
-            if alloc.free(addr, size) {
-                Ok(())
-            } else {
-                Err(IommuError::InvalidAddress)
-            }
-        }
+    /// Allocate an IOVA range from controller's allocator (4KB granularity)
+    pub fn allocate_iova(&mut self, size: u64) -> Result<u64, IommuError> {
+        let alloc = self.iova_allocator.as_mut().ok_or(IommuError::NotPresent)?;
+        alloc
+            .allocate(size, IovaGranularity::Page4K)
+            .ok_or(IommuError::HardwareError)
+    }
+
+    /// Allocate an IOVA range with specific granularity (for super-pages)
+    pub fn allocate_iova_aligned(
+        &mut self,
+        size: u64,
+        granularity: IovaGranularity,
+    ) -> Result<u64, IommuError> {
+        let alloc = self.iova_allocator.as_mut().ok_or(IommuError::NotPresent)?;
+        alloc
+            .allocate(size, granularity)
+            .ok_or(IommuError::HardwareError)
+    }
+
+    /// Free an IOVA range
+    pub fn free_iova(&mut self, addr: u64, size: u64) -> Result<(), IommuError> {
+        let alloc = self.iova_allocator.as_mut().ok_or(IommuError::NotPresent)?;
+        alloc.free(addr, size)
     }
 
     /// Initialize IOVA space for the global IOMMU controller
@@ -2031,14 +2032,14 @@ impl IommuController {
     }
 
     /// Allocate an IOVA from the global controller
-    pub fn allocate_iova(size: u64) -> Result<u64, IommuError> {
+    pub fn allocate_global_iova(size: u64) -> Result<u64, IommuError> {
         let mut guard = IOMMU.lock();
         let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
         controller.allocate_iova(size)
     }
 
     /// Free an IOVA back to global controller
-    pub fn free_iova(addr: u64, size: u64) -> Result<(), IommuError> {
+    pub fn free_global_iova(addr: u64, size: u64) -> Result<(), IommuError> {
         let mut guard = IOMMU.lock();
         let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
         controller.free_iova(addr, size)
@@ -2053,7 +2054,10 @@ impl IommuController {
         let iova = controller.allocate_iova(size)?;
 
         // Default domain is 0
-        let domain = controller.domains.get_mut(&0).ok_or(IommuError::DomainNotFound)?;
+        let domain = controller
+            .domains
+            .get_mut(&0)
+            .ok_or(IommuError::DomainNotFound)?;
         domain.map(iova, phys_addr.as_u64(), size, true, true)?;
 
         Ok(iova)
@@ -2065,7 +2069,10 @@ impl IommuController {
         let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
 
         // Default domain
-        let domain = controller.domains.get_mut(&0).ok_or(IommuError::DomainNotFound)?;
+        let domain = controller
+            .domains
+            .get_mut(&0)
+            .ok_or(IommuError::DomainNotFound)?;
         domain.unmap(iova)?;
         // Free IOVA - size argument used to determine pages freed
         controller.free_iova(iova, _size)?;
@@ -2199,6 +2206,30 @@ impl IommuController {
         self.submit_invalidation(entry)
     }
 
+    /// Submit a Device-TLB invalidation via queued invalidation
+    /// Used for ATS-enabled PCIe devices that cache translations
+    pub fn qi_invalidate_device_tlb(
+        &mut self,
+        source_id: u16,
+        domain_id: u16,
+    ) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::device_tlb_invalidate_device(source_id, domain_id);
+        self.submit_invalidation(entry)
+    }
+
+    /// Submit a page-selective Device-TLB invalidation
+    pub fn qi_invalidate_device_tlb_page(
+        &mut self,
+        source_id: u16,
+        domain_id: u16,
+        iova: u64,
+        size: u8,
+    ) -> Result<(), IommuError> {
+        let entry =
+            InvalidationQueueEntry::device_tlb_invalidate_page(source_id, domain_id, iova, size);
+        self.submit_invalidation(entry)
+    }
+
     /// Submit a wait descriptor and synchronize
     pub fn qi_wait_sync(&mut self) -> Result<(), IommuError> {
         // Get tail after submitting wait
@@ -2237,6 +2268,259 @@ pub struct IommuCapabilities {
     pub super_page_1gb: bool,
     pub page_walk_coherency: bool,
     pub snoop_control: bool,
+}
+
+// ============================================================================
+// IOVA Allocator (I/O Virtual Address Allocator)
+// ============================================================================
+
+/// IOVA allocation granularity
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IovaGranularity {
+    /// 4KB pages
+    Page4K,
+    /// 2MB super-pages
+    Page2M,
+    /// 1GB super-pages
+    Page1G,
+}
+
+impl IovaGranularity {
+    /// Get the size in bytes
+    pub const fn size_bytes(self) -> u64 {
+        match self {
+            IovaGranularity::Page4K => 4 * 1024,
+            IovaGranularity::Page2M => 2 * 1024 * 1024,
+            IovaGranularity::Page1G => 1024 * 1024 * 1024,
+        }
+    }
+
+    /// Get the alignment mask
+    pub const fn align_mask(self) -> u64 {
+        self.size_bytes() - 1
+    }
+}
+
+/// IOVA range for tracking allocations
+#[derive(Debug, Clone)]
+pub struct IovaRange {
+    /// Start address
+    pub start: u64,
+    /// Size in bytes
+    pub size: u64,
+}
+
+/// IOVA Allocator using bitmap-based allocation
+///
+/// Manages I/O Virtual Address space for DMA mappings.
+/// Supports 4KB, 2MB, and 1GB granularity allocations.
+pub struct IovaAllocator {
+    /// Base address of the IOVA space
+    base: u64,
+    /// Total size of the IOVA space
+    size: u64,
+    /// Bitmap for 4KB page tracking (1 bit per 4KB page)
+    /// We use Vec because the size can be large
+    bitmap: Vec<u64>,
+    /// Number of 4KB pages managed
+    total_pages: usize,
+    /// Number of free 4KB pages
+    free_pages: usize,
+    /// Next allocation hint (for fast sequential allocation)
+    next_hint: usize,
+}
+
+impl IovaAllocator {
+    /// 4KB page size
+    const PAGE_SIZE_4K: u64 = 4096;
+    /// Bits per bitmap word
+    const BITS_PER_WORD: usize = 64;
+
+    /// Create a new IOVA allocator
+    ///
+    /// # Arguments
+    /// * `base` - Base address of the IOVA space (should be page-aligned)
+    /// * `size` - Total size of the IOVA space
+    pub fn new(base: u64, size: u64) -> Self {
+        let total_pages = (size / Self::PAGE_SIZE_4K) as usize;
+        let bitmap_words = (total_pages + Self::BITS_PER_WORD - 1) / Self::BITS_PER_WORD;
+
+        // Initialize bitmap with all pages free (0 = free, 1 = allocated)
+        let bitmap = alloc::vec![0u64; bitmap_words];
+
+        Self {
+            base,
+            size,
+            bitmap,
+            total_pages,
+            free_pages: total_pages,
+            next_hint: 0,
+        }
+    }
+
+    /// Get base address
+    pub fn base(&self) -> u64 {
+        self.base
+    }
+
+    /// Get total size
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Get free pages count
+    pub fn free_pages(&self) -> usize {
+        self.free_pages
+    }
+
+    /// Check if a page is allocated
+    fn is_page_allocated(&self, page_idx: usize) -> bool {
+        if page_idx >= self.total_pages {
+            return true; // Out of range = considered allocated
+        }
+        let word_idx = page_idx / Self::BITS_PER_WORD;
+        let bit_idx = page_idx % Self::BITS_PER_WORD;
+        (self.bitmap[word_idx] & (1u64 << bit_idx)) != 0
+    }
+
+    /// Mark a range of pages as allocated
+    fn mark_pages_allocated(&mut self, start_page: usize, count: usize) {
+        for i in 0..count {
+            let page_idx = start_page + i;
+            let word_idx = page_idx / Self::BITS_PER_WORD;
+            let bit_idx = page_idx % Self::BITS_PER_WORD;
+            self.bitmap[word_idx] |= 1u64 << bit_idx;
+        }
+        self.free_pages -= count;
+    }
+
+    /// Mark a range of pages as free
+    fn mark_pages_free(&mut self, start_page: usize, count: usize) {
+        for i in 0..count {
+            let page_idx = start_page + i;
+            let word_idx = page_idx / Self::BITS_PER_WORD;
+            let bit_idx = page_idx % Self::BITS_PER_WORD;
+            self.bitmap[word_idx] &= !(1u64 << bit_idx);
+        }
+        self.free_pages += count;
+    }
+
+    /// Find a contiguous range of free pages
+    fn find_free_range(&self, pages_needed: usize, alignment_pages: usize) -> Option<usize> {
+        let mut start = self.next_hint;
+
+        // Align to the required granularity
+        start = (start + alignment_pages - 1) / alignment_pages * alignment_pages;
+
+        let mut search_count = 0;
+        while search_count < self.total_pages {
+            if start + pages_needed > self.total_pages {
+                // Wrap around
+                start = 0;
+                start = (start + alignment_pages - 1) / alignment_pages * alignment_pages;
+            }
+
+            // Check if this range is free
+            let mut all_free = true;
+            for i in 0..pages_needed {
+                if self.is_page_allocated(start + i) {
+                    all_free = false;
+                    // Skip to next aligned position
+                    start =
+                        ((start + i + 1) + alignment_pages - 1) / alignment_pages * alignment_pages;
+                    break;
+                }
+            }
+
+            if all_free {
+                return Some(start);
+            }
+
+            search_count += alignment_pages;
+        }
+
+        None
+    }
+
+    /// Allocate an IOVA range
+    ///
+    /// Returns the allocated IOVA address, or None if allocation fails.
+    pub fn allocate(&mut self, size: u64, granularity: IovaGranularity) -> Option<u64> {
+        let page_size = granularity.size_bytes();
+        let pages_needed = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
+        let alignment_pages = (page_size / Self::PAGE_SIZE_4K) as usize;
+
+        // Find a suitable range
+        let start_page = self.find_free_range(pages_needed, alignment_pages)?;
+
+        // Mark as allocated
+        self.mark_pages_allocated(start_page, pages_needed);
+
+        // Update hint for next allocation
+        self.next_hint = start_page + pages_needed;
+
+        Some(self.base + (start_page as u64) * Self::PAGE_SIZE_4K)
+    }
+
+    /// Allocate a specific IOVA range (for identity mapping)
+    pub fn allocate_at(&mut self, iova: u64, size: u64) -> Result<(), IommuError> {
+        if iova < self.base || iova + size > self.base + self.size {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let start_page = ((iova - self.base) / Self::PAGE_SIZE_4K) as usize;
+        let pages_needed = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
+
+        // Check if already allocated
+        for i in 0..pages_needed {
+            if self.is_page_allocated(start_page + i) {
+                return Err(IommuError::AlreadyMapped);
+            }
+        }
+
+        self.mark_pages_allocated(start_page, pages_needed);
+        Ok(())
+    }
+
+    /// Free an IOVA range
+    pub fn free(&mut self, iova: u64, size: u64) -> Result<(), IommuError> {
+        if iova < self.base || iova + size > self.base + self.size {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let start_page = ((iova - self.base) / Self::PAGE_SIZE_4K) as usize;
+        let pages_count = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
+
+        self.mark_pages_free(start_page, pages_count);
+
+        // Update hint to freed range for potential reuse
+        if start_page < self.next_hint {
+            self.next_hint = start_page;
+        }
+
+        Ok(())
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> IovaAllocatorStats {
+        IovaAllocatorStats {
+            total_pages: self.total_pages,
+            free_pages: self.free_pages,
+            allocated_pages: self.total_pages - self.free_pages,
+            base: self.base,
+            size: self.size,
+        }
+    }
+}
+
+/// IOVA allocator statistics
+#[derive(Debug, Clone)]
+pub struct IovaAllocatorStats {
+    pub total_pages: usize,
+    pub free_pages: usize,
+    pub allocated_pages: usize,
+    pub base: u64,
+    pub size: u64,
 }
 
 // ============================================================================
@@ -2512,7 +2796,8 @@ mod tests {
     fn test_iova_allocator_basic() {
         let mut ctrl = IommuController::new(0x0);
         // Small IOVA space for testing (64KB)
-        ctrl.init_iova(0x1000_0000, 0x10000).expect("init_iova failed");
+        ctrl.init_iova(0x1000_0000, 0x10000)
+            .expect("init_iova failed");
 
         let a = ctrl.allocate_iova(4096).expect("alloc 4K");
         assert_eq!(a % 4096, 0);
@@ -2541,7 +2826,9 @@ mod tests {
 
         {
             let domain = ctrl.domain_mut(0).expect("domain 0");
-            domain.map(iova, phys, size, true, true).expect("domain.map failed");
+            domain
+                .map(iova, phys, size, true, true)
+                .expect("domain.map failed");
             assert!(domain.mappings().contains_key(&iova));
 
             let mapping = domain.unmap(iova).expect("unmap failed");
@@ -2552,4 +2839,3 @@ mod tests {
         ctrl.free_iova(iova, size).expect("free failed");
     }
 }
-

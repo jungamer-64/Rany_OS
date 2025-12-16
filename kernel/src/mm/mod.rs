@@ -17,7 +17,8 @@ pub mod slab_cache;
 #[allow(unused_imports)]
 pub use buddy_allocator::{
     BuddyAllocatorStats, buddy_alloc_frame, buddy_alloc_frame_1g, buddy_alloc_frame_2m,
-    buddy_allocator_stats, buddy_dealloc_frame, buddy_dealloc_frame_1g, buddy_dealloc_frame_2m,
+    buddy_alloc_frame_on_node, buddy_alloc_frame_2m_on_node, buddy_alloc_frame_1g_on_node,
+    buddy_register_numa_region, buddy_allocator_stats, buddy_dealloc_frame, buddy_dealloc_frame_1g, buddy_dealloc_frame_2m,
     init_buddy_allocator,
 };
 #[allow(unused_imports)]
