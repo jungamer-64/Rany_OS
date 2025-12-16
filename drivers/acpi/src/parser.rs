@@ -17,6 +17,8 @@
 #![allow(clippy::missing_errors_doc)] // Internal implementation
 #![allow(clippy::missing_const_for_fn)] // Many functions can't be const due to pointer operations
 #![allow(clippy::map_unwrap_or)] // Kept for readability
+#![allow(clippy::use_self)] // Explicit type names for clarity in ACPI parsing
+#![allow(clippy::must_use_candidate)] // Parser internal methods
 
 use alloc::vec::Vec;
 use spin::Mutex;

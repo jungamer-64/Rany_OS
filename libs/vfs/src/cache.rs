@@ -29,6 +29,8 @@
 #![allow(clippy::missing_errors_doc)] // Internal implementation
 #![allow(clippy::missing_const_for_fn)] // Some functions may not be const due to RwLock
 #![allow(clippy::unnecessary_wraps)] // API consistency
+#![allow(clippy::must_use_candidate)] // Cache internal methods
+#![allow(clippy::doc_markdown)] // Format names like LRU, HashMap
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;

@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/task/fuel.rs - Fuel-Based Execution for Starvation Prevention
+// ============================================================================
+//!
 //! # Fuel-Based Execution for Starvation Prevention
 //!
 //! This module implements a "fuel" mechanism to limit the execution time of

@@ -4,9 +4,13 @@
 //!
 //! VirtQueue（仮想キュー）の共通実装
 //!
-//! VirtIO仕様に基づくリングバッファ管理を提供。
-//! 各デバイスドライバはこのVirtQueueを使用してデバイスと通信する。
+//! `VirtIO`仕様に基づくリングバッファ管理を提供。
+//! 各デバイスドライバはこの`VirtQueue`を使用してデバイスと通信する。
 
+// Allow mutable borrow from &self - intentional for VirtQueue's ownership model.
+// Descriptors are tracked via atomic bitmap, so each slot is exclusively owned
+// by the allocating code even with &self. The unsafe fn documents this contract.
+#![allow(clippy::mut_from_ref)]
 #![allow(dead_code)]
 
 use alloc::collections::VecDeque;
