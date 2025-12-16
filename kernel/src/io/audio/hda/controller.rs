@@ -561,12 +561,14 @@ impl HdaController {
 
     /// Detect connected codecs
     pub fn detect_codecs(&mut self) -> HdaResult<()> {
-        super::codec::detect_codecs(self)
+        // Driver-level helper returns list of detected codecs; store locally
+        self.codecs = super::codec::detect_codecs();
+        Ok(())
     }
 
     /// Initialize detected codecs
     pub fn init_codecs(&mut self) -> HdaResult<()> {
-        super::codec::init_codecs(self)
+        super::codec::init_codecs(&mut self.codecs)
     }
 
     // ========================================================================

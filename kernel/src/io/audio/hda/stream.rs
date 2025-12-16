@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 
 use super::controller::HdaController;
 use super::regs::*;
-use super::types::{BdlEntry, HdaError, HdaResult};
+use super::types::{BdlEntry, HdaError, HdaResult, CodecInfo, WidgetCaps, NodeType};
 
 // ============================================================================
 // Audio Output Stream Management
@@ -371,7 +371,20 @@ impl HdaController {
         self.setup_bdl(0, audio_buffer_addr, buffer_size as u32, 4)?;
 
         // Configure codec
-        super::codec::configure_codec_output(self, codec_addr, 1)?;
+        let codec = self
+            .codecs
+            .iter()
+            .find(|c| c.address == codec_addr)
+            .ok_or(HdaError::NoCodec)?;
+        let caps = WidgetCaps {
+            widget_type: NodeType::AudioOutput,
+            conn_list: false,
+            out_amp: false,
+            in_amp: false,
+            format_override: false,
+            stereo: false,
+        };
+        super::codec::configure_codec_output(codec, caps)?;
 
         // Start playback
         self.start_stream(0)?;

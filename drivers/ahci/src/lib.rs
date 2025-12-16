@@ -36,6 +36,7 @@ pub mod dma_buffer;
 pub mod driver_impl;
 pub mod ffi;
 pub mod port;
+pub mod atapi; // ATAPI (CD/DVD) support
 // pub mod poll_handler;
 
 // 主要な型を再エクスポート
@@ -89,3 +90,6 @@ pub use types::{
     SectorCount,
     SlotNumber,
 };
+
+// Re-export ATAPI module
+pub use atapi::*;

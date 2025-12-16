@@ -450,6 +450,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hda_driver"
+version = "0.1.0"
+dependencies = [
+ "hal",
+ "kernel_api",
+ "spin 0.9.8",
+ "x86_64",
+]
+
+[[package]]
 name = "hermit-abi"
 version = "0.1.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -680,6 +690,7 @@ dependencies = [
  "graphic_types",
  "hal",
  "hashbrown 0.16.1",
+ "hda_driver",
  "hid_driver",
  "ide_driver",
  "kernel_api",
