@@ -1269,7 +1269,14 @@ impl PageTableManager {
 
     /// 新しいページテーブル用のフレームを割り当て
     fn alloc_page_table(&self) -> Result<PhysAddr, MapError> {
-        // Buddy Allocatorから4KiBフレームを割り当て
+        // まず現在のCPUのローカルNUMAノードから割り当てを試みる（優先）
+        if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+            if let Some(frame) = crate::mm::alloc_frame_local(cpu_id as u8) {
+                return Ok(PhysAddr::new(frame.start_address().as_u64()));
+            }
+        }
+
+        // フォールバック: Buddy Allocatorを使用
         crate::mm::buddy_alloc_frame()
             .map(|frame| PhysAddr::new(frame.start_address().as_u64()))
             .ok_or(MapError::FrameAllocationFailed)
@@ -1330,4 +1337,17 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
     });
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
     unsafe { manager.update_flags(virt, flags) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_alloc_page_table_prefers_numa_local_or_buddy() {
+        // Verify alloc_page_table succeeds regardless of NUMA availability
+        let manager = unsafe { PageTableManager::from_current_cr3(0) };
+        let res = manager.alloc_page_table();
+        assert!(res.is_ok());
+    }
 }

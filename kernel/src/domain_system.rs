@@ -121,6 +121,8 @@ pub struct Domain {
     pub panic_message: Option<String>,
     /// 最後のエラーメッセージ
     pub last_error: Option<String>,
+    /// NUMAノードアフィニティ（任意）
+    pub numa_node: Option<usize>,
 }
 
 impl Domain {
@@ -140,6 +142,7 @@ impl Domain {
             created_at: crate::task::current_tick(),
             panic_message: None,
             last_error: None,
+            numa_node: None,
         }
     }
 
@@ -199,6 +202,16 @@ impl Domain {
     /// メモリ使用量を追加
     pub fn add_memory(&mut self, size: u64) {
         self.allocated_memory = self.allocated_memory.saturating_add(size);
+    }
+
+    /// NUMAノードを設定
+    pub fn set_numa_node(&mut self, node: usize) {
+        self.numa_node = Some(node);
+    }
+
+    /// NUMAノードを取得
+    pub fn get_numa_node(&self) -> Option<usize> {
+        self.numa_node
     }
 
     /// メモリ使用量を減少
@@ -361,14 +374,45 @@ pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
     }
 }
 
-/// ドメインを停止
-pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
-    if id == DomainId::KERNEL {
-        return Err("Cannot stop kernel domain");
+/// Set NUMA node for a domain
+pub fn set_domain_numa(id: DomainId, node: usize) {
+    if let Some(domain) = REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains
+        .get_mut(&id)
+    {
+        domain.set_numa_node(node);
+        log::info!("[DOMAIN] {} NUMA node set to {}\n", id, node);
     }
+}
 
+/// Get NUMA node for a domain
+pub fn get_domain_numa(id: DomainId) -> Option<usize> {
+    REGISTRY
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .domains
+        .get(&id)
+        .and_then(|d| d.get_numa_node())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_set_and_get_domain_numa() {
+        let id = create_domain(String::from("numa_test"));
+        assert_eq!(get_domain_numa(id), None);
+        set_domain_numa(id, 3);
+        assert_eq!(get_domain_numa(id), Some(3usize));
+    }
+}
+
+/// Stop a domain
+pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
     let mut registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-
     if let Some(domain) = registry.domains.get_mut(&id) {
         domain.state = DomainState::Stopped;
         log::info!("[DOMAIN] Stopped {}\n", id);

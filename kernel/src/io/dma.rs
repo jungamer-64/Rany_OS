@@ -1064,7 +1064,8 @@ impl DeviceDmaContext {
         let domain_id = if crate::io::iommu::is_iommu_enabled() {
             // IOMMUドメインを作成してデバイスをアタッチ
             crate::io::iommu::with_iommu(|iommu| {
-                let domain_id = iommu.create_domain().ok()?;
+                let numa_hint = Some(crate::mm::numa::current_node());
+                let domain_id = iommu.create_domain(numa_hint).ok()?;
                 iommu.attach_device(device_id, domain_id).ok()?;
                 Some(domain_id)
             })

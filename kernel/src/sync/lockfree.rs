@@ -81,7 +81,9 @@ impl Backoff {
             }
         }
 
-        if self.step < BACKOFF_YIELD_LIMIT {
+        // 境界値 (BACKOFF_YIELD_LIMIT) に達した場合も次回のspinで
+        // 完了状態に移行するため、<= を使用して1つ上げる
+        if self.step <= BACKOFF_YIELD_LIMIT {
             self.step += 1;
         }
     }
