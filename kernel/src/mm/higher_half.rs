@@ -1300,3 +1300,10 @@ pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
     let manager = guard.as_ref()?;
     manager.translate(virt)
 }
+
+/// グローバルページテーブルマネージャーでページのフラグを更新（MPK PKEY適用用）
+pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<(), MapError> {
+    let mut guard = PAGE_TABLE_MANAGER.lock();
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    unsafe { manager.update_flags(virt, flags) }
+}

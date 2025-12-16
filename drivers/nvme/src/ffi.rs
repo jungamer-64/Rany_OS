@@ -49,7 +49,7 @@ fn nvme_driver_vtable() -> *const kernel_api::driver_abi::DriverVTable {
 }
 
 #[cfg(feature = "export_driver_entry")]
-#[export_name = "_exorust_driver_entry"]
+#[unsafe(export_name = "_exorust_driver_entry")]
 pub extern "C" fn _exorust_driver_entry() -> *const kernel_api::driver_abi::DriverVTable {
     nvme_driver_vtable()
 }

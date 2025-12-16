@@ -71,6 +71,11 @@ pub fn verify_message(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64
 /// # Returns
 /// 公開鍵が有効な場合true
 pub fn is_valid_public_key(public_key: &[u8; 32]) -> bool {
+    // Reject the all-zero representation (defensive check); some `from_bytes`
+    // implementations may accept non-canonical or zero values.
+    if public_key.iter().all(|&b| b == 0) {
+        return false;
+    }
     VerifyingKey::from_bytes(public_key).is_ok()
 }
 

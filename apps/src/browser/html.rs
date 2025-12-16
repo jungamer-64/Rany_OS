@@ -96,16 +96,41 @@ impl HtmlParser {
 
     fn parse_attr(&mut self) -> (String, String) {
         let name = self.parse_tag_name();
+        // Some tags may have boolean attributes or malformed attributes. If
+        // there is no `=` following the attribute name, return an empty
+        // string as the value instead of panicking.
+        if !self.starts_with("=") {
+            return (name, String::new());
+        }
         self.expect("=");
         let value = self.parse_attr_value();
         (name, value)
     }
 
     fn parse_attr_value(&mut self) -> String {
+        // Support both quoted and unquoted attribute values. If input is
+        // malformed we avoid panicking and return a best-effort string.
+        if self.eof() {
+            return String::new();
+        }
+
         let open_quote = self.consume_char();
-        let value = self.consume_while(|c| c != open_quote);
-        self.consume_char();
-        value
+
+        // Quoted value
+        if open_quote == '"' || open_quote == '\'' {
+            let value = self.consume_while(|c| c != open_quote);
+            // Consume closing quote if present
+            if !self.eof() && self.next_char() == open_quote {
+                self.consume_char();
+            }
+            return value;
+        }
+
+        // Unquoted value: consume until whitespace or closing tag
+        let mut val = String::new();
+        val.push(open_quote);
+        val.push_str(&self.consume_while(|c| !c.is_whitespace() && c != '>'));
+        val
     }
 
     fn consume_whitespace(&mut self) {

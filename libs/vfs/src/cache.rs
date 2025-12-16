@@ -1023,11 +1023,13 @@ impl LruList {
     }
 
     /// キーが存在するか確認
+    #[allow(dead_code)]
     fn contains(&self, key: &BlockCacheKey) -> bool {
         self.key_to_index.contains_key(key)
     }
 
     /// 要素数を取得
+    #[allow(dead_code)]
     fn len(&self) -> usize {
         self.key_to_index.len()
     }
