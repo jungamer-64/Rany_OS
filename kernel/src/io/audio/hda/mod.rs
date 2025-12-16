@@ -23,15 +23,15 @@
 
 #![allow(dead_code)]
 
-// サブモジュール
-mod codec;
+// サブモジュール (controller/global remain kernel-local; core codec/types/stream moved to driver crate)
 mod controller;
 mod global;
-mod stream;
-mod types;
 
-// 親モジュールのレジスタ定義を使用
-use super::regs;
+// Use driver-provided modules
+pub use hda_driver::codec;
+pub use hda_driver::types;
+mod stream;
+pub use hda_driver::regs;
 
 // 型の再エクスポート
 pub use types::{

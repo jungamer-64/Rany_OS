@@ -20,6 +20,7 @@ members = [
     "drivers/serial",
     "drivers/gpu",
     "drivers/hid",
+    "drivers/hda",
     "drivers/virtio",
     "drivers/acpi",
     "drivers/rtc",

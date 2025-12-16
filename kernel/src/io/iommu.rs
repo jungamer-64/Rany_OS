@@ -566,6 +566,154 @@ pub mod iotlb_regs {
     pub const IOTLB: u64 = 0x08;
 }
 
+// ============================================================================
+// Fault Handling Structures
+// ============================================================================
+
+/// Fault Record (16 bytes)
+///
+/// Hardware fault record format from the Fault Recording Registers.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FaultRecord {
+    /// Lower 64 bits (Source ID, Fault Reason, etc.)
+    pub lo: u64,
+    /// Upper 64 bits (Fault Address)
+    pub hi: u64,
+}
+
+impl FaultRecord {
+    /// Fault reason mask (bits 0-7 of lo)
+    pub const REASON_MASK: u64 = 0xFF;
+    /// PASID value mask (bits 8-27 of lo)
+    pub const PASID_MASK: u64 = 0xFFFFF00;
+    pub const PASID_SHIFT: u64 = 8;
+    /// PASID present (bit 28 of lo)
+    pub const PASID_PRESENT: u64 = 1 << 28;
+    /// Execute request (bit 29 of lo)
+    pub const ERQ: u64 = 1 << 29;
+    /// Privilege mode requested (bit 30 of lo)
+    pub const PRIV: u64 = 1 << 30;
+    /// Supervisor request (bit 31 of lo)
+    pub const SUPERV: u64 = 1 << 31;
+    /// Source ID mask (bits 32-47 of lo)
+    pub const SID_MASK: u64 = 0xFFFF_0000_0000;
+    pub const SID_SHIFT: u64 = 32;
+    /// Type (bits 48-49 of lo)
+    pub const TYPE_MASK: u64 = 0x3_0000_0000_0000;
+    pub const TYPE_SHIFT: u64 = 48;
+    /// Fault (bit 63 of lo)
+    pub const FAULT: u64 = 1 << 63;
+    /// Fault address mask (bits 12-63 of hi)
+    pub const ADDR_MASK: u64 = !0xFFF;
+
+    /// Get fault reason code
+    pub fn reason(&self) -> u8 {
+        (self.lo & Self::REASON_MASK) as u8
+    }
+
+    /// Get source ID (BDF)
+    pub fn source_id(&self) -> u16 {
+        ((self.lo & Self::SID_MASK) >> Self::SID_SHIFT) as u16
+    }
+
+    /// Get fault address
+    pub fn fault_address(&self) -> u64 {
+        self.hi & Self::ADDR_MASK
+    }
+
+    /// Get PASID (if present)
+    pub fn pasid(&self) -> Option<u32> {
+        if self.lo & Self::PASID_PRESENT != 0 {
+            Some(((self.lo & Self::PASID_MASK) >> Self::PASID_SHIFT) as u32)
+        } else {
+            None
+        }
+    }
+
+    /// Check if this is a valid fault record
+    pub fn is_valid(&self) -> bool {
+        self.lo & Self::FAULT != 0
+    }
+
+    /// Clear the fault bit
+    pub fn clear(&mut self) {
+        self.lo &= !Self::FAULT;
+    }
+}
+
+/// Fault Log - Ring buffer for storing fault records
+pub struct FaultLog {
+    /// Ring buffer of fault records
+    records: Vec<FaultRecord>,
+    /// Write index (next slot to write)
+    write_idx: usize,
+    /// Number of records stored
+    count: usize,
+    /// Total faults recorded (may exceed capacity)
+    total_faults: u64,
+    /// Capacity (max records)
+    capacity: usize,
+}
+
+impl FaultLog {
+    /// Default capacity
+    pub const DEFAULT_CAPACITY: usize = 64;
+
+    /// Create a new fault log
+    pub fn new(capacity: usize) -> Self {
+        Self {
+            records: alloc::vec![FaultRecord::default(); capacity],
+            write_idx: 0,
+            count: 0,
+            total_faults: 0,
+            capacity,
+        }
+    }
+
+    /// Add a fault record
+    pub fn push(&mut self, record: FaultRecord) {
+        self.records[self.write_idx] = record;
+        self.write_idx = (self.write_idx + 1) % self.capacity;
+        self.total_faults += 1;
+        if self.count < self.capacity {
+            self.count += 1;
+        }
+    }
+
+    /// Get the most recent fault records (up to count entries)
+    pub fn recent(&self, max_count: usize) -> alloc::vec::Vec<FaultRecord> {
+        let n = max_count.min(self.count);
+        let mut result = alloc::vec::Vec::with_capacity(n);
+
+        for i in 0..n {
+            let idx = if self.write_idx >= i + 1 {
+                self.write_idx - i - 1
+            } else {
+                self.capacity - (i + 1 - self.write_idx)
+            };
+            result.push(self.records[idx]);
+        }
+
+        result
+    }
+
+    /// Get total number of faults recorded
+    pub fn total_faults(&self) -> u64 {
+        self.total_faults
+    }
+
+    /// Get current number of records in buffer
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Check if buffer is empty
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
 /// IOTLB Invalidation Command bits
 pub mod iotlb_bits {
     /// Invalidation Request Granularity (bits 60-61)
@@ -1058,6 +1206,244 @@ impl InvalidationQueue {
     pub fn check_wait_complete(&self, expected: u32) -> bool {
         let status = unsafe { core::ptr::read_volatile(self.status_addr as *const u32) };
         status == expected
+    }
+}
+
+// ============================================================================
+// IOMMU Optimization Structures
+// ============================================================================
+
+/// Context Cache Entry
+#[derive(Clone, Copy)]
+struct ContextCacheEntry {
+    /// Requester ID (BDF)
+    requester_id: u16,
+    /// Cached context entry
+    entry: ContextEntry,
+    /// Last access timestamp (for LRU)
+    last_access: u64,
+    /// Valid flag
+    valid: bool,
+}
+
+impl Default for ContextCacheEntry {
+    fn default() -> Self {
+        Self {
+            requester_id: 0,
+            entry: ContextEntry::default(),
+            last_access: 0,
+            valid: false,
+        }
+    }
+}
+
+/// Context Cache with LRU eviction
+///
+/// Caches frequently accessed context entries to avoid repeated
+/// page table walks for context table lookups.
+pub struct ContextCache {
+    /// Cache entries (fixed size for simplicity)
+    entries: [ContextCacheEntry; Self::CACHE_SIZE],
+    /// Current timestamp for LRU
+    timestamp: u64,
+    /// Cache hits
+    hits: u64,
+    /// Cache misses
+    misses: u64,
+}
+
+impl ContextCache {
+    /// Cache size (power of 2 for fast modulo)
+    const CACHE_SIZE: usize = 64;
+
+    /// Create a new context cache
+    pub const fn new() -> Self {
+        const DEFAULT: ContextCacheEntry = ContextCacheEntry {
+            requester_id: 0,
+            entry: ContextEntry { lo: 0, hi: 0 },
+            last_access: 0,
+            valid: false,
+        };
+        Self {
+            entries: [DEFAULT; Self::CACHE_SIZE],
+            timestamp: 0,
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Hash function for requester ID
+    fn hash(requester_id: u16) -> usize {
+        (requester_id as usize) % Self::CACHE_SIZE
+    }
+
+    /// Lookup a context entry
+    pub fn lookup(&mut self, requester_id: u16) -> Option<ContextEntry> {
+        self.timestamp += 1;
+        let idx = Self::hash(requester_id);
+
+        if self.entries[idx].valid && self.entries[idx].requester_id == requester_id {
+            self.entries[idx].last_access = self.timestamp;
+            self.hits += 1;
+            Some(self.entries[idx].entry)
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    /// Insert a context entry
+    pub fn insert(&mut self, requester_id: u16, entry: ContextEntry) {
+        self.timestamp += 1;
+        let idx = Self::hash(requester_id);
+
+        self.entries[idx] = ContextCacheEntry {
+            requester_id,
+            entry,
+            last_access: self.timestamp,
+            valid: true,
+        };
+    }
+
+    /// Invalidate a specific entry
+    pub fn invalidate(&mut self, requester_id: u16) {
+        let idx = Self::hash(requester_id);
+        if self.entries[idx].requester_id == requester_id {
+            self.entries[idx].valid = false;
+        }
+    }
+
+    /// Invalidate all entries
+    pub fn invalidate_all(&mut self) {
+        for entry in &mut self.entries {
+            entry.valid = false;
+        }
+    }
+
+    /// Get cache statistics
+    pub fn stats(&self) -> (u64, u64) {
+        (self.hits, self.misses)
+    }
+}
+
+/// Page Table Pool for reduced allocation overhead
+///
+/// Pre-allocates page tables and recycles freed ones.
+pub struct PageTablePool {
+    /// Free page tables (4KB aligned, zeroed)
+    free_list: Vec<usize>,
+    /// Total allocated
+    total_allocated: usize,
+    /// Maximum pool size
+    max_size: usize,
+}
+
+impl PageTablePool {
+    /// Default pool size
+    const DEFAULT_MAX: usize = 256;
+
+    /// Create a new page table pool
+    pub fn new(max_size: usize) -> Self {
+        Self {
+            free_list: Vec::with_capacity(max_size),
+            total_allocated: 0,
+            max_size,
+        }
+    }
+
+    /// Pre-allocate page tables
+    pub fn preallocate(&mut self, count: usize) -> Result<(), ()> {
+        use core::alloc::Layout;
+        let layout = Layout::from_size_align(4096, 4096).map_err(|_| ())?;
+
+        for _ in 0..count.min(self.max_size - self.free_list.len()) {
+            if let Some(ptr) = crate::util::allocate_zeroed(layout) {
+                self.free_list.push(ptr.as_ptr() as usize);
+                self.total_allocated += 1;
+            } else {
+                return Err(());
+            }
+        }
+        Ok(())
+    }
+
+    /// Allocate a page table from pool (or fresh allocation)
+    pub fn allocate(&mut self) -> Option<*mut SlPte> {
+        if let Some(addr) = self.free_list.pop() {
+            // Zero the recycled page table
+            unsafe {
+                core::ptr::write_bytes(addr as *mut u8, 0, 4096);
+            }
+            Some(addr as *mut SlPte)
+        } else {
+            // Allocate new
+            use core::alloc::Layout;
+            let layout = Layout::from_size_align(4096, 4096).ok()?;
+            if let Some(ptr) = crate::util::allocate_zeroed(layout) {
+                self.total_allocated += 1;
+                Some(ptr.as_ptr() as *mut SlPte)
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Return a page table to the pool
+    pub fn free(&mut self, ptr: *mut SlPte) {
+        if self.free_list.len() < self.max_size {
+            self.free_list.push(ptr as usize);
+        } else {
+            // Pool full, actually deallocate (not implemented, just leak for now)
+        }
+    }
+
+    /// Get pool statistics
+    pub fn stats(&self) -> (usize, usize) {
+        (self.free_list.len(), self.total_allocated)
+    }
+}
+
+/// Batched Invalidation for efficient QI usage
+///
+/// Collects multiple invalidation requests and submits them in a batch.
+pub struct InvalidationBatch {
+    /// Pending invalidation descriptors
+    pending: Vec<InvalidationQueueEntry>,
+    /// Maximum batch size before auto-flush
+    max_batch: usize,
+}
+
+impl InvalidationBatch {
+    /// Default batch size
+    const DEFAULT_MAX: usize = 32;
+
+    /// Create a new invalidation batch
+    pub fn new(max_batch: usize) -> Self {
+        Self {
+            pending: Vec::with_capacity(max_batch),
+            max_batch,
+        }
+    }
+
+    /// Add an invalidation descriptor
+    pub fn add(&mut self, entry: InvalidationQueueEntry) -> bool {
+        self.pending.push(entry);
+        self.pending.len() >= self.max_batch
+    }
+
+    /// Get pending descriptors and clear
+    pub fn drain(&mut self) -> Vec<InvalidationQueueEntry> {
+        core::mem::take(&mut self.pending)
+    }
+
+    /// Check if batch is empty
+    pub fn is_empty(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    /// Get pending count
+    pub fn len(&self) -> usize {
+        self.pending.len()
     }
 }
 
@@ -2163,6 +2549,8 @@ pub struct IommuController {
     pid_pool: Option<PostedInterruptPool>,
     /// Page Request Queue (PRI/ATS)
     page_request_queue: Option<PageRequestQueue>,
+    /// Fault log ring buffer
+    fault_log: Option<FaultLog>,
 }
 
 unsafe impl Send for IommuController {}
@@ -2190,6 +2578,7 @@ impl IommuController {
             ats_enabled_devices: BTreeSet::new(),
             pid_pool: None,
             page_request_queue: None,
+            fault_log: None,
         }
     }
 
@@ -2768,6 +3157,97 @@ impl IommuController {
     /// Check if interrupt remapping is enabled
     pub fn is_interrupt_remapping_enabled(&self) -> bool {
         self.ir_enabled.load(Ordering::Acquire)
+    }
+
+    // =========================================================================
+    // Fault Handling
+    // =========================================================================
+
+    /// Initialize fault handling with a fault log ring buffer
+    pub fn init_fault_handling(&mut self) {
+        self.fault_log = Some(FaultLog::new(FaultLog::DEFAULT_CAPACITY));
+        log::info!("[IOMMU] Fault handling initialized\\n");
+    }
+
+    /// Process pending faults from the Fault Recording Registers
+    /// Returns the number of faults processed
+    pub fn process_faults(&mut self) -> usize {
+        use fsts_bits::*;
+
+        let fsts = self.read32(regs::FSTS);
+        let mut processed = 0;
+
+        // Check if there's a pending fault
+        if fsts & FSTS_PPF == 0 {
+            return 0;
+        }
+
+        // Get the fault record index
+        let fri = ((fsts & FSTS_FRI_MASK) >> 8) as usize;
+
+        // Read capability to get number of fault records and offset
+        let nfr = ((self.cap >> 40) & 0xFF) as usize + 1;
+        let fro = ((self.cap >> 24) & 0x3FF) as usize * 16;
+
+        // Read fault record
+        for _ in 0..nfr {
+            let fr_offset = (fro + fri * 16) as u64;
+            let lo = self.read64(fr_offset);
+            let hi = self.read64(fr_offset + 8);
+
+            let record = FaultRecord { lo, hi };
+
+            if record.is_valid() {
+                // Log the fault
+                log::error!(
+                    "[IOMMU] Fault: reason={:#x}, source={:04x}, addr={:#x}, pasid={:?}\\n",
+                    record.reason(),
+                    record.source_id(),
+                    record.fault_address(),
+                    record.pasid()
+                );
+
+                // Add to fault log
+                if let Some(log) = &mut self.fault_log {
+                    log.push(record);
+                }
+
+                // Clear the fault by writing 1 to F bit
+                self.write64(fr_offset, lo | FaultRecord::FAULT);
+
+                processed += 1;
+            }
+        }
+
+        // Clear the primary fault overflow (PFO) if set
+        if fsts & FSTS_PFO != 0 {
+            self.write32(regs::FSTS, FSTS_PFO);
+            log::warn!("[IOMMU] Fault overflow cleared\\n");
+        }
+
+        processed
+    }
+
+    /// Get the fault log for inspection
+    pub fn fault_log(&self) -> Option<&FaultLog> {
+        self.fault_log.as_ref()
+    }
+
+    /// Get recent faults from the log
+    pub fn recent_faults(&self, count: usize) -> alloc::vec::Vec<FaultRecord> {
+        if let Some(log) = &self.fault_log {
+            log.recent(count)
+        } else {
+            alloc::vec::Vec::new()
+        }
+    }
+
+    /// Get total number of faults recorded
+    pub fn total_fault_count(&self) -> u64 {
+        self.fault_log
+            .as_ref()
+            .map(|l| l.total_faults())
+            .unwrap_or(0)
     }
 
     /// Allocate an IRTE for a device interrupt
@@ -3527,17 +4007,157 @@ pub struct IovaRange {
     pub size: u64,
 }
 
-/// IOVA Allocator using bitmap-based allocation
+// ============================================================================
+// Free Range Tree for O(log n) IOVA Allocation
+// ============================================================================
+
+/// Free range tracking structure using BTreeMap for O(log n) operations
+///
+/// Maintains two indexes:
+/// - `by_start`: Maps start_page to contiguous free page count (for coalescing)
+/// - `by_size`: Sorted set of (size, start_page) for best-fit allocation
+#[derive(Debug, Clone)]
+pub struct FreeRangeTree {
+    /// Map: start_page -> contiguous free pages
+    by_start: BTreeMap<usize, usize>,
+    /// Set: (size, start_page) for size-ordered queries
+    by_size: BTreeSet<(usize, usize)>,
+}
+
+impl FreeRangeTree {
+    /// Create a new free range tree with a single initial range
+    pub fn new(total_pages: usize) -> Self {
+        let mut by_start = BTreeMap::new();
+        let mut by_size = BTreeSet::new();
+
+        if total_pages > 0 {
+            by_start.insert(0, total_pages);
+            by_size.insert((total_pages, 0));
+        }
+
+        Self { by_start, by_size }
+    }
+
+    /// Find a free range with at least `pages_needed` pages and proper alignment
+    /// Returns (start_page, actual_size) or None
+    pub fn find_free_range(
+        &self,
+        pages_needed: usize,
+        alignment_pages: usize,
+    ) -> Option<(usize, usize)> {
+        // Find the smallest range that fits (best-fit)
+        for &(size, start) in self.by_size.range((pages_needed, 0)..) {
+            // Check alignment
+            let aligned_start = (start + alignment_pages - 1) / alignment_pages * alignment_pages;
+            let offset = aligned_start - start;
+
+            if size >= pages_needed + offset {
+                return Some((aligned_start, size));
+            }
+        }
+        None
+    }
+
+    /// Allocate a range of pages starting at `start_page` with `count` pages
+    /// Splits the containing free range as needed
+    pub fn allocate(&mut self, start_page: usize, count: usize) -> bool {
+        // Find the range containing this allocation
+        // Look for ranges that start at or before start_page
+        let containing = self.by_start.range(..=start_page).next_back();
+
+        if let Some((&range_start, &range_size)) = containing {
+            let range_end = range_start + range_size;
+            let alloc_end = start_page + count;
+
+            // Check if target range is fully within this free range
+            if start_page >= range_start && alloc_end <= range_end {
+                // Remove the old range
+                self.by_start.remove(&range_start);
+                self.by_size.remove(&(range_size, range_start));
+
+                // Add prefix range if any
+                if start_page > range_start {
+                    let prefix_size = start_page - range_start;
+                    self.by_start.insert(range_start, prefix_size);
+                    self.by_size.insert((prefix_size, range_start));
+                }
+
+                // Add suffix range if any
+                if alloc_end < range_end {
+                    let suffix_size = range_end - alloc_end;
+                    self.by_start.insert(alloc_end, suffix_size);
+                    self.by_size.insert((suffix_size, alloc_end));
+                }
+
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Free a range of pages, coalescing with adjacent free ranges
+    pub fn free(&mut self, start_page: usize, count: usize) {
+        let mut new_start = start_page;
+        let mut new_size = count;
+
+        // Check for preceding free range to coalesce
+        if let Some((&prev_start, &prev_size)) = self.by_start.range(..start_page).next_back() {
+            if prev_start + prev_size == start_page {
+                // Coalesce with preceding range
+                self.by_start.remove(&prev_start);
+                self.by_size.remove(&(prev_size, prev_start));
+                new_start = prev_start;
+                new_size += prev_size;
+            }
+        }
+
+        // Check for following free range to coalesce
+        let end_page = new_start + new_size;
+        if let Some((&next_start, &next_size)) = self.by_start.range(end_page..).next() {
+            if next_start == end_page {
+                // Coalesce with following range
+                self.by_start.remove(&next_start);
+                self.by_size.remove(&(next_size, next_start));
+                new_size += next_size;
+            }
+        }
+
+        // Insert the coalesced range
+        self.by_start.insert(new_start, new_size);
+        self.by_size.insert((new_size, new_start));
+    }
+
+    /// Get total free pages
+    pub fn total_free(&self) -> usize {
+        self.by_start.values().sum()
+    }
+
+    /// Get number of free ranges
+    pub fn range_count(&self) -> usize {
+        self.by_start.len()
+    }
+
+    /// Get the largest contiguous free range in pages
+    pub fn largest_free(&self) -> usize {
+        self.by_size
+            .iter()
+            .next_back()
+            .map(|(size, _)| *size)
+            .unwrap_or(0)
+    }
+}
+
+/// IOVA Allocator using tree-based free range tracking
 ///
 /// Manages I/O Virtual Address space for DMA mappings.
 /// Supports 4KB, 2MB, and 1GB granularity allocations.
+/// Uses O(log n) tree-based allocation with automatic coalescing.
 pub struct IovaAllocator {
     /// Base address of the IOVA space
     base: u64,
     /// Total size of the IOVA space
     size: u64,
-    /// Bitmap for 4KB page tracking (1 bit per 4KB page)
-    /// We use Vec because the size can be large
+    /// Bitmap for 4KB page tracking (1 bit per 4KB page) - kept for debugging
     bitmap: Vec<u64>,
     /// Number of 4KB pages managed
     total_pages: usize,
@@ -3545,6 +4165,8 @@ pub struct IovaAllocator {
     free_pages: usize,
     /// Next allocation hint (for fast sequential allocation)
     next_hint: usize,
+    /// Free range tree for O(log n) allocation
+    free_ranges: FreeRangeTree,
 }
 
 impl IovaAllocator {
@@ -3565,6 +4187,9 @@ impl IovaAllocator {
         // Initialize bitmap with all pages free (0 = free, 1 = allocated)
         let bitmap = alloc::vec![0u64; bitmap_words];
 
+        // Initialize free range tree with entire space as one free range
+        let free_ranges = FreeRangeTree::new(total_pages);
+
         Self {
             base,
             size,
@@ -3572,6 +4197,7 @@ impl IovaAllocator {
             total_pages,
             free_pages: total_pages,
             next_hint: 0,
+            free_ranges,
         }
     }
 
@@ -3662,15 +4288,21 @@ impl IovaAllocator {
     /// Allocate an IOVA range
     ///
     /// Returns the allocated IOVA address, or None if allocation fails.
+    /// Uses O(log n) tree-based allocation with best-fit.
     pub fn allocate(&mut self, size: u64, granularity: IovaGranularity) -> Option<u64> {
         let page_size = granularity.size_bytes();
         let pages_needed = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
         let alignment_pages = (page_size / Self::PAGE_SIZE_4K) as usize;
 
-        // Find a suitable range
-        let start_page = self.find_free_range(pages_needed, alignment_pages)?;
+        // Use tree-based allocation (O(log n))
+        let (start_page, _) = self
+            .free_ranges
+            .find_free_range(pages_needed, alignment_pages)?;
 
-        // Mark as allocated
+        // Allocate from tree (splits the range)
+        self.free_ranges.allocate(start_page, pages_needed);
+
+        // Mark as allocated in bitmap (for debugging/validation)
         self.mark_pages_allocated(start_page, pages_needed);
 
         // Update hint for next allocation
@@ -3688,18 +4320,17 @@ impl IovaAllocator {
         let start_page = ((iova - self.base) / Self::PAGE_SIZE_4K) as usize;
         let pages_needed = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
 
-        // Check if already allocated
-        for i in 0..pages_needed {
-            if self.is_page_allocated(start_page + i) {
-                return Err(IommuError::AlreadyMapped);
-            }
+        // Use tree to allocate (will fail if not free)
+        if !self.free_ranges.allocate(start_page, pages_needed) {
+            return Err(IommuError::AlreadyMapped);
         }
 
+        // Mark as allocated in bitmap (for debugging/validation)
         self.mark_pages_allocated(start_page, pages_needed);
         Ok(())
     }
 
-    /// Free an IOVA range
+    /// Free an IOVA range with automatic coalescing
     pub fn free(&mut self, iova: u64, size: u64) -> Result<(), IommuError> {
         if iova < self.base || iova + size > self.base + self.size {
             return Err(IommuError::InvalidAddress);
@@ -3708,6 +4339,10 @@ impl IovaAllocator {
         let start_page = ((iova - self.base) / Self::PAGE_SIZE_4K) as usize;
         let pages_count = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
 
+        // Free in tree (with automatic coalescing)
+        self.free_ranges.free(start_page, pages_count);
+
+        // Mark as free in bitmap (for debugging/validation)
         self.mark_pages_free(start_page, pages_count);
 
         // Update hint to freed range for potential reuse
@@ -3718,7 +4353,134 @@ impl IovaAllocator {
         Ok(())
     }
 
-    /// Get statistics
+    /// Reserve an IOVA range (for RMRR identity mappings)
+    ///
+    /// Reserved ranges cannot be allocated by normal allocation calls.
+    pub fn reserve(&mut self, iova: u64, size: u64) -> Result<(), IommuError> {
+        if iova < self.base || iova + size > self.base + self.size {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let start_page = ((iova - self.base) / Self::PAGE_SIZE_4K) as usize;
+        let pages_needed = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
+
+        // Use tree to allocate (will fail if not free)
+        if !self.free_ranges.allocate(start_page, pages_needed) {
+            return Err(IommuError::AlreadyMapped);
+        }
+
+        // Mark as allocated in bitmap
+        self.mark_pages_allocated_fast(start_page, pages_needed);
+        Ok(())
+    }
+
+    /// Allocate a contiguous range with specific size requirements
+    ///
+    /// Useful for large DMA buffers that need power-of-2 alignment.
+    pub fn allocate_contiguous(&mut self, size: u64, alignment: u64) -> Option<u64> {
+        let pages_needed = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
+        let alignment_pages = ((alignment.max(Self::PAGE_SIZE_4K)) / Self::PAGE_SIZE_4K) as usize;
+
+        // Use tree-based allocation (O(log n))
+        let (start_page, _) = self
+            .free_ranges
+            .find_free_range(pages_needed, alignment_pages)?;
+
+        // Allocate from tree
+        self.free_ranges.allocate(start_page, pages_needed);
+
+        // Mark as allocated in bitmap
+        self.mark_pages_allocated_fast(start_page, pages_needed);
+
+        // Update hint
+        self.next_hint = start_page + pages_needed;
+
+        Some(self.base + (start_page as u64) * Self::PAGE_SIZE_4K)
+    }
+
+    /// Mark pages allocated using word-level operations for efficiency
+    fn mark_pages_allocated_fast(&mut self, start_page: usize, count: usize) {
+        let end_page = start_page + count;
+
+        // Handle partial first word
+        let first_word = start_page / Self::BITS_PER_WORD;
+        let first_bit = start_page % Self::BITS_PER_WORD;
+
+        if first_bit != 0 {
+            let bits_in_first = (Self::BITS_PER_WORD - first_bit).min(count);
+            let mask = ((1u64 << bits_in_first) - 1) << first_bit;
+            self.bitmap[first_word] |= mask;
+
+            if bits_in_first >= count {
+                self.free_pages -= count;
+                return;
+            }
+        }
+
+        // Handle full words
+        let first_full_word = if first_bit == 0 {
+            first_word
+        } else {
+            first_word + 1
+        };
+        let last_word = end_page / Self::BITS_PER_WORD;
+
+        for word in first_full_word..last_word {
+            self.bitmap[word] = !0u64;
+        }
+
+        // Handle partial last word
+        let last_bit = end_page % Self::BITS_PER_WORD;
+        if last_bit != 0 && last_word < self.bitmap.len() {
+            let mask = (1u64 << last_bit) - 1;
+            self.bitmap[last_word] |= mask;
+        }
+
+        self.free_pages -= count;
+    }
+
+    /// Mark pages free using word-level operations for efficiency
+    fn mark_pages_free_fast(&mut self, start_page: usize, count: usize) {
+        let end_page = start_page + count;
+
+        // Handle partial first word
+        let first_word = start_page / Self::BITS_PER_WORD;
+        let first_bit = start_page % Self::BITS_PER_WORD;
+
+        if first_bit != 0 {
+            let bits_in_first = (Self::BITS_PER_WORD - first_bit).min(count);
+            let mask = ((1u64 << bits_in_first) - 1) << first_bit;
+            self.bitmap[first_word] &= !mask;
+
+            if bits_in_first >= count {
+                self.free_pages += count;
+                return;
+            }
+        }
+
+        // Handle full words
+        let first_full_word = if first_bit == 0 {
+            first_word
+        } else {
+            first_word + 1
+        };
+        let last_word = end_page / Self::BITS_PER_WORD;
+
+        for word in first_full_word..last_word {
+            self.bitmap[word] = 0;
+        }
+
+        // Handle partial last word
+        let last_bit = end_page % Self::BITS_PER_WORD;
+        if last_bit != 0 && last_word < self.bitmap.len() {
+            let mask = (1u64 << last_bit) - 1;
+            self.bitmap[last_word] &= !mask;
+        }
+
+        self.free_pages += count;
+    }
+
+    /// Get basic statistics
     pub fn stats(&self) -> IovaAllocatorStats {
         IovaAllocatorStats {
             total_pages: self.total_pages,
@@ -3726,6 +4488,27 @@ impl IovaAllocator {
             allocated_pages: self.total_pages - self.free_pages,
             base: self.base,
             size: self.size,
+        }
+    }
+
+    /// Get detailed statistics including fragmentation
+    pub fn stats_detailed(&self) -> IovaAllocatorStatsDetailed {
+        let free_ranges = self.free_ranges.range_count();
+        let fragmentation = if self.free_pages > 0 {
+            (free_ranges as f32) / (self.free_pages as f32 / 64.0).max(1.0)
+        } else {
+            0.0
+        };
+
+        IovaAllocatorStatsDetailed {
+            total_pages: self.total_pages,
+            free_pages: self.free_pages,
+            allocated_pages: self.total_pages - self.free_pages,
+            base: self.base,
+            size: self.size,
+            free_ranges,
+            fragmentation,
+            largest_free_range: self.free_ranges.largest_free(),
         }
     }
 }
@@ -3738,6 +4521,22 @@ pub struct IovaAllocatorStats {
     pub allocated_pages: usize,
     pub base: u64,
     pub size: u64,
+}
+
+/// Detailed IOVA allocator statistics
+#[derive(Debug, Clone)]
+pub struct IovaAllocatorStatsDetailed {
+    pub total_pages: usize,
+    pub free_pages: usize,
+    pub allocated_pages: usize,
+    pub base: u64,
+    pub size: u64,
+    /// Number of distinct free ranges
+    pub free_ranges: usize,
+    /// Fragmentation ratio (higher = more fragmented)
+    pub fragmentation: f32,
+    /// Largest contiguous free range in pages
+    pub largest_free_range: usize,
 }
 
 // ============================================================================
@@ -3926,6 +4725,149 @@ fn register_domain_lock(domain_id: u16) {
     DOMAIN_LOCKS
         .lock()
         .insert(domain_id, alloc::sync::Arc::new(spin::Mutex::new(())));
+}
+
+// ============================================================================
+// Per-CPU Domain Cache for Reduced Lock Contention
+// ============================================================================
+
+/// Per-CPU cached domain lookup entry
+#[derive(Clone, Copy)]
+struct DomainCacheEntry {
+    /// Device ID (requester ID)
+    device_id: u16,
+    /// Cached domain ID
+    domain_id: u16,
+    /// Controller index
+    controller_idx: usize,
+    /// Valid flag
+    valid: bool,
+}
+
+impl Default for DomainCacheEntry {
+    fn default() -> Self {
+        Self {
+            device_id: 0,
+            domain_id: 0,
+            controller_idx: 0,
+            valid: false,
+        }
+    }
+}
+
+/// Per-CPU domain lookup cache
+///
+/// Each CPU maintains its own cache of device-to-domain mappings.
+/// This reduces contention on the global IOMMU lock for frequent DMA operations.
+pub struct PerCpuDomainCache {
+    /// Cache entries (direct-mapped by device ID hash)
+    entries: [DomainCacheEntry; Self::CACHE_SIZE],
+    /// Cache hits
+    hits: u64,
+    /// Cache misses
+    misses: u64,
+}
+
+impl PerCpuDomainCache {
+    /// Cache size (power of 2)
+    const CACHE_SIZE: usize = 32;
+
+    /// Create a new per-CPU cache
+    pub const fn new() -> Self {
+        const DEFAULT: DomainCacheEntry = DomainCacheEntry {
+            device_id: 0,
+            domain_id: 0,
+            controller_idx: 0,
+            valid: false,
+        };
+        Self {
+            entries: [DEFAULT; Self::CACHE_SIZE],
+            hits: 0,
+            misses: 0,
+        }
+    }
+
+    /// Hash function for device ID
+    fn hash(device_id: u16) -> usize {
+        (device_id as usize) % Self::CACHE_SIZE
+    }
+
+    /// Lookup domain for a device
+    pub fn lookup(&mut self, device_id: u16) -> Option<(u16, usize)> {
+        let idx = Self::hash(device_id);
+        if self.entries[idx].valid && self.entries[idx].device_id == device_id {
+            self.hits += 1;
+            Some((
+                self.entries[idx].domain_id,
+                self.entries[idx].controller_idx,
+            ))
+        } else {
+            self.misses += 1;
+            None
+        }
+    }
+
+    /// Insert a device-domain mapping
+    pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: usize) {
+        let idx = Self::hash(device_id);
+        self.entries[idx] = DomainCacheEntry {
+            device_id,
+            domain_id,
+            controller_idx,
+            valid: true,
+        };
+    }
+
+    /// Invalidate entry for a device
+    pub fn invalidate(&mut self, device_id: u16) {
+        let idx = Self::hash(device_id);
+        if self.entries[idx].device_id == device_id {
+            self.entries[idx].valid = false;
+        }
+    }
+
+    /// Invalidate all entries
+    pub fn invalidate_all(&mut self) {
+        for entry in &mut self.entries {
+            entry.valid = false;
+        }
+    }
+
+    /// Get cache statistics
+    pub fn stats(&self) -> (u64, u64) {
+        (self.hits, self.misses)
+    }
+}
+
+/// Thread-local per-CPU domain cache
+/// Access via get_cpu_domain_cache() for current CPU's cache
+static CPU_DOMAIN_CACHES: Mutex<[PerCpuDomainCache; 256]> = {
+    const CACHE: PerCpuDomainCache = PerCpuDomainCache::new();
+    Mutex::new([CACHE; 256])
+};
+
+/// Get the domain cache for the current CPU
+/// Returns (domain_id, controller_idx) if found in cache
+pub fn lookup_domain_cached(device_id: DeviceId) -> Option<(u16, usize)> {
+    // Use CPU ID if available, otherwise use 0
+    let cpu_id = 0usize; // TODO: get actual CPU ID
+    let mut caches = CPU_DOMAIN_CACHES.lock();
+    caches[cpu_id % 256].lookup(device_id.requester_id())
+}
+
+/// Cache a device-domain mapping
+pub fn cache_domain_mapping(device_id: DeviceId, domain_id: u16, controller_idx: usize) {
+    let cpu_id = 0usize; // TODO: get actual CPU ID
+    let mut caches = CPU_DOMAIN_CACHES.lock();
+    caches[cpu_id % 256].insert(device_id.requester_id(), domain_id, controller_idx);
+}
+
+/// Invalidate a cached device-domain mapping on all CPUs
+pub fn invalidate_domain_cache(device_id: DeviceId) {
+    let mut caches = CPU_DOMAIN_CACHES.lock();
+    for cache in caches.iter_mut() {
+        cache.invalidate(device_id.requester_id());
+    }
 }
 
 /// IOMMU Configuration from Kernel Command Line
@@ -4255,8 +5197,15 @@ pub fn handle_fault() {
 /// # Returns
 /// 成功した場合は割り当てられたドメインID、失敗した場合はNone
 pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
-    if !is_iommu_enabled() {
-        return None;
+    // If there are no controllers registered, we cannot setup IOMMU for devices.
+    // Note: We allow setting up domains and applying RMRR even if translation
+    // is not yet globally enabled. This lets callers prepare page tables and
+    // context entries before calling `enable_iommu()`.
+    {
+        let guard = IOMMU.lock();
+        if guard.controllers.is_empty() {
+            return None;
+        }
     }
 
     let bdf = device.bdf;

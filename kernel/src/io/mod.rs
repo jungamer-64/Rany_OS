@@ -4,7 +4,7 @@
 // ============================================================================
 pub mod acpi;
 pub mod ahci;
-pub mod ahci_atapi; // AHCI ATAPI (CD/DVD) Support
+// ATAPI support migrated to `ahci_driver` crate (re-exported later)
 pub mod apic;
 pub mod audio;
 pub mod dma;
@@ -252,9 +252,9 @@ pub use acpi::{
 pub fn parse_dmar_table(addr: usize) -> Result<acpi::dmar::DmarInfo, &'static str> {
     unsafe { acpi::dmar::parse_dmar(addr) }
 }
-// AHCI ATAPI exports (CD/DVD support)
+// AHCI ATAPI exports (CD/DVD support) - re-export from ahci_driver crate
 #[allow(unused_imports)]
-pub use ahci_atapi::{
+pub use ahci_driver::atapi::{
     AtapiDeviceType,
     // ATAPI Port
     AtapiPort,
