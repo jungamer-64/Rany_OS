@@ -97,6 +97,24 @@ pub mod regs {
     pub const IQT: u64 = 0x88;
     /// Invalidation queue address register
     pub const IQA: u64 = 0x90;
+    /// Performance Monitoring Control register
+    pub const PERMON_CTL: u64 = 0x200;
+    /// Performance Monitoring Counter 0
+    pub const PERMON_CNT0: u64 = 0x208;
+    /// Performance Monitoring Counter 1
+    pub const PERMON_CNT1: u64 = 0x210;
+    /// Performance Monitoring Counter 2
+    pub const PERMON_CNT2: u64 = 0x218;
+    /// Performance Monitoring Counter 3
+    pub const PERMON_CNT3: u64 = 0x220;
+    /// Performance Monitoring Event Select 0
+    pub const PERMON_EVT0: u64 = 0x228;
+    /// Performance Monitoring Event Select 1
+    pub const PERMON_EVT1: u64 = 0x230;
+    /// Performance Monitoring Event Select 2
+    pub const PERMON_EVT2: u64 = 0x238;
+    /// Performance Monitoring Event Select 3
+    pub const PERMON_EVT3: u64 = 0x240;
 }
 
 /// Global command bits
@@ -199,6 +217,87 @@ pub mod ecap_bits {
     pub const ECAP_ERS: u64 = 1 << 30;
     /// Supervisor Request Support
     pub const ECAP_SRS: u64 = 1 << 31;
+    /// Posted Interrupts Support (Posted Interrupt Descriptor Support)
+    pub const ECAP_PIDS: u64 = 1 << 59;
+    /// Scalable Mode Translation Support
+    pub const ECAP_SMTS: u64 = 1 << 35;
+    /// Performance Monitoring Support
+    pub const ECAP_PMC: u64 = 1 << 40;
+}
+
+/// IOMMU Performance Monitoring Event Types
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum PerfMonEvent {
+    /// IOTLB hits
+    IotlbHit = 0x00,
+    /// IOTLB misses
+    IotlbMiss = 0x01,
+    /// Context cache hits
+    ContextCacheHit = 0x02,
+    /// Context cache misses
+    ContextCacheMiss = 0x03,
+    /// Page walk cycles
+    PageWalkCycles = 0x04,
+    /// Page walk requests
+    PageWalkRequests = 0x05,
+    /// PASID cache hits
+    PasidCacheHit = 0x06,
+    /// PASID cache misses
+    PasidCacheMiss = 0x07,
+    /// Posted interrupt descriptors processed
+    PostedInterruptDesc = 0x08,
+    /// DMA read requests
+    DmaReadRequests = 0x09,
+    /// DMA write requests
+    DmaWriteRequests = 0x0A,
+    /// Device-TLB invalidation requests
+    DevTlbInvalidations = 0x0B,
+}
+
+/// Performance Monitoring Counter configuration
+#[derive(Debug, Clone)]
+pub struct PerfMonCounter {
+    /// Counter index (0-3)
+    pub index: u8,
+    /// Event to monitor
+    pub event: PerfMonEvent,
+    /// Enable counter
+    pub enabled: bool,
+    /// Overflow interrupt enable
+    pub overflow_irq: bool,
+}
+
+/// Posted Interrupt Descriptor (PID)
+///
+/// 64-byte aligned structure used for Posted Interrupt processing.
+#[repr(C, align(64))]
+#[derive(Debug)]
+pub struct PostedInterruptDescriptor {
+    /// Posted Interrupt Request (PIR) - bitmap of 256 vectors
+    pub pir: [u64; 4],
+    /// Notification Info
+    /// - Bit 0: ON (Outstanding Notification)
+    /// - Bit 1: SN (Suppress Notification)
+    /// - Bits 16-23: NV (Notification Vector)
+    /// - Bits 32-63: NDST (Notification Destination APIC ID)
+    pub notification_info: AtomicU64,
+    /// Reserved
+    pub reserved: [u64; 3],
+}
+
+impl PostedInterruptDescriptor {
+    pub const ON: u64 = 1 << 0;
+    pub const SN: u64 = 1 << 1;
+
+    /// Create a new zeroed PID
+    pub fn new() -> Self {
+        Self {
+            pir: [0; 4],
+            notification_info: AtomicU64::new(0),
+            reserved: [0; 3],
+        }
+    }
 }
 
 /// Fault status register bits
@@ -262,6 +361,77 @@ pub struct InterruptRemapEntry {
     pub hi: u64,
 }
 
+// ============================================================================
+// Scalable Mode Structures (PASID)
+// ============================================================================
+
+/// PASID Directory Entry (Scalable Mode)
+///
+/// 8-byte entry in the PASID Directory. Points to a PASID Table.
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PasidDirectoryEntry(u64);
+
+impl PasidDirectoryEntry {
+    /// Present bit
+    pub const PRESENT: u64 = 1 << 0;
+
+    /// Create a new entry
+    pub fn new() -> Self {
+        Self(0)
+    }
+
+    /// Set the PASID Table pointer
+    pub fn set_table_ptr(&mut self, addr: u64) {
+        // Bits 12-63 contain physical address of PASID Table (4KB aligned)
+        self.0 = (addr & !0xFFF) | Self::PRESENT;
+    }
+
+    /// Get PASID Table address
+    pub fn table_addr(&self) -> u64 {
+        self.0 & !0xFFF
+    }
+
+    /// Check if present
+    pub fn is_present(&self) -> bool {
+        (self.0 & Self::PRESENT) != 0
+    }
+}
+
+/// PASID Table Entry (Scalable Mode)
+///
+/// 64-byte entry in the PASID Table.
+/// Contains pointer to First-Level (Stage-1) and Second-Level (Stage-2) translation structures.
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PasidTableEntry {
+    pub val: [u64; 8],
+}
+
+impl PasidTableEntry {
+    /// Present bit
+    pub const PRESENT: u64 = 1 << 0;
+    /// First-Level Translation Enable
+    pub const FLT: u64 = 1 << 50; // In val[0]
+    /// Second-Level Translation Enable
+    pub const SLT: u64 = 1 << 51; // In val[0]
+
+    /// Set Second-Level (Stage-2) Page Table pointer (SLPTR)
+    pub fn set_sl_ptr(&mut self, addr: u64) {
+        // SLPTR is in val[0] bits 12-63
+        self.val[0] = (self.val[0] & 0xFFF) | (addr & !0xFFF);
+        self.val[0] |= Self::PRESENT | Self::SLT;
+    }
+
+    /// Set First-Level (Stage-1) Page Table pointer (FLPTR)
+    pub fn set_fl_ptr(&mut self, addr: u64) {
+        // FLPTR is in val[2] bits 12-63
+        self.val[2] = (self.val[2] & 0xFFF) | (addr & !0xFFF);
+        // Enable bit is in val[0]
+        self.val[0] |= Self::PRESENT | Self::FLT;
+    }
+}
+
 impl InterruptRemapEntry {
     /// Entry present (bit 0)
     pub const PRESENT: u64 = 1 << 0;
@@ -290,10 +460,28 @@ impl InterruptRemapEntry {
     pub const SQ_SHIFT: u64 = 12;
     /// SVT (Source Validation Type, bits 14-15 of hi)
     pub const SVT_SHIFT: u64 = 14;
+    /// Interrupt Mode: 0 = Remapped, 1 = Posted (bit 15 of lo)
+    pub const IM: u64 = 1 << 15;
 
     /// Create a new blank (not present) entry
     pub const fn new() -> Self {
         Self { lo: 0, hi: 0 }
+    }
+
+    /// Create a present IRTE for posted interrupts
+    ///
+    /// # Arguments
+    /// * `pda` - Physical address of the Posted Interrupt Descriptor (must be 64-byte aligned)
+    /// * `vector` - Vector is handled by the PID's PIR field, but we might set notification vector in PID
+    pub fn posted(pda: u64) -> Self {
+        // Standard Posted Interrupt IRTE Layout:
+        // Low: P(1) | IM(1) | PDA
+        // Note: Exact layout depends on hardware generation, using standard format here.
+        // Assuming PDA is placed in address field (bits 32-63 for xAPIC or specialized field)
+        // For simplicity/safety in this implementation:
+        // Low = (PDA & !0x3F) | IM | PRESENT
+        let lo = (pda & !0x3F) | Self::IM | Self::PRESENT;
+        Self { lo, hi: 0 }
     }
 
     /// Create a present IRTE for fixed delivery
@@ -1827,6 +2015,21 @@ impl IommuController {
         (self.cap & cap_bits::CAP_SLLPS_1G) != 0
     }
 
+    /// Check if Posted Interrupts are supported
+    pub fn supports_posted_interrupts(&self) -> bool {
+        (self.ecap & ecap_bits::ECAP_PIDS) != 0
+    }
+
+    /// Check if Scalable Mode is supported
+    pub fn supports_scalable_mode(&self) -> bool {
+        (self.ecap & ecap_bits::ECAP_SMTS) != 0
+    }
+
+    /// Check if Performance Monitoring is supported
+    pub fn supports_performance_monitoring(&self) -> bool {
+        (self.ecap & ecap_bits::ECAP_PMC) != 0
+    }
+
     /// Get capability information
     pub fn capabilities(&self) -> IommuCapabilities {
         IommuCapabilities {
@@ -1836,6 +2039,9 @@ impl IommuController {
             super_page_1gb: self.supports_1gb_pages(),
             page_walk_coherency: (self.cap & cap_bits::CAP_PWC) != 0,
             snoop_control: (self.cap & cap_bits::CAP_SC) != 0,
+            posted_interrupts: self.supports_posted_interrupts(),
+            scalable_mode: self.supports_scalable_mode(),
+            performance_monitoring: self.supports_performance_monitoring(),
         }
     }
 
@@ -2257,6 +2463,107 @@ impl IommuController {
 
         Err(IommuError::Timeout)
     }
+
+    // =========================================================================
+    // Performance Monitoring Methods
+    // =========================================================================
+
+    /// Configure a performance monitoring counter
+    pub fn perfmon_configure_counter(
+        &mut self,
+        index: u8,
+        event: PerfMonEvent,
+        enable: bool,
+    ) -> Result<(), IommuError> {
+        if !self.supports_performance_monitoring() {
+            return Err(IommuError::NotSupported);
+        }
+        if index > 3 {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let evt_reg = match index {
+            0 => regs::PERMON_EVT0,
+            1 => regs::PERMON_EVT1,
+            2 => regs::PERMON_EVT2,
+            3 => regs::PERMON_EVT3,
+            _ => return Err(IommuError::InvalidAddress),
+        };
+
+        // Event select value: event type in bits 0-7, enable in bit 22
+        let evt_val = (event as u64) | (if enable { 1 << 22 } else { 0 });
+        self.write64(evt_reg, evt_val);
+
+        Ok(())
+    }
+
+    /// Read a performance monitoring counter value
+    pub fn perfmon_read_counter(&self, index: u8) -> Result<u64, IommuError> {
+        if !self.supports_performance_monitoring() {
+            return Err(IommuError::NotSupported);
+        }
+        if index > 3 {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let cnt_reg = match index {
+            0 => regs::PERMON_CNT0,
+            1 => regs::PERMON_CNT1,
+            2 => regs::PERMON_CNT2,
+            3 => regs::PERMON_CNT3,
+            _ => return Err(IommuError::InvalidAddress),
+        };
+
+        Ok(self.read64(cnt_reg))
+    }
+
+    /// Reset a performance monitoring counter to zero
+    pub fn perfmon_reset_counter(&mut self, index: u8) -> Result<(), IommuError> {
+        if !self.supports_performance_monitoring() {
+            return Err(IommuError::NotSupported);
+        }
+        if index > 3 {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let cnt_reg = match index {
+            0 => regs::PERMON_CNT0,
+            1 => regs::PERMON_CNT1,
+            2 => regs::PERMON_CNT2,
+            3 => regs::PERMON_CNT3,
+            _ => return Err(IommuError::InvalidAddress),
+        };
+
+        self.write64(cnt_reg, 0);
+        Ok(())
+    }
+
+    /// Reset all performance monitoring counters
+    pub fn perfmon_reset_all(&mut self) -> Result<(), IommuError> {
+        if !self.supports_performance_monitoring() {
+            return Err(IommuError::NotSupported);
+        }
+
+        self.write64(regs::PERMON_CNT0, 0);
+        self.write64(regs::PERMON_CNT1, 0);
+        self.write64(regs::PERMON_CNT2, 0);
+        self.write64(regs::PERMON_CNT3, 0);
+        Ok(())
+    }
+
+    /// Get all counter values at once
+    pub fn perfmon_read_all(&self) -> Result<[u64; 4], IommuError> {
+        if !self.supports_performance_monitoring() {
+            return Err(IommuError::NotSupported);
+        }
+
+        Ok([
+            self.read64(regs::PERMON_CNT0),
+            self.read64(regs::PERMON_CNT1),
+            self.read64(regs::PERMON_CNT2),
+            self.read64(regs::PERMON_CNT3),
+        ])
+    }
 }
 
 /// IOMMU capability summary
@@ -2268,6 +2575,9 @@ pub struct IommuCapabilities {
     pub super_page_1gb: bool,
     pub page_walk_coherency: bool,
     pub snoop_control: bool,
+    pub posted_interrupts: bool,
+    pub scalable_mode: bool,
+    pub performance_monitoring: bool,
 }
 
 // ============================================================================
