@@ -713,7 +713,11 @@ pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)])
     // SAFETY: 呼び出し元がregionsの正当性を保証
     unsafe {
         NUMA_FRAME_ALLOCATOR.lock().init_numa(regions);
-    }
+        // Also register regions with buddy allocator so buddy can perform
+        // node-local allocations when possible (best-effort).
+        for &(addr, size, node_id) in regions {
+            crate::mm::buddy_register_numa_region(node_id.as_usize(), addr, size);
+        }    }
 }
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -727,10 +731,24 @@ static FRAME_LOCAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
     if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
         FRAME_LOCAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+
+        // Prefer node-local Buddy allocation first (best-effort)
+        let node = get_cpu_numa_node(cpu_id as u8);
+        if let Some(frame) = crate::mm::buddy_alloc_frame_on_node(node.as_usize()) {
+            FRAME_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+            return Some(frame);
+        }
+
+        // Then try NUMA-aware bitmap allocator
         if let Some(frame) = NUMA_FRAME_ALLOCATOR.lock().allocate_4k_local(cpu_id as u8) {
             FRAME_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
             return Some(frame);
         }
+    }
+
+    // Fall back to global buddy then bitmap
+    if let Some(frame) = crate::mm::buddy_alloc_frame() {
+        return Some(frame);
     }
 
     FRAME_ALLOCATOR.lock().allocate_4k_frame()
@@ -739,12 +757,23 @@ pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
 /// 指定NUMAノードから4KiBフレームを割り当て
 /// 設計書 5.3.2: 明示的なノード指定API
 pub fn alloc_frame_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
+    // Try buddy on node first
+    if let Some(frame) = crate::mm::buddy_alloc_frame_on_node(node.as_usize()) {
+        return Some(frame);
+    }
     NUMA_FRAME_ALLOCATOR.lock().allocate_4k_on_node(node)
 }
 
 /// 現在のCPUのローカルNUMAノードから4KiBフレームを割り当て
 /// 設計書 5.3.2: First-Touch Policy
 pub fn alloc_frame_local(current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
+    let node = get_cpu_numa_node(current_cpu);
+
+    // Prefer buddy on the local node
+    if let Some(frame) = crate::mm::buddy_alloc_frame_on_node(node.as_usize()) {
+        return Some(frame);
+    }
+
     NUMA_FRAME_ALLOCATOR.lock().allocate_4k_local(current_cpu)
 }
 

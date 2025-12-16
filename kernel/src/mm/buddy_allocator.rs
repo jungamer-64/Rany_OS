@@ -496,9 +496,14 @@ impl BuddyFrameAllocator {
 
     /// Try to allocate a 4KiB frame on a preferred NUMA node; fallback to others and global
     pub fn allocate_4k_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size4KiB>> {
-        if let Some(map) = self.numa_regions.as_ref() {
-            if let Some(ranges) = map.get(&node) {
-                for &(start, end) in ranges.iter() {
+        if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
+            (
+                map.get(&node).cloned(),
+                map.iter().map(|(&k, v)| (k, v.clone())).collect::<alloc::vec::Vec<_>>(),
+            )
+        }) {
+            if let Some(ranges) = node_ranges {
+                for (start, end) in ranges {
                     if let Some(frame) = self.allocate_order_in_range(0, start.as_usize(), end.as_usize()) {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
@@ -506,12 +511,11 @@ impl BuddyFrameAllocator {
                 }
             }
 
-            // fallback to other nodes
-            for (&other, ranges) in map.iter() {
+            for (other, ranges) in other_nodes {
                 if other == node {
                     continue;
                 }
-                for &(start, end) in ranges.iter() {
+                for (start, end) in ranges {
                     if let Some(frame) = self.allocate_order_in_range(0, start.as_usize(), end.as_usize()) {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
@@ -527,9 +531,14 @@ impl BuddyFrameAllocator {
     /// 2MiB allocation on a preferred NUMA node
     pub fn allocate_2m_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size2MiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
-        if let Some(map) = self.numa_regions.as_ref() {
-            if let Some(ranges) = map.get(&node) {
-                for &(start, end) in ranges.iter() {
+        if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
+            (
+                map.get(&node).cloned(),
+                map.iter().map(|(&k, v)| (k, v.clone())).collect::<alloc::vec::Vec<_>>(),
+            )
+        }) {
+            if let Some(ranges) = node_ranges {
+                for (start, end) in ranges {
                     if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
@@ -537,9 +546,9 @@ impl BuddyFrameAllocator {
                 }
             }
 
-            for (&other, ranges) in map.iter() {
+            for (other, ranges) in other_nodes {
                 if other == node { continue; }
-                for &(start, end) in ranges.iter() {
+                for (start, end) in ranges {
                     if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
@@ -553,9 +562,14 @@ impl BuddyFrameAllocator {
     /// 1GiB allocation on a preferred NUMA node
     pub fn allocate_1g_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size1GiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
-        if let Some(map) = self.numa_regions.as_ref() {
-            if let Some(ranges) = map.get(&node) {
-                for &(start, end) in ranges.iter() {
+        if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
+            (
+                map.get(&node).cloned(),
+                map.iter().map(|(&k, v)| (k, v.clone())).collect::<alloc::vec::Vec<_>>(),
+            )
+        }) {
+            if let Some(ranges) = node_ranges {
+                for (start, end) in ranges {
                     if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
@@ -563,9 +577,9 @@ impl BuddyFrameAllocator {
                 }
             }
 
-            for (&other, ranges) in map.iter() {
+            for (other, ranges) in other_nodes {
                 if other == node { continue; }
-                for &(start, end) in ranges.iter() {
+                for (start, end) in ranges {
                     if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
