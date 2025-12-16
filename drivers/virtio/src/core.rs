@@ -15,7 +15,7 @@
 
 use alloc::collections::VecDeque;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 // use super::defs::*; // Removed
 use crate::defs::*;

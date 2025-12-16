@@ -19,9 +19,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::ptr::NonNull;
 
 use crate::defs::{VirtioDeviceType, status};
 

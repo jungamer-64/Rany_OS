@@ -246,7 +246,12 @@ pub use acpi::{
     LocalApicInfo, Madt, Mcfg, PcieEcamInfo, Rsdp, init as acpi_init, interrupt_overrides,
     io_apics, local_apic_address, local_apics, pcie_ecam_regions, processor_count,
 };
-
+/// Helper to parse DMAR table; wraps the `acpi::dmar::parse_dmar` helper so
+/// other `io` submodules (e.g., `iommu`) can call it without referencing the
+/// `acpi` module directly by path (helps avoid some resolution issues).
+pub fn parse_dmar_table(addr: usize) -> Result<acpi::dmar::DmarInfo, &'static str> {
+    unsafe { acpi::dmar::parse_dmar(addr) }
+}
 // AHCI ATAPI exports (CD/DVD support)
 #[allow(unused_imports)]
 pub use ahci_atapi::{

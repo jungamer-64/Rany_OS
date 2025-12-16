@@ -473,7 +473,7 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
         for (j, (name, value)) in cr_row.iter().enumerate() {
             draw_register(fb, margin_x + (j as i32 * col_width), y, name, *value);
         }
-        y += 18;
+        // y += 18; // Unused assignment removed
     } else {
         font.draw_string(
             fb,
@@ -483,7 +483,7 @@ fn display_bsod_internal(fb: &mut Framebuffer, info: &BsodInfo) {
             colors::TEXT_SECONDARY,
             None,
         );
-        y += 18;
+        // y += 18; // Unused assignment removed
     }
 
     // 8. QRコードを右下に描画

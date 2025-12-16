@@ -9,7 +9,6 @@
 
 #![allow(dead_code)]
 
-use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU32, Ordering};

@@ -80,7 +80,7 @@ impl AhciController {
         Ok(())
     }
 
-    pub fn port(&self, port: PortNumber) -> Option<Box<AhciPort>> {
+    pub fn port(&self, _port: PortNumber) -> Option<Box<AhciPort>> {
         // This is tricky with Mutex. We probably want to return a reference or clone if Arc.
         // But AhciPort is not Clone.
         // For the driver interface, we usually need to perform operations on the port.

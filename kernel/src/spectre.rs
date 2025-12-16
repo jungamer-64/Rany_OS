@@ -118,10 +118,9 @@ impl SpectreMitigationManager {
             return;
         }
 
-        unsafe {
-            let current = read_msr(IA32_SPEC_CTRL);
-            write_msr(IA32_SPEC_CTRL, current | SPEC_CTRL_IBRS);
-        }
+        // unsafe removed
+        let current = read_msr(IA32_SPEC_CTRL);
+        write_msr(IA32_SPEC_CTRL, current | SPEC_CTRL_IBRS);
         IBRS_ENABLED.store(true, Ordering::SeqCst);
         CURRENT_SPEC_CTRL.fetch_or(SPEC_CTRL_IBRS as u32, Ordering::SeqCst);
     }
@@ -132,10 +131,9 @@ impl SpectreMitigationManager {
             return;
         }
 
-        unsafe {
-            let current = read_msr(IA32_SPEC_CTRL);
-            write_msr(IA32_SPEC_CTRL, current & !SPEC_CTRL_IBRS);
-        }
+        // unsafe removed
+        let current = read_msr(IA32_SPEC_CTRL);
+        write_msr(IA32_SPEC_CTRL, current & !SPEC_CTRL_IBRS);
         IBRS_ENABLED.store(false, Ordering::SeqCst);
         CURRENT_SPEC_CTRL.fetch_and(!(SPEC_CTRL_IBRS as u32), Ordering::SeqCst);
     }
@@ -146,10 +144,9 @@ impl SpectreMitigationManager {
             return;
         }
 
-        unsafe {
-            let current = read_msr(IA32_SPEC_CTRL);
-            write_msr(IA32_SPEC_CTRL, current | SPEC_CTRL_STIBP);
-        }
+        // unsafe removed
+        let current = read_msr(IA32_SPEC_CTRL);
+        write_msr(IA32_SPEC_CTRL, current | SPEC_CTRL_STIBP);
         STIBP_ENABLED.store(true, Ordering::SeqCst);
         CURRENT_SPEC_CTRL.fetch_or(SPEC_CTRL_STIBP as u32, Ordering::SeqCst);
     }
@@ -160,10 +157,9 @@ impl SpectreMitigationManager {
             return;
         }
 
-        unsafe {
-            let current = read_msr(IA32_SPEC_CTRL);
-            write_msr(IA32_SPEC_CTRL, current & !SPEC_CTRL_STIBP);
-        }
+        // unsafe removed
+        let current = read_msr(IA32_SPEC_CTRL);
+        write_msr(IA32_SPEC_CTRL, current & !SPEC_CTRL_STIBP);
         STIBP_ENABLED.store(false, Ordering::SeqCst);
         CURRENT_SPEC_CTRL.fetch_and(!(SPEC_CTRL_STIBP as u32), Ordering::SeqCst);
     }
@@ -174,10 +170,9 @@ impl SpectreMitigationManager {
             return;
         }
 
-        unsafe {
-            let current = read_msr(IA32_SPEC_CTRL);
-            write_msr(IA32_SPEC_CTRL, current | SPEC_CTRL_SSBD);
-        }
+        // unsafe removed
+        let current = read_msr(IA32_SPEC_CTRL);
+        write_msr(IA32_SPEC_CTRL, current | SPEC_CTRL_SSBD);
         SSBD_ENABLED.store(true, Ordering::SeqCst);
         CURRENT_SPEC_CTRL.fetch_or(SPEC_CTRL_SSBD as u32, Ordering::SeqCst);
     }
@@ -188,10 +183,9 @@ impl SpectreMitigationManager {
             return;
         }
 
-        unsafe {
-            let current = read_msr(IA32_SPEC_CTRL);
-            write_msr(IA32_SPEC_CTRL, current & !SPEC_CTRL_SSBD);
-        }
+        // unsafe removed
+        let current = read_msr(IA32_SPEC_CTRL);
+        write_msr(IA32_SPEC_CTRL, current & !SPEC_CTRL_SSBD);
         SSBD_ENABLED.store(false, Ordering::SeqCst);
         CURRENT_SPEC_CTRL.fetch_and(!(SPEC_CTRL_SSBD as u32), Ordering::SeqCst);
     }
@@ -212,10 +206,8 @@ impl SpectreMitigationManager {
 /// コンテキストスイッチ時に呼び出してBTB/BHBをフラッシュ
 #[inline]
 pub fn issue_ibpb() {
-    unsafe {
-        // CPUID で IBPB サポートを確認済みの場合のみ実行
-        write_msr(IA32_PRED_CMD, PRED_CMD_IBPB);
-    }
+    // unsafe removed
+    write_msr(IA32_PRED_CMD, PRED_CMD_IBPB);
 }
 
 /// L1Dキャッシュをフラッシュ

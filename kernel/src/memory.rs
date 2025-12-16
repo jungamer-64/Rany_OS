@@ -378,6 +378,29 @@ pub fn init() {
     }
     crate::vga::early_serial_str("[MEM] buddy done\n");
 
+    // 2.5. NUMA情報をACPIから取得してBuddyに登録（任意）
+    crate::vga::early_serial_str("[MEM] SRAT check\n");
+    if let Some(rsdp_response) = super::RSDP_REQUEST.get_response() {
+        let rsdp_addr = rsdp_response.address() as usize;
+        crate::vga::early_serial_str("[MEM] parsing SRAT\n");
+        // Acquire SRAT entries from ACPI parser if available
+        let regions = crate::io::acpi::numa_memory_regions();
+        for (base, length, proximity) in regions {
+            // Log using a heap-backed format (heap already initialized at this point)
+            let s = alloc::format!("[MEM] registering region {:#x} len {:#x} prox {}\n", base, length, proximity);
+            crate::vga::early_serial_str(&s);
+
+            // Convert to PhysAddr and NumaNodeId
+            let base_phys = x86_64::PhysAddr::new(base);
+            let node = crate::mm::frame_allocator::NumaNodeId::new(proximity as u8);
+            unsafe {
+                crate::mm::init_numa_frame_allocator(&[(base_phys, length, node)]);
+            }
+        }
+    } else {
+        crate::vga::early_serial_str("[MEM] no SRAT (RSDP not present)\n");
+    }
+
     // 3. Exchange Heap の初期化（ゼロコピーIPC用）
     crate::vga::early_serial_str("[MEM] exheap init\n");
     unsafe {

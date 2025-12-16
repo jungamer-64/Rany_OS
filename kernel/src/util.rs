@@ -198,3 +198,26 @@ pub fn write_unaligned_to_addr<T: Copy>(addr: usize, value: T) {
         core::ptr::write_unaligned(addr as *mut T, value);
     }
 }
+
+/// Parse a command line string for a specific key-value pair.
+///
+/// Supports:
+/// - `key=value` -> returns `Some("value")`
+/// - `key` -> returns `Some("true")`
+/// - `key=` -> returns `Some("")`
+///
+/// Returns `None` if the key is not found.
+pub fn get_cmdline_option<'a>(cmdline: &'a str, key: &str) -> Option<&'a str> {
+    for part in cmdline.split_whitespace() {
+        if let Some(rest) = part.strip_prefix(key) {
+            if rest.is_empty() {
+                // key (flag)
+                return Some("true");
+            } else if let Some(value) = rest.strip_prefix('=') {
+                // key=value
+                return Some(value);
+            }
+        }
+    }
+    None
+}

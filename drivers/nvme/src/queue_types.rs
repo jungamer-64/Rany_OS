@@ -19,11 +19,10 @@ use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::marker::PhantomData;
-use core::ptr;
-use core::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
-use super::defs::{AdminOpcode, CQE_SIZE, IoOpcode, SQE_SIZE};
+use super::defs::{AdminOpcode, IoOpcode};
 
 // ============================================================================
 // Queue Type Markers

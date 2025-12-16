@@ -250,7 +250,7 @@ impl CommandExecutor {
 
     /// コマンド完了を通知
     pub fn notify_completion(&self, event: CommandCompletionEvent) {
-        let mut pending = self.pending.lock();
+        let pending = self.pending.lock();
         for cmd in pending.iter() {
             if cmd.trb_address == event.trb_address {
                 *cmd.result.lock() = Some(event);

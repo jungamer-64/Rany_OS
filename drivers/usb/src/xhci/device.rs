@@ -14,7 +14,6 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};

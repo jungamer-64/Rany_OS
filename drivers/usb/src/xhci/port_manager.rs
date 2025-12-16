@@ -10,7 +10,6 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 use spin::Mutex;
 
 // ============================================================================
