@@ -64,9 +64,11 @@ use super::LoadError;
 // Use real PageFlags and PKEY allocator from the kernel modules when available
 // - `PageFlags` lives in `crate::mm::higher_half` and provides `set_pkey()`.
 // - `allocate_protection_key()` / `free_protection_key()` live in `crate::security::mpk`.
-// We call into these implementations directly so the loader's behavior matches
-// the real kernel semantics (no temporary stubs).
-#[cfg(not(test))]
+// When compiling for tests or for bench builds (workspace `--all-features`) we
+// avoid pulling in the full `mm`/`security` implementations and use no-op
+// fallbacks instead. That keeps workspace test runs light and avoids needing
+// the entire kernel `mm` implementation for library-style builds.
+#[cfg(not(any(test, feature = "bench")))]
 use crate::mm::PageFlags;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -626,7 +628,7 @@ impl<'a> ElfLoader<'a> {
                 v
             }
         }
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "bench")))]
         impl Drop for PkeyGuard {
             fn drop(&mut self) {
                 if let Some(v) = self.0 {
@@ -637,7 +639,7 @@ impl<'a> ElfLoader<'a> {
 
         // Allocate PKEY only when mm is available (non-test builds). The guard
         // will free the PKEY on early return if something goes wrong.
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "bench")))]
         let guard = {
             let pkey_raw = crate::security::mpk::allocate_protection_key()
                 .ok_or(LoadError::OutOfMemory)?;
@@ -648,10 +650,10 @@ impl<'a> ElfLoader<'a> {
         let base_address = self.allocate_memory(info.memory_size, info.alignment)?;
 
         // PKEY を取得（テストビルドでは None）
-        #[cfg(not(test))]
+        #[cfg(not(any(test, feature = "bench")))]
         let pkey = guard.release();
-        #[cfg(test)]
-        let pkey = 0u8; // ダミー値（テストではフラグ更新を行わないため使用されない）
+        #[cfg(any(test, feature = "bench"))]
+        let pkey = 0u8; // ダミー値（テスト/ベンチではフラグ更新を行わないため使用されない）
 
         // 各セグメントをロード
         for segment in &info.segments {
@@ -754,7 +756,7 @@ impl<'a> ElfLoader<'a> {
     /// This is a thin wrapper that calls into `mm::global_update_flags` when
     /// compiled for the full kernel; for `#[cfg(test)]` builds this is a
     /// no-op to avoid depending on the `mm` module during library tests.
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "bench")))]
     fn apply_page_flags(
         &self,
         dest: usize,
@@ -800,9 +802,11 @@ impl<'a> ElfLoader<'a> {
         Ok(())
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "bench"))]
     fn apply_page_flags(&self, _dest: usize, _mem_size: usize, _seg_flags: u32, _pkey: u8) -> Result<(), LoadError> {
-        // No-op in tests (mm module not exported into library test builds)
+        // No-op in tests and bench builds (full `mm` not available in library
+        // builds that enable `bench`). This avoids bringing the full memory
+        // manager into lightweight workspace runs.
         Ok(())
     }
 

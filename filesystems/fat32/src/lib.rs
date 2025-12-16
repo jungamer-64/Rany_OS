@@ -15,9 +15,9 @@
 //!   - LFNチェックサム検証による完全性確認
 //!
 //! ## 型安全性の改善
-//! - Newtype パターン(Cluster, Sector)による取り違え防止
-//! - FileAttributes による属性の型安全な管理
-//! - SafePackedRead トレイトによる packed 構造体への安全なアクセス
+//! - Newtype パターン(`Cluster`, `Sector`)による取り違え防止
+//! - `FileAttributes` による属性の型安全な管理
+//! - `SafePackedRead` トレイトによる packed 構造体への安全なアクセス
 //!
 //! ## セキュリティ機能
 //! - **競合状態対策**: アトミックなクラスタ割り当て(TOCTO脆弱性排除)
@@ -37,6 +37,8 @@
 
 #![no_std]
 #![allow(dead_code)]
+#![allow(unused_variables)] // OpenFlags parameter for future use
+#![allow(clippy::len_without_is_empty)] // ByteCount has explicit is_empty method
 
 extern crate alloc;
 

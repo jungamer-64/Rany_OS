@@ -1,5 +1,7 @@
 #![no_std]
 #![allow(dead_code)]
+#![allow(clippy::must_use_candidate)] // ACPI accessor methods
+#![allow(clippy::doc_markdown)] // ACPI table names: RSDT, XSDT, FADT, MADT, MCFG etc
 
 extern crate alloc;
 

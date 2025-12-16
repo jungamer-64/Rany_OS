@@ -4,6 +4,15 @@
 #![allow(unused_unsafe)] // Nested unsafe blocks in I/O functions
 #![allow(clippy::cast_possible_truncation)] // LBA byte splitting
 #![allow(clippy::unreadable_literal)] // ATA addresses and constants
+#![allow(clippy::must_use_candidate)] // Hardware accessor methods
+#![allow(clippy::missing_const_for_fn)] // Functions use spin lock
+#![allow(clippy::cast_lossless)] // u16->u32, u32->u64 for LBA calculations
+#![allow(clippy::needless_range_loop)] // Index loops for buffer filling
+#![allow(clippy::cast_ptr_alignment)] // u8 buffer cast to u16 for sector I/O
+#![allow(clippy::ptr_as_ptr)] // Pointer casts for buffer operations
+#![allow(clippy::bool_to_int_with_if)] // Drive index from DriveSel comparison
+#![allow(clippy::missing_safety_doc)] // Unsafe fn docs
+#![allow(clippy::missing_errors_doc)] // Error documentation for driver functions
 
 extern crate alloc;
 

@@ -465,6 +465,7 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
 
     // Protection Key を解放（存在する場合）
     if let Some(pk) = pkey_opt {
+        #[cfg(not(any(test, feature = "bench")))]
         crate::security::mpk::free_protection_key(pk);
     }
 
