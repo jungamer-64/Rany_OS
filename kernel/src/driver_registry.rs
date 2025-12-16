@@ -23,6 +23,7 @@
 
 extern crate alloc;
 
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -34,7 +35,6 @@ use kernel_api::driver_abi::{
     DriverVTable as AbiDriverVTable,
 };
 use kernel_api::error::{KapiError, KapiResult};
-use spin::Mutex;
 
 // ============================================================================
 // Driver Registry
@@ -60,20 +60,25 @@ impl DriverEntry {
 /// Global driver registry
 pub struct DriverRegistry {
     /// All registered drivers
-    drivers: Mutex<Vec<DriverEntry>>,
+    drivers: PoisonLock<Vec<DriverEntry>>,
 }
 
 impl DriverRegistry {
     /// Create a new registry
     pub const fn new() -> Self {
         Self {
-            drivers: Mutex::new(Vec::new()),
+            drivers: PoisonLock::new(Vec::new()),
         }
     }
 
     /// Register a new driver
-    pub fn register(&self, driver: Box<dyn Driver>) -> DriverHandle {
-        let mut drivers = self.drivers.lock();
+    ///
+    /// Returns `Err(DriverError::Poisoned)` if the registry lock is poisoned.
+    pub fn register(&self, driver: Box<dyn Driver>) -> Result<DriverHandle, DriverError> {
+        let mut drivers = self.drivers.lock().map_err(|_| {
+            log::error!("[DRIVER] Registry lock is poisoned during register!");
+            DriverError::Poisoned
+        })?;
         let id = drivers.len();
 
         log::info!(
@@ -83,12 +88,15 @@ impl DriverRegistry {
         );
 
         drivers.push(DriverEntry::new(driver));
-        DriverHandle(id)
+        Ok(DriverHandle(id))
     }
 
     /// Probe a specific driver
     pub fn probe(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock();
+        let mut drivers = self.drivers.lock().map_err(|_| {
+            log::error!("[DRIVER] Registry lock is poisoned during probe!");
+            DriverError::Poisoned
+        })?;
         let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
         if entry.state != DriverState::Registered {
@@ -113,7 +121,10 @@ impl DriverRegistry {
 
     /// Start a probed driver
     pub fn start(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock();
+        let mut drivers = self.drivers.lock().map_err(|_| {
+            log::error!("[DRIVER] Registry lock is poisoned during start!");
+            DriverError::Poisoned
+        })?;
         let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
         if entry.state != DriverState::Probed && entry.state != DriverState::Stopped {
@@ -137,7 +148,10 @@ impl DriverRegistry {
 
     /// Stop a running driver
     pub fn stop(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock();
+        let mut drivers = self.drivers.lock().map_err(|_| {
+            log::error!("[DRIVER] Registry lock is poisoned during stop!");
+            DriverError::Poisoned
+        })?;
         let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
         if entry.state != DriverState::Running {
@@ -166,13 +180,24 @@ impl DriverRegistry {
 
     /// Get driver state
     pub fn state(&self, handle: DriverHandle) -> Option<DriverState> {
-        self.drivers.lock().get(handle.0).map(|e| e.state)
+        self.drivers
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[DRIVER] Registry poisoned (state)");
+                e.into_inner()
+            })
+            .get(handle.0)
+            .map(|e| e.state)
     }
 
     /// Get driver name
     pub fn name(&self, handle: DriverHandle) -> Option<String> {
         self.drivers
             .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[DRIVER] Registry poisoned (name)");
+                e.into_inner()
+            })
             .get(handle.0)
             .map(|e| String::from(e.driver.name()))
     }
@@ -181,6 +206,10 @@ impl DriverRegistry {
     pub fn find_by_type(&self, driver_type: DriverType) -> Vec<DriverHandle> {
         self.drivers
             .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[DRIVER] Registry poisoned (find_by_type)");
+                e.into_inner()
+            })
             .iter()
             .enumerate()
             .filter(|(_, e)| e.driver.driver_type() == driver_type)
@@ -192,6 +221,10 @@ impl DriverRegistry {
     pub fn find_for_device(&self, device_id: &DeviceId) -> Option<DriverHandle> {
         self.drivers
             .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[DRIVER] Registry poisoned (find_for_device)");
+                e.into_inner()
+            })
             .iter()
             .enumerate()
             .find(|(_, e)| {
@@ -205,13 +238,23 @@ impl DriverRegistry {
 
     /// Get count of registered drivers
     pub fn count(&self) -> usize {
-        self.drivers.lock().len()
+        self.drivers
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[DRIVER] Registry poisoned (count)");
+                e.into_inner()
+            })
+            .len()
     }
 
     /// Get count of running drivers
     pub fn running_count(&self) -> usize {
         self.drivers
             .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[DRIVER] Registry poisoned (running_count)");
+                e.into_inner()
+            })
             .iter()
             .filter(|e| e.state == DriverState::Running)
             .count()
@@ -221,6 +264,10 @@ impl DriverRegistry {
     pub fn list(&self) -> Vec<(DriverHandle, String, DriverType, DriverState)> {
         self.drivers
             .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[DRIVER] Registry poisoned (list)");
+                e.into_inner()
+            })
             .iter()
             .enumerate()
             .map(|(i, e)| {
@@ -238,7 +285,9 @@ impl DriverRegistry {
     pub fn probe_all(&self) {
         let count = self.count();
         for i in 0..count {
-            let _ = self.probe(DriverHandle(i));
+            if let Err(e) = self.probe(DriverHandle(i)) {
+                log::warn!("[DRIVER] Probe failed for handle {}: {}", i, e);
+            }
         }
     }
 
@@ -247,7 +296,9 @@ impl DriverRegistry {
         let count = self.count();
         for i in 0..count {
             if self.state(DriverHandle(i)) == Some(DriverState::Probed) {
-                let _ = self.start(DriverHandle(i));
+                if let Err(e) = self.start(DriverHandle(i)) {
+                    log::warn!("[DRIVER] Start failed for handle {}: {}", i, e);
+                }
             }
         }
     }
@@ -257,7 +308,9 @@ impl DriverRegistry {
         let count = self.count();
         for i in 0..count {
             if self.state(DriverHandle(i)) == Some(DriverState::Running) {
-                let _ = self.stop(DriverHandle(i));
+                if let Err(e) = self.stop(DriverHandle(i)) {
+                    log::warn!("[DRIVER] Stop failed for handle {}: {}", i, e);
+                }
             }
         }
     }
@@ -297,7 +350,10 @@ impl DriverRegistry {
 
     /// Unregister a driver and replace it with a null driver to allow cell unloading
     pub fn unregister(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock();
+        let mut drivers = self.drivers.lock().map_err(|_| {
+            log::error!("[DRIVER] Registry lock is poisoned during unregister!");
+            DriverError::Poisoned
+        })?;
         let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
         if entry.state == DriverState::Running {
@@ -325,8 +381,15 @@ impl DriverRegistry {
     /// Caller must ensure that the new driver is compatible with the old one's state requirements
     /// if state migration is needed (currently starts fresh).
     /// The old driver instance is dropped, but its code memory must valid until quiescent state.
-    pub fn replace_driver(&self, handle: DriverHandle, new_driver: Box<dyn Driver>) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock();
+    pub fn replace_driver(
+        &self,
+        handle: DriverHandle,
+        new_driver: Box<dyn Driver>,
+    ) -> Result<(), DriverError> {
+        let mut drivers = self.drivers.lock().map_err(|_| {
+            log::error!("[DRIVER] Registry lock is poisoned during replace_driver!");
+            DriverError::Poisoned
+        })?;
         let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
         log::info!(
@@ -335,13 +398,13 @@ impl DriverRegistry {
             handle.index()
         );
 
-        // We assume the new driver is in Registered state initially? 
+        // We assume the new driver is in Registered state initially?
         // Or do we expect it to be Probed/Started if the old one was?
         // For simplicity, we just swap the implementation and keep the *Registry* state as is?
         // No, the new driver instance is fresh. Its internal state is uninitialized.
         // So we should likely transition the entry state to `Registered`.
         // The caller (LiveUpdateManager) is responsible for re-probing/re-starting if needed.
-        
+
         // Swap the driver
         entry.driver = new_driver;
         entry.state = DriverState::Registered; // Reset state to Registered
@@ -387,6 +450,8 @@ pub enum DriverError {
     StartFailed,
     /// Stop failed
     StopFailed,
+    /// Registry lock is poisoned (previous holder panicked)
+    Poisoned,
 }
 
 impl fmt::Display for DriverError {
@@ -397,6 +462,7 @@ impl fmt::Display for DriverError {
             Self::ProbeFailed => write!(f, "driver probe failed"),
             Self::StartFailed => write!(f, "driver start failed"),
             Self::StopFailed => write!(f, "driver stop failed"),
+            Self::Poisoned => write!(f, "registry lock poisoned (holder panicked)"),
         }
     }
 }
@@ -414,7 +480,7 @@ pub fn driver_registry() -> &'static DriverRegistry {
 }
 
 /// Register a driver (convenience function)
-pub fn register_driver(driver: Box<dyn Driver>) -> DriverHandle {
+pub fn register_driver(driver: Box<dyn Driver>) -> Result<DriverHandle, DriverError> {
     DRIVER_REGISTRY.register(driver)
 }
 
@@ -458,7 +524,7 @@ pub fn register_abi_driver(entry: AbiEntryFn) -> Result<DriverHandle, DriverErro
         ctx: AbiDriverContext::new(),
     });
 
-    Ok(DRIVER_REGISTRY.register(abi_driver))
+    DRIVER_REGISTRY.register(abi_driver)
 }
 
 /// Unregister a driver by handle
@@ -727,7 +793,7 @@ mod tests {
                 is_safe: true,
                 signature_verified: true,
                 registered_drivers: vec![handle],
-                    pkey: None,
+                pkey: None,
                 stats: crate::loader::ModuleStats::default(),
             };
             r.register(entry);

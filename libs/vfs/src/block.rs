@@ -96,7 +96,7 @@ pub struct BlockRequest {
     /// Number of blocks
     pub count: u32,
     /// Data buffer (for read/write)
-    pub buffer: Option<Vec<u8>>,
+    pub buffer: Mutex<Option<Vec<u8>>>,
     /// Request state
     state: Mutex<RequestState>,
     /// Waker for async completion
@@ -112,7 +112,7 @@ impl BlockRequest {
             req_type: RequestType::Read,
             block,
             count,
-            buffer: Some(alloc::vec![0u8; buffer_size]),
+            buffer: Mutex::new(Some(alloc::vec![0u8; buffer_size])),
             state: Mutex::new(RequestState::Pending),
             waker: Mutex::new(None),
         }
@@ -126,7 +126,7 @@ impl BlockRequest {
             req_type: RequestType::Write,
             block,
             count,
-            buffer: Some(data),
+            buffer: Mutex::new(Some(data)),
             state: Mutex::new(RequestState::Pending),
             waker: Mutex::new(None),
         }
@@ -139,7 +139,7 @@ impl BlockRequest {
             req_type: RequestType::Flush,
             block: 0,
             count: 0,
-            buffer: None,
+            buffer: Mutex::new(None),
             state: Mutex::new(RequestState::Pending),
             waker: Mutex::new(None),
         }
@@ -175,7 +175,7 @@ impl BlockRequest {
 
     /// Take the data buffer
     pub fn take_buffer(&mut self) -> Option<Vec<u8>> {
-        self.buffer.take()
+        self.buffer.lock().take()
     }
 }
 
@@ -244,9 +244,15 @@ pub trait BlockDevice: Send + Sync {
             self.poll_completions();
             match request.state() {
                 RequestState::Completed => {
-                    // Copy data from request buffer
-                    // (In real impl, buffer would be shared)
-                    return Ok(buf.len());
+                    // Copy data from the request's internal buffer into caller buf
+                    let guard = request.buffer.lock();
+                    if let Some(inner) = guard.as_ref() {
+                        let to_copy = inner.len().min(buf.len());
+                        buf[..to_copy].copy_from_slice(&inner[..to_copy]);
+                        return Ok(to_copy);
+                    } else {
+                        return Ok(0);
+                    }
                 }
                 RequestState::Failed(e) => return Err(e),
                 _ => core::hint::spin_loop(),
@@ -336,8 +342,12 @@ impl RamDisk {
             RequestType::Read => {
                 let data = self.data.lock();
                 if offset + size <= data.len() {
-                    // Copy data to request buffer
-                    // In real impl, we'd use shared buffer
+                    // Copy data into the request buffer
+                    let mut buf_guard = request.buffer.lock();
+                    if let Some(buf) = buf_guard.as_mut() {
+                        let to_copy = buf.len().min(size);
+                        buf[..to_copy].copy_from_slice(&data[offset..offset + to_copy]);
+                    }
                     request.set_state(RequestState::Completed);
                 } else {
                     request.set_state(RequestState::Failed(BlockError::InvalidBlock));
@@ -346,9 +356,11 @@ impl RamDisk {
             RequestType::Write => {
                 let mut data = self.data.lock();
                 if offset + size <= data.len() {
-                    if let Some(buf) = &request.buffer {
-                        data[offset..offset + buf.len().min(size)]
-                            .copy_from_slice(&buf[..buf.len().min(size)]);
+                    // Read data from the request buffer and write into the ramdisk
+                    let buf_guard = request.buffer.lock();
+                    if let Some(buf) = buf_guard.as_ref() {
+                        let to_copy = buf.len().min(size);
+                        data[offset..offset + to_copy].copy_from_slice(&buf[..to_copy]);
                     }
                     request.set_state(RequestState::Completed);
                 } else {
@@ -436,15 +448,16 @@ impl Future for BlockReadFuture {
         // Check state
         match self.request.state() {
             RequestState::Completed => {
-                // Return data
-                let buffer = self
-                    .request
-                    .buffer
-                    .as_ref()
-                    .map(|b| b.clone())
-                    .unwrap_or_default();
-                Poll::Ready(Ok(buffer))
-            }
+                    // Return data (clone the inner buffer)
+                    let buffer = self
+                        .request
+                        .buffer
+                        .lock()
+                        .as_ref()
+                        .map(|b| b.clone())
+                        .unwrap_or_default();
+                    Poll::Ready(Ok(buffer))
+                }
             RequestState::Failed(e) => Poll::Ready(Err(e)),
             _ => {
                 self.request.register_waker(cx.waker().clone());
@@ -563,4 +576,35 @@ static BLOCK_MANAGER: BlockDeviceManager = BlockDeviceManager::new();
 /// Get the block device manager
 pub fn block_manager() -> &'static BlockDeviceManager {
     &BLOCK_MANAGER
+}
+
+// ============================================================================
+// Tests for RamDisk
+// ============================================================================
+
+#[cfg(test)]
+mod ramdisk_tests {
+    use super::*;
+
+    #[test]
+    fn test_ramdisk_read_write_sync() {
+        let disk = RamDisk::new(16, 512);
+        let data = [0xABu8; 512];
+        assert_eq!(disk.write_sync(1, &data).unwrap(), 512);
+
+        let mut buf = [0u8; 512];
+        assert_eq!(disk.read_sync(1, &mut buf).unwrap(), 512);
+        assert_eq!(buf, data);
+    }
+
+    #[test]
+    fn test_ramdisk_read_write_multiple_blocks() {
+        let disk = RamDisk::new(4, 512);
+        let data = [0x12u8; 1024]; // two blocks
+        assert_eq!(disk.write_sync(1, &data).unwrap(), 1024);
+
+        let mut buf = [0u8; 1024];
+        assert_eq!(disk.read_sync(1, &mut buf).unwrap(), 1024);
+        assert_eq!(buf, data);
+    }
 }
