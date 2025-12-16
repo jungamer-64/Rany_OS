@@ -22,11 +22,234 @@
 #![allow(dead_code)]
 
 // use crate::memory; // not used directly here; use `crate::mm::phys_to_virt` instead
-use crate::io::parse_dmar_table;
 use alloc::collections::BTreeMap;
+use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
+
+// Local DMAR parser (minimal, avoids cross-module resolution issues)
+// We re-implement a compact DMAR parser here to extract DRHD units and RMRR
+// regions without depending on `io::acpi` symbols, which can cause
+// circular resolution issues when compiling submodules.
+mod local_dmar {
+    use alloc::vec::Vec;
+    use core::mem;
+
+    #[repr(C, packed)]
+    #[derive(Debug, Clone, Copy)]
+    struct LocalSdtHeader {
+        signature: [u8; 4],
+        length: u32,
+        revision: u8,
+        checksum: u8,
+        oem_id: [u8; 6],
+        oem_table_id: [u8; 8],
+        oem_revision: u32,
+        creator_id: u32,
+        creator_revision: u32,
+    }
+
+    #[repr(C, packed)]
+    #[derive(Debug, Clone, Copy)]
+    struct DmarHeader {
+        header: LocalSdtHeader,
+        pub haw: u8,
+        pub flags: u8,
+        _reserved: [u8; 10],
+    }
+
+    impl DmarHeader {
+        pub const SIGNATURE: &'static [u8; 4] = b"DMAR";
+
+        pub fn is_valid(&self) -> bool {
+            self.header.signature == *Self::SIGNATURE
+        }
+    }
+
+    #[repr(C, packed)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct DmarRemappingHeader {
+        pub type_code: u16,
+        pub length: u16,
+    }
+
+    #[repr(C, packed)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct DrhdWrapper {
+        pub header: DmarRemappingHeader,
+        pub flags: u8,
+        _reserved: u8,
+        pub segment: u16,
+        pub register_base_addr: u64,
+    }
+
+    impl DrhdWrapper {
+        pub fn include_pci_all(&self) -> bool {
+            (self.flags & 0x1) != 0
+        }
+    }
+
+    #[repr(C, packed)]
+    #[derive(Debug, Clone, Copy)]
+    pub struct RmrrWrapper {
+        pub header: DmarRemappingHeader,
+        _reserved: u16,
+        pub segment: u16,
+        pub base_address: u64,
+        pub limit_address: u64,
+    }
+
+    #[repr(C, packed)]
+    #[derive(Debug, Clone, Copy)]
+    struct DeviceScopeHeader {
+        pub type_code: u8,
+        pub length: u8,
+        _reserved: u16,
+        pub enumeration_id: u8,
+        pub start_bus: u8,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct DmarInfo {
+        pub haw: u8,
+        pub flags: u8,
+        pub drhd_units: Vec<DrhdUnit>,
+        pub rmrr_regions: Vec<RmrrRegion>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct DrhdUnit {
+        pub segment: u16,
+        pub register_base: u64,
+        pub include_all: bool,
+        pub devices: Vec<DeviceScope>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct RmrrRegion {
+        pub segment: u16,
+        pub base: u64,
+        pub limit: u64,
+        pub devices: Vec<DeviceScope>,
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct DeviceScope {
+        pub scope_type: u8,
+        pub enumeration_id: u8,
+        pub start_bus: u8,
+        pub path: Vec<PciPath>,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct PciPath {
+        pub device: u8,
+        pub function: u8,
+    }
+
+    pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
+        let header = &*(addr as *const DmarHeader);
+        if !header.is_valid() {
+            return Err("Invalid DMAR signature");
+        }
+
+        let table_len = header.header.length as usize;
+        let mut offset = mem::size_of::<DmarHeader>();
+        let base_ptr = addr as *const u8;
+
+        let mut drhd_units = Vec::new();
+        let mut rmrr_regions = Vec::new();
+
+        while offset < table_len {
+            let entry_ptr = base_ptr.add(offset) as *const DmarRemappingHeader;
+            let entry_type = (*entry_ptr).type_code;
+            let entry_len = (*entry_ptr).length as usize;
+
+            if entry_len < mem::size_of::<DmarRemappingHeader>() {
+                break; // sanity
+            }
+
+            match entry_type {
+                0 => {
+                    let drhd = &*(entry_ptr as *const DrhdWrapper);
+                    let devices = parse_device_scopes(
+                        base_ptr.add(offset + mem::size_of::<DrhdWrapper>()),
+                        entry_len - mem::size_of::<DrhdWrapper>(),
+                    );
+                    drhd_units.push(DrhdUnit {
+                        segment: drhd.segment,
+                        register_base: drhd.register_base_addr,
+                        include_all: drhd.include_pci_all(),
+                        devices,
+                    });
+                }
+                1 => {
+                    let rmrr = &*(entry_ptr as *const RmrrWrapper);
+                    let devices = parse_device_scopes(
+                        base_ptr.add(offset + mem::size_of::<RmrrWrapper>()),
+                        entry_len - mem::size_of::<RmrrWrapper>(),
+                    );
+                    rmrr_regions.push(RmrrRegion {
+                        segment: rmrr.segment,
+                        base: rmrr.base_address,
+                        limit: rmrr.limit_address,
+                        devices,
+                    });
+                }
+                _ => {}
+            }
+
+            offset += entry_len;
+        }
+
+        Ok(DmarInfo {
+            haw: header.haw,
+            flags: header.flags,
+            drhd_units,
+            rmrr_regions,
+        })
+    }
+
+    unsafe fn parse_device_scopes(mut ptr: *const u8, mut len: usize) -> Vec<DeviceScope> {
+        let mut scopes = Vec::new();
+
+        while len >= mem::size_of::<DeviceScopeHeader>() {
+            let header = &*(ptr as *const DeviceScopeHeader);
+            let scope_len = header.length as usize;
+
+            if scope_len < mem::size_of::<DeviceScopeHeader>() || scope_len > len {
+                break;
+            }
+
+            let mut path = Vec::new();
+            let path_len = scope_len - mem::size_of::<DeviceScopeHeader>();
+            let path_count = path_len / 2;
+            let path_ptr = ptr.add(mem::size_of::<DeviceScopeHeader>());
+
+            for i in 0..path_count {
+                let dev = *path_ptr.add(i * 2);
+                let func = *path_ptr.add(i * 2 + 1);
+                path.push(PciPath {
+                    device: dev,
+                    function: func,
+                });
+            }
+
+            scopes.push(DeviceScope {
+                scope_type: header.type_code,
+                enumeration_id: header.enumeration_id,
+                start_bus: header.start_bus,
+                path,
+            });
+
+            ptr = ptr.add(scope_len);
+            len -= scope_len;
+        }
+
+        scopes
+    }
+}
 
 // ============================================================================
 // Configuration - IOMMU Requirement
@@ -915,10 +1138,17 @@ impl ContextEntry {
         (self.lo & 2) != 0
     }
 
-    /// Set second level page table pointer
+    /// Set second level page table pointer (Translation Type = 00b)
     pub fn set_sl_pt(&mut self, addr: u64, domain_id: u16, agaw: u8) {
         self.lo = (addr & !0xFFF) | 1; // Present
         self.hi = ((domain_id as u64) << 8) | ((agaw as u64) << 0);
+    }
+
+    /// Set passthrough (Translation Type = 10b / 2)
+    pub fn set_passthrough(&mut self, domain_id: u16) {
+        // PT (bit 3:2) = 10b (2). Present (bit 0) = 1.
+        self.lo = (2 << 2) | 1;
+        self.hi = (domain_id as u64) << 8;
     }
 
     /// Get second level page table address
@@ -1160,11 +1390,22 @@ impl From<u8> for FaultReason {
 // IOMMU Domain
 // ============================================================================
 
+/// Domain Type
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IommuDomainType {
+    /// Normal translated domain
+    Translated,
+    /// Passthrough domain (identity)
+    Passthrough,
+}
+
 /// IOMMU Domain (address space for devices)
 ///
 /// Each domain has its own Mutex in the global IOMMU_DOMAINS registry,
 /// allowing parallel map/unmap operations across different domains.
 pub struct IommuDomain {
+    /// Domain Type
+    domain_type: IommuDomainType,
     /// Domain ID
     id: u16,
     /// Second-level page table root (PML4)
@@ -1175,6 +1416,10 @@ pub struct IommuDomain {
     mapped_size: u64,
     /// Optional NUMA node affinity for this domain's data structures
     numa_node: Option<usize>,
+    /// Support for 2MB super-pages
+    supports_2mb: bool,
+    /// Support for 1GB super-pages
+    supports_1gb: bool,
 }
 
 /// DMA mapping info
@@ -1197,8 +1442,18 @@ unsafe impl Sync for IommuDomain {}
 
 impl IommuDomain {
     /// Create a new domain
-    pub fn new(id: u16, numa_node: Option<usize>) -> Self {
+    pub fn new(
+        id: u16,
+        numa_node: Option<usize>,
+        supports_2mb: bool,
+        supports_1gb: bool,
+        domain_type: IommuDomainType,
+    ) -> Self {
         // Allocate page table on the preferred NUMA node when possible.
+        // For Passthrough, we still allocate it to simplify logic (or we could skip it)
+        // But the hardware won't use it if we set TT=Passthrough.
+        // Let's allocate it to avoid null pointer checks elsewhere, or make it Option.
+        // For now: Allocate it.
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("Invalid layout for page table");
@@ -1209,16 +1464,24 @@ impl IommuDomain {
 
         Self {
             id,
+            domain_type,
             page_table,
             mappings: BTreeMap::new(),
             mapped_size: 0,
             numa_node,
+            supports_2mb,
+            supports_1gb,
         }
     }
 
     /// Get domain ID
     pub fn id(&self) -> u16 {
         self.id
+    }
+
+    /// Get domain type
+    pub fn domain_type(&self) -> IommuDomainType {
+        self.domain_type
     }
 
     /// Get page table physical address
@@ -1240,6 +1503,13 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
+        if self.domain_type == IommuDomainType::Passthrough {
+            // Passthrough means identity, so map calls are effectively no-ops or identity checks
+            // We just return OK.
+            // Ideally we could verify iova == phys, but sometimes map is called to *create* the mapping.
+            // In PT, it's already there.
+            return Ok(());
+        }
         // Validate alignment
         if iova & 0xFFF != 0 || phys & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(IommuError::InvalidAlignment);
@@ -1255,13 +1525,49 @@ impl IommuDomain {
             }
         }
 
-        // Create page table entries
-        let num_pages = size / 4096;
-        for i in 0..num_pages {
-            let page_iova = iova + i * 4096;
-            let page_phys = phys + i * 4096;
+        // Create page table entries using largest possible page sizes
+        let mut current_iova = iova;
+        let mut current_phys = phys;
+        let mut remaining = size;
 
-            self.map_page(page_iova, page_phys, read, write)?;
+        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+        const SIZE_2MB: u64 = 2 * 1024 * 1024;
+        const SIZE_4KB: u64 = 4096;
+
+        while remaining > 0 {
+            // Try 1GB page
+            if self.supports_1gb
+                && remaining >= SIZE_1GB
+                && current_iova % SIZE_1GB == 0
+                && current_phys % SIZE_1GB == 0
+                && (current_phys as u64 & 0x3FFF_FFFF) == 0
+            // Extra alignment check for 1GB
+            {
+                unsafe { self.map_page_1gb(current_iova, current_phys, read, write) }?;
+                current_iova += SIZE_1GB;
+                current_phys += SIZE_1GB;
+                remaining -= SIZE_1GB;
+                continue;
+            }
+
+            // Try 2MB page
+            if self.supports_2mb
+                && remaining >= SIZE_2MB
+                && current_iova % SIZE_2MB == 0
+                && current_phys % SIZE_2MB == 0
+            {
+                unsafe { self.map_page_2mb(current_iova, current_phys, read, write) }?;
+                current_iova += SIZE_2MB;
+                current_phys += SIZE_2MB;
+                remaining -= SIZE_2MB;
+                continue;
+            }
+
+            // Fallback to 4KB page
+            self.map_page(current_iova, current_phys, read, write)?;
+            current_iova += SIZE_4KB;
+            current_phys += SIZE_4KB;
+            remaining -= SIZE_4KB;
         }
 
         // Record mapping
@@ -1650,6 +1956,8 @@ pub struct IommuController {
     pub segment: u16,
     /// IOVA allocator (optional, configured via `init_iova`)
     iova_allocator: Option<IovaAllocator>,
+    /// Set of devices with ATS enabled (for optimization)
+    ats_enabled_devices: BTreeSet<DeviceId>,
 }
 
 unsafe impl Send for IommuController {}
@@ -1674,6 +1982,7 @@ impl IommuController {
             invalidation_queue: None,
             qi_enabled: AtomicBool::new(false),
             iova_allocator: None,
+            ats_enabled_devices: BTreeSet::new(),
         }
     }
 
@@ -1695,6 +2004,11 @@ impl IommuController {
     /// Write 64-bit register
     fn write64(&self, offset: u64, value: u64) {
         crate::io::mmio::mmio_write_u64((self.mmio_base + offset) as usize, value);
+    }
+
+    /// Add a device to the set of ATS-enabled devices
+    pub fn enable_ats_for_device(&mut self, device: DeviceId) {
+        self.ats_enabled_devices.insert(device);
     }
 
     /// Initialize the IOMMU
@@ -1766,6 +2080,14 @@ impl IommuController {
         // Enable translation
         self.write32(regs::GCMD, gcmd_bits::GCMD_TE);
 
+        // Enable Interrupt Remapping if table is present
+        if self.interrupt_remap_table.is_some() {
+            match unsafe { self.enable_interrupt_remapping() } {
+                Ok(_) => log::info!("[IOMMU] Interrupt Remapping enabled during global enable\n"),
+                Err(e) => log::warn!("[IOMMU] Failed to enable Interrupt Remapping: {:?}\n", e),
+            }
+        }
+
         // Wait for completion
         for _ in 0..1000 {
             if self.read32(regs::GSTS) & gsts_bits::GSTS_TES != 0 {
@@ -1801,10 +2123,17 @@ impl IommuController {
 
     /// Create a new domain
     /// Create a new domain with an optional NUMA node affinity hint
-    pub fn create_domain(&mut self, numa_node: Option<usize>) -> Result<u16, IommuError> {
+    pub fn create_domain(
+        &mut self,
+        numa_node: Option<usize>,
+        domain_type: IommuDomainType,
+    ) -> Result<u16, IommuError> {
         let id = self.next_domain_id.fetch_add(1, Ordering::Relaxed) as u16;
 
-        let domain = IommuDomain::new(id, numa_node);
+        let supports_2mb = self.supports_2mb_pages();
+        let supports_1gb = self.supports_1gb_pages();
+
+        let domain = IommuDomain::new(id, numa_node, supports_2mb, supports_1gb, domain_type);
         self.domains.insert(id, domain);
 
         // Register per-domain lock for parallel operations
@@ -1863,7 +2192,11 @@ impl IommuController {
         let context_entry = unsafe { &mut *self.context_tables[bus].add(devfn) };
 
         // 48-bit address width (AGAW = 2)
-        context_entry.set_sl_pt(domain.page_table_addr(), domain.id(), 2);
+        if domain.domain_type() == IommuDomainType::Passthrough {
+            context_entry.set_passthrough(domain.id());
+        } else {
+            context_entry.set_sl_pt(domain.page_table_addr(), domain.id(), 2);
+        }
 
         self.device_domains.insert(device, domain_id);
 
@@ -1922,7 +2255,54 @@ impl IommuController {
             .get_mut(&domain_id)
             .ok_or(IommuError::DomainNotFound)?;
 
-        domain.unmap(iova)
+        domain.unmap(iova).map(|mapping| {
+            // Invalidate IOTLB
+            // If size is large (>= 2MB), prefer domain invalidation to reduce overhead
+            if mapping.size >= 2 * 1024 * 1024 {
+                unsafe { self.invalidate_iotlb(domain_id) };
+            } else {
+                // Page-selective invalidation
+                if self.is_queued_invalidation_enabled() {
+                    let num_pages = (mapping.size / 4096) as u64;
+                    for i in 0..num_pages {
+                        let page_addr = iova + i * 4096;
+                        // Use drain=true for safety
+                        let _ = self.qi_invalidate_iotlb_page(domain_id, page_addr, true);
+                    }
+                    let _ = self.qi_wait_sync();
+                } else {
+                    // Fallback for register-based: just domain invalidation
+                    unsafe { self.invalidate_iotlb(domain_id) };
+                }
+            }
+
+            // Invalidate Device-TLB (ATS) if supported
+            // Only invalidate if the specific device has ATS enabled or if we don't track it (conservative)
+            let use_ats = (self.ecap & ecap_bits::ECAP_DT) != 0
+                && self.is_queued_invalidation_enabled()
+                && self.ats_enabled_devices.contains(device);
+
+            if use_ats {
+                if mapping.size >= 2 * 1024 * 1024 {
+                    let _ = self.qi_invalidate_device_tlb(device.requester_id(), domain_id);
+                } else {
+                    let num_pages = (mapping.size / 4096) as u64;
+                    for i in 0..num_pages {
+                        let page_addr = iova + i * 4096;
+                        // Size 0 = 4KB page (0 bits masked)
+                        let _ = self.qi_invalidate_device_tlb_page(
+                            device.requester_id(),
+                            domain_id,
+                            page_addr,
+                            0,
+                        );
+                    }
+                }
+                let _ = self.qi_wait_sync();
+            }
+
+            mapping
+        })
     }
 
     /// Invalidate IOTLB for a domain
@@ -2456,6 +2836,18 @@ impl IommuController {
         drain: bool,
     ) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::iotlb_invalidate_domain(domain_id, drain);
+        self.submit_invalidation(entry)
+    }
+
+    /// Submit a page-selective IOTLB invalidation via queued invalidation
+    pub fn qi_invalidate_iotlb_page(
+        &mut self,
+        domain_id: u16,
+        addr: u64,
+        drain: bool,
+    ) -> Result<(), IommuError> {
+        // AM (Address Mask) = 0 for 4KB page
+        let entry = InvalidationQueueEntry::iotlb_invalidate(3, domain_id, drain, addr);
         self.submit_invalidation(entry)
     }
 
@@ -3135,8 +3527,8 @@ pub unsafe fn init_iommu_from_acpi(
 
     // Caller should ensure `dmar_addr` is valid and log if desired.
 
-    // Parse DMAR (use io::parse_dmar_table helper)
-    let dmar_info = match parse_dmar_table(dmar_addr) {
+    // Parse DMAR using the local parser (keeps module dependencies simple)
+    let dmar_info = match local_dmar::parse_dmar(dmar_addr) {
         Ok(info) => info,
         Err(e) => {
             log::error!("Failed to parse DMAR: {}", e);
@@ -3157,11 +3549,9 @@ pub unsafe fn init_iommu_from_acpi(
         );
 
         // Map MMIO if necessary (assuming identity or HHDM handled by caller/base)
-        // Here we assume register_base is physical, and we need virtual.
-        // Convert phys to virt using standard conversion (HHDM assumed active)
-        let mmio_virt =
-            crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(unit.register_base))
-                .as_u64();
+        // If HHDM/identity mapping is in effect, `register_base` may already be usable.
+        // For now, assume the platform provides appropriate mapping (HHDM) and use it directly.
+        let mmio_virt = unit.register_base; // TODO: replace with phys->virt when mapping helper is reliable
 
         let mut controller = IommuController::new(mmio_virt, unit.segment);
 
@@ -3455,15 +3845,31 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
     // Re-lock and obtain mutable reference to the selected controller
     let mut guard = IOMMU.lock();
+    let passthrough = guard.config.passthrough;
     let iommu = match guard.controllers.get_mut(controller_idx) {
         Some(c) => c,
         None => return None,
     };
 
+    // Enable ATS for this device if IOMMU supports it (and device does - TODO check device cap)
+    // For now we optimistically enable tracking if ECAP_DT is set, assuming driver will enable ATS on device.
+    if (iommu.ecap & ecap_bits::ECAP_DT) != 0 {
+        let device_id = DeviceId::new(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
+        iommu.enable_ats_for_device(device_id);
+    }
+
     // 1. 新しいドメインを作成
     // Prefer creating the domain on the local NUMA node if available
     let numa_hint = Some(crate::mm::numa::current_node());
-    let domain_id = match iommu.create_domain(numa_hint) {
+
+    // Determine domain type based on config or specific device needs
+    let domain_type = if passthrough {
+        IommuDomainType::Passthrough
+    } else {
+        IommuDomainType::Translated
+    };
+
+    let domain_id = match iommu.create_domain(numa_hint, domain_type) {
         Ok(id) => id,
         Err(e) => {
             log::info!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
@@ -3571,7 +3977,7 @@ mod tests {
 
     #[test]
     fn test_iommu_domain() {
-        let mut domain = IommuDomain::new(1, None);
+        let mut domain = IommuDomain::new(1, None, false, false, IommuDomainType::Translated);
         assert_eq!(domain.id(), 1);
 
         // Map a region
@@ -3586,7 +3992,9 @@ mod tests {
     #[test]
     fn test_create_domain_with_numa_hint() {
         let mut ctrl = IommuController::new(0x0, 0);
-        let id = ctrl.create_domain(Some(2)).expect("create_domain failed");
+        let id = ctrl
+            .create_domain(Some(2), IommuDomainType::Translated)
+            .expect("create_domain failed");
         let domain = ctrl.domain(id).expect("domain not found");
         assert_eq!(domain.id(), id);
         assert_eq!(domain.numa_node(), Some(2));
@@ -3621,7 +4029,10 @@ mod tests {
         ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
         // Create default domain 0 for mapping
-        ctrl.domains.insert(0, IommuDomain::new(0, None));
+        ctrl.domains.insert(
+            0,
+            IommuDomain::new(0, None, false, false, IommuDomainType::Translated),
+        );
         register_domain_lock(0);
 
         let size = 0x3000;

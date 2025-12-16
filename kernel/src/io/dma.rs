@@ -805,7 +805,7 @@ impl Drop for IommuDmaBuffer {
 // ============================================================================
 
 use alloc::sync::Arc;
-use spin::Mutex;
+// // use spin::Mutex;
 
 /// DMAアロケータのエラー型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1065,7 +1065,9 @@ impl DeviceDmaContext {
             // IOMMUドメインを作成してデバイスをアタッチ
             crate::io::iommu::with_iommu(|iommu| {
                 let numa_hint = Some(crate::mm::numa::current_node());
-                let domain_id = iommu.create_domain(numa_hint).ok()?;
+                let domain_id = iommu
+                    .create_domain(numa_hint, crate::io::iommu::IommuDomainType::Translated)
+                    .ok()?;
                 iommu.attach_device(device_id, domain_id).ok()?;
                 Some(domain_id)
             })
@@ -1128,7 +1130,7 @@ pub fn supports_clflushopt() -> bool {
     let result: u32;
     unsafe {
         asm!(
-            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {}, ebx",
+            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {0:e}, ebx",
             out(reg) result, out("eax") _, out("ecx") _, out("edx") _,
             options(nostack, preserves_flags)
         );
@@ -1141,7 +1143,7 @@ pub fn supports_clwb() -> bool {
     let result: u32;
     unsafe {
         asm!(
-            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {}, ebx",
+            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {0:e}, ebx",
             out(reg) result, out("eax") _, out("ecx") _, out("edx") _,
             options(nostack, preserves_flags)
         );
@@ -1154,7 +1156,7 @@ pub fn cache_line_size() -> usize {
     let result: u32;
     unsafe {
         asm!(
-            "mov eax, 1", "cpuid", "mov {}, ebx",
+            "mov eax, 1", "cpuid", "mov {0:e}, ebx",
             out(reg) result, out("eax") _, out("ecx") _, out("edx") _,
             options(nostack, preserves_flags)
         );

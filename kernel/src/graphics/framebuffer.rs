@@ -789,8 +789,8 @@ impl Framebuffer {
             }
             mmio::stream_write_u32(ptr, value);
         }
-                // Ensure streaming stores are visible to device
-                self.counted_sfence();
+        // Ensure streaming stores are visible to device
+        self.counted_sfence();
         // Note: callers that want to batch many rows together can use
         // `write_u32_run_streaming_nofence` and call `mmio::sfence()` once
         // after the batch for better throughput.
@@ -1197,82 +1197,82 @@ impl Framebuffer {
     #[target_feature(enable = "avx2")]
     unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
         use core::arch::x86_64::*;
-            // 32-byte shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
-            let mask = _mm256_setr_epi8(
-                2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 18, 17, 16, 19, 22, 21, 20,
-                23, 26, 25, 24, 27, 30, 29, 28, 31,
-            );
+        // 32-byte shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
+        let mask = _mm256_setr_epi8(
+            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 18, 17, 16, 19, 22, 21, 20, 23,
+            26, 25, 24, 27, 30, 29, 28, 31,
+        );
 
-            let mut i = 0usize;
+        let mut i = 0usize;
 
-            // Fast path when both src and dst are 32-byte aligned: use aligned loads/stores
-            let src_aligned = (src as usize) & 31 == 0;
-            let dst_aligned = (dst as usize) & 31 == 0;
+        // Fast path when both src and dst are 32-byte aligned: use aligned loads/stores
+        let src_aligned = (src as usize) & 31 == 0;
+        let dst_aligned = (dst as usize) & 31 == 0;
 
-            if src_aligned && dst_aligned {
-                // Unroll 64-byte per iteration to reduce loop overhead
-                while i + 64 <= bytes {
-                    // Use unaligned loads/stores to avoid strict alignment requirements
-                    let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                    let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
-                    let r0 = _mm256_shuffle_epi8(v0, mask);
-                    let r1 = _mm256_shuffle_epi8(v1, mask);
-                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
-                    unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
-                    i += 64;
-                }
-
-                while i + 32 <= bytes {
-                    let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                    let r = _mm256_shuffle_epi8(v, mask);
-                    unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
-                    i += 32;
-                }
-                } else {
-                    // Unaligned (general) path
-                    while i + 64 <= bytes {
-                        let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                        let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
-                        let r0 = _mm256_shuffle_epi8(v0, mask);
-                        let r1 = _mm256_shuffle_epi8(v1, mask);
-                        unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
-                        unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
-                        i += 64;
-                    }
-
-                    while i + 32 <= bytes {
-                        let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                        let r = _mm256_shuffle_epi8(v, mask);
-                        unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
-                        i += 32;
-                    }
-                }
-
-            // Process remaining 16-byte block(s) via SSSE3-style shuffle
-            while i + 16 <= bytes {
-                let v = unsafe { _mm_loadu_si128(src.add(i) as *const __m128i) };
-                let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
-                let r = _mm_shuffle_epi8(v, m);
-                unsafe { _mm_storeu_si128(dst.add(i) as *mut __m128i, r) };
-                i += 16;
+        if src_aligned && dst_aligned {
+            // Unroll 64-byte per iteration to reduce loop overhead
+            while i + 64 <= bytes {
+                // Use unaligned loads/stores to avoid strict alignment requirements
+                let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
+                let r0 = _mm256_shuffle_epi8(v0, mask);
+                let r1 = _mm256_shuffle_epi8(v1, mask);
+                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
+                unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
+                i += 64;
             }
 
-            // Tail: scalar
-            while i < bytes {
-                let pixel_idx = i / 4;
-                let s = pixel_idx * 4;
-                unsafe {
-                    let r = *src.add(s + 0);
-                    let g = *src.add(s + 1);
-                    let b = *src.add(s + 2);
-                    let a = *src.add(s + 3);
-                    *dst.add(s + 0) = b;
-                    *dst.add(s + 1) = g;
-                    *dst.add(s + 2) = r;
-                    *dst.add(s + 3) = a;
-                }
-                i += 4;
+            while i + 32 <= bytes {
+                let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                let r = _mm256_shuffle_epi8(v, mask);
+                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
+                i += 32;
             }
+        } else {
+            // Unaligned (general) path
+            while i + 64 <= bytes {
+                let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
+                let r0 = _mm256_shuffle_epi8(v0, mask);
+                let r1 = _mm256_shuffle_epi8(v1, mask);
+                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
+                unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
+                i += 64;
+            }
+
+            while i + 32 <= bytes {
+                let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
+                let r = _mm256_shuffle_epi8(v, mask);
+                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
+                i += 32;
+            }
+        }
+
+        // Process remaining 16-byte block(s) via SSSE3-style shuffle
+        while i + 16 <= bytes {
+            let v = unsafe { _mm_loadu_si128(src.add(i) as *const __m128i) };
+            let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+            let r = _mm_shuffle_epi8(v, m);
+            unsafe { _mm_storeu_si128(dst.add(i) as *mut __m128i, r) };
+            i += 16;
+        }
+
+        // Tail: scalar
+        while i < bytes {
+            let pixel_idx = i / 4;
+            let s = pixel_idx * 4;
+            unsafe {
+                let r = *src.add(s + 0);
+                let g = *src.add(s + 1);
+                let b = *src.add(s + 2);
+                let a = *src.add(s + 3);
+                *dst.add(s + 0) = b;
+                *dst.add(s + 1) = g;
+                *dst.add(s + 2) = r;
+                *dst.add(s + 3) = a;
+            }
+            i += 4;
+        }
     }
 
     /// AVX2 helper: pack exactly 8 RGBA pixels (32 bytes) into 24 BGR bytes.
@@ -1556,8 +1556,8 @@ impl Framebuffer {
                 mmio::stream_write_u32(addr, color_u32);
             }
 
-                // Ensure streaming stores are globally visible
-                self.counted_sfence();
+            // Ensure streaming stores are globally visible
+            self.counted_sfence();
         }
     }
 
@@ -2324,7 +2324,7 @@ impl Framebuffer {
         // Mark entire screen as dirty
         self.mark_dirty(Rect::new(0, 0, self.info.width, self.info.height));
         let buffer = self.draw_buffer();
-        let bytes_per_pixel = self.info.format.bytes_per_pixel();
+        let _bytes_per_pixel = self.info.format.bytes_per_pixel();
         let width = self.info.width as usize;
         let stride = self.info.stride as usize;
 

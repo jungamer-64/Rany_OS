@@ -278,8 +278,7 @@ impl NetworkStack {
             ArpResult::CacheUpdated => {
                 // Cache was updated, check if we have pending sends
             }
-            ArpResult::Ignored | ArpResult::Invalid => {}
-            _ => {}
+            ArpResult::Ignored | ArpResult::Invalid => {} // _ => {} // Unreachable pattern removed
         }
     }
 
@@ -657,7 +656,11 @@ impl NetworkStack {
     }
 
     /// Send ICMP echo request (ping)
-    pub fn send_icmp_echo_request(&mut self, target: Ipv4Address, sequence: u16) -> Result<u64, ()> {
+    pub fn send_icmp_echo_request(
+        &mut self,
+        target: Ipv4Address,
+        sequence: u16,
+    ) -> Result<u64, ()> {
         let local_ip = self.ipv4_address();
         let identifier = 0x1234u16; // Fixed identifier for now
 

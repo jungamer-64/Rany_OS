@@ -300,7 +300,7 @@ impl ProcFs {
         // /proc/net/tcp - TCP接続情報
         let tcp_inode = self.allocate_inode();
         let tcp_entry = ProcEntry::file(tcp_inode, "tcp", || {
-            let mut output = alloc::string::String::from(
+            let output = alloc::string::String::from(
                 "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
             );
             // 将来的にはTcpProcessorから取得

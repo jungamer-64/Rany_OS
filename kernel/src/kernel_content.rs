@@ -1,6 +1,7 @@
 extern crate alloc;
 
-use core::panic::PanicInfo;
+// use alloc::string::String;
+// use core::panic::PanicInfo;
 use limine::BaseRevision;
 use limine::request::{
     ExecutableFileRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker,
@@ -348,7 +349,8 @@ extern "C" fn kmain() -> ! {
                 unsafe {
                     match parser.find_table(b"DMAR") {
                         Ok(dmar_addr) => {
-                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config) {
+                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config)
+                            {
                                 // If IOMMU not present or disabled, we just warn.
                                 if e != io::iommu::IommuError::NotPresent {
                                     warn!(target: "init", "IOMMU init failed: {:?}", e);
@@ -515,7 +517,7 @@ extern "C" fn kmain() -> ! {
         use alloc::boxed::Box;
         use driver_registry::register_driver;
         use nvme_driver::driver_impl::NvmeDriverWrapper;
-        use pci_driver::{PciClass, find_by_class};
+        use pci_driver::find_by_class;
 
         // PCIバススキャン（初期化）- すでにカーネルのio::init等で呼ばれている可能性もあるが、
         // ここで再スキャンしても問題ないか、あるいはfind_by_classが内部でスキャンするか確認が必要。
