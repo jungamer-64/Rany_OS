@@ -83,6 +83,13 @@ impl<T> RRef<T> {
         RRef { ptr, owner }
     }
 
+    /// 既存のExchange HeapポインタからRRefを作成
+    /// # Safety
+    /// ptrはExchange Heap上の有効なメモリであり、Heap Registryに登録済みであること
+    pub unsafe fn from_raw(ptr: NonNull<T>, owner: DomainId) -> Self {
+        RRef { ptr, owner }
+    }
+
     /// 所有権の移動 (Move)
     /// 設計書 5.3: データコピーなしで所有権のみ移動
     pub fn move_to(mut self, new_owner: DomainId) -> Self {
@@ -143,6 +150,16 @@ impl<T> RRef<T> {
         }
 
         value
+    }
+
+    /// RRefを消費して生ポインタと所有権を放棄する
+    /// Exchange Heapからの解放は行われない
+    /// 再度 from_raw で RRef に戻すか、適切に処理する必要がある
+    pub fn into_raw(self) -> (NonNull<T>, DomainId) {
+        let ptr = self.ptr;
+        let owner = self.owner;
+        core::mem::forget(self);
+        (ptr, owner)
     }
 }
 

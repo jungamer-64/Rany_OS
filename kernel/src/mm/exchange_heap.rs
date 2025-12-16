@@ -376,6 +376,11 @@ pub unsafe fn deallocate_raw(ptr: NonNull<u8>, layout: Layout) {
     }
 }
 
+/// 生のレイアウトを指定してExchange Heapからメモリを割り当て
+pub fn allocate_raw(layout: Layout) -> Option<NonNull<u8>> {
+    EXCHANGE_HEAP.allocate(layout)
+}
+
 /// Exchange Heapの統計を取得
 pub fn exchange_heap_stats() -> HeapStats {
     EXCHANGE_HEAP.stats()

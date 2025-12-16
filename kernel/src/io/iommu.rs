@@ -294,10 +294,13 @@ impl SlPte {
 // ============================================================================
 
 /// IOMMU Domain (address space for devices)
+///
+/// Each domain has its own Mutex in the global IOMMU_DOMAINS registry,
+/// allowing parallel map/unmap operations across different domains.
 pub struct IommuDomain {
     /// Domain ID
     id: u16,
-    /// Second-level page table root
+    /// Second-level page table root (PML4)
     page_table: *mut SlPte,
     /// Mapped regions
     mappings: BTreeMap<u64, DmaMapping>,
@@ -404,7 +407,8 @@ impl IommuDomain {
         Ok(())
     }
 
-    /// Map a single page (internal)
+    /// Map a single page using 4-level page table walking
+    /// Intel VT-d uses: PML4 -> PDP -> PD -> PT (same as x86-64 paging)
     fn map_page(
         &mut self,
         iova: u64,
@@ -412,24 +416,61 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
-        // Simple single-level implementation for demonstration
-        // Real implementation would use multi-level page tables
+        // Extract indices for each level
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize; // Bits 47:39
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize; // Bits 38:30
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize; // Bits 29:21
+        let pt_idx = ((iova >> 12) & 0x1FF) as usize; // Bits 20:12
 
-        let index = (iova >> 12) & 0x1FF;
-
-        if index >= PT_ENTRIES as u64 {
-            return Err(IommuError::InvalidAddress);
-        }
-
+        // self.page_table is the PML4 root
         unsafe {
-            let entry = self.page_table.add(index as usize);
-            if (*entry).is_present() {
+            // Level 4: PML4 -> PDP
+            let pml4_entry = self.page_table.add(pml4_idx);
+            if !(*pml4_entry).is_present() {
+                // Allocate PDP table
+                let pdp = Self::allocate_page_table()?;
+                *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+            }
+            let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
+
+            // Level 3: PDP -> PD
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() {
+                // Allocate PD table
+                let pd = Self::allocate_page_table()?;
+                *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+            }
+            let pd_table = ((*pdp_entry).phys_addr()) as *mut SlPte;
+
+            // Level 2: PD -> PT
+            let pd_entry = pd_table.add(pd_idx);
+            if !(*pd_entry).is_present() {
+                // Allocate PT
+                let pt = Self::allocate_page_table()?;
+                *pd_entry = SlPte((pt as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+            }
+            let pt_table = ((*pd_entry).phys_addr()) as *mut SlPte;
+
+            // Level 1: PT -> Page
+            let pt_entry = pt_table.add(pt_idx);
+            if (*pt_entry).is_present() {
                 return Err(IommuError::AlreadyMapped);
             }
-            *entry = SlPte::mapping(phys, read, write);
+            *pt_entry = SlPte::mapping(phys, read, write);
         }
 
         Ok(())
+    }
+
+    /// Allocate a zeroed page table
+    fn allocate_page_table() -> Result<*mut SlPte, IommuError> {
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .map_err(|_| IommuError::HardwareError)?;
+        let ptr = crate::util::allocate_zeroed(layout)
+            .ok_or(IommuError::HardwareError)?
+            .as_ptr() as *mut SlPte;
+        Ok(ptr)
     }
 
     /// Unmap a DMA region
@@ -448,17 +489,39 @@ impl IommuDomain {
         Ok(mapping)
     }
 
-    /// Unmap a single page (internal)
+    /// Unmap a single page using 4-level page table walking
     fn unmap_page(&mut self, iova: u64) -> Result<(), IommuError> {
-        let index = (iova >> 12) & 0x1FF;
-
-        if index >= PT_ENTRIES as u64 {
-            return Err(IommuError::InvalidAddress);
-        }
+        // Extract indices for each level
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
 
         unsafe {
-            let entry = self.page_table.add(index as usize);
-            *entry = SlPte::new();
+            // Walk down to PT
+            let pml4_entry = self.page_table.add(pml4_idx);
+            if !(*pml4_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+
+            let pd_entry = pd_table.add(pd_idx);
+            if !(*pd_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+
+            let pt_entry = pt_table.add(pt_idx);
+            if !(*pt_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            *pt_entry = SlPte::new();
         }
 
         Ok(())
@@ -722,6 +785,9 @@ impl IommuController {
         let domain = IommuDomain::new(id);
         self.domains.insert(id, domain);
 
+        // Register per-domain lock for parallel operations
+        register_domain_lock(id);
+
         Ok(id)
     }
 
@@ -839,7 +905,26 @@ impl IommuController {
 // Global Instance
 // ============================================================================
 
+/// Global IOMMU controller (for controller-level operations)
 static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
+
+/// Per-domain locks for parallel map/unmap operations
+/// Key: domain_id, Value: Mutex<()> (domain is stored in IommuController.domains)
+/// This allows multiple threads to perform DMA mapping on different domains concurrently.
+static DOMAIN_LOCKS: Mutex<BTreeMap<u16, alloc::sync::Arc<spin::Mutex<()>>>> = Mutex::new(BTreeMap::new());
+
+/// Acquire a lock for a specific domain
+fn lock_domain(domain_id: u16) -> Option<alloc::sync::Arc<spin::Mutex<()>>> {
+    let locks = DOMAIN_LOCKS.lock();
+    locks.get(&domain_id).cloned()
+}
+
+/// Register a new domain lock
+fn register_domain_lock(domain_id: u16) {
+    DOMAIN_LOCKS
+        .lock()
+        .insert(domain_id, alloc::sync::Arc::new(spin::Mutex::new(())));
+}
 
 /// Initialize the global IOMMU
 ///

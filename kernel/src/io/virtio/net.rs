@@ -917,7 +917,7 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
             let completed = rx_queue.process_used();
             if let Some((_, len)) = completed.first() {
                 // 受信完了: データ長を設定してPacketRefを返却
-                if let Some(packet) = this.packet.take() {
+                if let Some(mut packet) = this.packet.take() {
                     packet.set_len(*len as usize);
                     return Poll::Ready(Ok(packet));
                 }

@@ -378,7 +378,7 @@ pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
             log::warn!("[NET] Stack poisoned");
             e.into_inner()
         })
-        .as_ref()
+        .as_mut()
     {
         let target_ip = ipv4::Ipv4Address::new(target);
 
