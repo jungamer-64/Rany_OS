@@ -14,13 +14,13 @@
 
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use spin::Mutex;
 
 use super::mempool::PacketRef;
 
@@ -245,7 +245,7 @@ pub enum TcpError {
 /// 【設計書】POSIXソケットAPIを模倣しない
 /// connect()の代わりにdial()を使用
 pub struct TcpStream {
-    tcb: Arc<Mutex<TcpControlBlock>>,
+    tcb: Arc<PoisonLock<TcpControlBlock>>,
 }
 
 impl TcpStream {
@@ -256,11 +256,14 @@ impl TcpStream {
         let local_port = allocate_ephemeral_port();
         let local_addr = SocketAddr::new(Ipv4Addr::UNSPECIFIED, local_port);
 
-        let tcb = Arc::new(Mutex::new(TcpControlBlock::new(local_addr)));
+        let tcb = Arc::new(PoisonLock::new(TcpControlBlock::new(local_addr)));
 
         // SYN送信
         {
-            let mut tcb_guard = tcb.lock();
+            let mut tcb_guard = tcb.lock().unwrap_or_else(|e| {
+                log::warn!("[NET] TCP TCB poisoned");
+                e.into_inner()
+            });
             tcb_guard.remote_addr = Some(addr);
             tcb_guard.state = TcpState::SynSent;
             tcb_guard.snd_nxt = generate_initial_seq();
@@ -286,17 +289,36 @@ impl TcpStream {
 
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> SocketAddr {
-        self.tcb.lock().local_addr
+        self.tcb
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] TCP TCB poisoned");
+                e.into_inner()
+            })
+            .local_addr
     }
 
     /// リモートアドレスを取得
     pub fn peer_addr(&self) -> Option<SocketAddr> {
-        self.tcb.lock().remote_addr
+        self.tcb
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] TCP TCB poisoned");
+                e.into_inner()
+            })
+            .remote_addr
     }
 
     /// 統計を取得
     pub fn stats(&self) -> TcpStats {
-        self.tcb.lock().stats.clone()
+        self.tcb
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] TCP TCB poisoned");
+                e.into_inner()
+            })
+            .stats
+            .clone()
     }
 
     /// 読み取り用Future（コピーあり - 互換性用）
@@ -357,7 +379,10 @@ impl AsyncRead for TcpStream {
         cx: &mut Context<'_>,
         buf: &mut [u8],
     ) -> Poll<Result<usize, TcpError>> {
-        let mut tcb = self.tcb.lock();
+        let mut tcb = self.tcb.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP TCB poisoned");
+            e.into_inner()
+        });
 
         if tcb.state == TcpState::Closed {
             return Poll::Ready(Err(TcpError::ConnectionClosed));
@@ -382,7 +407,10 @@ impl AsyncWrite for TcpStream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, TcpError>> {
-        let mut tcb = self.tcb.lock();
+        let mut tcb = self.tcb.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP TCB poisoned");
+            e.into_inner()
+        });
 
         if tcb.state != TcpState::Established {
             return Poll::Ready(Err(TcpError::InvalidState));
@@ -410,7 +438,10 @@ impl AsyncWrite for TcpStream {
 
     fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
         // 送信バッファのフラッシュ
-        let mut tcb = self.tcb.lock();
+        let mut tcb = self.tcb.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP TCB poisoned");
+            e.into_inner()
+        });
 
         // 送信バッファ内の全パケットを送信
         while let Some(packet) = tcb.send_buffer.pop_front() {
@@ -432,7 +463,10 @@ impl AsyncWrite for TcpStream {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
-        let mut tcb = self.tcb.lock();
+        let mut tcb = self.tcb.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP TCB poisoned");
+            e.into_inner()
+        });
 
         match tcb.state {
             TcpState::Established => {
@@ -468,8 +502,8 @@ impl AsyncWrite for TcpStream {
 /// bind/listen/acceptの代わりにnew/incomingを使用
 pub struct TcpListener {
     local_addr: SocketAddr,
-    backlog: Arc<Mutex<VecDeque<TcpStream>>>,
-    accept_waker: Arc<Mutex<Option<Waker>>>,
+    backlog: Arc<PoisonLock<VecDeque<TcpStream>>>,
+    accept_waker: Arc<PoisonLock<Option<Waker>>>,
 }
 
 impl TcpListener {
@@ -484,8 +518,8 @@ impl TcpListener {
 
         Ok(Self {
             local_addr: addr,
-            backlog: Arc::new(Mutex::new(VecDeque::new())),
-            accept_waker: Arc::new(Mutex::new(None)),
+            backlog: Arc::new(PoisonLock::new(VecDeque::new())),
+            accept_waker: Arc::new(PoisonLock::new(None)),
         })
     }
 
@@ -521,10 +555,21 @@ impl TcpListener {
 
     /// 新しい接続をバックログに追加（内部使用）
     pub(crate) fn push_connection(&self, stream: TcpStream, _addr: SocketAddr) {
-        let mut backlog = self.backlog.lock();
+        let mut backlog = self.backlog.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP Backlog poisoned");
+            e.into_inner()
+        });
         backlog.push_back(stream);
 
-        if let Some(waker) = self.accept_waker.lock().take() {
+        if let Some(waker) = self
+            .accept_waker
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] TCP Waker poisoned");
+                e.into_inner()
+            })
+            .take()
+        {
             waker.wake();
         }
     }
@@ -536,14 +581,17 @@ impl TcpListener {
 
 /// 接続Future
 struct ConnectFuture {
-    tcb: Arc<Mutex<TcpControlBlock>>,
+    tcb: Arc<PoisonLock<TcpControlBlock>>,
 }
 
 impl Future for ConnectFuture {
     type Output = Result<(), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut tcb = self.tcb.lock();
+        let mut tcb = self.tcb.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP TCB poisoned");
+            e.into_inner()
+        });
 
         match tcb.state {
             TcpState::Established => Poll::Ready(Ok(())),
@@ -596,7 +644,10 @@ impl<'a> Future for AcceptFuture<'a> {
     type Output = Result<(TcpStream, SocketAddr), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut backlog = self.listener.backlog.lock();
+        let mut backlog = self.listener.backlog.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP Backlog poisoned");
+            e.into_inner()
+        });
 
         if let Some(stream) = backlog.pop_front() {
             let addr = stream
@@ -604,7 +655,10 @@ impl<'a> Future for AcceptFuture<'a> {
                 .unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
             Poll::Ready(Ok((stream, addr)))
         } else {
-            *self.listener.accept_waker.lock() = Some(cx.waker().clone());
+            *self.listener.accept_waker.lock().unwrap_or_else(|e| {
+                log::warn!("[NET] TCP Waker poisoned");
+                e.into_inner()
+            }) = Some(cx.waker().clone());
             Poll::Pending
         }
     }
@@ -639,7 +693,10 @@ impl<'a> Future for ZeroCopyReadFuture<'a> {
     type Output = Option<PacketRef>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut tcb = self.stream.tcb.lock();
+        let mut tcb = self.stream.tcb.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP TCB poisoned");
+            e.into_inner()
+        });
 
         if tcb.state == TcpState::Closed {
             return Poll::Ready(None);
@@ -670,7 +727,10 @@ impl<'a> Future for ZeroCopyWriteFuture<'a> {
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = &mut *self;
-        let mut tcb = this.stream.tcb.lock();
+        let mut tcb = this.stream.tcb.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] TCP TCB poisoned");
+            e.into_inner()
+        });
 
         if tcb.state != TcpState::Established {
             return Poll::Ready(Err(TcpError::InvalidState));

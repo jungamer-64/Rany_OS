@@ -4,10 +4,10 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
 use x86_64::PhysAddr;
 
 /// デフォルトのパケットバッファサイズ
@@ -162,9 +162,9 @@ pub struct Mempool {
     /// プールID
     id: u32,
     /// バッファストレージ
-    buffers: Mutex<Vec<NonNull<PacketBuffer>>>,
+    buffers: PoisonLock<Vec<NonNull<PacketBuffer>>>,
     /// 空きバッファリスト
-    free_list: Mutex<Vec<NonNull<PacketBuffer>>>,
+    free_list: PoisonLock<Vec<NonNull<PacketBuffer>>>,
     /// 統計: 割り当て回数
     alloc_count: AtomicU64,
     /// 統計: 返却回数
@@ -182,8 +182,8 @@ impl Mempool {
     pub fn new(id: u32) -> Self {
         Self {
             id,
-            buffers: Mutex::new(Vec::new()),
-            free_list: Mutex::new(Vec::new()),
+            buffers: PoisonLock::new(Vec::new()),
+            free_list: PoisonLock::new(Vec::new()),
             alloc_count: AtomicU64::new(0),
             free_count: AtomicU64::new(0),
             alloc_failed: AtomicU64::new(0),
@@ -192,8 +192,14 @@ impl Mempool {
 
     /// プールを初期化（バッファを事前割り当て）
     pub fn init(&self, capacity: usize) -> Result<(), &'static str> {
-        let mut buffers = self.buffers.lock();
-        let mut free_list = self.free_list.lock();
+        let mut buffers = self.buffers.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] Mempool buffers poisoned");
+            e.into_inner()
+        });
+        let mut free_list = self.free_list.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] Mempool free_list poisoned");
+            e.into_inner()
+        });
 
         for i in 0..capacity {
             // バッファを割り当て
@@ -231,7 +237,14 @@ impl Mempool {
 
     /// バッファを割り当て
     pub fn alloc(&'static self) -> Option<PacketRef> {
-        let buffer = self.free_list.lock().pop()?;
+        let buffer = self
+            .free_list
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] Mempool free_list poisoned");
+                e.into_inner()
+            })
+            .pop()?;
 
         unsafe {
             // 初期化
@@ -246,14 +259,34 @@ impl Mempool {
 
     /// バッファを返却
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
-        self.free_list.lock().push(buffer);
+        self.free_list
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] Mempool free_list poisoned");
+                e.into_inner()
+            })
+            .push(buffer);
         self.free_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 統計を取得
     pub fn stats(&self) -> MempoolStats {
-        let total = self.buffers.lock().len();
-        let free = self.free_list.lock().len();
+        let total = self
+            .buffers
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] Mempool buffers poisoned");
+                e.into_inner()
+            })
+            .len();
+        let free = self
+            .free_list
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] Mempool free_list poisoned");
+                e.into_inner()
+            })
+            .len();
 
         MempoolStats {
             total_buffers: total,
@@ -285,7 +318,7 @@ pub struct MempoolStats {
 /// 設計書 4.3: コアごとの独立性
 pub struct PerCoreMempoolCache {
     /// ローカルキャッシュ
-    local_cache: Mutex<Vec<NonNull<PacketBuffer>>>,
+    local_cache: PoisonLock<Vec<NonNull<PacketBuffer>>>,
     /// キャッシュ容量
     cache_capacity: usize,
     /// 親プール
@@ -296,7 +329,7 @@ impl PerCoreMempoolCache {
     /// 新しいキャッシュを作成
     pub fn new(parent: &'static Mempool, capacity: usize) -> Self {
         Self {
-            local_cache: Mutex::new(Vec::with_capacity(capacity)),
+            local_cache: PoisonLock::new(Vec::with_capacity(capacity)),
             cache_capacity: capacity,
             parent,
         }
@@ -305,7 +338,15 @@ impl PerCoreMempoolCache {
     /// バッファを割り当て（ローカルキャッシュから優先）
     pub fn alloc(&'static self) -> Option<PacketRef> {
         // まずローカルキャッシュから試みる
-        if let Some(buffer) = self.local_cache.lock().pop() {
+        if let Some(buffer) = self
+            .local_cache
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] LocalCache poisoned");
+                e.into_inner()
+            })
+            .pop()
+        {
             unsafe {
                 buffer.as_ref().len.store(0, Ordering::Release);
                 buffer.as_ref().ref_count.store(1, Ordering::Release);
@@ -322,7 +363,10 @@ impl PerCoreMempoolCache {
 
     /// バッファを返却（ローカルキャッシュに優先）
     pub fn free(&self, buffer: NonNull<PacketBuffer>) {
-        let mut cache = self.local_cache.lock();
+        let mut cache = self.local_cache.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] LocalCache poisoned");
+            e.into_inner()
+        });
 
         if cache.len() < self.cache_capacity {
             // ローカルキャッシュに空きがあれば追加
@@ -343,7 +387,7 @@ impl PerCoreMempoolCache {
 /// Used by the network stack for building outgoing packets
 pub struct PacketPool {
     /// Pre-allocated buffers
-    buffers: Mutex<Vec<Vec<u8>>>,
+    buffers: PoisonLock<Vec<Vec<u8>>>,
     /// Buffer size
     buffer_size: usize,
     /// Pool capacity
@@ -359,7 +403,7 @@ impl PacketPool {
         }
 
         PacketPool {
-            buffers: Mutex::new(buffers),
+            buffers: PoisonLock::new(buffers),
             buffer_size,
             capacity,
         }
@@ -367,7 +411,10 @@ impl PacketPool {
 
     /// Allocate a buffer from the pool
     pub fn alloc(&self) -> Option<Vec<u8>> {
-        let mut buffers = self.buffers.lock();
+        let mut buffers = self.buffers.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] Mempool buffers poisoned");
+            e.into_inner()
+        });
         buffers.pop()
     }
 
@@ -376,7 +423,10 @@ impl PacketPool {
         // Clear the buffer
         buffer.fill(0);
 
-        let mut buffers = self.buffers.lock();
+        let mut buffers = self.buffers.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] Mempool buffers poisoned");
+            e.into_inner()
+        });
         if buffers.len() < self.capacity {
             buffers.push(buffer);
         }
@@ -390,7 +440,13 @@ impl PacketPool {
 
     /// Get available buffer count
     pub fn available(&self) -> usize {
-        self.buffers.lock().len()
+        self.buffers
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] Mempool buffers poisoned");
+                e.into_inner()
+            })
+            .len()
     }
 }
 
