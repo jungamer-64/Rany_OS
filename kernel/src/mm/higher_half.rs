@@ -17,8 +17,8 @@
 
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 
 // ============================================================================
 // Address Types
@@ -766,25 +766,34 @@ impl HigherHalfManager {
 // ============================================================================
 
 /// グローバルHigher Halfマネージャー
-static HIGHER_HALF_MANAGER: Mutex<Option<HigherHalfManager>> = Mutex::new(None);
+static HIGHER_HALF_MANAGER: PoisonLock<Option<HigherHalfManager>> = PoisonLock::new(None);
 
 /// Higher Halfカーネルを初期化
 pub fn init(physical_memory_offset: u64) {
     let manager = HigherHalfManager::new(physical_memory_offset);
-    *HIGHER_HALF_MANAGER.lock() = Some(manager);
+    *HIGHER_HALF_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Higher Half poisoned");
+        e.into_inner()
+    }) = Some(manager);
     // log::info!("Higher half kernel initialized with offset {:#x}", physical_memory_offset);
 }
 
 /// 物理アドレスを仮想アドレスに変換
 pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
-    let guard = HIGHER_HALF_MANAGER.lock();
+    let guard = HIGHER_HALF_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Higher Half poisoned");
+        e.into_inner()
+    });
     let manager = guard.as_ref().expect("Higher half not initialized");
     manager.mapper().phys_to_virt(phys)
 }
 
 /// 仮想アドレスを物理アドレスに変換（直接マップ領域）
 pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
-    let guard = HIGHER_HALF_MANAGER.lock();
+    let guard = HIGHER_HALF_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Higher Half poisoned");
+        e.into_inner()
+    });
     let manager = guard.as_ref().expect("Higher half not initialized");
     manager.mapper().virt_to_phys(virt)
 }
@@ -1268,12 +1277,15 @@ impl PageTableManager {
 }
 
 /// グローバルなページテーブルマネージャー
-static PAGE_TABLE_MANAGER: Mutex<Option<PageTableManager>> = Mutex::new(None);
+static PAGE_TABLE_MANAGER: PoisonLock<Option<PageTableManager>> = PoisonLock::new(None);
 
 /// ページテーブルマネージャーを初期化
 pub fn init_page_table_manager(physical_memory_offset: u64) {
     let manager = unsafe { PageTableManager::from_current_cr3(physical_memory_offset) };
-    *PAGE_TABLE_MANAGER.lock() = Some(manager);
+    *PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Page Table Manager poisoned");
+        e.into_inner()
+    }) = Some(manager);
 }
 
 /// グローバルページテーブルマネージャーでページをマップ
@@ -1282,28 +1294,40 @@ pub unsafe fn global_map_page(
     phys: PhysAddr,
     flags: PageFlags,
 ) -> Result<(), MapError> {
-    let mut guard = PAGE_TABLE_MANAGER.lock();
+    let mut guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Page Table Manager poisoned");
+        e.into_inner()
+    });
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
     unsafe { manager.map_page(virt, phys, flags) }
 }
 
 /// グローバルページテーブルマネージャーでページをアンマップ
 pub unsafe fn global_unmap_page(virt: VirtAddr) -> Result<PhysAddr, MapError> {
-    let mut guard = PAGE_TABLE_MANAGER.lock();
+    let mut guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Page Table Manager poisoned");
+        e.into_inner()
+    });
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
     unsafe { manager.unmap_page(virt) }
 }
 
 /// グローバルページテーブルマネージャーで仮想→物理変換
 pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
-    let guard = PAGE_TABLE_MANAGER.lock();
+    let guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Page Table Manager poisoned");
+        e.into_inner()
+    });
     let manager = guard.as_ref()?;
     manager.translate(virt)
 }
 
 /// グローバルページテーブルマネージャーでページのフラグを更新（MPK PKEY適用用）
 pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<(), MapError> {
-    let mut guard = PAGE_TABLE_MANAGER.lock();
+    let mut guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Page Table Manager poisoned");
+        e.into_inner()
+    });
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
     unsafe { manager.update_flags(virt, flags) }
 }

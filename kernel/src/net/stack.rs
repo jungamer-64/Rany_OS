@@ -784,6 +784,10 @@ impl NetworkStack {
     pub fn arp_cache(&self) -> Vec<(Ipv4Address, MacAddress)> {
         self.arp
             .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] ARP poisoned");
+                e.into_inner()
+            })
             .cache()
             .all_entries()
             .iter()

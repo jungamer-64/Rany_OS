@@ -10,11 +10,11 @@
 // OOM Killer サブモジュール (設計書 9.3.4)
 pub mod oom_killer;
 
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 use x86_64::{PhysAddr, VirtAddr};
 
 /// 設計書 1.3: Higher Half Kernel Base (SAS)
@@ -39,6 +39,7 @@ pub fn set_physical_memory_offset(offset: u64) {
 
 /// カーネルヒープ用のBuddy Allocator
 /// linked_list_allocator (O(n)) の代わりに使用
+#[derive(Debug)]
 struct BuddyHeapAllocator {
     /// ヒープの開始アドレス
     heap_start: usize,
@@ -287,21 +288,30 @@ impl BuddyHeapAllocator {
 }
 
 /// スレッドセーフなグローバルアロケータラッパー
-struct LockedBuddyHeap(Mutex<BuddyHeapAllocator>);
+struct LockedBuddyHeap(PoisonLock<BuddyHeapAllocator>);
 
 impl LockedBuddyHeap {
     const fn new() -> Self {
-        Self(Mutex::new(BuddyHeapAllocator::new()))
+        Self(PoisonLock::new(BuddyHeapAllocator::new()))
     }
 }
 
 unsafe impl GlobalAlloc for LockedBuddyHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        self.0.lock().allocate(layout)
+        match self.0.lock() {
+            Ok(mut guard) => guard.allocate(layout),
+            Err(_) => {
+                // Poisoned: Heap is corrupt. Return null (OOM).
+                // Cannot log here due to recursion risk.
+                null_mut()
+            }
+        }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        self.0.lock().deallocate(ptr, layout)
+        if let Ok(mut guard) = self.0.lock() {
+            guard.deallocate(ptr, layout);
+        }
     }
 }
 
@@ -399,7 +409,7 @@ pub fn init() {
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 fn init_global_heap() {
     crate::vga::early_serial_str("[HEAP] lock\n");
-    let mut guard = ALLOCATOR.0.lock();
+    let mut guard = ALLOCATOR.0.lock().unwrap();
     crate::vga::early_serial_str("[HEAP] init call\n");
     let start = heap_start();
     crate::vga::early_serial_str("[HEAP] addr ok\n");

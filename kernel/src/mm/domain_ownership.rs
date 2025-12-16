@@ -23,11 +23,11 @@
 //! let freed_bytes = reclaim_domain_allocations(domain_id);
 //! ```
 
+use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ptr::NonNull;
-use spin::Mutex;
 
 /// ドメインID
 pub type DomainId = u64;
@@ -148,7 +148,8 @@ impl DomainAllocations {
 }
 
 /// グローバルドメインアロケーション追跡
-static DOMAIN_ALLOCATIONS: Mutex<DomainAllocations> = Mutex::new(DomainAllocations::new());
+static DOMAIN_ALLOCATIONS: PoisonLock<DomainAllocations> =
+    PoisonLock::new(DomainAllocations::new());
 
 // ============================================================================
 // Public API
@@ -158,24 +159,48 @@ static DOMAIN_ALLOCATIONS: Mutex<DomainAllocations> = Mutex::new(DomainAllocatio
 ///
 /// Exchange Heap 上のアロケーション後に呼び出す
 pub fn register_allocation(domain_id: DomainId, address: usize, size: usize) {
-    DOMAIN_ALLOCATIONS.lock().register(domain_id, address, size);
+    DOMAIN_ALLOCATIONS
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[OWNERSHIP] Global Map poisoned");
+            e.into_inner()
+        })
+        .register(domain_id, address, size);
 }
 
 /// アロケーションの登録を解除
 ///
 /// Exchange Heap 上のデアロケーション時に呼び出す
 pub fn unregister_allocation(address: usize) -> Option<(DomainId, usize)> {
-    DOMAIN_ALLOCATIONS.lock().unregister(address)
+    DOMAIN_ALLOCATIONS
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[OWNERSHIP] Global Map poisoned");
+            e.into_inner()
+        })
+        .unregister(address)
 }
 
 /// ドメインの全アロケーションを取得
 pub fn get_domain_allocations(domain_id: DomainId) -> Vec<AllocationInfo> {
-    DOMAIN_ALLOCATIONS.lock().get_domain_allocations(domain_id)
+    DOMAIN_ALLOCATIONS
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[OWNERSHIP] Global Map poisoned");
+            e.into_inner()
+        })
+        .get_domain_allocations(domain_id)
 }
 
 /// ドメインの総割り当てバイト数を取得
 pub fn domain_total_bytes(domain_id: DomainId) -> usize {
-    DOMAIN_ALLOCATIONS.lock().domain_total_bytes(domain_id)
+    DOMAIN_ALLOCATIONS
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[OWNERSHIP] Global Map poisoned");
+            e.into_inner()
+        })
+        .domain_total_bytes(domain_id)
 }
 
 /// ドメインの全アロケーションを回収
@@ -185,7 +210,13 @@ pub fn domain_total_bytes(domain_id: DomainId) -> usize {
 /// # Returns
 /// 解放したバイト数
 pub fn reclaim_domain_allocations(domain_id: DomainId) -> usize {
-    let allocations = DOMAIN_ALLOCATIONS.lock().remove_domain_allocations(domain_id);
+    let allocations = DOMAIN_ALLOCATIONS
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[OWNERSHIP] Global Map poisoned");
+            e.into_inner()
+        })
+        .remove_domain_allocations(domain_id);
 
     let mut freed_bytes = 0;
 
@@ -215,7 +246,13 @@ pub fn reclaim_domain_allocations(domain_id: DomainId) -> usize {
 
 /// 統計を取得
 pub fn stats() -> OwnershipStats {
-    DOMAIN_ALLOCATIONS.lock().stats()
+    DOMAIN_ALLOCATIONS
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[OWNERSHIP] Global Map poisoned");
+            e.into_inner()
+        })
+        .stats()
 }
 
 /// オーナーシップ統計
@@ -297,7 +334,10 @@ pub unsafe fn deallocate_slice_for_domain<T>(ptr: NonNull<T>, len: usize) {
 
 /// 全ドメインの割り当てサマリを取得（OOMキラー用）
 pub fn get_domain_memory_summary() -> Vec<(DomainId, usize)> {
-    let allocs = DOMAIN_ALLOCATIONS.lock();
+    let allocs = DOMAIN_ALLOCATIONS.lock().unwrap_or_else(|e| {
+        log::warn!("[OWNERSHIP] Global Map poisoned");
+        e.into_inner()
+    });
     allocs
         .domain_bytes
         .iter()
@@ -307,7 +347,10 @@ pub fn get_domain_memory_summary() -> Vec<(DomainId, usize)> {
 
 /// 最大メモリ使用ドメインを取得（OOMキラー用）
 pub fn get_largest_domain() -> Option<(DomainId, usize)> {
-    let allocs = DOMAIN_ALLOCATIONS.lock();
+    let allocs = DOMAIN_ALLOCATIONS.lock().unwrap_or_else(|e| {
+        log::warn!("[OWNERSHIP] Global Map poisoned");
+        e.into_inner()
+    });
     allocs
         .domain_bytes
         .iter()

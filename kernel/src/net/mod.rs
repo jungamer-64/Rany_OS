@@ -346,7 +346,14 @@ pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
 /// Get network statistics
 pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
     // Try to get real stats from NetworkStack
-    if let Some(stack_guard) = stack::stack().lock().as_ref() {
+    if let Some(stack_guard) = stack::stack()
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[NET] Stack poisoned");
+            e.into_inner()
+        })
+        .as_ref()
+    {
         let stats = stack_guard.stats();
         return Some(NetworkStatsSnapshot {
             rx_packets: stats.rx_packets.load(Ordering::Relaxed),
@@ -365,7 +372,14 @@ pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
 /// Send ICMP echo request (ping)
 pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
     // Try to use real NetworkStack
-    if let Some(stack_guard) = stack::stack().lock().as_ref() {
+    if let Some(stack_guard) = stack::stack()
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[NET] Stack poisoned");
+            e.into_inner()
+        })
+        .as_ref()
+    {
         let target_ip = ipv4::Ipv4Address::new(target);
 
         // Attempt to send ICMP echo via stack
@@ -479,7 +493,14 @@ pub fn get_dhcp_state() -> Option<DhcpStateInfo> {
 /// Get ARP cache
 pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     // Try to get real ARP cache from NetworkStack
-    if let Some(stack_guard) = stack::stack().lock().as_ref() {
+    if let Some(stack_guard) = stack::stack()
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[NET] Stack poisoned");
+            e.into_inner()
+        })
+        .as_ref()
+    {
         let arp_entries = stack_guard.arp_cache();
 
         let entries: Vec<ArpCacheEntry> = arp_entries
