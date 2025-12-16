@@ -4,7 +4,7 @@
 //!
 //! # 画像処理
 //!
-//! BMP、PNG（簡易）、アイコン等の画像フォーマット対応。
+//! `BMP`、`PNG`（簡易）、アイコン等の画像フォーマット対応。
 //!
 //! ## 機能
 //! - BMPファイル読み込み
@@ -14,7 +14,13 @@
 //!
 //! Note: Framebuffer drawing logic is excluded to keep this crate kernel-independent.
 
+// Allow common casting operations in image processing code
 #![allow(dead_code)]
+#![allow(clippy::cast_lossless)] // u8->u32, u16->u32 are safe and common
+#![allow(clippy::cast_precision_loss)] // u32->f32 for interpolation
+#![allow(clippy::cast_possible_wrap)] // u32->i32 for coordinate math
+#![allow(clippy::cast_sign_loss)] // i32->u32 after bounds checking
+#![allow(clippy::cast_possible_truncation)] // f32->u8 for color values
 
 use alloc::vec;
 use alloc::vec::Vec;
