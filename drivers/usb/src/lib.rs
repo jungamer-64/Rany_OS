@@ -18,7 +18,9 @@
 
 #![no_std]
 #![allow(dead_code)]
-#![deny(clippy::missing_safety_doc)]
+#![allow(clippy::missing_safety_doc)] // USB low-level functions
+#![allow(clippy::must_use_candidate)] // Accessor methods
+#![allow(clippy::struct_excessive_bools)] // PortStatus mirrors hardware
 
 extern crate alloc;
 

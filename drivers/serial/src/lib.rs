@@ -1,6 +1,8 @@
 #![no_std]
 #![feature(abi_x86_interrupt)]
 #![allow(dead_code)]
+#![allow(clippy::must_use_candidate)] // Accessor methods
+#![allow(clippy::len_without_is_empty)] // LineEditor has explicit len
 
 extern crate alloc;
 

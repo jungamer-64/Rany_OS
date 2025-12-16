@@ -1,4 +1,9 @@
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::must_use_candidate)] // Capability accessor methods
+#![allow(clippy::use_self)] // Explicit type names for clarity
+#![allow(clippy::missing_const_for_fn)] // Functions using Mutex
+#![allow(clippy::missing_errors_doc)] // Result type documentation
+#![allow(clippy::map_unwrap_or)] // map().unwrap_or() pattern is clear
 
 //! Minimal Security crate extracted from the kernel for host-friendly unit testing.
 //!

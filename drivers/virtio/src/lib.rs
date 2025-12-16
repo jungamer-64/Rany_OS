@@ -16,6 +16,8 @@
 
 #![no_std]
 #![allow(dead_code)]
+#![allow(clippy::collapsible_if)] // Clear conditional logic
+#![allow(clippy::type_complexity)] // Complex VirtQueue types
 
 extern crate alloc;
 
