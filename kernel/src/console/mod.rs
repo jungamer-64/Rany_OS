@@ -14,6 +14,8 @@
 //! - コピー＆ペースト
 //! - ログ出力統合
 
+// Allow explicit Default impl for AnsiColor for clarity
+#![allow(clippy::derivable_impls)]
 #![allow(dead_code)]
 
 use alloc::collections::VecDeque;
