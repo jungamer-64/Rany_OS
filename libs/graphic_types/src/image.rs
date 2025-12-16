@@ -21,6 +21,13 @@
 #![allow(clippy::cast_possible_wrap)] // u32->i32 for coordinate math
 #![allow(clippy::cast_sign_loss)] // i32->u32 after bounds checking
 #![allow(clippy::cast_possible_truncation)] // f32->u8 for color values
+#![allow(clippy::must_use_candidate)] // Image builder methods return Self
+#![allow(clippy::return_self_not_must_use)] // Builder pattern methods
+#![allow(clippy::doc_markdown)] // Many format names like DIBHeader
+#![allow(clippy::ptr_as_ptr)] // Pointer casts in image processing
+#![allow(clippy::branches_sharing_code)] // Kept for readability
+#![allow(clippy::manual_div_ceil)] // Ceiling division pattern
+#![allow(clippy::missing_const_for_fn)] // Some functions use Vec
 
 use alloc::vec;
 use alloc::vec::Vec;

@@ -6,9 +6,19 @@
 //!
 //! ## 設計
 //! - 統一ブロックデバイスインターフェース
-//! - VirtIO-blk、NVMe、RAMディスク対応
+//! - `VirtIO`-blk、`NVMe`、RAMディスク対応
 //! - 非同期I/Oサポート
 //!
+
+// Allow common patterns in block device code
+#![allow(clippy::missing_const_for_fn)] // Many functions use sync primitives
+#![allow(clippy::missing_errors_doc)] // Block device trait methods
+#![allow(clippy::cast_possible_truncation)] // 64-bit kernel, u64->usize is safe
+#![allow(clippy::collapsible_if)] // Kept for readability in state machines
+#![allow(clippy::useless_asref)] // Option::as_ref().map pattern
+#![allow(clippy::redundant_closure_for_method_calls)] // Clone pattern
+#![allow(clippy::must_use_candidate)] // Internal implementation
+#![allow(clippy::option_if_let_else)] // Kept for readability
 
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
