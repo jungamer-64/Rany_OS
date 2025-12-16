@@ -11,7 +11,7 @@
 
 use crate::domain_system::DomainId;
 use crate::sync::PoisonLock;
-use alloc::{collections::BTreeMap, vec::Vec};
+use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// デフォルト・シャード数 (調整可能)
@@ -179,6 +179,42 @@ impl HeapRegistry {
         (address >> 4) % self.shards.len()
     }
 
+    /// Determine the set of shard indices that cover the given address range.
+    /// Uses 16-byte granularity matching the shard hashing (address >> 4).
+    fn shards_for_range(&self, address: usize, size: usize) -> alloc::vec::Vec<usize> {
+        let shard_count = self.shards.len();
+        if shard_count == 0 {
+            return alloc::vec::Vec::new();
+        }
+
+        if size == 0 {
+            return alloc::vec::Vec::from([self.get_shard_index(address)]);
+        }
+
+        // Avoid overflow when computing end address
+        let end_addr = address.saturating_add(size.saturating_sub(1));
+
+        let start_blk = address >> 4;
+        let end_blk = end_addr >> 4;
+
+        // If the number of blocks spans all shards, return full range
+        let span = end_blk.saturating_sub(start_blk).saturating_add(1);
+        if span as usize >= shard_count {
+            return (0..shard_count).collect();
+        }
+
+        let mut shards = alloc::vec::Vec::new();
+        let mut last: Option<usize> = None;
+        for blk in start_blk..=end_blk {
+            let idx = (blk as usize) % shard_count;
+            if last != Some(idx) {
+                shards.push(idx);
+                last = Some(idx);
+            }
+        }
+        shards
+    }
+
     /// オブジェクトを登録
     pub fn register(
         &self,
@@ -187,24 +223,28 @@ impl HeapRegistry {
         owner: DomainId,
         type_id: u64,
     ) -> Result<u64, RegistryError> {
-        let shard_idx = self.get_shard_index(address);
-        let mut shard = self.shards[shard_idx].lock().unwrap();
+        // Determine shards covering the object's address range and lock them
+        let mut idxs = self.shards_for_range(address, size);
+        idxs.sort_unstable();
+        idxs.dedup();
 
-        // 重複チェック
-        if shard.objects.contains_key(&address) {
-            return Err(RegistryError::AlreadyRegistered);
+        // Acquire guards for all involved shards in ascending order to avoid deadlocks
+        let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
+        for idx in &idxs {
+            guards.push(self.shards[*idx].lock().unwrap());
         }
 
-        // 重なり検出 (同シャード内のみ。シャードまたぎの重なりは、このハッシングでは検知できない可能性があるが、
-        // アロケータが重複アドレスを返さないことを前提とする。
-        // もし厳密にやるなら、アドレス範囲全域のシャードをロックする必要があるが、
-        // 通常メモリアロケータは重複しない。)
-        if self.check_overlap_internal(&shard, address, size) {
-            return Err(RegistryError::Overlapping);
+        // Check duplicate registration across all involved shards
+        for g in &guards {
+            if g.objects.contains_key(&address) {
+                return Err(RegistryError::AlreadyRegistered);
+            }
+            if self.check_overlap_internal(&*g, address, size) {
+                return Err(RegistryError::Overlapping);
+            }
         }
 
         let generation = self.next_generation.fetch_add(1, Ordering::SeqCst);
-
         let object = HeapObject {
             address,
             size,
@@ -213,43 +253,74 @@ impl HeapRegistry {
             generation,
         };
 
-        shard.objects.insert(address, object);
+        // Insert the object into all covered shards
+        for g in guards.iter_mut() {
+            g.objects.insert(address, object.clone());
+            g.owner_index
+                .entry(owner)
+                .or_insert_with(Vec::new)
+                .push(address);
+        }
 
-        // オーナーインデックスを更新
-        shard
-            .owner_index
-            .entry(owner)
-            .or_insert_with(Vec::new)
-            .push(address);
-
-        self.stats.total_registered.fetch_add(1, Ordering::Relaxed);
+        // Count registration only once per logical object
+        self.stats
+            .total_registered
+            .fetch_add(1, Ordering::Relaxed);
 
         Ok(generation)
     }
 
     /// オブジェクトの登録を解除
     pub fn unregister(&self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
-        let shard_idx = self.get_shard_index(address);
-        let mut shard = self.shards[shard_idx].lock().unwrap();
+        // Find object in primary shard to determine its size
+        let primary = self.get_shard_index(address);
+        let primary_guard = self.shards[primary].lock().unwrap();
+        let object = primary_guard
+            .objects
+            .get(&address)
+            .ok_or(RegistryError::NotFound)?;
 
-        // オブジェクトを検索
-        let object = shard.objects.get(&address).ok_or(RegistryError::NotFound)?;
-
-        // 所有者チェック
         if object.owner != owner {
             return Err(RegistryError::PermissionDenied);
         }
 
-        // 削除
-        shard.objects.remove(&address);
+        let size = object.size;
+        drop(primary_guard);
 
-        // オーナーインデックスから削除
-        if let Some(addrs) = shard.owner_index.get_mut(&owner) {
-            addrs.retain(|a| *a != address);
+        // Determine all shards touched and lock them (ascending order)
+        let mut idxs = self.shards_for_range(address, size);
+        idxs.sort_unstable();
+        idxs.dedup();
+
+        let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
+        for idx in &idxs {
+            guards.push(self.shards[*idx].lock().unwrap());
+        }
+
+        // Re-validate and remove from all shards
+        // Use the primary shard position to verify ownership again
+        let primary_pos = idxs
+            .iter()
+            .position(|&i| i == primary)
+            .ok_or(RegistryError::NotFound)?;
+
+        if !guards[primary_pos].objects.contains_key(&address) {
+            return Err(RegistryError::NotFound);
+        }
+
+        if guards[primary_pos].objects.get(&address).unwrap().owner != owner {
+            return Err(RegistryError::PermissionDenied);
+        }
+
+        for g in guards.iter_mut() {
+            if g.objects.remove(&address).is_some() {
+                if let Some(addrs) = g.owner_index.get_mut(&owner) {
+                    addrs.retain(|a| *a != address);
+                }
+            }
         }
 
         self.stats.total_freed.fetch_add(1, Ordering::Relaxed);
-
         Ok(())
     }
 
@@ -260,34 +331,63 @@ impl HeapRegistry {
         from: DomainId,
         to: DomainId,
     ) -> Result<(), RegistryError> {
-        let shard_idx = self.get_shard_index(address);
-        let mut shard = self.shards[shard_idx].lock().unwrap();
-
-        // オブジェクトを検索
-        let object = shard
+        // Read size from primary shard first
+        let primary = self.get_shard_index(address);
+        let primary_guard = self.shards[primary].lock().unwrap();
+        let object = primary_guard
             .objects
-            .get_mut(&address)
+            .get(&address)
             .ok_or(RegistryError::NotFound)?;
 
-        // 所有者チェック
         if object.owner != from {
             return Err(RegistryError::PermissionDenied);
         }
 
-        // 所有者を更新
-        object.owner = to;
+        let size = object.size;
+        drop(primary_guard);
 
-        // インデックスを更新
-        if let Some(addrs) = shard.owner_index.get_mut(&from) {
-            addrs.retain(|a| *a != address);
+        // Lock all touched shards
+        let mut idxs = self.shards_for_range(address, size);
+        idxs.sort_unstable();
+        idxs.dedup();
+
+        let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
+        for idx in &idxs {
+            guards.push(self.shards[*idx].lock().unwrap());
         }
-        shard
-            .owner_index
-            .entry(to)
-            .or_insert_with(Vec::new)
-            .push(address);
 
-        self.stats.total_transferred.fetch_add(1, Ordering::Relaxed);
+        // Re-validate ownership and apply change across shards
+        let primary_pos = idxs
+            .iter()
+            .position(|&i| i == primary)
+            .ok_or(RegistryError::NotFound)?;
+
+        if !guards[primary_pos].objects.contains_key(&address) {
+            return Err(RegistryError::NotFound);
+        }
+
+        if guards[primary_pos].objects.get(&address).unwrap().owner != from {
+            return Err(RegistryError::PermissionDenied);
+        }
+
+        for g in guards.iter_mut() {
+            if let Some(obj) = g.objects.get_mut(&address) {
+                obj.owner = to;
+            }
+
+            // update owner_index
+            if let Some(addrs) = g.owner_index.get_mut(&from) {
+                addrs.retain(|a| *a != address);
+            }
+            g.owner_index
+                .entry(to)
+                .or_insert_with(Vec::new)
+                .push(address);
+        }
+
+        self.stats
+            .total_transferred
+            .fetch_add(1, Ordering::Relaxed);
 
         Ok(())
     }
@@ -389,18 +489,39 @@ impl HeapRegistry {
 
     /// オブジェクトを無条件に登録解除し、情報を返す
     pub fn unregister_any(&self, address: usize) -> Option<(DomainId, usize)> {
-        let shard_idx = self.get_shard_index(address);
-        let mut shard = self.shards[shard_idx].lock().unwrap();
+        // Try find primary object to get size and owner
+        let primary = self.get_shard_index(address);
+        let primary_guard = self.shards[primary].lock().unwrap();
+        let obj = primary_guard.objects.get(&address).cloned();
+        drop(primary_guard);
 
-        if let Some(object) = shard.objects.remove(&address) {
-            // オーナーインデックスから削除
-            if let Some(addrs) = shard.owner_index.get_mut(&object.owner) {
-                addrs.retain(|a| *a != address);
+        let (owner, size) = match obj {
+            Some(o) => (o.owner, o.size),
+            None => return None,
+        };
+
+        // Remove from all covered shards
+        let mut idxs = self.shards_for_range(address, size);
+        idxs.sort_unstable();
+        idxs.dedup();
+
+        let mut removed = false;
+        for idx in &idxs {
+            let mut g = self.shards[*idx].lock().unwrap();
+            if g.objects.remove(&address).is_some() {
+                if let Some(addrs) = g.owner_index.get_mut(&owner) {
+                    addrs.retain(|a| *a != address);
+                }
+                removed = true;
             }
-            self.stats.total_freed.fetch_add(1, Ordering::Relaxed);
-            return Some((object.owner, object.size));
         }
-        None
+
+        if removed {
+            self.stats.total_freed.fetch_add(1, Ordering::Relaxed);
+            Some((owner, size))
+        } else {
+            None
+        }
     }
 
     pub fn register_simple(&self, ptr: usize, size: usize, owner: DomainId) {
@@ -409,23 +530,37 @@ impl HeapRegistry {
 
     // Legacy support (mostly for finding bugs)
     pub fn object_count(&self) -> usize {
-        self.shards
-            .iter()
-            .map(|s| s.lock().unwrap().objects.len())
-            .sum()
+        // Deduplicate addresses across shards to count logical objects
+        let mut set: BTreeSet<usize> = BTreeSet::new();
+        for shard in &self.shards {
+            let g = shard.lock().unwrap();
+            for addr in g.objects.keys() {
+                set.insert(*addr);
+            }
+        }
+        set.len()
     }
 
     pub fn reclaim_all(&self, domain: DomainId) -> usize {
-        let mut count = 0;
+        // Remove all objects owned by `domain` across all shards, deduplicate
+        let mut removed_addrs: BTreeSet<usize> = BTreeSet::new();
         for shard in &self.shards {
-            let mut shard = shard.lock().unwrap();
-            if let Some(addrs) = shard.owner_index.remove(&domain) {
-                for addr in addrs {
-                    shard.objects.remove(&addr);
-                    count += 1;
+            let mut g = shard.lock().unwrap();
+            let mut to_remove: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+            for (&addr, obj) in g.objects.iter() {
+                if obj.owner == domain {
+                    to_remove.push(addr);
                 }
             }
+            for addr in to_remove {
+                g.objects.remove(&addr);
+                if let Some(addrs) = g.owner_index.get_mut(&domain) {
+                    addrs.retain(|a| *a != addr);
+                }
+                removed_addrs.insert(addr);
+            }
         }
+        let count = removed_addrs.len();
         self.stats
             .total_freed
             .fetch_add(count as u64, Ordering::Relaxed);
@@ -544,5 +679,57 @@ mod tests {
         // 少なくともいくつかのロック獲得とコンテンションが発生していることを期待
         assert!(m.acquire_count > 0, "expected some lock activity");
         assert!(m.contention_events > 0, "expected some contention events");
+    }
+
+    #[test]
+    fn test_register_spanning_shards() {
+        reset_lock_metrics();
+
+        let registry = HeapRegistry::new(4); // small shard count to force spanning
+        let owner = DomainId::new(1);
+        let addr = 0usize;
+        let size = 64usize; // with 16-byte blocks and 4 shards this will cover all shards
+
+        // Register spanning object
+        let generation = registry.register(addr, size, owner, 0).expect("register failed");
+        assert!(generation > 0);
+
+        // Mid-range access should resolve to owner
+        assert!(registry.check_access(addr + 32, owner));
+        assert_eq!(registry.get_owner(addr + 32), Some(owner));
+
+        // Object should appear in every shard
+        for s in 0..registry.shards.len() {
+            let g = registry.shards[s].lock().unwrap();
+            assert!(g.objects.contains_key(&addr));
+        }
+
+        // Transfer ownership and validate across shards
+        registry
+            .transfer_ownership(addr, owner, DomainId::new(2))
+            .expect("transfer failed");
+        assert_eq!(registry.get_owner(addr + 1), Some(DomainId::new(2)));
+
+        // Unregister should remove object from all shards
+        registry
+            .unregister(addr, DomainId::new(2))
+            .expect("unregister failed");
+        assert_eq!(registry.object_count(), 0);
+        assert!(!registry.check_access(addr, DomainId::new(2)));
+    }
+
+    #[test]
+    fn test_overlapping_detection_across_shards() {
+        let registry = HeapRegistry::new(4);
+        let owner = DomainId::new(1);
+
+        // Register large object
+        registry.register(0, 64, owner, 0).unwrap();
+
+        // Attempt to register overlapping object at offset 48 (overlaps)
+        match registry.register(48, 16, DomainId::new(2), 0) {
+            Err(RegistryError::Overlapping) => {}
+            _ => panic!("expected overlap error"),
+        }
     }
 }

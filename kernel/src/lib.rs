@@ -41,4 +41,8 @@ pub mod loader;
 pub mod sync;
 
 #[cfg(any(test, feature = "bench"))]
+pub mod sas;
+
+
+#[cfg(any(test, feature = "bench"))]
 pub mod util;

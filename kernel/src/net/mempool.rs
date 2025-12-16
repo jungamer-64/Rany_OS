@@ -4,6 +4,8 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::domain_system::DomainId;
+use crate::ipc::rref::RRef;
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
@@ -186,6 +188,40 @@ impl PacketRef {
             len: self.len,
         }
     }
+
+    /// Convert to RRef for zero-copy IPC
+    /// Consumes the PacketRef and returns an RRef owned by target_domain.
+    /// Requires exclusive access (ref_count == 1).
+    pub fn into_rref(self, target_domain: DomainId) -> Result<RRef<PacketBuffer>, Self> {
+        // Enforce exclusive ownership
+        unsafe {
+            if self.buffer.as_ref().ref_count.load(Ordering::Acquire) != 1 {
+                return Err(self);
+            }
+
+            // Transfer ownership from Kernel(0) to target_domain
+            // Assume current owner is Kernel (0) because PacketRef implies pool ownership
+            // and checking owner via SAS might be expensive.
+            match crate::sas::transfer_ownership(
+                self.buffer.as_ptr() as usize,
+                DomainId::new(0),
+                target_domain,
+            ) {
+                Ok(_) => {}
+                Err(e) => {
+                    log::error!("Failed to transfer packet ownership: {:?}", e);
+                    return Err(self);
+                }
+            }
+        }
+
+        let ptr = self.buffer;
+
+        // Forget self to prevent Drop (which would return to pool)
+        core::mem::forget(self);
+
+        unsafe { Ok(RRef::from_raw(ptr, target_domain)) }
+    }
 }
 
 impl Drop for PacketRef {
@@ -248,10 +284,18 @@ impl Mempool {
         });
 
         for i in 0..capacity {
-            // バッファを割り当て
+            // バッファを割り当て (Exchange Heap for RRef compatibility)
             let layout = alloc::alloc::Layout::new::<PacketBuffer>();
-            let nn = crate::util::allocate_zeroed(layout).ok_or("Failed to allocate buffer")?;
+            let nn = crate::mm::exchange_heap::allocate_raw(layout)
+                .ok_or("Failed to allocate buffer")?;
             let non_null = nn.cast::<PacketBuffer>();
+
+            // Heap Registryに登録（Kernel所有として）
+            crate::sas::register_object(
+                non_null.as_ptr() as usize,
+                layout.size(),
+                DomainId::new(0),
+            );
 
             // バッファを初期化
             unsafe {
@@ -313,6 +357,29 @@ impl Mempool {
             })
             .push(buffer);
         self.free_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Return an RRef to the pool (recycling)
+    /// Converts RRef back to a free buffer.
+    pub fn return_rref(&self, rref: RRef<PacketBuffer>) {
+        let (ptr, owner) = rref.into_raw();
+
+        unsafe {
+            // Transfer ownership back to Kernel(0)
+            if let Err(e) =
+                crate::sas::transfer_ownership(ptr.as_ptr() as usize, owner, DomainId::new(0))
+            {
+                log::error!("Failed to reclaim RRef ownership: {:?}", e);
+                // Do not reuse potentially corrupted buffer
+                return;
+            }
+
+            // Reset state
+            ptr.as_ref().len.store(0, Ordering::Release);
+            ptr.as_ref().ref_count.store(0, Ordering::Release);
+
+            self.return_buffer(ptr);
+        }
     }
 
     /// 統計を取得

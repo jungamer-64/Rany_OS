@@ -186,7 +186,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
     stack::init(config);
 
     // Set transmit callback
-    if let Some(ref stack) = *stack::stack().lock().unwrap_or_else(|e| {
+    if let Some(ref mut stack) = *stack::stack().lock().unwrap_or_else(|e| {
         log::warn!("[NET BRIDGE] Stack poisoned");
         e.into_inner()
     }) {
@@ -274,12 +274,12 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
 
 /// Send ICMP echo via real NetworkStack
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
-    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
+    let mut stack_guard = stack::stack().lock().unwrap_or_else(|e| {
         log::warn!("[NET BRIDGE] Stack poisoned");
         e.into_inner()
     });
     let stack = stack_guard
-        .as_ref()
+        .as_mut()
         .ok_or("Network stack not initialized")?;
 
     let target_ip = Ipv4Address::new(target);

@@ -473,37 +473,90 @@ impl Executor {
     }
 
     /// Work Stealing: 他のCPUからタスクを盗む
+    /// 【設計書 4.3】NUMA優先の3段階ワークスティーリング:
+    /// 1. 同一LLC/Hyperthread siblingから
+    /// 2. 同一NUMAノード内のコアから
+    /// 3. 他のNUMAノードのコアから
     fn try_steal(&mut self) {
         // アクティブCPUが1つしかない場合はスキップ
         if ACTIVE_CPU_COUNT.load(Ordering::Relaxed) <= 1 {
             return;
         }
 
-        // 他のCPUからタスクを盗む（ラウンドロビン）
-        let start = (self.cpu_id + 1) % MAX_CPUS;
+        // NUMA トポロジ情報を取得
+        let numa_info = super::work_stealing_advanced::NumaTopology::get();
+        let core_id = self.cpu_id as u32;
         let mut stolen = 0;
 
-        for i in 0..MAX_CPUS {
-            let target_cpu = (start + i) % MAX_CPUS;
-            if target_cpu == self.cpu_id {
+        // Phase 1: 同一LLCを共有するコア（Hyperthread sibling）からスチール
+        for &sibling_id in numa_info.get_llc_siblings(core_id) {
+            if sibling_id == core_id || sibling_id as usize >= MAX_CPUS {
                 continue;
             }
-
-            let store = &PER_CORE_STORES[target_cpu];
+            let store = &PER_CORE_STORES[sibling_id as usize];
             if !store.active.load(Ordering::Acquire) {
                 continue;
             }
-
-            // タスクが十分にある場合のみ盗む
             if store.len() > 1 {
                 if let Some((_, task)) = store.steal_one() {
                     self.local_queue.push_back(task);
                     stolen += 1;
                     EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
-
-                    // バッチ上限
                     if stolen >= self.batch_size / 2 {
-                        break;
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Phase 2: 同一NUMAノード内の他コアからスチール
+        let my_numa_node = numa_info.get_numa_node(core_id);
+        for &target_core in numa_info.get_cores_in_node(my_numa_node) {
+            if target_core == core_id || target_core as usize >= MAX_CPUS {
+                continue;
+            }
+            // 既にPhase 1でチェック済みのLLC siblingはスキップ
+            if numa_info.shares_llc(core_id, target_core) {
+                continue;
+            }
+            let store = &PER_CORE_STORES[target_core as usize];
+            if !store.active.load(Ordering::Acquire) {
+                continue;
+            }
+            if store.len() > 1 {
+                if let Some((_, task)) = store.steal_one() {
+                    self.local_queue.push_back(task);
+                    stolen += 1;
+                    EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
+                    if stolen >= self.batch_size / 2 {
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Phase 3: 他のNUMAノードからスチール（最後の手段）
+        for node in 0..numa_info.num_nodes() {
+            if node == my_numa_node {
+                continue;
+            }
+            for &target_core in numa_info.get_cores_in_node(node) {
+                if target_core as usize >= MAX_CPUS {
+                    continue;
+                }
+                let store = &PER_CORE_STORES[target_core as usize];
+                if !store.active.load(Ordering::Acquire) {
+                    continue;
+                }
+                if store.len() > 1 {
+                    if let Some((_, task)) = store.steal_one() {
+                        self.local_queue.push_back(task);
+                        stolen += 1;
+                        EXECUTOR_STATS.steals.fetch_add(1, Ordering::Relaxed);
+                        // TODO: Track cross-NUMA steals separately
+                        if stolen >= self.batch_size / 2 {
+                            return;
+                        }
                     }
                 }
             }

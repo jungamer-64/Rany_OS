@@ -180,7 +180,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
 
     // NetworkStack経由で送信
     let stack = crate::net::stack::stack();
-    if let Some(ref s) = *stack.lock().unwrap_or_else(|e| {
+    if let Some(ref mut s) = *stack.lock().unwrap_or_else(|e| {
         log::warn!("[NET] Stack poisoned");
         e.into_inner()
     }) {
