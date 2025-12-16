@@ -12,12 +12,14 @@
 //! - `controller` - AHCIコントローラ実装
 //!
 //! ## Kernel-Dependent Modules (temporarily excluded)
-//! - `poll_handler` - IoScheduler統合 (requires kernel io_scheduler)
+//! - `poll_handler` - `IoScheduler`統合 (requires kernel io_scheduler)
 //! - `dma_buffer` - DMA安全バッファ (requires kernel dma module)
 
 #![no_std]
 #![allow(unsafe_attr_outside_unsafe)]
 #![allow(dead_code)]
+#![allow(clippy::derivable_impls)] // Explicit Default impl for packed struct clarity
+#![allow(clippy::must_use_candidate)] // Hardware accessor methods
 
 extern crate alloc;
 

@@ -2,6 +2,15 @@
 // Allow common patterns in RTC driver
 #![allow(clippy::manual_is_multiple_of)] // Leap year check x % 4 == 0 is readable
 #![allow(clippy::assign_op_pattern)] // CMOS register operations use |= and &= patterns
+#![allow(clippy::must_use_candidate)] // Accessor methods
+#![allow(clippy::option_if_let_else)] // if let for clarity
+#![allow(clippy::if_not_else)] // Boolean logic clarity
+#![allow(clippy::cast_lossless)] // u8->u16 for register math
+#![allow(clippy::cast_possible_truncation)] // u16->u8 for century/year
+#![allow(clippy::cast_possible_wrap)] // u64->i64 for Unix time
+#![allow(clippy::cast_sign_loss)] // i64->u64 for timestamp
+#![allow(clippy::redundant_closure_for_method_calls)] // Closure readability
+#![allow(clippy::struct_excessive_bools)] // RtcAlarm has multiple enable flags
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use hal::port_io::PortU8;
