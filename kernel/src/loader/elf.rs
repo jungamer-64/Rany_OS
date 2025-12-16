@@ -61,11 +61,12 @@ use super::LoadError;
 // `security::mpk::allocate_protection_key` should be restored when the
 // module-level visibility guarantees are made explicit.
 
-// Use real PageFlags and PKEY allocator from the kernel modules
+// Use real PageFlags and PKEY allocator from the kernel modules when available
 // - `PageFlags` lives in `crate::mm::higher_half` and provides `set_pkey()`.
 // - `allocate_protection_key()` / `free_protection_key()` live in `crate::security::mpk`.
 // We call into these implementations directly so the loader's behavior matches
 // the real kernel semantics (no temporary stubs).
+#[cfg(not(test))]
 use crate::mm::PageFlags;
 use alloc::string::{String, ToString};
 use alloc::vec;
@@ -606,12 +607,12 @@ impl<'a> ElfLoader<'a> {
     /// セルをメモリにロード
     pub fn load(&self, info: &CellInfo<'a>) -> Result<LoadedCell, LoadError> {
 
-        // Protection Keyを割り当て（失敗時はLoadError）
-        let pkey_raw = crate::security::mpk::allocate_protection_key()
-            .ok_or(LoadError::OutOfMemory)?;
-
-        // Guard that will free the PKEY on early return unless released
+        // Protection Key は page-table manager が利用可能な場合にのみ割り当てる。
+        // テストビルド（libテスト）では `mm` モジュールが公開されていないため
+        // PKEY の割り当てとページフラグの更新はスキップする。
+        #[cfg(not(test))]
         struct PkeyGuard(Option<u8>);
+        #[cfg(not(test))]
         impl PkeyGuard {
             fn new(v: u8) -> Self {
                 Self(Some(v))
@@ -625,6 +626,7 @@ impl<'a> ElfLoader<'a> {
                 v
             }
         }
+        #[cfg(not(test))]
         impl Drop for PkeyGuard {
             fn drop(&mut self) {
                 if let Some(v) = self.0 {
@@ -633,13 +635,23 @@ impl<'a> ElfLoader<'a> {
             }
         }
 
-        let guard = PkeyGuard::new(pkey_raw);
+        // Allocate PKEY only when mm is available (non-test builds). The guard
+        // will free the PKEY on early return if something goes wrong.
+        #[cfg(not(test))]
+        let guard = {
+            let pkey_raw = crate::security::mpk::allocate_protection_key()
+                .ok_or(LoadError::OutOfMemory)?;
+            PkeyGuard::new(pkey_raw)
+        };
 
         // メモリを割り当て
         let base_address = self.allocate_memory(info.memory_size, info.alignment)?;
 
-        // PKEY の所有権を受け取り、以降の処理で使用する
+        // PKEY を取得（テストビルドでは None）
+        #[cfg(not(test))]
         let pkey = guard.release();
+        #[cfg(test)]
+        let pkey = 0u8; // ダミー値（テストではフラグ更新を行わないため使用されない）
 
         // 各セグメントをロード
         for segment in &info.segments {
@@ -669,43 +681,11 @@ impl<'a> ElfLoader<'a> {
                 }
             }
 
-            // Compute PKEY-aware flags and apply them to each mapped page
-            // covering this segment. We call into `mm::global_update_flags` to
-            // set per-page flags (including PKEY). If the global page table
-            // manager is not available or a page is not mapped we log a
-            // warning and continue; other errors are treated as fatal.
-            let flags = if (segment.flags & 0x1) != 0 {
-                PageFlags::user_code().set_pkey(pkey)
-            } else {
-                PageFlags::user_data().set_pkey(pkey)
-            };
-
-            // Iterate the page-aligned range covering the segment's memory
-            let seg_start = crate::mm::VirtAddr::new(dest as u64).align_down().as_u64() as usize;
-            let seg_end = crate::mm::VirtAddr::new((dest + segment.mem_size) as u64)
-                .align_up()
-                .as_u64() as usize;
-
-            for page_addr in (seg_start..seg_end).step_by(4096) {
-                let virt = crate::mm::VirtAddr::new(page_addr as u64);
-                unsafe {
-                    match crate::mm::global_update_flags(virt, flags) {
-                        Ok(()) => {}
-                        Err(e) => match e {
-                            crate::mm::MapError::InvalidAddress | crate::mm::MapError::NotMapped => {
-                                log::warn!("[ELF] Could not update flags for page {:#x}: {:?} (continuing)", page_addr, e)
-                            }
-                            other => {
-                                return Err(LoadError::InvalidPermissions(alloc::format!(
-                                    "Failed to update page flags for page {:#x}: {:?}",
-                                    page_addr, other
-                                )));
-                            }
-                        },
-                    }
-                }
-            }
-
+            // Compute PKEY-aware flags and (when mm is available) apply them to
+            // each mapped page covering this segment. If `mm` is not available
+            // (test builds) this block is skipped.
+            // Apply page flags (may be a no-op in test builds)
+            self.apply_page_flags(dest, segment.mem_size, segment.flags, pkey)?;
         }
 
         let entry_point = if info.entry_offset != 0 {
@@ -714,12 +694,21 @@ impl<'a> ElfLoader<'a> {
             None
         };
 
-        Ok(LoadedCell {
+        #[cfg(not(test))]
+        return Ok(LoadedCell {
             base_address,
             size: info.memory_size,
             entry_point,
             pkey: Some(pkey),
-        })
+        });
+
+        #[cfg(test)]
+        return Ok(LoadedCell {
+            base_address,
+            size: info.memory_size,
+            entry_point,
+            pkey: None,
+        });
     }
 
     /// メモリを割り当て
@@ -758,6 +747,63 @@ impl<'a> ElfLoader<'a> {
         );
 
         Ok(base_address)
+    }
+
+    /// Apply per-page flags for a memory range belonging to a segment.
+    ///
+    /// This is a thin wrapper that calls into `mm::global_update_flags` when
+    /// compiled for the full kernel; for `#[cfg(test)]` builds this is a
+    /// no-op to avoid depending on the `mm` module during library tests.
+    #[cfg(not(test))]
+    fn apply_page_flags(
+        &self,
+        dest: usize,
+        mem_size: usize,
+        seg_flags: u32,
+        pkey: u8,
+    ) -> Result<(), LoadError> {
+        let flags = if (seg_flags & 0x1) != 0 {
+            PageFlags::user_code().set_pkey(pkey)
+        } else {
+            PageFlags::user_data().set_pkey(pkey)
+        };
+
+        let seg_start = crate::mm::VirtAddr::new(dest as u64).align_down().as_u64() as usize;
+        let seg_end = crate::mm::VirtAddr::new((dest + mem_size) as u64)
+            .align_up()
+            .as_u64() as usize;
+
+        for page_addr in (seg_start..seg_end).step_by(4096) {
+            let virt = crate::mm::VirtAddr::new(page_addr as u64);
+            unsafe {
+                match crate::mm::global_update_flags(virt, flags) {
+                    Ok(()) => {}
+                    Err(e) => match e {
+                        crate::mm::MapError::InvalidAddress | crate::mm::MapError::NotMapped => {
+                            log::warn!(
+                                "[ELF] Could not update flags for page {:#x}: {:?} (continuing)",
+                                page_addr,
+                                e
+                            )
+                        }
+                        other => {
+                            return Err(LoadError::InvalidPermissions(alloc::format!(
+                                "Failed to update page flags for page {:#x}: {:?}",
+                                page_addr, other
+                            )));
+                        }
+                    },
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn apply_page_flags(&self, _dest: usize, _mem_size: usize, _seg_flags: u32, _pkey: u8) -> Result<(), LoadError> {
+        // No-op in tests (mm module not exported into library test builds)
+        Ok(())
     }
 
     /// リロケーションを適用

@@ -21,8 +21,7 @@ fn main() {
     fs::write(
         &dest_path,
         format!(
-            "/// Hash of the ABI struct definitions\npub const DRIVER_TYPE_HASH: u64 = {};",
-            hash
+            "/// Hash of the ABI struct definitions\npub const DRIVER_TYPE_HASH: u64 = {hash};"
         ),
     )
     .unwrap();
@@ -71,11 +70,7 @@ fn extract_and_hash_decl(content: &str, decl_start: &str, hasher: &mut Fnv1aHash
 
         for line in rest.lines() {
             // Strip comments
-            let line_content = if let Some(idx) = line.find("//") {
-                &line[..idx]
-            } else {
-                line
-            };
+            let line_content = line.find("//").map_or(line, |idx| &line[..idx]);
 
             // Count braces in the effective content
             for c in line_content.chars() {
@@ -114,7 +109,7 @@ struct Fnv1aHasher {
 }
 
 impl Fnv1aHasher {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             state: 0xcbf2_9ce4_8422_2325,
         }

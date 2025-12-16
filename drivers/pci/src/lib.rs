@@ -9,11 +9,12 @@
 //! - Configuration space access traits
 //! - Legacy I/O and ECAM support
 //! - MSI/MSI-X interrupt support
-//! - PCIe extended capabilities (SR-IOV, AER, hotplug)
+//! - PCIe extended capabilities (`SR-IOV`, AER, hotplug)
 
 #![no_std]
 #![allow(dead_code)]
 #![allow(unused_variables)]
+#![allow(clippy::unreadable_literal)] // PCI class codes and addresses are standard constants
 
 extern crate alloc;
 
