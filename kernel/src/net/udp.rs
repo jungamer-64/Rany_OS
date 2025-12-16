@@ -8,13 +8,13 @@
 #![allow(unused_variables)]
 
 use super::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
+use crate::sync::PoisonLock;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
-use spin::Mutex;
 
 extern crate alloc;
 
@@ -272,14 +272,14 @@ struct UdpSocketInner {
 
 /// UDP socket (async)
 pub struct UdpSocket {
-    inner: Arc<Mutex<UdpSocketInner>>,
+    inner: Arc<PoisonLock<UdpSocketInner>>,
 }
 
 impl UdpSocket {
     /// Create a new UDP socket bound to a port
     pub fn new(local_port: u16) -> Self {
         UdpSocket {
-            inner: Arc::new(Mutex::new(UdpSocketInner {
+            inner: Arc::new(PoisonLock::new(UdpSocketInner {
                 local_port,
                 rx_queue: VecDeque::new(),
                 waker: None,
@@ -290,7 +290,13 @@ impl UdpSocket {
 
     /// Get local port
     pub fn local_port(&self) -> u16 {
-        self.inner.lock().local_port
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] UDP Socket poisoned");
+                e.into_inner()
+            })
+            .local_port
     }
 
     /// Receive a datagram (async)
@@ -302,7 +308,10 @@ impl UdpSocket {
 
     /// Deliver a datagram to this socket (called by the network stack)
     pub fn deliver(&self, datagram: UdpDatagram) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] UDP Socket poisoned");
+            e.into_inner()
+        });
 
         if inner.closed {
             return;
@@ -317,7 +326,10 @@ impl UdpSocket {
 
     /// Close the socket
     pub fn close(&self) {
-        let mut inner = self.inner.lock();
+        let mut inner = self.inner.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] UDP Socket poisoned");
+            e.into_inner()
+        });
         inner.closed = true;
         inner.rx_queue.clear();
 
@@ -328,25 +340,41 @@ impl UdpSocket {
 
     /// Check if socket is closed
     pub fn is_closed(&self) -> bool {
-        self.inner.lock().closed
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] UDP Socket poisoned");
+                e.into_inner()
+            })
+            .closed
     }
 
     /// Get receive queue length
     pub fn rx_queue_len(&self) -> usize {
-        self.inner.lock().rx_queue.len()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] UDP Socket poisoned");
+                e.into_inner()
+            })
+            .rx_queue
+            .len()
     }
 }
 
 /// Future for receiving UDP datagrams
 pub struct UdpRecvFuture {
-    socket: Arc<Mutex<UdpSocketInner>>,
+    socket: Arc<PoisonLock<UdpSocketInner>>,
 }
 
 impl Future for UdpRecvFuture {
     type Output = Option<UdpDatagram>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut inner = self.socket.lock();
+        let mut inner = self.socket.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] UDP Socket poisoned");
+            e.into_inner()
+        });
 
         if inner.closed {
             return Poll::Ready(None);
@@ -367,7 +395,7 @@ const MAX_UDP_SOCKETS: usize = 256;
 /// UDP socket table
 pub struct UdpSocketTable {
     /// Sockets indexed by local port
-    sockets: Mutex<[Option<Arc<Mutex<UdpSocketInner>>>; MAX_UDP_SOCKETS]>,
+    sockets: PoisonLock<[Option<Arc<PoisonLock<UdpSocketInner>>>; MAX_UDP_SOCKETS]>,
     /// Statistics
     stats: UdpStats,
 }
@@ -388,9 +416,9 @@ pub struct UdpStats {
 impl UdpSocketTable {
     /// Create a new UDP socket table
     pub const fn new() -> Self {
-        const NONE: Option<Arc<Mutex<UdpSocketInner>>> = None;
+        const NONE: Option<Arc<PoisonLock<UdpSocketInner>>> = None;
         UdpSocketTable {
-            sockets: Mutex::new([NONE; MAX_UDP_SOCKETS]),
+            sockets: PoisonLock::new([NONE; MAX_UDP_SOCKETS]),
             stats: UdpStats {
                 rx_datagrams: core::sync::atomic::AtomicU64::new(0),
                 tx_datagrams: core::sync::atomic::AtomicU64::new(0),
@@ -402,7 +430,10 @@ impl UdpSocketTable {
 
     /// Bind a socket to a port
     pub fn bind(&self, port: u16) -> Option<UdpSocket> {
-        let mut sockets = self.sockets.lock();
+        let mut sockets = self.sockets.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] UDP Table poisoned");
+            e.into_inner()
+        });
 
         // Find slot for this port
         let slot = (port as usize) % MAX_UDP_SOCKETS;
@@ -412,7 +443,7 @@ impl UdpSocketTable {
             return None;
         }
 
-        let inner = Arc::new(Mutex::new(UdpSocketInner {
+        let inner = Arc::new(PoisonLock::new(UdpSocketInner {
             local_port: port,
             rx_queue: VecDeque::new(),
             waker: None,
@@ -426,18 +457,27 @@ impl UdpSocketTable {
 
     /// Unbind a socket from a port
     pub fn unbind(&self, port: u16) {
-        let mut sockets = self.sockets.lock();
+        let mut sockets = self.sockets.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] UDP Table poisoned");
+            e.into_inner()
+        });
         let slot = (port as usize) % MAX_UDP_SOCKETS;
         sockets[slot] = None;
     }
 
     /// Find a socket by port
-    pub fn find(&self, port: u16) -> Option<Arc<Mutex<UdpSocketInner>>> {
-        let sockets = self.sockets.lock();
+    pub fn find(&self, port: u16) -> Option<Arc<PoisonLock<UdpSocketInner>>> {
+        let sockets = self.sockets.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] UDP Table poisoned");
+            e.into_inner()
+        });
         let slot = (port as usize) % MAX_UDP_SOCKETS;
 
         if let Some(ref inner) = sockets[slot] {
-            let socket = inner.lock();
+            let socket = inner.lock().unwrap_or_else(|e| {
+                log::warn!("[NET] UDP Socket poisoned");
+                e.into_inner()
+            });
             if socket.local_port == port && !socket.closed {
                 return Some(inner.clone());
             }
@@ -451,7 +491,10 @@ impl UdpSocketTable {
         use core::sync::atomic::Ordering;
 
         if let Some(socket) = self.find(datagram.dst_port) {
-            let mut inner = socket.lock();
+            let mut inner = socket.lock().unwrap_or_else(|e| {
+                log::warn!("[NET] UDP Socket poisoned");
+                e.into_inner()
+            });
 
             if inner.closed {
                 self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
