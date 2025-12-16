@@ -59,6 +59,7 @@ pub use higher_half::{
     global_map_page,
     global_translate,
     global_unmap_page,
+    global_update_flags,
     init,
     init_page_table_manager,
     invalidate_page,

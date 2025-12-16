@@ -61,34 +61,12 @@ use super::LoadError;
 // `security::mpk::allocate_protection_key` should be restored when the
 // module-level visibility guarantees are made explicit.
 
-/// Lightweight PageFlags stub used when the real type is not available.
-/// This is intentionally minimal and only mirrors the small API the loader
-/// needs (construction and set_pkey()).
-#[derive(Clone, Copy)]
-struct PageFlags(u64);
-
-impl PageFlags {
-    fn user_code() -> Self {
-        Self(0)
-    }
-
-    fn user_data() -> Self {
-        Self(0)
-    }
-
-    fn set_pkey(self, _pkey: u8) -> Self {
-        self
-    }
-}
-
-/// Allocate a protection key. The real implementation lives under
-/// `crate::security::mpk::allocate_protection_key`, but that module is not
-/// guaranteed to be present when building the workspace as a dependency, so
-/// return a dummy value here to allow the loader to compile and run tests.
-fn allocate_protection_key() -> Option<u8> {
-    // TODO: integrate with `crate::security::mpk` when available
-    Some(0)
-}
+// Use real PageFlags and PKEY allocator from the kernel modules
+// - `PageFlags` lives in `crate::mm::higher_half` and provides `set_pkey()`.
+// - `allocate_protection_key()` / `free_protection_key()` live in `crate::security::mpk`.
+// We call into these implementations directly so the loader's behavior matches
+// the real kernel semantics (no temporary stubs).
+use crate::mm::PageFlags;
 use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -306,6 +284,8 @@ pub struct LoadedCell {
     pub size: usize,
     /// エントリポイント（あれば）
     pub entry_point: Option<usize>,
+    /// 割り当てられた Protection Key（存在する場合）
+    pub pkey: Option<u8>,
 }
 
 /// パース結果のセル情報（'a は ELF バッファのライフタイム）
@@ -625,11 +605,41 @@ impl<'a> ElfLoader<'a> {
 
     /// セルをメモリにロード
     pub fn load(&self, info: &CellInfo<'a>) -> Result<LoadedCell, LoadError> {
+
         // Protection Keyを割り当て（失敗時はLoadError）
-        let pkey = allocate_protection_key().ok_or(LoadError::OutOfMemory)?;
+        let pkey_raw = crate::security::mpk::allocate_protection_key()
+            .ok_or(LoadError::OutOfMemory)?;
+
+        // Guard that will free the PKEY on early return unless released
+        struct PkeyGuard(Option<u8>);
+        impl PkeyGuard {
+            fn new(v: u8) -> Self {
+                Self(Some(v))
+            }
+
+            /// Consume the guard and take ownership of the key so it will not be
+            /// freed by Drop.
+            fn release(mut self) -> u8 {
+                let v = self.0.take().unwrap();
+                core::mem::forget(self);
+                v
+            }
+        }
+        impl Drop for PkeyGuard {
+            fn drop(&mut self) {
+                if let Some(v) = self.0 {
+                    crate::security::mpk::free_protection_key(v);
+                }
+            }
+        }
+
+        let guard = PkeyGuard::new(pkey_raw);
 
         // メモリを割り当て
         let base_address = self.allocate_memory(info.memory_size, info.alignment)?;
+
+        // PKEY の所有権を受け取り、以降の処理で使用する
+        let pkey = guard.release();
 
         // 各セグメントをロード
         for segment in &info.segments {
@@ -659,20 +669,42 @@ impl<'a> ElfLoader<'a> {
                 }
             }
 
-            // Compute PKEY-aware flags (if applicable). We intentionally do not
-            // require the full `mm::higher_half` API when building as a
-            // dependency of other workspace crates; updating the global page
-            // table flags is a runtime-only operation and can be integrated
-            // later when `mm` is available.
-            let _flags = if (segment.flags & 0x1) != 0 {
+            // Compute PKEY-aware flags and apply them to each mapped page
+            // covering this segment. We call into `mm::global_update_flags` to
+            // set per-page flags (including PKEY). If the global page table
+            // manager is not available or a page is not mapped we log a
+            // warning and continue; other errors are treated as fatal.
+            let flags = if (segment.flags & 0x1) != 0 {
                 PageFlags::user_code().set_pkey(pkey)
             } else {
                 PageFlags::user_data().set_pkey(pkey)
             };
 
-            // NOTE: In full kernel builds this is the place to iterate pages and
-            // call into the page table manager (e.g. `global_update_flags`),
-            // but we skip that here to avoid depending on `mm` at compile-time.
+            // Iterate the page-aligned range covering the segment's memory
+            let seg_start = crate::mm::VirtAddr::new(dest as u64).align_down().as_u64() as usize;
+            let seg_end = crate::mm::VirtAddr::new((dest + segment.mem_size) as u64)
+                .align_up()
+                .as_u64() as usize;
+
+            for page_addr in (seg_start..seg_end).step_by(4096) {
+                let virt = crate::mm::VirtAddr::new(page_addr as u64);
+                unsafe {
+                    match crate::mm::global_update_flags(virt, flags) {
+                        Ok(()) => {}
+                        Err(e) => match e {
+                            crate::mm::MapError::InvalidAddress | crate::mm::MapError::NotMapped => {
+                                log::warn!("[ELF] Could not update flags for page {:#x}: {:?} (continuing)", page_addr, e)
+                            }
+                            other => {
+                                return Err(LoadError::InvalidPermissions(alloc::format!(
+                                    "Failed to update page flags for page {:#x}: {:?}",
+                                    page_addr, other
+                                )));
+                            }
+                        },
+                    }
+                }
+            }
 
         }
 
@@ -686,6 +718,7 @@ impl<'a> ElfLoader<'a> {
             base_address,
             size: info.memory_size,
             entry_point,
+            pkey: Some(pkey),
         })
     }
 
@@ -968,6 +1001,8 @@ pub struct LoadedInfo {
     pub size: usize,
     /// プログラムのエントリポイントアドレス
     pub entry_point: u64,
+    /// 割り当てられた Protection Key（存在する場合）
+    pub pkey: Option<u8>,
 }
 
 /// ELFローダーの静的インターフェース
@@ -1022,6 +1057,7 @@ impl Loader for ElfLoader<'_> {
             base_address: loaded.base_address as u64,
             size: loaded.size,
             entry_point: loaded.entry_point.unwrap_or(0) as u64,
+            pkey: loaded.pkey,
         })
     }
 }

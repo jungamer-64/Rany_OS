@@ -1,4 +1,9 @@
 #![no_std]
+// Allow common patterns in IDE driver code
+#![allow(dead_code)] // Reserved field and unused variants
+#![allow(unused_unsafe)] // Nested unsafe blocks in I/O functions
+#![allow(clippy::cast_possible_truncation)] // LBA byte splitting
+#![allow(clippy::unreadable_literal)] // ATA addresses and constants
 
 extern crate alloc;
 

@@ -4,9 +4,19 @@
 //!
 //! ACPI テーブルパーサー
 //!
-//! RSDP検索、RSDT/XSDTパース、MADT/MCFGパースを実装。
+//! `RSDP`検索、`RSDT`/`XSDT`パース、`MADT`/`MCFG`パースを実装。
 
+// Allow common patterns in ACPI parsing code
 #![allow(dead_code)]
+#![allow(clippy::cast_possible_truncation)] // u64->usize: intentional for 64-bit kernel
+#![allow(clippy::cast_lossless)] // u32->u64 for address calculations
+#![allow(clippy::unused_self)] // ACPI table methods need &self for API consistency
+#![allow(clippy::ptr_as_ptr)] // Raw pointer casts in ACPI table parsing
+#![allow(clippy::unnecessary_cast)] // Sometimes needed for clarity in ACPI code
+#![allow(clippy::missing_panics_doc)] // Internal implementation
+#![allow(clippy::missing_errors_doc)] // Internal implementation
+#![allow(clippy::missing_const_for_fn)] // Many functions can't be const due to pointer operations
+#![allow(clippy::map_unwrap_or)] // Kept for readability
 
 use alloc::vec::Vec;
 use spin::Mutex;
