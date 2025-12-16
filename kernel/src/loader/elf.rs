@@ -612,9 +612,12 @@ impl<'a> ElfLoader<'a> {
         // Protection Key は page-table manager が利用可能な場合にのみ割り当てる。
         // テストビルド（libテスト）では `mm` モジュールが公開されていないため
         // PKEY の割り当てとページフラグの更新はスキップする。
-        #[cfg(not(test))]
+        // PkeyGuard is available either in normal builds (when `test` cfg is
+        // not set) or when the `pkey_integration_test` feature is enabled for
+        // test-time integration checks.
+        #[cfg(any(feature = "pkey_integration_test", not(test)))]
         struct PkeyGuard(Option<u8>);
-        #[cfg(not(test))]
+        #[cfg(any(feature = "pkey_integration_test", not(test)))]
         impl PkeyGuard {
             fn new(v: u8) -> Self {
                 Self(Some(v))
@@ -696,7 +699,7 @@ impl<'a> ElfLoader<'a> {
             None
         };
 
-        #[cfg(not(test))]
+        #[cfg(any(feature = "pkey_integration_test", not(test)))]
         return Ok(LoadedCell {
             base_address,
             size: info.memory_size,
@@ -704,7 +707,7 @@ impl<'a> ElfLoader<'a> {
             pkey: Some(pkey),
         });
 
-        #[cfg(test)]
+        #[cfg(not(any(feature = "pkey_integration_test", not(test))))]
         return Ok(LoadedCell {
             base_address,
             size: info.memory_size,
@@ -1243,7 +1246,7 @@ mod tests {
         // Verify that registry entry has a PKEY and that allocator reports it used
         let pkey_opt = crate::loader::with_registry(|r| r.find_by_name("test-pkey").unwrap().pkey);
         assert!(pkey_opt.is_some());
-        let pkey = pkey_opt.unwrap().unwrap();
+        let pkey = pkey_opt.unwrap();
         assert!(crate::security::mpk::is_pkey_used(pkey));
 
         // Unload should free the PKEY
