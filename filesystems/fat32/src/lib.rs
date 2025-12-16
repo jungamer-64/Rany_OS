@@ -57,7 +57,7 @@ use vfs::block::BlockError;
 use vfs::block::BlockDevice;
 use vfs::cache::LRUBlockCache;
 use vfs::{
-    DirEntry, FileMode, FileSystem, FileType, InodeNum, Metadata as FileAttr, OpenFlags,
+    DirEntry, FileMode, FileSystem, FileType, Metadata as FileAttr, OpenFlags,
     VfsError as FsError, VfsNode as Inode, VfsResult as FsResult,
 };
 
@@ -2386,7 +2386,7 @@ impl Fat32FileSystem {
     ///
     /// # Returns
     /// クラスタ番号を順に返すイテレータ。各要素は`FsResult<Cluster>`。
-    pub fn clusters(&self, start: Cluster) -> ClusterChain {
+    pub fn clusters(&self, start: Cluster) -> ClusterChain<'_> {
         ClusterChain::new(self, start)
     }
 
@@ -2600,6 +2600,7 @@ impl Fat32FileSystem {
 
     /// FATエントリを読み取り（型安全）
     fn read_fat_entry(&self, cluster: Cluster) -> FsResult<Cluster> {
+        trace_fat_operation!("read", cluster);
         let idx = cluster.0 as usize;
         if self.full_fat_cache {
             let fat = self.fat_cache.read();
@@ -2641,6 +2642,7 @@ impl Fat32FileSystem {
     }
 
     fn write_fat_entry(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
+        trace_fat_operation!("write", cluster, "value={}", value.0);
         let idx = cluster.0 as usize;
         if self.full_fat_cache {
             {
@@ -2712,6 +2714,7 @@ impl Fat32FileSystem {
     /// 通常の書き込みは`write_fat_entry`を使用し、
     /// バッチでフラッシュすることを推奨。
     fn write_fat_entry_to_disk(&self, cluster: Cluster, value: Cluster) -> FsResult<()> {
+        trace_fat_operation!("write_disk", cluster, "value={}", value.0);
         let idx = cluster.0 as usize;
         // ディスクへの書き込みは2モード対応
         let fat_offset = idx * 4;
@@ -2833,6 +2836,7 @@ impl Fat32FileSystem {
 
                 // ディスクに即時書き込み
                 // この処理はロックを保持したまま行う (整合性優先)
+                trace_fat_operation!("allocate", cluster);
                 self.write_fat_entry_to_disk(cluster, Cluster::EOF)?;
 
                 // メモリキャッシュ側を更新(フルキャッシュ時のみ)
@@ -2854,6 +2858,7 @@ impl Fat32FileSystem {
 
     /// クラスタを解放(型安全)
     fn free_cluster(&self, cluster: Cluster) -> FsResult<()> {
+        trace_fat_operation!("free", cluster);
         self.write_fat_entry(cluster, Cluster::FREE)?;
         let mut free = self.free_clusters.write();
         *free += 1;
@@ -4316,6 +4321,91 @@ mod tests {
         let attrs = FileAttributes::from_bits_truncate(0x10); // DIRECTORY
         assert!(attrs.is_directory());
         assert!(!attrs.is_read_only());
+    }
+
+    #[test]
+    fn test_mount_minimal_boot_sector() {
+        use alloc::sync::Arc;
+        use vfs::block::RamDisk;
+
+        let disk = Arc::new(RamDisk::new(2048, 512));
+
+        let mut bs = [0u8; BOOT_SECTOR_SIZE];
+        // Standard BPB offsets (little-endian fields)
+        bs[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes per sector
+        bs[13] = 1; // sectors per cluster
+        bs[14..16].copy_from_slice(&32u16.to_le_bytes()); // reserved sectors
+        bs[16] = 2; // number of FATs
+        bs[32..36].copy_from_slice(&4096u32.to_le_bytes()); // total sectors (32-bit)
+        bs[36..40].copy_from_slice(&1u32.to_le_bytes()); // FAT size 32
+        bs[44..48].copy_from_slice(&2u32.to_le_bytes()); // root cluster
+        bs[82..90].copy_from_slice(b"FAT32   "); // fs type field
+        bs[510] = 0x55; // signature (little-endian 0xAA55)
+        bs[511] = 0xAA;
+
+        disk.write_sync(0, &bs).expect("write boot sector");
+
+        let fs = Fat32FileSystem::mount(disk).expect("mount should succeed");
+        assert_eq!((&*fs).root_cluster, Cluster(2));
+    }
+
+    #[test]
+    fn test_write_and_flush_fat_entry_writes_to_disk() {
+        use alloc::sync::Arc;
+        use vfs::block::RamDisk;
+
+        let disk = Arc::new(RamDisk::new(2048, 512));
+
+        let mut bs = [0u8; BOOT_SECTOR_SIZE];
+        bs[11..13].copy_from_slice(&512u16.to_le_bytes()); // bytes per sector
+        bs[13] = 1; // sectors per cluster
+        bs[14..16].copy_from_slice(&1u16.to_le_bytes()); // reserved sectors = 1
+        bs[16] = 2; // number of FATs
+        bs[32..36].copy_from_slice(&4096u32.to_le_bytes()); // total sectors
+        bs[36..40].copy_from_slice(&1u32.to_le_bytes()); // FAT size 32
+        bs[44..48].copy_from_slice(&2u32.to_le_bytes()); // root cluster
+        bs[82..90].copy_from_slice(b"FAT32   "); // fs type field
+        bs[510] = 0x55;
+        bs[511] = 0xAA;
+
+        disk.write_sync(0, &bs).expect("write boot sector");
+
+        let fs = Fat32FileSystem::mount(disk.clone()).expect("mount should succeed");
+        assert!(fs.full_fat_cache);
+
+        // Write FAT entry index 2 -> EOF
+        fs.write_fat_entry(Cluster(2), Cluster::EOF).expect("write entry");
+
+        // Check in-memory cache
+        {
+            let fat = fs.fat_cache.read();
+            assert_eq!(fat[2], Cluster::EOF);
+        }
+
+        // Dirty sector should be set (sector_idx 0)
+        {
+            let dirty = fs.dirty_sectors.read();
+            assert!(dirty[0]);
+        }
+
+        // Flush and verify disk contents
+        fs.flush_dirty_fat_sectors().expect("flush");
+
+        // After flush, dirty flag cleared
+        {
+            let dirty = fs.dirty_sectors.read();
+            assert!(!dirty[0]);
+        }
+
+        // Read primary FAT sector from disk and verify entry value
+        let mut buf = [0u8; BLOCK_SIZE];
+        fs.device
+            .read_sync(fs.fat_start_sector.as_u64(), &mut buf)
+            .expect("read primary fat");
+
+        let offset = 2 * 4;
+        let val = u32::from_le_bytes([buf[offset], buf[offset + 1], buf[offset + 2], buf[offset + 3]]) & 0x0FFFFFFF;
+        assert_eq!(val, Cluster::EOF.0 & 0x0FFFFFFF);
     }
 
     #[test]

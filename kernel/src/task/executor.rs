@@ -19,10 +19,10 @@
 #![allow(dead_code)]
 
 use super::{Task, TaskId, create_waker};
+use crate::sync::{LockResult, PoisonLock};
 use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
-use spin::Mutex;
 use x86_64::instructions::interrupts;
 
 // ============================================================================
@@ -156,7 +156,7 @@ const MAX_CPUS: usize = 64;
 /// 設計書 4.3: コアローカルなタスク管理でロックコンテンション削減
 struct PerCoreTaskStore {
     /// タスク保存マップ（Per-core）
-    tasks: Mutex<BTreeMap<TaskId, Task>>,
+    tasks: PoisonLock<BTreeMap<TaskId, Task>>,
     /// このCPUが有効かどうか
     active: AtomicBool,
     /// 保存タスク数（統計用）
@@ -166,7 +166,7 @@ struct PerCoreTaskStore {
 impl PerCoreTaskStore {
     const fn new() -> Self {
         Self {
-            tasks: Mutex::new(BTreeMap::new()),
+            tasks: PoisonLock::new(BTreeMap::new()),
             active: AtomicBool::new(false),
             task_count: AtomicUsize::new(0),
         }
@@ -174,13 +174,23 @@ impl PerCoreTaskStore {
 
     /// タスクを追加
     fn insert(&self, task_id: TaskId, task: Task) {
-        self.tasks.lock().insert(task_id, task);
+        self.tasks
+            .lock()
+            .unwrap_or_else(|e| {
+                // Recovery mode
+                e.into_inner()
+            })
+            .insert(task_id, task);
         self.task_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// タスクを取り出し
     fn remove(&self, task_id: &TaskId) -> Option<Task> {
-        let result = self.tasks.lock().remove(task_id);
+        let result = self
+            .tasks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(task_id);
         if result.is_some() {
             self.task_count.fetch_sub(1, Ordering::Relaxed);
         }
@@ -194,7 +204,7 @@ impl PerCoreTaskStore {
 
     /// Work Stealing: タスクを1つ盗む
     fn steal_one(&self) -> Option<(TaskId, Task)> {
-        let mut guard = self.tasks.lock();
+        let mut guard = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
         if let Some((&task_id, _)) = guard.iter().next() {
             if let Some(task) = guard.remove(&task_id) {
                 self.task_count.fetch_sub(1, Ordering::Relaxed);
@@ -213,7 +223,7 @@ static PER_CORE_STORES: [PerCoreTaskStore; MAX_CPUS] = {
 
 /// レガシー用グローバルタスクストア（後方互換性）
 /// 新規コードはper-coreストアを使用すべき
-static TASK_STORE: Mutex<BTreeMap<TaskId, Task>> = Mutex::new(BTreeMap::new());
+static TASK_STORE: PoisonLock<BTreeMap<TaskId, Task>> = PoisonLock::new(BTreeMap::new());
 
 /// Wake queue（ISR-safe ロックフリー）
 static WAKE_QUEUE: LockFreeQueue = LockFreeQueue::new();
@@ -334,7 +344,6 @@ impl Executor {
         }
     }
 
-
     /// ローカルキューのタスクを実行
     fn run_ready_tasks(&mut self) {
         // バッチ処理
@@ -396,7 +405,11 @@ impl Executor {
                 }
                 // レガシーストアも探す（後方互換性）
                 if !found {
-                    if let Some(task) = TASK_STORE.lock().remove(&task_id) {
+                    if let Some(task) = TASK_STORE
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&task_id)
+                    {
                         self.local_queue.push_back(task);
                         woken += 1;
                     } else {
@@ -438,7 +451,11 @@ impl Executor {
                 }
                 // レガシーストアも探す
                 if !found {
-                    if let Some(task) = TASK_STORE.lock().remove(&task_id) {
+                    if let Some(task) = TASK_STORE
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&task_id)
+                    {
                         self.local_queue.push_back(task);
                         fetched += 1;
                     }
