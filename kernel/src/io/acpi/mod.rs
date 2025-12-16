@@ -21,7 +21,9 @@ pub use acpi_driver::parser;
 pub use acpi_driver::tables;
 
 // Re-export commonly used items from the driver
-pub use acpi_driver::info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
+pub use acpi_driver::info::{
+    AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo,
+};
 pub use acpi_driver::parser::{
     AcpiParser, init, interrupt_overrides, io_apics, local_apic_address, local_apics,
     pcie_ecam_regions, processor_count,
@@ -31,3 +33,6 @@ pub use acpi_driver::tables::{
     MadtIoApic, MadtLocalApic, MadtLocalApicOverride, Mcfg, McfgEntry, RSDP_SIGNATURE, Rsdp,
     signature,
 };
+
+// DMAR (IOMMU) support
+pub mod dmar;
