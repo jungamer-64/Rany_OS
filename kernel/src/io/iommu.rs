@@ -151,12 +151,482 @@ pub mod cap_bits {
     pub const CAP_PLMR: u64 = 1 << 5;
     /// Pass through support
     pub const CAP_PT: u64 = 1 << 6;
-    /// Super-page support
-    pub const CAP_SLLPS: u64 = 3 << 34;
-    /// Page walk coherency
-    pub const CAP_PWC: u64 = 1 << 38;
     /// Snoop control
     pub const CAP_SC: u64 = 1 << 7;
+    /// Invalidation Register Offset (bits 8-11)
+    pub const CAP_IRO_MASK: u64 = 0xF << 8;
+    /// Number of Fault Recording registers (bits 40-47)
+    pub const CAP_NFR_MASK: u64 = 0xFF << 40;
+    /// Fault Recording register Offset (bits 24-33)
+    pub const CAP_FRO_MASK: u64 = 0x3FF << 24;
+    /// Super-page support (bits 34-35)
+    pub const CAP_SLLPS: u64 = 3 << 34;
+    /// 2MB super-page supported
+    pub const CAP_SLLPS_2M: u64 = 1 << 34;
+    /// 1GB super-page supported
+    pub const CAP_SLLPS_1G: u64 = 1 << 35;
+    /// Page walk coherency
+    pub const CAP_PWC: u64 = 1 << 38;
+    /// Caching mode
+    pub const CAP_CM: u64 = 1 << 7;
+}
+
+/// Extended capability register bits
+pub mod ecap_bits {
+    /// Page walk coherency
+    pub const ECAP_C: u64 = 1 << 0;
+    /// Queued Invalidation support
+    pub const ECAP_QI: u64 = 1 << 1;
+    /// Device-TLB support
+    pub const ECAP_DT: u64 = 1 << 2;
+    /// Interrupt Remapping support
+    pub const ECAP_IR: u64 = 1 << 3;
+    /// Extended Interrupt Mode
+    pub const ECAP_EIM: u64 = 1 << 4;
+    /// Pass Through support
+    pub const ECAP_PT: u64 = 1 << 6;
+    /// Snoop Control
+    pub const ECAP_SC: u64 = 1 << 7;
+    /// Interrupt Remapping Table Offset (bits 8-17)
+    pub const ECAP_IRO_MASK: u64 = 0x3FF << 8;
+    /// Memory Type Support
+    pub const ECAP_MTS: u64 = 1 << 25;
+    /// Nested Translation Support
+    pub const ECAP_NEST: u64 = 1 << 26;
+    /// Page Request Support
+    pub const ECAP_PRS: u64 = 1 << 29;
+    /// Execute Request Support
+    pub const ECAP_ERS: u64 = 1 << 30;
+    /// Supervisor Request Support
+    pub const ECAP_SRS: u64 = 1 << 31;
+}
+
+/// Fault status register bits
+pub mod fsts_bits {
+    /// Primary Pending Fault
+    pub const FSTS_PPF: u32 = 1 << 0;
+    /// Primary Fault Overflow
+    pub const FSTS_PFO: u32 = 1 << 1;
+    /// Invalidation Queue Error
+    pub const FSTS_IQE: u32 = 1 << 4;
+    /// Interrupt Condition Error
+    pub const FSTS_ICE: u32 = 1 << 5;
+    /// Interrupt Table Error
+    pub const FSTS_ITE: u32 = 1 << 6;
+    /// Advanced Pending Fault
+    pub const FSTS_APF: u32 = 1 << 7;
+    /// Fault Record Index (bits 8-15)
+    pub const FSTS_FRI_MASK: u32 = 0xFF << 8;
+}
+
+/// IOTLB Invalidation register offsets (relative to IRO)
+pub mod iotlb_regs {
+    /// IOTLB Invalidation Address register (64-bit)
+    pub const IVA: u64 = 0x00;
+    /// IOTLB Invalidation Command register (64-bit)
+    pub const IOTLB: u64 = 0x08;
+}
+
+/// IOTLB Invalidation Command bits
+pub mod iotlb_bits {
+    /// Invalidation Request Granularity (bits 60-61)
+    pub const IOTLB_IIRG_GLOBAL: u64 = 1 << 60;
+    pub const IOTLB_IIRG_DOMAIN: u64 = 2 << 60;
+    pub const IOTLB_IIRG_PAGE: u64 = 3 << 60;
+    /// Drain Reads before invalidation
+    pub const IOTLB_DR: u64 = 1 << 49;
+    /// Drain Writes before invalidation
+    pub const IOTLB_DW: u64 = 1 << 48;
+    /// Domain ID (bits 32-47)
+    pub const IOTLB_DID_SHIFT: u64 = 32;
+    /// Invalidation In Progress
+    pub const IOTLB_IVT: u64 = 1 << 63;
+}
+
+// ============================================================================
+// Interrupt Remapping Table (IRT) Structures
+// ============================================================================
+
+/// Interrupt Remapping Table Entry (IRTE)
+///
+/// Intel VT-d Interrupt Remapping provides:
+/// - Protection against malicious interrupt injection
+/// - Interrupt virtualization for VMs
+/// - Flexible interrupt routing
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InterruptRemapEntry {
+    /// Lower 64 bits
+    pub lo: u64,
+    /// Upper 64 bits  
+    pub hi: u64,
+}
+
+impl InterruptRemapEntry {
+    /// Entry present (bit 0)
+    pub const PRESENT: u64 = 1 << 0;
+    /// Fault Processing Disable (bit 1)
+    pub const FPD: u64 = 1 << 1;
+    /// Destination Mode: 0 = Physical, 1 = Logical (bit 2)
+    pub const DM_LOGICAL: u64 = 1 << 2;
+    /// Redirection Hint (bit 3)
+    pub const RH: u64 = 1 << 3;
+    /// Trigger Mode: 0 = Edge, 1 = Level (bit 4)
+    pub const TM_LEVEL: u64 = 1 << 4;
+    /// Delivery Mode shift (bits 5-7)
+    pub const DLVRY_MODE_SHIFT: u64 = 5;
+    /// Available for software (bits 8-11)
+    pub const AVAIL_SHIFT: u64 = 8;
+    /// Vector shift (bits 16-23)
+    pub const VECTOR_SHIFT: u64 = 16;
+    /// Destination ID shift (bits 32-63 for x2APIC, 40-47 for xAPIC)
+    pub const DEST_SHIFT: u64 = 32;
+
+    /// Subhandle valid (bit 0 of hi)
+    pub const SHV: u64 = 1 << 0;
+    /// Source Identifier shift (bits 16-31 of hi)
+    pub const SID_SHIFT: u64 = 16;
+    /// Source Identifier Qualifier (bits 12-13 of hi)
+    pub const SQ_SHIFT: u64 = 12;
+    /// SVT (Source Validation Type, bits 14-15 of hi)
+    pub const SVT_SHIFT: u64 = 14;
+
+    /// Create a new blank (not present) entry
+    pub const fn new() -> Self {
+        Self { lo: 0, hi: 0 }
+    }
+
+    /// Create a present IRTE for fixed delivery
+    pub fn fixed(vector: u8, dest_id: u32, logical: bool, level_trigger: bool) -> Self {
+        let mut lo = Self::PRESENT;
+        lo |= (vector as u64) << Self::VECTOR_SHIFT;
+        lo |= (dest_id as u64) << Self::DEST_SHIFT;
+        if logical {
+            lo |= Self::DM_LOGICAL;
+        }
+        if level_trigger {
+            lo |= Self::TM_LEVEL;
+        }
+        // Fixed delivery mode = 0
+        Self { lo, hi: 0 }
+    }
+
+    /// Create an IRTE for lowest-priority delivery
+    pub fn lowest_priority(vector: u8, dest_id: u32, logical: bool) -> Self {
+        let mut lo = Self::PRESENT | Self::RH;
+        lo |= (vector as u64) << Self::VECTOR_SHIFT;
+        lo |= (dest_id as u64) << Self::DEST_SHIFT;
+        lo |= 1 << Self::DLVRY_MODE_SHIFT; // Lowest priority = 1
+        if logical {
+            lo |= Self::DM_LOGICAL;
+        }
+        Self { lo, hi: 0 }
+    }
+
+    /// Check if entry is present
+    pub fn is_present(&self) -> bool {
+        (self.lo & Self::PRESENT) != 0
+    }
+
+    /// Get vector
+    pub fn vector(&self) -> u8 {
+        ((self.lo >> Self::VECTOR_SHIFT) & 0xFF) as u8
+    }
+
+    /// Get destination ID
+    pub fn dest_id(&self) -> u32 {
+        ((self.lo >> Self::DEST_SHIFT) & 0xFFFFFFFF) as u32
+    }
+
+    /// Set source validation (for device filtering)
+    pub fn set_source_validation(&mut self, svt: u8, sq: u8, source_id: u16) {
+        self.hi = ((svt as u64 & 0x3) << Self::SVT_SHIFT)
+            | ((sq as u64 & 0x3) << Self::SQ_SHIFT)
+            | ((source_id as u64) << Self::SID_SHIFT);
+    }
+}
+
+/// Delivery modes for interrupt remapping
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliveryMode {
+    Fixed = 0,
+    LowestPriority = 1,
+    SMI = 2,
+    NMI = 4,
+    Init = 5,
+    ExtInt = 7,
+}
+
+/// Interrupt Remapping Table (manages IRTE allocation)
+pub struct InterruptRemapTable {
+    /// Base address of the IRT (must be 4KB aligned)
+    base: usize,
+    /// Number of entries (power of 2, max 64K)
+    size: usize,
+    /// Allocation bitmap
+    allocated: Vec<u64>,
+}
+
+impl InterruptRemapTable {
+    /// Create a new Interrupt Remapping Table
+    ///
+    /// # Arguments
+    /// * `size_log2` - Log2 of number of entries (0-15, giving 1 to 65536 entries)
+    pub fn new(size_log2: u8) -> Option<Self> {
+        let size = 1usize << (size_log2.min(15) as usize);
+        let total_bytes = size * core::mem::size_of::<InterruptRemapEntry>();
+
+        // Allocate 4KB-aligned memory
+        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).ok()?;
+        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+
+        // Bitmap: 64 entries per u64
+        let bitmap_size = (size + 63) / 64;
+        let allocated = alloc::vec![0u64; bitmap_size];
+
+        Some(Self {
+            base,
+            size,
+            allocated,
+        })
+    }
+
+    /// Get the physical base address
+    pub fn base_address(&self) -> usize {
+        self.base
+    }
+
+    /// Get the size (number of entries)
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Allocate an IRTE index
+    pub fn allocate(&mut self) -> Option<u16> {
+        for (word_idx, word) in self.allocated.iter_mut().enumerate() {
+            if *word != u64::MAX {
+                // Find first free bit
+                let bit = (!*word).trailing_zeros();
+                *word |= 1 << bit;
+                return Some((word_idx * 64 + bit as usize) as u16);
+            }
+        }
+        None
+    }
+
+    /// Free an IRTE index
+    pub fn free(&mut self, index: u16) {
+        let word_idx = index as usize / 64;
+        let bit = index as usize % 64;
+        if word_idx < self.allocated.len() {
+            self.allocated[word_idx] &= !(1 << bit);
+        }
+    }
+
+    /// Get an entry
+    pub fn get(&self, index: u16) -> Option<InterruptRemapEntry> {
+        if (index as usize) < self.size {
+            let ptr = self.base as *const InterruptRemapEntry;
+            Some(unsafe { *ptr.add(index as usize) })
+        } else {
+            None
+        }
+    }
+
+    /// Set an entry
+    pub fn set(&mut self, index: u16, entry: InterruptRemapEntry) -> bool {
+        if (index as usize) < self.size {
+            let ptr = self.base as *mut InterruptRemapEntry;
+            unsafe {
+                *ptr.add(index as usize) = entry;
+            }
+            true
+        } else {
+            false
+        }
+    }
+}
+
+// ============================================================================
+// Queued Invalidation (QI) Structures
+// ============================================================================
+
+/// Invalidation Queue Entry (128 bits)
+///
+/// Intel VT-d Queued Invalidation provides:
+/// - Asynchronous invalidation requests
+/// - Batched invalidation for performance
+/// - Mandatory for x2APIC interrupt remapping
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InvalidationQueueEntry {
+    /// Lower 64 bits - descriptor type and parameters
+    pub lo: u64,
+    /// Upper 64 bits - additional parameters
+    pub hi: u64,
+}
+
+/// Invalidation descriptor types (bits 3:0 of lo)
+pub mod qi_desc_type {
+    /// Context-cache Invalidate Descriptor
+    pub const CC_INV: u64 = 0x1;
+    /// IOTLB Invalidate Descriptor
+    pub const IOTLB_INV: u64 = 0x2;
+    /// Device-TLB Invalidate Descriptor
+    pub const DEV_TLB_INV: u64 = 0x3;
+    /// Interrupt Entry Cache Invalidate Descriptor
+    pub const IEC_INV: u64 = 0x4;
+    /// Invalidation Wait Descriptor
+    pub const WAIT: u64 = 0x5;
+    /// Extended IOTLB Invalidate Descriptor
+    pub const EXT_IOTLB_INV: u64 = 0x6;
+    /// PASID-based IOTLB Invalidate
+    pub const PASID_IOTLB_INV: u64 = 0x7;
+    /// PASID-cache Invalidate
+    pub const PASID_CACHE_INV: u64 = 0x8;
+}
+
+impl InvalidationQueueEntry {
+    /// Create a Context-Cache Invalidation descriptor
+    /// Granularity: 0=reserved, 1=global, 2=domain, 3=device
+    pub fn context_cache_invalidate(granularity: u8, domain_id: u16, source_id: u16) -> Self {
+        let lo =
+            qi_desc_type::CC_INV | ((granularity as u64 & 0x3) << 4) | ((domain_id as u64) << 16);
+        let hi = source_id as u64;
+        Self { lo, hi }
+    }
+
+    /// Create a Global Context-Cache Invalidation descriptor
+    pub fn context_cache_invalidate_global() -> Self {
+        Self::context_cache_invalidate(1, 0, 0)
+    }
+
+    /// Create an IOTLB Invalidation descriptor
+    /// Granularity: 0=reserved, 1=global, 2=domain, 3=page
+    pub fn iotlb_invalidate(granularity: u8, domain_id: u16, drain: bool, address: u64) -> Self {
+        let lo = qi_desc_type::IOTLB_INV |
+                 ((granularity as u64 & 0x3) << 4) |
+                 (if drain { 1 << 6 } else { 0 }) | // DW (Drain Writes)
+                 (if drain { 1 << 7 } else { 0 }) | // DR (Drain Reads)
+                 ((domain_id as u64) << 16);
+        let hi = address & !0xFFF; // Page-aligned address for page-selective
+        Self { lo, hi }
+    }
+
+    /// Create a Global IOTLB Invalidation descriptor
+    pub fn iotlb_invalidate_global(drain: bool) -> Self {
+        Self::iotlb_invalidate(1, 0, drain, 0)
+    }
+
+    /// Create a Domain IOTLB Invalidation descriptor
+    pub fn iotlb_invalidate_domain(domain_id: u16, drain: bool) -> Self {
+        Self::iotlb_invalidate(2, domain_id, drain, 0)
+    }
+
+    /// Create an Interrupt Entry Cache Invalidation descriptor
+    /// Granularity: 0=global, 1=index-selective
+    pub fn iec_invalidate(granularity: u8, irte_index: u16, index_mask: u8) -> Self {
+        let lo = qi_desc_type::IEC_INV
+            | ((granularity as u64 & 0x1) << 4)
+            | ((index_mask as u64 & 0x1F) << 27)
+            | ((irte_index as u64) << 32);
+        Self { lo, hi: 0 }
+    }
+
+    /// Create a Global IEC Invalidation descriptor
+    pub fn iec_invalidate_global() -> Self {
+        Self::iec_invalidate(0, 0, 0)
+    }
+
+    /// Create an Invalidation Wait descriptor
+    /// Used to signal completion of previous descriptors
+    pub fn wait(status_addr: u64, status_data: u32, interrupt: bool, fence: bool) -> Self {
+        let lo = qi_desc_type::WAIT |
+                 (if fence { 1 << 5 } else { 0 }) |     // IF (Invalidation Fence)
+                 (if interrupt { 1 << 4 } else { 0 }) | // FN (Fence Notify)
+                 (1 << 5) |                              // SW (Status Write)
+                 ((status_data as u64) << 32);
+        let hi = status_addr;
+        Self { lo, hi }
+    }
+}
+
+/// Invalidation Queue Manager
+pub struct InvalidationQueue {
+    /// Base address of the queue (must be 4KB aligned)
+    base: usize,
+    /// Queue size in entries (power of 2, 256 to 64K)
+    size: usize,
+    /// Current tail (next write position)
+    tail: usize,
+    /// Status data address for wait descriptors
+    status_addr: usize,
+}
+
+impl InvalidationQueue {
+    /// Queue size must be power of 2 between 256 and 65536
+    pub const MIN_SIZE: usize = 256;
+    pub const MAX_SIZE: usize = 65536;
+
+    /// Create a new Invalidation Queue
+    pub fn new(size_log2: u8) -> Option<Self> {
+        let size = 1usize << (size_log2.clamp(8, 16) as usize);
+        let total_bytes = size * core::mem::size_of::<InvalidationQueueEntry>();
+
+        // Allocate 4KB-aligned queue
+        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).ok()?;
+        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+
+        // Allocate status page
+        let status_layout = alloc::alloc::Layout::from_size_align(4096, 4096).ok()?;
+        let status_addr = crate::util::allocate_zeroed(status_layout)?.as_ptr() as usize;
+
+        Some(Self {
+            base,
+            size,
+            tail: 0,
+            status_addr,
+        })
+    }
+
+    /// Get the queue base address for IQA register
+    pub fn base_address(&self) -> usize {
+        self.base
+    }
+
+    /// Get queue size in log2 form for IQA register (bits 2:0)
+    pub fn size_log2(&self) -> u8 {
+        (self.size.trailing_zeros() - 8) as u8
+    }
+
+    /// Get current tail index
+    pub fn tail(&self) -> usize {
+        self.tail
+    }
+
+    /// Submit an invalidation descriptor
+    pub fn submit(&mut self, entry: InvalidationQueueEntry) {
+        let ptr = self.base as *mut InvalidationQueueEntry;
+        unsafe {
+            *ptr.add(self.tail) = entry;
+        }
+        self.tail = (self.tail + 1) % self.size;
+    }
+
+    /// Submit a wait descriptor and return the status address
+    pub fn submit_wait(&mut self) -> usize {
+        // Use current tail as unique status data
+        let status_data = (self.tail & 0xFFFFFFFF) as u32;
+        let entry = InvalidationQueueEntry::wait(self.status_addr as u64, status_data, false, true);
+        self.submit(entry);
+        self.status_addr
+    }
+
+    /// Check if a wait has completed (status address updated)
+    pub fn check_wait_complete(&self, expected: u32) -> bool {
+        let status = unsafe { core::ptr::read_volatile(self.status_addr as *const u32) };
+        status == expected
+    }
 }
 
 // ============================================================================
@@ -250,6 +720,8 @@ impl SlPte {
     pub const SNOOP: u64 = 1 << 11;
     /// Transient mapping hint
     pub const TRANSIENT: u64 = 1 << 62;
+    /// Super-Page (PS) bit - marks entry as large page (2MB at PD level, 1GB at PDP level)
+    pub const SUPER_PAGE: u64 = 1 << 7;
 
     /// Create a new entry
     pub const fn new() -> Self {
@@ -266,6 +738,39 @@ impl SlPte {
             flags |= Self::WRITE;
         }
         Self((phys_addr & !0xFFF) | flags)
+    }
+
+    /// Create a 2MB super-page entry (used at PD level)
+    /// phys_addr must be 2MB-aligned
+    pub fn super_page_2mb(phys_addr: u64, read: bool, write: bool) -> Self {
+        const MASK_2MB: u64 = (2 * 1024 * 1024) - 1; // 0x1F_FFFF
+        let mut flags = Self::PRESENT | Self::SUPER_PAGE;
+        if read {
+            flags |= Self::READ;
+        }
+        if write {
+            flags |= Self::WRITE;
+        }
+        Self((phys_addr & !MASK_2MB) | flags)
+    }
+
+    /// Create a 1GB super-page entry (used at PDP level)
+    /// phys_addr must be 1GB-aligned
+    pub fn super_page_1gb(phys_addr: u64, read: bool, write: bool) -> Self {
+        const MASK_1GB: u64 = (1024 * 1024 * 1024) - 1; // 0x3FFF_FFFF
+        let mut flags = Self::PRESENT | Self::SUPER_PAGE;
+        if read {
+            flags |= Self::READ;
+        }
+        if write {
+            flags |= Self::WRITE;
+        }
+        Self((phys_addr & !MASK_1GB) | flags)
+    }
+
+    /// Check if this is a super-page entry
+    pub fn is_super_page(&self) -> bool {
+        (self.0 & Self::SUPER_PAGE) != 0
     }
 
     /// Check if present
@@ -290,6 +795,105 @@ impl SlPte {
 }
 
 // ============================================================================
+// Fault Recording
+// ============================================================================
+
+/// Fault Recording Entry (Intel VT-d 10.4.2)
+///
+/// Each fault recording register is 128 bits (16 bytes).
+/// The hardware writes fault information here when DMA faults occur.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct FaultRecordingEntry {
+    /// Lower 64 bits
+    pub lo: u64,
+    /// Upper 64 bits
+    pub hi: u64,
+}
+
+impl FaultRecordingEntry {
+    /// Fault present (bit 127 of hi)
+    pub fn is_fault(&self) -> bool {
+        (self.hi & (1 << 63)) != 0
+    }
+
+    /// Fault type: 0 = write, 1 = read (bit 126)
+    pub fn is_read(&self) -> bool {
+        (self.hi & (1 << 62)) != 0
+    }
+
+    /// Address Type (bits 124-125)
+    pub fn address_type(&self) -> u8 {
+        ((self.hi >> 60) & 0x3) as u8
+    }
+
+    /// Fault Reason (bits 96-103)
+    pub fn fault_reason(&self) -> u8 {
+        ((self.hi >> 32) & 0xFF) as u8
+    }
+
+    /// Source Identifier (requester ID, bits 112-127 of lo)
+    pub fn source_id(&self) -> u16 {
+        ((self.lo >> 40) & 0xFFFF) as u16
+    }
+
+    /// Faulting Address (bits 0-63 of lo, page-aligned)
+    pub fn fault_address(&self) -> u64 {
+        self.lo & !0xFFF
+    }
+
+    /// Clear the fault bit
+    pub fn clear(&mut self) {
+        self.hi &= !(1 << 63);
+    }
+}
+
+/// Fault reason codes (Intel VT-d spec table 33)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultReason {
+    /// Reserved / No fault
+    None,
+    /// Root entry not present
+    RootNotPresent,
+    /// Context entry not present
+    ContextNotPresent,
+    /// Context entry invalid
+    ContextInvalid,
+    /// Address outside domain address width
+    AddressOutOfRange,
+    /// Read access denied
+    ReadDenied,
+    /// Write access denied
+    WriteDenied,
+    /// Page table entry invalid
+    PageTableInvalid,
+    /// Root table invalid
+    RootTableInvalid,
+    /// Context table invalid
+    ContextTableInvalid,
+    /// Unknown fault reason
+    Unknown(u8),
+}
+
+impl From<u8> for FaultReason {
+    fn from(code: u8) -> Self {
+        match code {
+            0x0 => FaultReason::None,
+            0x1 => FaultReason::RootNotPresent,
+            0x2 => FaultReason::ContextNotPresent,
+            0x3 => FaultReason::ContextInvalid,
+            0x4 => FaultReason::AddressOutOfRange,
+            0x5 => FaultReason::ReadDenied,
+            0x6 => FaultReason::WriteDenied,
+            0x7 => FaultReason::PageTableInvalid,
+            0x8 => FaultReason::RootTableInvalid,
+            0x9 => FaultReason::ContextTableInvalid,
+            n => FaultReason::Unknown(n),
+        }
+    }
+}
+
+// ============================================================================
 // IOMMU Domain
 // ============================================================================
 
@@ -306,6 +910,8 @@ pub struct IommuDomain {
     mappings: BTreeMap<u64, DmaMapping>,
     /// Total mapped size
     mapped_size: u64,
+    /// Optional NUMA node affinity for this domain's data structures
+    numa_node: Option<usize>,
 }
 
 /// DMA mapping info
@@ -328,14 +934,13 @@ unsafe impl Sync for IommuDomain {}
 
 impl IommuDomain {
     /// Create a new domain
-    pub fn new(id: u16) -> Self {
-        // Allocate page table
-        // SAFETY: 4096アライメントと4096の倍数サイズは常に有効なレイアウト
+    pub fn new(id: u16, numa_node: Option<usize>) -> Self {
+        // Allocate page table on the preferred NUMA node when possible.
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("Invalid layout for page table");
 
-        let page_table = crate::util::allocate_zeroed(layout)
+        let page_table = crate::mm::numa::allocate_zeroed_on_node(layout, numa_node)
             .expect("Failed to allocate IOMMU page table")
             .as_ptr() as *mut SlPte;
 
@@ -344,6 +949,7 @@ impl IommuDomain {
             page_table,
             mappings: BTreeMap::new(),
             mapped_size: 0,
+            numa_node,
         }
     }
 
@@ -355,6 +961,11 @@ impl IommuDomain {
     /// Get page table physical address
     pub fn page_table_addr(&self) -> u64 {
         self.page_table as u64
+    }
+
+    /// Get optional NUMA node affinity for this domain
+    pub fn numa_node(&self) -> Option<usize> {
+        self.numa_node
     }
 
     /// Map a DMA region
@@ -427,8 +1038,8 @@ impl IommuDomain {
             // Level 4: PML4 -> PDP
             let pml4_entry = self.page_table.add(pml4_idx);
             if !(*pml4_entry).is_present() {
-                // Allocate PDP table
-                let pdp = Self::allocate_page_table()?;
+                // Allocate PDP table on the domain's preferred NUMA node when available
+                let pdp = Self::allocate_page_table(self.numa_node)?;
                 *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
             }
             let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
@@ -436,8 +1047,8 @@ impl IommuDomain {
             // Level 3: PDP -> PD
             let pdp_entry = pdp_table.add(pdp_idx);
             if !(*pdp_entry).is_present() {
-                // Allocate PD table
-                let pd = Self::allocate_page_table()?;
+                // Allocate PD table on the domain's preferred NUMA node when available
+                let pd = Self::allocate_page_table(self.numa_node)?;
                 *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
             }
             let pd_table = ((*pdp_entry).phys_addr()) as *mut SlPte;
@@ -445,8 +1056,8 @@ impl IommuDomain {
             // Level 2: PD -> PT
             let pd_entry = pd_table.add(pd_idx);
             if !(*pd_entry).is_present() {
-                // Allocate PT
-                let pt = Self::allocate_page_table()?;
+                // Allocate PT on the domain's preferred NUMA node when available
+                let pt = Self::allocate_page_table(self.numa_node)?;
                 *pd_entry = SlPte((pt as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
             }
             let pt_table = ((*pd_entry).phys_addr()) as *mut SlPte;
@@ -463,14 +1074,122 @@ impl IommuDomain {
     }
 
     /// Allocate a zeroed page table
-    fn allocate_page_table() -> Result<*mut SlPte, IommuError> {
+    fn allocate_page_table(numa_hint: Option<usize>) -> Result<*mut SlPte, IommuError> {
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .map_err(|_| IommuError::HardwareError)?;
-        let ptr = crate::util::allocate_zeroed(layout)
-            .ok_or(IommuError::HardwareError)?
-            .as_ptr() as *mut SlPte;
+
+        // Prefer NUMA-aware allocation when a hint is available
+        let ptr = if let Some(node) = numa_hint {
+            crate::mm::numa::allocate_zeroed_on_node(layout, Some(node))
+                .ok_or(IommuError::HardwareError)?
+        } else {
+            crate::util::allocate_zeroed(layout).ok_or(IommuError::HardwareError)?
+        }
+        .as_ptr() as *mut SlPte;
+
         Ok(ptr)
+    }
+
+    /// Map a 2MB super-page
+    /// 
+    /// Uses 3-level page table walking (PML4 -> PDP -> PD) and sets super-page at PD level.
+    /// Both iova and phys must be 2MB-aligned.
+    pub unsafe fn map_page_2mb(
+        &mut self,
+        iova: u64,
+        phys: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
+        const SIZE_2MB: u64 = 2 * 1024 * 1024;
+        
+        if iova % SIZE_2MB != 0 || phys % SIZE_2MB != 0 {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        // Calculate indices for 4-level paging (but stop at PD level for 2MB pages)
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+
+        let pml4_table = self.page_table;
+        let pml4_entry = pml4_table.add(pml4_idx);
+
+        // Ensure PDP exists
+        if !(*pml4_entry).is_present() {
+            let pdp = Self::allocate_page_table(self.numa_node)?;
+            *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+        }
+
+        let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
+        let pdp_entry = pdp_table.add(pdp_idx);
+
+        // Ensure PD exists
+        if !(*pdp_entry).is_present() {
+            let pd = Self::allocate_page_table(self.numa_node)?;
+            *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+        } else if (*pdp_entry).is_super_page() {
+            // Already a 1GB super-page at this level
+            return Err(IommuError::AlreadyMapped);
+        }
+
+        let pd_table = ((*pdp_entry).phys_addr()) as *mut SlPte;
+        let pd_entry = pd_table.add(pd_idx);
+
+        // Check if already mapped
+        if (*pd_entry).is_present() {
+            return Err(IommuError::AlreadyMapped);
+        }
+
+        // Create 2MB super-page entry
+        *pd_entry = SlPte::super_page_2mb(phys, read, write);
+
+        Ok(())
+    }
+
+    /// Map a 1GB super-page
+    /// 
+    /// Uses 2-level page table walking (PML4 -> PDP) and sets super-page at PDP level.
+    /// Both iova and phys must be 1GB-aligned.
+    pub unsafe fn map_page_1gb(
+        &mut self,
+        iova: u64,
+        phys: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
+        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+        
+        if iova % SIZE_1GB != 0 || phys % SIZE_1GB != 0 {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        // Calculate indices
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+
+        let pml4_table = self.page_table;
+        let pml4_entry = pml4_table.add(pml4_idx);
+
+        // Ensure PDP exists
+        if !(*pml4_entry).is_present() {
+            let pdp = Self::allocate_page_table(self.numa_node)?;
+            *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+        }
+
+        let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
+        let pdp_entry = pdp_table.add(pdp_idx);
+
+        // Check if already mapped
+        if (*pdp_entry).is_present() {
+            return Err(IommuError::AlreadyMapped);
+        }
+
+        // Create 1GB super-page entry
+        *pdp_entry = SlPte::super_page_1gb(phys, read, write);
+
+        Ok(())
     }
 
     /// Unmap a DMA region
@@ -635,6 +1354,16 @@ pub struct IommuController {
     next_domain_id: AtomicU64,
     /// Translation enabled
     enabled: AtomicBool,
+    /// Interrupt Remapping Table (optional, if supported)
+    interrupt_remap_table: Option<InterruptRemapTable>,
+    /// Interrupt remapping enabled
+    ir_enabled: AtomicBool,
+    /// Queued Invalidation Queue (optional, if supported)
+    invalidation_queue: Option<InvalidationQueue>,
+    /// Queued Invalidation enabled
+    qi_enabled: AtomicBool,
+    /// IOVA allocator (optional, configured via `init_iova`)
+    iova_allocator: Option<IovaAllocator>,
 }
 
 unsafe impl Send for IommuController {}
@@ -653,6 +1382,10 @@ impl IommuController {
             device_domains: BTreeMap::new(),
             next_domain_id: AtomicU64::new(1),
             enabled: AtomicBool::new(false),
+            interrupt_remap_table: None,
+            ir_enabled: AtomicBool::new(false),
+            invalidation_queue: None,
+            qi_enabled: AtomicBool::new(false),
         }
     }
 
@@ -779,16 +1512,37 @@ impl IommuController {
     }
 
     /// Create a new domain
-    pub fn create_domain(&mut self) -> Result<u16, IommuError> {
+    /// Create a new domain with an optional NUMA node affinity hint
+    pub fn create_domain(&mut self, numa_node: Option<usize>) -> Result<u16, IommuError> {
         let id = self.next_domain_id.fetch_add(1, Ordering::Relaxed) as u16;
 
-        let domain = IommuDomain::new(id);
+        let domain = IommuDomain::new(id, numa_node);
         self.domains.insert(id, domain);
 
         // Register per-domain lock for parallel operations
         register_domain_lock(id);
 
         Ok(id)
+    }
+
+    /// Set a domain's NUMA affinity (best-effort). Does NOT migrate existing
+    /// page tables or mappings; this is only a hint for future allocations.
+    pub fn set_domain_numa(
+        &mut self,
+        domain_id: u16,
+        numa_node: Option<usize>,
+    ) -> Result<(), IommuError> {
+        let domain = self
+            .domains
+            .get_mut(&domain_id)
+            .ok_or(IommuError::DomainNotFound)?;
+        domain.numa_node = numa_node;
+        Ok(())
+    }
+
+    /// Get domain NUMA hint
+    pub fn get_domain_numa(&self, domain_id: u16) -> Option<usize> {
+        self.domains.get(&domain_id).and_then(|d| d.numa_node)
     }
 
     /// Get a domain by ID
@@ -899,6 +1653,590 @@ impl IommuController {
             }
         }
     }
+
+    /// Invalidate IOTLB globally (all domains)
+    pub unsafe fn invalidate_iotlb_global(&self) {
+        // Get Invalidation Register Offset from CAP
+        let iro = ((self.cap & cap_bits::CAP_IRO_MASK) >> 8) as u64;
+        let iotlb_reg = self.mmio_base + (iro << 4) + iotlb_regs::IOTLB;
+
+        // Global invalidation with drain
+        let cmd: u64 = iotlb_bits::IOTLB_IVT
+            | iotlb_bits::IOTLB_IIRG_GLOBAL
+            | iotlb_bits::IOTLB_DR
+            | iotlb_bits::IOTLB_DW;
+
+        crate::io::mmio::mmio_write_u64(iotlb_reg as usize, cmd);
+
+        // Wait for completion
+        for _ in 0..1000 {
+            let status = crate::io::mmio::mmio_read_u64(iotlb_reg as usize);
+            if status & iotlb_bits::IOTLB_IVT == 0 {
+                break;
+            }
+        }
+    }
+
+    /// Check for and read fault status
+    pub fn check_fault_status(&self) -> u32 {
+        self.read32(regs::FSTS)
+    }
+
+    /// Check if there's a pending fault
+    pub fn has_pending_fault(&self) -> bool {
+        let fsts = self.check_fault_status();
+        (fsts & fsts_bits::FSTS_PPF) != 0
+    }
+
+    /// Read fault recording entries
+    /// Returns a vector of active fault entries
+    pub fn read_faults(&self) -> Vec<(FaultRecordingEntry, FaultReason)> {
+        let mut faults = Vec::new();
+
+        // Get Fault Recording Offset and count from CAP
+        let fro = ((self.cap & cap_bits::CAP_FRO_MASK) >> 24) as u64;
+        let nfr = ((self.cap & cap_bits::CAP_NFR_MASK) >> 40) as usize + 1;
+
+        let fr_base = self.mmio_base + (fro << 4);
+
+        for i in 0..nfr {
+            let entry_addr = fr_base + (i as u64 * 16);
+            let lo = crate::io::mmio::mmio_read_u64(entry_addr as usize);
+            let hi = crate::io::mmio::mmio_read_u64((entry_addr + 8) as usize);
+
+            let entry = FaultRecordingEntry { lo, hi };
+            if entry.is_fault() {
+                let reason = FaultReason::from(entry.fault_reason());
+                faults.push((entry, reason));
+
+                // Clear the fault bit by writing 1 to it
+                crate::io::mmio::mmio_write_u64((entry_addr + 8) as usize, hi | (1 << 63));
+            }
+        }
+
+        // Clear PFO (Primary Fault Overflow) if set
+        let fsts = self.check_fault_status();
+        if fsts & fsts_bits::FSTS_PFO != 0 {
+            self.write32(regs::FSTS, fsts_bits::FSTS_PFO);
+        }
+
+        faults
+    }
+
+    /// Check if Queued Invalidation is supported
+    pub fn supports_queued_invalidation(&self) -> bool {
+        (self.ecap & ecap_bits::ECAP_QI) != 0
+    }
+
+    /// Check if Interrupt Remapping is supported
+    pub fn supports_interrupt_remapping(&self) -> bool {
+        (self.ecap & ecap_bits::ECAP_IR) != 0
+    }
+
+    /// Check if 2MB super-pages are supported
+    pub fn supports_2mb_pages(&self) -> bool {
+        (self.cap & cap_bits::CAP_SLLPS_2M) != 0
+    }
+
+    /// Check if 1GB super-pages are supported
+    pub fn supports_1gb_pages(&self) -> bool {
+        (self.cap & cap_bits::CAP_SLLPS_1G) != 0
+    }
+
+    /// Get capability information
+    pub fn capabilities(&self) -> IommuCapabilities {
+        IommuCapabilities {
+            queued_invalidation: self.supports_queued_invalidation(),
+            interrupt_remapping: self.supports_interrupt_remapping(),
+            super_page_2mb: self.supports_2mb_pages(),
+            super_page_1gb: self.supports_1gb_pages(),
+            page_walk_coherency: (self.cap & cap_bits::CAP_PWC) != 0,
+            snoop_control: (self.cap & cap_bits::CAP_SC) != 0,
+        }
+    }
+
+    // =========================================================================
+    // Interrupt Remapping Methods
+    // =========================================================================
+
+    /// Initialize the Interrupt Remapping Table
+    ///
+    /// # Arguments
+    /// * `size_log2` - Log2 of IRT size (0-15, giving 1-65536 entries)
+    pub fn init_interrupt_remapping(&mut self, size_log2: u8) -> Result<(), IommuError> {
+        if !self.supports_interrupt_remapping() {
+            return Err(IommuError::NotSupported);
+        }
+
+        if self.interrupt_remap_table.is_some() {
+            return Err(IommuError::AlreadyInitialized);
+        }
+
+        // Create the IRT
+        let irt = InterruptRemapTable::new(size_log2).ok_or(IommuError::HardwareError)?;
+
+        // Get IRTA register offset from ECAP
+        let iro = ((self.ecap & ecap_bits::ECAP_IRO_MASK) >> 8) as u64;
+        let irta_reg = self.mmio_base + (iro << 4);
+
+        // Set Interrupt Remap Table Address
+        // Bits 11:0 = size (log2 - 1), Bit 11 = Extended Interrupt Mode
+        let eime = if (self.ecap & ecap_bits::ECAP_EIM) != 0 {
+            1 << 11
+        } else {
+            0
+        };
+        let irta_value = (irt.base_address() as u64) | ((size_log2 as u64 - 1) & 0xF) | eime;
+
+        crate::io::mmio::mmio_write_u64(irta_reg as usize, irta_value);
+
+        // Set IRT pointer (GCMD.SIRTP)
+        self.write32(regs::GCMD, gcmd_bits::GCMD_SIRTP);
+
+        // Wait for completion
+        for _ in 0..1000 {
+            if self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS != 0 {
+                break;
+            }
+        }
+
+        self.interrupt_remap_table = Some(irt);
+        log::info!(
+            "[IOMMU] Interrupt Remapping Table initialized ({} entries)\n",
+            1 << size_log2
+        );
+
+        Ok(())
+    }
+
+    /// Enable interrupt remapping
+    pub unsafe fn enable_interrupt_remapping(&self) -> Result<(), IommuError> {
+        if !self.supports_interrupt_remapping() {
+            return Err(IommuError::NotSupported);
+        }
+
+        if self.interrupt_remap_table.is_none() {
+            return Err(IommuError::NotPresent);
+        }
+
+        // Enable Interrupt Remapping (GCMD.IRE)
+        self.write32(regs::GCMD, gcmd_bits::GCMD_IRE);
+
+        // Wait for completion
+        for _ in 0..1000 {
+            if self.read32(regs::GSTS) & gsts_bits::GSTS_IRES != 0 {
+                self.ir_enabled.store(true, Ordering::Release);
+                log::info!("[IOMMU] Interrupt Remapping enabled\n");
+                return Ok(());
+            }
+        }
+
+        Err(IommuError::Timeout)
+    }
+
+    /// Disable interrupt remapping
+    pub unsafe fn disable_interrupt_remapping(&self) -> Result<(), IommuError> {
+        let gcmd = self.read32(regs::GCMD);
+        self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_IRE);
+
+        for _ in 0..1000 {
+            if self.read32(regs::GSTS) & gsts_bits::GSTS_IRES == 0 {
+                self.ir_enabled.store(false, Ordering::Release);
+                return Ok(());
+            }
+        }
+
+        Err(IommuError::Timeout)
+    }
+
+    /// Check if interrupt remapping is enabled
+    pub fn is_interrupt_remapping_enabled(&self) -> bool {
+        self.ir_enabled.load(Ordering::Acquire)
+    }
+
+    /// Allocate an IRTE for a device interrupt
+    /// Returns the IRTE index that should be used in the interrupt message
+    pub fn allocate_irte(
+        &mut self,
+        vector: u8,
+        dest_id: u32,
+        logical: bool,
+    ) -> Result<u16, IommuError> {
+        let irt = self
+            .interrupt_remap_table
+            .as_mut()
+            .ok_or(IommuError::NotPresent)?;
+
+        let index = irt.allocate().ok_or(IommuError::HardwareError)?;
+
+        let entry = InterruptRemapEntry::fixed(vector, dest_id, logical, false);
+        irt.set(index, entry);
+
+        Ok(index)
+    }
+
+    /// Free an IRTE
+    pub fn free_irte(&mut self, index: u16) -> Result<(), IommuError> {
+        let irt = self
+            .interrupt_remap_table
+            .as_mut()
+            .ok_or(IommuError::NotPresent)?;
+
+        irt.set(index, InterruptRemapEntry::new());
+        irt.free(index);
+
+        Ok(())
+    }
+
+    /// Update an existing IRTE
+    pub fn update_irte(
+        &mut self,
+        index: u16,
+        entry: InterruptRemapEntry,
+    ) -> Result<(), IommuError> {
+        let irt = self
+            .interrupt_remap_table
+            .as_mut()
+            .ok_or(IommuError::NotPresent)?;
+
+        if !irt.set(index, entry) {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // IOVA Allocator (simple page-granular bitmap allocator)
+    // =========================================================================
+
+    /// Simple page-granular IOVA allocator (bitmap)
+    #[derive(Debug)]
+    pub struct IovaAllocator {
+        base: u64,
+        size: u64,
+        page_size: u64,
+        pages: usize,
+        bitmap: alloc::vec::Vec<u64>,
+    }
+
+    impl IovaAllocator {
+        pub fn new(base: u64, size: u64, page_size: u64) -> Option<Self> {
+            if page_size == 0 || base % page_size != 0 || size % page_size != 0 {
+                return None;
+            }
+            let pages = (size / page_size) as usize;
+            let words = (pages + 63) / 64;
+            Some(Self {
+                base,
+                size,
+                page_size,
+                pages,
+                bitmap: alloc::vec![0u64; words],
+            })
+        }
+
+        /// Allocate a contiguous IOVA range of `size` bytes (page-aligned)
+        pub fn allocate(&mut self, size: u64) -> Option<u64> {
+            if size == 0 || size > self.size {
+                return None;
+            }
+            let needed = ((size + self.page_size - 1) / self.page_size) as usize;
+            if needed == 0 || needed > self.pages {
+                return None;
+            }
+
+            let mut run = 0usize;
+            let mut start = 0usize;
+            for i in 0..self.pages {
+                let w = i / 64;
+                let b = i % 64;
+                let occupied = ((self.bitmap[w] >> b) & 1u64) != 0;
+                if !occupied {
+                    if run == 0 {
+                        start = i;
+                    }
+                    run += 1;
+                    if run == needed {
+                        // mark bits
+                        for j in start..start + needed {
+                            let ww = j / 64;
+                            let bb = j % 64;
+                            self.bitmap[ww] |= 1u64 << bb;
+                        }
+                        return Some(self.base + (start as u64 * self.page_size));
+                    }
+                } else {
+                    run = 0;
+                }
+            }
+            None
+        }
+
+        /// Free a previously allocated IOVA range
+        pub fn free(&mut self, addr: u64, size: u64) -> bool {
+            if addr < self.base || addr + size > self.base + self.size {
+                return false;
+            }
+            if addr % self.page_size != 0 {
+                return false;
+            }
+            let start = ((addr - self.base) / self.page_size) as usize;
+            let needed = ((size + self.page_size - 1) / self.page_size) as usize;
+            if start + needed > self.pages {
+                return false;
+            }
+            for j in start..start + needed {
+                let ww = j / 64;
+                let bb = j % 64;
+                self.bitmap[ww] &= !(1u64 << bb);
+            }
+            true
+        }
+    }
+
+    // IOVA management on IOMMU controller
+    impl IommuController {
+        /// Initialize controller IOVA allocator
+        pub fn init_iova(&mut self, base: u64, size: u64) -> Result<(), IommuError> {
+            self.iova_allocator = IovaAllocator::new(base, size, 4096);
+            if self.iova_allocator.is_none() {
+                return Err(IommuError::HardwareError);
+            }
+            Ok(())
+        }
+
+        /// Allocate an IOVA range from controller's allocator
+        pub fn allocate_iova(&mut self, size: u64) -> Result<u64, IommuError> {
+            let alloc = self.iova_allocator.as_mut().ok_or(IommuError::NotPresent)?;
+            alloc.allocate(size).ok_or(IommuError::HardwareError)
+        }
+
+        /// Free an IOVA range
+        pub fn free_iova(&mut self, addr: u64, size: u64) -> Result<(), IommuError> {
+            let alloc = self.iova_allocator.as_mut().ok_or(IommuError::NotPresent)?;
+            if alloc.free(addr, size) {
+                Ok(())
+            } else {
+                Err(IommuError::InvalidAddress)
+            }
+        }
+    }
+
+    /// Initialize IOVA space for the global IOMMU controller
+    pub fn init_iova_range(base: u64, size: u64) -> Result<(), IommuError> {
+        let mut guard = IOMMU.lock();
+        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        controller.init_iova(base, size)
+    }
+
+    /// Allocate an IOVA from the global controller
+    pub fn allocate_iova(size: u64) -> Result<u64, IommuError> {
+        let mut guard = IOMMU.lock();
+        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        controller.allocate_iova(size)
+    }
+
+    /// Free an IOVA back to global controller
+    pub fn free_iova(addr: u64, size: u64) -> Result<(), IommuError> {
+        let mut guard = IOMMU.lock();
+        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        controller.free_iova(addr, size)
+    }
+
+    /// Allocate an IOVA and create a mapping in default domain (non-identity mapping)
+    pub fn map_for_dma_alloc(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuError> {
+        let mut guard = IOMMU.lock();
+        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+
+        // Allocate IOVA
+        let iova = controller.allocate_iova(size)?;
+
+        // Default domain is 0
+        let domain = controller.domains.get_mut(&0).ok_or(IommuError::DomainNotFound)?;
+        domain.map(iova, phys_addr.as_u64(), size, true, true)?;
+
+        Ok(iova)
+    }
+
+    /// Unmap IOVA and free it
+    pub fn unmap_dma_alloc(iova: u64, _size: u64) -> Result<(), IommuError> {
+        let mut guard = IOMMU.lock();
+        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+
+        // Default domain
+        let domain = controller.domains.get_mut(&0).ok_or(IommuError::DomainNotFound)?;
+        domain.unmap(iova)?;
+        // Free IOVA - size argument used to determine pages freed
+        controller.free_iova(iova, _size)?;
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Queued Invalidation Methods
+    // =========================================================================
+
+    /// Initialize the Invalidation Queue
+    ///
+    /// # Arguments
+    /// * `size_log2` - Log2 of queue size (8-16, giving 256-65536 entries)
+    pub fn init_queued_invalidation(&mut self, size_log2: u8) -> Result<(), IommuError> {
+        if !self.supports_queued_invalidation() {
+            return Err(IommuError::NotSupported);
+        }
+
+        if self.invalidation_queue.is_some() {
+            return Err(IommuError::AlreadyInitialized);
+        }
+
+        // Create the queue
+        let iq = InvalidationQueue::new(size_log2).ok_or(IommuError::HardwareError)?;
+
+        // Set Invalidation Queue Address (IQA register)
+        // Bits 2:0 = queue size (log2 - 8), bits 11:0 reserved
+        let iqa_value = (iq.base_address() as u64) | (iq.size_log2() as u64 & 0x7);
+        self.write64(regs::IQA, iqa_value);
+
+        // Set queue head to 0
+        self.write64(regs::IQH, 0);
+        // Set queue tail to 0
+        self.write64(regs::IQT, 0);
+
+        self.invalidation_queue = Some(iq);
+        log::info!(
+            "[IOMMU] Invalidation Queue initialized ({} entries)\n",
+            1 << size_log2
+        );
+
+        Ok(())
+    }
+
+    /// Enable Queued Invalidation
+    pub unsafe fn enable_queued_invalidation(&self) -> Result<(), IommuError> {
+        if self.invalidation_queue.is_none() {
+            return Err(IommuError::NotPresent);
+        }
+
+        // Enable QI (GCMD.QIE)
+        self.write32(regs::GCMD, gcmd_bits::GCMD_QIE);
+
+        // Wait for completion
+        for _ in 0..1000 {
+            if self.read32(regs::GSTS) & gsts_bits::GSTS_QIES != 0 {
+                self.qi_enabled.store(true, Ordering::Release);
+                log::info!("[IOMMU] Queued Invalidation enabled\n");
+                return Ok(());
+            }
+        }
+
+        Err(IommuError::Timeout)
+    }
+
+    /// Disable Queued Invalidation
+    pub unsafe fn disable_queued_invalidation(&self) -> Result<(), IommuError> {
+        let gcmd = self.read32(regs::GCMD);
+        self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_QIE);
+
+        for _ in 0..1000 {
+            if self.read32(regs::GSTS) & gsts_bits::GSTS_QIES == 0 {
+                self.qi_enabled.store(false, Ordering::Release);
+                return Ok(());
+            }
+        }
+
+        Err(IommuError::Timeout)
+    }
+
+    /// Check if Queued Invalidation is enabled
+    pub fn is_queued_invalidation_enabled(&self) -> bool {
+        self.qi_enabled.load(Ordering::Acquire)
+    }
+
+    /// Submit a queued invalidation request
+    pub fn submit_invalidation(&mut self, entry: InvalidationQueueEntry) -> Result<(), IommuError> {
+        let new_tail = {
+            let iq = self
+                .invalidation_queue
+                .as_mut()
+                .ok_or(IommuError::NotPresent)?;
+
+            iq.submit(entry);
+            (iq.tail() << 4) as u64 // Tail is in 16-byte units
+        };
+
+        // Update hardware tail pointer (borrow released)
+        self.write64(regs::IQT, new_tail);
+
+        Ok(())
+    }
+
+    /// Submit a global IOTLB invalidation via queued invalidation
+    pub fn qi_invalidate_iotlb_global(&mut self, drain: bool) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::iotlb_invalidate_global(drain);
+        self.submit_invalidation(entry)
+    }
+
+    /// Submit a domain IOTLB invalidation via queued invalidation
+    pub fn qi_invalidate_iotlb_domain(
+        &mut self,
+        domain_id: u16,
+        drain: bool,
+    ) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::iotlb_invalidate_domain(domain_id, drain);
+        self.submit_invalidation(entry)
+    }
+
+    /// Submit a global context-cache invalidation via queued invalidation
+    pub fn qi_invalidate_context_global(&mut self) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::context_cache_invalidate_global();
+        self.submit_invalidation(entry)
+    }
+
+    /// Submit a global IEC invalidation via queued invalidation
+    pub fn qi_invalidate_iec_global(&mut self) -> Result<(), IommuError> {
+        let entry = InvalidationQueueEntry::iec_invalidate_global();
+        self.submit_invalidation(entry)
+    }
+
+    /// Submit a wait descriptor and synchronize
+    pub fn qi_wait_sync(&mut self) -> Result<(), IommuError> {
+        // Get tail after submitting wait
+        let new_tail = {
+            let iq = self
+                .invalidation_queue
+                .as_mut()
+                .ok_or(IommuError::NotPresent)?;
+
+            let _status_addr = iq.submit_wait();
+            (iq.tail() << 4) as u64
+        };
+
+        // Update hardware tail (borrow released)
+        self.write64(regs::IQT, new_tail);
+
+        // Wait for hardware head to catch up (all descriptors processed)
+        let expected_tail = new_tail >> 4;
+        for _ in 0..10000 {
+            let head = self.read64(regs::IQH) >> 4;
+            if head == expected_tail {
+                return Ok(());
+            }
+        }
+
+        Err(IommuError::Timeout)
+    }
+}
+
+/// IOMMU capability summary
+#[derive(Debug, Clone)]
+pub struct IommuCapabilities {
+    pub queued_invalidation: bool,
+    pub interrupt_remapping: bool,
+    pub super_page_2mb: bool,
+    pub super_page_1gb: bool,
+    pub page_walk_coherency: bool,
+    pub snoop_control: bool,
 }
 
 // ============================================================================
@@ -911,7 +2249,8 @@ static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
 /// Per-domain locks for parallel map/unmap operations
 /// Key: domain_id, Value: Mutex<()> (domain is stored in IommuController.domains)
 /// This allows multiple threads to perform DMA mapping on different domains concurrently.
-static DOMAIN_LOCKS: Mutex<BTreeMap<u16, alloc::sync::Arc<spin::Mutex<()>>>> = Mutex::new(BTreeMap::new());
+static DOMAIN_LOCKS: Mutex<BTreeMap<u16, alloc::sync::Arc<spin::Mutex<()>>>> =
+    Mutex::new(BTreeMap::new());
 
 /// Acquire a lock for a specific domain
 fn lock_domain(domain_id: u16) -> Option<alloc::sync::Arc<spin::Mutex<()>>> {
@@ -961,6 +2300,19 @@ pub fn disable_iommu() -> Result<(), IommuError> {
 /// Check if IOMMU is enabled
 pub fn is_iommu_enabled() -> bool {
     IOMMU.lock().is_some()
+}
+
+/// Set NUMA hint for a domain (best-effort)
+pub fn set_domain_numa(domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError> {
+    // Explicitly propagate the inner result so callers receive any domain-not-found errors.
+    let mut guard = IOMMU.lock();
+    let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+    controller.set_domain_numa(domain_id, numa_node)
+}
+
+/// Get NUMA hint for a domain
+pub fn get_domain_numa(domain_id: u16) -> Result<Option<usize>, IommuError> {
+    with_iommu(|iommu| iommu.get_domain_numa(domain_id))
 }
 
 /// Map a physical address range for DMA access
@@ -1040,7 +2392,9 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
     with_iommu(|iommu| {
         // 1. 新しいドメインを作成
-        let domain_id = match iommu.create_domain() {
+        // Prefer creating the domain on the local NUMA node if available
+        let numa_hint = Some(crate::mm::numa::current_node());
+        let domain_id = match iommu.create_domain(numa_hint) {
             Ok(id) => id,
             Err(e) => {
                 log::info!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
@@ -1128,7 +2482,7 @@ mod tests {
 
     #[test]
     fn test_iommu_domain() {
-        let mut domain = IommuDomain::new(1);
+        let mut domain = IommuDomain::new(1, None);
         assert_eq!(domain.id(), 1);
 
         // Map a region
@@ -1139,4 +2493,63 @@ mod tests {
         let result = domain.map(0x1000, 0x3000, 0x1000, true, false);
         assert_eq!(result, Err(IommuError::AlreadyMapped));
     }
+
+    #[test]
+    fn test_create_domain_with_numa_hint() {
+        let mut ctrl = IommuController::new(0x0);
+        let id = ctrl.create_domain(Some(2)).expect("create_domain failed");
+        let domain = ctrl.domain(id).expect("domain not found");
+        assert_eq!(domain.id(), id);
+        assert_eq!(domain.numa_node(), Some(2));
+
+        // Test controller set/get API
+        ctrl.set_domain_numa(id, Some(5))
+            .expect("set_domain_numa failed");
+        assert_eq!(ctrl.get_domain_numa(id), Some(5usize));
+    }
+
+    #[test]
+    fn test_iova_allocator_basic() {
+        let mut ctrl = IommuController::new(0x0);
+        // Small IOVA space for testing (64KB)
+        ctrl.init_iova(0x1000_0000, 0x10000).expect("init_iova failed");
+
+        let a = ctrl.allocate_iova(4096).expect("alloc 4K");
+        assert_eq!(a % 4096, 0);
+
+        let b = ctrl.allocate_iova(8192).expect("alloc 8K");
+        assert_ne!(a, b);
+
+        ctrl.free_iova(a, 4096).expect("free failed");
+
+        let _c = ctrl.allocate_iova(4096).expect("alloc after free");
+    }
+
+    #[test]
+    fn test_map_for_dma_alloc_non_identity() {
+        let mut ctrl = IommuController::new(0x0);
+        ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
+
+        // Create default domain 0 for mapping
+        ctrl.domains.insert(0, IommuDomain::new(0, None));
+        register_domain_lock(0);
+
+        let size = 0x3000;
+        let phys = 0x2000_0000;
+
+        let iova = ctrl.allocate_iova(size).expect("allocate_iova");
+
+        {
+            let domain = ctrl.domain_mut(0).expect("domain 0");
+            domain.map(iova, phys, size, true, true).expect("domain.map failed");
+            assert!(domain.mappings().contains_key(&iova));
+
+            let mapping = domain.unmap(iova).expect("unmap failed");
+            assert_eq!(mapping.iova, iova);
+            assert_eq!(mapping.phys, phys);
+        }
+
+        ctrl.free_iova(iova, size).expect("free failed");
+    }
 }
+

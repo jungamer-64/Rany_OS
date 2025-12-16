@@ -299,6 +299,8 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
             // ドメインがMutexを保持したままパニックすると、
             // そのMutexは「poisoned」状態としてマークされる
             self.lock.poisoned.store(true, Ordering::Release);
+            // テスト環境ではシリアルへのI/Oは特権命令になり得るため、出力を抑止
+            #[cfg(not(test))]
             serial_println!("[PoisonLock] Lock poisoned due to panic");
         }
 

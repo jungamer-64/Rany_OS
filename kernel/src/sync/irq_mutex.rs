@@ -16,10 +16,15 @@ use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
+// テスト環境で特権命令 (CLI/STI) を実行できないため、テスト用の割り込み状態を模擬する
+#[cfg(test)]
+static TEST_INTERRUPTS_ENABLED: AtomicBool = AtomicBool::new(true);
+
 /// 割り込みフラグ (RFLAGS.IF) を保存して割り込みを禁止
 ///
 /// # Returns
 /// 元の割り込み有効状態 (true = 有効だった)
+#[cfg(not(test))]
 #[inline]
 pub(super) fn save_and_disable_interrupts() -> bool {
     let rflags: u64;
@@ -41,7 +46,15 @@ pub(super) fn save_and_disable_interrupts() -> bool {
     (rflags & (1 << 9)) != 0
 }
 
+/// テスト環境では特権命令を実行できないので、擬似割り込みフラグで代用
+#[cfg(test)]
+#[inline]
+pub(super) fn save_and_disable_interrupts() -> bool {
+    TEST_INTERRUPTS_ENABLED.swap(false, Ordering::SeqCst)
+}
+
 /// 割り込みを復元（元々有効だった場合のみ有効化）
+#[cfg(not(test))]
 #[inline]
 pub(super) fn restore_interrupts(was_enabled: bool) {
     if was_enabled {
@@ -49,6 +62,15 @@ pub(super) fn restore_interrupts(was_enabled: bool) {
             // 割り込み許可 (sti)
             asm!("sti", options(nomem, nostack));
         }
+    }
+}
+
+/// テスト環境向けの割り込み復元
+#[cfg(test)]
+#[inline]
+pub(super) fn restore_interrupts(was_enabled: bool) {
+    if was_enabled {
+        TEST_INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
     }
 }
 
@@ -197,6 +219,7 @@ where
 }
 
 /// 現在割り込みが有効かどうかを確認
+#[cfg(not(test))]
 pub fn interrupts_enabled() -> bool {
     let rflags: u64;
 
@@ -212,21 +235,38 @@ pub fn interrupts_enabled() -> bool {
     (rflags & (1 << 9)) != 0
 }
 
+#[cfg(test)]
+pub fn interrupts_enabled() -> bool {
+    TEST_INTERRUPTS_ENABLED.load(Ordering::SeqCst)
+}
+
 /// 割り込みを強制的に有効化
 ///
 /// # Safety
 /// 割り込みハンドラが正しく設定されている必要がある
+#[cfg(not(test))]
 pub unsafe fn enable_interrupts() {
     unsafe {
         asm!("sti", options(nomem, nostack));
     }
 }
 
+#[cfg(test)]
+pub unsafe fn enable_interrupts() {
+    TEST_INTERRUPTS_ENABLED.store(true, Ordering::SeqCst);
+}
+
 /// 割り込みを強制的に無効化
+#[cfg(not(test))]
 pub fn disable_interrupts() {
     unsafe {
         asm!("cli", options(nomem, nostack));
     }
+}
+
+#[cfg(test)]
+pub fn disable_interrupts() {
+    TEST_INTERRUPTS_ENABLED.store(false, Ordering::SeqCst);
 }
 
 #[cfg(test)]

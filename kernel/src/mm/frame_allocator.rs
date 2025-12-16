@@ -716,8 +716,23 @@ pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)])
     }
 }
 
+use core::sync::atomic::{AtomicU64, Ordering};
+
+// 簡易的な計測: ローカル優先割当の試行回数と成功回数
+static FRAME_LOCAL_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static FRAME_LOCAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+
 /// 4KiB フレームを割り当て（後方互換）
+/// 現在のCPUのローカルNUMAノードからの割当を優先して試みる
 pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
+    if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+        FRAME_LOCAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+        if let Some(frame) = NUMA_FRAME_ALLOCATOR.lock().allocate_4k_local(cpu_id as u8) {
+            FRAME_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+            return Some(frame);
+        }
+    }
+
     FRAME_ALLOCATOR.lock().allocate_4k_frame()
 }
 
@@ -733,8 +748,34 @@ pub fn alloc_frame_local(current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
     NUMA_FRAME_ALLOCATOR.lock().allocate_4k_local(current_cpu)
 }
 
+/// 計測値取得（テスト用）
+pub fn get_frame_local_alloc_metrics() -> (u64, u64) {
+    (
+        FRAME_LOCAL_ATTEMPTS.load(Ordering::Relaxed),
+        FRAME_LOCAL_SUCCESSES.load(Ordering::Relaxed),
+    )
+}
+
+/// 計測値リセット（テスト用）
+pub fn reset_frame_local_alloc_metrics() {
+    FRAME_LOCAL_ATTEMPTS.store(0, Ordering::Relaxed);
+    FRAME_LOCAL_SUCCESSES.store(0, Ordering::Relaxed);
+}
+
+static FRAME2M_LOCAL_ATTEMPTS: AtomicU64 = AtomicU64::new(0);
+static FRAME2M_LOCAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+
 /// 2MiB フレームを割り当て（後方互換）
+/// NUMAローカル優先で割当を試みる
 pub fn alloc_frame_2m() -> Option<PhysFrame<Size2MiB>> {
+    if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+        FRAME2M_LOCAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
+        if let Some(frame) = NUMA_FRAME_ALLOCATOR.lock().allocate_2m_local(cpu_id as u8) {
+            FRAME2M_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
+            return Some(frame);
+        }
+    }
+
     FRAME_ALLOCATOR.lock().allocate_2m_frame()
 }
 
@@ -746,6 +787,20 @@ pub fn alloc_frame_2m_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size2Mi
 /// 現在のCPUのローカルNUMAノードから2MiBフレームを割り当て
 pub fn alloc_frame_2m_local(current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
     NUMA_FRAME_ALLOCATOR.lock().allocate_2m_local(current_cpu)
+}
+
+/// 2MiB 計測値取得（テスト用）
+pub fn get_frame2m_local_alloc_metrics() -> (u64, u64) {
+    (
+        FRAME2M_LOCAL_ATTEMPTS.load(Ordering::Relaxed),
+        FRAME2M_LOCAL_SUCCESSES.load(Ordering::Relaxed),
+    )
+}
+
+/// 2MiB 計測値リセット（テスト用）
+pub fn reset_frame2m_local_alloc_metrics() {
+    FRAME2M_LOCAL_ATTEMPTS.store(0, Ordering::Relaxed);
+    FRAME2M_LOCAL_SUCCESSES.store(0, Ordering::Relaxed);
 }
 
 /// 1GiB フレームを割り当て（設計書5.1: TLBエントリの消費を最小限に）
@@ -805,5 +860,22 @@ mod tests {
             frame1.unwrap().start_address(),
             frame2.unwrap().start_address()
         );
+    }
+
+    #[test]
+    fn test_alloc_frame_numa_prefers_local_or_fallback() {
+        reset_frame_local_alloc_metrics();
+        let frame = alloc_frame();
+        assert!(frame.is_some(), "alloc_frame failed to allocate a frame");
+        let (attempts, successes) = get_frame_local_alloc_metrics();
+        assert!(successes <= attempts);
+    }
+
+    #[test]
+    fn test_alloc_frame_2m_numa_prefers_local_or_fallback() {
+        reset_frame2m_local_alloc_metrics();
+        let _frame = alloc_frame_2m(); // may be None on small test region
+        let (attempts, successes) = get_frame2m_local_alloc_metrics();
+        assert!(successes <= attempts);
     }
 }

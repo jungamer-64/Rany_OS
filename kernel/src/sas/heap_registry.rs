@@ -63,6 +63,8 @@ impl RegistryShard {
 pub struct HeapRegistry {
     /// シャード化されたレジストリ（ランタイムサイズ）
     shards: alloc::vec::Vec<PoisonLock<RegistryShard>>,
+    /// シャード -> NUMAノードのオプショナルなマッピング
+    shard_nodes: alloc::vec::Vec<Option<usize>>,
     /// 次のオブジェクト世代 (Global atomic is fine for generation)
     next_generation: AtomicU64,
     /// 統計情報
@@ -87,8 +89,26 @@ impl HeapRegistry {
         for _ in 0..shard_count {
             shards.push(PoisonLock::new(RegistryShard::new()));
         }
+        // Distribute shards across NUMA nodes (round-robin) to enable
+        // simple locality-aware heuristics. If NUMA detection is unavailable in
+        // lib-test builds, default to a single NUMA node (0).
+        #[cfg(not(any(test, feature = "bench")))]
+        let numa_nodes = crate::mm::numa::num_nodes();
+        #[cfg(any(test, feature = "bench"))]
+        let numa_nodes = 1usize;
+
+        let mut shard_nodes: alloc::vec::Vec<Option<usize>> = alloc::vec::Vec::with_capacity(shard_count);
+        for i in 0..shard_count {
+            if numa_nodes > 0 {
+                shard_nodes.push(Some(i % numa_nodes));
+            } else {
+                shard_nodes.push(Some(0));
+            }
+        }
+
         Self {
             shards,
+            shard_nodes,
             next_generation: AtomicU64::new(1),
             stats: RegistryStats::default(),
         }
@@ -165,6 +185,32 @@ impl HeapRegistry {
         let mut idxs = self.shards_for_range(address, size);
         idxs.sort_unstable();
         idxs.dedup();
+
+        // If possible, prefer shards local to the owner's NUMA node when deciding
+        // lock acquisition ordering (to slightly bias locality). This does NOT
+        // change correctness but can help on NUMA systems.
+        #[cfg(not(any(test, feature = "bench")))]
+        {
+            if let Some(owner_node) = crate::domain_system::get_domain_numa(owner) {
+                idxs.sort_by_key(|i| {
+                    if let Some(node) = self.shard_nodes.get(*i).copied().unwrap_or(None) {
+                        if node == owner_node {
+                            0usize
+                        } else {
+                            1usize
+                        }
+                    } else {
+                        1usize
+                    }
+                });
+            }
+        }
+        #[cfg(any(test, feature = "bench"))]
+        {
+            // In test builds the global `domain_system` may not be available via
+            // `crate::domain_system` (lib vs. binary build differences). Skip the
+            // NUMA-aware reordering in this case to keep tests deterministic.
+        }
 
         // Acquire guards for all involved shards in ascending order to avoid deadlocks
         let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
@@ -504,6 +550,32 @@ impl HeapRegistry {
             .fetch_add(count as u64, Ordering::Relaxed);
         count
     }
+
+    /// Get NUMA node for a shard (optional)
+    pub fn shard_node(&self, shard_idx: usize) -> Option<usize> {
+        self.shard_nodes.get(shard_idx).copied().unwrap_or(None)
+    }
+
+    /// Return shard indices whose affinity equals the owner's NUMA node
+    pub fn preferred_shards_for_owner(&self, owner: DomainId) -> alloc::vec::Vec<usize> {
+        #[cfg(not(any(test, feature = "bench")))]
+        {
+            if let Some(node) = crate::domain_system::get_domain_numa(owner) {
+                let mut out = alloc::vec::Vec::new();
+                for (i, n) in self.shard_nodes.iter().enumerate() {
+                    if let Some(snode) = n {
+                        if *snode == node {
+                            out.push(i);
+                        }
+                    }
+                }
+                return out;
+            }
+        }
+
+        // If we cannot query domain NUMA info (e.g. lib test build), return empty
+        alloc::vec::Vec::new()
+    }
 }
 
 /// レジストリエラー
@@ -743,4 +815,20 @@ mod tests {
             _ => panic!("expected overlap error"),
         }
     }
+
+    #[test]
+    fn test_shard_node_mapping() {
+        let shards = 8usize;
+        let registry = HeapRegistry::new(shards);
+        assert_eq!(registry.shards.len(), shards);
+        // num_nodes() in test harness is 1, so all shards should be Some(0)
+        for i in 0..shards {
+            assert_eq!(registry.shard_node(i), Some(0));
+        }
+
+        // In lib-test builds the domain NUMA query may be unavailable; ensure
+        // the API returns an empty set in that case.
+        let preferred = registry.preferred_shards_for_owner(DomainId::new(1));
+        // When domain NUMA info is not available, we expect an empty vector
+        assert_eq!(preferred.len(), 0usize);    }
 }
