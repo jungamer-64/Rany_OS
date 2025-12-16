@@ -4,7 +4,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use hal::port_io::{IoPort, PortU8, PortU16}; // PortU32 not used in visible code but maybe good to keep
+use hal::port_io::{PortU8, PortU16};
 use spin::Mutex;
 
 // ============================================================================

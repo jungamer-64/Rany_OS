@@ -9,7 +9,6 @@
 
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::BdfAddress;
-use core::ptr;
 
 // ============================================================================
 // ECAM Implementation
