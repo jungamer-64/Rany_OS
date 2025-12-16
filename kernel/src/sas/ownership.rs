@@ -5,7 +5,11 @@
 //! ゼロコピーでのセル間オブジェクト転送を安全に実現。
 #![allow(dead_code)]
 
+#[cfg(not(any(test, feature = "bench")))]
 use crate::domain_system::DomainId;
+
+#[cfg(any(test, feature = "bench"))]
+use super::DomainId;
 use core::marker::PhantomData;
 
 /// 所有権転送エラー
@@ -24,8 +28,8 @@ pub enum OwnershipError {
     /// アクセス拒否
     AccessDenied {
         ptr: usize,
-        owner: crate::domain_system::DomainId,
-        accessor: crate::domain_system::DomainId,
+        owner: DomainId,
+        accessor: DomainId,
     },
     /// 未登録のポインタ
     UnregisteredPointer(usize),

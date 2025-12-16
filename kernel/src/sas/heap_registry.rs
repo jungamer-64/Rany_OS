@@ -9,7 +9,13 @@
 //! - Removed Reference Counting (Strict Single Ownership).
 #![allow(dead_code)]
 
+#[cfg(not(any(test, feature = "bench")))]
 use crate::domain_system::DomainId;
+
+// In lib test builds we prefer a lightweight `DomainId` provided by the
+// parent `sas` module (a test-only fallback is defined in `sas::mod`).
+#[cfg(any(test, feature = "bench"))]
+use super::DomainId;
 use crate::sync::PoisonLock;
 use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -52,81 +58,6 @@ impl RegistryShard {
     }
 }
 
-    /// Measurement sweep for HeapRegistry: varies shard count and thread counts
-    /// and prints CSV-style metrics for analysis.
-    #[test]
-    fn test_heap_registry_shard_sweep() {
-        use std::sync::Arc;
-        use std::thread;
-        use std::time::Duration;
-
-        let configs = [
-            (32usize, 8usize, 200usize, 50u64),
-            (16usize, 16usize, 300usize, 100u64),
-            (8usize, 32usize, 300usize, 200u64),
-            (4usize, 64usize, 150usize, 500u64),
-        ];
-
-        println!("shards,threads,ops,hold_us,acq_count,contention,avg_acq_ticks,object_count");
-
-        for (shard_count, num_threads, ops, hold_us) in configs.iter().cloned() {
-            reset_lock_metrics();
-
-            let registry = Arc::new(HeapRegistry::new(shard_count));
-
-            // address pool distributed across shards
-            let addresses_per_shard = 16usize;
-            let mut pool = Vec::new();
-            for s in 0..shard_count {
-                for i in 0..addresses_per_shard {
-                    let addr = (s << 4) + i * (shard_count << 4);
-                    pool.push(addr);
-                }
-            }
-            let pool = Arc::new(pool);
-
-            let mut handles = Vec::new();
-            for t in 0..num_threads {
-                let reg = Arc::clone(&registry);
-                let pool = Arc::clone(&pool);
-                let handle = thread::spawn(move || {
-                    let owner = DomainId::new((t + 1) as u64);
-                    for i in 0..ops {
-                        let addr = pool[(i + t) % pool.len()];
-                        match reg.register(addr, 64, owner, 0) {
-                            Ok(_) => {
-                                let _ = reg.unregister(addr, owner);
-                            }
-                            Err(_) => {
-                                let _ = reg.check_access(addr, owner);
-                            }
-                        }
-                        if hold_us > 0 {
-                            thread::sleep(Duration::from_micros(hold_us));
-                        }
-                    }
-                });
-                handles.push(handle);
-            }
-
-            for h in handles {
-                h.join().unwrap();
-            }
-
-            let m = get_lock_metrics();
-            println!(
-                "{},{},{},{},{},{},{},{}",
-                shard_count,
-                num_threads,
-                ops,
-                hold_us,
-                m.acquire_count,
-                m.contention_events,
-                m.average_acquire_ticks,
-                registry.object_count(),
-            );
-        }
-    }
 
 /// ヒープレジストリ (Sharded)
 pub struct HeapRegistry {
@@ -165,7 +96,14 @@ impl HeapRegistry {
 
     /// Default initialization: choose shard count based on CPU count
     pub fn default() -> Self {
+        // When running unit tests under `cargo test --lib`, the full
+        // `smp` module may not be available; use a small default CPU
+        // count to make shard-sizing deterministic in tests.
+        #[cfg(not(any(test, feature = "bench")))]
         let cpus = crate::smp::cpu_count() as usize;
+
+        #[cfg(any(test, feature = "bench"))]
+        let cpus = 4usize;
         let cpus = if cpus == 0 { 1 } else { cpus };
         // 4 shards per CPU (rounded by next_power_of_two) is a practical default
         let shards = core::cmp::min(core::cmp::max((cpus.next_power_of_two()).saturating_mul(4), MIN_SHARD_COUNT), MAX_SHARD_COUNT);
@@ -315,7 +253,7 @@ impl HeapRegistry {
         for g in guards.iter_mut() {
             if g.objects.remove(&address).is_some() {
                 if let Some(addrs) = g.owner_index.get_mut(&owner) {
-                    addrs.retain(|a| *a != address);
+                        addrs.retain(|a: &usize| *a != address);
                 }
             }
         }
@@ -377,7 +315,7 @@ impl HeapRegistry {
 
             // update owner_index
             if let Some(addrs) = g.owner_index.get_mut(&from) {
-                addrs.retain(|a| *a != address);
+                addrs.retain(|a: &usize| *a != address);
             }
             g.owner_index
                 .entry(to)
@@ -510,7 +448,7 @@ impl HeapRegistry {
             let mut g = self.shards[*idx].lock().unwrap();
             if g.objects.remove(&address).is_some() {
                 if let Some(addrs) = g.owner_index.get_mut(&owner) {
-                    addrs.retain(|a| *a != address);
+                    addrs.retain(|a: &usize| *a != address);
                 }
                 removed = true;
             }
@@ -555,7 +493,7 @@ impl HeapRegistry {
             for addr in to_remove {
                 g.objects.remove(&addr);
                 if let Some(addrs) = g.owner_index.get_mut(&domain) {
-                    addrs.retain(|a| *a != addr);
+                    addrs.retain(|a: &usize| *a != addr);
                 }
                 removed_addrs.insert(addr);
             }
@@ -589,6 +527,79 @@ mod tests {
     use std::time::Duration;
 
     use crate::sync::poison_lock::{reset_lock_metrics, get_lock_metrics};
+
+    /// Measurement sweep for HeapRegistry: varies shard count and thread counts
+    /// and prints CSV-style metrics for analysis. This test is intentionally
+    /// placed under the `tests` module so it can reuse the `reset/get` imports.
+    #[test]
+    fn test_heap_registry_shard_sweep() {
+        let configs = [
+            (32usize, 8usize, 200usize, 50u64),
+            (16usize, 16usize, 300usize, 100u64),
+            (8usize, 32usize, 300usize, 200u64),
+            (4usize, 64usize, 150usize, 500u64),
+        ];
+
+        println!("shards,threads,ops,hold_us,acq_count,contention,avg_acq_ticks,object_count");
+
+        for (shard_count, num_threads, ops, hold_us) in configs.iter().cloned() {
+            reset_lock_metrics();
+
+            let registry = std::sync::Arc::new(HeapRegistry::new(shard_count));
+
+            // address pool distributed across shards
+            let addresses_per_shard = 16usize;
+            let mut pool = Vec::new();
+            for s in 0..shard_count {
+                for i in 0..addresses_per_shard {
+                    let addr = (s << 4) + i * (shard_count << 4);
+                    pool.push(addr);
+                }
+            }
+            let pool = std::sync::Arc::new(pool);
+
+            let mut handles = Vec::new();
+            for t in 0..num_threads {
+                let reg = std::sync::Arc::clone(&registry);
+                let pool = std::sync::Arc::clone(&pool);
+                let handle = std::thread::spawn(move || {
+                    let owner = DomainId::new((t + 1) as u64);
+                    for i in 0..ops {
+                        let addr = pool[(i + t) % pool.len()];
+                        match reg.register(addr, 64, owner, 0) {
+                            Ok(_) => {
+                                let _ = reg.unregister(addr, owner);
+                            }
+                            Err(_) => {
+                                let _ = reg.check_access(addr, owner);
+                            }
+                        }
+                        if hold_us > 0 {
+                            std::thread::sleep(std::time::Duration::from_micros(hold_us));
+                        }
+                    }
+                });
+                handles.push(handle);
+            }
+
+            for h in handles {
+                h.join().unwrap();
+            }
+
+            let m = get_lock_metrics();
+            println!(
+                "{},{},{},{},{},{},{},{}",
+                shard_count,
+                num_threads,
+                ops,
+                hold_us,
+                m.acquire_count,
+                m.contention_events,
+                m.average_acquire_ticks,
+                registry.object_count(),
+            );
+        }
+    }
 
     /// 簡易コンテンションテスト：1スレッドがシャードを長時間保持し、別スレッドが同シャードにアクセスする。
     /// PoisonLock の計測 (コンテンション検知) が記録されることを確認する。
