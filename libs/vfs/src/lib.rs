@@ -15,6 +15,8 @@
 //!
 
 #![no_std]
+#![allow(clippy::use_self)] // Explicit type names in From impl for clarity
+#![allow(clippy::bool_assert_comparison)] // assert_eq!(x, true) clearer in tests
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
