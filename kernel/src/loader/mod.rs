@@ -26,7 +26,7 @@ pub use signature::{CellSignature, SignatureVerifier, verify_cell};
 
 use crate::driver_registry::{DriverHandle, register_abi_driver};
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL;
 use spin::Mutex;
@@ -301,8 +301,8 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
 
     // 4. 依存関係のチェック
     for import in &cell_info.imports {
-        if with_registry(|r| r.resolve_symbol(import)).is_none() {
-            return Err(LoadError::UnresolvedDependency(import.clone()));
+        if with_registry(|r| r.resolve_symbol(*import)).is_none() {
+            return Err(LoadError::UnresolvedDependency((*import).to_string()));
         }
     }
 
@@ -310,7 +310,8 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
     let loaded = loader.load(&cell_info)?;
 
     // 6. リロケーション
-    loader.relocate(&loaded, |sym| with_registry(|r| r.resolve_symbol(sym)))?;
+    let resolver = |s: &str| with_registry(|r| r.resolve_symbol(s));
+    loader.relocate(&loaded, resolver)?;
 
     // 6. レジストリに登録
     let id = with_registry_mut(|r| {
@@ -325,9 +326,9 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
             exports: cell_info
                 .exports
                 .iter()
-                .map(|(n, v)| (n.clone(), loaded.base_address + *v as usize))
+                .map(|(n, v)| (n.to_string(), loaded.base_address + *v as usize))
                 .collect(),
-            imports: cell_info.imports,
+            imports: cell_info.imports.iter().map(|s| s.to_string()).collect(),
             dependencies: Vec::new(),
             is_safe: !signature.contains_unsafe,
             signature_verified: true,

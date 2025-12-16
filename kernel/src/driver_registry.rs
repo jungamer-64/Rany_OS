@@ -718,8 +718,8 @@ mod tests {
                 id,
                 name: String::from("test-cell"),
                 state: crate::loader::CellState::Loaded,
-                load_address: 0x1000,
-                load_size: 0x2000,
+                load_address: 0, // test: no real allocation
+                load_size: 0,
                 entry_point: None,
                 exports: Vec::new(),
                 imports: Vec::new(),

@@ -430,6 +430,7 @@ impl Image {
 
     /// 別の画像を描画
     #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::similar_names)]
     pub fn blit(&mut self, src: &Self, dst_x: i32, dst_y: i32) {
         for y in 0..src.height as i32 {
             let dst_py = dst_y + y;

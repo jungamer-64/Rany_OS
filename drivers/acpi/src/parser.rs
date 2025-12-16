@@ -9,7 +9,6 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use core::ptr;
 use spin::Mutex;
 
 use super::info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};

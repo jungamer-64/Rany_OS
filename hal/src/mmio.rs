@@ -246,6 +246,7 @@ pub fn sfence() {
 /// The address must be 4-byte aligned.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
+#[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u32(addr: usize, val: u32) {
     unsafe {
         core::arch::x86_64::_mm_stream_si32(addr as *mut i32, val as i32);
@@ -256,6 +257,7 @@ pub fn stream_write_u32(addr: usize, val: u32) {
 /// The address must be 8-byte aligned.
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[inline]
+#[allow(clippy::cast_possible_wrap)]
 pub fn stream_write_u64(addr: usize, val: u64) {
     unsafe {
         core::arch::x86_64::_mm_stream_si64(addr as *mut i64, val as i64);
@@ -271,6 +273,7 @@ pub fn stream_write_u64(addr: usize, val: u64) {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "sse2")]
 #[inline]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
     use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_stream_si128};
     // SAFETY: Caller ensures SSE2 is available and address is 16-byte aligned
@@ -289,6 +292,7 @@ pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 #[target_feature(enable = "avx")]
 #[inline]
+#[allow(clippy::cast_ptr_alignment)]
 pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
     use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_stream_si256};
     // SAFETY: Caller ensures AVX is available and address is 32-byte aligned
@@ -323,12 +327,13 @@ pub unsafe fn set_simd_level(level: u8) {
 
 /// Get the current SIMD support level.
 #[inline]
+#[must_use]
 pub fn get_simd_level() -> u8 {
     SIMD_LEVEL.load(core::sync::atomic::Ordering::Relaxed)
 }
 
 /// Check if debug printing is allowed during benchmarks.
-/// Use this instead of direct env var checks to allow use in no_std context.
+/// Use this instead of direct env var checks to allow use in `no_std` context.
 /// Returns true if `std` feature is enabled AND `RANY_DEBUG_DRAW` == "1".
 #[inline]
 pub fn bench_debug_print_allowed() -> bool {

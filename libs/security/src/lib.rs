@@ -2,7 +2,7 @@
 
 //! Minimal Security crate extracted from the kernel for host-friendly unit testing.
 //!
-//! Provides Capability, CapabilitySet, and CapabilityManager with tests.
+//! Provides [`Capability`], [`CapabilitySet`], and [`CapabilityManager`] with tests.
 
 #[cfg(feature = "std")]
 use std::vec::Vec;

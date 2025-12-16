@@ -20,7 +20,88 @@
 //! - サポートされていない場合はフォールバック動作
 
 #![allow(dead_code)]
+#[cfg(test)]
+mod pkey_allocator_tests {
+    use super::*;
 
+    #[test]
+    fn test_pkey_allocator_basic() {
+        let mut alloc = PkeyAllocator::new();
+        // 予約済み以外を全て割り当て
+        let mut keys = vec![];
+        for _ in 0..12 {
+            let k = alloc.alloc();
+            assert!(k.is_some());
+            keys.push(k.unwrap());
+        }
+        // これ以上は割り当て不可
+        assert!(alloc.alloc().is_none());
+        // 解放して再利用
+        alloc.free(keys[0]);
+        let k2 = alloc.alloc();
+        assert_eq!(k2, Some(keys[0]));
+    }
+}
+// ============================================================================
+// Protection Key Allocator (MPK/PKU) - Simple Bitmap Allocator
+// ============================================================================
+
+/// MPK Protection Key Allocator
+///
+/// 0-15のPKEYをビットマップで管理。0(Framework)や1(SystemDriver)などは予約済み。
+pub struct PkeyAllocator {
+    bitmap: u16, // 1ビット=1PKEY, 0=free, 1=used
+}
+
+impl PkeyAllocator {
+    /// 予約済みPKEY（0:Framework, 1:SystemDriver, ...）
+    pub const RESERVED_MASK: u16 = 0b0000_0000_0000_1111; // 0-3予約例
+
+    /// 新規アロケータ
+    pub const fn new() -> Self {
+        Self {
+            bitmap: Self::RESERVED_MASK,
+        }
+    }
+
+    /// PKEYを割り当て（最小番号から）
+    pub fn alloc(&mut self) -> Option<u8> {
+        for i in 0..16 {
+            let mask = 1 << i;
+            if self.bitmap & mask == 0 {
+                self.bitmap |= mask;
+                return Some(i);
+            }
+        }
+        None // 空きなし
+    }
+
+    /// PKEYを解放
+    pub fn free(&mut self, pkey: u8) {
+        if pkey < 16 && (Self::RESERVED_MASK & (1 << pkey)) == 0 {
+            self.bitmap &= !(1 << pkey);
+        }
+    }
+
+    /// PKEYが使用中か
+    pub fn is_used(&self, pkey: u8) -> bool {
+        (self.bitmap & (1 << pkey)) != 0
+    }
+}
+
+// グローバルPkeyAllocatorインスタンス
+use spin::Mutex;
+static PKEY_ALLOCATOR: Mutex<PkeyAllocator> = Mutex::new(PkeyAllocator::new());
+
+/// PKEYを割り当て
+pub fn allocate_protection_key() -> Option<u8> {
+    PKEY_ALLOCATOR.lock().alloc()
+}
+
+/// PKEYを解放
+pub fn free_protection_key(pkey: u8) {
+    PKEY_ALLOCATOR.lock().free(pkey)
+}
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // ============================================================================

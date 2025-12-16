@@ -116,14 +116,14 @@ struct Fnv1aHasher {
 impl Fnv1aHasher {
     fn new() -> Self {
         Self {
-            state: 0xcbf29ce484222325,
+            state: 0xcbf2_9ce4_8422_2325,
         }
     }
 
     fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
-            self.state ^= b as u64;
-            self.state = self.state.wrapping_mul(0x100000001b3);
+            self.state ^= u64::from(b);
+            self.state = self.state.wrapping_mul(0x0100_0000_01b3);
         }
     }
 

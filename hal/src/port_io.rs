@@ -48,24 +48,27 @@ pub fn outl(port: u16, value: u32) {
 pub fn out(port: u16, data: u32) {
     // choose width based on value range (simple approximation)
     if data <= 0xFF {
+        #[allow(clippy::cast_possible_truncation)]
         outb(port, data as u8);
     } else if data <= 0xFFFF {
-        outw(port, data as u16)
+        #[allow(clippy::cast_possible_truncation)]
+        outw(port, data as u16);
     } else {
-        outl(port, data)
+        outl(port, data);
     }
 }
 
 #[inline]
+#[must_use]
 pub fn inp(port: u16) -> u32 {
     // only return 32-bit value; readers may narrow if needed
     inl(port)
 }
 
-/// IoPort is a small safe wrapper around the raw x86_64 Port type.
-/// It exposes safe read/write methods by encapsulating the required unsafe
-/// operations within the implementation. This reduces the number of
-/// callers that need to use `unsafe { ... }` blocks for port I/O.
+/// Safe wrapper around the raw `x86_64` `Port` type.
+///
+/// Encapsulates the required unsafe operations within the implementation,
+/// reducing the number of callers that need `unsafe` blocks for port I/O.
 pub struct IoPort<T> {
     inner: XPort<T>,
     port: u16,
@@ -75,6 +78,7 @@ impl<T> IoPort<T>
 where
     T: Copy + PortRead + PortWrite,
 {
+    #[must_use]
     pub const fn new(port: u16) -> Self {
         Self {
             inner: XPort::new(port),
