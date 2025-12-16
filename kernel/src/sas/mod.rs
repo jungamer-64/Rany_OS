@@ -18,7 +18,31 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 
+#[cfg(not(any(test, feature = "bench")))]
 use crate::domain_system::DomainId;
+
+// When running library tests (or benches), the global `domain_system` module
+// may not be available in the lib test build. Provide a small test-only
+// fallback `DomainId` so `sas` unit tests can compile and run under
+// `cargo test --lib` without pulling the full kernel binary context.
+#[cfg(any(test, feature = "bench"))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DomainId(pub u64);
+
+#[cfg(any(test, feature = "bench"))]
+impl DomainId {
+    pub const KERNEL: DomainId = DomainId(0);
+    pub const fn new(id: u64) -> Self {
+        DomainId(id)
+    }
+}
+
+#[cfg(any(test, feature = "bench"))]
+impl core::fmt::Display for DomainId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 pub use heap_registry::HeapRegistry;
 pub use memory_region::{MemoryRegion, RegionPermissions};
@@ -78,21 +102,26 @@ impl SingleAddressSpaceManager {
 
         // Initialize Exchange Heap (32MB)
         // Allocate from Global Allocator to ensure backed memory
-        unsafe {
-            use alloc::alloc::{Layout, alloc};
-            let size = 32 * 1024 * 1024; // 32MB
-            let layout = Layout::from_size_align(size, 4096).unwrap();
-            let ptr = alloc(layout);
-            if !ptr.is_null() {
-                crate::mm::exchange_heap::init_exchange_heap(ptr as usize, size);
-                log::info!(
-                    "[SAS] Exchange Heap initialized (32MB) at {:#x}\n",
-                    ptr as usize
-                );
-            } else {
-                log::error!("[SAS] Failed to allocate memory for Exchange Heap\n");
+            // Exchange heap is only initialized in non-test/bench builds where the
+            // `mm` module (and the global allocator) is available. Tests run under
+            // `cargo test --lib` do not link the full kernel binary and should not
+            // perform global memory allocations here.
+            #[cfg(not(any(test, feature = "bench")))]
+            unsafe {
+                use alloc::alloc::{Layout, alloc};
+                let size = 32 * 1024 * 1024; // 32MB
+                let layout = Layout::from_size_align(size, 4096).unwrap();
+                let ptr = alloc(layout);
+                if !ptr.is_null() {
+                    crate::mm::exchange_heap::init_exchange_heap(ptr as usize, size);
+                    log::info!(
+                        "[SAS] Exchange Heap initialized (32MB) at {:#x}\n",
+                        ptr as usize
+                    );
+                } else {
+                    log::error!("[SAS] Failed to allocate memory for Exchange Heap\n");
+                }
             }
-        }
     }
 
     /// セル用のメモリ領域を割り当て
@@ -146,7 +175,7 @@ impl SingleAddressSpaceManager {
     /// 統計情報を取得
     pub fn stats(&self) -> SasStats {
         SasStats {
-            total_regions: self.cell_regions.values().map(|v| v.len()).sum::<usize>(),
+            total_regions: self.cell_regions.values().map(|v: &Vec<MemoryRegion>| v.len()).sum::<usize>(),
             total_objects: HEAP_REGISTRY.object_count(),
             domains: self.cell_regions.len(),
             next_addr: self.next_alloc_addr.load(Ordering::Relaxed),
@@ -345,7 +374,7 @@ pub fn stats() -> SasStats {
         (
             m.cell_regions.len(),
             m.next_alloc_addr.load(Ordering::Relaxed),
-            m.cell_regions.values().map(|v| v.len()).sum::<usize>(),
+            m.cell_regions.values().map(|v: &Vec<MemoryRegion>| v.len()).sum::<usize>(),
         )
     });
 
