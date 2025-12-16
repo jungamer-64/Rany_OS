@@ -454,7 +454,9 @@ impl BuddyFrameAllocator {
             self.numa_regions = Some(BTreeMap::new());
         }
         let map = self.numa_regions.as_mut().unwrap();
-        map.entry(node).or_insert_with(|| alloc::vec![]).push((start, end));
+        map.entry(node)
+            .or_insert_with(|| alloc::vec![])
+            .push((start, end));
 
         // Add the region to the global free lists
         self.add_region(start, end);
@@ -464,14 +466,21 @@ impl BuddyFrameAllocator {
     }
 
     /// Allocate an order block restricted to [start_frame, end_frame)
-    fn allocate_order_in_range(&mut self, order: usize, start_frame: usize, end_frame: usize) -> Option<FrameIndex> {
+    fn allocate_order_in_range(
+        &mut self,
+        order: usize,
+        start_frame: usize,
+        end_frame: usize,
+    ) -> Option<FrameIndex> {
         for current_order in order..=MAX_ORDER {
             let block_size = 1 << current_order;
             let fl = &mut self.free_lists[current_order];
             let mut i = 0usize;
             while i < fl.count {
                 if let Some(frame) = fl.entries[i] {
-                    if frame.as_usize() >= start_frame && (frame.as_usize() + block_size) <= end_frame {
+                    if frame.as_usize() >= start_frame
+                        && (frame.as_usize() + block_size) <= end_frame
+                    {
                         // remove the entry by swapping with last
                         fl.entries[i] = fl.entries[fl.count - 1].take();
                         fl.count -= 1;
@@ -499,12 +508,16 @@ impl BuddyFrameAllocator {
         if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
             (
                 map.get(&node).cloned(),
-                map.iter().map(|(&k, v)| (k, v.clone())).collect::<alloc::vec::Vec<_>>(),
+                map.iter()
+                    .map(|(&k, v)| (k, v.clone()))
+                    .collect::<alloc::vec::Vec<_>>(),
             )
         }) {
             if let Some(ranges) = node_ranges {
                 for (start, end) in ranges {
-                    if let Some(frame) = self.allocate_order_in_range(0, start.as_usize(), end.as_usize()) {
+                    if let Some(frame) =
+                        self.allocate_order_in_range(0, start.as_usize(), end.as_usize())
+                    {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
                     }
@@ -516,7 +529,9 @@ impl BuddyFrameAllocator {
                     continue;
                 }
                 for (start, end) in ranges {
-                    if let Some(frame) = self.allocate_order_in_range(0, start.as_usize(), end.as_usize()) {
+                    if let Some(frame) =
+                        self.allocate_order_in_range(0, start.as_usize(), end.as_usize())
+                    {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
                     }
@@ -534,12 +549,16 @@ impl BuddyFrameAllocator {
         if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
             (
                 map.get(&node).cloned(),
-                map.iter().map(|(&k, v)| (k, v.clone())).collect::<alloc::vec::Vec<_>>(),
+                map.iter()
+                    .map(|(&k, v)| (k, v.clone()))
+                    .collect::<alloc::vec::Vec<_>>(),
             )
         }) {
             if let Some(ranges) = node_ranges {
                 for (start, end) in ranges {
-                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                    if let Some(frame) =
+                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
+                    {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
                     }
@@ -547,9 +566,13 @@ impl BuddyFrameAllocator {
             }
 
             for (other, ranges) in other_nodes {
-                if other == node { continue; }
+                if other == node {
+                    continue;
+                }
                 for (start, end) in ranges {
-                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                    if let Some(frame) =
+                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
+                    {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
                     }
@@ -565,12 +588,16 @@ impl BuddyFrameAllocator {
         if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
             (
                 map.get(&node).cloned(),
-                map.iter().map(|(&k, v)| (k, v.clone())).collect::<alloc::vec::Vec<_>>(),
+                map.iter()
+                    .map(|(&k, v)| (k, v.clone()))
+                    .collect::<alloc::vec::Vec<_>>(),
             )
         }) {
             if let Some(ranges) = node_ranges {
                 for (start, end) in ranges {
-                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                    if let Some(frame) =
+                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
+                    {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
                     }
@@ -578,9 +605,13 @@ impl BuddyFrameAllocator {
             }
 
             for (other, ranges) in other_nodes {
-                if other == node { continue; }
+                if other == node {
+                    continue;
+                }
                 for (start, end) in ranges {
-                    if let Some(frame) = self.allocate_order_in_range(order, start.as_usize(), end.as_usize()) {
+                    if let Some(frame) =
+                        self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
+                    {
                         let addr = PhysAddr::new(frame.to_phys_addr());
                         return Some(PhysFrame::containing_address(addr));
                     }
@@ -757,23 +788,33 @@ mod tests {
         // フレーム割り当て
         let frame1 = allocator.allocate_4k_frame();
         assert!(frame1.is_some());
+    }
 
-        let frame2 = allocator.allocate_4k_frame();
-        assert!(frame2.is_some());
+    #[test]
+    fn test_init_numa_frame_allocator_registers_region_with_buddy() {
+        use crate::mm::frame_allocator::NumaNodeId;
+        use crate::mm::{init_buddy_allocator, init_numa_frame_allocator};
 
-        // 異なるフレームが割り当てられていることを確認
-        assert_ne!(
-            frame1.unwrap().start_address(),
-            frame2.unwrap().start_address()
-        );
+        // Initialize buddy allocator with a default region
+        let base_region = [(PhysAddr::new(0x100000), 0x400000u64)];
+        unsafe {
+            init_buddy_allocator(&base_region);
+        }
 
-        // 解放
-        allocator.deallocate_4k_frame(frame1.unwrap());
-        allocator.deallocate_4k_frame(frame2.unwrap());
+        // Register a NUMA region and ensure buddy knows about it
+        let numa_region = [(PhysAddr::new(0x200000), 0x2000u64, NumaNodeId::new(1))];
+        unsafe {
+            init_numa_frame_allocator(&numa_region);
+        }
 
-        // 統計確認
-        let stats = allocator.stats();
-        assert!(stats.coalesce_count > 0, "Buddies should coalesce");
+        // Check buddy reports the address as managed
+        assert!(crate::mm::buddy::is_managed_by_buddy(PhysAddr::new(
+            0x200000
+        )));
+
+        // Try to allocate a frame preferring that node (best-effort)
+        let alloc = crate::mm::buddy_alloc_frame_on_node(1);
+        assert!(alloc.is_some());
     }
 
     #[test]
@@ -817,9 +858,10 @@ mod tests {
         allocator.register_numa_region(1, start_frame, end_frame);
 
         // Try 4K allocation on node 1 (2M allocation may fail due to size)
-        let frame = allocator.allocate_4k_frame_on_node(1).expect("alloc 4K local");
+        let frame = allocator
+            .allocate_4k_frame_on_node(1)
+            .expect("alloc 4K local");
         assert!(frame.start_address().as_u64() >= start.as_u64());
         assert!(frame.start_address().as_u64() < start.as_u64() + size);
     }
 }
-

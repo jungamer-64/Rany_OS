@@ -134,6 +134,8 @@ pub struct InterruptConfig {
     pub polarity: Polarity,
     /// マスク状態
     pub masked: bool,
+    /// Interrupt Remapping Handle (if used)
+    pub ir_handle: Option<u16>,
 }
 
 impl Default for InterruptConfig {
@@ -145,6 +147,7 @@ impl Default for InterruptConfig {
             trigger_mode: TriggerMode::Edge,
             polarity: Polarity::ActiveHigh,
             masked: true,
+            ir_handle: None,
         }
     }
 }
@@ -152,27 +155,35 @@ impl Default for InterruptConfig {
 impl InterruptConfig {
     /// MSI用のメッセージアドレスを生成
     pub fn msi_address(&self) -> u64 {
-        const MSI_ADDRESS_BASE: u64 = 0xFEE00000;
-        let apic_id = self.target_apic_id.unwrap_or(0) as u64;
-        MSI_ADDRESS_BASE | (apic_id << 12)
+        if let Some(handle) = self.ir_handle {
+            crate::io::iommu::get_remap_msi_message(handle).0
+        } else {
+            const MSI_ADDRESS_BASE: u64 = 0xFEE00000;
+            let apic_id = self.target_apic_id.unwrap_or(0) as u64;
+            MSI_ADDRESS_BASE | (apic_id << 12)
+        }
     }
-    
+
     /// MSI用のメッセージデータを生成
     pub fn msi_data(&self) -> u32 {
-        let mut data = self.vector as u32;
-        data |= (self.delivery_mode.to_bits() as u32) << 8;
-        if self.trigger_mode == TriggerMode::Level {
-            data |= 1 << 15; // Level trigger
-            data |= 1 << 14; // Assert
+        if let Some(handle) = self.ir_handle {
+            crate::io::iommu::get_remap_msi_message(handle).1
+        } else {
+            let mut data = self.vector as u32;
+            data |= (self.delivery_mode.to_bits() as u32) << 8;
+            if self.trigger_mode == TriggerMode::Level {
+                data |= 1 << 15; // Level trigger
+                data |= 1 << 14; // Assert
+            }
+            data
         }
-        data
     }
-    
+
     /// IO-APIC用のリダイレクションエントリを生成
     pub fn ioapic_entry(&self) -> u64 {
         let mut entry = self.vector as u64;
         entry |= (self.delivery_mode.to_bits() as u64) << 8;
-        
+
         if self.polarity == Polarity::ActiveLow {
             entry |= 1 << 13;
         }
@@ -182,11 +193,11 @@ impl InterruptConfig {
         if self.masked {
             entry |= 1 << 16;
         }
-        
+
         // Destination APIC ID
         let apic_id = self.target_apic_id.unwrap_or(0) as u64;
         entry |= apic_id << 56;
-        
+
         entry
     }
 }
@@ -262,13 +273,13 @@ impl InterruptStats {
             total_count: AtomicU64::new(0),
         }
     }
-    
+
     /// 割り込み発生を記録
     pub fn record(&self, vector: u8) {
         self.counts[vector as usize].fetch_add(1, Ordering::Relaxed);
         self.total_count.fetch_add(1, Ordering::Relaxed);
     }
-    
+
     /// ベクタの割り込み回数を取得
     pub fn get_count(&self, vector: u8) -> u64 {
         self.counts[vector as usize].load(Ordering::Relaxed)
@@ -305,7 +316,7 @@ impl InterruptManager {
             stats: InterruptStats::new(),
         }
     }
-    
+
     /// 初期化
     pub fn init(&self) {
         // システム予約ベクタをマーク
@@ -316,25 +327,25 @@ impl InterruptManager {
             self.mark_vector_used(IPI_VECTOR_BASE + i);
         }
     }
-    
+
     /// ベクタを使用中としてマーク
     fn mark_vector_used(&self, vector: u8) {
         let (bitmap, bit) = self.vector_to_bitmap(vector);
         bitmap.fetch_or(1u64 << bit, Ordering::AcqRel);
     }
-    
+
     /// ベクタを空きとしてマーク
     fn mark_vector_free(&self, vector: u8) {
         let (bitmap, bit) = self.vector_to_bitmap(vector);
         bitmap.fetch_and(!(1u64 << bit), Ordering::AcqRel);
     }
-    
+
     /// ベクタが空いているか確認
     fn is_vector_free(&self, vector: u8) -> bool {
         let (bitmap, bit) = self.vector_to_bitmap(vector);
         (bitmap.load(Ordering::Acquire) & (1u64 << bit)) == 0
     }
-    
+
     /// ベクタをビットマップ位置に変換
     fn vector_to_bitmap(&self, vector: u8) -> (&AtomicU64, u8) {
         match vector {
@@ -344,7 +355,7 @@ impl InterruptManager {
             _ => (&self.allocated_vectors_3, vector - 192),
         }
     }
-    
+
     /// MSI/MSI-X用のベクタを割り当て
     pub fn allocate_msi_vector(
         &self,
@@ -355,31 +366,45 @@ impl InterruptManager {
         // MSI範囲から空きベクタを探す
         for vector in MSI_VECTORS_START..=MSI_VECTORS_END {
             if self.try_allocate_vector(vector) {
-                let config = InterruptConfig {
+                let mut config = InterruptConfig {
                     vector,
                     target_apic_id,
                     delivery_mode: DeliveryMode::Fixed,
                     trigger_mode: TriggerMode::Edge,
                     polarity: Polarity::ActiveHigh,
                     masked: false,
+                    ir_handle: None,
                 };
-                
+
+                // Try Interrupt Remapping
+                // Extract BDF (assuming segment 0)
+                let bus = ((device_bdf >> 8) & 0xFF) as u8;
+                let dev = ((device_bdf >> 3) & 0x1F) as u8;
+                let func = (device_bdf & 0x7) as u8;
+                let dest_id = target_apic_id.unwrap_or(0) as u32;
+
+                if let Ok(handle) =
+                    crate::io::iommu::map_interrupt(0, bus, dev, func, vector, dest_id, true)
+                {
+                    config.ir_handle = Some(handle);
+                }
+
                 let allocation = InterruptAllocation {
                     vector,
                     source: InterruptSourceType::Msi { device_bdf },
                     config: config.clone(),
                     handler_name,
                 };
-                
+
                 self.allocations.write().insert(vector, allocation);
-                
+
                 return Ok(VectorAllocation { vector, config });
             }
         }
-        
+
         Err(InterruptError::NoAvailableVector)
     }
-    
+
     /// MSI-X用の複数ベクタを割り当て
     pub fn allocate_msix_vectors(
         &self,
@@ -389,7 +414,7 @@ impl InterruptManager {
         target_apic_id: Option<u8>,
     ) -> Result<Vec<VectorAllocation>, InterruptError> {
         let mut allocations = Vec::with_capacity(count as usize);
-        
+
         for i in 0..count {
             match self.allocate_msi_vector(device_bdf, handler_name.clone(), target_apic_id) {
                 Ok(mut alloc) => {
@@ -411,10 +436,10 @@ impl InterruptManager {
                 }
             }
         }
-        
+
         Ok(allocations)
     }
-    
+
     /// IO-APIC (GSI) 用のベクタを割り当て
     pub fn allocate_gsi_vector(
         &self,
@@ -425,13 +450,15 @@ impl InterruptManager {
     ) -> Result<VectorAllocation, InterruptError> {
         // 既存のマッピングを確認
         if let Some(&vector) = self.gsi_to_vector.read().get(&gsi) {
-            let config = self.allocations.read()
+            let config = self
+                .allocations
+                .read()
                 .get(&vector)
                 .map(|a| a.config.clone())
                 .unwrap_or_default();
             return Ok(VectorAllocation { vector, config });
         }
-        
+
         // レガシー範囲から割り当て
         let vector = if gsi < 16 {
             // IRQ 0-15 は固定マッピング
@@ -440,11 +467,11 @@ impl InterruptManager {
             // その他のGSIは動的割り当て
             self.find_free_vector(LEGACY_VECTORS_START, USER_VECTORS_END)?
         };
-        
+
         if !self.try_allocate_vector(vector) {
             return Err(InterruptError::VectorInUse);
         }
-        
+
         let config = InterruptConfig {
             vector,
             target_apic_id: Some(0), // BSP
@@ -452,21 +479,22 @@ impl InterruptManager {
             trigger_mode,
             polarity,
             masked: true,
+            ir_handle: None,
         };
-        
+
         let allocation = InterruptAllocation {
             vector,
             source: InterruptSourceType::LegacyIoApic { gsi },
             config: config.clone(),
             handler_name,
         };
-        
+
         self.allocations.write().insert(vector, allocation);
         self.gsi_to_vector.write().insert(gsi, vector);
-        
+
         Ok(VectorAllocation { vector, config })
     }
-    
+
     /// 空きベクタを探す
     fn find_free_vector(&self, start: u8, end: u8) -> Result<u8, InterruptError> {
         for vector in start..=end {
@@ -476,18 +504,18 @@ impl InterruptManager {
         }
         Err(InterruptError::NoAvailableVector)
     }
-    
+
     /// ベクタの割り当てを試みる
     fn try_allocate_vector(&self, vector: u8) -> bool {
         let (bitmap, bit) = self.vector_to_bitmap(vector);
         let mask = 1u64 << bit;
-        
+
         loop {
             let current = bitmap.load(Ordering::Acquire);
             if (current & mask) != 0 {
                 return false; // 既に使用中
             }
-            
+
             match bitmap.compare_exchange(
                 current,
                 current | mask,
@@ -499,21 +527,24 @@ impl InterruptManager {
             }
         }
     }
-    
+
     /// ベクタを解放
     pub fn free_vector(&self, vector: u8) {
         self.mark_vector_free(vector);
         self.allocations.write().remove(&vector);
-        
+
         // GSIマッピングも削除
         self.gsi_to_vector.write().retain(|_, &mut v| v != vector);
     }
-    
+
     /// ベクタの設定を取得
     pub fn get_config(&self, vector: u8) -> Option<InterruptConfig> {
-        self.allocations.read().get(&vector).map(|a| a.config.clone())
+        self.allocations
+            .read()
+            .get(&vector)
+            .map(|a| a.config.clone())
     }
-    
+
     /// ベクタの設定を更新
     pub fn update_config(&self, vector: u8, config: InterruptConfig) -> Result<(), InterruptError> {
         if let Some(allocation) = self.allocations.write().get_mut(&vector) {
@@ -523,22 +554,22 @@ impl InterruptManager {
             Err(InterruptError::InvalidVector)
         }
     }
-    
+
     /// 割り込み発生を記録
     pub fn record_interrupt(&self, vector: u8) {
         self.stats.record(vector);
     }
-    
+
     /// 統計を取得
     pub fn stats(&self) -> &InterruptStats {
         &self.stats
     }
-    
+
     /// 割り当て情報を取得
     pub fn get_allocation(&self, vector: u8) -> Option<InterruptAllocation> {
         self.allocations.read().get(&vector).cloned()
     }
-    
+
     /// 全ての割り当てを列挙
     pub fn list_allocations(&self) -> Vec<InterruptAllocation> {
         self.allocations.read().values().cloned().collect()
@@ -625,25 +656,25 @@ pub fn configure_ioapic_interrupt(
 ) -> Result<(), InterruptError> {
     // IO-APICのリダイレクションテーブルに書き込み
     let entry = config.ioapic_entry();
-    
+
     // crate::io::apic モジュールの関数を呼び出す
     #[cfg(feature = "apic")]
     unsafe {
         crate::io::apic::set_ioapic_entry(gsi, entry);
     }
-    
+
     let _ = (gsi, entry); // 未使用警告を抑制
     Ok(())
 }
 
 /// Local APICにEOIを送信
-/// 
+///
 /// 割り込みハンドラの最後で呼び出してください
 #[inline]
 pub fn send_eoi() {
     #[cfg(feature = "apic")]
     crate::io::apic::local_apic_eoi();
-    
+
     // apicが無効な場合は何もしない
 }
 
@@ -651,7 +682,7 @@ pub fn send_eoi() {
 pub fn send_ipi(target_apic_id: u8, vector: u8) {
     #[cfg(feature = "apic")]
     crate::io::apic::send_ipi(target_apic_id, vector);
-    
+
     let _ = (target_apic_id, vector); // 未使用警告を抑制
 }
 
@@ -659,7 +690,7 @@ pub fn send_ipi(target_apic_id: u8, vector: u8) {
 pub fn broadcast_ipi(vector: u8) {
     #[cfg(feature = "apic")]
     crate::io::apic::broadcast_ipi(vector);
-    
+
     let _ = vector;
 }
 
@@ -679,7 +710,7 @@ pub fn current_apic_id() -> u8 {
 pub fn mask_interrupt(vector: u8) -> Result<(), InterruptError> {
     if let Some(allocation) = INTERRUPT_MANAGER.allocations.write().get_mut(&vector) {
         allocation.config.masked = true;
-        
+
         match allocation.source {
             InterruptSourceType::LegacyIoApic { gsi } => {
                 configure_ioapic_interrupt(gsi, &allocation.config)?;
@@ -689,7 +720,7 @@ pub fn mask_interrupt(vector: u8) -> Result<(), InterruptError> {
             }
             _ => {}
         }
-        
+
         Ok(())
     } else {
         Err(InterruptError::InvalidVector)
@@ -700,7 +731,7 @@ pub fn mask_interrupt(vector: u8) -> Result<(), InterruptError> {
 pub fn unmask_interrupt(vector: u8) -> Result<(), InterruptError> {
     if let Some(allocation) = INTERRUPT_MANAGER.allocations.write().get_mut(&vector) {
         allocation.config.masked = false;
-        
+
         match allocation.source {
             InterruptSourceType::LegacyIoApic { gsi } => {
                 configure_ioapic_interrupt(gsi, &allocation.config)?;
@@ -710,7 +741,7 @@ pub fn unmask_interrupt(vector: u8) -> Result<(), InterruptError> {
             }
             _ => {}
         }
-        
+
         Ok(())
     } else {
         Err(InterruptError::InvalidVector)
@@ -730,7 +761,7 @@ pub fn unmask_interrupt(vector: u8) -> Result<(), InterruptError> {
 use core::task::Waker;
 
 /// ロックフリー割り込みイベントキュー
-/// 
+///
 /// ISRから安全に呼び出せるよう、Atomic操作のみを使用
 pub struct InterruptQueue {
     /// リングバッファ本体
@@ -759,7 +790,7 @@ impl InterruptQueue {
     }
 
     /// 割り込みイベントをキューに追加（ISR用 - ロックフリー）
-    /// 
+    ///
     /// # Safety
     /// ISRコンテキストから呼び出し可能。ロックを取得しない。
     #[inline]
@@ -767,14 +798,14 @@ impl InterruptQueue {
         loop {
             let write = self.write_pos.load(Ordering::Relaxed);
             let read = self.read_pos.load(Ordering::Acquire);
-            
+
             // キューがフルかチェック
             if write.wrapping_sub(read) >= Self::CAPACITY as u32 {
                 return false; // キューフル
             }
-            
+
             let idx = (write & Self::MASK) as usize;
-            
+
             // CASでスロットを確保
             match self.write_pos.compare_exchange_weak(
                 write,
@@ -793,28 +824,28 @@ impl InterruptQueue {
     }
 
     /// 割り込みイベントをキューから取得（Executor用）
-    /// 
+    ///
     /// 通常コンテキストから呼び出すこと
     #[inline]
     pub fn pop(&self) -> Option<u8> {
         loop {
             let read = self.read_pos.load(Ordering::Relaxed);
             let write = self.write_pos.load(Ordering::Acquire);
-            
+
             // キューが空かチェック
             if read == write {
                 return None;
             }
-            
+
             let idx = (read & Self::MASK) as usize;
             let value = self.buffer[idx].load(Ordering::Acquire);
-            
+
             // まだ書き込み途中の可能性
             if value == Self::EMPTY {
                 core::hint::spin_loop();
                 continue;
             }
-            
+
             // CASで読み取り位置を進める
             match self.read_pos.compare_exchange_weak(
                 read,
@@ -846,7 +877,7 @@ impl InterruptQueue {
 pub struct WakerId(pub u8);
 
 /// Wakerレジストリ（ベクタ → Waker の対応表）
-/// 
+///
 /// 通常コンテキストでのみアクセスされる（Mutex保護）
 pub struct WakerRegistry {
     wakers: Mutex<BTreeMap<u8, Waker>>,
@@ -861,7 +892,7 @@ impl WakerRegistry {
     }
 
     /// Wakerを登録
-    /// 
+    ///
     /// ドライバが非同期操作を開始する際に呼び出す
     pub fn register(&self, vector: u8, waker: Waker) {
         self.wakers.lock().insert(vector, waker);
@@ -873,7 +904,7 @@ impl WakerRegistry {
     }
 
     /// 指定されたベクタのWakerを起床
-    /// 
+    ///
     /// 通常コンテキストから呼び出すこと
     pub fn wake(&self, vector: u8) {
         if let Some(waker) = self.wakers.lock().get(&vector) {
@@ -902,9 +933,9 @@ static WAKER_REGISTRY: WakerRegistry = WakerRegistry::new();
 // ============================================================================
 
 /// 割り込みイベントをキューに追加（ISR用）
-/// 
+///
 /// **ISRから安全に呼び出し可能** - ロックを取得しない
-/// 
+///
 /// # Example
 /// ```ignore
 /// // 割り込みハンドラ内で使用
@@ -919,10 +950,10 @@ pub fn push_interrupt_event(vector: u8) -> bool {
 }
 
 /// 保留中の割り込みを処理（Executor用）
-/// 
+///
 /// Executorのメインループの先頭で呼び出す。
 /// キューからイベントを取り出し、対応するWakerを起床する。
-/// 
+///
 /// # Example
 /// ```ignore
 /// // Executorメインループ
@@ -944,7 +975,7 @@ pub fn process_pending_interrupts() {
 }
 
 /// Wakerを登録（ドライバ用）
-/// 
+///
 /// 非同期操作の開始時に呼び出し、割り込み完了時にWakerが起床されるようにする
 pub fn register_waker(vector: u8, waker: Waker) {
     WAKER_REGISTRY.register(vector, waker);
@@ -966,63 +997,58 @@ pub fn waker_count() -> usize {
     WAKER_REGISTRY.count()
 }
 
-
 mod tests {
     use super::*;
-    
+
     #[test]
     fn test_msi_allocation() {
         let manager = InterruptManager::new();
         manager.init();
-        
+
         let result = manager.allocate_msi_vector(
             0x0100, // BDF
             "test_device".into(),
             Some(0),
         );
-        
+
         assert!(result.is_ok());
         let alloc = result.unwrap();
         assert!(alloc.vector >= MSI_VECTORS_START);
         assert!(alloc.vector <= MSI_VECTORS_END);
     }
-    
+
     #[test]
     fn test_gsi_allocation() {
         let manager = InterruptManager::new();
         manager.init();
-        
+
         let result = manager.allocate_gsi_vector(
             1, // IRQ 1 (keyboard)
             "keyboard".into(),
             TriggerMode::Edge,
             Polarity::ActiveHigh,
         );
-        
+
         assert!(result.is_ok());
     }
-    
+
     #[test]
     fn test_vector_free() {
         let manager = InterruptManager::new();
         manager.init();
-        
-        let alloc = manager.allocate_msi_vector(
-            0x0100,
-            "test".into(),
-            None,
-        ).unwrap();
-        
+
+        let alloc = manager
+            .allocate_msi_vector(0x0100, "test".into(), None)
+            .unwrap();
+
         let vector = alloc.vector;
         manager.free_vector(vector);
-        
+
         // 同じベクタを再割り当てできるはず
-        let alloc2 = manager.allocate_msi_vector(
-            0x0200,
-            "test2".into(),
-            None,
-        ).unwrap();
-        
+        let alloc2 = manager
+            .allocate_msi_vector(0x0200, "test2".into(), None)
+            .unwrap();
+
         // 空いているベクタが割り当てられる
         assert!(alloc2.vector >= MSI_VECTORS_START);
     }
@@ -1034,17 +1060,17 @@ mod tests {
     #[test]
     fn test_interrupt_queue_push_pop() {
         let queue = InterruptQueue::new();
-        
+
         // Push some vectors
         assert!(queue.push(32)); // Timer
         assert!(queue.push(33)); // Keyboard
         assert!(queue.push(44)); // Mouse
-        
+
         // Pop in FIFO order
         assert_eq!(queue.pop(), Some(32));
         assert_eq!(queue.pop(), Some(33));
         assert_eq!(queue.pop(), Some(44));
-        
+
         // Empty
         assert_eq!(queue.pop(), None);
     }
@@ -1052,14 +1078,14 @@ mod tests {
     #[test]
     fn test_interrupt_queue_empty() {
         let queue = InterruptQueue::new();
-        
+
         assert!(queue.is_empty());
         assert_eq!(queue.len(), 0);
-        
+
         queue.push(32);
         assert!(!queue.is_empty());
         assert_eq!(queue.len(), 1);
-        
+
         queue.pop();
         assert!(queue.is_empty());
     }
@@ -1067,12 +1093,12 @@ mod tests {
     #[test]
     fn test_interrupt_queue_full() {
         let queue = InterruptQueue::new();
-        
+
         // Fill the queue (1024 - 1 slots usable due to ring buffer design)
         for i in 0..1023 {
             assert!(queue.push(i as u8), "Failed at {}", i);
         }
-        
+
         // Should reject when full
         assert!(!queue.push(255));
     }
@@ -1084,11 +1110,10 @@ mod tests {
     #[test]
     fn test_waker_registry_register_count() {
         let registry = WakerRegistry::new();
-        
+
         assert_eq!(registry.count(), 0);
-        
+
         // We can't easily create real Wakers in tests without an executor,
         // so we just test the count functionality
     }
 }
-

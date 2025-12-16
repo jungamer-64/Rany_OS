@@ -105,6 +105,16 @@ pub mod io {
         pub fn mmio_write_u32(_addr: usize, _v: u32) {}
         pub fn mmio_write_u64(_addr: usize, _v: u64) {}
     }
+
+    // Expose a minimal ACPI module in tests so IOMMU init can call into
+    // `crate::io::acpi::dmar::parse_dmar` without pulling the full ACPI
+    // runtime dependencies into every unit test. This delegates only the
+    // DMAR parsing API to the acpi driver crate.
+    pub mod acpi {
+        pub mod dmar {
+            pub use acpi_driver::dmar::*;
+        }
+    }
 }
 
 #[cfg(any(test, feature = "bench"))]
