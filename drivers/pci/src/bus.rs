@@ -142,6 +142,8 @@ impl CapabilityId {
 /// PCIデバイス情報
 #[derive(Clone, Debug)]
 pub struct PciDeviceInfo {
+    /// PCIセグメントグループ番号 (デフォルトは0)
+    pub segment: u16,
     /// BDFアドレス
     pub bdf: BdfAddress,
     /// ベンダーID
@@ -330,6 +332,7 @@ impl<'a> PciBusScanner<'a> {
             self.read_capabilities(bdf);
 
         Some(PciDeviceInfo {
+            segment: 0, // レガシースキャナはセグメント0のみサポート
             bdf,
             vendor_id: VendorId(vendor_id),
             device_id: DeviceId(device_id),
