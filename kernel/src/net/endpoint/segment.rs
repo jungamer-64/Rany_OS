@@ -180,7 +180,10 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
 
     // NetworkStack経由で送信
     let stack = crate::net::stack::stack();
-    if let Some(ref s) = *stack.lock() {
+    if let Some(ref s) = *stack.lock().unwrap_or_else(|e| {
+        log::warn!("[NET] Stack poisoned");
+        e.into_inner()
+    }) {
         if s.send_tcp(src_ip, dst_ip, &segment) {
             crate::serial_println!(
                 "TCP TX: {:?}:{} -> {:?}:{} ({} bytes)",

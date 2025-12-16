@@ -23,10 +23,10 @@
 //! }
 //! ```
 
+use crate::sync::PoisonLock;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 
 /// ドメイン優先度
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -64,7 +64,7 @@ pub struct DomainMemoryInfo {
 /// OOM Killerの状態
 pub struct OomKiller {
     /// 登録されたドメイン
-    domains: Mutex<Vec<DomainMemoryInfo>>,
+    domains: PoisonLock<Vec<DomainMemoryInfo>>,
     /// 現在OOM処理中かどうか
     in_progress: AtomicBool,
     /// 終了させたドメイン数（統計用）
@@ -75,7 +75,7 @@ pub struct OomKiller {
 
 /// グローバルOOM Killerインスタンス
 static OOM_KILLER: OomKiller = OomKiller {
-    domains: Mutex::new(Vec::new()),
+    domains: PoisonLock::new(Vec::new()),
     in_progress: AtomicBool::new(false),
     kill_count: AtomicU64::new(0),
     freed_memory: AtomicU64::new(0),
@@ -84,7 +84,10 @@ static OOM_KILLER: OomKiller = OomKiller {
 impl OomKiller {
     /// ドメインを登録
     pub fn register_domain(&self, info: DomainMemoryInfo) {
-        let mut domains = self.domains.lock();
+        let mut domains = self.domains.lock().unwrap_or_else(|e| {
+            log::warn!("[MEM] OOM Killer poisoned");
+            e.into_inner()
+        });
         // 既存のエントリを更新または新規追加
         if let Some(existing) = domains.iter_mut().find(|d| d.domain_id == info.domain_id) {
             *existing = info;
@@ -95,13 +98,19 @@ impl OomKiller {
 
     /// ドメインの登録を解除
     pub fn unregister_domain(&self, domain_id: u64) {
-        let mut domains = self.domains.lock();
+        let mut domains = self.domains.lock().unwrap_or_else(|e| {
+            log::warn!("[MEM] OOM Killer poisoned");
+            e.into_inner()
+        });
         domains.retain(|d| d.domain_id != domain_id);
     }
 
     /// ドメインのメモリ使用量を更新
     pub fn update_memory_usage(&self, domain_id: u64, usage: u64) {
-        let mut domains = self.domains.lock();
+        let mut domains = self.domains.lock().unwrap_or_else(|e| {
+            log::warn!("[MEM] OOM Killer poisoned");
+            e.into_inner()
+        });
         if let Some(domain) = domains.iter_mut().find(|d| d.domain_id == domain_id) {
             domain.memory_usage = usage;
         }
@@ -128,7 +137,10 @@ impl OomKiller {
     /// 犠牲者を選択して終了
     fn select_and_kill_victim(&self) -> Option<u64> {
         let victim = {
-            let domains = self.domains.lock();
+            let domains = self.domains.lock().unwrap_or_else(|e| {
+                log::warn!("[MEM] OOM Killer poisoned");
+                e.into_inner()
+            });
 
             // 優先度順（低い方が先）、同優先度内ではメモリ使用量順（大きい方が先）
             let mut candidates: Vec<_> = domains
@@ -195,7 +207,14 @@ impl OomKiller {
     /// 統計情報を取得
     pub fn stats(&self) -> OomStats {
         OomStats {
-            total_domains: self.domains.lock().len(),
+            total_domains: self
+                .domains
+                .lock()
+                .unwrap_or_else(|e| {
+                    log::warn!("[MEM] OOM Killer poisoned");
+                    e.into_inner()
+                })
+                .len(),
             kill_count: self.kill_count.load(Ordering::Relaxed),
             freed_memory: self.freed_memory.load(Ordering::Relaxed),
             in_progress: self.in_progress.load(Ordering::Relaxed),
@@ -204,7 +223,13 @@ impl OomKiller {
 
     /// 全ドメインのメモリ情報を取得
     pub fn list_domains(&self) -> Vec<DomainMemoryInfo> {
-        self.domains.lock().clone()
+        self.domains
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[MEM] OOM Killer poisoned");
+                e.into_inner()
+            })
+            .clone()
     }
 }
 
@@ -334,10 +359,7 @@ mod tests {
         let _ = OOM_KILLER.try_free_memory();
 
         // Critical domain should still exist
-        assert!(OOM_KILLER
-            .list_domains()
-            .iter()
-            .any(|d| d.domain_id == 20));
+        assert!(OOM_KILLER.list_domains().iter().any(|d| d.domain_id == 20));
 
         // Cleanup
         OOM_KILLER.unregister_domain(20);

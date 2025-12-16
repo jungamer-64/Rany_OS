@@ -403,7 +403,9 @@ extern "C" fn kmain() -> ! {
         let ps2_handle = register_driver(Box::new(Ps2Driver::new()));
 
         // プローブと開始
-        if let Err(e) = driver_registry::driver_registry().probe_and_start(ps2_handle) {
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(ps2_handle.expect("Failed to register PS/2 driver"))
+        {
             warn!(target: "init", "PS/2 driver init failed: {:?}", e);
         } else {
             info!(target: "init", "PS/2 driver initialized via DriverRegistry");
@@ -425,7 +427,9 @@ extern "C" fn kmain() -> ! {
         let serial_handle = register_driver(Box::new(SerialDriver::new()));
 
         // プローブと開始
-        if let Err(e) = driver_registry::driver_registry().probe_and_start(serial_handle) {
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(serial_handle.expect("Failed to register Serial driver"))
+        {
             warn!(target: "init", "Serial driver init failed: {:?}", e);
         } else {
             info!(target: "init", "Serial driver initialized via DriverRegistry");
@@ -467,7 +471,9 @@ extern "C" fn kmain() -> ! {
                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
 
                 // プローブと開始
-                if let Err(e) = driver_registry::driver_registry().probe_and_start(nvme_handle) {
+                if let Err(e) = driver_registry::driver_registry()
+                    .probe_and_start(nvme_handle.expect("Failed to register NVMe driver"))
+                {
                     error!(target: "init", "NVMe driver init failed: {:?}", e);
                 } else {
                     info!(target: "init", "NVMe driver initialized via DriverRegistry");
@@ -510,7 +516,9 @@ extern "C" fn kmain() -> ! {
                 let ahci_handle = register_driver(Box::new(AhciDriverWrapper::new(abar_virt, 11))); // IRQ hardcoded for now
 
                 // プローブと開始
-                if let Err(e) = driver_registry::driver_registry().probe_and_start(ahci_handle) {
+                if let Err(e) = driver_registry::driver_registry()
+                    .probe_and_start(ahci_handle.expect("Failed to register AHCI driver"))
+                {
                     error!(target: "init", "AHCI driver init failed: {:?}", e);
                 } else {
                     info!(target: "init", "AHCI driver initialized via DriverRegistry");
@@ -553,7 +561,9 @@ extern "C" fn kmain() -> ! {
                 let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(base_virt)));
 
                 // プローブと開始
-                if let Err(e) = driver_registry::driver_registry().probe_and_start(usb_handle) {
+                if let Err(e) = driver_registry::driver_registry()
+                    .probe_and_start(usb_handle.expect("Failed to register USB driver"))
+                {
                     error!(target: "init", "USB xHCI driver init failed: {:?}", e);
                 } else {
                     info!(target: "init", "USB xHCI driver initialized via DriverRegistry");
@@ -595,7 +605,9 @@ extern "C" fn kmain() -> ! {
 
         let net_handle = register_driver(Box::new(VirtioNetDriver::new()));
 
-        if let Err(e) = driver_registry::driver_registry().probe_and_start(net_handle) {
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(net_handle.expect("Failed to register VirtIO-Net driver"))
+        {
             warn!(target: "init", "VirtIO-Net driver init failed: {:?}", e);
         } else {
             info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");

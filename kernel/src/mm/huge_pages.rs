@@ -21,6 +21,7 @@
 
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::PhysAddr;
 
@@ -249,30 +250,51 @@ pub unsafe fn setup_linear_mapping_2m(_total_memory: usize) -> usize {
 // ============================================================================
 
 /// グローバル1GBページアロケータ
-static HUGE_PAGE_ALLOCATOR: spin::Mutex<HugePageAllocator> =
-    spin::Mutex::new(HugePageAllocator::new());
+static HUGE_PAGE_ALLOCATOR: PoisonLock<HugePageAllocator> =
+    PoisonLock::new(HugePageAllocator::new());
 
 /// Huge Pageアロケータを取得
 pub fn with_huge_page_allocator<F, R>(f: F) -> R
 where
     F: FnOnce(&mut HugePageAllocator) -> R,
 {
-    f(&mut HUGE_PAGE_ALLOCATOR.lock())
+    f(&mut HUGE_PAGE_ALLOCATOR.lock().unwrap_or_else(|e| {
+        log::warn!("[MM] Huge Page Allocator poisoned");
+        e.into_inner()
+    }))
 }
 
 /// 1GBページを割り当て（グローバルAPI）
 pub fn alloc_huge_page_1g() -> Option<PhysAddr> {
-    HUGE_PAGE_ALLOCATOR.lock().allocate()
+    HUGE_PAGE_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[MM] Huge Page Allocator poisoned");
+            e.into_inner()
+        })
+        .allocate()
 }
 
 /// 1GBページを解放（グローバルAPI）
 pub fn dealloc_huge_page_1g(addr: PhysAddr) {
-    HUGE_PAGE_ALLOCATOR.lock().deallocate(addr);
+    HUGE_PAGE_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[MM] Huge Page Allocator poisoned");
+            e.into_inner()
+        })
+        .deallocate(addr);
 }
 
 /// Huge Page統計を取得
 pub fn huge_page_stats() -> HugePageStats {
-    HUGE_PAGE_ALLOCATOR.lock().stats()
+    HUGE_PAGE_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[MM] Huge Page Allocator poisoned");
+            e.into_inner()
+        })
+        .stats()
 }
 
 /// Huge Pageサブシステムを初期化
@@ -282,7 +304,13 @@ pub fn init() {
 
 /// Huge Pageアロケータを初期化（メモリレイアウト確定後）
 pub fn init_allocator(base: PhysAddr, count: usize) {
-    HUGE_PAGE_ALLOCATOR.lock().init(base, count);
+    HUGE_PAGE_ALLOCATOR
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[MM] Huge Page Allocator poisoned");
+            e.into_inner()
+        })
+        .init(base, count);
 }
 
 // ============================================================================

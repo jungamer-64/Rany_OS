@@ -5,10 +5,10 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ptr::NonNull;
-use spin::Mutex;
 
 /// Slab内のオブジェクトサイズクラス（2のべき乗）
 pub const SLAB_SIZES: [usize; 8] = [8, 16, 32, 64, 128, 256, 512, 1024];
@@ -263,9 +263,9 @@ pub const MAX_CPUS: usize = 64;
 /// グローバルなPer-Coreキャッシュ配列
 /// 重要: 各コアのキャッシュは **個別のMutex** で保護される
 /// これにより、Core 0 がロックを取っている間も Core 1 は自分のキャッシュを使用可能
-static PER_CORE_CACHES: [Mutex<Option<PerCoreCache>>; MAX_CPUS] = {
+static PER_CORE_CACHES: [PoisonLock<Option<PerCoreCache>>; MAX_CPUS] = {
     // const配列の初期化（Rust 1.63+）
-    const INIT: Mutex<Option<PerCoreCache>> = Mutex::new(None);
+    const INIT: PoisonLock<Option<PerCoreCache>> = PoisonLock::new(None);
     [INIT; MAX_CPUS]
 };
 
@@ -275,7 +275,10 @@ pub fn init_per_core_caches(num_cpus: usize) {
 
     for cpu_id in 0..num_cpus {
         // 各コアのMutexに個別にアクセス（他コアをブロックしない）
-        *PER_CORE_CACHES[cpu_id].lock() = Some(PerCoreCache::new(cpu_id));
+        *PER_CORE_CACHES[cpu_id].lock().unwrap_or_else(|e| {
+            log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
+            e.into_inner()
+        }) = Some(PerCoreCache::new(cpu_id));
     }
 }
 
@@ -295,7 +298,10 @@ pub fn per_core_alloc(cpu_id: usize, layout: Layout) -> Option<NonNull<u8>> {
         return None;
     }
     // このコアのMutexだけをロック（他コアに影響しない）
-    let mut guard = PER_CORE_CACHES[cpu_id].lock();
+    let mut guard = PER_CORE_CACHES[cpu_id].lock().unwrap_or_else(|e| {
+        log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
+        e.into_inner()
+    });
     guard.as_mut().and_then(|cache| cache.allocate(layout))
 }
 
@@ -308,7 +314,10 @@ pub unsafe fn per_core_dealloc(cpu_id: usize, ptr: NonNull<u8>, layout: Layout) 
         return;
     }
     // このコアのMutexだけをロック（他コアに影響しない）
-    let mut guard = PER_CORE_CACHES[cpu_id].lock();
+    let mut guard = PER_CORE_CACHES[cpu_id].lock().unwrap_or_else(|e| {
+        log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
+        e.into_inner()
+    });
     if let Some(cache) = guard.as_mut() {
         // SAFETY: 呼び出し元が保証
         unsafe {

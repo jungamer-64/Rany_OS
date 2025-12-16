@@ -6,9 +6,9 @@
 // ============================================================================
 #![allow(dead_code)]
 
+use crate::sync::PoisonLock;
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
-use spin::Mutex;
 
 /// シンプルな空きリストベースのアロケータ（Exchange Heap専用）
 ///
@@ -222,14 +222,14 @@ impl SimpleFreeListHeap {
 /// Exchange Heap: ドメイン間でゼロコピー通信するためのヒープ
 /// プライベートヒープとは別に管理される
 pub struct ExchangeHeap {
-    heap: Mutex<SimpleFreeListHeap>,
+    heap: PoisonLock<SimpleFreeListHeap>,
 }
 
 impl ExchangeHeap {
     /// 新しいExchange Heapを作成（未初期化）
     pub const fn new() -> Self {
         Self {
-            heap: Mutex::new(SimpleFreeListHeap::empty()),
+            heap: PoisonLock::new(SimpleFreeListHeap::empty()),
         }
     }
 
@@ -242,13 +242,26 @@ impl ExchangeHeap {
     pub unsafe fn init(&self, heap_start: usize, size: usize) {
         // SAFETY: 呼び出し元がメモリ領域の有効性を保証
         unsafe {
-            self.heap.lock().init(heap_start as *mut u8, size);
+            self.heap
+                .lock()
+                .unwrap_or_else(|e| {
+                    log::warn!("[MEM] Exchange Heap poisoned");
+                    e.into_inner()
+                })
+                .init(heap_start as *mut u8, size);
         }
     }
 
     /// Exchange Heap上にメモリを割り当て
     pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
-        self.heap.lock().allocate_first_fit(layout).ok()
+        self.heap
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[MEM] Exchange Heap poisoned");
+                e.into_inner()
+            })
+            .allocate_first_fit(layout)
+            .ok()
     }
 
     /// Exchange Heap上のメモリを解放
@@ -259,13 +272,22 @@ impl ExchangeHeap {
     pub unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // SAFETY: 呼び出し元がポインタとレイアウトの有効性を保証
         unsafe {
-            self.heap.lock().deallocate(ptr, layout);
+            self.heap
+                .lock()
+                .unwrap_or_else(|e| {
+                    log::warn!("[MEM] Exchange Heap poisoned");
+                    e.into_inner()
+                })
+                .deallocate(ptr, layout);
         }
     }
 
     /// ヒープ使用統計を取得（デバッグ用）
     pub fn stats(&self) -> HeapStats {
-        let heap = self.heap.lock();
+        let heap = self.heap.lock().unwrap_or_else(|e| {
+            log::warn!("[MEM] Exchange Heap poisoned");
+            e.into_inner()
+        });
         HeapStats {
             allocated: heap.used(),
             free: heap.free(),
