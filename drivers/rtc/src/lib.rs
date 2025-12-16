@@ -1,4 +1,7 @@
 #![no_std]
+// Allow common patterns in RTC driver
+#![allow(clippy::manual_is_multiple_of)] // Leap year check x % 4 == 0 is readable
+#![allow(clippy::assign_op_pattern)] // CMOS register operations use |= and &= patterns
 
 use core::sync::atomic::{AtomicU64, Ordering};
 use hal::port_io::PortU8;
