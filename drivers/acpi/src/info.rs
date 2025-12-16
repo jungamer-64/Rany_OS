@@ -34,6 +34,10 @@ pub struct AcpiInfo {
     pub has_legacy_pics: bool,
     /// ACPI revision
     pub revision: u8,
+    /// NUMA memory affinity entries: (base, length, proximity_domain)
+    pub numa_memory: Vec<(u64, u64, u32)>,
+    /// CPU proximity mapping: (apic_id, proximity_domain)
+    pub cpu_proximity: Vec<(u8, u32)>,
 }
 
 impl AcpiInfo {
@@ -47,6 +51,8 @@ impl AcpiInfo {
             pcie_ecam: Vec::new(),
             has_legacy_pics: false,
             revision,
+            numa_memory: Vec::new(),
+            cpu_proximity: Vec::new(),
         }
     }
 }

@@ -13,10 +13,8 @@
 #![allow(dead_code)]
 
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Waker;
 use spin::Mutex;
@@ -25,7 +23,7 @@ use super::context::DeviceContext;
 use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
 use super::{
     COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN, IR0,
-    MAX_ENDPOINTS, MAX_SLOTS, PAGESIZE, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS,
+    MAX_ENDPOINTS, MAX_SLOTS, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS,
     PORTSC_CHANGE_MASK, PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR,
     PORTSC_PRC, USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
 };

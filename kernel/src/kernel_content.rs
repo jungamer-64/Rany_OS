@@ -3,8 +3,8 @@ extern crate alloc;
 use core::panic::PanicInfo;
 use limine::BaseRevision;
 use limine::request::{
-    FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
-    RsdpRequest, StackSizeRequest,
+    ExecutableFileRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker,
+    RequestsStartMarker, RsdpRequest, StackSizeRequest,
 };
 use log::{debug, error, info, warn};
 
@@ -100,6 +100,10 @@ static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(
 #[used]
 #[unsafe(link_section = ".requests")]
 static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static KERNEL_FILE_REQUEST: ExecutableFileRequest = ExecutableFileRequest::new();
 
 #[unsafe(no_mangle)]
 extern "C" fn kmain() -> ! {
@@ -314,24 +318,56 @@ extern "C" fn kmain() -> ! {
     // 1.5. ACPI & IOMMU Initialization
     // Requires memory management for allocation
     info!(target: "init", "Initializing ACPI...");
+    // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
     if let Some(rsdp_response) = RSDP_REQUEST.get_response() {
         let rsdp_addr = rsdp_response.address() as usize;
-        match unsafe { io::acpi::init(rsdp_addr) } {
+        // Function init expects u64 physical address usually
+        match unsafe { io::acpi::init(rsdp_addr as u64) } {
             Ok(parser) => {
                 info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
-                // Initialize IOMMU using ACPI tables
-                unsafe {
-                    if let Err(e) = io::iommu::init_iommu_from_acpi(&parser) {
-                        warn!(target: "init", "IOMMU init failed or no units found: {:?}", e);
-                    } else {
-                        info!(target: "init", "IOMMU initialized successfully");
+                let mut iommu_config = io::iommu::IommuConfig::default();
+                if let Some(file_response) = KERNEL_FILE_REQUEST.get_response() {
+                    let file = file_response.file();
+                    // Prefer File::string() which returns an Option<&str>
+                    let cmdline = file.string().to_str().unwrap_or("");
+                    info!(target: "init", "Kernel cmdline: {}", cmdline);
 
-                        // Enable IOMMU
-                        if let Err(e) = io::iommu::enable_iommu() {
-                            error!(target: "init", "Failed to enable IOMMU: {:?}", e);
-                        } else {
-                            info!(target: "init", "IOMMU translation enabled");
+                    // Parse 'iommu' option
+                    if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
+                        match val {
+                            "off" => iommu_config.enabled = false,
+                            "pt" | "passthrough" => iommu_config.passthrough = true,
+                            "force" => iommu_config.force = true,
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Initialize IOMMU using ACPI tables and config
+                unsafe {
+                    match parser.find_table(b"DMAR") {
+                        Ok(dmar_addr) => {
+                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config) {
+                                // If IOMMU not present or disabled, we just warn.
+                                if e != io::iommu::IommuError::NotPresent {
+                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
+                                } else {
+                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
+                                }
+                            } else {
+                                info!(target: "init", "IOMMU initialized successfully");
+
+                                // Enable IOMMU
+                                if let Err(e) = io::iommu::enable_iommu() {
+                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                                } else {
+                                    info!(target: "init", "IOMMU translation enabled");
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            info!(target: "init", "IOMMU not initialized (No DMAR table)");
                         }
                     }
                 }

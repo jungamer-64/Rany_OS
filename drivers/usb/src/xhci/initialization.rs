@@ -12,7 +12,6 @@
 
 #![allow(dead_code)]
 
-use core::ptr;
 
 use super::{
     CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, IMAN, IR0, USBCMD, USBCMD_HCRST, USBCMD_INTE,

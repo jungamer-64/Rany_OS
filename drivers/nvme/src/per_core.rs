@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::defs::{DOORBELL_BATCH_THRESHOLD, SECTOR_SIZE};
-use super::queue::{QueuePair, SubmissionQueue};
+use super::queue::QueuePair;
 
 // ============================================================================
 // Queue Statistics

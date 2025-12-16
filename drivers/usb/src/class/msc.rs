@@ -18,10 +18,7 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::vec;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use spin::Mutex;
 

@@ -12,11 +12,9 @@
 use alloc::boxed::Box;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use spin::Mutex;
 
-use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
+use super::trb::{ErstEntry, Trb, TrbRing, TrbType};
 
 // ============================================================================
 // Constants

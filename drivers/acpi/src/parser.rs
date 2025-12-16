@@ -132,6 +132,9 @@ impl AcpiParser {
                 unsafe { self.parse_madt(table_addr, &mut info)? };
             } else if header.signature == signature::MCFG {
                 unsafe { self.parse_mcfg(table_addr, &mut info)? };
+            } else if header.signature == signature::SRAT {
+                // Parse SRAT for NUMA information
+                unsafe { self.parse_srat(table_addr, &mut info)? };
             }
         }
 
@@ -292,6 +295,101 @@ impl AcpiParser {
         Ok(())
     }
 
+    /// Parse SRAT (System Resource Affinity Table) for NUMA topology
+    unsafe fn parse_srat(&self, srat_address: u64, info: &mut AcpiInfo) -> Result<(), AcpiError> {
+        let header = unsafe { &*(srat_address as *const AcpiSdtHeader) };
+
+        if !header.validate() {
+            return Err(AcpiError::InvalidTableChecksum);
+        }
+
+        let entries_start = srat_address as usize + core::mem::size_of::<AcpiSdtHeader>();
+        let entries_end = srat_address as usize + header.length as usize;
+
+        let mut offset = entries_start;
+        while offset + 2 <= entries_end {
+            let entry_type = unsafe { core::ptr::read(offset as *const u8) };
+            let entry_len = unsafe { core::ptr::read((offset + 1) as *const u8) } as usize;
+            if entry_len == 0 || offset + entry_len > entries_end {
+                break;
+            }
+
+            match entry_type {
+                0 => {
+                    // Processor Local APIC/SAPIC Affinity
+                    // Try to extract APIC ID and proximity domain
+                    let apic_id = unsafe { core::ptr::read((offset + 3) as *const u8) };
+                    let mut proximity = 0u32;
+                    if entry_len >= 8 {
+                        // common layout contains a 32-bit proximity at offset 4
+                        proximity =
+                            unsafe { core::ptr::read_unaligned((offset + 4) as *const u32) };
+                    } else if entry_len >= 3 {
+                        proximity = unsafe { core::ptr::read((offset + 2) as *const u8) } as u32;
+                    }
+                    info.cpu_proximity.push((apic_id, proximity));
+                }
+                1 => {
+                    // Memory Affinity structure
+                    // layout (common): u8 type, u8 length, u32 proximity_domain, reserved, u64 base, u64 length, u32 flags
+                    if entry_len >= 24 {
+                        let proximity =
+                            unsafe { core::ptr::read_unaligned((offset + 2) as *const u32) };
+                        // Ensure we can read base/length safely
+                        if entry_len >= 24 + 8 {
+                            let base =
+                                unsafe { core::ptr::read_unaligned((offset + 8) as *const u64) };
+                            let length =
+                                unsafe { core::ptr::read_unaligned((offset + 16) as *const u64) };
+                            // Flags may be at offset 24
+                            let flags = if entry_len >= 28 {
+                                unsafe { core::ptr::read_unaligned((offset + 24) as *const u32) }
+                            } else {
+                                1u32
+                            };
+
+                            // If the memory affinity entry indicates the region is enabled, record it
+                            if flags & 0x1 != 0 {
+                                info.numa_memory.push((base, length, proximity));
+                            }
+                        }
+                    }
+                }
+                _ => {
+                    // Other SRAT structures are ignored for now
+                }
+            }
+
+            offset += entry_len;
+        }
+
+        Ok(())
+    }
+
+    /// Find a table by its signature
+    /// Returns the physical address of the table if found
+    pub fn find_table(&self, signature: &[u8; 4]) -> Result<usize, AcpiError> {
+        let rsdp = unsafe { &*(self.rsdp_address as *const Rsdp) };
+        if !rsdp.validate() {
+            return Err(AcpiError::InvalidRsdpChecksum);
+        }
+
+        let table_addresses = if rsdp.is_xsdt_available() {
+            unsafe { self.parse_xsdt(rsdp.xsdt_address)? }
+        } else {
+            unsafe { self.parse_rsdt(rsdp.rsdt_address as u64)? }
+        };
+
+        for &table_addr in &table_addresses {
+            let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
+            if header.signature == *signature {
+                return Ok(table_addr as usize);
+            }
+        }
+
+        Err(AcpiError::InvalidTable) // Or NotFound if we had it
+    }
+
     /// Get parsed ACPI info
     pub fn info(&self) -> Option<&AcpiInfo> {
         self.info.as_ref()
@@ -309,11 +407,11 @@ static ACPI_INFO: Mutex<Option<AcpiInfo>> = Mutex::new(None);
 ///
 /// # Safety
 /// The rsdp_address must point to a valid RSDP structure
-pub unsafe fn init(rsdp_address: u64) -> Result<(), AcpiError> {
+pub unsafe fn init(rsdp_address: u64) -> Result<AcpiParser, AcpiError> {
     let mut parser = AcpiParser::new(rsdp_address);
     let info = unsafe { parser.parse()? };
     *ACPI_INFO.lock() = Some(info.clone());
-    Ok(())
+    Ok(parser)
 }
 
 /// Get local APIC address
@@ -354,6 +452,26 @@ pub fn pcie_ecam_regions() -> Vec<PcieEcamInfo> {
         .lock()
         .as_ref()
         .map(|i| i.pcie_ecam.clone())
+        .unwrap_or_default()
+}
+
+/// Get NUMA memory regions discovered via SRAT
+/// Returns a Vec of (base, length, proximity_domain)
+pub fn numa_memory_regions() -> alloc::vec::Vec<(u64, u64, u32)> {
+    ACPI_INFO
+        .lock()
+        .as_ref()
+        .map(|i| i.numa_memory.clone())
+        .unwrap_or_default()
+}
+
+/// Get CPU proximity affinities discovered via SRAT
+/// Returns a Vec of (apic_id, proximity_domain)
+pub fn numa_cpu_proximity() -> alloc::vec::Vec<(u8, u32)> {
+    ACPI_INFO
+        .lock()
+        .as_ref()
+        .map(|i| i.cpu_proximity.clone())
         .unwrap_or_default()
 }
 

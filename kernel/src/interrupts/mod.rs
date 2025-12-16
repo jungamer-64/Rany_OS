@@ -45,7 +45,10 @@ pub enum InterruptVector {
     Mouse = PIC2_OFFSET + 4,
     Fpu = PIC2_OFFSET + 5,
     PrimaryAta = PIC2_OFFSET + 6,
+
     SecondaryAta = PIC2_OFFSET + 7,
+    /// IOMMU Fault (Vector 0x50 / 80)
+    IommuFault = 0x50,
 }
 
 /// IDTを初期化する関数
@@ -105,13 +108,16 @@ fn init_idt() {
         idt[InterruptVector::Keyboard as u8].set_handler_fn(keyboard_interrupt_handler);
         idt[InterruptVector::Com1 as u8].set_handler_fn(com1_interrupt_handler);
 
+        // IOMMU Fault Handler
+        idt[InterruptVector::IommuFault as u8].set_handler_fn(iommu_fault_handler);
+
         // PIC2 の IRQ ハンドラ（動的デバイス用）
         // IRQ 9, 10, 11 は多くの PCI デバイスで使用される
         idt[PIC2_OFFSET + 1].set_handler_fn(pci_irq9_handler); // IRQ9 (Free1)
         idt[PIC2_OFFSET + 2].set_handler_fn(pci_irq10_handler); // IRQ10 (Free2)
         idt[PIC2_OFFSET + 3].set_handler_fn(pci_irq11_handler); // IRQ11 (Free3)
         idt[InterruptVector::Mouse as u8].set_handler_fn(mouse_interrupt_handler); // IRQ12 (Mouse)
-        
+
         // Spurious Interrupt Vector (0xFF)
         // APICによって生成される偽の割り込みを処理
         // OSクラッシュ（#GP/#DF）を防ぐために必須
@@ -212,7 +218,8 @@ const ICW4_8086: u8 = 0x01;
 /// - 現代のx86_64ではAPIC/MSI-Xを使用すべき
 /// - PICは初期化後に全マスクして無効化
 fn init_pic() {
-    unsafe {
+    // unsafe block removed based on lint check
+    {
         // Intentionally keep creation of Port inside unsafe, but use wrapper functions
         // for the actual read/write operations to minimize scattered unsafe usage.
 
@@ -262,7 +269,8 @@ fn init_pic() {
 /// I/O待機（PICは遅いデバイス）
 #[inline]
 fn io_wait() {
-    unsafe {
+    // unsafe block removed based on lint check
+    {
         // 未使用ポートへのI/Oで遅延を発生
         crate::io::outb(0x80, 0);
     }
@@ -281,7 +289,8 @@ pub unsafe fn send_eoi(irq: u8) {
 
 /// 特定の割り込みをアンマスク（APIC移行までの暫定）
 pub fn unmask_irq(irq: u8) {
-    unsafe {
+    // unsafe block removed based on lint check
+    {
         if irq < 8 {
             let mask = crate::io::inb(PIC1_DATA);
             crate::io::outb(PIC1_DATA, mask & !(1 << irq));
@@ -294,7 +303,8 @@ pub fn unmask_irq(irq: u8) {
 
 /// 特定の割り込みをマスク
 pub fn mask_irq(irq: u8) {
-    unsafe {
+    // unsafe block removed based on lint check
+    {
         if irq < 8 {
             let mask = crate::io::inb(PIC1_DATA);
             crate::io::outb(PIC1_DATA, mask | (1 << irq));
@@ -324,7 +334,7 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 /// - Wakerを起床させるだけ
 extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
-    let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+    let _tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
 
     // 2. 軽量なフラグ設定のみ（重い処理は遅延）
     // タイマーイベントペンディングフラグを設定
@@ -445,6 +455,18 @@ extern "x86-interrupt" fn com1_interrupt_handler(_stack_frame: InterruptStackFra
     unsafe {
         send_eoi(InterruptVector::Com1 as u8 - PIC1_OFFSET);
     }
+}
+
+/// IOMMU Fault Handler
+///
+/// Handles faults reported by the IOMMU (DMA remapping errors, etc.)
+extern "x86-interrupt" fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
+    // Process faults
+    crate::io::iommu::handle_fault();
+
+    // Send EOI to Local APIC (IOMMU uses MSI/APIC delivery)
+    // We use the unified interrupt manager's EOI helper which targets LAPIC
+    crate::io::interrupt_manager::send_eoi();
 }
 
 // ============================================================================

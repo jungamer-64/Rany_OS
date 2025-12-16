@@ -102,6 +102,10 @@ serial = ["uart_16550"]
 stats = []
 mouse = []
 bench = ["std"]
+apic = []
+task = []
+force_vga = []
+gimli_unwind = []
 
 # Test-only feature: enable PKEY allocation behavior inside tests so we can
 # exercise loader->mpk integration without requiring a full kernel runtime.

@@ -21,6 +21,8 @@
 
 #![allow(dead_code)]
 
+// use crate::memory; // not used directly here; use `crate::mm::phys_to_virt` instead
+use crate::io::parse_dmar_table;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1924,7 +1926,19 @@ impl IommuController {
     }
 
     /// Invalidate IOTLB for a domain
-    pub unsafe fn invalidate_iotlb(&self, domain_id: u16) {
+    pub unsafe fn invalidate_iotlb(&mut self, domain_id: u16) {
+        // Use QI if enabled
+        if self.is_queued_invalidation_enabled() {
+            if let Err(e) = self.qi_invalidate_iotlb_domain(domain_id, true) {
+                log::error!("[IOMMU] QI Domain Invalidation failed: {:?}", e);
+            }
+            // Wait for completion (sync)
+            if let Err(e) = self.qi_wait_sync() {
+                log::error!("[IOMMU] QI Wait failed: {:?}", e);
+            }
+            return;
+        }
+
         // Context command register invalidation
         let cmd: u64 = (1u64 << 63) |          // ICC (Invalidate context-cache)
                        (1u64 << 61) |          // Global invalidation
@@ -1941,7 +1955,18 @@ impl IommuController {
     }
 
     /// Invalidate IOTLB globally (all domains)
-    pub unsafe fn invalidate_iotlb_global(&self) {
+    pub unsafe fn invalidate_iotlb_global(&mut self) {
+        // Use QI if enabled
+        if self.is_queued_invalidation_enabled() {
+            if let Err(e) = self.qi_invalidate_iotlb_global(true) {
+                log::error!("[IOMMU] QI Global Invalidation failed: {:?}", e);
+            }
+            if let Err(e) = self.qi_wait_sync() {
+                log::error!("[IOMMU] QI Wait failed: {:?}", e);
+            }
+            return;
+        }
+
         // Get Invalidation Register Offset from CAP
         let iro = ((self.cap & cap_bits::CAP_IRO_MASK) >> 8) as u64;
         let iotlb_reg = self.mmio_base + (iro << 4) + iotlb_regs::IOTLB;
@@ -2598,6 +2623,22 @@ impl IommuController {
             self.read64(regs::PERMON_CNT3),
         ])
     }
+
+    /// Enable Fault Interrupts
+    ///
+    /// Configures the Fault Event Control Register (FECTL) to generate interrupts on faults.
+    pub unsafe fn enable_fault_interrupt(&self, vector: u8) {
+        // Clear IM (Interrupt Mask) bit 31
+        // Clear IP (Interrupt Pending) bit 30 (by writing 1 to it?) - Spec says R/W or R/W1C depending on impl.
+        // Set Vector bits 7:0
+
+        let val = (vector as u32) & 0xFF;
+        // Ensure IM (bit 31) is 0 (Unmasked)
+        // Ensure IP (bit 30) is cleared? Let's just set the vector and unmask.
+
+        // Read current to preserve reserved bits? Register is usually RW.
+        self.write32(regs::FECTL, val);
+    }
 }
 
 /// IOMMU capability summary
@@ -2890,6 +2931,8 @@ pub struct IommuManager {
     default_iommu_idx: Option<usize>,
     /// Reserved memory regions
     reserved_regions: Vec<ReservedMemoryRegion>,
+    /// Global Configuration
+    pub config: IommuConfig,
 }
 
 unsafe impl Send for IommuManager {}
@@ -2901,6 +2944,7 @@ impl IommuManager {
             controllers: Vec::new(),
             default_iommu_idx: None,
             reserved_regions: Vec::new(),
+            config: IommuConfig::new(),
         }
     }
 
@@ -2998,21 +3042,35 @@ impl IommuManager {
         &mut self,
         segment: u16,
         _bus: u8,
-        _device: u8,
-        _function: u8,
+        _dev: u8,
+        _func: u8,
     ) -> Option<&mut IommuController> {
-        // Same logic as immutable version
-        for controller in &mut self.controllers {
-            if controller.segment == segment {
-                return Some(controller);
+        // Iterate by index to avoid conflicting borrows
+        for i in 0..self.controllers.len() {
+            if self.controllers[i].segment == segment {
+                return Some(&mut self.controllers[i]);
             }
         }
 
-        if let Some(idx) = self.default_iommu_idx {
-            return self.controllers.get_mut(idx);
-        }
+        let idx = self.default_iommu_idx?;
+        return self.controllers.get_mut(idx);
+    }
 
-        None
+    /// Find controller index for device without taking mutable references.
+    /// This helps avoid borrow issues when callers need to perform additional
+    /// operations on `self` (e.g., reading `reserved_regions`) before obtaining
+    /// a mutable handle to the controller.
+    pub fn find_controller_index_for_device(
+        &self,
+        segment: u16,
+        _bus: u8,
+        _device: u8,
+        _function: u8,
+    ) -> Option<usize> {
+        if let Some(idx) = self.controllers.iter().position(|c| c.segment == segment) {
+            return Some(idx);
+        }
+        self.default_iommu_idx
     }
 }
 
@@ -3038,21 +3096,47 @@ fn register_domain_lock(domain_id: u16) {
         .insert(domain_id, alloc::sync::Arc::new(spin::Mutex::new(())));
 }
 
-/// Initialize IOMMU using ACPI DMAR table
-pub unsafe fn init_iommu_from_acpi(parser: &crate::io::acpi::AcpiParser) -> Result<(), IommuError> {
-    // 1. Find DMAR table
-    let dmar_addr = match parser.find_table(b"DMAR") {
-        Ok(addr) => addr,
-        Err(_) => {
-            log::warn!("DMAR table not found in ACPI");
-            return Err(IommuError::NotPresent);
+/// IOMMU Configuration from Kernel Command Line
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IommuConfig {
+    /// Enable IOMMU
+    pub enabled: bool,
+    /// Passthrough mode (disable translation for most devices)
+    pub passthrough: bool,
+    /// Force enable even if ACPI says no (not used yet)
+    pub force: bool,
+}
+
+impl IommuConfig {
+    pub const fn new() -> Self {
+        Self {
+            enabled: true,
+            passthrough: false,
+            force: false,
         }
-    };
+    }
+}
 
-    log::info!("DMAR table found at {:#x}", dmar_addr);
+impl Default for IommuConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
-    // 2. Parse DMAR
-    let dmar_info = match crate::io::acpi::dmar::parse_dmar(dmar_addr) {
+/// Initialize IOMMU using ACPI DMAR table at `dmar_addr`
+pub unsafe fn init_iommu_from_acpi(
+    dmar_addr: usize,
+    config: IommuConfig,
+) -> Result<(), IommuError> {
+    if !config.enabled {
+        log::info!("IOMMU disabled by kernel configuration");
+        return Err(IommuError::NotPresent);
+    }
+
+    // Caller should ensure `dmar_addr` is valid and log if desired.
+
+    // Parse DMAR (use io::parse_dmar_table helper)
+    let dmar_info = match parse_dmar_table(dmar_addr) {
         Ok(info) => info,
         Err(e) => {
             log::error!("Failed to parse DMAR: {}", e);
@@ -3076,7 +3160,7 @@ pub unsafe fn init_iommu_from_acpi(parser: &crate::io::acpi::AcpiParser) -> Resu
         // Here we assume register_base is physical, and we need virtual.
         // Convert phys to virt using standard conversion (HHDM assumed active)
         let mmio_virt =
-            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(unit.register_base))
+            crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(unit.register_base))
                 .as_u64();
 
         let mut controller = IommuController::new(mmio_virt, unit.segment);
@@ -3085,6 +3169,24 @@ pub unsafe fn init_iommu_from_acpi(parser: &crate::io::acpi::AcpiParser) -> Resu
             if let Err(e) = controller.init() {
                 log::error!("Failed to initialize IOMMU controller: {:?}", e);
                 continue;
+            }
+
+            // Enable Fault Interrupts (Vector 0x50 - IommuFault)
+            // Note: We use a hardcoded vector here which must match InterruptVector::IommuFault
+            controller.enable_fault_interrupt(0x50);
+
+            // Setup Queued Invalidation if supported
+            if controller.supports_queued_invalidation() {
+                // Use a reasonable queue size (e.g., 256 entries = 2^8)
+                if let Err(e) = controller.init_queued_invalidation(8) {
+                    log::warn!("Failed to init Queued Invalidation: {:?}", e);
+                } else {
+                    if let Err(e) = controller.enable_queued_invalidation() {
+                        log::warn!("Failed to enable Queued Invalidation: {:?}", e);
+                    } else {
+                        log::info!("Queued Invalidation enabled for controller");
+                    }
+                }
             }
         }
 
@@ -3102,7 +3204,10 @@ pub unsafe fn init_iommu_from_acpi(parser: &crate::io::acpi::AcpiParser) -> Resu
     manager.default_iommu_idx = default_idx.or(Some(0));
 
     // 4. Register RMRR regions
-    for region in dmar_info.rmrr_regions {
+    // We clone regions to avoid borrowing conflicts with `manager` while iterating `dmar_info`
+    let dmar_rmrr_regions = dmar_info.rmrr_regions.clone();
+
+    for region in &dmar_rmrr_regions {
         // Convert dmar::RmrrRegion to iommu::ReservedMemoryRegion
         // We need to convert DeviceScope paths to DeviceId if possible
         // For now, simple conversion logic or just store generic info?
@@ -3111,7 +3216,7 @@ pub unsafe fn init_iommu_from_acpi(parser: &crate::io::acpi::AcpiParser) -> Resu
         // Or we can construct DeviceId from the Path if ScopeType is Endpoint (1) or Bridge.
 
         let mut devices = Vec::new();
-        for scope in region.devices {
+        for scope in &region.devices {
             // Basic scope parsing: start_bus + path
             // Path is (dev, func) list.
             // If path length is 1, it's devices on start_bus.
@@ -3278,6 +3383,33 @@ where
     Ok(f(controller))
 }
 
+/// Handle IOMMU Faults (Called from ISR)
+///
+/// Iterates all controllers and processes pending faults.
+pub fn handle_fault() {
+    let mut guard = IOMMU.lock();
+    for (i, controller) in guard.controllers.iter_mut().enumerate() {
+        if controller.has_pending_fault() {
+            let faults = controller.read_faults();
+            for (entry, reason) in faults {
+                log::error!(
+                    "[IOMMU] FAULT on Controller {}: Reason={:?} Addr={:#x} ReqID={:04x} Type={}",
+                    i,
+                    reason,
+                    entry.fault_address(),
+                    entry.source_id(),
+                    if entry.is_read() { "Read" } else { "Write" }
+                );
+            }
+
+            // Clear IP bit in FECTL to re-enable interrupts if edge triggered?
+            // FECTL is usually level or edge. If edge, we just handled it.
+            // If we cleared the Primary Pending Fault (PPF) in FSTS via read_faults() [which writes back 1 to fault bits],
+            // then the condition is cleared.
+        }
+    }
+}
+
 // ============================================================================
 // 【設計書 7.2】PCIデバイスへのIOMMU自動設定
 // ============================================================================
@@ -3298,25 +3430,34 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     }
 
     let bdf = device.bdf;
-    let device_id = DeviceId::new(
-        0, // segment（通常0）
-        bdf.bus.0,
-        bdf.device.0,
-        bdf.function.0,
-    );
-
-    let bdf = device.bdf;
     // Retrieve segment from device info (if available) or assume 0
     let segment = 0; // TODO: Get from PciDeviceInfo if added
 
     // Find correct IOMMU for this device
-    let mut guard = IOMMU.lock();
-    let controller =
-        guard.find_controller_for_device_mut(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
+    // Find controller index while we still have an immutable lock so we can clone reserved regions
+    let (controller_idx, reserved_clone) = {
+        let guard = IOMMU.lock();
+        // Check for passthrough mode and bail out early if configured globally
+        if guard.config.passthrough {
+            // TODO: Implement passthrough handling; for now, we allow setup but note it here
+        }
 
-    let iommu = match controller {
+        match guard.find_controller_index_for_device(
+            segment,
+            bdf.bus.0,
+            bdf.device.0,
+            bdf.function.0,
+        ) {
+            Some(idx) => (idx, guard.reserved_regions.clone()),
+            None => return None,
+        }
+    };
+
+    // Re-lock and obtain mutable reference to the selected controller
+    let mut guard = IOMMU.lock();
+    let iommu = match guard.controllers.get_mut(controller_idx) {
         Some(c) => c,
-        None => return None, // No IOMMU for this device
+        None => return None,
     };
 
     // 1. 新しいドメインを作成
@@ -3344,12 +3485,8 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     }
 
     // 2.5 Reserved Memory Regions (RMRR) の適用
-    // guardを再取得せずにapply_reserved_regionsを呼び出すために、
-    // IommuManagerのメソッドではなく、直接操作するか、helperメソッド呼出しが必要
-    // ここではguardを保持したまま処理を行う
-
-    // RMRR application logic integrated into setup flow
-    for region in &guard.reserved_regions {
+    // Use cloned reserved regions to avoid borrowing conflicts with `iommu`
+    for region in reserved_clone.iter() {
         if region.segment != device_id.segment {
             continue;
         }
