@@ -7,9 +7,9 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
-use spin::Mutex;
 
 use super::ethernet::MacAddress;
 use super::ipv4::Ipv4Address;
@@ -235,13 +235,13 @@ pub struct DhcpClient {
     /// MACアドレス
     mac_address: MacAddress,
     /// 現在の状態
-    state: Mutex<DhcpState>,
+    state: PoisonLock<DhcpState>,
     /// 現在のトランザクションID
     xid: AtomicU32,
     /// 現在のリース
-    lease: Mutex<Option<DhcpLease>>,
+    lease: PoisonLock<Option<DhcpLease>>,
     /// 提案されたリース (OFFER受信後)
-    offered_lease: Mutex<Option<DhcpLease>>,
+    offered_lease: PoisonLock<Option<DhcpLease>>,
     /// 状態遷移時刻
     state_time: AtomicU64,
     /// 再試行回数
@@ -256,10 +256,10 @@ impl DhcpClient {
     pub fn new(mac_address: MacAddress) -> Self {
         Self {
             mac_address,
-            state: Mutex::new(DhcpState::Init),
+            state: PoisonLock::new(DhcpState::Init),
             xid: AtomicU32::new(0),
-            lease: Mutex::new(None),
-            offered_lease: Mutex::new(None),
+            lease: PoisonLock::new(None),
+            offered_lease: PoisonLock::new(None),
             state_time: AtomicU64::new(0),
             retry_count: AtomicU32::new(0),
         }
@@ -267,12 +267,21 @@ impl DhcpClient {
 
     /// 現在の状態を取得
     pub fn state(&self) -> DhcpState {
-        *self.state.lock()
+        *self.state.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP State poisoned");
+            e.into_inner()
+        })
     }
 
     /// 現在のリースを取得
     pub fn lease(&self) -> Option<DhcpLease> {
-        self.lease.lock().clone()
+        self.lease
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] DHCP Lease poisoned");
+                e.into_inner()
+            })
+            .clone()
     }
 
     /// DHCPDISCOVER メッセージを構築
@@ -335,7 +344,10 @@ impl DhcpClient {
         offset += 1;
 
         // 状態を更新
-        *self.state.lock() = DhcpState::Selecting;
+        *self.state.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP State poisoned");
+            e.into_inner()
+        }) = DhcpState::Selecting;
         self.state_time.store(current_tick, Ordering::SeqCst);
 
         Ok(offset)
@@ -351,7 +363,10 @@ impl DhcpClient {
             return Err("Buffer too small");
         }
 
-        let offered = self.offered_lease.lock();
+        let offered = self.offered_lease.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP Offer poisoned");
+            e.into_inner()
+        });
         let lease = offered.as_ref().ok_or("No offer available")?;
 
         let xid = self.xid.load(Ordering::SeqCst);
@@ -414,7 +429,10 @@ impl DhcpClient {
         offset += 1;
 
         // 状態を更新
-        *self.state.lock() = DhcpState::Requesting;
+        *self.state.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP State poisoned");
+            e.into_inner()
+        }) = DhcpState::Requesting;
         self.state_time.store(current_tick, Ordering::SeqCst);
 
         Ok(offset)
@@ -559,7 +577,10 @@ impl DhcpClient {
                     domain_name,
                 };
 
-                *self.offered_lease.lock() = Some(lease.clone());
+                *self.offered_lease.lock().unwrap_or_else(|e| {
+                    log::warn!("[NET] DHCP Offer poisoned");
+                    e.into_inner()
+                }) = Some(lease.clone());
 
                 Ok(DhcpResponseResult::Offer(lease))
             }
@@ -576,16 +597,28 @@ impl DhcpClient {
                     domain_name,
                 };
 
-                *self.lease.lock() = Some(lease.clone());
-                *self.state.lock() = DhcpState::Bound;
+                *self.lease.lock().unwrap_or_else(|e| {
+                    log::warn!("[NET] DHCP Lease poisoned");
+                    e.into_inner()
+                }) = Some(lease.clone());
+                *self.state.lock().unwrap_or_else(|e| {
+                    log::warn!("[NET] DHCP State poisoned");
+                    e.into_inner()
+                }) = DhcpState::Bound;
                 self.state_time.store(current_tick, Ordering::SeqCst);
                 self.retry_count.store(0, Ordering::SeqCst);
 
                 Ok(DhcpResponseResult::Ack(lease))
             }
             DhcpMessageType::Nak => {
-                *self.state.lock() = DhcpState::Init;
-                *self.offered_lease.lock() = None;
+                *self.state.lock().unwrap_or_else(|e| {
+                    log::warn!("[NET] DHCP State poisoned");
+                    e.into_inner()
+                }) = DhcpState::Init;
+                *self.offered_lease.lock().unwrap_or_else(|e| {
+                    log::warn!("[NET] DHCP Offer poisoned");
+                    e.into_inner()
+                }) = None;
                 Ok(DhcpResponseResult::Nak)
             }
             _ => Err("Unexpected message type"),
@@ -594,14 +627,26 @@ impl DhcpClient {
 
     /// リースを解放
     pub fn release(&self) {
-        *self.state.lock() = DhcpState::Init;
-        *self.lease.lock() = None;
-        *self.offered_lease.lock() = None;
+        *self.state.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP State poisoned");
+            e.into_inner()
+        }) = DhcpState::Init;
+        *self.lease.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP Lease poisoned");
+            e.into_inner()
+        }) = None;
+        *self.offered_lease.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP Offer poisoned");
+            e.into_inner()
+        }) = None;
     }
 
     /// タイムアウトをチェック
     pub fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
-        let state = *self.state.lock();
+        let state = *self.state.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DHCP State poisoned");
+            e.into_inner()
+        });
         let state_time = self.state_time.load(Ordering::SeqCst);
         let elapsed_secs = (current_tick.saturating_sub(state_time)) / tick_rate;
 
@@ -611,16 +656,30 @@ impl DhcpClient {
                 if elapsed_secs > 4 {
                     let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
                     if retry >= Self::MAX_RETRIES {
-                        *self.state.lock() = DhcpState::Init;
+                        *self.state.lock().unwrap_or_else(|e| {
+                            log::warn!("[NET] DHCP State poisoned");
+                            e.into_inner()
+                        }) = DhcpState::Init;
                         self.retry_count.store(0, Ordering::SeqCst);
                     }
                     return true;
                 }
             }
             DhcpState::Bound => {
-                if let Some(lease) = self.lease.lock().as_ref() {
+                if let Some(lease) = self
+                    .lease
+                    .lock()
+                    .unwrap_or_else(|e| {
+                        log::warn!("[NET] DHCP Lease poisoned");
+                        e.into_inner()
+                    })
+                    .as_ref()
+                {
                     if lease.needs_renewal(current_tick, tick_rate) {
-                        *self.state.lock() = DhcpState::Renewing;
+                        *self.state.lock().unwrap_or_else(|e| {
+                            log::warn!("[NET] DHCP State poisoned");
+                            e.into_inner()
+                        }) = DhcpState::Renewing;
                         return true;
                     }
                 }
@@ -644,15 +703,18 @@ pub enum DhcpResponseResult {
 }
 
 /// グローバルDHCPクライアント
-static DHCP_CLIENT: Mutex<Option<DhcpClient>> = Mutex::new(None);
+static DHCP_CLIENT: PoisonLock<Option<DhcpClient>> = PoisonLock::new(None);
 
 /// DHCPクライアントを初期化
 pub fn init(mac_address: MacAddress) {
     let client = DhcpClient::new(mac_address);
-    *DHCP_CLIENT.lock() = Some(client);
+    *DHCP_CLIENT.lock().unwrap_or_else(|e| {
+        log::warn!("[NET] DHCP Global poisoned");
+        e.into_inner()
+    }) = Some(client);
 }
 
 /// DHCPクライアントを取得
-pub fn client() -> Option<&'static Mutex<Option<DhcpClient>>> {
+pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
     Some(&DHCP_CLIENT)
 }

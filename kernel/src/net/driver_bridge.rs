@@ -13,9 +13,9 @@ use super::ethernet::MacAddress;
 use super::ipv4::{Ipv4Address, Ipv4Config};
 use super::stack::{self, NetworkConfig, NetworkStack};
 use crate::io::virtio::{VirtioNetDevice, VirtioNetHeader, with_virtio_net};
+use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::Mutex;
 
 extern crate alloc;
 
@@ -33,7 +33,7 @@ static TX_PACKETS: AtomicU64 = AtomicU64::new(0);
 static RX_PACKETS: AtomicU64 = AtomicU64::new(0);
 
 /// Receive buffer for processing
-static RX_BUFFER: Mutex<[u8; 2048]> = Mutex::new([0u8; 2048]);
+static RX_BUFFER: PoisonLock<[u8; 2048]> = PoisonLock::new([0u8; 2048]);
 
 // ============================================================================
 // Transmit Bridge
@@ -186,7 +186,10 @@ pub fn init_bridge() -> Result<(), &'static str> {
     stack::init(config);
 
     // Set transmit callback
-    if let Some(ref stack) = *stack::stack().lock() {
+    if let Some(ref stack) = *stack::stack().lock().unwrap_or_else(|e| {
+        log::warn!("[NET BRIDGE] Stack poisoned");
+        e.into_inner()
+    }) {
         stack.set_transmit_fn(virtio_transmit);
     }
 
@@ -233,7 +236,10 @@ pub struct BridgeStats {
 
 /// Get real network configuration from NetworkStack
 pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
-    let stack_guard = stack::stack().lock();
+    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
+        log::warn!("[NET BRIDGE] Stack poisoned");
+        e.into_inner()
+    });
     let stack = stack_guard.as_ref()?;
 
     let config = stack.config();
@@ -248,7 +254,10 @@ pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
 
 /// Get real network statistics from NetworkStack
 pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
-    let stack_guard = stack::stack().lock();
+    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
+        log::warn!("[NET BRIDGE] Stack poisoned");
+        e.into_inner()
+    });
     let stack = stack_guard.as_ref()?;
 
     let stats = stack.stats();
@@ -265,7 +274,10 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
 
 /// Send ICMP echo via real NetworkStack
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
-    let stack_guard = stack::stack().lock();
+    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
+        log::warn!("[NET BRIDGE] Stack poisoned");
+        e.into_inner()
+    });
     let stack = stack_guard
         .as_ref()
         .ok_or("Network stack not initialized")?;
@@ -279,7 +291,10 @@ pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static st
 
 /// Get ARP cache entries from real NetworkStack
 pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
-    let stack_guard = stack::stack().lock();
+    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
+        log::warn!("[NET BRIDGE] Stack poisoned");
+        e.into_inner()
+    });
     let stack = match stack_guard.as_ref() {
         Some(s) => s,
         None => return Vec::new(),
