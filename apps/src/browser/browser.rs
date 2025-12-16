@@ -158,6 +158,13 @@ impl Browser {
             cursor_pos: 7,
         };
         browser.load_default_page();
+
+        // Record the initial page in history so navigation works as expected
+        // (i.e. the user can go back to the welcome page after navigating
+        //  somewhere else).
+        browser.history.push(browser.url.clone());
+        browser.history_pos = browser.history.len();
+
         browser
     }
 

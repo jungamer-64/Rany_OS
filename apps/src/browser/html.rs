@@ -57,6 +57,16 @@ impl HtmlParser {
     fn parse_element(&mut self) -> Node {
         // Opening tag
         self.expect("<");
+
+        // Special-case: declarations like <!DOCTYPE ...> or processing
+        // instructions <? ... ?> - skip them safely without panicking.
+        if self.next_char() == '!' || self.next_char() == '?' {
+            // Consume until the next '>' (best-effort) and return an empty text node
+            self.consume_while(|c| c != '>');
+            self.expect(">");
+            return Node::text("");
+        }
+
         let tag_name = self.parse_tag_name();
         let attrs = self.parse_attributes();
         self.expect(">");

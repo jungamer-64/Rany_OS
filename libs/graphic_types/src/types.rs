@@ -4,7 +4,7 @@
 //!
 //! グラフィックス基本型定義
 //!
-//! Color, PixelFormat, Point, Rect など基本的な型を定義
+//! `Color`, `PixelFormat`, `Point`, `Rect` など基本的な型を定義
 
 #![allow(dead_code)]
 
@@ -69,7 +69,7 @@ impl Color {
         let g = (self.green as u32 * a + bg.green as u32 * inv_a) / 255;
         let b = (self.blue as u32 * a + bg.blue as u32 * inv_a) / 255;
 
-        Color {
+        Self {
             red: r as u8,
             green: g as u8,
             blue: b as u8,
@@ -78,6 +78,7 @@ impl Color {
     }
 
     /// 32ビット値に変換（BGRA）
+    #[must_use]
     pub const fn to_u32(self) -> u32 {
         ((self.alpha as u32) << 24)
             | ((self.red as u32) << 16)
@@ -86,6 +87,7 @@ impl Color {
     }
 
     /// 32ビット値から変換
+    #[must_use]
     pub const fn from_u32(value: u32) -> Self {
         Self {
             blue: (value & 0xFF) as u8,
@@ -144,9 +146,9 @@ impl PixelFormat {
     #[must_use]
     pub const fn bytes_per_pixel(&self) -> usize {
         match self {
-            PixelFormat::Rgb888 | PixelFormat::Bgr888 => 3,
-            PixelFormat::Rgba8888 | PixelFormat::Bgra8888 => 4,
-            PixelFormat::Rgb565 => 2,
+            Self::Rgb888 | Self::Bgr888 => 3,
+            Self::Rgba8888 | Self::Bgra8888 => 4,
+            Self::Rgb565 => 2,
         }
     }
 
@@ -154,29 +156,29 @@ impl PixelFormat {
     /// `out` の長さは必ず `self.bytes_per_pixel()` 以上であること
     pub fn encode_color_bytes(&self, color: Color, out: &mut [u8]) {
         match self {
-            PixelFormat::Bgra8888 => {
+            Self::Bgra8888 => {
                 out[0] = color.blue;
                 out[1] = color.green;
                 out[2] = color.red;
                 out[3] = color.alpha;
             }
-            PixelFormat::Rgba8888 => {
+            Self::Rgba8888 => {
                 out[0] = color.red;
                 out[1] = color.green;
                 out[2] = color.blue;
                 out[3] = color.alpha;
             }
-            PixelFormat::Bgr888 => {
+            Self::Bgr888 => {
                 out[0] = color.blue;
                 out[1] = color.green;
                 out[2] = color.red;
             }
-            PixelFormat::Rgb888 => {
+            Self::Rgb888 => {
                 out[0] = color.red;
                 out[1] = color.green;
                 out[2] = color.blue;
             }
-            PixelFormat::Rgb565 => {
+            Self::Rgb565 => {
                 let r = (u16::from(color.red) >> 3) & 0x1F;
                 let g = (u16::from(color.green) >> 2) & 0x3F;
                 let b = (u16::from(color.blue) >> 3) & 0x1F;
@@ -188,16 +190,16 @@ impl PixelFormat {
         }
     }
 
-    /// バイト列から Color を復元する
+    /// バイト列から `Color` を復元する
     /// `bytes` は `self.bytes_per_pixel()` 以上の長さが必要
     #[must_use]
     pub fn decode_color_bytes(&self, bytes: &[u8]) -> Color {
         match self {
-            PixelFormat::Bgra8888 => Color::with_alpha(bytes[2], bytes[1], bytes[0], bytes[3]),
-            PixelFormat::Rgba8888 => Color::with_alpha(bytes[0], bytes[1], bytes[2], bytes[3]),
-            PixelFormat::Bgr888 => Color::new(bytes[2], bytes[1], bytes[0]),
-            PixelFormat::Rgb888 => Color::new(bytes[0], bytes[1], bytes[2]),
-            PixelFormat::Rgb565 => {
+            Self::Bgra8888 => Color::with_alpha(bytes[2], bytes[1], bytes[0], bytes[3]),
+            Self::Rgba8888 => Color::with_alpha(bytes[0], bytes[1], bytes[2], bytes[3]),
+            Self::Bgr888 => Color::new(bytes[2], bytes[1], bytes[0]),
+            Self::Rgb888 => Color::new(bytes[0], bytes[1], bytes[2]),
+            Self::Rgb565 => {
                 let val = u16::from_le_bytes([bytes[0], bytes[1]]);
                 let r = ((val >> 11) & 0x1F) as u8 * 8;
                 let g = ((val >> 5) & 0x3F) as u8 * 4;
@@ -211,8 +213,8 @@ impl PixelFormat {
     #[must_use]
     pub const fn encode_u32(&self, color: Color) -> Option<u32> {
         match self {
-            PixelFormat::Bgra8888 => Some(color.to_u32()),
-            PixelFormat::Rgba8888 => {
+            Self::Bgra8888 => Some(color.to_u32()),
+            Self::Rgba8888 => {
                 let b = [color.red, color.green, color.blue, color.alpha];
                 Some(u32::from_le_bytes(b))
             }
@@ -224,7 +226,7 @@ impl PixelFormat {
     #[must_use]
     pub const fn encode_u16(&self, color: Color) -> Option<u16> {
         match self {
-            PixelFormat::Rgb565 => {
+            Self::Rgb565 => {
                 let r = (color.red as u16 >> 3) & 0x1F;
                 let g = (color.green as u16 >> 2) & 0x3F;
                 let b = (color.blue as u16 >> 3) & 0x1F;
@@ -307,12 +309,14 @@ impl Rect {
 
     /// 右端のX座標
     #[must_use]
+    #[allow(clippy::cast_possible_wrap)]
     pub const fn right(&self) -> i32 {
         self.x + self.width as i32
     }
 
     /// 下端のY座標
     #[must_use]
+    #[allow(clippy::cast_possible_wrap)]
     pub const fn bottom(&self) -> i32 {
         self.y + self.height as i32
     }
@@ -325,7 +329,7 @@ impl Rect {
 
     /// 矩形が交差するか
     #[must_use]
-    pub const fn intersects(&self, other: &Rect) -> bool {
+    pub const fn intersects(&self, other: &Self) -> bool {
         self.x < other.right()
             && self.right() > other.x
             && self.y < other.bottom()
@@ -333,7 +337,9 @@ impl Rect {
     }
 
     /// 交差領域を取得
-    pub fn intersection(&self, other: &Rect) -> Option<Rect> {
+    #[must_use]
+    #[allow(clippy::cast_sign_loss)]
+    pub fn intersection(&self, other: &Self) -> Option<Self> {
         if !self.intersects(other) {
             return None;
         }
@@ -343,12 +349,12 @@ impl Rect {
         let right = self.right().min(other.right());
         let bottom = self.bottom().min(other.bottom());
 
-        Some(Rect::new(x, y, (right - x) as u32, (bottom - y) as u32))
+        Some(Self::new(x, y, (right - x) as u32, (bottom - y) as u32))
     }
 
     /// 他の矩形を完全に含むか
     #[must_use]
-    pub const fn contains_rect(&self, other: &Rect) -> bool {
+    pub const fn contains_rect(&self, other: &Self) -> bool {
         other.x >= self.x
             && other.y >= self.y
             && other.right() <= self.right()
@@ -356,12 +362,14 @@ impl Rect {
     }
 
     /// 2つの矩形を含む最小の矩形を返す
-    pub fn union(&self, other: &Rect) -> Rect {
+    #[must_use]
+    #[allow(clippy::cast_sign_loss)]
+    pub fn union(&self, other: &Self) -> Self {
         let x = self.x.min(other.x);
         let y = self.y.min(other.y);
         let right = self.right().max(other.right());
         let bottom = self.bottom().max(other.bottom());
-        Rect::new(x, y, (right - x) as u32, (bottom - y) as u32)
+        Self::new(x, y, (right - x) as u32, (bottom - y) as u32)
     }
 
     /// Returns true if this rectangle has non-zero area.
