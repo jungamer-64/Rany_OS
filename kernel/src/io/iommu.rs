@@ -2510,6 +2510,96 @@ impl DeviceId {
 // IOVA Allocator - see enhanced definition below after IommuCapabilities
 // =========================================================================
 
+/// Device scope type (from DRHD device scope structure)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DeviceScopeType {
+    /// PCI Endpoint Device
+    PciEndpoint = 1,
+    /// PCI Sub-hierarchy (bridge and all downstream devices)
+    PciSubHierarchy = 2,
+    /// IOAPIC
+    Ioapic = 3,
+    /// MSI-capable HPET
+    MsiCapableHpet = 4,
+    /// ACPI namespace device
+    AcpiNamespaceDevice = 5,
+}
+
+impl DeviceScopeType {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::PciEndpoint),
+            2 => Some(Self::PciSubHierarchy),
+            3 => Some(Self::Ioapic),
+            4 => Some(Self::MsiCapableHpet),
+            5 => Some(Self::AcpiNamespaceDevice),
+            _ => None,
+        }
+    }
+}
+
+/// Device scope entry (from DRHD structure)
+#[derive(Debug, Clone)]
+pub struct IommuDeviceScope {
+    /// Scope type
+    pub scope_type: DeviceScopeType,
+    /// Enumeration ID (for IOAPIC, HPET)
+    pub enumeration_id: u8,
+    /// Start bus number
+    pub start_bus: u8,
+    /// Path (device, function pairs)
+    pub path: Vec<(u8, u8)>,
+}
+
+impl IommuDeviceScope {
+    /// Create a new device scope
+    pub fn new(
+        scope_type: DeviceScopeType,
+        enumeration_id: u8,
+        start_bus: u8,
+        path: Vec<(u8, u8)>,
+    ) -> Self {
+        Self {
+            scope_type,
+            enumeration_id,
+            start_bus,
+            path,
+        }
+    }
+
+    /// Check if a device (bus, device, function) matches this scope
+    pub fn matches(&self, bus: u8, device: u8, function: u8) -> bool {
+        if self.path.is_empty() {
+            return false;
+        }
+
+        match self.scope_type {
+            DeviceScopeType::PciEndpoint => {
+                // Endpoint: exact match required
+                let (target_dev, target_func) = self.path[self.path.len() - 1];
+                // For simplicity, assume start_bus is the actual bus for endpoint
+                bus == self.start_bus && device == target_dev && function == target_func
+            }
+            DeviceScopeType::PciSubHierarchy => {
+                // Sub-hierarchy: matches if bus >= start_bus
+                // and first path element matches the bridge
+                if bus < self.start_bus {
+                    return false;
+                }
+                // If device is directly on start_bus, check path
+                if bus == self.start_bus && !self.path.is_empty() {
+                    let (bridge_dev, bridge_func) = self.path[0];
+                    return device == bridge_dev && function == bridge_func;
+                }
+                // Device is downstream of start_bus - matches sub-hierarchy
+                true
+            }
+            _ => false, // IOAPIC, HPET, etc. don't match PCI devices
+        }
+    }
+}
+
 /// IOMMU Controller
 pub struct IommuController {
     /// MMIO base address
@@ -2551,6 +2641,10 @@ pub struct IommuController {
     page_request_queue: Option<PageRequestQueue>,
     /// Fault log ring buffer
     fault_log: Option<FaultLog>,
+    /// Device scopes from DRHD (for proper device-to-IOMMU matching)
+    device_scopes: Vec<IommuDeviceScope>,
+    /// Include all devices (from DRHD INCLUDE_PCI_ALL flag)
+    include_all: bool,
 }
 
 unsafe impl Send for IommuController {}
@@ -2579,7 +2673,58 @@ impl IommuController {
             pid_pool: None,
             page_request_queue: None,
             fault_log: None,
+            device_scopes: Vec::new(),
+            include_all: false,
         }
+    }
+
+    /// Create a new IOMMU controller with device scopes
+    pub fn new_with_scopes(
+        mmio_base: u64,
+        segment: u16,
+        scopes: Vec<IommuDeviceScope>,
+        include_all: bool,
+    ) -> Self {
+        Self {
+            mmio_base,
+            segment,
+            cap: 0,
+            ecap: 0,
+            root_table: core::ptr::null_mut(),
+            context_tables: Vec::new(),
+            domains: BTreeMap::new(),
+            device_domains: BTreeMap::new(),
+            next_domain_id: AtomicU64::new(1),
+            enabled: AtomicBool::new(false),
+            interrupt_remap_table: None,
+            ir_enabled: AtomicBool::new(false),
+            invalidation_queue: None,
+            qi_enabled: AtomicBool::new(false),
+            iova_allocator: None,
+            ats_enabled_devices: BTreeSet::new(),
+            pid_pool: None,
+            page_request_queue: None,
+            fault_log: None,
+            device_scopes: scopes,
+            include_all,
+        }
+    }
+
+    /// Check if a device is in scope for this IOMMU
+    pub fn device_in_scope(&self, bus: u8, device: u8, function: u8) -> bool {
+        // If include_all flag is set, this IOMMU handles all PCI devices in the segment
+        if self.include_all {
+            return true;
+        }
+
+        // Otherwise, check device scopes
+        for scope in &self.device_scopes {
+            if scope.matches(bus, device, function) {
+                return true;
+            }
+        }
+
+        false
     }
 
     /// Read 32-bit register
@@ -4540,6 +4685,108 @@ pub struct IovaAllocatorStatsDetailed {
 }
 
 // ============================================================================
+// Per-CPU Domain Mapping Cache
+// ============================================================================
+
+/// Cache entry for device to domain mapping
+#[derive(Clone, Copy, Default)]
+struct DomainCacheEntry {
+    device_id: u16,
+    domain_id: u16,
+    controller_idx: u8,
+    valid: bool,
+}
+
+/// Per-CPU cache to reduce lock contention on global IOMMU lock
+///
+/// Stores frequently accessed device-to-domain mappings.
+/// A simple direct-mapped cache is sufficient as devices are usually fixed
+/// to a specific core's workload.
+pub struct PerCpuDomainCache {
+    entries: [DomainCacheEntry; 32],
+}
+
+impl PerCpuDomainCache {
+    const fn new() -> Self {
+        Self {
+            entries: [DomainCacheEntry {
+                device_id: 0,
+                domain_id: 0,
+                controller_idx: 0,
+                valid: false,
+            }; 32],
+        }
+    }
+
+    fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
+        let idx = (device_id as usize) % 32;
+        let entry = self.entries[idx];
+        if entry.valid && entry.device_id == device_id {
+            Some((entry.domain_id, entry.controller_idx))
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
+        let idx = (device_id as usize) % 32;
+        self.entries[idx] = DomainCacheEntry {
+            device_id,
+            domain_id,
+            controller_idx,
+            valid: true,
+        };
+    }
+
+    fn invalidate(&mut self, device_id: u16) {
+        let idx = (device_id as usize) % 32;
+        if self.entries[idx].device_id == device_id {
+            self.entries[idx].valid = false;
+        }
+    }
+}
+
+/// Global cache array (one per CPU, up to 256 CPUs)
+static CPU_DOMAIN_CACHES: Mutex<[PerCpuDomainCache; 256]> =
+    Mutex::new([PerCpuDomainCache::new(); 256]);
+
+/// Lookup domain in local CPU cache
+fn lookup_domain_cached(device_id: u16) -> Option<(u16, u8)> {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if cpu_id >= 256 {
+        return None;
+    }
+
+    // We use a try_lock to avoid blocking on the cache logic if it's contended
+    // Failing to lock just means a cache miss, which is fine (correctness preserved)
+    if let Some(caches) = CPU_DOMAIN_CACHES.try_lock() {
+        caches[cpu_id].lookup(device_id)
+    } else {
+        None
+    }
+}
+
+/// Update local CPU cache
+fn cache_domain_mapping(device_id: u16, domain_id: u16, controller_idx: u8) {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if cpu_id >= 256 {
+        return;
+    }
+
+    if let Some(mut caches) = CPU_DOMAIN_CACHES.try_lock() {
+        caches[cpu_id].insert(device_id, domain_id, controller_idx);
+    }
+}
+
+/// Invalidate a mapping in ALL CPU caches (slow path, but rare)
+fn invalidate_domain_cache(device_id: u16) {
+    let mut caches = CPU_DOMAIN_CACHES.lock();
+    for cache in caches.iter_mut() {
+        cache.invalidate(device_id);
+    }
+}
+
+// ============================================================================
 // Global Instance
 // ============================================================================
 
@@ -4636,6 +4883,11 @@ impl IommuManager {
 
     /// Find the IOMMU controller responsible for a specific device
     ///
+    /// Uses DRHD device scopes for proper matching:
+    /// 1. First, check controllers with explicit device scopes
+    /// 2. Fallback to include_all controller for the segment
+    /// 3. Final fallback to default controller
+    ///
     /// # Arguments
     /// * `segment` - PCI segment number
     /// * `bus` - PCI bus number
@@ -4644,18 +4896,30 @@ impl IommuManager {
     pub fn find_controller_for_device(
         &self,
         segment: u16,
-        _bus: u8,
-        _device: u8,
-        _function: u8,
+        bus: u8,
+        device: u8,
+        function: u8,
     ) -> Option<&IommuController> {
-        // Linear search for now (DRHDs are few)
-        // TODO: Implement proper scope matching based on DRHD structures
-        // For now, return the default controller or the first one matching segment
-
+        // First pass: Find controller with explicit scope match
         for controller in &self.controllers {
-            if controller.segment == segment {
-                // In a real implementation with scopes, check if device is in scope
-                // For now, simpler matching: match segment
+            if controller.segment != segment {
+                continue;
+            }
+
+            // Skip include_all controllers in first pass
+            if controller.include_all {
+                continue;
+            }
+
+            // Check if device matches any scope
+            if controller.device_in_scope(bus, device, function) {
+                return Some(controller);
+            }
+        }
+
+        // Second pass: Find include_all controller for this segment
+        for controller in &self.controllers {
+            if controller.segment == segment && controller.include_all {
                 return Some(controller);
             }
         }
@@ -4668,39 +4932,72 @@ impl IommuManager {
         None
     }
 
-    /// Find mutable controller
+    /// Find mutable controller using proper scope matching
     pub fn find_controller_for_device_mut(
         &mut self,
         segment: u16,
-        _bus: u8,
-        _dev: u8,
-        _func: u8,
+        bus: u8,
+        device: u8,
+        function: u8,
     ) -> Option<&mut IommuController> {
-        // Iterate by index to avoid conflicting borrows
+        // First pass: Find controller with explicit scope match
         for i in 0..self.controllers.len() {
-            if self.controllers[i].segment == segment {
+            if self.controllers[i].segment != segment {
+                continue;
+            }
+            if self.controllers[i].include_all {
+                continue;
+            }
+            if self.controllers[i].device_in_scope(bus, device, function) {
                 return Some(&mut self.controllers[i]);
             }
         }
 
+        // Second pass: Find include_all controller for this segment
+        for i in 0..self.controllers.len() {
+            if self.controllers[i].segment == segment && self.controllers[i].include_all {
+                return Some(&mut self.controllers[i]);
+            }
+        }
+
+        // Fallback to default
         let idx = self.default_iommu_idx?;
-        return self.controllers.get_mut(idx);
+        self.controllers.get_mut(idx)
     }
 
-    /// Find controller index for device without taking mutable references.
+    /// Find controller index using proper scope matching
+    ///
     /// This helps avoid borrow issues when callers need to perform additional
     /// operations on `self` (e.g., reading `reserved_regions`) before obtaining
     /// a mutable handle to the controller.
     pub fn find_controller_index_for_device(
         &self,
         segment: u16,
-        _bus: u8,
-        _device: u8,
-        _function: u8,
+        bus: u8,
+        device: u8,
+        function: u8,
     ) -> Option<usize> {
-        if let Some(idx) = self.controllers.iter().position(|c| c.segment == segment) {
-            return Some(idx);
+        // First pass: Find controller with explicit scope match
+        for (i, controller) in self.controllers.iter().enumerate() {
+            if controller.segment != segment {
+                continue;
+            }
+            if controller.include_all {
+                continue;
+            }
+            if controller.device_in_scope(bus, device, function) {
+                return Some(i);
+            }
         }
+
+        // Second pass: Find include_all controller for this segment
+        for (i, controller) in self.controllers.iter().enumerate() {
+            if controller.segment == segment && controller.include_all {
+                return Some(i);
+            }
+        }
+
+        // Fallback to default
         self.default_iommu_idx
     }
 }
@@ -4725,149 +5022,6 @@ fn register_domain_lock(domain_id: u16) {
     DOMAIN_LOCKS
         .lock()
         .insert(domain_id, alloc::sync::Arc::new(spin::Mutex::new(())));
-}
-
-// ============================================================================
-// Per-CPU Domain Cache for Reduced Lock Contention
-// ============================================================================
-
-/// Per-CPU cached domain lookup entry
-#[derive(Clone, Copy)]
-struct DomainCacheEntry {
-    /// Device ID (requester ID)
-    device_id: u16,
-    /// Cached domain ID
-    domain_id: u16,
-    /// Controller index
-    controller_idx: usize,
-    /// Valid flag
-    valid: bool,
-}
-
-impl Default for DomainCacheEntry {
-    fn default() -> Self {
-        Self {
-            device_id: 0,
-            domain_id: 0,
-            controller_idx: 0,
-            valid: false,
-        }
-    }
-}
-
-/// Per-CPU domain lookup cache
-///
-/// Each CPU maintains its own cache of device-to-domain mappings.
-/// This reduces contention on the global IOMMU lock for frequent DMA operations.
-pub struct PerCpuDomainCache {
-    /// Cache entries (direct-mapped by device ID hash)
-    entries: [DomainCacheEntry; Self::CACHE_SIZE],
-    /// Cache hits
-    hits: u64,
-    /// Cache misses
-    misses: u64,
-}
-
-impl PerCpuDomainCache {
-    /// Cache size (power of 2)
-    const CACHE_SIZE: usize = 32;
-
-    /// Create a new per-CPU cache
-    pub const fn new() -> Self {
-        const DEFAULT: DomainCacheEntry = DomainCacheEntry {
-            device_id: 0,
-            domain_id: 0,
-            controller_idx: 0,
-            valid: false,
-        };
-        Self {
-            entries: [DEFAULT; Self::CACHE_SIZE],
-            hits: 0,
-            misses: 0,
-        }
-    }
-
-    /// Hash function for device ID
-    fn hash(device_id: u16) -> usize {
-        (device_id as usize) % Self::CACHE_SIZE
-    }
-
-    /// Lookup domain for a device
-    pub fn lookup(&mut self, device_id: u16) -> Option<(u16, usize)> {
-        let idx = Self::hash(device_id);
-        if self.entries[idx].valid && self.entries[idx].device_id == device_id {
-            self.hits += 1;
-            Some((
-                self.entries[idx].domain_id,
-                self.entries[idx].controller_idx,
-            ))
-        } else {
-            self.misses += 1;
-            None
-        }
-    }
-
-    /// Insert a device-domain mapping
-    pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: usize) {
-        let idx = Self::hash(device_id);
-        self.entries[idx] = DomainCacheEntry {
-            device_id,
-            domain_id,
-            controller_idx,
-            valid: true,
-        };
-    }
-
-    /// Invalidate entry for a device
-    pub fn invalidate(&mut self, device_id: u16) {
-        let idx = Self::hash(device_id);
-        if self.entries[idx].device_id == device_id {
-            self.entries[idx].valid = false;
-        }
-    }
-
-    /// Invalidate all entries
-    pub fn invalidate_all(&mut self) {
-        for entry in &mut self.entries {
-            entry.valid = false;
-        }
-    }
-
-    /// Get cache statistics
-    pub fn stats(&self) -> (u64, u64) {
-        (self.hits, self.misses)
-    }
-}
-
-/// Thread-local per-CPU domain cache
-/// Access via get_cpu_domain_cache() for current CPU's cache
-static CPU_DOMAIN_CACHES: Mutex<[PerCpuDomainCache; 256]> = {
-    const CACHE: PerCpuDomainCache = PerCpuDomainCache::new();
-    Mutex::new([CACHE; 256])
-};
-
-/// Get the domain cache for the current CPU
-/// Returns (domain_id, controller_idx) if found in cache
-pub fn lookup_domain_cached(device_id: DeviceId) -> Option<(u16, usize)> {
-    // Use CPU ID if available, otherwise use 0
-    let cpu_id = 0usize; // TODO: get actual CPU ID
-    let mut caches = CPU_DOMAIN_CACHES.lock();
-    caches[cpu_id % 256].lookup(device_id.requester_id())
-}
-
-/// Cache a device-domain mapping
-pub fn cache_domain_mapping(device_id: DeviceId, domain_id: u16, controller_idx: usize) {
-    let cpu_id = 0usize; // TODO: get actual CPU ID
-    let mut caches = CPU_DOMAIN_CACHES.lock();
-    caches[cpu_id % 256].insert(device_id.requester_id(), domain_id, controller_idx);
-}
-
-/// Invalidate a cached device-domain mapping on all CPUs
-pub fn invalidate_domain_cache(device_id: DeviceId) {
-    let mut caches = CPU_DOMAIN_CACHES.lock();
-    for cache in caches.iter_mut() {
-        cache.invalidate(device_id.requester_id());
-    }
 }
 
 /// IOMMU Configuration from Kernel Command Line
@@ -4933,7 +5087,11 @@ pub unsafe fn init_iommu_from_acpi(
         // Map MMIO if necessary (assuming identity or HHDM handled by caller/base)
         // If HHDM/identity mapping is in effect, `register_base` may already be usable.
         // For now, assume the platform provides appropriate mapping (HHDM) and use it directly.
-        let mmio_virt = unit.register_base; // TODO: replace with phys->virt when mapping helper is reliable
+        // Map MMIO using higher half kernel mapper
+        let mmio_virt = crate::mm::higher_half::phys_to_virt(
+            crate::mm::higher_half::PhysAddr::new(unit.register_base),
+        )
+        .as_u64();
 
         let mut controller = IommuController::new(mmio_virt, unit.segment);
 
@@ -5209,8 +5367,8 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     }
 
     let bdf = device.bdf;
-    // Retrieve segment from device info (if available) or assume 0
-    let segment = 0; // TODO: Get from PciDeviceInfo if added
+    // Retrieve segment from device info
+    let segment = device.segment;
 
     // Find correct IOMMU for this device
     // Find controller index while we still have an immutable lock so we can clone reserved regions
