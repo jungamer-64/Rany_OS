@@ -7,11 +7,11 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
-use spin::Mutex;
 
 use super::ipv4::Ipv4Address;
 
@@ -273,9 +273,9 @@ impl DnsCache {
 /// DNSクライアント
 pub struct DnsClient {
     /// DNSサーバーアドレス (最大3つ)
-    servers: Mutex<Vec<Ipv4Address>>,
+    servers: PoisonLock<Vec<Ipv4Address>>,
     /// DNSキャッシュ
-    cache: Mutex<DnsCache>,
+    cache: PoisonLock<DnsCache>,
     /// 次のトランザクションID
     next_id: AtomicU16,
     /// 統計情報
@@ -313,8 +313,8 @@ impl DnsClient {
     /// 新しいDNSクライアントを作成
     pub fn new(tick_rate: u64) -> Self {
         Self {
-            servers: Mutex::new(Vec::new()),
-            cache: Mutex::new(DnsCache::new(tick_rate)),
+            servers: PoisonLock::new(Vec::new()),
+            cache: PoisonLock::new(DnsCache::new(tick_rate)),
             next_id: AtomicU16::new(1),
             stats: DnsStats::new(),
         }
@@ -322,12 +322,18 @@ impl DnsClient {
 
     /// DNSサーバーを設定
     pub fn set_servers(&self, servers: Vec<Ipv4Address>) {
-        *self.servers.lock() = servers;
+        *self.servers.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DNS Servers poisoned");
+            e.into_inner()
+        }) = servers;
     }
 
     /// DNSサーバーを追加
     pub fn add_server(&self, server: Ipv4Address) {
-        let mut servers = self.servers.lock();
+        let mut servers = self.servers.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DNS Servers poisoned");
+            e.into_inner()
+        });
         if !servers.contains(&server) && servers.len() < 3 {
             servers.push(server);
         }
@@ -335,7 +341,10 @@ impl DnsClient {
 
     /// キャッシュからIPアドレスを検索
     pub fn resolve_cached(&self, name: &str, current_tick: u64) -> Option<Ipv4Address> {
-        let cache = self.cache.lock();
+        let cache = self.cache.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] DNS Cache poisoned");
+            e.into_inner()
+        });
         if let Some(entry) = cache.lookup(name, current_tick) {
             for record in &entry.records {
                 if let DnsRecordData::A(ip) = &record.data {
@@ -530,7 +539,10 @@ impl DnsClient {
         // キャッシュに追加
         if !records.is_empty() {
             if let Some(first) = records.first() {
-                let mut cache = self.cache.lock();
+                let mut cache = self.cache.lock().unwrap_or_else(|e| {
+                    log::warn!("[NET] DNS Cache poisoned");
+                    e.into_inner()
+                });
                 cache.insert(first.name.clone(), records.clone(), current_tick);
             }
         }
@@ -631,22 +643,39 @@ impl DnsClient {
 
     /// プライマリDNSサーバーを取得
     pub fn primary_server(&self) -> Option<Ipv4Address> {
-        self.servers.lock().first().copied()
+        self.servers
+            .lock()
+            .unwrap_or_else(|e| {
+                log::warn!("[NET] DNS Servers poisoned");
+                e.into_inner()
+            })
+            .first()
+            .copied()
     }
 }
 
 /// グローバルDNSクライアント
-static DNS_CLIENT: Mutex<Option<DnsClient>> = Mutex::new(None);
+static DNS_CLIENT: PoisonLock<Option<DnsClient>> = PoisonLock::new(None);
 
 /// DNSクライアントを初期化
 pub fn init(tick_rate: u64) {
     let client = DnsClient::new(tick_rate);
-    *DNS_CLIENT.lock() = Some(client);
+    *DNS_CLIENT.lock().unwrap_or_else(|e| {
+        log::warn!("[NET] DNS Global poisoned");
+        e.into_inner()
+    }) = Some(client);
 }
 
 /// DNSサーバーを設定
 pub fn set_servers(servers: Vec<Ipv4Address>) {
-    if let Some(client) = DNS_CLIENT.lock().as_ref() {
+    if let Some(client) = DNS_CLIENT
+        .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[NET] DNS Global poisoned");
+            e.into_inner()
+        })
+        .as_ref()
+    {
         client.set_servers(servers);
     }
 }
@@ -655,6 +684,10 @@ pub fn set_servers(servers: Vec<Ipv4Address>) {
 pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
     DNS_CLIENT
         .lock()
+        .unwrap_or_else(|e| {
+            log::warn!("[NET] DNS Global poisoned");
+            e.into_inner()
+        })
         .as_ref()
         .and_then(|c| c.resolve_cached(name, current_tick))
 }
