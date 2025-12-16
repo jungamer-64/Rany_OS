@@ -5,8 +5,8 @@
 //! ページキャッシュ実装
 //!
 //! ## 設計原則 (仕様書 6.3準拠)
-//! - Arc<RwLock<Box<[u8]>>> による安全なゼロコピーキャッシュ
-//! - O(1) LRU eviction policy (Doubly Linked List + HashMap)
+//! - `Arc<RwLock<Box<[u8]>>>` による安全なゼロコピーキャッシュ
+//! - O(1) LRU eviction policy (Doubly Linked List + `HashMap`)
 //! - Write-back caching
 //! - Per-file キャッシュ管理
 //!
@@ -18,6 +18,17 @@
 //! ## パフォーマンス改善 (v2.0)
 //! - O(N) の LRU スキャンを O(1) に改善
 //! - Index-based Doubly Linked List による効率的な LRU 管理
+
+// Allow common patterns in cache implementation
+#![allow(clippy::cast_possible_truncation)] // u64->usize: intentional for 64-bit kernel
+#![allow(clippy::cast_precision_loss)] // u64->f64 for stats calculation
+#![allow(clippy::collapsible_if)] // Kept for readability in cache eviction logic
+#![allow(clippy::if_not_else)] // Kept for readability
+#![allow(clippy::result_unit_err)] // Internal cache methods use () error
+#![allow(clippy::missing_panics_doc)] // Internal implementation
+#![allow(clippy::missing_errors_doc)] // Internal implementation
+#![allow(clippy::missing_const_for_fn)] // Some functions may not be const due to RwLock
+#![allow(clippy::unnecessary_wraps)] // API consistency
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
