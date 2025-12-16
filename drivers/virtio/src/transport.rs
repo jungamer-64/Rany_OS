@@ -19,7 +19,6 @@
 
 #![allow(dead_code)]
 
-
 use crate::defs::{VirtioDeviceType, status};
 
 // ============================================================================
@@ -614,7 +613,7 @@ impl VirtioTransport for VirtioPciTransport {
     }
 
     fn get_interrupt_status(&self) -> u32 {
-        unsafe { hal::mmio::mmio_read_u8(self.isr_addr as usize) as u32 }
+        hal::mmio::mmio_read_u8(self.isr_addr as usize) as u32
     }
 
     fn ack_interrupt(&mut self, _status: u32) {
@@ -623,15 +622,15 @@ impl VirtioTransport for VirtioPciTransport {
     }
 
     fn read_config_u8(&self, offset: usize) -> u8 {
-        unsafe { hal::mmio::mmio_read_u8((self.device_cfg_addr + offset) as usize) }
+        hal::mmio::mmio_read_u8((self.device_cfg_addr + offset) as usize)
     }
 
     fn read_config_u16(&self, offset: usize) -> u16 {
-        unsafe { hal::mmio::mmio_read_u16((self.device_cfg_addr + offset) as usize) }
+        hal::mmio::mmio_read_u16((self.device_cfg_addr + offset) as usize)
     }
 
     fn read_config_u32(&self, offset: usize) -> u32 {
-        unsafe { hal::mmio::mmio_read_u32((self.device_cfg_addr + offset) as usize) }
+        hal::mmio::mmio_read_u32((self.device_cfg_addr + offset) as usize)
     }
 
     fn write_config_u8(&mut self, offset: usize, value: u8) {

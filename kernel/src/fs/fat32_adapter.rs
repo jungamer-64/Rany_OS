@@ -14,14 +14,14 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::fs::fs_abstraction::{
-    DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats,
-    Inode, OpenFlags,
+    DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
+    OpenFlags,
 };
 
 // Import from the new crate
 use fat32::Fat32FileSystem;
 use vfs::{
-    Directory as VfsDirectory, File as VfsFile, FileSystem as VfsFileSystem,
+    /*Directory as VfsDirectory, File as VfsFile,*/ FileSystem as VfsFileSystem,
     FileType as VfsFileType, Metadata as VfsMetadata, VfsError, VfsNode,
 };
 
@@ -192,7 +192,7 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn readdir(&self, _offset: u64) -> FsResult<Vec<DirEntry>> {
-        let mut node = self.inner.lock();
+        let node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let entries = dir.read_dir().map_err(FsError::from)?;
 
@@ -207,7 +207,7 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn create(&self, name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
-        let mut node = self.inner.lock();
+        let node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let child = dir.create(name, VfsFileType::File).map_err(FsError::from)?;
 
@@ -217,7 +217,7 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn mkdir(&self, name: &str, _mode: FileMode) -> FsResult<Arc<dyn Inode>> {
-        let mut node = self.inner.lock();
+        let node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let child = dir
             .create(name, VfsFileType::Directory)
@@ -229,13 +229,13 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn unlink(&self, name: &str) -> FsResult<()> {
-        let mut node = self.inner.lock();
+        let node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
         dir.remove(name).map_err(FsError::from)
     }
 
     fn rmdir(&self, name: &str) -> FsResult<()> {
-        let mut node = self.inner.lock();
+        let node = self.inner.lock();
         let mut dir = node.as_dir().map_err(FsError::from)?;
         dir.remove(name).map_err(FsError::from)
     }

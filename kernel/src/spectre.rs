@@ -215,9 +215,8 @@ pub fn issue_ibpb() {
 /// VM exit時やセキュリティ境界越え時に呼び出す
 #[inline]
 pub fn flush_l1d() {
-    unsafe {
-        write_msr(IA32_FLUSH_CMD, FLUSH_CMD_L1D);
-    }
+    // unsafe removed
+    write_msr(IA32_FLUSH_CMD, FLUSH_CMD_L1D);
 }
 
 /// 投機実行バリア (LFENCE)
@@ -395,7 +394,7 @@ fn detect_cpu_features() -> CpuFeatures {
 
     // IA32_ARCH_CAPABILITIES MSR から追加情報を取得
     if has_arch_cap {
-        let arch_cap = unsafe { read_msr(0x10A) };
+        let arch_cap = read_msr(0x10A);
         // Bit 2: IBRS_ALL
         features.ibrs_all = (arch_cap & (1 << 2)) != 0;
         // Bit 4: IBRS_FW
