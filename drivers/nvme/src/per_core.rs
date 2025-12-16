@@ -2,17 +2,20 @@
 // src/io/nvme/per_core.rs - Per-Core NVMe Queue Management
 // ============================================================================
 //!
-//! # コアごとのNVMeキュー管理
+//! # コアごとの`NVMe`キュー管理
 //!
 //! キャッシュライン整列されたコアローカルキューと統計管理。
 //! ロックフリーアクセスで最大スループットを実現。
 //!
 //! ## 特徴
 //! - 64バイトキャッシュライン整列（偽共有防止）
-//! - UnsafeCellによるロックフリーアクセス
+//! - `UnsafeCell`によるロックフリーアクセス
 //! - ドアベルバッチ処理
 //! - 詳細な統計収集
 
+// Allow mutable borrow from &self - intentional for per-core lock-free access.
+// Each core exclusively owns its queue via core affinity (single-threaded access guarantee).
+#![allow(clippy::mut_from_ref)]
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
