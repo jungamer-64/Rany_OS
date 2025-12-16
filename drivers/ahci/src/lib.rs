@@ -18,6 +18,7 @@
 #![no_std]
 #![allow(unsafe_attr_outside_unsafe)]
 #![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)] // Transitional: DMA and controller operations
 #![allow(clippy::derivable_impls)] // Explicit Default impl for packed struct clarity
 #![allow(clippy::must_use_candidate)] // Hardware accessor methods
 

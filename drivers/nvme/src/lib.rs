@@ -21,6 +21,7 @@
 
 #![no_std]
 #![allow(dead_code)]
+#![allow(unsafe_op_in_unsafe_fn)] // Transitional: DMA and queue operations
 
 extern crate alloc;
 
