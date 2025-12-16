@@ -17,6 +17,7 @@
 
 #![no_std]
 #![allow(dead_code)]
+#![allow(clippy::missing_safety_doc)] // GPU FFI functions
 
 extern crate alloc;
 
