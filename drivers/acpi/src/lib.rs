@@ -8,6 +8,7 @@ extern crate alloc;
 pub mod info;
 pub mod parser;
 pub mod tables;
+pub mod dmar;
 
 // Re-export commonly used items
 pub use info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
@@ -20,3 +21,5 @@ pub use tables::{
     MadtIoApic, MadtLocalApic, MadtLocalApicOverride, Mcfg, McfgEntry, RSDP_SIGNATURE, Rsdp,
     signature,
 };
+// DMAR parsing info
+pub use dmar::DmarInfo;

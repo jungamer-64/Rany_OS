@@ -43,6 +43,7 @@ pub mod ext_cap_id {
     pub const SRIOV: u16 = 0x0010; // SR-IOV
     pub const ACS: u16 = 0x000D; // Access Control Services
     pub const ARI: u16 = 0x000E; // Alternative Routing-ID
+    pub const ATS: u16 = 0x000F; // Address Translation Services
     pub const LTR: u16 = 0x0018; // Latency Tolerance Reporting
     pub const DPC: u16 = 0x001D; // Downstream Port Containment
 }
@@ -1151,4 +1152,161 @@ pub fn pcie_ext_manager() -> Option<&'static PcieExtManager> {
 /// PCIe拡張コンフィグを取得
 pub fn pcie_ext_config() -> Option<&'static PcieConfig> {
     PCIE_EXT_CONFIG.get()
+}
+
+// ============================================================================
+// ATS (Address Translation Services)
+// ============================================================================
+
+/// ATS Capability register offsets (relative to capability base)
+mod ats_regs {
+    pub const CAP: u16 = 0x04; // ATS Capability Register
+    pub const CTRL: u16 = 0x06; // ATS Control Register
+}
+
+/// ATS Capability structure
+#[derive(Debug, Clone)]
+pub struct AtsCapability {
+    /// Offset of the ATS Extended Capability in config space
+    pub offset: u16,
+    /// Invalidate Queue Depth (number of outstanding invalidate requests - 1)
+    pub invalidate_queue_depth: u8,
+    /// Page Aligned Request supported
+    pub page_aligned_request: bool,
+    /// Global Invalidate supported
+    pub global_invalidate: bool,
+    /// Relaxed Ordering supported
+    pub relaxed_ordering: bool,
+    /// Smallest Translation Unit (log2, 0 = 4KB)
+    pub stu: u8,
+}
+
+/// ATS Controller for a single device
+pub struct AtsController {
+    config: &'static PcieConfig,
+    bdf: PcieBdf,
+    capability: Option<AtsCapability>,
+    enabled: AtomicBool,
+}
+
+impl AtsController {
+    /// Create a new ATS controller for a device
+    pub fn new(config: &'static PcieConfig, bdf: PcieBdf) -> PcieResult<Self> {
+        let offset = config
+            .find_ext_capability(bdf, ext_cap_id::ATS)
+            .ok_or(PcieError::CapabilityNotFound)?;
+
+        let cap = Self::read_capability(config, bdf, offset)?;
+
+        Ok(Self {
+            config,
+            bdf,
+            capability: Some(cap),
+            enabled: AtomicBool::new(false),
+        })
+    }
+
+    fn read_capability(
+        config: &PcieConfig,
+        bdf: PcieBdf,
+        offset: u16,
+    ) -> PcieResult<AtsCapability> {
+        let cap_reg = config
+            .read16(bdf, offset + ats_regs::CAP)
+            .ok_or(PcieError::ConfigError)?;
+
+        let invalidate_queue_depth = (cap_reg & 0x1F) as u8;
+        let page_aligned_request = (cap_reg & (1 << 5)) != 0;
+        let global_invalidate = (cap_reg & (1 << 6)) != 0;
+        let relaxed_ordering = (cap_reg & (1 << 7)) != 0;
+
+        let ctrl_reg = config
+            .read16(bdf, offset + ats_regs::CTRL)
+            .ok_or(PcieError::ConfigError)?;
+
+        let stu = ((ctrl_reg >> 0) & 0x1F) as u8;
+
+        Ok(AtsCapability {
+            offset,
+            invalidate_queue_depth,
+            page_aligned_request,
+            global_invalidate,
+            relaxed_ordering,
+            stu,
+        })
+    }
+
+    /// Enable ATS for this device
+    ///
+    /// After enabling, the device may cache address translations from the IOMMU.
+    pub fn enable_ats(&self, stu: u8) -> PcieResult<()> {
+        let cap = self
+            .capability
+            .as_ref()
+            .ok_or(PcieError::CapabilityNotFound)?;
+        let offset = cap.offset;
+
+        // Read current control register
+        let mut ctrl = self
+            .config
+            .read16(self.bdf, offset + ats_regs::CTRL)
+            .ok_or(PcieError::ConfigError)?;
+
+        // Set STU (Smallest Translation Unit) - bits 4:0
+        ctrl = (ctrl & !0x1F) | ((stu as u16) & 0x1F);
+
+        // Set Enable bit (bit 15)
+        ctrl |= 1 << 15;
+
+        self.config
+            .write16(self.bdf, offset + ats_regs::CTRL, ctrl)
+            .ok_or(PcieError::ConfigError)?;
+
+        self.enabled.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Disable ATS for this device
+    pub fn disable_ats(&self) -> PcieResult<()> {
+        let cap = self
+            .capability
+            .as_ref()
+            .ok_or(PcieError::CapabilityNotFound)?;
+        let offset = cap.offset;
+
+        let mut ctrl = self
+            .config
+            .read16(self.bdf, offset + ats_regs::CTRL)
+            .ok_or(PcieError::ConfigError)?;
+
+        // Clear Enable bit (bit 15)
+        ctrl &= !(1 << 15);
+
+        self.config
+            .write16(self.bdf, offset + ats_regs::CTRL, ctrl)
+            .ok_or(PcieError::ConfigError)?;
+
+        self.enabled.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Check if ATS is currently enabled
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// Get the ATS capability information
+    pub fn capability(&self) -> Option<&AtsCapability> {
+        self.capability.as_ref()
+    }
+
+    /// Get the BDF address of this device
+    pub fn bdf(&self) -> PcieBdf {
+        self.bdf
+    }
+}
+
+/// Check if a device supports ATS
+pub fn device_supports_ats(config: &PcieConfig, bdf: PcieBdf) -> bool {
+    config.find_ext_capability(bdf, ext_cap_id::ATS).is_some()
 }

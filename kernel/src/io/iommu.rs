@@ -28,228 +28,11 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
-// Local DMAR parser (minimal, avoids cross-module resolution issues)
-// We re-implement a compact DMAR parser here to extract DRHD units and RMRR
-// regions without depending on `io::acpi` symbols, which can cause
-// circular resolution issues when compiling submodules.
-mod local_dmar {
-    use alloc::vec::Vec;
-    use core::mem;
+// PCI helpers used when enabling ATS for devices
+use pci_driver::{AtsController, PcieBdf, device_supports_ats, pcie_ext_config};
 
-    #[repr(C, packed)]
-    #[derive(Debug, Clone, Copy)]
-    struct LocalSdtHeader {
-        signature: [u8; 4],
-        length: u32,
-        revision: u8,
-        checksum: u8,
-        oem_id: [u8; 6],
-        oem_table_id: [u8; 8],
-        oem_revision: u32,
-        creator_id: u32,
-        creator_revision: u32,
-    }
-
-    #[repr(C, packed)]
-    #[derive(Debug, Clone, Copy)]
-    struct DmarHeader {
-        header: LocalSdtHeader,
-        pub haw: u8,
-        pub flags: u8,
-        _reserved: [u8; 10],
-    }
-
-    impl DmarHeader {
-        pub const SIGNATURE: &'static [u8; 4] = b"DMAR";
-
-        pub fn is_valid(&self) -> bool {
-            self.header.signature == *Self::SIGNATURE
-        }
-    }
-
-    #[repr(C, packed)]
-    #[derive(Debug, Clone, Copy)]
-    pub struct DmarRemappingHeader {
-        pub type_code: u16,
-        pub length: u16,
-    }
-
-    #[repr(C, packed)]
-    #[derive(Debug, Clone, Copy)]
-    pub struct DrhdWrapper {
-        pub header: DmarRemappingHeader,
-        pub flags: u8,
-        _reserved: u8,
-        pub segment: u16,
-        pub register_base_addr: u64,
-    }
-
-    impl DrhdWrapper {
-        pub fn include_pci_all(&self) -> bool {
-            (self.flags & 0x1) != 0
-        }
-    }
-
-    #[repr(C, packed)]
-    #[derive(Debug, Clone, Copy)]
-    pub struct RmrrWrapper {
-        pub header: DmarRemappingHeader,
-        _reserved: u16,
-        pub segment: u16,
-        pub base_address: u64,
-        pub limit_address: u64,
-    }
-
-    #[repr(C, packed)]
-    #[derive(Debug, Clone, Copy)]
-    struct DeviceScopeHeader {
-        pub type_code: u8,
-        pub length: u8,
-        _reserved: u16,
-        pub enumeration_id: u8,
-        pub start_bus: u8,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct DmarInfo {
-        pub haw: u8,
-        pub flags: u8,
-        pub drhd_units: Vec<DrhdUnit>,
-        pub rmrr_regions: Vec<RmrrRegion>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct DrhdUnit {
-        pub segment: u16,
-        pub register_base: u64,
-        pub include_all: bool,
-        pub devices: Vec<DeviceScope>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct RmrrRegion {
-        pub segment: u16,
-        pub base: u64,
-        pub limit: u64,
-        pub devices: Vec<DeviceScope>,
-    }
-
-    #[derive(Debug, Clone)]
-    pub struct DeviceScope {
-        pub scope_type: u8,
-        pub enumeration_id: u8,
-        pub start_bus: u8,
-        pub path: Vec<PciPath>,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub struct PciPath {
-        pub device: u8,
-        pub function: u8,
-    }
-
-    pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
-        let header = &*(addr as *const DmarHeader);
-        if !header.is_valid() {
-            return Err("Invalid DMAR signature");
-        }
-
-        let table_len = header.header.length as usize;
-        let mut offset = mem::size_of::<DmarHeader>();
-        let base_ptr = addr as *const u8;
-
-        let mut drhd_units = Vec::new();
-        let mut rmrr_regions = Vec::new();
-
-        while offset < table_len {
-            let entry_ptr = base_ptr.add(offset) as *const DmarRemappingHeader;
-            let entry_type = (*entry_ptr).type_code;
-            let entry_len = (*entry_ptr).length as usize;
-
-            if entry_len < mem::size_of::<DmarRemappingHeader>() {
-                break; // sanity
-            }
-
-            match entry_type {
-                0 => {
-                    let drhd = &*(entry_ptr as *const DrhdWrapper);
-                    let devices = parse_device_scopes(
-                        base_ptr.add(offset + mem::size_of::<DrhdWrapper>()),
-                        entry_len - mem::size_of::<DrhdWrapper>(),
-                    );
-                    drhd_units.push(DrhdUnit {
-                        segment: drhd.segment,
-                        register_base: drhd.register_base_addr,
-                        include_all: drhd.include_pci_all(),
-                        devices,
-                    });
-                }
-                1 => {
-                    let rmrr = &*(entry_ptr as *const RmrrWrapper);
-                    let devices = parse_device_scopes(
-                        base_ptr.add(offset + mem::size_of::<RmrrWrapper>()),
-                        entry_len - mem::size_of::<RmrrWrapper>(),
-                    );
-                    rmrr_regions.push(RmrrRegion {
-                        segment: rmrr.segment,
-                        base: rmrr.base_address,
-                        limit: rmrr.limit_address,
-                        devices,
-                    });
-                }
-                _ => {}
-            }
-
-            offset += entry_len;
-        }
-
-        Ok(DmarInfo {
-            haw: header.haw,
-            flags: header.flags,
-            drhd_units,
-            rmrr_regions,
-        })
-    }
-
-    unsafe fn parse_device_scopes(mut ptr: *const u8, mut len: usize) -> Vec<DeviceScope> {
-        let mut scopes = Vec::new();
-
-        while len >= mem::size_of::<DeviceScopeHeader>() {
-            let header = &*(ptr as *const DeviceScopeHeader);
-            let scope_len = header.length as usize;
-
-            if scope_len < mem::size_of::<DeviceScopeHeader>() || scope_len > len {
-                break;
-            }
-
-            let mut path = Vec::new();
-            let path_len = scope_len - mem::size_of::<DeviceScopeHeader>();
-            let path_count = path_len / 2;
-            let path_ptr = ptr.add(mem::size_of::<DeviceScopeHeader>());
-
-            for i in 0..path_count {
-                let dev = *path_ptr.add(i * 2);
-                let func = *path_ptr.add(i * 2 + 1);
-                path.push(PciPath {
-                    device: dev,
-                    function: func,
-                });
-            }
-
-            scopes.push(DeviceScope {
-                scope_type: header.type_code,
-                enumeration_id: header.enumeration_id,
-                start_bus: header.start_bus,
-                path,
-            });
-
-            ptr = ptr.add(scope_len);
-            len -= scope_len;
-        }
-
-        scopes
-    }
-}
+// DMAR parsing moved to `drivers::acpi::dmar` (see `drivers/acpi/src/dmar.rs`).
+// This centralizes parsing logic and avoids duplication / circular dependencies.
 
 // ============================================================================
 // Configuration - IOMMU Requirement
@@ -340,6 +123,12 @@ pub mod regs {
     pub const PERMON_EVT2: u64 = 0x238;
     /// Performance Monitoring Event Select 3
     pub const PERMON_EVT3: u64 = 0x240;
+    /// Page Request Queue Address register
+    pub const PQA: u64 = 0x0E0;
+    /// Page Request Queue Head register
+    pub const PQH: u64 = 0x0E8;
+    /// Page Request Queue Tail register
+    pub const PQT: u64 = 0x0F0;
 }
 
 /// Global command bits
@@ -525,6 +314,232 @@ impl PostedInterruptDescriptor {
     }
 }
 
+/// Posted Interrupt Descriptor Pool
+///
+/// Manages allocation of Posted Interrupt Descriptors (PIDs).
+/// Each PID is 64-byte aligned for hardware requirements.
+pub struct PostedInterruptPool {
+    /// Base physical address of the pool (64-byte aligned)
+    base: usize,
+    /// Number of PIDs in the pool
+    size: usize,
+    /// Allocation bitmap (1 = allocated, 0 = free)
+    allocated: Vec<u64>,
+}
+
+impl PostedInterruptPool {
+    /// Maximum number of PIDs supported
+    pub const MAX_PIDS: usize = 256;
+
+    /// Create a new PID pool
+    pub fn new(num_pids: usize) -> Option<Self> {
+        let size = num_pids.min(Self::MAX_PIDS);
+        // Each PID is 64 bytes
+        let total_bytes = size * core::mem::size_of::<PostedInterruptDescriptor>();
+
+        // Allocate 64-byte aligned memory
+        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 64).ok()?;
+        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+
+        // Bitmap: 64 PIDs per u64
+        let bitmap_size = (size + 63) / 64;
+        let allocated = alloc::vec![0u64; bitmap_size];
+
+        Some(Self {
+            base,
+            size,
+            allocated,
+        })
+    }
+
+    /// Allocate a PID, returning its index and physical address
+    pub fn allocate(&mut self) -> Option<(u16, u64)> {
+        for (word_idx, word) in self.allocated.iter_mut().enumerate() {
+            if *word != u64::MAX {
+                let bit = (!*word).trailing_zeros() as usize;
+                let index = word_idx * 64 + bit;
+                if index >= self.size {
+                    return None;
+                }
+                *word |= 1 << bit;
+                let addr = self.base + index * core::mem::size_of::<PostedInterruptDescriptor>();
+                return Some((index as u16, addr as u64));
+            }
+        }
+        None
+    }
+
+    /// Free a PID by index
+    pub fn free(&mut self, index: u16) {
+        let word_idx = index as usize / 64;
+        let bit = index as usize % 64;
+        if word_idx < self.allocated.len() {
+            self.allocated[word_idx] &= !(1 << bit);
+        }
+    }
+
+    /// Get a mutable reference to a PID by index
+    pub fn get_mut(&mut self, index: u16) -> Option<&mut PostedInterruptDescriptor> {
+        if (index as usize) < self.size {
+            let ptr = self.base as *mut PostedInterruptDescriptor;
+            Some(unsafe { &mut *ptr.add(index as usize) })
+        } else {
+            None
+        }
+    }
+
+    /// Get the physical address of a PID
+    pub fn get_address(&self, index: u16) -> Option<u64> {
+        if (index as usize) < self.size {
+            Some(
+                (self.base + (index as usize) * core::mem::size_of::<PostedInterruptDescriptor>())
+                    as u64,
+            )
+        } else {
+            None
+        }
+    }
+}
+
+// ============================================================================
+// Page Request Interface (PRI) Structures
+// ============================================================================
+
+/// Page Request Queue Entry
+///
+/// 16-byte entry in the Page Request Queue.
+/// Devices use this to request page translations during ATS faults.
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PageRequestEntry {
+    /// Low 64 bits
+    /// - Bits 0-15: Source ID (Requester ID)
+    /// - Bits 16-31: Reserved
+    /// - Bits 52-55: Request Type
+    /// - Bit 56: PASID Present
+    /// - Bit 57: Execute Requested
+    /// - Bit 58: Privileged Mode Requested
+    /// - Bit 59: Last Request in Group
+    /// - Bits 60-63: Reserved
+    pub lo: u64,
+    /// High 64 bits
+    /// - Bits 0-51: Page Address (4KB aligned)
+    /// - Bits 52-71: PASID (if present)
+    /// - Bits 72-80: PRG Index (Page Request Group Index)
+    pub hi: u64,
+}
+
+impl PageRequestEntry {
+    /// Last Request in Group
+    pub const LAST_REQ: u64 = 1 << 59;
+    /// Execute Requested
+    pub const EXEC_REQ: u64 = 1 << 57;
+    /// Privileged Mode Requested
+    pub const PRIV_REQ: u64 = 1 << 58;
+    /// PASID Present
+    pub const PASID_PRESENT: u64 = 1 << 56;
+
+    /// Get the source ID (Requester ID)
+    pub fn source_id(&self) -> u16 {
+        (self.lo & 0xFFFF) as u16
+    }
+
+    /// Get the page address (4KB aligned)
+    pub fn page_address(&self) -> u64 {
+        self.hi & 0x000F_FFFF_FFFF_F000
+    }
+
+    /// Get the PASID (if present)
+    pub fn pasid(&self) -> Option<u32> {
+        if (self.lo & Self::PASID_PRESENT) != 0 {
+            Some(((self.hi >> 52) & 0xFFFFF) as u32)
+        } else {
+            None
+        }
+    }
+
+    /// Check if this is the last request in a group
+    pub fn is_last(&self) -> bool {
+        (self.lo & Self::LAST_REQ) != 0
+    }
+}
+
+/// Page Request Queue
+///
+/// Ring buffer queue for page request entries.
+/// Hardware writes requests at the tail, software reads from head.
+pub struct PageRequestQueue {
+    /// Base virtual address of the queue
+    base: usize,
+    /// Number of entries (power of 2)
+    size: usize,
+    /// Current head index (software reads from here)
+    head: usize,
+    /// Cached tail from hardware
+    tail: usize,
+}
+
+impl PageRequestQueue {
+    /// Default PRQ size (256 entries)
+    pub const DEFAULT_SIZE: usize = 256;
+
+    /// Create a new Page Request Queue
+    pub fn new(size: usize) -> Option<Self> {
+        // Size must be power of 2
+        let size = size.next_power_of_two().min(4096);
+        let total_bytes = size * core::mem::size_of::<PageRequestEntry>();
+
+        // Allocate 4KB aligned memory
+        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).ok()?;
+        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+
+        Some(Self {
+            base,
+            size,
+            head: 0,
+            tail: 0,
+        })
+    }
+
+    /// Get the physical base address
+    pub fn base_address(&self) -> u64 {
+        self.base as u64
+    }
+
+    /// Get the size (number of entries)
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// Update the tail from hardware register
+    pub fn update_tail(&mut self, tail: usize) {
+        self.tail = tail & (self.size - 1);
+    }
+
+    /// Check if queue has pending entries
+    pub fn has_pending(&self) -> bool {
+        self.head != self.tail
+    }
+
+    /// Pop the next request entry
+    pub fn pop(&mut self) -> Option<PageRequestEntry> {
+        if self.head == self.tail {
+            return None;
+        }
+
+        let ptr = self.base as *const PageRequestEntry;
+        let entry = unsafe { *ptr.add(self.head) };
+        self.head = (self.head + 1) & (self.size - 1);
+
+        Some(entry)
+    }
+
+    /// Get current head index (for writing to hardware)
+    pub fn head(&self) -> usize {
+        self.head
+    }
+}
+
 /// Fault status register bits
 pub mod fsts_bits {
     /// Primary Pending Fault
@@ -623,39 +638,7 @@ impl PasidDirectoryEntry {
     }
 }
 
-/// PASID Table Entry (Scalable Mode)
-///
-/// 64-byte entry in the PASID Table.
-/// Contains pointer to First-Level (Stage-1) and Second-Level (Stage-2) translation structures.
-#[repr(C, align(64))]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct PasidTableEntry {
-    pub val: [u64; 8],
-}
 
-impl PasidTableEntry {
-    /// Present bit
-    pub const PRESENT: u64 = 1 << 0;
-    /// First-Level Translation Enable
-    pub const FLT: u64 = 1 << 50; // In val[0]
-    /// Second-Level Translation Enable
-    pub const SLT: u64 = 1 << 51; // In val[0]
-
-    /// Set Second-Level (Stage-2) Page Table pointer (SLPTR)
-    pub fn set_sl_ptr(&mut self, addr: u64) {
-        // SLPTR is in val[0] bits 12-63
-        self.val[0] = (self.val[0] & 0xFFF) | (addr & !0xFFF);
-        self.val[0] |= Self::PRESENT | Self::SLT;
-    }
-
-    /// Set First-Level (Stage-1) Page Table pointer (FLPTR)
-    pub fn set_fl_ptr(&mut self, addr: u64) {
-        // FLPTR is in val[2] bits 12-63
-        self.val[2] = (self.val[2] & 0xFFF) | (addr & !0xFFF);
-        // Enable bit is in val[0]
-        self.val[0] |= Self::PRESENT | Self::FLT;
-    }
-}
 
 impl InterruptRemapEntry {
     /// Entry present (bit 0)
@@ -1159,6 +1142,225 @@ impl ContextEntry {
     /// Get domain ID
     pub fn domain_id(&self) -> u16 {
         ((self.hi >> 8) & 0xFFFF) as u16
+    }
+}
+
+// ============================================================================
+// Scalable Mode Structures
+// ============================================================================
+
+/// Scalable Mode Context Entry (128 bytes)
+///
+/// Used in Scalable Mode Translation (SMTS) for PASID-based translation.
+/// Each entry is 128 bytes and points to a PASID table.
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug)]
+pub struct ScalableContextEntry {
+    /// 8 QWORDs (64 bytes each half)
+    pub qwords: [u64; 16],
+}
+
+impl Default for ScalableContextEntry {
+    fn default() -> Self {
+        Self { qwords: [0; 16] }
+    }
+}
+
+impl ScalableContextEntry {
+    /// Present bit (QWORD 0, bit 0)
+    pub const PRESENT: u64 = 1 << 0;
+    /// PASID Table Pointer (QWORD 0, bits 12-63)
+    pub const PTP_MASK: u64 = !0xFFF;
+    /// PASID Table Size (QWORD 1, bits 0-3) - log2 of entries
+    pub const PTS_SHIFT: u64 = 0;
+    /// RID-PASID (Request ID to PASID mapping, QWORD 1)
+    pub const RID_PASID_SHIFT: u64 = 4;
+    /// Domain ID (QWORD 8, bits 8-23)
+    pub const DID_SHIFT: u64 = 8;
+
+    /// Create a new empty entry
+    pub const fn new() -> Self {
+        Self { qwords: [0; 16] }
+    }
+
+    /// Check if the entry is present
+    pub fn is_present(&self) -> bool {
+        (self.qwords[0] & Self::PRESENT) != 0
+    }
+
+    /// Set the PASID table pointer
+    pub fn set_pasid_table(&mut self, pasid_table_addr: u64, size_log2: u8) {
+        self.qwords[0] = (pasid_table_addr & Self::PTP_MASK) | Self::PRESENT;
+        // Set PASID table size in QWORD 1
+        self.qwords[1] = ((size_log2 as u64) & 0xF) << Self::PTS_SHIFT;
+    }
+
+    /// Set domain ID
+    pub fn set_domain_id(&mut self, domain_id: u16) {
+        self.qwords[8] = (self.qwords[8] & !0xFFFF00) | ((domain_id as u64) << Self::DID_SHIFT);
+    }
+
+    /// Get domain ID
+    pub fn domain_id(&self) -> u16 {
+        ((self.qwords[8] >> Self::DID_SHIFT) & 0xFFFF) as u16
+    }
+
+    /// Get PASID table pointer
+    pub fn pasid_table_addr(&self) -> u64 {
+        self.qwords[0] & Self::PTP_MASK
+    }
+}
+
+/// PASID Table
+///
+/// Manages PASID entries for Scalable Mode.
+/// Each entry is 64 bytes (PasidTableEntry).
+pub struct PasidTable {
+    /// Base virtual address
+    base: usize,
+    /// Size (number of entries, power of 2)
+    size: usize,
+    /// Allocation bitmap
+    allocated: Vec<u64>,
+}
+
+impl PasidTable {
+    /// Default size (256 entries)
+    pub const DEFAULT_SIZE: usize = 256;
+
+    /// Create a new PASID table
+    pub fn new(size: usize) -> Option<Self> {
+        let size = size.next_power_of_two().min(1 << 20); // Max 2^20 PASIDs
+        let total_bytes = size * core::mem::size_of::<PasidTableEntry>();
+
+        // Allocate 4KB aligned memory
+        let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).ok()?;
+        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+
+        // Bitmap: 64 entries per u64
+        let bitmap_size = (size + 63) / 64;
+        let allocated = alloc::vec![0u64; bitmap_size];
+
+        Some(Self {
+            base,
+            size,
+            allocated,
+        })
+    }
+
+    /// Get the physical base address
+    pub fn base_address(&self) -> u64 {
+        self.base as u64
+    }
+
+    /// Get size log2 (for context entry)
+    pub fn size_log2(&self) -> u8 {
+        self.size.trailing_zeros() as u8
+    }
+
+    /// Allocate a PASID
+    pub fn allocate(&mut self) -> Option<u32> {
+        for (word_idx, word) in self.allocated.iter_mut().enumerate() {
+            if *word != u64::MAX {
+                let bit = (!*word).trailing_zeros() as usize;
+                let index = word_idx * 64 + bit;
+                if index >= self.size {
+                    return None;
+                }
+                *word |= 1 << bit;
+                return Some(index as u32);
+            }
+        }
+        None
+    }
+
+    /// Free a PASID
+    pub fn free(&mut self, pasid: u32) {
+        let word_idx = pasid as usize / 64;
+        let bit = pasid as usize % 64;
+        if word_idx < self.allocated.len() {
+            self.allocated[word_idx] &= !(1 << bit);
+        }
+    }
+
+    /// Get mutable reference to a PASID entry
+    pub fn get_mut(&mut self, pasid: u32) -> Option<&mut PasidTableEntry> {
+        if (pasid as usize) < self.size {
+            let ptr = self.base as *mut PasidTableEntry;
+            Some(unsafe { &mut *ptr.add(pasid as usize) })
+        } else {
+            None
+        }
+    }
+
+    /// Get reference to a PASID entry
+    pub fn get(&self, pasid: u32) -> Option<&PasidTableEntry> {
+        if (pasid as usize) < self.size {
+            let ptr = self.base as *const PasidTableEntry;
+            Some(unsafe { &*ptr.add(pasid as usize) })
+        } else {
+            None
+        }
+    }
+}
+
+/// PASID Table Entry (64 bytes)
+///
+/// Each entry in the PASID table defines the address translation
+/// for a specific PASID.
+#[repr(C, align(64))]
+#[derive(Clone, Copy, Debug)]
+pub struct PasidTableEntry {
+    /// 8 QWORDs
+    pub qwords: [u64; 8],
+}
+
+impl Default for PasidTableEntry {
+    fn default() -> Self {
+        Self { qwords: [0; 8] }
+    }
+}
+
+impl PasidTableEntry {
+    /// Present bit (QWORD 0, bit 0)
+    pub const PRESENT: u64 = 1 << 0;
+    /// Page Walk Disable (QWORD 0, bit 3)
+    pub const PWD: u64 = 1 << 3;
+    /// First Level Page Table Pointer (QWORD 0, bits 12-63)
+    pub const FLPT_MASK: u64 = !0xFFF;
+    /// Address Width (QWORD 1, bits 0-2)
+    pub const AW_SHIFT: u64 = 0;
+    /// Supervisor Request (QWORD 1, bit 5)
+    pub const SRE: u64 = 1 << 5;
+    /// Execute Enable (QWORD 1, bit 6)
+    pub const EAFE: u64 = 1 << 6;
+
+    /// Create a new empty entry
+    pub const fn new() -> Self {
+        Self { qwords: [0; 8] }
+    }
+
+    /// Check if present
+    pub fn is_present(&self) -> bool {
+        (self.qwords[0] & Self::PRESENT) != 0
+    }
+
+    /// Set first level page table pointer
+    pub fn set_fl_pt(&mut self, addr: u64, address_width: u8) {
+        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
+        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
+    }
+
+    /// Set second level page table pointer (for nested translation)
+    pub fn set_sl_pt(&mut self, addr: u64, address_width: u8) {
+        // Set PWD = 0 (page walk enabled) and point to SL PT
+        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
+        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
+    }
+
+    /// Get first level page table address
+    pub fn fl_pt_addr(&self) -> u64 {
+        self.qwords[0] & Self::FLPT_MASK
     }
 }
 
@@ -1958,6 +2160,11 @@ pub struct IommuController {
     iova_allocator: Option<IovaAllocator>,
     /// Set of devices with ATS enabled (for optimization)
     ats_enabled_devices: BTreeSet<DeviceId>,
+    /// Posted Interrupt Descriptor pool (base address, allocation bitmap)
+    /// Each PID is 64-byte aligned, pool can hold up to 256 PIDs
+    pid_pool: Option<PostedInterruptPool>,
+    /// Page Request Queue (PRI/ATS)
+    page_request_queue: Option<PageRequestQueue>,
 }
 
 unsafe impl Send for IommuController {}
@@ -1983,6 +2190,8 @@ impl IommuController {
             qi_enabled: AtomicBool::new(false),
             iova_allocator: None,
             ats_enabled_devices: BTreeSet::new(),
+            pid_pool: None,
+            page_request_queue: None,
         }
     }
 
@@ -2613,6 +2822,239 @@ impl IommuController {
         }
 
         Ok(())
+    }
+
+    // =========================================================================
+    // Posted Interrupts Methods
+    // =========================================================================
+
+    /// Initialize the Posted Interrupt Descriptor pool
+    ///
+    /// # Arguments
+    /// * `num_pids` - Number of PIDs to allocate (max 256)
+    pub fn init_posted_interrupts(&mut self, num_pids: usize) -> Result<(), IommuError> {
+        if !self.supports_posted_interrupts() {
+            return Err(IommuError::NotSupported);
+        }
+
+        if self.pid_pool.is_some() {
+            return Err(IommuError::AlreadyInitialized);
+        }
+
+        let pool = PostedInterruptPool::new(num_pids).ok_or(IommuError::HardwareError)?;
+        self.pid_pool = Some(pool);
+
+        log::info!(
+            "[IOMMU] Posted Interrupt pool initialized ({} PIDs)\\n",
+            num_pids
+        );
+        Ok(())
+    }
+
+    /// Allocate a Posted Interrupt Descriptor and configure an IRTE in posted mode
+    ///
+    /// # Arguments
+    /// * `notification_vector` - Vector to use for notification IPI
+    /// * `notification_dest` - APIC ID of the target CPU for notification
+    ///
+    /// # Returns
+    /// (IRTE index, PID index) on success
+    pub fn allocate_posted_irte(
+        &mut self,
+        notification_vector: u8,
+        notification_dest: u32,
+    ) -> Result<(u16, u16), IommuError> {
+        // Check PI support and initialization
+        if !self.supports_posted_interrupts() {
+            return Err(IommuError::NotSupported);
+        }
+
+        let pid_pool = self.pid_pool.as_mut().ok_or(IommuError::NotPresent)?;
+        let irt = self
+            .interrupt_remap_table
+            .as_mut()
+            .ok_or(IommuError::NotPresent)?;
+
+        // Allocate a PID
+        let (pid_index, pid_addr) = pid_pool.allocate().ok_or(IommuError::HardwareError)?;
+
+        // Configure the PID with notification info
+        if let Some(pid) = pid_pool.get_mut(pid_index) {
+            // Set notification vector and destination
+            let nv = (notification_vector as u64) << 16;
+            let ndst = (notification_dest as u64) << 32;
+            pid.notification_info.store(nv | ndst, Ordering::SeqCst);
+        }
+
+        // Allocate an IRTE
+        let irte_index = irt.allocate().ok_or(IommuError::HardwareError)?;
+
+        // Configure IRTE for posted mode
+        let entry = InterruptRemapEntry::posted(pid_addr);
+        irt.set(irte_index, entry);
+
+        Ok((irte_index, pid_index))
+    }
+
+    /// Free a Posted Interrupt Descriptor and its IRTE
+    pub fn free_posted_irte(&mut self, irte_index: u16, pid_index: u16) -> Result<(), IommuError> {
+        // Free IRTE
+        if let Some(irt) = self.interrupt_remap_table.as_mut() {
+            irt.set(irte_index, InterruptRemapEntry::new());
+            irt.free(irte_index);
+        }
+
+        // Free PID
+        if let Some(pool) = self.pid_pool.as_mut() {
+            pool.free(pid_index);
+        }
+
+        Ok(())
+    }
+
+    /// Set a pending vector in a Posted Interrupt Descriptor
+    ///
+    /// This is called when an interrupt needs to be posted to a vCPU.
+    pub fn post_interrupt(&mut self, pid_index: u16, vector: u8) -> Result<(), IommuError> {
+        let pool = self.pid_pool.as_mut().ok_or(IommuError::NotPresent)?;
+        let pid = pool.get_mut(pid_index).ok_or(IommuError::InvalidAddress)?;
+
+        // Set the vector bit in PIR (Posted Interrupt Request)
+        let word_idx = (vector / 64) as usize;
+        let bit = (vector % 64) as u64;
+        pid.pir[word_idx] |= 1 << bit;
+
+        // Set Outstanding Notification bit
+        pid.notification_info
+            .fetch_or(PostedInterruptDescriptor::ON, Ordering::SeqCst);
+
+        Ok(())
+    }
+
+    // =========================================================================
+    // Page Request Interface (PRI) Methods
+    // =========================================================================
+
+    /// Check if Page Request Services are supported
+    pub fn supports_page_request(&self) -> bool {
+        (self.ecap & ecap_bits::ECAP_PRS) != 0
+    }
+
+    /// Initialize the Page Request Queue
+    ///
+    /// # Arguments
+    /// * `size` - Number of PRQ entries (default: 256)
+    pub fn init_page_request(&mut self, size: usize) -> Result<(), IommuError> {
+        if !self.supports_page_request() {
+            return Err(IommuError::NotSupported);
+        }
+
+        if self.page_request_queue.is_some() {
+            return Err(IommuError::AlreadyInitialized);
+        }
+
+        let prq = PageRequestQueue::new(size).ok_or(IommuError::HardwareError)?;
+
+        // Set PRQ base address register (PQA)
+        // Format: [11:0] = Size (log2 - 1), [63:12] = Base Address
+        let size_log2 = (prq.size().trailing_zeros()) as u64;
+        let pqa_value = prq.base_address() | (size_log2.saturating_sub(1) & 0xF);
+
+        self.write64(regs::PQA, pqa_value);
+
+        // Set PRQ Head to 0
+        self.write64(regs::PQH, 0);
+
+        // Enable Page Request via GCMD.PRE (bit 28)
+        let gcmd = self.read32(regs::GCMD);
+        self.write32(regs::GCMD, gcmd | (1 << 28));
+
+        // Wait for PRS (Page Request Status) bit
+        for _ in 0..1000 {
+            if self.read32(regs::GSTS) & (1 << 28) != 0 {
+                break;
+            }
+        }
+
+        self.page_request_queue = Some(prq);
+        log::info!(
+            "[IOMMU] Page Request Queue initialized ({} entries)\\n",
+            size
+        );
+
+        Ok(())
+    }
+
+    /// Process pending page requests
+    ///
+    /// Returns a vector of page request entries that need to be handled.
+    /// The caller is responsible for sending Page Response via QI.
+    pub fn process_page_requests(&mut self) -> Vec<PageRequestEntry> {
+        let mut requests = Vec::new();
+
+        // Read current tail first (avoid borrowing `self` mutably while also borrowing it immutably)
+        let tail = (self.read64(regs::PQT) >> 4) as usize;
+
+        if let Some(prq) = self.page_request_queue.as_mut() {
+            prq.update_tail(tail);
+
+            // Pop all pending entries
+            while let Some(entry) = prq.pop() {
+                requests.push(entry);
+            }
+
+            // Cache head and drop the mutable borrow before writing registers
+            let head = prq.head();
+            let _ = prq; // release mutable borrow reference
+            self.write64(regs::PQH, (head as u64) << 4);
+        }
+
+        requests
+    }
+
+    /// Send a Page Response via Queued Invalidation
+    ///
+    /// # Arguments
+    /// * `source_id` - Device requester ID
+    /// * `pasid` - PASID (if applicable)
+    /// * `prg_index` - Page Request Group Index
+    /// * `response_code` - Response code (0=Success, 1=Invalid Request, 2=Failure)
+    pub fn send_page_response(
+        &mut self,
+        source_id: u16,
+        pasid: Option<u32>,
+        prg_index: u16,
+        response_code: u8,
+    ) -> Result<(), IommuError> {
+        if !self.is_queued_invalidation_enabled() {
+            return Err(IommuError::NotSupported);
+        }
+
+        // Page Response descriptor format (type 0x5 with subtype)
+        // This is a simplified implementation - full implementation would use
+        // the proper Page Response descriptor format from VT-d spec.
+        let _desc = InvalidationQueueEntry {
+            lo: qi_desc_type::WAIT | // Using wait descriptor as response confirmation
+                ((response_code as u64) << 4) |
+                ((source_id as u64) << 16),
+            hi: if let Some(p) = pasid {
+                (p as u64) | ((prg_index as u64) << 20)
+            } else {
+                (prg_index as u64) << 20
+            },
+        };
+
+        log::trace!(
+            "[IOMMU] Page Response: source_id={:04x} pasid={:?} prg={} code={}\\n",
+            source_id,
+            pasid,
+            prg_index,
+            response_code
+        );
+
+        // Submit response and wait for completion
+        self.submit_invalidation(_desc)?;
+        self.qi_wait_sync()
     }
 
     // IOVA management on IOMMU controller
@@ -3527,8 +3969,8 @@ pub unsafe fn init_iommu_from_acpi(
 
     // Caller should ensure `dmar_addr` is valid and log if desired.
 
-    // Parse DMAR using the local parser (keeps module dependencies simple)
-    let dmar_info = match local_dmar::parse_dmar(dmar_addr) {
+    // Parse DMAR using canonical ACPI parser from drivers/acpi
+    let dmar_info = match unsafe { crate::io::acpi::dmar::parse_dmar(dmar_addr) } {
         Ok(info) => info,
         Err(e) => {
             log::error!("Failed to parse DMAR: {}", e);
@@ -3825,12 +4267,11 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
     // Find correct IOMMU for this device
     // Find controller index while we still have an immutable lock so we can clone reserved regions
-    let (controller_idx, reserved_clone) = {
+    // Also capture passthrough config here to avoid borrowing `IOMMU` across mutable borrows later.
+    let (controller_idx, reserved_clone, passthrough) = {
         let guard = IOMMU.lock();
-        // Check for passthrough mode and bail out early if configured globally
-        if guard.config.passthrough {
-            // TODO: Implement passthrough handling; for now, we allow setup but note it here
-        }
+        // Capture passthrough flag early
+        let passthrough_val = guard.config.passthrough;
 
         match guard.find_controller_index_for_device(
             segment,
@@ -3838,24 +4279,44 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
             bdf.device.0,
             bdf.function.0,
         ) {
-            Some(idx) => (idx, guard.reserved_regions.clone()),
+            Some(idx) => (idx, guard.reserved_regions.clone(), passthrough_val),
             None => return None,
         }
     };
 
     // Re-lock and obtain mutable reference to the selected controller
     let mut guard = IOMMU.lock();
-    let passthrough = guard.config.passthrough;
     let iommu = match guard.controllers.get_mut(controller_idx) {
         Some(c) => c,
         None => return None,
     };
 
-    // Enable ATS for this device if IOMMU supports it (and device does - TODO check device cap)
-    // For now we optimistically enable tracking if ECAP_DT is set, assuming driver will enable ATS on device.
+    // Enable ATS for this device if IOMMU supports Device-TLB (ECAP_DT)
+    // and the device has the ATS Extended Capability.
     if (iommu.ecap & ecap_bits::ECAP_DT) != 0 {
-        let device_id = DeviceId::new(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
-        iommu.enable_ats_for_device(device_id);
+        // Check if PCIe Extended Config is available
+        if let Some(pcie_config) = pcie_ext_config() {
+            let pcie_bdf = PcieBdf::new(bdf.bus.0, bdf.device.0, bdf.function.0);
+
+            // Check if device supports ATS
+            if device_supports_ats(pcie_config, pcie_bdf) {
+                // Attempt to create ATS controller and enable ATS
+                // STU = 0 means 4KB smallest translation unit (default)
+                if let Ok(ats_ctrl) = AtsController::new(pcie_config, pcie_bdf) {
+                    if ats_ctrl.enable_ats(0u8).is_ok() {
+                        let device_id =
+                            DeviceId::new(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
+                        iommu.enable_ats_for_device(device_id);
+                        log::info!(
+                            "[IOMMU] ATS enabled for device {:02x}:{:02x}.{}\\n",
+                            bdf.bus.0,
+                            bdf.device.0,
+                            bdf.function.0
+                        );
+                    }
+                }
+            }
+        }
     }
 
     // 1. 新しいドメインを作成
@@ -4054,4 +4515,257 @@ mod tests {
 
         ctrl.free_iova(iova, size).expect("free failed");
     }
+
+    #[test]
+    fn test_init_iommu_registers_drhd_and_rmrr_and_applies_rmrr() {
+        use acpi_driver::tables::AcpiSdtHeader;
+        use core::mem;
+
+        // Reset global IOMMU manager to a known state
+        {
+            let mut guard = IOMMU.lock();
+            *guard = IommuManager::new();
+        }
+
+        // Build a DMAR table with one DRHD and one RMRR for device bus=0 dev=1 func=0
+        let mut buf: alloc::vec::Vec<u8> = alloc::vec::Vec::new();
+
+        // ACPI SDT header (DMAR)
+        let sdt = AcpiSdtHeader {
+            signature: *b"DMAR",
+            length: 0, // patched later
+            revision: 1,
+            checksum: 0,
+            oem_id: [0; 6],
+            oem_table_id: [0; 8],
+            oem_revision: 0,
+            creator_id: 0,
+            creator_revision: 0,
+        };
+
+        let dmar = crate::io::acpi::dmar::DmarHeader {
+            header: sdt,
+            haw: 0,
+            flags: 0,
+            _reserved: [0; 10],
+        };
+
+        let dmar_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &dmar as *const _ as *const u8,
+                mem::size_of::<crate::io::acpi::dmar::DmarHeader>(),
+            )
+        };
+        buf.extend_from_slice(dmar_bytes);
+
+        // DRHD (type 0) + device scope for device 1.0 on bus 0
+        let drhd_hdr = crate::io::acpi::dmar::DmarRemappingHeader {
+            type_code: 0,
+            length: (mem::size_of::<crate::io::acpi::dmar::DrhdWrapper>()
+                + mem::size_of::<crate::io::acpi::dmar::DeviceScopeHeader>()
+                + 2) as u16,
+        };
+        let drhd = crate::io::acpi::dmar::DrhdWrapper {
+            header: drhd_hdr,
+            flags: 1,
+            _reserved: 0,
+            segment: 0,
+            register_base_addr: 0x1000_0000,
+        };
+        let drhd_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &drhd as *const _ as *const u8,
+                mem::size_of::<crate::io::acpi::dmar::DrhdWrapper>(),
+            )
+        };
+        buf.extend_from_slice(drhd_bytes);
+
+        let ds = crate::io::acpi::dmar::DeviceScopeHeader {
+            type_code: 1,
+            length: (mem::size_of::<crate::io::acpi::dmar::DeviceScopeHeader>() + 2) as u8,
+            _reserved: 0,
+            enumeration_id: 0,
+            start_bus: 0,
+        };
+        let ds_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &ds as *const _ as *const u8,
+                mem::size_of::<crate::io::acpi::dmar::DeviceScopeHeader>(),
+            )
+        };
+        buf.extend_from_slice(ds_bytes);
+        // Path: device=1, function=0
+        buf.push(1u8);
+        buf.push(0u8);
+
+        // RMRR (type 1) for same device
+        let rmrr_hdr = crate::io::acpi::dmar::DmarRemappingHeader {
+            type_code: 1,
+            length: (mem::size_of::<crate::io::acpi::dmar::RmrrWrapper>()
+                + mem::size_of::<crate::io::acpi::dmar::DeviceScopeHeader>()
+                + 2) as u16,
+        };
+        let rmrr = crate::io::acpi::dmar::RmrrWrapper {
+            header: rmrr_hdr,
+            _reserved: 0,
+            segment: 0,
+            base_address: 0x1000,
+            limit_address: 0x1fff,
+        };
+        let rmrr_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &rmrr as *const _ as *const u8,
+                mem::size_of::<crate::io::acpi::dmar::RmrrWrapper>(),
+            )
+        };
+        buf.extend_from_slice(rmrr_bytes);
+
+        // RMRR device scope
+        let rds = crate::io::acpi::dmar::DeviceScopeHeader {
+            type_code: 1,
+            length: (mem::size_of::<crate::io::acpi::dmar::DeviceScopeHeader>() + 2) as u8,
+            _reserved: 0,
+            enumeration_id: 0,
+            start_bus: 0,
+        };
+        let rds_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &rds as *const _ as *const u8,
+                mem::size_of::<crate::io::acpi::dmar::DeviceScopeHeader>(),
+            )
+        };
+        buf.extend_from_slice(rds_bytes);
+        buf.push(1u8);
+        buf.push(0u8);
+
+        // Patch total length
+        let total_len = buf.len() as u32;
+        buf[4..8].copy_from_slice(&total_len.to_le_bytes());
+
+        let ptr = buf.as_ptr() as usize;
+
+        // Initialize IOMMU from our synthetic DMAR
+        unsafe {
+            let cfg = IommuConfig::new();
+            init_iommu_from_acpi(ptr, cfg).expect("IOMMU init should succeed");
+        }
+
+        // Validate manager state has controller & reserved region
+        {
+            let guard = IOMMU.lock();
+            assert!(
+                !guard.controllers.is_empty(),
+                "Should have at least one controller"
+            );
+            assert_eq!(
+                guard.reserved_regions.len(),
+                1,
+                "One RMRR region should be registered"
+            );
+            let rr = &guard.reserved_regions[0];
+            assert_eq!(rr.base, 0x1000);
+            assert_eq!(rr.limit, 0x1fff);
+
+            // Debug: print controllers and default index
+            println!("DEBUG: controllers={}", guard.controllers.len());
+            for (i, c) in guard.controllers.iter().enumerate() {
+                println!("DEBUG: controller {} segment={}", i, c.segment);
+            }
+            println!("DEBUG: default_iommu_idx={:?}", guard.default_iommu_idx);
+        }
+
+        // Now try to setup IOMMU for a matching PCI device and ensure RMRR is applied
+        let mut dev = crate::io::pci::PciDeviceInfo {
+            bdf: crate::io::pci::Bdf {
+                bus: crate::io::pci::Bus(0),
+                device: crate::io::pci::Device(1),
+                function: crate::io::pci::Function(0),
+            },
+            iommu_domain_id: None,
+        };
+        let domain_opt = setup_iommu_for_pci_device(&mut dev);
+        assert!(domain_opt.is_some(), "Domain should be created for device");
+
+        // Verify domain has identity mapping for RMRR
+        let domain_id = domain_opt.unwrap();
+        {
+            let guard = IOMMU.lock();
+            let ctrl = &guard.controllers[0];
+            let domain = ctrl.domain(domain_id).expect("domain exists");
+            // Mapping key should be identity mapping at region.base
+            assert!(
+                domain.mappings.contains_key(&0x1000),
+                "Domain should have mapping for RMRR base"
+            );
+            let mapping = domain.mappings.get(&0x1000).unwrap();
+            assert_eq!(mapping.phys, 0x1000);
+            assert_eq!(mapping.size, 0x1000); // 0x1fff - 0x1000 + 1
+        }
+
+        // Cleanup: reset global IOMMU
+        {
+            let mut guard = IOMMU.lock();
+            *guard = IommuManager::new();
+        }
+    }
+}
+
+// ============================================================================
+// Global Interrupt Remapping Interface
+// ============================================================================
+
+/// Map an interrupt for a device using Interrupt Remapping
+///
+/// Returns the IRTE handle (index) to be used for generating the MSI message.
+pub fn map_interrupt(
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+    vector: u8,
+    dest_id: u32,
+    logical: bool,
+) -> Result<u16, IommuError> {
+    let mut guard = IOMMU.lock();
+
+    // Find the controller responsible for this device
+    // Currently using simple segment matching as per find_controller_for_device
+    let controller = guard
+        .controllers
+        .iter_mut()
+        .find(|c| c.segment == segment)
+        .ok_or(IommuError::NotPresent)?;
+
+    // Check if IR is enabled
+    if !controller.is_interrupt_remapping_enabled() {
+        return Err(IommuError::NotSupported);
+    }
+
+    // Allocate IRTE
+    controller.allocate_irte(vector, dest_id, logical)
+}
+
+/// Generate MSI Address and Data for a Remapped Interrupt
+///
+/// # Arguments
+/// * `handle` - IRTE handle returned by `map_interrupt`
+///
+/// # Returns
+/// (Address, Data) tuple for MSI/MSI-X configuration
+pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
+    // Intel VT-d Spec 5.1.5.1 MSI / MSI-X Address Format
+    // 31:20 = 0xFEE (Fixed)
+    // 19:5  = Handle[14:0] (Interrupt Index)
+    // 4     = SHV (SubHandle Valid) - Set to 0 here
+    // 3     = Handle[15] (Interrupt Index MSB)
+    // 2     = XX (Guest Mode / Ignored)
+
+    let handle = handle as u64;
+    let index_14_0 = handle & 0x7FFF;
+    let index_15 = (handle >> 15) & 1;
+
+    let address = 0xFEE0_0000 | (index_14_0 << 5) | (index_15 << 3);
+    let data = 0; // Data is 0 when SHV=0
+
+    (address, data)
 }
