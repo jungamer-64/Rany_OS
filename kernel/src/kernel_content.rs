@@ -4,7 +4,7 @@ use core::panic::PanicInfo;
 use limine::BaseRevision;
 use limine::request::{
     FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker, RequestsStartMarker,
-    StackSizeRequest,
+    RsdpRequest, StackSizeRequest,
 };
 use log::{debug, error, info, warn};
 
@@ -96,6 +96,10 @@ static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
 #[used]
 #[unsafe(link_section = ".requests")]
 static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(512 * 1024); // 512 KiB stack
+
+#[used]
+#[unsafe(link_section = ".requests")]
+static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
 
 #[unsafe(no_mangle)]
 extern "C" fn kmain() -> ! {
@@ -306,6 +310,39 @@ extern "C" fn kmain() -> ! {
     memory::init();
     serial_print("[BOOT] Memory management initialized\r\n");
     info!(target: "init", "Memory management initialized");
+
+    // 1.5. ACPI & IOMMU Initialization
+    // Requires memory management for allocation
+    info!(target: "init", "Initializing ACPI...");
+    if let Some(rsdp_response) = RSDP_REQUEST.get_response() {
+        let rsdp_addr = rsdp_response.address() as usize;
+        match unsafe { io::acpi::init(rsdp_addr) } {
+            Ok(parser) => {
+                info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
+
+                // Initialize IOMMU using ACPI tables
+                unsafe {
+                    if let Err(e) = io::iommu::init_iommu_from_acpi(&parser) {
+                        warn!(target: "init", "IOMMU init failed or no units found: {:?}", e);
+                    } else {
+                        info!(target: "init", "IOMMU initialized successfully");
+
+                        // Enable IOMMU
+                        if let Err(e) = io::iommu::enable_iommu() {
+                            error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                        } else {
+                            info!(target: "init", "IOMMU translation enabled");
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                warn!(target: "init", "ACPI initialization failed: {:?}", e);
+            }
+        }
+    } else {
+        warn!(target: "init", "No RSDP found provided by bootloader");
+    }
 
     // 1.1. 1GB Huge Page サポートの初期化 (設計書 11.1.1)
     serial_print("[BOOT] Initializing 1GB Huge Page support...\r\n");

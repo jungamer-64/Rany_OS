@@ -1279,6 +1279,17 @@ impl IommuDomain {
         Ok(())
     }
 
+    /// Map a region with identity mapping (IOVA = Physical Address)
+    pub fn map_identity(
+        &mut self,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
+        self.map(phys, phys, size, read, write)
+    }
+
     /// Map a single page using 4-level page table walking
     /// Intel VT-d uses: PML4 -> PDP -> PD -> PT (same as x86-64 paging)
     fn map_page(
@@ -1633,6 +1644,8 @@ pub struct IommuController {
     invalidation_queue: Option<InvalidationQueue>,
     /// Queued Invalidation enabled
     qi_enabled: AtomicBool,
+    /// IOMMU Segment number (from ACPI DRHD)
+    pub segment: u16,
     /// IOVA allocator (optional, configured via `init_iova`)
     iova_allocator: Option<IovaAllocator>,
 }
@@ -1642,9 +1655,10 @@ unsafe impl Sync for IommuController {}
 
 impl IommuController {
     /// Create a new IOMMU controller
-    pub fn new(mmio_base: u64) -> Self {
+    pub fn new(mmio_base: u64, segment: u16) -> Self {
         Self {
             mmio_base,
+            segment,
             cap: 0,
             ecap: 0,
             root_table: core::ptr::null_mut(),
@@ -2230,31 +2244,47 @@ impl IommuController {
         alloc.free(addr, size)
     }
 
-    /// Initialize IOVA space for the global IOMMU controller
+    /// Initialize IOVA space for the global IOMMU controller (Default only)
     pub fn init_iova_range(base: u64, size: u64) -> Result<(), IommuError> {
         let mut guard = IOMMU.lock();
-        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let idx = guard.default_iommu_idx.ok_or(IommuError::NotPresent)?;
+        let controller = guard
+            .controllers
+            .get_mut(idx)
+            .ok_or(IommuError::NotPresent)?;
         controller.init_iova(base, size)
     }
 
     /// Allocate an IOVA from the global controller
     pub fn allocate_global_iova(size: u64) -> Result<u64, IommuError> {
         let mut guard = IOMMU.lock();
-        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let idx = guard.default_iommu_idx.ok_or(IommuError::NotPresent)?;
+        let controller = guard
+            .controllers
+            .get_mut(idx)
+            .ok_or(IommuError::NotPresent)?;
         controller.allocate_iova(size)
     }
 
     /// Free an IOVA back to global controller
     pub fn free_global_iova(addr: u64, size: u64) -> Result<(), IommuError> {
         let mut guard = IOMMU.lock();
-        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let idx = guard.default_iommu_idx.ok_or(IommuError::NotPresent)?;
+        let controller = guard
+            .controllers
+            .get_mut(idx)
+            .ok_or(IommuError::NotPresent)?;
         controller.free_iova(addr, size)
     }
 
     /// Allocate an IOVA and create a mapping in default domain (non-identity mapping)
     pub fn map_for_dma_alloc(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuError> {
         let mut guard = IOMMU.lock();
-        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let idx = guard.default_iommu_idx.ok_or(IommuError::NotPresent)?;
+        let controller = guard
+            .controllers
+            .get_mut(idx)
+            .ok_or(IommuError::NotPresent)?;
 
         // Allocate IOVA
         let iova = controller.allocate_iova(size)?;
@@ -2272,7 +2302,11 @@ impl IommuController {
     /// Unmap IOVA and free it
     pub fn unmap_dma_alloc(iova: u64, _size: u64) -> Result<(), IommuError> {
         let mut guard = IOMMU.lock();
-        let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let idx = guard.default_iommu_idx.ok_or(IommuError::NotPresent)?;
+        let controller = guard
+            .controllers
+            .get_mut(idx)
+            .ok_or(IommuError::NotPresent)?;
 
         // Default domain
         let domain = controller
@@ -2837,8 +2871,153 @@ pub struct IovaAllocatorStats {
 // Global Instance
 // ============================================================================
 
-/// Global IOMMU controller (for controller-level operations)
-static IOMMU: Mutex<Option<IommuController>> = Mutex::new(None);
+/// Reserved Memory Region (from RMRR)
+#[derive(Debug, Clone)]
+pub struct ReservedMemoryRegion {
+    pub segment: u16,
+    pub base: u64,
+    pub limit: u64,
+    /// Devices this region applies to (Segment, Bus, Device, Function)
+    /// If empty, might apply to all? (Spec usually says explicit scope)
+    pub devices: Vec<DeviceId>,
+}
+
+/// IOMMU Manager (Manages multiple IOMMU controllers)
+pub struct IommuManager {
+    /// List of IOMMU controllers
+    controllers: Vec<IommuController>,
+    /// IOMMU for legacy/all devices (if any unit has include_all)
+    default_iommu_idx: Option<usize>,
+    /// Reserved memory regions
+    reserved_regions: Vec<ReservedMemoryRegion>,
+}
+
+unsafe impl Send for IommuManager {}
+unsafe impl Sync for IommuManager {}
+
+impl IommuManager {
+    pub const fn new() -> Self {
+        Self {
+            controllers: Vec::new(),
+            default_iommu_idx: None,
+            reserved_regions: Vec::new(),
+        }
+    }
+
+    /// Add a reserved memory region
+    pub fn add_reserved_region(&mut self, region: ReservedMemoryRegion) {
+        self.reserved_regions.push(region);
+    }
+
+    /// Apply reserved regions for a specific device to a domain
+    pub fn apply_reserved_regions(
+        &self,
+        device_id: DeviceId,
+        domain_id: u16,
+        controller: &mut IommuController,
+    ) -> Result<(), IommuError> {
+        let domain = controller
+            .domain_mut(domain_id)
+            .ok_or(IommuError::DomainNotFound)?;
+
+        for region in &self.reserved_regions {
+            if region.segment != device_id.segment {
+                continue;
+            }
+
+            // Check if this device is in the region's scope
+            let in_scope = region.devices.iter().any(|d| *d == device_id);
+
+            if in_scope {
+                let size = region.limit - region.base + 1;
+                log::info!(
+                    "[IOMMU] Mapping RMRR for {:?}: {:#x} - {:#x}\n",
+                    device_id,
+                    region.base,
+                    region.limit
+                );
+                // RMRR regions are typically R/W
+                // Ignore overlap errors (might share regions)
+                let _ = domain.map_identity(region.base, size, true, true);
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a controller
+    pub fn add_controller(&mut self, controller: IommuController) {
+        self.controllers.push(controller);
+    }
+
+    /// Get controller by index
+    pub fn get_controller(&self, index: usize) -> Option<&IommuController> {
+        self.controllers.get(index)
+    }
+
+    /// Get mutable controller by index
+    pub fn get_controller_mut(&mut self, index: usize) -> Option<&mut IommuController> {
+        self.controllers.get_mut(index)
+    }
+
+    /// Find the IOMMU controller responsible for a specific device
+    ///
+    /// # Arguments
+    /// * `segment` - PCI segment number
+    /// * `bus` - PCI bus number
+    /// * `device` - PCI device number
+    /// * `function` - PCI function number
+    pub fn find_controller_for_device(
+        &self,
+        segment: u16,
+        _bus: u8,
+        _device: u8,
+        _function: u8,
+    ) -> Option<&IommuController> {
+        // Linear search for now (DRHDs are few)
+        // TODO: Implement proper scope matching based on DRHD structures
+        // For now, return the default controller or the first one matching segment
+
+        for controller in &self.controllers {
+            if controller.segment == segment {
+                // In a real implementation with scopes, check if device is in scope
+                // For now, simpler matching: match segment
+                return Some(controller);
+            }
+        }
+
+        // Fallback to default
+        if let Some(idx) = self.default_iommu_idx {
+            return self.controllers.get(idx);
+        }
+
+        None
+    }
+
+    /// Find mutable controller
+    pub fn find_controller_for_device_mut(
+        &mut self,
+        segment: u16,
+        _bus: u8,
+        _device: u8,
+        _function: u8,
+    ) -> Option<&mut IommuController> {
+        // Same logic as immutable version
+        for controller in &mut self.controllers {
+            if controller.segment == segment {
+                return Some(controller);
+            }
+        }
+
+        if let Some(idx) = self.default_iommu_idx {
+            return self.controllers.get_mut(idx);
+        }
+
+        None
+    }
+}
+
+/// Global IOMMU manager
+static IOMMU: Mutex<IommuManager> = Mutex::new(IommuManager::new());
 
 /// Per-domain locks for parallel map/unmap operations
 /// Key: domain_id, Value: Mutex<()> (domain is stored in IommuController.domains)
@@ -2859,54 +3038,187 @@ fn register_domain_lock(domain_id: u16) {
         .insert(domain_id, alloc::sync::Arc::new(spin::Mutex::new(())));
 }
 
+/// Initialize IOMMU using ACPI DMAR table
+pub unsafe fn init_iommu_from_acpi(parser: &crate::io::acpi::AcpiParser) -> Result<(), IommuError> {
+    // 1. Find DMAR table
+    let dmar_addr = match parser.find_table(b"DMAR") {
+        Ok(addr) => addr,
+        Err(_) => {
+            log::warn!("DMAR table not found in ACPI");
+            return Err(IommuError::NotPresent);
+        }
+    };
+
+    log::info!("DMAR table found at {:#x}", dmar_addr);
+
+    // 2. Parse DMAR
+    let dmar_info = match crate::io::acpi::dmar::parse_dmar(dmar_addr) {
+        Ok(info) => info,
+        Err(e) => {
+            log::error!("Failed to parse DMAR: {}", e);
+            return Err(IommuError::HardwareError);
+        }
+    };
+
+    let mut manager = IOMMU.lock();
+    let mut default_idx = None;
+
+    // 3. Initialize Controllers (DRHD)
+    for unit in dmar_info.drhd_units {
+        log::info!(
+            "Initializing IOMMU Controller at {:#x} (Segment: {}, All: {})",
+            unit.register_base,
+            unit.segment,
+            unit.include_all
+        );
+
+        // Map MMIO if necessary (assuming identity or HHDM handled by caller/base)
+        // Here we assume register_base is physical, and we need virtual.
+        // Convert phys to virt using standard conversion (HHDM assumed active)
+        let mmio_virt =
+            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(unit.register_base))
+                .as_u64();
+
+        let mut controller = IommuController::new(mmio_virt, unit.segment);
+
+        unsafe {
+            if let Err(e) = controller.init() {
+                log::error!("Failed to initialize IOMMU controller: {:?}", e);
+                continue;
+            }
+        }
+
+        manager.add_controller(controller);
+        if unit.include_all {
+            default_idx = Some(manager.controllers.len() - 1);
+        }
+    }
+
+    if manager.controllers.is_empty() {
+        return Err(IommuError::NotPresent);
+    }
+
+    // Set default controller (or first one)
+    manager.default_iommu_idx = default_idx.or(Some(0));
+
+    // 4. Register RMRR regions
+    for region in dmar_info.rmrr_regions {
+        // Convert dmar::RmrrRegion to iommu::ReservedMemoryRegion
+        // We need to convert DeviceScope paths to DeviceId if possible
+        // For now, simple conversion logic or just store generic info?
+        // Our ReservedMemoryRegion expects `devices: Vec<DeviceId>`.
+        // But dmar::DeviceScope -> DeviceId might need bus enumeration context which we don't have easily here?
+        // Or we can construct DeviceId from the Path if ScopeType is Endpoint (1) or Bridge.
+
+        let mut devices = Vec::new();
+        for scope in region.devices {
+            // Basic scope parsing: start_bus + path
+            // Path is (dev, func) list.
+            // If path length is 1, it's devices on start_bus.
+            // If path length > 1, it's hierarchy.
+            // We'll handle simple case: start_bus:dev:func
+
+            let bus = scope.start_bus;
+            // Iterate path to find target device
+            // The path leads to the device.
+            // If multiple entries in path, it traverses bridges.
+            // Final device is at the end.
+
+            // Simplification: Assume flat bus or simple path for now
+            if let Some(last_path) = scope.path.last() {
+                // The assumption here is that start_bus is the root of the path
+                // For complex bridges this needs bus walking.
+                // For now, we use start_bus + last_path (RISKY but common for simple setups)
+                let device_id = DeviceId::new(
+                    region.segment,
+                    bus, // This might be wrong for deep hierarchy
+                    last_path.device,
+                    last_path.function,
+                );
+                devices.push(device_id);
+            }
+        }
+
+        manager.add_reserved_region(ReservedMemoryRegion {
+            segment: region.segment,
+            base: region.base,
+            limit: region.limit,
+            devices,
+        });
+    }
+
+    Ok(())
+}
+
 /// Initialize the global IOMMU
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid
 pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
-    let mut controller = IommuController::new(mmio_base);
+    // Legacy initialization for single IOMMU (segment 0)
+    let mut controller = IommuController::new(mmio_base, 0);
     unsafe {
         controller.init()?;
     }
 
     log::info!("IOMMU initialized at 0x{:X}\n", mmio_base);
 
-    *IOMMU.lock() = Some(controller);
+    let mut manager = IOMMU.lock();
+    manager.add_controller(controller);
+    manager.default_iommu_idx = Some(0);
     Ok(())
 }
 
-/// Enable IOMMU translation
+/// Enable IOMMU translation (on all controllers)
 pub fn enable_iommu() -> Result<(), IommuError> {
     let guard = IOMMU.lock();
-    let controller = guard.as_ref().ok_or(IommuError::NotPresent)?;
-
-    unsafe { controller.enable() }
+    for controller in &guard.controllers {
+        unsafe {
+            controller.enable()?;
+        }
+    }
+    Ok(())
 }
 
-/// Disable IOMMU translation
+/// Disable IOMMU translation (on all controllers)
 pub fn disable_iommu() -> Result<(), IommuError> {
     let guard = IOMMU.lock();
-    let controller = guard.as_ref().ok_or(IommuError::NotPresent)?;
-
-    unsafe { controller.disable() }
+    for controller in &guard.controllers {
+        unsafe {
+            controller.disable()?;
+        }
+    }
+    Ok(())
 }
 
-/// Check if IOMMU is enabled
+/// Check if IOMMU is enabled (at least one)
 pub fn is_iommu_enabled() -> bool {
-    IOMMU.lock().is_some()
+    let guard = IOMMU.lock();
+    !guard.controllers.is_empty() && guard.controllers[0].is_enabled()
 }
 
 /// Set NUMA hint for a domain (best-effort)
+/// Note: Since domains are per-controller, this finds the first controller with the domain.
 pub fn set_domain_numa(domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError> {
-    // Explicitly propagate the inner result so callers receive any domain-not-found errors.
     let mut guard = IOMMU.lock();
-    let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
-    controller.set_domain_numa(domain_id, numa_node)
+    // Try to find the domain in any controller
+    for controller in &mut guard.controllers {
+        if controller.domain(domain_id).is_some() {
+            return controller.set_domain_numa(domain_id, numa_node);
+        }
+    }
+    Err(IommuError::DomainNotFound)
 }
 
 /// Get NUMA hint for a domain
 pub fn get_domain_numa(domain_id: u16) -> Result<Option<usize>, IommuError> {
-    with_iommu(|iommu| iommu.get_domain_numa(domain_id))
+    let guard = IOMMU.lock();
+    for controller in &guard.controllers {
+        if let Some(domain) = controller.domain(domain_id) {
+            return Ok(domain.numa_node());
+        }
+    }
+    Err(IommuError::DomainNotFound)
 }
 
 /// Map a physical address range for DMA access
@@ -2914,20 +3226,23 @@ pub fn get_domain_numa(domain_id: u16) -> Result<Option<usize>, IommuError> {
 /// Returns the IOVA (I/O Virtual Address) that devices should use
 pub fn map_for_dma(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuError> {
     let mut guard = IOMMU.lock();
-    let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
 
-    // For simplicity, use identity mapping (IOVA == physical address)
-    // In a more sophisticated implementation, this would allocate from an IOVA space
+    if guard.controllers.is_empty() {
+        return Err(IommuError::NotPresent);
+    }
+
+    // Map in ALL controllers (safe default for simple identity mapping)
+    // In a real system we should only map for relevant domains, but `map_for_dma` interface
+    // implies global reachability.
     let iova = phys_addr.as_u64();
 
-    // Create a mapping in the default domain (domain 0)
-    // This is a simplified implementation
-    let domain = controller
-        .domains
-        .get_mut(&0)
-        .ok_or(IommuError::DomainNotFound)?;
-
-    domain.map(iova, phys_addr.as_u64(), size, true, true)?;
+    for controller in &mut guard.controllers {
+        let domain = controller
+            .domains
+            .get_mut(&0) // Default domain
+            .ok_or(IommuError::DomainNotFound)?;
+        domain.map(iova, phys_addr.as_u64(), size, true, true)?;
+    }
 
     Ok(iova)
 }
@@ -2935,25 +3250,31 @@ pub fn map_for_dma(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuE
 /// Unmap a DMA address range
 pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
     let mut guard = IOMMU.lock();
-    let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+    if guard.controllers.is_empty() {
+        return Err(IommuError::NotPresent);
+    }
 
-    // Unmap from the default domain
-    let domain = controller
-        .domains
-        .get_mut(&0)
-        .ok_or(IommuError::DomainNotFound)?;
-
-    domain.unmap(iova)?;
+    for controller in &mut guard.controllers {
+        let domain = controller
+            .domains
+            .get_mut(&0)
+            .ok_or(IommuError::DomainNotFound)?;
+        domain.unmap(iova)?;
+    }
     Ok(())
 }
 
-/// Execute with IOMMU controller
+/// Execute with default IOMMU controller
 pub fn with_iommu<F, R>(f: F) -> Result<R, IommuError>
 where
     F: FnOnce(&mut IommuController) -> R,
 {
     let mut guard = IOMMU.lock();
-    let controller = guard.as_mut().ok_or(IommuError::NotPresent)?;
+    let idx = guard.default_iommu_idx.ok_or(IommuError::NotPresent)?;
+    let controller = guard
+        .controllers
+        .get_mut(idx)
+        .ok_or(IommuError::NotPresent)?;
     Ok(f(controller))
 }
 
@@ -2984,44 +3305,81 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         bdf.function.0,
     );
 
-    with_iommu(|iommu| {
-        // 1. 新しいドメインを作成
-        // Prefer creating the domain on the local NUMA node if available
-        let numa_hint = Some(crate::mm::numa::current_node());
-        let domain_id = match iommu.create_domain(numa_hint) {
-            Ok(id) => id,
-            Err(e) => {
-                log::info!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
-                return None;
-            }
-        };
+    let bdf = device.bdf;
+    // Retrieve segment from device info (if available) or assume 0
+    let segment = 0; // TODO: Get from PciDeviceInfo if added
 
-        // 2. デバイスをドメインにアタッチ
-        if let Err(e) = iommu.attach_device(device_id, domain_id) {
-            log::info!(
-                "[IOMMU] Failed to attach device {:?} to domain {}: {:?}\n",
-                bdf,
-                domain_id,
-                e
-            );
+    // Find correct IOMMU for this device
+    let mut guard = IOMMU.lock();
+    let controller =
+        guard.find_controller_for_device_mut(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
+
+    let iommu = match controller {
+        Some(c) => c,
+        None => return None, // No IOMMU for this device
+    };
+
+    // 1. 新しいドメインを作成
+    // Prefer creating the domain on the local NUMA node if available
+    let numa_hint = Some(crate::mm::numa::current_node());
+    let domain_id = match iommu.create_domain(numa_hint) {
+        Ok(id) => id,
+        Err(e) => {
+            log::info!("[IOMMU] Failed to create domain for {:?}: {:?}\n", bdf, e);
             return None;
         }
+    };
 
-        // 3. デバイス情報を更新
-        device.iommu_domain_id = Some(domain_id);
+    let device_id = DeviceId::new(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
 
+    // 2. デバイスをドメインにアタッチ
+    if let Err(e) = iommu.attach_device(device_id, domain_id) {
         log::info!(
-            "[IOMMU] Device {:02x}:{:02x}.{} -> Domain {}\n",
-            bdf.bus.0,
-            bdf.device.0,
-            bdf.function.0,
-            domain_id
+            "[IOMMU] Failed to attach device {:?} to domain {}: {:?}\n",
+            bdf,
+            domain_id,
+            e
         );
+        return None;
+    }
 
-        Some(domain_id)
-    })
-    .ok()
-    .flatten()
+    // 2.5 Reserved Memory Regions (RMRR) の適用
+    // guardを再取得せずにapply_reserved_regionsを呼び出すために、
+    // IommuManagerのメソッドではなく、直接操作するか、helperメソッド呼出しが必要
+    // ここではguardを保持したまま処理を行う
+
+    // RMRR application logic integrated into setup flow
+    for region in &guard.reserved_regions {
+        if region.segment != device_id.segment {
+            continue;
+        }
+        // Check scope
+        if region.devices.iter().any(|d| *d == device_id) {
+            let size = region.limit - region.base + 1;
+            if let Some(domain) = iommu.domain_mut(domain_id) {
+                log::info!(
+                    "[IOMMU] Applying RMRR {:#x} to device {:?}\n",
+                    region.base,
+                    bdf
+                );
+                let _ = domain.map_identity(region.base, size, true, true);
+            }
+        }
+    }
+
+    // 3. デバイス情報を更新
+    device.iommu_domain_id = Some(domain_id);
+
+    log::info!(
+        "[IOMMU] Device {:02x}:{:02x}.{} -> Domain {} (Seg {})\n",
+        bdf.bus.0,
+        bdf.device.0,
+        bdf.function.0,
+        domain_id,
+        segment
+    );
+
+    Some(domain_id)
 }
 
 /// すべてのPCIデバイスにIOMMUドメインを設定
@@ -3090,7 +3448,7 @@ mod tests {
 
     #[test]
     fn test_create_domain_with_numa_hint() {
-        let mut ctrl = IommuController::new(0x0);
+        let mut ctrl = IommuController::new(0x0, 0);
         let id = ctrl.create_domain(Some(2)).expect("create_domain failed");
         let domain = ctrl.domain(id).expect("domain not found");
         assert_eq!(domain.id(), id);
@@ -3104,7 +3462,7 @@ mod tests {
 
     #[test]
     fn test_iova_allocator_basic() {
-        let mut ctrl = IommuController::new(0x0);
+        let mut ctrl = IommuController::new(0x0, 0);
         // Small IOVA space for testing (64KB)
         ctrl.init_iova(0x1000_0000, 0x10000)
             .expect("init_iova failed");
@@ -3122,7 +3480,7 @@ mod tests {
 
     #[test]
     fn test_map_for_dma_alloc_non_identity() {
-        let mut ctrl = IommuController::new(0x0);
+        let mut ctrl = IommuController::new(0x0, 0);
         ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
         // Create default domain 0 for mapping
