@@ -9,7 +9,7 @@ use super::icmp::{IcmpEchoBuilder, IcmpProcessor, IcmpResult};
 use super::ipv4::{
     IpProtocol, Ipv4Address, Ipv4Config, Ipv4PacketMut, Ipv4ProcessResult, Ipv4Processor,
 };
-use super::mempool::PacketPool;
+use super::mempool::{PacketPool, PacketRef};
 use super::tcp::TcpProcessor;
 use super::udp::{UdpProcessor, UdpResult, UdpSocket};
 
@@ -103,25 +103,25 @@ pub type TransmitFn = fn(&[u8]) -> bool;
 /// Integrated network stack
 pub struct NetworkStack {
     /// Configuration
-    config: PoisonLock<NetworkConfig>,
+    config: NetworkConfig,
     /// Ethernet processor
-    ethernet: PoisonLock<EthernetProcessor>,
+    ethernet: EthernetProcessor,
     /// IPv4 processor
-    ipv4: PoisonLock<Ipv4Processor>,
+    ipv4: Ipv4Processor,
     /// ARP processor
-    arp: PoisonLock<ArpProcessor>,
+    arp: ArpProcessor,
     /// ICMP processor
-    icmp: PoisonLock<IcmpProcessor>,
+    icmp: IcmpProcessor,
     /// UDP processor
     udp: UdpProcessor,
     /// TCP processor
-    tcp: PoisonLock<TcpProcessor>,
+    tcp: TcpProcessor,
     /// Packet pool for transmit buffers
     tx_pool: PacketPool,
     /// Statistics
     stats: NetworkStats,
     /// Transmit callback
-    transmit_fn: PoisonLock<Option<TransmitFn>>,
+    transmit_fn: Option<TransmitFn>,
     /// Current timestamp (ticks)
     current_time: AtomicU64,
 }
@@ -139,16 +139,16 @@ impl NetworkStack {
         // Note: ipv4.clone() は Ipv4Config が小さい構造体のため
         // アセンブリでは memcpy やレジスタコピーに展開される
         NetworkStack {
-            ethernet: PoisonLock::new(EthernetProcessor::new(mac)),
-            ipv4: PoisonLock::new(Ipv4Processor::new(config.ipv4.clone())),
-            arp: PoisonLock::new(ArpProcessor::new(mac, ip)),
-            icmp: PoisonLock::new(IcmpProcessor::new(ip)),
+            ethernet: EthernetProcessor::new(mac),
+            ipv4: Ipv4Processor::new(config.ipv4.clone()),
+            arp: ArpProcessor::new(mac, ip),
+            icmp: IcmpProcessor::new(ip),
             udp: UdpProcessor::new(),
-            tcp: PoisonLock::new(TcpProcessor::new()),
+            tcp: TcpProcessor::new(),
             tx_pool: PacketPool::new(64, MAX_PACKET_SIZE),
-            config: PoisonLock::new(config),
+            config: config,
             stats: NetworkStats::default(),
-            transmit_fn: PoisonLock::new(None),
+            transmit_fn: None,
             current_time: AtomicU64::new(0),
         }
     }
@@ -159,11 +159,8 @@ impl NetworkStack {
     }
 
     /// Set transmit callback
-    pub fn set_transmit_fn(&self, f: TransmitFn) {
-        *self.transmit_fn.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] TX Fn poisoned");
-            e.into_inner()
-        }) = Some(f);
+    pub fn set_transmit_fn(&mut self, f: TransmitFn) {
+        self.transmit_fn = Some(f);
     }
 
     /// Update current time (call periodically)
@@ -177,87 +174,36 @@ impl NetworkStack {
     }
 
     /// Get configuration (full clone - use sparingly)
-    ///
-    /// Note: この関数は NetworkConfig 全体をクローンするため、
-    /// 頻繁に呼び出す場合は個別のフィールドアクセサを使用すること。
     pub fn config(&self) -> NetworkConfig {
-        self.config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .clone()
+        self.config.clone()
     }
 
-    /// ICMP echo が有効かチェック（clone不要）
+    /// ICMP echo が有効かチェック
     #[inline]
     pub fn icmp_echo_enabled(&self) -> bool {
-        self.config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .icmp_echo_enabled
+        self.config.icmp_echo_enabled
     }
 
-    /// MAC アドレスを取得（Copy型なのでclone不要）
+    /// MAC アドレスを取得
     #[inline]
     pub fn mac_address(&self) -> MacAddress {
-        self.config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .mac
+        self.config.mac
     }
 
-    /// IPv4 アドレスを取得（Copy型なのでclone不要）
+    /// IPv4 アドレスを取得
     #[inline]
     pub fn ipv4_address(&self) -> Ipv4Address {
-        self.config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .ipv4
-            .address
+        self.config.ipv4.address
     }
 
     /// Update configuration
-    pub fn set_config(&self, config: NetworkConfig) {
-        let mut cfg = self.config.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] Config poisoned");
-            e.into_inner()
-        });
-
+    pub fn set_config(&mut self, config: NetworkConfig) {
         // Update all processors
-        self.ethernet
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Ethernet poisoned");
-                e.into_inner()
-            })
-            .set_local_mac(config.mac);
-        self.ipv4
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] IPv4 poisoned");
-                e.into_inner()
-            })
-            .set_config(config.ipv4.clone());
-        self.arp
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] ARP poisoned");
-                e.into_inner()
-            })
-            .set_local(config.mac, config.ipv4.address);
+        self.ethernet.set_local_mac(config.mac);
+        self.ipv4.set_config(config.ipv4.clone());
+        self.arp.set_local(config.mac, config.ipv4.address);
 
-        *cfg = config;
+        self.config = config;
     }
 
     /// Get statistics
@@ -266,17 +212,11 @@ impl NetworkStack {
     }
 
     /// Process an incoming packet (main entry point)
-    pub fn receive(&self, data: &[u8]) {
+    pub fn receive(&mut self, packet: PacketRef) {
         let current_time = self.current_time();
 
-        // Process Ethernet frame
-        let result = {
-            let mut eth = self.ethernet.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] Ethernet poisoned");
-                e.into_inner()
-            });
-            eth.process(data)
-        };
+        // Process Ethernet frame (zero-copy via PacketRef view)
+        let result = self.ethernet.process(packet.data());
 
         match result {
             ProcessResult::Ipv4(payload) => {
@@ -297,18 +237,12 @@ impl NetworkStack {
             }
         }
 
-        self.stats.record_rx(data.len());
+        self.stats.record_rx(packet.len());
     }
 
     /// Process IPv4 packet
-    fn process_ipv4(&self, data: &[u8], current_time: u64) {
-        let result = {
-            let mut ipv4 = self.ipv4.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] IPv4 poisoned");
-                e.into_inner()
-            });
-            ipv4.process(data)
-        };
+    fn process_ipv4(&mut self, data: &[u8], current_time: u64) {
+        let result = self.ipv4.process(data);
 
         match result {
             Ipv4ProcessResult::Icmp(payload, src_ip) => {
@@ -326,18 +260,13 @@ impl NetworkStack {
             Ipv4ProcessResult::Error => {
                 self.stats.record_rx_error();
             }
+            Ipv4ProcessResult::Success => {}
         }
     }
 
     /// Process ARP packet
-    fn process_arp(&self, data: &[u8], current_time: u64) {
-        let result = {
-            let arp = self.arp.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] ARP poisoned");
-                e.into_inner()
-            });
-            arp.process(data, current_time)
-        };
+    fn process_arp(&mut self, data: &[u8], current_time: u64) {
+        let result = self.arp.process(data, current_time);
 
         match result {
             ArpResult::SendReply {
@@ -350,23 +279,17 @@ impl NetworkStack {
                 // Cache was updated, check if we have pending sends
             }
             ArpResult::Ignored | ArpResult::Invalid => {}
+            _ => {}
         }
     }
 
     /// Process ICMP packet
-    fn process_icmp(&self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
-        // clone() の代わりに専用アクセサを使用（Copy型の値のみ取得）
+    fn process_icmp(&mut self, data: &[u8], src_ip: Ipv4Address, current_time: u64) {
         if !self.icmp_echo_enabled() {
             return;
         }
 
-        let result = {
-            let mut icmp = self.icmp.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] ICMP poisoned");
-                e.into_inner()
-            });
-            icmp.process(data, src_ip)
-        };
+        let result = self.icmp.process(data, src_ip);
 
         match result {
             IcmpResult::SendEchoReply {
@@ -397,7 +320,7 @@ impl NetworkStack {
     }
 
     /// Process UDP packet
-    fn process_udp(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+    fn process_udp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
         let result = self.udp.process(data, src_ip, dst_ip);
 
         match result {
@@ -413,18 +336,13 @@ impl NetworkStack {
     }
 
     /// Process TCP packet
-    fn process_tcp(&self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
-        let mut tcp = self.tcp.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] TCP poisoned");
-            e.into_inner()
-        });
-        tcp.process(data, src_ip, dst_ip);
+    fn process_tcp(&mut self, data: &[u8], src_ip: Ipv4Address, dst_ip: Ipv4Address) {
+        self.tcp.process(data, src_ip, dst_ip);
     }
 
     /// Send an ARP reply
-    fn send_arp_reply(&self, target_mac: MacAddress, target_ip: Ipv4Address) {
+    fn send_arp_reply(&mut self, target_mac: MacAddress, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
-        // clone() ではなく Copy 型の個別取得
         let mac = self.mac_address();
 
         // Build Ethernet frame
@@ -435,15 +353,7 @@ impl NetworkStack {
                 .set_ether_type(EtherType::Arp);
 
             let payload = frame.payload_mut();
-            if let Some(len) = self
-                .arp
-                .lock()
-                .unwrap_or_else(|e| {
-                    log::warn!("[NET] ARP poisoned");
-                    e.into_inner()
-                })
-                .build_reply(payload, target_mac, target_ip)
-            {
+            if let Some(len) = self.arp.build_reply(payload, target_mac, target_ip) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
 
@@ -453,21 +363,14 @@ impl NetworkStack {
     }
 
     /// Send an ARP request
-    pub fn send_arp_request(&self, target_ip: Ipv4Address) {
+    pub fn send_arp_request(&mut self, target_ip: Ipv4Address) {
         let mut buffer = [0u8; 64];
-        // clone() ではなく Copy 型の個別取得
         let mac = self.mac_address();
         let current_time = self.current_time();
 
         // Check if we already have a pending request
-        {
-            let arp = self.arp.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] ARP poisoned");
-                e.into_inner()
-            });
-            if arp.cache().is_pending(target_ip, current_time) {
-                return;
-            }
+        if self.arp.cache().is_pending(target_ip, current_time) {
+            return;
         }
 
         // Build Ethernet frame (broadcast)
@@ -478,26 +381,12 @@ impl NetworkStack {
                 .set_ether_type(EtherType::Arp);
 
             let payload = frame.payload_mut();
-            if let Some(len) = self
-                .arp
-                .lock()
-                .unwrap_or_else(|e| {
-                    log::warn!("[NET] ARP poisoned");
-                    e.into_inner()
-                })
-                .build_request(payload, target_ip)
-            {
+            if let Some(len) = self.arp.build_request(payload, target_ip) {
                 frame.set_payload_len(len);
                 frame.pad_to_minimum();
 
                 // Mark request as sent
-                self.arp
-                    .lock()
-                    .unwrap_or_else(|e| {
-                        log::warn!("[NET] ARP poisoned");
-                        e.into_inner()
-                    })
-                    .request_sent(target_ip, current_time);
+                self.arp.request_sent(target_ip, current_time);
 
                 self.transmit(frame.as_bytes());
             }
@@ -506,57 +395,32 @@ impl NetworkStack {
 
     /// Send ICMP echo reply
     fn send_icmp_echo_reply(
-        &self,
+        &mut self,
         dst_ip: Ipv4Address,
         identifier: u16,
         sequence: u16,
         echo_data: &[u8],
         current_time: u64,
     ) {
-        let config = self
-            .config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .clone();
+        let config = self.config.clone();
 
         // Resolve MAC address
         let dst_mac = if config.ipv4.is_local(&dst_ip) {
             // Destination is on local subnet, use ARP
-            match self
-                .arp
-                .lock()
-                .unwrap_or_else(|e| {
-                    log::warn!("[NET] ARP poisoned");
-                    e.into_inner()
-                })
-                .resolve(dst_ip, current_time)
-            {
-                Some(mac) => mac,
-                None => {
-                    // Need to send ARP request first
-                    self.send_arp_request(dst_ip);
-                    return;
-                }
+            if let Some(mac) = self.arp.resolve(dst_ip, current_time) {
+                mac
+            } else {
+                // Need to send ARP request first
+                self.send_arp_request(dst_ip);
+                return;
             }
         } else {
             // Destination is remote, use gateway
-            match self
-                .arp
-                .lock()
-                .unwrap_or_else(|e| {
-                    log::warn!("[NET] ARP poisoned");
-                    e.into_inner()
-                })
-                .resolve(config.ipv4.gateway, current_time)
-            {
-                Some(mac) => mac,
-                None => {
-                    self.send_arp_request(config.ipv4.gateway);
-                    return;
-                }
+            if let Some(mac) = self.arp.resolve(config.ipv4.gateway, current_time) {
+                mac
+            } else {
+                self.send_arp_request(config.ipv4.gateway);
+                return;
             }
         };
 
@@ -600,15 +464,14 @@ impl NetworkStack {
     }
 
     /// Send a UDP packet
-    pub fn send_udp(&self, src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
-        let config = self
-            .config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .clone();
+    pub fn send_udp(
+        &mut self,
+        src_port: u16,
+        dst_ip: Ipv4Address,
+        dst_port: u16,
+        data: &[u8],
+    ) -> bool {
+        let config = self.config.clone();
         let current_time = self.current_time();
 
         // Resolve MAC address
@@ -664,7 +527,7 @@ impl NetworkStack {
 
     /// Resolve IP to MAC address
     fn resolve_mac(
-        &self,
+        &mut self,
         dst_ip: Ipv4Address,
         config: &NetworkConfig,
         current_time: u64,
@@ -682,14 +545,9 @@ impl NetworkStack {
         };
 
         // Look up in ARP cache
-        let arp = self.arp.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
-        match arp.resolve(next_hop, current_time) {
+        match self.arp.resolve(next_hop, current_time) {
             Some(mac) => Some(mac),
             None => {
-                drop(arp);
                 // Need ARP resolution
                 self.send_arp_request(next_hop);
                 None
@@ -699,15 +557,13 @@ impl NetworkStack {
 
     /// Send a raw TCP segment
     /// tcp_segment should already have the TCP header and data, with checksum calculated
-    pub fn send_tcp(&self, src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
-        let config = self
-            .config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .clone();
+    pub fn send_tcp(
+        &mut self,
+        src_ip: Ipv4Address,
+        dst_ip: Ipv4Address,
+        tcp_segment: &[u8],
+    ) -> bool {
+        let config = self.config.clone();
         let current_time = self.current_time();
 
         // Resolve MAC address
@@ -756,18 +612,13 @@ impl NetworkStack {
     }
 
     /// Bind a UDP socket
-    pub fn bind_udp(&self, port: u16) -> Option<UdpSocket> {
+    pub fn bind_udp(&mut self, port: u16) -> Option<UdpSocket> {
         self.udp.bind(port)
     }
 
     /// Transmit a raw Ethernet frame
     pub fn transmit(&self, data: &[u8]) -> bool {
-        let tx_fn = self.transmit_fn.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] TX Fn poisoned");
-            e.into_inner()
-        });
-
-        if let Some(f) = *tx_fn {
+        if let Some(f) = self.transmit_fn {
             if f(data) {
                 self.stats.record_tx(data.len());
                 return true;
@@ -783,11 +634,6 @@ impl NetworkStack {
     /// Get ARP cache entries (for debugging)
     pub fn arp_cache(&self) -> Vec<(Ipv4Address, MacAddress)> {
         self.arp
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] ARP poisoned");
-                e.into_inner()
-            })
             .cache()
             .all_entries()
             .iter()
@@ -798,38 +644,16 @@ impl NetworkStack {
 
     /// Get configuration (for shell commands)
     pub fn get_config(&self) -> NetworkConfig {
-        self.config
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Config poisoned");
-                e.into_inner()
-            })
-            .clone()
+        self.config.clone()
     }
 
     /// Update IP address (for DHCP)
-    pub fn update_ip(&self, ip: Ipv4Address) {
-        let mut config = self.config.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] Config poisoned");
-            e.into_inner()
-        });
-        config.ipv4.address = ip;
+    pub fn update_ip(&mut self, ip: Ipv4Address) {
+        self.config.ipv4.address = ip;
 
         // Update dependent processors
-        self.ipv4
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] IPv4 poisoned");
-                e.into_inner()
-            })
-            .set_config(config.ipv4.clone());
-        self.arp
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] ARP poisoned");
-                e.into_inner()
-            })
-            .set_local(config.mac, ip);
+        self.ipv4.set_config(self.config.ipv4.clone());
+        self.arp.set_local(self.config.mac, ip);
     }
 
     /// Send ICMP echo request (ping)
@@ -853,20 +677,17 @@ impl NetworkStack {
 
         // Need to resolve target MAC via ARP
         let current_time = self.current_time();
-        let target_mac = {
-            let arp = self.arp.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] ARP poisoned");
-                e.into_inner()
-            });
-            arp.cache().lookup(target, current_time)
-        };
+        // arp.cache() is accessible directly now
+        let target_mac = self.arp.cache().lookup(target, current_time);
 
         let dst_mac = match target_mac {
             Some(mac) => mac,
             None => {
                 // For gateway, use broadcast initially
                 // In a real implementation, we'd send ARP request and wait
-                MacAddress::BROADCAST
+                // Trigger ARP request
+                self.send_arp_request(target);
+                return Err(());
             }
         };
 
@@ -945,18 +766,11 @@ impl NetworkStack {
     }
 
     /// Periodic maintenance (call from timer)
-    pub fn periodic(&self) {
+    pub fn periodic(&mut self) {
         let current_time = self.current_time();
 
         // Expire old ARP entries
-        self.arp
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] ARP poisoned");
-                e.into_inner()
-            })
-            .cache()
-            .expire_old(current_time);
+        self.arp.cache().expire_old(current_time);
     }
 }
 
@@ -984,17 +798,30 @@ pub fn stack() -> &'static PoisonLock<Option<NetworkStack>> {
 
 /// Process a received packet
 pub fn receive(data: &[u8]) {
-    if let Some(ref stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
-        log::warn!("[NET] Global Stack poisoned");
-        e.into_inner()
-    }) {
-        stack.receive(data);
+    use crate::net::mempool::alloc_packet;
+
+    // Allocate PacketRef to bridge legacy driver to Zero-Copy stack
+    if let Some(mut packet) = alloc_packet() {
+        // Copy data (Bridge)
+        let len = data.len().min(packet.capacity());
+        packet.data_mut()[..len].copy_from_slice(&data[..len]);
+        packet.set_len(len);
+
+        if let Some(ref mut stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] Global Stack poisoned");
+            e.into_inner()
+        }) {
+            stack.receive(packet);
+        }
+    } else {
+        // Drop packet due to OOM
+        // Ideally record stats
     }
 }
 
 /// Send a UDP datagram
 pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
-    if let Some(ref stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
+    if let Some(ref mut stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
         log::warn!("[NET] Global Stack poisoned");
         e.into_inner()
     }) {
@@ -1006,7 +833,7 @@ pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) 
 
 /// Send a TCP segment
 pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
-    if let Some(ref stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
+    if let Some(ref mut stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
         log::warn!("[NET] Global Stack poisoned");
         e.into_inner()
     }) {
@@ -1024,7 +851,7 @@ pub fn bind_udp(port: u16) -> Option<UdpSocket> {
             log::warn!("[NET] Global Stack poisoned");
             e.into_inner()
         })
-        .as_ref()
+        .as_mut()
         .and_then(|s| s.bind_udp(port))
 }
 

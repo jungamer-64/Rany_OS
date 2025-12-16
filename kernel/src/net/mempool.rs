@@ -62,11 +62,6 @@ impl PacketBuffer {
         self.data.as_mut_ptr()
     }
 
-    /// 容量を取得
-    pub fn capacity(&self) -> usize {
-        DEFAULT_BUFFER_SIZE
-    }
-
     /// データ長を取得
     pub fn len(&self) -> usize {
         self.len.load(Ordering::Acquire)
@@ -105,29 +100,78 @@ impl PacketBuffer {
 pub struct PacketRef {
     buffer: NonNull<PacketBuffer>,
     pool: &'static Mempool,
+    offset: usize,
+    len: usize,
 }
 
 impl PacketRef {
+    /// Create new PacketRef (internal)
+    fn new(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> Self {
+        let len = unsafe { buffer.as_ref().len() };
+        Self {
+            buffer,
+            pool,
+            offset: 0,
+            len,
+        }
+    }
+
     /// データスライスを取得
     pub fn data(&self) -> &[u8] {
-        unsafe { self.buffer.as_ref().data() }
+        unsafe {
+            let slice = self.buffer.as_ref().data();
+            if self.offset >= slice.len() {
+                return &[];
+            }
+            let end = (self.offset + self.len).min(slice.len());
+            &slice[self.offset..end]
+        }
     }
 
     /// 可変データスライスを取得（排他的所有時のみ）
     pub fn data_mut(&mut self) -> &mut [u8] {
-        unsafe { self.buffer.as_mut().data_mut() }
+        unsafe {
+            let slice = self.buffer.as_mut().data_mut();
+            if self.offset >= slice.len() {
+                return &mut [];
+            }
+            let end = (self.offset + self.len).min(slice.len());
+            &mut slice[self.offset..end]
+        }
     }
 
     /// データ長を設定
-    pub fn set_len(&self, len: usize) {
-        unsafe {
-            self.buffer.as_ref().set_len(len);
-        }
+    pub fn set_len(&mut self, len: usize) {
+        // Only updates the view length, not the underlying buffer content length unless we want to?
+        // Actually, for RX, set_len usually sets the total valid data.
+        // But here PacketRef is a view.
+        // Let's assume set_len updates the view length.
+        self.len = len;
+    }
+
+    /// データ長を取得
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// 容量を取得
+    pub fn capacity(&self) -> usize {
+        DEFAULT_BUFFER_SIZE
     }
 
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
-        unsafe { self.buffer.as_ref().phys_addr() }
+        unsafe { self.buffer.as_ref().phys_addr() + self.offset as u64 }
+    }
+
+    /// ヘッドルームを消費（オフセットを進める）
+    pub fn advance(&mut self, size: usize) {
+        self.offset += size;
+        if self.len >= size {
+            self.len -= size;
+        } else {
+            self.len = 0;
+        }
     }
 
     /// クローン（参照カウントをインクリメント）
@@ -138,6 +182,8 @@ impl PacketRef {
         Self {
             buffer: self.buffer,
             pool: self.pool,
+            offset: self.offset,
+            len: self.len,
         }
     }
 }
@@ -254,7 +300,7 @@ impl Mempool {
 
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
 
-        Some(PacketRef { buffer, pool: self })
+        Some(PacketRef::new(buffer, self))
     }
 
     /// バッファを返却
@@ -351,10 +397,7 @@ impl PerCoreMempoolCache {
                 buffer.as_ref().len.store(0, Ordering::Release);
                 buffer.as_ref().ref_count.store(1, Ordering::Release);
             }
-            return Some(PacketRef {
-                buffer,
-                pool: self.parent,
-            });
+            return Some(PacketRef::new(buffer, self.parent));
         }
 
         // キャッシュが空なら親プールから取得

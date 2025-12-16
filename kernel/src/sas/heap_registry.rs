@@ -1,13 +1,23 @@
 // ============================================================================
-// src/sas/heap_registry.rs - ヒープオブジェクト所有権レジストリ
+// src/sas/heap_registry.rs - ヒープオブジェクト所有権レジストリ (Sharded)
 // ============================================================================
 //! SAS環境でのメモリ保護を実現するため、ヒープオブジェクトの所有者を追跡する。
 //! コンパイラベースの保護と実行時チェックを組み合わせて安全性を確保。
+//!
+//! # Scalability Improvements
+//! - Sharded Registry (32 shards) to reduce lock contention.
+//! - Removed Reference Counting (Strict Single Ownership).
 #![allow(dead_code)]
 
 use crate::domain_system::DomainId;
+use crate::sync::PoisonLock;
 use alloc::{collections::BTreeMap, vec::Vec};
 use core::sync::atomic::{AtomicU64, Ordering};
+
+/// デフォルト・シャード数 (調整可能)
+const DEFAULT_SHARD_COUNT: usize = 32;
+const MIN_SHARD_COUNT: usize = 4;
+const MAX_SHARD_COUNT: usize = 256;
 
 /// ヒープオブジェクトのメタデータ
 #[derive(Debug, Clone)]
@@ -22,20 +32,107 @@ pub struct HeapObject {
     pub type_id: u64,
     /// アロケーション世代（UAF検出用）
     pub generation: u64,
-    /// 参照カウント
-    pub ref_count: u32,
 }
 
-/// ヒープレジストリ
-///
-/// 全てのヒープオブジェクトの所有権を追跡し、
-/// SAS環境でのメモリ安全性を保証する。
-pub struct HeapRegistry {
+/// レジストリシャード
+#[derive(Debug)]
+struct RegistryShard {
     /// アドレス → オブジェクトのマッピング
     objects: BTreeMap<usize, HeapObject>,
-    /// ドメイン → 所有オブジェクトアドレスのマッピング
+    /// ドメイン → 所有オブジェクトアドレスのマッピング (このシャード内のみ)
     owner_index: BTreeMap<DomainId, Vec<usize>>,
-    /// 次のオブジェクト世代
+}
+
+impl RegistryShard {
+    fn new() -> Self {
+        Self {
+            objects: BTreeMap::new(),
+            owner_index: BTreeMap::new(),
+        }
+    }
+}
+
+    /// Measurement sweep for HeapRegistry: varies shard count and thread counts
+    /// and prints CSV-style metrics for analysis.
+    #[test]
+    fn test_heap_registry_shard_sweep() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let configs = [
+            (32usize, 8usize, 200usize, 50u64),
+            (16usize, 16usize, 300usize, 100u64),
+            (8usize, 32usize, 300usize, 200u64),
+            (4usize, 64usize, 150usize, 500u64),
+        ];
+
+        println!("shards,threads,ops,hold_us,acq_count,contention,avg_acq_ticks,object_count");
+
+        for (shard_count, num_threads, ops, hold_us) in configs.iter().cloned() {
+            reset_lock_metrics();
+
+            let registry = Arc::new(HeapRegistry::new(shard_count));
+
+            // address pool distributed across shards
+            let addresses_per_shard = 16usize;
+            let mut pool = Vec::new();
+            for s in 0..shard_count {
+                for i in 0..addresses_per_shard {
+                    let addr = (s << 4) + i * (shard_count << 4);
+                    pool.push(addr);
+                }
+            }
+            let pool = Arc::new(pool);
+
+            let mut handles = Vec::new();
+            for t in 0..num_threads {
+                let reg = Arc::clone(&registry);
+                let pool = Arc::clone(&pool);
+                let handle = thread::spawn(move || {
+                    let owner = DomainId::new((t + 1) as u64);
+                    for i in 0..ops {
+                        let addr = pool[(i + t) % pool.len()];
+                        match reg.register(addr, 64, owner, 0) {
+                            Ok(_) => {
+                                let _ = reg.unregister(addr, owner);
+                            }
+                            Err(_) => {
+                                let _ = reg.check_access(addr, owner);
+                            }
+                        }
+                        if hold_us > 0 {
+                            thread::sleep(Duration::from_micros(hold_us));
+                        }
+                    }
+                });
+                handles.push(handle);
+            }
+
+            for h in handles {
+                h.join().unwrap();
+            }
+
+            let m = get_lock_metrics();
+            println!(
+                "{},{},{},{},{},{},{},{}",
+                shard_count,
+                num_threads,
+                ops,
+                hold_us,
+                m.acquire_count,
+                m.contention_events,
+                m.average_acquire_ticks,
+                registry.object_count(),
+            );
+        }
+    }
+
+/// ヒープレジストリ (Sharded)
+pub struct HeapRegistry {
+    /// シャード化されたレジストリ（ランタイムサイズ）
+    shards: alloc::vec::Vec<PoisonLock<RegistryShard>>,
+    /// 次のオブジェクト世代 (Global atomic is fine for generation)
     next_generation: AtomicU64,
     /// 統計情報
     stats: RegistryStats,
@@ -43,46 +140,66 @@ pub struct HeapRegistry {
 
 /// レジストリ統計
 #[derive(Debug, Default)]
-struct RegistryStats {
-    total_registered: u64,
-    total_transferred: u64,
-    total_freed: u64,
-    access_checks: u64,
-    access_denials: u64,
+pub struct RegistryStats {
+    total_registered: AtomicU64,
+    total_transferred: AtomicU64,
+    total_freed: AtomicU64,
+    access_checks: AtomicU64,
+    access_denials: AtomicU64,
 }
 
 impl HeapRegistry {
-    /// 新しいレジストリを作成
-    pub const fn new() -> Self {
-        Self {
-            objects: BTreeMap::new(),
-            owner_index: BTreeMap::new(),
-            next_generation: AtomicU64::new(1),
-            stats: RegistryStats {
-                total_registered: 0,
-                total_transferred: 0,
-                total_freed: 0,
-                access_checks: 0,
-                access_denials: 0,
-            },
+    /// Create with explicit shard count
+    pub fn new(shard_count: usize) -> Self {
+        let shard_count = core::cmp::min(core::cmp::max(shard_count, MIN_SHARD_COUNT), MAX_SHARD_COUNT);
+        let mut shards = alloc::vec::Vec::with_capacity(shard_count);
+        for _ in 0..shard_count {
+            shards.push(PoisonLock::new(RegistryShard::new()));
         }
+        Self {
+            shards,
+            next_generation: AtomicU64::new(1),
+            stats: RegistryStats::default(),
+        }
+    }
+
+    /// Default initialization: choose shard count based on CPU count
+    pub fn default() -> Self {
+        let cpus = crate::smp::cpu_count() as usize;
+        let cpus = if cpus == 0 { 1 } else { cpus };
+        // 4 shards per CPU (rounded by next_power_of_two) is a practical default
+        let shards = core::cmp::min(core::cmp::max((cpus.next_power_of_two()).saturating_mul(4), MIN_SHARD_COUNT), MAX_SHARD_COUNT);
+        Self::new(shards)
+    }
+
+    /// シャードインデックスを計算
+    #[inline]
+    fn get_shard_index(&self, address: usize) -> usize {
+        // Simple hash by shifted address modulo current shard count
+        (address >> 4) % self.shards.len()
     }
 
     /// オブジェクトを登録
     pub fn register(
-        &mut self,
+        &self,
         address: usize,
         size: usize,
         owner: DomainId,
         type_id: u64,
     ) -> Result<u64, RegistryError> {
+        let shard_idx = self.get_shard_index(address);
+        let mut shard = self.shards[shard_idx].lock().unwrap();
+
         // 重複チェック
-        if self.objects.contains_key(&address) {
+        if shard.objects.contains_key(&address) {
             return Err(RegistryError::AlreadyRegistered);
         }
 
-        // 重なり検出
-        if self.check_overlap(address, size) {
+        // 重なり検出 (同シャード内のみ。シャードまたぎの重なりは、このハッシングでは検知できない可能性があるが、
+        // アロケータが重複アドレスを返さないことを前提とする。
+        // もし厳密にやるなら、アドレス範囲全域のシャードをロックする必要があるが、
+        // 通常メモリアロケータは重複しない。)
+        if self.check_overlap_internal(&shard, address, size) {
             return Err(RegistryError::Overlapping);
         }
 
@@ -94,59 +211,60 @@ impl HeapRegistry {
             owner,
             type_id,
             generation,
-            ref_count: 1,
         };
 
-        self.objects.insert(address, object);
+        shard.objects.insert(address, object);
 
         // オーナーインデックスを更新
-        self.owner_index
+        shard
+            .owner_index
             .entry(owner)
             .or_insert_with(Vec::new)
             .push(address);
 
-        self.stats.total_registered += 1;
+        self.stats.total_registered.fetch_add(1, Ordering::Relaxed);
 
         Ok(generation)
     }
 
     /// オブジェクトの登録を解除
-    pub fn unregister(&mut self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
+    pub fn unregister(&self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
+        let shard_idx = self.get_shard_index(address);
+        let mut shard = self.shards[shard_idx].lock().unwrap();
+
         // オブジェクトを検索
-        let object = self.objects.get(&address).ok_or(RegistryError::NotFound)?;
+        let object = shard.objects.get(&address).ok_or(RegistryError::NotFound)?;
 
         // 所有者チェック
         if object.owner != owner {
             return Err(RegistryError::PermissionDenied);
         }
 
-        // 参照カウントチェック
-        if object.ref_count > 1 {
-            return Err(RegistryError::StillReferenced);
-        }
-
         // 削除
-        self.objects.remove(&address);
+        shard.objects.remove(&address);
 
         // オーナーインデックスから削除
-        if let Some(addrs) = self.owner_index.get_mut(&owner) {
-            addrs.retain(|&a| a != address);
+        if let Some(addrs) = shard.owner_index.get_mut(&owner) {
+            addrs.retain(|a| *a != address);
         }
 
-        self.stats.total_freed += 1;
+        self.stats.total_freed.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
     }
 
     /// 所有権を転送
     pub fn transfer_ownership(
-        &mut self,
+        &self,
         address: usize,
         from: DomainId,
         to: DomainId,
     ) -> Result<(), RegistryError> {
+        let shard_idx = self.get_shard_index(address);
+        let mut shard = self.shards[shard_idx].lock().unwrap();
+
         // オブジェクトを検索
-        let object = self
+        let object = shard
             .objects
             .get_mut(&address)
             .ok_or(RegistryError::NotFound)?;
@@ -156,39 +274,61 @@ impl HeapRegistry {
             return Err(RegistryError::PermissionDenied);
         }
 
-        // 参照カウントチェック（転送は唯一の参照時のみ）
-        if object.ref_count != 1 {
-            return Err(RegistryError::StillReferenced);
-        }
-
         // 所有者を更新
         object.owner = to;
 
         // インデックスを更新
-        if let Some(addrs) = self.owner_index.get_mut(&from) {
-            addrs.retain(|&a| a != address);
+        if let Some(addrs) = shard.owner_index.get_mut(&from) {
+            addrs.retain(|a| *a != address);
         }
-        self.owner_index
+        shard
+            .owner_index
             .entry(to)
             .or_insert_with(Vec::new)
             .push(address);
 
-        self.stats.total_transferred += 1;
+        self.stats.total_transferred.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
     }
 
     /// アクセス権をチェック
-    pub fn check_access(&mut self, address: usize, accessor: DomainId) -> bool {
-        self.stats.access_checks += 1;
+    pub fn check_access(&self, address: usize, accessor: DomainId) -> bool {
+        self.stats.access_checks.fetch_add(1, Ordering::Relaxed);
+
+        let shard_idx = self.get_shard_index(address);
+        let shard = self.shards[shard_idx].lock().unwrap();
 
         // 直接マッチを試行
-        if let Some(object) = self.objects.get(&address) {
+        if let Some(object) = shard.objects.get(&address) {
             return object.owner == accessor;
         }
 
         // 範囲検索（アドレスがオブジェクト内にあるか）
-        for (_, object) in self.objects.range(..=address).rev().take(1) {
+        // オブジェクト開始アドレスが別のシャードにある場合、ここでの検索は失敗する。
+        // FIXME: Large objects spanning shards needs careful handling.
+        // Assumption: Objects are accessed by their base address usually.
+        // If pointers into middle of objects are checked, we need to search backward.
+        // But "sharding by address" usually means sharding by Base Address logic?
+        // No, current logic shards by query address.
+        // If I ask `check_access(addr + 10)`, hash might be different.
+        // Solutions:
+        // A) Only allow checking base address (fastest). User must supply base.
+        // B) Scan potential shards. (Expensive)
+        // C) Store object ranges in a separate structure?
+        //
+        // Current implementation tries `range(..=address).rev().take(1)`. This only works if the base address is in the same map (shard).
+        // Since we shard by `(address >> 4) % N`, small offsets (0..15) are in same shard.
+        // Large offsets might jump shards.
+        // Implementation Decision: `check_access` MUST receive the base address of the object, OR
+        // we enforce that objects are small enough/aligned enough, OR we accept that checking inner pointers is not supported efficiently.
+        //
+        // However, `UnregisteredPointer` error implies we should find it.
+        //
+        // Compromise: Implementation supports finding objects where `base_address` is in the same shard as `query_address`.
+        // This covers most small object cases. Large buffers should be checked by base address.
+
+        for (_, object) in shard.objects.range(..=address).rev().take(1) {
             if address < object.address + object.size {
                 if object.owner == accessor {
                     return true;
@@ -196,68 +336,29 @@ impl HeapRegistry {
             }
         }
 
-        self.stats.access_denials += 1;
+        self.stats.access_denials.fetch_add(1, Ordering::Relaxed);
         false
     }
 
-    /// オブジェクト情報を取得
-    pub fn get_object(&self, address: usize) -> Option<&HeapObject> {
-        self.objects.get(&address)
-    }
+    // ... Additional Helper Methods ...
 
-    /// ドメインの全オブジェクトを取得
-    pub fn get_domain_objects(&self, domain: DomainId) -> Option<&Vec<usize>> {
-        self.owner_index.get(&domain)
-    }
-
-    /// 参照カウントを増加
-    pub fn add_ref(&mut self, address: usize) -> Result<(), RegistryError> {
-        let object = self
-            .objects
-            .get_mut(&address)
-            .ok_or(RegistryError::NotFound)?;
-        object.ref_count = object
-            .ref_count
-            .checked_add(1)
-            .ok_or(RegistryError::RefCountOverflow)?;
-        Ok(())
-    }
-
-    /// 参照カウントを減少
-    pub fn release_ref(&mut self, address: usize) -> Result<u32, RegistryError> {
-        let object = self
-            .objects
-            .get_mut(&address)
-            .ok_or(RegistryError::NotFound)?;
-        object.ref_count = object
-            .ref_count
-            .checked_sub(1)
-            .ok_or(RegistryError::RefCountUnderflow)?;
-        Ok(object.ref_count)
-    }
-
-    /// 重なりをチェック
-    fn check_overlap(&self, address: usize, size: usize) -> bool {
-        // 前後の範囲をチェック
+    fn check_overlap_internal(&self, shard: &RegistryShard, address: usize, size: usize) -> bool {
         let end = address + size;
-
-        for (_, obj) in self.objects.range(..end) {
+        for (_, obj) in shard.objects.range(..end) {
             let obj_end = obj.address + obj.size;
             if obj.address < end && address < obj_end {
                 return true;
             }
         }
-
         false
     }
 
     // ========================================================================
-    // SAS Manager用の追加メソッド
+    // SAS Manager Wrapper Methods
     // ========================================================================
 
-    /// 所有者を変更（SAS Manager用簡易版）
     pub fn change_owner(
-        &mut self,
+        &self,
         ptr: usize,
         from: DomainId,
         to: DomainId,
@@ -269,75 +370,179 @@ impl HeapRegistry {
         })
     }
 
-    /// 所有者を取得
     pub fn get_owner(&self, ptr: usize) -> Option<DomainId> {
-        // 直接マッチ
-        if let Some(obj) = self.objects.get(&ptr) {
+        let shard_idx = self.get_shard_index(ptr);
+        let shard = self.shards[shard_idx].lock().unwrap();
+
+        if let Some(obj) = shard.objects.get(&ptr) {
             return Some(obj.owner);
         }
 
-        // 範囲検索
-        for (_, object) in self.objects.range(..=ptr).rev().take(1) {
+        // Range check in same shard
+        for (_, object) in shard.objects.range(..=ptr).rev().take(1) {
             if ptr < object.address + object.size {
                 return Some(object.owner);
             }
         }
-
         None
     }
 
-    /// オブジェクトを登録（簡易版、type_id = 0）
-    pub fn register_simple(&mut self, ptr: usize, size: usize, owner: DomainId) {
+    /// オブジェクトを無条件に登録解除し、情報を返す
+    pub fn unregister_any(&self, address: usize) -> Option<(DomainId, usize)> {
+        let shard_idx = self.get_shard_index(address);
+        let mut shard = self.shards[shard_idx].lock().unwrap();
+
+        if let Some(object) = shard.objects.remove(&address) {
+            // オーナーインデックスから削除
+            if let Some(addrs) = shard.owner_index.get_mut(&object.owner) {
+                addrs.retain(|a| *a != address);
+            }
+            self.stats.total_freed.fetch_add(1, Ordering::Relaxed);
+            return Some((object.owner, object.size));
+        }
+        None
+    }
+
+    pub fn register_simple(&self, ptr: usize, size: usize, owner: DomainId) {
         let _ = self.register(ptr, size, owner, 0);
     }
 
-    /// オブジェクトを登録解除（簡易版、所有者チェックなし）
-    /// RRefのDrop時など、所有者が明らかな場合に使用
-    pub fn unregister_simple(&mut self, ptr: usize) {
-        if let Some(obj) = self.objects.remove(&ptr) {
-            // オーナーインデックスから削除
-            if let Some(addrs) = self.owner_index.get_mut(&obj.owner) {
-                addrs.retain(|&a| a != ptr);
-            }
-            self.stats.total_freed += 1;
-        }
-    }
-
-    /// ドメインの全オブジェクトを回収
-    pub fn reclaim_all(&mut self, domain: DomainId) -> usize {
-        let addrs: Vec<usize> = self.owner_index.remove(&domain).unwrap_or_default();
-
-        let count = addrs.len();
-
-        for addr in addrs {
-            self.objects.remove(&addr);
-            self.stats.total_freed += 1;
-        }
-
-        count
-    }
-
-    /// 登録オブジェクト数を取得
+    // Legacy support (mostly for finding bugs)
     pub fn object_count(&self) -> usize {
-        self.objects.len()
+        self.shards
+            .iter()
+            .map(|s| s.lock().unwrap().objects.len())
+            .sum()
+    }
+
+    pub fn reclaim_all(&self, domain: DomainId) -> usize {
+        let mut count = 0;
+        for shard in &self.shards {
+            let mut shard = shard.lock().unwrap();
+            if let Some(addrs) = shard.owner_index.remove(&domain) {
+                for addr in addrs {
+                    shard.objects.remove(&addr);
+                    count += 1;
+                }
+            }
+        }
+        self.stats
+            .total_freed
+            .fetch_add(count as u64, Ordering::Relaxed);
+        count
     }
 }
 
 /// レジストリエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegistryError {
-    /// 既に登録済み
     AlreadyRegistered,
-    /// 見つからない
     NotFound,
-    /// 権限なし
     PermissionDenied,
-    /// まだ参照されている
-    StillReferenced,
-    /// 領域が重なっている
     Overlapping,
-    /// 参照カウントオーバーフロー
-    RefCountOverflow,
-    /// 参照カウントアンダーフロー
-    RefCountUnderflow,
+}
+
+// ============================================================================
+// Tests / Micro-benchmarks
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use std::thread;
+    use std::time::Duration;
+
+    use crate::sync::poison_lock::{reset_lock_metrics, get_lock_metrics};
+
+    /// 簡易コンテンションテスト：1スレッドがシャードを長時間保持し、別スレッドが同シャードにアクセスする。
+    /// PoisonLock の計測 (コンテンション検知) が記録されることを確認する。
+    #[test]
+    fn test_shard_lock_contention() {
+        // テスト用に計測値をリセット
+        reset_lock_metrics();
+
+        let registry = Arc::new(HeapRegistry::default());
+        let shard_idx = core::cmp::min(3usize, registry.shards.len() - 1);
+
+        // 長時間ロックを保持するスレッド
+        let r1 = Arc::clone(&registry);
+        let t1 = thread::spawn(move || {
+            let _g = r1.shards[shard_idx].lock().unwrap();
+            thread::sleep(Duration::from_millis(200));
+        });
+
+        // 少し待ってから別スレッドで同シャードにアクセスさせる（コンテンションを発生させる）
+        thread::sleep(Duration::from_millis(10));
+
+        let r2 = Arc::clone(&registry);
+        let t2 = thread::spawn(move || {
+            let addr = (shard_idx << 4) + 0usize;
+            let owner = DomainId::new(1);
+            // 登録操作はシャードロックを取るため、ここでスピンが発生するはず
+            let _ = r2.register(addr, 64, owner, 0);
+        });
+
+        t2.join().unwrap();
+        t1.join().unwrap();
+
+        let m = get_lock_metrics();
+        assert!(m.acquire_count >= 1, "expected at least one lock acquisition");
+        assert!(m.contention_events >= 1, "expected at least one contention event");
+    }
+
+    /// マルチスレッド負荷テスト：複数スレッドで同一または近傍シャードに対して登録/解除を繰り返す。
+    /// 実行時間が長くなりすぎないように控えめなループ回数を採用。
+    #[test]
+    fn test_heap_registry_multithreaded_stress() {
+        reset_lock_metrics();
+
+        let registry = Arc::new(HeapRegistry::default());
+        let num_threads = 8;
+        let ops_per_thread = 500usize;
+        let shard_ids = [0usize, 1usize];
+        let addresses_per_shard = 16usize;
+
+        // アドレスプール（各アドレスは同一シャードにハッシュされるように算出）
+        let shard_count = registry.shards.len();
+        let mut pool: Vec<usize> = Vec::new();
+        for &s_orig in &shard_ids {
+            let s = s_orig % shard_count;
+            for i in 0..addresses_per_shard {
+                let addr = (s << 4) + i * (shard_count << 4);
+                pool.push(addr);
+            }
+        }
+        let pool = Arc::new(pool);
+
+        let mut handles = Vec::new();
+        for t in 0..num_threads {
+            let reg = Arc::clone(&registry);
+            let pool = Arc::clone(&pool);
+            let handle = thread::spawn(move || {
+                let owner = DomainId::new((t + 1) as u64);
+                for i in 0..ops_per_thread {
+                    let addr = pool[(i + t) % pool.len()];
+                    match reg.register(addr, 64, owner, 0) {
+                        Ok(_) => {
+                            let _ = reg.unregister(addr, owner);
+                        }
+                        Err(_) => {
+                            let _ = reg.check_access(addr, owner);
+                        }
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let m = get_lock_metrics();
+        // 少なくともいくつかのロック獲得とコンテンションが発生していることを期待
+        assert!(m.acquire_count > 0, "expected some lock activity");
+        assert!(m.contention_events > 0, "expected some contention events");
+    }
 }

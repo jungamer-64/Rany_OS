@@ -13,9 +13,10 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU32, Ordering};
 
 use super::lockfree::Backoff;
+use serial_driver::serial_println;
 
 // ============================================================================
 // PoisonError - ロックが毒入れされた場合のエラー
@@ -126,6 +127,13 @@ impl<T> PoisonLock<T> {
     /// 呼び出し側は`into_inner()`で回復を試みることができる。
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
         // 1. スピンロックを取得（指数バックオフ付き）
+        // 計測: ロック獲得に要した時間とコンテンション有無を記録
+        #[cfg(test)]
+        let start = std::time::Instant::now();
+        #[cfg(not(test))]
+        let start = crate::task::current_tick();
+
+        let mut spin_count: u64 = 0;
         let mut backoff = Backoff::new();
         while self
             .locked
@@ -133,6 +141,19 @@ impl<T> PoisonLock<T> {
             .is_err()
         {
             backoff.spin();
+            spin_count = spin_count.wrapping_add(1);
+        }
+
+        // 計測値を更新
+        #[cfg(test)]
+        let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
+        #[cfg(not(test))]
+        let acquire_time = crate::task::current_tick().saturating_sub(start);
+
+        LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
+        LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
+        if spin_count > 0 {
+            LOCK_CONTENTION_EVENTS.fetch_add(1, Ordering::Relaxed);
         }
 
         let guard = PoisonLockGuard {
@@ -150,11 +171,25 @@ impl<T> PoisonLock<T> {
 
     /// ロックを試行（失敗したら即座に返る）
     pub fn try_lock(&self) -> Option<LockResult<PoisonLockGuard<'_, T>>> {
+        // try_lock は即時取得成功時のみ計測する
+        #[cfg(test)]
+        let start = std::time::Instant::now();
+        #[cfg(not(test))]
+        let start = crate::task::current_tick();
+
         if self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
             .is_ok()
         {
+            #[cfg(test)]
+            let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
+            #[cfg(not(test))]
+            let acquire_time = crate::task::current_tick().saturating_sub(start);
+
+            LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
+            LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
+
             let guard = PoisonLockGuard {
                 lock: self,
                 panicking: false,
@@ -264,7 +299,7 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
             // ドメインがMutexを保持したままパニックすると、
             // そのMutexは「poisoned」状態としてマークされる
             self.lock.poisoned.store(true, Ordering::Release);
-            crate::serial_println!("[PoisonLock] Lock poisoned due to panic");
+            serial_println!("[PoisonLock] Lock poisoned due to panic");
         }
 
         // スピンロックを解放
@@ -288,8 +323,6 @@ impl<T: fmt::Display + ?Sized> fmt::Display for PoisonLockGuard<'_, T> {
 // パニック検出ヘルパー
 // ============================================================================
 
-use core::sync::atomic::AtomicU32;
-
 /// 現在パニック中のCPUコアのビットマスク（最大32コア対応）
 static PANICKING_CORES: AtomicU32 = AtomicU32::new(0);
 
@@ -302,6 +335,45 @@ fn is_panicking() -> bool {
 
     let mask = PANICKING_CORES.load(Ordering::Acquire);
     (mask & (1 << core_id)) != 0
+}
+
+// ============================================================================
+// Lock acquisition metrics (軽量計測用)
+// - acquire_count: ロック取得呼び出し回数
+// - contention_events: スピンが発生した回数（コンテンション検知）
+// - total_acquire_ticks: ロック取得に費やした合計ティック数
+// ============================================================================
+static LOCK_ACQUIRE_COUNT: AtomicU64 = AtomicU64::new(0);
+static LOCK_CONTENTION_EVENTS: AtomicU64 = AtomicU64::new(0);
+static LOCK_TOTAL_ACQUIRE_TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// ロック計測値を取得する構造体
+pub struct LockMetrics {
+    pub acquire_count: u64,
+    pub contention_events: u64,
+    pub total_acquire_ticks: u64,
+    pub average_acquire_ticks: u64,
+}
+
+/// 計測値を返す
+pub fn get_lock_metrics() -> LockMetrics {
+    let acq = LOCK_ACQUIRE_COUNT.load(Ordering::Relaxed);
+    let cont = LOCK_CONTENTION_EVENTS.load(Ordering::Relaxed);
+    let total = LOCK_TOTAL_ACQUIRE_TICKS.load(Ordering::Relaxed);
+    let avg = if acq > 0 { total / acq } else { 0 };
+    LockMetrics {
+        acquire_count: acq,
+        contention_events: cont,
+        total_acquire_ticks: total,
+        average_acquire_ticks: avg,
+    }
+}
+
+/// 計測値をリセット（テスト用）
+pub fn reset_lock_metrics() {
+    LOCK_ACQUIRE_COUNT.store(0, Ordering::Relaxed);
+    LOCK_CONTENTION_EVENTS.store(0, Ordering::Relaxed);
+    LOCK_TOTAL_ACQUIRE_TICKS.store(0, Ordering::Relaxed);
 }
 
 /// 現在のCPUコアのパニック状態を設定
@@ -439,7 +511,7 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
         // パニック検出と毒入れ
         if is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
-            crate::serial_println!("[IrqPoisonLock] Lock poisoned due to panic");
+            serial_println!("[IrqPoisonLock] Lock poisoned due to panic");
         }
 
         // スピンロックを解放
@@ -491,6 +563,186 @@ mod tests {
                 let guard = err.into_inner();
                 assert_eq!(*guard, 42);
             }
+        }
+    }
+
+    #[test]
+    fn test_lock_contention_metrics() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        reset_lock_metrics();
+
+        let lock = Arc::new(PoisonLock::new(0usize));
+        let l2 = Arc::clone(&lock);
+
+        // Hold the lock in a background thread to force contention
+        let th = thread::spawn(move || {
+            let _g = l2.lock().unwrap();
+            thread::sleep(Duration::from_millis(100));
+        });
+
+        // Give the other thread a moment to acquire the lock
+        thread::sleep(Duration::from_millis(10));
+
+        // This acquisition should experience contention
+        let _guard = lock.lock().unwrap();
+
+        th.join().unwrap();
+
+        let m = get_lock_metrics();
+        assert!(m.acquire_count >= 1, "expected at least one lock acquisition");
+        assert!(m.contention_events >= 1, "expected at least one contention event");
+    }
+
+    /// Sharded-style stress test that simulates a sharded registry by creating
+    /// multiple `PoisonLock` instances and having many threads randomly lock
+    /// them repeatedly. This approximates contention patterns seen in
+    /// sharded registries without depending on the full `sas` module.
+    #[test]
+    fn test_sharded_poisonlock_stress() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        reset_lock_metrics();
+
+        let shard_count = 32usize;
+        let mut vec = Vec::with_capacity(shard_count);
+        for _ in 0..shard_count {
+            vec.push(Arc::new(PoisonLock::new(0usize)));
+        }
+        let shards = Arc::new(vec);
+
+        let num_threads = 16usize;
+        let ops = 300usize;
+        let mut handles = Vec::new();
+
+        for t in 0..num_threads {
+            let shards = Arc::clone(&shards);
+            let handle = thread::spawn(move || {
+                for i in 0..ops {
+                    let idx = (i + t) % shard_count;
+                    let _g = shards[idx].lock().unwrap();
+                    // occasional short hold to increase contention likelihood
+                    if i % 2 == 0 {
+                        thread::sleep(Duration::from_micros(50));
+                    }
+                }
+            });
+            handles.push(handle);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let m = get_lock_metrics();
+        assert!(m.acquire_count > 0, "expected some lock acquisitions");
+        assert!(m.contention_events > 0, "expected some contention events");
+    }
+
+    /// Higher contention scenario: fewer shards, more threads and longer holds.
+    #[test]
+    fn test_sharded_poisonlock_high_contention() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        reset_lock_metrics();
+
+        let shard_count = 4usize;
+        let mut vec = Vec::with_capacity(shard_count);
+        for _ in 0..shard_count {
+            vec.push(Arc::new(PoisonLock::new(0usize)));
+        }
+        let shards = Arc::new(vec);
+
+        let num_threads = 32usize;
+        let ops = 200usize;
+        let mut handles = Vec::new();
+
+        for t in 0..num_threads {
+            let shards = Arc::clone(&shards);
+            let handle = thread::spawn(move || {
+                for i in 0..ops {
+                    let idx = (i + t) % shard_count;
+                    let _g = shards[idx].lock().unwrap();
+                    // hold slightly longer to force spins on other threads
+                    thread::sleep(Duration::from_micros(200));
+                }
+            });
+            handles.push(handle);
+        }
+
+        for h in handles {
+            h.join().unwrap();
+        }
+
+        let m = get_lock_metrics();
+        assert!(m.acquire_count > 0, "expected some lock acquisitions");
+        assert!(m.contention_events > 0, "expected some contention events");
+    }
+
+    /// Measurement helper: sweep a few shard/thread configurations and print
+    /// CSV-style measurements so we can pick shard counts and judge contention.
+    /// This test is intended to run on the host (cfg(test)) only and prints
+    /// results to stdout for quick inspection.
+    #[test]
+    fn test_lock_metrics_sweep() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::Duration;
+
+        let configs = [
+            (32usize, 8usize, 200usize, 50u64),
+            (16usize, 16usize, 300usize, 100u64),
+            (8usize, 32usize, 300usize, 200u64),
+            (4usize, 64usize, 150usize, 500u64),
+        ];
+
+        println!("shards,threads,ops,hold_us,acq_count,contention,avg_acq_ticks");
+
+        for (shard_count, num_threads, ops, hold_us) in configs.iter().cloned() {
+            reset_lock_metrics();
+
+            let mut vec = Vec::with_capacity(shard_count);
+            for _ in 0..shard_count {
+                vec.push(Arc::new(PoisonLock::new(0usize)));
+            }
+            let shards = Arc::new(vec);
+
+            let mut handles = Vec::new();
+            for t in 0..num_threads {
+                let shards = Arc::clone(&shards);
+                let handle = thread::spawn(move || {
+                    for i in 0..ops {
+                        let idx = (i + t) % shard_count;
+                        let _g = shards[idx].lock().unwrap();
+                        if hold_us > 0 {
+                            thread::sleep(Duration::from_micros(hold_us));
+                        }
+                    }
+                });
+                handles.push(handle);
+            }
+
+            for h in handles {
+                h.join().unwrap();
+            }
+
+            let m = get_lock_metrics();
+            println!(
+                "{},{},{},{},{},{},{}",
+                shard_count,
+                num_threads,
+                ops,
+                hold_us,
+                m.acquire_count,
+                m.contention_events,
+                m.average_acquire_ticks
+            );
         }
     }
 }

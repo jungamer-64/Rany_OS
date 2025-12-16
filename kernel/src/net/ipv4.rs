@@ -650,6 +650,8 @@ pub enum Ipv4ProcessResult<'a> {
     Dropped,
     /// Error
     Error,
+    /// Success (Consumed internally)
+    Success,
 }
 
 impl Ipv4Processor {

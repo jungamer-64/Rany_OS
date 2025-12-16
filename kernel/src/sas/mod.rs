@@ -1,5 +1,6 @@
 // ============================================================================
 // src/sas/mod.rs - Single Address Space Manager
+// ============================================================================
 // 設計書 1.1: Single Address Space (SAS) の完全実装
 //
 // 全セルが単一の仮想アドレス空間を共有し、CR3切り替えなしで
@@ -14,6 +15,7 @@ pub mod ownership;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use lazy_static::lazy_static;
 use spin::Mutex;
 
 use crate::domain_system::DomainId;
@@ -21,6 +23,16 @@ use crate::domain_system::DomainId;
 pub use heap_registry::HeapRegistry;
 pub use memory_region::{MemoryRegion, RegionPermissions};
 pub use ownership::OwnershipError;
+
+// ============================================================================
+// Global Heap Registry
+// ============================================================================
+
+lazy_static! {
+    /// グローバルヒープオブジェクトレジストリ
+    /// Sharded + ThreadSafe structure
+    static ref HEAP_REGISTRY: HeapRegistry = HeapRegistry::default();
+}
 
 // ============================================================================
 // SAS Manager
@@ -33,8 +45,7 @@ pub use ownership::OwnershipError;
 pub struct SingleAddressSpaceManager {
     /// セルごとのメモリ領域管理
     cell_regions: BTreeMap<DomainId, Vec<MemoryRegion>>,
-    /// ヒープオブジェクトの所有者追跡
-    heap_registry: HeapRegistry,
+    // heap_registry: HeapRegistry, // Removed: Use global HEAP_REGISTRY
     /// 次の領域割り当てアドレス
     next_alloc_addr: AtomicU64,
     /// 初期化済みフラグ
@@ -46,7 +57,6 @@ impl SingleAddressSpaceManager {
     pub const fn new() -> Self {
         Self {
             cell_regions: BTreeMap::new(),
-            heap_registry: HeapRegistry::new(),
             next_alloc_addr: AtomicU64::new(SAS_BASE_ADDRESS),
             initialized: AtomicBool::new(false),
         }
@@ -102,70 +112,13 @@ impl SingleAddressSpaceManager {
         Ok(region)
     }
 
-    /// 所有権をゼロコピーで移動
-    ///
-    /// 設計書 7.1: CR3の切り替えなしでポインタの有効性を維持
-    /// アドレス変換なしで即座に完了
-    pub fn transfer_ownership(
-        &mut self,
-        ptr: usize,
-        from: DomainId,
-        to: DomainId,
-    ) -> Result<(), OwnershipError> {
-        // ポインタはそのまま有効（SASなのでアドレス変換不要）
-        // Heap Registryで所有者のみ変更
-        self.heap_registry.change_owner(ptr, from, to)?;
-
-        log::info!(
-            "[SAS] Transferred ownership: {:#x} from {} to {}\n",
-            ptr,
-            from,
-            to
-        );
-
-        Ok(())
-    }
-
-    /// オブジェクトを登録
-    pub fn register_object(&mut self, ptr: usize, size: usize, owner: DomainId) {
-        self.heap_registry.register_simple(ptr, size, owner);
-    }
-
-    /// オブジェクトを解除
-    pub fn unregister_object(&mut self, ptr: usize) -> Option<DomainId> {
-        let owner = self.heap_registry.get_owner(ptr)?;
-        // 注意: 完全な解除ではなく所有者を返すのみ
-        // 実際の解除は reclaim_domain_resources で行う
-        Some(owner)
-    }
-
-    /// アドレスの所有者を取得
-    pub fn get_owner(&self, ptr: usize) -> Option<DomainId> {
-        self.heap_registry.get_owner(ptr)
-    }
-
-    /// アクセス権限をチェック
-    pub fn check_access(&self, ptr: usize, accessor: DomainId) -> Result<(), OwnershipError> {
-        // カーネルドメインは全アクセス可能
-        if accessor == DomainId::KERNEL {
-            return Ok(());
-        }
-
-        // 所有者チェック
-        match self.heap_registry.get_owner(ptr) {
-            Some(owner) if owner == accessor => Ok(()),
-            Some(owner) => Err(OwnershipError::AccessDenied {
-                ptr,
-                owner,
-                accessor,
-            }),
-            None => Err(OwnershipError::UnregisteredPointer(ptr)),
-        }
-    }
+    // NOTE: transfer/check methods removed from struct to encourage using global methods
+    // bypassing the manager lock.
 
     /// セルのリソースを全て回収
     pub fn reclaim_domain_resources(&mut self, domain_id: DomainId) -> usize {
-        let count = self.heap_registry.reclaim_all(domain_id);
+        // 回収はグローバルレジストリに対して行う
+        let count = HEAP_REGISTRY.reclaim_all(domain_id);
         self.cell_regions.remove(&domain_id);
 
         log::info!("[SAS] Reclaimed {} objects from {}\n", count, domain_id);
@@ -175,8 +128,8 @@ impl SingleAddressSpaceManager {
     /// 統計情報を取得
     pub fn stats(&self) -> SasStats {
         SasStats {
-            total_regions: self.cell_regions.values().map(|v| v.len()).sum(),
-            total_objects: self.heap_registry.object_count(),
+            total_regions: self.cell_regions.values().map(|v| v.len()).sum::<usize>(),
+            total_objects: HEAP_REGISTRY.object_count(),
             domains: self.cell_regions.len(),
             next_addr: self.next_alloc_addr.load(Ordering::Relaxed),
         }
@@ -263,6 +216,7 @@ pub struct SasStats {
 static SAS_MANAGER: Mutex<SingleAddressSpaceManager> = Mutex::new(SingleAddressSpaceManager::new());
 
 /// SAS Managerにアクセス
+/// Note: 基本的な操作（所有権転送など）はこれを使わず、直接以下の関数を使用すること。
 pub fn with_sas_manager<F, R>(f: F) -> R
 where
     F: FnOnce(&SingleAddressSpaceManager) -> R,
@@ -283,27 +237,104 @@ pub fn init() {
     with_sas_manager_mut(|m| m.init());
 }
 
+// ============================================================================
+// High-Performance Access Methods (Bypass SAS_MANAGER lock)
+// ============================================================================
+
 /// 所有権を移動（公開API）
 pub fn transfer_ownership(ptr: usize, from: DomainId, to: DomainId) -> Result<(), OwnershipError> {
-    with_sas_manager_mut(|m| m.transfer_ownership(ptr, from, to))
+    HEAP_REGISTRY.change_owner(ptr, from, to).map_err(|e| {
+        // Logging moved here since it was inside manager method
+        // But logging might be expensive, maybe log only on error or debug
+        e
+    })?;
+
+    // Log success?
+    // log::info!("[SAS] Transferred ownership: {:#x} from {} to {}\n", ptr, from, to);
+    Ok(())
 }
 
 /// オブジェクトを登録
 pub fn register_object(ptr: usize, size: usize, owner: DomainId) {
-    with_sas_manager_mut(|m| m.register_object(ptr, size, owner));
+    HEAP_REGISTRY.register_simple(ptr, size, owner);
 }
 
 /// オブジェクトを解除
 pub fn unregister_object(ptr: usize) -> Option<DomainId> {
-    with_sas_manager_mut(|m| m.unregister_object(ptr))
+    // get_owner and unregister?
+    // unregister_object logic in original was: get_owner -> return owner.
+    // IT DID NOT UNREGISTER.
+    // "注意: 完全な解除ではなく所有者を返すのみ"
+    // "実際の解除は reclaim_domain_resources で行う"
+    //
+    // However, heap_registry.unregister exists.
+    // If the intention of `unregister_object` API was just "I am done with this, please free it",
+    // then we should unregister.
+    // But original code said: "Note: Not full unregister...".
+    // Wait, `heap_registry.unregister_simple` existed in previous `heap_registry.rs`.
+    // I need to implement `unregister_simple` in my new `heap_registry.rs` or just use `unregister`?
+    // In my new `heap_registry.rs`, `unregister` requires `owner`.
+    //
+    // The original `unregister_object` implementation called `self.heap_registry.get_owner(ptr)`.
+    // It didn't call `unregister`.
+    //
+    // If I want to match original behavior:
+    HEAP_REGISTRY.get_owner(ptr)
+}
+
+/// オブジェクトを無条件に登録解除し、情報を返す
+pub fn unregister_any(ptr: usize) -> Option<(DomainId, usize)> {
+    HEAP_REGISTRY.unregister_any(ptr)
 }
 
 /// アクセス権限をチェック
 pub fn check_access(ptr: usize, accessor: DomainId) -> Result<(), OwnershipError> {
-    with_sas_manager(|m| m.check_access(ptr, accessor))
+    // カーネルドメインは全アクセス可能
+    if accessor == DomainId::KERNEL {
+        return Ok(());
+    }
+
+    if HEAP_REGISTRY.check_access(ptr, accessor) {
+        Ok(())
+    } else {
+        // Find owner to report detailed error, if possible
+        let owner = HEAP_REGISTRY.get_owner(ptr);
+        match owner {
+            Some(o) => Err(OwnershipError::AccessDenied {
+                ptr,
+                owner: o,
+                accessor,
+            }),
+            None => Err(OwnershipError::UnregisteredPointer(ptr)),
+        }
+    }
+}
+
+/// 所有者を取得
+pub fn get_owner(ptr: usize) -> Option<DomainId> {
+    HEAP_REGISTRY.get_owner(ptr)
+}
+
+/// ドメインのリソースを回収
+pub fn reclaim_domain_resources(domain: DomainId) -> usize {
+    HEAP_REGISTRY.reclaim_all(domain)
 }
 
 /// 統計を取得
 pub fn stats() -> SasStats {
-    with_sas_manager(|m| m.stats())
+    // Must lock global manager for region stats
+    let regions = with_sas_manager(|m| {
+        (
+            m.cell_regions.len(),
+            m.next_alloc_addr.load(Ordering::Relaxed),
+            m.cell_regions.values().map(|v| v.len()).sum::<usize>(),
+        )
+    });
+
+    SasStats {
+        total_regions: regions.2,
+        total_objects: HEAP_REGISTRY.object_count(),
+        domains: regions.0,
+        next_addr: regions.1,
+    }
 }
