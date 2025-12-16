@@ -125,6 +125,8 @@ pub struct CellEntry {
     pub signature_verified: bool,
     /// 登録されたドライバ（このセルに依存するドライバ）
     pub registered_drivers: Vec<DriverHandle>,
+    /// 割り当てられた Protection Key
+    pub pkey: Option<u8>,
     /// モジュール統計情報
     pub stats: ModuleStats,
 }
@@ -333,6 +335,7 @@ pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<Cell
             is_safe: !signature.contains_unsafe,
             signature_verified: true,
             registered_drivers: Vec::new(),
+            pkey: loaded.pkey,
             stats: ModuleStats {
                 memory_usage: loaded.size,
                 segment_count: cell_info.segments.len(),
@@ -437,10 +440,10 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
         ));
     }
 
-    // セルのメモリ情報を取得（unload前に必要）
-    let (load_address, load_size) = with_registry(|r| {
+    // セルのメモリ情報と PKEY を取得（unload前に必要）
+    let (load_address, load_size, pkey_opt) = with_registry(|r| {
         r.get(id)
-            .map(|c| (c.load_address, c.load_size))
+            .map(|c| (c.load_address, c.load_size, c.pkey))
             .ok_or(LoadError::CellNotFound)
     })?;
 
@@ -459,6 +462,11 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     with_registry_mut(|r| {
         r.unload(id);
     });
+
+    // Protection Key を解放（存在する場合）
+    if let Some(pk) = pkey_opt {
+        crate::security::mpk::free_protection_key(pk);
+    }
 
     // メモリ解放
     if load_address != 0 && load_size > 0 {
@@ -547,6 +555,7 @@ pub fn init_kernel_cell() {
             is_safe: false, // カーネルはunsafeを含む
             signature_verified: true,
             registered_drivers: Vec::new(),
+            pkey: None,
             stats: ModuleStats::default(),
         };
         r.register(entry);
