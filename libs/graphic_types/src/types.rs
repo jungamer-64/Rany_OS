@@ -378,6 +378,7 @@ impl Rect {
     /// Zero-size rectangles (width=0 or height=0) are considered invalid
     /// and are typically filtered out during rendering.
     #[inline]
+    #[must_use]
     pub const fn is_valid(&self) -> bool {
         self.width > 0 && self.height > 0
     }
@@ -386,6 +387,7 @@ impl Rect {
     ///
     /// Convenience method, equivalent to `!self.is_valid()`.
     #[inline]
+    #[must_use]
     pub const fn is_zero_size(&self) -> bool {
         self.width == 0 || self.height == 0
     }

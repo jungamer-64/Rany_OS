@@ -443,6 +443,7 @@ pub const fn unpack_version(packed: u64) -> (u16, u16, u16) {
 ///
 /// Example:
 /// ```rust
+/// use kernel_api::export_driver;
 /// export_driver!(
 ///     probe: crate::probe_fn,
 ///     remove: crate::remove_fn,
@@ -459,6 +460,7 @@ pub const fn unpack_version(packed: u64) -> (u16, u16, u16) {
 ///
 /// Example with optional handlers:
 /// ```rust
+/// use kernel_api::export_driver;
 /// export_driver!(
 ///     probe: my_probe,
 ///     remove: my_remove,
