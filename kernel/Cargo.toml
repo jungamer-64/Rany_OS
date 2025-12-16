@@ -103,6 +103,11 @@ stats = []
 mouse = []
 bench = ["std"]
 
+# Test-only feature: enable PKEY allocation behavior inside tests so we can
+# exercise loader->mpk integration without requiring a full kernel runtime.
+# Usage: `cargo test -p rany_kernel --features pkey_integration_test`
+pkey_integration_test = []
+
 std = ["hal/std"]
 
 

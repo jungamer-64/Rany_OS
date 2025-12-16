@@ -628,7 +628,7 @@ impl<'a> ElfLoader<'a> {
                 v
             }
         }
-        #[cfg(not(any(test, feature = "bench")))]
+        #[cfg(any(feature = "pkey_integration_test", not(any(test, feature = "bench"))))]
         impl Drop for PkeyGuard {
             fn drop(&mut self) {
                 if let Some(v) = self.0 {
@@ -639,7 +639,7 @@ impl<'a> ElfLoader<'a> {
 
         // Allocate PKEY only when mm is available (non-test builds). The guard
         // will free the PKEY on early return if something goes wrong.
-        #[cfg(not(any(test, feature = "bench")))]
+        #[cfg(any(feature = "pkey_integration_test", not(any(test, feature = "bench"))))]
         let guard = {
             let pkey_raw = crate::security::mpk::allocate_protection_key()
                 .ok_or(LoadError::OutOfMemory)?;
@@ -650,9 +650,9 @@ impl<'a> ElfLoader<'a> {
         let base_address = self.allocate_memory(info.memory_size, info.alignment)?;
 
         // PKEY を取得（テストビルドでは None）
-        #[cfg(not(any(test, feature = "bench")))]
+        #[cfg(any(feature = "pkey_integration_test", not(any(test, feature = "bench"))))]
         let pkey = guard.release();
-        #[cfg(any(test, feature = "bench"))]
+        #[cfg(not(any(feature = "pkey_integration_test", not(any(test, feature = "bench")))))]
         let pkey = 0u8; // ダミー値（テスト/ベンチではフラグ更新を行わないため使用されない）
 
         // 各セグメントをロード
@@ -1195,6 +1195,60 @@ mod tests {
         assert_eq!(PF_X, 0x1);
         // W^X: 両方設定されている場合は0x3
         assert_eq!(PF_W | PF_X, 0x3);
+    }
+
+    /// PKEY integration test: verify that loading a cell allocates a PKEY and
+    /// unloading the cell frees it. This test is only compiled when the
+    /// `pkey_integration_test` feature is enabled to avoid requiring full
+    /// kernel runtime in normal unit tests.
+    #[test]
+    #[cfg(feature = "pkey_integration_test")]
+    fn test_pkey_alloc_and_free_on_load_unload() {
+        use core::mem;
+
+        // Ensure deterministic allocator state for the test
+        crate::security::mpk::test_reset_pkey_allocator();
+
+        // Prepare a minimal ELF with one PT_LOAD segment (filesz=0, memsz=4096)
+        let ph_size = mem::size_of::<Elf64ProgramHeader>();
+        let mut data = vec![0u8; 64 + ph_size];
+
+        let mut header: Elf64Header = unsafe { core::mem::zeroed() };
+        header.e_ident[0..4].copy_from_slice(&ELF_MAGIC);
+        header.e_ident[4] = ELFCLASS64;
+        header.e_ident[5] = ELFDATA2LSB;
+        header.e_machine = 0x3E; // x86_64
+        header.e_phoff = 64;
+        header.e_phentsize = ph_size as u16;
+        header.e_phnum = 1;
+
+        crate::util::write_struct(&mut data, 0, header).expect("write header");
+
+        let ph = Elf64ProgramHeader {
+            p_type: PT_LOAD,
+            p_flags: 0,
+            p_offset: (64 + ph_size) as u64,
+            p_vaddr: 0,
+            p_paddr: 0,
+            p_filesz: 0,
+            p_memsz: 4096,
+            p_align: 4096,
+        };
+
+        crate::util::write_struct(&mut data, header.e_phoff as usize, ph).expect("write ph");
+
+        // Load and register the cell (this should allocate a PKEY)
+        let cell_id = crate::loader::load_cell("test-pkey", &data, false).expect("load_cell");
+
+        // Verify that registry entry has a PKEY and that allocator reports it used
+        let pkey_opt = crate::loader::with_registry(|r| r.find_by_name("test-pkey").unwrap().pkey);
+        assert!(pkey_opt.is_some());
+        let pkey = pkey_opt.unwrap().unwrap();
+        assert!(crate::security::mpk::is_pkey_used(pkey));
+
+        // Unload should free the PKEY
+        crate::loader::unload_cell(cell_id).expect("unload");
+        assert!(!crate::security::mpk::is_pkey_used(pkey));
     }
 
     /// Elf64Relaのシンボル/タイプ抽出をテスト

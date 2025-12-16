@@ -102,6 +102,17 @@ pub fn allocate_protection_key() -> Option<u8> {
 pub fn free_protection_key(pkey: u8) {
     PKEY_ALLOCATOR.lock().free(pkey)
 }
+/// Test-only helpers: allow tests to query/reset allocator state when the
+/// `pkey_integration_test` feature is enabled (or under normal `#[cfg(test)]`).
+#[cfg(any(test, feature = "pkey_integration_test"))]
+pub fn is_pkey_used(pkey: u8) -> bool {
+    PKEY_ALLOCATOR.lock().is_used(pkey)
+}
+
+#[cfg(any(test, feature = "pkey_integration_test"))]
+pub fn test_reset_pkey_allocator() {
+    *PKEY_ALLOCATOR.lock() = PkeyAllocator::new();
+}
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 // ============================================================================
