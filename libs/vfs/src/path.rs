@@ -13,28 +13,32 @@ pub struct Path {
 }
 
 impl Path {
+    #[must_use]
     pub fn new(path: &str) -> Self {
         Self {
             inner: path.to_string(),
         }
     }
 
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.inner
     }
 
+    #[must_use]
     pub fn components(&self) -> Vec<&str> {
         self.inner.split('/').filter(|s| !s.is_empty()).collect()
     }
 
-    pub fn parent(&self) -> Option<Path> {
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
         if self.inner == "/" {
             return None;
         }
 
         let components = self.components();
         if components.is_empty() {
-            return Some(Path::new("/"));
+            return Some(Self::new("/"));
         }
 
         let mut parent = String::from("/");
@@ -48,16 +52,17 @@ impl Path {
             parent.push_str(component);
         }
 
-        Some(Path::new(&parent))
+        Some(Self::new(&parent))
     }
 
-    pub fn join(&self, path: &str) -> Path {
+    #[must_use]
+    pub fn join(&self, path: &str) -> Self {
         let mut new_path = self.inner.clone();
         if !new_path.ends_with('/') {
             new_path.push('/');
         }
         new_path.push_str(path);
-        Path::new(&new_path)
+        Self::new(&new_path)
     }
 }
 
