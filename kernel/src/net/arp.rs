@@ -5,8 +5,8 @@
 
 use super::ethernet::MacAddress;
 use super::ipv4::Ipv4Address;
+use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
 
 /// ARP hardware type
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -275,7 +275,7 @@ const ARP_INCOMPLETE_TIMEOUT: u64 = 3 * 1000;
 /// ARP cache for IPv4-to-MAC resolution
 pub struct ArpCache {
     /// Cache entries
-    entries: Mutex<[Option<ArpEntry>; ARP_CACHE_SIZE]>,
+    entries: PoisonLock<[Option<ArpEntry>; ARP_CACHE_SIZE]>,
     /// Statistics
     stats: ArpStats,
 }
@@ -308,7 +308,7 @@ impl ArpCache {
     pub const fn new() -> Self {
         const NONE: Option<ArpEntry> = None;
         ArpCache {
-            entries: Mutex::new([NONE; ARP_CACHE_SIZE]),
+            entries: PoisonLock::new([NONE; ARP_CACHE_SIZE]),
             stats: ArpStats {
                 hits: AtomicU64::new(0),
                 misses: AtomicU64::new(0),
@@ -320,7 +320,10 @@ impl ArpCache {
 
     /// Look up a MAC address by IP
     pub fn lookup(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
-        let entries = self.entries.lock();
+        let entries = self.entries.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] ARP poisoned");
+            e.into_inner()
+        });
 
         for entry in entries.iter().flatten() {
             if entry.ip == ip {
@@ -339,7 +342,10 @@ impl ArpCache {
 
     /// Insert or update an ARP entry
     pub fn insert(&self, ip: Ipv4Address, mac: MacAddress, current_time: u64) {
-        let mut entries = self.entries.lock();
+        let mut entries = self.entries.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] ARP poisoned");
+            e.into_inner()
+        });
 
         // Look for existing entry or empty slot
         let mut empty_slot = None;
@@ -378,7 +384,10 @@ impl ArpCache {
 
     /// Mark an entry as incomplete (ARP request sent)
     pub fn mark_incomplete(&self, ip: Ipv4Address, current_time: u64) {
-        let mut entries = self.entries.lock();
+        let mut entries = self.entries.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] ARP poisoned");
+            e.into_inner()
+        });
 
         // Look for existing entry
         for entry in entries.iter_mut().flatten() {
@@ -414,7 +423,10 @@ impl ArpCache {
 
     /// Check if we have a pending request for an IP
     pub fn is_pending(&self, ip: Ipv4Address, current_time: u64) -> bool {
-        let entries = self.entries.lock();
+        let entries = self.entries.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] ARP poisoned");
+            e.into_inner()
+        });
 
         for entry in entries.iter().flatten() {
             if entry.ip == ip && entry.state == ArpEntryState::Incomplete {
@@ -427,7 +439,10 @@ impl ArpCache {
 
     /// Remove an entry
     pub fn remove(&self, ip: Ipv4Address) {
-        let mut entries = self.entries.lock();
+        let mut entries = self.entries.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] ARP poisoned");
+            e.into_inner()
+        });
 
         for entry in entries.iter_mut() {
             if let Some(e) = entry {
@@ -441,7 +456,10 @@ impl ArpCache {
 
     /// Expire old entries
     pub fn expire_old(&self, current_time: u64) {
-        let mut entries = self.entries.lock();
+        let mut entries = self.entries.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] ARP poisoned");
+            e.into_inner()
+        });
 
         for entry in entries.iter_mut() {
             if let Some(e) = entry {
@@ -471,7 +489,10 @@ impl ArpCache {
 
     /// Get all entries (for debugging)
     pub fn all_entries(&self) -> alloc::vec::Vec<ArpEntry> {
-        let entries = self.entries.lock();
+        let entries = self.entries.lock().unwrap_or_else(|e| {
+            log::warn!("[NET] ARP poisoned");
+            e.into_inner()
+        });
         entries.iter().filter_map(|e| *e).collect()
     }
 }

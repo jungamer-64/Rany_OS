@@ -8,6 +8,7 @@
 #![allow(dead_code)]
 
 use super::raw;
+use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
@@ -16,7 +17,6 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-use spin::Mutex;
 
 // ============================================================================
 // Generic Work-Stealing Queue (for Per-Core Executor)
@@ -28,40 +28,52 @@ use spin::Mutex;
 /// Mutex で保護されたVecDequeを使用した簡易実装。
 pub struct WorkStealingQueue<T> {
     /// 内部キュー（Mutex保護）
-    inner: Mutex<VecDeque<T>>,
+    inner: PoisonLock<VecDeque<T>>,
 }
 
 impl<T> WorkStealingQueue<T> {
     /// 新しいキューを作成
     pub fn new() -> Self {
         Self {
-            inner: Mutex::new(VecDeque::with_capacity(256)),
+            inner: PoisonLock::new(VecDeque::with_capacity(256)),
         }
     }
 
     /// アイテムをプッシュ
     pub fn push(&self, item: T) {
-        self.inner.lock().push_back(item);
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push_back(item);
     }
 
     /// アイテムをポップ（LIFO: ローカル実行用）
     pub fn pop(&self) -> Option<T> {
-        self.inner.lock().pop_back()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_back()
     }
 
     /// アイテムをスチール（FIFO: 他コアからの取得用）
     pub fn steal(&self) -> Option<T> {
-        self.inner.lock().pop_front()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
     }
 
     /// キューの長さ
     pub fn len(&self) -> usize {
-        self.inner.lock().len()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
     }
 
     /// キューが空かどうか
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().is_empty()
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
     }
 }
 
@@ -246,7 +258,7 @@ pub struct PerCoreExecutor {
     /// ローカルの実行キュー
     local_queue: WorkStealingQueue<Arc<Task>>,
     /// 高優先度キュー
-    high_priority_queue: Mutex<VecDeque<Arc<Task>>>,
+    high_priority_queue: PoisonLock<VecDeque<Arc<Task>>>,
     /// 現在実行中のタスク数
     running_count: AtomicUsize,
     /// 統計: 実行したタスク数
@@ -265,7 +277,7 @@ impl PerCoreExecutor {
         Self {
             core_id,
             local_queue: WorkStealingQueue::new(),
-            high_priority_queue: Mutex::new(VecDeque::new()),
+            high_priority_queue: PoisonLock::new(VecDeque::new()),
             running_count: AtomicUsize::new(0),
             tasks_executed: AtomicU64::new(0),
             tasks_stolen: AtomicU64::new(0),
@@ -283,7 +295,10 @@ impl PerCoreExecutor {
     pub fn spawn(&self, task: Arc<Task>) {
         if task.metadata.priority <= Priority::High {
             // 高優先度タスクは専用キューへ
-            self.high_priority_queue.lock().push_back(task);
+            self.high_priority_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(task);
         } else {
             // 通常タスクはワークスティーリングキューへ
             self.local_queue.push(task);
@@ -299,7 +314,12 @@ impl PerCoreExecutor {
     /// 次のタスクを取得
     fn next_task(&self) -> Option<Arc<Task>> {
         // 1. 高優先度キューを最初にチェック
-        if let Some(task) = self.high_priority_queue.lock().pop_front() {
+        if let Some(task) = self
+            .high_priority_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+        {
             return Some(task);
         }
 
@@ -414,7 +434,12 @@ impl PerCoreExecutor {
 
     /// キューの長さを取得
     pub fn queue_length(&self) -> usize {
-        self.local_queue.len() + self.high_priority_queue.lock().len()
+        self.local_queue.len()
+            + self
+                .high_priority_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .len()
     }
 
     /// 統計を取得
@@ -454,26 +479,29 @@ pub struct ExecutorStats {
 /// グローバルエグゼキュータマネージャ
 pub struct ExecutorManager {
     /// 全コアのエグゼキュータ
-    executors: Mutex<alloc::vec::Vec<Arc<PerCoreExecutor>>>,
+    executors: PoisonLock<alloc::vec::Vec<Arc<PerCoreExecutor>>>,
     /// コア数
     core_count: AtomicUsize,
     /// グローバルタスクキュー（コア指定なしのspawn用）
-    global_queue: Mutex<VecDeque<Arc<Task>>>,
+    global_queue: PoisonLock<VecDeque<Arc<Task>>>,
 }
 
 impl ExecutorManager {
     /// 新しいマネージャを作成
     pub const fn new() -> Self {
         Self {
-            executors: Mutex::new(alloc::vec::Vec::new()),
+            executors: PoisonLock::new(alloc::vec::Vec::new()),
             core_count: AtomicUsize::new(0),
-            global_queue: Mutex::new(VecDeque::new()),
+            global_queue: PoisonLock::new(VecDeque::new()),
         }
     }
 
     /// エグゼキュータを初期化
     pub fn init(&self, core_count: usize) {
-        let mut executors = self.executors.lock();
+        let mut executors = self.executors.lock().unwrap_or_else(|e| {
+            log::warn!("[EXECUTOR] Manager lock poisoned (init)");
+            e.into_inner()
+        });
         executors.clear();
 
         for i in 0..core_count {
@@ -485,7 +513,7 @@ impl ExecutorManager {
 
     /// 指定コアのエグゼキュータを取得
     pub fn get_executor(&self, core_id: u32) -> Option<Arc<PerCoreExecutor>> {
-        let executors = self.executors.lock();
+        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
         executors.get(core_id as usize).cloned()
     }
 
@@ -497,12 +525,15 @@ impl ExecutorManager {
 
     /// タスクをspawn（負荷分散考慮）
     pub fn spawn(&self, task: Arc<Task>) {
-        let executors = self.executors.lock();
+        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
 
         if executors.is_empty() {
             // エグゼキュータが初期化されていない場合はグローバルキューへ
             drop(executors);
-            self.global_queue.lock().push_back(task);
+            self.global_queue
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(task);
             return;
         }
 
@@ -518,7 +549,7 @@ impl ExecutorManager {
 
     /// ワークスティーリングを実行
     pub fn try_steal(&self, core_id: u32) -> bool {
-        let executors = self.executors.lock();
+        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
 
         let thief = match executors.get(core_id as usize) {
             Some(e) => e.clone(),
@@ -527,12 +558,17 @@ impl ExecutorManager {
 
         // グローバルキューからまず取得
         drop(executors);
-        if let Some(task) = self.global_queue.lock().pop_front() {
+        if let Some(task) = self
+            .global_queue
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+        {
             thief.spawn(task);
             return true;
         }
 
-        let executors = self.executors.lock();
+        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
 
         // 最も負荷の高いエグゼキュータからスチール
         let victim = executors
@@ -551,12 +587,22 @@ impl ExecutorManager {
 
     /// 全エグゼキュータの統計を取得
     pub fn all_stats(&self) -> alloc::vec::Vec<ExecutorStats> {
-        self.executors.lock().iter().map(|e| e.stats()).collect()
+        self.executors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|e| e.stats())
+            .collect()
     }
 
     /// 全エグゼキュータをシャットダウン
     pub fn shutdown_all(&self) {
-        for executor in self.executors.lock().iter() {
+        for executor in self
+            .executors
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
             executor.shutdown();
         }
     }
