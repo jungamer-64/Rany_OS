@@ -45,7 +45,7 @@ pub struct DrhdWrapper {
 }
 
 impl DrhdWrapper {
-    pub fn include_pci_all(&self) -> bool {
+    pub const fn include_pci_all(&self) -> bool {
         (self.flags & 0x1) != 0
     }
 }
