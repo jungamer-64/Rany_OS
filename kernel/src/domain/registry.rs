@@ -30,8 +30,8 @@ pub fn init_kernel_domain() {
 /// 新しいドメインを登録
 /// 内部的に domain_system::create_domain() を呼び出す
 pub fn register_domain(name: String) -> DomainId {
-    crate::domain_system::create_domain(name)
-}
+    crate::domain_system::create_domain(name).expect("create_domain failed")
+} 
 
 /// ドメインを取得（読み取り用）
 /// 内部的に domain_system::with_domain() を呼び出す

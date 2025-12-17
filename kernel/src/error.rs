@@ -68,6 +68,8 @@ pub enum DomainErrorKind {
     LifecycleError,
     /// レジストリがいっぱい
     RegistryFull,
+    /// レジストリが毒入れされた / 利用不可
+    RegistryPoisoned,
 }
 
 /// IPC関連エラー
@@ -222,6 +224,7 @@ impl fmt::Display for DomainErrorKind {
             DomainErrorKind::InvalidStateTransition => write!(f, "invalid state transition"),
             DomainErrorKind::LifecycleError => write!(f, "lifecycle error"),
             DomainErrorKind::RegistryFull => write!(f, "registry full"),
+            DomainErrorKind::RegistryPoisoned => write!(f, "domain registry poisoned"),
         }
     }
 }
