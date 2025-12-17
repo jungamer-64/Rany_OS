@@ -432,7 +432,16 @@ pub fn init() {
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 fn init_global_heap() {
     crate::vga::early_serial_str("[HEAP] lock\n");
-    let mut guard = ALLOCATOR.0.lock().unwrap();
+    let mut guard = match ALLOCATOR.0.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            crate::vga::early_serial_str("[HEAP] global allocator poisoned - proceeding with best-effort\n");
+            match ALLOCATOR.0.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            }
+        }
+    };
     crate::vga::early_serial_str("[HEAP] init call\n");
     let start = heap_start();
     crate::vga::early_serial_str("[HEAP] addr ok\n");
