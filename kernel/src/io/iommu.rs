@@ -5487,11 +5487,13 @@ impl IommuController {
 
                     // Invalidate Context Cache for this device
                     if self.is_queued_invalidation_enabled() {
-                        let _ = self.qi_invalidate_context(0, source_id, 0, false); // Global? or domain-specific?
-                    // DID=0, SID=source_id, FM=0 (all functions?), CIRG=0 (Device-selective)
+                        // Use global context invalidation as we don't have granular helper yet
+                        let _ = self.qi_invalidate_context_global();
                     } else {
                         // Fallback to global invalidation if specific not implemented or easy
-                        let _ = unsafe { self.invalidate_context_global() };
+                        // Note: We use IOTLB invalidation as a proxy, though strict Context Invalidation is better.
+                        // But if we don't have CCMD helper, this is best effort.
+                        unsafe { self.invalidate_iotlb_global() };
                     }
                 }
             }
