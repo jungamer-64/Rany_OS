@@ -312,17 +312,8 @@ pub fn init() {
 
 /// Huge Pageアロケータを初期化（メモリレイアウト確定後）
 pub fn init_allocator(base: PhysAddr, count: usize) {
-    match HUGE_PAGE_ALLOCATOR.lock() {
-        Ok(mut g) => g.init(base, count),
-        Err(_) => {
-            log::warn!("[MM] Huge Page Allocator poisoned during init - proceeding with best-effort");
-            let mut guard = match HUGE_PAGE_ALLOCATOR.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            guard.init(base, count);
-        }
-    }
+    let mut guard = HUGE_PAGE_ALLOCATOR.lock_for_init("[MM] Huge Page Allocator init");
+    guard.init(base, count);
 }
 
 // ============================================================================

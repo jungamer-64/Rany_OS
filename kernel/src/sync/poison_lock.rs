@@ -205,6 +205,22 @@ impl<T> PoisonLock<T> {
         }
     }
 
+    /// Lock used for initialization-time best-effort recovery.
+    ///
+    /// If the lock is poisoned, log a warning with the provided `context` and return the
+    /// inner guard for best-effort recovery. This helper is intended for use during
+    /// initialization or exceptional recovery paths only — prefer explicit error
+    /// handling for runtime/hot-paths.
+    pub fn lock_for_init(&self, context: &str) -> PoisonLockGuard<'_, T> {
+        match self.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!("[POISON] {} - lock poisoned during init; proceeding with best-effort", context);
+                poisoned.into_inner()
+            }
+        }
+    }
+
     /// ロック状態を確認（デバッグ用）
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
@@ -564,6 +580,36 @@ mod tests {
                 // 回復可能
                 let guard = err.into_inner();
                 assert_eq!(*guard, 42);
+            }
+        }
+    }
+
+    #[test]
+    fn test_lock_for_init_recovers_on_poison() {
+        use crate::sync::set_panicking;
+
+        let lock = PoisonLock::new(0usize);
+
+        // Poison the lock by simulating a panic while holding the guard
+        set_panicking(true);
+        {
+            let _guard = lock.lock().unwrap();
+            // dropping _guard while panicking will mark the lock as poisoned
+        }
+        set_panicking(false);
+
+        // Recover via lock_for_init and mutate value
+        {
+            let mut g = lock.lock_for_init("test_lock_for_init");
+            *g = 123usize;
+        }
+
+        // Subsequent lock should reflect the updated value, either via Ok or Err with inner reference
+        match lock.lock() {
+            Ok(g) => assert_eq!(*g, 123usize),
+            Err(poisoned) => {
+                let guard = poisoned.into_inner();
+                assert_eq!(*guard, 123usize);
             }
         }
     }

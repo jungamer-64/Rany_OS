@@ -521,18 +521,8 @@ impl ExecutorManager {
 
     /// エグゼキュータを初期化
     pub fn init(&self, core_count: usize) {
-        // Initialization-time best-effort recovery: if this lock is poisoned during init,
-        // attempt to recover and continue boot rather than failing here.
-        let mut executors = match self.executors.lock() {
-            Ok(mut g) => { g },
-            Err(_) => {
-                log::warn!("[EXECUTOR] Manager lock poisoned (init) - proceeding with best-effort");
-                match self.executors.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                }
-            }
-        };
+// Initialization-time best-effort recovery: use helper to centralize behavior
+    let mut executors = self.executors.lock_for_init("[EXECUTOR] Manager init");
         executors.clear();
 
         for i in 0..core_count {

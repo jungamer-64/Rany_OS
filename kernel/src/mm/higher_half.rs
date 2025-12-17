@@ -773,16 +773,7 @@ pub fn init(physical_memory_offset: u64) {
     let manager = HigherHalfManager::new(physical_memory_offset);
     // Initialization-time best-effort recovery: recovering a poisoned manager during init is
     // acceptable to allow boot to continue.
-    let mut mgr_guard = match HIGHER_HALF_MANAGER.lock() {
-        Ok(g) => g,
-        Err(_) => {
-            log::warn!("[MM] Higher Half poisoned - proceeding with best-effort");
-            match HIGHER_HALF_MANAGER.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            }
-        }
-    };
+    let mut mgr_guard = HIGHER_HALF_MANAGER.lock_for_init("[MM] Higher Half init");
     *mgr_guard = Some(manager);
     // log::info!("Higher half kernel initialized with offset {:#x}", physical_memory_offset);
 }
@@ -1305,16 +1296,7 @@ static PAGE_TABLE_MANAGER: PoisonLock<Option<PageTableManager>> = PoisonLock::ne
 pub fn init_page_table_manager(physical_memory_offset: u64) {
     let manager = unsafe { PageTableManager::from_current_cr3(physical_memory_offset) };
     // Initialization-time best-effort recovery for PageTableManager initialization.
-    let mut mgr_guard = match PAGE_TABLE_MANAGER.lock() {
-        Ok(g) => g,
-        Err(_) => {
-            log::warn!("[MM] Page Table Manager poisoned - proceeding with best-effort");
-            match PAGE_TABLE_MANAGER.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            }
-        }
-    };
+    let mut mgr_guard = PAGE_TABLE_MANAGER.lock_for_init("[MM] Page Table Manager init");
     *mgr_guard = Some(manager);
 }
 
