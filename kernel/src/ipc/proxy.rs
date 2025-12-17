@@ -131,11 +131,13 @@ impl DomainProxy for BasicProxy {
         // パニックをチェック
         if PROXY_PANIC_STATE.load(core::sync::atomic::Ordering::SeqCst) {
             // 【設計書 8.4】PoisonLockの毒入れ対応
-            let message = PROXY_PANIC_MESSAGE
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .take()
-                .unwrap_or_default();
+            let message = match PROXY_PANIC_MESSAGE.lock() {
+                Ok(mut guard) => guard.take().unwrap_or_default(),
+                Err(_) => {
+                    log::error!("[Proxy] PROXY_PANIC_MESSAGE lock poisoned while retrieving message - using default");
+                    String::new()
+                }
+            };
             return Err(ProxyError::DomainPanicked(message));
         }
 

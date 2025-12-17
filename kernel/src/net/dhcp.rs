@@ -267,21 +267,24 @@ impl DhcpClient {
 
     /// 現在の状態を取得
     pub fn state(&self) -> DhcpState {
-        *self.state.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP State poisoned");
-            e.into_inner()
-        })
+        match self.state.lock() {
+            Ok(g) => *g,
+            Err(_) => {
+                log::error!("[NET] DHCP State lock poisoned (state) - returning Init");
+                DhcpState::Init
+            }
+        }
     }
 
     /// 現在のリースを取得
     pub fn lease(&self) -> Option<DhcpLease> {
-        self.lease
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] DHCP Lease poisoned");
-                e.into_inner()
-            })
-            .clone()
+        match self.lease.lock() {
+            Ok(g) => g.clone(),
+            Err(_) => {
+                log::error!("[NET] DHCP Lease lock poisoned (lease) - returning None");
+                None
+            }
+        }
     }
 
     /// DHCPDISCOVER メッセージを構築
@@ -344,10 +347,10 @@ impl DhcpClient {
         offset += 1;
 
         // 状態を更新
-        *self.state.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP State poisoned");
-            e.into_inner()
-        }) = DhcpState::Selecting;
+        match self.state.lock() {
+            Ok(mut g) => *g = DhcpState::Selecting,
+            Err(_) => log::error!("[NET] DHCP State lock poisoned (build_discover) - state not updated"),
+        }
         self.state_time.store(current_tick, Ordering::SeqCst);
 
         Ok(offset)
@@ -363,10 +366,13 @@ impl DhcpClient {
             return Err("Buffer too small");
         }
 
-        let offered = self.offered_lease.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP Offer poisoned");
-            e.into_inner()
-        });
+        let offered = match self.offered_lease.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] DHCP Offer lock poisoned (build_request) - no offer available");
+                return Err("No offer available");
+            }
+        };
         let lease = offered.as_ref().ok_or("No offer available")?;
 
         let xid = self.xid.load(Ordering::SeqCst);
@@ -429,10 +435,10 @@ impl DhcpClient {
         offset += 1;
 
         // 状態を更新
-        *self.state.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP State poisoned");
-            e.into_inner()
-        }) = DhcpState::Requesting;
+        match self.state.lock() {
+            Ok(mut g) => *g = DhcpState::Requesting,
+            Err(_) => log::error!("[NET] DHCP State lock poisoned (build_request) - state not updated"),
+        }
         self.state_time.store(current_tick, Ordering::SeqCst);
 
         Ok(offset)
@@ -577,10 +583,10 @@ impl DhcpClient {
                     domain_name,
                 };
 
-                *self.offered_lease.lock().unwrap_or_else(|e| {
-                    log::warn!("[NET] DHCP Offer poisoned");
-                    e.into_inner()
-                }) = Some(lease.clone());
+                match self.offered_lease.lock() {
+                    Ok(mut g) => *g = Some(lease.clone()),
+                    Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Offer) - skipping storing offer"),
+                }
 
                 Ok(DhcpResponseResult::Offer(lease))
             }
@@ -597,28 +603,28 @@ impl DhcpClient {
                     domain_name,
                 };
 
-                *self.lease.lock().unwrap_or_else(|e| {
-                    log::warn!("[NET] DHCP Lease poisoned");
-                    e.into_inner()
-                }) = Some(lease.clone());
-                *self.state.lock().unwrap_or_else(|e| {
-                    log::warn!("[NET] DHCP State poisoned");
-                    e.into_inner()
-                }) = DhcpState::Bound;
+                match self.lease.lock() {
+                    Ok(mut g) => *g = Some(lease.clone()),
+                    Err(_) => log::error!("[NET] DHCP Lease lock poisoned (process_response Ack) - skipping storing lease"),
+                }
+                match self.state.lock() {
+                    Ok(mut g) => *g = DhcpState::Bound,
+                    Err(_) => log::error!("[NET] DHCP State lock poisoned (process_response Ack) - state not updated"),
+                }
                 self.state_time.store(current_tick, Ordering::SeqCst);
                 self.retry_count.store(0, Ordering::SeqCst);
 
                 Ok(DhcpResponseResult::Ack(lease))
             }
             DhcpMessageType::Nak => {
-                *self.state.lock().unwrap_or_else(|e| {
-                    log::warn!("[NET] DHCP State poisoned");
-                    e.into_inner()
-                }) = DhcpState::Init;
-                *self.offered_lease.lock().unwrap_or_else(|e| {
-                    log::warn!("[NET] DHCP Offer poisoned");
-                    e.into_inner()
-                }) = None;
+                match self.state.lock() {
+                    Ok(mut g) => *g = DhcpState::Init,
+                    Err(_) => log::error!("[NET] DHCP State lock poisoned (process_response Nak) - state not updated"),
+                }
+                match self.offered_lease.lock() {
+                    Ok(mut g) => *g = None,
+                    Err(_) => log::error!("[NET] DHCP Offer lock poisoned (process_response Nak) - skipping clear"),
+                }
                 Ok(DhcpResponseResult::Nak)
             }
             _ => Err("Unexpected message type"),
@@ -627,26 +633,29 @@ impl DhcpClient {
 
     /// リースを解放
     pub fn release(&self) {
-        *self.state.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP State poisoned");
-            e.into_inner()
-        }) = DhcpState::Init;
-        *self.lease.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP Lease poisoned");
-            e.into_inner()
-        }) = None;
-        *self.offered_lease.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP Offer poisoned");
-            e.into_inner()
-        }) = None;
+        match self.state.lock() {
+            Ok(mut g) => *g = DhcpState::Init,
+            Err(_) => log::error!("[NET] DHCP State lock poisoned (release) - state not updated"),
+        }
+        match self.lease.lock() {
+            Ok(mut g) => *g = None,
+            Err(_) => log::error!("[NET] DHCP Lease lock poisoned (release) - skipping clear"),
+        }
+        match self.offered_lease.lock() {
+            Ok(mut g) => *g = None,
+            Err(_) => log::error!("[NET] DHCP Offer lock poisoned (release) - skipping clear"),
+        }
     }
 
     /// タイムアウトをチェック
     pub fn check_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
-        let state = *self.state.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DHCP State poisoned");
-            e.into_inner()
-        });
+        let state = match self.state.lock() {
+            Ok(g) => *g,
+            Err(_) => {
+                log::error!("[NET] DHCP State lock poisoned (check_timeout) - treating as Init");
+                DhcpState::Init
+            }
+        };
         let state_time = self.state_time.load(Ordering::SeqCst);
         let elapsed_secs = (current_tick.saturating_sub(state_time)) / tick_rate;
 
@@ -666,22 +675,18 @@ impl DhcpClient {
                 }
             }
             DhcpState::Bound => {
-                if let Some(lease) = self
-                    .lease
-                    .lock()
-                    .unwrap_or_else(|e| {
-                        log::warn!("[NET] DHCP Lease poisoned");
-                        e.into_inner()
-                    })
-                    .as_ref()
-                {
-                    if lease.needs_renewal(current_tick, tick_rate) {
-                        *self.state.lock().unwrap_or_else(|e| {
-                            log::warn!("[NET] DHCP State poisoned");
-                            e.into_inner()
-                        }) = DhcpState::Renewing;
-                        return true;
+                if let Ok(guard) = self.lease.lock() {
+                    if let Some(lease) = guard.as_ref() {
+                        if lease.needs_renewal(current_tick, tick_rate) {
+                            match self.state.lock() {
+                                Ok(mut g) => *g = DhcpState::Renewing,
+                                Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - state not updated"),
+                            }
+                            return true;
+                        }
                     }
+                } else {
+                    log::error!("[NET] DHCP Lease lock poisoned (check_timeout) - skipping renewal check");
                 }
             }
             _ => {}
@@ -708,10 +713,10 @@ static DHCP_CLIENT: PoisonLock<Option<DhcpClient>> = PoisonLock::new(None);
 /// DHCPクライアントを初期化
 pub fn init(mac_address: MacAddress) {
     let client = DhcpClient::new(mac_address);
-    *DHCP_CLIENT.lock().unwrap_or_else(|e| {
-        log::warn!("[NET] DHCP Global poisoned");
-        e.into_inner()
-    }) = Some(client);
+    match DHCP_CLIENT.lock() {
+        Ok(mut g) => *g = Some(client),
+        Err(_) => log::error!("[NET] DHCP Global lock poisoned (init) - initialization skipped"),
+    }
 }
 
 /// DHCPクライアントを取得

@@ -780,22 +780,26 @@ pub fn init(physical_memory_offset: u64) {
 
 /// 物理アドレスを仮想アドレスに変換
 pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
-    let guard = HIGHER_HALF_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Higher Half poisoned");
-        e.into_inner()
-    });
+    let guard = match HIGHER_HALF_MANAGER.lock() {
+        Ok(g) => g,
+        Err(_) => panic!("[MM] Higher Half manager poisoned (phys_to_virt)"),
+    };
     let manager = guard.as_ref().expect("Higher half not initialized");
     manager.mapper().phys_to_virt(phys)
 }
 
 /// 仮想アドレスを物理アドレスに変換（直接マップ領域）
 pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
-    let guard = HIGHER_HALF_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Higher Half poisoned");
-        e.into_inner()
-    });
-    let manager = guard.as_ref().expect("Higher half not initialized");
-    manager.mapper().virt_to_phys(virt)
+    match HIGHER_HALF_MANAGER.lock() {
+        Ok(guard) => {
+            let manager = guard.as_ref().expect("Higher half not initialized");
+            manager.mapper().virt_to_phys(virt)
+        }
+        Err(_) => {
+            log::error!("[MM] Higher Half manager poisoned (virt_to_phys) - returning None");
+            None
+        }
+    }
 }
 
 // ============================================================================
