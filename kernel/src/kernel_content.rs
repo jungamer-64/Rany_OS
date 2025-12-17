@@ -347,32 +347,50 @@ extern "C" fn kmain() -> ! {
 
                 // Initialize IOMMU using ACPI tables and config
                 unsafe {
-                    match parser.find_table(b"DMAR") {
-                        Ok(dmar_addr) => {
-                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config)
-                            {
-                                // If IOMMU not present or disabled, we just warn.
-                                if e != io::iommu::IommuError::NotPresent {
-                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
-                                } else {
-                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
-                                }
-                            } else {
-                                info!(target: "init", "IOMMU initialized successfully");
-
-                                // Enable IOMMU
-                                if let Err(e) = io::iommu::enable_iommu() {
-                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
-                                } else {
-                                    info!(target: "init", "IOMMU translation enabled");
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            info!(target: "init", "IOMMU not initialized (No DMAR table)");
-                        }
-                    }
-                }
+                                    match parser.find_table(b"DMAR") {
+                                        Ok(dmar_addr) => {
+                                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config)
+                                            {
+                                                // If IOMMU not present or disabled, we just warn.
+                                                if e != io::iommu::IommuError::NotPresent {
+                                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
+                                                } else {
+                                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
+                                                }
+                                            } else {
+                                                info!(target: "init", "IOMMU initialized successfully");
+                    
+                                                // Enable IOMMU
+                                                if let Err(e) = io::iommu::enable_iommu() {
+                                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                                                } else {
+                                                    info!(target: "init", "IOMMU translation enabled");
+                                                }
+                                            }
+                                        }
+                                        Err(_) => {
+                                            info!(target: "init", "IOMMU not initialized (No DMAR table)");
+                                        }
+                                    }
+                                    
+                                    let mut mcfg_base_addr: Option<u64> = None;
+                                    match parser.find_table(b"MCFG") {
+                                        Ok(addr) => {
+                                            mcfg_base_addr = Some(addr as u64);
+                                            info!(target: "init", "MCFG table found at {:#x}", addr);
+                                        }
+                                        Err(_) => {
+                                            warn!(target: "init", "No MCFG table found.");
+                                        }
+                                    }
+                    
+                                    // Initialize PCI subsystem
+                                    if let Err(e) = pci_driver::init(mcfg_base_addr) {
+                                        error!(target: "init", "PCI driver init failed: {:?}", e);
+                                    } else {
+                                        info!(target: "init", "PCI driver initialized");
+                                    }
+                                    }
             }
             Err(e) => {
                 warn!(target: "init", "ACPI initialization failed: {:?}", e);

@@ -6715,6 +6715,47 @@ mod tests {
     }
 
     #[test]
+    fn test_init_iova_poisoned_proceeds_with_best_effort() {
+        use crate::sync::set_panicking;
+        let ctrl = IommuController::new(0x0, 0);
+
+        // Poison the iova_allocator lock
+        set_panicking(true);
+        if let Ok(_g) = ctrl.iova_allocator.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+
+        // Should succeed and set the allocator via best-effort
+        ctrl.init_iova(0x2000_0000, 0x10000).expect("init_iova failed");
+
+        match ctrl.iova_allocator.lock() {
+            Ok(g) => assert!(g.is_some()),
+            Err(poisoned) => {
+                // still poisoned, ensure inner was set
+                let guard = poisoned.into_inner();
+                assert!(guard.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
+        use crate::sync::set_panicking;
+        let ctrl = IommuController::new(0x0, 0);
+
+        // Poison invalidation_queue lock
+        set_panicking(true);
+        if let Ok(_g) = ctrl.invalidation_queue.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+
+        let res = unsafe { ctrl.enable_queued_invalidation() };
+        assert_eq!(res.err(), Some(IommuError::HardwareError));
+    }
+
+    #[test]
     fn test_map_for_dma_alloc_non_identity() {
         let ctrl = IommuController::new(0x0, 0);
         ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
