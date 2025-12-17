@@ -460,9 +460,14 @@ extern "x86-interrupt" fn com1_interrupt_handler(_stack_frame: InterruptStackFra
 /// IOMMU Fault Handler
 ///
 /// Handles faults reported by the IOMMU (DMA remapping errors, etc.)
+/// Also wakes any pending async invalidation waiters.
 extern "x86-interrupt" fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
     // Process faults
     crate::io::iommu::handle_fault();
+
+    // Wake any pending async invalidation waiters
+    // Intel VT-d uses the same interrupt for both faults and invalidation completion
+    crate::io::iommu::wake_invalidation_waiters();
 
     // Send EOI to Local APIC (IOMMU uses MSI/APIC delivery)
     // We use the unified interrupt manager's EOI helper which targets LAPIC
