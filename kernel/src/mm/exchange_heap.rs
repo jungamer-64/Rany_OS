@@ -244,13 +244,20 @@ impl ExchangeHeap {
         unsafe {
             // Initialization-time best-effort recovery: proceed with initialization even if the lock
         // appears poisoned to avoid blocking boot.
-        self.heap
-                .lock()
-                .unwrap_or_else(|e| {
-                    log::warn!("[MEM] Exchange Heap poisoned");
-                    e.into_inner()
-                })
-                .init(heap_start as *mut u8, size);
+        match self.heap.lock() {
+            Ok(mut guard) => guard.init(heap_start as *mut u8, size),
+            Err(_) => {
+                // Initialization-time best-effort recovery: if Exchange Heap lock is poisoned during init,
+                // log and attempt to proceed using a best-effort recovered guard. This path is only used
+                // at boot-time.
+                log::warn!("[MEM] Exchange Heap poisoned during init - proceeding with best-effort");
+                let mut guard = match self.heap.lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                guard.init(heap_start as *mut u8, size);
+            }
+        }
         }
     }
 
