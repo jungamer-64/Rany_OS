@@ -266,35 +266,38 @@ where
 
 /// 1GBページを割り当て（グローバルAPI）
 pub fn alloc_huge_page_1g() -> Option<PhysAddr> {
-    HUGE_PAGE_ALLOCATOR
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[MM] Huge Page Allocator poisoned");
-            e.into_inner()
-        })
-        .allocate()
+    match HUGE_PAGE_ALLOCATOR.lock() {
+        Ok(mut guard) => guard.allocate(),
+        Err(_) => {
+            log::error!("[MM] Huge Page Allocator poisoned - allocation failed");
+            None
+        }
+    }
 }
 
 /// 1GBページを解放（グローバルAPI）
 pub fn dealloc_huge_page_1g(addr: PhysAddr) {
-    HUGE_PAGE_ALLOCATOR
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[MM] Huge Page Allocator poisoned");
-            e.into_inner()
-        })
-        .deallocate(addr);
+    match HUGE_PAGE_ALLOCATOR.lock() {
+        Ok(mut guard) => guard.deallocate(addr),
+        Err(_) => log::error!("[MM] Huge Page Allocator poisoned - deallocate ignored"),
+    }
 }
 
 /// Huge Page統計を取得
 pub fn huge_page_stats() -> HugePageStats {
-    HUGE_PAGE_ALLOCATOR
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[MM] Huge Page Allocator poisoned");
-            e.into_inner()
-        })
-        .stats()
+    match HUGE_PAGE_ALLOCATOR.lock() {
+        Ok(guard) => guard.stats(),
+        Err(_) => {
+            log::error!("[MM] Huge Page Allocator poisoned - returning zero stats");
+            HugePageStats {
+                total_pages_1g: 0,
+                used_pages_1g: 0,
+                free_pages_1g: 0,
+                total_memory_gb: 0,
+                used_memory_gb: 0,
+            }
+        }
+    }
 }
 
 /// Huge Pageサブシステムを初期化
@@ -361,5 +364,29 @@ mod tests {
         let stats = alloc.stats();
         assert_eq!(stats.used_pages_1g, 2);
         assert_eq!(stats.free_pages_1g, 6);
+    }
+
+    #[test]
+    fn test_global_huge_page_allocator_poisoned_allocation_fails() {
+        use crate::sync::set_panicking;
+
+        // Initialize global allocator
+        init_allocator(PhysAddr::new(0x40000000), 4);
+
+        // Poison the global lock by simulating a panic while holding it
+        set_panicking(true);
+        {
+            let _guard = HUGE_PAGE_ALLOCATOR.lock().unwrap();
+        }
+        set_panicking(false);
+
+        // Allocation should fail when the lock is poisoned
+        assert!(alloc_huge_page_1g().is_none());
+
+        // Stats should return zeros when poisoned
+        let stats = huge_page_stats();
+        assert_eq!(stats.total_pages_1g, 0);
+        assert_eq!(stats.used_pages_1g, 0);
+        assert_eq!(stats.free_pages_1g, 0);
     }
 }
