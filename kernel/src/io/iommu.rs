@@ -38,7 +38,8 @@ use crate::sync::PoisonLock;
 
 // PCI helpers used when enabling ATS for devices
 use pci_driver::{
-    AtsController, DeviceId as PciDeviceId, PcieBdf, device_supports_ats, pcie_ext_config,
+    AcsController, AtsController, DeviceId as PciDeviceId, PcieBdf, PcieConfig, PcieExtManager,
+    PciDeviceInfo, device_supports_acs, device_supports_ats, pcie_ext_config, pcie_ext_manager,
 };
 
 // DMAR parsing moved to `drivers::acpi::dmar` (see `drivers/acpi/src/dmar.rs`).
@@ -2101,6 +2102,197 @@ pub struct DmaMapping {
 
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
+
+// ============================================================================
+// IOMMU Grouping Structures
+// ============================================================================
+
+/// Represents a unique identifier for an IOMMU Group.
+/// Currently using DeviceId of the "root" of the group (e.g., a bridge or endpoint).
+pub type IommuGroupId = DeviceId;
+
+/// Represents an IOMMU Group, storing information about the assigned domain.
+#[derive(Debug, Clone)]
+pub struct IommuGroup {
+    /// The unique identifier for this IOMMU Group.
+    pub id: IommuGroupId,
+    /// The IOMMU Domain ID assigned to this group.
+    pub domain_id: u16,
+    /// The controller index that manages this domain.
+    pub controller_idx: usize,
+}
+
+/// Manages the allocation and lookup of IOMMU Groups.
+pub struct IommuGroupManager {
+    /// Maps IommuGroupId to an IommuGroup instance.
+    groups: PoisonLock<HashMap<IommuGroupId, IommuGroup>>,
+    /// Tracks which devices have been assigned to which group.
+    device_to_group: PoisonLock<HashMap<DeviceId, IommuGroupId>>,
+    /// Next available group ID for internal grouping logic (if DeviceId is not used as direct ID).
+    /// For now, DeviceId is the group ID.
+}
+
+impl IommuGroupManager {
+    pub fn new() -> Self {
+        Self {
+            groups: PoisonLock::new(HashMap::new()),
+            device_to_group: PoisonLock::new(HashMap::new()),
+        }
+    }
+
+    /// Finds or creates an IOMMU Group for a given device.
+    /// This is the core logic for IOMMU grouping.
+    ///
+    /// # Arguments
+    /// * `device` - The PCI DeviceId of the device to group.
+    /// * `iommu_registry` - The global IOMMU registry.
+    /// * `pcie_ext_manager` - The PCIe extended capabilities manager for topology and ACS checks.
+    ///
+    /// # Returns
+    /// A tuple containing the `IommuGroup` and a boolean indicating if it was newly created.
+    pub fn find_or_create_group(
+        &self,
+        device: DeviceId,
+        iommu_registry: &'static IommuRegistry,
+        pcie_ext_manager: &'static PcieExtManager,
+    ) -> Result<(IommuGroup, bool), IommuError> {
+        let mut groups_guard = self.groups.lock().map_err(|_| IommuError::HardwareError)?;
+        let mut device_to_group_guard = self.device_to_group.lock().map_err(|_| IommuError::HardwareError)?;
+
+        // 1. Check if device is already in a group
+        if let Some(group_id) = device_to_group_guard.get(&device) {
+            if let Some(group) = groups_guard.get(group_id) {
+                return Ok((group.clone(), false));
+            }
+        }
+
+        // 2. Determine the IOMMU Group ID for this device
+        // This involves walking up the PCI hierarchy and checking ACS capabilities.
+        let group_id = Self::determine_group_id_for_device(device, pcie_ext_manager)
+            .map_err(|e| {
+                log::error!("[IOMMU] Failed to determine IOMMU group for device {:?}: {:?}", device, e);
+                e
+            })?;
+
+        // 3. Check if a group with this ID already exists
+        if let Some(group) = groups_guard.get(&group_id) {
+            device_to_group_guard.insert(device, group.id);
+            return Ok((group.clone(), false));
+        }
+
+        // 4. Create a new IOMMU Group and assign a new domain
+        // Find the appropriate IOMMU controller for this device
+        let controller_idx = iommu_registry.find_controller_index_for_device(
+            device.segment,
+            device.bus,
+            device.device,
+            device.function,
+        ).ok_or(IommuError::DeviceNotFound)?;
+
+        let controller = iommu_registry.controllers[controller_idx].clone(); // Clone Arc for internal use
+
+        let domain_id = controller.create_domain(None, IommuDomainType::Translated)?;
+        let new_group = IommuGroup {
+            id: group_id,
+            domain_id,
+            controller_idx,
+        };
+
+        groups_guard.insert(group_id, new_group.clone());
+        device_to_group_guard.insert(device, group_id);
+
+        log::info!("[IOMMU] Created new group {:?} with domain {} for device {:?}", group_id, domain_id, device);
+
+        Ok((new_group, true))
+    }
+
+    /// Determines the IOMMU Group ID for a given device by traversing the PCI hierarchy.
+    /// The Group ID will be the DeviceId of the "topmost" device in the group that *cannot* be isolated.
+    /// If a device is fully isolated, its own DeviceId is its Group ID.
+    fn determine_group_id_for_device(
+        device: DeviceId,
+        pcie_ext_manager: &'static PcieExtManager,
+    ) -> Result<IommuGroupId, PcieError> {
+        let config = pcie_ext_manager.config();
+        let mut current_bdf = PcieBdf::new(device.bus, device.device, device.function);
+
+        // All functions of a multi-function device must be in the same group unless fully isolated.
+        // For simplicity, we group all functions under function 0's device ID.
+        // A more robust implementation might check for ARI (Alternative Routing-ID) or internal ACS.
+        let mut group_root_bdf = PcieBdf::new(current_bdf.bus, current_bdf.device, 0);
+
+        // Walk up the PCI hierarchy
+        loop {
+            // Check for multifunction device (if not function 0, assume it shares group with function 0)
+            if current_bdf.function != 0 {
+                // For simplicity, all functions of a multi-function device are in the same group.
+                // The group ID will be that of function 0.
+                group_root_bdf = PcieBdf::new(current_bdf.bus, current_bdf.device, 0);
+            }
+
+            // Read header type to check if it's a bridge
+            let header_type = config.read8(current_bdf, pci_driver::config_regs::HEADER_TYPE)
+                .ok_or(PcieError::ConfigError)?;
+
+            let is_pci_to_pci_bridge = (header_type & 0x7F) == 0x01; // Type 1 header
+
+            if is_pci_to_pci_bridge {
+                // It's a bridge. Check its ACS capabilities.
+                if let Some(acs_ctrl) = AcsController::new(config, current_bdf).ok() {
+                    if acs_ctrl.is_isolation_enabled() {
+                        // This bridge provides sufficient isolation for devices downstream.
+                        // So, the current device (or its function 0 root) is the group leader.
+                        break;
+                    }
+                }
+            } else {
+                // Not a bridge, or a root port, or ACS is not sufficient.
+                // The group extends further upstream or this is the root of the group.
+                // Need to find the upstream device.
+            }
+            
+            // Find upstream device (e.g., bridge or root complex)
+            // This is a simplification. A full implementation would traverse the ACPI/DMAR/PCIe topology.
+            // For now, if it's not a bridge that isolates, then the group extends to the upstream bus.
+            // If it's a device on bus 0 (root complex), it's its own group.
+            if current_bdf.bus == 0 {
+                break; // Reached bus 0, assuming root complex provides isolation
+            }
+
+            // Find the bridge that owns `current_bdf.bus`
+            let mut found_parent_bridge = false;
+            for device_info in pcie_ext_manager.devices() {
+                // If it's a type 1 header (PCI-to-PCI bridge)
+                if (config.read8(device_info.bdf, pci_driver::config_regs::HEADER_TYPE).unwrap_or(0) & 0x7F) == 0x01 {
+                    let secondary_bus = config.read8(device_info.bdf, pci_driver::config_regs::SECONDARY_BUS_NUMBER).unwrap_or(0);
+                    let subordinate_bus = config.read8(device_info.bdf, pci_driver::config_regs::SUBORDINATE_BUS_NUMBER).unwrap_or(0);
+
+                    if secondary_bus == current_bdf.bus {
+                        // Found the parent bridge.
+                        current_bdf = device_info.bdf;
+                        found_parent_bridge = true;
+                        break;
+                    }
+                }
+            }
+            
+            if !found_parent_bridge {
+                // No parent bridge found, must be root complex device or error in topology.
+                // Assume it's isolated at this point.
+                break;
+            }
+        }
+
+        Ok(DeviceId::new(device.segment, group_root_bdf.bus, group_root_bdf.device, group_root_bdf.function))
+    }
+}
+
+static IOMMU_GROUP_MANAGER: spin::Once<IommuGroupManager> = spin::Once::new();
+
+/// Get reference to the IOMMU Group manager
+fn get_iommu_group_manager() -> Option<&'static IommuGroupManager> {
+    IOMMU_GROUP_MANAGER.get()
+}
 
 impl IommuDomain {
     /// Create a new domain
@@ -5849,8 +6041,11 @@ pub unsafe fn init_iommu_from_acpi(
         }
     }
 
-    // Initialize the global registry
     IOMMU_REGISTRY.call_once(|| registry);
+
+    // Initialize IOMMU Group Manager
+    IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
+
 
     Ok(())
 }
@@ -6199,91 +6394,88 @@ fn process_fault_security(controller: &IommuController, entry: FaultRecordingEnt
 // ============================================================================
 
 /// PCIデバイスにIOMMUドメインを自動設定
-///
-/// この関数はPCIデバイス検出時に呼び出され、
 /// IOMMUが有効な場合は自動的にドメインを作成してデバイスをアタッチします。
 ///
-/// # Arguments
-/// * `device` - 設定対象のPCIデバイス情報（可変参照）
-///
-/// # Returns
-/// 成功した場合は割り当てられたドメインID、失敗した場合はNone
+/// ACS (Access Control Services) を考慮したIOMMUグループを構築します。
+/// デバイスは、属するIOMMUグループのドメインに割り当てられます。
 pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
     let registry = get_iommu_registry()?; // NotInitialized -> None
+    let iommu_group_manager = get_iommu_group_manager()?;
+    let pcie_ext_manager = pcie_ext_manager()?;
 
-    let bdf = device.bdf;
-    let segment = 0; // Default segment (PciDeviceInfo doesn't have segment yet)
+    let device_id = DeviceId::new(
+        device.segment,
+        device.bdf.bus,
+        device.bdf.device,
+        device.bdf.function,
+    );
+    let numa_hint = device.numa_node; // Use device's NUMA hint if available
 
-    // Find correct IOMMU for this device
-    let controller_idx = registry.find_controller_index_for_device(
-        segment,
-        bdf.bus.0,
-        bdf.device.0,
-        bdf.function.0,
-    )?;
+    // 1. Determine IOMMU Group and get/create its domain
+    let (iommu_group, newly_created) = match iommu_group_manager.find_or_create_group(
+        device_id,
+        registry,
+        pcie_ext_manager,
+    ) {
+        Ok(group_info) => group_info,
+        Err(e) => {
+            log::error!("[IOMMU] Failed to get/create IOMMU group for device {:?}: {:?}", device_id, e);
+            return None;
+        }
+    };
 
-    // Obtain controller directly
-    let iommu = registry.controllers.get(controller_idx)?;
+    let domain_id = iommu_group.domain_id;
+    let controller_idx = iommu_group.controller_idx;
 
-    // Enable ATS ... (same as before but iommu is guard)
-    if (iommu.ecap & ecap_bits::ECAP_DT) != 0 {
-        if let Some(pcie_config) = pcie_ext_config() {
-            let pcie_bdf = PcieBdf::new(bdf.bus.0, bdf.device.0, bdf.function.0);
-            if device_supports_ats(pcie_config, pcie_bdf) {
-                if let Ok(ats_ctrl) = AtsController::new(pcie_config, pcie_bdf) {
-                    if ats_ctrl.enable_ats(0u8).is_ok() {
-                        let device_id =
-                            DeviceId::new(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
-                        iommu.enable_ats_for_device(device_id);
-                        // Reduced logging
+    let controller = registry.controllers.get(controller_idx)?;
+
+    // 2. Enable ATS for the device if supported and not already enabled by this IOMMU
+    if (controller.ecap & ecap_bits::ECAP_DT) != 0 && device_supports_ats(pcie_ext_manager.config(), device.bdf) {
+        // Check if ATS is already enabled for this device on this controller
+        let ats_enabled_for_device = match controller.ats_enabled_devices.lock() {
+            Ok(set) => set.contains(&device_id),
+            Err(_) => {
+                log::warn!("[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?} - assuming ATS NOT enabled", device_id);
+                false
+            }
+        };
+
+        if !ats_enabled_for_device {
+            // Attempt to enable ATS
+            if let Some(config) = pcie_ext_config() {
+                if let Ok(ats_ctrl) = AtsController::new(config, device.bdf) {
+                    // STU (Smallest Translation Unit) is usually 0 (4KB).
+                    if let Err(e) = ats_ctrl.enable_ats(0) {
+                        log::warn!("[IOMMU] Failed to enable ATS for device {:?}: {:?}", device_id, e);
+                    } else {
+                        log::info!("[IOMMU] Enabled ATS for device {:?}", device_id);
+                        controller.enable_ats_for_device(device_id);
                     }
                 }
             }
         }
     }
 
-    // New domain creation
-    let numa_hint = Some(crate::mm::numa::current_node());
-    let domain_type = if registry.config.passthrough {
-        IommuDomainType::Passthrough
-    } else {
-        IommuDomainType::Translated
-    };
-
-    let domain_id = match iommu.create_domain(numa_hint, domain_type) {
-        Ok(id) => id,
-        Err(e) => {
-            log::error!("Failed to create domain for {:?}: {:?}\\n", bdf, e);
-            return None;
-        }
-    };
-
-    let device_id = DeviceId::new(segment, bdf.bus.0, bdf.device.0, bdf.function.0);
-    if let Err(e) = iommu.attach_device(device_id, domain_id) {
-        log::error!("[IOMMU] Attach failed: {:?}\\n", e);
+    // 3. Attach the device to the determined domain
+    if let Err(e) = controller.attach_device(device_id, domain_id) {
+        log::error!("[IOMMU] Attach failed for device {:?} to domain {}: {:?}\\n", device_id, domain_id, e);
         return None;
     }
 
-    // Apply Reserved Regions
-    for region in &registry.reserved_regions {
-        if region.segment != device_id.segment {
-            continue;
-        }
-        if region.devices.iter().any(|d| *d == device_id) {
-            let size = region.limit - region.base + 1;
-            if let Some(domain_arc) = iommu.domain(domain_id) {
-                match domain_arc.lock() {
-                    Ok(mut domain) => { let _ = domain.map_identity(region.base, size, true, true); },
-                    Err(poisoned) => {
-                        // Best-effort mapping during device setup: proceed to apply reserved regions if possible
-                        // even when the domain lock is poisoned (init/boot-time risk acceptance).
-                        let mut domain = poisoned.into_inner(); let _ = domain.map_identity(region.base, size, true, true); },
-                }
-            }
-        }
-    }
-
+    // 4. Update device info
     device.iommu_domain_id = Some(domain_id);
+    if newly_created {
+        log::info!(
+            "[IOMMU] Protected PCI device {:?} in new group {:?} (domain {})",
+            device_id, iommu_group.id, domain_id
+        );
+    } else {
+        log::info!(
+            "[IOMMU] Protected PCI device {:?} in existing group {:?} (domain {})",
+            device_id, iommu_group.id, domain_id
+        );
+    }
+    
     Some(domain_id)
 }
 
