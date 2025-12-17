@@ -254,14 +254,13 @@ impl ExchangeHeap {
 
     /// Exchange Heap上にメモリを割り当て
     pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
-        self.heap
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[MEM] Exchange Heap poisoned");
-                e.into_inner()
-            })
-            .allocate_first_fit(layout)
-            .ok()
+        match self.heap.lock() {
+            Ok(mut guard) => guard.allocate_first_fit(layout).ok(),
+            Err(_) => {
+                log::error!("[MEM] Exchange Heap poisoned - allocation failed");
+                None
+            }
+        }
     }
 
     /// Exchange Heap上のメモリを解放
@@ -271,26 +270,25 @@ impl ExchangeHeap {
     /// - `layout` は `allocate` 時と同じである必要がある
     pub unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
         // SAFETY: 呼び出し元がポインタとレイアウトの有効性を保証
-        unsafe {
-            self.heap
-                .lock()
-                .unwrap_or_else(|e| {
-                    log::warn!("[MEM] Exchange Heap poisoned");
-                    e.into_inner()
-                })
-                .deallocate(ptr, layout);
+        match self.heap.lock() {
+            Ok(mut guard) => unsafe { guard.deallocate(ptr, layout) },
+            Err(_) => {
+                log::error!("[MEM] Exchange Heap poisoned - deallocate ignored");
+            }
         }
     }
 
     /// ヒープ使用統計を取得（デバッグ用）
     pub fn stats(&self) -> HeapStats {
-        let heap = self.heap.lock().unwrap_or_else(|e| {
-            log::warn!("[MEM] Exchange Heap poisoned");
-            e.into_inner()
-        });
-        HeapStats {
-            allocated: heap.used(),
-            free: heap.free(),
+        match self.heap.lock() {
+            Ok(guard) => HeapStats {
+                allocated: guard.used(),
+                free: guard.free(),
+            },
+            Err(_) => {
+                log::error!("[MEM] Exchange Heap poisoned - returning zero stats");
+                HeapStats { allocated: 0, free: 0 }
+            }
         }
     }
 }
@@ -764,6 +762,25 @@ pub enum ExchangeHeapError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_exchange_heap_poisoned_allocation_fails() {
+        use crate::sync::set_panicking;
+
+        let heap = ExchangeHeap::new();
+        unsafe { heap.init(0x1000, 4096) }
+
+        // Poison the lock by simulating a panic while holding the guard
+        set_panicking(true);
+        {
+            let _guard = heap.heap.lock().unwrap();
+            // dropping _guard while panicking will mark the lock as poisoned
+        }
+        set_panicking(false);
+
+        let layout = core::alloc::Layout::from_size_align(64, 8).unwrap();
+        assert!(heap.allocate(layout).is_none());
+    }
 
     #[test]
     fn test_exchange_heap() {

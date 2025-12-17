@@ -274,14 +274,21 @@ impl Mempool {
 
     /// プールを初期化（バッファを事前割り当て）
     pub fn init(&self, capacity: usize) -> Result<(), &'static str> {
-        let mut buffers = self.buffers.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] Mempool buffers poisoned");
-            e.into_inner()
-        });
-        let mut free_list = self.free_list.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] Mempool free_list poisoned");
-            e.into_inner()
-        });
+        let mut buffers = match self.buffers.lock() {
+            Ok(b) => b,
+            Err(_) => {
+                log::error!("[NET] Mempool buffers poisoned during init");
+                return Err("Mempool buffers poisoned");
+            }
+        };
+
+        let mut free_list = match self.free_list.lock() {
+            Ok(f) => f,
+            Err(_) => {
+                log::error!("[NET] Mempool free_list poisoned during init");
+                return Err("Mempool free_list poisoned");
+            }
+        };
 
         for i in 0..capacity {
             // バッファを割り当て (Exchange Heap for RRef compatibility)
@@ -327,14 +334,14 @@ impl Mempool {
 
     /// バッファを割り当て
     pub fn alloc(&'static self) -> Option<PacketRef> {
-        let buffer = self
-            .free_list
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Mempool free_list poisoned");
-                e.into_inner()
-            })
-            .pop()?;
+        let buffer = match self.free_list.lock() {
+            Ok(mut free_list) => free_list.pop(),
+            Err(_) => {
+                log::error!("[NET] Mempool free_list poisoned - allocation failed");
+                self.alloc_failed.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }?;
 
         unsafe {
             // 初期化
@@ -349,13 +356,13 @@ impl Mempool {
 
     /// バッファを返却
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
-        self.free_list
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Mempool free_list poisoned");
-                e.into_inner()
-            })
-            .push(buffer);
+        match self.free_list.lock() {
+            Ok(mut free_list) => free_list.push(buffer),
+            Err(_) => {
+                log::error!("[NET] Mempool free_list poisoned - return ignored");
+                return;
+            }
+        }
         self.free_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -384,22 +391,21 @@ impl Mempool {
 
     /// 統計を取得
     pub fn stats(&self) -> MempoolStats {
-        let total = self
-            .buffers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Mempool buffers poisoned");
-                e.into_inner()
-            })
-            .len();
-        let free = self
-            .free_list
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Mempool free_list poisoned");
-                e.into_inner()
-            })
-            .len();
+        let total = match self.buffers.lock() {
+            Ok(b) => b.len(),
+            Err(_) => {
+                log::error!("[NET] Mempool buffers poisoned - returning zeros");
+                0
+            }
+        };
+
+        let free = match self.free_list.lock() {
+            Ok(f) => f.len(),
+            Err(_) => {
+                log::error!("[NET] Mempool free_list poisoned - returning zeros");
+                0
+            }
+        };
 
         MempoolStats {
             total_buffers: total,
@@ -586,6 +592,26 @@ pub fn alloc_packet() -> Option<PacketRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::set_panicking;
+    use core::sync::atomic::Ordering;
+
+    #[test]
+    fn test_mempool_poisoned_alloc_fails() {
+        let pool = Mempool::new(1);
+        pool.init(1).expect("init should succeed");
+
+        // Poison the free_list by simulating a panic while holding the lock
+        set_panicking(true);
+        {
+            let _guard = pool.free_list.lock().unwrap();
+        }
+        set_panicking(false);
+
+        // Allocation should fail and increment alloc_failed
+        assert!(pool.alloc().is_none());
+        assert!(pool.alloc_failed.load(Ordering::Relaxed) > 0);
+    }
+
 
     #[test]
     fn test_mempool_stats() {

@@ -298,11 +298,18 @@ pub fn per_core_alloc(cpu_id: usize, layout: Layout) -> Option<NonNull<u8>> {
         return None;
     }
     // このコアのMutexだけをロック（他コアに影響しない）
-    let mut guard = PER_CORE_CACHES[cpu_id].lock().unwrap_or_else(|e| {
-        log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
-        e.into_inner()
-    });
-    guard.as_mut().and_then(|cache| cache.allocate(layout))
+    match PER_CORE_CACHES[cpu_id].lock() {
+        Ok(mut guard) => guard.as_mut().and_then(|cache| cache.allocate(layout)),
+        Err(_) => {
+            // Poisoned: fallback to global heap allocation instead of accessing potentially
+            // corrupted per-core cache data.
+            log::error!("[MEM] Slab Poisoned cpu={}; falling back to global allocator", cpu_id);
+            unsafe {
+                let ptr = alloc::alloc::alloc(layout);
+                NonNull::new(ptr)
+            }
+        }
+    }
 }
 
 /// 現在のCPUのPer-Coreキャッシュに解放
@@ -314,15 +321,26 @@ pub unsafe fn per_core_dealloc(cpu_id: usize, ptr: NonNull<u8>, layout: Layout) 
         return;
     }
     // このコアのMutexだけをロック（他コアに影響しない）
-    let mut guard = PER_CORE_CACHES[cpu_id].lock().unwrap_or_else(|e| {
-        log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
-        e.into_inner()
-    });
-    if let Some(cache) = guard.as_mut() {
-        // SAFETY: 呼び出し元が保証
-        unsafe {
-            cache.deallocate(ptr, layout);
+    match PER_CORE_CACHES[cpu_id].lock() {
+        Ok(mut guard) => {
+            if let Some(cache) = guard.as_mut() {
+                // SAFETY: 呼び出し元が保証
+                unsafe {
+                    cache.deallocate(ptr, layout);
+                }
+                return;
+            }
+            // fallthrough to global dealloc if no per-core cache
         }
+        Err(_) => {
+            log::error!("[MEM] Slab Poisoned cpu={}; falling back to global dealloc", cpu_id);
+            // fallthrough to global dealloc
+        }
+    }
+
+    // Global deallocation fallback
+    unsafe {
+        alloc::alloc::dealloc(ptr.as_ptr(), layout);
     }
 }
 
@@ -366,6 +384,26 @@ pub unsafe fn per_core_dealloc_auto(ptr: NonNull<u8>, layout: Layout) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::set_panicking;
+
+    #[test]
+    fn test_per_core_alloc_poisoned_fallbacks_to_global() {
+        // Initialize per-core caches for CPU 0
+        init_per_core_caches(1);
+
+        // Poison the lock for CPU 0
+        set_panicking(true);
+        {
+            let _guard = PER_CORE_CACHES[0].lock().unwrap();
+        }
+        set_panicking(false);
+
+        let layout = Layout::from_size_align(128, 8).unwrap();
+        let ptr = per_core_alloc(0, layout).expect("should fall back to global alloc");
+
+        // Deallocate via per_core_dealloc (should detect poisoned and use global dealloc)
+        unsafe { per_core_dealloc(0, ptr, layout) };
+    }
 
     #[test]
     fn test_slab_cache() {
