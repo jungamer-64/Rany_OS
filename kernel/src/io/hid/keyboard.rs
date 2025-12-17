@@ -54,18 +54,8 @@ pub use super::keymap::{DEFAULT_KEYMAP, DvorakKeymap, JisKeymap, Keymap, UsQwert
 // エラー型
 // ============================================================================
 
-/// ストリーム取得エラー
-///
-/// `take_stream()`が失敗した場合に返される。
-/// 既に別のコンシューマがストリームを保持している場合に発生。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct StreamAlreadyTaken;
-
-impl fmt::Display for StreamAlreadyTaken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Keyboard stream already taken by another consumer")
-    }
-}
+// StreamAlreadyTaken is provided by the `hid_driver` crate.
+pub use hid_driver::StreamAlreadyTaken;
 
 // ============================================================================
 // スキャンコード定数
@@ -106,590 +96,27 @@ pub use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
 // Extension Traits
 // ============================================================================
 
-/// KeyCode拡張トレイト (スキャンコード変換など)
-pub trait KeyCodeExt {
-    fn from_scancode(scancode: u8, extended: bool) -> Self;
-    fn to_char(&self, shift: bool, caps_lock: bool) -> Option<char>;
-}
+// KeyCode helper trait is provided by the `hid_driver` crate.
+pub use hid_driver::KeyCodeExt;
 
-impl KeyCodeExt for KeyCode {
-    /// スキャンコードからキーコードに変換
-    ///
-    /// # PS/2スキャンコードセット1の規則
-    ///
-    /// テンキーとナビゲーションキーは同じスキャンコード値を共有しますが、
-    /// 拡張プレフィックス（E0）の有無で区別されます：
-    ///
-    /// - **拡張コード（E0プレフィックスあり）**: ナビゲーションキー（矢印、Home、End等）
-    /// - **非拡張コード**: テンキー（NumPad0-9、演算子）
-    ///
-    /// ## スキャンコードマッピング表
-    ///
-    /// | スキャンコード | 拡張時 | 非拡張時 |
-    /// |-------------|--------|---------|
-    /// | 0x47        | Home   | NumPad7 |
-    /// | 0x48        | Up     | NumPad8 |
-    /// | 0x49        | PageUp | NumPad9 |
-    /// | 0x4A        | -      | NumPadMinus |
-    /// | 0x4B        | Left   | NumPad4 |
-    /// | 0x4C        | -      | NumPad5 |
-    /// | 0x4D        | Right  | NumPad6 |
-    /// | 0x4E        | -      | NumPadPlus |
-    /// | 0x4F        | End    | NumPad1 |
-    /// | 0x50        | Down   | NumPad2 |
-    /// | 0x51        | PageDown | NumPad3 |
-    /// | 0x52        | Insert | NumPad0 |
-    /// | 0x53        | Delete | NumPadDecimal |
-    /// | 0x1C        | NumPadEnter | Enter |
-    /// | 0x35        | NumPadDivide | Slash |
-    /// | 0x37        | -      | NumPadMultiply |
-    fn from_scancode(scancode: u8, extended: bool) -> Self {
-        if extended {
-            // 拡張スキャンコード（E0プレフィックス付き）
-            // - ナビゲーションキー（矢印、Home、End等）
-            // - NumPadEnter、NumPadDivide
-            match scancode {
-                // 矢印キー
-                0x48 => KeyCode::Up,
-                0x50 => KeyCode::Down,
-                0x4B => KeyCode::Left,
-                0x4D => KeyCode::Right,
-                // ナビゲーションキー
-                0x52 => KeyCode::Insert,
-                0x53 => KeyCode::Delete,
-                0x47 => KeyCode::Home,
-                0x4F => KeyCode::End,
-                0x49 => KeyCode::PageUp,
-                0x51 => KeyCode::PageDown,
-                // 拡張テンキー
-                0x1C => KeyCode::NumPadEnter,  // E0 1C
-                0x35 => KeyCode::NumPadDivide, // E0 35
-                _ => KeyCode::Unknown,
-            }
-        } else {
-            // 非拡張スキャンコード
-            // - メインキーボード
-            // - テンキー（NumPad0-9、演算子）
-            match scancode {
-                0x01 => KeyCode::Escape,
-                0x02 => KeyCode::Key1,
-                0x03 => KeyCode::Key2,
-                0x04 => KeyCode::Key3,
-                0x05 => KeyCode::Key4,
-                0x06 => KeyCode::Key5,
-                0x07 => KeyCode::Key6,
-                0x08 => KeyCode::Key7,
-                0x09 => KeyCode::Key8,
-                0x0A => KeyCode::Key9,
-                0x0B => KeyCode::Key0,
-                0x0C => KeyCode::Minus,
-                0x0D => KeyCode::Equals,
-                0x0E => KeyCode::Backspace,
-                0x0F => KeyCode::Tab,
-                0x10 => KeyCode::Q,
-                0x11 => KeyCode::W,
-                0x12 => KeyCode::E,
-                0x13 => KeyCode::R,
-                0x14 => KeyCode::T,
-                0x15 => KeyCode::Y,
-                0x16 => KeyCode::U,
-                0x17 => KeyCode::I,
-                0x18 => KeyCode::O,
-                0x19 => KeyCode::P,
-                0x1A => KeyCode::LeftBracket,
-                0x1B => KeyCode::RightBracket,
-                0x1C => KeyCode::Enter,
-                0x1D => KeyCode::LeftCtrl,
-                0x1E => KeyCode::A,
-                0x1F => KeyCode::S,
-                0x20 => KeyCode::D,
-                0x21 => KeyCode::F,
-                0x22 => KeyCode::G,
-                0x23 => KeyCode::H,
-                0x24 => KeyCode::J,
-                0x25 => KeyCode::K,
-                0x26 => KeyCode::L,
-                0x27 => KeyCode::Semicolon,
-                0x28 => KeyCode::Quote,
-                0x29 => KeyCode::BackTick,
-                0x2A => KeyCode::LeftShift,
-                0x2B => KeyCode::Backslash,
-                0x2C => KeyCode::Z,
-                0x2D => KeyCode::X,
-                0x2E => KeyCode::C,
-                0x2F => KeyCode::V,
-                0x30 => KeyCode::B,
-                0x31 => KeyCode::N,
-                0x32 => KeyCode::M,
-                0x33 => KeyCode::Comma,
-                0x34 => KeyCode::Period,
-                0x35 => KeyCode::Slash,
-                0x36 => KeyCode::RightShift,
-                // テンキー乗算キー
-                0x37 => KeyCode::NumPadMultiply,
-                0x38 => KeyCode::LeftAlt,
-                0x39 => KeyCode::Space,
-                0x3A => KeyCode::CapsLock,
-                0x3B => KeyCode::F1,
-                0x3C => KeyCode::F2,
-                0x3D => KeyCode::F3,
-                0x3E => KeyCode::F4,
-                0x3F => KeyCode::F5,
-                0x40 => KeyCode::F6,
-                0x41 => KeyCode::F7,
-                0x42 => KeyCode::F8,
-                0x43 => KeyCode::F9,
-                0x44 => KeyCode::F10,
-                0x45 => KeyCode::NumLock,
-                0x46 => KeyCode::ScrollLock,
-                // テンキー数字キー（非拡張時）
-                0x47 => KeyCode::NumPad7,
-                0x48 => KeyCode::NumPad8,
-                0x49 => KeyCode::NumPad9,
-                0x4A => KeyCode::NumPadMinus,
-                0x4B => KeyCode::NumPad4,
-                0x4C => KeyCode::NumPad5,
-                0x4D => KeyCode::NumPad6,
-                0x4E => KeyCode::NumPadPlus,
-                0x4F => KeyCode::NumPad1,
-                0x50 => KeyCode::NumPad2,
-                0x51 => KeyCode::NumPad3,
-                0x52 => KeyCode::NumPad0,
-                0x53 => KeyCode::NumPadDecimal,
-                0x57 => KeyCode::F11,
-                0x58 => KeyCode::F12,
-                _ => KeyCode::Unknown,
-            }
-        }
-    }
-
-    /// キーコードを文字に変換（デフォルトキーマップを使用）
-    ///
-    /// # Note
-    /// 新しいコードでは`keymap.to_char(key, &modifiers)`を直接使用してください。
-    fn to_char(&self, shift: bool, caps_lock: bool) -> Option<char> {
-        let modifiers = Modifiers {
-            shift,
-            caps_lock,
-            ..Default::default()
-        };
-        DEFAULT_KEYMAP.to_char(*self, &modifiers)
-    }
-}
+// KeyCodeExt implementation is provided by the `hid_driver` crate and
+// re-exported above (`pub use hid_driver::KeyCodeExt`). Kernel should not
+// implement the trait for `hid_driver::KeyCode` to avoid orphan-rule violations.
 
 // ============================================================================
 // キーイベント
 // ============================================================================
 
-/// KeyEvent拡張トレイト (文字変換など)
-pub trait KeyEventExt {
-    fn to_char(&self) -> Option<char>;
-    fn to_char_with_keymap<K: Keymap>(&self, keymap: &K) -> Option<char>;
-}
+// KeyEventExt helper trait is provided by the `hid_driver` crate.
+pub use hid_driver::KeyEventExt;
 
-impl KeyEventExt for KeyEvent {
-    /// このイベントを文字に変換（デフォルトキーマップ使用）
-    fn to_char(&self) -> Option<char> {
-        if self.state == KeyState::Released {
-            return None;
-        }
-        DEFAULT_KEYMAP.to_char(self.key, &self.modifiers)
-    }
+// ModifierState implementation moved to `hid_driver` crate. Re-export it here for
+// backward-compatibility with kernel code that expects this type.
+pub use hid_driver::ModifierState;
 
-    /// 指定されたキーマップで文字に変換
-    fn to_char_with_keymap<K: Keymap>(&self, keymap: &K) -> Option<char> {
-        if self.state == KeyState::Released {
-            return None;
-        }
-        keymap.to_char(self.key, &self.modifiers)
-    }
-}
-
-// ============================================================================
-// 修飾キー状態（インスタンス内部状態）
-// ============================================================================
-
-/// 修飾キー状態（アトミック・ビットマスク）
-///
-/// 全ての修飾キー状態を単一のAtomicU32で管理し、
-/// 一貫したスナップショットを保証する。
-///
-/// # ビットレイアウト
-/// ```text
-/// bit 0:  left_shift
-/// bit 1:  right_shift
-/// bit 2:  left_ctrl
-/// bit 3:  right_ctrl
-/// bit 4:  left_alt
-/// bit 5:  right_alt (AltGr)
-/// bit 6:  caps_lock
-/// bit 7:  num_lock
-/// bit 8:  scroll_lock
-/// bit 9-31: reserved
-/// ```
-struct ModifierState {
-    bits: core::sync::atomic::AtomicU32,
-}
-
-impl ModifierState {
-    // ビット位置定数（衝突防止のため明示的に定義）
-    const BIT_LEFT_SHIFT: u32 = 0;
-    const BIT_RIGHT_SHIFT: u32 = 1;
-    const BIT_LEFT_CTRL: u32 = 2;
-    const BIT_RIGHT_CTRL: u32 = 3;
-    const BIT_LEFT_ALT: u32 = 4;
-    const BIT_RIGHT_ALT: u32 = 5;
-    const BIT_CAPS_LOCK: u32 = 6;
-    const BIT_NUM_LOCK: u32 = 7;
-    const BIT_SCROLL_LOCK: u32 = 8;
-
-    // ビットマスク定数
-    const LEFT_SHIFT: u32 = 1 << Self::BIT_LEFT_SHIFT;
-    const RIGHT_SHIFT: u32 = 1 << Self::BIT_RIGHT_SHIFT;
-    const LEFT_CTRL: u32 = 1 << Self::BIT_LEFT_CTRL;
-    const RIGHT_CTRL: u32 = 1 << Self::BIT_RIGHT_CTRL;
-    const LEFT_ALT: u32 = 1 << Self::BIT_LEFT_ALT;
-    const RIGHT_ALT: u32 = 1 << Self::BIT_RIGHT_ALT; // AltGr
-    const CAPS_LOCK: u32 = 1 << Self::BIT_CAPS_LOCK;
-    const NUM_LOCK: u32 = 1 << Self::BIT_NUM_LOCK;
-    const SCROLL_LOCK: u32 = 1 << Self::BIT_SCROLL_LOCK;
-
-    const SHIFT_MASK: u32 = Self::LEFT_SHIFT | Self::RIGHT_SHIFT;
-    const CTRL_MASK: u32 = Self::LEFT_CTRL | Self::RIGHT_CTRL;
-    const ALT_MASK: u32 = Self::LEFT_ALT; // Left Alt only for normal Alt
-
-    // コンパイル時ビット位置検証
-    const _BIT_VALIDATION: () = {
-        // 全ビット位置が32未満であることを確認
-        assert!(Self::BIT_SCROLL_LOCK < 32, "Bit position exceeds u32 range");
-
-        // ビット位置の一意性検証（網羅的）
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_RIGHT_SHIFT);
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_LEFT_CTRL);
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_RIGHT_CTRL);
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_LEFT_ALT);
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_RIGHT_ALT);
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_CAPS_LOCK);
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_NUM_LOCK);
-        assert!(Self::BIT_LEFT_SHIFT != Self::BIT_SCROLL_LOCK);
-        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_LEFT_CTRL);
-        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_RIGHT_CTRL);
-        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_LEFT_ALT);
-        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_RIGHT_ALT);
-        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_CAPS_LOCK);
-        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_NUM_LOCK);
-        assert!(Self::BIT_RIGHT_SHIFT != Self::BIT_SCROLL_LOCK);
-        assert!(Self::BIT_LEFT_CTRL != Self::BIT_RIGHT_CTRL);
-        assert!(Self::BIT_LEFT_CTRL != Self::BIT_LEFT_ALT);
-        assert!(Self::BIT_LEFT_CTRL != Self::BIT_RIGHT_ALT);
-        assert!(Self::BIT_LEFT_CTRL != Self::BIT_CAPS_LOCK);
-        assert!(Self::BIT_LEFT_CTRL != Self::BIT_NUM_LOCK);
-        assert!(Self::BIT_LEFT_CTRL != Self::BIT_SCROLL_LOCK);
-        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_LEFT_ALT);
-        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_RIGHT_ALT);
-        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_CAPS_LOCK);
-        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_NUM_LOCK);
-        assert!(Self::BIT_RIGHT_CTRL != Self::BIT_SCROLL_LOCK);
-        assert!(Self::BIT_LEFT_ALT != Self::BIT_RIGHT_ALT);
-        assert!(Self::BIT_LEFT_ALT != Self::BIT_CAPS_LOCK);
-        assert!(Self::BIT_LEFT_ALT != Self::BIT_NUM_LOCK);
-        assert!(Self::BIT_LEFT_ALT != Self::BIT_SCROLL_LOCK);
-        assert!(Self::BIT_RIGHT_ALT != Self::BIT_CAPS_LOCK);
-        assert!(Self::BIT_RIGHT_ALT != Self::BIT_NUM_LOCK);
-        assert!(Self::BIT_RIGHT_ALT != Self::BIT_SCROLL_LOCK);
-        assert!(Self::BIT_CAPS_LOCK != Self::BIT_NUM_LOCK);
-        assert!(Self::BIT_CAPS_LOCK != Self::BIT_SCROLL_LOCK);
-        assert!(Self::BIT_NUM_LOCK != Self::BIT_SCROLL_LOCK);
-    };
-
-    const fn new() -> Self {
-        Self {
-            bits: core::sync::atomic::AtomicU32::new(0),
-        }
-    }
-
-    /// 一貫したスナップショットを取得
-    ///
-    /// 単一のアトミックロードで全ての修飾キー状態を取得するため、
-    /// 割り込み中の状態変更に対しても一貫性が保証される。
-    fn snapshot(&self) -> Modifiers {
-        let bits = self.bits.load(Ordering::Acquire);
-        Modifiers {
-            shift: (bits & Self::SHIFT_MASK) != 0,
-            ctrl: (bits & Self::CTRL_MASK) != 0,
-            alt: (bits & Self::ALT_MASK) != 0,
-            alt_gr: (bits & Self::RIGHT_ALT) != 0,
-            caps_lock: (bits & Self::CAPS_LOCK) != 0,
-            num_lock: (bits & Self::NUM_LOCK) != 0,
-            scroll_lock: (bits & Self::SCROLL_LOCK) != 0,
-        }
-    }
-
-    /// ビットをセット
-    #[inline]
-    fn set_bit(&self, mask: u32) {
-        self.bits.fetch_or(mask, Ordering::Release);
-    }
-
-    /// ビットをクリア
-    #[inline]
-    fn clear_bit(&self, mask: u32) {
-        self.bits.fetch_and(!mask, Ordering::Release);
-    }
-
-    /// ビットをトグル
-    #[inline]
-    fn toggle_bit(&self, mask: u32) {
-        self.bits.fetch_xor(mask, Ordering::Release);
-    }
-
-    /// ビットを設定/クリア
-    #[inline]
-    fn update_bit(&self, mask: u32, pressed: bool) {
-        if pressed {
-            self.set_bit(mask);
-        } else {
-            self.clear_bit(mask);
-        }
-    }
-}
-
-// ============================================================================
-// IsrSafeWaker - 割り込み安全なWaker通知機構
-// ============================================================================
-
-/// ISR安全なWaker通知機構（ダブルバッファ方式）
-///
-/// ISR（割り込みハンドラ）から安全にWakerを起床させるための機構。
-///
-/// # 設計
-///
-/// - ISRは`notify()`でpendingフラグを立てるのみ（アロケーションなし）
-/// - Consumerは`check_and_wake()`で実際の起床処理
-/// - 2スロットバッファで、ISRアクセス中の更新を安全化
-///
-/// # ⚠️ 注意: これは真のEpoch-based Reclamationではありません
-///
-/// このダブルバッファ方式は、ISRが`notify()`でpendingフラグのみを操作し、
-/// Wakerを直接操作しないことを前提としています。そのため、完全なEBRは不要です。
-///
-/// ## 動作フロー
-///
-/// ```text
-/// ISR (Producer):
-///   handle_scancode() -> notify() -> pending.store(true)
-///   [Wakerは触らない]
-///
-/// Consumer (poll):
-///   poll() -> register(waker) -> 次スロットにWaker書き込み
-///                              -> epoch更新
-///
-/// Executor/Consumer:
-///   check_and_wake() -> pending確認
-///                    -> current_epochスロットから wake_by_ref()
-/// ```
-///
-/// ## 安全性の保証
-///
-/// | 操作 | 呼び出し元 | アクセス対象 | 安全性 |
-/// |------|-----------|-------------|--------|
-/// | notify() | ISR | pendingフラグのみ | ✅ AtomicBoolのみ |
-/// | register() | Consumer | 次スロット書き込み | ✅ 排他アクセス |
-/// | check_and_wake() | Consumer | 現スロット読み取り | ✅ Release-Acquire |
-///
-/// # Safety Contract
-///
-/// この`unsafe impl Send/Sync`は以下の契約に基づきます：
-///
-/// 1. **`register()`はConsumerスレッドからのみ呼び出す**
-///    - 次スロットへの書き込みは単一スレッドからのみ
-///    - ISRは現スロットのみ参照するため競合なし
-///
-/// 2. **`notify()`はISRから呼ばれても安全**
-///    - `pending: AtomicBool`のみ操作
-///    - Wakerスロットは一切触らない
-///
-/// 3. **`check_and_wake()`はConsumer/Executorからのみ呼び出す**
-///    - `pending.swap(false)`でISRとの同期
-///    - epoch読み取り後のスロット参照はRelease-Acquireで保護
-///
-/// 4. **Waker::clone()とwake_by_ref()はSend/Sync安全**
-///    - Wakerの契約による保証
-///
-/// # 検証状況
-///
-/// - [x] シングルコア環境: 割り込み禁止なしでも安全（ISRがWaker触らない）
-/// - [ ] マルチコア環境: 形式検証未実施（Miri/Loomでのテスト推奨）
-/// - [ ] 弱メモリモデル（ARM/RISC-V）: Release-Acquireで理論上安全だが実機未検証
-struct IsrSafeWaker {
-    /// 起床が保留されているか（ISRがセット、Consumer/Executorがクリア）
-    pending: AtomicBool,
-
-    /// 現在有効なエポック（偶数/奇数でスロット0/1を選択）
-    ///
-    /// # Invariant
-    /// - epoch % 2 == 0: waker_slots[0] が有効
-    /// - epoch % 2 == 1: waker_slots[1] が有効
-    current_epoch: AtomicU64,
-
-    /// 2世代のWakerスロット（epoch-based reclamation）
-    ///
-    /// # Safety
-    /// - 書き込み: Consumerスレッドからのみ（register）
-    /// - 読み取り: ISR/Consumer両方から可能
-    /// - 古いスロットは次のregister()まで有効を保証
-    waker_slots: [core::cell::UnsafeCell<Option<Waker>>; 2],
-
-    /// Wakerが登録されているか（読み取り専用フラグ）
-    has_waker: AtomicBool,
-}
-
-// Safety: ダブルバッファ方式により以下を保証
-//
-// 1. ISRは`notify()`でpendingフラグのみ操作（Wakerスロット触らない）
-// 2. register()は次スロットに書き込み → epoch更新（現スロットは安全）
-// 3. check_and_wake()は現スロットを参照（Release-Acquire同期）
-//
-// 前提条件:
-// - register()はConsumerスレッドからのみ呼ばれる
-// - ISRはnotify()のみ呼び出す（Waker操作なし）
-//
-// ⚠️ アーキテクチャ制限: x86_64でのみ検証済み
-//    ARM/RISC-Vでの使用は形式検証（Loom等）完了後に有効化してください
-#[cfg(not(target_arch = "x86_64"))]
-compile_error!(
-    "IsrSafeWaker is only verified on x86_64 (TSO memory model). \
-     ARM/RISC-V require formal verification with Loom/Miri before use. \
-     To enable on other architectures, add feature 'experimental-weak-memory'."
-);
-
-unsafe impl Send for IsrSafeWaker {}
-unsafe impl Sync for IsrSafeWaker {}
-
-impl IsrSafeWaker {
-    const fn new() -> Self {
-        Self {
-            pending: AtomicBool::new(false),
-            current_epoch: AtomicU64::new(0),
-            waker_slots: [
-                core::cell::UnsafeCell::new(None),
-                core::cell::UnsafeCell::new(None),
-            ],
-            has_waker: AtomicBool::new(false),
-        }
-    }
-
-    /// Wakerを登録（Consumerスレッドから呼び出し）
-    ///
-    /// # Epoch-based Reclamation
-    ///
-    /// 1. 次のepochのスロットに新しいWakerを書き込み
-    /// 2. current_epochをインクリメントして新スロットを有効化
-    /// 3. 古いスロットは次回のregister()まで保持（ISRがまだ参照中の可能性）
-    ///
-    /// # Memory Ordering
-    ///
-    /// - Release: epoch更新前にWaker書き込みが完了していることを保証
-    /// - ISR側のAcquireと対になる
-    fn register(&self, waker: &Waker) {
-        let old_epoch = self.current_epoch.load(Ordering::Acquire);
-        let next_epoch = old_epoch.wrapping_add(1);
-        let next_slot = (next_epoch % 2) as usize;
-
-        // 次のスロットに新しいWakerを書き込み
-        // Safety: Consumerスレッドからのみ呼ばれ、このスロットはISRから参照されない
-        // （ISRは current_epoch のスロットのみ参照）
-        unsafe {
-            let slot = &mut *self.waker_slots[next_slot].get();
-
-            // 既存のWakerと同じなら更新不要
-            if let Some(existing) = slot {
-                if existing.will_wake(waker) {
-                    return;
-                }
-            }
-
-            *slot = Some(waker.clone());
-        }
-
-        // エポックを進めて新スロットを有効化
-        // Release: スロット書き込みが完了してからepoch更新
-        self.current_epoch.store(next_epoch, Ordering::Release);
-        self.has_waker.store(true, Ordering::Release);
-    }
-
-    /// ISRから呼び出し: 起床を通知（フラグを立てるだけ）
-    ///
-    /// # Safety
-    /// - ロックなし、アロケーションなし
-    /// - ISRから安全に呼び出せる
-    /// - マルチコア環境でも安全
-    #[inline]
-    fn notify(&self) {
-        // フラグを立てるだけ - ISRからでも安全
-        self.pending.store(true, Ordering::Release);
-    }
-
-    /// Executor/Consumerから呼び出し: 保留中の起床があればWakerを起床
-    ///
-    /// # 戻り値
-    /// `true`: 起床を実行した、`false`: 保留なしまたはWaker未登録
-    ///
-    /// # Note
-    /// この関数はExecutorのポーリングループまたはConsumerの
-    /// poll()開始時に呼ばれる。
-    /// Waker::wake_by_ref()はここで呼ばれるため、
-    /// アロケータがロックを取っても問題ない。
-    fn check_and_wake(&self) -> bool {
-        // pending フラグをチェック＆クリア
-        if !self.pending.swap(false, Ordering::AcqRel) {
-            return false;
-        }
-
-        // Wakerが登録されていれば起床
-        if self.has_waker.load(Ordering::Acquire) {
-            let epoch = self.current_epoch.load(Ordering::Acquire);
-            let slot_idx = (epoch % 2) as usize;
-
-            // Safety: Acquire orderingによりepoch更新後のスロット状態を参照
-            let waker_slot = unsafe { &*self.waker_slots[slot_idx].get() };
-            if let Some(waker) = waker_slot {
-                waker.wake_by_ref();
-                return true;
-            }
-        }
-
-        false
-    }
-
-    /// 即座に起床（Consumer側から、キューにデータがある場合など）
-    ///
-    /// ISRを経由せず直接起床させたい場合に使用。
-    #[allow(dead_code)]
-    fn wake_now(&self) {
-        if self.has_waker.load(Ordering::Acquire) {
-            let epoch = self.current_epoch.load(Ordering::Acquire);
-            let slot_idx = (epoch % 2) as usize;
-
-            let waker_slot = unsafe { &*self.waker_slots[slot_idx].get() };
-            if let Some(waker) = waker_slot {
-                waker.wake_by_ref();
-            }
-        }
-    }
-
-    /// 保留中の起床があるか
-    #[inline]
-    fn is_pending(&self) -> bool {
-        self.pending.load(Ordering::Acquire)
-    }
-
-    /// Wakerが登録されているか
-    #[allow(dead_code)]
-    fn is_registered(&self) -> bool {
-        self.has_waker.load(Ordering::Acquire)
-    }
-}
+// IsrSafeWaker implementation moved to `hid_driver` crate. Re-export it here for
+// backward compatibility.
+pub use hid_driver::IsrSafeWaker;
 
 // ============================================================================
 // スキャンコードキュー（インスタンス内部状態）
@@ -948,7 +375,7 @@ impl KeyboardDriver {
             KeyState::Pressed
         };
 
-        self.update_modifiers(key, extended, released);
+        // self.update_modifiers(key, extended, released);
 
         // 生スキャンコードを保持（デバッグ用）
         // bit 0-6: キーコード部分、bit 7: リリースビット、bit 8: 拡張フラグ
@@ -963,45 +390,12 @@ impl KeyboardDriver {
     }
 
     /// 修飾キーの状態を更新
+    /*
+    /// 修飾キーの状態を更新
     fn update_modifiers(&self, key: KeyCode, extended: bool, released: bool) {
-        let pressed = !released;
-        match key {
-            KeyCode::LeftShift => {
-                self.modifiers
-                    .update_bit(ModifierState::LEFT_SHIFT, pressed);
-            }
-            KeyCode::RightShift => {
-                self.modifiers
-                    .update_bit(ModifierState::RIGHT_SHIFT, pressed);
-            }
-            KeyCode::LeftCtrl => {
-                let mask = if extended {
-                    ModifierState::RIGHT_CTRL
-                } else {
-                    ModifierState::LEFT_CTRL
-                };
-                self.modifiers.update_bit(mask, pressed);
-            }
-            KeyCode::LeftAlt => {
-                let mask = if extended {
-                    ModifierState::RIGHT_ALT // AltGr
-                } else {
-                    ModifierState::LEFT_ALT
-                };
-                self.modifiers.update_bit(mask, pressed);
-            }
-            KeyCode::CapsLock if pressed => {
-                self.modifiers.toggle_bit(ModifierState::CAPS_LOCK);
-            }
-            KeyCode::NumLock if pressed => {
-                self.modifiers.toggle_bit(ModifierState::NUM_LOCK);
-            }
-            KeyCode::ScrollLock if pressed => {
-                self.modifiers.toggle_bit(ModifierState::SCROLL_LOCK);
-            }
-            _ => {}
-        }
+         // ... implementation commented out ...
     }
+    */
 
     /// キーボードストリームを取得（所有権ベースのSPSC強制）
     ///
@@ -1024,7 +418,7 @@ impl KeyboardDriver {
     ///     }
     /// }
     /// ```
-    pub fn take_stream(&'static self) -> Result<KeyboardStream, StreamAlreadyTaken> {
+    pub fn take_stream(&'static self) -> Result<hid_driver::KeyboardStream, StreamAlreadyTaken> {
         self.take_stream_with_keymap(&DEFAULT_KEYMAP)
     }
 
@@ -1044,14 +438,11 @@ impl KeyboardDriver {
     pub fn take_stream_with_keymap(
         &'static self,
         keymap: &'static dyn Keymap,
-    ) -> Result<KeyboardStream, StreamAlreadyTaken> {
+    ) -> Result<hid_driver::KeyboardStream, StreamAlreadyTaken> {
         if self.stream_taken.swap(true, Ordering::SeqCst) {
             return Err(StreamAlreadyTaken);
         }
-        Ok(KeyboardStream {
-            driver: self,
-            keymap,
-        })
+        Ok(hid_driver::KeyboardStream::new(self, keymap))
     }
 
     /// Arc<dyn Keymap>を使用するキーボードストリームを取得 (Phase 5)
@@ -1079,14 +470,11 @@ impl KeyboardDriver {
     pub fn take_stream_with_arc_keymap(
         &'static self,
         keymap: Arc<dyn Keymap>,
-    ) -> Result<KeyboardStreamArc, StreamAlreadyTaken> {
+    ) -> Result<hid_driver::KeyboardStreamArc, StreamAlreadyTaken> {
         if self.stream_taken.swap(true, Ordering::SeqCst) {
             return Err(StreamAlreadyTaken);
         }
-        Ok(KeyboardStreamArc {
-            driver: self,
-            keymap,
-        })
+        Ok(hid_driver::KeyboardStreamArc::new(self, keymap))
     }
 
     /// キーボードストリームを取得（パニック版・テスト/初期化用）
@@ -1096,7 +484,7 @@ impl KeyboardDriver {
     ///
     /// # Note
     /// 本番コードでは`take_stream()`を使用し、エラーハンドリングを行うこと。
-    pub fn take_stream_or_panic(&'static self) -> KeyboardStream {
+    pub fn take_stream_or_panic(&'static self) -> hid_driver::KeyboardStream {
         self.take_stream()
             .expect("SPSC violation: Stream already taken")
     }
@@ -1166,371 +554,41 @@ impl KeyboardDriver {
     }
 }
 
-// ============================================================================
-// KeyboardStream - 所有権ベースのSPSC Consumer
-// ============================================================================
+// Stream/future helpers are implemented in the `hid_driver` crate
+// to allow reuse by other implementations. Re-export them here for
+// backward-compatibility with existing kernel code.
 
-/// キーボード入力ストリーム
-///
-/// このストリームの所有者だけがキーイベントを受信できる。
-/// `Clone`不可なので、所有権の移動によってのみ受け渡し可能。
-/// これにより、コンパイル時にConsumerの単一性が保証される。
-///
-/// # Dynamic Keymap
-/// ストリーム作成時にキーマップを指定可能。指定しない場合はUS配列がデフォルト。
-/// キーマップは `'static` ライフタイムが必要（グローバル定義を推奨）。
-pub struct KeyboardStream {
-    driver: &'static KeyboardDriver,
-    keymap: &'static dyn Keymap,
-}
+pub use hid_driver::{
+    CharFuture, CharFutureArc, DEFAULT_POLL_BUDGET, KeyEventFuture, KeyboardStream,
+    KeyboardStreamArc,
+};
 
-impl KeyboardStream {
-    /// 次のキーイベントを非同期で待機
-    pub fn read_key(&mut self) -> KeyEventFuture {
-        KeyEventFuture {
-            driver: self.driver,
-        }
+// Implement DriverOps at module scope so the driver-side stream helpers
+// can call back into this kernel implementation.
+impl hid_driver::stream::DriverOps for KeyboardDriver {
+    fn poll_key_event_internal(&self) -> Option<hid_driver::KeyEvent> {
+        self.poll_key_event_internal()
     }
-
-    /// 次の文字を非同期で待機
-    ///
-    /// ストリーム作成時に指定されたキーマップを使用して
-    /// キーコードを文字に変換します。
-    ///
-    /// # 動作詳細
-    /// キューに複数のイベントがある場合、文字に変換できるイベントが見つかるまで
-    /// すべてのイベントを処理します。Releasedイベントや変換できないキー（修飾キーなど）は
-    /// スキップされます。
-    ///
-    /// # Performance
-    /// - **Average case**: O(1) - ほとんどの場合、最初のイベントが文字
-    /// - **Worst case**: O(QUEUE_SIZE) - 128回のループ（修飾キーのみのイベント列など）
-    ///
-    /// 最悪の場合でも128回のループは許容範囲内として設計されています。
-    pub fn read_char(&mut self) -> CharFuture {
-        CharFuture {
-            driver: self.driver,
-            keymap: self.keymap,
-            budget: DEFAULT_POLL_BUDGET,
-        }
+    fn register_waker(&self, waker: &Waker) {
+        self.register_waker(waker);
     }
-
-    /// 次の文字を非同期で待機（カスタムバジェット）
-    ///
-    /// 高負荷環境やリアルタイム要件が厳しい場合に、
-    /// バジェットを調整できます。
-    ///
-    /// # Arguments
-    /// * `budget` - 1回pollで処理するイベントの最大数
-    ///
-    /// # Example
-    /// ```ignore
-    /// // 高頻度入力が予想される場合はバジェットを大きく
-    /// let ch = stream.read_char_with_budget(32).await;
-    /// // リアルタイム性が重要な場合は小さく
-    /// let ch = stream.read_char_with_budget(4).await;
-    /// ```
-    pub fn read_char_with_budget(&mut self, budget: usize) -> CharFuture {
-        CharFuture {
-            driver: self.driver,
-            keymap: self.keymap,
-            budget,
-        }
+    fn process_pending_wake(&self) -> bool {
+        self.process_pending_wake()
     }
-
-    /// 次のキーイベントをポーリング（ノンブロッキング）
-    pub fn poll(&mut self) -> Option<KeyEvent> {
-        self.driver.poll_key_event_internal()
+    fn has_event(&self) -> bool {
+        self.has_event()
     }
-
-    /// イベントがあるかチェック
-    pub fn has_event(&self) -> bool {
-        self.driver.has_event()
+    fn get_modifiers(&self) -> hid_driver::Modifiers {
+        self.get_modifiers()
     }
-
-    /// 現在の修飾キー状態を取得
-    pub fn modifiers(&self) -> Modifiers {
-        self.driver.get_modifiers()
-    }
-
-    /// 現在のキーマップを取得
-    pub fn keymap(&self) -> &'static dyn Keymap {
-        self.keymap
-    }
-}
-
-/// # Panic Handling
-///
-/// パニック時もストリームは自動返却されます。これにより、
-/// パニック後の部分的なリカバリーが可能になりますが、
-/// ドライバの内部状態（修飾キー、Wakerなど）は不整合の可能性があります。
-///
-/// 確実な動作のためには、パニック後はシステム全体を再起動してください。
-///
-/// # 設計判断
-/// - **Option A（現在の実装）**: 常に返却 → パニック後のリカバリー可能
-/// - Option B: パニック時は返却しない → 明示的なrelease()が必要
-///
-/// 組み込みシステムの実用性を考慮し、Option Aを採用しています。
-impl Drop for KeyboardStream {
-    fn drop(&mut self) {
-        self.driver.return_stream();
-    }
-}
-
-// Clone不可（SPSC強制）
-// impl !Clone for KeyboardStream {}  // negative impl は nightly のみ
-
-// ============================================================================
-// KeyboardStreamArc - Arc<dyn Keymap>を使用する動的キーマップストリーム (Phase 5)
-// ============================================================================
-
-/// 動的キーマップを使用するキーボード入力ストリーム (Phase 5)
-///
-/// `KeyboardStream`と異なり、`Arc<dyn Keymap>`を所有することで
-/// ランタイムでのキーマップ切り替えや、'staticでないキーマップの使用が可能。
-///
-/// # Use Cases
-/// - ユーザー設定に基づくキーマップの動的ロード
-/// - カスタムキーマップの実装（ゲーム固有のキーバインドなど）
-/// - テストでのモックキーマップ使用
-///
-/// # Memory Overhead
-/// - `KeyboardStream`: キーマップへの参照（ポインタサイズ）
-/// - `KeyboardStreamArc`: `Arc`のオーバーヘッド（参照カウント + ポインタ）
-///
-/// 静的なキーマップで十分な場合は`KeyboardStream`を使用してください。
-pub struct KeyboardStreamArc {
-    driver: &'static KeyboardDriver,
-    keymap: Arc<dyn Keymap>,
-}
-
-impl KeyboardStreamArc {
-    /// 次のキーイベントを非同期で待機
-    pub fn read_key(&mut self) -> KeyEventFuture {
-        KeyEventFuture {
-            driver: self.driver,
-        }
-    }
-
-    /// 次の文字を非同期で待機
-    ///
-    /// ストリーム作成時に指定されたキーマップを使用して
-    /// キーコードを文字に変換します。
-    pub fn read_char(&mut self) -> CharFutureArc<'_> {
-        CharFutureArc {
-            driver: self.driver,
-            keymap: &self.keymap,
-        }
-    }
-
-    /// 次のキーイベントをポーリング（ノンブロッキング）
-    pub fn poll(&mut self) -> Option<KeyEvent> {
-        self.driver.poll_key_event_internal()
-    }
-
-    /// イベントがあるかチェック
-    pub fn has_event(&self) -> bool {
-        self.driver.has_event()
-    }
-
-    /// 現在の修飾キー状態を取得
-    pub fn modifiers(&self) -> Modifiers {
-        self.driver.get_modifiers()
-    }
-
-    /// 現在のキーマップを取得（Arcクローン）
-    pub fn keymap(&self) -> Arc<dyn Keymap> {
-        Arc::clone(&self.keymap)
-    }
-
-    /// 現在のキーマップへの参照を取得
-    pub fn keymap_ref(&self) -> &dyn Keymap {
-        &*self.keymap
-    }
-
-    /// キーマップを変更（ランタイム切り替え）
-    pub fn set_keymap(&mut self, keymap: Arc<dyn Keymap>) {
-        self.keymap = keymap;
-    }
-}
-
-impl Drop for KeyboardStreamArc {
-    fn drop(&mut self) {
-        self.driver.return_stream();
-    }
-}
-
-/// 文字入力待ちFuture（Arc<dyn Keymap>版）
-///
-/// # Note
-/// `CharFuture`と同様のバジェット制限（MAX_EVENTS_PER_POLL）を適用。
-/// 詳細は`CharFuture`のドキュメントを参照。
-pub struct CharFutureArc<'a> {
-    driver: &'static KeyboardDriver,
-    keymap: &'a Arc<dyn Keymap>,
-}
-
-impl Future for CharFutureArc<'_> {
-    type Output = char;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // poll開始時に保留中のISR通知を処理
-        self.driver.process_pending_wake();
-
-        // イベント処理回数のバジェット制限
-        // 最悪ケースでも DEFAULT_POLL_BUDGET 回で処理を打ち切り、
-        // 他のタスクに実行機会を与える
-        let mut events_processed = 0;
-
-        // 文字が得られるまでループ（バジェット制限付き）
-        loop {
-            if events_processed >= DEFAULT_POLL_BUDGET {
-                // バジェット超過: 次回pollに持ち越し
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-
-            if let Some(event) = self.driver.poll_key_event_internal() {
-                events_processed += 1;
-                // Pressedイベントのみ処理
-                if event.state == KeyState::Pressed {
-                    if let Some(ch) = self.keymap.to_char(event.key, &event.modifiers) {
-                        return Poll::Ready(ch);
-                    }
-                }
-                // Released や変換できないキーは次へ
-            } else {
-                // キューが空
-                self.driver.register_waker(cx.waker());
-                // ダブルチェック
-                if let Some(event) = self.driver.poll_key_event_internal() {
-                    if event.state == KeyState::Pressed {
-                        if let Some(ch) = self.keymap.to_char(event.key, &event.modifiers) {
-                            return Poll::Ready(ch);
-                        }
-                    }
-                    // 次のループへ
-                } else {
-                    return Poll::Pending;
-                }
-            }
-        }
+    fn return_stream(&self) {
+        self.return_stream()
     }
 }
 
 // ============================================================================
 // Async Futures
 // ============================================================================
-
-/// キーイベント待ちFuture
-pub struct KeyEventFuture {
-    driver: &'static KeyboardDriver,
-}
-
-impl Future for KeyEventFuture {
-    type Output = KeyEvent;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // ✅ poll開始時に保留中のISR通知を処理
-        // ISRは notify() でフラグを立てるだけなので、
-        // 実際の wake() はここで行う
-        self.driver.process_pending_wake();
-
-        if let Some(event) = self.driver.poll_key_event_internal() {
-            Poll::Ready(event)
-        } else {
-            self.driver.register_waker(cx.waker());
-            // ダブルチェック: register後にデータが来ていないか
-            if let Some(event) = self.driver.poll_key_event_internal() {
-                Poll::Ready(event)
-            } else {
-                Poll::Pending
-            }
-        }
-    }
-}
-
-/// 文字入力待ちFuture
-///
-/// # バジェット制限
-/// 1回のpoll()で処理するイベント数は`budget`で制限される。
-/// デフォルトは`DEFAULT_POLL_BUDGET`（16）だが、
-/// `KeyboardStream::read_char_with_budget()`で変更可能。
-pub struct CharFuture {
-    driver: &'static KeyboardDriver,
-    keymap: &'static dyn Keymap,
-    /// 1回のpoll()で処理するイベントの最大数
-    budget: usize,
-}
-
-/// デフォルトのpoll()バジェット
-///
-/// リアルタイム性を保つため、修飾キーだけが大量に来ても
-/// poll()が長時間ブロックしないようにする。
-pub const DEFAULT_POLL_BUDGET: usize = 16;
-
-impl Future for CharFuture {
-    type Output = char;
-
-    /// # Performance
-    ///
-    /// - **Best case**: O(1) - 最初のイベントが文字に変換可能
-    /// - **Typical case**: O(数個) - 修飾キーを数個スキップ
-    /// - **Worst case**: O(MAX_EVENTS_PER_POLL) - バジェット制限で中断
-    ///
-    /// バジェット(MAX_EVENTS_PER_POLL=16)を超えた場合は`wake_by_ref()`で
-    /// 次回pollに持ち越し。これによりExecutorの公平性を維持。
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // poll開始時に保留中のISR通知を処理
-        self.driver.process_pending_wake();
-
-        let mut events_checked: usize = 0;
-        let budget = self.budget;
-
-        loop {
-            // バジェット制限: リアルタイム性のため
-            if events_checked >= budget {
-                // タイムスライス使い果たし - 次回に持ち越し
-                cx.waker().wake_by_ref();
-                return Poll::Pending;
-            }
-
-            if let Some(event) = self.driver.poll_key_event_internal() {
-                events_checked += 1;
-
-                // Releasedイベントはスキップ
-                if event.state == KeyState::Released {
-                    continue;
-                }
-                // 文字に変換可能か
-                if let Some(c) = self.keymap.to_char(event.key, &event.modifiers) {
-                    return Poll::Ready(c);
-                }
-                // 変換できないキー（修飾キー等）はスキップ
-                continue;
-            } else {
-                // キューが空 - Wakerを登録して待機
-                self.driver.register_waker(cx.waker());
-
-                // ダブルチェック: register後にデータが来ていないか
-                if let Some(event) = self.driver.poll_key_event_internal() {
-                    events_checked += 1;
-
-                    if event.state == KeyState::Released {
-                        continue;
-                    }
-                    if let Some(c) = self.keymap.to_char(event.key, &event.modifiers) {
-                        return Poll::Ready(c);
-                    }
-                    // 変換できなければ次のループへ
-                    continue;
-                }
-                return Poll::Pending;
-            }
-        }
-    }
-}
 
 // ============================================================================
 // グローバルインスタンス（PS/2キーボード用）

@@ -22,6 +22,18 @@ extern crate alloc;
 pub mod ffi;
 pub mod keymap;
 pub mod keyboard;
+pub mod stream;
+
+// Re-export stream/future helpers for kernel use
+pub use stream::{
+    DriverOps,
+    KeyboardStream,
+    KeyboardStreamArc,
+    KeyEventFuture,
+    CharFuture,
+    CharFutureArc,
+    DEFAULT_POLL_BUDGET,
+};
 
 use alloc::string::String;
 
