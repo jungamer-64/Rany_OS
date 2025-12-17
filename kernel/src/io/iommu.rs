@@ -2123,15 +2123,17 @@ pub struct IommuGroup {
 }
 
 /// Manages the allocation and lookup of IOMMU Groups.
+#[cfg(not(test))]
 pub struct IommuGroupManager {
     /// Maps IommuGroupId to an IommuGroup instance.
     groups: PoisonLock<HashMap<IommuGroupId, IommuGroup>>,
     /// Tracks which devices have been assigned to which group.
     device_to_group: PoisonLock<HashMap<DeviceId, IommuGroupId>>,
-    /// Next available group ID for internal grouping logic (if DeviceId is not used as direct ID).
-    /// For now, DeviceId is the group ID.
+    // Next available group ID for internal grouping logic (if DeviceId is not used as direct ID).
+    // For now, DeviceId is the group ID.
 }
 
+#[cfg(not(test))]
 impl IommuGroupManager {
     pub fn new() -> Self {
         Self {
@@ -2287,8 +2289,10 @@ impl IommuGroupManager {
     }
 }
 
+#[cfg(not(test))]
 static IOMMU_GROUP_MANAGER: spin::Once<IommuGroupManager> = spin::Once::new();
 
+#[cfg(not(test))]
 /// Get reference to the IOMMU Group manager
 fn get_iommu_group_manager() -> Option<&'static IommuGroupManager> {
     IOMMU_GROUP_MANAGER.get()
@@ -6043,8 +6047,11 @@ pub unsafe fn init_iommu_from_acpi(
 
     IOMMU_REGISTRY.call_once(|| registry);
 
-    // Initialize IOMMU Group Manager
-    IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
+    #[cfg(not(test))]
+    {
+        // Initialize IOMMU Group Manager
+        IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
+    }
 
 
     Ok(())
@@ -6398,6 +6405,7 @@ fn process_fault_security(controller: &IommuController, entry: FaultRecordingEnt
 ///
 /// ACS (Access Control Services) を考慮したIOMMUグループを構築します。
 /// デバイスは、属するIOMMUグループのドメインに割り当てられます。
+#[cfg(not(test))]
 pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
     let registry = get_iommu_registry()?; // NotInitialized -> None
     let iommu_group_manager = get_iommu_group_manager()?;
@@ -6482,6 +6490,7 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 /// すべてのPCIデバイスにIOMMUドメインを設定
 ///
 /// PCI初期化後に呼び出して、全デバイスを保護します。
+#[cfg(not(test))]
 pub fn setup_iommu_for_all_pci_devices(devices: &mut [crate::io::pci::PciDeviceInfo]) {
     if !is_iommu_enabled() {
         log::info!("[IOMMU] Skipping PCI device protection (IOMMU not enabled)\n");
