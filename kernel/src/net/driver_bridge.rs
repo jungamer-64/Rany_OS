@@ -186,11 +186,13 @@ pub fn init_bridge() -> Result<(), &'static str> {
     stack::init(config);
 
     // Set transmit callback
-    if let Some(ref mut stack) = *stack::stack().lock().unwrap_or_else(|e| {
-        log::warn!("[NET BRIDGE] Stack poisoned");
-        e.into_inner()
-    }) {
-        stack.set_transmit_fn(virtio_transmit);
+    match stack::stack().lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.set_transmit_fn(virtio_transmit);
+            }
+        }
+        Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),
     }
 
     crate::serial_println!("[NET BRIDGE] Bridge initialized");
