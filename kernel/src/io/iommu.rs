@@ -50,6 +50,13 @@ use pci_driver::{AtsController, PcieBdf, device_supports_ats, pcie_ext_config};
 /// - `false`: IOMMU未検出時も警告のみで続行
 pub static IOMMU_REQUIRED: AtomicBool = AtomicBool::new(false);
 
+// ============================================================================
+// Fault Logging Rate Limiting
+// ============================================================================
+
+/// Maximum number of faults to log per process_faults call (prevents log flooding)
+const FAULT_LOG_RATE_LIMIT: usize = 10;
+
 /// IOMMUを必須に設定する
 ///
 /// 起動初期（IOMMU初期化前）に呼び出すこと
@@ -912,6 +919,8 @@ pub struct InterruptRemapTable {
     size: usize,
     /// Allocation bitmap
     allocated: Vec<u64>,
+    /// Next-Fit hint: word index to start searching from
+    next_hint: usize,
 }
 
 impl InterruptRemapTable {
@@ -935,6 +944,7 @@ impl InterruptRemapTable {
             base,
             size,
             allocated,
+            next_hint: 0,
         })
     }
 
@@ -948,13 +958,23 @@ impl InterruptRemapTable {
         self.size
     }
 
-    /// Allocate an IRTE index
+    /// Allocate an IRTE index (Next-Fit algorithm for O(1) amortized)
     pub fn allocate(&mut self) -> Option<u16> {
-        for (word_idx, word) in self.allocated.iter_mut().enumerate() {
+        let len = self.allocated.len();
+        if len == 0 {
+            return None;
+        }
+
+        // Start from hint position and wrap around
+        for i in 0..len {
+            let word_idx = (self.next_hint + i) % len;
+            let word = &mut self.allocated[word_idx];
             if *word != u64::MAX {
                 // Find first free bit
                 let bit = (!*word).trailing_zeros();
                 *word |= 1 << bit;
+                // Update hint for next allocation
+                self.next_hint = word_idx;
                 return Some((word_idx * 64 + bit as usize) as u16);
             }
         }
@@ -1407,6 +1427,15 @@ impl PageTablePool {
         (self.free_list.len(), self.total_allocated)
     }
 }
+
+/// Global page table pool for reduced allocation overhead
+///
+/// Shared across all IOMMU domains. Uses Mutex for thread safety.
+static PAGE_TABLE_POOL: Mutex<PageTablePool> = Mutex::new(PageTablePool {
+    free_list: Vec::new(),
+    total_allocated: 0,
+    max_size: 256,
+});
 
 /// Batched Invalidation for efficient QI usage
 ///
@@ -2191,6 +2220,8 @@ impl IommuDomain {
 
     /// Map a single page using 4-level page table walking
     /// Intel VT-d uses: PML4 -> PDP -> PD -> PT (same as x86-64 paging)
+    ///
+    /// On error, any newly allocated page tables are deallocated to prevent leaks.
     fn map_page(
         &mut self,
         iova: u64,
@@ -2204,13 +2235,39 @@ impl IommuDomain {
         let pd_idx = ((iova >> 21) & 0x1FF) as usize; // Bits 29:21
         let pt_idx = ((iova >> 12) & 0x1FF) as usize; // Bits 20:12
 
+        // Track newly allocated page tables for rollback on error
+        // Index 0: PDP, 1: PD, 2: PT (order of allocation)
+        let mut newly_allocated: [Option<*mut SlPte>; 3] = [None, None, None];
+
+        // Cleanup helper - deallocate any newly allocated tables
+        let cleanup = |tables: &[Option<*mut SlPte>; 3]| {
+            for table in tables.iter().flatten() {
+                // Deallocate using the same layout as allocation
+                let layout = alloc::alloc::Layout::from_size_align(
+                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                    4096,
+                )
+                .unwrap();
+                unsafe {
+                    alloc::alloc::dealloc(*table as *mut u8, layout);
+                }
+            }
+        };
+
         // self.page_table is the PML4 root
         unsafe {
             // Level 4: PML4 -> PDP
             let pml4_entry = self.page_table.add(pml4_idx);
             if !(*pml4_entry).is_present() {
                 // Allocate PDP table on the domain's preferred NUMA node when available
-                let pdp = Self::allocate_page_table(self.numa_node)?;
+                let pdp = match Self::allocate_page_table(self.numa_node) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        cleanup(&newly_allocated);
+                        return Err(e);
+                    }
+                };
+                newly_allocated[0] = Some(pdp);
                 *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
             }
             let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
@@ -2219,7 +2276,18 @@ impl IommuDomain {
             let pdp_entry = pdp_table.add(pdp_idx);
             if !(*pdp_entry).is_present() {
                 // Allocate PD table on the domain's preferred NUMA node when available
-                let pd = Self::allocate_page_table(self.numa_node)?;
+                let pd = match Self::allocate_page_table(self.numa_node) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // Rollback PDP if we allocated it
+                        if newly_allocated[0].is_some() {
+                            (*pml4_entry).0 = 0; // Clear PML4 entry
+                        }
+                        cleanup(&newly_allocated);
+                        return Err(e);
+                    }
+                };
+                newly_allocated[1] = Some(pd);
                 *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
             }
             let pd_table = ((*pdp_entry).phys_addr()) as *mut SlPte;
@@ -2228,7 +2296,21 @@ impl IommuDomain {
             let pd_entry = pd_table.add(pd_idx);
             if !(*pd_entry).is_present() {
                 // Allocate PT on the domain's preferred NUMA node when available
-                let pt = Self::allocate_page_table(self.numa_node)?;
+                let pt = match Self::allocate_page_table(self.numa_node) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        // Rollback PD and PDP if we allocated them
+                        if newly_allocated[1].is_some() {
+                            (*pdp_entry).0 = 0; // Clear PDP entry
+                        }
+                        if newly_allocated[0].is_some() {
+                            (*pml4_entry).0 = 0; // Clear PML4 entry
+                        }
+                        cleanup(&newly_allocated);
+                        return Err(e);
+                    }
+                };
+                newly_allocated[2] = Some(pt);
                 *pd_entry = SlPte((pt as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
             }
             let pt_table = ((*pd_entry).phys_addr()) as *mut SlPte;
@@ -2236,6 +2318,17 @@ impl IommuDomain {
             // Level 1: PT -> Page
             let pt_entry = pt_table.add(pt_idx);
             if (*pt_entry).is_present() {
+                // Rollback all newly allocated tables
+                if newly_allocated[2].is_some() {
+                    (*pd_entry).0 = 0;
+                }
+                if newly_allocated[1].is_some() {
+                    (*pdp_entry).0 = 0;
+                }
+                if newly_allocated[0].is_some() {
+                    (*pml4_entry).0 = 0;
+                }
+                cleanup(&newly_allocated);
                 return Err(IommuError::AlreadyMapped);
             }
             *pt_entry = SlPte::mapping(phys, read, write);
@@ -2245,7 +2338,15 @@ impl IommuDomain {
     }
 
     /// Allocate a zeroed page table
+    ///
+    /// First tries the global PageTablePool, then falls back to fresh allocation.
     fn allocate_page_table(numa_hint: Option<usize>) -> Result<*mut SlPte, IommuError> {
+        // Try pool first (faster path for high-frequency allocations)
+        if let Some(ptr) = PAGE_TABLE_POOL.lock().allocate() {
+            return Ok(ptr);
+        }
+
+        // Fallback to fresh allocation
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .map_err(|_| IommuError::HardwareError)?;
@@ -2266,6 +2367,8 @@ impl IommuDomain {
     ///
     /// Uses 3-level page table walking (PML4 -> PDP -> PD) and sets super-page at PD level.
     /// Both iova and phys must be 2MB-aligned.
+    ///
+    /// On error, any newly allocated page tables are deallocated to prevent leaks.
     pub unsafe fn map_page_2mb(
         &mut self,
         iova: u64,
@@ -2284,12 +2387,35 @@ impl IommuDomain {
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
 
+        // Track newly allocated page tables for rollback
+        let mut newly_allocated: [Option<*mut SlPte>; 2] = [None, None];
+
+        let cleanup = |tables: &[Option<*mut SlPte>; 2]| {
+            for table in tables.iter().flatten() {
+                let layout = alloc::alloc::Layout::from_size_align(
+                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                    4096,
+                )
+                .unwrap();
+                unsafe {
+                    alloc::alloc::dealloc(*table as *mut u8, layout);
+                }
+            }
+        };
+
         let pml4_table = self.page_table;
         let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
 
         // Ensure PDP exists
         if !(unsafe { *pml4_entry }).is_present() {
-            let pdp = Self::allocate_page_table(self.numa_node)?;
+            let pdp = match Self::allocate_page_table(self.numa_node) {
+                Ok(p) => p,
+                Err(e) => {
+                    cleanup(&newly_allocated);
+                    return Err(e);
+                }
+            };
+            newly_allocated[0] = Some(pdp);
             unsafe {
                 *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
             };
@@ -2300,20 +2426,43 @@ impl IommuDomain {
 
         // Ensure PD exists
         if !(unsafe { *pdp_entry }).is_present() {
-            let pd = Self::allocate_page_table(self.numa_node)?;
+            let pd = match Self::allocate_page_table(self.numa_node) {
+                Ok(p) => p,
+                Err(e) => {
+                    // Rollback PDP if we allocated it
+                    if newly_allocated[0].is_some() {
+                        unsafe { (*pml4_entry).0 = 0 };
+                    }
+                    cleanup(&newly_allocated);
+                    return Err(e);
+                }
+            };
+            newly_allocated[1] = Some(pd);
             unsafe {
                 *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
             };
         } else if (unsafe { *pdp_entry }).is_super_page() {
-            // Already a 1GB super-page at this level
+            // Already a 1GB super-page at this level - rollback
+            if newly_allocated[0].is_some() {
+                unsafe { (*pml4_entry).0 = 0 };
+            }
+            cleanup(&newly_allocated);
             return Err(IommuError::AlreadyMapped);
         }
 
         let pd_table = ((unsafe { *pdp_entry }).phys_addr()) as *mut SlPte;
         let pd_entry = unsafe { pd_table.add(pd_idx) };
 
-        // Check if already mapped
-        if !(unsafe { *pd_entry }).is_present() {
+        // Check if already mapped (fixed: was checking !is_present())
+        if (unsafe { *pd_entry }).is_present() {
+            // Rollback allocated tables
+            if newly_allocated[1].is_some() {
+                unsafe { (*pdp_entry).0 = 0 };
+            }
+            if newly_allocated[0].is_some() {
+                unsafe { (*pml4_entry).0 = 0 };
+            }
+            cleanup(&newly_allocated);
             return Err(IommuError::AlreadyMapped);
         }
 
@@ -2327,6 +2476,8 @@ impl IommuDomain {
     ///
     /// Uses 2-level page table walking (PML4 -> PDP) and sets super-page at PDP level.
     /// Both iova and phys must be 1GB-aligned.
+    ///
+    /// On error, any newly allocated page tables are deallocated to prevent leaks.
     pub unsafe fn map_page_1gb(
         &mut self,
         iova: u64,
@@ -2344,12 +2495,35 @@ impl IommuDomain {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
 
+        // Track newly allocated PDP table for rollback
+        let mut newly_allocated_pdp: Option<*mut SlPte> = None;
+
+        let cleanup = |table: Option<*mut SlPte>| {
+            if let Some(ptr) = table {
+                let layout = alloc::alloc::Layout::from_size_align(
+                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                    4096,
+                )
+                .unwrap();
+                unsafe {
+                    alloc::alloc::dealloc(ptr as *mut u8, layout);
+                }
+            }
+        };
+
         let pml4_table = self.page_table;
         let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
 
         // Ensure PDP exists
         if !(unsafe { *pml4_entry }).is_present() {
-            let pdp = Self::allocate_page_table(self.numa_node)?;
+            let pdp = match Self::allocate_page_table(self.numa_node) {
+                Ok(p) => p,
+                Err(e) => {
+                    cleanup(newly_allocated_pdp);
+                    return Err(e);
+                }
+            };
+            newly_allocated_pdp = Some(pdp);
             unsafe {
                 *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
             };
@@ -2358,8 +2532,13 @@ impl IommuDomain {
         let pdp_table = ((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
 
-        // Check if already mapped
-        if !(unsafe { *pdp_entry }).is_present() {
+        // Check if already mapped (fixed: was checking !is_present())
+        if (unsafe { *pdp_entry }).is_present() {
+            // Rollback PDP if we allocated it
+            if newly_allocated_pdp.is_some() {
+                unsafe { (*pml4_entry).0 = 0 };
+            }
+            cleanup(newly_allocated_pdp);
             return Err(IommuError::AlreadyMapped);
         }
 
@@ -2386,12 +2565,19 @@ impl IommuDomain {
     }
 
     /// Unmap a single page using 4-level page table walking
+    ///
+    /// Also reclaims empty page tables (PT, PD, PDP) to prevent memory accumulation
+    /// from sparse mappings.
     fn unmap_page(&mut self, iova: u64) -> Result<(), IommuError> {
         // Extract indices for each level
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
         let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .unwrap();
 
         unsafe {
             // Walk down to PT
@@ -2418,9 +2604,39 @@ impl IommuDomain {
                 return Err(IommuError::NotMapped);
             }
             *pt_entry = SlPte::new();
+
+            // Reclaim empty tables (bottom-up cascade)
+            if Self::count_present_entries(pt_table) == 0 {
+                *pd_entry = SlPte::new();
+                alloc::alloc::dealloc(pt_table as *mut u8, layout);
+
+                if Self::count_present_entries(pd_table) == 0 {
+                    *pdp_entry = SlPte::new();
+                    alloc::alloc::dealloc(pd_table as *mut u8, layout);
+
+                    if Self::count_present_entries(pdp_table) == 0 {
+                        *pml4_entry = SlPte::new();
+                        alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                    }
+                }
+            }
         }
 
         Ok(())
+    }
+
+    /// Count present entries in a page table
+    ///
+    /// Used for empty table detection during unmap reclamation.
+    #[inline]
+    unsafe fn count_present_entries(table: *const SlPte) -> usize {
+        let mut count = 0;
+        for i in 0..PT_ENTRIES {
+            if (*table.add(i)).is_present() {
+                count += 1;
+            }
+        }
+        count
     }
 
     /// Get total mapped size
@@ -2434,17 +2650,44 @@ impl IommuDomain {
     }
 }
 
+/// Recursively deallocate all page tables under the given table
+///
+/// This function walks the page table hierarchy and deallocates all child tables.
+/// Super-pages (1GB/2MB) are leaf entries and don't have child tables.
+///
+/// # Arguments
+/// * `table` - Pointer to the current page table
+/// * `level` - Current level in the hierarchy (3=PML4, 2=PDP, 1=PD, 0=PT)
+///
+/// # Safety
+/// - `table` must be a valid pointer to a 4KB-aligned page table
+/// - The table must not be in use by hardware (IOMMU disabled or domain detached)
+unsafe fn deallocate_page_table_recursive(table: *mut SlPte, level: usize) {
+    if table.is_null() {
+        return;
+    }
+
+    // If not at PT level (level > 0), recurse into children
+    if level > 0 {
+        for i in 0..PT_ENTRIES {
+            let entry = *table.add(i);
+            if entry.is_present() && !entry.is_super_page() {
+                let child_table = entry.phys_addr() as *mut SlPte;
+                deallocate_page_table_recursive(child_table, level - 1);
+            }
+        }
+    }
+
+    // Return table to pool for reuse (instead of deallocating)
+    PAGE_TABLE_POOL.lock().free(table);
+}
+
 impl Drop for IommuDomain {
     fn drop(&mut self) {
         if !self.page_table.is_null() {
-            let layout = alloc::alloc::Layout::from_size_align(
-                PT_ENTRIES * core::mem::size_of::<SlPte>(),
-                4096,
-            )
-            .unwrap();
-
             unsafe {
-                alloc::alloc::dealloc(self.page_table as *mut u8, layout);
+                // Level 3 = PML4 (we recurse: PML4 -> PDP -> PD -> PT)
+                deallocate_page_table_recursive(self.page_table, 3);
             }
         }
     }
@@ -3389,14 +3632,18 @@ impl IommuController {
             let record = FaultRecord { lo, hi };
 
             if record.is_valid() {
-                // Log the fault
-                log::error!(
-                    "[IOMMU] Fault: reason={:#x}, source={:04x}, addr={:#x}, pasid={:?}\\n",
-                    record.reason(),
-                    record.source_id(),
-                    record.fault_address(),
-                    record.pasid()
-                );
+                // Rate-limited logging to prevent system stall under high fault load
+                if processed < FAULT_LOG_RATE_LIMIT {
+                    log::error!(
+                        "[IOMMU] Fault: reason={:#x}, source={:04x}, addr={:#x}, pasid={:?}\\n",
+                        record.reason(),
+                        record.source_id(),
+                        record.fault_address(),
+                        record.pasid()
+                    );
+                } else if processed == FAULT_LOG_RATE_LIMIT {
+                    log::warn!("[IOMMU] Further fault logging suppressed (rate limit reached)\\n");
+                }
 
                 // Add to fault log
                 if let Some(log) = self.fault_log.lock().as_mut() {
@@ -4765,12 +5012,15 @@ struct DomainCacheEntry {
 /// Stores frequently accessed device-to-domain mappings.
 /// A simple direct-mapped cache is sufficient as devices are usually fixed
 /// to a specific core's workload.
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy)]
 pub struct PerCpuDomainCache {
-    entries: [DomainCacheEntry; 32],
+    /// Cache size (power of 2 for efficient modulo via bitmask)
+    entries: [DomainCacheEntry; Self::CACHE_SIZE],
 }
 
 impl PerCpuDomainCache {
+    /// Per-CPU domain cache size (increased from 32 for better coverage on larger systems)
+    const CACHE_SIZE: usize = 64;
     const fn new() -> Self {
         Self {
             entries: [DomainCacheEntry {
@@ -4778,12 +5028,12 @@ impl PerCpuDomainCache {
                 domain_id: 0,
                 controller_idx: 0,
                 valid: false,
-            }; 32],
+            }; Self::CACHE_SIZE],
         }
     }
 
     fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
-        let idx = (device_id as usize) % 32;
+        let idx = (device_id as usize) % Self::CACHE_SIZE;
         let entry = self.entries[idx];
         if entry.valid && entry.device_id == device_id {
             Some((entry.domain_id, entry.controller_idx))
@@ -4793,7 +5043,7 @@ impl PerCpuDomainCache {
     }
 
     fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
-        let idx = (device_id as usize) % 32;
+        let idx = (device_id as usize) % Self::CACHE_SIZE;
         self.entries[idx] = DomainCacheEntry {
             device_id,
             domain_id,
@@ -4803,7 +5053,7 @@ impl PerCpuDomainCache {
     }
 
     fn invalidate(&mut self, device_id: u16) {
-        let idx = (device_id as usize) % 32;
+        let idx = (device_id as usize) % Self::CACHE_SIZE;
         if self.entries[idx].device_id == device_id {
             self.entries[idx].valid = false;
         }
@@ -5876,6 +6126,86 @@ mod tests {
         {
             let mut guard = IOMMU.write();
             *guard = IommuManager::new();
+        }
+    }
+
+    #[test]
+    fn test_domain_drop_frees_all_page_tables() {
+        // Create domain and map multiple scattered regions
+        let mut domain = IommuDomain::new(1, None, false, false, IommuDomainType::Translated);
+
+        // Map regions that span different PML4/PDP/PD entries
+        domain
+            .map(0x0000_1000, 0x1000, 0x1000, true, true)
+            .expect("map 1 failed");
+        domain
+            .map(0x0020_0000, 0x2000, 0x1000, true, true)
+            .expect("map 2 failed"); // Different PD entry
+
+        // Drop triggers recursive deallocation - this test ensures no panic occurs
+        drop(domain);
+    }
+
+    #[test]
+    fn test_unmap_reclaims_empty_tables() {
+        let mut domain = IommuDomain::new(1, None, false, false, IommuDomainType::Translated);
+
+        // Map a single page
+        domain
+            .map(0x1000, 0x2000, 0x1000, true, true)
+            .expect("map failed");
+
+        // Verify mapping exists
+        assert!(domain.mappings().contains_key(&0x1000));
+
+        // Unmap should reclaim PT, PD, PDP tables
+        let mapping = domain.unmap(0x1000).expect("unmap failed");
+        assert_eq!(mapping.iova, 0x1000);
+        assert_eq!(mapping.phys, 0x2000);
+
+        // Verify page table entries are cleared (PML4 entry should be not present)
+        unsafe {
+            let pml4_entry = *domain.page_table.add(0);
+            assert!(
+                !pml4_entry.is_present(),
+                "PML4 entry should be cleared after unmap"
+            );
+        }
+    }
+
+    #[test]
+    fn test_unmap_partial_keeps_tables() {
+        let mut domain = IommuDomain::new(1, None, false, false, IommuDomainType::Translated);
+
+        // Map two pages in the same PT
+        domain
+            .map(0x1000, 0x2000, 0x1000, true, true)
+            .expect("map 1 failed");
+        domain
+            .map(0x2000, 0x3000, 0x1000, true, true)
+            .expect("map 2 failed");
+
+        // Unmap first page - PT should still exist (second page still mapped)
+        domain.unmap(0x1000).expect("unmap 1 failed");
+
+        // Verify PML4 entry is still present (PT not empty)
+        unsafe {
+            let pml4_entry = *domain.page_table.add(0);
+            assert!(
+                pml4_entry.is_present(),
+                "PML4 entry should still be present"
+            );
+        }
+
+        // Unmap second page - now tables should be reclaimed
+        domain.unmap(0x2000).expect("unmap 2 failed");
+
+        unsafe {
+            let pml4_entry = *domain.page_table.add(0);
+            assert!(
+                !pml4_entry.is_present(),
+                "PML4 entry should be cleared after all unmaps"
+            );
         }
     }
 }
