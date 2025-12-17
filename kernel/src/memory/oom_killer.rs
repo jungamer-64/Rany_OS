@@ -84,35 +84,38 @@ static OOM_KILLER: OomKiller = OomKiller {
 impl OomKiller {
     /// ドメインを登録
     pub fn register_domain(&self, info: DomainMemoryInfo) {
-        let mut domains = self.domains.lock().unwrap_or_else(|e| {
-            log::warn!("[MEM] OOM Killer poisoned");
-            e.into_inner()
-        });
-        // 既存のエントリを更新または新規追加
-        if let Some(existing) = domains.iter_mut().find(|d| d.domain_id == info.domain_id) {
-            *existing = info;
-        } else {
-            domains.push(info);
+        match self.domains.lock() {
+            Ok(mut domains) => {
+                // 既存のエントリを更新または新規追加
+                if let Some(existing) = domains.iter_mut().find(|d| d.domain_id == info.domain_id) {
+                    *existing = info;
+                } else {
+                    domains.push(info);
+                }
+            }
+            Err(_) => {
+                log::error!("[MEM] OOM Killer domains lock poisoned - register skipped");
+            }
         }
     }
 
     /// ドメインの登録を解除
     pub fn unregister_domain(&self, domain_id: u64) {
-        let mut domains = self.domains.lock().unwrap_or_else(|e| {
-            log::warn!("[MEM] OOM Killer poisoned");
-            e.into_inner()
-        });
-        domains.retain(|d| d.domain_id != domain_id);
+        match self.domains.lock() {
+            Ok(mut domains) => domains.retain(|d| d.domain_id != domain_id),
+            Err(_) => log::error!("[MEM] OOM Killer domains lock poisoned - unregister skipped"),
+        }
     }
 
     /// ドメインのメモリ使用量を更新
     pub fn update_memory_usage(&self, domain_id: u64, usage: u64) {
-        let mut domains = self.domains.lock().unwrap_or_else(|e| {
-            log::warn!("[MEM] OOM Killer poisoned");
-            e.into_inner()
-        });
-        if let Some(domain) = domains.iter_mut().find(|d| d.domain_id == domain_id) {
-            domain.memory_usage = usage;
+        match self.domains.lock() {
+            Ok(mut domains) => {
+                if let Some(domain) = domains.iter_mut().find(|d| d.domain_id == domain_id) {
+                    domain.memory_usage = usage;
+                }
+            }
+            Err(_) => log::error!("[MEM] OOM Killer domains lock poisoned - update skipped"),
         }
     }
 
@@ -136,27 +139,28 @@ impl OomKiller {
 
     /// 犠牲者を選択して終了
     fn select_and_kill_victim(&self) -> Option<u64> {
-        let victim = {
-            let domains = self.domains.lock().unwrap_or_else(|e| {
-                log::warn!("[MEM] OOM Killer poisoned");
-                e.into_inner()
-            });
+        let victim = match self.domains.lock() {
+            Ok(domains) => {
+                // 優先度順（低い方が先）、同優先度内ではメモリ使用量順（大きい方が先）
+                let mut candidates: Vec<_> = domains
+                    .iter()
+                    .filter(|d| d.priority != DomainPriority::Critical)
+                    .cloned()
+                    .collect();
 
-            // 優先度順（低い方が先）、同優先度内ではメモリ使用量順（大きい方が先）
-            let mut candidates: Vec<_> = domains
-                .iter()
-                .filter(|d| d.priority != DomainPriority::Critical)
-                .cloned()
-                .collect();
+                candidates.sort_by(|a, b| {
+                    match a.priority.cmp(&b.priority) {
+                        core::cmp::Ordering::Equal => b.memory_usage.cmp(&a.memory_usage), // 大きい方を先に
+                        other => other, // 優先度が低い方を先に
+                    }
+                });
 
-            candidates.sort_by(|a, b| {
-                match a.priority.cmp(&b.priority) {
-                    core::cmp::Ordering::Equal => b.memory_usage.cmp(&a.memory_usage), // 大きい方を先に
-                    other => other, // 優先度が低い方を先に
-                }
-            });
-
-            candidates.first().cloned()
+                candidates.first().cloned()
+            }
+            Err(_) => {
+                log::error!("[OOM] OOM Killer domains lock poisoned - cannot select victim");
+                None
+            }
         };
 
         match victim {
@@ -206,15 +210,15 @@ impl OomKiller {
 
     /// 統計情報を取得
     pub fn stats(&self) -> OomStats {
+        let total_domains = match self.domains.lock() {
+            Ok(d) => d.len(),
+            Err(_) => {
+                log::error!("[MEM] OOM Killer domains lock poisoned - returning zero stats");
+                0
+            }
+        };
         OomStats {
-            total_domains: self
-                .domains
-                .lock()
-                .unwrap_or_else(|e| {
-                    log::warn!("[MEM] OOM Killer poisoned");
-                    e.into_inner()
-                })
-                .len(),
+            total_domains,
             kill_count: self.kill_count.load(Ordering::Relaxed),
             freed_memory: self.freed_memory.load(Ordering::Relaxed),
             in_progress: self.in_progress.load(Ordering::Relaxed),
@@ -223,13 +227,13 @@ impl OomKiller {
 
     /// 全ドメインのメモリ情報を取得
     pub fn list_domains(&self) -> Vec<DomainMemoryInfo> {
-        self.domains
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[MEM] OOM Killer poisoned");
-                e.into_inner()
-            })
-            .clone()
+        match self.domains.lock() {
+            Ok(d) => d.clone(),
+            Err(_) => {
+                log::error!("[MEM] OOM Killer domains lock poisoned - returning empty list");
+                Vec::new()
+            }
+        }
     }
 }
 
@@ -363,5 +367,29 @@ mod tests {
 
         // Cleanup
         OOM_KILLER.unregister_domain(20);
+    }
+
+    #[test]
+    fn test_poisoned_register_skips_and_list_empty() {
+        use crate::sync::set_panicking;
+        set_panicking(true);
+        OOM_KILLER.register_domain(DomainMemoryInfo {
+            domain_id: 99,
+            name: String::from("poisoned"),
+            priority: DomainPriority::Normal,
+            memory_usage: 512,
+            last_activity: 0,
+        });
+        set_panicking(false);
+        assert!(!OOM_KILLER.list_domains().iter().any(|d| d.domain_id == 99));
+    }
+
+    #[test]
+    fn test_poisoned_stats_returns_zero_total_domains() {
+        use crate::sync::set_panicking;
+        set_panicking(true);
+        let s = OOM_KILLER.stats();
+        assert_eq!(s.total_domains, 0);
+        set_panicking(false);
     }
 }

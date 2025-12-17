@@ -665,10 +665,10 @@ impl DhcpClient {
                 if elapsed_secs > 4 {
                     let retry = self.retry_count.fetch_add(1, Ordering::SeqCst);
                     if retry >= Self::MAX_RETRIES {
-                        *self.state.lock().unwrap_or_else(|e| {
-                            log::warn!("[NET] DHCP State poisoned");
-                            e.into_inner()
-                        }) = DhcpState::Init;
+                        match self.state.lock() {
+                            Ok(mut s) => *s = DhcpState::Init,
+                            Err(_) => log::error!("[NET] DHCP State lock poisoned (check_timeout) - cannot reset to Init"),
+                        }
                         self.retry_count.store(0, Ordering::SeqCst);
                     }
                     return true;
@@ -722,4 +722,26 @@ pub fn init(mac_address: MacAddress) {
 /// DHCPクライアントを取得
 pub fn client() -> Option<&'static PoisonLock<Option<DhcpClient>>> {
     Some(&DHCP_CLIENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::set_panicking;
+
+    #[test]
+    fn test_check_timeout_poisoned_state_reset_skips() {
+        let client = DhcpClient::new(crate::net::ethernet::MacAddress::ZERO);
+        {
+            let mut s = client.state.lock().unwrap();
+            *s = DhcpState::Selecting;
+        }
+        client.state_time.store(0, Ordering::SeqCst);
+        client.retry_count.store(DhcpClient::MAX_RETRIES - 1, Ordering::SeqCst);
+
+        set_panicking(true);
+        // Should not panic even if state lock is poisoned
+        let _ = client.check_timeout(10, 1);
+        set_panicking(false);
+    }
 }

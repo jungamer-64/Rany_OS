@@ -648,14 +648,13 @@ impl DnsClient {
 
     /// プライマリDNSサーバーを取得
     pub fn primary_server(&self) -> Option<Ipv4Address> {
-        self.servers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] DNS Servers poisoned");
-                e.into_inner()
-            })
-            .first()
-            .copied()
+        match self.servers.lock() {
+            Ok(servers) => servers.first().copied(),
+            Err(_) => {
+                log::error!("[NET] DNS Servers lock poisoned - returning None");
+                None
+            }
+        }
     }
 }
 
@@ -691,5 +690,23 @@ pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
             log::error!("[NET] DNS Global lock poisoned (resolve_cached) - treating as cache miss");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::set_panicking;
+
+    #[test]
+    fn test_primary_server_poisoned_returns_none() {
+        let client = DnsClient::new(100);
+        {
+            let mut s = client.servers.lock().unwrap();
+            s.push(Ipv4Address::new(1, 2, 3, 4));
+        }
+        set_panicking(true);
+        assert_eq!(client.primary_server(), None);
+        set_panicking(false);
     }
 }
