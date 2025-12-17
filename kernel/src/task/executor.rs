@@ -174,27 +174,42 @@ impl PerCoreTaskStore {
 
     /// タスクを追加
     fn insert(&self, task_id: TaskId, task: Task) {
-        self.tasks
-            .lock()
-            .unwrap_or_else(|e| {
-                // Recovery mode
-                e.into_inner()
-            })
-            .insert(task_id, task);
-        self.task_count.fetch_add(1, Ordering::Relaxed);
+        match self.tasks.lock() {
+            Ok(mut guard) => {
+                guard.insert(task_id, task);
+                self.task_count.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                log::error!("[EXECUTOR] Per-core tasks lock poisoned during insert - falling back to TASK_STORE");
+                if let Ok(mut legacy) = TASK_STORE.lock() {
+                    legacy.insert(task_id, task);
+                } else {
+                    log::error!("[EXECUTOR] TASK_STORE poisoned - dropping task");
+                }
+            }
+        }
     }
 
     /// タスクを取り出し
     fn remove(&self, task_id: &TaskId) -> Option<Task> {
-        let result = self
-            .tasks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(task_id);
-        if result.is_some() {
-            self.task_count.fetch_sub(1, Ordering::Relaxed);
+        match self.tasks.lock() {
+            Ok(mut guard) => {
+                let result = guard.remove(task_id);
+                if result.is_some() {
+                    self.task_count.fetch_sub(1, Ordering::Relaxed);
+                }
+                result
+            }
+            Err(_) => {
+                log::error!("[EXECUTOR] Per-core tasks lock poisoned during remove - trying TASK_STORE fallback");
+                if let Ok(mut legacy) = TASK_STORE.lock() {
+                    legacy.remove(task_id)
+                } else {
+                    log::error!("[EXECUTOR] TASK_STORE poisoned during remove");
+                    None
+                }
+            }
         }
-        result
     }
 
     /// タスク数を取得
@@ -204,14 +219,21 @@ impl PerCoreTaskStore {
 
     /// Work Stealing: タスクを1つ盗む
     fn steal_one(&self) -> Option<(TaskId, Task)> {
-        let mut guard = self.tasks.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((&task_id, _)) = guard.iter().next() {
-            if let Some(task) = guard.remove(&task_id) {
-                self.task_count.fetch_sub(1, Ordering::Relaxed);
-                return Some((task_id, task));
+        match self.tasks.lock() {
+            Ok(mut guard) => {
+                if let Some((&task_id, _)) = guard.iter().next() {
+                    if let Some(task) = guard.remove(&task_id) {
+                        self.task_count.fetch_sub(1, Ordering::Relaxed);
+                        return Some((task_id, task));
+                    }
+                }
+                None
+            }
+            Err(_) => {
+                log::error!("[EXECUTOR] Per-core tasks lock poisoned during steal - cannot steal");
+                None
             }
         }
-        None
     }
 }
 
@@ -405,16 +427,20 @@ impl Executor {
                 }
                 // レガシーストアも探す（後方互換性）
                 if !found {
-                    if let Some(task) = TASK_STORE
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&task_id)
-                    {
-                        self.local_queue.push_back(task);
-                        woken += 1;
-                    } else {
-                        // タスクが見つからない場合はローカルキャッシュに追加
-                        self.local_cache.push_back(task_id);
+                    match TASK_STORE.lock() {
+                        Ok(mut legacy) => {
+                            if let Some(task) = legacy.remove(&task_id) {
+                                self.local_queue.push_back(task);
+                                woken += 1;
+                            } else {
+                                // タスクが見つからない場合はローカルキャッシュに追加
+                                self.local_cache.push_back(task_id);
+                            }
+                        }
+                        Err(_) => {
+                            log::error!("[EXECUTOR] TASK_STORE poisoned during wake handling - caching task id");
+                            self.local_cache.push_back(task_id);
+                        }
                     }
                 }
             }
@@ -451,13 +477,16 @@ impl Executor {
                 }
                 // レガシーストアも探す
                 if !found {
-                    if let Some(task) = TASK_STORE
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&task_id)
-                    {
-                        self.local_queue.push_back(task);
-                        fetched += 1;
+                    match TASK_STORE.lock() {
+                        Ok(mut legacy) => {
+                            if let Some(task) = legacy.remove(&task_id) {
+                                self.local_queue.push_back(task);
+                                fetched += 1;
+                            }
+                        }
+                        Err(_) => {
+                            log::error!("[EXECUTOR] TASK_STORE poisoned during global fetch - skipping");
+                        }
                     }
                 }
             } else {

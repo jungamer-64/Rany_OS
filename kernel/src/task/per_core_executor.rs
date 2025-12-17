@@ -41,39 +41,54 @@ impl<T> WorkStealingQueue<T> {
 
     /// アイテムをプッシュ
     pub fn push(&self, item: T) {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(item);
+        match self.inner.lock() {
+            Ok(mut guard) => guard.push_back(item),
+            Err(_) => log::error!("[WSQ] WorkStealingQueue poisoned during push - dropping item"),
+        }
     }
 
     /// アイテムをポップ（LIFO: ローカル実行用）
     pub fn pop(&self) -> Option<T> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop_back()
+        match self.inner.lock() {
+            Ok(mut guard) => guard.pop_back(),
+            Err(_) => {
+                log::error!("[WSQ] WorkStealingQueue poisoned during pop - returning None");
+                None
+            }
+        }
     }
 
     /// アイテムをスチール（FIFO: 他コアからの取得用）
     pub fn steal(&self) -> Option<T> {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop_front()
+        match self.inner.lock() {
+            Ok(mut guard) => guard.pop_front(),
+            Err(_) => {
+                log::error!("[WSQ] WorkStealingQueue poisoned during steal - returning None");
+                None
+            }
+        }
     }
 
     /// キューの長さ
     pub fn len(&self) -> usize {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner()).len()
+        match self.inner.lock() {
+            Ok(g) => g.len(),
+            Err(_) => {
+                log::error!("[WSQ] WorkStealingQueue poisoned during len - returning 0");
+                0
+            }
+        }
     }
 
     /// キューが空かどうか
     pub fn is_empty(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_empty()
+        match self.inner.lock() {
+            Ok(g) => g.is_empty(),
+            Err(_) => {
+                log::error!("[WSQ] WorkStealingQueue poisoned during is_empty - returning true");
+                true
+            }
+        }
     }
 }
 

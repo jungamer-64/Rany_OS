@@ -238,80 +238,100 @@ pub struct BridgeStats {
 
 /// Get real network configuration from NetworkStack
 pub fn get_real_config() -> Option<super::NetworkConfigSnapshot> {
-    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
-        log::warn!("[NET BRIDGE] Stack poisoned");
-        e.into_inner()
-    });
-    let stack = stack_guard.as_ref()?;
+    match stack::stack().lock() {
+        Ok(guard) => {
+            let stack = match guard.as_ref() {
+                Some(s) => s,
+                None => return None,
+            };
 
-    let config = stack.config();
+            let config = stack.config();
 
-    Some(super::NetworkConfigSnapshot {
-        ip: *config.ipv4.address.as_bytes(),
-        netmask: *config.ipv4.subnet_mask.as_bytes(),
-        gateway: *config.ipv4.gateway.as_bytes(),
-        mac: *config.mac.as_bytes(),
-    })
+            Some(super::NetworkConfigSnapshot {
+                ip: *config.ipv4.address.as_bytes(),
+                netmask: *config.ipv4.subnet_mask.as_bytes(),
+                gateway: *config.ipv4.gateway.as_bytes(),
+                mac: *config.mac.as_bytes(),
+            })
+        }
+        Err(_) => {
+            log::error!("[NET BRIDGE] Stack poisoned (get_real_config)");
+            None
+        }
+    }
 }
 
 /// Get real network statistics from NetworkStack
 pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
-    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
-        log::warn!("[NET BRIDGE] Stack poisoned");
-        e.into_inner()
-    });
-    let stack = stack_guard.as_ref()?;
+    match stack::stack().lock() {
+        Ok(guard) => {
+            let stack = match guard.as_ref() {
+                Some(s) => s,
+                None => return Vec::new(),
+            };
 
-    let stats = stack.stats();
+            let stats = stack.stats();
 
-    Some(super::NetworkStatsSnapshot {
-        rx_packets: stats.rx_packets.load(Ordering::Relaxed),
-        tx_packets: stats.tx_packets.load(Ordering::Relaxed),
-        rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
-        tx_bytes: stats.tx_bytes.load(Ordering::Relaxed),
-        rx_errors: stats.rx_errors.load(Ordering::Relaxed),
-        rx_dropped: stats.rx_dropped.load(Ordering::Relaxed),
-    })
+            Some(super::NetworkStatsSnapshot {
+                rx_packets: stats.rx_packets.load(Ordering::Relaxed),
+                tx_packets: stats.tx_packets.load(Ordering::Relaxed),
+                rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
+                tx_bytes: stats.tx_bytes.load(Ordering::Relaxed),
+                rx_errors: stats.rx_errors.load(Ordering::Relaxed),
+                rx_dropped: stats.rx_dropped.load(Ordering::Relaxed),
+            })
+        }
+        Err(_) => {
+            log::error!("[NET BRIDGE] Stack poisoned (get_real_stats)");
+            None
+        }
+    }
 }
 
 /// Send ICMP echo via real NetworkStack
 pub fn send_real_icmp_echo(target: [u8; 4], seq: u16) -> Result<u64, &'static str> {
-    let mut stack_guard = stack::stack().lock().unwrap_or_else(|e| {
-        log::warn!("[NET BRIDGE] Stack poisoned");
-        e.into_inner()
-    });
-    let stack = stack_guard
-        .as_mut()
-        .ok_or("Network stack not initialized")?;
-
-    let target_ip = Ipv4Address::new(target);
-
-    stack
-        .send_icmp_echo_request(target_ip, seq)
-        .map_err(|_| "Failed to send ICMP echo request")
+    match stack::stack().lock() {
+        Ok(mut guard) => match guard.as_mut() {
+            Some(stack) => {
+                let target_ip = Ipv4Address::new(target);
+                stack
+                    .send_icmp_echo_request(target_ip, seq)
+                    .map_err(|_| "Failed to send ICMP echo request")
+            }
+            None => Err("Network stack not initialized"),
+        },
+        Err(_) => {
+            log::error!("[NET BRIDGE] Stack poisoned (send_real_icmp_echo)");
+            Err("Network stack not initialized")
+        }
+    }
 }
 
 /// Get ARP cache entries from real NetworkStack
 pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
-    let stack_guard = stack::stack().lock().unwrap_or_else(|e| {
-        log::warn!("[NET BRIDGE] Stack poisoned");
-        e.into_inner()
-    });
-    let stack = match stack_guard.as_ref() {
-        Some(s) => s,
-        None => return Vec::new(),
-    };
+    match stack::stack().lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some(stack) => {
+                let arp_cache = stack.arp_cache();
+                let mut entries = Vec::new();
 
-    let arp_cache = stack.arp_cache();
-    let mut entries = Vec::new();
+                for (ip, mac) in arp_cache {
+                    entries.push(super::ArpCacheEntry {
+                        ip: *ip.as_bytes(),
+                        mac: *mac.as_bytes(),
+                        complete: true,
+                    });
+                }
 
-    for (ip, mac) in arp_cache {
-        entries.push(super::ArpCacheEntry {
-            ip: *ip.as_bytes(),
-            mac: *mac.as_bytes(),
-            complete: true,
-        });
+                entries
+            }
+            None => Vec::new(),
+        },
+        Err(_) => {
+            log::error!("[NET BRIDGE] Stack poisoned (get_real_arp_cache)");
+            Vec::new()
+        }
+    } Vec::new()
+        }
     }
-
-    entries
 }
