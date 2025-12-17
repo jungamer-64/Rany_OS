@@ -109,8 +109,9 @@ pub struct PciPath {
 }
 
 /// Parse a DMAR table located at `addr` (physical/virtual pointer address)
+/// Parse a DMAR table located at `addr` (physical/virtual pointer address)
 pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
-    let header = &*(addr as *const DmarHeader);
+    let header = unsafe { &*(addr as *const DmarHeader) };
     if !header.is_valid() {
         return Err("Invalid DMAR signature");
     }
@@ -123,9 +124,9 @@ pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
     let mut rmrr_regions = Vec::new();
 
     while offset < table_len {
-        let entry_ptr = base_ptr.add(offset) as *const DmarRemappingHeader;
-        let entry_type = (*entry_ptr).type_code;
-        let entry_len = (*entry_ptr).length as usize;
+        let entry_ptr = unsafe { base_ptr.add(offset) } as *const DmarRemappingHeader;
+        let entry_type = unsafe { (*entry_ptr).type_code };
+        let entry_len = unsafe { (*entry_ptr).length } as usize;
 
         if entry_len < mem::size_of::<DmarRemappingHeader>() {
             break; // sanity
@@ -133,11 +134,13 @@ pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
 
         match entry_type {
             0 => {
-                let drhd = &*(entry_ptr as *const DrhdWrapper);
-                let devices = parse_device_scopes(
-                    base_ptr.add(offset + mem::size_of::<DrhdWrapper>()),
-                    entry_len - mem::size_of::<DrhdWrapper>(),
-                );
+                let drhd = unsafe { &*(entry_ptr as *const DrhdWrapper) };
+                let devices = unsafe {
+                    parse_device_scopes(
+                        base_ptr.add(offset + mem::size_of::<DrhdWrapper>()),
+                        entry_len - mem::size_of::<DrhdWrapper>(),
+                    )
+                };
                 drhd_units.push(DrhdUnit {
                     segment: drhd.segment,
                     register_base: drhd.register_base_addr,
@@ -146,11 +149,13 @@ pub unsafe fn parse_dmar(addr: usize) -> Result<DmarInfo, &'static str> {
                 });
             }
             1 => {
-                let rmrr = &*(entry_ptr as *const RmrrWrapper);
-                let devices = parse_device_scopes(
-                    base_ptr.add(offset + mem::size_of::<RmrrWrapper>()),
-                    entry_len - mem::size_of::<RmrrWrapper>(),
-                );
+                let rmrr = unsafe { &*(entry_ptr as *const RmrrWrapper) };
+                let devices = unsafe {
+                    parse_device_scopes(
+                        base_ptr.add(offset + mem::size_of::<RmrrWrapper>()),
+                        entry_len - mem::size_of::<RmrrWrapper>(),
+                    )
+                };
                 rmrr_regions.push(RmrrRegion {
                     segment: rmrr.segment,
                     base: rmrr.base_address,
@@ -176,7 +181,7 @@ unsafe fn parse_device_scopes(mut ptr: *const u8, mut len: usize) -> Vec<DeviceS
     let mut scopes = Vec::new();
 
     while len >= mem::size_of::<DeviceScopeHeader>() {
-        let header = &*(ptr as *const DeviceScopeHeader);
+        let header = unsafe { &*(ptr as *const DeviceScopeHeader) };
         let scope_len = header.length as usize;
 
         if scope_len < mem::size_of::<DeviceScopeHeader>() || scope_len > len {
@@ -186,11 +191,11 @@ unsafe fn parse_device_scopes(mut ptr: *const u8, mut len: usize) -> Vec<DeviceS
         let mut path = Vec::new();
         let path_len = scope_len - mem::size_of::<DeviceScopeHeader>();
         let path_count = path_len / 2;
-        let path_ptr = ptr.add(mem::size_of::<DeviceScopeHeader>());
+        let path_ptr = unsafe { ptr.add(mem::size_of::<DeviceScopeHeader>()) };
 
         for i in 0..path_count {
-            let dev = *path_ptr.add(i * 2);
-            let func = *path_ptr.add(i * 2 + 1);
+            let dev = unsafe { *path_ptr.add(i * 2) };
+            let func = unsafe { *path_ptr.add(i * 2 + 1) };
             path.push(PciPath {
                 device: dev,
                 function: func,
@@ -204,7 +209,7 @@ unsafe fn parse_device_scopes(mut ptr: *const u8, mut len: usize) -> Vec<DeviceS
             path,
         });
 
-        ptr = ptr.add(scope_len);
+        ptr = unsafe { ptr.add(scope_len) };
         len -= scope_len;
     }
 
@@ -244,20 +249,29 @@ mod tests {
 
         // Append DMAR header bytes
         let dmar_bytes = unsafe {
-            core::slice::from_raw_parts(&dmar as *const DmarHeader as *const u8, mem::size_of::<DmarHeader>())
+            core::slice::from_raw_parts(
+                &dmar as *const DmarHeader as *const u8,
+                mem::size_of::<DmarHeader>(),
+            )
         };
         buf.extend_from_slice(dmar_bytes);
 
         // RMRR entry (type=1)
         let rmrr = RmrrWrapper {
-            header: DmarRemappingHeader { type_code: 1, length: mem::size_of::<RmrrWrapper>() as u16 },
+            header: DmarRemappingHeader {
+                type_code: 1,
+                length: mem::size_of::<RmrrWrapper>() as u16,
+            },
             _reserved: 0,
             segment: 0,
             base_address: 0x1000,
             limit_address: 0x1fff,
         };
         let rmrr_bytes = unsafe {
-            core::slice::from_raw_parts(&rmrr as *const RmrrWrapper as *const u8, mem::size_of::<RmrrWrapper>())
+            core::slice::from_raw_parts(
+                &rmrr as *const RmrrWrapper as *const u8,
+                mem::size_of::<RmrrWrapper>(),
+            )
         };
         buf.extend_from_slice(rmrr_bytes);
 
