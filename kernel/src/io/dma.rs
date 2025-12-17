@@ -1068,7 +1068,7 @@ impl DeviceDmaContext {
                 let domain_id = iommu
                     .create_domain(numa_hint, crate::io::iommu::IommuDomainType::Translated)
                     .ok()?;
-                iommu.attach_device(device_id, domain_id).ok()?;
+                iommu.attach_device(device_id.clone(), domain_id).ok()?;
                 Some(domain_id)
             })
             .ok()
@@ -1080,7 +1080,7 @@ impl DeviceDmaContext {
         Ok(Self {
             device_id: Some(device_id),
             domain_id,
-            allocator: Arc::new(GlobalDmaAllocator::with_device(device_id)),
+            allocator: Arc::new(GlobalDmaAllocator::with_device(device_id.clone())),
         })
     }
 

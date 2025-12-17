@@ -12,6 +12,69 @@
 use core::arch::asm;
 use spin::Mutex;
 
+/// Cache entry for device to domain mapping
+#[derive(Clone, Copy, Default)]
+pub struct DomainCacheEntry {
+    pub device_id: u16,
+    pub domain_id: u16,
+    pub controller_idx: u8,
+    pub valid: bool,
+}
+
+/// Per-CPU cache to reduce lock contention on global IOMMU lock
+///
+/// Stores frequently accessed device-to-domain mappings.
+/// A simple direct-mapped cache is sufficient as devices are usually fixed
+/// to a specific core's workload.
+#[derive(Clone, Copy)]
+pub struct PerCpuDomainCache {
+    /// Cache size (power of 2 for efficient modulo via bitmask)
+    pub entries: [DomainCacheEntry; Self::CACHE_SIZE],
+}
+
+impl PerCpuDomainCache {
+    /// Per-CPU domain cache size
+    pub const CACHE_SIZE: usize = 64;
+
+    pub const fn new() -> Self {
+        Self {
+            entries: [DomainCacheEntry {
+                device_id: 0,
+                domain_id: 0,
+                controller_idx: 0,
+                valid: false,
+            }; Self::CACHE_SIZE],
+        }
+    }
+
+    pub fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
+        let idx = (device_id as usize) % Self::CACHE_SIZE;
+        let entry = self.entries[idx];
+        if entry.valid && entry.device_id == device_id {
+            Some((entry.domain_id, entry.controller_idx))
+        } else {
+            None
+        }
+    }
+
+    pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
+        let idx = (device_id as usize) % Self::CACHE_SIZE;
+        self.entries[idx] = DomainCacheEntry {
+            device_id,
+            domain_id,
+            controller_idx,
+            valid: true,
+        };
+    }
+
+    pub fn invalidate(&mut self, device_id: u16) {
+        let idx = (device_id as usize) % Self::CACHE_SIZE;
+        if self.entries[idx].device_id == device_id {
+            self.entries[idx].valid = false;
+        }
+    }
+}
+
 /// Per-CPUデータ構造
 /// GsBaseからのオフセットでアクセス
 #[repr(C, align(64))]
@@ -25,8 +88,10 @@ pub struct PerCpuData {
     /// Per-CPUヒープ統計
     pub alloc_count: u64,
     pub dealloc_count: u64,
-    /// パディング（キャッシュラインに揃える）
-    _padding: [u64; 3],
+    /// IOMMU Domain Cache (True Per-CPU)
+    pub iommu_domain_cache: PerCpuDomainCache,
+    /// パディング（キャッシュラインに揃える - 調整必要かも）
+    _padding: [u64; 3], // Layout check needed, but keeping for now
 }
 
 impl PerCpuData {
@@ -38,6 +103,7 @@ impl PerCpuData {
             current_task_id: 0,
             alloc_count: 0,
             dealloc_count: 0,
+            iommu_domain_cache: PerCpuDomainCache::new(),
             _padding: [0; 3],
         }
     }
@@ -288,6 +354,7 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             PER_CPU_DATA[0].current_task_id = 0;
             PER_CPU_DATA[0].alloc_count = 0;
             PER_CPU_DATA[0].dealloc_count = 0;
+            PER_CPU_DATA[0].iommu_domain_cache = PerCpuDomainCache::new();
             PER_CPU_DATA[0].set_self_ptr();
 
             // BSPのGsBaseを設定（これでcurrent_cpu_id()が動作する）
@@ -316,6 +383,7 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                 PER_CPU_DATA[i].current_task_id = 0;
                 PER_CPU_DATA[i].alloc_count = 0;
                 PER_CPU_DATA[i].dealloc_count = 0;
+                PER_CPU_DATA[i].iommu_domain_cache = PerCpuDomainCache::new();
                 PER_CPU_DATA[i].set_self_ptr();
             }
             crate::vga::early_serial_str("[PCPU] ok\n");

@@ -204,15 +204,15 @@ impl ModifierState {
     const BIT_NUM_LOCK: u32 = 7;
     const BIT_SCROLL_LOCK: u32 = 8;
 
-    const LEFT_SHIFT: u32 = 1 << Self::BIT_LEFT_SHIFT;
-    const RIGHT_SHIFT: u32 = 1 << Self::BIT_RIGHT_SHIFT;
-    const LEFT_CTRL: u32 = 1 << Self::BIT_LEFT_CTRL;
-    const RIGHT_CTRL: u32 = 1 << Self::BIT_RIGHT_CTRL;
-    const LEFT_ALT: u32 = 1 << Self::BIT_LEFT_ALT;
-    const RIGHT_ALT: u32 = 1 << Self::BIT_RIGHT_ALT;
-    const CAPS_LOCK: u32 = 1 << Self::BIT_CAPS_LOCK;
-    const NUM_LOCK: u32 = 1 << Self::BIT_NUM_LOCK;
-    const SCROLL_LOCK: u32 = 1 << Self::BIT_SCROLL_LOCK;
+    pub const LEFT_SHIFT: u32 = 1 << Self::BIT_LEFT_SHIFT;
+    pub const RIGHT_SHIFT: u32 = 1 << Self::BIT_RIGHT_SHIFT;
+    pub const LEFT_CTRL: u32 = 1 << Self::BIT_LEFT_CTRL;
+    pub const RIGHT_CTRL: u32 = 1 << Self::BIT_RIGHT_CTRL;
+    pub const LEFT_ALT: u32 = 1 << Self::BIT_LEFT_ALT;
+    pub const RIGHT_ALT: u32 = 1 << Self::BIT_RIGHT_ALT;
+    pub const CAPS_LOCK: u32 = 1 << Self::BIT_CAPS_LOCK;
+    pub const NUM_LOCK: u32 = 1 << Self::BIT_NUM_LOCK;
+    pub const SCROLL_LOCK: u32 = 1 << Self::BIT_SCROLL_LOCK;
 
     pub const fn new() -> Self {
         Self { bits: AtomicU32::new(0) }
