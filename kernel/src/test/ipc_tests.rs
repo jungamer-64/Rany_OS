@@ -67,8 +67,8 @@ pub fn test_domain_isolation() -> TestResult {
     use crate::domain_system;
 
     // Create two domains
-    let domain1 = domain_system::create_domain(String::from("test_domain_1"));
-    let domain2 = domain_system::create_domain(String::from("test_domain_2"));
+    let domain1 = domain_system::create_domain(String::from("test_domain_1")).expect("create_domain failed");
+    let domain2 = domain_system::create_domain(String::from("test_domain_2")).expect("create_domain failed");
 
     // Verify domains have different IDs
     if domain1 == domain2 {

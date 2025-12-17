@@ -415,7 +415,7 @@ mod tests {
 
     #[test]
     fn test_set_and_get_domain_numa() {
-        let id = create_domain(String::from("numa_test"));
+        let id = create_domain(String::from("numa_test")).expect("create_domain failed");
         assert_eq!(get_domain_numa(id), None);
         set_domain_numa(id, 3);
         assert_eq!(get_domain_numa(id), Some(3usize));
@@ -425,7 +425,7 @@ mod tests {
     fn test_domain_poisoned_readers_return_defaults() {
         use crate::sync::set_panicking;
 
-        let id = create_domain(String::from("poison_test"));
+        let id = create_domain(String::from("poison_test")).expect("create_domain failed");
 
         // Poison the registry lock
         set_panicking(true);
@@ -450,7 +450,7 @@ mod tests {
     fn test_domain_poisoned_add_remove_task_no_panic() {
         use crate::sync::set_panicking;
 
-        let id = create_domain(String::from("task_poison"));
+        let id = create_domain(String::from("task_poison")).expect("create_domain failed");
 
         set_panicking(true);
         if let Ok(_g) = REGISTRY.lock() {
@@ -467,7 +467,7 @@ mod tests {
     fn test_reclaim_domain_resources_poisoned_no_panic() {
         use crate::sync::set_panicking;
 
-        let id = create_domain(String::from("reclaim_poison"));
+        let id = create_domain(String::from("reclaim_poison")).expect("create_domain failed");
 
         set_panicking(true);
         if let Ok(_g) = REGISTRY.lock() {

@@ -775,7 +775,7 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     use task::Task;
 
     // ドメイン1を作成：ユーザーアプリケーション
-    let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"));
+    let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1")).expect("create_domain failed");
 
     // SAS統計をログ
     let sas_stats = sas::stats();
@@ -803,7 +803,7 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     }));
 
     // タスク2: ゼロコピー通信デモ
-    let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo"));
+    let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo")).expect("create_domain failed");
     domain_system::start_domain(domain2).ok();
 
     executor.spawn(Task::new(async move {
