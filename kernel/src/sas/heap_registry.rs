@@ -215,7 +215,13 @@ impl HeapRegistry {
         // Acquire guards for all involved shards in ascending order to avoid deadlocks
         let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
         for idx in &idxs {
-            guards.push(self.shards[*idx].lock().unwrap());
+            match self.shards[*idx].lock() {
+                Ok(g) => guards.push(g),
+                Err(_) => {
+                    log::error!("[HEAP] Registry shard lock poisoned - register failed");
+                    return Err(RegistryError::PermissionDenied);
+                }
+            }
         }
 
         // Check duplicate registration across all involved shards
@@ -258,7 +264,13 @@ impl HeapRegistry {
     pub fn unregister(&self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
         // Find object in primary shard to determine its size
         let primary = self.get_shard_index(address);
-        let primary_guard = self.shards[primary].lock().unwrap();
+        let primary_guard = match self.shards[primary].lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[HEAP] Registry shard lock poisoned - unregister skipped");
+                return Err(RegistryError::PermissionDenied);
+            }
+        };
         let object = primary_guard
             .objects
             .get(&address)
@@ -278,7 +290,13 @@ impl HeapRegistry {
 
         let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
         for idx in &idxs {
-            guards.push(self.shards[*idx].lock().unwrap());
+            match self.shards[*idx].lock() {
+                Ok(g) => guards.push(g),
+                Err(_) => {
+                    log::error!("[HEAP] Registry shard lock poisoned - unregister skipped");
+                    return Err(RegistryError::PermissionDenied);
+                }
+            }
         }
 
         // Re-validate and remove from all shards
@@ -317,7 +335,13 @@ impl HeapRegistry {
     ) -> Result<(), RegistryError> {
         // Read size from primary shard first
         let primary = self.get_shard_index(address);
-        let primary_guard = self.shards[primary].lock().unwrap();
+        let primary_guard = match self.shards[primary].lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[HEAP] Registry shard lock poisoned - transfer skipped");
+                return Err(RegistryError::PermissionDenied);
+            }
+        };
         let object = primary_guard
             .objects
             .get(&address)
@@ -337,7 +361,13 @@ impl HeapRegistry {
 
         let mut guards: alloc::vec::Vec<_> = alloc::vec::Vec::new();
         for idx in &idxs {
-            guards.push(self.shards[*idx].lock().unwrap());
+            match self.shards[*idx].lock() {
+                Ok(g) => guards.push(g),
+                Err(_) => {
+                    log::error!("[HEAP] Registry shard lock poisoned - transfer skipped");
+                    return Err(RegistryError::PermissionDenied);
+                }
+            }
         }
 
         // Re-validate ownership and apply change across shards
@@ -381,7 +411,13 @@ impl HeapRegistry {
         self.stats.access_checks.fetch_add(1, Ordering::Relaxed);
 
         let shard_idx = self.get_shard_index(address);
-        let shard = self.shards[shard_idx].lock().unwrap();
+        let shard = match self.shards[shard_idx].lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[HEAP] Registry shard lock poisoned (check_access) - returning false");
+                return false;
+            }
+        };
 
         // 直接マッチを試行
         if let Some(object) = shard.objects.get(&address) {
@@ -456,7 +492,13 @@ impl HeapRegistry {
 
     pub fn get_owner(&self, ptr: usize) -> Option<DomainId> {
         let shard_idx = self.get_shard_index(ptr);
-        let shard = self.shards[shard_idx].lock().unwrap();
+        let shard = match self.shards[shard_idx].lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[HEAP] Registry shard lock poisoned (get_owner) - returning None");
+                return None;
+            }
+        };
 
         if let Some(obj) = shard.objects.get(&ptr) {
             return Some(obj.owner);
@@ -475,7 +517,13 @@ impl HeapRegistry {
     pub fn unregister_any(&self, address: usize) -> Option<(DomainId, usize)> {
         // Try find primary object to get size and owner
         let primary = self.get_shard_index(address);
-        let primary_guard = self.shards[primary].lock().unwrap();
+        let primary_guard = match self.shards[primary].lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[HEAP] Registry shard lock poisoned (unregister_any) - aborting");
+                return None;
+            }
+        };
         let obj = primary_guard.objects.get(&address).cloned();
         drop(primary_guard);
 
@@ -491,7 +539,13 @@ impl HeapRegistry {
 
         let mut removed = false;
         for idx in &idxs {
-            let mut g = self.shards[*idx].lock().unwrap();
+            let mut g = match self.shards[*idx].lock() {
+                Ok(g) => g,
+                Err(_) => {
+                    log::error!("[HEAP] Registry shard lock poisoned (unregister_any) - aborting");
+                    return None;
+                }
+            };
             if g.objects.remove(&address).is_some() {
                 if let Some(addrs) = g.owner_index.get_mut(&owner) {
                     addrs.retain(|a: &usize| *a != address);
@@ -517,9 +571,15 @@ impl HeapRegistry {
         // Deduplicate addresses across shards to count logical objects
         let mut set: BTreeSet<usize> = BTreeSet::new();
         for shard in &self.shards {
-            let g = shard.lock().unwrap();
-            for addr in g.objects.keys() {
-                set.insert(*addr);
+            match shard.lock() {
+                Ok(g) => {
+                    for addr in g.objects.keys() {
+                        set.insert(*addr);
+                    }
+                }
+                Err(_) => {
+                    log::error!("[HEAP] Registry shard lock poisoned (object_count) - skipping shard");
+                }
             }
         }
         set.len()
@@ -529,19 +589,25 @@ impl HeapRegistry {
         // Remove all objects owned by `domain` across all shards, deduplicate
         let mut removed_addrs: BTreeSet<usize> = BTreeSet::new();
         for shard in &self.shards {
-            let mut g = shard.lock().unwrap();
-            let mut to_remove: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
-            for (&addr, obj) in g.objects.iter() {
-                if obj.owner == domain {
-                    to_remove.push(addr);
+            match shard.lock() {
+                Ok(mut g) => {
+                    let mut to_remove: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
+                    for (&addr, obj) in g.objects.iter() {
+                        if obj.owner == domain {
+                            to_remove.push(addr);
+                        }
+                    }
+                    for addr in to_remove {
+                        g.objects.remove(&addr);
+                        if let Some(addrs) = g.owner_index.get_mut(&domain) {
+                            addrs.retain(|a: &usize| *a != addr);
+                        }
+                        removed_addrs.insert(addr);
+                    }
                 }
-            }
-            for addr in to_remove {
-                g.objects.remove(&addr);
-                if let Some(addrs) = g.owner_index.get_mut(&domain) {
-                    addrs.retain(|a: &usize| *a != addr);
+                Err(_) => {
+                    log::error!("[HEAP] Registry shard lock poisoned (reclaim_all) - skipping shard");
                 }
-                removed_addrs.insert(addr);
             }
         }
         let count = removed_addrs.len();
@@ -831,5 +897,90 @@ mod tests {
         // the API returns an empty set in that case.
         let preferred = registry.preferred_shards_for_owner(DomainId::new(1));
         // When domain NUMA info is not available, we expect an empty vector
-        assert_eq!(preferred.len(), 0usize);    }
+        assert_eq!(preferred.len(), 0usize);
+    }
+
+    #[test]
+    fn test_register_poisoned_returns_permission_denied() {
+        let registry = HeapRegistry::new(4);
+        let owner = DomainId::new(1);
+        // Poison primary shard
+        {
+            let _guard = registry.shards[0].lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+        assert_eq!(registry.register(0x1000, 64, owner, 0), Err(RegistryError::PermissionDenied));
+    }
+
+    #[test]
+    fn test_unregister_poisoned_returns_permission_denied() {
+        let registry = HeapRegistry::new(4);
+        let owner = DomainId::new(1);
+        let addr = 0x1000usize;
+        registry.register(addr, 64, owner, 0).expect("register failed");
+        {
+            let _guard = registry.shards[0].lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+        assert_eq!(registry.unregister(addr, owner), Err(RegistryError::PermissionDenied));
+    }
+
+    #[test]
+    fn test_transfer_poisoned_returns_permission_denied() {
+        let registry = HeapRegistry::new(4);
+        let owner = DomainId::new(1);
+        let addr = 0x1000usize;
+        registry.register(addr, 64, owner, 0).expect("register failed");
+        {
+            let _guard = registry.shards[0].lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+        assert_eq!(registry.transfer_ownership(addr, owner, DomainId::new(2)), Err(RegistryError::PermissionDenied));
+    }
+
+    #[test]
+    fn test_get_owner_poisoned_returns_none() {
+        let registry = HeapRegistry::new(4);
+        let owner = DomainId::new(1);
+        let addr = 0x2000usize;
+        registry.register(addr, 64, owner, 0).expect("register failed");
+        {
+            let _guard = registry.shards[registry.get_shard_index(addr)].lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+        assert_eq!(registry.get_owner(addr), None);
+    }
+
+    #[test]
+    fn test_check_access_poisoned_returns_false() {
+        let registry = HeapRegistry::new(4);
+        let owner = DomainId::new(1);
+        let addr = 0x2000usize;
+        registry.register(addr, 64, owner, 0).expect("register failed");
+        {
+            let _guard = registry.shards[registry.get_shard_index(addr)].lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+        assert!(!registry.check_access(addr, owner));
+    }
+
+    #[test]
+    fn test_unregister_any_poisoned_returns_none() {
+        let registry = HeapRegistry::new(4);
+        let owner = DomainId::new(1);
+        let addr = 0x1000usize;
+        registry.register(addr, 64, owner, 0).expect("register failed");
+        {
+            let _guard = registry.shards[0].lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+        assert_eq!(registry.unregister_any(addr), None);
+    }
 }
+

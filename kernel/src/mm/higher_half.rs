@@ -1305,10 +1305,17 @@ static PAGE_TABLE_MANAGER: PoisonLock<Option<PageTableManager>> = PoisonLock::ne
 pub fn init_page_table_manager(physical_memory_offset: u64) {
     let manager = unsafe { PageTableManager::from_current_cr3(physical_memory_offset) };
     // Initialization-time best-effort recovery for PageTableManager initialization.
-    *PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Page Table Manager poisoned");
-        e.into_inner()
-    }) = Some(manager);
+    let mut mgr_guard = match PAGE_TABLE_MANAGER.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            log::warn!("[MM] Page Table Manager poisoned - proceeding with best-effort");
+            match PAGE_TABLE_MANAGER.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            }
+        }
+    };
+    *mgr_guard = Some(manager);
 }
 
 /// グローバルページテーブルマネージャーでページをマップ
