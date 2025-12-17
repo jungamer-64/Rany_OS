@@ -290,13 +290,13 @@ impl UdpSocket {
 
     /// Get local port
     pub fn local_port(&self) -> u16 {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] UDP Socket poisoned");
-                e.into_inner()
-            })
-            .local_port
+        match self.inner.lock() {
+            Ok(g) => g.local_port,
+            Err(_) => {
+                log::error!("[NET] UDP Socket poisoned (local_port)");
+                0
+            }
+        }
     }
 
     /// Receive a datagram (async)
@@ -308,57 +308,57 @@ impl UdpSocket {
 
     /// Deliver a datagram to this socket (called by the network stack)
     pub fn deliver(&self, datagram: UdpDatagram) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] UDP Socket poisoned");
-            e.into_inner()
-        });
+        match self.inner.lock() {
+            Ok(mut inner) => {
+                if inner.closed {
+                    return;
+                }
 
-        if inner.closed {
-            return;
-        }
+                inner.rx_queue.push_back(datagram);
 
-        inner.rx_queue.push_back(datagram);
-
-        if let Some(waker) = inner.waker.take() {
-            waker.wake();
+                if let Some(waker) = inner.waker.take() {
+                    waker.wake();
+                }
+            }
+            Err(_) => log::error!("[NET] UDP Socket poisoned during deliver - dropping datagram"),
         }
     }
 
     /// Close the socket
     pub fn close(&self) {
-        let mut inner = self.inner.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] UDP Socket poisoned");
-            e.into_inner()
-        });
-        inner.closed = true;
-        inner.rx_queue.clear();
+        match self.inner.lock() {
+            Ok(mut inner) => {
+                inner.closed = true;
+                inner.rx_queue.clear();
 
-        if let Some(waker) = inner.waker.take() {
-            waker.wake();
+                if let Some(waker) = inner.waker.take() {
+                    waker.wake();
+                }
+            }
+            Err(_) => log::error!("[NET] UDP Socket poisoned during close - no-op"),
         }
     }
 
     /// Check if socket is closed
     pub fn is_closed(&self) -> bool {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] UDP Socket poisoned");
-                e.into_inner()
-            })
-            .closed
+        match self.inner.lock() {
+            Ok(g) => g.closed,
+            Err(_) => {
+                log::error!("[NET] UDP Socket poisoned (is_closed)");
+                true
+            }
+        }
     }
 
     /// Get receive queue length
     pub fn rx_queue_len(&self) -> usize {
-        self.inner
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] UDP Socket poisoned");
-                e.into_inner()
-            })
-            .rx_queue
-            .len()
+        match self.inner.lock() {
+            Ok(g) => g.rx_queue.len(),
+            Err(_) => {
+                log::error!("[NET] UDP Socket poisoned (rx_queue_len)");
+                0
+            }
+        }
     }
 }
 
@@ -371,20 +371,23 @@ impl Future for UdpRecvFuture {
     type Output = Option<UdpDatagram>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut inner = self.socket.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] UDP Socket poisoned");
-            e.into_inner()
-        });
+        match self.socket.lock() {
+            Ok(mut inner) => {
+                if inner.closed {
+                    return Poll::Ready(None);
+                }
 
-        if inner.closed {
-            return Poll::Ready(None);
-        }
-
-        if let Some(datagram) = inner.rx_queue.pop_front() {
-            Poll::Ready(Some(datagram))
-        } else {
-            inner.waker = Some(cx.waker().clone());
-            Poll::Pending
+                if let Some(datagram) = inner.rx_queue.pop_front() {
+                    Poll::Ready(Some(datagram))
+                } else {
+                    inner.waker = Some(cx.waker().clone());
+                    Poll::Pending
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] UDP Socket poisoned in recv future - returning closed");
+                Poll::Ready(None)
+            }
         }
     }
 }
@@ -430,60 +433,72 @@ impl UdpSocketTable {
 
     /// Bind a socket to a port
     pub fn bind(&self, port: u16) -> Option<UdpSocket> {
-        let mut sockets = self.sockets.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] UDP Table poisoned");
-            e.into_inner()
-        });
+        match self.sockets.lock() {
+            Ok(mut sockets) => {
+                // Find slot for this port
+                let slot = (port as usize) % MAX_UDP_SOCKETS;
 
-        // Find slot for this port
-        let slot = (port as usize) % MAX_UDP_SOCKETS;
+                // Check if already bound
+                if sockets[slot].is_some() {
+                    return None;
+                }
 
-        // Check if already bound
-        if sockets[slot].is_some() {
-            return None;
+                let inner = Arc::new(PoisonLock::new(UdpSocketInner {
+                    local_port: port,
+                    rx_queue: VecDeque::new(),
+                    waker: None,
+                    closed: false,
+                }));
+
+                sockets[slot] = Some(inner.clone());
+
+                Some(UdpSocket { inner })
+            }
+            Err(_) => {
+                log::error!("[NET] UDP Table poisoned during bind");
+                None
+            }
         }
-
-        let inner = Arc::new(PoisonLock::new(UdpSocketInner {
-            local_port: port,
-            rx_queue: VecDeque::new(),
-            waker: None,
-            closed: false,
-        }));
-
-        sockets[slot] = Some(inner.clone());
-
-        Some(UdpSocket { inner })
     }
 
     /// Unbind a socket from a port
     pub fn unbind(&self, port: u16) {
-        let mut sockets = self.sockets.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] UDP Table poisoned");
-            e.into_inner()
-        });
-        let slot = (port as usize) % MAX_UDP_SOCKETS;
-        sockets[slot] = None;
+        match self.sockets.lock() {
+            Ok(mut sockets) => {
+                let slot = (port as usize) % MAX_UDP_SOCKETS;
+                sockets[slot] = None;
+            }
+            Err(_) => log::error!("[NET] UDP Table poisoned during unbind"),
+        }
     }
 
     /// Find a socket by port
     pub fn find(&self, port: u16) -> Option<Arc<PoisonLock<UdpSocketInner>>> {
-        let sockets = self.sockets.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] UDP Table poisoned");
-            e.into_inner()
-        });
-        let slot = (port as usize) % MAX_UDP_SOCKETS;
+        match self.sockets.lock() {
+            Ok(sockets) => {
+                let slot = (port as usize) % MAX_UDP_SOCKETS;
 
-        if let Some(ref inner) = sockets[slot] {
-            let socket = inner.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] UDP Socket poisoned");
-                e.into_inner()
-            });
-            if socket.local_port == port && !socket.closed {
-                return Some(inner.clone());
+                if let Some(ref inner) = sockets[slot] {
+                    match inner.lock() {
+                        Ok(socket) => {
+                            if socket.local_port == port && !socket.closed {
+                                return Some(inner.clone());
+                            }
+                        }
+                        Err(_) => {
+                            log::error!("[NET] UDP Socket poisoned during find");
+                            return None;
+                        }
+                    }
+                }
+
+                None
+            }
+            Err(_) => {
+                log::error!("[NET] UDP Table poisoned (find)");
+                None
             }
         }
-
-        None
     }
 
     /// Deliver a datagram to the appropriate socket
@@ -491,24 +506,28 @@ impl UdpSocketTable {
         use core::sync::atomic::Ordering;
 
         if let Some(socket) = self.find(datagram.dst_port) {
-            let mut inner = socket.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] UDP Socket poisoned");
-                e.into_inner()
-            });
+            match socket.lock() {
+                Ok(mut inner) => {
+                    if inner.closed {
+                        self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                        return false;
+                    }
 
-            if inner.closed {
-                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-                return false;
+                    inner.rx_queue.push_back(datagram);
+
+                    if let Some(waker) = inner.waker.take() {
+                        waker.wake();
+                    }
+
+                    self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+                    true
+                }
+                Err(_) => {
+                    log::error!("[NET] UDP Socket poisoned during deliver - dropping datagram");
+                    self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                    false
+                }
             }
-
-            inner.rx_queue.push_back(datagram);
-
-            if let Some(waker) = inner.waker.take() {
-                waker.wake();
-            }
-
-            self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-            true
         } else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             false
@@ -639,5 +658,89 @@ mod tests {
         assert_eq!(packet.dst_port(), 53);
         assert_eq!(packet.payload(), b"hello");
         assert!(packet.verify_checksum(src_ip, dst_ip));
+    }
+
+    #[test]
+    fn test_udp_socket_poisoned_methods_return_defaults() {
+        use crate::sync::set_panicking;
+
+        let socket = UdpSocket::new(12345);
+
+        // Poison the inner lock
+        set_panicking(true);
+        if let Ok(_g) = socket.inner.lock() {
+            // drop marks as poisoned
+        }
+        set_panicking(false);
+
+        assert_eq!(socket.local_port(), 0);
+        assert!(socket.is_closed());
+        assert_eq!(socket.rx_queue_len(), 0);
+
+        // Close should be a no-op
+        socket.close();
+    }
+
+    #[test]
+    fn test_udp_recv_future_poisoned_returns_closed() {
+        use crate::sync::set_panicking;
+        use core::task::{RawWaker, RawWakerVTable, Waker, Context};
+        use core::pin::Pin;
+        use core::task::Poll;
+        use core::ptr;
+
+        fn noop_raw_waker() -> RawWaker {
+            unsafe fn clone(_: *const ()) -> RawWaker { noop_raw_waker() }
+            unsafe fn wake(_: *const ()) {}
+            unsafe fn wake_by_ref(_: *const ()) {}
+            unsafe fn drop(_: *const ()) {}
+            RawWaker::new(ptr::null(), &RawWakerVTable::new(clone, wake, wake_by_ref, drop))
+        }
+
+        fn noop_waker() -> Waker { unsafe { Waker::from_raw(noop_raw_waker()) } }
+
+        let socket = UdpSocket::new(54321);
+
+        // Poison the inner lock
+        set_panicking(true);
+        if let Ok(_g) = socket.inner.lock() {
+            // drop marks as poisoned
+        }
+        set_panicking(false);
+
+        let mut fut = socket.recv();
+        let w = noop_waker();
+        let mut cx = Context::from_waker(&w);
+
+        assert_eq!(Pin::new(&mut fut).poll(&mut cx), Poll::Ready(None));
+    }
+
+    #[test]
+    fn test_udp_processor_poisoned_bind_and_process() {
+        use crate::sync::set_panicking;
+
+        let proc = UdpProcessor::new();
+
+        // Poison the socket table lock
+        set_panicking(true);
+        if let Ok(_g) = proc.sockets.sockets.lock() {
+            // drop marks as poisoned
+        }
+        set_panicking(false);
+
+        // Bind should fail
+        assert!(proc.bind(10000).is_none());
+
+        // Build a packet and process - should be NoSocket and stats increment rx_dropped
+        let src_ip = Ipv4Address::from_octets(1, 2, 3, 4);
+        let dst_ip = Ipv4Address::from_octets(1, 2, 3, 4);
+        let mut buffer = [0u8; 64];
+        let len = UdpProcessor::build_packet(&mut buffer, src_ip, 1234, dst_ip, 10000, b"x").unwrap();
+
+        let res = proc.process(&buffer[..len], src_ip, dst_ip);
+        assert_eq!(res, UdpResult::NoSocket);
+
+        let stats = proc.sockets.stats();
+        assert_eq!(stats.2, 1); // rx_dropped == 1
     }
 }
