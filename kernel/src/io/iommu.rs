@@ -3963,23 +3963,21 @@ impl IommuController {
         // Set IRT pointer (GCMD.SIRTP)
         self.write32(regs::GCMD, gcmd_bits::GCMD_SIRTP);
 
-        // Wait for completion
-        self.wait_for_condition(
+        // Wait for completion - initialization best-effort: if wait times out, log warning and continue
+        match self.wait_for_condition(
             || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS) != 0,
             10_000,
             false,
-        )?;
-
-        match self.interrupt_remap_table.lock() {
-            Ok(mut guard) => {
-                *guard = Some(irt);
+        ) {
+            Ok(_) => {}
+            Err(IommuError::Timeout) => {
+                log::warn!("[IOMMU] interrupt_remap_table init: wait for SIRTP timed out - proceeding with best-effort");
             }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] interrupt_remap_table lock poisoned while setting IRT - proceeding with best-effort");
-                let mut guard = poisoned.into_inner();
-                *guard = Some(irt);
-            }
+            Err(e) => return Err(e),
         }
+
+        let mut guard = self.interrupt_remap_table.lock_for_init("[IOMMU] interrupt_remap_table init");
+        *guard = Some(irt);
         log::info!(
             "[IOMMU] Interrupt Remapping Table initialized ({} entries)\n",
             1 << size_log2
@@ -4221,14 +4219,8 @@ impl IommuController {
         }
 
         let pool = PostedInterruptPool::new(num_pids).ok_or(IommuError::HardwareError)?;
-        match self.pid_pool.lock() {
-            Ok(mut guard) => { *guard = Some(pool); }
-            Err(poisoned) => {
-                // Initialization-time best-effort assignment: proceed to set the pid_pool even if the lock
-                // is poisoned. This minimizes missed initialization in early boot.
-                let mut guard = poisoned.into_inner(); *guard = Some(pool);
-            }
-        }
+        let mut guard = self.pid_pool.lock_for_init("[IOMMU] pid_pool init");
+        *guard = Some(pool);
 
         log::info!(
             "[IOMMU] Posted Interrupt pool initialized ({} PIDs)\\n",
@@ -4399,10 +4391,8 @@ impl IommuController {
         // Wait for PRS (Page Request Status) bit
         self.wait_for_condition(|| (self.read32(regs::GSTS) & (1 << 28)) != 0, 10_000, false)?;
 
-        match self.page_request_queue.lock() {
-            Ok(mut guard) => { *guard = Some(prq); }
-            Err(poisoned) => { log::warn!("[IOMMU] page_request_queue lock poisoned while initializing PRQ - proceeding with best-effort"); let mut guard = poisoned.into_inner(); *guard = Some(prq); }
-        }
+        let mut guard = self.page_request_queue.lock_for_init("[IOMMU] page_request_queue init");
+        *guard = Some(prq);
         log::info!(
             "[IOMMU] Page Request Queue initialized ({} entries)\\n",
             size
@@ -4498,13 +4488,8 @@ impl IommuController {
 
     /// Initialize controller IOVA allocator
     pub fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError> {
-        match self.iova_allocator.lock() {
-            Ok(mut guard) => { *guard = Some(IovaAllocator::new(base, size)); }
-            Err(poisoned) => {
-                // Initialization-time best-effort: proceed to set iova allocator even if poisoned; this helps boot
-                // complete initialization in presence of earlier panics.
-                log::warn!("[IOMMU] iova_allocator lock poisoned while initializing - proceeding with best-effort"); let mut guard = poisoned.into_inner(); *guard = Some(IovaAllocator::new(base, size)); }
-        }
+        let mut guard = self.iova_allocator.lock_for_init("[IOMMU] iova_allocator init");
+        *guard = Some(IovaAllocator::new(base, size));
         Ok(())
     }
 
@@ -4742,12 +4727,8 @@ impl IommuController {
         // Set queue tail to 0
         self.write64(regs::IQT, 0);
 
-        match self.invalidation_queue.lock() {
-            Ok(mut guard) => { *guard = Some(iq); }
-            Err(poisoned) => {
-                // Initialization-time best-effort assignment: set invalidation queue even if lock is poisoned.
-                log::warn!("[IOMMU] invalidation_queue lock poisoned while initializing - proceeding with best-effort"); let mut guard = poisoned.into_inner(); *guard = Some(iq); }
-        }
+        let mut guard = self.invalidation_queue.lock_for_init("[IOMMU] invalidation_queue init");
+        *guard = Some(iq);
         log::info!(
             "[IOMMU] Invalidation Queue initialized ({} entries)\\n",
             1 << size_log2
@@ -6742,6 +6723,33 @@ mod tests {
             Ok(g) => assert!(g.is_some()),
             Err(poisoned) => {
                 // still poisoned, ensure inner was set
+                let guard = poisoned.into_inner();
+                assert!(guard.is_some());
+            }
+        }
+    }
+
+    #[test]
+    fn test_init_interrupt_remapping_poisoned_proceeds_with_best_effort() {
+        use crate::sync::set_panicking;
+        let mut ctrl = IommuController::new(0x0, 0);
+
+        // Enable Interrupt Remapping capability
+        ctrl.ecap |= ecap_bits::ECAP_IR;
+
+        // Poison the interrupt_remap_table lock during init
+        set_panicking(true);
+        if let Ok(_g) = ctrl.interrupt_remap_table.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+
+        // Init should proceed with best-effort
+        ctrl.init_interrupt_remapping(4).expect("init_interrupt_remapping failed");
+
+        match ctrl.interrupt_remap_table.lock() {
+            Ok(g) => assert!(g.is_some()),
+            Err(poisoned) => {
                 let guard = poisoned.into_inner();
                 assert!(guard.is_some());
             }
