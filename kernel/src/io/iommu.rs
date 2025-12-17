@@ -22,6 +22,7 @@
 #![allow(dead_code)]
 
 // use crate::memory; // not used directly here; use `crate::mm::phys_to_virt` instead
+use crate::sync::IrqMutex;
 use crate::task::AtomicWaker;
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
@@ -657,40 +658,37 @@ impl FaultRecord {
 }
 
 /// Fault Log - Ring buffer for storing fault records
+/// Fixed-size buffer to ensure ISR safety (no allocations).
+pub const FAULT_LOG_SIZE: usize = 256;
+
 pub struct FaultLog {
     /// Ring buffer of fault records
-    records: Vec<FaultRecord>,
+    records: [FaultRecord; FAULT_LOG_SIZE],
     /// Write index (next slot to write)
     write_idx: usize,
     /// Number of records stored
     count: usize,
     /// Total faults recorded (may exceed capacity)
     total_faults: u64,
-    /// Capacity (max records)
-    capacity: usize,
 }
 
 impl FaultLog {
-    /// Default capacity
-    pub const DEFAULT_CAPACITY: usize = 64;
-
     /// Create a new fault log
-    pub fn new(capacity: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            records: alloc::vec![FaultRecord::default(); capacity],
+            records: [FaultRecord::default(); FAULT_LOG_SIZE],
             write_idx: 0,
             count: 0,
             total_faults: 0,
-            capacity,
         }
     }
 
     /// Add a fault record
     pub fn push(&mut self, record: FaultRecord) {
         self.records[self.write_idx] = record;
-        self.write_idx = (self.write_idx + 1) % self.capacity;
+        self.write_idx = (self.write_idx + 1) % FAULT_LOG_SIZE;
         self.total_faults += 1;
-        if self.count < self.capacity {
+        if self.count < FAULT_LOG_SIZE {
             self.count += 1;
         }
     }
@@ -704,7 +702,7 @@ impl FaultLog {
             let idx = if self.write_idx >= i + 1 {
                 self.write_idx - i - 1
             } else {
-                self.capacity - (i + 1 - self.write_idx)
+                FAULT_LOG_SIZE - (i + 1 - self.write_idx)
             };
             result.push(self.records[idx]);
         }
@@ -1956,6 +1954,9 @@ pub struct IommuDomain {
     supports_2mb: bool,
     /// Support for 1GB super-pages
     supports_1gb: bool,
+    /// Reference counts for page tables (Physical Address -> Active Entry Count)
+    /// Used to avoid O(N) scanning during unmap and recursive deallocation cleanup.
+    page_table_counts: BTreeMap<u64, u16>,
 }
 
 /// DMA mapping info
@@ -1971,6 +1972,8 @@ pub struct DmaMapping {
     pub read: bool,
     /// Write permission
     pub write: bool,
+    /// Domain ID (for IOTLB invalidation)
+    pub domain_id_placeholder: u16,
 }
 
 unsafe impl Send for IommuDomain {}
@@ -1998,6 +2001,15 @@ impl IommuDomain {
             .expect("Failed to allocate IOMMU page table")
             .as_ptr() as *mut SlPte;
 
+        // Initialize page_table_counts with root table
+        let mut page_table_counts = BTreeMap::new();
+        let root_phys = crate::mm::higher_half::virt_to_phys(
+            crate::mm::higher_half::VirtAddr::new(page_table as u64),
+        )
+        .expect("Failed to get root phys")
+        .as_u64();
+        page_table_counts.insert(root_phys, 0);
+
         Self {
             id,
             domain_type,
@@ -2007,6 +2019,7 @@ impl IommuDomain {
             numa_node,
             supports_2mb,
             supports_1gb,
+            page_table_counts,
         }
     }
 
@@ -2115,6 +2128,7 @@ impl IommuDomain {
                 size,
                 read,
                 write,
+                domain_id_placeholder: self.id,
             },
         );
 
@@ -2153,25 +2167,26 @@ impl IommuDomain {
 
         // Track newly allocated page tables for rollback on error
         // Index 0: PDP, 1: PD, 2: PT (order of allocation)
-        let mut newly_allocated: [Option<*mut SlPte>; 3] = [None, None, None];
+        // Store (pointer, physical_address) to allow proper cleanup from counts
+        let mut newly_allocated: [Option<(*mut SlPte, u64)>; 3] = [None, None, None];
 
         // Cleanup helper - deallocate any newly allocated tables
-        let cleanup = |tables: &[Option<*mut SlPte>; 3]| {
-            for table in tables.iter().flatten() {
-                // Deallocate using the same layout as allocation
-                let layout = alloc::alloc::Layout::from_size_align(
-                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
-                    4096,
-                )
-                .unwrap();
-                unsafe {
-                    alloc::alloc::dealloc(*table as *mut u8, layout);
-                }
-            }
-        };
+        // We cannot use a closure effectively here due to borrowing `self`, so we inline logic or handle carefully.
+        // But for clarity, we'll iterate manually in error blocks.
 
         // self.page_table is the PML4 root
         unsafe {
+            // Increment root table count as we are about to add/check PDP mapping
+            let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                crate::mm::higher_half::VirtAddr::new(self.page_table as u64),
+            )
+            .expect("Failed to get pml4 phys")
+            .as_u64();
+            // Since we are adding an entry or using existing, we increment its usage?
+            // No, `count` tracks *present entries*.
+            // If we set `*pml4_entry` to present (new allocation), we increment pml4 count.
+            // If it was already present, we don't.
+
             // Level 4: PML4 -> PDP
             let pml4_entry = self.page_table.add(pml4_idx);
             if !(*pml4_entry).is_present() {
@@ -2179,14 +2194,27 @@ impl IommuDomain {
                 let pdp = match Self::allocate_page_table(self.numa_node) {
                     Ok(p) => p,
                     Err(e) => {
-                        cleanup(&newly_allocated);
+                        // Nothing allocated yet, just return
                         return Err(e);
                     }
                 };
-                newly_allocated[0] = Some(pdp);
+
+                // Track new PDP
+                let pdp_phys = crate::mm::higher_half::virt_to_phys(
+                    crate::mm::higher_half::VirtAddr::new(pdp as u64),
+                )
+                .expect("Failed to get pdp phys")
+                .as_u64();
+                self.page_table_counts.insert(pdp_phys, 0);
+
                 *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+
+                // Increment PML4 count
+                *self.page_table_counts.entry(pml4_phys).or_default() += 1;
+                newly_allocated[0] = Some((pdp, pdp_phys));
             }
             let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
+            let pdp_phys = ((*pml4_entry).phys_addr());
 
             // Level 3: PDP -> PD
             let pdp_entry = pdp_table.add(pdp_idx);
@@ -2196,17 +2224,37 @@ impl IommuDomain {
                     Ok(p) => p,
                     Err(e) => {
                         // Rollback PDP if we allocated it
-                        if newly_allocated[0].is_some() {
+                        if let Some((_, pdp_phys_addr)) = newly_allocated[0] {
                             (*pml4_entry).0 = 0; // Clear PML4 entry
+                            *self.page_table_counts.entry(pml4_phys).or_default() -= 1;
+                            self.page_table_counts.remove(&pdp_phys_addr);
+                            let layout = alloc::alloc::Layout::from_size_align(
+                                PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                                4096,
+                            )
+                            .unwrap();
+                            alloc::alloc::dealloc(newly_allocated[0].unwrap().0 as *mut u8, layout);
                         }
-                        cleanup(&newly_allocated);
                         return Err(e);
                     }
                 };
-                newly_allocated[1] = Some(pd);
+
+                // Track new PD
+                let pd_phys = crate::mm::higher_half::virt_to_phys(
+                    crate::mm::higher_half::VirtAddr::new(pd as u64),
+                )
+                .expect("Failed to get pd phys")
+                .as_u64();
+                self.page_table_counts.insert(pd_phys, 0);
+
                 *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+
+                // Increment PDP count
+                *self.page_table_counts.entry(pdp_phys).or_default() += 1;
+                newly_allocated[1] = Some((pd, pd_phys));
             }
             let pd_table = ((*pdp_entry).phys_addr()) as *mut SlPte;
+            let pd_phys = ((*pdp_entry).phys_addr());
 
             // Level 2: PD -> PT
             let pd_entry = pd_table.add(pd_idx);
@@ -2215,44 +2263,85 @@ impl IommuDomain {
                 let pt = match Self::allocate_page_table(self.numa_node) {
                     Ok(p) => p,
                     Err(e) => {
-                        // Rollback PD and PDP if we allocated them
-                        if newly_allocated[1].is_some() {
-                            (*pdp_entry).0 = 0; // Clear PDP entry
+                        let layout = alloc::alloc::Layout::from_size_align(
+                            PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                            4096,
+                        )
+                        .unwrap();
+
+                        // Rollback PD if we allocated it
+                        if let Some((_, pd_phys_addr)) = newly_allocated[1] {
+                            (*pdp_entry).0 = 0;
+                            *self.page_table_counts.entry(pdp_phys).or_default() -= 1;
+                            self.page_table_counts.remove(&pd_phys_addr);
+                            alloc::alloc::dealloc(newly_allocated[1].unwrap().0 as *mut u8, layout);
                         }
-                        if newly_allocated[0].is_some() {
-                            (*pml4_entry).0 = 0; // Clear PML4 entry
+                        // Rollback PDP if we allocated it
+                        if let Some((_, pdp_phys_addr)) = newly_allocated[0] {
+                            (*pml4_entry).0 = 0;
+                            *self.page_table_counts.entry(pml4_phys).or_default() -= 1;
+                            self.page_table_counts.remove(&pdp_phys_addr);
+                            alloc::alloc::dealloc(newly_allocated[0].unwrap().0 as *mut u8, layout);
                         }
-                        cleanup(&newly_allocated);
                         return Err(e);
                     }
                 };
-                newly_allocated[2] = Some(pt);
+
+                // Track new PT
+                let pt_phys = crate::mm::higher_half::virt_to_phys(
+                    crate::mm::higher_half::VirtAddr::new(pt as u64),
+                )
+                .expect("Failed to get pt phys")
+                .as_u64();
+                self.page_table_counts.insert(pt_phys, 0);
+
                 *pd_entry = SlPte((pt as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE);
+
+                // Increment PD count
+                *self.page_table_counts.entry(pd_phys).or_default() += 1;
+                newly_allocated[2] = Some((pt, pt_phys));
             }
             let pt_table = ((*pd_entry).phys_addr()) as *mut SlPte;
+            let pt_phys = ((*pd_entry).phys_addr());
 
             // Level 1: PT -> Page
             let pt_entry = pt_table.add(pt_idx);
             if (*pt_entry).is_present() {
+                let layout = alloc::alloc::Layout::from_size_align(
+                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                    4096,
+                )
+                .unwrap();
+
                 // Rollback all newly allocated tables
-                if newly_allocated[2].is_some() {
+                if let Some((_, pt_phys_addr)) = newly_allocated[2] {
                     (*pd_entry).0 = 0;
+                    *self.page_table_counts.entry(pd_phys).or_default() -= 1;
+                    self.page_table_counts.remove(&pt_phys_addr);
+                    alloc::alloc::dealloc(newly_allocated[2].unwrap().0 as *mut u8, layout);
                 }
-                if newly_allocated[1].is_some() {
+                if let Some((_, pd_phys_addr)) = newly_allocated[1] {
                     (*pdp_entry).0 = 0;
+                    *self.page_table_counts.entry(pdp_phys).or_default() -= 1;
+                    self.page_table_counts.remove(&pd_phys_addr);
+                    alloc::alloc::dealloc(newly_allocated[1].unwrap().0 as *mut u8, layout);
                 }
-                if newly_allocated[0].is_some() {
+                if let Some((_, pdp_phys_addr)) = newly_allocated[0] {
                     (*pml4_entry).0 = 0;
+                    *self.page_table_counts.entry(pml4_phys).or_default() -= 1;
+                    self.page_table_counts.remove(&pdp_phys_addr);
+                    alloc::alloc::dealloc(newly_allocated[0].unwrap().0 as *mut u8, layout);
                 }
-                cleanup(&newly_allocated);
                 return Err(IommuError::AlreadyMapped);
             }
             *pt_entry = SlPte::mapping(phys, read, write);
+
+            // Increment PT count
+            *self.page_table_counts.entry(pt_phys).or_default() += 1;
         }
 
         Ok(())
     }
-
     /// Allocate a zeroed page table
     ///
     /// Uses NUMA-aware allocation directly to avoid global lock contention.
@@ -2295,20 +2384,8 @@ impl IommuDomain {
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
 
         // Track newly allocated page tables for rollback
-        let mut newly_allocated: [Option<*mut SlPte>; 2] = [None, None];
-
-        let cleanup = |tables: &[Option<*mut SlPte>; 2]| {
-            for table in tables.iter().flatten() {
-                let layout = alloc::alloc::Layout::from_size_align(
-                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
-                    4096,
-                )
-                .unwrap();
-                unsafe {
-                    alloc::alloc::dealloc(*table as *mut u8, layout);
-                }
-            }
-        };
+        // Index 0: PDP, 1: PD
+        let mut newly_allocated: [Option<(*mut SlPte, u64)>; 2] = [None, None];
 
         let pml4_table = self.page_table;
         let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
@@ -2318,11 +2395,27 @@ impl IommuDomain {
             let pdp = match Self::allocate_page_table(self.numa_node) {
                 Ok(p) => p,
                 Err(e) => {
-                    cleanup(&newly_allocated);
                     return Err(e);
                 }
             };
-            newly_allocated[0] = Some(pdp);
+
+            // Track new PDP
+            let pdp_phys = crate::mm::higher_half::virt_to_phys(
+                crate::mm::higher_half::VirtAddr::new(pdp as u64),
+            )
+            .expect("Failed to get pdp phys")
+            .as_u64();
+
+            // Increment PML4 count (root count)
+            let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
+            )
+            .expect("Failed to get pml4 phys")
+            .as_u64();
+
+            *self.page_table_counts.entry(pml4_phys).or_default() += 1;
+            newly_allocated[0] = Some((pdp, pdp_phys));
+
             unsafe {
                 *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
             };
@@ -2330,6 +2423,7 @@ impl IommuDomain {
 
         let pdp_table = ((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
+        let pdp_phys = ((unsafe { *pml4_entry }).phys_addr());
 
         // Ensure PD exists
         if !(unsafe { *pdp_entry }).is_present() {
@@ -2337,44 +2431,102 @@ impl IommuDomain {
                 Ok(p) => p,
                 Err(e) => {
                     // Rollback PDP if we allocated it
-                    if newly_allocated[0].is_some() {
-                        unsafe { (*pml4_entry).0 = 0 };
+                    if let Some((_, pdp_phys_mapped)) = newly_allocated[0] {
+                        unsafe { (*pml4_entry).0 = 0 }; // Clear PML4 entry
+                        // Decrement PML4 count
+                        let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                            crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
+                        )
+                        .expect("Failed to get pml4 phys")
+                        .as_u64();
+                        *self.page_table_counts.entry(pml4_phys).or_default() -= 1;
+                        self.page_table_counts.remove(&pdp_phys_mapped);
+
+                        let layout = alloc::alloc::Layout::from_size_align(
+                            PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                            4096,
+                        )
+                        .unwrap();
+                        unsafe {
+                            alloc::alloc::dealloc(newly_allocated[0].unwrap().0 as *mut u8, layout)
+                        };
                     }
-                    cleanup(&newly_allocated);
                     return Err(e);
                 }
             };
-            newly_allocated[1] = Some(pd);
+
+            // Track new PD
+            let pd_phys = crate::mm::higher_half::virt_to_phys(
+                crate::mm::higher_half::VirtAddr::new(pd as u64),
+            )
+            .expect("Failed to get pd phys")
+            .as_u64();
+
+            // Increment PDP count
+            *self.page_table_counts.entry(pdp_phys).or_default() += 1;
+            newly_allocated[1] = Some((pd, pd_phys));
+
             unsafe {
                 *pdp_entry = SlPte((pd as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
             };
         } else if (unsafe { *pdp_entry }).is_super_page() {
-            // Already a 1GB super-page at this level - rollback
-            if newly_allocated[0].is_some() {
+            // Already a 1GB super-page at this level - rollback if we allocated PDP
+            if let Some((_, pdp_phys_mapped)) = newly_allocated[0] {
                 unsafe { (*pml4_entry).0 = 0 };
+                let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                    crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
+                )
+                .expect("Failed to get pml4 phys")
+                .as_u64();
+                *self.page_table_counts.entry(pml4_phys).or_default() -= 1;
+                self.page_table_counts.remove(&pdp_phys_mapped);
+                let layout = alloc::alloc::Layout::from_size_align(
+                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                    4096,
+                )
+                .unwrap();
+                unsafe { alloc::alloc::dealloc(newly_allocated[0].unwrap().0 as *mut u8, layout) };
             }
-            cleanup(&newly_allocated);
             return Err(IommuError::AlreadyMapped);
         }
 
         let pd_table = ((unsafe { *pdp_entry }).phys_addr()) as *mut SlPte;
         let pd_entry = unsafe { pd_table.add(pd_idx) };
+        let pd_phys = ((unsafe { *pdp_entry }).phys_addr());
 
-        // Check if already mapped (fixed: was checking !is_present())
+        // Check if already mapped
         if (unsafe { *pd_entry }).is_present() {
             // Rollback allocated tables
-            if newly_allocated[1].is_some() {
+            let layout = alloc::alloc::Layout::from_size_align(
+                PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                4096,
+            )
+            .unwrap();
+
+            if let Some((_, pd_phys_mapped)) = newly_allocated[1] {
                 unsafe { (*pdp_entry).0 = 0 };
+                *self.page_table_counts.entry(pdp_phys).or_default() -= 1;
+                self.page_table_counts.remove(&pd_phys_mapped);
+                unsafe { alloc::alloc::dealloc(newly_allocated[1].unwrap().0 as *mut u8, layout) };
             }
-            if newly_allocated[0].is_some() {
+            if let Some((_, pdp_phys_mapped)) = newly_allocated[0] {
                 unsafe { (*pml4_entry).0 = 0 };
+                let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                    crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
+                )
+                .expect("Failed to get pml4 phys")
+                .as_u64();
+                *self.page_table_counts.entry(pml4_phys).or_default() -= 1;
+                self.page_table_counts.remove(&pdp_phys_mapped);
+                unsafe { alloc::alloc::dealloc(newly_allocated[0].unwrap().0 as *mut u8, layout) };
             }
-            cleanup(&newly_allocated);
             return Err(IommuError::AlreadyMapped);
         }
 
         // Create 2MB super-page entry
         unsafe { *pd_entry = SlPte::super_page_2mb(phys, read, write) };
+        // Increment PD count (valid entry)
+        *self.page_table_counts.entry(pd_phys).or_default() += 1;
 
         Ok(())
     }
@@ -2403,20 +2555,7 @@ impl IommuDomain {
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
 
         // Track newly allocated PDP table for rollback
-        let mut newly_allocated_pdp: Option<*mut SlPte> = None;
-
-        let cleanup = |table: Option<*mut SlPte>| {
-            if let Some(ptr) = table {
-                let layout = alloc::alloc::Layout::from_size_align(
-                    PT_ENTRIES * core::mem::size_of::<SlPte>(),
-                    4096,
-                )
-                .unwrap();
-                unsafe {
-                    alloc::alloc::dealloc(ptr as *mut u8, layout);
-                }
-            }
-        };
+        let mut newly_allocated_pdp: Option<(*mut SlPte, u64)> = None;
 
         let pml4_table = self.page_table;
         let pml4_entry = unsafe { pml4_table.add(pml4_idx) };
@@ -2426,11 +2565,27 @@ impl IommuDomain {
             let pdp = match Self::allocate_page_table(self.numa_node) {
                 Ok(p) => p,
                 Err(e) => {
-                    cleanup(newly_allocated_pdp);
                     return Err(e);
                 }
             };
-            newly_allocated_pdp = Some(pdp);
+
+            // Track new PDP
+            let pdp_phys = crate::mm::higher_half::virt_to_phys(
+                crate::mm::higher_half::VirtAddr::new(pdp as u64),
+            )
+            .expect("Failed to get pdp phys")
+            .as_u64();
+
+            // Increment PML4 count (root count)
+            let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
+            )
+            .expect("Failed to get pml4 phys")
+            .as_u64();
+
+            *self.page_table_counts.entry(pml4_phys).or_default() += 1;
+            newly_allocated_pdp = Some((pdp, pdp_phys));
+
             unsafe {
                 *pml4_entry = SlPte((pdp as u64) | SlPte::PRESENT | SlPte::READ | SlPte::WRITE)
             };
@@ -2438,19 +2593,35 @@ impl IommuDomain {
 
         let pdp_table = ((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
+        let pdp_phys = ((unsafe { *pml4_entry }).phys_addr());
 
         // Check if already mapped (fixed: was checking !is_present())
         if (unsafe { *pdp_entry }).is_present() {
+            let layout = alloc::alloc::Layout::from_size_align(
+                PT_ENTRIES * core::mem::size_of::<SlPte>(),
+                4096,
+            )
+            .unwrap();
+
             // Rollback PDP if we allocated it
-            if newly_allocated_pdp.is_some() {
+            if let Some((_, pdp_phys_mapped)) = newly_allocated_pdp {
                 unsafe { (*pml4_entry).0 = 0 };
+                let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                    crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
+                )
+                .expect("Failed to get pml4 phys")
+                .as_u64();
+                *self.page_table_counts.entry(pml4_phys).or_default() -= 1;
+                self.page_table_counts.remove(&pdp_phys_mapped);
+                unsafe { alloc::alloc::dealloc(newly_allocated_pdp.unwrap().0 as *mut u8, layout) };
             }
-            cleanup(newly_allocated_pdp);
             return Err(IommuError::AlreadyMapped);
         }
 
         // Create 1GB super-page entry
         unsafe { *pdp_entry = SlPte::super_page_1gb(phys, read, write) };
+        // Increment PDP count
+        *self.page_table_counts.entry(pdp_phys).or_default() += 1;
 
         Ok(())
     }
@@ -2493,37 +2664,71 @@ impl IommuDomain {
                 return Err(IommuError::NotMapped);
             }
             let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_phys = (*pml4_entry).phys_addr();
 
             let pdp_entry = pdp_table.add(pdp_idx);
             if !(*pdp_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
             let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_phys = (*pdp_entry).phys_addr();
 
             let pd_entry = pd_table.add(pd_idx);
             if !(*pd_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
             let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+            let pt_phys = (*pd_entry).phys_addr();
 
             let pt_entry = pt_table.add(pt_idx);
             if !(*pt_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
-            *pt_entry = SlPte::new();
+            *pt_entry = SlPte::new(); // Clear entry
 
-            // Reclaim empty tables (bottom-up cascade)
-            if Self::count_present_entries(pt_table) == 0 {
-                *pd_entry = SlPte::new();
-                alloc::alloc::dealloc(pt_table as *mut u8, layout);
+            // Decrement PT count
+            if let Some(count) = self.page_table_counts.get_mut(&pt_phys) {
+                *count -= 1;
+                if *count == 0 {
+                    // Free PT
+                    *pd_entry = SlPte::new();
+                    alloc::alloc::dealloc(pt_table as *mut u8, layout);
+                    self.page_table_counts.remove(&pt_phys);
 
-                if Self::count_present_entries(pd_table) == 0 {
-                    *pdp_entry = SlPte::new();
-                    alloc::alloc::dealloc(pd_table as *mut u8, layout);
+                    // Decrement PD count
+                    if let Some(pd_count) = self.page_table_counts.get_mut(&pd_phys) {
+                        *pd_count -= 1;
+                        if *pd_count == 0 {
+                            // Free PD
+                            *pdp_entry = SlPte::new();
+                            alloc::alloc::dealloc(pd_table as *mut u8, layout);
+                            self.page_table_counts.remove(&pd_phys);
 
-                    if Self::count_present_entries(pdp_table) == 0 {
-                        *pml4_entry = SlPte::new();
-                        alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                            // Decrement PDP count
+                            if let Some(pdp_count) = self.page_table_counts.get_mut(&pdp_phys) {
+                                *pdp_count -= 1;
+                                if *pdp_count == 0 {
+                                    // Free PDP
+                                    *pml4_entry = SlPte::new();
+                                    alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                                    self.page_table_counts.remove(&pdp_phys);
+
+                                    // Decrement PML4 count (root)
+                                    let pml4_phys = crate::mm::higher_half::virt_to_phys(
+                                        crate::mm::higher_half::VirtAddr::new(
+                                            self.page_table as u64,
+                                        ),
+                                    )
+                                    .expect("Failed to get pml4 phys")
+                                    .as_u64();
+                                    if let Some(pml4_count) =
+                                        self.page_table_counts.get_mut(&pml4_phys)
+                                    {
+                                        *pml4_count -= 1;
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -2532,6 +2737,7 @@ impl IommuDomain {
         Ok(())
     }
 
+    /* Count function no longer needed
     /// Count present entries in a page table
     ///
     /// Used for empty table detection during unmap reclamation.
@@ -2545,6 +2751,7 @@ impl IommuDomain {
         }
         count
     }
+    */
 
     /// Get total mapped size
     pub fn mapped_size(&self) -> u64 {
@@ -2555,42 +2762,46 @@ impl IommuDomain {
     pub fn mappings(&self) -> &BTreeMap<u64, DmaMapping> {
         &self.mappings
     }
-}
 
-/// Recursively deallocate all page tables under the given table
-///
-/// This function walks the page table hierarchy and deallocates all child tables.
-/// Super-pages (1GB/2MB) are leaf entries and don't have child tables.
-///
-/// # Arguments
-/// * `table` - Pointer to the current page table
-/// * `level` - Current level in the hierarchy (3=PML4, 2=PDP, 1=PD, 0=PT)
-///
-/// # Safety
-/// - `table` must be a valid pointer to a 4KB-aligned page table
-/// - The table must not be in use by hardware (IOMMU disabled or domain detached)
-unsafe fn deallocate_page_table_recursive(table: *mut SlPte, level: usize) {
-    if table.is_null() {
-        return;
-    }
+    /// Recursively deallocate all page tables under the given table (iterative version)
+    ///
+    /// Note: This now relies on `page_table_counts` (BTreeMap) to know which pages are allocated tables.
+    /// This avoids tree walking and stack overflow risks entirely.
+    /// It effectively becomes "free all tables tracked by this domain".
+    ///
+    /// # Safety
+    /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
+    unsafe fn deallocate_page_tables_iterative(&mut self) {
+        // Free all tables tracked in the counts map
+        // We iterate keys (Physical Addresses), convert to Virtual, and dealloc.
+        // Since we are destroying the domain, we just free everything.
+        // We must be careful not to double free if logic is flawed, but map guarantees uniqueness.
+        // Also, we skip the root table if it's managed by IommuDomain itself (which it is).
+        // Wait, `IommuDomain::new` allocates `page_table`. `Drop` (or callers) should free it.
+        // If we free everything in `page_table_counts`, we free the root too.
+        // Callers must be aware.
 
-    // If not at PT level (level > 0), recurse into children
-    if level > 0 {
-        for i in 0..PT_ENTRIES {
-            let entry = unsafe { *table.add(i) };
-            if entry.is_present() && !entry.is_super_page() {
-                let child_table = entry.phys_addr() as *mut SlPte;
-                unsafe { deallocate_page_table_recursive(child_table, level - 1) };
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .expect("invalid page table layout");
+
+        for &phys_addr in self.page_table_counts.keys() {
+            let virt_addr = crate::mm::higher_half::phys_to_virt(
+                crate::mm::higher_half::PhysAddr::new(phys_addr),
+            )
+            .as_u64();
+
+            let ptr = virt_addr as *mut u8;
+            // Don't free the root table if `IommuDomain` logic expects to free it separately?
+            // `IommuDomain` stores `page_table` pointer.
+            // If we free it here, `IommuDomain` should not free it again.
+            // `IommuDomain` struct doesn't implement Drop yet, but usually `deallocate_page_table_recursive` was called manually.
+
+            unsafe {
+                alloc::alloc::dealloc(ptr, layout);
             }
         }
-    }
-
-    // Actually deallocate the page table memory (no global pool)
-    let layout =
-        alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-            .expect("invalid page table layout");
-    unsafe {
-        alloc::alloc::dealloc(table as *mut u8, layout);
+        self.page_table_counts.clear();
     }
 }
 
@@ -2598,8 +2809,7 @@ impl Drop for IommuDomain {
     fn drop(&mut self) {
         if !self.page_table.is_null() {
             unsafe {
-                // Level 3 = PML4 (we recurse: PML4 -> PDP -> PD -> PT)
-                deallocate_page_table_recursive(self.page_table, 3);
+                self.deallocate_page_tables_iterative();
             }
         }
     }
@@ -2634,6 +2844,8 @@ pub enum IommuError {
     DeviceNotFound,
     /// Hardware error
     HardwareError,
+    /// Out of memory
+    OutOfMemory,
     /// Timeout
     Timeout,
 }
@@ -2797,6 +3009,16 @@ impl<'a> Future for InvalidationWaiter<'a> {
     }
 }
 
+/// Hardware Tables (Root Table and Context Tables)
+/// These are raw pointers managed by the IOMMU Driver.
+/// Send wrapper is required because we are sharing them across threads (via Mutex).
+pub struct HardwareContext {
+    pub root_table: *mut RootEntry,
+    pub context_tables: Vec<*mut ContextEntry>,
+}
+
+unsafe impl Send for HardwareContext {}
+
 /// IOMMU Controller
 pub struct IommuController {
     /// MMIO base address
@@ -2805,12 +3027,15 @@ pub struct IommuController {
     cap: u64,
     /// Extended capabilities
     ecap: u64,
-    /// Root table
-    root_table: *mut RootEntry,
-    /// Context tables (per bus)
-    context_tables: Vec<*mut ContextEntry>,
+    /// Hardware/Table Lock (protects root_table and context_tables)
+    /// This replaces the coarse-grained RwLock<IommuController>
+    hardware: Mutex<HardwareContext>,
+    /// Register Lock (protects MMIO command sequences)
+    /// Prevents race conditions on multi-step register operations (e.g. IOTLB invalidation)
+    register_lock: Mutex<()>,
     /// Domains (ARC/RwLock for concurrent access)
-    domains: BTreeMap<u16, Arc<RwLock<IommuDomain>>>,
+    /// Wrapped in RwLock to allow adding/removing domains with shared IommuController
+    domains: RwLock<BTreeMap<u16, Arc<RwLock<IommuDomain>>>>,
     /// Device to domain mapping
     device_domains: RwLock<BTreeMap<DeviceId, u16>>,
     /// Next domain ID
@@ -2837,7 +3062,7 @@ pub struct IommuController {
     /// Page Request Queue (PRI/ATS)
     page_request_queue: Mutex<Option<PageRequestQueue>>,
     /// Fault log ring buffer
-    fault_log: Mutex<Option<FaultLog>>,
+    fault_log: IrqMutex<Option<FaultLog>>,
     /// Device scopes from DRHD (for proper device-to-IOMMU matching)
     device_scopes: Vec<IommuDeviceScope>,
     /// Include all devices (from DRHD INCLUDE_PCI_ALL flag)
@@ -2857,9 +3082,12 @@ impl IommuController {
             segment,
             cap: 0,
             ecap: 0,
-            root_table: core::ptr::null_mut(),
-            context_tables: Vec::new(),
-            domains: BTreeMap::new(),
+            hardware: Mutex::new(HardwareContext {
+                root_table: core::ptr::null_mut(),
+                context_tables: Vec::new(),
+            }),
+            register_lock: Mutex::new(()),
+            domains: RwLock::new(BTreeMap::new()),
             device_domains: RwLock::new(BTreeMap::new()),
             next_domain_id: AtomicU64::new(1),
             enabled: AtomicBool::new(false),
@@ -2871,7 +3099,7 @@ impl IommuController {
             ats_enabled_devices: Mutex::new(BTreeSet::new()),
             pid_pool: Mutex::new(None),
             page_request_queue: Mutex::new(None),
-            fault_log: Mutex::new(None),
+            fault_log: IrqMutex::new(None),
             device_scopes: Vec::new(),
             include_all: false,
             pending_waiter: AtomicWaker::new(),
@@ -2890,9 +3118,12 @@ impl IommuController {
             segment,
             cap: 0,
             ecap: 0,
-            root_table: core::ptr::null_mut(),
-            context_tables: Vec::new(),
-            domains: BTreeMap::new(),
+            hardware: Mutex::new(HardwareContext {
+                root_table: core::ptr::null_mut(),
+                context_tables: Vec::new(),
+            }),
+            register_lock: Mutex::new(()),
+            domains: RwLock::new(BTreeMap::new()),
             device_domains: RwLock::new(BTreeMap::new()),
             next_domain_id: AtomicU64::new(1),
             enabled: AtomicBool::new(false),
@@ -2904,7 +3135,7 @@ impl IommuController {
             ats_enabled_devices: Mutex::new(BTreeSet::new()),
             pid_pool: Mutex::new(None),
             page_request_queue: Mutex::new(None),
-            fault_log: Mutex::new(None),
+            fault_log: IrqMutex::new(None),
             device_scopes: scopes,
             include_all,
             pending_waiter: AtomicWaker::new(),
@@ -2949,7 +3180,7 @@ impl IommuController {
     }
 
     /// Add a device to the set of ATS-enabled devices
-    pub fn enable_ats_for_device(&mut self, device: DeviceId) {
+    pub fn enable_ats_for_device(&self, device: DeviceId) {
         self.ats_enabled_devices.lock().insert(device);
     }
 
@@ -2966,13 +3197,15 @@ impl IommuController {
         // SAFETY: 4096 アライメントと4096サイズは常に有効
         let rt_layout = alloc::alloc::Layout::from_size_align(4096, 4096)
             .expect("Invalid layout for root table");
-        self.root_table = crate::util::allocate_zeroed(rt_layout)
+        let root_table = crate::util::allocate_zeroed(rt_layout)
             .expect("Failed to allocate root table")
             .as_ptr() as *mut RootEntry;
 
-        if self.root_table.is_null() {
+        if root_table.is_null() {
             return Err(IommuError::HardwareError);
         }
+
+        let mut context_tables = Vec::new();
 
         // Allocate context tables for all buses
         for _ in 0..256 {
@@ -2987,22 +3220,29 @@ impl IommuController {
                 return Err(IommuError::HardwareError);
             }
 
-            self.context_tables.push(ct);
+            context_tables.push(ct);
+        }
+
+        // Initialize hardware context
+        {
+            let mut hw = self.hardware.lock();
+            hw.root_table = root_table;
+            hw.context_tables = context_tables;
         }
 
         // Set root table address
-        self.write64(regs::RTADDR, self.root_table as u64);
+        self.write64(regs::RTADDR, root_table as u64);
 
         // Set root table pointer
         self.write32(regs::GCMD, gcmd_bits::GCMD_SRTP);
 
         // Wait for completion
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_RTPS != 0 {
-                break;
-            }
-        }
-
+        // Register: Global Status (GSTS)
+        // Bit: RTPS (Root Table Pointer Status)
+        self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_RTPS) != 0,
+            10_000,
+        )?;
         Ok(())
     }
 
@@ -3012,11 +3252,10 @@ impl IommuController {
         if self.cap & cap_bits::CAP_RWBF != 0 {
             self.write32(regs::GCMD, gcmd_bits::GCMD_WBF);
 
-            for _ in 0..1000 {
-                if self.read32(regs::GSTS) & gsts_bits::GSTS_WBFS == 0 {
-                    break;
-                }
-            }
+            self.wait_for_condition(
+                || (self.read32(regs::GSTS) & gsts_bits::GSTS_WBFS) == 0,
+                10_000,
+            )?;
         }
 
         // Enable translation
@@ -3031,14 +3270,13 @@ impl IommuController {
         }
 
         // Wait for completion
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_TES != 0 {
-                self.enabled.store(true, Ordering::Release);
-                return Ok(());
-            }
-        }
+        self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_TES) != 0,
+            10_000,
+        )?;
 
-        Err(IommuError::Timeout)
+        self.enabled.store(true, Ordering::Release);
+        Ok(())
     }
 
     /// Disable DMA remapping
@@ -3048,14 +3286,13 @@ impl IommuController {
         self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_TE);
 
         // Wait for completion
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_TES == 0 {
-                self.enabled.store(false, Ordering::Release);
-                return Ok(());
-            }
-        }
+        self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_TES) == 0,
+            10_000,
+        )?;
 
-        Err(IommuError::Timeout)
+        self.enabled.store(false, Ordering::Release);
+        Ok(())
     }
 
     /// Check if translation is enabled
@@ -3066,7 +3303,7 @@ impl IommuController {
     /// Create a new domain
     /// Create a new domain with an optional NUMA node affinity hint
     pub fn create_domain(
-        &mut self,
+        &self,
         numa_node: Option<usize>,
         domain_type: IommuDomainType,
     ) -> Result<u16, IommuError> {
@@ -3076,7 +3313,9 @@ impl IommuController {
         let supports_1gb = self.supports_1gb_pages();
 
         let domain = IommuDomain::new(id, numa_node, supports_2mb, supports_1gb, domain_type);
-        self.domains.insert(id, Arc::new(RwLock::new(domain)));
+        self.domains
+            .write()
+            .insert(id, Arc::new(RwLock::new(domain)));
 
         // register_domain_lock is no longer needed with Arc<RwLock>
 
@@ -3090,10 +3329,8 @@ impl IommuController {
         domain_id: u16,
         numa_node: Option<usize>,
     ) -> Result<(), IommuError> {
-        let domain_arc = self
-            .domains
-            .get(&domain_id)
-            .ok_or(IommuError::DomainNotFound)?;
+        let domains = self.domains.read();
+        let domain_arc = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
         let mut domain = domain_arc.write();
         domain.numa_node = numa_node;
         Ok(())
@@ -3102,34 +3339,36 @@ impl IommuController {
     /// Get domain NUMA hint
     pub fn get_domain_numa(&self, domain_id: u16) -> Option<usize> {
         self.domains
+            .read()
             .get(&domain_id)
             .and_then(|d| d.read().numa_node)
     }
 
     /// Get a domain by ID
     pub fn domain(&self, id: u16) -> Option<Arc<RwLock<IommuDomain>>> {
-        self.domains.get(&id).cloned()
+        self.domains.read().get(&id).cloned()
     }
 
     /// Attach a device to a domain
-    pub fn attach_device(&mut self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
-        let domain_arc = self
-            .domains
-            .get(&domain_id)
-            .ok_or(IommuError::DomainNotFound)?;
+    pub fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
+        let domains = self.domains.read();
+        let domain_arc = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
         let domain = domain_arc.read();
 
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
 
+        let hw = self.hardware.lock();
+
         // Setup root entry
-        let root_entry = unsafe { &mut *self.root_table.add(bus) };
+        let root_entry = unsafe { &mut *hw.root_table.add(bus) };
         if !root_entry.is_present() {
-            root_entry.set_context_table(self.context_tables[bus] as u64);
+            // Note: this assumes context_tables[bus] is valid which is ensured by init
+            root_entry.set_context_table(hw.context_tables[bus] as u64);
         }
 
         // Setup context entry
-        let context_entry = unsafe { &mut *self.context_tables[bus].add(devfn) };
+        let context_entry = unsafe { &mut *hw.context_tables[bus].add(devfn) };
 
         // 48-bit address width (AGAW = 2)
         if domain.domain_type() == IommuDomainType::Passthrough {
@@ -3144,12 +3383,13 @@ impl IommuController {
     }
 
     /// Detach a device from its domain
-    pub fn detach_device(&mut self, device: DeviceId) -> Result<(), IommuError> {
+    pub fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
 
         // Clear context entry
-        let context_entry = unsafe { &mut *self.context_tables[bus].add(devfn) };
+        let hw = self.hardware.lock();
+        let context_entry = unsafe { &mut *hw.context_tables[bus].add(devfn) };
 
         *context_entry = ContextEntry::default();
 
@@ -3175,10 +3415,8 @@ impl IommuController {
             .ok_or(IommuError::DeviceNotFound)?;
         drop(guard);
 
-        let domain_arc = self
-            .domains
-            .get(&domain_id)
-            .ok_or(IommuError::DomainNotFound)?;
+        let domains = self.domains.read();
+        let domain_arc = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
         let mut domain = domain_arc.write();
 
         domain.map(iova, phys, size, read, write)
@@ -3193,10 +3431,8 @@ impl IommuController {
             .ok_or(IommuError::DeviceNotFound)?;
         drop(guard);
 
-        let domain_arc = self
-            .domains
-            .get(&domain_id)
-            .ok_or(IommuError::DomainNotFound)?;
+        let domains = self.domains.read();
+        let domain_arc = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
         let mut domain = domain_arc.write();
 
         domain.unmap(iova).map(|mapping| {
@@ -3249,6 +3485,69 @@ impl IommuController {
         })
     }
 
+    /// Unmap DMA region for a device (Async)
+    pub async fn unmap_dma_async(
+        &self,
+        device: &DeviceId,
+        iova: u64,
+    ) -> Result<DmaMapping, IommuError> {
+        let guard = self.device_domains.read();
+        let domain_id = guard
+            .get(device)
+            .copied()
+            .ok_or(IommuError::DeviceNotFound)?;
+        drop(guard);
+
+        let domains = self.domains.read();
+        let domain_arc = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
+        let mut domain = domain_arc.write();
+
+        let mapping = domain.unmap(iova)?;
+        drop(domain); // Release lock early to avoid holding it during invalidation submit
+
+        // Invalidate IOTLB
+        if self.is_queued_invalidation_enabled() {
+            let num_pages = (mapping.size / 4096) as u64;
+            // Optimization: if large, do domain invalidation
+            if mapping.size >= 2 * 1024 * 1024 {
+                self.qi_invalidate_iotlb_domain(domain_id, true)?;
+            } else {
+                for i in 0..num_pages {
+                    let page_addr = iova + i * 4096;
+                    self.qi_invalidate_iotlb_page(domain_id, page_addr, true)?;
+                }
+            }
+
+            // Invalidate Device-TLB (ATS)
+            let use_ats = (self.ecap & ecap_bits::ECAP_DT) != 0
+                && self.ats_enabled_devices.lock().contains(device);
+
+            if use_ats {
+                if mapping.size >= 2 * 1024 * 1024 {
+                    self.qi_invalidate_device_tlb(device.requester_id(), domain_id)?;
+                } else {
+                    for i in 0..num_pages {
+                        let page_addr = iova + i * 4096;
+                        self.qi_invalidate_device_tlb_page(
+                            device.requester_id(),
+                            domain_id,
+                            page_addr,
+                            0,
+                        )?;
+                    }
+                }
+            }
+
+            // Async Wait
+            self.qi_wait_async().await?;
+        } else {
+            // Sync Fallback
+            unsafe { self.invalidate_iotlb(domain_id) };
+        }
+
+        Ok(mapping)
+    }
+
     /// Invalidate IOTLB for a domain
     pub unsafe fn invalidate_iotlb(&self, domain_id: u16) {
         // Use QI if enabled
@@ -3268,14 +3567,18 @@ impl IommuController {
                        (1u64 << 61) |          // Global invalidation
                        ((domain_id as u64) << 16);
 
-        self.write64(regs::CCMD, cmd);
-
-        // Wait for completion
-        for _ in 0..1000 {
-            if self.read64(regs::CCMD) & (1u64 << 63) == 0 {
-                break;
-            }
+        {
+            let _lock = self.register_lock.lock();
+            self.write64(regs::CCMD, cmd);
+            // Wait for completion (ICC bit 63 cleared)
+            let _ =
+                self.wait_for_condition(|| (self.read64(regs::CCMD) & (1u64 << 63)) == 0, 10_000);
         }
+
+        // Wait for completion (outside lock? no, this loop was redundant in original or for drain?)
+        // The original code waited TWICE. The second wait seems redundant or is for the actual effect time?
+        // But invalidation writes require checking the bit.
+        // We'll trust the first wait inside the lock.
     }
 
     /// Invalidate IOTLB globally (all domains)
@@ -3301,14 +3604,18 @@ impl IommuController {
             | iotlb_bits::IOTLB_DR
             | iotlb_bits::IOTLB_DW;
 
-        crate::io::mmio::mmio_write_u64(iotlb_reg as usize, cmd);
+        {
+            let _lock = self.register_lock.lock();
+            crate::io::mmio::mmio_write_u64(iotlb_reg as usize, cmd);
 
-        // Wait for completion
-        for _ in 0..1000 {
-            let status = crate::io::mmio::mmio_read_u64(iotlb_reg as usize);
-            if status & iotlb_bits::IOTLB_IVT == 0 {
-                break;
-            }
+            // Wait for completion
+            let _ = self.wait_for_condition(
+                || {
+                    (crate::io::mmio::mmio_read_u64(iotlb_reg as usize) & iotlb_bits::IOTLB_IVT)
+                        == 0
+                },
+                10_000,
+            );
         }
     }
 
@@ -3447,11 +3754,10 @@ impl IommuController {
         self.write32(regs::GCMD, gcmd_bits::GCMD_SIRTP);
 
         // Wait for completion
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS != 0 {
-                break;
-            }
-        }
+        self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS) != 0,
+            10_000,
+        )?;
 
         *self.interrupt_remap_table.lock() = Some(irt);
         log::info!(
@@ -3476,15 +3782,17 @@ impl IommuController {
         self.write32(regs::GCMD, gcmd_bits::GCMD_IRE);
 
         // Wait for completion
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_IRES != 0 {
+        match self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRES) != 0,
+            10_000,
+        ) {
+            Ok(_) => {
                 self.ir_enabled.store(true, Ordering::Release);
-                log::info!("[IOMMU] Interrupt Remapping enabled\n");
-                return Ok(());
+                log::info!("[IOMMU] Interrupt Remapping enabled\\n");
+                Ok(())
             }
+            Err(e) => Err(e),
         }
-
-        Err(IommuError::Timeout)
     }
 
     /// Disable interrupt remapping
@@ -3492,14 +3800,16 @@ impl IommuController {
         let gcmd = self.read32(regs::GCMD);
         self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_IRE);
 
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_IRES == 0 {
+        match self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRES) == 0,
+            10_000,
+        ) {
+            Ok(_) => {
                 self.ir_enabled.store(false, Ordering::Release);
-                return Ok(());
+                Ok(())
             }
+            Err(e) => Err(e),
         }
-
-        Err(IommuError::Timeout)
     }
 
     /// Check if interrupt remapping is enabled
@@ -3513,13 +3823,13 @@ impl IommuController {
 
     /// Initialize fault handling with a fault log ring buffer
     pub fn init_fault_handling(&mut self) {
-        *self.fault_log.lock() = Some(FaultLog::new(FaultLog::DEFAULT_CAPACITY));
-        log::info!("[IOMMU] Fault handling initialized\\n");
+        *self.fault_log.lock() = Some(FaultLog::new());
+        log::info!("[IOMMU] Fault handling initialized\n");
     }
 
     /// Process pending faults from the Fault Recording Registers
     /// Returns the number of faults processed
-    pub fn process_faults(&mut self) -> usize {
+    pub fn process_faults(&self) -> usize {
         use fsts_bits::*;
 
         let fsts = self.read32(regs::FSTS);
@@ -3603,7 +3913,7 @@ impl IommuController {
     /// Allocate an IRTE for a device interrupt
     /// Returns the IRTE index that should be used in the interrupt message
     pub fn allocate_irte(
-        &mut self,
+        &self,
         vector: u8,
         dest_id: u32,
         logical: bool,
@@ -3620,7 +3930,7 @@ impl IommuController {
     }
 
     /// Free an IRTE
-    pub fn free_irte(&mut self, index: u16) -> Result<(), IommuError> {
+    pub fn free_irte(&self, index: u16) -> Result<(), IommuError> {
         let mut guard = self.interrupt_remap_table.lock();
         let irt = guard.as_mut().ok_or(IommuError::NotPresent)?;
 
@@ -3719,7 +4029,7 @@ impl IommuController {
     }
 
     /// Free a Posted Interrupt Descriptor and its IRTE
-    pub fn free_posted_irte(&mut self, irte_index: u16, pid_index: u16) -> Result<(), IommuError> {
+    pub fn free_posted_irte(&self, irte_index: u16, pid_index: u16) -> Result<(), IommuError> {
         // Free IRTE
         if let Some(irt) = self.interrupt_remap_table.lock().as_mut() {
             irt.set(irte_index, InterruptRemapEntry::new());
@@ -3794,11 +4104,7 @@ impl IommuController {
         self.write32(regs::GCMD, gcmd | (1 << 28));
 
         // Wait for PRS (Page Request Status) bit
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & (1 << 28) != 0 {
-                break;
-            }
-        }
+        self.wait_for_condition(|| (self.read32(regs::GSTS) & (1 << 28)) != 0, 10_000)?;
 
         *self.page_request_queue.lock() = Some(prq);
         log::info!(
@@ -3891,13 +4197,50 @@ impl IommuController {
         Ok(())
     }
 
-    /// Allocate an IOVA range from controller's allocator (4KB granularity)
+    /// Allocate I/O virtual address (Optimized with Per-Core Cache)
+    pub fn allocate_iova_fast(&self, size: u64) -> Result<u64, IommuError> {
+        // 4KB以外はグローバルアロケータへ
+        if size != 4096 {
+            return self.allocate_iova(size);
+        }
+
+        // Per-Core Cacheの確認
+        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
+            if let Some(iova) = pc.iova_magazine.pop() {
+                return Ok(iova);
+            }
+        }
+
+        // Cache miss - use global allocator
+        self.allocate_iova(size)
+    }
+
+    /// Free IOVA (Optimized with Per-Core Cache)
+    pub fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        if size != 4096 {
+            return self.free_iova(iova, size);
+        }
+
+        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
+            if pc.iova_magazine.push(iova) {
+                return Ok(());
+            }
+        }
+
+        // Cache overflow or no per-cpu - free globally
+        self.free_iova(iova, size)
+    }
+
+    /// Allocate I/O virtual address range
     pub fn allocate_iova(&self, size: u64) -> Result<u64, IommuError> {
-        let mut guard = self.iova_allocator.lock();
-        let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
-        alloc
-            .allocate(size, IovaGranularity::Page4K)
-            .ok_or(IommuError::HardwareError)
+        let mut allocator = self.iova_allocator.lock();
+        if let Some(alloc) = allocator.as_mut() {
+            alloc
+                .allocate(size, IovaGranularity::Page4K)
+                .ok_or(IommuError::OutOfMemory)
+        } else {
+            Err(IommuError::NotInitialized)
+        }
     }
 
     /// Allocate an IOVA range with specific granularity (for super-pages)
@@ -3924,11 +4267,10 @@ impl IommuController {
     pub fn init_iova_range(base: u64, size: u64) -> Result<(), IommuError> {
         let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
         let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-        let controller_lock = registry
+        let controller = registry
             .controllers
             .get(idx)
             .ok_or(IommuError::NotPresent)?;
-        let controller = controller_lock.read();
         controller.init_iova(base, size)
     }
 
@@ -3936,11 +4278,10 @@ impl IommuController {
     pub fn allocate_global_iova(size: u64) -> Result<u64, IommuError> {
         let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
         let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-        let controller_lock = registry
+        let controller = registry
             .controllers
             .get(idx)
             .ok_or(IommuError::NotPresent)?;
-        let controller = controller_lock.read();
         controller.allocate_iova(size)
     }
 
@@ -3948,11 +4289,10 @@ impl IommuController {
     pub fn free_global_iova(addr: u64, size: u64) -> Result<(), IommuError> {
         let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
         let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-        let controller_lock = registry
+        let controller = registry
             .controllers
             .get(idx)
             .ok_or(IommuError::NotPresent)?;
-        let controller = controller_lock.read();
         controller.free_iova(addr, size)
     }
 
@@ -3960,20 +4300,17 @@ impl IommuController {
     pub fn map_for_dma_alloc(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuError> {
         let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
         let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-        let controller_lock = registry
+        let controller = registry
             .controllers
             .get(idx)
             .ok_or(IommuError::NotPresent)?;
-        let controller = controller_lock.read();
 
         // Allocate IOVA
-        let iova = controller.allocate_iova(size)?;
+        let iova = controller.allocate_iova_fast(size)?;
 
         // Default domain is 0
-        let domain_arc = controller
-            .domains
-            .get(&0)
-            .ok_or(IommuError::DomainNotFound)?;
+        let domains = controller.domains.read();
+        let domain_arc = domains.get(&0).ok_or(IommuError::DomainNotFound)?;
         let mut domain = domain_arc.write();
         domain.map(iova, phys_addr.as_u64(), size, true, true)?;
 
@@ -3984,23 +4321,20 @@ impl IommuController {
     pub fn unmap_dma_alloc(iova: u64, _size: u64) -> Result<(), IommuError> {
         let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
         let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-        let controller_lock = registry
+        let controller = registry
             .controllers
             .get(idx)
             .ok_or(IommuError::NotPresent)?;
-        let controller = controller_lock.read();
 
         // Default domain
-        let domain_arc = controller
-            .domains
-            .get(&0)
-            .ok_or(IommuError::DomainNotFound)?;
+        let domains = controller.domains.read();
+        let domain_arc = domains.get(&0).ok_or(IommuError::DomainNotFound)?;
         let mut domain = domain_arc.write();
         domain.unmap(iova)?;
         drop(domain); // Release lock
 
         // Free IOVA
-        controller.free_iova(iova, _size)?;
+        controller.free_iova_fast(iova, _size)?;
 
         Ok(())
     }
@@ -4054,15 +4388,18 @@ impl IommuController {
         self.write32(regs::GCMD, gcmd_bits::GCMD_QIE);
 
         // Wait for completion
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_QIES != 0 {
+        // Use helper with timeout
+        match self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_QIES) != 0,
+            10_000,
+        ) {
+            Ok(_) => {
                 self.qi_enabled.store(true, Ordering::Release);
-                log::info!("[IOMMU] Queued Invalidation enabled\n");
-                return Ok(());
+                log::info!("[IOMMU] Queued Invalidation enabled\\n");
+                Ok(())
             }
+            Err(e) => Err(e),
         }
-
-        Err(IommuError::Timeout)
     }
 
     /// Disable Queued Invalidation
@@ -4070,14 +4407,16 @@ impl IommuController {
         let gcmd = self.read32(regs::GCMD);
         self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_QIE);
 
-        for _ in 0..1000 {
-            if self.read32(regs::GSTS) & gsts_bits::GSTS_QIES == 0 {
+        match self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_QIES) == 0,
+            10_000,
+        ) {
+            Ok(_) => {
                 self.qi_enabled.store(false, Ordering::Release);
-                return Ok(());
+                Ok(())
             }
+            Err(e) => Err(e),
         }
-
-        Err(IommuError::Timeout)
     }
 
     /// Check if Queued Invalidation is enabled
@@ -4181,14 +4520,11 @@ impl IommuController {
 
         // Wait for hardware head to catch up (all descriptors processed)
         let expected_tail = new_tail >> 4;
-        for _ in 0..10000 {
-            let head = self.read64(regs::IQH) >> 4;
-            if head == expected_tail {
-                return Ok(());
-            }
-        }
-
-        Err(IommuError::Timeout)
+        // This is a critical wait, use longer timeout
+        self.wait_for_condition(
+            || (self.read64(regs::IQH) >> 4) == expected_tail,
+            100_000, // 100ms
+        )
     }
 
     /// Submit a wait descriptor and wait asynchronously for completion
@@ -4337,6 +4673,36 @@ impl IommuController {
 
         // Read current to preserve reserved bits? Register is usually RW.
         self.write32(regs::FECTL, val);
+    }
+
+    /// Wait for a condition to be true with a timeout
+    ///
+    /// # Arguments
+    /// * `condition` - Predicate to check
+    /// * `timeout_us` - Timeout in microseconds
+    ///
+    /// Uses rdtsc for time measurement to allow early boot usage before timers are fully calibrated.
+    /// Assumes a conservative 3GHz clock for safety (wait deeper than needed rather than timing out too soon).
+    fn wait_for_condition<F>(&self, condition: F, timeout_us: u64) -> Result<(), IommuError>
+    where
+        F: Fn() -> bool,
+    {
+        // 3GHz assumption: 3000 cycles / us
+        let cycles = timeout_us * 3000;
+        let start = unsafe { core::arch::x86_64::_rdtsc() };
+
+        loop {
+            if condition() {
+                return Ok(());
+            }
+
+            let current = unsafe { core::arch::x86_64::_rdtsc() };
+            if current.saturating_sub(start) > cycles {
+                return Err(IommuError::Timeout);
+            }
+
+            core::hint::spin_loop();
+        }
     }
 }
 
@@ -4993,8 +5359,8 @@ pub struct ReservedMemoryRegion {
 
 /// IOMMU Registry (Immutable container after initialization)
 pub struct IommuRegistry {
-    /// List of IOMMU controllers (individually locked)
-    controllers: Vec<RwLock<IommuController>>,
+    /// List of IOMMU controllers (Arc for shared access, fine-grained locking internally)
+    controllers: Vec<Arc<IommuController>>,
     /// Default IOMMU index
     default_iommu_idx: Option<usize>,
     /// Reserved memory regions
@@ -5016,8 +5382,7 @@ impl IommuRegistry {
         function: u8,
     ) -> Option<usize> {
         // First pass: Find controller with explicit scope match
-        for (i, controller_lock) in self.controllers.iter().enumerate() {
-            let controller = controller_lock.read();
+        for (i, controller) in self.controllers.iter().enumerate() {
             if controller.segment != segment {
                 continue;
             }
@@ -5030,8 +5395,7 @@ impl IommuRegistry {
         }
 
         // Second pass: Find include_all controller for this segment
-        for (i, controller_lock) in self.controllers.iter().enumerate() {
-            let controller = controller_lock.read();
+        for (i, controller) in self.controllers.iter().enumerate() {
             if controller.segment == segment && controller.include_all {
                 return Some(i);
             }
@@ -5143,7 +5507,7 @@ pub unsafe fn init_iommu_from_acpi(
             }
         }
 
-        controllers.push(RwLock::new(controller));
+        controllers.push(Arc::new(controller));
         if unit.include_all {
             default_idx = Some(controllers.len() - 1);
         }
@@ -5198,8 +5562,7 @@ pub unsafe fn init_iommu_from_acpi(
             let mut target_idx = None;
 
             // First pass
-            for (i, c_lock) in registry.controllers.iter().enumerate() {
-                let c = c_lock.read();
+            for (i, c) in registry.controllers.iter().enumerate() {
                 if c.segment != region.segment {
                     continue;
                 }
@@ -5215,8 +5578,7 @@ pub unsafe fn init_iommu_from_acpi(
             }
             // Second pass
             if target_idx.is_none() {
-                for (i, c_lock) in registry.controllers.iter().enumerate() {
-                    let c = c_lock.read();
+                for (i, c) in registry.controllers.iter().enumerate() {
                     if c.segment == region.segment && c.include_all {
                         target_idx = Some(i);
                         break;
@@ -5224,28 +5586,6 @@ pub unsafe fn init_iommu_from_acpi(
                 }
             }
             // Fallback
-            if target_idx.is_none() {
-                target_idx = registry.default_iommu_idx;
-            }
-
-            if let Some(idx) = target_idx {
-                if let Some(c_lock) = registry.controllers.get(idx) {
-                    let controller = c_lock.write();
-
-                    // Helper logic inlined from IommuManager::apply_reserved_regions
-                    // We need to find or create the domain for this device.
-                    // But RMRR is identity mapping. Usually applied to the device's assigned domain.
-                    // However, at init time, no domains are created yet.
-                    // RMRR are usually applied when device is attached.
-                    // So we just store RMRR in registry?
-                    // Currently `ReservedMemoryRegion` is stored in registry.
-                    // Applications happen later when domains are created/attached.
-                    // The previous code had `add_reserved_region` but `apply_reserved_regions` was called when?
-                    // It seems `apply_reserved_regions` was a helper method on Manager, called maybe during device attach?
-                    // Let's verify usage of apply_reserved_regions later.
-                    // For now, just storing them in registry struct is enough.
-                }
-            }
         }
     }
 
@@ -5273,7 +5613,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     log::info!("IOMMU initialized at 0x{:X}\n", mmio_base);
 
     let registry = IommuRegistry {
-        controllers: alloc::vec![RwLock::new(controller)],
+        controllers: alloc::vec![Arc::new(controller)],
         default_iommu_idx: Some(0),
         reserved_regions: Vec::new(),
         config: IommuConfig::default(),
@@ -5286,8 +5626,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
 /// Enable IOMMU translation (on all controllers)
 pub fn enable_iommu() -> Result<(), IommuError> {
     if let Some(registry) = get_iommu_registry() {
-        for controller_lock in &registry.controllers {
-            let controller = controller_lock.write();
+        for controller in &registry.controllers {
             unsafe {
                 controller.enable()?;
             }
@@ -5301,8 +5640,7 @@ pub fn enable_iommu() -> Result<(), IommuError> {
 /// Disable IOMMU translation (on all controllers)
 pub fn disable_iommu() -> Result<(), IommuError> {
     if let Some(registry) = get_iommu_registry() {
-        for controller_lock in &registry.controllers {
-            let controller = controller_lock.write();
+        for controller in &registry.controllers {
             unsafe {
                 controller.disable()?;
             }
@@ -5316,7 +5654,7 @@ pub fn disable_iommu() -> Result<(), IommuError> {
 /// Check if IOMMU is enabled (at least one)
 pub fn is_iommu_enabled() -> bool {
     if let Some(registry) = get_iommu_registry() {
-        !registry.controllers.is_empty() && registry.controllers[0].read().is_enabled()
+        !registry.controllers.is_empty() && registry.controllers[0].is_enabled()
     } else {
         false
     }
@@ -5327,8 +5665,7 @@ pub fn is_iommu_enabled() -> bool {
 pub fn set_domain_numa(domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError> {
     let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
     // Try to find the domain in any controller
-    for controller_lock in &registry.controllers {
-        let mut controller = controller_lock.write(); // Need write lock to set hint? likely internal mutability would be better but lock is safe
+    for controller in &registry.controllers {
         if controller.domain(domain_id).is_some() {
             return controller.set_domain_numa(domain_id, numa_node);
         }
@@ -5339,8 +5676,7 @@ pub fn set_domain_numa(domain_id: u16, numa_node: Option<usize>) -> Result<(), I
 /// Get NUMA hint for a domain
 pub fn get_domain_numa(domain_id: u16) -> Result<Option<usize>, IommuError> {
     let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-    for controller_lock in &registry.controllers {
-        let controller = controller_lock.read();
+    for controller in &registry.controllers {
         if let Some(domain_arc) = controller.domain(domain_id) {
             let d = domain_arc.read();
             return Ok(d.numa_node);
@@ -5362,10 +5698,9 @@ pub fn map_for_dma(phys_addr: x86_64::PhysAddr, size: u64) -> Result<u64, IommuE
     // Map in ALL controllers (mirroring)
     let iova = phys_addr.as_u64();
 
-    for controller_lock in &registry.controllers {
-        let controller = controller_lock.read();
-        let domain_arc = controller
-            .domains
+    for controller in &registry.controllers {
+        let domains = controller.domains.read();
+        let domain_arc = domains
             .get(&0) // Default domain
             .ok_or(IommuError::DomainNotFound)?;
         let mut domain = domain_arc.write();
@@ -5382,12 +5717,9 @@ pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
         return Err(IommuError::NotPresent);
     }
 
-    for controller_lock in &registry.controllers {
-        let controller = controller_lock.read();
-        let domain_arc = controller
-            .domains
-            .get(&0)
-            .ok_or(IommuError::DomainNotFound)?;
+    for controller in &registry.controllers {
+        let domains = controller.domains.read();
+        let domain_arc = domains.get(&0).ok_or(IommuError::DomainNotFound)?;
         let mut domain = domain_arc.write();
         domain.unmap(iova)?;
     }
@@ -5402,16 +5734,15 @@ pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
 /// consider adding a read-only helper.
 pub fn with_iommu<F, R>(f: F) -> Result<R, IommuError>
 where
-    F: FnOnce(&mut IommuController) -> R,
+    F: FnOnce(&IommuController) -> R,
 {
     let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
     let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-    let controller_lock = registry
+    let controller = registry
         .controllers
         .get(idx)
         .ok_or(IommuError::NotPresent)?;
-    let mut controller = controller_lock.write();
-    Ok(f(&mut controller))
+    Ok(f(controller))
 }
 
 /// Handle IOMMU Faults (Called from ISR)
@@ -5419,25 +5750,9 @@ where
 /// Iterates all controllers and processes pending faults.
 pub fn handle_fault() {
     if let Some(registry) = get_iommu_registry() {
-        for (i, controller_lock) in registry.controllers.iter().enumerate() {
-            let controller = controller_lock.read();
-            if controller.has_pending_fault() {
-                let faults = controller.read_faults();
-                for (entry, reason) in faults {
-                    log::error!(
-                        "[IOMMU] FAULT on Controller {}: Reason={:?} Addr={:#x} ReqID={:04x} Type={}",
-                        i,
-                        reason,
-                        entry.fault_address(),
-                        entry.source_id(),
-                        if entry.is_read() { "Read" } else { "Write" }
-                    );
-
-                    // CR5: Fault Handling - Isolate/Terminate Domain
-                    // (Forward reference to future implementation step or minimal version here)
-                    process_fault_security(&controller, entry);
-                }
-            }
+        for (_i, controller) in registry.controllers.iter().enumerate() {
+            // Process faults directly (thread-safe)
+            controller.process_faults();
         }
     }
 }
@@ -5446,10 +5761,8 @@ pub fn handle_fault() {
 pub fn wake_invalidation_waiters() {
     if let Some(registry) = get_iommu_registry() {
         // Use try_read to avoid deadlock in ISR if main thread holds write lock
-        for controller_lock in &registry.controllers {
-            if let Some(controller) = controller_lock.try_read() {
-                controller.wake_invalidation_waiter();
-            }
+        for controller in &registry.controllers {
+            controller.wake_invalidation_waiter();
         }
     }
 }
@@ -5462,7 +5775,9 @@ impl IommuController {
 
         // Safety: context_tables are allocated at init and never moved/freed until drop.
         // We only modify the Present bit atomically-ish to disable access.
-        if let Some(table_ptr) = self.context_tables.get(bus) {
+
+        let hw = self.hardware.lock();
+        if let Some(table_ptr) = hw.context_tables.get(bus) {
             unsafe {
                 let entry_ptr = table_ptr.add(devfn);
                 let mut entry = *entry_ptr;
@@ -5493,7 +5808,7 @@ impl IommuController {
                         // Fallback to global invalidation if specific not implemented or easy
                         // Note: We use IOTLB invalidation as a proxy, though strict Context Invalidation is better.
                         // But if we don't have CCMD helper, this is best effort.
-                        unsafe { self.invalidate_iotlb_global() };
+                        self.invalidate_iotlb_global();
                     }
                 }
             }
@@ -5531,7 +5846,7 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     let registry = get_iommu_registry()?; // NotInitialized -> None
 
     let bdf = device.bdf;
-    let segment = device.segment;
+    let segment = 0; // Default segment (PciDeviceInfo doesn't have segment yet)
 
     // Find correct IOMMU for this device
     let controller_idx = registry.find_controller_index_for_device(
@@ -5541,9 +5856,8 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         bdf.function.0,
     )?;
 
-    // Obtain mutable reference via write lock
-    let controller_lock = registry.controllers.get(controller_idx)?;
-    let mut iommu = controller_lock.write();
+    // Obtain controller directly
+    let iommu = registry.controllers.get(controller_idx)?;
 
     // Enable ATS ... (same as before but iommu is guard)
     if (iommu.ecap & ecap_bits::ECAP_DT) != 0 {
@@ -5707,7 +6021,7 @@ mod tests {
         ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
         // Create default domain 0 for mapping
-        ctrl.domains.insert(
+        ctrl.domains.write().insert(
             0,
             Arc::new(RwLock::new(IommuDomain::new(
                 0,
@@ -5849,12 +6163,10 @@ pub fn map_interrupt(
         .find_controller_index_for_device(segment, bus, device, function)
         .ok_or(IommuError::NotPresent)?;
 
-    let controller_lock = registry
+    let controller = registry
         .controllers
         .get(controller_idx)
         .ok_or(IommuError::NotPresent)?;
-
-    let mut controller = controller_lock.write();
 
     // Check if IR is enabled
     if !controller.is_interrupt_remapping_enabled() {

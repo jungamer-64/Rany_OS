@@ -8,8 +8,10 @@
 // - cpu_id引数が不要になり、APIが簡素化
 // ============================================================================
 #![allow(dead_code)]
-
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::arch::asm;
+use core::cell::UnsafeCell;
 use spin::Mutex;
 
 /// Cache entry for device to domain mapping
@@ -75,6 +77,36 @@ impl PerCpuDomainCache {
     }
 }
 
+/// Per-Core IOVA Magazine (Cache)
+/// 頻繁な確保/解放を行う4KBページのIOVAをキャッシュする
+#[derive(Clone)]
+pub struct IovaMagazine {
+    pub cache: Vec<u64>, // Free IOVA addresses (4KB pages)
+    pub capacity: usize,
+}
+
+impl IovaMagazine {
+    pub const fn new(capacity: usize) -> Self {
+        Self {
+            cache: Vec::new(),
+            capacity,
+        }
+    }
+
+    pub fn push(&mut self, iova: u64) -> bool {
+        if self.cache.len() < self.capacity {
+            self.cache.push(iova);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn pop(&mut self) -> Option<u64> {
+        self.cache.pop()
+    }
+}
+
 /// Per-CPUデータ構造
 /// GsBaseからのオフセットでアクセス
 #[repr(C, align(64))]
@@ -90,8 +122,10 @@ pub struct PerCpuData {
     pub dealloc_count: u64,
     /// IOMMU Domain Cache (True Per-CPU)
     pub iommu_domain_cache: PerCpuDomainCache,
+    /// IOMMU IOVA Magazine (Cache)
+    pub iova_magazine: IovaMagazine,
     /// パディング（キャッシュラインに揃える - 調整必要かも）
-    _padding: [u64; 3], // Layout check needed, but keeping for now
+    _padding: [u64; 2], // Reduced padding due to new field
 }
 
 impl PerCpuData {
@@ -104,7 +138,8 @@ impl PerCpuData {
             alloc_count: 0,
             dealloc_count: 0,
             iommu_domain_cache: PerCpuDomainCache::new(),
-            _padding: [0; 3],
+            iova_magazine: IovaMagazine::new(256), // Cache 256 pages (1MB)
+            _padding: [0; 2],
         }
     }
 
