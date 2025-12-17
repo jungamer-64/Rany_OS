@@ -320,12 +320,16 @@ impl ArpCache {
 
     /// Look up a MAC address by IP
     pub fn lookup(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
-        let entries = self.entries.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
+        let entries_guard = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - lookup returns None");
+                self.stats.misses.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+        };
 
-        for entry in entries.iter().flatten() {
+        for entry in entries_guard.iter().flatten() {
             if entry.ip == ip {
                 if entry.state == ArpEntryState::Resolved {
                     if !entry.is_expired(current_time, ARP_CACHE_TIMEOUT) {
@@ -342,10 +346,13 @@ impl ArpCache {
 
     /// Insert or update an ARP entry
     pub fn insert(&self, ip: Ipv4Address, mac: MacAddress, current_time: u64) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - insert ignored");
+                return;
+            }
+        };
 
         // Look for existing entry or empty slot
         let mut empty_slot = None;
@@ -384,10 +391,13 @@ impl ArpCache {
 
     /// Mark an entry as incomplete (ARP request sent)
     pub fn mark_incomplete(&self, ip: Ipv4Address, current_time: u64) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - mark_incomplete ignored");
+                return;
+            }
+        };
 
         // Look for existing entry
         for entry in entries.iter_mut().flatten() {
@@ -423,12 +433,15 @@ impl ArpCache {
 
     /// Check if we have a pending request for an IP
     pub fn is_pending(&self, ip: Ipv4Address, current_time: u64) -> bool {
-        let entries = self.entries.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
+        let entries_guard = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - is_pending returns false");
+                return false;
+            }
+        };
 
-        for entry in entries.iter().flatten() {
+        for entry in entries_guard.iter().flatten() {
             if entry.ip == ip && entry.state == ArpEntryState::Incomplete {
                 return !entry.is_expired(current_time, ARP_INCOMPLETE_TIMEOUT);
             }
@@ -439,10 +452,13 @@ impl ArpCache {
 
     /// Remove an entry
     pub fn remove(&self, ip: Ipv4Address) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - remove ignored");
+                return;
+            }
+        };
 
         for entry in entries.iter_mut() {
             if let Some(e) = entry {
@@ -456,10 +472,13 @@ impl ArpCache {
 
     /// Expire old entries
     pub fn expire_old(&self, current_time: u64) {
-        let mut entries = self.entries.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
+        let mut entries = match self.entries.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - expire_old ignored");
+                return;
+            }
+        };
 
         for entry in entries.iter_mut() {
             if let Some(e) = entry {
@@ -489,11 +508,13 @@ impl ArpCache {
 
     /// Get all entries (for debugging)
     pub fn all_entries(&self) -> alloc::vec::Vec<ArpEntry> {
-        let entries = self.entries.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] ARP poisoned");
-            e.into_inner()
-        });
-        entries.iter().filter_map(|e| *e).collect()
+        match self.entries.lock() {
+            Ok(entries) => entries.iter().filter_map(|e| *e).collect(),
+            Err(_) => {
+                log::error!("[NET] ARP cache lock poisoned - all_entries returns empty");
+                alloc::vec::Vec::new()
+            }
+        }
     }
 }
 
