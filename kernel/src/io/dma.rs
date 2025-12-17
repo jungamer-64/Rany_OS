@@ -766,6 +766,7 @@ impl Drop for StreamingDmaMapping<'_> {
 pub struct IommuDmaBuffer {
     inner: CoherentDmaBuffer,
     iova: Option<u64>,
+    device_id: Option<crate::io::iommu::DeviceId>,
 }
 
 impl IommuDmaBuffer {
@@ -776,7 +777,30 @@ impl IommuDmaBuffer {
         } else {
             None
         };
-        Some(Self { inner, iova })
+        Some(Self {
+            inner,
+            iova,
+            device_id: None,
+        })
+    }
+
+    /// 特定のデバイス向けにDMAバッファを作成（ドメイン分離対応）
+    pub fn new_for_device(
+        size: usize,
+        attributes: DmaMemoryAttributes,
+        device: crate::io::iommu::DeviceId,
+    ) -> Option<Self> {
+        let inner = CoherentDmaBuffer::new(size, attributes)?;
+        let iova = if crate::io::iommu::is_iommu_enabled() {
+            crate::io::iommu::map_for_device(&device, inner.phys_addr(), size as u64).ok()
+        } else {
+            None
+        };
+        Some(Self {
+            inner,
+            iova,
+            device_id: Some(device),
+        })
     }
 
     /// デバイスに渡すアドレス（IOMMUが有効ならIOVA）
@@ -795,7 +819,11 @@ impl IommuDmaBuffer {
 impl Drop for IommuDmaBuffer {
     fn drop(&mut self) {
         if let Some(iova) = self.iova {
-            let _ = crate::io::iommu::unmap_dma(iova, self.inner.size() as u64);
+            if let Some(device) = self.device_id {
+                let _ = crate::io::iommu::unmap_for_device(&device, iova, self.inner.size() as u64);
+            } else {
+                let _ = crate::io::iommu::unmap_dma(iova, self.inner.size() as u64);
+            }
         }
     }
 }

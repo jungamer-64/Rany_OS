@@ -34,9 +34,12 @@
 //! - `MpmcRingBuffer<T>`: ロックフリーな複数プロデューサ・複数コンシューマキュー
 //!
 
+pub mod atomic_waker;
 pub mod irq_mutex;
 pub mod lockfree;
 pub mod poison_lock;
+
+pub use atomic_waker::AtomicWaker;
 
 #[allow(unused_imports)]
 pub use irq_mutex::{IrqMutex, IrqMutexGuard};

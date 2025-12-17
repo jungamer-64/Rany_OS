@@ -38,6 +38,7 @@ impl PerCpuDomainCache {
     /// Per-CPU domain cache size
     pub const CACHE_SIZE: usize = 64;
 
+    #[allow(dead_code)]
     pub const fn new() -> Self {
         Self {
             entries: [DomainCacheEntry {
@@ -86,6 +87,7 @@ pub struct IovaMagazine {
 }
 
 impl IovaMagazine {
+    #[allow(dead_code)]
     pub const fn new(capacity: usize) -> Self {
         Self {
             cache: Vec::new(),
