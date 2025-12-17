@@ -142,3 +142,33 @@ impl fmt::Display for HdaError {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_make_corb_entry() {
+        let entry = make_corb_entry(3, 5, 0x12345);
+        assert_eq!(entry, ((3u32 & 0x0F) << 28) | ((5u32) << 20) | (0x12345 & 0xFFFFF));
+    }
+
+    #[test]
+    fn test_rirb_entry_fields() {
+        let e = RirbEntry { response: 0x11223344, response_ex: 0x0000000F };
+        assert_eq!(e.codec_addr(), 0x0F);
+        assert_eq!(e.is_unsolicited(), false);
+
+        let e2 = RirbEntry { response: 0, response_ex: 0x10 };
+        assert!(e2.is_unsolicited());
+    }
+
+    #[test]
+    fn test_bdl_entry_new() {
+        let be = BdlEntry::new(0x12345678_9ABCDEF0, 0x1000, true);
+        assert_eq!(be.addr_lo, 0x9ABCDEF0u32);
+        assert_eq!(be.addr_hi, 0x12345678u32);
+        assert_eq!(be.length, 0x1000);
+        assert_eq!(be.ioc, 1);
+    }
+}
+

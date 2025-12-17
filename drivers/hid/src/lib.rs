@@ -21,6 +21,7 @@ extern crate alloc;
 
 pub mod ffi;
 pub mod keymap;
+pub mod keyboard;
 
 use alloc::string::String;
 
@@ -293,3 +294,6 @@ pub use keymap::{
     DEFAULT_KEYMAP, DVORAK_KEYMAP, DvorakKeymap, JIS_KEYMAP, JisKeymap, Keymap, UsQwertyKeymap,
     ctrl_char_map,
 };
+
+// Keyboard helpers exported for kernel use (scancode conversion, waker, modifier state)
+pub use keyboard::{StreamAlreadyTaken, KeyCodeExt, KeyEventExt, ModifierState, IsrSafeWaker};
