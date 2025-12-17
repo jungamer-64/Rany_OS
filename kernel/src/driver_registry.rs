@@ -180,105 +180,104 @@ impl DriverRegistry {
 
     /// Get driver state
     pub fn state(&self, handle: DriverHandle) -> Option<DriverState> {
-        self.drivers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[DRIVER] Registry poisoned (state)");
-                e.into_inner()
-            })
-            .get(handle.0)
-            .map(|e| e.state)
+        match self.drivers.lock() {
+            Ok(guard) => guard.get(handle.0).map(|e| e.state),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (state)");
+                None
+            }
+        }
     }
 
     /// Get driver name
     pub fn name(&self, handle: DriverHandle) -> Option<String> {
-        self.drivers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[DRIVER] Registry poisoned (name)");
-                e.into_inner()
-            })
-            .get(handle.0)
-            .map(|e| String::from(e.driver.name()))
+        match self.drivers.lock() {
+            Ok(guard) => guard.get(handle.0).map(|e| String::from(e.driver.name())),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (name)");
+                None
+            }
+        }
     }
 
     /// Find drivers by type
     pub fn find_by_type(&self, driver_type: DriverType) -> Vec<DriverHandle> {
-        self.drivers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[DRIVER] Registry poisoned (find_by_type)");
-                e.into_inner()
-            })
-            .iter()
-            .enumerate()
-            .filter(|(_, e)| e.driver.driver_type() == driver_type)
-            .map(|(i, _)| DriverHandle(i))
-            .collect()
+        match self.drivers.lock() {
+            Ok(guard) => guard
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| e.driver.driver_type() == driver_type)
+                .map(|(i, _)| DriverHandle(i))
+                .collect(),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (find_by_type)");
+                Vec::new()
+            }
+        }
     }
 
     /// Find driver that supports a device
     pub fn find_for_device(&self, device_id: &DeviceId) -> Option<DriverHandle> {
-        self.drivers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[DRIVER] Registry poisoned (find_for_device)");
-                e.into_inner()
-            })
-            .iter()
-            .enumerate()
-            .find(|(_, e)| {
-                e.driver
-                    .supported_devices()
-                    .iter()
-                    .any(|d| d.vendor == device_id.vendor && d.device == device_id.device)
-            })
-            .map(|(i, _)| DriverHandle(i))
+        match self.drivers.lock() {
+            Ok(guard) => guard
+                .iter()
+                .enumerate()
+                .find(|(_, e)| {
+                    e.driver
+                        .supported_devices()
+                        .iter()
+                        .any(|d| d.vendor == device_id.vendor && d.device == device_id.device)
+                })
+                .map(|(i, _)| DriverHandle(i)),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (find_for_device)");
+                None
+            }
+        }
     }
 
     /// Get count of registered drivers
     pub fn count(&self) -> usize {
-        self.drivers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[DRIVER] Registry poisoned (count)");
-                e.into_inner()
-            })
-            .len()
+        match self.drivers.lock() {
+            Ok(g) => g.len(),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (count)");
+                0
+            }
+        }
     }
 
     /// Get count of running drivers
     pub fn running_count(&self) -> usize {
-        self.drivers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[DRIVER] Registry poisoned (running_count)");
-                e.into_inner()
-            })
-            .iter()
-            .filter(|e| e.state == DriverState::Running)
-            .count()
+        match self.drivers.lock() {
+            Ok(g) => g.iter().filter(|e| e.state == DriverState::Running).count(),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (running_count)");
+                0
+            }
+        }
     }
 
     /// List all drivers with their states
     pub fn list(&self) -> Vec<(DriverHandle, String, DriverType, DriverState)> {
-        self.drivers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[DRIVER] Registry poisoned (list)");
-                e.into_inner()
-            })
-            .iter()
-            .enumerate()
-            .map(|(i, e)| {
-                (
-                    DriverHandle(i),
-                    String::from(e.driver.name()),
-                    e.driver.driver_type(),
-                    e.state,
-                )
-            })
-            .collect()
+        match self.drivers.lock() {
+            Ok(g) => g
+                .iter()
+                .enumerate()
+                .map(|(i, e)| {
+                    (
+                        DriverHandle(i),
+                        String::from(e.driver.name()),
+                        e.driver.driver_type(),
+                        e.state,
+                    )
+                })
+                .collect(),
+            Err(_) => {
+                log::error!("[DRIVER] Registry poisoned (list)");
+                Vec::new()
+            }
+        }
     }
 
     /// Probe all registered drivers
@@ -823,5 +822,24 @@ mod tests {
         // Attempt to unload driver while running - should fail
         let res = crate::loader::unload_driver(handle);
         assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_registry_poisoned_readers_return_defaults() {
+        use crate::sync::set_panicking;
+
+        let reg = DriverRegistry::new();
+
+        // Poison the registry lock
+        set_panicking(true);
+        if let Ok(_g) = reg.drivers.lock() {
+            // dropping _g while panicking will mark the lock as poisoned
+        }
+        set_panicking(false);
+
+        assert_eq!(reg.count(), 0);
+        assert!(reg.list().is_empty());
+        assert_eq!(reg.find_by_type(DriverType::Block).len(), 0);
+        assert!(reg.name(DriverHandle(0)).is_none());
     }
 }
