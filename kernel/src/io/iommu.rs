@@ -3081,10 +3081,11 @@ impl IommuController {
             Ok(mut set) => {
                 set.insert(device);
             }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] ats_enabled_devices lock poisoned while enabling ATS for {:?}", device);
-                let mut set = poisoned.into_inner();
-                set.insert(device);
+            Err(_) => {
+                // Runtime path: do NOT attempt best-effort recovery here. If the lock is
+                // poisoned, the internal set may be inconsistent - skip the enable and
+                // log an error.
+                log::error!("[IOMMU] ats_enabled_devices lock poisoned - skipping enable for {:?}", device);
             }
         }
     }
@@ -3237,11 +3238,11 @@ impl IommuController {
                 println!("[IOMMU TEST] domains.lock() acquired (Ok)");
                 domains.insert(id, domain_arc.clone());
             }
-            Err(poisoned) => {
-                #[cfg(test)]
-                println!("[IOMMU TEST] domains.lock() poisoned, recovering");
-                let mut domains = poisoned.into_inner();
-                domains.insert(id, domain_arc.clone());
+            Err(_) => {
+                // Runtime operation: do not attempt best-effort recovery of the domains map;
+                // lock poisoning indicates internal state may be inconsistent.
+                log::error!("[IOMMU] Domains map poisoned in create_domain - cannot create domain");
+                return Err(IommuError::HardwareError);
             }
         }
 
@@ -3261,9 +3262,11 @@ impl IommuController {
         // Fetch the Arc for the domain while holding the domains map lock briefly
         let domain_arc = match self.domains.lock() {
             Ok(domains) => domains.get(&domain_id).cloned().ok_or(IommuError::DomainNotFound)?,
-            Err(poisoned) => {
-                let mut domains = poisoned.into_inner();
-                domains.get(&domain_id).cloned().ok_or(IommuError::DomainNotFound)?
+            Err(_) => {
+                // Runtime operation: do not attempt best-effort recovery of the domains map;
+                // lock poisoning indicates internal state may be inconsistent.
+                log::error!("[IOMMU] Domains map poisoned in set_domain_numa - cannot set NUMA");
+                return Err(IommuError::HardwareError);
             }
         };
 
@@ -3276,16 +3279,22 @@ impl IommuController {
     /// Get domain NUMA hint
     pub fn get_domain_numa(&self, domain_id: u16) -> Option<usize> {
         match self.domains.lock() {
-            Ok(domains) => domains.get(&domain_id).and_then(|d| match d.lock() {
-                Ok(guard) => guard.numa_node,
-                Err(poisoned) => poisoned.into_inner().numa_node,
-            }),
-            Err(poisoned_map) => {
-                let mut domains = poisoned_map.into_inner();
-                domains.get(&domain_id).and_then(|d| match d.lock() {
-                    Ok(guard) => guard.numa_node,
-                    Err(poisoned) => poisoned.into_inner().numa_node,
-                })
+            Ok(domains) => {
+                if let Some(d) = domains.get(&domain_id) {
+                    match d.lock() {
+                        Ok(guard) => guard.numa_node,
+                        Err(_) => {
+                            log::error!("[IOMMU] Domain lock poisoned in get_domain_numa - returning None");
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            }
+            Err(_) => {
+                log::error!("[IOMMU] Domains map poisoned in get_domain_numa - returning None");
+                None
             }
         }
     }
@@ -3294,10 +3303,9 @@ impl IommuController {
     pub fn domain(&self, id: u16) -> Option<Arc<PoisonLock<IommuDomain>>> {
         match self.domains.lock() {
             Ok(domains) => domains.get(&id).cloned(),
-            Err(poisoned) => {
-                // If the map is poisoned, attempt to access the inner data for best-effort inspection
-                let mut guard = poisoned.into_inner();
-                guard.get(&id).cloned()
+            Err(_) => {
+                log::error!("[IOMMU] Domains map poisoned (domain) - returning None");
+                None
             }
         }
     }
@@ -3450,17 +3458,17 @@ impl IommuController {
         // Resolve device -> domain_id (best-effort)
         let domain_id = match self.device_domains.lock() {
             Ok(guard) => guard.get(&device).copied(),
-            Err(poisoned) => {
-                let mut g = poisoned.into_inner();
-                g.get(&device).copied()
+            Err(_) => {
+                log::error!("[IOMMU] device_domains lock poisoned (get_domain_for_device) - returning None");
+                None
             }
         }?;
 
         match self.domains.lock() {
             Ok(domains) => domains.get(&domain_id).cloned(),
-            Err(poisoned) => {
-                let mut domains = poisoned.into_inner();
-                domains.get(&domain_id).cloned()
+            Err(_) => {
+                log::error!("[IOMMU] domains map poisoned (get_domain_for_device) - returning None");
+                None
             }
         }
     }
@@ -4220,20 +4228,10 @@ impl IommuController {
                     self.write64(regs::PQH, head as u64);
                 }
             }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] page_request_queue lock poisoned while processing requests - best-effort");
-                let mut prq_guard = poisoned.into_inner();
-                if let Some(prq) = prq_guard.as_mut() {
-                    prq.update_tail(tail);
-
-                    while let Some(entry) = prq.pop() {
-                        requests.push(entry);
-                    }
-
-                    let head = prq.head();
-                    drop(prq);
-                    self.write64(regs::PQH, head as u64);
-                }
+            Err(_) => {
+                // Do not attempt best-effort recovery in runtime path; lock poisoning indicates inconsistent state.
+                log::error!("[IOMMU] page_request_queue lock poisoned while processing requests - cannot process");
+                return requests;
             }
         }
 
@@ -4548,12 +4546,10 @@ impl IommuController {
                     return Err(IommuError::NotPresent);
                 }
             }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] invalidation_queue lock poisoned while enabling QI - proceeding with caution");
-                let guard = poisoned.into_inner();
-                if guard.is_none() {
-                    return Err(IommuError::NotPresent);
-                }
+            Err(_) => {
+                // Treat poison as a hardware error in runtime enabling path - do not attempt best-effort recovery.
+                log::error!("[IOMMU] invalidation_queue lock poisoned while enabling QI - cannot enable QI");
+                return Err(IommuError::HardwareError);
             }
         }
 
@@ -5920,7 +5916,10 @@ pub fn get_domain_numa(domain_id: u16) -> Result<Option<usize>, IommuError> {
         if let Some(domain_arc) = controller.domain(domain_id) {
             match domain_arc.lock() {
                 Ok(guard) => return Ok(guard.numa_node),
-                Err(poisoned) => return Ok(poisoned.into_inner().numa_node),
+                Err(_) => {
+                    log::error!("[IOMMU] Domain lock poisoned in get_domain_numa - returning None");
+                    return Ok(None);
+                }
             }
         }
     }
@@ -6345,6 +6344,93 @@ mod tests {
         ctrl.set_domain_numa(id, Some(5))
             .expect("set_domain_numa failed");
         assert_eq!(ctrl.get_domain_numa(id), Some(5usize));
+    }
+
+    #[test]
+    fn test_process_page_requests_poisoned_returns_empty() {
+        use crate::sync::set_panicking;
+        let mut ctrl = IommuController::new(0x0, 0);
+        set_panicking(true);
+        if let Ok(_g) = ctrl.page_request_queue.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+        let requests = ctrl.process_page_requests();
+        assert!(requests.is_empty());
+    }
+
+    #[test]
+    fn test_create_domain_poisoned_returns_hw_error() {
+        use crate::sync::set_panicking;
+        let ctrl = IommuController::new(0x0, 0);
+        // Poison domains lock
+        set_panicking(true);
+        if let Ok(_g) = ctrl.domains.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+        assert_eq!(ctrl.create_domain(Some(0), IommuDomainType::Translated).err(), Some(IommuError::HardwareError));
+    }
+
+    #[test]
+    fn test_domain_map_poisoned_returns_none() {
+        use crate::sync::set_panicking;
+        let ctrl = IommuController::new(0x0, 0);
+        let id = ctrl
+            .create_domain(None, IommuDomainType::Translated)
+            .expect("create_domain failed");
+
+        // Poison the domains lock
+        set_panicking(true);
+        if let Ok(_g) = ctrl.domains.lock() {
+            // dropping _g while panicking will mark the lock as poisoned
+        }
+        set_panicking(false);
+
+        assert!(ctrl.domain(id).is_none());
+    }
+
+    #[test]
+    fn test_get_domain_for_device_poisoned_returns_none() {
+        use crate::sync::set_panicking;
+        let mut ctrl = IommuController::new(0x0, 0);
+        let id = ctrl
+            .create_domain(None, IommuDomainType::Translated)
+            .expect("create_domain failed");
+
+        let device = DeviceId::new(0, 0, 1, 0);
+        // Register mapping
+        match ctrl.device_domains.lock() {
+            Ok(mut dmap) => { dmap.insert(device, id); }
+            Err(_) => {}
+        }
+
+        // Poison device_domains lock
+        set_panicking(true);
+        if let Ok(_g) = ctrl.device_domains.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+
+        assert!(ctrl.get_domain_for_device(device).is_none());
+    }
+
+    #[test]
+    fn test_set_domain_numa_poisoned_returns_hw_error() {
+        use crate::sync::set_panicking;
+        let ctrl = IommuController::new(0x0, 0);
+        let id = ctrl
+            .create_domain(None, IommuDomainType::Translated)
+            .expect("create_domain failed");
+
+        // Poison domains lock
+        set_panicking(true);
+        if let Ok(_g) = ctrl.domains.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+
+        assert_eq!(ctrl.set_domain_numa(id, Some(1)).err(), Some(IommuError::HardwareError));
     }
 
     #[test]

@@ -159,48 +159,49 @@ static DOMAIN_ALLOCATIONS: PoisonLock<DomainAllocations> =
 ///
 /// Exchange Heap 上のアロケーション後に呼び出す
 pub fn register_allocation(domain_id: DomainId, address: usize, size: usize) {
-    DOMAIN_ALLOCATIONS
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[OWNERSHIP] Global Map poisoned");
-            e.into_inner()
-        })
-        .register(domain_id, address, size);
+    match DOMAIN_ALLOCATIONS.lock() {
+        Ok(mut guard) => {
+            guard.register(domain_id, address, size);
+        }
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - register skipped");
+        }
+    }
 }
 
 /// アロケーションの登録を解除
 ///
 /// Exchange Heap 上のデアロケーション時に呼び出す
 pub fn unregister_allocation(address: usize) -> Option<(DomainId, usize)> {
-    DOMAIN_ALLOCATIONS
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[OWNERSHIP] Global Map poisoned");
-            e.into_inner()
-        })
-        .unregister(address)
+    match DOMAIN_ALLOCATIONS.lock() {
+        Ok(mut guard) => guard.unregister(address),
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - unregister skipped");
+            None
+        }
+    }
 }
 
 /// ドメインの全アロケーションを取得
 pub fn get_domain_allocations(domain_id: DomainId) -> Vec<AllocationInfo> {
-    DOMAIN_ALLOCATIONS
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[OWNERSHIP] Global Map poisoned");
-            e.into_inner()
-        })
-        .get_domain_allocations(domain_id)
+    match DOMAIN_ALLOCATIONS.lock() {
+        Ok(guard) => guard.get_domain_allocations(domain_id),
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - returning empty list");
+            Vec::new()
+        }
+    }
 }
 
 /// ドメインの総割り当てバイト数を取得
 pub fn domain_total_bytes(domain_id: DomainId) -> usize {
-    DOMAIN_ALLOCATIONS
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[OWNERSHIP] Global Map poisoned");
-            e.into_inner()
-        })
-        .domain_total_bytes(domain_id)
+    match DOMAIN_ALLOCATIONS.lock() {
+        Ok(guard) => guard.domain_total_bytes(domain_id),
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - returning 0");
+            0
+        }
+    }
 }
 
 /// ドメインの全アロケーションを回収
@@ -210,13 +211,13 @@ pub fn domain_total_bytes(domain_id: DomainId) -> usize {
 /// # Returns
 /// 解放したバイト数
 pub fn reclaim_domain_allocations(domain_id: DomainId) -> usize {
-    let allocations = DOMAIN_ALLOCATIONS
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[OWNERSHIP] Global Map poisoned");
-            e.into_inner()
-        })
-        .remove_domain_allocations(domain_id);
+    let allocations = match DOMAIN_ALLOCATIONS.lock() {
+        Ok(mut guard) => guard.remove_domain_allocations(domain_id),
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - reclaim skipped");
+            Vec::new()
+        }
+    };
 
     let mut freed_bytes = 0;
 
@@ -246,13 +247,17 @@ pub fn reclaim_domain_allocations(domain_id: DomainId) -> usize {
 
 /// 統計を取得
 pub fn stats() -> OwnershipStats {
-    DOMAIN_ALLOCATIONS
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[OWNERSHIP] Global Map poisoned");
-            e.into_inner()
-        })
-        .stats()
+    match DOMAIN_ALLOCATIONS.lock() {
+        Ok(guard) => guard.stats(),
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - returning zero stats");
+            OwnershipStats {
+                total_allocations: 0,
+                total_domains: 0,
+                total_tracked_bytes: 0,
+            }
+        }
+    }
 }
 
 /// オーナーシップ統計
@@ -334,28 +339,32 @@ pub unsafe fn deallocate_slice_for_domain<T>(ptr: NonNull<T>, len: usize) {
 
 /// 全ドメインの割り当てサマリを取得（OOMキラー用）
 pub fn get_domain_memory_summary() -> Vec<(DomainId, usize)> {
-    let allocs = DOMAIN_ALLOCATIONS.lock().unwrap_or_else(|e| {
-        log::warn!("[OWNERSHIP] Global Map poisoned");
-        e.into_inner()
-    });
-    allocs
-        .domain_bytes
-        .iter()
-        .map(|(id, bytes)| (*id, *bytes))
-        .collect()
+    match DOMAIN_ALLOCATIONS.lock() {
+        Ok(allocs) => allocs
+            .domain_bytes
+            .iter()
+            .map(|(id, bytes)| (*id, *bytes))
+            .collect(),
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - returning empty summary");
+            Vec::new()
+        }
+    }
 }
 
 /// 最大メモリ使用ドメインを取得（OOMキラー用）
 pub fn get_largest_domain() -> Option<(DomainId, usize)> {
-    let allocs = DOMAIN_ALLOCATIONS.lock().unwrap_or_else(|e| {
-        log::warn!("[OWNERSHIP] Global Map poisoned");
-        e.into_inner()
-    });
-    allocs
-        .domain_bytes
-        .iter()
-        .max_by_key(|(_, bytes)| *bytes)
-        .map(|(id, bytes)| (*id, *bytes))
+    match DOMAIN_ALLOCATIONS.lock() {
+        Ok(allocs) => allocs
+            .domain_bytes
+            .iter()
+            .max_by_key(|(_, bytes)| *bytes)
+            .map(|(id, bytes)| (*id, *bytes)),
+        Err(_) => {
+            log::error!("[OWNERSHIP] Global Map poisoned - returning None");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -400,5 +409,23 @@ mod tests {
         // 基本的な統計が取得できることを確認
         assert!(stats.total_allocations >= 0);
         assert!(stats.total_domains >= 0);
+    }
+
+    #[test]
+    fn test_poisoned_register_skips() {
+        use crate::sync::set_panicking;
+        set_panicking(true);
+        register_allocation(DomainId::new(1), 0x1234, 512);
+        set_panicking(false);
+        assert_eq!(get_domain_allocations(DomainId::new(1)).len(), 0);
+    }
+
+    #[test]
+    fn test_poisoned_getters_return_defaults() {
+        use crate::sync::set_panicking;
+        set_panicking(true);
+        assert!(get_domain_memory_summary().is_empty());
+        assert_eq!(get_largest_domain(), None);
+        set_panicking(false);
     }
 }

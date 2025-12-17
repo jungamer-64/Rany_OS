@@ -1336,22 +1336,30 @@ pub unsafe fn global_unmap_page(virt: VirtAddr) -> Result<PhysAddr, MapError> {
 
 /// グローバルページテーブルマネージャーで仮想→物理変換
 pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
-    let guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Page Table Manager poisoned");
-        e.into_inner()
-    });
-    let manager = guard.as_ref()?;
-    manager.translate(virt)
+    match PAGE_TABLE_MANAGER.lock() {
+        Ok(guard) => {
+            let manager = guard.as_ref();
+            manager.and_then(|m| m.translate(virt))
+        }
+        Err(_) => {
+            log::error!("[MM] Page Table Manager lock poisoned - returning None");
+            None
+        }
+    }
 }
 
 /// グローバルページテーブルマネージャーでページのフラグを更新（MPK PKEY適用用）
 pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<(), MapError> {
-    let mut guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Page Table Manager poisoned");
-        e.into_inner()
-    });
-    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
-    unsafe { manager.update_flags(virt, flags) }
+    match PAGE_TABLE_MANAGER.lock() {
+        Ok(mut guard) => {
+            let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+            unsafe { manager.update_flags(virt, flags) }
+        }
+        Err(_) => {
+            log::error!("[MM] Page Table Manager lock poisoned - returning HardwareError");
+            Err(MapError::HardwareError)
+        }
+    }
 }
 
 #[cfg(test)]

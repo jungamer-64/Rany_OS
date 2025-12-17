@@ -180,20 +180,25 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
 
     // NetworkStack経由で送信
     let stack = crate::net::stack::stack();
-    if let Some(ref mut s) = *stack.lock().unwrap_or_else(|e| {
-        log::warn!("[NET] Stack poisoned");
-        e.into_inner()
-    }) {
-        if s.send_tcp(src_ip, dst_ip, &segment) {
-            crate::serial_println!(
-                "TCP TX: {:?}:{} -> {:?}:{} ({} bytes)",
-                local.ip,
-                local.port,
-                remote.ip,
-                remote.port,
-                segment.len()
-            );
-        } else {
+    match stack.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                if s.send_tcp(src_ip, dst_ip, &segment) {
+                    crate::serial_println!(
+                        "TCP TX: {:?}:{} -> {:?}:{} ({} bytes)",
+                        local.ip,
+                        local.port,
+                        remote.ip,
+                        remote.port,
+                        segment.len()
+                    );
+                }
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Stack poisoned - dropping TCP segment");
+        }
+    }
             crate::serial_println!(
                 "TCP TX failed (ARP pending?): {:?}:{} -> {:?}:{}",
                 local.ip,
@@ -258,5 +263,15 @@ mod tests {
 
         // データ検証
         assert_eq!(&segment[20..], b"Hello");
+    }
+
+    #[test]
+    fn test_send_tcp_segment_poisoned_stack_drops() {
+        use crate::sync::set_panicking;
+        set_panicking(true);
+        let local = SocketAddr::new([127, 0, 0, 1], 12345);
+        let remote = SocketAddr::new([127, 0, 0, 1], 80);
+        send_tcp_segment(local, remote, vec![0u8; 40]);
+        set_panicking(false);
     }
 }
