@@ -1159,6 +1159,7 @@ impl InvalidationQueueEntry {
 }
 
 /// Invalidation Queue Manager
+#[derive(Debug)]
 pub struct InvalidationQueue {
     /// Base address of the queue (must be 4KB aligned)
     base: usize,
@@ -2878,27 +2879,30 @@ impl IommuDeviceScope {
 /// to the executor between polls, avoiding busy-waiting.
 pub struct InvalidationWaiter<'a> {
     controller: &'a IommuController,
-    expected_tail: u64,
-    submitted: bool,
+    /// Result of the submission phase: Ok(expected_tail) on success, Err(IommuError)
+    /// if submission could not be performed (e.g. lock poisoned / not present).
+    submit_result: Result<u64, IommuError>,
 }
 
 impl<'a> Future for InvalidationWaiter<'a> {
     type Output = Result<(), IommuError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if !self.submitted {
-            return Poll::Ready(Err(IommuError::NotPresent));
-        }
+        // If submission failed earlier, return the error immediately
+        match self.submit_result {
+            Err(e) => return Poll::Ready(Err(e)),
+            Ok(expected_tail) => {
+                // Check if hardware has caught up
+                let head = self.controller.read64(regs::IQH) >> 4;
+                if head == expected_tail {
+                    return Poll::Ready(Ok(()));
+                }
 
-        // Check if hardware has caught up
-        let head = self.controller.read64(regs::IQH) >> 4;
-        if head == self.expected_tail {
-            return Poll::Ready(Ok(()));
+                // Not ready yet - register waker and return Pending
+                self.controller.pending_waiter.register(cx.waker());
+                Poll::Pending
+            }
         }
-
-        // Not ready yet - register waker and return Pending
-        self.controller.pending_waiter.register(cx.waker());
-        Poll::Pending
     }
 }
 
@@ -3409,14 +3413,13 @@ impl IommuController {
 
             // Invalidate Device-TLB (ATS) if supported
             // Only invalidate if the specific device has ATS enabled. If the lock is poisoned,
-            // assume ATS is enabled for safety (conservative).
+            // conservatively assume ATS is enabled to ensure stale device TLBs are cleared.
             let use_ats = (self.ecap & ecap_bits::ECAP_DT) != 0 && self.is_queued_invalidation_enabled() &&
                 match self.ats_enabled_devices.lock() {
                     Ok(set) => set.contains(device),
-                    Err(poisoned) => {
-                        log::warn!("[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?}", device);
-                        let mut set = poisoned.into_inner();
-                        set.contains(device)
+                    Err(_) => {
+                        log::warn!("[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?} - assuming ATS enabled", device);
+                        true
                     }
                 };
             if use_ats {
@@ -3496,13 +3499,14 @@ impl IommuController {
             }
 
             // Invalidate Device-TLB (ATS)
+            // If the ATS set lock is poisoned, assume ATS enabled (conservative) to avoid
+            // leaving stale device-side translations.
             let use_ats = (self.ecap & ecap_bits::ECAP_DT) != 0 &&
                 match self.ats_enabled_devices.lock() {
                     Ok(set) => set.contains(device),
-                    Err(poisoned) => {
-                        log::warn!("[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?}", device);
-                        let mut set = poisoned.into_inner();
-                        set.contains(device)
+                    Err(_) => {
+                        log::warn!("[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?} - assuming ATS enabled", device);
+                        true
                     }
                 };
 
@@ -3783,20 +3787,18 @@ impl IommuController {
             return Err(IommuError::NotSupported);
         }
 
-        match self.interrupt_remap_table.lock() {
-            Ok(guard) => {
-                if guard.is_none() {
-                    return Err(IommuError::NotPresent);
-                }
+        // Treat a poisoned interrupt_remap_table lock as a hardware error - the
+        // interrupt remapping structures may be in an inconsistent state.
+        let guard = match self.interrupt_remap_table.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[IOMMU] interrupt_remap_table lock poisoned while enabling IR");
+                return Err(IommuError::HardwareError);
             }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] interrupt_remap_table lock poisoned while enabling IR - proceeding with caution");
-                // If poisoned and None, consider it NotPresent
-                let guard = poisoned.into_inner();
-                if guard.is_none() {
-                    return Err(IommuError::NotPresent);
-                }
-            }
+        };
+
+        if guard.is_none() {
+            return Err(IommuError::NotPresent);
         }
 
         // Enable Interrupt Remapping (GCMD.IRE)
@@ -4367,27 +4369,21 @@ impl IommuController {
 
     /// Allocate I/O virtual address range
     pub fn allocate_iova(&self, size: u64) -> Result<u64, IommuError> {
-        match self.iova_allocator.lock() {
-            Ok(mut guard) => {
-                if let Some(alloc) = guard.as_mut() {
-                    alloc
-                        .allocate(size, IovaGranularity::Page4K)
-                        .ok_or(IommuError::OutOfMemory)
-                } else {
-                    Err(IommuError::NotInitialized)
-                }
+        // A poisoned allocator lock indicates an internal corruption of the
+        // allocator state; fail with a HardwareError instead of attempting to
+        // use possibly inconsistent internal structures.
+        let mut guard = match self.iova_allocator.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[IOMMU] iova_allocator lock poisoned while allocating IOVA - hardware error");
+                return Err(IommuError::HardwareError);
             }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] iova_allocator lock poisoned while allocating IOVA - hardware error");
-                let mut guard = poisoned.into_inner();
-                if let Some(alloc) = guard.as_mut() {
-                    alloc
-                        .allocate(size, IovaGranularity::Page4K)
-                        .ok_or(IommuError::OutOfMemory)
-                } else {
-                    Err(IommuError::NotInitialized)
-                }
-            }
+        };
+
+        if let Some(alloc) = guard.as_mut() {
+            alloc.allocate(size, IovaGranularity::Page4K).ok_or(IommuError::OutOfMemory)
+        } else {
+            Err(IommuError::NotInitialized)
         }
     }
 
@@ -4605,20 +4601,20 @@ impl IommuController {
 
     /// Submit a queued invalidation request
     pub fn submit_invalidation(&self, entry: InvalidationQueueEntry) -> Result<(), IommuError> {
-        let new_tail = match self.invalidation_queue.lock() {
-            Ok(mut guard) => {
-                let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
-                iq.submit(entry);
-                (iq.tail() << 4) as u64 // Tail is in 16-byte units
-            }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] invalidation_queue lock poisoned while submitting invalidation - proceeding with best-effort");
-                let mut guard = poisoned.into_inner();
-                let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
-                iq.submit(entry);
-                (iq.tail() << 4) as u64
+        // Acquire the invalidation queue; a poisoned lock indicates an internal
+        // inconsistency and should be treated as a hardware error rather than
+        // attempting to continue with possibly-corrupted state.
+        let mut guard = match self.invalidation_queue.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[IOMMU] invalidation_queue lock poisoned while submitting invalidation");
+                return Err(IommuError::HardwareError);
             }
         };
+
+        let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        iq.submit(entry);
+        let new_tail = (iq.tail() << 4) as u64; // Tail is in 16-byte units
 
         // Update hardware tail pointer (borrow released)
         self.write64(regs::IQT, new_tail);
@@ -4693,20 +4689,19 @@ impl IommuController {
     /// Submit a wait descriptor and synchronize
     pub fn qi_wait_sync(&self) -> Result<(), IommuError> {
         // Get tail after submitting wait
-        let new_tail = match self.invalidation_queue.lock() {
-            Ok(mut guard) => {
-                let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
-                let _status_addr = iq.submit_wait();
-                (iq.tail() << 4) as u64
-            }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] invalidation_queue lock poisoned during qi_wait_sync - proceeding with best-effort");
-                let mut guard = poisoned.into_inner();
-                let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
-                let _status_addr = iq.submit_wait();
-                (iq.tail() << 4) as u64
+        // Acquire the invalidation queue; a poisoned lock means controller
+        // state is unreliable and we should fail rather than continue.
+        let mut guard = match self.invalidation_queue.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[IOMMU] invalidation_queue lock poisoned during qi_wait_sync");
+                return Err(IommuError::HardwareError);
             }
         };
+
+        let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let _status_addr = iq.submit_wait();
+        let new_tail = (iq.tail() << 4) as u64;
 
         // Update hardware tail (borrow released)
         self.write64(regs::IQT, new_tail);
@@ -4726,38 +4721,27 @@ impl IommuController {
     /// This is the async version of `qi_wait_sync`. Instead of busy-waiting,
     /// it registers a Waker that will be woken by the invalidation completion interrupt.
     pub fn qi_wait_async<'a>(&'a self) -> InvalidationWaiter<'a> {
-        // Submit wait descriptor first
-        let (expected_tail, submitted) = match self.invalidation_queue.lock() {
+        // Submit wait descriptor first. Treat poisoned lock as a hardware error
+        // and return a waiter which will immediately resolve to Err.
+        let submit_result = match self.invalidation_queue.lock() {
             Ok(mut guard) => {
                 if let Some(iq) = guard.as_mut() {
                     let _status_addr = iq.submit_wait();
                     let tail = (iq.tail() << 4) as u64;
                     // Update hardware tail
                     self.write64(regs::IQT, tail);
-                    (tail >> 4, true)
+                    Ok(tail >> 4)
                 } else {
-                    (0, false)
+                    Err(IommuError::NotPresent)
                 }
             }
-            Err(poisoned) => {
-                log::warn!("[IOMMU] invalidation_queue lock poisoned during qi_wait_async - best-effort");
-                let mut guard = poisoned.into_inner();
-                if let Some(iq) = guard.as_mut() {
-                    let _status_addr = iq.submit_wait();
-                    let tail = (iq.tail() << 4) as u64;
-                    self.write64(regs::IQT, tail);
-                    (tail >> 4, true)
-                } else {
-                    (0, false)
-                }
+            Err(_) => {
+                log::error!("[IOMMU] invalidation_queue lock poisoned during qi_wait_async");
+                Err(IommuError::HardwareError)
             }
         };
 
-        InvalidationWaiter {
-            controller: self,
-            expected_tail,
-            submitted,
-        }
+        InvalidationWaiter { controller: self, submit_result }
     }
 
     /// Wake pending async invalidation waiter (called from interrupt handler)
@@ -6514,6 +6498,102 @@ mod tests {
                 "PML4 entry should be cleared after all unmaps"
             );
         }
+    }
+
+    #[test]
+    fn test_submit_invalidation_poisoned_returns_error() {
+        let mut ctrl = IommuController::new(0x0, 0);
+
+        // Enable queued invalidation support for testing
+        ctrl.ecap = ecap_bits::ECAP_QI;
+        ctrl.init_queued_invalidation(8).expect("init_qi failed");
+
+        // Poison the invalidation_queue lock by simulating a panic while holding it
+        {
+            let _guard = ctrl.invalidation_queue.lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+
+        let res = ctrl.submit_invalidation(InvalidationQueueEntry::iec_invalidate_global());
+        assert_eq!(res, Err(IommuError::HardwareError));
+    }
+
+    #[test]
+    fn test_qi_wait_sync_poisoned_returns_error() {
+        let mut ctrl = IommuController::new(0x0, 0);
+
+        // Enable queued invalidation support for testing
+        ctrl.ecap = ecap_bits::ECAP_QI;
+        ctrl.init_queued_invalidation(8).expect("init_qi failed");
+
+        // Poison the invalidation_queue lock
+        {
+            let _guard = ctrl.invalidation_queue.lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+
+        let res = ctrl.qi_wait_sync();
+        assert_eq!(res, Err(IommuError::HardwareError));
+    }
+
+    #[test]
+    fn test_qi_wait_async_poisoned_returns_error() {
+        let mut ctrl = IommuController::new(0x0, 0);
+
+        // Enable queued invalidation support for testing
+        ctrl.ecap = ecap_bits::ECAP_QI;
+        ctrl.init_queued_invalidation(8).expect("init_qi failed");
+
+        // Poison the invalidation_queue lock
+        {
+            let _guard = ctrl.invalidation_queue.lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+
+        let waiter = ctrl.qi_wait_async();
+        assert_eq!(waiter.submit_result, Err(IommuError::HardwareError));
+    }
+
+    #[test]
+    fn test_page_table_scope_commit_preserves_counts() {
+        // Verify that commit doesn't overwrite existing counts and increments parent count.
+        let mut page_table_counts = alloc::collections::BTreeMap::new();
+
+        // Allocate a new page table scope
+        let mut scope = PageTableScope::new(None).expect("allocate ptable");
+
+        // Pre-populate a count for this table (simulate prior increment)
+        page_table_counts.insert(scope.phys(), 42);
+
+        // Create a fake parent entry and attach
+        let mut parent_entry = SlPte::new();
+        let parent_phys = 0xDEADBEEF;
+        scope.attach_to_parent(&mut parent_entry as *mut SlPte, parent_phys);
+
+        // Commit should not overwrite existing count for scope.phys(), but should increment parent
+        scope.commit(&mut page_table_counts);
+
+        assert_eq!(page_table_counts.get(&scope.phys()), Some(&42u16));
+        assert_eq!(page_table_counts.get(&parent_phys), Some(&1u16));
+    }
+
+    #[test]
+    fn test_page_table_scope_drop_rolls_back_parent() {
+        // Verify that dropping an uncommitted scope clears parent entry and frees memory.
+        let parent_phys = 0xBABA;
+        let mut parent_entry = SlPte::new();
+        {
+            let mut scope = PageTableScope::new(None).expect("allocate ptable");
+            // Attach to parent; don't commit
+            scope.attach_to_parent(&mut parent_entry as *mut SlPte, parent_phys);
+            // At this point, parent should be present
+            assert!(unsafe { (*(&parent_entry as *const SlPte)).is_present() });
+        }
+        // After scope dropped, parent should be cleared
+        assert!(!unsafe { (*(&parent_entry as *const SlPte)).is_present() });
     }
 }
 
