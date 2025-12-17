@@ -277,10 +277,17 @@ pub fn init_per_core_caches(num_cpus: usize) {
         // 各コアのMutexに個別にアクセス（他コアをブロックしない）
         // Initialization-time best-effort recovery for per-core caches: continue init even if a lock
         // shows as poisoned.
-        *PER_CORE_CACHES[cpu_id].lock().unwrap_or_else(|e| {
-            log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
-            e.into_inner()
-        }) = Some(PerCoreCache::new(cpu_id));
+        match PER_CORE_CACHES[cpu_id].lock() {
+            Ok(mut guard) => { *guard = Some(PerCoreCache::new(cpu_id)); }
+            Err(_) => {
+                log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
+                let mut guard = match PER_CORE_CACHES[cpu_id].lock() {
+                    Ok(g) => g,
+                    Err(poisoned) => poisoned.into_inner(),
+                };
+                *guard = Some(PerCoreCache::new(cpu_id));
+            }
+        }
     }
 }
 

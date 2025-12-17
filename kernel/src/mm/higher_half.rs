@@ -773,10 +773,17 @@ pub fn init(physical_memory_offset: u64) {
     let manager = HigherHalfManager::new(physical_memory_offset);
     // Initialization-time best-effort recovery: recovering a poisoned manager during init is
     // acceptable to allow boot to continue.
-    *HIGHER_HALF_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Higher Half poisoned");
-        e.into_inner()
-    }) = Some(manager);
+    let mut mgr_guard = match HIGHER_HALF_MANAGER.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            log::warn!("[MM] Higher Half poisoned - proceeding with best-effort");
+            match HIGHER_HALF_MANAGER.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            }
+        }
+    };
+    *mgr_guard = Some(manager);
     // log::info!("Higher half kernel initialized with offset {:#x}", physical_memory_offset);
 }
 
