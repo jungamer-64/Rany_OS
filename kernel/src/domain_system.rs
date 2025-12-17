@@ -17,6 +17,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 // 【設計書 8.1】PoisonLock使用 - パニック時自動毒入れ
 use crate::sync::PoisonLock;
+use crate::error::{KernelError, DomainErrorKind};
 
 // ============================================================================
 // ドメインID
@@ -288,24 +289,24 @@ pub fn init() {
 /// `name.clone()` は `crate::log!` マクロで使用するために必要。
 /// ドメイン作成は頻繁に呼ばれないため、このコストは許容される。
 /// 代替案: log を先に行い、name を消費するパターン
-pub fn create_domain(name: String) -> DomainId {
-    // NOTE: This currently recovers from a poisoned registry during domain creation. This is a
-    // runtime path and may expose inconsistent state; consider refactoring `create_domain` to
-    // return a `Result` and allow callers to handle lock poison conservatively. (TODO)
-    let mut registry = REGISTRY.lock().unwrap_or_else(|e| {
-        log::info!("[DOMAIN] Warning: registry poisoned, recovering\n");
-        e.into_inner()
-    });
-    let id = registry.generate_id();
-
-    // name をログで先に使用し、その後 Domain::new に渡す
-    // これにより clone() を回避
-    log::info!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
-
-    let domain = Domain::new(id, name);
-    registry.domains.insert(id, domain);
-
-    id
+pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
+    // Runtime path: do not attempt best-effort recovery from a poisoned registry.
+    // If the registry lock is poisoned, return a conservative error so callers can
+    // decide how to proceed (e.g., abort, retry, or propagate the error).
+    match REGISTRY.lock() {
+        Ok(mut registry) => {
+            let id = registry.generate_id();
+            // Log before consuming `name` to avoid an extra clone
+            log::info!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
+            let domain = Domain::new(id, name);
+            registry.domains.insert(id, domain);
+            Ok(id)
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned during create_domain");
+            Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned))
+        }
+    }
 }
 
 /// ドメインの状態を取得
@@ -444,6 +445,22 @@ mod tests {
 
         // print_domain_list should not panic
         print_domain_list();
+    }
+
+    #[test]
+    fn test_create_domain_poisoned_returns_error() {
+        use crate::sync::set_panicking;
+        use crate::error::{KernelError, DomainErrorKind};
+
+        // Poison the registry
+        set_panicking(true);
+        if let Ok(_g) = REGISTRY.lock() {
+            // dropping _g will poison the lock
+        }
+        set_panicking(false);
+
+        let res = create_domain(String::from("poison_test2"));
+        assert_eq!(res, Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned)));
     }
 
     #[test]
