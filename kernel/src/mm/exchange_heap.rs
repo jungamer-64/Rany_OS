@@ -242,7 +242,9 @@ impl ExchangeHeap {
     pub unsafe fn init(&self, heap_start: usize, size: usize) {
         // SAFETY: 呼び出し元がメモリ領域の有効性を保証
         unsafe {
-            self.heap
+            // Initialization-time best-effort recovery: proceed with initialization even if the lock
+        // appears poisoned to avoid blocking boot.
+        self.heap
                 .lock()
                 .unwrap_or_else(|e| {
                     log::warn!("[MEM] Exchange Heap poisoned");

@@ -717,7 +717,8 @@ mod tests {
 
         let registry = Arc::new(HeapRegistry::default());
         let num_threads = 8;
-        let ops_per_thread = 500usize;
+        // Increase ops to make contention more likely and reduce test flakiness
+        let ops_per_thread = 2000usize;
         let shard_ids = [0usize, 1usize];
         let addresses_per_shard = 16usize;
 

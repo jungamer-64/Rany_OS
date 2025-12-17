@@ -275,6 +275,8 @@ pub fn init_per_core_caches(num_cpus: usize) {
 
     for cpu_id in 0..num_cpus {
         // 各コアのMutexに個別にアクセス（他コアをブロックしない）
+        // Initialization-time best-effort recovery for per-core caches: continue init even if a lock
+        // shows as poisoned.
         *PER_CORE_CACHES[cpu_id].lock().unwrap_or_else(|e| {
             log::warn!("[MEM] Slab Poisoned cpu={}", cpu_id);
             e.into_inner()
