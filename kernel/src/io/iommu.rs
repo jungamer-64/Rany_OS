@@ -1850,11 +1850,7 @@ impl PageTableScope {
             .ok_or(IommuError::HardwareError)?
             .as_ptr() as *mut SlPte;
 
-        let phys = crate::mm::higher_half::virt_to_phys(
-            crate::mm::higher_half::VirtAddr::new(ptr as u64),
-        )
-        .ok_or(IommuError::HardwareError)?
-        .as_u64();
+        let phys = virt_ptr_to_phys(ptr as *const u8)?;
 
         Ok(Self {
             ptr,
@@ -1880,7 +1876,8 @@ impl PageTableScope {
     /// Commit the allocation into the page table accounting structures.
     /// This will insert the entry into `page_table_counts` and increment the parent's usage count.
     pub fn commit(&mut self, page_table_counts: &mut alloc::collections::BTreeMap<u64, u16>) {
-        page_table_counts.insert(self.phys, 0);
+        // Ensure the table is present in accounting without overwriting any existing counts
+        page_table_counts.entry(self.phys).or_insert(0);
         if let Some(parent_phys) = self.parent_phys {
             *page_table_counts.entry(parent_phys).or_default() += 1;
         }
@@ -1912,6 +1909,39 @@ impl Drop for PageTableScope {
         }
     }
 }
+
+/// Helper: convert a virtual pointer to a physical address (u64).
+/// - Non-test: use the kernel's higher_half translation helpers
+/// - Test: assume identity (pointer value is physical for unit tests)
+#[inline]
+fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
+    #[cfg(not(test))]
+    {
+        crate::mm::virt_to_phys(crate::mm::VirtAddr::new(ptr as u64))
+            .ok_or(IommuError::HardwareError)
+            .map(|p| p.as_u64())
+    }
+
+    #[cfg(test)]
+    {
+        Ok(ptr as u64)
+    }
+}
+
+/// Helper: convert a physical address (u64) to a virtual address usize.
+#[inline]
+fn phys_to_virt_usize(phys: u64) -> usize {
+    #[cfg(not(test))]
+    {
+        crate::mm::phys_to_virt(crate::mm::PhysAddr::new(phys)).as_u64() as usize
+    }
+
+    #[cfg(test)]
+    {
+        phys as usize
+    }
+}
+
 
 // ============================================================================
 // Fault Recording
@@ -2095,11 +2125,8 @@ impl IommuDomain {
 
         // Initialize page_table_counts with root table
         let mut page_table_counts = BTreeMap::new();
-        let root_phys = crate::mm::higher_half::virt_to_phys(
-            crate::mm::higher_half::VirtAddr::new(page_table as u64),
-        )
-        .expect("Failed to get root phys")
-        .as_u64();
+        let root_phys = virt_ptr_to_phys(page_table as *const u8)
+            .expect("Failed to get root page table physical address");
         page_table_counts.insert(root_phys, 0);
 
         Self {
@@ -2264,11 +2291,7 @@ impl IommuDomain {
         // self.page_table is the PML4 root
         unsafe {
             // Get pml4 physical address for counting
-            let pml4_phys = crate::mm::higher_half::virt_to_phys(
-                crate::mm::higher_half::VirtAddr::new(self.page_table as u64),
-            )
-            .expect("Failed to get pml4 phys")
-            .as_u64();
+            let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
 
             // Level 4: PML4 -> PDP
             let pml4_entry = self.page_table.add(pml4_idx);
@@ -2385,11 +2408,7 @@ impl IommuDomain {
             };
 
             // Attach to parent (writes PML4 entry)
-            let pml4_phys = crate::mm::higher_half::virt_to_phys(
-                crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
-            )
-            .expect("Failed to get pml4 phys")
-            .as_u64();
+            let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
 
             pdp_scope.attach_to_parent(pml4_entry, pml4_phys);
             newly_allocated[0] = Some(pdp_scope);
@@ -2413,13 +2432,6 @@ impl IommuDomain {
             return Err(IommuError::AlreadyMapped);
         }
 
-        // Commit any newly allocated page tables into accounting
-        for slot in newly_allocated.iter_mut() {
-            if let Some(scope) = slot {
-                scope.commit(&mut self.page_table_counts);
-            }
-        }
-
         let pd_table = ((unsafe { *pdp_entry }).phys_addr()) as *mut SlPte;
         let pd_entry = unsafe { pd_table.add(pd_idx) };
         let pd_phys = ((unsafe { *pdp_entry }).phys_addr());
@@ -2435,6 +2447,13 @@ impl IommuDomain {
         unsafe { *pd_entry = SlPte::super_page_2mb(phys, read, write) };
         // Increment PD count (valid entry)
         *self.page_table_counts.entry(pd_phys).or_default() += 1;
+
+        // Commit any newly allocated page tables into accounting
+        for slot in newly_allocated.iter_mut() {
+            if let Some(scope) = slot {
+                scope.commit(&mut self.page_table_counts);
+            }
+        }
 
         Ok(())
     }
@@ -2478,11 +2497,7 @@ impl IommuDomain {
             };
 
             // Attach to parent (writes PML4 entry)
-            let pml4_phys = crate::mm::higher_half::virt_to_phys(
-                crate::mm::higher_half::VirtAddr::new(pml4_table as u64),
-            )
-            .expect("Failed to get pml4 phys")
-            .as_u64();
+            let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
 
             pdp_scope.attach_to_parent(pml4_entry, pml4_phys);
             newly_allocated_pdp = Some(pdp_scope);
@@ -2600,13 +2615,8 @@ impl IommuDomain {
                                     self.page_table_counts.remove(&pdp_phys);
 
                                     // Decrement PML4 count (root)
-                                    let pml4_phys = crate::mm::higher_half::virt_to_phys(
-                                        crate::mm::higher_half::VirtAddr::new(
-                                            self.page_table as u64,
-                                        ),
-                                    )
-                                    .expect("Failed to get pml4 phys")
-                                    .as_u64();
+                                    let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)
+                                        .expect("Failed to get pml4 phys");
                                     if let Some(pml4_count) =
                                         self.page_table_counts.get_mut(&pml4_phys)
                                     {
@@ -2672,10 +2682,7 @@ impl IommuDomain {
                 .expect("invalid page table layout");
 
         for &phys_addr in self.page_table_counts.keys() {
-            let virt_addr = crate::mm::higher_half::phys_to_virt(
-                crate::mm::higher_half::PhysAddr::new(phys_addr),
-            )
-            .as_u64();
+            let virt_addr = phys_to_virt_usize(phys_addr) as u64;
 
             let ptr = virt_addr as *mut u8;
             // Don't free the root table if `IommuDomain` logic expects to free it separately?
@@ -3216,15 +3223,26 @@ impl IommuController {
 
         let domain = IommuDomain::new(id, numa_node, supports_2mb, supports_1gb, domain_type);
         let domain_arc = Arc::new(PoisonLock::new(domain));
+
+        #[cfg(test)]
+        println!("[IOMMU TEST] create_domain inserting id = {}", id);
+
         match self.domains.lock() {
             Ok(mut domains) => {
+                #[cfg(test)]
+                println!("[IOMMU TEST] domains.lock() acquired (Ok)");
                 domains.insert(id, domain_arc.clone());
             }
             Err(poisoned) => {
+                #[cfg(test)]
+                println!("[IOMMU TEST] domains.lock() poisoned, recovering");
                 let mut domains = poisoned.into_inner();
                 domains.insert(id, domain_arc.clone());
             }
         }
+
+        #[cfg(test)]
+        println!("[IOMMU TEST] create_domain done id = {}", id);
 
         Ok(id)
     }
@@ -5720,10 +5738,7 @@ pub unsafe fn init_iommu_from_acpi(
             unit.include_all
         );
 
-        let mmio_virt = crate::mm::higher_half::phys_to_virt(
-            crate::mm::higher_half::PhysAddr::new(unit.register_base),
-        )
-        .as_u64();
+        let mmio_virt = phys_to_virt_usize(unit.register_base) as u64;
 
         let mut controller = IommuController::new(mmio_virt, unit.segment);
 
@@ -5844,9 +5859,7 @@ pub unsafe fn init_iommu_from_acpi(
 /// Caller must ensure MMIO address is valid
 pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     // Legacy initialization for single IOMMU (segment 0) with default config
-    let mmio_virt =
-        crate::mm::higher_half::phys_to_virt(crate::mm::higher_half::PhysAddr::new(mmio_base))
-            .as_u64();
+    let mmio_virt = phys_to_virt_usize(mmio_base) as u64;
 
     let mut controller = IommuController::new(mmio_virt, 0);
     unsafe {
@@ -6334,7 +6347,10 @@ mod tests {
             .create_domain(Some(2), IommuDomainType::Translated)
             .expect("create_domain failed");
         let domain_arc = ctrl.domain(id).expect("domain not found");
-        let d = domain_arc.read();
+        let d = match domain_arc.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         assert_eq!(d.id(), id);
         assert_eq!(d.numa_node, Some(2));
 
@@ -6367,18 +6383,21 @@ mod tests {
         let ctrl = IommuController::new(0x0, 0);
         ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
-        // Create default domain 0 for mapping
-        ctrl.domains.write().insert(
+        // Create default domain 0 for mapping (use PoisonLock)
+        let domain = Arc::new(PoisonLock::new(IommuDomain::new(
             0,
-            Arc::new(RwLock::new(IommuDomain::new(
-                0,
-                None,
-                false,
-                false,
-                IommuDomainType::Translated,
-            ))),
-        );
-        // register_domain_lock(0); // Removed
+            None,
+            false,
+            false,
+            IommuDomainType::Translated,
+        )));
+        match ctrl.domains.lock() {
+            Ok(mut domains) => { domains.insert(0, domain.clone()); }
+            Err(poisoned) => {
+                let mut domains = poisoned.into_inner();
+                domains.insert(0, domain.clone());
+            }
+        }
 
         let size = 0x3000;
         let phys = 0x2000_0000;
@@ -6387,7 +6406,10 @@ mod tests {
 
         {
             let domain_arc = ctrl.domain(0).expect("domain 0");
-            let mut domain = domain_arc.write();
+            let mut domain = match domain_arc.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             domain
                 .map(iova, phys, size, true, true)
                 .expect("domain.map failed");
@@ -6409,7 +6431,7 @@ mod tests {
 
     #[test]
     fn test_unmap_reclaims_empty_tables() {
-        let domain = Arc::new(RwLock::new(IommuDomain::new(
+        let domain = Arc::new(PoisonLock::new(IommuDomain::new(
             1,
             None,
             false,
@@ -6418,7 +6440,10 @@ mod tests {
         )));
 
         {
-            let mut d = domain.write();
+            let mut d = match domain.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
             // Map a single page
             d.map(0x1000, 0x2000, 0x1000, true, true)
                 .expect("map failed");
@@ -6444,14 +6469,17 @@ mod tests {
 
     #[test]
     fn test_unmap_partial_keeps_tables() {
-        let domain_arc = Arc::new(RwLock::new(IommuDomain::new(
+        let domain_arc = Arc::new(PoisonLock::new(IommuDomain::new(
             1,
             None,
             false,
             false,
             IommuDomainType::Translated,
         )));
-        let mut domain = domain_arc.write();
+        let mut domain = match domain_arc.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
 
         // Map two pages in the same PT
         domain
