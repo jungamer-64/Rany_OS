@@ -479,13 +479,20 @@ mod tests {
 
 /// Stop a domain
 pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
-    let mut registry = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(domain) = registry.domains.get_mut(&id) {
-        domain.state = DomainState::Stopped;
-        log::info!("[DOMAIN] Stopped {}\n", id);
-        Ok(())
-    } else {
-        Err("Domain not found")
+    match REGISTRY.lock() {
+        Ok(mut registry) => {
+            if let Some(domain) = registry.domains.get_mut(&id) {
+                domain.state = DomainState::Stopped;
+                log::info!("[DOMAIN] Stopped {}\n", id);
+                Ok(())
+            } else {
+                Err("Domain not found")
+            }
+        }
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (stop_domain)");
+            Err("Domain registry poisoned")
+        }
     }
 }
 

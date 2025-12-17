@@ -457,20 +457,16 @@ impl PerCoreMempoolCache {
     /// バッファを割り当て（ローカルキャッシュから優先）
     pub fn alloc(&'static self) -> Option<PacketRef> {
         // まずローカルキャッシュから試みる
-        if let Some(buffer) = self
-            .local_cache
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] LocalCache poisoned");
-                e.into_inner()
-            })
-            .pop()
-        {
-            unsafe {
-                buffer.as_ref().len.store(0, Ordering::Release);
-                buffer.as_ref().ref_count.store(1, Ordering::Release);
+        if let Ok(mut cache) = self.local_cache.lock() {
+            if let Some(buffer) = cache.pop() {
+                unsafe {
+                    buffer.as_ref().len.store(0, Ordering::Release);
+                    buffer.as_ref().ref_count.store(1, Ordering::Release);
+                }
+                return Some(PacketRef::new(buffer, self.parent));
             }
-            return Some(PacketRef::new(buffer, self.parent));
+        } else {
+            log::error!("[NET] LocalCache lock poisoned (alloc) - falling back to parent pool");
         }
 
         // キャッシュが空なら親プールから取得
@@ -479,19 +475,23 @@ impl PerCoreMempoolCache {
 
     /// バッファを返却（ローカルキャッシュに優先）
     pub fn free(&self, buffer: NonNull<PacketBuffer>) {
-        let mut cache = self.local_cache.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] LocalCache poisoned");
-            e.into_inner()
-        });
-
-        if cache.len() < self.cache_capacity {
-            // ローカルキャッシュに空きがあれば追加
-            cache.push(buffer);
-        } else {
-            // キャッシュが満杯なら親プールに返却
-            drop(cache);
-            self.parent.return_buffer(buffer);
+        match self.local_cache.lock() {
+            Ok(mut cache) => {
+                if cache.len() < self.cache_capacity {
+                    // ローカルキャッシュに空きがあれば追加
+                    cache.push(buffer);
+                    return;
+                }
+                // キャッシュが満杯なら親プールに返却
+            }
+            Err(_) => {
+                log::error!("[NET] LocalCache lock poisoned (free) - returning to parent pool");
+                self.parent.return_buffer(buffer);
+                return;
+            }
         }
+
+        self.parent.return_buffer(buffer);
     }
 }
 
@@ -527,24 +527,26 @@ impl PacketPool {
 
     /// Allocate a buffer from the pool
     pub fn alloc(&self) -> Option<Vec<u8>> {
-        let mut buffers = self.buffers.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] Mempool buffers poisoned");
-            e.into_inner()
-        });
-        buffers.pop()
+        match self.buffers.lock() {
+            Ok(mut buffers) => buffers.pop(),
+            Err(_) => {
+                log::error!("[NET] PacketPool buffers lock poisoned (alloc) - allocation failed");
+                None
+            }
+        }
     }
 
     /// Return a buffer to the pool
     pub fn free(&self, mut buffer: Vec<u8>) {
         // Clear the buffer
         buffer.fill(0);
-
-        let mut buffers = self.buffers.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] Mempool buffers poisoned");
-            e.into_inner()
-        });
-        if buffers.len() < self.capacity {
-            buffers.push(buffer);
+        match self.buffers.lock() {
+            Ok(mut buffers) => {
+                if buffers.len() < self.capacity {
+                    buffers.push(buffer);
+                }
+            }
+            Err(_) => log::error!("[NET] PacketPool buffers lock poisoned (free) - dropping buffer"),
         }
         // Otherwise drop the buffer
     }
@@ -556,13 +558,13 @@ impl PacketPool {
 
     /// Get available buffer count
     pub fn available(&self) -> usize {
-        self.buffers
-            .lock()
-            .unwrap_or_else(|e| {
-                log::warn!("[NET] Mempool buffers poisoned");
-                e.into_inner()
-            })
-            .len()
+        match self.buffers.lock() {
+            Ok(b) => b.len(),
+            Err(_) => {
+                log::error!("[NET] PacketPool buffers lock poisoned (available) - returning 0");
+                0
+            }
+        }
     }
 }
 

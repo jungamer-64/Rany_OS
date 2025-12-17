@@ -348,11 +348,12 @@ pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
     // Try to get real stats from NetworkStack
     if let Some(stack_guard) = stack::stack()
         .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[NET] Stack poisoned");
-            e.into_inner()
+        .map(|g| g) // keep type
+        .and_then(|g| match g.as_ref() { Some(s) => Some(s), None => None })
+        .or_else(|_| {
+            log::error!("[NET] Stack lock poisoned (get_network_stats) - using fallback stats");
+            None
         })
-        .as_ref()
     {
         let stats = stack_guard.stats();
         return Some(NetworkStatsSnapshot {
@@ -372,14 +373,25 @@ pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
 /// Send ICMP echo request (ping)
 pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
     // Try to use real NetworkStack
-    if let Some(stack_guard) = stack::stack()
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[NET] Stack poisoned");
-            e.into_inner()
-        })
-        .as_mut()
-    {
+    match stack::stack().lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack_guard) = guard.as_mut() {
+                let target_ip = ipv4::Ipv4Address::new(target);
+
+                // Attempt to send ICMP echo via stack
+                if stack_guard.send_icmp_echo_request(target_ip, seq).is_ok() {
+                    // For now, return simulated RTT (real RTT would require async wait)
+                    return match target {
+                        [127, 0, 0, 1] => Ok(0.1),
+                        [10, 0, 2, 2] => Ok(1.5),
+                        [10, 0, 2, ..] => Ok(2.0),
+                        _ => Ok(10.0),
+                    };
+                }
+            }
+        }
+        Err(_) => log::error!("[NET] Stack lock poisoned (send_icmp_echo) - using fallback implementation"),
+    }
         let target_ip = ipv4::Ipv4Address::new(target);
 
         // Attempt to send ICMP echo via stack
@@ -493,28 +505,26 @@ pub fn get_dhcp_state() -> Option<DhcpStateInfo> {
 /// Get ARP cache
 pub fn get_arp_cache() -> Option<Vec<ArpCacheEntry>> {
     // Try to get real ARP cache from NetworkStack
-    if let Some(stack_guard) = stack::stack()
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[NET] Stack poisoned");
-            e.into_inner()
-        })
-        .as_ref()
-    {
-        let arp_entries = stack_guard.arp_cache();
+    match stack::stack().lock() {
+        Ok(guard) => {
+            if let Some(stack_guard) = guard.as_ref() {
+                let arp_entries = stack_guard.arp_cache();
 
-        let entries: Vec<ArpCacheEntry> = arp_entries
-            .iter()
-            .map(|(ip, mac)| ArpCacheEntry {
-                ip: *ip.as_bytes(),
-                mac: *mac.as_bytes(),
-                complete: true,
-            })
-            .collect();
+                let entries: Vec<ArpCacheEntry> = arp_entries
+                    .iter()
+                    .map(|(ip, mac)| ArpCacheEntry {
+                        ip: *ip.as_bytes(),
+                        mac: *mac.as_bytes(),
+                        complete: true,
+                    })
+                    .collect();
 
-        if !entries.is_empty() {
-            return Some(entries);
+                if !entries.is_empty() {
+                    return Some(entries);
+                }
+            }
         }
+        Err(_) => log::error!("[NET] Stack lock poisoned (get_arp_cache) - returning demo output"),
     }
 
     // Return None to show demo output in shell

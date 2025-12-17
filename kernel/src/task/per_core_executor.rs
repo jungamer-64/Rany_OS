@@ -309,11 +309,14 @@ impl PerCoreExecutor {
     /// タスクをローカルキューに追加
     pub fn spawn(&self, task: Arc<Task>) {
         if task.metadata.priority <= Priority::High {
-            // 高優先度タスクは専用キューへ
-            self.high_priority_queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_back(task);
+            // 高優先度タスクは専用キューへ。ロックが毒入れされていたらローカルキューにフォールバックする
+            match self.high_priority_queue.lock() {
+                Ok(mut guard) => guard.push_back(task),
+                Err(_) => {
+                    log::error!("[EXECUTOR] high_priority_queue poisoned during spawn - falling back to local queue");
+                    self.local_queue.push(task);
+                }
+            }
         } else {
             // 通常タスクはワークスティーリングキューへ
             self.local_queue.push(task);
@@ -329,13 +332,15 @@ impl PerCoreExecutor {
     /// 次のタスクを取得
     fn next_task(&self) -> Option<Arc<Task>> {
         // 1. 高優先度キューを最初にチェック
-        if let Some(task) = self
-            .high_priority_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop_front()
-        {
-            return Some(task);
+        match self.high_priority_queue.lock() {
+            Ok(mut guard) => {
+                if let Some(task) = guard.pop_front() {
+                    return Some(task);
+                }
+            }
+            Err(_) => {
+                log::error!("[EXECUTOR] high_priority_queue poisoned (next_task) - skipping high priority check");
+            }
         }
 
         // 2. ローカルキューからpop
@@ -449,12 +454,15 @@ impl PerCoreExecutor {
 
     /// キューの長さを取得
     pub fn queue_length(&self) -> usize {
-        self.local_queue.len()
-            + self
-                .high_priority_queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .len()
+        let hp_len = match self.high_priority_queue.lock() {
+            Ok(g) => g.len(),
+            Err(_) => {
+                log::error!("[EXECUTOR] high_priority_queue poisoned (queue_length) - treating as empty");
+                0
+            }
+        };
+
+        self.local_queue.len() + hp_len
     }
 
     /// 統計を取得
@@ -528,8 +536,13 @@ impl ExecutorManager {
 
     /// 指定コアのエグゼキュータを取得
     pub fn get_executor(&self, core_id: u32) -> Option<Arc<PerCoreExecutor>> {
-        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
-        executors.get(core_id as usize).cloned()
+        match self.executors.lock() {
+            Ok(executors) => executors.get(core_id as usize).cloned(),
+            Err(_) => {
+                log::error!("[EXECUTOR] Manager executors lock poisoned (get_executor)");
+                None
+            }
+        }
     }
 
     /// 現在のコアのエグゼキュータを取得
@@ -540,53 +553,72 @@ impl ExecutorManager {
 
     /// タスクをspawn（負荷分散考慮）
     pub fn spawn(&self, task: Arc<Task>) {
-        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
+        match self.executors.lock() {
+            Ok(mut executors) => {
+                if executors.is_empty() {
+                    // エグゼキュータが初期化されていない場合はグローバルキューへ
+                    drop(executors);
+                    match self.global_queue.lock() {
+                        Ok(mut g) => g.push_back(task),
+                        Err(_) => log::error!("[EXECUTOR] global_queue poisoned during spawn - dropping task"),
+                    }
+                    return;
+                }
 
-        if executors.is_empty() {
-            // エグゼキュータが初期化されていない場合はグローバルキューへ
-            drop(executors);
-            self.global_queue
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .push_back(task);
-            return;
-        }
+                // 最も負荷の低いエグゼキュータを選択
+                let min_executor = executors.iter().min_by_key(|e| e.queue_length()).cloned();
 
-        // 最も負荷の低いエグゼキュータを選択
-        let min_executor = executors.iter().min_by_key(|e| e.queue_length()).cloned();
+                drop(executors);
 
-        drop(executors);
-
-        if let Some(executor) = min_executor {
-            executor.spawn(task);
+                if let Some(executor) = min_executor {
+                    executor.spawn(task);
+                }
+            }
+            Err(_) => {
+                log::error!("[EXECUTOR] Manager executors lock poisoned (spawn) - pushing to global queue");
+                match self.global_queue.lock() {
+                    Ok(mut g) => g.push_back(task),
+                    Err(_) => log::error!("[EXECUTOR] global_queue poisoned during spawn - dropping task"),
+                }
+            }
         }
     }
 
     /// ワークスティーリングを実行
     pub fn try_steal(&self, core_id: u32) -> bool {
-        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
+        // executors lock が毒入れされている場合は失敗とする
+        let executors_guard = match self.executors.lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[EXECUTOR] executors lock poisoned (try_steal)");
+                return false;
+            }
+        };
 
-        let thief = match executors.get(core_id as usize) {
+        let thief = match executors_guard.get(core_id as usize) {
             Some(e) => e.clone(),
             None => return false,
         };
 
         // グローバルキューからまず取得
-        drop(executors);
-        if let Some(task) = self
-            .global_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop_front()
-        {
-            thief.spawn(task);
-            return true;
+        drop(executors_guard);
+        match self.global_queue.lock() {
+            Ok(mut g) => {
+                if let Some(task) = g.pop_front() {
+                    thief.spawn(task);
+                    return true;
+                }
+            }
+            Err(_) => log::error!("[EXECUTOR] global_queue poisoned (try_steal) - skipping global queue"),
         }
 
-        let executors = self.executors.lock().unwrap_or_else(|e| e.into_inner());
+        let executors_guard = match self.executors.lock() {
+            Ok(g) => g,
+            Err(_) => return false,
+        };
 
         // 最も負荷の高いエグゼキュータからスチール
-        let victim = executors
+        let victim = executors_guard
             .iter()
             .filter(|e| e.core_id() != core_id)
             .max_by_key(|e| e.queue_length());
@@ -602,23 +634,23 @@ impl ExecutorManager {
 
     /// 全エグゼキュータの統計を取得
     pub fn all_stats(&self) -> alloc::vec::Vec<ExecutorStats> {
-        self.executors
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .map(|e| e.stats())
-            .collect()
+        match self.executors.lock() {
+            Ok(executors) => executors.iter().map(|e| e.stats()).collect(),
+            Err(_) => {
+                log::error!("[EXECUTOR] executors lock poisoned (all_stats) - returning empty stats");
+                alloc::vec::Vec::new()
+            }
+        }
     }
 
     /// 全エグゼキュータをシャットダウン
     pub fn shutdown_all(&self) {
-        for executor in self
-            .executors
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-        {
-            executor.shutdown();
+        if let Ok(executors) = self.executors.lock() {
+            for executor in executors.iter() {
+                executor.shutdown();
+            }
+        } else {
+            log::error!("[EXECUTOR] executors lock poisoned (shutdown_all) - skipping shutdown");
         }
     }
 }
@@ -795,5 +827,67 @@ mod tests {
         let executor = PerCoreExecutor::new(0);
         assert_eq!(executor.core_id(), 0);
         assert_eq!(executor.queue_length(), 0);
+    }
+
+    #[test]
+    fn test_high_priority_queue_poisoned_spawn_uses_local_queue() {
+        use crate::sync::set_panicking;
+
+        let exec = PerCoreExecutor::new(0);
+
+        // create a high-priority task
+        let task = Task::new(async {}, Priority::High, None);
+
+        // Poison the high_priority_queue
+        set_panicking(true);
+        if let Ok(_g) = exec.high_priority_queue.lock() {
+            // drop marks as poisoned
+        }
+        set_panicking(false);
+
+        // spawn should not panic and should fall back to local queue
+        exec.spawn(task.clone());
+        assert_eq!(exec.queue_length(), 1);
+    }
+
+    #[test]
+    fn test_executor_manager_spawn_falls_back_to_global_queue_when_executors_poisoned() {
+        use crate::sync::set_panicking;
+
+        let manager = ExecutorManager::new();
+
+        let task = Task::new(async {}, Priority::Normal, None);
+
+        // Poison executors lock
+        set_panicking(true);
+        if let Ok(_g) = manager.executors.lock() {
+            // drop marks as poisoned
+        }
+        set_panicking(false);
+
+        manager.spawn(task.clone());
+
+        // global_queue should have the task
+        match manager.global_queue.lock() {
+            Ok(g) => assert_eq!(g.len(), 1),
+            Err(_) => panic!("global_queue poisoned in test"),
+        }
+    }
+
+    #[test]
+    fn test_all_stats_poisoned_returns_empty() {
+        use crate::sync::set_panicking;
+
+        let manager = ExecutorManager::new();
+
+        // Poison executors lock
+        set_panicking(true);
+        if let Ok(_g) = manager.executors.lock() {
+            // drop marks as poisoned
+        }
+        set_panicking(false);
+
+        let stats = manager.all_stats();
+        assert!(stats.is_empty());
     }
 }

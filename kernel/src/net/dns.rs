@@ -322,35 +322,39 @@ impl DnsClient {
 
     /// DNSサーバーを設定
     pub fn set_servers(&self, servers: Vec<Ipv4Address>) {
-        *self.servers.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DNS Servers poisoned");
-            e.into_inner()
-        }) = servers;
+        match self.servers.lock() {
+            Ok(mut guard) => *guard = servers,
+            Err(_) => log::error!("[NET] DNS Servers lock poisoned (set_servers) - operation skipped"),
+        }
     }
 
     /// DNSサーバーを追加
     pub fn add_server(&self, server: Ipv4Address) {
-        let mut servers = self.servers.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DNS Servers poisoned");
-            e.into_inner()
-        });
-        if !servers.contains(&server) && servers.len() < 3 {
-            servers.push(server);
+        match self.servers.lock() {
+            Ok(mut servers) => {
+                if !servers.contains(&server) && servers.len() < 3 {
+                    servers.push(server);
+                }
+            }
+            Err(_) => log::error!("[NET] DNS Servers lock poisoned (add_server) - operation skipped"),
         }
     }
 
     /// キャッシュからIPアドレスを検索
     pub fn resolve_cached(&self, name: &str, current_tick: u64) -> Option<Ipv4Address> {
-        let cache = self.cache.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] DNS Cache poisoned");
-            e.into_inner()
-        });
-        if let Some(entry) = cache.lookup(name, current_tick) {
-            for record in &entry.records {
-                if let DnsRecordData::A(ip) = &record.data {
-                    self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-                    return Some(*ip);
+        match self.cache.lock() {
+            Ok(cache) => {
+                if let Some(entry) = cache.lookup(name, current_tick) {
+                    for record in &entry.records {
+                        if let DnsRecordData::A(ip) = &record.data {
+                            self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                            return Some(*ip);
+                        }
+                    }
                 }
+            }
+            Err(_) => {
+                log::error!("[NET] DNS Cache lock poisoned (resolve_cached) - treating as cache miss");
             }
         }
         self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
@@ -539,11 +543,12 @@ impl DnsClient {
         // キャッシュに追加
         if !records.is_empty() {
             if let Some(first) = records.first() {
-                let mut cache = self.cache.lock().unwrap_or_else(|e| {
-                    log::warn!("[NET] DNS Cache poisoned");
-                    e.into_inner()
-                });
-                cache.insert(first.name.clone(), records.clone(), current_tick);
+                match self.cache.lock() {
+                    Ok(mut cache) => {
+                        cache.insert(first.name.clone(), records.clone(), current_tick);
+                    }
+                    Err(_) => log::error!("[NET] DNS Cache lock poisoned (parse_response) - skipping cache insert"),
+                }
             }
         }
 
@@ -660,34 +665,31 @@ static DNS_CLIENT: PoisonLock<Option<DnsClient>> = PoisonLock::new(None);
 /// DNSクライアントを初期化
 pub fn init(tick_rate: u64) {
     let client = DnsClient::new(tick_rate);
-    *DNS_CLIENT.lock().unwrap_or_else(|e| {
-        log::warn!("[NET] DNS Global poisoned");
-        e.into_inner()
-    }) = Some(client);
+    match DNS_CLIENT.lock() {
+        Ok(mut g) => *g = Some(client),
+        Err(_) => log::error!("[NET] DNS Global lock poisoned (init) - initialization skipped"),
+    }
 }
 
 /// DNSサーバーを設定
 pub fn set_servers(servers: Vec<Ipv4Address>) {
-    if let Some(client) = DNS_CLIENT
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[NET] DNS Global poisoned");
-            e.into_inner()
-        })
-        .as_ref()
-    {
-        client.set_servers(servers);
+    match DNS_CLIENT.lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.set_servers(servers);
+            }
+        }
+        Err(_) => log::error!("[NET] DNS Global lock poisoned (set_servers) - operation skipped"),
     }
 }
 
 /// キャッシュからIPアドレスを解決
 pub fn resolve_cached(name: &str, current_tick: u64) -> Option<Ipv4Address> {
-    DNS_CLIENT
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[NET] DNS Global poisoned");
-            e.into_inner()
-        })
-        .as_ref()
-        .and_then(|c| c.resolve_cached(name, current_tick))
+    match DNS_CLIENT.lock() {
+        Ok(g) => g.as_ref().and_then(|c| c.resolve_cached(name, current_tick)),
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (resolve_cached) - treating as cache miss");
+            None
+        }
+    }
 }

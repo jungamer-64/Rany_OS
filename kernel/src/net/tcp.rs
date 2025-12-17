@@ -473,31 +473,32 @@ impl AsyncWrite for TcpStream {
     }
 
     fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), TcpError>> {
-        let mut tcb = self.tcb.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] TCP TCB poisoned");
-            e.into_inner()
-        });
-
-        match tcb.state {
-            TcpState::Established => {
-                tcb.state = TcpState::FinWait1;
-                // FIN送信
-                if let Some(remote) = tcb.remote_addr {
-                    send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
-                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FINは1バイト消費
+        match self.tcb.lock() {
+            Ok(mut tcb) => match tcb.state {
+                TcpState::Established => {
+                    tcb.state = TcpState::FinWait1;
+                    // FIN送信
+                    if let Some(remote) = tcb.remote_addr {
+                        send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1); // FINは1バイト消費
+                    }
+                    Poll::Ready(Ok(()))
                 }
-                Poll::Ready(Ok(()))
-            }
-            TcpState::CloseWait => {
-                tcb.state = TcpState::LastAck;
-                // FIN送信
-                if let Some(remote) = tcb.remote_addr {
-                    send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
-                    tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                TcpState::CloseWait => {
+                    tcb.state = TcpState::LastAck;
+                    // FIN送信
+                    if let Some(remote) = tcb.remote_addr {
+                        send_fin_packet(tcb.local_addr, remote, tcb.snd_nxt, tcb.rcv_nxt);
+                        tcb.snd_nxt = tcb.snd_nxt.wrapping_add(1);
+                    }
+                    Poll::Ready(Ok(()))
                 }
-                Poll::Ready(Ok(()))
+                _ => Poll::Ready(Err(TcpError::InvalidState)),
+            },
+            Err(_) => {
+                log::error!("[NET] TCP TCB poisoned (shutdown) - returning InvalidState");
+                Poll::Ready(Err(TcpError::InvalidState))
             }
-            _ => Poll::Ready(Err(TcpError::InvalidState)),
         }
     }
 }
@@ -653,22 +654,26 @@ impl<'a> Future for AcceptFuture<'a> {
     type Output = Result<(TcpStream, SocketAddr), TcpError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut backlog = self.listener.backlog.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] TCP Backlog poisoned");
-            e.into_inner()
-        });
+        match self.listener.backlog.lock() {
+            Ok(mut backlog) => {
+                if let Some(stream) = backlog.pop_front() {
+                    let addr = stream
+                        .peer_addr()
+                        .unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
+                    return Poll::Ready(Ok((stream, addr)));
+                }
 
-        if let Some(stream) = backlog.pop_front() {
-            let addr = stream
-                .peer_addr()
-                .unwrap_or(SocketAddr::new(Ipv4Addr::UNSPECIFIED, 0));
-            Poll::Ready(Ok((stream, addr)))
-        } else {
-            *self.listener.accept_waker.lock().unwrap_or_else(|e| {
-                log::warn!("[NET] TCP Waker poisoned");
-                e.into_inner()
-            }) = Some(cx.waker().clone());
-            Poll::Pending
+                match self.listener.accept_waker.lock() {
+                    Ok(mut wake_opt) => *wake_opt = Some(cx.waker().clone()),
+                    Err(_) => log::error!("[NET] TCP Waker poisoned - cannot set waker"),
+                }
+
+                Poll::Pending
+            }
+            Err(_) => {
+                log::error!("[NET] TCP Backlog poisoned (accept) - returning InvalidState");
+                Poll::Ready(Err(TcpError::InvalidState))
+            }
         }
     }
 }
@@ -702,23 +707,26 @@ impl<'a> Future for ZeroCopyReadFuture<'a> {
     type Output = Option<PacketRef>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let mut tcb = self.stream.tcb.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] TCP TCB poisoned");
-            e.into_inner()
-        });
+        match self.stream.tcb.lock() {
+            Ok(mut tcb) => {
+                if tcb.state == TcpState::Closed {
+                    return Poll::Ready(None);
+                }
 
-        if tcb.state == TcpState::Closed {
-            return Poll::Ready(None);
-        }
+                if let Some(packet) = tcb.recv_buffer.pop_front() {
+                    let len = packet.data().len();
+                    tcb.stats.bytes_received += len as u64;
+                    // パケットの所有権をそのまま返す（ゼロコピー）
+                    return Poll::Ready(Some(packet));
+                }
 
-        if let Some(packet) = tcb.recv_buffer.pop_front() {
-            let len = packet.data().len();
-            tcb.stats.bytes_received += len as u64;
-            // パケットの所有権をそのまま返す（ゼロコピー）
-            Poll::Ready(Some(packet))
-        } else {
-            tcb.read_waker = Some(cx.waker().clone());
-            Poll::Pending
+                tcb.read_waker = Some(cx.waker().clone());
+                Poll::Pending
+            }
+            Err(_) => {
+                log::error!("[NET] TCP TCB poisoned (zero-copy read) - returning None");
+                Poll::Ready(None)
+            }
         }
     }
 }
