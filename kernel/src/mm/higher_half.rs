@@ -858,6 +858,8 @@ pub enum MapError {
     AlignmentError,
     /// 親エントリがHuge Page
     ParentEntryHugePage,
+    /// ハードウェア／内部状態のエラー（PoisonLockが毒入れされているなど）
+    HardwareError,
 }
 
 /// ページテーブルマネージャー
@@ -1301,20 +1303,29 @@ pub unsafe fn global_map_page(
     phys: PhysAddr,
     flags: PageFlags,
 ) -> Result<(), MapError> {
-    let mut guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Page Table Manager poisoned");
-        e.into_inner()
-    });
+    // If the global PageTableManager lock is poisoned, treat this as a
+    // hardware/internal error and propagate it rather than attempting to
+    // continue with potentially corrupted state.
+    let mut guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| {
+            log::error!("[MM] Page Table Manager lock poisoned");
+            MapError::HardwareError
+        })?;
+
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
     unsafe { manager.map_page(virt, phys, flags) }
 }
 
 /// グローバルページテーブルマネージャーでページをアンマップ
 pub unsafe fn global_unmap_page(virt: VirtAddr) -> Result<PhysAddr, MapError> {
-    let mut guard = PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Page Table Manager poisoned");
-        e.into_inner()
-    });
+    let mut guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| {
+            log::error!("[MM] Page Table Manager lock poisoned");
+            MapError::HardwareError
+        })?;
+
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
     unsafe { manager.unmap_page(virt) }
 }
@@ -1349,5 +1360,38 @@ mod tests {
         let manager = unsafe { PageTableManager::from_current_cr3(0) };
         let res = manager.alloc_page_table();
         assert!(res.is_ok());
+    }
+
+    #[test]
+    fn test_global_map_page_poisoned_returns_hardware_error() {
+        // Poison the PAGE_TABLE_MANAGER lock
+        {
+            let _guard = PAGE_TABLE_MANAGER.lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+
+        let res = unsafe {
+            global_map_page(
+                VirtAddr::new(0x1000),
+                PhysAddr::new(0x2000),
+                PageFlags::new(PageFlags::PRESENT),
+            )
+        };
+
+        assert_eq!(res, Err(MapError::HardwareError));
+    }
+
+    #[test]
+    fn test_global_unmap_page_poisoned_returns_hardware_error() {
+        // Poison the PAGE_TABLE_MANAGER lock
+        {
+            let _guard = PAGE_TABLE_MANAGER.lock().unwrap();
+            crate::sync::set_panicking(true);
+        }
+        crate::sync::set_panicking(false);
+
+        let res = unsafe { global_unmap_page(VirtAddr::new(0x1000)) };
+        assert_eq!(res, Err(MapError::HardwareError));
     }
 }
