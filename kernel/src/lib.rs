@@ -52,8 +52,136 @@ pub mod mm {
             unsafe { dealloc(ptr.as_ptr(), l); }
         }
     }
+
+    // Minimal per-CPU stubs used by IOMMU unit tests. These avoid pulling the
+    // full per-CPU subsystem into the test build while providing the API
+    // expected by `iommu.rs`.
+    pub mod per_cpu {
+        use alloc::vec::Vec;
+
+        /// Cache entry for device to domain mapping (test shim)
+        #[derive(Clone, Copy, Default)]
+        pub struct DomainCacheEntry {
+            pub device_id: u16,
+            pub domain_id: u16,
+            pub controller_idx: u8,
+            pub valid: bool,
+        }
+
+        /// Per-CPU domain cache (test shim)
+        pub struct PerCpuDomainCache {
+            pub entries: [DomainCacheEntry; Self::CACHE_SIZE],
+        }
+
+        impl PerCpuDomainCache {
+            pub const CACHE_SIZE: usize = 64;
+
+            pub fn new() -> Self {
+                Self { entries: [DomainCacheEntry { device_id: 0, domain_id: 0, controller_idx: 0, valid: false }; Self::CACHE_SIZE] }
+            }
+
+            pub fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
+                let idx = (device_id as usize) % Self::CACHE_SIZE;
+                let entry = self.entries[idx];
+                if entry.valid && entry.device_id == device_id {
+                    Some((entry.domain_id, entry.controller_idx))
+                } else {
+                    None
+                }
+            }
+
+            pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
+                let idx = (device_id as usize) % Self::CACHE_SIZE;
+                self.entries[idx] = DomainCacheEntry { device_id, domain_id, controller_idx, valid: true };
+            }
+
+            pub fn invalidate(&mut self, device_id: u16) {
+                let idx = (device_id as usize) % Self::CACHE_SIZE;
+                if self.entries[idx].device_id == device_id {
+                    self.entries[idx].valid = false;
+                }
+            }
+        }
+
+        /// Small per-CPU IOVA magazine (test shim)
+        pub struct IovaMagazine {
+            cache: Vec<u64>,
+            capacity: usize,
+        }
+
+        impl IovaMagazine {
+            pub fn new(capacity: usize) -> Self {
+                Self { cache: Vec::new(), capacity }
+            }
+
+            pub fn push(&mut self, iova: u64) -> bool {
+                if self.cache.len() < self.capacity {
+                    self.cache.push(iova);
+                    true
+                } else {
+                    false
+                }
+            }
+
+            pub fn pop(&mut self) -> Option<u64> {
+                self.cache.pop()
+            }
+        }
+
+        /// Per-CPU data (test shim)
+        pub struct PerCpuData {
+            pub iommu_domain_cache: PerCpuDomainCache,
+            pub iova_magazine: IovaMagazine,
+        }
+
+        impl PerCpuData {
+            pub fn new() -> Self {
+                Self { iommu_domain_cache: PerCpuDomainCache::new(), iova_magazine: IovaMagazine::new(256) }
+            }
+        }
+
+        /// Try to get the current CPU id (test shim: not initialized)
+        pub fn try_current_cpu_id() -> Option<usize> {
+            None
+        }
+
+        /// Get a mutable reference to per-CPU data (test shim: not available)
+        /// Returning `None` is acceptable for unit tests and forces global
+        /// allocator fallback paths to be exercised.
+        pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
+            None
+        }
+
+        /// Get an immutable reference to per-CPU data (test shim: not available)
+        pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
+            None
+        }
+    }
 }
 
+// Minimal task/time shims for tests
+#[cfg(test)]
+pub mod task {
+    pub mod timer {
+        /// Return current tick in milliseconds (test stub)
+        pub fn current_tick() -> u64 { 0 }
+    }
+
+    pub mod scheduler {
+        /// Yield the current task (test stub - no-op)
+        pub fn yield_current(_cpu_id: usize) {}
+    }
+}
+
+#[cfg(test)]
+pub mod time {
+    /// High-resolution time in nanoseconds (test stub using system clock)
+    pub fn precise_time_nanos() -> u64 {
+        // Use std for test builds to provide a monotonic-like value
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+    }
+}
 
 
 #[cfg(test)]
