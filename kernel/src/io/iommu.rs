@@ -6347,12 +6347,15 @@ mod tests {
             .create_domain(Some(2), IommuDomainType::Translated)
             .expect("create_domain failed");
         let domain_arc = ctrl.domain(id).expect("domain not found");
-        let d = match domain_arc.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        assert_eq!(d.id(), id);
-        assert_eq!(d.numa_node, Some(2));
+        {
+            // Scope the guard so it is dropped before we call `set_domain_numa`
+            let d = match domain_arc.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            assert_eq!(d.id(), id);
+            assert_eq!(d.numa_node, Some(2));
+        }
 
         // Test controller set/get API
         ctrl.set_domain_numa(id, Some(5))
