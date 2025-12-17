@@ -810,11 +810,15 @@ pub fn receive(data: &[u8]) {
         packet.data_mut()[..len].copy_from_slice(&data[..len]);
         packet.set_len(len);
 
-        if let Some(ref mut stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
-            log::warn!("[NET] Global Stack poisoned");
-            e.into_inner()
-        }) {
-            stack.receive(packet);
+        match NETWORK_STACK.lock() {
+            Ok(mut guard) => {
+                if let Some(ref mut stack) = *guard {
+                    stack.receive(packet);
+                }
+            }
+            Err(_) => {
+                log::error!("[NET] Global Stack poisoned - dropping packet");
+            }
         }
     } else {
         // Drop packet due to OOM
@@ -824,38 +828,47 @@ pub fn receive(data: &[u8]) {
 
 /// Send a UDP datagram
 pub fn send_udp(src_port: u16, dst_ip: Ipv4Address, dst_port: u16, data: &[u8]) -> bool {
-    if let Some(ref mut stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
-        log::warn!("[NET] Global Stack poisoned");
-        e.into_inner()
-    }) {
-        stack.send_udp(src_port, dst_ip, dst_port, data)
-    } else {
-        false
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.send_udp(src_port, dst_ip, dst_port, data)
+            } else {
+                false
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - send_udp failed");
+            false
+        }
     }
 }
 
 /// Send a TCP segment
 pub fn send_tcp(src_ip: Ipv4Address, dst_ip: Ipv4Address, tcp_segment: &[u8]) -> bool {
-    if let Some(ref mut stack) = *NETWORK_STACK.lock().unwrap_or_else(|e| {
-        log::warn!("[NET] Global Stack poisoned");
-        e.into_inner()
-    }) {
-        stack.send_tcp(src_ip, dst_ip, tcp_segment)
-    } else {
-        false
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut stack) = *guard {
+                stack.send_tcp(src_ip, dst_ip, tcp_segment)
+            } else {
+                false
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - send_tcp failed");
+            false
+        }
     }
 }
 
 /// Bind a UDP socket
 pub fn bind_udp(port: u16) -> Option<UdpSocket> {
-    NETWORK_STACK
-        .lock()
-        .unwrap_or_else(|e| {
-            log::warn!("[NET] Global Stack poisoned");
-            e.into_inner()
-        })
-        .as_mut()
-        .and_then(|s| s.bind_udp(port))
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp(port)),
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - bind_udp failed");
+            None
+        }
+    }
 }
 
 #[cfg(test)]
@@ -872,5 +885,24 @@ mod tests {
             MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01)
         );
         assert!(config.icmp_echo_enabled);
+    }
+
+    #[test]
+    fn test_network_stack_poisoned_runtime_apis_fail() {
+        use crate::sync::set_panicking;
+
+        // Initialize and then poison the global stack lock
+        init_default();
+
+        set_panicking(true);
+        if let Ok(_g) = NETWORK_STACK.lock() {
+            // Dropping _g while panicking marks the lock poisoned
+        }
+        set_panicking(false);
+
+        // Runtime APIs should fail conservatively when the global lock is poisoned
+        assert!(!send_udp(1234, Ipv4Address::LOOPBACK, 80, &[0x1, 0x2]));
+        assert!(!send_tcp(Ipv4Address::LOOPBACK, Ipv4Address::LOOPBACK, &[]));
+        assert!(bind_udp(1234).is_none());
     }
 }
