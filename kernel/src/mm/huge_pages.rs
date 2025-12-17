@@ -253,16 +253,21 @@ pub unsafe fn setup_linear_mapping_2m(_total_memory: usize) -> usize {
 static HUGE_PAGE_ALLOCATOR: PoisonLock<HugePageAllocator> =
     PoisonLock::new(HugePageAllocator::new());
 
-/// Huge Pageアロケータを取得
-pub fn with_huge_page_allocator<F, R>(f: F) -> R
+/// Huge Pageアロケータに安全にアクセスします。
+///
+/// ロックが poisoned の場合は `None` を返し、ランタイムでの不整合なデータアクセスを防ぎます。
+pub fn with_huge_page_allocator<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut HugePageAllocator) -> R,
 {
-    f(&mut HUGE_PAGE_ALLOCATOR.lock().unwrap_or_else(|e| {
-        log::warn!("[MM] Huge Page Allocator poisoned");
-        e.into_inner()
-    }))
-}
+    match HUGE_PAGE_ALLOCATOR.lock() {
+        Ok(mut guard) => Some(f(&mut guard)),
+        Err(_) => {
+            log::error!("[MM] Huge Page Allocator poisoned - refusing to access allocator");
+            None
+        }
+    }
+} 
 
 /// 1GBページを割り当て（グローバルAPI）
 pub fn alloc_huge_page_1g() -> Option<PhysAddr> {
@@ -365,7 +370,19 @@ mod tests {
         assert_eq!(stats.used_pages_1g, 2);
         assert_eq!(stats.free_pages_1g, 6);
     }
+    #[test]
+    fn test_with_huge_page_allocator_poisoned_returns_none() {
+        use crate::sync::set_panicking;
+        // Poison the allocator lock
+        set_panicking(true);
+        if let Ok(_g) = HUGE_PAGE_ALLOCATOR.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
 
+n        let res = with_huge_page_allocator(|alloc| alloc.allocate());
+        assert!(res.is_none());
+    }
     #[test]
     fn test_global_huge_page_allocator_poisoned_allocation_fails() {
         use crate::sync::set_panicking;

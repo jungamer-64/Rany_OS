@@ -77,10 +77,10 @@ pub use msi::{
     allocate_vector, allocate_vectors, disable_intx, enable_intx, setup_msi, setup_msix,
 };
 pub use pcie_ext::{
-    AerCapability, AerController, AtsCapability, AtsController, CorrectableErrors,
-    HotPlugController, HotPlugEvent, PCIE_CONFIG_SIZE, PCIE_EXT_CAP_START, PcieBdf, PcieConfig,
-    PcieError, PcieExtDevice, PcieExtManager, PcieMsixController, PcieMsixTableEntry,
-    PciePowerManager, PciePowerState, PcieResult, SriovCapability, SriovController,
-    UncorrectableErrors, cap_id, device_supports_ats, ext_cap_id, init_pcie_ext, pcie_ext_config,
-    pcie_ext_manager,
+    AcsCapability, AcsController, AerCapability, AerController, AtsCapability, AtsController,
+    CorrectableErrors, HotPlugController, HotPlugEvent, PCIE_CONFIG_SIZE, PCIE_EXT_CAP_START,
+    PcieBdf, PcieConfig, PcieError, PcieExtDevice, PcieExtManager, PcieMsixController,
+    PcieMsixTableEntry, PciePowerManager, PciePowerState, PcieResult, SriovCapability,
+    SriovController, UncorrectableErrors, cap_id, device_supports_acs, device_supports_ats,
+    ext_cap_id, init_pcie_ext, pcie_ext_config, pcie_ext_manager,
 };

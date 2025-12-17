@@ -289,7 +289,9 @@ pub fn init() {
 /// ドメイン作成は頻繁に呼ばれないため、このコストは許容される。
 /// 代替案: log を先に行い、name を消費するパターン
 pub fn create_domain(name: String) -> DomainId {
-    // 毒入れされている場合も回復して続行（障害隔離）
+    // NOTE: This currently recovers from a poisoned registry during domain creation. This is a
+    // runtime path and may expose inconsistent state; consider refactoring `create_domain` to
+    // return a `Result` and allow callers to handle lock poison conservatively. (TODO)
     let mut registry = REGISTRY.lock().unwrap_or_else(|e| {
         log::info!("[DOMAIN] Warning: registry poisoned, recovering\n");
         e.into_inner()

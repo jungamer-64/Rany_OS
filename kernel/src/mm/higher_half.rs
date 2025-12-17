@@ -771,6 +771,8 @@ static HIGHER_HALF_MANAGER: PoisonLock<Option<HigherHalfManager>> = PoisonLock::
 /// Higher Halfカーネルを初期化
 pub fn init(physical_memory_offset: u64) {
     let manager = HigherHalfManager::new(physical_memory_offset);
+    // Initialization-time best-effort recovery: recovering a poisoned manager during init is
+    // acceptable to allow boot to continue.
     *HIGHER_HALF_MANAGER.lock().unwrap_or_else(|e| {
         log::warn!("[MM] Higher Half poisoned");
         e.into_inner()
@@ -1295,6 +1297,7 @@ static PAGE_TABLE_MANAGER: PoisonLock<Option<PageTableManager>> = PoisonLock::ne
 /// ページテーブルマネージャーを初期化
 pub fn init_page_table_manager(physical_memory_offset: u64) {
     let manager = unsafe { PageTableManager::from_current_cr3(physical_memory_offset) };
+    // Initialization-time best-effort recovery for PageTableManager initialization.
     *PAGE_TABLE_MANAGER.lock().unwrap_or_else(|e| {
         log::warn!("[MM] Page Table Manager poisoned");
         e.into_inner()

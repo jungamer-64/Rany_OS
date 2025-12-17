@@ -3735,6 +3735,9 @@ impl IommuController {
                 }
             }
             Err(poisoned) => {
+                // Initialization-time best-effort recovery: if the IRT lock is poisoned during init,
+                // attempt a best-effort check to detect AlreadyInitialized; caller should be aware that
+                // the table may be inconsistent.
                 log::warn!("[IOMMU] interrupt_remap_table lock poisoned during init_interrupt_remapping");
                 let mut guard = poisoned.into_inner();
                 if guard.is_some() {
@@ -4010,6 +4013,9 @@ impl IommuController {
                 }
             }
             Err(poisoned) => {
+                // Initialization-time best-effort recovery for pid_pool: attempt to examine the current state
+                // and fail if already initialized. Best-effort because this occurs during init and helping
+                // boot progress is preferred.
                 log::warn!("[IOMMU] pid_pool lock poisoned during init_posted_interrupts");
                 let mut guard = poisoned.into_inner();
                 if guard.is_some() {
@@ -4021,7 +4027,11 @@ impl IommuController {
         let pool = PostedInterruptPool::new(num_pids).ok_or(IommuError::HardwareError)?;
         match self.pid_pool.lock() {
             Ok(mut guard) => { *guard = Some(pool); }
-            Err(poisoned) => { let mut guard = poisoned.into_inner(); *guard = Some(pool); }
+            Err(poisoned) => {
+                // Initialization-time best-effort assignment: proceed to set the pid_pool even if the lock
+                // is poisoned. This minimizes missed initialization in early boot.
+                let mut guard = poisoned.into_inner(); *guard = Some(pool);
+            }
         }
 
         log::info!(
@@ -4087,6 +4097,8 @@ impl IommuController {
                 }
             }
             Err(poisoned) => {
+                // Best-effort free: if the interrupt remap table lock is poisoned, attempt to free the IRTE to
+                // minimize resource leakage. This may operate on possibly-inconsistent state.
                 log::warn!("[IOMMU] interrupt_remap_table lock poisoned while freeing IRTE {}", irte_index);
                 let mut guard = poisoned.into_inner();
                 if let Some(irt) = guard.as_mut() {
@@ -4104,6 +4116,7 @@ impl IommuController {
                 }
             }
             Err(poisoned) => {
+                // Best-effort free: attempt to free PID even if pid_pool lock is poisoned to reduce resource leaks.
                 log::warn!("[IOMMU] pid_pool lock poisoned while freeing PID {}", pid_index);
                 let mut guard = poisoned.into_inner();
                 if let Some(pool) = guard.as_mut() {
@@ -4161,6 +4174,8 @@ impl IommuController {
                 }
             }
             Err(poisoned) => {
+                // Initialization-time best-effort: if PRQ lock is poisoned during init, check guard to avoid
+                // double-init; proceed cautiously.
                 log::warn!("[IOMMU] page_request_queue lock poisoned during init_page_request");
                 let guard = poisoned.into_inner();
                 if guard.is_some() {
@@ -4289,7 +4304,10 @@ impl IommuController {
     pub fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError> {
         match self.iova_allocator.lock() {
             Ok(mut guard) => { *guard = Some(IovaAllocator::new(base, size)); }
-            Err(poisoned) => { log::warn!("[IOMMU] iova_allocator lock poisoned while initializing - proceeding with best-effort"); let mut guard = poisoned.into_inner(); *guard = Some(IovaAllocator::new(base, size)); }
+            Err(poisoned) => {
+                // Initialization-time best-effort: proceed to set iova allocator even if poisoned; this helps boot
+                // complete initialization in presence of earlier panics.
+                log::warn!("[IOMMU] iova_allocator lock poisoned while initializing - proceeding with best-effort"); let mut guard = poisoned.into_inner(); *guard = Some(IovaAllocator::new(base, size)); }
         }
         Ok(())
     }
@@ -4505,6 +4523,8 @@ impl IommuController {
                 }
             }
             Err(poisoned) => {
+                // Initialization-time best-effort recovery for invalidation queue: proceed cautiously
+                // if lock is poisoned during initialization.
                 log::warn!("[IOMMU] invalidation_queue lock poisoned during init_queued_invalidation");
                 let guard = poisoned.into_inner();
                 if guard.is_some() {
@@ -4528,7 +4548,9 @@ impl IommuController {
 
         match self.invalidation_queue.lock() {
             Ok(mut guard) => { *guard = Some(iq); }
-            Err(poisoned) => { log::warn!("[IOMMU] invalidation_queue lock poisoned while initializing - proceeding with best-effort"); let mut guard = poisoned.into_inner(); *guard = Some(iq); }
+            Err(poisoned) => {
+                // Initialization-time best-effort assignment: set invalidation queue even if lock is poisoned.
+                log::warn!("[IOMMU] invalidation_queue lock poisoned while initializing - proceeding with best-effort"); let mut guard = poisoned.into_inner(); *guard = Some(iq); }
         }
         log::info!(
             "[IOMMU] Invalidation Queue initialized ({} entries)\\n",
@@ -6113,7 +6135,10 @@ impl IommuController {
                 // Hardware lock is released here (guard drops)
             }
             Err(poisoned) => {
-                // If the hardware lock is poisoned, attempt best-effort isolation using the poisoned guard.
+                // Best-effort isolation: when the hardware lock is poisoned, we still attempt to clear
+                // the device's Present bit via the poisoned guard. This is intentional because failing
+                // to isolate a device that triggered a security violation is worse than performing a
+                // best-effort modification on possibly-inconsistent table state.
                 log::warn!(
                     "[IOMMU] hardware lock poisoned while isolating device (SourceID {:04x}) - proceeding with best-effort isolation",
                     source_id
@@ -6249,7 +6274,10 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
             if let Some(domain_arc) = iommu.domain(domain_id) {
                 match domain_arc.lock() {
                     Ok(mut domain) => { let _ = domain.map_identity(region.base, size, true, true); },
-                    Err(poisoned) => { let mut domain = poisoned.into_inner(); let _ = domain.map_identity(region.base, size, true, true); },
+                    Err(poisoned) => {
+                        // Best-effort mapping during device setup: proceed to apply reserved regions if possible
+                        // even when the domain lock is poisoned (init/boot-time risk acceptance).
+                        let mut domain = poisoned.into_inner(); let _ = domain.map_identity(region.base, size, true, true); },
                 }
             }
         }
@@ -6370,6 +6398,49 @@ mod tests {
         }
         set_panicking(false);
         assert_eq!(ctrl.create_domain(Some(0), IommuDomainType::Translated).err(), Some(IommuError::HardwareError));
+    }
+
+    #[test]
+    fn test_isolate_faulting_device_poisoned_attempts_isolation() {
+        use crate::sync::set_panicking;
+        let ctrl = IommuController::new(0x0, 0);
+
+        // Allocate a single ContextEntry and make it Present
+        let boxed = Box::new(ContextEntry::default());
+        let boxed_ptr: *mut ContextEntry = Box::into_raw(boxed);
+        unsafe { (*boxed_ptr).lo = 1; } // set Present bit
+
+        // Install table pointer for bus 0
+        {
+            match ctrl.hardware.lock() {
+                Ok(mut hw) => { hw.context_tables.push(boxed_ptr); }
+                Err(poisoned) => { let mut hw = poisoned.into_inner(); hw.context_tables.push(boxed_ptr); }
+            }
+        }
+
+        // Poison the hardware lock so isolate will take the poisoned branch
+        set_panicking(true);
+        if let Ok(_g) = ctrl.hardware.lock() {
+            // drop to poison
+        }
+        set_panicking(false);
+
+        assert!(ctrl.hardware.is_poisoned());
+
+        // Call isolate - it should attempt best-effort isolation and clear the Present bit
+        ctrl.isolate_faulting_device(0);
+
+        // Remove pointer from controller context to avoid dangling pointer later
+        match ctrl.hardware.lock() {
+            Ok(mut hw) => { let p = hw.context_tables.remove(0); assert_eq!(p, boxed_ptr); },
+            Err(poisoned) => { let mut hw = poisoned.into_inner(); let p = hw.context_tables.remove(0); assert_eq!(p, boxed_ptr); },
+        }
+
+        unsafe {
+            assert!(!(*boxed_ptr).is_present());
+            // Free the box
+            let _ = Box::from_raw(boxed_ptr);
+        }
     }
 
     #[test]
