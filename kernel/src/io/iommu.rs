@@ -3924,22 +3924,18 @@ impl IommuController {
             return Err(IommuError::NotSupported);
         }
 
-        match self.interrupt_remap_table.lock() {
-            Ok(guard) => {
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
-            }
-            Err(poisoned) => {
+        let guard = match self.interrupt_remap_table.lock() {
+            Ok(g) => g,
+            Err(_) => {
                 // Initialization-time best-effort recovery: if the IRT lock is poisoned during init,
                 // attempt a best-effort check to detect AlreadyInitialized; caller should be aware that
                 // the table may be inconsistent.
                 log::warn!("[IOMMU] interrupt_remap_table lock poisoned during init_interrupt_remapping");
-                let guard = poisoned.into_inner();
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
+                self.interrupt_remap_table.lock_for_init("[IOMMU] interrupt_remap_table init")
             }
+        };
+        if guard.is_some() {
+            return Err(IommuError::AlreadyInitialized);
         }
 
         // Create the IRT
@@ -4200,22 +4196,18 @@ impl IommuController {
         }
 
         // Check if PID pool already initialized
-        match self.pid_pool.lock() {
-            Ok(guard) => {
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
-            }
-            Err(poisoned) => {
+        let guard = match self.pid_pool.lock() {
+            Ok(g) => g,
+            Err(_) => {
                 // Initialization-time best-effort recovery for pid_pool: attempt to examine the current state
                 // and fail if already initialized. Best-effort because this occurs during init and helping
                 // boot progress is preferred.
                 log::warn!("[IOMMU] pid_pool lock poisoned during init_posted_interrupts");
-                let guard = poisoned.into_inner();
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
+                self.pid_pool.lock_for_init("[IOMMU] pid_pool init")
             }
+        };
+        if guard.is_some() {
+            return Err(IommuError::AlreadyInitialized);
         }
 
         let pool = PostedInterruptPool::new(num_pids).ok_or(IommuError::HardwareError)?;
@@ -4355,21 +4347,17 @@ impl IommuController {
         }
 
         // Check for existing PRQ
-        match self.page_request_queue.lock() {
-            Ok(guard) => {
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
-            }
-            Err(poisoned) => {
+        let guard = match self.page_request_queue.lock() {
+            Ok(g) => g,
+            Err(_) => {
                 // Initialization-time best-effort: if PRQ lock is poisoned during init, check guard to avoid
                 // double-init; proceed cautiously.
                 log::warn!("[IOMMU] page_request_queue lock poisoned during init_page_request");
-                let guard = poisoned.into_inner();
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
+                self.page_request_queue.lock_for_init("[IOMMU] page_request_queue init")
             }
+        };
+        if guard.is_some() {
+            return Err(IommuError::AlreadyInitialized);
         }
 
         let prq = PageRequestQueue::new(size).ok_or(IommuError::HardwareError)?;
@@ -4697,21 +4685,17 @@ impl IommuController {
             return Err(IommuError::NotSupported);
         }
 
-        match self.invalidation_queue.lock() {
-            Ok(guard) => {
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
-            }
-            Err(poisoned) => {
+        let guard = match self.invalidation_queue.lock() {
+            Ok(g) => g,
+            Err(_) => {
                 // Initialization-time best-effort recovery for invalidation queue: proceed cautiously
                 // if lock is poisoned during initialization.
                 log::warn!("[IOMMU] invalidation_queue lock poisoned during init_queued_invalidation");
-                let guard = poisoned.into_inner();
-                if guard.is_some() {
-                    return Err(IommuError::AlreadyInitialized);
-                }
+                self.invalidation_queue.lock_for_init("[IOMMU] invalidation_queue init")
             }
+        };
+        if guard.is_some() {
+            return Err(IommuError::AlreadyInitialized);
         }
 
         // Create the queue
