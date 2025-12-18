@@ -11,6 +11,7 @@
 // ============================================================================
 #![allow(dead_code)]
 
+#[cfg(not(test))]
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::ops::{Deref, DerefMut};

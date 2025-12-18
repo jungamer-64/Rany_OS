@@ -36,6 +36,7 @@ use hashbrown::HashMap;
 use crate::sync::PoisonLock;
 
 // PCI helpers used when enabling ATS for devices
+#[allow(unused_imports)]
 use pci_driver::{
     AcsController, AtsController, DeviceId as PciDeviceId, PcieBdf, PcieConfig, PcieExtManager,
     PciDeviceInfo, device_supports_acs, device_supports_ats, pcie_ext_config, pcie_ext_manager,
@@ -2628,9 +2629,9 @@ impl IommuDomain {
             return Err(IommuError::AlreadyMapped);
         }
 
-        let pd_table = ((unsafe { *pdp_entry }).phys_addr()) as *mut SlPte;
+        let pd_table = (unsafe { *pdp_entry }).phys_addr() as *mut SlPte;
         let pd_entry = unsafe { pd_table.add(pd_idx) };
-        let pd_phys = ((unsafe { *pdp_entry }).phys_addr());
+        let pd_phys = (unsafe { *pdp_entry }).phys_addr();
 
         // Check if already mapped
         if (unsafe { *pd_entry }).is_present() {
