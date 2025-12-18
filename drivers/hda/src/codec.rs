@@ -5,8 +5,7 @@
 #![allow(dead_code)]
 
 use alloc::vec::Vec;
-use crate::types::{CodecInfo, HdaError, HdaResult, WidgetCaps};
-use crate::regs::*;
+use crate::types::{CodecInfo, HdaResult, WidgetCaps};
 
 // Detect codecs on a controller (controller-specific functions call these)
 pub fn detect_codecs() -> Vec<CodecInfo> {

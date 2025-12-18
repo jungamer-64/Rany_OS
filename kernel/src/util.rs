@@ -127,7 +127,7 @@ pub fn struct_as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
 /// Convert a NonNull<u8> pointer with an offset and length into an immutable slice.
 /// This encapsulates an unsafe pointer -> slice conversion for non-owning buffers.
 pub unsafe fn nonnull_ptr_as_slice<'a>(
-    ptr: core::ptr::NonNull<u8>,
+    ptr: NonNull<u8>,
     offset: usize,
     len: usize,
 ) -> &'a [u8] {
@@ -140,7 +140,7 @@ pub unsafe fn nonnull_ptr_as_slice<'a>(
 
 /// Convert a NonNull<u8> pointer with an offset and length into a mutable slice.
 pub unsafe fn nonnull_ptr_as_slice_mut<'a>(
-    ptr: core::ptr::NonNull<u8>,
+    ptr: NonNull<u8>,
     offset: usize,
     len: usize,
 ) -> &'a mut [u8] {
@@ -166,9 +166,9 @@ pub unsafe fn raw_ptr_as_slice_mut<'a>(ptr: *mut u8, len: usize) -> &'a mut [u8]
 /// Allocate memory zero-initialized and return a NonNull pointer if successful.
 ///
 /// This centralizes `alloc::alloc::alloc_zeroed` and converts the raw pointer into a `NonNull`.
-pub fn allocate_zeroed(layout: core::alloc::Layout) -> Option<core::ptr::NonNull<u8>> {
+pub fn allocate_zeroed(layout: core::alloc::Layout) -> Option<NonNull<u8>> {
     let ptr = unsafe { alloc_zeroed(layout) };
-    core::ptr::NonNull::new(ptr)
+    NonNull::new(ptr)
 }
 
 /// Write a typed value directly to a virtual address. The address must be valid

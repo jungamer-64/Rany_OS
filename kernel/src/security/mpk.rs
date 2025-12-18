@@ -350,14 +350,16 @@ static CURRENT_PKRU: AtomicU32 = AtomicU32::new(0xFFFFFFFF);
 #[inline(always)]
 pub unsafe fn rdpkru() -> u32 {
     let pkru: u32;
-    core::arch::asm!(
-        "xor ecx, ecx",
-        "rdpkru",
-        out("eax") pkru,
-        out("edx") _,
-        out("ecx") _,
-        options(nomem, nostack, preserves_flags)
-    );
+    unsafe {
+        core::arch::asm!(
+            "xor ecx, ecx",
+            "rdpkru",
+            out("eax") pkru,
+            out("edx") _,
+            out("ecx") _,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
     pkru
 }
 
@@ -368,13 +370,15 @@ pub unsafe fn rdpkru() -> u32 {
 /// - 不正なPKRU値はページフォールトを引き起こす可能性がある
 #[inline(always)]
 pub unsafe fn wrpkru(pkru: u32) {
-    core::arch::asm!(
-        "wrpkru",
-        in("eax") pkru,
-        in("ecx") 0u32,
-        in("edx") 0u32,
-        options(nomem, nostack, preserves_flags)
-    );
+    unsafe {
+        core::arch::asm!(
+            "wrpkru",
+            in("eax") pkru,
+            in("ecx") 0u32,
+            in("edx") 0u32,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
 }
 
 /// ドメイン遷移プロローグ
@@ -393,7 +397,7 @@ pub unsafe fn domain_transition_prologue(new_pkru: PkruValue) {
     }
 
     // WRPKRUでアクセス権を原子的に切り替え（約20サイクル）
-    wrpkru(new_pkru.0);
+    unsafe { wrpkru(new_pkru.0); }
 
     // 遷移先ドメインのエントリポイント検証（投機実行前に完了）
     core::sync::atomic::compiler_fence(Ordering::SeqCst);
