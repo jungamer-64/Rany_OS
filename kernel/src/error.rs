@@ -529,6 +529,8 @@ impl From<crate::io::usb::UsbError> for IoError {
             UE::InvalidParameter => IoError::InvalidParameter,
             UE::NoResources => IoError::NoResources,
             UE::XhciError(_) => IoError::UsbError,
+            UE::NotConnected => IoError::DeviceNotFound,
+            UE::InvalidDevice => IoError::DeviceNotFound,
             UE::Other(_) => IoError::UsbError,
         }
     }

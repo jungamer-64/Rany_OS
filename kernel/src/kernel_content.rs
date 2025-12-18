@@ -376,11 +376,8 @@ extern "C" fn kmain() -> ! {
                     }
 
                     // Initialize PCI subsystem
-                    if let Err(e) = pci_driver::init(mcfg_base_addr) {
-                        error!(target: "init", "PCI driver init failed: {:?}", e);
-                    } else {
-                        info!(target: "init", "PCI driver initialized");
-                    }
+                    pci_driver::init();
+                    info!(target: "init", "PCI driver initialized");
                 }
             }
             Err(e) => {

@@ -37,7 +37,12 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Prefer `KeyboardStream` or unified HID driver APIs instead of PS/2-specific helpers.
   - Internal polling shims (`poll_key_char`, `poll_key_event`, `poll_input_event`) ✅ **deprecated**
     - Migration: Use `KeyboardStream` and the async stream APIs.
-  - `ModifierState` re-export ✅ **deprecated**
+  - PS/2 alias types (`Ps2DeviceType`, `Ps2KeyCode`, `Ps2KeyEvent`, `Ps2Modifiers`) ✅ **deprecated**
+    - Migration: Use generic `KeyCode`, `KeyEvent`, `DeviceType`, `Modifiers` or `hid_driver` types directly.
+  - Mouse polling helpers (`has_mouse_event`, `poll_mouse_event`) ✅ **deprecated**
+    - Migration: Use event-driven `MouseEvent` streams or `mouse::has_event()`.
+  - HID extension traits (`KeyCodeExt`, `KeyEventExt`) ✅ **deprecated**
+    - Migration: Bring traits into scope from `hid_driver` directly (e.g., `use hid_driver::KeyEventExt`).  - `ModifierState` re-export ✅ **deprecated**
     - Migration: Use `hid_driver::ModifierState` directly.
   - `IsrSafeWaker` re-export ✅ **deprecated**
     - Migration: Use `hid_driver::IsrSafeWaker` directly.

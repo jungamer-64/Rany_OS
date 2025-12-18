@@ -2286,7 +2286,7 @@ impl IommuGroupManager {
                 {
                     // Secondary Bus Number (0x19), Subordinate Bus Number (0x1A) for Type 1 Header
                     let secondary_bus = config.read8(device_info.bdf, 0x19).unwrap_or(0);
-                    let subordinate_bus = config.read8(device_info.bdf, 0x1A).unwrap_or(0);
+                    let _subordinate_bus = config.read8(device_info.bdf, 0x1A).unwrap_or(0);
 
                     if secondary_bus == current_bdf.bus {
                         // Found the parent bridge.
@@ -2962,6 +2962,20 @@ pub enum IommuError {
     OutOfMemory,
     /// Timeout
     Timeout,
+}
+
+impl From<PcieError> for IommuError {
+    fn from(e: PcieError) -> Self {
+        match e {
+            PcieError::DeviceNotFound => IommuError::DeviceNotFound,
+            PcieError::CapabilityNotFound => IommuError::NotSupported,
+            PcieError::NotSupported => IommuError::NotSupported,
+            PcieError::ConfigError => IommuError::HardwareError,
+            PcieError::ResourceExhausted => IommuError::HardwareError,
+            PcieError::VfAllocationFailed => IommuError::HardwareError,
+            PcieError::AerError => IommuError::HardwareError,
+        }
+    }
 }
 
 /// Device identifier (BDF: Bus/Device/Function)
@@ -6545,11 +6559,11 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
     let device_id = DeviceId::new(
         device.segment,
-        device.bdf.bus,
-        device.bdf.device,
-        device.bdf.function,
+        device.bdf.bus(),
+        device.bdf.device(),
+        device.bdf.function(),
     );
-    let numa_hint = device.numa_node; // Use device's NUMA hint if available
+    let numa_hint = 0; // Use device's NUMA hint if available (not available in PciDeviceInfo yet)
 
     // 1. Determine IOMMU Group and get/create its domain
     let (iommu_group, newly_created) =
@@ -6572,7 +6586,10 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
     // 2. Enable ATS for the device if supported and not already enabled by this IOMMU
     if (controller.ecap & ecap_bits::ECAP_DT) != 0
-        && device_supports_ats(pcie_ext_manager.config(), device.bdf)
+        && device_supports_ats(
+            pcie_ext_manager.config(),
+            PcieBdf::from_bdf_address(&device.bdf),
+        )
     {
         // Check if ATS is already enabled for this device on this controller
         let ats_enabled_for_device = match controller.ats_enabled_devices.lock() {
@@ -6589,7 +6606,9 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         if !ats_enabled_for_device {
             // Attempt to enable ATS
             if let Some(config) = pcie_ext_config() {
-                if let Ok(ats_ctrl) = AtsController::new(config, device.bdf) {
+                if let Ok(ats_ctrl) =
+                    AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf))
+                {
                     // STU (Smallest Translation Unit) is usually 0 (4KB).
                     if let Err(e) = ats_ctrl.enable_ats(0) {
                         log::warn!(

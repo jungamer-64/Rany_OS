@@ -35,29 +35,39 @@ pub use hid_driver::{HidError, HidResult};
 
 // PS/2 Controller exports
 #[allow(unused_imports)]
-pub use ps2::{
-    DeviceType as Ps2DeviceType,
-    KeyCode as Ps2KeyCode,
-    KeyEvent as Ps2KeyEvent,
-    KeyboardHandler,
-    Modifiers as Ps2Modifiers,
-    MouseButton,
-    MouseEvent,
-    MouseHandler,
-    // Types
-    Ps2Controller,
-    commands as ps2_commands,
-    // Functions
-    init as ps2_init,
-    kbd_commands as ps2_kbd_commands,
-    keyboard_interrupt_handler,
-    mouse_commands as ps2_mouse_commands,
-    mouse_interrupt_handler,
-    // Constants
-    ports as ps2_ports,
-    set_leds,
-    status as ps2_status,
-};
+#[deprecated(note = "Ps2DeviceType is deprecated; prefer `DeviceType` from the `ps2` module or generic HID types.")]
+pub use ps2::DeviceType as Ps2DeviceType;
+
+#[deprecated(note = "Ps2KeyCode is deprecated; prefer `KeyCode` directly.")]
+pub use ps2::KeyCode as Ps2KeyCode;
+
+#[deprecated(note = "Ps2KeyEvent is deprecated; prefer `KeyEvent` directly.")]
+pub use ps2::KeyEvent as Ps2KeyEvent;
+
+pub use ps2::KeyboardHandler;
+
+#[deprecated(note = "Ps2Modifiers is deprecated; prefer `Modifiers` directly.")]
+pub use ps2::Modifiers as Ps2Modifiers;
+
+pub use ps2::MouseButton;
+pub use ps2::MouseEvent;
+pub use ps2::MouseHandler;
+
+// Types
+pub use ps2::Ps2Controller;
+pub use ps2::commands as ps2_commands;
+
+// Functions
+pub use ps2::init as ps2_init;
+pub use ps2::kbd_commands as ps2_kbd_commands;
+pub use ps2::keyboard_interrupt_handler;
+pub use ps2::mouse_commands as ps2_mouse_commands;
+pub use ps2::mouse_interrupt_handler;
+
+// Constants
+pub use ps2::ports as ps2_ports;
+pub use ps2::set_leds;
+pub use ps2::status as ps2_status;
 
 /// Deprecated PS/2 helpers - prefer `KeyboardStream` or unified HID APIs
 #[deprecated(note = "ps2::get_key_event is deprecated; prefer `KeyboardStream` or `keyboard::has_event` instead.")]
@@ -134,15 +144,16 @@ pub(crate) use keyboard::poll_key_event as poll_input_event;
 
 // Mouse driver exports
 #[allow(unused_imports)]
-pub use mouse::{
-    // Types
-    handle_mouse_packet,
-    has_mouse_event,
-    // Functions
-    init as mouse_init,
-    is_mouse_initialized,
-    poll_mouse_event,
-};
+pub use mouse::handle_mouse_packet;
+
+#[deprecated(note = "has_mouse_event is deprecated; prefer `mouse::has_event()` or event-driven MouseEvent streams.")]
+pub use mouse::has_mouse_event;
+
+pub use mouse::init as mouse_init;
+pub use mouse::is_mouse_initialized;
+
+#[deprecated(note = "poll_mouse_event is deprecated; prefer async MouseEvent streams or `mouse::poll_event` APIs.")]
+pub use mouse::poll_mouse_event;
 
 // Deprecated convenience alias: use `MouseButton`/`MouseEvent` directly
 #[deprecated(note = "MouseBtn is deprecated; use `MouseButton` directly.")]
