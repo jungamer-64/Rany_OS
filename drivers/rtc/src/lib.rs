@@ -12,7 +12,7 @@
 #![allow(clippy::redundant_closure_for_method_calls)] // Closure readability
 #![allow(clippy::struct_excessive_bools)] // RtcAlarm has multiple enable flags
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use hal::port_io::PortU8;
 use spin::Mutex;
 
@@ -190,6 +190,8 @@ pub struct Rtc {
     hour_24: bool,
     /// 世紀レジスタのアドレス（ACPIから取得）
     century_register: Option<u8>,
+    /// Periodic Interrupt Rate (Hz)
+    periodic_rate: u32,
 }
 
 impl Rtc {
@@ -240,10 +242,19 @@ impl Rtc {
     /// 新しいRTCドライバを作成
     pub fn new() -> Self {
         let status_b = unsafe { Self::read_cmos(regs::STATUS_B) };
+        let status_a = unsafe { Self::read_cmos(regs::STATUS_A) };
+
+        let rate_sel = status_a & status_a::RATE_MASK;
+        let periodic_rate = if (3..=15).contains(&rate_sel) {
+            32768 >> (rate_sel - 1)
+        } else {
+            0
+        };
         Self {
             binary_mode: (status_b & status_b::BINARY_MODE) != 0,
             hour_24: (status_b & status_b::HOUR_24) != 0,
             century_register: None,
+            periodic_rate,
         }
     }
 
@@ -390,7 +401,7 @@ impl Rtc {
 
     /// 周期的割り込みを設定
     /// rate: 3-15の値、周期 = 32768 >> (rate - 1) Hz
-    pub fn set_periodic_interrupt(&self, rate: u8) {
+    pub fn set_periodic_interrupt(&mut self, rate: u8) {
         let rate = rate.clamp(3, 15);
         unsafe {
             let status_a = Self::read_cmos(regs::STATUS_A);
@@ -399,6 +410,7 @@ impl Rtc {
             let status_b = Self::read_cmos(regs::STATUS_B);
             Self::write_cmos(regs::STATUS_B, status_b | status_b::PERIODIC_INT);
         }
+        self.periodic_rate = 32768 >> (rate - 1);
     }
 
     /// 割り込みを無効化
@@ -421,6 +433,57 @@ impl Rtc {
             alarm: (status_c & 0x20) != 0,
             periodic: (status_c & 0x40) != 0,
             irq: (status_c & 0x80) != 0,
+        }
+    }
+
+    /// 現在時刻から相対的にアラームを設定（秒後）
+    pub fn set_alarm_relative(&mut self, seconds: u8) {
+        let now = self.read_datetime();
+        let mut second = now.second + seconds;
+        let mut minute = now.minute;
+        let mut hour = now.hour;
+
+        while second >= 60 {
+            second -= 60;
+            minute += 1;
+        }
+        while minute >= 60 {
+            minute -= 60;
+            hour += 1;
+        }
+        hour %= 24;
+
+        self.set_alarm(hour, minute, second);
+    }
+
+    /// 周期的割り込みの周波数をHz単位で設定
+    /// サポートされている値: 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192
+    pub fn set_frequency(&mut self, hz: u32) -> Result<(), &'static str> {
+        let rate = match hz {
+            8192 => 3,
+            4096 => 4,
+            2048 => 5,
+            1024 => 6,
+            512 => 7,
+            256 => 8,
+            128 => 9,
+            64 => 10,
+            32 => 11,
+            16 => 12,
+            8 => 13,
+            4 => 14,
+            2 => 15,
+            _ => return Err("Unsupported frequency"),
+        };
+        self.set_periodic_interrupt(rate);
+        Ok(())
+    }
+
+    /// 更新終了割り込みを有効化
+    pub fn enable_update_interrupt(&self) {
+        unsafe {
+            let status_b = Self::read_cmos(regs::STATUS_B);
+            Self::write_cmos(regs::STATUS_B, status_b | status_b::UPDATE_ENDED_INT);
         }
     }
 }
@@ -446,6 +509,12 @@ static SYSTEM_TIME: AtomicU64 = AtomicU64::new(0);
 
 /// 起動時のUnixタイムスタンプ
 static BOOT_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
+
+/// 内部ティックカウンタ
+static TICKS: AtomicU64 = AtomicU64::new(0);
+
+/// アラーム発生フラグ
+static ALARM_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
 /// RTCを初期化
 pub fn init() {
@@ -474,35 +543,57 @@ pub fn set_datetime(dt: &DateTime) {
 
 /// 現在のUnixタイムスタンプを取得
 pub fn get_unix_timestamp() -> i64 {
-    BOOT_TIMESTAMP.load(Ordering::SeqCst) as i64 + SYSTEM_TIME.load(Ordering::SeqCst) as i64
+    BOOT_TIMESTAMP.load(Ordering::Acquire) as i64 + SYSTEM_TIME.load(Ordering::Acquire) as i64
 }
 
 /// システム起動時間（秒）を取得
 pub fn get_uptime_seconds() -> u64 {
-    SYSTEM_TIME.load(Ordering::SeqCst)
+    SYSTEM_TIME.load(Ordering::Acquire)
 }
 
-/// 周期的割り込みハンドラ（例: 1024Hz）
-pub fn periodic_interrupt_handler() {
-    // ステータスCを読み取って割り込みをクリア
+/// システム起動時間（ミリ秒）を取得
+pub fn get_uptime_ms() -> u64 {
+    let seconds = SYSTEM_TIME.load(Ordering::Acquire);
+    let ticks = TICKS.load(Ordering::Acquire);
+    
     if let Some(ref rtc) = *RTC.lock() {
-        let status = rtc.read_interrupt_status();
-        if status.periodic {
-            // 内部カウンタを更新
-            static TICKS: AtomicU64 = AtomicU64::new(0);
-            let ticks = TICKS.fetch_add(1, Ordering::SeqCst);
-            // 1024Hzの場合、1024ティックで1秒
-            if ticks % 1024 == 0 {
-                SYSTEM_TIME.fetch_add(1, Ordering::SeqCst);
-            }
+        let rate = rtc.periodic_rate as u64;
+        if rate > 0 {
+            let sub_second_ticks = ticks % rate;
+            return (seconds * 1000) + (sub_second_ticks * 1000 / rate);
         }
     }
+    
+    seconds * 1000
+}
+
+/// 高精度なUnixタイムスタンプ（ミリ秒）を取得
+pub fn get_unix_timestamp_ms() -> i64 {
+    get_unix_timestamp() * 1000 + (get_uptime_ms() % 1000) as i64
+}
+
+/// アラーム発生を確認してクリア
+pub fn check_and_clear_alarm() -> bool {
+    ALARM_TRIGGERED.swap(false, Ordering::Acquire)
 }
 
 /// RTC割り込みハンドラ
 pub fn rtc_interrupt_handler() {
     if let Some(ref rtc) = *RTC.lock() {
-        let _status = rtc.read_interrupt_status();
-        // 必要に応じて処理を追加
+        let status = rtc.read_interrupt_status();
+
+        if status.periodic {
+            // 内部カウンタを更新
+            let ticks = TICKS.fetch_add(1, Ordering::Relaxed);
+
+            let rate = rtc.periodic_rate as u64;
+            if rate > 0 && (ticks + 1) % rate == 0 {
+                SYSTEM_TIME.fetch_add(1, Ordering::Release);
+            }
+        }
+
+        if status.alarm {
+            ALARM_TRIGGERED.store(true, Ordering::Release);
+        }
     }
 }

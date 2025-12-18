@@ -18,6 +18,7 @@ pub enum VfsError {
     NotSupported,
     ReadOnly,
     FileSystemCorrupted,
+    CrossDeviceLink,
     Other,
 }
 
@@ -36,6 +37,7 @@ impl fmt::Display for VfsError {
             Self::NotSupported => write!(f, "Operation not supported"),
             Self::ReadOnly => write!(f, "Read-only file system"),
             Self::FileSystemCorrupted => write!(f, "File system corrupted"),
+            Self::CrossDeviceLink => write!(f, "Cross-device link"),
             Self::Other => write!(f, "Other error"),
         }
     }
