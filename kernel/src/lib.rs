@@ -20,9 +20,9 @@ pub mod security;
 #[cfg(any(test, feature = "bench"))]
 pub mod graphics;
 
-// Minimal test-only `mm::numa` shim to satisfy IOMMU tests without
-// pulling in the full memory subsystem and its heavy dependencies.
-#[cfg(test)]
+// Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
+// without pulling in the full memory subsystem and its heavy dependencies.
+#[cfg(any(test, feature = "bench"))]
 pub mod mm {
     pub mod numa {
         use alloc::alloc::{alloc_zeroed, dealloc, Layout as ALayout};
@@ -145,6 +145,9 @@ pub mod mm {
             None
         }
 
+        /// Maximum CPUs for the test/bench shim
+        pub const MAX_CPUS: usize = 8;
+
         /// Get a mutable reference to per-CPU data (test shim: not available)
         /// Returning `None` is acceptable for unit tests and forces global
         /// allocator fallback paths to be exercised.
@@ -159,21 +162,39 @@ pub mod mm {
     }
 }
 
-// Minimal task/time shims for tests
-#[cfg(test)]
+// Minimal task/time shims for tests and benches
+#[cfg(any(test, feature = "bench"))]
 pub mod task {
     pub mod timer {
         /// Return current tick in milliseconds (test stub)
         pub fn current_tick() -> u64 { 0 }
     }
 
+    /// Convenience: expose `current_tick` at `crate::task::current_tick()` for
+    /// code that expects that symbol (legacy usage in some modules).
+    pub fn current_tick() -> u64 { timer::current_tick() }
+
     pub mod scheduler {
         /// Yield the current task (test stub - no-op)
         pub fn yield_current(_cpu_id: usize) {}
     }
+
+    /// Minimal interrupt_waker shim used by some I/O drivers in tests and benches.
+    pub mod interrupt_waker {
+        #[derive(Clone, Copy)]
+        pub enum InterruptSource {
+            VirtioBlk(u8),
+            VirtioNet(u8),
+            Other(u8),
+        }
+
+        pub fn wake_from_interrupt(_src: InterruptSource) {
+            // No-op in tests/bench harness
+        }
+    }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "bench"))]
 pub mod time {
     /// High-resolution time in nanoseconds (test stub using system clock)
     pub fn precise_time_nanos() -> u64 {
@@ -181,10 +202,29 @@ pub mod time {
         use std::time::{SystemTime, UNIX_EPOCH};
         SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
     }
+
+    /// Minimal SystemClock stub used by benches/tests
+    pub struct SystemClock;
+    impl SystemClock {
+        /// Return TSC frequency in Hz if known. Test/bench stub returns None.
+        pub fn tsc_frequency(&self) -> Option<u64> { None }
+    }
+
+    pub fn system_clock() -> SystemClock { SystemClock }
+
+    /// Return uptime in milliseconds (test stub)
+    pub fn get_uptime_ms() -> u64 { 0 }
+
+    /// PIT delay stub used by audio controller code in tests/benches
+    pub struct Pit;
+    impl Pit {
+        pub fn delay_us(&self, _us: u64) {}
+    }
+    pub fn pit() -> Pit { Pit }
 }
 
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "bench")))]
 pub mod io {
     // Include only the IOMMU implementation for test builds to avoid
     // pulling in the whole I/O subsystem and its wide dependency graph.
@@ -244,6 +284,13 @@ pub mod io {
         }
     }
 }
+
+// When building benches enable a *minimal* I/O module that only includes
+// `crate::io::log` so benchmark harnesses can access logging helpers while
+// avoiding the heavy dependencies of the full I/O subsystem.
+#[cfg(feature = "bench")]
+#[path = "io/bench_mod.rs"]
+pub mod io;
 
 #[cfg(any(test, feature = "bench"))]
 pub use hal;

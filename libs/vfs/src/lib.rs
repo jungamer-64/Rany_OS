@@ -60,6 +60,9 @@ pub trait VfsNode: Send + Sync {
 
     /// 名前を取得
     fn name(&self) -> String;
+
+    /// Any型へのダウンキャスト用
+    fn as_any(&self) -> &dyn core::any::Any;
 }
 
 /// ファイル操作トレイト

@@ -18,6 +18,7 @@ path = "src/lib.rs"
 vfs = { path = "../../libs/vfs" }
 spin = "0.9.8"
 log = "0.4"
+hashbrown = "0.14"
 
 [features]
 debug-trace = []
