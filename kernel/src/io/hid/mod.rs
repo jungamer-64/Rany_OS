@@ -47,9 +47,6 @@ pub use ps2::{
     // Types
     Ps2Controller,
     commands as ps2_commands,
-    get_key_event,
-    get_modifiers,
-    get_mouse_event,
     // Functions
     init as ps2_init,
     kbd_commands as ps2_kbd_commands,
@@ -61,6 +58,16 @@ pub use ps2::{
     set_leds,
     status as ps2_status,
 };
+
+/// Deprecated PS/2 helpers - prefer `KeyboardStream` or unified HID APIs
+#[deprecated(note = "ps2::get_key_event is deprecated; prefer `KeyboardStream` or `keyboard::has_event` instead.")]
+pub use ps2::get_key_event;
+
+#[deprecated(note = "ps2::get_modifiers is deprecated; prefer using keyboard APIs and `KeyboardStream`.")]
+pub use ps2::get_modifiers;
+
+#[deprecated(note = "ps2::get_mouse_event is deprecated; prefer using `MouseEvent` streams or unified HID APIs.")]
+pub use ps2::get_mouse_event;
 
 // Keymap exports (i18n keyboard layout support)
 #[allow(unused_imports)]
