@@ -179,6 +179,10 @@ pub mod task {
         pub fn yield_current(_cpu_id: usize) {}
     }
 
+    // Test shim removed: tests and benches should use the canonical
+    // `crate::task::TaskId` directly. If you see failures related to TaskId
+    // field access, please update tests to use `as_u64()` accessor.
+
     /// Minimal interrupt_waker shim used by some I/O drivers in tests and benches.
     pub mod interrupt_waker {
         #[derive(Clone, Copy)]

@@ -361,6 +361,12 @@ impl Executor {
             // 5. アイドル状態
             if self.local_queue.is_empty() && self.local_cache.is_empty() {
                 EXECUTOR_STATS.idle_cycles.fetch_add(1, Ordering::Relaxed);
+
+                // Aggregate per-core logs and kick serial TX while idle (non-ISR context).
+                // This does bounded work (AGGREGATE_MAX_PER_CALL) and avoids creating
+                // extra background tasks by leveraging the executor idle path.
+                crate::io::log::kick_serial_tx();
+
                 interrupts::enable_and_hlt();
             }
         }

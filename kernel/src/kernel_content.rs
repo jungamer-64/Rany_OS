@@ -724,12 +724,9 @@ extern "C" fn kmain() -> ! {
     task::init_executors(1); // シングルコアで開始
     info!(target: "init", "Per-core executors initialized");
 
-    // Spawn log aggregator (low-priority background task)
-    if let Some(id) = crate::io::log::spawn_log_aggregator() {
-        info!(target: "init", "Log aggregator spawned: {:?}", id);
-    } else {
-        warn!(target: "init", "Log aggregator spawn failed or already running");
-    }
+    // Aggregation is performed in the executor idle loop; explicit aggregator
+    // spawn is not required in the normal runtime path.
+    debug!(target: "init", "Log aggregation will run on executor idle");
 
     // 5. ローダーシステムの初期化
     info!(target: "init", "Initializing cell loader");

@@ -367,6 +367,10 @@ pub enum UsbError {
     InvalidParameter,
     /// リソース不足
     NoResources,
+    /// デバイスが未接続
+    NotConnected,
+    /// 無効なデバイス
+    InvalidDevice,
     /// xHCIエラー
     XhciError(String),
     /// その他
@@ -436,6 +440,12 @@ pub trait UsbDevice: Send + Sync {
         endpoint: EndpointAddress,
         data: &[u8],
     ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>>;
+
+    /// デバイスをサスペンド
+    fn suspend(&self) -> Pin<Box<dyn Future<Output = UsbResult<()>> + Send + '_>>;
+
+    /// デバイスをレジューム
+    fn resume(&self) -> Pin<Box<dyn Future<Output = UsbResult<()>> + Send + '_>>;
 }
 
 // ============================================================================

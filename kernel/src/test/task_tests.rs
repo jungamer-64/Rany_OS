@@ -17,8 +17,8 @@ pub fn test_task_creation() -> TestResult {
         TASK_RAN.store(true, Ordering::SeqCst);
     });
     
-    // Verify task ID is valid
-    if task.id().0 == 0 {
+    // Verify task ID is valid (use public accessor)
+    if task.id.as_u64() == 0 {
         return TestResult::Failed(String::from("Task ID should not be 0"));
     }
     
@@ -193,7 +193,7 @@ pub fn test_task_id_generation() -> TestResult {
     }
     
     // IDs should be increasing
-    if id2.0 <= id1.0 || id3.0 <= id2.0 {
+    if id2.as_u64() <= id1.as_u64() || id3.as_u64() <= id2.as_u64() {
         return TestResult::Failed(String::from("Task IDs should be increasing"));
     }
     

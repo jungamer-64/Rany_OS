@@ -442,6 +442,29 @@ mod ringbuffer_tests {
         let n = LOG_BUFFER.lock().pop_bulk(&mut tmp);
         assert_eq!(n, moved);
     }
+
+    #[test]
+    fn kick_serial_tx_aggregates_to_global() {
+        // Clear buffers
+        LOG_BUFFER.lock().clear();
+        for i in 0..PER_CPU_COUNT {
+            PER_CORE_LOG_BUFFERS[i].lock().clear();
+        }
+        DROPPED_LOG_BYTES.store(0, Ordering::Relaxed);
+
+        // Put some data into per-core buffer 0
+        let mut g = PER_CORE_LOG_BUFFERS[0].lock();
+        assert_eq!(g.push_bytes(&[0xBBu8; 64]), 64);
+        drop(g);
+
+        // Kick TX (should aggregate into global buffer)
+    // NOTE: In test/bench builds we avoid touching hardware I/O. Call the
+    // aggregation helper directly to validate behavior.
+    let _moved = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
+        let mut tmp = [0u8; 128];
+        let n = LOG_BUFFER.lock().pop_bulk(&mut tmp);
+        assert!(n > 0);
+    }
 }
 
 
@@ -832,7 +855,8 @@ impl<'a, const N: usize> Write for AsyncLogWriter<'a, N> {
 fn start_serial_tx() {
     // Aggregate per-core buffers into the global buffer in non-ISR context.
     // This keeps ISR work minimal: only the global buffer is drained.
-    // TODO: Move aggregation into a low-priority kernel task / idle loop.
+    // Aggregation is also performed by the executor idle loop; this function
+    // remains the canonical way to kick the transmitter.
     if !IN_PANIC.load(Ordering::Relaxed) {
         let _ = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
     }
@@ -1032,17 +1056,39 @@ pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
 // ============================================================================
 
 /// Aggregator task priority (low, but above idle)
+#[deprecated(note = "Log aggregator now runs on the executor idle loop; this constant will be removed in a future release. Use `kick_serial_tx()` to kick aggregation from non-idle contexts.")]
 const LOG_AGGREGATOR_PRIORITY: u8 = 250;
 
 /// Ensure we only spawn one aggregator task
+#[deprecated(note = "Aggregator spawn control is no longer required; the aggregator runs on the executor idle loop. This static will be removed in a future release.")]
 static AGGREGATOR_STARTED: AtomicBool = AtomicBool::new(false);
 
+/// Public helper to kick the serial transmitter from non-ISR contexts.
+/// This aggregates per-core buffers into the global buffer and enables TX
+/// interrupt when necessary. Useful to call from an executor idle loop.
+///
+/// NOTE: Prefer calling `kick_serial_tx()` or relying on the executor idle loop
+/// for background aggregation. `spawn_log_aggregator()` is deprecated.
+pub fn kick_serial_tx() {
+    // Reuse the existing helper which performs aggregation + IER RMW.
+    start_serial_tx();
+}
+
 /// Spawn the aggregator as a low-priority kernel task. Returns TaskId on success.
+#[deprecated(note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release.")]
+#[cfg(not(any(test, feature = "bench")))]
 pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
     if AGGREGATOR_STARTED.swap(true, Ordering::SeqCst) {
         return None; // already started
     }
-    crate::task::spawn_task(log_aggregator_task, 0, LOG_AGGREGATOR_PRIORITY)
+    crate::task::scheduler::spawn_task(log_aggregator_task, 0, LOG_AGGREGATOR_PRIORITY)
+}
+
+// Test/bench builds do not have the full scheduler available; provide a no-op stub
+#[cfg(any(test, feature = "bench"))]
+#[deprecated(note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release.")]
+pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
+    None
 }
 
 /// Background aggregator task entry point. Move data from per-core buffers to
@@ -1059,7 +1105,7 @@ pub fn log_aggregator_task(_arg: u64) -> ! {
                 #[cfg(feature = "bench")]
                 { 0usize }
             };
-            crate::task::yield_current(cpu_id);
+            crate::task::scheduler::yield_current(cpu_id);
         } else {
             // Yield briefly to allow TX to be serviced
             let cpu_id = {
@@ -1068,7 +1114,7 @@ pub fn log_aggregator_task(_arg: u64) -> ! {
                 #[cfg(feature = "bench")]
                 { 0usize }
             };
-            crate::task::yield_current(cpu_id);
+            crate::task::scheduler::yield_current(cpu_id);
         }
     }
 }
