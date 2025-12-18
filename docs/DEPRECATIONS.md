@@ -37,6 +37,10 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Prefer `KeyboardStream` or unified HID driver APIs instead of PS/2-specific helpers.
   - Internal polling shims (`poll_key_char`, `poll_key_event`, `poll_input_event`) ✅ **deprecated**
     - Migration: Use `KeyboardStream` and the async stream APIs.
+  - `ModifierState` re-export ✅ **deprecated**
+    - Migration: Use `hid_driver::ModifierState` directly.
+  - `IsrSafeWaker` re-export ✅ **deprecated**
+    - Migration: Use `hid_driver::IsrSafeWaker` directly.
 
 - `kernel/src/io/ahci_atapi.rs`
   - Re-export of `ahci_driver::atapi` ✅ **deprecated**
@@ -57,6 +61,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `kernel/src/task/executor.rs`
   - `TASK_STORE` (legacy global task store) ✅ **deprecated**
     - Migration: Use per-core task stores (`PER_CORE_STORES`) and the per-core APIs; avoid using the global `TASK_STORE`.
+
 ## Drivers
 
 - `drivers/pci` (`drivers/pci/src/lib.rs`)
