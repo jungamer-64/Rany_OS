@@ -70,6 +70,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Acquire a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or call `crate::io::hid::keyboard_init()`.
   - `io::keyboard_init` ✅ **deprecated**
     - Migration: Prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver via `driver_registry::register_driver`.
+  - `io::ps2_init` ✅ **deprecated**
+    - Migration: Register the PS/2 driver with `driver_registry::register_driver(Box::new(Ps2Driver::new()))` or call `crate::io::hid::ps2::init()` directly.
   - `io::ps2_ports` ✅ **deprecated**
     - Migration: Use `crate::io::hid::ps2::ports` or `Ps2Controller` APIs directly.
   - `io::ps2_status` ✅ **deprecated**

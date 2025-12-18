@@ -197,6 +197,9 @@ pub use hid::keyboard;
 #[deprecated(note = "`io::keyboard_init` is deprecated; prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver through `driver_registry::register_driver`.")]
 pub use hid::keyboard_init;
 
+#[deprecated(note = "`io::ps2_init` is deprecated; prefer registering the PS/2 driver via `driver_registry::register_driver(Box::new(Ps2Driver::new()))` or calling `crate::io::hid::ps2::init()` directly.")]
+pub use hid::ps2_init;
+
 #[deprecated(note = "`io::ps2_ports` is deprecated; prefer `crate::io::hid::ps2::ports` or using `Ps2Controller` APIs directly.")]
 pub use hid::ps2_ports;
 
