@@ -1274,6 +1274,7 @@ macro_rules! early_log_no_newline {
 // ============================================================================
 
 /// io_log_info! 互換マクロ
+#[deprecated(note = "io_log_info! is deprecated; use `log::info!` directly.")]
 #[macro_export]
 macro_rules! io_log_info {
     ($($arg:tt)*) => {
@@ -1282,6 +1283,7 @@ macro_rules! io_log_info {
 }
 
 /// io_log_warn! 互換マクロ
+#[deprecated(note = "io_log_warn! is deprecated; use `log::warn!` directly.")]
 #[macro_export]
 macro_rules! io_log_warn {
     ($($arg:tt)*) => {
@@ -1290,6 +1292,7 @@ macro_rules! io_log_warn {
 }
 
 /// io_log_debug! 互換マクロ
+#[deprecated(note = "io_log_debug! is deprecated; use `log::debug!` directly.")]
 #[macro_export]
 macro_rules! io_log_debug {
     ($($arg:tt)*) => {
@@ -1298,6 +1301,7 @@ macro_rules! io_log_debug {
 }
 
 /// io_log_error! 互換マクロ
+#[deprecated(note = "io_log_error! is deprecated; use `log::error!` directly.")]
 #[macro_export]
 macro_rules! io_log_error {
     ($($arg:tt)*) => {

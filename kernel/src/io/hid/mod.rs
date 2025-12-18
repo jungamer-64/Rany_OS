@@ -111,9 +111,16 @@ pub use keyboard::Modifiers as InputModifiers;
 // Crate-internal re-exports for legacy shell code
 // TODO: Migrate shell code to use KeyboardStream
 #[doc(hidden)]
-pub(crate) use keyboard::{
-    poll_char as poll_key_char, poll_key_event, poll_key_event as poll_input_event,
-};
+#[deprecated(note = "poll_key_char is deprecated; use `keyboard::poll_char` or `KeyboardStream` instead.")]
+pub(crate) use keyboard::poll_char as poll_key_char;
+
+#[doc(hidden)]
+#[deprecated(note = "poll_key_event is deprecated; use `KeyboardStream` or the stream API instead.")]
+pub(crate) use keyboard::poll_key_event;
+
+#[doc(hidden)]
+#[deprecated(note = "poll_input_event is deprecated; use `KeyboardStream` or the stream API instead.")]
+pub(crate) use keyboard::poll_key_event as poll_input_event;
 
 // Mouse driver exports
 #[allow(unused_imports)]
