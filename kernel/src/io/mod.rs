@@ -198,7 +198,6 @@ pub use pci::{
     DeviceId as PciDeviceId,
     EcamAccess,
     EcamManager,
-    LegacyPciAccessor,
     MsiCapability,
     // MSI/MSI-X support
     MsiConfig,
@@ -238,6 +237,10 @@ pub use pci::{
     note = "get_legacy_accessor is deprecated; prefer the newer accessors in the `pci_driver` crate."
 )]
 pub use crate::io::pci::get_legacy_accessor;
+
+// Kernel-level deprecation for legacy PCI accessor type
+#[deprecated(note = "LegacyPciAccessor is deprecated; use `pci_driver::EcamAccess` or the new PCI APIs instead.")]
+pub use pci::LegacyPciAccessor;
 
 pub use mmio::{
     mmio_read_u8, mmio_read_u16, mmio_read_u32, mmio_read_u64, mmio_write_u8, mmio_write_u16,
