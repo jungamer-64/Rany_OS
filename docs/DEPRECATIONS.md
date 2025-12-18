@@ -27,6 +27,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `keyboard::has_event()` or the `KeyboardStream` async API.
   - `MouseBtn`, `MouseEvt` ✅ **deprecated**
     - Migration: Use `MouseButton` and `MouseEvent` directly.
+  - PS/2 helpers (`get_key_event`, `get_modifiers`, `get_mouse_event`) ✅ **deprecated**
+    - Migration: Prefer `KeyboardStream` or unified HID driver APIs instead of PS/2-specific helpers.
   - Internal polling shims (`poll_key_char`, `poll_key_event`, `poll_input_event`) ✅ **deprecated**
     - Migration: Use `KeyboardStream` and the async stream APIs.
 
