@@ -25,12 +25,12 @@ use hal::IoPort;
 
 #[cfg(not(feature = "bench"))]
 use crate::smp;
+use crate::sync::IrqMutex;
 use crate::time;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use hal::port_io::PortU8;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use spin::Mutex;
-use crate::sync::IrqMutex; 
 
 // ============================================================================
 // 定数定義
@@ -138,24 +138,45 @@ struct RingBuffer<const N: usize> {
 
 impl<const N: usize> RingBuffer<N> {
     pub const fn new() -> Self {
-        Self { buf: [0u8; N], head: 0, tail: 0, full: false }
+        Self {
+            buf: [0u8; N],
+            head: 0,
+            tail: 0,
+            full: false,
+        }
     }
 
-    pub fn capacity(&self) -> usize { N }
+    pub fn capacity(&self) -> usize {
+        N
+    }
 
     pub fn len(&self) -> usize {
-        if self.full { N } else if self.tail >= self.head { self.tail - self.head } else { N - self.head + self.tail }
+        if self.full {
+            N
+        } else if self.tail >= self.head {
+            self.tail - self.head
+        } else {
+            N - self.head + self.tail
+        }
     }
 
-    pub fn is_empty(&self) -> bool { !self.full && (self.head == self.tail) }
+    pub fn is_empty(&self) -> bool {
+        !self.full && (self.head == self.tail)
+    }
 
-    pub fn is_full(&self) -> bool { self.full }
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
 
     pub fn push_byte(&mut self, b: u8) -> bool {
-        if self.full { return false; }
+        if self.full {
+            return false;
+        }
         self.buf[self.tail] = b;
         self.tail = (self.tail + 1) % N;
-        if self.tail == self.head { self.full = true; }
+        if self.tail == self.head {
+            self.full = true;
+        }
         true
     }
 
@@ -181,7 +202,11 @@ impl<const N: usize> RingBuffer<N> {
 
         if first > 0 {
             unsafe {
-                core::ptr::copy_nonoverlapping(src.as_ptr(), self.buf.as_mut_ptr().add(self.tail), first);
+                core::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    self.buf.as_mut_ptr().add(self.tail),
+                    first,
+                );
             }
         }
 
@@ -189,7 +214,11 @@ impl<const N: usize> RingBuffer<N> {
             let second = to_write - first;
             debug_assert!(second <= N);
             unsafe {
-                core::ptr::copy_nonoverlapping(src.as_ptr().add(first), self.buf.as_mut_ptr(), second);
+                core::ptr::copy_nonoverlapping(
+                    src.as_ptr().add(first),
+                    self.buf.as_mut_ptr(),
+                    second,
+                );
             }
         }
 
@@ -204,16 +233,22 @@ impl<const N: usize> RingBuffer<N> {
     /// 先頭に1バイト挿入（未使用時にのみ、ISRからの再挿入用）
     pub fn push_front(&mut self, b: u8) -> bool {
         debug_assert!(N > 0);
-        if self.full { return false; }
+        if self.full {
+            return false;
+        }
         self.head = if self.head == 0 { N - 1 } else { self.head - 1 };
         debug_assert!(self.head < N);
         self.buf[self.head] = b;
-        if self.head == self.tail { self.full = true; }
+        if self.head == self.tail {
+            self.full = true;
+        }
         true
     }
 
     pub fn pop_one(&mut self) -> Option<u8> {
-        if self.is_empty() { return None; }
+        if self.is_empty() {
+            return None;
+        }
         debug_assert!(self.head < N);
         let b = self.buf[self.head];
         self.head = (self.head + 1) % N;
@@ -236,7 +271,11 @@ impl<const N: usize> RingBuffer<N> {
         debug_assert!(first <= to_read);
         if first > 0 {
             unsafe {
-                core::ptr::copy_nonoverlapping(self.buf.as_ptr().add(self.head), dst.as_mut_ptr(), first);
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr().add(self.head),
+                    dst.as_mut_ptr(),
+                    first,
+                );
             }
         }
 
@@ -244,7 +283,11 @@ impl<const N: usize> RingBuffer<N> {
             let second = to_read - first;
             debug_assert!(second <= N);
             unsafe {
-                core::ptr::copy_nonoverlapping(self.buf.as_ptr(), dst.as_mut_ptr().add(first), second);
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr(),
+                    dst.as_mut_ptr().add(first),
+                    second,
+                );
             }
         }
 
@@ -269,14 +312,22 @@ impl<const N: usize> RingBuffer<N> {
         let first = core::cmp::min(to_read, N - self.head);
         if first > 0 {
             unsafe {
-                core::ptr::copy_nonoverlapping(self.buf.as_ptr().add(self.head), dst.as_mut_ptr(), first);
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr().add(self.head),
+                    dst.as_mut_ptr(),
+                    first,
+                );
             }
         }
 
         if to_read > first {
             let second = to_read - first;
             unsafe {
-                core::ptr::copy_nonoverlapping(self.buf.as_ptr(), dst.as_mut_ptr().add(first), second);
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr(),
+                    dst.as_mut_ptr().add(first),
+                    second,
+                );
             }
         }
 
@@ -292,7 +343,11 @@ impl<const N: usize> RingBuffer<N> {
         }
     }
 
-    pub fn clear(&mut self) { self.head = 0; self.tail = 0; self.full = false; }
+    pub fn clear(&mut self) {
+        self.head = 0;
+        self.tail = 0;
+        self.full = false;
+    }
 }
 
 unsafe impl<const N: usize> Sync for RingBuffer<N> {}
@@ -317,8 +372,10 @@ const PER_CPU_COUNT: usize = crate::mm::per_cpu::MAX_CPUS;
 const PER_CPU_COUNT: usize = 8;
 
 /// Per-core log buffers (lock-protected, IRQ-safe)
-const PER_CORE_INIT: IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>> = IrqMutex::new(RingBuffer::new());
-static PER_CORE_LOG_BUFFERS: [IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>>; PER_CPU_COUNT] = [PER_CORE_INIT; PER_CPU_COUNT];
+const PER_CORE_INIT: IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>> =
+    IrqMutex::new(RingBuffer::new());
+static PER_CORE_LOG_BUFFERS: [IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>>; PER_CPU_COUNT] =
+    [PER_CORE_INIT; PER_CPU_COUNT];
 
 /// Scan index previously used by ISR round-robin servicing. No longer used
 /// because per-core aggregation is performed outside of ISR. Keep this symbol
@@ -350,17 +407,17 @@ mod ringbuffer_tests {
     #[test]
     fn ringbuffer_wrap_and_overflow() {
         let mut rb = RingBuffer::<4>::new();
-        assert_eq!(rb.push_bytes(&[1,2,3,4]), 4);
+        assert_eq!(rb.push_bytes(&[1, 2, 3, 4]), 4);
         assert!(rb.is_full());
         assert!(!rb.push_byte(5));
         assert_eq!(rb.pop_one(), Some(1));
         assert_eq!(rb.len(), 3);
-        assert_eq!(rb.push_bytes(&[6,7]), 1);
+        assert_eq!(rb.push_bytes(&[6, 7]), 1);
     }
     #[test]
     fn push_front_and_restore() {
         let mut rb = RingBuffer::<8>::new();
-        rb.push_bytes(&[1,2,3]);
+        rb.push_bytes(&[1, 2, 3]);
         assert_eq!(rb.pop_one(), Some(1));
         assert!(rb.push_front(1));
         assert_eq!(rb.pop_one(), Some(1));
@@ -371,7 +428,7 @@ mod ringbuffer_tests {
     #[test]
     fn push_front_overflow() {
         let mut rb = RingBuffer::<3>::new();
-        assert_eq!(rb.push_bytes(&[1,2,3]), 3);
+        assert_eq!(rb.push_bytes(&[1, 2, 3]), 3);
         assert!(!rb.push_front(4));
     }
 
@@ -379,27 +436,27 @@ mod ringbuffer_tests {
     fn push_bytes_wrap_and_pop_bulk() {
         // Buffer size 8
         let mut rb = RingBuffer::<8>::new();
-        assert_eq!(rb.push_bytes(&[1u8,2,3,4,5,6]), 6);
+        assert_eq!(rb.push_bytes(&[1u8, 2, 3, 4, 5, 6]), 6);
 
         // Pop 4 elements
         let mut out = [0u8; 4];
         assert_eq!(rb.pop_bulk(&mut out), 4);
-        assert_eq!(out, [1,2,3,4]);
+        assert_eq!(out, [1, 2, 3, 4]);
 
         // Push bytes that wrap around the buffer end
-        assert_eq!(rb.push_bytes(&[7u8,8,9,10,11]), 5);
+        assert_eq!(rb.push_bytes(&[7u8, 8, 9, 10, 11]), 5);
 
         // Now the buffer should contain [5,6,7,8,9,10,11]
         let mut out2 = [0u8; 7];
         assert_eq!(rb.pop_bulk(&mut out2), 7);
-        assert_eq!(out2, [5,6,7,8,9,10,11]);
+        assert_eq!(out2, [5, 6, 7, 8, 9, 10, 11]);
     }
 
     #[test]
     fn per_core_buffer_smoke() {
         // Write to per-core buffer index 0
         let mut guard = PER_CORE_LOG_BUFFERS[0].lock();
-        assert_eq!(guard.push_bytes(&[10,20,30]), 3);
+        assert_eq!(guard.push_bytes(&[10, 20, 30]), 3);
         assert_eq!(guard.pop_one(), Some(10));
         assert_eq!(guard.pop_one(), Some(20));
         drop(guard);
@@ -407,25 +464,25 @@ mod ringbuffer_tests {
     #[test]
     fn pop_bulk() {
         let mut rb = RingBuffer::<8>::new();
-        rb.push_bytes(&[1,2,3,4,5]);
+        rb.push_bytes(&[1, 2, 3, 4, 5]);
         let mut buf = [0u8; 3];
         let n = rb.pop_bulk(&mut buf);
         assert_eq!(n, 3);
-        assert_eq!(buf, [1,2,3]);
+        assert_eq!(buf, [1, 2, 3]);
         assert_eq!(rb.len(), 2);
     }
 
     #[test]
     fn peek_and_advance() {
         let mut rb = RingBuffer::<8>::new();
-        assert_eq!(rb.push_bytes(&[1u8,2,3,4,5]), 5);
+        assert_eq!(rb.push_bytes(&[1u8, 2, 3, 4, 5]), 5);
         let mut out = [0u8; 4];
         assert_eq!(rb.peek_bulk(&mut out), 4);
-        assert_eq!(out, [1,2,3,4]);
+        assert_eq!(out, [1, 2, 3, 4]);
         rb.advance_head(2);
         let mut out2 = [0u8; 3];
         assert_eq!(rb.pop_bulk(&mut out2), 3);
-        assert_eq!(out2, [3,4,5]);
+        assert_eq!(out2, [3, 4, 5]);
     }
 
     #[test]
@@ -458,15 +515,14 @@ mod ringbuffer_tests {
         drop(g);
 
         // Kick TX (should aggregate into global buffer)
-    // NOTE: In test/bench builds we avoid touching hardware I/O. Call the
-    // aggregation helper directly to validate behavior.
-    let _moved = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
+        // NOTE: In test/bench builds we avoid touching hardware I/O. Call the
+        // aggregation helper directly to validate behavior.
+        let _moved = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
         let mut tmp = [0u8; 128];
         let n = LOG_BUFFER.lock().pop_bulk(&mut tmp);
         assert!(n > 0);
     }
 }
-
 
 // ============================================================================
 // シリアルポート初期化
@@ -537,7 +593,7 @@ pub fn enable_serial_interrupts() {
         let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
         ier.write(0x01); // Enable RX interrupt only initially. TX is enabled on demand.
     }
-} 
+}
 
 // ============================================================================
 // シリアルロガー実装
@@ -688,24 +744,34 @@ impl KernelLogger {
 
     fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
         // Timestamp and Core ID
-        let uptime_ms = time::get_uptime_ms();
+        let uptime_ms = crate::io::rtc::get_uptime_ms();
         let core_id = {
             #[cfg(not(feature = "bench"))]
             {
-                smp::current_core_id()
+                crate::smp_advanced::current_core_id()
             }
             #[cfg(feature = "bench")]
-            { 0usize }
+            {
+                0usize
+            }
         };
         let secs = uptime_ms / 1000;
         let millis = uptime_ms % 1000;
 
         let _ = write!(w, "[");
         // Pad seconds to 5 spaces for alignment
-        if secs < 10000 { let _ = write!(w, " "); }
-        if secs < 1000 { let _ = write!(w, " "); }
-        if secs < 100 { let _ = write!(w, " "); }
-        if secs < 10 { let _ = write!(w, " "); }
+        if secs < 10000 {
+            let _ = write!(w, " ");
+        }
+        if secs < 1000 {
+            let _ = write!(w, " ");
+        }
+        if secs < 100 {
+            let _ = write!(w, " ");
+        }
+        if secs < 10 {
+            let _ = write!(w, " ");
+        }
         let _ = write!(w, "{}.{:03}] [C{}] ", secs, millis, core_id);
 
         // ログレベルプレフィックス
@@ -741,7 +807,9 @@ impl Log for KernelLogger {
             if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
                 if cpu_id < PER_CPU_COUNT {
                     if let Some(mut guard) = PER_CORE_LOG_BUFFERS[cpu_id].try_lock() {
-                        self.write_into_async_buffer::<{ PER_CORE_BUFFER_CAPACITY }>(&mut guard, record);
+                        self.write_into_async_buffer::<{ PER_CORE_BUFFER_CAPACITY }>(
+                            &mut guard, record,
+                        );
                         drop(guard);
                         wrote_async = true;
                     }
@@ -786,7 +854,11 @@ impl Log for KernelLogger {
             }
         } else {
             // 同期出力
-            let _guard = if IN_PANIC.load(Ordering::Relaxed) { None } else { Some(SERIAL_LOCK.lock()) };
+            let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+                None
+            } else {
+                Some(SERIAL_LOCK.lock())
+            };
             let mut tracker = LastCharTracker::new(SyncLogWriter);
             self.print_header(&mut tracker, record);
             let _ = write!(tracker, "{}", record.args());
@@ -809,7 +881,10 @@ struct LastCharTracker<W: Write> {
 
 impl<W: Write> LastCharTracker<W> {
     fn new(inner: W) -> Self {
-        Self { inner, last_char: 0 }
+        Self {
+            inner,
+            last_char: 0,
+        }
     }
 }
 
@@ -849,7 +924,7 @@ impl<'a, const N: usize> Write for AsyncLogWriter<'a, N> {
         }
         Ok(())
     }
-} 
+}
 
 /// シリアル送信を開始（割り込み有効化）
 fn start_serial_tx() {
@@ -877,7 +952,7 @@ fn start_serial_tx() {
             ier.write(current | 0x02);
         }
     }
-} 
+}
 
 /// シリアル割り込みハンドラ
 pub fn handle_serial_interrupt() {
@@ -892,7 +967,8 @@ pub fn handle_serial_interrupt() {
         }
 
         match id & 0x0E {
-            0x02 => { // THRE (Transmitter Holding Register Empty)
+            0x02 => {
+                // THRE (Transmitter Holding Register Empty)
                 // ISR now only drains the global buffer. Per-core buffers are
                 // aggregated into the global buffer by non-ISR contexts to
                 // keep interrupt handling time bounded. TODO: Move aggregation
@@ -909,7 +985,9 @@ pub fn handle_serial_interrupt() {
                 if n > 0 {
                     let mut i = 0usize;
                     while i < n {
-                        if (lsr.read() & LSR_TX_EMPTY) == 0 { break; }
+                        if (lsr.read() & LSR_TX_EMPTY) == 0 {
+                            break;
+                        }
                         data_port.write(tmp[i]);
                         i += 1;
                     }
@@ -936,7 +1014,8 @@ pub fn handle_serial_interrupt() {
                     }
                 }
             }
-            0x04 | 0x0C => { // RDA (Received Data Available) または Character Timeout
+            0x04 | 0x0C => {
+                // RDA (Received Data Available) または Character Timeout
                 let mut guard = INPUT_BUFFER.lock();
                 while (lsr.read() & 0x01) != 0 {
                     let byte = data_port.read();
@@ -982,7 +1061,9 @@ pub fn bench_clear_buffers() {
 #[cfg(feature = "bench")]
 /// Push bytes into per-core buffer (returns written bytes)
 pub fn bench_push_per_core(core: usize, data: &[u8]) -> usize {
-    if core >= PER_CPU_COUNT { return 0; }
+    if core >= PER_CPU_COUNT {
+        return 0;
+    }
     PER_CORE_LOG_BUFFERS[core].lock().push_bytes(data)
 }
 
@@ -1001,7 +1082,9 @@ pub fn bench_pop_global_buf(dst: &mut [u8]) -> usize {
 #[cfg(feature = "bench")]
 /// Pop up to dst.len() bytes from a per-core buffer
 pub fn bench_pop_per_core_buf(core: usize, dst: &mut [u8]) -> usize {
-    if core >= PER_CPU_COUNT { return 0; }
+    if core >= PER_CPU_COUNT {
+        return 0;
+    }
     PER_CORE_LOG_BUFFERS[core].lock().pop_bulk(dst)
 }
 
@@ -1024,12 +1107,16 @@ pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
     let mut tmp = [0u8; 256];
 
     for i in 0..PER_CPU_COUNT {
-        if moved >= max_bytes { break; }
+        if moved >= max_bytes {
+            break;
+        }
         // Try to take the per-core buffer without blocking
         if let Some(mut per_guard) = PER_CORE_LOG_BUFFERS[i].try_lock() {
             let to_read = core::cmp::min(tmp.len(), max_bytes - moved);
             let n = per_guard.peek_bulk(&mut tmp[..to_read]);
-            if n == 0 { continue; }
+            if n == 0 {
+                continue;
+            }
 
             let wrote = {
                 let mut global_guard = LOG_BUFFER.lock();
@@ -1048,19 +1135,22 @@ pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
     }
 
     moved
-} 
-
+}
 
 // ============================================================================
 // 公開API
 // ============================================================================
 
 /// Aggregator task priority (low, but above idle)
-#[deprecated(note = "Log aggregator now runs on the executor idle loop; this constant will be removed in a future release. Use `kick_serial_tx()` to kick aggregation from non-idle contexts.")]
+#[deprecated(
+    note = "Log aggregator now runs on the executor idle loop; this constant will be removed in a future release. Use `kick_serial_tx()` to kick aggregation from non-idle contexts."
+)]
 const LOG_AGGREGATOR_PRIORITY: u8 = 250;
 
 /// Ensure we only spawn one aggregator task
-#[deprecated(note = "Aggregator spawn control is no longer required; the aggregator runs on the executor idle loop. This static will be removed in a future release.")]
+#[deprecated(
+    note = "Aggregator spawn control is no longer required; the aggregator runs on the executor idle loop. This static will be removed in a future release."
+)]
 static AGGREGATOR_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Public helper to kick the serial transmitter from non-ISR contexts.
@@ -1075,7 +1165,9 @@ pub fn kick_serial_tx() {
 }
 
 /// Spawn the aggregator as a low-priority kernel task. Returns TaskId on success.
-#[deprecated(note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release.")]
+#[deprecated(
+    note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release."
+)]
 #[cfg(not(any(test, feature = "bench")))]
 pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
     if AGGREGATOR_STARTED.swap(true, Ordering::SeqCst) {
@@ -1086,7 +1178,9 @@ pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
 
 // Test/bench builds do not have the full scheduler available; provide a no-op stub
 #[cfg(any(test, feature = "bench"))]
-#[deprecated(note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release.")]
+#[deprecated(
+    note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release."
+)]
 pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
     None
 }
@@ -1101,24 +1195,31 @@ pub fn log_aggregator_task(_arg: u64) -> ! {
             // Nothing moved — yield and avoid busy looping
             let cpu_id = {
                 #[cfg(not(feature = "bench"))]
-                { crate::smp::current_core_id() as usize }
+                {
+                    crate::smp_advanced::current_core_id() as usize
+                }
                 #[cfg(feature = "bench")]
-                { 0usize }
+                {
+                    0usize
+                }
             };
             crate::task::scheduler::yield_current(cpu_id);
         } else {
             // Yield briefly to allow TX to be serviced
             let cpu_id = {
                 #[cfg(not(feature = "bench"))]
-                { crate::smp::current_core_id() as usize }
+                {
+                    crate::smp_advanced::current_core_id() as usize
+                }
                 #[cfg(feature = "bench")]
-                { 0usize }
+                {
+                    0usize
+                }
             };
             crate::task::scheduler::yield_current(cpu_id);
         }
     }
 }
-
 
 /// ロギングシステムを初期化
 ///
