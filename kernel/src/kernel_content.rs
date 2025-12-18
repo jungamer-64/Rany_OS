@@ -364,10 +364,10 @@ extern "C" fn kmain() -> ! {
                         }
                     }
 
-                    let mut mcfg_base_addr: Option<u64> = None;
+                    let mut _mcfg_base_addr: Option<u64> = None;
                     match parser.find_table(b"MCFG") {
                         Ok(addr) => {
-                            mcfg_base_addr = Some(addr as u64);
+                            _mcfg_base_addr = Some(addr as u64);
                             info!(target: "init", "MCFG table found at {:#x}", addr);
                         }
                         Err(_) => {
@@ -552,12 +552,10 @@ extern "C" fn kmain() -> ! {
                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
 
                 // Register NVMe ISR Handler (Vector 48) - Reactor Pattern
-                unsafe {
-                    io::interrupt_manager::register_handler(
-                        io::interrupt_manager::NVME_VECTOR,
-                        Box::new(io::nvme::per_core::irq_handler),
-                    );
-                }
+                io::interrupt_manager::register_handler(
+                    io::interrupt_manager::NVME_VECTOR,
+                    Box::new(io::nvme::per_core::irq_handler),
+                );
 
                 // プローブと開始
                 if let Err(e) = driver_registry::driver_registry()

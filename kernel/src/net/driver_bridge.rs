@@ -267,7 +267,7 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
         Ok(guard) => {
             let stack = match guard.as_ref() {
                 Some(s) => s,
-                None => return Vec::new(),
+                None => return None,
             };
 
             let stats = stack.stats();
@@ -333,4 +333,3 @@ pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
         }
     }
 }
-
