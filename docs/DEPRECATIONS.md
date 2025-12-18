@@ -96,6 +96,8 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `drivers/serial` (`drivers/serial/src/lib.rs`)
   - `serial_print!`, `serial_println!` macros ✅ **deprecated**
     - Migration: Use `crate::io::log::early_print` or the `log` crate for structured logging.
+  - `serial1()` ✅ **deprecated**
+    - Migration: Use `crate::io::log::early_print` or `log::info!`/`log::debug!` instead of using the `AsyncSerialPort` global.
 
 ## Notes
 

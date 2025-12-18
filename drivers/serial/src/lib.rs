@@ -763,6 +763,7 @@ pub fn init() -> Result<(), SerialError> {
     Ok(())
 }
 
+#[deprecated(note = "serial1() is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`). This global will be removed in a future release.")]
 pub fn serial1() -> &'static AsyncSerialPort {
     &SERIAL1
 }
