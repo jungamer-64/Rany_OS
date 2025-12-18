@@ -167,12 +167,6 @@ pub use hid::{
     Ps2Modifiers,
     StreamAlreadyTaken,
     UsQwertyKeymap,
-    get_key_event,
-    get_modifiers,
-    get_mouse_event,
-    handle_keyboard_interrupt,
-    keyboard,
-    keyboard_init,
     keyboard_interrupt_handler,
     mouse_interrupt_handler,
     ps2_commands,
@@ -184,6 +178,24 @@ pub use hid::{
     ps2_status,
     set_leds,
 };
+
+#[deprecated(note = "`io::get_key_event` is deprecated; prefer `KeyboardStream` or `keyboard::has_event()` instead.")]
+pub use hid::get_key_event;
+
+#[deprecated(note = "`io::get_modifiers` is deprecated; prefer `keyboard` APIs or `KeyboardStream`.")]
+pub use hid::get_modifiers;
+
+#[deprecated(note = "`io::get_mouse_event` is deprecated; prefer `MouseEvent` streams or `mouse::poll_event`.")]
+pub use hid::get_mouse_event;
+
+#[deprecated(note = "`io::handle_keyboard_interrupt` is deprecated; prefer registering the PS/2 driver's interrupt handler via the DriverRegistry or using `keyboard_interrupt_handler` directly.")]
+pub use hid::handle_keyboard_interrupt;
+
+#[deprecated(note = "`io::keyboard` accessor is deprecated; prefer acquiring a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or initialize via `crate::io::hid::keyboard_init()`.")]
+pub use hid::keyboard;
+
+#[deprecated(note = "`io::keyboard_init` is deprecated; prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver through `driver_registry::register_driver`.")]
+pub use hid::keyboard_init;
 
 // PCI common module exports (unified interface)
 #[allow(unused_imports)]
