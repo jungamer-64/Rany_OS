@@ -14,6 +14,10 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `crate::task::current_tick()` ✅ **deprecated**
     - Migration: Use `crate::task::timer::current_tick()` directly in tests/benches.
 
+- `kernel/src/fs/mod.rs` (fs alias)
+  - `vfs` alias ✅ **deprecated**
+    - Migration: Use `fs_abstraction` directly to make the optional layer explicit.
+
 - `kernel/src/io/log.rs`
   - `LOG_AGGREGATOR_PRIORITY`, `AGGREGATOR_STARTED`, `spawn_log_aggregator()` ✅ **deprecated**
     - Migration: Aggregation is performed from the executor idle loop. Use `kick_serial_tx()` to request aggregation from non-idle contexts.
