@@ -557,7 +557,7 @@ pub fn print_backtrace() {
 pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
     let mut bt = Backtrace::new();
     let mut current_rbp = rbp;
-    let mut frame_num = 0;
+    let mut frame_num = 1;
 
     // 最初のフレーム（クラッシュ位置）
     bt.entries[0] = Some(BacktraceEntry {
@@ -569,7 +569,6 @@ pub fn capture_from_context(rip: usize, rsp: usize, rbp: usize) -> Backtrace {
         },
         symbol: resolve_symbol(rip),
     });
-    frame_num = 1;
 
     // フレームチェーンをたどる
     while frame_num < MAX_FRAMES && is_valid_stack_address(current_rbp) {

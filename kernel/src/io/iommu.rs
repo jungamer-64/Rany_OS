@@ -3510,12 +3510,12 @@ impl IommuController {
     pub fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
         let domains = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
         let domain_arc = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
-        let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
+        let domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
 
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
 
-        let mut hw = self.hardware.lock().map_err(|_| IommuError::HardwareError)?;
+        let hw = self.hardware.lock().map_err(|_| IommuError::HardwareError)?;
 
         // Setup root entry
         let root_entry = unsafe { &mut *hw.root_table.add(bus) };
@@ -3550,7 +3550,7 @@ impl IommuController {
         device_domains.remove(&device);
 
         // Clear context entry in hardware
-        let mut hw = self.hardware.lock().map_err(|_| IommuError::HardwareError)?;
+        let hw = self.hardware.lock().map_err(|_| IommuError::HardwareError)?;
         let context_entry = unsafe { &mut *hw.context_tables[bus].add(devfn) };
         *context_entry = ContextEntry::default();
 
@@ -3935,7 +3935,7 @@ impl IommuController {
                 // attempt a best-effort check to detect AlreadyInitialized; caller should be aware that
                 // the table may be inconsistent.
                 log::warn!("[IOMMU] interrupt_remap_table lock poisoned during init_interrupt_remapping");
-                let mut guard = poisoned.into_inner();
+                let guard = poisoned.into_inner();
                 if guard.is_some() {
                     return Err(IommuError::AlreadyInitialized);
                 }
@@ -4211,7 +4211,7 @@ impl IommuController {
                 // and fail if already initialized. Best-effort because this occurs during init and helping
                 // boot progress is preferred.
                 log::warn!("[IOMMU] pid_pool lock poisoned during init_posted_interrupts");
-                let mut guard = poisoned.into_inner();
+                let guard = poisoned.into_inner();
                 if guard.is_some() {
                     return Err(IommuError::AlreadyInitialized);
                 }
@@ -6023,6 +6023,7 @@ pub unsafe fn init_iommu_from_acpi(
                 }
             }
             // Fallback
+            let _ = target_idx;
         }
     }
 
@@ -6288,7 +6289,7 @@ impl IommuController {
         let mut need_invalidation = false;
 
         match self.hardware.lock() {
-            Ok(mut hw) => {
+            Ok(hw) => {
                 if let Some(table_ptr) = hw.context_tables.get(bus) {
                     unsafe {
                         let entry_ptr = table_ptr.add(devfn);
@@ -6327,7 +6328,7 @@ impl IommuController {
                     source_id
                 );
 
-                let mut hw = poisoned.into_inner();
+                let hw = poisoned.into_inner();
                 if let Some(table_ptr) = hw.context_tables.get(bus) {
                     unsafe {
                         let entry_ptr = table_ptr.add(devfn);
@@ -6646,7 +6647,7 @@ mod tests {
     #[test]
     fn test_get_domain_for_device_poisoned_returns_none() {
         use crate::sync::set_panicking;
-        let mut ctrl = IommuController::new(0x0, 0);
+        let ctrl = IommuController::new(0x0, 0);
         let id = ctrl
             .create_domain(None, IommuDomainType::Translated)
             .expect("create_domain failed");
