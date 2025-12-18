@@ -112,10 +112,12 @@ pub use hid_driver::KeyEventExt;
 
 // ModifierState implementation moved to `hid_driver` crate. Re-export it here for
 // backward-compatibility with kernel code that expects this type.
+#[deprecated(note = "Compatibility re-export `ModifierState` is deprecated; prefer `hid_driver::ModifierState` directly.")]
 pub use hid_driver::ModifierState;
 
 // IsrSafeWaker implementation moved to `hid_driver` crate. Re-export it here for
 // backward compatibility.
+#[deprecated(note = "Compatibility re-export `IsrSafeWaker` is deprecated; prefer `hid_driver::IsrSafeWaker` directly.")]
 pub use hid_driver::IsrSafeWaker;
 
 // ============================================================================
