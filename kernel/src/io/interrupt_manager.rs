@@ -15,11 +15,15 @@
 
 #![allow(dead_code)]
 
+use crate::sync::IrqMutex;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use lazy_static::lazy_static;
 use spin::{Mutex, RwLock};
+use x86_64::structures::idt::InterruptStackFrame;
 
 // ============================================================================
 // Constants
@@ -37,7 +41,8 @@ const USER_VECTORS_END: u8 = 254;
 const SPURIOUS_VECTOR: u8 = 255;
 
 /// MSI/MSI-X用ベクタ範囲
-const MSI_VECTORS_START: u8 = 48;
+pub const NVME_VECTOR: u8 = 48; // NVMe専用ベクタ (0x30)
+const MSI_VECTORS_START: u8 = 49; // NVMeの次から開始
 const MSI_VECTORS_END: u8 = 223;
 
 /// レガシー割り込み用ベクタ範囲
@@ -995,6 +1000,73 @@ pub fn has_pending_interrupts() -> bool {
 /// 登録されているWaker数を取得
 pub fn waker_count() -> usize {
     WAKER_REGISTRY.count()
+}
+
+// ============================================================================
+// Direct Callback Support (for Event-Driven Reactor)
+// ============================================================================
+
+/// 割り込みハンドラの型
+pub type InterruptHandler = Box<dyn Fn() + Send + Sync>;
+
+lazy_static! {
+    /// 直接実行される割り込みハンドラのレジストリ
+    ///
+    /// ISRコンテキストで実行されるため、IrqMutexで保護する必要がある。
+    /// これにより、ISR内でのロック取得時のデッドロックを防ぐ。
+    static ref DIRECT_HANDLERS: IrqMutex<Vec<Option<InterruptHandler>>> = {
+        let mut v = Vec::with_capacity(256);
+        for _ in 0..256 {
+            v.push(None); // 初期化
+        }
+        IrqMutex::new(v)
+    };
+}
+
+/// 割り込みハンドラを登録（直接実行用）
+///
+/// ベクタに対応するハンドラを登録する。このハンドラはISR内で直接呼び出されるため、
+/// 実行時間は極力短くし、ブロックする操作を行ってはならない。
+pub fn register_handler(vector: u8, handler: InterruptHandler) {
+    let mut handlers = DIRECT_HANDLERS.lock();
+    if (vector as usize) < handlers.len() {
+        handlers[vector as usize] = Some(handler);
+    }
+}
+
+/// 直接ハンドラをディスパッチ試行
+///
+/// ISRから呼び出され、登録されたハンドラがあれば実行する。
+///
+/// # Returns
+/// ハンドラが実行された場合は `true`
+pub fn try_dispatch_direct(vector: u8) -> bool {
+    // try_lockを使用することで、万が一の再入時のデッドロックも回避
+    // (ただしIrqMutexは割り込みを無効化するため、通常は再入しない)
+    if let Some(handlers) = DIRECT_HANDLERS.try_lock() {
+        if let Some(ref handler) = handlers.get(vector as usize).and_then(|h| h.as_ref()) {
+            handler();
+            return true;
+        }
+    }
+    false
+}
+
+/// NVMe ISR Entry Point (Static)
+///
+/// IDTに登録される関数。ダイレクトディスパッチを試み、
+/// 失敗した場合はイベントキューにフォールバックする。
+pub extern "x86-interrupt" fn nvme_entry_point(_stack_frame: InterruptStackFrame) {
+    // 1. ダイレクトディスパッチ（高速パス）
+    if try_dispatch_direct(NVME_VECTOR) {
+        // ハンドラが処理を行ったので、ここでは何もしない
+    } else {
+        // 2. フォールバック（低速パス）- Executorで処理
+        push_interrupt_event(NVME_VECTOR);
+    }
+
+    // 3. EOI送信
+    send_eoi();
 }
 
 mod tests {

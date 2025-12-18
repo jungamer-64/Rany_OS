@@ -347,50 +347,50 @@ extern "C" fn kmain() -> ! {
 
                 // Initialize IOMMU using ACPI tables and config
                 unsafe {
-                                    match parser.find_table(b"DMAR") {
-                                        Ok(dmar_addr) => {
-                                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config)
-                                            {
-                                                // If IOMMU not present or disabled, we just warn.
-                                                if e != io::iommu::IommuError::NotPresent {
-                                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
-                                                } else {
-                                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
-                                                }
-                                            } else {
-                                                info!(target: "init", "IOMMU initialized successfully");
-                    
-                                                // Enable IOMMU
-                                                if let Err(e) = io::iommu::enable_iommu() {
-                                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
-                                                } else {
-                                                    info!(target: "init", "IOMMU translation enabled");
-                                                }
-                                            }
-                                        }
-                                        Err(_) => {
-                                            info!(target: "init", "IOMMU not initialized (No DMAR table)");
-                                        }
-                                    }
-                                    
-                                    let mut mcfg_base_addr: Option<u64> = None;
-                                    match parser.find_table(b"MCFG") {
-                                        Ok(addr) => {
-                                            mcfg_base_addr = Some(addr as u64);
-                                            info!(target: "init", "MCFG table found at {:#x}", addr);
-                                        }
-                                        Err(_) => {
-                                            warn!(target: "init", "No MCFG table found.");
-                                        }
-                                    }
-                    
-                                    // Initialize PCI subsystem
-                                    if let Err(e) = pci_driver::init(mcfg_base_addr) {
-                                        error!(target: "init", "PCI driver init failed: {:?}", e);
-                                    } else {
-                                        info!(target: "init", "PCI driver initialized");
-                                    }
-                                    }
+                    match parser.find_table(b"DMAR") {
+                        Ok(dmar_addr) => {
+                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config)
+                            {
+                                // If IOMMU not present or disabled, we just warn.
+                                if e != io::iommu::IommuError::NotPresent {
+                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
+                                } else {
+                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
+                                }
+                            } else {
+                                info!(target: "init", "IOMMU initialized successfully");
+
+                                // Enable IOMMU
+                                if let Err(e) = io::iommu::enable_iommu() {
+                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                                } else {
+                                    info!(target: "init", "IOMMU translation enabled");
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            info!(target: "init", "IOMMU not initialized (No DMAR table)");
+                        }
+                    }
+
+                    let mut mcfg_base_addr: Option<u64> = None;
+                    match parser.find_table(b"MCFG") {
+                        Ok(addr) => {
+                            mcfg_base_addr = Some(addr as u64);
+                            info!(target: "init", "MCFG table found at {:#x}", addr);
+                        }
+                        Err(_) => {
+                            warn!(target: "init", "No MCFG table found.");
+                        }
+                    }
+
+                    // Initialize PCI subsystem
+                    if let Err(e) = pci_driver::init(mcfg_base_addr) {
+                        error!(target: "init", "PCI driver init failed: {:?}", e);
+                    } else {
+                        info!(target: "init", "PCI driver initialized");
+                    }
+                }
             }
             Err(e) => {
                 warn!(target: "init", "ACPI initialization failed: {:?}", e);
@@ -562,6 +562,19 @@ extern "C" fn kmain() -> ! {
 
                 // ドライバを登録
                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
+
+                // Register NVMe ISR Handler (Vector 48) - Reactor Pattern
+                unsafe {
+                    io::interrupt_manager::register_handler(
+                        io::interrupt_manager::NVME_VECTOR,
+                        Box::new(|| {
+                            // Dispatch to local core's queue
+                            if let Some(queue) = io::nvme::per_core::get_local_queue() {
+                                queue.process_completions();
+                            }
+                        }),
+                    );
+                }
 
                 // プローブと開始
                 if let Err(e) = driver_registry::driver_registry()
@@ -797,7 +810,8 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     use task::Task;
 
     // ドメイン1を作成：ユーザーアプリケーション
-    let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1")).expect("create_domain failed");
+    let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
+        .expect("create_domain failed");
 
     // SAS統計をログ
     let sas_stats = sas::stats();
@@ -825,7 +839,8 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     }));
 
     // タスク2: ゼロコピー通信デモ
-    let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo")).expect("create_domain failed");
+    let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo"))
+        .expect("create_domain failed");
     domain_system::start_domain(domain2).ok();
 
     executor.spawn(Task::new(async move {

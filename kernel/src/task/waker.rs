@@ -1,17 +1,17 @@
 // ============================================================================
 // src/task/waker.rs - Simplified Waker (without crossbeam)
 // ============================================================================
+use super::TaskId;
+use crate::sync::IrqMutex;
+use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::task::Wake;
-use alloc::collections::VecDeque;
 use core::task::Waker;
-use spin::Mutex;
-use super::TaskId;
 
 /// ISR-safe wake queue
 /// 注意: crossbeam::SegQueue の代わりに Mutex<VecDeque> を使用
 /// 本来はロックフリーが理想だが、一旦これで動作確認
-static WAKE_QUEUE: Mutex<VecDeque<TaskId>> = Mutex::new(VecDeque::new());
+static WAKE_QUEUE: IrqMutex<VecDeque<TaskId>> = IrqMutex::new(VecDeque::new());
 
 /// ArcWakeトレイトを使った効率的なWaker実装
 struct TaskWaker {
@@ -48,10 +48,10 @@ mod tests {
     fn test_waker_wake() {
         let task_id = TaskId::new();
         let waker = create_waker(task_id);
-        
+
         // Wake should push to queue
         waker.wake_by_ref();
-        
+
         // Should be able to pop the task
         assert_eq!(pop_woken_task(), Some(task_id));
     }

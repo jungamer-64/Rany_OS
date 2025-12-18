@@ -107,7 +107,7 @@ impl NvmePollingDriver {
             allocated_sq_count: 0,
             allocated_cq_count: 0,
             active: AtomicBool::new(false),
-            interrupt_mode: false, // ポーリングモード
+            interrupt_mode: true, // 割り込みモード (Reactor Pattern)
             cmb_info: None,
             use_cmb: true, // デフォルトでCMBを使用（利用可能なら）
             admin_sq_buffer: None,
@@ -449,9 +449,23 @@ impl NvmePollingDriver {
 
         let qid = (core_id + 1) as u16;
 
+        // MSI-Xベクタ割り当て（Reactor Pattern）
+        let entry = if self.interrupt_mode {
+            // Kernel API経由でMSI-Xベクタを割り当て
+            // Note: drivers crateからは直接kernel crateを呼べないため、
+            // kernel_api::services などを通じてアクセスするか、
+            // 事前に構成されたコールバックを使用する必要がある。
+            // ここでは簡易的にベクタ48 + core_id を使用（設計書準拠）
+            // 実装時には kernel_api への依存を追加するか、初期化時に注入する設計が望ましい。
+            // 仮実装: 48 + core_id
+            48 + core_id as u16
+        } else {
+            0
+        };
+
         // Create I/O Completion Queue (cid=0 for first admin command of this queue)
         let create_cq_cmd =
-            NvmeCommand::create_io_cq(0, qid, depth, cq_phys, 0, self.interrupt_mode);
+            NvmeCommand::create_io_cq(0, qid, depth, cq_phys, entry, self.interrupt_mode);
         admin_queue.submit(&create_cq_cmd)?;
         self.poll_admin_completion()?;
 
@@ -474,6 +488,8 @@ impl NvmePollingDriver {
 
         if let Some(queue) = self.io_queues.get(core_id as usize) {
             unsafe { queue.set_queue_pair(qp) };
+            // Register for ISR access (Reactor Pattern)
+            super::per_core::register_queue(core_id, queue);
         }
 
         self.allocated_sq_count += 1;
@@ -717,4 +733,22 @@ impl Drop for NvmePollingDriver {
 #[inline(always)]
 fn cpu_pause() {
     core::hint::spin_loop();
+}
+
+impl NvmePollingDriver {
+    /// Wakerを登録（Reactor Pattern）
+    pub fn register_waker(&self, core_id: u32, cid: u16, waker: core::task::Waker) {
+        if let Some(queue) = self.io_queues.get(core_id as usize) {
+            queue.register_waker(cid, waker);
+        }
+    }
+
+    /// 完了を確認（ソフトウェア状態のみチェック）
+    pub fn check_completion(&self, core_id: u32, cid: u16) -> Option<NvmeCompletion> {
+        if let Some(queue) = self.io_queues.get(core_id as usize) {
+            queue.check_completion(cid)
+        } else {
+            None
+        }
+    }
 }
