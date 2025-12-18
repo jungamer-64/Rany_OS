@@ -751,6 +751,7 @@ static SERIAL1: AsyncSerialPort = AsyncSerialPort::new(ComPort::Com1);
 /// COM1 IRQ number
 const COM1_IRQ: u8 = 4;
 
+#[deprecated(note = "serial::init() is deprecated; prefer registering the serial driver with `driver_registry::register_driver` and let the DriverRegistry initialize it. This function will be removed in a future release.")]
 pub fn init() -> Result<(), SerialError> {
     SERIAL1.init(BaudRate::Baud115200)?;
     SERIAL1.port.set_interrupts(true, false);
@@ -768,6 +769,7 @@ pub fn serial1() -> &'static AsyncSerialPort {
     &SERIAL1
 }
 
+#[deprecated(note = "serial::handle_interrupt() is deprecated; prefer registering the serial driver (via `driver_registry::register_driver`) and allow the driver to expose its interrupt handling interface; this free function will be removed in a future release.")]
 pub fn handle_interrupt() {
     SERIAL1.handle_interrupt();
 }

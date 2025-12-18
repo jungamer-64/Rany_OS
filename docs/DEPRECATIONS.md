@@ -57,6 +57,21 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `take_stream_or_panic()` ✅ **deprecated**
     - Migration: Use `take_stream()` and handle `StreamAlreadyTaken` errors; avoid panics in production code.
 
+- IO-level re-exports (deprecated to propagate HID deprecations to `crate::io` namespace)
+  - `io::get_key_event` ✅ **deprecated**
+    - Migration: Use `KeyboardStream` or `keyboard::has_event()` instead.
+  - `io::get_modifiers` ✅ **deprecated**
+    - Migration: Use `keyboard` APIs or `KeyboardStream` instead.
+  - `io::get_mouse_event` ✅ **deprecated**
+    - Migration: Use `MouseEvent` streams or `mouse::poll_event` instead.
+  - `io::handle_keyboard_interrupt` ✅ **deprecated**
+    - Migration: Register the PS/2 driver's interrupt handler via the DriverRegistry or use `keyboard_interrupt_handler` directly.
+  - `io::keyboard` ✅ **deprecated**
+    - Migration: Acquire a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or call `crate::io::hid::keyboard_init()`.
+  - `io::keyboard_init` ✅ **deprecated**
+    - Migration: Prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver via `driver_registry::register_driver`.
+
+## Notes
 
 - `kernel/src/io/ahci_atapi.rs`
   - Re-export of `ahci_driver::atapi` ✅ **deprecated**
@@ -98,6 +113,10 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `crate::io::log::early_print` or the `log` crate for structured logging.
   - `serial1()` ✅ **deprecated**
     - Migration: Use `crate::io::log::early_print` or `log::info!`/`log::debug!` instead of using the `AsyncSerialPort` global.
+  - `init()` ✅ **deprecated**
+    - Migration: Register the serial driver with `driver_registry::register_driver` (e.g., `register_driver(Box::new(SerialDriver::new()))`) and let the DriverRegistry perform initialization.
+  - `handle_interrupt()` ✅ **deprecated**
+    - Migration: Prefer driver-registered interrupt handling via the DriverRegistry or the driver's interrupt methods; do not call the free function directly.
 
 ## Notes
 
