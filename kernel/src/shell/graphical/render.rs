@@ -479,6 +479,7 @@ impl GraphicalShell {
     }
 
     /// Alias for `redraw_input_line` (backwards compatibility).
+    #[deprecated(note = "redraw_input_only is deprecated; use `redraw_input_line` instead.")]
     pub fn redraw_input_only(&mut self) {
         self.redraw_input_line();
     }
