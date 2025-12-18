@@ -346,24 +346,24 @@ pub fn get_network_config() -> Option<NetworkConfigSnapshot> {
 /// Get network statistics
 pub fn get_network_stats() -> Option<NetworkStatsSnapshot> {
     // Try to get real stats from NetworkStack
-    if let Some(stack_guard) = stack::stack()
-        .lock()
-        .map(|g| g) // keep type
-        .and_then(|g| match g.as_ref() { Some(s) => Some(s), None => None })
-        .or_else(|_| {
+    // Try to get real stats from NetworkStack
+    match stack::stack().lock() {
+        Ok(guard) => {
+            if let Some(stack_guard) = guard.as_ref() {
+                let stats = stack_guard.stats();
+                return Some(NetworkStatsSnapshot {
+                    rx_packets: stats.rx_packets.load(Ordering::Relaxed),
+                    tx_packets: stats.tx_packets.load(Ordering::Relaxed),
+                    rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
+                    tx_bytes: stats.tx_bytes.load(Ordering::Relaxed),
+                    rx_errors: stats.rx_errors.load(Ordering::Relaxed),
+                    rx_dropped: stats.rx_dropped.load(Ordering::Relaxed),
+                });
+            }
+        }
+        Err(_) => {
             log::error!("[NET] Stack lock poisoned (get_network_stats) - using fallback stats");
-            None
-        })
-    {
-        let stats = stack_guard.stats();
-        return Some(NetworkStatsSnapshot {
-            rx_packets: stats.rx_packets.load(Ordering::Relaxed),
-            tx_packets: stats.tx_packets.load(Ordering::Relaxed),
-            rx_bytes: stats.rx_bytes.load(Ordering::Relaxed),
-            tx_bytes: stats.tx_bytes.load(Ordering::Relaxed),
-            rx_errors: stats.rx_errors.load(Ordering::Relaxed),
-            rx_dropped: stats.rx_dropped.load(Ordering::Relaxed),
-        });
+        }
     }
 
     // Fallback to demo stats
@@ -390,9 +390,10 @@ pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
                 }
             }
         }
-        Err(_) => log::error!("[NET] Stack lock poisoned (send_icmp_echo) - using fallback implementation"),
+        Err(_) => log::error!(
+            "[NET] Stack lock poisoned (send_icmp_echo) - using fallback implementation"
+        ),
     }
-
 
     // Fallback to demo implementation
     let _ = seq;

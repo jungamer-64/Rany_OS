@@ -488,10 +488,11 @@ impl KeyboardDriver {
     ///
     /// # Note
     /// 本番コードでは`take_stream()`を使用し、エラーハンドリングを行うこと。
+    #[deprecated(note = "`take_stream_or_panic` is deprecated; prefer `take_stream()` and handle `StreamAlreadyTaken` explicitly instead of panicking.")]
     pub fn take_stream_or_panic(&'static self) -> hid_driver::KeyboardStream {
         self.take_stream()
             .expect("SPSC violation: Stream already taken")
-    }
+    } 
 
     /// ストリームを返却（テスト用）
     fn return_stream(&self) {
@@ -605,19 +606,22 @@ impl hid_driver::stream::DriverOps for KeyboardDriver {
 static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
 
 /// PS/2キーボードドライバにアクセス
+#[deprecated(note = "`keyboard()` accessor is deprecated; prefer acquiring a `KeyboardStream` via `take_stream()` or initialize the keyboard via `crate::io::hid::keyboard_init()`.")]
 pub fn keyboard() -> &'static KeyboardDriver {
     &PS2_KEYBOARD
 }
 
 /// PS/2キーボードを初期化
+#[deprecated(note = "`keyboard::init()` is deprecated; prefer `crate::io::hid::keyboard_init()` or initialize the PS/2 controller directly.")]
 pub fn init() {
     PS2_KEYBOARD.init();
 }
 
 /// 割り込みハンドラから呼ばれる（PS/2キーボード用）
+#[deprecated(note = "`handle_keyboard_interrupt` is deprecated; prefer the PS/2 controller's `keyboard_interrupt_handler` re-export or register the handler via the PS/2 driver.")]
 pub fn handle_keyboard_interrupt(scancode: u8) {
     PS2_KEYBOARD.handle_scancode(scancode);
-}
+} 
 
 /// 保留中のISR通知を処理（Executorから呼び出し）
 ///

@@ -47,6 +47,17 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `IsrSafeWaker` re-export ✅ **deprecated**
     - Migration: Use `hid_driver::IsrSafeWaker` directly.
 
+- `kernel/src/io/hid/keyboard.rs`
+  - `keyboard()` ✅ **deprecated**
+    - Migration: Acquire a `KeyboardStream` via `take_stream()` or initialize the keyboard via `crate::io::hid::keyboard_init()`.
+  - `init()` ✅ **deprecated**
+    - Migration: Use `crate::io::hid::keyboard_init()` or initialize via the PS/2 controller API.
+  - `handle_keyboard_interrupt()` ✅ **deprecated**
+    - Migration: Use the PS/2 controller's `keyboard_interrupt_handler` or register the handler on the controller.
+  - `take_stream_or_panic()` ✅ **deprecated**
+    - Migration: Use `take_stream()` and handle `StreamAlreadyTaken` errors; avoid panics in production code.
+
+
 - `kernel/src/io/ahci_atapi.rs`
   - Re-export of `ahci_driver::atapi` ✅ **deprecated**
     - Migration: Use `ahci_driver::atapi` directly.
