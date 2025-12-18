@@ -331,7 +331,6 @@ pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
             log::error!("[NET BRIDGE] Stack poisoned (get_real_arp_cache)");
             Vec::new()
         }
-    } Vec::new()
-        }
     }
 }
+

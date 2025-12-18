@@ -44,6 +44,8 @@ pub mod async_io;
 pub mod driver_impl;
 pub mod global;
 pub mod polling_driver;
+pub mod requests;
+pub mod sync;
 
 // pub mod scheduler; // Requires kernel io_scheduler - stays local to kernel
 // pub mod driver; // Re-exports only - stays local to kernel
@@ -74,7 +76,9 @@ pub use error::NvmeError;
 pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
 
 // Global driver exports
-pub use global::{get_stats, init, poll, poll_batch, with_driver, with_driver_mut};
+pub use crate::global::{
+    get_stats, init, poll as poll_global, poll_batch, with_driver, with_driver_mut,
+};
 
 // Polling driver exports
 pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};

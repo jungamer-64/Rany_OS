@@ -392,19 +392,7 @@ pub fn send_icmp_echo(target: [u8; 4], seq: u16) -> Result<f32, String> {
         }
         Err(_) => log::error!("[NET] Stack lock poisoned (send_icmp_echo) - using fallback implementation"),
     }
-        let target_ip = ipv4::Ipv4Address::new(target);
 
-        // Attempt to send ICMP echo via stack
-        if stack_guard.send_icmp_echo_request(target_ip, seq).is_ok() {
-            // For now, return simulated RTT (real RTT would require async wait)
-            return match target {
-                [127, 0, 0, 1] => Ok(0.1),
-                [10, 0, 2, 2] => Ok(1.5),
-                [10, 0, 2, ..] => Ok(2.0),
-                _ => Ok(10.0),
-            };
-        }
-    }
 
     // Fallback to demo implementation
     let _ = seq;

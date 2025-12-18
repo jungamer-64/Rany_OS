@@ -75,21 +75,16 @@ pub use keyboard::{
     CharFutureArc, // Phase 5: Arc<dyn Keymap>サポート
     // Core types
     KeyCode,
-    // Type aliases for compatibility with old shell code
-    KeyCode as InputKeyCode,
     KeyEvent,
-    KeyEvent as InputKeyEvent,
     KeyEventExt,
     // Async futures
     KeyEventFuture,
     KeyState,
-    KeyState as InputKeyState,
     // Driver and stream
     KeyboardDriver,
     KeyboardStream,
     KeyboardStreamArc, // Phase 5: Arc<dyn Keymap>サポート
     Modifiers,
-    Modifiers as InputModifiers,
     StreamAlreadyTaken,
     handle_keyboard_interrupt,
     has_event as has_key_event,
@@ -99,6 +94,19 @@ pub use keyboard::{
     // ISR notification processing (for executors)
     process_pending_wakes,
 };
+
+// Deprecated compatibility aliases (prefer direct types)
+#[deprecated(note = "InputKeyCode is deprecated. Use `KeyCode` directly.")]
+pub use keyboard::KeyCode as InputKeyCode;
+
+#[deprecated(note = "InputKeyEvent is deprecated. Use `KeyEvent` directly.")]
+pub use keyboard::KeyEvent as InputKeyEvent;
+
+#[deprecated(note = "InputKeyState is deprecated. Use `KeyState` directly.")]
+pub use keyboard::KeyState as InputKeyState;
+
+#[deprecated(note = "InputModifiers is deprecated. Use `Modifiers` directly.")]
+pub use keyboard::Modifiers as InputModifiers;
 
 // Crate-internal re-exports for legacy shell code
 // TODO: Migrate shell code to use KeyboardStream

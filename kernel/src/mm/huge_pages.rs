@@ -375,7 +375,7 @@ mod tests {
         }
         set_panicking(false);
 
-n        let res = with_huge_page_allocator(|alloc| alloc.allocate());
+        let res = with_huge_page_allocator(|alloc| alloc.allocate());
         assert!(res.is_none());
     }
     #[test]

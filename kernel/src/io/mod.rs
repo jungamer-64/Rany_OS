@@ -221,12 +221,7 @@ pub use pci::{
     init as pci_init,
     // Legacy I/O port access
     pci_read,
-
-// Deprecated: backward compatibility helper for legacy PCI accessors. Prefer
-// `crate::io::pci::get_legacy_accessor` or the newer accessors in the
-// `pci_driver` crate and avoid calling legacy accessors directly.
-#[deprecated(note = "get_legacy_accessor is deprecated; prefer the newer accessors in the `pci_driver` crate.")]
-pub use crate::io::pci::get_legacy_accessor;    pci_read8,
+    pci_read8,
     pci_read16,
     pci_write,
     // Convenience functions
@@ -235,6 +230,14 @@ pub use crate::io::pci::get_legacy_accessor;    pci_read8,
     setup_msix,
     status_bits as pci_status_bits,
 };
+
+// Deprecated: backward compatibility helper for legacy PCI accessors. Prefer
+// `crate::io::pci::get_legacy_accessor` or the newer accessors in the
+// `pci_driver` crate and avoid calling legacy accessors directly.
+#[deprecated(
+    note = "get_legacy_accessor is deprecated; prefer the newer accessors in the `pci_driver` crate."
+)]
+pub use crate::io::pci::get_legacy_accessor;
 
 pub use mmio::{
     mmio_read_u8, mmio_read_u16, mmio_read_u32, mmio_read_u64, mmio_write_u8, mmio_write_u16,

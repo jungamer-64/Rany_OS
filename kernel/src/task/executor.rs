@@ -180,7 +180,9 @@ impl PerCoreTaskStore {
                 self.task_count.fetch_add(1, Ordering::Relaxed);
             }
             Err(_) => {
-                log::error!("[EXECUTOR] Per-core tasks lock poisoned during insert - falling back to TASK_STORE");
+                log::error!(
+                    "[EXECUTOR] Per-core tasks lock poisoned during insert - falling back to TASK_STORE"
+                );
                 if let Ok(mut legacy) = TASK_STORE.lock() {
                     legacy.insert(task_id, task);
                 } else {
@@ -201,7 +203,9 @@ impl PerCoreTaskStore {
                 result
             }
             Err(_) => {
-                log::error!("[EXECUTOR] Per-core tasks lock poisoned during remove - trying TASK_STORE fallback");
+                log::error!(
+                    "[EXECUTOR] Per-core tasks lock poisoned during remove - trying TASK_STORE fallback"
+                );
                 if let Ok(mut legacy) = TASK_STORE.lock() {
                     legacy.remove(task_id)
                 } else {
@@ -336,9 +340,8 @@ impl Executor {
     /// メインループ
     pub fn run(&mut self) -> ! {
         loop {
-            // 0. Interrupt-Waker Bridgeを処理（設計書 4.2）
-            // ISRからキューに追加された割り込みイベントを処理し、Wakerを起床
-            crate::io::interrupt_manager::process_pending_interrupts();
+            // 0. Interrupt-Waker Bridge logic removed for Reactor Pattern.
+            // NVMe ISR now wakes tasks directly via Waker.
 
             // 1. ローカルキューのタスクを処理
             self.run_ready_tasks();
@@ -444,7 +447,9 @@ impl Executor {
                             }
                         }
                         Err(_) => {
-                            log::error!("[EXECUTOR] TASK_STORE poisoned during wake handling - caching task id");
+                            log::error!(
+                                "[EXECUTOR] TASK_STORE poisoned during wake handling - caching task id"
+                            );
                             self.local_cache.push_back(task_id);
                         }
                     }
@@ -491,7 +496,9 @@ impl Executor {
                             }
                         }
                         Err(_) => {
-                            log::error!("[EXECUTOR] TASK_STORE poisoned during global fetch - skipping");
+                            log::error!(
+                                "[EXECUTOR] TASK_STORE poisoned during global fetch - skipping"
+                            );
                         }
                     }
                 }

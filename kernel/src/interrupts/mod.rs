@@ -111,6 +111,10 @@ fn init_idt() {
         // IOMMU Fault Handler
         idt[InterruptVector::IommuFault as u8].set_handler_fn(iommu_fault_handler);
 
+        // NVMe Interrupt (Direct Callback)
+        idt[crate::io::interrupt_manager::NVME_VECTOR as u8]
+            .set_handler_fn(crate::io::interrupt_manager::nvme_entry_point);
+
         // PIC2 の IRQ ハンドラ（動的デバイス用）
         // IRQ 9, 10, 11 は多くの PCI デバイスで使用される
         idt[PIC2_OFFSET + 1].set_handler_fn(pci_irq9_handler); // IRQ9 (Free1)

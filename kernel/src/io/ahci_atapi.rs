@@ -3,7 +3,12 @@
 
 //! ATAPI support for AHCI (migrated to `ahci_driver` crate).
 //! This file exists for backward compatibility and re-exports the driver API.
-
+//!
+//! **DEPRECATED**: Prefer `ahci_driver::atapi` directly — this compatibility
+//! re-export will be removed in a future release.
+#[deprecated(
+    note = "Use `ahci_driver::atapi` directly; this compatibility re-export will be removed in a future release."
+)]
 pub use ahci_driver::atapi::*;
 
     /// トレイをイジェクト
