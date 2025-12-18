@@ -54,6 +54,9 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `pub use serial_driver::serial_print(ln)` ✅ **deprecated** (prefer kernel logging APIs)
     - Migration: Use `crate::io::log::early_print` or `log` macros once available.
 
+- `kernel/src/task/executor.rs`
+  - `TASK_STORE` (legacy global task store) ✅ **deprecated**
+    - Migration: Use per-core task stores (`PER_CORE_STORES`) and the per-core APIs; avoid using the global `TASK_STORE`.
 ## Drivers
 
 - `drivers/pci` (`drivers/pci/src/lib.rs`)

@@ -249,6 +249,7 @@ static PER_CORE_STORES: [PerCoreTaskStore; MAX_CPUS] = {
 
 /// レガシー用グローバルタスクストア（後方互換性）
 /// 新規コードはper-coreストアを使用すべき
+#[deprecated(note = "TASK_STORE is deprecated; use per-core task stores (PER_CORE_STORES) instead. This legacy global will be removed in a future release.")]
 static TASK_STORE: PoisonLock<BTreeMap<TaskId, Task>> = PoisonLock::new(BTreeMap::new());
 
 /// Wake queue（ISR-safe ロックフリー）
