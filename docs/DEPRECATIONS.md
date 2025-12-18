@@ -23,6 +23,8 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `kernel/src/io/hid/mod.rs`
   - Compatibility aliases (`InputKeyCode`, `InputKeyEvent`, `InputKeyState`, `InputModifiers`) ✅ **deprecated**
     - Migration: Use `KeyCode`, `KeyEvent`, `KeyState`, `Modifiers` directly.
+  - `has_key_event()` ✅ **deprecated**
+    - Migration: Use `keyboard::has_event()` or the `KeyboardStream` async API.
   - Internal polling shims (`poll_key_char`, `poll_key_event`, `poll_input_event`) ✅ **deprecated**
     - Migration: Use `KeyboardStream` and the async stream APIs.
 

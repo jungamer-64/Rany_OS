@@ -87,13 +87,16 @@ pub use keyboard::{
     Modifiers,
     StreamAlreadyTaken,
     handle_keyboard_interrupt,
-    has_event as has_key_event,
     init as keyboard_init,
     // Functions
     keyboard,
     // ISR notification processing (for executors)
     process_pending_wakes,
 };
+
+// Deprecated compatibility alias: prefers explicit `keyboard::has_event` or `KeyboardStream` usage
+#[deprecated(note = "`has_key_event` is deprecated; use `keyboard::has_event` or the `KeyboardStream` API instead.")]
+pub use keyboard::has_event as has_key_event;
 
 // Deprecated compatibility aliases (prefer direct types)
 #[deprecated(note = "InputKeyCode is deprecated. Use `KeyCode` directly.")]
