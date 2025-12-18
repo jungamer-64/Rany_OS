@@ -790,6 +790,7 @@ pub fn _print(args: fmt::Arguments) {
     let _ = writer.write_fmt(args);
 }
 
+#[deprecated(note = "serial_print macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging.")]
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {
@@ -797,6 +798,7 @@ macro_rules! serial_print {
     };
 }
 
+#[deprecated(note = "serial_println macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging.")]
 #[macro_export]
 macro_rules! serial_println {
     () => ($crate::_print(format_args!("\n")));
