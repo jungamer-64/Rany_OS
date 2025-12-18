@@ -172,6 +172,7 @@ pub mod task {
 
     /// Convenience: expose `current_tick` at `crate::task::current_tick()` for
     /// code that expects that symbol (legacy usage in some modules).
+    #[deprecated(note = "Test shim `crate::task::current_tick()` is deprecated; call `crate::task::timer::current_tick()` directly.")]
     pub fn current_tick() -> u64 { timer::current_tick() }
 
     pub mod scheduler {
