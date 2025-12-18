@@ -167,6 +167,7 @@ pub struct VirtQueue {
     /// Last seen used index
     last_used_idx: AtomicU32,
     /// Notification address (MMIO)
+    #[deprecated(note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release.")]
     notify_addr: *mut u16,
 }
 
