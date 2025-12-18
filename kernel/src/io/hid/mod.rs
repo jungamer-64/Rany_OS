@@ -58,6 +58,7 @@ pub use ps2::Ps2Controller;
 pub use ps2::commands as ps2_commands;
 
 // Functions
+#[deprecated(note = "ps2_init is deprecated; prefer registering the PS/2 driver via `driver_registry::register_driver(Box::new(Ps2Driver::new()))` or calling `crate::io::hid::ps2::init()` directly; this free function will be removed in a future release.")]
 pub use ps2::init as ps2_init;
 pub use ps2::kbd_commands as ps2_kbd_commands;
 pub use ps2::keyboard_interrupt_handler;
