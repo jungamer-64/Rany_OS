@@ -73,7 +73,7 @@ pub fn get_local_queue() -> Option<&'static PerCoreNvmeQueue> {
     // For now, using crate::apic::local_apic_id() if available or similar.
     // Actually, interrupt_manager has `current_apic_id()`.
 
-    let core_id = crate::io::interrupt_manager::current_apic_id();
+    let core_id = current_apic_id();
     if (core_id as usize) < MAX_CORES {
         let ptr = QUEUES[core_id as usize].load(Ordering::Acquire);
         if !ptr.is_null() {
@@ -118,7 +118,7 @@ unsafe impl Send for PerCoreNvmeQueue {}
 
 impl PerCoreNvmeQueue {
     /// 新しいコアキューを作成
-    pub const fn new(core_id: u32) -> Self {
+    pub fn new(core_id: u32) -> Self {
         Self {
             inner: UnsafeCell::new(None),
             core_id,
@@ -458,4 +458,26 @@ impl PerCoreNvmeQueue {
         }
         count
     }
+}
+
+/// NVMe Interrupt Handler (ISR context)
+pub fn irq_handler() {
+    // 現在のコアのキューを取得して完了処理を実行
+    if let Some(queue) = get_local_queue() {
+        unsafe {
+            queue.process_completions();
+        }
+    }
+}
+
+/// Get current APIC ID (Local CPU ID)
+#[inline]
+fn current_apic_id() -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let res = core::arch::x86_64::__cpuid(1);
+        (res.ebx >> 24) as u32
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    0
 }
