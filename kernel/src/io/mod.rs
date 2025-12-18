@@ -218,11 +218,15 @@ pub use pci::{
     find_by_class as pci_find_by_class,
     find_by_id,
     find_virtio_devices as pci_find_virtio_devices,
-    get_legacy_accessor,
     init as pci_init,
     // Legacy I/O port access
     pci_read,
-    pci_read8,
+
+// Deprecated: backward compatibility helper for legacy PCI accessors. Prefer
+// `crate::io::pci::get_legacy_accessor` or the newer accessors in the
+// `pci_driver` crate and avoid calling legacy accessors directly.
+#[deprecated(note = "get_legacy_accessor is deprecated; prefer the newer accessors in the `pci_driver` crate.")]
+pub use crate::io::pci::get_legacy_accessor;    pci_read8,
     pci_read16,
     pci_write,
     // Convenience functions

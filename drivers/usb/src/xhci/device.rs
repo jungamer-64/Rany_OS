@@ -162,6 +162,126 @@ impl XhciDevice {
 
         Ok(dci)
     }
+
+    /// Isochronous転送を開始
+    ///
+    /// # Arguments
+    /// * `endpoint` - エンドポイントアドレス
+    /// * `buffer_len` - バッファ長
+    /// * `is_in` - IN方向か
+    /// * `data` - OUTの場合の送信データ
+    /// * `frame_id` - フレームID（Noneで即時開始）
+    fn start_isoch_transfer(
+        &self,
+        endpoint: EndpointAddress,
+        buffer_len: usize,
+        is_in: bool,
+        data: Option<&[u8]>,
+        frame_id: Option<u16>,
+    ) -> UsbResult<u8> {
+        let ep_num = endpoint.number();
+        let dci = (ep_num * 2) + if is_in { 1 } else { 0 };
+
+        let mut transfer_rings = self.controller.transfer_rings.lock();
+        let ring = transfer_rings
+            .get_mut(self.slot_id.as_usize())
+            .and_then(|slots| slots.get_mut(dci as usize))
+            .and_then(|opt| opt.as_mut())
+            .ok_or(UsbError::NoResources)?;
+
+        // Allocate buffer
+        let mut buffer = alloc::vec![0u8; buffer_len];
+        if let Some(src_data) = data {
+            buffer[..src_data.len().min(buffer_len)]
+                .copy_from_slice(&src_data[..src_data.len().min(buffer_len)]);
+        }
+        let data_ptr = buffer.as_ptr() as u64;
+
+        // Create Isochronous TRB
+        let trb = if let Some(fid) = frame_id {
+            // Scheduled transfer at specific frame
+            Trb::isoch(
+                data_ptr,
+                buffer_len as u32,
+                fid,
+                false, // SIA = false (use frame_id)
+                true,  // IOC = true
+                0,     // TBC
+                0,     // TLBPC
+                ring.cycle_bit(),
+            )
+        } else {
+            // Start ASAP
+            Trb::isoch_asap(data_ptr, buffer_len as u32, true, ring.cycle_bit())
+        };
+        ring.enqueue(trb);
+
+        // Keep buffer alive until transfer completes
+        core::mem::forget(buffer);
+
+        drop(transfer_rings);
+
+        // Ring doorbell
+        self.controller.ring_doorbell(self.slot_id.as_u8(), dci);
+
+        Ok(dci)
+    }
+
+    /// Isochronous IN転送
+    pub fn isoch_in(
+        &self,
+        endpoint: EndpointAddress,
+        buffer_len: usize,
+    ) -> core::pin::Pin<
+        alloc::boxed::Box<dyn core::future::Future<Output = UsbResult<usize>> + Send + '_>,
+    > {
+        let controller = alloc::sync::Arc::clone(&self.controller);
+        let slot_id = self.slot_id;
+
+        let start_result = self.start_isoch_transfer(endpoint, buffer_len, true, None, None);
+
+        alloc::boxed::Box::pin(async move {
+            let endpoint_id = start_result?;
+
+            BulkTransferFuture {
+                controller,
+                slot_id,
+                endpoint_id,
+                expected_len: buffer_len,
+                started: false,
+            }
+            .await
+        })
+    }
+
+    /// Isochronous OUT転送
+    pub fn isoch_out(
+        &self,
+        endpoint: EndpointAddress,
+        data: &[u8],
+    ) -> core::pin::Pin<
+        alloc::boxed::Box<dyn core::future::Future<Output = UsbResult<usize>> + Send + '_>,
+    > {
+        let data_copy = data.to_vec();
+        let len = data_copy.len();
+        let controller = alloc::sync::Arc::clone(&self.controller);
+        let slot_id = self.slot_id;
+
+        let start_result = self.start_isoch_transfer(endpoint, len, false, Some(&data_copy), None);
+
+        alloc::boxed::Box::pin(async move {
+            let endpoint_id = start_result?;
+
+            BulkTransferFuture {
+                controller,
+                slot_id,
+                endpoint_id,
+                expected_len: len,
+                started: false,
+            }
+            .await
+        })
+    }
 }
 
 // ============================================================================
@@ -454,5 +574,19 @@ impl UsbDevice for XhciDevice {
             }
             .await
         })
+    }
+
+    fn suspend(&self) -> Pin<Box<dyn Future<Output = UsbResult<()>> + Send + '_>> {
+        let controller = Arc::clone(&self.controller);
+        let slot_id = self.slot_id;
+
+        Box::pin(async move { controller.suspend_device(slot_id).await })
+    }
+
+    fn resume(&self) -> Pin<Box<dyn Future<Output = UsbResult<()>> + Send + '_>> {
+        let controller = Arc::clone(&self.controller);
+        let slot_id = self.slot_id;
+
+        Box::pin(async move { controller.resume_device(slot_id).await })
     }
 }

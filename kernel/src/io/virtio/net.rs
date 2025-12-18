@@ -203,6 +203,9 @@ pub struct NetVirtQueue {
     /// ペンディングバッファの追跡 (desc_id -> callback)
     pending_buffers: Mutex<Vec<Option<PendingBuffer>>>,
     /// Notify用MMIOアドレス（Option for backward compatibility）
+    /// Deprecated: prefer providing notify addresses via the transport or using
+    /// the transport's notify methods; this field will be removed in a future release.
+    #[deprecated(note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release.")]
     notify_addr: Option<*mut u16>,
 }
 

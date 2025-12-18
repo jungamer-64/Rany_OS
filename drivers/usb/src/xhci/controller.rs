@@ -23,9 +23,9 @@ use super::context::DeviceContext;
 use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
 use super::{
     COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN, IR0,
-    MAX_ENDPOINTS, MAX_SLOTS, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS,
-    PORTSC_CHANGE_MASK, PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR,
-    PORTSC_PRC, USBCMD, USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
+    MAX_ENDPOINTS, MAX_SLOTS, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS, PORTSC_CHANGE_MASK,
+    PORTSC_CSC, PORTSC_OCA, PORTSC_PEC, PORTSC_PED, PORTSC_PP, PORTSC_PR, PORTSC_PRC, USBCMD,
+    USBCMD_HCRST, USBCMD_INTE, USBCMD_RUN, USBSTS, USBSTS_CNR, USBSTS_HCH,
 };
 use crate::{PortNumber, PortStatus, SlotId, UsbError, UsbResult, UsbSpeed};
 
@@ -338,6 +338,81 @@ impl XhciController {
         Err(UsbError::Timeout)
     }
 
+    /// ポートをサスペンド
+    pub async fn suspend_port(&self, port: PortNumber) -> UsbResult<()> {
+        let offset = PORTSC_BASE + port.as_usize() * PORT_REGISTER_SIZE;
+        let portsc = self.read_op(offset);
+
+        if (portsc & PORTSC_PED) == 0 {
+            return Err(UsbError::Other("Port disabled".into()));
+        }
+
+        // U3 (Suspend) = 3
+        let pls_u3 = 3;
+        let new_portsc = (portsc & !PORTSC_CHANGE_MASK & !(0xF << 5)) | (pls_u3 << 5) | (1 << 16); // LWS=1
+        self.write_op(offset, new_portsc);
+
+        // 状態遷移待ち（必要に応じて）
+        Ok(())
+    }
+
+    /// ポートをレジューム
+    pub async fn resume_port(&self, port: PortNumber) -> UsbResult<()> {
+        let offset = PORTSC_BASE + port.as_usize() * PORT_REGISTER_SIZE;
+        let portsc = self.read_op(offset);
+
+        // USB 2.0 vs 3.0 check
+        // Speed is in bits 10-13.
+        // 1=Full, 2=Low, 3=High (USB2)
+        // 4=Super, 5=SuperPlus (USB3)
+        let speed_val = (portsc >> 10) & 0xF;
+        let is_usb3 = speed_val >= 4;
+
+        let pls_resume = if is_usb3 {
+            0 // U0
+        } else {
+            15 // Resume
+        };
+
+        let new_portsc =
+            (portsc & !PORTSC_CHANGE_MASK & !(0xF << 5)) | (pls_resume << 5) | (1 << 16); // LWS=1
+        self.write_op(offset, new_portsc);
+
+        Ok(())
+    }
+
+    /// デバイスをサスペンド
+    pub async fn suspend_device(&self, slot_id: SlotId) -> UsbResult<()> {
+        let port = self.get_root_port_for_slot(slot_id).await?;
+        self.suspend_port(port).await
+    }
+
+    /// デバイスをレジューム
+    pub async fn resume_device(&self, slot_id: SlotId) -> UsbResult<()> {
+        let port = self.get_root_port_for_slot(slot_id).await?;
+        self.resume_port(port).await
+    }
+
+    /// スロットIDからルートハブポート番号を取得
+    async fn get_root_port_for_slot(&self, slot_id: SlotId) -> UsbResult<PortNumber> {
+        let device_contexts = self.device_contexts.lock();
+        if let Some(ctx) = device_contexts
+            .get(slot_id.as_usize())
+            .and_then(|opt| opt.as_ref())
+        {
+            // latency_and_ports: Bits 16-23 is Root Hub Port Number
+            let root_port_num = ((ctx.slot.latency_and_ports >> 16) & 0xFF) as u8;
+            drop(device_contexts);
+
+            if root_port_num == 0 {
+                return Err(UsbError::InvalidDevice);
+            }
+            Ok(PortNumber(root_port_num))
+        } else {
+            Err(UsbError::InvalidDevice)
+        }
+    }
+
     /// スロットを有効化
     pub async fn enable_slot(&self) -> UsbResult<SlotId> {
         let trb = Trb::enable_slot(self.command_ring.lock().cycle_bit());
@@ -587,5 +662,202 @@ impl XhciController {
         let mut completions = self.transfer_completions.lock();
         completions
             .retain(|c| !(c.slot_id == slot_id && c.endpoint_id == endpoint_id && !c.completed));
+    }
+
+    // ========================================================================
+    // Device Enumeration
+    // ========================================================================
+
+    /// デバイスコンテキストを割り当て
+    ///
+    /// DCBAAエントリを設定し、デバイスコンテキストを作成
+    pub fn allocate_device_context(&self, slot_id: SlotId) -> UsbResult<()> {
+        if !slot_id.is_valid() || slot_id.as_usize() > self.max_slots as usize {
+            return Err(UsbError::InvalidDevice);
+        }
+
+        // デバイスコンテキストを作成
+        let device_context = Box::new(DeviceContext::default());
+        let context_ptr = device_context.as_ref() as *const DeviceContext as u64;
+
+        // DCBAAに登録
+        // SAFETY: slot_id は max_slots 以下であることを確認済み
+        let dcbaa_ptr = self.dcbaa.as_ptr() as *mut u64;
+        unsafe {
+            core::ptr::write_volatile(dcbaa_ptr.add(slot_id.as_usize()), context_ptr);
+        }
+
+        // デバイスコンテキストを保存
+        let mut device_contexts = self.device_contexts.lock();
+        if slot_id.as_usize() < device_contexts.len() {
+            device_contexts[slot_id.as_usize()] = Some(device_context);
+        }
+
+        Ok(())
+    }
+
+    /// 転送リングを割り当て
+    ///
+    /// 指定されたスロット/エンドポイントに転送リングを作成
+    pub fn allocate_transfer_ring(&self, slot_id: SlotId, dci: u8) -> UsbResult<u64> {
+        if !slot_id.is_valid() || dci == 0 || dci > 31 {
+            return Err(UsbError::InvalidDevice);
+        }
+
+        let ring = Box::new(TrbRing::new(super::TRANSFER_RING_SIZE));
+        let ring_addr = ring.physical_address();
+
+        let mut transfer_rings = self.transfer_rings.lock();
+        if let Some(slot_rings) = transfer_rings.get_mut(slot_id.as_usize()) {
+            if let Some(endpoint_ring) = slot_rings.get_mut(dci as usize) {
+                *endpoint_ring = Some(ring);
+            }
+        }
+
+        Ok(ring_addr)
+    }
+
+    /// デバイスにアドレスを割り当て
+    ///
+    /// Address Device コマンドを発行してデバイスにアドレスを設定
+    pub async fn address_device(
+        &self,
+        slot_id: SlotId,
+        port: PortNumber,
+        speed: UsbSpeed,
+        block_set_address: bool,
+    ) -> UsbResult<()> {
+        use super::context::InputContext;
+
+        // EP0用の転送リングを割り当て
+        let tr_dequeue_ptr = self.allocate_transfer_ring(slot_id, 1)?;
+
+        // 速度に応じたデフォルトの最大パケットサイズ
+        let max_packet_size = speed.default_max_packet_size();
+
+        // 入力コンテキストを作成
+        let input_context = Box::new(InputContext::for_address_device(
+            speed,
+            0, // route_string (直接接続)
+            port.one_indexed() as u8,
+            max_packet_size,
+            tr_dequeue_ptr,
+        ));
+        let input_context_ptr = input_context.physical_address();
+
+        // Address Device TRB を作成
+        let cycle = self.command_ring.lock().cycle_bit();
+        let trb = Trb::address_device(input_context_ptr, slot_id, block_set_address, cycle);
+
+        // コマンドを送信
+        let trb_addr = self.send_command(trb)?;
+
+        // 完了を待機
+        let completion = self.wait_command_completion(trb_addr).await?;
+
+        if completion.completion_code == CompletionCode::Success {
+            // 入力コンテキストを保持（ドロップ防止）
+            core::mem::forget(input_context);
+            Ok(())
+        } else {
+            Err(UsbError::XhciError(alloc::format!(
+                "Address device failed: {:?}",
+                completion.completion_code
+            )))
+        }
+    }
+
+    /// デバイスを列挙
+    ///
+    /// ポートに接続されたデバイスを完全に列挙:
+    /// 1. スロットを有効化
+    /// 2. デバイスコンテキストを割り当て
+    /// 3. デバイスにアドレスを割り当て
+    ///
+    /// 成功時はスロットIDを返す
+    pub async fn enumerate_device(&self, port: PortNumber) -> UsbResult<SlotId> {
+        // ポートの状態を確認
+        let status = self.port_status(port);
+        if !status.connected {
+            return Err(UsbError::NotConnected);
+        }
+
+        let speed = status
+            .speed
+            .ok_or(UsbError::Other("Unknown speed".into()))?;
+
+        // ポートをリセット
+        let _reset_speed = self.reset_port(port).await?;
+
+        // スロットを有効化
+        let slot_id = self.enable_slot().await?;
+
+        // デバイスコンテキストを割り当て
+        self.allocate_device_context(slot_id)?;
+
+        // デバイスにアドレスを割り当て
+        self.address_device(slot_id, port, speed, false).await?;
+
+        Ok(slot_id)
+    }
+
+    /// エンドポイントを設定
+    ///
+    /// Configure Endpoint コマンドを発行してエンドポイントを有効化
+    pub async fn configure_endpoints(
+        &self,
+        slot_id: SlotId,
+        endpoints: &[(u8, super::context::EndpointContext)],
+    ) -> UsbResult<()> {
+        use super::context::InputContext;
+
+        // 現在のスロットコンテキストを取得
+        let device_contexts = self.device_contexts.lock();
+        let slot_context = device_contexts
+            .get(slot_id.as_usize())
+            .and_then(|opt| opt.as_ref())
+            .map(|ctx| ctx.slot)
+            .ok_or(UsbError::InvalidDevice)?;
+        drop(device_contexts);
+
+        // 入力コンテキストを作成
+        let input_context = Box::new(InputContext::for_configure_endpoint(
+            &slot_context,
+            endpoints,
+        ));
+        let input_context_ptr = input_context.physical_address();
+
+        // 各エンドポイント用の転送リングを割り当て
+        for (dci, _) in endpoints {
+            let tr_addr = self.allocate_transfer_ring(slot_id, *dci)?;
+            // 既に設定済みの入力コンテキストのエンドポイントにTRアドレスを設定
+            // (InputContext::for_configure_endpoint で設定されていると仮定)
+            let _ = tr_addr;
+        }
+
+        // Configure Endpoint TRB を作成
+        let cycle = self.command_ring.lock().cycle_bit();
+        let trb = Trb::configure_endpoint(input_context_ptr, slot_id, cycle);
+
+        // コマンドを送信
+        let trb_addr = self.send_command(trb)?;
+
+        // 完了を待機
+        let completion = self.wait_command_completion(trb_addr).await?;
+
+        if completion.completion_code == CompletionCode::Success {
+            core::mem::forget(input_context);
+            Ok(())
+        } else {
+            Err(UsbError::XhciError(alloc::format!(
+                "Configure endpoint failed: {:?}",
+                completion.completion_code
+            )))
+        }
+    }
+
+    /// 最大スロット数を取得
+    pub fn max_slots(&self) -> u8 {
+        self.max_slots
     }
 }

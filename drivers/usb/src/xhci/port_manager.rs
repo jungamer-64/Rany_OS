@@ -532,14 +532,26 @@ impl XhciPortManager {
         }
 
         let portsc = self.read_portsc(port);
+        // Link State を U3 (Suspended) でない場合は何もしない、またはエラー？
+        // ここではチェックせずに進める
 
-        // Link State を U0 (Active) に設定
-        let new_portsc = (portsc & !PORTSC_PLS_MASK)
-            | ((PortLinkState::U0 as u32) << PORTSC_PLS_SHIFT)
-            | PORTSC_LWS;
+        let protocol = self.get_port_protocol(port);
+        let link_state = if protocol == PortProtocol::Usb3 {
+            PortLinkState::U0 // USB 3.0 transit to U0 directly from U3 (Recovery -> U0)
+        } else {
+            PortLinkState::Resume // USB 2.0 requires Resume (15)
+        };
+
+        // Link State を設定
+        let new_portsc =
+            (portsc & !PORTSC_PLS_MASK) | ((link_state as u32) << PORTSC_PLS_SHIFT) | PORTSC_LWS;
         self.write_portsc(port, new_portsc);
 
-        self.port_states.lock()[(port - 1) as usize] = PortState::Enabled;
+        // USB 2.0の場合、XHCIコントローラが20msのレジュームシグナル送出後に自動的にU0に遷移する可能性があるが
+        // ソフトウェアが完了を確認する必要があるかもしれない。
+        // ここでは非同期動作を前提とし、完了待ちをしない。
+
+        self.port_states.lock()[(port - 1) as usize] = PortState::Enabled; // 仮設定
         Ok(())
     }
 

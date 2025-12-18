@@ -2427,6 +2427,114 @@ fn get_current_dos_date() -> u16 {
     ((2024 - 1980) << 9) | (1 << 5) | 1
 }
 
+// ============================================================================
+// Short File Name (SFN) Generation with Collision Handling
+// ============================================================================
+
+/// ロングファイル名を8.3形式のショートファイル名に変換
+///
+/// # Arguments
+/// * `name` - ロングファイル名
+///
+/// # Returns
+/// 8.3形式のSFN（8バイト名前 + 3バイト拡張子、スペースパディング）
+pub fn long_name_to_sfn(name: &str) -> [u8; 11] {
+    let mut sfn = [b' '; 11];
+
+    // 拡張子を分離
+    let (base, ext) = if let Some(dot_pos) = name.rfind('.') {
+        (&name[..dot_pos], &name[dot_pos + 1..])
+    } else {
+        (name, "")
+    };
+
+    // ベース名を8文字まで
+    let mut base_idx = 0;
+    for ch in base.chars().take(8) {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            sfn[base_idx] = ch.to_ascii_uppercase() as u8;
+            base_idx += 1;
+        } else if ch == ' ' {
+            // スペースはスキップ
+        } else {
+            sfn[base_idx] = b'_';
+            base_idx += 1;
+        }
+    }
+
+    // 拡張子を3文字まで
+    let mut ext_idx = 8;
+    for ch in ext.chars().take(3) {
+        if ch.is_ascii_alphanumeric() || ch == '_' {
+            sfn[ext_idx] = ch.to_ascii_uppercase() as u8;
+            ext_idx += 1;
+        } else {
+            sfn[ext_idx] = b'_';
+            ext_idx += 1;
+        }
+    }
+
+    sfn
+}
+
+/// 既存のSFN一覧との衝突を避けるユニークなSFNを生成
+///
+/// 例: "LONGFI~1.TXT", "LONGFI~2.TXT", etc.
+///
+/// # Arguments
+/// * `name` - 元のロングファイル名
+/// * `existing` - 既存のSFN一覧（ディレクトリ内の全エントリから収集）
+///
+/// # Returns
+/// ユニークなSFN（~1-~9のサフィックス付き）
+pub fn generate_unique_sfn(name: &str, existing: &HashSet<[u8; 11]>) -> [u8; 11] {
+    let base_sfn = long_name_to_sfn(name);
+
+    // 衝突がなければそのまま返す
+    if !existing.contains(&base_sfn) {
+        return base_sfn;
+    }
+
+    // サフィックス付きで試行（~1から~9まで）
+    for suffix in 1..=9 {
+        let mut sfn = base_sfn;
+        // ベース名の末尾を ~N に置換
+        let suffix_pos = 6.min(
+            sfn[..8]
+                .iter()
+                .position(|&b| b == b' ')
+                .unwrap_or(8)
+                .saturating_sub(2),
+        );
+        sfn[suffix_pos] = b'~';
+        sfn[suffix_pos + 1] = b'0' + suffix;
+
+        if !existing.contains(&sfn) {
+            return sfn;
+        }
+    }
+
+    // 全て使用済みの場合、ハッシュベースのサフィックスを使用
+    let hash = name.bytes().fold(0u8, |acc, b| acc.wrapping_add(b));
+    let mut sfn = base_sfn;
+    sfn[4] = b'~';
+    sfn[5] = b"0123456789ABCDEF"[(hash >> 4) as usize];
+    sfn[6] = b"0123456789ABCDEF"[(hash & 0xF) as usize];
+    sfn[7] = b'~';
+
+    sfn
+}
+
+/// ディレクトリから既存のSFN一覧を収集
+pub fn collect_existing_sfns<'a>(
+    entries: impl Iterator<Item = FsResult<(String, DirEntryRaw)>> + 'a,
+) -> HashSet<[u8; 11]> {
+    entries
+        .filter_map(|res| res.ok())
+        .map(|(name, _)| long_name_to_sfn(&name))
+        .collect()
+}
+
 /// ディレクトリエントリの種類を表す列挙型
 ///
 /// 生のバイト列を解析した結果を型安全に表現する。
