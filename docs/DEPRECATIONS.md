@@ -51,6 +51,14 @@ This document lists symbols that have been marked deprecated and recommended mig
   - Re-export of `ahci_driver::atapi` ✅ **deprecated**
     - Migration: Use `ahci_driver::atapi` directly.
 
+- `kernel/src/io/virtio/net.rs`
+  - `notify_addr` field ✅ **deprecated**
+    - Migration: Prefer transport-level notify configuration and the `notify` methods on the virtio transport; use interrupt-driven notifications instead of per-queue MMIO `notify_addr` where possible.
+
+- `kernel/src/net` (TCP/Socket APIs)
+  - POSIX-style socket compatibility methods (e.g., `Socket::bind`, `Socket::connect`, `Socket::listen`, `Socket::accept`, `TcpStream::connect`, `TcpListener::bind`/`accept`) ✅ **deprecated**
+    - Migration: Use the new async-first APIs: `set_local_addr()`, `open_connection()`, `start_listening()`/`next_connection()`, and `dial()`/`TcpStream::dial()` instead.
+
 - `kernel/src/io/mod.rs`
   - `parse_dmar_table()` ✅ **deprecated**
     - Migration: Call `acpi::dmar::parse_dmar` directly.
