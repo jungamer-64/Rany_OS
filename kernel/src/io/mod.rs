@@ -197,6 +197,15 @@ pub use hid::keyboard;
 #[deprecated(note = "`io::keyboard_init` is deprecated; prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver through `driver_registry::register_driver`.")]
 pub use hid::keyboard_init;
 
+#[deprecated(note = "`io::ps2_ports` is deprecated; prefer `crate::io::hid::ps2::ports` or using `Ps2Controller` APIs directly.")]
+pub use hid::ps2_ports;
+
+#[deprecated(note = "`io::ps2_status` is deprecated; prefer `crate::io::hid::ps2::status` or `ps2::status` directly.")]
+pub use hid::ps2_status;
+
+#[deprecated(note = "`io::set_leds` is deprecated; prefer `ps2::set_leds` or using `Ps2Controller::set_leds` instead.")]
+pub use hid::set_leds;
+
 // PCI common module exports (unified interface)
 #[allow(unused_imports)]
 pub use pci::{
