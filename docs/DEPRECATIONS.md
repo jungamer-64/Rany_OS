@@ -17,6 +17,8 @@ This document lists symbols that have been marked deprecated and recommended mig
 - `kernel/src/fs/mod.rs` (fs alias)
   - `vfs` alias ✅ **deprecated**
     - Migration: Use `fs_abstraction` directly to make the optional layer explicit.
+  - `Fat32FileSystem` alias ✅ **deprecated**
+    - Migration: Use `filesystems::fat32::Fat32FileSystem` or `fs_abstraction` directly.
 
 - `kernel/src/io/log.rs`
   - `LOG_AGGREGATOR_PRIORITY`, `AGGREGATOR_STARTED`, `spawn_log_aggregator()` ✅ **deprecated**
