@@ -28,7 +28,7 @@ members = [
     "drivers/example_abi",
     # Apps
     "apps",
-    "tools/cap_harness",
+    "tools/cap_harness", "libs/boot_proto", "bootloader",
     # NOTE: `tools/framebuffer_bench` is intentionally not a workspace member anymore
     # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues
     # when running Criterion benches. It is runnable via its manifest path.

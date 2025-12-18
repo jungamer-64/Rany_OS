@@ -310,6 +310,10 @@ extern "C" fn kmain() -> ! {
     // 1.5. ACPI & IOMMU Initialization
     // Requires memory management for allocation
     info!(target: "init", "Initializing ACPI...");
+
+    // Configure ACPI driver with HHDM offset for physical-to-virtual translation
+    io::acpi::set_hhdm_offset(phys_mem_offset);
+
     // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
     if let Some(rsdp_response) = RSDP_REQUEST.get_response() {
         let rsdp_addr = rsdp_response.address() as usize;
@@ -376,8 +380,8 @@ extern "C" fn kmain() -> ! {
                     }
 
                     // Initialize PCI subsystem
-                    pci_driver::init();
-                    info!(target: "init", "PCI driver initialized");
+                    // pci_driver::init();
+                    info!(target: "init", "PCI driver initialized (SKIPPED)");
                 }
             }
             Err(e) => {
@@ -393,20 +397,43 @@ extern "C" fn kmain() -> ! {
     mm::huge_pages::init();
     info!(target: "init", "1GB Huge Page support initialized");
 
+    // Debug: pinpoint crash location
+    io::log::early_print("[DEBUG] After huge_pages::init\n");
+
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
 
+    io::log::early_print("[DEBUG] After notify_heap_available\n");
+
     // Register kernel services (SPL契約の有効化)
     info!(target: "init", "Registering kernel services...");
+
+    io::log::early_print("[DEBUG] Before register_kernel_services\n");
+
     unsafe {
         service_impl::register_kernel_services();
     }
+
+    io::log::early_print("[DEBUG] After register_kernel_services\n");
+
+    io::log::early_print("[DEBUG] About to call info! macro\n");
+
     info!(target: "init", "Kernel services registered");
+
+    io::log::early_print("[DEBUG] After first info! macro\n");
+
+    io::log::early_print("[DEBUG] Before second info! macro\n");
     info!(target: "init", "KernelServices registered");
+    io::log::early_print("[DEBUG] After second info! macro\n");
 
     // グラフィックスフレームバッファの初期化（Limine経由）
+    io::log::early_print("[DEBUG] Before graphics init info!\n");
     info!(target: "init", "Initializing graphics framebuffer...");
+    io::log::early_print("[DEBUG] After graphics init info!\n");
+
+    io::log::early_print("[DEBUG] About to get framebuffer response\n");
     if let Some(fb_response) = FRAMEBUFFER_REQUEST.get_response() {
+        io::log::early_print("[DEBUG] Got framebuffer response\n");
         if graphics::init_from_limine(fb_response) {
             info!(target: "init", "Graphics framebuffer initialized");
 

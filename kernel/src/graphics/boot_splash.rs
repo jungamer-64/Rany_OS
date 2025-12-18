@@ -104,12 +104,62 @@ const LOGO_O: [[u8; 12]; 16] = [
 /// カーネル起動時にグラフィカルなスプラッシュ画面を表示します。
 /// フレームバッファが初期化されていない場合は何もしません。
 pub fn show_boot_splash() {
+    crate::io::log::early_print("[SPLASH] show_boot_splash entry\n");
     with_framebuffer(|fb| {
+        crate::io::log::early_print("[SPLASH] Inside with_framebuffer closure\n");
         let width = fb.width();
         let height = fb.height();
 
-        // 背景を塗りつぶす
-        fb.clear(splash_colors::BG_COLOR);
+        // 背景をクリア (RED for debugging)
+        // use crate::graphics::colors::BG_COLOR;
+        crate::io::log::early_print("[SPLASH] Calling fb.clear() with RED\n");
+        fb.clear(Color::RED);
+        crate::io::log::early_print(
+            "[SPLASH] fb.clear() done. Attempting manual volatile write.\n",
+        );
+
+        // Manual volatile write test
+        let ptr = fb.raw_buffer_ptr();
+        let _ = crate::serial_println!("[SPLASH] Raw Buffer Ptr: {:p}", ptr);
+
+        let stride_bytes = fb.stride();
+        let stride_u32 = stride_bytes / 4;
+
+        // Draw 100x100 white box at center
+        let center_x = width / 2;
+        let center_y = height / 2;
+        let box_size = 100;
+        // Ensure bounds
+        let start_x = if center_x > box_size / 2 {
+            center_x - box_size / 2
+        } else {
+            0
+        };
+        let start_y = if center_y > box_size / 2 {
+            center_y - box_size / 2
+        } else {
+            0
+        };
+
+        unsafe {
+            let ptr_u32 = ptr as *mut u32;
+            for y in 0..box_size {
+                let curr_y = start_y + y;
+                if curr_y >= height {
+                    break;
+                }
+                for x in 0..box_size {
+                    let curr_x = start_x + x;
+                    if curr_x >= width {
+                        break;
+                    }
+
+                    let offset = (curr_y * stride_u32) + curr_x;
+                    core::ptr::write_volatile(ptr_u32.add(offset as usize), 0xFFFFFFFF);
+                }
+            }
+        }
+        crate::io::log::early_print("[SPLASH] Manual write done.\n");
 
         // ロゴを中央に描画（スケーリング係数）
         let scale = 4u32;
@@ -130,6 +180,7 @@ pub fn show_boot_splash() {
             scale,
             splash_colors::LOGO_PRIMARY,
         );
+        crate::io::log::early_print("[SPLASH] Drawn E\n");
 
         // "X" を描画
         let x_offset = start_x + char_width + spacing;
@@ -141,6 +192,7 @@ pub fn show_boot_splash() {
             scale,
             splash_colors::LOGO_SECONDARY,
         );
+        crate::io::log::early_print("[SPLASH] Drawn X\n");
 
         // "O" を描画
         let o_offset = x_offset + char_width + spacing;
@@ -152,6 +204,7 @@ pub fn show_boot_splash() {
             scale,
             splash_colors::LOGO_PRIMARY,
         );
+        crate::io::log::early_print("[SPLASH] Drawn O\n");
 
         // テキスト: "RanyOS" - ロゴの下
         let text_y = (start_y + char_height + 20) as i32;
@@ -187,6 +240,12 @@ pub fn show_boot_splash() {
             Rect::new(bar_x as i32, bar_y as i32, bar_width / 10, bar_height),
             splash_colors::LOGO_PRIMARY,
         );
+
+        crate::io::log::early_print("[SPLASH] Drawing complete, flushing cache\n");
+        unsafe {
+            core::arch::asm!("wbinvd", options(nostack, preserves_flags));
+        }
+        crate::io::log::early_print("[SPLASH] Cache flushed, display should happen\n");
     });
 }
 

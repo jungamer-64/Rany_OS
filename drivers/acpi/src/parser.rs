@@ -21,6 +21,7 @@
 #![allow(clippy::must_use_candidate)] // Parser internal methods
 
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 use super::info::{AcpiInfo, InterruptOverrideInfo, IoApicInfo, LocalApicInfo, PcieEcamInfo};
@@ -28,6 +29,32 @@ use super::tables::{
     AcpiError, AcpiSdtHeader, Madt, MadtEntryHeader, MadtInterruptOverride, MadtIoApic,
     MadtLocalApic, MadtLocalApicOverride, Mcfg, McfgEntry, RSDP_SIGNATURE, Rsdp, signature,
 };
+
+// ============================================================================
+// HHDM (Higher Half Direct Map) Configuration
+// ============================================================================
+
+/// Physical memory offset for HHDM translation.
+/// Must be set before parsing ACPI tables.
+static HHDM_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// Set the HHDM offset for physical-to-virtual translation.
+/// This must be called before `init()` if the kernel uses HHDM.
+pub fn set_hhdm_offset(offset: u64) {
+    HHDM_OFFSET.store(offset, Ordering::SeqCst);
+}
+
+/// Convert a physical address to virtual address using HHDM offset.
+#[inline]
+fn phys_to_virt(phys: u64) -> u64 {
+    let offset = HHDM_OFFSET.load(Ordering::Relaxed);
+    if offset == 0 {
+        // No HHDM configured, assume identity mapping
+        phys
+    } else {
+        phys + offset
+    }
+}
 
 // ============================================================================
 // ACPI Parser
@@ -118,13 +145,16 @@ impl AcpiParser {
         let mut info = AcpiInfo::new(rsdp.revision);
 
         // Get table addresses from XSDT (ACPI 2.0+) or RSDT (ACPI 1.0)
+        // Note: These addresses are physical addresses stored in the RSDP,
+        // we convert them to virtual using HHDM offset
         let table_addresses = if rsdp.is_xsdt_available() {
-            unsafe { self.parse_xsdt(rsdp.xsdt_address)? }
+            unsafe { self.parse_xsdt(phys_to_virt(rsdp.xsdt_address))? }
         } else {
-            unsafe { self.parse_rsdt(rsdp.rsdt_address as u64)? }
+            unsafe { self.parse_rsdt(phys_to_virt(rsdp.rsdt_address as u64))? }
         };
 
         // Parse individual tables
+        // Note: table_addresses returned from parse_xsdt/rsdt are already virtual
         for &table_addr in &table_addresses {
             let header = unsafe { &*(table_addr as *const AcpiSdtHeader) };
 
@@ -163,8 +193,9 @@ impl AcpiParser {
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
-            let addr = unsafe { core::ptr::read_unaligned(entries_ptr.add(i) as *const u32) };
-            addresses.push(addr as u64);
+            let phys_addr = unsafe { core::ptr::read_unaligned(entries_ptr.add(i) as *const u32) };
+            // Convert physical table address to virtual
+            addresses.push(phys_to_virt(phys_addr as u64));
         }
 
         Ok(addresses)
@@ -190,8 +221,9 @@ impl AcpiParser {
 
         let mut addresses = Vec::with_capacity(entry_count);
         for i in 0..entry_count {
-            let addr = unsafe { core::ptr::read_unaligned(entries_ptr.add(i) as *const u64) };
-            addresses.push(addr);
+            let phys_addr = unsafe { core::ptr::read_unaligned(entries_ptr.add(i) as *const u64) };
+            // Convert physical table address to virtual
+            addresses.push(phys_to_virt(phys_addr));
         }
 
         Ok(addresses)
@@ -367,17 +399,18 @@ impl AcpiParser {
     }
 
     /// Find a table by its signature
-    /// Returns the physical address of the table if found
+    /// Returns the virtual address of the table if found (HHDM translated)
     pub fn find_table(&self, signature: &[u8; 4]) -> Result<usize, AcpiError> {
         let rsdp = unsafe { &*(self.rsdp_address as *const Rsdp) };
         if !rsdp.validate() {
             return Err(AcpiError::InvalidRsdpChecksum);
         }
 
+        // Apply HHDM translation to physical XSDT/RSDT addresses
         let table_addresses = if rsdp.is_xsdt_available() {
-            unsafe { self.parse_xsdt(rsdp.xsdt_address)? }
+            unsafe { self.parse_xsdt(phys_to_virt(rsdp.xsdt_address))? }
         } else {
-            unsafe { self.parse_rsdt(rsdp.rsdt_address as u64)? }
+            unsafe { self.parse_rsdt(phys_to_virt(rsdp.rsdt_address as u64))? }
         };
 
         for &table_addr in &table_addresses {
