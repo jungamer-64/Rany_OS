@@ -94,6 +94,13 @@ function Get-Limine {
 # Build kernel
 function Build-Kernel {
     Write-Info "Building kernel..."
+    
+    # Set RUSTFLAGS for the target architecture ONLY:
+    # - Use kernel linker script
+    # - Build static (not PIE) to satisfy Limine ET_EXEC requirement
+    # - Avoid SIMD in curve25519 to work around LLVM bug
+    $env:CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS = '-C link-arg=-Tkernel/linker.ld -C relocation-model=static --cfg curve25519_dalek_backend="fiat"'
+    
     $buildCmd = "cargo build -p rany_kernel --target $TARGET $BUILD_FLAGS -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem".Trim()
     
     Invoke-Expression $buildCmd
@@ -116,6 +123,12 @@ function New-BootableDisk {
     
     $diskImage = "target/$TARGET/$PROFILE/ranyos.img"
     $diskSizeMB = 64  # 64MB should be enough
+    
+    # Ensure target directory exists
+    $diskImageDir = Split-Path $diskImage -Parent
+    if (-not (Test-Path $diskImageDir)) {
+        New-Item -ItemType Directory -Force -Path $diskImageDir | Out-Null
+    }
     
     # Create empty disk image
     $diskSizeBytes = $diskSizeMB * 1024 * 1024

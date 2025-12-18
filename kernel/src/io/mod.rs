@@ -169,45 +169,60 @@ pub use hid::{
     UsQwertyKeymap,
     keyboard_interrupt_handler,
     mouse_interrupt_handler,
-    ps2_commands,
     ps2_init,
-    ps2_kbd_commands,
-    ps2_mouse_commands,
     // PS/2 Controller
     ps2_ports,
     ps2_status,
     set_leds,
 };
 
-#[deprecated(note = "`io::get_key_event` is deprecated; prefer `KeyboardStream` or `keyboard::has_event()` instead.")]
+#[deprecated(
+    note = "`io::ps2_commands` is deprecated; prefer `crate::io::hid::ps2::commands` or `Ps2Controller` APIs directly."
+)]
+pub use hid::ps2_commands;
+
+#[deprecated(
+    note = "`io::ps2_kbd_commands` is deprecated; prefer `crate::io::hid::ps2::kbd_commands` or `Ps2Controller` helpers."
+)]
+pub use hid::ps2_kbd_commands;
+
+#[deprecated(
+    note = "`io::ps2_mouse_commands` is deprecated; prefer `crate::io::hid::ps2::mouse_commands` or `Ps2Controller` helpers."
+)]
+pub use hid::ps2_mouse_commands;
+
+#[deprecated(
+    note = "`io::get_key_event` is deprecated; prefer `KeyboardStream` or `keyboard::has_event()` instead."
+)]
 pub use hid::get_key_event;
 
-#[deprecated(note = "`io::get_modifiers` is deprecated; prefer `keyboard` APIs or `KeyboardStream`.")]
+#[deprecated(
+    note = "`io::get_modifiers` is deprecated; prefer `keyboard` APIs or `KeyboardStream`."
+)]
 pub use hid::get_modifiers;
 
-#[deprecated(note = "`io::get_mouse_event` is deprecated; prefer `MouseEvent` streams or `mouse::poll_event`.")]
+#[deprecated(
+    note = "`io::get_mouse_event` is deprecated; prefer `MouseEvent` streams or `mouse::poll_event`."
+)]
 pub use hid::get_mouse_event;
 
-#[deprecated(note = "`io::handle_keyboard_interrupt` is deprecated; prefer registering the PS/2 driver's interrupt handler via the DriverRegistry or using `keyboard_interrupt_handler` directly.")]
+#[deprecated(
+    note = "`io::handle_keyboard_interrupt` is deprecated; prefer registering the PS/2 driver's interrupt handler via the DriverRegistry or using `keyboard_interrupt_handler` directly."
+)]
 pub use hid::handle_keyboard_interrupt;
 
-#[deprecated(note = "`io::keyboard` accessor is deprecated; prefer acquiring a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or initialize via `crate::io::hid::keyboard_init()`.")]
+#[deprecated(
+    note = "`io::keyboard` accessor is deprecated; prefer acquiring a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or initialize via `crate::io::hid::keyboard_init()`."
+)]
 pub use hid::keyboard;
 
-#[deprecated(note = "`io::keyboard_init` is deprecated; prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver through `driver_registry::register_driver`.")]
+#[deprecated(
+    note = "`io::keyboard_init` is deprecated; prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver through `driver_registry::register_driver`."
+)]
 pub use hid::keyboard_init;
 
-#[deprecated(note = "`io::ps2_init` is deprecated; prefer registering the PS/2 driver via `driver_registry::register_driver(Box::new(Ps2Driver::new()))` or calling `crate::io::hid::ps2::init()` directly.")]
-pub use hid::ps2_init;
-
-#[deprecated(note = "`io::ps2_ports` is deprecated; prefer `crate::io::hid::ps2::ports` or using `Ps2Controller` APIs directly.")]
-pub use hid::ps2_ports;
-
-#[deprecated(note = "`io::ps2_status` is deprecated; prefer `crate::io::hid::ps2::status` or `ps2::status` directly.")]
-pub use hid::ps2_status;
-
-#[deprecated(note = "`io::set_leds` is deprecated; prefer `ps2::set_leds` or using `Ps2Controller::set_leds` instead.")]
-pub use hid::set_leds;
+// NOTE: ps2_init, ps2_ports, ps2_status, set_leds are already exported above (lines 172-176)
+// The following deprecated re-exports have been removed to fix duplicate symbol errors.
 
 // PCI common module exports (unified interface)
 #[allow(unused_imports)]
@@ -263,7 +278,9 @@ pub use pci::{
 pub use crate::io::pci::get_legacy_accessor;
 
 // Kernel-level deprecation for legacy PCI accessor type
-#[deprecated(note = "LegacyPciAccessor is deprecated; use `pci_driver::EcamAccess` or the new PCI APIs instead.")]
+#[deprecated(
+    note = "LegacyPciAccessor is deprecated; use `pci_driver::EcamAccess` or the new PCI APIs instead."
+)]
 pub use pci::LegacyPciAccessor;
 
 pub use mmio::{

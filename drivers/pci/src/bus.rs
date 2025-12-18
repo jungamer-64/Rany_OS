@@ -687,5 +687,10 @@ pub fn init() {
             dev.class_code.class,
             dev.class_code.subclass
         );
+        for (i, bar) in dev.bars.iter().enumerate() {
+            if let Some(bar) = bar {
+                log::info!("[PCI]   BAR{}: {:?}", i, bar);
+            }
+        }
     }
 }

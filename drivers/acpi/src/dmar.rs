@@ -226,8 +226,8 @@ mod tests {
         // Build a minimal DMAR table with a single RMRR entry (no scopes)
         let mut buf: Vec<u8> = Vec::new();
 
-        // LocalSdtHeader (signature + length placeholder)
-        let mut header = LocalSdtHeader {
+        // AcpiSdtHeader (signature + length placeholder)
+        let header = AcpiSdtHeader {
             signature: *b"DMAR",
             length: 0, // patch later
             revision: 1,

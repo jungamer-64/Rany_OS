@@ -398,6 +398,16 @@ impl Framebuffer {
         }
     }
 
+    /// Access raw buffer pointer (unsafe)
+    pub fn raw_buffer_ptr(&self) -> *mut u8 {
+        self.buffer
+    }
+
+    /// Get stride (bytes per line)
+    pub fn stride(&self) -> u32 {
+        self.info.stride
+    }
+
     /// Create a framebuffer from kernel_api::gui::FramebufferInfo
     ///
     /// # Safety

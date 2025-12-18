@@ -16,6 +16,16 @@ use super::framebuffer::Framebuffer;
 use super::{Color, FramebufferInfo, PixelFormat};
 use crate::memory::physical_memory_offset;
 use crate::mm::higher_half::{PageFlags, PageTableManager, VirtAddr};
+use core::fmt::{self, Write};
+
+// Simple buffer for formatting - safe enough for single threaded boot
+struct EarlyBuf;
+impl Write for EarlyBuf {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        crate::io::log::early_print(s);
+        Ok(())
+    }
+}
 
 // ============================================================================
 // Global State
@@ -49,27 +59,105 @@ pub fn init(info: FramebufferInfo) {
 /// ブートローダーから提供されたフレームバッファ情報を使用して
 /// グラフィックスサブシステムを初期化します。
 pub fn init_from_limine(response: &FramebufferResponse) -> bool {
+    crate::io::log::early_print("[GFX] init_from_limine entry\n");
+
     // 最初のフレームバッファを使用
     let mut iter = response.framebuffers();
     let Some(fb) = iter.next() else {
+        crate::io::log::early_print("[GFX] No framebuffer available\n");
         log::info!("[GRAPHICS] No framebuffer available from bootloader\n");
         return false;
     };
 
-    // ピクセルフォーマットを判定
-    // Limineは通常BGRA8888フォーマットを使用
-    let format = detect_pixel_format(
-        fb.red_mask_size(),
-        fb.red_mask_shift(),
-        fb.green_mask_size(),
-        fb.green_mask_shift(),
-        fb.blue_mask_size(),
-        fb.blue_mask_shift(),
-        fb.bpp(),
+    crate::io::log::early_print("[GFX] Got framebuffer from iterator\n");
+
+    // Limine provides a virtual address via fb.addr(), but this is calculated as
+    // HHDM_OFFSET + physical_address. However, Limine's HHDM only maps RAM, not MMIO/VRAM.
+    // For framebuffers at physical addresses like 0x80000000 (2GB), we must explicitly map them.
+
+    let limine_virt_addr = fb.addr() as u64;
+    let hhdm_offset = physical_memory_offset();
+
+    // Calculate physical address from Limine's HHDM-based virtual address
+    let phys_addr = if limine_virt_addr >= hhdm_offset {
+        limine_virt_addr - hhdm_offset
+    } else {
+        // Fallback: assume it's already a physical address
+        limine_virt_addr
+    };
+
+    crate::io::log::early_print("[GFX] Calculated phys addr\n");
+
+    let _ = write!(
+        EarlyBuf,
+        "[GFX] Framebuffer: limine_virt={:#x} hhdm={:#x} phys={:#x}\n",
+        limine_virt_addr, hhdm_offset, phys_addr
     );
 
+    // ピクセルフォーマットを判定
+    // Limineは通常BGRA8888フォーマットを使用
+    let bpp = fb.bpp();
+    let red_mask_size = fb.red_mask_size();
+    let red_mask_shift = fb.red_mask_shift();
+    let green_mask_size = fb.green_mask_size();
+    let green_mask_shift = fb.green_mask_shift();
+    let blue_mask_size = fb.blue_mask_size();
+    let blue_mask_shift = fb.blue_mask_shift();
+
+    let _ = write!(
+        EarlyBuf,
+        "[GFX] FB: {}x{} bpp={} pitch={}\n",
+        fb.width(),
+        fb.height(),
+        bpp,
+        fb.pitch()
+    );
+    let _ = write!(
+        EarlyBuf,
+        "[GFX] Masks: R={}:{} G={}:{} B={}:{}\n",
+        red_mask_size,
+        red_mask_shift,
+        green_mask_size,
+        green_mask_shift,
+        blue_mask_size,
+        blue_mask_shift
+    );
+
+    let format = detect_pixel_format(
+        red_mask_size,
+        red_mask_shift,
+        green_mask_size,
+        green_mask_shift,
+        blue_mask_size,
+        blue_mask_shift,
+        bpp as u16,
+    );
+    let _ = write!(EarlyBuf, "[GFX] Detected Format: {:?}\n", format);
+
+    let fb_size = (fb.pitch() as u64) * (fb.height() as u64);
+
+    crate::io::log::early_print("[GFX] About to call map_framebuffer_vram\n");
+
+    // Try to explicitly map the framebuffer with Write-Combining attributes
+    // If this fails (e.g., because Limine already mapped it), fall back to Limine's address
+    let mapped_virt_addr = {
+        let result = map_framebuffer_vram(phys_addr, fb_size);
+        if result == 0 {
+            crate::io::log::early_print("[GFX] map_range failed, using Limine's address\n");
+            log::warn!(
+                "[GRAPHICS] Could not remap framebuffer, using Limine's mapping at {:#x}\n",
+                limine_virt_addr
+            );
+            // Use Limine's original address - it should be mapped by the bootloader
+            limine_virt_addr
+        } else {
+            crate::io::log::early_print("[GFX] map_framebuffer_vram succeeded\n");
+            result
+        }
+    };
+
     let info = FramebufferInfo {
-        address: fb.addr() as u64,
+        address: mapped_virt_addr, // Use our explicitly mapped address or Limine's
         width: fb.width() as u32,
         height: fb.height() as u32,
         stride: fb.pitch() as u32,
@@ -78,21 +166,63 @@ pub fn init_from_limine(response: &FramebufferResponse) -> bool {
     };
 
     log::info!(
-        "[GRAPHICS] Limine framebuffer: {}x{}@{}bpp pitch={} format={:?}\n",
+        "[GRAPHICS] Limine framebuffer: {}x{}@{}bpp pitch={} format={:?} mapped_virt={:#x}\n",
         info.width,
         info.height,
         info.bpp,
         info.stride,
-        info.format
+        info.format,
+        mapped_virt_addr
     );
 
-    // Write-Combiningで再マッピング
-    // これによりVRAMへの書き込みパフォーマンスが大幅に向上する
-    let fb_size = (info.stride as u64) * (info.height as u64);
-    remap_framebuffer_wc(info.address, fb_size);
-
+    crate::io::log::early_print("[GFX] Calling init(info)\n");
     init(info);
+    crate::io::log::early_print("[GFX] init_from_limine complete\n");
     true
+}
+
+/// Map framebuffer VRAM to kernel virtual address space with Write-Combining attributes
+///
+/// Returns the virtual address where the framebuffer is mapped, or 0 on failure.
+fn map_framebuffer_vram(phys_addr: u64, size: u64) -> u64 {
+    use crate::mm::higher_half::PhysAddr;
+
+    crate::io::log::early_print("[GFX] map_framebuffer_vram entry\n");
+
+    let offset = physical_memory_offset();
+    let mut manager = unsafe { PageTableManager::from_current_cr3(offset) };
+
+    // Use a dedicated virtual address range for MMIO mappings
+    // We'll use HHDM_OFFSET + phys_addr but explicitly map it
+    let virt_addr = offset + phys_addr;
+    let virt_start = VirtAddr::new(virt_addr);
+    let phys_start = PhysAddr::new(phys_addr);
+
+    let _ = write!(
+        EarlyBuf,
+        "[GFX] Mapping framebuffer: Virt={:#x} Phys={:#x} Size={:#x}\n",
+        virt_start.as_u64(),
+        phys_start.as_u64(),
+        size
+    );
+
+    crate::io::log::early_print("[GFX] About to call map_range\n");
+
+    unsafe {
+        // Map with Write-Combining attributes for optimal VRAM performance
+        match manager.map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
+            Ok(_) => {
+                crate::io::log::early_print("[GFX] map_range OK\n");
+                log::info!("[GRAPHICS] Framebuffer mapped successfully with WC attributes\n");
+                virt_addr
+            }
+            Err(e) => {
+                crate::io::log::early_print("[GFX] map_range FAILED\n");
+                log::error!("[GRAPHICS] Failed to map framebuffer: {:?}\n", e);
+                0
+            }
+        }
+    }
 }
 
 /// フレームバッファをWrite-Combiningで再マッピング
@@ -117,6 +247,31 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
         );
         return;
     };
+
+    // 物理アドレスを逆算（HHDMオフセットを引く）
+    // オフセットが設定されていない場合は、Limineが提供する物理アドレス取得手段がないため
+    // 仮想アドレスからオフセットを引いて計算する
+    let offset = physical_memory_offset();
+    let phys_addr = if virt_addr >= offset {
+        virt_addr - offset
+    } else {
+        // HHDM外？
+        virt_addr
+    };
+
+    use crate::io::log::early_print;
+    use core::fmt::Write;
+    struct EarlyBuf;
+    impl Write for EarlyBuf {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            early_print(s);
+            Ok(())
+        }
+    }
+
+    let _ = write!(EarlyBuf, "[GFX] Limine Virt: {:#x}\n", virt_addr);
+    let _ = write!(EarlyBuf, "[GFX] Offset: {:#x}\n", offset);
+    let _ = write!(EarlyBuf, "[GFX] Calc Phys: {:#x}\n", phys_addr);
 
     log::info!(
         "[GRAPHICS] Remapping framebuffer: Virt={:#x} Phys={:#x} Size={:#x}\n",
