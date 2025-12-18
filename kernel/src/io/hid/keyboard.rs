@@ -97,6 +97,7 @@ pub use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
 // ============================================================================
 
 // KeyCode helper trait is provided by the `hid_driver` crate.
+#[deprecated(note = "KeyCodeExt re-export is deprecated; prefer `hid_driver::KeyCodeExt` directly.")]
 pub use hid_driver::KeyCodeExt;
 
 // KeyCodeExt implementation is provided by the `hid_driver` crate and
@@ -108,6 +109,7 @@ pub use hid_driver::KeyCodeExt;
 // ============================================================================
 
 // KeyEventExt helper trait is provided by the `hid_driver` crate.
+#[deprecated(note = "KeyEventExt re-export is deprecated; prefer `hid_driver::KeyEventExt` directly.")]
 pub use hid_driver::KeyEventExt;
 
 // ModifierState implementation moved to `hid_driver` crate. Re-export it here for

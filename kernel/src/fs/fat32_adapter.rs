@@ -44,6 +44,7 @@ impl From<VfsError> for FsError {
             VfsError::IoError => FsError::IoError,
             VfsError::NotSupported => FsError::NotSupported,
             VfsError::FileSystemCorrupted => FsError::CorruptedFs,
+            VfsError::CrossDeviceLink => FsError::NotSupported,
             VfsError::Other => FsError::IoError,
         }
     }
