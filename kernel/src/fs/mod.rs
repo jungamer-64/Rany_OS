@@ -19,6 +19,7 @@
 // FS抽象化レイヤー（旧称: vfs → オプショナルな層であることを明確化）
 pub mod fs_abstraction;
 // 後方互換性のためのエイリアス
+#[deprecated(note = "`vfs` alias is deprecated; use `fs_abstraction` directly.")]
 pub use fs_abstraction as vfs;
 
 pub mod async_ops;

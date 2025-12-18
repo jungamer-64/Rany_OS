@@ -19,9 +19,13 @@ mod fs;
 // ============================================================================
 // Macro Re-exports (from drivers)
 // ============================================================================
-#[deprecated(note = "serial_print is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`).")]
+#[deprecated(
+    note = "serial_print is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
+)]
 pub use serial_driver::serial_print;
-#[deprecated(note = "serial_println is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`).")]
+#[deprecated(
+    note = "serial_println is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
+)]
 pub use serial_driver::serial_println;
 
 mod graphics;
@@ -163,12 +167,13 @@ extern "C" fn kmain() -> ! {
     // Removed local `serial_print` helper in favor of `io::log::early_print` for early boot messages.
     // Use `log` macros (e.g., `info!`, `debug!`) after the logger has been initialized.
 
-
     io::log::early_print("[BOOT] Checking Limine revision...\n");
 
     // Verify Limine protocol support
     if !BASE_REVISION.is_supported() {
-        io::log::early_print("[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\n");
+        io::log::early_print(
+            "[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\n",
+        );
         // Continue despite revision mismatch for debugging
         // This may be caused by limine crate (0.5) and bootloader (8.x) version mismatch
     }
@@ -387,7 +392,7 @@ extern "C" fn kmain() -> ! {
     }
 
     // 1.1. 1GB Huge Page サポートの初期化 (設計書 11.1.1)
-    serial_print("[BOOT] Initializing 1GB Huge Page support...\r\n");
+    info!(target: "init", "Initializing 1GB Huge Page support...");
     mm::huge_pages::init();
     info!(target: "init", "1GB Huge Page support initialized");
 
@@ -395,27 +400,27 @@ extern "C" fn kmain() -> ! {
     io::log::notify_heap_available();
 
     // Register kernel services (SPL契約の有効化)
-    serial_print("[BOOT] Registering kernel services...\r\n");
+    info!(target: "init", "Registering kernel services...");
     unsafe {
         service_impl::register_kernel_services();
     }
-    serial_print("[BOOT] Kernel services registered\r\n");
+    info!(target: "init", "Kernel services registered");
     info!(target: "init", "KernelServices registered");
 
     // グラフィックスフレームバッファの初期化（Limine経由）
-    serial_print("[BOOT] Initializing graphics framebuffer...\r\n");
+    info!(target: "init", "Initializing graphics framebuffer...");
     if let Some(fb_response) = FRAMEBUFFER_REQUEST.get_response() {
         if graphics::init_from_limine(fb_response) {
-            serial_print("[BOOT] Graphics framebuffer initialized\r\n");
+            info!(target: "init", "Graphics framebuffer initialized");
 
             // ブートスプラッシュを表示
             graphics::show_boot_splash();
-            serial_print("[BOOT] Boot splash displayed\r\n");
+            info!(target: "init", "Boot splash displayed");
         } else {
-            serial_print("[BOOT] Graphics framebuffer init failed\r\n");
+            warn!(target: "init", "Graphics framebuffer init failed");
         }
     } else {
-        serial_print("[BOOT] No framebuffer response from bootloader\r\n");
+        warn!(target: "init", "No framebuffer response from bootloader");
     }
 
     // 進捗: 10% - メモリ初期化完了
@@ -553,12 +558,7 @@ extern "C" fn kmain() -> ! {
                 unsafe {
                     io::interrupt_manager::register_handler(
                         io::interrupt_manager::NVME_VECTOR,
-                        Box::new(|| {
-                            // Dispatch to local core's queue
-                            if let Some(queue) = io::nvme::per_core::get_local_queue() {
-                                queue.process_completions();
-                            }
-                        }),
+                        Box::new(io::nvme::per_core::irq_handler),
                     );
                 }
 

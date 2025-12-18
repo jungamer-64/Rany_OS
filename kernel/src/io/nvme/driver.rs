@@ -37,10 +37,8 @@ pub use super::polling_driver::{NvmeDriverStats, NvmePollingDriver};
 // ============================================================================
 // Re-exports from async_io.rs
 // ============================================================================
-pub use super::async_io::{
-    AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture, async_read,
-    async_write,
-};
+pub use super::async_io::{ReadFuture, WriteFuture, async_read, async_write};
+pub use nvme_driver::{AsyncIoRequest, IoRequestState, PendingRequests};
 
 // ============================================================================
 // Re-exports from error.rs
@@ -64,7 +62,9 @@ pub use super::scheduler::{NvmePollHandler, register_with_io_scheduler};
 // directly. This compatibility re-export is deprecated and will be removed in a
 // future release.
 // ============================================================================
-#[deprecated(note = "Use crate::io::nvme::commands::{NvmeCommand, NvmeCompletion} directly; this re-export will be removed in a future release.")]
+#[deprecated(
+    note = "Use crate::io::nvme::commands::{NvmeCommand, NvmeCompletion} directly; this re-export will be removed in a future release."
+)]
 pub use super::commands::{NvmeCommand, NvmeCompletion};
 
 // ============================================================================

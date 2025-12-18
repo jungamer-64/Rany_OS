@@ -93,14 +93,14 @@ pub use identify::{
 pub use error::NvmeError;
 
 // From nvme_driver modules
-pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
+pub use async_io::{ReadFuture, WriteFuture};
 pub use global::{
     get_stats, init as init_nvme_polling, poll as nvme_poll, with_driver, with_driver_mut,
 };
+pub use nvme_driver::{AsyncIoRequest, IoRequestState, PendingRequests};
 pub use per_core::{NvmeQueueStats, PerCoreNvmeQueue};
 pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};
 pub use queue::{CompletionQueue, QueuePair, SubmissionQueue};
 
 // From kernel-local scheduler
 pub use scheduler::{NvmePollHandler, register_with_io_scheduler};
-
