@@ -322,7 +322,7 @@ pub(crate) fn read_u64_checked(addr: usize) -> Option<u64> {
 #[unsafe(link_section = ".ksymtab")]
 static __KSYM_DUMMY: u8 = 0;
 
-/// .eh_frameセクション境界（リンカスクリプトで定義）
+// .eh_frameセクション境界（リンカスクリプトで定義）
 #[allow(improper_ctypes)]
 unsafe extern "C" {
     #[link_name = "__eh_frame_start"]
