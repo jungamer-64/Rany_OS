@@ -11,14 +11,13 @@
 
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU32, Ordering};
-use core::task::{Context, Poll, Waker};
+
+use core::task::{Context, Poll};
 
 use super::commands::NvmeCompletion;
-use super::defs::POLL_BATCH_SIZE;
 use super::error::NvmeError;
 use super::polling_driver::NvmePollingDriver;
-use super::requests::{AsyncIoRequest, IoRequestState, PendingRequests};
+use super::requests::PendingRequests;
 
 // ============================================================================
 // I/O Request State
@@ -72,28 +71,27 @@ impl<'a> Future for ReadFuture<'a> {
             let mut pending = pending_requests.lock();
 
             // Check if completed
-            if let Some(req) = pending.take(self.cid) {
-                if let Some(result) = req.result() {
-                    if result.is_success() {
-                        return Poll::Ready(Ok(*result));
-                    } else {
-                        return Poll::Ready(Err(NvmeError::CommandError(*result)));
-                    }
+            if let Some(completion) = pending.check_completion(self.cid) {
+                // Cleanup and return result
+                let _ = pending.take(self.cid);
+                if completion.is_success() {
+                    return Poll::Ready(Ok(completion));
+                } else {
+                    return Poll::Ready(Err(NvmeError::CommandError(completion)));
                 }
-                // If taken but no result? Should not happen if correctly managed
             }
 
             // Not completed, register waker
             pending.set_waker(self.cid, cx.waker().clone());
 
             // Check one more time to avoid race condition
-            if let Some(req) = pending.take(self.cid) {
-                if let Some(result) = req.result() {
-                    if result.is_success() {
-                        return Poll::Ready(Ok(*result));
-                    } else {
-                        return Poll::Ready(Err(NvmeError::CommandError(*result)));
-                    }
+            if let Some(completion) = pending.check_completion(self.cid) {
+                // Cleanup and return result
+                let _ = pending.take(self.cid);
+                if completion.is_success() {
+                    return Poll::Ready(Ok(completion));
+                } else {
+                    return Poll::Ready(Err(NvmeError::CommandError(completion)));
                 }
             }
         } else {
@@ -134,13 +132,13 @@ impl<'a> Future for WriteFuture<'a> {
             let mut pending = pending_requests.lock();
 
             // Check if completed
-            if let Some(req) = pending.take(self.cid) {
-                if let Some(result) = req.result() {
-                    if result.is_success() {
-                        return Poll::Ready(Ok(*result));
-                    } else {
-                        return Poll::Ready(Err(NvmeError::CommandError(*result)));
-                    }
+            if let Some(completion) = pending.check_completion(self.cid) {
+                // Cleanup and return
+                let _ = pending.take(self.cid);
+                if completion.is_success() {
+                    return Poll::Ready(Ok(completion));
+                } else {
+                    return Poll::Ready(Err(NvmeError::CommandError(completion)));
                 }
             }
 
@@ -148,13 +146,13 @@ impl<'a> Future for WriteFuture<'a> {
             pending.set_waker(self.cid, cx.waker().clone());
 
             // Check one more time
-            if let Some(req) = pending.take(self.cid) {
-                if let Some(result) = req.result() {
-                    if result.is_success() {
-                        return Poll::Ready(Ok(*result));
-                    } else {
-                        return Poll::Ready(Err(NvmeError::CommandError(*result)));
-                    }
+            if let Some(completion) = pending.check_completion(self.cid) {
+                // Cleanup and return
+                let _ = pending.take(self.cid);
+                if completion.is_success() {
+                    return Poll::Ready(Ok(completion));
+                } else {
+                    return Poll::Ready(Err(NvmeError::CommandError(completion)));
                 }
             }
         } else {

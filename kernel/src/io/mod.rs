@@ -256,6 +256,7 @@ pub use acpi::{
 /// Helper to parse DMAR table; wraps the `acpi::dmar::parse_dmar` helper so
 /// other `io` submodules (e.g., `iommu`) can call it without referencing the
 /// `acpi` module directly by path (helps avoid some resolution issues).
+#[deprecated(note = "parse_dmar_table is deprecated; call `acpi::dmar::parse_dmar` directly.")]
 pub fn parse_dmar_table(addr: usize) -> Result<acpi::dmar::DmarInfo, &'static str> {
     unsafe { acpi::dmar::parse_dmar(addr) }
 }

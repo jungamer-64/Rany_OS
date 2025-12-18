@@ -30,6 +30,10 @@ This document lists symbols that have been marked deprecated and recommended mig
   - Re-export of `ahci_driver::atapi` ✅ **deprecated**
     - Migration: Use `ahci_driver::atapi` directly.
 
+- `kernel/src/io/mod.rs`
+  - `parse_dmar_table()` ✅ **deprecated**
+    - Migration: Call `acpi::dmar::parse_dmar` directly.
+
 - `kernel/src/shell/graphical/render.rs`
   - `redraw_input_only()` ✅ **deprecated**
     - Migration: Use `redraw_input_line()`.
@@ -55,6 +59,7 @@ This document lists symbols that have been marked deprecated and recommended mig
 - Workspace-level full builds may still fail due to unrelated driver compile issues (e.g. `drivers/nvme`). Deprecation commits are small and intended to be low-risk.
 
 If you want, I can:
+
 - Continue deprecating additional kernel-level compatibility shims (low-risk) ✅
 - Start deprecating driver-level compatibility re-exports more aggressively (riskier; may require driver fixes) ⚠️
 

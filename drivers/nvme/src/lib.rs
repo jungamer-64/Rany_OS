@@ -34,7 +34,6 @@ pub mod queue_types;
 pub mod regs;
 
 // Modules migrated from kernel
-// Modules migrated from kernel
 pub mod controller;
 pub mod per_core;
 pub mod queue;
@@ -73,7 +72,8 @@ pub use identify::{
 pub use error::NvmeError;
 
 // Async I/O exports
-pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
+pub use async_io::{ReadFuture, WriteFuture};
+pub use requests::{AsyncIoRequest, IoRequestState, PendingRequests};
 
 // Global driver exports
 pub use crate::global::{

@@ -253,6 +253,12 @@ impl NvmePollingDriver {
         self.enable_controller()?;
 
         self.active.store(true, Ordering::Release);
+        self.active.store(true, Ordering::Release);
+
+        // Register Interrupt Handler
+        // The driver cannot directly access kernel::io::interrupt_manager from here.
+        // The integration layer (kernel) must register the irq_handler exported by per_core.
+
         Ok(())
     }
 

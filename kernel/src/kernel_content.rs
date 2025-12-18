@@ -160,34 +160,22 @@ extern "C" fn kmain() -> ! {
         }
     }
 
-    // Simple serial print helper for debugging
-    fn serial_print(s: &str) {
-        unsafe {
-            let port = 0x3F8u16;
-            for byte in s.bytes() {
-                core::arch::asm!(
-                    "out dx, al",
-                    in("dx") port,
-                    in("al") byte,
-                );
-            }
-        }
-    }
+    // Removed local `serial_print` helper in favor of `io::log::early_print` for early boot messages.
+    // Use `log` macros (e.g., `info!`, `debug!`) after the logger has been initialized.
 
-    serial_print("[BOOT] Checking Limine revision...\r\n");
+
+    io::log::early_print("[BOOT] Checking Limine revision...\n");
 
     // Verify Limine protocol support
     if !BASE_REVISION.is_supported() {
-        serial_print(
-            "[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\r\n",
-        );
+        io::log::early_print("[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\n");
         // Continue despite revision mismatch for debugging
         // This may be caused by limine crate (0.5) and bootloader (8.x) version mismatch
     }
-    serial_print("[BOOT] Limine revision check passed\r\n");
+    io::log::early_print("[BOOT] Limine revision check passed\n");
 
     // SSE/SSE2を有効化（x86_64ではABIで必須）
-    serial_print("[BOOT] Enabling SSE...\r\n");
+    io::log::early_print("[BOOT] Enabling SSE...\n");
     unsafe {
         use core::arch::asm;
         // CR0: EM=0, TS=0
@@ -204,7 +192,7 @@ extern "C" fn kmain() -> ! {
         cr4 |= 1 << 10; // OSXMMEXCPT  
         asm!("mov cr4, {}", in(reg) cr4);
     }
-    serial_print("[BOOT] SSE enabled\r\n");
+    io::log::early_print("[BOOT] SSE enabled\n");
 
     // Enable AVX/AVX2 if available
     unsafe {
@@ -216,7 +204,7 @@ extern "C" fn kmain() -> ! {
         let has_osxsave = (res.ecx & (1 << 27)) != 0; // OSXSAVE support
 
         if has_avx && has_osxsave {
-            serial_print("[BOOT] Enabling AVX...\r\n");
+            io::log::early_print("[BOOT] Enabling AVX...\n");
 
             // 2. Enable OSXSAVE in CR4 (bit 18)
             let mut cr4: u64;
@@ -248,7 +236,7 @@ extern "C" fn kmain() -> ! {
                 in("edx") xcr0_high,
             );
 
-            serial_print("[BOOT] AVX enabled (XCR0 set)\r\n");
+            io::log::early_print("[BOOT] AVX enabled (XCR0 set)\n");
 
             // 4. Notify HAL
             hal::mmio::set_simd_level(hal::mmio::simd_level::AVX);
@@ -256,47 +244,46 @@ extern "C" fn kmain() -> ! {
             // 5. Check AVX2 (CPUID.7:EBX.AVX2[bit 5])
             let res7 = __cpuid_count(7, 0);
             if (res7.ebx & (1 << 5)) != 0 {
-                serial_print("[BOOT] AVX2 detected\r\n");
+                io::log::early_print("[BOOT] AVX2 detected\n");
                 hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
             }
         } else {
-            serial_print("[BOOT] AVX not supported\r\n");
+            io::log::early_print("[BOOT] AVX not supported\n");
         }
     }
 
     // Get physical memory offset from HHDM (Higher Half Direct Map)
-    serial_print("[BOOT] Getting HHDM offset...\r\n");
+    io::log::early_print("[BOOT] Getting HHDM offset...\n");
     let phys_mem_offset = HHDM_REQUEST.get_response().map(|r| r.offset()).unwrap_or(0);
-    serial_print("[BOOT] HHDM offset obtained\r\n");
+    io::log::early_print("[BOOT] HHDM offset obtained\n");
 
     // VGAバッファの初期化（ログ出力用）
-    serial_print("[BOOT] Initializing VGA...\r\n");
+    io::log::early_print("[BOOT] Initializing VGA...\n");
     vga::init();
-    serial_print("[BOOT] VGA initialized\r\n");
+    io::log::early_print("[BOOT] VGA initialized\n");
 
     // ロギングシステムの初期化（最優先、ヒープ不要）
-    serial_print("[BOOT] Initializing logger...\r\n");
+    io::log::early_print("[BOOT] Initializing logger...\n");
     if io::log::init().is_err() {
         io::log::early_print("[FATAL] Logger init failed\n");
-        serial_print("[BOOT] Logger init FAILED!\r\n");
+        io::log::early_print("[BOOT] Logger init FAILED!\n");
     } else {
-        serial_print("[BOOT] Logger initialized\r\n");
+        info!(target: "init", "Logger initialized");
     }
 
     // 早期ブートログ（log crateを使用）
     info!(target: "boot", "kernel_main started");
 
     // 物理メモリオフセットを設定
-    serial_print("[BOOT] Setting physical memory offset...\r\n");
+    info!(target: "init", "Setting physical memory offset...");
     memory::set_physical_memory_offset(phys_mem_offset);
-    serial_print("[BOOT] Physical memory offset set\r\n");
+    info!(target: "init", "Physical memory offset set");
     debug!(target: "boot", "physical memory offset set: {:#x}", phys_mem_offset);
 
     print_logo();
 
     // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
     // これにより、メモリ初期化中の例外でデバッグ情報が得られる
-    serial_print("[BOOT] Initializing interrupt system...\r\n");
     info!(target: "init", "Initializing interrupt system");
     interrupts::init();
 
@@ -308,14 +295,11 @@ extern "C" fn kmain() -> ! {
         info!(target: "init", "Serial driver initialized");
     }
 
-    serial_print("[BOOT] Interrupt system initialized\r\n");
     info!(target: "init", "Interrupt system initialized");
 
     // 1. メモリ管理の初期化
-    serial_print("[BOOT] Initializing memory management...\r\n");
     info!(target: "init", "Initializing memory management");
     memory::init();
-    serial_print("[BOOT] Memory management initialized\r\n");
     info!(target: "init", "Memory management initialized");
 
     // 1.5. ACPI & IOMMU Initialization
