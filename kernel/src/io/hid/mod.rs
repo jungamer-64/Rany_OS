@@ -129,8 +129,6 @@ pub(crate) use keyboard::poll_key_event as poll_input_event;
 #[allow(unused_imports)]
 pub use mouse::{
     // Types
-    MouseButton as MouseBtn,
-    MouseEvent as MouseEvt,
     handle_mouse_packet,
     has_mouse_event,
     // Functions
@@ -138,3 +136,10 @@ pub use mouse::{
     is_mouse_initialized,
     poll_mouse_event,
 };
+
+// Deprecated convenience alias: use `MouseButton`/`MouseEvent` directly
+#[deprecated(note = "MouseBtn is deprecated; use `MouseButton` directly.")]
+pub use mouse::MouseButton as MouseBtn;
+
+#[deprecated(note = "MouseEvt is deprecated; use `MouseEvent` directly.")]
+pub use mouse::MouseEvent as MouseEvt;

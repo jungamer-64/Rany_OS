@@ -25,6 +25,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `KeyCode`, `KeyEvent`, `KeyState`, `Modifiers` directly.
   - `has_key_event()` ✅ **deprecated**
     - Migration: Use `keyboard::has_event()` or the `KeyboardStream` async API.
+  - `MouseBtn`, `MouseEvt` ✅ **deprecated**
+    - Migration: Use `MouseButton` and `MouseEvent` directly.
   - Internal polling shims (`poll_key_char`, `poll_key_event`, `poll_input_event`) ✅ **deprecated**
     - Migration: Use `KeyboardStream` and the async stream APIs.
 
