@@ -29,6 +29,7 @@ pub mod devfs;
 pub mod ext2;
 pub mod fat32_adapter;
 #[allow(unused_imports)]
+#[deprecated(note = "`Fat32FileSystem` alias is deprecated; prefer `filesystems::fat32::Fat32FileSystem` or use `fs_abstraction` directly.")]
 pub use fat32_adapter::Fat32FileSystemAdapter as Fat32FileSystem;
 pub mod memfs;
 pub mod async_memfs;
