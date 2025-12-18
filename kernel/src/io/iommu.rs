@@ -33,7 +33,6 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use hashbrown::HashMap;
-use spin::RwLock;
 use crate::sync::PoisonLock;
 
 // PCI helpers used when enabling ATS for devices
@@ -2504,8 +2503,8 @@ impl IommuDomain {
 
                 newly_allocated[0] = Some(pdp_scope);
             }
-            let pdp_table = ((*pml4_entry).phys_addr()) as *mut SlPte;
-            let pdp_phys = ((*pml4_entry).phys_addr());
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_phys = (*pml4_entry).phys_addr();
 
             // Level 3: PDP -> PD
             let pdp_entry = pdp_table.add(pdp_idx);
@@ -2519,8 +2518,8 @@ impl IommuDomain {
                 pd_scope.attach_to_parent(pdp_entry, pdp_phys);
                 newly_allocated[1] = Some(pd_scope);
             }
-            let pd_table = ((*pdp_entry).phys_addr()) as *mut SlPte;
-            let pd_phys = ((*pdp_entry).phys_addr());
+            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_phys = (*pdp_entry).phys_addr();
 
             // Level 2: PD -> PT
             let pd_entry = pd_table.add(pd_idx);
@@ -2534,8 +2533,8 @@ impl IommuDomain {
                 pt_scope.attach_to_parent(pd_entry, pd_phys);
                 newly_allocated[2] = Some(pt_scope);
             }
-            let pt_table = ((*pd_entry).phys_addr()) as *mut SlPte;
-            let pt_phys = ((*pd_entry).phys_addr());
+            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+            let pt_phys = (*pd_entry).phys_addr();
 
             // Level 1: PT -> Page
             let pt_entry = pt_table.add(pt_idx);
@@ -2611,9 +2610,9 @@ impl IommuDomain {
             newly_allocated[0] = Some(pdp_scope);
         }
 
-        let pdp_table = ((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
+        let pdp_table = (unsafe { *pml4_entry }).phys_addr() as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
-        let pdp_phys = ((unsafe { *pml4_entry }).phys_addr());
+        let pdp_phys = (unsafe { *pml4_entry }).phys_addr();
 
         // Ensure PD exists
         if !(unsafe { *pdp_entry }).is_present() {
@@ -2700,9 +2699,9 @@ impl IommuDomain {
             newly_allocated_pdp = Some(pdp_scope);
         }
 
-        let pdp_table = ((unsafe { *pml4_entry }).phys_addr()) as *mut SlPte;
+        let pdp_table = (unsafe { *pml4_entry }).phys_addr() as *mut SlPte;
         let pdp_entry = unsafe { pdp_table.add(pdp_idx) };
-        let pdp_phys = ((unsafe { *pml4_entry }).phys_addr());
+        let pdp_phys = (unsafe { *pml4_entry }).phys_addr();
 
         // Check if already mapped
         if (unsafe { *pdp_entry }).is_present() {
@@ -4424,8 +4423,8 @@ impl IommuController {
 
                     // Cache head and drop the mutable borrow before writing registers
                     let head = prq.head();
-                    // Drop here
-                    drop(prq);
+                    // End borrow explicitly
+                    let _ = prq;
                     self.write64(regs::PQH, head as u64);
                 }
             }
