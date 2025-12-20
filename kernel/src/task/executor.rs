@@ -249,7 +249,9 @@ static PER_CORE_STORES: [PerCoreTaskStore; MAX_CPUS] = {
 
 /// レガシー用グローバルタスクストア（後方互換性）
 /// 新規コードはper-coreストアを使用すべき
-#[deprecated(note = "TASK_STORE is deprecated; use per-core task stores (PER_CORE_STORES) instead. This legacy global will be removed in a future release.")]
+#[deprecated(
+    note = "TASK_STORE is deprecated; use per-core task stores (PER_CORE_STORES) instead. This legacy global will be removed in a future release."
+)]
 static TASK_STORE: PoisonLock<BTreeMap<TaskId, Task>> = PoisonLock::new(BTreeMap::new());
 
 /// Wake queue（ISR-safe ロックフリー）
@@ -333,6 +335,7 @@ impl Executor {
     pub fn spawn_on_cpu(task: Task, cpu_id: usize) {
         let task_id = task.id;
         let target_cpu = if cpu_id < MAX_CPUS { cpu_id } else { 0 };
+        crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
         PER_CORE_STORES[target_cpu].insert(task_id, task);
         GLOBAL_QUEUE.push(task_id);
         EXECUTOR_STATS.tasks_spawned.fetch_add(1, Ordering::Relaxed);
@@ -341,10 +344,88 @@ impl Executor {
     /// メインループ
     pub fn run(&mut self) -> ! {
         loop {
-            // 0. Interrupt-Waker Bridge logic removed for Reactor Pattern.
-            // NVMe ISR now wakes tasks directly via Waker.
+            // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
+            // Interrupt events (ISRs) enqueue InterruptSource events; handle them here.
+            crate::task::interrupt_waker::process_interrupt_events();
+            // Process any AtomicWaker notifications enqueued by ISRs.
+            crate::sync::process_deferred_wakes();
+            // IOMMU command queue processing (process a few commands per loop)
+            if let Some(reg) = crate::io::iommu::get_iommu_registry() {
+                for ctrl in &reg.controllers {
+                    if let Some(ref cq) = ctrl.command_queue {
+                        // Process up to 4 commands per loop to bound time spent
+                        for _ in 0..4 {
+                            let processed = cq.process_once(|kind| {
+                                match kind {
+                                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain { domain } => {
+                                        // call concrete operation directly
+                                        unsafe { ctrl.invalidate_iotlb(*domain) };
+                                        Ok(0)
+                                    }
+                                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                                        unsafe { ctrl.invalidate_iotlb_global() };
+                                        Ok(0)
+                                    }
+                                    crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
+                                        // Lookup domain and perform mapping; then invalidate
+                                        match ctrl.domains.lock() {
+                                            Ok(dom_map) => {
+                                                if let Some(domain_arc) = dom_map.get(domain) {
+                                                    match domain_arc.lock() {
+                                                        Ok(mut d) => {
+                                                            match d.map(*iova, *phys, *size, *read, *write) {
+                                                                Ok(_) => {
+                                                                    unsafe { ctrl.invalidate_iotlb(*domain) };
+                                                                    Ok(0)
+                                                                }
+                                                                Err(_) => Err(())
+                                                            }
+                                                        }
+                                                        Err(_) => Err(())
+                                                    }
+                                                } else {
+                                                    Err(())
+                                                }
+                                            }
+                                            Err(_) => Err(())
+                                        }
+                                    }
+                                    crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion { domain, iova, size: _ } => {
+                                        match ctrl.domains.lock() {
+                                            Ok(dom_map) => {
+                                                if let Some(domain_arc) = dom_map.get(domain) {
+                                                    match domain_arc.lock() {
+                                                        Ok(mut d) => {
+                                                            match d.unmap(*iova) {
+                                                                Ok(_) => {
+                                                                    unsafe { ctrl.invalidate_iotlb(*domain) };
+                                                                    Ok(0)
+                                                                }
+                                                                Err(_) => Err(())
+                                                            }
+                                                        }
+                                                        Err(_) => Err(())
+                                                    }
+                                                } else {
+                                                    Err(())
+                                                }
+                                            }
+                                            Err(_) => Err(())
+                                        }
+                                    }
+                                }
+                            });
 
-            // 1. ローカルキューのタスクを処理
+                            if processed == 0 {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 1. Refill fuel for this executor slice and process local tasks
+            crate::task::fuel::Fuel::refill(crate::task::fuel::FuelConfig::DEFAULT.default_fuel);
             self.run_ready_tasks();
 
             // 2. Wake queueを処理

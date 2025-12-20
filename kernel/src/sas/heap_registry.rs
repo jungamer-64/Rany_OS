@@ -323,6 +323,7 @@ impl HeapRegistry {
         for g in guards.iter_mut() {
             if g.objects.remove(&address).is_some() {
                 if let Some(addrs) = g.owner_index.get_mut(&owner) {
+                    let addrs: &mut alloc::vec::Vec<usize> = addrs;
                     addrs.retain(|a: &usize| *a != address);
                 }
             }
@@ -397,6 +398,7 @@ impl HeapRegistry {
 
             // update owner_index
             if let Some(addrs) = g.owner_index.get_mut(&from) {
+                let addrs: &mut alloc::vec::Vec<usize> = addrs;
                 addrs.retain(|a: &usize| *a != address);
             }
             g.owner_index
@@ -552,6 +554,7 @@ impl HeapRegistry {
             };
             if g.objects.remove(&address).is_some() {
                 if let Some(addrs) = g.owner_index.get_mut(&owner) {
+                    let addrs: &mut alloc::vec::Vec<usize> = addrs;
                     addrs.retain(|a: &usize| *a != address);
                 }
                 removed = true;
@@ -606,6 +609,7 @@ impl HeapRegistry {
                     for addr in to_remove {
                         g.objects.remove(&addr);
                         if let Some(addrs) = g.owner_index.get_mut(&domain) {
+                            let addrs: &mut alloc::vec::Vec<usize> = addrs;
                             addrs.retain(|a: &usize| *a != addr);
                         }
                         removed_addrs.insert(addr);

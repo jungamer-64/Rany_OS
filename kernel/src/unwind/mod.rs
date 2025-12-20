@@ -317,6 +317,7 @@ pub(crate) fn read_u64_checked(addr: usize) -> Option<u64> {
 
 // カーネルシンボルテーブルのダミー定義
 // 実際のシンボルテーブルはリンカスクリプトで上書きされる
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[used]
 #[unsafe(link_section = ".ksymtab")]

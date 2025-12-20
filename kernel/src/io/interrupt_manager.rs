@@ -875,6 +875,13 @@ impl InterruptQueue {
         let write = self.write_pos.load(Ordering::Acquire);
         read == write
     }
+
+    /// キューの長さを取得（テスト用）
+    pub fn len(&self) -> usize {
+        let read = self.read_pos.load(Ordering::Acquire);
+        let write = self.write_pos.load(Ordering::Acquire);
+        write.wrapping_sub(read) as usize
+    }
 }
 
 /// WakerレジストリのエントリID
@@ -1056,18 +1063,20 @@ pub fn try_dispatch_direct(vector: u8) -> bool {
 ///
 /// IDTに登録される関数。ダイレクトディスパッチを試み、
 /// 失敗した場合はイベントキューにフォールバックする。
-pub extern "x86-interrupt" fn nvme_entry_point(_stack_frame: InterruptStackFrame) {
-    // 1. ダイレクトディスパッチ（高速パス）
-    if try_dispatch_direct(NVME_VECTOR) {
-        // ハンドラが処理を行ったので、ここでは何もしない
-    } else {
-        // 2. フォールバック（低速パス）- Executorで処理
-        push_interrupt_event(NVME_VECTOR);
-    }
+define_interrupt!(
+    pub fn nvme_entry_point(_stack_frame: InterruptStackFrame) {
+        // 1. ダイレクトディスパッチ（高速パス）
+        if try_dispatch_direct(NVME_VECTOR) {
+            // ハンドラが処理を行ったので、ここでは何もしない
+        } else {
+            // 2. フォールバック（低速パス）- Executorで処理
+            push_interrupt_event(NVME_VECTOR);
+        }
 
-    // 3. EOI送信
-    send_eoi();
-}
+        // 3. EOI送信
+        send_eoi();
+    }
+);
 
 mod tests {
     use super::*;

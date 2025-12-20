@@ -2,11 +2,8 @@ extern crate alloc;
 
 // use alloc::string::String;
 // use core::panic::PanicInfo;
-use limine::BaseRevision;
-use limine::request::{
-    ExecutableFileRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker,
-    RequestsStartMarker, RsdpRequest, StackSizeRequest,
-};
+use boot_proto::ExoBootInfo;
+
 use log::{debug, error, info, warn};
 
 mod allocator;
@@ -16,6 +13,8 @@ mod domain_system;
 mod epoch;
 mod error;
 mod fs;
+#[macro_use]
+mod interrupt_macros;
 // ============================================================================
 // Macro Re-exports (from drivers)
 // ============================================================================
@@ -73,47 +72,29 @@ mod driver_registry;
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 mod service_impl; // KernelServices implementation // Driver lifecycle management
 
-// Limine bootloader protocol requests (UEFI/BIOS compatible)
-// Define the start and end markers for Limine requests
-#[used]
-#[unsafe(link_section = ".requests_start_marker")]
-static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
+fn debug_heap_check(tag: &str) {
+    io::log::early_print("[HEAP] Check: ");
+    io::log::early_print(tag);
+    io::log::early_print("\n");
 
-#[used]
-#[unsafe(link_section = ".requests_end_marker")]
-static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
+    // Simple allocation test
+    let mut v = alloc::vec::Vec::new();
+    for i in 0..100 {
+        v.push(i as u64);
+    }
+    drop(v);
 
-// Be sure to mark all limine requests with #[used], otherwise they may be removed by the compiler.
-#[used]
-#[unsafe(link_section = ".requests")]
-static BASE_REVISION: BaseRevision = BaseRevision::new();
+    // Large allocation test
+    let b = alloc::boxed::Box::new([0u8; 1024]);
+    core::hint::black_box(&b);
+    drop(b);
 
-#[used]
-#[unsafe(link_section = ".requests")]
-static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
+    io::log::early_print("[HEAP] Check OK\n");
+}
 
-#[used]
-#[unsafe(link_section = ".requests")]
-static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(512 * 1024); // 512 KiB stack
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static KERNEL_FILE_REQUEST: ExecutableFileRequest = ExecutableFileRequest::new();
-
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
-extern "C" fn kmain() -> ! {
+extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     // Early serial output to confirm kernel loaded
     unsafe {
         // Initialize COM1 (0x3F8)
@@ -154,6 +135,13 @@ extern "C" fn kmain() -> ! {
             in("al") 0x0Bu8,  // RTS/DSR
         );
 
+        // Output 'M' to serial to confirm we reached this point in kmain
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") b'M',
+        );
+
         // Send boot message
         for byte in b"RanyOS UEFI Boot OK!\r\n" {
             core::arch::asm!(
@@ -167,17 +155,12 @@ extern "C" fn kmain() -> ! {
     // Removed local `serial_print` helper in favor of `io::log::early_print` for early boot messages.
     // Use `log` macros (e.g., `info!`, `debug!`) after the logger has been initialized.
 
-    io::log::early_print("[BOOT] Checking Limine revision...\n");
-
-    // Verify Limine protocol support
-    if !BASE_REVISION.is_supported() {
-        io::log::early_print(
-            "[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\n",
-        );
-        // Continue despite revision mismatch for debugging
-        // This may be caused by limine crate (0.5) and bootloader (8.x) version mismatch
+    // Limine protocol check removed.
+    // Verify ExoBootInfo version if necessary.
+    io::log::early_print("[BOOT] Booted via ExoLoader!\n");
+    if boot_info.version != 1 {
+        io::log::early_print("[BOOT] WARNING: Protocol version mismatch\n");
     }
-    io::log::early_print("[BOOT] Limine revision check passed\n");
 
     // SSE/SSE2を有効化（x86_64ではABIで必須）
     io::log::early_print("[BOOT] Enabling SSE...\n");
@@ -257,9 +240,9 @@ extern "C" fn kmain() -> ! {
         }
     }
 
-    // Get physical memory offset from HHDM (Higher Half Direct Map)
+    // Get physical memory offset from ExoBootInfo
     io::log::early_print("[BOOT] Getting HHDM offset...\n");
-    let phys_mem_offset = HHDM_REQUEST.get_response().map(|r| r.offset()).unwrap_or(0);
+    let phys_mem_offset = boot_info.phys_mem_offset;
     io::log::early_print("[BOOT] HHDM offset obtained\n");
 
     // VGAバッファの初期化（ログ出力用）
@@ -304,7 +287,11 @@ extern "C" fn kmain() -> ! {
 
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    memory::init();
+    memory::init(if boot_info.rsdp_addr > 0 {
+        Some(boot_info.rsdp_addr)
+    } else {
+        None
+    });
     info!(target: "init", "Memory management initialized");
 
     // 1.5. ACPI & IOMMU Initialization
@@ -315,27 +302,30 @@ extern "C" fn kmain() -> ! {
     io::acpi::set_hhdm_offset(phys_mem_offset);
 
     // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
-    if let Some(rsdp_response) = RSDP_REQUEST.get_response() {
-        let rsdp_addr = rsdp_response.address() as usize;
+    // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
+    if boot_info.rsdp_addr != 0 {
+        let rsdp_addr = boot_info.rsdp_addr as usize;
         // Function init expects u64 physical address usually
         match unsafe { io::acpi::init(rsdp_addr as u64) } {
             Ok(parser) => {
                 info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
                 let mut iommu_config = io::iommu::IommuConfig::default();
-                if let Some(file_response) = KERNEL_FILE_REQUEST.get_response() {
-                    let file = file_response.file();
-                    // Prefer File::string() which returns an Option<&str>
-                    let cmdline = file.string().to_str().unwrap_or("");
-                    info!(target: "init", "Kernel cmdline: {}", cmdline);
+                if boot_info.cmdline_len > 0 {
+                    let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
+                    let slice =
+                        unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+                    if let Ok(cmdline) = core::str::from_utf8(slice) {
+                        info!(target: "init", "Kernel cmdline: {}", cmdline);
 
-                    // Parse 'iommu' option
-                    if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
-                        match val {
-                            "off" => iommu_config.enabled = false,
-                            "pt" | "passthrough" => iommu_config.passthrough = true,
-                            "force" => iommu_config.force = true,
-                            _ => {}
+                        // Parse 'iommu' option
+                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
+                            match val {
+                                "off" => iommu_config.enabled = false,
+                                "pt" | "passthrough" => iommu_config.passthrough = true,
+                                "force" => iommu_config.force = true,
+                                _ => {}
+                            }
                         }
                     }
                 }
@@ -380,8 +370,9 @@ extern "C" fn kmain() -> ! {
                     }
 
                     // Initialize PCI subsystem
-                    // pci_driver::init();
-                    info!(target: "init", "PCI driver initialized (SKIPPED)");
+                    // Initialize PCI subsystem
+                    // pci_driver::init(); // DISABLED FOR HEAP DEBUG
+                    // info!(target: "init", "PCI driver initialized");
                 }
             }
             Err(e) => {
@@ -426,15 +417,14 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "KernelServices registered");
     io::log::early_print("[DEBUG] After second info! macro\n");
 
-    // グラフィックスフレームバッファの初期化（Limine経由）
+    // グラフィックスフレームバッファの初期化（ExoLoader経由）
     io::log::early_print("[DEBUG] Before graphics init info!\n");
     info!(target: "init", "Initializing graphics framebuffer...");
     io::log::early_print("[DEBUG] After graphics init info!\n");
 
-    io::log::early_print("[DEBUG] About to get framebuffer response\n");
-    if let Some(fb_response) = FRAMEBUFFER_REQUEST.get_response() {
-        io::log::early_print("[DEBUG] Got framebuffer response\n");
-        if graphics::init_from_limine(fb_response) {
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        if graphics::init_from_boot_info(&boot_info.framebuffer, phys_mem_offset) {
             info!(target: "init", "Graphics framebuffer initialized");
 
             // ブートスプラッシュを表示
@@ -443,14 +433,21 @@ extern "C" fn kmain() -> ! {
         } else {
             warn!(target: "init", "Graphics framebuffer init failed");
         }
-    } else {
-        warn!(target: "init", "No framebuffer response from bootloader");
+    }
+    #[cfg(any(test, feature = "bench"))]
+    {
+        info!(target: "init", "Skipping graphics framebuffer init in test/bench build");
     }
 
     // 進捗: 10% - メモリ初期化完了
-    graphics::update_boot_progress_with_message(10, "Memory initialized");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(10, "Memory initialized");
+    }
 
     // アロケーションテスト（シンプル化）
+    io::log::early_print("[DEBUG] Before Allocation Tests\n");
+    /*
     debug!(target: "test", "Running allocation tests");
     {
         let v: alloc::vec::Vec<u8> = alloc::vec![1, 2, 3, 4];
@@ -459,19 +456,36 @@ extern "C" fn kmain() -> ! {
         debug!(target: "test", "Vec iteration OK");
 
         // BTreeMapテスト
-        debug!(target: "test", "Testing BTreeMap");
-        let mut map: alloc::collections::BTreeMap<u64, u64> = alloc::collections::BTreeMap::new();
-        map.insert(1, 100);
-        map.insert(2, 200);
-        debug!(target: "test", "BTreeMap OK");
+        io::log::early_print("[DEBUG] Creating BTreeMap\n");
+        {
+            let mut map: alloc::collections::BTreeMap<u64, u64> =
+                alloc::collections::BTreeMap::new();
+            map.insert(1, 100);
+            map.insert(2, 200);
+            for i in 3..100 {
+                map.insert(i, i * 10);
+            }
+        }
+        io::log::early_print("[DEBUG] BTreeMap Dropped & Allocating Vec\n");
+        let mut v: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+        v.push(1);
+        drop(v);
+        io::log::early_print("[DEBUG] Vec Dropped\n");
     }
     info!(target: "test", "Allocation tests passed");
+    io::log::early_print("[DEBUG] After Allocation Tests\n");
+    */
 
     // 2. ドメイン管理システムの初期化
+    io::log::early_print("[DEBUG] Before domain_system::init\n");
     info!(target: "init", "Initializing domain system");
-    domain_system::init();
+    // domain_system::init();
     info!(target: "init", "Domain system initialized");
-    graphics::update_boot_progress_with_message(20, "Domain system ready");
+    io::log::early_print("[DEBUG] After domain_system::init\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(20, "Domain system ready");
+    }
 
     // 2.5. SAS（単一アドレス空間）の初期化
     info!(target: "init", "Initializing SAS");
@@ -482,7 +496,10 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing Spectre mitigations");
     spectre::init();
     info!(target: "init", "Spectre mitigations initialized");
-    graphics::update_boot_progress_with_message(30, "Security initialized");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(30, "Security initialized");
+    }
 
     // 2.7. セキュリティフレームワークの初期化
     info!(target: "init", "Initializing security framework");
@@ -493,7 +510,10 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing MPK/PKU security");
     security::mpk::init();
     info!(target: "init", "MPK/PKU security initialized");
-    graphics::update_boot_progress_with_message(40, "Kernel API ready");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(40, "Kernel API ready");
+    }
 
     // 3. キーボードドライバの初期化
     info!(target: "init", "Initializing keyboard driver");
@@ -525,6 +545,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "boot", "BOOT COMPLETE!");
 
     // 3.5. シリアルポートの初期化（デバッグ用）via DriverRegistry
+    io::log::early_print("[DEBUG] Before Serial Driver\n");
     info!(target: "init", "Initializing serial port via DriverRegistry");
     {
         use alloc::boxed::Box;
@@ -543,9 +564,13 @@ extern "C" fn kmain() -> ! {
             info!(target: "init", "Serial driver initialized via DriverRegistry");
         }
     }
-
-    // 3.5.5. NVMeドライバの初期化（PCIスキャン）
+    io::log::early_print("[DEBUG] After Serial Driver\n");
+    io::log::early_print("[DEBUG] calling info! for NVMe\n");
+    // 3.5.5. NVMeドライバの初期化（PCIスキャン）- DISABLED FOR DEBUGGING
+    io::log::early_print("[DEBUG] NVMe scan SKIPPED\n");
+    /*
     info!(target: "init", "Scanning for NVMe controllers...");
+    io::log::early_print("[DEBUG] Calling find_by_class\n");
     {
         use alloc::boxed::Box;
         use driver_registry::register_driver;
@@ -558,7 +583,12 @@ extern "C" fn kmain() -> ! {
 
         // NVMeコントローラを検索 (Class 01h, Subclass 08h, ProgIF 02h)
         let devices = find_by_class(0x01, 0x08);
+        io::log::early_print("[DEBUG] Returned from find_by_class\n");
+        let _dev_count = devices.len();
+        io::log::early_print("[DEBUG] devices.len() obtained (no format)\n");
+        io::log::early_print("[DEBUG] About to call devices.iter().find()\n");
         if let Some(device_info) = devices.iter().find(|d| d.class_code.prog_if == 0x02) {
+            io::log::early_print("[DEBUG] Found NVMe device, calling info!\n");
             info!(target: "init", "NVMe controller found at {}", device_info.bdf);
 
             // BAR0を取得 (NVMeは64bit BAR0/1を使うことが多い)
@@ -599,8 +629,11 @@ extern "C" fn kmain() -> ! {
             info!(target: "init", "No NVMe controller found");
         }
     }
+    */
 
-    // 3.5.6. AHCIドライバの初期化（PCIスキャン）
+    // 3.5.6. AHCIドライバの初期化（PCIスキャン）- DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] AHCI scan SKIPPED\n");
+    /*
     info!(target: "init", "Scanning for AHCI controllers...");
     {
         use ahci_driver::driver_impl::AhciDriverWrapper;
@@ -644,8 +677,11 @@ extern "C" fn kmain() -> ! {
             info!(target: "init", "No AHCI controller found");
         }
     }
+    */
 
-    // 3.5.7. USBドライバの初期化（PCIスキャン）
+    // 3.5.7. USBドライバの初期化（PCIスキャン）- DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] USB scan SKIPPED\n");
+    /*
     info!(target: "init", "Scanning for USB xHCI controllers...");
     {
         use alloc::boxed::Box;
@@ -687,7 +723,10 @@ extern "C" fn kmain() -> ! {
             }
         }
     }
-    // 3.5.8. ドライバ初期化サマリ
+    */
+    // 3.5.8. ドライバ初期化サマリ - DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] Driver Summary SKIPPED\n");
+    /*
     {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
@@ -698,8 +737,11 @@ extern "C" fn kmain() -> ! {
         }
         info!(target: "init", "==============================");
     }
+    */
 
-    // 3.6. ネットワークサブシステムの初期化
+    // 3.6. ネットワークサブシステムの初期化 - DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] Network init SKIPPED\n");
+    /*
     info!(target: "init", "Initializing network subsystem");
     net::init_stack_default();
     net::init_socket_manager();
@@ -708,11 +750,19 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
     info!(target: "init", "Network stack initialized");
-    graphics::update_boot_progress_with_message(50, "Network stack ready");
+    */
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        // graphics::update_boot_progress_with_message(50, "Network stack ready"); // DISABLED FOR HEAP DEBUG
+        io::log::early_print("[DEBUG] Boot progress 50 SKIPPED\n");
+    }
 
     // 3.6.2. VirtIO-Net driver via DriverRegistry
+    /*
     info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
     {
+        // debug_heap_check("Before VirtIO-Net init");
+
         use alloc::boxed::Box;
         use driver_registry::register_driver;
         use net::driver::VirtioNetDriver;
@@ -726,45 +776,69 @@ extern "C" fn kmain() -> ! {
         } else {
             info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
         }
+
+        // debug_heap_check("After VirtIO-Net init");
     }
+    */
 
     // 3.7. ファイルシステム（memfs）の初期化
+    io::log::early_print("[DEBUG] Before memfs init\n");
     info!(target: "init", "Initializing memory filesystem");
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
-    graphics::update_boot_progress_with_message(60, "Filesystem mounted");
+    io::log::early_print("[DEBUG] After memfs init\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        io::log::early_print("[DEBUG] Before boot progress 60\n");
+        graphics::update_boot_progress_with_message(60, "Filesystem mounted");
+        io::log::early_print("[DEBUG] After boot progress 60\n");
+    }
 
     // 4. タスクスケジューラの初期化
+    io::log::early_print("[DEBUG] Before scheduler init\n");
     info!(target: "init", "Initializing task scheduler");
     task::init_scheduler(0); // CPU 0
     info!(target: "init", "Task scheduler initialized");
-    graphics::update_boot_progress_with_message(70, "Scheduler started");
+    io::log::early_print("[DEBUG] After scheduler init\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(70, "Scheduler started");
+    }
 
     // 4.5. Per-Core Executorの初期化（設計書 4.3）
+    io::log::early_print("[DEBUG] Before executor init\n");
     info!(target: "init", "Initializing per-core executors");
     task::init_executors(1); // シングルコアで開始
     info!(target: "init", "Per-core executors initialized");
+    io::log::early_print("[DEBUG] After executor init\n");
 
     // Aggregation is performed in the executor idle loop; explicit aggregator
     // spawn is not required in the normal runtime path.
     debug!(target: "init", "Log aggregation will run on executor idle");
 
     // 5. ローダーシステムの初期化
+    io::log::early_print("[DEBUG] Before loader init\n");
     info!(target: "init", "Initializing cell loader");
     loader::init_kernel_cell();
     register_kernel_symbols();
     info!(target: "init", "Cell loader initialized");
+    io::log::early_print("[DEBUG] After loader init\n");
 
     // 5.1. ライブアップデート / Epoch-based Reclamation の初期化 (設計書 3.5.3)
     info!(target: "init", "Initializing live update (Epoch-based Reclamation)");
     loader::live_update::init();
     info!(target: "init", "Live update initialized");
-    graphics::update_boot_progress_with_message(80, "Loader ready");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(80, "Loader ready");
+    }
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
+    io::log::early_print("[DEBUG] Before symbol table init\n");
     info!(target: "init", "Initializing symbol table");
     unwind::init_symbol_table();
     info!(target: "init", "Symbol table initialized");
+    io::log::early_print("[DEBUG] After symbol table init\n");
 
     // 5.6. テストフレームワークの初期化
     info!(target: "init", "Initializing test framework");
@@ -778,22 +852,38 @@ extern "C" fn kmain() -> ! {
     } else {
         info!(target: "init", "System integration initialized");
     }
-    graphics::update_boot_progress_with_message(90, "Integration complete");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(90, "Integration complete");
+    }
 
     // 6. 割り込みを有効化
+    io::log::early_print("[DEBUG] Before enable interrupts\n");
     interrupts::enable_interrupts();
     info!(target: "init", "Interrupts enabled");
-    graphics::update_boot_progress_with_message(100, "Ready!");
+    io::log::early_print("[DEBUG] After enable interrupts\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        io::log::early_print("[DEBUG] Before boot progress 100\n");
+        graphics::update_boot_progress_with_message(100, "Ready!");
+        io::log::early_print("[DEBUG] After boot progress 100\n");
+    }
 
     // 7. システム統計を表示
+    io::log::early_print("[DEBUG] Before print_system_stats\n");
     print_system_stats();
+    io::log::early_print("[DEBUG] After print_system_stats\n");
 
     // 8. Executorの作成とタスクスポーン
+    io::log::early_print("[DEBUG] Before Executor::new\n");
     info!(target: "init", "Creating async executor");
     let mut executor = task::Executor::new();
+    io::log::early_print("[DEBUG] After Executor::new\n");
 
+    io::log::early_print("[DEBUG] Before spawn_kernel_tasks\n");
     spawn_kernel_tasks(&mut executor);
     info!(target: "init", "Kernel tasks spawned");
+    io::log::early_print("[DEBUG] After spawn_kernel_tasks\n");
 
     // =========================================================================
     // 🚨 STACK OVERFLOW TEST (Double Fault Verification)
@@ -805,8 +895,10 @@ extern "C" fn kmain() -> ! {
     // stack_overflow();
     // =========================================================================
 
-    info!(target: "run", "Starting executor main loop");
-    info!("================================================================================");
+    io::log::early_print("[DEBUG] Before executor info macro\n");
+    // info!(target: "run", "Starting executor main loop");  // DISABLED FOR DEBUGGING
+    // info!("================================================================================");  // DISABLED FOR DEBUGGING
+    io::log::early_print("[DEBUG] Before executor.run()\n");
 
     // メインループ開始（戻ってこない）
     executor.run();

@@ -328,7 +328,7 @@ impl ExoShell {
         }
     }
 
-    fn is_namespace(&self, name: &str) -> bool {
+    pub(crate) fn is_namespace(&self, name: &str) -> bool {
         self.namespaces.contains_key(name)
     }
 

@@ -204,8 +204,8 @@ impl PacketRef {
             // and checking owner via SAS might be expensive.
             match crate::sas::transfer_ownership(
                 self.buffer.as_ptr() as usize,
-                DomainId::new(0),
-                target_domain,
+                crate::sas::DomainId::new(0),
+                crate::sas::DomainId::new(target_domain.as_u64()),
             ) {
                 Ok(_) => {}
                 Err(e) => {
@@ -301,7 +301,7 @@ impl Mempool {
             crate::sas::register_object(
                 non_null.as_ptr() as usize,
                 layout.size(),
-                DomainId::new(0),
+                crate::sas::DomainId::new(0),
             );
 
             // バッファを初期化
@@ -374,7 +374,7 @@ impl Mempool {
         unsafe {
             // Transfer ownership back to Kernel(0)
             if let Err(e) =
-                crate::sas::transfer_ownership(ptr.as_ptr() as usize, owner, DomainId::new(0))
+                crate::sas::transfer_ownership(ptr.as_ptr() as usize, crate::sas::DomainId::new(owner.as_u64()), crate::sas::DomainId::new(0))
             {
                 log::error!("Failed to reclaim RRef ownership: {:?}", e);
                 // Do not reuse potentially corrupted buffer
@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn test_mempool_poisoned_alloc_fails() {
-        let pool = Mempool::new(1);
+        let pool = Box::leak(Box::new(Mempool::new(1)));
         pool.init(1).expect("init should succeed");
 
         // Poison the free_list by simulating a panic while holding the lock
@@ -617,7 +617,7 @@ mod tests {
 
     #[test]
     fn test_mempool_stats() {
-        let pool = Mempool::new(1);
+        let pool = Box::leak(Box::new(Mempool::new(1)));
         let stats = pool.stats();
         assert_eq!(stats.total_buffers, 0);
         assert_eq!(stats.free_buffers, 0);

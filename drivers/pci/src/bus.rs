@@ -509,32 +509,47 @@ impl<'a> PciBusScanner<'a> {
         }
     }
 
-    /// 指定したデバイスをスキャン
-    pub fn scan_device(&self, bus: u8, device: u8, devices: &mut Vec<PciDeviceInfo>) {
+    /// 指定したデバイスをスキャン (コールバック版)
+    fn scan_device_with<F>(&self, bus: u8, device: u8, callback: &mut F)
+    where
+        F: FnMut(PciDeviceInfo),
+    {
         let bdf = BdfAddress::new(bus, device, 0);
 
         if let Some(info) = self.read_device(bdf) {
             let is_multifunction = info.is_multifunction();
-            devices.push(info);
+            callback(info);
 
             // マルチファンクションの場合、他のファンクションもスキャン
             if is_multifunction {
                 for function in 1..8u8 {
                     let func_bdf = BdfAddress::new(bus, device, function);
                     if let Some(func_info) = self.read_device(func_bdf) {
-                        devices.push(func_info);
+                        callback(func_info);
                     }
                 }
             }
         }
     }
 
+    /// 指定したデバイスをスキャン
+    pub fn scan_device(&self, bus: u8, device: u8, devices: &mut Vec<PciDeviceInfo>) {
+        self.scan_device_with(bus, device, &mut |info| devices.push(info));
+    }
+
     /// 特定のクラス/サブクラスのデバイスを検索
     pub fn find_by_class(&self, class: u8, subclass: u8) -> Vec<PciDeviceInfo> {
-        self.scan_all()
-            .into_iter()
-            .filter(|d| d.class_code.class == class && d.class_code.subclass == subclass)
-            .collect()
+        let mut devices = Vec::new();
+        for bus in 0..=255u8 {
+            for device in 0..32u8 {
+                self.scan_device_with(bus, device, &mut |info| {
+                    if info.class_code.class == class && info.class_code.subclass == subclass {
+                        devices.push(info);
+                    }
+                });
+            }
+        }
+        devices
     }
 
     /// 特定のベンダー/デバイスIDを持つデバイスを検索

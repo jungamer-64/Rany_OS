@@ -79,7 +79,8 @@ mod tests {
 
     #[test]
     fn test_nvme_command_read() {
-        let cmd = NvmeCommand::read(1, 0, 8, 0x1000, 0);
+        // New API: (cid, nsid, slba, nlb, prp1, prp2)
+        let cmd = NvmeCommand::read(0, 1, 0, 8, 0, 0);
         assert_eq!(cmd.nsid, 1);
         assert_eq!(cmd.cdw10, 0);
         assert_eq!(cmd.cdw12, 7); // 8-1
@@ -87,7 +88,7 @@ mod tests {
 
     #[test]
     fn test_nvme_command_write() {
-        let cmd = NvmeCommand::write(1, 100, 16, 0x2000, 0);
+        let cmd = NvmeCommand::write(0, 1, 100, 16, 0, 0);
         assert_eq!(cmd.nsid, 1);
         assert_eq!(cmd.cdw10, 100);
         assert_eq!(cmd.cdw12, 15); // 16-1
@@ -95,14 +96,14 @@ mod tests {
 
     #[test]
     fn test_nvme_command_create_cq() {
-        let cmd = NvmeCommand::create_io_cq(1, 256, 0x10000, 0, false);
+        let cmd = NvmeCommand::create_io_cq(0, 1, 256, 0x10000, 0, false);
         assert_eq!(cmd.cdw10, (1 << 16) | 255);
         assert_eq!(cmd.cdw11, 0x01); // PC=1, IEN=0
     }
 
     #[test]
     fn test_nvme_command_create_sq() {
-        let cmd = NvmeCommand::create_io_sq(1, 256, 0x20000, 1, 0);
+        let cmd = NvmeCommand::create_io_sq(0, 1, 256, 0x20000, 1, 0);
         assert_eq!(cmd.cdw10, (1 << 16) | 255);
         assert_eq!(cmd.cdw11, (1 << 16) | 0x01); // CQID=1, PC=1
     }
@@ -121,7 +122,7 @@ mod tests {
         cqe.status = 0x0103; // SC=1, SCT=0, Phase=1
         assert!(cqe.phase());
         assert!(!cqe.is_success());
-        assert_eq!(cqe.status_code(), 1);
+        assert_eq!(cqe.sc(), 1);
     }
 
     #[test]

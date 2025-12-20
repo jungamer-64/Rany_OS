@@ -98,7 +98,7 @@ fn ahci_driver_vtable() -> *const DriverVTable {
 // emitting the same symbol from multiple drivers when they are statically
 // linked into the kernel.
 #[cfg(feature = "export_driver_entry")]
-#[unsafe(export_name = "_exorust_driver_entry")]
+#[export_name = "_exorust_driver_entry"]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     ahci_driver_vtable()
 }

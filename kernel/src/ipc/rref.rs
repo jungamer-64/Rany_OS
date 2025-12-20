@@ -22,7 +22,7 @@ pub use crate::domain_system::DomainId;
 pub fn reclaim_domain_resources(domain: DomainId) {
     // 統合されたSAS APIを使用
     // SAS Manager (or Registry directly) handles reclamation
-    let reclaimed_count = crate::sas::reclaim_domain_resources(domain);
+    let reclaimed_count = crate::sas::reclaim_domain_resources(crate::sas::DomainId::new(domain.as_u64()));
 
     if reclaimed_count > 0 {
         log::info!(
@@ -78,7 +78,7 @@ impl<T> RRef<T> {
             .expect("Exchange heap allocation failed");
 
         // Heap Registryに登録（統合されたSAS APIを使用）
-        crate::sas::register_object(ptr.as_ptr() as usize, layout.size(), owner);
+        crate::sas::register_object(ptr.as_ptr() as usize, layout.size(), crate::sas::DomainId::new(owner.as_u64()));
 
         RRef { ptr, owner }
     }
@@ -94,7 +94,7 @@ impl<T> RRef<T> {
     /// 設計書 5.3: データコピーなしで所有権のみ移動
     pub fn move_to(mut self, new_owner: DomainId) -> Self {
         // Heap Registryの所有者を更新（統合されたSAS APIを使用）
-        match crate::sas::transfer_ownership(self.ptr.as_ptr() as usize, self.owner, new_owner) {
+        match crate::sas::transfer_ownership(self.ptr.as_ptr() as usize, crate::sas::DomainId::new(self.owner.as_u64()), crate::sas::DomainId::new(new_owner.as_u64())) {
             Ok(_) => {}
             Err(e) => {
                 // This creates a panic if transfer fails - which represents a logic bug or memory corruption

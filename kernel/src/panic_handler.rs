@@ -64,8 +64,8 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     if PANIC_IN_PROGRESS.swap(true, Ordering::SeqCst) {
         // 既にパニック処理中 → Double Panic検出
         // 最小限のエラー情報をシリアルポートに出力
-        crate::vga::early_serial_str("\n!!! DOUBLE PANIC DETECTED !!!\n");
-        crate::vga::early_serial_str("Aborting without further processing.\n");
+        crate::io::log::early_print("\n!!! DOUBLE PANIC DETECTED !!!\n");
+        crate::io::log::early_print("Aborting without further processing.\n");
 
         // 即座にHALT（スタックアンワインドを試みない）
         loop {
@@ -225,8 +225,11 @@ pub fn handle_double_fault(
         "================================================================================\n"
     );
 
-    // BSOD表示を試みる
-    crate::graphics::bsod::show_double_fault_bsod(stack_frame, error_code);
+    // BSOD表示を試みる (テスト/ベンチビルドではグラフィックスは無効化されているためスキップ)
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        crate::graphics::bsod::show_double_fault_bsod(stack_frame, error_code);
+    }
 
     loop {
         x86_64::instructions::hlt();
@@ -321,6 +324,7 @@ pub fn abort(message: &str) -> ! {
 ///
 /// グラフィックモードが利用可能な場合、青い画面にエラー情報を表示する。
 /// フレームバッファが未初期化の場合は何もしない。
+#[cfg(not(any(test, feature = "bench")))]
 fn display_bsod_on_panic(
     message: &str,
     file: Option<&str>,
@@ -328,6 +332,11 @@ fn display_bsod_on_panic(
     column: Option<u32>,
 ) {
     // グラフィックスが初期化されているか確認
+    // パニック時はデッドロックを回避するために強制的にロックを解除
+    unsafe {
+        crate::graphics::force_unlock_framebuffer();
+    }
+
     if crate::graphics::framebuffer().is_none() {
         log::info!("[BSOD] Framebuffer not available, skipping BSOD display\n");
         return;
@@ -339,9 +348,25 @@ fn display_bsod_on_panic(
     crate::graphics::bsod::show_panic_bsod(message, file, line, column);
 }
 
+#[cfg(any(test, feature = "bench"))]
+fn display_bsod_on_panic(
+    _message: &str,
+    _file: Option<&str>,
+    _line: Option<u32>,
+    _column: Option<u32>,
+) {
+    // No-op in tests
+}
+
 /// 手動でBSODをテスト表示する
 ///
 /// デバッグ用途でBSOD表示をテストするための関数
+#[cfg(not(any(test, feature = "bench")))]
 pub fn test_bsod(message: &str) {
     crate::graphics::bsod::show_panic_bsod(message, Some("test_file.rs"), Some(42), Some(1));
+}
+
+#[cfg(any(test, feature = "bench"))]
+pub fn test_bsod(_message: &str) {
+    // No-op in tests
 }

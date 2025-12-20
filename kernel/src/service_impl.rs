@@ -338,10 +338,19 @@ impl KernelServices for ExoKernel {
     }
 
     fn gui(&self) -> Option<&dyn kernel_api::gui::GuiServices> {
-        // GUI services are always available if framebuffer exists
-        if crate::graphics::framebuffer().is_some() {
-            Some(self)
-        } else {
+        #[cfg(not(any(test, feature = "bench")))]
+        {
+            // GUI services are available only if framebuffer exists
+            if crate::graphics::framebuffer().is_some() {
+                Some(self)
+            } else {
+                None
+            }
+        }
+
+        #[cfg(any(test, feature = "bench"))]
+        {
+            // In test/bench builds, graphics subsystem is disabled
             None
         }
     }
@@ -370,28 +379,35 @@ impl GuiServices for ExoKernel {
         }
 
         // Get framebuffer info from global
-        crate::graphics::with_framebuffer(|fb| {
-            let info = fb.info();
-            
-            // Convert graphic_types::PixelFormat to kernel_api::gui::PixelFormat
-            let format = match info.format {
-                crate::graphics::PixelFormat::Rgba8888 => KapiPixelFormat::Rgb32,
-                crate::graphics::PixelFormat::Bgra8888 => KapiPixelFormat::Bgr32,
-                crate::graphics::PixelFormat::Rgb888 => KapiPixelFormat::Rgb24,
-                crate::graphics::PixelFormat::Bgr888 => KapiPixelFormat::Bgr24,
-                _ => KapiPixelFormat::Unknown,
-            };
+        #[cfg(not(any(test, feature = "bench")))]
+        {
+            crate::graphics::with_framebuffer(|fb| {
+                let info = fb.info();
+                
+                // Convert graphic_types::PixelFormat to kernel_api::gui::PixelFormat
+                let format = match info.format {
+                    crate::graphics::PixelFormat::Rgba8888 => KapiPixelFormat::Rgb32,
+                    crate::graphics::PixelFormat::Bgra8888 => KapiPixelFormat::Bgr32,
+                    crate::graphics::PixelFormat::Rgb888 => KapiPixelFormat::Rgb24,
+                    crate::graphics::PixelFormat::Bgr888 => KapiPixelFormat::Bgr24,
+                    _ => KapiPixelFormat::Unknown,
+                };
 
-            Ok(KapiFramebufferInfo {
-                width: info.width as usize,
-                height: info.height as usize,
-                stride: info.stride as usize,
-                format,
-                vaddr: info.address as usize,
-                size: info.size(),
-            })
-        })
-        .unwrap_or(Err(KapiError::ResourceExhausted))
+                Ok(KapiFramebufferInfo {
+                    width: info.width as usize,
+                    height: info.height as usize,
+                    stride: info.stride as usize,
+                    format,
+                    vaddr: info.address as usize,
+                    size: info.size(),
+                })
+            }).unwrap_or(Err(KapiError::ResourceExhausted))
+        }
+        #[cfg(any(test, feature = "bench"))]
+        {
+            // Graphics unavailable in test builds
+            Err(KapiError::NotSupported)
+        }
     }
 
     fn get_input_stream_handle(&self) -> Result<InputStreamHandle, KapiError> {

@@ -225,7 +225,7 @@ impl NvmePollingDriver {
 
         // ドアベルストライドを計算
         self.doorbell_stride = self.cap.doorbell_stride_bytes();
-        self.max_queue_depth = self.cap.max_queue_depth().min(MAX_QUEUE_DEPTH);
+        self.max_queue_depth = self.cap.max_queue_depth().min(MAX_QUEUE_DEPTH as u32) as u16;
 
         // CMB情報を取得
         if self.use_cmb {
@@ -246,7 +246,7 @@ impl NvmePollingDriver {
         self.disable_controller()?;
 
         // Admin Queueのセットアップ
-        let admin_depth = DEFAULT_QUEUE_DEPTH.min(self.cap.max_queue_depth());
+        let admin_depth = (DEFAULT_QUEUE_DEPTH as u32).min(self.cap.max_queue_depth()) as u16;
         self.init_admin_queue(admin_depth)?;
 
         // コントローラを有効化

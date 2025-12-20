@@ -148,127 +148,140 @@ fn dump_control_registers() {
 // ============================================================================
 
 /// Divide Error (#DE)
-pub extern "x86-interrupt" fn divide_error_handler(stack_frame: InterruptStackFrame) {
-    EXCEPTION_STATS
-        .divide_errors
-        .fetch_add(1, Ordering::Relaxed);
+define_interrupt!(
+    pub fn divide_error_handler(stack_frame: InterruptStackFrame) {
+        EXCEPTION_STATS
+            .divide_errors
+            .fetch_add(1, Ordering::Relaxed);
 
-    early_print("\n[EXCEPTION] DIVIDE ERROR (#DE)\n");
-    dump_stack_frame(&stack_frame);
+        early_print("\n[EXCEPTION] DIVIDE ERROR (#DE)\n");
+        dump_stack_frame(&stack_frame);
 
-    panic!("Divide by zero");
-}
+        panic!("Divide by zero");
+    }
+);
 
 /// Debug Exception (#DB)
-pub extern "x86-interrupt" fn debug_handler(stack_frame: InterruptStackFrame) {
-    early_print("\n[EXCEPTION] DEBUG (#DB)\n");
-    dump_stack_frame(&stack_frame);
-    // デバッグ例外は継続可能
-}
+define_interrupt!(
+    pub fn debug_handler(stack_frame: InterruptStackFrame) {
+        early_print("\n[EXCEPTION] DEBUG (#DB)\n");
+        dump_stack_frame(&stack_frame);
+        // デバッグ例外は継続可能
+    }
+);
 
 /// Breakpoint (#BP)
-pub extern "x86-interrupt" fn breakpoint_handler(stack_frame: InterruptStackFrame) {
-    EXCEPTION_STATS.breakpoints.fetch_add(1, Ordering::Relaxed);
+define_interrupt!(
+    pub fn breakpoint_handler(stack_frame: InterruptStackFrame) {
+        EXCEPTION_STATS.breakpoints.fetch_add(1, Ordering::Relaxed);
 
-    early_print("\n[EXCEPTION] BREAKPOINT (#BP)\n");
-    dump_stack_frame(&stack_frame);
-    // ブレークポイントは継続可能
-}
+        early_print("\n[EXCEPTION] BREAKPOINT (#BP)\n");
+        dump_stack_frame(&stack_frame);
+        // ブレークポイントは継続可能
+    }
+);
 
 /// Invalid Opcode (#UD)
-pub extern "x86-interrupt" fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
-    EXCEPTION_STATS
-        .invalid_opcodes
-        .fetch_add(1, Ordering::Relaxed);
+define_interrupt!(
+    pub fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
+        EXCEPTION_STATS
+            .invalid_opcodes
+            .fetch_add(1, Ordering::Relaxed);
 
-    early_print("\n[EXCEPTION] INVALID OPCODE (#UD)\n");
-    dump_stack_frame(&stack_frame);
-    dump_registers();
+        early_print("\n[EXCEPTION] INVALID OPCODE (#UD)\n");
+        dump_stack_frame(&stack_frame);
+        dump_registers();
 
-    // 問題の命令を表示
-    let rip = stack_frame.instruction_pointer.as_u64() as *const u8;
-    early_print("  Instruction bytes: ");
-    for i in 0..8 {
-        let byte = unsafe { *rip.add(i) };
-        // 16進数でバイトを表示
-        let high = (byte >> 4) & 0xF;
-        let low = byte & 0xF;
-        let high_char = if high < 10 {
-            b'0' + high
-        } else {
-            b'a' + high - 10
-        };
-        let low_char = if low < 10 {
-            b'0' + low
-        } else {
-            b'a' + low - 10
-        };
-        crate::io::log::early_print_char(high_char);
-        crate::io::log::early_print_char(low_char);
-        early_print(" ");
+        // 問題の命令を表示
+        let rip = stack_frame.instruction_pointer.as_u64() as *const u8;
+        early_print("  Instruction bytes: ");
+        for i in 0..8 {
+            let byte = unsafe { *rip.add(i) };
+            // 16進数でバイトを表示
+            let high = (byte >> 4) & 0xF;
+            let low = byte & 0xF;
+            let high_char = if high < 10 {
+                b'0' + high
+            } else {
+                b'a' + high - 10
+            };
+            let low_char = if low < 10 {
+                b'0' + low
+            } else {
+                b'a' + low - 10
+            };
+            crate::io::log::early_print_char(high_char);
+            crate::io::log::early_print_char(low_char);
+            early_print(" ");
+        }
+        early_print("\n");
+
+        panic!("Invalid opcode");
     }
-    early_print("\n");
-
-    panic!("Invalid opcode");
-}
+);
 
 /// Device Not Available (#NM)
-pub extern "x86-interrupt" fn device_not_available_handler(stack_frame: InterruptStackFrame) {
-    early_print("\n[EXCEPTION] DEVICE NOT AVAILABLE (#NM)\n");
-    dump_stack_frame(&stack_frame);
+define_interrupt!(
+    pub fn device_not_available_handler(stack_frame: InterruptStackFrame) {
+        early_print("\n[EXCEPTION] DEVICE NOT AVAILABLE (#NM)\n");
+        dump_stack_frame(&stack_frame);
 
-    // FPU/SSE の遅延切り替え用
-    panic!("FPU not available");
-}
+        // FPU/SSE の遅延切り替え用
+        panic!("FPU not available");
+    }
+);
 
 /// Double Fault (#DF)
 ///
 /// これは専用のISTスタックで動作する（スタック破損時でも動く）
-pub extern "x86-interrupt" fn double_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) -> ! {
-    EXCEPTION_STATS
-        .double_faults
-        .fetch_add(1, Ordering::Relaxed);
+define_interrupt!(
+    pub fn double_fault_handler(
+        stack_frame: InterruptStackFrame,
+        error_code: u64,
+    ) -> ! {
+        EXCEPTION_STATS
+            .double_faults
+            .fetch_add(1, Ordering::Relaxed);
 
-    early_print("\n");
-    early_print("========================================================\n");
-    early_print("              DOUBLE FAULT - UNRECOVERABLE\n");
-    early_print("========================================================\n");
-    early_print("Error Code: ");
-    early_print_hex(error_code);
-    early_print("\n\n");
+        early_print("\n");
+        early_print("========================================================\n");
+        early_print("              DOUBLE FAULT - UNRECOVERABLE\n");
+        early_print("========================================================\n");
+        early_print("Error Code: ");
+        early_print_hex(error_code);
+        early_print("\n\n");
 
-    early_print("Stack Frame:\n");
-    dump_stack_frame(&stack_frame);
+        early_print("Stack Frame:\n");
+        dump_stack_frame(&stack_frame);
 
-    early_print("\nControl Registers:\n");
-    dump_control_registers();
+        early_print("\nControl Registers:\n");
+        dump_control_registers();
 
-    early_print("\nGeneral Registers:\n");
-    dump_registers();
+        early_print("\nGeneral Registers:\n");
+        dump_registers();
 
-    early_print("\n[FATAL] System halted.\n");
+        early_print("\n[FATAL] System halted.\n");
 
-    // 回復不能 - ハルト
-    loop {
-        x86_64::instructions::hlt();
+        // 回復不能 - ハルト
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
-}
+);
 
 /// General Protection Fault (#GP)
-pub extern "x86-interrupt" fn general_protection_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    EXCEPTION_STATS
-        .general_protection_faults
-        .fetch_add(1, Ordering::Relaxed);
+define_interrupt!(
+    pub fn general_protection_fault_handler(
+        stack_frame: InterruptStackFrame,
+        error_code: u64,
+    ) {
+        EXCEPTION_STATS
+            .general_protection_faults
+            .fetch_add(1, Ordering::Relaxed);
 
-    early_print("\n[EXCEPTION] GENERAL PROTECTION FAULT (#GP)\n");
-    early_print("Error Code: ");
-    early_print_hex(error_code);
+        early_print("\n[EXCEPTION] GENERAL PROTECTION FAULT (#GP)\n");
+        early_print("Error Code: ");
+        early_print_hex(error_code);
     early_print("\n");
 
     // エラーコードの解析
@@ -294,38 +307,40 @@ pub extern "x86-interrupt" fn general_protection_fault_handler(
 
     panic!("General protection fault");
 }
+);
 
 /// Page Fault (#PF)
-pub extern "x86-interrupt" fn page_fault_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: PageFaultErrorCode,
-) {
-    EXCEPTION_STATS.page_faults.fetch_add(1, Ordering::Relaxed);
+define_interrupt!(
+    pub fn page_fault_handler(
+        stack_frame: InterruptStackFrame,
+        error_code: PageFaultErrorCode,
+    ) {
+        EXCEPTION_STATS.page_faults.fetch_add(1, Ordering::Relaxed);
 
-    let fault_addr = Cr2::read().unwrap_or(x86_64::VirtAddr::zero());
+        let fault_addr = Cr2::read().unwrap_or(x86_64::VirtAddr::zero());
 
-    early_print("\n[EXCEPTION] PAGE FAULT (#PF)\n");
-    early_print("Faulting Address: ");
-    early_print_hex(fault_addr.as_u64());
-    early_print("\nError Code: ");
-    early_print_hex(error_code.bits() as u64);
-    early_print("\n");
+        early_print("\n[EXCEPTION] PAGE FAULT (#PF)\n");
+        early_print("Faulting Address: ");
+        early_print_hex(fault_addr.as_u64());
+        early_print("\nError Code: ");
+        early_print_hex(error_code.bits() as u64);
+        early_print("\n");
 
-    // エラーコードの詳細解析
-    let error_bits = error_code.bits();
-    early_print("  Present: ");
-    early_print(if (error_bits & 0x1) != 0 {
-        "true"
-    } else {
-        "false"
-    });
-    early_print("\n  Write: ");
-    early_print(if (error_bits & 0x2) != 0 {
-        "true"
-    } else {
-        "false"
-    });
-    early_print("\n  User Mode: ");
+        // エラーコードの詳細解析
+        let error_bits = error_code.bits();
+        early_print("  Present: ");
+        early_print(if (error_bits & 0x1) != 0 {
+            "true"
+        } else {
+            "false"
+        });
+        early_print("\n  Write: ");
+        early_print(if (error_bits & 0x2) != 0 {
+            "true"
+        } else {
+            "false"
+        });
+        early_print("\n  User Mode: ");
     early_print(if (error_bits & 0x4) != 0 {
         "true"
     } else {
@@ -350,52 +365,59 @@ pub extern "x86-interrupt" fn page_fault_handler(
 
     panic!("Page fault at {:#x}", fault_addr.as_u64());
 }
+);
 
 /// Alignment Check (#AC)
-pub extern "x86-interrupt" fn alignment_check_handler(
-    stack_frame: InterruptStackFrame,
-    error_code: u64,
-) {
-    early_print("\n[EXCEPTION] ALIGNMENT CHECK (#AC)\n");
-    early_print("Error Code: ");
-    early_print_hex(error_code);
-    early_print("\n");
-    dump_stack_frame(&stack_frame);
+define_interrupt!(
+    pub fn alignment_check_handler(
+        stack_frame: InterruptStackFrame,
+        error_code: u64,
+    ) {
+        early_print("\n[EXCEPTION] ALIGNMENT CHECK (#AC)\n");
+        early_print("Error Code: ");
+        early_print_hex(error_code);
+        early_print("\n");
+        dump_stack_frame(&stack_frame);
 
-    panic!("Alignment check");
-}
+        panic!("Alignment check");
+    }
+);
 
 /// Machine Check (#MC)
-pub extern "x86-interrupt" fn machine_check_handler(stack_frame: InterruptStackFrame) -> ! {
-    early_print("\n[EXCEPTION] MACHINE CHECK (#MC) - HARDWARE ERROR\n");
-    dump_stack_frame(&stack_frame);
+define_interrupt!(
+    pub fn machine_check_handler(stack_frame: InterruptStackFrame) -> ! {
+        early_print("\n[EXCEPTION] MACHINE CHECK (#MC) - HARDWARE ERROR\n");
+        dump_stack_frame(&stack_frame);
 
-    // ハードウェアエラーは回復不能
-    loop {
-        x86_64::instructions::hlt();
+        // ハードウェアエラーは回復不能
+        loop {
+            x86_64::instructions::hlt();
+        }
     }
-}
+);
 
 /// SIMD Floating Point Exception (#XM/#XF)
-pub extern "x86-interrupt" fn simd_floating_point_handler(stack_frame: InterruptStackFrame) {
-    early_print("\n[EXCEPTION] SIMD FLOATING POINT (#XM)\n");
-    dump_stack_frame(&stack_frame);
+define_interrupt!(
+    pub fn simd_floating_point_handler(stack_frame: InterruptStackFrame) {
+        early_print("\n[EXCEPTION] SIMD FLOATING POINT (#XM)\n");
+        dump_stack_frame(&stack_frame);
 
-    // MXCSR レジスタの読み取り
-    let mut mxcsr: u32 = 0;
-    unsafe {
-        core::arch::asm!(
-            "stmxcsr [{}]",
-            in(reg) &mut mxcsr as *mut u32,
-            options(nostack)
-        );
+        // MXCSR レジスタの読み取り
+        let mut mxcsr: u32 = 0;
+        unsafe {
+            core::arch::asm!(
+                "stmxcsr [{}]",
+                in(reg) &mut mxcsr as *mut u32,
+                options(nostack)
+            );
+        }
+        early_print("  MXCSR: ");
+        early_print_hex(mxcsr as u64);
+        early_print("\n");
+
+        panic!("SIMD floating point exception");
     }
-    early_print("  MXCSR: ");
-    early_print_hex(mxcsr as u64);
-    early_print("\n");
-
-    panic!("SIMD floating point exception");
-}
+);
 
 /// 例外統計を取得
 pub fn get_exception_stats() -> (u64, u64, u64, u64, u64, u64) {

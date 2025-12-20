@@ -248,7 +248,7 @@ impl UdpAddr {
 }
 
 /// Received UDP datagram
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UdpDatagram {
     /// Source address
     pub src: UdpAddr,
@@ -553,6 +553,7 @@ pub struct UdpProcessor {
 }
 
 /// Result of UDP processing
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum UdpResult {
     /// Delivered to socket
     Delivered,

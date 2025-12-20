@@ -20,12 +20,14 @@ const SLAB_PAGE_SIZE: usize = 4096;
 const CACHE_LINE_SIZE: usize = 64;
 
 /// Slab内の空きオブジェクトリスト
+#[derive(Debug)]
 struct FreeList {
     head: Option<NonNull<FreeNode>>,
     count: usize,
 }
 
 /// 空きリストのノード
+#[derive(Debug)]
 struct FreeNode {
     next: Option<NonNull<FreeNode>>,
 }
@@ -64,6 +66,7 @@ impl FreeList {
 }
 
 /// 1つのサイズクラス用のSlabキャッシュ
+#[derive(Debug)]
 pub struct SlabCache {
     /// オブジェクトサイズ
     object_size: usize,
@@ -184,6 +187,7 @@ unsafe impl Send for PerCoreCache {}
 /// Per-Core キャッシュ
 /// 設計書: 各コア専用のSlabキャッシュ
 #[repr(align(64))] // キャッシュラインにアライン
+#[derive(Debug)]
 pub struct PerCoreCache {
     /// 各サイズクラスのSlabキャッシュ
     caches: [SlabCache; SLAB_SIZES.len()],

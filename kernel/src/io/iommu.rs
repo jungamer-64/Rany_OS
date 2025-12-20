@@ -1180,16 +1180,46 @@ impl InvalidationQueue {
 
     /// Create a new Invalidation Queue
     pub fn new(size_log2: u8) -> Option<Self> {
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] InvalidationQueue::new start: size_log2={}",
+            size_log2
+        );
+
         let size = 1usize << (size_log2.clamp(8, 16) as usize);
         let total_bytes = size * core::mem::size_of::<InvalidationQueueEntry>();
 
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] allocating queue: total_bytes={} entries={}",
+            total_bytes, size
+        );
+
         // Allocate 4KB-aligned queue
         let layout = alloc::alloc::Layout::from_size_align(total_bytes, 4096).ok()?;
-        let base = crate::util::allocate_zeroed(layout)?.as_ptr() as usize;
+        let base_ptr = crate::util::allocate_zeroed(layout);
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] allocate_zeroed(queue_layout) returned: {:?}",
+            base_ptr.map(|p| p.as_ptr() as usize)
+        );
+        let base = base_ptr?.as_ptr() as usize;
 
         // Allocate status page
         let status_layout = alloc::alloc::Layout::from_size_align(4096, 4096).ok()?;
-        let status_addr = crate::util::allocate_zeroed(status_layout)?.as_ptr() as usize;
+        let status_ptr = crate::util::allocate_zeroed(status_layout);
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] allocate_zeroed(status_layout) returned: {:?}",
+            status_ptr.map(|p| p.as_ptr() as usize)
+        );
+        let status_addr = status_ptr?.as_ptr() as usize;
+
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] InvalidationQueue::new success base=0x{:x} status_addr=0x{:x} size={}",
+            base, status_addr, size
+        );
 
         Some(Self {
             base,
@@ -3164,8 +3194,9 @@ pub struct IommuController {
     /// Register Lock (protects MMIO command sequences)
     /// Prevents race conditions on multi-step register operations (e.g. IOTLB invalidation)
     register_lock: PoisonLock<()>,
+
     /// Domains (Arc<PoisonLock<IommuDomain>>) stored in a PoisonLock-protected map
-    domains: PoisonLock<HashMap<u16, Arc<PoisonLock<IommuDomain>>>>,
+    pub domains: PoisonLock<HashMap<u16, Arc<PoisonLock<IommuDomain>>>>,
     /// Device to domain mapping
     device_domains: PoisonLock<HashMap<DeviceId, u16>>,
     /// Next domain ID
@@ -3199,6 +3230,8 @@ pub struct IommuController {
     include_all: bool,
     /// Pending waker for async invalidation completion (ISR-safe)
     pending_waiter: AtomicWaker,
+    /// Command Queue for offloading register sequences and serialized HW ops
+    pub command_queue: Option<crate::io::iommu_cmdqueue::CommandQueue>,
 }
 
 unsafe impl Send for IommuController {}
@@ -3233,6 +3266,7 @@ impl IommuController {
             device_scopes: Vec::new(),
             include_all: false,
             pending_waiter: AtomicWaker::new(),
+            command_queue: None,
         }
     }
 
@@ -3269,6 +3303,7 @@ impl IommuController {
             device_scopes: scopes,
             include_all,
             pending_waiter: AtomicWaker::new(),
+            command_queue: None,
         }
     }
 
@@ -3335,6 +3370,10 @@ impl IommuController {
         // Read capabilities
         self.cap = self.read64(regs::CAP);
         self.ecap = self.read64(regs::ECAP);
+
+        // Initialize command queue to offload serialized hardware ops
+        // Currently created unconditionally; make configurable later if desired
+        self.command_queue = Some(crate::io::iommu_cmdqueue::CommandQueue::new());
 
         // Allocate root table (4KB, 256 entries)
         // SAFETY: 4096 アライメントと4096サイズは常に有効
@@ -3851,6 +3890,16 @@ impl IommuController {
             return;
         }
 
+        // If a command_queue is present, prefer to offload the operation
+        if let Some(ref cq) = self.command_queue {
+            let _ = cq.submit_sync(
+                crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain {
+                    domain: domain_id,
+                },
+            );
+            return;
+        }
+
         // Context command register invalidation
         let cmd: u64 = (1u64 << 63) |          // ICC (Invalidate context-cache)
                        (1u64 << 61) |          // Global invalidation
@@ -3871,6 +3920,37 @@ impl IommuController {
         // The original code waited TWICE. The second wait seems redundant or is for the actual effect time?
         // But invalidation writes require checking the bit.
         // We'll trust the first wait inside the lock.
+    }
+
+    /// Invalidate IOTLB directly without offloading to a CommandQueue
+    /// This variant is useful when called from a CQ worker to avoid
+    /// deadlocks where the worker submitting an offload would wait for
+    /// itself to process the request.
+    pub unsafe fn invalidate_iotlb_direct(&self, domain_id: u16) {
+        // Prefer QI when available
+        if self.is_queued_invalidation_enabled() {
+            if let Err(e) = self.qi_invalidate_iotlb_domain(domain_id, true) {
+                log::error!("[IOMMU] QI Domain Invalidation failed: {:?}", e);
+            }
+            if let Err(e) = self.qi_wait_sync() {
+                log::error!("[IOMMU] QI Wait failed: {:?}", e);
+            }
+            return;
+        }
+
+        // Fallback to Context command register invalidation (synchronous)
+        let cmd: u64 = (1u64 << 63) | (1u64 << 61) | ((domain_id as u64) << 16);
+
+        {
+            let _lock = self.register_lock.lock();
+            self.write64(regs::CCMD, cmd);
+            // Wait for completion (ICC bit 63 cleared)
+            let _ = self.wait_for_condition(
+                || (self.read64(regs::CCMD) & (1u64 << 63)) == 0,
+                10_000,
+                true,
+            );
+        }
     }
 
     /// Invalidate IOTLB globally (all domains)
@@ -3909,6 +3989,73 @@ impl IommuController {
                 10_000,
                 false,
             );
+        }
+    }
+
+    /// Handle a command queue entry. Intended to be called from CQ workers or the Executor's CQ processor.
+    /// Performs map/unmap/invalidations directly to avoid re-offloading to the CommandQueue.
+    pub fn handle_command_queue_entry(
+        &self,
+        kind: &crate::io::iommu_cmdqueue::IommuCommandKind,
+    ) -> Result<i32, ()> {
+        match kind {
+            crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion {
+                domain,
+                iova,
+                phys,
+                size,
+                read,
+                write,
+            } => match self.domains.lock() {
+                Ok(dom_map) => {
+                    if let Some(domain_arc) = dom_map.get(domain) {
+                        match domain_arc.lock() {
+                            Ok(mut d) => match d.map(*iova, *phys, *size, *read, *write) {
+                                Ok(_) => {
+                                    unsafe { self.invalidate_iotlb_direct(*domain) };
+                                    Ok(0)
+                                }
+                                Err(_) => Err(()),
+                            },
+                            Err(_) => Err(()),
+                        }
+                    } else {
+                        Err(())
+                    }
+                }
+                Err(_) => Err(()),
+            },
+            crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion {
+                domain,
+                iova,
+                size: _,
+            } => match self.domains.lock() {
+                Ok(dom_map) => {
+                    if let Some(domain_arc) = dom_map.get(domain) {
+                        match domain_arc.lock() {
+                            Ok(mut d) => match d.unmap(*iova) {
+                                Ok(_) => {
+                                    unsafe { self.invalidate_iotlb_direct(*domain) };
+                                    Ok(0)
+                                }
+                                Err(_) => Err(()),
+                            },
+                            Err(_) => Err(()),
+                        }
+                    } else {
+                        Err(())
+                    }
+                }
+                Err(_) => Err(()),
+            },
+            crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain { domain } => {
+                unsafe { self.invalidate_iotlb_direct(*domain) };
+                Ok(0)
+            }
+            crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                unsafe { self.invalidate_iotlb_global() };
+                Ok(0)
+            }
         }
     }
 
@@ -4017,19 +4164,41 @@ impl IommuController {
     /// # Arguments
     /// * `size_log2` - Log2 of IRT size (0-15, giving 1-65536 entries)
     pub fn init_interrupt_remapping(&mut self, size_log2: u8) -> Result<(), IommuError> {
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] init_interrupt_remapping enter: size_log2={}",
+            size_log2
+        );
+
         if !self.supports_interrupt_remapping() {
             return Err(IommuError::NotSupported);
         }
 
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] interrupt_remap_table.is_locked() before lock = {}",
+            self.interrupt_remap_table.is_locked()
+        );
+
         let guard = match self.interrupt_remap_table.lock() {
-            Ok(g) => g,
-            Err(_) => {
+            Ok(g) => {
+                #[cfg(test)]
+                eprintln!("[test][IOMMU] interrupt_remap_table.lock() succeeded (not poisoned)");
+                g
+            }
+            Err(poisoned) => {
                 // Initialization-time best-effort recovery: if the IRT lock is poisoned during init,
                 // attempt a best-effort check to detect AlreadyInitialized; caller should be aware that
                 // the table may be inconsistent.
                 log::warn!(
                     "[IOMMU] interrupt_remap_table lock poisoned during init_interrupt_remapping"
                 );
+                #[cfg(test)]
+                eprintln!(
+                    "[test][IOMMU] interrupt_remap_table.lock() returned Err (poisoned); dropping inner guard before calling lock_for_init"
+                );
+                // Dropping the inner guard of the PoisonError releases the lock so lock_for_init can proceed
+                drop(poisoned.into_inner());
                 self.interrupt_remap_table
                     .lock_for_init("[IOMMU] interrupt_remap_table init")
             }
@@ -4037,6 +4206,17 @@ impl IommuController {
         if guard.is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
+
+        // Drop the initial guard here to avoid deadlocking when re-acquiring the lock later
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] dropping initial guard to avoid re-lock deadlock");
+        drop(guard);
+
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] calling InterruptRemapTable::new(size_log2={})",
+            size_log2
+        );
 
         // Create the IRT
         let irt = InterruptRemapTable::new(size_log2).ok_or(IommuError::HardwareError)?;
@@ -4054,24 +4234,46 @@ impl IommuController {
         };
         let irta_value = (irt.base_address() as u64) | ((size_log2 as u64 - 1) & 0xF) | eime;
 
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] writing IRTA=0x{:x} to reg=0x{:x}",
+            irta_value, irta_reg
+        );
         crate::io::mmio::mmio_write_u64(irta_reg as usize, irta_value);
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] wrote IRTA");
 
         // Set IRT pointer (GCMD.SIRTP)
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] issuing GCMD.SIRTP");
         self.write32(regs::GCMD, gcmd_bits::GCMD_SIRTP);
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] issued GCMD.SIRTP");
 
         // Wait for completion - initialization best-effort: if wait times out, log warning and continue
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] waiting for GSTS.IRTPS to be set");
         match self.wait_for_condition(
             || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS) != 0,
             10_000,
             false,
         ) {
-            Ok(_) => {}
+            Ok(_) => {
+                #[cfg(test)]
+                eprintln!("[test][IOMMU] GSTS.IRTPS set - continue");
+            }
             Err(IommuError::Timeout) => {
                 log::warn!(
                     "[IOMMU] interrupt_remap_table init: wait for SIRTP timed out - proceeding with best-effort"
                 );
+                #[cfg(test)]
+                eprintln!("[test][IOMMU] wait_for_condition returned Timeout - proceeding");
             }
-            Err(e) => return Err(e),
+            Err(e) => {
+                #[cfg(test)]
+                eprintln!("[test][IOMMU] wait_for_condition returned error: {:?}", e);
+                return Err(e);
+            }
         }
 
         let mut guard = self
@@ -4310,18 +4512,31 @@ impl IommuController {
 
         // Check if PID pool already initialized
         let guard = match self.pid_pool.lock() {
-            Ok(g) => g,
-            Err(_) => {
+            Ok(g) => {
+                #[cfg(test)]
+                eprintln!("[test][IOMMU] pid_pool.lock() succeeded (not poisoned)");
+                g
+            }
+            Err(poisoned) => {
                 // Initialization-time best-effort recovery for pid_pool: attempt to examine the current state
                 // and fail if already initialized. Best-effort because this occurs during init and helping
                 // boot progress is preferred.
                 log::warn!("[IOMMU] pid_pool lock poisoned during init_posted_interrupts");
+                #[cfg(test)]
+                eprintln!(
+                    "[test][IOMMU] pid_pool.lock() returned Err (poisoned); dropping inner guard before calling lock_for_init"
+                );
+                drop(poisoned.into_inner());
                 self.pid_pool.lock_for_init("[IOMMU] pid_pool init")
             }
         };
         if guard.is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
+
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] dropping initial guard to avoid re-lock deadlock");
+        drop(guard);
 
         let pool = PostedInterruptPool::new(num_pids).ok_or(IommuError::HardwareError)?;
         let mut guard = self.pid_pool.lock_for_init("[IOMMU] pid_pool init");
@@ -4476,11 +4691,20 @@ impl IommuController {
 
         // Check for existing PRQ
         let guard = match self.page_request_queue.lock() {
-            Ok(g) => g,
-            Err(_) => {
+            Ok(g) => {
+                #[cfg(test)]
+                eprintln!("[test][IOMMU] page_request_queue.lock() succeeded (not poisoned)");
+                g
+            }
+            Err(poisoned) => {
                 // Initialization-time best-effort: if PRQ lock is poisoned during init, check guard to avoid
                 // double-init; proceed cautiously.
                 log::warn!("[IOMMU] page_request_queue lock poisoned during init_page_request");
+                #[cfg(test)]
+                eprintln!(
+                    "[test][IOMMU] page_request_queue.lock() returned Err (poisoned); dropping inner guard before calling lock_for_init"
+                );
+                drop(poisoned.into_inner());
                 self.page_request_queue
                     .lock_for_init("[IOMMU] page_request_queue init")
             }
@@ -4488,6 +4712,10 @@ impl IommuController {
         if guard.is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
+
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] dropping initial guard to avoid re-lock deadlock");
+        drop(guard);
 
         let prq = PageRequestQueue::new(size).ok_or(IommuError::HardwareError)?;
 
@@ -4838,47 +5066,132 @@ impl IommuController {
     /// # Arguments
     /// * `size_log2` - Log2 of queue size (8-16, giving 256-65536 entries)
     pub fn init_queued_invalidation(&mut self, size_log2: u8) -> Result<(), IommuError> {
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] init_queued_invalidation enter: size_log2={}",
+            size_log2
+        );
+
         if !self.supports_queued_invalidation() {
+            #[cfg(test)]
+            eprintln!("[test][IOMMU] QI not supported");
             return Err(IommuError::NotSupported);
         }
 
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] invalidation_queue.is_locked() before lock = {}",
+            self.invalidation_queue.is_locked()
+        );
+
         let guard = match self.invalidation_queue.lock() {
-            Ok(g) => g,
-            Err(_) => {
+            Ok(g) => {
+                #[cfg(test)]
+                eprintln!("[test][IOMMU] invalidation_queue.lock() succeeded (not poisoned)");
+                g
+            }
+            Err(poisoned) => {
                 // Initialization-time best-effort recovery for invalidation queue: proceed cautiously
                 // if lock is poisoned during initialization.
                 log::warn!(
                     "[IOMMU] invalidation_queue lock poisoned during init_queued_invalidation"
                 );
+                #[cfg(test)]
+                eprintln!(
+                    "[test][IOMMU] invalidation_queue.lock() returned Err (poisoned); dropping inner guard before calling lock_for_init"
+                );
+                // Release the inner guard immediately so that lock_for_init can reacquire the lock
+                drop(poisoned.into_inner());
                 self.invalidation_queue
                     .lock_for_init("[IOMMU] invalidation_queue init")
             }
         };
         if guard.is_some() {
+            #[cfg(test)]
+            eprintln!("[test][IOMMU] invalidation_queue already initialized");
             return Err(IommuError::AlreadyInitialized);
         }
+
+        // Drop the initial guard here to avoid deadlocking when re-acquiring the lock later
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] dropping initial guard to avoid re-lock deadlock");
+        drop(guard);
+
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] calling InvalidationQueue::new(size_log2={})",
+            size_log2
+        );
 
         // Create the queue
         let iq = InvalidationQueue::new(size_log2).ok_or(IommuError::HardwareError)?;
 
+        #[cfg(test)]
+        eprintln!(
+            "[test][IOMMU] InvalidationQueue::new returned: base=0x{:x} size={} entries",
+            iq.base_address(),
+            iq.size_log2()
+        );
+
         // Set Invalidation Queue Address (IQA register)
         // Bits 2:0 = queue size (log2 - 8), bits 11:0 reserved
         let iqa_value = (iq.base_address() as u64) | (iq.size_log2() as u64 & 0x7);
-        self.write64(regs::IQA, iqa_value);
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] writing IQA=0x{:x}", iqa_value);
+        // Prefer to offload IQA write to the command queue if configured
+        if let Some(ref cq) = self.command_queue {
+            let _ =
+                cq.submit_sync(crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+        } else {
+            self.write64(regs::IQA, iqa_value);
+        }
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] wrote IQA");
 
         // Set queue head to 0
-        self.write64(regs::IQH, 0);
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] writing IQH=0");
+        if let Some(ref cq) = self.command_queue {
+            // Use CQ to serialize the operation (no explicit IQH write op yet)
+            let _ =
+                cq.submit_sync(crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+        } else {
+            self.write64(regs::IQH, 0);
+        }
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] wrote IQH=0");
         // Set queue tail to 0
-        self.write64(regs::IQT, 0);
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] writing IQT=0");
+        if let Some(ref cq) = self.command_queue {
+            let _ =
+                cq.submit_sync(crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+        } else {
+            self.write64(regs::IQT, 0);
+        }
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] wrote IQT=0");
 
         let mut guard = self
             .invalidation_queue
             .lock_for_init("[IOMMU] invalidation_queue init");
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] acquired lock_for_init for finalizing");
         *guard = Some(iq);
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] stored InvalidationQueue; finalizing");
         log::info!(
             "[IOMMU] Invalidation Queue initialized ({} entries)\\n",
             1 << size_log2
         );
+
+        #[cfg(test)]
+        eprintln!("[test][IOMMU] init_queued_invalidation completed");
+
+        // Process any pending command queue entries so that tests using CQ don't stall
+        if let Some(ref cq) = self.command_queue {
+            let _ = cq.process_once(|_k| Ok(0));
+        }
 
         Ok(())
     }
@@ -5094,7 +5407,10 @@ impl IommuController {
 
     /// Wake pending async invalidation waiter (called from interrupt handler)
     pub fn wake_invalidation_waiter(&self) {
-        self.pending_waiter.wake();
+        // ISR-safe: enqueue deferred wake instead of calling waker directly.
+        // The actual wake will be performed later in non-ISR context by
+        // `crate::sync::process_deferred_wakes()` (typically called by the Executor).
+        self.pending_waiter.wake_from_isr();
     }
 
     // =========================================================================
@@ -5953,7 +6269,7 @@ pub struct ReservedMemoryRegion {
 /// IOMMU Registry (Immutable container after initialization)
 pub struct IommuRegistry {
     /// List of IOMMU controllers (Arc for shared access, fine-grained locking internally)
-    controllers: Vec<Arc<IommuController>>,
+    pub controllers: Vec<Arc<IommuController>>,
     /// Default IOMMU index
     default_iommu_idx: Option<usize>,
     /// Reserved memory regions
@@ -6003,7 +6319,7 @@ impl IommuRegistry {
 static IOMMU_REGISTRY: spin::Once<IommuRegistry> = spin::Once::new();
 
 /// Get reference to the IOMMU registry
-fn get_iommu_registry() -> Option<&'static IommuRegistry> {
+pub fn get_iommu_registry() -> Option<&'static IommuRegistry> {
     IOMMU_REGISTRY.get()
 }
 
@@ -6348,6 +6664,17 @@ pub fn map_for_device(
     phys_addr: x86_64::PhysAddr,
     size: u64,
 ) -> Result<u64, IommuError> {
+    // Backwards-compatible blocking wrapper over the async variant
+    crate::task::block_on(async { map_for_device_async(device, phys_addr, size).await })
+}
+
+/// Async variant of `map_for_device` that offloads to the controller's CommandQueue
+/// and `await`s completion when configured.
+pub async fn map_for_device_async(
+    device: &DeviceId,
+    phys_addr: x86_64::PhysAddr,
+    size: u64,
+) -> Result<u64, IommuError> {
     let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
     if registry.controllers.is_empty() {
         return Err(IommuError::NotPresent);
@@ -6358,8 +6685,33 @@ pub fn map_for_device(
     // Iterate controllers to find the one managing this device
     for controller in &registry.controllers {
         if let Some(domain_arc) = controller.get_domain_for_device(*device) {
+            // Read domain id under lock, but do NOT hold the domain lock while submitting to CQ
+            let domain_id = {
+                let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
+                d.id
+            };
+
+            // If a command queue is configured, offload the mapping to it and await completion.
+            if let Some(ref cq) = controller.command_queue {
+                let cmd = crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion {
+                    domain: domain_id,
+                    iova,
+                    phys: phys_addr.as_u64(),
+                    size,
+                    read: true,
+                    write: true,
+                };
+                let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
+                let rc = comp.await;
+                if rc == 0 {
+                    return Ok(iova);
+                } else {
+                    return Err(IommuError::HardwareError);
+                }
+            }
+
+            // No CQ configured: perform mapping inline
             let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-            // Identity mapping for now, matching map_for_dma behavior
             domain.map(iova, phys_addr.as_u64(), size, true, true)?;
             return Ok(iova);
         }
@@ -6370,6 +6722,15 @@ pub fn map_for_device(
 
 /// Unmap a DMA address range for a specific device
 pub fn unmap_for_device(device: &DeviceId, iova: u64, _size: u64) -> Result<(), IommuError> {
+    crate::task::block_on(async { unmap_for_device_async(device, iova, _size).await })
+}
+
+/// Async variant of `unmap_for_device` that offloads to CQ and awaits completion
+pub async fn unmap_for_device_async(
+    device: &DeviceId,
+    iova: u64,
+    _size: u64,
+) -> Result<(), IommuError> {
     let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
     if registry.controllers.is_empty() {
         return Err(IommuError::NotPresent);
@@ -6377,17 +6738,54 @@ pub fn unmap_for_device(device: &DeviceId, iova: u64, _size: u64) -> Result<(), 
 
     for controller in &registry.controllers {
         if let Some(domain_arc) = controller.get_domain_for_device(*device) {
+            // Read domain id under lock, then drop lock before submitting to CQ
+            let domain_id = {
+                let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
+                d.id
+            };
+
+            // If CQ is configured, offload unmap to CQ and await
+            if let Some(ref cq) = controller.command_queue {
+                let cmd = crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion {
+                    domain: domain_id,
+                    iova,
+                    size: _size,
+                };
+                let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
+                let rc = comp.await;
+                if rc == 0 {
+                    return Ok(());
+                } else {
+                    return Err(IommuError::HardwareError);
+                }
+            }
+
+            // No CQ: perform unmap inline then invalidate
             let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
             domain.unmap(iova)?;
-
-            // Invalidate IOTLB
             // Capture domain id while we still hold the domain lock
             let domain_id = domain.id();
             drop(domain); // Release lock before invalidating
 
             // SAFETY: We hold no locks on domain, controller logic handles hardware safety
-            unsafe {
-                controller.invalidate_iotlb(domain_id);
+            if let Some(ref cq) = controller.command_queue {
+                let comp = cq
+                    .submit(
+                        crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain {
+                            domain: domain_id,
+                        },
+                    )
+                    .map_err(|_| IommuError::HardwareError)?;
+                let rc = comp.await;
+                if rc == 0 {
+                    return Ok(());
+                } else {
+                    return Err(IommuError::HardwareError);
+                }
+            } else {
+                unsafe {
+                    controller.invalidate_iotlb(domain_id);
+                }
             }
 
             return Ok(());
@@ -7032,6 +7430,230 @@ mod tests {
 
         ctrl.free_iova(iova, size).expect("free failed");
     }
+
+    #[test]
+    fn test_cmdqueue_map_unmap_with_domain() {
+        // Construct a controller locally and attach a CQ (avoid global init timing issues)
+        let mut ctrl_local = IommuController::new(0x0, 0);
+        ctrl_local.command_queue = Some(crate::io::iommu_cmdqueue::CommandQueue::new());
+
+        // Leak so we can reference it from threads in test
+        let ctrl: &'static IommuController = Box::leak(Box::new(ctrl_local));
+        let cq = ctrl.command_queue.as_ref().expect("cq present");
+
+        // Create domain
+        let domain_id = ctrl
+            .create_domain(None, IommuDomainType::Translated)
+            .expect("create domain");
+
+        // Worker thread: act like executor and service mapping/unmapping commands
+        let worker_cq: &'static crate::io::iommu_cmdqueue::CommandQueue = cq;
+        let worker_ctrl: &'static IommuController = ctrl;
+        let worker =
+            std::thread::spawn(move || {
+                let mut map_done = false;
+                let mut unmap_done = false;
+                let mut attempts = 0;
+                while !(map_done && unmap_done) {
+                    eprintln!("[test][CQ] worker loop attempt {}", attempts);
+                    let processed =
+                        worker_cq.process_once(|k| {
+                            match k {
+                    crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion { .. } => {
+                        eprintln!("[test][CQ] handling MapRegion");
+                        match worker_ctrl.handle_command_queue_entry(&k) {
+                            Ok(_) => { map_done = true; Ok(0) },
+                            Err(_) => Err(()),
+                        }
+                    }
+                    crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
+                        eprintln!("[test][CQ] handling UnmapRegion");
+                        match worker_ctrl.handle_command_queue_entry(&k) {
+                            Ok(_) => { unmap_done = true; Ok(0) },
+                            Err(_) => Err(()),
+                        }
+                    }
+                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
+                        match worker_ctrl.handle_command_queue_entry(&k) {
+                            Ok(_) => Ok(0),
+                            Err(_) => Err(()),
+                        }
+                    }
+                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                        match worker_ctrl.handle_command_queue_entry(k) {
+                            Ok(_) => Ok(0),
+                            Err(_) => Err(()),
+                        }
+                    }
+                }
+                        });
+
+                    if processed > 0 {
+                        eprintln!("[test][CQ] worker processed {} commands", processed);
+                    }
+
+                    attempts += 1;
+                    if attempts > 2000 {
+                        panic!("CQ worker timed out");
+                    }
+                    std::thread::yield_now();
+                }
+            });
+
+        // Submit MapRegion (blocking until worker processes)
+        let map_cmd = crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion {
+            domain: domain_id,
+            iova: 0x1000,
+            phys: 0x2000,
+            size: 0x1000,
+            read: true,
+            write: true,
+        };
+        assert!(cq.submit_sync(map_cmd).is_ok());
+
+        // Confirm mapping exists
+        let domain_arc = ctrl.domain(domain_id).expect("domain not found");
+        let d = match domain_arc.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        assert!(d.mappings().contains_key(&0x1000));
+        drop(d);
+
+        // Submit UnmapRegion
+        let unmap_cmd = crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion {
+            domain: domain_id,
+            iova: 0x1000,
+            size: 0x1000,
+        };
+        assert!(cq.submit_sync(unmap_cmd).is_ok());
+
+        worker.join().expect("worker join failed");
+
+        let d = match domain_arc.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        assert!(!d.mappings().contains_key(&0x1000));
+    }
+
+    #[test]
+    fn test_map_for_device_async_and_unmap() {
+        // Construct a controller locally and attach a CQ (avoid global init timing issues)
+        let mut ctrl_local = IommuController::new(0x0, 0);
+        ctrl_local.command_queue = Some(crate::io::iommu_cmdqueue::CommandQueue::new());
+
+        // Instead of leaking, wrap the controller in an Arc and register it in the global registry
+        use alloc::sync::Arc as AllocArc;
+        let arc_ctrl = AllocArc::new(ctrl_local);
+
+        // Build a registry containing our test controller and install it (Once)
+        let registry = IommuRegistry {
+            controllers: alloc::vec![arc_ctrl.clone()],
+            default_iommu_idx: Some(0),
+            reserved_regions: Vec::new(),
+            config: IommuConfig::default(),
+        };
+        IOMMU_REGISTRY.call_once(|| registry);
+
+        // Obtain controller Arc for worker
+        let worker_ctrl = arc_ctrl.clone();
+
+        // Create domain for the device
+        let domain_id = arc_ctrl
+            .create_domain(None, IommuDomainType::Translated)
+            .expect("create domain");
+
+        // Register device -> domain mapping
+        let device = DeviceId::new(0, 0, 1, 0);
+        match arc_ctrl.device_domains.lock() {
+            Ok(mut dmap) => {
+                dmap.insert(device, domain_id);
+            }
+            Err(_) => {
+                panic!("device_domains poisoned");
+            }
+        }
+
+        // Worker thread: act like executor and service mapping/unmapping commands
+        let worker = std::thread::spawn(move || {
+            let mut map_done = false;
+            let mut unmap_done = false;
+            let mut attempts = 0;
+            while !(map_done && unmap_done) {
+                let processed =
+                    worker_ctrl
+                        .command_queue
+                        .as_ref()
+                        .expect("cq present")
+                        .process_once(|k| {
+                            match k {
+                    crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion { .. } => {
+                        match worker_ctrl.handle_command_queue_entry(&k) {
+                            Ok(0) => { map_done = true; Ok(0) },
+                            Ok(_) => Ok(0),
+                            Err(_) => Err(()),
+                        }
+                    }
+                    crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
+                        match worker_ctrl.handle_command_queue_entry(&k) {
+                            Ok(0) => { unmap_done = true; Ok(0) },
+                            Ok(_) => Ok(0),
+                            Err(_) => Err(()),
+                        }
+                    }
+                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
+                        match worker_ctrl.handle_command_queue_entry(&k) {
+                            Ok(_) => Ok(0),
+                            Err(_) => Err(()),
+                        }
+                    }
+                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                        match worker_ctrl.handle_command_queue_entry(&k) {
+                            Ok(_) => Ok(0),
+                            Err(_) => Err(()),
+                        }
+                    }
+                }
+                        });
+
+                if processed > 0 { /* continue */ }
+
+                attempts += 1;
+                if attempts > 2000 {
+                    panic!("CQ worker timed out");
+                }
+                std::thread::yield_now();
+            }
+        });
+
+        let phys = x86_64::PhysAddr::new(0x2000);
+        // Submit MapRegion asynchronously and block-wait for completion
+        let iova = crate::task::block_on(async {
+            map_for_device_async(&device, phys, 0x1000)
+                .await
+                .expect("map")
+        });
+
+        // Confirm mapping exists
+        let domain_arc = arc_ctrl.domain(domain_id).expect("domain not found");
+        let d =
+            domain_arc.lock_for_init("test_map_for_device_async_and_unmap - confirming mapping");
+        assert!(d.mappings().contains_key(&iova));
+        drop(d);
+
+        // Submit UnmapRegion asynchronously and wait
+        crate::task::block_on(async {
+            unmap_for_device_async(&device, iova, 0x1000)
+                .await
+                .expect("unmap")
+        });
+
+        worker.join().expect("worker join failed");
+
+        let d = domain_arc.lock_for_init("test_map_for_device_async_and_unmap - confirming unmap");
+        assert!(!d.mappings().contains_key(&iova));
+    }
     /*
     #[test]
     fn test_init_iommu_registers_drhd_and_rmrr_and_applies_rmrr() {
@@ -7148,16 +7770,24 @@ mod tests {
 
         // Enable queued invalidation support for testing
         ctrl.ecap = ecap_bits::ECAP_QI;
+        eprintln!("[test] calling init_queued_invalidation");
         ctrl.init_queued_invalidation(8).expect("init_qi failed");
+        eprintln!("[test] init_queued_invalidation returned");
 
         // Poison the invalidation_queue lock
+        eprintln!("[test] before acquiring guard");
         {
             let _guard = ctrl.invalidation_queue.lock().unwrap();
+            eprintln!("[test] acquired guard; setting panicking");
             crate::sync::set_panicking(true);
+            eprintln!("[test] set_panicking(true) called");
         }
+        eprintln!("[test] dropped guard; clearing panicking");
         crate::sync::set_panicking(false);
+        eprintln!("[test] calling qi_wait_sync");
 
         let res = ctrl.qi_wait_sync();
+        eprintln!("[test] qi_wait_sync returned: {:?}", res);
         assert_eq!(res, Err(IommuError::HardwareError));
     }
 

@@ -20,19 +20,16 @@
 extern crate alloc;
 
 pub mod ffi;
-pub mod keymap;
 pub mod keyboard;
+pub mod keymap;
+pub mod mouse;
+pub mod ps2;
 pub mod stream;
 
 // Re-export stream/future helpers for kernel use
 pub use stream::{
-    DriverOps,
-    KeyboardStream,
+    CharFuture, CharFutureArc, DEFAULT_POLL_BUDGET, DriverOps, KeyEventFuture, KeyboardStream,
     KeyboardStreamArc,
-    KeyEventFuture,
-    CharFuture,
-    CharFutureArc,
-    DEFAULT_POLL_BUDGET,
 };
 
 use alloc::string::String;
@@ -308,4 +305,4 @@ pub use keymap::{
 };
 
 // Keyboard helpers exported for kernel use (scancode conversion, waker, modifier state)
-pub use keyboard::{StreamAlreadyTaken, KeyCodeExt, KeyEventExt, ModifierState, IsrSafeWaker};
+pub use keyboard::{IsrSafeWaker, KeyCodeExt, KeyEventExt, ModifierState, StreamAlreadyTaken};

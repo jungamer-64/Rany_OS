@@ -8,7 +8,7 @@
 // ============================================================================
 #![allow(dead_code)]
 
-use alloc::collections::BTreeMap;
+// use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -16,8 +16,8 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 // 【設計書 8.1】PoisonLock使用 - パニック時自動毒入れ
+use crate::error::{DomainErrorKind, KernelError};
 use crate::sync::PoisonLock;
-use crate::error::{KernelError, DomainErrorKind};
 
 // ============================================================================
 // ドメインID
@@ -228,8 +228,8 @@ impl Domain {
 /// ドメインレジストリ
 #[derive(Debug)]
 struct DomainRegistry {
-    /// 全ドメインのマップ
-    domains: BTreeMap<DomainId, Domain>,
+    /// 全ドメインのリスト
+    domains: Vec<Domain>,
     /// 次のドメインID
     next_id: AtomicU64,
 }
@@ -238,7 +238,7 @@ impl DomainRegistry {
     /// 新しいレジストリを作成
     const fn new() -> Self {
         Self {
-            domains: BTreeMap::new(),
+            domains: Vec::new(),
             next_id: AtomicU64::new(1), // 0はカーネル用
         }
     }
@@ -267,20 +267,20 @@ static REGISTRY: PoisonLock<DomainRegistry> = PoisonLock::new(DomainRegistry::ne
 
 /// ドメインシステムを初期化（カーネルドメインを作成）
 pub fn init() {
-    crate::vga::early_serial_str("[DOM] lock\n");
+    crate::io::log::early_print("[DOM] lock\n");
     // 初期化時は毒入れされていないはず
     let mut registry = REGISTRY
         .lock()
         .expect("domain registry poisoned during init");
-    crate::vga::early_serial_str("[DOM] locked\n");
+    crate::io::log::early_print("[DOM] locked\n");
 
     // カーネルドメインを作成
     let mut kernel = Domain::new(DomainId::KERNEL, "kernel".into());
-    crate::vga::early_serial_str("[DOM] new done\n");
+    crate::io::log::early_print("[DOM] new done\n");
     kernel.state = DomainState::Running;
-    crate::vga::early_serial_str("[DOM] insert\n");
-    registry.domains.insert(DomainId::KERNEL, kernel);
-    crate::vga::early_serial_str("[DOM] done\n");
+    crate::io::log::early_print("[DOM] insert\n");
+    registry.domains.push(kernel);
+    crate::io::log::early_print("[DOM] done\n");
 }
 
 /// 新しいドメインを作成
@@ -299,7 +299,7 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
             // Log before consuming `name` to avoid an extra clone
             log::info!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
             let domain = Domain::new(id, name);
-            registry.domains.insert(id, domain);
+            registry.domains.push(domain);
             Ok(id)
         }
         Err(_) => {
@@ -312,13 +312,13 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
 /// ドメインの状態を取得
 pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
     match REGISTRY.lock() {
-        Ok(guard) => guard.domains.get(&id).map(|d| d.state),
+        Ok(guard) => guard.domains.iter().find(|d| d.id == id).map(|d| d.state),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (get_domain_state)");
             None
         }
     }
-} 
+}
 
 /// ドメインに対して読み取り操作を実行
 /// domain/registry.rs からの互換性維持のために追加
@@ -327,13 +327,13 @@ where
     F: FnOnce(&Domain) -> R,
 {
     match REGISTRY.lock() {
-        Ok(guard) => guard.domains.get(&id).map(f),
+        Ok(guard) => guard.domains.iter().find(|d| d.id == id).map(f),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (with_domain)");
             None
         }
     }
-} 
+}
 
 /// ドメインに対して更新操作を実行
 /// domain/registry.rs からの互換性維持のために追加
@@ -342,19 +342,19 @@ where
     F: FnOnce(&mut Domain) -> R,
 {
     match REGISTRY.lock() {
-        Ok(mut guard) => guard.domains.get_mut(&id).map(f),
+        Ok(mut guard) => guard.domains.iter_mut().find(|d| d.id == id).map(f),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (with_domain_mut)");
             None
         }
     }
-} 
+}
 
 /// ドメインの状態を変更
 pub fn set_domain_state(id: DomainId, state: DomainState) {
     match REGISTRY.lock() {
         Ok(mut guard) => {
-            if let Some(domain) = guard.domains.get_mut(&id) {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
                 let old_state = domain.state;
                 domain.state = state;
                 log::info!("[DOMAIN] {} state: {:?} -> {:?}\n", id, old_state, state);
@@ -362,13 +362,13 @@ pub fn set_domain_state(id: DomainId, state: DomainState) {
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (set_domain_state) - no-op"),
     }
-} 
+}
 
 /// ドメインを開始
 pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
     match REGISTRY.lock() {
         Ok(mut registry) => {
-            if let Some(domain) = registry.domains.get_mut(&id) {
+            if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
                 if domain.state != DomainState::Initializing {
                     return Err("Domain is not in initializing state");
                 }
@@ -384,31 +384,35 @@ pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
             Err("Domain registry poisoned")
         }
     }
-} 
+}
 
 /// Set NUMA node for a domain
 pub fn set_domain_numa(id: DomainId, node: usize) {
     match REGISTRY.lock() {
         Ok(mut guard) => {
-            if let Some(domain) = guard.domains.get_mut(&id) {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
                 domain.set_numa_node(node);
                 log::info!("[DOMAIN] {} NUMA node set to {}\n", id, node);
             }
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (set_domain_numa) - no-op"),
     }
-} 
+}
 
 /// Get NUMA node for a domain
 pub fn get_domain_numa(id: DomainId) -> Option<usize> {
     match REGISTRY.lock() {
-        Ok(guard) => guard.domains.get(&id).and_then(|d| d.get_numa_node()),
+        Ok(guard) => guard
+            .domains
+            .iter()
+            .find(|d| d.id == id)
+            .and_then(|d| d.get_numa_node()),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (get_domain_numa)");
             None
         }
     }
-} 
+}
 
 #[cfg(test)]
 mod tests {
@@ -449,8 +453,8 @@ mod tests {
 
     #[test]
     fn test_create_domain_poisoned_returns_error() {
+        use crate::error::{DomainErrorKind, KernelError};
         use crate::sync::set_panicking;
-        use crate::error::{KernelError, DomainErrorKind};
 
         // Poison the registry
         set_panicking(true);
@@ -460,7 +464,10 @@ mod tests {
         set_panicking(false);
 
         let res = create_domain(String::from("poison_test2"));
-        assert_eq!(res, Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned)));
+        assert_eq!(
+            res,
+            Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned))
+        );
     }
 
     #[test]
@@ -500,7 +507,7 @@ mod tests {
 pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
     match REGISTRY.lock() {
         Ok(mut registry) => {
-            if let Some(domain) = registry.domains.get_mut(&id) {
+            if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
                 domain.state = DomainState::Stopped;
                 log::info!("[DOMAIN] Stopped {}\n", id);
                 Ok(())
@@ -529,7 +536,7 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
     {
         match REGISTRY.lock() {
             Ok(mut registry) => {
-                if let Some(domain) = registry.domains.get_mut(&id) {
+                if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
                     domain.state = DomainState::Terminated;
                     // clone() はロックを保持したままの処理を避けるため
                     // デッドロック回避が clone のコストより重要
@@ -553,12 +560,14 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
         match REGISTRY.lock() {
             Ok(mut registry) => {
                 for dep_id in dependents {
-                    if let Some(dep) = registry.domains.get_mut(&dep_id) {
+                    if let Some(dep) = registry.domains.iter_mut().find(|d| d.id == dep_id) {
                         dep.last_error = Some(format!("Dependency {} terminated", id.as_u64()));
                     }
                 }
             }
-            Err(_) => log::error!("[DOMAIN] Registry poisoned (terminate_domain notify) - skipping dependent updates"),
+            Err(_) => log::error!(
+                "[DOMAIN] Registry poisoned (terminate_domain notify) - skipping dependent updates"
+            ),
         }
     }
 
@@ -573,12 +582,14 @@ pub fn handle_domain_panic(id: DomainId, message: String) {
     {
         match REGISTRY.lock() {
             Ok(mut registry) => {
-                if let Some(domain) = registry.domains.get_mut(&id) {
+                if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
                     domain.state = DomainState::Stopped;
                     domain.panic_message = Some(message);
                 }
             }
-            Err(_) => log::error!("[DOMAIN] Registry poisoned (handle_domain_panic) - could not record panic message"),
+            Err(_) => log::error!(
+                "[DOMAIN] Registry poisoned (handle_domain_panic) - could not record panic message"
+            ),
         }
     }
 
@@ -590,25 +601,25 @@ pub fn handle_domain_panic(id: DomainId, message: String) {
 pub fn add_task_to_domain(domain_id: DomainId, task_id: u64) {
     match REGISTRY.lock() {
         Ok(mut guard) => {
-            if let Some(domain) = guard.domains.get_mut(&domain_id) {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == domain_id) {
                 domain.add_task(task_id);
             }
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (add_task_to_domain) - no-op"),
     }
-} 
+}
 
 /// ドメインからタスクを削除
 pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
     match REGISTRY.lock() {
         Ok(mut guard) => {
-            if let Some(domain) = guard.domains.get_mut(&domain_id) {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == domain_id) {
                 domain.remove_task(task_id);
             }
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (remove_task_from_domain) - no-op"),
     }
-} 
+}
 
 // ============================================================================
 // 公開API - リソース管理
@@ -617,16 +628,22 @@ pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
 /// Exchange Heap上にオブジェクトを登録
 pub fn register_heap_object(ptr: usize, layout: Layout, owner: DomainId) {
     // 統合されたHeapRegistryに登録
-    crate::sas::register_object(ptr, layout.size(), owner);
+    crate::sas::register_object(
+        ptr,
+        layout.size(),
+        crate::sas::DomainId::new(owner.as_u64()),
+    );
 
     match REGISTRY.lock() {
         Ok(mut guard) => {
-            if let Some(domain) = guard.domains.get_mut(&owner) {
+            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == owner) {
                 domain.increment_rref();
                 domain.add_memory(layout.size() as u64);
             }
         }
-        Err(_) => log::error!("[DOMAIN] Registry poisoned (register_heap_object) - stats not updated"),
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (register_heap_object) - stats not updated")
+        }
     }
 }
 
@@ -637,12 +654,15 @@ pub fn unregister_heap_object(ptr: usize) {
         // ドメイン統計を更新
         match REGISTRY.lock() {
             Ok(mut guard) => {
-                if let Some(domain) = guard.domains.get_mut(&owner) {
+                let owner_ds = DomainId::new(owner.as_u64());
+                if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == owner_ds) {
                     domain.decrement_rref();
                     domain.free_memory(size as u64);
                 }
             }
-            Err(_) => log::error!("[DOMAIN] Registry poisoned (unregister_heap_object) - stats not updated"),
+            Err(_) => log::error!(
+                "[DOMAIN] Registry poisoned (unregister_heap_object) - stats not updated"
+            ),
         }
     }
 }
@@ -693,24 +713,38 @@ pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
     // The stats are secondary.
 
     if let Some(old_owner) = crate::sas::get_owner(ptr) {
-        if crate::sas::transfer_ownership(ptr, old_owner, new_owner).is_ok() {
+        // Convert SAS DomainId to domain_system::DomainId for registry lookup
+        let old_owner_ds = DomainId::new(old_owner.as_u64());
+        if crate::sas::transfer_ownership(
+            ptr,
+            old_owner,
+            crate::sas::DomainId::new(new_owner.as_u64()),
+        )
+        .is_ok()
+        {
             match REGISTRY.lock() {
                 Ok(mut registry) => {
                     // 旧所有者のカウント減少
-                    if let Some(old_domain) = registry.domains.get_mut(&old_owner) {
+                    if let Some(old_domain) =
+                        registry.domains.iter_mut().find(|d| d.id == old_owner_ds)
+                    {
                         old_domain.decrement_rref();
                         // old_domain.free_memory(size as u64); // Size unknown
                     }
 
                     // 新所有者のカウント増加
-                    if let Some(new_domain) = registry.domains.get_mut(&new_owner) {
+                    if let Some(new_domain) =
+                        registry.domains.iter_mut().find(|d| d.id == new_owner)
+                    {
                         new_domain.increment_rref();
                         // new_domain.add_memory(size as u64); // Size unknown
                     }
                     return true;
                 }
                 Err(_) => {
-                    log::error!("[DOMAIN] Registry poisoned (transfer_ownership) - stats not updated");
+                    log::error!(
+                        "[DOMAIN] Registry poisoned (transfer_ownership) - stats not updated"
+                    );
                     return true; // Ownership transfer succeeded; just skip stats update
                 }
             }
@@ -732,17 +766,21 @@ pub fn reclaim_domain_resources(domain: DomainId) {
     //
     // So I must do `crate::sas::with_sas_manager_mut(|m| m.reclaim_domain_resources(domain))`
 
-    let count = crate::sas::with_sas_manager_mut(|m| m.reclaim_domain_resources(domain));
+    let count = crate::sas::with_sas_manager_mut(|m| {
+        m.reclaim_domain_resources(crate::sas::DomainId::new(domain.as_u64()))
+    });
 
     // ドメインのリソースカウントをリセット
     match REGISTRY.lock() {
         Ok(mut guard) => {
-            if let Some(d) = guard.domains.get_mut(&domain) {
+            if let Some(d) = guard.domains.iter_mut().find(|d| d.id == domain) {
                 d.rref_count = 0;
                 d.allocated_memory = 0;
             }
         }
-        Err(_) => log::error!("[DOMAIN] Registry poisoned (reclaim_domain_resources) - stats not reset"),
+        Err(_) => {
+            log::error!("[DOMAIN] Registry poisoned (reclaim_domain_resources) - stats not reset")
+        }
     }
 
     if count > 0 {
@@ -784,7 +822,7 @@ pub fn get_domain_stats() -> DomainStats {
                 total_rrefs: 0,
             };
 
-            for domain in guard.domains.values() {
+            for domain in guard.domains.iter() {
                 match domain.state {
                     DomainState::Running | DomainState::Initializing => stats.running += 1,
                     DomainState::Stopped | DomainState::Suspended => stats.stopped += 1,
@@ -808,7 +846,7 @@ pub fn get_domain_stats() -> DomainStats {
             }
         }
     }
-} 
+}
 
 /// ドメイン統計を取得（get_domain_statsのエイリアス）
 /// domain/registry.rs からの互換性維持のために追加
@@ -821,7 +859,7 @@ pub fn print_domain_list() {
     match REGISTRY.lock() {
         Ok(guard) => {
             log::info!("[DOMAIN] === Domain List ===\n");
-            for domain in guard.domains.values() {
+            for domain in guard.domains.iter() {
                 log::info!(
                     "[DOMAIN] {} '{}': {:?}, tasks={}, rrefs={}, mem={}KB\n",
                     domain.id,
@@ -835,7 +873,7 @@ pub fn print_domain_list() {
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (print_domain_list) - skipping"),
     }
-} 
+}
 
 // ============================================================================
 // 現在のドメイン管理

@@ -2240,10 +2240,25 @@ impl Framebuffer {
     }
 
     /// Dirty Rectangle更新を行わない内部用メソッド
+    ///
+    /// # Safety Note
+    /// This function now performs bounds validation to prevent page faults
+    /// from invalid coordinates (negative values or out of framebuffer range).
     fn set_pixel_raw(&mut self, x: i32, y: i32, color: Color) {
-        // No debug printing in production; tests may provide diagnostics when needed
-        let offset = (y as usize * self.info.stride as usize)
-            + (x as usize * self.info.format.bytes_per_pixel());
+        // CRITICAL: Bounds check to prevent page faults from invalid coordinates
+        // Without this check, negative x/y would wrap around when cast to usize,
+        // causing access to invalid MMIO addresses (e.g., 0xFFFFFFFFFFFFFFF8)
+        if x < 0 || y < 0 {
+            return;
+        }
+        let x_u = x as u32;
+        let y_u = y as u32;
+        if x_u >= self.info.width || y_u >= self.info.height {
+            return;
+        }
+
+        let offset = (y_u as usize * self.info.stride as usize)
+            + (x_u as usize * self.info.format.bytes_per_pixel());
 
         if let Some(ref mut back) = self.back_buffer {
             // Write to back buffer: use simple pointer writes (no volatile needed)
@@ -3029,102 +3044,13 @@ impl Framebuffer {
                 // その他のフォーマット: try to use per-row bulk writes when
                 // possible (24-bit and 16-bit) to avoid per-pixel overhead.
                 match self.info.format {
-                    PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
-                        let b = color.blue;
-                        let g = color.green;
-                        let rcol = color.red;
-                        let row_bytes = (r.width as usize) * 3;
-                        self.ensure_scratch_u8(row_bytes);
-
-                        // Build scratch row with repeated BGR pixels
-                        // Initialize first pixel
-                        self.scratch_u8[0] = b;
-                        if row_bytes > 1 {
-                            self.scratch_u8[1] = g;
-                        }
-                        if row_bytes > 2 {
-                            self.scratch_u8[2] = rcol;
-                        }
-                        let mut filled_pixels = 1usize;
-                        while filled_pixels < r.width as usize {
-                            let copy_pixels =
-                                core::cmp::min(filled_pixels, r.width as usize - filled_pixels);
-                            let copy_bytes = copy_pixels * 3;
-                            let dst_offset = filled_pixels * 3;
-                            unsafe {
-                                ptr::copy(
-                                    self.scratch_u8.as_ptr(),
-                                    self.scratch_u8.as_mut_ptr().add(dst_offset),
-                                    copy_bytes,
-                                );
-                            }
-                            filled_pixels += copy_pixels;
-                        }
-
-                        if let Some(ref mut back) = self.back_buffer {
-                            for y in r.y..r.bottom() {
-                                let offset = (y as usize * stride as usize) + (r.x as usize * 3);
-                                unsafe {
-                                    ptr::copy_nonoverlapping(
-                                        self.scratch_u8.as_ptr(),
-                                        back.as_mut_ptr().add(offset),
-                                        row_bytes,
-                                    );
-                                }
-                            }
-                        } else {
-                            for y in r.y..r.bottom() {
-                                let offset = (y as usize * stride as usize) + (r.x as usize * 3);
-                                let addr = self.buffer as usize + offset;
-                                self.write_bytes_mmio_streaming(
-                                    addr,
-                                    &self.scratch_u8[..row_bytes],
-                                );
-                            }
-                            mmio::sfence();
-                        }
-                    }
-                    PixelFormat::Rgb565 => {
-                        let r16 = (color.red as u16 >> 3) & 0x1F;
-                        let g16 = (color.green as u16 >> 2) & 0x3F;
-                        let b16 = (color.blue as u16 >> 3) & 0x1F;
-                        let pixel = (r16 << 11) | (g16 << 5) | b16;
-                        let row_bytes = (r.width as usize) * 2;
-                        self.ensure_scratch_u8(row_bytes);
-                        for i in 0..r.width as usize {
-                            let off = i * 2;
-                            self.scratch_u8[off] = (pixel & 0xFF) as u8;
-                            self.scratch_u8[off + 1] = (pixel >> 8) as u8;
-                        }
-
-                        if let Some(ref mut back) = self.back_buffer {
-                            for y in r.y..r.bottom() {
-                                let offset = (y as usize * stride as usize) + (r.x as usize * 2);
-                                unsafe {
-                                    ptr::copy_nonoverlapping(
-                                        self.scratch_u8.as_ptr(),
-                                        back.as_mut_ptr().add(offset),
-                                        row_bytes,
-                                    );
-                                }
-                            }
-                        } else {
-                            for y in r.y..r.bottom() {
-                                let offset = (y as usize * stride as usize) + (r.x as usize * 2);
-                                let addr = self.buffer as usize + offset;
-                                self.write_bytes_mmio_streaming(
-                                    addr,
-                                    &self.scratch_u8[..row_bytes],
-                                );
-                            }
-                            mmio::sfence();
-                        }
-                    }
                     _ => {
-                        // Fallback to per-pixel writes
+                        // CRITICAL: Temporary fallback to simple pixel loop to diagnosis heap corruption
+                        // The optimized 24bpp path used scratch_u8 and unsafe ptr::copy which
+                        // likely caused heap corruption and subsequent Page Faults.
                         for y in r.y..r.bottom() {
                             for x in r.x..r.right() {
-                                self.set_pixel(x, y, color);
+                                self.set_pixel_raw(x, y, color);
                             }
                         }
                     }
@@ -3193,111 +3119,11 @@ impl Framebuffer {
     /// * `bg_color` - 背景色
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: Color, bg_color: Color) {
         let font = BitmapFont::default_8x16();
-        // Optional debug tracing for bench-time diagnostics. Set RANY_DEBUG_DRAW=1
-        // in the environment to enable verbose per-glyph logging.
-        #[cfg(feature = "std")]
-        let debug_draw = std::env::var("RANY_DEBUG_DRAW").ok();
-        // First fill the background rectangle for the whole text span. This
-        // leverages the optimized `fill_rect` path for broad formats.
-        let char_count = text.chars().filter(|&c| c != '\n').count() as u32;
-        if char_count == 0 {
-            return;
-        }
-
-        let text_w = char_count * font.width() as u32;
-        let text_h = font.height() as u32;
-
-        // Mark dirty (background + foreground)
-        self.mark_dirty(Rect::new(x, y, text_w, text_h));
-
-        #[cfg(feature = "std")]
-        if debug_draw.as_deref() == Some("1") {
-            eprintln!(
-                "draw_text: x={} y={} text_w={} text_h={} text='{}'",
-                x, y, text_w, text_h, text
-            );
-        }
-
-        self.fill_rect(Rect::new(x, y, text_w, text_h), bg_color);
-
-        // Now draw glyph foreground pixels in runs to minimize per-pixel writes.
-        let stride = self.info.stride as usize;
-        let bpp = self.info.format.bytes_per_pixel();
-
-        // Optimized path for 32-bit formats (RGBA/BGRA)
-        if bpp == 4 {
-            let fg_u32 = color.to_u32();
-            let bg_u32 = bg_color.to_u32();
-
-            let mut cx = x;
-            let mut mmio_wrote = false;
-            for c in text.chars() {
-                if c == '\n' {
-                    continue;
-                }
-
-                let char_x = cx;
-                let char_w_i32 = font.width() as i32;
-
-                // Obtain glyph bytes for this character (unscaled rows)
-                let glyph = match font.glyph(c) {
-                    Some(g) => g,
-                    None => {
-                        cx += font.width() as i32;
-                        continue;
-                    }
-                };
-
-                // Fast path: fully visible horizontally
-                if char_x >= self.clip.x && (char_x + char_w_i32) <= self.clip.right() {
-                    for (row, &byte) in glyph.iter().enumerate() {
-                        let dst_y = y + row as i32;
-                        if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
-                            continue;
-                        }
-
-                        let dst_offset = (dst_y as usize * stride) + (char_x as usize * 4);
-                        #[cfg(feature = "std")]
-                        if debug_draw.as_deref() == Some("1") {
-                            eprintln!(
-                                "draw_text: char='{}' row={} dst_y={} dst_offset={}",
-                                c, row, dst_y, dst_offset
-                            );
-                        }
-                        if self.write_glyph_row_32bit_nofence(byte, dst_offset, fg_u32, bg_u32) {
-                            mmio_wrote = true;
-                        }
-                    }
-                } else {
-                    // Partially clipped horizontally: per-pixel fallback
-                    for (row, &byte) in glyph.iter().enumerate() {
-                        let dst_y = y + row as i32;
-                        if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
-                            continue;
-                        }
-
-                        for col in 0..8 {
-                            let px = char_x + col as i32;
-                            if px < self.clip.x || px >= self.clip.right() {
-                                continue;
-                            }
-
-                            let is_on = (byte >> (7 - col)) & 1 != 0;
-                            let c_val = if is_on { color } else { bg_color };
-                            self.set_pixel_raw(px, dst_y, c_val);
-                        }
-                    }
-                }
-
-                cx += font.width() as i32;
-            }
-            if mmio_wrote {
-                self.counted_sfence();
-            }
-            return;
-        }
 
         // Original slow path for non-32bit formats
+        let stride = self.info.stride as usize;
+        let format = self.info.format;
+        let bpp = format.bytes_per_pixel() as usize;
         let mut cx = x;
         for c in text.chars() {
             if c == '\n' {
@@ -3357,7 +3183,10 @@ impl Framebuffer {
 
                     match bpp {
                         3 => {
-                            self.write_bgr_run(start_offset, clipped_len, color);
+                            // Use per-pixel fallback for 24bpp to avoid MMIO issues
+                            for i in 0..clipped_len {
+                                self.set_pixel_raw(clipped_start + i as i32, dst_y, color);
+                            }
                         }
                         2 => {
                             for i in 0..clipped_len {

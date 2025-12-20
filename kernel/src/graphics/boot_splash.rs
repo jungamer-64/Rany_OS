@@ -207,21 +207,21 @@ pub fn show_boot_splash() {
         crate::io::log::early_print("[SPLASH] Drawn O\n");
 
         // テキスト: "RanyOS" - ロゴの下
+        // DEBUG: Re-enabled for diagnosis
         let text_y = (start_y + char_height + 20) as i32;
+        crate::io::log::early_print("[SPLASH] Drawing RanyOS text for diagnosis\n");
         draw_centered_text(fb, "RanyOS", text_y, splash_colors::LOGO_ACCENT);
+        crate::io::log::early_print("[SPLASH] RanyOS text done\n");
 
         // テキスト: バージョン情報
         let version_y = text_y + (FONT_HEIGHT as i32) + 8;
-        draw_centered_text(
-            fb,
-            "Exokernel v0.3.0-alpha",
-            version_y,
-            splash_colors::TEXT_COLOR,
-        );
+        // draw_centered_text(fb, "Exokernel v0.3.0-alpha", version_y, splash_colors::TEXT_COLOR);
 
         // テキスト: ステータスメッセージ
         let status_y = (height * 2 / 3 + 24) as i32;
-        draw_centered_text(fb, "Initializing...", status_y, splash_colors::TEXT_COLOR);
+        // draw_centered_text(fb, "Initializing...", status_y, splash_colors::TEXT_COLOR);
+        let _ = version_y; // silence unused warning
+        let _ = status_y; // silence unused warning
 
         // 進捗バー
         let bar_y = height * 2 / 3;

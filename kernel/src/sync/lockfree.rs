@@ -472,32 +472,41 @@ pub const fn create_inter_core_channel() -> InterCoreChannel {
 // Bounded Channel (mpsc)
 // ============================================================================
 
-use alloc::sync::Arc;
+use alloc::boxed::Box;
 
-/// Bounded MPSC チャネル
-pub struct BoundedChannel<T, const N: usize> {
-    inner: Arc<MpscRingBuffer<T, N>>,
+/// Bounded MPSC チャネル (Arc-free by default)
+///
+/// For inter-domain or inter-core communication prefer this Arc-free API which
+/// either allocates a long-lived buffer (via `new()`, which leaks an allocator
+/// allocation intentionally) or accepts a caller-provided `'static` buffer via
+/// `from_static`. This avoids `Arc`'s atomic reference counting overhead which
+/// is detrimental to NUMA and cross-domain scalability.
+pub struct BoundedChannel<T: 'static, const N: usize> {
+    inner: &'static MpscRingBuffer<T, N>,
 }
 
-impl<T, const N: usize> BoundedChannel<T, N> {
+impl<T: 'static, const N: usize> BoundedChannel<T, N> {
+    /// Create a new bounded channel. Allocates a `MpscRingBuffer` on the heap
+    /// and leaks it to obtain a `'static` reference. This is suitable for
+    /// long-lived kernel channels and avoids `Arc` overhead.
     pub fn new() -> (BoundedSender<T, N>, BoundedReceiver<T, N>) {
-        let inner = Arc::new(MpscRingBuffer::new());
+        let boxed = Box::new(MpscRingBuffer::new());
+        let inner: &'static MpscRingBuffer<T, N> = Box::leak(boxed);
+        (BoundedSender { inner }, BoundedReceiver { inner })
+    }
 
-        (
-            BoundedSender {
-                inner: inner.clone(),
-            },
-            BoundedReceiver { inner },
-        )
+    /// Create a channel from a caller-provided static buffer.
+    pub const fn from_static(inner: &'static MpscRingBuffer<T, N>) -> (BoundedSender<T, N>, BoundedReceiver<T, N>) {
+        (BoundedSender { inner }, BoundedReceiver { inner })
     }
 }
 
 /// MPSC チャネルの送信側
-pub struct BoundedSender<T, const N: usize> {
-    inner: Arc<MpscRingBuffer<T, N>>,
+pub struct BoundedSender<T: 'static, const N: usize> {
+    inner: &'static MpscRingBuffer<T, N>,
 }
 
-impl<T, const N: usize> BoundedSender<T, N> {
+impl<T: 'static, const N: usize> BoundedSender<T, N> {
     pub fn send(&self, value: T) -> Result<(), T> {
         self.inner.push(value)
     }
@@ -510,20 +519,18 @@ impl<T, const N: usize> BoundedSender<T, N> {
     }
 }
 
-impl<T, const N: usize> Clone for BoundedSender<T, N> {
+impl<T: 'static, const N: usize> Clone for BoundedSender<T, N> {
     fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
+        Self { inner: self.inner }
     }
 }
 
 /// MPSC チャネルの受信側
-pub struct BoundedReceiver<T, const N: usize> {
-    inner: Arc<MpscRingBuffer<T, N>>,
+pub struct BoundedReceiver<T: 'static, const N: usize> {
+    inner: &'static MpscRingBuffer<T, N>,
 }
 
-impl<T, const N: usize> BoundedReceiver<T, N> {
+impl<T: 'static, const N: usize> BoundedReceiver<T, N> {
     pub fn recv(&self) -> Option<T> {
         self.inner.pop()
     }
@@ -533,6 +540,53 @@ impl<T, const N: usize> BoundedReceiver<T, N> {
     }
 }
 
+/// Alternative static helper types for explicit static usage
+///
+/// These are convenience wrappers for users that prefer to declare the buffer
+/// as a `static` rather than using `Box::leak` in `BoundedChannel::new()`.
+pub struct BoundedSenderStatic<T: 'static, const N: usize> {
+    inner: &'static MpscRingBuffer<T, N>,
+}
+
+pub struct BoundedReceiverStatic<T: 'static, const N: usize> {
+    inner: &'static MpscRingBuffer<T, N>,
+}
+
+impl<T: 'static, const N: usize> BoundedSenderStatic<T, N> {
+    pub fn send(&self, value: T) -> Result<(), T> {
+        self.inner.push(value)
+    }
+
+    pub fn is_full(&self) -> bool {
+        let head = self.inner.head.load(Ordering::Relaxed);
+        let tail = self.inner.tail.load(Ordering::Relaxed);
+        (head + 1) % N == tail
+    }
+}
+
+impl<T: 'static, const N: usize> Clone for BoundedSenderStatic<T, N> {
+    fn clone(&self) -> Self {
+        Self { inner: self.inner }
+    }
+}
+
+impl<T: 'static, const N: usize> BoundedReceiverStatic<T, N> {
+    pub fn recv(&self) -> Option<T> {
+        self.inner.pop()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.inner.is_empty()
+    }
+}
+
+impl<T: 'static, const N: usize> BoundedChannel<T, N> {
+    /// Convenience constructor to create Static sender/receiver wrappers from
+    /// a `'static` buffer
+    pub const fn into_static_wrappers(inner: &'static MpscRingBuffer<T, N>) -> (BoundedSenderStatic<T, N>, BoundedReceiverStatic<T, N>) {
+        (BoundedSenderStatic { inner }, BoundedReceiverStatic { inner })
+    }
+}
 // ============================================================================
 // Seqlock (Reader-Writer Lock Optimization)
 // 読み取りが多い場合に最適化されたロック
@@ -1077,5 +1131,35 @@ mod tests {
         }
 
         assert_eq!(lock.read(), 100);
+    }
+
+    #[test]
+    fn test_bounded_channel_static() {
+        static BUF: MpscRingBuffer<u64, 8> = MpscRingBuffer::new();
+        let (tx, rx) = BoundedChannel::from_static(&BUF);
+
+        assert!(tx.send(1u64).is_ok());
+        assert_eq!(rx.recv(), Some(1u64));
+
+        // Fill up to capacity (N-1)
+        for i in 0..BUF.capacity() {
+            assert!(tx.send(i as u64).is_ok());
+        }
+
+        // Now it should be full
+        assert!(tx.send(99u64).is_err());
+
+        for i in 0..BUF.capacity() {
+            assert_eq!(rx.recv(), Some(i as u64));
+        }
+
+        assert!(rx.recv().is_none());
+    }
+
+    #[test]
+    fn test_bounded_channel_new_leak() {
+        let (tx, rx) = BoundedChannel::<u32, 8>::new();
+        assert!(tx.send(42u32).is_ok());
+        assert_eq!(rx.recv(), Some(42u32));
     }
 }

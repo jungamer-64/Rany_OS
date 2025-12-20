@@ -19,7 +19,7 @@ use alloc::vec;
 use spin::Mutex;
 
 use crate::graphics::Color;
-use crate::io::hid::{KeyEvent, KeyCode, KeyState, Modifiers};
+use crate::io::hid::{KeyCode, KeyEvent, KeyState, Modifiers};
 use crate::shell::exoshell::{ExoShell, ExoValue};
 use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState};
 use kernel_api::services::kernel;
@@ -55,27 +55,25 @@ pub fn init() {
         info!(target: "gshell", "No GUI services available - skipping graphical shell");
         return;
     }
-    
+
     // CapabilityでFramebufferInfoを取得（デモ用: カーネル権限を使用）
     let fb_info = {
         // SAFETY: Kernel context has full capabilities
         let caps = unsafe { kernel_api::security::kernel_only::grant_all() };
         gui_services.unwrap().request_framebuffer(&caps)
     };
-    
+
     if let Err(e) = fb_info {
         info!(target: "gshell", "Failed to request framebuffer via GuiServices: {:?}", e);
         return;
     }
-    
+
     let fb_info = fb_info.unwrap();
     info!(target: "gshell", "Framebuffer via GuiServices: {}x{} stride={}", 
           fb_info.width, fb_info.height, fb_info.stride);
 
     // Create owned Framebuffer from KAPI info
-    let framebuffer = unsafe { 
-        crate::graphics::Framebuffer::from_kapi_info(&fb_info)
-    };
+    let framebuffer = unsafe { crate::graphics::Framebuffer::from_kapi_info(&fb_info) };
 
     // グラフィカルシェルを作成（フレームバッファを所有）
     let shell = GraphicalShell::new(framebuffer);
@@ -94,11 +92,13 @@ pub fn start() {
         let buffer_size = shell.framebuffer.info().size();
         if buffer_size > 0 {
             let backing_buffer = vec![0u8; buffer_size];
-            shell.framebuffer.enable_double_buffering_from_vec(backing_buffer);
+            shell
+                .framebuffer
+                .enable_double_buffering_from_vec(backing_buffer);
         } else {
             shell.framebuffer.enable_double_buffering();
         }
-        
+
         shell.start();
         info!(target: "gshell", "Graphical shell started");
     } else {
@@ -135,7 +135,7 @@ pub async fn run_async_shell() {
         // ========================================
         // Get current tick via GuiServices
         let current_time = kernel().gui().map(|g| g.current_tick()).unwrap_or(0);
-        
+
         // Shell owns its framebuffer - no need for with_framebuffer wrapper
         {
             let mut guard = GRAPHICAL_SHELL.lock();

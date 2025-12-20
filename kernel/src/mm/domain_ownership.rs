@@ -29,8 +29,7 @@ use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
-/// ドメインID
-pub type DomainId = u64;
+use crate::domain_system::DomainId;
 
 /// アロケーション情報
 #[derive(Debug, Clone, Copy)]
@@ -373,7 +372,7 @@ mod tests {
 
     #[test]
     fn test_register_unregister() {
-        let domain_id = 100;
+        let domain_id = DomainId::new(100);
         let address = 0x1000;
         let size = 256;
 
@@ -389,7 +388,7 @@ mod tests {
 
     #[test]
     fn test_reclaim_domain() {
-        let domain_id = 200;
+        let domain_id = DomainId::new(200);
 
         // 複数のアロケーションを登録
         register_allocation(domain_id, 0x2000, 100);

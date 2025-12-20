@@ -18,6 +18,8 @@ path = "src/lib.rs"
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
+spin = "0.9"
+log = "0.4"
 
 [features]
 default = []

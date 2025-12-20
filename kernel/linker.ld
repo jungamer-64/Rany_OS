@@ -9,6 +9,7 @@ PHDRS
     text            PT_LOAD FLAGS(5);  /* rx */
     rodata          PT_LOAD FLAGS(4);  /* r  */
     data            PT_LOAD FLAGS(6);  /* rw */
+    tls             PT_TLS  FLAGS(4);  /* r - Thread Local Storage */
 }
 
 SECTIONS
@@ -38,6 +39,15 @@ SECTIONS
         KEEP(*(.requests))
         KEEP(*(.requests_end_marker))
     } :data
+
+    /* Thread Local Storage */
+    . = ALIGN(CONSTANT(MAXPAGESIZE));
+    .tls : {
+        __tls_start = .;
+        *(.tdata .tdata.*)
+        *(.tbss .tbss.*)
+        __tls_end = .;
+    } :tls :data
 
     /* BSS - uninitialized data */
     /* NOTE: .bss needs to be the last thing mapped to :data, otherwise lots of */
