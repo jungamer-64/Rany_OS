@@ -496,35 +496,45 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             // そのため、FSベースはTLSセクションの**終端**に設定する
             crate::io::log::early_print("[PCPU] TLS init\n");
 
-            // リンカスクリプトから提供されるシンボル
-            unsafe extern "C" {
-                static __tls_start: u8;
-                static __tls_end: u8;
+            // On unit tests (host builds) we may not have linker-provided TLS symbols
+            // available. Skip TLS initialization in test builds to avoid linker errors
+            // referring to `__tls_start` / `__tls_end`.
+            #[cfg(all(not(test), not(target_os = "windows")))]
+            {
+                // リンカスクリプトから提供されるシンボル
+                unsafe extern "C" {
+                    static __tls_start: u8;
+                    static __tls_end: u8;
+                }
+
+                let tls_start = &__tls_start as *const u8 as u64;
+                let tls_end = &__tls_end as *const u8 as u64;
+                let tls_size = tls_end.saturating_sub(tls_start);
+
+                crate::io::log::early_print("[PCPU] TLS size=");
+                // Print TLS size (simple hex output)
+                if tls_size == 0 {
+                    crate::io::log::early_print("0");
+                } else {
+                    crate::io::log::early_print("non-zero");
+                }
+                crate::io::log::early_print("\n");
+
+                // x86_64 TLS では FS ベースは TLS ブロックの終端を指す
+                // 変数は FS:(-offset) でアクセスされる
+                let fs_base = tls_end;
+
+                if fsgsbase_supported {
+                    write_fs_base(fs_base);
+                } else {
+                    write_fs_base_msr(fs_base);
+                }
+                crate::io::log::early_print("[PCPU] TLS ok\n");
             }
-
-            let tls_start = &__tls_start as *const u8 as u64;
-            let tls_end = &__tls_end as *const u8 as u64;
-            let tls_size = tls_end.saturating_sub(tls_start);
-
-            crate::io::log::early_print("[PCPU] TLS size=");
-            // Print TLS size (simple hex output)
-            if tls_size == 0 {
-                crate::io::log::early_print("0");
-            } else {
-                crate::io::log::early_print("non-zero");
+            #[cfg(any(test, target_os = "windows"))]
+            {
+                crate::io::log::early_print("[PCPU] TLS skipped in test or Windows build\n");
             }
-            crate::io::log::early_print("\n");
-
-            // x86_64 TLS では FS ベースは TLS ブロックの終端を指す
-            // 変数は FS:(-offset) でアクセスされる
-            let fs_base = tls_end;
-
-            if fsgsbase_supported {
-                write_fs_base(fs_base);
-            } else {
-                write_fs_base_msr(fs_base);
-            }
-            crate::io::log::early_print("[PCPU] TLS ok\n");
         }
         crate::io::log::early_print("[PCPU] bsp ok\n");
 

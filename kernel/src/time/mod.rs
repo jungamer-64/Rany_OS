@@ -569,3 +569,9 @@ pub fn precise_time_nanos() -> u64 {
 pub fn current_time_ns() -> u64 {
     precise_time_nanos()
 }
+
+/// Return uptime in milliseconds (since boot)
+#[inline]
+pub fn get_uptime_ms() -> u64 {
+    SYSTEM_CLOCK.uptime_millis()
+}

@@ -481,6 +481,19 @@ impl Executor {
 
             processed += 1;
 
+            // Preemption integration: if a timer-triggered preemption is pending, force fuel exhaustion
+            // so long-running tasks hit `check_fuel!()` and yield soon. Also clear the preemption flag.
+            if crate::task::preemption::is_preemption_pending() {
+                crate::task::fuel::Fuel::exhaust();
+                crate::task::preemption::clear_preemption_pending();
+                break;
+            }
+
+            // Check for explicit yield request (set by ISR / preemption handler)
+            if crate::task::preemption::check_and_clear_yield_request() {
+                break;
+            }
+
             // バッチ上限で一旦中断（他の処理を許可）
             if processed >= self.batch_size {
                 break;

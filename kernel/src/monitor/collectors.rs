@@ -25,9 +25,20 @@ impl CpuCollector {
     pub fn collect(&self) -> u8 {
         // In a real implementation, this would read from performance counters
         // For now, estimate based on scheduler activity
-        let scheduler = crate::task::scheduler::scheduler();
-        let stats = scheduler.stats();
-        
+        #[cfg(feature = "legacy-scheduler")]
+        let switches = {
+            let scheduler = crate::task::scheduler::scheduler();
+            let stats = scheduler.stats();
+            stats.context_switches
+        };
+        #[cfg(not(feature = "legacy-scheduler"))]
+        let switches = {
+            // Fallback: use preemption stats as a proxy for context switches
+            let preempt = crate::task::preemption_controller();
+            let p = preempt.stats();
+            p.forced_preemptions + p.voluntary_yields
+        };
+
         let total = crate::interrupts::get_timer_ticks();
         let last_total = self.last_total.swap(total, Ordering::Relaxed);
         
@@ -38,7 +49,6 @@ impl CpuCollector {
         let delta = total - last_total;
         
         // Estimate based on context switches (simplified)
-        let switches = stats.context_switches;
         let estimated_usage = ((switches * 100) / delta.max(1)) as u8;
         
         estimated_usage.min(100)
@@ -157,16 +167,27 @@ impl TaskCollector {
     
     /// Collect task statistics
     pub fn collect(&self) -> super::TaskStats {
-        let scheduler = crate::task::scheduler::scheduler();
-        let sched_stats = scheduler.stats();
-        
+        #[cfg(feature = "legacy-scheduler")]
+        let context_switches = {
+            let scheduler = crate::task::scheduler::scheduler();
+            let stats = scheduler.stats();
+            stats.context_switches
+        };
+        #[cfg(not(feature = "legacy-scheduler"))]
+        let context_switches = {
+            // Fallback: use preemption stats as a proxy for context switches
+            let preempt = crate::task::preemption_controller();
+            let p = preempt.stats();
+            p.forced_preemptions + p.voluntary_yields
+        };
+
         let preempt = crate::task::preemption_controller();
         let preempt_stats = preempt.stats();
         
         super::TaskStats {
             total_created: 0,
             active: 0,
-            context_switches: sched_stats.context_switches,
+            context_switches: context_switches,
             voluntary_yields: preempt_stats.voluntary_yields,
             forced_preemptions: preempt_stats.forced_preemptions,
         }

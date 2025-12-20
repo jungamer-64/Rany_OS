@@ -627,7 +627,7 @@ impl KernelLogger {
         // Try time-based wait if TSC frequency is known
         if let Some(freq) = time::system_clock().tsc_frequency() {
             // Compute timeout cycles for TX_TIMEOUT_US microseconds (may be 0 for very low freq)
-            let timeout_cycles = (freq.saturating_mul(TX_TIMEOUT_US)) / 1_000_000;
+            let timeout_cycles: u64 = (freq as u64).saturating_mul(TX_TIMEOUT_US) / 1_000_000u64;
             let start = read_tsc_serialized();
             while (status_port.read() & LSR_TX_EMPTY) == 0 {
                 if read_tsc_serialized().saturating_sub(start) > timeout_cycles {
@@ -1174,8 +1174,18 @@ pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
     if AGGREGATOR_STARTED.swap(true, Ordering::SeqCst) {
         return None; // already started
     }
-    crate::task::scheduler::spawn_task(log_aggregator_task, 0, LOG_AGGREGATOR_PRIORITY)
-}
+
+    #[cfg(feature = "legacy-scheduler")]
+    {
+        return crate::task::scheduler::spawn_task(log_aggregator_task, 0, LOG_AGGREGATOR_PRIORITY);
+    }
+
+    #[cfg(not(feature = "legacy-scheduler"))]
+    {
+        log::info!("[LOG] spawn_log_aggregator called but legacy scheduler is disabled; aggregator runs on executor idle loop");
+        None
+    }
+} 
 
 // Test/bench builds do not have the full scheduler available; provide a no-op stub
 #[cfg(any(test, feature = "bench"))]
@@ -1204,7 +1214,18 @@ pub fn log_aggregator_task(_arg: u64) -> ! {
                     0usize
                 }
             };
-            crate::task::scheduler::yield_current(cpu_id);
+
+            #[cfg(feature = "legacy-scheduler")]
+            {
+                crate::task::scheduler::yield_current(cpu_id);
+            }
+
+            #[cfg(not(feature = "legacy-scheduler"))]
+            {
+                // Legacy scheduler disabled -> best-effort cooperative yield
+                crate::task::preemption::voluntary_yield();
+                crate::task::preemption::yield_point();
+            }
         } else {
             // Yield briefly to allow TX to be serviced
             let cpu_id = {
@@ -1217,7 +1238,18 @@ pub fn log_aggregator_task(_arg: u64) -> ! {
                     0usize
                 }
             };
-            crate::task::scheduler::yield_current(cpu_id);
+
+            #[cfg(feature = "legacy-scheduler")]
+            {
+                crate::task::scheduler::yield_current(cpu_id);
+            }
+
+            #[cfg(not(feature = "legacy-scheduler"))]
+            {
+                // Legacy scheduler disabled -> best-effort cooperative yield
+                crate::task::preemption::voluntary_yield();
+                crate::task::preemption::yield_point();
+            }
         }
     }
 }

@@ -1,285 +1,546 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Build and run RanyOS with ExoLoader or Limine bootloader
+    Build and run RanyOS with ExoLoader bootloader.
 .DESCRIPTION
-    Creates a bootable disk image and runs it in QEMU.
-    Supports ExoLoader (UEFI) and Limine (UEFI/BIOS).
+    Automates the build process for Kernel, Bootloader, and Signing.
+    Supports QEMU execution with WHPX/KVM acceleration.
 .PARAMETER Release
-    Build in release mode
-.PARAMETER Bootloader
-    "ExoLoader" (default) or "Limine"
+    Build in release mode (optimizations enabled).
 .PARAMETER GdbDebug
-    Enable GDB debugging on port 1234
+    Enable GDB stub on port 1234 and freeze CPU at startup.
 .PARAMETER Memory
-    Memory size in MB (default: 512)
+    Memory size in MB (default: 512).
+.PARAMETER Smp
+    Number of CPU cores (default: 4).
+.PARAMETER Clean
+    Clean target directory before building.
+.PARAMETER NoRun
+    Build only, do not launch QEMU.
+.PARAMETER Test
+    Run in test mode (exit on test completion, commonly used for CI).
+.PARAMETER Serial
+    Serial output mode: "stdio" (default), "file", "null".
+.PARAMETER NvmeDevice
+    Add a virtual NVMe device with specified size (e.g., "1G", "512M").
+.PARAMETER Features
+    List of Cargo features to enable for the kernel (e.g. "debug_print", "vga").
+.PARAMETER QemuExtraArgs
+    Additional arguments to pass directly to QEMU.
+.PARAMETER Lint
+    Run cargo fmt and clippy checks before building.
+.PARAMETER Iommu
+    Enable Intel VT-d IOMMU emulation (required for DMA protection testing).
+.PARAMETER Numa
+    Enable NUMA topology simulation (2 nodes, for Share-Nothing architecture testing).
+.PARAMETER Network
+    Enable VirtIO network device with IOMMU support (hostfwd: tcp/udp 5555->80).
+.PARAMETER Monitor
+    Enable QEMU Monitor on telnet port 4444 for runtime inspection.
+.PARAMETER Verbose
+    Show detailed build output.
 #>
 
 [CmdletBinding()]
 param(
     [switch]$Release,
-    [ValidateSet("ExoLoader", "Limine")]
-    [string]$Bootloader = "ExoLoader",
     [switch]$GdbDebug,
-    [int]$Memory = 512
+    [switch]$Clean,
+    [switch]$NoRun,
+    [switch]$Test,
+    [switch]$Lint,
+    [switch]$Iommu,
+    [switch]$Numa,
+    [switch]$Network,
+    [switch]$Monitor,
+    [switch]$Verbose,
+    [int]$Memory = 512,
+    [int]$Smp = 4,
+    [ValidateSet("stdio", "file", "null")]
+    [string]$Serial = "stdio",
+    [string]$NvmeDevice,
+    [string[]]$Features = @(),
+    [string[]]$QemuExtraArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-# Configuration
-$TARGET_KERNEL = "x86_64-kernel.json"
+# Build timing
+$script:TotalWatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+# Cross-platform support
+$EXE_EXT = if ($IsWindows) { ".exe" } else { "" }
+
+# --- Global Configuration & Paths ---
+$ROOT_DIR = $PSScriptRoot
+Set-Location $ROOT_DIR
+
+# Project Constants
+$TARGET_KERNEL_JSON = Join-Path $ROOT_DIR "x86_64-exorust.json"
 $TARGET_LOADER = "x86_64-unknown-uefi"
-$KERNEL_NAME = "exorust_kernel"
-$LOADER_NAME = "exoloader.efi"
-$LIMINE_VERSION = "8.x"
-$LIMINE_DIR = "assets/limine"
-$OVMF_DIR = "assets/firmware/ovmf-x64"
+$KERNEL_CRATE = "rany_kernel"
+$LOADER_CRATE = "exoloader"
+$LOADER_BIN_NAME = "exoloader.efi"
 
+# Resources
+$OVMF_DIR = Join-Path $ROOT_DIR "assets/firmware/ovmf-x64"
+$KEYS_DIR = Join-Path $ROOT_DIR "keys"
+$TOOLS_DIR = Join-Path $ROOT_DIR "tools"
+
+# Build Profile Setup
 if ($Release) {
     $PROFILE = "release"
-    $BUILD_FLAGS = "--release"
+    $CARGO_ARGS_COMMON = @("--release")
 }
 else {
     $PROFILE = "debug"
-    $BUILD_FLAGS = ""
+    $CARGO_ARGS_COMMON = @()
 }
 
-# Note: Cargo uses target name without .json extension for output directory
-$KERNEL_TARGET_DIR = "x86_64-kernel"
-$KERNEL_PATH = "target/$KERNEL_TARGET_DIR/$PROFILE/$KERNEL_NAME"
-$KERNEL_SIGNED_PATH = "target/$KERNEL_TARGET_DIR/$PROFILE/rany_os_signed"
-$LOADER_PATH = "target/$TARGET_LOADER/release/exoloader.efi"
-$DISK_IMG = "target/$KERNEL_TARGET_DIR/$PROFILE/ranyos.img"
-$SIGNER_PATH = "tools/signer/target/release/kernel-signer.exe"
-$KEYS_DIR = "keys"
+# Output Paths
+$TARGET_DIR = Join-Path $ROOT_DIR "target"
+$KERNEL_TARGET_DIR = Join-Path $TARGET_DIR "x86_64-exorust/$PROFILE"
+$LOADER_TARGET_DIR = Join-Path $TARGET_DIR "$TARGET_LOADER/release" # Loader is always release
+$KERNEL_RAW = Join-Path $KERNEL_TARGET_DIR "exorust_kernel"
+$KERNEL_SIGNED = Join-Path $KERNEL_TARGET_DIR "rany_os_signed"
+$LOADER_EFI = Join-Path $LOADER_TARGET_DIR $LOADER_BIN_NAME
+$SIGNER_TOOL_DIR = Join-Path $TOOLS_DIR "signer"
+$SIGNER_TOOL_BIN = Join-Path $SIGNER_TOOL_DIR "target/release/kernel-signer$EXE_EXT"
 
-function Write-Info($msg) { Write-Host "[INFO] $msg" -ForegroundColor Cyan }
-function Write-Success($msg) { Write-Host "[OK] $msg" -ForegroundColor Green }
-function Write-ErrorMsg($msg) { Write-Host "[ERROR] $msg" -ForegroundColor Red }
-function Write-Warn($msg) { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
+# --- Helper Functions ---
 
-# --- Limine Functions ---
-function Get-Limine {
-    if (-not (Test-Path "$LIMINE_DIR/limine-bios.sys")) {
-        Write-Info "Downloading Limine bootloader v$LIMINE_VERSION..."
-        New-Item -ItemType Directory -Force -Path $LIMINE_DIR | Out-Null
-        $baseUrl = "https://github.com/limine-bootloader/limine/raw/v$LIMINE_VERSION-binary"
-        $files = @("limine-bios.sys", "limine-bios-cd.bin", "limine-uefi-cd.bin", "BOOTX64.EFI", "BOOTIA32.EFI")
-        try {
-            foreach ($file in $files) {
-                Invoke-WebRequest -Uri "$baseUrl/$file" -OutFile "$LIMINE_DIR/$file" -UseBasicParsing -ErrorAction Stop
-            }
+function Write-Step($icon, $msg) { Write-Host "$icon $msg" -ForegroundColor Cyan }
+function Write-Done($msg) { Write-Host "   -> $msg" -ForegroundColor Green }
+function Write-Warn($msg) { Write-Host "   -> [WARN] $msg" -ForegroundColor Yellow }
+function Write-Fail($msg) { Write-Host "   -> [ERROR] $msg" -ForegroundColor Red }
+
+function Test-Command($cmd) {
+    if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
+        throw "Command '$cmd' not found. Please install it or add it to PATH."
+    }
+}
+
+function Test-RustComponent($component) {
+    $list = rustup component list --installed 2>$null
+    if ($list -notmatch $component) {
+        Write-Warn "Rust component '$component' is missing."
+        Write-Step "📥" "Installing '$component'..."
+        rustup component add $component
+        if ($LASTEXITCODE -ne 0) { throw "Failed to install $component" }
+    }
+}
+
+function Test-NightlyToolchain {
+    # Check rust-toolchain.toml for pinned version
+    $toolchainFile = Join-Path $ROOT_DIR "rust-toolchain.toml"
+    if (Test-Path $toolchainFile) {
+        $content = Get-Content $toolchainFile -Raw
+        if ($content -match 'channel\s*=\s*"([^"]+)"') {
+            $requiredVersion = $matches[1]
+            Write-Done "Toolchain pinned: $requiredVersion"
         }
-        catch {
-            Write-ErrorMsg "Failed to download Limine: $_"
-            exit 1
-        }
+    }
+    
+    $version = rustc --version 2>$null
+    if ($version -notmatch "nightly") {
+        Write-Warn "Current toolchain is not nightly. Build might fail."
+        Write-Warn "Recommended: rustup override set nightly"
     }
 }
 
-# --- Build Functions ---
-function Build-Kernel {
-    $ErrorActionPreference = "Continue" # Don't stop on cargo warnings
-    Write-Info "Building kernel..."
-    # Config for Limine/ExoLoader (static relocation)
-    # $env:CARGO_TARGET_X86_64_UNKNOWN_NONE_RUSTFLAGS = ... (Moved to .cargo/config.toml)
-    $buildCmd = "cargo build -p rany_kernel --target $TARGET_KERNEL $BUILD_FLAGS -Z 'build-std=core,compiler_builtins,alloc' -Z 'build-std-features=compiler-builtins-mem' 2>&1"
-    Invoke-Expression $buildCmd
-    if ($LASTEXITCODE -ne 0) { 
-        $ErrorActionPreference = "Stop"
-        throw "Kernel build failed" 
+function Check-Dependencies {
+    Write-Step "🔍" "Checking dependencies..."
+    Test-Command "cargo"
+    Test-Command "rustup"
+    
+    # Check toolchain and components
+    Test-NightlyToolchain
+    Test-RustComponent "rust-src"
+    
+    # QEMU check (only if we're going to run)
+    if (-not $NoRun) {
+        Test-Command "qemu-system-x86_64"
     }
-    $ErrorActionPreference = "Stop"
-    Write-Success "Kernel built"
+
+    if (-not (Test-Path $OVMF_DIR)) {
+        throw "OVMF firmware directory not found at: $OVMF_DIR"
+    }
 }
 
-function Build-ExoLoader {
-    $ErrorActionPreference = "Continue" 
-    Write-Info "Building ExoLoader..."
-    # Fix: Quote arguments
-    $buildCmd = "cargo build -p exoloader --target $TARGET_LOADER --release -Z 'build-std=core,compiler_builtins,alloc' -Z 'build-std-features=compiler-builtins-mem' 2>&1"
-    Invoke-Expression $buildCmd
-    if ($LASTEXITCODE -ne 0) { 
-        $ErrorActionPreference = "Stop"
-        throw "ExoLoader build failed" 
+function Run-Clean {
+    Write-Step "🧹" "Cleaning target directory..."
+    if (Test-Path $TARGET_DIR) {
+        Remove-Item -Recurse -Force $TARGET_DIR -ErrorAction SilentlyContinue
+        Write-Done "Cleaned."
     }
-    $ErrorActionPreference = "Stop"
-    Write-Success "ExoLoader built"
 }
 
-# --- Secure Boot Functions ---
+# --- Lint & Format ---
+
+function Invoke-Lints {
+    Write-Step "🧹" "Running Cargo Fmt & Clippy..."
+    
+    # Format check (don't modify, just check)
+    Write-Done "Checking format..."
+    & cargo fmt --all -- --check
+    if ($LASTEXITCODE -ne 0) {
+        Write-Fail "Format check failed. Run 'cargo fmt' to fix."
+        throw "Format check failed"
+    }
+    
+    # Clippy for kernel (with custom target)
+    Write-Done "Running Clippy on kernel..."
+    $clippyArgs = @(
+        "clippy",
+        "-p", $KERNEL_CRATE,
+        "--target", $TARGET_KERNEL_JSON,
+        "-Z", "build-std=core,compiler_builtins,alloc",
+        "--", "-D", "warnings"
+    )
+    & cargo $clippyArgs
+    if ($LASTEXITCODE -ne 0) { throw "Clippy failed on kernel" }
+    
+    # Clippy for loader
+    Write-Done "Running Clippy on loader..."
+    $clippyArgs = @(
+        "clippy",
+        "-p", $LOADER_CRATE,
+        "--target", $TARGET_LOADER,
+        "-Z", "build-std=core,compiler_builtins,alloc",
+        "--", "-D", "warnings"
+    )
+    & cargo $clippyArgs
+    if ($LASTEXITCODE -ne 0) { throw "Clippy failed on loader" }
+    
+    Write-Done "Code is clean."
+}
+
+# --- Build Steps ---
+
 function Build-Signer {
-    if (-not (Test-Path $SIGNER_PATH)) {
-        Write-Info "Building kernel signer tool..."
-        $buildCmd = "cargo build --release --manifest-path tools/signer/Cargo.toml 2>&1"
-        Invoke-Expression $buildCmd
-        if ($LASTEXITCODE -ne 0) { throw "Signer build failed" }
-        Write-Success "Signer built"
+    # Only build if missing or if explicitly requested (via Clean usually)
+    if (-not (Test-Path $SIGNER_TOOL_BIN)) {
+        Write-Step "🛠️" "Building Kernel Signer Tool..."
+        Push-Location $SIGNER_TOOL_DIR
+        try {
+            $buildArgs = @("build", "--release")
+            if (-not $Verbose) { $buildArgs += "--quiet" }
+            & cargo $buildArgs
+            if ($LASTEXITCODE -ne 0) { throw "Signer build failed" }
+        }
+        finally {
+            Pop-Location
+        }
+        Write-Done "Signer tool built."
     }
 }
 
-function Ensure-Keypair {
+function Setup-Keys {
     if (-not (Test-Path "$KEYS_DIR/kernel_pub.key")) {
-        Write-Info "Generating Ed25519 keypair for secure boot..."
-        & $SIGNER_PATH keygen --output-dir $KEYS_DIR
-        if ($LASTEXITCODE -ne 0) { throw "Keypair generation failed" }
-        Write-Success "Keypair generated"
-        Write-Warn "Keep keys/kernel.key SECRET! It is excluded from git."
+        Write-Step "🔑" "Generating Secure Boot Keys..."
+        if (-not (Test-Path $KEYS_DIR)) { New-Item -ItemType Directory -Path $KEYS_DIR | Out-Null }
+        
+        $proc = Start-Process -FilePath $SIGNER_TOOL_BIN -ArgumentList "keygen", "--output-dir", "`"$KEYS_DIR`"" -PassThru -NoNewWindow -Wait
+        if ($proc.ExitCode -ne 0) { throw "Key generation failed" }
+        
+        Write-Done "Keys generated in $KEYS_DIR"
+        Write-Warn "Keep private keys secret!"
     }
 }
 
-function Sign-Kernel {
-    Write-Info "Signing kernel with Ed25519..."
-    & $SIGNER_PATH sign --kernel $KERNEL_PATH --secret-key "$KEYS_DIR/kernel.key" --output $KERNEL_SIGNED_PATH
-    if ($LASTEXITCODE -ne 0) { throw "Kernel signing failed" }
-    Write-Success "Kernel signed"
+function Build-Loader {
+    Write-Step "🚀" "Building ExoLoader (UEFI)..."
+    $buildArgs = @(
+        "build",
+        "-p", $LOADER_CRATE,
+        "--target", $TARGET_LOADER,
+        "--release",
+        "--features", "uefi",
+        "-Z", "build-std=core,compiler_builtins,alloc",
+        "-Z", "build-std-features=compiler-builtins-mem"
+    )
+    
+    if (-not $Verbose) { $buildArgs += "--quiet" }
+
+    & cargo $buildArgs
+    if ($LASTEXITCODE -ne 0) { throw "ExoLoader build failed" }
+    Write-Done "ExoLoader built."
+}
+
+function Build-Kernel {
+    Write-Step "🦀" "Building Kernel ($PROFILE)..."
+    
+    $buildArgs = @(
+        "build",
+        "-p", $KERNEL_CRATE,
+        "--target", $TARGET_KERNEL_JSON
+    ) + $CARGO_ARGS_COMMON
+    
+    # Feature flags handling
+    if ($Features.Count -gt 0) {
+        $buildArgs += "--features"
+        $buildArgs += ($Features -join ",")
+        Write-Done "Enabled features: $($Features -join ', ')"
+    }
+
+    $buildArgs += @(
+        "-Z", "build-std=core,compiler_builtins,alloc",
+        "-Z", "build-std-features=compiler-builtins-mem"
+    )
+    
+    if (-not $Verbose) { $buildArgs += "--quiet" }
+
+    & cargo $buildArgs
+    if ($LASTEXITCODE -ne 0) { throw "Kernel build failed" }
+    Write-Done "Kernel compiled."
+}
+
+function Sign-Kernel-Binary {
+    Write-Step "✍️" "Signing Kernel..."
+    
+    if (-not (Test-Path $KERNEL_RAW)) { throw "Kernel binary not found at $KERNEL_RAW" }
+
+    $signArgs = @(
+        "sign",
+        "--kernel", $KERNEL_RAW,
+        "--secret-key", "$KEYS_DIR/kernel.key",
+        "--output", $KERNEL_SIGNED
+    )
+    
+    & $SIGNER_TOOL_BIN $signArgs
+    if ($LASTEXITCODE -ne 0) { throw "Signing failed" }
+    Write-Done "Kernel signed."
 }
 
 # --- Image Creation ---
-function New-BootableDisk {
-    Write-Info "Creating FAT32 disk image for $Bootloader..."
-    
-    # Ensure dir exists
-    $diskDir = Split-Path $DISK_IMG -Parent
-    if (-not (Test-Path $diskDir)) { New-Item -ItemType Directory -Force -Path $diskDir | Out-Null }
 
-    # Setup Directory Structure (Generic for both tools)
-    $fatRoot = "target/$TARGET_KERNEL/$PROFILE/fat_root"
+function Create-Disk-Image {
+    Write-Step "💾" "Preparing Boot Image..."
+    
+    $fatRoot = Join-Path $KERNEL_TARGET_DIR "fat_root"
     if (Test-Path $fatRoot) { Remove-Item $fatRoot -Recurse -Force }
     New-Item -ItemType Directory -Force -Path "$fatRoot/EFI/BOOT" | Out-Null
     
-    if ($Bootloader -eq "ExoLoader") {
-        # Deploy ExoLoader
-        Copy-Item $LOADER_PATH "$fatRoot/EFI/BOOT/BOOTX64.EFI"
-        # ExoLoader expects signed kernel at root named "rany_os"
-        Copy-Item $KERNEL_SIGNED_PATH "$fatRoot/rany_os"
-    }
-    else {
-        # Deploy Limine
-        Get-Limine
-        New-Item -ItemType Directory -Force -Path "$fatRoot/boot/limine" | Out-Null
-        Copy-Item $KERNEL_PATH "$fatRoot/boot/exorust_kernel"
-        Copy-Item "limine.conf" "$fatRoot/boot/limine/"
-        Copy-Item "limine.conf" "$fatRoot/EFI/BOOT/"
-        Copy-Item "$LIMINE_DIR/BOOTX64.EFI" "$fatRoot/EFI/BOOT/"
-        Copy-Item "$LIMINE_DIR/limine-bios.sys" "$fatRoot/boot/limine/"
-    }
+    # Check artifacts
+    if (-not (Test-Path $LOADER_EFI)) { throw "Loader binary missing: $LOADER_EFI" }
+    if (-not (Test-Path $KERNEL_SIGNED)) { throw "Signed kernel missing: $KERNEL_SIGNED" }
 
-    # Checks for mtools
-    $mformat = Get-Command "mformat" -ErrorAction SilentlyContinue
-    if ($mformat) {
-        Write-Info "Using mtools to create disk image..."
-        # Create blank file
-        $sizeBytes = 64 * 1024 * 1024
-        $f = [System.IO.File]::Create($DISK_IMG)
-        $f.SetLength($sizeBytes); $f.Close()
-        
-        $mtoolsrc = "target/mtoolsrc"
-        "drive x: file=`"$DISK_IMG`" offset=0" | Out-File $mtoolsrc -Encoding ascii
-        $env:MTOOLSRC = $mtoolsrc
-        
-        & mformat -i $DISK_IMG -F ::
-        
-        # Recursive copy function for mtools
-        function MCopy-Recurse($srcPath, $dstPath) {
-            Get-ChildItem $srcPath | ForEach-Object {
-                if ($_.PSIsContainer) {
-                    & mmd -i $DISK_IMG "$dstPath/$($_.Name)"
-                    MCopy-Recurse $_.FullName "$dstPath/$($_.Name)"
-                }
-                else {
-                    & mcopy -i $DISK_IMG $_.FullName "$dstPath/$($_.Name)"
-                }
-            }
-        }
-        
-        # Init root dirs
-        & mmd -i $DISK_IMG ::/EFI
-        & mmd -i $DISK_IMG ::/EFI/BOOT
-        if ($Bootloader -eq "Limine") { & mmd -i $DISK_IMG ::/boot; & mmd -i $DISK_IMG ::/boot/limine }
-        
-        # Copy content
-        MCopy-Recurse $fatRoot "::"
-        
-        return $DISK_IMG
+    # Copy artifacts
+    Copy-Item $LOADER_EFI "$fatRoot/EFI/BOOT/BOOTX64.EFI"
+    Copy-Item $KERNEL_SIGNED "$fatRoot/rany_os"
+    
+    # Optional initramfs
+    $initramfsPath = Join-Path $TARGET_DIR "initramfs.tar"
+    if (Test-Path $initramfsPath) {
+        Copy-Item $initramfsPath "$fatRoot/initramfs.tar"
+        Write-Done "Included initramfs.tar"
     }
     
-    Write-Info "Returning FAT root directory for QEMU vvfat"
+    # [ExoRust] Deploy Cells (Drivers/Apps)
+    # Cells are isolated driver/app binaries loaded at runtime
+    $cellsDir = Join-Path $KERNEL_TARGET_DIR "cells"
+    if (Test-Path $cellsDir) {
+        $bootCellsDir = "$fatRoot/cells"
+        New-Item -ItemType Directory -Force -Path $bootCellsDir | Out-Null
+        Copy-Item "$cellsDir/*" $bootCellsDir -Recurse -ErrorAction SilentlyContinue
+        $cellCount = (Get-ChildItem $bootCellsDir -File -Recurse | Measure-Object).Count
+        if ($cellCount -gt 0) {
+            Write-Done "Deployed $cellCount Cell(s) to /cells"
+        }
+    }
+
     return $fatRoot
 }
 
 # --- Run QEMU ---
+
+function Get-QemuAccelerator {
+    if (-not $IsWindows) { return "kvm" }
+
+    $helpOut = & qemu-system-x86_64 -accel help 2>&1
+    
+    if ($helpOut -match "whpx") {
+        Write-Done "[ACCEL] Windows Hypervisor Platform (WHPX)"
+        return "whpx"
+    }
+    elseif ($helpOut -match "hax") {
+        Write-Done "[ACCEL] HAXM"
+        return "hax"
+    }
+    else {
+        Write-Warn "No hardware acceleration detected. Using TCG (Slow)."
+        return "tcg"
+    }
+}
+
 function Start-Qemu {
-    param([string]$BootSource)
+    param([string]$FatDir)
     
-    $qemuArgs = @("-machine", "q35", "-cpu", "max", "-m", "${Memory}M", "-serial", "file:qemu_log_final.txt", "-no-reboot", "-no-shutdown")
+    Write-Step "🖥️" "Launching QEMU..."
     
-    # UEFI Config
-    $ovmfCode = "$OVMF_DIR/OVMF_CODE.fd"
-    $ovmfVars = "$OVMF_DIR/OVMF_VARS.fd"
+    # Firmware Setup
+    $ovmfCode = Join-Path $OVMF_DIR "OVMF_CODE.fd"
+    $ovmfVarsOrig = Join-Path $OVMF_DIR "OVMF_VARS.fd"
+    $ovmfVarsLocal = Join-Path $KERNEL_TARGET_DIR "OVMF_VARS.fd"
     
-    if (-not (Test-Path $ovmfCode)) {
-        if ($Bootloader -eq "ExoLoader") {
-            Write-ErrorMsg "ExoLoader requires UEFI (OVMF). Please ensure assets/firmware/ovmf-x64/OVMF_CODE.fd exists."
-            exit 1
+    if (-not (Test-Path $ovmfCode)) { throw "OVMF_CODE.fd missing" }
+    if (-not (Test-Path $ovmfVarsLocal)) { Copy-Item $ovmfVarsOrig $ovmfVarsLocal }
+
+    $accel = Get-QemuAccelerator
+
+    # Serial Config
+    $serialArg = switch ($Serial) {
+        "stdio" { "stdio" }
+        "file" { "file:$KERNEL_TARGET_DIR/serial.log" }
+        "null" { "null" }
+    }
+
+    # Base Arguments
+    # [ExoRust] Use kernel-irqchip=split for IOMMU interrupt remapping
+    $machineSpec = if ($Iommu) { "q35,kernel-irqchip=split" } else { "q35" }
+    
+    $qemuArgs = @(
+        "-machine", $machineSpec,
+        "-cpu", "max",
+        "-smp", "$Smp",
+        "-m", "${Memory}M",
+        "-serial", $serialArg,
+        "-no-reboot",
+        "-no-shutdown",
+        "-drive", "if=pflash,format=raw,readonly=on,file=$ovmfCode",
+        "-drive", "if=pflash,format=raw,file=$ovmfVarsLocal",
+        "-drive", "file=fat:rw:$FatDir,format=raw,media=disk",
+        "-accel", $accel
+    )
+    
+    # [ExoRust] IOMMU (Intel VT-d) Support
+    # Required for DMA protection testing (Design Doc 5.4.1)
+    if ($Iommu) {
+        $qemuArgs += @("-device", "intel-iommu,intremap=on,caching-mode=on")
+        Write-Done "[IOMMU] Intel VT-d enabled (intremap=on)"
+    }
+    
+    # [ExoRust] NUMA Topology Simulation
+    # Required for Share-Nothing architecture testing (Design Doc 5.3)
+    if ($Numa -and $Smp -ge 2) {
+        $coresPerNode = [math]::Floor($Smp / 2)
+        $memPerNode = [math]::Floor($Memory / 2)
+        $qemuArgs += @(
+            "-object", "memory-backend-ram,id=mem0,size=${memPerNode}M",
+            "-object", "memory-backend-ram,id=mem1,size=${memPerNode}M",
+            "-numa", "node,nodeid=0,cpus=0-$($coresPerNode-1),memdev=mem0",
+            "-numa", "node,nodeid=1,cpus=$($coresPerNode)-$($Smp-1),memdev=mem1"
+        )
+        Write-Done "[NUMA] 2-node topology: $coresPerNode cores, ${memPerNode}MB per node"
+    }
+    
+    # [ExoRust] VirtIO Network with IOMMU Support
+    # Required for zero-copy network testing (Design Doc 6.2)
+    if ($Network) {
+        $netdevArgs = "user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
+        $deviceArgs = "virtio-net-pci,netdev=net0,mq=on,vectors=10"
+        if ($Iommu) {
+            $deviceArgs += ",iommu_platform=on,disable-legacy=on"
         }
-        Write-Info "UEFI not found, using legacy BIOS"
-    }
-    else {
-        Write-Info "Booting UEFI..."
-        $ovmfVarsLocal = "target/$TARGET_KERNEL/$PROFILE/OVMF_VARS.fd"
-        if (-not (Test-Path $ovmfVarsLocal)) { Copy-Item $ovmfVars $ovmfVarsLocal }
-        $qemuArgs += @("-drive", "if=pflash,format=raw,readonly=on,file=$ovmfCode", "-drive", "if=pflash,format=raw,file=$ovmfVarsLocal")
+        $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)
+        Write-Done "[NET] VirtIO-net enabled (hostfwd: 5555->80)"
     }
 
-    # Drive Config
-    if (Test-Path $BootSource -PathType Container) {
-        # vvfat
-        $absPath = (Resolve-Path $BootSource).Path
-        $qemuArgs += @("-device", "ahci,id=ahci", "-drive", "file=fat:rw:$absPath,format=raw,if=none,id=fatdisk", "-device", "ide-hd,drive=fatdisk,bus=ahci.0")
-    }
-    else {
-        $qemuArgs += @("-drive", "file=$BootSource,format=raw,if=virtio")
+    # NVMe Device
+    if ($NvmeDevice) {
+        Test-Command "qemu-img"  # Ensure qemu-img is available
+        $nvmePath = Join-Path $KERNEL_TARGET_DIR "nvme.img"
+        if (-not (Test-Path $nvmePath)) {
+            Write-Done "Creating NVMe disk image ($NvmeDevice)..."
+            & qemu-img create -f qcow2 $nvmePath $NvmeDevice *>$null
+            if ($LASTEXITCODE -ne 0) { throw "Failed to create NVMe image" }
+        }
+        $qemuArgs += @("-drive", "file=$nvmePath,if=none,id=nvm", "-device", "nvme,serial=deadbeef,drive=nvm")
+        Write-Done "NVMe device attached ($NvmeDevice)"
     }
 
-    # Debug
-    if ($GdbDebug) { $qemuArgs += @("-s", "-S"); Write-Info "GDB enabled" }
+    # Debug / Test Flags
+    if ($GdbDebug) {
+        $qemuArgs += @("-s", "-S")
+        Write-Warn "GDB Stub: localhost:1234 (CPU Frozen)"
+    }
+    
+    # [ExoRust] QEMU Monitor for runtime inspection
+    if ($Monitor -or $GdbDebug) {
+        $qemuArgs += @("-monitor", "telnet:127.0.0.1:4444,server,nowait")
+        Write-Done "[MONITOR] telnet localhost 4444 (info tlb, info mem, etc.)"
+    }
 
-    # Accel
-    try {
-        $hypervisor = Get-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -ErrorAction SilentlyContinue
-        if ($hypervisor -and $hypervisor.State -eq "Enabled") {
-            $qemuArgs += @("-accel", "tcg,thread=multi") 
+    if ($Test) {
+        $qemuArgs += @("-device", "isa-debug-exit,iobase=0xf4,iosize=0x04", "-display", "none")
+        Write-Done "Test mode: Headless execution"
+    }
+
+    # Inject Extra Arguments (Passthrough)
+    if ($QemuExtraArgs.Count -gt 0) {
+        $qemuArgs += $QemuExtraArgs
+        Write-Done "Injected extra args: $($QemuExtraArgs -join ' ')"
+    }
+
+    if ($Serial -eq "file") {
+        Write-Done "Log: $KERNEL_TARGET_DIR/serial.log"
+    }
+
+    # Run QEMU
+    & qemu-system-x86_64 @qemuArgs
+    
+    $exitCode = $LASTEXITCODE
+
+    # QEMU isa-debug-exit normalization
+    if ($Test) {
+        # 0x10 (Success) -> 33, 0x11 (Fail) -> 35
+        if ($exitCode -eq 33) {
+            Write-Done "TEST RESULT: PASSED"
+            return 0
         }
         else {
-            $qemuArgs += @("-accel", "tcg,thread=multi") 
+            Write-Fail "TEST RESULT: FAILED (Code: $exitCode)"
+            return 1
         }
     }
-    catch {
-        $qemuArgs += @("-accel", "tcg,thread=multi") 
-    }
-    
-    Write-Host "Running: qemu-system-x86_64 $($qemuArgs -join ' ')" -ForegroundColor DarkGray
-    & qemu-system-x86_64 @qemuArgs
+
+    return $exitCode
 }
 
-# --- Main Execution ---
+# --- Main Pipeline ---
+
 try {
-    # Secure boot: build signer and ensure keys exist BEFORE bootloader
-    # (bootloader uses include_bytes! which needs the public key at compile time)
-    if ($Bootloader -eq "ExoLoader") {
-        Build-Signer
-        Ensure-Keypair
-        Build-ExoLoader
-    }
+    Check-Dependencies
+    if ($Clean) { Run-Clean }
+    
+    # 0. Lint (optional)
+    if ($Lint) { Invoke-Lints }
+    
+    # 1. Tools
+    Build-Signer
+    Setup-Keys
+    
+    # 2. Compilation
+    Build-Loader
     Build-Kernel
-    if ($Bootloader -eq "ExoLoader") {
-        Sign-Kernel
+    
+    # 3. Packaging
+    Sign-Kernel-Binary
+    
+    # Performance Report
+    $script:TotalWatch.Stop()
+    $elapsed = $script:TotalWatch.Elapsed.TotalSeconds.ToString('F2')
+    Write-Step "✅" "Build success in ${elapsed}s"
+    
+    # 4. Execution
+    if (-not $NoRun) {
+        $bootSource = Create-Disk-Image
+        $qemuExit = Start-Qemu -FatDir $bootSource
+        exit $qemuExit
     }
-    $media = New-BootableDisk
-    Start-Qemu -BootSource $media
 }
 catch {
-    Write-ErrorMsg "Script failed: $_"
+    Write-Fail $_
     exit 1
 }

@@ -294,15 +294,11 @@ impl CommandQueue {
 
     /// Allocate a free slot index or return None if none available now
     fn alloc_slot(&self) -> Option<usize> {
-        let mut backoff = Backoff::new();
-        for _ in 0..self.slots.len() {
-            let idx = self.next_alloc.fetch_add(1, Ordering::Relaxed) % self.slots.len();
-            // Prefer fresh free slot (0 -> 1)
-            if self.slots[idx].try_acquire() {
-                return Some(idx);
-            }
-            // If a previous command completed but nobody reclaimed it (state == 2),
-            // it's safe to reclaim it here (2 -> 1) and clear any stale result.
+        let n = self.slots.len();
+        // First pass: preferentially reclaim completed slots (state == 2)
+        let start = self.next_alloc.fetch_add(1, Ordering::Relaxed) % n;
+        for i in 0..n {
+            let idx = (start + i) % n;
             if self.slots[idx]
                 .state
                 .compare_exchange(2, 1, Ordering::AcqRel, Ordering::Relaxed)
@@ -315,6 +311,15 @@ impl CommandQueue {
                 self.reclaimed_count.fetch_add(1, Ordering::Relaxed);
                 return Some(idx);
             }
+        }
+
+        // Second pass: try to acquire a fresh free slot (0 -> 1)
+        let mut backoff = Backoff::new();
+        for _ in 0..n {
+            let idx = self.next_alloc.fetch_add(1, Ordering::Relaxed) % n;
+            if self.slots[idx].try_acquire() {
+                return Some(idx);
+            }
             backoff.snooze();
         }
         None
@@ -324,11 +329,9 @@ impl CommandQueue {
     fn try_alloc_slot(&self) -> Option<usize> {
         let n = self.slots.len();
         let start = self.next_alloc.fetch_add(1, Ordering::Relaxed) % n;
+        // First pass: try to reclaim any completed slots (2 -> 1)
         for i in 0..n {
             let idx = (start + i) % n;
-            if self.slots[idx].try_acquire() {
-                return Some(idx);
-            }
             if self.slots[idx]
                 .state
                 .compare_exchange(2, 1, Ordering::AcqRel, Ordering::Relaxed)
@@ -338,6 +341,13 @@ impl CommandQueue {
                 self.slots[idx].canceled.store(0, Ordering::Release);
                 // Metrics: reclaimed completed slot
                 self.reclaimed_count.fetch_add(1, Ordering::Relaxed);
+                return Some(idx);
+            }
+        }
+        // Second pass: try to acquire a fresh slot (0 -> 1)
+        for i in 0..n {
+            let idx = (start + i) % n;
+            if self.slots[idx].try_acquire() {
                 return Some(idx);
             }
         }

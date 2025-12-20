@@ -775,8 +775,13 @@ impl IommuDmaBuffer {
         let iova = if crate::io::iommu::is_iommu_enabled() {
             crate::io::iommu::map_for_dma(inner.phys_addr(), size as u64).ok()
         } else {
+            if crate::io::iommu::is_iommu_required() {
+                log::error!("[DMA] IOMMU required but not enabled: failing IOMMU DMA buffer allocation");
+                return None;
+            }
+            log::warn!("[DMA] IOMMU not enabled: IOMMU-based buffer not available");
             None
-        };
+        }; 
         Some(Self {
             inner,
             iova,
@@ -794,8 +799,13 @@ impl IommuDmaBuffer {
         let iova = if crate::io::iommu::is_iommu_enabled() {
             crate::io::iommu::map_for_device(&device, inner.phys_addr(), size as u64).ok()
         } else {
+            if crate::io::iommu::is_iommu_required() {
+                log::error!("[DMA] IOMMU required but not enabled: failing device IOMMU allocation");
+                return None;
+            }
+            log::warn!("[DMA] IOMMU not enabled: device IOMMU allocation unavailable");
             None
-        };
+        }; 
         Some(Self {
             inner,
             iova,
@@ -813,6 +823,11 @@ impl IommuDmaBuffer {
         let iova = if crate::io::iommu::is_iommu_enabled() {
             crate::io::iommu::map_for_device_async(&device, inner.phys_addr(), size as u64).await.ok()
         } else {
+            if crate::io::iommu::is_iommu_required() {
+                log::error!("[DMA] IOMMU required but not enabled: failing async device IOMMU allocation");
+                return None;
+            }
+            log::warn!("[DMA] IOMMU not enabled: async device IOMMU allocation unavailable");
             None
         };
         Some(Self {
@@ -869,7 +884,9 @@ pub enum DmaError {
     AddressTranslationFailed,
     /// デバイスが見つからない
     DeviceNotFound,
-}
+    /// IOMMUが必須だが利用できない
+    IommuRequired,
+} 
 
 /// DMAアロケータトレイト
 ///
@@ -985,7 +1002,7 @@ impl DmaAllocator for GlobalDmaAllocator {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        // IOMMUマッピング
+        // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
         let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
             match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
                 Ok(iova) => (iova, true),
@@ -996,9 +1013,19 @@ impl DmaAllocator for GlobalDmaAllocator {
                     return Err(DmaError::IommuMappingFailed);
                 }
             }
+        } else if crate::io::iommu::is_iommu_required() {
+            // IOMMUが必須と設定されているが無効 -> エラー
+            unsafe {
+                dealloc(ptr, layout);
+            }
+            return Err(DmaError::IommuRequired);
         } else {
+            // IOMMUが無効だが必須ではない: 警告を出してフォールバック（開発用）
+            log::warn!(
+                "[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)"
+            );
             (phys_addr.as_u64(), false)
-        };
+        }; 
 
         Ok(DmaAllocation {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
@@ -1027,15 +1054,18 @@ impl DmaAllocator for GlobalDmaAllocator {
             DmaDirection::FromDevice => {}
         }
 
-        // IOMMUマッピング
+        // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
         let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
             match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
                 Ok(iova) => (iova, true),
                 Err(_) => return Err(DmaError::IommuMappingFailed),
             }
+        } else if crate::io::iommu::is_iommu_required() {
+            return Err(DmaError::IommuRequired);
         } else {
+            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
             (phys_addr.as_u64(), false)
-        };
+        }; 
 
         Ok(StreamingMapping {
             host_addr,

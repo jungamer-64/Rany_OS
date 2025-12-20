@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/kernel_content.rs
+// ============================================================================
 extern crate alloc;
 
 // use alloc::string::String;
@@ -69,6 +72,7 @@ mod test;
 mod application;
 mod benchmark;
 mod driver_registry;
+mod initramfs; // Dynamic Cell loading from TAR archive
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 mod service_impl; // KernelServices implementation // Driver lifecycle management
 
@@ -515,6 +519,15 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
         graphics::update_boot_progress_with_message(40, "Kernel API ready");
     }
 
+    // 2.9. Initramfs からドライバ Cells をロード
+    info!(target: "init", "Loading driver Cells from initramfs...");
+    let loaded_cells = initramfs::load_cells_from_initramfs(&boot_info.initramfs);
+    if loaded_cells > 0 {
+        info!(target: "init", "Loaded {} driver Cell(s) from initramfs", loaded_cells);
+    } else {
+        debug!(target: "init", "No initramfs or no Cells found");
+    }
+
     // 3. キーボードドライバの初期化
     info!(target: "init", "Initializing keyboard driver");
     io::keyboard::init();
@@ -797,6 +810,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     // 4. タスクスケジューラの初期化
     io::log::early_print("[DEBUG] Before scheduler init\n");
     info!(target: "init", "Initializing task scheduler");
+    #[cfg(feature = "legacy-scheduler")]
     task::init_scheduler(0); // CPU 0
     info!(target: "init", "Task scheduler initialized");
     io::log::early_print("[DEBUG] After scheduler init\n");
@@ -1132,12 +1146,22 @@ fn register_kernel_symbols() {
         );
 
         registry.symbol_table.insert(
+            alloc::string::String::from("sys_dealloc"),
+            sys_dealloc as *const () as usize,
+        );
+
+        registry.symbol_table.insert(
             alloc::string::String::from("sys_sleep"),
             sys_sleep as *const () as usize,
         );
+
+        registry.symbol_table.insert(
+            alloc::string::String::from("sys_panic"),
+            sys_panic as *const () as usize,
+        );
     });
 
-    debug!(target: "loader", "Kernel symbols registered");
+    debug!(target: "loader", "Kernel symbols registered (5 syscalls)");
 }
 
 /// システムコール: ログ出力
@@ -1179,6 +1203,35 @@ pub extern "C" fn sys_sleep(ms: u64) {
     while task::current_tick() < target {
         core::hint::spin_loop();
     }
+}
+
+/// システムコール: メモリ解放
+#[unsafe(no_mangle)]
+pub extern "C" fn sys_dealloc(ptr: *mut u8, size: usize) {
+    use core::alloc::Layout;
+
+    if ptr.is_null() || size == 0 {
+        return;
+    }
+
+    let layout = match Layout::from_size_align(size, 8) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+
+    unsafe { alloc::alloc::dealloc(ptr, layout) }
+}
+
+/// システムコール: パニック（Cellからの呼び出し用）
+#[unsafe(no_mangle)]
+pub extern "C" fn sys_panic(msg: *const u8, len: usize) -> ! {
+    if !msg.is_null() && len > 0 {
+        let slice = unsafe { core::slice::from_raw_parts(msg, len) };
+        if let Ok(s) = core::str::from_utf8(slice) {
+            log::error!(target: "cell", "Cell panic: {}", s);
+        }
+    }
+    panic!("Cell panic - aborting");
 }
 
 /// ExoRustロゴを表示

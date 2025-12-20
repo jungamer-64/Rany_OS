@@ -9,6 +9,15 @@
 #[cfg(not(feature = "bench"))]
 include!("kernel_content.rs");
 
+// Provide fallback TLS symbols for binary builds on Windows hosts
+// when the kernel linker script is not applied (test runner builds).
+#[cfg(all(target_os = "windows", not(feature = "bench")))]
+#[unsafe(no_mangle)]
+pub static __tls_start: u8 = 0;
+#[cfg(all(target_os = "windows", not(feature = "bench")))]
+#[unsafe(no_mangle)]
+pub static __tls_end: u8 = 0;
+
 // Explicit _start entry point for the linker
 // This references kmain to prevent the linker from stripping it
 #[cfg(not(any(test, feature = "std", feature = "bench")))]
@@ -47,3 +56,7 @@ pub extern "C" fn mainCRTStartup() {}
 // Fallback for test configurations that do set `test` (e.g. library builds)
 #[cfg(all(test, not(feature = "std")))]
 fn main() {}
+
+// Time helpers are implemented in `kernel/src/time.rs`.
+// Test/bench shims and production fallbacks live there;
+// keep this file minimal to avoid duplicate module definitions.

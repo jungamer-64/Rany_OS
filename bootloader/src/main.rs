@@ -30,6 +30,7 @@ const SIG_SIZE: usize = 64;
 
 #[entry]
 fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
+    #[cfg(feature = "uefi")]
     uefi_services::init(&mut system_table).expect("Failed to initialize UEFI services");
 
     let boot_services = system_table.boot_services();
@@ -51,6 +52,19 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             info!("Stalling before exit...");
             boot_services.stall(5_000_000);
             return e;
+        }
+    };
+
+    // 1.1. Optionally load initramfs.tar (Cell drivers)
+    // This is optional - kernel will boot without it
+    let initramfs_data = match load_kernel(boot_services, image_handle, "initramfs.tar") {
+        Ok(data) => {
+            info!("Initramfs loaded: {} bytes", data.len());
+            Some(data)
+        }
+        Err(_) => {
+            info!("No initramfs.tar found (optional)");
+            None
         }
     };
 
@@ -99,6 +113,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     // 2. Parse ELF (using verified kernel data, without signature)
     let elf = xmas_elf::ElfFile::new(kernel_elf_data).expect("Invalid ELF file");
+    #[cfg(feature = "uefi")]
     uefi_services::print!("ELF Entry Point: 0x{:x}\n", elf.header.pt2.entry_point());
 
     for header in elf.program_iter() {
@@ -397,6 +412,31 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                 }
             }
         }
+    }
+
+    // 6.5. Initialize initramfs in boot_info
+    // Copy initramfs data to allocated pages and set up boot_info.initramfs
+    if let Some(ref initramfs) = initramfs_data {
+        let num_pages = (initramfs.len() + 4095) / 4096;
+        let initramfs_phys = UefiMapper::alloc_zeroed_pages(boot_services, num_pages)
+            .expect("Failed to alloc initramfs");
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                initramfs.as_ptr(),
+                initramfs_phys as *mut u8,
+                initramfs.len(),
+            );
+        }
+        // Pass HHDM virtual address to kernel
+        boot_info.initramfs.ptr = hhdm_start + initramfs_phys;
+        boot_info.initramfs.size = initramfs.len() as u64;
+        info!(
+            "Initramfs mapped at HHDM 0x{:x}, size {}",
+            boot_info.initramfs.ptr, boot_info.initramfs.size
+        );
+    } else {
+        boot_info.initramfs.ptr = 0;
+        boot_info.initramfs.size = 0;
     }
 
     // 7. Exit Boot Services
