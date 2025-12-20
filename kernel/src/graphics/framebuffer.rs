@@ -3130,7 +3130,16 @@ impl Framebuffer {
                 continue;
             }
 
-            let glyph = match font.glyph(c) {
+            let glyph_opt = font.glyph(c);
+
+            // For either a missing glyph or regular glyph, we should
+            // fill the character box with the background color to provide
+            // opaque text rendering semantics (tests expect space to write bg).
+            let char_w = font.width() as u32;
+            let char_h = font.height() as u32;
+            self.fill_rect(Rect::new(cx, y, char_w, char_h), bg_color);
+
+            let glyph = match glyph_opt {
                 Some(g) => g,
                 None => {
                     cx += font.width() as i32;

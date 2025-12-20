@@ -38,6 +38,21 @@ pub struct ExoBootInfo {
 
     /// Framebuffer information (resolution, base address, format).
     pub framebuffer: FramebufferInfo,
+
+    /// Initramfs module (optional, for driver Cells).
+    /// If ptr is null, no initramfs was loaded.
+    pub initramfs: InitramfsModule,
+}
+
+/// Initramfs module information.
+/// Contains pointer and size to the initramfs TAR archive loaded by bootloader.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct InitramfsModule {
+    /// Virtual address of initramfs data (null if not present).
+    pub ptr: u64,
+    /// Size of initramfs data in bytes.
+    pub size: u64,
 }
 
 /// TLS Template Information derived from the ELF `PT_TLS` segment.

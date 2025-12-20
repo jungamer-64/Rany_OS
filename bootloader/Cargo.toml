@@ -10,7 +10,7 @@ keywords = ["uefi", "boot"]
 
 [dependencies]
 uefi = { version = "0.24", features = ["alloc"] }
-uefi-services = "0.21"
+uefi-services = { version = "0.21", optional = true }
 log = "0.4"
 xmas-elf = "0.9"
 boot_proto = { path = "../libs/boot_proto" }
@@ -18,6 +18,9 @@ graphic_types = { path = "../libs/graphic_types" }
 # Ed25519 signature verification for secure boot
 # default-features = false disables std and random (RNG) - verification only needs core
 ed25519-compact = { version = "2.1", default-features = false }
+
+[features]
+uefi = ["uefi-services"]
 
 [profile.dev]
 panic = "abort"

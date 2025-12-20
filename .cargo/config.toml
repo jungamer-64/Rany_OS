@@ -1,6 +1,11 @@
-[unstable]
-build-std = ["core", "compiler_builtins", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
+# Build-std is intentionally disabled in the workspace default config to avoid
+# duplicate-lang-item (E0152) errors when running host tests. Use
+# `config.build-std.toml` or pass `-Z 'build-std=...'` on the command line when
+# you need to build a local copy of core/alloc/compiler_builtins for cross-target
+# builds (e.g. kernel cross-builds).
+# [unstable]
+# build-std = ["core", "compiler_builtins", "alloc"]
+# build-std-features = ["compiler-builtins-mem"]
 
 # Custom kernel target with PIE disabled and higher-half linker script
 # Note: For JSON targets, use the full path including .json extension

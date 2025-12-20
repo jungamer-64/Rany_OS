@@ -16,7 +16,8 @@ pub mod interrupt_waker;
 pub mod per_core_executor;
 pub mod preemption;
 pub mod process;
-pub mod scheduler;
+#[cfg(feature = "legacy-scheduler")]
+pub mod scheduler; 
 pub mod signal;
 pub mod timer;
 mod work_stealing;
@@ -69,6 +70,7 @@ pub use process::{
     setpriority, spawn as spawn_process, waitpid,
 };
 #[allow(unused_imports)]
+#[cfg(feature = "legacy-scheduler")]
 pub use scheduler::{PerCpuScheduler, init_scheduler};
 #[allow(unused_imports)]
 pub use signal::{

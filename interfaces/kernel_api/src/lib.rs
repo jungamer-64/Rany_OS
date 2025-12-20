@@ -25,6 +25,10 @@ pub mod services;
 pub mod shell;
 pub mod types;
 
+// Standalone Cell runtime stubs (allocator, panic handler)
+#[cfg(feature = "cell_runtime")]
+pub mod cell_runtime;
+
 // Re-export commonly used types
 pub use application::{AppContext, Application};
 pub use driver::{DeviceId, Driver, DriverInfo, DriverState, DriverType, DriverVersion};

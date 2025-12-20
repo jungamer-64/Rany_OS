@@ -26,6 +26,17 @@ pub mod security;
 #[cfg(any(test, feature = "bench"))]
 pub mod graphics;
 
+// Provide fallback TLS symbols on host Windows builds where the kernel
+// linker script is not used. This prevents undefined reference linker
+// errors for `__tls_start` / `__tls_end` when building the binary for
+// `cargo test` on Windows hosts.
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+pub static __tls_start: u8 = 0;
+#[cfg(target_os = "windows")]
+#[unsafe(no_mangle)]
+pub static __tls_end: u8 = 0;
+
 // Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
 // without pulling in the full memory subsystem and its heavy dependencies.
 #[cfg(any(test, feature = "bench"))]
@@ -299,6 +310,52 @@ pub mod task {
         impl FuelConfig {
             pub const DEFAULT: Self = Self { default_fuel: 10_000 };
         }
+    }
+
+    // Minimal preemption shim used by unit tests to avoid pulling the full
+    // preemption implementation into every test build while keeping the API
+    // expected by I/O modules and interrupts.
+    pub mod preemption {
+        /// Lightweight stats struct mirroring the real implementation used by monitors.
+        #[derive(Debug, Clone)]
+        pub struct PreemptionStats {
+            pub forced_preemptions: u64,
+            pub voluntary_yields: u64,
+            pub current_time_slice: u64,
+            pub enabled: bool,
+        }
+
+        /// Minimal controller stub that exposes only `stats()` for tests.
+        pub struct PreemptionController;
+
+        impl PreemptionController {
+            pub fn stats(&self) -> PreemptionStats {
+                PreemptionStats {
+                    forced_preemptions: 0,
+                    voluntary_yields: 0,
+                    current_time_slice: 0,
+                    enabled: false,
+                }
+            }
+        }
+
+        /// Return a static reference to the stub controller.
+        pub fn preemption_controller() -> &'static PreemptionController {
+            static CTRL: PreemptionController = PreemptionController;
+            &CTRL
+        }
+
+        /// No-op stubs used by code paths that call into preemption during tests.
+        pub fn voluntary_yield() {}
+        pub fn yield_point() {}
+        pub fn is_preemption_pending() -> bool { false }
+        pub fn clear_preemption_pending() {}
+        pub fn check_and_clear_yield_request() -> bool { false }
+        pub fn handle_timer_tick(_tick: u64) {}
+        pub fn set_preemption_pending() {}
+        pub fn request_yield() {}
+        pub fn decrement_time_slice() {}
+        pub fn notify_task_started(_tick: u64) {}
     }
 
     // Test shim removed: tests and benches should use the canonical

@@ -98,6 +98,7 @@ mouse = []
 bench = ["std"]
 apic = []
 task = []
+legacy-scheduler = []
 force_vga = []
 gimli_unwind = []
 

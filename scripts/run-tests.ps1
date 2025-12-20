@@ -28,8 +28,8 @@ param(
 $ErrorActionPreference = "Stop"
 
 $script:TestResults = @{
-    Passed = 0
-    Failed = 0
+    Passed  = 0
+    Failed  = 0
     Skipped = 0
 }
 
@@ -45,7 +45,8 @@ function Write-TestResult($testName, $passed, $message = "") {
         Write-Host "[PASS] " -ForegroundColor Green -NoNewline
         Write-Host $testName
         $script:TestResults.Passed++
-    } else {
+    }
+    else {
         Write-Host "[FAIL] " -ForegroundColor Red -NoNewline
         Write-Host "$testName - $message"
         $script:TestResults.Failed++
@@ -67,11 +68,12 @@ function Invoke-UnitTests {
     
     Write-Host "Running cargo check for syntax validation..." -ForegroundColor Gray
     
-    $result = & cargo check --target x86_64-rany_os.json 2>&1
+    $result = & cargo check --target x86_64-exorust.json 2>&1
     
     if ($LASTEXITCODE -eq 0) {
         Write-TestResult "Cargo syntax check" $true
-    } else {
+    }
+    else {
         Write-TestResult "Cargo syntax check" $false "Compilation errors found"
         if ($VerboseOutput) {
             Write-Host $result -ForegroundColor Gray
@@ -102,7 +104,7 @@ function Invoke-IntegrationTests {
         $featureStr = if ($features.Count -gt 0) { $features -join "," } else { "default" }
         Write-Host "Testing feature set: $featureStr" -ForegroundColor Gray
         
-        $args = @("build", "--target", "x86_64-rany_os.json")
+        $args = @("build", "--target", "x86_64-exorust.json")
         if ($features.Count -gt 0) {
             $args += @("--features", ($features -join ","))
         }
@@ -111,7 +113,8 @@ function Invoke-IntegrationTests {
         
         if ($LASTEXITCODE -eq 0) {
             Write-TestResult "Build with features: $featureStr" $true
-        } else {
+        }
+        else {
             Write-TestResult "Build with features: $featureStr" $false
             if ($VerboseOutput) {
                 Write-Host $result -ForegroundColor Gray
@@ -157,11 +160,13 @@ function Invoke-IntegrationTests {
     $checkScript = Join-Path $PSScriptRoot '..' | Join-Path -ChildPath 'scripts/check-driver-deps.ps1'
     if (-not (Test-Path $checkScript)) {
         Write-TestSkipped "Driver dependencies check" "No check script found"
-    } else {
+    }
+    else {
         $res = & $checkScript
         if ($LASTEXITCODE -ne 0) {
             Write-TestResult "Driver dependencies check" $false "Drivers violate dependency policy"
-        } else {
+        }
+        else {
             Write-TestResult "Driver dependencies check" $true
         }
     }
@@ -193,7 +198,7 @@ function Invoke-QemuTests {
     
     # Build kernel first
     Write-Host "Building kernel for QEMU test..." -ForegroundColor Gray
-    $buildResult = & cargo build --target x86_64-rany_os.json 2>&1
+    $buildResult = & cargo build --target x86_64-exorust.json 2>&1
     
     if ($LASTEXITCODE -ne 0) {
         Write-TestResult "QEMU boot test" $false "Build failed"
@@ -216,7 +221,8 @@ function Invoke-QemuTests {
     
     if ($kernelSize -gt 0 -and $kernelSize -lt 10MB) {
         Write-TestResult "Kernel size check" $true "Size: ${kernelSizeKB}KB"
-    } else {
+    }
+    else {
         Write-TestResult "Kernel size check" $false "Unexpected size: ${kernelSizeKB}KB"
     }
     
@@ -234,7 +240,7 @@ function Invoke-PerformanceTests {
     & cargo clean 2>&1 | Out-Null
     
     $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    & cargo build --target x86_64-rany_os.json 2>&1 | Out-Null
+    & cargo build --target x86_64-exorust.json 2>&1 | Out-Null
     $stopwatch.Stop()
     
     $buildTime = $stopwatch.Elapsed.TotalSeconds
@@ -242,7 +248,8 @@ function Invoke-PerformanceTests {
     
     if ($buildTime -lt 120) {
         Write-TestResult "Build performance" $true "Build completed in ${buildTime}s"
-    } else {
+    }
+    else {
         Write-TestResult "Build performance" $false "Build too slow: ${buildTime}s"
     }
     
@@ -261,7 +268,8 @@ function Invoke-PerformanceTests {
             $trimmed = $line.Trim()
             if ($trimmed -match "^//") {
                 $commentLines++
-            } elseif ($trimmed.Length -gt 0) {
+            }
+            elseif ($trimmed.Length -gt 0) {
                 $codeLines++
             }
         }
@@ -294,7 +302,8 @@ function Write-TestSummary {
         Write-Host ""
         Write-Host "All tests passed!" -ForegroundColor Green
         return 0
-    } else {
+    }
+    else {
         Write-Host ""
         Write-Host "Some tests failed." -ForegroundColor Red
         return 1
@@ -330,7 +339,8 @@ function Main {
         
         return Write-TestSummary
         
-    } finally {
+    }
+    finally {
         Pop-Location
     }
 }

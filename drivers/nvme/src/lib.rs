@@ -25,6 +25,10 @@
 
 extern crate alloc;
 
+// Register Cell runtime stubs (allocator, panic handler) for standalone cdylib build
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
+
 // Core modules (no kernel deps)
 pub mod commands;
 pub mod defs;

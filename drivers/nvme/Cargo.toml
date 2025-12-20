@@ -12,7 +12,12 @@ description = "NVMe Driver for RanyOS"
 
 [lib]
 path = "src/lib.rs"
-# Note: Use 'cargo build --features standalone' with custom linker to produce standalone .a
+# Default: rlib for kernel integration (statically linked)
+# For standalone Cell build (.cell file), use:
+#   cargo +stable build --package nvme_driver --features standalone --release
+# and enable cdylib temporarily in this file, or use a custom profile.
+# Cargo doesn't support conditional crate-type, so cdylib requires manual toggle.
+crate-type = ["rlib"]
 
 [dependencies]
 # HAL for MMIO and port I/O wrappers
@@ -23,6 +28,11 @@ x86_64 = "0.14"
 
 [features]
 default = []
-# Enables panic handler and dummy allocator for freestanding build
-standalone = ["export_driver_entry"]
-export_driver_entry = []
+# Standalone Cell build: enables cdylib with runtime stubs (allocator, panic_handler)
+# To build standalone: 
+#   1. Change crate-type to ["cdylib"] temporarily
+#   2. cargo build --features standalone --release
+#   3. Output: target/release/libnvme_driver.so (or .dll) → rename to nvme.cell
+standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
+# Export _exorust_driver_entry symbol for dynamic loading
+export_driver_entry = ["kernel_api/export_driver_entry"]
