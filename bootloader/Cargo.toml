@@ -1,12 +1,27 @@
 [package]
-name = "bootloader"
+name = "exoloader"
 version = "0.1.0"
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
+edition = "2021"
+description = "UEFI Bootloader for RanyOS"
+license = "MIT"
+repository = "https://github.com/Start-Rany-OS/Rany_OS"
+categories = ["os", "bootloader"]
+keywords = ["uefi", "boot"]
 
 [dependencies]
+uefi = { version = "0.24", features = ["alloc"] }
+uefi-services = "0.21"
+log = "0.4"
+xmas-elf = "0.9"
+boot_proto = { path = "../libs/boot_proto" }
+graphic_types = { path = "../libs/graphic_types" }
+# Ed25519 signature verification for secure boot
+# default-features = false disables std and random (RNG) - verification only needs core
+ed25519-compact = { version = "2.1", default-features = false }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true

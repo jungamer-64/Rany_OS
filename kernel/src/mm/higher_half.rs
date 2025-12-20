@@ -598,6 +598,7 @@ impl PageTable {
 
 /// 物理メモリマッパー
 /// 物理アドレスと仮想アドレス間の変換を提供
+#[derive(Debug)]
 pub struct PhysicalMemoryMapper {
     /// 物理メモリオフセット
     offset: u64,
@@ -870,6 +871,7 @@ pub enum MapError {
 ///
 /// 仮想アドレスと物理アドレスのマッピングを管理する。
 /// 4KiB, 2MiB, 1GiBページサイズをサポート。
+#[derive(Debug)]
 pub struct PageTableManager {
     /// PML4（レベル4ページテーブル）の物理アドレス
     pml4_phys: PhysAddr,

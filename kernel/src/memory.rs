@@ -74,18 +74,18 @@ impl BuddyHeapAllocator {
 
     /// ヒープを初期化
     unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
-        crate::vga::early_serial_str("[BUD] init\n");
+        crate::io::log::early_print("[BUD] init\n");
         self.heap_start = heap_start;
         self.heap_size = heap_size;
         self.initialized = true;
 
-        crate::vga::early_serial_str("[BUD] clear\n");
+        crate::io::log::early_print("[BUD] clear\n");
         // 全てのフリーリストをクリア
         for list in self.free_lists.iter_mut() {
             *list = None;
         }
 
-        crate::vga::early_serial_str("[BUD] loop\n");
+        crate::io::log::early_print("[BUD] loop\n");
         // ヒープ全体を適切なオーダーのブロックとして登録
         // 各オーダーのブロックは自身のサイズでアラインされている必要がある
         let mut current = heap_start;
@@ -124,14 +124,14 @@ impl BuddyHeapAllocator {
             }
 
             if current + block_size <= end {
-                crate::vga::early_serial_str("[BUD] add\n");
+                crate::io::log::early_print("[BUD] add\n");
                 self.add_to_free_list(current, order);
                 current += block_size;
             } else {
                 break;
             }
         }
-        crate::vga::early_serial_str("[BUD] done\n");
+        crate::io::log::early_print("[BUD] done\n");
     }
 
     /// サイズから必要なオーダーを計算
@@ -153,17 +153,47 @@ impl BuddyHeapAllocator {
 
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
+        // DEBUG: Log the operation
+        #[cfg(debug_assertions)]
+        crate::io::log::early_print("[HEAP] add_to_free_list\n");
+
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr_addr = addr as usize;
-        crate::io::mmio::volatile_write::<usize>(ptr_addr, self.free_lists[order].unwrap_or(0));
+        let old_head = self.free_lists[order].unwrap_or(0);
+
+        // DEBUG: Validate addresses
+        #[cfg(debug_assertions)]
+        if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
+            crate::io::log::early_print("[HEAP] ERROR: add_to_free_list got invalid addr!\n");
+        }
+
+        crate::io::mmio::volatile_write::<usize>(ptr_addr, old_head);
         self.free_lists[order] = Some(addr);
     }
 
     /// フリーリストからブロックを取得
     fn remove_from_free_list(&mut self, order: usize) -> Option<usize> {
+        #[cfg(debug_assertions)]
+        crate::io::log::early_print("[HEAP] remove_from_free_list\n");
+
         self.free_lists[order].take().map(|addr| {
+            // DEBUG: Validate the address being returned
+            #[cfg(debug_assertions)]
+            if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
+                crate::io::log::early_print(
+                    "[HEAP] ERROR: remove_from_free_list returning invalid addr!\n",
+                );
+            }
+
             let ptr_addr = addr as usize;
             let next = crate::io::mmio::volatile_read::<usize>(ptr_addr);
+
+            // DEBUG: Validate next pointer
+            #[cfg(debug_assertions)]
+            if next != 0 && (next < self.heap_start || next >= self.heap_start + HEAP_SIZE) {
+                crate::io::log::early_print("[HEAP] ERROR: next pointer is invalid!\n");
+            }
+
             self.free_lists[order] = if next == 0 { None } else { Some(next) };
             addr
         })
@@ -198,7 +228,12 @@ impl BuddyHeapAllocator {
 
     /// メモリを割り当て（O(log n)）
     fn allocate(&mut self, layout: Layout) -> *mut u8 {
+        #[cfg(debug_assertions)]
+        crate::io::log::early_print("[HEAP] allocate enter\n");
+
         if !self.initialized {
+            #[cfg(debug_assertions)]
+            crate::io::log::early_print("[HEAP] allocate: not initialized\n");
             return null_mut();
         }
 
@@ -215,6 +250,8 @@ impl BuddyHeapAllocator {
         let order = Self::size_to_order(alloc_size);
 
         if order > Self::MAX_ORDER {
+            #[cfg(debug_assertions)]
+            crate::io::log::early_print("[HEAP] allocate: order too large\n");
             return null_mut();
         }
 
@@ -224,12 +261,17 @@ impl BuddyHeapAllocator {
                 // 必要に応じて分割
                 self.split_block(block, current_order, order);
 
+                #[cfg(debug_assertions)]
+                crate::io::log::early_print("[HEAP] allocate success\n");
+
                 // Buddyブロックは自身のサイズでアラインされているため、
                 // block_size >= align なら自動的にアラインメントを満たす
                 return block as *mut u8;
             }
         }
 
+        #[cfg(debug_assertions)]
+        crate::io::log::early_print("[HEAP] allocate: out of memory\n");
         null_mut()
     }
 
@@ -246,7 +288,12 @@ impl BuddyHeapAllocator {
 
     /// メモリを解放（O(log n)）
     fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
+        #[cfg(debug_assertions)]
+        crate::io::log::early_print("[HEAP] deallocate enter\n");
+
         if ptr.is_null() || !self.initialized {
+            #[cfg(debug_assertions)]
+            crate::io::log::early_print("[HEAP] deallocate: null or not init\n");
             return;
         }
 
@@ -254,7 +301,15 @@ impl BuddyHeapAllocator {
         let order = Self::size_to_order(size);
         let addr = ptr as usize;
 
+        #[cfg(debug_assertions)]
+        if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
+            crate::io::log::early_print("[HEAP] ERROR: deallocate got invalid ptr!\n");
+        }
+
         self.coalesce(addr, order);
+
+        #[cfg(debug_assertions)]
+        crate::io::log::early_print("[HEAP] deallocate done\n");
     }
 
     /// Buddyとの合体を反復的に試みる
@@ -351,44 +406,48 @@ static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
 /// 3. Exchange Heap（ゼロコピーIPC用）
 /// 4. Per-CPU データ構造
 /// 5. Per-Core Slab Cache
-pub fn init() {
+pub fn init(rsdp_addr: Option<u64>) {
     use core::sync::atomic::Ordering;
 
-    crate::vga::early_serial_str("[MEM] init start\n");
+    crate::io::log::early_print("[MEM] init start\n");
 
     if MEMORY_INITIALIZED.swap(true, Ordering::SeqCst) {
-        crate::vga::early_serial_str("[MEM] already init\n");
+        crate::io::log::early_print("[MEM] already init\n");
         return;
     }
 
-    crate::vga::early_serial_str("[MEM] global heap\n");
+    crate::io::log::early_print("[MEM] global heap\n");
 
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
     init_global_heap();
-    crate::vga::early_serial_str("[MEM] heap done\n");
+    crate::io::log::early_print("[MEM] heap done\n");
 
     // 2. Buddy Allocator の初期化（デフォルトのメモリ領域を使用）
     // 注: 本番環境ではブートローダーからメモリマップを取得
-    crate::vga::early_serial_str("[MEM] buddy prep\n");
+    crate::io::log::early_print("[MEM] buddy prep\n");
     let usable_regions = get_default_memory_regions();
-    crate::vga::early_serial_str("[MEM] buddy init\n");
+    crate::io::log::early_print("[MEM] buddy init\n");
 
     unsafe {
         crate::mm::init_buddy_allocator(&usable_regions);
     }
-    crate::vga::early_serial_str("[MEM] buddy done\n");
+    crate::io::log::early_print("[MEM] buddy done\n");
 
     // 2.5. NUMA情報をACPIから取得してBuddyに登録（任意）
-    crate::vga::early_serial_str("[MEM] SRAT check\n");
-    if let Some(rsdp_response) = super::RSDP_REQUEST.get_response() {
-        let rsdp_addr = rsdp_response.address() as usize;
-        crate::vga::early_serial_str("[MEM] parsing SRAT\n");
+    crate::io::log::early_print("[MEM] SRAT check\n");
+    if let Some(_rsdp_addr_val) = rsdp_addr {
+        crate::io::log::early_print("[MEM] parsing SRAT\n");
         // Acquire SRAT entries from ACPI parser if available
         let regions = crate::io::acpi::numa_memory_regions();
         for (base, length, proximity) in regions {
             // Log using a heap-backed format (heap already initialized at this point)
-            let s = alloc::format!("[MEM] registering region {:#x} len {:#x} prox {}\n", base, length, proximity);
-            crate::vga::early_serial_str(&s);
+            let s = alloc::format!(
+                "[MEM] registering region {:#x} len {:#x} prox {}\n",
+                base,
+                length,
+                proximity
+            );
+            crate::io::log::early_print(&s);
 
             // Convert to PhysAddr and NumaNodeId
             let base_phys = x86_64::PhysAddr::new(base);
@@ -398,48 +457,48 @@ pub fn init() {
             }
         }
     } else {
-        crate::vga::early_serial_str("[MEM] no SRAT (RSDP not present)\n");
+        crate::io::log::early_print("[MEM] no SRAT (RSDP not provided)\n");
     }
 
     // 3. Exchange Heap の初期化（ゼロコピーIPC用）
-    crate::vga::early_serial_str("[MEM] exheap init\n");
+    crate::io::log::early_print("[MEM] exheap init\n");
     unsafe {
         crate::mm::init_exchange_heap(exchange_heap_start() as usize, EXCHANGE_HEAP_SIZE);
     }
-    crate::vga::early_serial_str("[MEM] exheap done\n");
+    crate::io::log::early_print("[MEM] exheap done\n");
 
     // 4. Per-CPU データ構造の初期化（BSPのみ）
     // 注: init_per_cpu() 内部でBSPのGsBaseが設定されるため、
     //     setup_current_cpu(0) は省略可能（冪等性のため呼んでも問題なし）
-    crate::vga::early_serial_str("[MEM] percpu init\n");
+    crate::io::log::early_print("[MEM] percpu init\n");
     unsafe {
         crate::mm::init_per_cpu(1);
         // BSPのGsBaseはinit_per_cpu内で設定済み
         // AP（追加プロセッサ）起動時は各APでsetup_current_cpu(cpu_id)を呼ぶ
     }
-    crate::vga::early_serial_str("[MEM] percpu done\n");
+    crate::io::log::early_print("[MEM] percpu done\n");
 
     // 5. Per-Core Slab Cache の初期化
-    crate::vga::early_serial_str("[MEM] slab init\n");
+    crate::io::log::early_print("[MEM] slab init\n");
     crate::mm::init_per_core_caches(1);
-    crate::vga::early_serial_str("[MEM] slab done\n");
+    crate::io::log::early_print("[MEM] slab done\n");
 
     // メモリ統計を表示（スキップ）
     // print_memory_stats();
-    crate::vga::early_serial_str("[MEM] all done\n");
+    crate::io::log::early_print("[MEM] all done\n");
 }
 
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 fn init_global_heap() {
-    crate::vga::early_serial_str("[HEAP] lock\n");
+    crate::io::log::early_print("[HEAP] lock\n");
     let mut guard = ALLOCATOR.0.lock_for_init("[HEAP] global allocator init");
-    crate::vga::early_serial_str("[HEAP] init call\n");
+    crate::io::log::early_print("[HEAP] init call\n");
     let start = heap_start();
-    crate::vga::early_serial_str("[HEAP] addr ok\n");
+    crate::io::log::early_print("[HEAP] addr ok\n");
     unsafe {
         guard.init(start as usize, HEAP_SIZE);
     }
-    crate::vga::early_serial_str("[HEAP] done\n");
+    crate::io::log::early_print("[HEAP] done\n");
 }
 
 /// デフォルトのメモリ領域を取得

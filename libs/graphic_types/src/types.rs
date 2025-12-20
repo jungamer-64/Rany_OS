@@ -242,7 +242,7 @@ impl PixelFormat {
 // ============================================================================
 
 /// フレームバッファ情報
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct FramebufferInfo {
     /// フレームバッファの物理アドレス

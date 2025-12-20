@@ -8,7 +8,6 @@
 
 #![allow(dead_code)]
 
-use limine::response::FramebufferResponse;
 use spin::Mutex;
 
 use super::console::TextConsole;
@@ -54,142 +53,112 @@ pub fn init(info: FramebufferInfo) {
     log::info!("[GRAPHICS] Framebuffer initialized: {}x{}\n", w, h);
 }
 
-/// Limineフレームバッファレスポンスからグラフィックスを初期化
+/// ExoLoader (UEFI) からのフレームバッファ情報を使用してグラフィックスを初期化
 ///
 /// ブートローダーから提供されたフレームバッファ情報を使用して
 /// グラフィックスサブシステムを初期化します。
-pub fn init_from_limine(response: &FramebufferResponse) -> bool {
-    crate::io::log::early_print("[GFX] init_from_limine entry\n");
+/// WC (Write-Combining) 属性での再マッピングも試みます。
+pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool {
+    crate::io::log::early_print("[GFX] init_from_boot_info entry\n");
 
-    // 最初のフレームバッファを使用
-    let mut iter = response.framebuffers();
-    let Some(fb) = iter.next() else {
-        crate::io::log::early_print("[GFX] No framebuffer available\n");
-        log::info!("[GRAPHICS] No framebuffer available from bootloader\n");
-        return false;
-    };
+    let mut final_info = *info;
 
-    crate::io::log::early_print("[GFX] Got framebuffer from iterator\n");
+    // 1. Fix BPP if missing (ExoLoader might set 0)
+    if final_info.bpp == 0 {
+        let bpp = match final_info.format {
+            PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => 32,
+            PixelFormat::Rgb888 | PixelFormat::Bgr888 => 24,
+            PixelFormat::Rgb565 => 16,
+            _ => 32,
+        };
+        final_info.bpp = bpp;
+    }
 
-    // Limine provides a virtual address via fb.addr(), but this is calculated as
-    // HHDM_OFFSET + physical_address. However, Limine's HHDM only maps RAM, not MMIO/VRAM.
-    // For framebuffers at physical addresses like 0x80000000 (2GB), we must explicitly map them.
+    // 2. Fix Stride if it looks like Pixels (UEFI GOP returns pixels, we want bytes)
+    // If stride is exactly width, it's almost certainly pixels.
+    // Real hardware usually aligns stride (e.g. width=1920, stride=2048 bytes?),
+    // but if stride == width, it's pixels.
+    if final_info.stride == final_info.width {
+        final_info.stride = final_info.width * (final_info.bpp as u32 / 8);
+    }
 
-    let limine_virt_addr = fb.addr() as u64;
-    let hhdm_offset = physical_memory_offset();
+    let limine_virt_addr = final_info.address;
 
-    // Calculate physical address from Limine's HHDM-based virtual address
-    let phys_addr = if limine_virt_addr >= hhdm_offset {
-        limine_virt_addr - hhdm_offset
+    // Calculate physical address.
+    // If coming from ExoLoader, address is typically Physical (e.g. 0x80000000).
+    // If it was already virtual (HHDM), subtracting offset gives Physical.
+    let phys_addr = if limine_virt_addr >= phys_mem_offset {
+        limine_virt_addr - phys_mem_offset
     } else {
-        // Fallback: assume it's already a physical address
         limine_virt_addr
     };
 
     crate::io::log::early_print("[GFX] Calculated phys addr\n");
 
-    let _ = write!(
-        EarlyBuf,
-        "[GFX] Framebuffer: limine_virt={:#x} hhdm={:#x} phys={:#x}\n",
-        limine_virt_addr, hhdm_offset, phys_addr
-    );
-
-    // ピクセルフォーマットを判定
-    // Limineは通常BGRA8888フォーマットを使用
-    let bpp = fb.bpp();
-    let red_mask_size = fb.red_mask_size();
-    let red_mask_shift = fb.red_mask_shift();
-    let green_mask_size = fb.green_mask_size();
-    let green_mask_shift = fb.green_mask_shift();
-    let blue_mask_size = fb.blue_mask_size();
-    let blue_mask_shift = fb.blue_mask_shift();
+    // Calculate the HHDM virtual address.
+    // This is known to be mapped by the bootloader.
+    let hhdm_virt_addr = phys_mem_offset + phys_addr;
 
     let _ = write!(
         EarlyBuf,
-        "[GFX] FB: {}x{} bpp={} pitch={}\n",
-        fb.width(),
-        fb.height(),
-        bpp,
-        fb.pitch()
-    );
-    let _ = write!(
-        EarlyBuf,
-        "[GFX] Masks: R={}:{} G={}:{} B={}:{}\n",
-        red_mask_size,
-        red_mask_shift,
-        green_mask_size,
-        green_mask_shift,
-        blue_mask_size,
-        blue_mask_shift
+        "[GFX] FB: {}x{} bpp={} pitch={} phys={:#x} hhdm={:#x}\n",
+        final_info.width,
+        final_info.height,
+        final_info.bpp,
+        final_info.stride,
+        phys_addr,
+        hhdm_virt_addr
     );
 
-    let format = detect_pixel_format(
-        red_mask_size,
-        red_mask_shift,
-        green_mask_size,
-        green_mask_shift,
-        blue_mask_size,
-        blue_mask_shift,
-        bpp as u16,
-    );
-    let _ = write!(EarlyBuf, "[GFX] Detected Format: {:?}\n", format);
-
-    let fb_size = (fb.pitch() as u64) * (fb.height() as u64);
+    let fb_size = (final_info.stride as u64) * (final_info.height as u64);
 
     crate::io::log::early_print("[GFX] About to call map_framebuffer_vram\n");
 
-    // Try to explicitly map the framebuffer with Write-Combining attributes
-    // If this fails (e.g., because Limine already mapped it), fall back to Limine's address
+    // Try to explicitly map with Write-Combining.
+    // If it fails (likely because it's already mapped in HHDM as WB),
+    // we fall back to using the HHDM address (hhdm_virt_addr).
+    // We DO NOT fall back to 'limine_virt_addr' if it looks physical (low address).
     let mapped_virt_addr = {
-        let result = map_framebuffer_vram(phys_addr, fb_size);
+        let result = map_framebuffer_vram(phys_addr, fb_size, phys_mem_offset);
         if result == 0 {
-            crate::io::log::early_print("[GFX] map_range failed, using Limine's address\n");
+            crate::io::log::early_print("[GFX] map_range failed, falling back to HHDM address\n");
             log::warn!(
-                "[GRAPHICS] Could not remap framebuffer, using Limine's mapping at {:#x}\n",
-                limine_virt_addr
+                "[GRAPHICS] Could not remap framebuffer (WC), utilizing HHDM mapping at {:#x}\n",
+                hhdm_virt_addr
             );
-            // Use Limine's original address - it should be mapped by the bootloader
-            limine_virt_addr
+            hhdm_virt_addr
         } else {
             crate::io::log::early_print("[GFX] map_framebuffer_vram succeeded\n");
             result
         }
     };
 
-    let info = FramebufferInfo {
-        address: mapped_virt_addr, // Use our explicitly mapped address or Limine's
-        width: fb.width() as u32,
-        height: fb.height() as u32,
-        stride: fb.pitch() as u32,
-        format,
-        bpp: fb.bpp() as u8,
-    };
+    final_info.address = mapped_virt_addr;
 
     log::info!(
-        "[GRAPHICS] Limine framebuffer: {}x{}@{}bpp pitch={} format={:?} mapped_virt={:#x}\n",
-        info.width,
-        info.height,
-        info.bpp,
-        info.stride,
-        info.format,
-        mapped_virt_addr
+        "[GRAPHICS] Framebuffer: {}x{}@{}bpp pitch={} format={:?} mapped_virt={:#x}\n",
+        final_info.width,
+        final_info.height,
+        final_info.bpp,
+        final_info.stride,
+        final_info.format,
+        final_info.address
     );
 
     crate::io::log::early_print("[GFX] Calling init(info)\n");
-    init(info);
-    crate::io::log::early_print("[GFX] init_from_limine complete\n");
+    init(final_info);
+    crate::io::log::early_print("[GFX] init_from_boot_info complete\n");
     true
 }
 
 /// Map framebuffer VRAM to kernel virtual address space with Write-Combining attributes
 ///
 /// Returns the virtual address where the framebuffer is mapped, or 0 on failure.
-fn map_framebuffer_vram(phys_addr: u64, size: u64) -> u64 {
+fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
     use crate::mm::higher_half::PhysAddr;
 
     crate::io::log::early_print("[GFX] map_framebuffer_vram entry\n");
 
-    let offset = physical_memory_offset();
     let mut manager = unsafe { PageTableManager::from_current_cr3(offset) };
 
     // Use a dedicated virtual address range for MMIO mappings
@@ -383,4 +352,13 @@ pub fn console_print(s: &str) {
     with_console(|console| {
         console.write_str(s);
     });
+}
+
+/// フレームバッファのロックを強制解除（パニック時用）
+///
+/// # Safety
+/// この関数は、デッドロックが発生しているパニックハンドラからのみ呼び出してください。
+/// 競合状態を引き起こす可能性があります。
+pub unsafe fn force_unlock_framebuffer() {
+    FRAMEBUFFER.force_unlock();
 }

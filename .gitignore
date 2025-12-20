@@ -15,3 +15,6 @@
 *.txt
 *.json
 /tmp
+
+# Secure boot - never commit secret key!
+keys/kernel.key

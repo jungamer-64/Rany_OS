@@ -86,6 +86,7 @@ pub const PAGE_SIZE_4K: usize = 1 << 12; // 4 KiB = 4096 bytes
 ///
 /// 物理メモリの連続した1GB領域を管理する。
 /// ブートストラップ時に使用可能なメモリ領域を設定する。
+#[derive(Debug)]
 pub struct HugePageAllocator {
     /// 利用可能な1GBページのビットマップ
     /// 最大64GB (64 pages) を管理

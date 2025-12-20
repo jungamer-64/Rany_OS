@@ -92,7 +92,7 @@ mod tests {
         let val = ExoValue::Int(42);
         assert_eq!(alloc::format!("{}", val), "42");
 
-        let val = ExoValue::String(alloc::string::String::from("hello"));
+        let val = ExoValue::String(alloc::string::String::from("hello").into());
         assert_eq!(alloc::format!("{}", val), "hello");
     }
 

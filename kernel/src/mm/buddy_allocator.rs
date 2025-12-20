@@ -808,7 +808,7 @@ mod tests {
         }
 
         // Check buddy reports the address as managed
-        assert!(crate::mm::buddy::is_managed_by_buddy(PhysAddr::new(
+        assert!(crate::mm::buddy_allocator::is_managed_by_buddy(PhysAddr::new(
             0x200000
         )));
 

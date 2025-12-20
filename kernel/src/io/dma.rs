@@ -803,6 +803,25 @@ impl IommuDmaBuffer {
         })
     }
 
+    /// Async constructor that awaits mapping completion when a controller CommandQueue is present
+    pub async fn new_for_device_async(
+        size: usize,
+        attributes: DmaMemoryAttributes,
+        device: crate::io::iommu::DeviceId,
+    ) -> Option<Self> {
+        let inner = CoherentDmaBuffer::new(size, attributes)?;
+        let iova = if crate::io::iommu::is_iommu_enabled() {
+            crate::io::iommu::map_for_device_async(&device, inner.phys_addr(), size as u64).await.ok()
+        } else {
+            None
+        };
+        Some(Self {
+            inner,
+            iova,
+            device_id: Some(device),
+        })
+    }
+
     /// デバイスに渡すアドレス（IOMMUが有効ならIOVA）
     pub fn device_addr(&self) -> u64 {
         self.iova.unwrap_or(self.inner.phys_addr().as_u64())

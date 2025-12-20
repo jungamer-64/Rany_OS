@@ -751,10 +751,12 @@ static SERIAL1: AsyncSerialPort = AsyncSerialPort::new(ComPort::Com1);
 /// COM1 IRQ number
 const COM1_IRQ: u8 = 4;
 
-#[deprecated(note = "serial::init() is deprecated; prefer registering the serial driver with `driver_registry::register_driver` and let the DriverRegistry initialize it. This function will be removed in a future release.")]
+#[deprecated(
+    note = "serial::init() is deprecated; prefer registering the serial driver with `driver_registry::register_driver` and let the DriverRegistry initialize it. This function will be removed in a future release."
+)]
 pub fn init() -> Result<(), SerialError> {
     SERIAL1.init(BaudRate::Baud115200)?;
-    SERIAL1.port.set_interrupts(true, false);
+    SERIAL1.port.set_interrupts(false, false);
 
     // Unmasking IRQ must be done by kernel, as driver doesn't have access to PIC.
     // crate::interrupts::unmask_irq(COM1_IRQ);
@@ -764,12 +766,16 @@ pub fn init() -> Result<(), SerialError> {
     Ok(())
 }
 
-#[deprecated(note = "serial1() is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`). This global will be removed in a future release.")]
+#[deprecated(
+    note = "serial1() is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`). This global will be removed in a future release."
+)]
 pub fn serial1() -> &'static AsyncSerialPort {
     &SERIAL1
 }
 
-#[deprecated(note = "serial::handle_interrupt() is deprecated; prefer registering the serial driver (via `driver_registry::register_driver`) and allow the driver to expose its interrupt handling interface; this free function will be removed in a future release.")]
+#[deprecated(
+    note = "serial::handle_interrupt() is deprecated; prefer registering the serial driver (via `driver_registry::register_driver`) and allow the driver to expose its interrupt handling interface; this free function will be removed in a future release."
+)]
 pub fn handle_interrupt() {
     SERIAL1.handle_interrupt();
 }
@@ -793,7 +799,9 @@ pub fn _print(args: fmt::Arguments) {
     let _ = writer.write_fmt(args);
 }
 
-#[deprecated(note = "serial_print macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging.")]
+#[deprecated(
+    note = "serial_print macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging."
+)]
 #[macro_export]
 macro_rules! serial_print {
     ($($arg:tt)*) => {
@@ -801,7 +809,9 @@ macro_rules! serial_print {
     };
 }
 
-#[deprecated(note = "serial_println macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging.")]
+#[deprecated(
+    note = "serial_println macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging."
+)]
 #[macro_export]
 macro_rules! serial_println {
     () => ($crate::_print(format_args!("\n")));

@@ -14,6 +14,7 @@ use core::ptr::NonNull;
 ///
 /// Exchange Heapはドメイン間通信専用で、通常の割り当てサイズは
 /// 比較的大きい（パケットバッファ等）ため、単純な空きリスト実装で十分。
+#[derive(Debug)]
 struct SimpleFreeListHeap {
     /// ヒープ開始アドレス
     heap_start: usize,
@@ -786,7 +787,8 @@ mod tests {
         static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
         unsafe {
-            EXCHANGE_HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE);
+            // Use addr_of_mut! to avoid creating a shared reference to a mutable static
+            EXCHANGE_HEAP.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE);
         }
 
         // アロケーション

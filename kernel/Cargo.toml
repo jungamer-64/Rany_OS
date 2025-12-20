@@ -47,8 +47,8 @@ serial_driver = { path = "../drivers/serial" }
 fat32 = { path = "../filesystems/fat32" }
 vfs = { path = "../libs/vfs" }
 
-# ブートローダーAPI（Limine Protocol - UEFI/BIOS両対応）
-limine = "0.5"
+# ブートローダーAPI（ExoLoader Protocol）
+boot_proto = { path = "../libs/boot_proto" }
 
 
 # x86_64アーキテクチャサポート
@@ -75,15 +75,8 @@ gimli = { version = "0.32", default-features = false, features = ["read-core"] }
 # no_std向けHashMap
 hashbrown = "0.16"
 
-# Ed25519署名検証用
-ed25519-dalek = { version = "2.1", default-features = false, features = [
-    "alloc",
-] }
-
-# curve25519-dalekの設定
-curve25519-dalek = { version = "4.1", default-features = false, features = [
-    "alloc",
-] }
+# Ed25519署名検証用（no_std対応、curve25519-dalek不使用）
+ed25519-compact = { version = "2", default-features = false }
 
 # SHA-256ハッシュ計算用
 sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
@@ -148,6 +141,10 @@ test-args = [
 ]
 test-success-exit-code = 33
 test-timeout = 300
+
+[profile.test]
+opt-level = 1
+panic = "abort"
 
 [[bench]]
 name = "framebuffer_bench"

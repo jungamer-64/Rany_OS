@@ -381,6 +381,7 @@ static PER_CORE_LOG_BUFFERS: [IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>>; PE
 /// because per-core aggregation is performed outside of ISR. Keep this symbol
 /// for future aggregator heuristics.
 #[allow(dead_code)]
+#[deprecated(note = "PER_CORE_SCAN_INDEX is no longer used and will be removed in a future release.")]
 static PER_CORE_SCAN_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 /// 非同期入力バッファ（受信）
@@ -604,14 +605,9 @@ struct KernelLogger;
 
 #[inline]
 fn read_tsc_serialized() -> u64 {
-    // Use RDTSCP for stronger ordering and add a compiler fence to prevent
-    // reordering across the timestamp reads used for timeouts.
-    unsafe {
-        let mut aux: u32 = 0;
-        let v = core::arch::x86_64::__rdtscp(&mut aux);
-        core::sync::atomic::compiler_fence(Ordering::SeqCst);
-        v
-    }
+    // Use RDTSC which is supported on all x64 CPUs.
+    // We don't strictly need RDTSCP's serialization for simple timeouts.
+    unsafe { core::arch::x86_64::_rdtsc() }
 }
 
 impl KernelLogger {
@@ -744,7 +740,12 @@ impl KernelLogger {
 
     fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
         // Timestamp and Core ID
+        // Use the RTC when available; for test/bench builds use the test shim in `crate::time`
+        #[cfg(any(test, feature = "bench"))]
+        let uptime_ms = crate::time::get_uptime_ms();
+        #[cfg(not(any(test, feature = "bench")))]
         let uptime_ms = crate::io::rtc::get_uptime_ms();
+
         let core_id = {
             #[cfg(not(feature = "bench"))]
             {
@@ -1181,7 +1182,7 @@ pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
 #[deprecated(
     note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release."
 )]
-pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
+pub fn spawn_log_aggregator() -> Option<u64> {
     None
 }
 

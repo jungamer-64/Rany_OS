@@ -122,7 +122,7 @@ impl Fnv1aHasher {
         }
     }
 
-    fn finish(&self) -> u64 {
+    const fn finish(&self) -> u64 {
         self.state
     }
 }

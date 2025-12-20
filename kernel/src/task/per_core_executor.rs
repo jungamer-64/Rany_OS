@@ -313,7 +313,9 @@ impl PerCoreExecutor {
             match self.high_priority_queue.lock() {
                 Ok(mut guard) => guard.push_back(task),
                 Err(_) => {
-                    log::error!("[EXECUTOR] high_priority_queue poisoned during spawn - falling back to local queue");
+                    log::error!(
+                        "[EXECUTOR] high_priority_queue poisoned during spawn - falling back to local queue"
+                    );
                     self.local_queue.push(task);
                 }
             }
@@ -339,7 +341,9 @@ impl PerCoreExecutor {
                 }
             }
             Err(_) => {
-                log::error!("[EXECUTOR] high_priority_queue poisoned (next_task) - skipping high priority check");
+                log::error!(
+                    "[EXECUTOR] high_priority_queue poisoned (next_task) - skipping high priority check"
+                );
             }
         }
 
@@ -457,7 +461,9 @@ impl PerCoreExecutor {
         let hp_len = match self.high_priority_queue.lock() {
             Ok(g) => g.len(),
             Err(_) => {
-                log::error!("[EXECUTOR] high_priority_queue poisoned (queue_length) - treating as empty");
+                log::error!(
+                    "[EXECUTOR] high_priority_queue poisoned (queue_length) - treating as empty"
+                );
                 0
             }
         };
@@ -521,8 +527,8 @@ impl ExecutorManager {
 
     /// エグゼキュータを初期化
     pub fn init(&self, core_count: usize) {
-// Initialization-time best-effort recovery: use helper to centralize behavior
-    let mut executors = self.executors.lock_for_init("[EXECUTOR] Manager init");
+        // Initialization-time best-effort recovery: use helper to centralize behavior
+        let mut executors = self.executors.lock_for_init("[EXECUTOR] Manager init");
         executors.clear();
 
         for i in 0..core_count {
@@ -552,13 +558,15 @@ impl ExecutorManager {
     /// タスクをspawn（負荷分散考慮）
     pub fn spawn(&self, task: Arc<Task>) {
         match self.executors.lock() {
-            Ok(mut executors) => {
+            Ok(executors) => {
                 if executors.is_empty() {
                     // エグゼキュータが初期化されていない場合はグローバルキューへ
                     drop(executors);
                     match self.global_queue.lock() {
                         Ok(mut g) => g.push_back(task),
-                        Err(_) => log::error!("[EXECUTOR] global_queue poisoned during spawn - dropping task"),
+                        Err(_) => log::error!(
+                            "[EXECUTOR] global_queue poisoned during spawn - dropping task"
+                        ),
                     }
                     return;
                 }
@@ -573,10 +581,14 @@ impl ExecutorManager {
                 }
             }
             Err(_) => {
-                log::error!("[EXECUTOR] Manager executors lock poisoned (spawn) - pushing to global queue");
+                log::error!(
+                    "[EXECUTOR] Manager executors lock poisoned (spawn) - pushing to global queue"
+                );
                 match self.global_queue.lock() {
                     Ok(mut g) => g.push_back(task),
-                    Err(_) => log::error!("[EXECUTOR] global_queue poisoned during spawn - dropping task"),
+                    Err(_) => {
+                        log::error!("[EXECUTOR] global_queue poisoned during spawn - dropping task")
+                    }
                 }
             }
         }
@@ -607,7 +619,9 @@ impl ExecutorManager {
                     return true;
                 }
             }
-            Err(_) => log::error!("[EXECUTOR] global_queue poisoned (try_steal) - skipping global queue"),
+            Err(_) => {
+                log::error!("[EXECUTOR] global_queue poisoned (try_steal) - skipping global queue")
+            }
         }
 
         let executors_guard = match self.executors.lock() {
@@ -635,7 +649,9 @@ impl ExecutorManager {
         match self.executors.lock() {
             Ok(executors) => executors.iter().map(|e| e.stats()).collect(),
             Err(_) => {
-                log::error!("[EXECUTOR] executors lock poisoned (all_stats) - returning empty stats");
+                log::error!(
+                    "[EXECUTOR] executors lock poisoned (all_stats) - returning empty stats"
+                );
                 alloc::vec::Vec::new()
             }
         }

@@ -4,6 +4,12 @@
 // runner.
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
 
+// Interrupt helper macro moved to a shared module so it's visible in both the
+// library and binary crate (define_interrupt! is used by modules included by
+// `main.rs`). See `interrupt_macros.rs` for the implementation.
+#[macro_use]
+mod interrupt_macros;
+
 // For unit testing we expose a small set of modules via the library entry
 // point. This keeps most of the kernel as a binary-only crate while still
 // allowing targeted library-style tests (e.g. security/capability) to run
@@ -180,6 +186,121 @@ pub mod task {
         pub fn yield_current(_cpu_id: usize) {}
     }
 
+    /// Synchronous helper to drive a Future to completion in tests
+    pub fn block_on<F: core::future::Future>(future: F) -> F::Output {
+        use core::task::{RawWaker, RawWakerVTable, Waker, Context, Poll};
+        use alloc::sync::Arc;
+        use core::pin::Pin;
+        use core::sync::atomic::{AtomicBool, Ordering};
+
+        let flag = Arc::new(AtomicBool::new(false));
+
+        unsafe fn clone_data(data: *const ()) -> RawWaker {
+            let arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
+            let cloned = arc.clone();
+            let _ = Arc::into_raw(arc);
+            RawWaker::new(Arc::into_raw(cloned) as *const (), &VTABLE)
+        }
+
+        unsafe fn wake_data(data: *const ()) {
+            let arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
+            arc.store(true, Ordering::SeqCst);
+        }
+
+        unsafe fn wake_by_ref_data(data: *const ()) {
+            let arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
+            arc.store(true, Ordering::SeqCst);
+            let _ = Arc::into_raw(arc);
+        }
+
+        unsafe fn drop_data(data: *const ()) {
+            let _arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
+        }
+
+        const VTABLE: RawWakerVTable = RawWakerVTable::new(
+            clone_data,
+            wake_data,
+            wake_by_ref_data,
+            drop_data,
+        );
+
+        let raw = RawWaker::new(Arc::into_raw(flag.clone()) as *const (), &VTABLE);
+        let waker = unsafe { Waker::from_raw(raw) };
+        let mut cx = Context::from_waker(&waker);
+
+        // Pin the future on the heap and poll a Pin<&mut F>
+        let mut boxed = Box::pin(future);
+
+        loop {
+            match core::pin::Pin::new(&mut boxed).poll(&mut cx) {
+                Poll::Ready(v) => return v,
+                Poll::Pending => {
+                    while !flag.load(Ordering::SeqCst) {
+                        core::hint::spin_loop();
+                    }
+                    flag.store(false, Ordering::SeqCst);
+                }
+            }
+        }
+    }
+
+    pub mod fuel {
+        use core::cell::Cell;
+
+        thread_local! {
+            static CURRENT_FUEL: Cell<u64> = Cell::new(0);
+            static FUEL_ACTIVE: Cell<bool> = Cell::new(false);
+        }
+
+        pub struct Fuel;
+
+        impl Fuel {
+            pub fn refill(amount: u64) {
+                FUEL_ACTIVE.with(|a| a.set(amount > 0));
+                CURRENT_FUEL.with(|c| c.set(amount));
+            }
+
+            pub fn consume(amount: u64) -> bool {
+                // If fuel is not active (amount==0 at refill), treat as unlimited and always allow
+                let active = FUEL_ACTIVE.with(|a| a.get());
+                if !active {
+                    return true;
+                }
+                CURRENT_FUEL.with(|c| {
+                    let current = c.get();
+                    if let Some(remaining) = current.checked_sub(amount) {
+                        c.set(remaining);
+                        true
+                    } else {
+                        c.set(0);
+                        false
+                    }
+                })
+            }
+
+            pub fn remaining() -> u64 {
+                CURRENT_FUEL.with(|c| c.get())
+            }
+
+            pub fn is_active() -> bool {
+                FUEL_ACTIVE.with(|a| a.get())
+            }
+
+            pub fn exhaust() {
+                FUEL_ACTIVE.with(|a| a.set(false));
+                CURRENT_FUEL.with(|c| c.set(0))
+            }
+        }
+
+        pub struct FuelConfig {
+            pub default_fuel: u64,
+        }
+
+        impl FuelConfig {
+            pub const DEFAULT: Self = Self { default_fuel: 10_000 };
+        }
+    }
+
     // Test shim removed: tests and benches should use the canonical
     // `crate::task::TaskId` directly. If you see failures related to TaskId
     // field access, please update tests to use `as_u64()` accessor.
@@ -235,6 +356,24 @@ pub mod io {
     // pulling in the whole I/O subsystem and its wide dependency graph.
     #[path = "iommu.rs"]
     pub mod iommu;
+
+    #[path = "iommu_cmdqueue.rs"]
+    pub mod iommu_cmdqueue;
+
+    /// Minimal logger shim for test builds. Kernel code calls `io::log::early_print`,
+    /// `io::log::init()` and `io::log::notify_heap_available()` during early boot. We
+    /// provide lightweight no-op implementations here so unit tests can run without
+    /// pulling the full I/O logging subsystem into the test build.
+    pub mod log {
+        /// Early boot serial-like print used before the full logger is initialized.
+        pub fn early_print(_s: &str) { }
+
+        /// Initialize the logger. Returns Ok(()) for the test shim.
+        pub fn init() -> Result<(), ()> { Ok(()) }
+
+        /// Notify the logging subsystem that the heap is now available.
+        pub fn notify_heap_available() { }
+    }
 
     // Minimal PCI stub for test builds so IOMMU functions that reference
     // `crate::io::pci::PciDeviceInfo` compile.

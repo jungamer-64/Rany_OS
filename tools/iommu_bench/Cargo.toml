@@ -1,0 +1,15 @@
+[package]
+name = "iommu_bench"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+# Keep this small crate independent from the repository workspace to avoid
+# inheriting top-level cargo config (same pattern as framebuffer_bench).
+
+[dependencies]
+criterion = "0.4"
+rany_kernel = { path = "../../kernel", features = ["bench", "std"] }
+
+[features]
+bench = ["rany_kernel/bench"]

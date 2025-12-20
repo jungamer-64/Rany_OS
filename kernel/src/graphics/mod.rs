@@ -58,15 +58,15 @@ pub use gpu_driver::{DamagedRegion, DisplayMode, GpuError, GpuResult, colors};
 // 型の再エクスポート
 #[cfg(not(any(test, feature = "bench")))]
 pub use console::TextConsole;
-pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH, Font};
 pub use font::FontExt;
+pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH, Font};
 pub use framebuffer::Framebuffer;
 
 // グローバル関数の再エクスポート
 #[cfg(not(any(test, feature = "bench")))]
 pub use global::{
-    console_print, framebuffer, init, init_console, init_from_limine, with_console,
-    with_framebuffer,
+    console_print, framebuffer, init, init_console, init_from_boot_info, with_console,
+    with_framebuffer, force_unlock_framebuffer,
 };
 
 // ブートスプラッシュ関数の再エクスポート

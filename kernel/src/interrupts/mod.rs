@@ -13,6 +13,28 @@ use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::structures::idt::InterruptDescriptorTable;
 
+// Helper macro to coerce handler function items into the expected
+// `extern "x86-interrupt" fn(...)` signatures for the IDT setup when
+// building on MSVC host targets. On MSVC we compile handlers as
+// `extern "C"` to avoid MSVC-specific codegen/linker alignment issues,
+// so this macro uses an `unsafe` transmute at the call sites only on MSVC.
+// On non-MSVC targets it expands to the function path unchanged.
+#[cfg(all(target_arch = "x86_64", target_env = "msvc"))]
+macro_rules! handler_to_x86 {
+    ($h:path as $t:ty) => {
+        // Convert function item to integer then to the desired function pointer type.
+        // This avoids trying to transmute the zero-sized function item type directly.
+        unsafe { core::mem::transmute::<usize, $t>($h as usize) }
+    };
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_env = "msvc")))]
+macro_rules! handler_to_x86 {
+    ($h:path as $t:ty) => {
+        $h
+    };
+}
+
 /// IDT初期化完了フラグ
 static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -53,85 +75,85 @@ pub enum InterruptVector {
 
 /// IDTを初期化する関数
 fn init_idt() {
-    crate::vga::early_serial_str("[IDT] init\n");
+    crate::io::log::early_print("[IDT] init\n");
 
     unsafe {
         let idt_ptr = (*IDT_CONTAINER.0.get()).as_mut_ptr();
 
         // IDTをゼロクリア（大きなstructなので慎重に）
-        crate::vga::early_serial_str("[IDT] zero start\n");
+        crate::io::log::early_print("[IDT] zero start\n");
         let idt_bytes = idt_ptr as *mut u8;
         let idt_size = core::mem::size_of::<InterruptDescriptorTable>();
         // 小さなチャンクで初期化
         for i in 0..idt_size {
             crate::io::mmio::volatile_write::<u8>(idt_bytes.add(i) as usize, 0);
         }
-        crate::vga::early_serial_str("[IDT] zeroed\n");
+        crate::io::log::early_print("[IDT] zeroed\n");
 
         // IDTはすでにゼロ初期化されているので、ハンドラだけ設定
         // InterruptDescriptorTable::new()を呼ばずに直接設定
         let idt = &mut *(idt_ptr as *mut InterruptDescriptorTable);
 
-        crate::vga::early_serial_str("[IDT] handlers\n");
+        crate::io::log::early_print("[IDT] handlers\n");
 
         // CPU例外ハンドラの設定
         idt.divide_error
-            .set_handler_fn(exceptions::divide_error_handler);
-        idt.debug.set_handler_fn(exceptions::debug_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::divide_error_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
+        idt.debug.set_handler_fn(handler_to_x86!(exceptions::debug_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
         idt.breakpoint
-            .set_handler_fn(exceptions::breakpoint_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::breakpoint_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
         idt.invalid_opcode
-            .set_handler_fn(exceptions::invalid_opcode_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::invalid_opcode_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
         idt.device_not_available
-            .set_handler_fn(exceptions::device_not_available_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::device_not_available_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
 
         // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
         idt.double_fault
-            .set_handler_fn(exceptions::double_fault_handler)
+            .set_handler_fn(handler_to_x86!(exceptions::double_fault_handler as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !))
             .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
 
         idt.general_protection_fault
-            .set_handler_fn(exceptions::general_protection_fault_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::general_protection_fault_handler as extern "x86-interrupt" fn(InterruptStackFrame, u64)));
         idt.page_fault
-            .set_handler_fn(exceptions::page_fault_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::page_fault_handler as extern "x86-interrupt" fn(InterruptStackFrame, x86_64::structures::idt::PageFaultErrorCode)));
         idt.alignment_check
-            .set_handler_fn(exceptions::alignment_check_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::alignment_check_handler as extern "x86-interrupt" fn(InterruptStackFrame, u64)));
         idt.machine_check
-            .set_handler_fn(exceptions::machine_check_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::machine_check_handler as extern "x86-interrupt" fn(InterruptStackFrame) -> !));
         idt.simd_floating_point
-            .set_handler_fn(exceptions::simd_floating_point_handler);
+            .set_handler_fn(handler_to_x86!(exceptions::simd_floating_point_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
 
-        crate::vga::early_serial_str("[IDT] hw int\n");
+        crate::io::log::early_print("[IDT] hw int\n");
 
-        // ハードウェア割り込みハンドラの設定
-        idt[InterruptVector::Timer as u8].set_handler_fn(timer_interrupt_handler);
-        idt[InterruptVector::Keyboard as u8].set_handler_fn(keyboard_interrupt_handler);
-        idt[InterruptVector::Com1 as u8].set_handler_fn(com1_interrupt_handler);
+        // ハードウェア割り込みハンド設定
+        idt[InterruptVector::Timer as u8].set_handler_fn(handler_to_x86!(timer_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
+        idt[InterruptVector::Keyboard as u8].set_handler_fn(handler_to_x86!(keyboard_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
+        idt[InterruptVector::Com1 as u8].set_handler_fn(handler_to_x86!(com1_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
 
         // IOMMU Fault Handler
-        idt[InterruptVector::IommuFault as u8].set_handler_fn(iommu_fault_handler);
+        idt[InterruptVector::IommuFault as u8].set_handler_fn(handler_to_x86!(iommu_fault_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
 
         // NVMe Interrupt (Direct Callback)
         idt[crate::io::interrupt_manager::NVME_VECTOR as u8]
-            .set_handler_fn(crate::io::interrupt_manager::nvme_entry_point);
+            .set_handler_fn(handler_to_x86!(crate::io::interrupt_manager::nvme_entry_point as extern "x86-interrupt" fn(InterruptStackFrame)));
 
         // PIC2 の IRQ ハンドラ（動的デバイス用）
         // IRQ 9, 10, 11 は多くの PCI デバイスで使用される
-        idt[PIC2_OFFSET + 1].set_handler_fn(pci_irq9_handler); // IRQ9 (Free1)
-        idt[PIC2_OFFSET + 2].set_handler_fn(pci_irq10_handler); // IRQ10 (Free2)
-        idt[PIC2_OFFSET + 3].set_handler_fn(pci_irq11_handler); // IRQ11 (Free3)
-        idt[InterruptVector::Mouse as u8].set_handler_fn(mouse_interrupt_handler); // IRQ12 (Mouse)
+        idt[PIC2_OFFSET + 1].set_handler_fn(handler_to_x86!(pci_irq9_handler as extern "x86-interrupt" fn(InterruptStackFrame))); // IRQ9 (Free1)
+        idt[PIC2_OFFSET + 2].set_handler_fn(handler_to_x86!(pci_irq10_handler as extern "x86-interrupt" fn(InterruptStackFrame))); // IRQ10 (Free2)
+        idt[PIC2_OFFSET + 3].set_handler_fn(handler_to_x86!(pci_irq11_handler as extern "x86-interrupt" fn(InterruptStackFrame))); // IRQ11 (Free3)
+        idt[InterruptVector::Mouse as u8].set_handler_fn(handler_to_x86!(mouse_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame))); // IRQ12 (Mouse)
 
         // Spurious Interrupt Vector (0xFF)
         // APICによって生成される偽の割り込みを処理
         // OSクラッシュ（#GP/#DF）を防ぐために必須
-        idt[0xFF].set_handler_fn(spurious_interrupt_handler);
+        idt[0xFF].set_handler_fn(handler_to_x86!(spurious_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)));
 
-        crate::vga::early_serial_str("[IDT] load\n");
+        crate::io::log::early_print("[IDT] load\n");
 
         // IDTをロード
         idt.load();
-        crate::vga::early_serial_str("[IDT] done\n");
+        crate::io::log::early_print("[IDT] done\n");
     }
 }
 
@@ -146,22 +168,22 @@ fn init_idt() {
 /// 2. PICの初期化
 /// 3. IDTのロード
 pub fn init() {
-    crate::vga::early_serial_str("[INT] init\n");
+    crate::io::log::early_print("[INT] init\n");
 
     // 1. GDT と TSS の初期化
     gdt::init_gdt();
-    crate::vga::early_serial_str("[INT] GDT done\n");
+    crate::io::log::early_print("[INT] GDT done\n");
 
     // 2. PIC の初期化（ハードウェア割り込みのリマップ）
-    crate::vga::early_serial_str("[INT] PIC\n");
+    crate::io::log::early_print("[INT] PIC\n");
     init_pic();
-    crate::vga::early_serial_str("[INT] PIC done\n");
+    crate::io::log::early_print("[INT] PIC done\n");
 
     // 3. IDT のロード
-    crate::vga::early_serial_str("[INT] IDT init\n");
+    crate::io::log::early_print("[INT] IDT init\n");
     init_idt();
     IDT_INITIALIZED.store(true, Ordering::SeqCst);
-    crate::vga::early_serial_str("[INT] ready\n");
+    crate::io::log::early_print("[INT] ready\n");
 }
 
 /// 割り込みを有効化
@@ -336,33 +358,35 @@ pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
 /// - タイマーティックの管理
 /// - フラグ設定のみで重い処理は遅延
 /// - Wakerを起床させるだけ
-extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
-    let _tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
+define_interrupt!(
+    fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        // 1. タイマーティックを増加（Relaxedで十分、順序は重要でない）
+        let _tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed);
 
-    // 2. 軽量なフラグ設定のみ（重い処理は遅延）
-    // タイマーイベントペンディングフラグを設定
-    TIMER_EVENT_PENDING.store(true, Ordering::Release);
+        // 2. 軽量なフラグ設定のみ（重い処理は遅延）
+        // タイマーイベントペンディングフラグを設定
+        TIMER_EVENT_PENDING.store(true, Ordering::Release);
 
-    // 3. プリエンプションカウンタを更新（軽量な操作のみ）
-    crate::task::preemption::decrement_time_slice();
+        // 3. プリエンプションカウンタを更新（軽量な操作のみ）
+        crate::task::preemption::decrement_time_slice();
 
-    // 4. Wakerを起床させる（軽量）
-    crate::task::interrupt_waker::wake_timer_task();
+        // 4. Wakerを起床させる（軽量）
+        crate::task::interrupt_waker::wake_timer_task();
 
-    // 4.5. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
-    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
+        // 4.5. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+        crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
 
-    // 5. EOI (End Of Interrupt) を送信
-    unsafe {
-        send_eoi(InterruptVector::Timer as u8 - PIC1_OFFSET);
+        // 5. EOI (End Of Interrupt) を送信
+        unsafe {
+            send_eoi(InterruptVector::Timer as u8 - PIC1_OFFSET);
+        }
+
+        // 6. プリエンプションフラグのみ設定（実際のyieldは遅延）
+        if crate::task::preemption::should_preempt() {
+            crate::task::preemption::set_preemption_pending();
+        }
     }
-
-    // 6. プリエンプションフラグのみ設定（実際のyieldは遅延）
-    if crate::task::preemption::should_preempt() {
-        crate::task::preemption::set_preemption_pending();
-    }
-}
+);
 
 /// タイマーイベントペンディングフラグ
 static TIMER_EVENT_PENDING: core::sync::atomic::AtomicBool =
@@ -393,128 +417,144 @@ pub fn poll_timer_events() {
 
 /// キーボード割り込みハンドラ
 /// Interrupt-Wakerブリッジとの連携
-extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Port import not needed; use crate::io::inb for port reads
+define_interrupt!(
+    fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        // Port import not needed; use crate::io::inb for port reads
 
-    // キーボードデータポートから読み取り（これをしないと次の割り込みが来ない）
-    let scancode: u8 = crate::io::inb(0x60);
+        // キーボードデータポートから読み取り（これをしないと次の割り込みが来ない）
+        let scancode: u8 = crate::io::inb(0x60);
 
-    // スキャンコードをhidモジュールに渡して処理
-    crate::io::hid::handle_keyboard_interrupt(scancode);
+        // スキャンコードをhidモジュールに渡して処理
+        crate::io::hid::handle_keyboard_interrupt(scancode);
 
-    // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
-    crate::task::interrupt_waker::wake_from_interrupt(
-        crate::task::interrupt_waker::InterruptSource::Keyboard,
-    );
+        // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
+        crate::task::interrupt_waker::wake_from_interrupt(
+            crate::task::interrupt_waker::InterruptSource::Keyboard,
+        );
 
-    // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
-    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Keyboard as u8);
+        // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+        crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Keyboard as u8);
 
-    // EOI を送信
-    unsafe {
-        send_eoi(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
+        // EOI を送信
+        unsafe {
+            send_eoi(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
+        }
     }
-}
+);
 
 /// マウス割り込みハンドラ (IRQ12)
 /// PS/2マウスからのデータ受信時に呼ばれる
-extern "x86-interrupt" fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Port import not needed; use crate::io::inb for port reads
+define_interrupt!(
+    fn mouse_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        // Port import not needed; use crate::io::inb for port reads
 
-    // マウスデータポートから読み取り（これをしないと次の割り込みが来ない）
-    let data: u8 = crate::io::inb(0x60);
+        // マウスデータポートから読み取り（これをしないと次の割り込みが来ない）
+        let data: u8 = crate::io::inb(0x60);
 
-    // データをhidモジュールに渡して処理
-    crate::io::hid::handle_mouse_packet(data);
+        // データをhidモジュールに渡して処理
+        crate::io::hid::handle_mouse_packet(data);
 
-    // Interrupt-Wakerブリッジにマウス割り込みを通知
-    crate::task::interrupt_waker::wake_from_interrupt(
-        crate::task::interrupt_waker::InterruptSource::Mouse,
-    );
+        // Interrupt-Wakerブリッジにマウス割り込みを通知
+        crate::task::interrupt_waker::wake_from_interrupt(
+            crate::task::interrupt_waker::InterruptSource::Mouse, 
+        );
 
-    // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
-    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Mouse as u8);
+        // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+        crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Mouse as u8);
 
-    // EOI を送信 (IRQ12はPIC2のIRQ4)
-    unsafe {
-        send_eoi(InterruptVector::Mouse as u8 - PIC1_OFFSET);
+        // EOI を送信 (IRQ12はPIC2のIRQ4)
+        unsafe {
+            send_eoi(InterruptVector::Mouse as u8 - PIC1_OFFSET);
+        }
     }
-}
+);
 
 /// COM1 (Serial) 割り込みハンドラ
 /// シリアルポートからのデータ受信時に呼ばれる
-extern "x86-interrupt" fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // シリアルポートドライバの割り込みハンドラを呼び出し
-    crate::io::serial::handle_interrupt();
+define_interrupt!(
+    fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        // シリアルポートドライバの割り込みハンドラを呼び出し
+        crate::io::serial::handle_interrupt();
 
-    // Interrupt-Wakerブリッジに通知
-    crate::task::interrupt_waker::wake_from_interrupt(
-        crate::task::interrupt_waker::InterruptSource::Serial,
-    );
+        // Interrupt-Wakerブリッジに通知
+        crate::task::interrupt_waker::wake_from_interrupt(
+            crate::task::interrupt_waker::InterruptSource::Serial,
+        );
 
-    // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
-    crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Com1 as u8);
+        // Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+        crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Com1 as u8);
 
-    // EOI を送信 (IRQ4 = COM1)
-    unsafe {
-        send_eoi(InterruptVector::Com1 as u8 - PIC1_OFFSET);
+        // EOI を送信 (IRQ4 = COM1)
+        unsafe {
+            send_eoi(InterruptVector::Com1 as u8 - PIC1_OFFSET);
+        }
     }
-}
+);
 
 /// IOMMU Fault Handler
 ///
 /// Handles faults reported by the IOMMU (DMA remapping errors, etc.)
 /// Also wakes any pending async invalidation waiters.
-extern "x86-interrupt" fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
-    // Process faults
-    crate::io::iommu::handle_fault();
+define_interrupt!(
+    fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
+        // Process faults
+        crate::io::iommu::handle_fault();
 
-    // Wake any pending async invalidation waiters
-    // Intel VT-d uses the same interrupt for both faults and invalidation completion
-    crate::io::iommu::wake_invalidation_waiters();
+        // Wake any pending async invalidation waiters
+        // Intel VT-d uses the same interrupt for both faults and invalidation completion
+        crate::io::iommu::wake_invalidation_waiters();
 
-    // Send EOI to Local APIC (IOMMU uses MSI/APIC delivery)
-    // We use the unified interrupt manager's EOI helper which targets LAPIC
-    crate::io::interrupt_manager::send_eoi();
-}
+        // Send EOI to Local APIC (IOMMU uses MSI/APIC delivery)
+        // We use the unified interrupt manager's EOI helper which targets LAPIC
+        crate::io::interrupt_manager::send_eoi();
+    }
+);
 
 // ============================================================================
 // PCI IRQ Handlers (IRQ 9, 10, 11)
 // ============================================================================
 
 /// IRQ 9 ハンドラ (PCI デバイス用)
-extern "x86-interrupt" fn pci_irq9_handler(_stack_frame: InterruptStackFrame) {
-    dispatch_pci_interrupt(9);
-    unsafe {
-        send_eoi(9);
+define_interrupt!(
+    fn pci_irq9_handler(_stack_frame: InterruptStackFrame) {
+        dispatch_pci_interrupt(9);
+        unsafe {
+            send_eoi(9);
+        }
     }
-}
+);
 
 /// IRQ 10 ハンドラ (PCI デバイス用)
-extern "x86-interrupt" fn pci_irq10_handler(_stack_frame: InterruptStackFrame) {
-    dispatch_pci_interrupt(10);
-    unsafe {
-        send_eoi(10);
+define_interrupt!(
+    fn pci_irq10_handler(_stack_frame: InterruptStackFrame) {
+        dispatch_pci_interrupt(10);
+        unsafe {
+            send_eoi(10);
+        }
     }
-}
+);
 
 /// IRQ 11 ハンドラ (PCI デバイス用)
-extern "x86-interrupt" fn pci_irq11_handler(_stack_frame: InterruptStackFrame) {
-    dispatch_pci_interrupt(11);
-    unsafe {
-        send_eoi(11);
+define_interrupt!(
+    fn pci_irq11_handler(_stack_frame: InterruptStackFrame) {
+        dispatch_pci_interrupt(11);
+        unsafe {
+            send_eoi(11);
+        }
     }
-}
+);
 
 /// Spurious Interrupt Handler (0xFF)
 /// APICノイズによる偽の割り込みを処理
 /// 何もせず単にリターンする（EOIも送らないのが一般的だが、ISR上はiretが必要）
-extern "x86-interrupt" fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // 偽割り込みに対してはEOIを送らないのがIntel仕様での推奨
-    // (ただし、Local APICのSIVRのビット8がクリアされている場合などは挙動が異なるが、
-    // ここではSoft Enableされている前提)
-    // ログも出さない（頻発すると遅くなるため）
-}
+define_interrupt!(
+    fn spurious_interrupt_handler(_stack_frame: InterruptStackFrame) {
+        // 偽割り込みに対してはEOIを送らないのがIntel仕様での推奨
+        // (ただし、Local APICのSIVRのビット8がクリアされている場合などは挙動が異なるが、
+        // ここではSoft Enableされている前提)
+        // ログも出さない（頻発すると遅くなるため）
+    }
+);
 
 /// PCI 割り込みをディスパッチ
 ///

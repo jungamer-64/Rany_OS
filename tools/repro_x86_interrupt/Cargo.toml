@@ -1,0 +1,14 @@
+[package]
+name = "repro_x86_interrupt"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"

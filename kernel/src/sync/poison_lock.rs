@@ -412,6 +412,11 @@ pub fn set_panicking(panicking: bool) {
 /// 現在のCPUコアIDを取得
 #[inline]
 fn get_current_core_id() -> u32 {
+    // Tests should run deterministically on the host; use core 0 in test builds.
+    if cfg!(test) {
+        return 0;
+    }
+
     // LAPIC IDから取得する場合（APICが利用可能な場合）
     // ここでは簡易実装としてRDTSCPのAUX値を使用
     #[cfg(target_arch = "x86_64")]
