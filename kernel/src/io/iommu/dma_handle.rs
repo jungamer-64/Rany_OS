@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/io/iommu/dma_handle.rs
+// ============================================================================
 //! DMA Handle - IOMMU-mapped buffer with ownership tracking
 //!
 //! This module provides `DmaHandle<T>`, a type-safe wrapper for IOMMU-mapped

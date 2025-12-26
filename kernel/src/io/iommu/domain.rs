@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/io/iommu/domain.rs
+// ============================================================================
 use super::controller::iova::IovaManager; // For allocate_iova/free_iova on IommuController
 use super::quarantine::QuarantineQueue;
 use super::tables::{PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys};
