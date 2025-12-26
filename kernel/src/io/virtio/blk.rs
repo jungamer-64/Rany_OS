@@ -23,6 +23,11 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
+use vfs::block::{
+    BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
+    BlockResult as VfsBlockResult, IoBuffer, IoBufferMut, OwnedBytes, ZeroCopyBlockDevice,
+    ZcFuture,
+};
 
 // ============================================================================
 // VirtIO Common Definitions
@@ -1039,6 +1044,133 @@ impl<'a> Future for WriteFuture<'a> {
     }
 }
 
+/// Future for async DMA read operation (uses physical address).
+pub struct DmaReadFuture<'a> {
+    device: &'a VirtioBlkDevice,
+    sector: u64,
+    dma_addr: u64,
+    buf: &'a mut [u8],
+    submitted: bool,
+    desc_id: Option<u16>,
+    queue_idx: usize,
+}
+
+impl<'a> Future for DmaReadFuture<'a> {
+    type Output = Result<usize, BlockError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.submitted {
+            if self.buf.len() % 512 != 0 {
+                return Poll::Ready(Err(BlockError::InvalidBufferSize));
+            }
+            if self.buf.len() > (u32::MAX as usize) {
+                return Poll::Ready(Err(BlockError::InvalidBufferSize));
+            }
+
+            let len = self.buf.len() as u32;
+            match self.device.submit_read(self.sector, self.dma_addr, len, self.queue_idx) {
+                Ok(desc_id) => {
+                    self.desc_id = Some(desc_id);
+                    self.submitted = true;
+
+                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+                    let mut wakers = self.device.pending_wakers.lock();
+                    if let Some(slot) = wakers.get_mut(waker_idx) {
+                        *slot = Some(cx.waker().clone());
+                    }
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
+        }
+
+        if let Some(desc_id) = self.desc_id {
+            let queue = &self.device.queues[self.queue_idx];
+            let queue_guard = queue.lock();
+
+            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
+                if completed_id == desc_id {
+                    return Poll::Ready(Ok(self.buf.len()));
+                }
+            }
+        }
+
+        if let Some(desc_id) = self.desc_id {
+            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+            let mut wakers = self.device.pending_wakers.lock();
+            if let Some(slot) = wakers.get_mut(waker_idx) {
+                *slot = Some(cx.waker().clone());
+            }
+        }
+
+        Poll::Pending
+    }
+}
+
+/// Future for async DMA write operation (uses physical address).
+pub struct DmaWriteFuture<'a> {
+    device: &'a VirtioBlkDevice,
+    sector: u64,
+    dma_addr: u64,
+    buf: &'a [u8],
+    submitted: bool,
+    desc_id: Option<u16>,
+    queue_idx: usize,
+}
+
+impl<'a> Future for DmaWriteFuture<'a> {
+    type Output = Result<usize, BlockError>;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if !self.submitted {
+            if self.buf.len() % 512 != 0 {
+                return Poll::Ready(Err(BlockError::InvalidBufferSize));
+            }
+            if self.buf.len() > (u32::MAX as usize) {
+                return Poll::Ready(Err(BlockError::InvalidBufferSize));
+            }
+
+            let len = self.buf.len() as u32;
+            match self
+                .device
+                .submit_write(self.sector, self.dma_addr, len, self.queue_idx)
+            {
+                Ok(desc_id) => {
+                    self.desc_id = Some(desc_id);
+                    self.submitted = true;
+
+                    let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+                    let mut wakers = self.device.pending_wakers.lock();
+                    if let Some(slot) = wakers.get_mut(waker_idx) {
+                        *slot = Some(cx.waker().clone());
+                    }
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
+        }
+
+        if let Some(desc_id) = self.desc_id {
+            let queue = &self.device.queues[self.queue_idx];
+            let queue_guard = queue.lock();
+
+            if let Some((completed_id, _len)) = queue_guard.poll_completions() {
+                if completed_id == desc_id {
+                    return Poll::Ready(Ok(self.buf.len()));
+                }
+            }
+        }
+
+        if let Some(desc_id) = self.desc_id {
+            let waker_idx = self.queue_idx * VIRTQUEUE_MAX_SIZE as usize + desc_id as usize;
+            let mut wakers = self.device.pending_wakers.lock();
+            if let Some(slot) = wakers.get_mut(waker_idx) {
+                *slot = Some(cx.waker().clone());
+            }
+        }
+
+        Poll::Pending
+    }
+}
+
 /// Future for async flush operation
 pub struct FlushFuture<'a> {
     device: &'a VirtioBlkDevice,
@@ -1128,6 +1260,239 @@ pub trait AsyncBlockDevice: Send + Sync {
 
     /// Get sector size
     fn sector_size(&self) -> u32;
+}
+
+// ============================================================================
+// VFS Zero-Copy Adapter (transitional: OwnedBytes + borrowed read)
+// ============================================================================
+
+const SECTOR_SIZE: u32 = 512;
+
+fn map_vfs_block_error(err: BlockError) -> VfsBlockError {
+    match err {
+        BlockError::NotReady => VfsBlockError::NotReady,
+        BlockError::ReadOnly => VfsBlockError::ReadOnly,
+        BlockError::InvalidSector => VfsBlockError::InvalidBlock,
+        BlockError::IoError | BlockError::Unsupported => VfsBlockError::IoError,
+        BlockError::QueueFull => VfsBlockError::QueueFull,
+        BlockError::InvalidBufferSize => VfsBlockError::InvalidBufferSize,
+    }
+}
+
+fn effective_block_size(config: &BlockDeviceConfig) -> u32 {
+    let bs = config.block_size;
+    if bs == 0 || (bs % SECTOR_SIZE) != 0 {
+        SECTOR_SIZE
+    } else {
+        bs
+    }
+}
+
+fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
+    if block_size == 0 || (block_size % SECTOR_SIZE) != 0 {
+        return Err(VfsBlockError::InvalidBufferSize);
+    }
+    let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
+    block
+        .checked_mul(sectors_per_block)
+        .ok_or(VfsBlockError::InvalidBufferSize)
+}
+
+impl ZeroCopyBlockDevice for VirtioBlkDevice {
+    type Buffer = OwnedBytes;
+
+    fn info(&self) -> VfsBlockDeviceInfo {
+        let block_size = effective_block_size(&self.config);
+        let sectors_per_block = (block_size / SECTOR_SIZE) as u64;
+        let total_blocks = if sectors_per_block == 0 {
+            0
+        } else {
+            self.config.capacity / sectors_per_block
+        };
+
+        VfsBlockDeviceInfo {
+            name: "virtio-blk",
+            total_blocks,
+            block_size,
+            read_only: self.config.read_only,
+            max_sectors: self.config.seg_max,
+            num_queues: self.config.num_queues,
+        }
+    }
+
+    fn flush(&self) -> VfsBlockResult<()> {
+        match crate::task::block_on(self.flush_async()) {
+            Ok(()) => Ok(()),
+            Err(BlockError::Unsupported) => Ok(()),
+            Err(err) => Err(map_vfs_block_error(err)),
+        }
+    }
+
+    fn alloc_buffer(&self, size: usize) -> VfsBlockResult<Self::Buffer> {
+        Ok(OwnedBytes::from_vec(vec![0u8; size]))
+    }
+
+    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, VfsBlockResult<Self::Buffer>> {
+        let block_size = effective_block_size(&self.config) as usize;
+        if block_size == 0 {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let size = match block_size.checked_mul(count as usize) {
+            Some(size) => size,
+            None => return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) }),
+        };
+        let sector = match block_to_sector(block, block_size as u32) {
+            Ok(sector) => sector,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+
+        Box::pin(async move {
+            let mut buf = OwnedBytes::from_vec(vec![0u8; size]);
+            if size == 0 {
+                return Ok(buf);
+            }
+            VirtioBlkDevice::read_async(self, sector, buf.as_mut())
+                .await
+                .map_err(map_vfs_block_error)?;
+            Ok(buf)
+        })
+    }
+
+    fn write_async(
+        &self,
+        block: u64,
+        buffer: Self::Buffer,
+    ) -> ZcFuture<'_, VfsBlockResult<Self::Buffer>> {
+        let block_size = effective_block_size(&self.config) as usize;
+        if block_size == 0 {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let len = buffer.as_ref().len();
+        if len == 0 {
+            return Box::pin(async move { Ok(buffer) });
+        }
+        if (len % block_size) != 0 {
+            return Box::pin(async move { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let sector = match block_to_sector(block, block_size as u32) {
+            Ok(sector) => sector,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+
+        Box::pin(async move {
+            VirtioBlkDevice::write_async(self, sector, buffer.as_ref())
+                .await
+                .map_err(map_vfs_block_error)?;
+            Ok(buffer)
+        })
+    }
+
+    fn read_into_buf(
+        &self,
+        block: u64,
+        dst: &mut dyn IoBufferMut,
+    ) -> ZcFuture<'_, VfsBlockResult<()>> {
+        let block_size = effective_block_size(&self.config) as usize;
+        if block_size == 0 {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let dma = dst.dma_info();
+        let buf = dst.as_mut_slice();
+        let len = buf.len();
+        if len == 0 {
+            return Box::pin(async { Ok(()) });
+        }
+        if (len % block_size) != 0 {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let blocks = len / block_size;
+        if blocks > (u32::MAX as usize) {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let sector = match block_to_sector(block, block_size as u32) {
+            Ok(sector) => sector,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+
+        if let Some(dma) = dma {
+            if dma.len != len {
+                return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+            }
+            return Box::pin(async move {
+                DmaReadFuture {
+                    device: self,
+                    sector,
+                    dma_addr: dma.phys_addr,
+                    buf,
+                    submitted: false,
+                    desc_id: None,
+                    queue_idx: 0,
+                }
+                .await
+                .map_err(map_vfs_block_error)?;
+                Ok(())
+            });
+        }
+
+        Box::pin(async move {
+            VirtioBlkDevice::read_async(self, sector, buf)
+                .await
+                .map_err(map_vfs_block_error)?;
+            Ok(())
+        })
+    }
+
+    fn write_from_buf(&self, block: u64, src: &dyn IoBuffer) -> ZcFuture<'_, VfsBlockResult<()>> {
+        let block_size = effective_block_size(&self.config) as usize;
+        if block_size == 0 {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let dma = src.dma_info();
+        let data = src.as_slice();
+        let len = data.len();
+        if len == 0 {
+            return Box::pin(async { Ok(()) });
+        }
+        if (len % block_size) != 0 {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let blocks = len / block_size;
+        if blocks > (u32::MAX as usize) {
+            return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+        }
+        let sector = match block_to_sector(block, block_size as u32) {
+            Ok(sector) => sector,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+
+        if let Some(dma) = dma {
+            if dma.len != len {
+                return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+            }
+            return Box::pin(async move {
+                DmaWriteFuture {
+                    device: self,
+                    sector,
+                    dma_addr: dma.phys_addr,
+                    buf: data,
+                    submitted: false,
+                    desc_id: None,
+                    queue_idx: 0,
+                }
+                .await
+                .map_err(map_vfs_block_error)?;
+                Ok(())
+            });
+        }
+
+        Box::pin(async move {
+            VirtioBlkDevice::write_async(self, sector, data)
+                .await
+                .map_err(map_vfs_block_error)?;
+            Ok(())
+        })
+    }
+
 }
 
 // ============================================================================

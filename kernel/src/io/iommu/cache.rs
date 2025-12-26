@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/io/iommu/cache.rs - Context Cache
+// ============================================================================
 //! IOMMU Context Cache
 //!
 //! Provides a context cache with LRU-like eviction for optimizing repeated

@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/io/iommu/config.rs
+// ============================================================================
 //! IOMMU Configuration
 //!
 //! Configuration structures for IOMMU initialization and runtime behavior.
