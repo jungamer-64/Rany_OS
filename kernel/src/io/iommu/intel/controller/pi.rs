@@ -8,11 +8,10 @@
 
 use core::sync::atomic::Ordering;
 
-use super::super::{
-    InterruptRemapEntry, IommuController, IommuError, PostedInterruptDescriptor,
-    PostedInterruptPool,
-};
+use super::IommuController;
 use super::init::CapabilityManager;
+use super::ir::{InterruptRemapEntry, InterruptRemapper};
+use crate::io::iommu::{IommuError, PostedInterruptDescriptor, PostedInterruptPool};
 
 pub trait PostedInterruptManager {
     /// Initialize the Posted Interrupt Descriptor pool

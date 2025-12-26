@@ -350,7 +350,7 @@ impl Executor {
             // Process any AtomicWaker notifications enqueued by ISRs.
             crate::sync::process_deferred_wakes();
             // IOMMU command queue processing (process a few commands per loop)
-            if let Some(reg) = crate::io::iommu::get_iommu_registry() {
+            if let Some(reg) = crate::io::iommu::intel::registry::get_iommu_registry() {
                 for ctrl in &reg.controllers {
                     if let Some(ref cq) = ctrl.command_queue {
                         // Process up to 4 commands per loop to bound time spent

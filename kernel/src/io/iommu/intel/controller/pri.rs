@@ -8,13 +8,13 @@
 
 use alloc::vec::Vec;
 
-use super::super::{
-    InvalidationQueueEntry, IommuController, IommuError, PageRequestEntry, PageRequestQueue,
-    qi_desc_type, regs,
-};
+use super::IommuController;
 use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
 use super::utils::IommuUtils;
+use crate::io::iommu::{
+    InvalidationQueueEntry, IommuError, PageRequestEntry, PageRequestQueue, qi_desc_type, regs,
+};
 
 pub trait PageRequestManager: InvalidationOps {
     /// Initialize the Page Request Queue

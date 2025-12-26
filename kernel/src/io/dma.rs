@@ -28,7 +28,7 @@
 //! ```
 #![allow(dead_code)]
 
-use crate::io::iommu::controller::dma::DomainManager;
+use crate::io::iommu::intel::controller::dma::DomainManager;
 use alloc::alloc::{Layout, alloc, dealloc};
 use core::marker::PhantomData;
 use core::ptr::NonNull;

@@ -8,9 +8,10 @@
 
 use core::sync::atomic::Ordering;
 
-use super::super::{InvalidationQueue, IommuController, IommuError, gcmd_bits, gsts_bits, regs};
+use super::IommuController;
 use super::init::CapabilityManager;
-use super::utils::IommuUtils; // for wait_for_condition
+use super::utils::IommuUtils;
+use crate::io::iommu::{InvalidationQueue, IommuError, gcmd_bits, gsts_bits, regs}; // for wait_for_condition
 
 pub trait QIManager {
     /// Initialize the Invalidation Queue

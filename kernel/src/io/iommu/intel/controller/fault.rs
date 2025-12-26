@@ -14,9 +14,10 @@
 //! - **Push** raw fault records to a lock-free deferred queue
 //! - Actual logging is done by `drain_deferred_faults()` in a safe async context
 
+use super::IommuController;
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
 use crate::io::iommu::registers::{fsts_bits, regs};
-use crate::io::iommu::{ContextEntry, FaultLog, FaultRecord, IommuController, IommuError};
+use crate::io::iommu::{ContextEntry, FaultLog, FaultRecord, IommuError};
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -291,9 +292,7 @@ pub fn drain_deferred_faults() -> usize {
 /// Drain deferred faults with optional controller access for full processing
 ///
 /// When controller is provided, also updates fault_log and notifies security.
-pub fn drain_deferred_faults_with_controller(
-    controller: Option<&super::super::IommuController>,
-) -> usize {
+pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuController>) -> usize {
     use crate::io::iommu::security::SecurityEvent;
 
     let mut count = 0;

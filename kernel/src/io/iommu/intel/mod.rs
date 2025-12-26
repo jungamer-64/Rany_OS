@@ -9,14 +9,24 @@ use alloc::sync::Arc;
 
 use x86_64::PhysAddr;
 
-use super::controller::dma::DomainManager;
-use super::controller::fault::FaultHandler;
-use super::controller::ir::InterruptRemapper;
-use super::controller::qi_ops::InvalidationOps;
+// Declaring submodules moved here
+pub mod controller;
+pub mod registry; // Intel-specific registry
+
+use self::controller::dma::DomainManager;
+use self::controller::fault::FaultHandler;
+use self::controller::ir::InterruptRemapper;
+use self::controller::qi_ops::InvalidationOps;
+
 use super::interface::{IommuDriver, IommuFuture};
-use super::registry::{get_iommu_driver, get_iommu_registry, init_driver};
+// Generic registry for registering the driver
+use super::registry::{get_iommu_driver, init_driver, is_iommu_enabled};
+
 use super::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu_cmdqueue::IommuCommandKind;
+
+// Intel-specific registry access
+use self::registry::get_iommu_registry;
 
 /// Intel VT-d driver wrapper.
 #[derive(Default)]
@@ -28,12 +38,12 @@ impl IntelIommuDriver {
     }
 
     pub fn register_driver() {
-        if get_iommu_driver().is_none() {
+        if !is_iommu_enabled() {
             init_driver(Arc::new(IntelIommuDriver::new()));
         }
     }
 
-    fn registry(&self) -> Result<&'static super::IommuRegistry, IommuError> {
+    fn registry(&self) -> Result<&'static self::registry::IommuRegistry, IommuError> {
         get_iommu_registry().ok_or(IommuError::NotInitialized)
     }
 }

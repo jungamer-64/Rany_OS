@@ -6,8 +6,9 @@
 //!
 //! This module contains performance monitoring methods for `IommuController` via `PerfMonitor` trait.
 
-use super::super::{IommuController, IommuError, PerfMonEvent, regs};
+use super::IommuController;
 use super::init::CapabilityManager;
+use crate::io::iommu::{IommuError, PerfMonEvent, regs};
 
 pub trait PerfMonitor {
     /// Configure a performance monitoring counter

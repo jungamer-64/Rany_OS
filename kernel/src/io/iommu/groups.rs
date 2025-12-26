@@ -2,9 +2,11 @@
 // kernel/src/io/iommu/groups.rs
 // ============================================================================
 
-use super::IommuRegistry;
-use super::types::{DeviceId, IommuDomainType, IommuError, IommuGroup, IommuGroupId};
-use crate::io::iommu::controller::dma::DomainManager;
+use crate::io::iommu::intel::controller::dma::DomainManager;
+use crate::io::iommu::intel::registry::IommuRegistry;
+use crate::io::iommu::{
+    DeviceId, IommuDomain, IommuDomainType, IommuError, IommuGroup, IommuGroupId,
+};
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use hashbrown::HashMap;

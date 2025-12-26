@@ -338,7 +338,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                 unsafe {
                     match parser.find_table(b"DMAR") {
                         Ok(dmar_addr) => {
-                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config)
+                            if let Err(e) = crate::io::iommu::intel::controller::init_global::init_iommu_from_acpi(dmar_addr, iommu_config)
                             {
                                 // If IOMMU not present or disabled, we just warn.
                                 if e != io::iommu::IommuError::NotPresent {
@@ -359,8 +359,10 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                         }
                         Err(_) => match parser.find_table(b"IVRS") {
                             Ok(ivrs_addr) => {
-                                if let Err(e) = io::iommu::init_iommu_from_ivrs(ivrs_addr, iommu_config)
-                                {
+                                if let Err(e) = crate::io::iommu::amd::init_iommu_from_ivrs(
+                                    ivrs_addr,
+                                    iommu_config,
+                                ) {
                                     if e != io::iommu::IommuError::NotPresent {
                                         warn!(target: "init", "AMD-Vi init failed: {:?}", e);
                                     } else {
@@ -884,6 +886,51 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
         warn!(target: "init", "System integration failed: {:?}", e);
     } else {
         info!(target: "init", "System integration initialized");
+    }
+
+    // If built with feature `run-integration-tests`, run the integration tests at boot and exit QEMU
+    #[cfg(feature = "run-integration-tests")]
+    {
+        info!(target: "init", "Feature run-integration-tests enabled: running integration tests (storage)");
+        let (_passed, failed) = integration::run_all_integration_tests();
+        use hal::port_io::PortU32;
+
+        let mut port = PortU32::new(0xf4);
+        if failed == 0 {
+            port.write(0x10u32); // QEMU success
+        } else {
+            port.write(0x11u32); // QEMU failure
+        }
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+
+    // If requested on the kernel cmdline, run integration tests and exit QEMU.
+    if boot_info.cmdline_len > 0 {
+        let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
+        let slice = unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+        if let Ok(cmdline) = core::str::from_utf8(slice) {
+            if let Some(val) = util::get_cmdline_option(cmdline, "run_integration") {
+                if val == "storage" || val == "1" {
+                    info!(target: "init", "Running integration tests (storage) as requested by cmdline");
+                    let (_passed, failed) = crate::test::integration::run_all_integration_tests();
+                    use hal::port_io::PortU32;
+
+                    let mut port = PortU32::new(0xf4);
+                    if failed == 0 {
+                        port.write(0x10u32); // QEMU success
+                    } else {
+                        port.write(0x11u32); // QEMU failure
+                    }
+
+                    // Stop here; QEMU will exit on the port write
+                    loop {
+                        x86_64::instructions::hlt();
+                    }
+                }
+            }
+        }
     }
     #[cfg(not(any(test, feature = "bench")))]
     {

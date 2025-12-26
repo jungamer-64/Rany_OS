@@ -4,19 +4,25 @@
 //! PCI device IOMMU integration
 //!
 //! Functions for setting up IOMMU protection for PCI devices.
+// ============================================================================
+// kernel/src/io/iommu/pci.rs
+// ============================================================================
+//! PCI device IOMMU integration
+//!
+//! Functions for setting up IOMMU protection for PCI devices.
 
-#[cfg(not(test))]
-use super::controller::dma::DomainManager;
 #[cfg(not(test))]
 use super::{
     DeviceId, IommuDomainType, ecap_bits, get_iommu_driver, get_iommu_group_manager,
-    get_iommu_registry, is_iommu_enabled,
+    is_iommu_enabled, with_iommu,
 };
+#[cfg(not(test))]
+use crate::io::iommu::intel::controller::dma::DomainManager;
+use crate::io::iommu::intel::registry::get_iommu_registry;
 
 #[cfg(not(test))]
 #[allow(unused_imports)]
 use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
-
 // ============================================================================
 // 【設計書 7.2】PCIデバイスへのIOMMU自動設定
 // ============================================================================
@@ -47,7 +53,7 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
         device.bdf.device(),
         device.bdf.function(),
     );
-    let numa_hint = 0; // Use device's NUMA hint if available (not available in PciDeviceInfo yet)
+    let _numa_hint = 0; // Use device's NUMA hint if available (not available in PciDeviceInfo yet)
 
     // 1. Determine IOMMU Group and get/create its domain
     let (iommu_group, newly_created) =
@@ -66,6 +72,7 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
     let domain_id = iommu_group.domain_id;
     let controller_idx = iommu_group.controller_idx;
 
+    let mut _overflow_cleared = false;
     let controller = registry.controllers.get(controller_idx)?;
 
     // 2. Enable ATS for the device if supported and not already enabled by this IOMMU
@@ -89,20 +96,25 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
 
         if !ats_enabled_for_device {
             // Attempt to enable ATS
-            if let Some(config) = pcie_ext_config() {
-                if let Ok(ats_ctrl) =
-                    AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf))
-                {
-                    // STU (Smallest Translation Unit) is usually 0 (4KB).
-                    if let Err(e) = ats_ctrl.enable_ats(0) {
-                        log::warn!(
-                            "[IOMMU] Failed to enable ATS for device {:?}: {:?}",
-                            device_id,
-                            e
-                        );
-                    } else {
-                        log::info!("[IOMMU] Enabled ATS for device {:?}", device_id);
-                        controller.enable_ats_for_device(device_id);
+            if let Some(_cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+                if let Some(config) = pcie_ext_config() {
+                    if let Ok(ats_ctrl) =
+                        AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf))
+                    {
+                        // STU (Smallest Translation Unit) is usually 0 (4KB).
+                        if let Err(e) = ats_ctrl.enable_ats(0) {
+                            log::warn!(
+                                "[IOMMU] Failed to enable ATS for device {:?}: {:?}",
+                                device_id,
+                                e
+                            );
+                        } else {
+                            _overflow_cleared = true;
+                            controller.invalidate_iotlb(domain_id);
+                            log::info!("[IOMMU] Enabled ATS for device {:?}", device_id);
+                            controller.enable_ats_for_device(device_id);
+                            crate::task::scheduler::yield_current(_cpu_id);
+                        }
                     }
                 }
             }

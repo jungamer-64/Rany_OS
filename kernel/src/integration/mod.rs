@@ -256,6 +256,20 @@ impl SystemIntegration {
                     ));
                     dev.enable_bus_master();
                     dev.enable_memory_space();
+
+                    // If BAR0 is present, initialize the MMIO device
+                    if let Some(bar0) = dev.bars[0] {
+                        let bar0_phys = bar0.base();
+                        let bar0_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                        unsafe {
+                            match crate::io::virtio::init_virtio_blk(bar0_virt) {
+                                Ok(()) => self.log("    VirtIO-blk driver initialized"),
+                                Err(e) => self.log(&alloc::format!("    VirtIO-blk init failed: {:?}", e)),
+                            }
+                        }
+                    } else {
+                        self.log("    VirtIO-blk found but BAR0 is missing, skipping init");
+                    }
                 }
                 0x1000 | 0x1041 => {
                     // VirtIO Network Device

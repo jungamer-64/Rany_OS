@@ -38,6 +38,7 @@ fn test_iommu_domain() {
         false,
         IommuDomainType::Translated,
         super::page_table_pool::PageTablePool::new(1, 32),
+        PteFormat::Intel,
     );
     assert_eq!(domain.id(), 1);
 
@@ -332,6 +333,7 @@ fn test_map_for_dma_alloc_non_identity() {
         false,
         IommuDomainType::Translated,
         super::page_table_pool::PageTablePool::new(1, 32),
+        PteFormat::Intel,
     )));
     match ctrl.domains.lock() {
         Ok(mut domains) => {
@@ -609,6 +611,7 @@ fn test_unmap_reclaims_empty_tables() {
         false,
         IommuDomainType::Translated,
         super::page_table_pool::PageTablePool::new(1, 32),
+        PteFormat::Intel,
     )));
 
     {
@@ -648,6 +651,7 @@ fn test_unmap_partial_keeps_tables() {
         false,
         IommuDomainType::Translated,
         super::page_table_pool::PageTablePool::new(1, 32),
+        PteFormat::Intel,
     )));
     let mut domain = match domain_arc.lock() {
         Ok(g) => g,
@@ -765,7 +769,12 @@ fn test_page_table_scope_commit_preserves_counts() {
     // Create a fake parent entry and attach
     let mut parent_entry = SlPte::new();
     let parent_phys = 0xDEADBEEF;
-    scope.attach_to_parent(&mut parent_entry as *mut SlPte, parent_phys);
+    scope.attach_to_parent(
+        &mut parent_entry as *mut SlPte,
+        parent_phys,
+        PteFormat::Intel,
+        1,
+    );
 
     // Commit should not overwrite existing count for scope.phys(), but should increment parent
     scope.commit(&mut page_table_counts);
@@ -782,7 +791,13 @@ fn test_page_table_scope_drop_rolls_back_parent() {
     {
         let mut scope = PageTableScope::new(None).expect("allocate ptable");
         // Attach to parent; don't commit
-        scope.attach_to_parent(&mut parent_entry as *mut SlPte, parent_phys);
+        // Attach to parent; don't commit
+        scope.attach_to_parent(
+            &mut parent_entry as *mut SlPte,
+            parent_phys,
+            PteFormat::Intel,
+            1,
+        );
         // At this point, parent should be present
         assert!(unsafe { (*(&parent_entry as *const SlPte)).is_present() });
     }

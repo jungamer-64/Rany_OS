@@ -1,12 +1,13 @@
 // ============================================================================
 // kernel/src/io/iommu/domain.rs
 // ============================================================================
-use super::controller::iova::IovaManager; // For allocate_iova/free_iova on IommuController
 use super::quarantine::QuarantineQueue;
 use super::tables::{
     AmdPte, PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
 use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::intel::controller::IommuController;
+use crate::io::iommu::intel::controller::iova::IovaManager; // Temporary Intel specific import
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -368,12 +369,12 @@ impl IommuDomain {
     pub fn flush(
         &self,
         invalidator: &dyn IommuInvalidator,
-        controller: &super::IommuController,
+        controller: &IommuController,
     ) -> Result<(), IommuError> {
         // Drain pending invalidations (Round 9: returns DrainResult)
         let (drained_batch, requests) = match self.quarantine.drain_pending_invalidations() {
             super::quarantine::DrainResult::NoWork { .. } => return Ok(()),
-            super::quarantine::DrainResult::NotReady { batch } => {
+            super::quarantine::DrainResult::NotReady { batch: _ } => {
                 // Round 9 Safety: Reserved slots pending.
                 // We MUST NOT issue invalidations or reap, as that would
                 // advance the batch prematurely or leave valid PTEs behind.
@@ -573,7 +574,7 @@ impl IommuDomain {
             let pd_phys = (*pdp_entry).phys_addr();
 
             let pd_entry = pd_table.add(pd_idx);
-            if !(*pd_entry).is_present() || !(*pd_entry).is_super_page() {
+            if !(*pd_entry).is_present() || !(*pd_entry).is_super_page(self.pte_format) {
                 return Err(IommuError::NotMapped);
             }
 
@@ -602,7 +603,7 @@ impl IommuDomain {
             let pdp_phys = (*pml4_entry).phys_addr();
 
             let pdp_entry = pdp_table.add(pdp_idx);
-            if !(*pdp_entry).is_present() || !(*pdp_entry).is_super_page() {
+            if !(*pdp_entry).is_present() || !(*pdp_entry).is_super_page(self.pte_format) {
                 return Err(IommuError::NotMapped);
             }
 
@@ -716,7 +717,7 @@ impl IommuDomain {
                 }
                 PteFormat::Amd => {
                     let amd_pte = AmdPte::mapping(phys, read, write, 0); // Level 1 = 4KB
-                    unsafe { *pt_entry = SlPte(amd_pte.0) }; // Transmute to SlPte for storage
+                    *pt_entry = SlPte(amd_pte.0); // Transmute to SlPte for storage
                 }
             }
 
@@ -799,10 +800,9 @@ impl IommuDomain {
                 Err(e) => return Err(e),
             };
 
-            // Attaching PD (Level 2) to PDP
             pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
             newly_allocated[1] = Some(pd_scope);
-        } else if (unsafe { *pdp_entry }).is_super_page() {
+        } else if (unsafe { *pdp_entry }).is_super_page(self.pte_format) {
             // Already a 1GB super-page at this level
             return Err(IommuError::AlreadyMapped);
         }
@@ -885,6 +885,13 @@ impl IommuDomain {
             // Attaching PDP (Level 3) to PML4
             pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
             newly_allocated_pdp = Some(pdp_scope);
+        } else if (unsafe { *pml4_entry }).is_super_page(self.pte_format) {
+            // PML4 entry cannot be a super page in 4-level paging (512GB pages not supported)
+            // But if it were, we should fail.
+            // Actually, PML4 entries point to PDP. If "is_super_page" is true, it means generic mismatch?
+            // Intel Bit 7 in PML4 entry matches 'Reserved'? Or 'Page Size'?
+            // For safety we can check.
+            return Err(IommuError::AlreadyMapped);
         }
 
         let pdp_table = (unsafe { *pml4_entry }).phys_addr() as *mut SlPte;
@@ -1056,7 +1063,7 @@ impl IommuDomain {
     pub fn map_buffer<T>(
         &mut self,
         rref: crate::ipc::RRef<T>,
-        controller: &super::IommuController,
+        controller: &IommuController,
         direction: super::dma_handle::DmaDirection,
     ) -> Result<super::dma_handle::DmaHandle<T>, super::dma_handle::MapError<T>> {
         use super::dma_handle::{DmaHandle, MapError, MapErrorKind};
@@ -1118,7 +1125,7 @@ impl IommuDomain {
     pub fn unmap_buffer<T>(
         &mut self,
         mut handle: super::dma_handle::DmaHandle<T>,
-        controller: &super::IommuController,
+        controller: &IommuController,
         invalidator: Option<&dyn IommuInvalidator>,
     ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
         use super::dma_handle::{UnmapError, UnmapErrorKind};
@@ -1176,7 +1183,7 @@ impl IommuDomain {
     pub async fn unmap_buffer_async<T>(
         &mut self,
         mut handle: super::dma_handle::DmaHandle<T>,
-        controller: &super::IommuController,
+        controller: &IommuController,
         invalidator: &(dyn IommuInvalidator + Sync),
     ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
         use super::dma_handle::{UnmapError, UnmapErrorKind};

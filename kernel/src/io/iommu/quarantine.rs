@@ -31,9 +31,11 @@ use crate::ipc::DomainId;
 use crate::ipc::rref::{RRef, RRefRawParts, RawPartsError};
 use crate::sync::IrqMutex;
 
-use super::controller::iova::IovaManager;
-use super::domain::InvalidateRequest;
-use super::{IommuController, IommuError};
+use crate::io::iommu::intel::controller::iova::IovaManager;
+// use super::{IommuController, IommuError};
+use crate::io::iommu::IommuError;
+use crate::io::iommu::domain::InvalidateRequest;
+use crate::io::iommu::intel::controller::IommuController;
 
 // ============================================================================
 // Constants
@@ -316,7 +318,7 @@ impl QuarantineSlotGuard {
         raw: RRefRawParts,
         iova: u64,
         iova_size: u64,
-        controller: &super::IommuController,
+        controller: &IommuController,
     ) -> Result<(), QuarantineError> {
         self.queue.commit_entry(
             self.slot_idx,

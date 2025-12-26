@@ -1657,25 +1657,32 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
 // Global Device Instance
 // ============================================================================
 
-/// Global VirtIO block device instance
-static VIRTIO_BLK_DEVICE: Mutex<Option<VirtioBlkDevice>> = Mutex::new(None);
+/// Global VirtIO block device instance (stored in an Arc for async usage)
+static VIRTIO_BLK_DEVICE: Mutex<Option<Arc<VirtioBlkDevice>>> = Mutex::new(None);
 
 /// Initialize the global VirtIO block device
 ///
 /// # Safety
 /// Caller must ensure MMIO address is valid and device exists
 pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
-    let mut device = VirtioBlkDevice::new(mmio_base);
-    unsafe { device.init()? };
+    let mut dev = VirtioBlkDevice::new(mmio_base);
+    unsafe { dev.init()? };
+
+    let device_arc = Arc::new(dev);
 
     log::info!(
         "VirtIO-blk initialized: {} sectors, {} bytes/sector\n",
-        device.config().capacity,
-        device.config().block_size
+        device_arc.config().capacity,
+        device_arc.config().block_size
     );
 
-    *VIRTIO_BLK_DEVICE.lock() = Some(device);
+    *VIRTIO_BLK_DEVICE.lock() = Some(Arc::clone(&device_arc));
     Ok(())
+}
+
+/// Get a clone of the global VirtioBlk device Arc if initialized
+pub fn get_virtio_blk_device() -> Option<Arc<VirtioBlkDevice>> {
+    VIRTIO_BLK_DEVICE.lock().as_ref().cloned()
 }
 
 /// Handle VirtIO block device interrupt

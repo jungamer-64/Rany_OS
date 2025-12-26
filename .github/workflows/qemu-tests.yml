@@ -155,24 +155,19 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y qemu-system-x86 qemu-utils
     
-    - name: Create test disk
+    - name: Create and format test disk
       run: |
+        sudo apt-get update
+        sudo apt-get install -y qemu-utils dosfstools mtools
         qemu-img create -f raw test_disk.img 64M
+        # Format as FAT32 and add a test file
+        mkfs.vfat -F 32 -n TEST test_disk.img
+        echo "E2E test file" > hello.txt
+        mcopy -i test_disk.img hello.txt ::/HELLO.TXT
+        rm hello.txt
     
     - name: Build kernel
-      run: cargo build --target x86_64-rany_os.json
-    
-    - name: Run storage test
-      run: |
-        KERNEL="target/x86_64-rany_os/debug/RanyOS"
-        
-        timeout 60s qemu-system-x86_64 \
-          -machine q35,accel=tcg \
-          -cpu qemu64 \
-          -smp 2 \
-          -m 512M \
-          -kernel "$KERNEL" \
-          -serial stdio \
+      run: cargo build --target x86_64-rany_os.json --features run-integration-tests
           -display none \
           -device virtio-blk-pci,drive=drive0 \
           -drive id=drive0,if=none,format=raw,file=test_disk.img \
