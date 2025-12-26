@@ -6,19 +6,13 @@
 //! Global API functions for IOMMU initialization, device protection,
 //! and interrupt remapping.
 
-use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 use x86_64::PhysAddr;
 
-use super::controller::{init::CapabilityManager, iova::IovaManager, qi_ops::InvalidationOps};
+use super::interface::IommuDriver;
 use super::{
-    DeviceId, IOMMU_REQUIRED, IommuController, IommuError, ecap_bits, get_iommu_registry,
-    is_iommu_enabled,
+    DeviceId, IOMMU_REQUIRED, IommuDomainType, IommuError, get_iommu_driver, is_iommu_enabled,
 };
-use crate::io::iommu::controller::{
-    dma::DomainManager, fault::FaultHandler, ir::InterruptRemapper,
-};
-use crate::io::iommu_cmdqueue::IommuCommandKind;
 
 // ============================================================================
 // IOMMU Requirement Functions
@@ -66,25 +60,8 @@ pub fn map_interrupt(
     dest_id: u32,
     logical: bool,
 ) -> Result<u16, IommuError> {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-
-    // Find the controller index for this device using proper scope matching
-    let controller_idx = registry
-        .find_controller_index_for_device(segment, bus, device, function)
-        .ok_or(IommuError::NotPresent)?;
-
-    let controller = registry
-        .controllers
-        .get(controller_idx)
-        .ok_or(IommuError::NotPresent)?;
-
-    // Check if IR is enabled
-    if !controller.is_interrupt_remapping_enabled() {
-        return Err(IommuError::NotSupported);
-    }
-
-    // Allocate IRTE
-    controller.allocate_irte(vector, dest_id, logical)
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.map_interrupt(segment, bus, device, function, vector, dest_id, logical)
 }
 
 /// Generate MSI Address and Data for a Remapped Interrupt
@@ -95,20 +72,16 @@ pub fn map_interrupt(
 /// # Returns
 /// (Address, Data) tuple for MSI/MSI-X configuration
 pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
-    // Intel VT-d Spec 5.1.5.1 MSI / MSI-X Address Format
-    // 31:20 = 0xFEE (Fixed)
-    // 19:5  = Handle[14:0] (Interrupt Index)
-    // 4     = SHV (SubHandle Valid) - Set to 0 here
-    // 3     = Handle[15] (Interrupt Index MSB)
-    // 2     = XX (Guest Mode / Ignored)
+    if let Some(driver) = get_iommu_driver() {
+        return driver.get_remap_msi_message(handle);
+    }
 
+    // Fallback to Intel VT-d MSI/MSI-X format if no driver is registered.
     let handle = handle as u64;
     let index_14_0 = handle & 0x7FFF;
     let index_15 = (handle >> 15) & 1;
-
     let address = 0xFEE0_0000 | (index_14_0 << 5) | (index_15 << 3);
-    let data = 0; // Data is 0 when SHV=0
-
+    let data = 0;
     (address, data)
 }
 
@@ -130,54 +103,14 @@ pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
 ///
 /// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
 pub unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-
-    if registry.controllers.is_empty() {
-        return Err(IommuError::NotPresent);
-    }
-
-    let iova = phys_addr.as_u64();
-
-    for controller in &registry.controllers {
-        let domain_arc = {
-            let domains_guard = controller
-                .domains
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            domains_guard
-                .get(&0) // Default domain
-                .cloned()
-                .ok_or(IommuError::DomainNotFound)?
-        };
-        let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-        domain.map(iova, phys_addr.as_u64(), size, true, true)?;
-    }
-
-    Ok(iova)
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    unsafe { driver.map_for_dma(phys_addr, size) }
 }
 
 /// Unmap a DMA address range
 pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-    if registry.controllers.is_empty() {
-        return Err(IommuError::NotPresent);
-    }
-
-    for controller in &registry.controllers {
-        let domain_arc = {
-            let domains_guard = controller
-                .domains
-                .lock()
-                .map_err(|_| IommuError::HardwareError)?;
-            domains_guard
-                .get(&0)
-                .cloned()
-                .ok_or(IommuError::DomainNotFound)?
-        };
-        let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-        domain.unmap(iova)?;
-    }
-    Ok(())
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.unmap_dma(iova, _size)
 }
 
 /// Map a physical address range for a specific device (Device-Aware)
@@ -194,9 +127,9 @@ pub unsafe fn map_for_device(
     phys_addr: PhysAddr,
     size: u64,
 ) -> Result<u64, IommuError> {
-    // Backwards-compatible blocking wrapper over the async variant
-    // SAFETY: Caller must uphold safety requirements of map_for_device
-    crate::task::block_on(async { unsafe { map_for_device_async(device, phys_addr, size).await } })
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    // SAFETY: Caller must uphold safety requirements of map_for_device.
+    unsafe { driver.map_for_device(device, phys_addr, size) }
 }
 
 /// Async variant of `map_for_device` that offloads to the controller's CommandQueue
@@ -211,56 +144,14 @@ pub async unsafe fn map_for_device_async(
     phys_addr: PhysAddr,
     size: u64,
 ) -> Result<u64, IommuError> {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-    if registry.controllers.is_empty() {
-        return Err(IommuError::NotPresent);
-    }
-
-    let iova = phys_addr.as_u64();
-
-    // Iterate controllers to find the one managing this device
-    for controller in &registry.controllers {
-        if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
-            if let Some(domain_arc) = controller.domain(domain_id) {
-                // Read domain id under lock, but do NOT hold the domain lock while submitting to CQ
-                let domain_id = {
-                    let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                    d.id
-                };
-
-                // If a command queue is configured, offload the mapping to it and await completion.
-                if let Some(ref cq) = controller.command_queue {
-                    let cmd = IommuCommandKind::MapRegion {
-                        domain: domain_id,
-                        iova,
-                        phys: phys_addr.as_u64(),
-                        size,
-                        read: true,
-                        write: true,
-                    };
-                    let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
-                    let rc = comp.await;
-                    if rc == 0 {
-                        return Ok(iova);
-                    } else {
-                        return Err(IommuError::HardwareError);
-                    }
-                }
-
-                // No CQ configured: perform mapping inline
-                let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                domain.map(iova, phys_addr.as_u64(), size, true, true)?;
-                return Ok(iova);
-            }
-        }
-    }
-
-    Err(IommuError::DomainNotFound)
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    unsafe { driver.map_for_device_async(device, phys_addr, size).await }
 }
 
 /// Unmap a DMA address range for a specific device
 pub fn unmap_for_device(device: &DeviceId, iova: u64, _size: u64) -> Result<(), IommuError> {
-    crate::task::block_on(async { unmap_for_device_async(device, iova, _size).await })
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.unmap_for_device(device, iova, _size)
 }
 
 /// Async variant of `unmap_for_device` that offloads to CQ and awaits completion
@@ -269,164 +160,84 @@ pub async fn unmap_for_device_async(
     iova: u64,
     _size: u64,
 ) -> Result<(), IommuError> {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-    if registry.controllers.is_empty() {
-        return Err(IommuError::NotPresent);
-    }
-
-    for controller in &registry.controllers {
-        if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
-            if let Some(domain_arc) = controller.domain(domain_id) {
-                // Read domain id under lock, then drop lock before submitting to CQ
-                let domain_id = {
-                    let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                    d.id
-                };
-
-                // If CQ is configured, offload unmap to CQ and await
-                if let Some(ref cq) = controller.command_queue {
-                    let cmd = IommuCommandKind::UnmapRegion {
-                        domain: domain_id,
-                        iova,
-                        size: _size,
-                    };
-                    let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
-                    let rc = comp.await;
-                    if rc == 0 {
-                        return Ok(());
-                    } else {
-                        return Err(IommuError::HardwareError);
-                    }
-                }
-
-                // No CQ: perform unmap inline then invalidate
-                let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                domain.unmap(iova)?;
-                // Capture domain id while we still hold the domain lock
-                let domain_id = domain.id();
-                drop(domain); // Release lock before invalidating
-
-                // SAFETY: We hold no locks on domain, controller logic handles hardware safety
-                if let Some(ref cq) = controller.command_queue {
-                    let comp = cq
-                        .submit(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
-                        .map_err(|_| IommuError::HardwareError)?;
-                    let rc = comp.await;
-                    if rc == 0 {
-                        return Ok(());
-                    } else {
-                        return Err(IommuError::HardwareError);
-                    }
-                } else {
-                    unsafe {
-                        controller.invalidate_iotlb(domain_id);
-                    }
-                }
-
-                return Ok(());
-            }
-        }
-    }
-
-    Err(IommuError::DomainNotFound)
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.unmap_for_device_async(device, iova, _size).await
 }
 
-/// Execute with default IOMMU controller (mutable access)
+/// Execute with the active IOMMU backend.
 ///
-/// This acquires a write lock on the chosen controller and passes a `&mut` to the
-/// provided closure. Many operations (attach/detach/create_domain) require mutation,
-/// so take `&mut` here for convenience. If only read access is needed in the future,
-/// consider adding a read-only helper.
+/// This passes a `&dyn IommuDriver` to the closure. Backend selection is handled
+/// by the driver registry.
 pub fn with_iommu<F, R>(f: F) -> Result<R, IommuError>
 where
-    F: FnOnce(&IommuController) -> R,
+    F: FnOnce(&dyn IommuDriver) -> R,
 {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-    let idx = registry.default_iommu_idx.ok_or(IommuError::NotPresent)?;
-    let controller = registry
-        .controllers
-        .get(idx)
-        .ok_or(IommuError::NotPresent)?;
-    Ok(f(controller))
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    Ok(f(driver.as_ref()))
 }
 
 /// Handle IOMMU Faults (Called from ISR)
 ///
 /// Iterates all controllers and processes pending faults.
 pub fn handle_fault() {
-    if let Some(registry) = get_iommu_registry() {
-        for (_i, controller) in registry.controllers.iter().enumerate() {
-            // Process faults directly (thread-safe)
-            controller.process_faults();
-        }
+    if let Some(driver) = get_iommu_driver() {
+        driver.handle_fault();
     }
 }
 
 /// Wake all pending async invalidation waiters (Called from ISR)
 pub fn wake_invalidation_waiters() {
-    if let Some(registry) = get_iommu_registry() {
-        // Use try_read to avoid deadlock in ISR if main thread holds write lock
-        for controller in &registry.controllers {
-            controller.wake_invalidation_waiter();
-        }
+    if let Some(driver) = get_iommu_driver() {
+        driver.wake_invalidation_waiters();
     }
 }
 
 /// Enable IOMMU translation (on all controllers)
 pub fn enable_iommu() -> Result<(), IommuError> {
-    if let Some(registry) = get_iommu_registry() {
-        for controller in &registry.controllers {
-            unsafe {
-                controller.enable()?;
-            }
-        }
-        Ok(())
-    } else {
-        Err(IommuError::NotInitialized)
-    }
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.enable()
 }
 
 /// Disable IOMMU translation (on all controllers)
 pub fn disable_iommu() -> Result<(), IommuError> {
-    if let Some(registry) = get_iommu_registry() {
-        for controller in &registry.controllers {
-            unsafe {
-                controller.disable()?;
-            }
-        }
-        Ok(())
-    } else {
-        Err(IommuError::NotInitialized)
-    }
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.disable()
 }
 
 /// Set NUMA hint for a domain (best-effort)
 /// Note: Since domains are per-controller, this finds the first controller with the domain.
 pub fn set_domain_numa(domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError> {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-    // Try to find the domain in any controller
-    for controller in &registry.controllers {
-        if controller.domain(domain_id).is_some() {
-            return controller.set_domain_numa(domain_id, numa_node);
-        }
-    }
-    Err(IommuError::DomainNotFound)
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.set_domain_numa(domain_id, numa_node)
 }
 
 /// Get NUMA hint for a domain
 pub fn get_domain_numa(domain_id: u16) -> Result<Option<usize>, IommuError> {
-    let registry = get_iommu_registry().ok_or(IommuError::NotInitialized)?;
-    for controller in &registry.controllers {
-        if let Some(domain_arc) = controller.domain(domain_id) {
-            match domain_arc.lock() {
-                Ok(guard) => return Ok(guard.numa_node),
-                Err(_) => {
-                    log::error!("[IOMMU] Domain lock poisoned in get_domain_numa - returning None");
-                    return Ok(None);
-                }
-            }
-        }
-    }
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.get_domain_numa(domain_id)
+}
 
-    Err(IommuError::DomainNotFound)
+// ============================================================================
+// Domain Management Helpers
+// ============================================================================
+
+/// Create a new domain using the active IOMMU backend.
+pub fn create_domain(
+    numa_node: Option<usize>,
+    domain_type: IommuDomainType,
+) -> Result<u16, IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.create_domain(numa_node, domain_type)
+}
+
+/// Attach a device to a domain using the active IOMMU backend.
+pub fn attach_device(device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.attach_device(device, domain_id)
+}
+
+/// Detach a device from a domain using the active IOMMU backend.
+pub fn detach_device(device: DeviceId) -> Result<(), IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.detach_device(device)
 }

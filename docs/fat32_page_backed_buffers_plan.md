@@ -181,8 +181,8 @@ pub trait ClusterBufferAllocator: Send + Sync {
 
 ### フェーズ 2 — ブロックドライバ適用（PR2: virtio-blk）
 
-1. virtio-blk の `ZeroCopyBlockDevice` 実装を追加（`dma_info()` があれば物理アドレスで DMA、なければ slice 直結）
-2. IOMMU 有効時は `dma_info()` → `DmaHandle`/IOVA マップへ拡張（後半タスク）
+1. virtio-blk の `ZeroCopyBlockDevice` 実装を追加（`dma_info()` があれば DMA、なければ slice 直結）
+2. IOMMU 有効時は `map_for_dma`/`unmap_dma` で IOVA マップ（デバイス別 `DmaHandle` は後半タスク）
 
 ### フェーズ 3 — カーネル allocator の実装（PR3）
 
@@ -282,7 +282,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
 - ⚠️ **ZeroCopyBlockDevice が owned buffer 返却のみ**: FAT32 の `read_cluster_async` は `B` を取得後に `&mut [u8]` へコピーしており、ホットパスはまだコピーが残ります。**borrowed API の追加**が必要です。
 - ⚠️ **I/O バッファ抽象が未整備**: vfs に `IoBuffer` がなく、DMA 情報（`dma_info()`）を一貫して取り出す仕組みが不足しています。
 - ⚠️ **Allocator 注入点が未整備**: `ClusterBufferPool::new` は `VecClusterBufferAllocator` 固定のため、`mount_with_allocator` で注入経路を追加する必要があります。
-- ✅ **virtio-blk の vfs 連携は初期実装済み**: `kernel/src/io/virtio/blk.rs` に `ZeroCopyBlockDevice` 実装を追加し、`dma_info()` がある場合は物理アドレスで DMA、ない場合は borrowed slice 直結。`dma_info()` → IOVA マップは PR2 後半で対応予定です。
+- ✅ **virtio-blk の vfs 連携は初期実装済み**: `kernel/src/io/virtio/blk.rs` に `ZeroCopyBlockDevice` 実装を追加し、`dma_info()` がある場合は DMA、ない場合は borrowed slice 直結。IOMMU 有効時は `map_for_dma`/`unmap_dma` で IOVA マップ済み（デバイス別 `DmaHandle` は後半対応）。
 - ⚠️ **フォールバックと SG（非連続）戦略が必要**: 連続フレーム確保が失敗した場合は Vec フォールバック、または将来的に SG (scatter/gather) 対応を検討する必要があります。
 
 **結論 (実装可否)**
@@ -293,7 +293,7 @@ pub trait ClusterBufferAllocator: Send + Sync {
 **追加タスク（優先）**
 
 1. PR1: `IoBuffer`/`IoBufferMut` + `DmaInfo` 追加 + borrowed API 追加 + アダプタ整備 - **高**
-2. PR2: virtio-blk の IOVA マップ対応（`dma_info()` → `DmaHandle`） - **高**
+2. PR2: virtio-blk のデバイス別 IOVA マップ対応（`dma_info()` → `DmaHandle`） - **高**
 3. PR3: `PageClusterBufferAllocator`（カーネル）プロトタイプ - **高**
 4. PR4: `Fat32FileSystem::mount_with_allocator` + pool 注入経路 - **中**
 5. `ClusterBuffer` の `IoBuffer` 実装（`dma_info()` 連携） - **中**

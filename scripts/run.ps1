@@ -30,14 +30,18 @@
 .PARAMETER Lint
     Run cargo fmt and clippy checks before building.
 .PARAMETER Iommu
-    Enable Intel VT-d IOMMU emulation (required for DMA protection testing).
+    Enable Intel VT-d IOMMU emulation (default: enabled for ExoRust DMA protection).
+.PARAMETER NoIommu
+    Disable IOMMU emulation (for compatibility testing without DMA protection).
 .PARAMETER Numa
     Enable NUMA topology simulation (2 nodes, for Share-Nothing architecture testing).
 .PARAMETER Network
     Enable VirtIO network device with IOMMU support (hostfwd: tcp/udp 5555->80).
 .PARAMETER Monitor
     Enable QEMU Monitor on telnet port 4444 for runtime inspection.
-.PARAMETER Verbose
+.PARAMETER Tcg
+    Force TCG (software emulation) instead of WHPX/KVM. Slower but more compatible.
+.PARAMETER VerboseOutput
     Show detailed build output.
 #>
 
@@ -49,11 +53,13 @@ param(
     [switch]$NoRun,
     [switch]$Test,
     [switch]$Lint,
-    [switch]$Iommu,
+    [bool]$Iommu = $true,  # ExoRust: IOMMU enabled by default for DMA protection
+    [switch]$NoIommu,      # Explicitly disable IOMMU
     [switch]$Numa,
     [switch]$Network,
     [switch]$Monitor,
-    [switch]$Verbose,
+    [switch]$Tcg,          # Force TCG software emulation
+    [switch]$VerboseOutput,
     [int]$Memory = 512,
     [int]$Smp = 4,
     [ValidateSet("stdio", "file", "null")]
@@ -73,7 +79,7 @@ $script:TotalWatch = [System.Diagnostics.Stopwatch]::StartNew()
 $EXE_EXT = if ($IsWindows) { ".exe" } else { "" }
 
 # --- Global Configuration & Paths ---
-$ROOT_DIR = $PSScriptRoot
+$ROOT_DIR = Split-Path -Parent $PSScriptRoot  # Project root (parent of scripts/)
 Set-Location $ROOT_DIR
 
 # Project Constants
@@ -123,7 +129,9 @@ function Test-Command($cmd) {
 
 function Test-RustComponent($component) {
     $list = rustup component list --installed 2>$null
-    if ($list -notmatch $component) {
+    # Check if component appears in the list (handles versioned names like rust-src-nightly)
+    $found = $list | Where-Object { $_ -like "$component*" }
+    if (-not $found) {
         Write-Warn "Rust component '$component' is missing."
         Write-Step "📥" "Installing '$component'..."
         rustup component add $component
@@ -225,7 +233,7 @@ function Build-Signer {
         Push-Location $SIGNER_TOOL_DIR
         try {
             $buildArgs = @("build", "--release")
-            if (-not $Verbose) { $buildArgs += "--quiet" }
+            if (-not $VerboseOutput) { $buildArgs += "--quiet" }
             & cargo $buildArgs
             if ($LASTEXITCODE -ne 0) { throw "Signer build failed" }
         }
@@ -261,7 +269,7 @@ function Build-Loader {
         "-Z", "build-std-features=compiler-builtins-mem"
     )
     
-    if (-not $Verbose) { $buildArgs += "--quiet" }
+    if (-not $VerboseOutput) { $buildArgs += "--quiet" }
 
     & cargo $buildArgs
     if ($LASTEXITCODE -ne 0) { throw "ExoLoader build failed" }
@@ -289,7 +297,7 @@ function Build-Kernel {
         "-Z", "build-std-features=compiler-builtins-mem"
     )
     
-    if (-not $Verbose) { $buildArgs += "--quiet" }
+    if (-not $VerboseOutput) { $buildArgs += "--quiet" }
 
     & cargo $buildArgs
     if ($LASTEXITCODE -ne 0) { throw "Kernel build failed" }
@@ -356,6 +364,12 @@ function Create-Disk-Image {
 # --- Run QEMU ---
 
 function Get-QemuAccelerator {
+    # Force TCG if requested
+    if ($Tcg) {
+        Write-Warn "[ACCEL] TCG (forced via -Tcg flag)"
+        return "tcg"
+    }
+    
     if (-not $IsWindows) { return "kvm" }
 
     $helpOut = & qemu-system-x86_64 -accel help 2>&1
@@ -398,7 +412,13 @@ function Start-Qemu {
 
     # Base Arguments
     # [ExoRust] Use kernel-irqchip=split for IOMMU interrupt remapping
-    $machineSpec = if ($Iommu) { "q35,kernel-irqchip=split" } else { "q35" }
+    # NOTE: WHPX doesn't support kernel-irqchip=split, so skip irqchip setting for WHPX
+    $enableIommu = $Iommu -and (-not $NoIommu)
+    if ($enableIommu -and $accel -ne "whpx") {
+        $machineSpec = "q35,kernel-irqchip=split"
+    } else {
+        $machineSpec = "q35"
+    }
     
     $qemuArgs = @(
         "-machine", $machineSpec,
@@ -415,10 +435,18 @@ function Start-Qemu {
     )
     
     # [ExoRust] IOMMU (Intel VT-d) Support
-    # Required for DMA protection testing (Design Doc 5.4.1)
-    if ($Iommu) {
-        $qemuArgs += @("-device", "intel-iommu,intremap=on,caching-mode=on")
-        Write-Done "[IOMMU] Intel VT-d enabled (intremap=on)"
+    # Required for DMA protection (Design Doc 5.4.1)
+    # Enabled by default for ExoRust; use -NoIommu to disable
+    # NOTE: WHPX doesn't support IOMMU (MSI/MMIO emulation fails), so skip entirely
+    $enableIommu = $Iommu -and (-not $NoIommu)
+    if ($enableIommu) {
+        if ($accel -eq "whpx") {
+            # WHPX doesn't support intel-iommu device at all
+            Write-Warn "[IOMMU] Skipped (WHPX does not support intel-iommu device)"
+        } else {
+            $qemuArgs += @("-device", "intel-iommu,intremap=on,caching-mode=on")
+            Write-Done "[IOMMU] Intel VT-d enabled (intremap=on) [DEFAULT]"
+        }
     }
     
     # [ExoRust] NUMA Topology Simulation
@@ -440,7 +468,7 @@ function Start-Qemu {
     if ($Network) {
         $netdevArgs = "user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
         $deviceArgs = "virtio-net-pci,netdev=net0,mq=on,vectors=10"
-        if ($Iommu) {
+        if ($enableIommu) {
             $deviceArgs += ",iommu_platform=on,disable-legacy=on"
         }
         $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)

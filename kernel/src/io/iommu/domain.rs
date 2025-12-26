@@ -220,6 +220,13 @@ pub struct IommuDomain {
     pub(crate) supports_1gb: bool,
     /// Reference counts for page tables (Physical Address -> Active Entry Count)
     /// Used to avoid O(N) scanning during unmap and recursive deallocation cleanup.
+    ///
+    /// # Performance Note
+    /// Uses BTreeMap for O(log n) lookup. For ~64K entries, this is ~16 comparisons.
+    /// For extreme performance requirements (millions of mappings), consider:
+    /// - Intrusive reference counting embedded in page table metadata
+    /// - Hash map with pre-sized capacity
+    /// Current implementation is acceptable for typical IOMMU workloads.
     pub(crate) page_table_counts: BTreeMap<u64, u16>,
     /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
     quarantine: Arc<QuarantineQueue>,

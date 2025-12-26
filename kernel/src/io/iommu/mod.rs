@@ -49,6 +49,12 @@ pub use self::qi::*;
 pub mod tables;
 pub use self::tables::*;
 
+pub mod interface;
+pub use self::interface::IommuDriver;
+
+pub mod amd;
+pub mod intel;
+
 pub mod fault_log;
 pub use self::fault_log::*;
 
@@ -109,10 +115,16 @@ pub use self::config::*;
 pub mod api;
 pub use self::api::*;
 
+pub use self::amd::init_iommu_from_ivrs;
+
 pub mod registry;
 // Explicit re-exports (avoid wildcard for API stability)
-pub use self::registry::{IommuRegistry, get_iommu_registry, init_registry, is_iommu_enabled};
+pub use self::registry::{
+    IommuRegistry, get_iommu_driver, get_iommu_registry, init_driver, init_registry,
+    is_iommu_enabled,
+};
 
+#[cfg(not(test))]
 pub mod pci;
 // Explicit re-exports for PCI integration (avoid wildcard for API stability)
 #[cfg(not(test))]
