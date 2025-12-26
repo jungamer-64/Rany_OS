@@ -21,6 +21,7 @@ ed25519-compact = { version = "2.1", default-features = false }
 
 [features]
 uefi = ["uefi-services"]
+insecure_boot = []
 
 [profile.dev]
 panic = "abort"

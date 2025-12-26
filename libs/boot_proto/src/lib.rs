@@ -1,5 +1,7 @@
 // libs/boot_proto/src/lib.rs
 #![no_std]
+#![allow(clippy::cargo_common_metadata)]
+#![allow(clippy::doc_markdown)]
 
 use graphic_types::FramebufferInfo;
 

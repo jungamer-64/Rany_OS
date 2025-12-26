@@ -20,8 +20,10 @@
 #![allow(clippy::must_use_candidate)] // Internal implementation
 #![allow(clippy::option_if_let_else)] // Kept for readability
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -54,6 +56,175 @@ pub enum BlockError {
 
 /// Result type for block operations
 pub type BlockResult<T> = Result<T, BlockError>;
+
+// ============================================================================
+// Zero-Copy Buffer + Block Device (Ownership-Moving I/O)
+// ============================================================================
+
+/// Owned buffer for zero-copy I/O (default Vec-backed compatibility type).
+///
+/// This is a transitional buffer type; real zero-copy drivers should use
+/// DMA-capable buffers and implement `ZeroCopyBufferMut` directly.
+pub struct OwnedBytes {
+    data: Vec<u8>,
+}
+
+impl OwnedBytes {
+    /// Create a new owned buffer from Vec.
+    pub fn from_vec(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+
+    /// Consume the buffer and return the inner Vec.
+    pub fn into_vec(self) -> Vec<u8> {
+        self.data
+    }
+
+    /// Return buffer length in bytes.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Check if the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+impl AsRef<[u8]> for OwnedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl AsMut<[u8]> for OwnedBytes {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+impl From<Vec<u8>> for OwnedBytes {
+    fn from(data: Vec<u8>) -> Self {
+        Self::from_vec(data)
+    }
+}
+
+/// Zero-copy buffer interface (ownership moves across layers).
+pub trait ZeroCopyBuffer: Send + 'static {
+    /// Read-only view of the buffer.
+    fn as_slice(&self) -> &[u8];
+
+    /// Buffer length in bytes.
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+}
+
+/// Mutable zero-copy buffer interface (for write paths).
+pub trait ZeroCopyBufferMut: ZeroCopyBuffer {
+    /// Mutable view of the buffer.
+    fn as_mut_slice(&mut self) -> &mut [u8];
+}
+
+impl ZeroCopyBuffer for OwnedBytes {
+    fn as_slice(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl ZeroCopyBufferMut for OwnedBytes {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+/// Boxed future type for object-safe zero-copy device APIs.
+pub type ZcFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Zero-copy block device interface (async, ownership-moving).
+///
+/// This trait is object-safe to allow `Arc<dyn ZeroCopyBlockDevice<Buffer = B>>`.
+pub trait ZeroCopyBlockDevice: Send + Sync {
+    /// Owned buffer type for transfers.
+    type Buffer: ZeroCopyBufferMut;
+
+    /// Get device information.
+    fn info(&self) -> BlockDeviceInfo;
+
+    /// Flush pending writes.
+    fn flush(&self) -> BlockResult<()>;
+
+    /// Allocate a buffer for I/O.
+    fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer>;
+
+    /// Read blocks into a newly owned buffer.
+    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>>;
+
+    /// Write blocks from an owned buffer, returning ownership for reuse.
+    fn write_async(
+        &self,
+        block: u64,
+        buffer: Self::Buffer,
+    ) -> ZcFuture<'_, BlockResult<Self::Buffer>>;
+}
+
+/// Compatibility adapter: wrap a legacy `BlockDevice` and expose zero-copy API.
+///
+/// Note: This adapter still copies internally; real zero-copy drivers should
+/// implement `ZeroCopyBlockDevice` directly with DMA-capable buffers.
+pub struct BlockDeviceZeroCopyAdapter {
+    device: Arc<dyn BlockDevice>,
+}
+
+impl BlockDeviceZeroCopyAdapter {
+    /// Wrap a legacy block device.
+    pub fn new(device: Arc<dyn BlockDevice>) -> Self {
+        Self { device }
+    }
+
+    /// Access the wrapped device.
+    pub fn device(&self) -> &Arc<dyn BlockDevice> {
+        &self.device
+    }
+}
+
+impl ZeroCopyBlockDevice for BlockDeviceZeroCopyAdapter {
+    type Buffer = OwnedBytes;
+
+    fn info(&self) -> BlockDeviceInfo {
+        self.device.info()
+    }
+
+    fn flush(&self) -> BlockResult<()> {
+        self.device.flush()
+    }
+
+    fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
+        Ok(OwnedBytes::from_vec(vec![0u8; size]))
+    }
+
+    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+        let device = Arc::clone(&self.device);
+        Box::pin(async move {
+            let data = BlockReadFuture::new(device, block, count).await?;
+            Ok(OwnedBytes::from_vec(data))
+        })
+    }
+
+    fn write_async(
+        &self,
+        block: u64,
+        buffer: Self::Buffer,
+    ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+        let device = Arc::clone(&self.device);
+        Box::pin(async move {
+            // Transitional path: copy into a Vec for legacy BlockDevice.
+            let data = buffer.as_slice().to_vec();
+            let _ = BlockWriteFuture::new(device, block, data).await?;
+            Ok(buffer)
+        })
+    }
+}
 
 // ============================================================================
 // Block Request
@@ -250,9 +421,8 @@ pub trait BlockDevice: Send + Sync {
                         let to_copy = inner.len().min(buf.len());
                         buf[..to_copy].copy_from_slice(&inner[..to_copy]);
                         return Ok(to_copy);
-                    } else {
-                        return Ok(0);
                     }
+                    return Ok(0);
                 }
                 RequestState::Failed(e) => return Err(e),
                 _ => core::hint::spin_loop(),
@@ -448,16 +618,16 @@ impl Future for BlockReadFuture {
         // Check state
         match self.request.state() {
             RequestState::Completed => {
-                    // Return data (clone the inner buffer)
-                    let buffer = self
-                        .request
-                        .buffer
-                        .lock()
-                        .as_ref()
-                        .map(|b| b.clone())
-                        .unwrap_or_default();
-                    Poll::Ready(Ok(buffer))
-                }
+                // Return data (clone the inner buffer)
+                let buffer = self
+                    .request
+                    .buffer
+                    .lock()
+                    .as_ref()
+                    .map(|b| b.clone())
+                    .unwrap_or_default();
+                Poll::Ready(Ok(buffer))
+            }
             RequestState::Failed(e) => Poll::Ready(Err(e)),
             _ => {
                 self.request.register_waker(cx.waker().clone());

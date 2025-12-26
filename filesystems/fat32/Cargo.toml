@@ -16,9 +16,11 @@ path = "src/lib.rs"
 
 [dependencies]
 vfs = { path = "../../libs/vfs" }
-spin = "0.9.8"
 log = "0.4"
 hashbrown = "0.14"
+
+[dev-dependencies]
+futures = "0.3"
 
 [features]
 debug-trace = []

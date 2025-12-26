@@ -8,6 +8,18 @@
 
 #![no_std]
 #![allow(dead_code)]
+#![allow(clippy::cargo_common_metadata)]
+#![allow(clippy::doc_markdown)]
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::use_self)]
+#![allow(clippy::inline_always)]
+#![allow(clippy::wildcard_imports)]
+#![allow(clippy::manual_let_else)]
+#![allow(clippy::assign_op_pattern)]
+#![allow(clippy::unnecessary_literal_bound)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::semicolon_if_nothing_returned)]
 #![allow(unused_variables)] // API consistency - capability parameters are used for type safety
 #![allow(clippy::derivable_impls)] // Explicit Default impls for clarity
 #![allow(clippy::must_use_candidate)] // Setter methods in security module

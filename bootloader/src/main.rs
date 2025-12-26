@@ -3,7 +3,7 @@
 
 extern crate alloc;
 
-use alloc::vec::Vec;
+use alloc::{vec, vec::Vec};
 use log::{error, info};
 use uefi::prelude::*;
 use uefi::proto::loaded_image::LoadedImage;
@@ -71,45 +71,36 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // ============================================================
     // SECURE BOOT: Ed25519 Signature Verification
     // ============================================================
-    info!("Verifying Kernel Signature... (SKIPPED for Debugging)");
-
-    // Dummy logic to proceed without verification
-    let (_signature_bytes, kernel_elf_data) = if signed_kernel_data.len() >= SIG_SIZE {
-        signed_kernel_data.split_at(SIG_SIZE)
-    } else {
-        panic!("Kernel too small");
-    };
-
-    /*
+    let verification_enabled = !(cfg!(debug_assertions) || cfg!(feature = "insecure_boot"));
     if signed_kernel_data.len() < SIG_SIZE {
         error!("SECURITY ERROR: Kernel file too small (< 64 bytes)!");
         boot_services.stall(10_000_000);
-        loop {
-            core::hint::spin_loop();
-        }
+        return Status::SECURITY_VIOLATION;
     }
 
     // Split: [Signature (64 bytes)] + [ELF binary]
     let (signature_bytes, kernel_elf_data) = signed_kernel_data.split_at(SIG_SIZE);
 
-    match verify_kernel(signature_bytes, kernel_elf_data) {
-        Ok(()) => {
-            info!("Signature Verification PASSED! Booting trusted kernel...");
-        }
-        Err(e) => {
-            // Verification failed - NEVER boot an untrusted kernel
-            error!("==================================================");
-            error!("SECURITY VIOLATION: Invalid Kernel Signature!");
-            error!("Error details: {:?}", e);
-            error!("System halted for security.");
-            error!("==================================================");
-            boot_services.stall(10_000_000); // 10 seconds to read error
-            loop {
-                core::hint::spin_loop();
+    if verification_enabled {
+        info!("Verifying Kernel Signature...");
+        match verify_kernel(signature_bytes, kernel_elf_data) {
+            Ok(()) => {
+                info!("Signature Verification PASSED! Booting trusted kernel...");
+            }
+            Err(e) => {
+                // Verification failed - NEVER boot an untrusted kernel
+                error!("==================================================");
+                error!("SECURITY VIOLATION: Invalid Kernel Signature!");
+                error!("Error details: {:?}", e);
+                error!("System halted for security.");
+                error!("==================================================");
+                boot_services.stall(10_000_000); // 10 seconds to read error
+                return Status::SECURITY_VIOLATION;
             }
         }
+    } else {
+        info!("Signature verification skipped (debug/insecure build)");
     }
-    */
 
     // 2. Parse ELF (using verified kernel data, without signature)
     let elf = xmas_elf::ElfFile::new(kernel_elf_data).expect("Invalid ELF file");
@@ -128,7 +119,9 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     }
 
     // 3. Map Memory
-    use page_table::{PageTable, UefiMapper, PAGE_PRESENT, PAGE_SIZE, PAGE_WRITABLE};
+    use page_table::{
+        PageTable, UefiMapper, PAGE_NO_EXECUTE, PAGE_PRESENT, PAGE_SIZE, PAGE_WRITABLE,
+    };
 
     info!("Allocating PML4...");
     let pml4_addr =
@@ -160,9 +153,18 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                 let total_size = mem_size + page_offset;
                 let num_pages = ((total_size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
 
+                let ph_flags = ph.flags;
+                let mut page_flags = 0;
+                if ph_flags.is_write() {
+                    page_flags |= PAGE_WRITABLE;
+                }
+                if !ph_flags.is_execute() {
+                    page_flags |= PAGE_NO_EXECUTE;
+                }
+
                 info!(
-                    "Mapping segment: Virt 0x{:x} (aligned: 0x{:x}, offset: 0x{:x}), MemSize 0x{:x}, Pages: {}",
-                    virt_addr, virt_start_aligned, page_offset, mem_size, num_pages
+                    "Mapping segment: Virt 0x{:x} (aligned: 0x{:x}, offset: 0x{:x}), MemSize 0x{:x}, Pages: {}, Flags: {}",
+                    virt_addr, virt_start_aligned, page_offset, mem_size, num_pages, ph_flags
                 );
 
                 let phys_start = UefiMapper::alloc_zeroed_pages(boot_services, num_pages)
@@ -187,7 +189,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                     let paddr = phys_start + (i as u64 * PAGE_SIZE);
                     // Standard Kernel Flags: Present | Writable.
                     mapper
-                        .map_page(vaddr, paddr, PAGE_WRITABLE | PAGE_PRESENT)
+                        .map_page(vaddr, paddr, page_flags | PAGE_PRESENT)
                         .expect("Failed to map page");
                 }
             }
@@ -198,6 +200,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // Find RELA section and apply R_X86_64_RELATIVE relocations
     let mut reloc_count = 0usize;
     let mut applied_count = 0usize;
+    let mut reloc_errors = 0usize;
     for section in elf.section_iter() {
         if let Ok(name) = section.get_name(&elf) {
             if name == ".rela.dyn" || name.starts_with(".rela") {
@@ -213,47 +216,70 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                         reloc_count += 1;
                         // R_X86_64_RELATIVE = 8
                         let r_type = rela.get_type();
-                        if r_type == 8u32 {
-                            // R_X86_64_RELATIVE: *reloc_addr = base + addend
-                            let reloc_offset = rela.get_offset();
-                            let addend = rela.get_addend();
+                        match r_type {
+                            8u32 => {
+                                // R_X86_64_RELATIVE: *reloc_addr = base + addend
+                                let reloc_offset = rela.get_offset();
+                                let addend = rela.get_addend();
 
-                            // Find which segment this relocation belongs to
-                            let mut found = false;
-                            for &(seg_virt, seg_phys, seg_size) in &segment_info {
-                                if reloc_offset >= seg_virt && reloc_offset < seg_virt + seg_size {
-                                    // Calculate physical address of relocation target
-                                    let reloc_phys = seg_phys + (reloc_offset - seg_virt);
-                                    // Apply relocation: write base + addend
-                                    // Base is KERNEL_BASE since we're relocating from 0 to KERNEL_BASE
-                                    let value =
-                                        (KERNEL_BASE as i64).wrapping_add(addend as i64) as u64;
+                                // Find which segment this relocation belongs to
+                                let mut found = false;
+                                for &(seg_virt, seg_phys, seg_size) in &segment_info {
+                                    if reloc_offset >= seg_virt
+                                        && reloc_offset < seg_virt + seg_size
+                                    {
+                                        // Calculate physical address of relocation target
+                                        let reloc_phys = seg_phys + (reloc_offset - seg_virt);
+                                        // Apply relocation: write base + addend
+                                        // Base is KERNEL_BASE since we're relocating from 0 to KERNEL_BASE
+                                        let value = (KERNEL_BASE as i64)
+                                            .wrapping_add(addend as i64) as u64;
 
-                                    // Debug first 5 relocations
-                                    if applied_count < 5 {
-                                        info!("RELA[{}]: off=0x{:x} add=0x{:x} val=0x{:x} phys=0x{:x}", 
-                                            applied_count, reloc_offset, addend, value, reloc_phys);
+                                        // Debug first 5 relocations
+                                        if applied_count < 5 {
+                                            info!("RELA[{}]: off=0x{:x} add=0x{:x} val=0x{:x} phys=0x{:x}", 
+                                                applied_count, reloc_offset, addend, value, reloc_phys);
+                                        }
+
+                                        unsafe {
+                                            *(reloc_phys as *mut u64) = value;
+                                        }
+                                        applied_count += 1;
+                                        found = true;
+                                        break;
                                     }
-
-                                    unsafe {
-                                        *(reloc_phys as *mut u64) = value;
-                                    }
-                                    applied_count += 1;
-                                    found = true;
-                                    break;
+                                }
+                                if !found {
+                                    reloc_errors += 1;
+                                    error!(
+                                        "RELA[{}]: off=0x{:x} not found in load segments",
+                                        reloc_count, reloc_offset
+                                    );
                                 }
                             }
-                            if !found && reloc_count <= 5 {
-                                info!(
-                                    "RELA[{}]: off=0x{:x} NOT FOUND in segments!",
-                                    reloc_count, reloc_offset
-                                );
+                            other => {
+                                reloc_errors += 1;
+                                if reloc_errors <= 5 {
+                                    error!(
+                                        "Unsupported relocation type {} at offset 0x{:x}",
+                                        other,
+                                        rela.get_offset()
+                                    );
+                                }
                             }
                         }
                     }
                 }
             }
         }
+    }
+    if reloc_errors > 0 {
+        error!(
+            "Relocation processing failed: {} error(s) out of {} entries",
+            reloc_errors, reloc_count
+        );
+        boot_services.stall(10_000_000);
+        return Status::LOAD_ERROR;
     }
     info!("Applied {}/{} relocations", applied_count, reloc_count);
 
@@ -286,10 +312,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // 4. Calculate Max Physical Address
     // We allocate a large buffer to avoid reallocation issues
     let mmap_size = boot_services.memory_map_size().map_size + 8 * 4096;
-    let mut mmap_buf = Vec::with_capacity(mmap_size);
-    unsafe {
-        mmap_buf.set_len(mmap_size);
-    }
+    let mut mmap_buf = vec![0u8; mmap_size];
     let map = boot_services
         .memory_map(&mut mmap_buf)
         .expect("Failed to get mmap");
@@ -342,7 +365,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     }
 
     // 6. Populate Boot Info
-    use boot_proto::ExoBootInfo;
+    use boot_proto::{ExoBootInfo, MemoryDescriptor as BootMemoryDescriptor};
 
     info!("Allocating BootInfo...");
     let boot_info_phys =
@@ -444,17 +467,25 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     let (_runtime, mmap) = system_table.exit_boot_services();
 
     // Update Memory Map
-    let count = mmap.entries().len();
+    let mmap_entries = mmap.entries();
+    let count = mmap_entries.len();
     boot_info.memory_map.count = count as u64;
 
-    // Copy to mmap_buf
-    let dest_ptr = mmap_buf.as_mut_ptr() as *mut uefi::table::boot::MemoryDescriptor;
-    for (i, desc) in mmap.entries().enumerate() {
-        unsafe {
-            *dest_ptr.add(i) = *desc;
-        }
+    // Copy to aligned buffer and pass HHDM pointer to kernel
+    let mut boot_mmap: Vec<BootMemoryDescriptor> = Vec::with_capacity(count);
+    for desc in mmap_entries {
+        boot_mmap.push(BootMemoryDescriptor {
+            r#type: desc.ty.0,
+            pad: 0,
+            phys_start: desc.phys_start,
+            virt_start: desc.virt_start,
+            page_count: desc.page_count,
+            attribute: desc.att.bits(),
+        });
     }
-    boot_info.memory_map.entries = mmap_buf.as_ptr() as *const _;
+    let boot_mmap_ptr = boot_mmap.as_ptr();
+    core::mem::forget(boot_mmap); // keep memory map alive for kernel
+    boot_info.memory_map.entries = (hhdm_start + boot_mmap_ptr as u64) as *const _;
 
     // 8. Switch CR3 & Jump
     // Kernel is statically linked at higher-half - entry point is already at correct address
@@ -529,29 +560,31 @@ fn load_kernel(
     let mut root = fs.open_volume().map_err(|_| Status::ABORTED)?;
 
     // 3. Convert filename to UCS-2 (UTF-16)
-    // Standard UEFI paths use backslashes, but root opening often accepts basenames.
-    // We construct a simple buffer.
-    let mut path_buf = [0u16; 128];
-    if filename.len() >= 127 {
+    // Try both bare name and a leading backslash to handle firmware differences.
+    let name_utf16: Vec<u16> = filename.encode_utf16().collect();
+    if name_utf16.len() >= 127 {
         return Err(Status::INVALID_PARAMETER);
     }
 
-    // Manual copy to CStr16 buffer
-    let mut len = 0;
-    // Prefix with backslash? Some firmwares prefer it relative to root.
-    // Let's try direct name first.
-    for (i, c) in filename.chars().enumerate() {
-        path_buf[i] = c as u16;
-        len += 1;
-    }
-    path_buf[len] = 0; // Null terminator
+    // Primary path: bare filename
+    let mut path_buf = [0u16; 128];
+    path_buf[..name_utf16.len()].copy_from_slice(&name_utf16);
+    path_buf[name_utf16.len()] = 0; // Null terminator
+    let path = CStr16::from_u16_with_nul(&path_buf[..=name_utf16.len()])
+        .map_err(|_| Status::INVALID_PARAMETER)?;
 
-    let path =
-        CStr16::from_u16_with_nul(&path_buf[..=len]).map_err(|_| Status::INVALID_PARAMETER)?;
+    // Fallback path: leading backslash
+    let mut alt_path_buf = [0u16; 129];
+    alt_path_buf[0] = b'\\' as u16;
+    alt_path_buf[1..=name_utf16.len()].copy_from_slice(&name_utf16);
+    alt_path_buf[name_utf16.len() + 1] = 0;
+    let alt_path = CStr16::from_u16_with_nul(&alt_path_buf[..=name_utf16.len() + 1])
+        .map_err(|_| Status::INVALID_PARAMETER)?;
 
-    // 4. Open file
+    // 4. Open file (try bare name, fall back to leading backslash)
     let file_handle = root
         .open(path, FileMode::Read, FileAttribute::empty())
+        .or_else(|_| root.open(alt_path, FileMode::Read, FileAttribute::empty()))
         .map_err(|_| Status::NOT_FOUND)?;
 
     let mut file = file_handle.into_regular_file().ok_or(Status::ABORTED)?;
@@ -570,17 +603,21 @@ fn load_kernel(
 
     info!("Found file. Size: {}", size);
 
-    // 6. Allocate buffer and read
-    let mut buffer = Vec::with_capacity(size as usize);
-    unsafe {
-        buffer.set_len(size as usize);
+    // 6. Allocate buffer and read (avoid uninitialized memory)
+    if size > usize::MAX as u64 {
+        return Err(Status::OUT_OF_RESOURCES);
     }
-
-    let read_size = file.read(&mut buffer).map_err(|_| Status::ABORTED)?;
-
-    if read_size != size as usize {
-        // Partial read?
-        return Err(Status::ABORTED);
+    let mut buffer = vec![0u8; size as usize];
+    let mut total_read = 0usize;
+    while total_read < buffer.len() {
+        let read_size = file
+            .read(&mut buffer[total_read..])
+            .map_err(|_| Status::ABORTED)?;
+        if read_size == 0 {
+            // EOF before expected size
+            return Err(Status::ABORTED);
+        }
+        total_read += read_size;
     }
 
     Ok(buffer)

@@ -4,6 +4,10 @@
 // - RMRR regions (segment, base, limit, device scopes)
 
 #![allow(dead_code)]
+#![allow(clippy::pub_underscore_fields)]
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::ptr_as_ptr)]
 
 use alloc::vec::Vec;
 use core::mem;

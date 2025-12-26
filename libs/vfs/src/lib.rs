@@ -15,7 +15,11 @@
 //!
 
 #![no_std]
+#![allow(clippy::cargo_common_metadata)]
+#![allow(clippy::doc_markdown)]
 #![allow(clippy::use_self)] // Explicit type names in From impl for clarity
+#![allow(clippy::match_same_arms)]
+#![allow(clippy::missing_errors_doc)]
 #![allow(clippy::bool_assert_comparison)] // assert_eq!(x, true) clearer in tests
 
 #[cfg(feature = "alloc")]
