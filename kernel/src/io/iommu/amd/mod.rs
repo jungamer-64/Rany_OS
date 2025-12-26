@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use x86_64::PhysAddr;
 
-use crate::io::acpi::ivrs::IvhdDeviceEntry;
+use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
 
 use super::interface::{IommuDriver, IommuFuture};
 use super::registry::{get_iommu_driver, init_driver};
@@ -23,20 +23,89 @@ pub struct AmdIommuUnit {
     pub device_entries: Vec<IvhdDeviceEntry>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AmdIvmdRange {
+    pub segment: u16,
+    pub devid_start: u16,
+    pub devid_end: u16,
+    pub range_start: u64,
+    /// End address (exclusive), computed as start + length.
+    pub range_end: u64,
+    pub unity_map: bool,
+    pub read: bool,
+    pub write: bool,
+    pub exclusion: bool,
+}
+
+impl AmdIvmdRange {
+    fn from_ivmd(ivmd: IvmdInfo) -> Option<Self> {
+        const IVMD_TYPE_ALL: u8 = 0x20;
+        const IVMD_TYPE: u8 = 0x21;
+        const IVMD_TYPE_RANGE: u8 = 0x22;
+        const IVMD_FLAG_UNITY_MAP: u8 = 0x01;
+        const IVMD_FLAG_IR: u8 = 0x02;
+        const IVMD_FLAG_IW: u8 = 0x04;
+        const IVMD_FLAG_EXCL_RANGE: u8 = 0x08;
+
+        let (devid_start, devid_end) = match ivmd.block_type {
+            IVMD_TYPE_ALL => (0, u16::MAX),
+            IVMD_TYPE => (ivmd.device_id, ivmd.device_id),
+            IVMD_TYPE_RANGE => (ivmd.device_id, ivmd.aux),
+            _ => return None,
+        };
+
+        if devid_end < devid_start {
+            return None;
+        }
+
+        let exclusion = (ivmd.flags & IVMD_FLAG_EXCL_RANGE) != 0;
+        let mut read = (ivmd.flags & IVMD_FLAG_IR) != 0;
+        let mut write = (ivmd.flags & IVMD_FLAG_IW) != 0;
+        if exclusion {
+            read = true;
+            write = true;
+        }
+        let unity_map = (ivmd.flags & IVMD_FLAG_UNITY_MAP) != 0 || exclusion;
+
+        Some(Self {
+            segment: ivmd.pci_segment,
+            devid_start,
+            devid_end,
+            range_start: ivmd.range_start,
+            range_end: ivmd.range_start.saturating_add(ivmd.range_length),
+            unity_map,
+            read,
+            write,
+            exclusion,
+        })
+    }
+
+    fn applies_to_devid(&self, devid: u16) -> bool {
+        devid >= self.devid_start && devid <= self.devid_end
+    }
+}
+
 pub struct AmdIommuDriver {
     units: Vec<AmdIommuUnit>,
+    ivmd_ranges: Vec<AmdIvmdRange>,
 }
 
 impl AmdIommuDriver {
-    pub fn new(units: Vec<AmdIommuUnit>) -> Self {
-        Self { units }
+    pub fn new(units: Vec<AmdIommuUnit>, ivmd_ranges: Vec<AmdIvmdRange>) -> Self {
+        Self {
+            units,
+            ivmd_ranges,
+        }
     }
 
-    pub fn register_driver(units: Vec<AmdIommuUnit>) -> Result<(), IommuError> {
+    pub fn register_driver(
+        units: Vec<AmdIommuUnit>,
+        ivmd_ranges: Vec<AmdIvmdRange>,
+    ) -> Result<(), IommuError> {
         if get_iommu_driver().is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
-        init_driver(Arc::new(AmdIommuDriver::new(units)));
+        init_driver(Arc::new(AmdIommuDriver::new(units, ivmd_ranges)));
         Ok(())
     }
 
@@ -45,6 +114,15 @@ impl AmdIommuDriver {
         self.units
             .iter()
             .find(|unit| unit.segment == device.segment && unit.covers_devid(devid))
+    }
+
+    pub fn ivmd_ranges_for_device(&self, device: DeviceId) -> Vec<AmdIvmdRange> {
+        let devid = device.requester_id();
+        self.ivmd_ranges
+            .iter()
+            .copied()
+            .filter(|range| range.segment == device.segment && range.applies_to_devid(devid))
+            .collect()
     }
 }
 
@@ -206,9 +284,21 @@ pub unsafe fn init_iommu_from_ivrs(
         return Err(IommuError::NotPresent);
     }
 
+    let mut ivmd_ranges = Vec::new();
+    for ivmd in ivrs_info.ivmds {
+        if let Some(range) = AmdIvmdRange::from_ivmd(ivmd) {
+            ivmd_ranges.push(range);
+        }
+    }
+
     let unit_count = units.len();
-    AmdIommuDriver::register_driver(units)?;
-    log::info!("AMD-Vi IVRS parsed ({} unit(s))", unit_count);
+    let ivmd_count = ivmd_ranges.len();
+    AmdIommuDriver::register_driver(units, ivmd_ranges)?;
+    log::info!(
+        "AMD-Vi IVRS parsed ({} unit(s), {} IVMD range(s))",
+        unit_count,
+        ivmd_count
+    );
 
     Ok(())
 }

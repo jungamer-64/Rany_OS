@@ -49,10 +49,23 @@ pub struct IvhdHeader {
     pub iommu_feature: u32,
 }
 
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct IvmdHeader {
+    pub header: IvrsBlockHeader,
+    pub device_id: u16,
+    pub aux: u16,
+    pub pci_segment: u16,
+    pub _reserved: [u8; 6],
+    pub range_start: u64,
+    pub range_length: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct IvrsInfo {
     pub info: u32,
     pub ivhds: Vec<IvhdInfo>,
+    pub ivmds: Vec<IvmdInfo>,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +80,18 @@ pub struct IvhdInfo {
     pub iommu_info: u16,
     pub iommu_feature: u32,
     pub device_entries: Vec<IvhdDeviceEntry>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IvmdInfo {
+    pub block_type: u8,
+    pub flags: u8,
+    pub length: u16,
+    pub device_id: u16,
+    pub aux: u16,
+    pub pci_segment: u16,
+    pub range_start: u64,
+    pub range_length: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +114,19 @@ const IVHD_TYPE_41: u8 = 0x41;
 
 fn is_ivhd(block_type: u8) -> bool {
     matches!(block_type, IVHD_TYPE_10 | IVHD_TYPE_11 | IVHD_TYPE_40 | IVHD_TYPE_41)
+}
+
+const IVMD_TYPE_ALL: u8 = 0x20;
+const IVMD_TYPE: u8 = 0x21;
+const IVMD_TYPE_RANGE: u8 = 0x22;
+
+const IVMD_FLAG_UNITY_MAP: u8 = 0x01;
+const IVMD_FLAG_IR: u8 = 0x02;
+const IVMD_FLAG_IW: u8 = 0x04;
+const IVMD_FLAG_EXCL_RANGE: u8 = 0x08;
+
+fn is_ivmd(block_type: u8) -> bool {
+    matches!(block_type, IVMD_TYPE_ALL | IVMD_TYPE | IVMD_TYPE_RANGE)
 }
 
 const IVHD_DEV_ALL: u8 = 0x01;
@@ -306,6 +344,7 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
     let mut offset = mem::size_of::<IvrsHeader>();
     let base_ptr = addr as *const u8;
     let mut ivhds = Vec::new();
+    let mut ivmds = Vec::new();
 
     while offset + mem::size_of::<IvrsBlockHeader>() <= table_len {
         let entry_ptr = unsafe { base_ptr.add(offset) } as *const IvrsBlockHeader;
@@ -351,6 +390,22 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
                 iommu_feature: ivhd.iommu_feature,
                 device_entries: devices,
             });
+        } else if is_ivmd(entry_type) {
+            if entry_len < mem::size_of::<IvmdHeader>() {
+                offset += entry_len;
+                continue;
+            }
+            let ivmd = unsafe { &*(entry_ptr as *const IvmdHeader) };
+            ivmds.push(IvmdInfo {
+                block_type: ivmd.header.block_type,
+                flags: ivmd.header.flags,
+                length: ivmd.header.length,
+                device_id: ivmd.device_id,
+                aux: ivmd.aux,
+                pci_segment: ivmd.pci_segment,
+                range_start: ivmd.range_start,
+                range_length: ivmd.range_length,
+            });
         }
 
         offset += entry_len;
@@ -359,6 +414,7 @@ pub unsafe fn parse_ivrs(addr: usize) -> Result<IvrsInfo, &'static str> {
     Ok(IvrsInfo {
         info: header.info,
         ivhds,
+        ivmds,
     })
 }
 
@@ -472,6 +528,7 @@ mod tests {
 
         let info = unsafe { parse_ivrs(buf.as_ptr() as usize) }.expect("parse should succeed");
         assert_eq!(info.ivhds.len(), 1);
+        assert!(info.ivmds.is_empty());
         let ivhd_info = &info.ivhds[0];
         assert_eq!(ivhd_info.device_entries.len(), 6);
 
@@ -538,5 +595,69 @@ mod tests {
             }
             _ => panic!("expected ext range entry"),
         }
+    }
+
+    #[test]
+    fn test_parse_ivrs_ivmd_range() {
+        let ivmd = IvmdHeader {
+            header: IvrsBlockHeader {
+                block_type: IVMD_TYPE_RANGE,
+                flags: IVMD_FLAG_UNITY_MAP | IVMD_FLAG_IR | IVMD_FLAG_IW,
+                length: mem::size_of::<IvmdHeader>() as u16,
+            },
+            device_id: 0x0100,
+            aux: 0x010f,
+            pci_segment: 0,
+            _reserved: [0; 6],
+            range_start: 0x1000,
+            range_length: 0x2000,
+        };
+
+        let ivrs_len = mem::size_of::<IvrsHeader>() + mem::size_of::<IvmdHeader>();
+        let ivrs = IvrsHeader {
+            header: AcpiSdtHeader {
+                signature: *b"IVRS",
+                length: ivrs_len as u32,
+                revision: 1,
+                checksum: 0,
+                oem_id: [0; 6],
+                oem_table_id: [0; 8],
+                oem_revision: 0,
+                creator_id: 0,
+                creator_revision: 0,
+            },
+            info: 0,
+            _reserved: 0,
+        };
+
+        let mut buf = Vec::new();
+        let ivrs_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &ivrs as *const IvrsHeader as *const u8,
+                mem::size_of::<IvrsHeader>(),
+            )
+        };
+        buf.extend_from_slice(ivrs_bytes);
+
+        let ivmd_bytes = unsafe {
+            core::slice::from_raw_parts(
+                &ivmd as *const IvmdHeader as *const u8,
+                mem::size_of::<IvmdHeader>(),
+            )
+        };
+        buf.extend_from_slice(ivmd_bytes);
+
+        let info = unsafe { parse_ivrs(buf.as_ptr() as usize) }.expect("parse should succeed");
+        assert!(info.ivhds.is_empty());
+        assert_eq!(info.ivmds.len(), 1);
+
+        let ivmd_info = &info.ivmds[0];
+        assert_eq!(ivmd_info.block_type, IVMD_TYPE_RANGE);
+        assert_eq!(ivmd_info.flags, IVMD_FLAG_UNITY_MAP | IVMD_FLAG_IR | IVMD_FLAG_IW);
+        assert_eq!(ivmd_info.device_id, 0x0100);
+        assert_eq!(ivmd_info.aux, 0x010f);
+        assert_eq!(ivmd_info.pci_segment, 0);
+        assert_eq!(ivmd_info.range_start, 0x1000);
+        assert_eq!(ivmd_info.range_length, 0x2000);
     }
 }

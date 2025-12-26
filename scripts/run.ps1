@@ -249,8 +249,9 @@ function Setup-Keys {
         Write-Step "🔑" "Generating Secure Boot Keys..."
         if (-not (Test-Path $KEYS_DIR)) { New-Item -ItemType Directory -Path $KEYS_DIR | Out-Null }
         
-        $proc = Start-Process -FilePath $SIGNER_TOOL_BIN -ArgumentList "keygen", "--output-dir", "`"$KEYS_DIR`"" -PassThru -NoNewWindow -Wait
-        if ($proc.ExitCode -ne 0) { throw "Key generation failed" }
+        # Direct invocation is more reliable cross-platform than Start-Process -NoNewWindow
+        & $SIGNER_TOOL_BIN keygen --output-dir $KEYS_DIR
+        if ($LASTEXITCODE -ne 0) { throw "Key generation failed" }
         
         Write-Done "Keys generated in $KEYS_DIR"
         Write-Warn "Keep private keys secret!"
@@ -411,10 +412,15 @@ function Start-Qemu {
     }
 
     # Base Arguments
-    # [ExoRust] Use kernel-irqchip=split for IOMMU interrupt remapping
-    # NOTE: WHPX doesn't support kernel-irqchip=split, so skip irqchip setting for WHPX
-    $enableIommu = $Iommu -and (-not $NoIommu)
-    if ($enableIommu -and $accel -ne "whpx") {
+    # [ExoRust] IOMMU: Separate "requested" vs "active" states
+    # - iommuRequested: User wants IOMMU (via -Iommu flag, not -NoIommu)
+    # - iommuActive: IOMMU is actually enabled (WHPX doesn't support it)
+    # This prevents VirtIO-net from using iommu_platform=on when IOMMU is not active
+    $iommuRequested = $Iommu -and (-not $NoIommu)
+    $iommuActive = $iommuRequested -and ($accel -ne "whpx")
+    
+    # NOTE: WHPX doesn't support kernel-irqchip=split, only use it when IOMMU is active
+    if ($iommuActive) {
         $machineSpec = "q35,kernel-irqchip=split"
     } else {
         $machineSpec = "q35"
@@ -437,38 +443,36 @@ function Start-Qemu {
     # [ExoRust] IOMMU (Intel VT-d) Support
     # Required for DMA protection (Design Doc 5.4.1)
     # Enabled by default for ExoRust; use -NoIommu to disable
-    # NOTE: WHPX doesn't support IOMMU (MSI/MMIO emulation fails), so skip entirely
-    $enableIommu = $Iommu -and (-not $NoIommu)
-    if ($enableIommu) {
-        if ($accel -eq "whpx") {
-            # WHPX doesn't support intel-iommu device at all
-            Write-Warn "[IOMMU] Skipped (WHPX does not support intel-iommu device)"
-        } else {
-            $qemuArgs += @("-device", "intel-iommu,intremap=on,caching-mode=on")
-            Write-Done "[IOMMU] Intel VT-d enabled (intremap=on) [DEFAULT]"
-        }
+    if ($iommuRequested -and -not $iommuActive) {
+        Write-Warn "[IOMMU] Skipped (WHPX does not support intel-iommu device)"
+    } elseif ($iommuActive) {
+        $qemuArgs += @("-device", "intel-iommu,intremap=on,caching-mode=on")
+        Write-Done "[IOMMU] Intel VT-d enabled (intremap=on) [DEFAULT]"
     }
     
     # [ExoRust] NUMA Topology Simulation
     # Required for Share-Nothing architecture testing (Design Doc 5.3)
+    # Memory split: ensure mem0 + mem1 = Memory (remainder goes to node1)
     if ($Numa -and $Smp -ge 2) {
-        $coresPerNode = [math]::Floor($Smp / 2)
-        $memPerNode = [math]::Floor($Memory / 2)
+        $coresNode0 = [math]::Floor($Smp / 2)
+        $memNode0 = [math]::Floor($Memory / 2)
+        $memNode1 = $Memory - $memNode0  # Remainder to node1 to ensure exact match with -m
         $qemuArgs += @(
-            "-object", "memory-backend-ram,id=mem0,size=${memPerNode}M",
-            "-object", "memory-backend-ram,id=mem1,size=${memPerNode}M",
-            "-numa", "node,nodeid=0,cpus=0-$($coresPerNode-1),memdev=mem0",
-            "-numa", "node,nodeid=1,cpus=$($coresPerNode)-$($Smp-1),memdev=mem1"
+            "-object", "memory-backend-ram,id=mem0,size=${memNode0}M",
+            "-object", "memory-backend-ram,id=mem1,size=${memNode1}M",
+            "-numa", "node,nodeid=0,cpus=0-$($coresNode0-1),memdev=mem0",
+            "-numa", "node,nodeid=1,cpus=$($coresNode0)-$($Smp-1),memdev=mem1"
         )
-        Write-Done "[NUMA] 2-node topology: $coresPerNode cores, ${memPerNode}MB per node"
+        Write-Done "[NUMA] 2-node topology: node0 $coresNode0 cores ${memNode0}MB, node1 $($Smp - $coresNode0) cores ${memNode1}MB"
     }
     
     # [ExoRust] VirtIO Network with IOMMU Support
     # Required for zero-copy network testing (Design Doc 6.2)
+    # NOTE: iommu_platform only when IOMMU is *active* (not just requested)
     if ($Network) {
         $netdevArgs = "user,id=net0,hostfwd=tcp::5555-:80,hostfwd=udp::5555-:80"
         $deviceArgs = "virtio-net-pci,netdev=net0,mq=on,vectors=10"
-        if ($enableIommu) {
+        if ($iommuActive) {
             $deviceArgs += ",iommu_platform=on,disable-legacy=on"
         }
         $qemuArgs += @("-netdev", $netdevArgs, "-device", $deviceArgs)

@@ -25,4 +25,4 @@ pub use tables::{
 };
 // DMAR parsing info
 pub use dmar::DmarInfo;
-pub use ivrs::IvrsInfo;
+pub use ivrs::{IvmdInfo, IvrsInfo};
