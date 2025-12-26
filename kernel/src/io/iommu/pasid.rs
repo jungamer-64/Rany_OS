@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/io/iommu/pasid.rs
+// ============================================================================
 //! PASID (Process Address Space ID) Support for Scalable Mode
 //!
 //! Intel VT-d Scalable Mode enables per-process DMA isolation using PASID.

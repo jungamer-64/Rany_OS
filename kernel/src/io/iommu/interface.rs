@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/io/iommu/interface.rs
+// ============================================================================
 //! IOMMU backend interfaces (driver/domain).
 
 use alloc::boxed::Box;
@@ -75,8 +78,7 @@ pub trait IommuDriver: Send + Sync {
     ) -> IommuFuture<'a, Result<u64, IommuError>>;
 
     /// Unmap a device DMA range.
-    fn unmap_for_device(&self, device: &DeviceId, iova: u64, size: u64)
-        -> Result<(), IommuError>;
+    fn unmap_for_device(&self, device: &DeviceId, iova: u64, size: u64) -> Result<(), IommuError>;
 
     /// Async unmap for a device (CQ-backed when available).
     fn unmap_for_device_async<'a>(

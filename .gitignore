@@ -16,5 +16,6 @@
 *.json
 /tmp
 
-# Secure boot - never commit secret key!
-keys/kernel.key
+# Secure boot keys - never commit any key material!
+# Contains: kernel.key (secret), kernel_pub.key (public)
+/keys/
