@@ -917,6 +917,127 @@ impl VirtioBlkDevice {
 // Async Futures
 // ============================================================================
 
+#[cfg(test)]
+mod tests {
+    use alloc::sync::Arc;
+    use core::sync::atomic::Ordering;
+    use alloc::vec::Vec;
+
+    use super::*;
+    use crate::mm::{alloc_contiguous_frames, dealloc_contiguous_frames, PAGE_SIZE_4K};
+    use crate::fs::page_cluster_buffer::PageClusterBuffer;
+    use x86_64::PhysAddr;
+
+    #[test]
+    fn test_submit_read_uses_dma_addr() {
+        // Setup small virtqueue memory regions
+        let queue_size: u16 = 8;
+        let mut descs = vec![VringDesc::default(); queue_size as usize];
+        let desc_ptr = descs.as_mut_ptr();
+
+        let mut avail = vec![0u16; 2 + queue_size as usize];
+        let avail_ptr = avail.as_mut_ptr() as *mut VringAvail;
+
+        let used_bytes = core::mem::size_of::<VringUsed>() + (queue_size as usize) * core::mem::size_of::<VringUsedElem>();
+        let mut used_mem = vec![0u8; used_bytes];
+        let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
+
+        let mut notify = Box::new(0u16);
+        let notify_ptr: *mut u16 = &mut *notify;
+
+        let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, notify_ptr) };
+
+        let mut dev = VirtioBlkDevice::new(0);
+        dev.queues.push(Arc::new(spin::Mutex::new(vq)));
+        dev.ready.store(true, Ordering::Release);
+        dev.config.capacity = 1024;
+
+        // Initialize wakers vector
+        let mut w = dev.pending_wakers.lock();
+        w.resize(VIRTQUEUE_MAX_SIZE as usize * dev.queues.len(), None);
+        drop(w);
+
+        // Skip test if contiguous frames unavailable
+        let frames_needed = 1usize;
+        if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
+            let real_size = PAGE_SIZE_4K as usize;
+            let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size).expect("new_from_phys failed");
+            let dma = buf.dma_info().expect("dma_info missing");
+
+            let head = dev.submit_read(0, dma.phys_addr, 512u32, 0).expect("submit_read failed");
+
+            // Inspect descriptor chain: header -> data -> status
+            let header_desc = unsafe { *desc_ptr.add(head as usize) };
+            let data_idx = header_desc.next as usize;
+            let data_desc = unsafe { *desc_ptr.add(data_idx) };
+
+            assert_eq!(data_desc.addr, dma.phys_addr);
+            assert_eq!(data_desc.len, 512u32);
+            assert!((data_desc.flags & vring_flags::VRING_DESC_F_WRITE) != 0);
+
+            // Clean up allocated frames
+            dealloc_contiguous_frames(PhysAddr::new(start_phys.as_u64()), frames_needed);
+        } else {
+            eprintln!("Skipping test: contiguous frames not available");
+        }
+    }
+
+    #[test]
+    fn test_submit_write_uses_dma_addr() {
+        // Setup small virtqueue memory regions
+        let queue_size: u16 = 8;
+        let mut descs = vec![VringDesc::default(); queue_size as usize];
+        let desc_ptr = descs.as_mut_ptr();
+
+        let mut avail = vec![0u16; 2 + queue_size as usize];
+        let avail_ptr = avail.as_mut_ptr() as *mut VringAvail;
+
+        let used_bytes = core::mem::size_of::<VringUsed>() + (queue_size as usize) * core::mem::size_of::<VringUsedElem>();
+        let mut used_mem = vec![0u8; used_bytes];
+        let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
+
+        let mut notify = Box::new(0u16);
+        let notify_ptr: *mut u16 = &mut *notify;
+
+        let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, notify_ptr) };
+
+        let mut dev = VirtioBlkDevice::new(0);
+        dev.queues.push(Arc::new(spin::Mutex::new(vq)));
+        dev.ready.store(true, Ordering::Release);
+        dev.config.capacity = 1024;
+
+        // Initialize wakers vector
+        let mut w = dev.pending_wakers.lock();
+        w.resize(VIRTQUEUE_MAX_SIZE as usize * dev.queues.len(), None);
+        drop(w);
+
+        // Skip test if contiguous frames unavailable
+        let frames_needed = 1usize;
+        if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
+            let real_size = PAGE_SIZE_4K as usize;
+            let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size).expect("new_from_phys failed");
+            let dma = buf.dma_info().expect("dma_info missing");
+
+            let head = dev.submit_write(0, dma.phys_addr, 512u32, 0).expect("submit_write failed");
+
+            // Inspect descriptor chain: header -> data -> status
+            let header_desc = unsafe { *desc_ptr.add(head as usize) };
+            let data_idx = header_desc.next as usize;
+            let data_desc = unsafe { *desc_ptr.add(data_idx) };
+
+            assert_eq!(data_desc.addr, dma.phys_addr);
+            assert_eq!(data_desc.len, 512u32);
+            // For write, device reads from buffer (no VRING_DESC_F_WRITE flag)
+            assert_eq!(data_desc.flags & vring_flags::VRING_DESC_F_WRITE, 0);
+
+            // Clean up allocated frames
+            dealloc_contiguous_frames(PhysAddr::new(start_phys.as_u64()), frames_needed);
+        } else {
+            eprintln!("Skipping test: contiguous frames not available");
+        }
+    }
+}
+
 /// Future for async read operation
 pub struct ReadFuture<'a> {
     device: &'a VirtioBlkDevice,

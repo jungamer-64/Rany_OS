@@ -42,6 +42,8 @@ pub use exchange_heap::{
 pub use frame_allocator::{
     PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K, alloc_frame, alloc_frame_1g, alloc_frame_2m,
     alloc_frame_local, dealloc_frame, frame_allocator_stats, init_frame_allocator, init_numa_frame_allocator,
+    // Contiguous frame helpers
+    alloc_contiguous_frames, dealloc_contiguous_frames,
 };
 #[allow(unused_imports)]
 pub use higher_half::{

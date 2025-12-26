@@ -22,9 +22,9 @@
 #![allow(dead_code)]
 
 // use crate::memory; // not used directly here; use `crate::mm::phys_to_virt` instead
-use crate::sync::AtomicWaker;
 use crate::sync::IrqMutex;
 use crate::sync::PoisonLock;
+use crate::sync::WakerQueue;
 use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
@@ -208,7 +208,7 @@ impl<'a> Future for InvalidationWaiter<'a> {
                 }
 
                 // Not ready yet - register waker and return Pending
-                self.controller.pending_waiter.register(cx.waker());
+                self.controller.pending_waiters.register(cx.waker());
                 Poll::Pending
             }
         }
@@ -266,8 +266,8 @@ pub struct IommuController {
     pub(crate) device_scopes: Vec<IommuDeviceScope>,
     /// Include all devices (from DRHD INCLUDE_PCI_ALL flag)
     pub(crate) include_all: bool,
-    /// Pending waker for async invalidation completion (ISR-safe)
-    pub(crate) pending_waiter: AtomicWaker,
+    /// Pending wakers for async invalidation completion (ISR-safe, supports multiple waiters)
+    pub(crate) pending_waiters: WakerQueue,
     /// Command Queue for offloading register sequences and serialized HW ops
     pub command_queue: Option<crate::io::iommu_cmdqueue::CommandQueue>,
     /// Phase 6: Page Table Recycling Pool (NUMA-aware)
@@ -306,7 +306,7 @@ impl IommuController {
             fault_log: IrqMutex::new(None),
             device_scopes: Vec::new(),
             include_all: false,
-            pending_waiter: AtomicWaker::new(),
+            pending_waiters: WakerQueue::new(),
             command_queue: None,
             // Phase 6: Page Table Pool (default: 8 nodes, 32 tables per node)
             page_table_pool: PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32),
@@ -345,7 +345,7 @@ impl IommuController {
             fault_log: IrqMutex::new(None),
             device_scopes: scopes,
             include_all,
-            pending_waiter: AtomicWaker::new(),
+            pending_waiters: WakerQueue::new(),
             command_queue: None,
             page_table_pool: PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
@@ -604,7 +604,10 @@ impl IommuController {
             return;
         }
 
-        // Context command register invalidation
+        // Context command register invalidation (legacy fallback)
+        // NOTE: The register_lock is held during spin-wait because hardware requires
+        // command serialization (only one CCMD can be in-flight at a time).
+        // Prefer QI when available for better concurrency.
         let cmd: u64 = (1u64 << 63) |          // ICC (Invalidate context-cache)
                        (1u64 << 61) |          // Global invalidation
                        ((domain_id as u64) << 16);
@@ -612,18 +615,13 @@ impl IommuController {
         {
             let _lock = self.register_lock.lock();
             self.write64(regs::CCMD, cmd);
-            // Wait for completion (ICC bit 63 cleared)
+            // Wait for completion (ICC bit 63 cleared) - shorter timeout for responsiveness
             let _ = self.wait_for_condition(
                 || (self.read64(regs::CCMD) & (1u64 << 63)) == 0,
-                10_000,
+                1_000, // Reduced from 10_000 for faster failure detection
                 true,
             );
         }
-
-        // Wait for completion (outside lock? no, this loop was redundant in original or for drain?)
-        // The original code waited TWICE. The second wait seems redundant or is for the actual effect time?
-        // But invalidation writes require checking the bit.
-        // We'll trust the first wait inside the lock.
     }
 
     /// Invalidate IOTLB directly without offloading to a CommandQueue
@@ -642,7 +640,7 @@ impl IommuController {
             return;
         }
 
-        // Fallback to Context command register invalidation (synchronous)
+        // Fallback to CCMD register (legacy path, requires lock during spin-wait)
         let cmd: u64 = (1u64 << 63) | (1u64 << 61) | ((domain_id as u64) << 16);
 
         {
@@ -651,7 +649,7 @@ impl IommuController {
             // Wait for completion (ICC bit 63 cleared)
             let _ = self.wait_for_condition(
                 || (self.read64(regs::CCMD) & (1u64 << 63)) == 0,
-                10_000,
+                1_000, // Reduced for faster failure detection
                 true,
             );
         }
@@ -674,7 +672,7 @@ impl IommuController {
         let iro = ((self.cap & cap_bits::CAP_IRO_MASK) >> 8) as u64;
         let iotlb_reg = self.mmio_base + (iro << 4) + iotlb_regs::IOTLB;
 
-        // Global invalidation with drain
+        // IOTLB register invalidation (legacy path, requires lock during spin-wait)
         let cmd: u64 = iotlb_bits::IOTLB_IVT
             | iotlb_bits::IOTLB_IIRG_GLOBAL
             | iotlb_bits::IOTLB_DR
@@ -684,13 +682,13 @@ impl IommuController {
             let _lock = self.register_lock.lock();
             crate::io::mmio::mmio_write_u64(iotlb_reg as usize, cmd);
 
-            // Wait for completion
+            // Wait for completion (IVT bit cleared)
             let _ = self.wait_for_condition(
                 || {
                     (crate::io::mmio::mmio_read_u64(iotlb_reg as usize) & iotlb_bits::IOTLB_IVT)
                         == 0
                 },
-                10_000,
+                1_000, // Reduced for faster failure detection
                 false,
             );
         }

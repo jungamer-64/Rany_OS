@@ -5,9 +5,15 @@
 //!
 //! Functions for setting up IOMMU protection for PCI devices.
 
+#[cfg(not(test))]
 use super::controller::dma::DomainManager;
-use super::{DeviceId, ecap_bits, get_iommu_group_manager, get_iommu_registry, is_iommu_enabled};
+#[cfg(not(test))]
+use super::{
+    DeviceId, IommuDomainType, ecap_bits, get_iommu_driver, get_iommu_group_manager,
+    get_iommu_registry, is_iommu_enabled,
+};
 
+#[cfg(not(test))]
 #[allow(unused_imports)]
 use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
 
@@ -22,9 +28,18 @@ use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
 /// デバイスは、属するIOMMUグループのドメインに割り当てられます。
 #[cfg(not(test))]
 pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) -> Option<u16> {
-    let registry = get_iommu_registry()?; // NotInitialized -> None
-    let iommu_group_manager = get_iommu_group_manager()?;
-    let pcie_ext_manager = pcie_ext_manager()?;
+    let registry = match get_iommu_registry() {
+        Some(registry) => registry,
+        None => return setup_iommu_for_pci_device_with_driver(device),
+    };
+    let iommu_group_manager = match get_iommu_group_manager() {
+        Some(manager) => manager,
+        None => return setup_iommu_for_pci_device_with_driver(device),
+    };
+    let pcie_ext_manager = match pcie_ext_manager() {
+        Some(manager) => manager,
+        None => return setup_iommu_for_pci_device_with_driver(device),
+    };
 
     let device_id = DeviceId::new(
         device.segment,
@@ -122,6 +137,71 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
             domain_id
         );
     }
+
+    Some(domain_id)
+}
+
+#[cfg(not(test))]
+fn setup_iommu_for_pci_device_with_driver(
+    device: &mut crate::io::pci::PciDeviceInfo,
+) -> Option<u16> {
+    if !is_iommu_enabled() {
+        return None;
+    }
+
+    let driver = get_iommu_driver()?;
+    let device_id = DeviceId::new(
+        device.segment,
+        device.bdf.bus(),
+        device.bdf.device(),
+        device.bdf.function(),
+    );
+
+    if let Some(existing) = device.iommu_domain_id {
+        if driver.attach_device(device_id, existing).is_ok() {
+            return Some(existing);
+        }
+    }
+
+    let default_domain = 0u16;
+    if driver.attach_device(device_id, default_domain).is_ok() {
+        device.iommu_domain_id = Some(default_domain);
+        log::info!(
+            "[IOMMU] Protected PCI device {:?} in default domain {} (no ACS grouping)",
+            device_id,
+            default_domain
+        );
+        return Some(default_domain);
+    }
+
+    let domain_id = match driver.create_domain(None, IommuDomainType::Translated) {
+        Ok(domain_id) => domain_id,
+        Err(e) => {
+            log::error!(
+                "[IOMMU] Failed to create domain for device {:?}: {:?}",
+                device_id,
+                e
+            );
+            return None;
+        }
+    };
+
+    if let Err(e) = driver.attach_device(device_id, domain_id) {
+        log::error!(
+            "[IOMMU] Attach failed for device {:?} to domain {}: {:?}",
+            device_id,
+            domain_id,
+            e
+        );
+        return None;
+    }
+
+    device.iommu_domain_id = Some(domain_id);
+    log::info!(
+        "[IOMMU] Protected PCI device {:?} in per-device domain {} (no ACS grouping)",
+        device_id,
+        domain_id
+    );
 
     Some(domain_id)
 }

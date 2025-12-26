@@ -3313,7 +3313,20 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         let boot_buf = device.read_async(0, 1).await.map_err(FsError::from)?;
         let boot_sector =
             BootSector::try_from(&boot_buf.as_slice()[..BOOT_SECTOR_SIZE])?;
-        let fs = Self::mount_from_boot(boot_sector, device, None)?;
+        let fs = Self::mount_from_boot(boot_sector, device, None, None)?;
+        fs.init_free_clusters_async().await?;
+        Ok(fs)
+    }
+
+    /// FAT32 をゼロコピーデバイスかつカスタムバッファアロケータでマウント（Async）
+    pub async fn mount_zero_copy_with_allocator(
+        device: Arc<dyn ZeroCopyBlockDevice<Buffer = B>>,
+        allocator: Arc<dyn ClusterBufferAllocator>,
+    ) -> FsResult<Arc<Self>> {
+        let boot_buf = device.read_async(0, 1).await.map_err(FsError::from)?;
+        let boot_sector =
+            BootSector::try_from(&boot_buf.as_slice()[..BOOT_SECTOR_SIZE])?;
+        let fs = Self::mount_from_boot(boot_sector, device, None, Some(allocator))?;
         fs.init_free_clusters_async().await?;
         Ok(fs)
     }
@@ -3322,6 +3335,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         boot_sector: BootSector,
         zc_device: Arc<dyn ZeroCopyBlockDevice<Buffer = B>>,
         legacy_device: Option<Arc<dyn BlockDevice>>,
+        allocator: Option<alloc::sync::Arc<dyn ClusterBufferAllocator>>,
     ) -> FsResult<Arc<Self>> {
         // FAT32であることを確認
         let fs_type = boot_sector.fs_type();
@@ -3367,7 +3381,10 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
             32 * 1024 * 1024, // 32MB キャッシュ上限
         ));
 
-        let cluster_buffer_pool = Arc::new(ClusterBufferPool::new(16)?); // 16スロットあれば通常十分
+        let cluster_buffer_pool = match allocator {
+            Some(a) => Arc::new(ClusterBufferPool::with_allocator(16, a)?),
+            None => Arc::new(ClusterBufferPool::new(16)?), // 16スロットあれば通常十分
+        };
         let fs = Arc::new_cyclic(|weak| Self {
             self_weak: weak.clone(),
             legacy_device,
@@ -4804,7 +4821,24 @@ impl Fat32FileSystem<DefaultZeroCopyBuffer> {
 
         // レガシーデバイスをゼロコピー互換アダプタで包む
         let zc_device = Arc::new(BlockDeviceZeroCopyAdapter::new(Arc::clone(&device)));
-        let fs = Self::mount_from_boot(boot_sector, zc_device, Some(device))?;
+        let fs = Self::mount_from_boot(boot_sector, zc_device, Some(device), None)?;
+        fs.init_free_clusters_sync()?;
+        Ok(fs)
+    }
+
+    /// FAT32ファイルシステムをマウント（同期 I/O + カスタムバッファアロケータ）
+    pub fn mount_with_allocator(
+        device: Arc<dyn BlockDevice>,
+        allocator: Arc<dyn ClusterBufferAllocator>,
+    ) -> FsResult<Arc<Self>> {
+        // ブートセクタを読み取り
+        let mut boot_data = [0u8; BOOT_SECTOR_SIZE];
+        device.read_sync(0, &mut boot_data)?;
+
+        let boot_sector = BootSector::try_from(&boot_data[..])?;
+
+        let zc_device = Arc::new(BlockDeviceZeroCopyAdapter::new(Arc::clone(&device)));
+        let fs = Self::mount_from_boot(boot_sector, zc_device, Some(device), Some(allocator))?;
         fs.init_free_clusters_sync()?;
         Ok(fs)
     }

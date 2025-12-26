@@ -1,6 +1,7 @@
 // ============================================================================
 // kernel/src/sync/atomic_waker.rs
 // ============================================================================
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::Waker;
 use spin::Mutex;
@@ -113,6 +114,135 @@ impl AtomicWaker {
 impl Default for AtomicWaker {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ============================================================================
+// Multi-Waker Queue (supports multiple concurrent waiters)
+// ============================================================================
+
+/// ISR-safe Waker queue that supports multiple concurrent waiters
+///
+/// Unlike `AtomicWaker` which only stores a single waker, `WakerQueue` can
+/// store multiple wakers and wake all of them when `wake_all()` is called.
+/// This is essential for scenarios where multiple tasks may await the same
+/// condition (e.g., multiple invalidation requests waiting for hardware).
+///
+/// # Thread Safety
+///
+/// - `register()`: Safe to call from async task context
+/// - `wake_all()`: Safe to call from any context (including ISR via deferred)
+/// - `wake_all_from_isr()`: Safe to call from ISR context (uses deferred queue)
+pub struct WakerQueue {
+    /// Registered wakers
+    wakers: Mutex<Vec<Waker>>,
+    /// Wake-all requested flag (set from ISR if lock fails)
+    wake_requested: AtomicBool,
+}
+
+impl WakerQueue {
+    /// Create a new empty waker queue
+    pub const fn new() -> Self {
+        Self {
+            wakers: Mutex::new(Vec::new()),
+            wake_requested: AtomicBool::new(false),
+        }
+    }
+
+    /// Register a waker to be notified
+    ///
+    /// If a pending wake was requested while no wakers were registered,
+    /// the waker is immediately woken.
+    pub fn register(&self, waker: &Waker) {
+        let mut guard = self.wakers.lock();
+
+        // Check if this waker is already registered (avoid duplicates)
+        let already_registered = guard.iter().any(|w| w.will_wake(waker));
+
+        if !already_registered {
+            guard.push(waker.clone());
+        }
+
+        // If an ISR requested wake-all, process it now
+        if self.wake_requested.swap(false, Ordering::AcqRel) {
+            let wakers: Vec<Waker> = guard.drain(..).collect();
+            drop(guard);
+            for w in wakers {
+                w.wake();
+            }
+        }
+    }
+
+    /// Wake all registered wakers (non-ISR context)
+    pub fn wake_all(&self) {
+        self.wake_requested.store(false, Ordering::Release);
+
+        let mut guard = self.wakers.lock();
+        let wakers: Vec<Waker> = guard.drain(..).collect();
+        drop(guard);
+
+        for w in wakers {
+            w.wake();
+        }
+    }
+
+    /// ISR-safe wake-all: enqueue for deferred processing
+    ///
+    /// If the lock can be acquired immediately, wakes all directly.
+    /// Otherwise, sets the pending flag and enqueues for deferred processing.
+    pub fn wake_all_from_isr(&self) {
+        // Fast path: try to get lock immediately
+        if let Some(mut guard) = self.wakers.try_lock() {
+            let wakers: Vec<Waker> = guard.drain(..).collect();
+            drop(guard);
+            self.wake_requested.store(false, Ordering::Release);
+            for w in wakers {
+                w.wake();
+            }
+            return;
+        }
+
+        // Fallback: mark pending and enqueue for deferred processing
+        self.wake_requested.store(true, Ordering::Release);
+        let ptr = self as *const Self as usize;
+        let _ = DEFERRED_WAKER_QUEUE_QUEUE.push_once(ptr);
+    }
+
+    /// Check if wake-all is pending
+    pub fn is_wake_pending(&self) -> bool {
+        self.wake_requested.load(Ordering::Acquire)
+    }
+
+    /// Get the number of registered wakers
+    pub fn waker_count(&self) -> usize {
+        self.wakers.lock().len()
+    }
+
+    /// Clear all wakers without waking them
+    pub fn clear(&self) {
+        self.wakers.lock().clear();
+        self.wake_requested.store(false, Ordering::Release);
+    }
+}
+
+impl Default for WakerQueue {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// Separate deferred queue for WakerQueue (to distinguish from AtomicWaker)
+static DEFERRED_WAKER_QUEUE_QUEUE: DeferredWakerQueue = DeferredWakerQueue::new();
+
+/// Process all deferred WakerQueue wakes; call from non-ISR context
+pub fn process_deferred_waker_queue_wakes() {
+    while let Some(ptr) = DEFERRED_WAKER_QUEUE_QUEUE.pop() {
+        if ptr == 0 {
+            continue;
+        }
+        // SAFETY: pointer must be to a long-lived WakerQueue instance
+        let wq = unsafe { &*(ptr as *const WakerQueue) };
+        wq.wake_all();
     }
 }
 
@@ -230,8 +360,8 @@ pub fn process_deferred_wakes() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::task::{RawWaker, RawWakerVTable, Waker};
     use core::sync::atomic::AtomicBool;
+    use core::task::{RawWaker, RawWakerVTable, Waker};
 
     fn dummy_waker() -> Waker {
         const VTABLE: RawWakerVTable = RawWakerVTable::new(
@@ -258,14 +388,15 @@ mod tests {
         }
         unsafe fn raw_drop(_data: *const ()) {}
 
-        static VTABLE: RawWakerVTable = RawWakerVTable::new(
-            raw_clone,
-            raw_wake,
-            raw_wake_by_ref,
-            raw_drop,
-        );
+        static VTABLE: RawWakerVTable =
+            RawWakerVTable::new(raw_clone, raw_wake, raw_wake_by_ref, raw_drop);
 
-        unsafe { Waker::from_raw(RawWaker::new(flag as *const AtomicBool as *const (), &VTABLE)) }
+        unsafe {
+            Waker::from_raw(RawWaker::new(
+                flag as *const AtomicBool as *const (),
+                &VTABLE,
+            ))
+        }
     }
 
     #[test]
@@ -298,7 +429,10 @@ mod tests {
         // or the notification is pending in the deferred queue (pending=true).
         let fast_path_woke = flag.load(Ordering::Acquire);
         let pending = atomic_waker.is_wake_pending();
-        assert!(fast_path_woke || pending, "expected either immediate wake or pending flag");
+        assert!(
+            fast_path_woke || pending,
+            "expected either immediate wake or pending flag"
+        );
 
         // Process deferred wakes (simulates Executor loop) to ensure eventual delivery
         process_deferred_wakes();

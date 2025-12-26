@@ -3,8 +3,10 @@
 // ============================================================================
 use super::controller::iova::IovaManager; // For allocate_iova/free_iova on IommuController
 use super::quarantine::QuarantineQueue;
-use super::tables::{PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys};
-use super::types::{DmaMapping, IommuDomainType, IommuError};
+use super::tables::{
+    AmdPte, PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
+};
+use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -232,6 +234,8 @@ pub struct IommuDomain {
     quarantine: Arc<QuarantineQueue>,
     /// Phase 6: Page table recycling pool (shared with controller)
     page_table_pool: Arc<super::page_table_pool::PageTablePool>,
+    /// PTE format (Intel or AMD)
+    pte_format: PteFormat,
 }
 
 unsafe impl Send for IommuDomain {}
@@ -254,6 +258,7 @@ impl IommuDomain {
         supports_1gb: bool,
         domain_type: IommuDomainType,
         page_table_pool: Arc<super::page_table_pool::PageTablePool>,
+        pte_format: PteFormat,
     ) -> Self {
         // Allocate page table on the preferred NUMA node when possible.
         // For Passthrough, we still allocate it to simplify logic (or we could skip it)
@@ -286,6 +291,7 @@ impl IommuDomain {
             page_table_counts,
             quarantine: QuarantineQueue::new(),
             page_table_pool,
+            pte_format,
         }
     }
 
@@ -396,6 +402,9 @@ impl IommuDomain {
     }
 
     /// Map a DMA region
+    ///
+    /// This function is transactional: if any page mapping fails, all successfully
+    /// mapped pages are rolled back before returning the error.
     pub fn map(
         &mut self,
         iova: u64,
@@ -435,6 +444,10 @@ impl IommuDomain {
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
         const SIZE_4KB: u64 = 4096;
 
+        // Track successfully mapped pages for rollback on error
+        // Format: (iova, page_size)
+        let mut mapped_pages: Vec<(u64, u64)> = Vec::new();
+
         while remaining > 0 {
             // Try 1GB page
             if self.supports_1gb
@@ -444,11 +457,20 @@ impl IommuDomain {
                 && (current_phys as u64 & 0x3FFF_FFFF) == 0
             // Extra alignment check for 1GB
             {
-                unsafe { self.map_page_1gb(current_iova, current_phys, read, write) }?;
-                current_iova += SIZE_1GB;
-                current_phys += SIZE_1GB;
-                remaining -= SIZE_1GB;
-                continue;
+                match unsafe { self.map_page_1gb(current_iova, current_phys, read, write) } {
+                    Ok(()) => {
+                        mapped_pages.push((current_iova, SIZE_1GB));
+                        current_iova += SIZE_1GB;
+                        current_phys += SIZE_1GB;
+                        remaining -= SIZE_1GB;
+                        continue;
+                    }
+                    Err(e) => {
+                        // Rollback all successfully mapped pages
+                        self.rollback_mapped_pages(&mapped_pages);
+                        return Err(e);
+                    }
+                }
             }
 
             // Try 2MB page
@@ -457,18 +479,36 @@ impl IommuDomain {
                 && current_iova % SIZE_2MB == 0
                 && current_phys % SIZE_2MB == 0
             {
-                unsafe { self.map_page_2mb(current_iova, current_phys, read, write) }?;
-                current_iova += SIZE_2MB;
-                current_phys += SIZE_2MB;
-                remaining -= SIZE_2MB;
-                continue;
+                match unsafe { self.map_page_2mb(current_iova, current_phys, read, write) } {
+                    Ok(()) => {
+                        mapped_pages.push((current_iova, SIZE_2MB));
+                        current_iova += SIZE_2MB;
+                        current_phys += SIZE_2MB;
+                        remaining -= SIZE_2MB;
+                        continue;
+                    }
+                    Err(e) => {
+                        // Rollback all successfully mapped pages
+                        self.rollback_mapped_pages(&mapped_pages);
+                        return Err(e);
+                    }
+                }
             }
 
             // Fallback to 4KB page
-            self.map_page(current_iova, current_phys, read, write)?;
-            current_iova += SIZE_4KB;
-            current_phys += SIZE_4KB;
-            remaining -= SIZE_4KB;
+            match self.map_page(current_iova, current_phys, read, write) {
+                Ok(()) => {
+                    mapped_pages.push((current_iova, SIZE_4KB));
+                    current_iova += SIZE_4KB;
+                    current_phys += SIZE_4KB;
+                    remaining -= SIZE_4KB;
+                }
+                Err(e) => {
+                    // Rollback all successfully mapped pages
+                    self.rollback_mapped_pages(&mapped_pages);
+                    return Err(e);
+                }
+            }
         }
 
         // Record mapping
@@ -486,6 +526,94 @@ impl IommuDomain {
 
         self.mapped_size += size;
 
+        Ok(())
+    }
+
+    /// Rollback successfully mapped pages on error
+    ///
+    /// Called when `map()` encounters an error after some pages were successfully
+    /// mapped. Unmaps all pages in reverse order to restore the original state.
+    fn rollback_mapped_pages(&mut self, mapped_pages: &[(u64, u64)]) {
+        for (page_iova, page_size) in mapped_pages.iter().rev() {
+            match *page_size {
+                size if size == 1024 * 1024 * 1024 => {
+                    // 1GB page: unmap using PDP level
+                    let _ = self.unmap_super_page_1gb(*page_iova);
+                }
+                size if size == 2 * 1024 * 1024 => {
+                    // 2MB page: unmap using PD level
+                    let _ = self.unmap_super_page_2mb(*page_iova);
+                }
+                _ => {
+                    // 4KB page: unmap using PT level
+                    let _ = self.unmap_page(*page_iova);
+                }
+            }
+        }
+    }
+
+    /// Unmap a 2MB super-page (for rollback)
+    fn unmap_super_page_2mb(&mut self, iova: u64) -> Result<(), IommuError> {
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+
+        unsafe {
+            let pml4_entry = self.page_table.add(pml4_idx);
+            if !(*pml4_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_phys = (*pdp_entry).phys_addr();
+
+            let pd_entry = pd_table.add(pd_idx);
+            if !(*pd_entry).is_present() || !(*pd_entry).is_super_page() {
+                return Err(IommuError::NotMapped);
+            }
+
+            // Clear the entry
+            *pd_entry = SlPte::new();
+
+            // Decrement PD count
+            if let Some(count) = self.page_table_counts.get_mut(&pd_phys) {
+                *count = count.saturating_sub(1);
+            }
+        }
+        Ok(())
+    }
+
+    /// Unmap a 1GB super-page (for rollback)
+    fn unmap_super_page_1gb(&mut self, iova: u64) -> Result<(), IommuError> {
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+
+        unsafe {
+            let pml4_entry = self.page_table.add(pml4_idx);
+            if !(*pml4_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_phys = (*pml4_entry).phys_addr();
+
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() || !(*pdp_entry).is_super_page() {
+                return Err(IommuError::NotMapped);
+            }
+
+            // Clear the entry
+            *pdp_entry = SlPte::new();
+
+            // Decrement PDP count
+            if let Some(count) = self.page_table_counts.get_mut(&pdp_phys) {
+                *count = count.saturating_sub(1);
+            }
+        }
         Ok(())
     }
 
@@ -536,7 +664,8 @@ impl IommuDomain {
                 };
 
                 // Attach to parent (writes parent entry)
-                pdp_scope.attach_to_parent(pml4_entry, pml4_phys);
+                // We are attaching a PDP (Level 3 table) to PML4
+                pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
 
                 newly_allocated[0] = Some(pdp_scope);
             }
@@ -552,7 +681,8 @@ impl IommuDomain {
                     Err(e) => return Err(e),
                 };
 
-                pd_scope.attach_to_parent(pdp_entry, pdp_phys);
+                // We are attaching a PD (Level 2 table) to PDP
+                pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
                 newly_allocated[1] = Some(pd_scope);
             }
             let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
@@ -567,7 +697,8 @@ impl IommuDomain {
                     Err(e) => return Err(e),
                 };
 
-                pt_scope.attach_to_parent(pd_entry, pd_phys);
+                // We are attaching a PT (Level 1 table) to PD
+                pt_scope.attach_to_parent(pd_entry, pd_phys, self.pte_format, 1);
                 newly_allocated[2] = Some(pt_scope);
             }
             let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
@@ -579,7 +710,15 @@ impl IommuDomain {
                 return Err(IommuError::AlreadyMapped);
             }
 
-            *pt_entry = SlPte::mapping(phys, read, write);
+            match self.pte_format {
+                PteFormat::Intel => {
+                    *pt_entry = SlPte::mapping(phys, read, write);
+                }
+                PteFormat::Amd => {
+                    let amd_pte = AmdPte::mapping(phys, read, write, 0); // Level 1 = 4KB
+                    unsafe { *pt_entry = SlPte(amd_pte.0) }; // Transmute to SlPte for storage
+                }
+            }
 
             // Increment PT count
             *self.page_table_counts.entry(pt_phys).or_default() += 1;
@@ -643,7 +782,9 @@ impl IommuDomain {
             // Attach to parent (writes PML4 entry)
             let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
 
-            pdp_scope.attach_to_parent(pml4_entry, pml4_phys);
+            // Attach to parent (writes PML4 entry)
+            // Attaching PDP (Level 3) to PML4
+            pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
             newly_allocated[0] = Some(pdp_scope);
         }
 
@@ -658,7 +799,8 @@ impl IommuDomain {
                 Err(e) => return Err(e),
             };
 
-            pd_scope.attach_to_parent(pdp_entry, pdp_phys);
+            // Attaching PD (Level 2) to PDP
+            pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
             newly_allocated[1] = Some(pd_scope);
         } else if (unsafe { *pdp_entry }).is_super_page() {
             // Already a 1GB super-page at this level
@@ -677,7 +819,15 @@ impl IommuDomain {
         }
 
         // Create 2MB super-page entry
-        unsafe { *pd_entry = SlPte::super_page_2mb(phys, read, write) };
+        match self.pte_format {
+            PteFormat::Intel => unsafe { *pd_entry = SlPte::super_page_2mb(phys, read, write) },
+            PteFormat::Amd => {
+                // For AMD, 2MB page is at Level 2 (PD). Next Level field (9-11) should be 0.
+                // Level 2 entry -> Next Level 0 -> Maps 2MB page
+                let amd_pte = AmdPte::mapping(phys, read, write, 0); // Mapping creates leaf (Next Level 0)
+                unsafe { *pd_entry = SlPte(amd_pte.0) };
+            }
+        }
         // Increment PD count (valid entry)
         *self.page_table_counts.entry(pd_phys).or_default() += 1;
 
@@ -732,7 +882,8 @@ impl IommuDomain {
             // Attach to parent (writes PML4 entry)
             let pml4_phys = virt_ptr_to_phys(pml4_table as *const u8)?;
 
-            pdp_scope.attach_to_parent(pml4_entry, pml4_phys);
+            // Attaching PDP (Level 3) to PML4
+            pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
             newly_allocated_pdp = Some(pdp_scope);
         }
 
@@ -748,7 +899,14 @@ impl IommuDomain {
         }
 
         // Create 1GB super-page entry
-        unsafe { *pdp_entry = SlPte::super_page_1gb(phys, read, write) };
+        match self.pte_format {
+            PteFormat::Intel => unsafe { *pdp_entry = SlPte::super_page_1gb(phys, read, write) },
+            PteFormat::Amd => {
+                // For AMD, 1GB page is at Level 3 (PDP). Next Level field (9-11) should be 0.
+                let amd_pte = AmdPte::mapping(phys, read, write, 0);
+                unsafe { *pdp_entry = SlPte(amd_pte.0) };
+            }
+        }
         // Increment PDP count
         *self.page_table_counts.entry(pdp_phys).or_default() += 1;
 

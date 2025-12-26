@@ -118,6 +118,11 @@ pub trait ZeroCopyBuffer: Send + 'static {
     fn len(&self) -> usize {
         self.as_slice().len()
     }
+
+    /// Optional DMA info for DMA-capable buffers. Default: None.
+    fn dma_info(&self) -> Option<DmaInfo> {
+        None
+    }
 }
 
 /// Mutable zero-copy buffer interface (for write paths).
@@ -203,10 +208,18 @@ impl IoBufferMut for Vec<u8> {
     }
 }
 
+// NOTE: We forward dma info from ZeroCopyBuffer when available. This allows
+// DMA-capable owned buffers to advertise physical addresses while keeping the
+// default behavior (None) for arbitrary owned buffers.
 impl<T: ZeroCopyBuffer> IoBuffer for T {
     #[inline]
     fn as_slice(&self) -> &[u8] {
         self.as_slice()
+    }
+
+    #[inline]
+    fn dma_info(&self) -> Option<DmaInfo> {
+        ZeroCopyBuffer::dma_info(self)
     }
 }
 
