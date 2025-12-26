@@ -10,13 +10,13 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
-use super::super::{
-    IommuController, IommuError,
-    registers::{ecap_bits, gcmd_bits, gsts_bits, regs},
-    tables::{HardwareTable, Zeroable},
-};
+use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
+use crate::io::iommu::{
+    IommuError, ecap_bits, gcmd_bits, gsts_bits, regs,
+    tables::{HardwareTable, Zeroable},
+};
 
 /// Interrupt Remapping Entry (128-bit)
 #[repr(C, align(16))]

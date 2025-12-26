@@ -9,10 +9,14 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use super::super::{
-    ContextEntry, DeviceId, DmaMapping, IommuController, IommuDomain, IommuDomainType, IommuError,
-    PoisonLock, ecap_bits,
+use crate::io::iommu::ecap_bits::ECAP_DT;
+use crate::io::iommu::{
+    ContextEntry, DeviceId, DmaMapping, IommuDomain, IommuDomainType, IommuError, PteFormat,
+    ecap_bits, regs,
 };
+
+use super::IommuController;
+use crate::sync::PoisonLock;
 
 // Import Invalidation traits (if/when moved)
 use super::init::CapabilityManager;
@@ -90,6 +94,7 @@ impl DomainManager for IommuController {
             supports_1gb,
             domain_type,
             self.page_table_pool.clone(),
+            PteFormat::Intel,
         );
         let domain_arc = Arc::new(PoisonLock::new(domain));
 

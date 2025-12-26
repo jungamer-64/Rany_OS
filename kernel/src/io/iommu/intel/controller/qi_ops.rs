@@ -8,9 +8,12 @@
 
 use core::sync::atomic::Ordering;
 
-use super::super::domain::{InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator};
-use super::super::{InvalidationQueueEntry, InvalidationWaiter, IommuController, IommuError, regs};
-use super::utils::IommuUtils; // for wait_for_condition
+use super::utils::IommuUtils;
+use super::{InvalidationWaiter, IommuController};
+use crate::io::iommu::domain::{
+    InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
+};
+use crate::io::iommu::{InvalidationQueueEntry, IommuError, regs}; // for wait_for_condition
 
 pub trait InvalidationOps {
     /// Check if Queued Invalidation is enabled

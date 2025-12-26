@@ -2,7 +2,7 @@
 // kernel/src/io/iommu/tables.rs
 // ============================================================================
 
-use super::types::IommuError;
+use super::types::{IommuError, PteFormat};
 use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -399,8 +399,14 @@ impl SlPte {
     }
 
     /// Check if this is a super-page entry
-    pub fn is_super_page(&self) -> bool {
-        (self.0 & Self::SUPER_PAGE) != 0
+    pub fn is_super_page(&self, format: PteFormat) -> bool {
+        match format {
+            PteFormat::Intel => (self.0 & Self::SUPER_PAGE) != 0,
+            PteFormat::Amd => {
+                // AMD: Next Level field (Bits 9-11) is 0 for pages (leaves) at PD/PDP levels
+                ((self.0 >> 9) & 0x7) == 0
+            }
+        }
     }
 
     /// Check if present
@@ -410,7 +416,9 @@ impl SlPte {
 
     /// Get physical address
     pub fn phys_addr(&self) -> u64 {
-        self.0 & !0xFFF
+        // Mask out flags (low 12 bits) and high flags (52-63)
+        // Intel/AMD physical address typically in 12-51 range
+        self.0 & 0x000F_FFFF_FFFF_F000
     }
 
     /// Check read permission
@@ -542,9 +550,7 @@ impl PageTableScope {
         })
     }
 
-use super::types::{IommuError, PteFormat};
-
-// ... (lines 6-544)
+    // ... (lines 6-544)
 
     /// Attach the newly allocated table to the provided parent entry.
     /// This writes the parent entry to point to the table and stores the parent information
@@ -555,7 +561,13 @@ use super::types::{IommuError, PteFormat};
     /// * `parent_phys` - Physical address of the parent table (for accounting)
     /// * `format` - PTE format (Intel or AMD)
     /// * `next_level` - For AMD, the level of the table being attached (3=PDP, 2=PD, 1=PT)
-    pub fn attach_to_parent(&mut self, parent_entry: *mut SlPte, parent_phys: u64, format: PteFormat, next_level: u8) {
+    pub fn attach_to_parent(
+        &mut self,
+        parent_entry: *mut SlPte,
+        parent_phys: u64,
+        format: PteFormat,
+        next_level: u8,
+    ) {
         unsafe {
             match format {
                 PteFormat::Intel => {
@@ -699,6 +711,7 @@ pub fn phys_to_virt_usize(phys: u64) -> usize {
 ///     entry.set_context_table(ctx_phys);
 /// }
 /// ```
+#[derive(Debug)]
 pub struct HardwareTable<T: Sized + Copy> {
     /// Virtual address (NonNull for null safety)
     ptr: NonNull<T>,

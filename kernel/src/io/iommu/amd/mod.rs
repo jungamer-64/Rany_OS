@@ -24,10 +24,10 @@ use crate::mm::mapping::phys_to_virt;
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
 
+use super::domain::IommuDomain as DomainState;
 use super::interface::{IommuDriver, IommuFuture};
 use super::registry::{get_iommu_driver, init_driver};
-use super::{DeviceId, IommuConfig, IommuDomainType, IommuError, PageTablePool};
-use super::domain::IommuDomain as DomainState;
+use super::{DeviceId, IommuConfig, IommuDomainType, IommuError, PageTablePool, PteFormat};
 
 const MMIO_DEV_TABLE_OFFSET: u64 = 0x0000;
 const MMIO_CONTROL_OFFSET: u64 = 0x0018;
@@ -137,11 +137,11 @@ impl AmdDeviceTable {
         size_bytes = size_bytes.next_power_of_two();
 
         let frame_count = (size_bytes / crate::io::iommu::iova_allocator::PAGE_SIZE_4K) as usize;
-        let phys_base = buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+        let phys_base =
+            buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
-        let entry_ptr =
-            NonNull::new(virt_base.as_u64() as *mut AmdDeviceTableEntry)
-                .ok_or(IommuError::HardwareError)?;
+        let entry_ptr = NonNull::new(virt_base.as_u64() as *mut AmdDeviceTableEntry)
+            .ok_or(IommuError::HardwareError)?;
 
         unsafe {
             ptr::write_bytes(virt_base.as_u64() as *mut u8, 0, size_bytes as usize);
@@ -243,13 +243,9 @@ impl AmdIvmdRange {
         }
 
         let exclusion = (ivmd.flags & IVMD_FLAG_EXCL_RANGE) != 0;
-        let mut read = (ivmd.flags & IVMD_FLAG_IR) != 0;
-        let mut write = (ivmd.flags & IVMD_FLAG_IW) != 0;
-        if exclusion {
-            read = true;
-            write = true;
-        }
-        let unity_map = (ivmd.flags & IVMD_FLAG_UNITY_MAP) != 0 || exclusion;
+        let read = (ivmd.flags & IVMD_FLAG_IR) != 0;
+        let write = (ivmd.flags & IVMD_FLAG_IW) != 0;
+        let unity_map = (ivmd.flags & IVMD_FLAG_UNITY_MAP) != 0;
 
         Some(Self {
             segment: ivmd.pci_segment,
@@ -293,8 +289,7 @@ impl AmdIommuDriver {
         cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Self {
-        let page_table_pool =
-            PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
+        let page_table_pool = PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
         let mut domain_map = HashMap::new();
         let default_domain = DomainState::new(
             0,
@@ -303,9 +298,15 @@ impl AmdIommuDriver {
             false,
             IommuDomainType::Translated,
             page_table_pool.clone(),
+            PteFormat::Amd,
         );
         let default_domain = Arc::new(PoisonLock::new(default_domain));
-        domain_map.insert(0, AmdDomainInfo { domain: default_domain });
+        domain_map.insert(
+            0,
+            AmdDomainInfo {
+                domain: default_domain,
+            },
+        );
 
         Self {
             units,
@@ -367,12 +368,19 @@ impl AmdIommuDriver {
         for entry in &unit.device_entries {
             match entry {
                 IvhdDeviceEntry::All { flags: entry_flags } => flags |= *entry_flags,
-                IvhdDeviceEntry::Select { devid: entry_devid, flags: entry_flags } => {
+                IvhdDeviceEntry::Select {
+                    devid: entry_devid,
+                    flags: entry_flags,
+                } => {
                     if *entry_devid == devid {
                         flags |= *entry_flags;
                     }
                 }
-                IvhdDeviceEntry::Range { start, end, flags: entry_flags } => {
+                IvhdDeviceEntry::Range {
+                    start,
+                    end,
+                    flags: entry_flags,
+                } => {
                     if devid >= *start && devid <= *end {
                         flags |= *entry_flags;
                     }
@@ -396,22 +404,38 @@ impl AmdIommuDriver {
                         flags |= *entry_flags;
                     }
                 }
-                IvhdDeviceEntry::ExtSelect { devid: entry_devid, flags: entry_flags, .. } => {
+                IvhdDeviceEntry::ExtSelect {
+                    devid: entry_devid,
+                    flags: entry_flags,
+                    ..
+                } => {
                     if *entry_devid == devid {
                         flags |= *entry_flags;
                     }
                 }
-                IvhdDeviceEntry::ExtRange { start, end, flags: entry_flags, .. } => {
+                IvhdDeviceEntry::ExtRange {
+                    start,
+                    end,
+                    flags: entry_flags,
+                    ..
+                } => {
                     if devid >= *start && devid <= *end {
                         flags |= *entry_flags;
                     }
                 }
-                IvhdDeviceEntry::Special { devid: entry_devid, flags: entry_flags, .. } => {
+                IvhdDeviceEntry::Special {
+                    devid: entry_devid,
+                    flags: entry_flags,
+                    ..
+                } => {
                     if *entry_devid == devid {
                         flags |= *entry_flags;
                     }
                 }
-                IvhdDeviceEntry::AcpiHid { devid: entry_devid, flags: entry_flags } => {
+                IvhdDeviceEntry::AcpiHid {
+                    devid: entry_devid,
+                    flags: entry_flags,
+                } => {
                     if *entry_devid == devid {
                         flags |= *entry_flags;
                     }
@@ -463,7 +487,8 @@ impl AmdIommuDriver {
             if (root_phys & 0xfff) != 0 {
                 return Err(IommuError::InvalidAlignment);
             }
-            entry.data[0] |= (root_phys & PM_ADDR_MASK) | (PAGE_MODE_4_LEVEL << DEV_ENTRY_MODE_SHIFT);
+            entry.data[0] |=
+                (root_phys & PM_ADDR_MASK) | (PAGE_MODE_4_LEVEL << DEV_ENTRY_MODE_SHIFT);
         }
 
         if ivhd_flags != 0 {
@@ -493,7 +518,9 @@ impl AmdIommuDriver {
                         aliases.push(*alias);
                     }
                 }
-                IvhdDeviceEntry::AliasRange { start, end, alias, .. } => {
+                IvhdDeviceEntry::AliasRange {
+                    start, end, alias, ..
+                } => {
                     if devid >= *start && devid <= *end && *alias != devid {
                         aliases.push(*alias);
                     }
@@ -522,6 +549,30 @@ impl AmdIommuDriver {
         map_ivmd_ranges(&mut guard, &ranges)
     }
 
+    fn reject_excluded_ivmd_range(
+        &self,
+        device: DeviceId,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        if size == 0 {
+            return Ok(());
+        }
+        let end = iova.checked_add(size).ok_or(IommuError::InvalidAddress)?;
+        for range in self.ivmd_ranges_for_device(device) {
+            if !range.exclusion {
+                continue;
+            }
+            if range.range_end <= range.range_start {
+                continue;
+            }
+            if iova < range.range_end && end > range.range_start {
+                return Err(IommuError::InvalidAddress);
+            }
+        }
+        Ok(())
+    }
+
     fn device_id_from_devid(segment: u16, devid: u16) -> DeviceId {
         let bus = (devid >> 8) as u8;
         let devfn = (devid & 0xff) as u8;
@@ -530,11 +581,7 @@ impl AmdIommuDriver {
         DeviceId::new(segment, bus, device, function)
     }
 
-    fn invalidate_device_entry_by_devid(
-        &self,
-        segment: u16,
-        devid: u16,
-    ) -> Result<(), IommuError> {
+    fn invalidate_device_entry_by_devid(&self, segment: u16, devid: u16) -> Result<(), IommuError> {
         let device = Self::device_id_from_devid(segment, devid);
         self.invalidate_device_entry(device)
     }
@@ -658,18 +705,19 @@ impl AmdIommuDriver {
         })
     }
 
-    fn invalidate_iotlb_pages(&self, device: DeviceId, iova: u64, size: u64) -> Result<(), IommuError> {
+    fn invalidate_iotlb_pages(
+        &self,
+        device: DeviceId,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
         let unit_idx = self
             .find_unit_index_for_device(device)
             .ok_or(IommuError::DeviceNotFound)?;
         let devid = device.requester_id();
         self.with_cmd_state(unit_idx, |state| {
             state.submit_and_wait(cmd::AmdCommand::invalidate_iotlb_pages(
-                devid,
-                0,
-                iova,
-                size,
-                None,
+                devid, 0, iova, size, None,
             ))
         })
     }
@@ -686,15 +734,17 @@ impl AmdIommuDriver {
             .ok_or(IommuError::DeviceNotFound)?;
         self.with_cmd_state(unit_idx, |state| {
             state.submit_and_wait(cmd::AmdCommand::invalidate_iommu_pages(
-                domain_id,
-                iova,
-                size,
-                None,
+                domain_id, iova, size, None,
             ))
         })
     }
 
-    fn invalidate_domain_pages(&self, domain_id: u16, iova: u64, size: u64) -> Result<(), IommuError> {
+    fn invalidate_domain_pages(
+        &self,
+        domain_id: u16,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
         let mut has_state = false;
         for idx in 0..self.cmd_states.len() {
             if self.cmd_states[idx].is_none() {
@@ -703,10 +753,7 @@ impl AmdIommuDriver {
             has_state = true;
             self.with_cmd_state(idx, |state| {
                 state.submit_and_wait(cmd::AmdCommand::invalidate_iommu_pages(
-                    domain_id,
-                    iova,
-                    size,
-                    None,
+                    domain_id, iova, size, None,
                 ))
             })?;
         }
@@ -803,7 +850,8 @@ impl AmdCommandState {
 }
 
 fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError> {
-    let frame_count = cmd::CMD_BUFFER_BYTES / (crate::io::iommu::iova_allocator::PAGE_SIZE_4K as usize);
+    let frame_count =
+        cmd::CMD_BUFFER_BYTES / (crate::io::iommu::iova_allocator::PAGE_SIZE_4K as usize);
     let phys_base = buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
     let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
     let buffer_ptr = NonNull::new(virt_base.as_u64() as *mut cmd::AmdCommand)
@@ -816,8 +864,7 @@ fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError
 
     let sync_phys = buddy_alloc_contiguous_frames(1).ok_or(IommuError::OutOfMemory)?;
     let sync_virt = phys_to_virt(PhysAddr::new(sync_phys.as_u64()));
-    let sync_ptr =
-        NonNull::new(sync_virt.as_u64() as *mut u64).ok_or(IommuError::HardwareError)?;
+    let sync_ptr = NonNull::new(sync_virt.as_u64() as *mut u64).ok_or(IommuError::HardwareError)?;
     unsafe {
         sync_ptr.as_ptr().write_volatile(0);
     }
@@ -887,9 +934,9 @@ fn max_devid_for_entries(entries: &[IvhdDeviceEntry]) -> u16 {
             IvhdDeviceEntry::Select { devid, .. } => *devid,
             IvhdDeviceEntry::Range { start, end, .. } => (*start).max(*end),
             IvhdDeviceEntry::Alias { devid, alias, .. } => (*devid).max(*alias),
-            IvhdDeviceEntry::AliasRange { start, end, alias, .. } => {
-                (*start).max(*end).max(*alias)
-            }
+            IvhdDeviceEntry::AliasRange {
+                start, end, alias, ..
+            } => (*start).max(*end).max(*alias),
             IvhdDeviceEntry::ExtSelect { devid, .. } => *devid,
             IvhdDeviceEntry::ExtRange { start, end, .. } => (*start).max(*end),
             IvhdDeviceEntry::Special { devid, .. } => *devid,
@@ -903,9 +950,7 @@ fn max_devid_for_entries(entries: &[IvhdDeviceEntry]) -> u16 {
     max
 }
 
-fn init_device_tables(
-    units: &[AmdIommuUnit],
-) -> Result<HashMap<u16, AmdDeviceTable>, IommuError> {
+fn init_device_tables(units: &[AmdIommuUnit]) -> Result<HashMap<u16, AmdDeviceTable>, IommuError> {
     let mut max_by_segment = HashMap::<u16, u16>::new();
     for unit in units {
         let max_devid = max_devid_for_entries(&unit.device_entries);
@@ -938,9 +983,23 @@ fn align_up(value: u64, align: u64) -> u64 {
 
 fn map_ivmd_ranges(domain: &mut DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
     let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+    let mut exclusions = Vec::new();
 
     for range in ranges {
-        if !range.unity_map {
+        if !range.exclusion {
+            continue;
+        }
+
+        let start = align_down(range.range_start, page_size);
+        let end = align_up(range.range_end, page_size);
+        if end <= start {
+            continue;
+        }
+        exclusions.push((start, end));
+    }
+
+    for range in ranges {
+        if !range.unity_map || range.exclusion {
             continue;
         }
 
@@ -950,11 +1009,39 @@ fn map_ivmd_ranges(domain: &mut DomainState, ranges: &[AmdIvmdRange]) -> Result<
             continue;
         }
 
-        let size = end - start;
-        match domain.map(start, start, size, range.read, range.write) {
-            Ok(()) => {}
-            Err(IommuError::AlreadyMapped) => {}
-            Err(err) => return Err(err),
+        let mut segments = alloc::vec![(start, end)];
+        if !exclusions.is_empty() {
+            for (ex_start, ex_end) in &exclusions {
+                let mut next = Vec::new();
+                for (seg_start, seg_end) in segments {
+                    if *ex_end <= seg_start || *ex_start >= seg_end {
+                        next.push((seg_start, seg_end));
+                        continue;
+                    }
+                    if *ex_start > seg_start {
+                        next.push((seg_start, *ex_start));
+                    }
+                    if *ex_end < seg_end {
+                        next.push((*ex_end, seg_end));
+                    }
+                }
+                segments = next;
+                if segments.is_empty() {
+                    break;
+                }
+            }
+        }
+
+        for (seg_start, seg_end) in segments {
+            if seg_end <= seg_start {
+                continue;
+            }
+            let size = seg_end - seg_start;
+            match domain.map(seg_start, seg_start, size, range.read, range.write) {
+                Ok(()) => {}
+                Err(IommuError::AlreadyMapped) => {}
+                Err(err) => return Err(err),
+            }
         }
     }
 
@@ -1074,8 +1161,9 @@ impl IommuDriver for AmdIommuDriver {
     ) -> IommuFuture<'a, Result<u64, IommuError>> {
         Box::pin(async move {
             let domain_id = self.domain_id_for_device(*device)?;
-            let domain = self.domain_for_id(domain_id)?;
             let iova = phys_addr.as_u64();
+            self.reject_excluded_ivmd_range(*device, iova, size)?;
+            let domain = self.domain_for_id(domain_id)?;
 
             {
                 let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
@@ -1088,12 +1176,7 @@ impl IommuDriver for AmdIommuDriver {
         })
     }
 
-    fn unmap_for_device(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
+    fn unmap_for_device(&self, device: &DeviceId, iova: u64, size: u64) -> Result<(), IommuError> {
         crate::task::block_on(async { self.unmap_for_device_async(device, iova, size).await })
     }
 
@@ -1134,6 +1217,7 @@ impl IommuDriver for AmdIommuDriver {
             false,
             domain_type,
             self.page_table_pool.clone(),
+            PteFormat::Amd,
         );
         let info = AmdDomainInfo {
             domain: Arc::new(PoisonLock::new(domain)),
@@ -1292,11 +1376,7 @@ impl IommuDriver for AmdIommuDriver {
         Ok(())
     }
 
-    fn set_domain_numa(
-        &self,
-        domain_id: u16,
-        numa_node: Option<usize>,
-    ) -> Result<(), IommuError> {
+    fn set_domain_numa(&self, domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError> {
         let domain = self.domain_for_id(domain_id)?;
         let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
         guard.numa_node = numa_node;
@@ -1500,12 +1580,111 @@ mod tests {
     fn test_ivhd_flags_for_device_acpi_hid() {
         let device = DeviceId::new(0, 2, 0, 0);
         let devid = device.requester_id();
-        let driver = make_driver(alloc::vec![IvhdDeviceEntry::AcpiHid {
-            devid,
-            flags: 0x03,
-        }]);
+        let driver = make_driver(alloc::vec![IvhdDeviceEntry::AcpiHid { devid, flags: 0x03 }]);
 
         let flags = driver.ivhd_flags_for_device(device);
         assert_eq!(flags, 0x03);
+    }
+
+    #[test]
+    fn test_map_ivmd_ranges_exclusion_splits() {
+        let pool = PageTablePool::new(1, 1);
+        let mut domain = DomainState::new(
+            0,
+            None,
+            false,
+            false,
+            IommuDomainType::Translated,
+            pool,
+            PteFormat::Amd,
+        );
+
+        let ranges = alloc::vec![
+            AmdIvmdRange {
+                segment: 0,
+                devid_start: 0,
+                devid_end: u16::MAX,
+                range_start: 0x1000,
+                range_end: 0x5000,
+                unity_map: true,
+                read: true,
+                write: true,
+                exclusion: false,
+            },
+            AmdIvmdRange {
+                segment: 0,
+                devid_start: 0,
+                devid_end: u16::MAX,
+                range_start: 0x2000,
+                range_end: 0x3000,
+                unity_map: false,
+                read: true,
+                write: true,
+                exclusion: true,
+            },
+        ];
+
+        map_ivmd_ranges(&mut domain, &ranges).expect("map ivmd ranges");
+
+        let mappings = domain.mappings();
+        assert!(mappings.contains_key(&0x1000));
+        assert!(mappings.contains_key(&0x3000));
+        assert!(!mappings.contains_key(&0x2000));
+        assert_eq!(mappings.len(), 2);
+    }
+
+    #[test]
+    fn test_map_for_device_rejects_exclusion_range() {
+        let device = DeviceId::new(0, 0, 1, 0);
+        let devid = device.requester_id();
+        let mut driver = make_driver(Vec::new());
+        driver.ivmd_ranges = alloc::vec![AmdIvmdRange {
+            segment: device.segment,
+            devid_start: devid,
+            devid_end: devid,
+            range_start: 0x2000,
+            range_end: 0x3000,
+            unity_map: false,
+            read: true,
+            write: true,
+            exclusion: true,
+        }];
+
+        let domain_id = 1u16;
+        let domain = DomainState::new(
+            domain_id,
+            None,
+            false,
+            false,
+            IommuDomainType::Translated,
+            driver.page_table_pool.clone(),
+            PteFormat::Amd,
+        );
+        let domain = alloc::sync::Arc::new(PoisonLock::new(domain));
+        {
+            let mut domains = match driver.domains.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            domains.insert(domain_id, AmdDomainInfo { domain });
+        }
+
+        {
+            let mut device_domains = match driver.device_domains.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            device_domains.insert(device, domain_id);
+        }
+
+        let result = unsafe {
+            <AmdIommuDriver as IommuDriver>::map_for_device(
+                &driver,
+                &device,
+                PhysAddr::new(0x2000),
+                0x1000,
+            )
+        };
+        assert_eq!(result, Err(IommuError::InvalidAddress));
     }
 }

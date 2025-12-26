@@ -4,7 +4,8 @@
 
 //! Utility methods for IommuController
 
-use super::super::{IommuController, IommuError};
+use super::IommuController;
+use crate::io::iommu::IommuError;
 
 /// Timer/Wait Utilities
 pub trait IommuUtils {

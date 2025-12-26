@@ -6,7 +6,8 @@
 //!
 //! This module contains IOVA allocation and management methods for `IommuController` via `IovaManager` trait.
 
-use super::super::{IommuController, IommuError, IovaAllocator, IovaGranularity};
+use super::IommuController;
+use crate::io::iommu::{IommuError, IovaAllocator, IovaGranularity};
 
 pub trait IovaManager {
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError>;

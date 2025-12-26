@@ -108,6 +108,9 @@ gimli_unwind = []
 # Usage: `cargo test -p rany_kernel --features pkey_integration_test`
 pkey_integration_test = []
 
+# Feature to enable running integration tests at boot (CI/e2e)
+run-integration-tests = []
+
 std = ["hal/std"]
 
 

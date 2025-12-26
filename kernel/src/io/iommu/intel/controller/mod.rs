@@ -1,0 +1,430 @@
+// ============================================================================
+// kernel/src/io/iommu/intel/controller/mod.rs
+// ============================================================================
+
+//! Intel IOMMU Controller Implementation
+//!
+//! Contains `IommuController` and its implementation modules.
+
+pub mod cpu_cache;
+pub mod dma;
+pub mod fault;
+pub mod init;
+pub mod init_global;
+pub mod iova;
+pub mod ir;
+pub mod perfmon;
+pub mod pi;
+pub mod pri;
+pub mod qi_init;
+pub mod qi_ops;
+pub mod utils;
+
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
+use core::future::Future;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::task::{Context, Poll};
+use hashbrown::HashMap;
+
+use self::ir::InterruptRemapTable;
+use crate::io::iommu::regs::IQH;
+use crate::io::iommu::tables::{ContextEntry, HardwareTable, RootEntry};
+use crate::io::iommu::{
+    DeviceId, FaultLog, InvalidationQueue, IommuDeviceScope, IommuDomain, IommuError,
+    PageRequestQueue, PageTablePool, PostedInterruptPool, SecurityEvent, SecurityNotifier,
+    gcmd_bits, gsts_bits, iova_allocator::IovaAllocator, regs,
+};
+
+use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
+
+// use self::cpu_cache::HardwareContext; // Removed duplicate import
+// In previous file (Step 587), HardwareContext was defined inline.
+
+// ============================================================================
+// Hardware Context
+// ============================================================================
+
+/// Hardware Tables (Root Table and Context Tables)
+#[derive(Debug)]
+pub struct HardwareContext {
+    /// Root Table: 256 entries (16 bytes each = 4KB)
+    pub root_table: Option<HardwareTable<RootEntry>>,
+    /// Context Tables: 256 tables, each with 256 entries (16 bytes each = 4KB)
+    pub context_tables: Vec<HardwareTable<ContextEntry>>,
+}
+
+impl Default for HardwareContext {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl HardwareContext {
+    /// Create an empty HardwareContext (tables will be allocated during init)
+    pub fn new() -> Self {
+        Self {
+            root_table: None,
+            context_tables: Vec::new(),
+        }
+    }
+
+    /// Check if hardware tables are initialized
+    pub fn is_initialized(&self) -> bool {
+        self.root_table.is_some() && !self.context_tables.is_empty()
+    }
+}
+
+unsafe impl Send for HardwareContext {}
+
+// ============================================================================
+// IOMMU Controller
+// ============================================================================
+
+/// IOMMU Controller
+pub struct IommuController {
+    /// MMIO base address
+    pub(crate) mmio_base: u64,
+    /// Capabilities
+    pub(crate) cap: u64,
+    /// Extended capabilities
+    pub(crate) ecap: u64,
+    /// Hardware/Table Lock (protects root_table and context_tables)
+    pub(crate) hardware: PoisonLock<HardwareContext>,
+    /// Register Lock (protects MMIO command sequences)
+    pub(crate) register_lock: PoisonLock<()>,
+
+    /// Domains
+    pub domains: PoisonLock<HashMap<u16, Arc<PoisonLock<IommuDomain>>>>,
+    /// Device to domain mapping
+    pub(crate) device_domains: PoisonLock<HashMap<DeviceId, u16>>,
+    /// Next domain ID
+    pub(crate) next_domain_id: AtomicU64,
+    /// Translation enabled
+    pub(crate) enabled: AtomicBool,
+    /// Interrupt Remapping Table (optional)
+    pub(crate) interrupt_remap_table: PoisonLock<Option<InterruptRemapTable>>,
+    /// Interrupt remapping enabled
+    pub(crate) ir_enabled: AtomicBool,
+    /// Queued Invalidation Queue (optional)
+    pub(crate) invalidation_queue: PoisonLock<Option<InvalidationQueue>>,
+    /// Queued Invalidation enabled
+    pub(crate) qi_enabled: AtomicBool,
+    /// IOMMU Segment number
+    pub segment: u16,
+    /// IOVA allocator
+    pub(crate) iova_allocator: PoisonLock<Option<IovaAllocator>>,
+    /// Set of devices with ATS enabled
+    pub(crate) ats_enabled_devices: PoisonLock<BTreeSet<DeviceId>>,
+    /// Posted Interrupt Descriptor pool
+    pub(crate) pid_pool: PoisonLock<Option<PostedInterruptPool>>,
+    /// Page Request Queue
+    pub(crate) page_request_queue: PoisonLock<Option<PageRequestQueue>>,
+    /// Fault log ring buffer
+    pub(crate) fault_log: IrqMutex<Option<FaultLog>>,
+    /// Device scopes
+    pub(crate) device_scopes: Vec<IommuDeviceScope>,
+    /// Include all devices
+    pub(crate) include_all: bool,
+    /// Pending wakers for async invalidation completion
+    pub(crate) pending_waiters: WakerQueue,
+    /// Command Queue
+    pub command_queue: Option<crate::io::iommu_cmdqueue::CommandQueue>,
+    /// Phase 6: Page Table Recycling Pool
+    pub page_table_pool: Arc<PageTablePool>,
+    /// Phase 7: Security event notifier
+    security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
+    /// Phase 7: Dropped security events counter
+    dropped_security_events: AtomicU64,
+}
+
+unsafe impl Send for IommuController {}
+unsafe impl Sync for IommuController {}
+
+impl IommuController {
+    /// Create a new IOMMU controller
+    pub fn new(mmio_base: u64, segment: u16) -> Self {
+        Self {
+            mmio_base,
+            segment,
+            cap: 0,
+            ecap: 0,
+            hardware: PoisonLock::new(HardwareContext::default()),
+            register_lock: PoisonLock::new(()),
+            domains: PoisonLock::new(HashMap::new()),
+            device_domains: PoisonLock::new(HashMap::new()),
+            next_domain_id: AtomicU64::new(1),
+            enabled: AtomicBool::new(false),
+            interrupt_remap_table: PoisonLock::new(None),
+            ir_enabled: AtomicBool::new(false),
+            invalidation_queue: PoisonLock::new(None),
+            qi_enabled: AtomicBool::new(false),
+            iova_allocator: PoisonLock::new(None),
+            ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
+            pid_pool: PoisonLock::new(None),
+            page_request_queue: PoisonLock::new(None),
+            fault_log: IrqMutex::new(None),
+            device_scopes: Vec::new(),
+            include_all: false,
+            pending_waiters: WakerQueue::new(),
+            command_queue: None,
+            page_table_pool: PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32),
+            security_notifier: spin::Once::new(),
+            dropped_security_events: AtomicU64::new(0),
+        }
+    }
+
+    /// Create a new IOMMU controller with device scopes
+    pub fn new_with_scopes(
+        mmio_base: u64,
+        segment: u16,
+        scopes: Vec<IommuDeviceScope>,
+        include_all: bool,
+    ) -> Self {
+        Self {
+            mmio_base,
+            segment,
+            cap: 0,
+            ecap: 0,
+            hardware: PoisonLock::new(HardwareContext::default()),
+            register_lock: PoisonLock::new(()),
+            domains: PoisonLock::new(HashMap::new()),
+            device_domains: PoisonLock::new(HashMap::new()),
+            next_domain_id: AtomicU64::new(1),
+            enabled: AtomicBool::new(false),
+            interrupt_remap_table: PoisonLock::new(None),
+            ir_enabled: AtomicBool::new(false),
+            invalidation_queue: PoisonLock::new(None),
+            qi_enabled: AtomicBool::new(false),
+            iova_allocator: PoisonLock::new(None),
+            ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
+            pid_pool: PoisonLock::new(None),
+            page_request_queue: PoisonLock::new(None),
+            fault_log: IrqMutex::new(None),
+            device_scopes: scopes,
+            include_all,
+            pending_waiters: WakerQueue::new(),
+            command_queue: None,
+            page_table_pool: PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32),
+            security_notifier: spin::Once::new(),
+            dropped_security_events: AtomicU64::new(0),
+        }
+    }
+
+    /// Initialize the IOMMU controller hardware
+    pub unsafe fn init(&mut self) -> Result<(), IommuError> {
+        // Read Capabilities
+        self.cap = self.read64(regs::CAP);
+        self.ecap = self.read64(regs::ECAP);
+
+        log::info!(
+            "IOMMU @ {:#x}: CAP={:#x}, ECAP={:#x}",
+            self.mmio_base,
+            self.cap,
+            self.ecap
+        );
+
+        // Allocate and set up Root Table
+        let root_table = HardwareTable::new(256, None)?;
+        self.hardware.lock().unwrap().root_table = Some(root_table);
+
+        // Program Root Table Address
+        let root_phys = self
+            .hardware
+            .lock()
+            .unwrap()
+            .root_table
+            .as_ref()
+            .unwrap()
+            .phys_addr();
+        self.write64(regs::RTADDR, root_phys);
+
+        // Update Global Command Register to set Root Table Pointer
+        self.write32(regs::GCMD, gcmd_bits::GCMD_SRTP);
+
+        // Wait for status update
+        use crate::io::iommu::intel::controller::utils::IommuUtils;
+        self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_RTPS) != 0,
+            100_000,
+            false,
+        )?;
+
+        Ok(())
+    }
+
+    /// Get IOTLB register offset from ECAP
+    fn iotlb_reg_offset(&self) -> u64 {
+        use crate::io::iommu::ecap_bits;
+        ((self.ecap & ecap_bits::ECAP_IRO_MASK) >> 8) * 16
+    }
+
+    /// Invalidate IOTLB for a specific domain (Register-based / Direct)
+    pub unsafe fn invalidate_iotlb_direct(&self, domain_id: u16) {
+        use crate::io::iommu::registers::{iotlb_bits, iotlb_regs};
+        let offset = self.iotlb_reg_offset();
+
+        let cmd = iotlb_bits::IOTLB_IIRG_DOMAIN
+            | iotlb_bits::IOTLB_DR
+            | iotlb_bits::IOTLB_DW
+            | ((domain_id as u64) << iotlb_bits::IOTLB_DID_SHIFT)
+            | iotlb_bits::IOTLB_IVT;
+
+        // Write command (IVT bit must be set in the upper 64-bit write or simultaneous)
+        self.write64(offset + iotlb_regs::IOTLB, cmd);
+
+        // Wait for completion (IVT bit cleared)
+        while (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Invalidate Global IOTLB (Register-based / Direct)
+    pub unsafe fn invalidate_iotlb_global(&self) {
+        use crate::io::iommu::registers::{iotlb_bits, iotlb_regs};
+        let offset = self.iotlb_reg_offset();
+
+        let cmd = iotlb_bits::IOTLB_IIRG_GLOBAL
+            | iotlb_bits::IOTLB_DR
+            | iotlb_bits::IOTLB_DW
+            | iotlb_bits::IOTLB_IVT;
+
+        self.write64(offset + iotlb_regs::IOTLB, cmd);
+
+        while (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Invalidate IOTLB (Generic: uses QI if enabled, else Direct)
+    pub fn invalidate_iotlb(&self, domain_id: u16) {
+        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+        if self.is_queued_invalidation_enabled() {
+            let _ = self.qi_invalidate_iotlb_domain(domain_id, true);
+        } else {
+            unsafe {
+                self.invalidate_iotlb_direct(domain_id);
+            }
+        }
+    }
+
+    /// Enable IOMMU Translation
+    pub unsafe fn enable(&self) -> Result<(), IommuError> {
+        // Enable Translation (TE)
+        self.write32(regs::GCMD, gcmd_bits::GCMD_TE);
+
+        use crate::io::iommu::intel::controller::utils::IommuUtils;
+        self.wait_for_condition(
+            || (self.read32(regs::GSTS) & gsts_bits::GSTS_TES) != 0,
+            100_000,
+            false,
+        )?;
+
+        self.enabled.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Disable IOMMU Translation
+    pub unsafe fn disable(&self) -> Result<(), IommuError> {
+        // We generally shouldn't disable but if requested, we try.
+        // Clearing TE bit might not be straightforward if it's Write-1-to-Enable.
+        // Assuming writing 0 to register or implementing Read-Modify-Write if needed.
+        // But for GCMD, usually we write the single command bit we want.
+        // It's possible we can't easily disable without reset.
+        // For now, mark as disabled in software.
+        self.enabled.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// Check if a device is in scope for this IOMMU
+    pub fn device_in_scope(&self, bus: u8, device: u8, function: u8) -> bool {
+        if self.include_all {
+            return true;
+        }
+        for scope in &self.device_scopes {
+            if scope.matches(bus, device, function) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(crate) fn read32(&self, offset: u64) -> u32 {
+        crate::io::mmio::mmio_read_u32((self.mmio_base + offset) as usize)
+    }
+
+    pub(crate) fn write32(&self, offset: u64, value: u32) {
+        crate::io::mmio::mmio_write_u32((self.mmio_base + offset) as usize, value)
+    }
+
+    pub(crate) fn read64(&self, offset: u64) -> u64 {
+        crate::io::mmio::mmio_read_u64((self.mmio_base + offset) as usize)
+    }
+
+    pub(crate) fn write64(&self, offset: u64, value: u64) {
+        crate::io::mmio::mmio_write_u64((self.mmio_base + offset) as usize, value)
+    }
+
+    pub fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
+        let mut set = false;
+        self.security_notifier.call_once(|| {
+            set = true;
+            notifier
+        });
+        set
+    }
+
+    pub(crate) fn notify_security(&self, event: SecurityEvent) {
+        if let Some(notifier) = self.security_notifier.get() {
+            notifier.notify(event);
+        }
+    }
+
+    pub(crate) fn record_dropped_security_event(&self) {
+        self.dropped_security_events.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn flush_dropped_security_events(&self) -> u64 {
+        self.dropped_security_events.swap(0, Ordering::Relaxed)
+    }
+
+    pub fn enable_ats_for_device(&self, device: DeviceId) {
+        match self.ats_enabled_devices.lock() {
+            Ok(mut set) => {
+                set.insert(device);
+            }
+            Err(_) => {
+                log::error!("Failed to lock ats_enabled_devices");
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Invalidation Waiter Future
+// ============================================================================
+
+pub struct InvalidationWaiter<'a> {
+    controller: &'a IommuController,
+    submit_result: Result<u64, IommuError>,
+}
+
+impl<'a> Future for InvalidationWaiter<'a> {
+    type Output = Result<(), IommuError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.submit_result {
+            Err(e) => return Poll::Ready(Err(e)),
+            Ok(expected_tail) => {
+                let head = self.controller.read64(IQH) >> 4;
+                if head == expected_tail {
+                    return Poll::Ready(Ok(()));
+                }
+                self.controller.pending_waiters.register(cx.waker());
+                Poll::Pending
+            }
+        }
+    }
+}

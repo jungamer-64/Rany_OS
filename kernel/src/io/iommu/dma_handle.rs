@@ -27,10 +27,11 @@
 
 use core::marker::PhantomData;
 
-use super::IommuController;
+// use super::IommuController;
 use super::domain::{InvalidateRequest, IommuDomain, IommuInvalidator};
 use super::quarantine::{QuarantineError, QuarantineQueue};
 use super::types::IommuError;
+use crate::io::iommu::intel::controller::IommuController;
 use crate::io::iommu_cmdqueue::IommuCommandKind;
 use crate::ipc::RRef;
 use crate::ipc::rref::RRefRawParts;

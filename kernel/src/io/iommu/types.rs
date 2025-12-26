@@ -224,7 +224,19 @@ impl IommuDeviceScope {
     }
 }
 
-// IommuCapabilities is now defined in controller.rs
+/// IOMMU Capabilities
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IommuCapabilities {
+    pub queued_invalidation: bool,
+    pub interrupt_remapping: bool,
+    pub super_page_2mb: bool,
+    pub super_page_1gb: bool,
+    pub page_walk_coherency: bool,
+    pub snoop_control: bool,
+    pub posted_interrupts: bool,
+    pub scalable_mode: bool,
+    pub performance_monitoring: bool,
+}
 
 /// Fault reason codes (Intel VT-d spec table 33)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,8 +282,3 @@ impl From<u8> for FaultReason {
         }
     }
 }
-
-// Performance monitoring types (PerfMonEvent, PerfMonCounter) are now in registers.rs
-// and re-exported via `pub use self::registers::*;` in the parent module.
-
-// IommuInvalidator trait is now defined in domain.rs alongside InvalidateRequest pattern.

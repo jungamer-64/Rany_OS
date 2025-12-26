@@ -6,7 +6,8 @@
 //!
 //! This module contains initialization and capability-related methods for `IommuController` via `CapabilityManager` trait.
 
-use super::super::{IommuCapabilities, IommuController, cap_bits, ecap_bits};
+use super::IommuController;
+use crate::io::iommu::{IommuCapabilities, cap_bits, ecap_bits};
 
 pub trait CapabilityManager {
     /// Check if Queued Invalidation is supported

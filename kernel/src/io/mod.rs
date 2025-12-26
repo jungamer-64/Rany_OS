@@ -12,8 +12,8 @@ pub mod hid; // HID subsystem (directory) - keyboard.rs, mouse.rs, ps2.rs
 pub mod ide;
 pub mod interrupt_manager; // Unified interrupt management with Waker bridge (設計書 4.2)
 pub mod io_scheduler; // Polling/Executor連携 I/Oスケジューラ
-pub mod iommu_cmdqueue;
 pub mod iommu;
+pub mod iommu_cmdqueue;
 pub mod log;
 pub mod nvme; // NVMe module (directory) - includes driver.rs
 pub mod pci; // PCI common module (directory)
@@ -63,8 +63,7 @@ pub use dma::{
 };
 #[allow(unused_imports)]
 pub use iommu::{
-    DeviceId, DmaMapping, IommuController, IommuDomain, IommuError, disable_iommu, enable_iommu,
-    init_iommu, with_iommu,
+    DeviceId, DmaMapping, IommuDomain, IommuError, disable_iommu, enable_iommu, with_iommu,
 };
 // NVMe common types (from nvme/ directory)
 #[allow(unused_imports)]

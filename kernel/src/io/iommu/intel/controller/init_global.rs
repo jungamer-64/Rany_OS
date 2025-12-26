@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/init_global.rs
+// kernel/src/io/iommu/intel/controller/init_global.rs
 // ============================================================================
 
 //! Global Initialization (from ACPI)
@@ -10,17 +10,19 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::super::tables::phys_to_virt_usize;
-use super::super::{
-    DeviceId, IommuConfig, IommuController, IommuError, IommuRegistry, ReservedMemoryRegion,
-    init_registry,
-};
+use crate::io::iommu::tables::phys_to_virt_usize;
+use crate::io::iommu::{DeviceId, IommuConfig, IommuError, ReservedMemoryRegion};
+// Intel-specific imports
+use super::super::registry::{IommuRegistry, init_registry};
+use super::IommuController;
+
 #[cfg(not(test))]
-use super::super::{IOMMU_GROUP_MANAGER, IommuGroupManager};
+use crate::io::iommu::{groups::IOMMU_GROUP_MANAGER, groups::IommuGroupManager};
+
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
 use super::qi_init::QIManager;
-use crate::io::acpi::dmar; // For parse_dmar
+// use crate::io::acpi::dmar; // For parse_dmar - verified this path exists in kernel/src/io/acpi/dmar.rs
 
 /// Initialize IOMMU using ACPI DMAR table at `dmar_addr`
 pub unsafe fn init_iommu_from_acpi(
@@ -31,8 +33,6 @@ pub unsafe fn init_iommu_from_acpi(
         log::info!("IOMMU disabled by kernel configuration");
         return Err(IommuError::NotPresent);
     }
-
-    // Caller should ensure `dmar_addr` is valid and log if desired.
 
     // Parse DMAR using canonical ACPI parser from drivers/acpi
     let dmar_info = match unsafe { crate::io::acpi::dmar::parse_dmar(dmar_addr) } {
@@ -132,9 +132,6 @@ pub unsafe fn init_iommu_from_acpi(
     // Need to do this before publishing registry because we need mutable access to controllers
     for region in &registry.reserved_regions {
         for device_id in &region.devices {
-            // Find controller for this device
-            // Cannot use registry methods easily yet as we own the data un-wrapped
-            // Manual lookup similar to find_controller_index_for_device
             let mut target_idx = None;
 
             // First pass
@@ -145,7 +142,6 @@ pub unsafe fn init_iommu_from_acpi(
                 if c.include_all {
                     continue;
                 }
-                // Need bus/dev/func from DeviceId
                 let (bus, dev, func) = (device_id.bus, device_id.device, device_id.function);
                 if c.device_in_scope(bus, dev, func) {
                     target_idx = Some(i);
@@ -171,7 +167,7 @@ pub unsafe fn init_iommu_from_acpi(
     #[cfg(not(test))]
     {
         // Register Intel VT-d driver backend (Phase 1 abstraction hook).
-        super::super::intel::IntelIommuDriver::register_driver();
+        super::super::IntelIommuDriver::register_driver();
 
         // Initialize IOMMU Group Manager
         IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
@@ -181,9 +177,6 @@ pub unsafe fn init_iommu_from_acpi(
 }
 
 /// Initialize the global IOMMU (legacy wrapper)
-///
-/// # Safety
-/// Caller must ensure MMIO address is valid
 pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     // Legacy initialization for single IOMMU (segment 0) with default config
     let mmio_virt = phys_to_virt_usize(mmio_base) as u64;
@@ -202,6 +195,6 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     );
 
     init_registry(registry);
-    super::super::intel::IntelIommuDriver::register_driver();
+    super::super::IntelIommuDriver::register_driver();
     Ok(())
 }
