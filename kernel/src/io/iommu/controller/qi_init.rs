@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/controller/qi_init.rs
+// ============================================================================
+
 //! Queued Invalidation Initialization Methods
 //!
 //! This module contains QI initialization and control methods for `IommuController` via `QIManager` trait.

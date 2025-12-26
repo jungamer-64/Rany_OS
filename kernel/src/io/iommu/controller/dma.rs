@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/controller/dma.rs
+// ============================================================================
+
 //! Domain and DMA Mapping Management
 //!
 //! This module contains DMA-related methods for `IommuController` via `DomainManager` trait.

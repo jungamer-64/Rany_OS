@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/tests.rs
+// ============================================================================
+
 //! IOMMU Unit Tests
 //!
 //! Tests for IOMMU controller functionality, domain management, and invalidation.
@@ -894,7 +898,7 @@ fn test_fault_summary_from_fault_record() {
     // Create a mock FaultRecord
     let record = FaultRecord {
         lo: (0x0108u64 << FaultRecord::SID_SHIFT) | 0x42, // source_id=0x0108, reason=0x42
-        hi: 0x2000, // fault_address=0x2000
+        hi: 0x2000,                                       // fault_address=0x2000
     };
 
     let summary = FaultSummary::from(&record);

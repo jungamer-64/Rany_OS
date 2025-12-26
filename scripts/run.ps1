@@ -43,6 +43,12 @@
     Force TCG (software emulation) instead of WHPX/KVM. Slower but more compatible.
 .PARAMETER VerboseOutput
     Show detailed build output.
+.PARAMETER ResetVars
+    Reset UEFI variables (OVMF_VARS.fd) to original state before launch.
+    Useful when UEFI settings become corrupted or cause boot issues.
+.PARAMETER Cpu
+    QEMU CPU model to use (e.g., "max", "host", "qemu64").
+    Default: "host" for KVM/HVF, "max" for WHPX/TCG.
 .EXAMPLE
     # Development: Quick iteration with debug build
     .\run.ps1
@@ -58,6 +64,12 @@
 .EXAMPLE
     # WHPX compatibility: Disable IOMMU for Windows Hypervisor Platform
     .\run.ps1 -NoIommu -Network
+.EXAMPLE
+    # Reset UEFI state when boot fails mysteriously
+    .\run.ps1 -ResetVars
+.EXAMPLE
+    # Force specific CPU model for compatibility
+    .\run.ps1 -Cpu qemu64 -Tcg
 #>
 
 [CmdletBinding()]
@@ -75,6 +87,8 @@ param(
     [switch]$Monitor,
     [switch]$Tcg,          # Force TCG software emulation
     [switch]$VerboseOutput,
+    [switch]$ResetVars,    # Reset UEFI variables to original state
+    [string]$Cpu,          # CPU model override (default: auto based on accel)
     [int]$Memory = 512,
     [int]$Smp = 4,
     [ValidateSet("stdio", "file", "null")]
@@ -136,6 +150,36 @@ function Write-Done($msg) { Write-Host "   -> $msg" -ForegroundColor Green }
 function Write-Warn($msg) { Write-Host "   -> [WARN] $msg" -ForegroundColor Yellow }
 function Write-Fail($msg) { Write-Host "   -> [ERROR] $msg" -ForegroundColor Red }
 
+# QEMU path/value safety helpers
+# QEMU parses -drive value internally with comma as separator, so paths with
+# commas, spaces, or quotes need special handling.
+function Get-FullPath([string]$p) {
+    # Resolve to absolute path, handling relative paths correctly
+    if (Test-Path $p) {
+        return (Resolve-Path -LiteralPath $p).Path
+    }
+    return $p
+}
+
+function Format-QemuValue([string]$v) {
+    # Quote value if it contains QEMU-unsafe characters (comma, space, quote)
+    if ($v -match '[,"\s]') {
+        $escaped = $v -replace '"', '\"'
+        return '"' + $escaped + '"'
+    }
+    return $v
+}
+
+function Get-NewestWriteTime([string]$dir) {
+    # Get the most recent file modification time in a directory tree
+    if (-not (Test-Path $dir)) { return [datetime]::MinValue }
+    $newest = Get-ChildItem $dir -Recurse -File -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($newest) { return $newest.LastWriteTime }
+    return [datetime]::MinValue
+}
+
 function Test-Command($cmd) {
     if (-not (Get-Command $cmd -ErrorAction SilentlyContinue)) {
         throw "Command '$cmd' not found. Please install it or add it to PATH."
@@ -167,9 +211,10 @@ function Test-NightlyToolchain {
     
     $version = rustc --version 2>$null
     if ($version -notmatch "nightly") {
-        Write-Warn "Current toolchain is not nightly. Build might fail."
-        Write-Warn "Recommended: rustup override set nightly"
+        # -Z build-std requires nightly, so this is a hard requirement
+        throw "Nightly toolchain required. Current: $version`nFix: rustup override set nightly"
     }
+    Write-Done "Nightly toolchain: OK"
 }
 
 function Check-Dependencies {
@@ -242,18 +287,18 @@ function Invoke-Lints {
 # --- Build Steps ---
 
 function Build-Signer {
-    # Build if missing, or if Cargo.toml is newer than the binary (source changed)
+    # Build if missing, or if ANY source file is newer than the binary
     $needsBuild = $false
-    $signerCargoToml = Join-Path $SIGNER_TOOL_DIR "Cargo.toml"
     
     if (-not (Test-Path $SIGNER_TOOL_BIN)) {
         $needsBuild = $true
     }
-    elseif (Test-Path $signerCargoToml) {
+    else {
+        # Check if any file in the signer directory is newer than the binary
         $binTime = (Get-Item $SIGNER_TOOL_BIN).LastWriteTime
-        $cargoTime = (Get-Item $signerCargoToml).LastWriteTime
-        if ($cargoTime -gt $binTime) {
-            Write-Done "Signer tool outdated (Cargo.toml newer), rebuilding..."
+        $srcTime = Get-NewestWriteTime $SIGNER_TOOL_DIR
+        if ($srcTime -gt $binTime) {
+            Write-Done "Signer tool outdated (source newer: $($srcTime.ToString('HH:mm:ss'))), rebuilding..."
             $needsBuild = $true
         }
     }
@@ -448,14 +493,33 @@ function Start-Qemu {
     $ovmfVarsLocal = Join-Path $KERNEL_TARGET_DIR "OVMF_VARS.fd"
     
     if (-not (Test-Path $ovmfCode)) { throw "OVMF_CODE.fd missing" }
+    
+    # Reset UEFI variables if requested (fixes mysterious boot failures)
+    if ($ResetVars -and (Test-Path $ovmfVarsLocal)) {
+        Remove-Item $ovmfVarsLocal -Force
+        Write-Done "[UEFI] OVMF_VARS.fd reset to original state"
+    }
     if (-not (Test-Path $ovmfVarsLocal)) { Copy-Item $ovmfVarsOrig $ovmfVarsLocal }
 
     $accel = Get-QemuAccelerator
 
+    # CPU model selection: use explicit -Cpu if given, otherwise auto-select based on accel
+    # - KVM/HVF: "host" for best performance (passthrough)
+    # - WHPX/TCG: "max" for feature detection (host passthrough may not work)
+    $cpuModel = if ($Cpu) { $Cpu } else {
+        switch ($accel) {
+            "kvm" { "host" }
+            "hvf" { "host" }
+            default { "max" }  # whpx/tcg/hax: use max, user can override with -Cpu
+        }
+    }
+    Write-Done "[CPU] $cpuModel"
+
     # Serial Config
+    $serialLogPath = Join-Path $KERNEL_TARGET_DIR "serial.log"
     $serialArg = switch ($Serial) {
         "stdio" { "stdio" }
-        "file" { "file:$KERNEL_TARGET_DIR/serial.log" }
+        "file" { "file:$(Format-QemuValue (Get-FullPath $KERNEL_TARGET_DIR))/serial.log" }
         "null" { "null" }
     }
 
@@ -474,17 +538,23 @@ function Start-Qemu {
         $machineSpec = "q35"
     }
     
+    # Safe path handling for QEMU -drive arguments
+    # QEMU parses these internally with comma as separator
+    $ovmfCodePath = Format-QemuValue (Get-FullPath $ovmfCode)
+    $ovmfVarsPath = Format-QemuValue (Get-FullPath $ovmfVarsLocal)
+    $fatDirPath = Format-QemuValue (Get-FullPath $FatDir)
+    
     $qemuArgs = @(
         "-machine", $machineSpec,
-        "-cpu", "max",
+        "-cpu", $cpuModel,
         "-smp", "$Smp",
         "-m", "${Memory}M",
         "-serial", $serialArg,
         "-no-reboot",
         "-no-shutdown",
-        "-drive", "if=pflash,format=raw,readonly=on,file=$ovmfCode",
-        "-drive", "if=pflash,format=raw,file=$ovmfVarsLocal",
-        "-drive", "file=fat:rw:$FatDir,format=raw,media=disk",
+        "-drive", "if=pflash,format=raw,readonly=on,file=$ovmfCodePath",
+        "-drive", "if=pflash,format=raw,file=$ovmfVarsPath",
+        "-drive", "file=fat:rw:$fatDirPath,format=raw,media=disk",
         "-accel", $accel
     )
     

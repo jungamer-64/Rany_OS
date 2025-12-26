@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/controller/init_global.rs
+// ============================================================================
+
 //! Global Initialization (from ACPI)
 //!
 //! This module contains functions to initialize the IOMMU subsystem

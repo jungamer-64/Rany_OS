@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/intel/mod.rs
+// ============================================================================
+
 //! Intel VT-d backend driver (adapter over existing implementation).
 
 use alloc::boxed::Box;
@@ -36,8 +40,7 @@ impl IntelIommuDriver {
 
 impl IommuDriver for IntelIommuDriver {
     fn is_enabled(&self) -> bool {
-        get_iommu_registry()
-            .map_or(false, |r| !r.controllers.is_empty())
+        get_iommu_registry().map_or(false, |r| !r.controllers.is_empty())
     }
 
     fn enable(&self) -> Result<(), IommuError> {
@@ -206,8 +209,7 @@ impl IommuDriver for IntelIommuDriver {
                                 read: true,
                                 write: true,
                             };
-                            let comp =
-                                cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
+                            let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
                             let rc = comp.await;
                             if rc == 0 {
                                 return Ok(iova);
@@ -253,9 +255,12 @@ impl IommuDriver for IntelIommuDriver {
                         };
 
                         if let Some(ref cq) = controller.command_queue {
-                            let cmd = IommuCommandKind::UnmapRegion { domain: domain_id, iova, size };
-                            let comp =
-                                cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
+                            let cmd = IommuCommandKind::UnmapRegion {
+                                domain: domain_id,
+                                iova,
+                                size,
+                            };
+                            let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
                             let rc = comp.await;
                             if rc == 0 {
                                 return Ok(());

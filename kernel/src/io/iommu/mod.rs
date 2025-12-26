@@ -1,5 +1,5 @@
 // ============================================================================
-// src/io/iommu.rs - IOMMU (Intel VT-d) Support
+// kernel/src/io/iommu/mod.rs - IOMMU (Intel VT-d) Support
 // ============================================================================
 //!
 //! IOMMU サポート (Intel VT-d / AMD-Vi)
