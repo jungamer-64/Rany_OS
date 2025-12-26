@@ -6,7 +6,8 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use super::{DeviceId, IommuConfig, IommuController, ReservedMemoryRegion};
+use super::interface::IommuDriver;
+use super::{IommuConfig, IommuController, ReservedMemoryRegion};
 
 // ============================================================================
 // IOMMU Registry
@@ -117,16 +118,22 @@ impl IommuRegistry {
 /// Global IOMMU Registry (initialized once during boot)
 static IOMMU_REGISTRY: spin::Once<IommuRegistry> = spin::Once::new();
 
+/// Global IOMMU Driver (backend abstraction, initialized once during boot)
+static IOMMU_DRIVER: spin::Once<Arc<dyn IommuDriver>> = spin::Once::new();
+
 /// Get reference to the IOMMU registry
 pub fn get_iommu_registry() -> Option<&'static IommuRegistry> {
     IOMMU_REGISTRY.get()
 }
 
-/// Check if IOMMU is enabled (registry exists and has controllers)
+/// Get reference to the registered IOMMU driver (backend abstraction)
+pub fn get_iommu_driver() -> Option<&'static Arc<dyn IommuDriver>> {
+    IOMMU_DRIVER.get()
+}
+
+/// Check if IOMMU is enabled (driver registered and backend available)
 pub fn is_iommu_enabled() -> bool {
-    IOMMU_REGISTRY
-        .get()
-        .map_or(false, |r| !r.controllers.is_empty())
+    IOMMU_DRIVER.get().map_or(false, |d| d.is_enabled())
 }
 
 /// Initialize the global registry (call once during boot)
@@ -135,6 +142,14 @@ pub fn is_iommu_enabled() -> bool {
 /// Panics if called more than once.
 pub fn init_registry(registry: IommuRegistry) {
     IOMMU_REGISTRY.call_once(|| registry);
+}
+
+/// Initialize the global driver (call once during boot)
+///
+/// # Panics
+/// Panics if called more than once.
+pub fn init_driver(driver: Arc<dyn IommuDriver>) {
+    IOMMU_DRIVER.call_once(|| driver);
 }
 
 /// Get the registry, calling `init_once` for late initialization if needed

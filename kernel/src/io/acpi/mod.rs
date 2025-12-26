@@ -36,3 +36,4 @@ pub use acpi_driver::tables::{
 
 // DMAR (IOMMU) support
 pub mod dmar;
+pub mod ivrs;

@@ -251,11 +251,11 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
     /// Requirements:
     /// - len % block_size == 0
     /// - blocks = len / block_size
-    fn read_into_buf(
-        &self,
+    fn read_into_buf<'a>(
+        &'a self,
         block: u64,
-        dst: &mut dyn IoBufferMut,
-    ) -> ZcFuture<'_, BlockResult<()>> {
+        dst: &'a mut dyn IoBufferMut,
+    ) -> ZcFuture<'a, BlockResult<()>> {
         Box::pin(async move {
             let bs_u32 = self.info().block_size;
             if bs_u32 == 0 {
@@ -275,7 +275,7 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
             }
 
             let buf = self.read_async(block, blocks as u32).await?;
-            let src = buf.as_slice();
+            let src = ZeroCopyBuffer::as_slice(&buf);
             if src.len() < len {
                 return Err(BlockError::IoError);
             }
@@ -289,7 +289,11 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
     /// Requirements:
     /// - len % block_size == 0
     /// - blocks = len / block_size
-    fn write_from_buf(&self, block: u64, src: &dyn IoBuffer) -> ZcFuture<'_, BlockResult<()>> {
+    fn write_from_buf<'a>(
+        &'a self,
+        block: u64,
+        src: &'a dyn IoBuffer,
+    ) -> ZcFuture<'a, BlockResult<()>> {
         let bs_u32 = self.info().block_size;
         if bs_u32 == 0 {
             return Box::pin(async { Err(BlockError::InvalidBufferSize) });
@@ -311,10 +315,10 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
             Ok(buf) => buf,
             Err(err) => return Box::pin(async move { Err(err) }),
         };
-        if buf.as_mut_slice().len() < len {
+        if ZeroCopyBufferMut::as_mut_slice(&mut buf).len() < len {
             return Box::pin(async { Err(BlockError::InvalidBufferSize) });
         }
-        buf.as_mut_slice()[..len].copy_from_slice(src.as_slice());
+        ZeroCopyBufferMut::as_mut_slice(&mut buf)[..len].copy_from_slice(src.as_slice());
 
         Box::pin(async move {
             let _ = self.write_async(block, buf).await?;
@@ -323,13 +327,67 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
     }
 
     /// Convenience wrapper for slice-based reads.
-    fn read_into(&self, block: u64, dst: &mut [u8]) -> ZcFuture<'_, BlockResult<()>> {
-        self.read_into_buf(block, &mut (dst as &mut [u8]))
+    fn read_into<'a>(&'a self, block: u64, dst: &'a mut [u8]) -> ZcFuture<'a, BlockResult<()>> {
+        Box::pin(async move {
+            let bs_u32 = self.info().block_size;
+            if bs_u32 == 0 {
+                return Err(BlockError::InvalidBufferSize);
+            }
+            let bs = bs_u32 as usize;
+            let len = dst.len();
+            if len == 0 {
+                return Ok(());
+            }
+            if (len % bs) != 0 {
+                return Err(BlockError::InvalidBufferSize);
+            }
+            let blocks = len / bs;
+            if blocks > (u32::MAX as usize) {
+                return Err(BlockError::InvalidBufferSize);
+            }
+
+            let buf = self.read_async(block, blocks as u32).await?;
+            let src = ZeroCopyBuffer::as_slice(&buf);
+            if src.len() < len {
+                return Err(BlockError::IoError);
+            }
+            dst.copy_from_slice(&src[..len]);
+            Ok(())
+        })
     }
 
     /// Convenience wrapper for slice-based writes.
     fn write_from(&self, block: u64, src: &[u8]) -> ZcFuture<'_, BlockResult<()>> {
-        self.write_from_buf(block, &(src as &[u8]))
+        let bs_u32 = self.info().block_size;
+        if bs_u32 == 0 {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        let bs = bs_u32 as usize;
+        let len = src.len();
+        if len == 0 {
+            return Box::pin(async { Ok(()) });
+        }
+        if (len % bs) != 0 {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        let blocks = len / bs;
+        if blocks > (u32::MAX as usize) {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+
+        let mut buf = match self.alloc_buffer(len) {
+            Ok(buf) => buf,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        if ZeroCopyBufferMut::as_mut_slice(&mut buf).len() < len {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        ZeroCopyBufferMut::as_mut_slice(&mut buf)[..len].copy_from_slice(src);
+
+        Box::pin(async move {
+            let _ = self.write_async(block, buf).await?;
+            Ok(())
+        })
     }
 }
 
@@ -384,7 +442,7 @@ impl ZeroCopyBlockDevice for BlockDeviceZeroCopyAdapter {
         let device = Arc::clone(&self.device);
         Box::pin(async move {
             // Transitional path: copy into a Vec for legacy BlockDevice.
-            let data = buffer.as_slice().to_vec();
+            let data = ZeroCopyBuffer::as_slice(&buffer).to_vec();
             let _ = BlockWriteFuture::new(device, block, data).await?;
             Ok(buffer)
         })

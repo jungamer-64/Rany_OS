@@ -7,6 +7,7 @@
 extern crate alloc;
 
 pub mod dmar;
+pub mod ivrs;
 pub mod info;
 pub mod parser;
 pub mod tables;
@@ -24,3 +25,4 @@ pub use tables::{
 };
 // DMAR parsing info
 pub use dmar::DmarInfo;
+pub use ivrs::IvrsInfo;

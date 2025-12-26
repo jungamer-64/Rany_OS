@@ -41,6 +41,11 @@ pub static __tls_end: u8 = 0;
 // without pulling in the full memory subsystem and its heavy dependencies.
 #[cfg(any(test, feature = "bench"))]
 pub mod mm {
+    use alloc::alloc::{alloc_zeroed, dealloc, Layout};
+    use core::ptr::NonNull;
+    use x86_64::structures::paging::{PhysFrame, Size4KiB};
+    use x86_64::PhysAddr;
+
     pub mod numa {
         use alloc::alloc::{alloc_zeroed, dealloc, Layout as ALayout};
         use core::alloc::Layout;
@@ -177,6 +182,183 @@ pub mod mm {
             None
         }
     }
+
+    // Minimal address translation helpers for tests/benches.
+    pub mod mapping {
+        use x86_64::{PhysAddr, VirtAddr};
+
+        pub fn virt_to_phys(addr: VirtAddr) -> PhysAddr {
+            PhysAddr::new(addr.as_u64())
+        }
+
+        pub fn phys_to_virt(addr: PhysAddr) -> VirtAddr {
+            VirtAddr::new(addr.as_u64())
+        }
+    }
+
+    pub fn buddy_alloc_frame() -> Option<PhysFrame<Size4KiB>> {
+        let layout = Layout::from_size_align(4096, 4096).ok()?;
+        let ptr = unsafe { alloc_zeroed(layout) };
+        let ptr = NonNull::new(ptr)?;
+        let phys = PhysAddr::new(ptr.as_ptr() as u64);
+        match PhysFrame::from_start_address(phys) {
+            Ok(frame) => Some(frame),
+            Err(_) => {
+                unsafe { dealloc(ptr.as_ptr(), layout) };
+                None
+            }
+        }
+    }
+
+    pub fn buddy_alloc_frame_on_node(_node: usize) -> Option<PhysFrame<Size4KiB>> {
+        buddy_alloc_frame()
+    }
+
+    pub fn buddy_dealloc_frame(frame: PhysFrame<Size4KiB>) {
+        let layout = Layout::from_size_align(4096, 4096).expect("buddy layout");
+        let ptr = frame.start_address().as_u64() as *mut u8;
+        unsafe { dealloc(ptr, layout) };
+    }
+}
+
+// Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).
+#[cfg(test)]
+pub mod ipc {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct DomainId(u64);
+
+    impl DomainId {
+        pub const fn new(id: u64) -> Self {
+            Self(id)
+        }
+
+        pub const fn as_u64(self) -> u64 {
+            self.0
+        }
+    }
+
+    pub mod rref {
+        use alloc::boxed::Box;
+        use core::any::TypeId;
+        use core::ops::{Deref, DerefMut};
+        use core::ptr::NonNull;
+
+        use super::DomainId;
+
+        #[derive(Debug)]
+        pub struct RRef<T: ?Sized> {
+            ptr: NonNull<T>,
+            owner: DomainId,
+        }
+
+        impl<T> RRef<T> {
+            pub fn new(owner: DomainId, val: T) -> Self {
+                let boxed = Box::new(val);
+                let ptr = NonNull::new(Box::into_raw(boxed)).expect("RRef Box pointer is null");
+                Self { ptr, owner }
+            }
+
+            pub unsafe fn from_raw(ptr: NonNull<T>, owner: DomainId) -> Self {
+                Self { ptr, owner }
+            }
+
+            pub fn into_raw(self) -> (NonNull<T>, DomainId) {
+                let ptr = self.ptr;
+                let owner = self.owner;
+                core::mem::forget(self);
+                (ptr, owner)
+            }
+        }
+
+        impl<T: ?Sized> Deref for RRef<T> {
+            type Target = T;
+
+            fn deref(&self) -> &Self::Target {
+                unsafe { self.ptr.as_ref() }
+            }
+        }
+
+        impl<T: ?Sized> DerefMut for RRef<T> {
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                unsafe { self.ptr.as_mut() }
+            }
+        }
+
+        impl<T: ?Sized> Drop for RRef<T> {
+            fn drop(&mut self) {
+                unsafe {
+                    drop(Box::from_raw(self.ptr.as_ptr()));
+                }
+            }
+        }
+
+        unsafe impl<T: ?Sized + Send> Send for RRef<T> {}
+        unsafe impl<T: ?Sized + Sync> Sync for RRef<T> {}
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum RawPartsError {
+            TypeMismatch,
+            SizeMismatch,
+        }
+
+        pub struct RRefRawParts {
+            ptr: NonNull<u8>,
+            owner: DomainId,
+            #[cfg(debug_assertions)]
+            size: usize,
+            #[cfg(debug_assertions)]
+            type_id: TypeId,
+            drop_fn: unsafe fn(NonNull<u8>, DomainId),
+        }
+
+        unsafe impl Send for RRefRawParts {}
+        unsafe impl Sync for RRefRawParts {}
+
+        impl RRefRawParts {
+            pub fn from_rref<T: 'static>(rref: RRef<T>) -> Self {
+                let (ptr, owner) = rref.into_raw();
+
+                unsafe fn drop_impl<T: 'static>(ptr: NonNull<u8>, owner: DomainId) {
+                    let rref: RRef<T> = unsafe { RRef::from_raw(ptr.cast(), owner) };
+                    drop(rref);
+                }
+
+                Self {
+                    ptr: ptr.cast(),
+                    owner,
+                    #[cfg(debug_assertions)]
+                    size: core::mem::size_of::<T>(),
+                    #[cfg(debug_assertions)]
+                    type_id: TypeId::of::<T>(),
+                    drop_fn: drop_impl::<T>,
+                }
+            }
+
+            pub unsafe fn into_rref<T: 'static>(self) -> Result<RRef<T>, RawPartsError> {
+                #[cfg(debug_assertions)]
+                {
+                    if self.type_id != TypeId::of::<T>() {
+                        return Err(RawPartsError::TypeMismatch);
+                    }
+                    if self.size != core::mem::size_of::<T>() {
+                        return Err(RawPartsError::SizeMismatch);
+                    }
+                }
+
+                Ok(unsafe { RRef::from_raw(self.ptr.cast(), self.owner) })
+            }
+
+            pub unsafe fn drop_erased(self) {
+                unsafe { (self.drop_fn)(self.ptr, self.owner) };
+            }
+
+            pub fn owner(&self) -> DomainId {
+                self.owner
+            }
+        }
+    }
+
+    pub use rref::RRef;
 }
 
 // Minimal task/time shims for tests and benches
@@ -196,6 +378,16 @@ pub mod task {
         /// Yield the current task (test stub - no-op)
         pub fn yield_current(_cpu_id: usize) {}
     }
+
+    pub mod per_core_executor {
+        pub fn spawn<F>(_future: F)
+        where
+            F: core::future::Future<Output = ()> + 'static,
+        {
+        }
+    }
+
+    pub async fn sleep_ms(_ms: u64) {}
 
     /// Synchronous helper to drive a Future to completion in tests
     pub fn block_on<F: core::future::Future>(future: F) -> F::Output {
@@ -411,7 +603,7 @@ pub mod time {
 pub mod io {
     // Include only the IOMMU implementation for test builds to avoid
     // pulling in the whole I/O subsystem and its wide dependency graph.
-    #[path = "iommu.rs"]
+    #[path = "iommu/mod.rs"]
     pub mod iommu;
 
     #[path = "iommu_cmdqueue.rs"]
@@ -482,6 +674,9 @@ pub mod io {
     pub mod acpi {
         pub mod dmar {
             pub use acpi_driver::dmar::*;
+        }
+        pub mod ivrs {
+            pub use acpi_driver::ivrs::*;
         }
     }
 }

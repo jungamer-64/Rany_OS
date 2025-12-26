@@ -3,6 +3,12 @@
 //! Tests for IOMMU controller functionality, domain management, and invalidation.
 
 use super::*;
+use crate::io::iommu::controller::dma::DomainManager;
+use crate::io::iommu::controller::iova::IovaManager;
+use crate::io::iommu::controller::ir::InterruptRemapper;
+use crate::io::iommu::controller::pri::PageRequestManager;
+use crate::io::iommu::controller::qi_init::QIManager;
+use crate::io::iommu::controller::qi_ops::InvalidationOps;
 
 #[test]
 fn test_device_id() {
@@ -98,22 +104,21 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
 
-    // Allocate a single ContextEntry and make it Present
-    let boxed = Box::new(ContextEntry::default());
-    let boxed_ptr: *mut ContextEntry = Box::into_raw(boxed);
-    unsafe {
-        (*boxed_ptr).lo = 1;
-    } // set Present bit
+    // Allocate a context table and mark entry 0 as Present
+    let mut table = HardwareTable::<ContextEntry>::new(256, None).expect("context table");
+    if let Some(entry) = table.get_mut(0) {
+        entry.lo = 1;
+    }
 
     // Install table pointer for bus 0
     {
         match ctrl.hardware.lock() {
             Ok(mut hw) => {
-                hw.context_tables.push(boxed_ptr);
+                hw.context_tables.push(table);
             }
             Err(poisoned) => {
                 let mut hw = poisoned.into_inner();
-                hw.context_tables.push(boxed_ptr);
+                hw.context_tables.push(table);
             }
         }
     }
@@ -128,26 +133,29 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     assert!(ctrl.hardware.is_poisoned());
 
     // Call isolate - it should attempt best-effort isolation and clear the Present bit
-    ctrl.isolate_faulting_device(0);
+    let fault = FaultRecord {
+        lo: FaultRecord::FAULT,
+        hi: 0,
+    };
+    let _ = ctrl.isolate_faulting_device(fault);
 
-    // Remove pointer from controller context to avoid dangling pointer later
-    match ctrl.hardware.lock() {
-        Ok(mut hw) => {
-            let p = hw.context_tables.remove(0);
-            assert_eq!(p, boxed_ptr);
-        }
+    let present = match ctrl.hardware.lock() {
+        Ok(hw) => hw
+            .context_tables
+            .get(0)
+            .and_then(|t| t.get(0))
+            .map(|e| e.is_present())
+            .unwrap_or(false),
         Err(poisoned) => {
-            let mut hw = poisoned.into_inner();
-            let p = hw.context_tables.remove(0);
-            assert_eq!(p, boxed_ptr);
+            let hw = poisoned.into_inner();
+            hw.context_tables
+                .get(0)
+                .and_then(|t| t.get(0))
+                .map(|e| e.is_present())
+                .unwrap_or(false)
         }
-    }
-
-    unsafe {
-        assert!(!(*boxed_ptr).is_present());
-        // Free the box
-        let _ = Box::from_raw(boxed_ptr);
-    }
+    };
+    assert!(!present);
 }
 
 #[test]
@@ -169,7 +177,7 @@ fn test_domain_map_poisoned_returns_none() {
 }
 
 #[test]
-fn test_get_domain_for_device_poisoned_returns_none() {
+fn test_get_domain_for_device_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
     let id = ctrl
@@ -192,7 +200,10 @@ fn test_get_domain_for_device_poisoned_returns_none() {
     }
     set_panicking(false);
 
-    assert!(ctrl.get_domain_for_device(device).is_none());
+    assert_eq!(
+        ctrl.get_domain_for_device(device).err(),
+        Some(IommuError::HardwareError)
+    );
 }
 
 #[test]
@@ -477,6 +488,9 @@ fn test_map_for_device_async_and_unmap() {
         IommuConfig::default(),
     );
     init_registry(registry);
+    if get_iommu_driver().is_none() {
+        super::intel::IntelIommuDriver::register_driver();
+    }
 
     // Obtain controller Arc for worker
     let worker_ctrl = arc_ctrl.clone();
@@ -879,8 +893,8 @@ fn test_fault_summary_from_fault_record() {
 
     // Create a mock FaultRecord
     let record = FaultRecord {
-        lo: 0x0108_0000_0000_0042, // source_id=0x0108, reason=0x42
-        hi: 0x2000,                // fault_address=0x2000
+        lo: (0x0108u64 << FaultRecord::SID_SHIFT) | 0x42, // source_id=0x0108, reason=0x42
+        hi: 0x2000, // fault_address=0x2000
     };
 
     let summary = FaultSummary::from(&record);

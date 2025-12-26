@@ -8,9 +8,11 @@ use alloc::vec::Vec;
 
 use super::super::tables::phys_to_virt_usize;
 use super::super::{
-    DeviceId, IOMMU_GROUP_MANAGER, IommuConfig, IommuController, IommuError, IommuGroupManager,
-    IommuRegistry, ReservedMemoryRegion, init_registry,
+    DeviceId, IommuConfig, IommuController, IommuError, IommuRegistry, ReservedMemoryRegion,
+    init_registry,
 };
+#[cfg(not(test))]
+use super::super::{IOMMU_GROUP_MANAGER, IommuGroupManager};
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
 use super::qi_init::QIManager;
@@ -164,6 +166,9 @@ pub unsafe fn init_iommu_from_acpi(
 
     #[cfg(not(test))]
     {
+        // Register Intel VT-d driver backend (Phase 1 abstraction hook).
+        super::super::intel::IntelIommuDriver::register_driver();
+
         // Initialize IOMMU Group Manager
         IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
     }
@@ -193,5 +198,6 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     );
 
     init_registry(registry);
+    super::super::intel::IntelIommuDriver::register_driver();
     Ok(())
 }

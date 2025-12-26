@@ -15,8 +15,10 @@
 
 #![allow(dead_code)]
 
+use crate::io::iommu::{is_iommu_enabled, map_for_dma, unmap_dma};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -25,9 +27,10 @@ use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 use vfs::block::{
     BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
-    BlockResult as VfsBlockResult, IoBuffer, IoBufferMut, OwnedBytes, ZeroCopyBlockDevice,
-    ZcFuture,
+    BlockResult as VfsBlockResult, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,
+    ZeroCopyBlockDevice,
 };
+use x86_64::PhysAddr;
 
 // ============================================================================
 // VirtIO Common Definitions
@@ -172,7 +175,9 @@ pub struct VirtQueue {
     /// Last seen used index
     last_used_idx: AtomicU32,
     /// Notification address (MMIO)
-    #[deprecated(note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release.")]
+    #[deprecated(
+        note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release."
+    )]
     notify_addr: *mut u16,
 }
 
@@ -1068,7 +1073,10 @@ impl<'a> Future for DmaReadFuture<'a> {
             }
 
             let len = self.buf.len() as u32;
-            match self.device.submit_read(self.sector, self.dma_addr, len, self.queue_idx) {
+            match self
+                .device
+                .submit_read(self.sector, self.dma_addr, len, self.queue_idx)
+            {
                 Ok(desc_id) => {
                     self.desc_id = Some(desc_id);
                     self.submitted = true;
@@ -1298,6 +1306,16 @@ fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
         .ok_or(VfsBlockError::InvalidBufferSize)
 }
 
+fn map_dma_addr(phys_addr: u64, len: usize) -> Result<Option<u64>, VfsBlockError> {
+    if !is_iommu_enabled() {
+        return Ok(None);
+    }
+    // SAFETY: caller guarantees phys_addr is owned and valid for DMA for len bytes.
+    unsafe { map_for_dma(PhysAddr::new(phys_addr), len as u64) }
+        .map(Some)
+        .map_err(|_| VfsBlockError::IoError)
+}
+
 impl ZeroCopyBlockDevice for VirtioBlkDevice {
     type Buffer = OwnedBytes;
 
@@ -1387,11 +1405,11 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         })
     }
 
-    fn read_into_buf(
-        &self,
+    fn read_into_buf<'a>(
+        &'a self,
         block: u64,
-        dst: &mut dyn IoBufferMut,
-    ) -> ZcFuture<'_, VfsBlockResult<()>> {
+        dst: &'a mut dyn IoBufferMut,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
         let block_size = effective_block_size(&self.config) as usize;
         if block_size == 0 {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
@@ -1418,18 +1436,26 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
             if dma.len != len {
                 return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
             }
+            let iova = match map_dma_addr(dma.phys_addr, len) {
+                Ok(iova) => iova,
+                Err(err) => return Box::pin(async move { Err(err) }),
+            };
+            let dma_addr = iova.unwrap_or(dma.phys_addr);
             return Box::pin(async move {
-                DmaReadFuture {
+                let result = DmaReadFuture {
                     device: self,
                     sector,
-                    dma_addr: dma.phys_addr,
+                    dma_addr,
                     buf,
                     submitted: false,
                     desc_id: None,
                     queue_idx: 0,
                 }
-                .await
-                .map_err(map_vfs_block_error)?;
+                .await;
+                if let Some(iova) = iova {
+                    let _ = unmap_dma(iova, len as u64);
+                }
+                result.map_err(map_vfs_block_error)?;
                 Ok(())
             });
         }
@@ -1442,7 +1468,11 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         })
     }
 
-    fn write_from_buf(&self, block: u64, src: &dyn IoBuffer) -> ZcFuture<'_, VfsBlockResult<()>> {
+    fn write_from_buf<'a>(
+        &'a self,
+        block: u64,
+        src: &'a dyn IoBuffer,
+    ) -> ZcFuture<'a, VfsBlockResult<()>> {
         let block_size = effective_block_size(&self.config) as usize;
         if block_size == 0 {
             return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
@@ -1469,18 +1499,26 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
             if dma.len != len {
                 return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
             }
+            let iova = match map_dma_addr(dma.phys_addr, len) {
+                Ok(iova) => iova,
+                Err(err) => return Box::pin(async move { Err(err) }),
+            };
+            let dma_addr = iova.unwrap_or(dma.phys_addr);
             return Box::pin(async move {
-                DmaWriteFuture {
+                let result = DmaWriteFuture {
                     device: self,
                     sector,
-                    dma_addr: dma.phys_addr,
+                    dma_addr,
                     buf: data,
                     submitted: false,
                     desc_id: None,
                     queue_idx: 0,
                 }
-                .await
-                .map_err(map_vfs_block_error)?;
+                .await;
+                if let Some(iova) = iova {
+                    let _ = unmap_dma(iova, len as u64);
+                }
+                result.map_err(map_vfs_block_error)?;
                 Ok(())
             });
         }
@@ -1492,7 +1530,6 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
             Ok(())
         })
     }
-
 }
 
 // ============================================================================

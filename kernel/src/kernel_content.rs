@@ -357,9 +357,23 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                                 }
                             }
                         }
-                        Err(_) => {
-                            info!(target: "init", "IOMMU not initialized (No DMAR table)");
-                        }
+                        Err(_) => match parser.find_table(b"IVRS") {
+                            Ok(ivrs_addr) => {
+                                if let Err(e) = io::iommu::init_iommu_from_ivrs(ivrs_addr, iommu_config)
+                                {
+                                    if e != io::iommu::IommuError::NotPresent {
+                                        warn!(target: "init", "AMD-Vi init failed: {:?}", e);
+                                    } else {
+                                        info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
+                                    }
+                                } else {
+                                    info!(target: "init", "AMD-Vi detected; backend registered (translation disabled)");
+                                }
+                            }
+                            Err(_) => {
+                                info!(target: "init", "IOMMU not initialized (No DMAR/IVRS table)");
+                            }
+                        },
                     }
 
                     let mut _mcfg_base_addr: Option<u64> = None;

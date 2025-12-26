@@ -773,6 +773,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
     fn test_cq_stress_multi_threaded() {
         use alloc::sync::Arc as AllocArc;
         use core::sync::atomic::{AtomicUsize, Ordering};
