@@ -485,8 +485,8 @@ macro_rules! export_driver {
         $(, stop = $stop:path)?
         , irq = $irq:path
     ) => {
-            #[cfg(feature = "export_driver_entry")]
-            #[no_mangle]
+            #[cfg(all(feature = "export_driver_entry", not(test)))]
+            #[unsafe(no_mangle)]
         pub extern "C" fn _exorust_driver_entry() -> *const $crate::driver_abi::DriverVTable {
             // --- Mandatory Adapters ---
             extern "C" fn probe_adapter(ctx: *mut $crate::driver_abi::DriverContext) -> i32 {

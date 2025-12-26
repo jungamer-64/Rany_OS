@@ -1,3 +1,4 @@
+#![allow(clippy::cargo_common_metadata)]
 #![no_std]
 #![allow(dead_code)]
 #![allow(clippy::must_use_candidate)] // ACPI accessor methods

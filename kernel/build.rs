@@ -1,3 +1,6 @@
+#![allow(clippy::cargo_common_metadata)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::redundant_closure_for_method_calls)]
 fn main() {
     // Only add MSVC host-specific link libraries when building for Windows/MSVC
     // This avoids polluting cross-compiles (e.g., x86_64-unknown-none kernel target).
@@ -17,7 +20,9 @@ fn main() {
             println!("cargo:warning=Adding UCRT search path: {}", ucrt_path);
             println!("cargo:rustc-link-search=native={}", ucrt_path);
         } else {
-            println!("cargo:warning=WindowsSdkDir/WindowsSDKVersion not set, trying default SDK path");
+            println!(
+                "cargo:warning=WindowsSdkDir/WindowsSDKVersion not set, trying default SDK path"
+            );
             // Fallback: detect the SDK version folder under the default install
             // location and add its ucrt\x64 path if found.
             let sdk_root = "C:\\Program Files (x86)\\Windows Kits\\10\\Lib";
@@ -31,10 +36,16 @@ fn main() {
                 versions.sort();
                 if let Some(sdkver) = versions.pop() {
                     let ucrt_path = format!("{}\\{}\\ucrt\\x64", sdk_root, sdkver);
-                    println!("cargo:warning=Adding discovered UCRT search path: {}", ucrt_path);
+                    println!(
+                        "cargo:warning=Adding discovered UCRT search path: {}",
+                        ucrt_path
+                    );
                     println!("cargo:rustc-link-search=native={}", ucrt_path);
                 } else {
-                    println!("cargo:warning=Could not discover Windows SDK version under {}", sdk_root);
+                    println!(
+                        "cargo:warning=Could not discover Windows SDK version under {}",
+                        sdk_root
+                    );
                 }
             } else {
                 println!("cargo:warning=Windows SDK path {} not present", sdk_root);
@@ -48,7 +59,8 @@ fn main() {
         } else {
             println!("cargo:warning=VCToolsInstallDir not set, trying default MSVC path");
             // Fallback: find a MSVC toolset under Visual Studio 2022 Community
-            let msvc_root = "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC";
+            let msvc_root =
+                "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC";
             if let Ok(entries) = std::fs::read_dir(msvc_root) {
                 let mut versions: Vec<_> = entries
                     .filter_map(|e| e.ok())
@@ -58,10 +70,16 @@ fn main() {
                 versions.sort();
                 if let Some(msvcver) = versions.pop() {
                     let vctools_lib = format!("{}\\{}\\lib\\x64", msvc_root, msvcver);
-                    println!("cargo:warning=Adding discovered VC tools lib path: {}", vctools_lib);
+                    println!(
+                        "cargo:warning=Adding discovered VC tools lib path: {}",
+                        vctools_lib
+                    );
                     println!("cargo:rustc-link-search=native={}", vctools_lib);
                 } else {
-                    println!("cargo:warning=Could not discover MSVC toolset under {}", msvc_root);
+                    println!(
+                        "cargo:warning=Could not discover MSVC toolset under {}",
+                        msvc_root
+                    );
                 }
             } else {
                 println!("cargo:warning=MSVC path {} not present", msvc_root);

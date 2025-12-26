@@ -27,7 +27,9 @@
 #![allow(clippy::ptr_as_ptr)] // Pointer casts in image processing
 #![allow(clippy::branches_sharing_code)] // Kept for readability
 #![allow(clippy::manual_div_ceil)] // Ceiling division pattern
-#![allow(clippy::missing_const_for_fn)] // Some functions use Vec
+#![allow(clippy::missing_const_for_fn)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::missing_panics_doc)] // Some functions use Vec
 
 use alloc::vec;
 use alloc::vec::Vec;

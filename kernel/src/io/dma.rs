@@ -28,6 +28,7 @@
 //! ```
 #![allow(dead_code)]
 
+use crate::io::iommu::controller::dma::DomainManager;
 use alloc::alloc::{Layout, alloc, dealloc};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -773,15 +774,18 @@ impl IommuDmaBuffer {
     pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
         let inner = CoherentDmaBuffer::new(size, attributes)?;
         let iova = if crate::io::iommu::is_iommu_enabled() {
-            crate::io::iommu::map_for_dma(inner.phys_addr(), size as u64).ok()
+            // SAFETY: CoherentDmaBuffer owns this memory, safe for DMA
+            unsafe { crate::io::iommu::map_for_dma(inner.phys_addr(), size as u64) }.ok()
         } else {
             if crate::io::iommu::is_iommu_required() {
-                log::error!("[DMA] IOMMU required but not enabled: failing IOMMU DMA buffer allocation");
+                log::error!(
+                    "[DMA] IOMMU required but not enabled: failing IOMMU DMA buffer allocation"
+                );
                 return None;
             }
             log::warn!("[DMA] IOMMU not enabled: IOMMU-based buffer not available");
             None
-        }; 
+        };
         Some(Self {
             inner,
             iova,
@@ -797,15 +801,19 @@ impl IommuDmaBuffer {
     ) -> Option<Self> {
         let inner = CoherentDmaBuffer::new(size, attributes)?;
         let iova = if crate::io::iommu::is_iommu_enabled() {
-            crate::io::iommu::map_for_device(&device, inner.phys_addr(), size as u64).ok()
+            // SAFETY: CoherentDmaBuffer owns this memory, safe for device DMA
+            unsafe { crate::io::iommu::map_for_device(&device, inner.phys_addr(), size as u64) }
+                .ok()
         } else {
             if crate::io::iommu::is_iommu_required() {
-                log::error!("[DMA] IOMMU required but not enabled: failing device IOMMU allocation");
+                log::error!(
+                    "[DMA] IOMMU required but not enabled: failing device IOMMU allocation"
+                );
                 return None;
             }
             log::warn!("[DMA] IOMMU not enabled: device IOMMU allocation unavailable");
             None
-        }; 
+        };
         Some(Self {
             inner,
             iova,
@@ -821,10 +829,17 @@ impl IommuDmaBuffer {
     ) -> Option<Self> {
         let inner = CoherentDmaBuffer::new(size, attributes)?;
         let iova = if crate::io::iommu::is_iommu_enabled() {
-            crate::io::iommu::map_for_device_async(&device, inner.phys_addr(), size as u64).await.ok()
+            // SAFETY: CoherentDmaBuffer owns this memory, safe for async device DMA
+            unsafe {
+                crate::io::iommu::map_for_device_async(&device, inner.phys_addr(), size as u64)
+                    .await
+            }
+            .ok()
         } else {
             if crate::io::iommu::is_iommu_required() {
-                log::error!("[DMA] IOMMU required but not enabled: failing async device IOMMU allocation");
+                log::error!(
+                    "[DMA] IOMMU required but not enabled: failing async device IOMMU allocation"
+                );
                 return None;
             }
             log::warn!("[DMA] IOMMU not enabled: async device IOMMU allocation unavailable");
@@ -886,7 +901,7 @@ pub enum DmaError {
     DeviceNotFound,
     /// IOMMUが必須だが利用できない
     IommuRequired,
-} 
+}
 
 /// DMAアロケータトレイト
 ///
@@ -1004,7 +1019,8 @@ impl DmaAllocator for GlobalDmaAllocator {
 
         // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
         let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
-            match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
+            // SAFETY: Just allocated DMA-capable memory that we own
+            match unsafe { crate::io::iommu::map_for_dma(phys_addr, size as u64) } {
                 Ok(iova) => (iova, true),
                 Err(_) => {
                     unsafe {
@@ -1021,11 +1037,9 @@ impl DmaAllocator for GlobalDmaAllocator {
             return Err(DmaError::IommuRequired);
         } else {
             // IOMMUが無効だが必須ではない: 警告を出してフォールバック（開発用）
-            log::warn!(
-                "[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)"
-            );
+            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
             (phys_addr.as_u64(), false)
-        }; 
+        };
 
         Ok(DmaAllocation {
             ptr: NonNull::new(ptr).expect("alloc returned null pointer"),
@@ -1056,7 +1070,8 @@ impl DmaAllocator for GlobalDmaAllocator {
 
         // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
         let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
-            match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
+            // SAFETY: Buffer is caller-owned; delegate safety to caller
+            match unsafe { crate::io::iommu::map_for_dma(phys_addr, size as u64) } {
                 Ok(iova) => (iova, true),
                 Err(_) => return Err(DmaError::IommuMappingFailed),
             }
@@ -1065,7 +1080,7 @@ impl DmaAllocator for GlobalDmaAllocator {
         } else {
             log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
             (phys_addr.as_u64(), false)
-        }; 
+        };
 
         Ok(StreamingMapping {
             host_addr,

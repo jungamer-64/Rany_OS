@@ -1,3 +1,4 @@
+#![allow(clippy::cargo_common_metadata)]
 #![cfg_attr(not(feature = "std"), no_std)]
 #![allow(clippy::must_use_candidate)] // Capability accessor methods
 #![allow(clippy::use_self)] // Explicit type names for clarity

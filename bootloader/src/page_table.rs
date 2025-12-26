@@ -10,6 +10,7 @@ pub const PAGE_WRITABLE: u64 = 1 << 1;
 pub const PAGE_USER: u64 = 1 << 2;
 pub const PAGE_HUGE: u64 = 1 << 7;
 pub const PAGE_NO_EXECUTE: u64 = 1 << 63;
+const FLAGS_MASK: u64 = 0x8000_0000_0000_0fff; // NX + lower 12 flag bits
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
@@ -31,7 +32,7 @@ impl PageTableEntry {
     }
 
     pub fn flags(&self) -> u64 {
-        self.entry & 0xFFF
+        self.entry & FLAGS_MASK
     }
 
     pub fn addr(&self) -> u64 {
@@ -44,11 +45,11 @@ impl PageTableEntry {
     }
 
     pub fn set_addr(&mut self, addr: u64, flags: u64) {
-        self.entry = (addr & 0x000fffff_fffff000) | (flags & 0xFFF);
+        self.entry = (addr & 0x000f_ffff_ffff_f000) | (flags & FLAGS_MASK);
     }
 
     pub fn set_flags(&mut self, flags: u64) {
-        self.entry = (self.entry & 0xFFFF_FFFF_FFFF_F000) | (flags & 0xFFF);
+        self.entry = (self.entry & 0xFFFF_FFFF_FFFF_F000) | (flags & FLAGS_MASK);
     }
 }
 
