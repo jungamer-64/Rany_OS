@@ -198,8 +198,8 @@ impl InvalidationOps for IommuController {
     }
 
     fn wake_invalidation_waiter(&self) {
-        // ISR-safe: enqueue deferred wake instead of calling waker directly.
-        self.pending_waiter.wake_from_isr();
+        // ISR-safe: enqueue deferred wake for ALL waiting tasks
+        self.pending_waiters.wake_all_from_isr();
     }
 }
 

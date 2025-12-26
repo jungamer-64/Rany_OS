@@ -38,6 +38,9 @@ impl IovaGranularity {
     }
 }
 
+/// Standard 4KB page size (public for other IOMMU modules)
+pub const PAGE_SIZE_4K: u64 = 4096;
+
 /// IOVA range for tracking allocations
 #[derive(Debug, Clone)]
 pub struct IovaRange {

@@ -108,6 +108,15 @@ pub enum IommuDomainType {
     Passthrough,
 }
 
+/// Page Table Entry Format
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PteFormat {
+    /// Intel VT-d format
+    Intel,
+    /// AMD-Vi format
+    Amd,
+}
+
 /// DMA mapping info
 #[derive(Clone, Debug)]
 pub struct DmaMapping {

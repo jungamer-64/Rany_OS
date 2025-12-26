@@ -367,7 +367,12 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                                         info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
                                     }
                                 } else {
-                                    info!(target: "init", "AMD-Vi detected; backend registered (translation disabled)");
+                                    info!(target: "init", "AMD-Vi detected; backend registered");
+                                    if let Err(e) = io::iommu::enable_iommu() {
+                                        error!(target: "init", "Failed to enable AMD-Vi: {:?}", e);
+                                    } else {
+                                        info!(target: "init", "AMD-Vi translation enabled");
+                                    }
                                 }
                             }
                             Err(_) => {
