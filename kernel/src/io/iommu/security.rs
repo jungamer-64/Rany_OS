@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/security.rs
+// ============================================================================
+
 //! Security Monitor Integration
 //!
 //! Provides security event notification from the IOMMU subsystem to external

@@ -214,6 +214,17 @@ pub mod mm {
         buddy_alloc_frame()
     }
 
+    pub fn buddy_alloc_contiguous_frames(frame_count: usize) -> Option<PhysAddr> {
+        if frame_count == 0 {
+            return None;
+        }
+        let bytes = frame_count.checked_mul(4096)?;
+        let layout = Layout::from_size_align(bytes, 4096).ok()?;
+        let ptr = unsafe { alloc_zeroed(layout) };
+        let ptr = NonNull::new(ptr)?;
+        Some(PhysAddr::new(ptr.as_ptr() as u64))
+    }
+
     pub fn buddy_dealloc_frame(frame: PhysFrame<Size4KiB>) {
         let layout = Layout::from_size_align(4096, 4096).expect("buddy layout");
         let ptr = frame.start_address().as_u64() as *mut u8;

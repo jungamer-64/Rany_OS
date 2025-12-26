@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/registry.rs
+// ============================================================================
+
 //! IOMMU Registry and Global State
 //!
 //! This module contains the global IOMMU registry which manages controller

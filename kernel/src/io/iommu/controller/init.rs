@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/controller/init.rs
+// ============================================================================
+
 //! Controller Initialization and Capability Detection
 //!
 //! This module contains initialization and capability-related methods for `IommuController` via `CapabilityManager` trait.

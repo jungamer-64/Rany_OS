@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/registers.rs
+// ============================================================================
+
 //! IOMMU Register Definitions
 
 /// DMAR (DMA Remapping) register offsets

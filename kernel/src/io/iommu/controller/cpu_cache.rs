@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/controller/cpu_cache.rs
+// ============================================================================
+
 //! Per-CPU Domain Mapping Cache Helpers
 //!
 //! These methods provide fast-path lookups for device-to-domain mappings

@@ -699,6 +699,14 @@ pub fn buddy_alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
     BUDDY_ALLOCATOR.lock().allocate_1g_frame()
 }
 
+/// 連続する物理フレームを割り当て（Buddy版）
+pub fn buddy_alloc_contiguous_frames(frame_count: usize) -> Option<PhysAddr> {
+    if frame_count == 0 {
+        return None;
+    }
+    BUDDY_ALLOCATOR.lock().allocate_contiguous(frame_count)
+}
+
 /// 4KiB フレームを解放（Buddy版）
 pub fn buddy_dealloc_frame(frame: PhysFrame<Size4KiB>) {
     BUDDY_ALLOCATOR.lock().deallocate_4k_frame(frame);

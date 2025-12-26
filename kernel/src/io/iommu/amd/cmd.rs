@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/amd/cmd.rs
+// ============================================================================
+
 // AMD-Vi command buffer and IOTLB invalidation helpers (skeleton).
 
 #![allow(dead_code)]
@@ -5,8 +9,8 @@
 use core::mem::size_of;
 use core::ptr::NonNull;
 
-use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 use crate::io::iommu::IommuError;
+use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 
 const MMIO_CMD_BUF_OFFSET: u64 = 0x0008;
 const MMIO_CONTROL_OFFSET: u64 = 0x0018;
@@ -15,8 +19,8 @@ const MMIO_CMD_TAIL_OFFSET: u64 = 0x2008;
 
 const CONTROL_CMDBUF_EN: u64 = 1 << 12;
 
-const CMD_BUFFER_SIZE: u32 = 8192;
-const CMD_BUFFER_ENTRIES: usize = 512;
+pub(crate) const CMD_BUFFER_BYTES: usize = 8192;
+pub(crate) const CMD_BUFFER_ENTRIES: usize = 512;
 const CMD_ENTRY_SIZE: u32 = 16;
 
 const MMIO_CMD_SIZE_SHIFT: u64 = 56;
@@ -153,7 +157,7 @@ impl AmdCommandBuffer {
         let bytes = size_of::<AmdCommand>()
             .checked_mul(entry_count)
             .ok_or(IommuError::InvalidAddress)?;
-        if bytes as u32 > CMD_BUFFER_SIZE {
+        if bytes > CMD_BUFFER_BYTES {
             return Err(IommuError::InvalidAddress);
         }
 
@@ -181,6 +185,7 @@ impl AmdCommandBuffer {
 
         let base = (self.phys_base & !0xfff) | MMIO_CMD_SIZE_512;
         mmio_write_u64((self.mmio_base + MMIO_CMD_BUF_OFFSET) as usize, base);
+        mmio_write_u32((self.mmio_base + MMIO_CMD_TAIL_OFFSET) as usize, 0);
         Ok(())
     }
 

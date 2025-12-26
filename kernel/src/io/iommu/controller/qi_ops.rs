@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/controller/qi_ops.rs
+// ============================================================================
+
 //! Queued Invalidation Operations
 //!
 //! This module contains QI-related methods for `IommuController` via `InvalidationOps` trait.

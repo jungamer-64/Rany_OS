@@ -1,3 +1,7 @@
+// ============================================================================
+// kernel/src/io/iommu/controller/mod.rs
+// ============================================================================
+
 //! IOMMU Controller Types and Submodules
 //!
 //! Core types for the IOMMU controller. The actual `IommuController` struct
