@@ -1,3 +1,6 @@
+// ============================================================================
+// kernel/src/io/iommu/iova_allocator.rs
+// ============================================================================
 //! IOVA Allocator (I/O Virtual Address Allocator)
 //!
 //! Manages I/O Virtual Address space for DMA mappings.

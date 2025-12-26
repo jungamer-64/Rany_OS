@@ -1,5 +1,7 @@
 //! AMD-Vi backend driver (skeleton).
 
+pub mod cmd;
+
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;

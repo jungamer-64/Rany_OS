@@ -43,6 +43,21 @@
     Force TCG (software emulation) instead of WHPX/KVM. Slower but more compatible.
 .PARAMETER VerboseOutput
     Show detailed build output.
+.EXAMPLE
+    # Development: Quick iteration with debug build
+    .\run.ps1
+.EXAMPLE
+    # Full ExoRust testing: IOMMU + Network + Monitor
+    .\run.ps1 -Release -Numa -Network -Monitor
+.EXAMPLE
+    # CI/Headless testing: TCG for compatibility, exit on test result
+    .\run.ps1 -Test -Tcg -Serial null
+.EXAMPLE
+    # GDB debugging: Freeze at startup, connect with gdb-multiarch
+    .\run.ps1 -GdbDebug -Monitor
+.EXAMPLE
+    # WHPX compatibility: Disable IOMMU for Windows Hypervisor Platform
+    .\run.ps1 -NoIommu -Network
 #>
 
 [CmdletBinding()]
@@ -227,8 +242,23 @@ function Invoke-Lints {
 # --- Build Steps ---
 
 function Build-Signer {
-    # Only build if missing or if explicitly requested (via Clean usually)
+    # Build if missing, or if Cargo.toml is newer than the binary (source changed)
+    $needsBuild = $false
+    $signerCargoToml = Join-Path $SIGNER_TOOL_DIR "Cargo.toml"
+    
     if (-not (Test-Path $SIGNER_TOOL_BIN)) {
+        $needsBuild = $true
+    }
+    elseif (Test-Path $signerCargoToml) {
+        $binTime = (Get-Item $SIGNER_TOOL_BIN).LastWriteTime
+        $cargoTime = (Get-Item $signerCargoToml).LastWriteTime
+        if ($cargoTime -gt $binTime) {
+            Write-Done "Signer tool outdated (Cargo.toml newer), rebuilding..."
+            $needsBuild = $true
+        }
+    }
+    
+    if ($needsBuild) {
         Write-Step "🛠️" "Building Kernel Signer Tool..."
         Push-Location $SIGNER_TOOL_DIR
         try {
@@ -371,22 +401,40 @@ function Get-QemuAccelerator {
         return "tcg"
     }
     
-    if (-not $IsWindows) { return "kvm" }
-
+    # Query QEMU for available accelerators
     $helpOut = & qemu-system-x86_64 -accel help 2>&1
     
-    if ($helpOut -match "whpx") {
-        Write-Done "[ACCEL] Windows Hypervisor Platform (WHPX)"
-        return "whpx"
-    }
-    elseif ($helpOut -match "hax") {
-        Write-Done "[ACCEL] HAXM"
-        return "hax"
+    if ($IsWindows) {
+        # Windows: prefer WHPX > HAXM > TCG
+        if ($helpOut -match "whpx") {
+            Write-Done "[ACCEL] Windows Hypervisor Platform (WHPX)"
+            return "whpx"
+        }
+        elseif ($helpOut -match "hax") {
+            Write-Done "[ACCEL] HAXM"
+            return "hax"
+        }
     }
     else {
-        Write-Warn "No hardware acceleration detected. Using TCG (Slow)."
-        return "tcg"
+        # Linux/macOS: prefer KVM (if available) > HVF (macOS) > TCG
+        if ($helpOut -match "kvm") {
+            # KVM requires /dev/kvm to be accessible
+            if (Test-Path "/dev/kvm") {
+                Write-Done "[ACCEL] KVM (Linux hardware virtualization)"
+                return "kvm"
+            }
+            else {
+                Write-Warn "[ACCEL] KVM listed but /dev/kvm not accessible (missing permissions or VT-x disabled)"
+            }
+        }
+        if ($helpOut -match "hvf") {
+            Write-Done "[ACCEL] Hypervisor.framework (macOS)"
+            return "hvf"
+        }
     }
+    
+    Write-Warn "No hardware acceleration detected. Using TCG (Slow)."
+    return "tcg"
 }
 
 function Start-Qemu {
