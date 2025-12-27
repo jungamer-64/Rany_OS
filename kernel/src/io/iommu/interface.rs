@@ -109,6 +109,9 @@ pub trait IommuDriver: Send + Sync {
 
     /// Get NUMA hint for a domain.
     fn get_domain_numa(&self, domain_id: u16) -> Result<Option<usize>, IommuError>;
+
+    /// Emit backend diagnostics (best-effort, non-fatal).
+    fn dump_diagnostics(&self) {}
 }
 
 /// IOMMU hardware context abstraction.

@@ -14,8 +14,46 @@ use crate::io::iommu::types::IommuError;
 use crate::io::iommu::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
-use crate::io::iommu::intel::qi::InvalidationQueueEntry;
+use crate::io::iommu::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
 use crate::io::iommu::intel::registers::regs; // for wait_for_condition
+
+fn submit_invalidation_locked(
+    controller: &IommuController,
+    iq: &mut InvalidationQueue,
+    entry: InvalidationQueueEntry,
+) -> Result<u64, IommuError> {
+    if iq.is_full() {
+        iq.record_full_check();
+        let head = (controller.read64(regs::IQH) >> 4) as usize;
+        iq.record_head_refresh();
+        iq.update_head(head);
+        if iq.is_full() {
+            iq.record_wait();
+            let cached_head = iq.cached_head() as u64;
+            if let Err(e) = controller.wait_for_condition(
+                || (controller.read64(regs::IQH) >> 4) != cached_head,
+                100_000, // 100ms
+                true,
+            ) {
+                iq.record_wait_timeout();
+                return Err(e);
+            }
+            let head = (controller.read64(regs::IQH) >> 4) as usize;
+            iq.record_head_refresh();
+            iq.update_head(head);
+            if iq.is_full() {
+                iq.record_wait_timeout();
+                return Err(IommuError::Timeout);
+            }
+        }
+    }
+
+    iq.submit(entry);
+    iq.record_submit();
+    let tail = iq.tail() as u64; // Tail is in entry units
+    controller.write64(regs::IQT, tail << 4);
+    Ok(tail)
+}
 
 pub trait InvalidationOps {
     /// Check if Queued Invalidation is enabled
@@ -85,12 +123,7 @@ impl InvalidationOps for IommuController {
         };
 
         let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
-        iq.submit(entry);
-        let new_tail = (iq.tail() << 4) as u64; // Tail is in 16-byte units
-
-        // Update hardware tail pointer (borrow released)
-        self.write64(regs::IQT, new_tail);
-
+        let _ = submit_invalidation_locked(self, iq, entry)?;
         Ok(())
     }
 
@@ -158,15 +191,13 @@ impl InvalidationOps for IommuController {
             }
         };
 
-        let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
-        let _status_addr = iq.submit_wait();
-        let new_tail = (iq.tail() << 4) as u64;
-
-        // Update hardware tail (borrow released)
-        self.write64(regs::IQT, new_tail);
+        let expected_tail = {
+            let iq = guard.as_mut().ok_or(IommuError::NotPresent)?;
+            let entry = iq.wait_entry();
+            submit_invalidation_locked(self, iq, entry)?
+        };
 
         // Wait for hardware head to catch up (all descriptors processed)
-        let expected_tail = new_tail >> 4;
         // This is a critical wait, use longer timeout
         self.wait_for_condition(
             || (self.read64(regs::IQH) >> 4) == expected_tail,
@@ -181,11 +212,8 @@ impl InvalidationOps for IommuController {
         let submit_result = match self.invalidation_queue.lock() {
             Ok(mut guard) => {
                 if let Some(iq) = guard.as_mut() {
-                    let _status_addr = iq.submit_wait();
-                    let tail = (iq.tail() << 4) as u64;
-                    // Update hardware tail
-                    self.write64(regs::IQT, tail);
-                    Ok(tail >> 4)
+                    let entry = iq.wait_entry();
+                    submit_invalidation_locked(self, iq, entry)
                 } else {
                     Err(IommuError::NotPresent)
                 }

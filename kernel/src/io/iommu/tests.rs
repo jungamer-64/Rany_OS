@@ -21,6 +21,8 @@ use crate::io::iommu::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::intel::controller::qi_init::QIManager;
 use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+use crate::io::iommu::intel::qi::InvalidationQueueEntry;
+use crate::io::iommu::intel::registers::ecap_bits;
 
 #[test]
 fn test_device_id() {
@@ -57,6 +59,188 @@ fn test_iommu_domain() {
     // Try to map overlapping region
     let result = domain.map(0x1000, 0x3000, 0x1000, true, false);
     assert_eq!(result, Err(IommuError::AlreadyMapped));
+}
+
+unsafe fn is_4k_mapped(domain: &IommuDomain, iova: u64, format: PteFormat) -> bool {
+    let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+    let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+    let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+    let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+
+    let pml4_entry = domain.page_table.add(pml4_idx);
+    if !(*pml4_entry).is_present() {
+        return false;
+    }
+    let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+    let pdp_entry = pdp_table.add(pdp_idx);
+    if !(*pdp_entry).is_present() {
+        return false;
+    }
+    if (*pdp_entry).is_super_page(format) {
+        return false;
+    }
+    let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+    let pd_entry = pd_table.add(pd_idx);
+    if !(*pd_entry).is_present() {
+        return false;
+    }
+    if (*pd_entry).is_super_page(format) {
+        return false;
+    }
+    let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+    let pt_entry = pt_table.add(pt_idx);
+    (*pt_entry).is_present()
+}
+
+unsafe fn is_superpage_2mb_mapped(domain: &IommuDomain, iova: u64, format: PteFormat) -> bool {
+    let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+    let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+    let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+
+    let pml4_entry = domain.page_table.add(pml4_idx);
+    if !(*pml4_entry).is_present() {
+        return false;
+    }
+    let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+    let pdp_entry = pdp_table.add(pdp_idx);
+    if !(*pdp_entry).is_present() {
+        return false;
+    }
+    if (*pdp_entry).is_super_page(format) {
+        return false;
+    }
+    let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+    let pd_entry = pd_table.add(pd_idx);
+    (*pd_entry).is_present() && (*pd_entry).is_super_page(format)
+}
+
+#[test]
+fn test_map_rollback_on_overlap_hidden_mapping() {
+    let format = PteFormat::Intel;
+    let mut domain = IommuDomain::new(
+        1,
+        None,
+        false,
+        false,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        format,
+    );
+
+    let base_iova = 0x10000;
+    let phys_base = 0x20000;
+
+    // Pre-map the middle page as a hidden "mine"
+    let mine_iova = base_iova + 0x1000;
+    domain
+        .map(mine_iova, phys_base + 0x1000, 0x1000, true, true)
+        .expect("mine map failed");
+    domain.mappings.remove(&mine_iova);
+    domain.mapped_size = domain.mapped_size.saturating_sub(0x1000);
+    assert!(unsafe { is_4k_mapped(&domain, mine_iova, format) });
+    assert!(!domain.mappings.contains_key(&mine_iova));
+
+    // Attempt to map three pages; should fail on the hidden mine
+    let res = domain.map(base_iova, phys_base, 0x3000, true, true);
+    assert_eq!(res, Err(IommuError::AlreadyMapped));
+
+    // First page should be rolled back, mine should remain, third page untouched
+    assert!(!unsafe { is_4k_mapped(&domain, base_iova, format) });
+    assert!(unsafe { is_4k_mapped(&domain, mine_iova, format) });
+    assert!(!unsafe { is_4k_mapped(&domain, base_iova + 0x2000, format) });
+
+    assert_eq!(domain.mapped_size, 0);
+    assert!(domain.mappings.is_empty());
+}
+
+#[test]
+fn test_map_rollback_on_overlap_hidden_mapping_amd() {
+    let format = PteFormat::Amd;
+    let mut domain = IommuDomain::new(
+        2,
+        None,
+        true,
+        true,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        format,
+    );
+
+    let base_iova = 0x10000;
+    let phys_base = 0x20000;
+    let mine_iova = base_iova + 0x1000;
+
+    domain
+        .map(mine_iova, phys_base + 0x1000, 0x1000, true, true)
+        .expect("setup map failed");
+    domain.mappings.remove(&mine_iova);
+    domain.mapped_size = domain.mapped_size.saturating_sub(0x1000);
+
+    assert!(unsafe { is_4k_mapped(&domain, mine_iova, format) });
+    assert!(!domain.mappings.contains_key(&mine_iova));
+
+    let res = domain.map(base_iova, phys_base, 0x3000, true, true);
+    assert_eq!(res, Err(IommuError::AlreadyMapped));
+
+    assert!(
+        !unsafe { is_4k_mapped(&domain, base_iova, format) },
+        "First page was not rolled back (AMD)"
+    );
+    assert!(
+        unsafe { is_4k_mapped(&domain, mine_iova, format) },
+        "Hidden page was incorrectly removed (AMD)"
+    );
+    assert!(
+        !unsafe { is_4k_mapped(&domain, base_iova + 0x2000, format) },
+        "Third page was mapped unexpectedly (AMD)"
+    );
+
+    assert_eq!(domain.mapped_size, 0);
+    assert!(domain.mappings.is_empty());
+}
+
+#[test]
+fn test_map_rollback_superpage_2mb_collision() {
+    let format = PteFormat::Amd;
+    let mut domain = IommuDomain::new(
+        3,
+        None,
+        true,
+        false,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        format,
+    );
+
+    const SIZE_2MB: u64 = 2 * 1024 * 1024;
+    let start_iova = 0x2000_0000;
+    let phys_base = 0x4000_0000;
+    let mine_iova = start_iova + SIZE_2MB;
+
+    domain
+        .map(mine_iova, phys_base + SIZE_2MB, 0x1000, true, true)
+        .expect("setup mine");
+    domain.mappings.remove(&mine_iova);
+    domain.mapped_size = domain.mapped_size.saturating_sub(0x1000);
+
+    let res = domain.map(start_iova, phys_base, SIZE_2MB * 2, true, true);
+    assert_eq!(res, Err(IommuError::AlreadyMapped));
+
+    assert!(
+        !unsafe { is_superpage_2mb_mapped(&domain, start_iova, format) },
+        "First 2MB superpage was not rolled back"
+    );
+    assert!(
+        !unsafe { is_4k_mapped(&domain, start_iova, format) },
+        "Unexpected 4KB mapping in first 2MB region"
+    );
+    assert!(
+        unsafe { is_4k_mapped(&domain, mine_iova, format) },
+        "Mine should persist"
+    );
+
+    assert_eq!(domain.mapped_size, 0);
+    assert!(domain.mappings.is_empty());
 }
 
 #[test]
@@ -805,6 +989,51 @@ fn test_qi_wait_async_poisoned_returns_error() {
 
     let waiter = ctrl.qi_wait_async();
     assert_eq!(waiter.submit_result, Err(IommuError::HardwareError));
+}
+
+#[test]
+fn test_qi_metrics_pressure() {
+    let mut ctrl = IommuController::new(0x0, 0);
+
+    ctrl.ecap = ecap_bits::ECAP_QI;
+    ctrl.init_queued_invalidation(8).expect("init_qi failed");
+
+    let stats = ctrl
+        .qi_stats()
+        .expect("stats read failed")
+        .expect("stats missing");
+    assert_eq!(stats.submits, 0);
+    assert_eq!(stats.full_checks, 0);
+
+    let ring_capacity = 1usize << 8;
+    let safe_submissions = ring_capacity - 1;
+
+    for _ in 0..safe_submissions {
+        let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+        ctrl.submit_invalidation(desc)
+            .expect("submit should succeed");
+    }
+
+    let stats = ctrl
+        .qi_stats()
+        .expect("stats read failed")
+        .expect("stats missing");
+    assert_eq!(stats.submits, safe_submissions as u64);
+    assert_eq!(stats.full_checks, 0);
+    assert_eq!(stats.wait_timeouts, 0);
+
+    let desc = InvalidationQueueEntry::iotlb_invalidate_global(false);
+    let res = ctrl.submit_invalidation(desc);
+    assert!(res.is_err());
+
+    let stats = ctrl
+        .qi_stats()
+        .expect("stats read failed")
+        .expect("stats missing");
+    assert!(stats.full_checks > 0, "should detect queue full");
+    assert!(stats.waits > 0, "should record wait");
+    assert!(stats.wait_timeouts > 0, "should record timeout");
+    assert_eq!(stats.submits, safe_submissions as u64);
 }
 
 #[test]

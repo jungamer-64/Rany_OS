@@ -282,6 +282,20 @@ pub fn get_unmap_count() -> u64 {
     UNMAP_COUNT.load(Ordering::SeqCst)
 }
 
+/// Emit IOMMU diagnostics to the log.
+pub fn dump_iommu_diagnostics() {
+    log::info!("=== IOMMU Diagnostics ===");
+    log::info!("Global map count: {}", get_map_count());
+    log::info!("Global unmap count: {}", get_unmap_count());
+
+    if let Some(driver) = get_iommu_driver() {
+        driver.dump_diagnostics();
+    } else {
+        log::warn!("IOMMU driver not initialized");
+    }
+    log::info!("=========================");
+}
+
 /// Execute with the active IOMMU backend.
 ///
 /// This passes a `&dyn IommuDriver` to the closure. Backend selection is handled

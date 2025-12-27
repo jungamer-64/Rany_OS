@@ -463,9 +463,9 @@ impl IommuDomain {
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
         const SIZE_4KB: u64 = 4096;
 
-        // Track successfully mapped pages for rollback on error
-        // Format: (iova, page_size)
-        let mut mapped_pages: Vec<(u64, u64)> = Vec::new();
+        // Track total bytes successfully mapped for rollback on error
+        let start_iova = iova;
+        let mut mapped_len: u64 = 0;
 
         while remaining > 0 {
             // Try 1GB page
@@ -478,21 +478,23 @@ impl IommuDomain {
             {
                 match unsafe { self.map_page_1gb(current_iova, current_phys, read, write) } {
                     Ok(()) => {
-                        mapped_pages.push((current_iova, SIZE_1GB));
                         current_iova += SIZE_1GB;
                         current_phys += SIZE_1GB;
                         remaining -= SIZE_1GB;
+                        mapped_len += SIZE_1GB;
                         continue;
                     }
                     Err(e) => {
                         // Rollback all successfully mapped pages
-                        if let Err(rollback_err) = self.rollback_mapped_pages(&mapped_pages) {
-                            log::error!(
-                                "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                                e,
-                                rollback_err
-                            );
-                            return Err(rollback_err);
+                        if mapped_len > 0 {
+                            if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
+                                log::error!(
+                                    "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                                    e,
+                                    rollback_err
+                                );
+                                return Err(rollback_err);
+                            }
                         }
                         return Err(e);
                     }
@@ -507,21 +509,23 @@ impl IommuDomain {
             {
                 match unsafe { self.map_page_2mb(current_iova, current_phys, read, write) } {
                     Ok(()) => {
-                        mapped_pages.push((current_iova, SIZE_2MB));
                         current_iova += SIZE_2MB;
                         current_phys += SIZE_2MB;
                         remaining -= SIZE_2MB;
+                        mapped_len += SIZE_2MB;
                         continue;
                     }
                     Err(e) => {
                         // Rollback all successfully mapped pages
-                        if let Err(rollback_err) = self.rollback_mapped_pages(&mapped_pages) {
-                            log::error!(
-                                "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                                e,
-                                rollback_err
-                            );
-                            return Err(rollback_err);
+                        if mapped_len > 0 {
+                            if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
+                                log::error!(
+                                    "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                                    e,
+                                    rollback_err
+                                );
+                                return Err(rollback_err);
+                            }
                         }
                         return Err(e);
                     }
@@ -531,20 +535,22 @@ impl IommuDomain {
             // Fallback to 4KB page
             match self.map_page(current_iova, current_phys, read, write) {
                 Ok(()) => {
-                    mapped_pages.push((current_iova, SIZE_4KB));
                     current_iova += SIZE_4KB;
                     current_phys += SIZE_4KB;
                     remaining -= SIZE_4KB;
+                    mapped_len += SIZE_4KB;
                 }
                 Err(e) => {
                     // Rollback all successfully mapped pages
-                    if let Err(rollback_err) = self.rollback_mapped_pages(&mapped_pages) {
-                        log::error!(
-                            "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                            e,
-                            rollback_err
-                        );
-                        return Err(rollback_err);
+                    if mapped_len > 0 {
+                        if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
+                            log::error!(
+                                "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                                e,
+                                rollback_err
+                            );
+                            return Err(rollback_err);
+                        }
                     }
                     return Err(e);
                 }
@@ -566,39 +572,6 @@ impl IommuDomain {
 
         self.mapped_size += size;
 
-        Ok(())
-    }
-
-    /// Rollback successfully mapped pages on error
-    ///
-    /// Called when `map()` encounters an error after some pages were successfully
-    /// mapped. Unmaps all pages in reverse order to restore the original state.
-    fn rollback_mapped_pages(&mut self, mapped_pages: &[(u64, u64)]) -> Result<(), IommuError> {
-        let mut first_err = None;
-        for (page_iova, page_size) in mapped_pages.iter().rev() {
-            let result = match *page_size {
-                size if size == 1024 * 1024 * 1024 => {
-                    // 1GB page: unmap using PDP level
-                    self.unmap_super_page_1gb(*page_iova)
-                }
-                size if size == 2 * 1024 * 1024 => {
-                    // 2MB page: unmap using PD level
-                    self.unmap_super_page_2mb(*page_iova)
-                }
-                _ => {
-                    // 4KB page: unmap using PT level
-                    self.unmap_page(*page_iova)
-                }
-            };
-            if let Err(err) = result {
-                if first_err.is_none() {
-                    first_err = Some(err);
-                }
-            }
-        }
-        if let Some(err) = first_err {
-            return Err(err);
-        }
         Ok(())
     }
 

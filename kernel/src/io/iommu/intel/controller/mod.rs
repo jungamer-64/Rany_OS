@@ -29,20 +29,20 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use hashbrown::HashMap;
 
-use self::ir::InterruptRemapTable;
 use self::iova::IovaManager;
-use crate::io::iommu::intel::qi::InvalidationQueue;
-use crate::io::iommu::intel::registers::regs::IQH;
-use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs};
-use crate::io::iommu::intel::tables::{ContextEntry, RootEntry};
-use crate::io::iommu::tables::HardwareTable;
+use self::ir::InterruptRemapTable;
 use crate::io::iommu::common::{PageRequestQueue, PostedInterruptPool};
 use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::fault_log::FaultLog;
+use crate::io::iommu::intel::qi::{InvalidationQueue, QiStats};
+use crate::io::iommu::intel::registers::regs::IQH;
+use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs};
+use crate::io::iommu::intel::tables::{ContextEntry, RootEntry};
 use crate::io::iommu::interface::IommuHardwareContext;
 use crate::io::iommu::iova_allocator::IovaAllocator;
 use crate::io::iommu::page_table_pool::PageTablePool;
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
+use crate::io::iommu::tables::HardwareTable;
 use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
 
 use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
@@ -162,7 +162,7 @@ impl IommuController {
             register_lock: PoisonLock::new(()),
             domains: PoisonLock::new(HashMap::new()),
             device_domains: PoisonLock::new(HashMap::new()),
-            next_domain_id: AtomicU64::new(1),
+            next_domain_id: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
             interrupt_remap_table: PoisonLock::new(None),
             ir_enabled: AtomicBool::new(false),
@@ -220,18 +220,40 @@ impl IommuController {
         }
     }
 
+    /// Get QI runtime stats if the queue is initialized.
+    pub fn qi_stats(&self) -> Result<Option<QiStats>, IommuError> {
+        match self.invalidation_queue.lock() {
+            Ok(guard) => Ok(guard.as_ref().map(|iq| iq.stats())),
+            Err(_) => Err(IommuError::HardwareError),
+        }
+    }
+
+    /// Reset QI runtime stats (no-op if QI is not initialized).
+    pub fn reset_qi_stats(&self) -> Result<(), IommuError> {
+        match self.invalidation_queue.lock() {
+            Ok(mut guard) => {
+                if let Some(iq) = guard.as_mut() {
+                    iq.reset_stats();
+                }
+                Ok(())
+            }
+            Err(_) => Err(IommuError::HardwareError),
+        }
+    }
+
     /// Initialize the IOMMU controller hardware
     pub unsafe fn init(&mut self) -> Result<(), IommuError> {
         // Read Capabilities
-        self.cap = self.read64(regs::CAP);
-        self.ecap = self.read64(regs::ECAP);
+        if self.mmio_base == 0 {
+            log::error!("IOMMU MMIO Base is NULL");
+            return Err(IommuError::HardwareError);
+        }
 
-        log::info!(
-            "IOMMU @ {:#x}: CAP={:#x}, ECAP={:#x}",
-            self.mmio_base,
-            self.cap,
-            self.ecap
-        );
+        self.cap = self.read64(regs::CAP);
+        log::info!("IOMMU init: CAP read success: {:#x}", self.cap);
+
+        self.ecap = self.read64(regs::ECAP);
+        log::info!("IOMMU init: ECAP read success: {:#x}", self.ecap);
 
         // Allocate and set up Root Table
         let root_table = HardwareTable::new(256, None)?;

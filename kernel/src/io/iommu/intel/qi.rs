@@ -137,6 +137,21 @@ impl InvalidationQueueEntry {
     }
 }
 
+/// QI runtime statistics
+#[derive(Clone, Copy, Debug, Default)]
+pub struct QiStats {
+    /// Total descriptors submitted
+    pub submits: u64,
+    /// Times the queue was observed full before submit
+    pub full_checks: u64,
+    /// Times IQH was read to refresh cached head
+    pub head_refreshes: u64,
+    /// Times we had to wait for space
+    pub waits: u64,
+    /// Wait attempts that timed out
+    pub wait_timeouts: u64,
+}
+
 /// Invalidation Queue Manager
 #[derive(Debug)]
 pub struct InvalidationQueue {
@@ -146,8 +161,12 @@ pub struct InvalidationQueue {
     size: usize,
     /// Current tail (next write position)
     tail: usize,
+    /// Cached head (last IQH read, in entries)
+    cached_head: usize,
     /// Status data address for wait descriptors
     status_addr: usize,
+    /// Runtime stats for queue pressure/latency
+    stats: QiStats,
 }
 
 impl InvalidationQueue {
@@ -202,7 +221,9 @@ impl InvalidationQueue {
             base,
             size,
             tail: 0,
+            cached_head: 0,
             status_addr,
+            stats: QiStats::default(),
         })
     }
 
@@ -221,7 +242,57 @@ impl InvalidationQueue {
         self.tail
     }
 
+    /// Get cached head index
+    pub fn cached_head(&self) -> usize {
+        self.cached_head
+    }
+
+    /// Update cached head (caller should pass IQH >> 4)
+    pub fn update_head(&mut self, head: usize) {
+        self.cached_head = head % self.size;
+    }
+
+    #[inline]
+    fn next_tail(&self) -> usize {
+        (self.tail + 1) % self.size
+    }
+
+    /// Check if the queue is full using cached head
+    pub fn is_full(&self) -> bool {
+        self.next_tail() == self.cached_head
+    }
+
+    pub fn stats(&self) -> QiStats {
+        self.stats
+    }
+
+    pub fn reset_stats(&mut self) {
+        self.stats = QiStats::default();
+    }
+
+    pub(crate) fn record_submit(&mut self) {
+        self.stats.submits = self.stats.submits.saturating_add(1);
+    }
+
+    pub(crate) fn record_full_check(&mut self) {
+        self.stats.full_checks = self.stats.full_checks.saturating_add(1);
+    }
+
+    pub(crate) fn record_head_refresh(&mut self) {
+        self.stats.head_refreshes = self.stats.head_refreshes.saturating_add(1);
+    }
+
+    pub(crate) fn record_wait(&mut self) {
+        self.stats.waits = self.stats.waits.saturating_add(1);
+    }
+
+    pub(crate) fn record_wait_timeout(&mut self) {
+        self.stats.wait_timeouts = self.stats.wait_timeouts.saturating_add(1);
+    }
+
     /// Submit an invalidation descriptor
+    ///
+    /// Caller must ensure there is space (queue not full).
     pub fn submit(&mut self, entry: InvalidationQueueEntry) {
         let ptr = self.base as *mut InvalidationQueueEntry;
         unsafe {
@@ -237,6 +308,12 @@ impl InvalidationQueue {
         let entry = InvalidationQueueEntry::wait(self.status_addr as u64, status_data, false, true);
         self.submit(entry);
         self.status_addr
+    }
+
+    /// Build a wait descriptor without submitting it
+    pub fn wait_entry(&self) -> InvalidationQueueEntry {
+        let status_data = (self.tail & 0xFFFFFFFF) as u32;
+        InvalidationQueueEntry::wait(self.status_addr as u64, status_data, false, true)
     }
 
     /// Check if a wait has completed (status address updated)
