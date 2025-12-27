@@ -9,6 +9,7 @@ pub mod apic;
 pub mod audio;
 pub mod dma;
 pub mod hid; // HID subsystem (directory) - keyboard.rs, mouse.rs, ps2.rs
+pub use hid::keyboard; // io::keyboard alias for compatibility
 pub mod ide;
 pub mod interrupt_manager; // Unified interrupt management with Waker bridge (設計書 4.2)
 pub mod io_scheduler; // Polling/Executor連携 I/Oスケジューラ
@@ -162,72 +163,27 @@ pub use hid::{
     KeyboardStream,
     // Keymap support
     Keymap,
+    Modifiers,
     MouseButton,
     MouseEvent,
     MouseHandler,
     Ps2Controller,
-    Ps2DeviceType,
-    Ps2KeyCode,
-    Ps2KeyEvent,
-    Ps2Modifiers,
     StreamAlreadyTaken,
     UsQwertyKeymap,
+    // Functions
+    keyboard_init,
     keyboard_interrupt_handler,
     mouse_interrupt_handler,
-    ps2_init,
-    // PS/2 Controller
+    // PS/2 exports
     ps2_ports,
     ps2_status,
     set_leds,
 };
 
-#[deprecated(
-    note = "`io::ps2_commands` is deprecated; prefer `crate::io::hid::ps2::commands` or `Ps2Controller` APIs directly."
-)]
-pub use hid::ps2_commands;
-
-#[deprecated(
-    note = "`io::ps2_kbd_commands` is deprecated; prefer `crate::io::hid::ps2::kbd_commands` or `Ps2Controller` helpers."
-)]
-pub use hid::ps2_kbd_commands;
-
-#[deprecated(
-    note = "`io::ps2_mouse_commands` is deprecated; prefer `crate::io::hid::ps2::mouse_commands` or `Ps2Controller` helpers."
-)]
-pub use hid::ps2_mouse_commands;
-
-#[deprecated(
-    note = "`io::get_key_event` is deprecated; prefer `KeyboardStream` or `keyboard::has_event()` instead."
-)]
-pub use hid::get_key_event;
-
-#[deprecated(
-    note = "`io::get_modifiers` is deprecated; prefer `keyboard` APIs or `KeyboardStream`."
-)]
-pub use hid::get_modifiers;
-
-#[deprecated(
-    note = "`io::get_mouse_event` is deprecated; prefer `MouseEvent` streams or `mouse::poll_event`."
-)]
-pub use hid::get_mouse_event;
-
-#[deprecated(
-    note = "`io::handle_keyboard_interrupt` is deprecated; prefer registering the PS/2 driver's interrupt handler via the DriverRegistry or using `keyboard_interrupt_handler` directly."
-)]
-pub use hid::handle_keyboard_interrupt;
-
-#[deprecated(
-    note = "`io::keyboard` accessor is deprecated; prefer acquiring a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or initialize via `crate::io::hid::keyboard_init()`."
-)]
-pub use hid::keyboard;
-
-#[deprecated(
-    note = "`io::keyboard_init` is deprecated; prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver through `driver_registry::register_driver`."
-)]
-pub use hid::keyboard_init;
-
-// NOTE: ps2_init, ps2_ports, ps2_status, set_leds are already exported above (lines 172-176)
-// The following deprecated re-exports have been removed to fix duplicate symbol errors.
+// NOTE: Legacy deprecated re-exports have been removed. Use direct paths:
+// - PS/2: `crate::io::hid::ps2::*`
+// - Keyboard: `crate::io::hid::keyboard::*`
+// - Mouse: `crate::io::hid::mouse::*`
 
 // PCI common module exports (unified interface)
 #[allow(unused_imports)]
