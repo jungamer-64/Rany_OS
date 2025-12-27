@@ -47,7 +47,7 @@ fn ref_count_registry() -> &'static IrqMutex<HashMap<u64, u16>> {
 /// Register a page table's physical address in the global registry
 pub fn register_page_table(phys: u64) {
     let mut registry = ref_count_registry().lock();
-    registry.insert(phys, 0);
+    registry.entry(phys).or_insert(0);
 }
 
 /// Unregister a page table's physical address from the global registry

@@ -365,7 +365,10 @@ impl KernelServices for ExoKernel {
 // GuiServices Implementation
 // ============================================================================
 
-use kernel_api::gui::{FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle, PixelFormat as KapiPixelFormat};
+use kernel_api::gui::{
+    FramebufferInfo as KapiFramebufferInfo, GuiServices, InputStreamHandle,
+    PixelFormat as KapiPixelFormat,
+};
 use kernel_api::security::DomainCapabilities;
 
 impl GuiServices for ExoKernel {
@@ -383,7 +386,7 @@ impl GuiServices for ExoKernel {
         {
             crate::graphics::with_framebuffer(|fb| {
                 let info = fb.info();
-                
+
                 // Convert graphic_types::PixelFormat to kernel_api::gui::PixelFormat
                 let format = match info.format {
                     crate::graphics::PixelFormat::Rgba8888 => KapiPixelFormat::Rgb32,
@@ -401,7 +404,8 @@ impl GuiServices for ExoKernel {
                     vaddr: info.address as usize,
                     size: info.size(),
                 })
-            }).unwrap_or(Err(KapiError::ResourceExhausted))
+            })
+            .unwrap_or(Err(KapiError::ResourceExhausted))
         }
         #[cfg(any(test, feature = "bench"))]
         {
@@ -421,12 +425,15 @@ impl GuiServices for ExoKernel {
     }
 
     fn poll_input_event(&self) -> Option<kernel_api::gui::InputEvent> {
-        use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState, MouseEvent as KapiMouseEvent, MouseButtons};
+        use kernel_api::gui::{
+            InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState, MouseButtons,
+            MouseEvent as KapiMouseEvent,
+        };
         // Bring the KeyEventExt trait into scope so we can call `.to_char()`
         use crate::io::hid::keyboard::KeyEventExt;
 
         // Try keyboard first
-        if let Some(hid_event) = crate::io::hid::poll_input_event() {
+        if let Some(hid_event) = crate::io::hid::keyboard::poll_input_event() {
             let kapi_state = match hid_event.state {
                 crate::io::hid::KeyState::Pressed => KapiKeyState::Pressed,
                 crate::io::hid::KeyState::Released => KapiKeyState::Released,
@@ -435,11 +442,21 @@ impl GuiServices for ExoKernel {
             // Encode modifiers as bitfield
             let mod_bits = {
                 let mut bits = 0u8;
-                if hid_event.modifiers.shift { bits |= 0x01; }
-                if hid_event.modifiers.ctrl { bits |= 0x02; }
-                if hid_event.modifiers.alt { bits |= 0x04; }
-                if hid_event.modifiers.alt_gr { bits |= 0x08; }
-                if hid_event.modifiers.caps_lock { bits |= 0x10; }
+                if hid_event.modifiers.shift {
+                    bits |= 0x01;
+                }
+                if hid_event.modifiers.ctrl {
+                    bits |= 0x02;
+                }
+                if hid_event.modifiers.alt {
+                    bits |= 0x04;
+                }
+                if hid_event.modifiers.alt_gr {
+                    bits |= 0x08;
+                }
+                if hid_event.modifiers.caps_lock {
+                    bits |= 0x10;
+                }
                 bits
             };
 
@@ -461,11 +478,21 @@ impl GuiServices for ExoKernel {
         // Try mouse (if feature enabled)
         #[cfg(feature = "mouse")]
         {
-            if let Some(mouse_event) = crate::io::hid::poll_mouse_event() {
+            if let Some(mouse_event) = crate::io::hid::mouse::poll_mouse_event() {
                 let buttons = MouseButtons(
-                    if mouse_event.buttons.left() { MouseButtons::LEFT } else { 0 }
-                    | if mouse_event.buttons.right() { MouseButtons::RIGHT } else { 0 }
-                    | if mouse_event.buttons.middle() { MouseButtons::MIDDLE } else { 0 }
+                    if mouse_event.buttons.left() {
+                        MouseButtons::LEFT
+                    } else {
+                        0
+                    } | if mouse_event.buttons.right() {
+                        MouseButtons::RIGHT
+                    } else {
+                        0
+                    } | if mouse_event.buttons.middle() {
+                        MouseButtons::MIDDLE
+                    } else {
+                        0
+                    },
                 );
 
                 let kapi_mouse = KapiMouseEvent {
@@ -492,7 +519,10 @@ impl GuiServices for ExoKernel {
 // ShellServices Implementation
 // ============================================================================
 
-use kernel_api::shell::{ShellServices, MemoryStats, ProcessInfo, ProcessState as KapiProcessState, SystemInfo as KapiSystemInfo, FileType as KapiFileType, DirEntry as KapiDirEntry};
+use kernel_api::shell::{
+    DirEntry as KapiDirEntry, FileType as KapiFileType, MemoryStats, ProcessInfo,
+    ProcessState as KapiProcessState, ShellServices, SystemInfo as KapiSystemInfo,
+};
 
 impl ShellServices for ExoKernel {
     fn memory_stats(&self) -> MemoryStats {
@@ -510,19 +540,21 @@ impl ShellServices for ExoKernel {
     fn list_processes(&self) -> alloc::vec::Vec<ProcessInfo> {
         let pm = crate::task::process_manager();
         let mut result = alloc::vec::Vec::new();
-        
+
         for pid in 0..100u64 {
             let proc_id = crate::task::ProcessId::new(pid);
             if let Some(process) = pm.get(proc_id) {
                 let p = process.read();
                 let state = match p.state {
-                    crate::task::ProcessState::Running | crate::task::ProcessState::Ready => kernel_api::shell::ProcessState::Running,
+                    crate::task::ProcessState::Running | crate::task::ProcessState::Ready => {
+                        kernel_api::shell::ProcessState::Running
+                    }
                     crate::task::ProcessState::Blocked => kernel_api::shell::ProcessState::Blocked,
                     crate::task::ProcessState::Stopped => kernel_api::shell::ProcessState::Stopped,
                     crate::task::ProcessState::Zombie => kernel_api::shell::ProcessState::Zombie,
                     _ => kernel_api::shell::ProcessState::Sleeping,
                 };
-                
+
                 result.push(ProcessInfo {
                     pid,
                     name: p.name.clone(),
@@ -534,7 +566,7 @@ impl ShellServices for ExoKernel {
                 });
             }
         }
-        
+
         if result.is_empty() {
             result.push(ProcessInfo {
                 pid: 0,
@@ -546,23 +578,25 @@ impl ShellServices for ExoKernel {
                 uid: 0,
             });
         }
-        
+
         result
     }
 
     fn get_process(&self, pid: u64) -> Option<ProcessInfo> {
         let proc_id = crate::task::ProcessId::new(pid);
-        
+
         if let Some(process) = crate::task::process_manager().get(proc_id) {
             let p = process.read();
             let state = match p.state {
-                crate::task::ProcessState::Running | crate::task::ProcessState::Ready => kernel_api::shell::ProcessState::Running,
+                crate::task::ProcessState::Running | crate::task::ProcessState::Ready => {
+                    kernel_api::shell::ProcessState::Running
+                }
                 crate::task::ProcessState::Blocked => kernel_api::shell::ProcessState::Blocked,
                 crate::task::ProcessState::Stopped => kernel_api::shell::ProcessState::Stopped,
                 crate::task::ProcessState::Zombie => kernel_api::shell::ProcessState::Zombie,
                 _ => kernel_api::shell::ProcessState::Sleeping,
             };
-            
+
             Some(ProcessInfo {
                 pid,
                 name: p.name.clone(),
@@ -586,33 +620,38 @@ impl ShellServices for ExoKernel {
             None
         }
     }
-    
-    fn kill_process(&self, pid: u64, caller_uid: u32, has_cap_kill: bool) -> Result<(), &'static str> {
+
+    fn kill_process(
+        &self,
+        pid: u64,
+        caller_uid: u32,
+        has_cap_kill: bool,
+    ) -> Result<(), &'static str> {
         if pid == 0 {
             return Err("Cannot kill kernel process");
         }
-        
+
         let proc_id = crate::task::ProcessId::new(pid);
         let pm = crate::task::process_manager();
-        
+
         if let Some(process) = pm.get(proc_id) {
             let target_uid = process.read().credentials.uid.as_u32();
-            
+
             if caller_uid != target_uid && !has_cap_kill {
                 return Err("Permission denied: Owner or CAP_KILL required");
             }
-            
+
             process.write().state = crate::task::ProcessState::Stopped;
             Ok(())
         } else {
             Err("Process not found")
         }
     }
-    
+
     fn current_uid(&self) -> u32 {
         crate::task::process::getuid().as_u32()
     }
-    
+
     fn current_pid(&self) -> u64 {
         crate::task::process::getpid().as_u64()
     }
@@ -658,15 +697,21 @@ impl ShellServices for ExoKernel {
         let tm = crate::thermal::thermal_manager();
         let (polling_count, trip_events) = tm.stats();
         let throttle = tm.throttle_controller();
-        let sensors = tm.sensors().iter().map(|s| {
-            kernel_api::shell::ThermalSensorInfo {
+        let sensors = tm
+            .sensors()
+            .iter()
+            .map(|s| kernel_api::shell::ThermalSensorInfo {
                 id: s.id as usize,
                 name: s.name.clone(),
-                current_c: if s.current.is_valid() { Some(s.current.celsius() as f32) } else { None },
+                current_c: if s.current.is_valid() {
+                    Some(s.current.celsius() as f32)
+                } else {
+                    None
+                },
                 is_hot: s.is_hot(),
                 is_critical: s.is_critical(),
-            }
-        }).collect();
+            })
+            .collect();
 
         kernel_api::shell::ThermalInfo {
             cpu_celsius: crate::thermal::cpu_temperature().map(|t| t.celsius() as f32),
@@ -697,8 +742,12 @@ impl ShellServices for ExoKernel {
 
         kernel_api::shell::PowerInfo {
             state: alloc::format!("{:?}", pm.current_state()),
-            power_button_presses: stats.power_button_presses.load(core::sync::atomic::Ordering::Relaxed),
-            sleep_button_presses: stats.sleep_button_presses.load(core::sync::atomic::Ordering::Relaxed),
+            power_button_presses: stats
+                .power_button_presses
+                .load(core::sync::atomic::Ordering::Relaxed),
+            sleep_button_presses: stats
+                .sleep_button_presses
+                .load(core::sync::atomic::Ordering::Relaxed),
             cpu_idle: kernel_api::shell::CpuIdleInfo {
                 c1_count: c1,
                 c2_count: c2,
@@ -722,49 +771,61 @@ impl ShellServices for ExoKernel {
     fn list_directory(&self, path: &str) -> Result<alloc::vec::Vec<KapiDirEntry>, &'static str> {
         match crate::fs::list_directory(path, "/") {
             Ok(entries) => {
-                let result = entries.into_iter().map(|e| {
-                    let file_type = match e.file_type {
-                        crate::fs::FileType::Directory => kernel_api::shell::FileType::Directory,
-                        crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
-                        crate::fs::FileType::CharDevice => kernel_api::shell::FileType::CharDevice,
-                        crate::fs::FileType::BlockDevice => kernel_api::shell::FileType::BlockDevice,
-                        crate::fs::FileType::Socket => kernel_api::shell::FileType::Socket,
-                        crate::fs::FileType::Fifo => kernel_api::shell::FileType::Fifo,
-                        _ => kernel_api::shell::FileType::File,
-                    };
-                    KapiDirEntry {
-                        name: e.name,
-                        file_type,
-                        size: 0,
-                        ino: e.ino,
-                    }
-                }).collect();
+                let result = entries
+                    .into_iter()
+                    .map(|e| {
+                        let file_type = match e.file_type {
+                            crate::fs::FileType::Directory => {
+                                kernel_api::shell::FileType::Directory
+                            }
+                            crate::fs::FileType::Symlink => kernel_api::shell::FileType::Symlink,
+                            crate::fs::FileType::CharDevice => {
+                                kernel_api::shell::FileType::CharDevice
+                            }
+                            crate::fs::FileType::BlockDevice => {
+                                kernel_api::shell::FileType::BlockDevice
+                            }
+                            crate::fs::FileType::Socket => kernel_api::shell::FileType::Socket,
+                            crate::fs::FileType::Fifo => kernel_api::shell::FileType::Fifo,
+                            _ => kernel_api::shell::FileType::File,
+                        };
+                        KapiDirEntry {
+                            name: e.name,
+                            file_type,
+                            size: 0,
+                            ino: e.ino,
+                        }
+                    })
+                    .collect();
                 Ok(result)
             }
             Err(_) => Err("Failed to list directory"),
         }
     }
-    
+
     fn read_file(&self, path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> {
         crate::fs::read_file_content(path, "/").map_err(|_| "Failed to read file")
     }
-    
-    fn read_file_zero_copy(&self, path: &str) -> Result<alloc::sync::Arc<alloc::vec::Vec<u8>>, &'static str> {
+
+    fn read_file_zero_copy(
+        &self,
+        path: &str,
+    ) -> Result<alloc::sync::Arc<alloc::vec::Vec<u8>>, &'static str> {
         // Use async_memfs's Bytes type internally for zero-copy semantics
         use crate::fs::async_memfs::Bytes;
-        
+
         // Read content
         let content = crate::fs::read_file_content(path, "/").map_err(|_| "Failed to read file")?;
-        
+
         // Wrap in Bytes and extract Arc
         let bytes = Bytes::from(content);
         Ok(bytes.into_inner())
     }
-    
+
     fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str> {
         crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
     }
-    
+
     fn stat_file(&self, path: &str) -> Result<kernel_api::shell::FileAttributes, &'static str> {
         match crate::fs::stat_file(path, "/") {
             Ok(attr) => {
@@ -787,15 +848,15 @@ impl ShellServices for ExoKernel {
             Err(_) => Err("Failed to stat file"),
         }
     }
-    
+
     fn make_directory(&self, path: &str) -> Result<(), &'static str> {
         crate::fs::make_directory(path, "/").map_err(|_| "Failed to create directory")
     }
-    
+
     fn remove_file(&self, path: &str) -> Result<(), &'static str> {
         crate::fs::remove_file(path, "/").map_err(|_| "Failed to remove file")
     }
-    
+
     fn remove_directory(&self, path: &str) -> Result<(), &'static str> {
         crate::fs::remove_directory(path, "/").map_err(|_| "Failed to remove directory")
     }

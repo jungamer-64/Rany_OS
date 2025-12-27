@@ -55,13 +55,13 @@ fn virtio_transmit(data: &[u8]) -> bool {
             true
         }
         Some(Err(_)) => {
-            crate::serial_println!("[NET BRIDGE] Transmit error");
+            log::info!("[NET BRIDGE] Transmit error");
             false
         }
         None => {
             // VirtIO-Netが初期化されていない場合はデバッグ出力
             #[cfg(debug_assertions)]
-            crate::serial_println!("[NET BRIDGE] VirtIO-Net not initialized");
+            log::info!("[NET BRIDGE] VirtIO-Net not initialized");
             false
         }
     }
@@ -91,7 +91,7 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
     // デバッグ用：パケット送信ログ
     #[cfg(debug_assertions)]
     if data.len() >= 14 {
-        crate::serial_println!(
+        log::info!(
             "[NET TX] {} bytes queued, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             data.len(),
             data[0],
@@ -127,7 +127,7 @@ pub fn process_received_packet(data: &[u8]) {
 
     #[cfg(debug_assertions)]
     if ethernet_data.len() >= 14 {
-        crate::serial_println!(
+        log::info!(
             "[NET RX] {} bytes, src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             ethernet_data.len(),
             ethernet_data[6],
@@ -151,7 +151,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
         return Ok(()); // Already initialized
     }
 
-    crate::serial_println!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
+    log::info!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
 
     // Get MAC address from VirtIO-Net if available
     let mac = with_virtio_net(|device| {
@@ -195,8 +195,8 @@ pub fn init_bridge() -> Result<(), &'static str> {
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),
     }
 
-    crate::serial_println!("[NET BRIDGE] Bridge initialized");
-    crate::serial_println!(
+    log::info!("[NET BRIDGE] Bridge initialized");
+    log::info!(
         "  MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         mac.as_bytes()[0],
         mac.as_bytes()[1],
@@ -205,7 +205,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
         mac.as_bytes()[4],
         mac.as_bytes()[5]
     );
-    crate::serial_println!("  IP: 10.0.2.15");
+    log::info!("  IP: 10.0.2.15");
 
     Ok(())
 }

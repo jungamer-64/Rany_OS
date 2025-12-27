@@ -220,6 +220,22 @@ impl IommuController {
         }
     }
 
+    fn sagaw_mask(&self) -> u8 {
+        if self.cap == 0 {
+            return 0;
+        }
+        ((self.cap & crate::io::iommu::intel::registers::cap_bits::CAP_SAGAW_MASK) >> 8) as u8
+    }
+
+    fn max_guest_address_width(&self) -> u8 {
+        if self.cap == 0 {
+            return 48;
+        }
+        let raw = ((self.cap & crate::io::iommu::intel::registers::cap_bits::CAP_MGAW_MASK) >> 16)
+            as u8;
+        raw.saturating_add(1).clamp(1, 64)
+    }
+
     /// Get QI runtime stats if the queue is initialized.
     pub fn qi_stats(&self) -> Result<Option<QiStats>, IommuError> {
         match self.invalidation_queue.lock() {
@@ -254,6 +270,24 @@ impl IommuController {
 
         self.ecap = self.read64(regs::ECAP);
         log::info!("IOMMU init: ECAP read success: {:#x}", self.ecap);
+
+        let sagaw = self.sagaw_mask();
+        let mgaw = self.max_guest_address_width();
+        log::info!(
+            "IOMMU init: MGAW={} bits, SAGAW=0x{:02x}",
+            mgaw,
+            sagaw
+        );
+        if mgaw < 48 {
+            log::warn!(
+                "IOMMU init: MGAW below 48 bits; 4-level page tables may be unsupported"
+            );
+        }
+        if (sagaw & (1 << 2)) == 0 {
+            log::warn!(
+                "IOMMU init: 48-bit AGAW not reported in SAGAW; page table compatibility may be limited"
+            );
+        }
 
         // Allocate and set up Root Table
         let root_table = HardwareTable::new(256, None)?;

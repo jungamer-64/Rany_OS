@@ -118,6 +118,10 @@ pub mod cap_bits {
     pub const CAP_SC: u64 = 1 << 7;
     /// Invalidation Register Offset (bits 8-11)
     pub const CAP_IRO_MASK: u64 = 0xF << 8;
+    /// Supported Adjusted Guest Address Widths (bits 8-12)
+    pub const CAP_SAGAW_MASK: u64 = 0x1F << 8;
+    /// Maximum Guest Address Width (bits 16-21)
+    pub const CAP_MGAW_MASK: u64 = 0x3F << 16;
     /// Number of Fault Recording registers (bits 40-47)
     pub const CAP_NFR_MASK: u64 = 0xFF << 40;
     /// Fault Recording register Offset (bits 24-33)

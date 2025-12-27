@@ -24,10 +24,12 @@ mod interrupt_macros;
 #[deprecated(
     note = "serial_print is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
 )]
+#[allow(deprecated)]
 pub use serial_driver::serial_print;
 #[deprecated(
     note = "serial_println is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
 )]
+#[allow(deprecated)]
 pub use serial_driver::serial_println;
 
 mod graphics;
@@ -559,7 +561,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
 
     // 3. キーボードドライバの初期化
     info!(target: "init", "Initializing keyboard driver");
-    io::keyboard::init();
+    io::hid::keyboard::init();
     info!(target: "init", "Keyboard driver initialized");
 
     // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）using DriverRegistry

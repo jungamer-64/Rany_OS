@@ -24,6 +24,7 @@ pub use security_integration::SecurityIntegration;
 
 /// Integration status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum IntegrationStatus {
     /// Not initialized
     Uninitialized,
@@ -45,6 +46,7 @@ pub enum IntegrationStatus {
 
 /// Integration error
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum IntegrationError {
     /// ACPI initialization failed
     AcpiError(String),
@@ -150,10 +152,10 @@ impl SystemIntegration {
         self.log("Phase 2: PCI bus integration");
 
         // Initialize PCI bus
-        crate::io::pci_init();
+        crate::io::pci::init();
 
         // Get all PCI devices
-        let devices = crate::io::pci_devices();
+        let devices = crate::io::pci::scan_all_devices();
         self.log(&alloc::format!("  Found {} PCI device(s)", devices.len()));
 
         // Categorize devices
@@ -210,7 +212,7 @@ impl SystemIntegration {
         ));
 
         // Get PCI devices with MSI capability and allocate vectors
-        let pci_devices = crate::io::pci_devices();
+        let pci_devices = crate::io::pci::scan_all_devices();
         for pci_dev in &pci_devices {
             for (dev_id, dev_name, pci_loc) in &msi_devices {
                 if pci_loc
@@ -221,7 +223,7 @@ impl SystemIntegration {
                     })
                     .unwrap_or(false)
                 {
-                    if let Some(vector) = crate::io::allocate_vector(pci_dev.bdf) {
+                    if let Some(vector) = crate::io::pci::allocate_vector(pci_dev.bdf) {
                         self.interrupt_router.add_msi_route(*dev_id, vector);
                         self.log(&alloc::format!(
                             "    Device {} -> vector {}",
@@ -243,7 +245,7 @@ impl SystemIntegration {
         self.log("Phase 4: Device initialization");
 
         // Initialize VirtIO devices
-        let virtio_devices = crate::io::pci_find_virtio_devices();
+        let virtio_devices = crate::io::pci::find_virtio_devices();
         for dev in virtio_devices {
             match dev.device_id.0 {
                 0x1001 | 0x1042 => {
@@ -260,11 +262,15 @@ impl SystemIntegration {
                     // If BAR0 is present, initialize the MMIO device
                     if let Some(bar0) = dev.bars[0] {
                         let bar0_phys = bar0.base();
-                        let bar0_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                        let bar0_virt =
+                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                                .as_u64();
                         unsafe {
                             match crate::io::virtio::init_virtio_blk(bar0_virt) {
                                 Ok(()) => self.log("    VirtIO-blk driver initialized"),
-                                Err(e) => self.log(&alloc::format!("    VirtIO-blk init failed: {:?}", e)),
+                                Err(e) => {
+                                    self.log(&alloc::format!("    VirtIO-blk init failed: {:?}", e))
+                                }
                             }
                         }
                     } else {
@@ -287,7 +293,7 @@ impl SystemIntegration {
         }
 
         // Initialize NVMe controllers
-        let nvme_devices = crate::io::pci_find_by_class(0x01, 0x08);
+        let nvme_devices = crate::io::pci::find_by_class(0x01, 0x08);
         for dev in nvme_devices {
             self.log(&alloc::format!(
                 "  Initializing NVMe controller at {:02x}:{:02x}.{}",

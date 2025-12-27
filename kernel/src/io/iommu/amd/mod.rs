@@ -89,6 +89,7 @@ const AMD_FAULT_QUEUE_SIZE: usize = 128;
 const AMD_FAULT_LOG_RATE_LIMIT: usize = 128;
 // Use a fixed IOMMU fault vector number to avoid depending on `interrupts` during lib builds
 const AMD_IOMMU_FAULT_VECTOR: u8 = 0x50u8;
+const AMD_DEFAULT_MAX_ADDR_BITS: u8 = 48; // TODO: derive from AMD-Vi capability registers.
 
 const IVHD_INIT_PASS: u8 = 1 << 0;
 const IVHD_EINT_PASS: u8 = 1 << 1;
@@ -655,6 +656,7 @@ impl AmdIommuDriver {
             None,
             false,
             false,
+            AMD_DEFAULT_MAX_ADDR_BITS,
             IommuDomainType::Translated,
             page_table_pool.clone(),
             PteFormat::Amd,
@@ -1735,6 +1737,7 @@ impl IommuDriver for AmdIommuDriver {
             numa_node,
             false,
             false,
+            AMD_DEFAULT_MAX_ADDR_BITS,
             domain_type,
             self.page_table_pool.clone(),
             PteFormat::Amd,
@@ -2132,6 +2135,7 @@ mod tests {
             None,
             false,
             false,
+            AMD_DEFAULT_MAX_ADDR_BITS,
             IommuDomainType::Translated,
             pool,
             PteFormat::Amd,
@@ -2194,6 +2198,7 @@ mod tests {
             None,
             false,
             false,
+            AMD_DEFAULT_MAX_ADDR_BITS,
             IommuDomainType::Translated,
             driver.page_table_pool.clone(),
             PteFormat::Amd,
