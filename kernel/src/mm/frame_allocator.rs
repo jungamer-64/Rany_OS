@@ -717,7 +717,8 @@ pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)])
         // node-local allocations when possible (best-effort).
         for &(addr, size, node_id) in regions {
             crate::mm::buddy_register_numa_region(node_id.as_usize(), addr, size);
-        }    }
+        }
+    }
 }
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -826,7 +827,13 @@ pub fn alloc_contiguous_frames(frames_needed: usize) -> Option<PhysAddr> {
     if frames_needed == 0 {
         return None;
     }
-    // ALIGN = 4KiB by default. For larger sizes we could try larger alignments.
+
+    // Prefer Buddy allocator (better at finding contiguous regions)
+    if let Some(addr) = crate::mm::buddy_alloc_contiguous_frames(frames_needed) {
+        return Some(addr);
+    }
+
+    // Fallback to bitmap allocator
     FRAME_ALLOCATOR
         .lock()
         .allocate_contiguous(frames_needed, PAGE_SIZE_4K)
@@ -953,4 +960,3 @@ mod tests {
         }
     }
 }
-

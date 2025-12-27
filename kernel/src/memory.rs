@@ -418,6 +418,10 @@ pub fn init(rsdp_addr: Option<u64>) {
 
     crate::io::log::early_print("[MEM] global heap\n");
 
+    // 0. Higher Half Manager の初期化 (IOMMUなどが依存)
+    crate::mm::init(physical_memory_offset());
+    crate::io::log::early_print("[MEM] higher half init\n");
+
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
     init_global_heap();
     crate::io::log::early_print("[MEM] heap done\n");
@@ -504,10 +508,10 @@ fn init_global_heap() {
 /// デフォルトのメモリ領域を取得
 /// 本番環境ではブートローダーから取得するが、開発用にハードコード
 fn get_default_memory_regions() -> Vec<(PhysAddr, u64)> {
-    // 16MiB - 256MiB の範囲を使用可能として設定
+    // 16MiB - 496MiB の範囲を使用可能として設定 (QEMU 512MBに収まる)
     // 最初の16MiBはBIOSやカーネルのために予約
     alloc::vec![
-        (PhysAddr::new(0x100_0000), 240 * 1024 * 1024), // 16MiB - 256MiB
+        (PhysAddr::new(0x100_0000), 480 * 1024 * 1024), // 16MiB - 496MiB
     ]
 }
 

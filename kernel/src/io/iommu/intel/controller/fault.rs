@@ -52,6 +52,11 @@ impl RawFaultEvent {
             hi: self.hi,
         }
     }
+
+    /// Check if this fault is critical (should trigger diagnostics)
+    pub fn is_critical(&self) -> bool {
+        self.reason == 0xFF || self.reason == 0x00 || self.is_overflow
+    }
 }
 
 impl From<&FaultRecord> for RawFaultEvent {
@@ -171,7 +176,7 @@ impl DeferredFaultQueue {
     fn is_critical(event: &RawFaultEvent) -> bool {
         // Unknown fault reasons (0xFF or 0x00 with valid fault) are critical
         // Also overflow events are critical for security audit
-        event.reason == 0xFF || event.reason == 0x00 || event.is_overflow
+        event.is_critical()
     }
 
     /// Push an event (MPSC-safe, ISR-safe, may drop if full)
@@ -326,6 +331,29 @@ pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuCon
                     fault_address: event.fault_address,
                     reason: event.reason,
                 });
+            }
+        }
+
+        if let Some(ctrl) = controller {
+            if event.is_critical() {
+                match ctrl.qi_stats() {
+                    Ok(Some(stats)) => {
+                        log::error!(
+                            "[IOMMU] QI stats at fault: submits={} full_checks={} head_refreshes={} waits={} wait_timeouts={}",
+                            stats.submits,
+                            stats.full_checks,
+                            stats.head_refreshes,
+                            stats.waits,
+                            stats.wait_timeouts
+                        );
+                    }
+                    Ok(None) => {
+                        log::info!("[IOMMU] QI stats unavailable (QI not initialized)");
+                    }
+                    Err(e) => {
+                        log::warn!("[IOMMU] QI stats unavailable at fault ({:?})", e);
+                    }
+                }
             }
         }
         count += 1;

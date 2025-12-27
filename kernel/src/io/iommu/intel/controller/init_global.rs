@@ -10,9 +10,9 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::io::iommu::tables::phys_to_virt_usize;
 use crate::io::iommu::config::{IommuConfig, ReservedMemoryRegion};
-use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::tables::phys_to_virt_usize;
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 // Intel-specific imports
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
@@ -58,6 +58,11 @@ pub unsafe fn init_iommu_from_acpi(
         );
 
         let mmio_virt = phys_to_virt_usize(unit.register_base) as u64;
+        log::info!(
+            "Mapped IOMMU Base: Phys {:#x} -> Virt {:#x}",
+            unit.register_base,
+            mmio_virt
+        );
 
         let mut controller = IommuController::new(mmio_virt, unit.segment);
 
@@ -169,6 +174,14 @@ pub unsafe fn init_iommu_from_acpi(
     {
         // Register Intel VT-d driver backend (Phase 1 abstraction hook).
         super::super::IntelIommuDriver::register_driver();
+
+        // Create default domain 0 for generic DMA mappings (used by panic DMA pool, etc.)
+        if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
+            match driver.create_domain(None, IommuDomainType::Translated) {
+                Ok(id) => log::info!("IOMMU default domain created: ID={}", id),
+                Err(e) => log::warn!("Failed to create default IOMMU domain: {:?}", e),
+            }
+        }
 
         // Initialize IOMMU Group Manager
         IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());

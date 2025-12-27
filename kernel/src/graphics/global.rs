@@ -178,6 +178,10 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
     crate::io::log::early_print("[GFX] About to call map_range\n");
 
     unsafe {
+        // First unmap existing HHDM mapping (ignore errors, it may not be mapped)
+        let _ = manager.unmap_range(virt_start, size);
+        crate::io::log::early_print("[GFX] Existing mapping cleared\n");
+
         // Map with Write-Combining attributes for optimal VRAM performance
         match manager.map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
             Ok(_) => {
