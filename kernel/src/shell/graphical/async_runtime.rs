@@ -171,10 +171,10 @@ pub async fn run_async_shell() {
                                 InputEvent::Mouse(kapi_mouse) => {
                                     #[cfg(feature = "mouse")]
                                     {
-                                        use crate::io::hid::MouseEvt;
+                                        use crate::io::hid::MouseEvent;
                                         use kernel_api::gui::MouseButtons;
                                         // Convert KAPI MouseEvent to internal MouseEvent
-                                        let hid_mouse = MouseEvt {
+                                        let hid_mouse = MouseEvent {
                                             dx: kapi_mouse.dx as i32,
                                             dy: kapi_mouse.dy as i32,
                                             left_down: kapi_mouse.buttons.left(),

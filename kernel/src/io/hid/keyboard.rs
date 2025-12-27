@@ -194,6 +194,15 @@ pub(crate) fn poll_char() -> Option<char> {
     None
 }
 
+/// 次のキーイベントをポーリング（非ブロッキング）- 内部API
+///
+/// service_impl.rs の poll_input_event から使用される。
+#[doc(hidden)]
+pub(crate) fn poll_input_event() -> Option<KeyEvent> {
+    use hid_driver::DriverOps;
+    PS2_KEYBOARD.poll_key_event_internal()
+}
+
 // ============================================================================
 // Extern crate declarations
 // ============================================================================
