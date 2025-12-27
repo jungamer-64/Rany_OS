@@ -9,29 +9,28 @@
 //! # Key Features
 //!
 //! - **Leak Detection**: `Drop` panics if handle is dropped without proper unmap
-//! - **IOTLB Synchronization**: `unmap()` waits for IOTLB invalidation before returning
+//! - **Backend Unmap**: `unmap()` routes through the global IOMMU API
 //! - **Ownership Safety**: Errors return the original `RRef<T>` or `DmaHandle<T>`
 //!
 //! # Example
 //!
 //! ```ignore
 //! let rref = RRef::new(domain_id, vec![0u8; 4096]);
-//! let handle = DmaHandle::map(&iommu_domain, rref, DmaDirection::ToDevice)?;
+//! let handle = crate::io::iommu::api::map_rref(rref, 0, DmaDirection::ToDevice)?;
 //!
 //! // Use handle.iova() for device programming
 //! device.set_dma_address(handle.iova());
 //!
 //! // When done, unmap to get RRef back
-//! let rref = handle.unmap(&iommu_domain)?;
+//! let rref = handle.unmap()?;
 //! ```
 
 use core::marker::PhantomData;
 
 // use super::IommuController;
 use super::domain::{InvalidateRequest, IommuDomain, IommuInvalidator};
-use super::quarantine::{QuarantineError, QuarantineQueue};
-use super::types::IommuError;
-use crate::io::iommu::intel::controller::IommuController;
+use super::interface::IommuHardwareContext;
+use super::types::{DeviceId, IommuError};
 use crate::io::iommu_cmdqueue::IommuCommandKind;
 use crate::ipc::RRef;
 use crate::ipc::rref::RRefRawParts;
@@ -51,6 +50,18 @@ pub enum DmaDirection {
     FromDevice,
     /// Bidirectional access
     Bidirectional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MappingKind {
+    /// Identity mapping (IOMMU disabled at map time)
+    Identity,
+    /// Global DMA mapping (domain 0)
+    Global,
+    /// Device-specific DMA mapping
+    Device(DeviceId),
+    /// Domain-managed mapping (requires explicit domain context to unmap)
+    Domain,
 }
 
 // ============================================================================
@@ -93,6 +104,8 @@ impl<T> MapError<T> {
 pub enum UnmapErrorKind {
     /// Invalid IOVA address
     InvalidIova,
+    /// Mapping requires a domain/context-specific unmap
+    InvalidContext,
     /// IOTLB invalidation timed out
     IoTlbTimeout,
     /// Domain not found
@@ -137,13 +150,13 @@ impl<T> UnmapError<T> {
 ///
 /// # Lifecycle
 ///
-/// 1. `DmaHandle::map()` - Maps RRef into IOVA space (consumes RRef)
+/// 1. `DmaHandle::map_rref()` - Maps RRef into IOVA space (consumes RRef)
 /// 2. Use `iova()` for device programming
-/// 3. `handle.unmap()` - Invalidates IOTLB, returns RRef
+/// 3. `handle.unmap()` - Unmaps via global IOMMU API, returns RRef
 ///
 /// # Panics
 ///
-/// Dropping a `DmaHandle` without calling `unmap()` or `unmap_async()` will panic.
+/// Dropping a `DmaHandle` without calling an unmap method will panic.
 /// This is intentional to prevent DMA-after-free bugs where a device might
 /// still be accessing memory that has been freed.
 #[derive(Debug)]
@@ -158,6 +171,8 @@ pub struct DmaHandle<T> {
     size: u64,
     /// Domain ID this handle belongs to
     domain_id: u16,
+    /// Mapping scope (global/device/domain/identity)
+    mapping: MappingKind,
     /// DMA direction
     direction: DmaDirection,
     /// Marker for T
@@ -176,7 +191,7 @@ unsafe impl<T: Sync> Sync for DmaHandle<T> {}
 impl<T> DmaHandle<T> {
     /// Create a new DmaHandle (internal use only)
     ///
-    /// Public construction should go through `DmaHandle::map()`.
+    /// Public construction should go through `DmaHandle::map_rref()` or API helpers.
     pub(crate) fn new(
         rref: RRef<T>,
         iova: u64,
@@ -184,6 +199,7 @@ impl<T> DmaHandle<T> {
         size: u64,
         domain_id: u16,
         direction: DmaDirection,
+        mapping: MappingKind,
     ) -> Self {
         Self {
             rref: Some(rref),
@@ -191,6 +207,7 @@ impl<T> DmaHandle<T> {
             phys,
             size,
             domain_id,
+            mapping,
             direction,
             _marker: PhantomData,
         }
@@ -250,7 +267,7 @@ impl<T> Drop for DmaHandle<T> {
             {
                 panic!(
                     "DMA handle leaked! IOVA=0x{:x}, size={}, domain={}. \
-                     Call unmap() before dropping DmaHandle.",
+                     Call an unmap method before dropping DmaHandle.",
                     self.iova, self.size, self.domain_id
                 );
             }
@@ -302,7 +319,15 @@ impl<T> DmaHandle<T> {
         // TODO: Use proper IOVA allocator from IommuDomain
         let iova = phys;
 
-        Ok(Self::new(rref, iova, phys, size, domain_id, direction))
+        Ok(Self::new(
+            rref,
+            iova,
+            phys,
+            size,
+            domain_id,
+            direction,
+            MappingKind::Identity,
+        ))
     }
 
     /// Unmap a DMA buffer (simplified - no IOTLB invalidation)
@@ -333,6 +358,63 @@ impl<T> DmaHandle<T> {
                 // Already unmapped - this shouldn't happen with proper usage
                 Err(UnmapError::new(self, UnmapErrorKind::InvalidIova))
             }
+        }
+    }
+
+    /// Unmap a DMA buffer using the global IOMMU API.
+    ///
+    /// For domain-managed mappings, use `unmap_with_domain` instead.
+    pub fn unmap(mut self) -> Result<RRef<T>, UnmapError<T>> {
+        if self.rref.is_none() {
+            return Err(UnmapError::new(self, UnmapErrorKind::InvalidIova));
+        }
+
+        match self.mapping {
+            MappingKind::Identity => Ok(self
+                .take_rref()
+                .expect("DmaHandle must have rref for unmap")),
+            MappingKind::Domain => Err(UnmapError::new(self, UnmapErrorKind::InvalidContext)),
+            MappingKind::Global => {
+                if let Err(e) = crate::io::iommu::api::unmap_dma(self.iova, self.size) {
+                    return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
+                }
+                Ok(self
+                    .take_rref()
+                    .expect("DmaHandle must have rref for unmap"))
+            }
+            MappingKind::Device(device) => {
+                if let Err(e) =
+                    crate::io::iommu::api::unmap_for_device(&device, self.iova, self.size)
+                {
+                    return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
+                }
+                Ok(self
+                    .take_rref()
+                    .expect("DmaHandle must have rref for unmap"))
+            }
+        }
+    }
+
+    /// Async variant of `unmap` for device-scoped mappings.
+    pub async fn unmap_async(mut self) -> Result<RRef<T>, UnmapError<T>> {
+        if self.rref.is_none() {
+            return Err(UnmapError::new(self, UnmapErrorKind::InvalidIova));
+        }
+
+        match self.mapping {
+            MappingKind::Device(device) => {
+                if let Err(e) =
+                    crate::io::iommu::api::unmap_for_device_async(&device, self.iova, self.size)
+                        .await
+                {
+                    return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
+                }
+                Ok(self
+                    .take_rref()
+                    .expect("DmaHandle must have rref for unmap"))
+            }
+            MappingKind::Domain => Err(UnmapError::new(self, UnmapErrorKind::InvalidContext)),
+            _ => self.unmap(),
         }
     }
 
@@ -375,7 +457,7 @@ impl<T> DmaHandle<T> {
     /// let rref = RRef::new(Buffer::new());
     /// let handle = DmaHandle::map_rref(rref, 0, DmaDirection::ToDevice)?;
     /// // Use handle.iova() for device programming
-    /// let returned_rref = handle.unmap_simple()?;
+    /// let returned_rref = handle.unmap()?;
     /// ```
     pub fn map_rref(
         rref: RRef<T>,
@@ -391,7 +473,7 @@ impl<T> DmaHandle<T> {
         let size = core::mem::size_of::<T>() as u64;
 
         // Check IOMMU enabled
-        if !crate::io::iommu::is_iommu_enabled() {
+        if !crate::io::iommu::api::is_iommu_enabled() {
             // Fallback to simple 1:1 mapping if IOMMU disabled
             return Self::map_simple(rref, domain_id, direction);
         }
@@ -401,13 +483,13 @@ impl<T> DmaHandle<T> {
         // - It's not kernel code or page tables (RRef allocation guarantees)
         // - It will remain valid as long as we hold the RRef
         let iova = match unsafe {
-            crate::io::iommu::map_for_dma(PhysAddr::new(phys_addr_val.as_u64()), size)
+            crate::io::iommu::api::map_for_dma(PhysAddr::new(phys_addr_val.as_u64()), size)
         } {
             Ok(iova) => iova,
             Err(_) => {
                 return Err(MapError::new(
                     rref,
-                    MapErrorKind::IommuError(crate::io::iommu::IommuError::HardwareError),
+                    MapErrorKind::IommuError(IommuError::HardwareError),
                 ));
             }
         };
@@ -419,6 +501,7 @@ impl<T> DmaHandle<T> {
             size,
             domain_id,
             direction,
+            MappingKind::Global,
         ))
     }
 
@@ -432,7 +515,7 @@ impl<T> DmaHandle<T> {
     /// * `direction` - DMA transfer direction
     pub fn map_rref_for_device(
         rref: RRef<T>,
-        device: &crate::io::iommu::DeviceId,
+        device: &DeviceId,
         direction: DmaDirection,
     ) -> Result<Self, MapError<T>> {
         use x86_64::{PhysAddr, VirtAddr};
@@ -442,13 +525,13 @@ impl<T> DmaHandle<T> {
         let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
         let size = core::mem::size_of::<T>() as u64;
 
-        if !crate::io::iommu::is_iommu_enabled() {
+        if !crate::io::iommu::api::is_iommu_enabled() {
             return Self::map_simple(rref, 0, direction);
         }
 
         // SAFETY: Same as map_rref - RRef ownership guarantees memory is safe for DMA
         let iova = match unsafe {
-            crate::io::iommu::map_for_device(device, PhysAddr::new(phys_addr_val.as_u64()), size)
+            crate::io::iommu::api::map_for_device(device, PhysAddr::new(phys_addr_val.as_u64()), size)
         } {
             Ok(iova) => iova,
             Err(_) => return Err(MapError::new(rref, MapErrorKind::DomainNotFound)),
@@ -464,6 +547,7 @@ impl<T> DmaHandle<T> {
             size,
             domain_id,
             direction,
+            MappingKind::Device(*device),
         ))
     }
 }
@@ -476,15 +560,15 @@ impl<T> DmaHandle<T> {
     /// # Arguments
     /// * `domain` - The IOMMU domain to map into
     /// * `rref` - The RRef to map (consumed)
-    /// * `controller` - The IOMMU controller (for IOVA allocation)
+    /// * `context` - The IOMMU context (for IOVA allocation)
     /// * `direction` - DMA transfer direction
-    pub fn map(
+    pub(crate) fn map(
         domain: &mut IommuDomain,
         rref: RRef<T>,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
         direction: DmaDirection,
     ) -> Result<Self, MapError<T>> {
-        domain.map_buffer(rref, controller, direction)
+        domain.map_buffer(rref, context, direction)
     }
 
     /// Unmap a DMA buffer and return the RRef (Full Implementation)
@@ -494,15 +578,15 @@ impl<T> DmaHandle<T> {
     ///
     /// # Arguments
     /// * `domain` - The IOMMU domain to unmap from
-    /// * `controller` - The IOMMU controller (for IOVA deallocation)
+    /// * `context` - The IOMMU context (for IOVA deallocation)
     /// * `invalidator` - Optional invalidator for IOTLB flush
-    pub fn unmap(
+    pub(crate) fn unmap_with_domain(
         self,
         domain: &mut IommuDomain,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
         invalidator: Option<&dyn IommuInvalidator>,
     ) -> Result<RRef<T>, UnmapError<T>> {
-        domain.unmap_buffer(self, controller, invalidator)
+        domain.unmap_buffer(self, context, invalidator)
     }
 
     /// Unmap a DMA buffer asynchronously and return the RRef
@@ -512,16 +596,16 @@ impl<T> DmaHandle<T> {
     ///
     /// # Arguments
     /// * `domain` - The IOMMU domain to unmap from
-    /// * `controller` - The IOMMU controller (for IOVA deallocation)
+    /// * `context` - The IOMMU context (for IOVA deallocation)
     /// * `invalidator` - Invalidator for async IOTLB flush
-    pub async fn unmap_async(
+    pub(crate) async fn unmap_with_domain_async(
         self,
         domain: &mut IommuDomain,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
         invalidator: &(dyn IommuInvalidator + Sync),
     ) -> Result<RRef<T>, UnmapError<T>> {
         domain
-            .unmap_buffer_async(self, controller, invalidator)
+            .unmap_buffer_async(self, context, invalidator)
             .await
     }
 
@@ -546,10 +630,10 @@ impl<T> DmaHandle<T> {
     ///
     /// # Zero Allocation
     /// This method does NOT allocate any heap memory in the hot path.
-    pub fn try_unmap_lazy(
+    pub(crate) fn try_unmap_lazy(
         mut self,
         domain: &mut IommuDomain,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
     ) -> Result<super::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
     where
         T: 'static,
@@ -624,7 +708,7 @@ impl<T> DmaHandle<T> {
         // If this fails, we can't easily restore self because rref is gone.
         // But commit should not fail for a valid reserved slot.
         slot_guard
-            .commit(raw, self.iova, self.size as u64, controller)
+            .commit(raw, self.iova, self.size as u64, context)
             .expect("Quarantine commit failed despite reservation");
 
         // Step 7: Create and return ticket
@@ -644,23 +728,23 @@ impl<T> DmaHandle<T> {
     /// # Returns
     /// - `Ok(QuarantineTicket<T>)` - On success or after flush. Poll for completion.
     /// - `Err(QuarantineLazyUnmapError<T>)` - On failure after flush attempt.
-    pub fn unmap_lazy(
+    pub(crate) fn unmap_lazy(
         self,
         domain: &mut IommuDomain,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
     ) -> Result<super::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
     where
         T: 'static,
     {
         // First try without flush
-        match self.try_unmap_lazy(domain, controller) {
+        match self.try_unmap_lazy(domain, context) {
             Ok(ticket) => Ok(ticket),
             Err(err) => {
                 // If queue full, try one flush and retry
                 if matches!(err.kind, QuarantineLazyUnmapErrorKind::QueueFull) {
                     // TODO: Trigger domain.flush() here when fully implemented
                     // For now, just retry once (flush would be called by domain owner)
-                    match err.handle.try_unmap_lazy(domain, controller) {
+                    match err.handle.try_unmap_lazy(domain, context) {
                         Ok(ticket) => Ok(ticket),
                         Err(e) => Err(e),
                     }
@@ -678,7 +762,7 @@ impl<T> DmaHandle<T> {
 
 /// Error kind for lazy unmap operations
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuarantineLazyUnmapErrorKind {
+pub(crate) enum QuarantineLazyUnmapErrorKind {
     /// Quarantine queue is full
     QueueFull,
     /// Quarantine error
@@ -688,7 +772,7 @@ pub enum QuarantineLazyUnmapErrorKind {
 }
 
 /// Error for lazy unmap operations (returns handle for retry)
-pub struct QuarantineLazyUnmapError<T> {
+pub(crate) struct QuarantineLazyUnmapError<T> {
     /// The handle that failed to unmap
     pub handle: DmaHandle<T>,
     /// Error kind

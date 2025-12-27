@@ -6,13 +6,21 @@
 //!
 //! Tests for IOMMU controller functionality, domain management, and invalidation.
 
-use super::*;
-use crate::io::iommu::controller::dma::DomainManager;
-use crate::io::iommu::controller::iova::IovaManager;
-use crate::io::iommu::controller::ir::InterruptRemapper;
-use crate::io::iommu::controller::pri::PageRequestManager;
-use crate::io::iommu::controller::qi_init::QIManager;
-use crate::io::iommu::controller::qi_ops::InvalidationOps;
+use super::config::IommuConfig;
+use super::domain::IommuDomain;
+use super::fault_log::FaultRecord;
+use super::page_table_pool::PageTablePool;
+use super::registry::{get_iommu_driver, init_registry, IommuRegistry};
+use super::tables::{HardwareTable, SlPte};
+use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
+use super::intel::controller::IommuController;
+use super::intel::tables::ContextEntry;
+use crate::io::iommu::intel::controller::dma::DomainManager;
+use crate::io::iommu::intel::controller::iova::IovaManager;
+use crate::io::iommu::intel::controller::ir::InterruptRemapper;
+use crate::io::iommu::intel::controller::pri::PageRequestManager;
+use crate::io::iommu::intel::controller::qi_init::QIManager;
+use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
 
 #[test]
 fn test_device_id() {
@@ -37,7 +45,7 @@ fn test_iommu_domain() {
         false,
         false,
         IommuDomainType::Translated,
-        super::page_table_pool::PageTablePool::new(1, 32),
+        PageTablePool::new(1, 32),
         PteFormat::Intel,
     );
     assert_eq!(domain.id(), 1);
@@ -332,7 +340,7 @@ fn test_map_for_dma_alloc_non_identity() {
         false,
         false,
         IommuDomainType::Translated,
-        super::page_table_pool::PageTablePool::new(1, 32),
+        PageTablePool::new(1, 32),
         PteFormat::Intel,
     )));
     match ctrl.domains.lock() {
@@ -610,7 +618,7 @@ fn test_unmap_reclaims_empty_tables() {
         false,
         false,
         IommuDomainType::Translated,
-        super::page_table_pool::PageTablePool::new(1, 32),
+        PageTablePool::new(1, 32),
         PteFormat::Intel,
     )));
 
@@ -650,7 +658,7 @@ fn test_unmap_partial_keeps_tables() {
         false,
         false,
         IommuDomainType::Translated,
-        super::page_table_pool::PageTablePool::new(1, 32),
+        PageTablePool::new(1, 32),
         PteFormat::Intel,
     )));
     let mut domain = match domain_arc.lock() {
@@ -907,7 +915,6 @@ fn test_security_event_types_are_copy() {
 
 #[test]
 fn test_fault_summary_from_fault_record() {
-    use super::fault_log::FaultRecord;
     use super::security::FaultSummary;
 
     // Create a mock FaultRecord

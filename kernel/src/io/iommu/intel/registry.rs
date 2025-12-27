@@ -10,8 +10,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use spin::Once;
 
-use crate::io::iommu::IommuConfig;
-pub use crate::io::iommu::ReservedMemoryRegion; // Will be moved? RMRR is defined in mod?
+use crate::io::iommu::config::IommuConfig;
+pub use crate::io::iommu::config::ReservedMemoryRegion; // Will be moved? RMRR is defined in mod?
 // use crate::io::iommu::IommuController; // Temporarily pointing to mod.rs, will change to super::controller::IommuController
 
 // Needs to point to the location of IommuController.

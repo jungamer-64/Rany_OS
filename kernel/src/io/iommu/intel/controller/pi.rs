@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/pi.rs
+// kernel/src/io/iommu/intel/controller/pi.rs
 // ============================================================================
 
 //! Posted Interrupts Methods
@@ -11,7 +11,8 @@ use core::sync::atomic::Ordering;
 use super::IommuController;
 use super::init::CapabilityManager;
 use super::ir::{InterruptRemapEntry, InterruptRemapper};
-use crate::io::iommu::{IommuError, PostedInterruptDescriptor, PostedInterruptPool};
+use crate::io::iommu::common::{PostedInterruptDescriptor, PostedInterruptPool};
+use crate::io::iommu::types::IommuError;
 
 pub trait PostedInterruptManager {
     /// Initialize the Posted Interrupt Descriptor pool

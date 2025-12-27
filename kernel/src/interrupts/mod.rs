@@ -498,11 +498,11 @@ define_interrupt!(
 define_interrupt!(
     fn iommu_fault_handler(_stack_frame: InterruptStackFrame) {
         // Process faults
-        crate::io::iommu::handle_fault();
+        crate::io::iommu::api::handle_fault();
 
         // Wake any pending async invalidation waiters
         // Intel VT-d uses the same interrupt for both faults and invalidation completion
-        crate::io::iommu::wake_invalidation_waiters();
+        crate::io::iommu::api::wake_invalidation_waiters();
 
         // Send EOI to Local APIC (IOMMU uses MSI/APIC delivery)
         // We use the unified interrupt manager's EOI helper which targets LAPIC

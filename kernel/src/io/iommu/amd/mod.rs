@@ -5,34 +5,46 @@
 //! AMD-Vi backend driver (skeleton).
 
 pub mod cmd;
+pub mod tables;
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use x86_64::PhysAddr;
 
 use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
 use crate::io::iommu::tables::{phys_to_virt_usize, virt_ptr_to_phys};
-use crate::io::mmio::{mmio_read_u64, mmio_write_u64};
+use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 use crate::mm::buddy_alloc_contiguous_frames;
 use crate::mm::mapping::phys_to_virt;
 // Use PAGE_SIZE_4K from local IOMMU iova_allocator instead
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
 
+use super::config::IommuConfig;
 use super::domain::IommuDomain as DomainState;
 use super::interface::{IommuDriver, IommuFuture};
+use super::page_table_pool::PageTablePool;
 use super::registry::{get_iommu_driver, init_driver};
-use super::{DeviceId, IommuConfig, IommuDomainType, IommuError, PageTablePool, PteFormat};
+use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 
 const MMIO_DEV_TABLE_OFFSET: u64 = 0x0000;
+const MMIO_EVT_BUF_OFFSET: u64 = 0x0010;
 const MMIO_CONTROL_OFFSET: u64 = 0x0018;
+const MMIO_MSI_ADDR_LO_OFFSET: u64 = 0x015c;
+const MMIO_MSI_ADDR_HI_OFFSET: u64 = 0x0160;
+const MMIO_MSI_DATA_OFFSET: u64 = 0x0164;
+const MMIO_EVT_HEAD_OFFSET: u64 = 0x2010;
+const MMIO_EVT_TAIL_OFFSET: u64 = 0x2018;
+const MMIO_STATUS_OFFSET: u64 = 0x2020;
 
 const CONTROL_IOMMU_EN: u64 = 1 << 0;
+const CONTROL_EVT_LOG_EN: u64 = 1 << 2;
+const CONTROL_EVT_INT_EN: u64 = 1 << 3;
 const CONTROL_CMDBUF_EN: u64 = 1 << 12;
 
 const DEV_ENTRY_MODE_SHIFT: u64 = 9;
@@ -45,6 +57,37 @@ const DTE_FLAG_IR: u64 = 1 << 61;
 const DTE_FLAG_IW: u64 = 1 << 62;
 
 const DEV_TABLE_ENTRY_SIZE: usize = 32;
+const EVENT_ENTRY_SIZE: u32 = 16;
+const EVT_BUFFER_BYTES: u32 = 8192;
+const EVT_BUFFER_SIZE_MASK: u64 = 0x9 << 56;
+
+const MMIO_STATUS_EVT_OVERFLOW_MASK: u32 = 1 << 0;
+const MMIO_STATUS_EVT_INT_MASK: u32 = 1 << 1;
+const MMIO_STATUS_EVT_RUN_MASK: u32 = 1 << 3;
+
+const EVENT_TYPE_SHIFT: u32 = 28;
+const EVENT_TYPE_MASK: u32 = 0x0f;
+const EVENT_TYPE_ILL_DEV: u8 = 0x1;
+const EVENT_TYPE_IO_FAULT: u8 = 0x2;
+const EVENT_TYPE_DEV_TAB_ERR: u8 = 0x3;
+const EVENT_TYPE_PAGE_TAB_ERR: u8 = 0x4;
+const EVENT_TYPE_ILL_CMD: u8 = 0x5;
+const EVENT_TYPE_CMD_HARD_ERR: u8 = 0x6;
+const EVENT_TYPE_IOTLB_INV_TO: u8 = 0x7;
+const EVENT_TYPE_INV_DEV_REQ: u8 = 0x8;
+const EVENT_TYPE_INV_PPR_REQ: u8 = 0x9;
+const EVENT_TYPE_RMP_FAULT: u8 = 0x0d;
+const EVENT_TYPE_RMP_HW_ERR: u8 = 0x0e;
+const EVENT_DEVID_MASK: u32 = 0xffff;
+const EVENT_DEVID_SHIFT: u32 = 0;
+const EVENT_DOMID_MASK_LO: u32 = 0xffff;
+const EVENT_DOMID_MASK_HI: u32 = 0xf0000;
+const EVENT_FLAGS_MASK: u32 = 0x0fff;
+const EVENT_FLAGS_SHIFT: u32 = 0x10;
+
+const AMD_FAULT_QUEUE_SIZE: usize = 128;
+const AMD_FAULT_LOG_RATE_LIMIT: usize = 128;
+const AMD_IOMMU_FAULT_VECTOR: u8 = crate::interrupts::InterruptVector::IommuFault as u8;
 
 const IVHD_INIT_PASS: u8 = 1 << 0;
 const IVHD_EINT_PASS: u8 = 1 << 1;
@@ -196,6 +239,310 @@ impl AmdDeviceTable {
     }
 }
 
+#[repr(C, align(16))]
+#[derive(Clone, Copy, Debug, Default)]
+struct AmdEventEntry {
+    data: [u32; 4],
+}
+
+impl AmdEventEntry {
+    fn event_type(&self) -> u8 {
+        ((self.data[1] >> EVENT_TYPE_SHIFT) & EVENT_TYPE_MASK) as u8
+    }
+
+    fn devid(&self) -> u16 {
+        ((self.data[0] >> EVENT_DEVID_SHIFT) & EVENT_DEVID_MASK) as u16
+    }
+
+    fn domain_id(&self) -> u32 {
+        (self.data[0] & EVENT_DOMID_MASK_HI) | (self.data[1] & EVENT_DOMID_MASK_LO)
+    }
+
+    fn flags(&self) -> u16 {
+        ((self.data[1] >> EVENT_FLAGS_SHIFT) & EVENT_FLAGS_MASK) as u16
+    }
+
+    fn address(&self) -> u64 {
+        ((self.data[3] as u64) << 32) | (self.data[2] as u64)
+    }
+}
+
+struct AmdEventLog {
+    phys_base: u64,
+    virt_base: NonNull<u32>,
+    size_bytes: u64,
+    processing: AtomicBool,
+}
+
+// SAFETY: AmdEventLog holds a stable buffer pointer accessed via atomics and MMIO.
+unsafe impl Send for AmdEventLog {}
+unsafe impl Sync for AmdEventLog {}
+
+impl AmdEventLog {
+    fn new() -> Result<Self, IommuError> {
+        let size_bytes = EVT_BUFFER_BYTES as u64;
+        let frame_count = (size_bytes / crate::io::iommu::iova_allocator::PAGE_SIZE_4K) as usize;
+        let phys_base =
+            buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+        let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
+        let entry_ptr =
+            NonNull::new(virt_base.as_u64() as *mut u32).ok_or(IommuError::HardwareError)?;
+
+        unsafe {
+            ptr::write_bytes(virt_base.as_u64() as *mut u8, 0, size_bytes as usize);
+        }
+
+        Ok(Self {
+            phys_base: phys_base.as_u64(),
+            virt_base: entry_ptr,
+            size_bytes,
+            processing: AtomicBool::new(false),
+        })
+    }
+
+    fn program(&self, unit: &AmdIommuUnit) -> Result<(), IommuError> {
+        if (self.phys_base & 0xfff) != 0 {
+            return Err(IommuError::InvalidAlignment);
+        }
+        if self.size_bytes != EVT_BUFFER_BYTES as u64 {
+            return Err(IommuError::NotSupported);
+        }
+
+        let entry = (self.phys_base & !0xfff) | EVT_BUFFER_SIZE_MASK;
+        let mmio_base = phys_to_virt_usize(unit.base_addr);
+        mmio_write_u64(mmio_base + MMIO_EVT_BUF_OFFSET as usize, entry);
+        mmio_write_u32(mmio_base + MMIO_EVT_HEAD_OFFSET as usize, 0);
+        mmio_write_u32(mmio_base + MMIO_EVT_TAIL_OFFSET as usize, 0);
+        Ok(())
+    }
+
+    fn try_lock(&self) -> Option<AmdEventLogGuard<'_>> {
+        if self
+            .processing
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+        {
+            Some(AmdEventLogGuard { log: self })
+        } else {
+            None
+        }
+    }
+
+    fn read_entry(&self, offset: u32) -> Option<AmdEventEntry> {
+        let offset_end = offset as u64 + EVENT_ENTRY_SIZE as u64;
+        if offset_end > self.size_bytes {
+            return None;
+        }
+        let base = self.virt_base.as_ptr() as *const u8;
+        let ptr = unsafe { base.add(offset as usize) as *const u32 };
+        let mut data = [0u32; 4];
+        for idx in 0..4 {
+            data[idx] = unsafe { ptr.add(idx).read_volatile() };
+        }
+        Some(AmdEventEntry { data })
+    }
+}
+
+struct AmdEventLogGuard<'a> {
+    log: &'a AmdEventLog,
+}
+
+impl Drop for AmdEventLogGuard<'_> {
+    fn drop(&mut self) {
+        self.log.processing.store(false, Ordering::Release);
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AmdFaultEvent {
+    segment: u16,
+    devid: u16,
+    domain_id: u32,
+    flags: u16,
+    address: u64,
+    event_type: u8,
+    raw: [u32; 4],
+    is_overflow: bool,
+}
+
+impl AmdFaultEvent {
+    fn from_entry(segment: u16, entry: AmdEventEntry) -> Self {
+        Self {
+            segment,
+            devid: entry.devid(),
+            domain_id: entry.domain_id(),
+            flags: entry.flags(),
+            address: entry.address(),
+            event_type: entry.event_type(),
+            raw: entry.data,
+            is_overflow: false,
+        }
+    }
+
+    fn overflow(segment: u16) -> Self {
+        Self {
+            segment,
+            devid: 0,
+            domain_id: 0,
+            flags: 0,
+            address: 0,
+            event_type: 0,
+            raw: [0; 4],
+            is_overflow: true,
+        }
+    }
+}
+
+struct AmdDeferredFaultQueue {
+    events: [Option<AmdFaultEvent>; AMD_FAULT_QUEUE_SIZE],
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    dropped: AtomicUsize,
+}
+
+impl AmdDeferredFaultQueue {
+    const fn new() -> Self {
+        Self {
+            events: [None; AMD_FAULT_QUEUE_SIZE],
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            dropped: AtomicUsize::new(0),
+        }
+    }
+
+    fn push(&self, event: AmdFaultEvent) {
+        const MAX_RETRIES: usize = 16;
+        for _ in 0..MAX_RETRIES {
+            let tail = self.tail.load(Ordering::Relaxed);
+            let next_tail = (tail + 1) % AMD_FAULT_QUEUE_SIZE;
+            let head = self.head.load(Ordering::Acquire);
+            if next_tail == head {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            if self
+                .tail
+                .compare_exchange_weak(tail, next_tail, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                unsafe {
+                    let ptr = &self.events as *const _
+                        as *mut [Option<AmdFaultEvent>; AMD_FAULT_QUEUE_SIZE];
+                    core::ptr::write_volatile(&mut (*ptr)[tail], Some(event));
+                }
+                return;
+            }
+            core::hint::spin_loop();
+        }
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn pop(&self) -> Option<AmdFaultEvent> {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        if head == tail {
+            return None;
+        }
+        let event = unsafe {
+            let ptr =
+                &self.events as *const _ as *mut [Option<AmdFaultEvent>; AMD_FAULT_QUEUE_SIZE];
+            (*ptr)[head].take()
+        };
+        self.head
+            .store((head + 1) % AMD_FAULT_QUEUE_SIZE, Ordering::Release);
+        event
+    }
+
+    fn take_dropped(&self) -> usize {
+        self.dropped.swap(0, Ordering::Relaxed)
+    }
+}
+
+static AMD_DEFERRED_FAULT_QUEUE: AmdDeferredFaultQueue = AmdDeferredFaultQueue::new();
+
+pub fn drain_deferred_faults() -> usize {
+    let mut count = 0usize;
+    while let Some(event) = AMD_DEFERRED_FAULT_QUEUE.pop() {
+        if event.is_overflow {
+            log::warn!("[IOMMU][AMD-Vi] Event log overflow");
+        } else {
+            let (bus, device, function) = devid_to_bdf(event.devid);
+            log::error!(
+                "[IOMMU][AMD-Vi] Event {} seg={} devid={:02x}:{:02x}.{} domain=0x{:05x} addr=0x{:x} flags=0x{:03x} raw={:08x}:{:08x}:{:08x}:{:08x}",
+                event_type_name(event.event_type),
+                event.segment,
+                bus,
+                device,
+                function,
+                event.domain_id,
+                event.address,
+                event.flags,
+                event.raw[0],
+                event.raw[1],
+                event.raw[2],
+                event.raw[3],
+            );
+        }
+        count += 1;
+    }
+
+    let dropped = AMD_DEFERRED_FAULT_QUEUE.take_dropped();
+    if dropped > 0 {
+        log::warn!(
+            "[IOMMU][AMD-Vi] {} event(s) dropped due to queue overflow",
+            dropped
+        );
+    }
+
+    count
+}
+
+const FAULT_HANDLER_INTERVAL_MS: u64 = 100;
+
+pub async fn fault_handler_task() {
+    loop {
+        let _ = drain_deferred_faults();
+        crate::task::sleep_ms(FAULT_HANDLER_INTERVAL_MS).await;
+    }
+}
+
+pub fn spawn_fault_handler_task() {
+    crate::task::per_core_executor::spawn(fault_handler_task());
+}
+
+fn msi_message(vector: u8) -> (u64, u32) {
+    const MSI_ADDRESS_BASE: u64 = 0xFEE0_0000;
+    let apic_id = crate::io::interrupt_manager::current_apic_id() as u64;
+    let address = MSI_ADDRESS_BASE | (apic_id << 12);
+    let data = vector as u32;
+    (address, data)
+}
+
+fn event_type_name(event_type: u8) -> &'static str {
+    match event_type {
+        EVENT_TYPE_ILL_DEV => "ILLEGAL_DEVICE_TABLE_ENTRY",
+        EVENT_TYPE_IO_FAULT => "IO_PAGE_FAULT",
+        EVENT_TYPE_DEV_TAB_ERR => "DEV_TABLE_HARDWARE_ERROR",
+        EVENT_TYPE_PAGE_TAB_ERR => "PAGE_TABLE_HARDWARE_ERROR",
+        EVENT_TYPE_ILL_CMD => "ILLEGAL_COMMAND",
+        EVENT_TYPE_CMD_HARD_ERR => "COMMAND_HARDWARE_ERROR",
+        EVENT_TYPE_IOTLB_INV_TO => "IOTLB_INV_TIMEOUT",
+        EVENT_TYPE_INV_DEV_REQ => "INVALID_DEVICE_REQUEST",
+        EVENT_TYPE_INV_PPR_REQ => "INVALID_PPR_REQUEST",
+        EVENT_TYPE_RMP_FAULT => "RMP_PAGE_FAULT",
+        EVENT_TYPE_RMP_HW_ERR => "RMP_HARDWARE_ERROR",
+        _ => "UNKNOWN",
+    }
+}
+
+fn devid_to_bdf(devid: u16) -> (u8, u8, u8) {
+    let bus = (devid >> 8) as u8;
+    let devfn = (devid & 0xff) as u8;
+    let device = (devfn >> 3) & 0x1f;
+    let function = devfn & 0x07;
+    (bus, device, function)
+}
+
 #[derive(Debug, Clone)]
 pub struct AmdIommuUnit {
     pub segment: u16,
@@ -269,6 +616,7 @@ pub struct AmdIommuDriver {
     units: Vec<AmdIommuUnit>,
     ivmd_ranges: Vec<AmdIvmdRange>,
     cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
+    event_logs: Vec<Option<AmdEventLog>>,
     device_tables: HashMap<u16, AmdDeviceTable>,
     domains: PoisonLock<HashMap<u16, AmdDomainInfo>>,
     device_domains: PoisonLock<HashMap<DeviceId, u16>>,
@@ -287,6 +635,7 @@ impl AmdIommuDriver {
         units: Vec<AmdIommuUnit>,
         ivmd_ranges: Vec<AmdIvmdRange>,
         cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
+        event_logs: Vec<Option<AmdEventLog>>,
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Self {
         let page_table_pool = PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
@@ -312,6 +661,7 @@ impl AmdIommuDriver {
             units,
             ivmd_ranges,
             cmd_states,
+            event_logs,
             device_tables,
             domains: PoisonLock::new(domain_map),
             device_domains: PoisonLock::new(HashMap::new()),
@@ -325,6 +675,7 @@ impl AmdIommuDriver {
         units: Vec<AmdIommuUnit>,
         ivmd_ranges: Vec<AmdIvmdRange>,
         cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
+        event_logs: Vec<Option<AmdEventLog>>,
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Result<(), IommuError> {
         if get_iommu_driver().is_some() {
@@ -334,6 +685,7 @@ impl AmdIommuDriver {
             units,
             ivmd_ranges,
             cmd_states,
+            event_logs,
             device_tables,
         ));
         driver.populate_default_entries()?;
@@ -763,6 +1115,96 @@ impl AmdIommuDriver {
         }
         Ok(())
     }
+
+    fn poll_event_log(&self, unit_idx: usize, unit: &AmdIommuUnit) {
+        let log = match self.event_logs.get(unit_idx).and_then(|log| log.as_ref()) {
+            Some(log) => log,
+            None => return,
+        };
+
+        let _guard = match log.try_lock() {
+            Some(guard) => guard,
+            None => return,
+        };
+
+        let mmio_base = phys_to_virt_usize(unit.base_addr);
+        let status = mmio_read_u32(mmio_base + MMIO_STATUS_OFFSET as usize);
+        let clear_mask = status & (MMIO_STATUS_EVT_INT_MASK | MMIO_STATUS_EVT_OVERFLOW_MASK);
+        if clear_mask != 0 {
+            mmio_write_u32(mmio_base + MMIO_STATUS_OFFSET as usize, clear_mask);
+        }
+
+        if status & MMIO_STATUS_EVT_RUN_MASK == 0 {
+            if status & MMIO_STATUS_EVT_OVERFLOW_MASK != 0 {
+                self.restart_event_log(mmio_base);
+                AMD_DEFERRED_FAULT_QUEUE.push(AmdFaultEvent::overflow(unit.segment));
+            } else {
+                self.enable_event_log(mmio_base);
+            }
+            return;
+        }
+
+        let mut head = mmio_read_u32(mmio_base + MMIO_EVT_HEAD_OFFSET as usize);
+        let tail = mmio_read_u32(mmio_base + MMIO_EVT_TAIL_OFFSET as usize);
+        if head >= EVT_BUFFER_BYTES || tail >= EVT_BUFFER_BYTES {
+            return;
+        }
+
+        let mut processed = 0usize;
+        while head != tail && processed < AMD_FAULT_LOG_RATE_LIMIT {
+            if let Some(entry) = log.read_entry(head) {
+                if entry.event_type() == 0 {
+                    break;
+                }
+                AMD_DEFERRED_FAULT_QUEUE.push(AmdFaultEvent::from_entry(unit.segment, entry));
+            }
+            head = (head + EVENT_ENTRY_SIZE) % EVT_BUFFER_BYTES;
+            mmio_write_u32(mmio_base + MMIO_EVT_HEAD_OFFSET as usize, head);
+            processed += 1;
+        }
+
+        if status & MMIO_STATUS_EVT_OVERFLOW_MASK != 0 {
+            self.restart_event_log(mmio_base);
+            AMD_DEFERRED_FAULT_QUEUE.push(AmdFaultEvent::overflow(unit.segment));
+        }
+    }
+
+    fn restart_event_log(&self, mmio_base: usize) {
+        let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
+        if (control & CONTROL_EVT_LOG_EN) != 0 {
+            control &= !CONTROL_EVT_LOG_EN;
+            mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
+        }
+        mmio_write_u32(
+            mmio_base + MMIO_STATUS_OFFSET as usize,
+            MMIO_STATUS_EVT_OVERFLOW_MASK,
+        );
+        control |= CONTROL_EVT_LOG_EN;
+        mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
+    }
+
+    fn enable_event_log(&self, mmio_base: usize) {
+        let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
+        if (control & CONTROL_EVT_LOG_EN) == 0 {
+            control |= CONTROL_EVT_LOG_EN;
+            mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
+        }
+    }
+
+    fn program_event_log_interrupt(&self, unit: &AmdIommuUnit) -> Result<(), IommuError> {
+        let (addr, data) = msi_message(AMD_IOMMU_FAULT_VECTOR);
+        let mmio_base = phys_to_virt_usize(unit.base_addr);
+        mmio_write_u32(
+            mmio_base + MMIO_MSI_ADDR_LO_OFFSET as usize,
+            (addr & 0xffff_ffff) as u32,
+        );
+        mmio_write_u32(
+            mmio_base + MMIO_MSI_ADDR_HI_OFFSET as usize,
+            (addr >> 32) as u32,
+        );
+        mmio_write_u32(mmio_base + MMIO_MSI_DATA_OFFSET as usize, data);
+        Ok(())
+    }
 }
 
 impl AmdIommuUnit {
@@ -870,7 +1312,7 @@ fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError
     }
 
     let mmio_base = phys_to_virt_usize(unit.base_addr) as u64;
-    let mut buffer = unsafe {
+    let buffer = unsafe {
         cmd::AmdCommandBuffer::new(
             mmio_base,
             phys_base.as_u64(),
@@ -924,6 +1366,35 @@ fn init_command_states(units: &[AmdIommuUnit]) -> Vec<Option<PoisonLock<AmdComma
         }
     }
     states
+}
+
+fn init_event_logs(units: &[AmdIommuUnit]) -> Vec<Option<AmdEventLog>> {
+    let mut logs = Vec::with_capacity(units.len());
+    for unit in units {
+        match AmdEventLog::new() {
+            Ok(log) => {
+                if let Err(err) = log.program(unit) {
+                    log::warn!(
+                        "AMD-Vi event log program failed for unit @ {:#x}: {:?}",
+                        unit.base_addr,
+                        err
+                    );
+                    logs.push(None);
+                } else {
+                    logs.push(Some(log));
+                }
+            }
+            Err(err) => {
+                log::warn!(
+                    "AMD-Vi event log alloc failed for unit @ {:#x}: {:?}",
+                    unit.base_addr,
+                    err
+                );
+                logs.push(None);
+            }
+        }
+    }
+    logs
 }
 
 fn max_devid_for_entries(entries: &[IvhdDeviceEntry]) -> u16 {
@@ -1074,6 +1545,27 @@ impl IommuDriver for AmdIommuDriver {
             } else {
                 control &= !CONTROL_CMDBUF_EN;
             }
+            if self
+                .event_logs
+                .get(idx)
+                .and_then(|log| log.as_ref())
+                .is_some()
+            {
+                if let Err(err) = self.program_event_log_interrupt(unit) {
+                    log::warn!(
+                        "AMD-Vi event log interrupt init failed for unit @ {:#x}: {:?}",
+                        unit.base_addr,
+                        err
+                    );
+                    control &= !CONTROL_EVT_INT_EN;
+                } else {
+                    control |= CONTROL_EVT_INT_EN;
+                }
+                control |= CONTROL_EVT_LOG_EN;
+            } else {
+                control &= !CONTROL_EVT_LOG_EN;
+                control &= !CONTROL_EVT_INT_EN;
+            }
             mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
         }
         self.enabled.store(true, Ordering::Release);
@@ -1084,14 +1576,19 @@ impl IommuDriver for AmdIommuDriver {
         for unit in &self.units {
             let mmio_base = phys_to_virt_usize(unit.base_addr);
             let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
-            control &= !(CONTROL_IOMMU_EN | CONTROL_CMDBUF_EN);
+            control &=
+                !(CONTROL_IOMMU_EN | CONTROL_CMDBUF_EN | CONTROL_EVT_LOG_EN | CONTROL_EVT_INT_EN);
             mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
         }
         self.enabled.store(false, Ordering::Release);
         Ok(())
     }
 
-    fn handle_fault(&self) {}
+    fn handle_fault(&self) {
+        for (idx, unit) in self.units.iter().enumerate() {
+            self.poll_event_log(idx, unit);
+        }
+    }
 
     fn wake_invalidation_waiters(&self) {}
 
@@ -1238,7 +1735,7 @@ impl IommuDriver for AmdIommuDriver {
         let aliases = self.alias_devids_for_device(device);
 
         let existing = {
-            let mut device_domains = self
+            let device_domains = self
                 .device_domains
                 .lock()
                 .map_err(|_| IommuError::Poisoned)?;
@@ -1390,7 +1887,21 @@ impl IommuDriver for AmdIommuDriver {
     }
 }
 
+impl super::interface::IommuHardwareContext for AmdIommuDriver {
+    fn allocate_iova(&self, _size: u64) -> Result<u64, IommuError> {
+        // AMD-Vi uses identity mapping (iova = phys_addr), so allocation is a no-op.
+        // For non-identity scenarios, integrate with IovaAllocator.
+        Err(IommuError::NotSupported)
+    }
+
+    fn free_iova(&self, _iova: u64, _size: u64) -> Result<(), IommuError> {
+        // No-op for identity mapping
+        Ok(())
+    }
+}
+
 /// Initialize AMD-Vi using ACPI IVRS table at `ivrs_addr`.
+
 pub unsafe fn init_iommu_from_ivrs(
     ivrs_addr: usize,
     config: IommuConfig,
@@ -1434,6 +1945,8 @@ pub unsafe fn init_iommu_from_ivrs(
 
     let cmd_states = init_command_states(&units);
     let cmd_ready = cmd_states.iter().filter(|buf| buf.is_some()).count();
+    let event_logs = init_event_logs(&units);
+    let evt_ready = event_logs.iter().filter(|log| log.is_some()).count();
 
     let device_tables = init_device_tables(&units)?;
     for unit in &units {
@@ -1446,12 +1959,13 @@ pub unsafe fn init_iommu_from_ivrs(
     let unit_count = units.len();
     let ivmd_count = ivmd_ranges.len();
     let table_count = device_tables.len();
-    AmdIommuDriver::register_driver(units, ivmd_ranges, cmd_states, device_tables)?;
+    AmdIommuDriver::register_driver(units, ivmd_ranges, cmd_states, event_logs, device_tables)?;
     log::info!(
-        "AMD-Vi IVRS parsed ({} unit(s), {} IVMD range(s), {} cmd buffer(s) ready, {} device table(s))",
+        "AMD-Vi IVRS parsed ({} unit(s), {} IVMD range(s), {} cmd buffer(s) ready, {} event log(s) ready, {} device table(s))",
         unit_count,
         ivmd_count,
         cmd_ready,
+        evt_ready,
         table_count
     );
 
@@ -1477,6 +1991,7 @@ mod tests {
             units: alloc::vec![unit],
             ivmd_ranges: Vec::new(),
             cmd_states: Vec::new(),
+            event_logs: Vec::new(),
             device_tables: HashMap::new(),
             domains: PoisonLock::new(HashMap::new()),
             device_domains: PoisonLock::new(HashMap::new()),

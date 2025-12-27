@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/dma.rs
+// kernel/src/io/iommu/intel/controller/dma.rs
 // ============================================================================
 
 //! Domain and DMA Mapping Management
@@ -9,11 +9,11 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
-use crate::io::iommu::ecap_bits::ECAP_DT;
-use crate::io::iommu::{
-    ContextEntry, DeviceId, DmaMapping, IommuDomain, IommuDomainType, IommuError, PteFormat,
-    ecap_bits, regs,
-};
+use crate::io::iommu::intel::registers::ecap_bits::ECAP_DT;
+use crate::io::iommu::intel::registers::{ecap_bits, regs};
+use crate::io::iommu::intel::tables::ContextEntry;
+use crate::io::iommu::domain::IommuDomain;
+use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 
 use super::IommuController;
 use crate::sync::PoisonLock;

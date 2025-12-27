@@ -10,9 +10,15 @@ use core::sync::atomic::Ordering;
 use x86_64::PhysAddr;
 
 use super::interface::IommuDriver;
-use super::{
-    DeviceId, IOMMU_REQUIRED, IommuDomainType, IommuError, get_iommu_driver, is_iommu_enabled,
+use super::registry::get_iommu_driver;
+use super::types::{DeviceId, IommuDomainType, IommuError};
+use super::IOMMU_REQUIRED;
+use crate::ipc::RRef;
+
+pub use super::dma_handle::{
+    DmaDirection, DmaHandle, MapError, MapErrorKind, UnmapError, UnmapErrorKind,
 };
+pub use super::registry::is_iommu_enabled;
 
 // ============================================================================
 // IOMMU Requirement Functions
@@ -88,6 +94,28 @@ pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
 // ============================================================================
 // Global DMA Mapping Interface
 // ============================================================================
+
+/// Map an `RRef<T>` for DMA access using the global IOMMU backend.
+///
+/// Returns a `DmaHandle<T>` that must be explicitly unmapped to recover the `RRef<T>`.
+pub fn map_rref<T>(
+    rref: RRef<T>,
+    domain_id: u16,
+    direction: DmaDirection,
+) -> Result<DmaHandle<T>, MapError<T>> {
+    DmaHandle::map_rref(rref, domain_id, direction)
+}
+
+/// Map an `RRef<T>` for DMA access scoped to a specific device.
+///
+/// Returns a `DmaHandle<T>` that must be explicitly unmapped to recover the `RRef<T>`.
+pub fn map_rref_for_device<T>(
+    rref: RRef<T>,
+    device: &DeviceId,
+    direction: DmaDirection,
+) -> Result<DmaHandle<T>, MapError<T>> {
+    DmaHandle::map_rref_for_device(rref, device, direction)
+}
 
 /// Map a physical address range for DMA access
 ///

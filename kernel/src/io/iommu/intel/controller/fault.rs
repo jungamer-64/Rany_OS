@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/fault.rs
+// kernel/src/io/iommu/intel/controller/fault.rs
 // ============================================================================
 
 //! Fault Handling Methods
@@ -16,8 +16,10 @@
 
 use super::IommuController;
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
-use crate::io::iommu::registers::{fsts_bits, regs};
-use crate::io::iommu::{ContextEntry, FaultLog, FaultRecord, IommuError};
+use crate::io::iommu::intel::registers::{fsts_bits, regs};
+use crate::io::iommu::intel::tables::ContextEntry;
+use crate::io::iommu::fault_log::{FaultLog, FaultRecord};
+use crate::io::iommu::types::IommuError;
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
@@ -296,13 +298,13 @@ pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuCon
     use crate::io::iommu::security::SecurityEvent;
 
     let mut count = 0;
-    let mut overflow_cleared = false;
+    let mut _overflow_cleared = false;
 
     while let Some(event) = DEFERRED_FAULT_QUEUE.pop() {
         // 1. Log the fault (safe context)
         if event.is_overflow {
             log::warn!("[IOMMU] Fault overflow cleared");
-            overflow_cleared = true;
+            _overflow_cleared = true;
         } else {
             log::error!(
                 "[IOMMU] Fault: reason={:#x}, source={:04x}, addr={:#x}, pasid={:?}",

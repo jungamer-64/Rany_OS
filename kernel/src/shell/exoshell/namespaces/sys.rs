@@ -329,6 +329,32 @@ impl SysNamespace {
         ExoValue::Map(map)
     }
 
+    /// パニックDMA記録（IOMMUが有効な場合）
+    pub fn panic_record() -> ExoValue<'static> {
+        let mut map = BTreeMap::new();
+        if let Some(info) = crate::io::iommu::panic::last_panic_record() {
+            map.insert(String::from("available"), ExoValue::Bool(true));
+            map.insert(String::from("iova"), ExoValue::Int(info.iova as i64));
+            map.insert(
+                String::from("phys"),
+                ExoValue::Int(info.phys.as_u64() as i64),
+            );
+            map.insert(String::from("len"), ExoValue::Int(info.len as i64));
+            map.insert(String::from("total"), ExoValue::Int(info.total as i64));
+            let message = crate::io::iommu::panic::last_panic_record_message();
+            map.insert(
+                String::from("message"),
+                ExoValue::String(Cow::Owned(
+                    message.map(String::from).unwrap_or_else(|| String::from("<invalid>")),
+                )),
+            );
+        } else {
+            map.insert(String::from("available"), ExoValue::Bool(false));
+        }
+
+        ExoValue::Map(map)
+    }
+
     /// システムシャットダウン
     /// Requires CAP_SYS_BOOT
     fn shutdown_with_caps(caps: &crate::security::CapabilitySet) -> ExoValue<'static> {
@@ -383,10 +409,11 @@ impl ShellNamespace for SysNamespace {
                 "thermal" | "temp" => Self::thermal(),
                 "watchdog" | "wd" => Self::watchdog(),
                 "power" => Self::power(),
+                "panic_record" => Self::panic_record(),
                 "shutdown" => Self::shutdown_with_caps(caps),
                 "reboot" => Self::reboot_with_caps(caps),
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, monitor, dashboard, thermal, watchdog, power, shutdown, reboot",
+                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, monitor, dashboard, thermal, watchdog, power, panic_record, shutdown, reboot",
                     method
                 )),
             }

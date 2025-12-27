@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/iova.rs
+// kernel/src/io/iommu/intel/controller/iova.rs
 // ============================================================================
 
 //! IOVA (I/O Virtual Address) Management Methods
@@ -7,7 +7,8 @@
 //! This module contains IOVA allocation and management methods for `IommuController` via `IovaManager` trait.
 
 use super::IommuController;
-use crate::io::iommu::{IommuError, IovaAllocator, IovaGranularity};
+use crate::io::iommu::iova_allocator::{IovaAllocator, IovaGranularity};
+use crate::io::iommu::types::IommuError;
 
 pub trait IovaManager {
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError>;

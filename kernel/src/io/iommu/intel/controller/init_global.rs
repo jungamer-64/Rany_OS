@@ -11,13 +11,14 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::io::iommu::tables::phys_to_virt_usize;
-use crate::io::iommu::{DeviceId, IommuConfig, IommuError, ReservedMemoryRegion};
+use crate::io::iommu::config::{IommuConfig, ReservedMemoryRegion};
+use crate::io::iommu::types::{DeviceId, IommuError};
 // Intel-specific imports
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
 
 #[cfg(not(test))]
-use crate::io::iommu::{groups::IOMMU_GROUP_MANAGER, groups::IommuGroupManager};
+use crate::io::iommu::groups::{IOMMU_GROUP_MANAGER, IommuGroupManager};
 
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;

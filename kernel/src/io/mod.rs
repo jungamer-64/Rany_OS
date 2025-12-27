@@ -41,6 +41,7 @@ pub use dma::{
     DmaMemoryAttributes,
     DmaState,
     IommuDmaBuffer,
+    RRefDmaBuffer,
     SgEntry,
     StreamingDmaMapping,
     // 型安全DMA（型状態パターン）
@@ -62,9 +63,9 @@ pub use dma::{
     writeback_cache_range,
 };
 #[allow(unused_imports)]
-pub use iommu::{
-    DeviceId, DmaMapping, IommuDomain, IommuError, disable_iommu, enable_iommu, with_iommu,
-};
+pub use iommu::api::{disable_iommu, enable_iommu, with_iommu};
+#[allow(unused_imports)]
+pub use iommu::types::{DeviceId, IommuError};
 // NVMe common types (from nvme/ directory)
 #[allow(unused_imports)]
 pub use nvme::{
