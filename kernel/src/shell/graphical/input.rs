@@ -105,13 +105,13 @@ impl GraphicalShell {
                 self.state.completions.clear();
                 self.state.input_buffer.backspace();
                 self.update_cursor_cache();
-                self.redraw_input_only(); // 入力行のみ再描画（高速化）
+                self.redraw_input_line(); // 入力行のみ再描画（高速化）
             }
             InputKeyCode::Delete => {
                 self.state.completions.clear();
                 self.state.input_buffer.delete();
                 self.update_cursor_cache();
-                self.redraw_input_only();
+                self.redraw_input_line();
             }
             InputKeyCode::Left => {
                 self.state.input_buffer.move_left();
@@ -126,12 +126,12 @@ impl GraphicalShell {
             InputKeyCode::Home => {
                 self.state.input_buffer.move_home();
                 self.update_cursor_cache();
-                self.redraw_input_only();
+                self.redraw_input_line();
             }
             InputKeyCode::End => {
                 self.state.input_buffer.move_end();
                 self.update_cursor_cache();
-                self.redraw_input_only();
+                self.redraw_input_line();
             }
             InputKeyCode::Up => {
                 self.history_prev();
@@ -160,7 +160,7 @@ impl GraphicalShell {
                         self.state.completions.clear();
                         self.state.input_buffer.insert(c);
                         self.update_cursor_cache();
-                        self.redraw_input_only();
+                        self.redraw_input_line();
                     }
                 }
             }

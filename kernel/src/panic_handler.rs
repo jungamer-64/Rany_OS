@@ -115,6 +115,15 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 
     *LAST_PANIC.lock() = Some(record);
 
+    if let Some(info) = crate::io::iommu::panic::write_panic_record(&message) {
+        log::info!(
+            "[PANIC] DMA record: iova=0x{:x} phys=0x{:x} len={}",
+            info.iova,
+            info.phys.as_u64(),
+            info.len
+        );
+    }
+
     // エラー出力（シリアルコンソール用）
     log::info!("\n");
     log::info!(

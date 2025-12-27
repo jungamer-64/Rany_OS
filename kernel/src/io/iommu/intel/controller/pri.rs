@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/pri.rs
+// kernel/src/io/iommu/intel/controller/pri.rs
 // ============================================================================
 
 //! Page Request Interface (PRI) Methods
@@ -12,9 +12,10 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
 use super::utils::IommuUtils;
-use crate::io::iommu::{
-    InvalidationQueueEntry, IommuError, PageRequestEntry, PageRequestQueue, qi_desc_type, regs,
-};
+use crate::io::iommu::intel::qi::{InvalidationQueueEntry, qi_desc_type};
+use crate::io::iommu::intel::registers::regs;
+use crate::io::iommu::common::{PageRequestEntry, PageRequestQueue};
+use crate::io::iommu::types::IommuError;
 
 pub trait PageRequestManager: InvalidationOps {
     /// Initialize the Page Request Queue

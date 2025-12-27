@@ -15,6 +15,8 @@
 //! - **Ctrl+C Interruption Support** via `select`
 //!
 
+#![allow(deprecated)]
+
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};

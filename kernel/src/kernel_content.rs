@@ -314,7 +314,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
             Ok(parser) => {
                 info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
-                let mut iommu_config = io::iommu::IommuConfig::default();
+                let mut iommu_config = io::iommu::config::IommuConfig::default();
                 if boot_info.cmdline_len > 0 {
                     let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
                     let slice =
@@ -341,7 +341,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                             if let Err(e) = crate::io::iommu::intel::controller::init_global::init_iommu_from_acpi(dmar_addr, iommu_config)
                             {
                                 // If IOMMU not present or disabled, we just warn.
-                                if e != io::iommu::IommuError::NotPresent {
+                                if e != io::iommu::types::IommuError::NotPresent {
                                     warn!(target: "init", "IOMMU init failed: {:?}", e);
                                 } else {
                                     info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
@@ -350,7 +350,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                                 info!(target: "init", "IOMMU initialized successfully");
 
                                 // Enable IOMMU
-                                if let Err(e) = io::iommu::enable_iommu() {
+                                if let Err(e) = io::iommu::api::enable_iommu() {
                                     error!(target: "init", "Failed to enable IOMMU: {:?}", e);
                                 } else {
                                     info!(target: "init", "IOMMU translation enabled");
@@ -363,14 +363,14 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                                     ivrs_addr,
                                     iommu_config,
                                 ) {
-                                    if e != io::iommu::IommuError::NotPresent {
+                                    if e != io::iommu::types::IommuError::NotPresent {
                                         warn!(target: "init", "AMD-Vi init failed: {:?}", e);
                                     } else {
                                         info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
                                     }
                                 } else {
                                     info!(target: "init", "AMD-Vi detected; backend registered");
-                                    if let Err(e) = io::iommu::enable_iommu() {
+                                    if let Err(e) = io::iommu::api::enable_iommu() {
                                         error!(target: "init", "Failed to enable AMD-Vi: {:?}", e);
                                     } else {
                                         info!(target: "init", "AMD-Vi translation enabled");
@@ -381,6 +381,14 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                                 info!(target: "init", "IOMMU not initialized (No DMAR/IVRS table)");
                             }
                         },
+                    }
+
+                    if io::iommu::api::is_iommu_enabled() {
+                        if let Err(e) = io::iommu::panic::init_panic_dma_pool_default() {
+                            warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
+                        } else {
+                            info!(target: "init", "IOMMU panic DMA pool initialized");
+                        }
                     }
 
                     let mut _mcfg_base_addr: Option<u64> = None;

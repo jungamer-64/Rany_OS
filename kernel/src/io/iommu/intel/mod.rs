@@ -11,7 +11,10 @@ use x86_64::PhysAddr;
 
 // Declaring submodules moved here
 pub mod controller;
+pub mod qi;
+pub mod registers;
 pub mod registry; // Intel-specific registry
+pub mod tables;
 
 use self::controller::dma::DomainManager;
 use self::controller::fault::FaultHandler;
@@ -22,7 +25,7 @@ use super::interface::{IommuDriver, IommuFuture};
 // Generic registry for registering the driver
 use super::registry::{get_iommu_driver, init_driver, is_iommu_enabled};
 
-use super::{DeviceId, IommuDomainType, IommuError};
+use super::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu_cmdqueue::IommuCommandKind;
 
 // Intel-specific registry access
@@ -298,9 +301,7 @@ impl IommuDriver for IntelIommuDriver {
                                 return Err(IommuError::HardwareError);
                             }
                         } else {
-                            unsafe {
-                                controller.invalidate_iotlb(domain_id);
-                            }
+                            controller.invalidate_iotlb(domain_id);
                         }
 
                         return Ok(());

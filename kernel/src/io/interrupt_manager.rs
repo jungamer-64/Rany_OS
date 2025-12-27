@@ -161,7 +161,7 @@ impl InterruptConfig {
     /// MSI用のメッセージアドレスを生成
     pub fn msi_address(&self) -> u64 {
         if let Some(handle) = self.ir_handle {
-            crate::io::iommu::get_remap_msi_message(handle).0
+            crate::io::iommu::api::get_remap_msi_message(handle).0
         } else {
             const MSI_ADDRESS_BASE: u64 = 0xFEE00000;
             let apic_id = self.target_apic_id.unwrap_or(0) as u64;
@@ -172,7 +172,7 @@ impl InterruptConfig {
     /// MSI用のメッセージデータを生成
     pub fn msi_data(&self) -> u32 {
         if let Some(handle) = self.ir_handle {
-            crate::io::iommu::get_remap_msi_message(handle).1
+            crate::io::iommu::api::get_remap_msi_message(handle).1
         } else {
             let mut data = self.vector as u32;
             data |= (self.delivery_mode.to_bits() as u32) << 8;
@@ -389,7 +389,7 @@ impl InterruptManager {
                 let dest_id = target_apic_id.unwrap_or(0) as u32;
 
                 if let Ok(handle) =
-                    crate::io::iommu::map_interrupt(0, bus, dev, func, vector, dest_id, true)
+                    crate::io::iommu::api::map_interrupt(0, bus, dev, func, vector, dest_id, true)
                 {
                     config.ir_handle = Some(handle);
                 }

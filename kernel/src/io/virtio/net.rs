@@ -4,6 +4,7 @@
 // 設計書 7.1: VirtIOドライバのRust実装
 // ============================================================================
 #![allow(dead_code)]
+#![allow(deprecated)]
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -205,7 +206,9 @@ pub struct NetVirtQueue {
     /// Notify用MMIOアドレス（Option for backward compatibility）
     /// Deprecated: prefer providing notify addresses via the transport or using
     /// the transport's notify methods; this field will be removed in a future release.
-    #[deprecated(note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release.")]
+    #[deprecated(
+        note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release."
+    )]
     notify_addr: Option<*mut u16>,
 }
 

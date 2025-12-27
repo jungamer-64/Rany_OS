@@ -1,11 +1,11 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/utils.rs
+// kernel/src/io/iommu/intel/controller/utils.rs
 // ============================================================================
 
 //! Utility methods for IommuController
 
 use super::IommuController;
-use crate::io::iommu::IommuError;
+use crate::io::iommu::types::IommuError;
 
 /// Timer/Wait Utilities
 pub trait IommuUtils {
@@ -48,7 +48,7 @@ impl IommuUtils for IommuController {
 
         // If it's safe to yield and scheduler is present, use tick-based waiting
         if can_yield {
-            if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+            if let Some(_cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
                 // Convert microseconds to milliseconds (ceiling)
                 let timeout_ms = (timeout_us + 999) / 1000;
                 let end_tick = crate::task::timer::current_tick().saturating_add(timeout_ms);
@@ -65,7 +65,7 @@ impl IommuUtils for IommuController {
                     // Yield to scheduler to avoid busy-looping
                     #[cfg(feature = "legacy-scheduler")]
                     {
-                        crate::task::scheduler::yield_current(cpu_id);
+                        crate::task::scheduler::yield_current(_cpu_id);
                     }
                     #[cfg(not(feature = "legacy-scheduler"))]
                     {

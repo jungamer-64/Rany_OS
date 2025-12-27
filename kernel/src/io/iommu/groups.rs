@@ -4,9 +4,7 @@
 
 use crate::io::iommu::intel::controller::dma::DomainManager;
 use crate::io::iommu::intel::registry::IommuRegistry;
-use crate::io::iommu::{
-    DeviceId, IommuDomain, IommuDomainType, IommuError, IommuGroup, IommuGroupId,
-};
+use super::types::{DeviceId, IommuDomainType, IommuError, IommuGroup, IommuGroupId};
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use hashbrown::HashMap;

@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/qi_init.rs
+// kernel/src/io/iommu/intel/controller/qi_init.rs
 // ============================================================================
 
 //! Queued Invalidation Initialization Methods
@@ -11,7 +11,9 @@ use core::sync::atomic::Ordering;
 use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
-use crate::io::iommu::{InvalidationQueue, IommuError, gcmd_bits, gsts_bits, regs}; // for wait_for_condition
+use crate::io::iommu::types::IommuError;
+use crate::io::iommu::intel::qi::InvalidationQueue;
+use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs};
 
 pub trait QIManager {
     /// Initialize the Invalidation Queue

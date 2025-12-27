@@ -31,11 +31,9 @@ use crate::ipc::DomainId;
 use crate::ipc::rref::{RRef, RRefRawParts, RawPartsError};
 use crate::sync::IrqMutex;
 
-use crate::io::iommu::intel::controller::iova::IovaManager;
-// use super::{IommuController, IommuError};
-use crate::io::iommu::IommuError;
-use crate::io::iommu::domain::InvalidateRequest;
-use crate::io::iommu::intel::controller::IommuController;
+use super::domain::InvalidateRequest;
+use super::interface::IommuHardwareContext;
+use super::types::IommuError;
 
 // ============================================================================
 // Constants
@@ -259,10 +257,7 @@ pub enum DrainResult {
     /// Cannot drain because Reserved slots exist (batch must not advance)
     NotReady { batch: u64 },
     /// Successfully drained invalidations (batch can advance)
-    Drained {
-        batch: u64,
-        requests: alloc::vec::Vec<InvalidateRequest>,
-    },
+    Drained { batch: u64 },
     /// Queue is poisoned (system failed). Caller must stop flushing.
     Poisoned { batch: u64 },
 }
@@ -318,7 +313,7 @@ impl QuarantineSlotGuard {
         raw: RRefRawParts,
         iova: u64,
         iova_size: u64,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
     ) -> Result<(), QuarantineError> {
         self.queue.commit_entry(
             self.slot_idx,
@@ -327,7 +322,7 @@ impl QuarantineSlotGuard {
             raw,
             iova,
             iova_size,
-            controller,
+            context,
         )?;
         self.committed = true;
         Ok(())
@@ -555,7 +550,17 @@ impl QuarantineQueue {
     /// - Drained: All pending invalidations are Ready. Returns requests to issue.
     ///
     /// The caller is responsible for issuing the invalidations and then calling `reap_completed`.
-    pub fn drain_pending_invalidations(&self) -> DrainResult {
+    ///
+    /// `requests` is cleared and populated with drained invalidations.
+    /// Reuse a preallocated buffer to avoid per-flush allocations.
+    pub fn drain_pending_invalidations(
+        &self,
+        requests: &mut alloc::vec::Vec<InvalidateRequest>,
+    ) -> DrainResult {
+        requests.clear();
+        if requests.capacity() < INVALIDATION_CAPACITY {
+            requests.reserve(INVALIDATION_CAPACITY - requests.capacity());
+        }
         let mut inner = self.inner.lock();
 
         // Round 13: Check poisoned ONLY inside lock? No, check atomic first is okay but inner has batch.
@@ -602,8 +607,6 @@ impl QuarantineQueue {
         // Pass 2: Drain (Mutation)
         // Since we verified no Reserved slots exist, we can safely replace.
         // All pending slots are Ready -> We can drain them!
-        let mut requests = alloc::vec::Vec::with_capacity(inner.pending_count);
-
         // Iterate and collect Ready requests using mem::replace to avoid clone
         for slot in inner.pending_invalidations.iter_mut() {
             // Round 10: Check the REPLACED value, not the result of assignment
@@ -625,10 +628,7 @@ impl QuarantineQueue {
             inner.current_batch = 1;
         }
 
-        DrainResult::Drained {
-            batch: drained_batch,
-            requests,
-        }
+        DrainResult::Drained { batch: drained_batch }
     }
 
     /// Round 7+8: Commit invalidation (after PTE clear)
@@ -731,7 +731,7 @@ impl QuarantineQueue {
         raw: RRefRawParts,
         iova: u64,
         iova_size: u64,
-        controller: &IommuController, // Round 6: Added for late commit IOVA free
+        context: &dyn IommuHardwareContext, // Round 6: Added for late commit IOVA free
     ) -> Result<(), QuarantineError> {
         let mut late_free: Option<(u64, u64)> = None;
         let mut late_wake: Option<core::task::Waker> = None;
@@ -786,7 +786,7 @@ impl QuarantineQueue {
 
         // Round 6: Handle late commit IOVA free outside lock
         if let Some((iova_to_free, size)) = late_free {
-            let _ = controller.free_iova(iova_to_free, size);
+            let _ = context.free_iova(iova_to_free, size);
         }
         if let Some(waker) = late_wake {
             waker.wake();
@@ -957,17 +957,21 @@ impl QuarantineQueue {
     /// Round 7: Only drains Ready slots (not Reserved).
     /// Round 8: Does NOT advance batch if Reserved slots remain.
     ///
-    /// Returns (drained_batch_id, Vec of pending requests).
-    /// The drained_batch_id is the batch these requests belong to.
+    /// Requests are written into a caller-provided buffer to avoid per-flush allocations.
 
     /// Reap completed entries after flush
+    ///
+    /// # Context
+    ///
+    /// Must be called from thread/executor context. This method allocates and
+    /// drops RRef raw parts, so it is not ISR-safe.
     ///
     /// Round 5 fix:
     /// - scan → publish → unlock order (prevents poll_entry race on IOVA)
     /// - Compute scan_threshold = max(old, completed_batch) inside lock
     /// - Zero IOVA on collect (idempotent, prevents double free)
     /// - Heavy operations (free_iova, drop_erased) OUTSIDE lock
-    pub fn reap_completed(&self, completed_batch: u64, controller: &IommuController) {
+    pub fn reap_completed(&self, completed_batch: u64, context: &dyn IommuHardwareContext) {
         use alloc::vec::Vec;
 
         // Collect items to process outside lock
@@ -1037,7 +1041,7 @@ impl QuarantineQueue {
 
         // Free IOVAs outside lock
         for (iova, size) in to_free_iova {
-            let _ = controller.free_iova(iova, size);
+            let _ = context.free_iova(iova, size);
         }
 
         // Drop abandoned raw parts outside lock

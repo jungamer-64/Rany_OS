@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/init.rs
+// kernel/src/io/iommu/intel/controller/init.rs
 // ============================================================================
 
 //! Controller Initialization and Capability Detection
@@ -7,7 +7,8 @@
 //! This module contains initialization and capability-related methods for `IommuController` via `CapabilityManager` trait.
 
 use super::IommuController;
-use crate::io::iommu::{IommuCapabilities, cap_bits, ecap_bits};
+use crate::io::iommu::types::IommuCapabilities;
+use crate::io::iommu::intel::registers::{cap_bits, ecap_bits};
 
 pub trait CapabilityManager {
     /// Check if Queued Invalidation is supported

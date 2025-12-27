@@ -9,7 +9,7 @@
 use core::mem::size_of;
 use core::ptr::NonNull;
 
-use crate::io::iommu::IommuError;
+use crate::io::iommu::types::IommuError;
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 
 const MMIO_CMD_BUF_OFFSET: u64 = 0x0008;

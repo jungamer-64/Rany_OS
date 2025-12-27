@@ -15,7 +15,7 @@
 
 #![allow(dead_code)]
 
-use crate::io::iommu::{is_iommu_enabled, map_for_dma, unmap_dma};
+use crate::io::iommu::api::{is_iommu_enabled, map_for_dma, unmap_dma};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;

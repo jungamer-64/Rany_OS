@@ -1,13 +1,11 @@
 // ============================================================================
 // kernel/src/io/iommu/domain.rs
 // ============================================================================
+use super::interface::IommuHardwareContext;
 use super::quarantine::QuarantineQueue;
-use super::tables::{
-    AmdPte, PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
-};
+use super::tables::{PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys};
 use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::intel::controller::IommuController;
-use crate::io::iommu::intel::controller::iova::IovaManager; // Temporary Intel specific import
+use crate::io::iommu::amd::tables::AmdPte;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -233,6 +231,8 @@ pub struct IommuDomain {
     pub(crate) page_table_counts: BTreeMap<u64, u16>,
     /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
     quarantine: Arc<QuarantineQueue>,
+    /// Reused buffer for flush invalidations (avoid per-flush allocations)
+    flush_requests: Vec<InvalidateRequest>,
     /// Phase 6: Page table recycling pool (shared with controller)
     page_table_pool: Arc<super::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)
@@ -291,6 +291,7 @@ impl IommuDomain {
             supports_1gb,
             page_table_counts,
             quarantine: QuarantineQueue::new(),
+            flush_requests: Vec::with_capacity(super::quarantine::INVALIDATION_CAPACITY),
             page_table_pool,
             pte_format,
         }
@@ -366,13 +367,19 @@ impl IommuDomain {
     /// 5. Frees IOVAs for completed entries
     ///
     /// Call this periodically or when the quarantine queue is full.
+    ///
+    /// # Context
+    ///
+    /// Must be called from thread/executor context. This path allocates and
+    /// drops RRef raw parts via the quarantine reap.
     pub fn flush(
-        &self,
+        &mut self,
         invalidator: &dyn IommuInvalidator,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
     ) -> Result<(), IommuError> {
         // Drain pending invalidations (Round 9: returns DrainResult)
-        let (drained_batch, requests) = match self.quarantine.drain_pending_invalidations() {
+        let requests = &mut self.flush_requests;
+        let drained_batch = match self.quarantine.drain_pending_invalidations(requests) {
             super::quarantine::DrainResult::NoWork { .. } => return Ok(()),
             super::quarantine::DrainResult::NotReady { batch: _ } => {
                 // Round 9 Safety: Reserved slots pending.
@@ -382,7 +389,7 @@ impl IommuDomain {
                 // but for now we just skip the flush.
                 return Ok(());
             }
-            super::quarantine::DrainResult::Drained { batch, requests } => (batch, requests),
+            super::quarantine::DrainResult::Drained { batch } => batch,
             super::quarantine::DrainResult::Poisoned { .. } => return Err(IommuError::Poisoned),
         };
 
@@ -392,12 +399,12 @@ impl IommuDomain {
         }
 
         // Process all invalidation requests
-        for req in requests {
+        for req in requests.drain(..) {
             invalidator.invalidate(req)?;
         }
 
         // Reap and process completed entries for this batch
-        self.quarantine.reap_completed(drained_batch, controller);
+        self.quarantine.reap_completed(drained_batch, context);
 
         Ok(())
     }
@@ -1049,13 +1056,13 @@ impl IommuDomain {
     ///
     /// This method:
     /// 1. Gets the physical address from the RRef
-    /// 2. Allocates an IOVA from the controller
+    /// 2. Allocates an IOVA from the hardware context
     /// 3. Creates page table mappings
     /// 4. Returns a DmaHandle that tracks ownership
     ///
     /// # Arguments
     /// * `rref` - The RRef to map (consumed)
-    /// * `controller` - The IOMMU controller for IOVA allocation
+    /// * `context` - The IOMMU context for IOVA allocation
     /// * `direction` - DMA transfer direction
     ///
     /// # Errors
@@ -1063,10 +1070,10 @@ impl IommuDomain {
     pub fn map_buffer<T>(
         &mut self,
         rref: crate::ipc::RRef<T>,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
         direction: super::dma_handle::DmaDirection,
     ) -> Result<super::dma_handle::DmaHandle<T>, super::dma_handle::MapError<T>> {
-        use super::dma_handle::{DmaHandle, MapError, MapErrorKind};
+        use super::dma_handle::{DmaHandle, MapError, MapErrorKind, MappingKind};
         use x86_64::VirtAddr;
 
         // Get physical address from RRef's virtual pointer
@@ -1083,8 +1090,8 @@ impl IommuDomain {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
         }
 
-        // Allocate IOVA from controller
-        let iova = match controller.allocate_iova(aligned_size) {
+        // Allocate IOVA from context
+        let iova = match context.allocate_iova(aligned_size) {
             Ok(addr) => addr,
             Err(e) => return Err(MapError::new(rref, MapErrorKind::IommuError(e))),
         };
@@ -1099,12 +1106,20 @@ impl IommuDomain {
         // Create page table mappings
         if let Err(e) = self.map(iova, phys, aligned_size, read, write) {
             // Mapping failed - free IOVA and return error with RRef
-            let _ = controller.free_iova(iova, aligned_size);
+            let _ = context.free_iova(iova, aligned_size);
             return Err(MapError::new(rref, MapErrorKind::IommuError(e)));
         }
 
         // Success - create DmaHandle
-        Ok(DmaHandle::new(rref, iova, phys, size, self.id, direction))
+        Ok(DmaHandle::new(
+            rref,
+            iova,
+            phys,
+            size,
+            self.id,
+            direction,
+            MappingKind::Domain,
+        ))
     }
 
     /// Unmap a DMA buffer and return the RRef
@@ -1117,7 +1132,7 @@ impl IommuDomain {
     ///
     /// # Arguments
     /// * `handle` - The DmaHandle to unmap (consumed)
-    /// * `controller` - The IOMMU controller for IOVA deallocation
+    /// * `context` - The IOMMU context for IOVA deallocation
     /// * `invalidator` - Optional invalidator for IOTLB flush
     ///
     /// # Errors
@@ -1125,7 +1140,7 @@ impl IommuDomain {
     pub fn unmap_buffer<T>(
         &mut self,
         mut handle: super::dma_handle::DmaHandle<T>,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
         invalidator: Option<&dyn IommuInvalidator>,
     ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
         use super::dma_handle::{UnmapError, UnmapErrorKind};
@@ -1152,7 +1167,7 @@ impl IommuDomain {
         }
 
         // Free IOVA
-        if let Err(e) = controller.free_iova(iova, aligned_size) {
+        if let Err(e) = context.free_iova(iova, aligned_size) {
             // IOVA free failed - log but continue since mapping is already removed
             log::warn!("[IommuDomain] IOVA free failed for 0x{:x}: {:?}", iova, e);
         }
@@ -1175,7 +1190,7 @@ impl IommuDomain {
     ///
     /// # Arguments
     /// * `handle` - The DmaHandle to unmap (consumed)
-    /// * `controller` - The IOMMU controller for IOVA deallocation
+    /// * `context` - The IOMMU context for IOVA deallocation
     /// * `invalidator` - Invalidator for async IOTLB flush
     ///
     /// # Returns
@@ -1183,7 +1198,7 @@ impl IommuDomain {
     pub async fn unmap_buffer_async<T>(
         &mut self,
         mut handle: super::dma_handle::DmaHandle<T>,
-        controller: &IommuController,
+        context: &dyn IommuHardwareContext,
         invalidator: &(dyn IommuInvalidator + Sync),
     ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
         use super::dma_handle::{UnmapError, UnmapErrorKind};
@@ -1209,7 +1224,7 @@ impl IommuDomain {
         }
 
         // Free IOVA
-        if let Err(e) = controller.free_iova(iova, aligned_size) {
+        if let Err(e) = context.free_iova(iova, aligned_size) {
             log::warn!("[IommuDomain] IOVA free failed for 0x{:x}: {:?}", iova, e);
         }
 

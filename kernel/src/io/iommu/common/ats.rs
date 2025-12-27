@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/ats.rs
+// kernel/src/io/iommu/common/ats.rs
 // ============================================================================
 //! IOMMU ATS (Address Translation Services) and PRI (Page Request Interface)
 //!

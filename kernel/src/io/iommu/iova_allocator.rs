@@ -7,7 +7,7 @@
 //! Supports 4KB, 2MB, and 1GB granularity allocations.
 //! Uses O(log n) tree-based allocation with automatic coalescing.
 
-use crate::io::iommu::IommuError;
+use super::types::IommuError;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 

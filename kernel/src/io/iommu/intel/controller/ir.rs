@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/ir.rs
+// kernel/src/io/iommu/intel/controller/ir.rs
 // ============================================================================
 
 //! Interrupt Remapping Methods
@@ -13,10 +13,9 @@ use core::sync::atomic::Ordering;
 use super::IommuController;
 use super::init::CapabilityManager;
 use super::utils::IommuUtils;
-use crate::io::iommu::{
-    IommuError, ecap_bits, gcmd_bits, gsts_bits, regs,
-    tables::{HardwareTable, Zeroable},
-};
+use crate::io::iommu::types::IommuError;
+use crate::io::iommu::intel::registers::{ecap_bits, gcmd_bits, gsts_bits, regs};
+use crate::io::iommu::tables::{HardwareTable, Zeroable};
 
 /// Interrupt Remapping Entry (128-bit)
 #[repr(C, align(16))]

@@ -30,13 +30,20 @@ use core::task::{Context, Poll};
 use hashbrown::HashMap;
 
 use self::ir::InterruptRemapTable;
-use crate::io::iommu::regs::IQH;
-use crate::io::iommu::tables::{ContextEntry, HardwareTable, RootEntry};
-use crate::io::iommu::{
-    DeviceId, FaultLog, InvalidationQueue, IommuDeviceScope, IommuDomain, IommuError,
-    PageRequestQueue, PageTablePool, PostedInterruptPool, SecurityEvent, SecurityNotifier,
-    gcmd_bits, gsts_bits, iova_allocator::IovaAllocator, regs,
-};
+use self::iova::IovaManager;
+use crate::io::iommu::intel::qi::InvalidationQueue;
+use crate::io::iommu::intel::registers::regs::IQH;
+use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs};
+use crate::io::iommu::intel::tables::{ContextEntry, RootEntry};
+use crate::io::iommu::tables::HardwareTable;
+use crate::io::iommu::common::{PageRequestQueue, PostedInterruptPool};
+use crate::io::iommu::domain::IommuDomain;
+use crate::io::iommu::fault_log::FaultLog;
+use crate::io::iommu::interface::IommuHardwareContext;
+use crate::io::iommu::iova_allocator::IovaAllocator;
+use crate::io::iommu::page_table_pool::PageTablePool;
+use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
+use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
 
 use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 
@@ -257,13 +264,13 @@ impl IommuController {
 
     /// Get IOTLB register offset from ECAP
     fn iotlb_reg_offset(&self) -> u64 {
-        use crate::io::iommu::ecap_bits;
+        use crate::io::iommu::intel::registers::ecap_bits;
         ((self.ecap & ecap_bits::ECAP_IRO_MASK) >> 8) * 16
     }
 
     /// Invalidate IOTLB for a specific domain (Register-based / Direct)
     pub unsafe fn invalidate_iotlb_direct(&self, domain_id: u16) {
-        use crate::io::iommu::registers::{iotlb_bits, iotlb_regs};
+        use crate::io::iommu::intel::registers::{iotlb_bits, iotlb_regs};
         let offset = self.iotlb_reg_offset();
 
         let cmd = iotlb_bits::IOTLB_IIRG_DOMAIN
@@ -283,7 +290,7 @@ impl IommuController {
 
     /// Invalidate Global IOTLB (Register-based / Direct)
     pub unsafe fn invalidate_iotlb_global(&self) {
-        use crate::io::iommu::registers::{iotlb_bits, iotlb_regs};
+        use crate::io::iommu::intel::registers::{iotlb_bits, iotlb_regs};
         let offset = self.iotlb_reg_offset();
 
         let cmd = iotlb_bits::IOTLB_IIRG_GLOBAL
@@ -399,6 +406,16 @@ impl IommuController {
                 log::error!("Failed to lock ats_enabled_devices");
             }
         }
+    }
+}
+
+impl IommuHardwareContext for IommuController {
+    fn allocate_iova(&self, size: u64) -> Result<u64, IommuError> {
+        IovaManager::allocate_iova(self, size)
+    }
+
+    fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        IovaManager::free_iova(self, iova, size)
     }
 }
 

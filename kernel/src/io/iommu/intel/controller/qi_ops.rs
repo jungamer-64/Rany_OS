@@ -1,5 +1,5 @@
 // ============================================================================
-// kernel/src/io/iommu/controller/qi_ops.rs
+// kernel/src/io/iommu/intel/controller/qi_ops.rs
 // ============================================================================
 
 //! Queued Invalidation Operations
@@ -10,10 +10,12 @@ use core::sync::atomic::Ordering;
 
 use super::utils::IommuUtils;
 use super::{InvalidationWaiter, IommuController};
+use crate::io::iommu::types::IommuError;
 use crate::io::iommu::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
-use crate::io::iommu::{InvalidationQueueEntry, IommuError, regs}; // for wait_for_condition
+use crate::io::iommu::intel::qi::InvalidationQueueEntry;
+use crate::io::iommu::intel::registers::regs; // for wait_for_condition
 
 pub trait InvalidationOps {
     /// Check if Queued Invalidation is enabled

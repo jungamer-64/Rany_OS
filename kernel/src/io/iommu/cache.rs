@@ -6,7 +6,7 @@
 //! Provides a context cache with LRU-like eviction for optimizing repeated
 //! context table lookups.
 
-use super::tables::ContextEntry;
+use crate::io::iommu::intel::tables::ContextEntry;
 
 // ============================================================================
 // Context Cache Entry
