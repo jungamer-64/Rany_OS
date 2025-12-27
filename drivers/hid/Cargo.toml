@@ -22,6 +22,7 @@ spin = "0.9"
 log = "0.4"
 
 [features]
-default = []
+default = ["log"]
+log = []
 standalone = ["export_driver_entry"]
 export_driver_entry = []

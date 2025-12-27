@@ -3,7 +3,6 @@
 // ============================================================================
 
 use super::types::{IommuError, PteFormat};
-use alloc::vec::Vec;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
@@ -293,12 +292,11 @@ impl PageTableScope {
     }
 
     /// Commit the allocation into the page table accounting structures.
-    /// This will insert the entry into `page_table_counts` and increment the parent's usage count.
-    pub fn commit(&mut self, page_table_counts: &mut alloc::collections::BTreeMap<u64, u16>) {
-        // Ensure the table is present in accounting without overwriting any existing counts
-        page_table_counts.entry(self.phys).or_insert(0);
+    /// This registers the table and increments the parent's usage count.
+    pub fn commit(&mut self) {
+        super::page_table_pool::register_page_table(self.phys);
         if let Some(parent_phys) = self.parent_phys {
-            *page_table_counts.entry(parent_phys).or_default() += 1;
+            super::page_table_pool::inc_ref(parent_phys);
         }
         self.committed = true;
     }

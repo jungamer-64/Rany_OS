@@ -11,7 +11,7 @@ use super::domain::IommuDomain;
 use super::fault_log::FaultRecord;
 use super::page_table_pool::PageTablePool;
 use super::registry::{get_iommu_driver, init_registry, IommuRegistry};
-use super::tables::{HardwareTable, SlPte};
+use super::tables::{HardwareTable, PageTableScope, SlPte};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use super::intel::controller::IommuController;
 use super::intel::tables::ContextEntry;
@@ -46,6 +46,7 @@ fn test_iommu_domain() {
         None,
         false,
         false,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -122,6 +123,7 @@ fn test_map_rollback_on_overlap_hidden_mapping() {
         None,
         false,
         false,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -161,6 +163,7 @@ fn test_map_rollback_on_overlap_hidden_mapping_amd() {
         None,
         true,
         true,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -207,6 +210,7 @@ fn test_map_rollback_superpage_2mb_collision() {
         None,
         true,
         false,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         format,
@@ -523,6 +527,7 @@ fn test_map_for_dma_alloc_non_identity() {
         None,
         false,
         false,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -801,6 +806,7 @@ fn test_unmap_reclaims_empty_tables() {
         None,
         false,
         false,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -841,6 +847,7 @@ fn test_unmap_partial_keeps_tables() {
         None,
         false,
         false,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -896,6 +903,7 @@ fn test_unmap_mixed_superpages() {
         None,
         true,
         true,
+        48,
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
@@ -1039,17 +1047,18 @@ fn test_qi_metrics_pressure() {
 #[test]
 fn test_page_table_scope_commit_preserves_counts() {
     // Verify that commit doesn't overwrite existing counts and increments parent count.
-    let mut page_table_counts = alloc::collections::BTreeMap::new();
-
-    // Allocate a new page table scope
     let mut scope = PageTableScope::new(None).expect("allocate ptable");
+    let scope_phys = scope.phys();
+    let parent_phys = 0xDEADBEEF;
 
-    // Pre-populate a count for this table (simulate prior increment)
-    page_table_counts.insert(scope.phys(), 42);
+    super::page_table_pool::register_page_table(scope_phys);
+    for _ in 0..42 {
+        super::page_table_pool::inc_ref(scope_phys);
+    }
+    super::page_table_pool::register_page_table(parent_phys);
 
     // Create a fake parent entry and attach
     let mut parent_entry = SlPte::new();
-    let parent_phys = 0xDEADBEEF;
     scope.attach_to_parent(
         &mut parent_entry as *mut SlPte,
         parent_phys,
@@ -1058,10 +1067,13 @@ fn test_page_table_scope_commit_preserves_counts() {
     );
 
     // Commit should not overwrite existing count for scope.phys(), but should increment parent
-    scope.commit(&mut page_table_counts);
+    scope.commit();
 
-    assert_eq!(page_table_counts.get(&scope.phys()), Some(&42u16));
-    assert_eq!(page_table_counts.get(&parent_phys), Some(&1u16));
+    assert_eq!(super::page_table_pool::get_ref_count(scope_phys), 42);
+    assert_eq!(super::page_table_pool::get_ref_count(parent_phys), 1);
+
+    super::page_table_pool::unregister_page_table(parent_phys);
+    super::page_table_pool::unregister_page_table(scope_phys);
 }
 
 #[test]

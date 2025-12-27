@@ -114,11 +114,11 @@ impl NetworkEventHandler {
 
         // パケット送信
         if let Err(e) = self.send_tcp_segment(local, remote, segment) {
-            crate::serial_println!("TCP: Failed to send data: {:?}", e);
+            log::info!("TCP: Failed to send data: {:?}", e);
             return EventHandleResult::ProtocolError(SocketError::Internal);
         }
 
-        crate::serial_println!(
+        log::info!(
             "TCP: Sent {} bytes (seq={}, ack={}) fd={}",
             data.len(),
             seq,
@@ -180,11 +180,11 @@ impl NetworkEventHandler {
 
         // パケット送信（IPスタック経由）
         if let Err(e) = self.send_tcp_segment(local_addr, remote, syn_segment) {
-            crate::serial_println!("TCP: Failed to send SYN packet: {:?}", e);
+            log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(SocketError::Internal);
         }
 
-        crate::serial_println!(
+        log::info!(
             "TCP: SYN sent {}:{} -> {}:{} (seq={})",
             local_addr.ip[0],
             local_addr.ip[1],
@@ -251,7 +251,7 @@ impl NetworkEventHandler {
         let _ = backlog; // 現在のTCB構造体にはbacklogフィールドなし
         tcb_table().insert(tcb);
 
-        crate::serial_println!(
+        log::info!(
             "TCP: Listening on {}:{} (fd={}, backlog={})",
             local.ip[0],
             local.ip[1],
@@ -278,7 +278,7 @@ impl NetworkEventHandler {
         let local = match inner.local_addr {
             Some(addr) => addr,
             None => {
-                crate::serial_println!("TCP: Close failed - no local address");
+                log::info!("TCP: Close failed - no local address");
                 return EventHandleResult::ProtocolError(SocketError::Internal);
             }
         };
@@ -318,11 +318,11 @@ impl NetworkEventHandler {
                 TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.ip, remote.ip);
 
                 if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
-                    crate::serial_println!("TCP: Failed to send FIN: {:?}", e);
+                    log::info!("TCP: Failed to send FIN: {:?}", e);
                     return EventHandleResult::ProtocolError(SocketError::Internal);
                 }
 
-                crate::serial_println!("TCP: FIN sent for fd={}", fd.raw());
+                log::info!("TCP: FIN sent for fd={}", fd.raw());
             }
             TcpConnectionState::CloseWait => {
                 // 相手からFINを受信済み、自分からFINを送信
@@ -344,7 +344,7 @@ impl NetworkEventHandler {
                 TcpSegmentBuilder::calculate_checksum(&mut fin_segment, local.ip, remote.ip);
 
                 if let Err(e) = self.send_tcp_segment(local, remote, fin_segment) {
-                    crate::serial_println!("TCP: Failed to send FIN (LastAck): {:?}", e);
+                    log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);
                 }
             }
             TcpConnectionState::Listen | TcpConnectionState::SynSent => {
@@ -411,11 +411,11 @@ impl NetworkEventHandler {
 
             // UDPパケット送信（IPスタック経由）
             if let Err(e) = self.send_udp_packet(local, remote, udp_packet) {
-                crate::serial_println!("UDP: Failed to send packet: {:?}", e);
+                log::info!("UDP: Failed to send packet: {:?}", e);
                 return EventHandleResult::ProtocolError(SocketError::Internal);
             }
 
-            crate::serial_println!(
+            log::info!(
                 "UDP: Sent {} bytes to {}:{} from port {}",
                 data.len(),
                 remote.ip[0],
@@ -460,7 +460,7 @@ pub fn init_network_event_handler() {
     // タスクスケジューラにnetwork_event_taskを登録する
     // Note: network_event_taskはasync関数なので、per_core_executor経由でspawnする
     // ネットワークイベント処理はCPU 0で実行（ネットワーク割り込みと同じコア）
-    crate::serial_println!("Network: Event handler initialized");
+    log::info!("Network: Event handler initialized");
 
     // タスクスポーン（実行時にエグゼキュータが初期化されている必要がある）
     // crate::task::per_core_executor::spawn(super::tcp_rx::network_event_task());

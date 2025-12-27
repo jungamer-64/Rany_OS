@@ -106,6 +106,4 @@ pub use keymap::{
 // ============================================================================
 // Internal Backward Compatibility (crate-only)
 // ============================================================================
-
-#[doc(hidden)]
-pub(crate) use keyboard::poll_input_event;
+// poll_input_event removed. Consumers should use `keyboard::poll_input_event` directly.

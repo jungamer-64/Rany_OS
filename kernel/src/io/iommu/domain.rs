@@ -2,8 +2,11 @@
 // kernel/src/io/iommu/domain.rs
 // ============================================================================
 use super::interface::IommuHardwareContext;
+use super::page_table_pool::{dec_ref, inc_ref, register_page_table, unregister_page_table};
 use super::quarantine::QuarantineQueue;
-use super::tables::{PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys};
+use super::tables::{
+    PT_ENTRIES, PT_LEVELS, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
+};
 use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::amd::tables::AmdPte;
 use alloc::collections::BTreeMap;
@@ -219,16 +222,8 @@ pub struct IommuDomain {
     pub(crate) supports_2mb: bool,
     /// Support for 1GB super-pages
     pub(crate) supports_1gb: bool,
-    /// Reference counts for page tables (Physical Address -> Active Entry Count)
-    /// Used to avoid O(N) scanning during unmap and recursive deallocation cleanup.
-    ///
-    /// # Performance Note
-    /// Uses BTreeMap for O(log n) lookup. For ~64K entries, this is ~16 comparisons.
-    /// For extreme performance requirements (millions of mappings), consider:
-    /// - Intrusive reference counting embedded in page table metadata
-    /// - Hash map with pre-sized capacity
-    /// Current implementation is acceptable for typical IOMMU workloads.
-    pub(crate) page_table_counts: BTreeMap<u64, u16>,
+    /// Maximum address width (in bits) supported for IOVA/physical addresses
+    pub(crate) max_addr_bits: u8,
     /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
     quarantine: Arc<QuarantineQueue>,
     /// Reused buffer for flush invalidations (avoid per-flush allocations)
@@ -250,6 +245,7 @@ impl IommuDomain {
     /// * `numa_node` - Optional NUMA node affinity
     /// * `supports_2mb` - Hardware supports 2MB super pages
     /// * `supports_1gb` - Hardware supports 1GB super pages
+    /// * `max_addr_bits` - Maximum supported address width (bits)
     /// * `domain_type` - Domain type (Strict, Passthrough, etc.)
     /// * `page_table_pool` - Shared page table pool for recycling
     pub fn new(
@@ -257,6 +253,7 @@ impl IommuDomain {
         numa_node: Option<usize>,
         supports_2mb: bool,
         supports_1gb: bool,
+        max_addr_bits: u8,
         domain_type: IommuDomainType,
         page_table_pool: Arc<super::page_table_pool::PageTablePool>,
         pte_format: PteFormat,
@@ -274,11 +271,9 @@ impl IommuDomain {
             .expect("Failed to allocate IOMMU page table")
             .as_ptr() as *mut SlPte;
 
-        // Initialize page_table_counts with root table
-        let mut page_table_counts = BTreeMap::new();
         let root_phys = virt_ptr_to_phys(page_table as *const u8)
             .expect("Failed to get root page table physical address");
-        page_table_counts.insert(root_phys, 0);
+        register_page_table(root_phys);
 
         Self {
             id,
@@ -289,7 +284,7 @@ impl IommuDomain {
             numa_node,
             supports_2mb,
             supports_1gb,
-            page_table_counts,
+            max_addr_bits: max_addr_bits.clamp(1, 64),
             quarantine: QuarantineQueue::new(),
             flush_requests: Vec::with_capacity(super::quarantine::INVALIDATION_CAPACITY),
             page_table_pool,
@@ -406,6 +401,20 @@ impl IommuDomain {
         Ok(())
     }
 
+    fn within_addr_width(&self, addr: u64, size: u64) -> bool {
+        if self.max_addr_bits >= 64 {
+            return true;
+        }
+
+        let limit = 1u128 << self.max_addr_bits;
+        let end = match addr.checked_add(size) {
+            Some(end) => end,
+            None => return false,
+        };
+
+        (addr as u128) < limit && (end as u128) <= limit
+    }
+
     /// Map a DMA region
     ///
     /// This function is transactional: if any page mapping fails, all successfully
@@ -425,6 +434,10 @@ impl IommuDomain {
         // Validate alignment
         if iova & 0xFFF != 0 || phys & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(IommuError::InvalidAlignment);
+        }
+
+        if !self.within_addr_width(iova, size) || !self.within_addr_width(phys, size) {
+            return Err(IommuError::InvalidAddress);
         }
 
         // Check for overlapping mappings
@@ -609,30 +622,22 @@ impl IommuDomain {
             *pd_entry = SlPte::new();
 
             // Decrement PD count
-            if let Some(count) = self.page_table_counts.get_mut(&pd_phys) {
-                *count -= 1;
-                if *count == 0 {
-                    // Free PD
-                    *pdp_entry = SlPte::new();
-                    alloc::alloc::dealloc(pd_table as *mut u8, layout);
-                    self.page_table_counts.remove(&pd_phys);
+            if dec_ref(pd_phys) {
+                // Free PD
+                *pdp_entry = SlPte::new();
+                alloc::alloc::dealloc(pd_table as *mut u8, layout);
+                unregister_page_table(pd_phys);
 
-                    // Decrement PDP count
-                    if let Some(pdp_count) = self.page_table_counts.get_mut(&pdp_phys) {
-                        *pdp_count -= 1;
-                        if *pdp_count == 0 {
-                            // Free PDP
-                            *pml4_entry = SlPte::new();
-                            alloc::alloc::dealloc(pdp_table as *mut u8, layout);
-                            self.page_table_counts.remove(&pdp_phys);
+                // Decrement PDP count
+                if dec_ref(pdp_phys) {
+                    // Free PDP
+                    *pml4_entry = SlPte::new();
+                    alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                    unregister_page_table(pdp_phys);
 
-                            // Decrement PML4 count (root)
-                            let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
-                            if let Some(pml4_count) = self.page_table_counts.get_mut(&pml4_phys) {
-                                *pml4_count -= 1;
-                            }
-                        }
-                    }
+                    // Decrement PML4 count (root)
+                    let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
+                    dec_ref(pml4_phys);
                 }
             }
         }
@@ -665,20 +670,15 @@ impl IommuDomain {
             *pdp_entry = SlPte::new();
 
             // Decrement PDP count
-            if let Some(count) = self.page_table_counts.get_mut(&pdp_phys) {
-                *count -= 1;
-                if *count == 0 {
-                    // Free PDP
-                    *pml4_entry = SlPte::new();
-                    alloc::alloc::dealloc(pdp_table as *mut u8, layout);
-                    self.page_table_counts.remove(&pdp_phys);
+            if dec_ref(pdp_phys) {
+                // Free PDP
+                *pml4_entry = SlPte::new();
+                alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                unregister_page_table(pdp_phys);
 
-                    // Decrement PML4 count (root)
-                    let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
-                    if let Some(pml4_count) = self.page_table_counts.get_mut(&pml4_phys) {
-                        *pml4_count -= 1;
-                    }
-                }
+                // Decrement PML4 count (root)
+                let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
+                dec_ref(pml4_phys);
             }
         }
         Ok(())
@@ -788,12 +788,12 @@ impl IommuDomain {
             }
 
             // Increment PT count
-            *self.page_table_counts.entry(pt_phys).or_default() += 1;
+            inc_ref(pt_phys);
 
             // Commit newly allocated page tables into accounting
             for slot in newly_allocated.iter_mut() {
                 if let Some(scope) = slot {
-                    scope.commit(&mut self.page_table_counts);
+                    scope.commit();
                 }
             }
         }
@@ -895,12 +895,12 @@ impl IommuDomain {
             }
         }
         // Increment PD count (valid entry)
-        *self.page_table_counts.entry(pd_phys).or_default() += 1;
+        inc_ref(pd_phys);
 
         // Commit any newly allocated page tables into accounting
         for slot in newly_allocated.iter_mut() {
             if let Some(scope) = slot {
-                scope.commit(&mut self.page_table_counts);
+                scope.commit();
             }
         }
 
@@ -981,11 +981,11 @@ impl IommuDomain {
             }
         }
         // Increment PDP count
-        *self.page_table_counts.entry(pdp_phys).or_default() += 1;
+        inc_ref(pdp_phys);
 
         // Commit newly allocated PDP if any
         if let Some(scope) = newly_allocated_pdp.as_mut() {
-            scope.commit(&mut self.page_table_counts);
+            scope.commit();
         }
 
         Ok(())
@@ -1107,43 +1107,30 @@ impl IommuDomain {
             *pt_entry = SlPte::new(); // Clear entry
 
             // Decrement PT count
-            if let Some(count) = self.page_table_counts.get_mut(&pt_phys) {
-                *count -= 1;
-                if *count == 0 {
-                    // Free PT
-                    *pd_entry = SlPte::new();
-                    alloc::alloc::dealloc(pt_table as *mut u8, layout);
-                    self.page_table_counts.remove(&pt_phys);
+            if dec_ref(pt_phys) {
+                // Free PT
+                *pd_entry = SlPte::new();
+                alloc::alloc::dealloc(pt_table as *mut u8, layout);
+                unregister_page_table(pt_phys);
 
-                    // Decrement PD count
-                    if let Some(pd_count) = self.page_table_counts.get_mut(&pd_phys) {
-                        *pd_count -= 1;
-                        if *pd_count == 0 {
-                            // Free PD
-                            *pdp_entry = SlPte::new();
-                            alloc::alloc::dealloc(pd_table as *mut u8, layout);
-                            self.page_table_counts.remove(&pd_phys);
+                // Decrement PD count
+                if dec_ref(pd_phys) {
+                    // Free PD
+                    *pdp_entry = SlPte::new();
+                    alloc::alloc::dealloc(pd_table as *mut u8, layout);
+                    unregister_page_table(pd_phys);
 
-                            // Decrement PDP count
-                            if let Some(pdp_count) = self.page_table_counts.get_mut(&pdp_phys) {
-                                *pdp_count -= 1;
-                                if *pdp_count == 0 {
-                                    // Free PDP
-                                    *pml4_entry = SlPte::new();
-                                    alloc::alloc::dealloc(pdp_table as *mut u8, layout);
-                                    self.page_table_counts.remove(&pdp_phys);
+                    // Decrement PDP count
+                    if dec_ref(pdp_phys) {
+                        // Free PDP
+                        *pml4_entry = SlPte::new();
+                        alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                        unregister_page_table(pdp_phys);
 
-                                    // Decrement PML4 count (root)
-                                    let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)
-                                        .expect("Failed to get pml4 phys");
-                                    if let Some(pml4_count) =
-                                        self.page_table_counts.get_mut(&pml4_phys)
-                                    {
-                                        *pml4_count -= 1;
-                                    }
-                                }
-                            }
-                        }
+                        // Decrement PML4 count (root)
+                        let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)
+                            .expect("Failed to get pml4 phys");
+                        dec_ref(pml4_phys);
                     }
                 }
             }
@@ -1351,40 +1338,39 @@ impl IommuDomain {
 
     /// Recursively deallocate all page tables under the given table (iterative version)
     ///
-    /// Note: This now relies on `page_table_counts` (BTreeMap) to know which pages are allocated tables.
-    /// This avoids tree walking and stack overflow risks entirely.
-    /// It effectively becomes "free all tables tracked by this domain".
+    /// Walks the page table tree to discover allocated tables and frees them bottom-up.
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
     unsafe fn deallocate_page_tables_iterative(&mut self) {
-        // Free all tables tracked in the counts map
-        // We iterate keys (Physical Addresses), convert to Virtual, and dealloc.
-        // Since we are destroying the domain, we just free everything.
-        // We must be careful not to double free if logic is flawed, but map guarantees uniqueness.
-        // Also, we skip the root table if it's managed by IommuDomain itself (which it is).
-        // Wait, `IommuDomain::new` allocates `page_table`. `Drop` (or callers) should free it.
-        // If we free everything in `page_table_counts`, we free the root too.
-        // Callers must be aware.
-
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");
 
-        for &phys_addr in self.page_table_counts.keys() {
-            let virt_addr = phys_to_virt_usize(phys_addr) as u64;
+        let mut stack: Vec<(*mut SlPte, usize)> = Vec::new();
+        stack.push((self.page_table, PT_LEVELS));
 
-            let ptr = virt_addr as *mut u8;
-            // Don't free the root table if `IommuDomain` logic expects to free it separately?
-            // `IommuDomain` stores `page_table` pointer.
-            // If we free it here, `IommuDomain` should not free it again.
-            // `IommuDomain` struct doesn't implement Drop yet, but usually `deallocate_page_table_recursive` was called manually.
-
-            unsafe {
-                alloc::alloc::dealloc(ptr, layout);
+        while let Some((table_ptr, level)) = stack.pop() {
+            if level > 1 {
+                for idx in 0..PT_ENTRIES {
+                    let entry = *table_ptr.add(idx);
+                    if !entry.is_present() {
+                        continue;
+                    }
+                    if (level == 3 || level == 2) && entry.is_super_page(self.pte_format) {
+                        continue;
+                    }
+                    let child_phys = entry.phys_addr();
+                    let child_ptr = phys_to_virt_usize(child_phys) as *mut SlPte;
+                    stack.push((child_ptr, level - 1));
+                }
             }
+
+            if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
+                unregister_page_table(phys);
+            }
+            alloc::alloc::dealloc(table_ptr as *mut u8, layout);
         }
-        self.page_table_counts.clear();
     }
 }
 

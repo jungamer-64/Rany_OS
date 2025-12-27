@@ -122,7 +122,7 @@ fn process_tcp_with_tcb(
 fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32) {
     // ACK番号を検証
     if ack_num != tcb.snd_nxt {
-        crate::serial_println!(
+        log::info!(
             "TCP: Invalid SYN-ACK ack_num: expected {}, got {}",
             tcb.snd_nxt,
             ack_num
@@ -153,7 +153,7 @@ fn handle_syn_ack_received(tcb: TcpControlBlockEntry, seq_num: u32, ack_num: u32
 
     // パケット送信
     send_tcp_segment(tcb.local, tcb.remote, ack_segment);
-    crate::serial_println!(
+    log::info!(
         "TCP: Connection established {}:{} <-> {}:{}",
         tcb.local.ip[0],
         tcb.local.port,
@@ -220,7 +220,7 @@ fn process_tcp_new_connection(
 
     // パケット送信
     send_tcp_segment(local, remote, syn_ack);
-    crate::serial_println!(
+    log::info!(
         "TCP: SYN-ACK sent {}:{} -> {}:{}",
         local.ip[0],
         local.port,
@@ -275,7 +275,7 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
         entry.state = TcpConnectionState::Established;
     });
 
-    crate::serial_println!(
+    log::info!(
         "TCP: Server connection established {}:{} <- {}:{}",
         tcb.local.ip[0],
         tcb.local.port,
@@ -287,14 +287,14 @@ fn handle_ack_for_syn(tcb: TcpControlBlockEntry, ack_num: u32) {
     let new_socket = match create_accepted_socket(&tcb) {
         Some(s) => s,
         None => {
-            crate::serial_println!("TCP: Failed to create accepted socket");
+            log::info!("TCP: Failed to create accepted socket");
             return;
         }
     };
 
     // Listeningソケットを探してAcceptキューに追加
     if !push_to_accept_queue(tcb.local.port, new_socket) {
-        crate::serial_println!("TCP: No listening socket found for port {}", tcb.local.port);
+        log::info!("TCP: No listening socket found for port {}", tcb.local.port);
     }
 }
 
@@ -344,7 +344,7 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
 
         // バックログがいっぱいでないか確認
         if inner.accept_queue.len() >= inner.accept_backlog {
-            crate::serial_println!("TCP: Accept queue full for port {}", local_port);
+            log::info!("TCP: Accept queue full for port {}", local_port);
             return false;
         }
 
@@ -356,7 +356,7 @@ fn push_to_accept_queue(local_port: u16, conn: AcceptedConnection) -> bool {
             waker.wake();
         }
 
-        crate::serial_println!(
+        log::info!(
             "TCP: Pushed to accept queue (queue_len={})",
             inner.accept_queue.len()
         );
@@ -495,10 +495,10 @@ pub async fn network_event_task() {
             EventHandleResult::Success => {}
             EventHandleResult::SocketNotFound(fd) => {
                 // ソケットが既に閉じられている - 正常
-                crate::serial_println!("Network: Socket {} not found (already closed)", fd.raw());
+                log::info!("Network: Socket {} not found (already closed)", fd.raw());
             }
             EventHandleResult::ProtocolError(e) => {
-                crate::serial_println!("Network: Protocol error: {:?}", e);
+                log::info!("Network: Protocol error: {:?}", e);
             }
             EventHandleResult::Retry => {
                 // 再試行が必要な場合
@@ -512,7 +512,7 @@ pub async fn network_event_task() {
         while let Some(event) = event_queue().recv() {
             let result = handler.handle_event(event);
             if let EventHandleResult::SocketNotFound(fd) = result {
-                crate::serial_println!("Network: Socket {} not found", fd.raw());
+                log::info!("Network: Socket {} not found", fd.raw());
             }
         }
     }

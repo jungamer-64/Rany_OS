@@ -86,12 +86,14 @@ impl DomainManager for IommuController {
 
         let supports_2mb = self.supports_2mb_pages();
         let supports_1gb = self.supports_1gb_pages();
+        let max_addr_bits = self.max_guest_address_width().min(48);
 
         let domain = IommuDomain::new(
             id,
             numa_node,
             supports_2mb,
             supports_1gb,
+            max_addr_bits,
             domain_type,
             self.page_table_pool.clone(),
             PteFormat::Intel,

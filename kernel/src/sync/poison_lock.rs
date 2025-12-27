@@ -13,10 +13,10 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::lockfree::Backoff;
-use serial_driver::serial_println;
+// use serial_driver::serial_println;
 
 // ============================================================================
 // PoisonError - ロックが毒入れされた場合のエラー
@@ -215,7 +215,10 @@ impl<T> PoisonLock<T> {
         match self.lock() {
             Ok(g) => g,
             Err(poisoned) => {
-                log::warn!("[POISON] {} - lock poisoned during init; proceeding with best-effort", context);
+                log::warn!(
+                    "[POISON] {} - lock poisoned during init; proceeding with best-effort",
+                    context
+                );
                 poisoned.into_inner()
             }
         }
@@ -317,7 +320,7 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
             self.lock.poisoned.store(true, Ordering::Release);
             // テスト環境ではシリアルへのI/Oは特権命令になり得るため、出力を抑止
             #[cfg(not(test))]
-            serial_println!("[PoisonLock] Lock poisoned due to panic");
+            log::info!("[PoisonLock] Lock poisoned due to panic");
         }
 
         // スピンロックを解放
@@ -534,7 +537,7 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
         // パニック検出と毒入れ
         if is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
-            serial_println!("[IrqPoisonLock] Lock poisoned due to panic");
+            log::info!("[IrqPoisonLock] Lock poisoned due to panic");
         }
 
         // スピンロックを解放
@@ -645,8 +648,14 @@ mod tests {
         th.join().unwrap();
 
         let m = get_lock_metrics();
-        assert!(m.acquire_count >= 1, "expected at least one lock acquisition");
-        assert!(m.contention_events >= 1, "expected at least one contention event");
+        assert!(
+            m.acquire_count >= 1,
+            "expected at least one lock acquisition"
+        );
+        assert!(
+            m.contention_events >= 1,
+            "expected at least one contention event"
+        );
     }
 
     /// Sharded-style stress test that simulates a sharded registry by creating

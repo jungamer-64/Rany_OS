@@ -120,7 +120,7 @@ pub fn show_boot_splash() {
 
         // Manual volatile write test
         let ptr = fb.raw_buffer_ptr();
-        let _ = crate::serial_println!("[SPLASH] Raw Buffer Ptr: {:p}", ptr);
+        let _ = log::info!("[SPLASH] Raw Buffer Ptr: {:p}", ptr);
 
         let stride_bytes = fb.stride();
         let stride_u32 = stride_bytes / 4;

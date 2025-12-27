@@ -25,6 +25,7 @@
 //! - `boot_splash` - ブートスプラッシュ画面
 
 #![allow(dead_code)]
+#![allow(unused_imports)]
 
 // コア機能モジュール
 #[cfg(not(any(test, feature = "bench")))]
@@ -65,8 +66,8 @@ pub use framebuffer::Framebuffer;
 // グローバル関数の再エクスポート
 #[cfg(not(any(test, feature = "bench")))]
 pub use global::{
-    console_print, framebuffer, init, init_console, init_from_boot_info, with_console,
-    with_framebuffer, force_unlock_framebuffer,
+    console_print, force_unlock_framebuffer, framebuffer, init, init_console, init_from_boot_info,
+    with_console, with_framebuffer,
 };
 
 // ブートスプラッシュ関数の再エクスポート

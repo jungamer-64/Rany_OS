@@ -9,7 +9,6 @@
 
 use super::types::IommuError;
 use alloc::collections::{BTreeMap, BTreeSet};
-use alloc::vec::Vec;
 
 /// IOVA allocation granularity
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,8 +199,6 @@ pub struct IovaAllocator {
     base: u64,
     /// Total size of the IOVA space
     size: u64,
-    /// Bitmap for 4KB page tracking (1 bit per 4KB page) - kept for debugging
-    bitmap: Vec<u64>,
     /// Number of 4KB pages managed
     total_pages: usize,
     /// Number of free 4KB pages
@@ -215,8 +212,6 @@ pub struct IovaAllocator {
 impl IovaAllocator {
     /// 4KB page size
     const PAGE_SIZE_4K: u64 = 4096;
-    /// Bits per bitmap word
-    const BITS_PER_WORD: usize = 64;
 
     /// Create a new IOVA allocator
     ///
@@ -225,10 +220,6 @@ impl IovaAllocator {
     /// * `size` - Total size of the IOVA space
     pub fn new(base: u64, size: u64) -> Self {
         let total_pages = (size / Self::PAGE_SIZE_4K) as usize;
-        let bitmap_words = (total_pages + Self::BITS_PER_WORD - 1) / Self::BITS_PER_WORD;
-
-        // Initialize bitmap with all pages free (0 = free, 1 = allocated)
-        let bitmap = alloc::vec![0u64; bitmap_words];
 
         // Initialize free range tree with entire space as one free range
         let free_ranges = FreeRangeTree::new(total_pages);
@@ -236,7 +227,6 @@ impl IovaAllocator {
         Self {
             base,
             size,
-            bitmap,
             total_pages,
             free_pages: total_pages,
             next_hint: 0,
@@ -259,38 +249,6 @@ impl IovaAllocator {
         self.free_pages
     }
 
-    /// Check if a page is allocated
-    fn is_page_allocated(&self, page_idx: usize) -> bool {
-        if page_idx >= self.total_pages {
-            return true; // Out of range = considered allocated
-        }
-        let word_idx = page_idx / Self::BITS_PER_WORD;
-        let bit_idx = page_idx % Self::BITS_PER_WORD;
-        (self.bitmap[word_idx] & (1u64 << bit_idx)) != 0
-    }
-
-    /// Mark a range of pages as allocated
-    fn mark_pages_allocated(&mut self, start_page: usize, count: usize) {
-        for i in 0..count {
-            let page_idx = start_page + i;
-            let word_idx = page_idx / Self::BITS_PER_WORD;
-            let bit_idx = page_idx % Self::BITS_PER_WORD;
-            self.bitmap[word_idx] |= 1u64 << bit_idx;
-        }
-        self.free_pages -= count;
-    }
-
-    /// Mark a range of pages as free
-    fn mark_pages_free(&mut self, start_page: usize, count: usize) {
-        for i in 0..count {
-            let page_idx = start_page + i;
-            let word_idx = page_idx / Self::BITS_PER_WORD;
-            let bit_idx = page_idx % Self::BITS_PER_WORD;
-            self.bitmap[word_idx] &= !(1u64 << bit_idx);
-        }
-        self.free_pages += count;
-    }
-
     /// Allocate an IOVA range
     ///
     /// Returns the allocated IOVA address, or None if allocation fails.
@@ -308,8 +266,7 @@ impl IovaAllocator {
         // Allocate from tree (splits the range)
         self.free_ranges.allocate(start_page, pages_needed);
 
-        // Mark as allocated in bitmap (for debugging/validation)
-        self.mark_pages_allocated(start_page, pages_needed);
+        self.free_pages = self.free_pages.saturating_sub(pages_needed);
 
         // Update hint for next allocation
         self.next_hint = start_page + pages_needed;
@@ -331,8 +288,7 @@ impl IovaAllocator {
             return Err(IommuError::AlreadyMapped);
         }
 
-        // Mark as allocated in bitmap (for debugging/validation)
-        self.mark_pages_allocated(start_page, pages_needed);
+        self.free_pages = self.free_pages.saturating_sub(pages_needed);
         Ok(())
     }
 
@@ -348,8 +304,7 @@ impl IovaAllocator {
         // Free in tree (with automatic coalescing)
         self.free_ranges.free(start_page, pages_count);
 
-        // Mark as free in bitmap (for debugging/validation)
-        self.mark_pages_free(start_page, pages_count);
+        self.free_pages = self.free_pages.saturating_add(pages_count);
 
         // Update hint to freed range for potential reuse
         if start_page < self.next_hint {
@@ -373,8 +328,7 @@ impl IovaAllocator {
             return Err(IommuError::AlreadyMapped);
         }
 
-        // Mark as allocated in bitmap
-        self.mark_pages_allocated_fast(start_page, pages_needed);
+        self.free_pages = self.free_pages.saturating_sub(pages_needed);
         Ok(())
     }
 
@@ -391,95 +345,12 @@ impl IovaAllocator {
         // Allocate from tree
         self.free_ranges.allocate(start_page, pages_needed);
 
-        // Mark as allocated in bitmap
-        self.mark_pages_allocated_fast(start_page, pages_needed);
+        self.free_pages = self.free_pages.saturating_sub(pages_needed);
 
         // Update hint
         self.next_hint = start_page + pages_needed;
 
         Some(self.base + (start_page as u64) * Self::PAGE_SIZE_4K)
-    }
-
-    /// Mark pages allocated using word-level operations for efficiency
-    fn mark_pages_allocated_fast(&mut self, start_page: usize, count: usize) {
-        let end_page = start_page + count;
-
-        // Handle partial first word
-        let first_word = start_page / Self::BITS_PER_WORD;
-        let first_bit = start_page % Self::BITS_PER_WORD;
-
-        if first_bit != 0 {
-            let bits_in_first = (Self::BITS_PER_WORD - first_bit).min(count);
-            let mask = ((1u64 << bits_in_first) - 1) << first_bit;
-            self.bitmap[first_word] |= mask;
-
-            if bits_in_first >= count {
-                self.free_pages -= count;
-                return;
-            }
-        }
-
-        // Handle full words
-        let first_full_word = if first_bit == 0 {
-            first_word
-        } else {
-            first_word + 1
-        };
-        let last_word = end_page / Self::BITS_PER_WORD;
-
-        for word in first_full_word..last_word {
-            self.bitmap[word] = !0u64;
-        }
-
-        // Handle partial last word
-        let last_bit = end_page % Self::BITS_PER_WORD;
-        if last_bit != 0 && last_word < self.bitmap.len() {
-            let mask = (1u64 << last_bit) - 1;
-            self.bitmap[last_word] |= mask;
-        }
-
-        self.free_pages -= count;
-    }
-
-    /// Mark pages free using word-level operations for efficiency
-    fn mark_pages_free_fast(&mut self, start_page: usize, count: usize) {
-        let end_page = start_page + count;
-
-        // Handle partial first word
-        let first_word = start_page / Self::BITS_PER_WORD;
-        let first_bit = start_page % Self::BITS_PER_WORD;
-
-        if first_bit != 0 {
-            let bits_in_first = (Self::BITS_PER_WORD - first_bit).min(count);
-            let mask = ((1u64 << bits_in_first) - 1) << first_bit;
-            self.bitmap[first_word] &= !mask;
-
-            if bits_in_first >= count {
-                self.free_pages += count;
-                return;
-            }
-        }
-
-        // Handle full words
-        let first_full_word = if first_bit == 0 {
-            first_word
-        } else {
-            first_word + 1
-        };
-        let last_word = end_page / Self::BITS_PER_WORD;
-
-        for word in first_full_word..last_word {
-            self.bitmap[word] = 0;
-        }
-
-        // Handle partial last word
-        let last_bit = end_page % Self::BITS_PER_WORD;
-        if last_bit != 0 && last_word < self.bitmap.len() {
-            let mask = (1u64 << last_bit) - 1;
-            self.bitmap[last_word] &= !mask;
-        }
-
-        self.free_pages += count;
     }
 
     /// Get basic statistics

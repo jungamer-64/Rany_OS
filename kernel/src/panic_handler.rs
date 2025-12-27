@@ -274,13 +274,13 @@ pub fn setup_stack_guard(stack_bottom: usize, _stack_size: usize) {
     unsafe {
         if let Err(e) = crate::mm::higher_half::global_unmap_page(guard_page_addr) {
             // アンマップに失敗した場合（既にマップされていない等）は警告のみ
-            crate::serial_println!(
+            log::warn!(
                 "[StackGuard] Warning: Could not setup guard page at {:?}: {:?}",
                 guard_page_addr,
                 e
             );
         } else {
-            crate::serial_println!(
+            log::info!(
                 "[StackGuard] Guard page set at {:?} (stack bottom)",
                 guard_page_addr
             );
@@ -307,7 +307,7 @@ pub fn setup_ist_stack_guards() {
     // ISTスタックの情報を取得してガードページを設定
     // 現在のGDT実装では静的に確保されているため、
     // ここでは警告のみを出力
-    crate::serial_println!("[StackGuard] IST stack guard pages should be configured manually");
+    log::warn!("[StackGuard] IST stack guard pages should be configured manually");
 }
 
 // ============================================================================
