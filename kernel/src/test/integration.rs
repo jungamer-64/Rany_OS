@@ -356,16 +356,31 @@ pub fn test_storage() -> IntegrationTestSuite {
             let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));
             let alloc = StdArc::new(PageClusterBufferAllocator::new());
 
+            // Reset IOMMU mapping counters for a clean test
+            crate::io::iommu::api::reset_map_unmap_counts();
+
             match block_on(
                 fat32::Fat32FileSystem::<PageClusterBuffer>::mount_zero_copy_with_allocator(
                     adapter, alloc,
                 ),
             ) {
-                Ok(_) => Ok(String::from("mount succeeded")),
+                Ok(_fs_arc) => {
+                    // If IOMMU is enabled, ensure we recorded mappings
+                    if crate::io::iommu::api::is_iommu_enabled() {
+                        let maps = crate::io::iommu::api::get_map_count();
+                        if maps == 0 {
+                            Err(String::from("IOMMU enabled but no map calls recorded"))
+                        } else {
+                            Ok(String::from("mount OK (IOMMU mapped)"))
+                        }
+                    } else {
+                        Ok(String::from("mount OK (no IOMMU)"))
+                    }
+                }
                 Err(e) => Err(alloc::format!("mount failed: {:?}", e)),
             }
         } else {
-            Err(String::from("virtio-blk not present"))
+            Err(String::from("No VirtIO-blk device found"))
         }
     }));
 

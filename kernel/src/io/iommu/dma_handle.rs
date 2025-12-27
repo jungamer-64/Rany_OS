@@ -8,7 +8,7 @@
 //!
 //! # Key Features
 //!
-//! - **Leak Detection**: `Drop` panics if handle is dropped without proper unmap
+//! - **Leak Detection**: `Drop` logs and leaks if handle is dropped without proper unmap
 //! - **Backend Unmap**: `unmap()` routes through the global IOMMU API
 //! - **Ownership Safety**: Errors return the original `RRef<T>` or `DmaHandle<T>`
 //!
@@ -147,7 +147,7 @@ impl<T: ?Sized> UnmapError<T> {
 /// IOVA space via the IOMMU. It ensures:
 ///
 /// - **Memory Safety**: The underlying `RRef<T>` is held until unmap completes
-/// - **Leak Detection**: Dropping without unmap causes a panic
+/// - **Leak Detection**: Dropping without unmap logs an error and leaks
 /// - **IOTLB Sync**: Unmap waits for IOTLB invalidation before releasing buffer
 ///
 /// # Lifecycle
@@ -156,11 +156,10 @@ impl<T: ?Sized> UnmapError<T> {
 /// 2. Use `iova()` for device programming
 /// 3. `handle.unmap()` - Unmaps via global IOMMU API, returns RRef
 ///
-/// # Panics
+/// # Safety
 ///
-/// Dropping a `DmaHandle` without calling an unmap method will panic.
-/// This is intentional to prevent DMA-after-free bugs where a device might
-/// still be accessing memory that has been freed.
+/// Dropping a `DmaHandle` without calling an unmap method will log and leak
+/// the underlying `RRef<T>` to avoid DMA-after-free.
 #[derive(Debug)]
 pub struct DmaHandle<T: ?Sized> {
     /// The underlying data (ownership held until unmap)
@@ -261,24 +260,18 @@ impl<T> DmaHandle<T> {
 
 impl<T: ?Sized> Drop for DmaHandle<T> {
     fn drop(&mut self) {
-        // If rref is still present, the handle was dropped without unmap!
-        // This is a critical bug - panic to prevent DMA-after-free.
-        if self.rref.is_some() {
-            // In debug mode, provide useful information
+        if let Some(rref) = self.rref.take() {
             #[cfg(debug_assertions)]
-            {
-                panic!(
-                    "DMA handle leaked! IOVA=0x{:x}, size={}, domain={}. \
-                     Call an unmap method before dropping DmaHandle.",
-                    self.iova, self.size, self.domain_id
-                );
-            }
-
-            // In release mode, panic with minimal message
+            log::error!(
+                "DMA handle leaked! IOVA=0x{:x}, size={}, domain={}. \
+                 Call an unmap method before dropping DmaHandle.",
+                self.iova,
+                self.size,
+                self.domain_id
+            );
             #[cfg(not(debug_assertions))]
-            {
-                panic!("DMA handle leaked without unmap");
-            }
+            log::error!("DMA handle leaked without unmap");
+            core::mem::forget(rref);
         }
     }
 }
@@ -292,6 +285,9 @@ impl<T> DmaHandle<T> {
     ///
     /// This is a simplified mapping that uses physical address as IOVA.
     /// For full IOMMU domain integration, use `IommuDomain::map_buffer()`.
+    ///
+    /// Identity mapping is only permitted when
+    /// `crate::io::iommu::api::is_unsafe_identity_mapping_allowed()` is true.
     ///
     /// # Arguments
     /// * `rref` - The RRef to map (consumed)
@@ -307,6 +303,12 @@ impl<T> DmaHandle<T> {
     ) -> Result<Self, MapError<T>> {
         if crate::io::iommu::api::is_iommu_required() && !crate::io::iommu::api::is_iommu_enabled()
         {
+            return Err(MapError::new(
+                rref,
+                MapErrorKind::IommuError(IommuError::NotInitialized),
+            ));
+        }
+        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
             return Err(MapError::new(
                 rref,
                 MapErrorKind::IommuError(IommuError::NotInitialized),
@@ -502,7 +504,7 @@ impl<T> DmaHandle<T> {
 
         // Check IOMMU enabled
         if !crate::io::iommu::api::is_iommu_enabled() {
-            // Fallback to simple 1:1 mapping if IOMMU disabled
+            // Fallback to simple 1:1 mapping only when explicitly allowed
             return Self::map_simple(rref, domain_id, direction);
         }
 
@@ -736,19 +738,18 @@ impl<T> DmaHandle<[T]> {
             _ => return Err(MapError::new(rref, MapErrorKind::InvalidAlignment)),
         };
 
-        if crate::io::iommu::api::is_iommu_required() && !crate::io::iommu::api::is_iommu_enabled()
-        {
-            return Err(MapError::new(
-                rref,
-                MapErrorKind::IommuError(IommuError::NotInitialized),
-            ));
-        }
-
-        let virt_ptr = rref.as_ptr() as u64;
-        let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
-
         if !crate::io::iommu::api::is_iommu_enabled() {
+            if crate::io::iommu::api::is_iommu_required()
+                || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+            {
+                return Err(MapError::new(
+                    rref,
+                    MapErrorKind::IommuError(IommuError::NotInitialized),
+                ));
+            }
+            let virt_ptr = rref.as_ptr() as u64;
+            let virt_addr = VirtAddr::new(virt_ptr);
+            let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
             return Ok(Self::new_slice(
                 rref,
                 phys_addr_val.as_u64(),
@@ -759,6 +760,10 @@ impl<T> DmaHandle<[T]> {
                 MappingKind::Identity,
             ));
         }
+
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
 
         if phys_addr_val.as_u64() & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
@@ -800,19 +805,18 @@ impl<T> DmaHandle<[T]> {
             _ => return Err(MapError::new(rref, MapErrorKind::InvalidAlignment)),
         };
 
-        if crate::io::iommu::api::is_iommu_required() && !crate::io::iommu::api::is_iommu_enabled()
-        {
-            return Err(MapError::new(
-                rref,
-                MapErrorKind::IommuError(IommuError::NotInitialized),
-            ));
-        }
-
-        let virt_ptr = rref.as_ptr() as u64;
-        let virt_addr = VirtAddr::new(virt_ptr);
-        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
-
         if !crate::io::iommu::api::is_iommu_enabled() {
+            if crate::io::iommu::api::is_iommu_required()
+                || !crate::io::iommu::api::is_unsafe_identity_mapping_allowed()
+            {
+                return Err(MapError::new(
+                    rref,
+                    MapErrorKind::IommuError(IommuError::NotInitialized),
+                ));
+            }
+            let virt_ptr = rref.as_ptr() as u64;
+            let virt_addr = VirtAddr::new(virt_ptr);
+            let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
             return Ok(Self::new_slice(
                 rref,
                 phys_addr_val.as_u64(),
@@ -823,6 +827,10 @@ impl<T> DmaHandle<[T]> {
                 MappingKind::Identity,
             ));
         }
+
+        let virt_ptr = rref.as_ptr() as u64;
+        let virt_addr = VirtAddr::new(virt_ptr);
+        let phys_addr_val = crate::mm::mapping::virt_to_phys(virt_addr);
 
         if phys_addr_val.as_u64() & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));

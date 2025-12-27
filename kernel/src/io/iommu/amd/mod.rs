@@ -87,7 +87,8 @@ const EVENT_FLAGS_SHIFT: u32 = 0x10;
 
 const AMD_FAULT_QUEUE_SIZE: usize = 128;
 const AMD_FAULT_LOG_RATE_LIMIT: usize = 128;
-const AMD_IOMMU_FAULT_VECTOR: u8 = crate::interrupts::InterruptVector::IommuFault as u8;
+// Use a fixed IOMMU fault vector number to avoid depending on `interrupts` during lib builds
+const AMD_IOMMU_FAULT_VECTOR: u8 = 0x50u8;
 
 const IVHD_INIT_PASS: u8 = 1 << 0;
 const IVHD_EINT_PASS: u8 = 1 << 1;
@@ -512,7 +513,16 @@ pub fn spawn_fault_handler_task() {
 
 fn msi_message(vector: u8) -> (u64, u32) {
     const MSI_ADDRESS_BASE: u64 = 0xFEE0_0000;
-    let apic_id = crate::io::interrupt_manager::current_apic_id() as u64;
+    let apic_id: u64 = {
+        #[cfg(feature = "apic")]
+        {
+            crate::io::interrupt_manager::current_apic_id() as u64
+        }
+        #[cfg(not(feature = "apic"))]
+        {
+            0u64
+        }
+    };
     let address = MSI_ADDRESS_BASE | (apic_id << 12);
     let data = vector as u32;
     (address, data)

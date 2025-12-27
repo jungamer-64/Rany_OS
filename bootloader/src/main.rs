@@ -232,8 +232,8 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                                         let reloc_phys = seg_phys + (reloc_offset - seg_virt);
                                         // Apply relocation: write base + addend
                                         // Base is KERNEL_BASE since we're relocating from 0 to KERNEL_BASE
-                                        let value = (KERNEL_BASE as i64)
-                                            .wrapping_add(addend as i64) as u64;
+                                        let value =
+                                            (KERNEL_BASE as i64).wrapping_add(addend as i64) as u64;
 
                                         // Debug first 5 relocations
                                         if applied_count < 5 {
@@ -325,13 +325,23 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         }
     }
 
-    // 5. Map HHDM
+    // 5. Map HHDM - Map up to 4GB to cover RAM and MMIO regions
+    // Device MMIO regions (e.g., IOMMU at 0xfed90000) must be accessible via HHDM.
+    // We use max_phys (from all memory map entries) but cap at 4GB to avoid excessive pages.
     let hhdm_start = 0xffff_8000_0000_0000;
-    info!("Mapping HHDM [0, 0x{:x}) at 0x{:x}", max_phys, hhdm_start);
+
+    // Use max_phys to cover all regions including MMIO, but cap at 4GB
+    // This ensures IOMMU registers (0xfed90000), LAPIC, etc. are accessible.
+    let map_limit = max_phys.min(4 * 1024 * 1024 * 1024); // 4GB max
+    info!(
+        "Mapping HHDM: max_phys=0x{:x}, limit=0x{:x}",
+        max_phys, map_limit
+    );
 
     // First, explicitly map first 8MB with 4KB pages to ensure bootloader code is mapped
     // This is a workaround for potential issues with 2MB page support in QEMU TCG
-    for page in 0..(8 * 1024 * 1024 / 4096) {
+    let first_region = (8 * 1024 * 1024u64).min(map_limit);
+    for page in 0..(first_region / 4096) {
         let addr = page * 4096;
         mapper
             .map_page(addr, addr, PAGE_WRITABLE | PAGE_PRESENT)
@@ -342,9 +352,9 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     }
 
     // Continue with 2MB pages for the rest
-    let mut current = 8 * 1024 * 1024; // Start after the first 8MB
-    while current < max_phys {
-        let remaining = max_phys - current;
+    let mut current = first_region;
+    while current < map_limit {
+        let remaining = map_limit - current;
         if current % 0x200000 == 0 && remaining >= 0x200000 {
             mapper
                 .map_page_2mb(hhdm_start + current, current, PAGE_WRITABLE | PAGE_PRESENT)
@@ -462,40 +472,56 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         boot_info.initramfs.size = 0;
     }
 
+    // 6.6. Pre-allocate memory map buffer BEFORE exiting boot services
+    // We cannot allocate after exit_boot_services() - UEFI heap will be invalid!
+    let mmap_estimate_count = boot_services.memory_map_size().map_size / 48 + 16; // sizeof(MemoryDescriptor) ~ 48 + margin
+    let mmap_buffer_size = mmap_estimate_count * core::mem::size_of::<BootMemoryDescriptor>();
+    let mmap_buffer_pages = (mmap_buffer_size + 4095) / 4096;
+    let mmap_buffer_phys = UefiMapper::alloc_zeroed_pages(boot_services, mmap_buffer_pages)
+        .expect("Failed to allocate memory map buffer");
+
+    // Log kernel entry points before exiting boot services (info!() won't work after)
+    let entry_addr = elf.header.pt2.entry_point();
+    let hhdm_entry = 0xffff_8000_0000_0000u64 + entry_phys_addr;
+    info!("Kernel entry (KERNEL_BASE): 0x{:x}", entry_addr);
+    info!("Kernel entry (HHDM): 0x{:x}", hhdm_entry);
+
     // 7. Exit Boot Services
     info!("Exiting Boot Services...");
     let (_runtime, mmap) = system_table.exit_boot_services();
 
-    // Update Memory Map
+    // NOTE: After exit_boot_services(), NO allocations allowed!
+    // We must use pre-allocated buffer only.
+
+    // Update Memory Map using pre-allocated buffer
     let mmap_entries = mmap.entries();
     let count = mmap_entries.len();
     boot_info.memory_map.count = count as u64;
 
-    // Copy to aligned buffer and pass HHDM pointer to kernel
-    let mut boot_mmap: Vec<BootMemoryDescriptor> = Vec::with_capacity(count);
-    for desc in mmap_entries {
-        boot_mmap.push(BootMemoryDescriptor {
+    // Copy to pre-allocated buffer (no heap allocation!)
+    let boot_mmap_slice = unsafe {
+        core::slice::from_raw_parts_mut(
+            mmap_buffer_phys as *mut BootMemoryDescriptor,
+            mmap_estimate_count,
+        )
+    };
+    for (i, desc) in mmap_entries.enumerate() {
+        if i >= mmap_estimate_count {
+            break; // Safety: don't overflow buffer
+        }
+        boot_mmap_slice[i] = BootMemoryDescriptor {
             r#type: desc.ty.0,
             pad: 0,
             phys_start: desc.phys_start,
             virt_start: desc.virt_start,
             page_count: desc.page_count,
             attribute: desc.att.bits(),
-        });
+        };
     }
-    let boot_mmap_ptr = boot_mmap.as_ptr();
-    core::mem::forget(boot_mmap); // keep memory map alive for kernel
-    boot_info.memory_map.entries = (hhdm_start + boot_mmap_ptr as u64) as *const _;
+    boot_info.memory_map.entries = (hhdm_start + mmap_buffer_phys) as *const _;
 
     // 8. Switch CR3 & Jump
     // Kernel is statically linked at higher-half - entry point is already at correct address
-    let entry_addr = elf.header.pt2.entry_point();
-    // HHDM test showed kernel CAN execute - problem is KERNEL_BASE mapping
-    let hhdm_entry = 0xffff_8000_0000_0000u64 + entry_phys_addr;
-    // Debug: log both addresses before boot services exit
-    info!("Kernel entry (KERNEL_BASE): 0x{:x}", entry_addr);
-    info!("Kernel entry (HHDM): 0x{:x}", hhdm_entry);
-    // NOTE: Cannot use info!() after exit_boot_services() - ConOut is invalid!
 
     // Use inline asm for absolute jump to kernel after CR3 switch
     // NOTE: Use explicit registers to avoid compiler reordering:
