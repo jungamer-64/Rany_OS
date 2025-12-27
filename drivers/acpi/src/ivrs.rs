@@ -96,15 +96,50 @@ pub struct IvmdInfo {
 
 #[derive(Debug, Clone)]
 pub enum IvhdDeviceEntry {
-    All { flags: u8 },
-    Select { devid: u16, flags: u8 },
-    Range { start: u16, end: u16, flags: u8 },
-    Alias { devid: u16, alias: u16, flags: u8 },
-    AliasRange { start: u16, end: u16, alias: u16, flags: u8 },
-    ExtSelect { devid: u16, flags: u8, ext_flags: u32 },
-    ExtRange { start: u16, end: u16, flags: u8, ext_flags: u32 },
-    Special { devid: u16, flags: u8, handle: u8, variety: u8 },
-    AcpiHid { devid: u16, flags: u8 },
+    All {
+        flags: u8,
+    },
+    Select {
+        devid: u16,
+        flags: u8,
+    },
+    Range {
+        start: u16,
+        end: u16,
+        flags: u8,
+    },
+    Alias {
+        devid: u16,
+        alias: u16,
+        flags: u8,
+    },
+    AliasRange {
+        start: u16,
+        end: u16,
+        alias: u16,
+        flags: u8,
+    },
+    ExtSelect {
+        devid: u16,
+        flags: u8,
+        ext_flags: u32,
+    },
+    ExtRange {
+        start: u16,
+        end: u16,
+        flags: u8,
+        ext_flags: u32,
+    },
+    Special {
+        devid: u16,
+        flags: u8,
+        handle: u8,
+        variety: u8,
+    },
+    AcpiHid {
+        devid: u16,
+        flags: u8,
+    },
 }
 
 const IVHD_TYPE_10: u8 = 0x10;
@@ -112,8 +147,11 @@ const IVHD_TYPE_11: u8 = 0x11;
 const IVHD_TYPE_40: u8 = 0x40;
 const IVHD_TYPE_41: u8 = 0x41;
 
-fn is_ivhd(block_type: u8) -> bool {
-    matches!(block_type, IVHD_TYPE_10 | IVHD_TYPE_11 | IVHD_TYPE_40 | IVHD_TYPE_41)
+const fn is_ivhd(block_type: u8) -> bool {
+    matches!(
+        block_type,
+        IVHD_TYPE_10 | IVHD_TYPE_11 | IVHD_TYPE_40 | IVHD_TYPE_41
+    )
 }
 
 const IVMD_TYPE_ALL: u8 = 0x20;
@@ -125,7 +163,7 @@ const IVMD_FLAG_IR: u8 = 0x02;
 const IVMD_FLAG_IW: u8 = 0x04;
 const IVMD_FLAG_EXCL_RANGE: u8 = 0x08;
 
-fn is_ivmd(block_type: u8) -> bool {
+const fn is_ivmd(block_type: u8) -> bool {
     matches!(block_type, IVMD_TYPE_ALL | IVMD_TYPE | IVMD_TYPE_RANGE)
 }
 
@@ -140,7 +178,7 @@ const IVHD_DEV_EXT_SELECT_RANGE: u8 = 0x47;
 const IVHD_DEV_SPECIAL: u8 = 0x48;
 const IVHD_DEV_ACPI_HID: u8 = 0xf0;
 
-fn ivhd_header_size(block_type: u8) -> Option<usize> {
+const fn ivhd_header_size(block_type: u8) -> Option<usize> {
     match block_type {
         IVHD_TYPE_10 => Some(mem::size_of::<IvhdHeader>()),
         IVHD_TYPE_11 | IVHD_TYPE_40 | IVHD_TYPE_41 => Some(mem::size_of::<IvhdHeader>() + 16),
@@ -148,11 +186,11 @@ fn ivhd_header_size(block_type: u8) -> Option<usize> {
     }
 }
 
-unsafe fn read_u16(ptr: *const u8) -> u16 {
+const unsafe fn read_u16(ptr: *const u8) -> u16 {
     u16::from_le_bytes([unsafe { *ptr }, unsafe { *ptr.add(1) }])
 }
 
-unsafe fn read_u32(ptr: *const u8) -> u32 {
+const unsafe fn read_u32(ptr: *const u8) -> u32 {
     u32::from_le_bytes([
         unsafe { *ptr },
         unsafe { *ptr.add(1) },
@@ -161,7 +199,11 @@ unsafe fn read_u32(ptr: *const u8) -> u32 {
     ])
 }
 
-fn ivhd_entry_length(entry_type: u8, entry_ptr: *const u8, remaining: usize) -> Option<usize> {
+const fn ivhd_entry_length(
+    entry_type: u8,
+    entry_ptr: *const u8,
+    remaining: usize,
+) -> Option<usize> {
     if remaining < mem::size_of::<u32>() {
         return None;
     }
@@ -550,7 +592,11 @@ mod tests {
         }
 
         match &ivhd_info.device_entries[2] {
-            IvhdDeviceEntry::Alias { devid, alias, flags } => {
+            IvhdDeviceEntry::Alias {
+                devid,
+                alias,
+                flags,
+            } => {
                 assert_eq!(*devid, 0x0300);
                 assert_eq!(*alias, 0x0310);
                 assert_eq!(*flags, 0x22);
@@ -559,7 +605,12 @@ mod tests {
         }
 
         match &ivhd_info.device_entries[3] {
-            IvhdDeviceEntry::AliasRange { start, end, alias, flags } => {
+            IvhdDeviceEntry::AliasRange {
+                start,
+                end,
+                alias,
+                flags,
+            } => {
                 assert_eq!(*start, 0x0400);
                 assert_eq!(*end, 0x0402);
                 assert_eq!(*alias, 0x0410);
@@ -653,7 +704,10 @@ mod tests {
 
         let ivmd_info = &info.ivmds[0];
         assert_eq!(ivmd_info.block_type, IVMD_TYPE_RANGE);
-        assert_eq!(ivmd_info.flags, IVMD_FLAG_UNITY_MAP | IVMD_FLAG_IR | IVMD_FLAG_IW);
+        assert_eq!(
+            ivmd_info.flags,
+            IVMD_FLAG_UNITY_MAP | IVMD_FLAG_IR | IVMD_FLAG_IW
+        );
         assert_eq!(ivmd_info.device_id, 0x0100);
         assert_eq!(ivmd_info.aux, 0x010f);
         assert_eq!(ivmd_info.pci_segment, 0);

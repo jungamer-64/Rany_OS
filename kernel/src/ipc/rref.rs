@@ -89,6 +89,21 @@ impl<T> RRef<T> {
         RRef { ptr, owner }
     }
 
+    /// 新しいRRefを作成（失敗時はNone）
+    pub fn try_new(owner: DomainId, val: T) -> Option<Self> {
+        let layout = Layout::new::<T>();
+        let ptr = crate::mm::exchange_heap::allocate_on_exchange(val)?;
+
+        // Heap Registryに登録（統合されたSAS APIを使用）
+        crate::sas::register_object(
+            ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+
+        Some(RRef { ptr, owner })
+    }
+
     /// 既存のExchange HeapポインタからRRefを作成
     /// # Safety
     /// ptrはExchange Heap上の有効なメモリであり、Heap Registryに登録済みであること
@@ -170,6 +185,80 @@ impl<T> RRef<T> {
         let owner = self.owner;
         core::mem::forget(self);
         (ptr, owner)
+    }
+}
+
+impl<T> RRef<[T]> {
+    /// Create a new slice-backed RRef using an initializer.
+    pub fn new_slice_with<F>(owner: DomainId, len: usize, init: F) -> Option<Self>
+    where
+        F: FnMut(usize) -> T,
+    {
+        let (ptr, layout) = crate::mm::exchange_heap::allocate_slice_with(len, init)?;
+        crate::sas::register_object(
+            ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+        let slice_ptr = NonNull::slice_from_raw_parts(ptr, len);
+        Some(Self { ptr: slice_ptr, owner })
+    }
+
+    /// Create a new slice-backed RRef with a custom alignment.
+    pub fn new_slice_with_aligned<F>(
+        owner: DomainId,
+        len: usize,
+        align: usize,
+        mut init: F,
+    ) -> Option<Self>
+    where
+        F: FnMut(usize) -> T,
+    {
+        if len == 0 || !align.is_power_of_two() {
+            return None;
+        }
+
+        let mut layout = Layout::array::<T>(len).ok()?;
+        if align > layout.align() {
+            layout = layout.align_to(align).ok()?;
+        }
+
+        let ptr = crate::mm::exchange_heap::allocate_raw(layout)?;
+        let typed_ptr = ptr.as_ptr() as *mut T;
+
+        unsafe {
+            for i in 0..len {
+                typed_ptr.add(i).write(init(i));
+            }
+        }
+
+        let typed_ptr = NonNull::new(typed_ptr)?;
+        crate::sas::register_object(
+            typed_ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+        let slice_ptr = NonNull::slice_from_raw_parts(typed_ptr, len);
+        Some(Self { ptr: slice_ptr, owner })
+    }
+}
+
+impl<T: Default> RRef<[T]> {
+    /// Create a new slice-backed RRef initialized with `T::default()`.
+    pub fn new_slice_default(owner: DomainId, len: usize) -> Option<Self> {
+        let (ptr, layout) = crate::mm::exchange_heap::allocate_slice_default::<T>(len)?;
+        crate::sas::register_object(
+            ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+        let slice_ptr = NonNull::slice_from_raw_parts(ptr, len);
+        Some(Self { ptr: slice_ptr, owner })
+    }
+
+    /// Create a new slice-backed RRef with a custom alignment.
+    pub fn new_slice_default_aligned(owner: DomainId, len: usize, align: usize) -> Option<Self> {
+        Self::new_slice_with_aligned(owner, len, align, |_| T::default())
     }
 }
 

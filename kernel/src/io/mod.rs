@@ -41,7 +41,10 @@ pub use dma::{
     DmaMemoryAttributes,
     DmaState,
     IommuDmaBuffer,
+    RRefDmaBytes,
     RRefDmaBuffer,
+    RRefMapError,
+    RRefSliceMapError,
     SgEntry,
     StreamingDmaMapping,
     // 型安全DMA（型状態パターン）

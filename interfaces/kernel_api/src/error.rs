@@ -51,7 +51,7 @@ impl fmt::Display for KapiError {
             Self::ConnectionError => write!(f, "Connection error"),
             Self::OutOfMemory => write!(f, "Out of memory"),
             Self::NotSupported => write!(f, "Operation not supported"),
-            Self::Internal(code) => write!(f, "Internal error: {}", code),
+            Self::Internal(code) => write!(f, "Internal error: {code}"),
         }
     }
 }

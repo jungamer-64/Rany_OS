@@ -681,7 +681,7 @@ pub fn find_by_id(vendor_id: u16, device_id: u16) -> Vec<PciDeviceInfo> {
 pub fn find_virtio_devices() -> Vec<PciDeviceInfo> {
     scan_all_devices()
         .into_iter()
-        .filter(|d| d.is_virtio())
+        .filter(PciDeviceInfo::is_virtio)
         .collect()
 }
 
@@ -704,7 +704,7 @@ pub fn init() {
         );
         for (i, bar) in dev.bars.iter().enumerate() {
             if let Some(bar) = bar {
-                log::info!("[PCI]   BAR{}: {:?}", i, bar);
+                log::info!("[PCI]   BAR{i}: {bar:?}");
             }
         }
     }
