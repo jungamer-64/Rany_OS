@@ -44,6 +44,7 @@ pub mod mm {
     use alloc::alloc::{Layout, alloc_zeroed, dealloc};
     use core::ptr::NonNull;
     use x86_64::PhysAddr;
+    use x86_64::VirtAddr;
     use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
     pub mod numa {
@@ -253,6 +254,22 @@ pub mod mm {
         let ptr = frame.start_address().as_u64() as *mut u8;
         unsafe { dealloc(ptr, layout) };
     }
+
+    // Convenience wrappers for IOMMU/legacy APIs used in some modules/tests
+    pub fn alloc_contiguous_frames(frames: usize) -> Option<PhysAddr> {
+        buddy_alloc_contiguous_frames(frames)
+    }
+
+    pub fn dealloc_contiguous_frames(_phys: PhysAddr, _frames: usize) {
+        // Test shim: no-op - memory will be reclaimed when the test process exits.
+    }
+
+    pub fn mapping_phys_to_virt(phys: PhysAddr) -> VirtAddr {
+        VirtAddr::new(phys.as_u64())
+    }
+
+    /// 4K page size constant for compatibility with drivers/tests
+    pub const PAGE_SIZE_4K: usize = 4096;
 }
 
 // Minimal IPC/RRef shims for tests (avoid pulling full IPC/SAS stack).

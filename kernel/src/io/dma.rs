@@ -2057,36 +2057,6 @@ impl Drop for DeviceDmaContext {
     }
 }
 
-// ============================================================================
-// CPU Feature Detection
-// ============================================================================
-
-/// CLFLUSHOPT命令のサポートを確認
-pub fn supports_clflushopt() -> bool {
-    let result: u32;
-    unsafe {
-        asm!(
-            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {0:e}, ebx",
-            out(reg) result, out("eax") _, out("ecx") _, out("edx") _,
-            options(nostack, preserves_flags)
-        );
-    }
-    (result & (1 << 23)) != 0
-}
-
-/// CLWB命令のサポートを確認
-pub fn supports_clwb() -> bool {
-    let result: u32;
-    unsafe {
-        asm!(
-            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {0:e}, ebx",
-            out(reg) result, out("eax") _, out("ecx") _, out("edx") _,
-            options(nostack, preserves_flags)
-        );
-    }
-    (result & (1 << 24)) != 0
-}
-
 /// キャッシュラインサイズを取得
 pub fn cache_line_size() -> usize {
     let result: u32;

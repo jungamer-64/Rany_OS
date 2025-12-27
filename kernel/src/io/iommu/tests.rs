@@ -699,6 +699,50 @@ fn test_unmap_partial_keeps_tables() {
 }
 
 #[test]
+fn test_unmap_mixed_superpages() {
+    const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+    const SIZE_2MB: u64 = 2 * 1024 * 1024;
+    const SIZE_4KB: u64 = 4096;
+    const SIZE_TOTAL: u64 = SIZE_1GB + SIZE_2MB + SIZE_4KB;
+    const IOVA_BASE: u64 = 0x4000_0000;
+    const PHYS_BASE: u64 = 0x8000_0000;
+
+    let domain_arc = Arc::new(PoisonLock::new(IommuDomain::new(
+        1,
+        None,
+        true,
+        true,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        PteFormat::Intel,
+    )));
+    let mut domain = match domain_arc.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+
+    domain
+        .map(IOVA_BASE, PHYS_BASE, SIZE_TOTAL, true, true)
+        .expect("map mixed failed");
+    assert!(domain.mappings().contains_key(&IOVA_BASE));
+
+    let mapping = domain.unmap(IOVA_BASE).expect("unmap mixed failed");
+    assert_eq!(mapping.iova, IOVA_BASE);
+    assert_eq!(mapping.phys, PHYS_BASE);
+    assert_eq!(mapping.size, SIZE_TOTAL);
+    assert!(!domain.mappings().contains_key(&IOVA_BASE));
+
+    let pml4_idx = ((IOVA_BASE >> 39) & 0x1FF) as usize;
+    unsafe {
+        let pml4_entry = *domain.page_table.add(pml4_idx);
+        assert!(
+            !pml4_entry.is_present(),
+            "PML4 entry should be cleared after unmap"
+        );
+    }
+}
+
+#[test]
 fn test_submit_invalidation_poisoned_returns_error() {
     let mut ctrl = IommuController::new(0x0, 0);
 

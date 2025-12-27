@@ -344,11 +344,8 @@ impl IommuDomain {
             return Err(IommuError::NotMapped);
         }
 
-        // Clear the page table entries using existing unmap_page method
-        let num_pages = size / 4096;
-        for i in 0..num_pages {
-            let page_iova = iova + i * 4096;
-            self.unmap_page(page_iova)?;
+        if self.domain_type != IommuDomainType::Passthrough {
+            self.unmap_range(iova, size)?;
         }
 
         // Update stats
@@ -422,11 +419,8 @@ impl IommuDomain {
         write: bool,
     ) -> Result<(), IommuError> {
         if self.domain_type == IommuDomainType::Passthrough {
-            // Passthrough means identity, so map calls are effectively no-ops or identity checks
-            // We just return OK.
-            // Ideally we could verify iova == phys, but sometimes map is called to *create* the mapping.
-            // In PT, it's already there.
-            return Ok(());
+            // Passthrough means identity, so map calls are page-table no-ops.
+            // We still track mappings for ownership/unmap bookkeeping.
         }
         // Validate alignment
         if iova & 0xFFF != 0 || phys & 0xFFF != 0 || size & 0xFFF != 0 {
@@ -441,6 +435,23 @@ impl IommuDomain {
             if iova < existing_end && new_end > *existing_iova {
                 return Err(IommuError::AlreadyMapped);
             }
+        }
+
+        if self.domain_type == IommuDomainType::Passthrough {
+            // Track mapping even in passthrough domains.
+            self.mappings.insert(
+                iova,
+                DmaMapping {
+                    iova,
+                    phys,
+                    size,
+                    read,
+                    write,
+                    domain_id_placeholder: self.id,
+                },
+            );
+            self.mapped_size += size;
+            return Ok(());
         }
 
         // Create page table entries using largest possible page sizes
@@ -475,7 +486,14 @@ impl IommuDomain {
                     }
                     Err(e) => {
                         // Rollback all successfully mapped pages
-                        self.rollback_mapped_pages(&mapped_pages);
+                        if let Err(rollback_err) = self.rollback_mapped_pages(&mapped_pages) {
+                            log::error!(
+                                "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                                e,
+                                rollback_err
+                            );
+                            return Err(rollback_err);
+                        }
                         return Err(e);
                     }
                 }
@@ -497,7 +515,14 @@ impl IommuDomain {
                     }
                     Err(e) => {
                         // Rollback all successfully mapped pages
-                        self.rollback_mapped_pages(&mapped_pages);
+                        if let Err(rollback_err) = self.rollback_mapped_pages(&mapped_pages) {
+                            log::error!(
+                                "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                                e,
+                                rollback_err
+                            );
+                            return Err(rollback_err);
+                        }
                         return Err(e);
                     }
                 }
@@ -513,7 +538,14 @@ impl IommuDomain {
                 }
                 Err(e) => {
                     // Rollback all successfully mapped pages
-                    self.rollback_mapped_pages(&mapped_pages);
+                    if let Err(rollback_err) = self.rollback_mapped_pages(&mapped_pages) {
+                        log::error!(
+                            "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                            e,
+                            rollback_err
+                        );
+                        return Err(rollback_err);
+                    }
                     return Err(e);
                 }
             }
@@ -541,23 +573,33 @@ impl IommuDomain {
     ///
     /// Called when `map()` encounters an error after some pages were successfully
     /// mapped. Unmaps all pages in reverse order to restore the original state.
-    fn rollback_mapped_pages(&mut self, mapped_pages: &[(u64, u64)]) {
+    fn rollback_mapped_pages(&mut self, mapped_pages: &[(u64, u64)]) -> Result<(), IommuError> {
+        let mut first_err = None;
         for (page_iova, page_size) in mapped_pages.iter().rev() {
-            match *page_size {
+            let result = match *page_size {
                 size if size == 1024 * 1024 * 1024 => {
                     // 1GB page: unmap using PDP level
-                    let _ = self.unmap_super_page_1gb(*page_iova);
+                    self.unmap_super_page_1gb(*page_iova)
                 }
                 size if size == 2 * 1024 * 1024 => {
                     // 2MB page: unmap using PD level
-                    let _ = self.unmap_super_page_2mb(*page_iova);
+                    self.unmap_super_page_2mb(*page_iova)
                 }
                 _ => {
                     // 4KB page: unmap using PT level
-                    let _ = self.unmap_page(*page_iova);
+                    self.unmap_page(*page_iova)
+                }
+            };
+            if let Err(err) = result {
+                if first_err.is_none() {
+                    first_err = Some(err);
                 }
             }
         }
+        if let Some(err) = first_err {
+            return Err(err);
+        }
+        Ok(())
     }
 
     /// Unmap a 2MB super-page (for rollback)
@@ -566,12 +608,17 @@ impl IommuDomain {
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
 
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .unwrap();
+
         unsafe {
             let pml4_entry = self.page_table.add(pml4_idx);
             if !(*pml4_entry).is_present() {
                 return Err(IommuError::NotMapped);
             }
             let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_phys = (*pml4_entry).phys_addr();
 
             let pdp_entry = pdp_table.add(pdp_idx);
             if !(*pdp_entry).is_present() {
@@ -590,7 +637,30 @@ impl IommuDomain {
 
             // Decrement PD count
             if let Some(count) = self.page_table_counts.get_mut(&pd_phys) {
-                *count = count.saturating_sub(1);
+                *count -= 1;
+                if *count == 0 {
+                    // Free PD
+                    *pdp_entry = SlPte::new();
+                    alloc::alloc::dealloc(pd_table as *mut u8, layout);
+                    self.page_table_counts.remove(&pd_phys);
+
+                    // Decrement PDP count
+                    if let Some(pdp_count) = self.page_table_counts.get_mut(&pdp_phys) {
+                        *pdp_count -= 1;
+                        if *pdp_count == 0 {
+                            // Free PDP
+                            *pml4_entry = SlPte::new();
+                            alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                            self.page_table_counts.remove(&pdp_phys);
+
+                            // Decrement PML4 count (root)
+                            let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
+                            if let Some(pml4_count) = self.page_table_counts.get_mut(&pml4_phys) {
+                                *pml4_count -= 1;
+                            }
+                        }
+                    }
+                }
             }
         }
         Ok(())
@@ -600,6 +670,10 @@ impl IommuDomain {
     fn unmap_super_page_1gb(&mut self, iova: u64) -> Result<(), IommuError> {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .unwrap();
 
         unsafe {
             let pml4_entry = self.page_table.add(pml4_idx);
@@ -619,7 +693,19 @@ impl IommuDomain {
 
             // Decrement PDP count
             if let Some(count) = self.page_table_counts.get_mut(&pdp_phys) {
-                *count = count.saturating_sub(1);
+                *count -= 1;
+                if *count == 0 {
+                    // Free PDP
+                    *pml4_entry = SlPte::new();
+                    alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                    self.page_table_counts.remove(&pdp_phys);
+
+                    // Decrement PML4 count (root)
+                    let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
+                    if let Some(pml4_count) = self.page_table_counts.get_mut(&pml4_phys) {
+                        *pml4_count -= 1;
+                    }
+                }
             }
         }
         Ok(())
@@ -936,16 +1022,71 @@ impl IommuDomain {
     pub fn unmap(&mut self, iova: u64) -> Result<DmaMapping, IommuError> {
         let mapping = self.mappings.remove(&iova).ok_or(IommuError::NotMapped)?;
 
-        // Clear page table entries
-        let num_pages = mapping.size / 4096;
-        for i in 0..num_pages {
-            let page_iova = iova + i * 4096;
-            self.unmap_page(page_iova)?;
+        if self.domain_type != IommuDomainType::Passthrough {
+            self.unmap_range(iova, mapping.size)?;
         }
 
         self.mapped_size -= mapping.size;
 
         Ok(mapping)
+    }
+
+    /// Unmap a range using super-page aware traversal.
+    fn unmap_range(&mut self, iova: u64, size: u64) -> Result<(), IommuError> {
+        let mut current = iova;
+        let mut remaining = size;
+
+        while remaining > 0 {
+            let unmapped = self.unmap_entry(current)?;
+            if unmapped > remaining {
+                return Err(IommuError::InvalidAlignment);
+            }
+            current += unmapped;
+            remaining -= unmapped;
+        }
+
+        Ok(())
+    }
+
+    /// Unmap a single entry at `iova` and return the unmapped size.
+    fn unmap_entry(&mut self, iova: u64) -> Result<u64, IommuError> {
+        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+        const SIZE_2MB: u64 = 2 * 1024 * 1024;
+        const SIZE_4KB: u64 = 4096;
+
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+
+        unsafe {
+            let pml4_entry = self.page_table.add(pml4_idx);
+            if !(*pml4_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            if (*pdp_entry).is_super_page(self.pte_format) {
+                self.unmap_super_page_1gb(iova)?;
+                return Ok(SIZE_1GB);
+            }
+
+            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_entry = pd_table.add(pd_idx);
+            if !(*pd_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            if (*pd_entry).is_super_page(self.pte_format) {
+                self.unmap_super_page_2mb(iova)?;
+                return Ok(SIZE_2MB);
+            }
+        }
+
+        self.unmap_page(iova)?;
+        Ok(SIZE_4KB)
     }
 
     /// Unmap a single page using 4-level page table walking

@@ -2,14 +2,14 @@
 # Usage: .\run_e2e_qemu.ps1
 
 param(
-    [string]$KernelPath = "target/x86_64-rany_os/debug/RanyOS",
+    [string]$KernelPath = "target/x86_64-exorust/debug/RanyOS",
     [string]$DiskImage = "test_disk.img",
     [int]$TimeoutSeconds = 60
 )
 
 Write-Host "Building kernel with integration tests feature..."
 # Use the same target as CI. Adjust if your environment differs.
-cargo build --target x86_64-rany_os.json --features run-integration-tests
+cargo build --target x86_64-exorust.json --features run-integration-tests
 if ($LASTEXITCODE -ne 0) {
     Write-Error "Kernel build failed"
     exit $LASTEXITCODE

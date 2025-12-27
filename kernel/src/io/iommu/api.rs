@@ -6,7 +6,7 @@
 //! Global API functions for IOMMU initialization, device protection,
 //! and interrupt remapping.
 
-use core::sync::atomic::Ordering;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::PhysAddr;
 
 use super::interface::IommuDriver;
@@ -20,9 +20,32 @@ pub use super::dma_handle::{
 };
 pub use super::registry::is_iommu_enabled;
 
+/// Identity mapping fallback gate (default: false).
+///
+/// WARNING: Enabling this allows identity mapping when IOMMU is unavailable.
+/// Use only for early boot or controlled bring-up paths.
+static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
+
+// Instrumentation counters for testing / diagnostics
+static MAP_COUNT: AtomicU64 = AtomicU64::new(0);
+static UNMAP_COUNT: AtomicU64 = AtomicU64::new(0);
+
 // ============================================================================
 // IOMMU Requirement Functions
 // ============================================================================
+
+/// Enable/disable identity mapping fallback.
+///
+/// # Safety
+/// This weakens memory protection and must only be set during trusted early init.
+pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
+    UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, Ordering::Release);
+}
+
+/// Check whether identity mapping fallback is allowed.
+pub fn is_unsafe_identity_mapping_allowed() -> bool {
+    UNSAFE_ALLOW_IDENTITY_MAPPING.load(Ordering::Acquire)
+}
 
 /// IOMMUを必須に設定する
 ///
@@ -163,13 +186,21 @@ pub fn map_rref_slice_for_device<T>(
 /// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
 pub unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    unsafe { driver.map_for_dma(phys_addr, size) }
+    let res = unsafe { driver.map_for_dma(phys_addr, size) };
+    if res.is_ok() {
+        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    res
 }
 
 /// Unmap a DMA address range
 pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    driver.unmap_dma(iova, _size)
+    let res = driver.unmap_dma(iova, _size);
+    if res.is_ok() {
+        UNMAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    res
 }
 
 /// Map a physical address range for a specific device (Device-Aware)
@@ -188,7 +219,11 @@ pub unsafe fn map_for_device(
 ) -> Result<u64, IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     // SAFETY: Caller must uphold safety requirements of map_for_device.
-    unsafe { driver.map_for_device(device, phys_addr, size) }
+    let res = unsafe { driver.map_for_device(device, phys_addr, size) };
+    if res.is_ok() {
+        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    res
 }
 
 /// Async variant of `map_for_device` that offloads to the controller's CommandQueue
@@ -204,7 +239,11 @@ pub async unsafe fn map_for_device_async(
     size: u64,
 ) -> Result<u64, IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    unsafe { driver.map_for_device_async(device, phys_addr, size).await }
+    let res = unsafe { driver.map_for_device_async(device, phys_addr, size).await };
+    if res.is_ok() {
+        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    res
 }
 
 /// Unmap a DMA address range for a specific device
@@ -220,7 +259,27 @@ pub async fn unmap_for_device_async(
     _size: u64,
 ) -> Result<(), IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    driver.unmap_for_device_async(device, iova, _size).await
+    let res = driver.unmap_for_device_async(device, iova, _size).await;
+    if res.is_ok() {
+        UNMAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    res
+}
+
+/// Reset map/unmap counters (for tests)
+pub fn reset_map_unmap_counts() {
+    MAP_COUNT.store(0, Ordering::SeqCst);
+    UNMAP_COUNT.store(0, Ordering::SeqCst);
+}
+
+/// Get number of successful map operations recorded
+pub fn get_map_count() -> u64 {
+    MAP_COUNT.load(Ordering::SeqCst)
+}
+
+/// Get number of successful unmap operations recorded
+pub fn get_unmap_count() -> u64 {
+    UNMAP_COUNT.load(Ordering::SeqCst)
 }
 
 /// Execute with the active IOMMU backend.
@@ -248,6 +307,19 @@ pub fn handle_fault() {
 pub fn wake_invalidation_waiters() {
     if let Some(driver) = get_iommu_driver() {
         driver.wake_invalidation_waiters();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_unmap_counters() {
+        // Reset to a known state
+        reset_map_unmap_counts();
+        assert_eq!(get_map_count(), 0);
+        assert_eq!(get_unmap_count(), 0);
     }
 }
 
