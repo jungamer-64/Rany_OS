@@ -41,13 +41,13 @@ pub static __tls_end: u8 = 0;
 // without pulling in the full memory subsystem and its heavy dependencies.
 #[cfg(any(test, feature = "bench"))]
 pub mod mm {
-    use alloc::alloc::{alloc_zeroed, dealloc, Layout};
+    use alloc::alloc::{Layout, alloc_zeroed, dealloc};
     use core::ptr::NonNull;
-    use x86_64::structures::paging::{PhysFrame, Size4KiB};
     use x86_64::PhysAddr;
+    use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
     pub mod numa {
-        use alloc::alloc::{alloc_zeroed, dealloc, Layout as ALayout};
+        use alloc::alloc::{Layout as ALayout, alloc_zeroed, dealloc};
         use core::alloc::Layout;
         use core::ptr::NonNull;
 
@@ -62,7 +62,10 @@ pub mod mm {
         }
 
         /// Allocate zeroed memory on a given node (test shim uses the global allocator)
-        pub fn allocate_zeroed_on_node(layout: Layout, _node: Option<usize>) -> Option<NonNull<u8>> {
+        pub fn allocate_zeroed_on_node(
+            layout: Layout,
+            _node: Option<usize>,
+        ) -> Option<NonNull<u8>> {
             let l = ALayout::from_size_align(layout.size(), layout.align()).ok()?;
             let ptr = unsafe { alloc_zeroed(l) };
             NonNull::new(ptr)
@@ -71,7 +74,9 @@ pub mod mm {
         /// Deallocate memory previously allocated by `allocate_zeroed_on_node`
         pub unsafe fn deallocate_on_node(ptr: NonNull<u8>, layout: Layout, _node: Option<usize>) {
             let l = ALayout::from_size_align(layout.size(), layout.align()).unwrap();
-            unsafe { dealloc(ptr.as_ptr(), l); }
+            unsafe {
+                dealloc(ptr.as_ptr(), l);
+            }
         }
     }
 
@@ -99,7 +104,14 @@ pub mod mm {
             pub const CACHE_SIZE: usize = 64;
 
             pub fn new() -> Self {
-                Self { entries: [DomainCacheEntry { device_id: 0, domain_id: 0, controller_idx: 0, valid: false }; Self::CACHE_SIZE] }
+                Self {
+                    entries: [DomainCacheEntry {
+                        device_id: 0,
+                        domain_id: 0,
+                        controller_idx: 0,
+                        valid: false,
+                    }; Self::CACHE_SIZE],
+                }
             }
 
             pub fn lookup(&self, device_id: u16) -> Option<(u16, u8)> {
@@ -114,7 +126,12 @@ pub mod mm {
 
             pub fn insert(&mut self, device_id: u16, domain_id: u16, controller_idx: u8) {
                 let idx = (device_id as usize) % Self::CACHE_SIZE;
-                self.entries[idx] = DomainCacheEntry { device_id, domain_id, controller_idx, valid: true };
+                self.entries[idx] = DomainCacheEntry {
+                    device_id,
+                    domain_id,
+                    controller_idx,
+                    valid: true,
+                };
             }
 
             pub fn invalidate(&mut self, device_id: u16) {
@@ -133,7 +150,10 @@ pub mod mm {
 
         impl IovaMagazine {
             pub fn new(capacity: usize) -> Self {
-                Self { cache: Vec::new(), capacity }
+                Self {
+                    cache: Vec::new(),
+                    capacity,
+                }
             }
 
             pub fn push(&mut self, iova: u64) -> bool {
@@ -158,7 +178,10 @@ pub mod mm {
 
         impl PerCpuData {
             pub fn new() -> Self {
-                Self { iommu_domain_cache: PerCpuDomainCache::new(), iova_magazine: IovaMagazine::new(256) }
+                Self {
+                    iommu_domain_cache: PerCpuDomainCache::new(),
+                    iova_magazine: IovaMagazine::new(256),
+                }
             }
         }
 
@@ -377,13 +400,19 @@ pub mod ipc {
 pub mod task {
     pub mod timer {
         /// Return current tick in milliseconds (test stub)
-        pub fn current_tick() -> u64 { 0 }
+        pub fn current_tick() -> u64 {
+            0
+        }
     }
 
     /// Convenience: expose `current_tick` at `crate::task::current_tick()` for
     /// code that expects that symbol (legacy usage in some modules).
-    #[deprecated(note = "Test shim `crate::task::current_tick()` is deprecated; call `crate::task::timer::current_tick()` directly.")]
-    pub fn current_tick() -> u64 { timer::current_tick() }
+    #[deprecated(
+        note = "Test shim `crate::task::current_tick()` is deprecated; call `crate::task::timer::current_tick()` directly."
+    )]
+    pub fn current_tick() -> u64 {
+        timer::current_tick()
+    }
 
     pub mod scheduler {
         /// Yield the current task (test stub - no-op)
@@ -402,10 +431,10 @@ pub mod task {
 
     /// Synchronous helper to drive a Future to completion in tests
     pub fn block_on<F: core::future::Future>(future: F) -> F::Output {
-        use core::task::{RawWaker, RawWakerVTable, Waker, Context, Poll};
         use alloc::sync::Arc;
         use core::pin::Pin;
         use core::sync::atomic::{AtomicBool, Ordering};
+        use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
         let flag = Arc::new(AtomicBool::new(false));
 
@@ -431,12 +460,8 @@ pub mod task {
             let _arc = unsafe { Arc::from_raw(data as *const AtomicBool) };
         }
 
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            clone_data,
-            wake_data,
-            wake_by_ref_data,
-            drop_data,
-        );
+        const VTABLE: RawWakerVTable =
+            RawWakerVTable::new(clone_data, wake_data, wake_by_ref_data, drop_data);
 
         let raw = RawWaker::new(Arc::into_raw(flag.clone()) as *const (), &VTABLE);
         let waker = unsafe { Waker::from_raw(raw) };
@@ -511,7 +536,9 @@ pub mod task {
         }
 
         impl FuelConfig {
-            pub const DEFAULT: Self = Self { default_fuel: 10_000 };
+            pub const DEFAULT: Self = Self {
+                default_fuel: 10_000,
+            };
         }
     }
 
@@ -551,9 +578,13 @@ pub mod task {
         /// No-op stubs used by code paths that call into preemption during tests.
         pub fn voluntary_yield() {}
         pub fn yield_point() {}
-        pub fn is_preemption_pending() -> bool { false }
+        pub fn is_preemption_pending() -> bool {
+            false
+        }
         pub fn clear_preemption_pending() {}
-        pub fn check_and_clear_yield_request() -> bool { false }
+        pub fn check_and_clear_yield_request() -> bool {
+            false
+        }
         pub fn handle_timer_tick(_tick: u64) {}
         pub fn set_preemption_pending() {}
         pub fn request_yield() {}
@@ -586,29 +617,39 @@ pub mod time {
     pub fn precise_time_nanos() -> u64 {
         // Use std for test builds to provide a monotonic-like value
         use std::time::{SystemTime, UNIX_EPOCH};
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64
     }
 
     /// Minimal SystemClock stub used by benches/tests
     pub struct SystemClock;
     impl SystemClock {
         /// Return TSC frequency in Hz if known. Test/bench stub returns None.
-        pub fn tsc_frequency(&self) -> Option<u64> { None }
+        pub fn tsc_frequency(&self) -> Option<u64> {
+            None
+        }
     }
 
-    pub fn system_clock() -> SystemClock { SystemClock }
+    pub fn system_clock() -> SystemClock {
+        SystemClock
+    }
 
     /// Return uptime in milliseconds (test stub)
-    pub fn get_uptime_ms() -> u64 { 0 }
+    pub fn get_uptime_ms() -> u64 {
+        0
+    }
 
     /// PIT delay stub used by audio controller code in tests/benches
     pub struct Pit;
     impl Pit {
         pub fn delay_us(&self, _us: u64) {}
     }
-    pub fn pit() -> Pit { Pit }
+    pub fn pit() -> Pit {
+        Pit
+    }
 }
-
 
 #[cfg(all(test, not(feature = "bench")))]
 pub mod io {
@@ -617,22 +658,21 @@ pub mod io {
     #[path = "iommu/mod.rs"]
     pub mod iommu;
 
-    #[path = "iommu_cmdqueue.rs"]
-    pub mod iommu_cmdqueue;
-
     /// Minimal logger shim for test builds. Kernel code calls `io::log::early_print`,
     /// `io::log::init()` and `io::log::notify_heap_available()` during early boot. We
     /// provide lightweight no-op implementations here so unit tests can run without
     /// pulling the full I/O logging subsystem into the test build.
     pub mod log {
         /// Early boot serial-like print used before the full logger is initialized.
-        pub fn early_print(_s: &str) { }
+        pub fn early_print(_s: &str) {}
 
         /// Initialize the logger. Returns Ok(()) for the test shim.
-        pub fn init() -> Result<(), ()> { Ok(()) }
+        pub fn init() -> Result<(), ()> {
+            Ok(())
+        }
 
         /// Notify the logging subsystem that the heap is now available.
-        pub fn notify_heap_available() { }
+        pub fn notify_heap_available() {}
     }
 
     // Minimal PCI stub for test builds so IOMMU functions that reference
@@ -668,10 +708,18 @@ pub mod io {
     // Minimal MMIO stubs used by the IOMMU unit tests. These provide
     // deterministic behavior suitable for unit testing.
     pub mod mmio {
-        pub fn mmio_read_u8(_addr: usize) -> u8 { 0 }
-        pub fn mmio_read_u16(_addr: usize) -> u16 { 0 }
-        pub fn mmio_read_u32(_addr: usize) -> u32 { 0 }
-        pub fn mmio_read_u64(_addr: usize) -> u64 { 0 }
+        pub fn mmio_read_u8(_addr: usize) -> u8 {
+            0
+        }
+        pub fn mmio_read_u16(_addr: usize) -> u16 {
+            0
+        }
+        pub fn mmio_read_u32(_addr: usize) -> u32 {
+            0
+        }
+        pub fn mmio_read_u64(_addr: usize) -> u64 {
+            0
+        }
         pub fn mmio_write_u8(_addr: usize, _v: u8) {}
         pub fn mmio_write_u16(_addr: usize, _v: u16) {}
         pub fn mmio_write_u32(_addr: usize, _v: u32) {}
@@ -721,7 +769,6 @@ pub mod sync;
 
 #[cfg(any(test, feature = "bench"))]
 pub mod sas;
-
 
 #[cfg(any(test, feature = "bench"))]
 pub mod util;

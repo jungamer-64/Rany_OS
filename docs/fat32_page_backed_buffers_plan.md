@@ -63,6 +63,16 @@
 
 ---
 
+## 進捗（現状） ✅
+
+- ✅ PR1: `IoBuffer`/`IoBufferMut` + `DmaInfo` を vfs に導入済み、borrowed API のデフォルト実装と `borrowed_io_tests` を追加済み
+- ✅ PR2: virtio-blk は borrowed API と `dma_info()` 経路を実装済み（IOMMU は `map_for_dma`/`unmap_dma` 経由）
+- ✅ PR3: `PageClusterBuffer` / `PageClusterBufferAllocator` を実装済み（`dma_info()` 連携含む）
+- ⏳ PR4: FAT 側の allocator 注入（`mount_with_allocator`）とホットパスの切り替えが未実施
+- ⏳ PR5: device-scoped IOMMU マッピング（`DmaHandle`/`DeviceDmaContext`）と 4K アライメント対応の整理が未実施
+
+---
+
 ## 具体的な API スケッチ（提案） ✍️
 
 ```rust
@@ -149,6 +159,9 @@ pub trait ClusterBufferAllocator: Send + Sync {
    - 既存の `read_async`/`write_async` が `ZcFuture` なので、borrowed API も同じ形式で追加する。
    - `ZcFuture` が `Send` を要求するため、`IoBuffer` も `Send` 制約を付ける。
    - `BlockError::InvalidBufferSize` は unit なので追加情報は載せない（API変更は避ける）。
+3. **IOMMU の 4K アライメント要件**  
+   - IOMMU 有効時の `map_for_dma` は **アドレス/サイズが 4K 境界**でないと失敗する。  
+   - 対策: ページバックバッファを基本とし、任意長バッファは `RRefDmaBytes` 等でページパディングする。
 
 ---
 
@@ -160,6 +173,8 @@ pub trait ClusterBufferAllocator: Send + Sync {
 - 単体テストの骨組みを用意
 
 ### フェーズ 1 — I/O API 整合（PR1: ZeroCopyBlockDevice borrowed API）
+
+**現状**: ✅ 完了（vfs 側の IoBuffer/borrowed API + テスト追加済み）
 
 1. `libs/vfs` に `IoBuffer` / `IoBufferMut` + `DmaInfo` を追加  
    - `&[u8]` / `&mut [u8]` / `Vec<u8>` でも使えるように便利実装を用意
@@ -181,10 +196,14 @@ pub trait ClusterBufferAllocator: Send + Sync {
 
 ### フェーズ 2 — ブロックドライバ適用（PR2: virtio-blk）
 
+**現状**: ✅ 完了（borrowed API 経路 + `dma_info()` 経由 DMA あり。device-scoped IOMMU は未対応）
+
 1. virtio-blk の `ZeroCopyBlockDevice` 実装を追加（`dma_info()` があれば DMA、なければ slice 直結）
 2. IOMMU 有効時は `map_for_dma`/`unmap_dma` で IOVA マップ（デバイス別 `DmaHandle` は後半タスク）
 
 ### フェーズ 3 — カーネル allocator の実装（PR3）
+
+**現状**: ✅ 完了（`PageClusterBuffer`/`PageClusterBufferAllocator` 実装済み）
 
 1. `kernel::page_cluster_buffer` モジュール作成
 2. `PageClusterBufferAllocator::alloc(size)` を実装
@@ -197,6 +216,8 @@ pub trait ClusterBufferAllocator: Send + Sync {
 
 ### フェーズ 4 — FAT 側の適応（PR4）
 
+**現状**: ⏳ 未着手
+
 1. `Fat32FileSystem::mount_with_allocator(allocator: Arc<dyn ClusterBufferAllocator>)` 追加
 2. 主要な I/O (read_cluster/write_cluster) で allocator を優先利用
    - borrowed API があれば `ClusterBuffer` に直接 read/write
@@ -205,11 +226,15 @@ pub trait ClusterBufferAllocator: Send + Sync {
 
 ### フェーズ 5 — テスト & ベンチ
 
+**現状**: ⏳ 未着手
+
 - 単体テスト: allocator の成功/失敗ケース、`IoBuffer::dma_info()` 整合性
 - 統合テスト: borrowed API 経路、`mount_zero_copy` 経路、read/write round-trip
 - ベンチ: コピー回数・CPU利用率・スループット比較
 
 ### フェーズ 6 — デフォルト切替・運用
+
+**現状**: ⏳ 未着手
 
 - カーネルビルドでデフォルト allocator をページベースに切替（段階的）
 - Codacy 実行 → 指摘修正
@@ -268,7 +293,8 @@ pub trait ClusterBufferAllocator: Send + Sync {
 - SG（非連続）: まずはやらない（contiguous 優先 + Vec fallback）
 - I/O API: `ZeroCopyBlockDevice` に borrowed API（`read_into_buf`/`write_from_buf`）を追加（`B` 伝播は後回し）
 - DMA 情報: `IoBuffer::dma_info()` の optional メソッドで提供
-- IOMMU 統合: API 完成後に段階導入（virtio-blk 側の実装フェーズで検討）
+- IOMMU 統合: device-scoped `DmaHandle` は後半に回し、4K アライメント要件を前提とする
+- 任意長バッファ: `RRefDmaBytes` 等でページパディングして扱う
 
 ---
 
@@ -279,37 +305,36 @@ pub trait ClusterBufferAllocator: Send + Sync {
 - ✅ **フレーム/マッピング基盤は揃っている**: `kernel/src/mm/frame_allocator.rs` の `allocate_contiguous`、`kernel/src/mm/mapping.rs` の `phys_to_virt` 等があり、ページ（物理フレーム）を確保して HHDM 上の仮想アドレスを得ることで連続領域を実現可能です。
 - ✅ **RRef / IOMMU 経路がある**: `kernel/src/ipc/rref.rs`、`kernel/src/io/iommu/dma_handle.rs` と `domain.rs` により、RRef→IOVA マップや `DmaHandle` が利用可能で、ドメイン間のゼロコピーパスと IOMMU 統合が可能です。
 - ✅ **Exchange Heap と既存ゼロコピー（ネットワーク）の事例**: `kernel/src/mm/exchange_heap.rs` と `kernel/src/net/mempool.rs`（`PacketRef`）はゼロコピーの実装例で、`kernel/src/io/virtio/net.rs` にゼロコピー send/recv が実装されています（実装パターンの良い参照）。
-- ⚠️ **ZeroCopyBlockDevice が owned buffer 返却のみ**: FAT32 の `read_cluster_async` は `B` を取得後に `&mut [u8]` へコピーしており、ホットパスはまだコピーが残ります。**borrowed API の追加**が必要です。
-- ⚠️ **I/O バッファ抽象が未整備**: vfs に `IoBuffer` がなく、DMA 情報（`dma_info()`）を一貫して取り出す仕組みが不足しています。
+- ✅ **borrowed API / IoBuffer は導入済み**: vfs に `IoBuffer`/`IoBufferMut`/`DmaInfo` を導入し、borrowed API とテストを追加済み。
+- ✅ **virtio-blk の borrowed API + DMA 経路は実装済み**: `dma_info()` がある場合は `map_for_dma`/`unmap_dma` で IOVA マップ（device-scoped `DmaHandle` は後半対応）。
+- ✅ **PageClusterBuffer/Allocator は実装済み**: `dma_info()` 連携を含むページバックバッファは利用可能。
+- ⚠️ **IOMMU 4K アライメント要件**: IOMMU 有効時の DMA マッピングは 4K アライン必須。任意長は `RRefDmaBytes` 等でページパディングする。
 - ⚠️ **Allocator 注入点が未整備**: `ClusterBufferPool::new` は `VecClusterBufferAllocator` 固定のため、`mount_with_allocator` で注入経路を追加する必要があります。
-- ✅ **virtio-blk の vfs 連携は初期実装済み**: `kernel/src/io/virtio/blk.rs` に `ZeroCopyBlockDevice` 実装を追加し、`dma_info()` がある場合は DMA、ない場合は borrowed slice 直結。IOMMU 有効時は `map_for_dma`/`unmap_dma` で IOVA マップ済み（デバイス別 `DmaHandle` は後半対応）。
 - ⚠️ **フォールバックと SG（非連続）戦略が必要**: 連続フレーム確保が失敗した場合は Vec フォールバック、または将来的に SG (scatter/gather) 対応を検討する必要があります。
 
 **結論 (実装可否)**
 
 - 実装は **技術的に可能** であり、既存のフレームアロケータ、マッピング、IOMMU/DmaHandle、RRef を活用できます。
-- ただし **I/O API 整合とブロックドライバ改修（ゼロコピー経路の追加）** が必須で、これを優先度高めに計画に入れる必要があります。
+- ただし **FAT 側の allocator 注入とホットパス切り替え、IOMMU の device-scoped マップ整備** が残課題です。
 
 **追加タスク（優先）**
 
-1. PR1: `IoBuffer`/`IoBufferMut` + `DmaInfo` 追加 + borrowed API 追加 + アダプタ整備 - **高**
-2. PR2: virtio-blk のデバイス別 IOVA マップ対応（`dma_info()` → `DmaHandle`） - **高**
-3. PR3: `PageClusterBufferAllocator`（カーネル）プロトタイプ - **高**
-4. PR4: `Fat32FileSystem::mount_with_allocator` + pool 注入経路 - **中**
-5. `ClusterBuffer` の `IoBuffer` 実装（`dma_info()` 連携） - **中**
-6. SG フォールバック設計 + tests - **中**
-7. ベンチ + Codacy - **低**（ただし実装途中で早めに実行）
+1. PR4: `Fat32FileSystem::mount_with_allocator` + pool 注入経路 - **高**
+2. PR5: virtio-blk の device-scoped IOVA マップ対応（`DmaHandle`/`DeviceDmaContext`） - **高**
+3. PR6: FAT の read/write ホットパスで borrowed API を優先利用 - **中**
+4. SG フォールバック設計 + tests - **中**
+5. ベンチ + Codacy - **低**（ただし実装途中で早めに実行）
 
 ---
 
 ## 次のアクション（私の提案） ▶️
 
-1. PR1: `IoBuffer`/`DmaInfo` を導入し、borrowed I/O API を `ZeroCopyBlockDevice` に追加（デフォルト実装 + アダプタ整備 + 最低限の単体テスト）。
-2. PR2: virtio-blk で borrowed API を実装（最初はコピーでも可）。
-3. PR3: `PageClusterBufferAllocator` を実装。
-4. PR4: FAT 側に `mount_with_allocator` を追加し、borrowed API を優先利用。
+1. PR4: FAT 側に `mount_with_allocator` を追加し、`PageClusterBufferAllocator` を注入可能にする。
+2. PR6: FAT の read/write ホットパスで borrowed API を優先利用する。
+3. PR5: virtio-blk の IOMMU 経路を device-scoped (`DmaHandle`/`DeviceDmaContext`) に寄せる。
+4. テスト: `cargo test -p fat32` で allocator 注入経路を検証。
 
-この順で進める前提で、PR1 から着手します。
+この順で進める前提で、PR4 から着手します。
 
 ---
 

@@ -13,7 +13,6 @@ pub mod ide;
 pub mod interrupt_manager; // Unified interrupt management with Waker bridge (設計書 4.2)
 pub mod io_scheduler; // Polling/Executor連携 I/Oスケジューラ
 pub mod iommu;
-pub mod iommu_cmdqueue;
 pub mod log;
 pub mod nvme; // NVMe module (directory) - includes driver.rs
 pub mod pci; // PCI common module (directory)
@@ -41,11 +40,13 @@ pub use dma::{
     DmaMemoryAttributes,
     DmaState,
     IommuDmaBuffer,
-    RRefDmaBytes,
     RRefDmaBuffer,
+    RRefDmaBytes,
     RRefMapError,
     RRefSliceMapError,
+    SgDmaGuard,
     SgEntry,
+    SliceDmaGuard,
     StreamingDmaMapping,
     // 型安全DMA（型状態パターン）
     TypedDmaBuffer,

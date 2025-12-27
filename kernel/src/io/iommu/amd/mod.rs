@@ -1610,6 +1610,11 @@ impl IommuDriver for AmdIommuDriver {
     }
 
     unsafe fn map_for_dma(&self, phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
+        let align = crate::mm::PAGE_SIZE_4K as u64;
+        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
+            return Err(IommuError::InvalidAlignment);
+        }
+
         let iova = phys_addr.as_u64();
         let domain = self.domain_for_id(0)?;
         {
@@ -1657,6 +1662,14 @@ impl IommuDriver for AmdIommuDriver {
         size: u64,
     ) -> IommuFuture<'a, Result<u64, IommuError>> {
         Box::pin(async move {
+            let align = crate::mm::PAGE_SIZE_4K as u64;
+            if size == 0
+                || (phys_addr.as_u64() & (align - 1) != 0)
+                || (size & (align - 1) != 0)
+            {
+                return Err(IommuError::InvalidAlignment);
+            }
+
             let domain_id = self.domain_id_for_device(*device)?;
             let iova = phys_addr.as_u64();
             self.reject_excluded_ivmd_range(*device, iova, size)?;

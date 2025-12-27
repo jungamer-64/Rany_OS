@@ -138,7 +138,7 @@ pub struct IommuController {
     /// Pending wakers for async invalidation completion
     pub(crate) pending_waiters: WakerQueue,
     /// Command Queue
-    pub command_queue: Option<crate::io::iommu_cmdqueue::CommandQueue>,
+    pub command_queue: Option<crate::io::iommu::cmdqueue::CommandQueue>,
     /// Phase 6: Page Table Recycling Pool
     pub page_table_pool: Arc<PageTablePool>,
     /// Phase 7: Security event notifier

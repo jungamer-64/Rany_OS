@@ -381,7 +381,7 @@ fn test_map_for_dma_alloc_non_identity() {
 fn test_cmdqueue_map_unmap_with_domain() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let mut ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.command_queue = Some(crate::io::iommu_cmdqueue::CommandQueue::new());
+    ctrl_local.command_queue = Some(crate::io::iommu::cmdqueue::CommandQueue::new());
 
     // Leak so we can reference it from threads in test
     let ctrl: &'static IommuController = Box::leak(Box::new(ctrl_local));
@@ -393,7 +393,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
         .expect("create domain");
 
     // Worker thread: act like executor and service mapping/unmapping commands
-    let worker_cq: &'static crate::io::iommu_cmdqueue::CommandQueue = cq;
+    let worker_cq: &'static crate::io::iommu::cmdqueue::CommandQueue = cq;
     let worker_ctrl: &'static IommuController = ctrl;
     let worker = std::thread::spawn(move || {
         let mut map_done = false;
@@ -402,7 +402,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
         while !(map_done && unmap_done) {
             eprintln!("[test][CQ] worker loop attempt {}", attempts);
             let processed = worker_cq.process_once(|k| match k {
-                crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion { .. } => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion { .. } => {
                     eprintln!("[test][CQ] handling MapRegion");
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => {
@@ -412,7 +412,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
                     eprintln!("[test][CQ] handling UnmapRegion");
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => {
@@ -422,13 +422,13 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
                     match worker_ctrl.handle_command_queue_entry(k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
@@ -449,7 +449,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
     });
 
     // Submit MapRegion (blocking until worker processes)
-    let map_cmd = crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion {
+    let map_cmd = crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion {
         domain: domain_id,
         iova: 0x1000,
         phys: 0x2000,
@@ -469,7 +469,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
     drop(d);
 
     // Submit UnmapRegion
-    let unmap_cmd = crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion {
+    let unmap_cmd = crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion {
         domain: domain_id,
         iova: 0x1000,
         size: 0x1000,
@@ -489,7 +489,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
 fn test_map_for_device_async_and_unmap() {
     // Construct a controller locally and attach a CQ (avoid global init timing issues)
     let mut ctrl_local = IommuController::new(0x0, 0);
-    ctrl_local.command_queue = Some(crate::io::iommu_cmdqueue::CommandQueue::new());
+    ctrl_local.command_queue = Some(crate::io::iommu::cmdqueue::CommandQueue::new());
 
     // Instead of leaking, wrap the controller in an Arc and register it in the global registry
     use alloc::sync::Arc as AllocArc;
@@ -539,27 +539,27 @@ fn test_map_for_device_async_and_unmap() {
                         .expect("cq present")
                         .process_once(|k| {
                             match k {
-                crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion { .. } => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(0) => { map_done = true; Ok(0) },
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(0) => { unmap_done = true; Ok(0) },
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
                     }
                 }
-                crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
                         Err(_) => Err(()),
