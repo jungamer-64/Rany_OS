@@ -174,7 +174,7 @@ impl core::fmt::Display for DateTime {
 }
 
 /// 閏年判定
-fn is_leap_year(year: u16) -> bool {
+const fn is_leap_year(year: u16) -> bool {
     (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
@@ -555,7 +555,7 @@ pub fn get_uptime_seconds() -> u64 {
 pub fn get_uptime_ms() -> u64 {
     let seconds = SYSTEM_TIME.load(Ordering::Acquire);
     let ticks = TICKS.load(Ordering::Acquire);
-    
+
     if let Some(ref rtc) = *RTC.lock() {
         let rate = rtc.periodic_rate as u64;
         if rate > 0 {
@@ -563,7 +563,7 @@ pub fn get_uptime_ms() -> u64 {
             return (seconds * 1000) + (sub_second_ticks * 1000 / rate);
         }
     }
-    
+
     seconds * 1000
 }
 

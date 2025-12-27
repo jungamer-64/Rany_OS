@@ -31,9 +31,15 @@
 //! `RRefDmaBuffer<T>` provides a safe IOMMU mapping for Exchange Heap-backed data.
 //! Use `DeviceDmaContext::map_rref_kernel` or `map_rref_buffer`, and explicitly
 //! unmap to recover the `RRef<T>`.
+//! For dynamic buffers, create `RRef<[T]>` with `RRef::new_slice_default_aligned`
+//! and map it via `DeviceDmaContext::map_rref_slice`.
+//! For byte buffers with arbitrary sizes, use `DeviceDmaContext::map_rref_kernel_bytes`
+//! to get a page-aligned mapping and keep the logical length.
+//! If you already have an aligned `RRef<[u8]>`, use `DeviceDmaContext::map_rref_bytes`.
+//! Note: When IOMMU is enabled, the mapped buffer must be 4K-aligned in address
+//! and size, otherwise mapping returns `InvalidAlignment`.
 #![allow(dead_code)]
 
-use crate::io::iommu::intel::controller::dma::DomainManager;
 use alloc::alloc::{Layout, alloc, dealloc};
 use core::marker::PhantomData;
 use core::ptr::NonNull;
@@ -42,6 +48,13 @@ use x86_64::PhysAddr;
 
 /// DMAバッファの最小アライメント
 const DMA_ALIGNMENT: usize = 4096; // ページアライメント
+
+fn align_up(value: usize, align: usize) -> Option<usize> {
+    if !align.is_power_of_two() {
+        return None;
+    }
+    value.checked_add(align - 1).map(|v| v & !(align - 1))
+}
 
 // ============================================================================
 // 型状態マーカー（改善案7: DMA型安全性強化）
@@ -644,8 +657,34 @@ impl DmaMemoryAttributes {
 ///
 /// Note: `T` should be a DMA-safe value stored inline in the RRef allocation
 /// (e.g., a fixed-size buffer or packet struct), not a pointer to other data.
+#[derive(Debug)]
 pub struct RRefDmaBuffer<T> {
     handle: crate::io::iommu::api::DmaHandle<T>,
+}
+
+/// Byte-oriented DMA buffer with a logical length and padded capacity.
+#[derive(Debug)]
+pub struct RRefDmaBytes {
+    buffer: RRefDmaBuffer<[u8]>,
+    len: usize,
+}
+
+/// Errors for kernel-owned slice allocation + DMA mapping.
+#[derive(Debug)]
+pub enum RRefSliceMapError<T> {
+    /// Exchange Heap allocation failed.
+    AllocFailed,
+    /// IOMMU mapping failed (returns the RRef on error).
+    MapError(crate::io::iommu::api::MapError<[T]>),
+}
+
+/// Errors for kernel-owned single value allocation + DMA mapping.
+#[derive(Debug)]
+pub enum RRefMapError<T> {
+    /// Exchange Heap allocation failed.
+    AllocFailed,
+    /// IOMMU mapping failed (returns the RRef on error).
+    MapError(crate::io::iommu::api::MapError<T>),
 }
 
 impl<T> RRefDmaBuffer<T> {
@@ -677,6 +716,28 @@ impl<T> RRefDmaBuffer<T> {
         T: Default,
     {
         Self::map_kernel(ctx, T::default(), direction)
+    }
+
+    /// Try to allocate a kernel-owned `RRef<T>` and map it for DMA.
+    pub fn try_map_kernel(
+        ctx: &DeviceDmaContext,
+        value: T,
+        direction: DmaDirection,
+    ) -> Result<Self, RRefMapError<T>> {
+        let rref = crate::ipc::RRef::try_new(crate::ipc::DomainId::KERNEL, value)
+            .ok_or(RRefMapError::AllocFailed)?;
+        Self::map(ctx, rref, direction).map_err(RRefMapError::MapError)
+    }
+
+    /// Try to allocate a default `T` in the kernel domain and map it for DMA.
+    pub fn try_map_kernel_default(
+        ctx: &DeviceDmaContext,
+        direction: DmaDirection,
+    ) -> Result<Self, RRefMapError<T>>
+    where
+        T: Default,
+    {
+        Self::try_map_kernel(ctx, T::default(), direction)
     }
 
     /// IOVA assigned for this mapping.
@@ -714,6 +775,112 @@ impl<T> RRefDmaBuffer<T> {
     /// Access the underlying IOMMU handle.
     pub fn handle(&self) -> &crate::io::iommu::api::DmaHandle<T> {
         &self.handle
+    }
+}
+
+impl<T> RRefDmaBuffer<[T]> {
+    /// IOVA assigned for this mapping.
+    pub fn iova(&self) -> u64 {
+        self.handle.iova()
+    }
+
+    /// Physical address of the mapped buffer.
+    pub fn phys_addr(&self) -> PhysAddr {
+        PhysAddr::new(self.handle.phys_addr())
+    }
+
+    /// Size of the mapped buffer in bytes.
+    pub fn size(&self) -> u64 {
+        self.handle.size()
+    }
+
+    /// Unmap and recover the original `RRef<[T]>`.
+    pub fn unmap(self) -> Result<crate::ipc::RRef<[T]>, crate::io::iommu::api::UnmapError<[T]>> {
+        self.handle.unmap()
+    }
+
+    /// Async unmap and recover the original `RRef<[T]>`.
+    pub async fn unmap_async(
+        self,
+    ) -> Result<crate::ipc::RRef<[T]>, crate::io::iommu::api::UnmapError<[T]>> {
+        self.handle.unmap_async().await
+    }
+
+    /// Access the underlying IOMMU handle.
+    pub fn handle(&self) -> &crate::io::iommu::api::DmaHandle<[T]> {
+        &self.handle
+    }
+
+    /// Number of elements in the mapped slice.
+    pub fn len(&self) -> usize {
+        let elem_size = core::mem::size_of::<T>() as u64;
+        if elem_size == 0 {
+            return 0;
+        }
+        (self.size() / elem_size) as usize
+    }
+
+    /// Whether the mapped slice is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl RRefDmaBytes {
+    /// Number of bytes requested by the caller.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Total mapped capacity in bytes (page-aligned).
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Whether the requested length is zero.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// IOVA assigned for this mapping.
+    pub fn iova(&self) -> u64 {
+        self.buffer.iova()
+    }
+
+    /// Physical address of the mapped buffer.
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.buffer.phys_addr()
+    }
+
+    /// Unmap and recover the original `RRef<[u8]>` plus the logical length.
+    pub fn unmap(
+        self,
+    ) -> Result<(crate::ipc::RRef<[u8]>, usize), crate::io::iommu::api::UnmapError<[u8]>> {
+        let RRefDmaBytes { buffer, len } = self;
+        buffer.unmap().map(|rref| (rref, len))
+    }
+
+    /// Async unmap and recover the original `RRef<[u8]>` plus the logical length.
+    pub async fn unmap_async(
+        self,
+    ) -> Result<(crate::ipc::RRef<[u8]>, usize), crate::io::iommu::api::UnmapError<[u8]>> {
+        let RRefDmaBytes { buffer, len } = self;
+        buffer.unmap_async().await.map(|rref| (rref, len))
+    }
+
+    /// Access the underlying IOMMU handle.
+    pub fn handle(&self) -> &crate::io::iommu::api::DmaHandle<[u8]> {
+        self.buffer.handle()
+    }
+
+    /// Access the underlying `RRefDmaBuffer<[u8]>`.
+    pub fn buffer(&self) -> &RRefDmaBuffer<[u8]> {
+        &self.buffer
+    }
+
+    /// Consume and return the underlying `RRefDmaBuffer<[u8]>`.
+    pub fn into_buffer(self) -> RRefDmaBuffer<[u8]> {
+        self.buffer
     }
 }
 
@@ -898,8 +1065,10 @@ impl IommuDmaBuffer {
         let inner = CoherentDmaBuffer::new(size, attributes)?;
         let iova = if crate::io::iommu::api::is_iommu_enabled() {
             // SAFETY: CoherentDmaBuffer owns this memory, safe for device DMA
-            unsafe { crate::io::iommu::api::map_for_device(&device, inner.phys_addr(), size as u64) }
-                .ok()
+            unsafe {
+                crate::io::iommu::api::map_for_device(&device, inner.phys_addr(), size as u64)
+            }
+            .ok()
         } else {
             if crate::io::iommu::api::is_iommu_required() {
                 log::error!(
@@ -965,7 +1134,11 @@ impl Drop for IommuDmaBuffer {
     fn drop(&mut self) {
         if let Some(iova) = self.iova {
             if let Some(device) = self.device_id {
-                let _ = crate::io::iommu::api::unmap_for_device(&device, iova, self.inner.size() as u64);
+                let _ = crate::io::iommu::api::unmap_for_device(
+                    &device,
+                    iova,
+                    self.inner.size() as u64,
+                );
             } else {
                 let _ = crate::io::iommu::api::unmap_dma(iova, self.inner.size() as u64);
             }
@@ -1254,7 +1427,10 @@ impl DeviceDmaContext {
             crate::io::iommu::api::with_iommu(|iommu| {
                 let numa_hint = Some(crate::mm::numa::current_node());
                 let domain_id = iommu
-                    .create_domain(numa_hint, crate::io::iommu::types::IommuDomainType::Translated)
+                    .create_domain(
+                        numa_hint,
+                        crate::io::iommu::types::IommuDomainType::Translated,
+                    )
                     .ok()?;
                 iommu.attach_device(device_id.clone(), domain_id).ok()?;
                 Some(domain_id)
@@ -1298,6 +1474,23 @@ impl DeviceDmaContext {
         }
     }
 
+    /// RRef-backed DMA slice mapping (safe IOMMU API)
+    ///
+    /// Returns a `DmaHandle<[T]>` that must be explicitly unmapped to recover the `RRef<[T]>`.
+    pub fn map_rref_slice<T>(
+        &self,
+        rref: crate::ipc::RRef<[T]>,
+        direction: DmaDirection,
+    ) -> Result<crate::io::iommu::api::DmaHandle<[T]>, crate::io::iommu::api::MapError<[T]>> {
+        let iommu_direction = direction.into();
+        if let Some(device) = self.device_id {
+            crate::io::iommu::api::map_rref_slice_for_device(rref, &device, iommu_direction)
+        } else {
+            let domain_id = self.domain_id.unwrap_or(0);
+            crate::io::iommu::api::map_rref_slice(rref, domain_id, iommu_direction)
+        }
+    }
+
     /// Map an `RRef<T>` into IOMMU space and return a DMA buffer handle.
     pub fn map_rref_buffer<T>(
         &self,
@@ -1307,6 +1500,144 @@ impl DeviceDmaContext {
         RRefDmaBuffer::map(self, rref, direction)
     }
 
+    /// Map an `RRef<[T]>` slice into IOMMU space and return a DMA buffer handle.
+    pub fn map_rref_slice_buffer<T>(
+        &self,
+        rref: crate::ipc::RRef<[T]>,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, crate::io::iommu::api::MapError<[T]>> {
+        self.map_rref_slice(rref, direction)
+            .map(|handle| RRefDmaBuffer { handle })
+    }
+
+    /// Map an `RRef<[u8]>` slice into IOMMU space and return a byte buffer handle.
+    pub fn map_rref_bytes(
+        &self,
+        rref: crate::ipc::RRef<[u8]>,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBytes, crate::io::iommu::api::MapError<[u8]>> {
+        let len = rref.len();
+        self.map_rref_slice_buffer(rref, direction)
+            .map(|buffer| RRefDmaBytes { buffer, len })
+    }
+
+    /// Allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) and map it into IOMMU space.
+    pub fn map_rref_kernel_slice_default<T>(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, crate::io::iommu::api::MapError<[T]>>
+    where
+        T: Default,
+    {
+        let rref = crate::ipc::RRef::new_slice_default_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+        )
+        .expect("exchange heap allocation failed");
+        self.map_rref_slice_buffer(rref, direction)
+    }
+
+    /// Allocate a kernel-owned byte buffer (page-aligned size) and map it.
+    pub fn map_rref_kernel_bytes(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBytes, crate::io::iommu::api::MapError<[u8]>> {
+        let aligned_len = align_up(len, DMA_ALIGNMENT).expect("invalid alignment");
+        assert!(aligned_len > 0, "zero-length DMA buffer");
+        let rref = crate::ipc::RRef::new_slice_default_aligned(
+            crate::ipc::DomainId::KERNEL,
+            aligned_len,
+            DMA_ALIGNMENT,
+        )
+        .expect("exchange heap allocation failed");
+        self.map_rref_slice_buffer(rref, direction)
+            .map(|buffer| RRefDmaBytes { buffer, len })
+    }
+
+    /// Try to allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) and map it into IOMMU space.
+    pub fn try_map_rref_kernel_slice_default<T>(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, RRefSliceMapError<T>>
+    where
+        T: Default,
+    {
+        let rref = crate::ipc::RRef::new_slice_default_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+        )
+        .ok_or(RRefSliceMapError::AllocFailed)?;
+        self.map_rref_slice_buffer(rref, direction)
+            .map_err(RRefSliceMapError::MapError)
+    }
+
+    /// Try to allocate a kernel-owned byte buffer (page-aligned size) and map it.
+    pub fn try_map_rref_kernel_bytes(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBytes, RRefSliceMapError<u8>> {
+        let aligned_len = align_up(len, DMA_ALIGNMENT).ok_or(RRefSliceMapError::AllocFailed)?;
+        if aligned_len == 0 {
+            return Err(RRefSliceMapError::AllocFailed);
+        }
+        let rref = crate::ipc::RRef::new_slice_default_aligned(
+            crate::ipc::DomainId::KERNEL,
+            aligned_len,
+            DMA_ALIGNMENT,
+        )
+        .ok_or(RRefSliceMapError::AllocFailed)?;
+        self.map_rref_slice_buffer(rref, direction)
+            .map(|buffer| RRefDmaBytes { buffer, len })
+            .map_err(RRefSliceMapError::MapError)
+    }
+
+    /// Allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) with an initializer and map it.
+    pub fn map_rref_kernel_slice_with<T, F>(
+        &self,
+        len: usize,
+        init: F,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, crate::io::iommu::api::MapError<[T]>>
+    where
+        F: FnMut(usize) -> T,
+    {
+        let rref = crate::ipc::RRef::new_slice_with_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+            init,
+        )
+        .expect("exchange heap allocation failed");
+        self.map_rref_slice_buffer(rref, direction)
+    }
+
+    /// Try to allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) with an initializer and map it.
+    pub fn try_map_rref_kernel_slice_with<T, F>(
+        &self,
+        len: usize,
+        init: F,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, RRefSliceMapError<T>>
+    where
+        F: FnMut(usize) -> T,
+    {
+        let rref = crate::ipc::RRef::new_slice_with_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+            init,
+        )
+        .ok_or(RRefSliceMapError::AllocFailed)?;
+        self.map_rref_slice_buffer(rref, direction)
+            .map_err(RRefSliceMapError::MapError)
+    }
+
     /// Allocate a kernel-owned `RRef<T>` and map it into IOMMU space.
     pub fn map_rref_kernel<T>(
         &self,
@@ -1314,6 +1645,26 @@ impl DeviceDmaContext {
         direction: DmaDirection,
     ) -> Result<RRefDmaBuffer<T>, crate::io::iommu::api::MapError<T>> {
         RRefDmaBuffer::map_kernel(self, value, direction)
+    }
+
+    /// Try to allocate a kernel-owned `RRef<T>` and map it into IOMMU space.
+    pub fn try_map_rref_kernel<T>(
+        &self,
+        value: T,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<T>, RRefMapError<T>> {
+        RRefDmaBuffer::try_map_kernel(self, value, direction)
+    }
+
+    /// Try to allocate a default kernel-owned `RRef<T>` and map it into IOMMU space.
+    pub fn try_map_rref_kernel_default<T>(
+        &self,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<T>, RRefMapError<T>>
+    where
+        T: Default,
+    {
+        RRefDmaBuffer::try_map_kernel_default(self, direction)
     }
 
     /// Allocate a default kernel-owned `RRef<T>` and map it into IOMMU space.

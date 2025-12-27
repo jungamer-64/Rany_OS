@@ -119,6 +119,11 @@ pub trait ZeroCopyBuffer: Send + 'static {
         self.as_slice().len()
     }
 
+    /// Whether the buffer is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     /// Optional DMA info for DMA-capable buffers. Default: None.
     fn dma_info(&self) -> Option<DmaInfo> {
         None
@@ -173,24 +178,24 @@ pub trait IoBufferMut: IoBuffer {
     fn as_mut_slice(&mut self) -> &mut [u8];
 }
 
-impl<'a> IoBuffer for &'a [u8] {
+impl IoBuffer for &[u8] {
     #[inline]
     fn as_slice(&self) -> &[u8] {
-        *self
+        self
     }
 }
 
-impl<'a> IoBuffer for &'a mut [u8] {
+impl IoBuffer for &mut [u8] {
     #[inline]
     fn as_slice(&self) -> &[u8] {
-        &**self
+        self
     }
 }
 
-impl<'a> IoBufferMut for &'a mut [u8] {
+impl IoBufferMut for &mut [u8] {
     #[inline]
     fn as_mut_slice(&mut self) -> &mut [u8] {
-        *self
+        self
     }
 }
 
@@ -279,7 +284,7 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
             if len == 0 {
                 return Ok(());
             }
-            if (len % bs) != 0 {
+            if !len.is_multiple_of(bs) {
                 return Err(BlockError::InvalidBufferSize);
             }
             let blocks = len / bs;
@@ -316,7 +321,7 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
         if len == 0 {
             return Box::pin(async { Ok(()) });
         }
-        if (len % bs) != 0 {
+        if !len.is_multiple_of(bs) {
             return Box::pin(async { Err(BlockError::InvalidBufferSize) });
         }
         let blocks = len / bs;
@@ -351,7 +356,7 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
             if len == 0 {
                 return Ok(());
             }
-            if (len % bs) != 0 {
+            if !len.is_multiple_of(bs) {
                 return Err(BlockError::InvalidBufferSize);
             }
             let blocks = len / bs;
@@ -380,7 +385,7 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
         if len == 0 {
             return Box::pin(async { Ok(()) });
         }
-        if (len % bs) != 0 {
+        if !len.is_multiple_of(bs) {
             return Box::pin(async { Err(BlockError::InvalidBufferSize) });
         }
         let blocks = len / bs;

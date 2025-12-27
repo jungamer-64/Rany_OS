@@ -98,6 +98,9 @@ pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
 /// Map an `RRef<T>` for DMA access using the global IOMMU backend.
 ///
 /// Returns a `DmaHandle<T>` that must be explicitly unmapped to recover the `RRef<T>`.
+///
+/// # Alignment
+/// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
 pub fn map_rref<T>(
     rref: RRef<T>,
     domain_id: u16,
@@ -109,12 +112,39 @@ pub fn map_rref<T>(
 /// Map an `RRef<T>` for DMA access scoped to a specific device.
 ///
 /// Returns a `DmaHandle<T>` that must be explicitly unmapped to recover the `RRef<T>`.
+///
+/// # Alignment
+/// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
 pub fn map_rref_for_device<T>(
     rref: RRef<T>,
     device: &DeviceId,
     direction: DmaDirection,
 ) -> Result<DmaHandle<T>, MapError<T>> {
     DmaHandle::map_rref_for_device(rref, device, direction)
+}
+
+/// Map an `RRef<[T]>` slice for DMA access using the global IOMMU backend.
+///
+/// # Alignment
+/// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
+pub fn map_rref_slice<T>(
+    rref: RRef<[T]>,
+    domain_id: u16,
+    direction: DmaDirection,
+) -> Result<DmaHandle<[T]>, MapError<[T]>> {
+    DmaHandle::map_rref_slice(rref, domain_id, direction)
+}
+
+/// Map an `RRef<[T]>` slice for DMA access scoped to a specific device.
+///
+/// # Alignment
+/// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
+pub fn map_rref_slice_for_device<T>(
+    rref: RRef<[T]>,
+    device: &DeviceId,
+    direction: DmaDirection,
+) -> Result<DmaHandle<[T]>, MapError<[T]>> {
+    DmaHandle::map_rref_slice_for_device(rref, device, direction)
 }
 
 /// Map a physical address range for DMA access

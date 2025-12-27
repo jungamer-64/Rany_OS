@@ -23,12 +23,66 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use crate::sync::IrqMutex;
+use hashbrown::HashMap;
 
 use super::tables::{PT_ENTRIES, SlPte};
 use super::types::IommuError;
+
+// ============================================================================
+// Page Table Reference Count Registry
+// ============================================================================
+
+/// Global registry mapping page table physical addresses to their reference counts.
+/// This replaces the BTreeMap<u64, u16> in IommuDomain with O(1) lookup.
+static PAGE_TABLE_REF_COUNTS: spin::Once<IrqMutex<HashMap<u64, u16>>> = spin::Once::new();
+
+/// Get or initialize the page table reference count registry
+fn ref_count_registry() -> &'static IrqMutex<HashMap<u64, u16>> {
+    PAGE_TABLE_REF_COUNTS.call_once(|| IrqMutex::new(HashMap::new()))
+}
+
+/// Register a page table's physical address in the global registry
+pub fn register_page_table(phys: u64) {
+    let mut registry = ref_count_registry().lock();
+    registry.insert(phys, 0);
+}
+
+/// Unregister a page table's physical address from the global registry
+pub fn unregister_page_table(phys: u64) {
+    let mut registry = ref_count_registry().lock();
+    registry.remove(&phys);
+}
+
+/// Increment reference count for a page table
+/// Returns the new count
+pub fn inc_ref(phys: u64) -> u16 {
+    let mut registry = ref_count_registry().lock();
+    let count = registry.entry(phys).or_insert(0);
+    *count += 1;
+    *count
+}
+
+/// Decrement reference count for a page table
+/// Returns true if count reached zero (table can be reclaimed)
+pub fn dec_ref(phys: u64) -> bool {
+    let mut registry = ref_count_registry().lock();
+    if let Some(count) = registry.get_mut(&phys) {
+        if *count > 0 {
+            *count -= 1;
+            return *count == 0;
+        }
+    }
+    false
+}
+
+/// Get current reference count for a page table
+pub fn get_ref_count(phys: u64) -> u16 {
+    let registry = ref_count_registry().lock();
+    registry.get(&phys).copied().unwrap_or(0)
+}
 
 // ============================================================================
 // PooledPt - Owned page table with NUMA node
@@ -47,6 +101,8 @@ pub struct PooledPt {
     pub node: usize,
     /// Layout for deallocation
     layout: alloc::alloc::Layout,
+    /// Reference count: number of entries pointing TO this table
+    ref_count: AtomicU16,
 }
 
 // SAFETY: The pointer is to heap-allocated memory with no aliasing
@@ -68,7 +124,29 @@ impl PooledPt {
             phys,
             node,
             layout,
+            ref_count: AtomicU16::new(0),
         }
+    }
+
+    /// Increment reference count (called when parent entry points to this table)
+    pub fn inc_ref(&self) -> u16 {
+        self.ref_count.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Decrement reference count (called when entry is cleared)
+    /// Returns true if count reached zero (table can be reclaimed)
+    pub fn dec_ref(&self) -> bool {
+        self.ref_count.fetch_sub(1, Ordering::Relaxed) == 1
+    }
+
+    /// Get current reference count
+    pub fn ref_count(&self) -> u16 {
+        self.ref_count.load(Ordering::Relaxed)
+    }
+
+    /// Reset reference count (used when recycling from pool)
+    pub fn reset_ref_count(&self) {
+        self.ref_count.store(0, Ordering::Relaxed);
     }
 }
 
