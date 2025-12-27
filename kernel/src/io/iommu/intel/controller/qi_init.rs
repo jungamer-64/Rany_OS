@@ -91,7 +91,7 @@ impl QIManager for IommuController {
 
         if let Some(ref cq) = self.command_queue {
             let _ =
-                cq.submit_sync(crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
         } else {
             self.write64(regs::IQA, iqa_value);
         }
@@ -103,7 +103,7 @@ impl QIManager for IommuController {
         eprintln!("[test][IOMMU] writing IQH=0");
         if let Some(ref cq) = self.command_queue {
             let _ =
-                cq.submit_sync(crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
         } else {
             self.write64(regs::IQH, 0);
         }
@@ -115,7 +115,7 @@ impl QIManager for IommuController {
         eprintln!("[test][IOMMU] writing IQT=0");
         if let Some(ref cq) = self.command_queue {
             let _ =
-                cq.submit_sync(crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
+                cq.submit_sync(crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal);
         } else {
             self.write64(regs::IQT, 0);
         }

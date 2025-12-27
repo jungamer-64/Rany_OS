@@ -15,7 +15,10 @@
 
 #![allow(dead_code)]
 
-use crate::io::iommu::api::{is_iommu_enabled, map_for_dma, unmap_dma};
+use crate::io::dma::{allocate_iommu_bounce_bytes, iommu_needs_bounce, IommuBounceAllocError};
+use crate::io::iommu::api::{
+    is_iommu_enabled, is_iommu_required, map_for_dma, map_rref_slice, unmap_dma, DmaDirection,
+};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -1429,7 +1432,13 @@ fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
 
 fn map_dma_addr(phys_addr: u64, len: usize) -> Result<Option<u64>, VfsBlockError> {
     if !is_iommu_enabled() {
+        if is_iommu_required() {
+            return Err(VfsBlockError::IoError);
+        }
         return Ok(None);
+    }
+    if iommu_needs_bounce(phys_addr, len) {
+        return Err(VfsBlockError::InvalidBufferSize);
     }
     // SAFETY: caller guarantees phys_addr is owned and valid for DMA for len bytes.
     unsafe { map_for_dma(PhysAddr::new(phys_addr), len as u64) }
@@ -1557,6 +1566,33 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
             if dma.len != len {
                 return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
             }
+            if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
+                return Box::pin(async move {
+                    let rref = allocate_iommu_bounce_bytes(len).map_err(|err| match err {
+                        IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
+                        IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
+                    })?;
+                    let handle = map_rref_slice(rref, 0, DmaDirection::FromDevice)
+                        .map_err(|_| VfsBlockError::IoError)?;
+                    let dma_addr = handle.iova();
+
+                    let result = DmaReadFuture {
+                        device: self,
+                        sector,
+                        dma_addr,
+                        buf,
+                        submitted: false,
+                        desc_id: None,
+                        queue_idx: 0,
+                    }
+                    .await;
+
+                    let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+                    result.map_err(map_vfs_block_error)?;
+                    buf.copy_from_slice(&rref[..len]);
+                    Ok(())
+                });
+            }
             let iova = match map_dma_addr(dma.phys_addr, len) {
                 Ok(iova) => iova,
                 Err(err) => return Box::pin(async move { Err(err) }),
@@ -1619,6 +1655,33 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         if let Some(dma) = dma {
             if dma.len != len {
                 return Box::pin(async { Err(VfsBlockError::InvalidBufferSize) });
+            }
+            if is_iommu_enabled() && iommu_needs_bounce(dma.phys_addr, len) {
+                return Box::pin(async move {
+                    let mut rref = allocate_iommu_bounce_bytes(len).map_err(|err| match err {
+                        IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
+                        IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
+                    })?;
+                    rref[..len].copy_from_slice(data);
+                    let handle = map_rref_slice(rref, 0, DmaDirection::ToDevice)
+                        .map_err(|_| VfsBlockError::IoError)?;
+                    let dma_addr = handle.iova();
+
+                    let result = DmaWriteFuture {
+                        device: self,
+                        sector,
+                        dma_addr,
+                        buf: data,
+                        submitted: false,
+                        desc_id: None,
+                        queue_idx: 0,
+                    }
+                    .await;
+
+                    handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+                    result.map_err(map_vfs_block_error)?;
+                    Ok(())
+                });
             }
             let iova = match map_dma_addr(dma.phys_addr, len) {
                 Ok(iova) => iova,

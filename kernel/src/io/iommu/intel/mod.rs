@@ -25,8 +25,8 @@ use super::interface::{IommuDriver, IommuFuture};
 // Generic registry for registering the driver
 use super::registry::{get_iommu_driver, init_driver, is_iommu_enabled};
 
+use super::cmdqueue::IommuCommandKind;
 use super::types::{DeviceId, IommuDomainType, IommuError};
-use crate::io::iommu_cmdqueue::IommuCommandKind;
 
 // Intel-specific registry access
 use self::registry::get_iommu_registry;
@@ -131,6 +131,11 @@ impl IommuDriver for IntelIommuDriver {
     }
 
     unsafe fn map_for_dma(&self, phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
+        let align = crate::mm::PAGE_SIZE_4K as u64;
+        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
+            return Err(IommuError::InvalidAlignment);
+        }
+
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
             return Err(IommuError::NotPresent);
@@ -198,6 +203,11 @@ impl IommuDriver for IntelIommuDriver {
         size: u64,
     ) -> IommuFuture<'a, Result<u64, IommuError>> {
         Box::pin(async move {
+            let align = crate::mm::PAGE_SIZE_4K as u64;
+            if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
+                return Err(IommuError::InvalidAlignment);
+            }
+
             let registry = self.registry()?;
             if registry.controllers.is_empty() {
                 return Err(IommuError::NotPresent);

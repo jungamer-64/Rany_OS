@@ -158,6 +158,7 @@ pub fn map_rref_slice_for_device<T>(
 /// - The memory will remain valid for the duration of DMA operations
 /// - The memory is not part of kernel code, page tables, or other critical structures
 /// - Concurrent access by the device is safe (proper synchronization if needed)
+/// - `phys_addr` and `size` are 4K-aligned when IOMMU translation is enabled
 ///
 /// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
 pub unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {

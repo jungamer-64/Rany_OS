@@ -50,6 +50,7 @@ pub trait IommuDriver: Send + Sync {
     ///
     /// # Safety
     /// Caller must uphold DMA safety invariants for the backing memory.
+    /// When translation is enabled, `phys_addr` and `size` must be 4K-aligned.
     unsafe fn map_for_dma(&self, phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError>;
 
     /// Unmap a DMA range (global domain).
@@ -59,6 +60,7 @@ pub trait IommuDriver: Send + Sync {
     ///
     /// # Safety
     /// Caller must uphold DMA safety invariants for the backing memory.
+    /// When translation is enabled, `phys_addr` and `size` must be 4K-aligned.
     unsafe fn map_for_device(
         &self,
         device: &DeviceId,
@@ -70,6 +72,7 @@ pub trait IommuDriver: Send + Sync {
     ///
     /// # Safety
     /// Caller must uphold DMA safety invariants for the backing memory.
+    /// When translation is enabled, `phys_addr` and `size` must be 4K-aligned.
     unsafe fn map_for_device_async<'a>(
         &'a self,
         device: &'a DeviceId,

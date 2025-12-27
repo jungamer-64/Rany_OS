@@ -1,6 +1,6 @@
-// ==================================================
-// kernel/src/io/iommu_cmdqueue.rs
-// ==================================================
+// ============================================================================
+// kernel/src/io/iommu/cmdqueue.rs
+// ============================================================================
 //!
 // Command Queue for IOMMU - initial implementation
 // - Per-controller MPSC queue using existing BoundedChannel
@@ -8,25 +8,26 @@
 // - submit_sync() API that blocks by using backoff spin until completion
 // - process_once() worker to be called periodically by the Executor
 
-use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
-use core::pin::Pin;
-use core::task::{Context, Poll};
 use crate::sync::atomic_waker::AtomicWaker;
-use crate::sync::lockfree::BoundedChannel;
-use crate::sync::lockfree::BoundedSender;
-use crate::sync::lockfree::BoundedReceiver;
-use crate::sync::lockfree::DEFAULT_QUEUE_SIZE;
 use crate::sync::lockfree::Backoff;
+use crate::sync::lockfree::BoundedChannel;
+use crate::sync::lockfree::BoundedReceiver;
+use crate::sync::lockfree::BoundedSender;
+use crate::sync::lockfree::DEFAULT_QUEUE_SIZE;
+use core::pin::Pin;
+use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
+use core::task::{Context, Poll};
 
-use alloc::vec::Vec;
-use alloc::boxed::Box;
 use alloc::alloc::Layout;
-
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 /// Command kinds (initial subset)
 #[derive(Debug, Clone)]
 pub enum IommuCommandKind {
-    InvalidateIotlbDomain { domain: u16 },
+    InvalidateIotlbDomain {
+        domain: u16,
+    },
     InvalidateIotlbGlobal,
     /// Map a region into the given domain
     MapRegion {
@@ -239,37 +240,35 @@ pub struct CommandQueue {
 }
 
 impl CommandQueue {
-
     pub fn new_with_numa(numa_node: Option<usize>) -> Self {
         let (s, r) = BoundedChannel::<IommuCommand, DEFAULT_QUEUE_SIZE>::new();
 
         // Try to allocate slots on the given NUMA node for locality benefits.
         let layout = Layout::array::<CompletionSlot>(DEFAULT_QUEUE_SIZE).expect("layout");
-        let slots: &'static [CompletionSlot] = if let Some(nonnull) =
-            crate::mm::numa::allocate_zeroed_on_node(layout, numa_node)
-        {
-            unsafe {
-                let ptr = nonnull.as_ptr() as *mut CompletionSlot;
-                for i in 0..DEFAULT_QUEUE_SIZE {
-                    core::ptr::write(ptr.add(i), CompletionSlot::new());
+        let slots: &'static [CompletionSlot] =
+            if let Some(nonnull) = crate::mm::numa::allocate_zeroed_on_node(layout, numa_node) {
+                unsafe {
+                    let ptr = nonnull.as_ptr() as *mut CompletionSlot;
+                    for i in 0..DEFAULT_QUEUE_SIZE {
+                        core::ptr::write(ptr.add(i), CompletionSlot::new());
+                    }
+                    let slice = core::slice::from_raw_parts_mut(ptr, DEFAULT_QUEUE_SIZE);
+                    let boxed = Box::from_raw(slice as *mut [CompletionSlot]);
+                    let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
+                    let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
+                    slot_ref
                 }
-                let slice = core::slice::from_raw_parts_mut(ptr, DEFAULT_QUEUE_SIZE);
-                let boxed = Box::from_raw(slice as *mut [CompletionSlot]);
+            } else {
+                // Fallback to global allocator
+                let mut v: Vec<CompletionSlot> = Vec::with_capacity(DEFAULT_QUEUE_SIZE);
+                for _ in 0..DEFAULT_QUEUE_SIZE {
+                    v.push(CompletionSlot::new());
+                }
+                let boxed = v.into_boxed_slice();
                 let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
                 let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
                 slot_ref
-            }
-        } else {
-            // Fallback to global allocator
-            let mut v: Vec<CompletionSlot> = Vec::with_capacity(DEFAULT_QUEUE_SIZE);
-            for _ in 0..DEFAULT_QUEUE_SIZE {
-                v.push(CompletionSlot::new());
-            }
-            let boxed = v.into_boxed_slice();
-            let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
-            let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
-            slot_ref
-        };
+            };
 
         Self {
             sender: s,
@@ -387,7 +386,11 @@ impl CommandQueue {
             }
         }
 
-        Ok(CommandCompletion { slot_idx, slots_ptr: self.slots.as_ptr() as *const CompletionSlot, queue_ptr: self as *const CommandQueue })
+        Ok(CommandCompletion {
+            slot_idx,
+            slots_ptr: self.slots.as_ptr() as *const CompletionSlot,
+            queue_ptr: self as *const CommandQueue,
+        })
     }
 
     /// Async submit (non-busy): returns a Future that waits for slot & channel space
@@ -546,7 +549,11 @@ pub struct SubmitFuture {
 
 impl SubmitFuture {
     fn new(queue_ptr: *const CommandQueue, kind: IommuCommandKind) -> Self {
-        Self { queue_ptr, kind: Some(kind), slot_idx: None }
+        Self {
+            queue_ptr,
+            kind: Some(kind),
+            slot_idx: None,
+        }
     }
 }
 
@@ -572,13 +579,20 @@ impl core::future::Future for SubmitFuture {
         }
 
         let idx = this.slot_idx.expect("slot acquired");
-        let cmd = IommuCommand { kind: this.kind.as_ref().unwrap().clone(), slot_idx: idx };
+        let cmd = IommuCommand {
+            kind: this.kind.as_ref().unwrap().clone(),
+            slot_idx: idx,
+        };
 
         // Try non-busy send
         match q.sender.send(cmd.clone()) {
             Ok(_) => {
                 this.kind = None;
-                let comp = CommandCompletion { slot_idx: idx, slots_ptr: q.slots.as_ptr() as *const CompletionSlot, queue_ptr: this.queue_ptr };
+                let comp = CommandCompletion {
+                    slot_idx: idx,
+                    slots_ptr: q.slots.as_ptr() as *const CompletionSlot,
+                    queue_ptr: this.queue_ptr,
+                };
                 Poll::Ready(Ok(comp))
             }
             Err(_) => {
@@ -588,7 +602,11 @@ impl core::future::Future for SubmitFuture {
                 if q.sender.send(cmd).is_ok() {
                     q.send_waiter.clear();
                     this.kind = None;
-                    let comp = CommandCompletion { slot_idx: idx, slots_ptr: q.slots.as_ptr() as *const CompletionSlot, queue_ptr: this.queue_ptr };
+                    let comp = CommandCompletion {
+                        slot_idx: idx,
+                        slots_ptr: q.slots.as_ptr() as *const CompletionSlot,
+                        queue_ptr: this.queue_ptr,
+                    };
                     Poll::Ready(Ok(comp))
                 } else {
                     Poll::Pending
@@ -613,9 +631,13 @@ mod tests {
             let mut attempts = 0;
             loop {
                 let processed = worker_q.process_once(|_k| Ok(0));
-                if processed > 0 { break; }
+                if processed > 0 {
+                    break;
+                }
                 attempts += 1;
-                if attempts > 1000 { panic!("CQ worker timed out"); }
+                if attempts > 1000 {
+                    panic!("CQ worker timed out");
+                }
                 std::thread::yield_now();
             }
         });
@@ -641,7 +663,14 @@ mod tests {
             let mut attempts = 0;
             while !(map_seen && unmap_seen) {
                 let _ = worker_q.process_once(|k| match k {
-                    IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
+                    IommuCommandKind::MapRegion {
+                        domain,
+                        iova,
+                        phys,
+                        size,
+                        read,
+                        write,
+                    } => {
                         assert_eq!(*domain, 1);
                         assert_eq!(*iova, 0x1000);
                         assert_eq!(*phys, 0x2000);
@@ -661,7 +690,9 @@ mod tests {
                 });
 
                 attempts += 1;
-                if attempts > 2000 { panic!("CQ worker timed out"); }
+                if attempts > 2000 {
+                    panic!("CQ worker timed out");
+                }
                 std::thread::yield_now();
             }
         });
@@ -679,7 +710,11 @@ mod tests {
         assert!(q.submit_sync(map_cmd).is_ok());
 
         // Submit UnmapRegion command
-        let unmap_cmd = IommuCommandKind::UnmapRegion { domain: 1, iova: 0x1000, size: 0x1000 };
+        let unmap_cmd = IommuCommandKind::UnmapRegion {
+            domain: 1,
+            iova: 0x1000,
+            size: 0x1000,
+        };
         assert!(q.submit_sync(unmap_cmd).is_ok());
 
         worker.join().expect("worker join failed");
@@ -701,9 +736,13 @@ mod tests {
                     }
                     _ => Err(()),
                 });
-                if processed > 0 { break; }
+                if processed > 0 {
+                    break;
+                }
                 attempts += 1;
-                if attempts > 1000 { panic!("CQ worker timed out"); }
+                if attempts > 1000 {
+                    panic!("CQ worker timed out");
+                }
                 std::thread::yield_now();
             }
         });
@@ -723,7 +762,9 @@ mod tests {
         let q = Box::leak(Box::new(CommandQueue::new()));
 
         // Submit a command and drop the completion without awaiting
-        let comp1 = q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 }).expect("submit");
+        let comp1 = q
+            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
+            .expect("submit");
         let idx = comp1.slot_idx;
         drop(comp1);
 
@@ -731,7 +772,10 @@ mod tests {
         q.slots[idx].complete(0);
 
         // Now try to submit again; alloc_slot should reclaim the completed slot
-        assert!(q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 2 }).is_ok());
+        assert!(
+            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 2 })
+                .is_ok()
+        );
         // reclaimed slot should have been counted
         assert!(q.reclaimed_total() > 0);
     }
@@ -741,7 +785,9 @@ mod tests {
         let q = Box::leak(Box::new(CommandQueue::new()));
 
         // Submit a command, cancel it, and ensure completion returns cancellation code
-        let comp = q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 3 }).expect("submit");
+        let comp = q
+            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 3 })
+            .expect("submit");
         assert!(comp.cancel());
 
         // Simulate worker now processing the queued command; it should notice cancellation
@@ -758,7 +804,9 @@ mod tests {
     fn test_drop_triggers_cancel() {
         let q = Box::leak(Box::new(CommandQueue::new()));
 
-        let comp = q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 4 }).expect("submit");
+        let comp = q
+            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 4 })
+            .expect("submit");
         let idx = comp.slot_idx;
         // Dropping the completion should attempt a best-effort cancel
         drop(comp);
@@ -821,11 +869,16 @@ mod tests {
             producers.push(handle);
         }
 
-        for h in producers { h.join().expect("producer join"); }
+        for h in producers {
+            h.join().expect("producer join");
+        }
         worker.join().expect("worker join");
 
         // After all work, we should be able to submit again (slots reclaimed)
-        assert!(q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 99 }).is_ok());
+        assert!(
+            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 99 })
+                .is_ok()
+        );
     }
 
     #[test]
@@ -857,16 +910,23 @@ mod tests {
                     }
                     _ => Err(()),
                 });
-                if processed > 0 { break; }
+                if processed > 0 {
+                    break;
+                }
                 attempts += 1;
-                if attempts > 1000 { panic!("CQ worker timed out"); }
+                if attempts > 1000 {
+                    panic!("CQ worker timed out");
+                }
                 std::thread::yield_now();
             }
         });
 
         let rc = crate::task::block_on(async {
             let rc = {
-                let comp = q.submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 7 }).await.expect("submit_async");
+                let comp = q
+                    .submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 7 })
+                    .await
+                    .expect("submit_async");
                 comp.await
             };
             rc
@@ -883,7 +943,10 @@ mod tests {
         // Submit multiple commands (non-blocking) and keep completions alive until processed
         let mut comps: Vec<CommandCompletion> = Vec::new();
         for i in 0..5 {
-            comps.push(q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: i as u16 }).expect("submit"));
+            comps.push(
+                q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: i as u16 })
+                    .expect("submit"),
+            );
         }
 
         // Refill fuel for this thread to process only 2 commands
@@ -915,7 +978,9 @@ mod tests {
         assert_eq!(q.cancelled_total(), 0);
         assert_eq!(q.cancel_attempts_total(), 0);
 
-        let comp = q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 }).expect("submit");
+        let comp = q
+            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
+            .expect("submit");
         assert!(comp.cancel());
         // cancel_attempts should be recorded immediately
         assert!(q.cancel_attempts_total() >= 1);
@@ -933,7 +998,10 @@ mod tests {
         // Fill until sender reports full or we can't allocate further slots
         while !q.sender.is_full() {
             if let Some(idx) = q.try_alloc_slot() {
-                let cmd = IommuCommand { kind: IommuCommandKind::InvalidateIotlbDomain { domain: 1 }, slot_idx: idx };
+                let cmd = IommuCommand {
+                    kind: IommuCommandKind::InvalidateIotlbDomain { domain: 1 },
+                    slot_idx: idx,
+                };
                 let _ = q.sender.send(cmd);
             } else {
                 break;
@@ -948,7 +1016,10 @@ mod tests {
         let qref: &'static CommandQueue = q;
         let handle = std::thread::spawn(move || {
             let rc = crate::task::block_on(async {
-                let comp = qref.submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 99 }).await.expect("submit_async");
+                let comp = qref
+                    .submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 99 })
+                    .await
+                    .expect("submit_async");
                 comp.await
             });
             // mark done and return
@@ -972,10 +1043,15 @@ mod tests {
         let mut iter = 0;
         while !done.load(Ordering::SeqCst) && iter < 10000 {
             let n = q.process_up_to(|_k| Ok(0), 8);
-            if n == 0 { std::thread::yield_now(); }
+            if n == 0 {
+                std::thread::yield_now();
+            }
             iter += 1;
         }
-        assert!(done.load(Ordering::SeqCst), "submit thread did not complete in time");
+        assert!(
+            done.load(Ordering::SeqCst),
+            "submit thread did not complete in time"
+        );
 
         let rc = handle.join().expect("submit join");
         assert_eq!(rc, 0);

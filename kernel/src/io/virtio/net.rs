@@ -21,7 +21,7 @@ use x86_64::PhysAddr;
 use super::defs::{VirtioDeviceType, status};
 use super::transport::VirtioTransport;
 use crate::io::dma::{
-    CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, TypedDmaSlice,
+    CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, SliceDmaGuard, TypedDmaSlice,
 };
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 // Import PacketRef for zero-copy
@@ -1153,8 +1153,8 @@ const VIRTIO_NET_MTU: usize = 1514;
 pub struct VirtioNetRxDmaBuffer {
     /// CPU所有状態のバッファ
     buffer: Option<TypedDmaSlice<CpuOwned>>,
-    /// デバイス所有状態（転送中）
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
+    /// デバイス所有状態（転送中）+ Guard
+    inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
 }
 
 impl VirtioNetRxDmaBuffer {
@@ -1175,21 +1175,22 @@ impl VirtioNetRxDmaBuffer {
         self.buffer
             .as_ref()
             .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+            .or_else(|| self.inflight.as_ref().map(|(b, _)| b.phys_addr()))
     }
 
     /// DMA転送を開始（VirtQueueへのバッファ追加時）
     pub fn start_receive(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in use")?;
         let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
+        let (dev, guard) = buffer.start_dma();
+        self.inflight = Some((dev, guard));
         Ok(phys)
     }
 
     /// DMA転送完了（受信完了時）
     pub fn complete_receive(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No receive in progress")?;
-        self.buffer = Some(inflight.complete_dma());
+        let (dev, guard) = self.inflight.take().ok_or("No receive in progress")?;
+        self.buffer = Some(guard.complete(dev));
         Ok(())
     }
 
@@ -1218,7 +1219,7 @@ impl Default for VirtioNetRxDmaBuffer {
 /// VirtIO ネットワーク送信用DMAバッファ
 pub struct VirtioNetTxDmaBuffer {
     buffer: Option<TypedDmaSlice<CpuOwned>>,
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
+    inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
     data_len: usize,
 }
 
@@ -1250,21 +1251,22 @@ impl VirtioNetTxDmaBuffer {
         self.buffer
             .as_ref()
             .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+            .or_else(|| self.inflight.as_ref().map(|(b, _)| b.phys_addr()))
     }
 
     /// DMA転送を開始
     pub fn start_transmit(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in use")?;
         let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
+        let (dev, guard) = buffer.start_dma();
+        self.inflight = Some((dev, guard));
         Ok(phys)
     }
 
     /// DMA転送完了
     pub fn complete_transmit(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No transmit in progress")?;
-        self.buffer = Some(inflight.complete_dma());
+        let (dev, guard) = self.inflight.take().ok_or("No transmit in progress")?;
+        self.buffer = Some(guard.complete(dev));
         Ok(())
     }
 

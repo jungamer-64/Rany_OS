@@ -357,16 +357,16 @@ impl Executor {
                         for _ in 0..4 {
                             let processed = cq.process_once(|kind| {
                                 match kind {
-                                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbDomain { domain } => {
+                                    crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { domain } => {
                                         // call concrete operation directly
                                         unsafe { ctrl.invalidate_iotlb(*domain) };
                                         Ok(0)
                                     }
-                                    crate::io::iommu_cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
+                                    crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
                                         unsafe { ctrl.invalidate_iotlb_global() };
                                         Ok(0)
                                     }
-                                    crate::io::iommu_cmdqueue::IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
+                                    crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
                                         // Lookup domain and perform mapping; then invalidate
                                         match ctrl.domains.lock() {
                                             Ok(dom_map) => {
@@ -390,7 +390,7 @@ impl Executor {
                                             Err(_) => Err(())
                                         }
                                     }
-                                    crate::io::iommu_cmdqueue::IommuCommandKind::UnmapRegion { domain, iova, size: _ } => {
+                                    crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { domain, iova, size: _ } => {
                                         match ctrl.domains.lock() {
                                             Ok(dom_map) => {
                                                 if let Some(domain_arc) = dom_map.get(domain) {

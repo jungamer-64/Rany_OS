@@ -5,7 +5,7 @@
 use x86_64::PhysAddr;
 
 use crate::io::dma::{
-    CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, TypedDmaSlice,
+    CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, SliceDmaGuard, TypedDmaSlice,
 };
 
 use super::types::SECTOR_SIZE;
@@ -16,8 +16,8 @@ use super::types::SECTOR_SIZE;
 pub struct AhciDmaReadBuffer {
     /// DMAバッファ (CPU所有状態)
     buffer: Option<TypedDmaSlice<CpuOwned>>,
-    /// 転送中バッファ (デバイス所有状態)
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
+    /// 転送中バッファ (デバイス所有状態) + Guard
+    inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
     /// セクタ数
     sector_count: usize,
 }
@@ -40,21 +40,22 @@ impl AhciDmaReadBuffer {
         self.buffer
             .as_ref()
             .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+            .or_else(|| self.inflight.as_ref().map(|(b, _)| b.phys_addr()))
     }
 
     /// DMA転送を開始
     pub fn start_transfer(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in transfer")?;
         let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
+        let (dev, guard) = buffer.start_dma();
+        self.inflight = Some((dev, guard));
         Ok(phys)
     }
 
     /// DMA転送完了
     pub fn complete_transfer(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No transfer in progress")?;
-        self.buffer = Some(inflight.complete_dma());
+        let (dev, guard) = self.inflight.take().ok_or("No transfer in progress")?;
+        self.buffer = Some(guard.complete(dev));
         Ok(())
     }
 
@@ -72,7 +73,7 @@ impl AhciDmaReadBuffer {
 /// DMA安全なセクタ書き込み用バッファ
 pub struct AhciDmaWriteBuffer {
     buffer: Option<TypedDmaSlice<CpuOwned>>,
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
+    inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
     sector_count: usize,
 }
 
@@ -97,21 +98,22 @@ impl AhciDmaWriteBuffer {
         self.buffer
             .as_ref()
             .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+            .or_else(|| self.inflight.as_ref().map(|(b, _)| b.phys_addr()))
     }
 
     /// DMA転送を開始
     pub fn start_transfer(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in transfer")?;
         let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
+        let (dev, guard) = buffer.start_dma();
+        self.inflight = Some((dev, guard));
         Ok(phys)
     }
 
     /// DMA転送完了
     pub fn complete_transfer(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No transfer in progress")?;
-        self.buffer = Some(inflight.complete_dma());
+        let (dev, guard) = self.inflight.take().ok_or("No transfer in progress")?;
+        self.buffer = Some(guard.complete(dev));
         Ok(())
     }
 }

@@ -9,10 +9,10 @@
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
+use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::intel::registers::ecap_bits::ECAP_DT;
 use crate::io::iommu::intel::registers::{ecap_bits, regs};
 use crate::io::iommu::intel::tables::ContextEntry;
-use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 
 use super::IommuController;
@@ -72,7 +72,7 @@ pub trait DomainManager {
     /// Handle a command queue entry directly
     fn handle_command_queue_entry(
         &self,
-        kind: &crate::io::iommu_cmdqueue::IommuCommandKind,
+        kind: &crate::io::iommu::cmdqueue::IommuCommandKind,
     ) -> Result<i32, ()>;
 }
 
@@ -433,9 +433,9 @@ impl DomainManager for IommuController {
 
     fn handle_command_queue_entry(
         &self,
-        kind: &crate::io::iommu_cmdqueue::IommuCommandKind,
+        kind: &crate::io::iommu::cmdqueue::IommuCommandKind,
     ) -> Result<i32, ()> {
-        use crate::io::iommu_cmdqueue::IommuCommandKind;
+        use crate::io::iommu::cmdqueue::IommuCommandKind;
         match kind {
             IommuCommandKind::MapRegion {
                 domain,
