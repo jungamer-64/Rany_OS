@@ -19,7 +19,7 @@ use x86_64::PhysAddr;
 
 // Import VirtIO common definitions
 use super::defs::{VirtioDeviceType, status};
-use super::transport::VirtioTransport;
+use super::transport::{TransportType, VirtioTransport};
 use crate::io::dma::{
     CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, SliceDmaGuard, TypedDmaSlice,
 };
@@ -195,6 +195,10 @@ pub struct NetVirtQueue {
     avail_ring: SendPtr<VringAvail>,
     /// Used Ring
     used_ring: SendPtr<VringUsed>,
+    /// Queue notify address (transport-provided)
+    notify_addr: Option<u64>,
+    /// Notify width (MMIO uses 32-bit, PCI uses 16-bit)
+    notify_is_32bit: bool,
     /// 次の空きディスクリプタ
     next_free_desc: AtomicU16,
     /// 最後に処理した Used インデックス
@@ -203,13 +207,8 @@ pub struct NetVirtQueue {
     pending_wakers: Mutex<Vec<Waker>>,
     /// ペンディングバッファの追跡 (desc_id -> callback)
     pending_buffers: Mutex<Vec<Option<PendingBuffer>>>,
-    /// Notify用MMIOアドレス（Option for backward compatibility）
-    /// Deprecated: prefer providing notify addresses via the transport or using
-    /// the transport's notify methods; this field will be removed in a future release.
-    #[deprecated(
-        note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release."
-    )]
-    notify_addr: Option<*mut u16>,
+    /// DMA Buffer to keep memory alive
+    dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
 }
 
 // NetVirtQueueをSend/Syncにする
@@ -237,6 +236,9 @@ impl NetVirtQueue {
         desc_table: *mut VringDesc,
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
+        dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
+        notify_addr: Option<u64>,
+        notify_is_32bit: bool,
     ) -> Self {
         // ペンディングバッファ配列を初期化
         let mut pending = Vec::with_capacity(size as usize);
@@ -248,42 +250,13 @@ impl NetVirtQueue {
             desc_table: SendPtr::new(desc_table),
             avail_ring: SendPtr::new(avail_ring),
             used_ring: SendPtr::new(used_ring),
+            notify_addr,
+            notify_is_32bit,
             next_free_desc: AtomicU16::new(0),
             last_used_idx: AtomicU16::new(0),
             pending_wakers: Mutex::new(Vec::new()),
             pending_buffers: Mutex::new(pending),
-            notify_addr: None,
-        }
-    }
-
-    /// 新しいVirtQueueを作成（notify付き）
-    ///
-    /// # Safety
-    /// desc_table, avail_ring, used_ring, notify_addr は有効なメモリを指している必要がある
-    pub unsafe fn new_with_notify(
-        index: u16,
-        size: u16,
-        desc_table: *mut VringDesc,
-        avail_ring: *mut VringAvail,
-        used_ring: *mut VringUsed,
-        notify_addr: *mut u16,
-    ) -> Self {
-        // Safety: 呼び出し元がdesc_table, avail_ring, used_ringの有効性を保証
-        let mut queue = unsafe { Self::new(index, size, desc_table, avail_ring, used_ring) };
-        queue.notify_addr = Some(notify_addr);
-        queue
-    }
-
-    /// デバイスにキュー更新を通知
-    ///
-    /// notify_addrが設定されている場合、MMIOレジスタに直接書き込む。
-    /// これにより、transportの&mut selfを要求せずに通知が可能。
-    pub fn notify(&self) {
-        if let Some(notify_addr) = self.notify_addr {
-            // Memory barrier before notifying device
-            core::sync::atomic::fence(Ordering::Release);
-            // Write queue index to notification register
-            crate::io::mmio_write_u16(notify_addr as usize, self.index);
+            dma_buffer,
         }
     }
 
@@ -295,6 +268,19 @@ impl NetVirtQueue {
         } else {
             self.next_free_desc.fetch_sub(1, Ordering::AcqRel);
             None
+        }
+    }
+
+    /// Notify the device that new buffers are available.
+    pub fn notify(&self) {
+        let Some(addr) = self.notify_addr else {
+            return;
+        };
+
+        if self.notify_is_32bit {
+            crate::io::mmio::mmio_write_u32(addr as usize, self.index as u32);
+        } else {
+            crate::io::mmio::mmio_write_u16(addr as usize, self.index);
         }
     }
 
@@ -618,11 +604,67 @@ impl VirtioNetDevice {
         let queue_size = max_size.min(256);
         self.transport.set_queue_size(queue_size);
 
-        // メモリをアロケート（実際の実装ではDMA対応メモリが必要）
-        // ここでは簡略化のためスキップ
-        // 実際のキュー設定はVirtQueueの初期化と連携が必要
+        // メモリをアロケート（DmaAllocatorを使用）
+        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
+        let avail_size = 6 + 2 * queue_size as usize;
+        let used_size = 6 + 8 * queue_size as usize;
 
-        // キューを有効化
+        let total_size = desc_size + avail_size + used_size;
+
+        let buffer = crate::io::dma::CoherentDmaBuffer::new(
+            total_size,
+            crate::io::dma::DmaMemoryAttributes::MMIO,
+        )
+        .ok_or(VirtioNetError::DeviceError)?;
+
+        let phys_base = buffer.phys_addr().as_u64();
+        let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
+
+        let desc_table = ptr as *mut VringDesc;
+        let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
+        let used_ring = unsafe { ptr.add(desc_size + avail_size) as *mut VringUsed };
+        let notify_addr = self.transport.get_notify_addr(queue_index);
+        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+
+        // 各リングを初期化
+        for i in 0..queue_size {
+            unsafe {
+                (*desc_table.add(i as usize)) = VringDesc::default();
+            }
+        }
+        unsafe {
+            (*avail_ring).flags = 0;
+            (*avail_ring).idx = 0;
+            (*used_ring).flags = 0;
+            (*used_ring).idx = 0;
+        }
+
+        // デバイスにアドレスを設定
+        self.transport.set_queue_desc_addr(phys_base);
+        self.transport
+            .set_queue_avail_addr(phys_base + desc_size as u64);
+        self.transport
+            .set_queue_used_addr(phys_base + desc_size as u64 + avail_size as u64);
+
+        // キューを作成
+        let queue = unsafe {
+            NetVirtQueue::new(
+                queue_index,
+                queue_size,
+                desc_table,
+                avail_ring,
+                used_ring,
+                Some(buffer),
+                notify_addr,
+                notify_is_32bit,
+            )
+        };
+
+        if queue_index == 0 {
+            self.rx_queue = Some(queue);
+        } else {
+            self.tx_queue = Some(queue);
+        }
         self.transport.enable_queue();
 
         Ok(())

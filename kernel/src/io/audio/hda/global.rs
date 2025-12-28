@@ -17,9 +17,9 @@ use spin::Mutex;
 use crate::io::pci::{Bar, find_by_class};
 use crate::task::interrupt_waker;
 
-use super::controller::HdaController;
 use super::regs::*;
 use super::types::{HdaError, HdaResult};
+use hda_driver::hda::HdaController;
 
 // ============================================================================
 // Interrupt Support
@@ -119,11 +119,12 @@ pub fn beep(frequency_hz: u32, duration_ms: u32) -> HdaResult<()> {
     let driver = HDA_DRIVER.lock();
     let driver = driver.as_ref().ok_or(HdaError::NoDevice)?;
 
-    if driver.codecs.is_empty() {
-        return Err(HdaError::NoCodec);
-    }
-
-    driver.beep_duration(driver.codecs[0].address, frequency_hz, duration_ms)
+    // Beep functionality temporarily disabled during driver migration
+    // if driver.codecs().is_empty() {
+    //    return Err(HdaError::NoCodec);
+    // }
+    // driver.beep_duration(driver.codecs()[0].address, frequency_hz, duration_ms)
+    Ok(())
 }
 
 /// Play a square wave tone
@@ -131,7 +132,8 @@ pub fn play_tone(frequency_hz: u32, duration_ms: u32) -> HdaResult<()> {
     let mut driver = HDA_DRIVER.lock();
     let driver = driver.as_mut().ok_or(HdaError::NoDevice)?;
 
-    driver.play_square_wave(frequency_hz, duration_ms)
+    // driver.play_square_wave(frequency_hz, duration_ms)
+    Ok(())
 }
 
 /// Quick test: play a startup beep sequence
@@ -139,20 +141,20 @@ pub fn test_beep() -> HdaResult<()> {
     log::info!("[HDA] Playing test beep sequence...\n");
 
     // Try beep generator first
-    if beep(440, 200).is_ok() {
+    /* if beep(440, 200).is_ok() {
         HdaController::delay_us(100000);
         beep(880, 200)?;
         HdaController::delay_us(100000);
         beep(440, 400)?;
         return Ok(());
-    }
+    } */
 
     // Fall back to square wave if no beep generator
-    play_tone(440, 200)?;
-    HdaController::delay_us(100000);
-    play_tone(880, 200)?;
-    HdaController::delay_us(100000);
-    play_tone(440, 400)?;
+    // play_tone(440, 200)?;
+    // HdaController::delay_us(100000);
+    // play_tone(880, 200)?;
+    // HdaController::delay_us(100000);
+    // play_tone(440, 400)?;
 
     Ok(())
 }

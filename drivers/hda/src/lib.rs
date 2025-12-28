@@ -7,11 +7,14 @@
 extern crate alloc;
 
 pub mod codec;
+pub mod hda;
+pub mod regs;
 pub mod stream;
 pub mod types;
-pub mod regs;
 
 // Re-export commonly used types and helpers
-pub use types::{BdlEntry, CodecInfo, HdaError, HdaResult, NodeType, RirbEntry, WidgetCaps, make_corb_entry};
 pub use codec::configure_codec_output;
 pub use stream::{StreamConfig, StreamError, StreamResult};
+pub use types::{
+    BdlEntry, CodecInfo, HdaError, HdaResult, NodeType, RirbEntry, WidgetCaps, make_corb_entry,
+};

@@ -7,7 +7,6 @@
 pub mod cmd;
 pub mod tables;
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem::size_of;
@@ -27,7 +26,7 @@ use hashbrown::HashMap;
 
 use super::config::IommuConfig;
 use super::domain::IommuDomain as DomainState;
-use super::interface::{IommuDriver, IommuFuture};
+use super::IommuBackend;
 use super::page_table_pool::PageTablePool;
 use super::registry::{get_iommu_driver, init_driver};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
@@ -693,15 +692,15 @@ impl AmdIommuDriver {
         if get_iommu_driver().is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
-        let driver = Arc::new(AmdIommuDriver::new(
+        let driver = AmdIommuDriver::new(
             units,
             ivmd_ranges,
             cmd_states,
             event_logs,
             device_tables,
-        ));
+        );
         driver.populate_default_entries()?;
-        init_driver(driver);
+        init_driver(Arc::new(IommuBackend::Amd(driver)));
         Ok(())
     }
 
@@ -1531,12 +1530,12 @@ fn map_ivmd_ranges(domain: &mut DomainState, ranges: &[AmdIvmdRange]) -> Result<
     Ok(())
 }
 
-impl IommuDriver for AmdIommuDriver {
-    fn is_enabled(&self) -> bool {
+impl AmdIommuDriver {
+    pub(crate) fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
     }
 
-    fn enable(&self) -> Result<(), IommuError> {
+    pub(crate) fn enable(&self) -> Result<(), IommuError> {
         for (idx, unit) in self.units.iter().enumerate() {
             let table = self
                 .device_tables
@@ -1584,7 +1583,7 @@ impl IommuDriver for AmdIommuDriver {
         Ok(())
     }
 
-    fn disable(&self) -> Result<(), IommuError> {
+    pub(crate) fn disable(&self) -> Result<(), IommuError> {
         for unit in &self.units {
             let mmio_base = phys_to_virt_usize(unit.base_addr);
             let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
@@ -1596,15 +1595,15 @@ impl IommuDriver for AmdIommuDriver {
         Ok(())
     }
 
-    fn handle_fault(&self) {
+    pub(crate) fn handle_fault(&self) {
         for (idx, unit) in self.units.iter().enumerate() {
             self.poll_event_log(idx, unit);
         }
     }
 
-    fn wake_invalidation_waiters(&self) {}
+    pub(crate) fn wake_invalidation_waiters(&self) {}
 
-    fn map_interrupt(
+    pub(crate) fn map_interrupt(
         &self,
         _segment: u16,
         _bus: u8,
@@ -1617,11 +1616,15 @@ impl IommuDriver for AmdIommuDriver {
         Err(IommuError::NotSupported)
     }
 
-    fn get_remap_msi_message(&self, _handle: u16) -> (u64, u32) {
+    pub(crate) fn get_remap_msi_message(&self, _handle: u16) -> (u64, u32) {
         (0, 0)
     }
 
-    unsafe fn map_for_dma(&self, phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
+    pub(crate) unsafe fn map_for_dma(
+        &self,
+        phys_addr: PhysAddr,
+        size: u64,
+    ) -> Result<u64, IommuError> {
         let align = crate::mm::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
@@ -1641,7 +1644,7 @@ impl IommuDriver for AmdIommuDriver {
         Ok(iova)
     }
 
-    fn unmap_dma(&self, iova: u64, _size: u64) -> Result<(), IommuError> {
+    pub(crate) fn unmap_dma(&self, iova: u64, _size: u64) -> Result<(), IommuError> {
         let domain = self.domain_for_id(0)?;
         let mapped_size = {
             let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
@@ -1656,73 +1659,69 @@ impl IommuDriver for AmdIommuDriver {
         Ok(())
     }
 
-    unsafe fn map_for_device(
+    pub(crate) unsafe fn map_for_device(
         &self,
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
     ) -> Result<u64, IommuError> {
-        crate::task::block_on(async {
-            unsafe { self.map_for_device_async(device, phys_addr, size).await }
-        })
+        let align = crate::mm::PAGE_SIZE_4K as u64;
+        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
+            return Err(IommuError::InvalidAlignment);
+        }
+
+        let domain_id = self.domain_id_for_device(*device)?;
+        let iova = phys_addr.as_u64();
+        self.reject_excluded_ivmd_range(*device, iova, size)?;
+        let domain = self.domain_for_id(domain_id)?;
+
+        {
+            let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
+            guard.map(iova, phys_addr.as_u64(), size, true, true)?;
+        }
+
+        self.invalidate_iommu_pages(*device, domain_id, iova, size)?;
+        self.invalidate_iotlb_pages(*device, iova, size)?;
+        Ok(iova)
     }
 
-    unsafe fn map_for_device_async<'a>(
-        &'a self,
-        device: &'a DeviceId,
+    pub(crate) async unsafe fn map_for_device_async(
+        &self,
+        device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
-    ) -> IommuFuture<'a, Result<u64, IommuError>> {
-        Box::pin(async move {
-            let align = crate::mm::PAGE_SIZE_4K as u64;
-            if size == 0
-                || (phys_addr.as_u64() & (align - 1) != 0)
-                || (size & (align - 1) != 0)
-            {
-                return Err(IommuError::InvalidAlignment);
-            }
-
-            let domain_id = self.domain_id_for_device(*device)?;
-            let iova = phys_addr.as_u64();
-            self.reject_excluded_ivmd_range(*device, iova, size)?;
-            let domain = self.domain_for_id(domain_id)?;
-
-            {
-                let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-                guard.map(iova, phys_addr.as_u64(), size, true, true)?;
-            }
-
-            self.invalidate_iommu_pages(*device, domain_id, iova, size)?;
-            self.invalidate_iotlb_pages(*device, iova, size)?;
-            Ok(iova)
-        })
+    ) -> Result<u64, IommuError> {
+        unsafe { self.map_for_device(device, phys_addr, size) }
     }
 
-    fn unmap_for_device(&self, device: &DeviceId, iova: u64, size: u64) -> Result<(), IommuError> {
-        crate::task::block_on(async { self.unmap_for_device_async(device, iova, size).await })
-    }
-
-    fn unmap_for_device_async<'a>(
-        &'a self,
-        device: &'a DeviceId,
+    pub(crate) fn unmap_for_device(
+        &self,
+        device: &DeviceId,
         iova: u64,
         _size: u64,
-    ) -> IommuFuture<'a, Result<(), IommuError>> {
-        Box::pin(async move {
-            let domain_id = self.domain_id_for_device(*device)?;
-            let domain = self.domain_for_id(domain_id)?;
-            let mapping = {
-                let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-                guard.unmap(iova)?
-            };
+    ) -> Result<(), IommuError> {
+        let domain_id = self.domain_id_for_device(*device)?;
+        let domain = self.domain_for_id(domain_id)?;
+        let mapping = {
+            let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
+            guard.unmap(iova)?
+        };
 
-            self.invalidate_iommu_pages(*device, domain_id, iova, mapping.size)?;
-            self.invalidate_iotlb_pages(*device, iova, mapping.size)?;
-            Ok(())
-        })
+        self.invalidate_iommu_pages(*device, domain_id, iova, mapping.size)?;
+        self.invalidate_iotlb_pages(*device, iova, mapping.size)?;
+        Ok(())
     }
 
-    fn create_domain(
+    pub(crate) async fn unmap_for_device_async(
+        &self,
+        device: &DeviceId,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        self.unmap_for_device(device, iova, size)
+    }
+
+    pub(crate) fn create_domain(
         &self,
         numa_node: Option<usize>,
         domain_type: IommuDomainType,
@@ -1753,7 +1752,11 @@ impl IommuDriver for AmdIommuDriver {
         Ok(domain_id)
     }
 
-    fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
+    pub(crate) fn attach_device(
+        &self,
+        device: DeviceId,
+        domain_id: u16,
+    ) -> Result<(), IommuError> {
         if self.find_unit_for_device(device).is_none() {
             return Err(IommuError::DeviceNotFound);
         }
@@ -1847,7 +1850,7 @@ impl IommuDriver for AmdIommuDriver {
         Ok(())
     }
 
-    fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
+    pub(crate) fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
         if self.find_unit_for_device(device).is_none() {
             return Err(IommuError::DeviceNotFound);
         }
@@ -1899,18 +1902,24 @@ impl IommuDriver for AmdIommuDriver {
         Ok(())
     }
 
-    fn set_domain_numa(&self, domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError> {
+    pub(crate) fn set_domain_numa(
+        &self,
+        domain_id: u16,
+        numa_node: Option<usize>,
+    ) -> Result<(), IommuError> {
         let domain = self.domain_for_id(domain_id)?;
         let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
         guard.numa_node = numa_node;
         Ok(())
     }
 
-    fn get_domain_numa(&self, domain_id: u16) -> Result<Option<usize>, IommuError> {
+    pub(crate) fn get_domain_numa(&self, domain_id: u16) -> Result<Option<usize>, IommuError> {
         let domain = self.domain_for_id(domain_id)?;
         let guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
         Ok(guard.numa_node)
     }
+
+    pub(crate) fn dump_diagnostics(&self) {}
 }
 
 impl super::interface::IommuHardwareContext for AmdIommuDriver {
@@ -2220,14 +2229,8 @@ mod tests {
             device_domains.insert(device, domain_id);
         }
 
-        let result = unsafe {
-            <AmdIommuDriver as IommuDriver>::map_for_device(
-                &driver,
-                &device,
-                PhysAddr::new(0x2000),
-                0x1000,
-            )
-        };
+        let result =
+            unsafe { driver.map_for_device(&device, PhysAddr::new(0x2000), 0x1000) };
         assert_eq!(result, Err(IommuError::InvalidAddress));
     }
 }

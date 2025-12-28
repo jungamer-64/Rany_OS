@@ -322,18 +322,7 @@ impl IommuInvalidator for IommuController {
     }
 
     /// Optimized async invalidation using QI wait
-    fn invalidate_async<'a>(
-        &'a self,
-        request: InvalidateRequest,
-    ) -> core::pin::Pin<
-        alloc::boxed::Box<dyn core::future::Future<Output = Result<(), IommuError>> + Send + 'a>,
-    >
-    where
-        Self: Sync,
-    {
-        use alloc::boxed::Box;
-        use core::pin::Pin;
-
+    async fn invalidate_async(&self, request: InvalidateRequest) -> Result<(), IommuError> {
         // Submit the invalidation request first (sync part)
         let drain = request
             .flags
@@ -380,17 +369,13 @@ impl IommuInvalidator for IommuController {
             } => self.qi_invalidate_iec_global(),
         };
 
-        // If submission failed, return error immediately
-        if let Err(e) = submit_result {
-            return Box::pin(async move { Err(e) });
-        }
+        submit_result?;
 
         // If QI is enabled, use async wait; otherwise we're done
         if self.is_queued_invalidation_enabled() {
-            let waiter = self.qi_wait_async();
-            Box::pin(async move { waiter.await })
+            self.qi_wait_async().await
         } else {
-            Box::pin(async { Ok(()) })
+            Ok(())
         }
     }
 }

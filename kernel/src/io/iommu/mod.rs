@@ -11,11 +11,12 @@ use core::sync::atomic::AtomicBool;
 
 // Public API surface
 pub mod api;
+pub mod backend;
 pub mod cmdqueue;
 pub mod dma_handle;
 pub mod types;
 
-pub use self::interface::IommuDriver;
+pub use self::backend::IommuBackend;
 pub use self::types::{DeviceId, IommuError};
 
 // Internal modules (crate-visible)

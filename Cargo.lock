@@ -54,6 +54,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
 
 [[package]]
+name = "apic_driver"
+version = "0.1.0"
+dependencies = [
+ "acpi_driver",
+ "bitflags 2.10.0",
+ "hal",
+ "kernel_api",
+ "log",
+ "spin 0.10.0",
+ "x86_64 0.15.4",
+]
+
+[[package]]
 name = "app_sdk"
 version = "0.1.0"
 dependencies = [
@@ -514,6 +527,8 @@ version = "0.1.0"
 dependencies = [
  "hal",
  "kernel_api",
+ "log",
+ "pci_driver",
  "spin 0.9.8",
  "x86_64 0.15.4",
 ]
@@ -755,6 +770,7 @@ version = "0.3.0"
 dependencies = [
  "acpi_driver",
  "ahci_driver",
+ "apic_driver",
  "bitflags 2.10.0",
  "boot_proto",
  "criterion",

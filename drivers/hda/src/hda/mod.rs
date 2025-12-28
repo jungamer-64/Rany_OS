@@ -24,14 +24,15 @@
 #![allow(dead_code)]
 
 // サブモジュール (controller/global remain kernel-local; core codec/types/stream moved to driver crate)
-// mod controller; // Moved to driver
-mod global;
+mod controller;
+// mod global; // Kernel-specific
 
 // Use driver-provided modules
-pub use hda_driver::codec;
-pub use hda_driver::types;
-// mod stream; // Moved to driver
-pub use hda_driver::regs;
+pub use crate::codec;
+pub use crate::types;
+// mod stream; // Use crate::stream
+pub use crate::regs;
+pub use crate::stream;
 
 // 型の再エクスポート
 pub use types::{
@@ -39,14 +40,10 @@ pub use types::{
 };
 
 // コントローラの再エクスポート
-// pub use controller::HdaController;
-pub use hda_driver::hda::HdaController;
+pub use controller::HdaController;
 
 // 公開API関数の再エクスポート
-pub use global::{
-    beep, clear_interrupt_pending, disable_irq, enable_irq, get_interrupt_count, get_irq,
-    handle_interrupt, init, play_tone, test_beep, with_driver, with_driver_mut,
-};
+// Global APIs removed from driver crate (moved to kernel)
 
 // コーデック設定関数の再エクスポート
 pub use codec::configure_codec_output;
