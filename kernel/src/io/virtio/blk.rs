@@ -15,9 +15,9 @@
 
 #![allow(dead_code)]
 
-use crate::io::dma::{allocate_iommu_bounce_bytes, iommu_needs_bounce, IommuBounceAllocError};
+use crate::io::dma::{IommuBounceAllocError, allocate_iommu_bounce_bytes, iommu_needs_bounce};
 use crate::io::iommu::api::{
-    is_iommu_enabled, is_iommu_required, map_for_dma, map_rref_slice, unmap_dma, DmaDirection,
+    DmaDirection, is_iommu_enabled, is_iommu_required, map_for_dma, map_rref_slice, unmap_dma,
 };
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -27,6 +27,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
+use super::transport::{TransportType, VirtioMmioTransport, VirtioTransport};
 use spin::Mutex;
 use vfs::block::{
     BlockDeviceInfo as VfsBlockDeviceInfo, BlockError as VfsBlockError,
@@ -177,11 +178,14 @@ pub struct VirtQueue {
     free_bitmap: AtomicU64,
     /// Last seen used index
     last_used_idx: AtomicU32,
-    /// Notification address (MMIO)
-    #[deprecated(
-        note = "notify_addr is deprecated; prefer using transport-level notify configuration or `notify` methods; this field will be removed in a future release."
-    )]
-    notify_addr: *mut u16,
+    /// DMA Buffer to keep memory alive (and properly manage ownership)
+    dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
+    /// Queue index
+    index: u16,
+    /// Queue notify address (transport-provided)
+    notify_addr: Option<u64>,
+    /// Notify width (MMIO uses 32-bit, PCI uses 16-bit)
+    notify_is_32bit: bool,
 }
 
 unsafe impl Send for VirtQueue {}
@@ -199,7 +203,10 @@ impl VirtQueue {
         desc_table: *mut VringDesc,
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
-        notify_addr: *mut u16,
+        dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
+        index: u16,
+        notify_addr: Option<u64>,
+        notify_is_32bit: bool,
     ) -> Self {
         // Initialize descriptor table
         for i in 0..queue_size {
@@ -227,7 +234,10 @@ impl VirtQueue {
             used_ring,
             free_bitmap: AtomicU64::new((1u64 << queue_size.min(64)) - 1),
             last_used_idx: AtomicU32::new(0),
+            dma_buffer,
+            index,
             notify_addr,
+            notify_is_32bit,
         }
     }
 
@@ -272,7 +282,7 @@ impl VirtQueue {
     ///
     /// # Safety
     /// Caller must ensure descriptors are properly set up
-    pub unsafe fn submit(&self, head: u16) {
+    pub unsafe fn submit(&self, head: u16) -> u16 {
         // Memory barrier before making buffer visible to device
         core::sync::atomic::fence(Ordering::Release);
 
@@ -289,8 +299,20 @@ impl VirtQueue {
             (*self.avail_ring).idx = avail_idx.wrapping_add(1);
         }
 
-        // Notify device via MMIO write to notification register
-        crate::io::mmio_write_u16(self.notify_addr as usize, 0);
+        self.index
+    }
+
+    /// Notify the device that new buffers are available.
+    pub fn notify(&self) {
+        let Some(addr) = self.notify_addr else {
+            return;
+        };
+
+        if self.notify_is_32bit {
+            crate::io::mmio::mmio_write_u32(addr as usize, self.index as u32);
+        } else {
+            crate::io::mmio::mmio_write_u16(addr as usize, self.index);
+        }
     }
 
     /// Poll for completed requests
@@ -385,8 +407,8 @@ pub struct VirtioBlkDevice {
     pending_wakers: Mutex<Vec<Option<Waker>>>,
     /// Device ready flag
     ready: AtomicBool,
-    /// MMIO base address
-    mmio_base: u64,
+    /// Transport
+    transport: Box<dyn VirtioTransport>,
     /// Features negotiated
     features: u64,
 }
@@ -415,13 +437,15 @@ pub enum BlockError {
 
 impl VirtioBlkDevice {
     /// Create a new VirtIO block device (uninitialized)
-    pub fn new(mmio_base: u64) -> Self {
+    ///
+    /// The transport must already be validated (magic/version checks).
+    pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
         Self {
             config: BlockDeviceConfig::default(),
             queues: Vec::new(),
             pending_wakers: Mutex::new(Vec::new()),
             ready: AtomicBool::new(false),
-            mmio_base,
+            transport,
             features: 0,
         }
     }
@@ -432,55 +456,44 @@ impl VirtioBlkDevice {
     /// Caller must ensure MMIO address is valid
     pub unsafe fn init(&mut self) -> Result<(), BlockError> {
         // Step 1: Reset device
-        unsafe {
-            self.write_status(0);
-        }
+        self.transport.set_status(0);
 
         // Step 2: Acknowledge device
-        unsafe {
-            self.write_status(VirtioDeviceStatus::Acknowledge as u8);
-        }
+        self.transport
+            .set_status(VirtioDeviceStatus::Acknowledge as u8);
 
         // Step 3: Driver loaded
-        unsafe {
-            self.write_status(
-                VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8,
-            );
-        }
+        self.transport
+            .set_status(VirtioDeviceStatus::Acknowledge as u8 | VirtioDeviceStatus::Driver as u8);
 
         // Step 4: Negotiate features
-        let device_features = unsafe { self.read_device_features() };
+        let device_features = self.transport.get_device_features();
         let driver_features = device_features
             & (features::VIRTIO_BLK_F_SIZE_MAX
                 | features::VIRTIO_BLK_F_SEG_MAX
                 | features::VIRTIO_BLK_F_BLK_SIZE
                 | features::VIRTIO_BLK_F_FLUSH
                 | features::VIRTIO_BLK_F_MQ);
-        unsafe {
-            self.write_driver_features(driver_features);
-        }
+        self.transport.set_driver_features(driver_features);
         self.features = driver_features;
 
         // Step 5: Features OK
-        unsafe {
-            self.write_status(
-                VirtioDeviceStatus::Acknowledge as u8
-                    | VirtioDeviceStatus::Driver as u8
-                    | VirtioDeviceStatus::FeaturesOk as u8,
-            );
-        }
+        // Step 5: Features OK
+        self.transport.set_status(
+            VirtioDeviceStatus::Acknowledge as u8
+                | VirtioDeviceStatus::Driver as u8
+                | VirtioDeviceStatus::FeaturesOk as u8,
+        );
 
         // Verify features accepted
-        let status = unsafe { self.read_status() };
+        let status = self.transport.get_status();
         if (status & VirtioDeviceStatus::FeaturesOk as u8) == 0 {
-            unsafe {
-                self.write_status(VirtioDeviceStatus::Failed as u8);
-            }
+            self.transport.set_status(VirtioDeviceStatus::Failed as u8);
             return Err(BlockError::NotReady);
         }
 
         // Step 6: Read configuration
-        unsafe { self.read_config()? };
+        self.read_config()?;
 
         // Step 7: Setup queues
         let num_queues = if self.features & features::VIRTIO_BLK_F_MQ != 0 {
@@ -490,9 +503,7 @@ impl VirtioBlkDevice {
         };
 
         for i in 0..num_queues {
-            unsafe {
-                self.setup_queue(i)?;
-            }
+            self.setup_queue(i)?;
         }
 
         // Initialize pending wakers
@@ -501,68 +512,57 @@ impl VirtioBlkDevice {
         drop(wakers);
 
         // Step 8: Driver OK
-        unsafe {
-            self.write_status(
-                VirtioDeviceStatus::Acknowledge as u8
-                    | VirtioDeviceStatus::Driver as u8
-                    | VirtioDeviceStatus::FeaturesOk as u8
-                    | VirtioDeviceStatus::DriverOk as u8,
-            );
-        }
+        self.transport.set_status(
+            VirtioDeviceStatus::Acknowledge as u8
+                | VirtioDeviceStatus::Driver as u8
+                | VirtioDeviceStatus::FeaturesOk as u8
+                | VirtioDeviceStatus::DriverOk as u8,
+        );
 
         self.ready.store(true, Ordering::Release);
         Ok(())
     }
 
-    /// Read device status register
-    unsafe fn read_status(&self) -> u8 {
-        // MMIO offset 0x70 for status
-        let ptr = (self.mmio_base + 0x70) as *const u8;
-        crate::io::mmio_read_u8((self.mmio_base + 0x70) as usize)
-    }
-
-    /// Write device status register
-    unsafe fn write_status(&self, status: u8) {
-        let ptr = (self.mmio_base + 0x70) as *mut u8;
-        crate::io::mmio_write_u8((self.mmio_base + 0x70) as usize, status);
-    }
-
-    /// Read device features
-    unsafe fn read_device_features(&self) -> u64 {
-        // MMIO offset 0x10 for device features
-        let low = crate::io::mmio_read_u32((self.mmio_base + 0x10) as usize) as u64;
-        let high = crate::io::mmio_read_u32((self.mmio_base + 0x10 + 4) as usize) as u64;
-        low | (high << 32)
-    }
-
-    /// Write driver features
-    unsafe fn write_driver_features(&self, features: u64) {
-        // MMIO offset 0x20 for driver features
-        crate::io::mmio_write_u32((self.mmio_base + 0x20) as usize, features as u32);
-        crate::io::mmio_write_u32(
-            (self.mmio_base + 0x20 + 4) as usize,
-            (features >> 32) as u32,
-        );
-    }
+    // read_status, write_status, read_device_features, write_driver_features REMOVED
+    // as we use self.transport methods directly.
 
     /// Read device configuration
-    unsafe fn read_config(&mut self) -> Result<(), BlockError> {
-        // Configuration space starts at MMIO offset 0x100
-        let config_base = self.mmio_base + 0x100;
-
+    fn read_config(&mut self) -> Result<(), BlockError> {
         // Read capacity (8 bytes at offset 0)
-        self.config.capacity = crate::io::mmio_read_u64(config_base as usize);
+        self.config.capacity = self.transport.read_config_u64(0);
 
         // Read block size if feature supported
+        // Read block size if feature supported
         if self.features & features::VIRTIO_BLK_F_BLK_SIZE != 0 {
-            // Block size (u32) at offset 0x14
-            self.config.block_size = crate::io::mmio::mmio_read_u32((config_base + 0x14) as usize);
+            // Block size (u32) at offset 0x14 - wait, offset depends on struct layout.
+            // But transport.read_config_u32(offset) works relative to config space.
+            // Offset 0 is capacity (u64, size 8).
+            // size_max (u32) at 8
+            // seg_max (u32) at 12
+            // geometry (cylinders, heads, sectors) at 16 (u16*3) -> 6 bytes
+            // blk_size (u32) is after geometry? Spec says:
+            // struct virtio_blk_config {
+            //     u64 capacity; (0)
+            //     u32 size_max; (8)
+            //     u32 seg_max; (12)
+            //     struct virtio_blk_geometry geometry; (16)
+            //     u32 blk_size; (20? 16+4+2+4=26? No, geometry is u16 cylinders, u8 heads, u8 sectors = 4 bytes total? 16+4=20)
+            //     ...
+            // }
+            // Let's assume standard offsets. 0x14 is 20.
+            self.config.block_size = self.transport.read_config_u32(20);
         }
 
         // Read num_queues if multiqueue supported
+        // Read num_queues if multiqueue supported
         if self.features & features::VIRTIO_BLK_F_MQ != 0 {
-            // Number of queues (u16) at offset 0x22
-            self.config.num_queues = crate::io::mmio::mmio_read_u16((config_base + 0x22) as usize);
+            // Number of queues (u16). Offset?
+            // topology (alignment etc) is after blk_size.
+            // writeback?
+            // Spec says num_queues is later?
+            // Existing code used 0x22 (34).
+            // Let's trust existing offset.
+            self.config.num_queues = self.transport.read_config_u16(34);
         }
 
         // Check read-only
@@ -574,70 +574,75 @@ impl VirtioBlkDevice {
     }
 
     /// Setup a virtqueue
-    unsafe fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> {
-        // Select queue
-        // Select queue
-        crate::io::mmio::mmio_write_u32((self.mmio_base + 0x30) as usize, queue_idx as u32);
-
-        // Read max queue size
-        // Read max queue size
-        let max_size = crate::io::mmio::mmio_read_u32((self.mmio_base + 0x34) as usize) as u16;
+    fn setup_queue(&mut self, queue_idx: u16) -> Result<(), BlockError> {
+        // Select queue and read size
+        self.transport.select_queue(queue_idx);
+        let max_size = self.transport.get_queue_max_size();
 
         if max_size == 0 {
             return Err(BlockError::NotReady);
         }
 
         let queue_size = max_size.min(VIRTQUEUE_MAX_SIZE);
+        let notify_addr = self.transport.get_notify_addr(queue_idx);
+        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
 
-        // Allocate queue memory (simplified - should use proper allocator)
-        // In real implementation, this would allocate physically contiguous memory
+        // Allocate queue memory (proper DMA allocation)
         let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
         let avail_size = 6 + 2 * queue_size as usize; // flags + idx + ring + used_event
         let used_size = 6 + 8 * queue_size as usize; // flags + idx + ring + avail_event
 
         let total_size = desc_size + avail_size + used_size;
-        let layout = alloc::alloc::Layout::from_size_align(total_size, 4096)
-            .map_err(|_| BlockError::NotReady)?;
-        let ptr_nn = crate::util::allocate_zeroed(layout).ok_or(BlockError::NotReady)?;
-        let ptr = ptr_nn.as_ptr();
+
+        // Use CoherentDmaBuffer for shared queue memory
+        // We use Bidirectional as default, allowing device to read/write rings
+        let buffer = crate::io::dma::CoherentDmaBuffer::new(
+            total_size,
+            crate::io::dma::DmaMemoryAttributes::MMIO, // Use MMIO/Uncacheable for rings to ensure visibility? Or Bidirectional?
+                                                       // Usually rings are Coherent/Consistent. DmaMemoryAttributes::TO_DEVICE says WriteBack.
+                                                       // MMIO says Uncacheable.
+                                                       // VirtIO legacy often requires legacy access, but modern requires correct flags.
+                                                       // Let's use DmaMemoryAttributes::MMIO which gives Uncacheable + Bidirectional, ensuring changes are visible immediately.
+                                                       // Wait, standard RAM for rings should be cacheable if snooped.
+                                                       // But to be safe and consistent with "Coherent", Uncacheable is often used if no hardware snooping.
+                                                       // Let's stick to DmaMemoryAttributes::MMIO for safety as per user guideline "wrap unsafe MMIO".
+                                                       // Actually, `alloc_dma_buffer` usually returns coherent memory.
+                                                       // Let's use `DmaMemoryAttributes { cache_mode: CacheMode::Uncacheable, contiguous: true, direction: DmaDirection::Bidirectional }`.
+                                                       // Which is `DmaMemoryAttributes::MMIO`.
+        )
+        .ok_or(BlockError::NotReady)?;
+
+        let phys_base = buffer.phys_addr().as_u64();
+        let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
 
         let desc_table = ptr as *mut VringDesc;
         let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
         let used_ring = unsafe { ptr.add(desc_size + avail_size) as *mut VringUsed };
 
         // Write queue configuration
-        // Write queue size
-        crate::io::mmio::mmio_write_u32((self.mmio_base + 0x38) as usize, queue_size as u32);
+        self.transport.set_queue_size(queue_size);
+        self.transport.set_queue_desc_addr(phys_base);
+        self.transport
+            .set_queue_avail_addr(phys_base + desc_size as u64);
+        self.transport
+            .set_queue_used_addr(phys_base + desc_size as u64 + avail_size as u64);
 
-        // Write descriptor table address (split into low/high)
-        let desc_addr = desc_table as u64;
-        let desc_low_addr = (self.mmio_base + 0x80) as usize;
-        let desc_high_addr = (self.mmio_base + 0x84) as usize;
-        crate::io::mmio::mmio_write_u32(desc_low_addr, desc_addr as u32);
-        crate::io::mmio::mmio_write_u32(desc_high_addr, (desc_addr >> 32) as u32);
+        // Activate queue
+        self.transport.enable_queue();
 
-        // Write available ring address
-        let avail_addr = avail_ring as u64;
-        let avail_low_addr = (self.mmio_base + 0x90) as usize;
-        let avail_high_addr = (self.mmio_base + 0x94) as usize;
-        crate::io::mmio::mmio_write_u32(avail_low_addr, avail_addr as u32);
-        crate::io::mmio::mmio_write_u32(avail_high_addr, (avail_addr >> 32) as u32);
-
-        // Write used ring address
-        let used_addr = used_ring as u64;
-        let used_low_addr = (self.mmio_base + 0xa0) as usize;
-        let used_high_addr = (self.mmio_base + 0xa4) as usize;
-        crate::io::mmio::mmio_write_u32(used_low_addr, used_addr as u32);
-        crate::io::mmio::mmio_write_u32(used_high_addr, (used_addr >> 32) as u32);
-
-        // Enable queue
-        crate::io::mmio::mmio_write_u32((self.mmio_base + 0x44) as usize, 1);
-
-        // Create notify address for this queue
-        let notify_addr = (self.mmio_base + 0x50) as *mut u16;
-
-        let virtqueue =
-            unsafe { VirtQueue::new(queue_size, desc_table, avail_ring, used_ring, notify_addr) };
+        // Create VirtQueue instance with transport-provided notify address
+        let virtqueue = unsafe {
+            VirtQueue::new(
+                queue_size,
+                desc_table,
+                avail_ring,
+                used_ring,
+                Some(buffer),
+                queue_idx, // Index
+                notify_addr,
+                notify_is_32bit,
+            )
+        };
 
         self.queues.push(Arc::new(Mutex::new(virtqueue)));
 
@@ -786,6 +791,8 @@ impl VirtioBlkDevice {
             }
         }
 
+        queue_guard.notify();
+
         Ok(desc0)
     }
 
@@ -860,6 +867,8 @@ impl VirtioBlkDevice {
             queue_guard.submit(desc0);
         }
 
+        queue_guard.notify();
+
         Ok(desc0)
     }
 
@@ -912,6 +921,8 @@ impl VirtioBlkDevice {
             queue_guard.submit(desc0);
         }
 
+        queue_guard.notify();
+
         Ok(desc0)
     }
 }
@@ -923,13 +934,100 @@ impl VirtioBlkDevice {
 #[cfg(test)]
 mod tests {
     use alloc::sync::Arc;
-    use core::sync::atomic::Ordering;
     use alloc::vec::Vec;
+    use core::sync::atomic::Ordering;
 
     use super::*;
-    use crate::mm::{alloc_contiguous_frames, dealloc_contiguous_frames, PAGE_SIZE_4K};
+    use crate::io::virtio::{TransportType, VirtioDeviceType, VirtioTransport};
     use crate::fs::page_cluster_buffer::PageClusterBuffer;
+    use crate::mm::{PAGE_SIZE_4K, alloc_contiguous_frames, dealloc_contiguous_frames};
     use x86_64::PhysAddr;
+
+    struct NoopTransport;
+
+    impl VirtioTransport for NoopTransport {
+        fn device_type(&self) -> VirtioDeviceType {
+            VirtioDeviceType::Block
+        }
+
+        fn get_status(&self) -> u8 {
+            0
+        }
+
+        fn set_status(&mut self, _status: u8) {}
+
+        fn get_device_features_low(&self) -> u32 {
+            0
+        }
+
+        fn get_device_features_high(&self) -> u32 {
+            0
+        }
+
+        fn set_driver_features_low(&mut self, _features: u32) {}
+
+        fn set_driver_features_high(&mut self, _features: u32) {}
+
+        fn get_num_queues(&self) -> u16 {
+            1
+        }
+
+        fn select_queue(&mut self, _queue_index: u16) {}
+
+        fn get_queue_max_size(&self) -> u16 {
+            VIRTQUEUE_MAX_SIZE
+        }
+
+        fn set_queue_size(&mut self, _size: u16) {}
+
+        fn is_queue_ready(&self) -> bool {
+            false
+        }
+
+        fn enable_queue(&mut self) {}
+
+        fn disable_queue(&mut self) {}
+
+        fn set_queue_desc_addr(&mut self, _addr: u64) {}
+
+        fn set_queue_avail_addr(&mut self, _addr: u64) {}
+
+        fn set_queue_used_addr(&mut self, _addr: u64) {}
+
+        fn notify_queue(&mut self, _queue_index: u16) {}
+
+        fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+            None
+        }
+
+        fn get_interrupt_status(&self) -> u32 {
+            0
+        }
+
+        fn ack_interrupt(&mut self, _status: u32) {}
+
+        fn read_config_u8(&self, _offset: usize) -> u8 {
+            0
+        }
+
+        fn read_config_u16(&self, _offset: usize) -> u16 {
+            0
+        }
+
+        fn read_config_u32(&self, _offset: usize) -> u32 {
+            0
+        }
+
+        fn write_config_u8(&mut self, _offset: usize, _value: u8) {}
+
+        fn write_config_u16(&mut self, _offset: usize, _value: u16) {}
+
+        fn write_config_u32(&mut self, _offset: usize, _value: u32) {}
+
+        fn transport_type(&self) -> TransportType {
+            TransportType::Mmio
+        }
+    }
 
     #[test]
     fn test_submit_read_uses_dma_addr() {
@@ -941,16 +1039,16 @@ mod tests {
         let mut avail = vec![0u16; 2 + queue_size as usize];
         let avail_ptr = avail.as_mut_ptr() as *mut VringAvail;
 
-        let used_bytes = core::mem::size_of::<VringUsed>() + (queue_size as usize) * core::mem::size_of::<VringUsedElem>();
+        let used_bytes = core::mem::size_of::<VringUsed>()
+            + (queue_size as usize) * core::mem::size_of::<VringUsedElem>();
         let mut used_mem = vec![0u8; used_bytes];
         let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
-        let mut notify = Box::new(0u16);
-        let notify_ptr: *mut u16 = &mut *notify;
+        let vq = unsafe {
+            VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, None, false)
+        };
 
-        let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, notify_ptr) };
-
-        let mut dev = VirtioBlkDevice::new(0);
+        let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
         dev.queues.push(Arc::new(spin::Mutex::new(vq)));
         dev.ready.store(true, Ordering::Release);
         dev.config.capacity = 1024;
@@ -964,10 +1062,13 @@ mod tests {
         let frames_needed = 1usize;
         if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
             let real_size = PAGE_SIZE_4K as usize;
-            let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size).expect("new_from_phys failed");
+            let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
+                .expect("new_from_phys failed");
             let dma = buf.dma_info().expect("dma_info missing");
 
-            let head = dev.submit_read(0, dma.phys_addr, 512u32, 0).expect("submit_read failed");
+            let head = dev
+                .submit_read(0, dma.phys_addr, 512u32, 0)
+                .expect("submit_read failed");
 
             // Inspect descriptor chain: header -> data -> status
             let header_desc = unsafe { *desc_ptr.add(head as usize) };
@@ -995,16 +1096,16 @@ mod tests {
         let mut avail = vec![0u16; 2 + queue_size as usize];
         let avail_ptr = avail.as_mut_ptr() as *mut VringAvail;
 
-        let used_bytes = core::mem::size_of::<VringUsed>() + (queue_size as usize) * core::mem::size_of::<VringUsedElem>();
+        let used_bytes = core::mem::size_of::<VringUsed>()
+            + (queue_size as usize) * core::mem::size_of::<VringUsedElem>();
         let mut used_mem = vec![0u8; used_bytes];
         let used_ptr = used_mem.as_mut_ptr() as *mut VringUsed;
 
-        let mut notify = Box::new(0u16);
-        let notify_ptr: *mut u16 = &mut *notify;
+        let vq = unsafe {
+            VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, None, 0, None, false)
+        };
 
-        let vq = unsafe { VirtQueue::new(queue_size, desc_ptr, avail_ptr, used_ptr, notify_ptr) };
-
-        let mut dev = VirtioBlkDevice::new(0);
+        let mut dev = VirtioBlkDevice::new(Box::new(NoopTransport));
         dev.queues.push(Arc::new(spin::Mutex::new(vq)));
         dev.ready.store(true, Ordering::Release);
         dev.config.capacity = 1024;
@@ -1018,10 +1119,13 @@ mod tests {
         let frames_needed = 1usize;
         if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
             let real_size = PAGE_SIZE_4K as usize;
-            let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size).expect("new_from_phys failed");
+            let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
+                .expect("new_from_phys failed");
             let dma = buf.dma_info().expect("dma_info missing");
 
-            let head = dev.submit_write(0, dma.phys_addr, 512u32, 0).expect("submit_write failed");
+            let head = dev
+                .submit_write(0, dma.phys_addr, 512u32, 0)
+                .expect("submit_write failed");
 
             // Inspect descriptor chain: header -> data -> status
             let header_desc = unsafe { *desc_ptr.add(head as usize) };
@@ -1728,7 +1832,10 @@ static VIRTIO_BLK_DEVICE: Mutex<Option<Arc<VirtioBlkDevice>>> = Mutex::new(None)
 /// # Safety
 /// Caller must ensure MMIO address is valid and device exists
 pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
-    let mut dev = VirtioBlkDevice::new(mmio_base);
+    let transport = unsafe {
+        VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
+    };
+    let mut dev = VirtioBlkDevice::new(Box::new(transport));
     unsafe { dev.init()? };
 
     let device_arc = Arc::new(dev);

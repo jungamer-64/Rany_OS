@@ -43,6 +43,7 @@ acpi_driver = { path = "../drivers/acpi" }
 rtc_driver = { path = "../drivers/rtc" }
 ide_driver = { path = "../drivers/ide" }
 serial_driver = { path = "../drivers/serial" }
+apic_driver = { path = "../drivers/apic" }
 
 # Filesystems
 fat32 = { path = "../filesystems/fat32" }

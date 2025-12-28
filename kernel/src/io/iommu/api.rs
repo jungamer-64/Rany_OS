@@ -9,7 +9,7 @@
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::PhysAddr;
 
-use super::interface::IommuDriver;
+use super::IommuBackend;
 use super::registry::get_iommu_driver;
 use super::types::{DeviceId, IommuDomainType, IommuError};
 use super::IOMMU_REQUIRED;
@@ -298,11 +298,11 @@ pub fn dump_iommu_diagnostics() {
 
 /// Execute with the active IOMMU backend.
 ///
-/// This passes a `&dyn IommuDriver` to the closure. Backend selection is handled
+/// This passes a `&IommuBackend` to the closure. Backend selection is handled
 /// by the driver registry.
 pub fn with_iommu<F, R>(f: F) -> Result<R, IommuError>
 where
-    F: FnOnce(&dyn IommuDriver) -> R,
+    F: FnOnce(&IommuBackend) -> R,
 {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     Ok(f(driver.as_ref()))

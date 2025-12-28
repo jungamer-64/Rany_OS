@@ -17,11 +17,13 @@ use alloc::vec::Vec;
 // Volatile memory reads/writes centralized via mmio helpers
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
-use crate::io::pci::PciDeviceInfo;
-use crate::time;
+use pci_driver::PciDeviceInfo;
+// use crate::time; // Kernel time not available in driver
+// use crate::io::pci::PciDeviceInfo; // Removed
+// use crate::time; // Removed
 
-use super::regs::*;
-use super::types::{CodecInfo, HdaError, HdaResult, make_corb_entry};
+use crate::regs::*;
+use crate::types::{CodecInfo, HdaError, HdaResult, make_corb_entry};
 
 // ============================================================================
 // HDA Controller
@@ -122,7 +124,7 @@ impl HdaController {
     /// - offset must be within the HDA register space
     #[inline]
     pub fn read8(&self, offset: u32) -> u8 {
-        crate::io::mmio::mmio_read_u8((self.mmio_base + offset as u64) as usize)
+        hal::mmio::mmio_read_u8((self.mmio_base + offset as u64) as usize)
     }
 
     /// Write a 8-bit register
@@ -132,7 +134,7 @@ impl HdaController {
     /// - offset must be within the HDA register space
     #[inline]
     pub fn write8(&self, offset: u32, value: u8) {
-        crate::io::mmio::mmio_write_u8((self.mmio_base + offset as u64) as usize, value);
+        hal::mmio::mmio_write_u8((self.mmio_base + offset as u64) as usize, value);
     }
 
     /// Read a 16-bit register
@@ -142,7 +144,7 @@ impl HdaController {
     /// - offset must be 2-byte aligned and within the HDA register space
     #[inline]
     pub fn read16(&self, offset: u32) -> u16 {
-        crate::io::mmio::mmio_read_u16((self.mmio_base + offset as u64) as usize)
+        hal::mmio::mmio_read_u16((self.mmio_base + offset as u64) as usize)
     }
 
     /// Write a 16-bit register
@@ -152,7 +154,7 @@ impl HdaController {
     /// - offset must be 2-byte aligned and within the HDA register space
     #[inline]
     pub fn write16(&self, offset: u32, value: u16) {
-        crate::io::mmio::mmio_write_u16((self.mmio_base + offset as u64) as usize, value);
+        hal::mmio::mmio_write_u16((self.mmio_base + offset as u64) as usize, value);
     }
 
     /// Read a 32-bit register
@@ -162,7 +164,7 @@ impl HdaController {
     /// - offset must be 4-byte aligned and within the HDA register space
     #[inline]
     pub fn read32(&self, offset: u32) -> u32 {
-        crate::io::mmio::mmio_read_u32((self.mmio_base + offset as u64) as usize)
+        hal::mmio::mmio_read_u32((self.mmio_base + offset as u64) as usize)
     }
 
     /// Write a 32-bit register
@@ -172,7 +174,7 @@ impl HdaController {
     /// - offset must be 4-byte aligned and within the HDA register space
     #[inline]
     pub fn write32(&self, offset: u32, value: u32) {
-        crate::io::mmio::mmio_write_u32((self.mmio_base + offset as u64) as usize, value);
+        hal::mmio::mmio_write_u32((self.mmio_base + offset as u64) as usize, value);
     }
 
     // ========================================================================
@@ -309,8 +311,12 @@ impl HdaController {
         // SAFETY: Layout is valid (size > 0, align is 128 which is a power of 2).
         // The allocated buffer will be used for DMA with the HDA controller.
         // alloc_zeroed returns a valid pointer or null, which we check below.
-        let nn = crate::util::allocate_zeroed(layout).ok_or(HdaError::AllocFailed)?;
-        let ptr = nn.as_ptr();
+        // Safety: Layout is valid.
+        let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) };
+        if ptr.is_null() {
+            return Err(HdaError::AllocFailed);
+        }
+        let nn = core::ptr::NonNull::new(ptr).ok_or(HdaError::AllocFailed)?;
 
         // Note: On x86_64 with PCIe, hardware cache coherency is maintained.
         // For other architectures, consider cache flush here.
@@ -494,14 +500,14 @@ impl HdaController {
         // SAFETY: corb_entry_addr points to a valid DMA buffer entry allocated by alloc_dma_buffer.
         // The buffer is 128-byte aligned and within bounds (next_wp < corb_size).
         unsafe {
-            crate::io::mmio::mmio_write_u32(corb_entry_addr as usize, cmd);
+            hal::mmio::mmio_write_u32(corb_entry_addr as usize, cmd);
         }
 
         // SAFETY: SFENCE ensures the CORB entry write is visible to the HDA controller
         // before we update the write pointer. This prevents out-of-order writes
         // that could cause the controller to read incomplete command data.
         // On x86_64, this is implemented as the SFENCE instruction.
-        crate::io::dma::sfence();
+        unsafe { core::arch::x86_64::_mm_sfence() };
 
         // Update write pointer
         self.write16(REG_CORBWP, next_wp);
@@ -528,7 +534,7 @@ impl HdaController {
                 // the latest data written by the HDA controller to the RIRB buffer.
                 // While x86_64 provides cache coherency for DMA, the fence ensures
                 // speculative loads don't return stale data.
-                crate::io::dma::lfence();
+                unsafe { core::arch::x86_64::_mm_lfence() };
 
                 // Read response
                 let rirb_entry_addr = self.rirb_addr + (next_rp as u64 * RIRB_ENTRY_SIZE as u64);
@@ -580,9 +586,12 @@ impl HdaController {
     /// 従来の spin_loop による空回しから PIT ワンショットモードに変更。
     /// より正確な時間待機が可能になる。
     pub fn delay_us(us: u64) {
-        // PIT タイマーを使用した精密な待機
-        // time::pit() は既に初期化済みの PIT インスタンスを返す
-        time::pit().delay_us(us);
+        // Simple spin loop approximate delay for now, as PIT is kernel-internal
+        // TODO: Pass a timer trait or use a better HAL delay
+        let iterations = us * 100; // Rough estimate
+        for _ in 0..iterations {
+            core::hint::spin_loop();
+        }
     }
 
     /// Get codec information

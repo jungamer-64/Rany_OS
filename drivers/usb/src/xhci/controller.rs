@@ -20,6 +20,9 @@ use core::task::Waker;
 use spin::Mutex;
 
 use super::context::DeviceContext;
+use super::event_handler::{
+    CommandCompletionEvent, EventHandler, PortStatusChangeEvent, ProcessedEvent, TransferEvent,
+};
 use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
 use super::{
     COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN, IR0,
@@ -78,6 +81,8 @@ pub struct XhciController {
     command_completions: Mutex<Vec<CommandCompletion>>,
     /// 転送完了待ち
     transfer_completions: Mutex<Vec<TransferCompletion>>,
+    /// イベントハンドラ (ISR/Task共有)
+    event_handler: Mutex<EventHandler>,
     /// 実行中フラグ
     running: AtomicBool,
 }
@@ -181,6 +186,7 @@ impl XhciController {
             transfer_rings: Mutex::new(transfer_rings),
             command_completions: Mutex::new(Vec::new()),
             transfer_completions: Mutex::new(Vec::new()),
+            event_handler: Mutex::new(EventHandler::new()),
             running: AtomicBool::new(false),
         };
 
@@ -447,6 +453,7 @@ impl XhciController {
         // 実際の実装では適切なasync待機を行う
         for _ in 0..1000 {
             self.process_events();
+            self.process_pending_events();
 
             let mut completions = self.command_completions.lock();
             if let Some(pos) = completions
@@ -464,10 +471,14 @@ impl XhciController {
         Err(UsbError::Timeout)
     }
 
-    /// イベントを処理
+    /// イベントを処理 (ISRから呼び出し)
+    ///
+    /// イベントリングからTRBを読み出し、キューに積む。
+    /// 実際の処理は `process_pending_events` で行う。
     pub fn process_events(&self) {
         let mut event_ring = self.event_ring.lock();
         let expected_cycle = event_ring.cycle_bit;
+        let mut event_handler = self.event_handler.lock();
 
         loop {
             let idx = event_ring.dequeue_index;
@@ -477,19 +488,9 @@ impl XhciController {
                 break;
             }
 
-            // イベントを処理
-            match TrbType::from_u8(trb.trb_type()) {
-                Some(TrbType::CommandCompletion) => {
-                    self.handle_command_completion(&trb);
-                }
-                Some(TrbType::Transfer) => {
-                    self.handle_transfer_completion(&trb);
-                }
-                Some(TrbType::PortStatusChange) => {
-                    self.handle_port_status_change(&trb);
-                }
-                _ => {}
-            }
+            // TRBをパースしてキューに追加
+            let event = EventHandler::parse_event(&trb);
+            event_handler.handle_event(event);
 
             event_ring.dequeue_index = (idx + 1) % event_ring.trbs.len();
             if event_ring.dequeue_index == 0 {
@@ -504,17 +505,38 @@ impl XhciController {
         self.write_runtime_64(ERDP, dequeue_ptr | 0x8); // EHB
     }
 
+    /// 保留中のイベントを処理 (タスク/ポーリングループから呼び出し)
+    pub fn process_pending_events(&self) {
+        let mut event_handler = self.event_handler.lock();
+        while let Some(event) = event_handler.pop_pending_event() {
+            drop(event_handler); // ハンドラロックを一旦解放（コールバック内でのロック競合回避）
+
+            match event {
+                ProcessedEvent::CommandCompletion(evt) => {
+                    self.handle_command_completion(&evt);
+                }
+                ProcessedEvent::Transfer(evt) => {
+                    self.handle_transfer_completion(&evt);
+                }
+                ProcessedEvent::PortStatusChange(evt) => {
+                    self.handle_port_status_change(&evt);
+                }
+                _ => {}
+            }
+
+            event_handler = self.event_handler.lock(); // ロック再取得
+        }
+    }
+
     /// コマンド完了イベントを処理
-    fn handle_command_completion(&self, trb: &Trb) {
-        let completion_code = CompletionCode::from_u8(((trb.status >> 24) & 0xFF) as u8);
-        let slot_id = SlotId(((trb.control >> 24) & 0xFF) as u8);
-        let trb_addr = trb.parameter & !0xF;
+    fn handle_command_completion(&self, event: &CommandCompletionEvent) {
+        let trb_addr = event.trb_address;
 
         let mut completions = self.command_completions.lock();
         for completion in completions.iter_mut() {
             if completion.trb_addr == trb_addr {
-                completion.completion_code = completion_code;
-                completion.slot_id = slot_id;
+                completion.completion_code = event.completion_code;
+                completion.slot_id = event.slot_id;
                 completion.completed = true;
                 if let Some(waker) = completion.waker.take() {
                     waker.wake();
@@ -526,30 +548,26 @@ impl XhciController {
         // 新しい完了を追加
         completions.push(CommandCompletion {
             trb_addr,
-            completion_code,
-            slot_id,
+            completion_code: event.completion_code,
+            slot_id: event.slot_id,
             waker: None,
             completed: true,
         });
     }
 
     /// 転送完了イベントを処理
-    fn handle_transfer_completion(&self, trb: &Trb) {
-        let completion_code = CompletionCode::from_u8(((trb.status >> 24) & 0xFF) as u8);
-        let slot_id = SlotId(((trb.control >> 24) & 0xFF) as u8);
-        let endpoint_id = ((trb.control >> 16) & 0x1F) as u8;
-        let trb_addr = trb.parameter;
-        let transferred = trb.status & 0xFFFFFF; // Transfer Length
+    fn handle_transfer_completion(&self, event: &TransferEvent) {
+        let transferred = event.transfer_length; // TODO: Check calculation
 
         let mut completions = self.transfer_completions.lock();
         for completion in completions.iter_mut() {
-            // スロットとエンドポイントでマッチング（TRBアドレスも考慮可能）
-            if completion.slot_id == slot_id
-                && completion.endpoint_id == endpoint_id
+            // スロットとエンドポイントでマッチング
+            if completion.slot_id == event.slot_id
+                && completion.endpoint_id == event.endpoint_id
                 && !completion.completed
             {
-                completion.completion_code = completion_code;
-                completion.transferred = transferred;
+                completion.completion_code = event.completion_code;
+                completion.transferred = transferred; // 簡易実装。実際はResidualからの計算が必要かも
                 completion.completed = true;
                 if let Some(waker) = completion.waker.take() {
                     waker.wake();
@@ -558,12 +576,12 @@ impl XhciController {
             }
         }
 
-        // 未登録の転送完了は新規追加（コールバックがない場合）
+        // 未登録の転送完了は新規追加
         completions.push(TransferCompletion {
-            trb_addr,
-            slot_id,
-            endpoint_id,
-            completion_code,
+            trb_addr: event.trb_pointer,
+            slot_id: event.slot_id,
+            endpoint_id: event.endpoint_id,
+            completion_code: event.completion_code,
             transferred,
             waker: None,
             completed: true,
@@ -571,8 +589,8 @@ impl XhciController {
     }
 
     /// ポート状態変更イベントを処理
-    fn handle_port_status_change(&self, trb: &Trb) {
-        let _port_id = ((trb.parameter >> 24) & 0xFF) as u8;
+    fn handle_port_status_change(&self, event: &PortStatusChangeEvent) {
+        let _port_id = event.port_id;
         // ポート状態変更の処理は別途実装
     }
 

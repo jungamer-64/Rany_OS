@@ -890,12 +890,12 @@ impl<T> DmaHandle<T> {
     /// # Arguments
     /// * `domain` - The IOMMU domain to unmap from
     /// * `context` - The IOMMU context (for IOVA deallocation)
-    /// * `invalidator` - Optional invalidator for IOTLB flush
-    pub(crate) fn unmap_with_domain(
+    /// * `invalidator` - Invalidator for IOTLB flush
+    pub(crate) fn unmap_with_domain<I: IommuInvalidator>(
         self,
         domain: &mut IommuDomain,
         context: &dyn IommuHardwareContext,
-        invalidator: Option<&dyn IommuInvalidator>,
+        invalidator: &I,
     ) -> Result<RRef<T>, UnmapError<T>> {
         domain.unmap_buffer(self, context, invalidator)
     }
@@ -909,11 +909,11 @@ impl<T> DmaHandle<T> {
     /// * `domain` - The IOMMU domain to unmap from
     /// * `context` - The IOMMU context (for IOVA deallocation)
     /// * `invalidator` - Invalidator for async IOTLB flush
-    pub(crate) async fn unmap_with_domain_async(
+    pub(crate) async fn unmap_with_domain_async<I: IommuInvalidator + Sync>(
         self,
         domain: &mut IommuDomain,
         context: &dyn IommuHardwareContext,
-        invalidator: &(dyn IommuInvalidator + Sync),
+        invalidator: &I,
     ) -> Result<RRef<T>, UnmapError<T>> {
         domain.unmap_buffer_async(self, context, invalidator).await
     }

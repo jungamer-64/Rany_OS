@@ -24,6 +24,13 @@ impl UsbDriverWrapper {
             controller: None,
         }
     }
+
+    /// Process pending events (should be called from a polling task or loop)
+    pub fn poll(&self) {
+        if let Some(controller) = &self.controller {
+            controller.process_pending_events();
+        }
+    }
 }
 
 impl Driver for UsbDriverWrapper {

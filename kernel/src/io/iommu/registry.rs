@@ -4,20 +4,20 @@
 
 //! Global IOMMU Driver Registration
 //!
-//! This module manages the active IOMMU backend driver (Intel VT-d or AMD-Vi).
-//! It provides a singleton accessor for the `IommuDriver` trait object.
+//! This module manages the active IOMMU backend (Intel VT-d or AMD-Vi).
+//! It provides a singleton accessor for the enum-dispatch backend.
 
 use alloc::sync::Arc;
 use spin::Once;
 
-use super::interface::IommuDriver;
+use super::IommuBackend;
 pub use super::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
 
 /// Global IOMMU Driver (backend abstraction, initialized once during boot)
-static IOMMU_DRIVER: Once<Arc<dyn IommuDriver>> = Once::new();
+static IOMMU_DRIVER: Once<Arc<IommuBackend>> = Once::new();
 
 /// Get reference to the registered IOMMU driver (backend abstraction)
-pub fn get_iommu_driver() -> Option<&'static Arc<dyn IommuDriver>> {
+pub fn get_iommu_driver() -> Option<&'static Arc<IommuBackend>> {
     IOMMU_DRIVER.get()
 }
 
@@ -30,6 +30,6 @@ pub fn is_iommu_enabled() -> bool {
 ///
 /// # Panics
 /// Panics if called more than once.
-pub fn init_driver(driver: Arc<dyn IommuDriver>) {
+pub fn init_driver(driver: Arc<IommuBackend>) {
     IOMMU_DRIVER.call_once(|| driver);
 }

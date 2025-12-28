@@ -171,7 +171,7 @@ impl InvalidateRequest {
 /// ];
 /// invalidator.process_invalidations(&requests)?;
 /// ```
-pub trait IommuInvalidator {
+pub trait IommuInvalidator: Send + Sync {
     /// Process a batch of invalidation requests synchronously
     ///
     /// All requests are processed, then a single wait is performed.
@@ -184,20 +184,20 @@ pub trait IommuInvalidator {
 
     /// Process a single invalidation request asynchronously
     ///
-    /// Returns a future that completes when the IOTLB invalidation is done.
-    /// The default implementation blocks synchronously.
-    fn invalidate_async<'a>(
-        &'a self,
-        request: InvalidateRequest,
-    ) -> core::pin::Pin<
-        alloc::boxed::Box<dyn core::future::Future<Output = Result<(), IommuError>> + Send + 'a>,
-    >
-    where
-        Self: Sync,
-    {
-        // Default: just wrap the sync version
-        let result = self.invalidate(request);
-        alloc::boxed::Box::pin(async move { result })
+    /// Returns when the IOTLB invalidation is done. The default implementation
+    /// delegates to the synchronous path.
+    async fn invalidate_async(&self, request: InvalidateRequest) -> Result<(), IommuError> {
+        self.invalidate(request)
+    }
+}
+
+/// No-op invalidator for contexts where IOTLB invalidation is unnecessary.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct NoopInvalidator;
+
+impl IommuInvalidator for NoopInvalidator {
+    fn process_invalidations(&self, _requests: &[InvalidateRequest]) -> Result<(), IommuError> {
+        Ok(())
     }
 }
 
@@ -364,9 +364,9 @@ impl IommuDomain {
     ///
     /// Must be called from thread/executor context. This path allocates and
     /// drops RRef raw parts via the quarantine reap.
-    pub fn flush(
+    pub fn flush<I: IommuInvalidator>(
         &mut self,
-        invalidator: &dyn IommuInvalidator,
+        invalidator: &I,
         context: &dyn IommuHardwareContext,
     ) -> Result<(), IommuError> {
         // Drain pending invalidations (Round 9: returns DrainResult)
@@ -440,12 +440,15 @@ impl IommuDomain {
             return Err(IommuError::InvalidAddress);
         }
 
-        // Check for overlapping mappings
-        for (existing_iova, mapping) in &self.mappings {
-            let existing_end = existing_iova + mapping.size;
-            let new_end = iova + size;
-
-            if iova < existing_end && new_end > *existing_iova {
+        // Check for overlapping mappings using range queries (O(log n))
+        let new_end = iova.checked_add(size).ok_or(IommuError::InvalidAddress)?;
+        if let Some((&existing_iova, mapping)) = self.mappings.range(..=iova).next_back() {
+            if existing_iova + mapping.size > iova {
+                return Err(IommuError::AlreadyMapped);
+            }
+        }
+        if let Some((&existing_iova, _)) = self.mappings.range(iova..).next() {
+            if existing_iova < new_end {
                 return Err(IommuError::AlreadyMapped);
             }
         }
@@ -1234,15 +1237,15 @@ impl IommuDomain {
     /// # Arguments
     /// * `handle` - The DmaHandle to unmap (consumed)
     /// * `context` - The IOMMU context for IOVA deallocation
-    /// * `invalidator` - Optional invalidator for IOTLB flush
+    /// * `invalidator` - Invalidator for IOTLB flush
     ///
     /// # Errors
     /// Returns `UnmapError<T>` containing the handle on failure.
-    pub fn unmap_buffer<T>(
+    pub fn unmap_buffer<T, I: IommuInvalidator>(
         &mut self,
         mut handle: super::dma_handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
-        invalidator: Option<&dyn IommuInvalidator>,
+        invalidator: &I,
     ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
         use super::dma_handle::{UnmapError, UnmapErrorKind};
 
@@ -1257,14 +1260,12 @@ impl IommuDomain {
             return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
         }
 
-        // Invalidate IOTLB if invalidator provided
-        if let Some(inv) = invalidator {
-            let req = InvalidateRequest::pages(self.id, iova, aligned_size);
-            if let Err(e) = inv.invalidate(req) {
-                // IOTLB invalidation failed - this is critical!
-                // We can't return the RRef because device may still access it
-                return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
-            }
+        // Invalidate IOTLB
+        let req = InvalidateRequest::pages(self.id, iova, aligned_size);
+        if let Err(e) = invalidator.invalidate(req) {
+            // IOTLB invalidation failed - this is critical!
+            // We can't return the RRef because device may still access it
+            return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
         }
 
         // Free IOVA
@@ -1296,11 +1297,11 @@ impl IommuDomain {
     ///
     /// # Returns
     /// A future that resolves to `Result<RRef<T>, UnmapError<T>>`
-    pub async fn unmap_buffer_async<T>(
+    pub async fn unmap_buffer_async<T, I: IommuInvalidator + Sync>(
         &mut self,
         mut handle: super::dma_handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
-        invalidator: &(dyn IommuInvalidator + Sync),
+        invalidator: &I,
     ) -> Result<crate::ipc::RRef<T>, super::dma_handle::UnmapError<T>> {
         use super::dma_handle::{UnmapError, UnmapErrorKind};
 
@@ -1336,9 +1337,9 @@ impl IommuDomain {
         }
     }
 
-    /// Recursively deallocate all page tables under the given table (iterative version)
+    /// Recursively deallocate all page tables under the given table.
     ///
-    /// Walks the page table tree to discover allocated tables and frees them bottom-up.
+    /// Uses a bounded recursion depth (4 levels) to avoid heap allocation in Drop.
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
@@ -1347,22 +1348,24 @@ impl IommuDomain {
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");
 
-        let mut stack: Vec<(*mut SlPte, usize)> = Vec::new();
-        stack.push((self.page_table, PT_LEVELS));
-
-        while let Some((table_ptr, level)) = stack.pop() {
+        unsafe fn free_table(
+            domain: &IommuDomain,
+            table_ptr: *mut SlPte,
+            level: usize,
+            layout: alloc::alloc::Layout,
+        ) {
             if level > 1 {
                 for idx in 0..PT_ENTRIES {
                     let entry = *table_ptr.add(idx);
                     if !entry.is_present() {
                         continue;
                     }
-                    if (level == 3 || level == 2) && entry.is_super_page(self.pte_format) {
+                    if (level == 3 || level == 2) && entry.is_super_page(domain.pte_format) {
                         continue;
                     }
                     let child_phys = entry.phys_addr();
                     let child_ptr = phys_to_virt_usize(child_phys) as *mut SlPte;
-                    stack.push((child_ptr, level - 1));
+                    free_table(domain, child_ptr, level - 1, layout);
                 }
             }
 
@@ -1371,6 +1374,8 @@ impl IommuDomain {
             }
             alloc::alloc::dealloc(table_ptr as *mut u8, layout);
         }
+
+        free_table(self, self.page_table, PT_LEVELS, layout);
     }
 }
 

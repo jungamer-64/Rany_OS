@@ -20,8 +20,8 @@ pub mod blk;
 pub mod net;
 
 // Re-export defs from virtio_driver crate
-pub use virtio_driver::defs;
 pub use virtio_driver::core;
+pub use virtio_driver::defs;
 pub use virtio_driver::transport;
 
 // Re-export common types

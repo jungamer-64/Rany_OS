@@ -87,6 +87,12 @@ pub enum ProcessedEvent {
 // Event Handler
 // ============================================================================
 
+// ============================================================================
+// Event Handler
+// ============================================================================
+
+use alloc::collections::VecDeque;
+
 /// イベントハンドラ
 pub struct EventHandler {
     /// コマンド完了待ちリスト
@@ -95,6 +101,10 @@ pub struct EventHandler {
     transfer_callbacks: Vec<TransferCallback>,
     /// ポート変更コールバック
     port_change_callback: Option<fn(u8)>,
+
+    /// 保留中のイベントキュー (ISR -> Worker)
+    /// 注意: ISRとWorker間の競合を防ぐため、この構造体全体をMutex等で保護して使用すること。
+    event_queue: VecDeque<ProcessedEvent>,
 }
 
 /// 保留中のコマンド
@@ -118,6 +128,7 @@ impl EventHandler {
             pending_commands: Vec::new(),
             transfer_callbacks: Vec::new(),
             port_change_callback: None,
+            event_queue: VecDeque::with_capacity(64), // 初期容量を確保
         }
     }
 
@@ -204,29 +215,50 @@ impl EventHandler {
         }
     }
 
-    /// イベントを処理
+    /// イベントを処理 (ISRコンテキスト用)
+    ///
+    /// 以前の実装とは異なり、ここではイベントをキューに積むだけで、
+    /// コールバックやWakerの呼び出しは行わない。
     pub fn handle_event(&mut self, event: ProcessedEvent) {
-        match event {
-            ProcessedEvent::CommandCompletion(evt) => {
-                self.handle_command_completion(evt);
-            }
-            ProcessedEvent::Transfer(evt) => {
-                self.handle_transfer_completion(evt);
-            }
-            ProcessedEvent::PortStatusChange(evt) => {
-                self.handle_port_status_change(evt);
-            }
-            ProcessedEvent::DeviceNotification(evt) => {
-                self.handle_device_notification(evt);
-            }
-            ProcessedEvent::HostController { completion_code } => {
-                self.handle_host_controller_event(completion_code);
-            }
-            ProcessedEvent::Unknown { trb_type } => {
-                // 未知のイベント - ログ出力のみ
-                let _ = trb_type;
+        // ISR内での割り当てを最小限にするため、capacityを超えた場合の挙動に注意が必要だが、
+        // ここでは簡易的にpush_backを使用。実運用ではリングバッファ(ArrayQueueなど)が望ましい。
+        self.event_queue.push_back(event);
+    }
+
+    /// 保留中のイベントを処理 (Task/Threadコンテキスト用)
+    ///
+    /// キューに溜まったイベントを順次処理し、コールバックを実行する。
+    /// ドライバのポーリングループやReactorから呼び出すこと。
+    pub fn process_pending_events(&mut self) {
+        while let Some(event) = self.event_queue.pop_front() {
+            match event {
+                ProcessedEvent::CommandCompletion(evt) => {
+                    self.handle_command_completion(evt);
+                }
+                ProcessedEvent::Transfer(evt) => {
+                    self.handle_transfer_completion(evt);
+                }
+                ProcessedEvent::PortStatusChange(evt) => {
+                    self.handle_port_status_change(evt);
+                }
+                ProcessedEvent::DeviceNotification(evt) => {
+                    self.handle_device_notification(evt);
+                }
+                ProcessedEvent::HostController { completion_code } => {
+                    self.handle_host_controller_event(completion_code);
+                }
+                ProcessedEvent::Unknown { trb_type } => {
+                    let _ = trb_type;
+                }
             }
         }
+    }
+
+    /// イベントキューからイベントを1つ取り出す
+    ///
+    /// コントローラ側で独自にイベントを処理する場合に使用する。
+    pub fn pop_pending_event(&mut self) -> Option<ProcessedEvent> {
+        self.event_queue.pop_front()
     }
 
     fn handle_command_completion(&mut self, event: CommandCompletionEvent) {
