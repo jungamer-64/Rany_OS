@@ -608,7 +608,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // 6.1. Early NUMA topology detection from ACPI SRAT table
     // This provides the kernel with NUMA node information for NUMA-aware allocations
     if boot_info.rsdp_addr != 0 {
-        boot_info.numa_info = numa::detect_numa_topology(boot_info.rsdp_addr, hhdm_start);
+        boot_info.numa_info = numa::detect_numa_topology(boot_info.rsdp_addr);
         if boot_info.numa_info.node_count > 0 {
             info!(
                 "NUMA: {} node(s) detected",
