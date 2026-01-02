@@ -209,6 +209,83 @@ pub fn voluntary_yield() {
 }
 
 // ============================================================================
+// Domain CPU Quota Enforcement - 設計書セキュリティ: ドメインごとのCPU制限
+// ============================================================================
+
+/// ドメインCPUクォータ超過フラグ
+static DOMAIN_QUOTA_EXCEEDED: AtomicBool = AtomicBool::new(false);
+
+/// 現在実行中のドメインID（Thread Local相当）
+static CURRENT_TASK_DOMAIN: AtomicU64 = AtomicU64::new(0);
+
+/// 現在のタスクドメインを設定
+pub fn set_current_task_domain(domain_id: u64) {
+    CURRENT_TASK_DOMAIN.store(domain_id, Ordering::Release);
+}
+
+/// 現在のタスクドメインを取得
+pub fn get_current_task_domain() -> u64 {
+    CURRENT_TASK_DOMAIN.load(Ordering::Acquire)
+}
+
+/// タスク実行時間をドメインクォータに記録し、超過をチェック
+/// Executorのタスクポーリング後に呼び出される
+///
+/// # Arguments
+/// * `elapsed_ns` - タスクが消費したCPU時間（ナノ秒）
+///
+/// # Returns
+/// クォータ超過の場合 `true`（タスクをサスペンドすべき）
+pub fn check_domain_quota(elapsed_ns: u64) -> bool {
+    let domain_id = CURRENT_TASK_DOMAIN.load(Ordering::Acquire);
+    if domain_id == 0 {
+        // カーネルドメインは無制限
+        return false;
+    }
+
+    // 現在時刻をナノ秒で取得
+    let current_time_ns = crate::task::timer::current_tick() * 1_000_000; // tick → ns
+
+    // ドメインクォータマネージャにCPU時間を記録
+    let exceeded = crate::domain::quota::quota_manager().consume_cpu_time(
+        crate::domain_system::DomainId::new(domain_id),
+        elapsed_ns,
+        current_time_ns,
+    );
+
+    if exceeded {
+        DOMAIN_QUOTA_EXCEEDED.store(true, Ordering::Release);
+        log::info!(
+            "[PREEMPT] Domain {} exceeded CPU quota, suspending\n",
+            domain_id
+        );
+    }
+
+    exceeded
+}
+
+/// ドメインクォータ超過フラグをチェック
+pub fn is_domain_quota_exceeded() -> bool {
+    DOMAIN_QUOTA_EXCEEDED.load(Ordering::Acquire)
+}
+
+/// ドメインクォータ超過フラグをクリア
+pub fn clear_domain_quota_exceeded() {
+    DOMAIN_QUOTA_EXCEEDED.store(false, Ordering::Release);
+}
+
+/// クォータ強制付きのYieldポイント
+/// タイムスライス超過またはドメインクォータ超過をチェック
+#[inline]
+pub fn yield_point_with_quota_check() {
+    if PREEMPTION_CONTROLLER.should_preempt() || is_domain_quota_exceeded() {
+        PREEMPTION_CONTROLLER.clear_preemption();
+        clear_domain_quota_exceeded();
+        core::hint::spin_loop();
+    }
+}
+
+// ============================================================================
 // Yield Future - 非同期コンテキストでのyield
 // ============================================================================
 

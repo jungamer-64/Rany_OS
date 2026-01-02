@@ -41,6 +41,9 @@ pub struct HeapObject {
     pub type_id: u64,
     /// アロケーション世代（UAF検出用）
     pub generation: u64,
+    /// オブジェクトが「毒入れされた」状態か
+    /// 設計書 8.4: オーナーがパニックした際にオブジェクトを無効化
+    pub poisoned: bool,
 }
 
 /// レジストリシャード
@@ -249,6 +252,7 @@ impl HeapRegistry {
             owner,
             type_id,
             generation,
+            poisoned: false,
         };
 
         // Insert the object into all covered shards
@@ -464,6 +468,78 @@ impl HeapRegistry {
 
         self.stats.access_denials.fetch_add(1, Ordering::Relaxed);
         false
+    }
+
+    /// オブジェクトが毒入れされているかチェック
+    /// 設計書 8.4: Exchange Heapへの適用
+    pub fn is_poisoned(&self, address: usize) -> bool {
+        let shard_idx = self.get_shard_index(address);
+        let shard = match self.shards[shard_idx].lock() {
+            Ok(g) => g,
+            Err(_) => {
+                // シャードロック自体がポイズンされている → オブジェクトも毒入れと見なす
+                return true;
+            }
+        };
+
+        if let Some(object) = shard.objects.get(&address) {
+            return object.poisoned;
+        }
+        false
+    }
+
+    /// オブジェクトを毒入れする
+    /// 設計書 8.4: オーナーがパニックした際にオブジェクトを無効化
+    pub fn poison_object(&self, address: usize) -> Result<(), RegistryError> {
+        let shard_idx = self.get_shard_index(address);
+        let mut shard = match self.shards[shard_idx].lock() {
+            Ok(g) => g,
+            Err(_) => {
+                log::error!("[HEAP] Registry shard lock poisoned (poison_object)");
+                return Err(RegistryError::PermissionDenied);
+            }
+        };
+
+        if let Some(object) = shard.objects.get_mut(&address) {
+            object.poisoned = true;
+            return Ok(());
+        }
+        Err(RegistryError::NotFound)
+    }
+
+    /// 指定ドメインが所有する全オブジェクトを毒入れ
+    /// 設計書 8.4: ドメインパニック時の連鎖クラッシュ防止
+    pub fn poison_domain_objects(&self, domain: DomainId) -> usize {
+        let mut poisoned_count = 0;
+
+        for shard in &self.shards {
+            let mut guard = match shard.lock() {
+                Ok(g) => g,
+                Err(_) => continue,
+            };
+
+            if let Some(addresses) = guard.owner_index.get(&domain) {
+                let addrs: Vec<usize> = addresses.clone();
+                for addr in addrs {
+                    if let Some(obj) = guard.objects.get_mut(&addr) {
+                        if !obj.poisoned {
+                            obj.poisoned = true;
+                            poisoned_count += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        if poisoned_count > 0 {
+            log::info!(
+                "[HEAP] Poisoned {} objects owned by domain {}\n",
+                poisoned_count,
+                domain
+            );
+        }
+
+        poisoned_count
     }
 
     // ... Additional Helper Methods ...

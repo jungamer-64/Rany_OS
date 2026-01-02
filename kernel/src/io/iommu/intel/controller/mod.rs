@@ -119,6 +119,8 @@ pub struct IommuController {
     pub(crate) invalidation_queue: PoisonLock<Option<InvalidationQueue>>,
     /// Queued Invalidation enabled
     pub(crate) qi_enabled: AtomicBool,
+    /// Scalable Mode enabled (SMTS)
+    pub(crate) scalable_mode_enabled: AtomicBool,
     /// IOMMU Segment number
     pub segment: u16,
     /// Controller index within the registry (for per-core caches)
@@ -170,6 +172,7 @@ impl IommuController {
             ir_enabled: AtomicBool::new(false),
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
+            scalable_mode_enabled: AtomicBool::new(false),
             controller_idx: AtomicUsize::new(usize::MAX),
             iova_allocator: PoisonLock::new(None),
             ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
@@ -208,6 +211,7 @@ impl IommuController {
             ir_enabled: AtomicBool::new(false),
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
+            scalable_mode_enabled: AtomicBool::new(false),
             controller_idx: AtomicUsize::new(usize::MAX),
             iova_allocator: PoisonLock::new(None),
             ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
@@ -235,6 +239,14 @@ impl IommuController {
         } else {
             Some(idx)
         }
+    }
+
+    pub(crate) fn is_scalable_mode_enabled(&self) -> bool {
+        self.scalable_mode_enabled.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn set_scalable_mode_enabled(&self, enabled: bool) {
+        self.scalable_mode_enabled.store(enabled, Ordering::Release);
     }
 
     fn sagaw_mask(&self) -> u8 {

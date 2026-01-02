@@ -430,6 +430,7 @@ impl From<crate::ipc::rref::AccessError> for KernelError {
         use crate::ipc::rref::AccessError as AE;
         KernelError::Ipc(match e {
             AE::NotOwner => IpcError::AccessDenied,
+            AE::Poisoned => IpcError::Disconnected, // ポイズンされたRRefはDisconnected扱い
         })
     }
 }

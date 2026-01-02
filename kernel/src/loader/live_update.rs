@@ -484,6 +484,180 @@ fn get_current_core_id() -> usize {
 }
 
 // ============================================================================
+// StateTransfer Trait - 設計書 3.5.2: 状態移行プロトコル
+// ============================================================================
+
+use alloc::vec::Vec;
+
+/// ライブアップデート時の状態エクスポートエラー
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateExportError {
+    /// シリアライズに失敗
+    SerializationFailed,
+    /// バッファ不足
+    BufferTooSmall,
+    /// 状態が不整合
+    InconsistentState,
+    /// サポートされていない
+    NotSupported,
+}
+
+/// ライブアップデート時の状態インポートエラー
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateImportError {
+    /// デシリアライズに失敗
+    DeserializationFailed,
+    /// バージョン非互換
+    VersionMismatch,
+    /// 破損したデータ
+    CorruptedData,
+    /// 状態復元に失敗
+    RestoreFailed,
+    /// サポートされていない
+    NotSupported,
+}
+
+/// エクスポートされた状態のメタデータ
+#[derive(Debug, Clone)]
+pub struct ExportedStateMetadata {
+    /// 状態のバージョン番号
+    pub version: u32,
+    /// エクスポート元のセルID
+    pub source_cell_id: u64,
+    /// エクスポート時刻（ティック）
+    pub export_time: u64,
+    /// 状態データのサイズ
+    pub data_size: usize,
+    /// チェックサム（簡易整合性検証用）
+    pub checksum: u32,
+}
+
+/// エクスポートされた状態
+/// 設計書 3.5.2: 内部状態を交換ヒープ上のシリアライズ可能な形式にエクスポート
+#[derive(Debug, Clone)]
+pub struct ExportedState {
+    /// メタデータ
+    pub metadata: ExportedStateMetadata,
+    /// シリアライズされた状態データ
+    pub data: Vec<u8>,
+}
+
+impl ExportedState {
+    /// 新しいExportedStateを作成
+    pub fn new(version: u32, source_cell_id: u64, data: Vec<u8>) -> Self {
+        let checksum = Self::compute_checksum(&data);
+        Self {
+            metadata: ExportedStateMetadata {
+                version,
+                source_cell_id,
+                export_time: crate::task::timer::current_tick(),
+                data_size: data.len(),
+                checksum,
+            },
+            data,
+        }
+    }
+
+    /// チェックサムを計算（簡易版：バイト合計）
+    fn compute_checksum(data: &[u8]) -> u32 {
+        data.iter().fold(0u32, |acc, &b| acc.wrapping_add(b as u32))
+    }
+
+    /// データの整合性を検証
+    pub fn verify(&self) -> bool {
+        self.metadata.data_size == self.data.len()
+            && self.metadata.checksum == Self::compute_checksum(&self.data)
+    }
+}
+
+/// 状態移行トレイト
+/// 設計書 3.5.2: セルが内部状態を持つ場合、ライブアップデート時に状態を新バージョンに移行
+///
+/// # 使用例
+/// ```rust
+/// impl StateTransfer for NetworkDriver {
+///     const STATE_VERSION: u32 = 1;
+///     
+///     fn export_state(&self) -> Result<ExportedState, StateExportError> {
+///         // 内部状態をシリアライズ
+///         let mut data = Vec::new();
+///         // ... シリアライズ処理 ...
+///         Ok(ExportedState::new(Self::STATE_VERSION, self.cell_id(), data))
+///     }
+///     
+///     fn import_state(state: ExportedState) -> Result<Self, StateImportError> {
+///         if state.metadata.version != Self::STATE_VERSION {
+///             return Err(StateImportError::VersionMismatch);
+///         }
+///         // 状態を復元
+///         // ... デシリアライズ処理 ...
+///         Ok(Self::new_from_state(...))
+///     }
+/// }
+/// ```
+pub trait StateTransfer: Sized {
+    /// 状態のバージョン番号
+    /// 新バージョンが旧フォーマットを理解できない場合はロールバック
+    const STATE_VERSION: u32;
+
+    /// 内部状態をエクスポート（シリアライズ）
+    /// 設計書 3.5.2: 旧セルが内部状態を交換ヒープ上の形式にエクスポート
+    fn export_state(&self) -> Result<ExportedState, StateExportError>;
+
+    /// 状態をインポート（デシリアライズ）して新インスタンスを構築
+    /// 設計書 3.5.2: 新セルがエクスポートされた状態をインポートして復元
+    fn import_state(state: ExportedState) -> Result<Self, StateImportError>;
+
+    /// バージョン互換性をチェック
+    /// デフォルトでは完全一致のみ許可
+    fn is_version_compatible(exported_version: u32) -> bool {
+        exported_version == Self::STATE_VERSION
+    }
+
+    /// セルIDを取得（オプショナル）
+    fn cell_id(&self) -> u64 {
+        0
+    }
+
+    /// 状態移行を試行
+    /// バージョン互換性チェック + インポートを一括で行う
+    fn try_migrate(state: ExportedState) -> Result<Self, StateImportError> {
+        // データ整合性検証
+        if !state.verify() {
+            return Err(StateImportError::CorruptedData);
+        }
+
+        // バージョン互換性チェック
+        if !Self::is_version_compatible(state.metadata.version) {
+            return Err(StateImportError::VersionMismatch);
+        }
+
+        // 状態をインポート
+        Self::import_state(state)
+    }
+}
+
+/// StateTransferを実装しないセル用のダミー実装
+/// 状態を持たないセルはこれを使用可能
+pub struct StatelessCell;
+
+impl StateTransfer for StatelessCell {
+    const STATE_VERSION: u32 = 0;
+
+    fn export_state(&self) -> Result<ExportedState, StateExportError> {
+        // 状態なし - 空のデータをエクスポート
+        Ok(ExportedState::new(Self::STATE_VERSION, 0, Vec::new()))
+    }
+
+    fn import_state(state: ExportedState) -> Result<Self, StateImportError> {
+        if !state.data.is_empty() {
+            return Err(StateImportError::CorruptedData);
+        }
+        Ok(StatelessCell)
+    }
+}
+
+// ============================================================================
 // Tests
 // ============================================================================
 

@@ -494,6 +494,7 @@ pub(crate) fn drain_deferred_faults_with_driver(driver: Option<&AmdIommuDriver>)
                     source_id: event.devid,
                     fault_address: event.address,
                     reason: event.event_type,
+                    domain_id: Some(event.domain_id),
                 });
             }
         }

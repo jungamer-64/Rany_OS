@@ -1221,11 +1221,17 @@ fn test_security_event_types_are_copy() {
         source_id: 0x0108,
         fault_address: 0x1000,
         reason: 0x01,
+        domain_id: Some(0x10),
     };
     let event2 = event1; // Copy
     match event2 {
-        SecurityEvent::DmaViolation { source_id, .. } => {
+        SecurityEvent::DmaViolation {
+            source_id,
+            domain_id,
+            ..
+        } => {
             assert_eq!(source_id, 0x0108);
+            assert_eq!(domain_id, Some(0x10));
         }
         _ => panic!("wrong event type"),
     }
