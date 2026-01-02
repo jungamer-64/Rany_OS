@@ -96,17 +96,21 @@ struct SratX2ApicAffinity {
 /// * `rsdp_addr` - Physical address of ACPI RSDP
 /// * `hhdm_offset` - Higher Half Direct Map offset for physical to virtual conversion
 ///
+/// Detect NUMA topology from ACPI SRAT table
+///
+/// # Arguments
+/// * `rsdp_addr` - Physical address of ACPI RSDP
+///
 /// # Returns
 /// NumaInfo structure with detected topology (node_count = 0 if SRAT not found)
-pub fn detect_numa_topology(rsdp_addr: u64, hhdm_offset: u64) -> NumaInfo {
+pub fn detect_numa_topology(rsdp_addr: u64) -> NumaInfo {
     if rsdp_addr == 0 {
         info!("NUMA: No RSDP address provided");
         return NumaInfo::default();
     }
 
-    // Convert physical address to virtual using HHDM
-    let rsdp_virt = hhdm_offset + rsdp_addr;
-    let rsdp_ptr = rsdp_virt as *const Rsdp;
+    // Access RSDP directly (Identity Mapped in UEFI)
+    let rsdp_ptr = rsdp_addr as *const Rsdp;
 
     // Verify RSDP signature (signature is at offset 0, aligned, so direct read is OK)
     let signature = unsafe { core::ptr::addr_of!((*rsdp_ptr).signature).read() };
@@ -116,18 +120,18 @@ pub fn detect_numa_topology(rsdp_addr: u64, hhdm_offset: u64) -> NumaInfo {
     }
 
     // Find SRAT table
-    let srat_addr = find_srat_table(rsdp_ptr, hhdm_offset);
+    let srat_addr = find_srat_table(rsdp_ptr);
     if srat_addr == 0 {
         info!("NUMA: SRAT table not found (single-node system assumed)");
         return NumaInfo::default();
     }
 
     // Parse SRAT
-    parse_srat(srat_addr, hhdm_offset)
+    parse_srat(srat_addr)
 }
 
 /// Find SRAT table address from XSDT/RSDT
-fn find_srat_table(rsdp_ptr: *const Rsdp, hhdm_offset: u64) -> u64 {
+fn find_srat_table(rsdp_ptr: *const Rsdp) -> u64 {
     // Read packed fields via read_unaligned
     let revision = unsafe { core::ptr::addr_of!((*rsdp_ptr).revision).read_unaligned() };
     let rsdt_address = unsafe { core::ptr::addr_of!((*rsdp_ptr).rsdt_address).read_unaligned() };
@@ -135,26 +139,25 @@ fn find_srat_table(rsdp_ptr: *const Rsdp, hhdm_offset: u64) -> u64 {
     
     // Prefer XSDT (64-bit) over RSDT (32-bit) if available
     if revision >= 2 && xsdt_address != 0 {
-        find_table_in_xsdt(xsdt_address, hhdm_offset)
+        find_table_in_xsdt(xsdt_address)
     } else if rsdt_address != 0 {
-        find_table_in_rsdt(rsdt_address as u64, hhdm_offset)
+        find_table_in_rsdt(rsdt_address as u64)
     } else {
         0
     }
 }
 
 /// Search for SRAT in XSDT (64-bit pointers)
-fn find_table_in_xsdt(xsdt_addr: u64, hhdm_offset: u64) -> u64 {
-    let xsdt_virt = hhdm_offset + xsdt_addr;
-    let header_ptr = xsdt_virt as *const SdtHeader;
-    let header_length = unsafe { core::ptr::addr_of!((*header_ptr).length).read_unaligned() };
+fn find_table_in_xsdt(xsdt_addr: u64) -> u64 {
+    let xsdt_ptr = xsdt_addr as *const SdtHeader;
+    let header_length = unsafe { core::ptr::addr_of!((*xsdt_ptr).length).read_unaligned() };
 
     let entry_count = (header_length as usize - core::mem::size_of::<SdtHeader>()) / 8;
-    let entries_ptr = (xsdt_virt + core::mem::size_of::<SdtHeader>() as u64) as *const u64;
+    let entries_ptr = (xsdt_addr + core::mem::size_of::<SdtHeader>() as u64) as *const u64;
 
     for i in 0..entry_count {
         let table_addr = unsafe { entries_ptr.add(i).read_unaligned() };
-        let table_header_ptr = (hhdm_offset + table_addr) as *const SdtHeader;
+        let table_header_ptr = table_addr as *const SdtHeader;
         let table_signature = unsafe { core::ptr::addr_of!((*table_header_ptr).signature).read_unaligned() };
 
         if &table_signature == SRAT_SIGNATURE {
@@ -166,17 +169,16 @@ fn find_table_in_xsdt(xsdt_addr: u64, hhdm_offset: u64) -> u64 {
 }
 
 /// Search for SRAT in RSDT (32-bit pointers)
-fn find_table_in_rsdt(rsdt_addr: u64, hhdm_offset: u64) -> u64 {
-    let rsdt_virt = hhdm_offset + rsdt_addr;
-    let header_ptr = rsdt_virt as *const SdtHeader;
-    let header_length = unsafe { core::ptr::addr_of!((*header_ptr).length).read_unaligned() };
+fn find_table_in_rsdt(rsdt_addr: u64) -> u64 {
+    let rsdt_ptr = rsdt_addr as *const SdtHeader;
+    let header_length = unsafe { core::ptr::addr_of!((*rsdt_ptr).length).read_unaligned() };
 
     let entry_count = (header_length as usize - core::mem::size_of::<SdtHeader>()) / 4;
-    let entries_ptr = (rsdt_virt + core::mem::size_of::<SdtHeader>() as u64) as *const u32;
+    let entries_ptr = (rsdt_addr + core::mem::size_of::<SdtHeader>() as u64) as *const u32;
 
     for i in 0..entry_count {
         let table_addr = unsafe { entries_ptr.add(i).read_unaligned() } as u64;
-        let table_header_ptr = (hhdm_offset + table_addr) as *const SdtHeader;
+        let table_header_ptr = table_addr as *const SdtHeader;
         let table_signature = unsafe { core::ptr::addr_of!((*table_header_ptr).signature).read_unaligned() };
 
         if &table_signature == SRAT_SIGNATURE {
@@ -188,12 +190,12 @@ fn find_table_in_rsdt(rsdt_addr: u64, hhdm_offset: u64) -> u64 {
 }
 
 /// Parse SRAT table and extract NUMA information
-fn parse_srat(srat_phys: u64, hhdm_offset: u64) -> NumaInfo {
-    let srat_virt = hhdm_offset + srat_phys;
-    let header_ptr = srat_virt as *const SdtHeader;
+/// Parse SRAT table and extract NUMA information
+fn parse_srat(srat_phys: u64) -> NumaInfo {
+    let srat_ptr = srat_phys as *const SdtHeader;
 
     // Read packed field via read_unaligned to avoid misaligned reference
-    let table_length = unsafe { core::ptr::addr_of!((*header_ptr).length).read_unaligned() };
+    let table_length = unsafe { core::ptr::addr_of!((*srat_ptr).length).read_unaligned() };
 
     info!(
         "NUMA: Found SRAT table at 0x{:x}, length {}",
@@ -204,8 +206,8 @@ fn parse_srat(srat_phys: u64, hhdm_offset: u64) -> NumaInfo {
     let mut node_map: [Option<usize>; 256] = [None; 256]; // proximity domain -> node index
 
     // SRAT entries start after header + 12 bytes reserved
-    let entries_start = srat_virt + core::mem::size_of::<SdtHeader>() as u64 + 12;
-    let entries_end = srat_virt + table_length as u64;
+    let entries_start = srat_phys + core::mem::size_of::<SdtHeader>() as u64 + 12;
+    let entries_end = srat_phys + table_length as u64;
     let mut offset = entries_start;
 
     while offset < entries_end {
