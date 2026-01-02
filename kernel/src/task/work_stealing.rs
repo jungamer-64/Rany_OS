@@ -290,41 +290,42 @@ pub struct StealingStats {
     pub total_attempts: u64,
 }
 
-/// Per-Coreスティーリング統計（Share-Nothing準拠）
+/// Per-Coreスティーリング統計ストレージ（Share-Nothing準拠）
 /// 各コアは自分のスロットのみアクセスするため、ロック不要
-static PER_CORE_STEALING_STATS: [core::cell::UnsafeCell<StealingStats>; MAX_CORES] = {
+struct PerCoreStealingStatsStorage([core::cell::UnsafeCell<StealingStats>; MAX_CORES]);
+
+// SAFETY: 各コアは自分のスロットのみアクセスするため、データ競合は発生しない
+unsafe impl Sync for PerCoreStealingStatsStorage {}
+
+static PER_CORE_STEALING_STATS: PerCoreStealingStatsStorage = {
     const INIT: core::cell::UnsafeCell<StealingStats> = core::cell::UnsafeCell::new(StealingStats {
         llc_steals: 0,
         same_numa_steals: 0,
         remote_numa_steals: 0,
         total_attempts: 0,
     });
-    [INIT; MAX_CORES]
+    PerCoreStealingStatsStorage([INIT; MAX_CORES])
 };
-
-// SAFETY: 各コアは自分のスロットのみアクセスするため、データ競合は発生しない
-unsafe impl Sync for StealingStatsWrapper {}
-struct StealingStatsWrapper;
 
 /// 現在のコアのスティーリング統計を取得
 pub fn get_current_core_stealing_stats() -> StealingStats {
-    let core_id = crate::smp::current_cpu();
+    let core_id = crate::smp::current_cpu() as usize;
     if core_id >= MAX_CORES {
         return StealingStats::default();
     }
     // SAFETY: 各コアは自分のスロットのみアクセス
-    unsafe { *PER_CORE_STEALING_STATS[core_id].get() }
+    unsafe { *PER_CORE_STEALING_STATS.0[core_id].get() }
 }
 
 /// 現在のコアのスティーリング統計を更新
 pub fn update_current_core_stealing_stats(updater: impl FnOnce(&mut StealingStats)) {
-    let core_id = crate::smp::current_cpu();
+    let core_id = crate::smp::current_cpu() as usize;
     if core_id >= MAX_CORES {
         return;
     }
     // SAFETY: 各コアは自分のスロットのみアクセス
     unsafe {
-        updater(&mut *PER_CORE_STEALING_STATS[core_id].get());
+        updater(&mut *PER_CORE_STEALING_STATS.0[core_id].get());
     }
 }
 
@@ -334,7 +335,7 @@ pub fn get_stealing_stats() -> StealingStats {
     let count = REGISTERED_CORE_COUNT.load(Ordering::Acquire);
     for i in 0..count.min(MAX_CORES) {
         // SAFETY: 読み取り専用アクセス、集計用途
-        let stats = unsafe { *PER_CORE_STEALING_STATS[i].get() };
+        let stats = unsafe { *PER_CORE_STEALING_STATS.0[i].get() };
         total.llc_steals += stats.llc_steals;
         total.same_numa_steals += stats.same_numa_steals;
         total.remote_numa_steals += stats.remote_numa_steals;
@@ -349,7 +350,7 @@ pub fn reset_stealing_stats() {
     for i in 0..count.min(MAX_CORES) {
         // SAFETY: リセット操作、各コアが非アクティブ時に呼び出すことを想定
         unsafe {
-            *PER_CORE_STEALING_STATS[i].get() = StealingStats::default();
+            *PER_CORE_STEALING_STATS.0[i].get() = StealingStats::default();
         }
     }
 }

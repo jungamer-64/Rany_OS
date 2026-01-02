@@ -13,7 +13,7 @@ use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits::ECAP_DT;
 use crate::io::iommu::intel::registers::{ecap_bits, regs};
-use crate::io::iommu::intel::tables::ContextEntry;
+use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 
 use super::IommuController;
@@ -225,41 +225,74 @@ impl DomainManager for IommuController {
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
 
-        let mut hw = self
+        let mut hw_guard = self
             .hardware
             .lock()
             .map_err(|_| IommuError::HardwareError)?;
-
-        // Get context table physical address first (before borrowing root entry)
-        let ctx_phys = hw
-            .context_tables
-            .get(bus)
-            .ok_or(IommuError::InvalidAddress)?
-            .phys_addr();
+        let hw = &mut *hw_guard;
 
         // Get root table (must be initialized)
         let root_table = hw.root_table.as_mut().ok_or(IommuError::HardwareError)?;
 
-        // Setup root entry using safe accessor
-        let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
-        if !root_entry.is_present() {
-            root_entry.set_context_table(ctx_phys);
-        }
+        if self.is_scalable_mode_enabled() {
+            let context_table = hw
+                .scalable_context_tables
+                .get_mut(bus)
+                .ok_or(IommuError::InvalidAddress)?;
+            let ctx_phys = context_table.phys_addr();
 
-        // Setup context entry using safe accessor
-        let context_table = hw
-            .context_tables
-            .get_mut(bus)
-            .ok_or(IommuError::InvalidAddress)?;
-        let context_entry = context_table
-            .get_mut(devfn)
-            .ok_or(IommuError::InvalidAddress)?;
+            // Setup root entry using scalable layout (two 4KB halves)
+            let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
+            root_entry.set_context_table_pair(ctx_phys, ctx_phys + 0x1000);
 
-        // 48-bit address width (AGAW = 2)
-        if domain_type == IommuDomainType::Passthrough {
-            context_entry.set_passthrough(domain_id);
+            // Setup scalable context entry
+            let context_entry = context_table
+                .get_mut(devfn)
+                .ok_or(IommuError::InvalidAddress)?;
+            *context_entry = ScalableContextEntry::new();
+
+            let mut pasid_table = PasidTable::new(6)?;
+            if domain_type == IommuDomainType::Passthrough {
+                pasid_table.setup_passthrough_entry(0, domain_id)?;
+            } else {
+                pasid_table.setup_sl_entry(0, page_table_addr, 2, domain_id)?;
+            }
+
+            context_entry.set_pasid_dir(pasid_table.phys_addr(), pasid_table.pds());
+            context_entry.set_rid2pasid(0);
+            context_entry.set_pasid_enable();
+            context_entry.set_fault_enable();
+            context_entry.set_present();
+
+            let mut device_pasid_tables = self
+                .device_pasid_tables
+                .lock()
+                .map_err(|_| IommuError::HardwareError)?;
+            device_pasid_tables.insert(device, pasid_table);
         } else {
-            context_entry.set_sl_pt(page_table_addr, domain_id, 2);
+            let context_table = hw
+                .legacy_context_tables
+                .get_mut(bus)
+                .ok_or(IommuError::InvalidAddress)?;
+            let ctx_phys = context_table.phys_addr();
+
+            // Setup root entry using legacy layout
+            let root_entry = root_table.get_mut(bus).ok_or(IommuError::InvalidAddress)?;
+            if !root_entry.is_present() {
+                root_entry.set_context_table(ctx_phys);
+            }
+
+            // Setup context entry using safe accessor
+            let context_entry = context_table
+                .get_mut(devfn)
+                .ok_or(IommuError::InvalidAddress)?;
+
+            // 48-bit address width (AGAW = 2)
+            if domain_type == IommuDomainType::Passthrough {
+                context_entry.set_passthrough(domain_id);
+            } else {
+                context_entry.set_sl_pt(page_table_addr, domain_id, 2);
+            }
         }
 
         let mut device_domains = self
@@ -286,14 +319,29 @@ impl DomainManager for IommuController {
             .hardware
             .lock()
             .map_err(|_| IommuError::HardwareError)?;
-        let context_table = hw
-            .context_tables
-            .get_mut(bus)
-            .ok_or(IommuError::InvalidAddress)?;
-        let context_entry = context_table
-            .get_mut(devfn)
-            .ok_or(IommuError::InvalidAddress)?;
-        *context_entry = ContextEntry::default();
+        if self.is_scalable_mode_enabled() {
+            let context_table = hw
+                .scalable_context_tables
+                .get_mut(bus)
+                .ok_or(IommuError::InvalidAddress)?;
+            if let Some(context_entry) = context_table.get_mut(devfn) {
+                *context_entry = ScalableContextEntry::default();
+            }
+
+            let mut device_pasid_tables = self
+                .device_pasid_tables
+                .lock()
+                .map_err(|_| IommuError::HardwareError)?;
+            device_pasid_tables.remove(&device);
+        } else {
+            let context_table = hw
+                .legacy_context_tables
+                .get_mut(bus)
+                .ok_or(IommuError::InvalidAddress)?;
+            if let Some(context_entry) = context_table.get_mut(devfn) {
+                *context_entry = ContextEntry::default();
+            }
+        }
 
         Ok(())
     }

@@ -64,20 +64,7 @@ pub use dma::{
 pub use iommu::api::{disable_iommu, enable_iommu, with_iommu};
 pub use iommu::types::{DeviceId, IommuError};
 
-// ============================================================================
-// Deprecation Compatibility
-// ============================================================================
 
-#[deprecated(note = "Use `pci_driver::EcamAccess` or `io::pci::LegacyPciAccessor`")]
-pub use pci::get_legacy_accessor;
-
-#[deprecated(note = "Use `pci_driver::EcamAccess` instead")]
-pub use pci::LegacyPciAccessor;
-
-#[deprecated(note = "Call `acpi::dmar::parse_dmar` directly")]
-pub fn parse_dmar_table(addr: usize) -> Result<acpi::dmar::DmarInfo, &'static str> {
-    unsafe { acpi::dmar::parse_dmar(addr) }
-}
 
 // ============================================================================
 // Usage Guide
