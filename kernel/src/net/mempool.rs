@@ -12,8 +12,10 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use x86_64::PhysAddr;
 
-/// デフォルトのパケットバッファサイズ
-const DEFAULT_BUFFER_SIZE: usize = 2048;
+use crate::mm::PAGE_SIZE_4K;
+
+/// DMAページサイズ
+const DMA_PAGE_SIZE: usize = PAGE_SIZE_4K;
 
 /// デフォルトのプール容量
 const DEFAULT_POOL_CAPACITY: usize = 4096;
@@ -21,12 +23,9 @@ const DEFAULT_POOL_CAPACITY: usize = 4096;
 /// キャッシュラインサイズ
 const CACHE_LINE_SIZE: usize = 64;
 
-/// パケットバッファ
-/// 設計書 6.2: NICのDMAエンジンは、事前に割り当てられた固定サイズのバッファプールに直接パケットを書き込む
-#[repr(C, align(64))] // キャッシュラインにアライン
-pub struct PacketBuffer {
-    /// データ領域
-    data: [u8; DEFAULT_BUFFER_SIZE],
+/// パケットバッファのメタデータ
+#[repr(C)]
+struct PacketBufferMeta {
     /// 使用中のデータ長
     len: AtomicUsize,
     /// 物理アドレス（DMA用）
@@ -41,16 +40,33 @@ pub struct PacketBuffer {
     _padding: [u8; 8],
 }
 
+const PACKET_META_SIZE: usize = core::mem::size_of::<PacketBufferMeta>();
+const PACKET_META_ALIGN: usize = core::mem::align_of::<PacketBufferMeta>();
+
+/// デフォルトのパケットバッファサイズ（メタデータ込みで4Kに収める）
+const DEFAULT_BUFFER_SIZE: usize =
+    (DMA_PAGE_SIZE - PACKET_META_SIZE) & !(PACKET_META_ALIGN - 1);
+
+/// パケットバッファ
+/// 設計書 6.2: NICのDMAエンジンは、事前に割り当てられた固定サイズのバッファプールに直接パケットを書き込む
+#[repr(C, align(4096))] // DMAページ境界にアライン
+pub struct PacketBuffer {
+    /// データ領域
+    data: [u8; DEFAULT_BUFFER_SIZE],
+    /// メタデータ
+    meta: PacketBufferMeta,
+}
+
 impl PacketBuffer {
     /// データスライスを取得
     pub fn data(&self) -> &[u8] {
-        let len = self.len.load(Ordering::Acquire);
+        let len = self.meta.len.load(Ordering::Acquire);
         &self.data[..len]
     }
 
     /// 可変データスライスを取得
     pub fn data_mut(&mut self) -> &mut [u8] {
-        let len = self.len.load(Ordering::Acquire);
+        let len = self.meta.len.load(Ordering::Acquire);
         &mut self.data[..len]
     }
 
@@ -66,7 +82,7 @@ impl PacketBuffer {
 
     /// データ長を取得
     pub fn len(&self) -> usize {
-        self.len.load(Ordering::Acquire)
+        self.meta.len.load(Ordering::Acquire)
     }
 
     /// 空かどうか
@@ -76,24 +92,25 @@ impl PacketBuffer {
 
     /// データ長を設定
     pub fn set_len(&self, len: usize) {
-        self.len
+        self.meta
+            .len
             .store(len.min(DEFAULT_BUFFER_SIZE), Ordering::Release);
     }
 
     /// 物理アドレスを取得
     pub fn phys_addr(&self) -> PhysAddr {
-        self.phys_addr
+        self.meta.phys_addr
     }
 
     /// 参照カウントをインクリメント
     pub fn add_ref(&self) {
-        self.ref_count.fetch_add(1, Ordering::Relaxed);
+        self.meta.ref_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 参照カウントをデクリメント
     /// 0になったらtrueを返す
     pub fn release(&self) -> bool {
-        self.ref_count.fetch_sub(1, Ordering::Release) == 1
+        self.meta.ref_count.fetch_sub(1, Ordering::Release) == 1
     }
 }
 
@@ -195,7 +212,14 @@ impl PacketRef {
     pub fn into_rref(self, target_domain: DomainId) -> Result<RRef<PacketBuffer>, Self> {
         // Enforce exclusive ownership
         unsafe {
-            if self.buffer.as_ref().ref_count.load(Ordering::Acquire) != 1 {
+            if self
+                .buffer
+                .as_ref()
+                .meta
+                .ref_count
+                .load(Ordering::Acquire)
+                != 1
+            {
                 return Err(self);
             }
 
@@ -204,8 +228,8 @@ impl PacketRef {
             // and checking owner via SAS might be expensive.
             match crate::sas::transfer_ownership(
                 self.buffer.as_ptr() as usize,
-                DomainId::new(0),
-                target_domain,
+                crate::sas::DomainId::new(0),
+                crate::sas::DomainId::new(target_domain.as_u64()),
             ) {
                 Ok(_) => {}
                 Err(e) => {
@@ -274,6 +298,9 @@ impl Mempool {
 
     /// プールを初期化（バッファを事前割り当て）
     pub fn init(&self, capacity: usize) -> Result<(), &'static str> {
+        debug_assert_eq!(core::mem::size_of::<PacketBuffer>(), DMA_PAGE_SIZE);
+        debug_assert_eq!(core::mem::align_of::<PacketBuffer>(), DMA_PAGE_SIZE);
+
         let mut buffers = match self.buffers.lock() {
             Ok(b) => b,
             Err(_) => {
@@ -301,16 +328,16 @@ impl Mempool {
             crate::sas::register_object(
                 non_null.as_ptr() as usize,
                 layout.size(),
-                DomainId::new(0),
+                crate::sas::DomainId::new(0),
             );
 
             // バッファを初期化
             unsafe {
                 let buffer_ptr = non_null.as_ptr();
-                (*buffer_ptr).pool_id = self.id;
-                (*buffer_ptr).index = i as u32;
-                (*buffer_ptr).len = AtomicUsize::new(0);
-                (*buffer_ptr).ref_count = AtomicU64::new(0);
+                (*buffer_ptr).meta.pool_id = self.id;
+                (*buffer_ptr).meta.index = i as u32;
+                (*buffer_ptr).meta.len = AtomicUsize::new(0);
+                (*buffer_ptr).meta.ref_count = AtomicU64::new(0);
                 // 仮想アドレスから物理アドレスへ変換
                 // カーネルヒープはリニアマッピングされているため、
                 // PHYSICAL_MEMORY_OFFSETを引くことで物理アドレスを得る
@@ -322,7 +349,7 @@ impl Mempool {
                     // （カーネルイメージ内のアドレスなど）
                     virt_addr
                 };
-                (*buffer_ptr).phys_addr = PhysAddr::new(phys);
+                (*buffer_ptr).meta.phys_addr = PhysAddr::new(phys);
             }
 
             buffers.push(non_null);
@@ -345,8 +372,8 @@ impl Mempool {
 
         unsafe {
             // 初期化
-            buffer.as_ref().len.store(0, Ordering::Release);
-            buffer.as_ref().ref_count.store(1, Ordering::Release);
+            buffer.as_ref().meta.len.store(0, Ordering::Release);
+            buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
         }
 
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
@@ -374,7 +401,7 @@ impl Mempool {
         unsafe {
             // Transfer ownership back to Kernel(0)
             if let Err(e) =
-                crate::sas::transfer_ownership(ptr.as_ptr() as usize, owner, DomainId::new(0))
+                crate::sas::transfer_ownership(ptr.as_ptr() as usize, crate::sas::DomainId::new(owner.as_u64()), crate::sas::DomainId::new(0))
             {
                 log::error!("Failed to reclaim RRef ownership: {:?}", e);
                 // Do not reuse potentially corrupted buffer
@@ -382,8 +409,8 @@ impl Mempool {
             }
 
             // Reset state
-            ptr.as_ref().len.store(0, Ordering::Release);
-            ptr.as_ref().ref_count.store(0, Ordering::Release);
+            ptr.as_ref().meta.len.store(0, Ordering::Release);
+            ptr.as_ref().meta.ref_count.store(0, Ordering::Release);
 
             self.return_buffer(ptr);
         }
@@ -460,8 +487,8 @@ impl PerCoreMempoolCache {
         if let Ok(mut cache) = self.local_cache.lock() {
             if let Some(buffer) = cache.pop() {
                 unsafe {
-                    buffer.as_ref().len.store(0, Ordering::Release);
-                    buffer.as_ref().ref_count.store(1, Ordering::Release);
+                    buffer.as_ref().meta.len.store(0, Ordering::Release);
+                    buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
                 }
                 return Some(PacketRef::new(buffer, self.parent));
             }
@@ -599,7 +626,7 @@ mod tests {
 
     #[test]
     fn test_mempool_poisoned_alloc_fails() {
-        let pool = Mempool::new(1);
+        let pool = Box::leak(Box::new(Mempool::new(1)));
         pool.init(1).expect("init should succeed");
 
         // Poison the free_list by simulating a panic while holding the lock
@@ -617,7 +644,7 @@ mod tests {
 
     #[test]
     fn test_mempool_stats() {
-        let pool = Mempool::new(1);
+        let pool = Box::leak(Box::new(Mempool::new(1)));
         let stats = pool.stats();
         assert_eq!(stats.total_buffers, 0);
         assert_eq!(stats.free_buffers, 0);

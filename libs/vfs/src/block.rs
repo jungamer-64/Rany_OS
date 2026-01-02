@@ -20,8 +20,10 @@
 #![allow(clippy::must_use_candidate)] // Internal implementation
 #![allow(clippy::option_if_let_else)] // Kept for readability
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -54,6 +56,416 @@ pub enum BlockError {
 
 /// Result type for block operations
 pub type BlockResult<T> = Result<T, BlockError>;
+
+// ============================================================================
+// Zero-Copy Buffer + Block Device (Ownership-Moving I/O)
+// ============================================================================
+
+/// Owned buffer for zero-copy I/O (default Vec-backed compatibility type).
+///
+/// This is a transitional buffer type; real zero-copy drivers should use
+/// DMA-capable buffers and implement `ZeroCopyBufferMut` directly.
+pub struct OwnedBytes {
+    data: Vec<u8>,
+}
+
+impl OwnedBytes {
+    /// Create a new owned buffer from Vec.
+    pub fn from_vec(data: Vec<u8>) -> Self {
+        Self { data }
+    }
+
+    /// Consume the buffer and return the inner Vec.
+    pub fn into_vec(self) -> Vec<u8> {
+        self.data
+    }
+
+    /// Return buffer length in bytes.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    /// Check if the buffer is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
+    }
+}
+
+impl AsRef<[u8]> for OwnedBytes {
+    fn as_ref(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl AsMut<[u8]> for OwnedBytes {
+    fn as_mut(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+impl From<Vec<u8>> for OwnedBytes {
+    fn from(data: Vec<u8>) -> Self {
+        Self::from_vec(data)
+    }
+}
+
+/// Zero-copy buffer interface (ownership moves across layers).
+pub trait ZeroCopyBuffer: Send + 'static {
+    /// Read-only view of the buffer.
+    fn as_slice(&self) -> &[u8];
+
+    /// Buffer length in bytes.
+    fn len(&self) -> usize {
+        self.as_slice().len()
+    }
+
+    /// Whether the buffer is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Optional DMA info for DMA-capable buffers. Default: None.
+    fn dma_info(&self) -> Option<DmaInfo> {
+        None
+    }
+}
+
+/// Mutable zero-copy buffer interface (for write paths).
+pub trait ZeroCopyBufferMut: ZeroCopyBuffer {
+    /// Mutable view of the buffer.
+    fn as_mut_slice(&mut self) -> &mut [u8];
+}
+
+impl ZeroCopyBuffer for OwnedBytes {
+    fn as_slice(&self) -> &[u8] {
+        &self.data
+    }
+}
+
+impl ZeroCopyBufferMut for OwnedBytes {
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        &mut self.data
+    }
+}
+
+// ============================================================================
+// Borrowed I/O Buffer Abstraction
+// ============================================================================
+
+#[derive(Clone, Copy, Debug)]
+pub struct DmaInfo {
+    /// NOTE: phys_addr is CPU physical; map to IOVA before DMA.
+    pub phys_addr: u64,
+    pub len: usize,
+}
+
+/// Borrowed I/O buffer.
+///
+/// Invariant: as_slice().len() == dma_info().len (if Some)
+pub trait IoBuffer: Send {
+    fn as_slice(&self) -> &[u8];
+
+    #[inline]
+    fn dma_info(&self) -> Option<DmaInfo> {
+        None
+    }
+}
+
+/// Mutable borrowed I/O buffer.
+///
+/// Invariant: as_mut_slice().len() == as_slice().len()
+pub trait IoBufferMut: IoBuffer {
+    fn as_mut_slice(&mut self) -> &mut [u8];
+}
+
+impl IoBuffer for &[u8] {
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        self
+    }
+}
+
+impl IoBuffer for &mut [u8] {
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        self
+    }
+}
+
+impl IoBufferMut for &mut [u8] {
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        self
+    }
+}
+
+impl IoBuffer for Vec<u8> {
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl IoBufferMut for Vec<u8> {
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.as_mut_slice()
+    }
+}
+
+// NOTE: We forward dma info from ZeroCopyBuffer when available. This allows
+// DMA-capable owned buffers to advertise physical addresses while keeping the
+// default behavior (None) for arbitrary owned buffers.
+impl<T: ZeroCopyBuffer> IoBuffer for T {
+    #[inline]
+    fn as_slice(&self) -> &[u8] {
+        self.as_slice()
+    }
+
+    #[inline]
+    fn dma_info(&self) -> Option<DmaInfo> {
+        ZeroCopyBuffer::dma_info(self)
+    }
+}
+
+impl<T: ZeroCopyBufferMut> IoBufferMut for T {
+    #[inline]
+    fn as_mut_slice(&mut self) -> &mut [u8] {
+        self.as_mut_slice()
+    }
+}
+
+/// Boxed future type for object-safe zero-copy device APIs.
+pub type ZcFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Zero-copy block device interface (async, ownership-moving).
+///
+/// This trait is object-safe to allow `Arc<dyn ZeroCopyBlockDevice<Buffer = B>>`.
+pub trait ZeroCopyBlockDevice: Send + Sync {
+    /// Owned buffer type for transfers.
+    type Buffer: ZeroCopyBufferMut;
+
+    /// Get device information.
+    fn info(&self) -> BlockDeviceInfo;
+
+    /// Flush pending writes.
+    fn flush(&self) -> BlockResult<()>;
+
+    /// Allocate a buffer for I/O.
+    fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer>;
+
+    /// Read blocks into a newly owned buffer.
+    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>>;
+
+    /// Write blocks from an owned buffer, returning ownership for reuse.
+    fn write_async(
+        &self,
+        block: u64,
+        buffer: Self::Buffer,
+    ) -> ZcFuture<'_, BlockResult<Self::Buffer>>;
+
+    /// Read blocks into a borrowed buffer (default: owned fallback).
+    ///
+    /// Requirements:
+    /// - len % block_size == 0
+    /// - blocks = len / block_size
+    fn read_into_buf<'a>(
+        &'a self,
+        block: u64,
+        dst: &'a mut dyn IoBufferMut,
+    ) -> ZcFuture<'a, BlockResult<()>> {
+        Box::pin(async move {
+            let bs_u32 = self.info().block_size;
+            if bs_u32 == 0 {
+                return Err(BlockError::InvalidBufferSize);
+            }
+            let bs = bs_u32 as usize;
+            let len = dst.as_mut_slice().len();
+            if len == 0 {
+                return Ok(());
+            }
+            if !len.is_multiple_of(bs) {
+                return Err(BlockError::InvalidBufferSize);
+            }
+            let blocks = len / bs;
+            if blocks > (u32::MAX as usize) {
+                return Err(BlockError::InvalidBufferSize);
+            }
+
+            let buf = self.read_async(block, blocks as u32).await?;
+            let src = ZeroCopyBuffer::as_slice(&buf);
+            if src.len() < len {
+                return Err(BlockError::IoError);
+            }
+            dst.as_mut_slice().copy_from_slice(&src[..len]);
+            Ok(())
+        })
+    }
+
+    /// Write blocks from a borrowed buffer (default: owned fallback).
+    ///
+    /// Requirements:
+    /// - len % block_size == 0
+    /// - blocks = len / block_size
+    fn write_from_buf<'a>(
+        &'a self,
+        block: u64,
+        src: &'a dyn IoBuffer,
+    ) -> ZcFuture<'a, BlockResult<()>> {
+        let bs_u32 = self.info().block_size;
+        if bs_u32 == 0 {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        let bs = bs_u32 as usize;
+        let len = src.as_slice().len();
+        if len == 0 {
+            return Box::pin(async { Ok(()) });
+        }
+        if !len.is_multiple_of(bs) {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        let blocks = len / bs;
+        if blocks > (u32::MAX as usize) {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+
+        let mut buf = match self.alloc_buffer(len) {
+            Ok(buf) => buf,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        if ZeroCopyBufferMut::as_mut_slice(&mut buf).len() < len {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        ZeroCopyBufferMut::as_mut_slice(&mut buf)[..len].copy_from_slice(src.as_slice());
+
+        Box::pin(async move {
+            let _ = self.write_async(block, buf).await?;
+            Ok(())
+        })
+    }
+
+    /// Convenience wrapper for slice-based reads.
+    fn read_into<'a>(&'a self, block: u64, dst: &'a mut [u8]) -> ZcFuture<'a, BlockResult<()>> {
+        Box::pin(async move {
+            let bs_u32 = self.info().block_size;
+            if bs_u32 == 0 {
+                return Err(BlockError::InvalidBufferSize);
+            }
+            let bs = bs_u32 as usize;
+            let len = dst.len();
+            if len == 0 {
+                return Ok(());
+            }
+            if !len.is_multiple_of(bs) {
+                return Err(BlockError::InvalidBufferSize);
+            }
+            let blocks = len / bs;
+            if blocks > (u32::MAX as usize) {
+                return Err(BlockError::InvalidBufferSize);
+            }
+
+            let buf = self.read_async(block, blocks as u32).await?;
+            let src = ZeroCopyBuffer::as_slice(&buf);
+            if src.len() < len {
+                return Err(BlockError::IoError);
+            }
+            dst.copy_from_slice(&src[..len]);
+            Ok(())
+        })
+    }
+
+    /// Convenience wrapper for slice-based writes.
+    fn write_from(&self, block: u64, src: &[u8]) -> ZcFuture<'_, BlockResult<()>> {
+        let bs_u32 = self.info().block_size;
+        if bs_u32 == 0 {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        let bs = bs_u32 as usize;
+        let len = src.len();
+        if len == 0 {
+            return Box::pin(async { Ok(()) });
+        }
+        if !len.is_multiple_of(bs) {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        let blocks = len / bs;
+        if blocks > (u32::MAX as usize) {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+
+        let mut buf = match self.alloc_buffer(len) {
+            Ok(buf) => buf,
+            Err(err) => return Box::pin(async move { Err(err) }),
+        };
+        if ZeroCopyBufferMut::as_mut_slice(&mut buf).len() < len {
+            return Box::pin(async { Err(BlockError::InvalidBufferSize) });
+        }
+        ZeroCopyBufferMut::as_mut_slice(&mut buf)[..len].copy_from_slice(src);
+
+        Box::pin(async move {
+            let _ = self.write_async(block, buf).await?;
+            Ok(())
+        })
+    }
+}
+
+/// Compatibility adapter: wrap a legacy `BlockDevice` and expose zero-copy API.
+///
+/// Note: This adapter still copies internally; real zero-copy drivers should
+/// implement `ZeroCopyBlockDevice` directly with DMA-capable buffers.
+pub struct BlockDeviceZeroCopyAdapter {
+    device: Arc<dyn BlockDevice>,
+}
+
+impl BlockDeviceZeroCopyAdapter {
+    /// Wrap a legacy block device.
+    pub fn new(device: Arc<dyn BlockDevice>) -> Self {
+        Self { device }
+    }
+
+    /// Access the wrapped device.
+    pub fn device(&self) -> &Arc<dyn BlockDevice> {
+        &self.device
+    }
+}
+
+impl ZeroCopyBlockDevice for BlockDeviceZeroCopyAdapter {
+    type Buffer = OwnedBytes;
+
+    fn info(&self) -> BlockDeviceInfo {
+        self.device.info()
+    }
+
+    fn flush(&self) -> BlockResult<()> {
+        self.device.flush()
+    }
+
+    fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
+        Ok(OwnedBytes::from_vec(vec![0u8; size]))
+    }
+
+    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+        let device = Arc::clone(&self.device);
+        Box::pin(async move {
+            let data = BlockReadFuture::new(device, block, count).await?;
+            Ok(OwnedBytes::from_vec(data))
+        })
+    }
+
+    fn write_async(
+        &self,
+        block: u64,
+        buffer: Self::Buffer,
+    ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+        let device = Arc::clone(&self.device);
+        Box::pin(async move {
+            // Transitional path: copy into a Vec for legacy BlockDevice.
+            let data = ZeroCopyBuffer::as_slice(&buffer).to_vec();
+            let _ = BlockWriteFuture::new(device, block, data).await?;
+            Ok(buffer)
+        })
+    }
+}
 
 // ============================================================================
 // Block Request
@@ -250,9 +662,8 @@ pub trait BlockDevice: Send + Sync {
                         let to_copy = inner.len().min(buf.len());
                         buf[..to_copy].copy_from_slice(&inner[..to_copy]);
                         return Ok(to_copy);
-                    } else {
-                        return Ok(0);
                     }
+                    return Ok(0);
                 }
                 RequestState::Failed(e) => return Err(e),
                 _ => core::hint::spin_loop(),
@@ -448,16 +859,16 @@ impl Future for BlockReadFuture {
         // Check state
         match self.request.state() {
             RequestState::Completed => {
-                    // Return data (clone the inner buffer)
-                    let buffer = self
-                        .request
-                        .buffer
-                        .lock()
-                        .as_ref()
-                        .map(|b| b.clone())
-                        .unwrap_or_default();
-                    Poll::Ready(Ok(buffer))
-                }
+                // Return data (clone the inner buffer)
+                let buffer = self
+                    .request
+                    .buffer
+                    .lock()
+                    .as_ref()
+                    .map(|b| b.clone())
+                    .unwrap_or_default();
+                Poll::Ready(Ok(buffer))
+            }
             RequestState::Failed(e) => Poll::Ready(Err(e)),
             _ => {
                 self.request.register_waker(cx.waker().clone());
@@ -606,5 +1017,137 @@ mod ramdisk_tests {
         let mut buf = [0u8; 1024];
         assert_eq!(disk.read_sync(1, &mut buf).unwrap(), 1024);
         assert_eq!(buf, data);
+    }
+}
+
+#[cfg(test)]
+mod borrowed_io_tests {
+    use super::*;
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    use futures::executor::block_on;
+
+    struct MemDev {
+        info: BlockDeviceInfo,
+        data: Mutex<Vec<u8>>,
+        read_calls: AtomicUsize,
+        write_calls: AtomicUsize,
+        alloc_calls: AtomicUsize,
+    }
+
+    impl MemDev {
+        fn new(block_size: u32, blocks: usize) -> Self {
+            let mut info = BlockDeviceInfo::default();
+            info.block_size = block_size;
+            info.total_blocks = blocks as u64;
+
+            Self {
+                info,
+                data: Mutex::new(vec![0u8; block_size as usize * blocks]),
+                read_calls: AtomicUsize::new(0),
+                write_calls: AtomicUsize::new(0),
+                alloc_calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ZeroCopyBlockDevice for MemDev {
+        type Buffer = OwnedBytes;
+
+        fn info(&self) -> BlockDeviceInfo {
+            self.info.clone()
+        }
+
+        fn flush(&self) -> BlockResult<()> {
+            Ok(())
+        }
+
+        fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
+            self.alloc_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(OwnedBytes::from_vec(vec![0u8; size]))
+        }
+
+        fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+            self.read_calls.fetch_add(1, Ordering::SeqCst);
+
+            let bs = self.info.block_size as usize;
+            let start = block as usize * bs;
+            let len = count as usize * bs;
+            let data = {
+                let data = self.data.lock();
+                if start + len > data.len() {
+                    None
+                } else {
+                    Some(data[start..start + len].to_vec())
+                }
+            };
+
+            Box::pin(async move {
+                match data {
+                    Some(bytes) => Ok(OwnedBytes::from_vec(bytes)),
+                    None => Err(BlockError::InvalidBlock),
+                }
+            })
+        }
+
+        fn write_async(
+            &self,
+            block: u64,
+            buffer: Self::Buffer,
+        ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+            self.write_calls.fetch_add(1, Ordering::SeqCst);
+
+            let bs = self.info.block_size as usize;
+            let start = block as usize * bs;
+            let data = &self.data;
+
+            Box::pin(async move {
+                let len = buffer.as_slice().len();
+                let mut data = data.lock();
+                if start + len > data.len() {
+                    return Err(BlockError::InvalidBlock);
+                }
+                data[start..start + len].copy_from_slice(buffer.as_slice());
+                Ok(buffer)
+            })
+        }
+    }
+
+    #[test]
+    fn read_into_buf_invalid_size() {
+        let dev = MemDev::new(4, 2);
+        let mut dst = [0u8; 6];
+
+        let err = block_on(dev.read_into_buf(0, &mut dst)).unwrap_err();
+        assert_eq!(err, BlockError::InvalidBufferSize);
+        assert_eq!(dev.read_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn read_into_buf_default_fallback_copies() {
+        let dev = MemDev::new(4, 4);
+        let expected = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        {
+            let mut data = dev.data.lock();
+            data[..expected.len()].copy_from_slice(&expected);
+        }
+
+        let mut dst = [0u8; 8];
+        block_on(dev.read_into_buf(0, &mut dst)).unwrap();
+
+        assert_eq!(dst, expected);
+        assert_eq!(dev.read_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn write_from_buf_default_fallback_copies() {
+        let dev = MemDev::new(4, 4);
+        let src = [9u8, 8, 7, 6, 5, 4, 3, 2];
+
+        block_on(dev.write_from_buf(0, &src)).unwrap();
+
+        assert_eq!(dev.alloc_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(dev.write_calls.load(Ordering::SeqCst), 1);
+        let data = dev.data.lock();
+        assert_eq!(&data[..src.len()], &src);
     }
 }

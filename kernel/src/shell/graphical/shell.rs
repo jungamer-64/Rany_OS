@@ -322,7 +322,7 @@ impl GraphicalShell {
     /// プロンプト領域を描画（実際には入力行再描画）
     pub fn draw_prompt(&mut self) {
         self.state.prompt = self.shell.prompt();
-        self.redraw_input_only();
+        self.redraw_input_line();
     }
 
     /// カーソルの点滅を更新（部分更新 - 効率的）

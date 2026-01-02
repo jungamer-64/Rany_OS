@@ -7,6 +7,7 @@
 //! Pure data types for graphics: `Color`, `PixelFormat`, `Point`, `Rect`.
 //! No kernel dependencies - can be used by kernel, drivers, and apps.
 
+#![allow(clippy::cargo_common_metadata)]
 #![no_std]
 #![allow(dead_code)]
 

@@ -25,6 +25,10 @@
 
 extern crate alloc;
 
+// Register Cell runtime stubs (allocator, panic handler) for standalone cdylib build
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
+
 // Core modules (no kernel deps)
 pub mod commands;
 pub mod defs;
@@ -33,7 +37,6 @@ pub mod identify;
 pub mod queue_types;
 pub mod regs;
 
-// Modules migrated from kernel
 // Modules migrated from kernel
 pub mod controller;
 pub mod per_core;
@@ -44,6 +47,8 @@ pub mod async_io;
 pub mod driver_impl;
 pub mod global;
 pub mod polling_driver;
+pub mod requests;
+pub mod sync;
 
 // pub mod scheduler; // Requires kernel io_scheduler - stays local to kernel
 // pub mod driver; // Re-exports only - stays local to kernel
@@ -71,10 +76,13 @@ pub use identify::{
 pub use error::NvmeError;
 
 // Async I/O exports
-pub use async_io::{AsyncIoRequest, IoRequestState, PendingRequests, ReadFuture, WriteFuture};
+pub use async_io::{ReadFuture, WriteFuture};
+pub use requests::{AsyncIoRequest, IoRequestState, PendingRequests};
 
 // Global driver exports
-pub use global::{get_stats, init, poll, poll_batch, with_driver, with_driver_mut};
+pub use crate::global::{
+    get_stats, init, poll as poll_global, poll_batch, with_driver, with_driver_mut,
+};
 
 // Polling driver exports
 pub use polling_driver::{NvmeDriverStats, NvmePollingDriver};

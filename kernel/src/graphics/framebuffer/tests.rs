@@ -15,7 +15,7 @@ fn test_draw_image_32bit_bgra_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let mut back = vec![0u8; info.size()];
+    let back = vec![0u8; info.size()];
     fb.enable_double_buffering_from_vec(back);
 
     let img = Image::filled(width, height, Color::with_alpha(10, 20, 30, 255));
@@ -45,7 +45,7 @@ fn test_draw_image_24bit_bgr_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let mut back = vec![0u8; info.size()];
+    let back = vec![0u8; info.size()];
     fb.enable_double_buffering_from_vec(back);
 
     let img = Image::filled(width, height, Color::with_alpha(255, 0, 0, 255));
@@ -554,7 +554,7 @@ fn test_draw_text_space_32bit_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let mut back = vec![0u8; info.size()];
+    let back = vec![0u8; info.size()];
     fb.enable_double_buffering_from_vec(back);
 
     let fg = Color::with_alpha(1, 2, 3, 255);
@@ -731,7 +731,7 @@ fn test_draw_text_space_24bit_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let mut back = vec![0u8; info.size()];
+    let back = vec![0u8; info.size()];
     fb.enable_double_buffering_from_vec(back);
 
     let fg = Color::with_alpha(1, 2, 3, 255);
@@ -1413,7 +1413,7 @@ fn test_draw_text_partial_left_clip_32bit_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let mut back = vec![0u8; info.size()];
+    let back = vec![0u8; info.size()];
     fb.enable_double_buffering_from_vec(back);
 
     let fg = Color::with_alpha(10, 20, 30, 255);

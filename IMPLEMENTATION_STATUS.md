@@ -80,6 +80,7 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | **非同期ファイルシステム (6.3)** | ✅ 完了 | `src/fs/async_ops.rs` |
 | VFS | ✅ 完了 | `src/fs/vfs.rs` |
 | ブロックキャッシュ | ✅ 完了 | `src/fs/cache.rs` |
+| FAT32: セクタバッファのロック化、LFN検証、サイクル検出、ベンチ追加 | ✅ 完了 | `filesystems/fat32/src/lib.rs` |
 | NVMeドライバ | ✅ 完了 | `src/io/nvme.rs` |
 
 ### ✅ セクション 7: デバイスドライバ

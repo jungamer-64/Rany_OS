@@ -29,10 +29,13 @@ members = [
     # Apps
     "apps",
     "tools/cap_harness",
-    # NOTE: `tools/framebuffer_bench` is intentionally not a workspace member anymore
-    # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues
-    # when running Criterion benches. It is runnable via its manifest path.
+    "libs/boot_proto",
+    "bootloader",
+    # NOTE: `tools/framebuffer_bench` and `tools/signer` are intentionally not workspace members
+    # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues.
+    # They are runnable via their manifest paths.
 ]
+exclude = ["tools/framebuffer_bench", "tools/signer"]
 
 
 [workspace.package]

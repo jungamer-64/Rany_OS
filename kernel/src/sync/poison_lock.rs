@@ -13,10 +13,10 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::lockfree::Backoff;
-use serial_driver::serial_println;
+// use serial_driver::serial_println;
 
 // ============================================================================
 // PoisonError - ロックが毒入れされた場合のエラー
@@ -205,6 +205,25 @@ impl<T> PoisonLock<T> {
         }
     }
 
+    /// Lock used for initialization-time best-effort recovery.
+    ///
+    /// If the lock is poisoned, log a warning with the provided `context` and return the
+    /// inner guard for best-effort recovery. This helper is intended for use during
+    /// initialization or exceptional recovery paths only — prefer explicit error
+    /// handling for runtime/hot-paths.
+    pub fn lock_for_init(&self, context: &str) -> PoisonLockGuard<'_, T> {
+        match self.lock() {
+            Ok(g) => g,
+            Err(poisoned) => {
+                log::warn!(
+                    "[POISON] {} - lock poisoned during init; proceeding with best-effort",
+                    context
+                );
+                poisoned.into_inner()
+            }
+        }
+    }
+
     /// ロック状態を確認（デバッグ用）
     pub fn is_locked(&self) -> bool {
         self.locked.load(Ordering::Relaxed)
@@ -301,7 +320,7 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
             self.lock.poisoned.store(true, Ordering::Release);
             // テスト環境ではシリアルへのI/Oは特権命令になり得るため、出力を抑止
             #[cfg(not(test))]
-            serial_println!("[PoisonLock] Lock poisoned due to panic");
+            log::info!("[PoisonLock] Lock poisoned due to panic");
         }
 
         // スピンロックを解放
@@ -396,6 +415,11 @@ pub fn set_panicking(panicking: bool) {
 /// 現在のCPUコアIDを取得
 #[inline]
 fn get_current_core_id() -> u32 {
+    // Tests should run deterministically on the host; use core 0 in test builds.
+    if cfg!(test) {
+        return 0;
+    }
+
     // LAPIC IDから取得する場合（APICが利用可能な場合）
     // ここでは簡易実装としてRDTSCPのAUX値を使用
     #[cfg(target_arch = "x86_64")]
@@ -513,7 +537,7 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
         // パニック検出と毒入れ
         if is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
-            serial_println!("[IrqPoisonLock] Lock poisoned due to panic");
+            log::info!("[IrqPoisonLock] Lock poisoned due to panic");
         }
 
         // スピンロックを解放
@@ -569,6 +593,36 @@ mod tests {
     }
 
     #[test]
+    fn test_lock_for_init_recovers_on_poison() {
+        use crate::sync::set_panicking;
+
+        let lock = PoisonLock::new(0usize);
+
+        // Poison the lock by simulating a panic while holding the guard
+        set_panicking(true);
+        {
+            let _guard = lock.lock().unwrap();
+            // dropping _guard while panicking will mark the lock as poisoned
+        }
+        set_panicking(false);
+
+        // Recover via lock_for_init and mutate value
+        {
+            let mut g = lock.lock_for_init("test_lock_for_init");
+            *g = 123usize;
+        }
+
+        // Subsequent lock should reflect the updated value, either via Ok or Err with inner reference
+        match lock.lock() {
+            Ok(g) => assert_eq!(*g, 123usize),
+            Err(poisoned) => {
+                let guard = poisoned.into_inner();
+                assert_eq!(*guard, 123usize);
+            }
+        }
+    }
+
+    #[test]
     fn test_lock_contention_metrics() {
         use std::sync::Arc;
         use std::thread;
@@ -594,8 +648,14 @@ mod tests {
         th.join().unwrap();
 
         let m = get_lock_metrics();
-        assert!(m.acquire_count >= 1, "expected at least one lock acquisition");
-        assert!(m.contention_events >= 1, "expected at least one contention event");
+        assert!(
+            m.acquire_count >= 1,
+            "expected at least one lock acquisition"
+        );
+        assert!(
+            m.contention_events >= 1,
+            "expected at least one contention event"
+        );
     }
 
     /// Sharded-style stress test that simulates a sharded registry by creating

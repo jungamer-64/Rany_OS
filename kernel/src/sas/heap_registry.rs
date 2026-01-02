@@ -17,7 +17,10 @@ use crate::domain_system::DomainId;
 #[cfg(any(test, feature = "bench"))]
 use super::DomainId;
 use crate::sync::PoisonLock;
-use alloc::{collections::{BTreeMap, BTreeSet}, vec::Vec};
+use alloc::{
+    collections::{BTreeMap, BTreeSet},
+    vec::Vec,
+};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 /// デフォルト・シャード数 (調整可能)
@@ -58,7 +61,6 @@ impl RegistryShard {
     }
 }
 
-
 /// ヒープレジストリ (Sharded)
 pub struct HeapRegistry {
     /// シャード化されたレジストリ（ランタイムサイズ）
@@ -84,7 +86,10 @@ pub struct RegistryStats {
 impl HeapRegistry {
     /// Create with explicit shard count
     pub fn new(shard_count: usize) -> Self {
-        let shard_count = core::cmp::min(core::cmp::max(shard_count, MIN_SHARD_COUNT), MAX_SHARD_COUNT);
+        let shard_count = core::cmp::min(
+            core::cmp::max(shard_count, MIN_SHARD_COUNT),
+            MAX_SHARD_COUNT,
+        );
         let mut shards = alloc::vec::Vec::with_capacity(shard_count);
         for _ in 0..shard_count {
             shards.push(PoisonLock::new(RegistryShard::new()));
@@ -97,7 +102,8 @@ impl HeapRegistry {
         #[cfg(any(test, feature = "bench"))]
         let numa_nodes = 1usize;
 
-        let mut shard_nodes: alloc::vec::Vec<Option<usize>> = alloc::vec::Vec::with_capacity(shard_count);
+        let mut shard_nodes: alloc::vec::Vec<Option<usize>> =
+            alloc::vec::Vec::with_capacity(shard_count);
         for i in 0..shard_count {
             if numa_nodes > 0 {
                 shard_nodes.push(Some(i % numa_nodes));
@@ -126,7 +132,13 @@ impl HeapRegistry {
         let cpus = 4usize;
         let cpus = if cpus == 0 { 1 } else { cpus };
         // 4 shards per CPU (rounded by next_power_of_two) is a practical default
-        let shards = core::cmp::min(core::cmp::max((cpus.next_power_of_two()).saturating_mul(4), MIN_SHARD_COUNT), MAX_SHARD_COUNT);
+        let shards = core::cmp::min(
+            core::cmp::max(
+                (cpus.next_power_of_two()).saturating_mul(4),
+                MIN_SHARD_COUNT,
+            ),
+            MAX_SHARD_COUNT,
+        );
         Self::new(shards)
     }
 
@@ -194,11 +206,7 @@ impl HeapRegistry {
             if let Some(owner_node) = crate::domain_system::get_domain_numa(owner) {
                 idxs.sort_by_key(|i| {
                     if let Some(node) = self.shard_nodes.get(*i).copied().unwrap_or(None) {
-                        if node == owner_node {
-                            0usize
-                        } else {
-                            1usize
-                        }
+                        if node == owner_node { 0usize } else { 1usize }
                     } else {
                         1usize
                     }
@@ -253,9 +261,7 @@ impl HeapRegistry {
         }
 
         // Count registration only once per logical object
-        self.stats
-            .total_registered
-            .fetch_add(1, Ordering::Relaxed);
+        self.stats.total_registered.fetch_add(1, Ordering::Relaxed);
 
         Ok(generation)
     }
@@ -317,7 +323,8 @@ impl HeapRegistry {
         for g in guards.iter_mut() {
             if g.objects.remove(&address).is_some() {
                 if let Some(addrs) = g.owner_index.get_mut(&owner) {
-                        addrs.retain(|a: &usize| *a != address);
+                    let addrs: &mut alloc::vec::Vec<usize> = addrs;
+                    addrs.retain(|a: &usize| *a != address);
                 }
             }
         }
@@ -391,6 +398,7 @@ impl HeapRegistry {
 
             // update owner_index
             if let Some(addrs) = g.owner_index.get_mut(&from) {
+                let addrs: &mut alloc::vec::Vec<usize> = addrs;
                 addrs.retain(|a: &usize| *a != address);
             }
             g.owner_index
@@ -399,9 +407,7 @@ impl HeapRegistry {
                 .push(address);
         }
 
-        self.stats
-            .total_transferred
-            .fetch_add(1, Ordering::Relaxed);
+        self.stats.total_transferred.fetch_add(1, Ordering::Relaxed);
 
         Ok(())
     }
@@ -548,6 +554,7 @@ impl HeapRegistry {
             };
             if g.objects.remove(&address).is_some() {
                 if let Some(addrs) = g.owner_index.get_mut(&owner) {
+                    let addrs: &mut alloc::vec::Vec<usize> = addrs;
                     addrs.retain(|a: &usize| *a != address);
                 }
                 removed = true;
@@ -578,7 +585,9 @@ impl HeapRegistry {
                     }
                 }
                 Err(_) => {
-                    log::error!("[HEAP] Registry shard lock poisoned (object_count) - skipping shard");
+                    log::error!(
+                        "[HEAP] Registry shard lock poisoned (object_count) - skipping shard"
+                    );
                 }
             }
         }
@@ -600,13 +609,16 @@ impl HeapRegistry {
                     for addr in to_remove {
                         g.objects.remove(&addr);
                         if let Some(addrs) = g.owner_index.get_mut(&domain) {
+                            let addrs: &mut alloc::vec::Vec<usize> = addrs;
                             addrs.retain(|a: &usize| *a != addr);
                         }
                         removed_addrs.insert(addr);
                     }
                 }
                 Err(_) => {
-                    log::error!("[HEAP] Registry shard lock poisoned (reclaim_all) - skipping shard");
+                    log::error!(
+                        "[HEAP] Registry shard lock poisoned (reclaim_all) - skipping shard"
+                    );
                 }
             }
         }
@@ -664,7 +676,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use crate::sync::poison_lock::{reset_lock_metrics, get_lock_metrics};
+    use crate::sync::poison_lock::{get_lock_metrics, reset_lock_metrics};
 
     /// Measurement sweep for HeapRegistry: varies shard count and thread counts
     /// and prints CSV-style metrics for analysis. This test is intentionally
@@ -771,8 +783,14 @@ mod tests {
         t1.join().unwrap();
 
         let m = get_lock_metrics();
-        assert!(m.acquire_count >= 1, "expected at least one lock acquisition");
-        assert!(m.contention_events >= 1, "expected at least one contention event");
+        assert!(
+            m.acquire_count >= 1,
+            "expected at least one lock acquisition"
+        );
+        assert!(
+            m.contention_events >= 1,
+            "expected at least one contention event"
+        );
     }
 
     /// マルチスレッド負荷テスト：複数スレッドで同一または近傍シャードに対して登録/解除を繰り返す。
@@ -841,7 +859,9 @@ mod tests {
         let size = 64usize; // with 16-byte blocks and 4 shards this will cover all shards
 
         // Register spanning object
-        let generation = registry.register(addr, size, owner, 0).expect("register failed");
+        let generation = registry
+            .register(addr, size, owner, 0)
+            .expect("register failed");
         assert!(generation > 0);
 
         // Mid-range access should resolve to owner
@@ -910,7 +930,10 @@ mod tests {
             crate::sync::set_panicking(true);
         }
         crate::sync::set_panicking(false);
-        assert_eq!(registry.register(0x1000, 64, owner, 0), Err(RegistryError::PermissionDenied));
+        assert_eq!(
+            registry.register(0x1000, 64, owner, 0),
+            Err(RegistryError::PermissionDenied)
+        );
     }
 
     #[test]
@@ -918,13 +941,18 @@ mod tests {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
         let addr = 0x1000usize;
-        registry.register(addr, 64, owner, 0).expect("register failed");
+        registry
+            .register(addr, 64, owner, 0)
+            .expect("register failed");
         {
             let _guard = registry.shards[0].lock().unwrap();
             crate::sync::set_panicking(true);
         }
         crate::sync::set_panicking(false);
-        assert_eq!(registry.unregister(addr, owner), Err(RegistryError::PermissionDenied));
+        assert_eq!(
+            registry.unregister(addr, owner),
+            Err(RegistryError::PermissionDenied)
+        );
     }
 
     #[test]
@@ -932,13 +960,18 @@ mod tests {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
         let addr = 0x1000usize;
-        registry.register(addr, 64, owner, 0).expect("register failed");
+        registry
+            .register(addr, 64, owner, 0)
+            .expect("register failed");
         {
             let _guard = registry.shards[0].lock().unwrap();
             crate::sync::set_panicking(true);
         }
         crate::sync::set_panicking(false);
-        assert_eq!(registry.transfer_ownership(addr, owner, DomainId::new(2)), Err(RegistryError::PermissionDenied));
+        assert_eq!(
+            registry.transfer_ownership(addr, owner, DomainId::new(2)),
+            Err(RegistryError::PermissionDenied)
+        );
     }
 
     #[test]
@@ -946,9 +979,13 @@ mod tests {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
         let addr = 0x2000usize;
-        registry.register(addr, 64, owner, 0).expect("register failed");
+        registry
+            .register(addr, 64, owner, 0)
+            .expect("register failed");
         {
-            let _guard = registry.shards[registry.get_shard_index(addr)].lock().unwrap();
+            let _guard = registry.shards[registry.get_shard_index(addr)]
+                .lock()
+                .unwrap();
             crate::sync::set_panicking(true);
         }
         crate::sync::set_panicking(false);
@@ -960,9 +997,13 @@ mod tests {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
         let addr = 0x2000usize;
-        registry.register(addr, 64, owner, 0).expect("register failed");
+        registry
+            .register(addr, 64, owner, 0)
+            .expect("register failed");
         {
-            let _guard = registry.shards[registry.get_shard_index(addr)].lock().unwrap();
+            let _guard = registry.shards[registry.get_shard_index(addr)]
+                .lock()
+                .unwrap();
             crate::sync::set_panicking(true);
         }
         crate::sync::set_panicking(false);
@@ -974,7 +1015,9 @@ mod tests {
         let registry = HeapRegistry::new(4);
         let owner = DomainId::new(1);
         let addr = 0x1000usize;
-        registry.register(addr, 64, owner, 0).expect("register failed");
+        registry
+            .register(addr, 64, owner, 0)
+            .expect("register failed");
         {
             let _guard = registry.shards[0].lock().unwrap();
             crate::sync::set_panicking(true);
@@ -983,4 +1026,3 @@ mod tests {
         assert_eq!(registry.unregister_any(addr), None);
     }
 }
-

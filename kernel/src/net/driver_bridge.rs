@@ -12,7 +12,7 @@
 use super::ethernet::MacAddress;
 use super::ipv4::{Ipv4Address, Ipv4Config};
 use super::stack::{self, NetworkConfig, NetworkStack};
-use crate::io::virtio::{VirtioNetDevice, VirtioNetHeader, with_virtio_net};
+use crate::io::virtio::{VirtioNetDevice, with_virtio_net};
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -55,13 +55,13 @@ fn virtio_transmit(data: &[u8]) -> bool {
             true
         }
         Some(Err(_)) => {
-            crate::serial_println!("[NET BRIDGE] Transmit error");
+            log::info!("[NET BRIDGE] Transmit error");
             false
         }
         None => {
             // VirtIO-Netが初期化されていない場合はデバッグ出力
             #[cfg(debug_assertions)]
-            crate::serial_println!("[NET BRIDGE] VirtIO-Net not initialized");
+            log::info!("[NET BRIDGE] VirtIO-Net not initialized");
             false
         }
     }
@@ -69,20 +69,11 @@ fn virtio_transmit(data: &[u8]) -> bool {
 
 /// Low-level packet transmission via VirtIO-Net
 fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static str> {
-    // VirtIO-Netヘッダを先頭に追加
-    let mut tx_buffer = alloc::vec![0u8; VirtioNetHeader::SIZE + data.len()];
-
-    // ヘッダ（デフォルト値でOK）
-    let header = VirtioNetHeader::new_tx();
-    let header_bytes: &[u8] = &crate::util::struct_as_bytes(&header)[..VirtioNetHeader::SIZE];
-    tx_buffer[..VirtioNetHeader::SIZE].copy_from_slice(header_bytes);
-    tx_buffer[VirtioNetHeader::SIZE..].copy_from_slice(data);
-
     // 非同期送信Futureを作成
     // Note: 完全な非同期実行にはasync executorとの統合が必要
     // 現時点ではFutureを作成し、送信リクエストをキューに登録する
     // 実際の送信完了はデバイスの割り込み処理で確認される
-    let _send_future = device.send_async(&tx_buffer);
+    let _send_future = device.send_async(data);
 
     // send_asyncはFutureを返すが、内部でVirtQueueにディスクリプタを追加し
     // デバイスに通知を送る
@@ -91,7 +82,7 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
     // デバッグ用：パケット送信ログ
     #[cfg(debug_assertions)]
     if data.len() >= 14 {
-        crate::serial_println!(
+        log::info!(
             "[NET TX] {} bytes queued, dst={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
             data.len(),
             data[0],
@@ -110,32 +101,25 @@ fn transmit_packet(device: &VirtioNetDevice, data: &[u8]) -> Result<(), &'static
 // Receive Bridge
 // ============================================================================
 
-/// Process a received packet from VirtIO-Net
+/// Process a received payload from VirtIO-Net
 /// Call this from the interrupt handler or polling loop
 pub fn process_received_packet(data: &[u8]) {
-    // VirtIO-Netヘッダをスキップ
-    if data.len() <= VirtioNetHeader::SIZE {
-        return;
-    }
-
-    let ethernet_data = &data[VirtioNetHeader::SIZE..];
-
     RX_PACKETS.fetch_add(1, Ordering::Relaxed);
 
     // NetworkStackに渡す
-    stack::receive(ethernet_data);
+    stack::receive(data);
 
     #[cfg(debug_assertions)]
-    if ethernet_data.len() >= 14 {
-        crate::serial_println!(
+    if data.len() >= 14 {
+        log::info!(
             "[NET RX] {} bytes, src={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-            ethernet_data.len(),
-            ethernet_data[6],
-            ethernet_data[7],
-            ethernet_data[8],
-            ethernet_data[9],
-            ethernet_data[10],
-            ethernet_data[11]
+            data.len(),
+            data[6],
+            data[7],
+            data[8],
+            data[9],
+            data[10],
+            data[11]
         );
     }
 }
@@ -151,7 +135,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
         return Ok(()); // Already initialized
     }
 
-    crate::serial_println!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
+    log::info!("[NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...");
 
     // Get MAC address from VirtIO-Net if available
     let mac = with_virtio_net(|device| {
@@ -195,8 +179,8 @@ pub fn init_bridge() -> Result<(), &'static str> {
         Err(_) => log::error!("[NET BRIDGE] Stack poisoned - transmit fn not set"),
     }
 
-    crate::serial_println!("[NET BRIDGE] Bridge initialized");
-    crate::serial_println!(
+    log::info!("[NET BRIDGE] Bridge initialized");
+    log::info!(
         "  MAC: {:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
         mac.as_bytes()[0],
         mac.as_bytes()[1],
@@ -205,7 +189,7 @@ pub fn init_bridge() -> Result<(), &'static str> {
         mac.as_bytes()[4],
         mac.as_bytes()[5]
     );
-    crate::serial_println!("  IP: 10.0.2.15");
+    log::info!("  IP: 10.0.2.15");
 
     Ok(())
 }
@@ -267,7 +251,7 @@ pub fn get_real_stats() -> Option<super::NetworkStatsSnapshot> {
         Ok(guard) => {
             let stack = match guard.as_ref() {
                 Some(s) => s,
-                None => return Vec::new(),
+                None => return None,
             };
 
             let stats = stack.stats();
@@ -330,8 +314,6 @@ pub fn get_real_arp_cache() -> Vec<super::ArpCacheEntry> {
         Err(_) => {
             log::error!("[NET BRIDGE] Stack poisoned (get_real_arp_cache)");
             Vec::new()
-        }
-    } Vec::new()
         }
     }
 }

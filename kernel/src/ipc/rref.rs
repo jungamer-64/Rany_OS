@@ -22,7 +22,8 @@ pub use crate::domain_system::DomainId;
 pub fn reclaim_domain_resources(domain: DomainId) {
     // 統合されたSAS APIを使用
     // SAS Manager (or Registry directly) handles reclamation
-    let reclaimed_count = crate::sas::reclaim_domain_resources(domain);
+    let reclaimed_count =
+        crate::sas::reclaim_domain_resources(crate::sas::DomainId::new(domain.as_u64()));
 
     if reclaimed_count > 0 {
         log::info!(
@@ -60,6 +61,7 @@ pub fn reclaim_domain_resources(domain: DomainId) {
 /// 2. RRefの所有権がMove semanticsで移動する
 /// 3. Rustの型システムが旧所有者からのアクセスを防止
 /// 4. ドメインクラッシュ時: Heap Registryが所有オブジェクトを回収
+#[derive(Debug)]
 pub struct RRef<T: ?Sized> {
     /// Exchange Heap上のポインタ
     ptr: NonNull<T>,
@@ -78,9 +80,28 @@ impl<T> RRef<T> {
             .expect("Exchange heap allocation failed");
 
         // Heap Registryに登録（統合されたSAS APIを使用）
-        crate::sas::register_object(ptr.as_ptr() as usize, layout.size(), owner);
+        crate::sas::register_object(
+            ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
 
         RRef { ptr, owner }
+    }
+
+    /// 新しいRRefを作成（失敗時はNone）
+    pub fn try_new(owner: DomainId, val: T) -> Option<Self> {
+        let layout = Layout::new::<T>();
+        let ptr = crate::mm::exchange_heap::allocate_on_exchange(val)?;
+
+        // Heap Registryに登録（統合されたSAS APIを使用）
+        crate::sas::register_object(
+            ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+
+        Some(RRef { ptr, owner })
     }
 
     /// 既存のExchange HeapポインタからRRefを作成
@@ -94,7 +115,11 @@ impl<T> RRef<T> {
     /// 設計書 5.3: データコピーなしで所有権のみ移動
     pub fn move_to(mut self, new_owner: DomainId) -> Self {
         // Heap Registryの所有者を更新（統合されたSAS APIを使用）
-        match crate::sas::transfer_ownership(self.ptr.as_ptr() as usize, self.owner, new_owner) {
+        match crate::sas::transfer_ownership(
+            self.ptr.as_ptr() as usize,
+            crate::sas::DomainId::new(self.owner.as_u64()),
+            crate::sas::DomainId::new(new_owner.as_u64()),
+        ) {
             Ok(_) => {}
             Err(e) => {
                 // This creates a panic if transfer fails - which represents a logic bug or memory corruption
@@ -163,6 +188,80 @@ impl<T> RRef<T> {
     }
 }
 
+impl<T> RRef<[T]> {
+    /// Create a new slice-backed RRef using an initializer.
+    pub fn new_slice_with<F>(owner: DomainId, len: usize, init: F) -> Option<Self>
+    where
+        F: FnMut(usize) -> T,
+    {
+        let (ptr, layout) = crate::mm::exchange_heap::allocate_slice_with(len, init)?;
+        crate::sas::register_object(
+            ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+        let slice_ptr = NonNull::slice_from_raw_parts(ptr, len);
+        Some(Self { ptr: slice_ptr, owner })
+    }
+
+    /// Create a new slice-backed RRef with a custom alignment.
+    pub fn new_slice_with_aligned<F>(
+        owner: DomainId,
+        len: usize,
+        align: usize,
+        mut init: F,
+    ) -> Option<Self>
+    where
+        F: FnMut(usize) -> T,
+    {
+        if len == 0 || !align.is_power_of_two() {
+            return None;
+        }
+
+        let mut layout = Layout::array::<T>(len).ok()?;
+        if align > layout.align() {
+            layout = layout.align_to(align).ok()?;
+        }
+
+        let ptr = crate::mm::exchange_heap::allocate_raw(layout)?;
+        let typed_ptr = ptr.as_ptr() as *mut T;
+
+        unsafe {
+            for i in 0..len {
+                typed_ptr.add(i).write(init(i));
+            }
+        }
+
+        let typed_ptr = NonNull::new(typed_ptr)?;
+        crate::sas::register_object(
+            typed_ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+        let slice_ptr = NonNull::slice_from_raw_parts(typed_ptr, len);
+        Some(Self { ptr: slice_ptr, owner })
+    }
+}
+
+impl<T: Default> RRef<[T]> {
+    /// Create a new slice-backed RRef initialized with `T::default()`.
+    pub fn new_slice_default(owner: DomainId, len: usize) -> Option<Self> {
+        let (ptr, layout) = crate::mm::exchange_heap::allocate_slice_default::<T>(len)?;
+        crate::sas::register_object(
+            ptr.as_ptr() as usize,
+            layout.size(),
+            crate::sas::DomainId::new(owner.as_u64()),
+        );
+        let slice_ptr = NonNull::slice_from_raw_parts(ptr, len);
+        Some(Self { ptr: slice_ptr, owner })
+    }
+
+    /// Create a new slice-backed RRef with a custom alignment.
+    pub fn new_slice_default_aligned(owner: DomainId, len: usize, align: usize) -> Option<Self> {
+        Self::new_slice_with_aligned(owner, len, align, |_| T::default())
+    }
+}
+
 impl<T: ?Sized> Deref for RRef<T> {
     type Target = T;
 
@@ -194,6 +293,115 @@ impl<T: ?Sized> Drop for RRef<T> {
 // Send/Sync の実装（SAS環境では安全）
 unsafe impl<T: ?Sized + Send> Send for RRef<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for RRef<T> {}
+
+// ============================================================================
+// RRefRawParts - Zero-Copy Quarantine Support
+// ============================================================================
+//
+// DESIGN: RRefRawParts allows decomposing an RRef into raw parts without
+// dropping it, and later reconstructing it OR dropping it via type-erased
+// drop_fn. This enables the IOMMU Quarantine pattern where the Queue owns
+// the raw parts and can drop abandoned entries without knowing T.
+
+/// RRefRawParts の再構築エラー (IOMMU非依存)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RawPartsError {
+    /// TypeId mismatch during reconstruction
+    TypeMismatch,
+    /// Size mismatch during reconstruction
+    SizeMismatch,
+}
+
+/// RRef を分解した raw parts (Exchange Heap解放不要)
+///
+/// Queue が T を知らなくても `drop_erased()` で安全に解放可能。
+///
+/// # Safety Invariants
+/// - `ptr` is a valid pointer to data on the Exchange Heap
+/// - `owner` is the DomainId that owns the data
+/// - `drop_fn` correctly drops the data as type T
+/// - Either `into_rref()` or `drop_erased()` must be called exactly once
+pub struct RRefRawParts {
+    /// Pointer to data on Exchange Heap
+    ptr: NonNull<u8>,
+    /// Owner domain
+    owner: DomainId,
+    /// Size of original type (debug verification)
+    #[cfg(debug_assertions)]
+    size: usize,
+    /// TypeId of original type (debug verification)
+    #[cfg(debug_assertions)]
+    type_id: core::any::TypeId,
+    /// Type-erased drop function (★ key for abandoned entry cleanup)
+    drop_fn: unsafe fn(NonNull<u8>, DomainId),
+}
+
+// RRefRawParts is Send/Sync because it follows same rules as RRef
+unsafe impl Send for RRefRawParts {}
+unsafe impl Sync for RRefRawParts {}
+
+impl RRefRawParts {
+    /// Decompose an RRef<T> into RRefRawParts (consumes, no Drop)
+    ///
+    /// # Signature matching RRef API:
+    /// - `RRef::into_raw(self) -> (NonNull<T>, DomainId)`
+    /// - `RRef::from_raw(ptr: NonNull<T>, owner: DomainId) -> Self`
+    pub fn from_rref<T: 'static>(rref: RRef<T>) -> Self {
+        let (ptr, owner) = rref.into_raw();
+
+        // Embed type-specific drop function
+        unsafe fn drop_impl<T: 'static>(ptr: NonNull<u8>, owner: DomainId) {
+            let rref: RRef<T> = RRef::from_raw(ptr.cast(), owner);
+            drop(rref); // Proper Drop path via Exchange Heap
+        }
+
+        Self {
+            ptr: ptr.cast(),
+            owner,
+            #[cfg(debug_assertions)]
+            size: core::mem::size_of::<T>(),
+            #[cfg(debug_assertions)]
+            type_id: core::any::TypeId::of::<T>(),
+            drop_fn: drop_impl::<T>,
+        }
+    }
+
+    /// Reconstruct RRef<T> from RRefRawParts
+    ///
+    /// # Safety
+    /// - Caller must ensure T matches the original type
+    /// - Only checks type/size in debug builds
+    ///
+    /// # Errors
+    /// Returns `RawPartsError` if type/size mismatch detected (debug only)
+    pub unsafe fn into_rref<T: 'static>(self) -> Result<RRef<T>, RawPartsError> {
+        #[cfg(debug_assertions)]
+        {
+            if self.type_id != core::any::TypeId::of::<T>() {
+                return Err(RawPartsError::TypeMismatch);
+            }
+            if self.size != core::mem::size_of::<T>() {
+                return Err(RawPartsError::SizeMismatch);
+            }
+        }
+        Ok(RRef::from_raw(self.ptr.cast(), self.owner))
+    }
+
+    /// Type-erased Drop - Queue can drop without knowing T
+    ///
+    /// # Safety
+    /// - Must be called exactly once
+    /// - After calling, self is consumed
+    pub unsafe fn drop_erased(self) {
+        (self.drop_fn)(self.ptr, self.owner);
+    }
+
+    /// Get the owner DomainId (for debugging/logging)
+    #[inline]
+    pub fn owner(&self) -> DomainId {
+        self.owner
+    }
+}
 
 /// アクセスエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

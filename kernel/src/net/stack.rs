@@ -782,17 +782,8 @@ static NETWORK_STACK: PoisonLock<Option<NetworkStack>> = PoisonLock::new(None);
 
 /// Initialize the global network stack
 pub fn init(config: NetworkConfig) {
-    // Initialization-time best-effort recovery: allowing recovery during init helps boot progress.
-    let mut stack = match NETWORK_STACK.lock() {
-        Ok(g) => g,
-        Err(_) => {
-            log::warn!("[NET] Global Stack poisoned - proceeding with best-effort");
-            match NETWORK_STACK.lock() {
-                Ok(g) => g,
-                Err(poisoned) => poisoned.into_inner(),
-            }
-        }
-    };
+    // Initialization-time best-effort recovery: use helper
+    let mut stack = NETWORK_STACK.lock_for_init("[NET] Global Stack init");
     *stack = Some(NetworkStack::new(config));
 }
 

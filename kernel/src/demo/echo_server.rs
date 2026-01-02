@@ -102,19 +102,19 @@ pub async fn run_echo_server_on_port(port: u16) {
     let server = match create_tcp_server(addr, 128) {
         Ok(s) => s,
         Err(e) => {
-            crate::serial_println!("Echo Server: Failed to bind on port {}: {:?}", port, e);
+            log::info!("Echo Server: Failed to bind on port {}: {:?}", port, e);
             STATS.on_error();
             return;
         }
     };
 
     RUNNING.store(true, Ordering::SeqCst);
-    crate::serial_println!("Echo Server: Listening on 0.0.0.0:{}", port);
+    log::info!("Echo Server: Listening on 0.0.0.0:{}", port);
 
     // Accept loop
     loop {
         if !RUNNING.load(Ordering::SeqCst) {
-            crate::serial_println!("Echo Server: Shutdown requested");
+            log::info!("Echo Server: Shutdown requested");
             break;
         }
 
@@ -123,7 +123,7 @@ pub async fn run_echo_server_on_port(port: u16) {
             match accept_future.await {
                 Ok((client_socket, client_addr)) => {
                     STATS.on_connect();
-                    crate::serial_println!(
+                    log::info!(
                         "Echo Server: New connection from {:?}:{} (total: {})",
                         client_addr.ip,
                         client_addr.port,
@@ -141,7 +141,7 @@ pub async fn run_echo_server_on_port(port: u16) {
                     continue;
                 }
                 Err(e) => {
-                    crate::serial_println!("Echo Server: Accept error: {:?}", e);
+                    log::info!("Echo Server: Accept error: {:?}", e);
                     STATS.on_error();
                 }
             }
@@ -149,20 +149,20 @@ pub async fn run_echo_server_on_port(port: u16) {
     }
 
     RUNNING.store(false, Ordering::SeqCst);
-    crate::serial_println!("Echo Server: Stopped");
+    log::info!("Echo Server: Stopped");
 }
 
 /// Handle a single echo client connection
 async fn handle_echo_client(socket: OwnedSocket) {
     let client_fd = socket.fd();
-    crate::serial_println!("Echo Client {}: Handler started", client_fd.raw());
+    log::info!("Echo Client {}: Handler started", client_fd.raw());
 
     loop {
         // 4. Receive data (Async)
         let recv_future = match socket.recv_async(1024) {
             Some(f) => f,
             None => {
-                crate::serial_println!("Echo Client {}: Socket error", client_fd.raw());
+                log::info!("Echo Client {}: Socket error", client_fd.raw());
                 STATS.on_error();
                 break;
             }
@@ -172,33 +172,22 @@ async fn handle_echo_client(socket: OwnedSocket) {
             Ok(data) => {
                 if data.is_empty() {
                     // EOF - connection closed by peer
-                    crate::serial_println!(
-                        "Echo Client {}: Connection closed by peer",
-                        client_fd.raw()
-                    );
+                    log::info!("Echo Client {}: Connection closed by peer", client_fd.raw());
                     break;
                 }
 
                 let len = data.len();
-                crate::serial_println!("Echo Client {}: Received {} bytes", client_fd.raw(), len);
+                log::info!("Echo Client {}: Received {} bytes", client_fd.raw(), len);
 
                 // 5. Send data back (Echo)
                 if let Some(send_future) = socket.send_async(data) {
                     match send_future.await {
                         Ok(sent) => {
                             STATS.on_echo(sent);
-                            crate::serial_println!(
-                                "Echo Client {}: Echoed {} bytes",
-                                client_fd.raw(),
-                                sent
-                            );
+                            log::info!("Echo Client {}: Echoed {} bytes", client_fd.raw(), sent);
                         }
                         Err(e) => {
-                            crate::serial_println!(
-                                "Echo Client {}: Send error: {:?}",
-                                client_fd.raw(),
-                                e
-                            );
+                            log::info!("Echo Client {}: Send error: {:?}", client_fd.raw(), e);
                             STATS.on_error();
                             break;
                         }
@@ -210,7 +199,7 @@ async fn handle_echo_client(socket: OwnedSocket) {
                 continue;
             }
             Err(e) => {
-                crate::serial_println!("Echo Client {}: Recv error: {:?}", client_fd.raw(), e);
+                log::info!("Echo Client {}: Recv error: {:?}", client_fd.raw(), e);
                 STATS.on_error();
                 break;
             }
@@ -218,7 +207,7 @@ async fn handle_echo_client(socket: OwnedSocket) {
     }
 
     STATS.on_disconnect();
-    crate::serial_println!(
+    log::info!(
         "Echo Client {}: Handler finished (active: {})",
         client_fd.raw(),
         STATS.active_connections.load(Ordering::Relaxed)
@@ -249,11 +238,11 @@ pub fn stats() -> (u64, u64, u64, u64) {
 /// Print server statistics
 pub fn print_stats() {
     let (conns, bytes, errors, active) = stats();
-    crate::serial_println!("Echo Server Statistics:");
-    crate::serial_println!("  Total connections: {}", conns);
-    crate::serial_println!("  Active connections: {}", active);
-    crate::serial_println!("  Bytes echoed: {}", bytes);
-    crate::serial_println!("  Errors: {}", errors);
+    log::info!("Echo Server Statistics:");
+    log::info!("  Total connections: {}", conns);
+    log::info!("  Active connections: {}", active);
+    log::info!("  Bytes echoed: {}", bytes);
+    log::info!("  Errors: {}", errors);
 }
 
 // ============================================================================

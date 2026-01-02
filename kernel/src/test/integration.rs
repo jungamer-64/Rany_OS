@@ -15,6 +15,8 @@
 
 extern crate alloc;
 
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -248,6 +250,144 @@ pub fn test_network() -> IntegrationTestSuite {
 }
 
 // ============================================================================
+// Storage Test Suite (VirtIO-blk Zero-Copy E2E)
+// ============================================================================
+
+use crate::fs::page_cluster_buffer::{PageClusterBuffer, PageClusterBufferAllocator};
+use crate::mm::{PAGE_SIZE_4K, alloc_contiguous_frames};
+use crate::task::block_on;
+use alloc::sync::Arc as StdArc;
+use vfs::block::{BlockError, BlockResult, ZcFuture, ZeroCopyBlockDevice};
+
+struct VirtioPageAdapter {
+    device: StdArc<crate::io::virtio::VirtioBlkDevice>,
+}
+
+impl VirtioPageAdapter {
+    fn new(device: StdArc<crate::io::virtio::VirtioBlkDevice>) -> Self {
+        Self { device }
+    }
+}
+
+impl ZeroCopyBlockDevice for VirtioPageAdapter {
+    type Buffer = PageClusterBuffer;
+
+    fn info(&self) -> vfs::block::BlockDeviceInfo {
+        self.device.info()
+    }
+
+    fn flush(&self) -> BlockResult<()> {
+        self.device.flush()
+    }
+
+    fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
+        if size == 0 {
+            return Err(BlockError::InvalidBufferSize);
+        }
+        let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
+        if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
+            let real_size = frames_needed * (PAGE_SIZE_4K as usize);
+            if let Some(buf) = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size) {
+                return Ok(buf);
+            }
+            // fallback: free & error
+            crate::mm::dealloc_contiguous_frames(start_phys, frames_needed);
+        }
+        Err(BlockError::NotReady)
+    }
+
+    fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+        let device = StdArc::clone(&self.device);
+        Box::pin(async move {
+            let block_size = device.info().block_size as usize;
+            let size = block_size
+                .checked_mul(count as usize)
+                .ok_or(BlockError::InvalidBufferSize)?;
+            let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
+            let start_phys = alloc_contiguous_frames(frames_needed).ok_or(BlockError::NotReady)?;
+            let real_size = frames_needed * (PAGE_SIZE_4K as usize);
+            let mut buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), real_size)
+                .ok_or(BlockError::IoError)?;
+            // Use underlying device borrowed API to do zero-copy read
+            device.read_into_buf(block, &mut buf).await.map_err(|e| e)?;
+            Ok(buf)
+        })
+    }
+
+    fn write_async(
+        &self,
+        block: u64,
+        buffer: Self::Buffer,
+    ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+        let device = StdArc::clone(&self.device);
+        Box::pin(async move {
+            device.write_from_buf(block, &buffer).await.map_err(|e| e)?;
+            Ok(buffer)
+        })
+    }
+
+    fn read_into_buf<'a>(
+        &'a self,
+        block: u64,
+        dst: &'a mut dyn vfs::block::IoBufferMut,
+    ) -> ZcFuture<'a, BlockResult<()>> {
+        self.device.read_into_buf(block, dst)
+    }
+
+    fn write_from_buf<'a>(
+        &'a self,
+        block: u64,
+        src: &'a dyn vfs::block::IoBuffer,
+    ) -> ZcFuture<'a, BlockResult<()>> {
+        self.device.write_from_buf(block, src)
+    }
+}
+
+// ============================================================================
+// Storage Test
+// ============================================================================
+
+pub fn test_storage() -> IntegrationTestSuite {
+    let mut suite = IntegrationTestSuite::new("Storage");
+
+    suite.add_result(run_test("virtio_blk_zero_copy_mount", || {
+        if let Some(dev) = crate::io::virtio::blk::get_virtio_blk_device() {
+            // Wrap the global virtio device with a Page-backed adapter and mount
+            let adapter = StdArc::new(VirtioPageAdapter::new(StdArc::clone(&dev)));
+            let alloc = StdArc::new(PageClusterBufferAllocator::new());
+
+            // Reset IOMMU mapping counters for a clean test
+            crate::io::iommu::api::reset_map_unmap_counts();
+
+            match block_on(
+                fat32::Fat32FileSystem::<PageClusterBuffer>::mount_zero_copy_with_allocator(
+                    adapter, alloc,
+                ),
+            ) {
+                Ok(_fs_arc) => {
+                    // If IOMMU is enabled, ensure we recorded mappings
+                    if crate::io::iommu::api::is_iommu_enabled() {
+                        let maps = crate::io::iommu::api::get_map_count();
+                        if maps == 0 {
+                            Err(String::from("IOMMU enabled but no map calls recorded"))
+                        } else {
+                            Ok(String::from("mount OK (IOMMU mapped)"))
+                        }
+                    } else {
+                        Ok(String::from("mount OK (no IOMMU)"))
+                    }
+                }
+                Err(e) => Err(alloc::format!("mount failed: {:?}", e)),
+            }
+        } else {
+            Err(String::from("No VirtIO-blk device found"))
+        }
+    }));
+
+    suite
+}
+
+// ============================================================================
 // Run All Tests
 // ============================================================================
 
@@ -269,6 +409,7 @@ pub fn run_all_integration_tests() -> (usize, usize) {
         test_domains(),
         test_security(),
         test_network(),
+        test_storage(),
     ];
 
     for suite in suites {

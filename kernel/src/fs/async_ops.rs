@@ -353,33 +353,51 @@ impl<'a> Future for AsyncReadFuture<'a> {
         }
 
         // リクエストの完了を確認
+        // リクエストの完了を確認 (Reactor Pattern)
         if let Some(request_id) = self.request_id {
-            // NVMe完了キューをチェック
             let core_id = current_cpu();
+
+            // 1. まず完了済みかチェック
             let completed = nvme_global::with_driver(|driver| {
-                // Safety: 現在のコアIDで自身のキューをポーリング
-                unsafe { driver.poll_completion_by_cid(core_id, request_id as u16) }
+                driver.check_completion(core_id, request_id as u16)
             });
 
-            match completed {
-                Some(Some(cqe)) if cqe.is_success() => {
-                    // 読み取り完了
+            if let Some(Some(cqe)) = completed {
+                if cqe.is_success() {
                     let to_read = self.buf.len();
                     self.file
                         .position
                         .fetch_add(to_read as u64, Ordering::Relaxed);
                     return Poll::Ready(Ok(to_read));
-                }
-                Some(Some(_cqe)) => {
-                    // エラー完了
+                } else {
                     return Poll::Ready(Err(FsError::IoError));
                 }
-                _ => {
-                    // まだ完了していない、再度ポーリング
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
+            }
+
+            // 2. まだならWakerを登録
+            nvme_global::with_driver(|driver| {
+                driver.register_waker(core_id, request_id as u16, cx.waker().clone());
+            });
+
+            // 3. 登録中に完了した可能性をダブルチェック
+            let completed_retry = nvme_global::with_driver(|driver| {
+                driver.check_completion(core_id, request_id as u16)
+            });
+
+            if let Some(Some(cqe)) = completed_retry {
+                if cqe.is_success() {
+                    let to_read = self.buf.len();
+                    self.file
+                        .position
+                        .fetch_add(to_read as u64, Ordering::Relaxed);
+                    return Poll::Ready(Ok(to_read));
+                } else {
+                    return Poll::Ready(Err(FsError::IoError));
                 }
             }
+
+            // ISRがWakerを起こすのを待つ
+            Poll::Pending
         } else {
             Poll::Ready(Ok(0))
         }
@@ -481,17 +499,17 @@ impl<'a> Future for AsyncWriteFuture<'a> {
         }
 
         // 完了確認
+        // 完了確認 (Reactor Pattern)
         if let Some(request_id) = self.request_id {
-            // NVMe完了キューをチェック
             let core_id = current_cpu();
+
+            // 1. Check completion
             let completed = nvme_global::with_driver(|driver| {
-                // Safety: 現在のコアIDで自身のキューをポーリング
-                unsafe { driver.poll_completion_by_cid(core_id, request_id as u16) }
+                driver.check_completion(core_id, request_id as u16)
             });
 
-            match completed {
-                Some(Some(cqe)) if cqe.is_success() => {
-                    // 書き込み完了
+            if let Some(Some(cqe)) = completed {
+                if cqe.is_success() {
                     let position = self.file.position.load(Ordering::Relaxed);
                     let len = self.buf.len();
                     self.file.position.fetch_add(len as u64, Ordering::Relaxed);
@@ -503,17 +521,41 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                         }
                     }
                     return Poll::Ready(Ok(len));
-                }
-                Some(Some(_cqe)) => {
-                    // エラー完了
+                } else {
                     return Poll::Ready(Err(FsError::IoError));
                 }
-                _ => {
-                    // まだ完了していない、再度ポーリング
-                    cx.waker().wake_by_ref();
-                    return Poll::Pending;
+            }
+
+            // 2. Register Waker
+            nvme_global::with_driver(|driver| {
+                driver.register_waker(core_id, request_id as u16, cx.waker().clone());
+            });
+
+            // 3. Double check
+            let completed_retry = nvme_global::with_driver(|driver| {
+                driver.check_completion(core_id, request_id as u16)
+            });
+
+            if let Some(Some(cqe)) = completed_retry {
+                if cqe.is_success() {
+                    let position = self.file.position.load(Ordering::Relaxed);
+                    let len = self.buf.len();
+                    self.file.position.fetch_add(len as u64, Ordering::Relaxed);
+                    {
+                        let mut attr = self.file.attr.lock();
+                        let new_end = position + len as u64;
+                        if new_end > attr.size {
+                            attr.size = new_end;
+                        }
+                    }
+                    return Poll::Ready(Ok(len));
+                } else {
+                    return Poll::Ready(Err(FsError::IoError));
                 }
             }
+
+            // Sleep
+            Poll::Pending
         } else {
             Poll::Ready(Ok(0))
         }

@@ -17,9 +17,10 @@ use crate::fs::fs_abstraction::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     OpenFlags,
 };
+use crate::sync::PoisonLock;
 
 // Import from the new crate
-use fat32::Fat32FileSystem;
+use fat32::DefaultFat32FileSystem;
 use vfs::{
     /*Directory as VfsDirectory, File as VfsFile,*/ FileSystem as VfsFileSystem,
     FileType as VfsFileType, Metadata as VfsMetadata, VfsError, VfsNode,
@@ -44,6 +45,7 @@ impl From<VfsError> for FsError {
             VfsError::IoError => FsError::IoError,
             VfsError::NotSupported => FsError::NotSupported,
             VfsError::FileSystemCorrupted => FsError::CorruptedFs,
+            VfsError::CrossDeviceLink => FsError::NotSupported,
             VfsError::Other => FsError::IoError,
         }
     }
@@ -99,11 +101,11 @@ fn convert_metadata(meta: VfsMetadata, ino: u64) -> FileAttr {
 // ============================================================================
 
 pub struct Fat32FileSystemAdapter {
-    inner: Arc<Fat32FileSystem>,
+    inner: Arc<DefaultFat32FileSystem>,
 }
 
 impl Fat32FileSystemAdapter {
-    pub fn new(inner: Arc<Fat32FileSystem>) -> Self {
+    pub fn new(inner: Arc<DefaultFat32FileSystem>) -> Self {
         Self { inner }
     }
 }
@@ -129,7 +131,7 @@ impl FileSystem for Fat32FileSystemAdapter {
         // But we need Arc<Fat32InodeAdapter> to return.
 
         Ok(Arc::new(Fat32InodeAdapter {
-            inner: spin::Mutex::new(root_node),
+            inner: PoisonLock::new(root_node),
         }))
     }
 
@@ -159,7 +161,7 @@ pub struct Fat32InodeAdapter {
     // or we just hold the Box.
     // Actually VfsNode methods take &self.
     // But we need to put it in a struct that can be Arc'd.
-    inner: spin::Mutex<Box<dyn VfsNode>>,
+    inner: PoisonLock<Box<dyn VfsNode>>,
 }
 
 impl Inode for Fat32InodeAdapter {
@@ -168,7 +170,7 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn getattr(&self) -> FsResult<FileAttr> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let meta = node.metadata().map_err(FsError::from)?;
         // Inode number is not easily available from VfsNode unless we cast or it has a method.
         // VfsNode has name(), but not ino().
@@ -182,17 +184,17 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn lookup(&self, name: &str) -> FsResult<Arc<dyn Inode>> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let dir = node.as_dir().map_err(FsError::from)?;
         let child = dir.lookup(name).map_err(FsError::from)?;
 
         Ok(Arc::new(Fat32InodeAdapter {
-            inner: spin::Mutex::new(child),
+            inner: PoisonLock::new(child),
         }))
     }
 
     fn readdir(&self, _offset: u64) -> FsResult<Vec<DirEntry>> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let entries = dir.read_dir().map_err(FsError::from)?;
 
@@ -207,35 +209,35 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn create(&self, name: &str, _mode: FileMode, _flags: OpenFlags) -> FsResult<Arc<dyn Inode>> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let child = dir.create(name, VfsFileType::File).map_err(FsError::from)?;
 
         Ok(Arc::new(Fat32InodeAdapter {
-            inner: spin::Mutex::new(child),
+            inner: PoisonLock::new(child),
         }))
     }
 
     fn mkdir(&self, name: &str, _mode: FileMode) -> FsResult<Arc<dyn Inode>> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut dir = node.as_dir().map_err(FsError::from)?;
         let child = dir
             .create(name, VfsFileType::Directory)
             .map_err(FsError::from)?;
 
         Ok(Arc::new(Fat32InodeAdapter {
-            inner: spin::Mutex::new(child),
+            inner: PoisonLock::new(child),
         }))
     }
 
     fn unlink(&self, name: &str) -> FsResult<()> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut dir = node.as_dir().map_err(FsError::from)?;
         dir.remove(name).map_err(FsError::from)
     }
 
     fn rmdir(&self, name: &str) -> FsResult<()> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut dir = node.as_dir().map_err(FsError::from)?;
         dir.remove(name).map_err(FsError::from)
     }
@@ -257,7 +259,7 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn read(&self, offset: u64, buf: &mut [u8]) -> FsResult<usize> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut file = node.open(vfs::OpenFlags::empty()).map_err(FsError::from)?;
         file.seek(vfs::SeekFrom::Start(offset))
             .map_err(FsError::from)?;
@@ -265,7 +267,7 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn write(&self, offset: u64, buf: &[u8]) -> FsResult<usize> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut file = node.open(vfs::OpenFlags::empty()).map_err(FsError::from)?;
         file.seek(vfs::SeekFrom::Start(offset))
             .map_err(FsError::from)?;
@@ -273,13 +275,13 @@ impl Inode for Fat32InodeAdapter {
     }
 
     fn truncate(&self, size: u64) -> FsResult<()> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut file = node.open(vfs::OpenFlags::empty()).map_err(FsError::from)?;
         file.set_len(size).map_err(FsError::from)
     }
 
     fn fsync(&self, _datasync: bool) -> FsResult<()> {
-        let node = self.inner.lock();
+        let node = self.inner.lock().map_err(|_| FsError::IoError)?;
         let mut file = node.open(vfs::OpenFlags::empty()).map_err(FsError::from)?;
         file.flush().map_err(FsError::from)
     }

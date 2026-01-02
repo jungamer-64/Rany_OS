@@ -4,6 +4,10 @@
 // - RMRR regions (segment, base, limit, device scopes)
 
 #![allow(dead_code)]
+#![allow(clippy::pub_underscore_fields)]
+#![allow(clippy::missing_safety_doc)]
+#![allow(clippy::missing_errors_doc)]
+#![allow(clippy::ptr_as_ptr)]
 
 use alloc::vec::Vec;
 use core::mem;
@@ -226,8 +230,8 @@ mod tests {
         // Build a minimal DMAR table with a single RMRR entry (no scopes)
         let mut buf: Vec<u8> = Vec::new();
 
-        // LocalSdtHeader (signature + length placeholder)
-        let mut header = LocalSdtHeader {
+        // AcpiSdtHeader (signature + length placeholder)
+        let header = AcpiSdtHeader {
             signature: *b"DMAR",
             length: 0, // patch later
             revision: 1,

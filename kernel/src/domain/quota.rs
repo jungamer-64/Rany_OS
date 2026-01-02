@@ -21,8 +21,7 @@
 use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-/// ドメインID（他モジュールとの連携用に再定義）
-pub type DomainId = u64;
+use crate::domain_system::DomainId;
 
 /// ドメイン優先度
 ///
@@ -371,7 +370,7 @@ impl DomainQuota {
     /// カーネルドメイン用（無制限）
     pub fn kernel() -> Self {
         Self {
-            domain_id: 0,
+            domain_id: DomainId::KERNEL,
             priority: DomainPriority::Critical,
             cpu: CpuQuota::unlimited(),
             memory: MemoryQuota::unlimited(),
@@ -699,20 +698,20 @@ mod tests {
     fn test_oom_victim_selection() {
         let mut quotas = BTreeMap::new();
 
-        let mut q1 = DomainQuota::new(1, DomainPriority::Normal);
+        let mut q1 = DomainQuota::new(DomainId::new(1), DomainPriority::Normal);
         let _ = q1.memory.try_allocate(100 * 1024 * 1024);
 
-        let mut q2 = DomainQuota::new(2, DomainPriority::Low);
+        let mut q2 = DomainQuota::new(DomainId::new(2), DomainPriority::Low);
         let _ = q2.memory.try_allocate(50 * 1024 * 1024);
 
-        let q3 = DomainQuota::new(3, DomainPriority::Critical);
+        let q3 = DomainQuota::new(DomainId::new(3), DomainPriority::Critical);
 
-        quotas.insert(1, q1);
-        quotas.insert(2, q2);
-        quotas.insert(3, q3);
+        quotas.insert(DomainId::new(1), q1);
+        quotas.insert(DomainId::new(2), q2);
+        quotas.insert(DomainId::new(3), q3);
 
         // Low優先度のドメイン2が選択される
         let victim = select_oom_victim(&quotas).unwrap();
-        assert_eq!(victim.domain_id, 2);
+        assert_eq!(victim.domain_id, DomainId::new(2));
     }
 }

@@ -376,6 +376,11 @@ impl SystemClock {
         *self.timer_source.lock() = TimerSource::TSC;
     }
 
+    /// TSC周波数を取得（設定されていれば Some(freq) を返す）
+    pub fn tsc_frequency(&self) -> Option<u64> {
+        (*self.tsc_info.lock()).as_ref().map(|t| t.frequency)
+    }
+
     /// 高精度な時刻を取得 (ナノ秒)
     pub fn precise_time_nanos(&self) -> u64 {
         if let Some(ref tsc_info) = *self.tsc_info.lock() {
@@ -563,4 +568,10 @@ pub fn precise_time_nanos() -> u64 {
 #[inline]
 pub fn current_time_ns() -> u64 {
     precise_time_nanos()
+}
+
+/// Return uptime in milliseconds (since boot)
+#[inline]
+pub fn get_uptime_ms() -> u64 {
+    SYSTEM_CLOCK.uptime_millis()
 }

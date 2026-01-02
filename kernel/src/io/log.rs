@@ -12,21 +12,32 @@
 //! - マルチコア安全なSpinlock保護
 //!
 //! ## 使用方法
-//! ```rust
+//! ```rust,no_run
 //! use log::{info, debug, warn, error, trace};
 //!
 //! info!("システム起動");
-//! debug!("デバッグ情報: {}", value);
-//! error!("エラー発生: {:?}", err);
+//! debug!("デバッグ情報: {}", /* value */ 0);
+//! error!("エラー発生: {:?}", /* err */ "err");
 //! ```
 
 use core::fmt::Write;
 use hal::IoPort;
 
-use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+#[cfg(not(feature = "bench"))]
+use crate::smp;
+use crate::sync::IrqMutex;
+use crate::time;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use hal::port_io::PortU8;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 use spin::Mutex;
+
+// ============================================================================
+// 定数定義
+// ============================================================================
+
+/// 非同期ログバッファの容量 (16KB)
+const LOG_BUFFER_CAPACITY: usize = 16 * 1024;
 
 // ============================================================================
 // 定数定義
@@ -63,6 +74,17 @@ const LSR_TX_EMPTY: u8 = 0x20;
 /// 現時点では、パニック時の信頼性を優先してシンプルなポーリング方式を維持しています。
 const TX_TIMEOUT_LOOPS: u32 = 100_000;
 
+/// 送信タイムアウト（マイクロ秒）: TSC周波数が利用可能な場合はこちらを優先して使います
+const TX_TIMEOUT_US: u64 = 100;
+
+/// 割り込みハンドラが一度に送信する最大バーストサイズ（ISR内のローカルバッファ長）
+/// 16550互換デバイスのFIFOは通常16バイトですが、割り込み頻度低減のため大きめに確保しています。
+const ISR_TX_BURST: usize = 64;
+
+/// Maximum bytes to pull from per-core buffers into the global buffer in one
+/// non-ISR aggregation call. Kept modest to avoid long blocking in writers.
+const AGGREGATE_MAX_PER_CALL: usize = 1024;
+
 // ============================================================================
 // ログレベル定義
 // ============================================================================
@@ -94,8 +116,414 @@ static HEAP_AVAILABLE: AtomicBool = AtomicBool::new(false);
 /// ロックを試行せず直接出力する（try_lockを使用）。
 static SERIAL_LOCK: Mutex<()> = Mutex::new(());
 
+/// I/Oポート（レジスタ）操作用のIRQセーフ排他
+///
+/// IER のような共有レジスタを read-modify-write する際に競合を避けるため、
+/// このロックを使って操作を原子的に行います。
+static SERIAL_IO_LOCK: IrqMutex<()> = IrqMutex::new(());
+
 /// パニック中フラグ（デッドロック回避用）
 static IN_PANIC: AtomicBool = AtomicBool::new(false);
+
+/// 非同期ログバッファ（固定長リングバッファ、ヒープ不要）
+const INPUT_BUFFER_CAPACITY: usize = 1024;
+
+/// 固定長リングバッファ（ISR安全: ヒープを使わない）
+struct RingBuffer<const N: usize> {
+    buf: [u8; N],
+    head: usize,
+    tail: usize,
+    full: bool,
+}
+
+impl<const N: usize> RingBuffer<N> {
+    pub const fn new() -> Self {
+        Self {
+            buf: [0u8; N],
+            head: 0,
+            tail: 0,
+            full: false,
+        }
+    }
+
+    pub fn capacity(&self) -> usize {
+        N
+    }
+
+    pub fn len(&self) -> usize {
+        if self.full {
+            N
+        } else if self.tail >= self.head {
+            self.tail - self.head
+        } else {
+            N - self.head + self.tail
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        !self.full && (self.head == self.tail)
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.full
+    }
+
+    pub fn push_byte(&mut self, b: u8) -> bool {
+        if self.full {
+            return false;
+        }
+        self.buf[self.tail] = b;
+        self.tail = (self.tail + 1) % N;
+        if self.tail == self.head {
+            self.full = true;
+        }
+        true
+    }
+
+    pub fn push_bytes(&mut self, src: &[u8]) -> usize {
+        debug_assert!(N > 0);
+        debug_assert!(self.tail < N && self.head < N);
+
+        // Calculate available space
+        let avail = self.capacity() - self.len();
+        if avail == 0 {
+            return 0;
+        }
+
+        let to_write = core::cmp::min(avail, src.len());
+        if to_write == 0 {
+            return 0;
+        }
+
+        // First contiguous chunk (to end of buffer)
+        let first = core::cmp::min(to_write, N - self.tail);
+
+        debug_assert!(first <= to_write && first <= N - self.tail);
+
+        if first > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    src.as_ptr(),
+                    self.buf.as_mut_ptr().add(self.tail),
+                    first,
+                );
+            }
+        }
+
+        if to_write > first {
+            let second = to_write - first;
+            debug_assert!(second <= N);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    src.as_ptr().add(first),
+                    self.buf.as_mut_ptr(),
+                    second,
+                );
+            }
+        }
+
+        self.tail = (self.tail + to_write) % N;
+        if self.tail == self.head {
+            self.full = true;
+        }
+
+        to_write
+    }
+
+    /// 先頭に1バイト挿入（未使用時にのみ、ISRからの再挿入用）
+    pub fn push_front(&mut self, b: u8) -> bool {
+        debug_assert!(N > 0);
+        if self.full {
+            return false;
+        }
+        self.head = if self.head == 0 { N - 1 } else { self.head - 1 };
+        debug_assert!(self.head < N);
+        self.buf[self.head] = b;
+        if self.head == self.tail {
+            self.full = true;
+        }
+        true
+    }
+
+    pub fn pop_one(&mut self) -> Option<u8> {
+        if self.is_empty() {
+            return None;
+        }
+        debug_assert!(self.head < N);
+        let b = self.buf[self.head];
+        self.head = (self.head + 1) % N;
+        self.full = false;
+        Some(b)
+    }
+
+    pub fn pop_bulk(&mut self, dst: &mut [u8]) -> usize {
+        debug_assert!(N > 0);
+        debug_assert!(self.head < N && self.tail < N);
+        let available = self.len();
+        if available == 0 || dst.is_empty() {
+            return 0;
+        }
+
+        let to_read = core::cmp::min(available, dst.len());
+
+        // First contiguous chunk
+        let first = core::cmp::min(to_read, N - self.head);
+        debug_assert!(first <= to_read);
+        if first > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr().add(self.head),
+                    dst.as_mut_ptr(),
+                    first,
+                );
+            }
+        }
+
+        if to_read > first {
+            let second = to_read - first;
+            debug_assert!(second <= N);
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr(),
+                    dst.as_mut_ptr().add(first),
+                    second,
+                );
+            }
+        }
+
+        self.head = (self.head + to_read) % N;
+        if to_read > 0 {
+            self.full = false;
+        }
+
+        to_read
+    }
+
+    /// Copy up to dst.len() bytes from the head without advancing it.
+    pub fn peek_bulk(&self, dst: &mut [u8]) -> usize {
+        debug_assert!(N > 0);
+        debug_assert!(self.head < N && self.tail < N);
+        let available = self.len();
+        if available == 0 || dst.is_empty() {
+            return 0;
+        }
+
+        let to_read = core::cmp::min(available, dst.len());
+        let first = core::cmp::min(to_read, N - self.head);
+        if first > 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr().add(self.head),
+                    dst.as_mut_ptr(),
+                    first,
+                );
+            }
+        }
+
+        if to_read > first {
+            let second = to_read - first;
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.buf.as_ptr(),
+                    dst.as_mut_ptr().add(first),
+                    second,
+                );
+            }
+        }
+
+        to_read
+    }
+
+    /// Advance the head by `n` bytes (must be <= len())
+    pub fn advance_head(&mut self, n: usize) {
+        debug_assert!(n <= self.len());
+        self.head = (self.head + n) % N;
+        if n > 0 {
+            self.full = false;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.head = 0;
+        self.tail = 0;
+        self.full = false;
+    }
+}
+
+unsafe impl<const N: usize> Sync for RingBuffer<N> {}
+unsafe impl<const N: usize> Send for RingBuffer<N> {}
+
+/// 非同期ログバッファ（送信）
+static LOG_BUFFER: IrqMutex<RingBuffer<LOG_BUFFER_CAPACITY>> = IrqMutex::new(RingBuffer::new());
+
+/// 非同期ログで切り捨てられたバイト数
+static DROPPED_LOG_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Per-core log buffer capacity (default per-core to 4 KiB)
+const PER_CORE_BUFFER_CAPACITY: usize = 4 * 1024;
+
+// Number of per-core buffers. When building benches we cannot rely on the full
+// `crate::mm::per_cpu` module being available, so provide a compile-time
+// fallback to a reasonable default.
+#[cfg(not(feature = "bench"))]
+const PER_CPU_COUNT: usize = crate::mm::per_cpu::MAX_CPUS;
+
+#[cfg(feature = "bench")]
+const PER_CPU_COUNT: usize = 8;
+
+/// Per-core log buffers (lock-protected, IRQ-safe)
+const PER_CORE_INIT: IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>> =
+    IrqMutex::new(RingBuffer::new());
+static PER_CORE_LOG_BUFFERS: [IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>>; PER_CPU_COUNT] =
+    [PER_CORE_INIT; PER_CPU_COUNT];
+
+/// Scan index previously used by ISR round-robin servicing. No longer used
+/// because per-core aggregation is performed outside of ISR. Keep this symbol
+/// for future aggregator heuristics.
+#[allow(dead_code)]
+#[deprecated(note = "PER_CORE_SCAN_INDEX is no longer used and will be removed in a future release.")]
+static PER_CORE_SCAN_INDEX: AtomicUsize = AtomicUsize::new(0);
+
+/// 非同期入力バッファ（受信）
+static INPUT_BUFFER: IrqMutex<RingBuffer<INPUT_BUFFER_CAPACITY>> = IrqMutex::new(RingBuffer::new());
+
+// Unit tests for RingBuffer
+#[cfg(test)]
+mod ringbuffer_tests {
+    use super::*;
+
+    #[test]
+    fn ringbuffer_push_pop_simple() {
+        let mut rb = RingBuffer::<8>::new();
+        assert!(rb.is_empty());
+        assert_eq!(rb.len(), 0);
+        assert!(rb.push_byte(1));
+        assert!(rb.push_byte(2));
+        assert_eq!(rb.len(), 2);
+        assert_eq!(rb.pop_one(), Some(1));
+        assert_eq!(rb.pop_one(), Some(2));
+        assert_eq!(rb.pop_one(), None);
+    }
+
+    #[test]
+    fn ringbuffer_wrap_and_overflow() {
+        let mut rb = RingBuffer::<4>::new();
+        assert_eq!(rb.push_bytes(&[1, 2, 3, 4]), 4);
+        assert!(rb.is_full());
+        assert!(!rb.push_byte(5));
+        assert_eq!(rb.pop_one(), Some(1));
+        assert_eq!(rb.len(), 3);
+        assert_eq!(rb.push_bytes(&[6, 7]), 1);
+    }
+    #[test]
+    fn push_front_and_restore() {
+        let mut rb = RingBuffer::<8>::new();
+        rb.push_bytes(&[1, 2, 3]);
+        assert_eq!(rb.pop_one(), Some(1));
+        assert!(rb.push_front(1));
+        assert_eq!(rb.pop_one(), Some(1));
+        assert_eq!(rb.pop_one(), Some(2));
+        assert_eq!(rb.pop_one(), Some(3));
+    }
+
+    #[test]
+    fn push_front_overflow() {
+        let mut rb = RingBuffer::<3>::new();
+        assert_eq!(rb.push_bytes(&[1, 2, 3]), 3);
+        assert!(!rb.push_front(4));
+    }
+
+    #[test]
+    fn push_bytes_wrap_and_pop_bulk() {
+        // Buffer size 8
+        let mut rb = RingBuffer::<8>::new();
+        assert_eq!(rb.push_bytes(&[1u8, 2, 3, 4, 5, 6]), 6);
+
+        // Pop 4 elements
+        let mut out = [0u8; 4];
+        assert_eq!(rb.pop_bulk(&mut out), 4);
+        assert_eq!(out, [1, 2, 3, 4]);
+
+        // Push bytes that wrap around the buffer end
+        assert_eq!(rb.push_bytes(&[7u8, 8, 9, 10, 11]), 5);
+
+        // Now the buffer should contain [5,6,7,8,9,10,11]
+        let mut out2 = [0u8; 7];
+        assert_eq!(rb.pop_bulk(&mut out2), 7);
+        assert_eq!(out2, [5, 6, 7, 8, 9, 10, 11]);
+    }
+
+    #[test]
+    fn per_core_buffer_smoke() {
+        // Write to per-core buffer index 0
+        let mut guard = PER_CORE_LOG_BUFFERS[0].lock();
+        assert_eq!(guard.push_bytes(&[10, 20, 30]), 3);
+        assert_eq!(guard.pop_one(), Some(10));
+        assert_eq!(guard.pop_one(), Some(20));
+        drop(guard);
+    }
+    #[test]
+    fn pop_bulk() {
+        let mut rb = RingBuffer::<8>::new();
+        rb.push_bytes(&[1, 2, 3, 4, 5]);
+        let mut buf = [0u8; 3];
+        let n = rb.pop_bulk(&mut buf);
+        assert_eq!(n, 3);
+        assert_eq!(buf, [1, 2, 3]);
+        assert_eq!(rb.len(), 2);
+    }
+
+    #[test]
+    fn peek_and_advance() {
+        let mut rb = RingBuffer::<8>::new();
+        assert_eq!(rb.push_bytes(&[1u8, 2, 3, 4, 5]), 5);
+        let mut out = [0u8; 4];
+        assert_eq!(rb.peek_bulk(&mut out), 4);
+        assert_eq!(out, [1, 2, 3, 4]);
+        rb.advance_head(2);
+        let mut out2 = [0u8; 3];
+        assert_eq!(rb.pop_bulk(&mut out2), 3);
+        assert_eq!(out2, [3, 4, 5]);
+    }
+
+    #[test]
+    fn aggregate_per_core_to_global_smoke() {
+        // Put some data into per-core buffer 0
+        let mut g = PER_CORE_LOG_BUFFERS[0].lock();
+        assert_eq!(g.push_bytes(&[0xAAu8; 100]), 100);
+        drop(g);
+
+        let moved = aggregate_per_core_to_global(200);
+        assert!(moved > 0);
+
+        let mut tmp = [0u8; 200];
+        let n = LOG_BUFFER.lock().pop_bulk(&mut tmp);
+        assert_eq!(n, moved);
+    }
+
+    #[test]
+    fn kick_serial_tx_aggregates_to_global() {
+        // Clear buffers
+        LOG_BUFFER.lock().clear();
+        for i in 0..PER_CPU_COUNT {
+            PER_CORE_LOG_BUFFERS[i].lock().clear();
+        }
+        DROPPED_LOG_BYTES.store(0, Ordering::Relaxed);
+
+        // Put some data into per-core buffer 0
+        let mut g = PER_CORE_LOG_BUFFERS[0].lock();
+        assert_eq!(g.push_bytes(&[0xBBu8; 64]), 64);
+        drop(g);
+
+        // Kick TX (should aggregate into global buffer)
+        // NOTE: In test/bench builds we avoid touching hardware I/O. Call the
+        // aggregation helper directly to validate behavior.
+        let _moved = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
+        let mut tmp = [0u8; 128];
+        let n = LOG_BUFFER.lock().pop_bulk(&mut tmp);
+        assert!(n > 0);
+    }
+}
 
 // ============================================================================
 // シリアルポート初期化
@@ -154,12 +582,33 @@ pub fn init_serial() {
     mcr.write(0x0F);
 }
 
+/// シリアル割り込みを有効化
+pub fn enable_serial_interrupts() {
+    if IN_PANIC.load(Ordering::Relaxed) {
+        // Avoid locking during panic: best-effort enable
+        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+        ier.write(0x01);
+    } else {
+        // Make this atomic across cores
+        let _io_guard = SERIAL_IO_LOCK.lock();
+        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+        ier.write(0x01); // Enable RX interrupt only initially. TX is enabled on demand.
+    }
+}
+
 // ============================================================================
 // シリアルロガー実装
 // ============================================================================
 
 /// カーネル用シリアルロガー
 struct KernelLogger;
+
+#[inline]
+fn read_tsc_serialized() -> u64 {
+    // Use RDTSC which is supported on all x64 CPUs.
+    // We don't strictly need RDTSCP's serialization for simple timeouts.
+    unsafe { core::arch::x86_64::_rdtsc() }
+}
 
 impl KernelLogger {
     /// シリアルポートに1バイト書き込み（内部用、ロックなし）
@@ -172,15 +621,63 @@ impl KernelLogger {
         let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_DATA_OFFSET);
 
         // 送信バッファが空になるまで待つ（タイムアウト付き）
-        let mut timeout = TX_TIMEOUT_LOOPS;
-        while (status_port.read() & LSR_TX_EMPTY) == 0 && timeout > 0 {
-            core::hint::spin_loop(); // CPU省電力ヒント
-            timeout -= 1;
+        // 可能ならTSC周波数を使った時間ベースの待機を行い、利用できない場合はループカウントでフォールバックします。
+        let mut sent = false;
+
+        // Try time-based wait if TSC frequency is known
+        if let Some(freq) = time::system_clock().tsc_frequency() {
+            // Compute timeout cycles for TX_TIMEOUT_US microseconds (may be 0 for very low freq)
+            let timeout_cycles: u64 = (freq as u64).saturating_mul(TX_TIMEOUT_US) / 1_000_000u64;
+            let start = read_tsc_serialized();
+            while (status_port.read() & LSR_TX_EMPTY) == 0 {
+                if read_tsc_serialized().saturating_sub(start) > timeout_cycles {
+                    break;
+                }
+                core::hint::spin_loop();
+            }
+
+            if (status_port.read() & LSR_TX_EMPTY) != 0 {
+                data_port.write(byte);
+                sent = true;
+            }
+        } else {
+            // Fallback to loop-count-based wait (early boot / when time subsystem isn't initialized)
+            let mut timeout = TX_TIMEOUT_LOOPS;
+            while (status_port.read() & LSR_TX_EMPTY) == 0 && timeout > 0 {
+                core::hint::spin_loop(); // CPU省電力ヒント
+                timeout -= 1;
+            }
+
+            if timeout > 0 {
+                data_port.write(byte);
+                sent = true;
+            }
         }
 
-        if timeout > 0 {
-            data_port.write(byte);
+        // If we couldn't send due to timeout, we simply drop the byte. On panic, the caller
+        // may retry or skip. We purposely avoid blocking indefinitely in low-level debug output.
+        let _ = sent;
+    }
+
+    /// パニック時にシリアルの状態をできるだけクリーンにする試み（FIFOクリア等）
+    fn reset_serial_for_panic() {
+        // Try to clear FIFOs and disable interrupts to leave the port in a known state.
+        let mut fcr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 2);
+        fcr.write(0x07); // enable FIFOs and clear RX/TX
+
+        // In panic mode we must not block on locks - perform direct writes to the
+        // serial registers. This can race with other cores but avoids deadlocks
+        // that would prevent panic output from ever being delivered.
+        if IN_PANIC.load(Ordering::Relaxed) {
+            let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+            ier.write(0x00); // disable serial interrupts (best-effort)
+            return;
         }
+
+        // Otherwise perform atomic RMW using SERIAL_IO_LOCK
+        let _io_guard = SERIAL_IO_LOCK.lock();
+        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+        ier.write(0x00); // disable serial interrupts
     }
 
     /// シリアルポートに直接書き込み（ロックなし、早期ブート/パニック用）
@@ -227,6 +724,66 @@ impl KernelLogger {
             Level::Trace => "\x1b[37m", // 白
         }
     }
+
+    /// Write a record into an async RingBuffer (generic over its capacity)
+    fn write_into_async_buffer<const N: usize>(&self, buf: &mut RingBuffer<N>, record: &Record) {
+        let mut writer = AsyncLogWriter::<N>::new(buf);
+        let mut tracker = LastCharTracker::new(writer);
+
+        self.print_header(&mut tracker, record);
+        let _ = write!(tracker, "{}", record.args());
+
+        if tracker.last_char != b'\n' {
+            let _ = tracker.inner.write_str("\r\n");
+        }
+    }
+
+    fn print_header<W: Write>(&self, w: &mut W, record: &Record) {
+        // Timestamp and Core ID
+        // Use the RTC when available; for test/bench builds use the test shim in `crate::time`
+        #[cfg(any(test, feature = "bench"))]
+        let uptime_ms = crate::time::get_uptime_ms();
+        #[cfg(not(any(test, feature = "bench")))]
+        let uptime_ms = crate::io::rtc::get_uptime_ms();
+
+        let core_id = {
+            #[cfg(not(feature = "bench"))]
+            {
+                crate::smp_advanced::current_core_id()
+            }
+            #[cfg(feature = "bench")]
+            {
+                0usize
+            }
+        };
+        let secs = uptime_ms / 1000;
+        let millis = uptime_ms % 1000;
+
+        let _ = write!(w, "[");
+        // Pad seconds to 5 spaces for alignment
+        if secs < 10000 {
+            let _ = write!(w, " ");
+        }
+        if secs < 1000 {
+            let _ = write!(w, " ");
+        }
+        if secs < 100 {
+            let _ = write!(w, " ");
+        }
+        if secs < 10 {
+            let _ = write!(w, " ");
+        }
+        let _ = write!(w, "{}.{:03}] [C{}] ", secs, millis, core_id);
+
+        // ログレベルプレフィックス
+        let _ = write!(w, "{}", Self::level_prefix(record.level()));
+
+        // モジュールパス（オプション）
+        let target = record.target();
+        if !target.is_empty() {
+            let _ = write!(w, "[{}] ", target);
+        }
+    }
 }
 
 impl Log for KernelLogger {
@@ -242,46 +799,73 @@ impl Log for KernelLogger {
             return;
         }
 
-        // パニック中でなければロックを取得
-        let _guard = if IN_PANIC.load(Ordering::Relaxed) {
-            None
-        } else {
-            Some(SERIAL_LOCK.lock())
-        };
+        let use_async = HEAP_AVAILABLE.load(Ordering::Relaxed) && !IN_PANIC.load(Ordering::Relaxed);
 
-        // ログレベルプレフィックス
-        Self::write_raw(Self::level_prefix(record.level()));
+        if use_async {
+            // Prefer per-core buffer when possible (reduces global contention)
+            let mut wrote_async = false;
 
-        // モジュールパス（オプション）
-        if let Some(module) = record.module_path() {
-            Self::write_raw("[");
-            Self::write_raw(module);
-            Self::write_raw("] ");
-        }
-
-        // メッセージ本文
-        // format_args!のアロケーションなし出力
-        // 最後に改行が必要かどうかを追跡
-        struct EarlyWriter {
-            last_char: u8,
-        }
-        impl Write for EarlyWriter {
-            fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                if !s.is_empty() {
-                    KernelLogger::write_raw(s);
-                    self.last_char = s.as_bytes()[s.len() - 1];
+            if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+                if cpu_id < PER_CPU_COUNT {
+                    if let Some(mut guard) = PER_CORE_LOG_BUFFERS[cpu_id].try_lock() {
+                        self.write_into_async_buffer::<{ PER_CORE_BUFFER_CAPACITY }>(
+                            &mut guard, record,
+                        );
+                        drop(guard);
+                        wrote_async = true;
+                    }
                 }
-                Ok(())
             }
-        }
 
-        let mut writer = EarlyWriter { last_char: 0 };
-        let _ = write!(writer, "{}", record.args());
+            // Global fallback if per-core wasn't available or no CPU id
+            if !wrote_async {
+                if let Some(mut guard) = LOG_BUFFER.try_lock() {
+                    self.write_into_async_buffer::<{ LOG_BUFFER_CAPACITY }>(&mut guard, record);
+                    drop(guard);
+                    wrote_async = true;
+                }
+            }
 
-        // メッセージが改行で終わっていない場合のみ改行を追加
-        if writer.last_char != b'\n' {
-            Self::write_char_raw(b'\r');
-            Self::write_char_raw(b'\n');
+            if wrote_async {
+                start_serial_tx();
+            } else {
+                // Can't do async (contended) -> fall back to sync try_lock or direct write to avoid blocking
+                let guard = if IN_PANIC.load(Ordering::Relaxed) {
+                    None
+                } else {
+                    SERIAL_LOCK.try_lock()
+                };
+
+                if guard.is_some() {
+                    let mut tracker = LastCharTracker::new(SyncLogWriter);
+                    self.print_header(&mut tracker, record);
+                    let _ = write!(tracker, "{}", record.args());
+                    if tracker.last_char != b'\n' {
+                        let _ = tracker.inner.write_str("\r\n");
+                    }
+                } else {
+                    // As a last resort, write raw without locks (used for panic or high contention)
+                    let mut tracker = LastCharTracker::new(SyncLogWriter);
+                    self.print_header(&mut tracker, record);
+                    let _ = write!(tracker, "{}", record.args());
+                    if tracker.last_char != b'\n' {
+                        let _ = tracker.inner.write_str("\r\n");
+                    }
+                }
+            }
+        } else {
+            // 同期出力
+            let _guard = if IN_PANIC.load(Ordering::Relaxed) {
+                None
+            } else {
+                Some(SERIAL_LOCK.lock())
+            };
+            let mut tracker = LastCharTracker::new(SyncLogWriter);
+            self.print_header(&mut tracker, record);
+            let _ = write!(tracker, "{}", record.args());
+            if tracker.last_char != b'\n' {
+                let _ = tracker.inner.write_str("\r\n");
+            }
         }
     }
 
@@ -290,12 +874,385 @@ impl Log for KernelLogger {
     }
 }
 
+/// `Write` トレイトを実装し、最後の文字を追跡するラッパー
+struct LastCharTracker<W: Write> {
+    inner: W,
+    last_char: u8,
+}
+
+impl<W: Write> LastCharTracker<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            last_char: 0,
+        }
+    }
+}
+
+impl<W: Write> Write for LastCharTracker<W> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        if !s.is_empty() {
+            self.last_char = s.as_bytes()[s.len() - 1];
+        }
+        self.inner.write_str(s)
+    }
+}
+
+struct SyncLogWriter;
+impl Write for SyncLogWriter {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        KernelLogger::write_raw(s);
+        Ok(())
+    }
+}
+
+struct AsyncLogWriter<'a, const N: usize> {
+    buffer: &'a mut RingBuffer<N>,
+}
+
+impl<'a, const N: usize> AsyncLogWriter<'a, N> {
+    fn new(buffer: &'a mut RingBuffer<N>) -> Self {
+        Self { buffer }
+    }
+}
+
+impl<'a, const N: usize> Write for AsyncLogWriter<'a, N> {
+    fn write_str(&mut self, s: &str) -> core::fmt::Result {
+        let bytes = s.as_bytes();
+        let written = self.buffer.push_bytes(bytes);
+        if written < bytes.len() {
+            DROPPED_LOG_BYTES.fetch_add((bytes.len() - written) as usize, Ordering::Relaxed);
+        }
+        Ok(())
+    }
+}
+
+/// シリアル送信を開始（割り込み有効化）
+fn start_serial_tx() {
+    // Aggregate per-core buffers into the global buffer in non-ISR context.
+    // This keeps ISR work minimal: only the global buffer is drained.
+    // Aggregation is also performed by the executor idle loop; this function
+    // remains the canonical way to kick the transmitter.
+    if !IN_PANIC.load(Ordering::Relaxed) {
+        let _ = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
+    }
+
+    if IN_PANIC.load(Ordering::Relaxed) {
+        // Avoid locking during panic: direct RMW
+        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+        let current = ier.read();
+        if (current & 0x02) == 0 {
+            ier.write(current | 0x02);
+        }
+    } else {
+        // IER RMW is atomic across cores
+        let _io_guard = SERIAL_IO_LOCK.lock();
+        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+        let current = ier.read();
+        if (current & 0x02) == 0 {
+            ier.write(current | 0x02);
+        }
+    }
+}
+
+/// シリアル割り込みハンドラ
+pub fn handle_serial_interrupt() {
+    let mut iir: PortU8 = IoPort::new(SERIAL_PORT_BASE + 2);
+    let mut lsr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 5);
+    let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE);
+
+    loop {
+        let id = iir.read();
+        if (id & 1) != 0 {
+            break; // 保留中の割り込みなし
+        }
+
+        match id & 0x0E {
+            0x02 => {
+                // THRE (Transmitter Holding Register Empty)
+                // ISR now only drains the global buffer. Per-core buffers are
+                // aggregated into the global buffer by non-ISR contexts to
+                // keep interrupt handling time bounded. TODO: Move aggregation
+                // into a dedicated low-priority kernel task.
+                let mut tmp = [0u8; ISR_TX_BURST];
+                let mut total_written = 0usize;
+
+                // Drain global buffer using peek/advance to avoid push_front semantics
+                let n = {
+                    let mut guard = LOG_BUFFER.lock();
+                    guard.peek_bulk(&mut tmp)
+                };
+
+                if n > 0 {
+                    let mut i = 0usize;
+                    while i < n {
+                        if (lsr.read() & LSR_TX_EMPTY) == 0 {
+                            break;
+                        }
+                        data_port.write(tmp[i]);
+                        i += 1;
+                    }
+
+                    if i > 0 {
+                        let mut guard = LOG_BUFFER.lock();
+                        guard.advance_head(i);
+                    }
+
+                    total_written += i;
+                }
+
+                // If nothing was sent, disable TX interrupt (bypass lock in panic)
+                if total_written == 0 {
+                    if IN_PANIC.load(Ordering::Relaxed) {
+                        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+                        let current = ier.read();
+                        ier.write(current & !0x02);
+                    } else {
+                        let _io_guard = SERIAL_IO_LOCK.lock();
+                        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
+                        let current = ier.read();
+                        ier.write(current & !0x02);
+                    }
+                }
+            }
+            0x04 | 0x0C => {
+                // RDA (Received Data Available) または Character Timeout
+                let mut guard = INPUT_BUFFER.lock();
+                while (lsr.read() & 0x01) != 0 {
+                    let byte = data_port.read();
+                    // 入力バッファが満杯なら切り捨てる
+                    let _ = guard.push_byte(byte);
+                }
+            }
+            _ => break,
+        }
+    }
+}
+
 /// グローバルロガーインスタンス
 static LOGGER: KernelLogger = KernelLogger;
+
+/// 非同期ロガーによってドロップされたバイト数を取得します。
+pub fn get_dropped_log_bytes() -> usize {
+    DROPPED_LOG_BYTES.load(Ordering::Relaxed)
+}
+
+/// シリアルポートから1文字読み取ります（非ブロッキング）。
+pub fn read_char() -> Option<u8> {
+    INPUT_BUFFER.lock().pop_one()
+}
+
+/// 入力バッファにデータがあるか確認します。
+pub fn has_char() -> bool {
+    !INPUT_BUFFER.lock().is_empty()
+}
+
+// Bench helpers (available under `--features bench`) -------------------------------------------------
+#[cfg(feature = "bench")]
+/// Clear all buffers and dropped counters (benchmark helper)
+pub fn bench_clear_buffers() {
+    LOG_BUFFER.lock().clear();
+    for i in 0..PER_CPU_COUNT {
+        PER_CORE_LOG_BUFFERS[i].lock().clear();
+    }
+    INPUT_BUFFER.lock().clear();
+    DROPPED_LOG_BYTES.store(0, Ordering::Relaxed);
+}
+
+#[cfg(feature = "bench")]
+/// Push bytes into per-core buffer (returns written bytes)
+pub fn bench_push_per_core(core: usize, data: &[u8]) -> usize {
+    if core >= PER_CPU_COUNT {
+        return 0;
+    }
+    PER_CORE_LOG_BUFFERS[core].lock().push_bytes(data)
+}
+
+#[cfg(feature = "bench")]
+/// Push bytes into global buffer (returns written bytes)
+pub fn bench_push_global(data: &[u8]) -> usize {
+    LOG_BUFFER.lock().push_bytes(data)
+}
+
+#[cfg(feature = "bench")]
+/// Pop up to dst.len() bytes from global buffer
+pub fn bench_pop_global_buf(dst: &mut [u8]) -> usize {
+    LOG_BUFFER.lock().pop_bulk(dst)
+}
+
+#[cfg(feature = "bench")]
+/// Pop up to dst.len() bytes from a per-core buffer
+pub fn bench_pop_per_core_buf(core: usize, dst: &mut [u8]) -> usize {
+    if core >= PER_CPU_COUNT {
+        return 0;
+    }
+    PER_CORE_LOG_BUFFERS[core].lock().pop_bulk(dst)
+}
+
+#[cfg(feature = "bench")]
+/// Return total pending bytes across all buffers
+pub fn bench_total_pending_bytes() -> usize {
+    let mut total = 0usize;
+    total += LOG_BUFFER.lock().len();
+    for i in 0..PER_CPU_COUNT {
+        total += PER_CORE_LOG_BUFFERS[i].lock().len();
+    }
+    total
+}
+
+/// Aggregate up to `max_bytes` from per-core buffers into the global
+/// `LOG_BUFFER`. This must be called from non-ISR contexts (executor/idle
+/// task or writers). Returns the number of bytes moved.
+pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
+    let mut moved = 0usize;
+    let mut tmp = [0u8; 256];
+
+    for i in 0..PER_CPU_COUNT {
+        if moved >= max_bytes {
+            break;
+        }
+        // Try to take the per-core buffer without blocking
+        if let Some(mut per_guard) = PER_CORE_LOG_BUFFERS[i].try_lock() {
+            let to_read = core::cmp::min(tmp.len(), max_bytes - moved);
+            let n = per_guard.peek_bulk(&mut tmp[..to_read]);
+            if n == 0 {
+                continue;
+            }
+
+            let wrote = {
+                let mut global_guard = LOG_BUFFER.lock();
+                let written = global_guard.push_bytes(&tmp[..n]);
+                if written < n {
+                    DROPPED_LOG_BYTES.fetch_add(n - written, Ordering::Relaxed);
+                }
+                written
+            };
+
+            if wrote > 0 {
+                per_guard.advance_head(wrote);
+                moved += wrote;
+            }
+        }
+    }
+
+    moved
+}
 
 // ============================================================================
 // 公開API
 // ============================================================================
+
+/// Aggregator task priority (low, but above idle)
+#[deprecated(
+    note = "Log aggregator now runs on the executor idle loop; this constant will be removed in a future release. Use `kick_serial_tx()` to kick aggregation from non-idle contexts."
+)]
+const LOG_AGGREGATOR_PRIORITY: u8 = 250;
+
+/// Ensure we only spawn one aggregator task
+#[deprecated(
+    note = "Aggregator spawn control is no longer required; the aggregator runs on the executor idle loop. This static will be removed in a future release."
+)]
+static AGGREGATOR_STARTED: AtomicBool = AtomicBool::new(false);
+
+/// Public helper to kick the serial transmitter from non-ISR contexts.
+/// This aggregates per-core buffers into the global buffer and enables TX
+/// interrupt when necessary. Useful to call from an executor idle loop.
+///
+/// NOTE: Prefer calling `kick_serial_tx()` or relying on the executor idle loop
+/// for background aggregation. `spawn_log_aggregator()` is deprecated.
+pub fn kick_serial_tx() {
+    // Reuse the existing helper which performs aggregation + IER RMW.
+    start_serial_tx();
+}
+
+/// Spawn the aggregator as a low-priority kernel task. Returns TaskId on success.
+#[deprecated(
+    note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release."
+)]
+#[cfg(not(any(test, feature = "bench")))]
+pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
+    if AGGREGATOR_STARTED.swap(true, Ordering::SeqCst) {
+        return None; // already started
+    }
+
+    #[cfg(feature = "legacy-scheduler")]
+    {
+        return crate::task::scheduler::spawn_task(log_aggregator_task, 0, LOG_AGGREGATOR_PRIORITY);
+    }
+
+    #[cfg(not(feature = "legacy-scheduler"))]
+    {
+        log::info!("[LOG] spawn_log_aggregator called but legacy scheduler is disabled; aggregator runs on executor idle loop");
+        None
+    }
+} 
+
+// Test/bench builds do not have the full scheduler available; provide a no-op stub
+#[cfg(any(test, feature = "bench"))]
+#[deprecated(
+    note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release."
+)]
+pub fn spawn_log_aggregator() -> Option<u64> {
+    None
+}
+
+/// Background aggregator task entry point. Move data from per-core buffers to
+/// the global buffer and yield when idle. This must never return.
+pub fn log_aggregator_task(_arg: u64) -> ! {
+    loop {
+        let moved = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
+
+        if moved == 0 {
+            // Nothing moved — yield and avoid busy looping
+            let cpu_id = {
+                #[cfg(not(feature = "bench"))]
+                {
+                    crate::smp_advanced::current_core_id() as usize
+                }
+                #[cfg(feature = "bench")]
+                {
+                    0usize
+                }
+            };
+
+            #[cfg(feature = "legacy-scheduler")]
+            {
+                crate::task::scheduler::yield_current(cpu_id);
+            }
+
+            #[cfg(not(feature = "legacy-scheduler"))]
+            {
+                // Legacy scheduler disabled -> best-effort cooperative yield
+                crate::task::preemption::voluntary_yield();
+                crate::task::preemption::yield_point();
+            }
+        } else {
+            // Yield briefly to allow TX to be serviced
+            let cpu_id = {
+                #[cfg(not(feature = "bench"))]
+                {
+                    crate::smp_advanced::current_core_id() as usize
+                }
+                #[cfg(feature = "bench")]
+                {
+                    0usize
+                }
+            };
+
+            #[cfg(feature = "legacy-scheduler")]
+            {
+                crate::task::scheduler::yield_current(cpu_id);
+            }
+
+            #[cfg(not(feature = "legacy-scheduler"))]
+            {
+                // Legacy scheduler disabled -> best-effort cooperative yield
+                crate::task::preemption::voluntary_yield();
+                crate::task::preemption::yield_point();
+            }
+        }
+    }
+}
 
 /// ロギングシステムを初期化
 ///
@@ -321,6 +1278,8 @@ pub fn notify_heap_available() {
 /// これにより、ロガーはロックを取得せずに直接出力する。
 pub fn enter_panic_mode() {
     IN_PANIC.store(true, Ordering::SeqCst);
+    // Attempt to put serial port in a clean state so that panic output has a better chance of being delivered
+    KernelLogger::reset_serial_for_panic();
 }
 
 /// パニック状態をクリア（通常は使用しない）
@@ -449,6 +1408,7 @@ macro_rules! early_log_no_newline {
 // ============================================================================
 
 /// io_log_info! 互換マクロ
+#[deprecated(note = "io_log_info! is deprecated; use `log::info!` directly.")]
 #[macro_export]
 macro_rules! io_log_info {
     ($($arg:tt)*) => {
@@ -457,6 +1417,7 @@ macro_rules! io_log_info {
 }
 
 /// io_log_warn! 互換マクロ
+#[deprecated(note = "io_log_warn! is deprecated; use `log::warn!` directly.")]
 #[macro_export]
 macro_rules! io_log_warn {
     ($($arg:tt)*) => {
@@ -465,6 +1426,7 @@ macro_rules! io_log_warn {
 }
 
 /// io_log_debug! 互換マクロ
+#[deprecated(note = "io_log_debug! is deprecated; use `log::debug!` directly.")]
 #[macro_export]
 macro_rules! io_log_debug {
     ($($arg:tt)*) => {
@@ -473,6 +1435,7 @@ macro_rules! io_log_debug {
 }
 
 /// io_log_error! 互換マクロ
+#[deprecated(note = "io_log_error! is deprecated; use `log::error!` directly.")]
 #[macro_export]
 macro_rules! io_log_error {
     ($($arg:tt)*) => {

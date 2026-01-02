@@ -13,6 +13,7 @@ description = "Single Address Space, Async-First Rust OS Kernel - Pure Performan
 [[bin]]
 name = "exorust_kernel"
 path = "src/main.rs"
+test = false
 
 [lib]
 name = "rany_os"
@@ -42,13 +43,14 @@ acpi_driver = { path = "../drivers/acpi" }
 rtc_driver = { path = "../drivers/rtc" }
 ide_driver = { path = "../drivers/ide" }
 serial_driver = { path = "../drivers/serial" }
+apic_driver = { path = "../drivers/apic" }
 
 # Filesystems
 fat32 = { path = "../filesystems/fat32" }
 vfs = { path = "../libs/vfs" }
 
-# ブートローダーAPI（Limine Protocol - UEFI/BIOS両対応）
-limine = "0.5"
+# ブートローダーAPI（ExoLoader Protocol）
+boot_proto = { path = "../libs/boot_proto" }
 
 
 # x86_64アーキテクチャサポート
@@ -75,15 +77,8 @@ gimli = { version = "0.32", default-features = false, features = ["read-core"] }
 # no_std向けHashMap
 hashbrown = "0.16"
 
-# Ed25519署名検証用
-ed25519-dalek = { version = "2.1", default-features = false, features = [
-    "alloc",
-] }
-
-# curve25519-dalekの設定
-curve25519-dalek = { version = "4.1", default-features = false, features = [
-    "alloc",
-] }
+# Ed25519署名検証用（no_std対応、curve25519-dalek不使用）
+ed25519-compact = { version = "2", default-features = false }
 
 # SHA-256ハッシュ計算用
 sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
@@ -105,13 +100,18 @@ mouse = []
 bench = ["std"]
 apic = []
 task = []
+legacy-scheduler = []
 force_vga = []
 gimli_unwind = []
+unsafe_iommu_bypass = []
 
 # Test-only feature: enable PKEY allocation behavior inside tests so we can
 # exercise loader->mpk integration without requiring a full kernel runtime.
 # Usage: `cargo test -p rany_kernel --features pkey_integration_test`
 pkey_integration_test = []
+
+# Feature to enable running integration tests at boot (CI/e2e)
+run-integration-tests = []
 
 std = ["hal/std"]
 
@@ -148,6 +148,10 @@ test-args = [
 ]
 test-success-exit-code = 33
 test-timeout = 300
+
+[profile.test]
+opt-level = 1
+panic = "abort"
 
 [[bench]]
 name = "framebuffer_bench"

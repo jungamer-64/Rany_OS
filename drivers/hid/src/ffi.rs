@@ -61,7 +61,7 @@ fn hid_driver_vtable() -> *const DriverVTable {
 }
 
 #[cfg(feature = "export_driver_entry")]
-#[unsafe(export_name = "_exorust_driver_entry")]
+#[export_name = "_exorust_driver_entry"]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     hid_driver_vtable()
 }

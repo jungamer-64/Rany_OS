@@ -229,7 +229,7 @@ impl Socket {
                 mgr.register(new_socket.clone());
             }
 
-            crate::serial_println!(
+            log::info!(
                 "TCP: Accepted connection from {:?}:{}",
                 conn.remote_addr.ip,
                 conn.remote_addr.port

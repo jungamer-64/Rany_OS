@@ -8,7 +8,6 @@
 
 #![allow(dead_code)]
 
-use limine::response::FramebufferResponse;
 use spin::Mutex;
 
 use super::console::TextConsole;
@@ -16,6 +15,16 @@ use super::framebuffer::Framebuffer;
 use super::{Color, FramebufferInfo, PixelFormat};
 use crate::memory::physical_memory_offset;
 use crate::mm::higher_half::{PageFlags, PageTableManager, VirtAddr};
+use core::fmt::{self, Write};
+
+// Simple buffer for formatting - safe enough for single threaded boot
+struct EarlyBuf;
+impl Write for EarlyBuf {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        crate::io::log::early_print(s);
+        Ok(())
+    }
+}
 
 // ============================================================================
 // Global State
@@ -44,55 +53,149 @@ pub fn init(info: FramebufferInfo) {
     log::info!("[GRAPHICS] Framebuffer initialized: {}x{}\n", w, h);
 }
 
-/// Limineフレームバッファレスポンスからグラフィックスを初期化
+/// ExoLoader (UEFI) からのフレームバッファ情報を使用してグラフィックスを初期化
 ///
 /// ブートローダーから提供されたフレームバッファ情報を使用して
 /// グラフィックスサブシステムを初期化します。
-pub fn init_from_limine(response: &FramebufferResponse) -> bool {
-    // 最初のフレームバッファを使用
-    let mut iter = response.framebuffers();
-    let Some(fb) = iter.next() else {
-        log::info!("[GRAPHICS] No framebuffer available from bootloader\n");
-        return false;
+/// WC (Write-Combining) 属性での再マッピングも試みます。
+pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool {
+    crate::io::log::early_print("[GFX] init_from_boot_info entry\n");
+
+    let mut final_info = *info;
+
+    // 1. Fix BPP if missing (ExoLoader might set 0)
+    if final_info.bpp == 0 {
+        let bpp = match final_info.format {
+            PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => 32,
+            PixelFormat::Rgb888 | PixelFormat::Bgr888 => 24,
+            PixelFormat::Rgb565 => 16,
+            _ => 32,
+        };
+        final_info.bpp = bpp;
+    }
+
+    // 2. Fix Stride if it looks like Pixels (UEFI GOP returns pixels, we want bytes)
+    // If stride is exactly width, it's almost certainly pixels.
+    // Real hardware usually aligns stride (e.g. width=1920, stride=2048 bytes?),
+    // but if stride == width, it's pixels.
+    if final_info.stride == final_info.width {
+        final_info.stride = final_info.width * (final_info.bpp as u32 / 8);
+    }
+
+    let limine_virt_addr = final_info.address;
+
+    // Calculate physical address.
+    // If coming from ExoLoader, address is typically Physical (e.g. 0x80000000).
+    // If it was already virtual (HHDM), subtracting offset gives Physical.
+    let phys_addr = if limine_virt_addr >= phys_mem_offset {
+        limine_virt_addr - phys_mem_offset
+    } else {
+        limine_virt_addr
     };
 
-    // ピクセルフォーマットを判定
-    // Limineは通常BGRA8888フォーマットを使用
-    let format = detect_pixel_format(
-        fb.red_mask_size(),
-        fb.red_mask_shift(),
-        fb.green_mask_size(),
-        fb.green_mask_shift(),
-        fb.blue_mask_size(),
-        fb.blue_mask_shift(),
-        fb.bpp(),
+    crate::io::log::early_print("[GFX] Calculated phys addr\n");
+
+    // Calculate the HHDM virtual address.
+    // This is known to be mapped by the bootloader.
+    let hhdm_virt_addr = phys_mem_offset + phys_addr;
+
+    let _ = write!(
+        EarlyBuf,
+        "[GFX] FB: {}x{} bpp={} pitch={} phys={:#x} hhdm={:#x}\n",
+        final_info.width,
+        final_info.height,
+        final_info.bpp,
+        final_info.stride,
+        phys_addr,
+        hhdm_virt_addr
     );
 
-    let info = FramebufferInfo {
-        address: fb.addr() as u64,
-        width: fb.width() as u32,
-        height: fb.height() as u32,
-        stride: fb.pitch() as u32,
-        format,
-        bpp: fb.bpp() as u8,
+    let fb_size = (final_info.stride as u64) * (final_info.height as u64);
+
+    crate::io::log::early_print("[GFX] About to call map_framebuffer_vram\n");
+
+    // Try to explicitly map with Write-Combining.
+    // If it fails (likely because it's already mapped in HHDM as WB),
+    // we fall back to using the HHDM address (hhdm_virt_addr).
+    // We DO NOT fall back to 'limine_virt_addr' if it looks physical (low address).
+    let mapped_virt_addr = {
+        let result = map_framebuffer_vram(phys_addr, fb_size, phys_mem_offset);
+        if result == 0 {
+            crate::io::log::early_print("[GFX] map_range failed, falling back to HHDM address\n");
+            log::warn!(
+                "[GRAPHICS] Could not remap framebuffer (WC), utilizing HHDM mapping at {:#x}\n",
+                hhdm_virt_addr
+            );
+            hhdm_virt_addr
+        } else {
+            crate::io::log::early_print("[GFX] map_framebuffer_vram succeeded\n");
+            result
+        }
     };
+
+    final_info.address = mapped_virt_addr;
 
     log::info!(
-        "[GRAPHICS] Limine framebuffer: {}x{}@{}bpp pitch={} format={:?}\n",
-        info.width,
-        info.height,
-        info.bpp,
-        info.stride,
-        info.format
+        "[GRAPHICS] Framebuffer: {}x{}@{}bpp pitch={} format={:?} mapped_virt={:#x}\n",
+        final_info.width,
+        final_info.height,
+        final_info.bpp,
+        final_info.stride,
+        final_info.format,
+        final_info.address
     );
 
-    // Write-Combiningで再マッピング
-    // これによりVRAMへの書き込みパフォーマンスが大幅に向上する
-    let fb_size = (info.stride as u64) * (info.height as u64);
-    remap_framebuffer_wc(info.address, fb_size);
-
-    init(info);
+    crate::io::log::early_print("[GFX] Calling init(info)\n");
+    init(final_info);
+    crate::io::log::early_print("[GFX] init_from_boot_info complete\n");
     true
+}
+
+/// Map framebuffer VRAM to kernel virtual address space with Write-Combining attributes
+///
+/// Returns the virtual address where the framebuffer is mapped, or 0 on failure.
+fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
+    use crate::mm::higher_half::PhysAddr;
+
+    crate::io::log::early_print("[GFX] map_framebuffer_vram entry\n");
+
+    let mut manager = unsafe { PageTableManager::from_current_cr3(offset) };
+
+    // Use a dedicated virtual address range for MMIO mappings
+    // We'll use HHDM_OFFSET + phys_addr but explicitly map it
+    let virt_addr = offset + phys_addr;
+    let virt_start = VirtAddr::new(virt_addr);
+    let phys_start = PhysAddr::new(phys_addr);
+
+    let _ = write!(
+        EarlyBuf,
+        "[GFX] Mapping framebuffer: Virt={:#x} Phys={:#x} Size={:#x}\n",
+        virt_start.as_u64(),
+        phys_start.as_u64(),
+        size
+    );
+
+    crate::io::log::early_print("[GFX] About to call map_range\n");
+
+    unsafe {
+        // First unmap existing HHDM mapping (ignore errors, it may not be mapped)
+        let _ = manager.unmap_range(virt_start, size);
+        crate::io::log::early_print("[GFX] Existing mapping cleared\n");
+
+        // Map with Write-Combining attributes for optimal VRAM performance
+        match manager.map_range(virt_start, phys_start, size, PageFlags::write_combining()) {
+            Ok(_) => {
+                crate::io::log::early_print("[GFX] map_range OK\n");
+                log::info!("[GRAPHICS] Framebuffer mapped successfully with WC attributes\n");
+                virt_addr
+            }
+            Err(e) => {
+                crate::io::log::early_print("[GFX] map_range FAILED\n");
+                log::error!("[GRAPHICS] Failed to map framebuffer: {:?}\n", e);
+                0
+            }
+        }
+    }
 }
 
 /// フレームバッファをWrite-Combiningで再マッピング
@@ -117,6 +220,31 @@ fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
         );
         return;
     };
+
+    // 物理アドレスを逆算（HHDMオフセットを引く）
+    // オフセットが設定されていない場合は、Limineが提供する物理アドレス取得手段がないため
+    // 仮想アドレスからオフセットを引いて計算する
+    let offset = physical_memory_offset();
+    let phys_addr = if virt_addr >= offset {
+        virt_addr - offset
+    } else {
+        // HHDM外？
+        virt_addr
+    };
+
+    use crate::io::log::early_print;
+    use core::fmt::Write;
+    struct EarlyBuf;
+    impl Write for EarlyBuf {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+            early_print(s);
+            Ok(())
+        }
+    }
+
+    let _ = write!(EarlyBuf, "[GFX] Limine Virt: {:#x}\n", virt_addr);
+    let _ = write!(EarlyBuf, "[GFX] Offset: {:#x}\n", offset);
+    let _ = write!(EarlyBuf, "[GFX] Calc Phys: {:#x}\n", phys_addr);
 
     log::info!(
         "[GRAPHICS] Remapping framebuffer: Virt={:#x} Phys={:#x} Size={:#x}\n",
@@ -228,4 +356,13 @@ pub fn console_print(s: &str) {
     with_console(|console| {
         console.write_str(s);
     });
+}
+
+/// フレームバッファのロックを強制解除（パニック時用）
+///
+/// # Safety
+/// この関数は、デッドロックが発生しているパニックハンドラからのみ呼び出してください。
+/// 競合状態を引き起こす可能性があります。
+pub unsafe fn force_unlock_framebuffer() {
+    FRAMEBUFFER.force_unlock();
 }

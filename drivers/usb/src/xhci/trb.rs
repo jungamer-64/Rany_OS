@@ -342,6 +342,121 @@ impl Trb {
             control: ((TrbType::NoOpCommand as u32) << 10) | if cycle { 1 } else { 0 },
         }
     }
+
+    /// Isochronous TRB を作成
+    ///
+    /// # Arguments
+    /// * `data_ptr` - データバッファの物理アドレス
+    /// * `length` - 転送長 (バイト)
+    /// * `frame_id` - フレームID (SIA=falseの場合に使用、11ビット)
+    /// * `sia` - Start Isoch ASAP (即時開始)
+    /// * `ioc` - Interrupt On Completion
+    /// * `tbc` - Transfer Burst Count (0-3)
+    /// * `tlbpc` - Transfer Last Burst Packet Count (0-15)
+    /// * `cycle` - サイクルビット
+    pub fn isoch(
+        data_ptr: u64,
+        length: u32,
+        frame_id: u16,
+        sia: bool,
+        ioc: bool,
+        tbc: u8,
+        tlbpc: u8,
+        cycle: bool,
+    ) -> Self {
+        // Status field:
+        // Bits 0-16: Transfer Length
+        // Bits 17-21: TD Size (remaining packets)
+        // Bits 22-31: Interrupter Target
+        let status = length & 0x1FFFF;
+
+        // Control field:
+        // Bit 0: Cycle
+        // Bit 1: ENT (Evaluate Next TRB)
+        // Bit 2: ISP (Interrupt on Short Packet)
+        // Bit 3: NS (No Snoop)
+        // Bit 4: Chain
+        // Bit 5: IOC (Interrupt On Completion)
+        // Bit 6: IDT (Immediate Data)
+        // Bits 7-8: TBC (Transfer Burst Count)
+        // Bits 9-10: Reserved
+        // Bits 10-15: TRB Type (5 = Isoch)
+        // Bit 16-20: TLBPC - Transfer Last Burst Packet Count
+        // Bits 20-30: Frame ID (if SIA=0)
+        // Bit 31: SIA (Start Isoch ASAP)
+        let control = ((TrbType::Isoch as u32) << 10)
+            | if cycle { 1 } else { 0 }
+            | if ioc { 1 << 5 } else { 0 }
+            | ((tbc as u32 & 0x3) << 7)
+            | ((tlbpc as u32 & 0xF) << 16)
+            | if sia {
+                1 << 31
+            } else {
+                ((frame_id as u32) & 0x7FF) << 20
+            };
+
+        Self {
+            parameter: data_ptr,
+            status,
+            control,
+        }
+    }
+
+    /// Isochronous TRB を作成 (簡易版 - Start ASAP)
+    ///
+    /// SIA=true で即座に転送を開始する簡易版
+    pub fn isoch_asap(data_ptr: u64, length: u32, ioc: bool, cycle: bool) -> Self {
+        Self::isoch(
+            data_ptr, length, 0,    // frame_id ignored when SIA=true
+            true, // SIA = Start Isoch ASAP
+            ioc, 0, // TBC = 1 burst
+            0, // TLBPC = 1 packet
+            cycle,
+        )
+    }
+
+    /// Evaluate Context コマンドTRB を作成
+    pub fn evaluate_context(input_context_ptr: u64, slot_id: SlotId, cycle: bool) -> Self {
+        Self {
+            parameter: input_context_ptr,
+            status: 0,
+            control: ((TrbType::EvaluateContext as u32) << 10)
+                | ((slot_id.as_u8() as u32) << 24)
+                | if cycle { 1 } else { 0 },
+        }
+    }
+
+    /// Stop Endpoint コマンドTRB を作成
+    pub fn stop_endpoint(slot_id: SlotId, dci: u8, suspend: bool, cycle: bool) -> Self {
+        Self {
+            parameter: 0,
+            status: 0,
+            control: ((TrbType::StopEndpoint as u32) << 10)
+                | ((slot_id.as_u8() as u32) << 24)
+                | ((dci as u32) << 16)
+                | if suspend { 1 << 23 } else { 0 }
+                | if cycle { 1 } else { 0 },
+        }
+    }
+
+    /// Set TR Dequeue Pointer コマンドTRB を作成
+    pub fn set_tr_dequeue_pointer(
+        dequeue_ptr: u64,
+        slot_id: SlotId,
+        dci: u8,
+        stream_id: u16,
+        cycle: bool,
+    ) -> Self {
+        // Dequeue pointer の下位4ビットには DCS と SCT が含まれる
+        Self {
+            parameter: (dequeue_ptr & !0xF) | 1, // DCS = 1
+            status: (stream_id as u32) << 16,
+            control: ((TrbType::SetTrDequeuePointer as u32) << 10)
+                | ((slot_id.as_u8() as u32) << 24)
+                | ((dci as u32) << 16)
+                | if cycle { 1 } else { 0 },
+        }
+    }
 }
 
 // ============================================================================

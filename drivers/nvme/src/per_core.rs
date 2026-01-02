@@ -20,11 +20,16 @@
 
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::ptr;
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::defs::{DOORBELL_BATCH_THRESHOLD, SECTOR_SIZE};
 use super::queue::QueuePair;
+use super::requests::PendingRequests;
+use crate::sync::IrqMutex;
+use alloc::sync::Arc;
+use core::task::Waker;
 
 // ============================================================================
 // Queue Statistics
@@ -43,6 +48,39 @@ pub struct NvmeQueueStats {
     pub doorbell_writes: AtomicU64,
     pub batched_commands: AtomicU64,
     _padding: [u8; 0], // 64バイト境界にパディング
+}
+
+// ============================================================================
+// Global Registry for ISR Access
+// ============================================================================
+
+const MAX_CORES: usize = 256;
+static QUEUES: [AtomicPtr<PerCoreNvmeQueue>; MAX_CORES] =
+    [const { AtomicPtr::new(ptr::null_mut()) }; MAX_CORES];
+
+/// ISR用にキューを登録
+pub fn register_queue(core_id: u32, queue: &PerCoreNvmeQueue) {
+    if (core_id as usize) < MAX_CORES {
+        QUEUES[core_id as usize].store(queue as *const _ as *mut _, Ordering::Release);
+    }
+}
+
+/// 現在のコアのキューを取得（ISR用、ロックフリー）
+pub fn get_local_queue() -> Option<&'static PerCoreNvmeQueue> {
+    // Note: Assuming crate::cpu::id() exists and returns u32 core ID
+    // If not, we need another way. checking imports/context.
+    // Usually via APIC local ID.
+    // For now, using crate::apic::local_apic_id() if available or similar.
+    // Actually, interrupt_manager has `current_apic_id()`.
+
+    let core_id = current_apic_id();
+    if (core_id as usize) < MAX_CORES {
+        let ptr = QUEUES[core_id as usize].load(Ordering::Acquire);
+        if !ptr.is_null() {
+            return Some(unsafe { &*ptr });
+        }
+    }
+    None
 }
 
 // ============================================================================
@@ -68,6 +106,8 @@ pub struct PerCoreNvmeQueue {
     pending_commands: AtomicU32,
     /// 統計（別キャッシュライン）
     stats: NvmeQueueStats,
+    /// Pending Requests for Async I/O (ISR-safe)
+    pending_requests: Arc<IrqMutex<PendingRequests>>,
 }
 
 // Safety: PerCoreNvmeQueueは各コア固有のキューとして使用され、
@@ -78,7 +118,7 @@ unsafe impl Send for PerCoreNvmeQueue {}
 
 impl PerCoreNvmeQueue {
     /// 新しいコアキューを作成
-    pub const fn new(core_id: u32) -> Self {
+    pub fn new(core_id: u32) -> Self {
         Self {
             inner: UnsafeCell::new(None),
             core_id,
@@ -95,6 +135,7 @@ impl PerCoreNvmeQueue {
                 batched_commands: AtomicU64::new(0),
                 _padding: [],
             },
+            pending_requests: Arc::new(IrqMutex::new(PendingRequests::new())),
         }
     }
 
@@ -149,6 +190,14 @@ impl PerCoreNvmeQueue {
 
         // CIDはSQのtailから取得
         let cid = qp.sq().tail();
+
+        // Register pending request BEFORE submission to ensure we don't miss completion
+        // if it happens abnormally fast (though unlikely given SQ doorbells)
+        {
+            let mut pending = self.pending_requests.lock();
+            let _ = pending.register(cid, qp.sq().qid());
+        }
+
         let cmd = NvmeCommand::read(cid, nsid, lba, blocks, prp1, prp2);
         let _tail = qp.sq().submit_no_doorbell(&cmd)?;
 
@@ -216,6 +265,13 @@ impl PerCoreNvmeQueue {
 
         // CIDはSQのtailから取得
         let cid = qp.sq().tail();
+
+        // Register pending request
+        {
+            let mut pending = self.pending_requests.lock();
+            let _ = pending.register(cid, qp.sq().qid());
+        }
+
         let cmd = NvmeCommand::write(cid, nsid, lba, blocks, prp1, prp2);
         let _tail = qp.sq().submit_no_doorbell(&cmd)?;
 
@@ -354,4 +410,74 @@ impl PerCoreNvmeQueue {
     pub fn pending_commands(&self) -> u32 {
         self.pending_commands.load(Ordering::Relaxed)
     }
+
+    /// Wakerを登録（非同期I/O用）
+    pub fn register_waker(&self, cid: u16, waker: Waker) {
+        self.pending_requests.lock().set_waker(cid, waker);
+    }
+
+    /// 完了を確認（ISRが処理済みのものを取得）
+    pub fn check_completion(&self, cid: u16) -> Option<NvmeCompletion> {
+        self.pending_requests.lock().check_completion(cid)
+    }
+
+    /// 保留中のリクエストマップを取得（ISR用）
+    pub fn get_pending_requests(&self) -> Arc<IrqMutex<PendingRequests>> {
+        self.pending_requests.clone()
+    }
+
+    /// 完了を処理（ISRコンテキスト対応）
+    ///
+    /// # Safety
+    /// ISRから呼び出されることを想定。
+    /// QueuePairのCQのみを操作するため、SQ操作中のメインスレッドと競合しない。
+    pub unsafe fn process_completions(&self) -> usize {
+        let qp_ptr = self.inner.get();
+        // lock-free check: if None, can't poll
+        let qp_opt = unsafe { &*qp_ptr };
+
+        let mut count = 0;
+
+        if let Some(qp) = qp_opt {
+            // ISR loop: poll until empty
+            while let Some(cqe) = qp.poll_completion() {
+                self.stats
+                    .commands_completed
+                    .fetch_add(1, Ordering::Relaxed);
+                if !cqe.is_success() {
+                    self.stats.errors.fetch_add(1, Ordering::Relaxed);
+                }
+
+                // Wakerを起こす
+                let cid = cqe.command_id();
+                let mut pending = self.pending_requests.lock();
+                pending.complete(cid, cqe);
+
+                count += 1;
+            }
+        }
+        count
+    }
+}
+
+/// NVMe Interrupt Handler (ISR context)
+pub fn irq_handler() {
+    // 現在のコアのキューを取得して完了処理を実行
+    if let Some(queue) = get_local_queue() {
+        unsafe {
+            queue.process_completions();
+        }
+    }
+}
+
+/// Get current APIC ID (Local CPU ID)
+#[inline]
+fn current_apic_id() -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        let res = core::arch::x86_64::__cpuid(1);
+        (res.ebx >> 24) as u32
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    0
 }

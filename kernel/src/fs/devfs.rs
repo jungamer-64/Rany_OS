@@ -580,6 +580,31 @@ impl DevFs {
 
         entry.ops.clone().ok_or(DevError::NotDevice)
     }
+
+    /// デバイス番号からブロックデバイスを探す
+    pub fn find_block_device_by_number(&self, device_number: DeviceNumber) -> Result<Arc<dyn DeviceOps>, DevError> {
+        let root = self.root.read();
+
+        fn search(entry: &DevEntry, device_number: DeviceNumber) -> Option<Arc<dyn DeviceOps>> {
+            if entry.device_type == Some(DeviceType::Block) {
+                if let Some(dn) = entry.device_number {
+                    if dn == device_number {
+                        return entry.ops.clone();
+                    }
+                }
+            }
+
+            for child in entry.children.values() {
+                if let Some(ops) = search(child, device_number) {
+                    return Some(ops);
+                }
+            }
+
+            None
+        }
+
+        search(&*root, device_number).ok_or(DevError::NotFound)
+    }
 }
 
 /// グローバル devfs インスタンス
@@ -687,5 +712,25 @@ mod tests {
         assert!(entries.contains(&String::from("null")));
         assert!(entries.contains(&String::from("zero")));
         assert!(entries.contains(&String::from("random")));
+    }
+
+    #[test]
+    fn test_find_block_device_by_number() {
+        struct TestBlockDevice;
+        impl DeviceOps for TestBlockDevice {
+            fn open(&self) -> Result<(), DevError> { Ok(()) }
+            fn close(&self) -> Result<(), DevError> { Ok(()) }
+            fn read(&self, _offset: usize, _buf: &mut [u8]) -> Result<usize, DevError> { Ok(0) }
+            fn write(&self, _offset: usize, _buf: &[u8]) -> Result<usize, DevError> { Ok(0) }
+            fn ioctl(&self, _cmd: u32, _arg: usize) -> Result<usize, DevError> { Ok(0) }
+        }
+
+        let fs = DevFs::new();
+        let devnum = DeviceNumber::new(8, 9);
+        fs.register_block_device("testblk", devnum, Arc::new(TestBlockDevice));
+
+        let ops = fs.find_block_device_by_number(devnum).expect("block device should be found by number");
+        ops.open().unwrap();
+        ops.close().unwrap();
     }
 }

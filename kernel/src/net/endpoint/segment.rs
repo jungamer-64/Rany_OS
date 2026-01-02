@@ -184,7 +184,7 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
         Ok(mut guard) => {
             if let Some(ref mut s) = *guard {
                 if s.send_tcp(src_ip, dst_ip, &segment) {
-                    crate::serial_println!(
+                    log::info!(
                         "TCP TX: {:?}:{} -> {:?}:{} ({} bytes)",
                         local.ip,
                         local.port,
@@ -192,23 +192,22 @@ pub fn send_tcp_segment(local: SocketAddr, remote: SocketAddr, segment: Vec<u8>)
                         remote.port,
                         segment.len()
                     );
+                } else {
+                    log::info!(
+                        "TCP TX failed (ARP pending?): {:?}:{} -> {:?}:{}",
+                        local.ip,
+                        local.port,
+                        remote.ip,
+                        remote.port
+                    );
                 }
+            } else {
+                log::info!("TCP TX: Network stack not initialized");
             }
         }
         Err(_) => {
             log::error!("[NET] Stack poisoned - dropping TCP segment");
         }
-    }
-            crate::serial_println!(
-                "TCP TX failed (ARP pending?): {:?}:{} -> {:?}:{}",
-                local.ip,
-                local.port,
-                remote.ip,
-                remote.port
-            );
-        }
-    } else {
-        crate::serial_println!("TCP TX: Network stack not initialized");
     }
 }
 

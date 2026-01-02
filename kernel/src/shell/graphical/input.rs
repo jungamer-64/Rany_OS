@@ -10,14 +10,14 @@
 #![allow(dead_code)]
 
 use crate::graphics::Framebuffer;
-use crate::io::hid::{InputKeyCode, InputKeyEvent, InputKeyState, KeyEventExt, MouseEvt};
+use crate::io::hid::{KeyCode, KeyEvent, KeyEventExt, KeyState, MouseEvent};
 
 use super::shell::GraphicalShell;
 
 impl GraphicalShell {
     /// キーイベントを処理
-    pub fn handle_key(&mut self, event: InputKeyEvent) {
-        if event.state != InputKeyState::Pressed {
+    pub fn handle_key(&mut self, event: KeyEvent) {
+        if event.state != KeyState::Pressed {
             return;
         }
 
@@ -31,43 +31,43 @@ impl GraphicalShell {
         // Ctrl修飾キーの処理
         if event.modifiers().ctrl {
             match event.key {
-                InputKeyCode::C => {
+                KeyCode::C => {
                     self.state.input_buffer.clear();
                     self.update_cursor_cache();
                     self.print("^C\n");
                     self.draw_prompt();
                     return;
                 }
-                InputKeyCode::L => {
+                KeyCode::L => {
                     self.clear_screen();
                     self.draw_prompt();
                     return;
                 }
-                InputKeyCode::A => {
+                KeyCode::A => {
                     self.state.input_buffer.move_home();
                     self.update_cursor_cache();
                     self.redraw();
                     return;
                 }
-                InputKeyCode::E => {
+                KeyCode::E => {
                     self.state.input_buffer.move_end();
                     self.update_cursor_cache();
                     self.redraw();
                     return;
                 }
-                InputKeyCode::K => {
+                KeyCode::K => {
                     self.state.input_buffer.clear_to_end();
                     self.update_cursor_cache();
                     self.redraw();
                     return;
                 }
-                InputKeyCode::U => {
+                KeyCode::U => {
                     self.state.input_buffer.clear_to_start();
                     self.update_cursor_cache();
                     self.redraw();
                     return;
                 }
-                InputKeyCode::W => {
+                KeyCode::W => {
                     self.state.input_buffer.delete_word();
                     self.update_cursor_cache();
                     self.redraw();
@@ -80,13 +80,13 @@ impl GraphicalShell {
         // Alt修飾キーの処理
         if event.modifiers().alt {
             match event.key {
-                InputKeyCode::Left => {
+                KeyCode::Left => {
                     self.state.input_buffer.move_word_left();
                     self.update_cursor_cache();
                     self.redraw();
                     return;
                 }
-                InputKeyCode::Right => {
+                KeyCode::Right => {
                     self.state.input_buffer.move_word_right();
                     self.update_cursor_cache();
                     self.redraw();
@@ -98,69 +98,69 @@ impl GraphicalShell {
 
         // 通常キー処理
         match event.key {
-            InputKeyCode::Enter => {
+            KeyCode::Enter => {
                 self.submit_input();
             }
-            InputKeyCode::Backspace => {
+            KeyCode::Backspace => {
                 self.state.completions.clear();
                 self.state.input_buffer.backspace();
                 self.update_cursor_cache();
-                self.redraw_input_only(); // 入力行のみ再描画（高速化）
+                self.redraw_input_line(); // 入力行のみ再描画（高速化）
             }
-            InputKeyCode::Delete => {
+            KeyCode::Delete => {
                 self.state.completions.clear();
                 self.state.input_buffer.delete();
                 self.update_cursor_cache();
-                self.redraw_input_only();
+                self.redraw_input_line();
             }
-            InputKeyCode::Left => {
+            KeyCode::Left => {
                 self.state.input_buffer.move_left();
                 self.update_cursor_cache();
                 self.redraw_cursor_only(); // カーソルのみ移動（高速化）
             }
-            InputKeyCode::Right => {
+            KeyCode::Right => {
                 self.state.input_buffer.move_right();
                 self.update_cursor_cache();
                 self.redraw_cursor_only();
             }
-            InputKeyCode::Home => {
+            KeyCode::Home => {
                 self.state.input_buffer.move_home();
                 self.update_cursor_cache();
-                self.redraw_input_only();
+                self.redraw_input_line();
             }
-            InputKeyCode::End => {
+            KeyCode::End => {
                 self.state.input_buffer.move_end();
                 self.update_cursor_cache();
-                self.redraw_input_only();
+                self.redraw_input_line();
             }
-            InputKeyCode::Up => {
+            KeyCode::Up => {
                 self.history_prev();
             }
-            InputKeyCode::Down => {
+            KeyCode::Down => {
                 self.history_next();
             }
-            InputKeyCode::Tab => {
+            KeyCode::Tab => {
                 self.handle_tab();
             }
-            InputKeyCode::PageUp => {
+            KeyCode::PageUp => {
                 self.scroll_up();
             }
-            InputKeyCode::PageDown => {
+            KeyCode::PageDown => {
                 self.scroll_down();
             }
-            InputKeyCode::Escape => {
+            KeyCode::Escape => {
                 self.state.completions.clear();
                 self.redraw();
             }
-            InputKeyCode::Insert => {}
-            InputKeyCode::CapsLock | InputKeyCode::NumLock | InputKeyCode::ScrollLock => {}
+            KeyCode::Insert => {}
+            KeyCode::CapsLock | KeyCode::NumLock | KeyCode::ScrollLock => {}
             _ => {
                 if let Some(c) = event.to_char() {
                     if c >= ' ' && c <= '~' {
                         self.state.completions.clear();
                         self.state.input_buffer.insert(c);
                         self.update_cursor_cache();
-                        self.redraw_input_only();
+                        self.redraw_input_line();
                     }
                 }
             }
@@ -172,7 +172,7 @@ impl GraphicalShell {
     /// マウス移動時は全画面再描画ではなく、古い位置と新しい位置の
     /// 2領域のみを更新することで、高解像度環境でのパフォーマンスを向上。
     #[cfg(feature = "mouse")]
-    pub fn handle_mouse(&mut self, event: MouseEvt) {
+    pub fn handle_mouse(&mut self, event: MouseEvent) {
         let max_x = self.resources.fb_width as i32;
         let max_y = self.resources.fb_height as i32;
 

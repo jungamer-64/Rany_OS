@@ -14,6 +14,7 @@ use core::ptr::NonNull;
 ///
 /// Exchange Heapはドメイン間通信専用で、通常の割り当てサイズは
 /// 比較的大きい（パケットバッファ等）ため、単純な空きリスト実装で十分。
+#[derive(Debug)]
 struct SimpleFreeListHeap {
     /// ヒープ開始アドレス
     heap_start: usize,
@@ -244,20 +245,8 @@ impl ExchangeHeap {
         unsafe {
             // Initialization-time best-effort recovery: proceed with initialization even if the lock
         // appears poisoned to avoid blocking boot.
-        match self.heap.lock() {
-            Ok(mut guard) => guard.init(heap_start as *mut u8, size),
-            Err(_) => {
-                // Initialization-time best-effort recovery: if Exchange Heap lock is poisoned during init,
-                // log and attempt to proceed using a best-effort recovered guard. This path is only used
-                // at boot-time.
-                log::warn!("[MEM] Exchange Heap poisoned during init - proceeding with best-effort");
-                let mut guard = match self.heap.lock() {
-                    Ok(g) => g,
-                    Err(poisoned) => poisoned.into_inner(),
-                };
-                guard.init(heap_start as *mut u8, size);
-            }
-        }
+        let mut guard = self.heap.lock_for_init("[MEM] Exchange Heap init");
+        guard.init(heap_start as *mut u8, size);
         }
     }
 
@@ -798,7 +787,8 @@ mod tests {
         static mut HEAP_MEM: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
 
         unsafe {
-            EXCHANGE_HEAP.init(HEAP_MEM.as_ptr() as usize, HEAP_SIZE);
+            // Use addr_of_mut! to avoid creating a shared reference to a mutable static
+            EXCHANGE_HEAP.init(core::ptr::addr_of_mut!(HEAP_MEM) as usize, HEAP_SIZE);
         }
 
         // アロケーション

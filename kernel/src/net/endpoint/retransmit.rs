@@ -264,7 +264,7 @@ pub fn check_retransmit_timeouts() {
                 send_tcp_segment(*local, *remote, segment_data);
             } else {
                 // 最大再送回数超過 - 接続をリセット
-                crate::serial_println!(
+                log::info!(
                     "TCP: Max retransmit exceeded for {:?} -> {:?}",
                     local,
                     remote

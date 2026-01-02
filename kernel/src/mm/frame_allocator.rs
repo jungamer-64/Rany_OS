@@ -717,7 +717,8 @@ pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)])
         // node-local allocations when possible (best-effort).
         for &(addr, size, node_id) in regions {
             crate::mm::buddy_register_numa_region(node_id.as_usize(), addr, size);
-        }    }
+        }
+    }
 }
 
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -818,6 +819,41 @@ pub fn alloc_frame_2m_local(current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
     NUMA_FRAME_ALLOCATOR.lock().allocate_2m_local(current_cpu)
 }
 
+/// 連続した (4KiB) フレームを割り当てるラッパー
+///
+/// - `frames_needed`: 割り当てたいフレーム数
+/// - 戻り値: 割り当て開始物理アドレス (4KiB 単位)
+pub fn alloc_contiguous_frames(frames_needed: usize) -> Option<PhysAddr> {
+    if frames_needed == 0 {
+        return None;
+    }
+
+    // Prefer Buddy allocator (better at finding contiguous regions)
+    if let Some(addr) = crate::mm::buddy_alloc_contiguous_frames(frames_needed) {
+        return Some(addr);
+    }
+
+    // Fallback to bitmap allocator
+    FRAME_ALLOCATOR
+        .lock()
+        .allocate_contiguous(frames_needed, PAGE_SIZE_4K)
+}
+
+/// 連続領域を解放するラッパー
+///
+/// - `start`: 開始物理アドレス
+/// - `frames`: フレーム数
+pub fn dealloc_contiguous_frames(start: PhysAddr, frames: usize) {
+    // Deallocate frame-by-frame (4KiB)
+    let mut alloc = FRAME_ALLOCATOR.lock();
+    for i in 0..frames {
+        let addr = start.as_u64() + (i as u64) * (PAGE_SIZE_4K as u64);
+        if let Ok(frame) = PhysFrame::<Size4KiB>::from_start_address(x86_64::PhysAddr::new(addr)) {
+            alloc.deallocate_4k_frame(frame);
+        }
+    }
+}
+
 /// 2MiB 計測値取得（テスト用）
 pub fn get_frame2m_local_alloc_metrics() -> (u64, u64) {
     (
@@ -906,5 +942,21 @@ mod tests {
         let _frame = alloc_frame_2m(); // may be None on small test region
         let (attempts, successes) = get_frame2m_local_alloc_metrics();
         assert!(successes <= attempts);
+    }
+
+    #[test]
+    fn test_alloc_dealloc_contiguous_wrapper() {
+        // Try to allocate a single contiguous 4KiB frame; if not available, test is a no-op
+        if let Some(start) = alloc_contiguous_frames(1) {
+            // Map to virtual address using HHDM offset
+            let virt = crate::memory::physical_memory_offset() + start.as_u64();
+            let ptr = virt as *mut u8;
+            unsafe {
+                core::ptr::write_volatile(ptr, 0xA5u8);
+                let v = core::ptr::read_volatile(ptr);
+                assert_eq!(v, 0xA5u8);
+            }
+            dealloc_contiguous_frames(start, 1);
+        }
     }
 }

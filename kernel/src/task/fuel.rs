@@ -14,8 +14,10 @@
 //! - **Consumption**: The task consumes fuel during loops or heavy operations.
 //! - **Yielding**: When fuel is exhausted, the task yields (returns `Poll::Pending`).
 
-use core::cell::Cell;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+/// Maximum number of CPUs supported
+const MAX_CPUS: usize = 64;
 
 /// Global fuel configuration
 pub struct FuelConfig {
@@ -29,10 +31,24 @@ impl FuelConfig {
     };
 }
 
-/// Thread-local storage for current task's fuel
-/// specific to the current core/thread.
-#[thread_local]
-static CURRENT_FUEL: Cell<u64> = Cell::new(0);
+/// Per-CPU fuel storage
+/// Uses atomic operations for safe access from any context.
+/// Index by current CPU ID.
+static CURRENT_FUEL: [AtomicU64; MAX_CPUS] = {
+    const INIT: AtomicU64 = AtomicU64::new(0);
+    [INIT; MAX_CPUS]
+};
+
+/// Get current CPU index safely (clamped to valid range)
+#[inline]
+fn cpu_index() -> usize {
+    let cpu_id = crate::smp::current_cpu() as usize;
+    if cpu_id < MAX_CPUS {
+        cpu_id
+    } else {
+        0 // Fallback to CPU 0 if out of range
+    }
+}
 
 /// Fuel manager
 pub struct Fuel;
@@ -41,18 +57,19 @@ impl Fuel {
     /// Refill the current task's fuel
     #[inline]
     pub fn refill(amount: u64) {
-        CURRENT_FUEL.set(amount);
+        CURRENT_FUEL[cpu_index()].store(amount, Ordering::Relaxed);
     }
 
     /// Consume fuel. Returns false if exhausted (should yield).
     #[inline]
     pub fn consume(amount: u64) -> bool {
-        let current = CURRENT_FUEL.get();
+        let idx = cpu_index();
+        let current = CURRENT_FUEL[idx].load(Ordering::Relaxed);
         if let Some(remaining) = current.checked_sub(amount) {
-            CURRENT_FUEL.set(remaining);
+            CURRENT_FUEL[idx].store(remaining, Ordering::Relaxed);
             true
         } else {
-            CURRENT_FUEL.set(0);
+            CURRENT_FUEL[idx].store(0, Ordering::Relaxed);
             false
         }
     }
@@ -60,13 +77,19 @@ impl Fuel {
     /// Check remaining fuel
     #[inline]
     pub fn remaining() -> u64 {
-        CURRENT_FUEL.get()
+        CURRENT_FUEL[cpu_index()].load(Ordering::Relaxed)
+    }
+
+    /// Check if fuel management is active (fuel has been set)
+    #[inline]
+    pub fn is_active() -> bool {
+        CURRENT_FUEL[cpu_index()].load(Ordering::Relaxed) > 0
     }
 
     /// Force exhaustion (e.g. on yield)
     #[inline]
     pub fn exhaust() {
-        CURRENT_FUEL.set(0);
+        CURRENT_FUEL[cpu_index()].store(0, Ordering::Relaxed);
     }
 }
 

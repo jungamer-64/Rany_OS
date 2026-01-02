@@ -17,3 +17,9 @@ path = "src/lib.rs"
 [dependencies]
 # Spinlock for global Once registration
 spin = "0.10"
+
+[features]
+# When set, generated driver macros will emit exported driver entry symbols
+export_driver_entry = []
+# Enable Cell runtime stubs (allocator, panic handler) for standalone cdylib builds
+cell_runtime = []

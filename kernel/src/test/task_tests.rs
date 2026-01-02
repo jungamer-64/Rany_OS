@@ -17,8 +17,8 @@ pub fn test_task_creation() -> TestResult {
         TASK_RAN.store(true, Ordering::SeqCst);
     });
     
-    // Verify task ID is valid
-    if task.id().0 == 0 {
+    // Verify task ID is valid (use public accessor)
+    if task.id.as_u64() == 0 {
         return TestResult::Failed(String::from("Task ID should not be 0"));
     }
     
@@ -30,18 +30,27 @@ pub fn test_task_creation() -> TestResult {
 
 /// Test task scheduling
 pub fn test_task_scheduling() -> TestResult {
-    // Verify scheduler is initialized
-    let scheduler = crate::task::scheduler::scheduler();
-    
-    // Get initial stats
-    let stats = scheduler.stats();
-    
-    // Stats should be accessible
-    if stats.context_switches < 0 {
-        return TestResult::Failed(String::from("Invalid context switch count"));
+    #[cfg(feature = "legacy-scheduler")]
+    {
+        // Verify scheduler is initialized
+        let scheduler = crate::task::scheduler::scheduler();
+
+        // Get initial stats
+        let stats = scheduler.stats();
+
+        // Stats should be accessible
+        if stats.context_switches < 0 {
+            return TestResult::Failed(String::from("Invalid context switch count"));
+        }
+
+        return TestResult::Passed;
     }
-    
-    TestResult::Passed
+
+    #[cfg(not(feature = "legacy-scheduler"))]
+    {
+        // Legacy scheduler disabled; skip this test
+        return TestResult::Skipped(String::from("Legacy scheduler disabled; test skipped"));
+    }
 }
 
 /// Test async sleep mechanism
@@ -193,7 +202,7 @@ pub fn test_task_id_generation() -> TestResult {
     }
     
     // IDs should be increasing
-    if id2.0 <= id1.0 || id3.0 <= id2.0 {
+    if id2.as_u64() <= id1.as_u64() || id3.as_u64() <= id2.as_u64() {
         return TestResult::Failed(String::from("Task IDs should be increasing"));
     }
     
