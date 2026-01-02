@@ -467,11 +467,19 @@ impl IommuController {
 
 impl IommuHardwareContext for IommuController {
     fn allocate_iova(&self, size: u64) -> Result<u64, IommuError> {
-        IovaManager::allocate_iova(self, size)
+        if size == crate::mm::PAGE_SIZE_4K as u64 {
+            IovaManager::allocate_iova_fast(self, size)
+        } else {
+            IovaManager::allocate_iova(self, size)
+        }
     }
 
     fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        IovaManager::free_iova(self, iova, size)
+        if size == crate::mm::PAGE_SIZE_4K as u64 {
+            IovaManager::free_iova_fast(self, iova, size)
+        } else {
+            IovaManager::free_iova(self, iova, size)
+        }
     }
 }
 

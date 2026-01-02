@@ -548,13 +548,18 @@ impl IommuDomain {
                 }
             }
 
-            // Fallback to 4KB page
-            match self.map_page(current_iova, current_phys, read, write) {
-                Ok(()) => {
-                    current_iova += SIZE_4KB;
-                    current_phys += SIZE_4KB;
-                    remaining -= SIZE_4KB;
-                    mapped_len += SIZE_4KB;
+            // Fallback to 4KB pages (batch within a single PT)
+            let pages_remaining = (remaining / SIZE_4KB) as usize;
+            let pt_idx = ((current_iova >> 12) & 0x1FF) as usize;
+            let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
+
+            match self.map_range_4k(current_iova, current_phys, pages_in_pt, read, write) {
+                Ok(pages_mapped) => {
+                    let mapped_bytes = (pages_mapped as u64) * SIZE_4KB;
+                    current_iova += mapped_bytes;
+                    current_phys += mapped_bytes;
+                    remaining -= mapped_bytes;
+                    mapped_len += mapped_bytes;
                 }
                 Err(e) => {
                     // Rollback all successfully mapped pages
@@ -696,6 +701,103 @@ impl IommuDomain {
         write: bool,
     ) -> Result<(), IommuError> {
         self.map(phys, phys, size, read, write)
+    }
+
+    /// Map a contiguous run of 4KB pages within a single PT.
+    fn map_range_4k(
+        &mut self,
+        iova: u64,
+        phys: u64,
+        pages: usize,
+        read: bool,
+        write: bool,
+    ) -> Result<usize, IommuError> {
+        const SIZE_4KB: u64 = 4096;
+
+        if pages == 0 {
+            return Ok(0);
+        }
+
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+
+        let mut newly_allocated: [Option<PageTableScope>; 3] = [None, None, None];
+
+        unsafe {
+            let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)?;
+            let pml4_entry = self.page_table.add(pml4_idx);
+
+            if !(*pml4_entry).is_present() {
+                let mut pdp_scope = self.allocate_page_table()?;
+                pdp_scope.attach_to_parent(pml4_entry, pml4_phys, self.pte_format, 3);
+                newly_allocated[0] = Some(pdp_scope);
+            }
+
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_phys = (*pml4_entry).phys_addr();
+
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() {
+                let mut pd_scope = self.allocate_page_table()?;
+                pd_scope.attach_to_parent(pdp_entry, pdp_phys, self.pte_format, 2);
+                newly_allocated[1] = Some(pd_scope);
+            } else if (*pdp_entry).is_super_page(self.pte_format) {
+                return Err(IommuError::AlreadyMapped);
+            }
+
+            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_phys = (*pdp_entry).phys_addr();
+
+            let pd_entry = pd_table.add(pd_idx);
+            if !(*pd_entry).is_present() {
+                let mut pt_scope = self.allocate_page_table()?;
+                pt_scope.attach_to_parent(pd_entry, pd_phys, self.pte_format, 1);
+                newly_allocated[2] = Some(pt_scope);
+            } else if (*pd_entry).is_super_page(self.pte_format) {
+                return Err(IommuError::AlreadyMapped);
+            }
+
+            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+            let pt_phys = (*pd_entry).phys_addr();
+            let pages_in_pt = core::cmp::min(pages, PT_ENTRIES - pt_idx);
+
+            if newly_allocated[2].is_none() {
+                for idx in 0..pages_in_pt {
+                    let pt_entry = pt_table.add(pt_idx + idx);
+                    if (*pt_entry).is_present() {
+                        return Err(IommuError::AlreadyMapped);
+                    }
+                }
+            }
+
+            for idx in 0..pages_in_pt {
+                let pt_entry = pt_table.add(pt_idx + idx);
+                let entry_phys = phys + (idx as u64 * SIZE_4KB);
+                match self.pte_format {
+                    PteFormat::Intel => {
+                        *pt_entry = SlPte::mapping(entry_phys, read, write);
+                    }
+                    PteFormat::Amd => {
+                        let amd_pte = AmdPte::mapping(entry_phys, read, write, 0);
+                        *pt_entry = SlPte(amd_pte.0);
+                    }
+                }
+            }
+
+            for scope in newly_allocated.iter_mut() {
+                if let Some(scope) = scope {
+                    scope.commit();
+                }
+            }
+
+            for _ in 0..pages_in_pt {
+                inc_ref(pt_phys);
+            }
+
+            Ok(pages_in_pt)
+        }
     }
 
     /// Map a single page using 4-level page table walking

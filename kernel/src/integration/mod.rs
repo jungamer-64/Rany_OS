@@ -22,6 +22,22 @@ pub use device_manager::{DeviceInfo, DeviceManager};
 pub use interrupt_routing::InterruptRouter;
 pub use security_integration::SecurityIntegration;
 
+fn register_pci_dma_width(dev: &crate::io::pci::PciDeviceInfo, bits: u8) {
+    let device = crate::io::iommu::types::DeviceId::new(
+        dev.segment,
+        dev.bdf.bus(),
+        dev.bdf.device(),
+        dev.bdf.function(),
+    );
+    if let Err(err) = crate::io::iommu::api::register_device_dma_width(device, bits) {
+        log::warn!(
+            "[INTEGRATION] Failed to register DMA width for {}: {:?}",
+            dev.bdf,
+            err
+        );
+    }
+}
+
 /// Integration status
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -256,6 +272,14 @@ impl SystemIntegration {
                         dev.bdf.device(),
                         dev.bdf.function()
                     ));
+                    let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
+                    register_pci_dma_width(&dev, dma_bits);
+                    let iommu_device = crate::io::iommu::types::DeviceId::new(
+                        dev.segment,
+                        dev.bdf.bus(),
+                        dev.bdf.device(),
+                        dev.bdf.function(),
+                    );
                     dev.enable_bus_master();
                     dev.enable_memory_space();
 
@@ -266,7 +290,10 @@ impl SystemIntegration {
                             crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
                                 .as_u64();
                         unsafe {
-                            match crate::io::virtio::init_virtio_blk(bar0_virt) {
+                            match crate::io::virtio::init_virtio_blk_for_device(
+                                bar0_virt,
+                                iommu_device,
+                            ) {
                                 Ok(()) => self.log("    VirtIO-blk driver initialized"),
                                 Err(e) => {
                                     self.log(&alloc::format!("    VirtIO-blk init failed: {:?}", e))
@@ -285,8 +312,34 @@ impl SystemIntegration {
                         dev.bdf.device(),
                         dev.bdf.function()
                     ));
+                    let dma_bits = if dev.device_id.0 >= 0x1040 { 64 } else { 32 };
+                    register_pci_dma_width(&dev, dma_bits);
+                    let iommu_device = crate::io::iommu::types::DeviceId::new(
+                        dev.segment,
+                        dev.bdf.bus(),
+                        dev.bdf.device(),
+                        dev.bdf.function(),
+                    );
                     dev.enable_bus_master();
                     dev.enable_memory_space();
+
+                    if let Some(bar0) = dev.bars[0] {
+                        let bar0_phys = bar0.base();
+                        let bar0_virt =
+                            crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                                .as_u64();
+                        match crate::io::virtio::init_virtio_net_for_device(
+                            bar0_virt as usize,
+                            iommu_device,
+                        ) {
+                            Ok(()) => self.log("    VirtIO-net driver initialized"),
+                            Err(e) => {
+                                self.log(&alloc::format!("    VirtIO-net init failed: {:?}", e))
+                            }
+                        }
+                    } else {
+                        self.log("    VirtIO-net found but BAR0 is missing, skipping init");
+                    }
                 }
                 _ => {}
             }
@@ -301,6 +354,7 @@ impl SystemIntegration {
                 dev.bdf.device(),
                 dev.bdf.function()
             ));
+            register_pci_dma_width(&dev, 64);
             dev.enable_bus_master();
             dev.enable_memory_space();
         }
