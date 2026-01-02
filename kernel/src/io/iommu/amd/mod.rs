@@ -18,6 +18,7 @@ use x86_64::PhysAddr;
 use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
 use crate::io::iommu::tables::{phys_to_virt_usize, virt_ptr_to_phys};
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
+use crate::io::iommu::iova_allocator::{IovaAllocator, IovaGranularity};
 use crate::mm::buddy_alloc_contiguous_frames;
 use crate::mm::mapping::phys_to_virt;
 // Use PAGE_SIZE_4K from local IOMMU iova_allocator instead
@@ -632,12 +633,13 @@ pub struct AmdIommuDriver {
     device_domains: PoisonLock<HashMap<DeviceId, u16>>,
     next_domain_id: AtomicU64,
     page_table_pool: Arc<PageTablePool>,
+    iova_allocator: PoisonLock<IovaAllocator>,
     enabled: AtomicBool,
 }
 
 #[derive(Clone)]
 struct AmdDomainInfo {
-    domain: Arc<PoisonLock<DomainState>>,
+    domain: Arc<DomainState>,
 }
 
 impl AmdIommuDriver {
@@ -649,6 +651,46 @@ impl AmdIommuDriver {
         device_tables: HashMap<u16, AmdDeviceTable>,
     ) -> Self {
         let page_table_pool = PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
+        let iova_bits = AMD_DEFAULT_MAX_ADDR_BITS.min(48).max(12);
+        let iova_base = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        let iova_limit = 1u64 << iova_bits;
+        let iova_size = iova_limit.saturating_sub(iova_base);
+        let mut iova_allocator = IovaAllocator::new(iova_base, iova_size);
+        let alloc_base = iova_allocator.base();
+        let alloc_end = alloc_base.saturating_add(iova_allocator.size());
+        let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        for range in &ivmd_ranges {
+            if !range.unity_map || range.exclusion {
+                continue;
+            }
+
+            let start = align_down(range.range_start, page_size);
+            let end = align_up(range.range_end, page_size);
+            if end <= start {
+                continue;
+            }
+
+            let clamped_start = start.max(alloc_base);
+            let clamped_end = end.min(alloc_end);
+            if clamped_end <= clamped_start {
+                continue;
+            }
+
+            let reserve_size = clamped_end - clamped_start;
+            match iova_allocator.reserve(clamped_start, reserve_size) {
+                Ok(()) | Err(IommuError::AlreadyMapped) => {}
+                Err(IommuError::InvalidAddress) => {
+                    log::warn!(
+                        "AMD-Vi IVMD reservation outside IOVA window: range={:#x}-{:#x}",
+                        clamped_start,
+                        clamped_end
+                    );
+                }
+                Err(err) => {
+                    log::warn!("AMD-Vi IVMD IOVA reservation failed: {:?}", err);
+                }
+            }
+        }
         let mut domain_map = HashMap::new();
         let default_domain = DomainState::new(
             0,
@@ -660,7 +702,7 @@ impl AmdIommuDriver {
             page_table_pool.clone(),
             PteFormat::Amd,
         );
-        let default_domain = Arc::new(PoisonLock::new(default_domain));
+        let default_domain = Arc::new(default_domain);
         domain_map.insert(
             0,
             AmdDomainInfo {
@@ -678,6 +720,7 @@ impl AmdIommuDriver {
             device_domains: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(1),
             page_table_pool,
+            iova_allocator: PoisonLock::new(iova_allocator),
             enabled: AtomicBool::new(false),
         }
     }
@@ -824,7 +867,7 @@ impl AmdIommuDriver {
         flags
     }
 
-    fn domain_for_id(&self, domain_id: u16) -> Result<Arc<PoisonLock<DomainState>>, IommuError> {
+    fn domain_for_id(&self, domain_id: u16) -> Result<Arc<DomainState>, IommuError> {
         let domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
         let info = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
         Ok(info.domain.clone())
@@ -908,20 +951,21 @@ impl AmdIommuDriver {
         }
 
         let domain = self.domain_for_id(domain_id)?;
-        let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-        map_ivmd_ranges(&mut guard, &ranges)
+        map_ivmd_ranges(domain.as_ref(), &ranges)
     }
 
     fn reject_excluded_ivmd_range(
         &self,
         device: DeviceId,
-        iova: u64,
+        phys_addr: u64,
         size: u64,
     ) -> Result<(), IommuError> {
         if size == 0 {
             return Ok(());
         }
-        let end = iova.checked_add(size).ok_or(IommuError::InvalidAddress)?;
+        let end = phys_addr
+            .checked_add(size)
+            .ok_or(IommuError::InvalidAddress)?;
         for range in self.ivmd_ranges_for_device(device) {
             if !range.exclusion {
                 continue;
@@ -929,7 +973,7 @@ impl AmdIommuDriver {
             if range.range_end <= range.range_start {
                 continue;
             }
-            if iova < range.range_end && end > range.range_start {
+            if phys_addr < range.range_end && end > range.range_start {
                 return Err(IommuError::InvalidAddress);
             }
         }
@@ -960,9 +1004,8 @@ impl AmdIommuDriver {
         match domain_id {
             Some(domain_id) => {
                 let domain = self.domain_for_id(domain_id)?;
-                let guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
                 let flags = AmdIommuDriver::ivhd_flags_for_device(self, device);
-                let entry = self.build_dte_entry(domain_id, &guard, flags)?;
+                let entry = self.build_dte_entry(domain_id, domain.as_ref(), flags)?;
                 table.write_entry(devid, entry)?;
                 for alias in aliases {
                     table.write_entry(*alias, entry)?;
@@ -991,16 +1034,12 @@ impl AmdIommuDriver {
 
     fn populate_default_entries(&self) -> Result<(), IommuError> {
         let default_domain = self.domain_for_id(0)?;
-        let mut domain = default_domain.lock().map_err(|_| IommuError::Poisoned)?;
-        map_ivmd_ranges(&mut domain, &self.ivmd_ranges)?;
-        drop(domain);
+        map_ivmd_ranges(default_domain.as_ref(), &self.ivmd_ranges)?;
 
         for (segment, table) in &self.device_tables {
             let flags = AmdIommuDriver::ivhd_global_flags(self, *segment);
             let domain = self.domain_for_id(0)?;
-            let guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-            let entry = self.build_dte_entry(0, &guard, flags)?;
-            drop(guard);
+            let entry = self.build_dte_entry(0, domain.as_ref(), flags)?;
             table.fill(entry)?;
         }
 
@@ -1463,7 +1502,7 @@ fn align_up(value: u64, align: u64) -> u64 {
     (value + align - 1) & !(align - 1)
 }
 
-fn map_ivmd_ranges(domain: &mut DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
+fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
     let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
     let mut exclusions = Vec::new();
 
@@ -1620,6 +1659,80 @@ impl AmdIommuDriver {
         (0, 0)
     }
 
+    fn allocate_iova(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
+        let mut guard = self.iova_allocator.lock().map_err(|_| IommuError::Poisoned)?;
+        let alloc = &mut *guard;
+        let iova = match mask {
+            Some(limit) => alloc.allocate_with_limit(size, IovaGranularity::Page4K, limit),
+            None => alloc.allocate(size, IovaGranularity::Page4K),
+        };
+        iova.ok_or(IommuError::OutOfMemory)
+    }
+
+    fn allocate_iova_fast(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
+        let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        if size != page_size || mask.is_some() {
+            return self.allocate_iova(size, mask);
+        }
+
+        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
+            if let Some(magazine) = pc.iova_magazines.get_mut(0) {
+                if let Some(iova) = magazine.pop() {
+                    return Ok(iova);
+                }
+            }
+        }
+
+        const BATCH_COUNT: u64 = 32;
+        const BATCH_SIZE: u64 = BATCH_COUNT * crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+
+        let batch_start = match self.allocate_iova(BATCH_SIZE, None) {
+            Ok(addr) => addr,
+            Err(_) => return self.allocate_iova(size, None),
+        };
+
+        let result = batch_start;
+
+        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
+            if let Some(magazine) = pc.iova_magazines.get_mut(0) {
+                for i in 1..BATCH_COUNT {
+                    let page = batch_start + i * page_size;
+                    if !magazine.push(page) {
+                        let _ = self.free_iova(page, page_size);
+                    }
+                }
+            } else {
+                let _ = self.free_iova(batch_start + page_size, BATCH_SIZE - page_size);
+            }
+        } else {
+            let _ = self.free_iova(batch_start + page_size, BATCH_SIZE - page_size);
+        }
+
+        Ok(result)
+    }
+
+    fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        let mut guard = self.iova_allocator.lock().map_err(|_| IommuError::Poisoned)?;
+        guard.free(iova, size)
+    }
+
+    fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        if size != page_size {
+            return self.free_iova(iova, size);
+        }
+
+        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
+            if let Some(magazine) = pc.iova_magazines.get_mut(0) {
+                if magazine.push(iova) {
+                    return Ok(());
+                }
+            }
+        }
+
+        self.free_iova(iova, size)
+    }
+
     pub(crate) unsafe fn map_for_dma(
         &self,
         phys_addr: PhysAddr,
@@ -1630,11 +1743,11 @@ impl AmdIommuDriver {
             return Err(IommuError::InvalidAlignment);
         }
 
-        let iova = phys_addr.as_u64();
+        let iova = self.allocate_iova_fast(size, None)?;
         let domain = self.domain_for_id(0)?;
-        {
-            let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-            guard.map(iova, phys_addr.as_u64(), size, true, true)?;
+        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, true, true) {
+            let _ = self.free_iova_fast(iova, size);
+            return Err(err);
         }
         if let Err(err) = self.invalidate_domain_pages(0, iova, size) {
             if err != IommuError::NotSupported {
@@ -1646,16 +1759,14 @@ impl AmdIommuDriver {
 
     pub(crate) fn unmap_dma(&self, iova: u64, _size: u64) -> Result<(), IommuError> {
         let domain = self.domain_for_id(0)?;
-        let mapped_size = {
-            let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-            let mapping = guard.unmap(iova)?;
-            mapping.size
-        };
+        let mapping = domain.unmap(iova)?;
+        let mapped_size = mapping.size;
         if let Err(err) = self.invalidate_domain_pages(0, iova, mapped_size) {
             if err != IommuError::NotSupported {
                 return Err(err);
             }
         }
+        let _ = self.free_iova_fast(iova, mapped_size);
         Ok(())
     }
 
@@ -1671,13 +1782,14 @@ impl AmdIommuDriver {
         }
 
         let domain_id = self.domain_id_for_device(*device)?;
-        let iova = phys_addr.as_u64();
-        self.reject_excluded_ivmd_range(*device, iova, size)?;
+        self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
+        let mask = crate::io::iommu::api::get_device_dma_mask(device);
+        let iova = self.allocate_iova_fast(size, mask)?;
         let domain = self.domain_for_id(domain_id)?;
 
-        {
-            let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-            guard.map(iova, phys_addr.as_u64(), size, true, true)?;
+        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, true, true) {
+            let _ = self.free_iova_fast(iova, size);
+            return Err(err);
         }
 
         self.invalidate_iommu_pages(*device, domain_id, iova, size)?;
@@ -1702,13 +1814,11 @@ impl AmdIommuDriver {
     ) -> Result<(), IommuError> {
         let domain_id = self.domain_id_for_device(*device)?;
         let domain = self.domain_for_id(domain_id)?;
-        let mapping = {
-            let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-            guard.unmap(iova)?
-        };
+        let mapping = domain.unmap(iova)?;
 
         self.invalidate_iommu_pages(*device, domain_id, iova, mapping.size)?;
         self.invalidate_iotlb_pages(*device, iova, mapping.size)?;
+        let _ = self.free_iova_fast(iova, mapping.size);
         Ok(())
     }
 
@@ -1742,7 +1852,7 @@ impl AmdIommuDriver {
             PteFormat::Amd,
         );
         let info = AmdDomainInfo {
-            domain: Arc::new(PoisonLock::new(domain)),
+            domain: Arc::new(domain),
         };
 
         let mut domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
@@ -1908,15 +2018,13 @@ impl AmdIommuDriver {
         numa_node: Option<usize>,
     ) -> Result<(), IommuError> {
         let domain = self.domain_for_id(domain_id)?;
-        let mut guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-        guard.numa_node = numa_node;
+        domain.set_numa_node(numa_node);
         Ok(())
     }
 
     pub(crate) fn get_domain_numa(&self, domain_id: u16) -> Result<Option<usize>, IommuError> {
         let domain = self.domain_for_id(domain_id)?;
-        let guard = domain.lock().map_err(|_| IommuError::Poisoned)?;
-        Ok(guard.numa_node)
+        Ok(domain.numa_node())
     }
 
     pub(crate) fn dump_diagnostics(&self) {}
@@ -1995,6 +2103,7 @@ pub unsafe fn init_iommu_from_ivrs(
     let ivmd_count = ivmd_ranges.len();
     let table_count = device_tables.len();
     AmdIommuDriver::register_driver(units, ivmd_ranges, cmd_states, event_logs, device_tables)?;
+    crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
     log::info!(
         "AMD-Vi IVRS parsed ({} unit(s), {} IVMD range(s), {} cmd buffer(s) ready, {} event log(s) ready, {} device table(s))",
         unit_count,
@@ -2032,6 +2141,11 @@ mod tests {
             device_domains: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(1),
             page_table_pool: PageTablePool::new(1, 1),
+            iova_allocator: PoisonLock::new(IovaAllocator::new(
+                crate::io::iommu::iova_allocator::PAGE_SIZE_4K,
+                (1u64 << AMD_DEFAULT_MAX_ADDR_BITS)
+                    .saturating_sub(crate::io::iommu::iova_allocator::PAGE_SIZE_4K),
+            )),
             enabled: AtomicBool::new(false),
         }
     }
@@ -2175,9 +2289,9 @@ mod tests {
             },
         ];
 
-        map_ivmd_ranges(&mut domain, &ranges).expect("map ivmd ranges");
+        map_ivmd_ranges(&domain, &ranges).expect("map ivmd ranges");
 
-        let mappings = domain.mappings();
+        let mappings = domain.mappings_snapshot();
         assert!(mappings.contains_key(&0x1000));
         assert!(mappings.contains_key(&0x3000));
         assert!(!mappings.contains_key(&0x2000));
@@ -2212,7 +2326,7 @@ mod tests {
             driver.page_table_pool.clone(),
             PteFormat::Amd,
         );
-        let domain = alloc::sync::Arc::new(PoisonLock::new(domain));
+        let domain = alloc::sync::Arc::new(domain);
         {
             let mut domains = match driver.domains.lock() {
                 Ok(guard) => guard,

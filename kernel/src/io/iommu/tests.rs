@@ -41,7 +41,7 @@ fn test_sl_pte() {
 
 #[test]
 fn test_iommu_domain() {
-    let mut domain = IommuDomain::new(
+    let domain = IommuDomain::new(
         1,
         None,
         false,
@@ -118,7 +118,7 @@ unsafe fn is_superpage_2mb_mapped(domain: &IommuDomain, iova: u64, format: PteFo
 #[test]
 fn test_map_rollback_on_overlap_hidden_mapping() {
     let format = PteFormat::Intel;
-    let mut domain = IommuDomain::new(
+    let domain = IommuDomain::new(
         1,
         None,
         false,
@@ -137,10 +137,9 @@ fn test_map_rollback_on_overlap_hidden_mapping() {
     domain
         .map(mine_iova, phys_base + 0x1000, 0x1000, true, true)
         .expect("mine map failed");
-    domain.mappings.remove(&mine_iova);
-    domain.mapped_size = domain.mapped_size.saturating_sub(0x1000);
+    domain.drop_mapping_for_test(mine_iova);
     assert!(unsafe { is_4k_mapped(&domain, mine_iova, format) });
-    assert!(!domain.mappings.contains_key(&mine_iova));
+    assert!(domain.mapping(mine_iova).is_none());
 
     // Attempt to map three pages; should fail on the hidden mine
     let res = domain.map(base_iova, phys_base, 0x3000, true, true);
@@ -151,14 +150,14 @@ fn test_map_rollback_on_overlap_hidden_mapping() {
     assert!(unsafe { is_4k_mapped(&domain, mine_iova, format) });
     assert!(!unsafe { is_4k_mapped(&domain, base_iova + 0x2000, format) });
 
-    assert_eq!(domain.mapped_size, 0);
-    assert!(domain.mappings.is_empty());
+    assert_eq!(domain.mapped_size(), 0);
+    assert!(domain.mappings_snapshot().is_empty());
 }
 
 #[test]
 fn test_map_rollback_on_overlap_hidden_mapping_amd() {
     let format = PteFormat::Amd;
-    let mut domain = IommuDomain::new(
+    let domain = IommuDomain::new(
         2,
         None,
         true,
@@ -176,11 +175,10 @@ fn test_map_rollback_on_overlap_hidden_mapping_amd() {
     domain
         .map(mine_iova, phys_base + 0x1000, 0x1000, true, true)
         .expect("setup map failed");
-    domain.mappings.remove(&mine_iova);
-    domain.mapped_size = domain.mapped_size.saturating_sub(0x1000);
+    domain.drop_mapping_for_test(mine_iova);
 
     assert!(unsafe { is_4k_mapped(&domain, mine_iova, format) });
-    assert!(!domain.mappings.contains_key(&mine_iova));
+    assert!(domain.mapping(mine_iova).is_none());
 
     let res = domain.map(base_iova, phys_base, 0x3000, true, true);
     assert_eq!(res, Err(IommuError::AlreadyMapped));
@@ -198,14 +196,14 @@ fn test_map_rollback_on_overlap_hidden_mapping_amd() {
         "Third page was mapped unexpectedly (AMD)"
     );
 
-    assert_eq!(domain.mapped_size, 0);
-    assert!(domain.mappings.is_empty());
+    assert_eq!(domain.mapped_size(), 0);
+    assert!(domain.mappings_snapshot().is_empty());
 }
 
 #[test]
 fn test_map_rollback_superpage_2mb_collision() {
     let format = PteFormat::Amd;
-    let mut domain = IommuDomain::new(
+    let domain = IommuDomain::new(
         3,
         None,
         true,
@@ -224,8 +222,7 @@ fn test_map_rollback_superpage_2mb_collision() {
     domain
         .map(mine_iova, phys_base + SIZE_2MB, 0x1000, true, true)
         .expect("setup mine");
-    domain.mappings.remove(&mine_iova);
-    domain.mapped_size = domain.mapped_size.saturating_sub(0x1000);
+    domain.drop_mapping_for_test(mine_iova);
 
     let res = domain.map(start_iova, phys_base, SIZE_2MB * 2, true, true);
     assert_eq!(res, Err(IommuError::AlreadyMapped));
@@ -243,8 +240,8 @@ fn test_map_rollback_superpage_2mb_collision() {
         "Mine should persist"
     );
 
-    assert_eq!(domain.mapped_size, 0);
-    assert!(domain.mappings.is_empty());
+    assert_eq!(domain.mapped_size(), 0);
+    assert!(domain.mappings_snapshot().is_empty());
 }
 
 #[test]
@@ -254,15 +251,8 @@ fn test_create_domain_with_numa_hint() {
         .create_domain(Some(2), IommuDomainType::Translated)
         .expect("create_domain failed");
     let domain_arc = ctrl.domain(id).expect("domain not found");
-    {
-        // Scope the guard so it is dropped before we call `set_domain_numa`
-        let d = match domain_arc.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        assert_eq!(d.id(), id);
-        assert_eq!(d.numa_node, Some(2));
-    }
+    assert_eq!(domain_arc.id(), id);
+    assert_eq!(domain_arc.numa_node(), Some(2));
 
     // Test controller set/get API
     ctrl.set_domain_numa(id, Some(5))
@@ -521,8 +511,8 @@ fn test_map_for_dma_alloc_non_identity() {
     let ctrl = IommuController::new(0x0, 0);
     ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
-    // Create default domain 0 for mapping (use PoisonLock)
-    let domain = Arc::new(PoisonLock::new(IommuDomain::new(
+    // Create default domain 0 for mapping
+    let domain = Arc::new(IommuDomain::new(
         0,
         None,
         false,
@@ -531,7 +521,7 @@ fn test_map_for_dma_alloc_non_identity() {
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
-    )));
+    ));
     match ctrl.domains.lock() {
         Ok(mut domains) => {
             domains.insert(0, domain.clone());
@@ -549,16 +539,12 @@ fn test_map_for_dma_alloc_non_identity() {
 
     {
         let domain_arc = ctrl.domain(0).expect("domain 0");
-        let mut domain = match domain_arc.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        domain
+        domain_arc
             .map(iova, phys, size, true, true)
             .expect("domain.map failed");
-        assert!(domain.mappings().contains_key(&iova));
+        assert!(domain_arc.mapping(iova).is_some());
 
-        let mapping = domain.unmap(iova).expect("unmap failed");
+        let mapping = domain_arc.unmap(iova).expect("unmap failed");
         assert_eq!(mapping.iova, iova);
         assert_eq!(mapping.phys, phys);
     }
@@ -650,12 +636,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
 
     // Confirm mapping exists
     let domain_arc = ctrl.domain(domain_id).expect("domain not found");
-    let d = match domain_arc.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    assert!(d.mappings().contains_key(&0x1000));
-    drop(d);
+    assert!(domain_arc.mapping(0x1000).is_some());
 
     // Submit UnmapRegion
     let unmap_cmd = crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion {
@@ -667,11 +648,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
 
     worker.join().expect("worker join failed");
 
-    let d = match domain_arc.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    assert!(!d.mappings().contains_key(&0x1000));
+    assert!(domain_arc.mapping(0x1000).is_none());
 }
 
 #[test]
@@ -691,6 +668,9 @@ fn test_map_for_device_async_and_unmap() {
         IommuConfig::default(),
     );
     init_registry(registry);
+    arc_ctrl
+        .init_iova(0x1000, 0x1_0000_0000 - 0x1000)
+        .expect("init_iova");
     if get_iommu_driver().is_none() {
         super::intel::IntelIommuDriver::register_driver();
     }
@@ -776,9 +756,7 @@ fn test_map_for_device_async_and_unmap() {
 
     // Confirm mapping exists
     let domain_arc = arc_ctrl.domain(domain_id).expect("domain not found");
-    let d = domain_arc.lock_for_init("test_map_for_device_async_and_unmap - confirming mapping");
-    assert!(d.mappings().contains_key(&iova));
-    drop(d);
+    assert!(domain_arc.mapping(iova).is_some());
 
     // Submit UnmapRegion asynchronously and wait
     crate::task::block_on(async {
@@ -789,8 +767,7 @@ fn test_map_for_device_async_and_unmap() {
 
     worker.join().expect("worker join failed");
 
-    let d = domain_arc.lock_for_init("test_map_for_device_async_and_unmap - confirming unmap");
-    assert!(!d.mappings().contains_key(&iova));
+    assert!(domain_arc.mapping(iova).is_none());
 }
 
 #[test]
@@ -819,6 +796,7 @@ fn test_map_for_device_respects_dma_mask() {
         super::intel::IntelIommuDriver::register_driver();
     }
 
+    let _ = controller.init_iova(0x1000, 0x1_0000_0000 - 0x1000);
     let domain_id = controller
         .create_domain(None, IommuDomainType::Translated)
         .expect("create domain");
@@ -844,8 +822,10 @@ fn test_map_for_device_respects_dma_mask() {
     let _guard = MaskGuard(device);
 
     let phys = x86_64::PhysAddr::new(0x1_0000_0000);
-    let result = unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) };
-    assert_eq!(result, Err(IommuError::InvalidAddress));
+    let iova = unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) }
+        .expect("map for device with mask");
+    assert!(iova + 0x1000 - 1 <= 0xFFFF_FFFF);
+    crate::io::iommu::api::unmap_for_device(&device, iova, 0x1000).expect("unmap");
 }
 /*
 #[test]
@@ -856,7 +836,7 @@ fn test_init_iommu_registers_drhd_and_rmrr_and_applies_rmrr() {
 
 #[test]
 fn test_unmap_reclaims_empty_tables() {
-    let domain = Arc::new(PoisonLock::new(IommuDomain::new(
+    let domain = IommuDomain::new(
         1,
         None,
         false,
@@ -865,39 +845,34 @@ fn test_unmap_reclaims_empty_tables() {
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
-    )));
+    );
 
-    {
-        let mut d = match domain.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        // Map a single page
-        d.map(0x1000, 0x2000, 0x1000, true, true)
-            .expect("map failed");
+    // Map a single page
+    domain
+        .map(0x1000, 0x2000, 0x1000, true, true)
+        .expect("map failed");
 
-        // Verify mapping exists
-        assert!(d.mappings().contains_key(&0x1000));
+    // Verify mapping exists
+    assert!(domain.mapping(0x1000).is_some());
 
-        // Unmap should reclaim PT, PD, PDP tables
-        let mapping = d.unmap(0x1000).expect("unmap failed");
-        assert_eq!(mapping.iova, 0x1000);
-        assert_eq!(mapping.phys, 0x2000);
+    // Unmap should reclaim PT, PD, PDP tables
+    let mapping = domain.unmap(0x1000).expect("unmap failed");
+    assert_eq!(mapping.iova, 0x1000);
+    assert_eq!(mapping.phys, 0x2000);
 
-        // Verify page table entries are cleared (PML4 entry should be not present)
-        unsafe {
-            let pml4_entry = *d.page_table.add(0);
-            assert!(
-                !pml4_entry.is_present(),
-                "PML4 entry should be cleared after unmap"
-            );
-        }
+    // Verify page table entries are cleared (PML4 entry should be not present)
+    unsafe {
+        let pml4_entry = *domain.page_table.add(0);
+        assert!(
+            !pml4_entry.is_present(),
+            "PML4 entry should be cleared after unmap"
+        );
     }
 }
 
 #[test]
 fn test_unmap_partial_keeps_tables() {
-    let domain_arc = Arc::new(PoisonLock::new(IommuDomain::new(
+    let domain = IommuDomain::new(
         1,
         None,
         false,
@@ -906,11 +881,7 @@ fn test_unmap_partial_keeps_tables() {
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
-    )));
-    let mut domain = match domain_arc.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    );
 
     // Map two pages in the same PT
     domain
@@ -953,7 +924,7 @@ fn test_unmap_mixed_superpages() {
     const IOVA_BASE: u64 = 0x4000_0000;
     const PHYS_BASE: u64 = 0x8000_0000;
 
-    let domain_arc = Arc::new(PoisonLock::new(IommuDomain::new(
+    let domain = IommuDomain::new(
         1,
         None,
         true,
@@ -962,22 +933,18 @@ fn test_unmap_mixed_superpages() {
         IommuDomainType::Translated,
         PageTablePool::new(1, 32),
         PteFormat::Intel,
-    )));
-    let mut domain = match domain_arc.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    );
 
     domain
         .map(IOVA_BASE, PHYS_BASE, SIZE_TOTAL, true, true)
         .expect("map mixed failed");
-    assert!(domain.mappings().contains_key(&IOVA_BASE));
+    assert!(domain.mapping(IOVA_BASE).is_some());
 
     let mapping = domain.unmap(IOVA_BASE).expect("unmap mixed failed");
     assert_eq!(mapping.iova, IOVA_BASE);
     assert_eq!(mapping.phys, PHYS_BASE);
     assert_eq!(mapping.size, SIZE_TOTAL);
-    assert!(!domain.mappings().contains_key(&IOVA_BASE));
+    assert!(domain.mapping(IOVA_BASE).is_none());
 
     let pml4_idx = ((IOVA_BASE >> 39) & 0x1FF) as usize;
     unsafe {

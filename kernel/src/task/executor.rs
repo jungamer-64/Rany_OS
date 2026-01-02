@@ -370,18 +370,15 @@ impl Executor {
                                         // Lookup domain and perform mapping; then invalidate
                                         match ctrl.domains.lock() {
                                             Ok(dom_map) => {
-                                                if let Some(domain_arc) = dom_map.get(domain) {
-                                                    match domain_arc.lock() {
-                                                        Ok(mut d) => {
-                                                            match d.map(*iova, *phys, *size, *read, *write) {
-                                                                Ok(_) => {
-                                                                    unsafe { ctrl.invalidate_iotlb(*domain) };
-                                                                    Ok(0)
-                                                                }
-                                                                Err(_) => Err(())
-                                                            }
+                                                let domain_arc = dom_map.get(domain).cloned();
+                                                drop(dom_map);
+                                                if let Some(domain_arc) = domain_arc {
+                                                    match domain_arc.map(*iova, *phys, *size, *read, *write) {
+                                                        Ok(_) => {
+                                                            unsafe { ctrl.invalidate_iotlb(*domain) };
+                                                            Ok(0)
                                                         }
-                                                        Err(_) => Err(())
+                                                        Err(_) => Err(()),
                                                     }
                                                 } else {
                                                     Err(())
@@ -393,18 +390,15 @@ impl Executor {
                                     crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { domain, iova, size: _ } => {
                                         match ctrl.domains.lock() {
                                             Ok(dom_map) => {
-                                                if let Some(domain_arc) = dom_map.get(domain) {
-                                                    match domain_arc.lock() {
-                                                        Ok(mut d) => {
-                                                            match d.unmap(*iova) {
-                                                                Ok(_) => {
-                                                                    unsafe { ctrl.invalidate_iotlb(*domain) };
-                                                                    Ok(0)
-                                                                }
-                                                                Err(_) => Err(())
-                                                            }
+                                                let domain_arc = dom_map.get(domain).cloned();
+                                                drop(dom_map);
+                                                if let Some(domain_arc) = domain_arc {
+                                                    match domain_arc.unmap(*iova) {
+                                                        Ok(_) => {
+                                                            unsafe { ctrl.invalidate_iotlb(*domain) };
+                                                            Ok(0)
                                                         }
-                                                        Err(_) => Err(())
+                                                        Err(_) => Err(()),
                                                     }
                                                 } else {
                                                     Err(())

@@ -173,7 +173,7 @@ pub struct PoolStats {
 ///
 /// # Lock Ordering
 ///
-/// **ALWAYS acquire `IommuDomain` lock BEFORE `PageTablePool` lock.**
+/// **ALWAYS acquire `IommuDomain` shard lock(s) BEFORE `PageTablePool` lock.**
 ///
 /// This prevents deadlocks when domain operations need page tables.
 ///

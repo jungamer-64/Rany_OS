@@ -86,6 +86,7 @@ pub mod mm {
     // expected by `iommu.rs`.
     pub mod per_cpu {
         use alloc::vec::Vec;
+        use core::array;
 
         /// Cache entry for device to domain mapping (test shim)
         #[derive(Clone, Copy, Default)]
@@ -143,6 +144,9 @@ pub mod mm {
             }
         }
 
+        pub const IOVA_MAG_CAPACITY: usize = 256;
+        pub const MAX_IOMMU_CONTROLLERS: usize = 8;
+
         /// Small per-CPU IOVA magazine (test shim)
         pub struct IovaMagazine {
             cache: Vec<u64>,
@@ -174,14 +178,14 @@ pub mod mm {
         /// Per-CPU data (test shim)
         pub struct PerCpuData {
             pub iommu_domain_cache: PerCpuDomainCache,
-            pub iova_magazine: IovaMagazine,
+            pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
         }
 
         impl PerCpuData {
             pub fn new() -> Self {
                 Self {
                     iommu_domain_cache: PerCpuDomainCache::new(),
-                    iova_magazine: IovaMagazine::new(256),
+                    iova_magazines: array::from_fn(|_| IovaMagazine::new(IOVA_MAG_CAPACITY)),
                 }
             }
         }

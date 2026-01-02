@@ -100,6 +100,31 @@ impl FreeRangeTree {
         None
     }
 
+    /// Find a free range with at least `pages_needed` pages and proper alignment,
+    /// bounded by an exclusive end page.
+    pub fn find_free_range_below(
+        &self,
+        pages_needed: usize,
+        alignment_pages: usize,
+        max_end_page: usize,
+    ) -> Option<(usize, usize)> {
+        if max_end_page == 0 {
+            return None;
+        }
+
+        for &(size, start) in self.by_size.range((pages_needed, 0)..) {
+            let aligned_start = (start + alignment_pages - 1) / alignment_pages * alignment_pages;
+            let offset = aligned_start - start;
+            let end = aligned_start.saturating_add(pages_needed);
+
+            if size >= pages_needed + offset && end <= max_end_page {
+                return Some((aligned_start, size));
+            }
+        }
+
+        None
+    }
+
     /// Allocate a range of pages starting at `start_page` with `count` pages
     /// Splits the containing free range as needed
     pub fn allocate(&mut self, start_page: usize, count: usize) -> bool {
@@ -269,6 +294,43 @@ impl IovaAllocator {
         self.free_pages = self.free_pages.saturating_sub(pages_needed);
 
         // Update hint for next allocation
+        self.next_hint = start_page + pages_needed;
+
+        Some(self.base + (start_page as u64) * Self::PAGE_SIZE_4K)
+    }
+
+    /// Allocate an IOVA range within a maximum address (inclusive).
+    pub fn allocate_with_limit(
+        &mut self,
+        size: u64,
+        granularity: IovaGranularity,
+        max_addr_inclusive: u64,
+    ) -> Option<u64> {
+        if max_addr_inclusive < self.base {
+            return None;
+        }
+
+        let limit_exclusive = max_addr_inclusive.saturating_add(1);
+        let available_end = (self.base + self.size).min(limit_exclusive);
+        if available_end <= self.base {
+            return None;
+        }
+
+        let max_end_page = ((available_end - self.base) / Self::PAGE_SIZE_4K) as usize;
+        if max_end_page == 0 {
+            return None;
+        }
+
+        let page_size = granularity.size_bytes();
+        let pages_needed = ((size + Self::PAGE_SIZE_4K - 1) / Self::PAGE_SIZE_4K) as usize;
+        let alignment_pages = (page_size / Self::PAGE_SIZE_4K) as usize;
+
+        let (start_page, _) = self
+            .free_ranges
+            .find_free_range_below(pages_needed, alignment_pages, max_end_page)?;
+
+        self.free_ranges.allocate(start_page, pages_needed);
+        self.free_pages = self.free_pages.saturating_sub(pages_needed);
         self.next_hint = start_page + pages_needed;
 
         Some(self.base + (start_page as u64) * Self::PAGE_SIZE_4K)

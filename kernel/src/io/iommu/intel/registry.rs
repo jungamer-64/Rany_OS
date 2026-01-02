@@ -42,6 +42,9 @@ impl IommuRegistry {
         reserved_regions: Vec<ReservedMemoryRegion>,
         config: IommuConfig,
     ) -> Self {
+        for (idx, controller) in controllers.iter().enumerate() {
+            controller.set_controller_idx(idx);
+        }
         let default_iommu_idx = if controllers.is_empty() {
             None
         } else {

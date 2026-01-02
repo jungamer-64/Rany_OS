@@ -25,7 +25,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 use hashbrown::HashMap;
 
@@ -104,7 +104,7 @@ pub struct IommuController {
     pub(crate) register_lock: PoisonLock<()>,
 
     /// Domains
-    pub domains: PoisonLock<HashMap<u16, Arc<PoisonLock<IommuDomain>>>>,
+    pub domains: PoisonLock<HashMap<u16, Arc<IommuDomain>>>,
     /// Device to domain mapping
     pub(crate) device_domains: PoisonLock<HashMap<DeviceId, u16>>,
     /// Next domain ID
@@ -121,6 +121,8 @@ pub struct IommuController {
     pub(crate) qi_enabled: AtomicBool,
     /// IOMMU Segment number
     pub segment: u16,
+    /// Controller index within the registry (for per-core caches)
+    pub(crate) controller_idx: AtomicUsize,
     /// IOVA allocator
     pub(crate) iova_allocator: PoisonLock<Option<IovaAllocator>>,
     /// Set of devices with ATS enabled
@@ -168,6 +170,7 @@ impl IommuController {
             ir_enabled: AtomicBool::new(false),
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
+            controller_idx: AtomicUsize::new(usize::MAX),
             iova_allocator: PoisonLock::new(None),
             ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
             pid_pool: PoisonLock::new(None),
@@ -205,6 +208,7 @@ impl IommuController {
             ir_enabled: AtomicBool::new(false),
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
+            controller_idx: AtomicUsize::new(usize::MAX),
             iova_allocator: PoisonLock::new(None),
             ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
             pid_pool: PoisonLock::new(None),
@@ -217,6 +221,19 @@ impl IommuController {
             page_table_pool: PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
             dropped_security_events: AtomicU64::new(0),
+        }
+    }
+
+    pub(crate) fn set_controller_idx(&self, idx: usize) {
+        self.controller_idx.store(idx, Ordering::Relaxed);
+    }
+
+    pub(crate) fn controller_idx(&self) -> Option<usize> {
+        let idx = self.controller_idx.load(Ordering::Relaxed);
+        if idx == usize::MAX {
+            None
+        } else {
+            Some(idx)
         }
     }
 
