@@ -43,6 +43,8 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | セルモデル | ✅ 完了 | `src/loader/mod.rs` |
 | ELFローダー | ✅ 完了 | `src/loader/elf.rs` |
 | 署名検証 | ✅ 完了 | `src/loader/signature.rs` |
+| ライブアップデート | ✅ 完了 | `src/loader/live_update.rs` |
+| 型ID検証 | ✅ 完了 | `src/loader/type_id.rs` |
 | ドメイン分離 | ✅ 完了 | `src/domain/mod.rs` |
 
 ### ✅ セクション 4: カーネル並行性モデル
@@ -53,11 +55,16 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | Futureベースタスク | ✅ 完了 | `src/task/mod.rs` |
 | **Interrupt-Wakerブリッジ (4.2)** | ✅ 完了 | `src/task/interrupt_waker.rs` |
 | **Per-Core Executor (4.3)** | ✅ 完了 | `src/task/per_core_executor.rs` |
-| **Work Stealing (4.3)** | ✅ 完了 | `src/task/work_stealing.rs` |
+| **Work Stealing (4.3)** | ✅ 完了 | `src/task/work_stealing.rs`, `src/task/work_stealing_advanced.rs` |
 | **ロックフリー通信 (4.3)** | ✅ 完了 | `src/sync/lockfree.rs` |
+| **AtomicWaker** | ✅ 完了 | `src/sync/atomic_waker.rs` |
+| **PoisonLock** | ✅ 完了 | `src/sync/poison_lock.rs` |
 | **スターベーション対策 (4.4)** | ✅ 完了 | `src/task/preemption.rs` |
 | タイマー | ✅ 完了 | `src/task/timer.rs` |
 | スケジューラ | ✅ 完了 | `src/task/scheduler.rs` |
+| 実行燃料制限 | ✅ 完了 | `src/task/fuel.rs` |
+| プロセス管理 | ✅ 完了 | `src/task/process.rs` |
+| シグナル | ✅ 完了 | `src/task/signal.rs` |
 
 ### ✅ セクション 5: メモリ管理
 
@@ -70,42 +77,55 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | **Exchange Heap (5.3)** | ✅ 完了 | `src/mm/exchange_heap.rs` |
 | **RRef (5.3)** | ✅ 完了 | `src/ipc/rref.rs` |
 | **DMA安全性 (5.4)** | ✅ 完了 | `src/io/dma.rs` |
+| NUMAサポート | ✅ 完了 | `src/mm/numa.rs` |
+| 1GB/2MBページ | ✅ 完了 | `src/mm/huge_pages.rs` |
+| Higher Half Map | ✅ 完了 | `src/mm/higher_half.rs` |
+| ドメイン所有権 | ✅ 完了 | `src/mm/domain_ownership.rs` |
 
 ### ✅ セクション 6: I/Oサブシステム
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
-| **適応的ポーリング (6.1)** | ✅ 完了 | `src/io/polling.rs` |
-| **ゼロコピーネットワーク (6.2)** | ✅ 完了 | `src/net/tcp.rs`, `src/net/mempool.rs` |
+| **適応的ポーリング (6.1)** | ✅ 完了 | `src/net/adaptive_polling.rs` |
+| **ゼロコピーネットワーク (6.2)** | ✅ 完了 | `src/net/tcp.rs`, `src/net/mempool.rs`, `src/net/zero_copy.rs` |
 | **非同期ファイルシステム (6.3)** | ✅ 完了 | `src/fs/async_ops.rs` |
-| VFS | ✅ 完了 | `src/fs/vfs.rs` |
+| FS抽象化レイヤー | ✅ 完了 | `src/fs/fs_abstraction.rs` |
 | ブロックキャッシュ | ✅ 完了 | `src/fs/cache.rs` |
-| FAT32: セクタバッファのロック化、LFN検証、サイクル検出、ベンチ追加 | ✅ 完了 | `filesystems/fat32/src/lib.rs` |
-| NVMeドライバ | ✅ 完了 | `src/io/nvme.rs` |
+| FAT32アダプター | ✅ 完了 | `src/fs/fat32_adapter.rs`, `filesystems/fat32/` |
+| NVMeドライバ | ✅ 完了 | `src/io/nvme/` |
+| DevFS | ✅ 完了 | `src/fs/devfs.rs` |
+| ProcFS | ✅ 完了 | `src/fs/procfs.rs` |
+| MemFS | ✅ 完了 | `src/fs/memfs.rs`, `src/fs/async_memfs.rs` |
 
 ### ✅ セクション 7: デバイスドライバ
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
-| **VirtIO-Net (7.1)** | ✅ 完了 | `src/io/virtio_net.rs` |
-| **VirtIO-Blk (7.1)** | ✅ 完了 | `src/io/virtio_blk.rs` |
-| VirtIO共通 | ✅ 完了 | `src/io/virtio.rs` |
-| IOMMU | ✅ 完了 | `src/io/iommu.rs` |
-| **キーボードドライバ** | ✅ 完了 | `src/io/keyboard.rs` |
+| **VirtIO-Net (7.1)** | ✅ 完了 | `src/io/virtio/net.rs` |
+| **VirtIO-Blk (7.1)** | ✅ 完了 | `src/io/virtio/blk.rs` |
+| VirtIO共通 | ✅ 完了 | `src/io/virtio/mod.rs` |
+| **IOMMU (VT-d/AMD-Vi)** | ✅ 完了 | `src/io/iommu/` |
+| **キーボードドライバ** | ✅ 完了 | `src/io/hid/keyboard.rs` |
+| **マウスドライバ** | ✅ 完了 | `src/io/hid/mouse.rs` |
 | **APICサポート** | ✅ 完了 | `src/io/apic.rs` |
 | **シリアルポート** | ✅ 完了 | `src/io/serial.rs` |
-| **PCIバスサポート (7.2)** | ✅ 完了 | `src/io/pci.rs` |
-| **ACPIテーブル解析 (7.2)** | ✅ 完了 | `src/io/acpi.rs` |
-| **MSI/MSI-X割り込み (7.2)** | ✅ 完了 | `src/io/msi.rs` |
+| **PCIバスサポート (7.2)** | ✅ 完了 | `src/io/pci/mod.rs` |
+| **ACPIテーブル解析 (7.2)** | ✅ 完了 | `src/io/acpi/` |
+| **AHCIドライバ** | ✅ 完了 | `src/io/ahci/` |
+| **IDEドライバ** | ✅ 完了 | `src/io/ide.rs` |
+| **RTCドライバ** | ✅ 完了 | `src/io/rtc.rs` |
+| **オーディオサブシステム (HDA)** | ✅ 完了 | `src/io/audio/` |
+| **USBサブシステム** | 🔄 進行中 | `src/io/usb/` |
 
 ### ✅ セクション 8: フォールトアイソレーション
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
-| スタックアンワインド | ✅ 完了 | `src/unwind.rs` |
+| スタックアンワインド | ✅ 完了 | `src/unwind/` |
 | パニックハンドラ | ✅ 完了 | `src/panic_handler.rs` |
 | ドメインライフサイクル | ✅ 完了 | `src/domain/lifecycle.rs` |
 | ドメインレジストリ | ✅ 完了 | `src/domain/registry.rs` |
+| ドメインクォータ管理 | ✅ 完了 | `src/domain/quota.rs` |
 | **プロキシパターン (8.2)** | ✅ 完了 | `src/ipc/proxy.rs` |
 
 ### ✅ セクション 9: セキュリティ
@@ -113,15 +133,16 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | 項目 | 状態 | ファイル |
 |------|------|----------|
 | **コンパイラ署名 (9.1)** | ✅ 完了 | `src/loader/signature.rs` |
+| **Ed25519署名** | ✅ 完了 | `src/loader/ed25519.rs` |
+| **SHA-256ハッシュ** | ✅ 完了 | `src/loader/sha256.rs` |
 | **Spectre緩和策 (9.2)** | ✅ 完了 | `src/spectre.rs` |
+| **MPK/PKUセキュリティ (9.2.2)** | ✅ 完了 | `src/security/mpk.rs` |
 | **セキュリティフレームワーク** | ✅ 完了 | `src/security/mod.rs` |
 | **静的ケイパビリティ (v0.3.0)** | ✅ 完了 | `src/security/static_capability.rs` |
-| **ケイパビリティシステム (レガシー)** | 📦 維持 | `src/security/capability.rs` |
-| **MAC (強制アクセス制御) (レガシー)** | 📦 維持 | `src/security/mac.rs` |
-| **監査ログ (レガシー)** | 📦 維持 | `src/security/audit.rs` |
-| **ポリシーエンジン (レガシー)** | 📦 維持 | `src/security/policy.rs` |
-| アクセス制御 | ✅ 完了 | `src/security/mod.rs` |
-| ゼロコピーバリア | ✅ 完了 | `src/security/mod.rs` |
+| **ケイパビリティシステム** | ✅ 完了 | `src/security/capability.rs` |
+| **MAC (強制アクセス制御)** | ✅ 完了 | `src/security/mac.rs` |
+| **監査ログ** | ✅ 完了 | `src/security/audit.rs` |
+| **ポリシーエンジン** | ✅ 完了 | `src/security/policy.rs` |
 
 **注 (ローカルテストについて)**: 一部のカーネル/セキュリティ関連のユニットテストをローカルで実行すると、Rust/Cargo のビルド挙動により
 `error[E0152]: duplicate lang item`（`core`/`alloc` が2重にリンクされる）エラーが発生するケースがあります。現状の回避策として、ケイパビリティの振る舞い
@@ -134,23 +155,21 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
-| **システムコールAPI** | ✅ 完了 | `src/syscall/mod.rs` |
-| 非同期システムコール | ✅ 完了 | `src/syscall/mod.rs` |
-| **非同期キーボード入力** | ✅ 完了 | `src/io/keyboard.rs` |
+| **非同期キーボード入力** | ✅ 完了 | `src/io/hid/keyboard.rs` |
 | **非同期シリアル入出力** | ✅ 完了 | `src/io/serial.rs` |
+| **HIDマウスサポート** | ✅ 完了 | `src/io/hid/mouse.rs` |
 
 ### ✅ 追加実装: ブートローダー・UEFI対応
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
-| **Limine Bootloader** | ✅ 完了 | `limine.conf`, `linker.ld` |
-| **UEFIブート** | ✅ 完了 | `src/main.rs` (Limine protocol) |
-| **BIOSレガシーブート** | ✅ 完了 | `scripts/run-limine.ps1` |
-| **Higher Half Direct Map** | ✅ 完了 | `src/main.rs` (HHDM_REQUEST) |
-| **ブータブルISO作成** | ✅ 完了 | `scripts/run-limine.ps1` (xorriso/WSL) |
+| **ExoLoader Protocol** | ✅ 完了 | `libs/boot_proto/`, `bootloader/` |
+| **UEFIブート** | ✅ 完了 | `src/main.rs` |
+| **Higher Half Direct Map** | ✅ 完了 | `src/main.rs` |
+| **ブータブルISO作成** | ✅ 完了 | `scripts/run.ps1` |
 | **OVMFファームウェア対応** | ✅ 完了 | `assets/firmware/ovmf-x64/` |
 
-**注**: v0.3.0でLimineブートローダーに移行。UEFI/BIOSデュアルブート対応。従来の`bootloader` crateは削除。
+**注**: ExoLoader Protocolによるブート。UEFI対応。
 
 ### ✅ 追加実装: フェーズ 4-5 システム統合
 
@@ -164,7 +183,7 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | **セキュリティ統合** | ✅ 完了 | `src/integration/security_integration.rs` |
 | **統合テストフレームワーク** | ✅ 完了 | `src/test/integration.rs` |
 | **SMPブートストラップ** | ✅ 完了 | `src/smp/bootstrap.rs` |
-| **ユーザー空間API** | ✅ 完了 | `src/userspace/mod.rs` |
+| **システム統合API** | ✅ 完了 | `src/integration/mod.rs` |
 
 ---
 
@@ -173,71 +192,255 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 ```
 src/
 ├── main.rs              # カーネルエントリポイント
+├── kernel_content.rs    # カーネル本体（main.rsからinclude）
+├── lib.rs               # ライブラリエントリ（テスト用）
 ├── allocator.rs         # グローバルアロケータ
 ├── memory.rs            # メモリ初期化
 ├── vga.rs               # VGAテキスト出力
 ├── error.rs             # 共通エラー型
 ├── spectre.rs           # Spectre緩和策
-├── unwind.rs            # スタックアンワインド
 ├── panic_handler.rs     # パニックハンドラ
-├── smp.rs               # マルチコアサポート
+├── util.rs              # ユーティリティ関数
+├── initramfs.rs         # TAR形式initramfsローダー
+├── driver_registry.rs   # ドライバライフサイクル管理
+├── service_impl.rs      # KernelServices実装
+├── domain_system.rs     # ドメインシステム統合
+├── smp_advanced.rs      # 高度なSMP機能
+│
+├── application/         # アプリケーション実行環境
+│   └── mod.rs
+│
+├── benchmark/           # ベンチマークシステム
+│   └── mod.rs
+│
+├── console/             # コンソールサブシステム
+│   └── mod.rs
+│
+├── demo/                # デモンストレーション
+│   ├── mod.rs
+│   ├── echo_server.rs   # エコーサーバーデモ
+│   ├── http_server.rs   # HTTPサーバーデモ
+│   └── performance_demo.rs
+│
+├── diag/                # 診断ツール
+│   └── mod.rs
 │
 ├── domain/              # ドメイン管理
 │   ├── mod.rs           # ドメインシステム
 │   ├── lifecycle.rs     # ライフサイクル管理
+│   ├── quota.rs         # リソースクォータ管理
 │   └── registry.rs      # ドメインレジストリ
+│
+├── epoch/               # エポックベースメモリ管理
+│   └── mod.rs
 │
 ├── fs/                  # ファイルシステム
 │   ├── mod.rs
-│   ├── vfs.rs           # 仮想ファイルシステム
+│   ├── fs_abstraction.rs # FS抽象化レイヤー (旧VFS)
 │   ├── block.rs         # ブロックデバイス抽象化
 │   ├── cache.rs         # ブロックキャッシュ
-│   └── async_ops.rs     # 非同期操作 ★
+│   ├── async_ops.rs     # 非同期操作 ★
+│   ├── async_memfs.rs   # 非同期メモリFS
+│   ├── memfs.rs         # インメモリファイルシステム
+│   ├── devfs.rs         # デバイスファイルシステム
+│   ├── procfs.rs        # プロセスファイルシステム
+│   ├── ext2.rs          # Ext2ファイルシステム
+│   ├── fat32_adapter.rs # FAT32アダプター
+│   ├── page.rs          # ページバッファ
+│   └── page_cluster_buffer.rs # ページクラスターバッファ
+│
+├── gpu/                 # GPUサブシステム
+│   └── mod.rs
+│
+├── graphics/            # グラフィックスサブシステム ★
+│   ├── mod.rs
+│   ├── boot_splash.rs   # ブートスプラッシュ
+│   ├── bsod.rs          # ブルースクリーン
+│   ├── console.rs       # グラフィカルコンソール
+│   ├── font.rs          # フォント管理
+│   ├── framebuffer.rs   # フレームバッファ
+│   ├── global.rs        # グローバル状態
+│   ├── mmio.rs          # MMIO描画
+│   ├── psf.rs           # PSFフォント形式
+│   ├── qrcode.rs        # QRコード生成
+│   ├── window.rs        # ウィンドウ管理
+│   ├── compositor/      # コンポジターサブシステム
+│   │   ├── mod.rs
+│   │   ├── compositor.rs
+│   │   ├── constants.rs
+│   │   ├── cursor.rs
+│   │   ├── dirty_rect.rs
+│   │   ├── types.rs
+│   │   └── window.rs
+│   └── framebuffer/
+│       └── tests.rs
+│
+├── integration/         # システム統合 (旧: userspace)
+│   ├── mod.rs
+│   ├── device_manager.rs
+│   ├── interrupt_routing.rs
+│   └── security_integration.rs
 │
 ├── interrupts/          # 割り込みシステム
-│   ├── mod.rs           # IDT/PIC初期化
+│   ├── mod.rs           # IDT初期化
 │   ├── gdt.rs           # GDT/TSS
 │   └── exceptions.rs    # 例外ハンドラ
 │
-├── io/                  # I/Oサブシステム
+├── io/                  # I/Oサブシステム ★
 │   ├── mod.rs
-│   ├── acpi.rs          # ACPIテーブル解析 ★
-│   ├── apic.rs          # Local/IO APIC ★
 │   ├── dma.rs           # DMA安全性 ★
-│   ├── iommu.rs         # IOMMU
-│   ├── keyboard.rs      # 非同期キーボード ★
-│   ├── msi.rs           # MSI/MSI-X割り込み ★
-│   ├── nvme.rs          # NVMeドライバ
-│   ├── pci.rs           # PCIバス列挙 ★
-│   ├── polling.rs       # 適応的ポーリング ★
-│   ├── serial.rs        # シリアルポート ★
-│   ├── virtio.rs        # VirtIO共通
-│   ├── virtio_blk.rs    # VirtIO-Blk ★
-│   └── virtio_net.rs    # VirtIO-Net ★
+│   ├── serial.rs        # シリアルポート
+│   ├── apic.rs          # Local/IO APIC
+│   ├── ide.rs           # IDEドライバ
+│   ├── rtc.rs           # リアルタイムクロック
+│   ├── mmio.rs          # MMIO抽象化
+│   ├── port_io.rs       # ポートI/O抽象化
+│   ├── log.rs           # 早期ログ出力
+│   ├── io_scheduler.rs  # I/Oスケジューラ
+│   ├── interrupt_manager.rs # 割り込み管理
+│   ├── bench_mod.rs     # I/Oベンチマーク
+│   │
+│   ├── acpi/            # ACPI解析 ★
+│   │   ├── mod.rs
+│   │   ├── dmar.rs      # DMA Remapping
+│   │   └── ivrs.rs      # I/O Virtualization
+│   │
+│   ├── ahci/            # AHCIドライバ
+│   │   ├── mod.rs
+│   │   ├── dma_buffer.rs
+│   │   └── poll_handler.rs
+│   │
+│   ├── audio/           # オーディオサブシステム ★
+│   │   ├── mod.rs
+│   │   ├── mixer.rs     # ソフトウェアミキサー
+│   │   ├── regs.rs      # HDAレジスタ
+│   │   └── hda/         # Intel HD Audio
+│   │       ├── mod.rs
+│   │       ├── codec.rs
+│   │       ├── global.rs
+│   │       ├── stream.rs
+│   │       └── types.rs
+│   │
+│   ├── hid/             # HIDデバイス ★
+│   │   ├── mod.rs
+│   │   ├── keyboard.rs  # キーボードドライバ
+│   │   └── mouse.rs     # マウスドライバ
+│   │
+│   ├── iommu/           # IOMMU (VT-d/AMD-Vi) ★★
+│   │   ├── mod.rs
+│   │   ├── api.rs       # パブリックAPI
+│   │   ├── backend.rs   # バックエンド抽象化
+│   │   ├── types.rs     # 共通型定義
+│   │   ├── config.rs    # 設定
+│   │   ├── cache.rs     # IOTLBキャッシュ
+│   │   ├── cmdqueue.rs  # コマンドキュー
+│   │   ├── dma_handle.rs # DMAハンドル
+│   │   ├── domain.rs    # IOMMUドメイン
+│   │   ├── fault_log.rs # フォールトログ
+│   │   ├── groups.rs    # デバイスグループ
+│   │   ├── interface.rs # インターフェース
+│   │   ├── iova_allocator.rs # IOVAアロケータ
+│   │   ├── page_table_pool.rs # ページテーブルプール
+│   │   ├── panic.rs     # パニック処理
+│   │   ├── quarantine.rs # 検疫機構
+│   │   ├── registry.rs  # レジストリ
+│   │   ├── security.rs  # セキュリティ
+│   │   ├── tables.rs    # テーブル管理
+│   │   ├── tests.rs     # テスト
+│   │   ├── pci.rs       # PCI統合
+│   │   ├── common/      # 共通機能
+│   │   │   ├── mod.rs
+│   │   │   ├── ats.rs   # ATS (Address Translation Services)
+│   │   │   └── pasid.rs # PASID (Process Address Space ID)
+│   │   ├── intel/       # Intel VT-d
+│   │   │   ├── mod.rs
+│   │   │   ├── qi.rs    # Queued Invalidation
+│   │   │   ├── registers.rs
+│   │   │   ├── registry.rs
+│   │   │   ├── tables.rs
+│   │   │   └── controller/
+│   │   └── amd/         # AMD-Vi
+│   │       ├── mod.rs
+│   │       ├── cmd.rs
+│   │       └── tables.rs
+│   │
+│   ├── nvme/            # NVMeドライバ ★
+│   │   ├── mod.rs
+│   │   ├── driver.rs
+│   │   └── scheduler.rs
+│   │
+│   ├── pci/             # PCIバス ★
+│   │   └── mod.rs
+│   │
+│   ├── usb/             # USBサブシステム
+│   │   └── mod.rs
+│   │
+│   └── virtio/          # VirtIOドライバ ★
+│       ├── mod.rs
+│       ├── blk.rs       # VirtIO-Blk
+│       └── net.rs       # VirtIO-Net
 │
 ├── ipc/                 # プロセス間通信
 │   ├── mod.rs
 │   ├── proxy.rs         # ドメインプロキシ ★
-│   └── rref.rs          # リモート参照 ★
+│   ├── rref.rs          # リモート参照 ★
+│   ├── pipe.rs          # パイプ通信
+│   └── shared_mem.rs    # 共有メモリ
 │
 ├── loader/              # セルローダー
 │   ├── mod.rs
 │   ├── elf.rs           # ELFパーサー
-│   └── signature.rs     # 署名検証 ★
+│   ├── signature.rs     # 署名検証 ★
+│   ├── ed25519.rs       # Ed25519署名
+│   ├── sha256.rs        # SHA-256ハッシュ
+│   ├── type_id.rs       # 型ID検証
+│   ├── live_update.rs   # ライブアップデート
+│   └── registry.rs      # ローダーレジストリ
 │
 ├── mm/                  # メモリ管理
 │   ├── mod.rs
-│   ├── buddy_allocator.rs
+│   ├── buddy_allocator.rs # Buddyアロケータ
 │   ├── exchange_heap.rs # Exchange Heap ★
-│   ├── frame_allocator.rs
-│   ├── mapping.rs
-│   ├── per_cpu.rs
-│   └── slab_cache.rs
+│   ├── frame_allocator.rs # フレームアロケータ
+│   ├── mapping.rs       # ページマッピング
+│   ├── per_cpu.rs       # Per-CPUキャッシュ
+│   ├── slab_cache.rs    # Slabキャッシュ
+│   ├── numa.rs          # NUMAサポート
+│   ├── huge_pages.rs    # 1GB/2MBページ
+│   ├── higher_half.rs   # Higher Half Map
+│   ├── mmap.rs          # メモリマップ
+│   └── domain_ownership.rs # ドメイン所有権
 │
-├── net/                 # ネットワークスタック
+├── monitor/             # システムモニター
+│   ├── mod.rs
+│   ├── collectors.rs    # データコレクター
+│   └── display.rs       # 表示
+│
+├── net/                 # ネットワークスタック ★
 │   ├── mod.rs
 │   ├── mempool.rs       # パケットメモリプール
-│   └── tcp.rs           # ゼロコピーTCP ★
+│   ├── tcp.rs           # ゼロコピーTCP ★
+│   ├── udp.rs           # UDP
+│   ├── ipv4.rs          # IPv4
+│   ├── ethernet.rs      # Ethernet
+│   ├── icmp.rs          # ICMP
+│   ├── arp.rs           # ARP
+│   ├── dhcp.rs          # DHCPクライアント
+│   ├── dns.rs           # DNSリゾルバ
+│   ├── tls.rs           # TLSサポート
+│   ├── stack.rs         # 統合ネットワークスタック
+│   ├── driver.rs        # ドライバインターフェース
+│   ├── driver_bridge.rs # VirtIO-Netブリッジ
+│   ├── adaptive_polling.rs # 適応的ポーリング ★
+│   ├── zero_copy.rs     # ゼロコピーAPI
+│   ├── optimization.rs  # 性能最適化
+│   └── endpoint.rs      # エンドポイントAPI (旧: socket)
+│
+├── power/               # 電源管理
+│   └── mod.rs
+│
+├── profiler/            # プロファイラ
+│   └── mod.rs
 │
 ├── sas/                 # 単一アドレス空間
 │   ├── mod.rs
@@ -247,34 +450,105 @@ src/
 │
 ├── security/            # セキュリティフレームワーク ★
 │   ├── mod.rs           # セキュリティ統合
-│   ├── static_capability.rs # 静的ケイパビリティ (v0.3.0) ★★
-│   ├── capability.rs    # ケイパビリティシステム (レガシー)
-│   ├── mac.rs           # 強制アクセス制御 (レガシー)
-│   ├── audit.rs         # 監査ログ (レガシー)
-│   └── policy.rs        # ポリシーエンジン (レガシー)
+│   ├── static_capability.rs # 静的ケイパビリティ ★★
+│   ├── capability.rs    # ケイパビリティシステム
+│   ├── mac.rs           # 強制アクセス制御
+│   ├── audit.rs         # 監査ログ
+│   ├── policy.rs        # ポリシーエンジン
+│   └── mpk.rs           # MPK/PKUセキュリティ ★
 │
-├── syscall/             # システムコールAPI ★
-│   └── mod.rs
+├── shell/               # シェル環境 ★
+│   ├── mod.rs
+│   ├── async_shell.rs   # 非同期シェル
+│   ├── exoshell/        # ExoShell (Rust式REPL)
+│   │   ├── mod.rs
+│   │   ├── shell.rs
+│   │   ├── types.rs
+│   │   ├── display.rs
+│   │   ├── buffer_view.rs
+│   │   ├── parser/      # パーサー
+│   │   │   ├── mod.rs
+│   │   │   ├── tokenizer.rs
+│   │   │   ├── ast.rs
+│   │   │   ├── expr_parser.rs
+│   │   │   ├── eval.rs
+│   │   │   └── error.rs
+│   │   └── namespaces/  # 名前空間
+│   │       ├── mod.rs
+│   │       ├── fs.rs    # fs.*
+│   │       ├── net.rs   # net.*
+│   │       ├── proc.rs  # proc.*
+│   │       ├── cap.rs   # cap.*
+│   │       ├── sys.rs   # sys.*
+│   │       ├── driver.rs
+│   │       ├── dynamic_driver.rs
+│   │       └── registry.rs
+│   └── graphical/       # グラフィカルシェル
+│       ├── mod.rs
+│       ├── shell.rs
+│       ├── render.rs
+│       ├── input.rs
+│       ├── streams.rs
+│       ├── types.rs
+│       ├── utils.rs
+│       └── async_runtime.rs
+│
+├── smp/                 # SMPサポート
+│   ├── mod.rs
+│   └── bootstrap.rs     # APブートストラップ
 │
 ├── sync/                # 同期プリミティブ
 │   ├── mod.rs
-│   ├── irq_mutex.rs
-│   └── lockfree.rs      # ロックフリー構造 ★
+│   ├── irq_mutex.rs     # IRQ安全Mutex
+│   ├── lockfree.rs      # ロックフリー構造 ★
+│   ├── poison_lock.rs   # PoisonLock ★
+│   └── atomic_waker.rs  # AtomicWaker
 │
-└── task/                # タスクシステム
-    ├── mod.rs
-    ├── context.rs       # コンテキスト切り替え
-    ├── executor.rs      # Executor
-    ├── interrupt_waker.rs # 割り込みWaker ★
-    ├── per_core_executor.rs # Per-Core Executor ★
-    ├── preemption.rs    # プリエンプション制御 ★
-    ├── scheduler.rs     # スケジューラ
-    ├── timer.rs         # タイマー
-    ├── waker.rs         # Waker実装
-    └── work_stealing.rs # ワークスティーリング ★
+├── task/                # タスクシステム
+│   ├── mod.rs
+│   ├── context.rs       # コンテキスト切り替え
+│   ├── executor.rs      # Executor
+│   ├── environ.rs       # タスク環境
+│   ├── fuel.rs          # 実行燃料制限
+│   ├── interrupt_waker.rs # 割り込みWaker ★
+│   ├── per_core_executor.rs # Per-Core Executor ★
+│   ├── preemption.rs    # プリエンプション制御 ★
+│   ├── process.rs       # プロセス管理
+│   ├── raw.rs           # 低レベルタスク
+│   ├── scheduler.rs     # スケジューラ
+│   ├── signal.rs        # シグナル
+│   ├── timer.rs         # タイマー
+│   ├── waker.rs         # Waker実装
+│   ├── work_stealing.rs # ワークスティーリング ★
+│   └── work_stealing_advanced.rs # 高度なワークスティーリング
+│
+├── test/                # テストフレームワーク
+│   ├── mod.rs
+│   ├── integration.rs   # 統合テスト
+│   ├── benchmark.rs     # ベンチマーク
+│   ├── ipc_tests.rs     # IPCテスト
+│   ├── memory_tests.rs  # メモリテスト
+│   ├── network_tests.rs # ネットワークテスト
+│   └── task_tests.rs    # タスクテスト
+│
+├── thermal/             # 熱管理
+│   └── mod.rs
+│
+├── time/                # 時間管理
+│   └── mod.rs
+│
+├── unwind/              # スタックアンワインド
+│   ├── mod.rs
+│   ├── gimli_unwinder.rs # GIMLIアンワインダー
+│   ├── reader.rs        # DWARFリーダー
+│   └── registers.rs     # レジスタ状態
+│
+└── watchdog/            # ウォッチドッグ
+    └── mod.rs
 ```
 
 ★ = 仕様書の重要セクションの実装
+★★ = v0.3.0での重要な新機能
 
 ---
 
@@ -492,8 +766,8 @@ pub struct AuditSubsystem {
 
 | 項目 | 状態 | ファイル |
 |------|------|----------|
-| QEMU自動化スクリプト (PowerShell) | ✅ 完了 | `scripts/qemu-run.ps1` |
-| QEMU自動化スクリプト (Bash) | ✅ 完了 | `scripts/qemu-run.sh` |
+| QEMU自動化スクリプト (PowerShell) | ✅ 完了 | `scripts/run.ps1` |
+| QEMU自動化スクリプト (Bash) | ✅ 完了 | `scripts/run.sh` |
 | 自動テストランナー | ✅ 完了 | `scripts/run-tests.ps1` |
 | ネットワーク性能最適化 | ✅ 完了 | `src/net/optimization.rs` |
 | バッチパケット処理 (64パケット) | ✅ 完了 | `src/net/optimization.rs` |
@@ -505,6 +779,8 @@ pub struct AuditSubsystem {
 | アーキテクチャドキュメント | ✅ 完了 | `docs/ARCHITECTURE.md` |
 | CI/CDパイプライン | ✅ 完了 | `.github/workflows/ci.yml` |
 | QEMUマトリックステスト | ✅ 完了 | `.github/workflows/qemu-tests.yml` |
+| パフォーマンステスト | ✅ 完了 | `.github/workflows/perf.yml` |
+| Codacy解析 | ✅ 完了 | `.github/workflows/codacy-analysis.yml` |
 
 ---
 
@@ -547,6 +823,7 @@ pub struct TsoContext {
 ## CI/CD パイプライン
 
 ### メインCI (`ci.yml`)
+
 - ✅ ビルド検証
 - ✅ 静的解析 (clippy)
 - ✅ ドキュメント生成
@@ -555,6 +832,7 @@ pub struct TsoContext {
 - ✅ リリースビルド
 
 ### QEMUテスト (`qemu-tests.yml`)
+
 - ✅ CPUタイプマトリックス (qemu64, max, host)
 - ✅ メモリサイズテスト (128MB, 256MB, 512MB)
 - ✅ SMPテスト (1, 2, 4コア)
@@ -564,22 +842,25 @@ pub struct TsoContext {
 
 ## スクリプト
 
-### `scripts/qemu-run.ps1` (Windows)
+### `scripts/run.ps1` (Windows)
+
 ```powershell
 # 使用例
-.\scripts\qemu-run.ps1 -Debug           # デバッグモード
-.\scripts\qemu-run.ps1 -Network          # ネットワーク有効
-.\scripts\qemu-run.ps1 -Storage          # ストレージ有効
-.\scripts\qemu-run.ps1 -Benchmark        # ベンチマークモード
+.\scripts\run.ps1              # 標準起動
 ```
 
-### `scripts/qemu-run.sh` (Linux/macOS)
+### `scripts/run.sh` (Linux/macOS)
+
 ```bash
 # 使用例
-./scripts/qemu-run.sh --debug            # デバッグモード
-./scripts/qemu-run.sh --network          # ネットワーク有効
-./scripts/qemu-run.sh --storage          # ストレージ有効
-./scripts/qemu-run.sh --benchmark        # ベンチマークモード
+./scripts/run.sh               # 標準起動
+```
+
+### `scripts/run-tests.ps1` (テスト実行)
+
+```powershell
+# テスト実行
+.\scripts\run-tests.ps1
 ```
 
 ---
@@ -593,7 +874,7 @@ pub struct TsoContext {
 
 ## シェルコマンド
 
-### 🆕 ExoShell - Rust式REPL環境 (`src/shell/exoshell.rs`)
+### 🆕 ExoShell - Rust式REPL環境 (`src/shell/exoshell/`)
 
 **ExoRust設計思想に基づいた新しいシェル環境。**
 
@@ -613,6 +894,7 @@ pub struct TsoContext {
 |------|------|------|
 | ExoValue型システム | ✅ 完了 | 13種類の値型（Nil, Bool, Int, Float, String, Bytes, Array, Map, FileEntry, NetConnection, Process, Capability, Iterator） |
 | 5大名前空間 | ✅ 完了 | fs.*, net.*, proc.*, cap.*, sys.* |
+| ドライバ名前空間 | ✅ 完了 | driver.*, dynamic_driver.* |
 | トークナイザー | ✅ 完了 | 文字列リテラル内の'.'を正しく処理 |
 | メソッドチェーンパーサー | ✅ 完了 | `fs.entries("/").filter("size > 1024").first()` |
 | 配列メソッド | ✅ 完了 | filter, map, take, skip, sort, first, last, reverse, len |
@@ -621,6 +903,8 @@ pub struct TsoContext {
 | 変数バインディング | ✅ 完了 | `let x = ...`, `$x` |
 | Unixエイリアス | ✅ 完了 | ls, cd, cat等の互換コマンド（利便性のため） |
 | モード切替 | ✅ 完了 | `exo`/`classic` コマンド |
+| **グラフィカルシェル** | ✅ 完了 | `src/shell/graphical/` - GUI対応シェル |
+| **非同期シェル** | ✅ 完了 | `src/shell/async_shell.rs` |
 
 #### モード切替
 
@@ -674,6 +958,15 @@ pub struct TsoContext {
 | `sys.info()` | システム情報 | `uname -a` |
 | `sys.memory()` | メモリ使用量 | `free` |
 | `sys.time()` | 時刻情報 | `uptime` |
+
+**driver.* - ドライバ管理**
+
+| メソッド | 説明 |
+|----------|------|
+| `driver.list()` | ロード済みドライバ一覧 |
+| `driver.info(name)` | ドライバ詳細情報 |
+| `driver.load(name)` | ドライバのロード |
+| `driver.unload(name)` | ドライバのアンロード |
 
 #### 変数と評価
 
@@ -814,6 +1107,7 @@ pub fn get_real_arp_cache() -> Vec<ArpCacheEntry>
 ```
 
 **ブートログ例:**
+
 ```
 [NET BRIDGE] Initializing VirtIO-Net <-> NetworkStack bridge...
 [NET BRIDGE] Bridge initialized
@@ -829,28 +1123,42 @@ pub fn get_real_arp_cache() -> Vec<ArpCacheEntry>
 ## 今後の課題
 
 ### 優先度: 高
+
 - [ ] 実ハードウェアでのテスト
 - [ ] ストレステスト実施
 - [ ] パフォーマンスプロファイリング
 - [x] ~~ネットワークコマンドの実ドライバ統合~~ (driver_bridge.rs完了)
 
 ### 優先度: 中
-- [ ] USBスタック実装
+
+- [x] ~~USBスタック基盤~~ (src/io/usb/mod.rs)
+- [ ] USBスタック完全実装
 - [ ] NVMe最適化
 - [ ] プロセス分離強化
 
 ### 優先度: 低
+
 - [x] ~~GPU支援~~ (Limineフレームバッファ統合完了)
-- [ ] サウンドサポート
+- [x] ~~サウンドサポート~~ (src/io/audio/ HDAドライバ完了)
 - [ ] Bluetoothスタック
 
 ---
 
 ## 最新の変更履歴
 
+### 2026年1月 - v0.3.0
+
+- **IOMMUサブシステム拡充**: Intel VT-d/AMD-Vi対応、IOVA アロケータ、ページテーブルプール
+- **オーディオサブシステム**: Intel HD Audio (HDA) ドライバ、ソフトウェアミキサー
+- **HIDサブシステム**: キーボード/マウスドライバをHIDモジュールに統合
+- **グラフィックス拡張**: コンポジター、ウィンドウ管理、QRコード生成
+- **ExoShell拡張**: グラフィカルシェル、名前空間システム
+- **ファイルシステム**: DevFS、ProcFS、AsyncMemFS追加
+
 ### 2025年1月 - v0.3.0-alpha
-- **UEFI対応**: Limineブートローダーによるマルチブート (UEFI/BIOS両対応)
-- **グラフィックス**: Limineフレームバッファ統合、ブートスプラッシュ表示
+
+- **UEFI対応**: ExoLoaderによるブート
+- **グラフィックス**: フレームバッファ統合、ブートスプラッシュ表示
 - **グラフィカルコンソール**: TextConsoleによるフレームバッファ描画
 
 ---
@@ -861,4 +1169,4 @@ MIT License
 
 ---
 
-最終更新: 2025年1月 (v0.3.0)
+最終更新: 2026年1月 (v0.3.0)

@@ -3,10 +3,12 @@
 // ============================================================================
 //! IOMMU backend enum dispatch (static, zero-allocation).
 
+use alloc::sync::Arc;
 use x86_64::PhysAddr;
 
 use super::amd::AmdIommuDriver;
 use super::intel::IntelIommuDriver;
+use super::security::SecurityNotifier;
 use super::types::{DeviceId, IommuDomainType, IommuError};
 
 /// IOMMU backend implementation selected at init time.
@@ -51,6 +53,13 @@ impl IommuBackend {
         }
     }
 
+    pub fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
+        match self {
+            Self::Intel(driver) => driver.set_security_notifier(notifier),
+            Self::Amd(driver) => driver.set_security_notifier(notifier),
+        }
+    }
+
     pub fn map_interrupt(
         &self,
         segment: u16,
@@ -87,6 +96,21 @@ impl IommuBackend {
         }
     }
 
+    /// # Safety
+    /// Caller must uphold DMA safety invariants for the backing memory.
+    pub unsafe fn map_for_dma_with_perms(
+        &self,
+        phys_addr: PhysAddr,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
+        match self {
+            Self::Intel(driver) => unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) },
+            Self::Amd(driver) => unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) },
+        }
+    }
+
     pub fn unmap_dma(&self, iova: u64, size: u64) -> Result<(), IommuError> {
         match self {
             Self::Intel(driver) => driver.unmap_dma(iova, size),
@@ -105,6 +129,26 @@ impl IommuBackend {
         match self {
             Self::Intel(driver) => unsafe { driver.map_for_device(device, phys_addr, size) },
             Self::Amd(driver) => unsafe { driver.map_for_device(device, phys_addr, size) },
+        }
+    }
+
+    /// # Safety
+    /// Caller must uphold DMA safety invariants for the backing memory.
+    pub unsafe fn map_for_device_with_perms(
+        &self,
+        device: &DeviceId,
+        phys_addr: PhysAddr,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
+        match self {
+            Self::Intel(driver) => unsafe {
+                driver.map_for_device_with_perms(device, phys_addr, size, read, write)
+            },
+            Self::Amd(driver) => unsafe {
+                driver.map_for_device_with_perms(device, phys_addr, size, read, write)
+            },
         }
     }
 
@@ -145,6 +189,13 @@ impl IommuBackend {
         match self {
             Self::Intel(driver) => driver.unmap_for_device_async(device, iova, size).await,
             Self::Amd(driver) => driver.unmap_for_device_async(device, iova, size).await,
+        }
+    }
+
+    pub fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {
+        match self {
+            Self::Intel(driver) => driver.domain_id_for_device(device),
+            Self::Amd(driver) => driver.domain_id_for_device(device),
         }
     }
 

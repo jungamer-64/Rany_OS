@@ -47,11 +47,11 @@ impl IommuGroupManager {
         iommu_registry: &'static IommuRegistry,
         pcie_ext_manager: &'static PcieExtManager,
     ) -> Result<(IommuGroup, bool), IommuError> {
-        let mut groups_guard = self.groups.lock().map_err(|_| IommuError::HardwareError)?;
+        let mut groups_guard = self.groups.lock().map_err(|_| IommuError::Poisoned)?;
         let mut device_to_group_guard = self
             .device_to_group
             .lock()
-            .map_err(|_| IommuError::HardwareError)?;
+            .map_err(|_| IommuError::Poisoned)?;
 
         // 1. Check if device is already in a group
         if let Some(group_id) = device_to_group_guard.get(&device) {

@@ -7,6 +7,7 @@
 //! and interrupt remapping.
 
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::RwLock;
 use x86_64::PhysAddr;
@@ -19,6 +20,9 @@ use crate::ipc::RRef;
 
 pub use super::dma_handle::{
     DmaDirection, DmaHandle, MapError, MapErrorKind, UnmapError, UnmapErrorKind,
+};
+pub use super::security::{
+    FaultSummary, IsolationDecision, IsolationReason, SecurityEvent, SecurityNotifier,
 };
 pub use super::registry::is_iommu_enabled;
 
@@ -301,6 +305,23 @@ pub(in crate::io::iommu) unsafe fn map_for_dma(
     res
 }
 
+pub(in crate::io::iommu) unsafe fn map_for_dma_with_perms(
+    phys_addr: PhysAddr,
+    size: u64,
+    read: bool,
+    write: bool,
+) -> Result<u64, IommuError> {
+    if is_iommu_enabled() && !is_global_dma_mapping_allowed() {
+        return Err(IommuError::NotSupported);
+    }
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    let res = unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) };
+    if res.is_ok() {
+        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    }
+    res
+}
+
 /// Unmap a DMA address range
 pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
@@ -328,6 +349,29 @@ pub(in crate::io::iommu) unsafe fn map_for_device(
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     // SAFETY: Caller must uphold safety requirements of map_for_device.
     let iova = unsafe { driver.map_for_device(device, phys_addr, size) }?;
+    if let Err(err) = validate_device_dma_mask(device, iova, size) {
+        if let Err(unmap_err) = driver.unmap_for_device(device, iova, size) {
+            log::error!(
+                "[IOMMU] failed to unmap invalid device DMA mapping: {:?}",
+                unmap_err
+            );
+        }
+        return Err(err);
+    }
+    MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    Ok(iova)
+}
+
+pub(in crate::io::iommu) unsafe fn map_for_device_with_perms(
+    device: &DeviceId,
+    phys_addr: PhysAddr,
+    size: u64,
+    read: bool,
+    write: bool,
+) -> Result<u64, IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    // SAFETY: Caller must uphold safety requirements of map_for_device_with_perms.
+    let iova = unsafe { driver.map_for_device_with_perms(device, phys_addr, size, read, write) }?;
     if let Err(err) = validate_device_dma_mask(device, iova, size) {
         if let Err(unmap_err) = driver.unmap_for_device(device, iova, size) {
             log::error!(
@@ -372,6 +416,11 @@ pub(in crate::io::iommu) async unsafe fn map_for_device_async(
 pub fn unmap_for_device(device: &DeviceId, iova: u64, _size: u64) -> Result<(), IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     driver.unmap_for_device(device, iova, _size)
+}
+
+pub(crate) fn domain_id_for_device(device: &DeviceId) -> Result<u16, IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    driver.domain_id_for_device(device)
 }
 
 /// Async variant of `unmap_for_device` that offloads to CQ and awaits completion
@@ -485,6 +534,19 @@ pub fn wake_invalidation_waiters() {
     if let Some(driver) = get_iommu_driver() {
         driver.wake_invalidation_waiters();
     }
+}
+
+// ========================================================================
+// Security Monitor Interface
+// ========================================================================
+
+/// Register a security notifier for IOMMU events.
+///
+/// Returns `Ok(true)` if the notifier was installed, or `Ok(false)` if a notifier
+/// was already registered.
+pub fn set_security_notifier(notifier: Arc<dyn SecurityNotifier>) -> Result<bool, IommuError> {
+    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    Ok(driver.set_security_notifier(notifier))
 }
 
 #[cfg(test)]
