@@ -15,7 +15,14 @@ use uefi::Identify;
 // Ed25519 signature verification for secure boot
 use ed25519_compact::{PublicKey, Signature};
 
+mod ap_boot;
+mod config;
+mod menu;
+mod numa;
 mod page_table;
+mod serial;
+mod tpm;
+mod uefi_runtime;
 
 /// Kernel base address for higher-half mapping
 /// PIE ELF has VAddr starting at 0x0, so we add this offset
@@ -30,19 +37,79 @@ const SIG_SIZE: usize = 64;
 
 #[entry]
 fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
+    // Initialize serial console early for headless debugging
+    serial::init();
+    serial_println!("ExoLoader: Serial console initialized");
+
     #[cfg(feature = "uefi")]
     uefi_services::init(&mut system_table).expect("Failed to initialize UEFI services");
 
-    let boot_services = system_table.boot_services();
-
     info!("ExoLoader v0.1.0 Starting...");
+    serial_println!("ExoLoader v0.1.0 Starting...");
     info!("Initializing Boot Protocol...");
+
+    // 0.5. Load boot configuration and show menu (if multiple entries)
+    let boot_config = match load_kernel(system_table.boot_services(), image_handle, "exoloader.cfg") {
+        Ok(data) => {
+            if let Ok(cfg_str) = core::str::from_utf8(&data) {
+                config::parse_config(cfg_str)
+            } else {
+                info!("Boot config not valid UTF-8, using defaults");
+                config::default_config()
+            }
+        }
+        Err(_) => {
+            info!("No exoloader.cfg found, using defaults");
+            config::default_config()
+        }
+    };
+
+    // Show boot menu if multiple entries or timeout > 0
+    let selected_entry = if boot_config.entries.len() > 1 || boot_config.timeout > 0 {
+        info!("Showing boot menu...");
+        match menu::show_boot_menu(&mut system_table, &boot_config) {
+            menu::MenuResult::Selected(idx) => {
+                info!("User selected entry {}", idx);
+                boot_config.entries.get(idx)
+            }
+            menu::MenuResult::Timeout => {
+                info!("Timeout, using default entry {}", boot_config.default_entry);
+                boot_config.entries.get(boot_config.default_entry)
+            }
+            menu::MenuResult::Cancelled => {
+                info!("Boot cancelled by user");
+                system_table.boot_services().stall(2_000_000);
+                return Status::ABORTED;
+            }
+        }
+    } else {
+        boot_config.entries.first()
+    };
+
+    // Determine kernel/initramfs paths from selected entry
+    let (kernel_name, initramfs_name, entry_cmdline) = match selected_entry {
+        Some(entry) => {
+            info!("Booting: {}", entry.name);
+            (
+                entry.kernel.as_str(),
+                entry.initramfs.as_deref(),
+                entry.cmdline.as_deref(),
+            )
+        }
+        None => {
+            info!("No boot entry found, using defaults");
+            ("rany_os", Some("initramfs.tar"), None)
+        }
+    };
+
+    // Get boot services reference for remaining operations
+    let boot_services = system_table.boot_services();
 
     // 1. Locate and load signed kernel
     // We assume the kernel file is named "rany_os" and located in the root of the boot partition
     // Format: [Ed25519 Signature (64 bytes)] + [ELF Binary]
-    info!("Loading signed kernel file 'rany_os'...");
-    let signed_kernel_data = match load_kernel(boot_services, image_handle, "rany_os") {
+    info!("Loading signed kernel file '{}'...", kernel_name);
+    let signed_kernel_data = match load_kernel(boot_services, image_handle, kernel_name) {
         Ok(data) => {
             info!("Kernel loaded successfully. Size: {} bytes", data.len());
             data
@@ -55,18 +122,75 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         }
     };
 
-    // 1.1. Optionally load initramfs.tar (Cell drivers)
+    // 1.1. Optionally load initramfs (Cell drivers)
     // This is optional - kernel will boot without it
-    let initramfs_data = match load_kernel(boot_services, image_handle, "initramfs.tar") {
-        Ok(data) => {
-            info!("Initramfs loaded: {} bytes", data.len());
-            Some(data)
+    let initramfs_data = if let Some(initramfs_path) = initramfs_name {
+        match load_kernel(boot_services, image_handle, initramfs_path) {
+            Ok(data) => {
+                info!("Initramfs loaded: {} bytes", data.len());
+                Some(data)
+            }
+            Err(_) => {
+                info!("No {} found (optional)", initramfs_path);
+                None
+            }
         }
-        Err(_) => {
-            info!("No initramfs.tar found (optional)");
-            None
+    } else {
+        info!("No initramfs specified");
+        None
+    };
+
+    // 1.2. Kernel command line handling
+    // Priority: exoloader.cmdline file > boot entry cmdline
+    let cmdline_data = {
+        // First try loading from file
+        let file_cmdline = match load_kernel(boot_services, image_handle, "exoloader.cmdline") {
+            Ok(data) => {
+                // Trim trailing newlines and null bytes
+                let mut len = data.len();
+                while len > 0 && (data[len - 1] == b'\n' || data[len - 1] == b'\r' || data[len - 1] == 0) {
+                    len -= 1;
+                }
+                if len > 0 {
+                    Some(data[..len].to_vec())
+                } else {
+                    None
+                }
+            }
+            Err(_) => None,
+        };
+
+        // Merge: file cmdline takes precedence, then entry cmdline
+        match (file_cmdline, entry_cmdline) {
+            (Some(file), Some(entry)) => {
+                // Merge both: "file_args entry_args"
+                let mut merged = file;
+                merged.push(b' ');
+                merged.extend_from_slice(entry.as_bytes());
+                info!("Cmdline (merged): {} bytes", merged.len());
+                Some(merged)
+            }
+            (Some(file), None) => {
+                info!("Cmdline (from file): {} bytes", file.len());
+                Some(file)
+            }
+            (None, Some(entry)) => {
+                let entry_bytes = entry.as_bytes().to_vec();
+                info!("Cmdline (from config): {} bytes", entry_bytes.len());
+                Some(entry_bytes)
+            }
+            (None, None) => {
+                info!("No kernel cmdline specified");
+                None
+            }
         }
     };
+
+    if let Some(ref cmdline) = cmdline_data {
+        if let Ok(s) = core::str::from_utf8(&cmdline[..cmdline.len().min(64)]) {
+            info!("Effective cmdline: \"{}\"...", s);
+        }
+    }
 
     // ============================================================
     // SECURE BOOT: Ed25519 Signature Verification
@@ -102,6 +226,24 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         info!("Signature verification skipped (debug/insecure build)");
     }
 
+    // 1.3 TPM 2.0 Measured Boot
+    // Extend PCRs with hashes of kernel, initramfs, and cmdline
+    // This creates a cryptographic chain of trust verifiable via remote attestation
+    let tpm_result = tpm::perform_measured_boot(
+        boot_services,
+        kernel_elf_data,
+        initramfs_data.as_deref(),
+        cmdline_data.as_deref(),
+    );
+    if tpm_result.tpm_available {
+        info!(
+            "TPM Measured Boot: kernel={}, initramfs={}, cmdline={}",
+            tpm_result.kernel_measured,
+            tpm_result.initramfs_measured,
+            tpm_result.cmdline_measured
+        );
+    }
+
     // 2. Parse ELF (using verified kernel data, without signature)
     let elf = xmas_elf::ElfFile::new(kernel_elf_data).expect("Invalid ELF file");
     #[cfg(feature = "uefi")]
@@ -120,8 +262,16 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     // 3. Map Memory
     use page_table::{
-        PageTable, UefiMapper, PAGE_NO_EXECUTE, PAGE_PRESENT, PAGE_SIZE, PAGE_WRITABLE,
+        CpuPageFeatures, PageTable, UefiMapper, PAGE_NO_EXECUTE, PAGE_PRESENT, PAGE_SIZE,
+        PAGE_SIZE_1GB, PAGE_SIZE_2MB, PAGE_WRITABLE,
     };
+
+    // Detect CPU page size support
+    let cpu_features = CpuPageFeatures::detect();
+    info!(
+        "CPU Page Features: PSE(2MB)={}, Page1GB={}",
+        cpu_features.pse, cpu_features.page_1gb
+    );
 
     info!("Allocating PML4...");
     let pml4_addr =
@@ -192,6 +342,27 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                         .map_page(vaddr, paddr, page_flags | PAGE_PRESENT)
                         .expect("Failed to map page");
                 }
+            }
+        }
+    }
+
+    // 3.4 Detect PT_TLS segment for Thread Local Storage initialization
+    // TLS is required for per-CPU variables in the kernel
+    use boot_proto::TlsInfo;
+    let mut tls_info = TlsInfo::default();
+    for header in elf.program_iter() {
+        if let xmas_elf::program::ProgramHeader::Ph64(ph) = header {
+            // PT_TLS = 7
+            if ph.get_type().unwrap() == xmas_elf::program::Type::Tls {
+                tls_info.start_addr = ph.virtual_addr;
+                tls_info.file_size = ph.file_size;
+                tls_info.mem_size = ph.mem_size;
+                tls_info.align = ph.align;
+                info!(
+                    "Found PT_TLS: start=0x{:x}, file_size=0x{:x}, mem_size=0x{:x}, align={}",
+                    tls_info.start_addr, tls_info.file_size, tls_info.mem_size, tls_info.align
+                );
+                break;
             }
         }
     }
@@ -351,28 +522,58 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             .expect("Failed to map HHDM first 8MB 4KB");
     }
 
-    // Continue with 2MB pages for the rest
+    // Continue with largest possible page size: 1GB > 2MB > 4KB
+    // This minimizes TLB pressure and improves memory access performance
     let mut current = first_region;
+    let mut pages_1gb = 0u32;
+    let mut pages_2mb = 0u32;
+    let mut pages_4kb = 0u32;
+
     while current < map_limit {
         let remaining = map_limit - current;
-        if current % 0x200000 == 0 && remaining >= 0x200000 {
+
+        // Try 1GB page first (if CPU supports and alignment is correct)
+        if cpu_features.page_1gb
+            && current % PAGE_SIZE_1GB == 0
+            && remaining >= PAGE_SIZE_1GB
+        {
+            mapper
+                .map_page_1gb(hhdm_start + current, current, PAGE_WRITABLE | PAGE_PRESENT)
+                .expect("Failed to map HHDM 1GB");
+            mapper
+                .map_page_1gb(current, current, PAGE_WRITABLE | PAGE_PRESENT)
+                .expect("Failed to map Identity 1GB");
+            current += PAGE_SIZE_1GB;
+            pages_1gb += 1;
+        }
+        // Try 2MB page
+        else if current % PAGE_SIZE_2MB == 0 && remaining >= PAGE_SIZE_2MB {
             mapper
                 .map_page_2mb(hhdm_start + current, current, PAGE_WRITABLE | PAGE_PRESENT)
                 .expect("Failed to map HHDM 2MB");
             mapper
                 .map_page_2mb(current, current, PAGE_WRITABLE | PAGE_PRESENT)
                 .expect("Failed to map Identity 2MB");
-            current += 0x200000;
-        } else {
+            current += PAGE_SIZE_2MB;
+            pages_2mb += 1;
+        }
+        // Fall back to 4KB page
+        else {
             mapper
                 .map_page(hhdm_start + current, current, PAGE_WRITABLE | PAGE_PRESENT)
                 .expect("Failed to map HHDM 4KB");
             mapper
                 .map_page(current, current, PAGE_WRITABLE | PAGE_PRESENT)
                 .expect("Failed to map Identity 4KB");
-            current += 0x1000;
+            current += PAGE_SIZE;
+            pages_4kb += 1;
         }
     }
+
+    info!(
+        "HHDM mapped: {} x 1GB, {} x 2MB, {} x 4KB pages",
+        pages_1gb, pages_2mb, pages_4kb
+    );
 
     // 6. Populate Boot Info
     use boot_proto::{ExoBootInfo, MemoryDescriptor as BootMemoryDescriptor};
@@ -385,6 +586,9 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     boot_info.version = 1;
     boot_info.phys_mem_offset = hhdm_start;
     boot_info.page_table_base = pml4_addr;
+
+    // TLS template information for kernel per-CPU variables
+    boot_info.tls_template = tls_info;
 
     // RSDP
     if let Some(rsdp) = system_table
@@ -400,6 +604,37 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     {
         boot_info.rsdp_addr = rsdp.address as u64;
     }
+
+    // 6.1. Early NUMA topology detection from ACPI SRAT table
+    // This provides the kernel with NUMA node information for NUMA-aware allocations
+    if boot_info.rsdp_addr != 0 {
+        boot_info.numa_info = numa::detect_numa_topology(boot_info.rsdp_addr, hhdm_start);
+        if boot_info.numa_info.node_count > 0 {
+            info!(
+                "NUMA: {} node(s) detected",
+                boot_info.numa_info.node_count
+            );
+        }
+    }
+
+    // 6.2. Prepare AP (Application Processor) boot resources
+    // Allocates trampoline code region below 1MB and pre-allocates per-AP stacks
+    boot_info.ap_boot = ap_boot::prepare_ap_boot(boot_services, 0);
+    if boot_info.ap_boot.ap_count > 0 {
+        info!(
+            "AP Boot: {} AP(s) prepared, trampoline at 0x{:x}",
+            boot_info.ap_boot.ap_count, boot_info.ap_boot.trampoline_addr
+        );
+    }
+
+    // 6.3. Collect UEFI Runtime Services information
+    // This must be done BEFORE ExitBootServices so we can access the memory map
+    boot_info.uefi_runtime =
+        uefi_runtime::collect_runtime_info(&system_table, boot_services, hhdm_start);
+    info!(
+        "UEFI Runtime: {} region(s), capabilities 0x{:x}",
+        boot_info.uefi_runtime.runtime_mmap_count, boot_info.uefi_runtime.capabilities
+    );
 
     // GOP
     if let Ok(handles) = boot_services.locate_handle_buffer(
@@ -472,7 +707,36 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         boot_info.initramfs.size = 0;
     }
 
-    // 6.6. Pre-allocate memory map buffer BEFORE exiting boot services
+    // 6.6. Initialize command line in boot_info
+    // Copy cmdline data to allocated pages and set up boot_info.cmdline_ptr/len
+    if let Some(ref cmdline) = cmdline_data {
+        // Allocate pages for command line (+ 1 for null terminator)
+        let cmdline_size = cmdline.len() + 1;
+        let num_pages = (cmdline_size + 4095) / 4096;
+        let cmdline_phys = UefiMapper::alloc_zeroed_pages(boot_services, num_pages)
+            .expect("Failed to alloc cmdline");
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                cmdline.as_ptr(),
+                cmdline_phys as *mut u8,
+                cmdline.len(),
+            );
+            // Null terminate
+            *((cmdline_phys + cmdline.len() as u64) as *mut u8) = 0;
+        }
+        // Pass HHDM virtual address to kernel
+        boot_info.cmdline_ptr = hhdm_start + cmdline_phys;
+        boot_info.cmdline_len = cmdline.len() as u64;
+        info!(
+            "Cmdline mapped at HHDM 0x{:x}, len {}",
+            boot_info.cmdline_ptr, boot_info.cmdline_len
+        );
+    } else {
+        boot_info.cmdline_ptr = 0;
+        boot_info.cmdline_len = 0;
+    }
+
+    // 6.7. Pre-allocate memory map buffer BEFORE exiting boot services
     // We cannot allocate after exit_boot_services() - UEFI heap will be invalid!
     let mmap_estimate_count = boot_services.memory_map_size().map_size / 48 + 16; // sizeof(MemoryDescriptor) ~ 48 + margin
     let mmap_buffer_size = mmap_estimate_count * core::mem::size_of::<BootMemoryDescriptor>();
