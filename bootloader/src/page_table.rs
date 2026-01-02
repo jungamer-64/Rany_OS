@@ -1,16 +1,49 @@
 use core::ops::{Index, IndexMut};
 use uefi::table::boot::{AllocateType, BootServices, MemoryType};
 
-// Page Size
+// Page Sizes
 pub const PAGE_SIZE: u64 = 4096;
+pub const PAGE_SIZE_2MB: u64 = 2 * 1024 * 1024;
+pub const PAGE_SIZE_1GB: u64 = 1024 * 1024 * 1024;
 
 // Page Table Flags
 pub const PAGE_PRESENT: u64 = 1 << 0;
 pub const PAGE_WRITABLE: u64 = 1 << 1;
+#[allow(dead_code)]
 pub const PAGE_USER: u64 = 1 << 2;
 pub const PAGE_HUGE: u64 = 1 << 7;
 pub const PAGE_NO_EXECUTE: u64 = 1 << 63;
 const FLAGS_MASK: u64 = 0x8000_0000_0000_0fff; // NX + lower 12 flag bits
+
+/// CPU feature flags for page size support
+#[derive(Debug, Clone, Copy)]
+pub struct CpuPageFeatures {
+    /// PSE (Page Size Extension) - 2MB pages supported
+    pub pse: bool,
+    /// Page1GB - 1GB pages supported (CPUID.80000001H:EDX[26])
+    pub page_1gb: bool,
+}
+
+impl CpuPageFeatures {
+    /// Detect CPU page size support via CPUID
+    pub fn detect() -> Self {
+        // CPUID.01H:EDX[3] = PSE (Page Size Extension, 2MB pages)
+        let cpuid_01 = core::arch::x86_64::__cpuid(0x01);
+        let pse = (cpuid_01.edx & (1 << 3)) != 0;
+
+        // Check if extended CPUID is available
+        let cpuid_ext = core::arch::x86_64::__cpuid(0x80000000);
+        let page_1gb = if cpuid_ext.eax >= 0x80000001 {
+            // CPUID.80000001H:EDX[26] = Page1GB
+            let cpuid_ext_01 = core::arch::x86_64::__cpuid(0x80000001);
+            (cpuid_ext_01.edx & (1 << 26)) != 0
+        } else {
+            false
+        };
+
+        Self { pse, page_1gb }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 #[repr(transparent)]
@@ -18,6 +51,7 @@ pub struct PageTableEntry {
     entry: u64,
 }
 
+#[allow(dead_code)]
 impl PageTableEntry {
     pub const fn new() -> Self {
         Self { entry: 0 }
@@ -59,6 +93,7 @@ pub struct PageTable {
     pub entries: [PageTableEntry; 512],
 }
 
+#[allow(dead_code)]
 impl PageTable {
     pub const fn new() -> Self {
         Self {
@@ -140,6 +175,31 @@ impl<'a> UefiMapper<'a> {
         let p2 = self.get_or_create_table_from(p3, p3_index)?;
 
         let entry = &mut p2.entries[p2_index];
+        entry.set_addr(phys, flags | PAGE_PRESENT | PAGE_HUGE);
+        Ok(())
+    }
+
+    /// Map a global 1GB huge page (requires CPU support)
+    /// 
+    /// # Arguments
+    /// * `virt` - Virtual address (must be 1GB aligned)
+    /// * `phys` - Physical address (must be 1GB aligned)
+    /// * `flags` - Page flags (PAGE_WRITABLE, PAGE_NO_EXECUTE, etc.)
+    /// 
+    /// # Returns
+    /// * `Ok(())` if mapping succeeded
+    /// * `Err(())` if allocation failed
+    pub fn map_page_1gb(&mut self, virt: u64, phys: u64, flags: u64) -> Result<(), ()> {
+        debug_assert!(virt % PAGE_SIZE_1GB == 0, "1GB page virt not aligned");
+        debug_assert!(phys % PAGE_SIZE_1GB == 0, "1GB page phys not aligned");
+
+        let p4_index = ((virt >> 39) & 0x1ff) as usize;
+        let p3_index = ((virt >> 30) & 0x1ff) as usize;
+
+        let p3 = self.get_or_create_table(p4_index)?;
+
+        // Set 1GB page directly in PDPT entry (PAGE_HUGE flag makes it a leaf)
+        let entry = &mut p3.entries[p3_index];
         entry.set_addr(phys, flags | PAGE_PRESENT | PAGE_HUGE);
         Ok(())
     }
