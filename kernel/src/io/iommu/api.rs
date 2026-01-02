@@ -26,7 +26,11 @@ pub use super::registry::is_iommu_enabled;
 ///
 /// WARNING: Enabling this allows identity mapping when IOMMU is unavailable.
 /// Use only for early boot or controlled bring-up paths.
+#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
 static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
+
+/// Global DMA mapping gate (device-scoped mappings remain allowed).
+static ALLOW_GLOBAL_MAPPINGS: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
 
 // Instrumentation counters for testing / diagnostics
 static MAP_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -43,13 +47,42 @@ static DEVICE_DMA_MASKS: RwLock<BTreeMap<DeviceId, u64>> = RwLock::new(BTreeMap:
 ///
 /// # Safety
 /// This weakens memory protection and must only be set during trusted early init.
+#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
 pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
     UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, Ordering::Release);
 }
 
+/// Enable/disable identity mapping fallback.
+///
+/// # Safety
+/// This weakens memory protection and must only be set during trusted early init.
+#[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+pub unsafe fn set_unsafe_identity_mapping_allowed(_allowed: bool) {
+    log::warn!(
+        "[IOMMU] identity mapping bypass is disabled; ignoring unsafe override"
+    );
+}
+
 /// Check whether identity mapping fallback is allowed.
+#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
 pub fn is_unsafe_identity_mapping_allowed() -> bool {
     UNSAFE_ALLOW_IDENTITY_MAPPING.load(Ordering::Acquire)
+}
+
+/// Check whether identity mapping fallback is allowed.
+#[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+pub fn is_unsafe_identity_mapping_allowed() -> bool {
+    false
+}
+
+/// Enable/disable global DMA mappings (non device-scoped).
+pub fn set_global_dma_mapping_allowed(allowed: bool) {
+    ALLOW_GLOBAL_MAPPINGS.store(allowed, Ordering::Release);
+}
+
+/// Check whether global DMA mappings are allowed.
+pub fn is_global_dma_mapping_allowed() -> bool {
+    ALLOW_GLOBAL_MAPPINGS.load(Ordering::Acquire)
 }
 
 /// IOMMUを必須に設定する
@@ -191,6 +224,7 @@ pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
 ///
 /// # Alignment
 /// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
+#[deprecated(note = "Use map_rref_for_device; global mappings can be disabled (iommu_global=off).")]
 pub fn map_rref<T>(
     rref: RRef<T>,
     domain_id: u16,
@@ -217,6 +251,7 @@ pub fn map_rref_for_device<T>(
 ///
 /// # Alignment
 /// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
+#[deprecated(note = "Use map_rref_slice_for_device; global mappings can be disabled (iommu_global=off).")]
 pub fn map_rref_slice<T>(
     rref: RRef<[T]>,
     domain_id: u16,
@@ -252,6 +287,9 @@ pub fn map_rref_slice_for_device<T>(
 ///
 /// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
 pub unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
+    if is_iommu_enabled() && !is_global_dma_mapping_allowed() {
+        return Err(IommuError::NotSupported);
+    }
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     let res = unsafe { driver.map_for_dma(phys_addr, size) };
     if res.is_ok() {

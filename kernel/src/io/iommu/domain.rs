@@ -2,7 +2,9 @@
 // kernel/src/io/iommu/domain.rs
 // ============================================================================
 use super::interface::IommuHardwareContext;
-use super::page_table_pool::{dec_ref, inc_ref, register_page_table, unregister_page_table};
+use super::page_table_pool::{
+    dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
+};
 use super::quarantine::QuarantineQueue;
 use super::tables::{
     PT_ENTRIES, PT_LEVELS, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
@@ -13,6 +15,8 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use spin::{Mutex, RwLock};
 
 // ============================================================================
 // Invalidation Request Pattern
@@ -203,8 +207,23 @@ impl IommuInvalidator for NoopInvalidator {
 
 /// IOMMU Domain (address space for devices)
 ///
-/// Each domain has its own Mutex in the global IOMMU_DOMAINS registry,
-/// allowing parallel map/unmap operations across different domains.
+/// Each domain owns sharded locks for mapping metadata/page tables, allowing
+/// parallel map/unmap operations across domains and across shard boundaries.
+const DOMAIN_SHARD_COUNT: usize = 64;
+const PML4_ENTRIES_PER_SHARD: usize = PT_ENTRIES / DOMAIN_SHARD_COUNT;
+
+struct DomainShard {
+    mappings: BTreeMap<u64, DmaMapping>,
+}
+
+impl DomainShard {
+    fn new() -> Self {
+        Self {
+            mappings: BTreeMap::new(),
+        }
+    }
+}
+
 pub struct IommuDomain {
     /// Domain Type
     pub(crate) domain_type: IommuDomainType,
@@ -213,11 +232,11 @@ pub struct IommuDomain {
     /// Second-level page table root (PML4)
     pub(crate) page_table: *mut SlPte,
     /// Mapped regions
-    pub(crate) mappings: BTreeMap<u64, DmaMapping>,
+    shards: Box<[Mutex<DomainShard>]>,
     /// Total mapped size
-    pub(crate) mapped_size: u64,
+    mapped_size: AtomicU64,
     /// Optional NUMA node affinity for this domain's data structures
-    pub(crate) numa_node: Option<usize>,
+    numa_node: RwLock<Option<usize>>,
     /// Support for 2MB super-pages
     pub(crate) supports_2mb: bool,
     /// Support for 1GB super-pages
@@ -227,11 +246,13 @@ pub struct IommuDomain {
     /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
     quarantine: Arc<QuarantineQueue>,
     /// Reused buffer for flush invalidations (avoid per-flush allocations)
-    flush_requests: Vec<InvalidateRequest>,
+    flush_requests: Mutex<Vec<InvalidateRequest>>,
     /// Phase 6: Page table recycling pool (shared with controller)
     page_table_pool: Arc<super::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)
     pte_format: PteFormat,
+    /// Fatal error flag; once set, the domain rejects new map/unmap operations.
+    poisoned: AtomicBool,
 }
 
 unsafe impl Send for IommuDomain {}
@@ -275,20 +296,30 @@ impl IommuDomain {
             .expect("Failed to get root page table physical address");
         register_page_table(root_phys);
 
+        debug_assert_eq!(PT_ENTRIES % DOMAIN_SHARD_COUNT, 0);
+        debug_assert!(PML4_ENTRIES_PER_SHARD > 0);
+        let mut shards = Vec::with_capacity(DOMAIN_SHARD_COUNT);
+        for _ in 0..DOMAIN_SHARD_COUNT {
+            shards.push(Mutex::new(DomainShard::new()));
+        }
+
         Self {
             id,
             domain_type,
             page_table,
-            mappings: BTreeMap::new(),
-            mapped_size: 0,
-            numa_node,
+            shards: shards.into_boxed_slice(),
+            mapped_size: AtomicU64::new(0),
+            numa_node: RwLock::new(numa_node),
             supports_2mb,
             supports_1gb,
             max_addr_bits: max_addr_bits.clamp(1, 64),
             quarantine: QuarantineQueue::new(),
-            flush_requests: Vec::with_capacity(super::quarantine::INVALIDATION_CAPACITY),
+            flush_requests: Mutex::new(Vec::with_capacity(
+                super::quarantine::INVALIDATION_CAPACITY,
+            )),
             page_table_pool,
             pte_format,
+            poisoned: AtomicBool::new(false),
         }
     }
 
@@ -309,7 +340,12 @@ impl IommuDomain {
 
     /// Get optional NUMA node affinity for this domain
     pub fn numa_node(&self) -> Option<usize> {
-        self.numa_node
+        *self.numa_node.read()
+    }
+
+    /// Set domain NUMA affinity hint
+    pub fn set_numa_node(&self, numa_node: Option<usize>) {
+        *self.numa_node.write() = numa_node;
     }
 
     // ========================================================================
@@ -328,23 +364,33 @@ impl IommuDomain {
     ///
     /// # Safety
     /// The caller must ensure the IOVA range will be freed after IOTLB invalidation.
-    pub fn clear_mapping_only(&mut self, iova: u64, size: u64) -> Result<(), IommuError> {
-        // Remove the mapping from our tracking
-        let mapping = self.mappings.remove(&iova).ok_or(IommuError::NotMapped)?;
+    pub fn clear_mapping_only(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(IommuError::Poisoned);
+        }
 
-        // Verify size matches
+        let (start_shard, end_shard) = self.shard_range(iova, size)?;
+        let mut guards = self.lock_shards(start_shard, end_shard);
+
+        let mapping = guards[0]
+            .mappings
+            .get(&iova)
+            .cloned()
+            .ok_or(IommuError::NotMapped)?;
+
         if mapping.size != size {
-            // Put it back if size mismatch
-            self.mappings.insert(iova, mapping);
             return Err(IommuError::NotMapped);
+        }
+
+        for guard in guards.iter_mut() {
+            guard.mappings.remove(&iova);
         }
 
         if self.domain_type != IommuDomainType::Passthrough {
             self.unmap_range(iova, size)?;
         }
 
-        // Update stats
-        self.mapped_size = self.mapped_size.saturating_sub(size);
+        self.mapped_size.fetch_sub(size, Ordering::Relaxed);
 
         Ok(())
     }
@@ -365,13 +411,13 @@ impl IommuDomain {
     /// Must be called from thread/executor context. This path allocates and
     /// drops RRef raw parts via the quarantine reap.
     pub fn flush<I: IommuInvalidator>(
-        &mut self,
+        &self,
         invalidator: &I,
         context: &dyn IommuHardwareContext,
     ) -> Result<(), IommuError> {
         // Drain pending invalidations (Round 9: returns DrainResult)
-        let requests = &mut self.flush_requests;
-        let drained_batch = match self.quarantine.drain_pending_invalidations(requests) {
+        let mut requests = self.flush_requests.lock();
+        let drained_batch = match self.quarantine.drain_pending_invalidations(&mut requests) {
             super::quarantine::DrainResult::NoWork { .. } => return Ok(()),
             super::quarantine::DrainResult::NotReady { batch: _ } => {
                 // Round 9 Safety: Reserved slots pending.
@@ -390,10 +436,11 @@ impl IommuDomain {
             return Ok(());
         }
 
-        // Process all invalidation requests
-        for req in requests.drain(..) {
-            invalidator.invalidate(req)?;
+        // Process all invalidation requests in a single batch
+        if let Err(err) = invalidator.process_invalidations(requests.as_slice()) {
+            return Err(err);
         }
+        requests.clear();
 
         // Reap and process completed entries for this batch
         self.quarantine.reap_completed(drained_batch, context);
@@ -415,23 +462,68 @@ impl IommuDomain {
         (addr as u128) < limit && (end as u128) <= limit
     }
 
+    fn shard_for_iova(iova: u64) -> usize {
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        pml4_idx / PML4_ENTRIES_PER_SHARD
+    }
+
+    fn shard_range(&self, iova: u64, size: u64) -> Result<(usize, usize), IommuError> {
+        if size == 0 {
+            return Err(IommuError::InvalidAlignment);
+        }
+        let end = iova.checked_add(size).ok_or(IommuError::InvalidAddress)?;
+        let last = end.saturating_sub(1);
+        let start = Self::shard_for_iova(iova);
+        let end = Self::shard_for_iova(last);
+        Ok((start, end))
+    }
+
+    fn lock_shards(
+        &self,
+        start: usize,
+        end: usize,
+    ) -> Vec<spin::MutexGuard<'_, DomainShard>> {
+        let mut guards = Vec::with_capacity(end.saturating_sub(start) + 1);
+        for idx in start..=end {
+            guards.push(self.shards[idx].lock());
+        }
+        guards
+    }
+
+    fn mapping_overlaps(mappings: &BTreeMap<u64, DmaMapping>, iova: u64, size: u64) -> bool {
+        let new_end = match iova.checked_add(size) {
+            Some(end) => end,
+            None => return true,
+        };
+        if let Some((&existing_iova, mapping)) = mappings.range(..=iova).next_back() {
+            if existing_iova.saturating_add(mapping.size) > iova {
+                return true;
+            }
+        }
+        if let Some((&existing_iova, _)) = mappings.range(iova..).next() {
+            if existing_iova < new_end {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Map a DMA region
     ///
     /// This function is transactional: if any page mapping fails, all successfully
     /// mapped pages are rolled back before returning the error.
     pub fn map(
-        &mut self,
+        &self,
         iova: u64,
         phys: u64,
         size: u64,
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
-        if self.domain_type == IommuDomainType::Passthrough {
-            // Passthrough means identity, so map calls are page-table no-ops.
-            // We still track mappings for ownership/unmap bookkeeping.
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(IommuError::Poisoned);
         }
-        // Validate alignment
+
         if iova & 0xFFF != 0 || phys & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(IommuError::InvalidAlignment);
         }
@@ -440,164 +532,144 @@ impl IommuDomain {
             return Err(IommuError::InvalidAddress);
         }
 
-        // Check for overlapping mappings using range queries (O(log n))
-        let new_end = iova.checked_add(size).ok_or(IommuError::InvalidAddress)?;
-        if let Some((&existing_iova, mapping)) = self.mappings.range(..=iova).next_back() {
-            if existing_iova + mapping.size > iova {
-                return Err(IommuError::AlreadyMapped);
-            }
-        }
-        if let Some((&existing_iova, _)) = self.mappings.range(iova..).next() {
-            if existing_iova < new_end {
+        let (start_shard, end_shard) = self.shard_range(iova, size)?;
+        let mut guards = self.lock_shards(start_shard, end_shard);
+
+        for guard in guards.iter() {
+            if Self::mapping_overlaps(&guard.mappings, iova, size) {
                 return Err(IommuError::AlreadyMapped);
             }
         }
 
-        if self.domain_type == IommuDomainType::Passthrough {
-            // Track mapping even in passthrough domains.
-            self.mappings.insert(
-                iova,
-                DmaMapping {
-                    iova,
-                    phys,
-                    size,
-                    read,
-                    write,
-                    domain_id_placeholder: self.id,
-                },
-            );
-            self.mapped_size += size;
-            return Ok(());
-        }
+        if self.domain_type != IommuDomainType::Passthrough {
+            let mut current_iova = iova;
+            let mut current_phys = phys;
+            let mut remaining = size;
 
-        // Create page table entries using largest possible page sizes
-        let mut current_iova = iova;
-        let mut current_phys = phys;
-        let mut remaining = size;
+            const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+            const SIZE_2MB: u64 = 2 * 1024 * 1024;
+            const SIZE_4KB: u64 = 4096;
 
-        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
-        const SIZE_2MB: u64 = 2 * 1024 * 1024;
-        const SIZE_4KB: u64 = 4096;
+            let start_iova = iova;
+            let mut mapped_len: u64 = 0;
 
-        // Track total bytes successfully mapped for rollback on error
-        let start_iova = iova;
-        let mut mapped_len: u64 = 0;
+            while remaining > 0 {
+                if self.supports_1gb
+                    && remaining >= SIZE_1GB
+                    && current_iova % SIZE_1GB == 0
+                    && current_phys % SIZE_1GB == 0
+                    && (current_phys as u64 & 0x3FFF_FFFF) == 0
+                {
+                    match unsafe { self.map_page_1gb(current_iova, current_phys, read, write) } {
+                        Ok(()) => {
+                            current_iova += SIZE_1GB;
+                            current_phys += SIZE_1GB;
+                            remaining -= SIZE_1GB;
+                            mapped_len += SIZE_1GB;
+                            continue;
+                        }
+                        Err(e) => {
+                            if mapped_len > 0 {
+                                if let Err(rollback_err) =
+                                    self.unmap_range(start_iova, mapped_len)
+                                {
+                                    log::error!(
+                                        "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                                        e,
+                                        rollback_err
+                                    );
+                                    self.poison();
+                                    return Err(IommuError::Poisoned);
+                                }
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
 
-        while remaining > 0 {
-            // Try 1GB page
-            if self.supports_1gb
-                && remaining >= SIZE_1GB
-                && current_iova % SIZE_1GB == 0
-                && current_phys % SIZE_1GB == 0
-                && (current_phys as u64 & 0x3FFF_FFFF) == 0
-            // Extra alignment check for 1GB
-            {
-                match unsafe { self.map_page_1gb(current_iova, current_phys, read, write) } {
-                    Ok(()) => {
-                        current_iova += SIZE_1GB;
-                        current_phys += SIZE_1GB;
-                        remaining -= SIZE_1GB;
-                        mapped_len += SIZE_1GB;
-                        continue;
+                if self.supports_2mb
+                    && remaining >= SIZE_2MB
+                    && current_iova % SIZE_2MB == 0
+                    && current_phys % SIZE_2MB == 0
+                {
+                    match unsafe { self.map_page_2mb(current_iova, current_phys, read, write) } {
+                        Ok(()) => {
+                            current_iova += SIZE_2MB;
+                            current_phys += SIZE_2MB;
+                            remaining -= SIZE_2MB;
+                            mapped_len += SIZE_2MB;
+                            continue;
+                        }
+                        Err(e) => {
+                            if mapped_len > 0 {
+                                if let Err(rollback_err) =
+                                    self.unmap_range(start_iova, mapped_len)
+                                {
+                                    log::error!(
+                                        "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
+                                        e,
+                                        rollback_err
+                                    );
+                                    self.poison();
+                                    return Err(IommuError::Poisoned);
+                                }
+                            }
+                            return Err(e);
+                        }
+                    }
+                }
+
+                let pages_remaining = (remaining / SIZE_4KB) as usize;
+                let pt_idx = ((current_iova >> 12) & 0x1FF) as usize;
+                let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
+
+                match self.map_range_4k(current_iova, current_phys, pages_in_pt, read, write) {
+                    Ok(pages_mapped) => {
+                        let mapped_bytes = (pages_mapped as u64) * SIZE_4KB;
+                        current_iova += mapped_bytes;
+                        current_phys += mapped_bytes;
+                        remaining -= mapped_bytes;
+                        mapped_len += mapped_bytes;
                     }
                     Err(e) => {
-                        // Rollback all successfully mapped pages
                         if mapped_len > 0 {
-                            if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
+                            if let Err(rollback_err) =
+                                self.unmap_range(start_iova, mapped_len)
+                            {
                                 log::error!(
                                     "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
                                     e,
                                     rollback_err
                                 );
-                                return Err(rollback_err);
+                                self.poison();
+                                return Err(IommuError::Poisoned);
                             }
                         }
                         return Err(e);
                     }
                 }
             }
-
-            // Try 2MB page
-            if self.supports_2mb
-                && remaining >= SIZE_2MB
-                && current_iova % SIZE_2MB == 0
-                && current_phys % SIZE_2MB == 0
-            {
-                match unsafe { self.map_page_2mb(current_iova, current_phys, read, write) } {
-                    Ok(()) => {
-                        current_iova += SIZE_2MB;
-                        current_phys += SIZE_2MB;
-                        remaining -= SIZE_2MB;
-                        mapped_len += SIZE_2MB;
-                        continue;
-                    }
-                    Err(e) => {
-                        // Rollback all successfully mapped pages
-                        if mapped_len > 0 {
-                            if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
-                                log::error!(
-                                    "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                                    e,
-                                    rollback_err
-                                );
-                                return Err(rollback_err);
-                            }
-                        }
-                        return Err(e);
-                    }
-                }
-            }
-
-            // Fallback to 4KB pages (batch within a single PT)
-            let pages_remaining = (remaining / SIZE_4KB) as usize;
-            let pt_idx = ((current_iova >> 12) & 0x1FF) as usize;
-            let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
-
-            match self.map_range_4k(current_iova, current_phys, pages_in_pt, read, write) {
-                Ok(pages_mapped) => {
-                    let mapped_bytes = (pages_mapped as u64) * SIZE_4KB;
-                    current_iova += mapped_bytes;
-                    current_phys += mapped_bytes;
-                    remaining -= mapped_bytes;
-                    mapped_len += mapped_bytes;
-                }
-                Err(e) => {
-                    // Rollback all successfully mapped pages
-                    if mapped_len > 0 {
-                        if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
-                            log::error!(
-                                "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                                e,
-                                rollback_err
-                            );
-                            return Err(rollback_err);
-                        }
-                    }
-                    return Err(e);
-                }
-            }
         }
 
-        // Record mapping
-        self.mappings.insert(
+        let mapping = DmaMapping {
             iova,
-            DmaMapping {
-                iova,
-                phys,
-                size,
-                read,
-                write,
-                domain_id_placeholder: self.id,
-            },
-        );
+            phys,
+            size,
+            read,
+            write,
+            domain_id_placeholder: self.id,
+        };
+        for guard in guards.iter_mut() {
+            guard.mappings.insert(iova, mapping.clone());
+        }
 
-        self.mapped_size += size;
+        self.mapped_size.fetch_add(size, Ordering::Relaxed);
 
         Ok(())
     }
 
     /// Unmap a 2MB super-page (for rollback)
-    fn unmap_super_page_2mb(&mut self, iova: u64) -> Result<(), IommuError> {
+    fn unmap_super_page_2mb(&self, iova: u64) -> Result<(), IommuError> {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
         let pd_idx = ((iova >> 21) & 0x1FF) as usize;
@@ -653,7 +725,7 @@ impl IommuDomain {
     }
 
     /// Unmap a 1GB super-page (for rollback)
-    fn unmap_super_page_1gb(&mut self, iova: u64) -> Result<(), IommuError> {
+    fn unmap_super_page_1gb(&self, iova: u64) -> Result<(), IommuError> {
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
 
@@ -694,7 +766,7 @@ impl IommuDomain {
 
     /// Map a region with identity mapping (IOVA = Physical Address)
     pub fn map_identity(
-        &mut self,
+        &self,
         phys: u64,
         size: u64,
         read: bool,
@@ -705,7 +777,7 @@ impl IommuDomain {
 
     /// Map a contiguous run of 4KB pages within a single PT.
     fn map_range_4k(
-        &mut self,
+        &self,
         iova: u64,
         phys: u64,
         pages: usize,
@@ -805,7 +877,7 @@ impl IommuDomain {
     ///
     /// On error, any newly allocated page tables are deallocated to prevent leaks.
     fn map_page(
-        &mut self,
+        &self,
         iova: u64,
         phys: u64,
         read: bool,
@@ -910,7 +982,7 @@ impl IommuDomain {
     /// Uses the domain's page table pool for NUMA-aware recycling.
     /// Falls back to direct allocation if pool is not available.
     fn allocate_page_table(&self) -> Result<PageTableScope, IommuError> {
-        PageTableScope::new_with_pool(self.page_table_pool.clone(), self.numa_node)
+        PageTableScope::new_with_pool(self.page_table_pool.clone(), self.numa_node())
     }
 
     /// Map a 2MB super-page
@@ -920,7 +992,7 @@ impl IommuDomain {
     ///
     /// On error, any newly allocated page tables are deallocated to prevent leaks.
     pub unsafe fn map_page_2mb(
-        &mut self,
+        &self,
         iova: u64,
         phys: u64,
         read: bool,
@@ -1019,7 +1091,7 @@ impl IommuDomain {
     ///
     /// On error, any newly allocated page tables are deallocated to prevent leaks.
     pub unsafe fn map_page_1gb(
-        &mut self,
+        &self,
         iova: u64,
         phys: u64,
         read: bool,
@@ -1097,37 +1169,195 @@ impl IommuDomain {
     }
 
     /// Unmap a DMA region
-    pub fn unmap(&mut self, iova: u64) -> Result<DmaMapping, IommuError> {
-        let mapping = self.mappings.remove(&iova).ok_or(IommuError::NotMapped)?;
+    pub fn unmap(&self, iova: u64) -> Result<DmaMapping, IommuError> {
+        if self.poisoned.load(Ordering::Acquire) {
+            return Err(IommuError::Poisoned);
+        }
+
+        let start_shard = Self::shard_for_iova(iova);
+        let mut guard = self.shards[start_shard].lock();
+        let mapping = guard
+            .mappings
+            .get(&iova)
+            .cloned()
+            .ok_or(IommuError::NotMapped)?;
+        let (_, end_shard) = self.shard_range(iova, mapping.size)?;
+
+        let mut guards = Vec::with_capacity(end_shard.saturating_sub(start_shard) + 1);
+        guards.push(guard);
+        for idx in (start_shard + 1)..=end_shard {
+            guards.push(self.shards[idx].lock());
+        }
+
+        for guard in guards.iter_mut() {
+            guard.mappings.remove(&iova);
+        }
 
         if self.domain_type != IommuDomainType::Passthrough {
             self.unmap_range(iova, mapping.size)?;
         }
 
-        self.mapped_size -= mapping.size;
+        self.mapped_size
+            .fetch_sub(mapping.size, Ordering::Relaxed);
 
         Ok(mapping)
     }
 
     /// Unmap a range using super-page aware traversal.
-    fn unmap_range(&mut self, iova: u64, size: u64) -> Result<(), IommuError> {
+    fn unmap_range(&self, iova: u64, size: u64) -> Result<(), IommuError> {
         let mut current = iova;
         let mut remaining = size;
+        const SIZE_4KB: u64 = 4096;
 
         while remaining > 0 {
-            let unmapped = self.unmap_entry(current)?;
-            if unmapped > remaining {
+            if let Some(unmapped) = self.try_unmap_superpage(current)? {
+                if unmapped > remaining {
+                    return Err(IommuError::InvalidAlignment);
+                }
+                current += unmapped;
+                remaining -= unmapped;
+                continue;
+            }
+
+            let pages_remaining = (remaining / SIZE_4KB) as usize;
+            let pt_idx = ((current >> 12) & 0x1FF) as usize;
+            let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
+            let pages_unmapped = self.unmap_range_4k(current, pages_in_pt)?;
+            let unmapped_bytes = (pages_unmapped as u64) * SIZE_4KB;
+            if unmapped_bytes > remaining {
                 return Err(IommuError::InvalidAlignment);
             }
-            current += unmapped;
-            remaining -= unmapped;
+            current += unmapped_bytes;
+            remaining -= unmapped_bytes;
         }
 
         Ok(())
     }
 
+    fn try_unmap_superpage(&self, iova: u64) -> Result<Option<u64>, IommuError> {
+        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
+        const SIZE_2MB: u64 = 2 * 1024 * 1024;
+
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+
+        unsafe {
+            let pml4_entry = self.page_table.add(pml4_idx);
+            if !(*pml4_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            if (*pdp_entry).is_super_page(self.pte_format) {
+                self.unmap_super_page_1gb(iova)?;
+                return Ok(Some(SIZE_1GB));
+            }
+
+            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_entry = pd_table.add(pd_idx);
+            if !(*pd_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            if (*pd_entry).is_super_page(self.pte_format) {
+                self.unmap_super_page_2mb(iova)?;
+                return Ok(Some(SIZE_2MB));
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// Unmap a contiguous run of 4KB entries within a single PT.
+    fn unmap_range_4k(&self, iova: u64, pages: usize) -> Result<usize, IommuError> {
+        if pages == 0 {
+            return Ok(0);
+        }
+
+        let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
+        let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
+        let pd_idx = ((iova >> 21) & 0x1FF) as usize;
+        let pt_idx = ((iova >> 12) & 0x1FF) as usize;
+        let pages_in_pt = core::cmp::min(pages, PT_ENTRIES - pt_idx);
+
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .unwrap();
+
+        unsafe {
+            let pml4_entry = self.page_table.add(pml4_idx);
+            if !(*pml4_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            let pdp_table = (*pml4_entry).phys_addr() as *mut SlPte;
+            let pdp_phys = (*pml4_entry).phys_addr();
+
+            let pdp_entry = pdp_table.add(pdp_idx);
+            if !(*pdp_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            if (*pdp_entry).is_super_page(self.pte_format) {
+                return Err(IommuError::InvalidAlignment);
+            }
+            let pd_table = (*pdp_entry).phys_addr() as *mut SlPte;
+            let pd_phys = (*pdp_entry).phys_addr();
+
+            let pd_entry = pd_table.add(pd_idx);
+            if !(*pd_entry).is_present() {
+                return Err(IommuError::NotMapped);
+            }
+            if (*pd_entry).is_super_page(self.pte_format) {
+                return Err(IommuError::InvalidAlignment);
+            }
+            let pt_table = (*pd_entry).phys_addr() as *mut SlPte;
+            let pt_phys = (*pd_entry).phys_addr();
+
+            for idx in 0..pages_in_pt {
+                let pt_entry = pt_table.add(pt_idx + idx);
+                if !(*pt_entry).is_present() {
+                    return Err(IommuError::NotMapped);
+                }
+            }
+
+            for idx in 0..pages_in_pt {
+                let pt_entry = pt_table.add(pt_idx + idx);
+                *pt_entry = SlPte::new();
+                let _ = dec_ref(pt_phys);
+            }
+
+            if get_ref_count(pt_phys) == 0 {
+                *pd_entry = SlPte::new();
+                alloc::alloc::dealloc(pt_table as *mut u8, layout);
+                unregister_page_table(pt_phys);
+
+                if dec_ref(pd_phys) {
+                    *pdp_entry = SlPte::new();
+                    alloc::alloc::dealloc(pd_table as *mut u8, layout);
+                    unregister_page_table(pd_phys);
+
+                    if dec_ref(pdp_phys) {
+                        *pml4_entry = SlPte::new();
+                        alloc::alloc::dealloc(pdp_table as *mut u8, layout);
+                        unregister_page_table(pdp_phys);
+
+                        let pml4_phys = virt_ptr_to_phys(self.page_table as *const u8)
+                            .expect("Failed to get pml4 phys");
+                        dec_ref(pml4_phys);
+                    }
+                }
+            }
+        }
+
+        Ok(pages_in_pt)
+    }
+
     /// Unmap a single entry at `iova` and return the unmapped size.
-    fn unmap_entry(&mut self, iova: u64) -> Result<u64, IommuError> {
+    #[allow(dead_code)]
+    fn unmap_entry(&self, iova: u64) -> Result<u64, IommuError> {
         const SIZE_1GB: u64 = 1024 * 1024 * 1024;
         const SIZE_2MB: u64 = 2 * 1024 * 1024;
         const SIZE_4KB: u64 = 4096;
@@ -1171,7 +1401,7 @@ impl IommuDomain {
     ///
     /// Also reclaims empty page tables (PT, PD, PDP) to prevent memory accumulation
     /// from sparse mappings.
-    fn unmap_page(&mut self, iova: u64) -> Result<(), IommuError> {
+    fn unmap_page(&self, iova: u64) -> Result<(), IommuError> {
         // Extract indices for each level
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;
         let pdp_idx = ((iova >> 30) & 0x1FF) as usize;
@@ -1246,12 +1476,48 @@ impl IommuDomain {
 
     /// Get total mapped size
     pub fn mapped_size(&self) -> u64 {
-        self.mapped_size
+        self.mapped_size.load(Ordering::Relaxed)
     }
 
-    /// Get all mappings
-    pub fn mappings(&self) -> &BTreeMap<u64, DmaMapping> {
-        &self.mappings
+    fn poison(&self) {
+        if !self.poisoned.swap(true, Ordering::AcqRel) {
+            log::error!(
+                "[IommuDomain] domain {} poisoned due to rollback failure",
+                self.id
+            );
+        }
+    }
+
+    /// Lookup a mapping by its IOVA base.
+    pub fn mapping(&self, iova: u64) -> Option<DmaMapping> {
+        let shard = Self::shard_for_iova(iova);
+        let guard = self.shards[shard].lock();
+        guard.mappings.get(&iova).cloned()
+    }
+
+    /// Get a snapshot of all mappings (deduplicated across shards).
+    pub fn mappings_snapshot(&self) -> BTreeMap<u64, DmaMapping> {
+        let mut snapshot = BTreeMap::new();
+        for shard in self.shards.iter() {
+            let guard = shard.lock();
+            for (iova, mapping) in guard.mappings.iter() {
+                snapshot.entry(*iova).or_insert_with(|| mapping.clone());
+            }
+        }
+        snapshot
+    }
+
+    #[cfg(test)]
+    pub fn drop_mapping_for_test(&self, iova: u64) -> Option<DmaMapping> {
+        let mapping = self.mapping(iova)?;
+        let (start_shard, end_shard) = self.shard_range(iova, mapping.size).ok()?;
+        let mut guards = self.lock_shards(start_shard, end_shard);
+        for guard in guards.iter_mut() {
+            guard.mappings.remove(&iova);
+        }
+        self.mapped_size
+            .fetch_sub(mapping.size, Ordering::Relaxed);
+        Some(mapping)
     }
 
     // =========================================================================
@@ -1274,7 +1540,7 @@ impl IommuDomain {
     /// # Errors
     /// Returns `MapError<T>` containing the original RRef on failure.
     pub fn map_buffer<T>(
-        &mut self,
+        &self,
         rref: crate::ipc::RRef<T>,
         context: &dyn IommuHardwareContext,
         direction: super::dma_handle::DmaDirection,
@@ -1344,7 +1610,7 @@ impl IommuDomain {
     /// # Errors
     /// Returns `UnmapError<T>` containing the handle on failure.
     pub fn unmap_buffer<T, I: IommuInvalidator>(
-        &mut self,
+        &self,
         mut handle: super::dma_handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
@@ -1400,7 +1666,7 @@ impl IommuDomain {
     /// # Returns
     /// A future that resolves to `Result<RRef<T>, UnmapError<T>>`
     pub async fn unmap_buffer_async<T, I: IommuInvalidator + Sync>(
-        &mut self,
+        &self,
         mut handle: super::dma_handle::DmaHandle<T>,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
@@ -1450,7 +1716,7 @@ impl IommuDomain {
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");
 
-        unsafe fn free_table(
+        fn free_table(
             domain: &IommuDomain,
             table_ptr: *mut SlPte,
             level: usize,
@@ -1458,7 +1724,7 @@ impl IommuDomain {
         ) {
             if level > 1 {
                 for idx in 0..PT_ENTRIES {
-                    let entry = *table_ptr.add(idx);
+                    let entry = unsafe { *table_ptr.add(idx) };
                     if !entry.is_present() {
                         continue;
                     }
@@ -1474,7 +1740,9 @@ impl IommuDomain {
             if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
                 unregister_page_table(phys);
             }
-            alloc::alloc::dealloc(table_ptr as *mut u8, layout);
+            unsafe {
+                alloc::alloc::dealloc(table_ptr as *mut u8, layout);
+            }
         }
 
         free_table(self, self.page_table, PT_LEVELS, layout);

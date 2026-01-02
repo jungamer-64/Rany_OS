@@ -15,12 +15,14 @@ pub trait IovaManager {
     fn allocate_iova_fast(&self, size: u64) -> Result<u64, IommuError>;
     fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError>;
     fn allocate_iova(&self, size: u64) -> Result<u64, IommuError>;
+    fn allocate_iova_masked(&self, size: u64, mask: u64) -> Result<u64, IommuError>;
     fn allocate_iova_aligned(
         &self,
         size: u64,
         granularity: IovaGranularity,
     ) -> Result<u64, IommuError>;
     fn free_iova(&self, addr: u64, size: u64) -> Result<(), IommuError>;
+    fn reserve_iova(&self, addr: u64, size: u64) -> Result<(), IommuError>;
 }
 
 impl IovaManager for IommuController {
@@ -40,13 +42,25 @@ impl IovaManager for IommuController {
             return self.allocate_iova(size);
         }
 
+        // Per-core magazines are controller-scoped to avoid cross-controller reuse.
+        let controller_idx = match self.controller_idx() {
+            Some(idx) => idx,
+            None => return self.allocate_iova(size),
+        };
+
         let mut pc_ref = unsafe { crate::mm::per_cpu::current_per_cpu_mut() };
 
         // 1. Try Cache
         if let Some(ref mut pc) = pc_ref {
-            if let Some(iova) = pc.iova_magazine.pop() {
-                return Ok(iova);
+            if let Some(magazine) = pc.iova_magazines.get_mut(controller_idx) {
+                if let Some(iova) = magazine.pop() {
+                    return Ok(iova);
+                }
+            } else {
+                return self.allocate_iova(size);
             }
+        } else {
+            return self.allocate_iova(size);
         }
 
         // Drop mutable borrow of per-cpu to allow method call
@@ -72,13 +86,17 @@ impl IovaManager for IommuController {
         // 3. Fill Magazine with remaining pages
         // If we lost per-cpu access (unlikely), we free them back immediately.
         if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
-            for i in 1..BATCH_COUNT {
-                let page = batch_start + i * 4096;
-                if !pc.iova_magazine.push(page) {
-                    // Magazine full (unlikely if we just popped empty, but possible if capacity is tiny)
-                    // Free back to global
-                    let _ = self.free_iova(page, 4096);
+            if let Some(magazine) = pc.iova_magazines.get_mut(controller_idx) {
+                for i in 1..BATCH_COUNT {
+                    let page = batch_start + i * 4096;
+                    if !magazine.push(page) {
+                        // Magazine full (unlikely if we just popped empty, but possible if capacity is tiny)
+                        // Free back to global
+                        let _ = self.free_iova(page, 4096);
+                    }
                 }
+            } else {
+                let _ = self.free_iova(batch_start + 4096, BATCH_SIZE - 4096);
             }
         } else {
             // Fallback: free the rest
@@ -94,10 +112,21 @@ impl IovaManager for IommuController {
             return self.free_iova(iova, size);
         }
 
+        let controller_idx = match self.controller_idx() {
+            Some(idx) => idx,
+            None => return self.free_iova(iova, size),
+        };
+
         if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
-            if pc.iova_magazine.push(iova) {
-                return Ok(());
+            if let Some(magazine) = pc.iova_magazines.get_mut(controller_idx) {
+                if magazine.push(iova) {
+                    return Ok(());
+                }
+            } else {
+                return self.free_iova(iova, size);
             }
+        } else {
+            return self.free_iova(iova, size);
         }
 
         // Cache overflow or no per-cpu - free globally
@@ -144,6 +173,18 @@ impl IovaManager for IommuController {
             .ok_or(IommuError::HardwareError)
     }
 
+    /// Allocate an IOVA range within a DMA mask limit (inclusive).
+    fn allocate_iova_masked(&self, size: u64, mask: u64) -> Result<u64, IommuError> {
+        let mut guard = self
+            .iova_allocator
+            .lock()
+            .map_err(|_| IommuError::HardwareError)?;
+        let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        alloc
+            .allocate_with_limit(size, IovaGranularity::Page4K, mask)
+            .ok_or(IommuError::OutOfMemory)
+    }
+
     /// Free an IOVA range
     fn free_iova(&self, addr: u64, size: u64) -> Result<(), IommuError> {
         let mut guard = self
@@ -152,5 +193,15 @@ impl IovaManager for IommuController {
             .map_err(|_| IommuError::HardwareError)?;
         let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
         alloc.free(addr, size)
+    }
+
+    /// Reserve an IOVA range (identity or fixed mapping).
+    fn reserve_iova(&self, addr: u64, size: u64) -> Result<(), IommuError> {
+        let mut guard = self
+            .iova_allocator
+            .lock()
+            .map_err(|_| IommuError::HardwareError)?;
+        let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        alloc.reserve(addr, size)
     }
 }

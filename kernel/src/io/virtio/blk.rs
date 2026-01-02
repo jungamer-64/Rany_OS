@@ -17,8 +17,8 @@
 
 use crate::io::dma::{IommuBounceAllocError, allocate_iommu_bounce_bytes, iommu_needs_bounce};
 use crate::io::iommu::api::{
-    DmaDirection, is_iommu_enabled, is_iommu_required, map_for_device, map_for_dma,
-    map_rref_slice, map_rref_slice_for_device, unmap_dma, unmap_for_device,
+    DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_for_device, map_for_dma,
+    map_rref_slice_for_device, unmap_dma, unmap_for_device,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
@@ -1708,7 +1708,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     let handle = if let Some(device) = self.iommu_device_id {
                         map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice)
                     } else {
-                        map_rref_slice(rref, 0, DmaDirection::FromDevice)
+                        DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice)
                     }
                     .map_err(|_| VfsBlockError::IoError)?;
                     let dma_addr = handle.iova();
@@ -1803,7 +1803,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     let handle = if let Some(device) = self.iommu_device_id {
                         map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
                     } else {
-                        map_rref_slice(rref, 0, DmaDirection::ToDevice)
+                        DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice)
                     }
                     .map_err(|_| VfsBlockError::IoError)?;
                     let dma_addr = handle.iova();

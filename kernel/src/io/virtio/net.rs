@@ -25,7 +25,7 @@ use crate::io::dma::{
 };
 use crate::io::iommu::api::{
     get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_for_device, map_for_dma,
-    map_rref_slice, map_rref_slice_for_device, unmap_dma, unmap_for_device, DmaDirection,
+    map_rref_slice_for_device, unmap_dma, unmap_for_device, DmaDirection, DmaHandle,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
@@ -1123,7 +1123,7 @@ impl<'a> Future for SendFuture<'a> {
                             Some(device) => {
                                 map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
                             }
-                            None => map_rref_slice(rref, 0, DmaDirection::ToDevice),
+                            None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
                         }
                         .map_err(|_| VirtioNetError::DeviceError);
                         let handle = match handle {
@@ -1274,7 +1274,7 @@ impl<'a> Future for RecvFuture<'a> {
                             Some(device) => {
                                 map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice)
                             }
-                            None => map_rref_slice(rref, 0, DmaDirection::FromDevice),
+                            None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice),
                         }
                         .map_err(|_| VirtioNetError::DeviceError);
                         let handle = match handle {
@@ -1463,7 +1463,7 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
                                 Some(device) => {
                                     map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
                                 }
-                                None => map_rref_slice(rref, 0, DmaDirection::ToDevice),
+                                None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
                             }
                             .map_err(|_| VirtioNetError::DeviceError);
                             let handle = match handle {
@@ -1626,7 +1626,7 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
                         Some(device) => {
                             map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice)
                         }
-                        None => map_rref_slice(rref, 0, DmaDirection::FromDevice),
+                        None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice),
                     }
                     .map_err(|_| VirtioNetError::DeviceError);
                     let handle = match handle {

@@ -1596,6 +1596,12 @@ impl DmaAllocator for GlobalDmaAllocator {
             }
             return Err(DmaError::IommuRequired);
         } else {
+            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+                unsafe {
+                    dealloc(ptr, layout);
+                }
+                return Err(DmaError::IommuRequired);
+            }
             // IOMMUが無効だが必須ではない: 警告を出してフォールバック（開発用）
             log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
             (phys_addr.as_u64(), false)
@@ -1676,6 +1682,9 @@ impl DmaAllocator for GlobalDmaAllocator {
         } else if crate::io::iommu::api::is_iommu_required() {
             return Err(DmaError::IommuRequired);
         } else {
+            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+                return Err(DmaError::IommuRequired);
+            }
             log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
             (phys_addr.as_u64(), false)
         };
@@ -1852,7 +1861,7 @@ impl DeviceDmaContext {
             crate::io::iommu::api::map_rref_for_device(rref, &device, iommu_direction)
         } else {
             let domain_id = self.domain_id.unwrap_or(0);
-            crate::io::iommu::api::map_rref(rref, domain_id, iommu_direction)
+            crate::io::iommu::dma_handle::DmaHandle::map_rref(rref, domain_id, iommu_direction)
         }
     }
 
@@ -1869,7 +1878,11 @@ impl DeviceDmaContext {
             crate::io::iommu::api::map_rref_slice_for_device(rref, &device, iommu_direction)
         } else {
             let domain_id = self.domain_id.unwrap_or(0);
-            crate::io::iommu::api::map_rref_slice(rref, domain_id, iommu_direction)
+            crate::io::iommu::dma_handle::DmaHandle::map_rref_slice(
+                rref,
+                domain_id,
+                iommu_direction,
+            )
         }
     }
 

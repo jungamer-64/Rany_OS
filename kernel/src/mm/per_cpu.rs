@@ -80,6 +80,13 @@ impl PerCpuDomainCache {
 
 /// Per-Core IOVA Magazine (Cache)
 /// 頻繁な確保/解放を行う4KBページのIOVAをキャッシュする
+pub const IOVA_MAG_CAPACITY: usize = 256;
+
+/// Max number of IOMMU controllers that can use per-core IOVA caches.
+/// Controllers with indices >= this value skip the per-core fast path.
+pub const MAX_IOMMU_CONTROLLERS: usize = 8;
+
+/// Per-controller IOVA cache (per CPU).
 #[derive(Clone)]
 pub struct IovaMagazine {
     pub cache: Vec<u64>, // Free IOVA addresses (4KB pages)
@@ -124,10 +131,10 @@ pub struct PerCpuData {
     pub dealloc_count: u64,
     /// IOMMU Domain Cache (True Per-CPU)
     pub iommu_domain_cache: PerCpuDomainCache,
-    /// IOMMU IOVA Magazine (Cache)
-    pub iova_magazine: IovaMagazine,
+    /// IOMMU IOVA Magazines (per-controller cache)
+    pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
     /// パディング（キャッシュラインに揃える - 調整必要かも）
-    _padding: [u64; 2], // Reduced padding due to new field
+    _padding: [u64; 2], // Padding may need adjustment as fields evolve
 }
 
 impl PerCpuData {
@@ -140,7 +147,7 @@ impl PerCpuData {
             alloc_count: 0,
             dealloc_count: 0,
             iommu_domain_cache: PerCpuDomainCache::new(),
-            iova_magazine: IovaMagazine::new(256), // Cache 256 pages (1MB)
+            iova_magazines: [IovaMagazine::new(IOVA_MAG_CAPACITY); MAX_IOMMU_CONTROLLERS],
             _padding: [0; 2],
         }
     }

@@ -21,7 +21,11 @@
 //!     crate::mm::PAGE_SIZE_4K,
 //! )
 //! .expect("alloc rref slice");
-//! let handle = crate::io::iommu::api::map_rref_slice(rref, 0, DmaDirection::ToDevice)?;
+//! let handle = crate::io::iommu::dma_handle::DmaHandle::map_rref_slice(
+//!     rref,
+//!     0,
+//!     DmaDirection::ToDevice,
+//! )?;
 //!
 //! // Use handle.iova() for device programming
 //! device.set_dma_address(handle.iova());
@@ -507,6 +511,12 @@ impl<T> DmaHandle<T> {
             // Fallback to simple 1:1 mapping only when explicitly allowed
             return Self::map_simple(rref, domain_id, direction);
         }
+        if !crate::io::iommu::api::is_global_dma_mapping_allowed() {
+            return Err(MapError::new(
+                rref,
+                MapErrorKind::IommuError(IommuError::NotSupported),
+            ));
+        }
 
         if phys_addr_val.as_u64() & 0xFFF != 0 || size & 0xFFF != 0 {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
@@ -760,6 +770,12 @@ impl<T> DmaHandle<[T]> {
                 MappingKind::Identity,
             ));
         }
+        if !crate::io::iommu::api::is_global_dma_mapping_allowed() {
+            return Err(MapError::new(
+                rref,
+                MapErrorKind::IommuError(IommuError::NotSupported),
+            ));
+        }
 
         let virt_ptr = rref.as_ptr() as u64;
         let virt_addr = VirtAddr::new(virt_ptr);
@@ -874,7 +890,7 @@ impl<T> DmaHandle<T> {
     /// * `context` - The IOMMU context (for IOVA allocation)
     /// * `direction` - DMA transfer direction
     pub(crate) fn map(
-        domain: &mut IommuDomain,
+        domain: &IommuDomain,
         rref: RRef<T>,
         context: &dyn IommuHardwareContext,
         direction: DmaDirection,
@@ -893,7 +909,7 @@ impl<T> DmaHandle<T> {
     /// * `invalidator` - Invalidator for IOTLB flush
     pub(crate) fn unmap_with_domain<I: IommuInvalidator>(
         self,
-        domain: &mut IommuDomain,
+        domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
     ) -> Result<RRef<T>, UnmapError<T>> {
@@ -911,7 +927,7 @@ impl<T> DmaHandle<T> {
     /// * `invalidator` - Invalidator for async IOTLB flush
     pub(crate) async fn unmap_with_domain_async<I: IommuInvalidator + Sync>(
         self,
-        domain: &mut IommuDomain,
+        domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
         invalidator: &I,
     ) -> Result<RRef<T>, UnmapError<T>> {
@@ -941,7 +957,7 @@ impl<T> DmaHandle<T> {
     /// This method does NOT allocate any heap memory in the hot path.
     pub(crate) fn try_unmap_lazy(
         mut self,
-        domain: &mut IommuDomain,
+        domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
     ) -> Result<super::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
     where
@@ -1032,28 +1048,49 @@ impl<T> DmaHandle<T> {
     /// Lazy unmap with quarantine - auto-flush if queue full
     ///
     /// Like `try_unmap_lazy()`, but if the queue is full, triggers a single
-    /// flush attempt before returning an error.
+    /// `domain.flush()` attempt before returning an error.
     ///
     /// # Returns
     /// - `Ok(QuarantineTicket<T>)` - On success or after flush. Poll for completion.
     /// - `Err(QuarantineLazyUnmapError<T>)` - On failure after flush attempt.
-    pub(crate) fn unmap_lazy(
+    pub(crate) fn unmap_lazy<I: IommuInvalidator>(
         self,
-        domain: &mut IommuDomain,
+        domain: &IommuDomain,
         context: &dyn IommuHardwareContext,
+        invalidator: &I,
     ) -> Result<super::quarantine::QuarantineTicket<T>, QuarantineLazyUnmapError<T>>
     where
         T: 'static,
     {
+        let mut handle = self;
+        let stats = domain.quarantine_queue().stats();
+        if stats.pending_invalidations > 0 {
+            const QUARANTINE_FLUSH_THRESHOLD: usize =
+                super::quarantine::QUARANTINE_CAPACITY * 3 / 4;
+            if stats.active_count as usize >= QUARANTINE_FLUSH_THRESHOLD {
+                if let Err(err) = domain.flush(invalidator, context) {
+                    return Err(QuarantineLazyUnmapError {
+                        handle,
+                        kind: QuarantineLazyUnmapErrorKind::IommuError(err),
+                    });
+                }
+            }
+        }
+
         // First try without flush
-        match self.try_unmap_lazy(domain, context) {
+        match handle.try_unmap_lazy(domain, context) {
             Ok(ticket) => Ok(ticket),
             Err(err) => {
                 // If queue full, try one flush and retry
                 if matches!(err.kind, QuarantineLazyUnmapErrorKind::QueueFull) {
-                    // TODO: Trigger domain.flush() here when fully implemented
-                    // For now, just retry once (flush would be called by domain owner)
-                    match err.handle.try_unmap_lazy(domain, context) {
+                    let handle = err.handle;
+                    if let Err(flush_err) = domain.flush(invalidator, context) {
+                        return Err(QuarantineLazyUnmapError {
+                            handle,
+                            kind: QuarantineLazyUnmapErrorKind::IommuError(flush_err),
+                        });
+                    }
+                    match handle.try_unmap_lazy(domain, context) {
                         Ok(ticket) => Ok(ticket),
                         Err(e) => Err(e),
                     }

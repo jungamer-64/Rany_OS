@@ -17,6 +17,7 @@ pub mod tables;
 
 use self::controller::dma::DomainManager;
 use self::controller::fault::FaultHandler;
+use self::controller::iova::IovaManager;
 use self::controller::ir::InterruptRemapper;
 use self::controller::qi_ops::InvalidationOps;
 
@@ -57,7 +58,7 @@ impl IntelIommuDriver {
 
     pub(crate) fn enable(&self) -> Result<(), IommuError> {
         let registry = self.registry()?;
-        for controller in &registry.controllers {
+        for (idx, controller) in registry.controllers.iter().enumerate() {
             unsafe {
                 controller.enable()?;
             }
@@ -67,7 +68,7 @@ impl IntelIommuDriver {
 
     pub(crate) fn disable(&self) -> Result<(), IommuError> {
         let registry = self.registry()?;
-        for controller in &registry.controllers {
+        for (idx, controller) in registry.controllers.iter().enumerate() {
             unsafe {
                 controller.disable()?;
             }
@@ -144,9 +145,29 @@ impl IntelIommuDriver {
             return Err(IommuError::NotPresent);
         }
 
-        let iova = phys_addr.as_u64();
+        let default_controller = registry
+            .default_controller()
+            .ok_or(IommuError::NotPresent)?;
+        let iova = default_controller.allocate_iova(size)?;
 
-        for controller in &registry.controllers {
+        let default_ptr = Arc::as_ptr(default_controller) as *const ();
+        let mut reserved_indices = alloc::vec::Vec::new();
+        for (idx, controller) in registry.controllers.iter().enumerate() {
+            if (Arc::as_ptr(controller) as *const ()) == default_ptr {
+                continue;
+            }
+            if let Err(err) = controller.reserve_iova(iova, size) {
+                let _ = default_controller.free_iova(iova, size);
+                for reserved_idx in &reserved_indices {
+                    let _ = registry.controllers[*reserved_idx].free_iova(iova, size);
+                }
+                return Err(err);
+            }
+            reserved_indices.push(idx);
+        }
+
+        let mut mapped_indices = alloc::vec::Vec::new();
+        for (idx, controller) in registry.controllers.iter().enumerate() {
             let domain_arc = {
                 let domains_guard = controller
                     .domains
@@ -157,8 +178,38 @@ impl IntelIommuDriver {
                     .cloned()
                     .ok_or(IommuError::DomainNotFound)?
             };
-            let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-            domain.map(iova, phys_addr.as_u64(), size, true, true)?;
+            if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, true, true) {
+                let mut unmap_failed = false;
+                for mapped in &mapped_indices {
+                    let Some(mapped_ctrl) = registry.controllers.get(*mapped) else {
+                        unmap_failed = true;
+                        continue;
+                    };
+                    let domains_guard = match mapped_ctrl.domains.lock() {
+                        Ok(guard) => guard,
+                        Err(_) => {
+                            unmap_failed = true;
+                            continue;
+                        }
+                    };
+                    let Some(domain_arc) = domains_guard.get(&0).cloned() else {
+                        unmap_failed = true;
+                        continue;
+                    };
+                    drop(domains_guard);
+                    if domain_arc.unmap(iova).is_err() {
+                        unmap_failed = true;
+                    }
+                }
+                if !unmap_failed {
+                    let _ = default_controller.free_iova(iova, size);
+                    for reserved_idx in &reserved_indices {
+                        let _ = registry.controllers[*reserved_idx].free_iova(iova, size);
+                    }
+                }
+                return Err(err);
+            }
+            mapped_indices.push(idx);
         }
 
         Ok(iova)
@@ -170,6 +221,7 @@ impl IntelIommuDriver {
             return Err(IommuError::NotPresent);
         }
 
+        let mut last_err = None;
         for controller in &registry.controllers {
             let domain_arc = {
                 let domains_guard = controller
@@ -181,11 +233,21 @@ impl IntelIommuDriver {
                     .cloned()
                     .ok_or(IommuError::DomainNotFound)?
             };
-            let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-            domain.unmap(iova)?;
+            match domain_arc.unmap(iova) {
+                Ok(mapping) => {
+                    let _ = controller.free_iova(iova, mapping.size);
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                }
+            }
         }
 
-        Ok(())
+        if let Some(err) = last_err {
+            Err(err)
+        } else {
+            Ok(())
+        }
     }
 
     pub(crate) unsafe fn map_for_device(
@@ -204,14 +266,17 @@ impl IntelIommuDriver {
             return Err(IommuError::NotPresent);
         }
 
-        let iova = phys_addr.as_u64();
-
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let domain_id = {
-                        let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                        d.id
+                    let domain_id = domain_arc.id();
+                    let mask = crate::io::iommu::api::get_device_dma_mask(device);
+                    let iova = match mask {
+                        Some(limit) => controller.allocate_iova_masked(size, limit)?,
+                        None if size == crate::mm::PAGE_SIZE_4K as u64 => {
+                            controller.allocate_iova_fast(size)?
+                        }
+                        None => controller.allocate_iova(size)?,
                     };
 
                     if let Some(ref cq) = controller.command_queue {
@@ -223,12 +288,17 @@ impl IntelIommuDriver {
                             read: true,
                             write: true,
                         };
-                        cq.submit_sync(cmd).map_err(|_| IommuError::HardwareError)?;
+                        if cq.submit_sync(cmd).is_err() {
+                            let _ = controller.free_iova(iova, size);
+                            return Err(IommuError::HardwareError);
+                        }
                         return Ok(iova);
                     }
 
-                    let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                    domain.map(iova, phys_addr.as_u64(), size, true, true)?;
+                    if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, true, true) {
+                        let _ = controller.free_iova(iova, size);
+                        return Err(err);
+                    }
                     return Ok(iova);
                 }
             }
@@ -253,14 +323,17 @@ impl IntelIommuDriver {
             return Err(IommuError::NotPresent);
         }
 
-        let iova = phys_addr.as_u64();
-
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let domain_id = {
-                        let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                        d.id
+                    let domain_id = domain_arc.id();
+                    let mask = crate::io::iommu::api::get_device_dma_mask(device);
+                    let iova = match mask {
+                        Some(limit) => controller.allocate_iova_masked(size, limit)?,
+                        None if size == crate::mm::PAGE_SIZE_4K as u64 => {
+                            controller.allocate_iova_fast(size)?
+                        }
+                        None => controller.allocate_iova(size)?,
                     };
 
                     if let Some(ref cq) = controller.command_queue {
@@ -272,17 +345,25 @@ impl IntelIommuDriver {
                             read: true,
                             write: true,
                         };
-                        let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
+                        let comp = match cq.submit(cmd) {
+                            Ok(comp) => comp,
+                            Err(_) => {
+                                let _ = controller.free_iova(iova, size);
+                                return Err(IommuError::HardwareError);
+                            }
+                        };
                         let rc = comp.await;
                         if rc == 0 {
                             return Ok(iova);
-                        } else {
-                            return Err(IommuError::HardwareError);
                         }
+                        let _ = controller.free_iova(iova, size);
+                        return Err(IommuError::HardwareError);
                     }
 
-                    let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                    domain.map(iova, phys_addr.as_u64(), size, true, true)?;
+                    if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, true, true) {
+                        let _ = controller.free_iova(iova, size);
+                        return Err(err);
+                    }
                     return Ok(iova);
                 }
             }
@@ -305,25 +386,24 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let domain_id = {
-                        let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                        d.id
-                    };
-
                     if let Some(ref cq) = controller.command_queue {
+                        let domain_id = domain_arc.id();
+                        let mapping = domain_arc
+                            .mapping(iova)
+                            .ok_or(IommuError::NotMapped)?;
+                        let mapping_size = mapping.size;
                         let cmd = IommuCommandKind::UnmapRegion {
                             domain: domain_id,
                             iova,
                             size,
                         };
                         cq.submit_sync(cmd).map_err(|_| IommuError::HardwareError)?;
+                        let _ = controller.free_iova(iova, mapping_size);
                         return Ok(());
                     }
 
-                    let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                    domain.unmap(iova)?;
-                    let domain_id = domain.id();
-                    drop(domain);
+                    let mapping = domain_arc.unmap(iova)?;
+                    let domain_id = domain_arc.id();
 
                     if let Some(ref cq) = controller.command_queue {
                         cq.submit_sync(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
@@ -332,6 +412,7 @@ impl IntelIommuDriver {
                         controller.invalidate_iotlb(domain_id);
                     }
 
+                    let _ = controller.free_iova(iova, mapping.size);
                     return Ok(());
                 }
             }
@@ -354,12 +435,12 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let domain_id = {
-                        let d = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                        d.id
-                    };
-
                     if let Some(ref cq) = controller.command_queue {
+                        let domain_id = domain_arc.id();
+                        let mapping = domain_arc
+                            .mapping(iova)
+                            .ok_or(IommuError::NotMapped)?;
+                        let mapping_size = mapping.size;
                         let cmd = IommuCommandKind::UnmapRegion {
                             domain: domain_id,
                             iova,
@@ -368,16 +449,14 @@ impl IntelIommuDriver {
                         let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
                         let rc = comp.await;
                         if rc == 0 {
+                            let _ = controller.free_iova(iova, mapping_size);
                             return Ok(());
-                        } else {
-                            return Err(IommuError::HardwareError);
                         }
+                        return Err(IommuError::HardwareError);
                     }
 
-                    let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-                    domain.unmap(iova)?;
-                    let domain_id = domain.id();
-                    drop(domain);
+                    let mapping = domain_arc.unmap(iova)?;
+                    let domain_id = domain_arc.id();
 
                     if let Some(ref cq) = controller.command_queue {
                         let comp = cq
@@ -393,6 +472,7 @@ impl IntelIommuDriver {
                         controller.invalidate_iotlb(domain_id);
                     }
 
+                    let _ = controller.free_iova(iova, mapping.size);
                     return Ok(());
                 }
             }
@@ -467,15 +547,7 @@ impl IntelIommuDriver {
         let registry = self.registry()?;
         for controller in &registry.controllers {
             if let Some(domain_arc) = controller.domain(domain_id) {
-                match domain_arc.lock() {
-                    Ok(guard) => return Ok(guard.numa_node),
-                    Err(_) => {
-                        log::error!(
-                            "[IOMMU] Domain lock poisoned in get_domain_numa - returning None"
-                        );
-                        return Ok(None);
-                    }
-                }
+                return Ok(domain_arc.numa_node());
             }
         }
 

@@ -10,17 +10,67 @@ use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
 
 use crate::io::iommu::domain::IommuDomain;
+use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits::ECAP_DT;
 use crate::io::iommu::intel::registers::{ecap_bits, regs};
 use crate::io::iommu::intel::tables::ContextEntry;
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 
 use super::IommuController;
-use crate::sync::PoisonLock;
 
 // Import Invalidation traits (if/when moved)
 use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
+
+fn align_down(value: u64, align: u64) -> u64 {
+    value & !(align - 1)
+}
+
+fn align_up(value: u64, align: u64) -> u64 {
+    (value + align - 1) & !(align - 1)
+}
+
+fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), IommuError> {
+    if domain.domain_type() == IommuDomainType::Passthrough {
+        return Ok(());
+    }
+
+    let Some(registry) = get_iommu_registry() else {
+        return Ok(());
+    };
+
+    let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+    for region in registry.reserved_regions() {
+        if region.segment != device.segment {
+            continue;
+        }
+        if region.devices.is_empty() {
+            log::warn!(
+                "[IOMMU] RMRR region has empty device scope: seg={}, base={:#x}, limit={:#x}",
+                region.segment,
+                region.base,
+                region.limit
+            );
+            continue;
+        }
+        if !region.devices.iter().any(|d| *d == device) {
+            continue;
+        }
+
+        let start = align_down(region.base, page_size);
+        let end = align_up(region.limit.saturating_add(1), page_size);
+        if end <= start {
+            continue;
+        }
+        let size = end - start;
+        match domain.map(start, start, size, true, true) {
+            Ok(()) | Err(IommuError::AlreadyMapped) => {}
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(())
+}
 
 pub trait DomainManager {
     /// Create a new domain with an optional NUMA node affinity hint
@@ -37,7 +87,7 @@ pub trait DomainManager {
     fn get_domain_numa(&self, domain_id: u16) -> Option<usize>;
 
     /// Get a domain by ID
-    fn domain(&self, id: u16) -> Option<Arc<PoisonLock<IommuDomain>>>;
+    fn domain(&self, id: u16) -> Option<Arc<IommuDomain>>;
 
     /// Attach a device to a domain
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError>;
@@ -98,7 +148,7 @@ impl DomainManager for IommuController {
             self.page_table_pool.clone(),
             PteFormat::Intel,
         );
-        let domain_arc = Arc::new(PoisonLock::new(domain));
+        let domain_arc = Arc::new(domain);
 
         #[cfg(test)]
         println!("[IOMMU TEST] create_domain inserting id = {}", id);
@@ -133,28 +183,13 @@ impl DomainManager for IommuController {
             }
         };
 
-        let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-        domain.numa_node = numa_node;
+        domain_arc.set_numa_node(numa_node);
         Ok(())
     }
 
     fn get_domain_numa(&self, domain_id: u16) -> Option<usize> {
         match self.domains.lock() {
-            Ok(domains) => {
-                if let Some(d) = domains.get(&domain_id) {
-                    match d.lock() {
-                        Ok(guard) => guard.numa_node,
-                        Err(_) => {
-                            log::error!(
-                                "[IOMMU] Domain lock poisoned in get_domain_numa - returning None"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                }
-            }
+            Ok(domains) => domains.get(&domain_id).map(|d| d.numa_node()),
             Err(_) => {
                 log::error!("[IOMMU] Domains map poisoned in get_domain_numa - returning None");
                 None
@@ -162,7 +197,7 @@ impl DomainManager for IommuController {
         }
     }
 
-    fn domain(&self, id: u16) -> Option<Arc<PoisonLock<IommuDomain>>> {
+    fn domain(&self, id: u16) -> Option<Arc<IommuDomain>> {
         match self.domains.lock() {
             Ok(domains) => domains.get(&id).cloned(),
             Err(_) => {
@@ -173,9 +208,16 @@ impl DomainManager for IommuController {
     }
 
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError> {
-        let domains = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
-        let domain_arc = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
-        let domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
+        let domain_arc = {
+            let domains = self.domains.lock().map_err(|_| IommuError::HardwareError)?;
+            domains
+                .get(&domain_id)
+                .cloned()
+                .ok_or(IommuError::DomainNotFound)?
+        };
+        map_rmrr_for_device(&domain_arc, device)?;
+        let domain_type = domain_arc.domain_type();
+        let page_table_addr = domain_arc.page_table_addr();
 
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
@@ -211,10 +253,10 @@ impl DomainManager for IommuController {
             .ok_or(IommuError::InvalidAddress)?;
 
         // 48-bit address width (AGAW = 2)
-        if domain.domain_type() == IommuDomainType::Passthrough {
-            context_entry.set_passthrough(domain.id());
+        if domain_type == IommuDomainType::Passthrough {
+            context_entry.set_passthrough(domain_id);
         } else {
-            context_entry.set_sl_pt(domain.page_table_addr(), domain.id(), 2);
+            context_entry.set_sl_pt(page_table_addr, domain_id, 2);
         }
 
         let mut device_domains = self
@@ -293,9 +335,7 @@ impl DomainManager for IommuController {
                 .cloned()
                 .ok_or(IommuError::DomainNotFound)?
         };
-        let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-
-        domain.map(iova, phys, size, read, write)
+        domain_arc.map(iova, phys, size, read, write)
     }
 
     fn unmap_dma(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
@@ -317,9 +357,7 @@ impl DomainManager for IommuController {
                 .cloned()
                 .ok_or(IommuError::DomainNotFound)?
         };
-        let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-
-        domain.unmap(iova).map(|mapping| {
+        domain_arc.unmap(iova).map(|mapping| {
             if mapping.size >= 2 * 1024 * 1024 {
                 unsafe { self.invalidate_iotlb_direct(domain_id) };
             } else {
@@ -387,10 +425,7 @@ impl DomainManager for IommuController {
                 .cloned()
                 .ok_or(IommuError::DomainNotFound)?
         };
-        let mut domain = domain_arc.lock().map_err(|_| IommuError::HardwareError)?;
-
-        let mapping = domain.unmap(iova)?;
-        drop(domain); // Release lock
+        let mapping = domain_arc.unmap(iova)?;
 
         if self.is_queued_invalidation_enabled() {
             let num_pages = (mapping.size / 4096) as u64;
@@ -448,15 +483,14 @@ impl DomainManager for IommuController {
                 write,
             } => match self.domains.lock() {
                 Ok(dom_map) => {
-                    if let Some(domain_arc) = dom_map.get(domain) {
-                        match domain_arc.lock() {
-                            Ok(mut d) => match d.map(*iova, *phys, *size, *read, *write) {
-                                Ok(_) => {
-                                    unsafe { self.invalidate_iotlb_direct(*domain) };
-                                    Ok(0)
-                                }
-                                Err(_) => Err(()),
-                            },
+                    let domain_arc = dom_map.get(domain).cloned();
+                    drop(dom_map);
+                    if let Some(domain_arc) = domain_arc {
+                        match domain_arc.map(*iova, *phys, *size, *read, *write) {
+                            Ok(_) => {
+                                unsafe { self.invalidate_iotlb_direct(*domain) };
+                                Ok(0)
+                            }
                             Err(_) => Err(()),
                         }
                     } else {
@@ -471,15 +505,14 @@ impl DomainManager for IommuController {
                 size: _,
             } => match self.domains.lock() {
                 Ok(dom_map) => {
-                    if let Some(domain_arc) = dom_map.get(domain) {
-                        match domain_arc.lock() {
-                            Ok(mut d) => match d.unmap(*iova) {
-                                Ok(_) => {
-                                    unsafe { self.invalidate_iotlb_direct(*domain) };
-                                    Ok(0)
-                                }
-                                Err(_) => Err(()),
-                            },
+                    let domain_arc = dom_map.get(domain).cloned();
+                    drop(dom_map);
+                    if let Some(domain_arc) = domain_arc {
+                        match domain_arc.unmap(*iova) {
+                            Ok(_) => {
+                                unsafe { self.invalidate_iotlb_direct(*domain) };
+                                Ok(0)
+                            }
                             Err(_) => Err(()),
                         }
                     } else {

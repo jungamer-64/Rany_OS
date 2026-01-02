@@ -171,8 +171,13 @@ impl SystemIntegration {
         crate::io::pci::init();
 
         // Get all PCI devices
-        let devices = crate::io::pci::scan_all_devices();
+        let mut devices = crate::io::pci::scan_all_devices();
         self.log(&alloc::format!("  Found {} PCI device(s)", devices.len()));
+
+        #[cfg(not(test))]
+        {
+            crate::io::iommu::pci::setup_iommu_for_all_pci_devices(&mut devices);
+        }
 
         // Categorize devices
         let mut storage_count = 0;

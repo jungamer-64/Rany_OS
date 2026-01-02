@@ -333,6 +333,15 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                                 _ => {}
                             }
                         }
+                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu_global") {
+                            match val {
+                                "on" | "1" | "true" => iommu_config.allow_global_mappings = true,
+                                "off" | "0" | "false" => {
+                                    iommu_config.allow_global_mappings = false;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
 
