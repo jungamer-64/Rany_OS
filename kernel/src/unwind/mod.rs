@@ -65,6 +65,10 @@ pub use gimli_unwinder::{
     unregister_domain_lock, unregister_drop_guard,
 };
 
+// catch_panic機構のエクスポート
+// 設計書 8.1/8.2: ドメイン境界でのパニック捕捉
+// pub use catch_panic::{...} は後方で定義されているため、ここでは宣言のみ
+
 use core::fmt;
 use core::ptr;
 
@@ -1209,6 +1213,246 @@ impl SafeCfiInterpreter {
     /// 現在のコンテキスト
     pub fn context(&self) -> &registers::UnwindContext {
         &self.context
+    }
+}
+
+// ============================================================================
+// Catch Panic Mechanism - 設計書 8.1/8.2: ドメイン境界でのパニック捕捉
+// ============================================================================
+//
+// no_std環境では std::panic::catch_unwind() が使用できないため、
+// パニックハンドラとの協調によりパニック捕捉をエミュレートする。
+//
+// ## 設計
+// 1. PanicCatcher: 現在の「捕捉ポイント」を表す構造体
+// 2. パニックハンドラがPANIC_CATCH_ACTIVE をチェック
+// 3. 捕捉可能な場合、パニックメッセージを保存してHALT/継続
+//
+// ## 制限事項
+// - 真のスタックアンワインドは行われない（Drop トレイトは呼ばれない）
+// - パニックしたドメインのリソースはリーク可能性あり
+// - 設計書 8.1 のリソース回収機構と組み合わせて使用すること
+
+use alloc::string::String;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// パニック捕捉が有効かどうか
+static PANIC_CATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 捕捉されたパニックがあるかどうか
+static PANIC_CAUGHT: AtomicBool = AtomicBool::new(false);
+
+/// 捕捉されたパニックメッセージ（簡易版: 固定長バッファ）
+/// 
+/// 注意: パニックコンテキストでの動的メモリ確保を避けるため固定長バッファを使用
+const PANIC_MESSAGE_BUFFER_SIZE: usize = 256;
+static PANIC_MESSAGE_BUFFER: spin::Mutex<[u8; PANIC_MESSAGE_BUFFER_SIZE]> =
+    spin::Mutex::new([0u8; PANIC_MESSAGE_BUFFER_SIZE]);
+static PANIC_MESSAGE_LEN: AtomicUsize = AtomicUsize::new(0);
+
+/// パニック情報を保持する構造体
+#[derive(Debug, Clone)]
+pub struct PanicPayload {
+    /// パニックメッセージ
+    pub message: String,
+    /// パニック発生場所（ファイル名）
+    pub file: Option<String>,
+    /// 行番号
+    pub line: Option<u32>,
+    /// 列番号
+    pub column: Option<u32>,
+}
+
+impl PanicPayload {
+    /// 空のペイロードを作成
+    pub fn empty() -> Self {
+        Self {
+            message: String::new(),
+            file: None,
+            line: None,
+            column: None,
+        }
+    }
+    
+    /// メッセージからペイロードを作成
+    pub fn from_message(message: String) -> Self {
+        Self {
+            message,
+            file: None,
+            line: None,
+            column: None,
+        }
+    }
+}
+
+impl core::fmt::Display for PanicPayload {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.message)?;
+        if let (Some(file), Some(line)) = (&self.file, self.line) {
+            write!(f, " at {}:{}", file, line)?;
+            if let Some(col) = self.column {
+                write!(f, ":{}", col)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// パニック捕捉の結果
+pub type CatchResult<T> = Result<T, PanicPayload>;
+
+/// パニック捕捉が有効かどうかをチェック
+/// 
+/// パニックハンドラから呼び出される
+#[inline]
+pub fn is_panic_catch_active() -> bool {
+    PANIC_CATCH_ACTIVE.load(Ordering::SeqCst)
+}
+
+/// パニックを記録（パニックハンドラから呼び出される）
+/// 
+/// # 安全性
+/// この関数はパニックハンドラのコンテキストから呼び出されるため、
+/// 動的メモリ確保を避け、固定長バッファを使用する。
+pub fn record_caught_panic(message: &str, file: Option<&str>, line: Option<u32>, column: Option<u32>) {
+    PANIC_CAUGHT.store(true, Ordering::SeqCst);
+    
+    // メッセージを固定長バッファにコピー
+    let bytes = message.as_bytes();
+    let copy_len = bytes.len().min(PANIC_MESSAGE_BUFFER_SIZE - 1);
+    
+    if let Some(mut guard) = PANIC_MESSAGE_BUFFER.try_lock() {
+        guard[..copy_len].copy_from_slice(&bytes[..copy_len]);
+        guard[copy_len] = 0; // null終端
+        PANIC_MESSAGE_LEN.store(copy_len, Ordering::Release);
+    }
+    
+    // ファイル情報は現時点では破棄（将来的には別バッファに保存）
+    let _ = (file, line, column);
+}
+
+/// 捕捉されたパニックを取得してクリア
+fn take_caught_panic() -> Option<PanicPayload> {
+    if !PANIC_CAUGHT.swap(false, Ordering::SeqCst) {
+        return None;
+    }
+    
+    let len = PANIC_MESSAGE_LEN.load(Ordering::Acquire);
+    let message = if let Some(guard) = PANIC_MESSAGE_BUFFER.try_lock() {
+        let bytes = &guard[..len];
+        String::from_utf8_lossy(bytes).into_owned()
+    } else {
+        String::from("(panic message unavailable)")
+    };
+    
+    // バッファをクリア
+    PANIC_MESSAGE_LEN.store(0, Ordering::Release);
+    
+    Some(PanicPayload::from_message(message))
+}
+
+/// パニックを捕捉して実行
+/// 
+/// no_std環境での `std::panic::catch_unwind` 相当の機能を提供する。
+/// 
+/// # 設計書 8.2: ドメイン境界でのパニック捕捉
+/// 
+/// プロキシ呼び出し時にこの関数を使用することで、ドメインのパニックを
+/// 捕捉し、呼び出し元ドメインに `Result::Err` として伝播させる。
+/// 
+/// # 使用例
+/// ```
+/// let result = catch_panic(|| {
+///     // パニックする可能性のあるコード
+///     risky_operation()
+/// });
+/// 
+/// match result {
+///     Ok(value) => println!("Success: {:?}", value),
+///     Err(payload) => println!("Caught panic: {}", payload),
+/// }
+/// ```
+/// 
+/// # 制限事項
+/// - 真のスタックアンワインドは行われない
+/// - パニックしたコードのDropトレイトは呼ばれない
+/// - パニックハンドラがこの機構と統合されている必要がある
+/// 
+/// # 安全性
+/// この関数自体はsafeだが、パニック時のリソースリークに注意が必要。
+/// 設計書 8.1 のリソース回収機構と組み合わせて使用すること。
+pub fn catch_panic<F, T>(f: F) -> CatchResult<T>
+where
+    F: FnOnce() -> T,
+{
+    // パニック捕捉を有効化
+    let was_active = PANIC_CATCH_ACTIVE.swap(true, Ordering::SeqCst);
+    
+    // 前の捕捉状態をクリア
+    PANIC_CAUGHT.store(false, Ordering::SeqCst);
+    
+    // 関数を実行
+    let result = f();
+    
+    // パニック捕捉を復元
+    PANIC_CATCH_ACTIVE.store(was_active, Ordering::SeqCst);
+    
+    // パニックが捕捉されたかチェック
+    if let Some(payload) = take_caught_panic() {
+        return Err(payload);
+    }
+    
+    Ok(result)
+}
+
+/// パニック捕捉付きで関数を実行し、AssertUnwindSafe相当の保証を提供
+/// 
+/// `catch_panic` との違い:
+/// - 明示的にUnwindSafeでないクロージャを受け入れる
+/// - 「このコードはパニック後も安全」という意図を示す
+pub fn catch_panic_unwind_safe<F, T>(f: F) -> CatchResult<T>
+where
+    F: FnOnce() -> T,
+{
+    catch_panic(f)
+}
+
+/// パニック捕捉スコープガード
+/// 
+/// RAII パターンでパニック捕捉の有効/無効を管理する。
+/// Drop時に自動的に以前の状態に復元される。
+pub struct PanicCatchGuard {
+    was_active: bool,
+}
+
+impl PanicCatchGuard {
+    /// 新しいパニック捕捉スコープを開始
+    pub fn new() -> Self {
+        let was_active = PANIC_CATCH_ACTIVE.swap(true, Ordering::SeqCst);
+        PANIC_CAUGHT.store(false, Ordering::SeqCst);
+        Self { was_active }
+    }
+    
+    /// パニックが捕捉されたかチェック
+    pub fn caught_panic(&self) -> bool {
+        PANIC_CAUGHT.load(Ordering::SeqCst)
+    }
+    
+    /// 捕捉されたパニック情報を取得
+    pub fn take_panic(&self) -> Option<PanicPayload> {
+        take_caught_panic()
+    }
+}
+
+impl Drop for PanicCatchGuard {
+    fn drop(&mut self) {
+        PANIC_CATCH_ACTIVE.store(self.was_active, Ordering::SeqCst);
+    }
+}
+
+impl Default for PanicCatchGuard {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

@@ -15,6 +15,7 @@ use super::tables::{HardwareTable, PageTableScope, SlPte};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use super::intel::controller::IommuController;
 use super::intel::tables::ContextEntry;
+use alloc::sync::Arc;
 use crate::io::iommu::intel::controller::dma::DomainManager;
 use crate::io::iommu::intel::controller::iova::IovaManager;
 use crate::io::iommu::intel::controller::ir::InterruptRemapper;
@@ -1187,6 +1188,28 @@ fn test_security_notifier_registration() {
     // Second registration should fail (already set)
     let notifier2 = Arc::new(MockSecurityNotifier::new());
     assert!(!ctrl.set_security_notifier(notifier2));
+}
+
+#[test]
+fn test_api_security_notifier_registration() {
+    if get_iommu_registry().is_none() {
+        let ctrl = IommuController::new(0x0, 0);
+        let registry =
+            IommuRegistry::new(alloc::vec![Arc::new(ctrl)], Vec::new(), IommuConfig::default());
+        init_registry(registry);
+    }
+
+    if get_iommu_driver().is_none() {
+        super::intel::IntelIommuDriver::register_driver();
+    }
+
+    let notifier = Arc::new(MockSecurityNotifier::new());
+    let first = super::api::set_security_notifier(notifier).expect("set notifier");
+    assert!(first);
+
+    let notifier2 = Arc::new(MockSecurityNotifier::new());
+    let second = super::api::set_security_notifier(notifier2).expect("set notifier");
+    assert!(!second);
 }
 
 #[test]

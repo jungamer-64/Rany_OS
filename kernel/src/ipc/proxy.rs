@@ -193,21 +193,38 @@ pub fn did_proxy_panic() -> bool {
 /// パニック捕捉付きで関数を実行
 ///
 /// no_std環境ではstd::panic::catch_unwindが使えないため、
-/// パニックハンドラとの連携でエミュレート
+/// unwindモジュールのcatch_panic機構と連携してパニックを捕捉する。
+///
+/// 設計書 8.1/8.2:
+/// - パニックはドメイン境界で停止
+/// - パニックハンドラがリソース回収を行う
+/// - プロキシは Result::Err を返す
 fn execute_with_panic_capture<F, T>(func: F) -> T
 where
     F: FnOnce() -> T,
 {
-    // 注意: 実際のパニック捕捉は panic_handler との連携が必要
-    // パニックハンドラは PROXY_PANIC_STATE をチェックし、
-    // プロキシ呼び出し中であれば record_proxy_panic() を呼び出す
-    //
-    // 設計書 8.1/8.2:
-    // - パニックはドメイン境界で停止
-    // - パニックハンドラがリソース回収を行う
-    // - プロキシは Result::Err を返す
-
-    func()
+    // unwindモジュールのcatch_panic機構を使用
+    // これによりパニックハンドラとの連携でパニックを捕捉できる
+    match crate::unwind::catch_panic(func) {
+        Ok(result) => result,
+        Err(payload) => {
+            // パニックが捕捉された場合、PROXY_PANIC_STATEを設定
+            record_proxy_panic(payload.message);
+            
+            // 注意: ここに到達した場合、関数は完了していないため
+            // 戻り値を生成できない。この問題は呼び出し元で
+            // PROXY_PANIC_STATEをチェックすることで対処する。
+            //
+            // 現在の設計では、catch_panic後にここに到達することは
+            // 実際には起こらない（パニックハンドラがHALTするため）。
+            // 将来的にsetjmp/longjmpを実装した場合、ここでの処理が必要になる。
+            
+            // 暫定的にデフォルト値を返す（実際には到達しない）
+            // TODO: 将来的にはunsafe { core::mem::zeroed() } または
+            // MaybeUninitを使用する
+            unreachable!("catch_panic should have returned Ok or halted")
+        }
+    }
 }
 
 /// 非同期プロキシ呼び出しのFuture

@@ -202,7 +202,8 @@ impl IntelIommuDriver {
             if let Err(err) = controller.reserve_iova(iova, size) {
                 let _ = default_controller.free_iova(iova, size);
                 for reserved_idx in &reserved_indices {
-                    let _ = registry.controllers[*reserved_idx].free_iova(iova, size);
+                    let ctrl = &registry.controllers[*reserved_idx];
+                    let _ = ctrl.free_iova(iova, size);
                 }
                 return Err(err);
             }
@@ -211,16 +212,9 @@ impl IntelIommuDriver {
 
         let mut mapped_indices = alloc::vec::Vec::new();
         for (idx, controller) in registry.controllers.iter().enumerate() {
-            let domain_arc = {
-                let domains_guard = controller
-                    .domains
-                    .lock()
-                    .map_err(|_| IommuError::HardwareError)?;
-                domains_guard
-                    .get(&0)
-                    .cloned()
-                    .ok_or(IommuError::DomainNotFound)?
-            };
+            let domain_arc = controller
+                .domain(0)
+                .ok_or(IommuError::DomainNotFound)?;
             if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, read, write) {
                 let mut unmap_failed = false;
                 for mapped in &mapped_indices {
@@ -228,26 +222,19 @@ impl IntelIommuDriver {
                         unmap_failed = true;
                         continue;
                     };
-                    let domains_guard = match mapped_ctrl.domains.lock() {
-                        Ok(guard) => guard,
-                        Err(_) => {
-                            unmap_failed = true;
-                            continue;
-                        }
-                    };
-                    let Some(domain_arc) = domains_guard.get(&0).cloned() else {
+                    let Some(rollback_domain) = mapped_ctrl.domain(0) else {
                         unmap_failed = true;
                         continue;
                     };
-                    drop(domains_guard);
-                    if domain_arc.unmap(iova).is_err() {
+                    if rollback_domain.unmap(iova).is_err() {
                         unmap_failed = true;
                     }
                 }
                 if !unmap_failed {
                     let _ = default_controller.free_iova(iova, size);
                     for reserved_idx in &reserved_indices {
-                        let _ = registry.controllers[*reserved_idx].free_iova(iova, size);
+                        let ctrl = &registry.controllers[*reserved_idx];
+                        let _ = ctrl.free_iova(iova, size);
                     }
                 }
                 return Err(err);

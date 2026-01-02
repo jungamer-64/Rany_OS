@@ -195,7 +195,7 @@ impl IommuBackend {
     pub fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {
         match self {
             Self::Intel(driver) => driver.domain_id_for_device(device),
-            Self::Amd(driver) => driver.domain_id_for_device(device),
+            Self::Amd(driver) => driver.domain_id_for_device(*device),
         }
     }
 

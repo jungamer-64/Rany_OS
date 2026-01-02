@@ -12,6 +12,7 @@ use super::tables::{
 use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::amd::tables::AmdPte;
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
