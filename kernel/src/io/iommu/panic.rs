@@ -53,6 +53,12 @@ pub struct PanicDmaRegion {
     pub virt: *mut u8,
 }
 
+// SAFETY: PanicDmaRegion points to static panic DMA pool memory that is
+// valid for the entire lifetime of the kernel. The pool is allocated once
+// during boot and never deallocated. All fields are trivially copyable.
+unsafe impl Send for PanicDmaRegion {}
+unsafe impl Sync for PanicDmaRegion {}
+
 static PANIC_DMA_POOL: Once<PanicDmaPool> = Once::new();
 static LAST_PANIC_DMA_PHYS: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_IOVA: AtomicU64 = AtomicU64::new(0);

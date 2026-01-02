@@ -19,6 +19,7 @@ use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
 use crate::io::iommu::tables::{phys_to_virt_usize, virt_ptr_to_phys};
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 use crate::io::iommu::iova_allocator::{IovaAllocator, IovaGranularity};
+use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use crate::mm::buddy_alloc_contiguous_frames;
 use crate::mm::mapping::phys_to_virt;
 // Use PAGE_SIZE_4K from local IOMMU iova_allocator instead
@@ -463,6 +464,10 @@ impl AmdDeferredFaultQueue {
 static AMD_DEFERRED_FAULT_QUEUE: AmdDeferredFaultQueue = AmdDeferredFaultQueue::new();
 
 pub fn drain_deferred_faults() -> usize {
+    drain_deferred_faults_with_driver(None)
+}
+
+pub(crate) fn drain_deferred_faults_with_driver(driver: Option<&AmdIommuDriver>) -> usize {
     let mut count = 0usize;
     while let Some(event) = AMD_DEFERRED_FAULT_QUEUE.pop() {
         if event.is_overflow {
@@ -484,6 +489,13 @@ pub fn drain_deferred_faults() -> usize {
                 event.raw[2],
                 event.raw[3],
             );
+            if let Some(driver) = driver {
+                driver.notify_security(SecurityEvent::DmaViolation {
+                    source_id: event.devid,
+                    fault_address: event.address,
+                    reason: event.event_type,
+                });
+            }
         }
         count += 1;
     }
@@ -494,6 +506,11 @@ pub fn drain_deferred_faults() -> usize {
             "[IOMMU][AMD-Vi] {} event(s) dropped due to queue overflow",
             dropped
         );
+        if let Some(driver) = driver {
+            driver.notify_security(SecurityEvent::EventsDropped {
+                count: dropped as u64,
+            });
+        }
     }
 
     count
@@ -503,7 +520,11 @@ const FAULT_HANDLER_INTERVAL_MS: u64 = 100;
 
 pub async fn fault_handler_task() {
     loop {
-        let _ = drain_deferred_faults();
+        let driver = get_iommu_driver().and_then(|backend| match backend.as_ref() {
+            IommuBackend::Amd(driver) => Some(driver),
+            _ => None,
+        });
+        let _ = drain_deferred_faults_with_driver(driver);
         crate::task::sleep_ms(FAULT_HANDLER_INTERVAL_MS).await;
     }
 }
@@ -635,6 +656,7 @@ pub struct AmdIommuDriver {
     page_table_pool: Arc<PageTablePool>,
     iova_allocator: PoisonLock<IovaAllocator>,
     enabled: AtomicBool,
+    security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
 }
 
 #[derive(Clone)]
@@ -722,6 +744,7 @@ impl AmdIommuDriver {
             page_table_pool,
             iova_allocator: PoisonLock::new(iova_allocator),
             enabled: AtomicBool::new(false),
+            security_notifier: spin::Once::new(),
         }
     }
 
@@ -745,6 +768,39 @@ impl AmdIommuDriver {
         driver.populate_default_entries()?;
         init_driver(Arc::new(IommuBackend::Amd(driver)));
         Ok(())
+    }
+
+    pub fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
+        let mut set = false;
+        self.security_notifier.call_once(|| {
+            set = true;
+            notifier
+        });
+
+        if set {
+            if let Some(notifier) = self.security_notifier.get() {
+                match self.domains.lock() {
+                    Ok(domains) => {
+                        for info in domains.values() {
+                            let _ = info.domain.set_security_notifier(Arc::clone(notifier));
+                        }
+                    }
+                    Err(_) => {
+                        log::error!(
+                            "[IOMMU][AMD-Vi] Domains map poisoned while propagating security notifier"
+                        );
+                    }
+                }
+            }
+        }
+
+        set
+    }
+
+    fn notify_security(&self, event: SecurityEvent) {
+        if let Some(notifier) = self.security_notifier.get() {
+            notifier.notify(event);
+        }
     }
 
     pub fn find_unit_for_device(&self, device: DeviceId) -> Option<&AmdIommuUnit> {
@@ -1021,7 +1077,7 @@ impl AmdIommuDriver {
         Ok(())
     }
 
-    fn domain_id_for_device(&self, device: DeviceId) -> Result<u16, IommuError> {
+    pub(crate) fn domain_id_for_device(&self, device: DeviceId) -> Result<u16, IommuError> {
         let device_domains = self
             .device_domains
             .lock()
@@ -1738,6 +1794,16 @@ impl AmdIommuDriver {
         phys_addr: PhysAddr,
         size: u64,
     ) -> Result<u64, IommuError> {
+        unsafe { self.map_for_dma_with_perms(phys_addr, size, true, true) }
+    }
+
+    pub(crate) unsafe fn map_for_dma_with_perms(
+        &self,
+        phys_addr: PhysAddr,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
         let align = crate::mm::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
@@ -1745,7 +1811,7 @@ impl AmdIommuDriver {
 
         let iova = self.allocate_iova_fast(size, None)?;
         let domain = self.domain_for_id(0)?;
-        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, true, true) {
+        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, read, write) {
             let _ = self.free_iova_fast(iova, size);
             return Err(err);
         }
@@ -1776,6 +1842,17 @@ impl AmdIommuDriver {
         phys_addr: PhysAddr,
         size: u64,
     ) -> Result<u64, IommuError> {
+        unsafe { self.map_for_device_with_perms(device, phys_addr, size, true, true) }
+    }
+
+    pub(crate) unsafe fn map_for_device_with_perms(
+        &self,
+        device: &DeviceId,
+        phys_addr: PhysAddr,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
         let align = crate::mm::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
@@ -1787,7 +1864,7 @@ impl AmdIommuDriver {
         let iova = self.allocate_iova_fast(size, mask)?;
         let domain = self.domain_for_id(domain_id)?;
 
-        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, true, true) {
+        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, read, write) {
             let _ = self.free_iova_fast(iova, size);
             return Err(err);
         }
@@ -1851,9 +1928,11 @@ impl AmdIommuDriver {
             self.page_table_pool.clone(),
             PteFormat::Amd,
         );
-        let info = AmdDomainInfo {
-            domain: Arc::new(domain),
-        };
+        let domain = Arc::new(domain);
+        if let Some(notifier) = self.security_notifier.get() {
+            let _ = domain.set_security_notifier(Arc::clone(notifier));
+        }
+        let info = AmdDomainInfo { domain };
 
         let mut domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
         if domains.insert(domain_id, info).is_some() {

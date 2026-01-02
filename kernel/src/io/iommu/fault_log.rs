@@ -149,3 +149,9 @@ impl FaultLog {
         self.count == 0
     }
 }
+
+impl Default for FaultLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}

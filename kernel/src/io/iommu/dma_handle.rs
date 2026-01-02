@@ -522,12 +522,23 @@ impl<T> DmaHandle<T> {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
         }
 
+        let (read, write) = match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        };
+
         // SAFETY: We hold the RRef, which guarantees:
         // - We own this memory (RRef semantics)
         // - It's not kernel code or page tables (RRef allocation guarantees)
         // - It will remain valid as long as we hold the RRef
         let iova = match unsafe {
-            crate::io::iommu::api::map_for_dma(PhysAddr::new(phys_addr_val.as_u64()), size)
+            crate::io::iommu::api::map_for_dma_with_perms(
+                PhysAddr::new(phys_addr_val.as_u64()),
+                size,
+                read,
+                write,
+            )
         } {
             Ok(iova) => iova,
             Err(e) => return Err(MapError::new(rref, MapErrorKind::IommuError(e))),
@@ -578,20 +589,27 @@ impl<T> DmaHandle<T> {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
         }
 
+        let (read, write) = match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        };
+
         // SAFETY: Same as map_rref - RRef ownership guarantees memory is safe for DMA
         let iova = match unsafe {
-            crate::io::iommu::api::map_for_device(
+            crate::io::iommu::api::map_for_device_with_perms(
                 device,
                 PhysAddr::new(phys_addr_val.as_u64()),
                 size,
+                read,
+                write,
             )
         } {
             Ok(iova) => iova,
             Err(e) => return Err(MapError::new(rref, MapErrorKind::IommuError(e))),
         };
 
-        // TODO: Get actual domain_id from device mapping
-        let domain_id = 0;
+        let domain_id = crate::io::iommu::api::domain_id_for_device(device).unwrap_or(0);
 
         Ok(Self::new(
             rref,
@@ -785,9 +803,20 @@ impl<T> DmaHandle<[T]> {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
         }
 
+        let (read, write) = match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        };
+
         // SAFETY: RRef slice ownership guarantees memory is safe for DMA.
         let iova = match unsafe {
-            crate::io::iommu::api::map_for_dma(PhysAddr::new(phys_addr_val.as_u64()), size)
+            crate::io::iommu::api::map_for_dma_with_perms(
+                PhysAddr::new(phys_addr_val.as_u64()),
+                size,
+                read,
+                write,
+            )
         } {
             Ok(iova) => iova,
             Err(e) => return Err(MapError::new(rref, MapErrorKind::IommuError(e))),
@@ -852,20 +881,27 @@ impl<T> DmaHandle<[T]> {
             return Err(MapError::new(rref, MapErrorKind::InvalidAlignment));
         }
 
+        let (read, write) = match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        };
+
         // SAFETY: RRef slice ownership guarantees memory is safe for DMA.
         let iova = match unsafe {
-            crate::io::iommu::api::map_for_device(
+            crate::io::iommu::api::map_for_device_with_perms(
                 device,
                 PhysAddr::new(phys_addr_val.as_u64()),
                 size,
+                read,
+                write,
             )
         } {
             Ok(iova) => iova,
             Err(e) => return Err(MapError::new(rref, MapErrorKind::IommuError(e))),
         };
 
-        // TODO: Get actual domain_id from device mapping
-        let domain_id = 0;
+        let domain_id = crate::io::iommu::api::domain_id_for_device(device).unwrap_or(0);
 
         Ok(Self::new_slice(
             rref,
@@ -973,10 +1009,16 @@ impl<T> DmaHandle<T> {
         // Reserve a slot in the quarantine queue
         let mut slot_guard = match queue.reserve_slot_guarded() {
             Ok(g) => g,
-            Err(_) => {
+            Err(QuarantineError::QueueFull) => {
                 return Err(QuarantineLazyUnmapError {
                     handle: self,
                     kind: QuarantineLazyUnmapErrorKind::QueueFull,
+                });
+            }
+            Err(e) => {
+                return Err(QuarantineLazyUnmapError {
+                    handle: self,
+                    kind: QuarantineLazyUnmapErrorKind::Quarantine(e),
                 });
             }
         };
@@ -1013,7 +1055,7 @@ impl<T> DmaHandle<T> {
         slot_guard.mark_pte_cleared();
 
         // Construct invalidation request (Ready state)
-        let req = InvalidateRequest::pages(self.domain_id, self.iova, self.size);
+        let req = InvalidateRequest::pages(domain.id(), self.iova, self.size);
 
         // Commit invalidation (marks it Ready)
         if let Err(e) = inv_guard.commit(req) {

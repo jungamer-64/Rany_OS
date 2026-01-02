@@ -24,6 +24,7 @@ use self::controller::qi_ops::InvalidationOps;
 use super::IommuBackend;
 // Generic registry for registering the driver
 use super::registry::{init_driver, is_iommu_enabled};
+use super::security::SecurityNotifier;
 
 use super::cmdqueue::IommuCommandKind;
 use super::types::{DeviceId, IommuDomainType, IommuError};
@@ -92,6 +93,21 @@ impl IntelIommuDriver {
         }
     }
 
+    pub(crate) fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
+        let registry = match self.registry() {
+            Ok(registry) => registry,
+            Err(_) => return false,
+        };
+
+        let mut any_set = false;
+        for controller in &registry.controllers {
+            if controller.set_security_notifier(Arc::clone(&notifier)) {
+                any_set = true;
+            }
+        }
+        any_set
+    }
+
     pub(crate) fn map_interrupt(
         &self,
         segment: u16,
@@ -130,10 +146,37 @@ impl IntelIommuDriver {
         (address, data)
     }
 
+    pub(crate) fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {
+        let registry = self.registry()?;
+        if registry.controllers.is_empty() {
+            return Err(IommuError::NotPresent);
+        }
+
+        for controller in &registry.controllers {
+            match controller.get_domain_for_device(*device) {
+                Ok(Some(domain_id)) => return Ok(domain_id),
+                Ok(None) => continue,
+                Err(_) => continue,
+            }
+        }
+
+        Err(IommuError::DomainNotFound)
+    }
+
     pub(crate) unsafe fn map_for_dma(
         &self,
         phys_addr: PhysAddr,
         size: u64,
+    ) -> Result<u64, IommuError> {
+        unsafe { self.map_for_dma_with_perms(phys_addr, size, true, true) }
+    }
+
+    pub(crate) unsafe fn map_for_dma_with_perms(
+        &self,
+        phys_addr: PhysAddr,
+        size: u64,
+        read: bool,
+        write: bool,
     ) -> Result<u64, IommuError> {
         let align = crate::mm::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
@@ -178,7 +221,7 @@ impl IntelIommuDriver {
                     .cloned()
                     .ok_or(IommuError::DomainNotFound)?
             };
-            if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, true, true) {
+            if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, read, write) {
                 let mut unmap_failed = false;
                 for mapped in &mapped_indices {
                     let Some(mapped_ctrl) = registry.controllers.get(*mapped) else {
@@ -256,6 +299,17 @@ impl IntelIommuDriver {
         phys_addr: PhysAddr,
         size: u64,
     ) -> Result<u64, IommuError> {
+        unsafe { self.map_for_device_with_perms(device, phys_addr, size, true, true) }
+    }
+
+    pub(crate) unsafe fn map_for_device_with_perms(
+        &self,
+        device: &DeviceId,
+        phys_addr: PhysAddr,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
         let align = crate::mm::PAGE_SIZE_4K as u64;
         if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
             return Err(IommuError::InvalidAlignment);
@@ -285,8 +339,8 @@ impl IntelIommuDriver {
                             iova,
                             phys: phys_addr.as_u64(),
                             size,
-                            read: true,
-                            write: true,
+                            read,
+                            write,
                         };
                         if cq.submit_sync(cmd).is_err() {
                             let _ = controller.free_iova(iova, size);
@@ -295,7 +349,7 @@ impl IntelIommuDriver {
                         return Ok(iova);
                     }
 
-                    if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, true, true) {
+                    if let Err(err) = domain_arc.map(iova, phys_addr.as_u64(), size, read, write) {
                         let _ = controller.free_iova(iova, size);
                         return Err(err);
                     }
