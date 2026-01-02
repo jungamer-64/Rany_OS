@@ -425,6 +425,10 @@ pub struct HardwareTable<T: Sized + Copy> {
     phys: u64,
     /// Number of entries in the table
     count: usize,
+    /// Allocation size in bytes (rounded to page size)
+    alloc_bytes: usize,
+    /// Number of 4KiB frames backing the table
+    frame_count: usize,
     /// PhantomData for T
     _marker: PhantomData<T>,
 }
@@ -437,9 +441,6 @@ unsafe impl<T: Sized + Copy + Send> Send for HardwareTable<T> {}
 unsafe impl<T: Sized + Copy + Sync> Sync for HardwareTable<T> {}
 
 impl<T: Sized + Zeroable> HardwareTable<T> {
-    /// Maximum allocation size: 4KB (1 page) for physical contiguity guarantee
-    pub const MAX_SIZE: usize = 4096;
-
     /// Create a new hardware table with the specified number of entries
     ///
     /// # Arguments
@@ -453,7 +454,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     /// # Physical Contiguity Guarantee
     ///
     /// This function guarantees physical contiguity by using the buddy frame
-    /// allocator to allocate exactly one 4KB physical page frame. This is a
+    /// allocator to allocate a contiguous region sized for the table. This is a
     /// VT-d hardware requirement - root tables, context tables, and page tables
     /// must all be physically contiguous.
     pub fn new(count: usize, numa_hint: Option<usize>) -> Result<Self, IommuError> {
@@ -465,31 +466,40 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             .checked_mul(count)
             .ok_or(IommuError::InvalidAddress)?;
 
-        // Enforce 4KB limit for physical contiguity
-        if bytes > Self::MAX_SIZE {
+        let page_size = crate::mm::PAGE_SIZE_4K as usize;
+        let alloc_bytes = bytes.checked_add(page_size - 1).ok_or(IommuError::InvalidAddress)?
+            / page_size
+            * page_size;
+        let frame_count = alloc_bytes / page_size;
+        if frame_count == 0 {
             return Err(IommuError::InvalidAddress);
         }
 
-        // Use buddy allocator to get a physically contiguous 4KB frame
-        // This is the key change that guarantees physical contiguity!
-        let frame = if let Some(node) = numa_hint {
-            crate::mm::buddy_alloc_frame_on_node(node)
+        let phys = if frame_count == 1 {
+            let frame = if let Some(node) = numa_hint {
+                crate::mm::buddy_alloc_frame_on_node(node)
+            } else {
+                crate::mm::buddy_alloc_frame()
+            }
+            .ok_or(IommuError::OutOfMemory)?;
+            frame.start_address().as_u64()
         } else {
-            crate::mm::buddy_alloc_frame()
-        }
-        .ok_or(IommuError::OutOfMemory)?;
-
-        // Get physical address from the frame
-        let phys = frame.start_address().as_u64();
+            if numa_hint.is_some() {
+                log::debug!("[IOMMU] NUMA hint ignored for contiguous table allocation");
+            }
+            crate::mm::buddy_alloc_contiguous_frames(frame_count)
+                .ok_or(IommuError::OutOfMemory)?
+                .as_u64()
+        };
 
         // Convert to virtual address using linear mapping
         let virt_addr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
         let raw_ptr = virt_addr.as_u64() as *mut u8;
 
         // Zero the memory (hardware safety requirement)
-        // SAFETY: We just allocated this frame and own it exclusively
+        // SAFETY: We just allocated this region and own it exclusively
         unsafe {
-            core::ptr::write_bytes(raw_ptr, 0, Self::MAX_SIZE);
+            core::ptr::write_bytes(raw_ptr, 0, alloc_bytes);
         }
 
         let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
@@ -498,6 +508,8 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             ptr,
             phys,
             count,
+            alloc_bytes,
+            frame_count,
             _marker: PhantomData,
         })
     }
@@ -582,20 +594,23 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     ///
     /// Useful for reinitializing a table without reallocating.
     pub fn clear(&mut self) {
-        // SAFETY: ptr is valid for MAX_SIZE bytes (one full page)
+        // SAFETY: ptr is valid for alloc_bytes bytes (backing allocation)
         unsafe {
-            core::ptr::write_bytes(self.ptr.as_ptr() as *mut u8, 0, Self::MAX_SIZE);
+            core::ptr::write_bytes(self.ptr.as_ptr() as *mut u8, 0, self.alloc_bytes);
         }
     }
 }
 
 impl<T: Sized + Copy> Drop for HardwareTable<T> {
     fn drop(&mut self) {
-        // SAFETY: We own the frame and it was allocated via buddy_alloc_frame
-        // The caller must ensure hardware is not using this table before drop
+        // SAFETY: We own the backing frames and they were allocated via buddy allocator.
+        // The caller must ensure hardware is not using this table before drop.
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
-        let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(self.phys));
-        crate::mm::buddy_dealloc_frame(frame);
+        for idx in 0..self.frame_count {
+            let addr = self.phys + (idx as u64) * (crate::mm::PAGE_SIZE_4K as u64);
+            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
+            crate::mm::buddy_dealloc_frame(frame);
+        }
     }
 }

@@ -342,6 +342,14 @@ where
     guard.as_mut().map(f)
 }
 
+/// コンソールのロックを試行（非ブロッキング）
+///
+/// ロガーなどの割り込みコンテキストから安全に呼び出すための関数。
+/// ロックが取得できない場合は `None` を返す。
+pub fn try_lock_console() -> Option<spin::MutexGuard<'static, Option<TextConsole>>> {
+    CONSOLE.try_lock()
+}
+
 /// フレームバッファが初期化されているか確認
 pub fn framebuffer() -> Option<()> {
     if FRAMEBUFFER.lock().is_some() {

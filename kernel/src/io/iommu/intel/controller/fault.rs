@@ -22,7 +22,6 @@ use crate::io::iommu::intel::tables::{ContextEntry, ScalableContextEntry};
 use crate::io::iommu::fault_log::{FaultLog, FaultRecord};
 use crate::io::iommu::types::{DeviceId, IommuError};
 use core::cell::UnsafeCell;
-use core::mem::size_of;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
@@ -91,7 +90,7 @@ fn domain_id_from_context_entry(ctrl: &IommuController, device: DeviceId) -> Opt
     let devfn = ((device.device as usize) << 3) | (device.function as usize);
 
     let hw = ctrl.hardware.lock().ok()?;
-    let context_table = hw.context_tables.get(bus)?;
+    let context_table = hw.legacy_context_tables.get(bus)?;
     let entry = context_table.get(devfn)?;
     if !entry.is_present() {
         return None;
@@ -99,33 +98,18 @@ fn domain_id_from_context_entry(ctrl: &IommuController, device: DeviceId) -> Opt
     Some(entry.domain_id())
 }
 
-fn domain_id_from_scalable_context_entry(ctrl: &IommuController, device: DeviceId) -> Option<u16> {
+fn domain_id_from_scalable_context_entry(
+    ctrl: &IommuController,
+    device: DeviceId,
+    pasid: Option<u32>,
+) -> Option<u16> {
     if !ctrl.is_scalable_mode_enabled() {
         return None;
     }
-
-    let bus = device.bus as usize;
-    let devfn = ((device.device as usize) << 3) | (device.function as usize);
-
-    let hw = ctrl.hardware.lock().ok()?;
-    let context_table = hw.context_tables.get(bus)?;
-    let table_bytes = context_table.count().checked_mul(size_of::<ContextEntry>())?;
-    let entry_size = size_of::<ScalableContextEntry>();
-    let full_table_bytes = entry_size.checked_mul(256)?;
-    if table_bytes < full_table_bytes {
-        return None;
-    }
-    let entry_count = table_bytes / entry_size;
-    if devfn >= entry_count {
-        return None;
-    }
-    let base = context_table.as_ptr() as *const u8;
-    let entry_ptr = unsafe { base.add(devfn * entry_size) as *const ScalableContextEntry };
-    let entry = unsafe { &*entry_ptr };
-    if !entry.is_present() {
-        return None;
-    }
-    Some(entry.domain_id())
+    let pasid = pasid.unwrap_or(0);
+    let tables = ctrl.device_pasid_tables.lock().ok()?;
+    let table = tables.get(&device)?;
+    table.domain_id(pasid)
 }
 
 /// Fixed-size MPSC lock-free ring buffer for deferred fault events
@@ -387,7 +371,9 @@ pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuCon
                     .ok()
                     .flatten()
                     .or_else(|| domain_id_from_context_entry(ctrl, device_id))
-                    .or_else(|| domain_id_from_scalable_context_entry(ctrl, device_id))
+                    .or_else(|| {
+                        domain_id_from_scalable_context_entry(ctrl, device_id, event.pasid)
+                    })
                     .map(u32::from);
                 ctrl.notify_security(SecurityEvent::DmaViolation {
                     source_id: event.source_id,
@@ -685,8 +671,26 @@ impl FaultHandler for IommuController {
         // Safely access hardware lock
         match self.hardware.lock() {
             Ok(mut hw) => {
-                if let Some(table) = hw.context_tables.get_mut(bus as usize) {
-                    let idx = ((dev as usize) << 3) | (func as usize);
+                let idx = ((dev as usize) << 3) | (func as usize);
+                if self.is_scalable_mode_enabled() {
+                    if let Some(table) = hw.scalable_context_tables.get_mut(bus as usize) {
+                        if let Some(entry) = table.get_mut(idx) {
+                            if entry.is_present() {
+                                if isolated_domain_id.is_none() {
+                                    if let Ok(pasid_tables) = self.device_pasid_tables.lock() {
+                                        let device_id =
+                                            DeviceId::new(self.segment, bus, dev, func);
+                                        isolated_domain_id = pasid_tables
+                                            .get(&device_id)
+                                            .and_then(|t| t.domain_id(0));
+                                    }
+                                }
+                                *entry = ScalableContextEntry::default();
+                                need_invalidation = true;
+                            }
+                        }
+                    }
+                } else if let Some(table) = hw.legacy_context_tables.get_mut(bus as usize) {
                     if let Some(entry) = table.get_mut(idx) {
                         unsafe {
                             let entry_ptr = entry as *mut ContextEntry;
@@ -707,8 +711,26 @@ impl FaultHandler for IommuController {
             Err(poisoned) => {
                 log::warn!("[IOMMU] Lock poisoned during isolation, attempting best-effort");
                 let mut hw = poisoned.into_inner();
-                if let Some(table) = hw.context_tables.get_mut(bus as usize) {
-                    let idx = ((dev as usize) << 3) | (func as usize);
+                let idx = ((dev as usize) << 3) | (func as usize);
+                if self.is_scalable_mode_enabled() {
+                    if let Some(table) = hw.scalable_context_tables.get_mut(bus as usize) {
+                        if let Some(entry) = table.get_mut(idx) {
+                            if entry.is_present() {
+                                if isolated_domain_id.is_none() {
+                                    if let Ok(pasid_tables) = self.device_pasid_tables.lock() {
+                                        let device_id =
+                                            DeviceId::new(self.segment, bus, dev, func);
+                                        isolated_domain_id = pasid_tables
+                                            .get(&device_id)
+                                            .and_then(|t| t.domain_id(0));
+                                    }
+                                }
+                                *entry = ScalableContextEntry::default();
+                                need_invalidation = true;
+                            }
+                        }
+                    }
+                } else if let Some(table) = hw.legacy_context_tables.get_mut(bus as usize) {
                     if let Some(entry) = table.get_mut(idx) {
                         unsafe {
                             let entry_ptr = entry as *mut ContextEntry;

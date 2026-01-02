@@ -430,3 +430,233 @@ impl MonitorHistory {
         (sum / self.snapshots.len() as u64) as u8
     }
 }
+
+// ============================================================================
+// ヘルスモニタリング（設計書 §10.4）
+// ============================================================================
+//
+// システム全体の健全性を監視し、異常を検知する機構。
+//
+// ## 機能
+// - CPU/メモリ使用率の閾値監視
+// - ドメインの応答性チェック（ハートビート）
+// - メトリクスのエクスポート
+// - 異常検知とアラート発行
+
+use core::sync::atomic::AtomicU32;
+
+/// ヘルス状態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HealthStatus {
+    /// 正常
+    Healthy,
+    /// 警告（閾値に近い）
+    Warning,
+    /// 危険（閾値超過）
+    Critical,
+    /// 不明（データ不足）
+    Unknown,
+}
+
+/// ヘルスチェック閾値
+#[derive(Debug, Clone)]
+pub struct HealthThresholds {
+    /// CPU使用率の警告閾値（%）
+    pub cpu_warning: u8,
+    /// CPU使用率の危険閾値（%）
+    pub cpu_critical: u8,
+    /// メモリ使用率の警告閾値（%）
+    pub memory_warning: u8,
+    /// メモリ使用率の危険閾値（%）
+    pub memory_critical: u8,
+    /// 連続異常判定回数
+    pub consecutive_failures: u32,
+}
+
+impl Default for HealthThresholds {
+    fn default() -> Self {
+        Self {
+            cpu_warning: 70,
+            cpu_critical: 90,
+            memory_warning: 80,
+            memory_critical: 95,
+            consecutive_failures: 3,
+        }
+    }
+}
+
+/// ヘルスメトリクス
+#[derive(Debug, Clone, Default)]
+pub struct HealthMetrics {
+    /// 最新のCPU使用率
+    pub cpu_usage: u8,
+    /// 最新のメモリ使用率
+    pub memory_usage: u8,
+    /// 連続警告回数
+    pub consecutive_warnings: u32,
+    /// 連続危険回数
+    pub consecutive_criticals: u32,
+    /// 最終チェック時刻（tick）
+    pub last_check_tick: u64,
+    /// ヘルスチェック総回数
+    pub total_checks: u64,
+    /// 警告発生総回数
+    pub total_warnings: u64,
+    /// 危険発生総回数
+    pub total_criticals: u64,
+}
+
+/// ヘルスモニター
+pub struct HealthMonitor {
+    thresholds: HealthThresholds,
+    metrics: spin::Mutex<HealthMetrics>,
+    enabled: AtomicBool,
+}
+
+impl HealthMonitor {
+    /// 新しいヘルスモニターを作成
+    pub const fn new() -> Self {
+        Self {
+            thresholds: HealthThresholds {
+                cpu_warning: 70,
+                cpu_critical: 90,
+                memory_warning: 80,
+                memory_critical: 95,
+                consecutive_failures: 3,
+            },
+            metrics: spin::Mutex::new(HealthMetrics {
+                cpu_usage: 0,
+                memory_usage: 0,
+                consecutive_warnings: 0,
+                consecutive_criticals: 0,
+                last_check_tick: 0,
+                total_checks: 0,
+                total_warnings: 0,
+                total_criticals: 0,
+            }),
+            enabled: AtomicBool::new(false),
+        }
+    }
+
+    /// ヘルスモニタリングを有効化
+    pub fn enable(&self) {
+        self.enabled.store(true, Ordering::SeqCst);
+    }
+
+    /// ヘルスモニタリングを無効化
+    pub fn disable(&self) {
+        self.enabled.store(false, Ordering::SeqCst);
+    }
+
+    /// 有効状態を取得
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.load(Ordering::Relaxed)
+    }
+
+    /// ヘルスチェックを実行
+    pub fn check(&self, snap: &SystemSnapshot) -> HealthStatus {
+        if !self.is_enabled() {
+            return HealthStatus::Unknown;
+        }
+
+        let mut metrics = self.metrics.lock();
+        metrics.cpu_usage = snap.cpu_usage;
+        metrics.memory_usage = snap.memory.usage_percent;
+        metrics.last_check_tick = snap.timestamp;
+        metrics.total_checks += 1;
+
+        // CPU判定
+        let cpu_status = if snap.cpu_usage >= self.thresholds.cpu_critical {
+            HealthStatus::Critical
+        } else if snap.cpu_usage >= self.thresholds.cpu_warning {
+            HealthStatus::Warning
+        } else {
+            HealthStatus::Healthy
+        };
+
+        // メモリ判定
+        let mem_status = if snap.memory.usage_percent >= self.thresholds.memory_critical {
+            HealthStatus::Critical
+        } else if snap.memory.usage_percent >= self.thresholds.memory_warning {
+            HealthStatus::Warning
+        } else {
+            HealthStatus::Healthy
+        };
+
+        // 総合判定（より重い方を採用）
+        let overall = match (cpu_status, mem_status) {
+            (HealthStatus::Critical, _) | (_, HealthStatus::Critical) => {
+                metrics.consecutive_criticals += 1;
+                metrics.consecutive_warnings = 0;
+                metrics.total_criticals += 1;
+                HealthStatus::Critical
+            }
+            (HealthStatus::Warning, _) | (_, HealthStatus::Warning) => {
+                metrics.consecutive_warnings += 1;
+                metrics.consecutive_criticals = 0;
+                metrics.total_warnings += 1;
+                HealthStatus::Warning
+            }
+            _ => {
+                metrics.consecutive_warnings = 0;
+                metrics.consecutive_criticals = 0;
+                HealthStatus::Healthy
+            }
+        };
+
+        overall
+    }
+
+    /// 現在のメトリクスを取得
+    pub fn metrics(&self) -> HealthMetrics {
+        self.metrics.lock().clone()
+    }
+
+    /// メトリクスをPrometheus形式でエクスポート
+    pub fn export_prometheus(&self) -> String {
+        use alloc::fmt::Write;
+        let metrics = self.metrics.lock();
+        let mut s = String::new();
+
+        let _ = writeln!(s, "# HELP exorust_cpu_usage CPU usage percentage");
+        let _ = writeln!(s, "# TYPE exorust_cpu_usage gauge");
+        let _ = writeln!(s, "exorust_cpu_usage {}", metrics.cpu_usage);
+
+        let _ = writeln!(s, "# HELP exorust_memory_usage Memory usage percentage");
+        let _ = writeln!(s, "# TYPE exorust_memory_usage gauge");
+        let _ = writeln!(s, "exorust_memory_usage {}", metrics.memory_usage);
+
+        let _ = writeln!(s, "# HELP exorust_health_checks_total Total health checks");
+        let _ = writeln!(s, "# TYPE exorust_health_checks_total counter");
+        let _ = writeln!(s, "exorust_health_checks_total {}", metrics.total_checks);
+
+        let _ = writeln!(s, "# HELP exorust_health_warnings_total Total warnings");
+        let _ = writeln!(s, "# TYPE exorust_health_warnings_total counter");
+        let _ = writeln!(s, "exorust_health_warnings_total {}", metrics.total_warnings);
+
+        let _ = writeln!(s, "# HELP exorust_health_criticals_total Total criticals");
+        let _ = writeln!(s, "# TYPE exorust_health_criticals_total counter");
+        let _ = writeln!(s, "exorust_health_criticals_total {}", metrics.total_criticals);
+
+        s
+    }
+}
+
+/// グローバルヘルスモニター
+static HEALTH_MONITOR: HealthMonitor = HealthMonitor::new();
+
+/// グローバルヘルスモニターを取得
+pub fn health_monitor() -> &'static HealthMonitor {
+    &HEALTH_MONITOR
+}
+
+/// ヘルスチェックを実行（snapshot付き）
+pub fn health_check() -> HealthStatus {
+    let snap = snapshot();
+    HEALTH_MONITOR.check(&snap)
+}
+
+/// Prometheusメトリクスをエクスポート
+pub fn export_metrics() -> String {
+    HEALTH_MONITOR.export_prometheus()
+}

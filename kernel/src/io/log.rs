@@ -377,12 +377,6 @@ const PER_CORE_INIT: IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>> =
 static PER_CORE_LOG_BUFFERS: [IrqMutex<RingBuffer<PER_CORE_BUFFER_CAPACITY>>; PER_CPU_COUNT] =
     [PER_CORE_INIT; PER_CPU_COUNT];
 
-/// Scan index previously used by ISR round-robin servicing. No longer used
-/// because per-core aggregation is performed outside of ISR. Keep this symbol
-/// for future aggregator heuristics.
-#[allow(dead_code)]
-#[deprecated(note = "PER_CORE_SCAN_INDEX is no longer used and will be removed in a future release.")]
-static PER_CORE_SCAN_INDEX: AtomicUsize = AtomicUsize::new(0);
 
 /// 非同期入力バッファ（受信）
 static INPUT_BUFFER: IrqMutex<RingBuffer<INPUT_BUFFER_CAPACITY>> = IrqMutex::new(RingBuffer::new());
@@ -867,6 +861,17 @@ impl Log for KernelLogger {
                 let _ = tracker.inner.write_str("\r\n");
             }
         }
+
+        // 画面への出力（統合実装）
+        // パニック中以外、かつロックが取得できた場合のみ出力してデッドロックを回避する
+        if !is_in_panic() {
+            if let Some(mut guard) = crate::graphics::global::try_lock_console() {
+                if let Some(console) = guard.as_mut() {
+                    use core::fmt::Write;
+                    let _ = write!(console, "{}\n", record.args());
+                }
+            }
+        }
     }
 
     fn flush(&self) {
@@ -1142,117 +1147,43 @@ pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
 // 公開API
 // ============================================================================
 
-/// Aggregator task priority (low, but above idle)
-#[deprecated(
-    note = "Log aggregator now runs on the executor idle loop; this constant will be removed in a future release. Use `kick_serial_tx()` to kick aggregation from non-idle contexts."
-)]
-const LOG_AGGREGATOR_PRIORITY: u8 = 250;
-
-/// Ensure we only spawn one aggregator task
-#[deprecated(
-    note = "Aggregator spawn control is no longer required; the aggregator runs on the executor idle loop. This static will be removed in a future release."
-)]
-static AGGREGATOR_STARTED: AtomicBool = AtomicBool::new(false);
-
 /// Public helper to kick the serial transmitter from non-ISR contexts.
 /// This aggregates per-core buffers into the global buffer and enables TX
 /// interrupt when necessary. Useful to call from an executor idle loop.
-///
-/// NOTE: Prefer calling `kick_serial_tx()` or relying on the executor idle loop
-/// for background aggregation. `spawn_log_aggregator()` is deprecated.
 pub fn kick_serial_tx() {
     // Reuse the existing helper which performs aggregation + IER RMW.
     start_serial_tx();
 }
 
-/// Spawn the aggregator as a low-priority kernel task. Returns TaskId on success.
-#[deprecated(
-    note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release."
-)]
-#[cfg(not(any(test, feature = "bench")))]
-pub fn spawn_log_aggregator() -> Option<crate::task::TaskId> {
-    if AGGREGATOR_STARTED.swap(true, Ordering::SeqCst) {
-        return None; // already started
-    }
-
-    #[cfg(feature = "legacy-scheduler")]
-    {
-        return crate::task::scheduler::spawn_task(log_aggregator_task, 0, LOG_AGGREGATOR_PRIORITY);
-    }
-
-    #[cfg(not(feature = "legacy-scheduler"))]
-    {
-        log::info!("[LOG] spawn_log_aggregator called but legacy scheduler is disabled; aggregator runs on executor idle loop");
-        None
-    }
-} 
-
-// Test/bench builds do not have the full scheduler available; provide a no-op stub
-#[cfg(any(test, feature = "bench"))]
-#[deprecated(
-    note = "Deprecated: aggregator is now driven from executor idle loop — use `kick_serial_tx()` instead; removal planned in a future release."
-)]
-pub fn spawn_log_aggregator() -> Option<u64> {
-    None
-}
-
 /// Background aggregator task entry point. Move data from per-core buffers to
 /// the global buffer and yield when idle. This must never return.
+///
+/// NOTE: This function is typically driven by the executor idle loop via
+/// `kick_serial_tx()`. Direct spawning as a task is no longer recommended.
+#[cfg(not(any(test, feature = "bench")))]
 pub fn log_aggregator_task(_arg: u64) -> ! {
     loop {
         let moved = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
 
+        // Yield to allow other work / TX to be serviced
+        crate::task::preemption::voluntary_yield();
+        crate::task::preemption::yield_point();
+
         if moved == 0 {
-            // Nothing moved — yield and avoid busy looping
-            let cpu_id = {
-                #[cfg(not(feature = "bench"))]
-                {
-                    crate::smp_advanced::current_core_id() as usize
-                }
-                #[cfg(feature = "bench")]
-                {
-                    0usize
-                }
-            };
-
-            #[cfg(feature = "legacy-scheduler")]
-            {
-                crate::task::scheduler::yield_current(cpu_id);
-            }
-
-            #[cfg(not(feature = "legacy-scheduler"))]
-            {
-                // Legacy scheduler disabled -> best-effort cooperative yield
-                crate::task::preemption::voluntary_yield();
-                crate::task::preemption::yield_point();
-            }
-        } else {
-            // Yield briefly to allow TX to be serviced
-            let cpu_id = {
-                #[cfg(not(feature = "bench"))]
-                {
-                    crate::smp_advanced::current_core_id() as usize
-                }
-                #[cfg(feature = "bench")]
-                {
-                    0usize
-                }
-            };
-
-            #[cfg(feature = "legacy-scheduler")]
-            {
-                crate::task::scheduler::yield_current(cpu_id);
-            }
-
-            #[cfg(not(feature = "legacy-scheduler"))]
-            {
-                // Legacy scheduler disabled -> best-effort cooperative yield
-                crate::task::preemption::voluntary_yield();
-                crate::task::preemption::yield_point();
-            }
+            // Nothing moved — add small delay to avoid busy looping
+            core::hint::spin_loop();
         }
     }
 }
+
+/// Test/bench stub for log_aggregator_task (never returns, but signature required)
+#[cfg(any(test, feature = "bench"))]
+pub fn log_aggregator_task(_arg: u64) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
 
 /// ロギングシステムを初期化
 ///
@@ -1282,16 +1213,18 @@ pub fn enter_panic_mode() {
     KernelLogger::reset_serial_for_panic();
 }
 
+/// パニック状態かどうかを判定
+pub fn is_in_panic() -> bool {
+    IN_PANIC.load(Ordering::Relaxed)
+}
+
 /// パニック状態をクリア（通常は使用しない）
 #[allow(dead_code)]
 pub fn exit_panic_mode() {
     IN_PANIC.store(false, Ordering::SeqCst);
 }
 
-/// 現在パニック中かどうか
-pub fn is_in_panic() -> bool {
-    IN_PANIC.load(Ordering::Relaxed)
-}
+
 
 /// 実行時にログレベルを変更
 pub fn set_log_level(level: LevelFilter) {
@@ -1403,47 +1336,153 @@ macro_rules! early_log_no_newline {
     }};
 }
 
-// ============================================================================
-// レガシー互換マクロ（廃止予定）
-// ============================================================================
-
-/// io_log_info! 互換マクロ
-#[deprecated(note = "io_log_info! is deprecated; use `log::info!` directly.")]
-#[macro_export]
-macro_rules! io_log_info {
-    ($($arg:tt)*) => {
-        log::info!($($arg)*)
-    };
-}
-
-/// io_log_warn! 互換マクロ
-#[deprecated(note = "io_log_warn! is deprecated; use `log::warn!` directly.")]
-#[macro_export]
-macro_rules! io_log_warn {
-    ($($arg:tt)*) => {
-        log::warn!($($arg)*)
-    };
-}
-
-/// io_log_debug! 互換マクロ
-#[deprecated(note = "io_log_debug! is deprecated; use `log::debug!` directly.")]
-#[macro_export]
-macro_rules! io_log_debug {
-    ($($arg:tt)*) => {
-        log::debug!($($arg)*)
-    };
-}
-
-/// io_log_error! 互換マクロ
-#[deprecated(note = "io_log_error! is deprecated; use `log::error!` directly.")]
-#[macro_export]
-macro_rules! io_log_error {
-    ($($arg:tt)*) => {
-        log::error!($($arg)*)
-    };
-}
 
 // ============================================================================
-// 内部log互換モジュール（削除、log crateを使用）
+// シリアルデバッグコンソール（設計書 §10.2）
 // ============================================================================
-// Note: log::info!, log::debug!, log::warn!, log::error!, log::trace! を直接使用してください
+//
+// シリアルコンソールからのデバッグコマンド受信機能。
+// 実行中にログレベルを変更したり、システム情報を取得できる。
+//
+// ## サポートされるコマンド（Ctrl+文字）
+// - Ctrl+L: ログレベルサイクル切り替え (Error → Warn → Info → Debug → Trace)
+// - Ctrl+S: システムステータス表示
+// - Ctrl+H: ヘルプ表示
+
+/// デバッグコンソールのコマンドバイト
+pub mod debug_commands {
+    /// ログレベルサイクル (Ctrl+L = 0x0C)
+    pub const LOG_LEVEL_CYCLE: u8 = 0x0C;
+    /// システムステータス (Ctrl+S = 0x13)
+    pub const SYSTEM_STATUS: u8 = 0x13;
+    /// メモリ表示 (Ctrl+M = 0x0D) - 注: CRと衝突するので別キー使用
+    pub const MEMORY_STATUS: u8 = 0x00; // Ctrl+@ として割り当て
+    /// ヘルプ (Ctrl+H = 0x08)
+    pub const HELP: u8 = 0x08;
+}
+
+/// デバッグコンソールコマンドを処理
+///
+/// シリアル割り込みハンドラから呼び出される。
+/// 制御文字を受信した場合にコマンドとして解釈する。
+///
+/// # Returns
+/// コマンドとして処理した場合は`true`、通常文字の場合は`false`
+pub fn handle_debug_command(byte: u8) -> bool {
+    match byte {
+        debug_commands::LOG_LEVEL_CYCLE => {
+            cycle_log_level();
+            true
+        }
+        debug_commands::SYSTEM_STATUS => {
+            print_system_status();
+            true
+        }
+        debug_commands::HELP => {
+            print_debug_help();
+            true
+        }
+        _ => false,
+    }
+}
+
+/// ログレベルをサイクル切り替え
+fn cycle_log_level() {
+    let current = current_log_level();
+    let next = match current {
+        LevelFilter::Off => LevelFilter::Error,
+        LevelFilter::Error => LevelFilter::Warn,
+        LevelFilter::Warn => LevelFilter::Info,
+        LevelFilter::Info => LevelFilter::Debug,
+        LevelFilter::Debug => LevelFilter::Trace,
+        LevelFilter::Trace => LevelFilter::Error,
+    };
+    set_log_level(next);
+    early_print("\n[DEBUG] Log level changed: ");
+    early_print(level_filter_name(next));
+    early_print("\n");
+}
+
+/// ログレベルを文字列名に変換
+fn level_filter_name(level: LevelFilter) -> &'static str {
+    match level {
+        LevelFilter::Off => "OFF",
+        LevelFilter::Error => "ERROR",
+        LevelFilter::Warn => "WARN",
+        LevelFilter::Info => "INFO",
+        LevelFilter::Debug => "DEBUG",
+        LevelFilter::Trace => "TRACE",
+    }
+}
+
+/// システムステータスを表示
+fn print_system_status() {
+    early_print("\n[DEBUG] === System Status ===\n");
+    early_print("[DEBUG] Log level: ");
+    early_print(level_filter_name(current_log_level()));
+    early_print("\n");
+    
+    // タイマーtick
+    let tick = crate::task::timer::current_tick();
+    early_print("[DEBUG] Timer ticks: ");
+    early_print_dec(tick);
+    early_print("\n");
+    
+    // パニック統計
+    let panic_stats = crate::panic_handler::panic_stats();
+    early_print("[DEBUG] Panic count: ");
+    early_print_dec(panic_stats.total_panics);
+    early_print("\n");
+    
+    early_print("[DEBUG] ======================\n");
+}
+
+/// デバッグヘルプを表示
+fn print_debug_help() {
+    early_print("\n[DEBUG] === Debug Console Help ===\n");
+    early_print("[DEBUG] Ctrl+L : Cycle log level\n");
+    early_print("[DEBUG] Ctrl+S : Show system status\n");
+    early_print("[DEBUG] Ctrl+H : Show this help\n");
+    early_print("[DEBUG] =============================\n");
+}
+
+/// 文字列からログレベルを設定
+///
+/// シェルコマンド等から呼び出される。
+/// alloc依存を排除し、ゼロアロケーションで比較を行います。
+///
+/// # Arguments
+/// * `level_str` - "error", "warn", "info", "debug", "trace" のいずれか（大文字小文字不問）
+///
+/// # Returns
+/// 設定成功時は`Ok(新レベル)`、無効な文字列は`Err`
+pub fn set_log_level_from_str(level_str: &str) -> Result<LevelFilter, &'static str> {
+    // eq_ignore_ascii_case を使用してヒープアロケーションを回避
+    if level_str.eq_ignore_ascii_case("off") {
+        set_log_level(LevelFilter::Off);
+        return Ok(LevelFilter::Off);
+    }
+    if level_str.eq_ignore_ascii_case("error") {
+        set_log_level(LevelFilter::Error);
+        return Ok(LevelFilter::Error);
+    }
+    if level_str.eq_ignore_ascii_case("warn") || level_str.eq_ignore_ascii_case("warning") {
+        set_log_level(LevelFilter::Warn);
+        return Ok(LevelFilter::Warn);
+    }
+    if level_str.eq_ignore_ascii_case("info") {
+        set_log_level(LevelFilter::Info);
+        return Ok(LevelFilter::Info);
+    }
+    if level_str.eq_ignore_ascii_case("debug") {
+        set_log_level(LevelFilter::Debug);
+        return Ok(LevelFilter::Debug);
+    }
+    if level_str.eq_ignore_ascii_case("trace") {
+        set_log_level(LevelFilter::Trace);
+        return Ok(LevelFilter::Trace);
+    }
+
+    Err("Invalid log level. Use: off, error, warn, info, debug, trace")
+}
+

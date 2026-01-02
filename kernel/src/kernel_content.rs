@@ -342,6 +342,15 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                                 _ => {}
                             }
                         }
+                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu_scalable") {
+                            match val {
+                                "on" | "1" | "true" => iommu_config.scalable_mode = true,
+                                "off" | "0" | "false" => {
+                                    iommu_config.scalable_mode = false;
+                                }
+                                _ => {}
+                            }
+                        }
                     }
                 }
 

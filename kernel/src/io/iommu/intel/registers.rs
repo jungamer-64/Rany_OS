@@ -106,6 +106,12 @@ pub mod gsts_bits {
     pub const GSTS_CFIS: u32 = 1 << 23;
 }
 
+/// Root table address register bits
+pub mod rtaddr_bits {
+    /// Scalable Mode Translation enable (RTT/SMT)
+    pub const RTADDR_SMT: u64 = 1 << 10;
+}
+
 /// Capability register bits
 pub mod cap_bits {
     /// Required write-buffer flushing
@@ -169,7 +175,7 @@ pub mod ecap_bits {
     /// Posted Interrupts Support (Posted Interrupt Descriptor Support)
     pub const ECAP_PIDS: u64 = 1 << 59;
     /// Scalable Mode Translation Support
-    pub const ECAP_SMTS: u64 = 1 << 35;
+    pub const ECAP_SMTS: u64 = 1 << 43;
     /// Performance Monitoring Support
     pub const ECAP_PMC: u64 = 1 << 40;
 }

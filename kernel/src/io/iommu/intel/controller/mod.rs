@@ -31,13 +31,14 @@ use hashbrown::HashMap;
 
 use self::iova::IovaManager;
 use self::ir::InterruptRemapTable;
+use self::init::CapabilityManager;
 use crate::io::iommu::common::{PageRequestQueue, PostedInterruptPool};
 use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::fault_log::FaultLog;
 use crate::io::iommu::intel::qi::{InvalidationQueue, QiStats};
 use crate::io::iommu::intel::registers::regs::IQH;
-use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs};
-use crate::io::iommu::intel::tables::{ContextEntry, RootEntry};
+use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs, rtaddr_bits};
+use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
 use crate::io::iommu::interface::IommuHardwareContext;
 use crate::io::iommu::iova_allocator::IovaAllocator;
 use crate::io::iommu::page_table_pool::PageTablePool;
@@ -59,8 +60,10 @@ use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 pub struct HardwareContext {
     /// Root Table: 256 entries (16 bytes each = 4KB)
     pub root_table: Option<HardwareTable<RootEntry>>,
-    /// Context Tables: 256 tables, each with 256 entries (16 bytes each = 4KB)
-    pub context_tables: Vec<HardwareTable<ContextEntry>>,
+    /// Legacy Context Tables: 256 tables, each 4KB (256 entries, 16 bytes each)
+    pub legacy_context_tables: Vec<HardwareTable<ContextEntry>>,
+    /// Scalable Context Tables: 256 tables, each 8KB (256 entries, 32 bytes each)
+    pub scalable_context_tables: Vec<HardwareTable<ScalableContextEntry>>,
 }
 
 impl Default for HardwareContext {
@@ -74,13 +77,15 @@ impl HardwareContext {
     pub fn new() -> Self {
         Self {
             root_table: None,
-            context_tables: Vec::new(),
+            legacy_context_tables: Vec::new(),
+            scalable_context_tables: Vec::new(),
         }
     }
 
     /// Check if hardware tables are initialized
     pub fn is_initialized(&self) -> bool {
-        self.root_table.is_some() && !self.context_tables.is_empty()
+        self.root_table.is_some()
+            && (!self.legacy_context_tables.is_empty() || !self.scalable_context_tables.is_empty())
     }
 }
 
@@ -98,7 +103,7 @@ pub struct IommuController {
     pub(crate) cap: u64,
     /// Extended capabilities
     pub(crate) ecap: u64,
-    /// Hardware/Table Lock (protects root_table and context_tables)
+    /// Hardware/Table Lock (protects root_table and context tables)
     pub(crate) hardware: PoisonLock<HardwareContext>,
     /// Register Lock (protects MMIO command sequences)
     pub(crate) register_lock: PoisonLock<()>,
@@ -107,6 +112,8 @@ pub struct IommuController {
     pub domains: PoisonLock<HashMap<u16, Arc<IommuDomain>>>,
     /// Device to domain mapping
     pub(crate) device_domains: PoisonLock<HashMap<DeviceId, u16>>,
+    /// Device to PASID table mapping (scalable mode)
+    pub(crate) device_pasid_tables: PoisonLock<HashMap<DeviceId, PasidTable>>,
     /// Next domain ID
     pub(crate) next_domain_id: AtomicU64,
     /// Translation enabled
@@ -166,6 +173,7 @@ impl IommuController {
             register_lock: PoisonLock::new(()),
             domains: PoisonLock::new(HashMap::new()),
             device_domains: PoisonLock::new(HashMap::new()),
+            device_pasid_tables: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(0),
             enabled: AtomicBool::new(false),
             interrupt_remap_table: PoisonLock::new(None),
@@ -205,6 +213,7 @@ impl IommuController {
             register_lock: PoisonLock::new(()),
             domains: PoisonLock::new(HashMap::new()),
             device_domains: PoisonLock::new(HashMap::new()),
+            device_pasid_tables: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(1),
             enabled: AtomicBool::new(false),
             interrupt_remap_table: PoisonLock::new(None),
@@ -287,7 +296,7 @@ impl IommuController {
     }
 
     /// Initialize the IOMMU controller hardware
-    pub unsafe fn init(&mut self) -> Result<(), IommuError> {
+    pub unsafe fn init(&mut self, enable_scalable_mode: bool) -> Result<(), IommuError> {
         // Read Capabilities
         if self.mmio_base == 0 {
             log::error!("IOMMU MMIO Base is NULL");
@@ -318,12 +327,21 @@ impl IommuController {
             );
         }
 
+        if enable_scalable_mode && !self.supports_scalable_mode() {
+            log::warn!("[IOMMU] Scalable mode requested but not supported");
+        }
+        let scalable_enabled = enable_scalable_mode && self.supports_scalable_mode();
+        self.set_scalable_mode_enabled(scalable_enabled);
+        if scalable_enabled {
+            log::warn!("[IOMMU] Scalable mode context tables enabled (translation path is experimental)");
+        }
+
         // Allocate and set up Root Table
         let root_table = HardwareTable::new(256, None)?;
         self.hardware.lock().unwrap().root_table = Some(root_table);
 
         // Program Root Table Address
-        let root_phys = self
+        let mut root_phys = self
             .hardware
             .lock()
             .unwrap()
@@ -331,6 +349,9 @@ impl IommuController {
             .as_ref()
             .unwrap()
             .phys_addr();
+        if self.is_scalable_mode_enabled() {
+            root_phys |= rtaddr_bits::RTADDR_SMT;
+        }
         self.write64(regs::RTADDR, root_phys);
 
         // Update Global Command Register to set Root Table Pointer
@@ -343,6 +364,26 @@ impl IommuController {
             100_000,
             false,
         )?;
+
+        // Allocate context tables (legacy 4KiB or scalable 8KiB)
+        if self.is_scalable_mode_enabled() {
+            let mut context_tables: Vec<HardwareTable<ScalableContextEntry>> =
+                Vec::with_capacity(256);
+            for _ in 0..256 {
+                context_tables.push(HardwareTable::new(256, None)?);
+            }
+            let mut hw = self.hardware.lock().unwrap();
+            hw.scalable_context_tables = context_tables;
+            hw.legacy_context_tables.clear();
+        } else {
+            let mut context_tables: Vec<HardwareTable<ContextEntry>> = Vec::with_capacity(256);
+            for _ in 0..256 {
+                context_tables.push(HardwareTable::new(256, None)?);
+            }
+            let mut hw = self.hardware.lock().unwrap();
+            hw.legacy_context_tables = context_tables;
+            hw.scalable_context_tables.clear();
+        }
 
         Ok(())
     }

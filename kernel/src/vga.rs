@@ -182,34 +182,3 @@ pub fn _print(args: fmt::Arguments) {
     // それ以外の場合はシリアル出力を使用（io::logが処理）
 }
 
-/// 早期ブート段階用のシリアル出力（ロックなし、シンプル）
-///
-/// 注意: この関数は後方互換性のために残されています。
-/// 新規コードでは `io::log::early_print` または `log` クレートを使用してください。
-#[deprecated(note = "Use `crate::io::log::early_print_char` instead; this wrapper will be removed in a future release.")]
-pub fn early_serial_char(c: u8) {
-    crate::io::log::early_print_char(c);
-}
-
-/// 早期ブート段階用のシリアル文字列出力
-///
-/// 注意: この関数は後方互換性のために残されています。
-/// 新規コードでは `io::log::early_print` または `log` クレートを使用してください。
-#[deprecated(note = "Use `crate::io::log::early_print` instead; this wrapper will be removed in a future release.")]
-pub fn early_serial_str(s: &str) {
-    crate::io::log::early_print(s);
-}
-
-
-
-/// VGAとシリアル両方に出力するマクロ（シリアル初期化後用）
-///
-/// 注意: このマクロは非推奨です。代わりに `log` クレートのマクロおよび `crate::io::serial::_print` を直接使用してください。
-#[deprecated(note = "log_serial! is deprecated; use `log` macros and `crate::io::serial::_print` instead. This macro will be removed in a future release.")]
-#[macro_export]
-macro_rules! log_serial {
-    ($($arg:tt)*) => ({
-        $crate::vga::_print(format_args!($($arg)*));
-        $crate::io::serial::_print(format_args!($($arg)*));
-    });
-}

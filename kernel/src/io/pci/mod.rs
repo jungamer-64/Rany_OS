@@ -82,9 +82,3 @@ pub use pci_driver::{
     status_bits,
 };
 
-// Deprecated legacy re-exports: prefer using the APIs in `pci_driver` directly.
-#[deprecated(note = "Legacy PCI accessor is deprecated; use `pci_driver::EcamAccess` or the new PCI APIs in the `pci_driver` crate directly.")]
-pub use pci_driver::LegacyPciAccessor;
-
-#[deprecated(note = "get_legacy_accessor is deprecated; prefer the new accessors exposed by the `pci_driver` crate.")]
-pub use pci_driver::get_legacy_accessor;

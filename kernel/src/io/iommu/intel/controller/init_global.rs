@@ -76,7 +76,7 @@ pub unsafe fn init_iommu_from_acpi(
         let mut controller = IommuController::new(mmio_virt, unit.segment);
 
         unsafe {
-            if let Err(e) = controller.init() {
+            if let Err(e) = controller.init(config.scalable_mode) {
                 log::error!("Failed to initialize IOMMU controller: {:?}", e);
                 continue;
             }
@@ -250,11 +250,12 @@ pub unsafe fn init_iommu_from_acpi(
 /// Initialize the global IOMMU (legacy wrapper)
 pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     // Legacy initialization for single IOMMU (segment 0) with default config
+    let config = IommuConfig::default();
     let mmio_virt = phys_to_virt_usize(mmio_base) as u64;
 
     let mut controller = IommuController::new(mmio_virt, 0);
     unsafe {
-        controller.init()?;
+        controller.init(config.scalable_mode)?;
     }
 
     let iova_bits = controller.max_guest_address_width().min(48).max(12);

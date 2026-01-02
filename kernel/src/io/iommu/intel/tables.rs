@@ -26,9 +26,25 @@ impl RootEntry {
         (self.lo & 1) != 0
     }
 
+    /// Check if lower context table pointer is present
+    pub fn is_present_low(&self) -> bool {
+        (self.lo & 1) != 0
+    }
+
+    /// Check if upper context table pointer is present
+    pub fn is_present_high(&self) -> bool {
+        (self.hi & 1) != 0
+    }
+
     /// Set context table pointer
     pub fn set_context_table(&mut self, addr: u64) {
         self.lo = (addr & !0xFFF) | 1; // Present bit
+    }
+
+    /// Set context table pointers for scalable mode (lower and upper halves)
+    pub fn set_context_table_pair(&mut self, low_addr: u64, high_addr: u64) {
+        self.lo = (low_addr & !0xFFF) | 1; // Present bit
+        self.hi = (high_addr & !0xFFF) | 1; // Present bit
     }
 
     /// Get context table address
@@ -101,38 +117,45 @@ unsafe impl Zeroable for ContextEntry {}
 // Scalable Mode Context Table
 // ============================================================================
 
-/// Scalable Mode Context Entry (128 bytes)
+/// Scalable Mode Context Entry (32 bytes)
 ///
 /// Used in Scalable Mode Translation (SMTS) for PASID-based translation.
-/// Each entry is 128 bytes and points to a PASID table.
-#[repr(C, align(64))]
+/// Each entry is 32 bytes; the first 16 bytes hold PASID directory pointer
+/// and RID->PASID mapping, remaining 16 bytes are reserved.
+#[repr(C, align(16))]
 #[derive(Clone, Copy, Debug)]
 pub struct ScalableContextEntry {
-    /// 8 QWORDs (64 bytes each half)
-    pub qwords: [u64; 16],
+    /// 4 QWORDs (32 bytes)
+    pub qwords: [u64; 4],
 }
 
 impl Default for ScalableContextEntry {
     fn default() -> Self {
-        Self { qwords: [0; 16] }
+        Self { qwords: [0; 4] }
     }
 }
 
 impl ScalableContextEntry {
     /// Present bit (QWORD 0, bit 0)
     pub const PRESENT: u64 = 1 << 0;
-    /// PASID Table Pointer (QWORD 0, bits 12-63)
-    pub const PTP_MASK: u64 = !0xFFF;
-    /// PASID Table Size (QWORD 1, bits 0-3) - log2 of entries
-    pub const PTS_SHIFT: u64 = 0;
-    /// RID-PASID (Request ID to PASID mapping, QWORD 1)
-    pub const RID_PASID_SHIFT: u64 = 4;
-    /// Domain ID (QWORD 8, bits 8-23)
-    pub const DID_SHIFT: u64 = 8;
+    /// Fault Processing Disable (QWORD 0, bit 1)
+    pub const FAULT_DISABLE: u64 = 1 << 1;
+    /// Device-TLB Enable (QWORD 0, bit 2)
+    pub const DTE: u64 = 1 << 2;
+    /// PASID Enable (QWORD 0, bit 3)
+    pub const PASID_ENABLE: u64 = 1 << 3;
+    /// Page Request Enable (QWORD 0, bit 4)
+    pub const PRE: u64 = 1 << 4;
+    /// PASID Directory Pointer (QWORD 0, bits 12-63)
+    pub const PASID_DIR_MASK: u64 = !0xFFF;
+    /// PASID Directory Size (QWORD 0, bits 9-11)
+    pub const PDS_SHIFT: u64 = 9;
+    /// RID->PASID mapping (QWORD 1, bits 0-19)
+    pub const RID_PASID_MASK: u64 = (1 << 20) - 1;
 
     /// Create a new empty entry
     pub const fn new() -> Self {
-        Self { qwords: [0; 16] }
+        Self { qwords: [0; 4] }
     }
 
     /// Check if the entry is present
@@ -140,32 +163,82 @@ impl ScalableContextEntry {
         (self.qwords[0] & Self::PRESENT) != 0
     }
 
-    /// Set the PASID table pointer
-    pub fn set_pasid_table(&mut self, pasid_table_addr: u64, size_log2: u8) {
-        self.qwords[0] = (pasid_table_addr & Self::PTP_MASK) | Self::PRESENT;
-        // Set PASID table size in QWORD 1
-        self.qwords[1] = ((size_log2 as u64) & 0xF) << Self::PTS_SHIFT;
+    /// Set the PASID directory pointer and size
+    pub fn set_pasid_dir(&mut self, pasid_dir_addr: u64, pds: u8) {
+        self.qwords[0] = (pasid_dir_addr & Self::PASID_DIR_MASK)
+            | (((pds as u64) & 0x7) << Self::PDS_SHIFT);
     }
 
-    /// Set domain ID
-    pub fn set_domain_id(&mut self, domain_id: u16) {
-        self.qwords[8] = (self.qwords[8] & !0xFFFF00) | ((domain_id as u64) << Self::DID_SHIFT);
+    /// Set RID->PASID mapping (for requests without PASID)
+    pub fn set_rid2pasid(&mut self, pasid: u32) {
+        let pasid_bits = (pasid as u64) & Self::RID_PASID_MASK;
+        self.qwords[1] = (self.qwords[1] & !Self::RID_PASID_MASK) | pasid_bits;
     }
 
-    /// Get domain ID
-    pub fn domain_id(&self) -> u16 {
-        ((self.qwords[8] >> Self::DID_SHIFT) & 0xFFFF) as u16
+    /// Mark entry present
+    pub fn set_present(&mut self) {
+        self.qwords[0] |= Self::PRESENT;
     }
 
-    /// Get PASID table pointer
-    pub fn pasid_table_addr(&self) -> u64 {
-        self.qwords[0] & Self::PTP_MASK
+    /// Enable fault processing (clear FPD)
+    pub fn set_fault_enable(&mut self) {
+        self.qwords[0] &= !Self::FAULT_DISABLE;
+    }
+
+    /// Enable PASID translation
+    pub fn set_pasid_enable(&mut self) {
+        self.qwords[0] |= Self::PASID_ENABLE;
+    }
+
+    /// Enable Page Request
+    pub fn set_pre(&mut self) {
+        self.qwords[0] |= Self::PRE;
+    }
+
+    /// Enable Device-TLB (ATS)
+    pub fn set_dte(&mut self) {
+        self.qwords[0] |= Self::DTE;
     }
 }
+
+// SAFETY: ScalableContextEntry with all zeros is not present - valid state
+unsafe impl Zeroable for ScalableContextEntry {}
 
 // ============================================================================
 // PASID Table
 // ============================================================================
+
+/// PASID Directory Entry (8 bytes)
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct PasidDirEntry(pub u64);
+
+impl PasidDirEntry {
+    /// Present bit
+    pub const PRESENT: u64 = 1 << 0;
+    /// Fault Processing Disable
+    pub const FAULT_DISABLE: u64 = 1 << 1;
+    /// PASID Table Pointer (bits 12-63)
+    pub const TABLE_MASK: u64 = !0xFFF;
+
+    /// Create a new empty entry
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Check if present
+    pub fn is_present(&self) -> bool {
+        (self.0 & Self::PRESENT) != 0
+    }
+
+    /// Set PASID table pointer
+    pub fn set_table(&mut self, addr: u64) {
+        self.0 = (addr & Self::TABLE_MASK) | Self::PRESENT;
+    }
+}
+
+// SAFETY: PasidDirEntry with all zeros is not present - valid state
+unsafe impl Zeroable for PasidDirEntry {}
 
 /// PASID Table Entry (64 bytes)
 ///
@@ -187,16 +260,22 @@ impl Default for PasidTableEntry {
 impl PasidTableEntry {
     /// Present bit (QWORD 0, bit 0)
     pub const PRESENT: u64 = 1 << 0;
-    /// Page Walk Disable (QWORD 0, bit 3)
-    pub const PWD: u64 = 1 << 3;
-    /// First Level Page Table Pointer (QWORD 0, bits 12-63)
-    pub const FLPT_MASK: u64 = !0xFFF;
-    /// Address Width (QWORD 1, bits 0-2)
-    pub const AW_SHIFT: u64 = 0;
-    /// Supervisor Request (QWORD 1, bit 5)
-    pub const SRE: u64 = 1 << 5;
-    /// Execute Enable (QWORD 1, bit 6)
-    pub const EAFE: u64 = 1 << 6;
+    /// Fault Processing Disable (QWORD 0, bit 1)
+    pub const FAULT_DISABLE: u64 = 1 << 1;
+    /// Address Width (QWORD 0, bits 2-4)
+    pub const AW_SHIFT: u64 = 2;
+    /// Translation Type (QWORD 0, bits 6-8)
+    pub const PGTT_SHIFT: u64 = 6;
+    /// Second Level Page Table Pointer (QWORD 0, bits 12-63)
+    pub const SLPT_MASK: u64 = !0xFFF;
+    /// Domain ID (QWORD 1, bits 0-15)
+    pub const DID_MASK: u64 = 0xFFFF;
+
+    /// PGTT encodings
+    pub const PGTT_FL_ONLY: u64 = 1;
+    pub const PGTT_SL_ONLY: u64 = 2;
+    pub const PGTT_NESTED: u64 = 3;
+    pub const PGTT_PT: u64 = 4;
 
     /// Create a new empty entry
     pub const fn new() -> Self {
@@ -208,22 +287,35 @@ impl PasidTableEntry {
         (self.qwords[0] & Self::PRESENT) != 0
     }
 
-    /// Set first level page table pointer
-    pub fn set_fl_pt(&mut self, addr: u64, address_width: u8) {
-        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
-        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
+    /// Clear entry
+    pub fn clear(&mut self) {
+        self.qwords = [0; 8];
     }
 
-    /// Set second level page table pointer (for nested translation)
-    pub fn set_sl_pt(&mut self, addr: u64, address_width: u8) {
-        // Set PWD = 0 (page walk enabled) and point to SL PT
-        self.qwords[0] = (addr & Self::FLPT_MASK) | Self::PRESENT;
-        self.qwords[1] = ((address_width as u64) & 0x7) << Self::AW_SHIFT;
+    /// Set second level page table pointer (SL-only translation)
+    pub fn set_sl_pt(&mut self, addr: u64, address_width: u8, domain_id: u16) {
+        self.clear();
+        self.qwords[0] = (addr & Self::SLPT_MASK) | Self::PRESENT;
+        self.qwords[0] |= ((address_width as u64) & 0x7) << Self::AW_SHIFT;
+        self.qwords[0] |= (Self::PGTT_SL_ONLY & 0x7) << Self::PGTT_SHIFT;
+        self.qwords[1] = (domain_id as u64) & Self::DID_MASK;
     }
 
-    /// Get first level page table address
-    pub fn fl_pt_addr(&self) -> u64 {
-        self.qwords[0] & Self::FLPT_MASK
+    /// Set passthrough translation (no page tables)
+    pub fn set_passthrough(&mut self, domain_id: u16) {
+        self.clear();
+        self.qwords[0] = Self::PRESENT | ((Self::PGTT_PT & 0x7) << Self::PGTT_SHIFT);
+        self.qwords[1] = (domain_id as u64) & Self::DID_MASK;
+    }
+
+    /// Get second level page table address
+    pub fn sl_pt_addr(&self) -> u64 {
+        self.qwords[0] & Self::SLPT_MASK
+    }
+
+    /// Get domain ID
+    pub fn domain_id(&self) -> u16 {
+        (self.qwords[1] & Self::DID_MASK) as u16
     }
 }
 
@@ -235,25 +327,39 @@ unsafe impl Zeroable for PasidTableEntry {}
 /// Manages PASID entries for Scalable Mode.
 /// Each entry is 64 bytes (PasidTableEntry).
 pub struct PasidTable {
-    /// Hardware table backing the PASID entries
+    /// PASID directory table (4KB, 512 entries)
+    pub directory: HardwareTable<PasidDirEntry>,
+    /// PASID leaf table (4KB, 64 entries)
     pub table: HardwareTable<PasidTableEntry>,
     /// Size (number of entries, power of 2)
     pub size: usize,
     /// Allocation bitmap
     allocated: Vec<u64>,
+    /// PASID directory size field (PDS)
+    pds: u8,
 }
 
 impl PasidTable {
+    const DIR_ENTRIES: usize = 512;
+    const TABLE_ENTRIES: usize = 64;
+
     /// Create a new PASID table
     pub fn new(size_log2: u8) -> Result<Self, IommuError> {
-        // Limit max PASID bits to 20 (1M entries)
-        if size_log2 > 20 {
-            return Err(IommuError::InvalidAddress);
+        // Limit to a single 4KB PASID leaf table (<= 64 entries) for now
+        if size_log2 > 6 {
+            return Err(IommuError::NotSupported);
         }
 
-        let count = 1 << size_log2;
-        // Allocate hardware table
-        let table = HardwareTable::new(count, None)?;
+        let count = 1usize << size_log2;
+        let mut directory = HardwareTable::new(Self::DIR_ENTRIES, None)?;
+        let table = HardwareTable::new(Self::TABLE_ENTRIES, None)?;
+
+        // Setup directory entry 0 to point to the leaf table
+        let mut dir_entry = PasidDirEntry::new();
+        dir_entry.set_table(table.phys_addr());
+        if let Some(entry) = directory.get_mut(0) {
+            *entry = dir_entry;
+        }
 
         // Allocate bitmap
         let bitmap_len = (count + 63) / 64;
@@ -261,25 +367,33 @@ impl PasidTable {
         allocated.resize(bitmap_len, 0);
 
         Ok(Self {
+            directory,
             table,
             size: count,
             allocated,
+            pds: 0,
         })
     }
 
-    /// Get physical address
+    /// Get physical address of PASID directory table
     pub fn phys_addr(&self) -> u64 {
-        self.table.phys_addr()
+        self.directory.phys_addr()
+    }
+
+    /// Get PASID directory size field
+    pub fn pds(&self) -> u8 {
+        self.pds
     }
 
     /// Setup a PASID entry
-    pub fn setup_entry(
+    pub fn setup_sl_entry(
         &mut self,
         pasid: u32,
-        fl_pt_addr: u64,
+        sl_pt_addr: u64,
         address_width: u8,
+        domain_id: u16,
     ) -> Result<(), IommuError> {
-        if (pasid as usize) >= self.size {
+        if (pasid as usize) >= self.size || (pasid as usize) >= Self::TABLE_ENTRIES {
             return Err(IommuError::InvalidAddress);
         }
 
@@ -290,12 +404,48 @@ impl PasidTable {
 
         // Update entry
         if let Some(entry) = self.table.get_mut(pasid as usize) {
-            entry.set_fl_pt(fl_pt_addr, address_width);
+            entry.set_sl_pt(sl_pt_addr, address_width, domain_id);
             // Ensure memory is visible
             core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
             Ok(())
         } else {
             Err(IommuError::InvalidAddress)
+        }
+    }
+
+    /// Setup a passthrough PASID entry
+    pub fn setup_passthrough_entry(
+        &mut self,
+        pasid: u32,
+        domain_id: u16,
+    ) -> Result<(), IommuError> {
+        if (pasid as usize) >= self.size || (pasid as usize) >= Self::TABLE_ENTRIES {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let word_idx = (pasid as usize) / 64;
+        let bit_idx = (pasid as usize) % 64;
+        self.allocated[word_idx] |= 1 << bit_idx;
+
+        if let Some(entry) = self.table.get_mut(pasid as usize) {
+            entry.set_passthrough(domain_id);
+            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+            Ok(())
+        } else {
+            Err(IommuError::InvalidAddress)
+        }
+    }
+
+    /// Read domain ID for a PASID entry (if present)
+    pub fn domain_id(&self, pasid: u32) -> Option<u16> {
+        if (pasid as usize) >= self.size || (pasid as usize) >= Self::TABLE_ENTRIES {
+            return None;
+        }
+        let entry = self.table.get(pasid as usize)?;
+        if entry.is_present() {
+            Some(entry.domain_id())
+        } else {
+            None
         }
     }
 }
