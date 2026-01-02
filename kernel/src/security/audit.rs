@@ -53,6 +53,8 @@ pub enum AuditEventType {
     PermissionDenied,
     /// Privilege escalation attempt
     PrivilegeEscalation,
+    /// IOMMU security event
+    IommuEvent,
 
     // System events
     /// System call
@@ -86,6 +88,7 @@ impl AuditEventType {
             AuditEventType::CapabilityCheck => "CAPABILITY_CHECK",
             AuditEventType::PermissionDenied => "PERMISSION_DENIED",
             AuditEventType::PrivilegeEscalation => "PRIVILEGE_ESCALATION",
+            AuditEventType::IommuEvent => "IOMMU_EVENT",
             AuditEventType::Syscall => "SYSCALL",
             AuditEventType::ModuleLoad => "MODULE_LOAD",
             AuditEventType::ConfigChange => "CONFIG_CHANGE",
@@ -103,6 +106,7 @@ impl AuditEventType {
                 | AuditEventType::PermissionDenied
                 | AuditEventType::AuthFailure
                 | AuditEventType::ModuleLoad
+                | AuditEventType::IommuEvent
         )
     }
 }

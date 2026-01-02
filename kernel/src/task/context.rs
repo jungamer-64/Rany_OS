@@ -166,9 +166,14 @@ pub unsafe extern "C" fn switch_context(_old: *mut CpuContext, _new: *const CpuC
 /// カーネルタスク用のスタック
 ///
 /// Per-Task スタック管理。各タスクは独自のカーネルスタックを持つ。
+/// 
+/// 【設計書 8.3】各タスクスタックの下端（低アドレス側）にガードページを配置し、
+/// スタックオーバーフローを検出可能にする。
 pub struct KernelStack {
     /// スタックメモリ（底から上に向かって成長）
     memory: Box<[u8; Self::SIZE]>,
+    /// ガードページが設定済みかどうか
+    guard_page_set: bool,
 }
 
 impl KernelStack {
@@ -179,6 +184,12 @@ impl KernelStack {
     pub const GUARD_SIZE: usize = 4096;
 
     /// 新しいスタックを割り当て
+    /// 
+    /// 【設計書 8.3】ガードページによるスタックオーバーフロー検出
+    /// 
+    /// スタックの下端（低アドレス側）にガードページ（Present=0）を自動的に
+    /// 配置する。スタックオーバーフローが発生すると、ガードページへの
+    /// アクセスによりPage Fault (#PF) が発生し、検出可能になる。
     pub fn new() -> Option<Self> {
         // ゼロ初期化されたスタックメモリを確保
         // Box::new_zeroed() は allocator_api feature が必要なので代替実装
@@ -188,7 +199,39 @@ impl KernelStack {
         // SAFETY: ptr は適切なサイズとアラインメントで割り当てられている
         let memory = unsafe { raw::box_from_raw(ptr as *mut [u8; Self::SIZE]) };
 
-        Some(Self { memory })
+        let mut stack = Self { 
+            memory,
+            guard_page_set: false,
+        };
+
+        // ガードページを設定
+        stack.setup_guard_page();
+
+        Some(stack)
+    }
+
+    /// 【設計書 8.3】ガードページを設定
+    /// 
+    /// スタックの下端にガードページを配置する。
+    /// ガードページへのアクセスはPage Faultを発生させる。
+    fn setup_guard_page(&mut self) {
+        if self.guard_page_set {
+            return;
+        }
+
+        let bottom = self.bottom().as_u64() as usize;
+        
+        // panic_handler モジュールのガードページ設定関数を使用
+        crate::panic_handler::setup_task_stack_guard(bottom, Self::SIZE);
+        
+        self.guard_page_set = true;
+        
+        log::debug!(
+            "[KernelStack] Guard page set at 0x{:x} for stack [0x{:x}..0x{:x}]",
+            bottom,
+            bottom,
+            bottom + Self::SIZE
+        );
     }
 
     /// スタックの最上位アドレス（初期RSP）を取得

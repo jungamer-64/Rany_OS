@@ -58,6 +58,41 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     // 割り込みを無効化
     x86_64::instructions::interrupts::disable();
 
+    // 【設計書 8.2】パニック捕捉が有効かチェック（catch_panic機構）
+    // プロキシ呼び出し中であれば、パニックを記録して特別な処理を行う
+    if crate::unwind::is_panic_catch_active() {
+        // パニックメッセージを抽出
+        let message = {
+            use core::fmt::Write;
+            let mut s = String::new();
+            let _ = write!(s, "{}", info.message());
+            if s.is_empty() {
+                String::from("Unknown panic")
+            } else {
+                s
+            }
+        };
+        
+        // パニック場所情報を抽出
+        let (file, line, column) = info.location()
+            .map(|loc| (Some(loc.file()), Some(loc.line()), Some(loc.column())))
+            .unwrap_or((None, None, None));
+        
+        // パニック情報を記録
+        crate::unwind::record_caught_panic(&message, file, line, column);
+        
+        // プロキシ呼び出し中のパニックも記録
+        crate::ipc::proxy::record_proxy_panic(message);
+        
+        // 注意: 現在の実装では真のsetjmp/longjmpがないため、
+        // ここでHALTする。将来的にはランディングパッドに
+        // ジャンプして復帰できるようにする。
+        log::info!("[PanicHandler] Panic caught in catch_panic context, halting...");
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+
     // 【設計書 8.5.1】Double Panic検出
     // パニックハンドラの入口でこのフラグをチェックし、
     // 既にtrueであればDouble Panicと判定して即座にabort

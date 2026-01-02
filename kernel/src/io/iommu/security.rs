@@ -18,7 +18,12 @@
 //!
 //! All types are `Send + Sync`. Events are `Copy` to avoid allocation in ISR context.
 
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicUsize, Ordering};
+use spin::Once;
+
 use crate::io::iommu::fault_log::FaultRecord;
+use crate::security::audit::{AuditEvent, AuditEventType};
 
 /// Security event types from IOMMU subsystem
 ///
@@ -34,6 +39,8 @@ pub enum SecurityEvent {
         fault_address: u64,
         /// Hardware fault reason code
         reason: u8,
+        /// Domain ID if known
+        domain_id: Option<u32>,
     },
 
     /// Device has been isolated due to security policy
@@ -167,4 +174,198 @@ pub trait SecurityNotifier: Send + Sync {
     fn decide(&self, _fault: &FaultSummary) -> IsolationDecision {
         IsolationDecision::default()
     }
+}
+
+const SECURITY_EVENT_QUEUE_SIZE: usize = 256;
+
+struct SecurityEventQueue {
+    events: [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE],
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    dropped: AtomicUsize,
+}
+
+impl SecurityEventQueue {
+    const fn new() -> Self {
+        Self {
+            events: [None; SECURITY_EVENT_QUEUE_SIZE],
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            dropped: AtomicUsize::new(0),
+        }
+    }
+
+    fn push(&self, event: SecurityEvent) {
+        const MAX_RETRIES: usize = 16;
+        for _ in 0..MAX_RETRIES {
+            let tail = self.tail.load(Ordering::Relaxed);
+            let next_tail = (tail + 1) % SECURITY_EVENT_QUEUE_SIZE;
+            let head = self.head.load(Ordering::Acquire);
+            if next_tail == head {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
+            if self
+                .tail
+                .compare_exchange_weak(tail, next_tail, Ordering::AcqRel, Ordering::Relaxed)
+                .is_ok()
+            {
+                unsafe {
+                    let ptr = &self.events as *const _
+                        as *mut [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE];
+                    core::ptr::write_volatile(&mut (*ptr)[tail], Some(event));
+                }
+                return;
+            }
+            core::hint::spin_loop();
+        }
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn pop(&self) -> Option<SecurityEvent> {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        if head == tail {
+            return None;
+        }
+        let event = unsafe {
+            let ptr = &self.events as *const _
+                as *mut [Option<SecurityEvent>; SECURITY_EVENT_QUEUE_SIZE];
+            (*ptr)[head].take()
+        };
+        self.head
+            .store((head + 1) % SECURITY_EVENT_QUEUE_SIZE, Ordering::Release);
+        event
+    }
+
+    fn take_dropped(&self) -> usize {
+        self.dropped.swap(0, Ordering::Relaxed)
+    }
+}
+
+/// Default IOMMU security monitor that buffers events in a lock-free ring.
+pub struct IommuSecurityMonitor {
+    queue: SecurityEventQueue,
+}
+
+impl IommuSecurityMonitor {
+    fn new() -> Self {
+        Self {
+            queue: SecurityEventQueue::new(),
+        }
+    }
+
+    /// Drain buffered events and pass them to the handler.
+    pub fn drain_events<F>(&self, max: usize, mut handler: F) -> usize
+    where
+        F: FnMut(SecurityEvent),
+    {
+        let mut count = 0;
+        while count < max {
+            let Some(event) = self.queue.pop() else {
+                break;
+            };
+            handler(event);
+            count += 1;
+        }
+        count
+    }
+
+    /// Return number of dropped events since the last call.
+    pub fn take_dropped_events(&self) -> usize {
+        self.queue.take_dropped()
+    }
+}
+
+impl SecurityNotifier for IommuSecurityMonitor {
+    fn notify(&self, event: SecurityEvent) {
+        self.queue.push(event);
+    }
+}
+
+static DEFAULT_SECURITY_MONITOR: Once<Arc<IommuSecurityMonitor>> = Once::new();
+static SECURITY_MONITOR_TASK: Once<()> = Once::new();
+
+/// Get the default IOMMU security notifier instance.
+pub fn default_security_notifier() -> Arc<dyn SecurityNotifier> {
+    default_security_monitor() as Arc<dyn SecurityNotifier>
+}
+
+/// Get the default IOMMU security monitor instance.
+pub fn default_security_monitor() -> Arc<IommuSecurityMonitor> {
+    DEFAULT_SECURITY_MONITOR.call_once(|| Arc::new(IommuSecurityMonitor::new()));
+    let monitor = DEFAULT_SECURITY_MONITOR
+        .get()
+        .expect("IOMMU security monitor not initialized");
+    Arc::clone(monitor)
+}
+
+fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
+    match event {
+        SecurityEvent::DmaViolation {
+            source_id,
+            fault_address,
+            reason,
+            domain_id,
+        } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("dma_violation")
+            .field("source_id", alloc::format!("{:#x}", source_id))
+            .field("fault_address", alloc::format!("{:#x}", fault_address))
+            .field("reason", alloc::format!("{:#x}", reason))
+            .field(
+                "domain_id",
+                alloc::format!("{:#x}", domain_id.unwrap_or(u32::MAX)),
+            ),
+        SecurityEvent::DeviceIsolated { source_id, reason } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("device_isolated")
+                .field("source_id", alloc::format!("{:#x}", source_id))
+                .field("reason", alloc::format!("{:?}", reason))
+        }
+        SecurityEvent::QuarantinePoisoned { domain_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, domain_id as u64)
+                .success(false)
+                .message("quarantine_poisoned")
+        }
+        SecurityEvent::EventsDropped { count } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("events_dropped")
+                .field("count", alloc::format!("{}", count))
+        }
+    }
+}
+
+const SECURITY_MONITOR_INTERVAL_MS: u64 = 100;
+const SECURITY_MONITOR_BATCH: usize = 128;
+
+/// Drain IOMMU security events and forward them to the audit pipeline.
+pub async fn security_monitor_task() {
+    let monitor = default_security_monitor();
+    loop {
+        let _ = monitor.drain_events(SECURITY_MONITOR_BATCH, |event| {
+            crate::security::audit::log_event(security_event_to_audit(event));
+        });
+
+        let dropped = monitor.take_dropped_events();
+        if dropped > 0 {
+            crate::security::audit::log_event(
+                AuditEvent::new(AuditEventType::IommuEvent, 0)
+                    .success(false)
+                    .message("monitor_events_dropped")
+                    .field("count", alloc::format!("{}", dropped)),
+            );
+        }
+
+        crate::task::sleep_ms(SECURITY_MONITOR_INTERVAL_MS).await;
+    }
+}
+
+/// Spawn the default IOMMU security monitor task (idempotent).
+pub fn spawn_security_monitor_task() {
+    SECURITY_MONITOR_TASK.call_once(|| {
+        crate::task::per_core_executor::spawn(security_monitor_task());
+    });
 }

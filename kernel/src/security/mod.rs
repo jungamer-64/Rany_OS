@@ -613,6 +613,22 @@ pub fn init() {
 
     log::info!("[SECURITY] Security framework initialized\n");
     log::info!("[SECURITY] Audit logging: enabled\n");
+
+    if crate::io::iommu::api::is_iommu_enabled() {
+        match crate::io::iommu::api::set_security_notifier(
+            crate::io::iommu::security::default_security_notifier(),
+        ) {
+            Ok(true) => {
+                log::info!("[SECURITY] IOMMU notifier registered");
+                crate::io::iommu::security::spawn_security_monitor_task();
+            }
+            Ok(false) => {
+                log::info!("[SECURITY] IOMMU notifier already registered");
+                crate::io::iommu::security::spawn_security_monitor_task();
+            }
+            Err(err) => log::warn!("[SECURITY] IOMMU notifier registration failed: {:?}", err),
+        }
+    }
 }
 
 #[cfg(test)]

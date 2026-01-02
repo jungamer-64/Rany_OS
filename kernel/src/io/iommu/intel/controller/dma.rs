@@ -192,7 +192,7 @@ impl DomainManager for IommuController {
 
     fn get_domain_numa(&self, domain_id: u16) -> Option<usize> {
         match self.domains.lock() {
-            Ok(domains) => domains.get(&domain_id).map(|d| d.numa_node()),
+            Ok(domains) => domains.get(&domain_id).and_then(|d| d.numa_node()),
             Err(_) => {
                 log::error!("[IOMMU] Domains map poisoned in get_domain_numa - returning None");
                 None
