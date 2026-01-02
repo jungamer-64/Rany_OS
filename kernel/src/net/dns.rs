@@ -703,7 +703,7 @@ mod tests {
         let client = DnsClient::new(100);
         {
             let mut s = client.servers.lock().unwrap();
-            s.push(Ipv4Address::new(1, 2, 3, 4));
+            s.push(Ipv4Address::from_octets(1, 2, 3, 4));
         }
         set_panicking(true);
         assert_eq!(client.primary_server(), None);

@@ -4,24 +4,30 @@
 // 設計書 7.1: VirtIOドライバのRust実装
 // ============================================================================
 #![allow(dead_code)]
+#![allow(deprecated)]
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
 
 // Import VirtIO common definitions
 use super::defs::{VirtioDeviceType, status};
-use super::transport::VirtioTransport;
+use super::transport::{TransportType, VirtioTransport};
 use crate::io::dma::{
-    CoherentDmaBuffer, CpuOwned, DeviceOwned, DmaMemoryAttributes, TypedDmaSlice,
+    allocate_iommu_bounce_bytes, iommu_align_len, CoherentDmaBuffer, CpuOwned, DeviceOwned,
+    DmaMemoryAttributes, IommuBounceAllocError, SliceDmaGuard, TypedDmaSlice,
 };
+use crate::io::iommu::api::{
+    get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device, raw,
+    unmap_dma, unmap_for_device, DmaDirection, DmaHandle,
+};
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
 // Import PacketRef for zero-copy
 use crate::net::mempool::PacketRef;
@@ -40,6 +46,56 @@ fn read_mac_address(transport: &dyn VirtioTransport) -> [u8; 6] {
         transport.read_config_u8(4),
         transport.read_config_u8(5),
     ]
+}
+
+fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
+    if size == 0 {
+        return true;
+    }
+
+    let end = match addr.checked_add(size) {
+        Some(end) => end,
+        None => return false,
+    };
+
+    let limit = (mask as u128) + 1;
+    (addr as u128) <= (mask as u128) && (end as u128) <= limit
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    if align.is_power_of_two() {
+        (value + align - 1) & !(align - 1)
+    } else {
+        value
+    }
+}
+
+fn check_device_dma_mask(
+    device: Option<IommuDeviceId>,
+    addr: u64,
+    size: usize,
+) -> Result<(), VirtioNetError> {
+    let Some(device) = device else {
+        return Ok(());
+    };
+    let Some(mask) = get_device_dma_mask(&device) else {
+        return Ok(());
+    };
+    if dma_mask_allows_range(mask, addr, size as u64) {
+        Ok(())
+    } else {
+        Err(VirtioNetError::DeviceError)
+    }
+}
+
+fn unmap_iommu_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
+    let result = match device {
+        Some(device) => unmap_for_device(&device, iova, len as u64),
+        None => unmap_dma(iova, len as u64),
+    };
+    if let Err(err) = result {
+        log::warn!("[VIRTIO-NET] failed to unmap DMA buffer: {:?}", err);
+    }
 }
 
 // ============================================================================
@@ -194,30 +250,38 @@ pub struct NetVirtQueue {
     avail_ring: SendPtr<VringAvail>,
     /// Used Ring
     used_ring: SendPtr<VringUsed>,
-    /// 次の空きディスクリプタ
-    next_free_desc: AtomicU16,
+    /// Queue notify address (transport-provided)
+    notify_addr: Option<u64>,
+    /// Notify width (MMIO uses 32-bit, PCI uses 16-bit)
+    notify_is_32bit: bool,
     /// 最後に処理した Used インデックス
     last_used_idx: AtomicU16,
+    /// 完了キャッシュのstale検知回数
+    stale_completion_count: AtomicU64,
+    /// 空きディスクリプタ (desc_id stack)
+    free_descs: Mutex<Vec<u16>>,
     /// 割り込み待機中のWaker
     pending_wakers: Mutex<Vec<Waker>>,
-    /// ペンディングバッファの追跡 (desc_id -> callback)
-    pending_buffers: Mutex<Vec<Option<PendingBuffer>>>,
-    /// Notify用MMIOアドレス（Option for backward compatibility）
-    notify_addr: Option<*mut u16>,
+    /// 完了済みディスクリプタの長さ (desc_id -> used len)
+    pending_completions: Mutex<Vec<Option<u32>>>,
+    /// DMA Buffer to keep memory alive
+    dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
+    /// Optional IOMMU mapping for queue memory
+    iommu_map: Option<IommuMapping>,
+    /// TX header table (one header per descriptor)
+    tx_headers: Option<SendPtr<VirtioNetHeader>>,
+    /// TX header table DMA base (IOVA or phys)
+    tx_header_dma_base: Option<u64>,
 }
 
 // NetVirtQueueをSend/Syncにする
 unsafe impl Send for NetVirtQueue {}
 unsafe impl Sync for NetVirtQueue {}
 
-/// ペンディングバッファ情報
-struct PendingBuffer {
-    /// 元のバッファアドレス
-    buffer_addr: usize,
-    /// バッファサイズ
-    buffer_size: usize,
-    /// 完了時のWaker
-    waker: Option<Waker>,
+struct IommuMapping {
+    device: Option<IommuDeviceId>,
+    iova: u64,
+    len: usize,
 }
 
 impl NetVirtQueue {
@@ -231,10 +295,20 @@ impl NetVirtQueue {
         desc_table: *mut VringDesc,
         avail_ring: *mut VringAvail,
         used_ring: *mut VringUsed,
+        dma_buffer: Option<crate::io::dma::CoherentDmaBuffer>,
+        notify_addr: Option<u64>,
+        notify_is_32bit: bool,
+        iommu_map: Option<IommuMapping>,
+        tx_headers: Option<SendPtr<VirtioNetHeader>>,
+        tx_header_dma_base: Option<u64>,
     ) -> Self {
         // ペンディングバッファ配列を初期化
         let mut pending = Vec::with_capacity(size as usize);
         pending.resize_with(size as usize, || None);
+        let mut free_descs = Vec::with_capacity(size as usize);
+        for idx in (0..size).rev() {
+            free_descs.push(idx);
+        }
 
         Self {
             index,
@@ -242,71 +316,85 @@ impl NetVirtQueue {
             desc_table: SendPtr::new(desc_table),
             avail_ring: SendPtr::new(avail_ring),
             used_ring: SendPtr::new(used_ring),
-            next_free_desc: AtomicU16::new(0),
+            notify_addr,
+            notify_is_32bit,
             last_used_idx: AtomicU16::new(0),
+            stale_completion_count: AtomicU64::new(0),
+            free_descs: Mutex::new(free_descs),
             pending_wakers: Mutex::new(Vec::new()),
-            pending_buffers: Mutex::new(pending),
-            notify_addr: None,
-        }
-    }
-
-    /// 新しいVirtQueueを作成（notify付き）
-    ///
-    /// # Safety
-    /// desc_table, avail_ring, used_ring, notify_addr は有効なメモリを指している必要がある
-    pub unsafe fn new_with_notify(
-        index: u16,
-        size: u16,
-        desc_table: *mut VringDesc,
-        avail_ring: *mut VringAvail,
-        used_ring: *mut VringUsed,
-        notify_addr: *mut u16,
-    ) -> Self {
-        // Safety: 呼び出し元がdesc_table, avail_ring, used_ringの有効性を保証
-        let mut queue = unsafe { Self::new(index, size, desc_table, avail_ring, used_ring) };
-        queue.notify_addr = Some(notify_addr);
-        queue
-    }
-
-    /// デバイスにキュー更新を通知
-    ///
-    /// notify_addrが設定されている場合、MMIOレジスタに直接書き込む。
-    /// これにより、transportの&mut selfを要求せずに通知が可能。
-    pub fn notify(&self) {
-        if let Some(notify_addr) = self.notify_addr {
-            // Memory barrier before notifying device
-            core::sync::atomic::fence(Ordering::Release);
-            // Write queue index to notification register
-            crate::io::mmio_write_u16(notify_addr as usize, self.index);
+            pending_completions: Mutex::new(pending),
+            dma_buffer,
+            iommu_map,
+            tx_headers,
+            tx_header_dma_base,
         }
     }
 
     /// ディスクリプタを割り当て
     fn alloc_desc(&self) -> Option<u16> {
-        let idx = self.next_free_desc.fetch_add(1, Ordering::AcqRel);
-        if idx < self.size {
-            Some(idx)
+        let idx = self.free_descs.lock().pop()?;
+        self.clear_stale_completion(idx);
+        Some(idx)
+    }
+
+    fn alloc_desc_pair(&self) -> Option<(u16, u16)> {
+        let mut free_descs = self.free_descs.lock();
+        let first = free_descs.pop()?;
+        let second = match free_descs.pop() {
+            Some(second) => second,
+            None => {
+                free_descs.push(first);
+                return None;
+            }
+        };
+        drop(free_descs);
+        self.clear_stale_completion(first);
+        self.clear_stale_completion(second);
+        Some((first, second))
+    }
+
+    /// Notify the device that new buffers are available.
+    pub fn notify(&self) {
+        let Some(addr) = self.notify_addr else {
+            return;
+        };
+
+        if self.notify_is_32bit {
+            crate::io::mmio::mmio_write_u32(addr as usize, self.index as u32);
         } else {
-            self.next_free_desc.fetch_sub(1, Ordering::AcqRel);
-            None
+            crate::io::mmio::mmio_write_u16(addr as usize, self.index);
         }
     }
 
     /// 送信バッファを追加
     pub fn add_tx_buffer(
         &self,
-        _header: &VirtioNetHeader,
+        header: &VirtioNetHeader,
         data: &[u8],
     ) -> Result<u16, VirtioNetError> {
-        let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+        let (desc_idx, data_desc_idx) = self.alloc_desc_pair().ok_or(VirtioNetError::QueueFull)?;
+        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
+            (Some(ptr), Some(base)) => (ptr, base),
+            _ => return Err(VirtioNetError::DeviceError),
+        };
 
         unsafe {
-            // ディスクリプタを設定
+            let header_slot = &mut *header_ptr.as_ptr().add(desc_idx as usize);
+            *header_slot = *header;
+
+            // ヘッダーディスクリプタ
             let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
-            desc.addr = data.as_ptr() as u64;
-            desc.len = (VirtioNetHeader::SIZE + data.len()) as u32;
-            desc.flags = 0;
-            desc.next = 0;
+            desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
+            desc.len = VirtioNetHeader::SIZE as u32;
+            desc.flags = VringDesc::VRING_DESC_F_NEXT;
+            desc.next = data_desc_idx;
+
+            // データーディスクリプタ
+            let data_desc = &mut *self.desc_table.as_ptr().add(data_desc_idx as usize);
+            data_desc.addr = data.as_ptr() as u64;
+            data_desc.len = data.len() as u32;
+            data_desc.flags = 0;
+            data_desc.next = 0;
 
             // Available Ringに追加
             let avail = &mut *self.avail_ring.as_ptr();
@@ -329,15 +417,29 @@ impl NetVirtQueue {
         phys_addr: u64,
         data_len: usize,
     ) -> Result<u16, VirtioNetError> {
-        let desc_idx = self.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
+        let (desc_idx, data_desc_idx) = self.alloc_desc_pair().ok_or(VirtioNetError::QueueFull)?;
+        let (header_ptr, header_dma_base) = match (self.tx_headers, self.tx_header_dma_base) {
+            (Some(ptr), Some(base)) => (ptr, base),
+            _ => return Err(VirtioNetError::DeviceError),
+        };
 
         unsafe {
-            // ディスクリプタを設定（物理アドレスを直接使用）
+            let header = &mut *header_ptr.as_ptr().add(desc_idx as usize);
+            *header = VirtioNetHeader::new_tx();
+
+            // ヘッダーディスクリプタ
             let desc = &mut *self.desc_table.as_ptr().add(desc_idx as usize);
-            desc.addr = phys_addr;
-            desc.len = (VirtioNetHeader::SIZE + data_len) as u32;
-            desc.flags = 0;
-            desc.next = 0;
+            desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
+            desc.len = VirtioNetHeader::SIZE as u32;
+            desc.flags = VringDesc::VRING_DESC_F_NEXT;
+            desc.next = data_desc_idx;
+
+            // データーディスクリプタ
+            let data_desc = &mut *self.desc_table.as_ptr().add(data_desc_idx as usize);
+            data_desc.addr = phys_addr;
+            data_desc.len = data_len as u32;
+            data_desc.flags = 0;
+            data_desc.next = 0;
 
             // Available Ringに追加
             let avail = &mut *self.avail_ring.as_ptr();
@@ -411,6 +513,22 @@ impl NetVirtQueue {
     /// 完了したバッファを処理
     pub fn process_used(&self) -> Vec<(u16, u32)> {
         let mut completed = Vec::new();
+        let _ = self.process_used_with(|desc_idx, len| {
+            completed.push((desc_idx, len));
+        });
+        completed
+    }
+
+    pub fn process_used_count(&self) -> usize {
+        self.process_used_with(|_, _| {})
+    }
+
+    fn process_used_with<F>(&self, mut on_complete: F) -> usize
+    where
+        F: FnMut(u16, u32),
+    {
+        let mut count = 0;
+        let mut pending = self.pending_completions.lock();
 
         unsafe {
             let used = &*self.used_ring.as_ptr();
@@ -418,27 +536,99 @@ impl NetVirtQueue {
 
             while last_idx != used.idx {
                 let elem = &used.ring[(last_idx % self.size) as usize];
-                completed.push((elem.id as u16, elem.len));
+                let desc_idx = elem.id as u16;
+                let len = elem.len;
+                if let Some(slot) = pending.get_mut(desc_idx as usize) {
+                    *slot = Some(len);
+                }
+                on_complete(desc_idx, len);
+                count += 1;
                 last_idx = last_idx.wrapping_add(1);
             }
 
             self.last_used_idx.store(last_idx, Ordering::Release);
         }
 
-        // 完了したバッファのWakerを起動
-        if !completed.is_empty() {
+        drop(pending);
+
+        if count > 0 {
             let wakers: Vec<Waker> = self.pending_wakers.lock().drain(..).collect();
             for waker in wakers {
                 waker.wake();
             }
         }
 
-        completed
+        count
     }
 
     /// Wakerを登録
     pub fn register_waker(&self, waker: Waker) {
         self.pending_wakers.lock().push(waker);
+    }
+
+    pub fn take_completion(&self, desc_idx: u16) -> Option<u32> {
+        {
+            let mut pending = self.pending_completions.lock();
+            if let Some(slot) = pending.get_mut(desc_idx as usize) {
+                if let Some(len) = slot.take() {
+                    drop(pending);
+                    self.free_desc_chain(desc_idx);
+                    return Some(len);
+                }
+            }
+        }
+
+        let used_idx = unsafe { (*self.used_ring.as_ptr()).idx };
+        let last_idx = self.last_used_idx.load(Ordering::Acquire);
+        if used_idx == last_idx {
+            return None;
+        }
+
+        let _ = self.process_used_count();
+        let mut pending = self.pending_completions.lock();
+        let len = pending
+            .get_mut(desc_idx as usize)
+            .and_then(|slot| slot.take());
+        drop(pending);
+        if len.is_some() {
+            self.free_desc_chain(desc_idx);
+        }
+        len
+    }
+
+    fn free_desc_chain(&self, head: u16) {
+        let mut free_descs = self.free_descs.lock();
+        let mut current = head;
+        for _ in 0..self.size {
+            if current >= self.size {
+                break;
+            }
+            free_descs.push(current);
+            let desc = unsafe { &*self.desc_table.as_ptr().add(current as usize) };
+            if (desc.flags & VringDesc::VRING_DESC_F_NEXT) == 0 {
+                break;
+            }
+            current = desc.next;
+        }
+    }
+
+    fn clear_stale_completion(&self, desc_idx: u16) {
+        let mut pending = self.pending_completions.lock();
+        if let Some(slot) = pending.get_mut(desc_idx as usize) {
+            if slot.is_some() {
+                self.stale_completion_count
+                    .fetch_add(1, Ordering::Relaxed);
+                log::warn!(
+                    "[VIRTIO-NET] stale completion detected for desc {}",
+                    desc_idx
+                );
+                *slot = None;
+            }
+        }
+    }
+
+    pub fn stale_completion_count(&self) -> u64 {
+        self.stale_completion_count.load(Ordering::Relaxed)
     }
 
     /// ペンディングバッファがあるかチェック
@@ -447,6 +637,20 @@ impl NetVirtQueue {
             let used = &*self.used_ring.as_ptr();
             let last_idx = self.last_used_idx.load(Ordering::Acquire);
             last_idx != used.idx
+        }
+    }
+}
+
+impl Drop for NetVirtQueue {
+    fn drop(&mut self) {
+        if let Some(map) = self.iommu_map.take() {
+            let result = match map.device {
+                Some(device) => unmap_for_device(&device, map.iova, map.len as u64),
+                None => unmap_dma(map.iova, map.len as u64),
+            };
+            if let Err(err) = result {
+                log::warn!("[VIRTIO-NET] failed to unmap queue DMA: {:?}", err);
+            }
         }
     }
 }
@@ -482,6 +686,8 @@ pub struct VirtioNetDevice {
     transport: Box<dyn VirtioTransport>,
     /// 設定
     config: VirtioNetConfig,
+    /// Optional IOMMU device identifier for device-scoped mappings
+    iommu_device_id: Option<IommuDeviceId>,
     /// 受信キュー
     rx_queue: Option<NetVirtQueue>,
     /// 送信キュー
@@ -505,6 +711,14 @@ impl VirtioNetDevice {
     /// * `transport` - 初期化済みの VirtioTransport 実装（MMIO または PCI）
     ///   トランスポートはmagic/version検証を通過している必要がある
     pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
+        Self::new_with_device(transport, None)
+    }
+
+    /// 新しいデバイスを作成（IOMMUデバイスIDを指定）
+    pub fn new_with_device(
+        transport: Box<dyn VirtioTransport>,
+        iommu_device_id: Option<IommuDeviceId>,
+    ) -> Self {
         Self {
             transport,
             config: VirtioNetConfig {
@@ -512,6 +726,7 @@ impl VirtioNetDevice {
                 max_queues: 1,
                 mtu: 1500,
             },
+            iommu_device_id,
             rx_queue: None,
             tx_queue: None,
             initialized: AtomicBool::new(false),
@@ -612,11 +827,127 @@ impl VirtioNetDevice {
         let queue_size = max_size.min(256);
         self.transport.set_queue_size(queue_size);
 
-        // メモリをアロケート（実際の実装ではDMA対応メモリが必要）
-        // ここでは簡略化のためスキップ
-        // 実際のキュー設定はVirtQueueの初期化と連携が必要
+        // メモリをアロケート（DmaAllocatorを使用）
+        let desc_size = core::mem::size_of::<VringDesc>() * queue_size as usize;
+        let avail_size = 6 + 2 * queue_size as usize;
+        let used_size = 6 + 8 * queue_size as usize;
 
-        // キューを有効化
+        let header_align = core::mem::align_of::<VirtioNetHeader>();
+        let header_stride = VirtioNetHeader::SIZE;
+        let header_offset = align_up(desc_size + avail_size + used_size, header_align);
+        let header_size = header_stride * queue_size as usize;
+        let total_size = if queue_index == 1 {
+            header_offset + header_size
+        } else {
+            desc_size + avail_size + used_size
+        };
+
+        if is_iommu_required() && !is_iommu_enabled() {
+            return Err(VirtioNetError::DeviceError);
+        }
+
+        let (buffer, dma_len) = if is_iommu_enabled() {
+            let aligned_len = iommu_align_len(total_size).ok_or(VirtioNetError::DeviceError)?;
+            let buffer = crate::io::dma::CoherentDmaBuffer::new(
+                aligned_len,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+            )
+            .ok_or(VirtioNetError::DeviceError)?;
+            (buffer, aligned_len)
+        } else {
+            let buffer = crate::io::dma::CoherentDmaBuffer::new(
+                total_size,
+                crate::io::dma::DmaMemoryAttributes::MMIO,
+            )
+            .ok_or(VirtioNetError::DeviceError)?;
+            (buffer, total_size)
+        };
+
+        let phys_base = buffer.phys_addr().as_u64();
+        let ptr = unsafe { buffer.as_slice().as_ptr() } as *mut u8;
+
+        let desc_table = ptr as *mut VringDesc;
+        let avail_ring = unsafe { ptr.add(desc_size) as *mut VringAvail };
+        let used_ring = unsafe { ptr.add(desc_size + avail_size) as *mut VringUsed };
+        let notify_addr = self.transport.get_notify_addr(queue_index);
+        let notify_is_32bit = matches!(self.transport.transport_type(), TransportType::Mmio);
+        let (dma_base, iommu_map) = if is_iommu_enabled() {
+            let iova = unsafe {
+                match self.iommu_device_id {
+                    Some(device) => raw::map_for_device(&device, PhysAddr::new(phys_base), dma_len as u64),
+                    None => raw::map_for_dma(PhysAddr::new(phys_base), dma_len as u64),
+                }
+            }
+            .map_err(|_| VirtioNetError::DeviceError)?;
+            (
+                iova,
+                Some(IommuMapping {
+                    device: self.iommu_device_id,
+                    iova,
+                    len: dma_len,
+                }),
+            )
+        } else {
+            (phys_base, None)
+        };
+
+        let (tx_headers, tx_header_dma_base) = if queue_index == 1 {
+            let header_ptr = unsafe { ptr.add(header_offset) as *mut VirtioNetHeader };
+            let header_dma_base = dma_base + header_offset as u64;
+            (Some(SendPtr::new(header_ptr)), Some(header_dma_base))
+        } else {
+            (None, None)
+        };
+
+        // 各リングを初期化
+        for i in 0..queue_size {
+            unsafe {
+                (*desc_table.add(i as usize)) = VringDesc::default();
+            }
+        }
+        unsafe {
+            (*avail_ring).flags = 0;
+            (*avail_ring).idx = 0;
+            (*used_ring).flags = 0;
+            (*used_ring).idx = 0;
+        }
+        if let Some(header_ptr) = tx_headers {
+            for i in 0..queue_size {
+                unsafe {
+                    *header_ptr.as_ptr().add(i as usize) = VirtioNetHeader::default();
+                }
+            }
+        }
+
+        // デバイスにアドレスを設定
+        self.transport.set_queue_desc_addr(dma_base);
+        self.transport
+            .set_queue_avail_addr(dma_base + desc_size as u64);
+        self.transport
+            .set_queue_used_addr(dma_base + desc_size as u64 + avail_size as u64);
+
+        // キューを作成
+        let queue = unsafe {
+            NetVirtQueue::new(
+                queue_index,
+                queue_size,
+                desc_table,
+                avail_ring,
+                used_ring,
+                Some(buffer),
+                notify_addr,
+                notify_is_32bit,
+                iommu_map,
+                tx_headers,
+                tx_header_dma_base,
+            )
+        };
+
+        if queue_index == 0 {
+            self.rx_queue = Some(queue);
+        } else {
+            self.tx_queue = Some(queue);
+        }
         self.transport.enable_queue();
 
         Ok(())
@@ -634,6 +965,10 @@ impl VirtioNetDevice {
             data: data.as_ptr(),
             len: data.len(),
             submitted: false,
+            desc_idx: 0,
+            dma_len: 0,
+            dma_iova: None,
+            bounce_handle: None,
         }
     }
 
@@ -647,6 +982,9 @@ impl VirtioNetDevice {
             packet: Some(packet),
             submitted: false,
             desc_idx: 0,
+            dma_len: 0,
+            dma_iova: None,
+            bounce_handle: None,
         }
     }
 
@@ -656,6 +994,10 @@ impl VirtioNetDevice {
             device: self,
             buffer,
             submitted: false,
+            desc_idx: 0,
+            dma_len: 0,
+            dma_iova: None,
+            bounce_handle: None,
         }
     }
 
@@ -672,6 +1014,10 @@ impl VirtioNetDevice {
             pool,
             packet: None,
             submitted: false,
+            desc_idx: 0,
+            dma_len: 0,
+            dma_iova: None,
+            bounce_handle: None,
         }
     }
 
@@ -684,16 +1030,16 @@ impl VirtioNetDevice {
     pub fn handle_interrupt(&self) {
         // RXキューを処理
         if let Some(ref rx_queue) = self.rx_queue {
-            let completed = rx_queue.process_used();
+            let completed = rx_queue.process_used_count();
             self.rx_packets
-                .fetch_add(completed.len() as u32, Ordering::Relaxed);
+                .fetch_add(completed as u32, Ordering::Relaxed);
         }
 
         // TXキューを処理
         if let Some(ref tx_queue) = self.tx_queue {
-            let completed = tx_queue.process_used();
+            let completed = tx_queue.process_used_count();
             self.tx_packets
-                .fetch_add(completed.len() as u32, Ordering::Relaxed);
+                .fetch_add(completed as u32, Ordering::Relaxed);
         }
 
         // HybridIoCoordinator 経由でパケット処理を通知（io_scheduler 統一後）
@@ -729,39 +1075,143 @@ pub struct SendFuture<'a> {
     data: *const u8,
     len: usize,
     submitted: bool,
+    desc_idx: u16,
+    dma_len: usize,
+    dma_iova: Option<u64>,
+    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> Future for SendFuture<'a> {
     type Output = Result<usize, VirtioNetError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if !self.submitted {
-            // 送信をキューに追加
-            if let Some(ref tx_queue) = self.device.tx_queue {
-                let header = VirtioNetHeader::new_tx();
-                let data = unsafe { crate::util::raw_ptr_as_slice(self.data, self.len) };
+        let this = &mut *self;
 
-                match tx_queue.add_tx_buffer(&header, data) {
-                    Ok(_) => {
-                        self.submitted = true;
+        if !this.submitted {
+            if let Some(ref tx_queue) = this.device.tx_queue {
+                let data_len = this.len;
+                let virt_addr = VirtAddr::new(this.data as u64);
+                let phys_addr = crate::mm::mapping::virt_to_phys(virt_addr);
+                let phys_addr_val = phys_addr.as_u64();
+                let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+                let page_base = phys_addr_val & !page_mask;
+                let page_offset = (phys_addr_val - page_base) as usize;
+                let map_len = crate::mm::PAGE_SIZE_4K;
+                let can_map_page = page_offset + data_len <= map_len;
+
+                let mut dma_addr = phys_addr_val;
+                let mut mapped_iova: Option<u64> = None;
+                let mut mapped_len = 0usize;
+                let mut bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>> = None;
+
+                if is_iommu_enabled() {
+                    if !can_map_page {
+                        let mut rref =
+                            match allocate_iommu_bounce_bytes(data_len).map_err(|err| match err {
+                                IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
+                                IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
+                            }) {
+                                Ok(rref) => rref,
+                                Err(err) => return Poll::Ready(Err(err)),
+                            };
+                        if data_len > 0 {
+                            let data =
+                                unsafe { crate::util::raw_ptr_as_slice(this.data, data_len) };
+                            rref[..data_len].copy_from_slice(data);
+                        }
+                        let handle = match this.device.iommu_device_id {
+                            Some(device) => {
+                                map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
+                            }
+                            None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
+                        }
+                        .map_err(|_| VirtioNetError::DeviceError);
+                        let handle = match handle {
+                            Ok(handle) => handle,
+                            Err(err) => return Poll::Ready(Err(err)),
+                        };
+                        dma_addr = handle.iova();
+                        bounce_handle = Some(handle);
+                    } else {
+                        let iova = unsafe {
+                            match this.device.iommu_device_id {
+                                Some(device) => {
+                                    raw::map_for_device(&device, PhysAddr::new(page_base), map_len as u64)
+                                }
+                                None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                            }
+                        }
+                        .map_err(|_| VirtioNetError::DeviceError);
+                        let iova = match iova {
+                            Ok(iova) => iova,
+                            Err(err) => return Poll::Ready(Err(err)),
+                        };
+                        dma_addr = iova + page_offset as u64;
+                        mapped_iova = Some(iova);
+                        mapped_len = map_len;
+                    }
+                } else if is_iommu_required() {
+                    return Poll::Ready(Err(VirtioNetError::DeviceError));
+                }
+
+                if bounce_handle.is_none() {
+                    if let Err(err) = check_device_dma_mask(
+                        this.device.iommu_device_id,
+                        dma_addr,
+                        data_len,
+                    ) {
+                        if let Some(iova) = mapped_iova.take() {
+                            unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                        }
+                        return Poll::Ready(Err(err));
+                    }
+                }
+
+                match tx_queue.add_tx_buffer_zero_copy(dma_addr, data_len) {
+                    Ok(desc_idx) => {
+                        this.submitted = true;
+                        this.desc_idx = desc_idx;
+                        this.dma_iova = mapped_iova;
+                        this.dma_len = mapped_len;
+                        this.bounce_handle = bounce_handle;
                         tx_queue.register_waker(cx.waker().clone());
-
-                        // デバイスに通知
-                        // NetVirtQueue::notify()を使用してMMIOに直接書き込み
-                        // notify_addrが設定されていない場合は、割り込み駆動に依存
                         tx_queue.notify();
                     }
-                    Err(e) => return Poll::Ready(Err(e)),
+                    Err(e) => {
+                        if let Some(handle) = bounce_handle {
+                            if let Err(err) = handle.unmap() {
+                                log::warn!(
+                                    "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                                    err
+                                );
+                            }
+                        }
+                        if let Some(iova) = mapped_iova {
+                            unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                        }
+                        return Poll::Ready(Err(e));
+                    }
                 }
             } else {
                 return Poll::Ready(Err(VirtioNetError::NotInitialized));
             }
         }
 
-        // 完了を確認
-        if let Some(ref tx_queue) = self.device.tx_queue {
-            if tx_queue.has_pending() {
-                Poll::Ready(Ok(self.len))
+        if let Some(ref tx_queue) = this.device.tx_queue {
+            if tx_queue.take_completion(this.desc_idx).is_some() {
+                if let Some(handle) = this.bounce_handle.take() {
+                    if let Err(err) = handle.unmap() {
+                        log::warn!(
+                            "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                            err
+                        );
+                        return Poll::Ready(Err(VirtioNetError::DeviceError));
+                    }
+                }
+                if let Some(iova) = this.dma_iova.take() {
+                    unmap_iommu_addr(this.device.iommu_device_id, iova, this.dma_len);
+                }
+                Poll::Ready(Ok(this.len))
             } else {
                 tx_queue.register_waker(cx.waker().clone());
                 Poll::Pending
@@ -777,32 +1227,170 @@ pub struct RecvFuture<'a> {
     device: &'a VirtioNetDevice,
     buffer: &'a mut [u8],
     submitted: bool,
+    desc_idx: u16,
+    dma_len: usize,
+    dma_iova: Option<u64>,
+    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> Future for RecvFuture<'a> {
     type Output = Result<usize, VirtioNetError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if !self.submitted {
-            // 受信バッファをキューに追加
-            if let Some(ref rx_queue) = self.device.rx_queue {
-                match rx_queue.add_rx_buffer(self.buffer) {
-                    Ok(_) => {
-                        self.submitted = true;
+        let this = &mut *self;
+
+        if !this.submitted {
+            if this.buffer.len() < VirtioNetHeader::SIZE {
+                return Poll::Ready(Err(VirtioNetError::BufferTooSmall));
+            }
+
+            if let Some(ref rx_queue) = this.device.rx_queue {
+                let buffer_len = this.buffer.len();
+                let virt_addr = VirtAddr::new(this.buffer.as_ptr() as u64);
+                let phys_addr = crate::mm::mapping::virt_to_phys(virt_addr);
+                let phys_addr_val = phys_addr.as_u64();
+                let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+                let page_base = phys_addr_val & !page_mask;
+                let page_offset = (phys_addr_val - page_base) as usize;
+                let map_len = crate::mm::PAGE_SIZE_4K;
+                let can_map_page = page_offset + buffer_len <= map_len;
+
+                let mut dma_addr = phys_addr_val;
+                let mut mapped_iova: Option<u64> = None;
+                let mut mapped_len = 0usize;
+                let mut bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>> = None;
+
+                if is_iommu_enabled() {
+                    if !can_map_page {
+                        let rref =
+                            match allocate_iommu_bounce_bytes(buffer_len).map_err(|err| match err {
+                                IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
+                                IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
+                            }) {
+                                Ok(rref) => rref,
+                                Err(err) => return Poll::Ready(Err(err)),
+                            };
+                        let handle = match this.device.iommu_device_id {
+                            Some(device) => {
+                                map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice)
+                            }
+                            None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice),
+                        }
+                        .map_err(|_| VirtioNetError::DeviceError);
+                        let handle = match handle {
+                            Ok(handle) => handle,
+                            Err(err) => return Poll::Ready(Err(err)),
+                        };
+                        dma_addr = handle.iova();
+                        bounce_handle = Some(handle);
+                    } else {
+                        let iova = unsafe {
+                            match this.device.iommu_device_id {
+                                Some(device) => {
+                                    raw::map_for_device(&device, PhysAddr::new(page_base), map_len as u64)
+                                }
+                                None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                            }
+                        }
+                        .map_err(|_| VirtioNetError::DeviceError);
+                        let iova = match iova {
+                            Ok(iova) => iova,
+                            Err(err) => return Poll::Ready(Err(err)),
+                        };
+                        dma_addr = iova + page_offset as u64;
+                        mapped_iova = Some(iova);
+                        mapped_len = map_len;
+                    }
+                } else if is_iommu_required() {
+                    return Poll::Ready(Err(VirtioNetError::DeviceError));
+                }
+
+                if bounce_handle.is_none() {
+                    if let Err(err) = check_device_dma_mask(
+                        this.device.iommu_device_id,
+                        dma_addr,
+                        buffer_len,
+                    ) {
+                        if let Some(iova) = mapped_iova.take() {
+                            unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                        }
+                        return Poll::Ready(Err(err));
+                    }
+                }
+
+                match rx_queue.add_rx_buffer_zero_copy(dma_addr, buffer_len) {
+                    Ok(desc_idx) => {
+                        this.submitted = true;
+                        this.desc_idx = desc_idx;
+                        this.dma_iova = mapped_iova;
+                        this.dma_len = mapped_len;
+                        this.bounce_handle = bounce_handle;
                         rx_queue.register_waker(cx.waker().clone());
                     }
-                    Err(e) => return Poll::Ready(Err(e)),
+                    Err(e) => {
+                        if let Some(handle) = bounce_handle {
+                            if let Err(err) = handle.unmap() {
+                                log::warn!(
+                                    "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                                    err
+                                );
+                            }
+                        }
+                        if let Some(iova) = mapped_iova {
+                            unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                        }
+                        return Poll::Ready(Err(e));
+                    }
                 }
             } else {
                 return Poll::Ready(Err(VirtioNetError::NotInitialized));
             }
         }
 
-        // 完了を確認
-        if let Some(ref rx_queue) = self.device.rx_queue {
-            let completed = rx_queue.process_used();
-            if let Some((_, len)) = completed.first() {
-                Poll::Ready(Ok(*len as usize))
+        if let Some(ref rx_queue) = this.device.rx_queue {
+            if let Some(len) = rx_queue.take_completion(this.desc_idx) {
+                let total_len = len as usize;
+                let payload_len = total_len.saturating_sub(VirtioNetHeader::SIZE);
+                let payload_cap = this
+                    .buffer
+                    .len()
+                    .saturating_sub(VirtioNetHeader::SIZE);
+                let payload_len = core::cmp::min(payload_len, payload_cap);
+
+                if let Some(handle) = this.bounce_handle.take() {
+                    let rref = match handle.unmap() {
+                        Ok(rref) => rref,
+                        Err(err) => {
+                            log::warn!(
+                                "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                                err
+                            );
+                            return Poll::Ready(Err(VirtioNetError::DeviceError));
+                        }
+                    };
+                    if payload_len > 0 {
+                        this.buffer[..payload_len].copy_from_slice(
+                            &rref[VirtioNetHeader::SIZE..(VirtioNetHeader::SIZE + payload_len)],
+                        );
+                    }
+                } else {
+                    if payload_len > 0 {
+                        let buf_ptr = this.buffer.as_mut_ptr();
+                        unsafe {
+                            core::ptr::copy(
+                                buf_ptr.add(VirtioNetHeader::SIZE),
+                                buf_ptr,
+                                payload_len,
+                            );
+                        }
+                    }
+                }
+
+                if let Some(iova) = this.dma_iova.take() {
+                    unmap_iommu_addr(this.device.iommu_device_id, iova, this.dma_len);
+                }
+
+                Poll::Ready(Ok(payload_len))
             } else {
                 rx_queue.register_waker(cx.waker().clone());
                 Poll::Pending
@@ -826,6 +1414,9 @@ pub struct ZeroCopySendFuture<'a> {
     packet: Option<PacketRef>,
     submitted: bool,
     desc_idx: u16,
+    dma_len: usize,
+    dma_iova: Option<u64>,
+    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> Future for ZeroCopySendFuture<'a> {
@@ -840,15 +1431,110 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
                 if let Some(ref packet) = this.packet {
                     let data = packet.data();
                     let phys_addr = packet.phys_addr();
+                    let data_len = VirtioNetHeader::SIZE + data.len();
+                    let phys_addr_val = phys_addr.as_u64();
+                    let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+                    let page_base = phys_addr_val & !page_mask;
+                    let page_offset = (phys_addr_val - page_base) as usize;
+                    let map_len = crate::mm::PAGE_SIZE_4K;
+                    let can_map_page = page_offset + data_len <= map_len;
 
-                    // ゼロコピー: 物理アドレスを直接VirtQueueに渡す
-                    match tx_queue.add_tx_buffer_zero_copy(phys_addr.as_u64(), data.len()) {
+                    let mut dma_addr = phys_addr_val;
+                    let mut mapped_iova: Option<u64> = None;
+                    let mut mapped_len = 0usize;
+                    let mut bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>> = None;
+
+                    if is_iommu_enabled() {
+                        if !can_map_page {
+                            let mut rref =
+                                match allocate_iommu_bounce_bytes(data_len).map_err(|err| match err {
+                                    IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
+                                    IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
+                                }) {
+                                    Ok(rref) => rref,
+                                    Err(err) => return Poll::Ready(Err(err)),
+                                };
+                            if data_len > 0 {
+                                rref[..data_len].fill(0);
+                                let copy_len = core::cmp::min(data.len(), data_len);
+                                rref[..copy_len].copy_from_slice(&data[..copy_len]);
+                            }
+                            let handle = match this.device.iommu_device_id {
+                                Some(device) => {
+                                    map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
+                                }
+                                None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
+                            }
+                            .map_err(|_| VirtioNetError::DeviceError);
+                            let handle = match handle {
+                                Ok(handle) => handle,
+                                Err(err) => return Poll::Ready(Err(err)),
+                            };
+                            dma_addr = handle.iova();
+                            bounce_handle = Some(handle);
+                        } else {
+                            let iova = unsafe {
+                                match this.device.iommu_device_id {
+                                    Some(device) => raw::map_for_device(
+                                        &device,
+                                        PhysAddr::new(page_base),
+                                        map_len as u64,
+                                    ),
+                                    None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                                }
+                            }
+                            .map_err(|_| VirtioNetError::DeviceError);
+                            let iova = match iova {
+                                Ok(iova) => iova,
+                                Err(err) => return Poll::Ready(Err(err)),
+                            };
+                            dma_addr = iova + page_offset as u64;
+                            mapped_iova = Some(iova);
+                            mapped_len = map_len;
+                        }
+                    } else {
+                        if is_iommu_required() {
+                            return Poll::Ready(Err(VirtioNetError::DeviceError));
+                        }
+                    }
+
+                    if bounce_handle.is_none() {
+                        if let Err(err) = check_device_dma_mask(
+                            this.device.iommu_device_id,
+                            dma_addr,
+                            data_len,
+                        ) {
+                            if let Some(iova) = mapped_iova.take() {
+                                unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                            }
+                            return Poll::Ready(Err(err));
+                        }
+                    }
+
+                    // ゼロコピー: 物理/IOVA アドレスを直接VirtQueueに渡す
+                    match tx_queue.add_tx_buffer_zero_copy(dma_addr, data.len()) {
                         Ok(desc_idx) => {
                             this.submitted = true;
                             this.desc_idx = desc_idx;
+                            this.dma_iova = mapped_iova;
+                            this.dma_len = mapped_len;
+                            this.bounce_handle = bounce_handle;
                             tx_queue.register_waker(cx.waker().clone());
                         }
-                        Err(e) => return Poll::Ready(Err(e)),
+                        Err(e) => {
+                            if let Some(handle) = bounce_handle {
+                                if let Err(err) = handle.unmap() {
+                                    log::warn!(
+                                        "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                                        err
+                                    );
+                                }
+                            }
+                            if let Some(iova) = mapped_iova {
+                                unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                            }
+                            return Poll::Ready(Err(e));
+                        }
                     }
                 } else {
                     return Poll::Ready(Err(VirtioNetError::BufferTooSmall));
@@ -860,7 +1546,19 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
 
         // 完了を確認
         if let Some(ref tx_queue) = this.device.tx_queue {
-            if tx_queue.has_pending() {
+            if tx_queue.take_completion(this.desc_idx).is_some() {
+                if let Some(handle) = this.bounce_handle.take() {
+                    if let Err(err) = handle.unmap() {
+                        log::warn!(
+                            "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                            err
+                        );
+                        return Poll::Ready(Err(VirtioNetError::DeviceError));
+                    }
+                }
+                if let Some(iova) = this.dma_iova.take() {
+                    unmap_iommu_addr(this.device.iommu_device_id, iova, this.dma_len);
+                }
                 // 送信完了: PacketRefをドロップしてMempoolに返却
                 let packet = this.packet.take();
                 let len = packet.map(|p| p.data().len()).unwrap_or(0);
@@ -884,6 +1582,10 @@ pub struct ZeroCopyRecvFuture<'a> {
     pool: &'static crate::net::mempool::Mempool,
     packet: Option<PacketRef>,
     submitted: bool,
+    desc_idx: u16,
+    dma_len: usize,
+    dma_iova: Option<u64>,
+    bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>>,
 }
 
 impl<'a> Future for ZeroCopyRecvFuture<'a> {
@@ -896,16 +1598,108 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
             // Mempoolからバッファを割り当て
             let packet = this.pool.alloc().ok_or(VirtioNetError::BufferTooSmall)?;
             let phys_addr = packet.phys_addr();
+            let buffer_len = packet.capacity();
+            let data_len = buffer_len;
+            let phys_addr_val = phys_addr.as_u64();
+            let page_mask = (crate::mm::PAGE_SIZE_4K as u64) - 1;
+            let page_base = phys_addr_val & !page_mask;
+            let page_offset = (phys_addr_val - page_base) as usize;
+            let map_len = crate::mm::PAGE_SIZE_4K;
+            let can_map_page = page_offset + data_len <= map_len;
+
+            let mut dma_addr = phys_addr_val;
+            let mut mapped_iova: Option<u64> = None;
+            let mut mapped_len = 0usize;
+            let mut bounce_handle: Option<crate::io::iommu::api::DmaHandle<[u8]>> = None;
+
+            if is_iommu_enabled() {
+                if !can_map_page {
+                    let rref =
+                        match allocate_iommu_bounce_bytes(data_len).map_err(|err| match err {
+                            IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
+                            IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
+                        }) {
+                            Ok(rref) => rref,
+                            Err(err) => return Poll::Ready(Err(err)),
+                        };
+                    let handle = match this.device.iommu_device_id {
+                        Some(device) => {
+                            map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice)
+                        }
+                        None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice),
+                    }
+                    .map_err(|_| VirtioNetError::DeviceError);
+                    let handle = match handle {
+                        Ok(handle) => handle,
+                        Err(err) => return Poll::Ready(Err(err)),
+                    };
+                    dma_addr = handle.iova();
+                    bounce_handle = Some(handle);
+                } else {
+                    let iova = unsafe {
+                        match this.device.iommu_device_id {
+                            Some(device) => raw::map_for_device(
+                                &device,
+                                PhysAddr::new(page_base),
+                                map_len as u64,
+                            ),
+                            None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                        }
+                    }
+                    .map_err(|_| VirtioNetError::DeviceError);
+                    let iova = match iova {
+                        Ok(iova) => iova,
+                        Err(err) => return Poll::Ready(Err(err)),
+                    };
+                    dma_addr = iova + page_offset as u64;
+                    mapped_iova = Some(iova);
+                    mapped_len = map_len;
+                }
+            } else {
+                if is_iommu_required() {
+                    return Poll::Ready(Err(VirtioNetError::DeviceError));
+                }
+            }
+
+            if bounce_handle.is_none() {
+                if let Err(err) = check_device_dma_mask(
+                    this.device.iommu_device_id,
+                    dma_addr,
+                    data_len,
+                ) {
+                    if let Some(iova) = mapped_iova.take() {
+                        unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                    }
+                    return Poll::Ready(Err(err));
+                }
+            }
 
             // 受信バッファをキューに追加
             if let Some(ref rx_queue) = this.device.rx_queue {
-                match rx_queue.add_rx_buffer_zero_copy(phys_addr.as_u64(), packet.data().len()) {
-                    Ok(_) => {
+                match rx_queue.add_rx_buffer_zero_copy(dma_addr, buffer_len) {
+                    Ok(desc_idx) => {
                         this.packet = Some(packet);
                         this.submitted = true;
+                        this.desc_idx = desc_idx;
+                        this.dma_iova = mapped_iova;
+                        this.dma_len = mapped_len;
+                        this.bounce_handle = bounce_handle;
                         rx_queue.register_waker(cx.waker().clone());
                     }
-                    Err(e) => return Poll::Ready(Err(e)),
+                    Err(e) => {
+                        if let Some(handle) = bounce_handle {
+                            if let Err(err) = handle.unmap() {
+                                log::warn!(
+                                    "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                                    err
+                                );
+                            }
+                        }
+                        if let Some(iova) = mapped_iova {
+                            unmap_iommu_addr(this.device.iommu_device_id, iova, mapped_len);
+                        }
+                        return Poll::Ready(Err(e));
+                    }
                 }
             } else {
                 return Poll::Ready(Err(VirtioNetError::NotInitialized));
@@ -914,11 +1708,37 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
 
         // 完了を確認
         if let Some(ref rx_queue) = this.device.rx_queue {
-            let completed = rx_queue.process_used();
-            if let Some((_, len)) = completed.first() {
+            if let Some(len) = rx_queue.take_completion(this.desc_idx) {
+                if let Some(handle) = this.bounce_handle.take() {
+                    let rref = match handle.unmap() {
+                        Ok(rref) => rref,
+                        Err(err) => {
+                            log::warn!(
+                                "[VIRTIO-NET] failed to unmap bounce buffer: {:?}",
+                                err
+                            );
+                            return Poll::Ready(Err(VirtioNetError::DeviceError));
+                        }
+                    };
+                    if let Some(mut packet) = this.packet.take() {
+                        let copy_len = core::cmp::min(len as usize, packet.capacity());
+                        packet.set_len(copy_len);
+                        packet.data_mut()[..copy_len].copy_from_slice(&rref[..copy_len]);
+                        packet.advance(VirtioNetHeader::SIZE);
+                        return Poll::Ready(Ok(packet));
+                    }
+                    return Poll::Ready(Err(VirtioNetError::BufferTooSmall));
+                }
+
+                if let Some(iova) = this.dma_iova.take() {
+                    unmap_iommu_addr(this.device.iommu_device_id, iova, this.dma_len);
+                }
+
                 // 受信完了: データ長を設定してPacketRefを返却
                 if let Some(mut packet) = this.packet.take() {
-                    packet.set_len(*len as usize);
+                    let copy_len = core::cmp::min(len as usize, packet.capacity());
+                    packet.set_len(copy_len);
+                    packet.advance(VirtioNetHeader::SIZE);
                     return Poll::Ready(Ok(packet));
                 }
                 return Poll::Ready(Err(VirtioNetError::BufferTooSmall));
@@ -994,7 +1814,24 @@ pub fn init_virtio_net(base_addr: usize) -> Result<(), VirtioNetError> {
         unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
 
     let mut device = VirtioNetDevice::new(Box::new(transport));
-    unsafe { device.init()? };
+    device.init()?;
+    *VIRTIO_NET_DEVICE.lock() = Some(device);
+    Ok(())
+}
+
+/// VirtIO ネットワークデバイス（MMIO）を初期化（IOMMUデバイスID付き）
+///
+/// # Safety
+/// `base_addr` は有効なVirtIO MMIOデバイスのベースアドレスを指す必要がある
+pub fn init_virtio_net_for_device(
+    base_addr: usize,
+    device: IommuDeviceId,
+) -> Result<(), VirtioNetError> {
+    let transport =
+        unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
+
+    let mut device = VirtioNetDevice::new_with_device(Box::new(transport), Some(device));
+    device.init()?;
     *VIRTIO_NET_DEVICE.lock() = Some(device);
     Ok(())
 }
@@ -1147,8 +1984,10 @@ const VIRTIO_NET_MTU: usize = 1514;
 pub struct VirtioNetRxDmaBuffer {
     /// CPU所有状態のバッファ
     buffer: Option<TypedDmaSlice<CpuOwned>>,
-    /// デバイス所有状態（転送中）
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
+    /// デバイス所有状態（転送中）+ Guard
+    inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
+    /// アロケート済みバッファサイズ（4Kアライン）
+    alloc_size: usize,
 }
 
 impl VirtioNetRxDmaBuffer {
@@ -1156,11 +1995,13 @@ impl VirtioNetRxDmaBuffer {
     pub fn new() -> Option<Self> {
         // VirtIO net header + MTU
         let size = core::mem::size_of::<VirtioNetHeader>() + VIRTIO_NET_MTU;
-        let buffer = TypedDmaSlice::new(size)?;
+        let alloc_size = iommu_align_len(size)?;
+        let buffer = TypedDmaSlice::new(alloc_size)?;
 
         Some(Self {
             buffer: Some(buffer),
             inflight: None,
+            alloc_size,
         })
     }
 
@@ -1169,21 +2010,22 @@ impl VirtioNetRxDmaBuffer {
         self.buffer
             .as_ref()
             .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+            .or_else(|| self.inflight.as_ref().map(|(b, _)| b.phys_addr()))
     }
 
     /// DMA転送を開始（VirtQueueへのバッファ追加時）
     pub fn start_receive(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in use")?;
         let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
+        let (dev, guard) = buffer.start_dma();
+        self.inflight = Some((dev, guard));
         Ok(phys)
     }
 
     /// DMA転送完了（受信完了時）
     pub fn complete_receive(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No receive in progress")?;
-        self.buffer = Some(inflight.complete_dma());
+        let (dev, guard) = self.inflight.take().ok_or("No receive in progress")?;
+        self.buffer = Some(guard.complete(dev));
         Ok(())
     }
 
@@ -1193,13 +2035,14 @@ impl VirtioNetRxDmaBuffer {
             // Skip VirtIO net header
             let slice = b.as_slice();
             let header_size = core::mem::size_of::<VirtioNetHeader>();
-            &slice[header_size..]
+            let end = header_size + VIRTIO_NET_MTU;
+            &slice[header_size..end]
         })
     }
 
-    /// バッファ全体のサイズ
+    /// バッファ全体のサイズ（4Kアライン済み）
     pub fn size(&self) -> usize {
-        core::mem::size_of::<VirtioNetHeader>() + VIRTIO_NET_MTU
+        self.alloc_size
     }
 }
 
@@ -1212,8 +2055,9 @@ impl Default for VirtioNetRxDmaBuffer {
 /// VirtIO ネットワーク送信用DMAバッファ
 pub struct VirtioNetTxDmaBuffer {
     buffer: Option<TypedDmaSlice<CpuOwned>>,
-    inflight: Option<TypedDmaSlice<DeviceOwned>>,
+    inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
     data_len: usize,
+    alloc_size: usize,
 }
 
 impl VirtioNetTxDmaBuffer {
@@ -1221,21 +2065,24 @@ impl VirtioNetTxDmaBuffer {
     pub fn with_data(data: &[u8]) -> Option<Self> {
         let header_size = core::mem::size_of::<VirtioNetHeader>();
         let total_size = header_size + data.len();
+        let alloc_size = iommu_align_len(total_size)?;
 
-        let mut buffer = TypedDmaSlice::new(total_size)?;
+        let mut buffer = TypedDmaSlice::new(alloc_size)?;
 
         {
             let slice = buffer.as_mut_slice();
             // VirtIO net header をゼロクリア（初期化済み）
             // slice[..header_size] は既に 0
             // データをコピー
-            slice[header_size..].copy_from_slice(data);
+            let data_end = header_size + data.len();
+            slice[header_size..data_end].copy_from_slice(data);
         }
 
         Some(Self {
             buffer: Some(buffer),
             inflight: None,
             data_len: data.len(),
+            alloc_size,
         })
     }
 
@@ -1244,21 +2091,22 @@ impl VirtioNetTxDmaBuffer {
         self.buffer
             .as_ref()
             .map(|b| b.phys_addr())
-            .or_else(|| self.inflight.as_ref().map(|b| b.phys_addr()))
+            .or_else(|| self.inflight.as_ref().map(|(b, _)| b.phys_addr()))
     }
 
     /// DMA転送を開始
     pub fn start_transmit(&mut self) -> Result<u64, &'static str> {
         let buffer = self.buffer.take().ok_or("Buffer already in use")?;
         let phys = buffer.phys_addr().as_u64();
-        self.inflight = Some(buffer.start_dma());
+        let (dev, guard) = buffer.start_dma();
+        self.inflight = Some((dev, guard));
         Ok(phys)
     }
 
     /// DMA転送完了
     pub fn complete_transmit(&mut self) -> Result<(), &'static str> {
-        let inflight = self.inflight.take().ok_or("No transmit in progress")?;
-        self.buffer = Some(inflight.complete_dma());
+        let (dev, guard) = self.inflight.take().ok_or("No transmit in progress")?;
+        self.buffer = Some(guard.complete(dev));
         Ok(())
     }
 
@@ -1267,9 +2115,9 @@ impl VirtioNetTxDmaBuffer {
         self.data_len
     }
 
-    /// 合計バッファサイズ（ヘッダー含む）
+    /// 合計バッファサイズ（4Kアライン済み）
     pub fn total_size(&self) -> usize {
-        core::mem::size_of::<VirtioNetHeader>() + self.data_len
+        self.alloc_size
     }
 }
 

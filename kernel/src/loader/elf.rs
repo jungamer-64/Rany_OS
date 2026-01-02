@@ -70,7 +70,7 @@ use super::LoadError;
 // the entire kernel `mm` implementation for library-style builds.
 #[cfg(not(any(test, feature = "bench")))]
 use crate::mm::PageFlags;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;

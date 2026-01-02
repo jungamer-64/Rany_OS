@@ -44,7 +44,7 @@ extern "C" fn gpu_request_capabilities(caps: *mut DriverCapabilities) {
 }
 
 #[cfg(feature = "export_driver_entry")]
-#[unsafe(export_name = "_exorust_driver_entry")]
+#[export_name = "_exorust_driver_entry"]
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     static VTABLE: DriverVTable = DriverVTable::new(
         DRIVER_ABI_VERSION,

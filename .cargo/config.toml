@@ -1,9 +1,31 @@
-[alias]
-# Alias for xtask commands
-xtask = "run --package xtask --"
+# Build-std is intentionally disabled in the workspace default config to avoid
+# duplicate-lang-item (E0152) errors when running host tests. Use
+# `config.build-std.toml` or pass `-Z 'build-std=...'` on the command line when
+# you need to build a local copy of core/alloc/compiler_builtins for cross-target
+# builds (e.g. kernel cross-builds).
+# [unstable]
+# build-std = ["core", "compiler_builtins", "alloc"]
+# build-std-features = ["compiler-builtins-mem"]
 
-[unstable]
-# Build-std is intentionally moved to `.cargo/config.build-std.toml` and must be
-# opted into explicitly when cross-building or when local std components must
-# be compiled. Keeping it enabled by default caused duplicate-lang-item E0152
-# issues in host-side release/criterion benches.
+# Custom kernel target with PIE disabled and higher-half linker script
+# Note: For JSON targets, use the full path including .json extension
+[target.x86_64-kernel]
+rustflags = [
+    "-C",
+    "link-arg=-Tkernel/linker.ld",
+    "-C",
+    "relocation-model=static",
+    "-C",
+    "code-model=kernel",
+    "-C",
+    "link-arg=--no-gc-sections",
+    "-C",
+    "link-arg=--no-pie",
+    "-C",
+    "link-arg=-Map=kernel.map",
+    # "-C",
+    # "force-frame-pointers=yes", # Uncomment for better stack traces
+]
+
+[target.'cfg(target_os = "none")']
+runner = "bootloader"

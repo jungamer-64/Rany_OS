@@ -1,313 +1,235 @@
-# ExoRust OS (Rany_OS)
+# **ExoRust**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Rust](https://img.shields.io/badge/Rust-nightly-orange.svg)](https://www.rust-lang.org/)
-[![Platform](https://img.shields.io/badge/Platform-x86__64-blue.svg)](https://en.wikipedia.org/wiki/X86-64)
+**ExoRust** は、Linux/POSIX互換性を完全に排除し、Rustの所有権モデルと型システムをOS設計の根幹に据えた、次世代x86_64用高性能Exokernel研究プロジェクトです。
 
-**ExoRust** は、Rustで実装された次世代Exokernel研究用オペレーティングシステムです。
+## **🎯 アーキテクチャ概論**
 
-## 🎯 設計理念
+ExoRustは、ハードウェアによる強制的な隔離（MMU/Ring分離）に伴うコンテキストスイッチやシステムコールのオーバーヘッドを排除し、**「言語内分離 (Intralingual Isolation)」**による極限の効率を追求します。
 
-ExoRustは以下の革新的なアーキテクチャを採用しています：
+```mermaid
+graph TD
+    subgraph Legacy ["従来のOS (Linux/Windows)"]
+        direction BT
+        App1[App Process A<br/>(Ring 3)]
+        App2[App Process B<br/>(Ring 3)]
+        
+        subgraph Kernel ["Kernel Space (Ring 0)"]
+            SyscallHandler[Syscall Interface]
+            KCore[Kernel Core]
+            Drivers[Drivers]
+        end
 
-### Single Address Space (SAS)
-- 全プロセスが同一の仮想アドレス空間を共有
-- TLBミスの大幅削減による高性能化
-- ゼロコピーIPCの実現
+        %% Separator
+        Boundary1[====== Hardware Isolation ======]
+        style Boundary1 fill:none,stroke:none,color:red
 
-### Single Privilege Level (SPL)
-- リング0のみで動作し、システムコールオーバーヘッドを排除
-- 型システムとRustの所有権モデルによる安全性保証
-- 直接関数呼び出しによる高速なカーネル操作
+        App1 -- "SYSCALL<br/>(Context Switch)" --> SyscallHandler
+        App2 -- "SYSCALL<br/>(Context Switch)" --> SyscallHandler
+        SyscallHandler --> KCore
+    end
 
-### Async-First Design
-- カーネル全体がasync/awaitベースで設計
-- ワークスティーリングによる効率的なタスクスケジューリング
-- ポーリングベースI/Oによる低レイテンシ
+    subgraph ExoRust ["ExoRust Architecture"]
+        direction BT
+        
+        subgraph SAS ["Single Address Space (Ring 0)"]
+            style SAS fill:#f9f,stroke:#333,stroke-width:2px,fill-opacity:0.1
+            
+            ExoApp1[Domain: Web Server]
+            ExoApp2[Domain: Database]
+            ExoNet[Domain: Net Stack]
+            
+            Framework[ExoRust Framework<br/>(Safe/Unsafe Boundary)]
+            
+            %% Direct Function Calls
+            ExoApp1 -- "Function Call<br/>(Zero Cost)" --> Framework
+            ExoApp1 -- "Function Call" --> ExoNet
+            ExoApp2 -- "Function Call" --> Framework
+        end
+        
+        %% Protection
+        Safety[Type System & MPK Isolation]
+        style Safety fill:none,stroke:none,color:blue
+    end
 
-## 📁 プロジェクト構造
+```
+
+## **🛠 設計理念：レガシーからの脱却**
+
+### **1. 単一アドレス空間 (Single Address Space: SAS)**
+
+* **TLB効率の最大化:** 全てのセル（ドメイン）が同一の仮想アドレス空間を共有。CR3レジスタの書き換えを排除し、TLBフラッシュをゼロに抑えます。
+* **真のゼロコピー:** アドレス変換やシリアライゼーションなしに、ポインタを渡すだけでデータの所有権を移動（Move）可能です。
+
+### **2. 単一特権レベル (Single Privilege Level: SPL)**
+
+* **ゼロコスト・システムコール:** 全てのコードをRing 0で実行。システムコールは通常の関数呼び出し（Function Call）へと置換され、モードスイッチのコストを消滅させます。
+* **型システムによる安全性:** コンパイラがビルド時にメモリ安全性を証明。不正なメモリアクセスは実行時ではなくコンパイル時に阻止されます。
+
+### **3. Async-First & Fuel-based Scheduling**
+
+* **協調的マルチタスク:** Rustの`async/await`を用いたスタックレスコルーチンにより、数万のタスクを最小限のメモリフットプリントで管理します。
+* **スターベーション対策:** ループや関数呼び出しに「燃料（Fuel）」消費コードを自動挿入。CPU独占を防止しつつ、プリエンプションの利点を維持します。
+
+```mermaid
+sequenceDiagram
+    participant HW as Hardware (NIC)
+    participant ISR as Interrupt Handler
+    participant Queue as Lock-free Event Queue
+    participant Executor as Async Executor
+    participant Task as Task (Future)
+
+    Note over Executor, Task: Normal Execution Loop
+    Executor->>Task: poll()
+    Task-->>Executor: Poll::Pending
+    
+    Note over HW, ISR: Packet Arrival
+    HW->>ISR: Interrupt (IRQ)
+    activate ISR
+    ISR->>Queue: Push(EventID)
+    Note right of ISR: Minimize work inside ISR
+    deactivate ISR
+    
+    Note over Executor: Waking Phase
+    Executor->>Queue: Check Events
+    Queue-->>Executor: Pop(EventID)
+    Executor->>Task: Waker.wake()
+    
+    Note over Executor, Task: Reschedule
+    Executor->>Task: poll()
+    Task->>Task: Process Packet
+    Task-->>Executor: Poll::Ready
+
+```
+
+## **🛡 セキュリティモデル (MPK & Isolation)**
+
+単一アドレス空間における脆弱性（Spectre等）への対策として、**Intel MPK (Memory Protection Keys)** を第一級市民として統合しています。
+
+* **ハードウェア支援型分離:** ページテーブルの保護キー(PKU)を使用し、約20サイクルでドメイン間のアクセス権を動的に切り替えます。
+* **多層防御:** Rustの型システムによる論理的分離と、MPKによる物理的分離を組み合わせ、投機的実行攻撃に対する堅牢な防御壁を構築します。
+
+```mermaid
+block-beta
+    columns 3
+    
+    block:Hardware
+        columns 1
+        CPU["CPU Core"]
+        MPK["Intel PKU / MPK"]
+        TLB["TLB (No Flush)"]
+    end
+
+    space
+
+    block:MemorySpace
+        columns 1
+        title "Single Virtual Address Space (64-bit)"
+        
+        block:DomainA
+            columns 3
+            DA_Text["Code (Rx)"] 
+            DA_Heap["Private Heap<br/>(Key: 1)"]
+            DA_Stack["Stack"]
+        end
+        
+        block:Exchange
+            columns 1
+            EH["Exchange Heap (Shared Data)<br/>(Key: Public)"]
+        end
+
+        block:DomainB
+            columns 3
+            DB_Text["Code (Rx)"]
+            DB_Heap["Private Heap<br/>(Key: 2)"]
+            DB_Stack["Stack"]
+        end
+        
+        block:Framework
+            columns 1
+            FW["Trusted Framework<br/>(Key: 0)"]
+        end
+    end
+
+    CPU -- "Enforce" --> MPK
+    MPK -- "Block Access" --> DB_Heap
+    MPK -- "Allow Access" --> DA_Heap
+    DA_Text -- "Zero Copy (Move)" --> EH
+    DB_Text -- "Zero Copy (Move)" --> EH
+
+    style DomainA fill:#e1f5fe,stroke:#01579b
+    style DomainB fill:#fff3e0,stroke:#e65100
+    style Framework fill:#e8f5e9,stroke:#1b5e20
+    style Exchange fill:#f3e5f5,stroke:#4a148c
+
+```
+
+## **📊 パフォーマンス目標**
+
+| 操作 | 従来OS (Linux等) | **ExoRust (目標値)** | 改善率 |
+| --- | --- | --- | --- |
+| システムコール遅延 | ~200-500 ns | **< 100 ns** | 2-5x |
+| コンテキストスイッチ | ~1000-3000 ns | **< 500 ns** | 2-6x |
+| 通信コスト | データコピー発生 | **完全ゼロコピー** | - |
+| ネットワーク (10GbE) | 割り込みによる飽和 | **ポーリングによるフルレート** | - |
+
+## **📁 プロジェクト構造**
 
 ```
 src/
+├── abi/               # 型定義ハッシュによるABI互換性検証
 ├── allocator.rs       # グローバルアロケータ
-├── domain_system.rs   # ドメイン管理システム
-├── lib.rs            # ライブラリエントリ
-├── main.rs           # カーネルエントリポイント
-├── panic_handler.rs  # パニックハンドラ
-├── smp.rs            # マルチコアサポート
-├── spectre.rs        # Spectre対策
-├── vga.rs            # VGAテキスト出力
-│
-├── domain/           # ドメイン（分離実行単位）
-│   ├── lifecycle.rs  # ライフサイクル管理
-│   └── registry.rs   # ドメインレジストリ
-│
-├── fs/               # ファイルシステム
-│   ├── vfs.rs        # 仮想ファイルシステム
-│   ├── block.rs      # ブロックデバイス抽象化
-│   ├── cache.rs      # ページキャッシュ & LRUブロックキャッシュ
-│   ├── fat32.rs      # FAT32実装
-│   ├── ext2.rs       # Ext2実装
-│   └── memfs.rs      # メモリファイルシステム
-│
-├── interrupts/       # 割り込み処理
-│   ├── gdt.rs        # GDT/TSS設定
-│   └── exceptions.rs # 例外ハンドラ
-│
-├── io/               # I/Oサブシステム
-│   ├── nvme.rs       # NVMeドライバ
-│   ├── virtio.rs     # VirtIO基盤
-│   ├── virtio_blk.rs # VirtIOブロック
-│   ├── dma.rs        # DMA管理
-│   ├── iommu.rs      # IOMMU制御
-│   └── polling.rs    # ポーリングI/O
-│
-├── ipc/              # プロセス間通信
-│   ├── rref.rs       # RRef（所有権転送IPC）
-│   └── proxy.rs      # ドメイン間プロキシ
-│
-├── loader/           # ローダー
-│   ├── elf.rs        # ELFローダー
-│   └── signature.rs  # 署名検証
-│
-├── mm/               # メモリ管理
-│   ├── buddy_allocator.rs   # バディアロケータ
-│   ├── slab_cache.rs        # スラブキャッシュ
-│   ├── frame_allocator.rs   # フレームアロケータ
-│   ├── exchange_heap.rs     # Exchange Heap
-│   ├── mapping.rs           # ページマッピング
-│   └── per_cpu.rs           # Per-CPUデータ
-│
-├── net/              # ネットワーク
-│   ├── tcp.rs        # TCPスタック
-│   └── mempool.rs    # バッファプール
-│
-├── sas/              # SASサブシステム
-│   ├── memory_region.rs   # メモリ領域管理
-│   ├── ownership.rs       # 所有権追跡
-│   └── heap_registry.rs   # ヒープレジストリ
-│
-├── sync/             # 同期プリミティブ
-│   └── irq_mutex.rs  # 割り込み安全Mutex
-│
-├── task/             # タスク管理
-│   ├── executor.rs       # 非同期Executor
-│   ├── scheduler.rs      # スケジューラ
-│   ├── work_stealing.rs  # ワークスティーリング
-│   ├── preemption.rs     # プリエンプション
-│   ├── timer.rs          # タイマー
-│   ├── waker.rs          # Waker実装
-│   └── context.rs        # コンテキスト切り替え
-│
-├── test/             # テストフレームワーク
-│   ├── mod.rs            # テストランナー
-│   ├── memory_tests.rs   # メモリテスト
-│   ├── task_tests.rs     # タスクテスト
-│   ├── network_tests.rs  # ネットワークテスト
-│   ├── ipc_tests.rs      # IPCテスト
-│   └── benchmark.rs      # パフォーマンスベンチマーク
-│
-├── demo/             # デモアプリケーション
-│   ├── http_server.rs      # HTTPサーバー
-│   ├── echo_server.rs      # エコーサーバー
-│   └── performance_demo.rs # パフォーマンスデモ
-│
-└── monitor/          # システムモニター
-    ├── display.rs    # 表示ユーティリティ
-    └── collectors.rs # データコレクター
+├── bootstrap/         # 1GB Huge Pageによる初期マッピング
+├── debug/             # バックトレース, プロファイラ, GDBスタブ
+├── domain/            # ドメイン管理とセルローダー
+├── io/                # I/Oサブシステム
+│   ├── nvme.rs        # NVMeポーリングドライバ
+│   ├── polling.rs     # 適応的ポーリングロジック
+│   └── virtio.rs      # VirtIOドライバ
+├── live_update/       # Epochベースのライブアップデート・Quiescent State
+├── mm/                # メモリ管理
+│   ├── exchange_heap.rs # ドメイン間共有ヒープ (Exchange Heap)
+│   └── numa.rs        # NUMAトポロジ検出と最適化
+├── net/               # smoltcp統合ネットワークスタック
+├── scheduler/         # Fuel-based Executor, ワークスティーリング
+├── security/          # MPKドメイン遷移, Spectre緩和策, 署名検証
+└── main.rs            # カーネルエントリポイント
+
 ```
 
-## 🚀 ビルド手順
+## **🚀 クイックスタート**
 
-### 必要条件
+### **必要条件**
 
-- Rust nightly (2024年以降推奨)
-- `rust-src` コンポーネント
-- QEMU (テスト用)
-- WSL + xorriso (Windows でのISO作成用、オプション)
+* Rust nightly (2025年以降推奨)
+* `rust-src`, `llvm-tools-preview`
+* QEMU (x86_64)
 
-### セットアップ
+### **ビルド & 実行**
+
+ExoRustは **Limine bootloader** (UEFI/BIOS対応) を使用します。
 
 ```bash
-# 1. Rust nightlyのインストール
+# 1. ツールチェーンの準備
 rustup install nightly
-rustup default nightly
+rustup component add rust-src llvm-tools-preview
 
-# 2. 必要なコンポーネントの追加
-rustup component add rust-src
-rustup component add llvm-tools-preview
-
-# 3. ビルド (通常ターゲット)
+# 2. カーネルのビルド
 cargo build --target x86_64-unknown-none
 
-# 4. QEMUで実行 (UEFI/BIOS両対応)
-
-# Windows - Limineブートローダーで実行（推奨）
-.\scripts\run.ps1
-
-# Windows - UEFIモード強制
-.\scripts\run.ps1 -Uefi
-
-# Windows - レガシーBIOSモード
-.\scripts\run.ps1 -Bios
-
-# Linux/macOS
-./scripts/run.sh
-```
-
-### UEFI対応
-
-ExoRustは**Limine bootloader v8.x**を使用してUEFI/BIOSデュアルブートに対応しています。
-
-#### 主な特徴
-- **UEFI**: OVMF (QEMU) / 実機UEFIファームウェア対応
-- **BIOS**: レガシーBIOSブート対応
-- **Higher Half Kernel**: 仮想アドレス `0xffffffff80000000` にロード
-- **Higher Half Direct Map (HHDM)**: 全物理メモリを高位アドレスにマップ
-
-#### ファイル構成
-```
-limine.conf           # Limineブートローダー設定
-linker.ld             # カーネルリンカースクリプト
-assets/limine/        # Limineバイナリ (自動ダウンロード)
-assets/firmware/      # OVMFファームウェア (UEFI用)
-```
-
-## 🔧 開発オプション
-
-### QEMU実行オプション
-
-```powershell
-# 基本実行
-.\scripts\run.ps1
-
-# デバッグモード（GDBポート1234で待機）
-.\scripts\run.ps1 -GdbDebug
-
-# UEFIモード強制
-.\scripts\run.ps1 -Uefi
-
-# レガシーBIOSモード
-.\scripts\run.ps1 -Bios
-
-# カスタムメモリサイズ
-.\scripts\run.ps1 -Memory 1024
-
-# リリースビルド
-.\scripts\run.ps1 -Release
-```
-
-### Makefileターゲット
-
-```bash
-make build    # ビルド
-make run      # QEMUで実行
-make test     # テスト実行
-make clean    # クリーン
-```
-
-## 📊 パフォーマンス特性
-
-ExoRustは以下の領域で優れたパフォーマンスを実現：
-
-| 操作 | 従来OS | ExoRust | 改善率 |
-|------|--------|---------|--------|
-| システムコール | ~200-500サイクル | ~10-20サイクル | 10-50x |
-| IPC | ~1000サイクル | ~50サイクル | 20x |
-| コンテキストスイッチ | ~1000サイクル | ~100サイクル | 10x |
-| TLBミス | 高頻度 | 極低頻度 | - |
-
-### 💾 ファイルシステム & キャッシュ
-
-#### LRUブロックキャッシュ
-ExoRustには効率的なLRUブロックキャッシュが実装されています：
-- **O(1)アクセス**: ハッシュマップ + LRUリストによる高速キャッシュ操作
-- **ゼロコピー設計**: `Arc<Vec<u8>>`による効率的なバッファ共有
-- **Write-backポリシー**: ダーティブロックの遅延書き込みで性能向上
-- **マルチデバイス対応**: 複数のブロックデバイスを統一的に管理
-
-詳細は [docs/LRU_BLOCK_CACHE.md](docs/LRU_BLOCK_CACHE.md) を参照してください。
-
-#### サポートされるファイルシステム
-- **FAT32**: レガシーシステムとの互換性
-- **Ext2**: Linux互換ファイルシステム
-- **MemFS**: 高速なメモリベースファイルシステム
-
-## 🧪 テスト
-
-```bash
-# 全テスト実行
-cargo test
-
-# 特定のテストモジュール
-cargo test memory_tests
-cargo test task_tests
-cargo test network_tests
-cargo test ipc_tests
-
-# ベンチマーク
-cargo bench
-```
-
-## 🎮 デモアプリケーション
-
-### HTTPサーバー
-
-ゼロコピーI/OによるHTTPサーバーのデモ：
+# 3. QEMUで実行 (UEFIモード推奨)
+./scripts/run.sh --uefi
 
 ```
-GET /       - トップページ
-GET /stats  - システム統計
-GET /health - ヘルスチェック
-GET /info   - システム情報
-```
 
-### エコーサーバー
+## **📄 ライセンス**
 
-TCP エコーサーバーによるネットワークスタックのデモ。
+MIT License - 詳細は [LICENSE](https://www.google.com/search?q=LICENSE) を参照
 
-### パフォーマンスデモ
+## **📚 参考資料**
 
-- システムコール排除の効果
-- ゼロコピーバッファ転送
-- TLB効率
-- 非同期処理効率
-
-## 🔒 セキュリティモデル
-
-ExoRustは従来のハードウェア分離ではなく、以下のソフトウェアベースセキュリティを採用：
-
-1. **Rustの型システム** - メモリ安全性を静的に保証
-2. **所有権モデル** - データ競合の排除
-3. **ドメイン分離** - 論理的な実行分離
-4. **署名検証** - ローダーによるコード検証
-5. **Spectre対策** - 投機実行攻撃への対処
-
-## 📚 参考資料
-
-- [Exokernel論文](https://pdos.csail.mit.edu/6.828/2008/readings/engler95exokernel.pdf)
-- [RedLeaf OS](https://www.usenix.org/conference/osdi20/presentation/narayanan-vikram)
-- [Theseus OS](https://www.usenix.org/conference/osdi20/presentation/boos)
-
-## 🤝 コントリビューション
-
-プルリクエストを歓迎します！以下のガイドラインに従ってください：
-
-1. 新機能はテストを含めてください
-2. `cargo fmt` でフォーマット
-3. `cargo clippy` で警告がないことを確認
-4. コミットメッセージは明確に
-
-## 📄 ライセンス
-
-MIT License - 詳細は [LICENSE](LICENSE) を参照
-
-## 🙏 謝辞
-
-- Rust言語チーム
-- Philipp Oppermann の [blog_os](https://os.phil-opp.com/)
-- Redox OS プロジェクト
-- seL4 マイクロカーネル
+* [RedLeaf: Isolation and Communication in a Safe Operating System](https://www.usenix.org/conference/osdi20/presentation/narayanan-vikram)
+* [Theseus: an Experiment in Operating System Structure](https://www.usenix.org/conference/osdi20/presentation/boos)
+* [Asterinas: The Framekernel Architecture](https://asterinas.github.io/)
 
 ---
 

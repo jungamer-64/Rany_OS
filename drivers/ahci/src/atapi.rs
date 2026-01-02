@@ -15,7 +15,7 @@ use alloc::vec::Vec;
 use core::ptr;
 
 use crate::{
-    AhciError, AhciResult, CommandHeader, CommandTable, DeviceType, FisRegH2D, FisType, Lba,
+    AhciError, AhciResult, CommandHeader, CommandTable, FisRegH2D, FisType,
     PhysicalRegionDescriptor, PortNumber, SlotNumber,
 };
 

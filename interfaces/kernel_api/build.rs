@@ -1,3 +1,4 @@
+#![allow(clippy::cargo_common_metadata)]
 use std::env;
 use std::fs;
 use std::path::Path;
@@ -122,7 +123,7 @@ impl Fnv1aHasher {
         }
     }
 
-    fn finish(&self) -> u64 {
+    const fn finish(&self) -> u64 {
         self.state
     }
 }

@@ -31,8 +31,6 @@ pub use pci_driver::{
     EcamManager,
     HotPlugController,
     HotPlugEvent,
-    // Legacy access
-    LegacyPciAccessor,
     MsiCapability,
     // MSI/MSI-X
     MsiConfig,
@@ -70,7 +68,6 @@ pub use pci_driver::{
     find_by_class,
     find_by_id,
     find_virtio_devices,
-    get_legacy_accessor,
     init,
     init_pcie_ext,
     pci_read,
@@ -84,3 +81,10 @@ pub use pci_driver::{
     setup_msix,
     status_bits,
 };
+
+// Deprecated legacy re-exports: prefer using the APIs in `pci_driver` directly.
+#[deprecated(note = "Legacy PCI accessor is deprecated; use `pci_driver::EcamAccess` or the new PCI APIs in the `pci_driver` crate directly.")]
+pub use pci_driver::LegacyPciAccessor;
+
+#[deprecated(note = "get_legacy_accessor is deprecated; prefer the new accessors exposed by the `pci_driver` crate.")]
+pub use pci_driver::get_legacy_accessor;

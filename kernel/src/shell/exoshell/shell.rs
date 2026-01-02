@@ -328,7 +328,7 @@ impl ExoShell {
         }
     }
 
-    fn is_namespace(&self, name: &str) -> bool {
+    pub(crate) fn is_namespace(&self, name: &str) -> bool {
         self.namespaces.contains_key(name)
     }
 
@@ -1384,6 +1384,7 @@ impl ExoShell {
     sys.thermal()          - Temperature/throttling status
     sys.watchdog()        - Watchdog status
     sys.power()           - Power state/CPU idle stats
+    sys.panic_record()    - Last panic DMA record
     sys.shutdown()        - Request shutdown
     sys.reboot()          - Request reboot
 
@@ -1476,6 +1477,7 @@ impl ExoShell {
                 "thermal",
                 "watchdog",
                 "power",
+                "panic_record",
                 "shutdown",
                 "reboot",
             ],

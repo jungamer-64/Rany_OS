@@ -69,9 +69,13 @@ pub use bus::{
     scan_all_devices,
 };
 pub use ecam::{EcamAccess, EcamManager};
-pub use legacy::{
-    LegacyPciAccessor, get_legacy_accessor, pci_read, pci_read8, pci_read16, pci_write,
-};
+#[deprecated(note = "LegacyPciAccessor is deprecated; use `pci_driver::EcamAccess` or the new PCI APIs instead.")]
+pub use legacy::LegacyPciAccessor;
+
+#[deprecated(note = "get_legacy_accessor is deprecated; prefer the new accessors exposed by the `pci_driver` crate.")]
+pub use legacy::get_legacy_accessor;
+
+pub use legacy::{ pci_read, pci_read8, pci_read16, pci_write };
 pub use msi::{
     DeliveryMode, MsiCapability, MsiConfig, MsixCapability, MsixTableEntry, TriggerMode,
     allocate_vector, allocate_vectors, disable_intx, enable_intx, setup_msi, setup_msix,

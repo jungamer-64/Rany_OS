@@ -65,7 +65,7 @@ pub fn init_gdt() {
 
     // 早期シリアル出力関数を使用
     fn serial_str(s: &str) {
-        crate::vga::early_serial_str(s);
+        crate::io::log::early_print(s);
     }
 
     serial_str("[GDT] init\n");

@@ -37,6 +37,7 @@ pub enum DescriptorType {
     SuperSpeedPlusIsochEndpointCompanion = 49,
     // クラス固有
     HidReport = 0x22,
+    Hub = 0x29,
 }
 
 impl DescriptorType {
@@ -58,6 +59,7 @@ impl DescriptorType {
             48 => Some(DescriptorType::SuperSpeedEndpointCompanion),
             49 => Some(DescriptorType::SuperSpeedPlusIsochEndpointCompanion),
             0x22 => Some(DescriptorType::HidReport),
+            0x29 => Some(DescriptorType::Hub),
             _ => None,
         }
     }

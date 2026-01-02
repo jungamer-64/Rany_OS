@@ -18,7 +18,7 @@
 #![allow(dead_code)]
 
 pub mod hid;
-// pub mod hub;
+pub mod hub;
 pub mod msc;
 
 use alloc::boxed::Box;
@@ -26,7 +26,7 @@ use alloc::vec::Vec;
 
 // Re-exports
 pub use hid::{HidDevice, HidProtocol, HidReport, HidSubclass, UsbKeyboard, UsbMouse};
-// pub use hub::{HubCharacteristics, HubDescriptor, HubDevice, HubPortStatus, HubSpeed};
+pub use hub::{HubCharacteristics, HubDescriptor, HubDevice, HubPortStatus};
 pub use msc::{MscDevice, MscProtocol, MscSubclass, ScsiCommand, ScsiSense};
 
 // ============================================================================
@@ -301,6 +301,7 @@ impl EndpointHelper {
 pub const REQUEST_TYPE_CLASS: u8 = 0x20;
 pub const REQUEST_TYPE_CLASS_INTERFACE: u8 = 0x21;
 pub const REQUEST_TYPE_CLASS_ENDPOINT: u8 = 0x22;
+pub const REQUEST_TYPE_CLASS_OTHER: u8 = 0x23;
 
 /// 方向ビット
 pub const REQUEST_DIR_IN: u8 = 0x80;

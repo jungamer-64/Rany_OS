@@ -1224,7 +1224,7 @@ impl AtsController {
             .read16(bdf, offset + ats_regs::CTRL)
             .ok_or(PcieError::ConfigError)?;
 
-        let stu = ((ctrl_reg >> 0) & 0x1F) as u8;
+        let stu = (ctrl_reg & 0x1F) as u8;
 
         Ok(AtsCapability {
             offset,
@@ -1369,7 +1369,10 @@ impl AcsController {
 
     /// Enable ACS P2P Isolation (Source Validation, P2P Redirect, Upstream Forwarding)
     pub fn enable_isolation(&self) -> PcieResult<()> {
-        let cap = self.capability.as_ref().ok_or(PcieError::CapabilityNotFound)?;
+        let cap = self
+            .capability
+            .as_ref()
+            .ok_or(PcieError::CapabilityNotFound)?;
         let offset = cap.offset;
 
         let mut ctrl = self
@@ -1407,7 +1410,7 @@ impl AcsController {
             Some(c) => c,
             None => return false,
         };
-        
+
         let ctrl = match self.config.read16(self.bdf, cap.offset + acs_regs::CTRL) {
             Some(v) => v,
             None => return false,

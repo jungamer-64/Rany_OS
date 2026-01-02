@@ -174,20 +174,41 @@ pub fn domain_count() -> usize {
 // ============================================================================
 
 /// Backward compatibility: AppHandle
+///
+/// DEPRECATED: prefer `DomainId` (see `crate::domain_system::DomainId`) and
+/// the canonical application/domain APIs (e.g. `domain_count()`).
+#[deprecated(
+    since = "0.1.0",
+    note = "AppHandle is deprecated. Use `crate::domain_system::DomainId` instead."
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AppHandle(pub u64);
 
 impl AppHandle {
+    #[deprecated(
+        since = "0.1.0",
+        note = "AppHandle::new is deprecated. Construct a `DomainId` (e.g., `DomainId::new(id)`) instead."
+    )]
     pub fn new(id: u64) -> Self {
         Self(id)
     }
 
+    #[deprecated(
+        since = "0.1.0",
+        note = "AppHandle::id is deprecated. Use `DomainId::as_u64()` or other accessors instead."
+    )]
     pub fn id(&self) -> u64 {
         self.0
     }
 }
 
 /// Backward compatibility: app count
+///
+/// DEPRECATED: Use `domain_count()` instead.
+#[deprecated(
+    since = "0.1.0",
+    note = "app_count is deprecated. Use `domain_count()` instead."
+)]
 pub fn app_count() -> usize {
     domain_count()
 }

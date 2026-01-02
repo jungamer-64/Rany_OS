@@ -1,0 +1,601 @@
+// ============================================================================
+// kernel/src/io/iommu/tables.rs
+// ============================================================================
+
+use super::types::{IommuError, PteFormat};
+use core::marker::PhantomData;
+use core::ptr::NonNull;
+
+// Import architecture specific PTEs for helper functions
+use crate::io::iommu::amd::tables::AmdPte;
+
+// ============================================================================
+// Zeroable Trait - Zero-initialization safety
+// ============================================================================
+
+/// Marker trait for types that can be safely zero-initialized.
+///
+/// # Safety
+///
+/// Implementing this trait guarantees that:
+/// - All-zeros is a valid bit pattern for this type
+/// - Creating a reference to a zeroed instance does not cause UB
+///
+/// Types like `NonZeroU64` or references MUST NOT implement this trait.
+///
+/// # Usage
+///
+/// ```ignore
+/// #[repr(C)]
+/// struct MyEntry { lo: u64, hi: u64 }
+/// // SAFETY: All-zeros is valid (represents "not present")
+/// unsafe impl Zeroable for MyEntry {}
+/// ```
+pub unsafe trait Zeroable: Copy {}
+
+/// Page table levels
+pub const PT_LEVELS: usize = 4;
+
+/// Page table entries per level (512 for 4KB pages)
+pub const PT_ENTRIES: usize = 512;
+
+/// Second level page table entry
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SlPte(pub u64);
+
+impl SlPte {
+    /// Present bit
+    pub const PRESENT: u64 = 1 << 0;
+    /// Read permission
+    pub const READ: u64 = 1 << 0;
+    /// Write permission
+    pub const WRITE: u64 = 1 << 1;
+    /// Access bit (A) - set by hardware when page is accessed
+    pub const ACCESSED: u64 = 1 << 5;
+    /// Dirty bit (D) - set by hardware when page is written
+    pub const DIRTY: u64 = 1 << 6;
+    /// Super-Page (PS) bit - marks entry as large page (2MB at PD level, 1GB at PDP level)
+    pub const SUPER_PAGE: u64 = 1 << 7;
+    /// Snoop behavior
+    pub const SNOOP: u64 = 1 << 11;
+    /// Transient mapping hint
+    pub const TRANSIENT: u64 = 1 << 62;
+
+    /// Create a new entry
+    pub const fn new() -> Self {
+        Self(0)
+    }
+
+    /// Create a present entry with address and permissions
+    pub fn mapping(phys_addr: u64, read: bool, write: bool) -> Self {
+        let mut flags = Self::PRESENT;
+        if read {
+            flags |= Self::READ;
+        }
+        if write {
+            flags |= Self::WRITE;
+        }
+        Self((phys_addr & !0xFFF) | flags)
+    }
+
+    /// Create a 2MB super-page entry (used at PD level)
+    /// phys_addr must be 2MB-aligned
+    pub fn super_page_2mb(phys_addr: u64, read: bool, write: bool) -> Self {
+        const MASK_2MB: u64 = (2 * 1024 * 1024) - 1; // 0x1F_FFFF
+        let mut flags = Self::PRESENT | Self::SUPER_PAGE;
+        if read {
+            flags |= Self::READ;
+        }
+        if write {
+            flags |= Self::WRITE;
+        }
+        Self((phys_addr & !MASK_2MB) | flags)
+    }
+
+    /// Create a 1GB super-page entry (used at PDP level)
+    /// phys_addr must be 1GB-aligned
+    pub fn super_page_1gb(phys_addr: u64, read: bool, write: bool) -> Self {
+        const MASK_1GB: u64 = (1024 * 1024 * 1024) - 1; // 0x3FFF_FFFF
+        let mut flags = Self::PRESENT | Self::SUPER_PAGE;
+        if read {
+            flags |= Self::READ;
+        }
+        if write {
+            flags |= Self::WRITE;
+        }
+        Self((phys_addr & !MASK_1GB) | flags)
+    }
+
+    /// Check if this is a super-page entry
+    pub fn is_super_page(&self, format: PteFormat) -> bool {
+        match format {
+            PteFormat::Intel => (self.0 & Self::SUPER_PAGE) != 0,
+            PteFormat::Amd => {
+                // AMD: Next Level field (Bits 9-11) is 0 for pages (leaves) at PD/PDP levels
+                ((self.0 >> 9) & 0x7) == 0
+            }
+        }
+    }
+
+    /// Check if present
+    pub fn is_present(&self) -> bool {
+        (self.0 & Self::PRESENT) != 0
+    }
+
+    /// Get physical address
+    pub fn phys_addr(&self) -> u64 {
+        // Mask out flags (low 12 bits) and high flags (52-63)
+        // Intel/AMD physical address typically in 12-51 range
+        self.0 & 0x000F_FFFF_FFFF_F000
+    }
+
+    /// Check read permission
+    pub fn can_read(&self) -> bool {
+        (self.0 & Self::READ) != 0
+    }
+
+    /// Check write permission
+    pub fn can_write(&self) -> bool {
+        (self.0 & Self::WRITE) != 0
+    }
+
+    /// Check if page has been accessed
+    pub fn is_accessed(&self) -> bool {
+        (self.0 & Self::ACCESSED) != 0
+    }
+
+    /// Check if page has been written (dirty)
+    pub fn is_dirty(&self) -> bool {
+        (self.0 & Self::DIRTY) != 0
+    }
+
+    /// Clear accessed bit (returns old value)
+    pub fn clear_accessed(&mut self) -> bool {
+        let was_set = self.is_accessed();
+        self.0 &= !Self::ACCESSED;
+        was_set
+    }
+
+    /// Clear dirty bit (returns old value)
+    pub fn clear_dirty(&mut self) -> bool {
+        let was_set = self.is_dirty();
+        self.0 &= !Self::DIRTY;
+        was_set
+    }
+
+    /// Clear both accessed and dirty bits
+    pub fn clear_accessed_dirty(&mut self) -> (bool, bool) {
+        let accessed = self.clear_accessed();
+        let dirty = self.clear_dirty();
+        (accessed, dirty)
+    }
+}
+
+// SAFETY: SlPte with all zeros represents "not present" - a valid state
+unsafe impl Zeroable for SlPte {}
+
+/// RAII guard for an allocated page-table page
+///
+/// Ensures that allocated page-tables are deallocated on panic or error unless explicitly committed.
+///
+/// # Phase 6: Pool Support
+///
+/// If created via `new_with_pool()`, the page table is acquired from the pool and
+/// returned to the pool on Drop. Otherwise, direct allocation/deallocation is used.
+///
+/// # Lock Ordering
+///
+/// When acquiring pool pages, ensure domain lock is held BEFORE pool lock.
+pub struct PageTableScope {
+    /// Virtual pointer to the page table
+    ptr: *mut SlPte,
+    /// Physical address of the page table
+    phys: u64,
+    /// NUMA node where this table was allocated
+    node: usize,
+    /// Layout for direct deallocation (None if pool-managed)
+    layout: Option<alloc::alloc::Layout>,
+    /// Pool for release (Some if pool-managed)
+    pool: Option<alloc::sync::Arc<super::page_table_pool::PageTablePool>>,
+    /// Parent entry pointer that references this table. If set and the scope is not committed,
+    /// Drop will clear the parent entry to avoid leaving stale pointers into freed memory.
+    parent_entry: Option<*mut SlPte>,
+    parent_phys: Option<u64>,
+    committed: bool,
+}
+
+impl PageTableScope {
+    /// Allocate a zeroed page table on the given NUMA node (direct allocation, no pool)
+    ///
+    /// Use `new_with_pool()` for pool-managed allocation.
+    pub fn new(numa_hint: Option<usize>) -> Result<Self, IommuError> {
+        let layout =
+            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
+                .map_err(|_| IommuError::HardwareError)?;
+
+        let node = numa_hint.unwrap_or(0);
+        let ptr = crate::mm::numa::allocate_zeroed_on_node(layout, numa_hint)
+            .ok_or(IommuError::HardwareError)?
+            .as_ptr() as *mut SlPte;
+
+        let phys = virt_ptr_to_phys(ptr as *const u8)?;
+
+        Ok(Self {
+            ptr,
+            phys,
+            node,
+            layout: Some(layout),
+            pool: None,
+            parent_entry: None,
+            parent_phys: None,
+            committed: false,
+        })
+    }
+
+    /// Allocate a zeroed page table from the pool (Phase 6)
+    ///
+    /// The page table is returned to the pool on Drop (unless committed to a
+    /// structure that will manage lifetime separately).
+    ///
+    /// # Arguments
+    /// * `pool` - The page table pool to acquire from
+    /// * `node_hint` - Preferred NUMA node
+    pub fn new_with_pool(
+        pool: alloc::sync::Arc<super::page_table_pool::PageTablePool>,
+        node_hint: Option<usize>,
+    ) -> Result<Self, IommuError> {
+        let pt = pool.acquire(node_hint)?;
+
+        Ok(Self {
+            ptr: pt.ptr.as_ptr(),
+            phys: pt.phys,
+            node: pt.node,
+            layout: None, // Pool-managed, no layout needed
+            pool: Some(pool),
+            parent_entry: None,
+            parent_phys: None,
+            committed: false,
+        })
+    }
+
+    /// Attach the newly allocated table to the provided parent entry.
+    /// This writes the parent entry to point to the table and stores the parent information
+    /// so that Drop can clear it if this scope is not committed.
+    ///
+    /// # Arguments
+    /// * `parent_entry` - Pointer to the PTE in the parent table
+    /// * `parent_phys` - Physical address of the parent table (for accounting)
+    /// * `format` - PTE format (Intel or AMD)
+    /// * `next_level` - For AMD, the level of the table being attached (3=PDP, 2=PD, 1=PT)
+    pub fn attach_to_parent(
+        &mut self,
+        parent_entry: *mut SlPte,
+        parent_phys: u64,
+        format: PteFormat,
+        next_level: u8,
+    ) {
+        unsafe {
+            match format {
+                PteFormat::Intel => {
+                    *parent_entry = SlPte::mapping(self.phys, true, true);
+                }
+                PteFormat::Amd => {
+                    // AMD directory entry needs correct Next Level field
+                    let amd_pte = AmdPte::table_pointer(self.phys, next_level);
+                    *parent_entry = SlPte(amd_pte.0);
+                }
+            }
+        }
+        self.parent_entry = Some(parent_entry);
+        self.parent_phys = Some(parent_phys);
+    }
+
+    /// Commit the allocation into the page table accounting structures.
+    /// This registers the table and increments the parent's usage count.
+    pub fn commit(&mut self) {
+        super::page_table_pool::register_page_table(self.phys);
+        if let Some(parent_phys) = self.parent_phys {
+            super::page_table_pool::inc_ref(parent_phys);
+        }
+        self.committed = true;
+    }
+
+    #[inline]
+    pub fn ptr(&self) -> *mut SlPte {
+        self.ptr
+    }
+
+    #[inline]
+    pub fn phys(&self) -> u64 {
+        self.phys
+    }
+
+    #[inline]
+    pub fn node(&self) -> usize {
+        self.node
+    }
+}
+
+impl Drop for PageTableScope {
+    fn drop(&mut self) {
+        // If not committed, we must clear the parent entry (if any) and free the memory
+        if !self.committed {
+            if let Some(parent) = self.parent_entry {
+                unsafe {
+                    (*parent).0 = 0;
+                }
+            }
+
+            // Release to pool or direct dealloc
+            if let Some(ref pool) = self.pool {
+                // Pool-managed: reconstruct PooledPt and release
+                let pt = super::page_table_pool::PooledPt::new(
+                    unsafe { core::ptr::NonNull::new_unchecked(self.ptr) },
+                    self.phys,
+                    self.node,
+                );
+                pool.release(pt);
+            } else if let Some(layout) = self.layout {
+                // Direct allocation: dealloc via NUMA helper
+                unsafe {
+                    crate::mm::numa::deallocate_on_node(
+                        core::ptr::NonNull::new_unchecked(self.ptr as *mut u8),
+                        layout,
+                        Some(self.node),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Helper: convert a virtual pointer to a physical address (u64).
+/// - Non-test: use the kernel's higher_half translation helpers
+/// - Test: assume identity (pointer value is physical for unit tests)
+#[inline]
+pub fn virt_ptr_to_phys(ptr: *const u8) -> Result<u64, IommuError> {
+    #[cfg(not(test))]
+    {
+        crate::mm::virt_to_phys(crate::mm::VirtAddr::new(ptr as u64))
+            .ok_or(IommuError::HardwareError)
+            .map(|p| p.as_u64())
+    }
+
+    #[cfg(test)]
+    {
+        Ok(ptr as u64)
+    }
+}
+
+/// Helper: convert a physical address (u64) to a virtual address usize.
+#[inline]
+pub fn phys_to_virt_usize(phys: u64) -> usize {
+    #[cfg(not(test))]
+    {
+        crate::mm::phys_to_virt(crate::mm::PhysAddr::new(phys)).as_u64() as usize
+    }
+
+    #[cfg(test)]
+    {
+        phys as usize
+    }
+}
+
+// ============================================================================
+// HardwareTable<T> - Type-safe IOMMU Hardware Table Abstraction
+// ============================================================================
+
+/// Type-safe wrapper for IOMMU hardware tables (Root Table, Context Tables)
+///
+/// # Guarantees
+///
+/// - **Physical Contiguity**: Always allocates exactly 1 page (4KB), ensuring
+///   the returned memory is physically contiguous (VT-d requirement).
+/// - **Zero Initialization**: Memory is zeroed before use (hardware safety).
+/// - **NUMA Awareness**: Attempts NUMA-local allocation with automatic fallback.
+/// - **RAII Deallocation**: Memory is freed on Drop.
+///
+/// # Safety
+///
+/// The caller must ensure that the table is not in use by hardware when it
+/// is dropped. This typically means:
+/// - Disabling IOMMU translation before dropping root/context tables
+/// - Invalidating any TLB entries referencing this table
+///
+/// # Example
+///
+/// ```ignore
+/// // Allocate a root table (256 RootEntry, each 16 bytes = 4KB)
+/// let root_table = HardwareTable::<RootEntry>::new(256, Some(0))?;
+///
+/// // Get physical address for hardware register
+/// let phys = root_table.phys_addr();
+///
+/// // Access entries safely
+/// if let Some(entry) = root_table.get_mut(0) {
+///     entry.set_context_table(ctx_phys);
+/// }
+/// ```
+#[derive(Debug)]
+pub struct HardwareTable<T: Sized + Copy> {
+    /// Virtual address (NonNull for null safety)
+    ptr: NonNull<T>,
+    /// Physical address (required by VT-d hardware)
+    phys: u64,
+    /// Number of entries in the table
+    count: usize,
+    /// PhantomData for T
+    _marker: PhantomData<T>,
+}
+
+// SAFETY: HardwareTable is Send/Sync because:
+// - The underlying memory is exclusively owned by this struct
+// - Access is controlled via safe methods with bounds checking
+// - Hardware access is serialized via external locks (IommuController::hardware)
+unsafe impl<T: Sized + Copy + Send> Send for HardwareTable<T> {}
+unsafe impl<T: Sized + Copy + Sync> Sync for HardwareTable<T> {}
+
+impl<T: Sized + Zeroable> HardwareTable<T> {
+    /// Maximum allocation size: 4KB (1 page) for physical contiguity guarantee
+    pub const MAX_SIZE: usize = 4096;
+
+    /// Create a new hardware table with the specified number of entries
+    ///
+    /// # Arguments
+    /// * `count` - Number of entries (must fit within 4KB)
+    /// * `numa_hint` - Optional NUMA node preference (falls back to any node)
+    ///
+    /// # Errors
+    /// - `IommuError::InvalidAddress` - If `count * size_of::<T>()` exceeds 4KB
+    /// - `IommuError::OutOfMemory` - If allocation fails
+    ///
+    /// # Physical Contiguity Guarantee
+    ///
+    /// This function guarantees physical contiguity by using the buddy frame
+    /// allocator to allocate exactly one 4KB physical page frame. This is a
+    /// VT-d hardware requirement - root tables, context tables, and page tables
+    /// must all be physically contiguous.
+    pub fn new(count: usize, numa_hint: Option<usize>) -> Result<Self, IommuError> {
+        if count == 0 {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        let bytes = core::mem::size_of::<T>()
+            .checked_mul(count)
+            .ok_or(IommuError::InvalidAddress)?;
+
+        // Enforce 4KB limit for physical contiguity
+        if bytes > Self::MAX_SIZE {
+            return Err(IommuError::InvalidAddress);
+        }
+
+        // Use buddy allocator to get a physically contiguous 4KB frame
+        // This is the key change that guarantees physical contiguity!
+        let frame = if let Some(node) = numa_hint {
+            crate::mm::buddy_alloc_frame_on_node(node)
+        } else {
+            crate::mm::buddy_alloc_frame()
+        }
+        .ok_or(IommuError::OutOfMemory)?;
+
+        // Get physical address from the frame
+        let phys = frame.start_address().as_u64();
+
+        // Convert to virtual address using linear mapping
+        let virt_addr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+        let raw_ptr = virt_addr.as_u64() as *mut u8;
+
+        // Zero the memory (hardware safety requirement)
+        // SAFETY: We just allocated this frame and own it exclusively
+        unsafe {
+            core::ptr::write_bytes(raw_ptr, 0, Self::MAX_SIZE);
+        }
+
+        let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
+
+        Ok(Self {
+            ptr,
+            phys,
+            count,
+            _marker: PhantomData,
+        })
+    }
+
+    /// Get the virtual pointer (for kernel access)
+    #[inline]
+    pub fn as_ptr(&self) -> *const T {
+        self.ptr.as_ptr()
+    }
+
+    /// Get a mutable virtual pointer (for kernel access)
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure:
+    /// - Access is serialized via external locks (e.g., `IommuController::hardware`)
+    /// - No other mutable references exist to this data
+    /// - The returned pointer is not used after this table is dropped
+    ///
+    /// Prefer using `get_mut()` or `as_mut_slice()` for bounds-checked safe access.
+    #[inline]
+    pub unsafe fn as_mut_ptr_unchecked(&mut self) -> *mut T {
+        self.ptr.as_ptr()
+    }
+
+    /// Get the physical address (for VT-d hardware register programming)
+    ///
+    /// This is the value that should be written to RTADDR, context table
+    /// pointers, etc.
+    #[inline]
+    pub fn phys_addr(&self) -> u64 {
+        self.phys
+    }
+
+    /// Get the number of valid entries
+    #[inline]
+    pub fn count(&self) -> usize {
+        self.count
+    }
+
+    /// Get a reference to an entry by index
+    ///
+    /// Returns `None` if index is out of bounds.
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if index < self.count {
+            // SAFETY: Index is bounds-checked, ptr is valid for count elements
+            Some(unsafe { &*self.ptr.as_ptr().add(index) })
+        } else {
+            None
+        }
+    }
+
+    /// Get a mutable reference to an entry by index
+    ///
+    /// Returns `None` if index is out of bounds.
+    #[inline]
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index < self.count {
+            // SAFETY: Index is bounds-checked, ptr is valid for count elements
+            Some(unsafe { &mut *self.ptr.as_ptr().add(index) })
+        } else {
+            None
+        }
+    }
+
+    /// Get a slice of all valid entries
+    #[inline]
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: ptr is valid for `count` elements
+        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }
+    }
+
+    /// Get a mutable slice of all valid entries
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: ptr is valid for `count` elements
+        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.count) }
+    }
+
+    /// Zero all entries in the table
+    ///
+    /// Useful for reinitializing a table without reallocating.
+    pub fn clear(&mut self) {
+        // SAFETY: ptr is valid for MAX_SIZE bytes (one full page)
+        unsafe {
+            core::ptr::write_bytes(self.ptr.as_ptr() as *mut u8, 0, Self::MAX_SIZE);
+        }
+    }
+}
+
+impl<T: Sized + Copy> Drop for HardwareTable<T> {
+    fn drop(&mut self) {
+        // SAFETY: We own the frame and it was allocated via buddy_alloc_frame
+        // The caller must ensure hardware is not using this table before drop
+        use x86_64::structures::paging::{PhysFrame, Size4KiB};
+
+        let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(self.phys));
+        crate::mm::buddy_dealloc_frame(frame);
+    }
+}

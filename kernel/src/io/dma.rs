@@ -24,8 +24,21 @@
 //! let (buffer, guard) = buffer.start_dma(); // 所有権移動
 //! // buffer.as_ref(); // コンパイルエラー！DeviceOwnedはas_refを持たない
 //!
-//! let buffer = buffer.complete_dma(); // CPUに戻る
+//! let buffer = guard.complete(buffer); // CPUに戻る
 //! ```
+//!
+//! ## RRef-backed DMA mapping
+//! `RRefDmaBuffer<T>` provides a safe IOMMU mapping for Exchange Heap-backed data.
+//! Use `DeviceDmaContext::map_rref_kernel` or `map_rref_buffer`, and explicitly
+//! unmap to recover the `RRef<T>`.
+//! For dynamic buffers, create `RRef<[T]>` with `RRef::new_slice_default_aligned`
+//! and map it via `DeviceDmaContext::map_rref_slice` (ensure
+//! `len * size_of::<T>` is 4K-aligned when IOMMU is enabled).
+//! For byte buffers with arbitrary sizes, use `DeviceDmaContext::map_rref_kernel_bytes`
+//! to get a page-aligned mapping and keep the logical length.
+//! If you already have an aligned `RRef<[u8]>`, use `DeviceDmaContext::map_rref_bytes`.
+//! Note: When IOMMU is enabled, the mapped buffer must be 4K-aligned in address
+//! and size, otherwise mapping returns `InvalidAlignment`.
 #![allow(dead_code)]
 
 use alloc::alloc::{Layout, alloc, dealloc};
@@ -36,6 +49,42 @@ use x86_64::PhysAddr;
 
 /// DMAバッファの最小アライメント
 const DMA_ALIGNMENT: usize = 4096; // ページアライメント
+
+fn align_up(value: usize, align: usize) -> Option<usize> {
+    if !align.is_power_of_two() {
+        return None;
+    }
+    value.checked_add(align - 1).map(|v| v & !(align - 1))
+}
+
+pub(crate) fn iommu_align_len(len: usize) -> Option<usize> {
+    align_up(len, DMA_ALIGNMENT)
+}
+
+pub(crate) fn iommu_needs_bounce(phys_addr: u64, len: usize) -> bool {
+    (phys_addr & (DMA_ALIGNMENT as u64 - 1) != 0) || (len & (DMA_ALIGNMENT - 1) != 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IommuBounceAllocError {
+    InvalidLen,
+    AllocFailed,
+}
+
+pub(crate) fn allocate_iommu_bounce_bytes(
+    len: usize,
+) -> Result<crate::ipc::RRef<[u8]>, IommuBounceAllocError> {
+    let aligned_len = iommu_align_len(len).ok_or(IommuBounceAllocError::InvalidLen)?;
+    if aligned_len == 0 {
+        return Err(IommuBounceAllocError::InvalidLen);
+    }
+    crate::ipc::RRef::new_slice_default_aligned(
+        crate::ipc::DomainId::KERNEL,
+        aligned_len,
+        DMA_ALIGNMENT,
+    )
+    .ok_or(IommuBounceAllocError::AllocFailed)
+}
 
 // ============================================================================
 // 型状態マーカー（改善案7: DMA型安全性強化）
@@ -51,9 +100,18 @@ pub struct DeviceOwned;
 
 /// 状態マーカートレイト（シールド）
 mod sealed {
-    pub trait DmaState {}
-    impl DmaState for super::CpuOwned {}
-    impl DmaState for super::DeviceOwned {}
+    pub trait DmaState {
+        /// この状態でDropした時にメモリを解放するか
+        /// CpuOwned: true (解放する)
+        /// DeviceOwned: false (no-op、Guardが管理)
+        const OWNS_ALLOC: bool;
+    }
+    impl DmaState for super::CpuOwned {
+        const OWNS_ALLOC: bool = true;
+    }
+    impl DmaState for super::DeviceOwned {
+        const OWNS_ALLOC: bool = false;
+    }
 }
 
 /// DMA状態を示すマーカートレイト
@@ -125,14 +183,15 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
     /// DMA転送を開始（デバイスに所有権を移動）
     ///
     /// 返り値は所有権が移動したバッファとDMAガード。
-    /// ガードがドロップされると自動的にCPUに所有権が戻る。
+    /// 完了時は `guard.complete(dev)` を呼ぶ。
     pub fn start_dma(self) -> (TypedDmaBuffer<T, DeviceOwned>, TypedDmaGuard<T>) {
-        // キャッシュフラッシュ（アーキテクチャ依存）
         core::sync::atomic::fence(Ordering::Release);
 
         let guard = TypedDmaGuard {
+            ptr: self.ptr,
             phys_addr: self.phys_addr,
             layout: self.layout,
+            completed: false,
             _marker: PhantomData,
         };
 
@@ -143,35 +202,13 @@ impl<T> TypedDmaBuffer<T, CpuOwned> {
             _state: PhantomData,
         };
 
-        // selfのDropを防ぐ
-        core::mem::forget(self);
-
+        core::mem::forget(self); // CpuOwned の Drop を止める
         (buffer, guard)
     }
 }
 
-impl<T> TypedDmaBuffer<T, DeviceOwned> {
-    // 注意: as_ref() と as_mut() は DeviceOwned では実装しない
-    // → コンパイルエラーになる
-
-    /// DMA転送完了（CPUに所有権を返却）
-    pub fn complete_dma(self) -> TypedDmaBuffer<T, CpuOwned> {
-        // キャッシュ無効化（アーキテクチャ依存）
-        core::sync::atomic::fence(Ordering::Acquire);
-
-        let buffer = TypedDmaBuffer {
-            ptr: self.ptr,
-            phys_addr: self.phys_addr,
-            layout: self.layout,
-            _state: PhantomData,
-        };
-
-        // selfのDropを防ぐ
-        core::mem::forget(self);
-
-        buffer
-    }
-}
+// TypedDmaBuffer<T, DeviceOwned> には complete_dma は実装しない。
+// 完了は guard.complete(dev) 経由でのみ可能。
 
 impl<T, State: DmaState> TypedDmaBuffer<T, State> {
     /// 物理アドレスを取得（どちらの状態でも利用可能）
@@ -187,22 +224,27 @@ impl<T, State: DmaState> TypedDmaBuffer<T, State> {
 
 impl<T, State: DmaState> Drop for TypedDmaBuffer<T, State> {
     fn drop(&mut self) {
-        unsafe {
-            // デストラクタを呼び出し
-            core::ptr::drop_in_place(self.ptr.as_ptr());
-            // メモリを解放
-            dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+        // DeviceOwned: no-op (Guard が管理)
+        // CpuOwned: デストラクタ呼び出し + 解放
+        if <State as sealed::DmaState>::OWNS_ALLOC {
+            unsafe {
+                core::ptr::drop_in_place(self.ptr.as_ptr());
+                dealloc(self.ptr.as_ptr() as *mut u8, self.layout);
+            }
         }
     }
 }
 
-/// DMA転送のRAIIガード（型安全版）
+/// DMA転送中のメタデータ保持構造体（TypedDmaBuffer用）
 ///
-/// DMA転送中の物理アドレス情報を保持。
-/// ドロップ時に自動的に同期処理を行う。
+/// 注意: この構造体は自動同期を行いません。
+/// `complete()` を必ず呼んでください。
+#[must_use = "DMA in-flight guard must be completed; dropping leaks in release / panics in debug"]
 pub struct TypedDmaGuard<T> {
+    ptr: NonNull<T>,
     phys_addr: PhysAddr,
     layout: Layout,
+    completed: bool,
     _marker: PhantomData<T>,
 }
 
@@ -215,6 +257,105 @@ impl<T> TypedDmaGuard<T> {
     /// サイズを取得
     pub fn size(&self) -> usize {
         self.layout.size()
+    }
+
+    /// DMA完了。GuardとDeviceOwnedハンドルを消費してCpuOwnedを返す。
+    pub fn complete(mut self, dev: TypedDmaBuffer<T, DeviceOwned>) -> TypedDmaBuffer<T, CpuOwned> {
+        debug_assert_eq!(self.ptr, dev.ptr);
+        core::sync::atomic::fence(Ordering::Acquire);
+        self.completed = true;
+        // dev は Drop しても no-op (DeviceOwned) なのでそのまま捨ててOK
+        core::mem::drop(dev);
+        TypedDmaBuffer {
+            ptr: self.ptr,
+            phys_addr: self.phys_addr,
+            layout: self.layout,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl<T> Drop for TypedDmaGuard<T> {
+    fn drop(&mut self) {
+        if !self.completed {
+            #[cfg(debug_assertions)]
+            panic!(
+                "TypedDmaGuard dropped without complete()! phys={:?} size={}",
+                self.phys_addr,
+                self.layout.size()
+            );
+            #[cfg(not(debug_assertions))]
+            log::warn!(
+                "TypedDmaGuard leaked: complete() not called (phys={:?}, size={})",
+                self.phys_addr,
+                self.layout.size()
+            );
+        }
+    }
+}
+
+// ============================================================================
+// SliceDmaGuard - DMAスライス用ガード
+// ============================================================================
+
+/// DMA転送中のスライスバッファ所有権管理ガード
+///
+/// `complete()` を呼ばずに drop すると:
+/// - debug: panic（バグ検出）
+/// - release: warn + メモリリーク（DMA安全優先）
+#[must_use = "DMA in-flight guard must be completed; dropping leaks in release / panics in debug"]
+pub struct SliceDmaGuard {
+    ptr: NonNull<u8>,
+    phys_addr: PhysAddr,
+    size: usize,
+    layout: Layout,
+    completed: bool,
+}
+
+impl SliceDmaGuard {
+    /// 物理アドレスを取得
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.phys_addr
+    }
+
+    /// サイズを取得
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// DMA完了。GuardとDeviceOwnedハンドルを消費してCpuOwnedを返す。
+    pub fn complete(mut self, dev: TypedDmaSlice<DeviceOwned>) -> TypedDmaSlice<CpuOwned> {
+        debug_assert_eq!(self.ptr, dev.ptr);
+        debug_assert_eq!(self.size, dev.size);
+        core::sync::atomic::fence(Ordering::Acquire);
+        self.completed = true;
+        // dev は Drop しても no-op (DeviceOwned) なのでそのまま捨ててOK
+        core::mem::drop(dev);
+        TypedDmaSlice {
+            ptr: self.ptr,
+            phys_addr: self.phys_addr,
+            size: self.size,
+            layout: self.layout,
+            _state: PhantomData,
+        }
+    }
+}
+
+impl Drop for SliceDmaGuard {
+    fn drop(&mut self) {
+        if !self.completed {
+            #[cfg(debug_assertions)]
+            panic!(
+                "SliceDmaGuard dropped without complete()! phys={:?} size={}",
+                self.phys_addr, self.size
+            );
+            #[cfg(not(debug_assertions))]
+            log::warn!(
+                "SliceDmaGuard leaked: complete() not called (phys={:?}, size={})",
+                self.phys_addr,
+                self.size
+            );
+        }
     }
 }
 
@@ -235,7 +376,19 @@ unsafe impl<State: DmaState> Send for TypedDmaSlice<State> {}
 
 impl TypedDmaSlice<CpuOwned> {
     /// 指定サイズのDMAスライスを割り当て
+    ///
+    /// # Physical Memory Contiguity
+    /// The global allocator uses a Buddy allocator backed by contiguous
+    /// physical memory. Allocations are guaranteed to be physically contiguous.
+    ///
+    /// # Returns
+    /// `None` if size is 0 or allocation fails.
     pub fn new(size: usize) -> Option<Self> {
+        // size=0 はDMAでは無効（バグの可能性が高い）
+        if size == 0 {
+            return None;
+        }
+
         let layout = Layout::from_size_align(size, DMA_ALIGNMENT).ok()?;
 
         let non_null = crate::util::allocate_zeroed(layout)?;
@@ -263,40 +416,35 @@ impl TypedDmaSlice<CpuOwned> {
         unsafe { crate::util::raw_ptr_as_slice_mut(self.ptr.as_ptr(), self.size) }
     }
 
-    /// DMA転送を開始
-    pub fn start_dma(self) -> TypedDmaSlice<DeviceOwned> {
+    /// DMA転送を開始。GuardとDeviceOwnedハンドルを返す。
+    ///
+    /// 完了時は `guard.complete(dev)` を呼ぶ。
+    pub fn start_dma(self) -> (TypedDmaSlice<DeviceOwned>, SliceDmaGuard) {
         core::sync::atomic::fence(Ordering::Release);
 
-        let result = TypedDmaSlice {
+        let guard = SliceDmaGuard {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
             size: self.size,
             layout: self.layout,
-            _state: PhantomData,
+            completed: false,
         };
 
-        core::mem::forget(self);
-        result
-    }
-}
-
-impl TypedDmaSlice<DeviceOwned> {
-    /// DMA転送完了
-    pub fn complete_dma(self) -> TypedDmaSlice<CpuOwned> {
-        core::sync::atomic::fence(Ordering::Acquire);
-
-        let result = TypedDmaSlice {
+        let dev = TypedDmaSlice {
             ptr: self.ptr,
             phys_addr: self.phys_addr,
             size: self.size,
-            layout: self.layout,
+            layout: self.layout, // Drop が no-op なので持っててOK
             _state: PhantomData,
         };
 
-        core::mem::forget(self);
-        result
+        core::mem::forget(self); // CpuOwned の Drop（解放）を止める
+        (dev, guard)
     }
 }
+
+// TypedDmaSlice<DeviceOwned> には complete_dma は実装しない。
+// 完了は guard.complete(dev) 経由でのみ可能。
 
 impl<State: DmaState> TypedDmaSlice<State> {
     /// 物理アドレスを取得
@@ -317,8 +465,12 @@ impl<State: DmaState> TypedDmaSlice<State> {
 
 impl<State: DmaState> Drop for TypedDmaSlice<State> {
     fn drop(&mut self) {
-        unsafe {
-            dealloc(self.ptr.as_ptr(), self.layout);
+        // DeviceOwned: no-op (Guard が管理)
+        // CpuOwned: 解放
+        if <State as sealed::DmaState>::OWNS_ALLOC {
+            unsafe {
+                dealloc(self.ptr.as_ptr(), self.layout);
+            }
         }
     }
 }
@@ -344,6 +496,35 @@ pub struct TypedSgList<State: DmaState> {
     entries: alloc::vec::Vec<SgEntry>,
     buffers: alloc::vec::Vec<TypedDmaSlice<State>>,
     _state: PhantomData<State>,
+}
+
+/// Scatter-Gather DMA用ガード
+///
+/// 複数のSliceDmaGuardをまとめて管理。
+/// `complete_all()` でDeviceOwnedリストと一緒に消費してCpuOwnedリストを返す。
+#[must_use = "SG DMA guard must be completed; dropping leaks in release / panics in debug"]
+pub struct SgDmaGuard {
+    guards: alloc::vec::Vec<SliceDmaGuard>,
+}
+
+impl SgDmaGuard {
+    /// SG全体のDMA完了。GuardとDeviceOwnedリストをペアで消費。
+    pub fn complete_all(self, list: TypedSgList<DeviceOwned>) -> TypedSgList<CpuOwned> {
+        debug_assert_eq!(self.guards.len(), list.buffers.len());
+
+        let buffers = self
+            .guards
+            .into_iter()
+            .zip(list.buffers.into_iter())
+            .map(|(g, dev)| g.complete(dev))
+            .collect();
+
+        TypedSgList {
+            entries: list.entries,
+            buffers,
+            _state: PhantomData,
+        }
+    }
 }
 
 impl TypedSgList<CpuOwned> {
@@ -381,36 +562,36 @@ impl TypedSgList<CpuOwned> {
         self.buffers.get_mut(index)
     }
 
-    /// 全バッファをデバイスに転送
-    pub fn start_dma(self) -> TypedSgList<DeviceOwned> {
+    /// 全バッファをデバイスに転送。GuardとDeviceOwnedリストを返す。
+    ///
+    /// 完了時は `guard.complete_all(list)` を呼ぶ。
+    pub fn start_dma(self) -> (TypedSgList<DeviceOwned>, SgDmaGuard) {
         core::sync::atomic::fence(Ordering::Release);
 
-        let buffers: alloc::vec::Vec<TypedDmaSlice<DeviceOwned>> =
-            self.buffers.into_iter().map(|b| b.start_dma()).collect();
+        let mut guards = alloc::vec::Vec::with_capacity(self.buffers.len());
+        let buffers = self
+            .buffers
+            .into_iter()
+            .map(|b| {
+                let (dev, g) = b.start_dma();
+                guards.push(g);
+                dev
+            })
+            .collect();
 
-        TypedSgList {
-            entries: self.entries,
-            buffers,
-            _state: PhantomData,
-        }
+        (
+            TypedSgList {
+                entries: self.entries,
+                buffers,
+                _state: PhantomData,
+            },
+            SgDmaGuard { guards },
+        )
     }
 }
 
-impl TypedSgList<DeviceOwned> {
-    /// 全バッファをCPUに返却
-    pub fn complete_dma(self) -> TypedSgList<CpuOwned> {
-        core::sync::atomic::fence(Ordering::Acquire);
-
-        let buffers: alloc::vec::Vec<TypedDmaSlice<CpuOwned>> =
-            self.buffers.into_iter().map(|b| b.complete_dma()).collect();
-
-        TypedSgList {
-            entries: self.entries,
-            buffers,
-            _state: PhantomData,
-        }
-    }
-}
+// TypedSgList<DeviceOwned> には complete_dma は実装しない。
+// 完了は guard.complete_all(list) 経由でのみ可能。
 
 impl<State: DmaState> TypedSgList<State> {
     /// エントリ数を取得
@@ -485,8 +666,37 @@ impl CacheMode {
 // Cache Control Instructions
 // ============================================================================
 
+use core::sync::atomic::AtomicBool;
+
 /// キャッシュラインサイズ（x86_64では通常64バイト）
 pub const CACHE_LINE_SIZE: usize = 64;
+
+/// CPU feature flags (ブート時に一度だけ設定)
+static SUPPORTS_CLFLUSHOPT: AtomicBool = AtomicBool::new(false);
+static SUPPORTS_CLWB: AtomicBool = AtomicBool::new(false);
+
+/// ブート時にCPUキャッシュフィーチャーを検出
+///
+/// # Safety
+/// カーネル初期化時に一度だけ呼ぶこと
+pub fn init_cache_features() {
+    // CPUID.07H:EBX.CLFLUSHOPT[bit 23]
+    // CPUID.07H:EBX.CLWB[bit 24]
+    let result = unsafe { core::arch::x86_64::__cpuid_count(0x07, 0) };
+    SUPPORTS_CLFLUSHOPT.store((result.ebx & (1 << 23)) != 0, Ordering::Relaxed);
+    SUPPORTS_CLWB.store((result.ebx & (1 << 24)) != 0, Ordering::Relaxed);
+}
+
+/// CLFLUSHOPT/CLWB がサポートされているか
+#[inline]
+pub fn supports_clflushopt() -> bool {
+    SUPPORTS_CLFLUSHOPT.load(Ordering::Relaxed)
+}
+
+#[inline]
+pub fn supports_clwb() -> bool {
+    SUPPORTS_CLWB.load(Ordering::Relaxed)
+}
 
 /// CLFLUSH: キャッシュラインをフラッシュ（無効化+書き戻し）
 #[inline(always)]
@@ -509,6 +719,16 @@ pub fn clflushopt(addr: *const u8) {
 pub fn clwb(addr: *const u8) {
     unsafe {
         asm!("clwb [{}]", in(reg) addr, options(nostack, preserves_flags));
+    }
+}
+
+/// 1キャッシュラインをフラッシュ（CPU検出に基づく自動選択）
+#[inline(always)]
+fn flush_line(addr: *const u8) {
+    if SUPPORTS_CLFLUSHOPT.load(Ordering::Relaxed) {
+        clflushopt(addr);
+    } else {
+        clflush(addr);
     }
 }
 
@@ -543,15 +763,17 @@ pub fn lfence() {
 /// 指定範囲のキャッシュをフラッシュ（DMA転送開始前 CPU→デバイス）
 pub fn flush_cache_range(addr: *const u8, size: usize) {
     let start = addr as usize;
-    let end = start + size;
+    let end = start.checked_add(size).unwrap_or(usize::MAX);
     let aligned_start = start & !(CACHE_LINE_SIZE - 1);
 
     let mut current = aligned_start;
     while current < end {
-        clflushopt(current as *const u8);
+        flush_line(current as *const u8);
         current += CACHE_LINE_SIZE;
     }
-    sfence();
+    // CLFLUSH は MFENCE が必要、CLFLUSHOPT は SFENCE で十分だが
+    // 互換性のため MFENCE を使用
+    mfence();
 }
 
 /// 指定範囲のキャッシュを無効化（DMA転送完了後 デバイス→CPU）
@@ -563,15 +785,20 @@ pub fn invalidate_cache_range(addr: *const u8, size: usize) {
 /// 指定範囲のキャッシュを書き戻し（永続メモリ用、無効化なし）
 pub fn writeback_cache_range(addr: *const u8, size: usize) {
     let start = addr as usize;
-    let end = start + size;
+    let end = start.checked_add(size).unwrap_or(usize::MAX);
     let aligned_start = start & !(CACHE_LINE_SIZE - 1);
 
     let mut current = aligned_start;
     while current < end {
-        clwb(current as *const u8);
+        // CLWBがサポートされていればCLWB、なければCLFLUSHOPT/CLFLUSHにフォールバック
+        if SUPPORTS_CLWB.load(Ordering::Relaxed) {
+            clwb(current as *const u8);
+        } else {
+            flush_line(current as *const u8);
+        }
         current += CACHE_LINE_SIZE;
     }
-    sfence();
+    mfence();
 }
 
 // ============================================================================
@@ -587,6 +814,16 @@ pub enum DmaDirection {
     FromDevice,
     /// 双方向
     Bidirectional,
+}
+
+impl From<DmaDirection> for crate::io::iommu::api::DmaDirection {
+    fn from(direction: DmaDirection) -> Self {
+        match direction {
+            DmaDirection::ToDevice => crate::io::iommu::api::DmaDirection::ToDevice,
+            DmaDirection::FromDevice => crate::io::iommu::api::DmaDirection::FromDevice,
+            DmaDirection::Bidirectional => crate::io::iommu::api::DmaDirection::Bidirectional,
+        }
+    }
 }
 
 /// DMAメモリ属性
@@ -618,6 +855,241 @@ impl DmaMemoryAttributes {
         contiguous: true,
         direction: DmaDirection::ToDevice,
     };
+}
+
+// ============================================================================
+// RRef-backed DMA Mapping
+// ============================================================================
+
+/// RRef-backed DMA mapping that must be explicitly unmapped.
+///
+/// Note: `T` should be a DMA-safe value stored inline in the RRef allocation
+/// (e.g., a fixed-size buffer or packet struct), not a pointer to other data.
+#[derive(Debug)]
+pub struct RRefDmaBuffer<T: ?Sized> {
+    handle: crate::io::iommu::api::DmaHandle<T>,
+}
+
+/// Byte-oriented DMA buffer with a logical length and padded capacity.
+#[derive(Debug)]
+pub struct RRefDmaBytes {
+    buffer: RRefDmaBuffer<[u8]>,
+    len: usize,
+}
+
+/// Errors for kernel-owned slice allocation + DMA mapping.
+#[derive(Debug)]
+pub enum RRefSliceMapError<T> {
+    /// Exchange Heap allocation failed.
+    AllocFailed,
+    /// IOMMU mapping failed (returns the RRef on error).
+    MapError(crate::io::iommu::api::MapError<[T]>),
+}
+
+/// Errors for kernel-owned single value allocation + DMA mapping.
+#[derive(Debug)]
+pub enum RRefMapError<T> {
+    /// Exchange Heap allocation failed.
+    AllocFailed,
+    /// IOMMU mapping failed (returns the RRef on error).
+    MapError(crate::io::iommu::api::MapError<T>),
+}
+
+impl<T> RRefDmaBuffer<T> {
+    /// Map an `RRef<T>` using the device context's IOMMU settings.
+    pub fn map(
+        ctx: &DeviceDmaContext,
+        rref: crate::ipc::RRef<T>,
+        direction: DmaDirection,
+    ) -> Result<Self, crate::io::iommu::api::MapError<T>> {
+        ctx.map_rref(rref, direction).map(|handle| Self { handle })
+    }
+
+    /// Allocate an `RRef<T>` in the kernel domain and map it for DMA.
+    pub fn map_kernel(
+        ctx: &DeviceDmaContext,
+        value: T,
+        direction: DmaDirection,
+    ) -> Result<Self, crate::io::iommu::api::MapError<T>> {
+        let rref = crate::ipc::RRef::new(crate::ipc::DomainId::KERNEL, value);
+        Self::map(ctx, rref, direction)
+    }
+
+    /// Allocate a default `T` in the kernel domain and map it for DMA.
+    pub fn map_kernel_default(
+        ctx: &DeviceDmaContext,
+        direction: DmaDirection,
+    ) -> Result<Self, crate::io::iommu::api::MapError<T>>
+    where
+        T: Default,
+    {
+        Self::map_kernel(ctx, T::default(), direction)
+    }
+
+    /// Try to allocate a kernel-owned `RRef<T>` and map it for DMA.
+    pub fn try_map_kernel(
+        ctx: &DeviceDmaContext,
+        value: T,
+        direction: DmaDirection,
+    ) -> Result<Self, RRefMapError<T>> {
+        let rref = crate::ipc::RRef::try_new(crate::ipc::DomainId::KERNEL, value)
+            .ok_or(RRefMapError::AllocFailed)?;
+        Self::map(ctx, rref, direction).map_err(RRefMapError::MapError)
+    }
+
+    /// Try to allocate a default `T` in the kernel domain and map it for DMA.
+    pub fn try_map_kernel_default(
+        ctx: &DeviceDmaContext,
+        direction: DmaDirection,
+    ) -> Result<Self, RRefMapError<T>>
+    where
+        T: Default,
+    {
+        Self::try_map_kernel(ctx, T::default(), direction)
+    }
+
+    /// IOVA assigned for this mapping.
+    pub fn iova(&self) -> u64 {
+        self.handle.iova()
+    }
+
+    /// Physical address of the mapped buffer.
+    pub fn phys_addr(&self) -> PhysAddr {
+        PhysAddr::new(self.handle.phys_addr())
+    }
+
+    /// Size of the mapped buffer in bytes.
+    pub fn size(&self) -> u64 {
+        self.handle.size()
+    }
+
+    /// Unmap and recover the original `RRef<T>`.
+    pub fn unmap(self) -> Result<crate::ipc::RRef<T>, crate::io::iommu::api::UnmapError<T>> {
+        self.handle.unmap()
+    }
+
+    /// Async unmap and recover the original `RRef<T>`.
+    pub async fn unmap_async(
+        self,
+    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::api::UnmapError<T>> {
+        self.handle.unmap_async().await
+    }
+
+    /// Consume and return the underlying IOMMU handle.
+    pub fn into_handle(self) -> crate::io::iommu::api::DmaHandle<T> {
+        self.handle
+    }
+
+    /// Access the underlying IOMMU handle.
+    pub fn handle(&self) -> &crate::io::iommu::api::DmaHandle<T> {
+        &self.handle
+    }
+}
+
+impl<T> RRefDmaBuffer<[T]> {
+    /// IOVA assigned for this mapping.
+    pub fn iova(&self) -> u64 {
+        self.handle.iova()
+    }
+
+    /// Physical address of the mapped buffer.
+    pub fn phys_addr(&self) -> PhysAddr {
+        PhysAddr::new(self.handle.phys_addr())
+    }
+
+    /// Size of the mapped buffer in bytes.
+    pub fn size(&self) -> u64 {
+        self.handle.size()
+    }
+
+    /// Unmap and recover the original `RRef<[T]>`.
+    pub fn unmap(self) -> Result<crate::ipc::RRef<[T]>, crate::io::iommu::api::UnmapError<[T]>> {
+        self.handle.unmap()
+    }
+
+    /// Async unmap and recover the original `RRef<[T]>`.
+    pub async fn unmap_async(
+        self,
+    ) -> Result<crate::ipc::RRef<[T]>, crate::io::iommu::api::UnmapError<[T]>> {
+        self.handle.unmap_async().await
+    }
+
+    /// Access the underlying IOMMU handle.
+    pub fn handle(&self) -> &crate::io::iommu::api::DmaHandle<[T]> {
+        &self.handle
+    }
+
+    /// Number of elements in the mapped slice.
+    pub fn len(&self) -> usize {
+        let elem_size = core::mem::size_of::<T>() as u64;
+        if elem_size == 0 {
+            return 0;
+        }
+        (self.size() / elem_size) as usize
+    }
+
+    /// Whether the mapped slice is empty.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl RRefDmaBytes {
+    /// Number of bytes requested by the caller.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Total mapped capacity in bytes (page-aligned).
+    pub fn capacity(&self) -> usize {
+        self.buffer.len()
+    }
+
+    /// Whether the requested length is zero.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// IOVA assigned for this mapping.
+    pub fn iova(&self) -> u64 {
+        self.buffer.iova()
+    }
+
+    /// Physical address of the mapped buffer.
+    pub fn phys_addr(&self) -> PhysAddr {
+        self.buffer.phys_addr()
+    }
+
+    /// Unmap and recover the original `RRef<[u8]>` plus the logical length.
+    pub fn unmap(
+        self,
+    ) -> Result<(crate::ipc::RRef<[u8]>, usize), crate::io::iommu::api::UnmapError<[u8]>> {
+        let RRefDmaBytes { buffer, len } = self;
+        buffer.unmap().map(|rref| (rref, len))
+    }
+
+    /// Async unmap and recover the original `RRef<[u8]>` plus the logical length.
+    pub async fn unmap_async(
+        self,
+    ) -> Result<(crate::ipc::RRef<[u8]>, usize), crate::io::iommu::api::UnmapError<[u8]>> {
+        let RRefDmaBytes { buffer, len } = self;
+        buffer.unmap_async().await.map(|rref| (rref, len))
+    }
+
+    /// Access the underlying IOMMU handle.
+    pub fn handle(&self) -> &crate::io::iommu::api::DmaHandle<[u8]> {
+        self.buffer.handle()
+    }
+
+    /// Access the underlying `RRefDmaBuffer<[u8]>`.
+    pub fn buffer(&self) -> &RRefDmaBuffer<[u8]> {
+        &self.buffer
+    }
+
+    /// Consume and return the underlying `RRefDmaBuffer<[u8]>`.
+    pub fn into_buffer(self) -> RRefDmaBuffer<[u8]> {
+        self.buffer
+    }
 }
 
 // ============================================================================
@@ -766,15 +1238,36 @@ impl Drop for StreamingDmaMapping<'_> {
 pub struct IommuDmaBuffer {
     inner: CoherentDmaBuffer,
     iova: Option<u64>,
-    device_id: Option<crate::io::iommu::DeviceId>,
+    device_id: Option<crate::io::iommu::types::DeviceId>,
 }
 
 impl IommuDmaBuffer {
     pub fn new(size: usize, attributes: DmaMemoryAttributes) -> Option<Self> {
         let inner = CoherentDmaBuffer::new(size, attributes)?;
-        let iova = if crate::io::iommu::is_iommu_enabled() {
-            crate::io::iommu::map_for_dma(inner.phys_addr(), size as u64).ok()
+        let iova = if crate::io::iommu::api::is_iommu_enabled() {
+            if size % DMA_ALIGNMENT != 0 {
+                log::error!(
+                    "[DMA] IOMMU mapping requires 4K-aligned size (got {} bytes)",
+                    size
+                );
+                return None;
+            }
+            // SAFETY: CoherentDmaBuffer owns this memory, safe for DMA
+            match unsafe { crate::io::iommu::api::raw::map_for_dma(inner.phys_addr(), size as u64) } {
+                Ok(iova) => Some(iova),
+                Err(e) => {
+                    log::error!("[DMA] IOMMU map_for_dma failed: {:?}", e);
+                    return None;
+                }
+            }
         } else {
+            if crate::io::iommu::api::is_iommu_required() {
+                log::error!(
+                    "[DMA] IOMMU required but not enabled: failing IOMMU DMA buffer allocation"
+                );
+                return None;
+            }
+            log::warn!("[DMA] IOMMU not enabled: IOMMU-based buffer not available");
             None
         };
         Some(Self {
@@ -788,12 +1281,76 @@ impl IommuDmaBuffer {
     pub fn new_for_device(
         size: usize,
         attributes: DmaMemoryAttributes,
-        device: crate::io::iommu::DeviceId,
+        device: crate::io::iommu::types::DeviceId,
     ) -> Option<Self> {
         let inner = CoherentDmaBuffer::new(size, attributes)?;
-        let iova = if crate::io::iommu::is_iommu_enabled() {
-            crate::io::iommu::map_for_device(&device, inner.phys_addr(), size as u64).ok()
+        let iova = if crate::io::iommu::api::is_iommu_enabled() {
+            if size % DMA_ALIGNMENT != 0 {
+                log::error!(
+                    "[DMA] IOMMU mapping requires 4K-aligned size (got {} bytes)",
+                    size
+                );
+                return None;
+            }
+            // SAFETY: CoherentDmaBuffer owns this memory, safe for device DMA
+            unsafe {
+                crate::io::iommu::api::raw::map_for_device(&device, inner.phys_addr(), size as u64)
+            }
+            .map(Some)
+            .unwrap_or_else(|e| {
+                log::error!("[DMA] IOMMU map_for_device failed: {:?}", e);
+                None
+            })
         } else {
+            if crate::io::iommu::api::is_iommu_required() {
+                log::error!(
+                    "[DMA] IOMMU required but not enabled: failing device IOMMU allocation"
+                );
+                return None;
+            }
+            log::warn!("[DMA] IOMMU not enabled: device IOMMU allocation unavailable");
+            None
+        };
+        Some(Self {
+            inner,
+            iova,
+            device_id: Some(device),
+        })
+    }
+
+    /// Async constructor that awaits mapping completion when a controller CommandQueue is present
+    pub async fn new_for_device_async(
+        size: usize,
+        attributes: DmaMemoryAttributes,
+        device: crate::io::iommu::types::DeviceId,
+    ) -> Option<Self> {
+        let inner = CoherentDmaBuffer::new(size, attributes)?;
+        let iova = if crate::io::iommu::api::is_iommu_enabled() {
+            if size % DMA_ALIGNMENT != 0 {
+                log::error!(
+                    "[DMA] IOMMU mapping requires 4K-aligned size (got {} bytes)",
+                    size
+                );
+                return None;
+            }
+            // SAFETY: CoherentDmaBuffer owns this memory, safe for async device DMA
+            unsafe {
+                crate::io::iommu::api::raw::map_for_device_async(&device, inner.phys_addr(), size as u64)
+                    .await
+            }
+            .map(Some)
+            .unwrap_or_else(|e| {
+                log::error!("[DMA] IOMMU map_for_device_async failed: {:?}", e);
+                None
+            })
+        } else {
+            if crate::io::iommu::api::is_iommu_required() {
+                log::error!(
+                    "[DMA] IOMMU required but not enabled: failing async device IOMMU allocation"
+                );
+                return None;
+            }
+            log::warn!("[DMA] IOMMU not enabled: async device IOMMU allocation unavailable");
             None
         };
         Some(Self {
@@ -820,9 +1377,13 @@ impl Drop for IommuDmaBuffer {
     fn drop(&mut self) {
         if let Some(iova) = self.iova {
             if let Some(device) = self.device_id {
-                let _ = crate::io::iommu::unmap_for_device(&device, iova, self.inner.size() as u64);
+                let _ = crate::io::iommu::api::unmap_for_device(
+                    &device,
+                    iova,
+                    self.inner.size() as u64,
+                );
             } else {
-                let _ = crate::io::iommu::unmap_dma(iova, self.inner.size() as u64);
+                let _ = crate::io::iommu::api::unmap_dma(iova, self.inner.size() as u64);
             }
         }
     }
@@ -844,12 +1405,16 @@ pub enum DmaError {
     InvalidAlignment,
     /// サイズエラー
     InvalidSize,
+    /// アドレス範囲が無効
+    InvalidAddress,
     /// IOMMUマッピング失敗
     IommuMappingFailed,
     /// アドレス変換失敗
     AddressTranslationFailed,
     /// デバイスが見つからない
     DeviceNotFound,
+    /// IOMMUが必須だが利用できない
+    IommuRequired,
 }
 
 /// DMAアロケータトレイト
@@ -901,7 +1466,7 @@ impl Drop for DmaAllocation {
     fn drop(&mut self) {
         // IOMMUマッピングを解除
         if self.iova_mapped {
-            let _ = crate::io::iommu::unmap_dma(self.device_addr, self.size as u64);
+            let _ = crate::io::iommu::api::unmap_dma(self.device_addr, self.size as u64);
         }
         // メモリを解放
         unsafe {
@@ -911,6 +1476,7 @@ impl Drop for DmaAllocation {
 }
 
 /// ストリーミングDMAマッピング
+#[must_use = "streaming DMA mappings must be unmapped via DmaAllocator::unmap_streaming"]
 pub struct StreamingMapping {
     /// 元のバッファアドレス
     pub host_addr: *const u8,
@@ -918,16 +1484,52 @@ pub struct StreamingMapping {
     pub device_addr: u64,
     /// サイズ
     pub size: usize,
+    /// マップされたサイズ（IOMMU用のアライメント込み）
+    mapped_len: usize,
     /// 方向
     pub direction: DmaDirection,
     /// IOMMUでマッピングされているか
     pub iova_mapped: bool,
+    /// IOMMUバウンス用バッファ（必要時のみ）
+    bounce: Option<crate::ipc::RRef<[u8]>>,
+}
+
+impl Drop for StreamingMapping {
+    fn drop(&mut self) {
+        if self.iova_mapped {
+            // Release: IOMMU unmap を試みる（デバイスを fault させる方が安全）
+            // DMA中かもしれないが、解放後アクセスよりデバイス fault の方がマシ
+            let _ = crate::io::iommu::api::unmap_dma(self.device_addr, self.mapped_len as u64);
+
+            // bounce バッファは解放して回収
+            if let Some(bounce) = self.bounce.take() {
+                drop(bounce);
+            }
+
+            #[cfg(debug_assertions)]
+            {
+                panic!(
+                    "Streaming DMA mapping leaked! addr=0x{:x}, size={}, mapped_len={} (IOMMU unmapped)",
+                    self.device_addr, self.size, self.mapped_len
+                );
+            }
+            #[cfg(not(debug_assertions))]
+            {
+                log::error!(
+                    "[DMA] streaming mapping leaked: addr=0x{:x}, size={}, mapped_len={} (IOMMU unmapped, device may fault)",
+                    self.device_addr,
+                    self.size,
+                    self.mapped_len
+                );
+            }
+        }
+    }
 }
 
 /// グローバルDMAアロケータ
 pub struct GlobalDmaAllocator {
     /// デバイスID（IOMMU用）
-    device_id: Option<crate::io::iommu::DeviceId>,
+    device_id: Option<crate::io::iommu::types::DeviceId>,
 }
 
 impl GlobalDmaAllocator {
@@ -937,7 +1539,7 @@ impl GlobalDmaAllocator {
     }
 
     /// デバイスIDを設定（IOMMU連携用）
-    pub fn with_device(device_id: crate::io::iommu::DeviceId) -> Self {
+    pub fn with_device(device_id: crate::io::iommu::types::DeviceId) -> Self {
         Self {
             device_id: Some(device_id),
         }
@@ -950,6 +1552,9 @@ impl DmaAllocator for GlobalDmaAllocator {
         size: usize,
         _direction: DmaDirection,
     ) -> Result<DmaAllocation, DmaError> {
+        if crate::io::iommu::api::is_iommu_enabled() && size % DMA_ALIGNMENT != 0 {
+            return Err(DmaError::InvalidAlignment);
+        }
         let layout =
             Layout::from_size_align(size, DMA_ALIGNMENT).map_err(|_| DmaError::InvalidAlignment)?;
 
@@ -966,9 +1571,16 @@ impl DmaAllocator for GlobalDmaAllocator {
         // 仮想アドレスを物理アドレスに変換
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(ptr as u64));
 
-        // IOMMUマッピング
-        let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
-            match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
+        // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
+        // device_id があればデバイス固有ドメインにマップ
+        let (device_addr, iova_mapped) = if crate::io::iommu::api::is_iommu_enabled() {
+            // SAFETY: Just allocated DMA-capable memory that we own
+            let map_result = if let Some(ref dev) = self.device_id {
+                unsafe { crate::io::iommu::api::raw::map_for_device(dev, phys_addr, size as u64) }
+            } else {
+                unsafe { crate::io::iommu::api::raw::map_for_dma(phys_addr, size as u64) }
+            };
+            match map_result {
                 Ok(iova) => (iova, true),
                 Err(_) => {
                     unsafe {
@@ -977,7 +1589,21 @@ impl DmaAllocator for GlobalDmaAllocator {
                     return Err(DmaError::IommuMappingFailed);
                 }
             }
+        } else if crate::io::iommu::api::is_iommu_required() {
+            // IOMMUが必須と設定されているが無効 -> エラー
+            unsafe {
+                dealloc(ptr, layout);
+            }
+            return Err(DmaError::IommuRequired);
         } else {
+            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+                unsafe {
+                    dealloc(ptr, layout);
+                }
+                return Err(DmaError::IommuRequired);
+            }
+            // IOMMUが無効だが必須ではない: 警告を出してフォールバック（開発用）
+            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
             (phys_addr.as_u64(), false)
         };
 
@@ -998,23 +1624,68 @@ impl DmaAllocator for GlobalDmaAllocator {
     ) -> Result<StreamingMapping, DmaError> {
         let host_addr = buffer.as_ptr();
         let size = buffer.len();
+        if size == 0 {
+            return Err(DmaError::InvalidSize);
+        }
         let phys_addr = crate::memory::virt_to_phys(x86_64::VirtAddr::new(host_addr as u64));
+        let mut mapped_len = size;
+        let mut bounce = None;
 
-        // キャッシュ操作
-        match direction {
-            DmaDirection::ToDevice | DmaDirection::Bidirectional => {
-                flush_cache_range(host_addr, size);
+        if crate::io::iommu::api::is_iommu_enabled() && iommu_needs_bounce(phys_addr.as_u64(), size)
+        {
+            let mut rref = allocate_iommu_bounce_bytes(size).map_err(|err| match err {
+                IommuBounceAllocError::InvalidLen => DmaError::InvalidAlignment,
+                IommuBounceAllocError::AllocFailed => DmaError::OutOfMemory,
+            })?;
+
+            if matches!(
+                direction,
+                DmaDirection::ToDevice | DmaDirection::Bidirectional
+            ) {
+                rref[..size].copy_from_slice(buffer);
+                flush_cache_range(rref.as_ptr(), rref.len());
             }
-            DmaDirection::FromDevice => {}
+
+            mapped_len = rref.len();
+            bounce = Some(rref);
+        } else if matches!(
+            direction,
+            DmaDirection::ToDevice | DmaDirection::Bidirectional
+        ) {
+            flush_cache_range(host_addr, size);
         }
 
-        // IOMMUマッピング
-        let (device_addr, iova_mapped) = if crate::io::iommu::is_iommu_enabled() {
-            match crate::io::iommu::map_for_dma(phys_addr, size as u64) {
+        let (phys_addr, mapped_len) = if let Some(ref rref) = bounce {
+            let bounce_ptr = rref.as_ptr();
+            let bounce_phys = crate::memory::virt_to_phys(x86_64::VirtAddr::new(bounce_ptr as u64));
+            (bounce_phys, mapped_len)
+        } else {
+            (phys_addr, mapped_len)
+        };
+
+        // キャッシュ操作
+        // Note: For bounce buffers, cache ops are handled above on the bounce memory.
+
+        // IOMMUマッピング（セキュリティ方針: IOMMU_REQUIRED が真ならエラー）
+        // device_id があればデバイス固有ドメインにマップ
+        let (device_addr, iova_mapped) = if crate::io::iommu::api::is_iommu_enabled() {
+            // SAFETY: Buffer is caller-owned; delegate safety to caller
+            let map_result = if let Some(ref dev) = self.device_id {
+                unsafe { crate::io::iommu::api::raw::map_for_device(dev, phys_addr, mapped_len as u64) }
+            } else {
+                unsafe { crate::io::iommu::api::raw::map_for_dma(phys_addr, mapped_len as u64) }
+            };
+            match map_result {
                 Ok(iova) => (iova, true),
                 Err(_) => return Err(DmaError::IommuMappingFailed),
             }
+        } else if crate::io::iommu::api::is_iommu_required() {
+            return Err(DmaError::IommuRequired);
         } else {
+            if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+                return Err(DmaError::IommuRequired);
+            }
+            log::warn!("[DMA] IOMMU is not enabled; falling back to identity mapping (insecure)");
             (phys_addr.as_u64(), false)
         };
 
@@ -1022,24 +1693,55 @@ impl DmaAllocator for GlobalDmaAllocator {
             host_addr,
             device_addr,
             size,
+            mapped_len,
             direction,
             iova_mapped,
+            bounce,
         })
     }
 
-    fn unmap_streaming(&self, mapping: StreamingMapping) {
-        // キャッシュ操作
-        match mapping.direction {
-            DmaDirection::FromDevice | DmaDirection::Bidirectional => {
-                invalidate_cache_range(mapping.host_addr, mapping.size);
+    fn unmap_streaming(&self, mut mapping: StreamingMapping) {
+        if let Some(bounce) = mapping.bounce.as_mut() {
+            if matches!(
+                mapping.direction,
+                DmaDirection::FromDevice | DmaDirection::Bidirectional
+            ) {
+                invalidate_cache_range(bounce.as_ptr(), mapping.mapped_len);
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        bounce.as_ptr(),
+                        mapping.host_addr as *mut u8,
+                        mapping.size,
+                    );
+                }
             }
-            DmaDirection::ToDevice => {}
+
+            if mapping.iova_mapped {
+                let _ = crate::io::iommu::api::unmap_dma(
+                    mapping.device_addr,
+                    mapping.mapped_len as u64,
+                );
+            }
+
+            mapping.iova_mapped = false;
+            mapping.bounce = None;
+            return;
+        }
+
+        // キャッシュ操作
+        if matches!(
+            mapping.direction,
+            DmaDirection::FromDevice | DmaDirection::Bidirectional
+        ) {
+            invalidate_cache_range(mapping.host_addr, mapping.size);
         }
 
         // IOMMUマッピング解除
         if mapping.iova_mapped {
-            let _ = crate::io::iommu::unmap_dma(mapping.device_addr, mapping.size as u64);
+            let _ =
+                crate::io::iommu::api::unmap_dma(mapping.device_addr, mapping.mapped_len as u64);
         }
+        mapping.iova_mapped = false;
     }
 
     fn device_address(&self, phys_addr: PhysAddr) -> u64 {
@@ -1048,7 +1750,7 @@ impl DmaAllocator for GlobalDmaAllocator {
     }
 
     fn iommu_enabled(&self) -> bool {
-        crate::io::iommu::is_iommu_enabled()
+        crate::io::iommu::api::is_iommu_enabled()
     }
 }
 
@@ -1070,7 +1772,7 @@ pub fn global_dma_allocator() -> &'static dyn DmaAllocator {
 /// IOMMUドメインやデバイス固有の設定を管理。
 pub struct DeviceDmaContext {
     /// デバイスID
-    device_id: Option<crate::io::iommu::DeviceId>,
+    device_id: Option<crate::io::iommu::types::DeviceId>,
     /// IOMMUドメインID
     domain_id: Option<u16>,
     /// アロケータ
@@ -1088,13 +1790,19 @@ impl DeviceDmaContext {
     }
 
     /// デバイスIDを設定してIOMMU連携を有効化
-    pub fn with_device(device_id: crate::io::iommu::DeviceId) -> Result<Self, DmaError> {
-        let domain_id = if crate::io::iommu::is_iommu_enabled() {
+    ///
+    /// DMAアドレス幅を制限する場合は `with_device_dma_mask` / `with_device_dma_width`
+    /// を使用する。
+    pub fn with_device(device_id: crate::io::iommu::types::DeviceId) -> Result<Self, DmaError> {
+        let domain_id = if crate::io::iommu::api::is_iommu_enabled() {
             // IOMMUドメインを作成してデバイスをアタッチ
-            crate::io::iommu::with_iommu(|iommu| {
+            crate::io::iommu::api::with_iommu(|iommu| {
                 let numa_hint = Some(crate::mm::numa::current_node());
                 let domain_id = iommu
-                    .create_domain(numa_hint, crate::io::iommu::IommuDomainType::Translated)
+                    .create_domain(
+                        numa_hint,
+                        crate::io::iommu::types::IommuDomainType::Translated,
+                    )
                     .ok()?;
                 iommu.attach_device(device_id.clone(), domain_id).ok()?;
                 Some(domain_id)
@@ -1112,6 +1820,25 @@ impl DeviceDmaContext {
         })
     }
 
+    /// デバイスのDMAアドレスマスクを登録してからコンテキストを作成
+    pub fn with_device_dma_mask(
+        device_id: crate::io::iommu::types::DeviceId,
+        mask: u64,
+    ) -> Result<Self, DmaError> {
+        crate::io::iommu::api::register_device_dma_mask(device_id, mask);
+        Self::with_device(device_id)
+    }
+
+    /// デバイスのDMAアドレス幅を登録してからコンテキストを作成
+    pub fn with_device_dma_width(
+        device_id: crate::io::iommu::types::DeviceId,
+        bits: u8,
+    ) -> Result<Self, DmaError> {
+        crate::io::iommu::api::register_device_dma_width(device_id, bits)
+            .map_err(|_| DmaError::InvalidAddress)?;
+        Self::with_device(device_id)
+    }
+
     /// コヒーレントDMAバッファを割り当て
     pub fn allocate(
         &self,
@@ -1119,6 +1846,224 @@ impl DeviceDmaContext {
         direction: DmaDirection,
     ) -> Result<DmaAllocation, DmaError> {
         self.allocator.allocate_coherent(size, direction)
+    }
+
+    /// RRef-backed DMA mapping (safe IOMMU API)
+    ///
+    /// Returns a `DmaHandle<T>` that must be explicitly unmapped to recover the `RRef<T>`.
+    pub fn map_rref<T>(
+        &self,
+        rref: crate::ipc::RRef<T>,
+        direction: DmaDirection,
+    ) -> Result<crate::io::iommu::api::DmaHandle<T>, crate::io::iommu::api::MapError<T>> {
+        let iommu_direction = direction.into();
+        if let Some(device) = self.device_id {
+            crate::io::iommu::api::map_rref_for_device(rref, &device, iommu_direction)
+        } else {
+            let domain_id = self.domain_id.unwrap_or(0);
+            crate::io::iommu::dma_handle::DmaHandle::map_rref(rref, domain_id, iommu_direction)
+        }
+    }
+
+    /// RRef-backed DMA slice mapping (safe IOMMU API)
+    ///
+    /// Returns a `DmaHandle<[T]>` that must be explicitly unmapped to recover the `RRef<[T]>`.
+    pub fn map_rref_slice<T>(
+        &self,
+        rref: crate::ipc::RRef<[T]>,
+        direction: DmaDirection,
+    ) -> Result<crate::io::iommu::api::DmaHandle<[T]>, crate::io::iommu::api::MapError<[T]>> {
+        let iommu_direction = direction.into();
+        if let Some(device) = self.device_id {
+            crate::io::iommu::api::map_rref_slice_for_device(rref, &device, iommu_direction)
+        } else {
+            let domain_id = self.domain_id.unwrap_or(0);
+            crate::io::iommu::dma_handle::DmaHandle::map_rref_slice(
+                rref,
+                domain_id,
+                iommu_direction,
+            )
+        }
+    }
+
+    /// Map an `RRef<T>` into IOMMU space and return a DMA buffer handle.
+    pub fn map_rref_buffer<T>(
+        &self,
+        rref: crate::ipc::RRef<T>,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<T>, crate::io::iommu::api::MapError<T>> {
+        RRefDmaBuffer::map(self, rref, direction)
+    }
+
+    /// Map an `RRef<[T]>` slice into IOMMU space and return a DMA buffer handle.
+    pub fn map_rref_slice_buffer<T>(
+        &self,
+        rref: crate::ipc::RRef<[T]>,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, crate::io::iommu::api::MapError<[T]>> {
+        self.map_rref_slice(rref, direction)
+            .map(|handle| RRefDmaBuffer { handle })
+    }
+
+    /// Map an `RRef<[u8]>` slice into IOMMU space and return a byte buffer handle.
+    pub fn map_rref_bytes(
+        &self,
+        rref: crate::ipc::RRef<[u8]>,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBytes, crate::io::iommu::api::MapError<[u8]>> {
+        let len = rref.len();
+        self.map_rref_slice_buffer(rref, direction)
+            .map(|buffer| RRefDmaBytes { buffer, len })
+    }
+
+    /// Allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) and map it into IOMMU space.
+    pub fn map_rref_kernel_slice_default<T>(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, crate::io::iommu::api::MapError<[T]>>
+    where
+        T: Default,
+    {
+        let rref = crate::ipc::RRef::new_slice_default_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+        )
+        .expect("exchange heap allocation failed");
+        self.map_rref_slice_buffer(rref, direction)
+    }
+
+    /// Allocate a kernel-owned byte buffer (page-aligned size) and map it.
+    pub fn map_rref_kernel_bytes(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBytes, crate::io::iommu::api::MapError<[u8]>> {
+        if len == 0 {
+            panic!("zero-length DMA buffer");
+        }
+        let rref = allocate_iommu_bounce_bytes(len).unwrap_or_else(|err| match err {
+            IommuBounceAllocError::InvalidLen => panic!("invalid alignment"),
+            IommuBounceAllocError::AllocFailed => panic!("exchange heap allocation failed"),
+        });
+        self.map_rref_slice_buffer(rref, direction)
+            .map(|buffer| RRefDmaBytes { buffer, len })
+    }
+
+    /// Try to allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) and map it into IOMMU space.
+    pub fn try_map_rref_kernel_slice_default<T>(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, RRefSliceMapError<T>>
+    where
+        T: Default,
+    {
+        let rref = crate::ipc::RRef::new_slice_default_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+        )
+        .ok_or(RRefSliceMapError::AllocFailed)?;
+        self.map_rref_slice_buffer(rref, direction)
+            .map_err(RRefSliceMapError::MapError)
+    }
+
+    /// Try to allocate a kernel-owned byte buffer (page-aligned size) and map it.
+    pub fn try_map_rref_kernel_bytes(
+        &self,
+        len: usize,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBytes, RRefSliceMapError<u8>> {
+        if len == 0 {
+            return Err(RRefSliceMapError::AllocFailed);
+        }
+        let rref = allocate_iommu_bounce_bytes(len).map_err(|_| RRefSliceMapError::AllocFailed)?;
+        self.map_rref_slice_buffer(rref, direction)
+            .map(|buffer| RRefDmaBytes { buffer, len })
+            .map_err(RRefSliceMapError::MapError)
+    }
+
+    /// Allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) with an initializer and map it.
+    pub fn map_rref_kernel_slice_with<T, F>(
+        &self,
+        len: usize,
+        init: F,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, crate::io::iommu::api::MapError<[T]>>
+    where
+        F: FnMut(usize) -> T,
+    {
+        let rref = crate::ipc::RRef::new_slice_with_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+            init,
+        )
+        .expect("exchange heap allocation failed");
+        self.map_rref_slice_buffer(rref, direction)
+    }
+
+    /// Try to allocate a kernel-owned `RRef<[T]>` slice (4K-aligned) with an initializer and map it.
+    pub fn try_map_rref_kernel_slice_with<T, F>(
+        &self,
+        len: usize,
+        init: F,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<[T]>, RRefSliceMapError<T>>
+    where
+        F: FnMut(usize) -> T,
+    {
+        let rref = crate::ipc::RRef::new_slice_with_aligned(
+            crate::ipc::DomainId::KERNEL,
+            len,
+            crate::mm::PAGE_SIZE_4K,
+            init,
+        )
+        .ok_or(RRefSliceMapError::AllocFailed)?;
+        self.map_rref_slice_buffer(rref, direction)
+            .map_err(RRefSliceMapError::MapError)
+    }
+
+    /// Allocate a kernel-owned `RRef<T>` and map it into IOMMU space.
+    pub fn map_rref_kernel<T>(
+        &self,
+        value: T,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<T>, crate::io::iommu::api::MapError<T>> {
+        RRefDmaBuffer::map_kernel(self, value, direction)
+    }
+
+    /// Try to allocate a kernel-owned `RRef<T>` and map it into IOMMU space.
+    pub fn try_map_rref_kernel<T>(
+        &self,
+        value: T,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<T>, RRefMapError<T>> {
+        RRefDmaBuffer::try_map_kernel(self, value, direction)
+    }
+
+    /// Try to allocate a default kernel-owned `RRef<T>` and map it into IOMMU space.
+    pub fn try_map_rref_kernel_default<T>(
+        &self,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<T>, RRefMapError<T>>
+    where
+        T: Default,
+    {
+        RRefDmaBuffer::try_map_kernel_default(self, direction)
+    }
+
+    /// Allocate a default kernel-owned `RRef<T>` and map it into IOMMU space.
+    pub fn map_rref_kernel_default<T>(
+        &self,
+        direction: DmaDirection,
+    ) -> Result<RRefDmaBuffer<T>, crate::io::iommu::api::MapError<T>>
+    where
+        T: Default,
+    {
+        RRefDmaBuffer::map_kernel_default(self, direction)
     }
 
     /// 便利なメソッド: TypedDmaBufferを作成
@@ -1142,41 +2087,11 @@ impl Drop for DeviceDmaContext {
     fn drop(&mut self) {
         // IOMMUドメインからデバイスをデタッチ
         if let (Some(device_id), Some(_domain_id)) = (self.device_id, self.domain_id) {
-            let _ = crate::io::iommu::with_iommu(|iommu| {
+            let _ = crate::io::iommu::api::with_iommu(|iommu| {
                 let _ = iommu.detach_device(device_id);
             });
         }
     }
-}
-
-// ============================================================================
-// CPU Feature Detection
-// ============================================================================
-
-/// CLFLUSHOPT命令のサポートを確認
-pub fn supports_clflushopt() -> bool {
-    let result: u32;
-    unsafe {
-        asm!(
-            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {0:e}, ebx",
-            out(reg) result, out("eax") _, out("ecx") _, out("edx") _,
-            options(nostack, preserves_flags)
-        );
-    }
-    (result & (1 << 23)) != 0
-}
-
-/// CLWB命令のサポートを確認
-pub fn supports_clwb() -> bool {
-    let result: u32;
-    unsafe {
-        asm!(
-            "mov eax, 7", "xor ecx, ecx", "cpuid", "mov {0:e}, ebx",
-            out(reg) result, out("eax") _, out("ecx") _, out("edx") _,
-            options(nostack, preserves_flags)
-        );
-    }
-    (result & (1 << 24)) != 0
 }
 
 /// キャッシュラインサイズを取得
@@ -1211,8 +2126,8 @@ mod tests {
         // （ここでは確認のためコメントアウト）
         // device_buffer.as_ref(); // ERROR!
 
-        // DMA転送完了
-        let buffer = device_buffer.complete_dma();
+        // DMA転送完了 (guard.complete(dev) を使用)
+        let buffer = guard.complete(device_buffer);
         assert_eq!(*buffer.as_ref(), 42);
     }
 
@@ -1232,10 +2147,11 @@ mod tests {
         assert_eq!(slice.as_slice()[1], 0xAD);
 
         // DMA転送
-        let device_slice = slice.start_dma();
+        let (device_slice, guard) = slice.start_dma();
         // device_slice.as_slice(); // ERROR! DeviceOwnedでは不可
 
-        let cpu_slice = device_slice.complete_dma();
+        // DMA転送完了 (guard.complete(dev) を使用)
+        let cpu_slice = guard.complete(device_slice);
         assert_eq!(cpu_slice.as_slice()[0], 0xDE);
     }
 }

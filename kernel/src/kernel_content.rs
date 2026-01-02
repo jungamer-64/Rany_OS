@@ -1,12 +1,12 @@
+// ============================================================================
+// kernel/src/kernel_content.rs
+// ============================================================================
 extern crate alloc;
 
 // use alloc::string::String;
 // use core::panic::PanicInfo;
-use limine::BaseRevision;
-use limine::request::{
-    ExecutableFileRequest, FramebufferRequest, HhdmRequest, MemoryMapRequest, RequestsEndMarker,
-    RequestsStartMarker, RsdpRequest, StackSizeRequest,
-};
+use boot_proto::ExoBootInfo;
+
 use log::{debug, error, info, warn};
 
 mod allocator;
@@ -16,10 +16,20 @@ mod domain_system;
 mod epoch;
 mod error;
 mod fs;
+#[macro_use]
+mod interrupt_macros;
 // ============================================================================
 // Macro Re-exports (from drivers)
 // ============================================================================
+#[deprecated(
+    note = "serial_print is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
+)]
+#[allow(deprecated)]
 pub use serial_driver::serial_print;
+#[deprecated(
+    note = "serial_println is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
+)]
+#[allow(deprecated)]
 pub use serial_driver::serial_println;
 
 mod graphics;
@@ -64,50 +74,33 @@ mod test;
 mod application;
 mod benchmark;
 mod driver_registry;
+mod initramfs; // Dynamic Cell loading from TAR archive
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 mod service_impl; // KernelServices implementation // Driver lifecycle management
 
-// Limine bootloader protocol requests (UEFI/BIOS compatible)
-// Define the start and end markers for Limine requests
-#[used]
-#[unsafe(link_section = ".requests_start_marker")]
-static _START_MARKER: RequestsStartMarker = RequestsStartMarker::new();
+fn debug_heap_check(tag: &str) {
+    io::log::early_print("[HEAP] Check: ");
+    io::log::early_print(tag);
+    io::log::early_print("\n");
 
-#[used]
-#[unsafe(link_section = ".requests_end_marker")]
-static _END_MARKER: RequestsEndMarker = RequestsEndMarker::new();
+    // Simple allocation test
+    let mut v = alloc::vec::Vec::new();
+    for i in 0..100 {
+        v.push(i as u64);
+    }
+    drop(v);
 
-// Be sure to mark all limine requests with #[used], otherwise they may be removed by the compiler.
-#[used]
-#[unsafe(link_section = ".requests")]
-static BASE_REVISION: BaseRevision = BaseRevision::new();
+    // Large allocation test
+    let b = alloc::boxed::Box::new([0u8; 1024]);
+    core::hint::black_box(&b);
+    drop(b);
 
-#[used]
-#[unsafe(link_section = ".requests")]
-static HHDM_REQUEST: HhdmRequest = HhdmRequest::new();
+    io::log::early_print("[HEAP] Check OK\n");
+}
 
-#[used]
-#[unsafe(link_section = ".requests")]
-static MEMORY_MAP_REQUEST: MemoryMapRequest = MemoryMapRequest::new();
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static FRAMEBUFFER_REQUEST: FramebufferRequest = FramebufferRequest::new();
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static STACK_SIZE_REQUEST: StackSizeRequest = StackSizeRequest::new().with_size(512 * 1024); // 512 KiB stack
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static RSDP_REQUEST: RsdpRequest = RsdpRequest::new();
-
-#[used]
-#[unsafe(link_section = ".requests")]
-static KERNEL_FILE_REQUEST: ExecutableFileRequest = ExecutableFileRequest::new();
-
+#[cfg(not(test))]
 #[unsafe(no_mangle)]
-extern "C" fn kmain() -> ! {
+extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     // Early serial output to confirm kernel loaded
     unsafe {
         // Initialize COM1 (0x3F8)
@@ -148,6 +141,13 @@ extern "C" fn kmain() -> ! {
             in("al") 0x0Bu8,  // RTS/DSR
         );
 
+        // Output 'M' to serial to confirm we reached this point in kmain
+        core::arch::asm!(
+            "out dx, al",
+            in("dx") port,
+            in("al") b'M',
+        );
+
         // Send boot message
         for byte in b"RanyOS UEFI Boot OK!\r\n" {
             core::arch::asm!(
@@ -158,34 +158,18 @@ extern "C" fn kmain() -> ! {
         }
     }
 
-    // Simple serial print helper for debugging
-    fn serial_print(s: &str) {
-        unsafe {
-            let port = 0x3F8u16;
-            for byte in s.bytes() {
-                core::arch::asm!(
-                    "out dx, al",
-                    in("dx") port,
-                    in("al") byte,
-                );
-            }
-        }
-    }
+    // Removed local `serial_print` helper in favor of `io::log::early_print` for early boot messages.
+    // Use `log` macros (e.g., `info!`, `debug!`) after the logger has been initialized.
 
-    serial_print("[BOOT] Checking Limine revision...\r\n");
-
-    // Verify Limine protocol support
-    if !BASE_REVISION.is_supported() {
-        serial_print(
-            "[BOOT] WARNING: Limine revision not fully supported, continuing anyway...\r\n",
-        );
-        // Continue despite revision mismatch for debugging
-        // This may be caused by limine crate (0.5) and bootloader (8.x) version mismatch
+    // Limine protocol check removed.
+    // Verify ExoBootInfo version if necessary.
+    io::log::early_print("[BOOT] Booted via ExoLoader!\n");
+    if boot_info.version != 1 {
+        io::log::early_print("[BOOT] WARNING: Protocol version mismatch\n");
     }
-    serial_print("[BOOT] Limine revision check passed\r\n");
 
     // SSE/SSE2を有効化（x86_64ではABIで必須）
-    serial_print("[BOOT] Enabling SSE...\r\n");
+    io::log::early_print("[BOOT] Enabling SSE...\n");
     unsafe {
         use core::arch::asm;
         // CR0: EM=0, TS=0
@@ -202,7 +186,7 @@ extern "C" fn kmain() -> ! {
         cr4 |= 1 << 10; // OSXMMEXCPT  
         asm!("mov cr4, {}", in(reg) cr4);
     }
-    serial_print("[BOOT] SSE enabled\r\n");
+    io::log::early_print("[BOOT] SSE enabled\n");
 
     // Enable AVX/AVX2 if available
     unsafe {
@@ -214,7 +198,7 @@ extern "C" fn kmain() -> ! {
         let has_osxsave = (res.ecx & (1 << 27)) != 0; // OSXSAVE support
 
         if has_avx && has_osxsave {
-            serial_print("[BOOT] Enabling AVX...\r\n");
+            io::log::early_print("[BOOT] Enabling AVX...\n");
 
             // 2. Enable OSXSAVE in CR4 (bit 18)
             let mut cr4: u64;
@@ -246,7 +230,7 @@ extern "C" fn kmain() -> ! {
                 in("edx") xcr0_high,
             );
 
-            serial_print("[BOOT] AVX enabled (XCR0 set)\r\n");
+            io::log::early_print("[BOOT] AVX enabled (XCR0 set)\n");
 
             // 4. Notify HAL
             hal::mmio::set_simd_level(hal::mmio::simd_level::AVX);
@@ -254,47 +238,46 @@ extern "C" fn kmain() -> ! {
             // 5. Check AVX2 (CPUID.7:EBX.AVX2[bit 5])
             let res7 = __cpuid_count(7, 0);
             if (res7.ebx & (1 << 5)) != 0 {
-                serial_print("[BOOT] AVX2 detected\r\n");
+                io::log::early_print("[BOOT] AVX2 detected\n");
                 hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
             }
         } else {
-            serial_print("[BOOT] AVX not supported\r\n");
+            io::log::early_print("[BOOT] AVX not supported\n");
         }
     }
 
-    // Get physical memory offset from HHDM (Higher Half Direct Map)
-    serial_print("[BOOT] Getting HHDM offset...\r\n");
-    let phys_mem_offset = HHDM_REQUEST.get_response().map(|r| r.offset()).unwrap_or(0);
-    serial_print("[BOOT] HHDM offset obtained\r\n");
+    // Get physical memory offset from ExoBootInfo
+    io::log::early_print("[BOOT] Getting HHDM offset...\n");
+    let phys_mem_offset = boot_info.phys_mem_offset;
+    io::log::early_print("[BOOT] HHDM offset obtained\n");
 
     // VGAバッファの初期化（ログ出力用）
-    serial_print("[BOOT] Initializing VGA...\r\n");
+    io::log::early_print("[BOOT] Initializing VGA...\n");
     vga::init();
-    serial_print("[BOOT] VGA initialized\r\n");
+    io::log::early_print("[BOOT] VGA initialized\n");
 
     // ロギングシステムの初期化（最優先、ヒープ不要）
-    serial_print("[BOOT] Initializing logger...\r\n");
+    io::log::early_print("[BOOT] Initializing logger...\n");
     if io::log::init().is_err() {
         io::log::early_print("[FATAL] Logger init failed\n");
-        serial_print("[BOOT] Logger init FAILED!\r\n");
+        io::log::early_print("[BOOT] Logger init FAILED!\n");
     } else {
-        serial_print("[BOOT] Logger initialized\r\n");
+        info!(target: "init", "Logger initialized");
     }
 
     // 早期ブートログ（log crateを使用）
     info!(target: "boot", "kernel_main started");
 
     // 物理メモリオフセットを設定
-    serial_print("[BOOT] Setting physical memory offset...\r\n");
+    info!(target: "init", "Setting physical memory offset...");
     memory::set_physical_memory_offset(phys_mem_offset);
-    serial_print("[BOOT] Physical memory offset set\r\n");
+    info!(target: "init", "Physical memory offset set");
     debug!(target: "boot", "physical memory offset set: {:#x}", phys_mem_offset);
 
     print_logo();
 
     // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
     // これにより、メモリ初期化中の例外でデバッグ情報が得られる
-    serial_print("[BOOT] Initializing interrupt system...\r\n");
     info!(target: "init", "Initializing interrupt system");
     interrupts::init();
 
@@ -306,91 +289,135 @@ extern "C" fn kmain() -> ! {
         info!(target: "init", "Serial driver initialized");
     }
 
-    serial_print("[BOOT] Interrupt system initialized\r\n");
     info!(target: "init", "Interrupt system initialized");
 
     // 1. メモリ管理の初期化
-    serial_print("[BOOT] Initializing memory management...\r\n");
     info!(target: "init", "Initializing memory management");
-    memory::init();
-    serial_print("[BOOT] Memory management initialized\r\n");
+    memory::init(if boot_info.rsdp_addr > 0 {
+        Some(boot_info.rsdp_addr)
+    } else {
+        None
+    });
     info!(target: "init", "Memory management initialized");
 
     // 1.5. ACPI & IOMMU Initialization
     // Requires memory management for allocation
     info!(target: "init", "Initializing ACPI...");
+
+    // Configure ACPI driver with HHDM offset for physical-to-virtual translation
+    io::acpi::set_hhdm_offset(phys_mem_offset);
+
     // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
-    if let Some(rsdp_response) = RSDP_REQUEST.get_response() {
-        let rsdp_addr = rsdp_response.address() as usize;
+    // static KERNEL_FILE_REQUEST removed (was shadowing global one without link section)
+    if boot_info.rsdp_addr != 0 {
+        let rsdp_addr = boot_info.rsdp_addr as usize;
         // Function init expects u64 physical address usually
         match unsafe { io::acpi::init(rsdp_addr as u64) } {
             Ok(parser) => {
                 info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
 
-                let mut iommu_config = io::iommu::IommuConfig::default();
-                if let Some(file_response) = KERNEL_FILE_REQUEST.get_response() {
-                    let file = file_response.file();
-                    // Prefer File::string() which returns an Option<&str>
-                    let cmdline = file.string().to_str().unwrap_or("");
-                    info!(target: "init", "Kernel cmdline: {}", cmdline);
+                let mut iommu_config = io::iommu::config::IommuConfig::default();
+                if boot_info.cmdline_len > 0 {
+                    let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
+                    let slice =
+                        unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+                    if let Ok(cmdline) = core::str::from_utf8(slice) {
+                        info!(target: "init", "Kernel cmdline: {}", cmdline);
 
-                    // Parse 'iommu' option
-                    if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
-                        match val {
-                            "off" => iommu_config.enabled = false,
-                            "pt" | "passthrough" => iommu_config.passthrough = true,
-                            "force" => iommu_config.force = true,
-                            _ => {}
+                        // Parse 'iommu' option
+                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu") {
+                            match val {
+                                "off" => iommu_config.enabled = false,
+                                "pt" | "passthrough" => iommu_config.passthrough = true,
+                                "force" => iommu_config.force = true,
+                                _ => {}
+                            }
+                        }
+                        if let Some(val) = util::get_cmdline_option(cmdline, "iommu_global") {
+                            match val {
+                                "on" | "1" | "true" => iommu_config.allow_global_mappings = true,
+                                "off" | "0" | "false" => {
+                                    iommu_config.allow_global_mappings = false;
+                                }
+                                _ => {}
+                            }
                         }
                     }
                 }
 
                 // Initialize IOMMU using ACPI tables and config
                 unsafe {
-                                    match parser.find_table(b"DMAR") {
-                                        Ok(dmar_addr) => {
-                                            if let Err(e) = io::iommu::init_iommu_from_acpi(dmar_addr, iommu_config)
-                                            {
-                                                // If IOMMU not present or disabled, we just warn.
-                                                if e != io::iommu::IommuError::NotPresent {
-                                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
-                                                } else {
-                                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
-                                                }
-                                            } else {
-                                                info!(target: "init", "IOMMU initialized successfully");
-                    
-                                                // Enable IOMMU
-                                                if let Err(e) = io::iommu::enable_iommu() {
-                                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
-                                                } else {
-                                                    info!(target: "init", "IOMMU translation enabled");
-                                                }
-                                            }
-                                        }
-                                        Err(_) => {
-                                            info!(target: "init", "IOMMU not initialized (No DMAR table)");
-                                        }
-                                    }
-                                    
-                                    let mut mcfg_base_addr: Option<u64> = None;
-                                    match parser.find_table(b"MCFG") {
-                                        Ok(addr) => {
-                                            mcfg_base_addr = Some(addr as u64);
-                                            info!(target: "init", "MCFG table found at {:#x}", addr);
-                                        }
-                                        Err(_) => {
-                                            warn!(target: "init", "No MCFG table found.");
-                                        }
-                                    }
-                    
-                                    // Initialize PCI subsystem
-                                    if let Err(e) = pci_driver::init(mcfg_base_addr) {
-                                        error!(target: "init", "PCI driver init failed: {:?}", e);
+                    match parser.find_table(b"DMAR") {
+                        Ok(dmar_addr) => {
+                            if let Err(e) = crate::io::iommu::intel::controller::init_global::init_iommu_from_acpi(dmar_addr, iommu_config)
+                            {
+                                // If IOMMU not present or disabled, we just warn.
+                                if e != io::iommu::types::IommuError::NotPresent {
+                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
+                                } else {
+                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
+                                }
+                            } else {
+                                info!(target: "init", "IOMMU initialized successfully");
+
+                                // Enable IOMMU
+                                if let Err(e) = io::iommu::api::enable_iommu() {
+                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                                } else {
+                                    info!(target: "init", "IOMMU translation enabled");
+                                }
+                            }
+                        }
+                        Err(_) => match parser.find_table(b"IVRS") {
+                            Ok(ivrs_addr) => {
+                                if let Err(e) = crate::io::iommu::amd::init_iommu_from_ivrs(
+                                    ivrs_addr,
+                                    iommu_config,
+                                ) {
+                                    if e != io::iommu::types::IommuError::NotPresent {
+                                        warn!(target: "init", "AMD-Vi init failed: {:?}", e);
                                     } else {
-                                        info!(target: "init", "PCI driver initialized");
+                                        info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
                                     }
+                                } else {
+                                    info!(target: "init", "AMD-Vi detected; backend registered");
+                                    if let Err(e) = io::iommu::api::enable_iommu() {
+                                        error!(target: "init", "Failed to enable AMD-Vi: {:?}", e);
+                                    } else {
+                                        info!(target: "init", "AMD-Vi translation enabled");
                                     }
+                                }
+                            }
+                            Err(_) => {
+                                info!(target: "init", "IOMMU not initialized (No DMAR/IVRS table)");
+                            }
+                        },
+                    }
+
+                    if io::iommu::api::is_iommu_enabled() {
+                        if let Err(e) = io::iommu::panic::init_panic_dma_pool_default() {
+                            warn!(target: "init", "IOMMU panic DMA pool init failed: {:?}", e);
+                        } else {
+                            info!(target: "init", "IOMMU panic DMA pool initialized");
+                        }
+                    }
+
+                    let mut _mcfg_base_addr: Option<u64> = None;
+                    match parser.find_table(b"MCFG") {
+                        Ok(addr) => {
+                            _mcfg_base_addr = Some(addr as u64);
+                            info!(target: "init", "MCFG table found at {:#x}", addr);
+                        }
+                        Err(_) => {
+                            warn!(target: "init", "No MCFG table found.");
+                        }
+                    }
+
+                    // Initialize PCI subsystem
+                    // Initialize PCI subsystem
+                    // pci_driver::init(); // DISABLED FOR HEAP DEBUG
+                    // info!(target: "init", "PCI driver initialized");
+                }
             }
             Err(e) => {
                 warn!(target: "init", "ACPI initialization failed: {:?}", e);
@@ -401,41 +428,70 @@ extern "C" fn kmain() -> ! {
     }
 
     // 1.1. 1GB Huge Page サポートの初期化 (設計書 11.1.1)
-    serial_print("[BOOT] Initializing 1GB Huge Page support...\r\n");
+    info!(target: "init", "Initializing 1GB Huge Page support...");
     mm::huge_pages::init();
     info!(target: "init", "1GB Huge Page support initialized");
+
+    // Debug: pinpoint crash location
+    io::log::early_print("[DEBUG] After huge_pages::init\n");
 
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();
 
+    io::log::early_print("[DEBUG] After notify_heap_available\n");
+
     // Register kernel services (SPL契約の有効化)
-    serial_print("[BOOT] Registering kernel services...\r\n");
+    info!(target: "init", "Registering kernel services...");
+
+    io::log::early_print("[DEBUG] Before register_kernel_services\n");
+
     unsafe {
         service_impl::register_kernel_services();
     }
-    serial_print("[BOOT] Kernel services registered\r\n");
-    info!(target: "init", "KernelServices registered");
 
-    // グラフィックスフレームバッファの初期化（Limine経由）
-    serial_print("[BOOT] Initializing graphics framebuffer...\r\n");
-    if let Some(fb_response) = FRAMEBUFFER_REQUEST.get_response() {
-        if graphics::init_from_limine(fb_response) {
-            serial_print("[BOOT] Graphics framebuffer initialized\r\n");
+    io::log::early_print("[DEBUG] After register_kernel_services\n");
+
+    io::log::early_print("[DEBUG] About to call info! macro\n");
+
+    info!(target: "init", "Kernel services registered");
+
+    io::log::early_print("[DEBUG] After first info! macro\n");
+
+    io::log::early_print("[DEBUG] Before second info! macro\n");
+    info!(target: "init", "KernelServices registered");
+    io::log::early_print("[DEBUG] After second info! macro\n");
+
+    // グラフィックスフレームバッファの初期化（ExoLoader経由）
+    io::log::early_print("[DEBUG] Before graphics init info!\n");
+    info!(target: "init", "Initializing graphics framebuffer...");
+    io::log::early_print("[DEBUG] After graphics init info!\n");
+
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        if graphics::init_from_boot_info(&boot_info.framebuffer, phys_mem_offset) {
+            info!(target: "init", "Graphics framebuffer initialized");
 
             // ブートスプラッシュを表示
             graphics::show_boot_splash();
-            serial_print("[BOOT] Boot splash displayed\r\n");
+            info!(target: "init", "Boot splash displayed");
         } else {
-            serial_print("[BOOT] Graphics framebuffer init failed\r\n");
+            warn!(target: "init", "Graphics framebuffer init failed");
         }
-    } else {
-        serial_print("[BOOT] No framebuffer response from bootloader\r\n");
+    }
+    #[cfg(any(test, feature = "bench"))]
+    {
+        info!(target: "init", "Skipping graphics framebuffer init in test/bench build");
     }
 
     // 進捗: 10% - メモリ初期化完了
-    graphics::update_boot_progress_with_message(10, "Memory initialized");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(10, "Memory initialized");
+    }
 
     // アロケーションテスト（シンプル化）
+    io::log::early_print("[DEBUG] Before Allocation Tests\n");
+    /*
     debug!(target: "test", "Running allocation tests");
     {
         let v: alloc::vec::Vec<u8> = alloc::vec![1, 2, 3, 4];
@@ -444,19 +500,36 @@ extern "C" fn kmain() -> ! {
         debug!(target: "test", "Vec iteration OK");
 
         // BTreeMapテスト
-        debug!(target: "test", "Testing BTreeMap");
-        let mut map: alloc::collections::BTreeMap<u64, u64> = alloc::collections::BTreeMap::new();
-        map.insert(1, 100);
-        map.insert(2, 200);
-        debug!(target: "test", "BTreeMap OK");
+        io::log::early_print("[DEBUG] Creating BTreeMap\n");
+        {
+            let mut map: alloc::collections::BTreeMap<u64, u64> =
+                alloc::collections::BTreeMap::new();
+            map.insert(1, 100);
+            map.insert(2, 200);
+            for i in 3..100 {
+                map.insert(i, i * 10);
+            }
+        }
+        io::log::early_print("[DEBUG] BTreeMap Dropped & Allocating Vec\n");
+        let mut v: alloc::vec::Vec<u64> = alloc::vec::Vec::new();
+        v.push(1);
+        drop(v);
+        io::log::early_print("[DEBUG] Vec Dropped\n");
     }
     info!(target: "test", "Allocation tests passed");
+    io::log::early_print("[DEBUG] After Allocation Tests\n");
+    */
 
     // 2. ドメイン管理システムの初期化
+    io::log::early_print("[DEBUG] Before domain_system::init\n");
     info!(target: "init", "Initializing domain system");
-    domain_system::init();
+    // domain_system::init();
     info!(target: "init", "Domain system initialized");
-    graphics::update_boot_progress_with_message(20, "Domain system ready");
+    io::log::early_print("[DEBUG] After domain_system::init\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(20, "Domain system ready");
+    }
 
     // 2.5. SAS（単一アドレス空間）の初期化
     info!(target: "init", "Initializing SAS");
@@ -467,7 +540,10 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing Spectre mitigations");
     spectre::init();
     info!(target: "init", "Spectre mitigations initialized");
-    graphics::update_boot_progress_with_message(30, "Security initialized");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(30, "Security initialized");
+    }
 
     // 2.7. セキュリティフレームワークの初期化
     info!(target: "init", "Initializing security framework");
@@ -478,11 +554,23 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing MPK/PKU security");
     security::mpk::init();
     info!(target: "init", "MPK/PKU security initialized");
-    graphics::update_boot_progress_with_message(40, "Kernel API ready");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(40, "Kernel API ready");
+    }
+
+    // 2.9. Initramfs からドライバ Cells をロード
+    info!(target: "init", "Loading driver Cells from initramfs...");
+    let loaded_cells = initramfs::load_cells_from_initramfs(&boot_info.initramfs);
+    if loaded_cells > 0 {
+        info!(target: "init", "Loaded {} driver Cell(s) from initramfs", loaded_cells);
+    } else {
+        debug!(target: "init", "No initramfs or no Cells found");
+    }
 
     // 3. キーボードドライバの初期化
     info!(target: "init", "Initializing keyboard driver");
-    io::keyboard::init();
+    io::hid::keyboard::init();
     info!(target: "init", "Keyboard driver initialized");
 
     // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）using DriverRegistry
@@ -510,6 +598,7 @@ extern "C" fn kmain() -> ! {
     info!(target: "boot", "BOOT COMPLETE!");
 
     // 3.5. シリアルポートの初期化（デバッグ用）via DriverRegistry
+    io::log::early_print("[DEBUG] Before Serial Driver\n");
     info!(target: "init", "Initializing serial port via DriverRegistry");
     {
         use alloc::boxed::Box;
@@ -528,9 +617,13 @@ extern "C" fn kmain() -> ! {
             info!(target: "init", "Serial driver initialized via DriverRegistry");
         }
     }
-
-    // 3.5.5. NVMeドライバの初期化（PCIスキャン）
+    io::log::early_print("[DEBUG] After Serial Driver\n");
+    io::log::early_print("[DEBUG] calling info! for NVMe\n");
+    // 3.5.5. NVMeドライバの初期化（PCIスキャン）- DISABLED FOR DEBUGGING
+    io::log::early_print("[DEBUG] NVMe scan SKIPPED\n");
+    /*
     info!(target: "init", "Scanning for NVMe controllers...");
+    io::log::early_print("[DEBUG] Calling find_by_class\n");
     {
         use alloc::boxed::Box;
         use driver_registry::register_driver;
@@ -543,7 +636,12 @@ extern "C" fn kmain() -> ! {
 
         // NVMeコントローラを検索 (Class 01h, Subclass 08h, ProgIF 02h)
         let devices = find_by_class(0x01, 0x08);
+        io::log::early_print("[DEBUG] Returned from find_by_class\n");
+        let _dev_count = devices.len();
+        io::log::early_print("[DEBUG] devices.len() obtained (no format)\n");
+        io::log::early_print("[DEBUG] About to call devices.iter().find()\n");
         if let Some(device_info) = devices.iter().find(|d| d.class_code.prog_if == 0x02) {
+            io::log::early_print("[DEBUG] Found NVMe device, calling info!\n");
             info!(target: "init", "NVMe controller found at {}", device_info.bdf);
 
             // BAR0を取得 (NVMeは64bit BAR0/1を使うことが多い)
@@ -563,6 +661,12 @@ extern "C" fn kmain() -> ! {
                 // ドライバを登録
                 let nvme_handle = register_driver(Box::new(NvmeDriverWrapper::new(bar0_virt, 1))); // Core=1 for now
 
+                // Register NVMe ISR Handler (Vector 48) - Reactor Pattern
+                io::interrupt_manager::register_handler(
+                    io::interrupt_manager::NVME_VECTOR,
+                    Box::new(io::nvme::per_core::irq_handler),
+                );
+
                 // プローブと開始
                 if let Err(e) = driver_registry::driver_registry()
                     .probe_and_start(nvme_handle.expect("Failed to register NVMe driver"))
@@ -578,8 +682,11 @@ extern "C" fn kmain() -> ! {
             info!(target: "init", "No NVMe controller found");
         }
     }
+    */
 
-    // 3.5.6. AHCIドライバの初期化（PCIスキャン）
+    // 3.5.6. AHCIドライバの初期化（PCIスキャン）- DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] AHCI scan SKIPPED\n");
+    /*
     info!(target: "init", "Scanning for AHCI controllers...");
     {
         use ahci_driver::driver_impl::AhciDriverWrapper;
@@ -623,8 +730,11 @@ extern "C" fn kmain() -> ! {
             info!(target: "init", "No AHCI controller found");
         }
     }
+    */
 
-    // 3.5.7. USBドライバの初期化（PCIスキャン）
+    // 3.5.7. USBドライバの初期化（PCIスキャン）- DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] USB scan SKIPPED\n");
+    /*
     info!(target: "init", "Scanning for USB xHCI controllers...");
     {
         use alloc::boxed::Box;
@@ -666,7 +776,10 @@ extern "C" fn kmain() -> ! {
             }
         }
     }
-    // 3.5.8. ドライバ初期化サマリ
+    */
+    // 3.5.8. ドライバ初期化サマリ - DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] Driver Summary SKIPPED\n");
+    /*
     {
         let registry = driver_registry::driver_registry();
         let drivers = registry.list();
@@ -677,8 +790,11 @@ extern "C" fn kmain() -> ! {
         }
         info!(target: "init", "==============================");
     }
+    */
 
-    // 3.6. ネットワークサブシステムの初期化
+    // 3.6. ネットワークサブシステムの初期化 - DISABLED FOR HEAP DEBUG
+    io::log::early_print("[DEBUG] Network init SKIPPED\n");
+    /*
     info!(target: "init", "Initializing network subsystem");
     net::init_stack_default();
     net::init_socket_manager();
@@ -687,11 +803,19 @@ extern "C" fn kmain() -> ! {
     info!(target: "init", "Initializing network shell API");
     net::init_network_shell();
     info!(target: "init", "Network stack initialized");
-    graphics::update_boot_progress_with_message(50, "Network stack ready");
+    */
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        // graphics::update_boot_progress_with_message(50, "Network stack ready"); // DISABLED FOR HEAP DEBUG
+        io::log::early_print("[DEBUG] Boot progress 50 SKIPPED\n");
+    }
 
     // 3.6.2. VirtIO-Net driver via DriverRegistry
+    /*
     info!(target: "init", "Registering VirtIO-Net driver via DriverRegistry");
     {
+        // debug_heap_check("Before VirtIO-Net init");
+
         use alloc::boxed::Box;
         use driver_registry::register_driver;
         use net::driver::VirtioNetDriver;
@@ -705,41 +829,70 @@ extern "C" fn kmain() -> ! {
         } else {
             info!(target: "init", "VirtIO-Net driver initialized via DriverRegistry");
         }
+
+        // debug_heap_check("After VirtIO-Net init");
     }
+    */
 
     // 3.7. ファイルシステム（memfs）の初期化
+    io::log::early_print("[DEBUG] Before memfs init\n");
     info!(target: "init", "Initializing memory filesystem");
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
-    graphics::update_boot_progress_with_message(60, "Filesystem mounted");
+    io::log::early_print("[DEBUG] After memfs init\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        io::log::early_print("[DEBUG] Before boot progress 60\n");
+        graphics::update_boot_progress_with_message(60, "Filesystem mounted");
+        io::log::early_print("[DEBUG] After boot progress 60\n");
+    }
 
     // 4. タスクスケジューラの初期化
+    io::log::early_print("[DEBUG] Before scheduler init\n");
     info!(target: "init", "Initializing task scheduler");
+    #[cfg(feature = "legacy-scheduler")]
     task::init_scheduler(0); // CPU 0
     info!(target: "init", "Task scheduler initialized");
-    graphics::update_boot_progress_with_message(70, "Scheduler started");
+    io::log::early_print("[DEBUG] After scheduler init\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(70, "Scheduler started");
+    }
 
     // 4.5. Per-Core Executorの初期化（設計書 4.3）
+    io::log::early_print("[DEBUG] Before executor init\n");
     info!(target: "init", "Initializing per-core executors");
     task::init_executors(1); // シングルコアで開始
     info!(target: "init", "Per-core executors initialized");
+    io::log::early_print("[DEBUG] After executor init\n");
+
+    // Aggregation is performed in the executor idle loop; explicit aggregator
+    // spawn is not required in the normal runtime path.
+    debug!(target: "init", "Log aggregation will run on executor idle");
 
     // 5. ローダーシステムの初期化
+    io::log::early_print("[DEBUG] Before loader init\n");
     info!(target: "init", "Initializing cell loader");
     loader::init_kernel_cell();
     register_kernel_symbols();
     info!(target: "init", "Cell loader initialized");
+    io::log::early_print("[DEBUG] After loader init\n");
 
     // 5.1. ライブアップデート / Epoch-based Reclamation の初期化 (設計書 3.5.3)
     info!(target: "init", "Initializing live update (Epoch-based Reclamation)");
     loader::live_update::init();
     info!(target: "init", "Live update initialized");
-    graphics::update_boot_progress_with_message(80, "Loader ready");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(80, "Loader ready");
+    }
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
+    io::log::early_print("[DEBUG] Before symbol table init\n");
     info!(target: "init", "Initializing symbol table");
     unwind::init_symbol_table();
     info!(target: "init", "Symbol table initialized");
+    io::log::early_print("[DEBUG] After symbol table init\n");
 
     // 5.6. テストフレームワークの初期化
     info!(target: "init", "Initializing test framework");
@@ -753,22 +906,83 @@ extern "C" fn kmain() -> ! {
     } else {
         info!(target: "init", "System integration initialized");
     }
-    graphics::update_boot_progress_with_message(90, "Integration complete");
+
+    // If built with feature `run-integration-tests`, run the integration tests at boot and exit QEMU
+    #[cfg(feature = "run-integration-tests")]
+    {
+        info!(target: "init", "Feature run-integration-tests enabled: running integration tests (storage)");
+        let (_passed, failed) = integration::run_all_integration_tests();
+        use hal::port_io::PortU32;
+
+        let mut port = PortU32::new(0xf4);
+        if failed == 0 {
+            port.write(0x10u32); // QEMU success
+        } else {
+            port.write(0x11u32); // QEMU failure
+        }
+        loop {
+            x86_64::instructions::hlt();
+        }
+    }
+
+    // If requested on the kernel cmdline, run integration tests and exit QEMU.
+    if boot_info.cmdline_len > 0 {
+        let ptr = (phys_mem_offset + boot_info.cmdline_ptr) as *const u8;
+        let slice = unsafe { core::slice::from_raw_parts(ptr, boot_info.cmdline_len as usize) };
+        if let Ok(cmdline) = core::str::from_utf8(slice) {
+            if let Some(val) = util::get_cmdline_option(cmdline, "run_integration") {
+                if val == "storage" || val == "1" {
+                    info!(target: "init", "Running integration tests (storage) as requested by cmdline");
+                    let (_passed, failed) = crate::test::integration::run_all_integration_tests();
+                    use hal::port_io::PortU32;
+
+                    let mut port = PortU32::new(0xf4);
+                    if failed == 0 {
+                        port.write(0x10u32); // QEMU success
+                    } else {
+                        port.write(0x11u32); // QEMU failure
+                    }
+
+                    // Stop here; QEMU will exit on the port write
+                    loop {
+                        x86_64::instructions::hlt();
+                    }
+                }
+            }
+        }
+    }
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        graphics::update_boot_progress_with_message(90, "Integration complete");
+    }
 
     // 6. 割り込みを有効化
+    io::log::early_print("[DEBUG] Before enable interrupts\n");
     interrupts::enable_interrupts();
     info!(target: "init", "Interrupts enabled");
-    graphics::update_boot_progress_with_message(100, "Ready!");
+    io::log::early_print("[DEBUG] After enable interrupts\n");
+    #[cfg(not(any(test, feature = "bench")))]
+    {
+        io::log::early_print("[DEBUG] Before boot progress 100\n");
+        graphics::update_boot_progress_with_message(100, "Ready!");
+        io::log::early_print("[DEBUG] After boot progress 100\n");
+    }
 
     // 7. システム統計を表示
+    io::log::early_print("[DEBUG] Before print_system_stats\n");
     print_system_stats();
+    io::log::early_print("[DEBUG] After print_system_stats\n");
 
     // 8. Executorの作成とタスクスポーン
+    io::log::early_print("[DEBUG] Before Executor::new\n");
     info!(target: "init", "Creating async executor");
     let mut executor = task::Executor::new();
+    io::log::early_print("[DEBUG] After Executor::new\n");
 
+    io::log::early_print("[DEBUG] Before spawn_kernel_tasks\n");
     spawn_kernel_tasks(&mut executor);
     info!(target: "init", "Kernel tasks spawned");
+    io::log::early_print("[DEBUG] After spawn_kernel_tasks\n");
 
     // =========================================================================
     // 🚨 STACK OVERFLOW TEST (Double Fault Verification)
@@ -780,8 +994,10 @@ extern "C" fn kmain() -> ! {
     // stack_overflow();
     // =========================================================================
 
-    info!(target: "run", "Starting executor main loop");
-    info!("================================================================================");
+    io::log::early_print("[DEBUG] Before executor info macro\n");
+    // info!(target: "run", "Starting executor main loop");  // DISABLED FOR DEBUGGING
+    // info!("================================================================================");  // DISABLED FOR DEBUGGING
+    io::log::early_print("[DEBUG] Before executor.run()\n");
 
     // メインループ開始（戻ってこない）
     executor.run();
@@ -793,7 +1009,8 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     use task::Task;
 
     // ドメイン1を作成：ユーザーアプリケーション
-    let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1")).expect("create_domain failed");
+    let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
+        .expect("create_domain failed");
 
     // SAS統計をログ
     let sas_stats = sas::stats();
@@ -821,7 +1038,8 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     }));
 
     // タスク2: ゼロコピー通信デモ
-    let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo")).expect("create_domain failed");
+    let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo"))
+        .expect("create_domain failed");
     domain_system::start_domain(domain2).ok();
 
     executor.spawn(Task::new(async move {
@@ -1013,12 +1231,22 @@ fn register_kernel_symbols() {
         );
 
         registry.symbol_table.insert(
+            alloc::string::String::from("sys_dealloc"),
+            sys_dealloc as *const () as usize,
+        );
+
+        registry.symbol_table.insert(
             alloc::string::String::from("sys_sleep"),
             sys_sleep as *const () as usize,
         );
+
+        registry.symbol_table.insert(
+            alloc::string::String::from("sys_panic"),
+            sys_panic as *const () as usize,
+        );
     });
 
-    debug!(target: "loader", "Kernel symbols registered");
+    debug!(target: "loader", "Kernel symbols registered (5 syscalls)");
 }
 
 /// システムコール: ログ出力
@@ -1060,6 +1288,35 @@ pub extern "C" fn sys_sleep(ms: u64) {
     while task::current_tick() < target {
         core::hint::spin_loop();
     }
+}
+
+/// システムコール: メモリ解放
+#[unsafe(no_mangle)]
+pub extern "C" fn sys_dealloc(ptr: *mut u8, size: usize) {
+    use core::alloc::Layout;
+
+    if ptr.is_null() || size == 0 {
+        return;
+    }
+
+    let layout = match Layout::from_size_align(size, 8) {
+        Ok(l) => l,
+        Err(_) => return,
+    };
+
+    unsafe { alloc::alloc::dealloc(ptr, layout) }
+}
+
+/// システムコール: パニック（Cellからの呼び出し用）
+#[unsafe(no_mangle)]
+pub extern "C" fn sys_panic(msg: *const u8, len: usize) -> ! {
+    if !msg.is_null() && len > 0 {
+        let slice = unsafe { core::slice::from_raw_parts(msg, len) };
+        if let Ok(s) = core::str::from_utf8(slice) {
+            log::error!(target: "cell", "Cell panic: {}", s);
+        }
+    }
+    panic!("Cell panic - aborting");
 }
 
 /// ExoRustロゴを表示

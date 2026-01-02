@@ -270,7 +270,9 @@ pub fn stream_write_u64(addr: usize, val: u64) {
 /// # Safety
 /// - Caller must ensure the address is 16-byte aligned
 /// - Caller must ensure SSE2 is available (standard on `x86_64`)
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+///
+/// NOTE: Disabled on no_std targets due to LLVM codegen bug.
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
 #[target_feature(enable = "sse2")]
 #[inline]
 #[allow(clippy::cast_ptr_alignment)]
@@ -283,13 +285,28 @@ pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
     }
 }
 
+/// Fallback for no_std targets - use two 64-bit stores
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "std")))]
+#[inline]
+pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
+    // Fall back to two 64-bit streaming stores
+    unsafe {
+        let v0 = core::ptr::read_unaligned(data.as_ptr().cast::<u64>());
+        let v1 = core::ptr::read_unaligned(data.as_ptr().add(8).cast::<u64>());
+        stream_write_u64(addr, v0);
+        stream_write_u64(addr + 8, v1);
+    }
+}
+
 /// Write 256 bits (32 bytes) using AVX non-temporal store.
 /// The address MUST be 32-byte aligned.
 ///
 /// # Safety
 /// - Caller must ensure the address is 32-byte aligned
 /// - Caller must ensure AVX is available
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+///
+/// NOTE: Disabled on no_std targets due to LLVM codegen bug in nightly 2025-11-25 through 2025-12-17.
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
 #[target_feature(enable = "avx")]
 #[inline]
 #[allow(clippy::cast_ptr_alignment)]
@@ -299,6 +316,17 @@ pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
     unsafe {
         let v = _mm256_loadu_si256(data.as_ptr().cast::<__m256i>());
         _mm256_stream_si256(addr as *mut __m256i, v);
+    }
+}
+
+/// Fallback for no_std targets - use SSE2 16-byte stores
+#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "std")))]
+#[inline]
+pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
+    // Fall back to two 16-byte stores
+    unsafe {
+        stream_write_128(addr, &*(data.as_ptr().cast::<[u8; 16]>()));
+        stream_write_128(addr + 16, &*(data.as_ptr().add(16).cast::<[u8; 16]>()));
     }
 }
 

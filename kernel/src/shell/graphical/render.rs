@@ -478,11 +478,6 @@ impl GraphicalShell {
         });
     }
 
-    /// Alias for `redraw_input_line` (backwards compatibility).
-    pub fn redraw_input_only(&mut self) {
-        self.redraw_input_line();
-    }
-
     /// Redraws only the mouse cursor region (optimized for mouse movement).
     ///
     /// This is much faster than `redraw()` because it only updates:
@@ -529,7 +524,7 @@ impl GraphicalShell {
     {
         self.prepare_completions_buffer();
 
-        let mut dirty_regions = get_dirty_regions(self);
+        let dirty_regions = get_dirty_regions(self);
 
         // Pre-merge: Add mouse cursor to dirty regions if visible.
         // push_or_merge will automatically merge with overlapping regions.

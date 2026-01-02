@@ -24,13 +24,13 @@
 #![allow(dead_code)]
 
 // サブモジュール (controller/global remain kernel-local; core codec/types/stream moved to driver crate)
-mod controller;
+// mod controller; // Moved to driver
 mod global;
 
 // Use driver-provided modules
 pub use hda_driver::codec;
 pub use hda_driver::types;
-mod stream;
+// mod stream; // Moved to driver
 pub use hda_driver::regs;
 
 // 型の再エクスポート
@@ -39,7 +39,8 @@ pub use types::{
 };
 
 // コントローラの再エクスポート
-pub use controller::HdaController;
+// pub use controller::HdaController;
+pub use hda_driver::hda::HdaController;
 
 // 公開API関数の再エクスポート
 pub use global::{

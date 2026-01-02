@@ -15,11 +15,15 @@
 
 #![allow(dead_code)]
 
+use crate::sync::IrqMutex;
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use lazy_static::lazy_static;
 use spin::{Mutex, RwLock};
+use x86_64::structures::idt::InterruptStackFrame;
 
 // ============================================================================
 // Constants
@@ -37,7 +41,8 @@ const USER_VECTORS_END: u8 = 254;
 const SPURIOUS_VECTOR: u8 = 255;
 
 /// MSI/MSI-X用ベクタ範囲
-const MSI_VECTORS_START: u8 = 48;
+pub const NVME_VECTOR: u8 = 48; // NVMe専用ベクタ (0x30)
+const MSI_VECTORS_START: u8 = 49; // NVMeの次から開始
 const MSI_VECTORS_END: u8 = 223;
 
 /// レガシー割り込み用ベクタ範囲
@@ -156,7 +161,7 @@ impl InterruptConfig {
     /// MSI用のメッセージアドレスを生成
     pub fn msi_address(&self) -> u64 {
         if let Some(handle) = self.ir_handle {
-            crate::io::iommu::get_remap_msi_message(handle).0
+            crate::io::iommu::api::get_remap_msi_message(handle).0
         } else {
             const MSI_ADDRESS_BASE: u64 = 0xFEE00000;
             let apic_id = self.target_apic_id.unwrap_or(0) as u64;
@@ -167,7 +172,7 @@ impl InterruptConfig {
     /// MSI用のメッセージデータを生成
     pub fn msi_data(&self) -> u32 {
         if let Some(handle) = self.ir_handle {
-            crate::io::iommu::get_remap_msi_message(handle).1
+            crate::io::iommu::api::get_remap_msi_message(handle).1
         } else {
             let mut data = self.vector as u32;
             data |= (self.delivery_mode.to_bits() as u32) << 8;
@@ -384,7 +389,7 @@ impl InterruptManager {
                 let dest_id = target_apic_id.unwrap_or(0) as u32;
 
                 if let Ok(handle) =
-                    crate::io::iommu::map_interrupt(0, bus, dev, func, vector, dest_id, true)
+                    crate::io::iommu::api::map_interrupt(0, bus, dev, func, vector, dest_id, true)
                 {
                     config.ir_handle = Some(handle);
                 }
@@ -870,6 +875,13 @@ impl InterruptQueue {
         let write = self.write_pos.load(Ordering::Acquire);
         read == write
     }
+
+    /// キューの長さを取得（テスト用）
+    pub fn len(&self) -> usize {
+        let read = self.read_pos.load(Ordering::Acquire);
+        let write = self.write_pos.load(Ordering::Acquire);
+        write.wrapping_sub(read) as usize
+    }
 }
 
 /// WakerレジストリのエントリID
@@ -996,6 +1008,75 @@ pub fn has_pending_interrupts() -> bool {
 pub fn waker_count() -> usize {
     WAKER_REGISTRY.count()
 }
+
+// ============================================================================
+// Direct Callback Support (for Event-Driven Reactor)
+// ============================================================================
+
+/// 割り込みハンドラの型
+pub type InterruptHandler = Box<dyn Fn() + Send + Sync>;
+
+lazy_static! {
+    /// 直接実行される割り込みハンドラのレジストリ
+    ///
+    /// ISRコンテキストで実行されるため、IrqMutexで保護する必要がある。
+    /// これにより、ISR内でのロック取得時のデッドロックを防ぐ。
+    static ref DIRECT_HANDLERS: IrqMutex<Vec<Option<InterruptHandler>>> = {
+        let mut v = Vec::with_capacity(256);
+        for _ in 0..256 {
+            v.push(None); // 初期化
+        }
+        IrqMutex::new(v)
+    };
+}
+
+/// 割り込みハンドラを登録（直接実行用）
+///
+/// ベクタに対応するハンドラを登録する。このハンドラはISR内で直接呼び出されるため、
+/// 実行時間は極力短くし、ブロックする操作を行ってはならない。
+pub fn register_handler(vector: u8, handler: InterruptHandler) {
+    let mut handlers = DIRECT_HANDLERS.lock();
+    if (vector as usize) < handlers.len() {
+        handlers[vector as usize] = Some(handler);
+    }
+}
+
+/// 直接ハンドラをディスパッチ試行
+///
+/// ISRから呼び出され、登録されたハンドラがあれば実行する。
+///
+/// # Returns
+/// ハンドラが実行された場合は `true`
+pub fn try_dispatch_direct(vector: u8) -> bool {
+    // try_lockを使用することで、万が一の再入時のデッドロックも回避
+    // (ただしIrqMutexは割り込みを無効化するため、通常は再入しない)
+    if let Some(handlers) = DIRECT_HANDLERS.try_lock() {
+        if let Some(ref handler) = handlers.get(vector as usize).and_then(|h| h.as_ref()) {
+            handler();
+            return true;
+        }
+    }
+    false
+}
+
+/// NVMe ISR Entry Point (Static)
+///
+/// IDTに登録される関数。ダイレクトディスパッチを試み、
+/// 失敗した場合はイベントキューにフォールバックする。
+define_interrupt!(
+    pub fn nvme_entry_point(_stack_frame: InterruptStackFrame) {
+        // 1. ダイレクトディスパッチ（高速パス）
+        if try_dispatch_direct(NVME_VECTOR) {
+            // ハンドラが処理を行ったので、ここでは何もしない
+        } else {
+            // 2. フォールバック（低速パス）- Executorで処理
+            push_interrupt_event(NVME_VECTOR);
+        }
+
+        // 3. EOI送信
+        send_eoi();
+    }
+);
 
 mod tests {
     use super::*;

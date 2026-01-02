@@ -1,0 +1,10 @@
+[package]
+name = "kernel-signer"
+version = "0.1.0"
+edition = "2021"
+description = "Ed25519 kernel signing tool for RanyOS secure boot"
+license = "MIT"
+
+[dependencies]
+ed25519-compact = "2.1"
+clap = { version = "4", features = ["derive"] }

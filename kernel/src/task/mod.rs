@@ -16,7 +16,8 @@ pub mod interrupt_waker;
 pub mod per_core_executor;
 pub mod preemption;
 pub mod process;
-pub mod scheduler;
+#[cfg(feature = "legacy-scheduler")]
+pub mod scheduler; 
 pub mod signal;
 pub mod timer;
 mod work_stealing;
@@ -69,6 +70,7 @@ pub use process::{
     setpriority, spawn as spawn_process, waitpid,
 };
 #[allow(unused_imports)]
+#[cfg(feature = "legacy-scheduler")]
 pub use scheduler::{PerCpuScheduler, init_scheduler};
 #[allow(unused_imports)]
 pub use signal::{
@@ -172,6 +174,69 @@ impl<F: Future> Future for TimeoutFuture<F> {
 /// ```
 pub fn with_timeout<F: Future>(future: F, timeout_ms: u64) -> TimeoutFuture<F> {
     TimeoutFuture::new(future, timeout_ms)
+}
+
+/// Simple helper to synchronously run a `Future` to completion in tests or
+/// synchronous contexts. This creates a minimal local Waker that spins waiting
+/// to be notified. Intended for tests and transitional use only.
+pub fn block_on<F: Future>(future: F) -> F::Output {
+    use alloc::sync::Arc;
+    use core::pin::Pin;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+
+    // Shared wake flag
+    let flag = Arc::new(AtomicBool::new(false));
+
+    unsafe fn clone_data(data: *const ()) -> RawWaker {
+        // Convert back to Arc and increment refcount
+        let arc = Arc::from_raw(data as *const AtomicBool);
+        let cloned = arc.clone();
+        // Re-leak the original Arc
+        let _ = Arc::into_raw(arc);
+        RawWaker::new(Arc::into_raw(cloned) as *const (), &VTABLE)
+    }
+
+    unsafe fn wake_data(data: *const ()) {
+        let arc = Arc::from_raw(data as *const AtomicBool);
+        arc.store(true, Ordering::SeqCst);
+        // Drop original Arc reference obtained from from_raw
+    }
+
+    unsafe fn wake_by_ref_data(data: *const ()) {
+        let arc = Arc::from_raw(data as *const AtomicBool);
+        arc.store(true, Ordering::SeqCst);
+        // Re-leak
+        let _ = Arc::into_raw(arc);
+    }
+
+    unsafe fn drop_data(data: *const ()) {
+        // Convert back to Arc and drop it so refcount decreases
+        let _arc = Arc::from_raw(data as *const AtomicBool);
+    }
+
+    const VTABLE: RawWakerVTable =
+        RawWakerVTable::new(clone_data, wake_data, wake_by_ref_data, drop_data);
+
+    // Build initial RawWaker
+    let raw = RawWaker::new(Arc::into_raw(flag.clone()) as *const (), &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw) };
+    let mut cx = Context::from_waker(&waker);
+
+    let mut fut = Box::pin(future);
+
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => return v,
+            Poll::Pending => {
+                // Wait until woken
+                while !flag.load(Ordering::SeqCst) {
+                    core::hint::spin_loop();
+                }
+                flag.store(false, Ordering::SeqCst);
+            }
+        }
+    }
 }
 
 /// タイムアウト付きタスクをスポーン

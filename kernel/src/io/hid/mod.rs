@@ -1,5 +1,5 @@
 // ============================================================================
-// src/io/hid/mod.rs - Human Interface Device (HID) Subsystem
+// kernel/src/io/hid/mod.rs - Human Interface Device (HID) Subsystem
 // ============================================================================
 //!
 //! # HIDサブシステム
@@ -12,37 +12,62 @@
 //! - `keymap` - キーボードレイアウト抽象化 (i18n対応)
 //! - `mouse` - PS/2マウスドライバ
 //!
-//! ## キーボードドライバ
-//! 同期・非同期両方のインターフェースを提供:
-//! - 同期: `poll_key_event()`, `has_key_event()`
-//! - 非同期: `KeyboardStream` (所有権ベースSPSCコンシューマ)
+//! ## 使用方法
 //!
-//! ## キーマップサポート
-//! キーマップモジュールはi18n対応のためのキーボードレイアウト抽象化を提供:
-//! - `Keymap` trait: キーボードレイアウトの抽象インターフェース
-//! - `UsQwertyKeymap`: デフォルトUS QWERTYレイアウト
-//! - 追加レイアウト対応可能 (JIS, AZERTY, Dvorak等)
+//! 新しいコードでは直接的なパスを使用してください:
+//! - キーボード: `crate::io::hid::keyboard`
+//! - マウス: `crate::io::hid::mouse`
+//! - PS/2: `crate::io::hid::ps2`
 
 pub mod keyboard;
 pub mod mouse;
-pub mod ps2;
+pub use hid_driver::ps2;
 
 // Re-export keymap from hid_driver
 pub use hid_driver::keymap;
 
-// Re-exports from hid_driver crate (error types only - core types exported via keyboard/mouse)
+// Re-exports from hid_driver crate
 pub use hid_driver::{HidError, HidResult};
 
-// PS/2 Controller exports
-#[allow(unused_imports)]
+// ============================================================================
+// Core Type Re-exports (from keyboard)
+// ============================================================================
+
+pub use keyboard::{
+    CharFuture,
+    CharFutureArc,
+    // Core types
+    KeyCode,
+    // Extension traits
+    KeyCodeExt,
+    KeyEvent,
+    KeyEventExt,
+    // Async futures
+    KeyEventFuture,
+    KeyState,
+    // Driver and stream
+    KeyboardDriver,
+    KeyboardStream,
+    KeyboardStreamArc,
+    Modifiers,
+    StreamAlreadyTaken,
+    handle_keyboard_interrupt,
+    has_event,
+    // Functions
+    init as keyboard_init,
+    process_pending_wakes,
+    take_stream,
+    take_stream_with_arc_keymap,
+    take_stream_with_keymap,
+};
+
+// ============================================================================
+// PS/2 Re-exports
+// ============================================================================
+
 pub use ps2::{
-    DeviceType as Ps2DeviceType,
-    KeyCode as Ps2KeyCode,
-    KeyEvent as Ps2KeyEvent,
+    DeviceType,
     KeyboardHandler,
-    Modifiers as Ps2Modifiers,
-    MouseButton,
-    MouseEvent,
     MouseHandler,
     // Types
     Ps2Controller,
@@ -52,9 +77,7 @@ pub use ps2::{
     get_mouse_event,
     // Functions
     init as ps2_init,
-    kbd_commands as ps2_kbd_commands,
     keyboard_interrupt_handler,
-    mouse_commands as ps2_mouse_commands,
     mouse_interrupt_handler,
     // Constants
     ports as ps2_ports,
@@ -62,61 +85,25 @@ pub use ps2::{
     status as ps2_status,
 };
 
-// Keymap exports (i18n keyboard layout support)
-#[allow(unused_imports)]
+// ============================================================================
+// Mouse Re-exports
+// ============================================================================
+
+pub use hid_driver::{MouseButton, MouseEvent};
+pub use mouse::{
+    Mouse, MouseInitError, handle_mouse_packet, has_mouse_event, init as mouse_init,
+    is_mouse_initialized, poll_mouse_event,
+};
+
+// ============================================================================
+// Keymap Re-exports
+// ============================================================================
+
 pub use keymap::{
     DEFAULT_KEYMAP, DVORAK_KEYMAP, DvorakKeymap, JIS_KEYMAP, JisKeymap, Keymap, UsQwertyKeymap,
 };
 
-// Keyboard driver exports
-#[allow(unused_imports)]
-pub use keyboard::{
-    CharFuture,
-    CharFutureArc, // Phase 5: Arc<dyn Keymap>サポート
-    // Core types
-    KeyCode,
-    // Type aliases for compatibility with old shell code
-    KeyCode as InputKeyCode,
-    KeyEvent,
-    KeyEvent as InputKeyEvent,
-    KeyEventExt,
-    // Async futures
-    KeyEventFuture,
-    KeyState,
-    KeyState as InputKeyState,
-    // Driver and stream
-    KeyboardDriver,
-    KeyboardStream,
-    KeyboardStreamArc, // Phase 5: Arc<dyn Keymap>サポート
-    Modifiers,
-    Modifiers as InputModifiers,
-    StreamAlreadyTaken,
-    handle_keyboard_interrupt,
-    has_event as has_key_event,
-    init as keyboard_init,
-    // Functions
-    keyboard,
-    // ISR notification processing (for executors)
-    process_pending_wakes,
-};
-
-// Crate-internal re-exports for legacy shell code
-// TODO: Migrate shell code to use KeyboardStream
-#[doc(hidden)]
-pub(crate) use keyboard::{
-    poll_char as poll_key_char, poll_key_event, poll_key_event as poll_input_event,
-};
-
-// Mouse driver exports
-#[allow(unused_imports)]
-pub use mouse::{
-    // Types
-    MouseButton as MouseBtn,
-    MouseEvent as MouseEvt,
-    handle_mouse_packet,
-    has_mouse_event,
-    // Functions
-    init as mouse_init,
-    is_mouse_initialized,
-    poll_mouse_event,
-};
+// ============================================================================
+// Internal Backward Compatibility (crate-only)
+// ============================================================================
+// poll_input_event removed. Consumers should use `keyboard::poll_input_event` directly.

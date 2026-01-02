@@ -25,28 +25,28 @@ use crate::defs::{VirtioDeviceType, status};
 // Transport Error
 // ============================================================================
 
-/// 繝医Λ繝ｳ繧ｹ繝晢ｿｽE繝亥ｱ､繧ｨ繝ｩ繝ｼ
+/// トランスポート層エラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TransportError {
-    /// 繝・・ｽ・ｽ繧､繧ｹ縺瑚ｦ九▽縺九ｉ縺ｪ縺・
+    /// デバイスが見つからない
     DeviceNotFound,
-    /// 辟｡蜉ｹ縺ｪ繝槭ず繝・・ｽ・ｽ蛟､
+    /// 無効なマジック値
     InvalidMagic,
-    /// 繧ｵ繝晢ｿｽE繝医＆繧後※縺・・ｽ・ｽ縺・・ｽ・ｽ繝ｼ繧ｸ繝ｧ繝ｳ
+    /// サポートされていないバージョン
     UnsupportedVersion,
-    /// 繝輔ぅ繝ｼ繝√Ε繝阪ざ繧ｷ繧ｨ繝ｼ繧ｷ繝ｧ繝ｳ螟ｱ謨・
+    /// フィーチャネゴシエーション失敗
     FeatureNegotiationFailed,
-    /// 繧ｭ繝･繝ｼ險ｭ螳壹お繝ｩ繝ｼ
+    /// キュー設定エラー
     QueueSetupFailed,
-    /// 險ｭ螳夂ｩｺ髢薙い繧ｯ繧ｻ繧ｹ繧ｨ繝ｩ繝ｼ
+    /// 設定空間アクセスエラー
     ConfigAccessFailed,
-    /// 繝・・ｽ・ｽ繧､繧ｹ繧ｨ繝ｩ繝ｼ
+    /// デバイスエラー
     DeviceError,
-    /// 繧ｿ繧､繝繧｢繧ｦ繝・
+    /// タイムアウト
     Timeout,
-    /// 辟｡蜉ｹ縺ｪ繧ｭ繝･繝ｼ繧､繝ｳ繝・・ｽ・ｽ繧ｯ繧ｹ
+    /// 無効なキューインデックス
     InvalidQueueIndex,
-    /// 繝ｪ繧ｽ繝ｼ繧ｹ荳崎ｶｳ
+    /// リソース不足
     OutOfResources,
 }
 
@@ -119,37 +119,42 @@ pub trait VirtioTransport: Send + Sync {
     /// 繧ｭ繝･繝ｼ繧呈怏蜉ｹ蛹・
     fn enable_queue(&mut self);
 
-    /// 繧ｭ繝･繝ｼ繧堤┌蜉ｹ蛹・
+    /// キューを無効化
     fn disable_queue(&mut self);
 
-    /// 繧ｭ繝･繝ｼ縺ｮ繝・・ｽ・ｽ繧ｹ繧ｯ繝ｪ繝励ち繝・・ｽE繝悶Ν繧｢繝峨Ξ繧ｹ繧定ｨｭ螳・
+    /// キューのディスクリプタテーブルアドレスを設定
     fn set_queue_desc_addr(&mut self, addr: u64);
 
-    /// 繧ｭ繝･繝ｼ縺ｮAvail繝ｪ繝ｳ繧ｰ繧｢繝峨Ξ繧ｹ繧定ｨｭ螳・
+    /// キューのAvailリングアドレスを設定
     fn set_queue_avail_addr(&mut self, addr: u64);
 
-    /// 繧ｭ繝･繝ｼ縺ｮUsed繝ｪ繝ｳ繧ｰ繧｢繝峨Ξ繧ｹ繧定ｨｭ螳・
+    /// キューのUsedリングアドレスを設定
     fn set_queue_used_addr(&mut self, addr: u64);
 
-    /// 繧ｭ繝･繝ｼ縺ｫ騾夂衍
+    /// キューに通知
     fn notify_queue(&mut self, queue_index: u16);
 
-    /// 蜑ｲ繧願ｾｼ縺ｿ繧ｹ繝・・ｽE繧ｿ繧ｹ繧貞叙蠕・
+    /// キューの通知アドレスを取得
+    ///
+    /// ポーリングなどで、トランスポートを介さずに直接OS側へ通知したい場合に使用
+    fn get_notify_addr(&mut self, queue_index: u16) -> Option<u64>;
+
+    /// 割り込みステータスを取得
     fn get_interrupt_status(&self) -> u32;
 
-    /// 蜑ｲ繧願ｾｼ縺ｿ繧但CK
+    /// 割り込みACK
     fn ack_interrupt(&mut self, status: u32);
 
-    /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
+    /// コンフィグ空間から8ビット値を読み取り
     fn read_config_u8(&self, offset: usize) -> u8;
 
-    /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・6繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
+    /// コンフィグ空間から16ビット値を読み取り
     fn read_config_u16(&self, offset: usize) -> u16;
 
-    /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・2繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
+    /// コンフィグ空間から32ビット値を読み取り
     fn read_config_u32(&self, offset: usize) -> u32;
 
-    /// 繧ｳ繝ｳ繝輔ぅ繧ｰ遨ｺ髢薙°繧・4繝薙ャ繝亥､繧定ｪｭ縺ｿ蜿悶ｊ
+    /// コンフィグ空間から64ビット値を読み取り
     fn read_config_u64(&self, offset: usize) -> u64 {
         let low = self.read_config_u32(offset) as u64;
         let high = self.read_config_u32(offset + 4) as u64;
@@ -364,6 +369,10 @@ impl VirtioTransport for VirtioMmioTransport {
 
     fn notify_queue(&mut self, queue_index: u16) {
         self.write32(mmio_regs::QUEUE_NOTIFY, queue_index as u32);
+    }
+
+    fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+        Some((self.base + mmio_regs::QUEUE_NOTIFY) as u64)
     }
 
     fn get_interrupt_status(&self) -> u32 {
@@ -612,6 +621,12 @@ impl VirtioTransport for VirtioPciTransport {
         hal::mmio::mmio_write_u16(notify_addr as usize, queue_index);
     }
 
+    fn get_notify_addr(&mut self, queue_index: u16) -> Option<u64> {
+        self.write_common_u16(pci_common_cfg::QUEUE_SELECT, queue_index);
+        let notify_off = self.get_queue_notify_offset() as usize;
+        Some((self.notify_addr + notify_off * self.notify_off_multiplier as usize) as u64)
+    }
+
     fn get_interrupt_status(&self) -> u32 {
         hal::mmio::mmio_read_u8(self.isr_addr as usize) as u32
     }
@@ -817,6 +832,9 @@ mod tests {
         fn set_queue_avail_addr(&mut self, _addr: u64) {}
         fn set_queue_used_addr(&mut self, _addr: u64) {}
         fn notify_queue(&mut self, _queue_index: u16) {}
+        fn get_notify_addr(&mut self, _queue_index: u16) -> Option<u64> {
+            None
+        }
         fn get_interrupt_status(&self) -> u32 {
             0
         }

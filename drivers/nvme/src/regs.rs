@@ -145,8 +145,8 @@ impl NvmeCapabilities {
     }
 
     /// 最大キュー深度（実際の値）
-    pub fn max_queue_depth(&self) -> u16 {
-        self.mqes() + 1
+    pub fn max_queue_depth(&self) -> u32 {
+        (self.mqes() as u32) + 1
     }
 
     /// Contiguous Queues Required

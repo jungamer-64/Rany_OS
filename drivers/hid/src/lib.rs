@@ -11,28 +11,30 @@
 //! - Mouse event handling
 //! - PS/2 and USB HID support
 //!
-//! Note: Full implementation remains in kernel due to deep dependencies.
-//! This crate provides type definitions and interfaces.
+//! This crate provides the core HID implementation that is platform-independent.
+//! Kernel-specific wrappers (global instances, interrupt handlers) remain in the kernel.
 
 #![no_std]
 #![allow(dead_code)]
 
 extern crate alloc;
 
+pub mod driver;
 pub mod ffi;
-pub mod keymap;
 pub mod keyboard;
+pub mod keymap;
+pub mod mouse;
+pub mod ps2;
+pub mod queue;
 pub mod stream;
+
+// Re-export driver for kernel use
+pub use driver::KeyboardDriver;
 
 // Re-export stream/future helpers for kernel use
 pub use stream::{
-    DriverOps,
-    KeyboardStream,
+    CharFuture, CharFutureArc, DEFAULT_POLL_BUDGET, DriverOps, KeyEventFuture, KeyboardStream,
     KeyboardStreamArc,
-    KeyEventFuture,
-    CharFuture,
-    CharFutureArc,
-    DEFAULT_POLL_BUDGET,
 };
 
 use alloc::string::String;
@@ -308,4 +310,4 @@ pub use keymap::{
 };
 
 // Keyboard helpers exported for kernel use (scancode conversion, waker, modifier state)
-pub use keyboard::{StreamAlreadyTaken, KeyCodeExt, KeyEventExt, ModifierState, IsrSafeWaker};
+pub use keyboard::{IsrSafeWaker, KeyCodeExt, KeyEventExt, ModifierState, StreamAlreadyTaken};

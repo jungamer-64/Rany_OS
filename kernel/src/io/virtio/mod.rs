@@ -20,8 +20,8 @@ pub mod blk;
 pub mod net;
 
 // Re-export defs from virtio_driver crate
-pub use virtio_driver::defs;
 pub use virtio_driver::core;
+pub use virtio_driver::defs;
 pub use virtio_driver::transport;
 
 // Re-export common types
@@ -37,12 +37,13 @@ pub use virtio_driver::transport::{
 // Re-exports for VirtIO-Net
 pub use net::{
     NetVirtQueue, VirtioNetConfig, VirtioNetDevice, VirtioNetHeader, VirtioNetStats, VringDesc,
-    features as net_features, handle_virtio_net_interrupt, init_virtio_net, with_virtio_net,
+    features as net_features, handle_virtio_net_interrupt, init_virtio_net,
+    init_virtio_net_for_device, with_virtio_net,
 };
 
 // Re-exports for VirtIO-Blk
 pub use blk::{
     AsyncBlockDevice, BlockDeviceConfig, BlockError, VirtQueue as BlkVirtQueue, VirtioBlkDevice,
     VringDesc as BlkVringDesc, features as blk_features, handle_virtio_blk_interrupt,
-    init_virtio_blk,
+    init_virtio_blk, init_virtio_blk_for_device,
 };

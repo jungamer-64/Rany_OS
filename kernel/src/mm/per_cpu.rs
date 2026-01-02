@@ -9,7 +9,6 @@
 // ============================================================================
 #![allow(dead_code)]
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use spin::Mutex;
@@ -80,24 +79,32 @@ impl PerCpuDomainCache {
 
 /// Per-Core IOVA Magazine (Cache)
 /// 頻繁な確保/解放を行う4KBページのIOVAをキャッシュする
-#[derive(Clone)]
+pub const IOVA_MAG_CAPACITY: usize = 256;
+
+/// Max number of IOMMU controllers that can use per-core IOVA caches.
+/// Controllers with indices >= this value skip the per-core fast path.
+pub const MAX_IOMMU_CONTROLLERS: usize = 8;
+
+/// Per-controller IOVA cache (per CPU).
+#[derive(Clone, Copy)]
 pub struct IovaMagazine {
-    pub cache: Vec<u64>, // Free IOVA addresses (4KB pages)
-    pub capacity: usize,
+    cache: [u64; IOVA_MAG_CAPACITY],
+    len: usize,
 }
 
 impl IovaMagazine {
     #[allow(dead_code)]
-    pub const fn new(capacity: usize) -> Self {
+    pub const fn new() -> Self {
         Self {
-            cache: Vec::new(),
-            capacity,
+            cache: [0; IOVA_MAG_CAPACITY],
+            len: 0,
         }
     }
 
     pub fn push(&mut self, iova: u64) -> bool {
-        if self.cache.len() < self.capacity {
-            self.cache.push(iova);
+        if self.len < IOVA_MAG_CAPACITY {
+            self.cache[self.len] = iova;
+            self.len += 1;
             true
         } else {
             false
@@ -105,7 +112,12 @@ impl IovaMagazine {
     }
 
     pub fn pop(&mut self) -> Option<u64> {
-        self.cache.pop()
+        if self.len == 0 {
+            None
+        } else {
+            self.len -= 1;
+            Some(self.cache[self.len])
+        }
     }
 }
 
@@ -124,10 +136,10 @@ pub struct PerCpuData {
     pub dealloc_count: u64,
     /// IOMMU Domain Cache (True Per-CPU)
     pub iommu_domain_cache: PerCpuDomainCache,
-    /// IOMMU IOVA Magazine (Cache)
-    pub iova_magazine: IovaMagazine,
+    /// IOMMU IOVA Magazines (per-controller cache)
+    pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
     /// パディング（キャッシュラインに揃える - 調整必要かも）
-    _padding: [u64; 2], // Reduced padding due to new field
+    _padding: [u64; 2], // Padding may need adjustment as fields evolve
 }
 
 impl PerCpuData {
@@ -140,7 +152,7 @@ impl PerCpuData {
             alloc_count: 0,
             dealloc_count: 0,
             iommu_domain_cache: PerCpuDomainCache::new(),
-            iova_magazine: IovaMagazine::new(256), // Cache 256 pages (1MB)
+            iova_magazines: [IovaMagazine::new(); MAX_IOMMU_CONTROLLERS],
             _padding: [0; 2],
         }
     }
@@ -242,6 +254,92 @@ pub unsafe fn write_gs_base_msr(value: u64) {
         asm!(
             "wrmsr",
             in("ecx") IA32_GS_BASE,
+            in("eax") low,
+            in("edx") high,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+// ============================================================================
+// FS Base Functions (for Thread Local Storage)
+// ============================================================================
+
+/// FSBaseレジスタを読み取る
+///
+/// # Safety
+/// FSBaseが有効なTLSデータを指している必要がある
+#[inline]
+pub unsafe fn read_fs_base() -> u64 {
+    let value: u64;
+    // SAFETY: rdfsbaseはFsBaseレジスタの値を読み取る
+    unsafe {
+        asm!(
+            "rdfsbase {0}",
+            out(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+    value
+}
+
+/// FSBaseレジスタに書き込む
+///
+/// # Safety
+/// - 有効なTLSデータへのポインタを渡す必要がある
+/// - FSGSBASEが有効化されている必要がある（CR4.FSGSBASE）
+#[inline]
+pub unsafe fn write_fs_base(value: u64) {
+    // SAFETY: wrfsbaseはFsBaseレジスタに値を書き込む
+    unsafe {
+        asm!(
+            "wrfsbase {0}",
+            in(reg) value,
+            options(nostack, preserves_flags)
+        );
+    }
+}
+
+/// MSR経由でFSBaseを読み取る（FSGSBASEが無効な環境用）
+///
+/// # Safety
+/// カーネルモードで実行される必要がある
+#[inline]
+pub unsafe fn read_fs_base_msr() -> u64 {
+    const IA32_FS_BASE: u32 = 0xC000_0100;
+    let low: u32;
+    let high: u32;
+
+    // SAFETY: MSR読み取りはカーネルモードで安全
+    unsafe {
+        asm!(
+            "rdmsr",
+            in("ecx") IA32_FS_BASE,
+            out("eax") low,
+            out("edx") high,
+            options(nostack, preserves_flags)
+        );
+    }
+
+    ((high as u64) << 32) | (low as u64)
+}
+
+/// MSR経由でFSBaseに書き込む（FSGSBASEが無効な環境用）
+///
+/// # Safety
+/// - カーネルモードで実行される必要がある
+/// - 有効なTLSデータへのポインタを渡す必要がある
+#[inline]
+pub unsafe fn write_fs_base_msr(value: u64) {
+    const IA32_FS_BASE: u32 = 0xC000_0100;
+    let low = value as u32;
+    let high = (value >> 32) as u32;
+
+    // SAFETY: MSR書き込みはカーネルモードで安全
+    unsafe {
+        asm!(
+            "wrmsr",
+            in("ecx") IA32_FS_BASE,
             in("eax") low,
             in("edx") high,
             options(nostack, preserves_flags)
@@ -357,18 +455,18 @@ pub unsafe fn check_fsgsbase_support() -> bool {
 /// これにより、初期化中でも `current_cpu_id()` や `try_current_cpu_id()` を
 /// 安全に呼び出すことができる。
 pub unsafe fn init_per_cpu(num_cpus: usize) {
-    crate::vga::early_serial_str("[PCPU] init\n");
+    crate::io::log::early_print("[PCPU] init\n");
     INITIALIZED.call_once(|| {
-        crate::vga::early_serial_str("[PCPU] once\n");
+        crate::io::log::early_print("[PCPU] once\n");
         let num_cpus = num_cpus.min(MAX_CPUS);
 
         // 1. FSGSBASEを有効化（サポートされている場合のみ）
         // SAFETY: 初期化時に一度だけ呼ばれる
-        crate::vga::early_serial_str("[PCPU] fsgs\n");
+        crate::io::log::early_print("[PCPU] fsgs\n");
 
         // CPUIDでFSGSBASEサポートを確認
         let fsgsbase_supported = unsafe { check_fsgsbase_support() };
-        crate::vga::early_serial_str(if fsgsbase_supported {
+        crate::io::log::early_print(if fsgsbase_supported {
             "[PCPU] fsgs supported\n"
         } else {
             "[PCPU] fsgs not supported, using MSR\n"
@@ -378,13 +476,13 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             unsafe {
                 enable_fsgsbase();
             }
-            crate::vga::early_serial_str("[PCPU] fsgs enabled\n");
+            crate::io::log::early_print("[PCPU] fsgs enabled\n");
         }
-        crate::vga::early_serial_str("[PCPU] fsgs ok\n");
+        crate::io::log::early_print("[PCPU] fsgs ok\n");
 
         // 2. BSP（CPU 0）のデータを先に初期化してGsBaseを設定
         // これにより、以降の初期化コード内でcurrent_cpu_id()が使えるようになる
-        crate::vga::early_serial_str("[PCPU] bsp setup\n");
+        crate::io::log::early_print("[PCPU] bsp setup\n");
         unsafe {
             PER_CPU_DATA[0].cpu_id = 0;
             PER_CPU_DATA[0].self_ptr = 0;
@@ -402,16 +500,63 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
             } else {
                 write_gs_base_msr(bsp_ptr);
             }
+
+            // 2.5. TLS (Thread Local Storage) の初期化
+            // #[thread_local] 属性はFSレジスタを使用する
+            // x86_64 TLS モデルでは、FS:0 が TCS (Thread Control Structure) を指し、
+            // TLS変数は負のオフセット (FS:-8, FS:-16 など) でアクセスされる
+            // そのため、FSベースはTLSセクションの**終端**に設定する
+            crate::io::log::early_print("[PCPU] TLS init\n");
+
+            // On unit tests (host builds) we may not have linker-provided TLS symbols
+            // available. Skip TLS initialization in test builds to avoid linker errors
+            // referring to `__tls_start` / `__tls_end`.
+            #[cfg(all(not(test), not(target_os = "windows")))]
+            {
+                // リンカスクリプトから提供されるシンボル
+                unsafe extern "C" {
+                    static __tls_start: u8;
+                    static __tls_end: u8;
+                }
+
+                let tls_start = &__tls_start as *const u8 as u64;
+                let tls_end = &__tls_end as *const u8 as u64;
+                let tls_size = tls_end.saturating_sub(tls_start);
+
+                crate::io::log::early_print("[PCPU] TLS size=");
+                // Print TLS size (simple hex output)
+                if tls_size == 0 {
+                    crate::io::log::early_print("0");
+                } else {
+                    crate::io::log::early_print("non-zero");
+                }
+                crate::io::log::early_print("\n");
+
+                // x86_64 TLS では FS ベースは TLS ブロックの終端を指す
+                // 変数は FS:(-offset) でアクセスされる
+                let fs_base = tls_end;
+
+                if fsgsbase_supported {
+                    write_fs_base(fs_base);
+                } else {
+                    write_fs_base_msr(fs_base);
+                }
+                crate::io::log::early_print("[PCPU] TLS ok\n");
+            }
+            #[cfg(any(test, target_os = "windows"))]
+            {
+                crate::io::log::early_print("[PCPU] TLS skipped in test or Windows build\n");
+            }
         }
-        crate::vga::early_serial_str("[PCPU] bsp ok\n");
+        crate::io::log::early_print("[PCPU] bsp ok\n");
 
         // 3. 残りのCPU（AP）のデータを初期化
-        crate::vga::early_serial_str("[PCPU] loop start\n");
+        crate::io::log::early_print("[PCPU] loop start\n");
         let mut i = 1usize; // CPU 0は既に初期化済み
         while i < num_cpus {
-            crate::vga::early_serial_str("[PCPU] i=");
-            crate::vga::early_serial_char(b'0' + (i as u8));
-            crate::vga::early_serial_str("\n");
+            crate::io::log::early_print("[PCPU] i=");
+            crate::io::log::early_print_char(b'0' + (i as u8));
+            crate::io::log::early_print("\n");
 
             // SAFETY: 初期化中は他のCPUからアクセスされない
             unsafe {
@@ -423,15 +568,15 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
                 PER_CPU_DATA[i].iommu_domain_cache = PerCpuDomainCache::new();
                 PER_CPU_DATA[i].set_self_ptr();
             }
-            crate::vga::early_serial_str("[PCPU] ok\n");
+            crate::io::log::early_print("[PCPU] ok\n");
             i += 1;
         }
-        crate::vga::early_serial_str("[PCPU] cpus ok\n");
+        crate::io::log::early_print("[PCPU] cpus ok\n");
 
         *ACTIVE_CPUS.lock() = num_cpus;
-        crate::vga::early_serial_str("[PCPU] done\n");
+        crate::io::log::early_print("[PCPU] done\n");
     });
-    crate::vga::early_serial_str("[PCPU] exit\n");
+    crate::io::log::early_print("[PCPU] exit\n");
 }
 
 /// 現在のCPUのPer-CPUデータを設定（AP用）

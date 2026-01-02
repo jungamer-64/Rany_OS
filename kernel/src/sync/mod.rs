@@ -40,6 +40,11 @@ pub mod lockfree;
 pub mod poison_lock;
 
 pub use atomic_waker::AtomicWaker;
+pub use atomic_waker::WakerQueue;
+
+// Process deferred wake notifications (ISR -> Executor deferred wake queue)
+pub use atomic_waker::process_deferred_waker_queue_wakes;
+pub use atomic_waker::process_deferred_wakes;
 
 #[allow(unused_imports)]
 pub use irq_mutex::{IrqMutex, IrqMutexGuard};
@@ -57,7 +62,9 @@ pub use lockfree::{
     // Bounded channel
     BoundedChannel,
     BoundedReceiver,
+    BoundedReceiverStatic,
     BoundedSender,
+    BoundedSenderStatic,
     // Cache-line optimization
     CacheLinePadded,
     DEFAULT_QUEUE_SIZE,

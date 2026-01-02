@@ -15,6 +15,8 @@
 //! - **Ctrl+C Interruption Support** via `select`
 //!
 
+#![allow(deprecated)]
+
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -199,8 +201,14 @@ pub async fn run_async_shell() {
     crate::serial_println!("{}{}\n", ansi::CYAN, ansi::RESET);
 
     let mut exoshell = ExoShell::new();
+    // Yield after heavy ExoShell allocation to allow other tasks (e.g., graphical shell) to start
+    crate::task::yield_now().await;
+
     let mut history = History::new(100);
     let mut stream = InputEventStream::new();
+
+    // Yield again after all initialization is complete
+    crate::task::yield_now().await;
 
     // Print initial prompt
     print_prompt(&exoshell);
