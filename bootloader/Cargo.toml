@@ -11,6 +11,7 @@ keywords = ["uefi", "boot"]
 [dependencies]
 uefi = { version = "0.24", features = ["alloc"] }
 uefi-services = { version = "0.21", optional = true }
+uefi-raw = "0.5"
 log = "0.4"
 xmas-elf = "0.9"
 boot_proto = { path = "../libs/boot_proto" }
