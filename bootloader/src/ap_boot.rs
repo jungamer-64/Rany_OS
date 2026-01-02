@@ -1,0 +1,203 @@
+//! Application Processor (AP) boot preparation
+//!
+//! This module allocates and prepares resources needed for AP startup:
+//! - Real-mode trampoline code (must be below 1MB)
+//! - Per-AP stacks
+//! - AP boot information structure
+
+use boot_proto::ApBootInfo;
+use log::info;
+use uefi::table::boot::{AllocateType, BootServices, MemoryType};
+
+/// Size of AP trampoline code region (4KB aligned)
+pub const AP_TRAMPOLINE_SIZE: usize = 4096;
+
+/// Size of each AP's stack (64KB)
+pub const AP_STACK_SIZE: usize = 64 * 1024;
+
+/// Maximum number of APs to support
+pub const MAX_AP_COUNT: usize = 255;
+
+/// Preferred address for trampoline (below 1MB, 4KB aligned)
+/// Using 0x8000 which is typically safe in real mode
+pub const TRAMPOLINE_PREFERRED_ADDR: u64 = 0x8000;
+
+/// Prepare AP boot resources
+///
+/// This function:
+/// 1. Counts available CPUs via UEFI MP Services Protocol
+/// 2. Allocates real-mode trampoline region below 1MB
+/// 3. Pre-allocates stacks for all APs
+///
+/// # Arguments
+/// * `boot_services` - UEFI boot services handle
+/// * `cpu_count` - Total number of CPUs (BSP + APs), or 0 to detect via MP protocol
+///
+/// # Returns
+/// ApBootInfo structure with allocated resources
+pub fn prepare_ap_boot(boot_services: &BootServices, cpu_count: u32) -> ApBootInfo {
+    let ap_count = if cpu_count > 1 {
+        cpu_count - 1 // Subtract BSP
+    } else {
+        // If cpu_count is 0 or 1, try to detect via MP Services Protocol
+        detect_cpu_count(boot_services).saturating_sub(1)
+    };
+
+    if ap_count == 0 {
+        info!("AP Boot: No APs detected (single-core system)");
+        return ApBootInfo::default();
+    }
+
+    info!("AP Boot: Preparing resources for {} AP(s)", ap_count);
+
+    // Allocate trampoline region below 1MB
+    let trampoline_addr = allocate_trampoline(boot_services);
+    if trampoline_addr == 0 {
+        info!("AP Boot: WARNING - Failed to allocate trampoline region");
+        return ApBootInfo::default();
+    }
+
+    // Allocate stacks for APs
+    let (stack_base, stack_count) = allocate_ap_stacks(boot_services, ap_count as usize);
+
+    let ap_boot_info = ApBootInfo {
+        ap_count: ap_count as u16,
+        _reserved: [0; 6],
+        trampoline_addr,
+        trampoline_size: AP_TRAMPOLINE_SIZE as u64,
+        stack_base,
+        stack_size: AP_STACK_SIZE as u64,
+        stack_count: stack_count as u16,
+        _reserved2: [0; 6],
+    };
+
+    info!(
+        "AP Boot: Trampoline at 0x{:x}, {} stacks at 0x{:x}",
+        trampoline_addr, stack_count, stack_base
+    );
+
+    ap_boot_info
+}
+
+/// Detect CPU count using UEFI MP Services Protocol
+fn detect_cpu_count(boot_services: &BootServices) -> u32 {
+    // Try to find MP Services Protocol
+    // Note: This protocol may not be available on all systems
+    // In uefi 0.24, we need to use different approach
+    use uefi::table::boot::SearchType;
+    use uefi::proto::pi::mp::MpServices;
+    use uefi::Identify;
+
+    // First try to find handles that support the protocol
+    match boot_services.locate_handle_buffer(SearchType::ByProtocol(&MpServices::GUID)) {
+        Ok(handles) => {
+            if let Some(&handle) = handles.first() {
+                match boot_services.open_protocol_exclusive::<MpServices>(handle) {
+                    Ok(mp_protocol) => {
+                        match mp_protocol.get_number_of_processors() {
+                            Ok(processor_count) => {
+                                let total = processor_count.total;
+                                info!("AP Boot: MP Protocol reports {} processor(s)", total);
+                                return total as u32;
+                            }
+                            Err(e) => {
+                                info!("AP Boot: MP Protocol query failed: {:?}", e);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        info!("AP Boot: Failed to open MP Services: {:?}", e);
+                    }
+                }
+            }
+        }
+        Err(_) => {
+            info!("AP Boot: MP Services Protocol not available");
+        }
+    }
+
+    1 // Assume single processor
+}
+
+/// Allocate real-mode trampoline region below 1MB
+fn allocate_trampoline(boot_services: &BootServices) -> u64 {
+    // Try to allocate at preferred address first
+    match boot_services.allocate_pages(
+        AllocateType::Address(TRAMPOLINE_PREFERRED_ADDR),
+        MemoryType::LOADER_DATA,
+        (AP_TRAMPOLINE_SIZE + 4095) / 4096,
+    ) {
+        Ok(addr) => {
+            info!("AP Boot: Trampoline allocated at preferred address 0x{:x}", addr);
+            return addr;
+        }
+        Err(_) => {
+            // Preferred address not available, try MaxAddress allocation
+        }
+    }
+
+    // Fallback: allocate anywhere below 1MB
+    match boot_services.allocate_pages(
+        AllocateType::MaxAddress(0x100000), // Below 1MB
+        MemoryType::LOADER_DATA,
+        (AP_TRAMPOLINE_SIZE + 4095) / 4096,
+    ) {
+        Ok(addr) => {
+            info!("AP Boot: Trampoline allocated at fallback address 0x{:x}", addr);
+            addr
+        }
+        Err(e) => {
+            info!("AP Boot: Failed to allocate trampoline: {:?}", e);
+            0
+        }
+    }
+}
+
+/// Allocate stacks for Application Processors
+fn allocate_ap_stacks(boot_services: &BootServices, ap_count: usize) -> (u64, usize) {
+    let stack_count = ap_count.min(MAX_AP_COUNT);
+    let total_size = stack_count * AP_STACK_SIZE;
+    let page_count = (total_size + 4095) / 4096;
+
+    match boot_services.allocate_pages(
+        AllocateType::AnyPages,
+        MemoryType::LOADER_DATA,
+        page_count,
+    ) {
+        Ok(addr) => {
+            info!(
+                "AP Boot: Allocated {} stacks ({} pages) at 0x{:x}",
+                stack_count, page_count, addr
+            );
+
+            // Zero-initialize stacks
+            unsafe {
+                core::ptr::write_bytes(addr as *mut u8, 0, total_size);
+            }
+
+            (addr, stack_count)
+        }
+        Err(e) => {
+            info!("AP Boot: Failed to allocate stacks: {:?}", e);
+            (0, 0)
+        }
+    }
+}
+
+/// Get the stack pointer for a specific AP
+///
+/// # Arguments
+/// * `ap_boot_info` - AP boot information structure
+/// * `ap_index` - Zero-based AP index (0 = first AP, not BSP)
+///
+/// # Returns
+/// Stack pointer (top of stack) for the AP, or 0 if invalid
+#[allow(dead_code)]
+pub fn get_ap_stack_pointer(ap_boot_info: &ApBootInfo, ap_index: usize) -> u64 {
+    if ap_index >= ap_boot_info.stack_count as usize {
+        return 0;
+    }
+
+    // Stack grows downward, so return top of allocated region
+    ap_boot_info.stack_base + ((ap_index + 1) * ap_boot_info.stack_size as usize) as u64
+}
