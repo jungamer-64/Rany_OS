@@ -14,13 +14,15 @@
 //! - **Push** raw fault records to a lock-free deferred queue
 //! - Actual logging is done by `drain_deferred_faults()` in a safe async context
 
+use super::dma::DomainManager;
 use super::IommuController;
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
 use crate::io::iommu::intel::registers::{fsts_bits, regs};
-use crate::io::iommu::intel::tables::ContextEntry;
+use crate::io::iommu::intel::tables::{ContextEntry, ScalableContextEntry};
 use crate::io::iommu::fault_log::{FaultLog, FaultRecord};
-use crate::io::iommu::types::IommuError;
+use crate::io::iommu::types::{DeviceId, IommuError};
 use core::cell::UnsafeCell;
+use core::mem::size_of;
 use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
@@ -71,6 +73,59 @@ impl From<&FaultRecord> for RawFaultEvent {
             is_overflow: false,
         }
     }
+}
+
+fn device_id_from_source_id(segment: u16, source_id: u16) -> DeviceId {
+    let bus = (source_id >> 8) as u8;
+    let devfn = (source_id & 0xff) as u8;
+    let device = (devfn >> 3) & 0x1f;
+    let function = devfn & 0x07;
+    DeviceId::new(segment, bus, device, function)
+}
+
+fn domain_id_from_context_entry(ctrl: &IommuController, device: DeviceId) -> Option<u16> {
+    if ctrl.is_scalable_mode_enabled() {
+        return None;
+    }
+    let bus = device.bus as usize;
+    let devfn = ((device.device as usize) << 3) | (device.function as usize);
+
+    let hw = ctrl.hardware.lock().ok()?;
+    let context_table = hw.context_tables.get(bus)?;
+    let entry = context_table.get(devfn)?;
+    if !entry.is_present() {
+        return None;
+    }
+    Some(entry.domain_id())
+}
+
+fn domain_id_from_scalable_context_entry(ctrl: &IommuController, device: DeviceId) -> Option<u16> {
+    if !ctrl.is_scalable_mode_enabled() {
+        return None;
+    }
+
+    let bus = device.bus as usize;
+    let devfn = ((device.device as usize) << 3) | (device.function as usize);
+
+    let hw = ctrl.hardware.lock().ok()?;
+    let context_table = hw.context_tables.get(bus)?;
+    let table_bytes = context_table.count().checked_mul(size_of::<ContextEntry>())?;
+    let entry_size = size_of::<ScalableContextEntry>();
+    let full_table_bytes = entry_size.checked_mul(256)?;
+    if table_bytes < full_table_bytes {
+        return None;
+    }
+    let entry_count = table_bytes / entry_size;
+    if devfn >= entry_count {
+        return None;
+    }
+    let base = context_table.as_ptr() as *const u8;
+    let entry_ptr = unsafe { base.add(devfn * entry_size) as *const ScalableContextEntry };
+    let entry = unsafe { &*entry_ptr };
+    if !entry.is_present() {
+        return None;
+    }
+    Some(entry.domain_id())
 }
 
 /// Fixed-size MPSC lock-free ring buffer for deferred fault events
@@ -326,10 +381,19 @@ pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuCon
                 }
 
                 // 3. Notify security monitor
+                let device_id = device_id_from_source_id(ctrl.segment, event.source_id);
+                let domain_id = ctrl
+                    .get_domain_for_device(device_id)
+                    .ok()
+                    .flatten()
+                    .or_else(|| domain_id_from_context_entry(ctrl, device_id))
+                    .or_else(|| domain_id_from_scalable_context_entry(ctrl, device_id))
+                    .map(u32::from);
                 ctrl.notify_security(SecurityEvent::DmaViolation {
                     source_id: event.source_id,
                     fault_address: event.fault_address,
                     reason: event.reason,
+                    domain_id,
                 });
             }
         }

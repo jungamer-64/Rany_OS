@@ -215,10 +215,24 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
 
 /// ドメイン固有のパニック処理を試みる
 /// 設計書 8.1: 障害を起こしたドメインに関連するすべてのタスクとリソースを解放
+/// 設計書 8.4: ドメインが所有するオブジェクトをポイズニング
 fn try_handle_domain_panic(domain_id: u64, _message: &str) -> bool {
     use crate::ipc::rref::DomainId;
 
     let id = DomainId::new(domain_id);
+    let sas_domain_id = crate::sas::DomainId::new(domain_id);
+
+    // 【設計書 8.4】ドメインが所有する全オブジェクトをポイズニング
+    // これにより、他のドメインがこのドメインのRRefにアクセスしようとすると
+    // Poisonedエラーが返される
+    let poisoned_count = crate::sas::poison_domain_objects(sas_domain_id);
+    if poisoned_count > 0 {
+        log::info!(
+            "[PanicHandler] Poisoned {} objects owned by domain {}\n",
+            poisoned_count,
+            domain_id
+        );
+    }
 
     // ドメインのリソースを回収
     crate::ipc::reclaim_domain_resources(id);

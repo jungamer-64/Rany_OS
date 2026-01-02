@@ -307,16 +307,20 @@ fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
             fault_address,
             reason,
             domain_id,
-        } => AuditEvent::new(AuditEventType::IommuEvent, 0)
-            .success(false)
-            .message("dma_violation")
-            .field("source_id", alloc::format!("{:#x}", source_id))
-            .field("fault_address", alloc::format!("{:#x}", fault_address))
-            .field("reason", alloc::format!("{:#x}", reason))
-            .field(
-                "domain_id",
-                alloc::format!("{:#x}", domain_id.unwrap_or(u32::MAX)),
-            ),
+        } => {
+            let domain = domain_id.map(u64::from).unwrap_or(0);
+            let mut event = AuditEvent::new(AuditEventType::IommuEvent, domain)
+                .success(false)
+                .message("dma_violation")
+                .field("source_id", alloc::format!("{:#x}", source_id))
+                .field("fault_address", alloc::format!("{:#x}", fault_address))
+                .field("reason", alloc::format!("{:#x}", reason));
+            event = match domain_id {
+                Some(domain_id) => event.field("domain_id", alloc::format!("{:#x}", domain_id)),
+                None => event.field("domain_id", "unknown"),
+            };
+            event
+        }
         SecurityEvent::DeviceIsolated { source_id, reason } => {
             AuditEvent::new(AuditEventType::IommuEvent, 0)
                 .success(false)

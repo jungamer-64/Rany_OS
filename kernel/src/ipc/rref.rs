@@ -137,8 +137,19 @@ impl<T> RRef<T> {
         self.owner
     }
 
-    /// 内部データへの参照を取得（所有権チェック付き）
+    /// このRRefが毒入れされているかチェック
+    /// 設計書 8.4: Exchange Heapへの適用
+    pub fn is_poisoned(&self) -> bool {
+        crate::sas::is_object_poisoned(self.ptr.as_ptr() as usize)
+    }
+
+    /// 内部データへの参照を取得（所有権 + ポイズニングチェック付き）
+    /// 設計書 8.4: オーナーがパニックした際にPoisonedエラー
     pub fn as_ref_checked(&self, requester: DomainId) -> Result<&T, AccessError> {
+        // まずポイズニングをチェック
+        if crate::sas::is_object_poisoned(self.ptr.as_ptr() as usize) {
+            return Err(AccessError::Poisoned);
+        }
         if self.owner == requester {
             Ok(unsafe { self.ptr.as_ref() })
         } else {
@@ -146,8 +157,13 @@ impl<T> RRef<T> {
         }
     }
 
-    /// 内部データへの可変参照を取得（所有権チェック付き）
+    /// 内部データへの可変参照を取得（所有権 + ポイズニングチェック付き）
+    /// 設計書 8.4: オーナーがパニックした際にPoisonedエラー
     pub fn as_mut_checked(&mut self, requester: DomainId) -> Result<&mut T, AccessError> {
+        // まずポイズニングをチェック
+        if crate::sas::is_object_poisoned(self.ptr.as_ptr() as usize) {
+            return Err(AccessError::Poisoned);
+        }
         if self.owner == requester {
             Ok(unsafe { self.ptr.as_mut() })
         } else {
@@ -404,15 +420,20 @@ impl RRefRawParts {
 }
 
 /// アクセスエラー
+/// 設計書 8.4: Poisoning対応
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessError {
+    /// 所有者ではない
     NotOwner,
+    /// オブジェクトが毒入れされている（オーナーがパニック）
+    Poisoned,
 }
 
 impl core::fmt::Display for AccessError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             AccessError::NotOwner => write!(f, "Access denied: not the owner of this RRef"),
+            AccessError::Poisoned => write!(f, "Access denied: RRef is poisoned (owner panicked)"),
         }
     }
 }

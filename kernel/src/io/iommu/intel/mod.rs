@@ -194,7 +194,7 @@ impl IntelIommuDriver {
         let iova = default_controller.allocate_iova(size)?;
 
         let default_ptr = Arc::as_ptr(default_controller) as *const ();
-        let mut reserved_indices = alloc::vec::Vec::new();
+        let mut reserved_indices: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
         for (idx, controller) in registry.controllers.iter().enumerate() {
             if (Arc::as_ptr(controller) as *const ()) == default_ptr {
                 continue;
@@ -210,7 +210,7 @@ impl IntelIommuDriver {
             reserved_indices.push(idx);
         }
 
-        let mut mapped_indices = alloc::vec::Vec::new();
+        let mut mapped_indices: alloc::vec::Vec<usize> = alloc::vec::Vec::new();
         for (idx, controller) in registry.controllers.iter().enumerate() {
             let domain_arc = controller
                 .domain(0)

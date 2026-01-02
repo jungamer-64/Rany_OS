@@ -372,6 +372,24 @@ pub fn reclaim_domain_resources(domain: DomainId) -> usize {
     HEAP_REGISTRY.reclaim_all(domain)
 }
 
+/// オブジェクトが毒入れされているかチェック
+/// 設計書 8.4: Exchange Heapへの適用
+pub fn is_object_poisoned(ptr: usize) -> bool {
+    HEAP_REGISTRY.is_poisoned(ptr)
+}
+
+/// オブジェクトを毒入れする
+/// 設計書 8.4: オーナーがパニックした際にオブジェクトを無効化
+pub fn poison_object(ptr: usize) -> Result<(), heap_registry::RegistryError> {
+    HEAP_REGISTRY.poison_object(ptr)
+}
+
+/// 指定ドメインが所有する全オブジェクトを毒入れ
+/// 設計書 8.4: ドメインパニック時の連鎖クラッシュ防止
+pub fn poison_domain_objects(domain: DomainId) -> usize {
+    HEAP_REGISTRY.poison_domain_objects(domain)
+}
+
 /// 統計を取得
 pub fn stats() -> SasStats {
     // Must lock global manager for region stats
