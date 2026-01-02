@@ -24,8 +24,8 @@ use crate::io::dma::{
     DmaMemoryAttributes, IommuBounceAllocError, SliceDmaGuard, TypedDmaSlice,
 };
 use crate::io::iommu::api::{
-    get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_for_device, map_for_dma,
-    map_rref_slice_for_device, unmap_dma, unmap_for_device, DmaDirection, DmaHandle,
+    get_device_dma_mask, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device, raw,
+    unmap_dma, unmap_for_device, DmaDirection, DmaHandle,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::io_scheduler::{DeviceId, IoRequestId, IoResult, PollHandler, hybrid_coordinator};
@@ -874,8 +874,8 @@ impl VirtioNetDevice {
         let (dma_base, iommu_map) = if is_iommu_enabled() {
             let iova = unsafe {
                 match self.iommu_device_id {
-                    Some(device) => map_for_device(&device, PhysAddr::new(phys_base), dma_len as u64),
-                    None => map_for_dma(PhysAddr::new(phys_base), dma_len as u64),
+                    Some(device) => raw::map_for_device(&device, PhysAddr::new(phys_base), dma_len as u64),
+                    None => raw::map_for_dma(PhysAddr::new(phys_base), dma_len as u64),
                 }
             }
             .map_err(|_| VirtioNetError::DeviceError)?;
@@ -1136,9 +1136,9 @@ impl<'a> Future for SendFuture<'a> {
                         let iova = unsafe {
                             match this.device.iommu_device_id {
                                 Some(device) => {
-                                    map_for_device(&device, PhysAddr::new(page_base), map_len as u64)
+                                    raw::map_for_device(&device, PhysAddr::new(page_base), map_len as u64)
                                 }
-                                None => map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                                None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
                             }
                         }
                         .map_err(|_| VirtioNetError::DeviceError);
@@ -1287,9 +1287,9 @@ impl<'a> Future for RecvFuture<'a> {
                         let iova = unsafe {
                             match this.device.iommu_device_id {
                                 Some(device) => {
-                                    map_for_device(&device, PhysAddr::new(page_base), map_len as u64)
+                                    raw::map_for_device(&device, PhysAddr::new(page_base), map_len as u64)
                                 }
-                                None => map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                                None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
                             }
                         }
                         .map_err(|_| VirtioNetError::DeviceError);
@@ -1475,12 +1475,12 @@ impl<'a> Future for ZeroCopySendFuture<'a> {
                         } else {
                             let iova = unsafe {
                                 match this.device.iommu_device_id {
-                                    Some(device) => map_for_device(
+                                    Some(device) => raw::map_for_device(
                                         &device,
                                         PhysAddr::new(page_base),
                                         map_len as u64,
                                     ),
-                                    None => map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                                    None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
                                 }
                             }
                             .map_err(|_| VirtioNetError::DeviceError);
@@ -1638,12 +1638,12 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
                 } else {
                     let iova = unsafe {
                         match this.device.iommu_device_id {
-                            Some(device) => map_for_device(
+                            Some(device) => raw::map_for_device(
                                 &device,
                                 PhysAddr::new(page_base),
                                 map_len as u64,
                             ),
-                            None => map_for_dma(PhysAddr::new(page_base), map_len as u64),
+                            None => raw::map_for_dma(PhysAddr::new(page_base), map_len as u64),
                         }
                     }
                     .map_err(|_| VirtioNetError::DeviceError);

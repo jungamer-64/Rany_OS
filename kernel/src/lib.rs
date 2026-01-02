@@ -85,7 +85,6 @@ pub mod mm {
     // full per-CPU subsystem into the test build while providing the API
     // expected by `iommu.rs`.
     pub mod per_cpu {
-        use alloc::vec::Vec;
         use core::array;
 
         /// Cache entry for device to domain mapping (test shim)
@@ -148,22 +147,24 @@ pub mod mm {
         pub const MAX_IOMMU_CONTROLLERS: usize = 8;
 
         /// Small per-CPU IOVA magazine (test shim)
+        #[derive(Clone, Copy)]
         pub struct IovaMagazine {
-            cache: Vec<u64>,
-            capacity: usize,
+            cache: [u64; IOVA_MAG_CAPACITY],
+            len: usize,
         }
 
         impl IovaMagazine {
-            pub fn new(capacity: usize) -> Self {
+            pub const fn new() -> Self {
                 Self {
-                    cache: Vec::new(),
-                    capacity,
+                    cache: [0; IOVA_MAG_CAPACITY],
+                    len: 0,
                 }
             }
 
             pub fn push(&mut self, iova: u64) -> bool {
-                if self.cache.len() < self.capacity {
-                    self.cache.push(iova);
+                if self.len < IOVA_MAG_CAPACITY {
+                    self.cache[self.len] = iova;
+                    self.len += 1;
                     true
                 } else {
                     false
@@ -171,7 +172,12 @@ pub mod mm {
             }
 
             pub fn pop(&mut self) -> Option<u64> {
-                self.cache.pop()
+                if self.len == 0 {
+                    None
+                } else {
+                    self.len -= 1;
+                    Some(self.cache[self.len])
+                }
             }
         }
 
@@ -185,7 +191,7 @@ pub mod mm {
             pub fn new() -> Self {
                 Self {
                     iommu_domain_cache: PerCpuDomainCache::new(),
-                    iova_magazines: array::from_fn(|_| IovaMagazine::new(IOVA_MAG_CAPACITY)),
+                    iova_magazines: array::from_fn(|_| IovaMagazine::new()),
                 }
             }
         }

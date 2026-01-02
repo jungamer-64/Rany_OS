@@ -489,6 +489,71 @@ pub fn bench_network_processing(runner: &mut BenchmarkRunner) {
     });
 }
 
+/// IOMMU IOVA allocator benchmark (global vs per-core fast path)
+pub fn bench_iommu_iova(runner: &mut BenchmarkRunner) {
+    use crate::io::iommu::intel::controller::iova::IovaManager;
+    use crate::io::iommu::intel::controller::IommuController;
+    use crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+    use crate::io::iommu::registry::{get_iommu_driver, get_iommu_registry};
+    use crate::io::iommu::IommuBackend;
+    use crate::mm::per_cpu::MAX_IOMMU_CONTROLLERS;
+
+    let controller = IommuController::new(0, 0);
+    let iova_base = PAGE_SIZE_4K;
+    let iova_size = 1024 * 1024 * 1024u64; // 1 GiB scratch window
+    if IovaManager::init_iova(&controller, iova_base, iova_size).is_err() {
+        log::info!("[BENCH] IOMMU IOVA init failed; skipping");
+        return;
+    }
+
+    let mut enable_fast = true;
+    let controller_idx = match get_iommu_driver() {
+        Some(driver) => match driver.as_ref() {
+            IommuBackend::Intel(_) => {
+                let used = get_iommu_registry()
+                    .map(|reg| reg.controllers.len())
+                    .unwrap_or(0);
+                if used < MAX_IOMMU_CONTROLLERS {
+                    used
+                } else {
+                    enable_fast = false;
+                    0
+                }
+            }
+            IommuBackend::Amd(_) => {
+                enable_fast = false;
+                0
+            }
+        },
+        None => 0,
+    };
+
+    if enable_fast {
+        controller.set_controller_idx(controller_idx);
+        for _ in 0..64 {
+            let iova = IovaManager::allocate_iova_fast(&controller, PAGE_SIZE_4K)
+                .expect("warmup alloc");
+            IovaManager::free_iova_fast(&controller, iova, PAGE_SIZE_4K)
+                .expect("warmup free");
+        }
+
+        runner.bench("iommu_iova_fast_4k", 100000, || {
+            let iova = IovaManager::allocate_iova_fast(&controller, PAGE_SIZE_4K)
+                .expect("alloc");
+            IovaManager::free_iova_fast(&controller, iova, PAGE_SIZE_4K).expect("free");
+            core::hint::black_box(iova);
+        });
+    } else {
+        log::info!("[BENCH] Skipping per-core IOVA cache benchmark");
+    }
+
+    runner.bench("iommu_iova_global_4k", 100000, || {
+        let iova = IovaManager::allocate_iova(&controller, PAGE_SIZE_4K).expect("alloc");
+        IovaManager::free_iova(&controller, iova, PAGE_SIZE_4K).expect("free");
+        core::hint::black_box(iova);
+    });
+}
+
 /// Calculate Internet checksum
 fn internet_checksum(data: &[u8]) -> u16 {
     let mut sum: u32 = 0;
@@ -536,6 +601,9 @@ pub fn run_all_benchmarks() -> Vec<BenchmarkResult> {
 
     log::info!("[BENCH] Network processing benchmarks\n");
     bench_network_processing(&mut runner);
+
+    log::info!("[BENCH] IOMMU IOVA benchmarks\n");
+    bench_iommu_iova(&mut runner);
 
     runner.print_summary();
 
