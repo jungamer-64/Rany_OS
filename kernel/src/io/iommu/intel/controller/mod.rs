@@ -453,6 +453,22 @@ impl IommuController {
             set = true;
             notifier
         });
+        if set {
+            if let Some(notifier) = self.security_notifier.get() {
+                match self.domains.lock() {
+                    Ok(domains) => {
+                        for domain in domains.values() {
+                            let _ = domain.set_security_notifier(Arc::clone(notifier));
+                        }
+                    }
+                    Err(_) => {
+                        log::error!(
+                            "[IOMMU] Domains map poisoned while propagating security notifier"
+                        );
+                    }
+                }
+            }
+        }
         set
     }
 

@@ -17,8 +17,8 @@
 
 use crate::io::dma::{IommuBounceAllocError, allocate_iommu_bounce_bytes, iommu_needs_bounce};
 use crate::io::iommu::api::{
-    DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_for_device, map_for_dma,
-    map_rref_slice_for_device, unmap_dma, unmap_for_device,
+    raw, DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
+    unmap_dma, unmap_for_device,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
@@ -1561,8 +1561,10 @@ fn map_dma_addr(
     }
     // SAFETY: caller guarantees phys_addr is owned and valid for DMA for len bytes.
     let result = match device {
-        Some(device) => unsafe { map_for_device(&device, PhysAddr::new(phys_addr), len as u64) },
-        None => unsafe { map_for_dma(PhysAddr::new(phys_addr), len as u64) },
+        Some(device) => unsafe {
+            raw::map_for_device(&device, PhysAddr::new(phys_addr), len as u64)
+        },
+        None => unsafe { raw::map_for_dma(PhysAddr::new(phys_addr), len as u64) },
     };
     result
         .map(Some)

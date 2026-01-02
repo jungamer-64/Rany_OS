@@ -11,12 +11,13 @@ use super::tables::{
 };
 use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::amd::tables::AmdPte;
+use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
+use spin::{Mutex, Once, RwLock};
 
 // ============================================================================
 // Invalidation Request Pattern
@@ -251,6 +252,8 @@ pub struct IommuDomain {
     page_table_pool: Arc<super::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)
     pte_format: PteFormat,
+    /// Optional security notifier for fatal domain errors
+    security_notifier: Once<Arc<dyn SecurityNotifier>>,
     /// Fatal error flag; once set, the domain rejects new map/unmap operations.
     poisoned: AtomicBool,
 }
@@ -319,6 +322,7 @@ impl IommuDomain {
             )),
             page_table_pool,
             pte_format,
+            security_notifier: Once::new(),
             poisoned: AtomicBool::new(false),
         }
     }
@@ -346,6 +350,22 @@ impl IommuDomain {
     /// Set domain NUMA affinity hint
     pub fn set_numa_node(&self, numa_node: Option<usize>) {
         *self.numa_node.write() = numa_node;
+    }
+
+    /// Attach a security notifier for fatal domain errors (best-effort, one-time).
+    pub(crate) fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
+        let mut set = false;
+        self.security_notifier.call_once(|| {
+            set = true;
+            notifier
+        });
+        set
+    }
+
+    fn notify_security(&self, event: SecurityEvent) {
+        if let Some(notifier) = self.security_notifier.get() {
+            notifier.notify(event);
+        }
     }
 
     // ========================================================================
@@ -1481,6 +1501,7 @@ impl IommuDomain {
 
     fn poison(&self) {
         if !self.poisoned.swap(true, Ordering::AcqRel) {
+            self.notify_security(SecurityEvent::QuarantinePoisoned { domain_id: self.id });
             log::error!(
                 "[IommuDomain] domain {} poisoned due to rollback failure",
                 self.id

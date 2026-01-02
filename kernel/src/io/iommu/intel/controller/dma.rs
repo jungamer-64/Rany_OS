@@ -149,6 +149,9 @@ impl DomainManager for IommuController {
             PteFormat::Intel,
         );
         let domain_arc = Arc::new(domain);
+        if let Some(notifier) = self.security_notifier.get() {
+            let _ = domain_arc.set_security_notifier(Arc::clone(notifier));
+        }
 
         #[cfg(test)]
         println!("[IOMMU TEST] create_domain inserting id = {}", id);

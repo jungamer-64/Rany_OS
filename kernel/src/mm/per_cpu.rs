@@ -9,7 +9,6 @@
 // ============================================================================
 #![allow(dead_code)]
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use spin::Mutex;
@@ -87,24 +86,25 @@ pub const IOVA_MAG_CAPACITY: usize = 256;
 pub const MAX_IOMMU_CONTROLLERS: usize = 8;
 
 /// Per-controller IOVA cache (per CPU).
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct IovaMagazine {
-    pub cache: Vec<u64>, // Free IOVA addresses (4KB pages)
-    pub capacity: usize,
+    cache: [u64; IOVA_MAG_CAPACITY],
+    len: usize,
 }
 
 impl IovaMagazine {
     #[allow(dead_code)]
-    pub const fn new(capacity: usize) -> Self {
+    pub const fn new() -> Self {
         Self {
-            cache: Vec::new(),
-            capacity,
+            cache: [0; IOVA_MAG_CAPACITY],
+            len: 0,
         }
     }
 
     pub fn push(&mut self, iova: u64) -> bool {
-        if self.cache.len() < self.capacity {
-            self.cache.push(iova);
+        if self.len < IOVA_MAG_CAPACITY {
+            self.cache[self.len] = iova;
+            self.len += 1;
             true
         } else {
             false
@@ -112,7 +112,12 @@ impl IovaMagazine {
     }
 
     pub fn pop(&mut self) -> Option<u64> {
-        self.cache.pop()
+        if self.len == 0 {
+            None
+        } else {
+            self.len -= 1;
+            Some(self.cache[self.len])
+        }
     }
 }
 
@@ -147,7 +152,7 @@ impl PerCpuData {
             alloc_count: 0,
             dealloc_count: 0,
             iommu_domain_cache: PerCpuDomainCache::new(),
-            iova_magazines: [IovaMagazine::new(IOVA_MAG_CAPACITY); MAX_IOMMU_CONTROLLERS],
+            iova_magazines: [IovaMagazine::new(); MAX_IOMMU_CONTROLLERS],
             _padding: [0; 2],
         }
     }

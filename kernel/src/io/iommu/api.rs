@@ -286,7 +286,10 @@ pub fn map_rref_slice_for_device<T>(
 /// - `phys_addr` and `size` are 4K-aligned when IOMMU translation is enabled
 ///
 /// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
-pub unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
+pub(in crate::io::iommu) unsafe fn map_for_dma(
+    phys_addr: PhysAddr,
+    size: u64,
+) -> Result<u64, IommuError> {
     if is_iommu_enabled() && !is_global_dma_mapping_allowed() {
         return Err(IommuError::NotSupported);
     }
@@ -317,7 +320,7 @@ pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
 ///
 /// Same requirements as `map_for_dma`. The caller must guarantee the physical
 /// address is owned, valid for DMA, and not a critical system structure.
-pub unsafe fn map_for_device(
+pub(in crate::io::iommu) unsafe fn map_for_device(
     device: &DeviceId,
     phys_addr: PhysAddr,
     size: u64,
@@ -345,7 +348,7 @@ pub unsafe fn map_for_device(
 ///
 /// Same requirements as `map_for_dma`. The caller must guarantee the physical
 /// address is owned, valid for DMA, and not a critical system structure.
-pub async unsafe fn map_for_device_async(
+pub(in crate::io::iommu) async unsafe fn map_for_device_async(
     device: &DeviceId,
     phys_addr: PhysAddr,
     size: u64,
@@ -383,6 +386,47 @@ pub async fn unmap_for_device_async(
         UNMAP_COUNT.fetch_add(1, Ordering::SeqCst);
     }
     res
+}
+
+// ========================================================================
+// Internal Raw DMA Mapping Helpers (crate-local)
+// ========================================================================
+
+pub(crate) mod raw {
+    use super::{DeviceId, IommuError};
+    use x86_64::PhysAddr;
+
+    /// Raw DMA mapping for caller-owned memory.
+    ///
+    /// # Safety
+    /// Caller must guarantee ownership and DMA safety for the mapping duration.
+    pub unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
+        unsafe { super::map_for_dma(phys_addr, size) }
+    }
+
+    /// Raw DMA mapping for device-scoped domains.
+    ///
+    /// # Safety
+    /// Caller must guarantee ownership and DMA safety for the mapping duration.
+    pub unsafe fn map_for_device(
+        device: &DeviceId,
+        phys_addr: PhysAddr,
+        size: u64,
+    ) -> Result<u64, IommuError> {
+        unsafe { super::map_for_device(device, phys_addr, size) }
+    }
+
+    /// Async raw DMA mapping for device-scoped domains.
+    ///
+    /// # Safety
+    /// Caller must guarantee ownership and DMA safety for the mapping duration.
+    pub async unsafe fn map_for_device_async(
+        device: &DeviceId,
+        phys_addr: PhysAddr,
+        size: u64,
+    ) -> Result<u64, IommuError> {
+        unsafe { super::map_for_device_async(device, phys_addr, size).await }
+    }
 }
 
 /// Reset map/unmap counters (for tests)
