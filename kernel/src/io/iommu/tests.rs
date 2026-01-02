@@ -10,7 +10,7 @@ use super::config::IommuConfig;
 use super::domain::IommuDomain;
 use super::fault_log::FaultRecord;
 use super::page_table_pool::PageTablePool;
-use super::registry::{get_iommu_driver, init_registry, IommuRegistry};
+use super::registry::{get_iommu_driver, get_iommu_registry, init_registry, IommuRegistry};
 use super::tables::{HardwareTable, PageTableScope, SlPte};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use super::intel::controller::IommuController;
@@ -791,6 +791,61 @@ fn test_map_for_device_async_and_unmap() {
 
     let d = domain_arc.lock_for_init("test_map_for_device_async_and_unmap - confirming unmap");
     assert!(!d.mappings().contains_key(&iova));
+}
+
+#[test]
+fn test_map_for_device_respects_dma_mask() {
+    use alloc::sync::Arc as AllocArc;
+
+    let controller = if let Some(registry) = get_iommu_registry() {
+        registry
+            .controllers
+            .get(0)
+            .cloned()
+            .expect("no IOMMU controller in registry")
+    } else {
+        let ctrl = IommuController::new(0x0, 0);
+        let arc_ctrl = AllocArc::new(ctrl);
+        let registry = IommuRegistry::new(
+            alloc::vec![arc_ctrl.clone()],
+            Vec::new(),
+            IommuConfig::default(),
+        );
+        init_registry(registry);
+        arc_ctrl
+    };
+
+    if get_iommu_driver().is_none() {
+        super::intel::IntelIommuDriver::register_driver();
+    }
+
+    let domain_id = controller
+        .create_domain(None, IommuDomainType::Translated)
+        .expect("create domain");
+
+    let device = DeviceId::new(0, 0, 2, 0);
+    match controller.device_domains.lock() {
+        Ok(mut dmap) => {
+            dmap.insert(device, domain_id);
+        }
+        Err(_) => {
+            panic!("device_domains poisoned");
+        }
+    }
+
+    struct MaskGuard(DeviceId);
+    impl Drop for MaskGuard {
+        fn drop(&mut self) {
+            crate::io::iommu::api::clear_device_dma_mask(self.0);
+        }
+    }
+
+    crate::io::iommu::api::register_device_dma_mask(device, 0xFFFF_FFFF);
+    let _guard = MaskGuard(device);
+
+    let phys = x86_64::PhysAddr::new(0x1_0000_0000);
+    let result = unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) };
+    assert_eq!(result, Err(IommuError::InvalidAddress));
 }
 /*
 #[test]

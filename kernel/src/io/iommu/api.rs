@@ -6,7 +6,9 @@
 //! Global API functions for IOMMU initialization, device protection,
 //! and interrupt remapping.
 
+use alloc::collections::BTreeMap;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use spin::RwLock;
 use x86_64::PhysAddr;
 
 use super::IommuBackend;
@@ -29,6 +31,9 @@ static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
 // Instrumentation counters for testing / diagnostics
 static MAP_COUNT: AtomicU64 = AtomicU64::new(0);
 static UNMAP_COUNT: AtomicU64 = AtomicU64::new(0);
+
+// Per-device DMA address masks (inclusive).
+static DEVICE_DMA_MASKS: RwLock<BTreeMap<DeviceId, u64>> = RwLock::new(BTreeMap::new());
 
 // ============================================================================
 // IOMMU Requirement Functions
@@ -70,6 +75,68 @@ pub fn enforce_iommu_requirement() {
                 DMA attacks are possible without IOMMU protection. \
                 To boot without IOMMU, set IOMMU_REQUIRED=false."
         );
+    }
+}
+
+// ========================================================================
+// Device DMA Address Mask Registry
+// ========================================================================
+
+/// Register or update a device DMA mask (inclusive).
+///
+/// Example: 32-bit DMA mask => 0xFFFF_FFFF.
+pub fn register_device_dma_mask(device: DeviceId, mask: u64) {
+    DEVICE_DMA_MASKS.write().insert(device, mask);
+}
+
+/// Register a device DMA mask using a bit width (1..=64).
+pub fn register_device_dma_width(device: DeviceId, bits: u8) -> Result<(), IommuError> {
+    if bits == 0 || bits > 64 {
+        return Err(IommuError::InvalidAddress);
+    }
+
+    let mask = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    register_device_dma_mask(device, mask);
+    Ok(())
+}
+
+/// Clear a previously registered DMA mask for a device.
+pub fn clear_device_dma_mask(device: DeviceId) {
+    DEVICE_DMA_MASKS.write().remove(&device);
+}
+
+/// Get a device DMA mask if registered.
+pub fn get_device_dma_mask(device: &DeviceId) -> Option<u64> {
+    DEVICE_DMA_MASKS.read().get(device).copied()
+}
+
+fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
+    if size == 0 {
+        return true;
+    }
+
+    let end = match addr.checked_add(size) {
+        Some(end) => end,
+        None => return false,
+    };
+
+    let limit = (mask as u128) + 1;
+    (addr as u128) <= (mask as u128) && (end as u128) <= limit
+}
+
+fn validate_device_dma_mask(device: &DeviceId, addr: u64, size: u64) -> Result<(), IommuError> {
+    let Some(mask) = get_device_dma_mask(device) else {
+        return Ok(());
+    };
+
+    if dma_mask_allows_range(mask, addr, size) {
+        Ok(())
+    } else {
+        Err(IommuError::InvalidAddress)
     }
 }
 
@@ -219,11 +286,18 @@ pub unsafe fn map_for_device(
 ) -> Result<u64, IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     // SAFETY: Caller must uphold safety requirements of map_for_device.
-    let res = unsafe { driver.map_for_device(device, phys_addr, size) };
-    if res.is_ok() {
-        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    let iova = unsafe { driver.map_for_device(device, phys_addr, size) }?;
+    if let Err(err) = validate_device_dma_mask(device, iova, size) {
+        if let Err(unmap_err) = driver.unmap_for_device(device, iova, size) {
+            log::error!(
+                "[IOMMU] failed to unmap invalid device DMA mapping: {:?}",
+                unmap_err
+            );
+        }
+        return Err(err);
     }
-    res
+    MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    Ok(iova)
 }
 
 /// Async variant of `map_for_device` that offloads to the controller's CommandQueue
@@ -239,11 +313,18 @@ pub async unsafe fn map_for_device_async(
     size: u64,
 ) -> Result<u64, IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    let res = unsafe { driver.map_for_device_async(device, phys_addr, size).await };
-    if res.is_ok() {
-        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    let iova = unsafe { driver.map_for_device_async(device, phys_addr, size).await }?;
+    if let Err(err) = validate_device_dma_mask(device, iova, size) {
+        if let Err(unmap_err) = driver.unmap_for_device_async(device, iova, size).await {
+            log::error!(
+                "[IOMMU] failed to unmap invalid async device DMA mapping: {:?}",
+                unmap_err
+            );
+        }
+        return Err(err);
     }
-    res
+    MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    Ok(iova)
 }
 
 /// Unmap a DMA address range for a specific device

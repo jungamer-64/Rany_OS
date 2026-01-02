@@ -17,8 +17,10 @@
 
 use crate::io::dma::{IommuBounceAllocError, allocate_iommu_bounce_bytes, iommu_needs_bounce};
 use crate::io::iommu::api::{
-    DmaDirection, is_iommu_enabled, is_iommu_required, map_for_dma, map_rref_slice, unmap_dma,
+    DmaDirection, is_iommu_enabled, is_iommu_required, map_for_device, map_for_dma,
+    map_rref_slice, map_rref_slice_for_device, unmap_dma, unmap_for_device,
 };
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -407,6 +409,8 @@ pub struct VirtioBlkDevice {
     pending_wakers: Mutex<Vec<Option<Waker>>>,
     /// Device ready flag
     ready: AtomicBool,
+    /// Optional IOMMU device identifier for device-scoped mappings
+    iommu_device_id: Option<IommuDeviceId>,
     /// Transport
     transport: Box<dyn VirtioTransport>,
     /// Features negotiated
@@ -440,11 +444,20 @@ impl VirtioBlkDevice {
     ///
     /// The transport must already be validated (magic/version checks).
     pub fn new(transport: Box<dyn VirtioTransport>) -> Self {
+        Self::new_with_device(transport, None)
+    }
+
+    /// Create a new VirtIO block device with an IOMMU device ID.
+    pub fn new_with_device(
+        transport: Box<dyn VirtioTransport>,
+        iommu_device_id: Option<IommuDeviceId>,
+    ) -> Self {
         Self {
             config: BlockDeviceConfig::default(),
             queues: Vec::new(),
             pending_wakers: Mutex::new(Vec::new()),
             ready: AtomicBool::new(false),
+            iommu_device_id,
             transport,
             features: 0,
         }
@@ -786,9 +799,7 @@ impl VirtioBlkDevice {
             };
 
             // Submit to available ring
-            unsafe {
-                queue_guard.submit(desc0);
-            }
+            queue_guard.submit(desc0);
         }
 
         queue_guard.notify();
@@ -1534,7 +1545,11 @@ fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
         .ok_or(VfsBlockError::InvalidBufferSize)
 }
 
-fn map_dma_addr(phys_addr: u64, len: usize) -> Result<Option<u64>, VfsBlockError> {
+fn map_dma_addr(
+    device: Option<IommuDeviceId>,
+    phys_addr: u64,
+    len: usize,
+) -> Result<Option<u64>, VfsBlockError> {
     if !is_iommu_enabled() {
         if is_iommu_required() {
             return Err(VfsBlockError::IoError);
@@ -1545,9 +1560,23 @@ fn map_dma_addr(phys_addr: u64, len: usize) -> Result<Option<u64>, VfsBlockError
         return Err(VfsBlockError::InvalidBufferSize);
     }
     // SAFETY: caller guarantees phys_addr is owned and valid for DMA for len bytes.
-    unsafe { map_for_dma(PhysAddr::new(phys_addr), len as u64) }
+    let result = match device {
+        Some(device) => unsafe { map_for_device(&device, PhysAddr::new(phys_addr), len as u64) },
+        None => unsafe { map_for_dma(PhysAddr::new(phys_addr), len as u64) },
+    };
+    result
         .map(Some)
         .map_err(|_| VfsBlockError::IoError)
+}
+
+fn unmap_dma_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
+    let result = match device {
+        Some(device) => unmap_for_device(&device, iova, len as u64),
+        None => unmap_dma(iova, len as u64),
+    };
+    if let Err(err) = result {
+        log::warn!("[VIRTIO-BLK] failed to unmap DMA address: {:?}", err);
+    }
 }
 
 impl ZeroCopyBlockDevice for VirtioBlkDevice {
@@ -1676,8 +1705,12 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                         IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
                         IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
                     })?;
-                    let handle = map_rref_slice(rref, 0, DmaDirection::FromDevice)
-                        .map_err(|_| VfsBlockError::IoError)?;
+                    let handle = if let Some(device) = self.iommu_device_id {
+                        map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice)
+                    } else {
+                        map_rref_slice(rref, 0, DmaDirection::FromDevice)
+                    }
+                    .map_err(|_| VfsBlockError::IoError)?;
                     let dma_addr = handle.iova();
 
                     let result = DmaReadFuture {
@@ -1697,7 +1730,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     Ok(())
                 });
             }
-            let iova = match map_dma_addr(dma.phys_addr, len) {
+            let iova = match map_dma_addr(self.iommu_device_id, dma.phys_addr, len) {
                 Ok(iova) => iova,
                 Err(err) => return Box::pin(async move { Err(err) }),
             };
@@ -1714,7 +1747,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                 }
                 .await;
                 if let Some(iova) = iova {
-                    let _ = unmap_dma(iova, len as u64);
+                    unmap_dma_addr(self.iommu_device_id, iova, len);
                 }
                 result.map_err(map_vfs_block_error)?;
                 Ok(())
@@ -1767,8 +1800,12 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                         IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
                     })?;
                     rref[..len].copy_from_slice(data);
-                    let handle = map_rref_slice(rref, 0, DmaDirection::ToDevice)
-                        .map_err(|_| VfsBlockError::IoError)?;
+                    let handle = if let Some(device) = self.iommu_device_id {
+                        map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice)
+                    } else {
+                        map_rref_slice(rref, 0, DmaDirection::ToDevice)
+                    }
+                    .map_err(|_| VfsBlockError::IoError)?;
                     let dma_addr = handle.iova();
 
                     let result = DmaWriteFuture {
@@ -1787,7 +1824,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     Ok(())
                 });
             }
-            let iova = match map_dma_addr(dma.phys_addr, len) {
+            let iova = match map_dma_addr(self.iommu_device_id, dma.phys_addr, len) {
                 Ok(iova) => iova,
                 Err(err) => return Box::pin(async move { Err(err) }),
             };
@@ -1804,7 +1841,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                 }
                 .await;
                 if let Some(iova) = iova {
-                    let _ = unmap_dma(iova, len as u64);
+                    unmap_dma_addr(self.iommu_device_id, iova, len);
                 }
                 result.map_err(map_vfs_block_error)?;
                 Ok(())
@@ -1836,6 +1873,32 @@ pub unsafe fn init_virtio_blk(mmio_base: u64) -> Result<(), BlockError> {
         VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
     };
     let mut dev = VirtioBlkDevice::new(Box::new(transport));
+    unsafe { dev.init()? };
+
+    let device_arc = Arc::new(dev);
+
+    log::info!(
+        "VirtIO-blk initialized: {} sectors, {} bytes/sector\n",
+        device_arc.config().capacity,
+        device_arc.config().block_size
+    );
+
+    *VIRTIO_BLK_DEVICE.lock() = Some(Arc::clone(&device_arc));
+    Ok(())
+}
+
+/// Initialize the global VirtIO block device with an IOMMU device ID.
+///
+/// # Safety
+/// Caller must ensure MMIO address is valid and device exists.
+pub unsafe fn init_virtio_blk_for_device(
+    mmio_base: u64,
+    device: IommuDeviceId,
+) -> Result<(), BlockError> {
+    let transport = unsafe {
+        VirtioMmioTransport::new(mmio_base as usize).map_err(|_| BlockError::NotReady)?
+    };
+    let mut dev = VirtioBlkDevice::new_with_device(Box::new(transport), Some(device));
     unsafe { dev.init()? };
 
     let device_arc = Arc::new(dev);

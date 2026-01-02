@@ -1405,6 +1405,8 @@ pub enum DmaError {
     InvalidAlignment,
     /// サイズエラー
     InvalidSize,
+    /// アドレス範囲が無効
+    InvalidAddress,
     /// IOMMUマッピング失敗
     IommuMappingFailed,
     /// アドレス変換失敗
@@ -1779,6 +1781,9 @@ impl DeviceDmaContext {
     }
 
     /// デバイスIDを設定してIOMMU連携を有効化
+    ///
+    /// DMAアドレス幅を制限する場合は `with_device_dma_mask` / `with_device_dma_width`
+    /// を使用する。
     pub fn with_device(device_id: crate::io::iommu::types::DeviceId) -> Result<Self, DmaError> {
         let domain_id = if crate::io::iommu::api::is_iommu_enabled() {
             // IOMMUドメインを作成してデバイスをアタッチ
@@ -1804,6 +1809,25 @@ impl DeviceDmaContext {
             domain_id,
             allocator: Arc::new(GlobalDmaAllocator::with_device(device_id.clone())),
         })
+    }
+
+    /// デバイスのDMAアドレスマスクを登録してからコンテキストを作成
+    pub fn with_device_dma_mask(
+        device_id: crate::io::iommu::types::DeviceId,
+        mask: u64,
+    ) -> Result<Self, DmaError> {
+        crate::io::iommu::api::register_device_dma_mask(device_id, mask);
+        Self::with_device(device_id)
+    }
+
+    /// デバイスのDMAアドレス幅を登録してからコンテキストを作成
+    pub fn with_device_dma_width(
+        device_id: crate::io::iommu::types::DeviceId,
+        bits: u8,
+    ) -> Result<Self, DmaError> {
+        crate::io::iommu::api::register_device_dma_width(device_id, bits)
+            .map_err(|_| DmaError::InvalidAddress)?;
+        Self::with_device(device_id)
     }
 
     /// コヒーレントDMAバッファを割り当て
