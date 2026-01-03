@@ -202,34 +202,111 @@ pub struct UefiRuntimeInfo {
 - [x] 機能フラグ検出
 - [ ] SetVirtualAddressMap呼び出し（カーネル側で実装）
 
-### 2.3 UEFI Secure Boot統合
+### 2.3 UEFI Secure Boot統合 ✅ 完了
 
-**目的**: ファームウェアレベルでのブートローダー検証
+**目的**: ファームウェアレベルでのブートローダー検証状態の検出
 
-**実装タスク**:
+**実装内容**:
 
-- [ ] Shim loader対応（またはMicrosoft署名取得）
-- [ ] MOK (Machine Owner Key) 管理
-- [ ] セキュアブート状態のカーネルへの伝達
-
-### 2.4 メモリ暗号化対応 (AMD SME/SEV)
-
-**目的**: メモリ内容の保護
+- `secure_boot.rs` モジュール追加
+- UEFI変数からSecure Boot状態を検出
+- SetupMode/UserMode/AuditMode/DeployedMode判定
+- PK/KEK/db/dbx存在確認
+- SecureBootInfo構造体でカーネルに状態を伝達
 
 ```rust
-// ExoBootInfo に追加
-pub struct MemoryEncryptionInfo {
-    pub enabled: bool,
-    pub c_bit_position: u8,      // AMD SEV Cビット位置
-    pub encryption_mask: u64,     // 暗号化ページマスク
+// boot_proto/src/lib.rs に実装済み
+pub struct SecureBootInfo {
+    pub secure_boot_enabled: bool,
+    pub setup_mode: bool,
+    pub pk_present: bool,
+    pub kek_present: bool,
+    pub db_present: bool,
+    pub dbx_present: bool,
+    pub audit_mode: bool,
+    pub deployed_mode: bool,
+    pub vendor_keys: bool,
 }
 ```
 
 **実装タスク**:
 
-- [ ] AMD SME/SEV検出 (CPUID)
-- [ ] 暗号化ページテーブルフラグ設定
-- [ ] Intel TDX基本対応（将来）
+- [x] セキュアブート状態のカーネルへの伝達
+- [x] SecureBoot/SetupMode/AuditMode/DeployedMode変数読み取り
+- [x] PK/KEK/db/dbx存在確認
+- [x] Shim loader対応
+- [x] MOK (Machine Owner Key) 管理
+
+### 2.3.1 Shim Loader・MOK対応 ✅ 完了
+
+**目的**: Shim bootloader経由での起動とMOK管理機能
+
+**実装内容**:
+
+- `shim_mok.rs` モジュール追加
+- SHIM_LOCK_PROTOCOL検出（GUID: 605DAB50-E046-4300-ABB6-3DD810DD8B23）
+- MOK関連UEFI変数の読み取り（MokSBState, MokList, MokListRT, MokListX, SbatLevel）
+- MOK証明書数のカウント
+- Shimバイナリ検証機能（verify_with_shim）
+
+```rust
+// boot_proto/src/lib.rs に実装済み
+pub struct ShimMokInfo {
+    pub shim_detected: bool,
+    pub mok_sb_state: u8,
+    pub mok_list_present: bool,
+    pub mok_list_rt_present: bool,
+    pub mok_list_x_present: bool,
+    pub sbat_level_present: bool,
+    pub shim_validated: bool,
+    pub mok_count: u16,
+    pub shim_version_major: u8,
+    pub shim_version_minor: u8,
+}
+```
+
+**実装タスク**:
+
+- [x] SHIM_LOCK_PROTOCOL検出
+- [x] MOK変数読み取り（MokSBState, MokList等）
+- [x] ShimMokInfo構造体追加
+- [x] Shimバイナリ検証API
+
+### 2.4 メモリ暗号化対応 (AMD SME/SEV) ✅ 完了
+
+**目的**: メモリ内容の保護
+
+**実装内容**:
+
+- `sme_sev.rs` モジュール追加
+- CPUID経由でAMD SME/SEV/SEV-ES/SEV-SNP機能を検出
+- MSR読み取りで暗号化の有効状態を確認
+- Intel TDX基本検出（CPUID leaf 0x21）
+- C-bit位置と暗号化マスクをカーネルに渡す
+
+```rust
+// boot_proto/src/lib.rs に実装済み
+pub struct MemoryEncryptionInfo {
+    pub sme_available: bool,
+    pub sev_available: bool,
+    pub sev_es_available: bool,
+    pub sev_snp_available: bool,
+    pub sme_enabled: bool,
+    pub sev_enabled: bool,
+    pub c_bit_position: u8,
+    pub phys_addr_reduction: u8,
+    pub encryption_mask: u64,
+    pub tdx_available: bool,
+}
+```
+
+**実装タスク**:
+
+- [x] AMD SME/SEV検出 (CPUID Fn8000_001F)
+- [x] MSR読み取りで有効状態確認
+- [x] Intel TDX基本検出
+- [x] MemoryEncryptionInfo構造体追加
+- [ ] 暗号化ページテーブルフラグ設定（カーネル側で実装）
 
 ---
 
@@ -306,18 +383,7 @@ cmdline = loglevel=debug console=serial
 - [ ] UEFI変数からの読み込み（オプション）
 - [x] 文字列のHHDMアドレスへのマッピング
 
-### 3.3 グラフィカルスプラッシュスクリーン
-
-**目的**: ブランディングとユーザー体験向上
-
-**実装タスク**:
-
-- [ ] BMP/PNG画像読み込み
-- [ ] GOP Bltによる描画
-- [ ] プログレスバー表示
-- [ ] エラー時の診断画面
-
-### 3.4 シリアルコンソールログ ✅ 完了
+### 3.3 シリアルコンソールログ ✅ 完了
 
 **目的**: ヘッドレス環境でのデバッグ
 
@@ -338,54 +404,41 @@ cmdline = loglevel=debug console=serial
 
 ---
 
-## Phase 4: アーキテクチャ拡張 🏗️
+## Phase 4: ハードウェア情報拡張 🏗️
 
-### 4.1 AP (Application Processor) 起動準備
-
-**目的**: マルチコア起動のための事前準備
-
-```rust
-#[repr(C)]
-pub struct ApBootInfo {
-    pub ap_count: u16,
-    pub ap_trampoline_addr: u64,  // 物理アドレス
-    pub ap_stack_base: u64,       // 各APスタック開始
-    pub ap_stack_size: u64,       // 各APスタックサイズ
-}
-```
-
-**実装タスク**:
-
-- [ ] APトランポリンコード配置 (1MB以下)
-- [ ] AP用スタック事前割り当て
-- [ ] AP用GDT/IDT準備情報
-
-### 4.2 UEFI Runtime Services 保存
-
-**目的**: カーネルからUEFI Runtime呼び出し可能に
-
-```rust
-pub struct UefiRuntimeInfo {
-    pub runtime_services: u64,        // 仮想アドレス
-    pub runtime_memory_map: MemoryMap, // RTメモリ領域
-}
-```
-
-**実装タスク**:
-
-- [ ] SetVirtualAddressMap()呼び出し
-- [ ] Runtime Services仮想アドレス設定
-- [ ] Runtime Memory領域のHHDMマッピング
-
-### 4.3 Devicetree / SMBIOS情報
+### 4.1 SMBIOS情報取得 ✅ 完了
 
 **目的**: ハードウェア情報の詳細取得
 
+**実装内容**:
+
+- `smbios.rs` モジュール追加
+- UEFI Configuration TableからSMBIOS 3.x/2.xテーブル検出
+- BIOS情報（ベンダー、バージョン）パース
+- システム情報（製造元、製品名、シリアル番号、UUID）パース
+- SmbiosInfo構造体でカーネルに情報を伝達
+
+```rust
+// boot_proto/src/lib.rs に実装済み
+pub struct SmbiosInfo {
+    pub smbios3_addr: u64,
+    pub smbios_addr: u64,
+    pub major_version: u8,
+    pub minor_version: u8,
+    pub table_max_size: u32,
+    pub flags: u16,
+    pub system_uuid: [u8; 16],
+    // ... その他フィールド
+}
+```
+
 **実装タスク**:
 
-- [ ] SMBIOS テーブルアドレス取得
-- [ ] UEFI Configuration Table完全パース
-- [ ] デバイス情報のExoBootInfoへの追加
+- [x] SMBIOS 3.x/2.x テーブルアドレス取得
+- [x] UEFI Configuration Tableパース
+- [x] BIOS情報（Type 0）パース
+- [x] システム情報（Type 1）パース
+- [x] SmbiosInfo構造体でカーネルに情報を伝達
 
 ---
 
@@ -432,17 +485,19 @@ pub struct UefiRuntimeInfo {
 | TLS 初期化 | 中 | 高 | ⭐⭐⭐⭐⭐ | ✅ 完了 |
 | コマンドライン | 低 | 中 | ⭐⭐⭐⭐ | ✅ 完了 |
 | シリアルログ | 低 | 中 | ⭐⭐⭐⭐ | ✅ 完了 |
-| NUMA検出 | 中 | 中 | ⭐⭐⭐ | 未実装 |
-| ブートメニュー | 中 | 中 | ⭐⭐⭐ | 未実装 |
-| TPM統合 | 高 | 高 | ⭐⭐⭐ | 未実装 |
-| AP準備 | 中 | 高 | ⭐⭐⭐ | 未実装 |
-| UEFI Runtime | 中 | 低 | ⭐⭐ | 未実装 |
-| メモリ暗号化 | 高 | 中 | ⭐⭐ | 未実装 |
-| スプラッシュ | 低 | 低 | ⭐ | 未実装 |
+| NUMA検出 | 中 | 中 | ⭐⭐⭐ | ✅ 完了 |
+| ブートメニュー | 中 | 中 | ⭐⭐⭐ | ✅ 完了 |
+| TPM統合 | 高 | 高 | ⭐⭐⭐ | ✅ 完了 |
+| AP準備 | 中 | 高 | ⭐⭐⭐ | ✅ 完了 |
+| UEFI Runtime | 中 | 低 | ⭐⭐ | ✅ 完了 |
+| メモリ暗号化 | 高 | 中 | ⭐⭐ | ✅ 完了 |
+| Secure Boot | 中 | 高 | ⭐⭐⭐ | ✅ 完了 |
+| Shim/MOK | 中 | 中 | ⭐⭐ | ✅ 完了 |
+| SMBIOS情報 | 低 | 中 | ⭐⭐ | ✅ 完了 |
 
 ---
 
-## ファイル構成計画
+## ファイル構成（現在）
 
 ```
 bootloader/
@@ -450,15 +505,20 @@ bootloader/
 ├── FUTURE_ROADMAP.md       # このファイル
 ├── src/
 │   ├── main.rs             # エントリポイント
-│   ├── page_table.rs       # ページテーブル操作 (1GB対応済み)
-│   ├── serial.rs           # [NEW] シリアルログ ✅
-│   ├── config.rs           # [PLANNED] 設定ファイルパーサー
-│   ├── numa.rs             # [PLANNED] NUMA検出
-│   ├── tpm.rs              # [PLANNED] TPM統合
-│   ├── menu.rs             # [PLANNED] ブートメニュー
-│   └── ap_trampoline.rs    # [PLANNED] AP起動準備
+│   ├── page_table.rs       # ページテーブル操作 (1GB対応) ✅
+│   ├── serial.rs           # シリアルログ ✅
+│   ├── config.rs           # 設定ファイルパーサー ✅
+│   ├── menu.rs             # ブートメニューUI ✅
+│   ├── numa.rs             # NUMA検出 ✅
+│   ├── ap_boot.rs          # AP起動準備 ✅
+│   ├── tpm.rs              # TPM 2.0統合 ✅
+│   ├── uefi_runtime.rs     # UEFI Runtime Services ✅
+│   ├── sme_sev.rs          # AMD SME/SEV検出 ✅
+│   ├── secure_boot.rs      # Secure Boot状態検出 ✅
+│   ├── shim_mok.rs         # Shim/MOK管理 ✅
+│   └── smbios.rs           # SMBIOS情報取得 ✅
 └── assets/
-    └── splash.bmp          # [PLANNED] スプラッシュ画像
+    └── exoloader.cfg.example  # 設定ファイル例 ✅
 ```
 
 ---
@@ -478,3 +538,6 @@ bootloader/
 |------|-----------|------|
 | 2026-01-03 | v0.1 | 初版作成 |
 | 2026-01-03 | v0.2 | Phase 1完了 (1GBページ、TLS、コマンドライン、シリアルログ) |
+| 2026-01-03 | v0.3 | Phase 2完了 (TPM、UEFI Runtime、Secure Boot、SME/SEV) |
+| 2026-01-03 | v0.4 | Phase 2.3追加 (Shim/MOK管理)、Phase 3完了 (ブートメニュー) |
+| 2026-01-03 | v0.5 | Phase 4完了 (SMBIOS情報取得)

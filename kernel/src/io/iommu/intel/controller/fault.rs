@@ -323,6 +323,11 @@ impl DeferredFaultQueue {
 /// Global deferred fault queue (ISR writes, async task reads)
 static DEFERRED_FAULT_QUEUE: DeferredFaultQueue = DeferredFaultQueue::new();
 
+#[cfg(test)]
+pub(crate) fn push_deferred_fault_for_test(event: RawFaultEvent) {
+    DEFERRED_FAULT_QUEUE.push(event);
+}
+
 /// Drain deferred faults and process them (call from safe async context)
 ///
 /// This function handles ALL fault processing that was deferred from ISR:

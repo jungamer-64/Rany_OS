@@ -55,17 +55,7 @@ pub use super::global::{get_stats, init, poll, poll_batch, with_driver, with_dri
 // ============================================================================
 pub use super::scheduler::{NvmePollHandler, register_with_io_scheduler};
 
-// ============================================================================
-// Re-exports from commands.rs (for backward compatibility)
-//
-// NOTE: Prefer using `crate::io::nvme::commands::{NvmeCommand, NvmeCompletion}`
-// directly. This compatibility re-export is deprecated and will be removed in a
-// future release.
-// ============================================================================
-#[deprecated(
-    note = "Use crate::io::nvme::commands::{NvmeCommand, NvmeCompletion} directly; this re-export will be removed in a future release."
-)]
-pub use super::commands::{NvmeCommand, NvmeCompletion};
+
 
 // ============================================================================
 // Tests

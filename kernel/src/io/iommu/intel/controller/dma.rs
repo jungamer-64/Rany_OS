@@ -11,8 +11,7 @@ use core::sync::atomic::Ordering;
 
 use crate::io::iommu::domain::IommuDomain;
 use crate::io::iommu::intel::registry::get_iommu_registry;
-use crate::io::iommu::intel::registers::ecap_bits::ECAP_DT;
-use crate::io::iommu::intel::registers::{ecap_bits, regs};
+use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
 

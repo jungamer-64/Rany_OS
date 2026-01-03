@@ -60,16 +60,7 @@ use hid_driver::KeyEventExt as _KeyEventExt;
 // Error types
 pub use hid_driver::StreamAlreadyTaken;
 
-// Internal types (deprecated re-exports for backward compatibility)
-#[deprecated(
-    note = "Compatibility re-export `ModifierState` is deprecated; prefer `hid_driver::ModifierState` directly."
-)]
-pub use hid_driver::ModifierState;
 
-#[deprecated(
-    note = "Compatibility re-export `IsrSafeWaker` is deprecated; prefer `hid_driver::IsrSafeWaker` directly."
-)]
-pub use hid_driver::IsrSafeWaker;
 
 // Keymap re-exports
 pub use super::keymap::{DEFAULT_KEYMAP, DvorakKeymap, JisKeymap, Keymap, UsQwertyKeymap};
@@ -88,13 +79,7 @@ static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
 // Public API
 // ============================================================================
 
-/// PS/2キーボードドライバにアクセス
-#[deprecated(
-    note = "`keyboard()` accessor is deprecated; prefer acquiring a `KeyboardStream` via `take_stream()` or initialize the keyboard via `crate::io::hid::keyboard_init()`."
-)]
-pub fn keyboard() -> &'static KeyboardDriver {
-    &PS2_KEYBOARD
-}
+
 
 /// PS/2キーボードを初期化
 pub fn init() {
@@ -163,21 +148,7 @@ pub fn take_stream_with_arc_keymap(
 // 内部API（crate内部使用・後方互換性）
 // ============================================================================
 
-/// 次のキーイベントをポーリング（非ブロッキング）
-///
-/// # Note
-/// この関数はSPSC契約を強制しません。
-/// 新しいコードでは`take_stream()`を使用してください。
-#[doc(hidden)]
-#[deprecated(
-    since = "0.3.0",
-    note = "SPSC contract violation risk. Use KeyboardStream::poll() instead."
-)]
-pub(crate) fn poll_key_event() -> Option<KeyEvent> {
-    // Access internal method via DriverOps trait
-    use hid_driver::DriverOps;
-    PS2_KEYBOARD.poll_key_event_internal()
-}
+
 
 /// 次の文字をポーリング（非ブロッキング）
 ///

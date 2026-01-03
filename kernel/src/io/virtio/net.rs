@@ -4,7 +4,7 @@
 // 設計書 7.1: VirtIOドライバのRust実装
 // ============================================================================
 #![allow(dead_code)]
-#![allow(deprecated)]
+
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
