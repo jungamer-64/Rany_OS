@@ -4,23 +4,31 @@
 extern crate alloc;
 
 use alloc::{vec, vec::Vec};
+use core::time::Duration;
 use log::{error, info};
 use uefi::prelude::*;
 use uefi::proto::loaded_image::LoadedImage;
 use uefi::proto::media::file::{File, FileAttribute, FileInfo, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::CStr16;
-use uefi::Identify;
+use uefi::{boot, CStr16, Identify};
+use uefi::mem::memory_map::{MemoryType, MemoryMap};
 
 // Ed25519 signature verification for secure boot
 use ed25519_compact::{PublicKey, Signature};
 
 mod ap_boot;
+mod boot_log;
 mod config;
 mod menu;
 mod numa;
 mod page_table;
+mod recovery;
+mod secure_boot;
+mod self_test;
 mod serial;
+mod shim_mok;
+mod smbios;
+mod sme_sev;
 mod tpm;
 mod uefi_runtime;
 
@@ -36,20 +44,23 @@ static PUBLIC_KEY_BYTES: &[u8] = include_bytes!("../../keys/kernel_pub.key");
 const SIG_SIZE: usize = 64;
 
 #[entry]
-fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
+fn main() -> Status {
+    // Initialize UEFI helper services (allocator, logger, panic handler)
+    uefi::helpers::init().expect("Failed to initialize UEFI helpers");
+
     // Initialize serial console early for headless debugging
     serial::init();
     serial_println!("ExoLoader: Serial console initialized");
-
-    #[cfg(feature = "uefi")]
-    uefi_services::init(&mut system_table).expect("Failed to initialize UEFI services");
 
     info!("ExoLoader v0.1.0 Starting...");
     serial_println!("ExoLoader v0.1.0 Starting...");
     info!("Initializing Boot Protocol...");
 
+    // Get image handle for protocol operations
+    let image_handle = boot::image_handle();
+
     // 0.5. Load boot configuration and show menu (if multiple entries)
-    let boot_config = match load_kernel(system_table.boot_services(), image_handle, "exoloader.cfg") {
+    let boot_config = match load_kernel(image_handle, "exoloader.cfg") {
         Ok(data) => {
             if let Ok(cfg_str) = core::str::from_utf8(&data) {
                 config::parse_config(cfg_str)
@@ -67,7 +78,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // Show boot menu if multiple entries or timeout > 0
     let selected_entry = if boot_config.entries.len() > 1 || boot_config.timeout > 0 {
         info!("Showing boot menu...");
-        match menu::show_boot_menu(&mut system_table, &boot_config) {
+        match menu::show_boot_menu(&boot_config) {
             menu::MenuResult::Selected(idx) => {
                 info!("User selected entry {}", idx);
                 boot_config.entries.get(idx)
@@ -78,7 +89,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             }
             menu::MenuResult::Cancelled => {
                 info!("Boot cancelled by user");
-                system_table.boot_services().stall(2_000_000);
+                boot::stall(Duration::from_micros(2_000_000));
                 return Status::ABORTED;
             }
         }
@@ -102,14 +113,11 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         }
     };
 
-    // Get boot services reference for remaining operations
-    let boot_services = system_table.boot_services();
-
     // 1. Locate and load signed kernel
     // We assume the kernel file is named "rany_os" and located in the root of the boot partition
     // Format: [Ed25519 Signature (64 bytes)] + [ELF Binary]
     info!("Loading signed kernel file '{}'...", kernel_name);
-    let signed_kernel_data = match load_kernel(boot_services, image_handle, kernel_name) {
+    let signed_kernel_data = match load_kernel(image_handle, kernel_name) {
         Ok(data) => {
             info!("Kernel loaded successfully. Size: {} bytes", data.len());
             data
@@ -117,7 +125,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         Err(e) => {
             error!("Failed to load kernel: {:?}", e);
             info!("Stalling before exit...");
-            boot_services.stall(5_000_000);
+            boot::stall(Duration::from_micros(5_000_000));
             return e;
         }
     };
@@ -125,7 +133,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // 1.1. Optionally load initramfs (Cell drivers)
     // This is optional - kernel will boot without it
     let initramfs_data = if let Some(initramfs_path) = initramfs_name {
-        match load_kernel(boot_services, image_handle, initramfs_path) {
+        match load_kernel(image_handle, initramfs_path) {
             Ok(data) => {
                 info!("Initramfs loaded: {} bytes", data.len());
                 Some(data)
@@ -144,7 +152,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // Priority: exoloader.cmdline file > boot entry cmdline
     let cmdline_data = {
         // First try loading from file
-        let file_cmdline = match load_kernel(boot_services, image_handle, "exoloader.cmdline") {
+        let file_cmdline = match load_kernel(image_handle, "exoloader.cmdline") {
             Ok(data) => {
                 // Trim trailing newlines and null bytes
                 let mut len = data.len();
@@ -198,7 +206,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     let verification_enabled = !(cfg!(debug_assertions) || cfg!(feature = "insecure_boot"));
     if signed_kernel_data.len() < SIG_SIZE {
         error!("SECURITY ERROR: Kernel file too small (< 64 bytes)!");
-        boot_services.stall(10_000_000);
+        boot::stall(Duration::from_micros(10_000_000));
         return Status::SECURITY_VIOLATION;
     }
 
@@ -218,7 +226,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                 error!("Error details: {:?}", e);
                 error!("System halted for security.");
                 error!("==================================================");
-                boot_services.stall(10_000_000); // 10 seconds to read error
+                boot::stall(Duration::from_micros(10_000_000)); // 10 seconds to read error
                 return Status::SECURITY_VIOLATION;
             }
         }
@@ -230,7 +238,6 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // Extend PCRs with hashes of kernel, initramfs, and cmdline
     // This creates a cryptographic chain of trust verifiable via remote attestation
     let tpm_result = tpm::perform_measured_boot(
-        boot_services,
         kernel_elf_data,
         initramfs_data.as_deref(),
         cmdline_data.as_deref(),
@@ -275,10 +282,10 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     info!("Allocating PML4...");
     let pml4_addr =
-        UefiMapper::alloc_zeroed_pages(boot_services, 1).expect("Failed to allocate PML4");
+        UefiMapper::alloc_zeroed_pages(1).expect("Failed to allocate PML4");
     let pml4 = unsafe { &mut *(pml4_addr as *mut PageTable) };
 
-    let mut mapper = UefiMapper::new(boot_services, pml4);
+    let mut mapper = UefiMapper::new(pml4);
 
     // Note: 512MB identity mapping was removed - it conflicted with 4KB segment mapping
     // (2MB huge pages can't be overridden by 4KB pages in same address range)
@@ -317,7 +324,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
                     virt_addr, virt_start_aligned, page_offset, mem_size, num_pages, ph_flags
                 );
 
-                let phys_start = UefiMapper::alloc_zeroed_pages(boot_services, num_pages)
+                let phys_start = UefiMapper::alloc_zeroed_pages(num_pages)
                     .expect("Failed to allocate kernel segment");
 
                 // Track this segment for relocation processing (use original VAddr)
@@ -449,7 +456,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
             "Relocation processing failed: {} error(s) out of {} entries",
             reloc_errors, reloc_count
         );
-        boot_services.stall(10_000_000);
+        boot::stall(Duration::from_micros(10_000_000));
         return Status::LOAD_ERROR;
     }
     info!("Applied {}/{} relocations", applied_count, reloc_count);
@@ -482,10 +489,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     // 4. Calculate Max Physical Address
     // We allocate a large buffer to avoid reallocation issues
-    let mmap_size = boot_services.memory_map_size().map_size + 8 * 4096;
-    let mut mmap_buf = vec![0u8; mmap_size];
-    let map = boot_services
-        .memory_map(&mut mmap_buf)
+    let map = boot::memory_map(MemoryType::LOADER_DATA)
         .expect("Failed to get mmap");
 
     let mut max_phys = 0;
@@ -580,7 +584,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     info!("Allocating BootInfo...");
     let boot_info_phys =
-        UefiMapper::alloc_zeroed_pages(boot_services, 1).expect("Failed to allocate BootInfo");
+        UefiMapper::alloc_zeroed_pages(1).expect("Failed to allocate BootInfo");
     let boot_info = unsafe { &mut *(boot_info_phys as *mut ExoBootInfo) };
 
     boot_info.version = 1;
@@ -591,19 +595,15 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     boot_info.tls_template = tls_info;
 
     // RSDP
-    if let Some(rsdp) = system_table
-        .config_table()
-        .iter()
-        .find(|entry| entry.guid == uefi::table::cfg::ACPI2_GUID)
-    {
-        boot_info.rsdp_addr = rsdp.address as u64;
-    } else if let Some(rsdp) = system_table
-        .config_table()
-        .iter()
-        .find(|entry| entry.guid == uefi::table::cfg::ACPI_GUID)
-    {
-        boot_info.rsdp_addr = rsdp.address as u64;
-    }
+    boot_info.rsdp_addr = uefi::system::with_config_table(|entries| {
+        if let Some(rsdp) = entries.iter().find(|entry| entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI2_GUID) {
+            rsdp.address as u64
+        } else if let Some(rsdp) = entries.iter().find(|entry| entry.guid == uefi::table::cfg::ConfigTableEntry::ACPI_GUID) {
+            rsdp.address as u64
+        } else {
+            0
+        }
+    });
 
     // 6.1. Early NUMA topology detection from ACPI SRAT table
     // This provides the kernel with NUMA node information for NUMA-aware allocations
@@ -619,7 +619,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     // 6.2. Prepare AP (Application Processor) boot resources
     // Allocates trampoline code region below 1MB and pre-allocates per-AP stacks
-    boot_info.ap_boot = ap_boot::prepare_ap_boot(boot_services, 0);
+    boot_info.ap_boot = ap_boot::prepare_ap_boot(0);
     if boot_info.ap_boot.ap_count > 0 {
         info!(
             "AP Boot: {} AP(s) prepared, trampoline at 0x{:x}",
@@ -630,19 +630,147 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // 6.3. Collect UEFI Runtime Services information
     // This must be done BEFORE ExitBootServices so we can access the memory map
     boot_info.uefi_runtime =
-        uefi_runtime::collect_runtime_info(&system_table, boot_services, hhdm_start);
+        uefi_runtime::collect_runtime_info(hhdm_start);
     info!(
         "UEFI Runtime: {} region(s), capabilities 0x{:x}",
         boot_info.uefi_runtime.runtime_mmap_count, boot_info.uefi_runtime.capabilities
     );
 
+    // 6.4. Detect AMD SME/SEV and Intel TDX memory encryption
+    let mem_enc_info = sme_sev::detect_memory_encryption();
+    boot_info.mem_encryption = boot_proto::MemoryEncryptionInfo {
+        sme_available: mem_enc_info.sme_available,
+        sev_available: mem_enc_info.sev_available,
+        sev_es_available: mem_enc_info.sev_es_available,
+        sev_snp_available: mem_enc_info.sev_snp_available,
+        sme_enabled: mem_enc_info.sme_enabled,
+        sev_enabled: mem_enc_info.sev_enabled,
+        _reserved: [0; 2],
+        c_bit_position: mem_enc_info.c_bit_position,
+        phys_addr_reduction: mem_enc_info.phys_addr_reduction,
+        _reserved2: [0; 6],
+        encryption_mask: mem_enc_info.encryption_mask,
+        tdx_available: mem_enc_info.tdx_available,
+        _reserved3: [0; 7],
+    };
+    if mem_enc_info.sme_enabled || mem_enc_info.sev_enabled {
+        info!(
+            "Memory encryption enabled: C-bit={}, mask=0x{:x}",
+            mem_enc_info.c_bit_position, mem_enc_info.encryption_mask
+        );
+    }
+
+    // 6.5. Detect UEFI Secure Boot state
+    let sb_info = secure_boot::detect_secure_boot_state();
+    boot_info.secure_boot = boot_proto::SecureBootInfo {
+        secure_boot_enabled: sb_info.secure_boot_enabled,
+        setup_mode: sb_info.setup_mode,
+        pk_present: sb_info.pk_present,
+        kek_present: sb_info.kek_present,
+        db_present: sb_info.db_present,
+        dbx_present: sb_info.dbx_present,
+        audit_mode: sb_info.audit_mode,
+        deployed_mode: sb_info.deployed_mode,
+        vendor_keys: sb_info.vendor_keys,
+        _reserved: [0; 7],
+    };
+    info!("{}", secure_boot::get_secure_boot_status_string(&sb_info));
+
+    // 6.6. Detect Shim bootloader and MOK (Machine Owner Key) state
+    let shim_info = shim_mok::detect_shim_mok();
+    boot_info.shim_mok = boot_proto::ShimMokInfo {
+        shim_detected: shim_info.shim_detected,
+        mok_sb_state: shim_info.mok_sb_state,
+        mok_list_present: shim_info.mok_list_present,
+        mok_list_rt_present: shim_info.mok_list_rt_present,
+        mok_list_x_present: shim_info.mok_list_x_present,
+        sbat_level_present: shim_info.sbat_level_present,
+        shim_validated: shim_info.shim_validated,
+        _reserved: 0,
+        mok_count: shim_info.mok_count,
+        shim_version_major: shim_info.shim_version_major,
+        shim_version_minor: shim_info.shim_version_minor,
+        _reserved2: [0; 4],
+    };
+    info!("{}", shim_mok::get_shim_mok_status_string(&shim_info));
+
+    // 6.7. Detect SMBIOS (System Management BIOS) tables
+    let smbios_info = smbios::detect_smbios();
+    boot_info.smbios = boot_proto::SmbiosInfo {
+        smbios3_addr: smbios_info.smbios3_addr,
+        smbios_addr: smbios_info.smbios_addr,
+        major_version: smbios_info.major_version,
+        minor_version: smbios_info.minor_version,
+        table_max_size: smbios_info.table_max_size,
+        flags: smbios_info.flags,
+        _reserved: [0; 4],
+        bios_vendor_offset: smbios_info.bios_vendor_offset,
+        bios_version_offset: smbios_info.bios_version_offset,
+        system_manufacturer_offset: smbios_info.system_manufacturer_offset,
+        system_product_offset: smbios_info.system_product_offset,
+        system_serial_offset: smbios_info.system_serial_offset,
+        system_uuid: smbios_info.system_uuid,
+    };
+    smbios::log_smbios_info(&smbios_info);
+
+    // 6.8. Boot recovery state management
+    let mut boot_state = recovery::load_boot_state();
+    recovery::log_boot_state(&boot_state);
+
+    // Create boot logger for this session and initialize (rotates old logs)
+    let mut boot_logger = boot_log::BootLogger::new();
+    boot_logger.init();
+    boot_logger.info("ExoLoader boot sequence started");
+
+    // Check if we should enter recovery mode
+    if recovery::should_enter_recovery(&boot_state) {
+        boot_logger.warning("Entering recovery mode due to repeated failures");
+        info!("RECOVERY MODE: {} consecutive boot failures detected", boot_state.failure_count);
+    }
+
+    // Prepare boot attempt (sets failure flag, will be cleared by kernel on success)
+    let recovery_info = recovery::prepare_boot_attempt(&mut boot_state, 0);
+    boot_info.boot_recovery = boot_proto::BootRecoveryInfo {
+        boot_attempt_id: recovery_info.boot_attempt_id,
+        failure_count: recovery_info.failure_count,
+        is_recovery_mode: recovery_info.is_recovery_mode,
+        is_fallback: recovery_info.is_fallback,
+        _reserved: 0,
+        expected_success_id: recovery_info.expected_success_id,
+    };
+    boot_logger.info("Boot recovery state prepared");
+
+    // 6.9. Run self-tests
+    let self_test_config = self_test::SelfTestConfig::default();
+    let self_test_results = self_test::run_self_tests(&self_test_config);
+    boot_info.self_test = boot_proto::SelfTestInfo {
+        overall_result: match self_test_results.overall {
+            self_test::TestResult::Pass => 0,
+            self_test::TestResult::Warning => 1,
+            self_test::TestResult::Fail => 2,
+            self_test::TestResult::Skip => 3,
+        },
+        critical_failures: self_test_results.critical_failures,
+        warnings: self_test_results.warnings,
+        tests_run: self_test_results.tests.len() as u8,
+        _reserved: [0; 4],
+    };
+
+    // Log self-test results
+    if self_test_results.critical_failures > 0 {
+        boot_logger.error("Self-test detected critical failures");
+    } else if self_test_results.warnings > 0 {
+        boot_logger.warning("Self-test completed with warnings");
+    } else {
+        boot_logger.info("All self-tests passed");
+    }
+
     // GOP
-    if let Ok(handles) = boot_services.locate_handle_buffer(
-        uefi::table::boot::SearchType::ByProtocol(&uefi::proto::console::gop::GraphicsOutput::GUID),
+    if let Ok(handles) = boot::locate_handle_buffer(
+        uefi::boot::SearchType::ByProtocol(&uefi::proto::console::gop::GraphicsOutput::GUID),
     ) {
         if let Some(handle) = handles.first() {
-            if let Ok(mut gop) = boot_services
-                .open_protocol_exclusive::<uefi::proto::console::gop::GraphicsOutput>(*handle)
+            if let Ok(mut gop) = boot::open_protocol_exclusive::<uefi::proto::console::gop::GraphicsOutput>(*handle)
             {
                 let mode = gop.current_mode_info();
                 let mut fb = gop.frame_buffer();
@@ -686,7 +814,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     // Copy initramfs data to allocated pages and set up boot_info.initramfs
     if let Some(ref initramfs) = initramfs_data {
         let num_pages = (initramfs.len() + 4095) / 4096;
-        let initramfs_phys = UefiMapper::alloc_zeroed_pages(boot_services, num_pages)
+        let initramfs_phys = UefiMapper::alloc_zeroed_pages(num_pages)
             .expect("Failed to alloc initramfs");
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -713,7 +841,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         // Allocate pages for command line (+ 1 for null terminator)
         let cmdline_size = cmdline.len() + 1;
         let num_pages = (cmdline_size + 4095) / 4096;
-        let cmdline_phys = UefiMapper::alloc_zeroed_pages(boot_services, num_pages)
+        let cmdline_phys = UefiMapper::alloc_zeroed_pages(num_pages)
             .expect("Failed to alloc cmdline");
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -738,10 +866,11 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 
     // 6.7. Pre-allocate memory map buffer BEFORE exiting boot services
     // We cannot allocate after exit_boot_services() - UEFI heap will be invalid!
-    let mmap_estimate_count = boot_services.memory_map_size().map_size / 48 + 16; // sizeof(MemoryDescriptor) ~ 48 + margin
+    // In uefi 0.36, we estimate size based on typical memory map
+    let mmap_estimate_count = 512; // Generous estimate for typical systems
     let mmap_buffer_size = mmap_estimate_count * core::mem::size_of::<BootMemoryDescriptor>();
     let mmap_buffer_pages = (mmap_buffer_size + 4095) / 4096;
-    let mmap_buffer_phys = UefiMapper::alloc_zeroed_pages(boot_services, mmap_buffer_pages)
+    let mmap_buffer_phys = UefiMapper::alloc_zeroed_pages(mmap_buffer_pages)
         .expect("Failed to allocate memory map buffer");
 
     // Log kernel entry points before exiting boot services (info!() won't work after)
@@ -750,9 +879,14 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
     info!("Kernel entry (KERNEL_BASE): 0x{:x}", entry_addr);
     info!("Kernel entry (HHDM): 0x{:x}", hhdm_entry);
 
+    // Save boot log before exiting boot services
+    boot_logger.info("About to exit boot services and jump to kernel");
+    boot_logger.finalize(true);
+    boot_logger.save();
+
     // 7. Exit Boot Services
     info!("Exiting Boot Services...");
-    let (_runtime, mmap) = system_table.exit_boot_services();
+    let mmap = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
 
     // NOTE: After exit_boot_services(), NO allocations allowed!
     // We must use pre-allocated buffer only.
@@ -831,20 +965,17 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 }
 
 fn load_kernel(
-    boot_services: &BootServices,
     image_handle: Handle,
     filename: &str,
 ) -> Result<Vec<u8>, Status> {
     // 1. Get LoadedImage protocol to find the device handle
-    let loaded_image = boot_services
-        .open_protocol_exclusive::<LoadedImage>(image_handle)
+    let loaded_image = boot::open_protocol_exclusive::<LoadedImage>(image_handle)
         .map_err(|_| Status::ABORTED)?;
 
-    let device_handle = loaded_image.device();
+    let device_handle = loaded_image.device().ok_or(Status::ABORTED)?;
 
     // 2. Get SimpleFileSystem from the device handle
-    let mut fs = boot_services
-        .open_protocol_exclusive::<SimpleFileSystem>(device_handle)
+    let mut fs = boot::open_protocol_exclusive::<SimpleFileSystem>(device_handle)
         .map_err(|_| Status::ABORTED)?;
 
     let mut root = fs.open_volume().map_err(|_| Status::ABORTED)?;

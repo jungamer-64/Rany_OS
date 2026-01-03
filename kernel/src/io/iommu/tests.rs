@@ -14,9 +14,12 @@ use super::registry::{get_iommu_driver, get_iommu_registry, init_registry, Iommu
 use super::tables::{HardwareTable, PageTableScope, SlPte};
 use super::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use super::intel::controller::IommuController;
-use super::intel::tables::ContextEntry;
+use super::intel::tables::{ContextEntry, RootEntry, ScalableContextEntry};
 use alloc::sync::Arc;
 use crate::io::iommu::intel::controller::dma::DomainManager;
+use crate::io::iommu::intel::controller::fault::{
+    drain_deferred_faults_with_controller, push_deferred_fault_for_test, RawFaultEvent,
+};
 use crate::io::iommu::intel::controller::iova::IovaManager;
 use crate::io::iommu::intel::controller::ir::InterruptRemapper;
 use crate::io::iommu::intel::controller::pri::PageRequestManager;
@@ -24,6 +27,8 @@ use crate::io::iommu::intel::controller::qi_init::QIManager;
 use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
 use crate::io::iommu::intel::qi::InvalidationQueueEntry;
 use crate::io::iommu::intel::registers::ecap_bits;
+use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 #[test]
 fn test_device_id() {
@@ -306,11 +311,11 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     {
         match ctrl.hardware.lock() {
             Ok(mut hw) => {
-                hw.context_tables.push(table);
+                hw.legacy_context_tables.push(table);
             }
             Err(poisoned) => {
                 let mut hw = poisoned.into_inner();
-                hw.context_tables.push(table);
+                hw.legacy_context_tables.push(table);
             }
         }
     }
@@ -333,14 +338,14 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
 
     let present = match ctrl.hardware.lock() {
         Ok(hw) => hw
-            .context_tables
+            .legacy_context_tables
             .get(0)
             .and_then(|t| t.get(0))
             .map(|e| e.is_present())
             .unwrap_or(false),
         Err(poisoned) => {
             let hw = poisoned.into_inner();
-            hw.context_tables
+            hw.legacy_context_tables
                 .get(0)
                 .and_then(|t| t.get(0))
                 .map(|e| e.is_present())
@@ -348,6 +353,117 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
         }
     };
     assert!(!present);
+}
+
+#[test]
+fn test_scalable_mode_pasid0_fault_resolution() {
+    struct TestNotifier {
+        seen: AtomicBool,
+        domain_id: AtomicU32,
+    }
+
+    impl TestNotifier {
+        fn new() -> Self {
+            Self {
+                seen: AtomicBool::new(false),
+                domain_id: AtomicU32::new(u32::MAX),
+            }
+        }
+
+        fn seen(&self) -> bool {
+            self.seen.load(Ordering::Acquire)
+        }
+
+        fn domain_id(&self) -> u32 {
+            self.domain_id.load(Ordering::Acquire)
+        }
+    }
+
+    impl SecurityNotifier for TestNotifier {
+        fn notify(&self, event: SecurityEvent) {
+            if let SecurityEvent::DmaViolation { domain_id, .. } = event {
+                let id = domain_id.unwrap_or(u32::MAX);
+                self.domain_id.store(id, Ordering::Release);
+                self.seen.store(true, Ordering::Release);
+            }
+        }
+    }
+
+    let ctrl = IommuController::new(0x0, 0);
+    ctrl.set_scalable_mode_enabled(true);
+
+    let root_table = HardwareTable::<RootEntry>::new(256, None).expect("root table");
+    let scalable_table =
+        HardwareTable::<ScalableContextEntry>::new(256, None).expect("scalable table");
+
+    {
+        let mut hw = ctrl.hardware.lock().expect("hardware lock");
+        hw.root_table = Some(root_table);
+        hw.scalable_context_tables.push(scalable_table);
+    }
+
+    let domain_id = ctrl
+        .create_domain(None, IommuDomainType::Translated)
+        .expect("create_domain failed");
+    let device = DeviceId::new(0, 0, 1, 0);
+    ctrl.attach_device(device, domain_id)
+        .expect("attach_device failed");
+
+    let domain = ctrl.domain(domain_id).expect("domain not found");
+    domain
+        .map(0x1000, 0x2000, 0x1000, true, true)
+        .expect("map failed");
+    let mapping = domain.unmap(0x1000).expect("unmap failed");
+    assert_eq!(mapping.size, 0x1000);
+
+    {
+        let hw = ctrl.hardware.lock().expect("hardware lock");
+        let root_entry = hw
+            .root_table
+            .as_ref()
+            .and_then(|t| t.get(0))
+            .expect("root entry");
+        assert!(root_entry.is_present_low());
+        assert!(root_entry.is_present_high());
+
+        let devfn = ((device.device as usize) << 3) | (device.function as usize);
+        let ctx_entry = hw
+            .scalable_context_tables
+            .get(0)
+            .and_then(|t| t.get(devfn))
+            .expect("context entry");
+        assert!(ctx_entry.is_present());
+    }
+
+    let pasid_domain = ctrl
+        .device_pasid_tables
+        .lock()
+        .ok()
+        .and_then(|tables| tables.get(&device).and_then(|t| t.domain_id(0)));
+    assert_eq!(pasid_domain, Some(domain_id));
+
+    ctrl.device_domains
+        .lock()
+        .expect("device_domains lock")
+        .remove(&device);
+
+    let notifier = Arc::new(TestNotifier::new());
+    ctrl.set_security_notifier(Arc::clone(&notifier));
+
+    push_deferred_fault_for_test(RawFaultEvent {
+        source_id: device.requester_id(),
+        fault_address: 0xdeadbeef,
+        reason: 0x05,
+        pasid: Some(0),
+        lo: 0,
+        hi: 0,
+        is_overflow: false,
+    });
+
+    drain_deferred_faults_with_controller(Some(&ctrl));
+
+    assert!(notifier.seen());
+    assert_eq!(notifier.domain_id(), domain_id as u32);
 }
 
 #[test]

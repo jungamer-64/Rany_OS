@@ -56,6 +56,30 @@ pub struct ExoBootInfo {
     /// UEFI Runtime Services information.
     /// Allows kernel to access UEFI variables, RTC, etc. after ExitBootServices.
     pub uefi_runtime: UefiRuntimeInfo,
+
+    /// Memory encryption information (AMD SME/SEV, Intel TDX).
+    /// Used for proper page table setup with encryption bits.
+    pub mem_encryption: MemoryEncryptionInfo,
+
+    /// UEFI Secure Boot state information.
+    /// Indicates whether Secure Boot is enabled and its configuration.
+    pub secure_boot: SecureBootInfo,
+
+    /// Shim bootloader and MOK (Machine Owner Key) information.
+    /// Indicates if we were launched via Shim and MOK state.
+    pub shim_mok: ShimMokInfo,
+
+    /// SMBIOS (System Management BIOS) information.
+    /// Contains table addresses and basic system/BIOS info.
+    pub smbios: SmbiosInfo,
+
+    /// Boot recovery information.
+    /// Contains failure count, recovery mode status, etc.
+    pub boot_recovery: BootRecoveryInfo,
+
+    /// Self-test results.
+    /// Contains results from boot-time hardware validation.
+    pub self_test: SelfTestInfo,
 }
 
 /// Initramfs module information.
@@ -281,4 +305,342 @@ pub mod runtime_caps {
     pub const CAPSULE_SERVICES: u32 = 1 << 3;
     /// QueryCapsuleCapabilities available
     pub const QUERY_CAPSULE: u32 = 1 << 4;
+}
+
+/// Memory encryption information (AMD SME/SEV, Intel TDX).
+/// Used by the kernel to handle encrypted memory correctly.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct MemoryEncryptionInfo {
+    /// AMD SME (Secure Memory Encryption) is available
+    pub sme_available: bool,
+    /// AMD SEV (Secure Encrypted Virtualization) is available
+    pub sev_available: bool,
+    /// AMD SEV-ES (Encrypted State) is available
+    pub sev_es_available: bool,
+    /// AMD SEV-SNP (Secure Nested Paging) is available
+    pub sev_snp_available: bool,
+    /// SME is currently enabled
+    pub sme_enabled: bool,
+    /// SEV is currently enabled (running in SEV guest)
+    pub sev_enabled: bool,
+    /// Reserved for alignment
+    pub _reserved: [u8; 2],
+    /// C-bit position in page table entries (AMD specific)
+    pub c_bit_position: u8,
+    /// Physical address reduction due to encryption
+    pub phys_addr_reduction: u8,
+    /// Reserved for alignment
+    pub _reserved2: [u8; 6],
+    /// Encryption mask to apply to page table entries
+    pub encryption_mask: u64,
+    /// Intel TDX is available
+    pub tdx_available: bool,
+    /// Reserved for future use
+    pub _reserved3: [u8; 7],
+}
+
+impl Default for MemoryEncryptionInfo {
+    fn default() -> Self {
+        Self {
+            sme_available: false,
+            sev_available: false,
+            sev_es_available: false,
+            sev_snp_available: false,
+            sme_enabled: false,
+            sev_enabled: false,
+            _reserved: [0; 2],
+            c_bit_position: 0,
+            phys_addr_reduction: 0,
+            _reserved2: [0; 6],
+            encryption_mask: 0,
+            tdx_available: false,
+            _reserved3: [0; 7],
+        }
+    }
+}
+
+/// UEFI Secure Boot state information.
+/// Provides information about the Secure Boot configuration.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SecureBootInfo {
+    /// Secure Boot is enabled
+    pub secure_boot_enabled: bool,
+    /// System is in Setup Mode (Secure Boot not enforced)
+    pub setup_mode: bool,
+    /// Platform Key (PK) is enrolled
+    pub pk_present: bool,
+    /// Key Exchange Key (KEK) is enrolled
+    pub kek_present: bool,
+    /// Signature database (db) is present
+    pub db_present: bool,
+    /// Forbidden signature database (dbx) is present
+    pub dbx_present: bool,
+    /// Audit mode is enabled
+    pub audit_mode: bool,
+    /// Deployed mode is enabled
+    pub deployed_mode: bool,
+    /// Vendor keys are present
+    pub vendor_keys: bool,
+    /// Reserved for alignment
+    pub _reserved: [u8; 7],
+}
+
+impl Default for SecureBootInfo {
+    fn default() -> Self {
+        Self {
+            secure_boot_enabled: false,
+            setup_mode: false,
+            pk_present: false,
+            kek_present: false,
+            db_present: false,
+            dbx_present: false,
+            audit_mode: false,
+            deployed_mode: false,
+            vendor_keys: false,
+            _reserved: [0; 7],
+        }
+    }
+}
+
+/// Secure Boot mode flags
+pub mod secure_boot_flags {
+    /// Secure Boot is enabled and enforcing
+    pub const SECURE_BOOT_ENABLED: u32 = 1 << 0;
+    /// System is in Setup Mode
+    pub const SETUP_MODE: u32 = 1 << 1;
+    /// Platform Key is enrolled
+    pub const PK_PRESENT: u32 = 1 << 2;
+    /// Key Exchange Key is enrolled
+    pub const KEK_PRESENT: u32 = 1 << 3;
+    /// Signature database (db) is present
+    pub const DB_PRESENT: u32 = 1 << 4;
+    /// Forbidden signature database (dbx) is present
+    pub const DBX_PRESENT: u32 = 1 << 5;
+    /// Audit mode is enabled
+    pub const AUDIT_MODE: u32 = 1 << 6;
+    /// Deployed mode is enabled
+    pub const DEPLOYED_MODE: u32 = 1 << 7;
+}
+
+/// Shim bootloader and MOK (Machine Owner Key) information.
+/// Provides information about Shim-based Secure Boot chain.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct ShimMokInfo {
+    /// Shim Lock Protocol detected (we were launched by Shim)
+    pub shim_detected: bool,
+    /// MOK Secure Boot validation state in Shim
+    /// 0 = disabled, 1 = enabled
+    pub mok_sb_state: u8,
+    /// MokList variable present (MOK certificates enrolled)
+    pub mok_list_present: bool,
+    /// MokListRT variable present (runtime MOK access)
+    pub mok_list_rt_present: bool,
+    /// MokListX variable present (MOK revocation list)
+    pub mok_list_x_present: bool,
+    /// SbatLevel variable present (SBAT revocation)
+    pub sbat_level_present: bool,
+    /// Shim validated this binary
+    pub shim_validated: bool,
+    /// Reserved for alignment
+    pub _reserved: u8,
+    /// Number of MOK certificates enrolled
+    pub mok_count: u16,
+    /// Shim version (major.minor)
+    pub shim_version_major: u8,
+    pub shim_version_minor: u8,
+    /// Reserved for future use
+    pub _reserved2: [u8; 4],
+}
+
+impl Default for ShimMokInfo {
+    fn default() -> Self {
+        Self {
+            shim_detected: false,
+            mok_sb_state: 0,
+            mok_list_present: false,
+            mok_list_rt_present: false,
+            mok_list_x_present: false,
+            sbat_level_present: false,
+            shim_validated: false,
+            _reserved: 0,
+            mok_count: 0,
+            shim_version_major: 0,
+            shim_version_minor: 0,
+            _reserved2: [0; 4],
+        }
+    }
+}
+
+/// Shim/MOK state flags
+pub mod shim_mok_flags {
+    /// Shim bootloader detected
+    pub const SHIM_DETECTED: u32 = 1 << 0;
+    /// MOK Secure Boot validation enabled in Shim
+    pub const MOK_SB_ENABLED: u32 = 1 << 1;
+    /// MokList (certificates) present
+    pub const MOK_LIST_PRESENT: u32 = 1 << 2;
+    /// MokListRT (runtime access) present
+    pub const MOK_LIST_RT_PRESENT: u32 = 1 << 3;
+    /// MokListX (revocation) present
+    pub const MOK_LIST_X_PRESENT: u32 = 1 << 4;
+    /// SBAT revocation data present
+    pub const SBAT_LEVEL_PRESENT: u32 = 1 << 5;
+    /// Binary validated by Shim
+    pub const SHIM_VALIDATED: u32 = 1 << 6;
+}
+
+/// SMBIOS (System Management BIOS) information.
+/// Contains table addresses and parsed basic information.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SmbiosInfo {
+    /// SMBIOS 3.x table address (0 = not found)
+    pub smbios3_addr: u64,
+    /// SMBIOS 2.x table address (0 = not found)
+    pub smbios_addr: u64,
+    /// SMBIOS major version
+    pub major_version: u8,
+    /// SMBIOS minor version
+    pub minor_version: u8,
+    /// Maximum table structure size
+    pub table_max_size: u32,
+    /// Status flags (see smbios_flags module)
+    pub flags: u16,
+    /// Reserved for alignment
+    pub _reserved: [u8; 4],
+    /// BIOS vendor string offset (table internal)
+    pub bios_vendor_offset: u32,
+    /// BIOS version string offset
+    pub bios_version_offset: u32,
+    /// System manufacturer string offset
+    pub system_manufacturer_offset: u32,
+    /// System product name string offset
+    pub system_product_offset: u32,
+    /// System serial number string offset
+    pub system_serial_offset: u32,
+    /// System UUID (16 bytes)
+    pub system_uuid: [u8; 16],
+}
+
+impl Default for SmbiosInfo {
+    fn default() -> Self {
+        Self {
+            smbios3_addr: 0,
+            smbios_addr: 0,
+            major_version: 0,
+            minor_version: 0,
+            table_max_size: 0,
+            flags: 0,
+            _reserved: [0; 4],
+            bios_vendor_offset: 0,
+            bios_version_offset: 0,
+            system_manufacturer_offset: 0,
+            system_product_offset: 0,
+            system_serial_offset: 0,
+            system_uuid: [0; 16],
+        }
+    }
+}
+
+/// SMBIOS status flags
+pub mod smbios_flags {
+    /// SMBIOS 3.x available
+    pub const SMBIOS3_AVAILABLE: u16 = 1 << 0;
+    /// SMBIOS 2.x available
+    pub const SMBIOS2_AVAILABLE: u16 = 1 << 1;
+    /// BIOS information parsed
+    pub const BIOS_INFO_VALID: u16 = 1 << 2;
+    /// System information parsed
+    pub const SYSTEM_INFO_VALID: u16 = 1 << 3;
+    /// Processor information parsed
+    pub const PROCESSOR_INFO_VALID: u16 = 1 << 4;
+    /// Memory information parsed
+    pub const MEMORY_INFO_VALID: u16 = 1 << 5;
+}
+
+/// Boot recovery information.
+/// Contains failure tracking and recovery mode status.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct BootRecoveryInfo {
+    /// Current boot attempt ID (incremental counter)
+    pub boot_attempt_id: u32,
+    /// Consecutive boot failure count
+    pub failure_count: u8,
+    /// Currently in recovery mode
+    pub is_recovery_mode: bool,
+    /// Using fallback kernel
+    pub is_fallback: bool,
+    /// Reserved for alignment
+    pub _reserved: u8,
+    /// Expected success ID (kernel should confirm this)
+    pub expected_success_id: u32,
+}
+
+impl Default for BootRecoveryInfo {
+    fn default() -> Self {
+        Self {
+            boot_attempt_id: 0,
+            failure_count: 0,
+            is_recovery_mode: false,
+            is_fallback: false,
+            _reserved: 0,
+            expected_success_id: 0,
+        }
+    }
+}
+
+/// Boot recovery flags
+pub mod boot_recovery_flags {
+    /// Recovery mode active
+    pub const RECOVERY_MODE: u32 = 1 << 0;
+    /// Using fallback kernel
+    pub const FALLBACK_KERNEL: u32 = 1 << 1;
+    /// First boot attempt
+    pub const FIRST_BOOT: u32 = 1 << 2;
+    /// Previous boot failed
+    pub const PREVIOUS_FAILED: u32 = 1 << 3;
+}
+
+/// Self-test results from boot-time hardware validation.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct SelfTestInfo {
+    /// Overall test result (0=Pass, 1=Warning, 2=Fail, 3=Skip)
+    pub overall_result: u8,
+    /// Number of critical failures
+    pub critical_failures: u8,
+    /// Number of warnings
+    pub warnings: u8,
+    /// Number of tests run
+    pub tests_run: u8,
+    /// Reserved for alignment
+    pub _reserved: [u8; 4],
+}
+
+impl Default for SelfTestInfo {
+    fn default() -> Self {
+        Self {
+            overall_result: 0,
+            critical_failures: 0,
+            warnings: 0,
+            tests_run: 0,
+            _reserved: [0; 4],
+        }
+    }
+}
+
+/// Self-test result values
+pub mod self_test_results {
+    /// All tests passed
+    pub const PASS: u8 = 0;
+    /// Some tests had warnings
+    pub const WARNING: u8 = 1;
+    /// Critical test failures
+    pub const FAIL: u8 = 2;
+    /// Tests were skipped
+    pub const SKIP: u8 = 3;
 }

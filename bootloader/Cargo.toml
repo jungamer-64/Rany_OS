@@ -9,11 +9,10 @@ categories = ["os", "bootloader"]
 keywords = ["uefi", "boot"]
 
 [dependencies]
-uefi = { version = "0.24", features = ["alloc"] }
-uefi-services = { version = "0.21", optional = true }
-uefi-raw = "0.5"
+uefi = { version = "0.36", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
+uefi-raw = "0.13"
 log = "0.4"
-xmas-elf = "0.9"
+xmas-elf = "0.10"
 boot_proto = { path = "../libs/boot_proto" }
 graphic_types = { path = "../libs/graphic_types" }
 # Ed25519 signature verification for secure boot
@@ -21,7 +20,7 @@ graphic_types = { path = "../libs/graphic_types" }
 ed25519-compact = { version = "2.1", default-features = false }
 
 [features]
-uefi = ["uefi-services"]
+default = []
 insecure_boot = []
 
 [profile.dev]

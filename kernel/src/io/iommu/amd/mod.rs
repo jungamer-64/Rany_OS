@@ -9,9 +9,11 @@ pub mod tables;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::future::poll_fn;
 use core::mem::size_of;
 use core::ptr::{self, NonNull};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::task::Poll;
 
 use x86_64::PhysAddr;
 
@@ -23,7 +25,7 @@ use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use crate::mm::buddy_alloc_contiguous_frames;
 use crate::mm::mapping::phys_to_virt;
 // Use PAGE_SIZE_4K from local IOMMU iova_allocator instead
-use crate::sync::PoisonLock;
+use crate::sync::{PoisonLock, WakerQueue};
 use hashbrown::HashMap;
 
 use super::config::IommuConfig;
@@ -459,9 +461,16 @@ impl AmdDeferredFaultQueue {
     fn take_dropped(&self) -> usize {
         self.dropped.swap(0, Ordering::Relaxed)
     }
+
+    fn is_empty(&self) -> bool {
+        let head = self.head.load(Ordering::Acquire);
+        let tail = self.tail.load(Ordering::Acquire);
+        head == tail
+    }
 }
 
 static AMD_DEFERRED_FAULT_QUEUE: AmdDeferredFaultQueue = AmdDeferredFaultQueue::new();
+static AMD_FAULT_WAKERS: WakerQueue = WakerQueue::new();
 
 pub fn drain_deferred_faults() -> usize {
     drain_deferred_faults_with_driver(None)
@@ -517,7 +526,19 @@ pub(crate) fn drain_deferred_faults_with_driver(driver: Option<&AmdIommuDriver>)
     count
 }
 
-const FAULT_HANDLER_INTERVAL_MS: u64 = 100;
+async fn wait_for_fault_events() {
+    poll_fn(|cx| {
+        if !AMD_DEFERRED_FAULT_QUEUE.is_empty() {
+            return Poll::Ready(());
+        }
+        AMD_FAULT_WAKERS.register(cx.waker());
+        if !AMD_DEFERRED_FAULT_QUEUE.is_empty() {
+            return Poll::Ready(());
+        }
+        Poll::Pending
+    })
+    .await;
+}
 
 pub async fn fault_handler_task() {
     loop {
@@ -526,7 +547,7 @@ pub async fn fault_handler_task() {
             _ => None,
         });
         let _ = drain_deferred_faults_with_driver(driver);
-        crate::task::sleep_ms(FAULT_HANDLER_INTERVAL_MS).await;
+        wait_for_fault_events().await;
     }
 }
 
@@ -1154,6 +1175,28 @@ impl AmdIommuDriver {
         f(&mut *guard)
     }
 
+    async fn submit_cmd_async(
+        &self,
+        unit_idx: usize,
+        cmd: cmd::AmdCommand,
+    ) -> Result<(), IommuError> {
+        let state = self
+            .cmd_states
+            .get(unit_idx)
+            .and_then(|state| state.as_ref())
+            .ok_or(IommuError::NotSupported)?;
+
+        let token = {
+            let mut guard = match state.lock() {
+                Ok(guard) => guard,
+                Err(_) => return Err(IommuError::Poisoned),
+            };
+            guard.submit_and_wait_token(cmd)?
+        };
+
+        token.wait_async().await
+    }
+
     fn invalidate_device_entry(&self, device: DeviceId) -> Result<(), IommuError> {
         let unit_idx = self
             .find_unit_index_for_device(device)
@@ -1196,6 +1239,40 @@ impl AmdIommuDriver {
                 domain_id, iova, size, None,
             ))
         })
+    }
+
+    async fn invalidate_iotlb_pages_async(
+        &self,
+        device: DeviceId,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        let unit_idx = self
+            .find_unit_index_for_device(device)
+            .ok_or(IommuError::DeviceNotFound)?;
+        let devid = device.requester_id();
+        self.submit_cmd_async(
+            unit_idx,
+            cmd::AmdCommand::invalidate_iotlb_pages(devid, 0, iova, size, None),
+        )
+        .await
+    }
+
+    async fn invalidate_iommu_pages_async(
+        &self,
+        device: DeviceId,
+        domain_id: u16,
+        iova: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        let unit_idx = self
+            .find_unit_index_for_device(device)
+            .ok_or(IommuError::DeviceNotFound)?;
+        self.submit_cmd_async(
+            unit_idx,
+            cmd::AmdCommand::invalidate_iommu_pages(domain_id, iova, size, None),
+        )
+        .await
     }
 
     fn invalidate_domain_pages(
@@ -1344,6 +1421,53 @@ impl AmdIommuUnit {
     }
 }
 
+const AMD_CMD_WAIT_MAX_POLLS: u64 = 1_000_000;
+
+struct AmdCommandWaitToken {
+    sync_ptr: NonNull<u64>,
+    expected_seq: u64,
+}
+
+impl AmdCommandWaitToken {
+    fn is_complete(&self) -> bool {
+        // Commands complete in order; a newer sequence implies this one finished.
+        unsafe { self.sync_ptr.as_ptr().read_volatile() } >= self.expected_seq
+    }
+
+    fn wait_blocking(self) -> Result<(), IommuError> {
+        let mut spins = 0u64;
+        while !self.is_complete() {
+            spins += 1;
+            if spins > AMD_CMD_WAIT_MAX_POLLS {
+                return Err(IommuError::Timeout);
+            }
+            core::hint::spin_loop();
+        }
+        Ok(())
+    }
+
+    async fn wait_async(self) -> Result<(), IommuError> {
+        #[cfg(test)]
+        {
+            let _ = self;
+            return Ok(());
+        }
+
+        #[cfg(not(test))]
+        {
+            let mut polls = 0u64;
+            while !self.is_complete() {
+                polls += 1;
+                if polls > AMD_CMD_WAIT_MAX_POLLS {
+                    return Err(IommuError::Timeout);
+                }
+                crate::task::yield_now().await;
+            }
+            Ok(())
+        }
+    }
+}
+
 struct AmdCommandState {
     buffer: cmd::AmdCommandBuffer,
     sync_ptr: NonNull<u64>,
@@ -1363,6 +1487,23 @@ impl AmdCommandState {
         Ok(())
     }
 
+    fn submit_and_wait_token(
+        &mut self,
+        cmd: cmd::AmdCommand,
+    ) -> Result<AmdCommandWaitToken, IommuError> {
+        let next_seq = self.seq.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
+        self.submit(cmd)?;
+        self.submit(cmd::AmdCommand::completion_wait(
+            self.sync_phys,
+            next_seq,
+            false,
+        ))?;
+        Ok(AmdCommandWaitToken {
+            sync_ptr: self.sync_ptr,
+            expected_seq: next_seq,
+        })
+    }
+
     fn submit_and_wait(&mut self, cmd: cmd::AmdCommand) -> Result<(), IommuError> {
         #[cfg(test)]
         {
@@ -1372,28 +1513,8 @@ impl AmdCommandState {
 
         #[cfg(not(test))]
         {
-            let next_seq = self.seq.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
-            unsafe {
-                self.sync_ptr.as_ptr().write_volatile(0);
-            }
-
-            self.submit(cmd)?;
-            self.submit(cmd::AmdCommand::completion_wait(
-                self.sync_phys,
-                next_seq,
-                false,
-            ))?;
-
-            let mut spins = 0u64;
-            while unsafe { self.sync_ptr.as_ptr().read_volatile() } != next_seq {
-                spins += 1;
-                if spins > 1_000_000 {
-                    return Err(IommuError::Timeout);
-                }
-                core::hint::spin_loop();
-            }
-
-            Ok(())
+            let token = self.submit_and_wait_token(cmd)?;
+            token.wait_blocking()
         }
     }
 }
@@ -1695,6 +1816,7 @@ impl AmdIommuDriver {
         for (idx, unit) in self.units.iter().enumerate() {
             self.poll_event_log(idx, unit);
         }
+        AMD_FAULT_WAKERS.wake_all_from_isr();
     }
 
     pub(crate) fn wake_invalidation_waiters(&self) {}
@@ -1875,13 +1997,43 @@ impl AmdIommuDriver {
         Ok(iova)
     }
 
+    pub(crate) async unsafe fn map_for_device_with_perms_async(
+        &self,
+        device: &DeviceId,
+        phys_addr: PhysAddr,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<u64, IommuError> {
+        let align = crate::mm::PAGE_SIZE_4K as u64;
+        if size == 0 || (phys_addr.as_u64() & (align - 1) != 0) || (size & (align - 1) != 0) {
+            return Err(IommuError::InvalidAlignment);
+        }
+
+        let domain_id = self.domain_id_for_device(*device)?;
+        self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
+        let mask = crate::io::iommu::api::get_device_dma_mask(device);
+        let iova = self.allocate_iova_fast(size, mask)?;
+        let domain = self.domain_for_id(domain_id)?;
+
+        if let Err(err) = domain.map(iova, phys_addr.as_u64(), size, read, write) {
+            let _ = self.free_iova_fast(iova, size);
+            return Err(err);
+        }
+
+        self.invalidate_iommu_pages_async(*device, domain_id, iova, size)
+            .await?;
+        self.invalidate_iotlb_pages_async(*device, iova, size).await?;
+        Ok(iova)
+    }
+
     pub(crate) async unsafe fn map_for_device_async(
         &self,
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
     ) -> Result<u64, IommuError> {
-        unsafe { self.map_for_device(device, phys_addr, size) }
+        unsafe { self.map_for_device_with_perms_async(device, phys_addr, size, true, true).await }
     }
 
     pub(crate) fn unmap_for_device(
@@ -1904,9 +2056,18 @@ impl AmdIommuDriver {
         &self,
         device: &DeviceId,
         iova: u64,
-        size: u64,
+        _size: u64,
     ) -> Result<(), IommuError> {
-        self.unmap_for_device(device, iova, size)
+        let domain_id = self.domain_id_for_device(*device)?;
+        let domain = self.domain_for_id(domain_id)?;
+        let mapping = domain.unmap(iova)?;
+
+        self.invalidate_iommu_pages_async(*device, domain_id, iova, mapping.size)
+            .await?;
+        self.invalidate_iotlb_pages_async(*device, iova, mapping.size)
+            .await?;
+        let _ = self.free_iova_fast(iova, mapping.size);
+        Ok(())
     }
 
     pub(crate) fn create_domain(

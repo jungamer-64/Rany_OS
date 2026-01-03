@@ -1,5 +1,6 @@
 use core::ops::{Index, IndexMut};
-use uefi::table::boot::{AllocateType, BootServices, MemoryType};
+use uefi::boot::{self, AllocateType};
+use uefi::mem::memory_map::MemoryType;
 
 // Page Sizes
 pub const PAGE_SIZE: u64 = 4096;
@@ -124,23 +125,20 @@ impl IndexMut<usize> for PageTable {
 
 /// Simple mapper that allocates frames from UEFI
 pub struct UefiMapper<'a> {
-    boot_services: &'a BootServices,
     pml4: &'a mut PageTable,
 }
 
 impl<'a> UefiMapper<'a> {
-    pub fn new(boot_services: &'a BootServices, pml4: &'a mut PageTable) -> Self {
-        Self {
-            boot_services,
-            pml4,
-        }
+    pub fn new(pml4: &'a mut PageTable) -> Self {
+        Self { pml4 }
     }
 
     /// Allocate zeroed frames
-    pub fn alloc_zeroed_pages(bs: &BootServices, num_pages: usize) -> Option<u64> {
-        bs.allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, num_pages)
+    pub fn alloc_zeroed_pages(num_pages: usize) -> Option<u64> {
+        boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, num_pages)
             .ok()
-            .map(|addr| {
+            .map(|ptr| {
+                let addr = ptr.as_ptr() as u64;
                 // Zero the memory
                 unsafe {
                     core::ptr::write_bytes(addr as *mut u8, 0, (PAGE_SIZE as usize) * num_pages);
@@ -206,7 +204,7 @@ impl<'a> UefiMapper<'a> {
 
     fn get_or_create_table(&mut self, index: usize) -> Result<&'a mut PageTable, ()> {
         if self.pml4.entries[index].is_unused() {
-            let frame = Self::alloc_zeroed_pages(self.boot_services, 1).ok_or(())?;
+            let frame = Self::alloc_zeroed_pages(1).ok_or(())?;
             self.pml4.entries[index].set_addr(frame, PAGE_PRESENT | PAGE_WRITABLE);
         }
         let addr = self.pml4.entries[index].addr();
@@ -219,7 +217,7 @@ impl<'a> UefiMapper<'a> {
         index: usize,
     ) -> Result<&'a mut PageTable, ()> {
         if table.entries[index].is_unused() {
-            let frame = Self::alloc_zeroed_pages(self.boot_services, 1).ok_or(())?;
+            let frame = Self::alloc_zeroed_pages(1).ok_or(())?;
             table.entries[index].set_addr(frame, PAGE_PRESENT | PAGE_WRITABLE);
         }
         let addr = table.entries[index].addr();

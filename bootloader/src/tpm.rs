@@ -11,7 +11,7 @@
 
 use log::info;
 use uefi::prelude::*;
-use uefi::table::boot::BootServices;
+use uefi::boot;
 
 /// PCR index for kernel measurement
 pub const PCR_KERNEL: u32 = 8;
@@ -128,7 +128,6 @@ const PE_PCR_EVENT_FLAG: u64 = 0x1;
 /// into their respective PCRs using the TCG2 protocol.
 ///
 /// # Arguments
-/// * `boot_services` - UEFI Boot Services
 /// * `kernel_data` - Raw kernel binary (without signature)
 /// * `initramfs_data` - Optional initramfs data
 /// * `cmdline` - Optional command line
@@ -136,7 +135,6 @@ const PE_PCR_EVENT_FLAG: u64 = 0x1;
 /// # Returns
 /// TpmMeasurementResult indicating what was measured
 pub fn perform_measured_boot(
-    boot_services: &BootServices,
     kernel_data: &[u8],
     initramfs_data: Option<&[u8]>,
     cmdline: Option<&[u8]>,
@@ -144,7 +142,7 @@ pub fn perform_measured_boot(
     let mut result = TpmMeasurementResult::default();
 
     // Try to locate TCG2 protocol
-    let tcg2 = match locate_tcg2_protocol(boot_services) {
+    let tcg2 = match locate_tcg2_protocol() {
         Some(p) => p,
         None => {
             info!("TPM: TCG2 Protocol not available (TPM not present or disabled)");
@@ -199,12 +197,9 @@ pub fn perform_measured_boot(
 }
 
 /// Locate the TCG2 protocol
-fn locate_tcg2_protocol(boot_services: &BootServices) -> Option<*const Tcg2Protocol> {
-    use uefi::table::boot::SearchType;
-
+fn locate_tcg2_protocol() -> Option<*const Tcg2Protocol> {
     // Search for handles that support TCG2 protocol
-    let handles = boot_services
-        .locate_handle_buffer(SearchType::ByProtocol(&TCG2_PROTOCOL_GUID))
+    let handles = boot::locate_handle_buffer(boot::SearchType::ByProtocol(&TCG2_PROTOCOL_GUID))
         .ok()?;
 
     if handles.is_empty() {
@@ -213,14 +208,12 @@ fn locate_tcg2_protocol(boot_services: &BootServices) -> Option<*const Tcg2Proto
 
     // Open the protocol using open_protocol_exclusive alternative
     // Since TCG2 is not a standard uefi-rs protocol, we need raw access
-    // Use locate_protocol which returns a raw pointer
-    
-    // Get raw boot services table pointer for handle_protocol call
-    // This is a workaround since TCG2 is not in uefi-rs
+    // Use raw UEFI boot services for handle_protocol call
     let mut protocol_ptr: *mut core::ffi::c_void = core::ptr::null_mut();
     
-    // Use the raw UEFI boot services table
-    let bs_raw = boot_services as *const BootServices as *const uefi_raw::table::boot::BootServices;
+    // Get raw boot services table pointer
+    let st_ptr = uefi::table::system_table_raw().expect("No system table available");
+    let bs_raw = unsafe { (*st_ptr.as_ptr()).boot_services };
     
     let status = unsafe {
         let handle_protocol_fn = (*bs_raw).handle_protocol;
