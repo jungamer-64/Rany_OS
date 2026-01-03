@@ -198,6 +198,7 @@ fn read_key_nonblocking() -> Option<Key> {
 }
 
 /// Get the selected boot entry
+#[allow(dead_code)]
 pub fn get_selected_entry<'a>(config: &'a BootConfig, result: &MenuResult) -> Option<&'a BootEntry> {
     match result {
         MenuResult::Selected(idx) => config.entries.get(*idx),

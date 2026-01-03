@@ -78,8 +78,10 @@ pub mod smbios_flags {
     /// システム情報が取得済み
     pub const SYSTEM_INFO_VALID: u16 = 1 << 3;
     /// プロセッサ情報が取得済み
+    #[allow(dead_code)]
     pub const PROCESSOR_INFO_VALID: u16 = 1 << 4;
     /// メモリ情報が取得済み
+    #[allow(dead_code)]
     pub const MEMORY_INFO_VALID: u16 = 1 << 5;
 }
 
@@ -295,6 +297,7 @@ fn parse_system_info(info: &mut SmbiosInfo, table_ptr: *const u8, offset: usize,
 }
 
 /// SMBIOS情報の概要をシリアル出力
+#[cfg(feature = "serial_log")]
 pub fn log_smbios_info(info: &SmbiosInfo) {
     use crate::serial_println;
     
@@ -333,4 +336,10 @@ pub fn log_smbios_info(info: &SmbiosInfo) {
     if info.smbios3_addr == 0 && info.smbios_addr == 0 {
         serial_println!("  No SMBIOS tables found");
     }
+}
+
+/// SMBIOS情報の概要をシリアル出力（シリアル無効時はnoop）
+#[cfg(not(feature = "serial_log"))]
+pub fn log_smbios_info(_info: &SmbiosInfo) {
+    // シリアルログ無効時は何もしない
 }

@@ -18,7 +18,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::{Mutex, Once, RwLock};
+use crate::sync::{PoisonLock, PoisonLockGuard};
+use spin::{Once, RwLock};
 
 // ============================================================================
 // Invalidation Request Pattern
@@ -234,7 +235,7 @@ pub struct IommuDomain {
     /// Second-level page table root (PML4)
     pub(crate) page_table: *mut SlPte,
     /// Mapped regions
-    shards: Box<[Mutex<DomainShard>]>,
+    shards: Box<[PoisonLock<DomainShard>]>,
     /// Total mapped size
     mapped_size: AtomicU64,
     /// Optional NUMA node affinity for this domain's data structures
@@ -248,7 +249,7 @@ pub struct IommuDomain {
     /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
     quarantine: Arc<QuarantineQueue>,
     /// Reused buffer for flush invalidations (avoid per-flush allocations)
-    flush_requests: Mutex<Vec<InvalidateRequest>>,
+    flush_requests: PoisonLock<Vec<InvalidateRequest>>,
     /// Phase 6: Page table recycling pool (shared with controller)
     page_table_pool: Arc<super::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)
@@ -304,7 +305,7 @@ impl IommuDomain {
         debug_assert!(PML4_ENTRIES_PER_SHARD > 0);
         let mut shards = Vec::with_capacity(DOMAIN_SHARD_COUNT);
         for _ in 0..DOMAIN_SHARD_COUNT {
-            shards.push(Mutex::new(DomainShard::new()));
+            shards.push(PoisonLock::new(DomainShard::new()));
         }
 
         Self {
@@ -318,7 +319,7 @@ impl IommuDomain {
             supports_1gb,
             max_addr_bits: max_addr_bits.clamp(1, 64),
             quarantine: QuarantineQueue::new(),
-            flush_requests: Mutex::new(Vec::with_capacity(
+            flush_requests: PoisonLock::new(Vec::with_capacity(
                 super::quarantine::INVALIDATION_CAPACITY,
             )),
             page_table_pool,
@@ -391,7 +392,7 @@ impl IommuDomain {
         }
 
         let (start_shard, end_shard) = self.shard_range(iova, size)?;
-        let mut guards = self.lock_shards(start_shard, end_shard);
+        let mut guards = self.lock_shards(start_shard, end_shard)?;
 
         let mapping = guards[0]
             .mappings
@@ -437,7 +438,10 @@ impl IommuDomain {
         context: &dyn IommuHardwareContext,
     ) -> Result<(), IommuError> {
         // Drain pending invalidations (Round 9: returns DrainResult)
-        let mut requests = self.flush_requests.lock();
+        let mut requests = self
+            .flush_requests
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
         let drained_batch = match self.quarantine.drain_pending_invalidations(&mut requests) {
             super::quarantine::DrainResult::NoWork { .. } => return Ok(()),
             super::quarantine::DrainResult::NotReady { batch: _ } => {
@@ -503,12 +507,13 @@ impl IommuDomain {
         &self,
         start: usize,
         end: usize,
-    ) -> Vec<spin::MutexGuard<'_, DomainShard>> {
+    ) -> Result<Vec<PoisonLockGuard<'_, DomainShard>>, IommuError> {
         let mut guards = Vec::with_capacity(end.saturating_sub(start) + 1);
         for idx in start..=end {
-            guards.push(self.shards[idx].lock());
+            let guard = self.shards[idx].lock().map_err(|_| IommuError::Poisoned)?;
+            guards.push(guard);
         }
-        guards
+        Ok(guards)
     }
 
     fn mapping_overlaps(mappings: &BTreeMap<u64, DmaMapping>, iova: u64, size: u64) -> bool {
@@ -554,7 +559,7 @@ impl IommuDomain {
         }
 
         let (start_shard, end_shard) = self.shard_range(iova, size)?;
-        let mut guards = self.lock_shards(start_shard, end_shard);
+        let mut guards = self.lock_shards(start_shard, end_shard)?;
 
         for guard in guards.iter() {
             if Self::mapping_overlaps(&guard.mappings, iova, size) {
@@ -1196,7 +1201,9 @@ impl IommuDomain {
         }
 
         let start_shard = Self::shard_for_iova(iova);
-        let mut guard = self.shards[start_shard].lock();
+        let mut guard = self.shards[start_shard]
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
         let mapping = guard
             .mappings
             .get(&iova)
@@ -1207,7 +1214,8 @@ impl IommuDomain {
         let mut guards = Vec::with_capacity(end_shard.saturating_sub(start_shard) + 1);
         guards.push(guard);
         for idx in (start_shard + 1)..=end_shard {
-            guards.push(self.shards[idx].lock());
+            let guard = self.shards[idx].lock().map_err(|_| IommuError::Poisoned)?;
+            guards.push(guard);
         }
 
         for guard in guards.iter_mut() {
@@ -1513,7 +1521,10 @@ impl IommuDomain {
     /// Lookup a mapping by its IOVA base.
     pub fn mapping(&self, iova: u64) -> Option<DmaMapping> {
         let shard = Self::shard_for_iova(iova);
-        let guard = self.shards[shard].lock();
+        let guard = match self.shards[shard].lock() {
+            Ok(guard) => guard,
+            Err(_) => return None,
+        };
         guard.mappings.get(&iova).cloned()
     }
 
@@ -1521,7 +1532,10 @@ impl IommuDomain {
     pub fn mappings_snapshot(&self) -> BTreeMap<u64, DmaMapping> {
         let mut snapshot = BTreeMap::new();
         for shard in self.shards.iter() {
-            let guard = shard.lock();
+            let guard = match shard.lock() {
+                Ok(guard) => guard,
+                Err(_) => continue,
+            };
             for (iova, mapping) in guard.mappings.iter() {
                 snapshot.entry(*iova).or_insert_with(|| mapping.clone());
             }
@@ -1533,7 +1547,7 @@ impl IommuDomain {
     pub fn drop_mapping_for_test(&self, iova: u64) -> Option<DmaMapping> {
         let mapping = self.mapping(iova)?;
         let (start_shard, end_shard) = self.shard_range(iova, mapping.size).ok()?;
-        let mut guards = self.lock_shards(start_shard, end_shard);
+        let mut guards = self.lock_shards(start_shard, end_shard).ok()?;
         for guard in guards.iter_mut() {
             guard.mappings.remove(&iova);
         }

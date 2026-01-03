@@ -19,17 +19,28 @@ use ed25519_compact::{PublicKey, Signature};
 mod ap_boot;
 mod boot_log;
 mod config;
+#[cfg(feature = "ui")]
 mod menu;
 mod numa;
 mod page_table;
 mod recovery;
 mod secure_boot;
+#[cfg(feature = "self_test")]
 mod self_test;
+#[cfg(feature = "serial_log")]
 mod serial;
 mod shim_mok;
 mod smbios;
 mod sme_sev;
 mod tpm;
+
+/// シリアルログ無効時のフォールバックマクロ（何もしない）
+#[cfg(not(feature = "serial_log"))]
+#[macro_export]
+macro_rules! serial_println {
+    () => {};
+    ($($arg:tt)*) => {};
+}
 mod uefi_runtime;
 
 /// Kernel base address for higher-half mapping
@@ -49,10 +60,14 @@ fn main() -> Status {
     uefi::helpers::init().expect("Failed to initialize UEFI helpers");
 
     // Initialize serial console early for headless debugging
-    serial::init();
-    serial_println!("ExoLoader: Serial console initialized");
+    #[cfg(feature = "serial_log")]
+    {
+        serial::init();
+        serial_println!("ExoLoader: Serial console initialized");
+    }
 
     info!("ExoLoader v0.1.0 Starting...");
+    #[cfg(feature = "serial_log")]
     serial_println!("ExoLoader v0.1.0 Starting...");
     info!("Initializing Boot Protocol...");
 
@@ -76,6 +91,7 @@ fn main() -> Status {
     };
 
     // Show boot menu if multiple entries or timeout > 0
+    #[cfg(feature = "ui")]
     let selected_entry = if boot_config.entries.len() > 1 || boot_config.timeout > 0 {
         info!("Showing boot menu...");
         match menu::show_boot_menu(&boot_config) {
@@ -96,6 +112,10 @@ fn main() -> Status {
     } else {
         boot_config.entries.first()
     };
+
+    // Minimal mode: skip menu, use default entry immediately
+    #[cfg(not(feature = "ui"))]
+    let selected_entry = boot_config.entries.get(boot_config.default_entry).or_else(|| boot_config.entries.first());
 
     // Determine kernel/initramfs paths from selected entry
     let (kernel_name, initramfs_name, entry_cmdline) = match selected_entry {
@@ -253,8 +273,7 @@ fn main() -> Status {
 
     // 2. Parse ELF (using verified kernel data, without signature)
     let elf = xmas_elf::ElfFile::new(kernel_elf_data).expect("Invalid ELF file");
-    #[cfg(feature = "uefi")]
-    uefi_services::print!("ELF Entry Point: 0x{:x}\n", elf.header.pt2.entry_point());
+    info!("ELF Entry Point: 0x{:x}", elf.header.pt2.entry_point());
 
     for header in elf.program_iter() {
         if let xmas_elf::program::ProgramHeader::Ph64(ph) = header {
@@ -740,29 +759,45 @@ fn main() -> Status {
     };
     boot_logger.info("Boot recovery state prepared");
 
-    // 6.9. Run self-tests
-    let self_test_config = self_test::SelfTestConfig::default();
-    let self_test_results = self_test::run_self_tests(&self_test_config);
-    boot_info.self_test = boot_proto::SelfTestInfo {
-        overall_result: match self_test_results.overall {
-            self_test::TestResult::Pass => 0,
-            self_test::TestResult::Warning => 1,
-            self_test::TestResult::Fail => 2,
-            self_test::TestResult::Skip => 3,
-        },
-        critical_failures: self_test_results.critical_failures,
-        warnings: self_test_results.warnings,
-        tests_run: self_test_results.tests.len() as u8,
-        _reserved: [0; 4],
-    };
+    // 6.9. Run self-tests (only when self_test feature is enabled)
+    #[cfg(feature = "self_test")]
+    {
+        let self_test_config = self_test::SelfTestConfig::default();
+        let self_test_results = self_test::run_self_tests(&self_test_config);
+        boot_info.self_test = boot_proto::SelfTestInfo {
+            overall_result: match self_test_results.overall {
+                self_test::TestResult::Pass => 0,
+                self_test::TestResult::Warning => 1,
+                self_test::TestResult::Fail => 2,
+                self_test::TestResult::Skip => 3,
+            },
+            critical_failures: self_test_results.critical_failures,
+            warnings: self_test_results.warnings,
+            tests_run: self_test_results.tests.len() as u8,
+            _reserved: [0; 4],
+        };
 
-    // Log self-test results
-    if self_test_results.critical_failures > 0 {
-        boot_logger.error("Self-test detected critical failures");
-    } else if self_test_results.warnings > 0 {
-        boot_logger.warning("Self-test completed with warnings");
-    } else {
-        boot_logger.info("All self-tests passed");
+        // Log self-test results
+        if self_test_results.critical_failures > 0 {
+            boot_logger.error("Self-test detected critical failures");
+        } else if self_test_results.warnings > 0 {
+            boot_logger.warning("Self-test completed with warnings");
+        } else {
+            boot_logger.info("All self-tests passed");
+        }
+    }
+
+    // Skip self-tests in minimal/production builds
+    #[cfg(not(feature = "self_test"))]
+    {
+        boot_info.self_test = boot_proto::SelfTestInfo {
+            overall_result: 3, // Skip
+            critical_failures: 0,
+            warnings: 0,
+            tests_run: 0,
+            _reserved: [0; 4],
+        };
+        boot_logger.info("Self-tests skipped (minimal build)");
     }
 
     // GOP

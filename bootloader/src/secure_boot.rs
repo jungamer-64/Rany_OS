@@ -162,6 +162,7 @@ fn variable_exists(name: &CStr16) -> bool {
 /// This is useful for determining if we're running as a trusted boot component.
 /// Note: This only indicates the Secure Boot state, not whether this specific
 /// bootloader binary was verified (that depends on whether we're signed and in db).
+#[allow(dead_code)]
 pub fn is_verified_boot(info: &SecureBootInfo) -> bool {
     info.secure_boot_enabled && !info.setup_mode && info.pk_present
 }
@@ -184,6 +185,7 @@ pub fn get_secure_boot_status_string(info: &SecureBootInfo) -> &'static str {
 }
 
 /// Secure Boot mode enumeration
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SecureBootMode {
     /// Secure Boot is not supported by the firmware
@@ -201,6 +203,7 @@ pub enum SecureBootMode {
 }
 
 /// Get the current Secure Boot mode
+#[allow(dead_code)]
 pub fn get_secure_boot_mode(info: &SecureBootInfo) -> SecureBootMode {
     if !info.pk_present && !info.setup_mode && !info.secure_boot_enabled {
         SecureBootMode::NotSupported

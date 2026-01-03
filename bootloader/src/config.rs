@@ -22,12 +22,16 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 /// Maximum number of boot entries
+#[allow(dead_code)]
 pub const MAX_BOOT_ENTRIES: usize = 8;
 /// Maximum length of a boot entry name
+#[allow(dead_code)]
 pub const MAX_NAME_LEN: usize = 64;
 /// Maximum length of a path
+#[allow(dead_code)]
 pub const MAX_PATH_LEN: usize = 128;
 /// Maximum length of command line
+#[allow(dead_code)]
 pub const MAX_CMDLINE_LEN: usize = 256;
 
 /// A boot menu entry

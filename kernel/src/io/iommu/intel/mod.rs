@@ -386,7 +386,7 @@ impl IntelIommuDriver {
                             read: true,
                             write: true,
                         };
-                        let comp = match cq.submit(cmd) {
+                        let comp = match cq.submit_async(cmd).await {
                             Ok(comp) => comp,
                             Err(_) => {
                                 let _ = controller.free_iova(iova, size);
@@ -487,7 +487,10 @@ impl IntelIommuDriver {
                             iova,
                             size,
                         };
-                        let comp = cq.submit(cmd).map_err(|_| IommuError::HardwareError)?;
+                        let comp = cq
+                            .submit_async(cmd)
+                            .await
+                            .map_err(|_| IommuError::HardwareError)?;
                         let rc = comp.await;
                         if rc == 0 {
                             let _ = controller.free_iova(iova, mapping_size);
@@ -501,7 +504,10 @@ impl IntelIommuDriver {
 
                     if let Some(ref cq) = controller.command_queue {
                         let comp = cq
-                            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: domain_id })
+                            .submit_async(IommuCommandKind::InvalidateIotlbDomain {
+                                domain: domain_id,
+                            })
+                            .await
                             .map_err(|_| IommuError::HardwareError)?;
                         let rc = comp.await;
                         if rc == 0 {
