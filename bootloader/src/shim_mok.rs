@@ -13,12 +13,11 @@
 //! - MokSBState: Secure Boot validation state within Shim
 //! - SBAT: Secure Boot Advanced Targeting for revocation
 
-use alloc::vec::Vec;
 use log::info;
 use uefi::prelude::*;
 use uefi::proto::unsafe_protocol;
 use uefi::runtime::{self, VariableVendor};
-use uefi::{boot, Guid, Identify};
+use uefi::{boot, Guid};
 
 /// Shim Lock Protocol GUID
 /// {605DAB50-E046-4300-ABB6-3DD810DD8B23}
@@ -30,6 +29,7 @@ const SHIM_VARIABLE_GUID: Guid = uefi::guid!("605dab50-e046-4300-abb6-3dd810dd8b
 
 /// MOK List RT Variable GUID (MOK variables in RuntimeServices)
 /// {605DAB50-E046-4300-ABB6-3DD810DD8B23}
+#[allow(dead_code)]
 const MOK_LIST_RT_GUID: Guid = SHIM_VARIABLE_GUID;
 
 /// Shim/MOK detection information
@@ -302,6 +302,7 @@ pub fn get_shim_mok_status_string(info: &ShimMokInfo) -> &'static str {
 }
 
 /// Check if we're running in a Shim-validated boot chain
+#[allow(dead_code)]
 pub fn is_shim_validated_boot(info: &ShimMokInfo) -> bool {
     info.shim_detected && info.shim_validated && info.mok_sb_state == 1
 }

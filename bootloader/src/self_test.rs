@@ -159,7 +159,7 @@ fn test_cpu_features(results: &mut SelfTestResults) {
     }
 
     // 基本的なCPUID情報を取得
-    let (max_func, vendor_b, vendor_c, vendor_d) = unsafe {
+    let (max_func, _vendor_b, _vendor_c, _vendor_d) = unsafe {
         let eax: u32;
         let ebx: u32;
         let ecx: u32;
@@ -187,13 +187,13 @@ fn test_cpu_features(results: &mut SelfTestResults) {
 
     // Long Mode（64bit）サポート確認
     let long_mode_supported = unsafe {
-        let eax: u32;
+        let _eax: u32;
         let edx: u32;
         core::arch::asm!(
             "push rbx",
             "cpuid",
             "pop rbx",
-            inout("eax") 0x8000_0001u32 => eax,
+            inout("eax") 0x8000_0001u32 => _eax,
             out("edx") edx,
             out("ecx") _,
             options(nostack, preserves_flags),
@@ -430,6 +430,7 @@ fn log_test_results(results: &SelfTestResults) {
 /// セルフテスト情報（boot_protoに渡す）
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct SelfTestInfo {
     /// テスト全体結果（0=Pass, 1=Warning, 2=Fail, 3=Skip）
     pub overall_result: u8,

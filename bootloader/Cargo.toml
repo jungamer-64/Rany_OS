@@ -20,8 +20,18 @@ graphic_types = { path = "../libs/graphic_types" }
 ed25519-compact = { version = "2.1", default-features = false }
 
 [features]
-default = []
+default = ["ui", "serial_log", "self_test"]
+# ブートメニューUI（対話的なカーネル選択）
+ui = []
+# シリアルポートへのログ出力
+serial_log = []
+# 起動時セルフテスト（メモリ・ハードウェア検証）
+self_test = []
+# 開発用：署名なしカーネルのロードを許可（本番では絶対に使用禁止）
 insecure_boot = []
+# クラウド/本番用：最小構成（UIなし、テストなし、最速起動）
+# 使用例: cargo build --no-default-features --features minimal
+minimal = []
 
 [profile.dev]
 panic = "abort"

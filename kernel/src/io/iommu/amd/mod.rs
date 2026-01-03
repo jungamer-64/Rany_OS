@@ -471,6 +471,7 @@ impl AmdDeferredFaultQueue {
 
 static AMD_DEFERRED_FAULT_QUEUE: AmdDeferredFaultQueue = AmdDeferredFaultQueue::new();
 static AMD_FAULT_WAKERS: WakerQueue = WakerQueue::new();
+static AMD_CMD_WAITERS: WakerQueue = WakerQueue::new();
 
 pub fn drain_deferred_faults() -> usize {
     drain_deferred_faults_with_driver(None)
@@ -1191,7 +1192,7 @@ impl AmdIommuDriver {
                 Ok(guard) => guard,
                 Err(_) => return Err(IommuError::Poisoned),
             };
-            guard.submit_and_wait_token(cmd)?
+            guard.submit_and_wait_token(cmd, true)?
         };
 
         token.wait_async().await
@@ -1456,14 +1457,22 @@ impl AmdCommandWaitToken {
         #[cfg(not(test))]
         {
             let mut polls = 0u64;
-            while !self.is_complete() {
+            let mut token = self;
+            poll_fn(|cx| {
+                if token.is_complete() {
+                    return Poll::Ready(Ok(()));
+                }
                 polls += 1;
                 if polls > AMD_CMD_WAIT_MAX_POLLS {
-                    return Err(IommuError::Timeout);
+                    return Poll::Ready(Err(IommuError::Timeout));
                 }
-                crate::task::yield_now().await;
-            }
-            Ok(())
+                AMD_CMD_WAITERS.register(cx.waker());
+                if token.is_complete() {
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Pending
+            })
+            .await
         }
     }
 }
@@ -1490,13 +1499,14 @@ impl AmdCommandState {
     fn submit_and_wait_token(
         &mut self,
         cmd: cmd::AmdCommand,
+        interrupt: bool,
     ) -> Result<AmdCommandWaitToken, IommuError> {
         let next_seq = self.seq.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         self.submit(cmd)?;
         self.submit(cmd::AmdCommand::completion_wait(
             self.sync_phys,
             next_seq,
-            false,
+            interrupt,
         ))?;
         Ok(AmdCommandWaitToken {
             sync_ptr: self.sync_ptr,
@@ -1513,7 +1523,7 @@ impl AmdCommandState {
 
         #[cfg(not(test))]
         {
-            let token = self.submit_and_wait_token(cmd)?;
+            let token = self.submit_and_wait_token(cmd, false)?;
             token.wait_blocking()
         }
     }
@@ -1819,7 +1829,9 @@ impl AmdIommuDriver {
         AMD_FAULT_WAKERS.wake_all_from_isr();
     }
 
-    pub(crate) fn wake_invalidation_waiters(&self) {}
+    pub(crate) fn wake_invalidation_waiters(&self) {
+        AMD_CMD_WAITERS.wake_all_from_isr();
+    }
 
     pub(crate) fn map_interrupt(
         &self,

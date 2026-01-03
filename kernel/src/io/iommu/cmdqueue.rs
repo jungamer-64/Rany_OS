@@ -14,6 +14,7 @@ use crate::sync::lockfree::BoundedChannel;
 use crate::sync::lockfree::BoundedReceiver;
 use crate::sync::lockfree::BoundedSender;
 use crate::sync::lockfree::DEFAULT_QUEUE_SIZE;
+use core::future::poll_fn;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
@@ -231,6 +232,8 @@ pub struct CommandQueue {
     slot_waiter: AtomicWaker,
     /// Waker for tasks waiting for send space on the channel
     send_waiter: AtomicWaker,
+    /// Waker for tasks waiting for new commands
+    recv_waiter: AtomicWaker,
     /// Counters for metrics and diagnostics
     processed_count: AtomicUsize,
     cancelled_count: AtomicUsize,
@@ -278,6 +281,7 @@ impl CommandQueue {
             numa_node,
             slot_waiter: AtomicWaker::new(),
             send_waiter: AtomicWaker::new(),
+            recv_waiter: AtomicWaker::new(),
             processed_count: AtomicUsize::new(0),
             cancelled_count: AtomicUsize::new(0),
             cancel_attempts: AtomicUsize::new(0),
@@ -379,7 +383,10 @@ impl CommandQueue {
         let mut backoff = Backoff::new();
         loop {
             match self.sender.send(cmd.clone()) {
-                Ok(_) => break,
+                Ok(_) => {
+                    self.recv_waiter.wake();
+                    break;
+                }
                 Err(_) => {
                     backoff.spin();
                 }
@@ -403,6 +410,21 @@ impl CommandQueue {
         let comp = self.submit(kind)?;
         let rc = comp.wait_blocking();
         if rc == RESULT_OK { Ok(()) } else { Err(()) }
+    }
+
+    /// Await until work arrives on the queue.
+    pub async fn wait_for_work(&self) {
+        poll_fn(|cx| {
+            if !self.receiver.is_empty() {
+                return Poll::Ready(());
+            }
+            self.recv_waiter.register(cx.waker());
+            if !self.receiver.is_empty() {
+                return Poll::Ready(());
+            }
+            Poll::Pending
+        })
+        .await;
     }
 
     /// Process pending commands (single pass)
@@ -587,6 +609,7 @@ impl core::future::Future for SubmitFuture {
         // Try non-busy send
         match q.sender.send(cmd.clone()) {
             Ok(_) => {
+                q.recv_waiter.wake();
                 this.kind = None;
                 let comp = CommandCompletion {
                     slot_idx: idx,
@@ -600,6 +623,7 @@ impl core::future::Future for SubmitFuture {
                 q.send_backpressure_count.fetch_add(1, Ordering::Relaxed);
                 q.send_waiter.register(cx.waker());
                 if q.sender.send(cmd).is_ok() {
+                    q.recv_waiter.wake();
                     q.send_waiter.clear();
                     this.kind = None;
                     let comp = CommandCompletion {

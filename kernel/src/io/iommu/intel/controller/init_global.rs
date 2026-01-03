@@ -24,6 +24,8 @@ use super::fault::FaultHandler;
 use super::init::CapabilityManager;
 use super::iova::IovaManager;
 use super::qi_init::QIManager;
+#[cfg(not(test))]
+use super::dma::DomainManager;
 // use crate::io::acpi::dmar; // For parse_dmar - verified this path exists in kernel/src/io/acpi/dmar.rs
 
 fn align_down(value: u64, align: u64) -> u64 {
@@ -32,6 +34,31 @@ fn align_down(value: u64, align: u64) -> u64 {
 
 fn align_up(value: u64, align: u64) -> u64 {
     (value + align - 1) & !(align - 1)
+}
+
+#[cfg(not(test))]
+const COMMAND_QUEUE_BATCH: usize = 64;
+
+#[cfg(not(test))]
+async fn command_queue_worker(controller: Arc<IommuController>) {
+    loop {
+        let cq = match controller.command_queue.as_ref() {
+            Some(cq) => cq,
+            None => break,
+        };
+        let processed = cq.process_up_to(
+            |kind| controller.handle_command_queue_entry(kind).map_err(|_| ()),
+            COMMAND_QUEUE_BATCH,
+        );
+        if processed == 0 {
+            cq.wait_for_work().await;
+        }
+    }
+}
+
+#[cfg(not(test))]
+fn spawn_command_queue_worker(controller: Arc<IommuController>) {
+    crate::task::per_core_executor::spawn(command_queue_worker(controller));
 }
 
 /// Initialize IOMMU using ACPI DMAR table at `dmar_addr`
@@ -108,6 +135,9 @@ pub unsafe fn init_iommu_from_acpi(
             }
         }
 
+        controller.command_queue =
+            Some(crate::io::iommu::cmdqueue::CommandQueue::new_with_numa(None));
+
         controllers.push(Arc::new(controller));
         if unit.include_all {
             default_idx = Some(controllers.len() - 1);
@@ -156,6 +186,15 @@ pub unsafe fn init_iommu_from_acpi(
         reserved_regions,
         config,
     };
+
+    #[cfg(not(test))]
+    {
+        for controller in &registry.controllers {
+            if controller.command_queue.is_some() {
+                spawn_command_queue_worker(Arc::clone(controller));
+            }
+        }
+    }
 
     // Apply Reserved Regions (RMRR)
     // Need to do this before publishing registry because we need mutable access to controllers
@@ -270,8 +309,19 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
 
     log::info!("IOMMU initialized at 0x{:X}\n", mmio_base);
 
+    controller.command_queue =
+        Some(crate::io::iommu::cmdqueue::CommandQueue::new_with_numa(None));
+    let controller = Arc::new(controller);
+
+    #[cfg(not(test))]
+    {
+        if controller.command_queue.is_some() {
+            spawn_command_queue_worker(Arc::clone(&controller));
+        }
+    }
+
     let registry = IommuRegistry::new(
-        alloc::vec![Arc::new(controller)],
+        alloc::vec![Arc::clone(&controller)],
         Vec::new(),
         IommuConfig::default(),
     );

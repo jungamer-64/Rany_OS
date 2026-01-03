@@ -10,6 +10,7 @@ use core::fmt::Write;
 use uefi::runtime::{self, VariableAttributes, VariableVendor};
 use uefi::{cstr16, CStr16, Guid};
 
+#[allow(unused_imports)]
 use crate::serial_println;
 
 /// ブートログ専用GUID
@@ -108,6 +109,7 @@ impl BootLogger {
     }
 
     /// error レベルのログ
+    #[allow(dead_code)]
     pub fn error(&mut self, message: &str) {
         self.log(&alloc::format!("[ERROR] {}", message));
     }
@@ -160,8 +162,8 @@ impl BootLogger {
                     self.buffer.len()
                 );
             }
-            Err(e) => {
-                serial_println!("[BootLog] Failed to save log: {:?}", e);
+            Err(_e) => {
+                serial_println!("[BootLog] Failed to save log: {:?}", _e);
             }
         }
     }
@@ -257,8 +259,8 @@ pub fn dump_previous_log() {
     serial_println!("[BootLog] === Previous Boot Log ===");
 
     if let Some(log) = get_previous_log(1) {
-        for line in log.lines() {
-            serial_println!("  {}", line);
+        for _line in log.lines() {
+            serial_println!("  {}", _line);
         }
     } else {
         serial_println!("  (No previous log available)");
@@ -276,7 +278,7 @@ static mut BOOT_LOGGER: BootLogger = BootLogger::new();
 /// シングルスレッド環境（ブート時）でのみ使用可能
 #[allow(dead_code)]
 pub unsafe fn get_logger() -> &'static mut BootLogger {
-    unsafe { &mut BOOT_LOGGER }
+    unsafe { &mut *(&raw mut BOOT_LOGGER) }
 }
 
 /// ロガーを初期化
@@ -285,7 +287,7 @@ pub unsafe fn get_logger() -> &'static mut BootLogger {
 /// シングルスレッド環境（ブート時）でのみ使用可能
 #[allow(dead_code)]
 pub unsafe fn init_logger() {
-    unsafe { BOOT_LOGGER.init() };
+    unsafe { (*(&raw mut BOOT_LOGGER)).init() };
 }
 
 /// ログを保存
@@ -294,7 +296,7 @@ pub unsafe fn init_logger() {
 /// シングルスレッド環境（ブート時）でのみ使用可能
 #[allow(dead_code)]
 pub unsafe fn save_log() {
-    unsafe { BOOT_LOGGER.save() };
+    unsafe { (*(&raw const BOOT_LOGGER)).save() };
 }
 
 /// ブートログマクロ
