@@ -340,7 +340,6 @@ function Build-Loader {
         "-p", $LOADER_CRATE,
         "--target", $TARGET_LOADER,
         "--release",
-        "--features", "uefi",
         "-Z", "build-std=core,compiler_builtins,alloc",
         "-Z", "build-std-features=compiler-builtins-mem"
     )

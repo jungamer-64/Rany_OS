@@ -806,8 +806,8 @@ fn get_cpu_vendor() -> &'static str {
     #[cfg(target_arch = "x86_64")]
     {
         use core::arch::x86_64::__cpuid;
-        // SAFETY: CPUIDは常に安全
-        let result = unsafe { __cpuid(0) };
+        // CPUID is safe to call directly
+        let result = __cpuid(0);
         let vendor_bytes = [
             (result.ebx as u8),
             ((result.ebx >> 8) as u8),
@@ -843,7 +843,7 @@ fn get_cpu_model_name() -> &'static str {
     {
         use core::arch::x86_64::__cpuid;
         // CPUID拡張機能チェック
-        let result = unsafe { __cpuid(0x80000000) };
+        let result = __cpuid(0x80000000);
         if result.eax >= 0x80000004 {
             // モデル名はCPUID 0x80000002-0x80000004で取得可能だが、
             // 静的文字列を返すためベンダーに基づく推定を使用

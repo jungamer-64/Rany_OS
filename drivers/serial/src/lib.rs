@@ -543,6 +543,7 @@ impl LineEditor {
 
 /// Read a line from serial port with advanced editing support
 /// Returns InputEvent for special keys, allowing shell to handle history
+#[allow(deprecated)]
 pub async fn read_line_advanced(editor: &mut LineEditor) -> InputEvent {
     let port = serial1();
 
@@ -685,6 +686,7 @@ fn redraw_from_cursor(port: &AsyncSerialPort, editor: &LineEditor) {
 
 /// Read a line from serial port asynchronously (simple version)
 /// Returns when Enter is pressed or buffer is full
+#[allow(deprecated)]
 pub async fn read_line() -> String {
     let port = serial1();
     let mut buffer = Vec::with_capacity(256);

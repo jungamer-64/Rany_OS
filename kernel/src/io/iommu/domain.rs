@@ -212,9 +212,250 @@ impl IommuInvalidator for NoopInvalidator {
 ///
 /// Each domain owns sharded locks for mapping metadata/page tables, allowing
 /// parallel map/unmap operations across domains and across shard boundaries.
+///
+/// # Performance Considerations: BTreeMap vs Slab Allocator
+///
+/// The current implementation uses `BTreeMap<u64, DmaMapping>` for tracking mappings.
+/// This has the following characteristics:
+///
+/// | Operation     | Current (BTreeMap) | Target (Slab+Intrusive) |
+/// |---------------|--------------------|-----------------------------|
+/// | Insert        | O(log n) + alloc   | O(1), allocation-free       |
+/// | Remove        | O(log n)           | O(1)                        |
+/// | Lookup        | O(log n)           | O(1) via handle             |
+/// | Memory        | Heap per entry     | Pre-allocated slab          |
+///
+/// ## Why BTreeMap is Problematic for High-Throughput I/O
+///
+/// 1. **Heap Allocation**: Every `map()` allocates a `BTreeMap` node on the heap.
+///    For 100Gbps networking with 1500-byte packets, this is ~8M allocations/sec.
+///
+/// 2. **Pointer Chasing**: Tree traversal causes cache misses, especially under
+///    memory pressure where nodes are not cache-local.
+///
+/// 3. **Lock Contention**: Even with sharding, the BTreeMap lock must be held
+///    during the entire insertion/removal operation.
+///
+/// ## Migration Plan to Intrusive Data Structures
+///
+/// **Phase 1**: Add `DmaMappingSlot` slab allocator (fixed-size, per-NUMA).
+/// ```text
+/// struct DmaMappingSlot {
+///     iova: u64,
+///     phys: u64,
+///     size: u64,
+///     domain_link: IntrusiveListLink,  // For domain's active list
+///     device_link: IntrusiveListLink,  // For device's mapping list
+///     flags: DmaMappingFlags,
+///     ref_count: AtomicU32,
+/// }
+/// ```
+///
+/// **Phase 2**: Replace `DmaHandle`'s IOVA lookup with direct slot pointer.
+/// ```text
+/// struct DmaHandle<T> {
+///     slot: *mut DmaMappingSlot,  // Direct reference, no tree lookup
+///     rref: Option<RRef<T>>,
+///     // ...
+/// }
+/// ```
+///
+/// **Phase 3**: Use intrusive linked lists per domain shard.
+/// ```text
+/// struct DomainShard {
+///     active_mappings: IntrusiveList<DmaMappingSlot>,  // O(1) insert/remove
+///     mapping_count: usize,
+/// }
+/// ```
+///
+/// ## Interim Optimization: Segregated Free Lists for Common Sizes
+///
+/// Until the full migration, add fast paths for common allocation sizes:
+/// ```text
+/// const FAST_PATH_SIZES: [u64; 3] = [4096, 65536, 2097152];  // 4KB, 64KB, 2MB
+/// ```
+///
+/// This reduces tree pressure for the most common DMA buffer sizes.
 const DOMAIN_SHARD_COUNT: usize = 64;
 const PML4_ENTRIES_PER_SHARD: usize = PT_ENTRIES / DOMAIN_SHARD_COUNT;
 
+// ============================================================================
+// DMA Resource Registry (Phase 8: Leak Prevention)
+// ============================================================================
+
+/// Entry in the DMA resource registry tracking an active DmaHandle.
+///
+/// This is stored in a per-domain registry to enable force-unmap on
+/// domain destruction, preventing resource leaks in SAS environments.
+#[derive(Debug)]
+pub struct DmaRegistryEntry {
+    /// IOVA address of this mapping
+    pub iova: u64,
+    /// Physical address
+    pub phys: u64,
+    /// Size in bytes
+    pub size: u64,
+    /// Whether this entry has been unmapped (tombstone for lazy cleanup)
+    pub unmapped: bool,
+}
+
+/// DMA Resource Registry for tracking active DmaHandles.
+///
+/// Enables two critical features:
+/// 1. **Leak Prevention**: Domain destruction force-unmaps all entries
+/// 2. **Resource Accounting**: Track total DMA memory per domain
+///
+/// # Thread Safety
+///
+/// The registry is protected by `PoisonLock` with shard-level granularity
+/// to reduce contention. Each shard corresponds to a range of IOVAs.
+///
+/// # Performance Considerations
+///
+/// - Insert/remove: O(log n) with BTreeMap (future: O(1) with intrusive list)
+/// - Force unmap all: O(n) linear scan
+pub struct DmaResourceRegistry {
+    /// Active DMA mappings indexed by IOVA
+    entries: PoisonLock<BTreeMap<u64, DmaRegistryEntry>>,
+    /// Total active mappings count
+    active_count: AtomicU64,
+    /// Total mapped bytes
+    total_bytes: AtomicU64,
+}
+
+impl DmaResourceRegistry {
+    /// Create a new empty registry
+    pub fn new() -> Self {
+        Self {
+            entries: PoisonLock::new(BTreeMap::new()),
+            active_count: AtomicU64::new(0),
+            total_bytes: AtomicU64::new(0),
+        }
+    }
+
+    /// Register a new DMA mapping
+    ///
+    /// Called when a DmaHandle is created for this domain.
+    pub fn register(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
+        let mut guard = self.entries.lock().map_err(|_| {
+            log::error!("[IOMMU] DMA registry lock poisoned");
+            IommuError::HardwareError
+        })?;
+
+        let entry = DmaRegistryEntry {
+            iova,
+            phys,
+            size,
+            unmapped: false,
+        };
+
+        if guard.insert(iova, entry).is_some() {
+            log::warn!(
+                "[IOMMU] Registry: duplicate IOVA 0x{:x} registration (overwritten)",
+                iova
+            );
+        }
+
+        self.active_count.fetch_add(1, Ordering::Relaxed);
+        self.total_bytes.fetch_add(size, Ordering::Relaxed);
+
+        Ok(())
+    }
+
+    /// Unregister a DMA mapping
+    ///
+    /// Called when a DmaHandle is successfully unmapped.
+    pub fn unregister(&self, iova: u64) -> Result<Option<DmaRegistryEntry>, IommuError> {
+        let mut guard = self.entries.lock().map_err(|_| {
+            log::error!("[IOMMU] DMA registry lock poisoned");
+            IommuError::HardwareError
+        })?;
+
+        if let Some(entry) = guard.remove(&iova) {
+            self.active_count.fetch_sub(1, Ordering::Relaxed);
+            self.total_bytes.fetch_sub(entry.size, Ordering::Relaxed);
+            Ok(Some(entry))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Mark an entry as unmapped (lazy tombstone for batch cleanup)
+    pub fn mark_unmapped(&self, iova: u64) -> Result<bool, IommuError> {
+        let mut guard = self.entries.lock().map_err(|_| {
+            log::error!("[IOMMU] DMA registry lock poisoned");
+            IommuError::HardwareError
+        })?;
+
+        if let Some(entry) = guard.get_mut(&iova) {
+            entry.unmapped = true;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    /// Get count of active (non-unmapped) entries
+    #[inline]
+    pub fn active_count(&self) -> u64 {
+        self.active_count.load(Ordering::Relaxed)
+    }
+
+    /// Get total mapped bytes
+    #[inline]
+    pub fn total_bytes(&self) -> u64 {
+        self.total_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Drain all entries for force-unmap on domain destruction
+    ///
+    /// Returns all entries that need to be force-unmapped.
+    /// After this call, the registry is empty.
+    pub fn drain_all(&self) -> Result<Vec<DmaRegistryEntry>, IommuError> {
+        let mut guard = self.entries.lock().map_err(|_| {
+            log::error!("[IOMMU] DMA registry lock poisoned");
+            IommuError::HardwareError
+        })?;
+
+        let entries: Vec<DmaRegistryEntry> = guard
+            .values()
+            .filter(|e| !e.unmapped)
+            .map(|e| DmaRegistryEntry {
+                iova: e.iova,
+                phys: e.phys,
+                size: e.size,
+                unmapped: e.unmapped,
+            })
+            .collect();
+
+        guard.clear();
+        self.active_count.store(0, Ordering::Relaxed);
+        self.total_bytes.store(0, Ordering::Relaxed);
+
+        Ok(entries)
+    }
+
+    /// Check if an IOVA is registered
+    pub fn contains(&self, iova: u64) -> bool {
+        self.entries
+            .lock()
+            .map(|g| g.contains_key(&iova))
+            .unwrap_or(false)
+    }
+}
+
+impl Default for DmaResourceRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Shard for domain-local mapping metadata.
+///
+/// # Future Work
+///
+/// Replace `BTreeMap` with intrusive list + slab allocator.
+/// See `IommuDomain` documentation for migration plan.
 struct DomainShard {
     mappings: BTreeMap<u64, DmaMapping>,
 }
@@ -258,6 +499,34 @@ pub struct IommuDomain {
     security_notifier: Once<Arc<dyn SecurityNotifier>>,
     /// Fatal error flag; once set, the domain rejects new map/unmap operations.
     poisoned: AtomicBool,
+    /// Per-Domain IOVA Allocator (Phase 7: Scalability Improvement)
+    ///
+    /// When Some, this domain uses its own IOVA space instead of sharing
+    /// the controller's global allocator. This eliminates lock contention
+    /// between devices in different domains.
+    ///
+    /// # Configuration
+    ///
+    /// Enable per-domain allocation by passing `iova_range` to `new_with_iova()`.
+    ///
+    /// # Benefits
+    ///
+    /// - Zero lock contention between domains
+    /// - Full 48-bit IOVA space per domain for ASLR
+    /// - Per-domain resource accounting
+    /// - 32-bit devices don't compete for low addresses
+    per_domain_iova: Option<PoisonLock<super::iova_allocator::IovaAllocator>>,
+    /// DMA Resource Registry (Phase 8: Leak Prevention)
+    ///
+    /// Tracks all active DmaHandles belonging to this domain.
+    /// Enables force-unmap on domain destruction to prevent resource leaks.
+    ///
+    /// # Usage
+    ///
+    /// - `register()`: Called when DmaHandle is created
+    /// - `unregister()`: Called when DmaHandle is unmapped
+    /// - `drain_all()`: Called on domain destruction for force-unmap
+    dma_registry: DmaResourceRegistry,
 }
 
 unsafe impl Send for IommuDomain {}
@@ -326,7 +595,181 @@ impl IommuDomain {
             pte_format,
             security_notifier: Once::new(),
             poisoned: AtomicBool::new(false),
+            per_domain_iova: None, // Use controller's global allocator by default
+            dma_registry: DmaResourceRegistry::new(),
         }
+    }
+
+    /// Create a new domain with per-domain IOVA allocator
+    ///
+    /// This constructor creates a domain with its own dedicated IOVA space,
+    /// eliminating lock contention with other domains.
+    ///
+    /// # Arguments
+    /// * `id` - Domain ID
+    /// * `numa_node` - Optional NUMA node affinity
+    /// * `supports_2mb` - Hardware supports 2MB super pages
+    /// * `supports_1gb` - Hardware supports 1GB super pages
+    /// * `max_addr_bits` - Maximum supported address width (bits)
+    /// * `domain_type` - Domain type (Strict, Passthrough, etc.)
+    /// * `page_table_pool` - Shared page table pool for recycling
+    /// * `pte_format` - PTE format (Intel or AMD)
+    /// * `iova_base` - Base address for this domain's IOVA space
+    /// * `iova_size` - Size of this domain's IOVA space
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// // Create domain with 512GB IOVA space starting at 4GB
+    /// let domain = IommuDomain::new_with_iova(
+    ///     domain_id,
+    ///     Some(numa_node),
+    ///     true, true, 48,
+    ///     IommuDomainType::Strict,
+    ///     pool.clone(),
+    ///     PteFormat::Intel,
+    ///     4 * 1024 * 1024 * 1024,       // 4GB base
+    ///     512 * 1024 * 1024 * 1024,     // 512GB size
+    /// );
+    /// ```
+    pub fn new_with_iova(
+        id: u16,
+        numa_node: Option<usize>,
+        supports_2mb: bool,
+        supports_1gb: bool,
+        max_addr_bits: u8,
+        domain_type: IommuDomainType,
+        page_table_pool: Arc<super::page_table_pool::PageTablePool>,
+        pte_format: PteFormat,
+        iova_base: u64,
+        iova_size: u64,
+    ) -> Self {
+        let mut domain = Self::new(
+            id,
+            numa_node,
+            supports_2mb,
+            supports_1gb,
+            max_addr_bits,
+            domain_type,
+            page_table_pool,
+            pte_format,
+        );
+
+        // Initialize per-domain IOVA allocator
+        domain.per_domain_iova = Some(PoisonLock::new(
+            super::iova_allocator::IovaAllocator::new(iova_base, iova_size),
+        ));
+
+        log::debug!(
+            "[IOMMU] Domain {} initialized with per-domain IOVA: base=0x{:x}, size=0x{:x}",
+            id,
+            iova_base,
+            iova_size
+        );
+
+        domain
+    }
+
+    /// Allocate IOVA from this domain's allocator (if available)
+    ///
+    /// Returns `Ok(iova)` if per-domain allocator is configured,
+    /// `Err(IommuError::NotSupported)` if using global allocator.
+    pub fn allocate_iova(&self, size: u64) -> Result<u64, super::types::IommuError> {
+        use super::iova_allocator::IovaGranularity;
+        
+        let allocator = self
+            .per_domain_iova
+            .as_ref()
+            .ok_or(super::types::IommuError::NotSupported)?;
+
+        let mut guard = allocator.lock().map_err(|_| {
+            log::error!("[IOMMU] Per-domain IOVA allocator lock poisoned");
+            super::types::IommuError::HardwareError
+        })?;
+
+        guard
+            .allocate(size, IovaGranularity::Page4K)
+            .ok_or(super::types::IommuError::OutOfIova)
+    }
+
+    /// Free IOVA back to this domain's allocator (if available)
+    pub fn free_iova(&self, iova: u64, size: u64) -> Result<(), super::types::IommuError> {
+        let allocator = self
+            .per_domain_iova
+            .as_ref()
+            .ok_or(super::types::IommuError::NotSupported)?;
+
+        let mut guard = allocator.lock().map_err(|_| {
+            log::error!("[IOMMU] Per-domain IOVA allocator lock poisoned");
+            super::types::IommuError::HardwareError
+        })?;
+
+        guard.free(iova, size)
+    }
+
+    /// Check if this domain has a per-domain IOVA allocator
+    #[inline]
+    pub fn has_per_domain_iova(&self) -> bool {
+        self.per_domain_iova.is_some()
+    }
+
+    // ========================================================================
+    // Phase 8: DMA Resource Registry (Leak Prevention)
+    // ========================================================================
+
+    /// Register a DMA mapping in this domain's resource registry
+    ///
+    /// Called when a DmaHandle is created for this domain.
+    pub fn register_dma_mapping(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
+        self.dma_registry.register(iova, phys, size)
+    }
+
+    /// Unregister a DMA mapping from this domain's resource registry
+    ///
+    /// Called when a DmaHandle is successfully unmapped.
+    pub fn unregister_dma_mapping(&self, iova: u64) -> Result<Option<DmaRegistryEntry>, IommuError> {
+        self.dma_registry.unregister(iova)
+    }
+
+    /// Get the count of active DMA mappings in this domain
+    #[inline]
+    pub fn active_dma_count(&self) -> u64 {
+        self.dma_registry.active_count()
+    }
+
+    /// Get the total bytes of active DMA mappings in this domain
+    #[inline]
+    pub fn active_dma_bytes(&self) -> u64 {
+        self.dma_registry.total_bytes()
+    }
+
+    /// Force unmap all active DMA mappings
+    ///
+    /// This is called during domain destruction to prevent resource leaks.
+    /// Returns the list of entries that were force-unmapped.
+    ///
+    /// # Warning
+    ///
+    /// This is a destructive operation that invalidates all DmaHandles
+    /// belonging to this domain. Only call during domain teardown.
+    pub fn force_unmap_all_dma(&self) -> Result<Vec<DmaRegistryEntry>, IommuError> {
+        let entries = self.dma_registry.drain_all()?;
+
+        if !entries.is_empty() {
+            log::warn!(
+                "[IOMMU] Domain {}: Force-unmapping {} leaked DMA mappings ({} bytes)",
+                self.id,
+                entries.len(),
+                entries.iter().map(|e| e.size).sum::<u64>()
+            );
+        }
+
+        Ok(entries)
+    }
+
+    /// Check if a specific IOVA is registered in this domain
+    pub fn is_dma_registered(&self, iova: u64) -> bool {
+        self.dma_registry.contains(iova)
     }
 
     /// Get domain ID
@@ -791,6 +1234,18 @@ impl IommuDomain {
     }
 
     /// Map a region with identity mapping (IOVA = Physical Address)
+    ///
+    /// # Security Warning
+    ///
+    /// Identity mapping bypasses IOMMU protection and should only be used
+    /// for RMRR (Reserved Memory Region Reporting) regions or early boot.
+    ///
+    /// This function is only available when:
+    /// - `feature = "unsafe_iommu_bypass"` is enabled, OR
+    /// - `debug_assertions` are enabled (debug builds)
+    ///
+    /// In production builds, use `map()` with explicit IOVA allocation instead.
+    #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
     pub fn map_identity(
         &self,
         phys: u64,
@@ -798,7 +1253,30 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<(), IommuError> {
+        log::warn!(
+            "[IOMMU][SECURITY] Identity mapping {:#x}+{:#x} - bypassing protection!",
+            phys, size
+        );
         self.map(phys, phys, size, read, write)
+    }
+
+    /// Map a region with identity mapping - DISABLED in production builds.
+    ///
+    /// This stub exists to provide a clear compile-time error when identity
+    /// mapping is attempted in production builds without the bypass feature.
+    #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+    #[allow(unused_variables)]
+    pub fn map_identity(
+        &self,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<(), IommuError> {
+        log::error!(
+            "[IOMMU][SECURITY] Identity mapping rejected - enable 'unsafe_iommu_bypass' feature"
+        );
+        Err(IommuError::NotSupported)
     }
 
     /// Map a contiguous run of 4KB pages within a single PT.
@@ -1744,10 +2222,12 @@ impl IommuDomain {
     /// Recursively deallocate all page tables under the given table.
     ///
     /// Uses a bounded recursion depth (4 levels) to avoid heap allocation in Drop.
+    /// Note: Despite the historical name, this implementation is recursive, not iterative.
+    /// The recursion depth is bounded by PT_LEVELS (typically 4), so stack usage is safe.
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
-    unsafe fn deallocate_page_tables_iterative(&mut self) {
+    unsafe fn deallocate_page_tables_recursive(&mut self) {
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");
@@ -1789,7 +2269,7 @@ impl Drop for IommuDomain {
     fn drop(&mut self) {
         if !self.page_table.is_null() {
             unsafe {
-                self.deallocate_page_tables_iterative();
+                self.deallocate_page_tables_recursive();
             }
         }
     }

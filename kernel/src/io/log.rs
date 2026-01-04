@@ -721,7 +721,7 @@ impl KernelLogger {
 
     /// Write a record into an async RingBuffer (generic over its capacity)
     fn write_into_async_buffer<const N: usize>(&self, buf: &mut RingBuffer<N>, record: &Record) {
-        let mut writer = AsyncLogWriter::<N>::new(buf);
+        let writer = AsyncLogWriter::<N>::new(buf);
         let mut tracker = LastCharTracker::new(writer);
 
         self.print_header(&mut tracker, record);
@@ -984,7 +984,7 @@ pub fn handle_serial_interrupt() {
 
                 // Drain global buffer using peek/advance to avoid push_front semantics
                 let n = {
-                    let mut guard = LOG_BUFFER.lock();
+                    let guard = LOG_BUFFER.lock();
                     guard.peek_bulk(&mut tmp)
                 };
 

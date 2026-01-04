@@ -549,6 +549,7 @@ impl DomainManager for IommuController {
                 }
                 Err(_) => Err(()),
             },
+            IommuCommandKind::MapRegionDevice { .. } => Err(()),
             IommuCommandKind::UnmapRegion {
                 domain,
                 iova,
@@ -571,6 +572,7 @@ impl DomainManager for IommuController {
                 }
                 Err(_) => Err(()),
             },
+            IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
             IommuCommandKind::InvalidateIotlbDomain { domain } => {
                 unsafe { self.invalidate_iotlb_direct(*domain) };
                 Ok(0)

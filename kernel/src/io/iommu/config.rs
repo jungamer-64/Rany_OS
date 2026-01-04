@@ -5,7 +5,6 @@
 //!
 //! Configuration structures for IOMMU initialization and runtime behavior.
 
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::types::DeviceId;

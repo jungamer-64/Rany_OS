@@ -21,6 +21,7 @@ use self::controller::iova::IovaManager;
 use self::controller::ir::InterruptRemapper;
 use self::controller::qi_ops::InvalidationOps;
 
+use super::domain::IommuDomain;
 use super::IommuBackend;
 // Generic registry for registering the driver
 use super::registry::{init_driver, is_iommu_enabled};
@@ -585,6 +586,17 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if controller.domain(domain_id).is_some() {
                 return controller.set_domain_numa(domain_id, numa_node);
+            }
+        }
+        Err(IommuError::DomainNotFound)
+    }
+
+    /// Get domain by ID
+    pub(crate) fn get_domain(&self, domain_id: u16) -> Result<Arc<IommuDomain>, IommuError> {
+        let registry = self.registry()?;
+        for controller in &registry.controllers {
+            if let Some(domain_arc) = controller.domain(domain_id) {
+                return Ok(domain_arc);
             }
         }
         Err(IommuError::DomainNotFound)

@@ -422,7 +422,7 @@ impl InterruptManager {
 
         for i in 0..count {
             match self.allocate_msi_vector(device_bdf, handler_name.clone(), target_apic_id) {
-                Ok(mut alloc) => {
+                Ok(alloc) => {
                     // MSI-Xとして記録
                     if let Some(allocation) = self.allocations.write().get_mut(&alloc.vector) {
                         allocation.source = InterruptSourceType::MsiX {

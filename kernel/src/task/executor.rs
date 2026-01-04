@@ -19,7 +19,8 @@
 #![allow(dead_code)]
 
 use super::{Task, TaskId, create_waker};
-use crate::sync::{LockResult, PoisonLock};
+use crate::sync::PoisonLock;
+use crate::io::iommu::intel::controller::dma::DomainManager;
 use alloc::collections::{BTreeMap, VecDeque};
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
@@ -359,12 +360,25 @@ impl Executor {
                                 match kind {
                                     crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { domain } => {
                                         // call concrete operation directly
-                                        unsafe { ctrl.invalidate_iotlb(*domain) };
+                                        ctrl.invalidate_iotlb(*domain);
                                         Ok(0)
                                     }
                                     crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbGlobal => {
-                                        unsafe { ctrl.invalidate_iotlb_global() };
+                                        unsafe { ctrl.invalidate_iotlb_global(); }
                                         Ok(0)
+                                    }
+                                    crate::io::iommu::cmdqueue::IommuCommandKind::MapRegionDevice { .. } => {
+                                        // Delegate to controller-specific device mapping handler if available.
+                                        match ctrl.handle_command_queue_entry(kind) {
+                                            Ok(rc) => Ok(rc),
+                                            Err(_) => Err(()),
+                                        }
+                                    }
+                                    crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegionDevice { .. } => {
+                                        match ctrl.handle_command_queue_entry(kind) {
+                                            Ok(rc) => Ok(rc),
+                                            Err(_) => Err(()),
+                                        }
                                     }
                                     crate::io::iommu::cmdqueue::IommuCommandKind::MapRegion { domain, iova, phys, size, read, write } => {
                                         // Lookup domain and perform mapping; then invalidate
@@ -375,7 +389,7 @@ impl Executor {
                                                 if let Some(domain_arc) = domain_arc {
                                                     match domain_arc.map(*iova, *phys, *size, *read, *write) {
                                                         Ok(_) => {
-                                                            unsafe { ctrl.invalidate_iotlb(*domain) };
+                                                            ctrl.invalidate_iotlb(*domain);
                                                             Ok(0)
                                                         }
                                                         Err(_) => Err(()),
@@ -395,7 +409,7 @@ impl Executor {
                                                 if let Some(domain_arc) = domain_arc {
                                                     match domain_arc.unmap(*iova) {
                                                         Ok(_) => {
-                                                            unsafe { ctrl.invalidate_iotlb(*domain) };
+                                                            ctrl.invalidate_iotlb(*domain);
                                                             Ok(0)
                                                         }
                                                         Err(_) => Err(()),

@@ -7,7 +7,7 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 /// A Mutex that disables interrupts while locked.
 ///
@@ -43,7 +43,7 @@ impl<T: ?Sized> IrqMutex<T> {
     /// Locks the mutex and disables interrupts.
     ///
     /// Returns a guard that will restore the previous interrupt state when dropped.
-    pub fn lock(&self) -> IrqMutexGuard<T> {
+    pub fn lock(&self) -> IrqMutexGuard<'_, T> {
         // 1. Disable interrupts and save state
         let saved_int_state = x86_64::instructions::interrupts::are_enabled();
         x86_64::instructions::interrupts::disable();
@@ -70,7 +70,7 @@ impl<T: ?Sized> IrqMutex<T> {
     ///
     /// If successful, returns the guard. Interrupts are disabled if successful.
     /// If failed, returns None and interrupt state is unchanged (or restored).
-    pub fn try_lock(&self) -> Option<IrqMutexGuard<T>> {
+    pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
         let saved_int_state = x86_64::instructions::interrupts::are_enabled();
         x86_64::instructions::interrupts::disable();
 

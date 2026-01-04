@@ -34,6 +34,8 @@ pub enum IommuError {
     HardwareError,
     /// Out of memory
     OutOfMemory,
+    /// Out of IOVA space
+    OutOfIova,
     /// Timeout
     Timeout,
     /// System entered poisoned state (critical error)

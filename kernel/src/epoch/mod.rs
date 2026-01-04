@@ -187,7 +187,6 @@ pub fn defer_free(address: usize, size: usize) {
 /// # Returns
 /// 解放したメモリ量（バイト）
 pub fn process_deferred_frees() -> usize {
-    let current = current_epoch();
     let mut freed = 0;
 
     let mut queue = DEFERRED_QUEUE.lock();

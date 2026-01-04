@@ -11,6 +11,7 @@ use alloc::sync::Arc;
 use spin::Once;
 
 use super::IommuBackend;
+#[allow(unused_imports)]
 pub use super::intel::registry::{get_iommu_registry, init_registry, IommuRegistry};
 
 /// Global IOMMU Driver (backend abstraction, initialized once during boot)

@@ -23,7 +23,7 @@ use super::context::DeviceContext;
 use super::event_handler::{
     CommandCompletionEvent, EventHandler, PortStatusChangeEvent, ProcessedEvent, TransferEvent,
 };
-use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
+use super::trb::{CompletionCode, ErstEntry, Trb, TrbRing};
 use super::{
     COMMAND_RING_SIZE, CONFIG, CRCR, DCBAAP, ERDP, ERSTBA, ERSTSZ, EVENT_RING_SIZE, IMAN, IR0,
     MAX_ENDPOINTS, MAX_SLOTS, PORT_REGISTER_SIZE, PORTSC_BASE, PORTSC_CCS, PORTSC_CHANGE_MASK,

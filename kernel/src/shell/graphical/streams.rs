@@ -151,7 +151,7 @@ impl BlinkTimer {
     }
 
     /// 次のティックまで待機
-    pub fn tick(&mut self) -> BlinkTimerFuture {
+    pub fn tick(&mut self) -> BlinkTimerFuture<'_> {
         BlinkTimerFuture { timer: self }
     }
 }

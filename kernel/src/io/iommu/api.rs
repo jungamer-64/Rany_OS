@@ -28,20 +28,68 @@ pub use super::registry::is_iommu_enabled;
 
 /// Identity mapping fallback gate (default: false).
 ///
-/// WARNING: Enabling this allows identity mapping when IOMMU is unavailable.
-/// Use only for early boot or controlled bring-up paths.
+/// # Security Warning
+///
+/// **CRITICAL**: Enabling identity mapping completely bypasses IOMMU protection
+/// and exposes the system to DMA attacks. A malicious or buggy device can:
+///
+/// - Read/write arbitrary physical memory (including kernel code and secrets)
+/// - Escalate privileges by modifying kernel data structures
+/// - Exfiltrate cryptographic keys and other sensitive data
+/// - Bypass all isolation guarantees provided by the IOMMU
+///
+/// This flag is available **only** when:
+/// - `feature = "unsafe_iommu_bypass"` is enabled, OR
+/// - `debug_assertions` are enabled (debug builds)
+///
+/// In release builds without `unsafe_iommu_bypass`, this flag does not exist
+/// and identity mapping is unconditionally prohibited.
+///
+/// ## Acceptable Use Cases
+/// - Very early boot (before IOMMU initialization completes)
+/// - Hardware debugging on trusted systems with no external devices
+/// - IOMMU hardware bring-up on new platforms
+///
+/// ## Never Use When
+/// - Untrusted PCIe devices are present
+/// - System processes sensitive data
+/// - Production deployments
 #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
 static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
 
 /// Global DMA mapping gate (device-scoped mappings remain allowed).
 static ALLOW_GLOBAL_MAPPINGS: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
 
-// Instrumentation counters for testing / diagnostics
+// Instrumentation counters for testing / diagnostics.
+// These use Relaxed ordering as they are only for diagnostic purposes
+// and do not require synchronization with other memory operations.
 static MAP_COUNT: AtomicU64 = AtomicU64::new(0);
 static UNMAP_COUNT: AtomicU64 = AtomicU64::new(0);
 
 // Per-device DMA address masks (inclusive).
 static DEVICE_DMA_MASKS: RwLock<BTreeMap<DeviceId, u64>> = RwLock::new(BTreeMap::new());
+
+// ============================================================================
+// MSI/MSI-X Constants (x86 Format)
+// ============================================================================
+
+/// Base address for MSI messages (x86 architecture).
+/// All MSI messages are directed to the LAPIC address range.
+const MSI_BASE_ADDRESS: u64 = 0xFEE0_0000;
+
+/// Shift for the lower 15 bits of the interrupt handle in MSI address.
+/// Bits [19:5] contain handle[14:0].
+const MSI_HANDLE_LOW_SHIFT: u8 = 5;
+
+/// Shift for the high bit of the interrupt handle in MSI address.
+/// Bit [3] contains handle[15] (SHV bit in VT-d terminology).
+const MSI_HANDLE_HIGH_SHIFT: u8 = 3;
+
+/// Mask for the lower 15 bits of the interrupt handle.
+const MSI_HANDLE_LOW_MASK: u64 = 0x7FFF;
+
+/// Mask for the high bit (bit 15) of the interrupt handle.
+const MSI_HANDLE_HIGH_MASK: u64 = 1;
 
 // ============================================================================
 // IOMMU Requirement Functions
@@ -50,9 +98,29 @@ static DEVICE_DMA_MASKS: RwLock<BTreeMap<DeviceId, u64>> = RwLock::new(BTreeMap:
 /// Enable/disable identity mapping fallback.
 ///
 /// # Safety
-/// This weakens memory protection and must only be set during trusted early init.
+///
+/// **DANGEROUS**: This function weakens or completely removes IOMMU protection.
+///
+/// The caller must guarantee:
+/// - This is called during a trusted early initialization phase
+/// - No untrusted PCIe/Thunderbolt devices are present
+/// - The system is in a controlled debugging environment
+/// - Identity mapping will be disabled before untrusted code runs
+///
+/// Enabling identity mapping in production environments is a **critical security vulnerability**.
+/// See [`UNSAFE_ALLOW_IDENTITY_MAPPING`] for detailed security implications.
+///
+/// # Platform Behavior
+/// - Debug builds: Sets the flag (with warning log)
+/// - Release builds with `unsafe_iommu_bypass`: Sets the flag (with warning log)
+/// - Release builds without `unsafe_iommu_bypass`: No-op, logs a warning
 #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
 pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
+    if allowed {
+        log::warn!(
+            "[IOMMU][SECURITY] Identity mapping ENABLED - system is vulnerable to DMA attacks!"
+        );
+    }
     UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, Ordering::Release);
 }
 
@@ -178,6 +246,124 @@ fn validate_device_dma_mask(device: &DeviceId, addr: u64, size: u64) -> Result<(
 }
 
 // ============================================================================
+// DMA Mask Pre-Validation (TOCTOU-safe)
+// ============================================================================
+
+/// Pre-validate that a mapping size can fit within the device's DMA mask.
+///
+/// # TOCTOU-Safety
+///
+/// This validation is performed **before** any IOVA allocation or page table
+/// modification. Combined with `allocate_iova_masked()`, this ensures that
+/// an invalid mapping is never created, eliminating the time-of-check
+/// time-of-use vulnerability window.
+///
+/// # Returns
+/// * `Ok(Some(mask))` - Device has a DMA mask, returned for use in allocation
+/// * `Ok(None)` - No mask registered, no constraint
+/// * `Err(IommuError::InvalidAddress)` - Size exceeds maximum addressable range
+fn validate_dma_mask_pre_allocation(device: &DeviceId, size: u64) -> Result<Option<u64>, IommuError> {
+    let Some(mask) = get_device_dma_mask(device) else {
+        return Ok(None);
+    };
+
+    // Check if the size alone exceeds the mask's addressable range
+    // (i.e., there exists no IOVA where `iova + size <= mask + 1`)
+    let max_addressable = (mask as u128) + 1;
+    if (size as u128) > max_addressable {
+        log::warn!(
+            "[IOMMU] DMA mapping size {} exceeds device {:?} mask limit {}",
+            size, device, max_addressable
+        );
+        return Err(IommuError::InvalidAddress);
+    }
+
+    Ok(Some(mask))
+}
+
+/// Finalize a successful DMA mapping (counter update only).
+///
+/// Called after a mapping has been validated and created.
+/// This function only updates diagnostic counters.
+fn finalize_mapping_success() {
+    MAP_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+// ============================================================================
+// DMA Mapping Post-Validation Helper (DEPRECATED - defense in depth only)
+// ============================================================================
+
+/// Validate and finalize a DMA mapping for a device.
+///
+/// # Deprecation Notice
+///
+/// This function performs **post-hoc validation** after the mapping has been created.
+/// It exists only as a defense-in-depth measure for legacy code paths.
+///
+/// **New code should use `validate_dma_mask_pre_allocation()` before mapping.**
+///
+/// The TOCTOU-safe approach is:
+/// 1. Call `validate_dma_mask_pre_allocation()` to get the DMA mask
+/// 2. Pass the mask to `allocate_iova_masked()` during IOVA allocation
+/// 3. Create the mapping (which now cannot violate the mask)
+/// 4. Call `finalize_mapping_success()` for diagnostic counters
+#[deprecated(
+    since = "0.3.0",
+    note = "Use validate_dma_mask_pre_allocation() before mapping instead"
+)]
+fn validate_and_finalize_mapping(
+    driver: &IommuBackend,
+    device: &DeviceId,
+    iova: u64,
+    size: u64,
+) -> Result<u64, IommuError> {
+    if let Err(err) = validate_device_dma_mask(device, iova, size) {
+        // Mapping violates device DMA constraints; clean up immediately
+        log::error!(
+            "[IOMMU][SECURITY] TOCTOU window exploited: mapping {:#x}+{} violates device {:?} DMA mask",
+            iova, size, device
+        );
+        if let Err(unmap_err) = driver.unmap_for_device(device, iova, size) {
+            log::error!(
+                "[IOMMU] failed to unmap invalid device DMA mapping: {:?}",
+                unmap_err
+            );
+        }
+        return Err(err);
+    }
+    MAP_COUNT.fetch_add(1, Ordering::Relaxed);
+    Ok(iova)
+}
+
+/// Async variant of `validate_and_finalize_mapping`.
+#[deprecated(
+    since = "0.3.0",
+    note = "Use validate_dma_mask_pre_allocation() before mapping instead"
+)]
+async fn validate_and_finalize_mapping_async(
+    driver: &IommuBackend,
+    device: &DeviceId,
+    iova: u64,
+    size: u64,
+) -> Result<u64, IommuError> {
+    if let Err(err) = validate_device_dma_mask(device, iova, size) {
+        log::error!(
+            "[IOMMU][SECURITY] TOCTOU window exploited: async mapping {:#x}+{} violates device {:?} DMA mask",
+            iova, size, device
+        );
+        if let Err(unmap_err) = driver.unmap_for_device_async(device, iova, size).await {
+            log::error!(
+                "[IOMMU] failed to unmap invalid async device DMA mapping: {:?}",
+                unmap_err
+            );
+        }
+        return Err(err);
+    }
+    MAP_COUNT.fetch_add(1, Ordering::Relaxed);
+    Ok(iova)
+}
+
+// ============================================================================
 // Global Interrupt Remapping Interface
 // ============================================================================
 
@@ -204,6 +390,15 @@ pub fn map_interrupt(
 ///
 /// # Returns
 /// (Address, Data) tuple for MSI/MSI-X configuration
+///
+/// # Address Format (x86, Intel VT-d/AMD-Vi compatible)
+/// ```text
+/// Bits [31:20]: 0xFEE (LAPIC base)
+/// Bits [19:5]:  handle[14:0] - lower 15 bits of interrupt handle
+/// Bit  [4]:     Reserved (0)
+/// Bit  [3]:     handle[15] - high bit of handle (SHV in VT-d)
+/// Bits [2:0]:   Reserved (0)
+/// ```
 pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
     if let Some(driver) = get_iommu_driver() {
         return driver.get_remap_msi_message(handle);
@@ -211,9 +406,11 @@ pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
 
     // Fallback to Intel VT-d MSI/MSI-X format if no driver is registered.
     let handle = handle as u64;
-    let index_14_0 = handle & 0x7FFF;
-    let index_15 = (handle >> 15) & 1;
-    let address = 0xFEE0_0000 | (index_14_0 << 5) | (index_15 << 3);
+    let index_low = handle & MSI_HANDLE_LOW_MASK;
+    let index_high = (handle >> 15) & MSI_HANDLE_HIGH_MASK;
+    let address = MSI_BASE_ADDRESS
+        | (index_low << MSI_HANDLE_LOW_SHIFT)
+        | (index_high << MSI_HANDLE_HIGH_SHIFT);
     let data = 0;
     (address, data)
 }
@@ -276,7 +473,7 @@ pub(in crate::io::iommu) unsafe fn map_for_dma(
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     let res = unsafe { driver.map_for_dma(phys_addr, size) };
     if res.is_ok() {
-        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+        MAP_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     res
 }
@@ -293,7 +490,7 @@ pub(in crate::io::iommu) unsafe fn map_for_dma_with_perms(
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     let res = unsafe { driver.map_for_dma_with_perms(phys_addr, size, read, write) };
     if res.is_ok() {
-        MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+        MAP_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     res
 }
@@ -303,7 +500,7 @@ pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     let res = driver.unmap_dma(iova, _size);
     if res.is_ok() {
-        UNMAP_COUNT.fetch_add(1, Ordering::SeqCst);
+        UNMAP_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     res
 }
@@ -312,6 +509,12 @@ pub fn unmap_dma(iova: u64, _size: u64) -> Result<(), IommuError> {
 ///
 /// Uses the optimized `get_domain_for_device` path to map only in the
 /// device's assigned domain.
+///
+/// # TOCTOU Safety
+///
+/// This function is TOCTOU-safe: the backend applies DMA mask constraints
+/// during IOVA allocation via `allocate_iova_masked()`, ensuring no
+/// invalid mapping ever exists in the page tables.
 ///
 /// # Safety
 ///
@@ -322,19 +525,14 @@ pub(in crate::io::iommu) unsafe fn map_for_device(
     phys_addr: PhysAddr,
     size: u64,
 ) -> Result<u64, IommuError> {
+    // Pre-validate that size can fit within device's DMA mask
+    let _ = validate_dma_mask_pre_allocation(device, size)?;
+
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     // SAFETY: Caller must uphold safety requirements of map_for_device.
+    // Note: Backend applies DMA mask during IOVA allocation (TOCTOU-safe).
     let iova = unsafe { driver.map_for_device(device, phys_addr, size) }?;
-    if let Err(err) = validate_device_dma_mask(device, iova, size) {
-        if let Err(unmap_err) = driver.unmap_for_device(device, iova, size) {
-            log::error!(
-                "[IOMMU] failed to unmap invalid device DMA mapping: {:?}",
-                unmap_err
-            );
-        }
-        return Err(err);
-    }
-    MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    finalize_mapping_success();
     Ok(iova)
 }
 
@@ -345,24 +543,24 @@ pub(in crate::io::iommu) unsafe fn map_for_device_with_perms(
     read: bool,
     write: bool,
 ) -> Result<u64, IommuError> {
+    // Pre-validate that size can fit within device's DMA mask
+    let _ = validate_dma_mask_pre_allocation(device, size)?;
+
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     // SAFETY: Caller must uphold safety requirements of map_for_device_with_perms.
+    // Note: Backend applies DMA mask during IOVA allocation (TOCTOU-safe).
     let iova = unsafe { driver.map_for_device_with_perms(device, phys_addr, size, read, write) }?;
-    if let Err(err) = validate_device_dma_mask(device, iova, size) {
-        if let Err(unmap_err) = driver.unmap_for_device(device, iova, size) {
-            log::error!(
-                "[IOMMU] failed to unmap invalid device DMA mapping: {:?}",
-                unmap_err
-            );
-        }
-        return Err(err);
-    }
-    MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    finalize_mapping_success();
     Ok(iova)
 }
 
 /// Async variant of `map_for_device` that offloads to the controller's CommandQueue
 /// and `await`s completion when configured.
+///
+/// # TOCTOU Safety
+///
+/// This function is TOCTOU-safe: the backend applies DMA mask constraints
+/// during IOVA allocation via `allocate_iova_masked()`.
 ///
 /// # Safety
 ///
@@ -373,18 +571,13 @@ pub(in crate::io::iommu) async unsafe fn map_for_device_async(
     phys_addr: PhysAddr,
     size: u64,
 ) -> Result<u64, IommuError> {
+    // Pre-validate that size can fit within device's DMA mask
+    let _ = validate_dma_mask_pre_allocation(device, size)?;
+
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
+    // Note: Backend applies DMA mask during IOVA allocation (TOCTOU-safe).
     let iova = unsafe { driver.map_for_device_async(device, phys_addr, size).await }?;
-    if let Err(err) = validate_device_dma_mask(device, iova, size) {
-        if let Err(unmap_err) = driver.unmap_for_device_async(device, iova, size).await {
-            log::error!(
-                "[IOMMU] failed to unmap invalid async device DMA mapping: {:?}",
-                unmap_err
-            );
-        }
-        return Err(err);
-    }
-    MAP_COUNT.fetch_add(1, Ordering::SeqCst);
+    finalize_mapping_success();
     Ok(iova)
 }
 
@@ -408,7 +601,7 @@ pub async fn unmap_for_device_async(
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
     let res = driver.unmap_for_device_async(device, iova, _size).await;
     if res.is_ok() {
-        UNMAP_COUNT.fetch_add(1, Ordering::SeqCst);
+        UNMAP_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     res
 }
@@ -456,18 +649,18 @@ pub(crate) mod raw {
 
 /// Reset map/unmap counters (for tests)
 pub fn reset_map_unmap_counts() {
-    MAP_COUNT.store(0, Ordering::SeqCst);
-    UNMAP_COUNT.store(0, Ordering::SeqCst);
+    MAP_COUNT.store(0, Ordering::Relaxed);
+    UNMAP_COUNT.store(0, Ordering::Relaxed);
 }
 
 /// Get number of successful map operations recorded
 pub fn get_map_count() -> u64 {
-    MAP_COUNT.load(Ordering::SeqCst)
+    MAP_COUNT.load(Ordering::Relaxed)
 }
 
 /// Get number of successful unmap operations recorded
 pub fn get_unmap_count() -> u64 {
-    UNMAP_COUNT.load(Ordering::SeqCst)
+    UNMAP_COUNT.load(Ordering::Relaxed)
 }
 
 /// Emit IOMMU diagnostics to the log.

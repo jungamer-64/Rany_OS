@@ -147,6 +147,27 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | **オーディオサブシステム (HDA)** | ✅ 完了 | `src/io/audio/` |
 | **USBサブシステム** | 🔄 進行中 | `src/io/usb/` |
 
+#### IOMMU サブシステム詳細 (v0.3.0 2026-01-04更新)
+
+| 機能 | 状態 | ファイル | 説明 |
+|------|------|----------|------|
+| Intel VT-d | ✅ 完了 | `src/io/iommu/intel/` | Queued Invalidation, Interrupt Remapping |
+| AMD-Vi | ✅ 完了 | `src/io/iommu/amd/` | Command Buffer, Event Log |
+| PageTablePool | ✅ 完了 | `src/io/iommu/page_table_pool.rs` | NUMA-awareリサイクル |
+| Per-CPU Magazine | ✅ 完了 | `src/mm/per_cpu.rs` | O(1)ロックフリー割り当て |
+| IOVA Allocator | ✅ 完了 | `src/io/iommu/iova_allocator.rs` | Tree-based O(log n) |
+| Per-Domain IOVA | ✅ 完了 | `src/io/iommu/domain.rs` | ドメイン間ロック競合排除 |
+| DmaHandle<T> | ✅ 完了 | `src/io/iommu/dma_handle.rs` | 所有権ベースDMA管理 |
+| DmaResourceRegistry | ✅ 完了 | `src/io/iommu/domain.rs` | SASリソースリーク防止 |
+| SecurityNotifier | ✅ 完了 | `src/io/iommu/security.rs` | ISR-safeセキュリティ通知 |
+| Fault Storm Detection | ✅ 完了 | `src/io/iommu/security.rs` | デバイス毎フォールトレート制限 |
+| ATS Security Policy | ✅ 完了 | `src/io/iommu/intel/controller/` | 信頼レベルベースATS制御 |
+| Async IOTLB Invalidation | ✅ 完了 | `src/io/iommu/cmdqueue.rs` | Futureベース非同期待機 |
+
+**Feature Flags:**
+- `async_unmap_default`: DmaHandle::unmap()を遅延無効化モードにする
+- `unsafe_iommu_bypass`: Identity Mapping許可（デバッグ用）
+
 ### ✅ セクション 8: フォールトアイソレーション
 
 | 項目 | 状態 | ファイル |

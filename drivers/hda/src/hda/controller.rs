@@ -12,7 +12,7 @@
 
 #![allow(dead_code)]
 
-use alloc::string::String;
+
 use alloc::vec::Vec;
 // Volatile memory reads/writes centralized via mmio helpers
 use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -316,7 +316,7 @@ impl HdaController {
         if ptr.is_null() {
             return Err(HdaError::AllocFailed);
         }
-        let nn = core::ptr::NonNull::new(ptr).ok_or(HdaError::AllocFailed)?;
+        let _nn = core::ptr::NonNull::new(ptr).ok_or(HdaError::AllocFailed)?;
 
         // Note: On x86_64 with PCIe, hardware cache coherency is maintained.
         // For other architectures, consider cache flush here.
@@ -499,9 +499,7 @@ impl HdaController {
         let corb_entry_addr = self.corb_addr + (next_wp as u64 * CORB_ENTRY_SIZE as u64);
         // SAFETY: corb_entry_addr points to a valid DMA buffer entry allocated by alloc_dma_buffer.
         // The buffer is 128-byte aligned and within bounds (next_wp < corb_size).
-        unsafe {
-            hal::mmio::mmio_write_u32(corb_entry_addr as usize, cmd);
-        }
+        hal::mmio::mmio_write_u32(corb_entry_addr as usize, cmd);
 
         // SAFETY: SFENCE ensures the CORB entry write is visible to the HDA controller
         // before we update the write pointer. This prevents out-of-order writes

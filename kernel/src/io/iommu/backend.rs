@@ -7,6 +7,7 @@ use alloc::sync::Arc;
 use x86_64::PhysAddr;
 
 use super::amd::AmdIommuDriver;
+use super::domain::IommuDomain;
 use super::intel::IntelIommuDriver;
 use super::security::SecurityNotifier;
 use super::types::{DeviceId, IommuDomainType, IommuError};
@@ -239,6 +240,14 @@ impl IommuBackend {
         match self {
             Self::Intel(driver) => driver.get_domain_numa(domain_id),
             Self::Amd(driver) => driver.get_domain_numa(domain_id),
+        }
+    }
+
+    /// Get domain by ID
+    pub fn get_domain(&self, domain_id: u16) -> Result<Arc<IommuDomain>, IommuError> {
+        match self {
+            Self::Intel(driver) => driver.get_domain(domain_id),
+            Self::Amd(driver) => driver.get_domain(domain_id),
         }
     }
 

@@ -704,6 +704,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
+                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
                 crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
                     eprintln!("[test][CQ] handling UnmapRegion");
                     match worker_ctrl.handle_command_queue_entry(&k) {
@@ -714,6 +715,7 @@ fn test_cmdqueue_map_unmap_with_domain() {
                         Err(_) => Err(()),
                     }
                 }
+                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
                 crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
@@ -832,6 +834,7 @@ fn test_map_for_device_async_and_unmap() {
                         Err(_) => Err(()),
                     }
                 }
+                crate::io::iommu::cmdqueue::IommuCommandKind::MapRegionDevice { .. } => Err(()),
                 crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegion { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(0) => { unmap_done = true; Ok(0) },
@@ -839,6 +842,7 @@ fn test_map_for_device_async_and_unmap() {
                         Err(_) => Err(()),
                     }
                 }
+                crate::io::iommu::cmdqueue::IommuCommandKind::UnmapRegionDevice { .. } => Err(()),
                 crate::io::iommu::cmdqueue::IommuCommandKind::InvalidateIotlbDomain { .. } => {
                     match worker_ctrl.handle_command_queue_entry(&k) {
                         Ok(_) => Ok(0),
