@@ -235,7 +235,7 @@ impl AmdCommandBuffer {
 }
 
 fn build_inv_address(address: u64, size: u64) -> u64 {
-    let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+    let page_size = crate::io::iommu::PAGE_SIZE_4K;
     if size <= page_size {
         return address & !0xfff;
     }

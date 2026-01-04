@@ -21,11 +21,10 @@ use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
 use crate::io::iommu::cmdqueue::{CommandQueue, IommuCommandKind};
 use crate::io::iommu::tables::{phys_to_virt_usize, virt_ptr_to_phys};
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
-use crate::io::iommu::iova_allocator::{IovaAllocator, IovaGranularity};
+use crate::io::iommu::{IovaAllocatorFast, IovaGranularity, PAGE_SIZE_4K};
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use crate::mm::buddy_alloc_contiguous_frames;
 use crate::mm::mapping::phys_to_virt;
-// Use PAGE_SIZE_4K from local IOMMU iova_allocator instead
 use crate::sync::{PoisonLock, WakerQueue};
 use hashbrown::HashMap;
 
@@ -180,12 +179,12 @@ impl AmdDeviceTable {
         let mut size_bytes = (entry_count as u64)
             .checked_mul(entry_bytes)
             .ok_or(IommuError::InvalidAddress)?;
-        if size_bytes < crate::io::iommu::iova_allocator::PAGE_SIZE_4K {
-            size_bytes = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        if size_bytes < PAGE_SIZE_4K {
+            size_bytes = PAGE_SIZE_4K;
         }
         size_bytes = size_bytes.next_power_of_two();
 
-        let frame_count = (size_bytes / crate::io::iommu::iova_allocator::PAGE_SIZE_4K) as usize;
+        let frame_count = (size_bytes / PAGE_SIZE_4K) as usize;
         let phys_base =
             buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
@@ -287,7 +286,7 @@ unsafe impl Sync for AmdEventLog {}
 impl AmdEventLog {
     fn new() -> Result<Self, IommuError> {
         let size_bytes = EVT_BUFFER_BYTES as u64;
-        let frame_count = (size_bytes / crate::io::iommu::iova_allocator::PAGE_SIZE_4K) as usize;
+        let frame_count = (size_bytes / PAGE_SIZE_4K) as usize;
         let phys_base =
             buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
@@ -714,7 +713,7 @@ pub struct AmdIommuDriver {
     next_domain_id: AtomicU64,
     page_table_pool: Arc<PageTablePool>,
     command_queue: Option<CommandQueue>,
-    iova_allocator: PoisonLock<IovaAllocator>,
+    iova_allocator: IovaAllocatorFast,
     enabled: AtomicBool,
     security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
 }
@@ -734,20 +733,21 @@ impl AmdIommuDriver {
     ) -> Self {
         let page_table_pool = PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
         let iova_bits = AMD_DEFAULT_MAX_ADDR_BITS.min(48).max(12);
-        let iova_base = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        let iova_base = PAGE_SIZE_4K;
         let iova_limit = 1u64 << iova_bits;
         let iova_size = iova_limit.saturating_sub(iova_base);
-        let mut iova_allocator = IovaAllocator::new(iova_base, iova_size);
+        let iova_allocator = IovaAllocatorFast::new(iova_base, iova_size);
         let alloc_base = iova_allocator.base();
         let alloc_end = alloc_base.saturating_add(iova_allocator.size());
-        let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        
+        // Reserve IVMD unity-mapped ranges
         for range in &ivmd_ranges {
             if !range.unity_map || range.exclusion {
                 continue;
             }
 
-            let start = align_down(range.range_start, page_size);
-            let end = align_up(range.range_end, page_size);
+            let start = align_down(range.range_start, PAGE_SIZE_4K);
+            let end = align_up(range.range_end, PAGE_SIZE_4K);
             if end <= start {
                 continue;
             }
@@ -803,7 +803,7 @@ impl AmdIommuDriver {
             next_domain_id: AtomicU64::new(1),
             page_table_pool,
             command_queue: Some(CommandQueue::new_with_numa(None)),
-            iova_allocator: PoisonLock::new(iova_allocator),
+            iova_allocator,
             enabled: AtomicBool::new(false),
             security_notifier: spin::Once::new(),
         }
@@ -1568,8 +1568,7 @@ impl AmdCommandState {
 }
 
 fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError> {
-    let frame_count =
-        cmd::CMD_BUFFER_BYTES / (crate::io::iommu::iova_allocator::PAGE_SIZE_4K as usize);
+    let frame_count = cmd::CMD_BUFFER_BYTES / (PAGE_SIZE_4K as usize);
     let phys_base = buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
     let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
     let buffer_ptr = NonNull::new(virt_base.as_u64() as *mut cmd::AmdCommand)
@@ -1729,7 +1728,7 @@ fn align_up(value: u64, align: u64) -> u64 {
 }
 
 fn map_ivmd_ranges(domain: &DomainState, ranges: &[AmdIvmdRange]) -> Result<(), IommuError> {
-    let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+    let page_size = PAGE_SIZE_4K;
     let mut exclusions = Vec::new();
 
     for range in ranges {
@@ -1888,77 +1887,35 @@ impl AmdIommuDriver {
         (0, 0)
     }
 
+    /// Allocate an IOVA address
+    ///
+    /// The IovaAllocatorFast is lock-free internally with per-CPU magazine caching.
     fn allocate_iova(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
-        let mut guard = self.iova_allocator.lock().map_err(|_| IommuError::Poisoned)?;
-        let alloc = &mut *guard;
         let iova = match mask {
-            Some(limit) => alloc.allocate_with_limit(size, IovaGranularity::Page4K, limit),
-            None => alloc.allocate(size, IovaGranularity::Page4K),
+            Some(limit) => self.iova_allocator.allocate_with_limit(size, IovaGranularity::Page4K, limit),
+            None => self.iova_allocator.allocate(size, IovaGranularity::Page4K),
         };
         iova.ok_or(IommuError::OutOfMemory)
     }
 
+    /// Fast path IOVA allocation (4KB pages)
+    ///
+    /// IovaAllocatorFast already provides O(1) allocation with per-CPU magazine,
+    /// so this just delegates to allocate_iova.
     fn allocate_iova_fast(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
-        let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
-        if size != page_size || mask.is_some() {
-            return self.allocate_iova(size, mask);
-        }
-
-        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
-            if let Some(magazine) = pc.iova_magazines.get_mut(0) {
-                if let Some(iova) = magazine.pop() {
-                    return Ok(iova);
-                }
-            }
-        }
-
-        const BATCH_COUNT: u64 = 32;
-        const BATCH_SIZE: u64 = BATCH_COUNT * crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
-
-        let batch_start = match self.allocate_iova(BATCH_SIZE, None) {
-            Ok(addr) => addr,
-            Err(_) => return self.allocate_iova(size, None),
-        };
-
-        let result = batch_start;
-
-        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
-            if let Some(magazine) = pc.iova_magazines.get_mut(0) {
-                for i in 1..BATCH_COUNT {
-                    let page = batch_start + i * page_size;
-                    if !magazine.push(page) {
-                        let _ = self.free_iova(page, page_size);
-                    }
-                }
-            } else {
-                let _ = self.free_iova(batch_start + page_size, BATCH_SIZE - page_size);
-            }
-        } else {
-            let _ = self.free_iova(batch_start + page_size, BATCH_SIZE - page_size);
-        }
-
-        Ok(result)
+        self.allocate_iova(size, mask)
     }
 
+    /// Free an IOVA address
     fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        let mut guard = self.iova_allocator.lock().map_err(|_| IommuError::Poisoned)?;
-        guard.free(iova, size)
+        self.iova_allocator.free(iova, size)
     }
 
+    /// Fast path IOVA free (4KB pages)
+    ///
+    /// IovaAllocatorFast already provides O(1) free with per-CPU magazine,
+    /// so this just delegates to free_iova.
     fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
-        if size != page_size {
-            return self.free_iova(iova, size);
-        }
-
-        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
-            if let Some(magazine) = pc.iova_magazines.get_mut(0) {
-                if magazine.push(iova) {
-                    return Ok(());
-                }
-            }
-        }
-
         self.free_iova(iova, size)
     }
 

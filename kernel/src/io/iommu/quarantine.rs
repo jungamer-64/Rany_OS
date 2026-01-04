@@ -191,6 +191,8 @@ struct QuarantineQueueInner {
     pending_count: usize,
     /// Number of ready slots (only Ready slots can be drained)
     ready_count: usize,
+    /// Waker to notify when capacity becomes available (backpressure support)
+    capacity_waker: Option<Waker>,
 }
 
 impl QuarantineQueueInner {
@@ -206,6 +208,7 @@ impl QuarantineQueueInner {
             inv_generations: [0; INVALIDATION_CAPACITY],
             pending_count: 0,
             ready_count: 0,
+            capacity_waker: None,
         }
     }
 
@@ -480,6 +483,72 @@ impl QuarantineQueue {
         })
     }
 
+    /// Check if the queue has capacity for new entries.
+    ///
+    /// This is a non-blocking check that can be used before attempting
+    /// to reserve a slot, enabling backpressure in async contexts.
+    #[inline]
+    pub fn has_capacity(&self) -> bool {
+        if self.poisoned.load(Ordering::Acquire) {
+            return false;
+        }
+        let inner = self.inner.lock();
+        inner.active_count < QUARANTINE_CAPACITY as u32
+    }
+
+    /// Get current utilization (active_count / capacity).
+    ///
+    /// Returns a value between 0.0 and 1.0.
+    #[inline]
+    pub fn utilization(&self) -> f32 {
+        let inner = self.inner.lock();
+        inner.active_count as f32 / QUARANTINE_CAPACITY as f32
+    }
+
+    /// Register a waker to be notified when capacity becomes available.
+    ///
+    /// This enables async backpressure: instead of synchronously flushing
+    /// when the queue is full, callers can await capacity.
+    ///
+    /// The waker is stored in a dedicated slot and will be woken when
+    /// any entry is released (during reap_completed).
+    pub fn register_capacity_waker(&self, waker: &Waker) {
+        let mut inner = self.inner.lock();
+        inner.capacity_waker = Some(waker.clone());
+    }
+
+    /// Poll for available capacity (backpressure pattern).
+    ///
+    /// Returns `Poll::Ready(())` if there is capacity for at least one entry.
+    /// Returns `Poll::Pending` if the queue is full, registering the waker.
+    ///
+    /// This enables async code to wait for capacity without blocking:
+    /// ```ignore
+    /// // Instead of:
+    /// if queue.reserve_slot().is_err() {
+    ///     domain.flush(invalidator, context)?; // Blocking!
+    /// }
+    ///
+    /// // Use:
+    /// poll_fn(|cx| queue.poll_capacity(cx)).await;
+    /// let slot = queue.reserve_slot_guarded()?;
+    /// ```
+    pub fn poll_capacity(&self, cx: &mut Context<'_>) -> Poll<()> {
+        if self.poisoned.load(Ordering::Acquire) {
+            // Queue is poisoned, return Ready to propagate error on next operation
+            return Poll::Ready(());
+        }
+
+        let mut inner = self.inner.lock();
+        if inner.active_count < QUARANTINE_CAPACITY as u32 {
+            Poll::Ready(())
+        } else {
+            // Queue is full, register waker and return Pending
+            inner.capacity_waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
+
     /// Reserve space for an invalidation request
     ///
     /// Call this after reserve_slot() but before PTE clear.
@@ -552,15 +621,26 @@ impl QuarantineQueue {
     /// The caller is responsible for issuing the invalidations and then calling `reap_completed`.
     ///
     /// `requests` is cleared and populated with drained invalidations.
-    /// Reuse a preallocated buffer to avoid per-flush allocations.
+    /// The buffer must have been pre-allocated with sufficient capacity.
+    ///
+    /// # Panics
+    ///
+    /// Panics in debug builds if the buffer capacity is insufficient.
+    /// In release builds, excess requests are dropped with an error log.
     pub fn drain_pending_invalidations(
         &self,
         requests: &mut alloc::vec::Vec<InvalidateRequest>,
     ) -> DrainResult {
         requests.clear();
-        if requests.capacity() < INVALIDATION_CAPACITY {
-            requests.reserve(INVALIDATION_CAPACITY - requests.capacity());
-        }
+
+        // ISR-Safety: No dynamic allocation in critical path.
+        // If capacity is insufficient, log error but don't allocate.
+        // The caller should have pre-allocated with INVALIDATION_CAPACITY.
+        debug_assert!(
+            requests.capacity() >= INVALIDATION_CAPACITY,
+            "flush_requests buffer must be pre-allocated with INVALIDATION_CAPACITY"
+        );
+
         let mut inner = self.inner.lock();
 
         // Round 13: Check poisoned ONLY inside lock? No, check atomic first is okay but inner has batch.
@@ -978,6 +1058,8 @@ impl QuarantineQueue {
         let mut to_wake: Vec<core::task::Waker> = Vec::new();
         let mut to_free_iova: Vec<(u64, u64)> = Vec::new(); // (iova, size)
         let mut to_drop: Vec<RRefRawParts> = Vec::new();
+        let mut capacity_waker: Option<Waker> = None;
+        let mut freed_slots = false;
 
         {
             let mut inner = self.inner.lock();
@@ -1023,6 +1105,7 @@ impl QuarantineQueue {
                     // Free the slot
                     entry.reset();
                     inner.active_count = inner.active_count.saturating_sub(1);
+                    freed_slots = true;
                 } else {
                     // Collect waker for later wake (outside lock)
                     if let Some(waker) = entry.waker.take() {
@@ -1036,6 +1119,11 @@ impl QuarantineQueue {
             if scan_threshold > old {
                 self.completed_batch
                     .store(scan_threshold, Ordering::Release);
+            }
+
+            // Collect capacity waker if slots were freed (backpressure notification)
+            if freed_slots {
+                capacity_waker = inner.capacity_waker.take();
             }
         } // Lock released here
 
@@ -1052,6 +1140,11 @@ impl QuarantineQueue {
 
         // Wake all waiters OUTSIDE the lock
         for waker in to_wake {
+            waker.wake();
+        }
+
+        // Wake capacity waiter if slots were freed (backpressure notification)
+        if let Some(waker) = capacity_waker {
             waker.wake();
         }
     }

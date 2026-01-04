@@ -29,6 +29,23 @@ fn align_up(value: u64, align: u64) -> u64 {
     (value + align - 1) & !(align - 1)
 }
 
+/// Map RMRR (Reserved Memory Region Reporting) regions for a device.
+///
+/// RMRR regions are memory areas that the BIOS has allocated for device use
+/// (e.g., USB keyboard buffer for legacy support). These MUST be identity-mapped
+/// in the device's IOMMU domain, or the device will malfunction or corrupt memory.
+///
+/// # Critical Security Note
+///
+/// RMRR mapping failure is a **critical error** that should prevent device use:
+/// - If mapping fails, the device may access unmapped memory, causing DMA faults
+/// - Or worse, the device may access wrong memory, corrupting system state
+/// - BIOS-reserved regions may contain critical firmware data
+///
+/// # Returns
+///
+/// - `Ok(())` if all required RMRR regions are successfully mapped
+/// - `Err(IommuError::RmrrMapFailed)` if any required region fails to map
 fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), IommuError> {
     if domain.domain_type() == IommuDomainType::Passthrough {
         return Ok(());
@@ -38,7 +55,10 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
         return Ok(());
     };
 
-    let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+    let page_size = crate::io::iommu::PAGE_SIZE_4K;
+    let mut mapped_count = 0u32;
+    let mut error_count = 0u32;
+
     for region in registry.reserved_regions() {
         if region.segment != device.segment {
             continue;
@@ -62,10 +82,46 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
             continue;
         }
         let size = end - start;
+
         match domain.map(start, start, size, true, true) {
-            Ok(()) | Err(IommuError::AlreadyMapped) => {}
-            Err(err) => return Err(err),
+            Ok(()) => {
+                mapped_count += 1;
+                log::debug!(
+                    "[IOMMU] RMRR mapped for {:04x}:{:02x}:{:02x}.{}: {:#x}-{:#x}",
+                    device.segment, device.bus, device.device, device.function,
+                    start, start + size
+                );
+            }
+            Err(IommuError::AlreadyMapped) => {
+                // Already mapped, that's fine
+                mapped_count += 1;
+            }
+            Err(err) => {
+                error_count += 1;
+                log::error!(
+                    "[IOMMU][CRITICAL] RMRR map FAILED for {:04x}:{:02x}:{:02x}.{}: \
+                     region {:#x}-{:#x}, error: {:?}",
+                    device.segment, device.bus, device.device, device.function,
+                    start, start + size, err
+                );
+                log::error!(
+                    "[IOMMU][CRITICAL] Device {:04x}:{:02x}:{:02x}.{} should NOT be used - \
+                     RMRR failure may cause DMA faults or memory corruption!",
+                    device.segment, device.bus, device.device, device.function
+                );
+                // Return error immediately - device must not be used
+                return Err(IommuError::RmrrMapFailed);
+            }
         }
+    }
+
+    if error_count > 0 {
+        log::error!(
+            "[IOMMU] RMRR mapping summary for {:04x}:{:02x}:{:02x}.{}: {} success, {} FAILED",
+            device.segment, device.bus, device.device, device.function,
+            mapped_count, error_count
+        );
+        return Err(IommuError::RmrrMapFailed);
     }
 
     Ok(())

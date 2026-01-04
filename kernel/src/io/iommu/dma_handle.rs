@@ -141,6 +141,12 @@ pub enum UnmapErrorKind {
     DomainNotFound,
     /// IOMMU error
     IommuError(IommuError),
+    /// Called from ISR context where blocking operations are forbidden
+    ///
+    /// Synchronous unmap waits for hardware IOTLB invalidation completion,
+    /// which is not allowed in interrupt handlers. Use `unmap()` with
+    /// `async_unmap_default` feature or `unmap_async()` instead.
+    CalledFromIsr,
 }
 
 /// Unmap operation error (returns ownership on failure)
@@ -330,31 +336,48 @@ impl<T> DmaHandle<T> {
 impl<T: ?Sized> Drop for DmaHandle<T> {
     fn drop(&mut self) {
         if let Some(rref) = self.rref.take() {
-            // Attempt best-effort cleanup before leaking
-            let cleanup_success = self.try_cleanup_on_drop();
+            // Identity mappings don't need cleanup - just drop the RRef
+            if matches!(self.mapping, MappingKind::Identity) {
+                drop(rref);
+                return;
+            }
 
-            if !cleanup_success {
-                // Cleanup failed - we must leak to avoid DMA-after-free
+            // === ASYNC-FIRST: Enqueue to Zombie Queue ===
+            // Instead of synchronous unmap (which can block the executor or ISR),
+            // we enqueue the handle metadata for async cleanup by the GC task.
+            // This ensures Drop completes in O(1) without locks or I/O.
+            let mapping_kind = super::zombie_queue::encode_mapping_kind(&self.mapping);
+            let enqueued = super::zombie_queue::enqueue_zombie(
+                self.iova,
+                self.size as u64,
+                self.domain_id,
+                mapping_kind,
+            );
+
+            if enqueued {
+                // Successfully enqueued - RRef will be held until GC completes unmap.
+                // For now, we must leak the RRef to prevent use-after-free.
+                // Future: Add RRef tracking to zombie queue for proper cleanup.
+                log::debug!(
+                    "[DmaHandle] Enqueued zombie for async cleanup (IOVA=0x{:x}, size={})",
+                    self.iova,
+                    self.size
+                );
+                // Leak RRef to prevent DMA-after-free until IOVA is unmapped
+                core::mem::forget(rref);
+            } else {
+                // Queue full - must leak to preserve safety
                 #[cfg(debug_assertions)]
                 log::error!(
-                    "DMA handle leaked! IOVA=0x{:x}, size={}, domain={}. \
+                    "DMA handle leaked! Zombie queue full. IOVA=0x{:x}, size={}, domain={}. \
                      Call an unmap method before dropping DmaHandle.",
                     self.iova,
                     self.size,
                     self.domain_id
                 );
                 #[cfg(not(debug_assertions))]
-                log::error!("DMA handle leaked without unmap");
+                log::error!("DMA handle leaked: zombie queue full");
                 core::mem::forget(rref);
-            } else {
-                // Cleanup succeeded - RRef can be safely dropped
-                log::warn!(
-                    "DmaHandle auto-cleaned on drop (IOVA=0x{:x}, size={}). \
-                     Consider calling unmap() explicitly for better error handling.",
-                    self.iova,
-                    self.size
-                );
-                drop(rref);
             }
         }
     }
@@ -362,6 +385,11 @@ impl<T: ?Sized> Drop for DmaHandle<T> {
 
 impl<T: ?Sized> DmaHandle<T> {
     /// Attempt to unmap the DMA buffer during drop.
+    ///
+    /// # Deprecated
+    ///
+    /// This method is kept for backward compatibility but is no longer used
+    /// by Drop. The new Drop implementation uses zombie_queue for async cleanup.
     ///
     /// This is a best-effort cleanup that tries to:
     /// 1. Get the global IOMMU driver
@@ -614,7 +642,26 @@ impl<T> DmaHandle<T> {
     ///
     /// Use this when you need to guarantee that the mapping is fully
     /// invalidated before returning (e.g., before reusing the buffer).
+    ///
+    /// # ISR Safety Warning
+    ///
+    /// This function performs blocking IOTLB invalidation which waits for
+    /// hardware completion. Calling this from an interrupt handler (ISR)
+    /// will cause CPU blocking and may lead to system instability or deadlock.
+    ///
+    /// If called from ISR context, this function returns an error instead of
+    /// blocking. Use `unmap()` with `async_unmap_default` feature or
+    /// `unmap_async()` for ISR-safe unmapping.
     pub fn unmap_sync(self) -> Result<RRef<T>, UnmapError<T>> {
+        // Check if we're in interrupt context - blocking waits are forbidden
+        if crate::mm::in_interrupt_context() {
+            log::warn!(
+                "[DmaHandle] unmap_sync() called from ISR context at IOVA {:#x} - \
+                 blocking operations forbidden in ISR, returning error",
+                self.iova
+            );
+            return Err(UnmapError::new(self, UnmapErrorKind::CalledFromIsr));
+        }
         self.unmap_sync_internal()
     }
 

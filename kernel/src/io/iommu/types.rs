@@ -40,6 +40,9 @@ pub enum IommuError {
     Timeout,
     /// System entered poisoned state (critical error)
     Poisoned,
+    /// RMRR (Reserved Memory Region) mapping failed.
+    /// Device must not be used - may cause DMA faults or memory corruption.
+    RmrrMapFailed,
 }
 
 impl From<PcieError> for IommuError {

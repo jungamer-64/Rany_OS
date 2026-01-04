@@ -5,9 +5,12 @@
 //! IOVA (I/O Virtual Address) Management Methods
 //!
 //! This module contains IOVA allocation and management methods for `IommuController` via `IovaManager` trait.
+//!
+//! The underlying `IovaAllocatorFast` is a lock-free bitmap-based allocator with
+//! per-CPU magazine caching, providing O(1) allocation/free for 4KB/2MB/1GB pages.
 
 use super::IommuController;
-use crate::io::iommu::iova_allocator::{IovaAllocator, IovaGranularity};
+use crate::io::iommu::{IovaAllocatorFast, IovaGranularity};
 use crate::io::iommu::types::IommuError;
 
 pub trait IovaManager {
@@ -31,114 +34,29 @@ impl IovaManager for IommuController {
         let mut guard = self
             .iova_allocator
             .lock_for_init("[IOMMU] iova_allocator init");
-        *guard = Some(IovaAllocator::new(base, size));
+        *guard = Some(IovaAllocatorFast::new(base, size));
         Ok(())
     }
 
-    /// Allocate I/O virtual address (Optimized with Per-Core Cache and Batch Refill)
+    /// Allocate I/O virtual address (Fast path with per-CPU magazine)
+    ///
+    /// IovaAllocatorFast already provides O(1) allocation with per-CPU magazine,
+    /// so this delegates directly.
     fn allocate_iova_fast(&self, size: u64) -> Result<u64, IommuError> {
-        // 4KB以外はグローバルアロケータへ
-        if size != 4096 {
-            return self.allocate_iova(size);
-        }
-
-        // Per-core magazines are controller-scoped to avoid cross-controller reuse.
-        let controller_idx = match self.controller_idx() {
-            Some(idx) => idx,
-            None => return self.allocate_iova(size),
-        };
-
-        let mut pc_ref = unsafe { crate::mm::per_cpu::current_per_cpu_mut() };
-
-        // 1. Try Cache
-        if let Some(ref mut pc) = pc_ref {
-            if let Some(magazine) = pc.iova_magazines.get_mut(controller_idx) {
-                if let Some(iova) = magazine.pop() {
-                    return Ok(iova);
-                }
-            } else {
-                return self.allocate_iova(size);
-            }
-        } else {
-            return self.allocate_iova(size);
-        }
-
-        // Drop mutable borrow of per-cpu to allow method call
-        // (Not strictly needed if NLL works, but safest)
-        // pc_ref lifetime ends here effectively as we re-acquire later or don't use it.
-        // Actually we need to re-acquire to push.
-
-        // 2. Cache Miss - Batch Allocation
-        // Allocate 32 pages (128KB) at once to amortize lock cost
-        const BATCH_COUNT: u64 = 32;
-        const BATCH_SIZE: u64 = BATCH_COUNT * 4096;
-
-        // Try to allocate a contiguous batch from global allocator
-        // If this fails (e.g. fragmentation), fallback to single page allocation
-        let batch_start = match self.allocate_iova(BATCH_SIZE) {
-            Ok(addr) => addr,
-            Err(_) => return self.allocate_iova(size),
-        };
-
-        // We use the first page for the current request
-        let result = batch_start;
-
-        // 3. Fill Magazine with remaining pages
-        // If we lost per-cpu access (unlikely), we free them back immediately.
-        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
-            if let Some(magazine) = pc.iova_magazines.get_mut(controller_idx) {
-                for i in 1..BATCH_COUNT {
-                    let page = batch_start + i * 4096;
-                    if !magazine.push(page) {
-                        // Magazine full (unlikely if we just popped empty, but possible if capacity is tiny)
-                        // Free back to global
-                        let _ = self.free_iova(page, 4096);
-                    }
-                }
-            } else {
-                let _ = self.free_iova(batch_start + 4096, BATCH_SIZE - 4096);
-            }
-        } else {
-            // Fallback: free the rest
-            let _ = self.free_iova(batch_start + 4096, BATCH_SIZE - 4096);
-        }
-
-        Ok(result)
+        self.allocate_iova(size)
     }
 
-    /// Free IOVA (Optimized with Per-Core Cache)
+    /// Free IOVA (Fast path with per-CPU magazine)
+    ///
+    /// IovaAllocatorFast already provides O(1) free with per-CPU magazine,
+    /// so this delegates directly.
     fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        if size != 4096 {
-            return self.free_iova(iova, size);
-        }
-
-        let controller_idx = match self.controller_idx() {
-            Some(idx) => idx,
-            None => return self.free_iova(iova, size),
-        };
-
-        if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu_mut() } {
-            if let Some(magazine) = pc.iova_magazines.get_mut(controller_idx) {
-                if magazine.push(iova) {
-                    return Ok(());
-                }
-            } else {
-                return self.free_iova(iova, size);
-            }
-        } else {
-            return self.free_iova(iova, size);
-        }
-
-        // Cache overflow or no per-cpu - free globally
         self.free_iova(iova, size)
     }
 
     /// Allocate I/O virtual address range
     fn allocate_iova(&self, size: u64) -> Result<u64, IommuError> {
-        // A poisoned allocator lock indicates an internal corruption of the
-        // allocator state; fail with a HardwareError instead of attempting to
-        // use possibly inconsistent internal structures.
-        let mut guard = match self.iova_allocator.lock() {
+        let guard = match self.iova_allocator.lock() {
             Ok(g) => g,
             Err(_) => {
                 log::error!(
@@ -148,7 +66,7 @@ impl IovaManager for IommuController {
             }
         };
 
-        if let Some(alloc) = guard.as_mut() {
+        if let Some(alloc) = guard.as_ref() {
             alloc
                 .allocate(size, IovaGranularity::Page4K)
                 .ok_or(IommuError::OutOfMemory)
@@ -163,11 +81,11 @@ impl IovaManager for IommuController {
         size: u64,
         granularity: IovaGranularity,
     ) -> Result<u64, IommuError> {
-        let mut guard = self
+        let guard = self
             .iova_allocator
             .lock()
             .map_err(|_| IommuError::HardwareError)?;
-        let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
         alloc
             .allocate(size, granularity)
             .ok_or(IommuError::HardwareError)
@@ -175,11 +93,11 @@ impl IovaManager for IommuController {
 
     /// Allocate an IOVA range within a DMA mask limit (inclusive).
     fn allocate_iova_masked(&self, size: u64, mask: u64) -> Result<u64, IommuError> {
-        let mut guard = self
+        let guard = self
             .iova_allocator
             .lock()
             .map_err(|_| IommuError::HardwareError)?;
-        let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
         alloc
             .allocate_with_limit(size, IovaGranularity::Page4K, mask)
             .ok_or(IommuError::OutOfMemory)
@@ -187,21 +105,21 @@ impl IovaManager for IommuController {
 
     /// Free an IOVA range
     fn free_iova(&self, addr: u64, size: u64) -> Result<(), IommuError> {
-        let mut guard = self
+        let guard = self
             .iova_allocator
             .lock()
             .map_err(|_| IommuError::HardwareError)?;
-        let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
         alloc.free(addr, size)
     }
 
     /// Reserve an IOVA range (identity or fixed mapping).
     fn reserve_iova(&self, addr: u64, size: u64) -> Result<(), IommuError> {
-        let mut guard = self
+        let guard = self
             .iova_allocator
             .lock()
             .map_err(|_| IommuError::HardwareError)?;
-        let alloc = guard.as_mut().ok_or(IommuError::NotPresent)?;
+        let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
         alloc.reserve(addr, size)
     }
 }

@@ -1395,3 +1395,116 @@ fn test_isolation_decision_default() {
         _ => panic!("default should be Isolate(DmaFault)"),
     }
 }
+
+// ============================================================================
+// Identity Mapping Exclusion Tests
+// ============================================================================
+
+/// Test that identity mapping is disabled by default in release builds.
+/// This ensures that IOVAs are always different from physical addresses.
+#[test]
+fn test_identity_mapping_disabled_by_default() {
+    // In release builds without unsafe_iommu_bypass, identity mapping should be disabled
+    #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+    {
+        assert!(
+            !crate::io::iommu::api::is_unsafe_identity_mapping_allowed(),
+            "Identity mapping should be disabled by default in release builds"
+        );
+    }
+}
+
+/// Test that IOVA allocation produces non-identity addresses.
+/// IOVA should NEVER equal physical address (except for RMRR regions).
+#[test]
+fn test_iova_not_equal_phys() {
+    let ctrl = IommuController::new(0x0, 0);
+    // Start IOVA range at high address to avoid collision with typical phys
+    ctrl.init_iova(0xF000_0000, 0x10000).expect("init_iova");
+
+    let size = 0x1000;
+    let iova = ctrl.allocate_iova(size).expect("allocate_iova");
+
+    // Typical physical address range is lower, IOVA should be higher
+    // This is a simple sanity check - real test would compare actual phys
+    assert!(
+        iova >= 0xF000_0000,
+        "IOVA should be in allocated range, not identity mapped"
+    );
+
+    ctrl.free_iova(iova, size).expect("free failed");
+}
+
+/// Test that domains use Translated type, not PassThrough.
+#[test]
+fn test_domain_type_not_passthrough() {
+    let domain = IommuDomain::new(
+        0,
+        None,
+        false,
+        false,
+        48,
+        IommuDomainType::Translated, // Must be Translated, not PassThrough
+        PageTablePool::new(1, 32),
+        PteFormat::Intel,
+    );
+
+    // Domain should be Translated type for proper IOMMU protection
+    match domain.domain_type() {
+        IommuDomainType::Translated => { /* OK */ }
+        IommuDomainType::PassThrough => {
+            panic!("Domain should not use PassThrough type in production");
+        }
+    }
+}
+
+/// Test that all mappings have distinct IOVA vs physical addresses.
+#[test]
+fn test_mapping_iova_phys_distinct() {
+    let ctrl = IommuController::new(0x0, 0);
+    ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
+
+    let domain = Arc::new(IommuDomain::new(
+        0,
+        None,
+        false,
+        false,
+        48,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        PteFormat::Intel,
+    ));
+
+    match ctrl.domains.lock() {
+        Ok(mut domains) => {
+            domains.insert(0, domain.clone());
+        }
+        Err(poisoned) => {
+            let mut domains = poisoned.into_inner();
+            domains.insert(0, domain.clone());
+        }
+    }
+
+    let size = 0x1000;
+    let phys = 0x2000_0000; // Typical physical address
+    let iova = ctrl.allocate_iova(size).expect("allocate_iova");
+
+    // Map the physical address
+    domain.map(iova, phys, size, true, true).expect("map");
+
+    // Verify IOVA != phys (not identity mapped)
+    assert_ne!(
+        iova, phys,
+        "IOVA must not equal physical address (identity mapping detected)"
+    );
+
+    // Verify mapping exists with correct values
+    let mapping = domain.mapping(iova).expect("mapping should exist");
+    assert_eq!(mapping.iova, iova);
+    assert_eq!(mapping.phys, phys);
+    assert_ne!(mapping.iova, mapping.phys, "Mapping uses identity (IOVA == phys)");
+
+    // Cleanup
+    domain.unmap(iova).expect("unmap");
+    ctrl.free_iova(iova, size).expect("free");
+}

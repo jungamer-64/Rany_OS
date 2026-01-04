@@ -14,7 +14,6 @@ use super::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::amd::tables::AmdPte;
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
@@ -685,13 +684,17 @@ pub struct IommuDomain {
     /// **Now required for all domains.** Each domain uses its own IOVA space
     /// to eliminate lock contention between devices in different domains.
     ///
+    /// Uses `IovaAllocatorFast` - a bitmap-based allocator with per-CPU magazine
+    /// caching for O(1) allocation/free of common 4KB/2MB pages.
+    ///
     /// # Benefits
     ///
-    /// - Zero lock contention between domains
+    /// - Zero lock contention between domains (per-CPU magazines)
+    /// - O(1) allocation/free for 4KB and 2MB pages
     /// - Full 48-bit IOVA space per domain for ASLR
     /// - Per-domain resource accounting
     /// - 32-bit devices don't compete for low addresses
-    per_domain_iova: PoisonLock<super::iova_allocator::IovaAllocator>,
+    per_domain_iova: super::IovaAllocatorFast,
     /// DMA Resource Registry (Phase 8: Leak Prevention)
     ///
     /// Tracks all active DmaHandles belonging to this domain.
@@ -764,6 +767,9 @@ impl IommuDomain {
             supports_1gb,
             max_addr_bits: max_addr_bits.clamp(1, 64),
             quarantine: QuarantineQueue::new(),
+            // Pre-allocate flush buffer to avoid dynamic allocation in critical path.
+            // CRITICAL: This capacity must never be exceeded. The quarantine's
+            // drain_pending_invalidations() asserts this in debug builds.
             flush_requests: PoisonLock::new(Vec::with_capacity(
                 super::quarantine::INVALIDATION_CAPACITY,
             )),
@@ -774,11 +780,10 @@ impl IommuDomain {
             // Per-domain IOVA allocator: Default 256GB space starting at 4GB
             // Avoids low addresses (reserved for 32-bit legacy devices) and
             // provides ample space for typical workloads.
-            per_domain_iova: PoisonLock::new(
-                super::iova_allocator::IovaAllocator::new(
-                    0x1_0000_0000,           // 4GB base (above 32-bit space)
-                    0x40_0000_0000,          // 256GB size
-                )
+            // Uses bitmap-based IovaAllocatorFast with O(1) magazine allocation.
+            per_domain_iova: super::IovaAllocatorFast::new(
+                0x1_0000_0000,           // 4GB base (above 32-bit space)
+                0x40_0000_0000,          // 256GB size
             ),
             dma_registry: DmaResourceRegistry::new(),
         }
@@ -840,9 +845,7 @@ impl IommuDomain {
         );
 
         // Override with custom IOVA range
-        domain.per_domain_iova = PoisonLock::new(
-            super::iova_allocator::IovaAllocator::new(iova_base, iova_size),
-        );
+        domain.per_domain_iova = super::IovaAllocatorFast::new(iova_base, iova_size);
 
         log::debug!(
             "[IOMMU] Domain {} initialized with custom IOVA: base=0x{:x}, size=0x{:x}",
@@ -856,29 +859,25 @@ impl IommuDomain {
 
     /// Allocate IOVA from this domain's allocator.
     ///
-    /// All domains now have their own IOVA allocator, eliminating
-    /// lock contention between domains.
+    /// Uses IovaAllocatorFast with O(1) per-CPU magazine allocation.
+    /// All domains have their own IOVA allocator, eliminating lock contention.
+    #[inline]
     pub fn allocate_iova(&self, size: u64) -> Result<u64, super::types::IommuError> {
-        use super::iova_allocator::IovaGranularity;
+        use super::IovaGranularity;
         
-        let mut guard = self.per_domain_iova.lock().map_err(|_| {
-            log::error!("[IOMMU] Per-domain IOVA allocator lock poisoned");
-            super::types::IommuError::Poisoned
-        })?;
-
-        guard
+        // IovaAllocatorFast is internally lock-free for common paths
+        self.per_domain_iova
             .allocate(size, IovaGranularity::Page4K)
             .ok_or(super::types::IommuError::OutOfIova)
     }
 
     /// Free IOVA back to this domain's allocator.
+    ///
+    /// Uses IovaAllocatorFast with O(1) per-CPU magazine deallocation.
+    #[inline]
     pub fn free_iova(&self, iova: u64, size: u64) -> Result<(), super::types::IommuError> {
-        let mut guard = self.per_domain_iova.lock().map_err(|_| {
-            log::error!("[IOMMU] Per-domain IOVA allocator lock poisoned");
-            super::types::IommuError::Poisoned
-        })?;
-
-        guard.free(iova, size)
+        // IovaAllocatorFast is internally lock-free for common paths
+        self.per_domain_iova.free(iova, size)
     }
 
     /// Check if this domain has a per-domain IOVA allocator.
@@ -2176,17 +2175,23 @@ impl IommuDomain {
     }
 
     /// Get a snapshot of all mappings (deduplicated across shards).
-    pub fn mappings_snapshot(&self) -> BTreeMap<u64, DmaMapping> {
-        let mut snapshot = BTreeMap::new();
+    /// Returns mappings sorted by IOVA address.
+    pub fn mappings_snapshot(&self) -> Vec<DmaMapping> {
+        let mut snapshot = Vec::new();
         for shard in self.shards.iter() {
             let guard = match shard.lock() {
                 Ok(guard) => guard,
                 Err(_) => continue,
             };
             for mapping in guard.mappings.iter() {
-                snapshot.entry(mapping.iova).or_insert_with(|| mapping.clone());
+                // Deduplicate by IOVA (only add if not already present)
+                if !snapshot.iter().any(|m: &DmaMapping| m.iova == mapping.iova) {
+                    snapshot.push(mapping.clone());
+                }
             }
         }
+        // Sort by IOVA for consistent ordering
+        snapshot.sort_by_key(|m| m.iova);
         snapshot
     }
 
@@ -2391,49 +2396,127 @@ impl IommuDomain {
         }
     }
 
-    /// Recursively deallocate all page tables under the given table.
+    /// Iteratively deallocate all page tables using an explicit stack.
     ///
-    /// Uses a bounded recursion depth (4 levels) to avoid heap allocation in Drop.
-    /// Note: Despite the historical name, this implementation is recursive, not iterative.
-    /// The recursion depth is bounded by PT_LEVELS (typically 4), so stack usage is safe.
+    /// This implementation avoids recursion entirely by using a fixed-size
+    /// explicit stack. The stack size is bounded by the maximum page table
+    /// depth (PT_LEVELS) multiplied by the fan-out (PT_ENTRIES), but in practice
+    /// we process tables level-by-level to keep stack usage minimal.
+    ///
+    /// # Design
+    ///
+    /// Uses post-order traversal: children are freed before parents.
+    /// The algorithm:
+    /// 1. Push root table with level info
+    /// 2. For each table, push all child tables (non-super-page entries)
+    /// 3. When a table has no more children to process, free it
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
-    unsafe fn deallocate_page_tables_recursive(&mut self) {
+    unsafe fn deallocate_page_tables_iterative(&mut self) {
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");
 
-        fn free_table(
-            domain: &IommuDomain,
+        /// Stack entry for iterative page table traversal.
+        /// Using a fixed-size array avoids heap allocation during Drop.
+        #[derive(Clone, Copy)]
+        struct StackEntry {
             table_ptr: *mut SlPte,
             level: usize,
-            layout: alloc::alloc::Layout,
-        ) {
-            if level > 1 {
-                for idx in 0..PT_ENTRIES {
-                    let entry = unsafe { *table_ptr.add(idx) };
-                    if !entry.is_present() {
-                        continue;
-                    }
-                    if (level == 3 || level == 2) && entry.is_super_page(domain.pte_format) {
-                        continue;
-                    }
-                    let child_phys = entry.phys_addr();
-                    let child_ptr = phys_to_virt_usize(child_phys) as *mut SlPte;
-                    free_table(domain, child_ptr, level - 1, layout);
+            next_idx: usize, // Next child index to process
+        }
+
+        // Maximum stack depth: one entry per level, plus entries being processed
+        // PT_LEVELS is typically 4, so 16 entries is more than enough for worst case
+        const MAX_STACK_DEPTH: usize = 16;
+        let mut stack: [StackEntry; MAX_STACK_DEPTH] = [StackEntry {
+            table_ptr: core::ptr::null_mut(),
+            level: 0,
+            next_idx: 0,
+        }; MAX_STACK_DEPTH];
+        let mut stack_top: usize = 0;
+
+        // Push root table
+        stack[0] = StackEntry {
+            table_ptr: self.page_table,
+            level: PT_LEVELS,
+            next_idx: 0,
+        };
+        stack_top = 1;
+
+        while stack_top > 0 {
+            let entry_idx = stack_top - 1;
+
+            // Copy current entry values to avoid borrow conflicts
+            let table_ptr = stack[entry_idx].table_ptr;
+            let level = stack[entry_idx].level;
+            let mut next_idx = stack[entry_idx].next_idx;
+
+            // Leaf level (level 1) or all children processed - free this table
+            if level <= 1 || next_idx >= PT_ENTRIES {
+                stack_top -= 1;
+
+                // Unregister and deallocate the table
+                if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
+                    unregister_page_table(phys);
+                }
+                alloc::alloc::dealloc(table_ptr as *mut u8, layout);
+                continue;
+            }
+
+            // Find next child table to process
+            let mut found_child = false;
+            while next_idx < PT_ENTRIES {
+                let idx = next_idx;
+                next_idx += 1;
+
+                let pte = *table_ptr.add(idx);
+                if !pte.is_present() {
+                    continue;
+                }
+
+                // Skip super pages (2MB at level 2, 1GB at level 3)
+                if (level == 3 || level == 2) && pte.is_super_page(self.pte_format) {
+                    continue;
+                }
+
+                // Found a child page table - update parent's next_idx and push child
+                stack[entry_idx].next_idx = next_idx;
+
+                let child_phys = pte.phys_addr();
+                let child_ptr = phys_to_virt_usize(child_phys) as *mut SlPte;
+
+                if stack_top < MAX_STACK_DEPTH {
+                    stack[stack_top] = StackEntry {
+                        table_ptr: child_ptr,
+                        level: level - 1,
+                        next_idx: 0,
+                    };
+                    stack_top += 1;
+                    found_child = true;
+                    break;
+                } else {
+                    // Stack overflow - this should never happen with correct PT_LEVELS
+                    log::error!(
+                        "[IommuDomain] Page table deallocation stack overflow at level {}",
+                        level
+                    );
                 }
             }
 
-            if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
-                unregister_page_table(phys);
-            }
-            unsafe {
-                alloc::alloc::dealloc(table_ptr as *mut u8, layout);
+            // If no child was found, update next_idx to trigger freeing on next iteration
+            if !found_child {
+                stack[entry_idx].next_idx = PT_ENTRIES;
             }
         }
+    }
 
-        free_table(self, self.page_table, PT_LEVELS, layout);
+    /// Legacy recursive deallocation - kept for reference but not used.
+    #[allow(dead_code)]
+    unsafe fn deallocate_page_tables_recursive(&mut self) {
+        // Delegate to the iterative version
+        self.deallocate_page_tables_iterative();
     }
 }
 
@@ -2441,7 +2524,7 @@ impl Drop for IommuDomain {
     fn drop(&mut self) {
         if !self.page_table.is_null() {
             unsafe {
-                self.deallocate_page_tables_recursive();
+                self.deallocate_page_tables_iterative();
             }
         }
     }
