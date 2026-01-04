@@ -257,4 +257,48 @@ impl IommuBackend {
             Self::Amd(driver) => driver.dump_diagnostics(),
         }
     }
+
+    // ========================================================================
+    // Flush Operations (for emergency isolation)
+    // ========================================================================
+
+    /// Invalidate IOTLB entries for a specific domain.
+    ///
+    /// If `iova` is `Some`, invalidates only that page; otherwise domain-wide.
+    pub fn invalidate_iotlb(
+        &self,
+        domain_id: u16,
+        iova: Option<u64>,
+    ) -> Result<(), IommuError> {
+        match self {
+            Self::Intel(driver) => driver.invalidate_iotlb(domain_id, iova),
+            Self::Amd(driver) => driver.invalidate_iotlb(domain_id, iova),
+        }
+    }
+
+    /// Invalidate all IOTLB entries globally.
+    pub fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
+        match self {
+            Self::Intel(driver) => driver.invalidate_iotlb_global(),
+            Self::Amd(driver) => driver.invalidate_iotlb_global(),
+        }
+    }
+
+    /// Invalidate context cache globally.
+    pub fn invalidate_context_global(&self) -> Result<(), IommuError> {
+        match self {
+            Self::Intel(driver) => driver.invalidate_context_global(),
+            Self::Amd(driver) => driver.invalidate_context_global(),
+        }
+    }
+
+    /// Lookup the domain ID for a device.
+    ///
+    /// Returns `None` if the device is not assigned to any domain.
+    pub fn lookup_device_domain(&self, source_id: u16) -> Option<u16> {
+        match self {
+            Self::Intel(driver) => driver.lookup_device_domain(source_id),
+            Self::Amd(driver) => driver.lookup_device_domain(source_id),
+        }
+    }
 }

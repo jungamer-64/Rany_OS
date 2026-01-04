@@ -45,7 +45,19 @@ pub use super::registry::is_iommu_enabled;
 /// In release builds without `unsafe_iommu_bypass`, this flag does not exist
 /// and identity mapping is unconditionally prohibited.
 ///
-/// ## Acceptable Use Cases
+/// ## RMRR (Reserved Memory Region Reporting) Exception
+///
+/// The **only** legitimate use of identity mapping in production is for RMRR
+/// regions declared by system firmware (ACPI DMAR table). These regions are:
+///
+/// - Legacy USB controllers that require specific physical addresses
+/// - BIOS/UEFI video buffers that firmware expects at fixed locations
+/// - Other firmware-reserved regions that cannot be relocated
+///
+/// RMRR mappings are handled automatically by the IOMMU driver during
+/// initialization and do NOT require enabling this global flag.
+///
+/// ## Acceptable Use Cases (Non-Production Only)
 /// - Very early boot (before IOMMU initialization completes)
 /// - Hardware debugging on trusted systems with no external devices
 /// - IOMMU hardware bring-up on new platforms
@@ -113,38 +125,58 @@ const MSI_HANDLE_HIGH_MASK: u64 = 1;
 /// # Platform Behavior
 /// - Debug builds: Sets the flag (with warning log)
 /// - Release builds with `unsafe_iommu_bypass`: Sets the flag (with warning log)
-/// - Release builds without `unsafe_iommu_bypass`: No-op, logs a warning
+/// - **Release builds without `unsafe_iommu_bypass`: Function does not exist (linker error if called)**
+///
+/// # Compile-Time Enforcement
+///
+/// In production release builds, this function is **not compiled at all**.
+/// Any attempt to call it will result in a linker error, preventing accidental usage.
 #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
 pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
     if allowed {
-        log::warn!(
-            "[IOMMU][SECURITY] Identity mapping ENABLED - system is vulnerable to DMA attacks!"
+        log::error!(
+            "[IOMMU][SECURITY][CRITICAL] Identity mapping ENABLED - \
+             system is VULNERABLE to DMA attacks! \
+             This should NEVER be enabled in production!"
         );
+        // Additional compile-time warning
+        #[cfg(all(not(debug_assertions), feature = "unsafe_iommu_bypass"))]
+        log::error!(
+            "[IOMMU][SECURITY] You are using unsafe_iommu_bypass in a release build. \
+             This feature should only be used for hardware bring-up and debugging."
+        );
+    } else {
+        log::info!("[IOMMU][SECURITY] Identity mapping DISABLED - DMA protection restored");
     }
     UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, Ordering::Release);
 }
 
-/// Enable/disable identity mapping fallback.
-///
-/// # Safety
-/// This weakens memory protection and must only be set during trusted early init.
-#[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
-pub unsafe fn set_unsafe_identity_mapping_allowed(_allowed: bool) {
-    log::warn!(
-        "[IOMMU] identity mapping bypass is disabled; ignoring unsafe override"
-    );
-}
+// NOTE: In release builds without `unsafe_iommu_bypass`, this function is intentionally
+// **not defined**. This ensures that any code attempting to use identity mapping
+// will fail to compile/link in production builds.
+//
+// If you see a linker error about `set_unsafe_identity_mapping_allowed` not found,
+// it means you are trying to use identity mapping in a release build without
+// explicitly enabling the `unsafe_iommu_bypass` feature. This is by design.
 
 /// Check whether identity mapping fallback is allowed.
+///
+/// In release builds without `unsafe_iommu_bypass`, this always returns `false`
+/// and is marked `#[inline(always)]` to allow dead code elimination.
 #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
 pub fn is_unsafe_identity_mapping_allowed() -> bool {
     UNSAFE_ALLOW_IDENTITY_MAPPING.load(Ordering::Acquire)
 }
 
 /// Check whether identity mapping fallback is allowed.
+///
+/// In production release builds, this always returns `false` and is optimized
+/// away by the compiler, allowing all identity mapping code paths to be
+/// eliminated as dead code.
 #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+#[inline(always)]
 pub fn is_unsafe_identity_mapping_allowed() -> bool {
-    false
+    false // Compile-time constant, enables dead code elimination
 }
 
 /// Enable/disable global DMA mappings (non device-scoped).
@@ -610,6 +642,19 @@ pub async fn unmap_for_device_async(
 // Internal Raw DMA Mapping Helpers (crate-local)
 // ========================================================================
 
+/// Raw DMA mapping helpers for kernel-internal use only.
+///
+/// # Warning
+///
+/// **Do not use these functions directly in device drivers.**
+/// Prefer safe APIs:
+/// - `DmaHandle<T>::map_rref()` for type-safe DMA mapping
+/// - `DmaHandle<T>::new()` for pre-allocated buffers
+///
+/// These raw functions exist only for:
+/// - Legacy kernel components during migration
+/// - Boot-time initialization before full IOMMU setup
+/// - Panic/error paths where allocation may fail
 pub(crate) mod raw {
     use super::{DeviceId, IommuError};
     use x86_64::PhysAddr;
@@ -618,6 +663,13 @@ pub(crate) mod raw {
     ///
     /// # Safety
     /// Caller must guarantee ownership and DMA safety for the mapping duration.
+    ///
+    /// # Deprecation Notice
+    /// Prefer `DmaHandle::map_rref()` for new code.
+    #[deprecated(
+        since = "0.4.0",
+        note = "Use DmaHandle::map_rref() for type-safe DMA mapping"
+    )]
     pub unsafe fn map_for_dma(phys_addr: PhysAddr, size: u64) -> Result<u64, IommuError> {
         unsafe { super::map_for_dma(phys_addr, size) }
     }
@@ -626,6 +678,13 @@ pub(crate) mod raw {
     ///
     /// # Safety
     /// Caller must guarantee ownership and DMA safety for the mapping duration.
+    ///
+    /// # Deprecation Notice
+    /// Prefer `DmaHandle::new()` with device context for new code.
+    #[deprecated(
+        since = "0.4.0",
+        note = "Use DmaHandle::new() with device context"
+    )]
     pub unsafe fn map_for_device(
         device: &DeviceId,
         phys_addr: PhysAddr,
@@ -638,6 +697,13 @@ pub(crate) mod raw {
     ///
     /// # Safety
     /// Caller must guarantee ownership and DMA safety for the mapping duration.
+    ///
+    /// # Deprecation Notice
+    /// Prefer async variants of DmaHandle for new code.
+    #[deprecated(
+        since = "0.4.0",
+        note = "Use async DmaHandle methods"
+    )]
     pub async unsafe fn map_for_device_async(
         device: &DeviceId,
         phys_addr: PhysAddr,

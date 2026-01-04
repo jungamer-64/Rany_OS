@@ -2557,6 +2557,108 @@ impl AmdIommuDriver {
             log::info!("[IOMMU][AMD-Vi] CQ: not initialized");
         }
     }
+
+    // ========================================================================
+    // Flush Operations (for emergency isolation)
+    // ========================================================================
+
+    /// Invalidate IOTLB entries for a specific domain.
+    pub(crate) fn invalidate_iotlb(
+        &self,
+        domain_id: u16,
+        _iova: Option<u64>,
+    ) -> Result<(), IommuError> {
+        // AMD-Vi uses INVALIDATE_IOMMU_PAGES command
+        // For emergency isolation, we invalidate all pages in the domain
+        self.invalidate_domain_all(domain_id)
+    }
+
+    /// Invalidate all IOTLB entries globally.
+    pub(crate) fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
+        // Invalidate all domains - AMD-Vi doesn't have a single global invalidation
+        // so we iterate through known domains
+        let domain_ids: Vec<u16> = match self.domains.lock() {
+            Ok(domains) => domains.keys().cloned().collect(),
+            Err(_) => return Err(IommuError::Poisoned),
+        };
+
+        for domain_id in domain_ids {
+            let _ = self.invalidate_domain_all(domain_id);
+        }
+
+        Ok(())
+    }
+
+    /// Invalidate context cache globally.
+    pub(crate) fn invalidate_context_global(&self) -> Result<(), IommuError> {
+        // AMD-Vi uses device table entries; invalidation is done via
+        // INVALIDATE_DEVTAB_ENTRY command
+        // For global invalidation, we flush all known devices
+        self.invalidate_all_device_entries()
+    }
+
+    /// Lookup the domain ID for a device.
+    pub(crate) fn lookup_device_domain(&self, source_id: u16) -> Option<u16> {
+        let device_id = DeviceId::from_bdf(source_id);
+        match self.device_domains.lock() {
+            Ok(device_domains) => device_domains.get(&device_id).copied(),
+            Err(_) => None,
+        }
+    }
+
+    /// Invalidate all pages in a domain.
+    fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
+        use crate::io::iommu::amd::cmd::AmdCommand;
+
+        for (idx, _unit) in self.units.iter().enumerate() {
+            if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
+                // Use invalidate_iommu_pages with size = u64::MAX to invalidate all pages
+                // domain_id: target domain
+                // address: 0 (start from beginning)
+                // size: u64::MAX (entire address space)
+                // pasid: None (no PASID)
+                let cmd = AmdCommand::invalidate_iommu_pages(
+                    domain_id,
+                    0,         // address
+                    u64::MAX,  // size = all pages
+                    None,      // pasid
+                );
+                if let Ok(mut state) = cmd_state.lock() {
+                    let _ = state.submit_and_wait(cmd);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Invalidate all device table entries.
+    fn invalidate_all_device_entries(&self) -> Result<(), IommuError> {
+        use crate::io::iommu::amd::cmd::AmdCommand;
+
+        let device_ids: Vec<u16> = match self.device_domains.lock() {
+            Ok(device_domains) => device_domains.keys().map(|d| d.bdf()).collect(),
+            Err(_) => return Err(IommuError::Poisoned),
+        };
+
+        for (idx, _unit) in self.units.iter().enumerate() {
+            if let Some(cmd_state) = self.cmd_states.get(idx).and_then(|s| s.as_ref()) {
+                if let Ok(mut state) = cmd_state.lock() {
+                    for devid in &device_ids {
+                        let cmd = AmdCommand::invalidate_device_entry(*devid);
+                        let _ = state.submit(cmd);
+                    }
+                    // Submit a completion wait to flush all pending commands
+                    let completion = AmdCommand::completion_wait(
+                        state.sync_phys,
+                        state.seq.fetch_add(1, core::sync::atomic::Ordering::Relaxed) + 1,
+                        false,
+                    );
+                    let _ = state.submit(completion);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl super::interface::IommuHardwareContext for AmdIommuDriver {

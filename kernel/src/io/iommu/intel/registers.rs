@@ -106,6 +106,32 @@ pub mod gsts_bits {
     pub const GSTS_CFIS: u32 = 1 << 23;
 }
 
+/// Context Command register bits
+pub mod ccmd_bits {
+    /// Invalidate Context-Cache (ICC) - bit 63
+    /// Set to 1 to initiate invalidation, cleared by hardware when complete
+    pub const CCMD_ICC: u64 = 1 << 63;
+    /// Context Invalidation Request Granularity (CIRG) - bits 61-62
+    pub const CCMD_CIRG_SHIFT: u32 = 61;
+    /// Global invalidation
+    pub const CCMD_CIRG_GLOBAL: u8 = 0b01;
+    /// Domain-selective invalidation
+    pub const CCMD_CIRG_DOMAIN: u8 = 0b10;
+    /// Device-selective invalidation
+    pub const CCMD_CIRG_DEVICE: u8 = 0b11;
+    /// Context Invalidation Actual Granularity (CAIG) - bits 59-60 (read-only)
+    pub const CCMD_CAIG_SHIFT: u32 = 59;
+    pub const CCMD_CAIG_MASK: u64 = 0b11 << 59;
+    /// Domain ID field - bits 0-15
+    pub const CCMD_DID_MASK: u64 = 0xFFFF;
+    /// Source ID field - bits 16-31
+    pub const CCMD_SID_SHIFT: u32 = 16;
+    pub const CCMD_SID_MASK: u64 = 0xFFFF << 16;
+    /// Function Mask - bits 32-33
+    pub const CCMD_FM_SHIFT: u32 = 32;
+    pub const CCMD_FM_MASK: u64 = 0b11 << 32;
+}
+
 /// Root table address register bits
 pub mod rtaddr_bits {
     /// Scalable Mode Translation enable (RTT/SMT)
