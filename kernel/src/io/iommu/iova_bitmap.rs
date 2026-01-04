@@ -205,10 +205,17 @@ impl Magazine {
 }
 
 /// Per-CPU magazine set (one magazine per size class)
+///
+/// Also holds per-CPU allocation hints to avoid cache line bounce
+/// on the global hint when multiple cores allocate simultaneously.
 #[repr(C, align(128))] // Two cache lines to avoid false sharing
 pub struct PerCpuMagazine {
     /// Magazines indexed by size class
     magazines: [IrqMutex<Magazine>; MAGAZINE_SIZE_CLASSES],
+    /// Per-CPU hint for 4KB allocation (word index to start searching)
+    pub hint_4k: AtomicUsize,
+    /// Per-CPU hint for 2MB allocation (block index to start searching)
+    pub hint_2m: AtomicUsize,
 }
 
 impl PerCpuMagazine {
@@ -220,6 +227,8 @@ impl PerCpuMagazine {
                 IrqMutex::new(Magazine::new()), // 2MB
                 IrqMutex::new(Magazine::new()), // 1GB
             ],
+            hint_4k: AtomicUsize::new(0),
+            hint_2m: AtomicUsize::new(0),
         }
     }
 
@@ -446,27 +455,40 @@ impl IovaBitmap {
     ///
     /// Updates the 2MB/1GB hierarchical bitmaps when a 2MB block transitions
     /// from fully-free to partially-used.
+    ///
+    /// Uses the global hint. For better multi-core performance, use
+    /// `allocate_page_with_hint()` with a per-CPU hint.
     pub fn allocate_page(&self) -> Option<u64> {
-        let hint = self.hint_4k.load(Ordering::Relaxed);
+        self.allocate_page_with_hint(&self.hint_4k)
+    }
+
+    /// Allocate a single 4KB page using a per-CPU hint
+    ///
+    /// # Arguments
+    /// * `hint` - Per-CPU hint to start searching from (reduces cache line bounce)
+    ///
+    /// The hint is updated on successful allocation to improve locality.
+    pub fn allocate_page_with_hint(&self, hint: &AtomicUsize) -> Option<u64> {
+        let hint_val = hint.load(Ordering::Relaxed);
         let detail_words = self.detail.len();
 
         if detail_words == 0 {
             return None;
         }
 
-        let hint = hint % detail_words;
+        let hint_idx = hint_val % detail_words;
         let summary_words = self.summary.len();
 
         // Summary-first scan (fast when nearly full)
         for summary_offset in 0..summary_words {
-            let summary_idx = (hint / BITS_PER_WORD + summary_offset) % summary_words;
+            let summary_idx = (hint_idx / BITS_PER_WORD + summary_offset) % summary_words;
             let mut summary_word = self.summary[summary_idx].load(Ordering::Acquire);
             if summary_word == 0 {
                 continue;
             }
 
             if summary_offset == 0 {
-                let start_bit = hint % BITS_PER_WORD;
+                let start_bit = hint_idx % BITS_PER_WORD;
                 summary_word &= !((1u64 << start_bit) - 1);
                 if summary_word == 0 {
                     continue;
@@ -483,15 +505,18 @@ impl IovaBitmap {
                 if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
                     let page_idx = word_idx * BITS_PER_WORD + bit_idx;
                     if page_idx < self.total_pages {
-                        self.hint_4k.store(word_idx, Ordering::Relaxed);
+                        hint.store(word_idx, Ordering::Relaxed);
                         self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
                         // Update 2MB/1GB hierarchy
                         self.on_page_allocated(page_idx);
                         return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                     }
-                } else {
-                    self.clear_summary_bit(word_idx);
                 }
+                // Note: Do NOT clear summary bit here on failure.
+                // Summary bit is only cleared when the word transitions to 0 via CAS
+                // inside try_allocate_from_word(). This prevents races where another
+                // CPU frees a page and sets the summary bit, only to have it cleared
+                // immediately by this thread.
 
                 summary_word &= summary_word - 1;
             }
@@ -499,12 +524,12 @@ impl IovaBitmap {
 
         // Fallback: full detail scan for correctness (summary can be stale)
         for offset in 0..detail_words {
-            let word_idx = (hint + offset) % detail_words;
+            let word_idx = (hint_idx + offset) % detail_words;
 
             if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
                 let page_idx = word_idx * BITS_PER_WORD + bit_idx;
                 if page_idx < self.total_pages {
-                    self.hint_4k.store(word_idx, Ordering::Relaxed);
+                    hint.store(word_idx, Ordering::Relaxed);
                     self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
                     // Update 2MB/1GB hierarchy
                     self.on_page_allocated(page_idx);
@@ -546,6 +571,171 @@ impl IovaBitmap {
             }
             core::hint::spin_loop();
         }
+    }
+
+    /// Batch allocate multiple pages from a single word (more efficient for refills)
+    ///
+    /// # Arguments
+    /// * `word_idx` - Word index to allocate from
+    /// * `max_pages` - Maximum number of pages to allocate
+    /// * `out` - Output buffer to store allocated page indices (relative to word start)
+    ///
+    /// # Returns
+    /// Number of pages actually allocated
+    fn batch_allocate_from_word(&self, word_idx: usize, max_pages: usize, out: &mut [usize]) -> usize {
+        let word = &self.detail[word_idx];
+        let mut allocated = 0;
+        
+        loop {
+            if allocated >= max_pages || allocated >= out.len() {
+                break;
+            }
+            
+            let current = word.load(Ordering::Acquire);
+            if current == 0 {
+                break; // No free pages in this word
+            }
+            
+            // Count available bits
+            let available = current.count_ones() as usize;
+            let to_alloc = available.min(max_pages - allocated).min(out.len() - allocated);
+            
+            if to_alloc == 0 {
+                break;
+            }
+            
+            // Build mask for all bits to allocate
+            let mut mask = 0u64;
+            let mut temp = current;
+            for i in 0..to_alloc {
+                let bit_idx = temp.trailing_zeros() as usize;
+                out[allocated + i] = bit_idx;
+                mask |= 1u64 << bit_idx;
+                temp &= temp - 1; // Clear lowest set bit
+            }
+            
+            // Try to clear all bits atomically
+            let new_val = current & !mask;
+            if word.compare_exchange_weak(
+                current,
+                new_val,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ).is_ok() {
+                allocated += to_alloc;
+                // Update summary if word is now empty
+                if new_val == 0 {
+                    self.clear_summary_bit(word_idx);
+                }
+                // Optimized hierarchy update: 1 word (64 pages) is always within
+                // a single 2MB block (512 pages = 8 words), so we can batch the
+                // hierarchy update with a single fetch_add instead of per-page calls.
+                let first_page_idx = word_idx * BITS_PER_WORD;
+                if first_page_idx < self.total_pages {
+                    self.on_pages_allocated_batch(first_page_idx, to_alloc);
+                }
+                break; // Success, exit even if we could allocate more
+            }
+            core::hint::spin_loop();
+        }
+        
+        allocated
+    }
+
+    /// Batch update hierarchy after allocating multiple pages from the same word
+    ///
+    /// Since 1 word (64 pages) is always within a single 2MB block (512 pages = 8 words),
+    /// we can update the hierarchy with a single atomic operation instead of per-page.
+    ///
+    /// # Arguments
+    /// * `first_page_idx` - Index of first page in the word
+    /// * `count` - Number of pages allocated from this word
+    fn on_pages_allocated_batch(&self, first_page_idx: usize, count: usize) {
+        let block_2m = first_page_idx / PAGES_PER_2MB_BLOCK;
+        if block_2m >= self.total_2mb_blocks {
+            return;
+        }
+
+        // Batch increment used_count_2m
+        let old_used = self.used_count_2m[block_2m].fetch_add(count as u16, Ordering::AcqRel);
+        
+        // If this block was fully free (old_used == 0), it's no longer fully free
+        if old_used == 0 {
+            // Clear 2MB bitmap bit
+            let word_2m = block_2m / BITS_PER_WORD;
+            let bit_2m = block_2m % BITS_PER_WORD;
+            let mask_2m = 1u64 << bit_2m;
+            let old_2m = self.bitmap_2m[word_2m].fetch_and(!mask_2m, Ordering::AcqRel);
+            
+            if old_2m & mask_2m != 0 {
+                self.free_count_2m.fetch_sub(1, Ordering::Relaxed);
+            }
+            
+            // Update 1GB hierarchy
+            let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
+            if block_1g < self.total_1gb_blocks {
+                let old_1g = self.used_count_1g[block_1g].fetch_add(1, Ordering::AcqRel);
+                if old_1g == 0 {
+                    // Clear 1GB bitmap bit
+                    let word_1g = block_1g / BITS_PER_WORD;
+                    let bit_1g = block_1g % BITS_PER_WORD;
+                    let mask_1g = 1u64 << bit_1g;
+                    let old_1g_bm = self.bitmap_1g[word_1g].fetch_and(!mask_1g, Ordering::AcqRel);
+                    if old_1g_bm & mask_1g != 0 {
+                        self.free_count_1g.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Batch allocate pages using per-CPU hint (efficient for magazine refill)
+    ///
+    /// # Arguments
+    /// * `max_pages` - Maximum number of pages to allocate
+    /// * `hint` - Per-CPU hint for locality
+    ///
+    /// # Returns
+    /// Vector of allocated IOVAs
+    pub fn batch_allocate_pages(&self, max_pages: usize, hint: &AtomicUsize) -> alloc::vec::Vec<u64> {
+        let mut result = alloc::vec::Vec::with_capacity(max_pages);
+        let mut local_buf = [0usize; 64]; // Stack buffer for batch allocation
+        let hint_val = hint.load(Ordering::Relaxed);
+        let detail_words = self.detail.len();
+        
+        if detail_words == 0 {
+            return result;
+        }
+        
+        let hint_idx = hint_val % detail_words;
+        
+        // Scan through words starting from hint
+        for offset in 0..detail_words {
+            if result.len() >= max_pages {
+                break;
+            }
+            
+            let word_idx = (hint_idx + offset) % detail_words;
+            let remaining = max_pages - result.len();
+            let batch_size = remaining.min(64);
+            
+            let allocated = self.batch_allocate_from_word(word_idx, batch_size, &mut local_buf[..batch_size]);
+            if allocated > 0 {
+                // Update hint to this word for next allocation
+                hint.store(word_idx, Ordering::Relaxed);
+                
+                // Convert to IOVAs
+                for i in 0..allocated {
+                    let page_idx = word_idx * BITS_PER_WORD + local_buf[i];
+                    if page_idx < self.total_pages {
+                        result.push(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                        self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        }
+        
+        result
     }
 
     /// Free a single 4KB page
@@ -883,10 +1073,15 @@ impl IovaBitmap {
         if result.is_err() {
             return result;
         }
+        
+        // Update 2MB/1GB hierarchy after freeing range
+        // This allows blocks to become fully-free again for 2MB/1GB allocation
+        self.update_hierarchy_after_range_free(start_page, valid_pages);
+        
         if end_page > self.total_pages {
             return Err(IommuError::InvalidAddress);
         }
-        result
+        Ok(())
     }
 
     /// Free a contiguous range of pages by page index (word-optimized)
@@ -1212,19 +1407,32 @@ impl IovaBitmap {
     ///
     /// This is much faster than `allocate_contiguous(512, 512)` because it
     /// only scans the 2MB bitmap (16KB for 256GB) instead of the 4KB bitmap.
+    ///
+    /// Uses the global hint. For better multi-core performance, use
+    /// `allocate_2mb_with_hint()` with a per-CPU hint.
     pub fn allocate_2mb(&self) -> Option<u64> {
-        let hint = self.hint_2m.load(Ordering::Relaxed);
+        self.allocate_2mb_with_hint(&self.hint_2m)
+    }
+
+    /// Allocate a fully-free 2MB block using a per-CPU hint
+    ///
+    /// # Arguments
+    /// * `hint` - Per-CPU hint to start searching from (reduces cache line bounce)
+    ///
+    /// The hint is updated on successful allocation to improve locality.
+    pub fn allocate_2mb_with_hint(&self, hint: &AtomicUsize) -> Option<u64> {
+        let hint_val = hint.load(Ordering::Relaxed);
         let bitmap_words = self.bitmap_2m.len();
 
         if bitmap_words == 0 || self.total_2mb_blocks == 0 {
             return None;
         }
 
-        let hint = hint % bitmap_words;
+        let hint_idx = hint_val % bitmap_words;
 
         // Scan 2MB bitmap for a fully-free block
         for offset in 0..bitmap_words {
-            let word_idx = (hint + offset) % bitmap_words;
+            let word_idx = (hint_idx + offset) % bitmap_words;
             let word = self.bitmap_2m[word_idx].load(Ordering::Acquire);
             if word == 0 {
                 continue;
@@ -1239,7 +1447,7 @@ impl IovaBitmap {
 
             // Try to claim this block atomically
             if self.try_allocate_2mb_block(block_idx) {
-                self.hint_2m.store(word_idx, Ordering::Relaxed);
+                hint.store(word_idx, Ordering::Relaxed);
                 return Some(self.base + (block_idx as u64) * PAGE_SIZE_2M);
             }
         }
@@ -1645,51 +1853,71 @@ impl IovaAllocatorFast {
                     return Some(iova);
                 }
             }
+            
+            self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
+            
+            // Medium path: allocate from bitmap using per-CPU hint
+            let hint = &magazine.hint_4k;
+            let iova = self.bitmap_4k.allocate_page_with_hint(hint)?;
+            self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+            
+            // Try to refill magazine while we're here
+            self.try_refill_magazine_4k(cpu_id);
+            
+            return Some(iova);
         }
         
         self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
         
-        // Medium path: allocate from bitmap
+        // Fallback: allocate from bitmap using global hint
         let iova = self.bitmap_4k.allocate_page()?;
         self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-        
-        // Try to refill magazine while we're here
-        if let Some(cpu_id) = Self::current_cpu_id() {
-            self.try_refill_magazine_4k(cpu_id);
-        }
         
         Some(iova)
     }
 
     /// Try to refill the 4KB magazine for a CPU
+    ///
+    /// Uses per-CPU hints and batch allocation for efficiency.
+    /// Batch allocation reduces the number of atomic operations by
+    /// allocating multiple pages from a single word in one CAS.
     fn try_refill_magazine_4k(&self, cpu_id: usize) {
         let magazine = &self.magazines[cpu_id];
         let Some(mag) = magazine.get(0) else { return };
         
-        // Refill up to half capacity
-        let target = MAGAZINE_CAPACITY / 2;
-        let mut refilled = 0;
+        // Use per-CPU hint for better cache locality
+        let hint = &magazine.hint_4k;
         
-        loop {
-            if let Some(iova) = self.bitmap_4k.allocate_page() {
-                let mut mag = mag.lock();
-                if mag.len() >= target {
-                    let _ = self.bitmap_4k.free_page(iova);
-                    break;
-                }
-                if mag.push(iova) {
-                    refilled += 1;
-                } else {
+        // Check current magazine level
+        let current_len = {
+            let mag = mag.lock();
+            mag.len()
+        };
+        
+        if current_len >= MAGAZINE_CAPACITY / 2 {
+            return; // Already has enough
+        }
+        
+        // Calculate how many pages to refill
+        let target = MAGAZINE_CAPACITY / 2;
+        let to_refill = target.saturating_sub(current_len);
+        
+        if to_refill == 0 {
+            return;
+        }
+        
+        // Batch allocate pages (more efficient than one-by-one)
+        let pages = self.bitmap_4k.batch_allocate_pages(to_refill, hint);
+        
+        if !pages.is_empty() {
+            let mut mag = mag.lock();
+            for iova in pages {
+                if !mag.push(iova) {
                     // Magazine full, return the page
                     let _ = self.bitmap_4k.free_page(iova);
                     break;
                 }
-            } else {
-                break; // Bitmap exhausted
             }
-        }
-        
-        if refilled > 0 {
             self.stats.magazine_refills.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -1706,11 +1934,21 @@ impl IovaAllocatorFast {
                     return Some(iova);
                 }
             }
+            
+            self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
+            
+            // Medium path: O(1) allocation from 2MB fully-free bitmap
+            // Use per-CPU hint for better cache locality
+            let hint = &magazine.hint_2m;
+            let iova = self.bitmap_4k.allocate_2mb_with_hint(hint)?;
+            self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+            
+            return Some(iova);
         }
         
         self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
         
-        // Medium path: O(1) allocation from 2MB fully-free bitmap
+        // Fallback: use global hint
         let iova = self.bitmap_4k.allocate_2mb()?;
         self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
         
