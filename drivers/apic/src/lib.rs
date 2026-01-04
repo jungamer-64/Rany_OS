@@ -357,8 +357,7 @@ impl LocalApic {
         use hal::port_io::PortU8;
 
         // PIT (Legacy Programmable Interval Timer) を使用して較正
-        // Note: PIT port I/O requires unsafe
-        let (gate_val, elapsed) = unsafe {
+        let (gate_val, elapsed) = {
             let mut pit_cmd = PortU8::new(0x43);
             let mut pit_data = PortU8::new(0x42);
             let mut pit_gate = PortU8::new(0x61);
@@ -792,7 +791,7 @@ impl IoApic {
     pub fn read_entry(&self, irq: u8) -> RedirectionEntry {
         let reg = ioapic_reg::IOREDTBL_BASE + irq * 2;
 
-        unsafe {
+        {
             let low = self.read(reg);
             let high = self.read(reg + 1);
             RedirectionEntry::from_raw((low as u64) | ((high as u64) << 32))

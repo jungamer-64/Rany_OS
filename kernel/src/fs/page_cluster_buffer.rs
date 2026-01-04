@@ -3,7 +3,7 @@
 // `vfs::block::IoBufferMut` for DMA-capable I/O.
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
+
 use alloc::sync::Arc;
 use core::ptr::NonNull;
 use core::slice;

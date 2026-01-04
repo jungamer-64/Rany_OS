@@ -6,6 +6,75 @@
 //! Manages I/O Virtual Address space for DMA mappings.
 //! Supports 4KB, 2MB, and 1GB granularity allocations.
 //! Uses O(log n) tree-based allocation with automatic coalescing.
+//!
+//! # Architecture Design Notes
+//!
+//! ## Current Implementation: Shared IOVA Space
+//!
+//! The current implementation uses a **single global IOVA allocator per IOMMU controller**.
+//! All domains share the same IOVA address space. This design has the following trade-offs:
+//!
+//! **Advantages:**
+//! - Simpler implementation
+//! - Lower memory overhead (single allocator metadata)
+//! - Works well for systems with few devices
+//!
+//! **Disadvantages:**
+//! - **Scalability bottleneck**: All map operations compete for the global allocator lock
+//! - **Address space exhaustion**: 32-bit devices compete for the limited low 4GB range
+//! - **Reduced ASLR entropy**: Shared space means less address randomization per device
+//!
+//! ## Future Improvement: Per-Domain IOVA Allocators
+//!
+//! For better scalability and security, consider migrating to **per-domain IOVA allocators**:
+//!
+//! ```text
+//! Current Architecture:
+//! ┌─────────────────────────────────────────────┐
+//! │           Global IOVA Allocator             │
+//! │         (single lock, shared space)         │
+//! └────────────┬──────────────┬─────────────────┘
+//!              │              │
+//!      ┌───────┴───┐    ┌────┴────┐
+//!      │ Domain 1  │    │ Domain 2 │
+//!      │ (Device A)│    │(Device B)│
+//!      └───────────┘    └──────────┘
+//!
+//! Proposed Architecture:
+//! ┌───────────────────┐    ┌───────────────────┐
+//! │ Domain 1 IOVA     │    │ Domain 2 IOVA     │
+//! │ Allocator         │    │ Allocator         │
+//! │ (0 - 2^48)        │    │ (0 - 2^48)        │
+//! └─────────┬─────────┘    └─────────┬─────────┘
+//!           │                        │
+//!    ┌──────┴──────┐          ┌──────┴──────┐
+//!    │  Device A   │          │  Device B   │
+//!    │  Page Table │          │  Page Table │
+//!    └─────────────┘          └─────────────┘
+//! ```
+//!
+//! **Implementation Steps:**
+//! 1. Move `IovaAllocator` instance into `IommuDomain` struct
+//! 2. Initialize per-domain allocator when domain is created
+//! 3. Remove global allocator from `IommuController`
+//! 4. Update `map_for_device()` to use domain's allocator
+//!
+//! **Benefits:**
+//! - Lock contention eliminated between different devices
+//! - Each device gets full 48-bit IOVA space for ASLR
+//! - 32-bit devices no longer compete for low addresses
+//! - Per-domain resource accounting becomes trivial
+//!
+//! ## Performance Optimization: Hybrid Allocator
+//!
+//! For high-throughput networking/storage, consider a hybrid allocator:
+//!
+//! - **Fast path**: Per-CPU magazine cache for 4KB allocations (O(1))
+//! - **Medium path**: Bitmap allocator for common sizes (O(1) amortized)
+//! - **Slow path**: Tree-based allocator for large/aligned allocations (O(log n))
+//!
+//! The current implementation already includes magazine caching in `IovaManager`,
+//! but this should be integrated into `IovaAllocator` for per-domain use.
 
 use super::types::IommuError;
 use alloc::collections::{BTreeMap, BTreeSet};

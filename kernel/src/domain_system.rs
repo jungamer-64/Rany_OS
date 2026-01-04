@@ -13,7 +13,6 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::alloc::Layout;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 // 【設計書 8.1】PoisonLock使用 - パニック時自動毒入れ
 use crate::error::{DomainErrorKind, KernelError};

@@ -15,7 +15,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -23,12 +22,11 @@ use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use spin::Mutex;
 
 use super::{
-    ClassDriverError, ClassDriverEvent, REQUEST_DIR_IN, REQUEST_DIR_OUT, REQUEST_TYPE_CLASS,
-    REQUEST_TYPE_CLASS_OTHER, TransferStatus, UsbClass, UsbClassDriver,
+    ClassDriverError, ClassDriverEvent, TransferStatus, UsbClass, UsbClassDriver,
 };
 use crate::{
     SetupPacket, UsbDevice,
-    descriptor::{DescriptorType, SafePackedRead},
+    descriptor::{SafePackedRead},
 };
 
 /// フィールドの安全な読み取りマクロ

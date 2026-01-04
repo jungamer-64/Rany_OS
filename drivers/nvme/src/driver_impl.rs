@@ -1,7 +1,8 @@
 use crate::polling_driver::NvmePollingDriver;
 use kernel_api::KapiResult;
 use kernel_api::driver::{Driver, DriverType};
-use kernel_api::driver_abi::{AbiDriverType, DriverContext};
+use kernel_api::driver_abi::DriverContext;
+
 use spin::Mutex;
 
 pub struct NvmeDriverWrapper {

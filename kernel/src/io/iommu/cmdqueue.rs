@@ -23,6 +23,8 @@ use alloc::alloc::Layout;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
+use crate::io::iommu::types::DeviceId;
+
 /// Command kinds (initial subset)
 #[derive(Debug, Clone)]
 pub enum IommuCommandKind {
@@ -39,9 +41,24 @@ pub enum IommuCommandKind {
         read: bool,
         write: bool,
     },
+    /// Map a region for a specific device (device-scoped invalidation)
+    MapRegionDevice {
+        device: DeviceId,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    },
     /// Unmap a region from the given domain (size may be 4KB-aligned)
     UnmapRegion {
         domain: u16,
+        iova: u64,
+        size: u64,
+    },
+    /// Unmap a region for a specific device
+    UnmapRegionDevice {
+        device: DeviceId,
         iova: u64,
         size: u64,
     },

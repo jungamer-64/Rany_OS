@@ -511,7 +511,7 @@ impl MpkManager {
         {
             use core::arch::x86_64::__cpuid_count;
 
-            let result = unsafe { __cpuid_count(0x07, 0) };
+            let result = __cpuid_count(0x07, 0);
             self.pku_detected = (result.ecx & (1 << 3)) != 0;
 
             if self.pku_detected {

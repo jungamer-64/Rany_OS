@@ -174,6 +174,7 @@ impl History {
 
 /// Async shell task
 /// This function runs as an async task and handles serial input via interrupts
+#[allow(deprecated)]
 pub async fn run_async_shell() {
     crate::serial_println!("\n");
     crate::serial_println!("{}{}", ansi::CYAN, ansi::RESET);
@@ -382,6 +383,7 @@ pub async fn run_async_shell() {
 }
 
 /// Execute command in ExoShell (async version)
+#[allow(deprecated)]
 async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
     let result = exoshell.eval(line).await;
 
@@ -412,6 +414,7 @@ async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
 }
 
 /// Print colored prompt
+#[allow(deprecated)]
 fn print_prompt(exoshell: &ExoShell) {
     serial::serial1().send_str(&format!(
         "{}exo{}:{}{}{} {}>{} ",
@@ -426,6 +429,7 @@ fn print_prompt(exoshell: &ExoShell) {
 }
 
 /// Clear current line (for history navigation)
+#[allow(deprecated)]
 fn clear_line(_editor: &LineEditor) {
     let port = serial::serial1();
     port.send_str("\r");

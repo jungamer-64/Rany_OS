@@ -11,6 +11,30 @@
 //! - **Leak Detection**: `Drop` logs and leaks if handle is dropped without proper unmap
 //! - **Backend Unmap**: `unmap()` routes through the global IOMMU API
 //! - **Ownership Safety**: Errors return the original `RRef<T>` or `DmaHandle<T>`
+//! - **Resource Registry Integration**: Handles are tracked per-domain for SAS safety
+//!
+//! # Async-First Design
+//!
+//! The module supports both synchronous and asynchronous IOTLB invalidation:
+//!
+//! | API                | Behavior                  | Feature Flag                   |
+//! |--------------------|---------------------------|--------------------------------|
+//! | `unmap()`          | Sync or Lazy (cfg)        | `async_unmap_default`          |
+//! | `unmap_sync()`     | Always synchronous        | Always available               |
+//! | `unmap_async()`    | Async completion          | Always available               |
+//!
+//! When `async_unmap_default` feature is enabled, `unmap()` uses deferred
+//! invalidation via Quarantine for improved throughput in high-frequency
+//! DMA workloads.
+//!
+//! # Resource Registry
+//!
+//! Each `DmaHandle` is registered with its domain's `DmaResourceRegistry`
+//! (if available). This enables:
+//!
+//! - **Leak Prevention**: Domain destruction can force-unmap leaked handles
+//! - **Resource Tracking**: Monitor active DMA mappings per domain
+//! - **SAS Safety**: Prevent memory reuse while DMA is active
 //!
 //! # Example
 //!
@@ -41,7 +65,6 @@ use super::domain::{InvalidateRequest, IommuDomain, IommuInvalidator};
 use super::interface::IommuHardwareContext;
 use super::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
-use crate::ipc::rref::RRefRawParts;
 
 // ============================================================================
 // DMA Direction
@@ -160,6 +183,48 @@ impl<T: ?Sized> UnmapError<T> {
 /// 2. Use `iova()` for device programming
 /// 3. `handle.unmap()` - Unmaps via global IOMMU API, returns RRef
 ///
+/// # Resource Leak Problem (SAS Environment)
+///
+/// In Single Address Space (SAS) environments without process isolation, dropped
+/// handles cannot be reclaimed by an OS-level cleanup. The current implementation
+/// logs and intentionally leaks via `mem::forget()` to avoid DMA-after-free.
+///
+/// **Problem**: This leads to resource exhaustion (DoS) if handles are repeatedly
+/// dropped without unmap.
+///
+/// ## Planned Solution: Resource Registry
+///
+/// ```text
+/// ┌─────────────────────────────────────────────────────────────────┐
+/// │                    DmaResourceRegistry (Per-Domain)             │
+/// ├─────────────────────────────────────────────────────────────────┤
+/// │ active_handles: IntrusiveList<DmaHandleEntry>                   │
+/// │ handle_count: AtomicU64                                          │
+/// │ domain_ref: Weak<IommuDomain>                                   │
+/// └─────────────────────────────────────────────────────────────────┘
+///                              │
+///                              ▼
+/// ┌─────────────────────────────────────────────────────────────────┐
+/// │                      DmaHandle<T>                               │
+/// ├─────────────────────────────────────────────────────────────────┤
+/// │ registry_entry: *mut DmaHandleEntry  // Link to registry        │
+/// │ domain_weak: Weak<IommuDomain>       // For drop cleanup        │
+/// │ rref: Option<RRef<T>>                                           │
+/// │ ...                                                             │
+/// └─────────────────────────────────────────────────────────────────┘
+/// ```
+///
+/// **Key Features:**
+/// - `Weak<IommuDomain>` allows `Drop` to attempt cleanup without a strong ref
+/// - Registry tracks all active handles; domain destruction force-unmaps them
+/// - Intrusive list avoids per-handle heap allocation
+///
+/// **Domain Destruction Flow:**
+/// 1. Domain receives destroy request
+/// 2. Iterate `active_handles`, force unmap each
+/// 3. RRefs are returned to their owning allocator (no leak)
+/// 4. Domain page tables and IOVAs freed
+///
 /// # Safety
 ///
 /// Dropping a `DmaHandle` without calling an unmap method will log and leak
@@ -265,17 +330,126 @@ impl<T> DmaHandle<T> {
 impl<T: ?Sized> Drop for DmaHandle<T> {
     fn drop(&mut self) {
         if let Some(rref) = self.rref.take() {
-            #[cfg(debug_assertions)]
-            log::error!(
-                "DMA handle leaked! IOVA=0x{:x}, size={}, domain={}. \
-                 Call an unmap method before dropping DmaHandle.",
-                self.iova,
-                self.size,
-                self.domain_id
+            // Attempt best-effort cleanup before leaking
+            let cleanup_success = self.try_cleanup_on_drop();
+
+            if !cleanup_success {
+                // Cleanup failed - we must leak to avoid DMA-after-free
+                #[cfg(debug_assertions)]
+                log::error!(
+                    "DMA handle leaked! IOVA=0x{:x}, size={}, domain={}. \
+                     Call an unmap method before dropping DmaHandle.",
+                    self.iova,
+                    self.size,
+                    self.domain_id
+                );
+                #[cfg(not(debug_assertions))]
+                log::error!("DMA handle leaked without unmap");
+                core::mem::forget(rref);
+            } else {
+                // Cleanup succeeded - RRef can be safely dropped
+                log::warn!(
+                    "DmaHandle auto-cleaned on drop (IOVA=0x{:x}, size={}). \
+                     Consider calling unmap() explicitly for better error handling.",
+                    self.iova,
+                    self.size
+                );
+                drop(rref);
+            }
+        }
+    }
+}
+
+impl<T: ?Sized> DmaHandle<T> {
+    /// Attempt to unmap the DMA buffer during drop.
+    ///
+    /// This is a best-effort cleanup that tries to:
+    /// 1. Get the global IOMMU driver
+    /// 2. Unmap based on the mapping kind
+    /// 3. Handle errors gracefully (no panics)
+    ///
+    /// Returns `true` if cleanup succeeded and RRef can be safely dropped.
+    /// Returns `false` if cleanup failed and RRef must be leaked.
+    fn try_cleanup_on_drop(&self) -> bool {
+        use crate::io::iommu::registry::get_iommu_driver;
+
+        // Identity mappings don't need IOMMU cleanup
+        if matches!(self.mapping, MappingKind::Identity) {
+            return true;
+        }
+
+        let Some(driver) = get_iommu_driver() else {
+            log::warn!(
+                "[DmaHandle] Cannot cleanup: IOMMU driver unavailable (IOVA=0x{:x})",
+                self.iova
             );
-            #[cfg(not(debug_assertions))]
-            log::error!("DMA handle leaked without unmap");
-            core::mem::forget(rref);
+            return false;
+        };
+
+        let result = match &self.mapping {
+            MappingKind::Identity => {
+                // Already handled above, but for completeness
+                Ok(())
+            }
+            MappingKind::Global => {
+                // Global DMA mapping - use driver's unmap_dma
+                driver.unmap_dma(self.iova, self.size)
+            }
+            MappingKind::Device(device_id) => {
+                // Device-specific mapping
+                driver.unmap_for_device(device_id, self.iova, self.size)
+            }
+            MappingKind::Domain => {
+                // Domain-managed mapping - we don't have the domain context here,
+                // so we cannot safely unmap. This is a design limitation.
+                log::warn!(
+                    "[DmaHandle] Domain-managed mapping cannot be auto-cleaned \
+                     (IOVA=0x{:x}, domain={}). Consider using Device mapping instead.",
+                    self.iova,
+                    self.domain_id
+                );
+                return false;
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                log::debug!(
+                    "[DmaHandle] Auto-cleanup succeeded (IOVA=0x{:x}, size={})",
+                    self.iova,
+                    self.size
+                );
+                // Try to unregister from domain registry (best-effort)
+                self.try_unregister_from_domain();
+                true
+            }
+            Err(e) => {
+                log::error!(
+                    "[DmaHandle] Auto-cleanup failed: {:?} (IOVA=0x{:x}, size={})",
+                    e,
+                    self.iova,
+                    self.size
+                );
+                false
+            }
+        }
+    }
+
+    /// Try to unregister this mapping from the domain's resource registry.
+    ///
+    /// This is a best-effort operation that doesn't fail if the domain
+    /// is not accessible. The registry entry will be cleaned up when
+    /// the domain is destroyed.
+    fn try_unregister_from_domain(&self) {
+        use crate::io::iommu::registry::get_iommu_driver;
+
+        let Some(driver) = get_iommu_driver() else {
+            return;
+        };
+
+        // Get domain and unregister (best-effort, ignore errors)
+        if let Ok(domain) = driver.get_domain(self.domain_id) {
+            let _ = domain.unregister_dma_mapping(self.iova);
         }
     }
 }
@@ -285,13 +459,15 @@ impl<T: ?Sized> Drop for DmaHandle<T> {
 // ============================================================================
 
 impl<T> DmaHandle<T> {
-    /// Map an RRef for DMA access (simplified - uses 1:1 mapping)
+    /// Map an RRef for DMA access using identity mapping (IOVA = physical address).
     ///
-    /// This is a simplified mapping that uses physical address as IOVA.
-    /// For full IOMMU domain integration, use `IommuDomain::map_buffer()`.
+    /// # Security Warning
     ///
-    /// Identity mapping is only permitted when
-    /// `crate::io::iommu::api::is_unsafe_identity_mapping_allowed()` is true.
+    /// Identity mapping bypasses IOMMU protection completely. This function is
+    /// only available in debug builds or when `unsafe_iommu_bypass` feature is enabled.
+    ///
+    /// For production use, prefer `map_rref_for_device()` which uses proper
+    /// IOVA allocation with IOMMU protection.
     ///
     /// # Arguments
     /// * `rref` - The RRef to map (consumed)
@@ -300,6 +476,7 @@ impl<T> DmaHandle<T> {
     ///
     /// # Errors
     /// Returns `MapError<T>` containing the original RRef on failure.
+    #[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
     pub fn map_simple(
         rref: RRef<T>,
         domain_id: u16,
@@ -318,6 +495,11 @@ impl<T> DmaHandle<T> {
                 MapErrorKind::IommuError(IommuError::NotInitialized),
             ));
         }
+
+        log::warn!(
+            "[IOMMU][SECURITY] map_simple identity mapping - bypassing protection!"
+        );
+
         use x86_64::VirtAddr;
 
         // Get physical address from RRef's virtual pointer
@@ -334,7 +516,6 @@ impl<T> DmaHandle<T> {
         }
 
         // For now, use physical address as IOVA (1:1 mapping)
-        // TODO: Use proper IOVA allocator from IommuDomain
         let iova = phys;
 
         Ok(Self::new(
@@ -345,6 +526,22 @@ impl<T> DmaHandle<T> {
             domain_id,
             direction,
             MappingKind::Identity,
+        ))
+    }
+
+    /// Identity mapping is DISABLED in production builds.
+    #[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+    pub fn map_simple(
+        rref: RRef<T>,
+        _domain_id: u16,
+        _direction: DmaDirection,
+    ) -> Result<Self, MapError<T>> {
+        log::error!(
+            "[IOMMU][SECURITY] Identity mapping rejected - use map_rref_for_device() instead"
+        );
+        Err(MapError::new(
+            rref,
+            MapErrorKind::IommuError(IommuError::NotSupported),
         ))
     }
 
@@ -382,11 +579,47 @@ impl<T> DmaHandle<T> {
     /// Unmap a DMA buffer using the global IOMMU API.
     ///
     /// For domain-managed mappings, use `unmap_with_domain` instead.
+    ///
+    /// # Performance Note
+    ///
+    /// This method performs **synchronous** IOTLB invalidation, which blocks
+    /// until hardware completion (typically several microseconds). For high-
+    /// throughput paths, prefer `unmap_async()` or `try_unmap_lazy()` if you
+    /// have domain context.
+    ///
+    /// See module documentation for planned API evolution toward async-first design.
+    ///
+    /// # Async-First Mode
+    ///
+    /// When the `async_unmap_default` feature is enabled, this method internally
+    /// uses lazy unmap via the quarantine system, deferring IOTLB invalidation
+    /// for better throughput. Use `unmap_sync()` if you need immediate completion.
     pub fn unmap(mut self) -> Result<RRef<T>, UnmapError<T>> {
         if self.rref.is_none() {
             return Err(UnmapError::new(self, UnmapErrorKind::InvalidIova));
         }
 
+        // With async_unmap_default feature, use lazy unmap for non-identity mappings
+        #[cfg(feature = "async_unmap_default")]
+        {
+            if !matches!(self.mapping, MappingKind::Identity) {
+                return self.unmap_lazy_internal();
+            }
+        }
+
+        self.unmap_sync_internal()
+    }
+
+    /// Synchronous unmap with immediate IOTLB invalidation.
+    ///
+    /// Use this when you need to guarantee that the mapping is fully
+    /// invalidated before returning (e.g., before reusing the buffer).
+    pub fn unmap_sync(self) -> Result<RRef<T>, UnmapError<T>> {
+        self.unmap_sync_internal()
+    }
+
+    /// Internal synchronous unmap implementation
+    fn unmap_sync_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
         match self.mapping {
             MappingKind::Identity => Ok(self
                 .take_rref()
@@ -396,6 +629,8 @@ impl<T> DmaHandle<T> {
                 if let Err(e) = crate::io::iommu::api::unmap_dma(self.iova, self.size) {
                     return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
                 }
+                // Unregister from domain registry
+                self.try_unregister_from_domain();
                 Ok(self
                     .take_rref()
                     .expect("DmaHandle must have rref for unmap"))
@@ -406,9 +641,47 @@ impl<T> DmaHandle<T> {
                 {
                     return Err(UnmapError::new(self, UnmapErrorKind::IommuError(e)));
                 }
+                // Unregister from domain registry
+                self.try_unregister_from_domain();
                 Ok(self
                     .take_rref()
                     .expect("DmaHandle must have rref for unmap"))
+            }
+        }
+    }
+
+    /// Internal lazy unmap implementation using quarantine
+    #[cfg(feature = "async_unmap_default")]
+    fn unmap_lazy_internal(mut self) -> Result<RRef<T>, UnmapError<T>> {
+        use crate::io::iommu::registry::get_iommu_driver;
+
+        let Some(driver) = get_iommu_driver() else {
+            log::warn!("[DmaHandle] Lazy unmap failed: no IOMMU driver, falling back to sync");
+            return self.unmap_sync_internal();
+        };
+
+        let Some(domain) = driver.get_domain(self.domain_id) else {
+            log::warn!(
+                "[DmaHandle] Lazy unmap failed: domain {} not found, falling back to sync",
+                self.domain_id
+            );
+            return self.unmap_sync_internal();
+        };
+
+        // Try to use quarantine for deferred invalidation
+        match domain.quarantine_queue().try_enqueue(self.iova, self.size) {
+            Ok(()) => {
+                // Successfully queued for lazy invalidation
+                // Mark in registry as unmapped (tombstone)
+                let _ = domain.unregister_dma_mapping(self.iova);
+                Ok(self
+                    .take_rref()
+                    .expect("DmaHandle must have rref for unmap"))
+            }
+            Err(_) => {
+                // Quarantine full, fall back to sync
+                log::debug!("[DmaHandle] Quarantine full, falling back to sync unmap");
+                self.unmap_sync_internal()
             }
         }
     }

@@ -6,7 +6,6 @@ use crate::io::iommu::intel::controller::dma::DomainManager;
 use crate::io::iommu::intel::registry::IommuRegistry;
 use super::types::{DeviceId, IommuDomainType, IommuError, IommuGroup, IommuGroupId};
 use crate::sync::PoisonLock;
-use alloc::vec::Vec;
 use hashbrown::HashMap;
 use pci_driver::{AcsController, PcieBdf, PcieError, PcieExtManager};
 use spin::Once;
@@ -205,7 +204,7 @@ impl IommuGroupManager {
 }
 
 #[cfg(not(test))]
-pub static IOMMU_GROUP_MANAGER: spin::Once<IommuGroupManager> = spin::Once::new();
+pub static IOMMU_GROUP_MANAGER: Once<IommuGroupManager> = Once::new();
 
 #[cfg(not(test))]
 /// Get reference to the IOMMU Group manager

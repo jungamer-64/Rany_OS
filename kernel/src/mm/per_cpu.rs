@@ -121,6 +121,130 @@ impl IovaMagazine {
     }
 }
 
+// ============================================================================
+// Per-CPU Page Table Magazine (for PageTablePool fast path)
+// ============================================================================
+
+/// Per-CPU Page Table Magazine capacity
+/// Smaller than IOVA magazine since page tables are larger (4KB each)
+pub const PT_MAG_CAPACITY: usize = 8;
+
+/// Lightweight page table entry for per-CPU magazine
+/// Stores only the essential information needed for recycling
+#[derive(Clone, Copy)]
+pub struct PtMagEntry {
+    /// Physical address of the page table
+    pub phys: u64,
+    /// Virtual address (as usize for pointer reconstruction)
+    pub virt: usize,
+    /// NUMA node where this page was allocated
+    pub node: u8,
+}
+
+impl PtMagEntry {
+    pub const fn empty() -> Self {
+        Self {
+            phys: 0,
+            virt: 0,
+            node: 0,
+        }
+    }
+
+    pub const fn is_valid(&self) -> bool {
+        self.phys != 0
+    }
+}
+
+/// Per-CPU Page Table Magazine
+///
+/// Lock-free cache for page table allocation/deallocation.
+/// Each CPU maintains its own magazine to avoid lock contention.
+///
+/// # Design
+/// - Small capacity (8 entries) to limit memory overhead
+/// - NUMA-aware: tracks allocation node for proper return
+/// - LIFO order for cache locality
+#[derive(Clone, Copy)]
+pub struct PtMagazine {
+    /// Cached page table entries
+    entries: [PtMagEntry; PT_MAG_CAPACITY],
+    /// Current fill level (0 = empty, PT_MAG_CAPACITY = full)
+    len: usize,
+    /// Preferred NUMA node for this CPU
+    preferred_node: u8,
+}
+
+impl PtMagazine {
+    pub const fn new() -> Self {
+        Self {
+            entries: [PtMagEntry::empty(); PT_MAG_CAPACITY],
+            len: 0,
+            preferred_node: 0,
+        }
+    }
+
+    /// Set the preferred NUMA node (called during CPU initialization)
+    pub fn set_preferred_node(&mut self, node: u8) {
+        self.preferred_node = node;
+    }
+
+    /// Get the preferred NUMA node
+    pub fn preferred_node(&self) -> u8 {
+        self.preferred_node
+    }
+
+    /// Try to pop a page table from the magazine
+    /// Returns None if empty
+    #[inline]
+    pub fn pop(&mut self) -> Option<PtMagEntry> {
+        if self.len == 0 {
+            None
+        } else {
+            self.len -= 1;
+            let entry = self.entries[self.len];
+            self.entries[self.len] = PtMagEntry::empty();
+            Some(entry)
+        }
+    }
+
+    /// Try to push a page table into the magazine
+    /// Returns false if full (caller should return to depot)
+    #[inline]
+    pub fn push(&mut self, entry: PtMagEntry) -> bool {
+        if self.len >= PT_MAG_CAPACITY {
+            false
+        } else {
+            self.entries[self.len] = entry;
+            self.len += 1;
+            true
+        }
+    }
+
+    /// Check if empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Check if full
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.len >= PT_MAG_CAPACITY
+    }
+
+    /// Current fill level
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Available capacity
+    #[inline]
+    pub fn available(&self) -> usize {
+        PT_MAG_CAPACITY - self.len
+    }
+}
+
 /// Per-CPUデータ構造
 /// GsBaseからのオフセットでアクセス
 #[repr(C, align(64))]
@@ -138,8 +262,10 @@ pub struct PerCpuData {
     pub iommu_domain_cache: PerCpuDomainCache,
     /// IOMMU IOVA Magazines (per-controller cache)
     pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
+    /// IOMMU Page Table Magazine (per-CPU cache for PageTablePool)
+    pub pt_magazine: PtMagazine,
     /// パディング（キャッシュラインに揃える - 調整必要かも）
-    _padding: [u64; 2], // Padding may need adjustment as fields evolve
+    _padding: [u64; 1], // Reduced padding due to pt_magazine addition
 }
 
 impl PerCpuData {
@@ -153,7 +279,8 @@ impl PerCpuData {
             dealloc_count: 0,
             iommu_domain_cache: PerCpuDomainCache::new(),
             iova_magazines: [IovaMagazine::new(); MAX_IOMMU_CONTROLLERS],
-            _padding: [0; 2],
+            pt_magazine: PtMagazine::new(),
+            _padding: [0; 1],
         }
     }
 

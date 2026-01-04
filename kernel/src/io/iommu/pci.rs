@@ -106,7 +106,9 @@ pub fn setup_iommu_for_pci_device(device: &mut crate::io::pci::PciDeviceInfo) ->
                         );
                     } else {
                         log::info!("[IOMMU] Enabled ATS for device {:?}", device_id);
-                        controller.enable_ats_for_device(device_id);
+                        // Default to Trusted for now - in production, determine from device context
+                        use crate::io::iommu::security::DeviceTrustLevel;
+                        controller.enable_ats_for_device(device_id, DeviceTrustLevel::Trusted);
                     }
                 }
             }

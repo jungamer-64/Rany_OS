@@ -14,12 +14,18 @@
 //! - **`decide()` implementation**: MUST be atomic-read level (no locks, no I/O)
 //! - **Actual processing**: Done by Security Monitor task draining the queue
 //!
+//! # Fault Storm Protection
+//!
+//! The module includes per-device fault rate limiting to prevent malicious or
+//! faulty devices from overwhelming the security monitor. When a device exceeds
+//! the fault threshold within a time window, it is automatically isolated.
+//!
 //! # Thread Safety
 //!
 //! All types are `Send + Sync`. Events are `Copy` to avoid allocation in ISR context.
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use spin::Once;
 
 use crate::io::iommu::fault_log::FaultRecord;
@@ -62,6 +68,94 @@ pub enum SecurityEvent {
         /// Number of events dropped since last report
         count: u64,
     },
+
+    /// Device fault rate exceeded threshold (fault storm detected)
+    FaultStormDetected {
+        /// Source ID of the offending device
+        source_id: u16,
+        /// Number of faults in the time window
+        fault_count: u32,
+        /// Time window in milliseconds
+        window_ms: u32,
+    },
+
+    /// ATS (Address Translation Services) enabled for potentially untrusted device
+    ///
+    /// # Security Warning
+    ///
+    /// ATS allows devices to cache address translations, which introduces attack
+    /// vectors if the device is compromised:
+    /// - **DMA attacks**: Malicious device could use cached translations to access
+    ///   memory regions that should have been revoked
+    /// - **Stale TLB exploitation**: Device might ignore invalidation requests
+    /// - **Side-channel attacks**: Translation timing can leak information
+    ///
+    /// Only enable ATS for devices that:
+    /// 1. Are physically trusted (not hot-pluggable external ports)
+    /// 2. Have firmware verified via secure boot chain
+    /// 3. Are from vendors with good security track record
+    AtsEnabledForUntrustedDevice {
+        /// Source ID of the device
+        source_id: u16,
+        /// Vendor ID (PCI)
+        vendor_id: u16,
+        /// Device ID (PCI)
+        device_id: u16,
+        /// Trust level assigned to the device
+        trust_level: DeviceTrustLevel,
+    },
+
+    /// ATS operation (enable/disable) performed on a device
+    AtsStateChanged {
+        /// Source ID of the device
+        source_id: u16,
+        /// New ATS state (true = enabled, false = disabled)
+        enabled: bool,
+        /// Reason for the state change
+        reason: AtsChangeReason,
+    },
+}
+
+/// Trust level assigned to a device for ATS policy decisions
+///
+/// Higher trust levels allow more permissive ATS behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DeviceTrustLevel {
+    /// Device is untrusted (e.g., external USB, Thunderbolt)
+    /// ATS should be DISABLED for security
+    Untrusted = 0,
+
+    /// Device is partially trusted (internal but not verified)
+    /// ATS allowed with warnings logged
+    Partial = 1,
+
+    /// Device is fully trusted (verified firmware, internal bus)
+    /// ATS allowed without warnings
+    Trusted = 2,
+}
+
+impl Default for DeviceTrustLevel {
+    fn default() -> Self {
+        // Default to untrusted for safety
+        Self::Untrusted
+    }
+}
+
+/// Reason for ATS state change
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AtsChangeReason {
+    /// ATS enabled by driver during device initialization
+    DriverInit,
+    /// ATS disabled due to security policy
+    SecurityPolicy,
+    /// ATS disabled due to fault storm from device
+    FaultStorm,
+    /// ATS disabled by administrator command
+    AdminRequest,
+    /// ATS state changed during live update/migration
+    LiveUpdate,
 }
 
 /// Reason for device isolation
@@ -74,6 +168,8 @@ pub enum IsolationReason {
     PolicyViolation,
     /// Isolation requested by administrator
     AdminRequest,
+    /// Isolation triggered by fault storm (excessive fault rate)
+    FaultStorm,
 }
 
 /// Decision from security policy evaluation
@@ -339,6 +435,38 @@ fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
                 .message("events_dropped")
                 .field("count", alloc::format!("{}", count))
         }
+        SecurityEvent::FaultStormDetected {
+            source_id,
+            fault_count,
+            window_ms,
+        } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("fault_storm_detected")
+            .field("source_id", alloc::format!("{:#x}", source_id))
+            .field("fault_count", alloc::format!("{}", fault_count))
+            .field("window_ms", alloc::format!("{}", window_ms)),
+        SecurityEvent::AtsEnabledForUntrustedDevice {
+            source_id,
+            vendor_id,
+            device_id,
+            trust_level,
+        } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(false)
+            .message("ats_enabled_untrusted")
+            .field("source_id", alloc::format!("{:#x}", source_id))
+            .field("vendor_id", alloc::format!("{:#x}", vendor_id))
+            .field("device_id", alloc::format!("{:#x}", device_id))
+            .field("trust_level", alloc::format!("{:?}", trust_level)),
+        SecurityEvent::AtsStateChanged {
+            source_id,
+            enabled,
+            reason,
+        } => AuditEvent::new(AuditEventType::IommuEvent, 0)
+            .success(true)
+            .message("ats_state_changed")
+            .field("source_id", alloc::format!("{:#x}", source_id))
+            .field("enabled", alloc::format!("{}", enabled))
+            .field("reason", alloc::format!("{:?}", reason)),
     }
 }
 
@@ -372,4 +500,209 @@ pub fn spawn_security_monitor_task() {
     SECURITY_MONITOR_TASK.call_once(|| {
         crate::task::per_core_executor::spawn(security_monitor_task());
     });
+}
+
+// ============================================================================
+// Fault Storm Protection (Per-Device Rate Limiting)
+// ============================================================================
+
+/// Maximum number of devices to track for fault rate limiting.
+/// Using a fixed-size array to avoid allocation in ISR context.
+const MAX_TRACKED_DEVICES: usize = 64;
+
+/// Fault threshold: number of faults within the time window before isolation.
+const FAULT_STORM_THRESHOLD: u32 = 10;
+
+/// Time window for fault rate calculation in milliseconds.
+const FAULT_STORM_WINDOW_MS: u32 = 1000;
+
+/// Per-device fault tracking entry.
+///
+/// Uses atomic operations for ISR-safe updates.
+struct DeviceFaultEntry {
+    /// Device source ID (0 = unused slot)
+    source_id: AtomicU32,
+    /// Fault count in current window
+    fault_count: AtomicU32,
+    /// Window start timestamp (TSC or milliseconds)
+    window_start: AtomicU64,
+    /// Whether the device has been flagged for isolation
+    isolated: AtomicU32,
+}
+
+impl DeviceFaultEntry {
+    const fn new() -> Self {
+        Self {
+            source_id: AtomicU32::new(0),
+            fault_count: AtomicU32::new(0),
+            window_start: AtomicU64::new(0),
+            isolated: AtomicU32::new(0),
+        }
+    }
+
+    fn is_unused(&self) -> bool {
+        self.source_id.load(Ordering::Relaxed) == 0
+    }
+
+    fn matches(&self, source_id: u16) -> bool {
+        self.source_id.load(Ordering::Relaxed) == source_id as u32
+    }
+
+    fn is_isolated(&self) -> bool {
+        self.isolated.load(Ordering::Relaxed) != 0
+    }
+
+    fn mark_isolated(&self) {
+        self.isolated.store(1, Ordering::Relaxed);
+    }
+
+    /// Record a fault and return (new_count, triggered_storm) tuple.
+    fn record_fault(&self, current_time_ms: u64) -> (u32, bool) {
+        let window_start = self.window_start.load(Ordering::Relaxed);
+        let elapsed = current_time_ms.saturating_sub(window_start);
+
+        if elapsed > FAULT_STORM_WINDOW_MS as u64 {
+            // Window expired, reset counter
+            self.window_start.store(current_time_ms, Ordering::Relaxed);
+            self.fault_count.store(1, Ordering::Relaxed);
+            (1, false)
+        } else {
+            // Within window, increment counter
+            let new_count = self.fault_count.fetch_add(1, Ordering::Relaxed) + 1;
+            let triggered = new_count >= FAULT_STORM_THRESHOLD && !self.is_isolated();
+            (new_count, triggered)
+        }
+    }
+
+    /// Try to claim this slot for a new device.
+    fn try_claim(&self, source_id: u16, current_time_ms: u64) -> bool {
+        if self
+            .source_id
+            .compare_exchange(0, source_id as u32, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            self.window_start.store(current_time_ms, Ordering::Relaxed);
+            self.fault_count.store(0, Ordering::Relaxed);
+            self.isolated.store(0, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// Global fault rate limiter for detecting fault storms.
+///
+/// Tracks per-device fault rates and triggers isolation when thresholds are exceeded.
+pub struct FaultRateLimiter {
+    entries: [DeviceFaultEntry; MAX_TRACKED_DEVICES],
+}
+
+impl FaultRateLimiter {
+    /// Create a new fault rate limiter.
+    pub const fn new() -> Self {
+        // SAFETY: DeviceFaultEntry::new() is const, so this is safe
+        const INIT: DeviceFaultEntry = DeviceFaultEntry::new();
+        Self {
+            entries: [INIT; MAX_TRACKED_DEVICES],
+        }
+    }
+
+    /// Record a fault for a device and check for fault storm.
+    ///
+    /// Returns `Some(IsolationReason::FaultStorm)` if the device should be isolated.
+    /// Returns `None` if the fault is within acceptable limits.
+    ///
+    /// # ISR Safety
+    /// This method is ISR-safe (lock-free, bounded time).
+    pub fn record_fault(&self, source_id: u16, current_time_ms: u64) -> Option<IsolationReason> {
+        // First, try to find existing entry for this device
+        for entry in &self.entries {
+            if entry.matches(source_id) {
+                if entry.is_isolated() {
+                    // Already isolated, no need to re-trigger
+                    return None;
+                }
+                let (count, triggered) = entry.record_fault(current_time_ms);
+                if triggered {
+                    entry.mark_isolated();
+                    log::warn!(
+                        "[IOMMU][Security] Fault storm detected: device 0x{:x} had {} faults in {}ms",
+                        source_id,
+                        count,
+                        FAULT_STORM_WINDOW_MS
+                    );
+                    return Some(IsolationReason::FaultStorm);
+                }
+                return None;
+            }
+        }
+
+        // Device not found, try to allocate a new slot
+        for entry in &self.entries {
+            if entry.is_unused() && entry.try_claim(source_id, current_time_ms) {
+                // New device, first fault - no storm yet
+                entry.record_fault(current_time_ms);
+                return None;
+            }
+        }
+
+        // No slots available - log and continue without tracking
+        // This is a resource limitation, not a security event
+        log::debug!(
+            "[IOMMU][Security] Fault rate limiter full, cannot track device 0x{:x}",
+            source_id
+        );
+        None
+    }
+
+    /// Check if a device is currently marked as isolated due to fault storm.
+    pub fn is_isolated(&self, source_id: u16) -> bool {
+        self.entries
+            .iter()
+            .any(|e| e.matches(source_id) && e.is_isolated())
+    }
+
+    /// Clear isolation status for a device (for recovery/debugging).
+    pub fn clear_isolation(&self, source_id: u16) {
+        for entry in &self.entries {
+            if entry.matches(source_id) {
+                entry.isolated.store(0, Ordering::Relaxed);
+                entry.fault_count.store(0, Ordering::Relaxed);
+                entry
+                    .window_start
+                    .store(current_time_ms_approx(), Ordering::Relaxed);
+                return;
+            }
+        }
+    }
+
+    /// Get fault statistics for a device.
+    pub fn get_device_stats(&self, source_id: u16) -> Option<(u32, bool)> {
+        for entry in &self.entries {
+            if entry.matches(source_id) {
+                return Some((
+                    entry.fault_count.load(Ordering::Relaxed),
+                    entry.is_isolated(),
+                ));
+            }
+        }
+        None
+    }
+}
+
+// Global fault rate limiter instance
+static FAULT_RATE_LIMITER: FaultRateLimiter = FaultRateLimiter::new();
+
+/// Get the global fault rate limiter.
+pub fn fault_rate_limiter() -> &'static FaultRateLimiter {
+    &FAULT_RATE_LIMITER
+}
+
+/// Approximate current time in milliseconds (for ISR context).
+///
+/// Uses the system clock's uptime value (based on TSC or PIT).
+fn current_time_ms_approx() -> u64 {
+    // Use system clock's uptime in milliseconds
+    crate::time::get_uptime_ms()
 }

@@ -5,9 +5,7 @@
 //!
 //! Fixed-size buffer to ensure ISR safety (no allocations).
 
-use crate::io::iommu::intel::registers::fsts_bits;
 use alloc::vec::Vec;
-use core::fmt;
 
 /// Fault Record (16 bytes)
 ///

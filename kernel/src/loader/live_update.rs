@@ -473,7 +473,7 @@ fn get_current_core_id() -> usize {
     {
         // CPUID経由でLAPIC IDを取得
         use core::arch::x86_64::__cpuid;
-        let result = unsafe { __cpuid(0x01) };
+        let result = __cpuid(0x01);
         ((result.ebx >> 24) & 0xFF) as usize
     }
 
