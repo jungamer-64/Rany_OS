@@ -80,6 +80,31 @@ impl DeviceId {
         }
     }
 
+    /// Create from segment, bus, and devfn (device/function packed)
+    pub const fn from_bus_devfn(segment: u16, bus: u8, devfn: u8) -> Self {
+        Self {
+            segment,
+            bus,
+            device: devfn >> 3,
+            function: devfn & 0x07,
+        }
+    }
+
+    /// Create from BDF packed as u16 (bus:8, device:5, function:3)
+    pub const fn from_bdf(bdf: u16) -> Self {
+        Self {
+            segment: 0,
+            bus: ((bdf >> 8) & 0xFF) as u8,
+            device: ((bdf >> 3) & 0x1F) as u8,
+            function: (bdf & 0x07) as u8,
+        }
+    }
+
+    /// Get BDF as packed u16 (bus:8, device:5, function:3)
+    pub const fn bdf(&self) -> u16 {
+        ((self.bus as u16) << 8) | ((self.device as u16) << 3) | (self.function as u16)
+    }
+
     /// Get requester ID (used for root/context table indexing)
     pub fn requester_id(&self) -> u16 {
         ((self.bus as u16) << 8) | ((self.device as u16) << 3) | (self.function as u16)

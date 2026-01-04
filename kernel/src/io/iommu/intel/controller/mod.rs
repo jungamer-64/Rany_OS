@@ -443,6 +443,64 @@ impl IommuController {
         }
     }
 
+    /// Invalidate IOTLB globally (synchronous).
+    ///
+    /// Used for emergency device isolation.
+    pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
+        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_invalidate_iotlb_global(true)
+        } else {
+            unsafe {
+                self.invalidate_iotlb_global();
+            }
+            Ok(())
+        }
+    }
+
+    /// Invalidate context cache globally (synchronous).
+    ///
+    /// Used for emergency device isolation.
+    pub fn invalidate_context_global_sync(&self) -> Result<(), IommuError> {
+        use crate::io::iommu::intel::controller::qi_ops::InvalidationOps;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_invalidate_context_global()
+        } else {
+            // Register-based context invalidation
+            unsafe {
+                self.invalidate_context_global_direct();
+            }
+            Ok(())
+        }
+    }
+
+    /// Register-based global context cache invalidation.
+    unsafe fn invalidate_context_global_direct(&self) {
+        use crate::io::iommu::intel::registers::ccmd_bits;
+        
+        // Global context invalidation command
+        let cmd: u64 = ccmd_bits::CCMD_ICC
+            | ((ccmd_bits::CCMD_CIRG_GLOBAL as u64) << ccmd_bits::CCMD_CIRG_SHIFT);
+        
+        self.write64(regs::CCMD, cmd);
+        
+        // Wait for completion (ICC bit cleared)
+        while (self.read64(regs::CCMD) & ccmd_bits::CCMD_ICC) != 0 {
+            core::hint::spin_loop();
+        }
+    }
+
+    /// Lookup device to domain mapping.
+    pub fn device_to_domain(&self, bus: u8, devfn: u8) -> Option<u16> {
+        // Use the device_domains hashmap directly
+        let device_id = DeviceId::from_bus_devfn(self.segment, bus, devfn);
+        
+        match self.device_domains.lock() {
+            Ok(device_domains) => device_domains.get(&device_id).copied(),
+            Err(_) => None,
+        }
+    }
+
     /// Enable IOMMU Translation
     pub unsafe fn enable(&self) -> Result<(), IommuError> {
         // Enable Translation (TE)

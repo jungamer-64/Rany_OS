@@ -237,3 +237,46 @@ impl UnifiedAllocatorStats {
         self.total_frames() - self.used_frames()
     }
 }
+
+// ============================================================================
+// Memory Pressure Detection
+// ============================================================================
+
+/// Get the current memory pressure level (0-100).
+///
+/// Returns:
+/// - 0-25: Low pressure (plenty of free memory)
+/// - 25-50: Medium pressure (consider cleanup)
+/// - 50-75: High pressure (aggressive cleanup needed)
+/// - 75-100: Critical pressure (emergency measures)
+///
+/// The pressure is calculated based on the percentage of used physical frames
+/// from the buddy allocator, with adjustments for free page count thresholds.
+pub fn memory_pressure_level() -> u8 {
+    let stats = buddy_allocator_stats();
+
+    if stats.total_frames == 0 {
+        return 0; // No memory tracked yet
+    }
+
+    // Calculate usage percentage
+    let used = stats.total_frames.saturating_sub(stats.free_frames as usize);
+    let usage_percent = (used * 100 / stats.total_frames) as u8;
+
+    // Apply thresholds for more nuanced pressure detection
+    // If we have less than 1GB free (262144 4KB frames), increase pressure
+    const LOW_FREE_THRESHOLD: u64 = 262144; // ~1GB
+    const CRITICAL_FREE_THRESHOLD: u64 = 65536; // ~256MB
+
+    let pressure = if stats.free_frames < CRITICAL_FREE_THRESHOLD {
+        // Critical: less than 256MB free
+        core::cmp::max(usage_percent, 80)
+    } else if stats.free_frames < LOW_FREE_THRESHOLD {
+        // Low free memory: apply mild boost
+        core::cmp::min(usage_percent.saturating_add(10), 100)
+    } else {
+        usage_percent
+    };
+
+    pressure
+}
