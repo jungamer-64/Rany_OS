@@ -31,6 +31,80 @@ use spin::Once;
 use crate::io::iommu::fault_log::FaultRecord;
 use crate::security::audit::{AuditEvent, AuditEventType};
 
+// ============================================================================
+// ISR-Safe Numeric Formatting (Allocation-Free)
+// ============================================================================
+
+/// Fixed-size buffer for numeric formatting (avoids heap allocation).
+/// Maximum hex u64 with "0x" prefix: "0xffffffffffffffff" = 18 chars + null = 19
+const FMT_BUF_SIZE: usize = 24;
+
+/// Format a u64 as hexadecimal string without allocation.
+/// Returns a string slice valid for the lifetime of the buffer.
+#[inline]
+fn fmt_hex_u64(value: u64, buf: &mut [u8; FMT_BUF_SIZE]) -> &str {
+    use core::fmt::Write;
+
+    // Use index-based writing to avoid borrow conflicts
+    let mut pos = 0usize;
+
+    // Write "0x" prefix
+    if pos + 2 <= buf.len() {
+        buf[pos] = b'0';
+        buf[pos + 1] = b'x';
+        pos += 2;
+    }
+
+    // Write hex digits (up to 16 digits for u64)
+    let mut started = false;
+    for i in (0..16).rev() {
+        let digit = ((value >> (i * 4)) & 0xF) as u8;
+        if digit != 0 || started || i == 0 {
+            started = true;
+            if pos < buf.len() {
+                buf[pos] = if digit < 10 {
+                    b'0' + digit
+                } else {
+                    b'a' + (digit - 10)
+                };
+                pos += 1;
+            }
+        }
+    }
+
+    // SAFETY: We only write ASCII hex digits
+    unsafe { core::str::from_utf8_unchecked(&buf[..pos]) }
+}
+
+/// Format a u64 as decimal string without allocation.
+#[inline]
+fn fmt_dec_u64(value: u64, buf: &mut [u8; FMT_BUF_SIZE]) -> &str {
+    if value == 0 {
+        buf[0] = b'0';
+        return unsafe { core::str::from_utf8_unchecked(&buf[..1]) };
+    }
+
+    // Write digits in reverse order
+    let mut pos = 0usize;
+    let mut v = value;
+    let mut temp = [0u8; 20]; // Max u64 digits = 20
+
+    while v > 0 && pos < 20 {
+        temp[pos] = b'0' + (v % 10) as u8;
+        v /= 10;
+        pos += 1;
+    }
+
+    // Reverse into output buffer
+    let len = pos;
+    for i in 0..len {
+        buf[i] = temp[len - 1 - i];
+    }
+
+    // SAFETY: We only write ASCII decimal digits
+    unsafe { core::str::from_utf8_unchecked(&buf[..len]) }
+}
+
 /// Security event types from IOMMU subsystem
 ///
 /// All variants are `Copy` and small (< 32 bytes) for ISR-safe notification.
@@ -189,6 +263,156 @@ pub enum IsolationDecision {
 impl Default for IsolationDecision {
     fn default() -> Self {
         Self::Isolate(IsolationReason::DmaFault)
+    }
+}
+
+// ============================================================================
+// Event Aggregator for Drop Summary
+// ============================================================================
+
+/// Key for aggregating similar events together.
+///
+/// Events with the same key are counted together to produce a summary
+/// instead of logging each individual occurrence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum EventAggregateKey {
+    /// DMA violation from specific device
+    DmaViolation { source_id: u16 },
+    /// Device isolation (unique per device)
+    DeviceIsolated { source_id: u16 },
+    /// Quarantine poisoned (unique per domain)
+    QuarantinePoisoned { domain_id: u16 },
+    /// Fault storm (unique per device)
+    FaultStorm { source_id: u16 },
+    /// Generic events that don't aggregate
+    Other,
+}
+
+impl From<&SecurityEvent> for EventAggregateKey {
+    fn from(event: &SecurityEvent) -> Self {
+        match event {
+            SecurityEvent::DmaViolation { source_id, .. } => {
+                EventAggregateKey::DmaViolation { source_id: *source_id }
+            }
+            SecurityEvent::DeviceIsolated { source_id, .. } => {
+                EventAggregateKey::DeviceIsolated { source_id: *source_id }
+            }
+            SecurityEvent::QuarantinePoisoned { domain_id, .. } => {
+                EventAggregateKey::QuarantinePoisoned { domain_id: *domain_id }
+            }
+            SecurityEvent::FaultStormDetected { source_id, .. } => {
+                EventAggregateKey::FaultStorm { source_id: *source_id }
+            }
+            _ => EventAggregateKey::Other,
+        }
+    }
+}
+
+/// Statistics for aggregated events of the same type.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EventAggregate {
+    /// Number of occurrences since last report
+    pub count: u64,
+    /// Representative event (first occurrence)
+    pub representative: Option<SecurityEvent>,
+}
+
+/// Maximum number of unique event keys to track for aggregation.
+const MAX_AGGREGATE_BUCKETS: usize = 32;
+
+/// Per-CPU event aggregator for efficient duplicate suppression.
+///
+/// Uses a simple array-based structure to avoid allocation on hot path.
+/// When capacity is exceeded, the oldest entries are evicted.
+pub struct EventAggregator {
+    /// Array of (key, aggregate) pairs
+    buckets: [(Option<EventAggregateKey>, EventAggregate); MAX_AGGREGATE_BUCKETS],
+    /// Number of active buckets
+    active: usize,
+    /// Next slot for eviction (circular)
+    next_evict: usize,
+}
+
+impl EventAggregator {
+    /// Create a new empty aggregator.
+    pub const fn new() -> Self {
+        const EMPTY_BUCKET: (Option<EventAggregateKey>, EventAggregate) = (
+            None,
+            EventAggregate {
+                count: 0,
+                representative: None,
+            },
+        );
+        Self {
+            buckets: [EMPTY_BUCKET; MAX_AGGREGATE_BUCKETS],
+            active: 0,
+            next_evict: 0,
+        }
+    }
+
+    /// Record an event, aggregating with existing entries if possible.
+    ///
+    /// Returns `true` if this is the first occurrence of this event type.
+    pub fn record(&mut self, event: SecurityEvent) -> bool {
+        let key = EventAggregateKey::from(&event);
+
+        // Look for existing bucket with same key
+        for (bucket_key, aggregate) in self.buckets.iter_mut() {
+            if *bucket_key == Some(key) {
+                aggregate.count += 1;
+                return false; // Not first occurrence
+            }
+        }
+
+        // Find empty slot or evict oldest
+        let slot = if self.active < MAX_AGGREGATE_BUCKETS {
+            let slot = self.active;
+            self.active += 1;
+            slot
+        } else {
+            let slot = self.next_evict;
+            self.next_evict = (self.next_evict + 1) % MAX_AGGREGATE_BUCKETS;
+            slot
+        };
+
+        self.buckets[slot] = (
+            Some(key),
+            EventAggregate {
+                count: 1,
+                representative: Some(event),
+            },
+        );
+        true // First occurrence
+    }
+
+    /// Drain all aggregates and reset.
+    ///
+    /// Calls the handler for each non-empty aggregate.
+    pub fn drain<F>(&mut self, mut handler: F)
+    where
+        F: FnMut(EventAggregateKey, EventAggregate),
+    {
+        for (key, aggregate) in self.buckets.iter_mut() {
+            if let Some(k) = key.take() {
+                if aggregate.count > 0 {
+                    handler(k, *aggregate);
+                }
+                *aggregate = EventAggregate::default();
+            }
+        }
+        self.active = 0;
+        self.next_evict = 0;
+    }
+
+    /// Get current number of unique event types being tracked.
+    pub fn active_count(&self) -> usize {
+        self.active
+    }
+}
+
+impl Default for EventAggregator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -396,7 +620,78 @@ pub fn default_security_monitor() -> Arc<IommuSecurityMonitor> {
     Arc::clone(monitor)
 }
 
+/// Log a summary for aggregated events (called periodically).
+///
+/// This reduces log spam when the same event type occurs repeatedly
+/// (e.g., continuous DMA violations from a misbehaving device).
+///
+/// # ISR Safety
+///
+/// This function uses stack-allocated buffers for number formatting,
+/// avoiding heap allocation entirely. Safe to call from any context.
+fn log_aggregated_event_summary(key: EventAggregateKey, aggregate: EventAggregate) {
+    // Stack-allocated format buffers (no heap allocation)
+    let mut buf1 = [0u8; FMT_BUF_SIZE];
+    let mut buf2 = [0u8; FMT_BUF_SIZE];
+
+    let audit_event = match key {
+        EventAggregateKey::DmaViolation { source_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("dma_violation_summary")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
+        EventAggregateKey::DeviceIsolated { source_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("device_isolated_summary")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
+        EventAggregateKey::QuarantinePoisoned { domain_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("quarantine_poisoned_summary")
+                .field("domain_id", fmt_dec_u64(domain_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
+        EventAggregateKey::FaultStorm { source_id } => {
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("fault_storm_summary")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("count", fmt_dec_u64(aggregate.count, &mut buf2))
+        }
+        EventAggregateKey::Other => {
+            // For Other events, use the representative if available
+            if let Some(event) = aggregate.representative {
+                let mut buf3 = [0u8; FMT_BUF_SIZE];
+                return crate::security::audit::log_event(
+                    security_event_to_audit(event)
+                        .field("repeated_count", fmt_dec_u64(aggregate.count, &mut buf3)),
+                );
+            }
+            return; // No representative, skip
+        }
+    };
+    crate::security::audit::log_event(audit_event);
+}
+
+/// Convert a SecurityEvent to an AuditEvent using stack-allocated formatting.
+///
+/// # ISR Safety
+///
+/// This function uses stack-allocated buffers for all numeric formatting,
+/// completely avoiding heap allocation. Safe to call from any context
+/// including interrupt handlers and high-priority executor threads.
 fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
+    // Stack-allocated format buffers (no heap allocation)
+    let mut buf1 = [0u8; FMT_BUF_SIZE];
+    let mut buf2 = [0u8; FMT_BUF_SIZE];
+    let mut buf3 = [0u8; FMT_BUF_SIZE];
+    let mut buf4 = [0u8; FMT_BUF_SIZE];
+
     match event {
         SecurityEvent::DmaViolation {
             source_id,
@@ -405,24 +700,30 @@ fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
             domain_id,
         } => {
             let domain = domain_id.map(u64::from).unwrap_or(0);
-            let mut event = AuditEvent::new(AuditEventType::IommuEvent, domain)
+            let base_event = AuditEvent::new(AuditEventType::IommuEvent, domain)
                 .success(false)
                 .message("dma_violation")
-                .field("source_id", alloc::format!("{:#x}", source_id))
-                .field("fault_address", alloc::format!("{:#x}", fault_address))
-                .field("reason", alloc::format!("{:#x}", reason));
-            event = match domain_id {
-                Some(domain_id) => event.field("domain_id", alloc::format!("{:#x}", domain_id)),
-                None => event.field("domain_id", "unknown"),
-            };
-            event
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("fault_address", fmt_hex_u64(fault_address, &mut buf2))
+                .field("reason", fmt_hex_u64(reason as u64, &mut buf3));
+            match domain_id {
+                Some(did) => base_event.field("domain_id", fmt_hex_u64(did as u64, &mut buf4)),
+                None => base_event.field("domain_id", "unknown"),
+            }
         }
         SecurityEvent::DeviceIsolated { source_id, reason } => {
+            // Use static strings for IsolationReason to avoid allocation
+            let reason_str = match reason {
+                IsolationReason::DmaFault => "DmaFault",
+                IsolationReason::PolicyViolation => "PolicyViolation",
+                IsolationReason::AdminRequest => "AdminRequest",
+                IsolationReason::FaultStorm => "FaultStorm",
+            };
             AuditEvent::new(AuditEventType::IommuEvent, 0)
                 .success(false)
                 .message("device_isolated")
-                .field("source_id", alloc::format!("{:#x}", source_id))
-                .field("reason", alloc::format!("{:?}", reason))
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("reason", reason_str)
         }
         SecurityEvent::QuarantinePoisoned { domain_id } => {
             AuditEvent::new(AuditEventType::IommuEvent, domain_id as u64)
@@ -433,7 +734,7 @@ fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
             AuditEvent::new(AuditEventType::IommuEvent, 0)
                 .success(false)
                 .message("events_dropped")
-                .field("count", alloc::format!("{}", count))
+                .field("count", fmt_dec_u64(count, &mut buf1))
         }
         SecurityEvent::FaultStormDetected {
             source_id,
@@ -442,31 +743,49 @@ fn security_event_to_audit(event: SecurityEvent) -> AuditEvent {
         } => AuditEvent::new(AuditEventType::IommuEvent, 0)
             .success(false)
             .message("fault_storm_detected")
-            .field("source_id", alloc::format!("{:#x}", source_id))
-            .field("fault_count", alloc::format!("{}", fault_count))
-            .field("window_ms", alloc::format!("{}", window_ms)),
+            .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+            .field("fault_count", fmt_dec_u64(fault_count as u64, &mut buf2))
+            .field("window_ms", fmt_dec_u64(window_ms as u64, &mut buf3)),
         SecurityEvent::AtsEnabledForUntrustedDevice {
             source_id,
             vendor_id,
             device_id,
             trust_level,
-        } => AuditEvent::new(AuditEventType::IommuEvent, 0)
-            .success(false)
-            .message("ats_enabled_untrusted")
-            .field("source_id", alloc::format!("{:#x}", source_id))
-            .field("vendor_id", alloc::format!("{:#x}", vendor_id))
-            .field("device_id", alloc::format!("{:#x}", device_id))
-            .field("trust_level", alloc::format!("{:?}", trust_level)),
+        } => {
+            // Use static strings for DeviceTrustLevel to avoid allocation
+            let trust_str = match trust_level {
+                DeviceTrustLevel::Untrusted => "Untrusted",
+                DeviceTrustLevel::Partial => "Partial",
+                DeviceTrustLevel::Trusted => "Trusted",
+            };
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(false)
+                .message("ats_enabled_untrusted")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("vendor_id", fmt_hex_u64(vendor_id as u64, &mut buf2))
+                .field("device_id", fmt_hex_u64(device_id as u64, &mut buf3))
+                .field("trust_level", trust_str)
+        }
         SecurityEvent::AtsStateChanged {
             source_id,
             enabled,
             reason,
-        } => AuditEvent::new(AuditEventType::IommuEvent, 0)
-            .success(true)
-            .message("ats_state_changed")
-            .field("source_id", alloc::format!("{:#x}", source_id))
-            .field("enabled", alloc::format!("{}", enabled))
-            .field("reason", alloc::format!("{:?}", reason)),
+        } => {
+            // Use static strings for AtsChangeReason to avoid allocation
+            let reason_str = match reason {
+                AtsChangeReason::DriverInit => "DriverInit",
+                AtsChangeReason::SecurityPolicy => "SecurityPolicy",
+                AtsChangeReason::FaultStorm => "FaultStorm",
+                AtsChangeReason::AdminRequest => "AdminRequest",
+                AtsChangeReason::LiveUpdate => "LiveUpdate",
+            };
+            AuditEvent::new(AuditEventType::IommuEvent, 0)
+                .success(true)
+                .message("ats_state_changed")
+                .field("source_id", fmt_hex_u64(source_id as u64, &mut buf1))
+                .field("enabled", if enabled { "true" } else { "false" })
+                .field("reason", reason_str)
+        }
     }
 }
 
@@ -476,19 +795,29 @@ const SECURITY_MONITOR_BATCH: usize = 128;
 /// GC (Garbage Collection) interval for zombie DMA handles
 const ZOMBIE_GC_INTERVAL_MS: u64 = 5000; // 5 seconds
 
+/// Interval for flushing aggregated events (milliseconds)
+const EVENT_AGGREGATE_FLUSH_MS: u64 = 1000; // 1 second
+
 /// Drain IOMMU security events and forward them to the audit pipeline.
 ///
 /// This task also performs periodic housekeeping:
 /// 1. Processes pending emergency device isolations (IOTLB flush)
 /// 2. Garbage collects zombie DMA handles (idle/memory pressure)
+/// 3. Aggregates and summarizes repeated security events
 pub async fn security_monitor_task() {
     let monitor = default_security_monitor();
     let mut gc_counter: u64 = 0;
+    let mut aggregate_counter: u64 = 0;
+    let mut aggregator = EventAggregator::new();
 
     loop {
-        // 1. Drain security events
+        // 1. Drain security events with aggregation
         let _ = monitor.drain_events(SECURITY_MONITOR_BATCH, |event| {
-            crate::security::audit::log_event(security_event_to_audit(event));
+            // Log immediately for first occurrence, aggregate duplicates
+            let is_first = aggregator.record(event);
+            if is_first {
+                crate::security::audit::log_event(security_event_to_audit(event));
+            }
         });
 
         let dropped = monitor.take_dropped_events();
@@ -499,6 +828,20 @@ pub async fn security_monitor_task() {
                     .message("monitor_events_dropped")
                     .field("count", alloc::format!("{}", dropped)),
             );
+        }
+
+        // 1b. Periodically flush aggregated event summaries
+        aggregate_counter += SECURITY_MONITOR_INTERVAL_MS;
+        if aggregate_counter >= EVENT_AGGREGATE_FLUSH_MS {
+            aggregate_counter = 0;
+            aggregator.drain(|key, aggregate| {
+                // Skip if only 1 occurrence (already logged)
+                if aggregate.count <= 1 {
+                    return;
+                }
+                // Log summary for repeated events
+                log_aggregated_event_summary(key, aggregate);
+            });
         }
 
         // 2. Process pending emergency isolations (fault storm handling)
@@ -528,41 +871,53 @@ pub async fn security_monitor_task() {
 /// 2. Belongs to a domain that has exceeded its resource threshold
 /// 3. Has been idle for too long (future enhancement)
 ///
-/// This function scans all domains and force-unmaps leaked handles
-/// when memory pressure is detected or domain limits are exceeded.
+/// This function processes entries from the zombie_queue and performs
+/// the actual unmap operations asynchronously (from GC task context,
+/// not from Drop which must be O(1) and lock-free).
 fn run_zombie_dma_gc() {
-    // Check if memory pressure is detected
+    use super::zombie_queue;
+
+    // Always process some zombies if there are any pending
+    let pending = zombie_queue::has_pending_zombies();
     let memory_pressure = crate::mm::memory_pressure_level();
 
-    if memory_pressure < 50 {
-        // No pressure, skip GC
+    // Determine how many to process based on pressure
+    let max_process = if memory_pressure >= 80 {
+        256  // High pressure: aggressive cleanup
+    } else if memory_pressure >= 50 || pending {
+        64   // Medium pressure or pending: moderate cleanup
+    } else {
+        0    // No pressure and no pending: skip
+    };
+
+    if max_process == 0 {
         return;
     }
 
-    log::debug!(
-        "[IOMMU][GC] Memory pressure {} - scanning for zombie DMA handles",
-        memory_pressure
-    );
+    // Process zombies using the zombie_queue API
+    let processed = zombie_queue::run_zombie_gc(max_process);
 
-    // Get all domains and check for excessive mappings
-    if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
-        // Scan domains for potential leaks
-        // Note: Full implementation requires domain enumeration API
-        // For now, we log statistics only
+    if processed > 0 {
+        let stats = zombie_queue::zombie_stats();
+        log::debug!(
+            "[IOMMU][GC] Processed {} zombies (total: enqueued={}, processed={}, dropped={})",
+            processed,
+            stats.total_enqueued,
+            stats.total_processed,
+            stats.total_dropped
+        );
+    }
+
+    // Log emergency registry stats for debugging
+    if memory_pressure >= 50 {
         let stats = EMERGENCY_REGISTRY.stats();
         log::debug!(
-            "[IOMMU][GC] Emergency registry: total={} pending={} active={}",
+            "[IOMMU][GC] Memory pressure {} - emergency registry: total={} pending={} active={}",
+            memory_pressure,
             stats.total_isolations,
             stats.pending_count,
             stats.active_count
         );
-
-        // Future enhancement: iterate domains and force-unmap leaked handles
-        // For each domain:
-        // 1. Check if active_dma_count exceeds threshold
-        // 2. Check handle ages (requires timestamp tracking)
-        // 3. Force-unmap oldest/largest handles if needed
-        let _ = driver; // suppress unused warning
     }
 }
 

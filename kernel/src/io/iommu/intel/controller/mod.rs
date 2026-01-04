@@ -40,7 +40,7 @@ use crate::io::iommu::intel::registers::regs::IQH;
 use crate::io::iommu::intel::registers::{gcmd_bits, gsts_bits, regs, rtaddr_bits};
 use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, RootEntry, ScalableContextEntry};
 use crate::io::iommu::interface::IommuHardwareContext;
-use crate::io::iommu::iova_allocator::IovaAllocator;
+use crate::io::iommu::IovaAllocatorFast;
 use crate::io::iommu::page_table_pool::PageTablePool;
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::tables::HardwareTable;
@@ -132,8 +132,8 @@ pub struct IommuController {
     pub segment: u16,
     /// Controller index within the registry (for per-core caches)
     pub(crate) controller_idx: AtomicUsize,
-    /// IOVA allocator
-    pub(crate) iova_allocator: PoisonLock<Option<IovaAllocator>>,
+    /// IOVA allocator (lock-free bitmap-based)
+    pub(crate) iova_allocator: PoisonLock<Option<IovaAllocatorFast>>,
     /// Set of devices with ATS enabled
     pub(crate) ats_enabled_devices: PoisonLock<BTreeSet<DeviceId>>,
     /// Posted Interrupt Descriptor pool
@@ -790,11 +790,11 @@ impl IommuHardwareContext for IommuController {
 
         // Map alignment to granularity
         let granularity = if alignment >= 1024 * 1024 * 1024 {
-            crate::io::iommu::iova_allocator::IovaGranularity::Page1G
+            crate::io::iommu::IovaGranularity::Page1G
         } else if alignment >= 2 * 1024 * 1024 {
-            crate::io::iommu::iova_allocator::IovaGranularity::Page2M
+            crate::io::iommu::IovaGranularity::Page2M
         } else {
-            crate::io::iommu::iova_allocator::IovaGranularity::Page4K
+            crate::io::iommu::IovaGranularity::Page4K
         };
 
         IovaManager::allocate_iova_aligned(self, size, granularity)

@@ -109,7 +109,7 @@ pub unsafe fn init_iommu_from_acpi(
             }
 
             let iova_bits = controller.max_guest_address_width().min(48).max(12);
-            let iova_base = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+            let iova_base = crate::io::iommu::PAGE_SIZE_4K;
             let iova_limit = 1u64 << iova_bits;
             let iova_size = iova_limit.saturating_sub(iova_base);
             if iova_size == 0 {
@@ -199,7 +199,7 @@ pub unsafe fn init_iommu_from_acpi(
     // Apply Reserved Regions (RMRR)
     // Need to do this before publishing registry because we need mutable access to controllers
     for region in &registry.reserved_regions {
-        let page_size = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+        let page_size = crate::io::iommu::PAGE_SIZE_4K;
         let start = align_down(region.base, page_size);
         let end = align_up(region.limit.saturating_add(1), page_size);
         if end <= start {
@@ -211,7 +211,7 @@ pub unsafe fn init_iommu_from_acpi(
                 continue;
             }
 
-            let mut guard = match controller.iova_allocator.lock() {
+            let guard = match controller.iova_allocator.lock() {
                 Ok(guard) => guard,
                 Err(_) => {
                     log::warn!(
@@ -222,7 +222,7 @@ pub unsafe fn init_iommu_from_acpi(
                 }
             };
 
-            let alloc = match guard.as_mut() {
+            let alloc = match guard.as_ref() {
                 Some(alloc) => alloc,
                 None => {
                     log::warn!(
@@ -298,7 +298,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     }
 
     let iova_bits = controller.max_guest_address_width().min(48).max(12);
-    let iova_base = crate::io::iommu::iova_allocator::PAGE_SIZE_4K;
+    let iova_base = crate::io::iommu::PAGE_SIZE_4K;
     let iova_limit = 1u64 << iova_bits;
     let iova_size = iova_limit.saturating_sub(iova_base);
     if iova_size == 0 {

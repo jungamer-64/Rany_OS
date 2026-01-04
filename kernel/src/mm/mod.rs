@@ -85,8 +85,8 @@ pub use mmap::{
 #[allow(unused_imports)]
 pub use per_cpu::{
     MAX_CPUS, PerCpuData, active_cpu_count, current_cpu_id, current_per_cpu, current_per_cpu_mut,
-    enable_fsgsbase, get_per_cpu, init_per_cpu, is_fsgsbase_enabled, setup_current_cpu,
-    try_current_cpu_id,
+    enable_fsgsbase, enter_interrupt, exit_interrupt, get_per_cpu, in_interrupt_context,
+    init_per_cpu, is_fsgsbase_enabled, setup_current_cpu, try_current_cpu_id,
 };
 #[allow(unused_imports)]
 pub use slab_cache::{

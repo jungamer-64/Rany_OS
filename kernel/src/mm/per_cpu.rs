@@ -264,6 +264,9 @@ pub struct PerCpuData {
     pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
     /// IOMMU Page Table Magazine (per-CPU cache for PageTablePool)
     pub pt_magazine: PtMagazine,
+    /// Interrupt nesting depth (incremented on ISR entry, decremented on exit)
+    /// Used to detect if code is running in interrupt context.
+    pub interrupt_depth: core::sync::atomic::AtomicU32,
     /// パディング（キャッシュラインに揃える - 調整必要かも）
     _padding: [u64; 1], // Reduced padding due to pt_magazine addition
 }
@@ -280,6 +283,7 @@ impl PerCpuData {
             iommu_domain_cache: PerCpuDomainCache::new(),
             iova_magazines: [IovaMagazine::new(); MAX_IOMMU_CONTROLLERS],
             pt_magazine: PtMagazine::new(),
+            interrupt_depth: core::sync::atomic::AtomicU32::new(0),
             _padding: [0; 1],
         }
     }
@@ -287,6 +291,31 @@ impl PerCpuData {
     /// 自己参照ポインタを設定
     pub fn set_self_ptr(&mut self) {
         self.self_ptr = self as *const _ as usize;
+    }
+
+    /// Check if currently executing in interrupt context.
+    ///
+    /// Returns `true` if the current code is running inside an interrupt
+    /// handler (ISR), `false` otherwise.
+    #[inline]
+    pub fn in_interrupt(&self) -> bool {
+        self.interrupt_depth.load(core::sync::atomic::Ordering::Relaxed) > 0
+    }
+
+    /// Increment interrupt nesting depth.
+    ///
+    /// Must be called at the beginning of every interrupt handler.
+    #[inline]
+    pub fn enter_interrupt(&self) {
+        self.interrupt_depth.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Decrement interrupt nesting depth.
+    ///
+    /// Must be called at the end of every interrupt handler.
+    #[inline]
+    pub fn exit_interrupt(&self) {
+        self.interrupt_depth.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -866,6 +895,62 @@ pub unsafe fn get_per_cpu(cpu_id: usize) -> Option<&'static PerCpuData> {
 /// アクティブなCPU数を取得
 pub fn active_cpu_count() -> usize {
     *ACTIVE_CPUS.lock()
+}
+
+// ============================================================================
+// Global Interrupt Context Helpers
+// ============================================================================
+
+/// Check if the current CPU is executing in interrupt context.
+///
+/// This is a safe wrapper that handles the case where Per-CPU data is not
+/// yet initialized (returns `false` in that case).
+///
+/// # Returns
+/// - `true` if running inside an interrupt handler (ISR)
+/// - `false` if running in normal context or Per-CPU is not initialized
+#[inline]
+pub fn in_interrupt_context() -> bool {
+    // SAFETY: Reading Per-CPU data is safe; we handle the None case.
+    unsafe {
+        current_per_cpu()
+            .map(|pc| pc.in_interrupt())
+            .unwrap_or(false)
+    }
+}
+
+/// Enter interrupt context (call at the start of every ISR).
+///
+/// This must be called at the very beginning of every interrupt handler
+/// to enable accurate interrupt context detection.
+///
+/// # Safety
+/// Must only be called from actual interrupt handler entry points.
+#[inline]
+pub fn enter_interrupt() {
+    // SAFETY: We're in an ISR, Per-CPU data should be initialized.
+    unsafe {
+        if let Some(pc) = current_per_cpu() {
+            pc.enter_interrupt();
+        }
+    }
+}
+
+/// Exit interrupt context (call at the end of every ISR).
+///
+/// This must be called at the very end of every interrupt handler,
+/// before the `iret` instruction.
+///
+/// # Safety
+/// Must only be called from actual interrupt handler exit points.
+#[inline]
+pub fn exit_interrupt() {
+    // SAFETY: We're in an ISR, Per-CPU data should be initialized.
+    unsafe {
+        if let Some(pc) = current_per_cpu() {
+            pc.exit_interrupt();
+        }
+    }
 }
 
 #[cfg(test)]
