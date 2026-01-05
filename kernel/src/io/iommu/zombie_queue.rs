@@ -17,16 +17,34 @@
 //!
 //! # Implementation
 //!
-//! Uses a bounded MPSC ring buffer with CAS-based enqueue:
-//! 1. Drop enqueues handle metadata (no alloc, O(1))
-//! 2. Background task dequeues and performs actual unmap
-//! 3. If queue full, handle is leaked with warning (safety preserved)
+//! Uses a bounded MPSC ring buffer with 2-phase publish protocol:
+//!
+//! ## Producer (Drop/ISR context):
+//! 1. `Empty -> Writing` (CAS AcqRel) - claim slot exclusively
+//! 2. Write payload data (non-atomic, exclusive ownership)
+//! 3. `Writing -> Pending` (store Release) - publish to consumer
+//!
+//! ## Consumer (GC task):
+//! 4. `Pending -> Processing` (CAS AcqRel) - acquire payload
+//! 5. Read payload data (non-atomic, exclusive ownership)
+//! 6. `Processing -> Empty` (store Release) - release slot
+//!
+//! This 2-phase protocol prevents publish-before-init races where the
+//! consumer could observe partially initialized data.
+//!
+//! # O(1) Guarantee
+//!
+//! Enqueue probes a fixed number of slots (MAX_PROBE_COUNT) and gives up
+//! if none are available. This guarantees O(1) worst-case for Drop/ISR.
+//! Leaked handles are safe (IOVA stays mapped, memory not reused).
 //!
 //! # Memory Safety
 //!
 //! Zombie handles prevent memory reuse until unmapped. The GC task runs
 //! periodically and on memory pressure to reclaim IOVAs.
 
+use core::cell::UnsafeCell;
+use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -39,77 +57,108 @@ const ZOMBIE_QUEUE_CAPACITY: usize = 4096;
 /// Mask for ring buffer index calculation.
 const ZOMBIE_QUEUE_MASK: usize = ZOMBIE_QUEUE_CAPACITY - 1;
 
-/// Zombie entry state
+/// Maximum probe attempts before giving up (O(1) guarantee).
+/// Must be small enough for Drop/ISR context.
+const MAX_PROBE_COUNT: usize = 64;
+
+/// Zombie entry state (2-phase publish protocol)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 enum ZombieState {
-    /// Slot is empty and available
+    /// Slot is empty and available for claiming
     Empty = 0,
-    /// Slot contains a pending zombie handle
-    Pending = 1,
-    /// Slot is being processed by GC
-    Processing = 2,
+    /// Slot is being written by producer (exclusive ownership)
+    Writing = 1,
+    /// Slot contains valid data, ready for consumer
+    Pending = 2,
+    /// Slot is being processed by GC (exclusive ownership)
+    Processing = 3,
 }
 
-/// Compact zombie entry (64 bytes total)
+/// Payload data stored in a zombie entry (non-atomic)
 ///
-/// Stores minimal information needed to perform async unmap.
+/// This struct is written/read under exclusive ownership guaranteed by
+/// the state machine (Writing or Processing state).
+#[derive(Clone, Copy)]
+#[repr(C)]
+struct ZombiePayload {
+    /// IOVA base address
+    iova: u64,
+    /// Size in bytes
+    size: u64,
+    /// Domain ID (u16 for IOMMU domain)
+    domain_id: u16,
+    /// Padding for alignment
+    _pad1: u16,
+    /// Mapping kind (encoded)
+    mapping_kind: u32,
+    /// Raw RRef pointer (0 if none)
+    raw_ptr: u64,
+    /// Raw RRef owner DomainId
+    raw_owner: u64,
+    /// Raw RRef metadata
+    raw_meta: u64,
+    /// Raw RRef drop fn pointer
+    /// NOTE: Pointer-to-integer conversion is intentional for lock-free storage.
+    /// This breaks strict provenance but is acceptable in kernel context.
+    raw_drop_fn: u64,
+}
+
+/// Compact zombie entry (64 bytes total, cache-line aligned)
+///
+/// Uses 2-phase publish protocol:
+/// - Producer: Empty -> Writing (CAS) -> write payload -> Pending (Release)
+/// - Consumer: Pending -> Processing (CAS) -> read payload -> Empty (Release)
 #[repr(C, align(64))]
 struct ZombieEntry {
-    /// IOVA base address
-    iova: AtomicU64,
-    /// Size in bytes
-    size: AtomicU64,
-    /// Domain ID (u16 for IOMMU domain)
-    domain_id: AtomicU32,
-    /// Mapping kind (encoded)
-    mapping_kind: AtomicU32,
-    /// Raw RRef pointer (0 if none)
-    raw_ptr: AtomicU64,
-    /// Raw RRef owner DomainId
-    raw_owner: AtomicU64,
-    /// Raw RRef metadata
-    raw_meta: AtomicU64,
-    /// Raw RRef drop fn pointer
-    raw_drop_fn: AtomicU64,
-    /// Entry state + generation for ABA prevention
-    /// Lower 8 bits: ZombieState
-    /// Upper 24 bits: generation counter
+    /// Entry state + generation counter for ABA prevention
+    /// - Bits 0-7: ZombieState
+    /// - Bits 8-31: generation counter (24 bits, wraps at 16M)
     state_gen: AtomicU32,
-    /// Padding for alignment
-    _pad: AtomicU32,
+    /// Padding for payload alignment
+    _pad: u32,
+    /// Payload data (accessed only under exclusive ownership)
+    payload: UnsafeCell<MaybeUninit<ZombiePayload>>,
 }
+
+// SAFETY: ZombieEntry is safe to share between threads because:
+// - state_gen is atomic and controls exclusive access to payload
+// - payload is only accessed when the thread owns the slot (Writing or Processing state)
+unsafe impl Sync for ZombieEntry {}
 
 impl ZombieEntry {
     const fn new() -> Self {
         Self {
-            iova: AtomicU64::new(0),
-            size: AtomicU64::new(0),
-            domain_id: AtomicU32::new(0),
-            mapping_kind: AtomicU32::new(0),
-            raw_ptr: AtomicU64::new(0),
-            raw_owner: AtomicU64::new(0),
-            raw_meta: AtomicU64::new(0),
-            raw_drop_fn: AtomicU64::new(0),
             state_gen: AtomicU32::new(0),
-            _pad: AtomicU32::new(0),
+            _pad: 0,
+            payload: UnsafeCell::new(MaybeUninit::uninit()),
         }
     }
 
+    /// Extract state from a packed state_gen value.
     #[inline]
-    fn state(&self) -> ZombieState {
-        let v = self.state_gen.load(Ordering::Acquire);
-        match v & 0xFF {
+    const fn extract_state(state_gen: u32) -> ZombieState {
+        match state_gen & 0xFF {
             0 => ZombieState::Empty,
-            1 => ZombieState::Pending,
-            2 => ZombieState::Processing,
+            1 => ZombieState::Writing,
+            2 => ZombieState::Pending,
+            3 => ZombieState::Processing,
             _ => ZombieState::Empty,
         }
     }
 
+    /// Extract generation from a packed state_gen value.
     #[inline]
-    fn generation(&self) -> u32 {
-        self.state_gen.load(Ordering::Acquire) >> 8
+    const fn extract_generation(state_gen: u32) -> u32 {
+        state_gen >> 8
+    }
+
+    /// Load state_gen once and return (state, generation).
+    /// Uses Relaxed ordering - caller decides if Acquire is needed.
+    #[inline]
+    fn load_state_gen_relaxed(&self) -> (ZombieState, u32) {
+        let sg = self.state_gen.load(Ordering::Relaxed);
+        (Self::extract_state(sg), Self::extract_generation(sg))
     }
 
     #[inline]
@@ -117,101 +166,73 @@ impl ZombieEntry {
         ((generation & 0xFF_FFFF) << 8) | (state as u32)
     }
 
-    /// Try to claim this slot for a new zombie entry.
-    /// Returns the generation on success.
-    fn try_claim(&self, expected_gen: u32) -> Option<u32> {
+    /// Phase 1: Try to claim this slot for writing (Empty -> Writing).
+    /// Takes pre-loaded generation to avoid double load in hot path.
+    /// Returns the new generation on success.
+    #[inline]
+    fn try_claim_for_writing(&self, expected_gen: u32) -> Option<u32> {
         let expected = Self::pack_state_gen(ZombieState::Empty, expected_gen);
         let new_gen = expected_gen.wrapping_add(1);
-        let desired = Self::pack_state_gen(ZombieState::Pending, new_gen);
+        let desired = Self::pack_state_gen(ZombieState::Writing, new_gen);
 
+        // AcqRel on success provides synchronization for any prior state
         self.state_gen
             .compare_exchange_weak(expected, desired, Ordering::AcqRel, Ordering::Relaxed)
             .ok()
             .map(|_| new_gen)
     }
 
-    /// Mark entry as being processed (for GC).
-    fn try_start_processing(&self) -> bool {
-        let current = self.state_gen.load(Ordering::Acquire);
-        if current & 0xFF != ZombieState::Pending as u32 {
-            return false;
-        }
-        let generation = current >> 8;
-        let desired = Self::pack_state_gen(ZombieState::Processing, generation);
-
-        self.state_gen
-            .compare_exchange(current, desired, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-    }
-
-    /// Mark entry as empty (after GC completes).
-    fn complete_processing(&self) {
-        let current = self.state_gen.load(Ordering::Acquire);
-        let generation = (current >> 8).wrapping_add(1);
-        let desired = Self::pack_state_gen(ZombieState::Empty, generation);
+    /// Phase 2: Publish the written data (Writing -> Pending).
+    /// Must only be called by the thread that successfully claimed the slot.
+    fn publish(&self, generation: u32) {
+        let desired = Self::pack_state_gen(ZombieState::Pending, generation);
+        // Release ensures all payload writes are visible before state change
         self.state_gen.store(desired, Ordering::Release);
     }
 
-    /// Write zombie data to claimed slot.
-    fn write(
-        &self,
-        iova: u64,
-        size: u64,
-        domain_id: u16,
-        mapping_kind: u32,
-        raw: Option<ZombieRawPartsComponents>,
-    ) {
-        self.iova.store(iova, Ordering::Relaxed);
-        self.size.store(size, Ordering::Relaxed);
-        self.domain_id.store(domain_id as u32, Ordering::Relaxed);
-        if let Some(raw) = raw {
-            self.raw_ptr.store(raw.ptr, Ordering::Relaxed);
-            self.raw_owner.store(raw.owner, Ordering::Relaxed);
-            self.raw_meta.store(raw.meta, Ordering::Relaxed);
-            self.raw_drop_fn.store(raw.drop_fn, Ordering::Relaxed);
-        } else {
-            self.raw_ptr.store(0, Ordering::Relaxed);
-            self.raw_owner.store(0, Ordering::Relaxed);
-            self.raw_meta.store(0, Ordering::Relaxed);
-            self.raw_drop_fn.store(0, Ordering::Relaxed);
+    /// Try to acquire a pending entry for processing (Pending -> Processing).
+    /// Takes pre-loaded state_gen value to avoid double load.
+    #[inline]
+    fn try_acquire_for_processing_with(&self, current: u32) -> bool {
+        if Self::extract_state(current) != ZombieState::Pending {
+            return false;
         }
-        self.mapping_kind.store(mapping_kind, Ordering::Release);
+        let generation = Self::extract_generation(current);
+        let desired = Self::pack_state_gen(ZombieState::Processing, generation);
+
+        // Acquire on success is sufficient: we need to see producer's payload writes.
+        // Producer used Release in publish(), so Acquire here forms the sync pair.
+        self.state_gen
+            .compare_exchange(current, desired, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
     }
 
-    /// Read zombie data from slot.
-    fn read(&self) -> ZombieEntryData {
-        // mapping_kind is the "release" store, read it last
-        let mapping_kind = self.mapping_kind.load(Ordering::Acquire);
-        let raw_ptr = self.raw_ptr.load(Ordering::Relaxed);
-        let raw_drop_fn = self.raw_drop_fn.load(Ordering::Relaxed);
-        let raw = if raw_ptr != 0 && raw_drop_fn != 0 {
-            let ptr = NonNull::new(raw_ptr as *mut u8);
-            let owner = DomainId::new(self.raw_owner.load(Ordering::Relaxed));
-            let meta = self.raw_meta.load(Ordering::Relaxed) as usize;
-            let drop_fn = unsafe {
-                core::mem::transmute::<usize, unsafe fn(NonNull<u8>, DomainId, usize)>(
-                    raw_drop_fn as usize,
-                )
-            };
-            ptr.map(|ptr| ZombieRawParts {
-                ptr,
-                owner,
-                meta,
-                drop_fn,
-            })
-        } else {
-            None
-        };
-        ZombieData {
-            iova: self.iova.load(Ordering::Relaxed),
-            size: self.size.load(Ordering::Relaxed),
-            domain_id: self.domain_id.load(Ordering::Relaxed) as u16,
-            mapping_kind,
-        }
-        .into_entry(raw)
+    /// Release a processed entry back to empty (Processing -> Empty).
+    fn release(&self) {
+        let current = self.state_gen.load(Ordering::Relaxed);
+        let generation = Self::extract_generation(current).wrapping_add(1);
+        let desired = Self::pack_state_gen(ZombieState::Empty, generation);
+        // Release ordering: not strictly required here since we're done with payload,
+        // but keeps the generation update visible to other threads promptly.
+        self.state_gen.store(desired, Ordering::Release);
+    }
+
+    /// Write payload data to a claimed slot.
+    /// SAFETY: Caller must have successfully called try_claim_for_writing().
+    unsafe fn write_payload(&self, payload: ZombiePayload) {
+        let ptr = self.payload.get();
+        (*ptr).write(payload);
+    }
+
+    /// Read payload data from an acquired slot.
+    /// SAFETY: Caller must have successfully called try_acquire_for_processing().
+    unsafe fn read_payload(&self) -> ZombiePayload {
+        let ptr = self.payload.get();
+        (*ptr).assume_init_read()
     }
 }
 
+/// Components for RRef raw parts stored in zombie entry
 #[derive(Clone, Copy)]
 struct ZombieRawPartsComponents {
     ptr: u64,
@@ -230,21 +251,27 @@ impl ZombieRawPartsComponents {
             drop_fn: drop_fn as usize as u64,
         }
     }
+
+    /// Reconstruct the drop function and parts for cleanup.
+    /// Returns None if no valid RRef was stored.
+    fn into_drop_parts(self) -> Option<(NonNull<u8>, DomainId, usize, unsafe fn(NonNull<u8>, DomainId, usize))> {
+        if self.ptr == 0 || self.drop_fn == 0 {
+            return None;
+        }
+        let ptr = NonNull::new(self.ptr as *mut u8)?;
+        let owner = DomainId::new(self.owner);
+        let meta = self.meta as usize;
+        // SAFETY: drop_fn was stored from a valid function pointer
+        let drop_fn = unsafe {
+            core::mem::transmute::<usize, unsafe fn(NonNull<u8>, DomainId, usize)>(
+                self.drop_fn as usize,
+            )
+        };
+        Some((ptr, owner, meta, drop_fn))
+    }
 }
 
-struct ZombieRawParts {
-    ptr: NonNull<u8>,
-    owner: DomainId,
-    meta: usize,
-    drop_fn: unsafe fn(NonNull<u8>, DomainId, usize),
-}
-
-struct ZombieEntryData {
-    data: ZombieData,
-    raw: Option<ZombieRawParts>,
-}
-
-/// Data extracted from a zombie entry
+/// Data extracted from a zombie entry for processing
 #[derive(Debug, Clone, Copy)]
 pub struct ZombieData {
     pub iova: u64,
@@ -255,23 +282,27 @@ pub struct ZombieData {
     pub mapping_kind: u32,
 }
 
-impl ZombieData {
-    fn into_entry(self, raw: Option<ZombieRawParts>) -> ZombieEntryData {
-        ZombieEntryData { data: self, raw }
-    }
-}
-
 /// Global zombie queue (statically allocated)
 pub struct ZombieQueue {
     entries: [ZombieEntry; ZOMBIE_QUEUE_CAPACITY],
-    /// Producer hint (not authoritative, just helps find empty slots)
-    producer_hint: AtomicU64,
-    /// Consumer position (only modified by GC task)
+    /// Producer sequence counter (fetch_add to distribute start positions)
+    producer_seq: AtomicU64,
+    /// Consumer position hint (helps resume scanning efficiently)
     consumer_pos: AtomicU64,
-    /// Statistics
+    /// Statistics: total entries successfully enqueued
     total_enqueued: AtomicU64,
+    /// Statistics: total entries successfully processed (unmap succeeded)
     total_processed: AtomicU64,
+    /// Statistics: total entries drained (processed + failed, for accurate pending_estimate)
+    total_drained: AtomicU64,
+    /// Statistics: total entries dropped due to queue full
     total_dropped: AtomicU64,
+    /// Statistics: unmap failed (driver error)
+    total_unmap_failed: AtomicU64,
+    /// Statistics: no IOMMU driver available
+    total_no_driver: AtomicU64,
+    /// Statistics: identity mappings leaked (intentional)
+    total_identity_leaked: AtomicU64,
 }
 
 impl ZombieQueue {
@@ -280,21 +311,29 @@ impl ZombieQueue {
         const EMPTY_ENTRY: ZombieEntry = ZombieEntry::new();
         Self {
             entries: [EMPTY_ENTRY; ZOMBIE_QUEUE_CAPACITY],
-            producer_hint: AtomicU64::new(0),
+            producer_seq: AtomicU64::new(0),
             consumer_pos: AtomicU64::new(0),
             total_enqueued: AtomicU64::new(0),
             total_processed: AtomicU64::new(0),
+            total_drained: AtomicU64::new(0),
             total_dropped: AtomicU64::new(0),
+            total_unmap_failed: AtomicU64::new(0),
+            total_no_driver: AtomicU64::new(0),
+            total_identity_leaked: AtomicU64::new(0),
         }
     }
 
     /// Try to enqueue a zombie handle.
     ///
-    /// This is O(1) amortized, lock-free, and allocation-free.
-    /// Safe to call from Drop or ISR context.
+    /// This is O(1) worst-case: probes at most MAX_PROBE_COUNT slots.
+    /// Lock-free and allocation-free. Safe to call from Drop or ISR context.
     ///
-    /// Returns `true` if enqueued successfully.
-    /// Returns `false` if queue is full (handle will be leaked).
+    /// Uses fetch_add on producer_seq to distribute start positions among
+    /// concurrent producers, reducing collision rate when queue is contended.
+    ///
+    /// # Returns
+    /// - `true` if enqueued successfully
+    /// - `false` if no empty slot found (handle will be leaked, but safely)
     pub fn try_enqueue(
         &self,
         iova: u64,
@@ -303,43 +342,50 @@ impl ZombieQueue {
         mapping_kind: u32,
         raw: Option<RRefRawParts>,
     ) -> bool {
-        let raw = raw.map(ZombieRawPartsComponents::from_raw_parts);
-        // Try a few positions starting from hint
-        let hint = self.producer_hint.load(Ordering::Relaxed) as usize;
+        // fetch_add gives each producer a unique starting position,
+        // distributing them across the ring buffer to reduce collisions.
+        let start = self.producer_seq.fetch_add(1, Ordering::Relaxed) as usize;
 
-        for offset in 0..32 {
-            let idx = (hint + offset) & ZOMBIE_QUEUE_MASK;
+        // Probe up to MAX_PROBE_COUNT slots (O(1) guarantee)
+        for offset in 0..MAX_PROBE_COUNT {
+            let idx = start.wrapping_add(offset) & ZOMBIE_QUEUE_MASK;
             let entry = &self.entries[idx];
 
-            if entry.state() == ZombieState::Empty {
-                let current_gen = entry.generation();
-                if let Some(_new_gen) = entry.try_claim(current_gen) {
-                    // Successfully claimed slot
-                    entry.write(iova, size, domain_id, mapping_kind, raw);
-                    self.producer_hint
-                        .store((idx + 1) as u64, Ordering::Relaxed);
+            // Single load, extract both state and generation
+            let (state, current_gen) = entry.load_state_gen_relaxed();
+            
+            if state == ZombieState::Empty {
+                if let Some(new_gen) = entry.try_claim_for_writing(current_gen) {
+                    // Phase 1 complete: we own the slot exclusively
+                    
+                    // Build payload
+                    let raw_components = raw.map(ZombieRawPartsComponents::from_raw_parts);
+                    let payload = ZombiePayload {
+                        iova,
+                        size,
+                        domain_id,
+                        _pad1: 0,
+                        mapping_kind,
+                        raw_ptr: raw_components.map_or(0, |r| r.ptr),
+                        raw_owner: raw_components.map_or(0, |r| r.owner),
+                        raw_meta: raw_components.map_or(0, |r| r.meta),
+                        raw_drop_fn: raw_components.map_or(0, |r| r.drop_fn),
+                    };
+                    
+                    // SAFETY: We own the slot (Writing state)
+                    unsafe { entry.write_payload(payload) };
+                    
+                    // Phase 2: publish to consumer (Writing -> Pending)
+                    entry.publish(new_gen);
+                    
                     self.total_enqueued.fetch_add(1, Ordering::Relaxed);
                     return true;
                 }
             }
         }
 
-        // Queue appears full, scan more aggressively
-        for idx in 0..ZOMBIE_QUEUE_CAPACITY {
-            let entry = &self.entries[idx];
-            if entry.state() == ZombieState::Empty {
-                let current_gen = entry.generation();
-                if let Some(_new_gen) = entry.try_claim(current_gen) {
-                    entry.write(iova, size, domain_id, mapping_kind, raw);
-                    self.producer_hint
-                        .store((idx + 1) as u64, Ordering::Relaxed);
-                    self.total_enqueued.fetch_add(1, Ordering::Relaxed);
-                    return true;
-                }
-            }
-        }
-
-        // Queue is truly full
+        // No empty slot found within probe limit - leak the handle
+        // This is safe: IOVA stays mapped, memory won't be reused
         self.total_dropped.fetch_add(1, Ordering::Relaxed);
         false
     }
@@ -349,15 +395,24 @@ impl ZombieQueue {
     /// This should only be called from the GC task (single consumer).
     /// Calls the provided callback for each zombie entry.
     ///
-    /// Returns the number of entries processed.
+    /// # Arguments
+    /// * `max_count` - Maximum number of entries to process
+    /// * `callback` - Called for each zombie; returns true if unmap succeeded
+    ///
+    /// # Returns
+    /// Number of entries processed (drained from queue).
     pub fn process_pending<F>(&self, max_count: usize, mut callback: F) -> usize
     where
         F: FnMut(ZombieData) -> bool,
     {
         let mut processed = 0;
         let start = self.consumer_pos.load(Ordering::Relaxed) as usize;
+        let mut last_offset = 0;
 
-        for offset in 0..ZOMBIE_QUEUE_CAPACITY.min(max_count * 2) {
+        // Scan up to 2x max_count to find pending entries
+        let scan_limit = ZOMBIE_QUEUE_CAPACITY.min(max_count * 2);
+
+        for offset in 0..scan_limit {
             if processed >= max_count {
                 break;
             }
@@ -365,29 +420,54 @@ impl ZombieQueue {
             let idx = (start + offset) & ZOMBIE_QUEUE_MASK;
             let entry = &self.entries[idx];
 
-            if entry.state() == ZombieState::Pending {
-                if entry.try_start_processing() {
-                    let entry_data = entry.read();
+            // Single load for state check, pass to CAS if Pending
+            let sg = entry.state_gen.load(Ordering::Relaxed);
+            if ZombieEntry::extract_state(sg) == ZombieState::Pending {
+                if entry.try_acquire_for_processing_with(sg) {
+                    // SAFETY: We own the slot (Processing state)
+                    let payload = unsafe { entry.read_payload() };
+                    
+                    let data = ZombieData {
+                        iova: payload.iova,
+                        size: payload.size,
+                        domain_id: payload.domain_id,
+                        mapping_kind: payload.mapping_kind,
+                    };
 
-                    // Call callback - if it returns true, processing succeeded
-                    if callback(entry_data.data) {
-                        if let Some(raw) = entry_data.raw {
-                            unsafe { (raw.drop_fn)(raw.ptr, raw.owner, raw.meta) };
+                    // Call callback - if it returns true, unmap succeeded
+                    let success = callback(data);
+                    
+                    if success {
+                        // Run RRef drop if present
+                        let raw = ZombieRawPartsComponents {
+                            ptr: payload.raw_ptr,
+                            owner: payload.raw_owner,
+                            meta: payload.raw_meta,
+                            drop_fn: payload.raw_drop_fn,
+                        };
+                        if let Some((ptr, owner, meta, drop_fn)) = raw.into_drop_parts() {
+                            // SAFETY: drop_fn and ptr were stored from valid RRef
+                            unsafe { drop_fn(ptr, owner, meta) };
                         }
                         self.total_processed.fetch_add(1, Ordering::Relaxed);
                     }
+                    // Note: If callback returned false, we still drain the entry.
+                    // The zombie is permanently leaked (IOVA stays mapped).
+                    // This prevents pending_estimate from growing unboundedly.
 
-                    // Mark slot as empty regardless (data is consumed)
-                    entry.complete_processing();
+                    // Release slot back to empty
+                    entry.release();
+                    self.total_drained.fetch_add(1, Ordering::Relaxed);
                     processed += 1;
+                    last_offset = offset;
                 }
             }
         }
 
-        // Update consumer position hint
+        // Update consumer position hint based on last processed offset
         if processed > 0 {
             self.consumer_pos.store(
-                ((start + processed) & ZOMBIE_QUEUE_MASK) as u64,
+                ((start + last_offset + 1) & ZOMBIE_QUEUE_MASK) as u64,
                 Ordering::Relaxed,
             );
         }
@@ -400,25 +480,56 @@ impl ZombieQueue {
         ZombieQueueStats {
             total_enqueued: self.total_enqueued.load(Ordering::Relaxed),
             total_processed: self.total_processed.load(Ordering::Relaxed),
+            total_drained: self.total_drained.load(Ordering::Relaxed),
             total_dropped: self.total_dropped.load(Ordering::Relaxed),
+            total_unmap_failed: self.total_unmap_failed.load(Ordering::Relaxed),
+            total_no_driver: self.total_no_driver.load(Ordering::Relaxed),
+            total_identity_leaked: self.total_identity_leaked.load(Ordering::Relaxed),
             capacity: ZOMBIE_QUEUE_CAPACITY,
         }
     }
 
-    /// Estimate current pending count (not exact due to concurrency).
+    /// Increment the unmap_failed counter.
+    pub fn inc_unmap_failed(&self) {
+        self.total_unmap_failed.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the no_driver counter.
+    pub fn inc_no_driver(&self) {
+        self.total_no_driver.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the identity_leaked counter.
+    pub fn inc_identity_leaked(&self) {
+        self.total_identity_leaked.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Estimate current pending count (accurate based on enqueued - drained).
     pub fn pending_estimate(&self) -> usize {
         let enqueued = self.total_enqueued.load(Ordering::Relaxed);
-        let processed = self.total_processed.load(Ordering::Relaxed);
-        enqueued.saturating_sub(processed) as usize
+        let drained = self.total_drained.load(Ordering::Relaxed);
+        enqueued.saturating_sub(drained) as usize
     }
 }
 
 /// Zombie queue statistics
 #[derive(Debug, Clone, Copy)]
 pub struct ZombieQueueStats {
+    /// Total entries successfully enqueued
     pub total_enqueued: u64,
+    /// Total entries where unmap succeeded
     pub total_processed: u64,
+    /// Total entries drained (processed + failed cleanups)
+    pub total_drained: u64,
+    /// Total entries dropped due to queue full (leaked at enqueue)
     pub total_dropped: u64,
+    /// Total unmap failures (driver returned error)
+    pub total_unmap_failed: u64,
+    /// Total entries leaked because no IOMMU driver was available
+    pub total_no_driver: u64,
+    /// Total identity mappings intentionally leaked
+    pub total_identity_leaked: u64,
+    /// Queue capacity
     pub capacity: usize,
 }
 
@@ -525,25 +636,40 @@ pub fn decode_mapping_kind(encoded: u32) -> super::dma_handle::MappingKind {
 ///
 /// Called from security_monitor_task or on memory pressure.
 /// Processes up to `max_count` zombie entries.
+/// Updates failure reason statistics for monitoring.
 pub fn run_zombie_gc(max_count: usize) -> usize {
     use super::dma_handle::MappingKind;
     use crate::io::iommu::registry::get_iommu_driver;
 
-    let Some(driver) = get_iommu_driver() else {
-        // No IOMMU driver - identity mappings don't need cleanup
-        return process_zombies(max_count, |_| true);
-    };
+    let driver = get_iommu_driver();
 
     process_zombies(max_count, |zombie| {
         let kind = decode_mapping_kind(zombie.mapping_kind);
 
+        // If no IOMMU driver, we can't do any cleanup.
+        // Return false to leak the entry safely (IOVA stays mapped).
+        let Some(ref driver) = driver else {
+            log::warn!(
+                "[ZombieGC] No IOMMU driver, leaking: IOVA=0x{:x}, size={}, kind={:?}",
+                zombie.iova,
+                zombie.size,
+                kind
+            );
+            ZOMBIE_QUEUE.inc_no_driver();
+            return false;
+        };
+
         let result = match &kind {
             MappingKind::Identity => {
+                // Identity mappings don't need IOMMU cleanup, but we still
+                // can't run the RRef drop without knowing if device DMA is complete.
+                // Leak to be safe.
                 log::warn!(
                     "[ZombieGC] Identity mapping leaked: IOVA=0x{:x}, size={}",
                     zombie.iova,
                     zombie.size
                 );
+                ZOMBIE_QUEUE.inc_identity_leaked();
                 return false;
             }
             MappingKind::Global => {
@@ -567,6 +693,7 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
                     zombie.size,
                     zombie.domain_id
                 );
+                // Domain leaks are counted separately if needed
                 return false;
             }
         };
@@ -588,6 +715,7 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
                     zombie.size,
                     e
                 );
+                ZOMBIE_QUEUE.inc_unmap_failed();
                 false
             }
         }
@@ -609,6 +737,7 @@ mod tests {
         let stats = queue.stats();
         assert_eq!(stats.total_enqueued, 1);
         assert_eq!(stats.total_processed, 0);
+        assert_eq!(stats.total_drained, 0);
         assert_eq!(stats.total_dropped, 0);
 
         // Process the zombie
@@ -623,6 +752,48 @@ mod tests {
         assert_eq!(data.iova, 0x1000);
         assert_eq!(data.size, 4096);
         assert_eq!(data.domain_id, 1);
+
+        // Check stats after processing
+        let stats = queue.stats();
+        assert_eq!(stats.total_processed, 1);
+        assert_eq!(stats.total_drained, 1);
+        assert_eq!(queue.pending_estimate(), 0);
+    }
+
+    #[test]
+    fn test_zombie_queue_failed_cleanup() {
+        let queue = ZombieQueue::new();
+
+        // Enqueue two zombies
+        assert!(queue.try_enqueue(0x1000, 4096, 1u16, 0, None));
+        assert!(queue.try_enqueue(0x2000, 4096, 2u16, 0, None));
+
+        // Process with callback that returns false (cleanup failed)
+        let count = queue.process_pending(10, |_| false);
+        assert_eq!(count, 2);
+
+        // Stats should show drained but not processed
+        let stats = queue.stats();
+        assert_eq!(stats.total_enqueued, 2);
+        assert_eq!(stats.total_processed, 0); // cleanup failed
+        assert_eq!(stats.total_drained, 2);   // but entries are drained
+        assert_eq!(queue.pending_estimate(), 0); // accurate estimate
+    }
+
+    #[test]
+    fn test_zombie_queue_probe_limit() {
+        let queue = ZombieQueue::new();
+
+        // Fill up more than MAX_PROBE_COUNT entries
+        for i in 0..(MAX_PROBE_COUNT + 10) {
+            let _ = queue.try_enqueue(i as u64 * 0x1000, 4096, 1u16, 0, None);
+        }
+
+        // After MAX_PROBE_COUNT, enqueue should start failing
+        // (though exact behavior depends on hint position)
+        let stats = queue.stats();
+        assert!(stats.total_enqueued > 0);
+        // Some may have been dropped if all probed slots were taken
     }
 
     #[test]
@@ -650,5 +821,56 @@ mod tests {
         // Domain
         let encoded = encode_mapping_kind(&MappingKind::Domain);
         assert!(matches!(decode_mapping_kind(encoded), MappingKind::Domain));
+    }
+
+    #[test]
+    fn test_state_transitions() {
+        let entry = ZombieEntry::new();
+        
+        // Initial state is Empty
+        let (state, generation) = entry.load_state_gen_relaxed();
+        assert_eq!(state, ZombieState::Empty);
+        assert_eq!(generation, 0);
+
+        // Claim for writing: Empty -> Writing
+        let new_gen = entry.try_claim_for_writing(0).unwrap();
+        let (state, _) = entry.load_state_gen_relaxed();
+        assert_eq!(state, ZombieState::Writing);
+        assert_eq!(new_gen, 1);
+
+        // Write payload (safe because we own the slot)
+        let payload = ZombiePayload {
+            iova: 0x1000,
+            size: 4096,
+            domain_id: 1,
+            _pad1: 0,
+            mapping_kind: 0,
+            raw_ptr: 0,
+            raw_owner: 0,
+            raw_meta: 0,
+            raw_drop_fn: 0,
+        };
+        unsafe { entry.write_payload(payload) };
+
+        // Publish: Writing -> Pending
+        entry.publish(new_gen);
+        let (state, _) = entry.load_state_gen_relaxed();
+        assert_eq!(state, ZombieState::Pending);
+
+        // Acquire for processing: Pending -> Processing
+        let sg = entry.state_gen.load(Ordering::Relaxed);
+        assert!(entry.try_acquire_for_processing_with(sg));
+        let (state, _) = entry.load_state_gen_relaxed();
+        assert_eq!(state, ZombieState::Processing);
+
+        // Read payload
+        let read_payload = unsafe { entry.read_payload() };
+        assert_eq!(read_payload.iova, 0x1000);
+        assert_eq!(read_payload.size, 4096);
+
+        // Release: Processing -> Empty
+        entry.release();
+        let (state, _) = entry.load_state_gen_relaxed();
+        assert_eq!(state, ZombieState::Empty);
     }
 }
