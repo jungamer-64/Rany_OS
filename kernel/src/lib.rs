@@ -300,9 +300,8 @@ pub mod ipc {
 
     pub mod rref {
         use alloc::boxed::Box;
-        use core::any::TypeId;
         use core::ops::{Deref, DerefMut};
-        use core::ptr::NonNull;
+        use core::ptr::{self, NonNull};
 
         use super::DomainId;
 
@@ -318,7 +317,9 @@ pub mod ipc {
                 let ptr = NonNull::new(Box::into_raw(boxed)).expect("RRef Box pointer is null");
                 Self { ptr, owner }
             }
+        }
 
+        impl<T: ?Sized> RRef<T> {
             pub unsafe fn from_raw(ptr: NonNull<T>, owner: DomainId) -> Self {
                 Self { ptr, owner }
             }
@@ -365,57 +366,98 @@ pub mod ipc {
         pub struct RRefRawParts {
             ptr: NonNull<u8>,
             owner: DomainId,
+            meta: usize,
             #[cfg(debug_assertions)]
             size: usize,
             #[cfg(debug_assertions)]
-            type_id: TypeId,
-            drop_fn: unsafe fn(NonNull<u8>, DomainId),
+            type_hash: u64,
+            drop_fn: unsafe fn(NonNull<u8>, DomainId, usize),
         }
 
         unsafe impl Send for RRefRawParts {}
         unsafe impl Sync for RRefRawParts {}
 
         impl RRefRawParts {
-            pub fn from_rref<T: 'static>(rref: RRef<T>) -> Self {
+            pub fn from_rref<T: ?Sized>(rref: RRef<T>) -> Self {
+                #[cfg(debug_assertions)]
+                let size = core::mem::size_of_val(&*rref);
+                #[cfg(debug_assertions)]
+                let type_hash = debug_type_hash(&*rref);
                 let (ptr, owner) = rref.into_raw();
+                let meta = if core::mem::size_of::<T::Metadata>() == 0 {
+                    0
+                } else {
+                    unsafe { core::mem::transmute_copy(&ptr::metadata(ptr.as_ptr())) }
+                };
 
-                unsafe fn drop_impl<T: 'static>(ptr: NonNull<u8>, owner: DomainId) {
-                    let rref: RRef<T> = unsafe { RRef::from_raw(ptr.cast(), owner) };
+                unsafe fn drop_impl<T: ?Sized>(ptr: NonNull<u8>, owner: DomainId, meta: usize) {
+                    let data_ptr = ptr.as_ptr() as *mut ();
+                    let meta = if core::mem::size_of::<T::Metadata>() == 0 {
+                        core::mem::zeroed()
+                    } else {
+                        core::mem::transmute_copy::<usize, T::Metadata>(&meta)
+                    };
+                    let typed_ptr = ptr::from_raw_parts_mut::<T>(data_ptr, meta);
+                    let rref: RRef<T> = unsafe { RRef::from_raw(NonNull::new_unchecked(typed_ptr), owner) };
                     drop(rref);
                 }
 
                 Self {
                     ptr: ptr.cast(),
                     owner,
+                    meta,
                     #[cfg(debug_assertions)]
-                    size: core::mem::size_of::<T>(),
+                    size,
                     #[cfg(debug_assertions)]
-                    type_id: TypeId::of::<T>(),
+                    type_hash,
                     drop_fn: drop_impl::<T>,
                 }
             }
 
-            pub unsafe fn into_rref<T: 'static>(self) -> Result<RRef<T>, RawPartsError> {
+            pub unsafe fn into_rref<T: ?Sized>(self) -> Result<RRef<T>, RawPartsError> {
+                let meta = if core::mem::size_of::<T::Metadata>() == 0 {
+                    core::mem::zeroed()
+                } else {
+                    core::mem::transmute_copy::<usize, T::Metadata>(&self.meta)
+                };
+                let typed_ptr = ptr::from_raw_parts_mut::<T>(self.ptr.as_ptr() as *mut (), meta);
+
                 #[cfg(debug_assertions)]
                 {
-                    if self.type_id != TypeId::of::<T>() {
+                    let actual_size = core::mem::size_of_val(&*typed_ptr);
+                    let actual_hash = debug_type_hash(&*typed_ptr);
+                    if self.type_hash != actual_hash {
                         return Err(RawPartsError::TypeMismatch);
                     }
-                    if self.size != core::mem::size_of::<T>() {
+                    if self.size != actual_size {
                         return Err(RawPartsError::SizeMismatch);
                     }
                 }
 
-                Ok(unsafe { RRef::from_raw(self.ptr.cast(), self.owner) })
+                Ok(unsafe { RRef::from_raw(NonNull::new_unchecked(typed_ptr), self.owner) })
             }
 
             pub unsafe fn drop_erased(self) {
-                unsafe { (self.drop_fn)(self.ptr, self.owner) };
+                unsafe { (self.drop_fn)(self.ptr, self.owner, self.meta) };
             }
 
             pub fn owner(&self) -> DomainId {
                 self.owner
             }
+        }
+
+        #[cfg(debug_assertions)]
+        fn debug_type_hash<T: ?Sized>(val: &T) -> u64 {
+            const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+            const FNV_PRIME: u64 = 0x100000001b3;
+            let mut hash = FNV_OFFSET;
+            for byte in core::any::type_name::<T>().as_bytes() {
+                hash ^= *byte as u64;
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            hash ^= (core::mem::size_of_val(val) as u64) << 32;
+            hash ^= (core::mem::align_of_val(val) as u64) << 48;
+            hash
         }
     }
 

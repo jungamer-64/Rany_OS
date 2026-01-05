@@ -191,6 +191,10 @@ impl BuddyFrameAllocator {
         let mut total = 0usize;
 
         // 使用可能な領域を空きブロックとして登録
+        if self.numa_regions.is_none() {
+            self.numa_regions = Some(BTreeMap::new());
+        }
+
         for &(start, size) in usable_regions {
             let start_frame = FrameIndex::from_phys_addr(start.as_u64());
             let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
@@ -199,11 +203,12 @@ impl BuddyFrameAllocator {
 
             // 領域を最大オーダーのブロックに分割して登録
             self.add_region(start_frame, end_frame);
-        }
 
-        // Initialize NUMA regions mapping
-        if self.numa_regions.is_none() {
-            self.numa_regions = Some(BTreeMap::new());
+            if let Some(map) = self.numa_regions.as_mut() {
+                map.entry(0)
+                    .or_insert_with(alloc::vec::Vec::new)
+                    .push((start_frame, end_frame));
+            }
         }
 
         self.total_frames = total;
@@ -777,6 +782,41 @@ pub fn is_managed_by_buddy(addr: PhysAddr) -> bool {
 
     let max_addr = (allocator.total_frames as u64) * (PAGE_SIZE_4K as u64);
     addr.as_u64() < max_addr
+}
+
+/// 指定範囲がBuddy Allocatorで管理されているかチェック
+///
+/// 範囲は [start, start+size) の半開区間。
+pub fn is_range_managed_by_buddy(start: PhysAddr, size: u64) -> bool {
+    if size == 0 {
+        return false;
+    }
+
+    let Some(end) = start.as_u64().checked_add(size) else {
+        return false;
+    };
+
+    let allocator = BUDDY_ALLOCATOR.lock();
+
+    if let Some(map) = allocator.numa_regions.as_ref() {
+        for (_node, ranges) in map.iter() {
+            for &(range_start, range_end) in ranges.iter() {
+                let start_addr = range_start.to_phys_addr();
+                let end_addr = range_end.to_phys_addr();
+                if start.as_u64() >= start_addr && end <= end_addr {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    if allocator.total_frames == 0 {
+        return false;
+    }
+
+    let max_addr = (allocator.total_frames as u64) * (PAGE_SIZE_4K as u64);
+    start.as_u64() < max_addr && end <= max_addr
 }
 
 #[cfg(test)]

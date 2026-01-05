@@ -281,6 +281,10 @@ pub struct IovaBitmap {
     hint_4k: AtomicUsize,
     /// Free 4KB page count
     free_count_4k: AtomicUsize,
+    /// Valid bit mask for the last word (handles non-64-aligned total_pages)
+    /// For word i < last_word: mask is u64::MAX
+    /// For last_word: mask has only `total_pages % 64` bits set (or 64 if aligned)
+    last_word_mask: u64,
 
     // === 2MB Level (Fully-Free Tracking) ===
     /// Per-2MB-block used count (0..512) - when 0, the block is fully free
@@ -426,6 +430,15 @@ impl IovaBitmap {
             bitmap_1g.push(AtomicU64::new(bits));
         }
 
+        // Calculate valid mask for the last word
+        // If total_pages is not a multiple of 64, the last word has fewer valid bits
+        let remainder = capped_pages % BITS_PER_WORD;
+        let last_word_mask = if remainder == 0 {
+            u64::MAX // All 64 bits are valid
+        } else {
+            (1u64 << remainder) - 1 // Only `remainder` bits are valid
+        };
+
         Self {
             base,
             total_pages: capped_pages,
@@ -435,6 +448,7 @@ impl IovaBitmap {
             summary: summary.into_boxed_slice(),
             hint_4k: AtomicUsize::new(0),
             free_count_4k: AtomicUsize::new(capped_pages),
+            last_word_mask,
             used_count_2m: used_count_2m.into_boxed_slice(),
             bitmap_2m: bitmap_2m.into_boxed_slice(),
             hint_2m: AtomicUsize::new(0),
@@ -444,6 +458,27 @@ impl IovaBitmap {
             bitmap_1g: bitmap_1g.into_boxed_slice(),
             // Only complete 1GB blocks are counted as "free" for 1GB allocation
             free_count_1g: AtomicUsize::new(complete_1gb_blocks),
+        }
+    }
+
+    /// Get the valid bit mask for a word index
+    ///
+    /// For all words except the last, returns u64::MAX (all bits valid).
+    /// For the last word, returns only the bits corresponding to valid pages.
+    #[inline]
+    fn valid_mask(&self, word_idx: usize) -> u64 {
+        let last_word_idx = if self.detail.is_empty() {
+            0
+        } else {
+            self.detail.len() - 1
+        };
+        
+        if word_idx < last_word_idx {
+            u64::MAX
+        } else if word_idx == last_word_idx {
+            self.last_word_mask
+        } else {
+            0 // Out of bounds
         }
     }
 
@@ -659,6 +694,13 @@ impl IovaBitmap {
         // Batch increment used_count_2m
         let old_used = self.used_count_2m[block_2m].fetch_add(count as u16, Ordering::AcqRel);
         
+        // Debug check: detect wrap-around
+        debug_assert!(
+            (old_used as usize).saturating_add(count) <= PAGES_PER_2MB_BLOCK,
+            "used_count_2m batch overflow at block {}: old={}, adding={}", 
+            block_2m, old_used, count
+        );
+        
         // If this block was fully free (old_used == 0), it's no longer fully free
         if old_used == 0 {
             // Clear 2MB bitmap bit
@@ -675,6 +717,14 @@ impl IovaBitmap {
             let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
             if block_1g < self.total_1gb_blocks {
                 let old_1g = self.used_count_1g[block_1g].fetch_add(1, Ordering::AcqRel);
+                
+                // Debug check: detect 1GB wrap-around
+                debug_assert!(
+                    old_1g < BLOCKS_2MB_PER_1GB as u16,
+                    "used_count_1g batch overflow at block {}: old_1g={}", 
+                    block_1g, old_1g
+                );
+                
                 if old_1g == 0 {
                     // Clear 1GB bitmap bit
                     let word_1g = block_1g / BITS_PER_WORD;
@@ -913,7 +963,7 @@ impl IovaBitmap {
     ///
     /// Uses word-level CAS operations for O(words) instead of O(pages).
     /// - Partial words: use masked CAS
-    /// - Full words: use compare_exchange(u64::MAX, 0)
+    /// - Full words: use compare_exchange(valid_mask, 0)
     fn allocate_range(&self, start_page: usize, count: usize) -> bool {
         if count == 0 {
             return true;
@@ -938,14 +988,18 @@ impl IovaBitmap {
             let last_bit_excl = end_page.min(word_end_page) - word_start_page;
             let bits_in_word = last_bit_excl - first_bit;
 
-            let is_full_word = first_bit == 0 && bits_in_word == BITS_PER_WORD;
+            // Use valid_mask for the last word to handle non-64-aligned total_pages
+            let valid_bits = self.valid_mask(word_idx);
+            let effective_bits = bits_in_word.min(valid_bits.count_ones() as usize);
+            let is_full_word = first_bit == 0 && effective_bits == valid_bits.count_ones() as usize;
 
             let word = &self.detail[word_idx];
 
             if is_full_word {
                 // Fast path: full word allocation via compare_exchange
+                // Use valid_mask instead of u64::MAX for last word safety
                 match word.compare_exchange(
-                    u64::MAX,
+                    valid_bits,
                     0,
                     Ordering::AcqRel,
                     Ordering::Relaxed,
@@ -1006,6 +1060,7 @@ impl IovaBitmap {
     /// Roll back a partially allocated range (word-optimized)
     ///
     /// Restores freed bits for words that were successfully allocated.
+    /// Uses valid_mask() to avoid setting bits for non-existent pages in the last word.
     fn rollback_range_words(&self, start_word: usize, words_allocated: usize, start_page: usize, total_pages: usize) {
         let end_page = start_page + total_pages;
 
@@ -1025,10 +1080,11 @@ impl IovaBitmap {
             let is_full_word = first_bit == 0 && bits_in_word == BITS_PER_WORD;
 
             if is_full_word {
-                // Full word: restore to u64::MAX
-                self.detail[word_idx].store(u64::MAX, Ordering::Release);
+                // Full word: restore to valid_mask (NOT u64::MAX for last word!)
+                let mask = self.valid_mask(word_idx);
+                self.detail[word_idx].store(mask, Ordering::Release);
             } else {
-                // Partial word: set mask bits
+                // Partial word: set mask bits (already correctly bounded)
                 let mask = ((1u64 << bits_in_word) - 1) << first_bit;
                 self.detail[word_idx].fetch_or(mask, Ordering::Release);
             }
@@ -1120,14 +1176,17 @@ impl IovaBitmap {
 
             if is_full_word {
                 // Fast path: full word free
-                // Use swap instead of fetch_or to get old value and set to MAX in one op
-                let old = word.swap(u64::MAX, Ordering::AcqRel);
-                let newly_freed_bits = !old; // bits that were 0 (allocated) are now freed
+                // Use valid_mask() to avoid setting bits for non-existent pages
+                let target_mask = self.valid_mask(word_idx);
+                let old = word.swap(target_mask, Ordering::AcqRel);
+                // Count only valid bits that were freed
+                let newly_freed_bits = (!old) & target_mask;
                 freed += newly_freed_bits.count_ones() as usize;
 
-                // Check for double-free (any bits that were already 1)
-                if old != 0 && double_free_iova.is_none() {
-                    let already_free_bit = old.trailing_zeros() as usize;
+                // Check for double-free (any valid bits that were already 1)
+                let already_free = old & target_mask;
+                if already_free != 0 && double_free_iova.is_none() {
+                    let already_free_bit = already_free.trailing_zeros() as usize;
                     let page_idx = word_idx * BITS_PER_WORD + already_free_bit;
                     double_free_iova = Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                 }
@@ -1197,6 +1256,13 @@ impl IovaBitmap {
 
         // Increment 2MB used_count
         let old_count = self.used_count_2m[block_2m].fetch_add(1, Ordering::AcqRel);
+        
+        // Debug check: detect wrap-around (should never happen if logic is correct)
+        debug_assert!(
+            old_count < PAGES_PER_2MB_BLOCK as u16,
+            "used_count_2m overflow detected at block {}: old_count={}", 
+            block_2m, old_count
+        );
 
         // Transition 0 -> 1: block is no longer fully free
         if old_count == 0 {
@@ -1208,6 +1274,14 @@ impl IovaBitmap {
             let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
             if block_1g < self.total_1gb_blocks {
                 let old_1g = self.used_count_1g[block_1g].fetch_add(1, Ordering::AcqRel);
+                
+                // Debug check: detect 1GB wrap-around
+                debug_assert!(
+                    old_1g < BLOCKS_2MB_PER_1GB as u16,
+                    "used_count_1g overflow detected at block {}: old_1g={}", 
+                    block_1g, old_1g
+                );
+                
                 if old_1g == 0 {
                     // 1GB block no longer fully free
                     self.clear_bitmap_1g_bit(block_1g);
@@ -1227,6 +1301,13 @@ impl IovaBitmap {
 
         // Decrement 2MB used_count
         let old_count = self.used_count_2m[block_2m].fetch_sub(1, Ordering::AcqRel);
+        
+        // Debug check: detect underflow (should never happen if logic is correct)
+        debug_assert!(
+            old_count > 0,
+            "used_count_2m underflow detected at block {}: old_count={}", 
+            block_2m, old_count
+        );
 
         // Transition 1 -> 0: block is now fully free
         if old_count == 1 {
@@ -1238,6 +1319,14 @@ impl IovaBitmap {
             let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
             if block_1g < self.total_1gb_blocks {
                 let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
+                
+                // Debug check: detect 1GB underflow
+                debug_assert!(
+                    old_1g > 0,
+                    "used_count_1g underflow detected at block {}: old_1g={}", 
+                    block_1g, old_1g
+                );
+                
                 if old_1g == 1 {
                     // 1GB block is now fully free (all 512 2MB blocks free)
                     self.set_bitmap_1g_bit(block_1g);
