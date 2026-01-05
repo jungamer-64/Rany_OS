@@ -55,7 +55,7 @@
 //! - Bitmap layer: Protected by PoisonLock (short critical sections)
 //! - Tree layer: Protected by PoisonLock (rarely accessed)
 
-use core::sync::atomic::{AtomicI64, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use crate::sync::IrqMutex;
 use super::types::IommuError;
 
@@ -576,6 +576,336 @@ impl ArenaOwnership {
     }
 }
 
+// ============================================================================
+// Per-Arena Detail (Single-Writer Non-Atomic Bitmap)
+// ============================================================================
+
+/// Maximum words per arena (64 words = 4096 pages = 16MB per arena)
+/// This allows the summary to fit in a single u64
+const MAX_WORDS_PER_ARENA: usize = 64;
+
+/// Per-arena non-atomic detail bitmap (single-writer optimization)
+///
+/// Only the owner CPU can read/write this structure directly.
+/// Non-owners must use RemoteFreeRing to request frees.
+///
+/// # Single-Writer Guarantee
+///
+/// - **Allocations**: Only owner CPU allocates from this arena
+/// - **Owner frees**: Owner directly updates `bits`
+/// - **Non-owner frees**: Pushed to owner's RemoteFreeRing, drained by owner
+/// - **Ownership transfer**: Happens at epoch boundaries (frozen during transfer)
+///
+/// # Benefits
+///
+/// - **No atomic RMW on hot path**: Direct bit manipulation
+/// - **No CAS retries**: Single writer means no contention
+/// - **Cache-local**: Owner's arena stays hot in L1/L2
+/// - **Reduced cache line bouncing**: Other CPUs don't touch this data
+///
+/// # Memory Layout
+///
+/// Each arena covers up to 64 words (4096 pages = 16MB).
+/// The `summary` field provides O(1) lookup for non-empty words.
+#[repr(C, align(64))]
+pub struct PerArenaDetail {
+    /// Non-atomic bitmap words (owner-only access)
+    /// bits[i] corresponds to global word index (word_start + i)
+    /// 1 = free, 0 = allocated
+    bits: [u64; MAX_WORDS_PER_ARENA],
+    /// Arena ID (index into arenas array)
+    arena_id: usize,
+    /// Global word range [word_start, word_end)
+    word_start: usize,
+    word_end: usize,
+    /// Number of valid words in this arena (may be < MAX_WORDS_PER_ARENA)
+    num_words: usize,
+    /// Local free page count (non-atomic, owner-maintained)
+    free_count: usize,
+    /// Local summary bits for fast scan within arena
+    /// Bit i is set if bits[i] != 0 (has free pages)
+    summary: u64,
+    /// Owner CPU ID (cached for fast check)
+    owner_cpu: u16,
+    /// Frozen flag: set during ownership transfer
+    /// When frozen, owner must not modify; transfer is in progress
+    frozen: bool,
+    /// Padding for alignment
+    _pad: [u8; 5],
+}
+
+impl PerArenaDetail {
+    /// Create a new per-arena detail for an arena
+    ///
+    /// # Arguments
+    /// * `arena_id` - Index of this arena
+    /// * `word_start` - First global word index
+    /// * `word_end` - One past the last global word index
+    /// * `owner_cpu` - Initial owner CPU ID
+    /// * `initial_bits` - Initial bitmap values (from global detail)
+    pub fn new(
+        arena_id: usize,
+        word_start: usize,
+        word_end: usize,
+        owner_cpu: u16,
+        initial_bits: &[u64],
+    ) -> Self {
+        let num_words = (word_end - word_start).min(MAX_WORDS_PER_ARENA);
+        let mut bits = [0u64; MAX_WORDS_PER_ARENA];
+        let mut summary = 0u64;
+        let mut free_count = 0usize;
+        
+        // Copy initial bits and build summary
+        for i in 0..num_words {
+            let b = if i < initial_bits.len() {
+                initial_bits[i]
+            } else {
+                0
+            };
+            bits[i] = b;
+            if b != 0 {
+                summary |= 1u64 << i;
+                free_count += b.count_ones() as usize;
+            }
+        }
+        
+        Self {
+            bits,
+            arena_id,
+            word_start,
+            word_end,
+            num_words,
+            free_count,
+            summary,
+            owner_cpu,
+            frozen: false,
+            _pad: [0; 5],
+        }
+    }
+    
+    /// Check if this arena has any free pages
+    #[inline]
+    pub fn has_free_pages(&self) -> bool {
+        self.summary != 0
+    }
+    
+    /// Get free page count
+    #[inline]
+    pub fn free_count(&self) -> usize {
+        self.free_count
+    }
+    
+    /// Check if arena is frozen (ownership transfer in progress)
+    #[inline]
+    pub fn is_frozen(&self) -> bool {
+        self.frozen
+    }
+    
+    /// Freeze the arena for ownership transfer
+    #[inline]
+    pub fn freeze(&mut self) {
+        self.frozen = true;
+    }
+    
+    /// Unfreeze the arena after ownership transfer
+    #[inline]
+    pub fn unfreeze(&mut self, new_owner: u16) {
+        self.owner_cpu = new_owner;
+        self.frozen = false;
+    }
+    
+    /// Allocate a single page from this arena (O(1), no atomics!)
+    ///
+    /// # Safety
+    /// Must only be called by the owner CPU under IRQ-off guard.
+    ///
+    /// # Returns
+    /// Some(global_page_idx) if successful, None if arena is empty or frozen
+    #[inline]
+    pub fn allocate_page(&mut self) -> Option<usize> {
+        if self.frozen || self.summary == 0 {
+            return None;
+        }
+        
+        // Find first word with free pages using tzcnt (O(1))
+        let word_in_arena = self.summary.trailing_zeros() as usize;
+        if word_in_arena >= self.num_words {
+            return None;
+        }
+        
+        let bits = self.bits[word_in_arena];
+        if bits == 0 {
+            // Summary was stale, update it
+            self.summary &= !(1u64 << word_in_arena);
+            // Retry with corrected summary
+            return self.allocate_page();
+        }
+        
+        // Find first free bit using tzcnt (O(1))
+        let bit_idx = bits.trailing_zeros() as usize;
+        
+        // Clear the bit (allocate the page) - NO ATOMIC!
+        self.bits[word_in_arena] &= !(1u64 << bit_idx);
+        self.free_count -= 1;
+        
+        // Update summary if word is now empty
+        if self.bits[word_in_arena] == 0 {
+            self.summary &= !(1u64 << word_in_arena);
+        }
+        
+        // Calculate global page index
+        let global_word_idx = self.word_start + word_in_arena;
+        let global_page_idx = global_word_idx * BITS_PER_WORD + bit_idx;
+        
+        Some(global_page_idx)
+    }
+    
+    /// Claim an entire word from this arena (for sub-magazine refill)
+    ///
+    /// # Returns
+    /// Some((global_word_idx, bits)) if successful, None if no non-empty words
+    #[inline]
+    pub fn claim_word(&mut self) -> Option<(usize, u64)> {
+        if self.frozen || self.summary == 0 {
+            return None;
+        }
+        
+        // Find first word with free pages
+        let word_in_arena = self.summary.trailing_zeros() as usize;
+        if word_in_arena >= self.num_words {
+            return None;
+        }
+        
+        let bits = self.bits[word_in_arena];
+        if bits == 0 {
+            self.summary &= !(1u64 << word_in_arena);
+            return self.claim_word();
+        }
+        
+        // Take all bits from this word - NO ATOMIC!
+        self.bits[word_in_arena] = 0;
+        self.summary &= !(1u64 << word_in_arena);
+        self.free_count -= bits.count_ones() as usize;
+        
+        let global_word_idx = self.word_start + word_in_arena;
+        Some((global_word_idx, bits))
+    }
+    
+    /// Free a single page back to this arena
+    ///
+    /// # Arguments
+    /// * `global_page_idx` - Global page index to free
+    ///
+    /// # Returns
+    /// true if the page was in this arena and freed, false otherwise
+    #[inline]
+    pub fn free_page(&mut self, global_page_idx: usize) -> bool {
+        if self.frozen {
+            return false;
+        }
+        
+        let global_word_idx = global_page_idx / BITS_PER_WORD;
+        if global_word_idx < self.word_start || global_word_idx >= self.word_end {
+            return false; // Not in this arena
+        }
+        
+        let word_in_arena = global_word_idx - self.word_start;
+        if word_in_arena >= self.num_words {
+            return false;
+        }
+        
+        let bit_idx = global_page_idx % BITS_PER_WORD;
+        let mask = 1u64 << bit_idx;
+        
+        // Check if already free (double-free detection)
+        if self.bits[word_in_arena] & mask != 0 {
+            // Already free - this is a bug, but don't corrupt state
+            return false;
+        }
+        
+        // Set the bit (free the page) - NO ATOMIC!
+        self.bits[word_in_arena] |= mask;
+        self.free_count += 1;
+        
+        // Update summary if word was empty
+        self.summary |= 1u64 << word_in_arena;
+        
+        true
+    }
+    
+    /// Return multiple pages (from RemoteFreeRing drain)
+    ///
+    /// # Arguments
+    /// * `pages` - Slice of global page indices to free
+    ///
+    /// # Returns
+    /// Number of pages successfully freed
+    pub fn free_pages_batch(&mut self, pages: &[usize]) -> usize {
+        if self.frozen {
+            return 0;
+        }
+        
+        let mut freed = 0;
+        for &global_page_idx in pages {
+            if self.free_page(global_page_idx) {
+                freed += 1;
+            }
+        }
+        freed
+    }
+    
+    /// Sync this arena's state back to the global atomic bitmap
+    ///
+    /// Used during ownership transfer or when falling back to atomic path.
+    /// Writes all local `bits` back to the corresponding global `detail` words.
+    pub fn sync_to_global(&self, global_detail: &[AtomicU64]) {
+        for i in 0..self.num_words {
+            let global_idx = self.word_start + i;
+            if global_idx < global_detail.len() {
+                // Use store with Release ordering to make changes visible
+                global_detail[global_idx].store(self.bits[i], Ordering::Release);
+            }
+        }
+    }
+    
+    /// Sync from global atomic bitmap to this arena
+    ///
+    /// Used when taking ownership of an arena.
+    pub fn sync_from_global(&mut self, global_detail: &[AtomicU64]) {
+        self.summary = 0;
+        self.free_count = 0;
+        
+        for i in 0..self.num_words {
+            let global_idx = self.word_start + i;
+            let bits = if global_idx < global_detail.len() {
+                global_detail[global_idx].load(Ordering::Acquire)
+            } else {
+                0
+            };
+            self.bits[i] = bits;
+            if bits != 0 {
+                self.summary |= 1u64 << i;
+                self.free_count += bits.count_ones() as usize;
+            }
+        }
+        
+        self.frozen = false;
+    }
+    
+    /// Get the global word index for a local word index
+    #[inline]
+    pub fn global_word_idx(&self, local_idx: usize) -> usize {
+        self.word_start + local_idx
+    }
+    
+    /// Check if a global page index belongs to this arena
+    #[inline]
+    pub fn contains_page(&self, global_page_idx: usize) -> bool {
+        let global_word_idx = global_page_idx / BITS_PER_WORD;
+        global_word_idx >= self.word_start && global_word_idx < self.word_end
+    }
+}
+
 /// Per-CPU magazine set (one magazine per size class)
 ///
 /// Also holds per-CPU allocation hints and arena boundaries to avoid cache line
@@ -593,6 +923,14 @@ impl ArenaOwnership {
 /// transitions 0→non-zero (via free), the index is pushed to the local stack.
 /// On allocation, pop from the local stack first for O(1) allocation.
 /// This eliminates the race condition in the previous global lock-free design.
+///
+/// # Single-Writer Arena (Non-Atomic Fast Path)
+///
+/// Each CPU has an optional `PerArenaDetail` for single-writer allocation.
+/// When enabled, allocations bypass atomic operations entirely:
+/// - Owner CPU allocates directly from non-atomic `arena_detail.bits`
+/// - Non-owner frees are routed through `remote_free_ring`
+/// - Ownership transfers happen at epoch boundaries
 #[repr(C, align(128))] // Two cache lines to avoid false sharing
 pub struct PerCpuMagazine {
     /// This CPU's ID (for arena ownership tracking)
@@ -628,6 +966,11 @@ pub struct PerCpuMagazine {
     /// Sub-magazine: claimed word (64 pages) for zero-contention allocation
     /// Protected by IRQ-off (same as free_word_stack)
     pub sub_magazine_4k: IrqMutex<SubMagazine>,
+    /// Single-writer arena detail (non-atomic fast path)
+    /// None until initialized by IovaAllocatorFast::init_single_writer_arenas()
+    pub arena_detail: IrqMutex<Option<PerArenaDetail>>,
+    /// Flag indicating if single-writer mode is active for this CPU
+    pub single_writer_enabled: AtomicBool,
 }
 
 impl PerCpuMagazine {
@@ -654,6 +997,9 @@ impl PerCpuMagazine {
             free_count_delta_2m: AtomicI64::new(0),
             remote_free_ring: RemoteFreeRing::new(),
             sub_magazine_4k: IrqMutex::new(SubMagazine::new()),
+            // Single-writer arena: None until enabled
+            arena_detail: IrqMutex::new(None),
+            single_writer_enabled: AtomicBool::new(false),
         }
     }
 
@@ -689,6 +1035,53 @@ impl PerCpuMagazine {
         
         // Initialize remote free ring sequences
         self.remote_free_ring.init();
+    }
+    
+    /// Initialize single-writer arena for this CPU
+    ///
+    /// Called by IovaAllocatorFast after bitmap is created.
+    /// Copies the relevant portion of the global bitmap into the local arena.
+    pub fn init_single_writer_arena(&self, global_detail: &[AtomicU64]) {
+        let mut arena_guard = self.arena_detail.lock();
+        
+        // Calculate the number of words in this arena
+        let num_words = self.arena_end_4k.saturating_sub(self.arena_start_4k);
+        if num_words == 0 || num_words > MAX_WORDS_PER_ARENA {
+            // Arena too large or empty, disable single-writer
+            *arena_guard = None;
+            self.single_writer_enabled.store(false, Ordering::Release);
+            return;
+        }
+        
+        // Copy initial bits from global detail
+        let mut initial_bits = alloc::vec::Vec::with_capacity(num_words);
+        for i in 0..num_words {
+            let global_idx = self.arena_start_4k + i;
+            let bits = if global_idx < global_detail.len() {
+                global_detail[global_idx].load(Ordering::Acquire)
+            } else {
+                0
+            };
+            initial_bits.push(bits);
+        }
+        
+        // Create per-arena detail
+        let arena = PerArenaDetail::new(
+            self.cpu_id,
+            self.arena_start_4k,
+            self.arena_end_4k,
+            self.cpu_id as u16,
+            &initial_bits,
+        );
+        
+        *arena_guard = Some(arena);
+        self.single_writer_enabled.store(true, Ordering::Release);
+    }
+    
+    /// Check if single-writer mode is enabled
+    #[inline]
+    pub fn is_single_writer_enabled(&self) -> bool {
+        self.single_writer_enabled.load(Ordering::Acquire)
     }
 
     /// Get magazine for a size class
@@ -4761,6 +5154,12 @@ impl IovaBitmap {
     pub fn total_1gb_blocks(&self) -> usize {
         self.total_1gb_blocks
     }
+    
+    /// Get detail bitmap (for single-writer arena initialization)
+    #[inline]
+    pub fn detail(&self) -> &[AtomicU64] {
+        &self.detail
+    }
 }
 
 // ============================================================================
@@ -4835,6 +5234,13 @@ pub struct IovaAllocatorFastStats {
     pub remote_frees: AtomicU64,
     /// Local free count (freed on same CPU as allocated)
     pub local_frees: AtomicU64,
+    // === Single-Writer Arena Statistics ===
+    /// Allocations from single-writer arena (non-atomic fast path)
+    pub single_writer_allocs: AtomicU64,
+    /// Frees routed through single-writer arena
+    pub single_writer_frees: AtomicU64,
+    /// Remote frees drained into single-writer arena
+    pub single_writer_remote_drains: AtomicU64,
 }
 
 impl IovaAllocatorFastStats {
@@ -4853,6 +5259,9 @@ impl IovaAllocatorFastStats {
             cas_retries_detail: AtomicU64::new(0),
             remote_frees: AtomicU64::new(0),
             local_frees: AtomicU64::new(0),
+            single_writer_allocs: AtomicU64::new(0),
+            single_writer_frees: AtomicU64::new(0),
+            single_writer_remote_drains: AtomicU64::new(0),
         }
     }
 }
@@ -4926,6 +5335,60 @@ impl IovaAllocatorFast {
             current_epoch: AtomicU32::new(0),
             completed_epoch: AtomicU32::new(0),
             stats: IovaAllocatorFastStats::new(),
+        }
+    }
+    
+    /// Enable single-writer arena mode for all CPUs
+    ///
+    /// This enables the non-atomic fast path where each CPU operates on
+    /// its own bitmap copy without any atomic RMW operations.
+    ///
+    /// # Safety
+    /// This should be called during system initialization, before
+    /// heavy concurrent allocation begins.
+    ///
+    /// # Performance
+    /// With single-writer mode enabled:
+    /// - Owner CPU allocations: NO atomics (tzcnt + bit clear)
+    /// - Owner CPU frees: NO atomics (bit set)
+    /// - Non-owner frees: Push to RemoteFreeRing (lock-free)
+    pub fn enable_single_writer_arenas(&self) {
+        let global_detail = self.bitmap_4k.detail();
+        
+        for cpu_id in 0..MAX_CPUS {
+            let magazine = &self.magazines[cpu_id];
+            
+            // Only enable if arena has valid range and not too large
+            if magazine.arena_end_4k > magazine.arena_start_4k {
+                let num_words = magazine.arena_end_4k - magazine.arena_start_4k;
+                
+                // Only enable if arena fits within MAX_WORDS_PER_ARENA
+                if num_words <= MAX_WORDS_PER_ARENA {
+                    magazine.init_single_writer_arena(global_detail);
+                }
+            }
+        }
+    }
+    
+    /// Sync single-writer arenas to global bitmap
+    ///
+    /// This should be called periodically (e.g., at epoch boundaries)
+    /// to ensure the global bitmap reflects all local changes.
+    /// This is important for:
+    /// - Statistics accuracy
+    /// - Large allocation (2MB/1GB) availability tracking
+    /// - System-wide free count consistency
+    pub fn sync_single_writer_arenas(&self) {
+        let global_detail = self.bitmap_4k.detail();
+        
+        for cpu_id in 0..MAX_CPUS {
+            let magazine = &self.magazines[cpu_id];
+            if magazine.is_single_writer_enabled() {
+                let mut arena_guard = magazine.arena_detail.lock();
+                if let Some(ref mut arena) = *arena_guard {
+                    arena.sync_to_global(global_detail);
+                }
+            }
         }
     }
 
@@ -5076,6 +5539,114 @@ impl IovaAllocatorFast {
         
         drained
     }
+    
+    /// Drain remote frees directly into single-writer arena (non-atomic path)
+    ///
+    /// This is called by the owner CPU when using single-writer mode.
+    /// Instead of processing remote frees through atomic bitmap operations,
+    /// we directly update the non-atomic PerArenaDetail bitmap.
+    ///
+    /// # Arguments
+    /// * `magazine` - The owner CPU's magazine
+    /// * `arena` - The owner CPU's arena detail (mutable, non-atomic)
+    ///
+    /// # Performance
+    /// This avoids all atomic RMW operations for frees that were pushed
+    /// to RemoteFreeRing by non-owner CPUs.
+    #[inline]
+    fn drain_remote_frees_into_arena(&self, magazine: &PerCpuMagazine, arena: &mut PerArenaDetail) {
+        // Drain up to 32 entries from RemoteFreeRing
+        let mut entries = [RemoteFreeEntry::empty(); 32];
+        let drained = magazine.remote_free_ring.drain(&mut entries);
+        
+        if drained == 0 {
+            return;
+        }
+        
+        let mut freed_count = 0usize;
+        
+        // Collect pages within our arena's range for batch processing
+        let mut arena_pages: [usize; 32] = [usize::MAX; 32];
+        let mut arena_page_count = 0usize;
+        
+        // Pages outside our arena range (must go through atomic path)
+        let mut external_pages: [(usize, u64); 32] = [(usize::MAX, 0); 32];
+        let mut external_count = 0usize;
+        
+        // 2MB/1GB frees (always atomic)
+        let mut large_frees: [(u8, u64); 8] = [(0, 0); 8];
+        let mut large_count = 0usize;
+        
+        // Phase 1: Categorize entries
+        for entry in &entries[..drained] {
+            match entry.size_class {
+                0 => {
+                    // 4KB page
+                    if entry.iova < self.bitmap_4k.base {
+                        continue;
+                    }
+                    let page_idx = ((entry.iova - self.bitmap_4k.base) / PAGE_SIZE_4K) as usize;
+                    if page_idx >= self.bitmap_4k.total_pages {
+                        continue;
+                    }
+                    
+                    // Check if this page is within our arena's word range
+                    let word_idx = page_idx / BITS_PER_WORD;
+                    if word_idx >= arena.word_start && word_idx < arena.word_end {
+                        // Within arena - can use non-atomic path
+                        if arena_page_count < arena_pages.len() {
+                            arena_pages[arena_page_count] = page_idx;
+                            arena_page_count += 1;
+                        }
+                    } else {
+                        // Outside arena - must use atomic path
+                        if external_count < external_pages.len() {
+                            external_pages[external_count] = (word_idx, entry.iova);
+                            external_count += 1;
+                        }
+                    }
+                }
+                1 | 2 => {
+                    if large_count < large_frees.len() {
+                        large_frees[large_count] = (entry.size_class, entry.iova);
+                        large_count += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        // Phase 2: Process arena pages (NON-ATOMIC!)
+        if arena_page_count > 0 {
+            arena.free_pages_batch(&arena_pages[..arena_page_count]);
+            freed_count += arena_page_count;
+        }
+        
+        // Phase 3: Process external pages (atomic fallback)
+        for i in 0..external_count {
+            let (_, iova) = external_pages[i];
+            let _ = self.bitmap_4k.free_page(iova);
+            freed_count += 1;
+        }
+        
+        // Phase 4: Process large frees
+        for i in 0..large_count {
+            let (size_class, iova) = large_frees[i];
+            match size_class {
+                1 => {
+                    let _ = self.bitmap_4k.free_2mb(iova);
+                }
+                2 => {
+                    let _ = self.bitmap_4k.free_1gb(iova);
+                }
+                _ => {}
+            }
+        }
+        
+        if freed_count > 0 {
+            self.stats.single_writer_remote_drains.fetch_add(freed_count as u64, Ordering::Relaxed);
+        }
+    }
 
     // ========================================================================
     // Epoch Management for Quarantine
@@ -5143,12 +5714,43 @@ impl IovaAllocatorFast {
     /// # Arena Owner Optimization (Optimization 1)
     /// When CPU owns its arena, allocation proceeds with minimal contention.
     /// Non-owner allocation tracks steal attempts for adaptive ownership transfer.
+    ///
+    /// # Single-Writer Arena (Non-Atomic Fast Path)
+    /// When enabled, owner CPU uses non-atomic bit manipulation for allocation.
+    /// This eliminates all atomic RMW operations on the hot path.
     #[inline]
     fn allocate_4k(&self) -> Option<u64> {
         // Fast path: try per-CPU magazine
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
             let my_cpu_id = magazine.cpu_id;
+            
+            // ================================================================
+            // FASTEST PATH: Single-Writer Arena (NO ATOMICS!)
+            //
+            // If single-writer mode is enabled for this CPU, we can allocate
+            // directly from the non-atomic per-arena bitmap. This is the
+            // ultimate fast path: just tzcnt + bit clear + address calc.
+            // ================================================================
+            if magazine.is_single_writer_enabled() {
+                let mut arena_guard = magazine.arena_detail.lock();
+                if let Some(ref mut arena) = *arena_guard {
+                    if !arena.is_frozen() && arena.has_free_pages() {
+                        // First, drain any pending remote frees into our arena
+                        self.drain_remote_frees_into_arena(magazine, arena);
+                        
+                        // Try to allocate from arena (NO ATOMIC RMW!)
+                        if let Some(page_idx) = arena.allocate_page() {
+                            let iova = self.bitmap_4k.base() + (page_idx as u64) * PAGE_SIZE_4K;
+                            self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
+                            self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
+                            // Update 2MB/1GB hierarchy (still needed for large allocations)
+                            self.bitmap_4k.on_page_allocated(page_idx);
+                            return Some(iova);
+                        }
+                    }
+                }
+            }
             
             // === Fast path #0: Sub-magazine (claimed word, zero atomics!) ===
             {
@@ -5484,8 +6086,9 @@ impl IovaAllocatorFast {
     /// # Owner-Based Free Strategy
     ///
     /// 1. If magazine has space: push to local magazine (fastest)
-    /// 2. If current CPU is owner: free directly to bitmap (local free)
-    /// 3. If current CPU is NOT owner: push to owner's remote free ring
+    /// 2. If single-writer enabled and we own this arena: free to non-atomic arena
+    /// 3. If current CPU is owner: free directly to bitmap (local free)
+    /// 4. If current CPU is NOT owner: push to owner's remote free ring
     ///
     /// This reduces CAS contention by ensuring bitmap updates are primarily
     /// done by the owner CPU. Other CPUs only push to a lock-free ring.
@@ -5511,16 +6114,41 @@ impl IovaAllocatorFast {
                 // === Local free: we own this arena ===
                 self.stats.local_frees.fetch_add(1, Ordering::Relaxed);
                 
+                let magazine = &self.magazines[cpu_id];
+                
+                // ============================================================
+                // Single-Writer Path: Non-atomic free to arena
+                // ============================================================
+                if magazine.is_single_writer_enabled() {
+                    if iova >= self.bitmap_4k.base {
+                        let page_idx = ((iova - self.bitmap_4k.base) / PAGE_SIZE_4K) as usize;
+                        let word_idx = page_idx / BITS_PER_WORD;
+                        
+                        let mut arena_guard = magazine.arena_detail.lock();
+                        if let Some(ref mut arena) = *arena_guard {
+                            if !arena.is_frozen() 
+                               && word_idx >= arena.word_start 
+                               && word_idx < arena.word_end 
+                            {
+                                // Free directly to non-atomic arena bitmap
+                                arena.free_page(page_idx);
+                                self.stats.single_writer_frees.fetch_add(1, Ordering::Relaxed);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                
                 // Also drain some remote frees while we're here (amortized)
-                if !self.magazines[cpu_id].remote_free_ring.is_empty() {
+                if !magazine.remote_free_ring.is_empty() {
                     self.drain_remote_frees_for_cpu(cpu_id);
                 }
                 
-                // Free to bitmap
+                // Free to bitmap (atomic fallback)
                 match self.bitmap_4k.free_page(iova)? {
                     Some(word_idx) => {
                         // Word transitioned 0→non-zero, push to our free word stack
-                        let mut stack = self.magazines[cpu_id].free_word_stack.lock();
+                        let mut stack = magazine.free_word_stack.lock();
                         let _ = stack.push(word_idx);
                     }
                     None => {}
@@ -5763,6 +6391,9 @@ impl IovaAllocatorFast {
             magazine_misses: self.stats.magazine_misses.load(Ordering::Relaxed),
             bitmap_allocs: self.stats.bitmap_allocs.load(Ordering::Relaxed),
             magazine_refills: self.stats.magazine_refills.load(Ordering::Relaxed),
+            single_writer_allocs: self.stats.single_writer_allocs.load(Ordering::Relaxed),
+            single_writer_frees: self.stats.single_writer_frees.load(Ordering::Relaxed),
+            single_writer_remote_drains: self.stats.single_writer_remote_drains.load(Ordering::Relaxed),
         }
     }
 
@@ -5855,6 +6486,10 @@ pub struct IovaAllocatorStatsFast {
     pub magazine_misses: u64,
     pub bitmap_allocs: u64,
     pub magazine_refills: u64,
+    // === Single-Writer Arena Stats ===
+    pub single_writer_allocs: u64,
+    pub single_writer_frees: u64,
+    pub single_writer_remote_drains: u64,
 }
 
 impl IovaAllocatorStatsFast {
@@ -5865,6 +6500,16 @@ impl IovaAllocatorStatsFast {
             0.0
         } else {
             self.magazine_hits as f64 / total as f64
+        }
+    }
+    
+    /// Calculate single-writer arena hit rate
+    pub fn single_writer_rate(&self) -> f64 {
+        let total = self.single_writer_allocs + self.magazine_hits;
+        if total == 0 {
+            0.0
+        } else {
+            self.single_writer_allocs as f64 / total as f64
         }
     }
 }
