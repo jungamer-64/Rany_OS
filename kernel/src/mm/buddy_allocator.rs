@@ -482,7 +482,7 @@ impl BuddyFrameAllocator {
         while current_order > to_order {
             current_order -= 1;
 
-            // 後半のBuddyを空きリストに追加
+            // 後半のBuddyを空きビットに追加
             let buddy = FrameIndex::new(frame.as_usize() + (1 << current_order));
             self.set_free_block_by_frame(current_order, buddy);
 
@@ -622,7 +622,7 @@ impl BuddyFrameAllocator {
             .or_insert_with(|| alloc::vec![])
             .push((start, end));
 
-        // Add the region to the global free lists
+        // Add the region to the global free bitsets
         self.add_region(start, end);
 
         // Update total_frames to cover the new region
@@ -839,7 +839,7 @@ pub fn buddy_alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
     BUDDY_ALLOCATOR.lock().allocate_1g_frame()
 }
 
-/// 連続する物理フレームを割り当て（Buddy版）
+/// 連続する物理フレームを割り当て（2のべき乗に切り上げ）
 pub fn buddy_alloc_contiguous_frames(frame_count: usize) -> Option<PhysAddr> {
     if frame_count == 0 {
         return None;

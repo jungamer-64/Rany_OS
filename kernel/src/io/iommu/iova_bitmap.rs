@@ -23,9 +23,12 @@
 //! │  Medium Path (O(1) amortized):                              │
 //! │  ┌─────────────────────────────────────────────────────────┐│
 //! │  │ Bitmap Allocator (fixed overhead)                       ││
-//! │  │ - 4KB bitmap: 1 bit per 4KB page                        ││
-//! │  │ - 2MB bitmap: 1 bit per 2MB region                      ││
-//! │  │ - Hierarchical summary for fast scanning                ││
+//! │  │ - 4KB detail: 1 bit per 4KB page                        ││
+//! │  │ - 4KB summary: 1 bit per 64 pages (4096 pages/word)     ││
+//! │  │ - 4KB summary_l2: 1 bit per 4096 pages (262144/word)    ││
+//! │  │ - 2MB fully-free: 1 bit per 2MB block                   ││
+//! │  │ - 1GB fully-free: 1 bit per 1GB block                   ││
+//! │  │ - 3-level hierarchical summary for near-full scanning   ││
 //! │  └─────────────────────────────────────────────────────────┘│
 //! │                           │                                 │
 //! │                           ▼ (fallback for large allocs)     │
@@ -52,7 +55,7 @@
 //! - Bitmap layer: Protected by PoisonLock (short critical sections)
 //! - Tree layer: Protected by PoisonLock (rarely accessed)
 
-use core::sync::atomic::{AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use crate::sync::IrqMutex;
 use super::types::IommuError;
 
@@ -85,6 +88,20 @@ const MAGAZINE_CAPACITY: usize = 64;
 
 /// Number of size classes in magazine (4KB, 2MB, 1GB)
 const MAGAZINE_SIZE_CLASSES: usize = 3;
+
+// ============================================================================
+// 3-Level Summary Hierarchy Constants
+// ============================================================================
+
+/// Detail words per summary bit (64 pages per bit = 1 word)
+const DETAIL_WORDS_PER_SUMMARY_BIT: usize = 1;
+
+/// Summary words per summary_l2 bit (64 summary bits per l2 bit)
+/// 1 summary_l2 bit covers 64 * 64 = 4096 detail words = 262,144 pages
+const SUMMARY_WORDS_PER_L2_BIT: usize = 1;
+
+/// Pages covered by one summary_l2 bit
+const PAGES_PER_L2_BIT: usize = BITS_PER_WORD * BITS_PER_WORD; // 4096 pages
 
 // ============================================================================
 // Hierarchical Block Constants
@@ -270,24 +287,169 @@ impl PerCpuMagazine {
 }
 
 // ============================================================================
+// Quarantine Ring Buffer (Epoch-Based Delayed Reclamation)
+// ============================================================================
+
+/// Capacity of per-CPU quarantine ring buffer
+const QUARANTINE_CAPACITY: usize = 256;
+
+/// Entry in the quarantine ring buffer
+#[derive(Clone, Copy)]
+pub struct QuarantineEntry {
+    /// IOVA address to be freed
+    pub iova: u64,
+    /// Size class: 0 = 4KB, 1 = 2MB, 2 = 1GB
+    pub size_class: u8,
+    /// Epoch when this entry was quarantined
+    pub epoch: u32,
+}
+
+impl QuarantineEntry {
+    pub const fn empty() -> Self {
+        Self {
+            iova: 0,
+            size_class: 0,
+            epoch: 0,
+        }
+    }
+}
+
+/// Per-CPU quarantine ring buffer for delayed IOVA reclamation
+///
+/// IOVAs are not returned to the bitmap immediately after free. Instead,
+/// they are placed in a quarantine ring. After IOTLB invalidation completes
+/// (or the epoch advances), quarantined entries are batch-returned to the bitmap.
+///
+/// # Benefits
+/// - Prevents IOTLB stale entry issues (UAF via DMA)
+/// - Reduces bitmap write frequency (batch returns)
+/// - Synergizes with zombie_queue for async cleanup
+///
+/// # Thread Safety
+/// - Each CPU has its own quarantine ring (no contention)
+/// - Protected by IRQ-off guard
+#[repr(C, align(128))]
+pub struct QuarantineRing {
+    /// Ring buffer entries
+    entries: [QuarantineEntry; QUARANTINE_CAPACITY],
+    /// Write position (head)
+    head: usize,
+    /// Read position (tail, for drain)
+    tail: usize,
+    /// Number of valid entries
+    count: usize,
+}
+
+impl QuarantineRing {
+    /// Create an empty quarantine ring
+    pub const fn new() -> Self {
+        Self {
+            entries: [QuarantineEntry::empty(); QUARANTINE_CAPACITY],
+            head: 0,
+            tail: 0,
+            count: 0,
+        }
+    }
+
+    /// Try to add an entry to quarantine (O(1))
+    ///
+    /// Returns false if the ring is full (caller should drain first).
+    #[inline]
+    pub fn push(&mut self, iova: u64, size_class: u8, epoch: u32) -> bool {
+        if self.count >= QUARANTINE_CAPACITY {
+            return false;
+        }
+        
+        self.entries[self.head] = QuarantineEntry {
+            iova,
+            size_class,
+            epoch,
+        };
+        self.head = (self.head + 1) % QUARANTINE_CAPACITY;
+        self.count += 1;
+        true
+    }
+
+    /// Pop entries that are older than the given epoch
+    ///
+    /// Returns up to `max` entries that have epoch <= completed_epoch.
+    /// Entries are removed from the ring.
+    pub fn drain_older_than(&mut self, completed_epoch: u32, max: usize, out: &mut [QuarantineEntry]) -> usize {
+        let mut drained = 0;
+        
+        while drained < max && drained < out.len() && self.count > 0 {
+            let entry = &self.entries[self.tail];
+            
+            // Only drain if epoch has passed
+            // Handle wrap-around: completed_epoch - entry.epoch should be positive
+            // Using signed comparison to handle wrap
+            let age = completed_epoch.wrapping_sub(entry.epoch) as i32;
+            if age < 0 {
+                // Entry is from a future epoch, stop draining
+                break;
+            }
+            
+            out[drained] = *entry;
+            self.tail = (self.tail + 1) % QUARANTINE_CAPACITY;
+            self.count -= 1;
+            drained += 1;
+        }
+        
+        drained
+    }
+
+    /// Force drain all entries (for shutdown or emergency)
+    pub fn drain_all(&mut self, out: &mut [QuarantineEntry]) -> usize {
+        let mut drained = 0;
+        
+        while drained < out.len() && self.count > 0 {
+            out[drained] = self.entries[self.tail];
+            self.tail = (self.tail + 1) % QUARANTINE_CAPACITY;
+            self.count -= 1;
+            drained += 1;
+        }
+        
+        drained
+    }
+
+    /// Get current count
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Check if full
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.count >= QUARANTINE_CAPACITY
+    }
+}
+
+// ============================================================================
 // Bitmap Allocator (Medium Path)
 // ============================================================================
 
 /// Hierarchical bitmap for O(1) amortized allocation
 ///
-/// Uses a two-level hierarchy:
-/// - Level 0: Summary bitmap (1 bit per 64 pages)
-/// - Level 1: Detail bitmap (1 bit per page)
-/// - Level 2: 2MB fully-free bitmap (1 bit per 512 pages)
-/// - Level 3: 1GB fully-free bitmap (1 bit per 512 2MB blocks)
+/// Uses a three-level hierarchy for 4KB pages:
+/// - Level 2 (L2): Summary-of-summary bitmap (1 bit per 4096 pages / 64 words)
+/// - Level 1 (L1): Summary bitmap (1 bit per 64 pages / 1 word)
+/// - Level 0 (L0): Detail bitmap (1 bit per page)
 ///
-/// This allows finding a free page in O(1) amortized time by first
-/// checking the summary level. For 2MB/1GB allocations, the dedicated
-/// fully-free bitmaps provide O(1) allocation without linear scanning.
+/// Plus dedicated fully-free bitmaps for 2MB/1GB:
+/// - 2MB fully-free bitmap (1 bit per 512 pages)
+/// - 1GB fully-free bitmap (1 bit per 512 2MB blocks)
+///
+/// This allows finding a free page in O(1) amortized time. The 3-level
+/// hierarchy prevents slow scanning when the bitmap is nearly full:
+/// - L2 scan: only ~16 words for 256GB (vs 128KB summary)
+/// - L1 scan: only non-zero L2 bits
+/// - L0 allocation: only non-zero L1 bits
 ///
 /// # Memory Overhead (256GB IOVA space)
-/// - 4KB detail bitmap: 8MB (64M bits)
-/// - 4KB summary bitmap: 128KB
+/// - 4KB detail bitmap (L0): 8MB (64M bits)
+/// - 4KB summary bitmap (L1): 128KB (1M bits)
+/// - 4KB summary_l2 bitmap (L2): 2KB (16K bits)
 /// - 2MB used_count: 256KB (131,072 × u16)
 /// - 2MB fully-free bitmap: 16KB (131,072 bits)
 /// - 1GB fully-free bitmap: 32B (256 bits)
@@ -302,11 +464,14 @@ pub struct IovaBitmap {
     /// Total 1GB blocks managed  
     total_1gb_blocks: usize,
 
-    // === 4KB Level ===
-    /// Level 1: Detailed bitmap (1 = free, 0 = allocated)
+    // === 4KB Level (3-level hierarchy) ===
+    /// Level 0 (L0): Detailed bitmap (1 = free, 0 = allocated)
     detail: alloc::boxed::Box<[AtomicU64]>,
-    /// Level 0: Summary bitmap (1 = has free pages in corresponding detail word)
+    /// Level 1 (L1): Summary bitmap (1 = has free pages in corresponding detail word)
     summary: alloc::boxed::Box<[AtomicU64]>,
+    /// Level 2 (L2): Summary-of-summary (1 = has non-zero summary word in range)
+    /// Covers 64 summary words (= 4096 detail words = 262,144 pages) per bit
+    summary_l2: alloc::boxed::Box<[AtomicU64]>,
     /// Allocation hint for 4KB (word index to start searching)
     hint_4k: AtomicUsize,
     /// Free 4KB page count
@@ -359,11 +524,12 @@ impl IovaBitmap {
         let total_2mb_blocks = (capped_pages + PAGES_PER_2MB_BLOCK - 1) / PAGES_PER_2MB_BLOCK;
         let total_1gb_blocks = (total_2mb_blocks + BLOCKS_2MB_PER_1GB - 1) / BLOCKS_2MB_PER_1GB;
 
-        // === 4KB Level Initialization ===
+        // === 4KB Level Initialization (3-level hierarchy) ===
         let detail_words = (capped_pages + BITS_PER_WORD - 1) / BITS_PER_WORD;
         let summary_words = (detail_words + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let summary_l2_words = (summary_words + BITS_PER_WORD - 1) / BITS_PER_WORD;
 
-        // Allocate and initialize detail bitmap (all free = all 1s)
+        // Allocate and initialize detail bitmap (L0) (all free = all 1s)
         let mut detail = alloc::vec::Vec::with_capacity(detail_words);
         for i in 0..detail_words {
             let remaining = capped_pages.saturating_sub(i * BITS_PER_WORD);
@@ -375,7 +541,7 @@ impl IovaBitmap {
             detail.push(AtomicU64::new(bits));
         }
 
-        // Allocate and initialize summary bitmap
+        // Allocate and initialize summary bitmap (L1)
         let mut summary = alloc::vec::Vec::with_capacity(summary_words);
         for i in 0..summary_words {
             let remaining_words = detail_words.saturating_sub(i * BITS_PER_WORD);
@@ -385,6 +551,21 @@ impl IovaBitmap {
                 (1u64 << remaining_words) - 1
             };
             summary.push(AtomicU64::new(bits));
+        }
+
+        // Allocate and initialize summary_l2 bitmap (L2)
+        // Each bit covers 64 summary words (= 4096 detail words)
+        let mut summary_l2 = alloc::vec::Vec::with_capacity(summary_l2_words);
+        for i in 0..summary_l2_words {
+            let remaining_summary_words = summary_words.saturating_sub(i * BITS_PER_WORD);
+            let bits = if remaining_summary_words >= BITS_PER_WORD {
+                u64::MAX
+            } else if remaining_summary_words > 0 {
+                (1u64 << remaining_summary_words) - 1
+            } else {
+                0
+            };
+            summary_l2.push(AtomicU64::new(bits));
         }
 
         // === 2MB Level Initialization ===
@@ -476,6 +657,7 @@ impl IovaBitmap {
             total_1gb_blocks,
             detail: detail.into_boxed_slice(),
             summary: summary.into_boxed_slice(),
+            summary_l2: summary_l2.into_boxed_slice(),
             hint_4k: AtomicUsize::new(0),
             free_count_4k: AtomicUsize::new(capped_pages),
             last_word_mask,
@@ -543,51 +725,77 @@ impl IovaBitmap {
 
         let hint_idx = hint_val % detail_words;
         let summary_words = self.summary.len();
+        let summary_l2_words = self.summary_l2.len();
 
-        // Summary-first scan (fast when nearly full)
-        for summary_offset in 0..summary_words {
-            let summary_idx = (hint_idx / BITS_PER_WORD + summary_offset) % summary_words;
-            let mut summary_word = self.summary[summary_idx].load(Ordering::Acquire);
-            if summary_word == 0 {
+        // 3-level hierarchy scan: L2 → L1 → L0 (fast when nearly full)
+        //
+        // L2 scan: ~16 words for 256GB (covers 4096 detail words per bit)
+        // L1 scan: only non-zero L2 bits
+        // L0 allocation: only non-zero L1 bits
+        for l2_offset in 0..summary_l2_words {
+            let l2_idx = (hint_idx / (BITS_PER_WORD * BITS_PER_WORD) + l2_offset) % summary_l2_words;
+            let mut l2_word = self.summary_l2[l2_idx].load(Ordering::Acquire);
+            if l2_word == 0 {
                 continue;
             }
 
-            if summary_offset == 0 {
-                let start_bit = hint_idx % BITS_PER_WORD;
-                summary_word &= !((1u64 << start_bit) - 1);
-                if summary_word == 0 {
+            // Mask off bits before hint for first L2 word
+            if l2_offset == 0 {
+                let start_l2_bit = (hint_idx / BITS_PER_WORD) % BITS_PER_WORD;
+                l2_word &= !((1u64 << start_l2_bit) - 1);
+                if l2_word == 0 {
                     continue;
                 }
             }
 
-            while summary_word != 0 {
-                let bit = summary_word.trailing_zeros() as usize;
-                let word_idx = summary_idx * BITS_PER_WORD + bit;
-                if word_idx >= detail_words {
+            while l2_word != 0 {
+                let l2_bit = l2_word.trailing_zeros() as usize;
+                let summary_idx = l2_idx * BITS_PER_WORD + l2_bit;
+                if summary_idx >= summary_words {
                     break;
                 }
 
-                if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
-                    let page_idx = word_idx * BITS_PER_WORD + bit_idx;
-                    if page_idx < self.total_pages {
-                        hint.store(word_idx, Ordering::Relaxed);
-                        self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
-                        // Update 2MB/1GB hierarchy
-                        self.on_page_allocated(page_idx);
-                        return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                let mut summary_word = self.summary[summary_idx].load(Ordering::Acquire);
+                if summary_word == 0 {
+                    l2_word &= l2_word - 1;
+                    continue;
+                }
+
+                // Mask off bits before hint for first summary word in first L2 word
+                if l2_offset == 0 && l2_bit == (hint_idx / BITS_PER_WORD) % BITS_PER_WORD {
+                    let start_bit = hint_idx % BITS_PER_WORD;
+                    summary_word &= !((1u64 << start_bit) - 1);
+                    if summary_word == 0 {
+                        l2_word &= l2_word - 1;
+                        continue;
                     }
                 }
-                // Note: Do NOT clear summary bit here on failure.
-                // Summary bit is only cleared when the word transitions to 0 via CAS
-                // inside try_allocate_from_word(). This prevents races where another
-                // CPU frees a page and sets the summary bit, only to have it cleared
-                // immediately by this thread.
 
-                summary_word &= summary_word - 1;
+                while summary_word != 0 {
+                    let bit = summary_word.trailing_zeros() as usize;
+                    let word_idx = summary_idx * BITS_PER_WORD + bit;
+                    if word_idx >= detail_words {
+                        break;
+                    }
+
+                    if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                        let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                        if page_idx < self.total_pages {
+                            hint.store(word_idx, Ordering::Relaxed);
+                            self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                            self.on_page_allocated(page_idx);
+                            return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                        }
+                    }
+                    summary_word &= summary_word - 1;
+                }
+
+                l2_word &= l2_word - 1;
             }
         }
 
-        // Fallback: full detail scan for correctness (summary can be stale)
+        // Fallback: full detail scan for correctness (summary hierarchy can be stale)
+        // This is rare in practice, only when all L2 bits are 0 but pages remain
         for offset in 0..detail_words {
             let word_idx = (hint_idx + offset) % detail_words;
 
@@ -596,7 +804,6 @@ impl IovaBitmap {
                 if page_idx < self.total_pages {
                     hint.store(word_idx, Ordering::Relaxed);
                     self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
-                    // Update 2MB/1GB hierarchy
                     self.on_page_allocated(page_idx);
                     return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                 }
@@ -854,6 +1061,9 @@ impl IovaBitmap {
 
     /// Batch allocate pages using per-CPU hint (efficient for magazine refill)
     ///
+    /// Uses 3-level summary hierarchy (L2 → L1 → L0) to efficiently find
+    /// non-empty words, avoiding full detail scan when nearly full.
+    ///
     /// # Arguments
     /// * `max_pages` - Maximum number of pages to allocate
     /// * `hint` - Per-CPU hint for locality
@@ -871,31 +1081,216 @@ impl IovaBitmap {
         }
         
         let hint_idx = hint_val % detail_words;
-        
-        // Scan through words starting from hint
-        for offset in 0..detail_words {
+        let summary_words = self.summary.len();
+        let summary_l2_words = self.summary_l2.len();
+
+        // 3-level hierarchy scan: L2 → L1 → L0 (fast when nearly full)
+        for l2_offset in 0..summary_l2_words {
             if result.len() >= max_pages {
                 break;
             }
-            
-            let word_idx = (hint_idx + offset) % detail_words;
-            let remaining = max_pages - result.len();
-            let batch_size = remaining.min(64);
-            
-            let allocated = self.batch_allocate_from_word(word_idx, batch_size, &mut local_buf[..batch_size]);
-            if allocated > 0 {
-                // Update hint to this word for next allocation
-                hint.store(word_idx, Ordering::Relaxed);
+
+            let l2_idx = (hint_idx / (BITS_PER_WORD * BITS_PER_WORD) + l2_offset) % summary_l2_words;
+            let mut l2_word = self.summary_l2[l2_idx].load(Ordering::Acquire);
+            if l2_word == 0 {
+                continue;
+            }
+
+            // Mask off bits before hint for first L2 word
+            if l2_offset == 0 {
+                let start_l2_bit = (hint_idx / BITS_PER_WORD) % BITS_PER_WORD;
+                l2_word &= !((1u64 << start_l2_bit) - 1);
+                if l2_word == 0 {
+                    continue;
+                }
+            }
+
+            while l2_word != 0 && result.len() < max_pages {
+                let l2_bit = l2_word.trailing_zeros() as usize;
+                let summary_idx = l2_idx * BITS_PER_WORD + l2_bit;
+                if summary_idx >= summary_words {
+                    break;
+                }
+
+                let mut summary_word = self.summary[summary_idx].load(Ordering::Acquire);
+                if summary_word == 0 {
+                    l2_word &= l2_word - 1;
+                    continue;
+                }
+
+                // Mask off bits before hint for first summary word
+                if l2_offset == 0 && l2_bit == (hint_idx / BITS_PER_WORD) % BITS_PER_WORD {
+                    let start_bit = hint_idx % BITS_PER_WORD;
+                    summary_word &= !((1u64 << start_bit) - 1);
+                    if summary_word == 0 {
+                        l2_word &= l2_word - 1;
+                        continue;
+                    }
+                }
+
+                while summary_word != 0 && result.len() < max_pages {
+                    let bit = summary_word.trailing_zeros() as usize;
+                    let word_idx = summary_idx * BITS_PER_WORD + bit;
+                    if word_idx >= detail_words {
+                        break;
+                    }
+
+                    let remaining = max_pages - result.len();
+                    let batch_size = remaining.min(64);
+                    let allocated = self.batch_allocate_from_word(word_idx, batch_size, &mut local_buf[..batch_size]);
+                    
+                    if allocated > 0 {
+                        hint.store(word_idx, Ordering::Relaxed);
+                        for i in 0..allocated {
+                            let page_idx = word_idx * BITS_PER_WORD + local_buf[i];
+                            if page_idx < self.total_pages {
+                                result.push(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                                self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    summary_word &= summary_word - 1;
+                }
+
+                l2_word &= l2_word - 1;
+            }
+        }
+        
+        // Fallback: full detail scan (rare, only when hierarchy is stale)
+        if result.len() < max_pages {
+            for offset in 0..detail_words {
+                if result.len() >= max_pages {
+                    break;
+                }
                 
-                // Convert to IOVAs
-                for i in 0..allocated {
-                    let page_idx = word_idx * BITS_PER_WORD + local_buf[i];
-                    if page_idx < self.total_pages {
-                        result.push(self.base + (page_idx as u64) * PAGE_SIZE_4K);
-                        self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                let word_idx = (hint_idx + offset) % detail_words;
+                let remaining = max_pages - result.len();
+                let batch_size = remaining.min(64);
+                
+                let allocated = self.batch_allocate_from_word(word_idx, batch_size, &mut local_buf[..batch_size]);
+                if allocated > 0 {
+                    hint.store(word_idx, Ordering::Relaxed);
+                    for i in 0..allocated {
+                        let page_idx = word_idx * BITS_PER_WORD + local_buf[i];
+                        if page_idx < self.total_pages {
+                            result.push(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                            self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                        }
                     }
                 }
             }
+        }
+        
+        result
+    }
+
+    /// Batch allocate pages within a specific arena (sharded allocation)
+    ///
+    /// First tries to allocate within the arena using 3-level summary hierarchy,
+    /// then falls back to stealing from other arenas if needed.
+    ///
+    /// # Arguments
+    /// * `max_pages` - Maximum number of pages to allocate
+    /// * `hint` - Per-CPU hint for locality
+    /// * `arena_start` - Start of arena (detail word index, inclusive)
+    /// * `arena_end` - End of arena (detail word index, exclusive)
+    ///
+    /// # Returns
+    /// Vector of allocated IOVAs
+    pub fn batch_allocate_pages_in_arena(
+        &self,
+        max_pages: usize,
+        hint: &AtomicUsize,
+        arena_start: usize,
+        arena_end: usize,
+    ) -> alloc::vec::Vec<u64> {
+        let mut result = alloc::vec::Vec::with_capacity(max_pages);
+        let mut local_buf = [0usize; 64];
+        let detail_words = self.detail.len();
+        
+        if detail_words == 0 || arena_start >= arena_end {
+            return result;
+        }
+        
+        let arena_end = arena_end.min(detail_words);
+        let hint_val = hint.load(Ordering::Relaxed);
+        let hint_in_arena = if hint_val >= arena_start && hint_val < arena_end {
+            hint_val
+        } else {
+            arena_start
+        };
+        let summary_words = self.summary.len();
+
+        // Phase 1: Arena-local allocation using L1 summary (L2 is too coarse for arena)
+        // Convert arena bounds to summary range
+        let summary_start = arena_start / BITS_PER_WORD;
+        let summary_end = (arena_end + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let hint_summary = hint_in_arena / BITS_PER_WORD;
+
+        for summary_offset in 0..(summary_end - summary_start) {
+            if result.len() >= max_pages {
+                break;
+            }
+
+            let summary_idx = summary_start + (hint_summary - summary_start + summary_offset) % (summary_end - summary_start);
+            if summary_idx >= summary_words {
+                continue;
+            }
+
+            let mut summary_word = self.summary[summary_idx].load(Ordering::Acquire);
+            if summary_word == 0 {
+                continue;
+            }
+
+            // Mask to only include bits within arena
+            let first_word_in_summary = summary_idx * BITS_PER_WORD;
+            let last_word_in_summary = (summary_idx + 1) * BITS_PER_WORD;
+            
+            // Clamp to arena bounds
+            let arena_first_bit = arena_start.saturating_sub(first_word_in_summary);
+            let arena_last_bit = (arena_end.min(last_word_in_summary) - first_word_in_summary).min(BITS_PER_WORD);
+            
+            if arena_first_bit >= BITS_PER_WORD || arena_last_bit <= arena_first_bit {
+                continue;
+            }
+            
+            // Create mask for valid bits in arena
+            let arena_mask = ((1u64 << arena_last_bit) - 1) & !((1u64 << arena_first_bit) - 1);
+            summary_word &= arena_mask;
+            
+            if summary_word == 0 {
+                continue;
+            }
+
+            while summary_word != 0 && result.len() < max_pages {
+                let bit = summary_word.trailing_zeros() as usize;
+                let word_idx = first_word_in_summary + bit;
+                if word_idx >= arena_end {
+                    break;
+                }
+
+                let remaining = max_pages - result.len();
+                let batch_size = remaining.min(64);
+                let allocated = self.batch_allocate_from_word(word_idx, batch_size, &mut local_buf[..batch_size]);
+                
+                if allocated > 0 {
+                    hint.store(word_idx, Ordering::Relaxed);
+                    for i in 0..allocated {
+                        let page_idx = word_idx * BITS_PER_WORD + local_buf[i];
+                        if page_idx < self.total_pages {
+                            result.push(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                            self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+                summary_word &= summary_word - 1;
+            }
+        }
+
+        // Phase 2: Steal from global (outside arena) if not enough
+        if result.len() < max_pages {
+            let stolen = self.batch_allocate_pages(max_pages - result.len(), hint);
+            result.extend(stolen);
         }
         
         result
@@ -1335,23 +1730,50 @@ impl IovaBitmap {
         Ok(())
     }
 
-    /// Set a bit in the summary bitmap
+    /// Set a bit in the summary bitmap (L1) and update summary_l2 (L2)
     fn set_summary_bit(&self, detail_word_idx: usize) {
         let summary_word_idx = detail_word_idx / BITS_PER_WORD;
         let summary_bit = detail_word_idx % BITS_PER_WORD;
         
         if summary_word_idx < self.summary.len() {
             self.summary[summary_word_idx].fetch_or(1u64 << summary_bit, Ordering::Release);
+            // Also update summary_l2 (L2)
+            self.set_summary_l2_bit(summary_word_idx);
         }
     }
 
-    /// Clear a bit in the summary bitmap
+    /// Clear a bit in the summary bitmap (L1)
+    /// Only clears summary_l2 (L2) if the entire summary word becomes 0
     fn clear_summary_bit(&self, detail_word_idx: usize) {
         let summary_word_idx = detail_word_idx / BITS_PER_WORD;
         let summary_bit = detail_word_idx % BITS_PER_WORD;
         
         if summary_word_idx < self.summary.len() {
-            self.summary[summary_word_idx].fetch_and(!(1u64 << summary_bit), Ordering::Release);
+            let old = self.summary[summary_word_idx].fetch_and(!(1u64 << summary_bit), Ordering::Release);
+            // If the summary word just became 0, clear the L2 bit
+            if old == (1u64 << summary_bit) {
+                self.clear_summary_l2_bit(summary_word_idx);
+            }
+        }
+    }
+
+    /// Set a bit in the summary_l2 bitmap (L2)
+    fn set_summary_l2_bit(&self, summary_word_idx: usize) {
+        let l2_word_idx = summary_word_idx / BITS_PER_WORD;
+        let l2_bit = summary_word_idx % BITS_PER_WORD;
+        
+        if l2_word_idx < self.summary_l2.len() {
+            self.summary_l2[l2_word_idx].fetch_or(1u64 << l2_bit, Ordering::Release);
+        }
+    }
+
+    /// Clear a bit in the summary_l2 bitmap (L2)
+    fn clear_summary_l2_bit(&self, summary_word_idx: usize) {
+        let l2_word_idx = summary_word_idx / BITS_PER_WORD;
+        let l2_bit = summary_word_idx % BITS_PER_WORD;
+        
+        if l2_word_idx < self.summary_l2.len() {
+            self.summary_l2[l2_word_idx].fetch_and(!(1u64 << l2_bit), Ordering::Release);
         }
     }
 
@@ -2005,7 +2427,7 @@ impl IovaBitmap {
 }
 
 // ============================================================================
-// Fast IOVA Allocator (Combines Magazine + Bitmap)
+// Fast IOVA Allocator (Combines Magazine + Bitmap + Quarantine)
 // ============================================================================
 
 /// Maximum number of CPUs supported for per-CPU magazines
@@ -2016,7 +2438,17 @@ const MAX_CPUS: usize = crate::mm::MAX_CPUS;
 /// This allocator provides:
 /// - O(1) allocation for 4KB/2MB pages via per-CPU magazines (IRQ-off guarded)
 /// - O(1) amortized allocation via bitmap for magazine refills
+/// - Delayed reclamation via per-CPU quarantine (epoch-based)
 /// - Fallback to tree-based allocator for 1GB+ allocations (rare)
+///
+/// # Quarantine / Epoch-Based Reclamation
+///
+/// Free'd IOVAs are not returned to the bitmap immediately. Instead, they
+/// are placed in a per-CPU quarantine ring with the current epoch. After
+/// IOTLB invalidation completes (epoch advances), quarantined entries are
+/// batch-returned to the bitmap.
+///
+/// This prevents IOTLB stale entry issues and reduces bitmap write frequency.
 pub struct IovaAllocatorFast {
     /// Base IOVA address
     base: u64,
@@ -2026,6 +2458,12 @@ pub struct IovaAllocatorFast {
     bitmap_4k: IovaBitmap,
     /// Per-CPU magazines (indexed by CPU ID)
     magazines: alloc::boxed::Box<[PerCpuMagazine]>,
+    /// Per-CPU quarantine rings (indexed by CPU ID)
+    quarantines: alloc::boxed::Box<[IrqMutex<QuarantineRing>]>,
+    /// Current epoch (incremented after IOTLB invalidation)
+    current_epoch: AtomicU32,
+    /// Last completed epoch (all entries <= this epoch are safe to reclaim)
+    completed_epoch: AtomicU32,
     /// Statistics
     stats: IovaAllocatorFastStats,
 }
@@ -2040,6 +2478,12 @@ pub struct IovaAllocatorFastStats {
     pub bitmap_allocs: AtomicU64,
     /// Magazine refills
     pub magazine_refills: AtomicU64,
+    /// Quarantine pushes
+    pub quarantine_pushes: AtomicU64,
+    /// Quarantine drains (batch returns to bitmap)
+    pub quarantine_drains: AtomicU64,
+    /// Quarantine forced drains (ring full)
+    pub quarantine_forced_drains: AtomicU64,
 }
 
 impl IovaAllocatorFastStats {
@@ -2049,6 +2493,9 @@ impl IovaAllocatorFastStats {
             magazine_misses: AtomicU64::new(0),
             bitmap_allocs: AtomicU64::new(0),
             magazine_refills: AtomicU64::new(0),
+            quarantine_pushes: AtomicU64::new(0),
+            quarantine_drains: AtomicU64::new(0),
+            quarantine_forced_drains: AtomicU64::new(0),
         }
     }
 }
@@ -2097,11 +2544,20 @@ impl IovaAllocatorFast {
             magazines.push(mag);
         }
         
+        // Allocate per-CPU quarantine rings
+        let mut quarantines = alloc::vec::Vec::with_capacity(MAX_CPUS);
+        for _ in 0..MAX_CPUS {
+            quarantines.push(IrqMutex::new(QuarantineRing::new()));
+        }
+        
         Self {
             base,
             size,
             bitmap_4k,
             magazines: magazines.into_boxed_slice(),
+            quarantines: quarantines.into_boxed_slice(),
+            current_epoch: AtomicU32::new(0),
+            completed_epoch: AtomicU32::new(0),
             stats: IovaAllocatorFastStats::new(),
         }
     }
@@ -2111,6 +2567,42 @@ impl IovaAllocatorFast {
     fn current_cpu_id() -> Option<usize> {
         crate::mm::try_current_cpu_id().filter(|&cpu_id| cpu_id < MAX_CPUS)
     }
+
+    // ========================================================================
+    // Epoch Management for Quarantine
+    // ========================================================================
+
+    /// Advance the current epoch (call before IOTLB invalidation)
+    ///
+    /// Returns the new epoch value.
+    pub fn advance_epoch(&self) -> u32 {
+        self.current_epoch.fetch_add(1, Ordering::Release)
+    }
+
+    /// Mark an epoch as completed (call after IOTLB invalidation completes)
+    ///
+    /// All quarantined entries with epoch <= completed_epoch will be eligible
+    /// for reclamation on the next drain.
+    pub fn complete_epoch(&self, epoch: u32) {
+        // Only advance if the new epoch is greater
+        let _ = self.completed_epoch.fetch_max(epoch, Ordering::Release);
+    }
+
+    /// Get the current epoch
+    #[inline]
+    pub fn current_epoch(&self) -> u32 {
+        self.current_epoch.load(Ordering::Acquire)
+    }
+
+    /// Get the completed epoch
+    #[inline]
+    pub fn completed_epoch(&self) -> u32 {
+        self.completed_epoch.load(Ordering::Acquire)
+    }
+
+    // ========================================================================
+    // Allocation API
+    // ========================================================================
 
     /// Allocate an IOVA (hot path - O(1) for 4KB/2MB)
     pub fn allocate(&self, size: u64, granularity: IovaGranularity) -> Option<u64> {
@@ -2172,9 +2664,10 @@ impl IovaAllocatorFast {
 
     /// Try to refill the 4KB magazine for a CPU
     ///
-    /// Uses per-CPU hints and batch allocation for efficiency.
+    /// Uses per-CPU hints and arena-sharded batch allocation for efficiency.
     /// Batch allocation reduces the number of atomic operations by
     /// allocating multiple pages from a single word in one CAS.
+    /// Arena sharding reduces cache line contention across CPUs.
     fn try_refill_magazine_4k(&self, cpu_id: usize) {
         let magazine = &self.magazines[cpu_id];
         let Some(mag) = magazine.get(0) else { return };
@@ -2200,8 +2693,14 @@ impl IovaAllocatorFast {
             return;
         }
         
-        // Batch allocate pages (more efficient than one-by-one)
-        let pages = self.bitmap_4k.batch_allocate_pages(to_refill, hint);
+        // Batch allocate pages using arena-sharded allocation
+        // First tries local arena, then steals from global if needed
+        let pages = self.bitmap_4k.batch_allocate_pages_in_arena(
+            to_refill,
+            hint,
+            magazine.arena_start_4k,
+            magazine.arena_end_4k,
+        );
         
         if !pages.is_empty() {
             let mut mag = mag.lock();
@@ -2288,8 +2787,67 @@ impl IovaAllocatorFast {
         }
     }
 
-    /// Free a 4KB page (O(1))
+    /// Free an IOVA with quarantine (delayed reclamation)
+    ///
+    /// Places the IOVA in the quarantine ring instead of returning it to the
+    /// bitmap immediately. The IOVA will be reclaimed after IOTLB invalidation.
+    ///
+    /// Use `free_immediate()` to bypass quarantine (e.g., for error paths
+    /// where DMA was never started).
+    pub fn free_quarantined(&self, iova: u64, granularity: IovaGranularity) -> Result<(), IommuError> {
+        let size_class = match granularity {
+            IovaGranularity::Page4K => 0,
+            IovaGranularity::Page2M => 1,
+            IovaGranularity::Page1G => 2,
+        };
+        let epoch = self.current_epoch.load(Ordering::Acquire);
+
+        if let Some(cpu_id) = Self::current_cpu_id() {
+            let quarantine = &self.quarantines[cpu_id];
+            let mut q = quarantine.lock();
+            
+            // Try to push to quarantine
+            if q.push(iova, size_class, epoch) {
+                self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            
+            // Quarantine full, force drain and retry
+            self.stats.quarantine_forced_drains.fetch_add(1, Ordering::Relaxed);
+            drop(q);
+            self.drain_quarantine_cpu(cpu_id);
+            
+            // Retry push
+            let mut q = quarantine.lock();
+            if q.push(iova, size_class, epoch) {
+                self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+        }
+        
+        // Fallback: return directly to bitmap
+        self.free_immediate(iova, granularity)
+    }
+
+    /// Free an IOVA immediately (bypass quarantine)
+    ///
+    /// Use this when DMA was never started (e.g., allocation error paths)
+    /// or when IOTLB is known to be clean.
+    pub fn free_immediate(&self, iova: u64, granularity: IovaGranularity) -> Result<(), IommuError> {
+        match granularity {
+            IovaGranularity::Page4K => self.free_4k_immediate(iova),
+            IovaGranularity::Page2M => self.free_2m_immediate(iova),
+            IovaGranularity::Page1G => self.free_1g_immediate(iova),
+        }
+    }
+
+    /// Free a 4KB page (O(1)) - via quarantine
     fn free_4k(&self, iova: u64) -> Result<(), IommuError> {
+        self.free_quarantined(iova, IovaGranularity::Page4K)
+    }
+
+    /// Free a 4KB page immediately (bypass quarantine)
+    fn free_4k_immediate(&self, iova: u64) -> Result<(), IommuError> {
         // Fast path: return to per-CPU magazine
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
@@ -2305,8 +2863,13 @@ impl IovaAllocatorFast {
         self.bitmap_4k.free_page(iova)
     }
 
-    /// Free a 2MB super-page (O(1) via hierarchical bitmap)
+    /// Free a 2MB super-page (O(1) via hierarchical bitmap) - via quarantine
     fn free_2m(&self, iova: u64) -> Result<(), IommuError> {
+        self.free_quarantined(iova, IovaGranularity::Page2M)
+    }
+
+    /// Free a 2MB super-page immediately (bypass quarantine)
+    fn free_2m_immediate(&self, iova: u64) -> Result<(), IommuError> {
         // Fast path: return to per-CPU magazine for 2MB
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
@@ -2322,8 +2885,13 @@ impl IovaAllocatorFast {
         self.bitmap_4k.free_2mb(iova)
     }
 
-    /// Free a 1GB huge-page (O(1) via hierarchical bitmap)
+    /// Free a 1GB huge-page (O(1) via hierarchical bitmap) - via quarantine
     fn free_1g(&self, iova: u64) -> Result<(), IommuError> {
+        self.free_quarantined(iova, IovaGranularity::Page1G)
+    }
+
+    /// Free a 1GB huge-page immediately (bypass quarantine)
+    fn free_1g_immediate(&self, iova: u64) -> Result<(), IommuError> {
         // Fast path: return to per-CPU magazine for 1GB
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
@@ -2339,11 +2907,123 @@ impl IovaAllocatorFast {
         self.bitmap_4k.free_1gb(iova)
     }
 
-    /// Free a range of pages
+    /// Free a range of pages (bypasses quarantine, for contiguous regions)
     fn free_range(&self, iova: u64, size: u64) -> Result<(), IommuError> {
         let pages = ((size + PAGE_SIZE_4K - 1) / PAGE_SIZE_4K) as usize;
         self.bitmap_4k.free_contiguous(iova, pages)
     }
+
+    // ========================================================================
+    // Quarantine Drain API
+    // ========================================================================
+
+    /// Drain quarantined entries that are safe to reclaim
+    ///
+    /// Call this after IOTLB invalidation completes. Entries with epoch
+    /// <= completed_epoch will be returned to the bitmap.
+    ///
+    /// Returns the number of entries drained.
+    pub fn drain_quarantine(&self) -> usize {
+        let completed = self.completed_epoch.load(Ordering::Acquire);
+        let mut total_drained = 0;
+        
+        for cpu_id in 0..MAX_CPUS {
+            total_drained += self.drain_quarantine_cpu_epoch(cpu_id, completed);
+        }
+        
+        if total_drained > 0 {
+            self.stats.quarantine_drains.fetch_add(total_drained as u64, Ordering::Relaxed);
+        }
+        
+        total_drained
+    }
+
+    /// Drain quarantined entries for a specific CPU
+    fn drain_quarantine_cpu(&self, cpu_id: usize) {
+        let completed = self.completed_epoch.load(Ordering::Acquire);
+        let drained = self.drain_quarantine_cpu_epoch(cpu_id, completed);
+        if drained > 0 {
+            self.stats.quarantine_drains.fetch_add(drained as u64, Ordering::Relaxed);
+        }
+    }
+
+    /// Drain quarantined entries for a specific CPU up to a specific epoch
+    fn drain_quarantine_cpu_epoch(&self, cpu_id: usize, completed_epoch: u32) -> usize {
+        let quarantine = &self.quarantines[cpu_id];
+        let mut buf = [QuarantineEntry::empty(); 64];
+        let mut total_drained = 0;
+        
+        loop {
+            let drained = {
+                let mut q = quarantine.lock();
+                q.drain_older_than(completed_epoch, 64, &mut buf)
+            };
+            
+            if drained == 0 {
+                break;
+            }
+            
+            // Return entries to bitmap (outside quarantine lock)
+            for i in 0..drained {
+                let entry = &buf[i];
+                let result = match entry.size_class {
+                    0 => self.free_4k_immediate(entry.iova),
+                    1 => self.free_2m_immediate(entry.iova),
+                    2 => self.free_1g_immediate(entry.iova),
+                    _ => Ok(()), // Invalid size class, skip
+                };
+                if let Err(e) = result {
+                    log::warn!("[IOVA] Failed to reclaim quarantined IOVA 0x{:x}: {:?}", entry.iova, e);
+                }
+            }
+            
+            total_drained += drained;
+        }
+        
+        total_drained
+    }
+
+    /// Force drain all quarantined entries (for shutdown)
+    pub fn drain_all_quarantine(&self) -> usize {
+        let mut total_drained = 0;
+        let mut buf = [QuarantineEntry::empty(); 64];
+        
+        for cpu_id in 0..MAX_CPUS {
+            let quarantine = &self.quarantines[cpu_id];
+            
+            loop {
+                let drained = {
+                    let mut q = quarantine.lock();
+                    q.drain_all(&mut buf)
+                };
+                
+                if drained == 0 {
+                    break;
+                }
+                
+                for i in 0..drained {
+                    let entry = &buf[i];
+                    let result = match entry.size_class {
+                        0 => self.free_4k_immediate(entry.iova),
+                        1 => self.free_2m_immediate(entry.iova),
+                        2 => self.free_1g_immediate(entry.iova),
+                        _ => Ok(()),
+                    };
+                    if let Err(e) = result {
+                        log::warn!("[IOVA] Failed to reclaim quarantined IOVA 0x{:x}: {:?}", entry.iova, e);
+                    }
+                }
+                
+                total_drained += drained;
+            }
+        }
+        
+        total_drained
+    }
+
+    // ========================================================================
+    // Accessors
+    // ========================================================================
 
     /// Get base address
     #[inline]
