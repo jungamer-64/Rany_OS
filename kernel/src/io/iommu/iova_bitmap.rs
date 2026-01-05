@@ -1756,6 +1756,143 @@ impl IovaBitmap {
         claimed
     }
 
+    /// Find a non-empty word in partial 2MB blocks and return its index
+    ///
+    /// This supports the "always prefer word claim" optimization by finding
+    /// candidate words from partial blocks without modifying the bitmap.
+    /// The caller can then use `try_claim_word()` to atomically claim it.
+    ///
+    /// # Arguments
+    /// * `hint_partial` - Per-CPU hint for partial block scanning
+    ///
+    /// # Returns
+    /// Some(word_idx) of a non-empty word, None if no partial blocks have free words
+    pub(crate) fn find_non_empty_word_in_partial(&self, hint_partial: &AtomicUsize) -> Option<usize> {
+        let partial_words = self.bitmap_2m_partial.len();
+        let detail_words = self.detail.len();
+        
+        if detail_words == 0 || partial_words == 0 {
+            return None;
+        }
+        
+        let hint_val = hint_partial.load(Ordering::Relaxed);
+        let hint_block = hint_val % self.total_2mb_blocks.max(1);
+        
+        // Scan partial bitmap words
+        for word_offset in 0..partial_words {
+            let partial_word_idx = (hint_block / BITS_PER_WORD + word_offset) % partial_words;
+            let mut word = self.bitmap_2m_partial[partial_word_idx].load(Ordering::Acquire);
+            
+            // Mask off bits before hint for first word
+            if word_offset == 0 {
+                let start_bit = hint_block % BITS_PER_WORD;
+                word &= !((1u64 << start_bit) - 1);
+            }
+            
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                let block_2m = partial_word_idx * BITS_PER_WORD + bit;
+                
+                if block_2m >= self.total_2mb_blocks {
+                    break;
+                }
+                
+                // Use free_word_mask_2m for O(1) word selection within block
+                let free_mask = if block_2m < self.free_word_mask_2m.len() {
+                    self.free_word_mask_2m[block_2m].load(Ordering::Acquire)
+                } else {
+                    0xFF // Conservative fallback
+                };
+                
+                if free_mask != 0 {
+                    let word_in_block = free_mask.trailing_zeros() as usize;
+                    let detail_idx = block_2m * WORDS_PER_2MB_BLOCK + word_in_block;
+                    
+                    if detail_idx < detail_words {
+                        // Verify word is actually non-empty
+                        let word_val = self.detail[detail_idx].load(Ordering::Acquire);
+                        if word_val != 0 {
+                            hint_partial.store(block_2m, Ordering::Relaxed);
+                            return Some(detail_idx);
+                        }
+                    }
+                }
+                
+                // If free_mask was empty or word was empty, scan all words as fallback
+                let start_detail_word = block_2m * WORDS_PER_2MB_BLOCK;
+                let end_detail_word = (start_detail_word + WORDS_PER_2MB_BLOCK).min(detail_words);
+                
+                for detail_idx in start_detail_word..end_detail_word {
+                    let word_val = self.detail[detail_idx].load(Ordering::Acquire);
+                    if word_val != 0 {
+                        hint_partial.store(block_2m, Ordering::Relaxed);
+                        return Some(detail_idx);
+                    }
+                }
+                
+                // Block might have become full or free, continue to next
+                word &= word - 1;
+            }
+        }
+        
+        None
+    }
+
+    /// Find a non-empty word using the summary hierarchy
+    ///
+    /// This is the fallback when no partial 2MB blocks are available.
+    /// It scans the summary bitmap to find any word with free pages.
+    ///
+    /// # Arguments
+    /// * `hint` - Per-CPU hint for word scanning
+    ///
+    /// # Returns
+    /// Some(word_idx) of a non-empty word, None if all words are empty
+    pub(crate) fn find_non_empty_word_from_summary(&self, hint: &AtomicUsize) -> Option<usize> {
+        let summary_words = self.summary.len();
+        let detail_words = self.detail.len();
+        
+        if detail_words == 0 || summary_words == 0 {
+            return None;
+        }
+        
+        let hint_word = hint.load(Ordering::Relaxed);
+        let hint_summary = (hint_word / BITS_PER_WORD) % summary_words;
+        
+        // Scan summary words
+        for offset in 0..summary_words {
+            let summary_idx = (hint_summary + offset) % summary_words;
+            let mut summary_word = self.summary[summary_idx].load(Ordering::Acquire);
+            
+            // Mask off bits before hint for first summary word
+            if offset == 0 {
+                let start_bit = hint_word % BITS_PER_WORD;
+                summary_word &= !((1u64 << start_bit) - 1);
+            }
+            
+            while summary_word != 0 {
+                let bit = summary_word.trailing_zeros() as usize;
+                let word_idx = summary_idx * BITS_PER_WORD + bit;
+                
+                if word_idx >= detail_words {
+                    break;
+                }
+                
+                // Verify word is actually non-empty
+                let word_val = self.detail[word_idx].load(Ordering::Acquire);
+                if word_val != 0 {
+                    hint.store(word_idx, Ordering::Relaxed);
+                    return Some(word_idx);
+                }
+                
+                // Word was empty (stale summary bit), continue
+                summary_word &= summary_word - 1;
+            }
+        }
+        
+        None
+    }
+
     /// Return remaining bits from a SubMagazine back to the bitmap
     ///
     /// This is used when a SubMagazine has leftover pages that need to be
@@ -4025,36 +4162,70 @@ impl IovaAllocatorFast {
             
             self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
             
-            // Medium path #1: Try per-CPU free word stack (O(1) fast path)
+            // ================================================================
+            // Medium path: Always prefer word claim (Optimization 2)
+            //
+            // Instead of allocating single pages with individual CAS operations,
+            // we claim entire words (64 pages) and use sub-magazine. This reduces
+            // atomic operations from N CAS per N pages to just 1 swap per 64 pages.
+            // ================================================================
+            
+            // Medium path #1: Try word claim from partial 2MB blocks
+            // Find a non-empty word in partial blocks (hugepage preservation)
             {
-                let mut stack = magazine.free_word_stack.lock();
-                if let Some(iova) = self.bitmap_4k.allocate_page_from_stack(
-                    &mut stack,
-                    &magazine.hint_4k,
-                    8, // max_pops
-                ) {
-                    self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-                    self.stats.allocs_from_partial_2m.fetch_add(1, Ordering::Relaxed);
-                    self.try_refill_magazine_4k(cpu_id);
-                    return Some(iova);
+                let mut sub_mag = magazine.sub_magazine_4k.lock();
+                
+                // Try to find and claim a word from partial 2MB blocks
+                for _ in 0..4 { // Max 4 attempts
+                    if let Some(word_idx) = self.bitmap_4k.find_non_empty_word_in_partial(&magazine.hint_2m_partial) {
+                        let bits = self.bitmap_4k.try_claim_word(word_idx);
+                        if bits != 0 {
+                            let base_iova = self.bitmap_4k.base() + (word_idx as u64) * BITS_PER_WORD as u64 * PAGE_SIZE_4K;
+                            let count = sub_mag.claim(bits, word_idx, base_iova);
+                            
+                            // Update hierarchy
+                            let first_page_idx = word_idx * BITS_PER_WORD;
+                            self.bitmap_4k.on_pages_allocated_batch(first_page_idx, count);
+                            magazine.hint_4k.store(word_idx, Ordering::Relaxed);
+                            
+                            // Allocate from sub-magazine
+                            if let Some(iova) = sub_mag.allocate() {
+                                self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+                                self.stats.allocs_from_partial_2m.fetch_add(1, Ordering::Relaxed);
+                                return Some(iova);
+                            }
+                        }
+                    } else {
+                        break; // No more partial blocks
+                    }
                 }
             }
             
-            // Medium path #2: Prefer partial 2MB blocks (hugepage preservation)
-            let (iova_opt, polluted) = self.bitmap_4k.allocate_page_prefer_partial(
-                &magazine.hint_2m_partial,
-                &magazine.hint_4k,
-            );
-            
-            if let Some(iova) = iova_opt {
-                self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
-                if polluted {
-                    self.stats.hugepage_pollutions.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    self.stats.allocs_from_partial_2m.fetch_add(1, Ordering::Relaxed);
+            // Medium path #2: Fallback to global hierarchy scan with word claim
+            // This may pollute hugepages but still uses efficient word claim
+            {
+                let mut sub_mag = magazine.sub_magazine_4k.lock();
+                
+                // Find any non-empty word from summary hierarchy
+                if let Some(word_idx) = self.bitmap_4k.find_non_empty_word_from_summary(&magazine.hint_4k) {
+                    let bits = self.bitmap_4k.try_claim_word(word_idx);
+                    if bits != 0 {
+                        let base_iova = self.bitmap_4k.base() + (word_idx as u64) * BITS_PER_WORD as u64 * PAGE_SIZE_4K;
+                        let count = sub_mag.claim(bits, word_idx, base_iova);
+                        
+                        // Update hierarchy
+                        let first_page_idx = word_idx * BITS_PER_WORD;
+                        self.bitmap_4k.on_pages_allocated_batch(first_page_idx, count);
+                        magazine.hint_4k.store(word_idx, Ordering::Relaxed);
+                        
+                        // Allocate from sub-magazine
+                        if let Some(iova) = sub_mag.allocate() {
+                            self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+                            self.stats.hugepage_pollutions.fetch_add(1, Ordering::Relaxed);
+                            return Some(iova);
+                        }
+                    }
                 }
-                self.try_refill_magazine_4k(cpu_id);
-                return Some(iova);
             }
             
             return None;
