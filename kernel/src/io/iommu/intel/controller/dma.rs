@@ -36,7 +36,7 @@ fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
 }
 
 fn kernel_phys_range() -> Option<(u64, u64)> {
-    extern "C" {
+    unsafe extern "C" {
         static __kernel_start: u8;
         static __kernel_end: u8;
     }
