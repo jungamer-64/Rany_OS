@@ -114,14 +114,14 @@ pub enum MapErrorKind {
 
 /// Map operation error (returns ownership on failure)
 #[derive(Debug)]
-pub struct MapError<T: ?Sized> {
+pub struct MapError<T: ?Sized + 'static> {
     /// The original RRef - returned so caller can retry or clean up
     pub rref: RRef<T>,
     /// Error kind
     pub kind: MapErrorKind,
 }
 
-impl<T: ?Sized> MapError<T> {
+impl<T: ?Sized + 'static> MapError<T> {
     /// Create a new map error
     pub fn new(rref: RRef<T>, kind: MapErrorKind) -> Self {
         Self { rref, kind }
@@ -156,14 +156,14 @@ pub enum UnmapErrorKind {
 /// This error type returns the `DmaHandle<T>` so that ownership is not lost.
 /// The caller can retry the unmap or take other recovery action.
 #[derive(Debug)]
-pub struct UnmapError<T: ?Sized> {
+pub struct UnmapError<T: ?Sized + 'static> {
     /// The handle - returned so caller can retry
     pub handle: DmaHandle<T>,
     /// Error kind
     pub kind: UnmapErrorKind,
 }
 
-impl<T: ?Sized> UnmapError<T> {
+impl<T: ?Sized + 'static> UnmapError<T> {
     /// Create a new unmap error
     pub fn new(handle: DmaHandle<T>, kind: UnmapErrorKind) -> Self {
         Self { handle, kind }
@@ -236,7 +236,7 @@ impl<T: ?Sized> UnmapError<T> {
 /// Dropping a `DmaHandle` without calling an unmap method will log and leak
 /// the underlying `RRef<T>` to avoid DMA-after-free.
 #[derive(Debug)]
-pub struct DmaHandle<T: ?Sized> {
+pub struct DmaHandle<T: ?Sized + 'static> {
     /// The underlying data (ownership held until unmap)
     rref: Option<RRef<T>>,
     /// IOVA address assigned by IOMMU
@@ -258,11 +258,11 @@ pub struct DmaHandle<T: ?Sized> {
 // SAFETY: DmaHandle is Send if T is Send
 // The handle just holds a reference to memory; actual access
 // is controlled by the device and IOMMU
-unsafe impl<T: Send + ?Sized> Send for DmaHandle<T> {}
+unsafe impl<T: Send + ?Sized + 'static> Send for DmaHandle<T> {}
 
 // SAFETY: DmaHandle is Sync if T is Sync
 // Multiple threads can read the IOVA/phys addresses
-unsafe impl<T: Sync + ?Sized> Sync for DmaHandle<T> {}
+unsafe impl<T: Sync + ?Sized + 'static> Sync for DmaHandle<T> {}
 
 impl<T> DmaHandle<T> {
     /// Create a new DmaHandle (internal use only)
@@ -333,7 +333,7 @@ impl<T> DmaHandle<T> {
     }
 }
 
-impl<T: ?Sized> Drop for DmaHandle<T> {
+impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
     fn drop(&mut self) {
         if let Some(rref) = self.rref.take() {
             // Identity mappings don't need cleanup - just drop the RRef
@@ -382,7 +382,7 @@ impl<T: ?Sized> Drop for DmaHandle<T> {
     }
 }
 
-impl<T: ?Sized> DmaHandle<T> {
+impl<T: ?Sized + 'static> DmaHandle<T> {
     /// Attempt to unmap the DMA buffer during drop.
     ///
     /// # Deprecated
@@ -1479,14 +1479,14 @@ pub(crate) enum QuarantineLazyUnmapErrorKind {
 }
 
 /// Error for lazy unmap operations (returns handle for retry)
-pub(crate) struct QuarantineLazyUnmapError<T> {
+pub(crate) struct QuarantineLazyUnmapError<T: 'static> {
     /// The handle that failed to unmap
     pub handle: DmaHandle<T>,
     /// Error kind
     pub kind: QuarantineLazyUnmapErrorKind,
 }
 
-impl<T> core::fmt::Debug for QuarantineLazyUnmapError<T> {
+impl<T: 'static> core::fmt::Debug for QuarantineLazyUnmapError<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("QuarantineLazyUnmapError")
             .field("kind", &self.kind)

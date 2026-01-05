@@ -8,7 +8,7 @@
 
 use core::alloc::Layout;
 use core::ops::{Deref, DerefMut};
-use core::ptr::{self, NonNull};
+use core::ptr::{self, NonNull, Pointee};
 
 // DomainIdはdomain_system.rsから使用
 pub use crate::domain_system::DomainId;
@@ -367,7 +367,10 @@ impl RRefRawParts {
     /// # Signature matching RRef API:
     /// - `RRef::into_raw(self) -> (NonNull<T>, DomainId)`
     /// - `RRef::from_raw(ptr: NonNull<T>, owner: DomainId) -> Self`
-    pub fn from_rref<T: ?Sized>(rref: RRef<T>) -> Self {
+    pub fn from_rref<T: ?Sized + Pointee + 'static>(rref: RRef<T>) -> Self
+    where
+        <T as Pointee>::Metadata: Copy,
+    {
         #[cfg(debug_assertions)]
         let size = core::mem::size_of_val(&*rref);
         #[cfg(debug_assertions)]
@@ -386,7 +389,10 @@ impl RRefRawParts {
         };
 
         // Embed type-specific drop function
-        unsafe fn drop_impl<T: ?Sized + 'static>(ptr: NonNull<u8>, owner: DomainId, meta: usize) {
+        unsafe fn drop_impl<T: ?Sized + Pointee + 'static>(ptr: NonNull<u8>, owner: DomainId, meta: usize)
+        where
+            <T as Pointee>::Metadata: Copy,
+        {
             let data_ptr = ptr.as_ptr() as *mut ();
             let meta = if core::mem::size_of::<T::Metadata>() == 0 {
                 core::mem::zeroed()
@@ -418,7 +424,10 @@ impl RRefRawParts {
     ///
     /// # Errors
     /// Returns `RawPartsError` if type/size mismatch detected (debug only)
-    pub unsafe fn into_rref<T: ?Sized>(self) -> Result<RRef<T>, RawPartsError> {
+    pub unsafe fn into_rref<T: ?Sized + Pointee>(self) -> Result<RRef<T>, RawPartsError>
+    where
+        <T as Pointee>::Metadata: Copy,
+    {
         let meta = if core::mem::size_of::<T::Metadata>() == 0 {
             core::mem::zeroed()
         } else {
