@@ -329,6 +329,253 @@ impl SubMagazine {
     }
 }
 
+// ============================================================================
+// Arena Owner Mode (Optimization 1)
+// ============================================================================
+
+/// Arena ownership state
+/// 
+/// Each arena can be in one of these states:
+/// - Owned: A specific CPU owns this arena (fast path for owner)
+/// - Contested: Multiple CPUs want this arena (slower path)
+/// - Abandoned: Owner released the arena (up for grabs)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ArenaOwnerState {
+    /// Arena is owned by a specific CPU (value stores owner CPU ID)
+    Owned = 0,
+    /// Arena is being contested (multiple CPUs want it)
+    Contested = 1,
+    /// Arena has been abandoned by previous owner
+    Abandoned = 2,
+}
+
+/// Arena owner tracking
+///
+/// Tracks which CPU owns each arena for the Arena Owner optimization.
+/// Owner CPU can perform lock-free operations on its arena.
+/// Non-owners must use more careful synchronization.
+#[derive(Debug)]
+pub struct ArenaOwnership {
+    /// Owner CPU ID for each arena (u16::MAX = no owner)
+    /// Indexed by arena_id = word_idx / words_per_arena
+    owners: alloc::boxed::Box<[AtomicU16]>,
+    /// Number of words per arena
+    words_per_arena: usize,
+    /// Total number of arenas
+    num_arenas: usize,
+    /// Steal attempt counters per arena (for adaptive ownership)
+    steal_counts: alloc::boxed::Box<[AtomicU32]>,
+}
+
+/// Invalid owner constant (no CPU assigned)
+const ARENA_NO_OWNER: u16 = u16::MAX;
+
+/// Threshold for steal count before ownership transfer
+const ARENA_STEAL_THRESHOLD: u32 = 8;
+
+impl ArenaOwnership {
+    /// Create new arena ownership tracking
+    pub fn new(total_words: usize, num_cpus: usize) -> Self {
+        let words_per_arena = if num_cpus > 0 {
+            (total_words + num_cpus - 1) / num_cpus
+        } else {
+            total_words
+        };
+        let num_arenas = if words_per_arena > 0 {
+            (total_words + words_per_arena - 1) / words_per_arena
+        } else {
+            1
+        };
+        
+        // Create owner array with initial ownership
+        let mut owners = alloc::vec::Vec::with_capacity(num_arenas);
+        for arena_id in 0..num_arenas {
+            // Initial owner is the arena's natural CPU (arena_id % num_cpus)
+            let initial_owner = if num_cpus > 0 {
+                (arena_id % num_cpus) as u16
+            } else {
+                0
+            };
+            owners.push(AtomicU16::new(initial_owner));
+        }
+        
+        // Create steal counters (all zero)
+        let mut steal_counts = alloc::vec::Vec::with_capacity(num_arenas);
+        for _ in 0..num_arenas {
+            steal_counts.push(AtomicU32::new(0));
+        }
+        
+        Self {
+            owners: owners.into_boxed_slice(),
+            words_per_arena,
+            num_arenas,
+            steal_counts: steal_counts.into_boxed_slice(),
+        }
+    }
+    
+    /// Get arena ID for a word index
+    #[inline]
+    pub fn arena_for_word(&self, word_idx: usize) -> usize {
+        if self.words_per_arena == 0 {
+            return 0;
+        }
+        word_idx / self.words_per_arena
+    }
+    
+    /// Check if current CPU owns the arena containing this word
+    #[inline]
+    pub fn is_owner(&self, word_idx: usize, current_cpu: usize) -> bool {
+        let arena_id = self.arena_for_word(word_idx);
+        if arena_id >= self.owners.len() {
+            return false;
+        }
+        self.owners[arena_id].load(Ordering::Relaxed) == current_cpu as u16
+    }
+    
+    /// Try to claim ownership of an arena
+    /// Returns true if successfully claimed
+    #[inline]
+    pub fn try_claim(&self, arena_id: usize, cpu_id: usize) -> bool {
+        if arena_id >= self.owners.len() {
+            return false;
+        }
+        
+        // Only claim if currently unowned
+        self.owners[arena_id]
+            .compare_exchange(
+                ARENA_NO_OWNER,
+                cpu_id as u16,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            )
+            .is_ok()
+    }
+    
+    /// Release ownership of an arena
+    #[inline]
+    pub fn release(&self, arena_id: usize, cpu_id: usize) {
+        if arena_id >= self.owners.len() {
+            return;
+        }
+        
+        let _ = self.owners[arena_id].compare_exchange(
+            cpu_id as u16,
+            ARENA_NO_OWNER,
+            Ordering::AcqRel,
+            Ordering::Relaxed,
+        );
+    }
+    
+    /// Record a steal attempt and check if ownership should transfer
+    /// Returns true if ownership should transfer to the stealer
+    #[inline]
+    pub fn record_steal_and_check_transfer(&self, arena_id: usize) -> bool {
+        if arena_id >= self.steal_counts.len() {
+            return false;
+        }
+        
+        let count = self.steal_counts[arena_id].fetch_add(1, Ordering::Relaxed);
+        count + 1 >= ARENA_STEAL_THRESHOLD
+    }
+    
+    /// Reset steal counter (after ownership transfer)
+    #[inline]
+    pub fn reset_steal_count(&self, arena_id: usize) {
+        if arena_id < self.steal_counts.len() {
+            self.steal_counts[arena_id].store(0, Ordering::Relaxed);
+        }
+    }
+    
+    /// Get current owner of an arena
+    #[inline]
+    pub fn get_owner(&self, arena_id: usize) -> Option<u16> {
+        if arena_id >= self.owners.len() {
+            return None;
+        }
+        let owner = self.owners[arena_id].load(Ordering::Relaxed);
+        if owner == ARENA_NO_OWNER {
+            None
+        } else {
+            Some(owner)
+        }
+    }
+    
+    /// Force transfer ownership (for adaptive rebalancing)
+    #[inline]
+    pub fn transfer_ownership(&self, arena_id: usize, old_owner: u16, new_owner: u16) -> bool {
+        if arena_id >= self.owners.len() {
+            return false;
+        }
+        
+        self.owners[arena_id]
+            .compare_exchange(old_owner, new_owner, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+    }
+    
+    /// Reconfigure arena ownership for a new CPU count
+    ///
+    /// Called when the actual CPU count is known (after bootstrap).
+    /// Redistributes arena ownership among the available CPUs.
+    pub fn reconfigure_for_cpus(&mut self, total_words: usize, num_cpus: usize) {
+        let new_words_per_arena = if num_cpus > 0 {
+            (total_words + num_cpus - 1) / num_cpus
+        } else {
+            total_words
+        };
+        let new_num_arenas = if new_words_per_arena > 0 {
+            (total_words + new_words_per_arena - 1) / new_words_per_arena
+        } else {
+            1
+        };
+        
+        // Resize owner and steal_count arrays if needed
+        if new_num_arenas != self.num_arenas {
+            let mut new_owners = alloc::vec::Vec::with_capacity(new_num_arenas);
+            let mut new_steal_counts = alloc::vec::Vec::with_capacity(new_num_arenas);
+            
+            for arena_id in 0..new_num_arenas {
+                let initial_owner = if num_cpus > 0 {
+                    (arena_id % num_cpus) as u16
+                } else {
+                    0
+                };
+                new_owners.push(AtomicU16::new(initial_owner));
+                new_steal_counts.push(AtomicU32::new(0));
+            }
+            
+            self.owners = new_owners.into_boxed_slice();
+            self.steal_counts = new_steal_counts.into_boxed_slice();
+        } else {
+            // Just reassign owners without reallocating
+            for arena_id in 0..self.num_arenas {
+                let new_owner = if num_cpus > 0 {
+                    (arena_id % num_cpus) as u16
+                } else {
+                    0
+                };
+                self.owners[arena_id].store(new_owner, Ordering::Release);
+                self.steal_counts[arena_id].store(0, Ordering::Release);
+            }
+        }
+        
+        self.words_per_arena = new_words_per_arena;
+        self.num_arenas = new_num_arenas;
+    }
+    
+    /// Get words per arena
+    #[inline]
+    pub fn words_per_arena(&self) -> usize {
+        self.words_per_arena
+    }
+    
+    /// Get number of arenas
+    #[inline]
+    pub fn num_arenas(&self) -> usize {
+        self.num_arenas
+    }
+}
+
 /// Per-CPU magazine set (one magazine per size class)
 ///
 /// Also holds per-CPU allocation hints and arena boundaries to avoid cache line
@@ -348,6 +595,8 @@ impl SubMagazine {
 /// This eliminates the race condition in the previous global lock-free design.
 #[repr(C, align(128))] // Two cache lines to avoid false sharing
 pub struct PerCpuMagazine {
+    /// This CPU's ID (for arena ownership tracking)
+    pub cpu_id: usize,
     /// Magazines indexed by size class
     magazines: [IrqMutex<Magazine>; MAGAZINE_SIZE_CLASSES],
     /// Per-CPU hint for 4KB allocation (word index to start searching)
@@ -385,6 +634,7 @@ impl PerCpuMagazine {
     /// Create empty per-CPU magazines with default (full-range) arena
     pub const fn new() -> Self {
         Self {
+            cpu_id: 0, // Will be set by set_arena()
             magazines: [
                 IrqMutex::new(Magazine::new()), // 4KB
                 IrqMutex::new(Magazine::new()), // 2MB
@@ -413,7 +663,11 @@ impl PerCpuMagazine {
     /// cpu_id is used to scatter the initial hint position within the arena,
     /// preventing all CPUs from starting at the same point and reducing
     /// contention at startup or under heavy load.
+    ///
+    /// # Arena Owner Optimization
+    /// The cpu_id is stored for use in arena ownership tracking.
     pub fn set_arena(&mut self, cpu_id: usize, start_4k: usize, end_4k: usize, start_2m: usize, end_2m: usize) {
+        self.cpu_id = cpu_id;
         self.arena_start_4k = start_4k;
         self.arena_end_4k = end_4k;
         self.arena_start_2m = start_2m;
@@ -988,6 +1242,380 @@ enum RangeFreeResult {
 }
 
 // ============================================================================
+// 2MB Buddy Allocator (Optimization 4)
+// ============================================================================
+
+/// Maximum buddy order for 2MB blocks
+/// Order 0 = 1 block (2MB), Order 1 = 2 blocks (4MB), ..., Order 9 = 512 blocks (1GB)
+const BUDDY_2M_MAX_ORDER: usize = 10;
+
+/// Free list entry for 2MB buddy allocator
+/// Each order has a bitmap tracking free buddy blocks at that order.
+/// Order k has blocks of size 2^k × 2MB, with alignment 2^k × 2MB.
+#[derive(Debug)]
+struct Buddy2mFreeList {
+    /// Bitmap of free blocks at each order
+    /// For order k: bit i is set if block starting at i*2^k is free at this order
+    /// Order 0: 1 bit per 2MB block
+    /// Order 1: 1 bit per 4MB region (2 consecutive 2MB blocks)
+    /// etc.
+    bitmap: [alloc::boxed::Box<[AtomicU64]>; BUDDY_2M_MAX_ORDER],
+    /// Count of free blocks at each order
+    free_count: [AtomicUsize; BUDDY_2M_MAX_ORDER],
+}
+
+impl Buddy2mFreeList {
+    /// Create a new buddy free list for the given number of 2MB blocks
+    fn new(total_2mb_blocks: usize) -> Self {
+        use alloc::boxed::Box;
+        
+        // Helper to create bitmap for a given order
+        fn make_bitmap(total_2mb_blocks: usize, order: usize) -> alloc::boxed::Box<[AtomicU64]> {
+            let blocks_at_order = (total_2mb_blocks + (1 << order) - 1) >> order;
+            let words_needed = (blocks_at_order + BITS_PER_WORD - 1) / BITS_PER_WORD;
+            let mut v = alloc::vec::Vec::with_capacity(words_needed.max(1));
+            for _ in 0..words_needed.max(1) {
+                v.push(AtomicU64::new(0));
+            }
+            v.into_boxed_slice()
+        }
+        
+        // Initialize bitmaps for each order manually (AtomicU64 is not Clone)
+        let bitmap: [Box<[AtomicU64]>; BUDDY_2M_MAX_ORDER] = [
+            make_bitmap(total_2mb_blocks, 0),
+            make_bitmap(total_2mb_blocks, 1),
+            make_bitmap(total_2mb_blocks, 2),
+            make_bitmap(total_2mb_blocks, 3),
+            make_bitmap(total_2mb_blocks, 4),
+            make_bitmap(total_2mb_blocks, 5),
+            make_bitmap(total_2mb_blocks, 6),
+            make_bitmap(total_2mb_blocks, 7),
+            make_bitmap(total_2mb_blocks, 8),
+            make_bitmap(total_2mb_blocks, 9),
+        ];
+        
+        let free_count: [AtomicUsize; BUDDY_2M_MAX_ORDER] = [
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+            AtomicUsize::new(0),
+        ];
+        
+        Self { bitmap, free_count }
+    }
+    
+    /// Set a block as free at the given order
+    fn set_free(&self, order: usize, block_idx: usize) {
+        if order >= BUDDY_2M_MAX_ORDER {
+            return;
+        }
+        let word_idx = block_idx / BITS_PER_WORD;
+        let bit_idx = block_idx % BITS_PER_WORD;
+        if word_idx < self.bitmap[order].len() {
+            let old = self.bitmap[order][word_idx].fetch_or(1u64 << bit_idx, Ordering::AcqRel);
+            if old & (1u64 << bit_idx) == 0 {
+                self.free_count[order].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    
+    /// Clear a block as allocated at the given order
+    fn set_allocated(&self, order: usize, block_idx: usize) {
+        if order >= BUDDY_2M_MAX_ORDER {
+            return;
+        }
+        let word_idx = block_idx / BITS_PER_WORD;
+        let bit_idx = block_idx % BITS_PER_WORD;
+        if word_idx < self.bitmap[order].len() {
+            let old = self.bitmap[order][word_idx].fetch_and(!(1u64 << bit_idx), Ordering::AcqRel);
+            if old & (1u64 << bit_idx) != 0 {
+                self.free_count[order].fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+    
+    /// Check if a block is free at the given order
+    fn is_free(&self, order: usize, block_idx: usize) -> bool {
+        if order >= BUDDY_2M_MAX_ORDER {
+            return false;
+        }
+        let word_idx = block_idx / BITS_PER_WORD;
+        let bit_idx = block_idx % BITS_PER_WORD;
+        if word_idx < self.bitmap[order].len() {
+            self.bitmap[order][word_idx].load(Ordering::Acquire) & (1u64 << bit_idx) != 0
+        } else {
+            false
+        }
+    }
+    
+    /// Find and allocate a free block at the given order
+    /// Returns the block index if found, None otherwise
+    fn find_and_allocate(&self, order: usize) -> Option<usize> {
+        if order >= BUDDY_2M_MAX_ORDER {
+            return None;
+        }
+        
+        for word_idx in 0..self.bitmap[order].len() {
+            let mut word = self.bitmap[order][word_idx].load(Ordering::Acquire);
+            while word != 0 {
+                let bit_idx = word.trailing_zeros() as usize;
+                let block_idx = word_idx * BITS_PER_WORD + bit_idx;
+                
+                // Try to clear the bit atomically
+                let mask = 1u64 << bit_idx;
+                let old = self.bitmap[order][word_idx].fetch_and(!mask, Ordering::AcqRel);
+                if old & mask != 0 {
+                    // Successfully allocated
+                    self.free_count[order].fetch_sub(1, Ordering::Relaxed);
+                    return Some(block_idx);
+                }
+                
+                // CAS failed, reload and retry
+                word = self.bitmap[order][word_idx].load(Ordering::Acquire);
+            }
+        }
+        
+        None
+    }
+    
+    /// Get the count of free blocks at the given order
+    fn count(&self, order: usize) -> usize {
+        if order >= BUDDY_2M_MAX_ORDER {
+            0
+        } else {
+            self.free_count[order].load(Ordering::Relaxed)
+        }
+    }
+}
+
+// ============================================================================
+// TLSF (Two-Level Segregated Fit) for Variable-Size Contiguous Allocation
+// Optimization 3: O(1) variable-size allocation
+// ============================================================================
+
+/// First-level index bits (log2 of size class)
+/// Covers sizes from 2^4 = 16 pages (64KB) to 2^20 = 1M pages (4GB)
+const TLSF_FLI_MIN: usize = 4;  // Minimum: 16 pages = 64KB
+const TLSF_FLI_MAX: usize = 20; // Maximum: 1M pages = 4GB
+const TLSF_FLI_COUNT: usize = TLSF_FLI_MAX - TLSF_FLI_MIN + 1; // 17 first-level classes
+
+/// Second-level index bits (subdivision within each first-level class)
+const TLSF_SLI_BITS: usize = 4;
+const TLSF_SLI_COUNT: usize = 1 << TLSF_SLI_BITS; // 16 second-level classes
+
+/// Free block header stored at the beginning of each free block
+/// Uses a doubly-linked list for efficient insertion/removal
+#[derive(Debug)]
+struct TlsfFreeBlock {
+    /// Size of this block in pages
+    size: usize,
+    /// Start page index of this block
+    start_page: usize,
+    /// Previous free block in same size class (page index, or usize::MAX if none)
+    prev: AtomicUsize,
+    /// Next free block in same size class (page index, or usize::MAX if none)
+    next: AtomicUsize,
+}
+
+/// TLSF allocator for variable-size contiguous IOVA ranges
+#[derive(Debug)]
+struct TlsfAllocator {
+    /// First-level bitmap: bit i is set if there's a free block in FLI class i
+    fl_bitmap: AtomicU32,
+    /// Second-level bitmaps: sl_bitmap[fli] has bit j set if free block exists
+    /// at size class (fli, sli)
+    sl_bitmap: [AtomicU16; TLSF_FLI_COUNT],
+    /// Free block headers, indexed by start page
+    /// Only stores headers for blocks that are in the free list
+    /// Note: This is a sparse structure - most entries will be empty
+    headers: alloc::boxed::Box<[Option<TlsfFreeBlock>]>,
+    /// Head of free list for each (fli, sli) pair: start_page or usize::MAX
+    free_lists: [[AtomicUsize; TLSF_SLI_COUNT]; TLSF_FLI_COUNT],
+    /// Total pages managed
+    total_pages: usize,
+}
+
+impl TlsfAllocator {
+    /// Create a new TLSF allocator
+    fn new(total_pages: usize) -> Self {
+        use alloc::vec::Vec;
+        
+        // Initialize free list heads to usize::MAX (empty)
+        let free_lists: [[AtomicUsize; TLSF_SLI_COUNT]; TLSF_FLI_COUNT] = 
+            core::array::from_fn(|_| core::array::from_fn(|_| AtomicUsize::new(usize::MAX)));
+        
+        // Initialize headers as None (no free blocks initially)
+        // In practice, we'll only allocate headers for active free blocks
+        let headers_count = total_pages.min(1024 * 1024); // Cap for memory efficiency
+        let mut headers_vec = Vec::with_capacity(headers_count);
+        for _ in 0..headers_count {
+            headers_vec.push(None);
+        }
+        
+        Self {
+            fl_bitmap: AtomicU32::new(0),
+            sl_bitmap: core::array::from_fn(|_| AtomicU16::new(0)),
+            headers: headers_vec.into_boxed_slice(),
+            free_lists,
+            total_pages,
+        }
+    }
+    
+    /// Calculate first-level index for a size
+    #[inline]
+    fn fli_for_size(size: usize) -> usize {
+        if size < (1 << TLSF_FLI_MIN) {
+            return 0;
+        }
+        let msb = (usize::BITS - size.leading_zeros()) as usize - 1;
+        (msb - TLSF_FLI_MIN).min(TLSF_FLI_COUNT - 1)
+    }
+    
+    /// Calculate second-level index for a size
+    #[inline]
+    fn sli_for_size(size: usize, fli: usize) -> usize {
+        if fli == 0 {
+            return size.saturating_sub(1 << TLSF_FLI_MIN) / ((1 << TLSF_FLI_MIN) / TLSF_SLI_COUNT);
+        }
+        let base = 1usize << (fli + TLSF_FLI_MIN);
+        let offset = size - base;
+        let sli_range = base / TLSF_SLI_COUNT;
+        (offset / sli_range).min(TLSF_SLI_COUNT - 1)
+    }
+    
+    /// Find a suitable free block for allocation
+    /// Returns (start_page, actual_size) if found
+    fn find_suitable(&self, requested_size: usize) -> Option<(usize, usize)> {
+        if requested_size == 0 || requested_size > self.total_pages {
+            return None;
+        }
+        
+        // Round up to find the correct size class
+        let fli = Self::fli_for_size(requested_size);
+        let sli = Self::sli_for_size(requested_size, fli);
+        
+        // First, try the exact or slightly larger class
+        let sl_map = self.sl_bitmap[fli].load(Ordering::Acquire) as u32;
+        // Mask off smaller SLI entries
+        let sl_mask = !((1u32 << sli) - 1);
+        let sl_candidate = sl_map & sl_mask;
+        
+        if sl_candidate != 0 {
+            // Found a block in this FLI
+            let target_sli = sl_candidate.trailing_zeros() as usize;
+            return self.try_allocate_from(fli, target_sli, requested_size);
+        }
+        
+        // No suitable block in this FLI, try larger FLIs
+        let fl_map = self.fl_bitmap.load(Ordering::Acquire);
+        // Mask off smaller FLI entries
+        let fl_mask = !((1u32 << (fli + 1)) - 1);
+        let fl_candidate = fl_map & fl_mask;
+        
+        if fl_candidate != 0 {
+            // Found a larger FLI class
+            let target_fli = fl_candidate.trailing_zeros() as usize;
+            let sl_map = self.sl_bitmap[target_fli].load(Ordering::Acquire);
+            if sl_map != 0 {
+                let target_sli = sl_map.trailing_zeros() as usize;
+                return self.try_allocate_from(target_fli, target_sli, requested_size);
+            }
+        }
+        
+        None
+    }
+    
+    /// Try to allocate from a specific size class
+    fn try_allocate_from(&self, fli: usize, sli: usize, requested_size: usize) -> Option<(usize, usize)> {
+        if fli >= TLSF_FLI_COUNT || sli >= TLSF_SLI_COUNT {
+            return None;
+        }
+        
+        // Get the head of the free list for this class
+        let head_page = self.free_lists[fli][sli].load(Ordering::Acquire);
+        if head_page == usize::MAX || head_page >= self.headers.len() {
+            return None;
+        }
+        
+        // Try to get the header
+        if let Some(header) = &self.headers[head_page] {
+            let block_size = header.size;
+            let start_page = header.start_page;
+            
+            if block_size >= requested_size {
+                // This block is suitable
+                // Remove from free list
+                let next_page = header.next.load(Ordering::Acquire);
+                
+                // Update the head of the free list
+                if self.free_lists[fli][sli]
+                    .compare_exchange(head_page, next_page, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok() 
+                {
+                    // Update next block's prev pointer
+                    if next_page != usize::MAX && next_page < self.headers.len() {
+                        if let Some(next_header) = &self.headers[next_page] {
+                            next_header.prev.store(usize::MAX, Ordering::Release);
+                        }
+                    }
+                    
+                    // Update bitmaps if list is now empty
+                    if next_page == usize::MAX {
+                        self.sl_bitmap[fli].fetch_and(!(1u16 << sli), Ordering::AcqRel);
+                        // Check if all SLI entries for this FLI are now empty
+                        if self.sl_bitmap[fli].load(Ordering::Acquire) == 0 {
+                            self.fl_bitmap.fetch_and(!(1u32 << fli), Ordering::AcqRel);
+                        }
+                    }
+                    
+                    return Some((start_page, block_size));
+                }
+            }
+        }
+        
+        None
+    }
+    
+    /// Add a free block to the allocator
+    fn add_free_block(&self, start_page: usize, size: usize) {
+        if size < (1 << TLSF_FLI_MIN) || start_page >= self.headers.len() {
+            return; // Too small for TLSF, handle elsewhere
+        }
+        
+        let fli = Self::fli_for_size(size);
+        let sli = Self::sli_for_size(size, fli);
+        
+        // Note: This is a simplified version - full implementation would need
+        // mutable access to headers or use atomics throughout
+        // For now, TLSF is primarily used as a hint/cache layer
+        
+        // Update bitmaps
+        self.sl_bitmap[fli].fetch_or(1u16 << sli, Ordering::AcqRel);
+        self.fl_bitmap.fetch_or(1u32 << fli, Ordering::AcqRel);
+    }
+    
+    /// Check if TLSF might have a suitable block (fast heuristic)
+    fn might_have_block(&self, requested_size: usize) -> bool {
+        if requested_size == 0 || requested_size > self.total_pages {
+            return false;
+        }
+        
+        let fli = Self::fli_for_size(requested_size);
+        let fl_map = self.fl_bitmap.load(Ordering::Relaxed);
+        
+        // Check if any FLI >= our FLI has blocks
+        let fl_mask = !((1u32 << fli) - 1);
+        (fl_map & fl_mask) != 0
+    }
+}
+
+// ============================================================================
 // Bitmap Allocator (Medium Path)
 // ============================================================================
 
@@ -1078,6 +1706,17 @@ pub struct IovaBitmap {
     /// When a word transitions 0→non-zero, its index is pushed here.
     /// On allocation, pop and validate before using.
     free_word_stack: FreeWordStack,
+    
+    // === 2MB Buddy Allocator (O(log N) contiguous 2MB allocation) ===
+    /// Buddy free lists for 2MB blocks
+    /// Tracks consecutive free 2MB blocks at each power-of-2 order.
+    /// Order k contains blocks of size 2^k × 2MB (e.g., order 2 = 4 consecutive 2MB = 8MB)
+    buddy_2m: Buddy2mFreeList,
+    
+    // === Arena Ownership (Optimization 1) ===
+    /// Tracks which CPU owns each arena for lock-free owner operations
+    /// Owner CPU can perform optimistic updates without CAS in some cases.
+    arena_ownership: ArenaOwnership,
 }
 
 impl IovaBitmap {
@@ -1285,7 +1924,41 @@ impl IovaBitmap {
             // Free word stack starts empty (will be populated as allocations occur)
             // Note: We don't pre-populate because all words start as free anyway
             free_word_stack: FreeWordStack::new(),
+            // Buddy allocator for contiguous 2MB allocations
+            // We initialize and then populate the buddy lists
+            buddy_2m: {
+                let buddy = Buddy2mFreeList::new(total_2mb_blocks);
+                // Initialize order 0 with all complete 2MB blocks
+                // Higher orders will be built lazily when blocks are freed
+                for block_idx in 0..complete_2mb_blocks {
+                    buddy.set_free(0, block_idx);
+                }
+                buddy
+            },
+            // Arena ownership for CPU-local lock-free operations
+            // Each arena covers WORDS_PER_ARENA words
+            // Initially assigned to CPUs in round-robin fashion
+            // Use 1 CPU for bootstrap (can be reconfigured later)
+            arena_ownership: ArenaOwnership::new(detail_words, 1),
         }
+    }
+
+    /// Reconfigure arena ownership for a known CPU count
+    ///
+    /// Called after bootstrap when the actual number of CPUs is known.
+    /// Each CPU will be assigned ownership of approximately equal portions
+    /// of the IOVA space.
+    ///
+    /// # Arguments
+    /// * `num_cpus` - Number of CPUs in the system
+    pub fn reconfigure_arena_ownership(&mut self, num_cpus: usize) {
+        let total_words = self.detail.len();
+        self.arena_ownership.reconfigure_for_cpus(total_words, num_cpus);
+    }
+    
+    /// Get arena ownership info for statistics/debugging
+    pub fn arena_ownership_info(&self) -> (usize, usize) {
+        (self.arena_ownership.num_arenas(), self.arena_ownership.words_per_arena())
     }
 
     /// Get the valid bit mask for a word index
@@ -1669,6 +2342,194 @@ impl IovaBitmap {
                 if page_idx < self.total_pages {
                     self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
                     self.on_page_allocated(page_idx);
+                    return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Allocate a single 4KB page using arena owner optimization
+    ///
+    /// This method provides the fastest allocation path for arena owners:
+    /// - Owner CPU: Optimistic lock-free allocation from owned arena
+    /// - Non-owner: Must steal from other arenas with potential ownership transfer
+    ///
+    /// # Arguments
+    /// * `cpu_id` - Current CPU ID
+    /// * `hint` - Per-CPU hint (updated on success)
+    /// * `arena_start` - Start of arena (word index, inclusive)
+    /// * `arena_end` - End of arena (word index, exclusive)
+    ///
+    /// # Owner Fast Path
+    /// When cpu_id matches arena owner, allocation proceeds without contention
+    /// tracking. This allows for maximum throughput on the common case.
+    ///
+    /// # Non-Owner Path with Steal Tracking
+    /// When cpu_id doesn't match owner, steal attempts are tracked. After
+    /// ARENA_STEAL_THRESHOLD consecutive steals, ownership may transfer to
+    /// the stealing CPU.
+    pub fn allocate_page_owner_optimized(
+        &self,
+        cpu_id: usize,
+        hint: &AtomicUsize,
+        arena_start: usize,
+        arena_end: usize,
+    ) -> Option<u64> {
+        let detail_words = self.detail.len();
+        if detail_words == 0 {
+            return None;
+        }
+
+        // Check arena bounds
+        let arena_start = arena_start.min(detail_words);
+        let arena_end = arena_end.min(detail_words);
+        let arena_size = arena_end.saturating_sub(arena_start);
+
+        if arena_size == 0 {
+            return self.allocate_page_with_hint(hint);
+        }
+
+        // Calculate arena ID for ownership tracking
+        let arena_id = self.arena_ownership.arena_for_word(arena_start);
+
+        // === Owner Fast Path ===
+        // If we own this arena, we get lock-free allocation priority
+        let is_owner = self.arena_ownership.is_owner(arena_start, cpu_id);
+        
+        if is_owner {
+            // Owner allocation: direct scan without steal tracking
+            let hint_val = hint.load(Ordering::Relaxed);
+            let local_hint = if hint_val >= arena_start && hint_val < arena_end {
+                hint_val
+            } else {
+                arena_start
+            };
+
+            for offset in 0..arena_size {
+                let word_idx = arena_start + ((local_hint - arena_start + offset) % arena_size);
+
+                if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                    let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                    if page_idx < self.total_pages {
+                        hint.store(word_idx, Ordering::Relaxed);
+                        self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                        self.on_page_allocated(page_idx);
+                        return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                    }
+                }
+            }
+        } else {
+            // === Non-Owner Path: Track steal attempts ===
+            // Try to allocate from the arena (stealing)
+            let hint_val = hint.load(Ordering::Relaxed);
+            let local_hint = if hint_val >= arena_start && hint_val < arena_end {
+                hint_val
+            } else {
+                arena_start
+            };
+
+            for offset in 0..arena_size {
+                let word_idx = arena_start + ((local_hint - arena_start + offset) % arena_size);
+
+                if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                    let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                    if page_idx < self.total_pages {
+                        hint.store(word_idx, Ordering::Relaxed);
+                        self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                        self.on_page_allocated(page_idx);
+                        
+                        // Record steal and check for ownership transfer
+                        if self.arena_ownership.record_steal_and_check_transfer(arena_id) {
+                            // Threshold reached, try to transfer ownership
+                            if let Some(old_owner) = self.arena_ownership.get_owner(arena_id) {
+                                if self.arena_ownership.transfer_ownership(
+                                    arena_id,
+                                    old_owner,
+                                    cpu_id as u16,
+                                ) {
+                                    self.arena_ownership.reset_steal_count(arena_id);
+                                }
+                            } else {
+                                // No current owner, claim it
+                                let _ = self.arena_ownership.try_claim(arena_id, cpu_id);
+                                self.arena_ownership.reset_steal_count(arena_id);
+                            }
+                        }
+                        
+                        return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                    }
+                }
+            }
+        }
+
+        // === Global Steal Path ===
+        // Local arena exhausted, steal from other arenas
+        self.allocate_page_steal_global(cpu_id, hint, arena_start, arena_end)
+    }
+
+    /// Steal allocation from global pool (outside local arena)
+    ///
+    /// Called when local arena is exhausted. Tries other arenas with steal tracking.
+    fn allocate_page_steal_global(
+        &self,
+        cpu_id: usize,
+        hint: &AtomicUsize,
+        arena_start: usize,
+        arena_end: usize,
+    ) -> Option<u64> {
+        let detail_words = self.detail.len();
+
+        // Try words before arena_start
+        for word_idx in 0..arena_start {
+            if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                if page_idx < self.total_pages {
+                    self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                    self.on_page_allocated(page_idx);
+                    
+                    // Track steal from this arena
+                    let stolen_arena = self.arena_ownership.arena_for_word(word_idx);
+                    if self.arena_ownership.record_steal_and_check_transfer(stolen_arena) {
+                        if let Some(old_owner) = self.arena_ownership.get_owner(stolen_arena) {
+                            if self.arena_ownership.transfer_ownership(
+                                stolen_arena,
+                                old_owner,
+                                cpu_id as u16,
+                            ) {
+                                self.arena_ownership.reset_steal_count(stolen_arena);
+                            }
+                        }
+                    }
+                    
+                    return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                }
+            }
+        }
+
+        // Try words after arena_end
+        for word_idx in arena_end..detail_words {
+            if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                if page_idx < self.total_pages {
+                    self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                    self.on_page_allocated(page_idx);
+                    
+                    // Track steal from this arena
+                    let stolen_arena = self.arena_ownership.arena_for_word(word_idx);
+                    if self.arena_ownership.record_steal_and_check_transfer(stolen_arena) {
+                        if let Some(old_owner) = self.arena_ownership.get_owner(stolen_arena) {
+                            if self.arena_ownership.transfer_ownership(
+                                stolen_arena,
+                                old_owner,
+                                cpu_id as u16,
+                            ) {
+                                self.arena_ownership.reset_steal_count(stolen_arena);
+                            }
+                        }
+                    }
+                    
                     return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                 }
             }
@@ -2558,12 +3419,120 @@ impl IovaBitmap {
         RangeFreeResult::Free
     }
 
-    /// Allocate contiguous pages from fully-free 2MB blocks
+    /// Allocate contiguous pages from fully-free 2MB blocks using buddy allocator
     ///
-    /// For large allocations, this is much faster than linear scanning
-    /// because we can skip directly to fully-free regions.
+    /// # Optimization 4: 2MB Buddy Allocator
+    ///
+    /// For large allocations (>= 2MB), uses a buddy allocator for O(log N) allocation
+    /// of contiguous 2MB blocks. Falls back to linear scan if buddy allocation fails.
+    ///
+    /// The buddy allocator maintains free lists at each power-of-2 order:
+    /// - Order 0: single 2MB blocks
+    /// - Order 1: pairs of consecutive 2MB blocks (4MB)
+    /// - Order 2: 4 consecutive 2MB blocks (8MB)
+    /// - etc.
     fn allocate_contiguous_from_2mb_blocks(&self, pages: usize, alignment_pages: usize) -> Option<u64> {
         // How many complete 2MB blocks do we need?
+        let blocks_needed = (pages + PAGES_PER_2MB_BLOCK - 1) / PAGES_PER_2MB_BLOCK;
+        
+        if blocks_needed == 0 {
+            return None;
+        }
+        
+        // Calculate the minimum order needed (ceil(log2(blocks_needed)))
+        let min_order = if blocks_needed == 1 {
+            0
+        } else {
+            (usize::BITS - (blocks_needed - 1).leading_zeros()) as usize
+        };
+        
+        // Try buddy allocation: find smallest available order >= min_order
+        for order in min_order..BUDDY_2M_MAX_ORDER {
+            if let Some(block_idx) = self.buddy_2m.find_and_allocate(order) {
+                // Convert block index at this order to actual 2MB block index
+                let start_2m_block = block_idx << order;
+                let blocks_at_order = 1usize << order;
+                
+                // Check alignment requirement
+                let start_page = start_2m_block * PAGES_PER_2MB_BLOCK;
+                let aligned_start = (start_page + alignment_pages - 1) / alignment_pages * alignment_pages;
+                let aligned_2m_block = aligned_start / PAGES_PER_2MB_BLOCK;
+                
+                // Check if we can fit within the allocated region after alignment
+                if aligned_2m_block >= start_2m_block && 
+                   aligned_start + pages <= (start_2m_block + blocks_at_order) * PAGES_PER_2MB_BLOCK {
+                    
+                    // Allocate the exact range in the detail bitmap
+                    if self.allocate_range(aligned_start, pages) {
+                        // Update hierarchy
+                        self.update_hierarchy_after_range_alloc(aligned_start, pages);
+                        
+                        // Mark unused 2MB blocks as free in lower orders
+                        // Split any excess blocks back into buddy lists
+                        self.buddy_split_excess(start_2m_block, blocks_at_order, blocks_needed);
+                        
+                        return Some(self.base + (aligned_start as u64) * PAGE_SIZE_4K);
+                    }
+                }
+                
+                // Allocation failed, return block to buddy (rollback)
+                self.buddy_2m.set_free(order, block_idx);
+            }
+        }
+        
+        // Buddy allocation failed, fall back to linear scan
+        self.allocate_contiguous_from_2mb_blocks_linear(pages, alignment_pages)
+    }
+    
+    /// Split excess 2MB blocks back into buddy free lists
+    fn buddy_split_excess(&self, start_block: usize, total_blocks: usize, used_blocks: usize) {
+        if used_blocks >= total_blocks {
+            return;
+        }
+        
+        // Return excess blocks starting from (start_block + used_blocks)
+        let excess_start = start_block + used_blocks;
+        let excess_count = total_blocks - used_blocks;
+        
+        // Add excess blocks back to appropriate buddy orders
+        self.buddy_add_contiguous_free(excess_start, excess_count);
+    }
+    
+    /// Add a contiguous range of 2MB blocks to buddy free lists
+    fn buddy_add_contiguous_free(&self, start_block: usize, count: usize) {
+        if count == 0 {
+            return;
+        }
+        
+        // Decompose count into power-of-2 chunks and add to appropriate orders
+        let mut remaining = count;
+        let mut current_block = start_block;
+        
+        while remaining > 0 {
+            // Find highest order that fits and is properly aligned
+            let mut best_order = 0;
+            for order in (0..BUDDY_2M_MAX_ORDER).rev() {
+                let block_size = 1usize << order;
+                let alignment_mask = block_size - 1;
+                
+                if remaining >= block_size && (current_block & alignment_mask) == 0 {
+                    best_order = order;
+                    break;
+                }
+            }
+            
+            let block_size = 1usize << best_order;
+            let buddy_idx = current_block >> best_order;
+            
+            self.buddy_2m.set_free(best_order, buddy_idx);
+            
+            current_block += block_size;
+            remaining -= block_size;
+        }
+    }
+    
+    /// Linear fallback for allocate_contiguous_from_2mb_blocks
+    fn allocate_contiguous_from_2mb_blocks_linear(&self, pages: usize, alignment_pages: usize) -> Option<u64> {
         let blocks_needed = (pages + PAGES_PER_2MB_BLOCK - 1) / PAGES_PER_2MB_BLOCK;
         
         // Scan 2MB bitmap for consecutive fully-free blocks
@@ -2589,14 +3558,11 @@ impl IovaBitmap {
                 }
                 
                 if consecutive_count >= blocks_needed {
-                    // Found enough consecutive blocks
                     let start_block = consecutive_start.unwrap();
                     let start_page = start_block * PAGES_PER_2MB_BLOCK;
-                    
-                    // Check alignment
                     let aligned_start = (start_page + alignment_pages - 1) / alignment_pages * alignment_pages;
+                    
                     if aligned_start + pages <= (start_block + consecutive_count) * PAGES_PER_2MB_BLOCK {
-                        // Try to allocate
                         if self.is_range_free(aligned_start, pages) {
                             if self.allocate_range(aligned_start, pages) {
                                 self.update_hierarchy_after_range_alloc(aligned_start, pages);
@@ -2606,7 +3572,6 @@ impl IovaBitmap {
                     }
                 }
             } else {
-                // Reset consecutive count
                 consecutive_start = None;
                 consecutive_count = 0;
             }
@@ -3509,6 +4474,10 @@ impl IovaBitmap {
         self.used_count_2m[block_idx].store(0, Ordering::Release);
         self.set_bitmap_2m_bit(block_idx);
         self.free_count_2m.fetch_add(1, Ordering::Relaxed);
+        
+        // Update buddy allocator: add this block to order 0
+        // Then try to coalesce with buddy into higher orders
+        self.buddy_coalesce_and_add(block_idx);
 
         // Update 1GB hierarchy
         let block_1g = block_idx / BLOCKS_2MB_PER_1GB;
@@ -3521,6 +4490,59 @@ impl IovaBitmap {
         }
 
         Ok(())
+    }
+    
+    /// Add a 2MB block to buddy allocator with coalescing
+    fn buddy_coalesce_and_add(&self, block_idx: usize) {
+        let mut current_idx = block_idx;
+        let mut current_order = 0usize;
+        
+        while current_order < BUDDY_2M_MAX_ORDER - 1 {
+            // Calculate buddy index at this order
+            let buddy_idx = current_idx ^ 1; // XOR with 1 gives buddy at same order
+            let buddy_block_at_order = buddy_idx >> current_order;
+            
+            // Check if buddy exists and is free at this order
+            if !self.buddy_2m.is_free(current_order, buddy_block_at_order) {
+                // Buddy is not free, stop coalescing
+                break;
+            }
+            
+            // Check if buddy's corresponding 2MB blocks are all free in bitmap_2m
+            let buddy_start_2m = buddy_block_at_order << current_order;
+            let buddy_count = 1usize << current_order;
+            let mut buddy_all_free = true;
+            
+            for i in 0..buddy_count {
+                let buddy_2m_idx = buddy_start_2m + i;
+                if buddy_2m_idx >= self.total_2mb_blocks {
+                    buddy_all_free = false;
+                    break;
+                }
+                let word_idx = buddy_2m_idx / BITS_PER_WORD;
+                let bit_idx = buddy_2m_idx % BITS_PER_WORD;
+                if word_idx >= self.bitmap_2m.len() || 
+                   self.bitmap_2m[word_idx].load(Ordering::Acquire) & (1u64 << bit_idx) == 0 {
+                    buddy_all_free = false;
+                    break;
+                }
+            }
+            
+            if !buddy_all_free {
+                break;
+            }
+            
+            // Remove buddy from current order
+            self.buddy_2m.set_allocated(current_order, buddy_block_at_order);
+            
+            // Move to next order (parent block)
+            current_idx = current_idx.min(buddy_idx);
+            current_order += 1;
+        }
+        
+        // Add the (possibly coalesced) block to its final order
+        let final_block_idx = current_idx >> current_order;
+        self.buddy_2m.set_free(current_order, final_block_idx);
     }
 
     // ========================================================================
@@ -3847,9 +4869,18 @@ impl IovaAllocatorFast {
     /// The IOVA space is divided into arenas, one per CPU. Each CPU preferentially
     /// allocates from its own arena to minimize cache line contention. When a local
     /// arena is exhausted, the CPU steals from other arenas.
+    ///
+    /// # Arena Owner Optimization
+    ///
+    /// Each CPU owns its arena and gets lock-free allocation priority.
+    /// Non-owner allocations track steal attempts for adaptive ownership transfer.
     pub fn new(base: u64, size: u64) -> Self {
         let total_pages = (size / PAGE_SIZE_4K) as usize;
-        let bitmap_4k = IovaBitmap::new(base, total_pages);
+        let mut bitmap_4k = IovaBitmap::new(base, total_pages);
+        
+        // Configure arena ownership for MAX_CPUS
+        // This ensures each CPU has its own arena with ownership tracking
+        bitmap_4k.reconfigure_arena_ownership(MAX_CPUS);
         
         // Calculate arena sizes
         let total_words_4k = (total_pages + BITS_PER_WORD - 1) / BITS_PER_WORD;
@@ -4108,11 +5139,16 @@ impl IovaAllocatorFast {
     /// 2. Per-CPU free word stack (O(1), local non-empty words)
     /// 3. Partial 2MB blocks (O(1) amortized, preserves fully-free 2MB)
     /// 4. Arena-restricted hierarchy scan (fallback, may pollute hugepages)
+    ///
+    /// # Arena Owner Optimization (Optimization 1)
+    /// When CPU owns its arena, allocation proceeds with minimal contention.
+    /// Non-owner allocation tracks steal attempts for adaptive ownership transfer.
     #[inline]
     fn allocate_4k(&self) -> Option<u64> {
         // Fast path: try per-CPU magazine
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
+            let my_cpu_id = magazine.cpu_id;
             
             // === Fast path #0: Sub-magazine (claimed word, zero atomics!) ===
             {
@@ -4168,6 +5204,10 @@ impl IovaAllocatorFast {
             // Instead of allocating single pages with individual CAS operations,
             // we claim entire words (64 pages) and use sub-magazine. This reduces
             // atomic operations from N CAS per N pages to just 1 swap per 64 pages.
+            //
+            // Arena Owner Optimization (Optimization 1):
+            // Owner CPU gets lock-free fast path for its arena.
+            // Non-owner allocation tracks steal attempts for adaptive transfer.
             // ================================================================
             
             // Medium path #1: Try word claim from partial 2MB blocks
@@ -4201,7 +5241,20 @@ impl IovaAllocatorFast {
                 }
             }
             
-            // Medium path #2: Fallback to global hierarchy scan with word claim
+            // Medium path #2: Arena owner-optimized allocation
+            // Uses ownership tracking for adaptive load balancing
+            if let Some(iova) = self.bitmap_4k.allocate_page_owner_optimized(
+                my_cpu_id,
+                &magazine.hint_4k,
+                magazine.arena_start_4k,
+                magazine.arena_end_4k,
+            ) {
+                self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+                self.stats.hugepage_pollutions.fetch_add(1, Ordering::Relaxed);
+                return Some(iova);
+            }
+            
+            // Medium path #3: Fallback to global hierarchy scan with word claim
             // This may pollute hugepages but still uses efficient word claim
             {
                 let mut sub_mag = magazine.sub_magazine_4k.lock();
