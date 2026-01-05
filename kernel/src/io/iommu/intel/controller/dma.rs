@@ -14,6 +14,8 @@ use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
+use crate::mm::{global_translate, VirtAddr};
+use x86_64::PhysAddr;
 
 use super::IommuController;
 
@@ -27,6 +29,76 @@ fn align_down(value: u64, align: u64) -> u64 {
 
 fn align_up(value: u64, align: u64) -> u64 {
     (value + align - 1) & !(align - 1)
+}
+
+fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
+    a_start < b_end && b_start < a_end
+}
+
+fn kernel_phys_range() -> Option<(u64, u64)> {
+    extern "C" {
+        static __kernel_start: u8;
+        static __kernel_end: u8;
+    }
+
+    let start = unsafe { &__kernel_start as *const u8 as u64 };
+    let end = unsafe { &__kernel_end as *const u8 as u64 };
+    if end <= start {
+        return None;
+    }
+
+    let start_phys = global_translate(VirtAddr::new(start))?.as_u64();
+    let end_phys = global_translate(VirtAddr::new(end - 1))?.as_u64();
+    Some((start_phys, end_phys.saturating_add(1)))
+}
+
+fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
+    let size = end.saturating_sub(start);
+    if size == 0 {
+        return Ok(());
+    }
+
+    // Hard block if it overlaps the kernel image.
+    if let Some((kstart, kend)) = kernel_phys_range() {
+        if ranges_overlap(start, end, kstart, kend) {
+            log::error!(
+                "[IOMMU][SECURITY] RMRR overlaps kernel image: {:#x}-{:#x} vs {:#x}-{:#x}",
+                start,
+                end,
+                kstart,
+                kend
+            );
+            return Err(IommuError::RmrrMapFailed);
+        }
+    } else {
+        log::warn!(
+            "[IOMMU] Unable to resolve kernel physical range for RMRR validation"
+        );
+    }
+
+    // Best-effort bounds check against known physical memory.
+    let stats = crate::mm::buddy_allocator_stats();
+    let max_phys = (stats.total_frames as u64).saturating_mul(crate::mm::PAGE_SIZE_4K as u64);
+    if max_phys != 0 && end > max_phys {
+        log::error!(
+            "[IOMMU][SECURITY] RMRR outside known RAM: {:#x}-{:#x} (max {:#x})",
+            start,
+            end,
+            max_phys
+        );
+        return Err(IommuError::RmrrMapFailed);
+    }
+
+    // Warn if the range is not within managed regions (may be firmware-reserved).
+    if !crate::mm::buddy_allocator::is_range_managed_by_buddy(PhysAddr::new(start), size) {
+        log::warn!(
+            "[IOMMU] RMRR outside managed RAM: {:#x}-{:#x} (allowing reserved region)",
+            start,
+            end
+        );
+    }
+
+    Ok(())
 }
 
 /// Map RMRR (Reserved Memory Region Reporting) regions for a device.
@@ -82,6 +154,16 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
             continue;
         }
         let size = end - start;
+
+        if let Err(e) = validate_rmrr_region(start, end) {
+            log::error!(
+                "[IOMMU][CRITICAL] RMRR validation failed for {:04x}:{:02x}:{:02x}.{}: \
+                 region {:#x}-{:#x}, error: {:?}",
+                device.segment, device.bus, device.device, device.function,
+                start, start + size, e
+            );
+            return Err(IommuError::RmrrMapFailed);
+        }
 
         match domain.map(start, start, size, true, true) {
             Ok(()) => {

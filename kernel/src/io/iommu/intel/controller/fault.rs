@@ -17,7 +17,7 @@
 use super::dma::DomainManager;
 use super::IommuController;
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
-use crate::io::iommu::intel::registers::{fsts_bits, regs};
+use crate::io::iommu::intel::registers::{ecap_bits, fsts_bits, regs};
 use crate::io::iommu::intel::tables::{ContextEntry, ScalableContextEntry};
 use crate::io::iommu::fault_log::{FaultLog, FaultRecord};
 use crate::io::iommu::types::{DeviceId, IommuError};
@@ -761,10 +761,26 @@ impl FaultHandler for IommuController {
             // Since we may not have device-selective context cache invalidation via register,
             // use global invalidation as safe fallback.
             unsafe {
-                // Global context cache and IOTLB invalidation
-                // This is safe but may have performance impact on other devices
-                self.qi_invalidate_context_global()
-                    .unwrap_or_else(|e| log::warn!("[IOMMU] Context invalidation failed: {:?}", e));
+                let use_device_scope = self.is_queued_invalidation_enabled()
+                    && (self.ecap & ecap_bits::ECAP_DT != 0)
+                    && isolated_domain_id.is_some();
+
+                if use_device_scope {
+                    let did = isolated_domain_id.unwrap();
+                    self.qi_invalidate_context_device(sid, did).unwrap_or_else(|e| {
+                        log::warn!(
+                            "[IOMMU] Device context invalidation failed: {:?}; falling back to global",
+                            e
+                        );
+                        let _ = self.qi_invalidate_context_global();
+                    });
+                } else {
+                    // Global context cache invalidation
+                    // This is safe but may have performance impact on other devices
+                    self.qi_invalidate_context_global().unwrap_or_else(|e| {
+                        log::warn!("[IOMMU] Context invalidation failed: {:?}", e)
+                    });
+                }
 
                 // IOTLB invalidation: prefer domain-specific if we have domain_id
                 if let Some(did) = isolated_domain_id {

@@ -126,18 +126,25 @@ pub fn panic_alloc_dma(bytes: usize) -> Option<PanicDmaRegion> {
     }
 
     let size = align_up(bytes as u64, PANIC_DMA_ALIGN);
+    if size > pool.size {
+        return None;
+    }
     let offset = loop {
         let cursor = pool.cursor.load(Ordering::Acquire);
-        let next = cursor + size;
-        if next > pool.size {
-            return None;
-        }
+        let offset = cursor % pool.size;
+        let next = if offset + size > pool.size {
+            cursor
+                .wrapping_add(pool.size - offset)
+                .wrapping_add(size)
+        } else {
+            cursor.wrapping_add(size)
+        };
         if pool
             .cursor
             .compare_exchange(cursor, next, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
-            break cursor;
+            break if offset + size > pool.size { 0 } else { offset };
         }
     };
 

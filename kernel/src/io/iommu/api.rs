@@ -139,6 +139,7 @@ pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
              system is VULNERABLE to DMA attacks! \
              This should NEVER be enabled in production!"
         );
+        log::error!("[IOMMU][SECURITY][TAINTED] TAINTED: IOMMU BYPASS ENABLED");
         // Additional compile-time warning
         #[cfg(all(not(debug_assertions), feature = "unsafe_iommu_bypass"))]
         log::error!(

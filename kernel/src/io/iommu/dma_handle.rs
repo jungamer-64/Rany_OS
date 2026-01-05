@@ -346,25 +346,25 @@ impl<T: ?Sized> Drop for DmaHandle<T> {
             // Instead of synchronous unmap (which can block the executor or ISR),
             // we enqueue the handle metadata for async cleanup by the GC task.
             // This ensures Drop completes in O(1) without locks or I/O.
+            use crate::ipc::rref::RRefRawParts;
+
             let mapping_kind = super::zombie_queue::encode_mapping_kind(&self.mapping);
+            let raw = RRefRawParts::from_rref(rref);
             let enqueued = super::zombie_queue::enqueue_zombie(
                 self.iova,
                 self.size as u64,
                 self.domain_id,
                 mapping_kind,
+                Some(raw),
             );
 
             if enqueued {
                 // Successfully enqueued - RRef will be held until GC completes unmap.
-                // For now, we must leak the RRef to prevent use-after-free.
-                // Future: Add RRef tracking to zombie queue for proper cleanup.
                 log::debug!(
                     "[DmaHandle] Enqueued zombie for async cleanup (IOVA=0x{:x}, size={})",
                     self.iova,
                     self.size
                 );
-                // Leak RRef to prevent DMA-after-free until IOVA is unmapped
-                core::mem::forget(rref);
             } else {
                 // Queue full - must leak to preserve safety
                 #[cfg(debug_assertions)]
@@ -377,7 +377,6 @@ impl<T: ?Sized> Drop for DmaHandle<T> {
                 );
                 #[cfg(not(debug_assertions))]
                 log::error!("DMA handle leaked: zombie queue full");
-                core::mem::forget(rref);
             }
         }
     }

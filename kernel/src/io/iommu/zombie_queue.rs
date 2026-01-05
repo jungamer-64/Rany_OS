@@ -27,7 +27,10 @@
 //! Zombie handles prevent memory reuse until unmapped. The GC task runs
 //! periodically and on memory pressure to reclaim IOVAs.
 
+use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+use crate::ipc::rref::{DomainId, RRefRawParts};
 
 /// Maximum number of zombie entries.
 /// Must be power of 2 for efficient modulo.
@@ -48,7 +51,7 @@ enum ZombieState {
     Processing = 2,
 }
 
-/// Compact zombie entry (40 bytes total)
+/// Compact zombie entry (64 bytes total)
 ///
 /// Stores minimal information needed to perform async unmap.
 #[repr(C, align(64))]
@@ -61,6 +64,14 @@ struct ZombieEntry {
     domain_id: AtomicU32,
     /// Mapping kind (encoded)
     mapping_kind: AtomicU32,
+    /// Raw RRef pointer (0 if none)
+    raw_ptr: AtomicU64,
+    /// Raw RRef owner DomainId
+    raw_owner: AtomicU64,
+    /// Raw RRef metadata
+    raw_meta: AtomicU64,
+    /// Raw RRef drop fn pointer
+    raw_drop_fn: AtomicU64,
     /// Entry state + generation for ABA prevention
     /// Lower 8 bits: ZombieState
     /// Upper 24 bits: generation counter
@@ -76,6 +87,10 @@ impl ZombieEntry {
             size: AtomicU64::new(0),
             domain_id: AtomicU32::new(0),
             mapping_kind: AtomicU32::new(0),
+            raw_ptr: AtomicU64::new(0),
+            raw_owner: AtomicU64::new(0),
+            raw_meta: AtomicU64::new(0),
+            raw_drop_fn: AtomicU64::new(0),
             state_gen: AtomicU32::new(0),
             _pad: AtomicU32::new(0),
         }
@@ -138,24 +153,95 @@ impl ZombieEntry {
     }
 
     /// Write zombie data to claimed slot.
-    fn write(&self, iova: u64, size: u64, domain_id: u16, mapping_kind: u32) {
+    fn write(
+        &self,
+        iova: u64,
+        size: u64,
+        domain_id: u16,
+        mapping_kind: u32,
+        raw: Option<ZombieRawPartsComponents>,
+    ) {
         self.iova.store(iova, Ordering::Relaxed);
         self.size.store(size, Ordering::Relaxed);
         self.domain_id.store(domain_id as u32, Ordering::Relaxed);
+        if let Some(raw) = raw {
+            self.raw_ptr.store(raw.ptr, Ordering::Relaxed);
+            self.raw_owner.store(raw.owner, Ordering::Relaxed);
+            self.raw_meta.store(raw.meta, Ordering::Relaxed);
+            self.raw_drop_fn.store(raw.drop_fn, Ordering::Relaxed);
+        } else {
+            self.raw_ptr.store(0, Ordering::Relaxed);
+            self.raw_owner.store(0, Ordering::Relaxed);
+            self.raw_meta.store(0, Ordering::Relaxed);
+            self.raw_drop_fn.store(0, Ordering::Relaxed);
+        }
         self.mapping_kind.store(mapping_kind, Ordering::Release);
     }
 
     /// Read zombie data from slot.
-    fn read(&self) -> ZombieData {
+    fn read(&self) -> ZombieEntryData {
         // mapping_kind is the "release" store, read it last
         let mapping_kind = self.mapping_kind.load(Ordering::Acquire);
+        let raw_ptr = self.raw_ptr.load(Ordering::Relaxed);
+        let raw_drop_fn = self.raw_drop_fn.load(Ordering::Relaxed);
+        let raw = if raw_ptr != 0 && raw_drop_fn != 0 {
+            let ptr = NonNull::new(raw_ptr as *mut u8);
+            let owner = DomainId::new(self.raw_owner.load(Ordering::Relaxed));
+            let meta = self.raw_meta.load(Ordering::Relaxed) as usize;
+            let drop_fn = unsafe {
+                core::mem::transmute::<usize, unsafe fn(NonNull<u8>, DomainId, usize)>(
+                    raw_drop_fn as usize,
+                )
+            };
+            ptr.map(|ptr| ZombieRawParts {
+                ptr,
+                owner,
+                meta,
+                drop_fn,
+            })
+        } else {
+            None
+        };
         ZombieData {
             iova: self.iova.load(Ordering::Relaxed),
             size: self.size.load(Ordering::Relaxed),
             domain_id: self.domain_id.load(Ordering::Relaxed) as u16,
             mapping_kind,
         }
+        .into_entry(raw)
     }
+}
+
+#[derive(Clone, Copy)]
+struct ZombieRawPartsComponents {
+    ptr: u64,
+    owner: u64,
+    meta: u64,
+    drop_fn: u64,
+}
+
+impl ZombieRawPartsComponents {
+    fn from_raw_parts(raw: RRefRawParts) -> Self {
+        let (ptr, owner, meta, drop_fn) = raw.into_components();
+        Self {
+            ptr: ptr.as_ptr() as u64,
+            owner: owner.as_u64(),
+            meta: meta as u64,
+            drop_fn: drop_fn as usize as u64,
+        }
+    }
+}
+
+struct ZombieRawParts {
+    ptr: NonNull<u8>,
+    owner: DomainId,
+    meta: usize,
+    drop_fn: unsafe fn(NonNull<u8>, DomainId, usize),
+}
+
+struct ZombieEntryData {
+    data: ZombieData,
+    raw: Option<ZombieRawParts>,
 }
 
 /// Data extracted from a zombie entry
@@ -167,6 +253,12 @@ pub struct ZombieData {
     pub domain_id: u16,
     /// Encoded mapping kind (0=Identity, 1=Global, 2=Device, 3=Domain)
     pub mapping_kind: u32,
+}
+
+impl ZombieData {
+    fn into_entry(self, raw: Option<ZombieRawParts>) -> ZombieEntryData {
+        ZombieEntryData { data: self, raw }
+    }
 }
 
 /// Global zombie queue (statically allocated)
@@ -209,7 +301,9 @@ impl ZombieQueue {
         size: u64,
         domain_id: u16,
         mapping_kind: u32,
+        raw: Option<RRefRawParts>,
     ) -> bool {
+        let raw = raw.map(ZombieRawPartsComponents::from_raw_parts);
         // Try a few positions starting from hint
         let hint = self.producer_hint.load(Ordering::Relaxed) as usize;
 
@@ -221,7 +315,7 @@ impl ZombieQueue {
                 let current_gen = entry.generation();
                 if let Some(_new_gen) = entry.try_claim(current_gen) {
                     // Successfully claimed slot
-                    entry.write(iova, size, domain_id, mapping_kind);
+                    entry.write(iova, size, domain_id, mapping_kind, raw);
                     self.producer_hint
                         .store((idx + 1) as u64, Ordering::Relaxed);
                     self.total_enqueued.fetch_add(1, Ordering::Relaxed);
@@ -236,7 +330,7 @@ impl ZombieQueue {
             if entry.state() == ZombieState::Empty {
                 let current_gen = entry.generation();
                 if let Some(_new_gen) = entry.try_claim(current_gen) {
-                    entry.write(iova, size, domain_id, mapping_kind);
+                    entry.write(iova, size, domain_id, mapping_kind, raw);
                     self.producer_hint
                         .store((idx + 1) as u64, Ordering::Relaxed);
                     self.total_enqueued.fetch_add(1, Ordering::Relaxed);
@@ -273,10 +367,13 @@ impl ZombieQueue {
 
             if entry.state() == ZombieState::Pending {
                 if entry.try_start_processing() {
-                    let data = entry.read();
+                    let entry_data = entry.read();
 
                     // Call callback - if it returns true, processing succeeded
-                    if callback(data) {
+                    if callback(entry_data.data) {
+                        if let Some(raw) = entry_data.raw {
+                            unsafe { (raw.drop_fn)(raw.ptr, raw.owner, raw.meta) };
+                        }
                         self.total_processed.fetch_add(1, Ordering::Relaxed);
                     }
 
@@ -347,8 +444,14 @@ static ZOMBIE_QUEUE: ZombieQueue = ZombieQueue::new();
 /// # Returns
 /// `true` if successfully enqueued, `false` if queue full (leaked).
 #[inline]
-pub fn enqueue_zombie(iova: u64, size: u64, domain_id: u16, mapping_kind: u32) -> bool {
-    ZOMBIE_QUEUE.try_enqueue(iova, size, domain_id, mapping_kind)
+pub fn enqueue_zombie(
+    iova: u64,
+    size: u64,
+    domain_id: u16,
+    mapping_kind: u32,
+    raw: Option<RRefRawParts>,
+) -> bool {
+    ZOMBIE_QUEUE.try_enqueue(iova, size, domain_id, mapping_kind, raw)
 }
 
 /// Process pending zombie handles.
@@ -436,8 +539,12 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
 
         let result = match &kind {
             MappingKind::Identity => {
-                // Identity mappings don't need IOMMU cleanup
-                Ok(())
+                log::warn!(
+                    "[ZombieGC] Identity mapping leaked: IOVA=0x{:x}, size={}",
+                    zombie.iova,
+                    zombie.size
+                );
+                return false;
             }
             MappingKind::Global => {
                 // Global DMA mapping
@@ -460,7 +567,7 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
                     zombie.size,
                     zombie.domain_id
                 );
-                Ok(())
+                return false;
             }
         };
 
@@ -496,7 +603,7 @@ mod tests {
         let queue = ZombieQueue::new();
 
         // Enqueue a zombie (domain_id is u16)
-        assert!(queue.try_enqueue(0x1000, 4096, 1u16, 0));
+        assert!(queue.try_enqueue(0x1000, 4096, 1u16, 0, None));
 
         // Check stats
         let stats = queue.stats();

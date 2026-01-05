@@ -8,7 +8,7 @@
 
 use core::alloc::Layout;
 use core::ops::{Deref, DerefMut};
-use core::ptr::NonNull;
+use core::ptr::{self, NonNull};
 
 // DomainIdはdomain_system.rsから使用
 pub use crate::domain_system::DomainId;
@@ -104,13 +104,6 @@ impl<T> RRef<T> {
         Some(RRef { ptr, owner })
     }
 
-    /// 既存のExchange HeapポインタからRRefを作成
-    /// # Safety
-    /// ptrはExchange Heap上の有効なメモリであり、Heap Registryに登録済みであること
-    pub unsafe fn from_raw(ptr: NonNull<T>, owner: DomainId) -> Self {
-        RRef { ptr, owner }
-    }
-
     /// 所有権の移動 (Move)
     /// 設計書 5.3: データコピーなしで所有権のみ移動
     pub fn move_to(mut self, new_owner: DomainId) -> Self {
@@ -191,6 +184,16 @@ impl<T> RRef<T> {
         }
 
         value
+    }
+
+}
+
+impl<T: ?Sized> RRef<T> {
+    /// 既存のExchange HeapポインタからRRefを作成
+    /// # Safety
+    /// ptrはExchange Heap上の有効なメモリであり、Heap Registryに登録済みであること
+    pub unsafe fn from_raw(ptr: NonNull<T>, owner: DomainId) -> Self {
+        RRef { ptr, owner }
     }
 
     /// RRefを消費して生ポインタと所有権を放棄する
@@ -322,7 +325,7 @@ unsafe impl<T: ?Sized + Sync> Sync for RRef<T> {}
 /// RRefRawParts の再構築エラー (IOMMU非依存)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RawPartsError {
-    /// TypeId mismatch during reconstruction
+    /// Type mismatch during reconstruction
     TypeMismatch,
     /// Size mismatch during reconstruction
     SizeMismatch,
@@ -342,14 +345,16 @@ pub struct RRefRawParts {
     ptr: NonNull<u8>,
     /// Owner domain
     owner: DomainId,
+    /// Pointer metadata (slice length or vtable pointer), encoded as usize
+    meta: usize,
     /// Size of original type (debug verification)
     #[cfg(debug_assertions)]
     size: usize,
-    /// TypeId of original type (debug verification)
+    /// Debug type hash (best-effort verification)
     #[cfg(debug_assertions)]
-    type_id: core::any::TypeId,
+    type_hash: TypeHash,
     /// Type-erased drop function (★ key for abandoned entry cleanup)
-    drop_fn: unsafe fn(NonNull<u8>, DomainId),
+    drop_fn: unsafe fn(NonNull<u8>, DomainId, usize),
 }
 
 // RRefRawParts is Send/Sync because it follows same rules as RRef
@@ -362,22 +367,45 @@ impl RRefRawParts {
     /// # Signature matching RRef API:
     /// - `RRef::into_raw(self) -> (NonNull<T>, DomainId)`
     /// - `RRef::from_raw(ptr: NonNull<T>, owner: DomainId) -> Self`
-    pub fn from_rref<T: 'static>(rref: RRef<T>) -> Self {
+    pub fn from_rref<T: ?Sized>(rref: RRef<T>) -> Self {
+        #[cfg(debug_assertions)]
+        let size = core::mem::size_of_val(&*rref);
+        #[cfg(debug_assertions)]
+        let type_hash = compute_simple_type_hash(
+            core::any::type_name::<T>(),
+            size,
+            core::mem::align_of_val(&*rref),
+        );
+
         let (ptr, owner) = rref.into_raw();
+        let meta = if core::mem::size_of::<T::Metadata>() == 0 {
+            0
+        } else {
+            // SAFETY: Metadata fits in usize for slices and trait objects.
+            unsafe { core::mem::transmute_copy(&ptr::metadata(ptr.as_ptr())) }
+        };
 
         // Embed type-specific drop function
-        unsafe fn drop_impl<T: 'static>(ptr: NonNull<u8>, owner: DomainId) {
-            let rref: RRef<T> = RRef::from_raw(ptr.cast(), owner);
+        unsafe fn drop_impl<T: ?Sized + 'static>(ptr: NonNull<u8>, owner: DomainId, meta: usize) {
+            let data_ptr = ptr.as_ptr() as *mut ();
+            let meta = if core::mem::size_of::<T::Metadata>() == 0 {
+                core::mem::zeroed()
+            } else {
+                core::mem::transmute_copy::<usize, T::Metadata>(&meta)
+            };
+            let typed_ptr = ptr::from_raw_parts_mut::<T>(data_ptr, meta);
+            let rref: RRef<T> = RRef::from_raw(NonNull::new_unchecked(typed_ptr), owner);
             drop(rref); // Proper Drop path via Exchange Heap
         }
 
         Self {
             ptr: ptr.cast(),
             owner,
+            meta,
             #[cfg(debug_assertions)]
-            size: core::mem::size_of::<T>(),
+            size,
             #[cfg(debug_assertions)]
-            type_id: core::any::TypeId::of::<T>(),
+            type_hash,
             drop_fn: drop_impl::<T>,
         }
     }
@@ -390,17 +418,30 @@ impl RRefRawParts {
     ///
     /// # Errors
     /// Returns `RawPartsError` if type/size mismatch detected (debug only)
-    pub unsafe fn into_rref<T: 'static>(self) -> Result<RRef<T>, RawPartsError> {
+    pub unsafe fn into_rref<T: ?Sized>(self) -> Result<RRef<T>, RawPartsError> {
+        let meta = if core::mem::size_of::<T::Metadata>() == 0 {
+            core::mem::zeroed()
+        } else {
+            core::mem::transmute_copy::<usize, T::Metadata>(&self.meta)
+        };
+        let typed_ptr = ptr::from_raw_parts_mut::<T>(self.ptr.as_ptr() as *mut (), meta);
+
         #[cfg(debug_assertions)]
         {
-            if self.type_id != core::any::TypeId::of::<T>() {
+            let actual_size = core::mem::size_of_val(&*typed_ptr);
+            let actual_hash = compute_simple_type_hash(
+                core::any::type_name::<T>(),
+                actual_size,
+                core::mem::align_of_val(&*typed_ptr),
+            );
+            if self.type_hash != actual_hash {
                 return Err(RawPartsError::TypeMismatch);
             }
-            if self.size != core::mem::size_of::<T>() {
+            if self.size != actual_size {
                 return Err(RawPartsError::SizeMismatch);
             }
         }
-        Ok(RRef::from_raw(self.ptr.cast(), self.owner))
+        Ok(RRef::from_raw(NonNull::new_unchecked(typed_ptr), self.owner))
     }
 
     /// Type-erased Drop - Queue can drop without knowing T
@@ -409,7 +450,13 @@ impl RRefRawParts {
     /// - Must be called exactly once
     /// - After calling, self is consumed
     pub unsafe fn drop_erased(self) {
-        (self.drop_fn)(self.ptr, self.owner);
+        (self.drop_fn)(self.ptr, self.owner, self.meta);
+    }
+
+    pub(crate) fn into_components(
+        self,
+    ) -> (NonNull<u8>, DomainId, usize, unsafe fn(NonNull<u8>, DomainId, usize)) {
+        (self.ptr, self.owner, self.meta, self.drop_fn)
     }
 
     /// Get the owner DomainId (for debugging/logging)

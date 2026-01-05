@@ -15,6 +15,7 @@ SECTIONS
 {
     /* Higher half kernel at -2GiB */
     . = 0xffffffff80000000;
+    __kernel_start = .;
 
     /* Code section */
     .text : {
@@ -48,6 +49,8 @@ SECTIONS
         *(COMMON)
         __bss_end = .;
     } :data
+
+    __kernel_end = .;
 
     /* Discard unnecessary sections */
     /DISCARD/ : {
