@@ -665,7 +665,9 @@ impl BuddyFrameAllocator {
 
     /// Try to allocate a 4KiB frame on a preferred NUMA node; fallback to others and global
     pub fn allocate_4k_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size4KiB>> {
-        if let Some(map) = self.numa_regions.as_ref() {
+        // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
+        let map_clone = self.numa_regions.clone();
+        if let Some(map) = map_clone.as_ref() {
             if let Some(ranges) = map.get(&node) {
                 for &(start, end) in ranges.iter() {
                     if let Some(frame) =
@@ -699,7 +701,9 @@ impl BuddyFrameAllocator {
     /// 2MiB allocation on a preferred NUMA node
     pub fn allocate_2m_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size2MiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
-        if let Some(map) = self.numa_regions.as_ref() {
+        // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
+        let map_clone = self.numa_regions.clone();
+        if let Some(map) = map_clone.as_ref() {
             if let Some(ranges) = map.get(&node) {
                 for &(start, end) in ranges.iter() {
                     if let Some(frame) =
@@ -731,7 +735,9 @@ impl BuddyFrameAllocator {
     /// 1GiB allocation on a preferred NUMA node
     pub fn allocate_1g_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size1GiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
-        if let Some(map) = self.numa_regions.as_ref() {
+        // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
+        let map_clone = self.numa_regions.clone();
+        if let Some(map) = map_clone.as_ref() {
             if let Some(ranges) = map.get(&node) {
                 for &(start, end) in ranges.iter() {
                     if let Some(frame) =

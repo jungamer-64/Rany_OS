@@ -866,7 +866,7 @@ impl DmaMemoryAttributes {
 /// Note: `T` should be a DMA-safe value stored inline in the RRef allocation
 /// (e.g., a fixed-size buffer or packet struct), not a pointer to other data.
 #[derive(Debug)]
-pub struct RRefDmaBuffer<T: ?Sized> {
+pub struct RRefDmaBuffer<T: ?Sized + 'static> {
     handle: crate::io::iommu::api::DmaHandle<T>,
 }
 
@@ -879,7 +879,7 @@ pub struct RRefDmaBytes {
 
 /// Errors for kernel-owned slice allocation + DMA mapping.
 #[derive(Debug)]
-pub enum RRefSliceMapError<T> {
+pub enum RRefSliceMapError<T: 'static> {
     /// Exchange Heap allocation failed.
     AllocFailed,
     /// IOMMU mapping failed (returns the RRef on error).
@@ -888,14 +888,14 @@ pub enum RRefSliceMapError<T> {
 
 /// Errors for kernel-owned single value allocation + DMA mapping.
 #[derive(Debug)]
-pub enum RRefMapError<T> {
+pub enum RRefMapError<T: 'static> {
     /// Exchange Heap allocation failed.
     AllocFailed,
     /// IOMMU mapping failed (returns the RRef on error).
     MapError(crate::io::iommu::api::MapError<T>),
 }
 
-impl<T> RRefDmaBuffer<T> {
+impl<T: 'static> RRefDmaBuffer<T> {
     /// Map an `RRef<T>` using the device context's IOMMU settings.
     pub fn map(
         ctx: &DeviceDmaContext,
@@ -986,7 +986,7 @@ impl<T> RRefDmaBuffer<T> {
     }
 }
 
-impl<T> RRefDmaBuffer<[T]> {
+impl<T: 'static> RRefDmaBuffer<[T]> {
     /// IOVA assigned for this mapping.
     pub fn iova(&self) -> u64 {
         self.handle.iova()

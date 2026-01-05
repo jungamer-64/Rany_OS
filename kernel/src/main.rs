@@ -2,6 +2,7 @@
 #![cfg_attr(not(any(test, feature = "std", feature = "bench")), no_main)]
 #![feature(abi_x86_interrupt)]
 #![feature(thread_local)]
+#![feature(ptr_metadata)]
 
 #![allow(unsafe_op_in_unsafe_fn)] // Transitional: allows unsafe calls in unsafe fn without block
 
