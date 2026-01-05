@@ -351,7 +351,7 @@ pub fn setup_task_stack_guard(stack_start: usize, stack_size: usize) {
 ///
 /// Double FaultやPage Fault用のISTスタックにもガードページを設定する。
 pub fn setup_ist_stack_guards() {
-    use crate::interrupts::gdt;
+    
 
     // ISTスタックの情報を取得してガードページを設定
     // 現在のGDT実装では静的に確保されているため、

@@ -20,7 +20,7 @@ pub mod qi_init;
 pub mod qi_ops;
 pub mod utils;
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeSet;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;

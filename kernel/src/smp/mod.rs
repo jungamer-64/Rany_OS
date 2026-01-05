@@ -55,5 +55,10 @@ pub fn init_smp() -> Result<(), &'static str> {
 
     log::info!("[SMP] Started {}/{} APs\n", started, num_aps);
 
+    // Reconfigure PMM arenas for the CPUs that actually came online.
+    unsafe {
+        crate::mm::pmm_reconfigure_for_online_cpus();
+    }
+
     Ok(())
 }

@@ -2,6 +2,7 @@
 // Memory Management Module
 // 設計書 5: メモリ管理戦略 - 階層型アロケータ設計
 // ============================================================================
+pub mod types; // 共通型定義（FrameIndex, NumaNodeId, AddressUnit）
 pub mod buddy_allocator;
 pub mod domain_ownership; // 新: ドメインオーナーシップ追跡 (設計書 5.4, 8.1)
 pub mod exchange_heap;
@@ -13,6 +14,9 @@ pub mod mmap;
 pub mod numa;
 pub mod per_cpu;
 pub mod slab_cache;
+
+// 共通型を再エクスポート
+pub use types::{NumaNodeId, PAGE_SIZE_4K};
 
 #[allow(unused_imports)]
 pub use buddy_allocator::{
@@ -40,8 +44,11 @@ pub use exchange_heap::{
 };
 #[allow(unused_imports)]
 pub use frame_allocator::{
-    PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K, alloc_frame, alloc_frame_1g, alloc_frame_2m,
-    alloc_frame_local, dealloc_frame, frame_allocator_stats, init_frame_allocator, init_numa_frame_allocator,
+    alloc_frame, alloc_frame_1g, alloc_frame_2m,
+    alloc_frame_local, alloc_frame_on_numa_node, dealloc_frame, dealloc_frame_1g, dealloc_frame_2m, frame_allocator_stats,
+    init_frame_allocator, init_numa_frame_allocator, init_numa_frame_allocator_from_info,
+    is_range_managed_by_pmm, pmm_managed_end, pmm_maintenance_tick, pmm_reconfigure_for_cpu_ids,
+    pmm_reconfigure_for_online_cpus, pmm_release_range,
     // Contiguous frame helpers
     alloc_contiguous_frames, dealloc_contiguous_frames,
 };
@@ -86,7 +93,8 @@ pub use mmap::{
 pub use per_cpu::{
     MAX_CPUS, PerCpuData, active_cpu_count, current_cpu_id, current_per_cpu, current_per_cpu_mut,
     enable_fsgsbase, enter_interrupt, exit_interrupt, get_per_cpu, in_interrupt_context,
-    init_per_cpu, is_fsgsbase_enabled, setup_current_cpu, try_current_cpu_id,
+    init_per_cpu, is_fsgsbase_enabled, mark_cpu_online, online_cpu_ids, setup_current_cpu,
+    try_current_cpu_id,
 };
 #[allow(unused_imports)]
 pub use slab_cache::{
@@ -95,6 +103,7 @@ pub use slab_cache::{
     SlabCache,
     SlabStats,
     init_per_core_caches,
+    init_per_core_cache_for_cpu,
     per_core_alloc,
     // GsBaseを使った自動CPU ID取得API
     per_core_alloc_auto,
@@ -104,11 +113,10 @@ pub use slab_cache::{
 
 // ============================================================================
 // 統一フレームアロケータインターフェース
-// P3完了: ビットマップ/バディアロケータの統合
 //
 // 設計方針:
-// - BuddyAllocator を優先使用（O(log n)、連続領域確保が効率的）
-// - BitmapAllocator はフォールバック/レガシー用途
+// - PMM fast allocator（bitmap + per-CPU magazine）を主経路
+// - 旧Buddy/Bitmapは後方互換/非常用
 // - 新規コードは UnifiedFrameAllocator を使用すること
 // ============================================================================
 
@@ -132,66 +140,36 @@ pub struct UnifiedFrameAllocator;
 impl UnifiedFrameAllocator {
     /// 4KBフレームを割り当て
     ///
-    /// デフォルトでBuddyを優先し、失敗時にBitmapにフォールバック
+    /// デフォルトでPMM fastを使用（後方互換フォールバックあり）
     pub fn alloc_4k() -> Option<PhysFrame<Size4KiB>> {
-        // まずBuddyを試す（高効率）
-        if let Some(frame) = buddy_alloc_frame() {
-            return Some(frame);
-        }
-        // フォールバック
         alloc_frame()
     }
 
     /// 2MBフレームを割り当て
     pub fn alloc_2m() -> Option<PhysFrame<Size2MiB>> {
-        if let Some(frame) = buddy_alloc_frame_2m() {
-            return Some(frame);
-        }
         alloc_frame_2m()
     }
 
     /// 1GBフレームを割り当て
     pub fn alloc_1g() -> Option<PhysFrame<Size1GiB>> {
-        if let Some(frame) = buddy_alloc_frame_1g() {
-            return Some(frame);
-        }
         alloc_frame_1g()
     }
 
     /// 4KBフレームを解放
     ///
-    /// アドレスを両方のアロケータで試みる
+    /// PMM fast へ返却
     pub fn dealloc_4k(frame: PhysFrame<Size4KiB>) {
-        // Buddyで管理されているかチェック
-        if buddy_allocator::is_managed_by_buddy(frame.start_address()) {
-            buddy_dealloc_frame(frame);
-        } else {
-            dealloc_frame(frame);
-        }
+        dealloc_frame(frame);
     }
 
     /// 2MBフレームを解放
     pub fn dealloc_2m(frame: PhysFrame<Size2MiB>) {
-        if buddy_allocator::is_managed_by_buddy(frame.start_address()) {
-            buddy_dealloc_frame_2m(frame);
-        } else {
-            // Bitmapでは2MB解放は512x4KBとして処理
-            for i in 0..512 {
-                let offset = i * 4096;
-                let addr = x86_64::PhysAddr::new(frame.start_address().as_u64() + offset);
-                if let Some(small_frame) = PhysFrame::<Size4KiB>::from_start_address(addr).ok() {
-                    dealloc_frame(small_frame);
-                }
-            }
-        }
+        dealloc_frame_2m(frame);
     }
 
     /// 1GBフレームを解放
     pub fn dealloc_1g(frame: PhysFrame<Size1GiB>) {
-        if buddy_allocator::is_managed_by_buddy(frame.start_address()) {
-            buddy_dealloc_frame_1g(frame);
-        }
-        // Bitmapでは1GB解放は複雑すぎるため非サポート
+        dealloc_frame_1g(frame);
     }
 
     /// 統計を取得

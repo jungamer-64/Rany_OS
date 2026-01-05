@@ -77,8 +77,7 @@ fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
     }
 
     // Best-effort bounds check against known physical memory.
-    let stats = crate::mm::buddy_allocator_stats();
-    let max_phys = (stats.total_frames as u64).saturating_mul(crate::mm::PAGE_SIZE_4K as u64);
+    let max_phys = crate::mm::pmm_managed_end().unwrap_or(0);
     if max_phys != 0 && end > max_phys {
         log::error!(
             "[IOMMU][SECURITY] RMRR outside known RAM: {:#x}-{:#x} (max {:#x})",
@@ -90,7 +89,7 @@ fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
     }
 
     // Warn if the range is not within managed regions (may be firmware-reserved).
-    if !crate::mm::buddy_allocator::is_range_managed_by_buddy(PhysAddr::new(start), size) {
+    if !crate::mm::is_range_managed_by_pmm(PhysAddr::new(start), size) {
         log::warn!(
             "[IOMMU] RMRR outside managed RAM: {:#x}-{:#x} (allowing reserved region)",
             start,

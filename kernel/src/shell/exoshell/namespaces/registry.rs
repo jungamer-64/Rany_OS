@@ -13,7 +13,6 @@
 //! シェルもこれに対応し、ハードコードされた名前空間だけでなく、
 //! 実行時に追加された名前空間も利用できる必要がある。
 
-use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;

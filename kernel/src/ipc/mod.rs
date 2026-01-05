@@ -42,10 +42,6 @@ pub use proxy::{
 pub use rref::{
     DomainId,
     RRef,
-    TypeHash,
-    TypeHashError,
-    // TypeIdHash: 動的型安全性（設計書 8.1）
-    TypeIdHash,
     reclaim_domain_resources,
 };
 #[allow(unused_imports)]

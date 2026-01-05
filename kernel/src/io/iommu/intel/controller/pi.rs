@@ -10,7 +10,7 @@ use core::sync::atomic::Ordering;
 
 use super::IommuController;
 use super::init::CapabilityManager;
-use super::ir::{InterruptRemapEntry, InterruptRemapper};
+use super::ir::InterruptRemapEntry;
 use crate::io::iommu::common::{PostedInterruptDescriptor, PostedInterruptPool};
 use crate::io::iommu::types::IommuError;
 

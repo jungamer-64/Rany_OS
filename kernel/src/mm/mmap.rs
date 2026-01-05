@@ -593,7 +593,7 @@ impl MmapManager {
         protection: Protection,
         flags: MappingFlags,
     ) -> Result<MappedAddress, MmapError> {
-        use crate::mm::{PageFlags, buddy_alloc_frame};
+        use crate::mm::{PageFlags, alloc_frame};
         use x86_64::PhysAddr;
 
         if size.as_usize() == 0 {
@@ -632,7 +632,7 @@ impl MmapManager {
         // 各ページに物理フレームを割り当ててマップ
         let mut allocated_frames = Vec::new();
         for i in 0..page_count {
-            let frame = buddy_alloc_frame().ok_or(MmapError::OutOfMemory)?;
+            let frame = alloc_frame().ok_or(MmapError::OutOfMemory)?;
             let phys_addr = PhysAddr::new(frame.start_address().as_u64());
             let virt_addr = crate::mm::higher_half::VirtAddr::new(
                 (address.as_usize() + i * MappingSize::PAGE_SIZE) as u64,
@@ -650,7 +650,7 @@ impl MmapManager {
             if map_result.is_err() {
                 // 失敗した場合、これまでに割り当てたフレームを解放
                 for prev_frame in allocated_frames {
-                    crate::mm::buddy_dealloc_frame(prev_frame);
+                    crate::mm::dealloc_frame(prev_frame);
                 }
                 return Err(MmapError::NoResources);
             }
@@ -822,13 +822,13 @@ impl MmapManager {
                 // ページテーブルからアンマップ
                 let _ = unsafe { crate::mm::global_unmap_page(virt_addr) };
 
-                // 物理フレームをBuddy Allocatorに返却
+                // 物理フレームをPMMに返却
                 let frame = x86_64::structures::paging::PhysFrame::<
                     x86_64::structures::paging::Size4KiB,
                 >::containing_address(x86_64::PhysAddr::new(
                     phys_addr.as_u64(),
                 ));
-                crate::mm::buddy_dealloc_frame(frame);
+                crate::mm::dealloc_frame(frame);
             }
         }
 

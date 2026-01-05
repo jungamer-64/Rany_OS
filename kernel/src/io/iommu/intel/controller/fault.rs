@@ -621,7 +621,7 @@ impl FaultHandler for IommuController {
     /// Isolate a faulting device by moving it to a quarantine domain
     fn isolate_faulting_device(&self, fault: FaultRecord) -> Result<(), IommuError> {
         use crate::io::iommu::security::{
-            FaultSummary, IsolationDecision, IsolationReason, SecurityEvent,
+            FaultSummary, IsolationDecision, SecurityEvent,
         };
 
         let sid = fault.source_id();

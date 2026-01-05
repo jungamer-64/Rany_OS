@@ -24,18 +24,12 @@ mod types;
 pub mod utils;
 
 // Re-export types
-pub use types::{
-    CURSOR_BLINK_MS, ConsoleLine, FONT_HEIGHT, FONT_WIDTH, LineBuffer, MAX_HISTORY,
-    MAX_LINE_LENGTH, RenderInputState, SCROLLBACK_LINES, ShellTheme,
-};
 #[cfg(feature = "mouse")]
 pub use types::{MouseState, RenderMouseState};
 
 // Re-export shell
-pub use shell::GraphicalShell;
 
 // Re-export async runtime functions
-pub use async_runtime::{init, print, print_colored, run_async_shell, start, with_shell};
+pub use async_runtime::{init, run_async_shell, start};
 
 // Re-export stream types (for submit_command)
-pub use streams::{CommandRequest, CommandResult, submit_command};

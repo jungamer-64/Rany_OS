@@ -126,14 +126,14 @@ impl SlabCache {
 
     /// 新しいSlabページを追加
     ///
-    /// Buddy Allocator から直接物理フレームを取得し、
+    /// PMM から直接物理フレームを取得し、
     /// リニアマッピングで仮想アドレスに変換する。
     ///
     /// これにより GlobalAlloc (LinkedListAllocator) を経由せず、
     /// Slab の高速性を維持したままページを補充できる。
     fn grow(&mut self) -> Option<()> {
-        // Buddy Allocator から直接 4KiB フレームを取得
-        let frame = crate::mm::buddy_allocator::buddy_alloc_frame()?;
+        // PMM から直接 4KiB フレームを取得
+        let frame = crate::mm::alloc_frame()?;
 
         // 物理アドレス → 仮想アドレス (SAS リニアマッピング)
         let phys_addr = frame.start_address();
@@ -278,10 +278,20 @@ pub fn init_per_core_caches(num_cpus: usize) {
     let num_cpus = num_cpus.min(MAX_CPUS);
 
     for cpu_id in 0..num_cpus {
-        // 各コアのMutexに個別にアクセス（他コアをブロックしない）
-        // Initialization-time best-effort recovery for per-core caches: continue init even if a lock
-        // shows as poisoned.
-        let mut guard = PER_CORE_CACHES[cpu_id].lock_for_init("[MEM] Per-core slab init");
+        init_per_core_cache_for_cpu(cpu_id);
+    }
+}
+
+/// Initialize per-core cache for a single CPU (idempotent)
+pub fn init_per_core_cache_for_cpu(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS {
+        return;
+    }
+    // 各コアのMutexに個別にアクセス（他コアをブロックしない）
+    // Initialization-time best-effort recovery for per-core caches: continue init even if a lock
+    // shows as poisoned.
+    let mut guard = PER_CORE_CACHES[cpu_id].lock_for_init("[MEM] Per-core slab init");
+    if guard.is_none() {
         *guard = Some(PerCoreCache::new(cpu_id));
     }
 }

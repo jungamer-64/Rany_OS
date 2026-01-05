@@ -115,9 +115,9 @@ where
 }
 
 /// Play a beep using the codec's beep generator
-pub fn beep(frequency_hz: u32, duration_ms: u32) -> HdaResult<()> {
+pub fn beep(_frequency_hz: u32, _duration_ms: u32) -> HdaResult<()> {
     let driver = HDA_DRIVER.lock();
-    let driver = driver.as_ref().ok_or(HdaError::NoDevice)?;
+    let _driver = driver.as_ref().ok_or(HdaError::NoDevice)?;
 
     // Beep functionality temporarily disabled during driver migration
     // if driver.codecs().is_empty() {
@@ -128,9 +128,9 @@ pub fn beep(frequency_hz: u32, duration_ms: u32) -> HdaResult<()> {
 }
 
 /// Play a square wave tone
-pub fn play_tone(frequency_hz: u32, duration_ms: u32) -> HdaResult<()> {
+pub fn play_tone(_frequency_hz: u32, _duration_ms: u32) -> HdaResult<()> {
     let mut driver = HDA_DRIVER.lock();
-    let driver = driver.as_mut().ok_or(HdaError::NoDevice)?;
+    let _driver = driver.as_mut().ok_or(HdaError::NoDevice)?;
 
     // driver.play_square_wave(frequency_hz, duration_ms)
     Ok(())

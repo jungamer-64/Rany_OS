@@ -426,6 +426,12 @@ pub fn online_aps() -> u32 {
 pub extern "C" fn ap_entry(ap_index: u32) {
     log::info!("[SMP] AP {} entered kernel\n", ap_index);
 
+    // Initialize per-CPU data and per-core caches for this AP.
+    unsafe {
+        crate::mm::setup_current_cpu(ap_index as usize);
+    }
+    crate::mm::init_per_core_cache_for_cpu(ap_index as usize);
+
     // Mark as started
     if let Some(bootstrap) = AP_BOOTSTRAP.lock().as_ref() {
         if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {

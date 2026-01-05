@@ -27,7 +27,6 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 
-use crate::ipc::DomainId;
 use crate::ipc::rref::{RRef, RRefRawParts, RawPartsError};
 use crate::sync::IrqMutex;
 

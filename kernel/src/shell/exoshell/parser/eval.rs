@@ -9,7 +9,7 @@
 
 use alloc::borrow::Cow;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use super::ast::{BinaryOp, Expr, UnaryOp};

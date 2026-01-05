@@ -19,7 +19,6 @@ use crate::io::io_scheduler::{
 };
 
 use super::global::with_driver;
-use super::per_core::PerCoreNvmeQueue;
 
 // ============================================================================
 // Poll Handler

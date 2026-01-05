@@ -621,7 +621,7 @@ impl<T> DmaHandle<T> {
     /// When the `async_unmap_default` feature is enabled, this method internally
     /// uses lazy unmap via the quarantine system, deferring IOTLB invalidation
     /// for better throughput. Use `unmap_sync()` if you need immediate completion.
-    pub fn unmap(mut self) -> Result<RRef<T>, UnmapError<T>> {
+    pub fn unmap(self) -> Result<RRef<T>, UnmapError<T>> {
         if self.rref.is_none() {
             return Err(UnmapError::new(self, UnmapErrorKind::InvalidIova));
         }
@@ -1423,7 +1423,7 @@ impl<T> DmaHandle<T> {
     where
         T: 'static,
     {
-        let mut handle = self;
+        let handle = self;
         let stats = domain.quarantine_queue().stats();
         if stats.pending_invalidations > 0 {
             const QUARANTINE_FLUSH_THRESHOLD: usize =

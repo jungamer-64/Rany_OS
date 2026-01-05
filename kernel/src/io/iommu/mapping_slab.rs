@@ -34,8 +34,6 @@
 //! the `DomainShard`'s `PoisonLock`.
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use super::types::DmaMapping;
@@ -195,7 +193,7 @@ impl MappingSlab {
     /// Create a new slab with all slots in the free list.
     pub fn new() -> Self {
         // Initialize slots array
-        let mut slots: Box<[MappingSlot; SLAB_CAPACITY]> = {
+        let slots: Box<[MappingSlot; SLAB_CAPACITY]> = {
             // Use vec for initialization, then convert
             let mut v = alloc::vec::Vec::with_capacity(SLAB_CAPACITY);
             for i in 0..SLAB_CAPACITY {

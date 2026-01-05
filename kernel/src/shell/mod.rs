@@ -28,10 +28,8 @@ pub mod exoshell;
 pub mod graphical;
 
 // Re-export ExoShell types
-pub use exoshell::{CapOperation, Capability, ExoShell, ExoValue};
 
 // Re-export graphical shell
-pub use graphical::GraphicalShell;
 
 // ============================================================================
 // Removed: Legacy Shell implementation

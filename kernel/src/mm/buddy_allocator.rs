@@ -18,12 +18,8 @@ use alloc::collections::BTreeMap;
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
-/// 4KiB ページサイズ
-pub const PAGE_SIZE_4K: usize = 4096;
-/// 2MiB ページサイズ  
-pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024;
-/// 1GiB ページサイズ
-pub const PAGE_SIZE_1G: usize = 1024 * 1024 * 1024;
+// 共通型定義をインポート（IOVA_MM_MIGRATION_PLAN Phase 0.1）
+use super::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 
 /// 最大オーダー（2^MAX_ORDER * 4KiB = 最大ブロックサイズ）
 /// MAX_ORDER = 10 → 4MiB ブロック
@@ -58,47 +54,9 @@ const fn total_summary_words() -> usize {
     total
 }
 
-/// フレーム番号のNewtype
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FrameIndex(usize);
-
-impl FrameIndex {
-    #[inline]
-    pub const fn new(index: usize) -> Self {
-        Self(index)
-    }
-
-    #[inline]
-    pub const fn from_phys_addr(addr: u64) -> Self {
-        Self((addr as usize) / PAGE_SIZE_4K)
-    }
-
-    #[inline]
-    pub const fn to_phys_addr(self) -> u64 {
-        (self.0 * PAGE_SIZE_4K) as u64
-    }
-
-    #[inline]
-    pub const fn as_usize(self) -> usize {
-        self.0
-    }
-
-    /// Buddyのインデックスを計算
-    /// order = 0 なら 1ページの Buddy
-    /// order = 1 なら 2ページの Buddy
-    #[inline]
-    pub const fn buddy(self, order: usize) -> Self {
-        let block_size = 1 << order;
-        Self(self.0 ^ block_size)
-    }
-
-    /// 指定オーダーのブロック先頭にアライン
-    #[inline]
-    pub const fn align_down(self, order: usize) -> Self {
-        let block_size = 1 << order;
-        Self((self.0 / block_size) * block_size)
-    }
-}
+// FrameIndexはsuper::types::FrameIndexを使用
+// (IOVA_MM_MIGRATION_PLAN Phase 0.1 による統一)
+// buddy(), align_down() メソッドも types.rs に含まれている
 
 // (FreeList removed: order-local free bitsets are used instead.)
 
@@ -506,7 +464,7 @@ impl BuddyFrameAllocator {
             return;
         }
         self.set_free_block(order, block_idx);
-        self.free_frames += (1u64 << order);
+        self.free_frames += 1u64 << order;
 
         // Buddyとの合体を試みる
         self.coalesce(block_idx, order);

@@ -293,11 +293,20 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
 
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    memory::init(if boot_info.rsdp_addr > 0 {
-        Some(boot_info.rsdp_addr)
+    let numa_info = if boot_info.numa_info.node_count > 0 {
+        Some(&boot_info.numa_info)
     } else {
         None
-    });
+    };
+    memory::init(
+        if boot_info.rsdp_addr > 0 {
+            Some(boot_info.rsdp_addr)
+        } else {
+            None
+        },
+        numa_info,
+        Some(boot_info),
+    );
     info!(target: "init", "Memory management initialized");
 
     // 1.5. ACPI & IOMMU Initialization
@@ -426,6 +435,9 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                     // Initialize PCI subsystem
                     // pci_driver::init(); // DISABLED FOR HEAP DEBUG
                     // info!(target: "init", "PCI driver initialized");
+
+                    // ACPI tables have been parsed; reclaim ACPI-reclaimable memory.
+                    memory::reclaim_acpi_reclaimable(boot_info);
                 }
             }
             Err(e) => {

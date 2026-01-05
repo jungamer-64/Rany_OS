@@ -562,6 +562,51 @@ impl ArenaOwnership {
         self.words_per_arena = new_words_per_arena;
         self.num_arenas = new_num_arenas;
     }
+
+    /// Reconfigure arena ownership for a specific CPU ID list
+    ///
+    /// This assigns arena owners using the provided CPU IDs (global CPU IDs),
+    /// while keeping the same arena partitioning scheme as `reconfigure_for_cpus`.
+    pub fn reconfigure_for_cpu_list(&mut self, total_words: usize, cpu_ids: &[usize]) {
+        let num_cpus = cpu_ids.len().max(1);
+        let new_words_per_arena = if num_cpus > 0 {
+            (total_words + num_cpus - 1) / num_cpus
+        } else {
+            total_words
+        };
+        let new_num_arenas = if new_words_per_arena > 0 {
+            (total_words + new_words_per_arena - 1) / new_words_per_arena
+        } else {
+            1
+        };
+
+        let owner_for_arena = |arena_id: usize| -> u16 {
+            let idx = arena_id % num_cpus;
+            let cpu_id = cpu_ids.get(idx).copied().unwrap_or(0);
+            cpu_id as u16
+        };
+
+        if new_num_arenas != self.num_arenas {
+            let mut new_owners = alloc::vec::Vec::with_capacity(new_num_arenas);
+            let mut new_steal_counts = alloc::vec::Vec::with_capacity(new_num_arenas);
+
+            for arena_id in 0..new_num_arenas {
+                new_owners.push(AtomicU16::new(owner_for_arena(arena_id)));
+                new_steal_counts.push(AtomicU32::new(0));
+            }
+
+            self.owners = new_owners.into_boxed_slice();
+            self.steal_counts = new_steal_counts.into_boxed_slice();
+        } else {
+            for arena_id in 0..self.num_arenas {
+                self.owners[arena_id].store(owner_for_arena(arena_id), Ordering::Release);
+                self.steal_counts[arena_id].store(0, Ordering::Release);
+            }
+        }
+
+        self.words_per_arena = new_words_per_arena;
+        self.num_arenas = new_num_arenas;
+    }
     
     /// Get words per arena
     #[inline]
@@ -596,33 +641,50 @@ const MAX_WORDS_PER_ARENA: usize = 64;
 /// - **Non-owner frees**: Pushed to owner's RemoteFreeRing, drained by owner
 /// - **Ownership transfer**: Happens at epoch boundaries (frozen during transfer)
 ///
+/// # Windowing (Scalability Fix)
+///
+/// For large IOVA spaces (e.g., 256GB divided among 8 CPUs = 32GB per CPU),
+/// the arena is much larger than MAX_WORDS_PER_ARENA (16MB window).
+/// Instead of disabling Single-Writer mode, we use **windowing**:
+///
+/// - `window_base_word`: Global word index where the current window starts
+/// - `bits[]`: Caches a MAX_WORDS_PER_ARENA-sized window of the arena
+/// - When window exhausted, `reload_window()` loads the next segment
+///
+/// This allows Single-Writer optimization even for multi-GB arenas.
+///
 /// # Benefits
 ///
 /// - **No atomic RMW on hot path**: Direct bit manipulation
 /// - **No CAS retries**: Single writer means no contention
-/// - **Cache-local**: Owner's arena stays hot in L1/L2
+/// - **Cache-local**: Owner's window stays hot in L1/L2
 /// - **Reduced cache line bouncing**: Other CPUs don't touch this data
 ///
 /// # Memory Layout
 ///
-/// Each arena covers up to 64 words (4096 pages = 16MB).
+/// Each window covers up to 64 words (4096 pages = 16MB).
 /// The `summary` field provides O(1) lookup for non-empty words.
 #[repr(C, align(64))]
 pub struct PerArenaDetail {
     /// Non-atomic bitmap words (owner-only access)
-    /// bits[i] corresponds to global word index (word_start + i)
+    /// bits[i] corresponds to global word index (window_base_word + i)
     /// 1 = free, 0 = allocated
     bits: [u64; MAX_WORDS_PER_ARENA],
     /// Arena ID (index into arenas array)
     arena_id: usize,
-    /// Global word range [word_start, word_end)
+    /// Full arena word range [word_start, word_end)
     word_start: usize,
     word_end: usize,
-    /// Number of valid words in this arena (may be < MAX_WORDS_PER_ARENA)
+    /// Current window base (global word index where bits[0] starts)
+    /// This allows sliding window within larger arenas
+    window_base_word: usize,
+    /// Number of words currently loaded in the window (may be < MAX_WORDS_PER_ARENA)
     num_words: usize,
-    /// Local free page count (non-atomic, owner-maintained)
+    /// Local free page count within current window (non-atomic, owner-maintained)
     free_count: usize,
-    /// Local summary bits for fast scan within arena
+    /// Total free count in full arena (approximate, for statistics)
+    full_arena_free_estimate: usize,
+    /// Local summary bits for fast scan within window
     /// Bit i is set if bits[i] != 0 (has free pages)
     summary: u64,
     /// Owner CPU ID (cached for fast check)
@@ -630,8 +692,10 @@ pub struct PerArenaDetail {
     /// Frozen flag: set during ownership transfer
     /// When frozen, owner must not modify; transfer is in progress
     frozen: bool,
+    /// Window has been reloaded at least once (for statistics)
+    reloaded: bool,
     /// Padding for alignment
-    _pad: [u8; 5],
+    _pad: [u8; 4],
 }
 
 impl PerArenaDetail {
@@ -643,6 +707,18 @@ impl PerArenaDetail {
     /// * `word_end` - One past the last global word index
     /// * `owner_cpu` - Initial owner CPU ID
     /// * `initial_bits` - Initial bitmap values (from global detail)
+    /// Create a new per-arena detail window for an arena
+    ///
+    /// # Arguments
+    /// * `arena_id` - Index of this arena
+    /// * `word_start` - First global word index of full arena
+    /// * `word_end` - One past the last global word index of full arena
+    /// * `owner_cpu` - Initial owner CPU ID
+    /// * `initial_bits` - Initial bitmap values for first window (from global detail)
+    ///
+    /// # Windowing
+    /// If the arena is larger than MAX_WORDS_PER_ARENA, only the first window
+    /// is loaded. Call `reload_window()` to load subsequent windows.
     pub fn new(
         arena_id: usize,
         word_start: usize,
@@ -650,12 +726,13 @@ impl PerArenaDetail {
         owner_cpu: u16,
         initial_bits: &[u64],
     ) -> Self {
-        let num_words = (word_end - word_start).min(MAX_WORDS_PER_ARENA);
+        let full_arena_size = word_end.saturating_sub(word_start);
+        let num_words = full_arena_size.min(MAX_WORDS_PER_ARENA);
         let mut bits = [0u64; MAX_WORDS_PER_ARENA];
         let mut summary = 0u64;
         let mut free_count = 0usize;
         
-        // Copy initial bits and build summary
+        // Copy initial bits and build summary (first window)
         for i in 0..num_words {
             let b = if i < initial_bits.len() {
                 initial_bits[i]
@@ -674,25 +751,52 @@ impl PerArenaDetail {
             arena_id,
             word_start,
             word_end,
+            window_base_word: word_start, // First window starts at arena start
             num_words,
             free_count,
+            full_arena_free_estimate: free_count, // Initially same as window
             summary,
             owner_cpu,
             frozen: false,
-            _pad: [0; 5],
+            reloaded: false,
+            _pad: [0; 4],
         }
     }
     
-    /// Check if this arena has any free pages
+    /// Check if this window has any free pages
     #[inline]
     pub fn has_free_pages(&self) -> bool {
         self.summary != 0
     }
     
-    /// Get free page count
+    /// Get free page count in current window
     #[inline]
     pub fn free_count(&self) -> usize {
         self.free_count
+    }
+    
+    /// Check if the full arena is larger than one window
+    #[inline]
+    pub fn is_windowed(&self) -> bool {
+        (self.word_end - self.word_start) > MAX_WORDS_PER_ARENA
+    }
+    
+    /// Get the full arena size in words
+    #[inline]
+    pub fn full_arena_words(&self) -> usize {
+        self.word_end.saturating_sub(self.word_start)
+    }
+    
+    /// Check if there are more windows to load after current
+    #[inline]
+    pub fn has_next_window(&self) -> bool {
+        self.window_base_word + MAX_WORDS_PER_ARENA < self.word_end
+    }
+    
+    /// Check if there are windows before current
+    #[inline]
+    pub fn has_prev_window(&self) -> bool {
+        self.window_base_word > self.word_start
     }
     
     /// Check if arena is frozen (ownership transfer in progress)
@@ -714,13 +818,17 @@ impl PerArenaDetail {
         self.frozen = false;
     }
     
-    /// Allocate a single page from this arena (O(1), no atomics!)
+    /// Allocate a single page from this window (O(1), no atomics!)
     ///
     /// # Safety
     /// Must only be called by the owner CPU under IRQ-off guard.
     ///
     /// # Returns
-    /// Some(global_page_idx) if successful, None if arena is empty or frozen
+    /// Some(global_page_idx) if successful, None if window is empty or frozen
+    /// 
+    /// # Note
+    /// If window is exhausted but arena has more windows, caller should
+    /// call `needs_reload()` and reload via `sync_and_reload_window()`.
     #[inline]
     pub fn allocate_page(&mut self) -> Option<usize> {
         if self.frozen || self.summary == 0 {
@@ -728,15 +836,15 @@ impl PerArenaDetail {
         }
         
         // Find first word with free pages using tzcnt (O(1))
-        let word_in_arena = self.summary.trailing_zeros() as usize;
-        if word_in_arena >= self.num_words {
+        let word_in_window = self.summary.trailing_zeros() as usize;
+        if word_in_window >= self.num_words {
             return None;
         }
         
-        let bits = self.bits[word_in_arena];
+        let bits = self.bits[word_in_window];
         if bits == 0 {
             // Summary was stale, update it
-            self.summary &= !(1u64 << word_in_arena);
+            self.summary &= !(1u64 << word_in_window);
             // Retry with corrected summary
             return self.allocate_page();
         }
@@ -745,22 +853,28 @@ impl PerArenaDetail {
         let bit_idx = bits.trailing_zeros() as usize;
         
         // Clear the bit (allocate the page) - NO ATOMIC!
-        self.bits[word_in_arena] &= !(1u64 << bit_idx);
+        self.bits[word_in_window] &= !(1u64 << bit_idx);
         self.free_count -= 1;
         
         // Update summary if word is now empty
-        if self.bits[word_in_arena] == 0 {
-            self.summary &= !(1u64 << word_in_arena);
+        if self.bits[word_in_window] == 0 {
+            self.summary &= !(1u64 << word_in_window);
         }
         
-        // Calculate global page index
-        let global_word_idx = self.word_start + word_in_arena;
+        // Calculate global page index using window_base_word
+        let global_word_idx = self.window_base_word + word_in_window;
         let global_page_idx = global_word_idx * BITS_PER_WORD + bit_idx;
         
         Some(global_page_idx)
     }
     
-    /// Claim an entire word from this arena (for sub-magazine refill)
+    /// Check if window needs reload (exhausted but more windows exist)
+    #[inline]
+    pub fn needs_reload(&self) -> bool {
+        self.summary == 0 && self.is_windowed()
+    }
+    
+    /// Claim an entire word from this window (for sub-magazine refill)
     ///
     /// # Returns
     /// Some((global_word_idx, bits)) if successful, None if no non-empty words
@@ -771,33 +885,37 @@ impl PerArenaDetail {
         }
         
         // Find first word with free pages
-        let word_in_arena = self.summary.trailing_zeros() as usize;
-        if word_in_arena >= self.num_words {
+        let word_in_window = self.summary.trailing_zeros() as usize;
+        if word_in_window >= self.num_words {
             return None;
         }
         
-        let bits = self.bits[word_in_arena];
+        let bits = self.bits[word_in_window];
         if bits == 0 {
-            self.summary &= !(1u64 << word_in_arena);
+            self.summary &= !(1u64 << word_in_window);
             return self.claim_word();
         }
         
         // Take all bits from this word - NO ATOMIC!
-        self.bits[word_in_arena] = 0;
-        self.summary &= !(1u64 << word_in_arena);
+        self.bits[word_in_window] = 0;
+        self.summary &= !(1u64 << word_in_window);
         self.free_count -= bits.count_ones() as usize;
         
-        let global_word_idx = self.word_start + word_in_arena;
+        let global_word_idx = self.window_base_word + word_in_window;
         Some((global_word_idx, bits))
     }
     
-    /// Free a single page back to this arena
+    /// Free a single page back to this window
     ///
     /// # Arguments
     /// * `global_page_idx` - Global page index to free
     ///
     /// # Returns
-    /// true if the page was in this arena and freed, false otherwise
+    /// true if the page was in this window and freed, false otherwise
+    /// 
+    /// # Note
+    /// If the page belongs to the full arena but not the current window,
+    /// returns false. Caller should use RemoteFreeRing for cross-window frees.
     #[inline]
     pub fn free_page(&mut self, global_page_idx: usize) -> bool {
         if self.frozen {
@@ -805,12 +923,15 @@ impl PerArenaDetail {
         }
         
         let global_word_idx = global_page_idx / BITS_PER_WORD;
-        if global_word_idx < self.word_start || global_word_idx >= self.word_end {
-            return false; // Not in this arena
+        
+        // Check against current window bounds (not full arena bounds)
+        let window_end = self.window_base_word + self.num_words;
+        if global_word_idx < self.window_base_word || global_word_idx >= window_end {
+            return false; // Not in current window
         }
         
-        let word_in_arena = global_word_idx - self.word_start;
-        if word_in_arena >= self.num_words {
+        let word_in_window = global_word_idx - self.window_base_word;
+        if word_in_window >= self.num_words {
             return false;
         }
         
@@ -818,19 +939,26 @@ impl PerArenaDetail {
         let mask = 1u64 << bit_idx;
         
         // Check if already free (double-free detection)
-        if self.bits[word_in_arena] & mask != 0 {
+        if self.bits[word_in_window] & mask != 0 {
             // Already free - this is a bug, but don't corrupt state
             return false;
         }
         
         // Set the bit (free the page) - NO ATOMIC!
-        self.bits[word_in_arena] |= mask;
+        self.bits[word_in_window] |= mask;
         self.free_count += 1;
         
         // Update summary if word was empty
-        self.summary |= 1u64 << word_in_arena;
+        self.summary |= 1u64 << word_in_window;
         
         true
+    }
+    
+    /// Check if a global page index is within the FULL arena (not just current window)
+    #[inline]
+    pub fn page_in_full_arena(&self, global_page_idx: usize) -> bool {
+        let global_word_idx = global_page_idx / BITS_PER_WORD;
+        global_word_idx >= self.word_start && global_word_idx < self.word_end
     }
     
     /// Return multiple pages (from RemoteFreeRing drain)
@@ -854,13 +982,13 @@ impl PerArenaDetail {
         freed
     }
     
-    /// Sync this arena's state back to the global atomic bitmap
+    /// Sync current window's state back to the global atomic bitmap
     ///
-    /// Used during ownership transfer or when falling back to atomic path.
+    /// Used during ownership transfer, window reload, or when falling back to atomic path.
     /// Writes all local `bits` back to the corresponding global `detail` words.
     pub fn sync_to_global(&self, global_detail: &[AtomicU64]) {
         for i in 0..self.num_words {
-            let global_idx = self.word_start + i;
+            let global_idx = self.window_base_word + i;
             if global_idx < global_detail.len() {
                 // Use store with Release ordering to make changes visible
                 global_detail[global_idx].store(self.bits[i], Ordering::Release);
@@ -868,15 +996,15 @@ impl PerArenaDetail {
         }
     }
     
-    /// Sync from global atomic bitmap to this arena
+    /// Sync from global atomic bitmap to current window
     ///
-    /// Used when taking ownership of an arena.
+    /// Used when taking ownership of an arena or reloading a window.
     pub fn sync_from_global(&mut self, global_detail: &[AtomicU64]) {
         self.summary = 0;
         self.free_count = 0;
         
         for i in 0..self.num_words {
-            let global_idx = self.word_start + i;
+            let global_idx = self.window_base_word + i;
             let bits = if global_idx < global_detail.len() {
                 global_detail[global_idx].load(Ordering::Acquire)
             } else {
@@ -895,14 +1023,149 @@ impl PerArenaDetail {
     /// Get the global word index for a local word index
     #[inline]
     pub fn global_word_idx(&self, local_idx: usize) -> usize {
-        self.word_start + local_idx
+        self.window_base_word + local_idx
     }
     
-    /// Check if a global page index belongs to this arena
+    /// Check if a global page index belongs to this arena (full arena, not just window)
     #[inline]
     pub fn contains_page(&self, global_page_idx: usize) -> bool {
         let global_word_idx = global_page_idx / BITS_PER_WORD;
         global_word_idx >= self.word_start && global_word_idx < self.word_end
+    }
+    
+    /// Check if a global page index is in the current window
+    #[inline]
+    pub fn in_current_window(&self, global_page_idx: usize) -> bool {
+        let global_word_idx = global_page_idx / BITS_PER_WORD;
+        let window_end = self.window_base_word + self.num_words;
+        global_word_idx >= self.window_base_word && global_word_idx < window_end
+    }
+    
+    /// Move window forward and reload from global bitmap
+    ///
+    /// Syncs current window back, advances `window_base_word`, loads new data.
+    /// Returns true if successfully moved to next window, false if at end.
+    ///
+    /// # Arguments
+    /// * `global_detail` - Global atomic bitmap to sync with
+    pub fn reload_next_window(&mut self, global_detail: &[AtomicU64]) -> bool {
+        if !self.has_next_window() {
+            return false;
+        }
+        
+        // Sync current window back to global
+        self.sync_to_global(global_detail);
+        
+        // Advance window position
+        self.window_base_word += self.num_words;
+        
+        // Check if we need to shrink the last window
+        let remaining_words = self.word_end.saturating_sub(self.window_base_word);
+        if remaining_words < self.num_words {
+            // Last window is smaller
+            // Note: num_words is the actual window size, we don't change it
+            // as bits[] array size is fixed. We just won't use all of it.
+        }
+        
+        // Reload from global bitmap
+        self.sync_from_global(global_detail);
+        self.reloaded = true;
+        
+        true
+    }
+    
+    /// Move window backward and reload from global bitmap
+    ///
+    /// Syncs current window back, moves `window_base_word` back, loads previous data.
+    /// Returns true if successfully moved to previous window, false if at start.
+    ///
+    /// # Arguments
+    /// * `global_detail` - Global atomic bitmap to sync with
+    pub fn reload_prev_window(&mut self, global_detail: &[AtomicU64]) -> bool {
+        if !self.has_prev_window() {
+            return false;
+        }
+        
+        // Sync current window back to global
+        self.sync_to_global(global_detail);
+        
+        // Move window position backward
+        self.window_base_word = self.window_base_word.saturating_sub(self.num_words);
+        
+        // Clamp to arena start
+        if self.window_base_word < self.word_start {
+            self.window_base_word = self.word_start;
+        }
+        
+        // Reload from global bitmap
+        self.sync_from_global(global_detail);
+        self.reloaded = true;
+        
+        true
+    }
+    
+    /// Scan all windows for free pages (expensive, use sparingly)
+    ///
+    /// Returns (best_window_base, estimated_free_count) for the window with most free pages.
+    /// Returns None if no windows have free pages.
+    pub fn scan_best_window(&self, global_detail: &[AtomicU64]) -> Option<(usize, usize)> {
+        let _full_words = self.full_arena_words(); // Used for future optimization hints
+        let mut best_base = self.word_start;
+        let mut best_free = 0usize;
+        
+        let mut window_base = self.word_start;
+        while window_base < self.word_end {
+            // Sample a few words from this potential window
+            let window_end = (window_base + self.num_words).min(self.word_end);
+            let mut window_free = 0usize;
+            
+            // Sample every 8th word for speed (trade accuracy for performance)
+            let mut idx = window_base;
+            while idx < window_end {
+                if idx < global_detail.len() {
+                    let bits = global_detail[idx].load(Ordering::Relaxed);
+                    window_free += bits.count_ones() as usize;
+                }
+                idx += 8;
+            }
+            // Extrapolate: multiply sample by 8
+            window_free *= 8;
+            
+            if window_free > best_free {
+                best_free = window_free;
+                best_base = window_base;
+            }
+            
+            window_base += self.num_words;
+        }
+        
+        if best_free > 0 {
+            Some((best_base, best_free))
+        } else {
+            None
+        }
+    }
+    
+    /// Jump to a specific window base (e.g., after scan_best_window)
+    ///
+    /// Syncs current window and loads the new one.
+    pub fn jump_to_window(&mut self, new_base: usize, global_detail: &[AtomicU64]) -> bool {
+        // Validate new_base is within arena and aligned
+        if new_base < self.word_start || new_base >= self.word_end {
+            return false;
+        }
+        
+        // Sync current window back
+        self.sync_to_global(global_detail);
+        
+        // Move to new window
+        self.window_base_word = new_base;
+        
+        // Reload
+        self.sync_from_global(global_detail);
+        self.reloaded = true;
+        
+        true
     }
 }
 
@@ -1041,21 +1304,32 @@ impl PerCpuMagazine {
     ///
     /// Called by IovaAllocatorFast after bitmap is created.
     /// Copies the relevant portion of the global bitmap into the local arena.
+    ///
+    /// # Windowing Mode
+    ///
+    /// If the arena is larger than `MAX_WORDS_PER_ARENA`, we use "windowing mode":
+    /// - Only a window of `MAX_WORDS_PER_ARENA` words is held locally
+    /// - When the window is exhausted, we sync back and reload the next window
+    /// - This allows Single-Writer mode to work with arbitrarily large arenas
+    /// - The `window_base_word` field tracks where the current window starts
     pub fn init_single_writer_arena(&self, global_detail: &[AtomicU64]) {
         let mut arena_guard = self.arena_detail.lock();
         
-        // Calculate the number of words in this arena
-        let num_words = self.arena_end_4k.saturating_sub(self.arena_start_4k);
-        if num_words == 0 || num_words > MAX_WORDS_PER_ARENA {
-            // Arena too large or empty, disable single-writer
+        // Calculate the total number of words in this arena
+        let total_arena_words = self.arena_end_4k.saturating_sub(self.arena_start_4k);
+        if total_arena_words == 0 {
+            // Arena empty, disable single-writer
             *arena_guard = None;
             self.single_writer_enabled.store(false, Ordering::Release);
             return;
         }
         
-        // Copy initial bits from global detail
-        let mut initial_bits = alloc::vec::Vec::with_capacity(num_words);
-        for i in 0..num_words {
+        // Determine the effective window size (capped at MAX_WORDS_PER_ARENA)
+        let window_size = total_arena_words.min(MAX_WORDS_PER_ARENA);
+        
+        // Copy initial bits for the FIRST window only
+        let mut initial_bits = alloc::vec::Vec::with_capacity(window_size);
+        for i in 0..window_size {
             let global_idx = self.arena_start_4k + i;
             let bits = if global_idx < global_detail.len() {
                 global_detail[global_idx].load(Ordering::Acquire)
@@ -1065,7 +1339,8 @@ impl PerCpuMagazine {
             initial_bits.push(bits);
         }
         
-        // Create per-arena detail
+        // Create per-arena detail with the FIRST window
+        // window_base_word will be set to arena_start_4k (word_start) by new()
         let arena = PerArenaDetail::new(
             self.cpu_id,
             self.arena_start_4k,
@@ -1378,11 +1653,23 @@ impl QuarantineRing {
 /// Must be power of 2 for efficient modulo operation
 const REMOTE_FREE_RING_CAPACITY: usize = 512;
 
-/// Entry in the remote free ring
+/// Entry in the remote free ring (Range-based for batch efficiency)
+///
+/// # Range-based Free (Optimization 3)
+///
+/// Instead of storing one entry per page, we can store a contiguous range:
+/// - Single page: iova = addr, count = 1
+/// - Range: iova = start_addr, count = N (frees N contiguous 4KB pages)
+///
+/// This dramatically reduces ring push/drain overhead for scatter-gather
+/// buffer releases and batch DMA unmaps.
 #[derive(Clone, Copy)]
 pub struct RemoteFreeEntry {
-    /// IOVA address to be freed
+    /// IOVA address to be freed (start of range)
     pub iova: u64,
+    /// Number of contiguous pages (1 = single page, N = N pages)
+    /// For 2MB/1GB (size_class 1/2), this is the count of 2MB/1GB blocks
+    pub count: u16,
     /// Size class: 0 = 4KB, 1 = 2MB, 2 = 1GB
     pub size_class: u8,
 }
@@ -1391,8 +1678,47 @@ impl RemoteFreeEntry {
     pub const fn empty() -> Self {
         Self {
             iova: 0,
+            count: 0,
             size_class: 0,
         }
+    }
+    
+    /// Create a single-page entry (backward compatible)
+    #[inline]
+    pub const fn single(iova: u64, size_class: u8) -> Self {
+        Self {
+            iova,
+            count: 1,
+            size_class,
+        }
+    }
+    
+    /// Create a range entry for multiple contiguous pages
+    #[inline]
+    pub const fn range(iova: u64, count: u16, size_class: u8) -> Self {
+        Self {
+            iova,
+            count,
+            size_class,
+        }
+    }
+    
+    /// Check if this is an empty/invalid entry
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+    
+    /// Get total bytes covered by this entry
+    #[inline]
+    pub fn total_bytes(&self) -> u64 {
+        let page_size = match self.size_class {
+            0 => PAGE_SIZE_4K,
+            1 => PAGE_SIZE_2M,
+            2 => PAGE_SIZE_1G,
+            _ => PAGE_SIZE_4K,
+        };
+        page_size * (self.count as u64)
     }
 }
 
@@ -1423,6 +1749,9 @@ pub struct RemoteFreeRing {
     entries: [AtomicU64; REMOTE_FREE_RING_CAPACITY],
     /// Size classes packed separately (to keep entries as simple u64)
     size_classes: [AtomicU8; REMOTE_FREE_RING_CAPACITY],
+    /// Page counts for range-based free (Optimization 3)
+    /// count = 0 means empty, count = N means N contiguous pages/blocks
+    counts: [AtomicU16Wrapper; REMOTE_FREE_RING_CAPACITY],
     /// Sequence numbers for each slot (Vyukov protocol)
     sequences: [AtomicUsize; REMOTE_FREE_RING_CAPACITY],
     /// Write position (head), incremented by pushers via CAS
@@ -1432,6 +1761,8 @@ pub struct RemoteFreeRing {
     tail: AtomicUsize,
     /// Overflow counter (pushes that failed due to full ring)
     overflow_count: AtomicU64,
+    /// Total pages freed via range entries (for statistics)
+    range_pages_freed: AtomicU64,
 }
 
 /// Atomic u8 wrapper (since core doesn't have AtomicU8 on all platforms)
@@ -1492,19 +1823,43 @@ impl AtomicU8 {
     }
 }
 
+/// Atomic u16 wrapper for count field in RemoteFreeRing
+/// This uses AtomicUsize internally because no_std doesn't guarantee AtomicU16
+#[repr(transparent)]
+pub struct AtomicU16Wrapper(AtomicUsize);
+
+impl AtomicU16Wrapper {
+    pub const fn new(v: u16) -> Self {
+        Self(AtomicUsize::new(v as usize))
+    }
+    
+    #[inline]
+    pub fn store(&self, v: u16, order: Ordering) {
+        self.0.store(v as usize, order);
+    }
+    
+    #[inline]
+    pub fn load(&self, order: Ordering) -> u16 {
+        self.0.load(order) as u16
+    }
+}
+
 impl RemoteFreeRing {
     /// Create a new empty remote free ring (Vyukov MPSC)
     pub const fn new() -> Self {
         const EMPTY_ENTRY: AtomicU64 = AtomicU64::new(0);
         const EMPTY_SIZE: AtomicU8 = AtomicU8::new(0);
+        const EMPTY_COUNT: AtomicU16Wrapper = AtomicU16Wrapper::new(0);
         const INIT_SEQ: AtomicUsize = AtomicUsize::new(0);
         Self {
             entries: [EMPTY_ENTRY; REMOTE_FREE_RING_CAPACITY],
             size_classes: [EMPTY_SIZE; REMOTE_FREE_RING_CAPACITY],
+            counts: [EMPTY_COUNT; REMOTE_FREE_RING_CAPACITY],
             sequences: [INIT_SEQ; REMOTE_FREE_RING_CAPACITY],
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
             overflow_count: AtomicU64::new(0),
+            range_pages_freed: AtomicU64::new(0),
         }
     }
     
@@ -1516,12 +1871,32 @@ impl RemoteFreeRing {
         }
     }
     
-    /// Try to push an entry (lock-free Vyukov MPSC, called by non-owner CPUs)
+    /// Try to push a single entry (backward compatible, lock-free Vyukov MPSC)
     ///
     /// Returns true if pushed successfully, false if ring is full.
     /// No "holes" possible: uses CAS to reserve slot, then commits with sequence update.
     #[inline]
     pub fn try_push(&self, iova: u64, size_class: u8) -> bool {
+        self.try_push_range(iova, 1, size_class)
+    }
+    
+    /// Try to push a range entry (Optimization 3: Range-based Remote Free)
+    ///
+    /// # Arguments
+    /// * `iova` - Start address of the range
+    /// * `count` - Number of contiguous pages/blocks to free
+    /// * `size_class` - 0 = 4KB, 1 = 2MB, 2 = 1GB
+    ///
+    /// # Benefits
+    /// - Single ring entry for N pages → reduces push/drain overhead
+    /// - Better cache utilization (fewer ring traversals)
+    /// - Enables batch free_pages_coalesced processing
+    #[inline]
+    pub fn try_push_range(&self, iova: u64, count: u16, size_class: u8) -> bool {
+        if count == 0 {
+            return true; // Nothing to free
+        }
+        
         let mut pos = self.head.load(Ordering::Relaxed);
         
         loop {
@@ -1540,7 +1915,12 @@ impl RemoteFreeRing {
                     Ok(_) => {
                         // Successfully reserved slot, write data
                         self.size_classes[idx].store(size_class, Ordering::Relaxed);
+                        self.counts[idx].store(count, Ordering::Relaxed);
                         self.entries[idx].store(iova, Ordering::Relaxed);
+                        // Update range statistics
+                        if count > 1 {
+                            self.range_pages_freed.fetch_add(count as u64, Ordering::Relaxed);
+                        }
                         // Commit: set seq = pos + 1 to signal consumer
                         self.sequences[idx].store(pos.wrapping_add(1), Ordering::Release);
                         return true;
@@ -1563,8 +1943,12 @@ impl RemoteFreeRing {
     
     /// Drain entries from the ring (single-consumer Vyukov, called by owner CPU only)
     ///
-    /// Returns the number of entries drained.
+    /// Returns the number of entries drained (each entry may represent multiple pages).
     /// Only reads slots where sequence indicates data is committed (no holes!)
+    ///
+    /// # Range-based Entries
+    /// Each entry may have count > 1, representing multiple contiguous pages.
+    /// The caller should iterate from iova to iova + (count-1) * page_size.
     pub fn drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
         let mut drained = 0;
         let mut pos = self.tail.load(Ordering::Relaxed);
@@ -1582,11 +1966,12 @@ impl RemoteFreeRing {
             // Read data (order doesn't matter, seq acquire already synchronized)
             let iova = self.entries[idx].load(Ordering::Relaxed);
             let size_class = self.size_classes[idx].load(Ordering::Relaxed);
+            let count = self.counts[idx].load(Ordering::Relaxed);
             
             // Reset sequence for next producer: seq = pos + CAPACITY
             self.sequences[idx].store(pos.wrapping_add(REMOTE_FREE_RING_CAPACITY), Ordering::Release);
             
-            out[drained] = RemoteFreeEntry { iova, size_class };
+            out[drained] = RemoteFreeEntry { iova, count, size_class };
             drained += 1;
             pos = pos.wrapping_add(1);
         }
@@ -1617,6 +2002,12 @@ impl RemoteFreeRing {
     #[inline]
     pub fn overflow_count(&self) -> u64 {
         self.overflow_count.load(Ordering::Relaxed)
+    }
+    
+    /// Get total pages freed via range entries (statistics)
+    #[inline]
+    pub fn range_pages_freed(&self) -> u64 {
+        self.range_pages_freed.load(Ordering::Relaxed)
     }
 }
 
@@ -2085,6 +2476,19 @@ pub struct IovaBitmap {
     free_count_2m: AtomicUsize,
     /// Partial 2MB block count (0 < used_count < 512)
     partial_count_2m: AtomicUsize,
+    
+    // === Segregated Free Lists (Optimization 2: HugePage Fragmentation Prevention) ===
+    /// Demoted 2MB blocks bitmap (1 = block has been demoted to 4KB-only region)
+    /// Once demoted, this block will NOT be promoted back to hugepage-available
+    /// until ALL 512 pages are freed simultaneously.
+    /// 
+    /// Benefits:
+    /// - Prevents partial 4KB allocation from permanently fragmenting hugepage pool
+    /// - 4KB allocation prefers demoted blocks first
+    /// - HugePage pool remains pristine for 2MB/1GB allocations
+    demoted_2m: alloc::boxed::Box<[AtomicU64]>,
+    /// Count of demoted 2MB blocks (for statistics)
+    demoted_count_2m: AtomicUsize,
 
     // === 1GB Level (Fully-Free Tracking) ===
     /// Per-1GB-block used count (count of non-free 2MB blocks, 0..512)
@@ -2290,6 +2694,13 @@ impl IovaBitmap {
             (1u64 << remainder) - 1 // Only `remainder` bits are valid
         };
 
+        // === Segregated Free Lists: demoted_2m initialization ===
+        // Initially no blocks are demoted (all preserve hugepage potential)
+        let mut demoted_2m = alloc::vec::Vec::with_capacity(bitmap_2m_words);
+        for _ in 0..bitmap_2m_words {
+            demoted_2m.push(AtomicU64::new(0));
+        }
+
         Self {
             base,
             total_pages: capped_pages,
@@ -2310,6 +2721,9 @@ impl IovaBitmap {
             // Only complete 2MB blocks are counted as "free" for 2MB allocation
             free_count_2m: AtomicUsize::new(complete_2mb_blocks),
             partial_count_2m: AtomicUsize::new(0),
+            // Segregated Free Lists
+            demoted_2m: demoted_2m.into_boxed_slice(),
+            demoted_count_2m: AtomicUsize::new(0),
             used_count_1g: used_count_1g.into_boxed_slice(),
             bitmap_1g: bitmap_1g.into_boxed_slice(),
             // Only complete 1GB blocks are counted as "free" for 1GB allocation
@@ -2347,6 +2761,16 @@ impl IovaBitmap {
     pub fn reconfigure_arena_ownership(&mut self, num_cpus: usize) {
         let total_words = self.detail.len();
         self.arena_ownership.reconfigure_for_cpus(total_words, num_cpus);
+    }
+
+    /// Reconfigure arena ownership with an explicit CPU list
+    ///
+    /// This is useful for NUMA-aware sharding where only a subset of CPUs
+    /// should own arenas for a given allocator instance.
+    pub fn reconfigure_arena_ownership_for_cpu_ids(&mut self, cpu_ids: &[usize]) {
+        let total_words = self.detail.len();
+        self.arena_ownership
+            .reconfigure_for_cpu_list(total_words, cpu_ids);
     }
     
     /// Get arena ownership info for statistics/debugging
@@ -2564,6 +2988,15 @@ impl IovaBitmap {
     ///
     /// # Returns
     /// (Some(iova), polluted) where `polluted` is true if a fully-free 2MB was consumed
+    /// Allocate a single 4KB page preferring partial/demoted blocks
+    ///
+    /// # Priority Order (Segregated Free Lists - Optimization 2)
+    /// 1. Demoted 2MB blocks (4KB-only region, cannot be promoted back)
+    /// 2. Partial 2MB blocks (already fragmented, preserve other hugepages)
+    /// 3. Fully-free 2MB blocks (last resort, causes hugepage pollution)
+    ///
+    /// # Returns
+    /// (Some(iova), polluted) where `polluted` indicates a fresh hugepage was consumed
     pub fn allocate_page_prefer_partial(
         &self,
         hint_partial: &AtomicUsize,
@@ -2574,6 +3007,12 @@ impl IovaBitmap {
 
         if detail_words == 0 {
             return (None, false);
+        }
+
+        // === Phase 0: Try to allocate from demoted 2MB blocks (highest priority) ===
+        // Demoted blocks are 4KB-only and will never be promoted back to hugepage
+        if let Some(iova) = self.allocate_page_from_demoted(hint_4k) {
+            return (Some(iova), false);
         }
 
         // === Phase 1: Try to allocate from a partial 2MB block ===
@@ -2651,13 +3090,182 @@ impl IovaBitmap {
             }
         }
 
-        // === Phase 2: No partial blocks, fall back to regular allocation ===
+        // === Phase 2: No demoted or partial blocks, fall back to regular allocation ===
         // This will consume from fully-free 2MB blocks (hugepage pollution)
         if let Some(iova) = self.allocate_page_with_hint(hint_4k) {
             return (Some(iova), true); // Polluted a hugepage
         }
 
         (None, false)
+    }
+
+    /// Allocate a single 4KB page from demoted 2MB blocks only
+    ///
+    /// Demoted blocks are part of the "4KB-only region" in Segregated Free Lists.
+    /// These blocks will never be promoted back to hugepage pool.
+    ///
+    /// # Returns
+    /// Some(iova) if allocation succeeded from demoted block, None otherwise
+    fn allocate_page_from_demoted(&self, hint_4k: &AtomicUsize) -> Option<u64> {
+        let demoted_words = self.demoted_2m.len();
+        let detail_words = self.detail.len();
+        
+        if demoted_words == 0 || detail_words == 0 {
+            return None;
+        }
+        
+        // Scan demoted bitmap for a block with free pages
+        for word_idx in 0..demoted_words {
+            let demoted_word = self.demoted_2m[word_idx].load(Ordering::Acquire);
+            if demoted_word == 0 {
+                continue;
+            }
+            
+            let mut word = demoted_word;
+            while word != 0 {
+                let bit = word.trailing_zeros() as usize;
+                let block_2m = word_idx * BITS_PER_WORD + bit;
+                
+                if block_2m >= self.total_2mb_blocks {
+                    break;
+                }
+                
+                // Use free_word_mask for O(1) word selection
+                let free_mask = if block_2m < self.free_word_mask_2m.len() {
+                    self.free_word_mask_2m[block_2m].load(Ordering::Acquire)
+                } else {
+                    0
+                };
+                
+                if free_mask != 0 {
+                    // Found a demoted block with free pages
+                    let word_in_block = free_mask.trailing_zeros() as usize;
+                    let detail_idx = block_2m * WORDS_PER_2MB_BLOCK + word_in_block;
+                    
+                    if detail_idx < detail_words {
+                        if let Some(bit_idx) = self.try_allocate_from_word(detail_idx) {
+                            let page_idx = detail_idx * BITS_PER_WORD + bit_idx;
+                            if page_idx < self.total_pages {
+                                hint_4k.store(detail_idx, Ordering::Relaxed);
+                                self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                                self.on_page_allocated(page_idx);
+                                return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                            }
+                        }
+                    }
+                }
+                
+                word &= word - 1;
+            }
+        }
+        
+        None
+    }
+    
+    /// Demote a 2MB block to 4KB-only region
+    ///
+    /// Once demoted, this block will only be used for 4KB allocations
+    /// and will not be promoted back to hugepage pool even when fully freed.
+    ///
+    /// This is called when:
+    /// - 4KB allocation needs to pollute a fully-free 2MB block
+    /// - We want to preserve a pool of 4KB-only memory
+    ///
+    /// # Arguments
+    /// * `block_2m` - Index of the 2MB block to demote
+    ///
+    /// # Returns
+    /// true if successfully demoted, false if already demoted or invalid
+    pub fn demote_2mb_block(&self, block_2m: usize) -> bool {
+        if block_2m >= self.total_2mb_blocks {
+            return false;
+        }
+        
+        let word_idx = block_2m / BITS_PER_WORD;
+        let bit_idx = block_2m % BITS_PER_WORD;
+        let bit_mask = 1u64 << bit_idx;
+        
+        if word_idx >= self.demoted_2m.len() {
+            return false;
+        }
+        
+        // Set the demoted bit (atomic)
+        let old = self.demoted_2m[word_idx].fetch_or(bit_mask, Ordering::AcqRel);
+        let was_demoted = (old & bit_mask) != 0;
+        
+        if !was_demoted {
+            // Successfully demoted
+            self.demoted_count_2m.fetch_add(1, Ordering::Relaxed);
+            
+            // Remove from fully-free bitmap if present (prevent 2MB allocation)
+            let _ = self.bitmap_2m[word_idx].fetch_and(!bit_mask, Ordering::AcqRel);
+            
+            true
+        } else {
+            false // Already demoted
+        }
+    }
+    
+    /// Check if a 2MB block is demoted (4KB-only region)
+    #[inline]
+    pub fn is_block_demoted(&self, block_2m: usize) -> bool {
+        if block_2m >= self.total_2mb_blocks {
+            return false;
+        }
+        
+        let word_idx = block_2m / BITS_PER_WORD;
+        let bit_idx = block_2m % BITS_PER_WORD;
+        
+        if word_idx >= self.demoted_2m.len() {
+            return false;
+        }
+        
+        (self.demoted_2m[word_idx].load(Ordering::Acquire) & (1u64 << bit_idx)) != 0
+    }
+    
+    /// Get the count of demoted 2MB blocks
+    #[inline]
+    pub fn demoted_block_count(&self) -> usize {
+        self.demoted_count_2m.load(Ordering::Relaxed)
+    }
+    
+    /// Clear demoted flag (promote back to potential hugepage)
+    ///
+    /// Called when a demoted 2MB block becomes fully free again.
+    /// This allows the block to be used for 2MB/1GB allocations once more.
+    ///
+    /// # HugePage Recovery Strategy
+    /// By promoting fully-free demoted blocks back to the hugepage pool,
+    /// we prevent long-running systems from eventually exhausting all
+    /// hugepage-capable memory due to fragmentation.
+    ///
+    /// # Arguments
+    /// * `block_2m` - Index of the 2MB block to promote
+    ///
+    /// # Returns
+    /// true if successfully promoted (was demoted), false otherwise
+    pub fn clear_demoted_flag(&self, block_2m: usize) -> bool {
+        if block_2m >= self.total_2mb_blocks {
+            return false;
+        }
+        
+        let word_idx = block_2m / BITS_PER_WORD;
+        let bit_idx = block_2m % BITS_PER_WORD;
+        
+        if word_idx >= self.demoted_2m.len() {
+            return false;
+        }
+        
+        let mask = 1u64 << bit_idx;
+        let old = self.demoted_2m[word_idx].fetch_and(!mask, Ordering::AcqRel);
+        
+        if (old & mask) != 0 {
+            // Was demoted, now promoted
+            self.demoted_count_2m.fetch_sub(1, Ordering::Relaxed);
+            true
+        } else {
+            false // Was not demoted
+        }
     }
 
     /// Allocate a single 4KB page within a specific arena (sharded allocation)
@@ -2868,7 +3476,7 @@ impl IovaBitmap {
     fn allocate_page_steal_global(
         &self,
         cpu_id: usize,
-        hint: &AtomicUsize,
+        _hint: &AtomicUsize,
         arena_start: usize,
         arena_end: usize,
     ) -> Option<u64> {
@@ -4424,8 +5032,14 @@ impl IovaBitmap {
 
         // Transition 0 -> 1: block was fully free, now partial
         if old_count == 0 {
-            // Clear 2MB fully-free bitmap bit
-            self.clear_bitmap_2m_bit(block_2m);
+            // === Segregated Free Lists (Optimization 2): Auto-demote on first allocation ===
+            // When a fully-free 2MB block gets its first 4KB allocation,
+            // we demote it to prevent future 2MB allocation from this block.
+            // This preserves other 2MB blocks for hugepage allocations.
+            self.demote_2mb_block(block_2m);
+            
+            // Clear 2MB fully-free bitmap bit (already done by demote_2mb_block)
+            // Note: demote_2mb_block also clears bitmap_2m bit
             self.free_count_2m.fetch_sub(1, Ordering::Relaxed);
             
             // Set 2MB partial bitmap bit (now has 0 < used < 512)
@@ -4464,8 +5078,15 @@ impl IovaBitmap {
     /// Updates 2MB used_count and manages bitmap_2m / bitmap_2m_partial.
     ///
     /// State transitions:
-    /// - 1 -> 0: partial -> fully-free (clear partial bit, set fully-free bit)
+    /// - 1 -> 0: partial -> fully-free (clear partial bit, set fully-free bit ONLY if not demoted)
     /// - 512 -> N: full -> partial (set partial bit)
+    ///
+    /// # Segregated Free Lists (Optimization 2)
+    /// # HugePage Recovery (Improved from original "Sticky Demotion")
+    /// 
+    /// When a demoted block becomes fully free (all 512 pages released),
+    /// we promote it back to the hugepage pool. This prevents long-running
+    /// systems from exhausting all hugepage-capable memory.
     fn on_page_freed(&self, page_idx: usize) {
         let block_2m = page_idx / PAGES_PER_2MB_BLOCK;
         if block_2m >= self.total_2mb_blocks {
@@ -4488,7 +5109,17 @@ impl IovaBitmap {
             self.clear_bitmap_2m_partial_bit(block_2m);
             self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
             
-            // Set 2MB fully-free bitmap bit
+            // === HugePage Recovery: Promote fully-free demoted blocks ===
+            // If this block was demoted (4KB-only), clear the demotion flag
+            // so it can be used for 2MB allocations again.
+            // This is the key improvement over "sticky demotion" which prevented
+            // hugepage recovery indefinitely.
+            if self.is_block_demoted(block_2m) {
+                self.clear_demoted_flag(block_2m);
+            }
+            
+            // Now the block is definitely not demoted (either cleared above or never was)
+            // Mark it available for 2MB allocation
             self.set_bitmap_2m_bit(block_2m);
             self.free_count_2m.fetch_add(1, Ordering::Relaxed);
 
@@ -5337,6 +5968,67 @@ impl IovaAllocatorFast {
             stats: IovaAllocatorFastStats::new(),
         }
     }
+
+    /// Reconfigure per-CPU arenas using an explicit CPU ID list
+    ///
+    /// This is intended for NUMA-aware sharding where only a subset of CPUs
+    /// should own arenas for a given allocator instance.
+    ///
+    /// # Safety
+    /// Call during initialization, before heavy concurrent allocations.
+    pub fn configure_arenas_for_cpu_ids(&mut self, cpu_ids: &[usize]) {
+        let total_pages = self.bitmap_4k.total_pages();
+        let total_words_4k = (total_pages + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let total_blocks_2m = total_pages / PAGES_PER_2MB_BLOCK;
+
+        let mut valid_cpu_ids = alloc::vec::Vec::new();
+        let mut is_local = [false; MAX_CPUS];
+        for &cpu_id in cpu_ids {
+            if cpu_id < MAX_CPUS {
+                if !is_local[cpu_id] {
+                    valid_cpu_ids.push(cpu_id);
+                    is_local[cpu_id] = true;
+                }
+            }
+        }
+        if valid_cpu_ids.is_empty() {
+            valid_cpu_ids.push(0);
+            is_local[0] = true;
+        }
+
+        let num_cpus = valid_cpu_ids.len();
+        let words_per_cpu = (total_words_4k + num_cpus - 1) / num_cpus;
+        let blocks_2m_per_cpu = if total_blocks_2m >= num_cpus {
+            (total_blocks_2m + num_cpus - 1) / num_cpus
+        } else {
+            1
+        };
+
+        for (idx, &cpu_id) in valid_cpu_ids.iter().enumerate() {
+            let arena_start_4k = (idx * words_per_cpu).min(total_words_4k);
+            let arena_end_4k = ((idx + 1) * words_per_cpu).min(total_words_4k);
+
+            let arena_start_2m = (idx * blocks_2m_per_cpu).min(total_blocks_2m);
+            let arena_end_2m = ((idx + 1) * blocks_2m_per_cpu).min(total_blocks_2m);
+
+            let mag = &mut self.magazines[cpu_id];
+            mag.set_arena(cpu_id, arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
+            mag.single_writer_enabled.store(false, Ordering::Release);
+            *mag.arena_detail.lock() = None;
+        }
+
+        for cpu_id in 0..MAX_CPUS {
+            if !is_local[cpu_id] {
+                let mag = &mut self.magazines[cpu_id];
+                mag.set_arena(cpu_id, 0, 0, 0, 0);
+                mag.single_writer_enabled.store(false, Ordering::Release);
+                *mag.arena_detail.lock() = None;
+            }
+        }
+
+        self.bitmap_4k
+            .reconfigure_arena_ownership_for_cpu_ids(&valid_cpu_ids);
+    }
     
     /// Enable single-writer arena mode for all CPUs
     ///
@@ -5435,11 +6127,14 @@ impl IovaAllocatorFast {
     
     /// Drain remote free ring for a specific CPU
     ///
-    /// # Optimization: Return Coalescing (5B)
+    /// # Optimization: Return Coalescing (5B) + Range-based Free (3)
     ///
     /// Instead of calling free_page() N times for N pages in the same word
     /// (N atomic fetch_or operations), we coalesce pages by word_idx and
     /// use a single fetch_or per word via free_pages_coalesced().
+    ///
+    /// With range-based entries, a single RemoteFreeEntry can represent
+    /// multiple contiguous pages, further reducing ring traversal overhead.
     ///
     /// This dramatically reduces atomic contention when multiple pages
     /// from the same word are freed in rapid succession.
@@ -5455,51 +6150,66 @@ impl IovaAllocatorFast {
         }
         
         // Coalescing buffer: word_idx -> (coalesced_mask, page_count)
-        // Max 64 unique words from 64 entries
-        const MAX_WORDS: usize = 64;
+        // Max 128 unique words (range entries can span multiple words)
+        const MAX_WORDS: usize = 128;
         let mut word_masks: [(usize, u64, usize); MAX_WORDS] = [(usize::MAX, 0, 0); MAX_WORDS];
         let mut word_count = 0usize;
         
         // 2MB/1GB frees (don't coalesce, process directly)
-        let mut large_frees: [(u8, u64); 16] = [(0, 0); 16];
+        let mut large_frees: [(u8, u64, u16); 32] = [(0, 0, 0); 32];
         let mut large_count = 0usize;
         
-        // Phase 1: Sort entries into coalescing buffer
+        // Total pages freed (for statistics)
+        let mut total_pages_freed = 0usize;
+        
+        // Phase 1: Sort entries into coalescing buffer (range-aware)
         for entry in &entries[..drained] {
+            if entry.count == 0 {
+                continue; // Skip empty entries
+            }
+            
             match entry.size_class {
                 0 => {
-                    // 4KB page: compute word_idx and bit
+                    // 4KB page(s): compute word_idx and bits for each page in range
                     if entry.iova < self.bitmap_4k.base {
                         continue;
                     }
-                    let page_idx = ((entry.iova - self.bitmap_4k.base) / PAGE_SIZE_4K) as usize;
-                    if page_idx >= self.bitmap_4k.total_pages {
-                        continue;
-                    }
                     
-                    let word_idx = page_idx / BITS_PER_WORD;
-                    let bit_idx = page_idx % BITS_PER_WORD;
-                    let bit_mask = 1u64 << bit_idx;
+                    let start_page_idx = ((entry.iova - self.bitmap_4k.base) / PAGE_SIZE_4K) as usize;
+                    let range_count = entry.count as usize;
                     
-                    // Find or create entry in coalescing buffer
-                    let mut found = false;
-                    for i in 0..word_count {
-                        if word_masks[i].0 == word_idx {
-                            word_masks[i].1 |= bit_mask;
-                            word_masks[i].2 += 1;
-                            found = true;
+                    // Process each page in the range
+                    for offset in 0..range_count {
+                        let page_idx = start_page_idx + offset;
+                        if page_idx >= self.bitmap_4k.total_pages {
                             break;
                         }
-                    }
-                    if !found && word_count < MAX_WORDS {
-                        word_masks[word_count] = (word_idx, bit_mask, 1);
-                        word_count += 1;
+                        
+                        let word_idx = page_idx / BITS_PER_WORD;
+                        let bit_idx = page_idx % BITS_PER_WORD;
+                        let bit_mask = 1u64 << bit_idx;
+                        
+                        // Find or create entry in coalescing buffer
+                        let mut found = false;
+                        for i in 0..word_count {
+                            if word_masks[i].0 == word_idx {
+                                word_masks[i].1 |= bit_mask;
+                                word_masks[i].2 += 1;
+                                found = true;
+                                break;
+                            }
+                        }
+                        if !found && word_count < MAX_WORDS {
+                            word_masks[word_count] = (word_idx, bit_mask, 1);
+                            word_count += 1;
+                        }
+                        total_pages_freed += 1;
                     }
                 }
                 1 | 2 => {
-                    // 2MB or 1GB page: collect for later
+                    // 2MB or 1GB page(s): collect for later (preserve count)
                     if large_count < large_frees.len() {
-                        large_frees[large_count] = (entry.size_class, entry.iova);
+                        large_frees[large_count] = (entry.size_class, entry.iova, entry.count);
                         large_count += 1;
                     }
                 }
@@ -5523,17 +6233,22 @@ impl IovaAllocatorFast {
             }
         }
         
-        // Phase 3: Process large frees
+        // Phase 3: Process large frees (with range support)
         for i in 0..large_count {
-            let (size_class, iova) = large_frees[i];
-            match size_class {
-                1 => {
-                    let _ = self.bitmap_4k.free_2mb(iova);
+            let (size_class, iova, count) = large_frees[i];
+            let page_size = if size_class == 1 { PAGE_SIZE_2M } else { PAGE_SIZE_1G };
+            
+            for c in 0..count {
+                let page_iova = iova + (c as u64) * page_size;
+                match size_class {
+                    1 => {
+                        let _ = self.bitmap_4k.free_2mb(page_iova);
+                    }
+                    2 => {
+                        let _ = self.bitmap_4k.free_1gb(page_iova);
+                    }
+                    _ => {}
                 }
-                2 => {
-                    let _ = self.bitmap_4k.free_1gb(iova);
-                }
-                _ => {}
             }
         }
         
@@ -5552,7 +6267,8 @@ impl IovaAllocatorFast {
     ///
     /// # Performance
     /// This avoids all atomic RMW operations for frees that were pushed
-    /// to RemoteFreeRing by non-owner CPUs.
+    /// to RemoteFreeRing by non-owner CPUs. With range-based entries,
+    /// a single RemoteFreeEntry can represent multiple contiguous pages.
     #[inline]
     fn drain_remote_frees_into_arena(&self, magazine: &PerCpuMagazine, arena: &mut PerArenaDetail) {
         // Drain up to 32 entries from RemoteFreeRing
@@ -5566,49 +6282,60 @@ impl IovaAllocatorFast {
         let mut freed_count = 0usize;
         
         // Collect pages within our arena's range for batch processing
-        let mut arena_pages: [usize; 32] = [usize::MAX; 32];
+        let mut arena_pages: [usize; 64] = [usize::MAX; 64];
         let mut arena_page_count = 0usize;
         
         // Pages outside our arena range (must go through atomic path)
-        let mut external_pages: [(usize, u64); 32] = [(usize::MAX, 0); 32];
+        let mut external_pages: [(usize, u64); 64] = [(usize::MAX, 0); 64];
         let mut external_count = 0usize;
         
-        // 2MB/1GB frees (always atomic)
-        let mut large_frees: [(u8, u64); 8] = [(0, 0); 8];
+        // 2MB/1GB frees (always atomic, with count)
+        let mut large_frees: [(u8, u64, u16); 16] = [(0, 0, 0); 16];
         let mut large_count = 0usize;
         
-        // Phase 1: Categorize entries
+        // Phase 1: Categorize entries (range-aware)
         for entry in &entries[..drained] {
+            if entry.count == 0 {
+                continue; // Skip empty entries
+            }
+            
             match entry.size_class {
                 0 => {
-                    // 4KB page
+                    // 4KB page(s)
                     if entry.iova < self.bitmap_4k.base {
                         continue;
                     }
-                    let page_idx = ((entry.iova - self.bitmap_4k.base) / PAGE_SIZE_4K) as usize;
-                    if page_idx >= self.bitmap_4k.total_pages {
-                        continue;
-                    }
+                    let start_page_idx = ((entry.iova - self.bitmap_4k.base) / PAGE_SIZE_4K) as usize;
+                    let range_count = entry.count as usize;
                     
-                    // Check if this page is within our arena's word range
-                    let word_idx = page_idx / BITS_PER_WORD;
-                    if word_idx >= arena.word_start && word_idx < arena.word_end {
-                        // Within arena - can use non-atomic path
-                        if arena_page_count < arena_pages.len() {
-                            arena_pages[arena_page_count] = page_idx;
-                            arena_page_count += 1;
+                    // Process each page in the range
+                    for offset in 0..range_count {
+                        let page_idx = start_page_idx + offset;
+                        if page_idx >= self.bitmap_4k.total_pages {
+                            break;
                         }
-                    } else {
-                        // Outside arena - must use atomic path
-                        if external_count < external_pages.len() {
-                            external_pages[external_count] = (word_idx, entry.iova);
-                            external_count += 1;
+                        
+                        // Check if this page is within our arena's word range
+                        let word_idx = page_idx / BITS_PER_WORD;
+                        if word_idx >= arena.word_start && word_idx < arena.word_end {
+                            // Within arena - can use non-atomic path
+                            if arena_page_count < arena_pages.len() {
+                                arena_pages[arena_page_count] = page_idx;
+                                arena_page_count += 1;
+                            }
+                        } else {
+                            // Outside arena - must use atomic path
+                            if external_count < external_pages.len() {
+                                let page_iova = self.bitmap_4k.base + (page_idx as u64) * PAGE_SIZE_4K;
+                                external_pages[external_count] = (word_idx, page_iova);
+                                external_count += 1;
+                            }
                         }
                     }
                 }
                 1 | 2 => {
                     if large_count < large_frees.len() {
-                        large_frees[large_count] = (entry.size_class, entry.iova);
+                        large_frees[large_count] = (entry.size_class, entry.iova, entry.count);
                         large_count += 1;
                     }
                 }
@@ -5629,17 +6356,22 @@ impl IovaAllocatorFast {
             freed_count += 1;
         }
         
-        // Phase 4: Process large frees
+        // Phase 4: Process large frees (with range support)
         for i in 0..large_count {
-            let (size_class, iova) = large_frees[i];
-            match size_class {
-                1 => {
-                    let _ = self.bitmap_4k.free_2mb(iova);
+            let (size_class, iova, count) = large_frees[i];
+            let page_size = if size_class == 1 { PAGE_SIZE_2M } else { PAGE_SIZE_1G };
+            
+            for c in 0..count {
+                let page_iova = iova + (c as u64) * page_size;
+                match size_class {
+                    1 => {
+                        let _ = self.bitmap_4k.free_2mb(page_iova);
+                    }
+                    2 => {
+                        let _ = self.bitmap_4k.free_1gb(page_iova);
+                    }
+                    _ => {}
                 }
-                2 => {
-                    let _ = self.bitmap_4k.free_1gb(iova);
-                }
-                _ => {}
             }
         }
         
@@ -5731,15 +6463,19 @@ impl IovaAllocatorFast {
             // If single-writer mode is enabled for this CPU, we can allocate
             // directly from the non-atomic per-arena bitmap. This is the
             // ultimate fast path: just tzcnt + bit clear + address calc.
+            //
+            // Windowed Mode: If arena is larger than MAX_WORDS_PER_ARENA,
+            // we use a sliding window. When current window is exhausted,
+            // we sync back and reload the next window.
             // ================================================================
             if magazine.is_single_writer_enabled() {
                 let mut arena_guard = magazine.arena_detail.lock();
                 if let Some(ref mut arena) = *arena_guard {
-                    if !arena.is_frozen() && arena.has_free_pages() {
+                    if !arena.is_frozen() {
                         // First, drain any pending remote frees into our arena
                         self.drain_remote_frees_into_arena(magazine, arena);
                         
-                        // Try to allocate from arena (NO ATOMIC RMW!)
+                        // Try to allocate from current window (NO ATOMIC RMW!)
                         if let Some(page_idx) = arena.allocate_page() {
                             let iova = self.bitmap_4k.base() + (page_idx as u64) * PAGE_SIZE_4K;
                             self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
@@ -5747,6 +6483,38 @@ impl IovaAllocatorFast {
                             // Update 2MB/1GB hierarchy (still needed for large allocations)
                             self.bitmap_4k.on_page_allocated(page_idx);
                             return Some(iova);
+                        }
+                        
+                        // Window exhausted - try window reload for large arenas
+                        if arena.is_windowed() {
+                            let global_detail = self.bitmap_4k.detail();
+                            
+                            // First try moving to next window
+                            if arena.has_next_window() && arena.reload_next_window(global_detail) {
+                                // Window reloaded, try allocation again
+                                if let Some(page_idx) = arena.allocate_page() {
+                                    let iova = self.bitmap_4k.base() + (page_idx as u64) * PAGE_SIZE_4K;
+                                    self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
+                                    self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
+                                    self.bitmap_4k.on_page_allocated(page_idx);
+                                    return Some(iova);
+                                }
+                            }
+                            
+                            // Try scanning for best window if both directions exhausted
+                            if arena.summary == 0 {
+                                if let Some((best_base, _)) = arena.scan_best_window(global_detail) {
+                                    if arena.jump_to_window(best_base, global_detail) {
+                                        if let Some(page_idx) = arena.allocate_page() {
+                                            let iova = self.bitmap_4k.base() + (page_idx as u64) * PAGE_SIZE_4K;
+                                            self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
+                                            self.stats.single_writer_allocs.fetch_add(1, Ordering::Relaxed);
+                                            self.bitmap_4k.on_page_allocated(page_idx);
+                                            return Some(iova);
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -6074,6 +6842,11 @@ impl IovaAllocatorFast {
             IovaGranularity::Page2M => self.free_2m_immediate(iova),
             IovaGranularity::Page1G => self.free_1g_immediate(iova),
         }
+    }
+
+    /// Free a contiguous range immediately (bypass quarantine and magazines)
+    pub fn free_range_immediate(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        self.free_range(iova, size)
     }
 
     /// Free a 4KB page (O(1)) - via quarantine

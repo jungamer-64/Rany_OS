@@ -6,8 +6,7 @@
 
 #![allow(dead_code)]
 
-use crate::graphics::{BitmapFont, Color, Font, Framebuffer, Rect};
-use crate::io::hid::MouseEvent;
+use crate::graphics::{Color, Font, Rect};
 use alloc::boxed::Box;
 use alloc::string::{String, ToString};
 

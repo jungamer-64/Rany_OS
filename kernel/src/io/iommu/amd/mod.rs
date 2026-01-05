@@ -23,7 +23,7 @@ use crate::io::iommu::tables::{phys_to_virt_usize, virt_ptr_to_phys};
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 use crate::io::iommu::{IovaAllocatorFast, IovaGranularity, PAGE_SIZE_4K};
 use crate::io::iommu::security::{SecurityEvent, SecurityNotifier};
-use crate::mm::buddy_alloc_contiguous_frames;
+use crate::mm::alloc_contiguous_frames;
 use crate::mm::mapping::phys_to_virt;
 use crate::sync::{PoisonLock, WakerQueue};
 use hashbrown::HashMap;
@@ -186,7 +186,7 @@ impl AmdDeviceTable {
 
         let frame_count = (size_bytes / PAGE_SIZE_4K) as usize;
         let phys_base =
-            buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+            alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
         let entry_ptr = NonNull::new(virt_base.as_u64() as *mut AmdDeviceTableEntry)
             .ok_or(IommuError::HardwareError)?;
@@ -288,7 +288,7 @@ impl AmdEventLog {
         let size_bytes = EVT_BUFFER_BYTES as u64;
         let frame_count = (size_bytes / PAGE_SIZE_4K) as usize;
         let phys_base =
-            buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+            alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
         let entry_ptr =
             NonNull::new(virt_base.as_u64() as *mut u32).ok_or(IommuError::HardwareError)?;
@@ -1495,7 +1495,7 @@ impl AmdCommandWaitToken {
         #[cfg(not(test))]
         {
             let mut polls = 0u64;
-            let mut token = self;
+            let token = self;
             poll_fn(|cx| {
                 if token.is_complete() {
                     return Poll::Ready(Ok(()));
@@ -1569,7 +1569,7 @@ impl AmdCommandState {
 
 fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError> {
     let frame_count = cmd::CMD_BUFFER_BYTES / (PAGE_SIZE_4K as usize);
-    let phys_base = buddy_alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+    let phys_base = alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
     let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
     let buffer_ptr = NonNull::new(virt_base.as_u64() as *mut cmd::AmdCommand)
         .ok_or(IommuError::HardwareError)?;
@@ -1579,7 +1579,7 @@ fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError
         core::ptr::write_bytes(virt_base.as_u64() as *mut u8, 0, cmd::CMD_BUFFER_BYTES);
     }
 
-    let sync_phys = buddy_alloc_contiguous_frames(1).ok_or(IommuError::OutOfMemory)?;
+    let sync_phys = alloc_contiguous_frames(1).ok_or(IommuError::OutOfMemory)?;
     let sync_virt = phys_to_virt(PhysAddr::new(sync_phys.as_u64()));
     let sync_ptr = NonNull::new(sync_virt.as_u64() as *mut u64).ok_or(IommuError::HardwareError)?;
     unsafe {
