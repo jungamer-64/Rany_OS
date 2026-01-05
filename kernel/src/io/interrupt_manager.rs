@@ -1079,7 +1079,7 @@ define_interrupt!(
 );
 
 mod tests {
-    use super::*;
+    
 
     #[test]
     fn test_msi_allocation() {

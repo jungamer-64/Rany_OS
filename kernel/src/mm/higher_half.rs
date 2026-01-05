@@ -1284,8 +1284,8 @@ impl PageTableManager {
             }
         }
 
-        // フォールバック: Buddy Allocatorを使用
-        crate::mm::buddy_alloc_frame()
+        // フォールバック: PMMグローバルを使用
+        crate::mm::alloc_frame()
             .map(|frame| PhysAddr::new(frame.start_address().as_u64()))
             .ok_or(MapError::FrameAllocationFailed)
     }

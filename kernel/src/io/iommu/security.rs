@@ -43,7 +43,7 @@ const FMT_BUF_SIZE: usize = 24;
 /// Returns a string slice valid for the lifetime of the buffer.
 #[inline]
 fn fmt_hex_u64(value: u64, buf: &mut [u8; FMT_BUF_SIZE]) -> &str {
-    use core::fmt::Write;
+    
 
     // Use index-based writing to avoid borrow conflicts
     let mut pos = 0usize;

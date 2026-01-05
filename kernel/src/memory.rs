@@ -11,6 +11,7 @@
 pub mod oom_killer;
 
 use crate::sync::PoisonLock;
+use boot_proto::{ExoBootInfo, MemoryMap, NumaInfo};
 use alloc::vec::Vec;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
@@ -380,6 +381,12 @@ pub const HEAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
 
 /// Exchange Heap のサイズ
 pub const EXCHANGE_HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
+const EFI_PAGE_SIZE: u64 = 4096;
+const EFI_MEMORY_TYPE_BOOT_SERVICES_CODE: u32 = 3;
+const EFI_MEMORY_TYPE_BOOT_SERVICES_DATA: u32 = 4;
+const EFI_MEMORY_TYPE_ACPI_RECLAIM: u32 = 9;
+const EFI_MEMORY_TYPE_CONVENTIONAL: u32 = 7;
+const MIN_USABLE_PHYS_ADDR: u64 = 0x100_0000; // 16 MiB
 
 /// ヒープの開始アドレスを計算（ランタイム）
 /// 物理メモリ16MBをPhysical Memory Offsetでマップした仮想アドレス
@@ -398,6 +405,191 @@ fn exchange_heap_start() -> u64 {
 static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
+fn is_usable_efi_memory_type(ty: u32) -> bool {
+    ty == EFI_MEMORY_TYPE_CONVENTIONAL
+        || ty == EFI_MEMORY_TYPE_BOOT_SERVICES_CODE
+        || ty == EFI_MEMORY_TYPE_BOOT_SERVICES_DATA
+}
+
+fn get_boot_memory_regions(memory_map: &MemoryMap) -> Vec<(PhysAddr, u64)> {
+    let mut regions = Vec::new();
+    if memory_map.entries.is_null() || memory_map.count == 0 {
+        return regions;
+    }
+
+    let count = memory_map.count.min(usize::MAX as u64) as usize;
+    let descriptors = unsafe { core::slice::from_raw_parts(memory_map.entries, count) };
+
+    for desc in descriptors {
+        if !is_usable_efi_memory_type(desc.r#type) {
+            continue;
+        }
+        if desc.page_count == 0 {
+            continue;
+        }
+        let size = match desc.page_count.checked_mul(EFI_PAGE_SIZE) {
+            Some(size) => size,
+            None => continue,
+        };
+        let start = desc.phys_start;
+        let end = match start.checked_add(size) {
+            Some(end) => end,
+            None => continue,
+        };
+        let start = start.max(MIN_USABLE_PHYS_ADDR);
+        if end <= start {
+            continue;
+        }
+        regions.push((PhysAddr::new(start), end - start));
+    }
+
+    regions
+}
+
+fn subtract_reserved_range(
+    regions: Vec<(PhysAddr, u64)>,
+    reserved_start: u64,
+    reserved_size: u64,
+) -> Vec<(PhysAddr, u64)> {
+    if reserved_size == 0 {
+        return regions;
+    }
+    let reserved_end = reserved_start.saturating_add(reserved_size);
+    let mut filtered = Vec::with_capacity(regions.len());
+
+    for (addr, size) in regions {
+        let start = addr.as_u64();
+        let end = start.saturating_add(size);
+        if reserved_end <= start || reserved_start >= end {
+            filtered.push((addr, size));
+            continue;
+        }
+        if start < reserved_start {
+            let left_size = reserved_start - start;
+            if left_size > 0 {
+                filtered.push((PhysAddr::new(start), left_size));
+            }
+        }
+        if end > reserved_end {
+            let right_size = end - reserved_end;
+            if right_size > 0 {
+                filtered.push((PhysAddr::new(reserved_end), right_size));
+            }
+        }
+    }
+
+    filtered
+}
+
+fn reserve_bootstrap_heaps(regions: Vec<(PhysAddr, u64)>) -> Vec<(PhysAddr, u64)> {
+    let hhdm = physical_memory_offset();
+    let heap_phys = heap_start().saturating_sub(hhdm);
+    let exchange_phys = exchange_heap_start().saturating_sub(hhdm);
+
+    let regions = subtract_reserved_range(regions, heap_phys, HEAP_SIZE as u64);
+    subtract_reserved_range(regions, exchange_phys, EXCHANGE_HEAP_SIZE as u64)
+}
+
+fn hhdm_ptr_to_phys(ptr: u64) -> Option<u64> {
+    if ptr == 0 {
+        return None;
+    }
+    let hhdm = physical_memory_offset();
+    if ptr < hhdm {
+        return None;
+    }
+    Some(ptr - hhdm)
+}
+
+fn addr_to_phys(addr: u64) -> Option<u64> {
+    if addr == 0 {
+        return None;
+    }
+    let hhdm = physical_memory_offset();
+    if addr >= hhdm {
+        Some(addr - hhdm)
+    } else {
+        Some(addr)
+    }
+}
+
+fn reserve_boot_info_ranges(
+    mut regions: Vec<(PhysAddr, u64)>,
+    boot_info: &ExoBootInfo,
+) -> Vec<(PhysAddr, u64)> {
+    let boot_info_ptr = boot_info as *const _ as u64;
+    if let Some(phys) = hhdm_ptr_to_phys(boot_info_ptr) {
+        regions = subtract_reserved_range(
+            regions,
+            phys,
+            core::mem::size_of::<ExoBootInfo>() as u64,
+        );
+    }
+
+    let mmap_ptr = boot_info.memory_map.entries as u64;
+    if let Some(phys) = hhdm_ptr_to_phys(mmap_ptr) {
+        let entry_size = core::mem::size_of::<boot_proto::MemoryDescriptor>() as u64;
+        if let Some(bytes) = boot_info.memory_map.count.checked_mul(entry_size) {
+            regions = subtract_reserved_range(regions, phys, bytes);
+        }
+    }
+
+    if let Some(phys) = hhdm_ptr_to_phys(boot_info.cmdline_ptr) {
+        let size = boot_info.cmdline_len.saturating_add(1);
+        if size > 0 {
+            regions = subtract_reserved_range(regions, phys, size);
+        }
+    }
+
+    if let Some(phys) = hhdm_ptr_to_phys(boot_info.initramfs.ptr) {
+        let size = boot_info.initramfs.size;
+        if size > 0 {
+            regions = subtract_reserved_range(regions, phys, size);
+        }
+    }
+
+    if let Some(phys) = addr_to_phys(boot_info.framebuffer.address) {
+        let size = boot_info.framebuffer.size() as u64;
+        if size > 0 {
+            regions = subtract_reserved_range(regions, phys, size);
+        }
+    }
+
+    let ap_boot = &boot_info.ap_boot;
+    if ap_boot.trampoline_size > 0 {
+        regions = subtract_reserved_range(
+            regions,
+            ap_boot.trampoline_addr,
+            ap_boot.trampoline_size,
+        );
+    }
+    if ap_boot.stack_size > 0 && ap_boot.stack_count > 0 {
+        let size = (ap_boot.stack_size as u64)
+            .checked_mul(ap_boot.stack_count as u64)
+            .unwrap_or(0);
+        if size > 0 {
+            regions = subtract_reserved_range(regions, ap_boot.stack_base, size);
+        }
+    }
+
+    let runtime = &boot_info.uefi_runtime;
+    let runtime_count = (runtime.runtime_mmap_count as usize)
+        .min(runtime.runtime_mmap.len());
+    for i in 0..runtime_count {
+        let region = &runtime.runtime_mmap[i];
+        if region.phys_addr == 0 || region.page_count == 0 {
+            continue;
+        }
+        if let Some(size) = region.page_count.checked_mul(EFI_PAGE_SIZE) {
+            if size > 0 {
+                regions = subtract_reserved_range(regions, region.phys_addr, size);
+            }
+        }
+    }
+
+    regions
+}
+
 /// メモリサブシステムの完全初期化
 ///
 /// 初期化順序:
@@ -406,7 +598,7 @@ static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
 /// 3. Exchange Heap（ゼロコピーIPC用）
 /// 4. Per-CPU データ構造
 /// 5. Per-Core Slab Cache
-pub fn init(rsdp_addr: Option<u64>) {
+pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Option<&ExoBootInfo>) {
     use core::sync::atomic::Ordering;
 
     crate::io::log::early_print("[MEM] init start\n");
@@ -426,10 +618,25 @@ pub fn init(rsdp_addr: Option<u64>) {
     init_global_heap();
     crate::io::log::early_print("[MEM] heap done\n");
 
-    // 2. Buddy Allocator の初期化（デフォルトのメモリ領域を使用）
-    // 注: 本番環境ではブートローダーからメモリマップを取得
+    // 2. Buddy Allocator の初期化（ブートローダーのメモリマップを使用）
     crate::io::log::early_print("[MEM] buddy prep\n");
-    let usable_regions = get_default_memory_regions();
+    let memory_map = boot_info.map(|info| &info.memory_map);
+    let mut usable_regions = if let Some(map) = memory_map {
+        crate::io::log::early_print("[MEM] boot memory map\n");
+        let regions = get_boot_memory_regions(map);
+        if regions.is_empty() {
+            crate::io::log::early_print("[MEM] boot map empty\n");
+            get_default_memory_regions()
+        } else {
+            regions
+        }
+    } else {
+        get_default_memory_regions()
+    };
+    usable_regions = reserve_bootstrap_heaps(usable_regions);
+    if let Some(info) = boot_info {
+        usable_regions = reserve_boot_info_ranges(usable_regions, info);
+    }
     crate::io::log::early_print("[MEM] buddy init\n");
 
     unsafe {
@@ -437,31 +644,59 @@ pub fn init(rsdp_addr: Option<u64>) {
     }
     crate::io::log::early_print("[MEM] buddy done\n");
 
-    // 2.5. NUMA情報をACPIから取得してBuddyに登録（任意）
-    crate::io::log::early_print("[MEM] SRAT check\n");
-    if let Some(_rsdp_addr_val) = rsdp_addr {
-        crate::io::log::early_print("[MEM] parsing SRAT\n");
-        // Acquire SRAT entries from ACPI parser if available
-        let regions = crate::io::acpi::numa_memory_regions();
-        for (base, length, proximity) in regions {
-            // Log using a heap-backed format (heap already initialized at this point)
-            let s = alloc::format!(
-                "[MEM] registering region {:#x} len {:#x} prox {}\n",
-                base,
-                length,
-                proximity
-            );
-            crate::io::log::early_print(&s);
-
-            // Convert to PhysAddr and NumaNodeId
-            let base_phys = x86_64::PhysAddr::new(base);
-            let node = crate::mm::frame_allocator::NumaNodeId::new(proximity as u8);
+    // 2.5. NUMA情報（ブートローダー/ACPI）からPMMを初期化
+    let mut pmm_initialized = false;
+    if let Some(info) = numa_info {
+        if info.node_count > 0 {
+            crate::io::log::early_print("[MEM] NUMA info from bootloader\n");
             unsafe {
-                crate::mm::init_numa_frame_allocator(&[(base_phys, length, node)]);
+                if crate::mm::init_numa_frame_allocator_from_info(info) {
+                    pmm_initialized = true;
+                }
             }
         }
-    } else {
-        crate::io::log::early_print("[MEM] no SRAT (RSDP not provided)\n");
+    }
+
+    if !pmm_initialized {
+        crate::io::log::early_print("[MEM] SRAT check\n");
+        if let Some(_rsdp_addr_val) = rsdp_addr {
+            crate::io::log::early_print("[MEM] parsing SRAT\n");
+            // Acquire SRAT entries from ACPI parser if available
+            let regions = crate::io::acpi::numa_memory_regions();
+            let mut numa_regions = alloc::vec::Vec::new();
+            for (base, length, proximity) in regions {
+                // Log using a heap-backed format (heap already initialized at this point)
+                let s = alloc::format!(
+                    "[MEM] registering region {:#x} len {:#x} prox {}\n",
+                    base,
+                    length,
+                    proximity
+                );
+                crate::io::log::early_print(&s);
+
+                // Convert to PhysAddr and NumaNodeId
+                let base_phys = x86_64::PhysAddr::new(base);
+                let node = crate::mm::NumaNodeId::new(proximity as u8);
+                numa_regions.push((base_phys, length, node));
+            }
+            if !numa_regions.is_empty() {
+                unsafe {
+                    crate::mm::init_numa_frame_allocator(&numa_regions);
+                    pmm_initialized = true;
+                }
+            } else {
+                crate::io::log::early_print("[MEM] SRAT empty\n");
+            }
+        } else {
+            crate::io::log::early_print("[MEM] no SRAT (RSDP not provided)\n");
+        }
+    }
+
+    if !pmm_initialized {
+        crate::io::log::early_print("[MEM] using global PMM\n");
+        unsafe {
+            crate::mm::init_frame_allocator(&usable_regions);
+        }
     }
 
     // 3. Exchange Heap の初期化（ゼロコピーIPC用）
@@ -490,6 +725,45 @@ pub fn init(rsdp_addr: Option<u64>) {
     // メモリ統計を表示（スキップ）
     // print_memory_stats();
     crate::io::log::early_print("[MEM] all done\n");
+}
+
+/// ACPI Reclaimable メモリをPMMへ返却
+pub fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfo) {
+    let mmap = &boot_info.memory_map;
+    if mmap.entries.is_null() || mmap.count == 0 {
+        return;
+    }
+
+    let count = mmap.count.min(usize::MAX as u64) as usize;
+    let descriptors = unsafe { core::slice::from_raw_parts(mmap.entries, count) };
+
+    let mut total_pages = 0u64;
+    for desc in descriptors {
+        if desc.r#type != EFI_MEMORY_TYPE_ACPI_RECLAIM {
+            continue;
+        }
+        if desc.page_count == 0 {
+            continue;
+        }
+        let size = match desc.page_count.checked_mul(EFI_PAGE_SIZE) {
+            Some(size) => size,
+            None => continue,
+        };
+        let start = desc.phys_start.max(MIN_USABLE_PHYS_ADDR);
+        let end = match desc.phys_start.checked_add(size) {
+            Some(end) => end,
+            None => continue,
+        };
+        if end <= start {
+            continue;
+        }
+        let released = crate::mm::pmm_release_range(PhysAddr::new(start), end - start);
+        total_pages += released;
+    }
+
+    if total_pages > 0 {
+        log::info!("[MEM] Reclaimed ACPI memory: {} pages", total_pages);
+    }
 }
 
 /// グローバルヒープの初期化（Buddy Allocatorベース）

@@ -8,8 +8,7 @@ pub mod eval;
 pub mod expr_parser;
 pub mod tokenizer;
 
-pub use ast::{BinaryOp, Expr, UnaryOp};
+pub use ast::{BinaryOp, Expr};
 pub use error::ParseError;
-pub use eval::{EvalContext, eval_closure, eval_closure_as_bool, eval_expr};
-pub use expr_parser::{ExprParser, parse_expression};
-pub use tokenizer::{Token, Tokenizer};
+pub use eval::eval_closure_as_bool;
+pub use expr_parser::parse_expression;

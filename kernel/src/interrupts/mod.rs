@@ -24,7 +24,7 @@ macro_rules! handler_to_x86 {
     ($h:path as $t:ty) => {
         // Convert function item to integer then to the desired function pointer type.
         // This avoids trying to transmute the zero-sized function item type directly.
-        unsafe { core::mem::transmute::<usize, $t>($h as usize) }
+        unsafe { core::mem::transmute::<usize, $t>($h as *const () as usize) }
     };
 }
 
@@ -451,6 +451,9 @@ pub fn poll_timer_events() {
 
         // Interrupt-Wakerブリッジの処理
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
+
+        // PMMメンテナンス (非ISRコンテキスト)
+        crate::mm::pmm_maintenance_tick(tick);
 
         // ペンディングのプリエンプションを処理
         if crate::task::preemption::is_preemption_pending() {

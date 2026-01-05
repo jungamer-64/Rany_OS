@@ -244,7 +244,7 @@ impl KernelServices for ExoKernel {
     // ========================================================================
 
     fn net_create_endpoint(&self) -> Result<TcpEndpoint, KapiError> {
-        use crate::net::endpoint::{SocketFd, create_tcp_socket};
+        use crate::net::endpoint::create_tcp_socket;
 
         let owned = create_tcp_socket();
         let fd = owned.fd();
@@ -426,8 +426,7 @@ impl GuiServices for ExoKernel {
 
     fn poll_input_event(&self) -> Option<kernel_api::gui::InputEvent> {
         use kernel_api::gui::{
-            InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState, MouseButtons,
-            MouseEvent as KapiMouseEvent,
+            InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState,
         };
         // Bring the KeyEventExt trait into scope so we can call `.to_char()`
         use crate::io::hid::keyboard::KeyEventExt;
@@ -520,8 +519,7 @@ impl GuiServices for ExoKernel {
 // ============================================================================
 
 use kernel_api::shell::{
-    DirEntry as KapiDirEntry, FileType as KapiFileType, MemoryStats, ProcessInfo,
-    ProcessState as KapiProcessState, ShellServices, SystemInfo as KapiSystemInfo,
+    DirEntry as KapiDirEntry, MemoryStats, ProcessInfo, ShellServices, SystemInfo as KapiSystemInfo,
 };
 
 impl ShellServices for ExoKernel {

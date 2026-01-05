@@ -60,7 +60,7 @@ impl IntelIommuDriver {
 
     pub(crate) fn enable(&self) -> Result<(), IommuError> {
         let registry = self.registry()?;
-        for (idx, controller) in registry.controllers.iter().enumerate() {
+        for (_idx, controller) in registry.controllers.iter().enumerate() {
             unsafe {
                 controller.enable()?;
             }
@@ -70,7 +70,7 @@ impl IntelIommuDriver {
 
     pub(crate) fn disable(&self) -> Result<(), IommuError> {
         let registry = self.registry()?;
-        for (idx, controller) in registry.controllers.iter().enumerate() {
+        for (_idx, controller) in registry.controllers.iter().enumerate() {
             unsafe {
                 controller.disable()?;
             }

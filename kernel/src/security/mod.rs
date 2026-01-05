@@ -35,10 +35,6 @@ pub mod policy;
 pub mod static_capability; // 新: 静的ケイパビリティシステム
 
 // Re-export MPK API
-pub use mpk::{
-    DomainCallError, DomainPermissions, MpkManager, PkruValue, ProtectionKeyClass,
-    domain_transition_prologue, is_pku_enabled, secure_domain_call,
-};
 
 // Re-export capability types for convenience
 pub use capability::CapabilitySet;

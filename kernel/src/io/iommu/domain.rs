@@ -1847,7 +1847,7 @@ impl IommuDomain {
         }
 
         let start_shard = Self::shard_for_iova(iova);
-        let mut guard = self.shards[start_shard]
+        let guard = self.shards[start_shard]
             .lock()
             .map_err(|_| IommuError::Poisoned)?;
         let mapping = guard

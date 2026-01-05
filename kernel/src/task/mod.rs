@@ -181,7 +181,7 @@ pub fn with_timeout<F: Future>(future: F, timeout_ms: u64) -> TimeoutFuture<F> {
 /// to be notified. Intended for tests and transitional use only.
 pub fn block_on<F: Future>(future: F) -> F::Output {
     use alloc::sync::Arc;
-    use core::pin::Pin;
+    
     use core::sync::atomic::{AtomicBool, Ordering};
     use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 

@@ -23,8 +23,6 @@
 use core::fmt::Write;
 use hal::IoPort;
 
-#[cfg(not(feature = "bench"))]
-use crate::smp;
 use crate::sync::IrqMutex;
 use crate::time;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};

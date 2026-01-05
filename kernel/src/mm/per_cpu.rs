@@ -8,9 +8,9 @@
 // - cpu_id引数が不要になり、APIが簡素化
 // ============================================================================
 #![allow(dead_code)]
-use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::arch::asm;
-use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 /// Cache entry for device to domain mapping
@@ -334,6 +334,8 @@ static INITIALIZED: spin::Once<()> = spin::Once::new();
 
 /// 初期化済みCPU数
 static ACTIVE_CPUS: Mutex<usize> = Mutex::new(0);
+/// Online CPU bitmask (bit N set => CPU N online)
+static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
 
 /// GsBaseレジスタを読み取る
 ///
@@ -730,6 +732,7 @@ pub unsafe fn init_per_cpu(num_cpus: usize) {
         crate::io::log::early_print("[PCPU] cpus ok\n");
 
         *ACTIVE_CPUS.lock() = num_cpus;
+        mark_cpu_online(0);
         crate::io::log::early_print("[PCPU] done\n");
     });
     crate::io::log::early_print("[PCPU] exit\n");
@@ -750,6 +753,14 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
         return;
     }
 
+    // Initialize per-CPU slot on demand if it wasn't pre-initialized.
+    if unsafe { PER_CPU_DATA[cpu_id].self_ptr } == 0 {
+        unsafe {
+            PER_CPU_DATA[cpu_id] = PerCpuData::new(cpu_id);
+            PER_CPU_DATA[cpu_id].set_self_ptr();
+        }
+    }
+
     // SAFETY: cpu_idは有効範囲内
     let per_cpu_ptr = unsafe { &PER_CPU_DATA[cpu_id] as *const _ as u64 };
 
@@ -765,6 +776,36 @@ pub unsafe fn setup_current_cpu(cpu_id: usize) {
             write_gs_base_msr(per_cpu_ptr);
         }
     }
+
+    mark_cpu_online(cpu_id);
+}
+
+/// Mark a CPU as online (best-effort)
+pub fn mark_cpu_online(cpu_id: usize) {
+    if cpu_id >= MAX_CPUS {
+        return;
+    }
+    let bit = 1u64 << cpu_id;
+    ONLINE_CPU_MASK.fetch_or(bit, Ordering::Release);
+    let mut active = ACTIVE_CPUS.lock();
+    if cpu_id + 1 > *active {
+        *active = cpu_id + 1;
+    }
+}
+
+/// Get a list of online CPU IDs
+pub fn online_cpu_ids() -> Vec<usize> {
+    let mask = ONLINE_CPU_MASK.load(Ordering::Acquire);
+    let mut ids = Vec::new();
+    for cpu_id in 0..MAX_CPUS {
+        if (mask & (1u64 << cpu_id)) != 0 {
+            ids.push(cpu_id);
+        }
+    }
+    if ids.is_empty() {
+        ids.push(0);
+    }
+    ids
 }
 
 /// 現在のCPU IDを取得

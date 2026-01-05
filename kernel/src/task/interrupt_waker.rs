@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::task::Waker;
 use spin::Mutex;
 

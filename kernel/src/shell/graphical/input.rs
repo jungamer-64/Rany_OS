@@ -9,8 +9,7 @@
 
 #![allow(dead_code)]
 
-use crate::graphics::Framebuffer;
-use crate::io::hid::{KeyCode, KeyEvent, KeyEventExt, KeyState, MouseEvent};
+use crate::io::hid::{KeyCode, KeyEvent, KeyEventExt, KeyState};
 
 use super::shell::GraphicalShell;
 

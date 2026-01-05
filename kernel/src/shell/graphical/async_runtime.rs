@@ -13,7 +13,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::format;
 use alloc::vec;
 use spin::Mutex;
@@ -21,7 +20,7 @@ use spin::Mutex;
 use crate::graphics::Color;
 use crate::io::hid::{KeyCode, KeyEvent, KeyState, Modifiers};
 use crate::shell::exoshell::{ExoShell, ExoValue};
-use kernel_api::gui::{InputEvent, KeyEvent as KapiKeyEvent, KeyState as KapiKeyState};
+use kernel_api::gui::{InputEvent, KeyState as KapiKeyState};
 use kernel_api::services::kernel;
 
 use super::shell::GraphicalShell;
@@ -168,7 +167,7 @@ pub async fn run_async_shell() {
                                     };
                                     shell.handle_key(hid_event);
                                 }
-                                InputEvent::Mouse(kapi_mouse) => {
+                                InputEvent::Mouse(_kapi_mouse) => {
                                     #[cfg(feature = "mouse")]
                                     {
                                         use crate::io::hid::MouseEvent;

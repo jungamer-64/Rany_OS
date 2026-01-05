@@ -477,9 +477,11 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
 
         let phys = if frame_count == 1 {
             let frame = if let Some(node) = numa_hint {
-                crate::mm::buddy_alloc_frame_on_node(node)
+                crate::mm::alloc_frame_on_numa_node(crate::mm::NumaNodeId::new(
+                    node as u8,
+                ))
             } else {
-                crate::mm::buddy_alloc_frame()
+                crate::mm::alloc_frame()
             }
             .ok_or(IommuError::OutOfMemory)?;
             frame.start_address().as_u64()
@@ -487,7 +489,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             if numa_hint.is_some() {
                 log::debug!("[IOMMU] NUMA hint ignored for contiguous table allocation");
             }
-            crate::mm::buddy_alloc_contiguous_frames(frame_count)
+            crate::mm::alloc_contiguous_frames(frame_count)
                 .ok_or(IommuError::OutOfMemory)?
                 .as_u64()
         };
@@ -603,14 +605,14 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
 
 impl<T: Sized + Copy> Drop for HardwareTable<T> {
     fn drop(&mut self) {
-        // SAFETY: We own the backing frames and they were allocated via buddy allocator.
+        // SAFETY: We own the backing frames and they were allocated via PMM.
         // The caller must ensure hardware is not using this table before drop.
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
         for idx in 0..self.frame_count {
             let addr = self.phys + (idx as u64) * (crate::mm::PAGE_SIZE_4K as u64);
             let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
-            crate::mm::buddy_dealloc_frame(frame);
+            crate::mm::dealloc_frame(frame);
         }
     }
 }
