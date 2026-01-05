@@ -55,7 +55,7 @@
 //! - Bitmap layer: Protected by PoisonLock (short critical sections)
 //! - Tree layer: Protected by PoisonLock (rarely accessed)
 
-use core::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI64, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use crate::sync::IrqMutex;
 use super::types::IommuError;
 
@@ -109,6 +109,9 @@ const PAGES_PER_L2_BIT: usize = BITS_PER_WORD * BITS_PER_WORD; // 4096 pages
 
 /// 4KB pages per 2MB block (2MB / 4KB = 512)
 const PAGES_PER_2MB_BLOCK: usize = 512;
+
+/// Words (u64) per 2MB block (512 pages / 64 bits per word = 8)
+const WORDS_PER_2MB_BLOCK: usize = PAGES_PER_2MB_BLOCK / BITS_PER_WORD;
 
 /// 2MB blocks per 1GB block (1GB / 2MB = 512)
 const BLOCKS_2MB_PER_1GB: usize = 512;
@@ -221,6 +224,111 @@ impl Magazine {
     }
 }
 
+// ============================================================================
+// Sub-Magazine (Per-CPU Claimed Word for Zero-Contention Allocation)
+// ============================================================================
+
+/// Per-CPU sub-magazine holding a claimed word (64 pages) for zero-contention allocation
+///
+/// Instead of doing CAS per-bit allocation from the shared bitmap, each CPU can
+/// "claim" an entire word using `swap(0)` (single atomic op), then allocate from
+/// that word locally without any synchronization.
+///
+/// # Benefits
+/// - **64 allocations per atomic op**: One swap claims 64 pages
+/// - **Zero contention**: Local allocation is pure arithmetic (no CAS loops)
+/// - **Perfect for burst allocation**: Common in DMA buffer allocation
+///
+/// # Lifecycle
+/// 1. CPU claims a word via `swap(0)` - word is now "owned" locally
+/// 2. Allocate pages by finding set bits in `bits` (local tzcnt)
+/// 3. When `bits == 0`, claim another word or fall back to magazine
+/// 4. On CPU idle/shutdown, return remaining bits to bitmap
+#[repr(C)]
+pub struct SubMagazine {
+    /// Bit mask of available pages (1 = free, 0 = allocated)
+    /// When empty (0), need to claim a new word
+    bits: u64,
+    /// Word index in the detail bitmap that this sub-magazine owns
+    /// Only valid when bits != 0
+    word_idx: usize,
+    /// Base IOVA for this word (cached for fast address calculation)
+    /// Only valid when bits != 0
+    base_iova: u64,
+}
+
+impl SubMagazine {
+    /// Create an empty sub-magazine
+    pub const fn new() -> Self {
+        Self {
+            bits: 0,
+            word_idx: 0,
+            base_iova: 0,
+        }
+    }
+
+    /// Check if sub-magazine has available pages
+    #[inline]
+    pub fn has_pages(&self) -> bool {
+        self.bits != 0
+    }
+
+    /// Allocate a single page from the sub-magazine (O(1), no atomics)
+    ///
+    /// Returns Some(iova) if successful, None if sub-magazine is empty.
+    #[inline]
+    pub fn allocate(&mut self) -> Option<u64> {
+        if self.bits == 0 {
+            return None;
+        }
+
+        // Find first set bit (free page)
+        let bit_idx = self.bits.trailing_zeros() as usize;
+        
+        // Clear the bit (mark as allocated)
+        self.bits &= !(1u64 << bit_idx);
+
+        // Calculate IOVA
+        Some(self.base_iova + (bit_idx as u64) * PAGE_SIZE_4K)
+    }
+
+    /// Claim a word from the bitmap (swap the word to 0, take ownership)
+    ///
+    /// Returns the number of pages claimed (popcount of claimed bits).
+    #[inline]
+    pub fn claim(&mut self, bits: u64, word_idx: usize, base_iova: u64) -> usize {
+        self.bits = bits;
+        self.word_idx = word_idx;
+        self.base_iova = base_iova;
+        bits.count_ones() as usize
+    }
+
+    /// Return remaining pages to the bitmap
+    ///
+    /// Returns (word_idx, bits) if there are remaining pages, None otherwise.
+    #[inline]
+    pub fn return_remaining(&mut self) -> Option<(usize, u64)> {
+        if self.bits == 0 {
+            return None;
+        }
+        let result = (self.word_idx, self.bits);
+        self.bits = 0;
+        Some(result)
+    }
+
+    /// Get remaining page count
+    #[inline]
+    pub fn remaining_count(&self) -> usize {
+        self.bits.count_ones() as usize
+    }
+
+    /// Get the word index (only valid when has_pages())
+    #[inline]
+    pub fn word_idx(&self) -> usize {
+        self.word_idx
+    }
+}
+
 /// Per-CPU magazine set (one magazine per size class)
 ///
 /// Also holds per-CPU allocation hints and arena boundaries to avoid cache line
@@ -231,6 +339,13 @@ impl Magazine {
 /// Each CPU is assigned a preferred arena (range of words in the bitmap).
 /// Allocations first try the local arena, then steal from other arenas if needed.
 /// This dramatically reduces contention on multi-core systems.
+///
+/// # Per-CPU Free Word Stack
+///
+/// Each CPU maintains a local stack of non-empty word indices. When a word
+/// transitions 0→non-zero (via free), the index is pushed to the local stack.
+/// On allocation, pop from the local stack first for O(1) allocation.
+/// This eliminates the race condition in the previous global lock-free design.
 #[repr(C, align(128))] // Two cache lines to avoid false sharing
 pub struct PerCpuMagazine {
     /// Magazines indexed by size class
@@ -239,6 +354,11 @@ pub struct PerCpuMagazine {
     pub hint_4k: AtomicUsize,
     /// Per-CPU hint for 2MB allocation (block index to start searching)
     pub hint_2m: AtomicUsize,
+    /// Per-CPU hint for partial 2MB blocks (for hugepage-preserving 4KB alloc)
+    pub hint_2m_partial: AtomicUsize,
+    /// Per-CPU hint offset (scattered to avoid initial contention)
+    /// Added to arena_start to prevent all CPUs starting at same point
+    pub hint_offset: usize,
     /// Start of this CPU's preferred arena (4KB word index, inclusive)
     pub arena_start_4k: usize,
     /// End of this CPU's preferred arena (4KB word index, exclusive)
@@ -247,6 +367,18 @@ pub struct PerCpuMagazine {
     pub arena_start_2m: usize,
     /// End of this CPU's preferred arena (2MB block index, exclusive)
     pub arena_end_2m: usize,
+    /// Per-CPU local free word stack (IRQ-off protected, no atomics needed)
+    pub free_word_stack: IrqMutex<LocalFreeWordStack>,
+    /// Per-CPU free page counter delta (reduces global counter updates)
+    pub free_count_delta_4k: AtomicI64,
+    /// Per-CPU free 2MB block counter delta
+    pub free_count_delta_2m: AtomicI64,
+    /// Remote free ring: receives frees from other CPUs for this CPU's arena
+    /// Lock-free MPSC: other CPUs push, this CPU drains
+    pub remote_free_ring: RemoteFreeRing,
+    /// Sub-magazine: claimed word (64 pages) for zero-contention allocation
+    /// Protected by IRQ-off (same as free_word_stack)
+    pub sub_magazine_4k: IrqMutex<SubMagazine>,
 }
 
 impl PerCpuMagazine {
@@ -260,29 +392,195 @@ impl PerCpuMagazine {
             ],
             hint_4k: AtomicUsize::new(0),
             hint_2m: AtomicUsize::new(0),
+            hint_2m_partial: AtomicUsize::new(0),
+            hint_offset: 0,
             // Default: full range (will be configured by IovaAllocatorFast::new)
             arena_start_4k: 0,
             arena_end_4k: usize::MAX,
             arena_start_2m: 0,
             arena_end_2m: usize::MAX,
+            free_word_stack: IrqMutex::new(LocalFreeWordStack::new()),
+            free_count_delta_4k: AtomicI64::new(0),
+            free_count_delta_2m: AtomicI64::new(0),
+            remote_free_ring: RemoteFreeRing::new(),
+            sub_magazine_4k: IrqMutex::new(SubMagazine::new()),
         }
     }
 
     /// Configure this CPU's arena boundaries
-    pub fn set_arena(&mut self, start_4k: usize, end_4k: usize, start_2m: usize, end_2m: usize) {
+    /// 
+    /// # 5C: Hint Scattering
+    /// cpu_id is used to scatter the initial hint position within the arena,
+    /// preventing all CPUs from starting at the same point and reducing
+    /// contention at startup or under heavy load.
+    pub fn set_arena(&mut self, cpu_id: usize, start_4k: usize, end_4k: usize, start_2m: usize, end_2m: usize) {
         self.arena_start_4k = start_4k;
         self.arena_end_4k = end_4k;
         self.arena_start_2m = start_2m;
         self.arena_end_2m = end_2m;
-        // Initialize hints to arena start
-        self.hint_4k = AtomicUsize::new(start_4k);
-        self.hint_2m = AtomicUsize::new(start_2m);
+        
+        // 5C: Scatter hint offset based on cpu_id to reduce contention
+        // Use golden ratio-based scattering for even distribution
+        let arena_size_4k = end_4k.saturating_sub(start_4k);
+        let arena_size_2m = end_2m.saturating_sub(start_2m);
+        
+        // Golden ratio ≈ 0.618... → multiply by (2^32 * 0.618) ≈ 0x9E3779B9
+        let scatter_4k = ((cpu_id as u64).wrapping_mul(0x9E3779B9) as usize) % arena_size_4k.max(1);
+        let scatter_2m = ((cpu_id as u64).wrapping_mul(0x9E3779B9) as usize) % arena_size_2m.max(1);
+        
+        self.hint_offset = scatter_4k;
+        self.hint_4k = AtomicUsize::new(start_4k + scatter_4k);
+        self.hint_2m = AtomicUsize::new(start_2m + scatter_2m);
+        self.hint_2m_partial = AtomicUsize::new(start_2m + scatter_2m);
+        
+        // Initialize remote free ring sequences
+        self.remote_free_ring.init();
     }
 
     /// Get magazine for a size class
     #[inline]
     pub fn get(&self, size_class: usize) -> Option<&IrqMutex<Magazine>> {
         self.magazines.get(size_class)
+    }
+
+    /// Flush per-CPU counter deltas to global counters
+    ///
+    /// Returns (delta_4k, delta_2m) that were flushed
+    pub fn flush_counter_deltas(&self) -> (i64, i64) {
+        let delta_4k = self.free_count_delta_4k.swap(0, Ordering::Relaxed);
+        let delta_2m = self.free_count_delta_2m.swap(0, Ordering::Relaxed);
+        (delta_4k, delta_2m)
+    }
+}
+
+// ============================================================================
+// Free Word Stack (Non-Empty Word Index List for O(1) Allocation)
+// ============================================================================
+
+/// Capacity of the free word stack per CPU
+/// Smaller than global since it's per-CPU and protected by IRQ-off
+const FREE_WORD_STACK_CAPACITY: usize = 256;
+
+/// Per-CPU local stack of non-empty word indices (IRQ-off protected, no CAS needed)
+///
+/// When a word transitions from 0 to non-zero (via free), its index is pushed.
+/// When allocating, pop an index and try to allocate from that word.
+///
+/// # Design Decisions
+///
+/// - **Per-CPU isolation**: Each CPU has its own stack, eliminating contention
+/// - **IRQ-off protected**: Push/pop are done under IRQ-off guard (no atomics needed)
+/// - **Duplicate pushes allowed**: A word index may appear multiple times.
+///   On pop, we validate the word is still non-zero before using it.
+/// - **Bounded capacity**: If the stack is full, we don't push (fallback to scan).
+/// - **Cross-CPU return**: When freeing pages allocated by another CPU, the word
+///   index is still pushed to the local (freeing CPU's) stack. This is fine because
+///   we validate on pop anyway.
+///
+/// This eliminates the race condition in the previous global lock-free stack design
+/// where push could increment top before writing the entry, causing pop to read INVALID.
+#[repr(C, align(64))]
+pub struct LocalFreeWordStack {
+    /// Stack entries (word indices)
+    entries: [usize; FREE_WORD_STACK_CAPACITY],
+    /// Stack top (number of valid entries)
+    top: usize,
+}
+
+impl LocalFreeWordStack {
+    /// Create a new empty stack
+    pub const fn new() -> Self {
+        Self {
+            entries: [0; FREE_WORD_STACK_CAPACITY],
+            top: 0,
+        }
+    }
+
+    /// Push a word index onto the stack (O(1), IRQ-off required)
+    ///
+    /// Returns true if pushed, false if stack is full.
+    #[inline]
+    pub fn push(&mut self, word_idx: usize) -> bool {
+        if self.top >= FREE_WORD_STACK_CAPACITY {
+            return false; // Stack full
+        }
+        self.entries[self.top] = word_idx;
+        self.top += 1;
+        true
+    }
+
+    /// Pop a word index from the stack (O(1), IRQ-off required)
+    ///
+    /// Returns Some(word_idx) if available, None if stack is empty.
+    /// The caller must validate that the word is still non-zero.
+    #[inline]
+    pub fn pop(&mut self) -> Option<usize> {
+        if self.top == 0 {
+            return None; // Stack empty
+        }
+        self.top -= 1;
+        Some(self.entries[self.top])
+    }
+
+    /// Get current count
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.top
+    }
+
+    /// Check if empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.top == 0
+    }
+
+    /// Clear the stack
+    #[inline]
+    pub fn clear(&mut self) {
+        self.top = 0;
+    }
+}
+
+/// Legacy global lock-free stack (kept for backward compatibility / stats)
+///
+/// This is a simpler atomic counter for approximate stats only.
+/// The actual free word tracking is now per-CPU via LocalFreeWordStack.
+#[repr(C, align(64))]
+pub struct FreeWordStack {
+    /// Approximate count of non-empty words (for stats, not allocation)
+    approx_count: AtomicUsize,
+}
+
+impl FreeWordStack {
+    /// Create a new empty stack
+    pub const fn new() -> Self {
+        Self {
+            approx_count: AtomicUsize::new(0),
+        }
+    }
+
+    /// Increment approximate count (called when word becomes non-empty)
+    #[inline]
+    pub fn notify_non_empty(&self) {
+        self.approx_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Decrement approximate count (called when word becomes empty)
+    #[inline]
+    pub fn notify_empty(&self) {
+        self.approx_count.fetch_sub(1, Ordering::Relaxed);
+    }
+
+    /// Get approximate count (for stats)
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.approx_count.load(Ordering::Relaxed)
+    }
+
+    /// Check if empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -426,6 +724,270 @@ impl QuarantineRing {
 }
 
 // ============================================================================
+// Remote Free Ring (Cross-CPU Free Aggregation for Owner-Based Bitmap Access)
+// ============================================================================
+
+/// Capacity of remote free ring per CPU
+/// Must be power of 2 for efficient modulo operation
+const REMOTE_FREE_RING_CAPACITY: usize = 512;
+
+/// Entry in the remote free ring
+#[derive(Clone, Copy)]
+pub struct RemoteFreeEntry {
+    /// IOVA address to be freed
+    pub iova: u64,
+    /// Size class: 0 = 4KB, 1 = 2MB, 2 = 1GB
+    pub size_class: u8,
+}
+
+impl RemoteFreeEntry {
+    pub const fn empty() -> Self {
+        Self {
+            iova: 0,
+            size_class: 0,
+        }
+    }
+}
+
+/// Lock-free MPSC (Multi-Producer Single-Consumer) ring for remote frees
+///
+/// When a CPU frees an IOVA that belongs to another CPU's arena, it pushes
+/// the IOVA to the owner CPU's remote free ring. The owner CPU periodically
+/// drains this ring and updates its bitmap.
+///
+/// # Design (Vyukov MPSC with Sequences)
+///
+/// Uses sequence numbers to avoid the "hole" problem where producers reserve
+/// slots but haven't written yet:
+/// - seq == pos: slot is ready for producer at position `pos`
+/// - seq == pos + 1: slot contains committed data for consumer
+/// - Producer: CAS head to reserve → write data → update seq (commit)
+/// - Consumer: check seq to verify data is committed before reading
+///
+/// # Benefits
+///
+/// - **No holes**: Consumer never reads uncommitted data
+/// - **Lock-free push**: Multiple CPUs can push concurrently using CAS on head
+/// - **Single-consumer pop**: Only the owner CPU drains (no contention on tail)
+/// - **Bounded capacity**: If full, pusher falls back to direct bitmap update
+#[repr(C, align(128))]
+pub struct RemoteFreeRing {
+    /// Ring buffer entries (lock-free, written by pushers)
+    entries: [AtomicU64; REMOTE_FREE_RING_CAPACITY],
+    /// Size classes packed separately (to keep entries as simple u64)
+    size_classes: [AtomicU8; REMOTE_FREE_RING_CAPACITY],
+    /// Sequence numbers for each slot (Vyukov protocol)
+    sequences: [AtomicUsize; REMOTE_FREE_RING_CAPACITY],
+    /// Write position (head), incremented by pushers via CAS
+    head: AtomicUsize,
+    // --- Cache line boundary ---
+    /// Read position (tail), only modified by owner CPU
+    tail: AtomicUsize,
+    /// Overflow counter (pushes that failed due to full ring)
+    overflow_count: AtomicU64,
+}
+
+/// Atomic u8 wrapper (since core doesn't have AtomicU8 on all platforms)
+#[repr(transparent)]
+pub struct AtomicU8(AtomicUsize);
+
+impl AtomicU8 {
+    pub const fn new(v: u8) -> Self {
+        Self(AtomicUsize::new(v as usize))
+    }
+    
+    #[inline]
+    pub fn store(&self, v: u8, order: Ordering) {
+        self.0.store(v as usize, order);
+    }
+    
+    #[inline]
+    pub fn load(&self, order: Ordering) -> u8 {
+        self.0.load(order) as u8
+    }
+    
+    /// Atomically AND with a value, returning the previous value
+    #[inline]
+    pub fn fetch_and(&self, val: u8, order: Ordering) -> u8 {
+        // Use CAS loop since AtomicUsize operations affect all bits
+        loop {
+            let current = self.0.load(Ordering::Acquire);
+            let new_val = (current as u8) & val;
+            if self.0.compare_exchange_weak(
+                current,
+                new_val as usize,
+                order,
+                Ordering::Relaxed,
+            ).is_ok() {
+                return current as u8;
+            }
+            core::hint::spin_loop();
+        }
+    }
+    
+    /// Atomically OR with a value, returning the previous value
+    #[inline]
+    pub fn fetch_or(&self, val: u8, order: Ordering) -> u8 {
+        // Use CAS loop since AtomicUsize operations affect all bits
+        loop {
+            let current = self.0.load(Ordering::Acquire);
+            let new_val = (current as u8) | val;
+            if self.0.compare_exchange_weak(
+                current,
+                new_val as usize,
+                order,
+                Ordering::Relaxed,
+            ).is_ok() {
+                return current as u8;
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
+impl RemoteFreeRing {
+    /// Create a new empty remote free ring (Vyukov MPSC)
+    pub const fn new() -> Self {
+        const EMPTY_ENTRY: AtomicU64 = AtomicU64::new(0);
+        const EMPTY_SIZE: AtomicU8 = AtomicU8::new(0);
+        const INIT_SEQ: AtomicUsize = AtomicUsize::new(0);
+        Self {
+            entries: [EMPTY_ENTRY; REMOTE_FREE_RING_CAPACITY],
+            size_classes: [EMPTY_SIZE; REMOTE_FREE_RING_CAPACITY],
+            sequences: [INIT_SEQ; REMOTE_FREE_RING_CAPACITY],
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            overflow_count: AtomicU64::new(0),
+        }
+    }
+    
+    /// Initialize sequence numbers (call once after construction)
+    /// Each slot i starts with sequence = i, meaning "ready for producer at pos i"
+    pub fn init(&self) {
+        for i in 0..REMOTE_FREE_RING_CAPACITY {
+            self.sequences[i].store(i, Ordering::Relaxed);
+        }
+    }
+    
+    /// Try to push an entry (lock-free Vyukov MPSC, called by non-owner CPUs)
+    ///
+    /// Returns true if pushed successfully, false if ring is full.
+    /// No "holes" possible: uses CAS to reserve slot, then commits with sequence update.
+    #[inline]
+    pub fn try_push(&self, iova: u64, size_class: u8) -> bool {
+        let mut pos = self.head.load(Ordering::Relaxed);
+        
+        loop {
+            let idx = pos % REMOTE_FREE_RING_CAPACITY;
+            let seq = self.sequences[idx].load(Ordering::Acquire);
+            let diff = seq as isize - pos as isize;
+            
+            if diff == 0 {
+                // Slot is ready for this position, try to claim it
+                match self.head.compare_exchange_weak(
+                    pos,
+                    pos.wrapping_add(1),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                ) {
+                    Ok(_) => {
+                        // Successfully reserved slot, write data
+                        self.size_classes[idx].store(size_class, Ordering::Relaxed);
+                        self.entries[idx].store(iova, Ordering::Relaxed);
+                        // Commit: set seq = pos + 1 to signal consumer
+                        self.sequences[idx].store(pos.wrapping_add(1), Ordering::Release);
+                        return true;
+                    }
+                    Err(new_pos) => {
+                        pos = new_pos; // Retry with updated head
+                    }
+                }
+            } else if diff < 0 {
+                // Ring is full (consumer hasn't caught up)
+                self.overflow_count.fetch_add(1, Ordering::Relaxed);
+                return false;
+            } else {
+                // Another producer is still writing to this slot, reload head
+                pos = self.head.load(Ordering::Relaxed);
+            }
+            core::hint::spin_loop();
+        }
+    }
+    
+    /// Drain entries from the ring (single-consumer Vyukov, called by owner CPU only)
+    ///
+    /// Returns the number of entries drained.
+    /// Only reads slots where sequence indicates data is committed (no holes!)
+    pub fn drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
+        let mut drained = 0;
+        let mut pos = self.tail.load(Ordering::Relaxed);
+        
+        while drained < out.len() {
+            let idx = pos % REMOTE_FREE_RING_CAPACITY;
+            let seq = self.sequences[idx].load(Ordering::Acquire);
+            let expected_seq = pos.wrapping_add(1);
+            
+            if seq != expected_seq {
+                // Slot not ready (either empty or producer still writing)
+                break;
+            }
+            
+            // Read data (order doesn't matter, seq acquire already synchronized)
+            let iova = self.entries[idx].load(Ordering::Relaxed);
+            let size_class = self.size_classes[idx].load(Ordering::Relaxed);
+            
+            // Reset sequence for next producer: seq = pos + CAPACITY
+            self.sequences[idx].store(pos.wrapping_add(REMOTE_FREE_RING_CAPACITY), Ordering::Release);
+            
+            out[drained] = RemoteFreeEntry { iova, size_class };
+            drained += 1;
+            pos = pos.wrapping_add(1);
+        }
+        
+        // Update tail if we drained anything
+        if drained > 0 {
+            self.tail.store(pos, Ordering::Release);
+        }
+        
+        drained
+    }
+    
+    /// Get approximate number of pending entries
+    #[inline]
+    pub fn len(&self) -> usize {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Relaxed);
+        head.wrapping_sub(tail).min(REMOTE_FREE_RING_CAPACITY)
+    }
+    
+    /// Check if ring appears empty
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.head.load(Ordering::Relaxed) == self.tail.load(Ordering::Relaxed)
+    }
+    
+    /// Get overflow count (failed pushes)
+    #[inline]
+    pub fn overflow_count(&self) -> u64 {
+        self.overflow_count.load(Ordering::Relaxed)
+    }
+}
+
+// ============================================================================
+// Range Free Result (for allocate_contiguous word-level skip)
+// ============================================================================
+
+/// Result of is_range_free_with_skip check
+///
+/// Used by allocate_contiguous to efficiently skip past allocated regions.
+enum RangeFreeResult {
+    /// Range is free, can proceed with allocation
+    Free,
+    /// Range is not free, skip to this page index for next attempt
+    NotFree { skip_to_page: usize },
+}
+
+// ============================================================================
 // Bitmap Allocator (Medium Path)
 // ============================================================================
 
@@ -475,21 +1037,33 @@ pub struct IovaBitmap {
     /// Allocation hint for 4KB (word index to start searching)
     hint_4k: AtomicUsize,
     /// Free 4KB page count
-    free_count_4k: AtomicUsize,
+    pub(crate) free_count_4k: AtomicUsize,
     /// Valid bit mask for the last word (handles non-64-aligned total_pages)
     /// For word i < last_word: mask is u64::MAX
     /// For last_word: mask has only `total_pages % 64` bits set (or 64 if aligned)
     last_word_mask: u64,
 
-    // === 2MB Level (Fully-Free Tracking) ===
+    // === 2MB Level (Fully-Free Tracking + Partial Tracking) ===
     /// Per-2MB-block used count (0..512) - when 0, the block is fully free
     used_count_2m: alloc::boxed::Box<[AtomicU16]>,
     /// 2MB fully-free bitmap (1 = all 512 pages in this 2MB block are free)
+    /// Used for 2MB allocation and should be preserved for hugepage availability
     bitmap_2m: alloc::boxed::Box<[AtomicU64]>,
+    /// 2MB partially-used bitmap (1 = 0 < used_count < 512, has free pages but not fully free)
+    /// 4KB allocation should prefer these blocks to preserve fully-free 2MB blocks
+    bitmap_2m_partial: alloc::boxed::Box<[AtomicU64]>,
+    /// Per-2MB-block free word mask (8 bits = 8 words per 2MB block)
+    /// Bit i is set if detail word i within the block has free pages (detail[...] != 0)
+    /// Used for O(1) word selection within partial blocks
+    free_word_mask_2m: alloc::boxed::Box<[AtomicU8]>,
     /// Allocation hint for 2MB (block index to start searching)
     hint_2m: AtomicUsize,
+    /// Allocation hint for partial 2MB blocks (for 4KB allocation)
+    hint_2m_partial: AtomicUsize,
     /// Free 2MB block count (fully free only)
     free_count_2m: AtomicUsize,
+    /// Partial 2MB block count (0 < used_count < 512)
+    partial_count_2m: AtomicUsize,
 
     // === 1GB Level (Fully-Free Tracking) ===
     /// Per-1GB-block used count (count of non-free 2MB blocks, 0..512)
@@ -498,6 +1072,12 @@ pub struct IovaBitmap {
     bitmap_1g: alloc::boxed::Box<[AtomicU64]>,
     /// Free 1GB block count (fully free only)
     free_count_1g: AtomicUsize,
+
+    // === Free Word Stack (O(1) allocation fast path) ===
+    /// Global stack of non-empty word indices for O(1) allocation
+    /// When a word transitions 0→non-zero, its index is pushed here.
+    /// On allocation, pop and validate before using.
+    free_word_stack: FreeWordStack,
 }
 
 impl IovaBitmap {
@@ -602,6 +1182,34 @@ impl IovaBitmap {
             bitmap_2m.push(AtomicU64::new(bits));
         }
 
+        // bitmap_2m_partial: starts all zeros (no partial blocks initially)
+        // A partial block has 0 < used_count < 512
+        let mut bitmap_2m_partial = alloc::vec::Vec::with_capacity(bitmap_2m_words);
+        for _ in 0..bitmap_2m_words {
+            bitmap_2m_partial.push(AtomicU64::new(0));
+        }
+
+        // free_word_mask_2m: 8 bits per 2MB block (8 words per block)
+        // Initially all 0xFF for complete blocks (all 8 words have free pages)
+        // Partial trailing blocks have fewer valid words
+        let mut free_word_mask_2m = alloc::vec::Vec::with_capacity(total_2mb_blocks);
+        for block_idx in 0..total_2mb_blocks {
+            if block_idx < complete_2mb_blocks {
+                // Complete block: all 8 words have free pages
+                free_word_mask_2m.push(AtomicU8::new(0xFF));
+            } else {
+                // Partial trailing block: calculate how many words are valid
+                let pages_in_block = capped_pages.saturating_sub(block_idx * PAGES_PER_2MB_BLOCK);
+                let words_in_block = (pages_in_block + BITS_PER_WORD - 1) / BITS_PER_WORD;
+                let mask = if words_in_block >= 8 {
+                    0xFF
+                } else {
+                    (1u8 << words_in_block) - 1
+                };
+                free_word_mask_2m.push(AtomicU8::new(mask));
+            }
+        }
+
         // === 1GB Level Initialization ===
         // 4-c Fix: Only COMPLETE 1GB blocks are marked as fully-free
         let bitmap_1g_words = (total_1gb_blocks + BITS_PER_WORD - 1) / BITS_PER_WORD;
@@ -663,13 +1271,20 @@ impl IovaBitmap {
             last_word_mask,
             used_count_2m: used_count_2m.into_boxed_slice(),
             bitmap_2m: bitmap_2m.into_boxed_slice(),
+            bitmap_2m_partial: bitmap_2m_partial.into_boxed_slice(),
+            free_word_mask_2m: free_word_mask_2m.into_boxed_slice(),
             hint_2m: AtomicUsize::new(0),
+            hint_2m_partial: AtomicUsize::new(0),
             // Only complete 2MB blocks are counted as "free" for 2MB allocation
             free_count_2m: AtomicUsize::new(complete_2mb_blocks),
+            partial_count_2m: AtomicUsize::new(0),
             used_count_1g: used_count_1g.into_boxed_slice(),
             bitmap_1g: bitmap_1g.into_boxed_slice(),
             // Only complete 1GB blocks are counted as "free" for 1GB allocation
             free_count_1g: AtomicUsize::new(complete_1gb_blocks),
+            // Free word stack starts empty (will be populated as allocations occur)
+            // Note: We don't pre-populate because all words start as free anyway
+            free_word_stack: FreeWordStack::new(),
         }
     }
 
@@ -715,23 +1330,23 @@ impl IovaBitmap {
     /// * `hint` - Per-CPU hint to start searching from (reduces cache line bounce)
     ///
     /// The hint is updated on successful allocation to improve locality.
+    ///
+    /// # Note
+    /// For O(1) allocation, use `allocate_page_from_stack()` with a per-CPU
+    /// LocalFreeWordStack first. This function is the fallback using hierarchy scan.
     pub fn allocate_page_with_hint(&self, hint: &AtomicUsize) -> Option<u64> {
-        let hint_val = hint.load(Ordering::Relaxed);
         let detail_words = self.detail.len();
 
         if detail_words == 0 {
             return None;
         }
 
+        // === Medium Path: 3-level hierarchy scan (L2 → L1 → L0) ===
+        let hint_val = hint.load(Ordering::Relaxed);
         let hint_idx = hint_val % detail_words;
         let summary_words = self.summary.len();
         let summary_l2_words = self.summary_l2.len();
 
-        // 3-level hierarchy scan: L2 → L1 → L0 (fast when nearly full)
-        //
-        // L2 scan: ~16 words for 256GB (covers 4096 detail words per bit)
-        // L1 scan: only non-zero L2 bits
-        // L0 allocation: only non-zero L1 bits
         for l2_offset in 0..summary_l2_words {
             let l2_idx = (hint_idx / (BITS_PER_WORD * BITS_PER_WORD) + l2_offset) % summary_l2_words;
             let mut l2_word = self.summary_l2[l2_idx].load(Ordering::Acquire);
@@ -811,6 +1426,172 @@ impl IovaBitmap {
         }
 
         None
+    }
+
+    /// Allocate a single 4KB page from a per-CPU local free word stack (O(1) fast path)
+    ///
+    /// This is the fastest allocation path. The caller provides a per-CPU
+    /// LocalFreeWordStack which tracks known non-empty words.
+    ///
+    /// # Arguments
+    /// * `stack` - Per-CPU local free word stack (must be locked by caller)
+    /// * `hint` - Per-CPU hint (updated on success)
+    /// * `max_pops` - Maximum stack pops before falling through to hierarchy scan
+    ///
+    /// # Returns
+    /// Some(iova) if allocation succeeded from stack, None if stack exhausted/stale
+    ///
+    /// # Note
+    /// If this returns None, caller should fall through to `allocate_page_with_hint()`.
+    pub fn allocate_page_from_stack(
+        &self,
+        stack: &mut LocalFreeWordStack,
+        hint: &AtomicUsize,
+        max_pops: usize,
+    ) -> Option<u64> {
+        let detail_words = self.detail.len();
+
+        if detail_words == 0 {
+            return None;
+        }
+
+        for _ in 0..max_pops {
+            let word_idx = match stack.pop() {
+                Some(idx) => idx,
+                None => return None, // Stack empty
+            };
+
+            if word_idx >= detail_words {
+                continue; // Invalid index, skip
+            }
+
+            if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                if page_idx < self.total_pages {
+                    hint.store(word_idx, Ordering::Relaxed);
+                    self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                    self.on_page_allocated(page_idx);
+                    return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                }
+            }
+            // Word was empty (stale entry), continue to next
+        }
+
+        None // Exhausted max_pops or all stale
+    }
+
+    /// Allocate a single 4KB page, preferring partially-used 2MB blocks
+    ///
+    /// This allocation strategy preserves fully-free 2MB blocks for future
+    /// 2MB/1GB allocations. It first scans `bitmap_2m_partial` to find blocks
+    /// with 0 < used_count < 512, then allocates from the detail bitmap within
+    /// that block.
+    ///
+    /// # Strategy
+    /// 1. Scan `bitmap_2m_partial` for a partial block (fast: O(1) amortized)
+    /// 2. Allocate from detail bitmap within the partial block
+    /// 3. If no partial blocks, fall back to regular hierarchy scan (may pollute hugepage)
+    ///
+    /// # Arguments
+    /// * `hint_partial` - Per-CPU hint for partial block scanning
+    /// * `hint_4k` - Per-CPU hint for 4KB allocation (fallback)
+    ///
+    /// # Returns
+    /// (Some(iova), polluted) where `polluted` is true if a fully-free 2MB was consumed
+    pub fn allocate_page_prefer_partial(
+        &self,
+        hint_partial: &AtomicUsize,
+        hint_4k: &AtomicUsize,
+    ) -> (Option<u64>, bool) {
+        let partial_words = self.bitmap_2m_partial.len();
+        let detail_words = self.detail.len();
+
+        if detail_words == 0 {
+            return (None, false);
+        }
+
+        // === Phase 1: Try to allocate from a partial 2MB block ===
+        // Use free_word_mask_2m for O(1) word selection within block
+        if partial_words > 0 {
+            let hint_val = hint_partial.load(Ordering::Relaxed);
+            let hint_block = hint_val % self.total_2mb_blocks.max(1);
+
+            for word_offset in 0..partial_words {
+                let word_idx = (hint_block / BITS_PER_WORD + word_offset) % partial_words;
+                let mut word = self.bitmap_2m_partial[word_idx].load(Ordering::Acquire);
+                
+                // Mask off bits before hint for first word
+                if word_offset == 0 {
+                    let start_bit = hint_block % BITS_PER_WORD;
+                    word &= !((1u64 << start_bit) - 1);
+                }
+
+                while word != 0 {
+                    let bit = word.trailing_zeros() as usize;
+                    let block_2m = word_idx * BITS_PER_WORD + bit;
+                    
+                    if block_2m >= self.total_2mb_blocks {
+                        break;
+                    }
+
+                    // === O(1) word selection using free_word_mask_2m ===
+                    // Each block has 8 words; use 8-bit mask to find non-empty word instantly
+                    let free_mask = if block_2m < self.free_word_mask_2m.len() {
+                        self.free_word_mask_2m[block_2m].load(Ordering::Acquire)
+                    } else {
+                        0xFF // Conservative fallback
+                    };
+                    
+                    if free_mask != 0 {
+                        // Use tzcnt to find first word with free pages - O(1)!
+                        let word_in_block = free_mask.trailing_zeros() as usize;
+                        let detail_idx = block_2m * WORDS_PER_2MB_BLOCK + word_in_block;
+                        
+                        if detail_idx < detail_words {
+                            if let Some(bit_idx) = self.try_allocate_from_word(detail_idx) {
+                                let page_idx = detail_idx * BITS_PER_WORD + bit_idx;
+                                if page_idx < self.total_pages {
+                                    hint_partial.store(block_2m, Ordering::Relaxed);
+                                    hint_4k.store(detail_idx, Ordering::Relaxed);
+                                    self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                                    self.on_page_allocated(page_idx);
+                                    return (Some(self.base + (page_idx as u64) * PAGE_SIZE_4K), false);
+                                }
+                            }
+                        }
+                    }
+
+                    // If free_mask was empty or allocation failed, scan all words as fallback
+                    // This handles race conditions where mask may be stale
+                    let start_detail_word = block_2m * WORDS_PER_2MB_BLOCK;
+                    let end_detail_word = (start_detail_word + WORDS_PER_2MB_BLOCK).min(detail_words);
+
+                    for detail_idx in start_detail_word..end_detail_word {
+                        if let Some(bit_idx) = self.try_allocate_from_word(detail_idx) {
+                            let page_idx = detail_idx * BITS_PER_WORD + bit_idx;
+                            if page_idx < self.total_pages {
+                                hint_partial.store(block_2m, Ordering::Relaxed);
+                                hint_4k.store(detail_idx, Ordering::Relaxed);
+                                self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                                self.on_page_allocated(page_idx);
+                                return (Some(self.base + (page_idx as u64) * PAGE_SIZE_4K), false);
+                            }
+                        }
+                    }
+
+                    // Block might have become full or free, continue to next
+                    word &= word - 1;
+                }
+            }
+        }
+
+        // === Phase 2: No partial blocks, fall back to regular allocation ===
+        // This will consume from fully-free 2MB blocks (hugepage pollution)
+        if let Some(iova) = self.allocate_page_with_hint(hint_4k) {
+            return (Some(iova), true); // Polluted a hugepage
+        }
+
+        (None, false)
     }
 
     /// Allocate a single 4KB page within a specific arena (sharded allocation)
@@ -918,14 +1699,95 @@ impl IovaBitmap {
                 Ordering::AcqRel,
                 Ordering::Relaxed,
             ).is_ok() {
-                // Update summary if word is now empty
+                // Update summary and free_word_mask_2m if word is now empty
                 if new_val == 0 {
                     self.clear_summary_bit(word_idx);
+                    
+                    // Update free_word_mask_2m (clear bit for this word)
+                    let word_within_block = word_idx % WORDS_PER_2MB_BLOCK;
+                    let block_2m = word_idx / WORDS_PER_2MB_BLOCK;
+                    if block_2m < self.free_word_mask_2m.len() {
+                        let mask = !(1u8 << word_within_block);
+                        self.free_word_mask_2m[block_2m].fetch_and(mask, Ordering::Release);
+                    }
                 }
                 return Some(bit_idx);
             }
             core::hint::spin_loop();
         }
+    }
+
+    /// Claim an entire word atomically using swap(0)
+    ///
+    /// This is used by SubMagazine to take ownership of all free pages in a word
+    /// with a single atomic operation, eliminating CAS retries.
+    ///
+    /// # Arguments
+    /// * `word_idx` - Word index to claim
+    ///
+    /// # Returns
+    /// The claimed bits (u64) - each set bit represents a free page that is now owned
+    /// by the caller. Returns 0 if the word was empty.
+    ///
+    /// # Hierarchy Updates
+    /// Caller is responsible for calling `on_pages_allocated_batch()` with the
+    /// count of claimed pages (bits.count_ones()).
+    pub(crate) fn try_claim_word(&self, word_idx: usize) -> u64 {
+        if word_idx >= self.detail.len() {
+            return 0;
+        }
+        
+        // Atomically swap the word with 0 - single atomic op, no CAS retries!
+        let claimed = self.detail[word_idx].swap(0, Ordering::AcqRel);
+        
+        if claimed != 0 {
+            // Word is now empty, update summary
+            self.clear_summary_bit(word_idx);
+            
+            // Update free_word_mask_2m (clear bit for this word within its 2MB block)
+            let word_within_block = word_idx % WORDS_PER_2MB_BLOCK;
+            let block_2m = word_idx / WORDS_PER_2MB_BLOCK;
+            if block_2m < self.free_word_mask_2m.len() {
+                let mask = !(1u8 << word_within_block);
+                self.free_word_mask_2m[block_2m].fetch_and(mask, Ordering::Release);
+            }
+        }
+        
+        claimed
+    }
+
+    /// Return remaining bits from a SubMagazine back to the bitmap
+    ///
+    /// This is used when a SubMagazine has leftover pages that need to be
+    /// returned to the global pool (e.g., during CPU migration or cleanup).
+    ///
+    /// # Arguments
+    /// * `word_idx` - Original word index these bits came from
+    /// * `bits` - Remaining free bits to return
+    fn return_claimed_bits(&self, word_idx: usize, bits: u64) {
+        if bits == 0 || word_idx >= self.detail.len() {
+            return;
+        }
+        
+        let word = &self.detail[word_idx];
+        
+        // Return bits using fetch_or - may conflict but bits will be returned
+        let old = word.fetch_or(bits, Ordering::AcqRel);
+        
+        // If word was empty and is now non-empty, set summary bit
+        if old == 0 {
+            self.set_summary_bit(word_idx);
+        }
+        
+        // Update free_word_mask_2m if word now has free pages
+        let word_within_block = word_idx % WORDS_PER_2MB_BLOCK;
+        let block_2m = word_idx / WORDS_PER_2MB_BLOCK;
+        if block_2m < self.free_word_mask_2m.len() {
+            let mask = 1u8 << word_within_block;
+            self.free_word_mask_2m[block_2m].fetch_or(mask, Ordering::Release);
+        }
+        
+        // Note: Caller should update hierarchy (used_count_2m) if needed
     }
 
     /// Batch allocate multiple pages from a single word (more efficient for refills)
@@ -1005,7 +1867,7 @@ impl IovaBitmap {
     /// # Arguments
     /// * `first_page_idx` - Index of first page in the word
     /// * `count` - Number of pages allocated from this word
-    fn on_pages_allocated_batch(&self, first_page_idx: usize, count: usize) {
+    pub(crate) fn on_pages_allocated_batch(&self, first_page_idx: usize, count: usize) {
         let block_2m = first_page_idx / PAGES_PER_2MB_BLOCK;
         if block_2m >= self.total_2mb_blocks {
             return;
@@ -1070,6 +1932,10 @@ impl IovaBitmap {
     ///
     /// # Returns
     /// Vector of allocated IOVAs
+    ///
+    /// # Note
+    /// For O(1) fast path, use `batch_allocate_from_stack()` with a per-CPU
+    /// LocalFreeWordStack first. This function only uses hierarchy scan.
     pub fn batch_allocate_pages(&self, max_pages: usize, hint: &AtomicUsize) -> alloc::vec::Vec<u64> {
         let mut result = alloc::vec::Vec::with_capacity(max_pages);
         let mut local_buf = [0usize; 64]; // Stack buffer for batch allocation
@@ -1297,7 +2163,10 @@ impl IovaBitmap {
     }
 
     /// Free a single 4KB page
-    pub fn free_page(&self, iova: u64) -> Result<(), IommuError> {
+    ///
+    /// Returns the word index if the word transitioned 0→non-zero (for per-CPU stack push).
+    /// The caller (IovaAllocatorFast) should push to the per-CPU LocalFreeWordStack.
+    pub fn free_page(&self, iova: u64) -> Result<Option<usize>, IommuError> {
         if iova < self.base {
             return Err(IommuError::InvalidAddress);
         }
@@ -1320,6 +2189,21 @@ impl IovaBitmap {
             return Err(IommuError::NotMapped);
         }
         
+        // Track if word transitioned 0→non-zero (for per-CPU stack push)
+        let became_non_empty = old == 0;
+        if became_non_empty {
+            // Update global stats (approximate count of non-empty words)
+            self.free_word_stack.notify_non_empty();
+            
+            // Update free_word_mask_2m (set bit for this word)
+            let word_within_block = word_idx % WORDS_PER_2MB_BLOCK;
+            let block_2m = word_idx / WORDS_PER_2MB_BLOCK;
+            if block_2m < self.free_word_mask_2m.len() {
+                let mask = 1u8 << word_within_block;
+                self.free_word_mask_2m[block_2m].fetch_or(mask, Ordering::Release);
+            }
+        }
+        
         // Set summary bit since this word now has free pages
         self.set_summary_bit(word_idx);
         self.free_count_4k.fetch_add(1, Ordering::Relaxed);
@@ -1327,10 +2211,114 @@ impl IovaBitmap {
         // Update 2MB/1GB hierarchy
         self.on_page_freed(page_idx);
         
-        Ok(())
+        // Return word_idx if caller should push to per-CPU stack
+        Ok(if became_non_empty { Some(word_idx) } else { None })
+    }
+
+    /// Free multiple pages within the same word in a single atomic operation
+    ///
+    /// # Arguments
+    /// * `word_idx` - The word index (all pages must belong to this word)
+    /// * `coalesced_mask` - Pre-computed bitmask of bits to set (OR of all page bits)
+    /// * `page_count` - Number of pages being freed (for stats update)
+    ///
+    /// # Returns
+    /// * `Ok(Some(word_idx))` - Word transitioned 0→non-zero (push to per-CPU stack)
+    /// * `Ok(None)` - Word already had free pages
+    /// * `Err` - Invalid word_idx
+    ///
+    /// # Performance
+    /// Single fetch_or instead of N fetch_or calls for N pages in same word.
+    pub fn free_pages_coalesced(&self, word_idx: usize, coalesced_mask: u64, _page_count: usize) -> Result<Option<usize>, IommuError> {
+        if word_idx >= self.detail.len() {
+            return Err(IommuError::InvalidAddress);
+        }
+        
+        // Single atomic OR for all bits
+        let word = &self.detail[word_idx];
+        let old = word.fetch_or(coalesced_mask, Ordering::AcqRel);
+        
+        // Check for double-free (any bit already set)
+        let double_freed = old & coalesced_mask;
+        if double_freed != 0 {
+            let double_count = double_freed.count_ones() as usize;
+            log::warn!("[IOVA] Double free detected: {} pages in word {} (mask 0x{:016x})", 
+                       double_count, word_idx, double_freed);
+            // Continue - we've still freed the valid pages
+        }
+        
+        // Track word transition 0→non-zero
+        let became_non_empty = old == 0;
+        if became_non_empty {
+            self.free_word_stack.notify_non_empty();
+            
+            // Update free_word_mask_2m
+            let word_within_block = word_idx % WORDS_PER_2MB_BLOCK;
+            let block_2m = word_idx / WORDS_PER_2MB_BLOCK;
+            if block_2m < self.free_word_mask_2m.len() {
+                let mask = 1u8 << word_within_block;
+                self.free_word_mask_2m[block_2m].fetch_or(mask, Ordering::Release);
+            }
+        }
+        
+        // Update summary bit
+        self.set_summary_bit(word_idx);
+        
+        // Update stats (only count actually-freed pages, not double-frees)
+        let actual_freed = (coalesced_mask & !old).count_ones() as usize;
+        if actual_freed > 0 {
+            self.free_count_4k.fetch_add(actual_freed, Ordering::Relaxed);
+        }
+        
+        // Update 2MB/1GB hierarchy for each page
+        // Note: For coalesced frees in same word, all pages are in same 2MB block
+        let base_page = word_idx * BITS_PER_WORD;
+        let block_2m = base_page / PAGES_PER_2MB_BLOCK;
+        
+        if block_2m < self.total_2mb_blocks && actual_freed > 0 {
+            // Batch update: decrement used_count by actual_freed
+            let old_count = self.used_count_2m[block_2m].fetch_sub(actual_freed as u16, Ordering::AcqRel);
+            
+            // Handle state transitions
+            let new_count = old_count.saturating_sub(actual_freed as u16);
+            
+            // Transition to fully-free
+            if new_count == 0 && old_count > 0 {
+                self.clear_bitmap_2m_partial_bit(block_2m);
+                self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
+                self.set_bitmap_2m_bit(block_2m);
+                self.free_count_2m.fetch_add(1, Ordering::Relaxed);
+                
+                // Update 1GB hierarchy
+                let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
+                if block_1g < self.total_1gb_blocks {
+                    let old_1g = self.used_count_1g[block_1g].fetch_sub(1, Ordering::AcqRel);
+                    if old_1g == 1 {
+                        self.set_bitmap_1g_bit(block_1g);
+                        self.free_count_1g.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+            // Transition from full to partial
+            else if old_count == PAGES_PER_2MB_BLOCK as u16 && new_count < PAGES_PER_2MB_BLOCK as u16 {
+                self.set_bitmap_2m_partial_bit(block_2m);
+                self.partial_count_2m.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        
+        Ok(if became_non_empty { Some(word_idx) } else { None })
     }
 
     /// Allocate contiguous pages (for 2MB allocations)
+    ///
+    /// # Performance Optimization (C: Word-Level Skip)
+    ///
+    /// Instead of incrementing start_page by 1 on failure, we skip entire words
+    /// that are fully allocated (word value == 0). This dramatically reduces
+    /// iterations when the bitmap is fragmented.
+    ///
+    /// For allocations >= 512 pages (2MB), we also use the 2MB fully-free bitmap
+    /// to generate candidates, avoiding slow linear scans.
     ///
     /// # 4-a Fix
     /// Now properly updates 2MB/1GB hierarchy after allocation.
@@ -1340,7 +2328,14 @@ impl IovaBitmap {
         }
         let alignment_pages = alignment_pages.max(1);
 
-        // For large allocations, scan the bitmap linearly
+        // For large allocations (>= 2MB), try fully-free 2MB blocks first
+        if pages >= PAGES_PER_2MB_BLOCK {
+            if let Some(result) = self.allocate_contiguous_from_2mb_blocks(pages, alignment_pages) {
+                return Some(result);
+            }
+        }
+
+        // Word-level skip scan with intelligent advancement
         let mut start_page = 0usize;
         
         while start_page + pages <= self.total_pages {
@@ -1350,17 +2345,134 @@ impl IovaBitmap {
                 break;
             }
             
-            // Check if range is free
-            if self.is_range_free(aligned_start, pages) {
-                // Try to allocate the range
-                if self.allocate_range(aligned_start, pages) {
-                    // 4-a Fix: Update 2MB/1GB hierarchy
-                    self.update_hierarchy_after_range_alloc(aligned_start, pages);
-                    return Some(self.base + (aligned_start as u64) * PAGE_SIZE_4K);
+            // Check if range is free, with word-level skip on failure
+            match self.is_range_free_with_skip(aligned_start, pages) {
+                RangeFreeResult::Free => {
+                    // Try to allocate the range
+                    if self.allocate_range(aligned_start, pages) {
+                        // 4-a Fix: Update 2MB/1GB hierarchy
+                        self.update_hierarchy_after_range_alloc(aligned_start, pages);
+                        return Some(self.base + (aligned_start as u64) * PAGE_SIZE_4K);
+                    }
+                    // CAS failed, move forward by 1 page
+                    start_page = aligned_start + 1;
+                }
+                RangeFreeResult::NotFree { skip_to_page } => {
+                    // Skip to the next potential start position
+                    start_page = skip_to_page.max(aligned_start + 1);
                 }
             }
+        }
+        
+        None
+    }
+
+    /// Check if a range is free, returning skip hint on failure
+    ///
+    /// When encountering an allocated page, returns the page index after
+    /// the fully-allocated word, allowing the caller to skip efficiently.
+    fn is_range_free_with_skip(&self, start_page: usize, pages: usize) -> RangeFreeResult {
+        let end_page = start_page + pages;
+        
+        let start_word = start_page / BITS_PER_WORD;
+        let end_word = (end_page + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        
+        for word_idx in start_word..end_word {
+            if word_idx >= self.detail.len() {
+                return RangeFreeResult::NotFree { skip_to_page: self.total_pages };
+            }
             
-            start_page = aligned_start + 1;
+            let word_val = self.detail[word_idx].load(Ordering::Acquire);
+            let word_start = word_idx * BITS_PER_WORD;
+            let word_end = word_start + BITS_PER_WORD;
+            
+            // Calculate which bits we need to check in this word
+            let first_bit = start_page.saturating_sub(word_start);
+            let last_bit_excl = end_page.min(word_end) - word_start;
+            
+            // Create mask for bits we need to check
+            let check_mask = if last_bit_excl >= BITS_PER_WORD {
+                if first_bit == 0 {
+                    u64::MAX
+                } else {
+                    u64::MAX << first_bit
+                }
+            } else {
+                ((1u64 << last_bit_excl) - 1) & (u64::MAX << first_bit)
+            };
+            
+            // If any required bit is 0 (allocated), range is not free
+            if word_val & check_mask != check_mask {
+                // Word is partially or fully allocated
+                if word_val == 0 {
+                    // Entire word is allocated, skip past it
+                    return RangeFreeResult::NotFree { skip_to_page: word_end };
+                } else {
+                    // Find first allocated bit and skip past it
+                    let allocated_bits = !word_val & check_mask;
+                    let first_alloc_bit = allocated_bits.trailing_zeros() as usize;
+                    return RangeFreeResult::NotFree { 
+                        skip_to_page: word_start + first_alloc_bit + 1 
+                    };
+                }
+            }
+        }
+        
+        RangeFreeResult::Free
+    }
+
+    /// Allocate contiguous pages from fully-free 2MB blocks
+    ///
+    /// For large allocations, this is much faster than linear scanning
+    /// because we can skip directly to fully-free regions.
+    fn allocate_contiguous_from_2mb_blocks(&self, pages: usize, alignment_pages: usize) -> Option<u64> {
+        // How many complete 2MB blocks do we need?
+        let blocks_needed = (pages + PAGES_PER_2MB_BLOCK - 1) / PAGES_PER_2MB_BLOCK;
+        
+        // Scan 2MB bitmap for consecutive fully-free blocks
+        let mut consecutive_start: Option<usize> = None;
+        let mut consecutive_count = 0usize;
+        
+        for block_idx in 0..self.total_2mb_blocks {
+            let word_idx = block_idx / BITS_PER_WORD;
+            let bit_idx = block_idx % BITS_PER_WORD;
+            
+            if word_idx >= self.bitmap_2m.len() {
+                break;
+            }
+            
+            let is_free = self.bitmap_2m[word_idx].load(Ordering::Acquire) & (1u64 << bit_idx) != 0;
+            
+            if is_free {
+                if consecutive_start.is_none() {
+                    consecutive_start = Some(block_idx);
+                    consecutive_count = 1;
+                } else {
+                    consecutive_count += 1;
+                }
+                
+                if consecutive_count >= blocks_needed {
+                    // Found enough consecutive blocks
+                    let start_block = consecutive_start.unwrap();
+                    let start_page = start_block * PAGES_PER_2MB_BLOCK;
+                    
+                    // Check alignment
+                    let aligned_start = (start_page + alignment_pages - 1) / alignment_pages * alignment_pages;
+                    if aligned_start + pages <= (start_block + consecutive_count) * PAGES_PER_2MB_BLOCK {
+                        // Try to allocate
+                        if self.is_range_free(aligned_start, pages) {
+                            if self.allocate_range(aligned_start, pages) {
+                                self.update_hierarchy_after_range_alloc(aligned_start, pages);
+                                return Some(self.base + (aligned_start as u64) * PAGE_SIZE_4K);
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Reset consecutive count
+                consecutive_start = None;
+                consecutive_count = 0;
+            }
         }
         
         None
@@ -1698,6 +2810,11 @@ impl IovaBitmap {
                     let page_idx = word_idx * BITS_PER_WORD + already_free_bit;
                     double_free_iova = Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                 }
+                
+                // Notify stats if word was empty before (0→non-zero)
+                if old == 0 && target_mask != 0 {
+                    self.free_word_stack.notify_non_empty();
+                }
             } else {
                 // Partial word: use masked fetch_or
                 let mask = ((1u64 << bits_in_word) - 1) << first_bit;
@@ -1711,6 +2828,11 @@ impl IovaBitmap {
                     let bit = already_free.trailing_zeros() as usize;
                     let page_idx = word_idx * BITS_PER_WORD + bit;
                     double_free_iova = Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                }
+                
+                // Notify stats if word was empty before (0→non-zero)
+                if old == 0 && mask != 0 {
+                    self.free_word_stack.notify_non_empty();
                 }
             }
 
@@ -1782,8 +2904,12 @@ impl IovaBitmap {
     // ========================================================================
 
     /// Called when a single 4KB page is allocated.
-    /// Updates 2MB used_count and clears 2MB/1GB bitmap bits if needed.
-    fn on_page_allocated(&self, page_idx: usize) {
+    /// Updates 2MB used_count and manages bitmap_2m / bitmap_2m_partial.
+    ///
+    /// State transitions:
+    /// - 0 -> 1: fully-free -> partial (set partial bit, clear fully-free bit)
+    /// - N -> 512: partial -> full (clear partial bit)
+    pub(crate) fn on_page_allocated(&self, page_idx: usize) {
         let block_2m = page_idx / PAGES_PER_2MB_BLOCK;
         if block_2m >= self.total_2mb_blocks {
             return;
@@ -1799,11 +2925,17 @@ impl IovaBitmap {
             block_2m, old_count
         );
 
-        // Transition 0 -> 1: block is no longer fully free
+        let new_count = old_count + 1;
+
+        // Transition 0 -> 1: block was fully free, now partial
         if old_count == 0 {
-            // Clear 2MB bitmap bit
+            // Clear 2MB fully-free bitmap bit
             self.clear_bitmap_2m_bit(block_2m);
             self.free_count_2m.fetch_sub(1, Ordering::Relaxed);
+            
+            // Set 2MB partial bitmap bit (now has 0 < used < 512)
+            self.set_bitmap_2m_partial_bit(block_2m);
+            self.partial_count_2m.fetch_add(1, Ordering::Relaxed);
 
             // Update 1GB hierarchy
             let block_1g = block_2m / BLOCKS_2MB_PER_1GB;
@@ -1824,10 +2956,21 @@ impl IovaBitmap {
                 }
             }
         }
+        // Transition N -> 512: block was partial, now completely full
+        else if new_count == PAGES_PER_2MB_BLOCK as u16 {
+            // Clear 2MB partial bitmap bit (no more free pages)
+            self.clear_bitmap_2m_partial_bit(block_2m);
+            self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
+        }
+        // Otherwise: block remains partial (1..511 used), no bitmap changes needed
     }
 
     /// Called when a single 4KB page is freed.
-    /// Updates 2MB used_count and sets 2MB/1GB bitmap bits if block becomes fully free.
+    /// Updates 2MB used_count and manages bitmap_2m / bitmap_2m_partial.
+    ///
+    /// State transitions:
+    /// - 1 -> 0: partial -> fully-free (clear partial bit, set fully-free bit)
+    /// - 512 -> N: full -> partial (set partial bit)
     fn on_page_freed(&self, page_idx: usize) {
         let block_2m = page_idx / PAGES_PER_2MB_BLOCK;
         if block_2m >= self.total_2mb_blocks {
@@ -1844,9 +2987,13 @@ impl IovaBitmap {
             block_2m, old_count
         );
 
-        // Transition 1 -> 0: block is now fully free
+        // Transition 1 -> 0: block was partial, now fully free
         if old_count == 1 {
-            // Set 2MB bitmap bit
+            // Clear 2MB partial bitmap bit
+            self.clear_bitmap_2m_partial_bit(block_2m);
+            self.partial_count_2m.fetch_sub(1, Ordering::Relaxed);
+            
+            // Set 2MB fully-free bitmap bit
             self.set_bitmap_2m_bit(block_2m);
             self.free_count_2m.fetch_add(1, Ordering::Relaxed);
 
@@ -1869,6 +3016,13 @@ impl IovaBitmap {
                 }
             }
         }
+        // Transition 512 -> N: block was completely full, now partial
+        else if old_count == PAGES_PER_2MB_BLOCK as u16 {
+            // Set 2MB partial bitmap bit (now has 0 < used < 512)
+            self.set_bitmap_2m_partial_bit(block_2m);
+            self.partial_count_2m.fetch_add(1, Ordering::Relaxed);
+        }
+        // Otherwise: block remains partial (1..511 used), no bitmap changes needed
     }
 
     /// Set a bit in the 2MB fully-free bitmap
@@ -1886,6 +3040,24 @@ impl IovaBitmap {
         let bit_idx = block_idx % BITS_PER_WORD;
         if word_idx < self.bitmap_2m.len() {
             self.bitmap_2m[word_idx].fetch_and(!(1u64 << bit_idx), Ordering::Release);
+        }
+    }
+
+    /// Set a bit in the 2MB partial bitmap (0 < used_count < 512)
+    fn set_bitmap_2m_partial_bit(&self, block_idx: usize) {
+        let word_idx = block_idx / BITS_PER_WORD;
+        let bit_idx = block_idx % BITS_PER_WORD;
+        if word_idx < self.bitmap_2m_partial.len() {
+            self.bitmap_2m_partial[word_idx].fetch_or(1u64 << bit_idx, Ordering::Release);
+        }
+    }
+
+    /// Clear a bit in the 2MB partial bitmap
+    fn clear_bitmap_2m_partial_bit(&self, block_idx: usize) {
+        let word_idx = block_idx / BITS_PER_WORD;
+        let bit_idx = block_idx % BITS_PER_WORD;
+        if word_idx < self.bitmap_2m_partial.len() {
+            self.bitmap_2m_partial[word_idx].fetch_and(!(1u64 << bit_idx), Ordering::Release);
         }
     }
 
@@ -2386,8 +3558,14 @@ impl IovaBitmap {
     }
 
     // ========================================================================
-    // Statistics
+    // Statistics / Accessors
     // ========================================================================
+
+    /// Get base IOVA address
+    #[inline]
+    pub fn base(&self) -> u64 {
+        self.base
+    }
 
     /// Get free 4KB page count
     #[inline]
@@ -2484,6 +3662,20 @@ pub struct IovaAllocatorFastStats {
     pub quarantine_drains: AtomicU64,
     /// Quarantine forced drains (ring full)
     pub quarantine_forced_drains: AtomicU64,
+    // === Hugepage Preservation Statistics ===
+    /// 4KB allocations from partial 2MB blocks (good - preserves hugepages)
+    pub allocs_from_partial_2m: AtomicU64,
+    /// 4KB allocations that polluted a fully-free 2MB block (bad - consumed hugepage)
+    pub hugepage_pollutions: AtomicU64,
+    /// 2MB allocation failures (no fully-free 2MB block available)
+    pub alloc_2m_failures: AtomicU64,
+    // === Contention Statistics ===
+    /// CAS retry count in detail bitmap (high value indicates contention)
+    pub cas_retries_detail: AtomicU64,
+    /// Remote free count (freed on different CPU than allocated)
+    pub remote_frees: AtomicU64,
+    /// Local free count (freed on same CPU as allocated)
+    pub local_frees: AtomicU64,
 }
 
 impl IovaAllocatorFastStats {
@@ -2496,6 +3688,12 @@ impl IovaAllocatorFastStats {
             quarantine_pushes: AtomicU64::new(0),
             quarantine_drains: AtomicU64::new(0),
             quarantine_forced_drains: AtomicU64::new(0),
+            allocs_from_partial_2m: AtomicU64::new(0),
+            hugepage_pollutions: AtomicU64::new(0),
+            alloc_2m_failures: AtomicU64::new(0),
+            cas_retries_detail: AtomicU64::new(0),
+            remote_frees: AtomicU64::new(0),
+            local_frees: AtomicU64::new(0),
         }
     }
 }
@@ -2540,7 +3738,8 @@ impl IovaAllocatorFast {
             let arena_start_2m = cpu_id * blocks_2m_per_cpu;
             let arena_end_2m = ((cpu_id + 1) * blocks_2m_per_cpu).min(total_blocks_2m);
             
-            mag.set_arena(arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
+            // 5C: Pass cpu_id for hint scattering
+            mag.set_arena(cpu_id, arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
             magazines.push(mag);
         }
         
@@ -2566,6 +3765,148 @@ impl IovaAllocatorFast {
     #[inline]
     fn current_cpu_id() -> Option<usize> {
         crate::mm::try_current_cpu_id().filter(|&cpu_id| cpu_id < MAX_CPUS)
+    }
+
+    /// Determine which CPU owns a given IOVA (for 4KB pages)
+    ///
+    /// Returns the CPU ID that "owns" this IOVA's arena, i.e., the CPU
+    /// that should be the primary updater of the bitmap for this address.
+    #[inline]
+    fn owner_cpu_for_iova_4k(&self, iova: u64) -> usize {
+        let page_idx = ((iova - self.base) / PAGE_SIZE_4K) as usize;
+        let word_idx = page_idx / BITS_PER_WORD;
+        
+        // Find which CPU's arena contains this word
+        for cpu_id in 0..MAX_CPUS {
+            let mag = &self.magazines[cpu_id];
+            if word_idx >= mag.arena_start_4k && word_idx < mag.arena_end_4k {
+                return cpu_id;
+            }
+        }
+        
+        // Fallback: if no arena found (shouldn't happen), return 0
+        0
+    }
+
+    /// Drain remote free ring for the current CPU
+    ///
+    /// This should be called periodically by each CPU to process frees
+    /// that were pushed by other CPUs to this CPU's arena.
+    ///
+    /// Returns the number of entries drained.
+    pub fn drain_remote_frees(&self) -> usize {
+        let Some(cpu_id) = Self::current_cpu_id() else {
+            return 0;
+        };
+        
+        self.drain_remote_frees_for_cpu(cpu_id)
+    }
+    
+    /// Drain remote free ring for a specific CPU
+    ///
+    /// # Optimization: Return Coalescing (5B)
+    ///
+    /// Instead of calling free_page() N times for N pages in the same word
+    /// (N atomic fetch_or operations), we coalesce pages by word_idx and
+    /// use a single fetch_or per word via free_pages_coalesced().
+    ///
+    /// This dramatically reduces atomic contention when multiple pages
+    /// from the same word are freed in rapid succession.
+    fn drain_remote_frees_for_cpu(&self, cpu_id: usize) -> usize {
+        let magazine = &self.magazines[cpu_id];
+        
+        // Drain up to 64 entries at a time
+        let mut entries = [RemoteFreeEntry::empty(); 64];
+        let drained = magazine.remote_free_ring.drain(&mut entries);
+        
+        if drained == 0 {
+            return 0;
+        }
+        
+        // Coalescing buffer: word_idx -> (coalesced_mask, page_count)
+        // Max 64 unique words from 64 entries
+        const MAX_WORDS: usize = 64;
+        let mut word_masks: [(usize, u64, usize); MAX_WORDS] = [(usize::MAX, 0, 0); MAX_WORDS];
+        let mut word_count = 0usize;
+        
+        // 2MB/1GB frees (don't coalesce, process directly)
+        let mut large_frees: [(u8, u64); 16] = [(0, 0); 16];
+        let mut large_count = 0usize;
+        
+        // Phase 1: Sort entries into coalescing buffer
+        for entry in &entries[..drained] {
+            match entry.size_class {
+                0 => {
+                    // 4KB page: compute word_idx and bit
+                    if entry.iova < self.bitmap_4k.base {
+                        continue;
+                    }
+                    let page_idx = ((entry.iova - self.bitmap_4k.base) / PAGE_SIZE_4K) as usize;
+                    if page_idx >= self.bitmap_4k.total_pages {
+                        continue;
+                    }
+                    
+                    let word_idx = page_idx / BITS_PER_WORD;
+                    let bit_idx = page_idx % BITS_PER_WORD;
+                    let bit_mask = 1u64 << bit_idx;
+                    
+                    // Find or create entry in coalescing buffer
+                    let mut found = false;
+                    for i in 0..word_count {
+                        if word_masks[i].0 == word_idx {
+                            word_masks[i].1 |= bit_mask;
+                            word_masks[i].2 += 1;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found && word_count < MAX_WORDS {
+                        word_masks[word_count] = (word_idx, bit_mask, 1);
+                        word_count += 1;
+                    }
+                }
+                1 | 2 => {
+                    // 2MB or 1GB page: collect for later
+                    if large_count < large_frees.len() {
+                        large_frees[large_count] = (entry.size_class, entry.iova);
+                        large_count += 1;
+                    }
+                }
+                _ => {
+                    // Unknown size class, ignore
+                }
+            }
+        }
+        
+        // Phase 2: Process coalesced 4KB frees
+        for i in 0..word_count {
+            let (word_idx, coalesced_mask, page_count) = word_masks[i];
+            if word_idx == usize::MAX {
+                continue;
+            }
+            
+            if let Ok(Some(became_non_empty_word)) = self.bitmap_4k.free_pages_coalesced(word_idx, coalesced_mask, page_count) {
+                // Word became non-empty, push to owner's free word stack
+                let mut stack = magazine.free_word_stack.lock();
+                let _ = stack.push(became_non_empty_word);
+            }
+        }
+        
+        // Phase 3: Process large frees
+        for i in 0..large_count {
+            let (size_class, iova) = large_frees[i];
+            match size_class {
+                1 => {
+                    let _ = self.bitmap_4k.free_2mb(iova);
+                }
+                2 => {
+                    let _ = self.bitmap_4k.free_1gb(iova);
+                }
+                _ => {}
+            }
+        }
+        
+        drained
     }
 
     // ========================================================================
@@ -2622,12 +3963,58 @@ impl IovaAllocatorFast {
         }
     }
 
-    /// Allocate a 4KB page (O(1) fast path with arena sharding)
+    /// Allocate a 4KB page (O(1) fast path with arena sharding + hugepage preservation)
+    ///
+    /// Allocation strategy (in order of preference):
+    /// 0. Per-CPU sub-magazine (O(1), claimed word, zero atomics!)
+    /// 1. Per-CPU magazine (O(1), zero contention)
+    /// 2. Per-CPU free word stack (O(1), local non-empty words)
+    /// 3. Partial 2MB blocks (O(1) amortized, preserves fully-free 2MB)
+    /// 4. Arena-restricted hierarchy scan (fallback, may pollute hugepages)
     #[inline]
     fn allocate_4k(&self) -> Option<u64> {
         // Fast path: try per-CPU magazine
         if let Some(cpu_id) = Self::current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
+            
+            // === Fast path #0: Sub-magazine (claimed word, zero atomics!) ===
+            {
+                let mut sub_mag = magazine.sub_magazine_4k.lock();
+                if let Some(iova) = sub_mag.allocate() {
+                    self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
+                    // Update hierarchy for this allocation
+                    let page_idx = ((iova - self.bitmap_4k.base()) / PAGE_SIZE_4K) as usize;
+                    self.bitmap_4k.on_page_allocated(page_idx);
+                    self.bitmap_4k.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                    return Some(iova);
+                }
+                
+                // Sub-magazine empty, try to claim a new word
+                // First check per-CPU free word stack for a candidate word
+                {
+                    let mut stack = magazine.free_word_stack.lock();
+                    while let Some(word_idx) = stack.pop() {
+                        // Try to claim this word
+                        let bits = self.bitmap_4k.try_claim_word(word_idx);
+                        if bits != 0 {
+                            let base_iova = self.bitmap_4k.base() + (word_idx as u64) * BITS_PER_WORD as u64 * PAGE_SIZE_4K;
+                            let count = sub_mag.claim(bits, word_idx, base_iova);
+                            
+                            // Update hierarchy for entire word claim
+                            let first_page_idx = word_idx * BITS_PER_WORD;
+                            self.bitmap_4k.on_pages_allocated_batch(first_page_idx, count);
+                            
+                            // Now allocate from sub-magazine
+                            if let Some(iova) = sub_mag.allocate() {
+                                self.stats.magazine_hits.fetch_add(1, Ordering::Relaxed);
+                                return Some(iova);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // === Fast path #1: Traditional magazine ===
             if let Some(mag) = magazine.get(0) {
                 let mut mag = mag.lock();
                 if let Some(iova) = mag.pop() {
@@ -2638,26 +4025,48 @@ impl IovaAllocatorFast {
             
             self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
             
-            // Medium path: allocate from bitmap with arena sharding
-            // This tries local arena first, then steals from other CPUs
-            let iova = self.bitmap_4k.allocate_page_in_arena(
+            // Medium path #1: Try per-CPU free word stack (O(1) fast path)
+            {
+                let mut stack = magazine.free_word_stack.lock();
+                if let Some(iova) = self.bitmap_4k.allocate_page_from_stack(
+                    &mut stack,
+                    &magazine.hint_4k,
+                    8, // max_pops
+                ) {
+                    self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+                    self.stats.allocs_from_partial_2m.fetch_add(1, Ordering::Relaxed);
+                    self.try_refill_magazine_4k(cpu_id);
+                    return Some(iova);
+                }
+            }
+            
+            // Medium path #2: Prefer partial 2MB blocks (hugepage preservation)
+            let (iova_opt, polluted) = self.bitmap_4k.allocate_page_prefer_partial(
+                &magazine.hint_2m_partial,
                 &magazine.hint_4k,
-                magazine.arena_start_4k,
-                magazine.arena_end_4k,
-            )?;
-            self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+            );
             
-            // Try to refill magazine while we're here
-            self.try_refill_magazine_4k(cpu_id);
+            if let Some(iova) = iova_opt {
+                self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+                if polluted {
+                    self.stats.hugepage_pollutions.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    self.stats.allocs_from_partial_2m.fetch_add(1, Ordering::Relaxed);
+                }
+                self.try_refill_magazine_4k(cpu_id);
+                return Some(iova);
+            }
             
-            return Some(iova);
+            return None;
         }
         
         self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
         
         // Fallback: allocate from bitmap using global hint (no arena restriction)
+        // No per-CPU state available, use simple allocation
         let iova = self.bitmap_4k.allocate_page()?;
         self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+        self.stats.hugepage_pollutions.fetch_add(1, Ordering::Relaxed);
         
         Some(iova)
     }
@@ -2706,7 +4115,7 @@ impl IovaAllocatorFast {
             let mut mag = mag.lock();
             for iova in pages {
                 if !mag.push(iova) {
-                    // Magazine full, return the page
+                    // Magazine full, return the page (ignore result)
                     let _ = self.bitmap_4k.free_page(iova);
                     break;
                 }
@@ -2847,9 +4256,20 @@ impl IovaAllocatorFast {
     }
 
     /// Free a 4KB page immediately (bypass quarantine)
+    ///
+    /// # Owner-Based Free Strategy
+    ///
+    /// 1. If magazine has space: push to local magazine (fastest)
+    /// 2. If current CPU is owner: free directly to bitmap (local free)
+    /// 3. If current CPU is NOT owner: push to owner's remote free ring
+    ///
+    /// This reduces CAS contention by ensuring bitmap updates are primarily
+    /// done by the owner CPU. Other CPUs only push to a lock-free ring.
     fn free_4k_immediate(&self, iova: u64) -> Result<(), IommuError> {
+        let current_cpu = Self::current_cpu_id();
+        
         // Fast path: return to per-CPU magazine
-        if let Some(cpu_id) = Self::current_cpu_id() {
+        if let Some(cpu_id) = current_cpu {
             let magazine = &self.magazines[cpu_id];
             if let Some(mag) = magazine.get(0) {
                 let mut mag = mag.lock();
@@ -2859,8 +4279,57 @@ impl IovaAllocatorFast {
             }
         }
         
-        // Magazine full, return to bitmap
-        self.bitmap_4k.free_page(iova)
+        // Magazine full, determine owner and route accordingly
+        let owner_cpu = self.owner_cpu_for_iova_4k(iova);
+        
+        if let Some(cpu_id) = current_cpu {
+            if cpu_id == owner_cpu {
+                // === Local free: we own this arena ===
+                self.stats.local_frees.fetch_add(1, Ordering::Relaxed);
+                
+                // Also drain some remote frees while we're here (amortized)
+                if !self.magazines[cpu_id].remote_free_ring.is_empty() {
+                    self.drain_remote_frees_for_cpu(cpu_id);
+                }
+                
+                // Free to bitmap
+                match self.bitmap_4k.free_page(iova)? {
+                    Some(word_idx) => {
+                        // Word transitioned 0→non-zero, push to our free word stack
+                        let mut stack = self.magazines[cpu_id].free_word_stack.lock();
+                        let _ = stack.push(word_idx);
+                    }
+                    None => {}
+                }
+            } else {
+                // === Remote free: push to owner's ring ===
+                self.stats.remote_frees.fetch_add(1, Ordering::Relaxed);
+                
+                let owner_mag = &self.magazines[owner_cpu];
+                if !owner_mag.remote_free_ring.try_push(iova, 0) {
+                    // Ring full, fall back to direct bitmap update
+                    // (This is rare and acceptable - preserves correctness)
+                    match self.bitmap_4k.free_page(iova)? {
+                        Some(word_idx) => {
+                            // Best effort: push to our stack (not owner's)
+                            let mut stack = self.magazines[cpu_id].free_word_stack.lock();
+                            let _ = stack.push(word_idx);
+                        }
+                        None => {}
+                    }
+                }
+            }
+        } else {
+            // No CPU ID available, fall back to direct bitmap update
+            self.stats.remote_frees.fetch_add(1, Ordering::Relaxed);
+            
+            match self.bitmap_4k.free_page(iova)? {
+                Some(_) => {}
+                None => {}
+            }
+        }
+        
+        Ok(())
     }
 
     /// Free a 2MB super-page (O(1) via hierarchical bitmap) - via quarantine
