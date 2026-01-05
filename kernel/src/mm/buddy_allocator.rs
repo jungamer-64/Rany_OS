@@ -36,9 +36,27 @@ const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024;
 /// 4KiBページ数の最大値
 const MAX_4K_FRAMES: usize = MAX_PHYSICAL_MEMORY / PAGE_SIZE_4K;
 
-/// 各オーダーの空きリストの最大エントリ数
-/// 最悪ケースでも十分な数を確保
-const MAX_FREE_LIST_ENTRIES: usize = MAX_4K_FRAMES / 2;
+/// 全オーダーの空きビット数の合計（完全二分木）
+const TOTAL_BLOCKS: usize = MAX_4K_FRAMES * 2 - 1;
+
+/// 空きビットの総ワード数（u64）
+const TOTAL_DETAIL_WORDS: usize = (TOTAL_BLOCKS + 63) / 64;
+
+/// 各オーダーのサマリービットの総ワード数（u64）
+const TOTAL_SUMMARY_WORDS: usize = total_summary_words();
+
+const fn total_summary_words() -> usize {
+    let mut total = 0usize;
+    let mut order = 0usize;
+    while order <= MAX_ORDER {
+        let blocks = MAX_4K_FRAMES >> order;
+        let detail_words = (blocks + 63) / 64;
+        let summary_words = (detail_words + 63) / 64;
+        total += summary_words;
+        order += 1;
+    }
+    total
+}
 
 /// フレーム番号のNewtype
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -82,60 +100,7 @@ impl FrameIndex {
     }
 }
 
-/// 空きブロックリスト（双方向リンクリスト的に管理）
-/// 実際にはシンプルな配列ベースの実装
-struct FreeList {
-    /// 空きブロックの先頭フレームインデックス
-    entries: [Option<FrameIndex>; 8192],
-    /// エントリ数
-    count: usize,
-}
-
-impl FreeList {
-    const fn new() -> Self {
-        Self {
-            entries: [None; 8192],
-            count: 0,
-        }
-    }
-
-    fn push(&mut self, frame: FrameIndex) {
-        if self.count < self.entries.len() {
-            self.entries[self.count] = Some(frame);
-            self.count += 1;
-        }
-    }
-
-    fn pop(&mut self) -> Option<FrameIndex> {
-        if self.count > 0 {
-            self.count -= 1;
-            self.entries[self.count].take()
-        } else {
-            None
-        }
-    }
-
-    /// 特定のフレームを削除（buddy合体時に使用）
-    fn remove(&mut self, frame: FrameIndex) -> bool {
-        for i in 0..self.count {
-            if self.entries[i] == Some(frame) {
-                // 末尾要素と交換して削除
-                self.entries[i] = self.entries[self.count - 1].take();
-                self.count -= 1;
-                return true;
-            }
-        }
-        false
-    }
-
-    fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    fn len(&self) -> usize {
-        self.count
-    }
-}
+// (FreeList removed: order-local free bitsets are used instead.)
 
 /// Buddy Allocator
 ///
@@ -144,12 +109,26 @@ impl FreeList {
 /// - order 9: 2MiB (512フレーム)
 /// - order 18: 1GiB (262144フレーム)
 pub struct BuddyFrameAllocator {
-    /// 各オーダーの空きリスト
-    free_lists: [FreeList; MAX_ORDER + 1],
-    /// フレームの状態を追跡するビットマップ
-    /// bit = 1: 使用中または分割済み
-    /// bit = 0: 完全に空き
-    bitmap: [u64; MAX_4K_FRAMES / 64],
+    /// 各オーダーの空きブロックビット（1 = free）
+    free_bits: [u64; TOTAL_DETAIL_WORDS],
+    /// 各オーダーの空きサマリービット（1 = detail word has free blocks）
+    free_summary: [u64; TOTAL_SUMMARY_WORDS],
+    /// オーダーごとのブロック数（capacity, MAX_PHYSICAL_MEMORYに基づく）
+    order_block_capacity: [usize; MAX_ORDER + 1],
+    /// オーダーごとのブロック数（total_framesに基づく上限）
+    order_block_counts: [usize; MAX_ORDER + 1],
+    /// オーダーごとの詳細ビット開始位置（word index）
+    order_detail_word_start: [usize; MAX_ORDER + 1],
+    /// オーダーごとの詳細ビット長（word数）
+    order_detail_word_len: [usize; MAX_ORDER + 1],
+    /// オーダーごとのサマリービット開始位置（word index）
+    order_summary_word_start: [usize; MAX_ORDER + 1],
+    /// オーダーごとのサマリービット長（word数）
+    order_summary_word_len: [usize; MAX_ORDER + 1],
+    /// オーダーごとの空きブロック数
+    order_free_counts: [usize; MAX_ORDER + 1],
+    /// レイアウト初期化済みフラグ
+    layout_initialized: bool,
     /// 総フレーム数
     total_frames: usize,
     /// 空きフレーム数（4KiB単位）
@@ -166,10 +145,17 @@ pub struct BuddyFrameAllocator {
 
 impl BuddyFrameAllocator {
     pub const fn new() -> Self {
-        const INIT_FREE_LIST: FreeList = FreeList::new();
         Self {
-            free_lists: [INIT_FREE_LIST; MAX_ORDER + 1],
-            bitmap: [0u64; MAX_4K_FRAMES / 64],
+            free_bits: [0u64; TOTAL_DETAIL_WORDS],
+            free_summary: [0u64; TOTAL_SUMMARY_WORDS],
+            order_block_capacity: [0usize; MAX_ORDER + 1],
+            order_block_counts: [0usize; MAX_ORDER + 1],
+            order_detail_word_start: [0usize; MAX_ORDER + 1],
+            order_detail_word_len: [0usize; MAX_ORDER + 1],
+            order_summary_word_start: [0usize; MAX_ORDER + 1],
+            order_summary_word_len: [0usize; MAX_ORDER + 1],
+            order_free_counts: [0usize; MAX_ORDER + 1],
+            layout_initialized: false,
             total_frames: 0,
             free_frames: 0,
             split_count: 0,
@@ -183,10 +169,21 @@ impl BuddyFrameAllocator {
     /// # Safety
     /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
     pub unsafe fn init(&mut self, usable_regions: &[(PhysAddr, u64)]) {
-        // 最初は全てを使用中としてマーク
-        for word in self.bitmap.iter_mut() {
-            *word = u64::MAX;
+        self.init_layout();
+
+        // 初期化: 全て使用中（free bit = 0）
+        for word in self.free_bits.iter_mut() {
+            *word = 0;
         }
+        for word in self.free_summary.iter_mut() {
+            *word = 0;
+        }
+        for count in self.order_free_counts.iter_mut() {
+            *count = 0;
+        }
+        self.free_frames = 0;
+        self.split_count = 0;
+        self.coalesce_count = 0;
 
         let mut total = 0usize;
 
@@ -211,13 +208,61 @@ impl BuddyFrameAllocator {
             }
         }
 
-        self.total_frames = total;
+        self.total_frames = total.min(MAX_4K_FRAMES);
+        self.update_order_limits();
+    }
+
+    fn init_layout(&mut self) {
+        if self.layout_initialized {
+            return;
+        }
+
+        let mut detail_offset = 0usize;
+        let mut summary_offset = 0usize;
+
+        for order in 0..=MAX_ORDER {
+            let blocks = MAX_4K_FRAMES >> order;
+            let detail_words = (blocks + 63) / 64;
+            let summary_words = (detail_words + 63) / 64;
+
+            self.order_block_capacity[order] = blocks;
+            self.order_detail_word_start[order] = detail_offset;
+            self.order_detail_word_len[order] = detail_words;
+            self.order_summary_word_start[order] = summary_offset;
+            self.order_summary_word_len[order] = summary_words;
+
+            detail_offset += detail_words;
+            summary_offset += summary_words;
+        }
+
+        debug_assert!(detail_offset <= TOTAL_DETAIL_WORDS);
+        debug_assert!(summary_offset <= TOTAL_SUMMARY_WORDS);
+
+        self.layout_initialized = true;
+    }
+
+    fn update_order_limits(&mut self) {
+        for order in 0..=MAX_ORDER {
+            self.order_block_counts[order] = self.total_frames >> order;
+        }
     }
 
     /// 連続した空き領域を Buddy システムに追加
     fn add_region(&mut self, start: FrameIndex, end: FrameIndex) {
         let mut current = start.as_usize();
-        let end_idx = end.as_usize();
+        let mut end_idx = end.as_usize();
+
+        if current >= MAX_4K_FRAMES {
+            return;
+        }
+        if end_idx > MAX_4K_FRAMES {
+            log::warn!(
+                "[Buddy] Region beyond MAX_PHYSICAL_MEMORY: clamping end {:#x} -> {:#x}",
+                end_idx * PAGE_SIZE_4K,
+                MAX_4K_FRAMES * PAGE_SIZE_4K
+            );
+            end_idx = MAX_4K_FRAMES;
+        }
 
         while current < end_idx {
             // 現在位置からアラインされた最大ブロックを見つける
@@ -232,65 +277,196 @@ impl BuddyFrameAllocator {
 
             // このブロックを空きとして登録
             let frame = FrameIndex::new(current);
-            self.free_lists[order].push(frame);
+            self.set_free_block_by_frame(order, frame);
             self.free_frames += block_size as u64;
-
-            // ビットマップをクリア（空きとしてマーク）
-            for i in 0..block_size {
-                self.mark_frame_free(FrameIndex::new(current + i));
-            }
 
             current += block_size;
         }
     }
 
-    /// フレームを空きとしてマーク
-    fn mark_frame_free(&mut self, frame: FrameIndex) {
-        let word_idx = frame.as_usize() / 64;
-        let bit_idx = frame.as_usize() % 64;
-
-        if word_idx < self.bitmap.len() {
-            self.bitmap[word_idx] &= !(1u64 << bit_idx);
+    #[inline]
+    fn set_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
+        let summary_word_idx =
+            self.order_summary_word_start[order] + (detail_word_idx / 64);
+        let summary_bit = detail_word_idx % 64;
+        if summary_word_idx < self.free_summary.len() {
+            self.free_summary[summary_word_idx] |= 1u64 << summary_bit;
         }
     }
 
-    /// フレームを使用中としてマーク
-    fn mark_frame_used(&mut self, frame: FrameIndex) {
-        let word_idx = frame.as_usize() / 64;
-        let bit_idx = frame.as_usize() % 64;
-
-        if word_idx < self.bitmap.len() {
-            self.bitmap[word_idx] |= 1u64 << bit_idx;
+    #[inline]
+    fn clear_summary_bit(&mut self, order: usize, detail_word_idx: usize) {
+        let summary_word_idx =
+            self.order_summary_word_start[order] + (detail_word_idx / 64);
+        let summary_bit = detail_word_idx % 64;
+        if summary_word_idx < self.free_summary.len() {
+            self.free_summary[summary_word_idx] &= !(1u64 << summary_bit);
         }
     }
 
-    /// フレームが空きかどうか確認
-    fn is_frame_free(&self, frame: FrameIndex) -> bool {
-        let word_idx = frame.as_usize() / 64;
-        let bit_idx = frame.as_usize() % 64;
+    #[inline]
+    fn set_free_block(&mut self, order: usize, block_idx: usize) {
+        if block_idx >= self.order_block_capacity[order] {
+            return;
+        }
+        let detail_word_idx = block_idx / 64;
+        let bit_idx = block_idx % 64;
+        let word_idx = self.order_detail_word_start[order] + detail_word_idx;
+        let word = self.free_bits[word_idx];
+        let new_word = word | (1u64 << bit_idx);
+        if new_word != word {
+            self.free_bits[word_idx] = new_word;
+            self.order_free_counts[order] += 1;
+            if word == 0 {
+                self.set_summary_bit(order, detail_word_idx);
+            }
+        }
+    }
 
-        if word_idx >= self.bitmap.len() {
+    #[inline]
+    fn clear_free_block(&mut self, order: usize, block_idx: usize) {
+        if block_idx >= self.order_block_capacity[order] {
+            return;
+        }
+        let detail_word_idx = block_idx / 64;
+        let bit_idx = block_idx % 64;
+        let word_idx = self.order_detail_word_start[order] + detail_word_idx;
+        let word = self.free_bits[word_idx];
+        if (word & (1u64 << bit_idx)) == 0 {
+            return;
+        }
+        let new_word = word & !(1u64 << bit_idx);
+        self.free_bits[word_idx] = new_word;
+        self.order_free_counts[order] = self.order_free_counts[order].saturating_sub(1);
+        if new_word == 0 {
+            self.clear_summary_bit(order, detail_word_idx);
+        }
+    }
+
+    #[inline]
+    fn is_block_free(&self, order: usize, block_idx: usize) -> bool {
+        if block_idx >= self.order_block_capacity[order] {
             return false;
         }
+        let detail_word_idx = block_idx / 64;
+        let bit_idx = block_idx % 64;
+        let word_idx = self.order_detail_word_start[order] + detail_word_idx;
+        (self.free_bits[word_idx] & (1u64 << bit_idx)) != 0
+    }
 
-        (self.bitmap[word_idx] & (1u64 << bit_idx)) == 0
+    #[inline]
+    fn set_free_block_by_frame(&mut self, order: usize, frame: FrameIndex) {
+        let block_idx = frame.as_usize() >> order;
+        self.set_free_block(order, block_idx);
+    }
+
+    fn find_free_block(&mut self, order: usize) -> Option<usize> {
+        if self.order_free_counts[order] == 0 || self.order_block_counts[order] == 0 {
+            return None;
+        }
+
+        let summary_start = self.order_summary_word_start[order];
+        let summary_len = self.order_summary_word_len[order];
+        let detail_start = self.order_detail_word_start[order];
+        let detail_len = self.order_detail_word_len[order];
+        let max_blocks = self.order_block_counts[order];
+
+        for summary_idx in 0..summary_len {
+            let mut summary_word = self.free_summary[summary_start + summary_idx];
+            while summary_word != 0 {
+                let bit = summary_word.trailing_zeros() as usize;
+                let detail_idx = summary_idx * 64 + bit;
+                if detail_idx >= detail_len {
+                    break;
+                }
+                let detail_word = self.free_bits[detail_start + detail_idx];
+                if detail_word == 0 {
+                    self.clear_summary_bit(order, detail_idx);
+                } else {
+                    let block_bit = detail_word.trailing_zeros() as usize;
+                    let block_idx = detail_idx * 64 + block_bit;
+                    if block_idx < max_blocks {
+                        return Some(block_idx);
+                    }
+                }
+                summary_word &= summary_word - 1;
+            }
+        }
+
+        None
+    }
+
+    fn find_free_block_in_range(
+        &mut self,
+        order: usize,
+        start_block: usize,
+        end_block: usize,
+    ) -> Option<usize> {
+        if start_block >= end_block {
+            return None;
+        }
+
+        let max_blocks = self.order_block_counts[order];
+        let end_block = end_block.min(max_blocks);
+        if start_block >= end_block || self.order_free_counts[order] == 0 {
+            return None;
+        }
+
+        let detail_start = self.order_detail_word_start[order];
+        let detail_len = self.order_detail_word_len[order];
+        let start_word = start_block / 64;
+        let end_word = (end_block + 63) / 64;
+
+        for word_idx in start_word..end_word.min(detail_len) {
+            let mut word = self.free_bits[detail_start + word_idx];
+            if word == 0 {
+                continue;
+            }
+
+            let word_base = word_idx * 64;
+            let mut mask = u64::MAX;
+            if word_base < start_block {
+                mask &= !((1u64 << (start_block - word_base)) - 1);
+            }
+            if word_base + 64 > end_block {
+                let tail = end_block - word_base;
+                if tail < 64 {
+                    mask &= (1u64 << tail) - 1;
+                }
+            }
+
+            word &= mask;
+            if word == 0 {
+                continue;
+            }
+            let bit = word.trailing_zeros() as usize;
+            let block_idx = word_base + bit;
+            if block_idx < end_block {
+                return Some(block_idx);
+            }
+        }
+
+        None
     }
 
     /// 指定オーダーのブロックを割り当て
     /// O(log n) の性能
     fn allocate_order(&mut self, order: usize) -> Option<FrameIndex> {
+        if order > MAX_ORDER {
+            return None;
+        }
         // 要求オーダー以上の空きブロックを探す
         for current_order in order..=MAX_ORDER {
-            if let Some(frame) = self.free_lists[current_order].pop() {
+            if let Some(block_idx) = self.find_free_block(current_order) {
+                self.clear_free_block(current_order, block_idx);
+                let frame = FrameIndex::new(block_idx << current_order);
+
                 // 必要に応じてブロックを分割
                 self.split_block(frame, current_order, order);
 
-                // フレームを使用中としてマーク
-                let block_size = 1 << order;
-                for i in 0..block_size {
-                    self.mark_frame_used(FrameIndex::new(frame.as_usize() + i));
-                }
-                self.free_frames -= block_size as u64;
+                let block_size = 1u64 << order;
+                debug_assert!(self.free_frames >= block_size);
+                self.free_frames = self.free_frames.saturating_sub(block_size);
 
                 return Some(frame);
             }
@@ -308,7 +484,7 @@ impl BuddyFrameAllocator {
 
             // 後半のBuddyを空きリストに追加
             let buddy = FrameIndex::new(frame.as_usize() + (1 << current_order));
-            self.free_lists[current_order].push(buddy);
+            self.set_free_block_by_frame(current_order, buddy);
 
             self.split_count += 1;
         }
@@ -317,72 +493,57 @@ impl BuddyFrameAllocator {
     /// 指定オーダーのブロックを解放
     /// O(log n) の性能
     fn deallocate_order(&mut self, frame: FrameIndex, order: usize) {
+        debug_assert_eq!(frame.align_down(order), frame);
+
         // フレームを空きとしてマーク
-        let block_size = 1 << order;
-        for i in 0..block_size {
-            self.mark_frame_free(FrameIndex::new(frame.as_usize() + i));
+        let block_idx = frame.as_usize() >> order;
+        if self.is_block_free(order, block_idx) {
+            log::error!(
+                "[Buddy] Double free detected: frame={:#x} order={}",
+                frame.to_phys_addr(),
+                order
+            );
+            return;
         }
-        self.free_frames += block_size as u64;
+        self.set_free_block(order, block_idx);
+        self.free_frames += (1u64 << order);
 
         // Buddyとの合体を試みる
-        self.coalesce(frame, order);
+        self.coalesce(block_idx, order);
     }
 
     /// Buddyとの合体を反復的に試みる
     ///
     /// 以前の再帰実装はスタックオーバーフローのリスクがあったため、
     /// ループベースの反復的実装に変更。
-    fn coalesce(&mut self, frame: FrameIndex, order: usize) {
-        let mut current_frame = frame;
+    fn coalesce(&mut self, block_idx: usize, order: usize) {
+        let mut current_block = block_idx;
         let mut current_order = order;
 
         // 反復的に合体を試みる
         while current_order < MAX_ORDER {
-            let buddy = current_frame.buddy(current_order);
+            let buddy = current_block ^ 1;
+            if buddy >= self.order_block_counts[current_order] {
+                break;
+            }
 
             // Buddyが存在し、かつ同じオーダーで空いているか確認
-            if !self.is_buddy_free(buddy, current_order) {
+            if !self.is_block_free(current_order, buddy) {
                 break;
             }
 
-            // Buddyを空きリストから削除
-            if !self.free_lists[current_order].remove(buddy) {
-                break;
-            }
+            // Buddyと自分のブロックを消去して上位を空きにする
+            self.clear_free_block(current_order, current_block);
+            self.clear_free_block(current_order, buddy);
 
             self.coalesce_count += 1;
 
-            // 合体したブロックの先頭を計算
-            current_frame = if current_frame.as_usize() < buddy.as_usize() {
-                current_frame
-            } else {
-                buddy
-            };
-
             // 次のオーダーへ
+            current_block >>= 1;
             current_order += 1;
+
+            self.set_free_block(current_order, current_block);
         }
-
-        // 最終的なオーダーの空きリストに追加
-        self.free_lists[current_order].push(current_frame);
-    }
-
-    /// Buddyが同じオーダーで空いているか確認
-    fn is_buddy_free(&self, buddy: FrameIndex, order: usize) -> bool {
-        let block_size = 1 << order;
-
-        // Buddyブロック内の全フレームが空きかチェック
-        if buddy.as_usize() + block_size > self.total_frames {
-            return false;
-        }
-
-        for i in 0..block_size {
-            if !self.is_frame_free(FrameIndex::new(buddy.as_usize() + i)) {
-                return false;
-            }
-        }
-
-        true
     }
 
     /// 必要フレーム数から適切なオーダーを計算
@@ -439,21 +600,19 @@ impl BuddyFrameAllocator {
         self.deallocate_order(frame_idx, order);
     }
 
-    /// 連続する物理フレームを割り当て（任意サイズ）
+    /// 連続する物理フレームを割り当て（2のべき乗に切り上げ）
     pub fn allocate_contiguous(&mut self, frame_count: usize) -> Option<PhysAddr> {
         let order = Self::frames_to_order(frame_count);
+        if order > MAX_ORDER {
+            return None;
+        }
         self.allocate_order(order)
             .map(|frame| PhysAddr::new(frame.to_phys_addr()))
     }
 
     /// Register a NUMA region for a node and add it to the allocator
     pub fn register_numa_region(&mut self, node: usize, start: FrameIndex, end: FrameIndex) {
-        // Ensure internal structures are initialized if allocator wasn't inited
-        if self.total_frames == 0 {
-            for word in self.bitmap.iter_mut() {
-                *word = u64::MAX;
-            }
-        }
+        self.init_layout();
 
         if self.numa_regions.is_none() {
             self.numa_regions = Some(BTreeMap::new());
@@ -467,7 +626,8 @@ impl BuddyFrameAllocator {
         self.add_region(start, end);
 
         // Update total_frames to cover the new region
-        self.total_frames = self.total_frames.max(end.as_usize());
+        self.total_frames = self.total_frames.max(end.as_usize().min(MAX_4K_FRAMES));
+        self.update_order_limits();
     }
 
     /// Allocate an order block restricted to [start_frame, end_frame)
@@ -477,32 +637,27 @@ impl BuddyFrameAllocator {
         start_frame: usize,
         end_frame: usize,
     ) -> Option<FrameIndex> {
+        if order > MAX_ORDER {
+            return None;
+        }
         for current_order in order..=MAX_ORDER {
             let block_size = 1 << current_order;
-            let fl = &mut self.free_lists[current_order];
-            let mut i = 0usize;
-            while i < fl.count {
-                if let Some(frame) = fl.entries[i] {
-                    if frame.as_usize() >= start_frame
-                        && (frame.as_usize() + block_size) <= end_frame
-                    {
-                        // remove the entry by swapping with last
-                        fl.entries[i] = fl.entries[fl.count - 1].take();
-                        fl.count -= 1;
+            let start_block = (start_frame + block_size - 1) / block_size;
+            let end_block = end_frame / block_size;
 
-                        // split down to target order and allocate
-                        self.split_block(frame, current_order, order);
+            if let Some(block_idx) =
+                self.find_free_block_in_range(current_order, start_block, end_block)
+            {
+                self.clear_free_block(current_order, block_idx);
+                let frame = FrameIndex::new(block_idx << current_order);
 
-                        let target_size = 1 << order;
-                        for j in 0..target_size {
-                            self.mark_frame_used(FrameIndex::new(frame.as_usize() + j));
-                        }
-                        self.free_frames -= target_size as u64;
+                self.split_block(frame, current_order, order);
 
-                        return Some(frame);
-                    }
-                }
-                i += 1;
+                let target_size = 1u64 << order;
+                debug_assert!(self.free_frames >= target_size);
+                self.free_frames = self.free_frames.saturating_sub(target_size);
+
+                return Some(frame);
             }
         }
         None
@@ -510,16 +665,9 @@ impl BuddyFrameAllocator {
 
     /// Try to allocate a 4KiB frame on a preferred NUMA node; fallback to others and global
     pub fn allocate_4k_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size4KiB>> {
-        if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
-            (
-                map.get(&node).cloned(),
-                map.iter()
-                    .map(|(&k, v)| (k, v.clone()))
-                    .collect::<alloc::vec::Vec<_>>(),
-            )
-        }) {
-            if let Some(ranges) = node_ranges {
-                for (start, end) in ranges {
+        if let Some(map) = self.numa_regions.as_ref() {
+            if let Some(ranges) = map.get(&node) {
+                for &(start, end) in ranges.iter() {
                     if let Some(frame) =
                         self.allocate_order_in_range(0, start.as_usize(), end.as_usize())
                     {
@@ -529,11 +677,11 @@ impl BuddyFrameAllocator {
                 }
             }
 
-            for (other, ranges) in other_nodes {
+            for (&other, ranges) in map.iter() {
                 if other == node {
                     continue;
                 }
-                for (start, end) in ranges {
+                for &(start, end) in ranges.iter() {
                     if let Some(frame) =
                         self.allocate_order_in_range(0, start.as_usize(), end.as_usize())
                     {
@@ -551,16 +699,9 @@ impl BuddyFrameAllocator {
     /// 2MiB allocation on a preferred NUMA node
     pub fn allocate_2m_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size2MiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
-        if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
-            (
-                map.get(&node).cloned(),
-                map.iter()
-                    .map(|(&k, v)| (k, v.clone()))
-                    .collect::<alloc::vec::Vec<_>>(),
-            )
-        }) {
-            if let Some(ranges) = node_ranges {
-                for (start, end) in ranges {
+        if let Some(map) = self.numa_regions.as_ref() {
+            if let Some(ranges) = map.get(&node) {
+                for &(start, end) in ranges.iter() {
                     if let Some(frame) =
                         self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
                     {
@@ -570,11 +711,11 @@ impl BuddyFrameAllocator {
                 }
             }
 
-            for (other, ranges) in other_nodes {
+            for (&other, ranges) in map.iter() {
                 if other == node {
                     continue;
                 }
-                for (start, end) in ranges {
+                for &(start, end) in ranges.iter() {
                     if let Some(frame) =
                         self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
                     {
@@ -590,16 +731,9 @@ impl BuddyFrameAllocator {
     /// 1GiB allocation on a preferred NUMA node
     pub fn allocate_1g_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size1GiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
-        if let Some((node_ranges, other_nodes)) = self.numa_regions.as_ref().map(|map| {
-            (
-                map.get(&node).cloned(),
-                map.iter()
-                    .map(|(&k, v)| (k, v.clone()))
-                    .collect::<alloc::vec::Vec<_>>(),
-            )
-        }) {
-            if let Some(ranges) = node_ranges {
-                for (start, end) in ranges {
+        if let Some(map) = self.numa_regions.as_ref() {
+            if let Some(ranges) = map.get(&node) {
+                for &(start, end) in ranges.iter() {
                     if let Some(frame) =
                         self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
                     {
@@ -609,11 +743,11 @@ impl BuddyFrameAllocator {
                 }
             }
 
-            for (other, ranges) in other_nodes {
+            for (&other, ranges) in map.iter() {
                 if other == node {
                     continue;
                 }
-                for (start, end) in ranges {
+                for &(start, end) in ranges.iter() {
                     if let Some(frame) =
                         self.allocate_order_in_range(order, start.as_usize(), end.as_usize())
                     {
@@ -641,10 +775,11 @@ impl BuddyFrameAllocator {
     pub fn stats(&self) -> BuddyAllocatorStats {
         let mut order_stats = [(0usize, 0usize); MAX_ORDER + 1];
 
-        for (order, free_list) in self.free_lists.iter().enumerate() {
+        for order in 0..=MAX_ORDER {
             let block_frames = 1 << order;
-            let total_frames = free_list.len() * block_frames;
-            order_stats[order] = (free_list.len(), total_frames);
+            let free_blocks = self.order_free_counts[order];
+            let total_frames = free_blocks * block_frames;
+            order_stats[order] = (free_blocks, total_frames);
         }
 
         BuddyAllocatorStats {

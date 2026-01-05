@@ -206,8 +206,14 @@ impl Magazine {
 
 /// Per-CPU magazine set (one magazine per size class)
 ///
-/// Also holds per-CPU allocation hints to avoid cache line bounce
-/// on the global hint when multiple cores allocate simultaneously.
+/// Also holds per-CPU allocation hints and arena boundaries to avoid cache line
+/// bounce on the global hint when multiple cores allocate simultaneously.
+///
+/// # Arena Sharding
+///
+/// Each CPU is assigned a preferred arena (range of words in the bitmap).
+/// Allocations first try the local arena, then steal from other arenas if needed.
+/// This dramatically reduces contention on multi-core systems.
 #[repr(C, align(128))] // Two cache lines to avoid false sharing
 pub struct PerCpuMagazine {
     /// Magazines indexed by size class
@@ -216,10 +222,18 @@ pub struct PerCpuMagazine {
     pub hint_4k: AtomicUsize,
     /// Per-CPU hint for 2MB allocation (block index to start searching)
     pub hint_2m: AtomicUsize,
+    /// Start of this CPU's preferred arena (4KB word index, inclusive)
+    pub arena_start_4k: usize,
+    /// End of this CPU's preferred arena (4KB word index, exclusive)
+    pub arena_end_4k: usize,
+    /// Start of this CPU's preferred arena (2MB block index, inclusive)
+    pub arena_start_2m: usize,
+    /// End of this CPU's preferred arena (2MB block index, exclusive)
+    pub arena_end_2m: usize,
 }
 
 impl PerCpuMagazine {
-    /// Create empty per-CPU magazines
+    /// Create empty per-CPU magazines with default (full-range) arena
     pub const fn new() -> Self {
         Self {
             magazines: [
@@ -229,7 +243,23 @@ impl PerCpuMagazine {
             ],
             hint_4k: AtomicUsize::new(0),
             hint_2m: AtomicUsize::new(0),
+            // Default: full range (will be configured by IovaAllocatorFast::new)
+            arena_start_4k: 0,
+            arena_end_4k: usize::MAX,
+            arena_start_2m: 0,
+            arena_end_2m: usize::MAX,
         }
+    }
+
+    /// Configure this CPU's arena boundaries
+    pub fn set_arena(&mut self, start_4k: usize, end_4k: usize, start_2m: usize, end_2m: usize) {
+        self.arena_start_4k = start_4k;
+        self.arena_end_4k = end_4k;
+        self.arena_start_2m = start_2m;
+        self.arena_end_2m = end_2m;
+        // Initialize hints to arena start
+        self.hint_4k = AtomicUsize::new(start_4k);
+        self.hint_2m = AtomicUsize::new(start_2m);
     }
 
     /// Get magazine for a size class
@@ -567,6 +597,89 @@ impl IovaBitmap {
                     hint.store(word_idx, Ordering::Relaxed);
                     self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
                     // Update 2MB/1GB hierarchy
+                    self.on_page_allocated(page_idx);
+                    return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Allocate a single 4KB page within a specific arena (sharded allocation)
+    ///
+    /// First tries to allocate within the arena, then falls back to global if needed.
+    ///
+    /// # Arguments
+    /// * `hint` - Per-CPU hint (updated on success)
+    /// * `arena_start` - Start of arena (word index, inclusive)
+    /// * `arena_end` - End of arena (word index, exclusive)
+    ///
+    /// # Returns
+    /// Some(iova) if allocation succeeded, None if exhausted
+    pub fn allocate_page_in_arena(
+        &self,
+        hint: &AtomicUsize,
+        arena_start: usize,
+        arena_end: usize,
+    ) -> Option<u64> {
+        let detail_words = self.detail.len();
+        if detail_words == 0 {
+            return None;
+        }
+
+        // Clamp arena bounds to valid range
+        let arena_start = arena_start.min(detail_words);
+        let arena_end = arena_end.min(detail_words);
+        let arena_size = arena_end.saturating_sub(arena_start);
+
+        if arena_size == 0 {
+            // Empty arena, fall back to global
+            return self.allocate_page_with_hint(hint);
+        }
+
+        // Phase 1: Try within local arena first
+        let hint_val = hint.load(Ordering::Relaxed);
+        let local_hint = if hint_val >= arena_start && hint_val < arena_end {
+            hint_val
+        } else {
+            arena_start
+        };
+
+        for offset in 0..arena_size {
+            let word_idx = arena_start + ((local_hint - arena_start + offset) % arena_size);
+
+            if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                if page_idx < self.total_pages {
+                    hint.store(word_idx, Ordering::Relaxed);
+                    self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                    self.on_page_allocated(page_idx);
+                    return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                }
+            }
+        }
+
+        // Phase 2: Local arena exhausted, steal from global (outside our arena)
+        // Try words before arena_start
+        for word_idx in 0..arena_start {
+            if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                if page_idx < self.total_pages {
+                    // Don't update hint (keep it in our arena for next time)
+                    self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
+                    self.on_page_allocated(page_idx);
+                    return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
+                }
+            }
+        }
+
+        // Try words after arena_end
+        for word_idx in arena_end..detail_words {
+            if let Some(bit_idx) = self.try_allocate_from_word(word_idx) {
+                let page_idx = word_idx * BITS_PER_WORD + bit_idx;
+                if page_idx < self.total_pages {
+                    self.free_count_4k.fetch_sub(1, Ordering::Relaxed);
                     self.on_page_allocated(page_idx);
                     return Some(self.base + (page_idx as u64) * PAGE_SIZE_4K);
                 }
@@ -1544,6 +1657,66 @@ impl IovaBitmap {
         None
     }
 
+    /// Allocate a 2MB block within a specific arena (sharded allocation)
+    ///
+    /// First tries to allocate within the arena, then falls back to global if needed.
+    ///
+    /// # Arguments
+    /// * `hint` - Per-CPU hint (updated on success)
+    /// * `arena_start` - Start of arena (2MB block index, inclusive)
+    /// * `arena_end` - End of arena (2MB block index, exclusive)
+    pub fn allocate_2mb_in_arena(
+        &self,
+        hint: &AtomicUsize,
+        arena_start: usize,
+        arena_end: usize,
+    ) -> Option<u64> {
+        if self.total_2mb_blocks == 0 {
+            return None;
+        }
+
+        // Clamp arena bounds
+        let arena_start = arena_start.min(self.total_2mb_blocks);
+        let arena_end = arena_end.min(self.total_2mb_blocks);
+        let arena_size = arena_end.saturating_sub(arena_start);
+
+        if arena_size == 0 {
+            return self.allocate_2mb_with_hint(hint);
+        }
+
+        // Phase 1: Try within local arena
+        let hint_val = hint.load(Ordering::Relaxed);
+        let local_hint = if hint_val >= arena_start && hint_val < arena_end {
+            hint_val
+        } else {
+            arena_start
+        };
+
+        for offset in 0..arena_size {
+            let block_idx = arena_start + ((local_hint - arena_start + offset) % arena_size);
+
+            if self.try_allocate_2mb_block(block_idx) {
+                hint.store(block_idx, Ordering::Relaxed);
+                return Some(self.base + (block_idx as u64) * PAGE_SIZE_2M);
+            }
+        }
+
+        // Phase 2: Steal from outside arena
+        for block_idx in 0..arena_start {
+            if self.try_allocate_2mb_block(block_idx) {
+                return Some(self.base + (block_idx as u64) * PAGE_SIZE_2M);
+            }
+        }
+
+        for block_idx in arena_end..self.total_2mb_blocks {
+            if self.try_allocate_2mb_block(block_idx) {
+                return Some(self.base + (block_idx as u64) * PAGE_SIZE_2M);
+            }
+        }
+
+        None
+    }
+
     /// Try to allocate a specific 2MB block atomically
     fn try_allocate_2mb_block(&self, block_idx: usize) -> bool {
         // Clear the 2MB bitmap bit first (optimistic)
@@ -1881,19 +2054,47 @@ impl IovaAllocatorFastStats {
 }
 
 impl IovaAllocatorFast {
-    /// Create a new fast IOVA allocator
+    /// Create a new fast IOVA allocator with arena sharding
     ///
     /// # Arguments
     /// * `base` - Base IOVA address (must be page-aligned)
     /// * `size` - Total size of IOVA space
+    ///
+    /// # Arena Sharding
+    ///
+    /// The IOVA space is divided into arenas, one per CPU. Each CPU preferentially
+    /// allocates from its own arena to minimize cache line contention. When a local
+    /// arena is exhausted, the CPU steals from other arenas.
     pub fn new(base: u64, size: u64) -> Self {
         let total_pages = (size / PAGE_SIZE_4K) as usize;
         let bitmap_4k = IovaBitmap::new(base, total_pages);
         
-        // Allocate per-CPU magazines
+        // Calculate arena sizes
+        let total_words_4k = (total_pages + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let total_blocks_2m = total_pages / PAGES_PER_2MB_BLOCK;
+        
+        // Divide arenas among CPUs (at least 1 word per CPU, or share if not enough)
+        let words_per_cpu = (total_words_4k + MAX_CPUS - 1) / MAX_CPUS;
+        let blocks_2m_per_cpu = if total_blocks_2m >= MAX_CPUS {
+            (total_blocks_2m + MAX_CPUS - 1) / MAX_CPUS
+        } else {
+            1 // Share all blocks if fewer than CPU count
+        };
+        
+        // Allocate per-CPU magazines with arena boundaries
         let mut magazines = alloc::vec::Vec::with_capacity(MAX_CPUS);
-        for _ in 0..MAX_CPUS {
-            magazines.push(PerCpuMagazine::new());
+        for cpu_id in 0..MAX_CPUS {
+            let mut mag = PerCpuMagazine::new();
+            
+            // Calculate this CPU's arena boundaries (non-overlapping)
+            let arena_start_4k = cpu_id * words_per_cpu;
+            let arena_end_4k = ((cpu_id + 1) * words_per_cpu).min(total_words_4k);
+            
+            let arena_start_2m = cpu_id * blocks_2m_per_cpu;
+            let arena_end_2m = ((cpu_id + 1) * blocks_2m_per_cpu).min(total_blocks_2m);
+            
+            mag.set_arena(arena_start_4k, arena_end_4k, arena_start_2m, arena_end_2m);
+            magazines.push(mag);
         }
         
         Self {
@@ -1929,7 +2130,7 @@ impl IovaAllocatorFast {
         }
     }
 
-    /// Allocate a 4KB page (O(1) fast path)
+    /// Allocate a 4KB page (O(1) fast path with arena sharding)
     #[inline]
     fn allocate_4k(&self) -> Option<u64> {
         // Fast path: try per-CPU magazine
@@ -1945,9 +2146,13 @@ impl IovaAllocatorFast {
             
             self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
             
-            // Medium path: allocate from bitmap using per-CPU hint
-            let hint = &magazine.hint_4k;
-            let iova = self.bitmap_4k.allocate_page_with_hint(hint)?;
+            // Medium path: allocate from bitmap with arena sharding
+            // This tries local arena first, then steals from other CPUs
+            let iova = self.bitmap_4k.allocate_page_in_arena(
+                &magazine.hint_4k,
+                magazine.arena_start_4k,
+                magazine.arena_end_4k,
+            )?;
             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
             
             // Try to refill magazine while we're here
@@ -1958,7 +2163,7 @@ impl IovaAllocatorFast {
         
         self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
         
-        // Fallback: allocate from bitmap using global hint
+        // Fallback: allocate from bitmap using global hint (no arena restriction)
         let iova = self.bitmap_4k.allocate_page()?;
         self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
         
@@ -2011,7 +2216,7 @@ impl IovaAllocatorFast {
         }
     }
 
-    /// Allocate a 2MB super-page (O(1) via hierarchical bitmap)
+    /// Allocate a 2MB super-page (O(1) via hierarchical bitmap with arena sharding)
     fn allocate_2m(&self) -> Option<u64> {
         // Fast path: try per-CPU magazine for 2MB
         if let Some(cpu_id) = Self::current_cpu_id() {
@@ -2027,9 +2232,12 @@ impl IovaAllocatorFast {
             self.stats.magazine_misses.fetch_add(1, Ordering::Relaxed);
             
             // Medium path: O(1) allocation from 2MB fully-free bitmap
-            // Use per-CPU hint for better cache locality
-            let hint = &magazine.hint_2m;
-            let iova = self.bitmap_4k.allocate_2mb_with_hint(hint)?;
+            // Uses arena sharding: local arena first, then steal from others
+            let iova = self.bitmap_4k.allocate_2mb_in_arena(
+                &magazine.hint_2m,
+                magazine.arena_start_2m,
+                magazine.arena_end_2m,
+            )?;
             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
             
             return Some(iova);
