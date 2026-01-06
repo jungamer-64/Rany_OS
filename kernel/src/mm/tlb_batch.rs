@@ -63,6 +63,10 @@ pub const TLB_FLUSH_ALL_THRESHOLD: usize = 512;
 /// 最大CPU数
 pub const MAX_CPUS: usize = 256;
 
+/// TLBフラッシュ用IPIベクタ番号
+/// interrupt_manager.rsのIPI_VECTOR_BASE (241) + オフセット
+pub const TLB_FLUSH_VECTOR: u8 = 241;
+
 // ============================================================================
 // TLB Flush Batch
 // ============================================================================
@@ -532,8 +536,7 @@ fn send_tlb_flush_ipi(cpu_mask: u64) {
             }
             
             // アクティブなCPUにはIPIを送信
-            // TODO: 実際のIPI送信（APICドライバとの連携）
-            // send_ipi(cpu_id, TLB_FLUSH_VECTOR);
+            send_tlb_ipi_to_cpu(cpu_id);
         }
     }
     
@@ -609,7 +612,8 @@ pub fn flush_tlb_immediate(addr: VirtAddr) {
     unsafe {
         flush_tlb_page_local(addr);
     }
-    // TODO: リモートCPUへのIPI
+    // リモートCPUへのIPI（全CPUにブロードキャスト）
+    broadcast_tlb_flush_ipi();
 }
 
 /// 全TLBフラッシュ（全CPU）
@@ -618,6 +622,27 @@ pub fn flush_tlb_all() {
         flush_tlb_all_local();
     }
     send_tlb_flush_ipi_all(u64::MAX);
+}
+
+// ============================================================================
+// IPI Helper Functions
+// ============================================================================
+
+/// 単一CPUにTLBフラッシュIPIを送信
+fn send_tlb_ipi_to_cpu(cpu_id: usize) {
+    // CPU IDをAPIC IDとして使用（通常は1:1マッピング）
+    let apic_id = cpu_id as u8;
+    
+    // interrupt_manager経由でIPI送信
+    crate::io::interrupt_manager::send_ipi(apic_id, TLB_FLUSH_VECTOR);
+    
+    TLB_STATS.remote_flushes.fetch_add(1, Ordering::Relaxed);
+}
+
+/// 全CPUにTLBフラッシュIPIをブロードキャスト
+fn broadcast_tlb_flush_ipi() {
+    crate::io::interrupt_manager::broadcast_ipi(TLB_FLUSH_VECTOR);
+    TLB_STATS.remote_flushes.fetch_add(1, Ordering::Relaxed);
 }
 
 // ============================================================================
@@ -1103,8 +1128,7 @@ pub fn send_tlb_flush_lazy_aware(cpu_mask: u64, asid: u16) -> usize {
         if LAZY_TLB_STATE[cpu_id].request_flush(asid) {
             skipped += 1;
         } else {
-            // TODO: 実際のIPI送信
-            // send_ipi(cpu_id, TLB_FLUSH_VECTOR);
+            send_tlb_ipi_to_cpu(cpu_id);
         }
     }
     

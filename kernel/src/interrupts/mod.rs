@@ -185,6 +185,12 @@ fn init_idt() {
             mouse_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
         )); // IRQ12 (Mouse)
 
+        // TLB Flush IPI Vector (0xF1 = 241)
+        // マルチコア環境でのTLBシュートダウンに使用
+        idt[crate::mm::tlb_batch::TLB_FLUSH_VECTOR].set_handler_fn(handler_to_x86!(
+            tlb_flush_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        ));
+
         // Spurious Interrupt Vector (0xFF)
         // APICによって生成される偽の割り込みを処理
         // OSクラッシュ（#GP/#DF）を防ぐために必須
@@ -588,6 +594,23 @@ define_interrupt!(
         unsafe {
             send_eoi(11);
         }
+    }
+);
+
+// TLB Flush IPI Handler (0xF1 = 241)
+// マルチコア環境でのTLBシュートダウン用割り込みハンドラ
+// 他CPUからのTLBフラッシュ要求を処理
+define_interrupt!(
+    fn tlb_flush_ipi_handler(_stack_frame: InterruptStackFrame) {
+        // TLBフラッシュ処理を実行
+        // Safety: 割り込みハンドラとして呼び出されている
+        unsafe {
+            crate::mm::tlb_batch::tlb_flush_ipi_handler();
+        }
+        
+        // Local APICにEOIを送信
+        // IPIはLocal APICから来るのでLocal APICにEOIを送る
+        crate::io::interrupt_manager::send_eoi();
     }
 );
 

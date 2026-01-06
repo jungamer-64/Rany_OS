@@ -263,18 +263,12 @@ impl IovaAllocator {
     }
 
     /// Allocate within a limit (e.g. 32-bit address space)
-    pub fn allocate_with_limit(&self, size: u64, granularity: IovaGranularity, limit: u64) -> Option<u64> {
-        // TODO: Implement proper top-down allocation or limit checking in FastBitmapAllocator
-        // For now, we optimistically allocate and check result.
-        // This is safe but might fail if memory is fragmented or high.
-        
-        let addr = self.allocate(size, granularity)?;
-        if addr + size <= limit + 1 {
-            Some(addr)
-        } else {
-            // Allocated address is too high.
-             let _ = self.free_with_granularity(addr, granularity);
-             None
+    pub fn allocate_with_limit(&self, _size: u64, granularity: IovaGranularity, limit: u64) -> Option<u64> {
+        // NOTE: We currently ignore 'size' assuming it matches granularity, consistent with allocate()
+        match granularity {
+            IovaGranularity::Page4K => self.inner.allocate_4k_below(limit),
+            IovaGranularity::Page2M => self.inner.allocate_2m_below(limit),
+            IovaGranularity::Page1G => self.inner.allocate_1g_below(limit),
         }
     }
 

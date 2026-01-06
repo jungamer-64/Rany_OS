@@ -12,6 +12,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use crate::mm::memcg::MemcgId;
 
 // ============================================================================
 // Per-CPU 現在プロセスID追跡
@@ -395,6 +396,8 @@ pub struct ProcessInfo {
     pub stats: ProcessStats,
     /// リソース制限
     pub limits: ResourceLimits,
+    /// memcg ID
+    pub memcg_id: MemcgId,
     /// 作成時刻
     pub created_at: u64,
     /// 終了コード (終了時のみ)
@@ -421,6 +424,7 @@ impl ProcessInfo {
             priority: Priority::NORMAL,
             stats: ProcessStats::default(),
             limits: ResourceLimits::default(),
+            memcg_id: MemcgId::ROOT,
             created_at: crate::time::current_time_ns(),
             exit_code: None,
             children: Vec::new(),
@@ -720,6 +724,16 @@ pub fn getgid() -> GroupId {
         process.read().credentials.gid
     } else {
         GroupId::ROOT
+    }
+}
+
+/// 現在プロセスの memcg ID を取得
+pub fn get_current_process_memcg_id() -> MemcgId {
+    let pid = get_current_process();
+    if let Some(process) = PROCESS_MANAGER.get(pid) {
+        process.read().memcg_id
+    } else {
+        MemcgId::ROOT
     }
 }
 

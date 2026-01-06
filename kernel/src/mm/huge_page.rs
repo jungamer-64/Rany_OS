@@ -160,7 +160,7 @@ impl HugePageEntry {
             frame,
             size,
             numa_node,
-            alloc_time: 0, // TODO: タイムスタンプ取得
+            alloc_time: crate::time::current_time_ns(),
         }
     }
 }
