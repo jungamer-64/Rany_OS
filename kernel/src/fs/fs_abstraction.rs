@@ -759,6 +759,68 @@ pub fn mount_table() -> &'static MountTable {
     &MOUNT_TABLE
 }
 
+/// Attempt to write data to the inode identified by `ino`.
+/// This is a best-effort helper that traverses mounted filesystems and
+/// attempts to locate the inode by number, then calls `Inode::write`.
+/// Returns `Ok(())` if write succeeds, `Err(())` otherwise.
+pub fn write_inode_by_number(ino: InodeNum, offset: u64, data: &[u8]) -> Result<(), ()> {
+    use alloc::collections::VecDeque;
+    use hashbrown::HashSet;
+
+    let mounts = MOUNT_TABLE.mounts.read();
+
+    for entry in mounts.iter() {
+        if let Ok(root) = entry.fs.root() {
+            // Breadth-first search for inode with matching number
+            let mut queue: VecDeque<Arc<dyn Inode>> = VecDeque::new();
+            let mut visited: HashSet<u64> = HashSet::new();
+
+            if let Ok(attr) = root.getattr() {
+                if attr.ino == ino {
+                    if root.write(offset, data).is_ok() {
+                        return Ok(());
+                    } else {
+                        return Err(());
+                    }
+                }
+                visited.insert(attr.ino);
+                queue.push_back(root);
+            }
+
+            while let Some(node) = queue.pop_front() {
+                if let Ok(attr) = node.getattr() {
+                    if attr.file_type == FileType::Directory {
+                        if let Ok(entries) = node.readdir(0) {
+                            for d in entries {
+                                if d.ino == ino {
+                                    if let Ok(child) = node.lookup(&d.name) {
+                                        if child.write(offset, data).is_ok() {
+                                            return Ok(());
+                                        } else {
+                                            return Err(());
+                                        }
+                                    }
+                                } else if d.file_type == FileType::Directory {
+                                    if let Ok(child) = node.lookup(&d.name) {
+                                        if let Ok(child_attr) = child.getattr() {
+                                            if !visited.contains(&child_attr.ino) {
+                                                visited.insert(child_attr.ino);
+                                                queue.push_back(child);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(())
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
