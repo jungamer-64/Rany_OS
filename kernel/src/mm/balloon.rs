@@ -24,6 +24,7 @@
 //!       DEFLATING
 //! ```
 
+#![allow(dead_code)]
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use spin::{Mutex, RwLock};

@@ -5,8 +5,9 @@
 //! - Per-CPU data structures
 //! - Inter-processor interrupts
 
-pub mod bootstrap;
+#![allow(dead_code)]
 
+pub mod bootstrap;
 pub use bootstrap::{init, online_aps, start_aps};
 
 /// Get total CPU count (BSP + APs)
