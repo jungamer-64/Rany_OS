@@ -1,6 +1,7 @@
 // ============================================================================
 // src/task/mod.rs - Task Definition and Executor
 // ============================================================================
+#![allow(dead_code)]
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;
