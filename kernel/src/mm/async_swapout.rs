@@ -543,6 +543,12 @@ mod kernel_impl {
                 }
             }
 
+
+            // Refill token bucket after processing batch
+            // Only refill if we actually processed something or if we just woke up to check
+            // Use a simple strategy: constant refill rate per batch processing cycle
+            add_tokens(TOKEN_REFILL_PER_BATCH);
+
             // If shutdown requested and channel empty after processing, stop
             if WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
                 if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
@@ -554,6 +560,33 @@ mod kernel_impl {
                     WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
                     break;
                 }
+            }
+        }
+    }
+
+    fn try_consume_token() -> bool {
+        let mut cur = TOKENS.load(Ordering::Acquire);
+        loop {
+            if cur == 0 {
+                return false;
+            }
+            match TOKENS.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return true,
+                Err(c) => cur = c,
+            }
+        }
+    }
+
+    fn add_tokens(n: usize) {
+        let mut cur = TOKENS.load(Ordering::Acquire);
+        loop {
+            if cur >= TOKEN_BUCKET_CAPACITY {
+                return;
+            }
+            let new = (cur + n).min(TOKEN_BUCKET_CAPACITY);
+            match TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => return,
+                Err(c) => cur = c,
             }
         }
     }

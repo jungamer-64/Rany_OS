@@ -102,6 +102,7 @@
 - RESERVED_FILE_SLOTS（ファイル予約）: キュー容量の約 12.5% を予約してファイル書き戻しを優先する実装にしています。システムの I/O 特性により調整してください。
 
 調整の指針:
+
 - レイテンシ重視（短時間で anon を積極的に解放したい）: `TOKEN_BUCKET_CAPACITY` を増やし、`TOKEN_REFILL_PER_BATCH` を小さめにする。
 - スループット重視（ファイル書き戻し優先）: `RESERVED_FILE_SLOTS` を増やし、`TOKEN_BUCKET_CAPACITY` を控えめにする。
 
