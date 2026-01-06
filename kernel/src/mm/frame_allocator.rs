@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use crate::sync::IrqMutex;
-use crate::io::iommu::{IovaAllocatorFast, IovaGranularity};
+use crate::mm::fast_allocator::{FastBitmapAllocator, PageGranularity};
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
@@ -99,6 +99,11 @@ pub struct NumaTopology {
     /// ノード間距離行列（キャッシュライン考慮）
     /// 値が大きいほど遠い（レイテンシが高い）
     distance_matrix: [[u8; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+    /// プリコンピュートされた距離順ノードリスト
+    /// distance_cache[from_node] = 距離順にソートされたノードID配列
+    distance_cache: [[NumaNodeId; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+    /// 距離キャッシュが初期化済みか
+    distance_cache_valid: bool,
 }
 
 impl NumaTopology {
@@ -126,12 +131,67 @@ impl NumaTopology {
             [20, 20, 20, 20, 20, 20, 10, 20],
             [20, 20, 20, 20, 20, 20, 20, 10],
         ];
+        
+        // デフォルトの距離キャッシュ（自ノードが最初、他は番号順）
+        const N0: NumaNodeId = NumaNodeId::new(0);
+        let distance_cache = [
+            [NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2), NumaNodeId::new(3), 
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(1), NumaNodeId::new(0), NumaNodeId::new(2), NumaNodeId::new(3),
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(2), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(3),
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(3), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(4), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(5), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(6), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(7)],
+            [NumaNodeId::new(7), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6)],
+        ];
 
         Self {
             nodes,
             node_count: 1, // デフォルトは1ノード
             distance_matrix,
+            distance_cache,
+            distance_cache_valid: false,
         }
+    }
+    
+    /// 距離キャッシュを事前計算（起動時に一度だけ呼び出し）
+    /// 
+    /// 各ノードからの距離順にノードをソートしてキャッシュに格納。
+    /// これにより `nodes_by_distance()` が O(1) で動作する。
+    pub fn precompute_distance_cache(&mut self) {
+        for from in 0..self.node_count {
+            let _from_id = NumaNodeId::new(from as u8);
+            
+            // (node_id, distance) のペアを作成
+            let mut pairs: [(usize, u8); MAX_NUMA_NODES] = [(0, 255); MAX_NUMA_NODES];
+            for to in 0..self.node_count {
+                pairs[to] = (to, self.distance_matrix[from][to]);
+            }
+            
+            // 距離でソート（insertion sort、小配列なので十分）
+            for i in 1..self.node_count {
+                let mut j = i;
+                while j > 0 && pairs[j - 1].1 > pairs[j].1 {
+                    pairs.swap(j - 1, j);
+                    j -= 1;
+                }
+            }
+            
+            // 結果をキャッシュに格納
+            for (i, &(node_idx, _)) in pairs.iter().enumerate().take(MAX_NUMA_NODES) {
+                self.distance_cache[from][i] = NumaNodeId::new(node_idx as u8);
+            }
+        }
+        
+        self.distance_cache_valid = true;
     }
 
     /// ノード数を取得
@@ -179,7 +239,24 @@ impl NumaTopology {
 
     /// 指定ノードからの優先順位でノードをソート
     /// 近いノードが先頭に来る
+    /// 
+    /// ## 最適化
+    /// 
+    /// `precompute_distance_cache()` が呼ばれていれば O(1) で返却。
+    /// キャッシュ無効時はフォールバックでソートを実行。
+    #[inline]
     pub fn nodes_by_distance(&self, from: NumaNodeId) -> [NumaNodeId; MAX_NUMA_NODES] {
+        // 高速パス: プリコンピュート済みキャッシュを返す
+        if self.distance_cache_valid {
+            return self.distance_cache[from.as_usize()];
+        }
+        
+        // フォールバック: 動的にソート（起動初期のみ）
+        self.compute_nodes_by_distance_slow(from)
+    }
+    
+    /// 動的に距離順ソートを実行（フォールバック用）
+    fn compute_nodes_by_distance_slow(&self, from: NumaNodeId) -> [NumaNodeId; MAX_NUMA_NODES] {
         let mut result = [NumaNodeId::new(0); MAX_NUMA_NODES];
         let mut indices: [usize; MAX_NUMA_NODES] = [0, 1, 2, 3, 4, 5, 6, 7];
 
@@ -455,7 +532,7 @@ unsafe impl FrameAllocator<Size4KiB> for BitmapFrameAllocator {
 
 /// PMM fast allocator wrapper (phys addr aware)
 struct PmmAllocatorFast {
-    inner: IovaAllocatorFast,
+    inner: FastBitmapAllocator,
     base: u64,
     size: u64,
 }
@@ -463,14 +540,14 @@ struct PmmAllocatorFast {
 impl PmmAllocatorFast {
     fn new(base: u64, size: u64) -> Self {
         Self {
-            inner: IovaAllocatorFast::new(base, size),
+            inner: FastBitmapAllocator::new(base, size),
             base,
             size,
         }
     }
 
     fn configure_arenas_for_cpu_ids(&mut self, cpu_ids: &[usize]) {
-        self.inner.configure_arenas_for_cpu_ids(cpu_ids);
+        self.inner.reconfigure_for_cpu_ids(cpu_ids);
     }
 
     fn enable_single_writer(&self) {
@@ -486,28 +563,21 @@ impl PmmAllocatorFast {
     }
 
     fn stats(&self) -> (u64, usize) {
-        let stats = self.inner.stats();
-        (stats.free_pages as u64, stats.total_pages)
+        self.inner.pmm_stats()
     }
 
     fn alloc_4k(&self) -> Option<PhysFrame<Size4KiB>> {
-        let addr = self
-            .inner
-            .allocate(PAGE_SIZE_4K as u64, IovaGranularity::Page4K)?;
+        let addr = self.inner.allocate_4k()?;
         PhysFrame::from_start_address(PhysAddr::new(addr)).ok()
     }
 
     fn alloc_2m(&self) -> Option<PhysFrame<Size2MiB>> {
-        let addr = self
-            .inner
-            .allocate(PAGE_SIZE_2M as u64, IovaGranularity::Page2M)?;
+        let addr = self.inner.allocate_2m()?;
         PhysFrame::from_start_address(PhysAddr::new(addr)).ok()
     }
 
     fn alloc_1g(&self) -> Option<PhysFrame<Size1GiB>> {
-        let addr = self
-            .inner
-            .allocate(PAGE_SIZE_1G as u64, IovaGranularity::Page1G)?;
+        let addr = self.inner.allocate_1g()?;
         PhysFrame::from_start_address(PhysAddr::new(addr)).ok()
     }
 
@@ -526,21 +596,21 @@ impl PmmAllocatorFast {
         let addr = frame.start_address().as_u64();
         let _ = self
             .inner
-            .free_immediate(addr, IovaGranularity::Page4K);
+            .free_immediate(addr, PageGranularity::Page4K);
     }
 
     fn free_2m(&self, frame: PhysFrame<Size2MiB>) {
         let addr = frame.start_address().as_u64();
         let _ = self
             .inner
-            .free_immediate(addr, IovaGranularity::Page2M);
+            .free_immediate(addr, PageGranularity::Page2M);
     }
 
     fn free_1g(&self, frame: PhysFrame<Size1GiB>) {
         let addr = frame.start_address().as_u64();
         let _ = self
             .inner
-            .free_immediate(addr, IovaGranularity::Page1G);
+            .free_immediate(addr, PageGranularity::Page1G);
     }
 
     fn reserve_range(&self, start: u64, size: u64) {

@@ -3,6 +3,9 @@
 // 設計書 5.3: 線形型と交換ヒープ（RedLeaf OS参照）
 //
 // v0.3.0: linked_list_allocator から内蔵Buddy Allocatorへ移行
+// v0.4.0: Segregated Free Lists (区分フリーリスト) 導入
+//         - O(n) First-Fit から O(1) サイズクラス探索へ
+//         - IPCの頻繁な割り当て/解放のボトルネックを解消
 // ============================================================================
 #![allow(dead_code)]
 
@@ -10,42 +13,107 @@ use crate::sync::PoisonLock;
 use alloc::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
 
-/// シンプルな空きリストベースのアロケータ（Exchange Heap専用）
-///
-/// Exchange Heapはドメイン間通信専用で、通常の割り当てサイズは
-/// 比較的大きい（パケットバッファ等）ため、単純な空きリスト実装で十分。
-#[derive(Debug)]
-struct SimpleFreeListHeap {
-    /// ヒープ開始アドレス
-    heap_start: usize,
-    /// ヒープ終了アドレス
-    heap_end: usize,
-    /// 空きリストの先頭
-    free_list_head: Option<NonNull<FreeBlock>>,
-    /// 使用中のバイト数
-    allocated_bytes: usize,
-}
+// ============================================================================
+// Segregated Free Lists アロケータ
+// ============================================================================
+
+/// サイズクラスの数 (8B, 16B, 32B, ... 最大 2^31 B)
+/// インデックス i のリストは 2^(i+3) バイトのブロックを管理
+const SIZE_CLASS_COUNT: usize = 29;
+
+/// 最小ブロックサイズ (8 bytes = 2^3)
+const MIN_BLOCK_SIZE: usize = 8;
+
+/// 最小ブロックサイズのlog2
+const MIN_BLOCK_SIZE_LOG2: usize = 3;
 
 /// 空きブロックヘッダ
 #[repr(C)]
 struct FreeBlock {
+    /// ブロックサイズ（ヘッダを含む）
     size: usize,
+    /// 同一サイズクラス内の次の空きブロック
     next: Option<NonNull<FreeBlock>>,
 }
 
-// SimpleFreeListHeap は Mutex で保護されているため Send/Sync は安全
-// FreeBlock はヒープメモリ内に存在し、Mutex のロック下でのみアクセスされる
-unsafe impl Send for SimpleFreeListHeap {}
-unsafe impl Sync for SimpleFreeListHeap {}
+/// Segregated Free Lists アロケータ
+///
+/// TLSFアロケータに類似したアプローチで、サイズクラスごとに
+/// 別々のフリーリストを管理する。
+///
+/// ## サイズクラス
+/// - クラス 0: 8-15 bytes
+/// - クラス 1: 16-31 bytes
+/// - クラス 2: 32-63 bytes
+/// - ...
+/// - クラス n: 2^(n+3) - 2^(n+4)-1 bytes
+///
+/// ## 割り当て計算量
+/// - O(1): ビット探索命令でサイズクラスを特定
+/// - ベストケース: 対応クラスに空きがあれば即座に返却
+/// - ワーストケース: より大きいクラスから分割（小さい定数）
+#[derive(Debug)]
+struct SegregatedFreeListHeap {
+    /// ヒープ開始アドレス
+    heap_start: usize,
+    /// ヒープ終了アドレス
+    heap_end: usize,
+    /// サイズクラスごとのフリーリスト
+    free_lists: [Option<NonNull<FreeBlock>>; SIZE_CLASS_COUNT],
+    /// 空きブロックが存在するサイズクラスのビットマップ
+    /// bit i が 1 なら free_lists[i] に空きブロックがある
+    free_bitmap: u32,
+    /// 使用中のバイト数
+    allocated_bytes: usize,
+    /// 統計: 割り当て回数
+    alloc_count: u64,
+    /// 統計: 解放回数
+    dealloc_count: u64,
+    /// 統計: ブロック分割回数
+    split_count: u64,
+    /// 統計: ブロック結合回数
+    coalesce_count: u64,
+}
 
-impl SimpleFreeListHeap {
+// SegregatedFreeListHeap は PoisonLock で保護されるため Send/Sync は安全
+unsafe impl Send for SegregatedFreeListHeap {}
+unsafe impl Sync for SegregatedFreeListHeap {}
+
+impl SegregatedFreeListHeap {
     const fn empty() -> Self {
         Self {
             heap_start: 0,
             heap_end: 0,
-            free_list_head: None,
+            free_lists: [None; SIZE_CLASS_COUNT],
+            free_bitmap: 0,
             allocated_bytes: 0,
+            alloc_count: 0,
+            dealloc_count: 0,
+            split_count: 0,
+            coalesce_count: 0,
         }
+    }
+
+    /// サイズからサイズクラスインデックスを計算（切り上げ）
+    ///
+    /// # Returns
+    /// サイズを収容できる最小のクラスインデックス
+    #[inline]
+    fn size_to_class(size: usize) -> usize {
+        if size <= MIN_BLOCK_SIZE {
+            return 0;
+        }
+        // size > MIN_BLOCK_SIZE の場合
+        // 必要なクラス = ceil(log2(size)) - MIN_BLOCK_SIZE_LOG2
+        let bits_needed = usize::BITS - (size - 1).leading_zeros();
+        let class = (bits_needed as usize).saturating_sub(MIN_BLOCK_SIZE_LOG2);
+        class.min(SIZE_CLASS_COUNT - 1)
+    }
+
+    /// サイズクラスからブロックサイズを計算
+    #[inline]
+    fn class_to_size(class: usize) -> usize {
+        MIN_BLOCK_SIZE << class
     }
 
     /// ヒープを初期化
@@ -57,86 +125,114 @@ impl SimpleFreeListHeap {
         self.heap_start = heap_start as usize;
         self.heap_end = self.heap_start + size;
         self.allocated_bytes = 0;
+        self.free_bitmap = 0;
+        self.alloc_count = 0;
+        self.dealloc_count = 0;
+        self.split_count = 0;
+        self.coalesce_count = 0;
 
-        // 初期状態: 全体が1つの空きブロック
+        // フリーリストをクリア
+        for list in self.free_lists.iter_mut() {
+            *list = None;
+        }
+
+        // 初期状態: 全体を最大サイズのブロックとして登録
         if size >= core::mem::size_of::<FreeBlock>() {
-            let block = heap_start as *mut FreeBlock;
-            unsafe {
-                (*block).size = size;
-                (*block).next = None;
-            }
-            self.free_list_head = NonNull::new(block);
+            self.add_free_block(heap_start as usize, size);
         }
     }
 
-    /// メモリを割り当て（First-Fit）
-    fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
+    /// 空きブロックを適切なサイズクラスに追加
+    fn add_free_block(&mut self, addr: usize, size: usize) {
+        let min_size = core::mem::size_of::<FreeBlock>();
+        if size < min_size {
+            return;
+        }
+
+        let class = Self::size_to_class(size);
+        let block_ptr = addr as *mut FreeBlock;
+
+        unsafe {
+            (*block_ptr).size = size;
+            (*block_ptr).next = self.free_lists[class];
+        }
+
+        self.free_lists[class] = NonNull::new(block_ptr);
+        self.free_bitmap |= 1u32 << class;
+    }
+
+    /// 指定サイズクラスから空きブロックを取得
+    fn pop_free_block(&mut self, class: usize) -> Option<NonNull<FreeBlock>> {
+        let block = self.free_lists[class]?;
+
+        unsafe {
+            self.free_lists[class] = (*block.as_ptr()).next;
+        }
+
+        // リストが空になったらビットマップをクリア
+        if self.free_lists[class].is_none() {
+            self.free_bitmap &= !(1u32 << class);
+        }
+
+        Some(block)
+    }
+
+    /// メモリを割り当て（O(1) Segregated Fit）
+    fn allocate(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
         let align = layout.align().max(core::mem::align_of::<FreeBlock>());
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
 
-        // 最低ブロックサイズ（ヘッダ + アライメント）
-        let _min_block_size = size + align;
+        // 要求サイズに対応するクラスを計算
+        let required_class = Self::size_to_class(size);
 
-        let mut prev: Option<NonNull<FreeBlock>> = None;
-        let mut current = self.free_list_head;
-
-        while let Some(block_ptr) = current {
-            let block = unsafe { block_ptr.as_ref() };
-
-            // アライメントを考慮した割り当て開始位置
-            let block_addr = block_ptr.as_ptr() as usize;
-            let aligned_addr = (block_addr + align - 1) & !(align - 1);
-            let padding = aligned_addr - block_addr;
-
-            let total_needed = padding + size;
-
-            if block.size >= total_needed {
-                let remaining = block.size - total_needed;
-
-                // 残りが十分大きければ分割
-                if remaining >= core::mem::size_of::<FreeBlock>() + 16 {
-                    // 新しい空きブロックを作成
-                    let new_block_addr = aligned_addr + size;
-                    let new_block = new_block_addr as *mut FreeBlock;
-                    unsafe {
-                        (*new_block).size = remaining;
-                        (*new_block).next = block.next;
-                    }
-
-                    // リストを更新
-                    if let Some(mut p) = prev {
-                        unsafe {
-                            p.as_mut().next = NonNull::new(new_block);
-                        }
-                    } else {
-                        self.free_list_head = NonNull::new(new_block);
-                    }
-                } else {
-                    // 残りが小さければ全体を使用
-                    if let Some(mut p) = prev {
-                        unsafe {
-                            p.as_mut().next = block.next;
-                        }
-                    } else {
-                        self.free_list_head = block.next;
-                    }
-                }
-
-                self.allocated_bytes += total_needed;
-                return Ok(NonNull::new(aligned_addr as *mut u8).expect("aligned addr null"));
-            }
-
-            prev = current;
-            current = block.next;
+        // このクラス以上で空きがあるクラスをビットマップで O(1) 探索
+        let available_mask = self.free_bitmap & !((1u32 << required_class) - 1);
+        if available_mask == 0 {
+            return Err(());
         }
 
-        Err(())
+        // 最小の空きクラスを取得 (trailing_zeros = tzcnt/bsf 命令)
+        let found_class = available_mask.trailing_zeros() as usize;
+
+        // そのクラスからブロックを取得
+        let block = self.pop_free_block(found_class).ok_or(())?;
+        let block_ptr = block.as_ptr();
+        let block_size = unsafe { (*block_ptr).size };
+        let block_addr = block_ptr as usize;
+
+        // アライメント調整
+        let aligned_addr = (block_addr + align - 1) & !(align - 1);
+        let padding = aligned_addr - block_addr;
+
+        // 必要な総サイズ
+        let total_needed = padding + size;
+
+        if block_size < total_needed {
+            // サイズ不足（通常起こらないが安全のため）
+            self.add_free_block(block_addr, block_size);
+            return Err(());
+        }
+
+        let remaining = block_size - total_needed;
+
+        // 残りが十分大きければ分割して別クラスに戻す
+        let min_split_size = core::mem::size_of::<FreeBlock>();
+        if remaining >= min_split_size {
+            let new_block_addr = aligned_addr + size;
+            self.add_free_block(new_block_addr, remaining);
+            self.split_count += 1;
+        }
+
+        self.allocated_bytes += total_needed;
+        self.alloc_count += 1;
+
+        Ok(NonNull::new(aligned_addr as *mut u8).expect("aligned addr null"))
     }
 
     /// メモリを解放
     ///
     /// # Safety
-    /// - `ptr` は以前に `allocate_first_fit` で取得したポインタ
+    /// - `ptr` は以前に `allocate` で取得したポインタ
     unsafe fn deallocate(&mut self, ptr: NonNull<u8>, layout: Layout) {
         let size = layout.size().max(core::mem::size_of::<FreeBlock>());
         let addr = ptr.as_ptr() as usize;
@@ -146,69 +242,13 @@ impl SimpleFreeListHeap {
             return;
         }
 
-        // 新しい空きブロックを作成
-        let new_block = addr as *mut FreeBlock;
-        unsafe {
-            (*new_block).size = size;
-            (*new_block).next = None;
-        }
-
         self.allocated_bytes = self.allocated_bytes.saturating_sub(size);
+        self.dealloc_count += 1;
 
-        // 隣接ブロックの合体を試みる
-        // フリーリストをアドレス順にソートして挿入位置を見つける
-        let mut prev: Option<NonNull<FreeBlock>> = None;
-        let mut current = self.free_list_head;
-
-        // 挿入位置を見つける（アドレス昇順）
-        while let Some(block_ptr) = current {
-            let block = unsafe { block_ptr.as_ref() };
-            if block_ptr.as_ptr() as usize > addr {
-                break;
-            }
-            prev = current;
-            current = block.next;
-        }
-
-        // 新しいブロックをリストに挿入
-        unsafe {
-            (*new_block).next = current;
-        }
-
-        if let Some(mut p) = prev {
-            unsafe {
-                p.as_mut().next = NonNull::new(new_block);
-            }
-        } else {
-            self.free_list_head = NonNull::new(new_block);
-        }
-
-        // 後ろの隣接ブロックと合体
-        if let Some(next_ptr) = current {
-            let new_block_end = addr + size;
-            if new_block_end == next_ptr.as_ptr() as usize {
-                // 合体
-                let next_block = unsafe { next_ptr.as_ref() };
-                unsafe {
-                    (*new_block).size += next_block.size;
-                    (*new_block).next = next_block.next;
-                }
-            }
-        }
-
-        // 前の隣接ブロックと合体
-        if let Some(prev_ptr) = prev {
-            let prev_block = unsafe { prev_ptr.as_ref() };
-            let prev_end = prev_ptr.as_ptr() as usize + prev_block.size;
-            if prev_end == addr {
-                // 合体
-                unsafe {
-                    let prev_block_mut = prev_ptr.as_ptr() as *mut FreeBlock;
-                    (*prev_block_mut).size += (*new_block).size;
-                    (*prev_block_mut).next = (*new_block).next;
-                }
-            }
-        }
+        // 空きブロックとして追加（隣接結合は将来の最適化として保留）
+        // Note: 完全な隣接結合にはブロック境界情報の追跡が必要
+        // 現時点ではシンプルにサイズクラスに追加
+        self.add_free_block(addr, size);
     }
 
     fn used(&self) -> usize {
@@ -217,6 +257,55 @@ impl SimpleFreeListHeap {
 
     fn free(&self) -> usize {
         (self.heap_end - self.heap_start).saturating_sub(self.allocated_bytes)
+    }
+
+    /// 拡張統計情報を取得
+    fn extended_stats(&self) -> ExtendedHeapStats {
+        let mut non_empty_classes = 0u32;
+        for i in 0..SIZE_CLASS_COUNT {
+            if self.free_lists[i].is_some() {
+                non_empty_classes |= 1u32 << i;
+            }
+        }
+
+        ExtendedHeapStats {
+            allocated: self.allocated_bytes,
+            free: self.free(),
+            alloc_count: self.alloc_count,
+            dealloc_count: self.dealloc_count,
+            split_count: self.split_count,
+            coalesce_count: self.coalesce_count,
+            non_empty_classes,
+        }
+    }
+}
+
+// ============================================================================
+// 後方互換性のための型エイリアス（内部実装が変わっても外部APIは同じ）
+// ============================================================================
+type SimpleFreeListHeap = SegregatedFreeListHeap;
+
+/// 拡張ヒープ統計情報
+#[derive(Debug, Clone, Copy)]
+pub struct ExtendedHeapStats {
+    pub allocated: usize,
+    pub free: usize,
+    pub alloc_count: u64,
+    pub dealloc_count: u64,
+    pub split_count: u64,
+    pub coalesce_count: u64,
+    /// 空きブロックが存在するサイズクラス（ビットマップ）
+    pub non_empty_classes: u32,
+}
+
+// ============================================================================
+// 旧API互換のSimpleFreeListHeap実装（削除済み、上記で置換）
+// ============================================================================
+
+impl SegregatedFreeListHeap {
+    /// 旧API互換: allocate_first_fit
+    fn allocate_first_fit(&mut self, layout: Layout) -> Result<NonNull<u8>, ()> {
+        self.allocate(layout)
     }
 }
 
@@ -286,6 +375,17 @@ impl ExchangeHeap {
             Err(_) => {
                 log::error!("[MEM] Exchange Heap poisoned - returning zero stats");
                 HeapStats { allocated: 0, free: 0 }
+            }
+        }
+    }
+
+    /// 拡張統計情報を取得（デバッグ/性能分析用）
+    pub fn extended_stats(&self) -> Option<ExtendedHeapStats> {
+        match self.heap.lock() {
+            Ok(guard) => Some(guard.extended_stats()),
+            Err(_) => {
+                log::error!("[MEM] Exchange Heap poisoned - returning None for extended stats");
+                None
             }
         }
     }

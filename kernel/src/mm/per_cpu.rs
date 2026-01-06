@@ -13,6 +13,14 @@ use core::arch::asm;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
+// IOVA_MM_MIGRATION_PLAN Phase 1.1: 汎用Magazineを使用
+use super::magazine::Magazine;
+// NUMA zonelist support
+use super::types::NumaNodeId;
+use super::frame_allocator::MAX_NUMA_NODES;
+// Remote Free batch support
+use super::remote_free::RemoteFreeEntry;
+
 /// Cache entry for device to domain mapping
 #[derive(Clone, Copy, Default)]
 pub struct DomainCacheEntry {
@@ -86,40 +94,9 @@ pub const IOVA_MAG_CAPACITY: usize = 256;
 pub const MAX_IOMMU_CONTROLLERS: usize = 8;
 
 /// Per-controller IOVA cache (per CPU).
-#[derive(Clone, Copy)]
-pub struct IovaMagazine {
-    cache: [u64; IOVA_MAG_CAPACITY],
-    len: usize,
-}
+/// IOVA_MM_MIGRATION_PLAN Phase 1.1: Magazine<T, N>の型エイリアスとして定義
+pub type IovaMagazine = Magazine<u64, IOVA_MAG_CAPACITY>;
 
-impl IovaMagazine {
-    #[allow(dead_code)]
-    pub const fn new() -> Self {
-        Self {
-            cache: [0; IOVA_MAG_CAPACITY],
-            len: 0,
-        }
-    }
-
-    pub fn push(&mut self, iova: u64) -> bool {
-        if self.len < IOVA_MAG_CAPACITY {
-            self.cache[self.len] = iova;
-            self.len += 1;
-            true
-        } else {
-            false
-        }
-    }
-
-    pub fn pop(&mut self) -> Option<u64> {
-        if self.len == 0 {
-            None
-        } else {
-            self.len -= 1;
-            Some(self.cache[self.len])
-        }
-    }
-}
 
 // ============================================================================
 // Per-CPU Page Table Magazine (for PageTablePool fast path)
@@ -245,6 +222,207 @@ impl PtMagazine {
     }
 }
 
+// ============================================================================
+// Per-CPU Remote Free Batch Buffer
+// ============================================================================
+
+/// Capacity of the per-CPU remote free batch buffer
+/// When buffer reaches this capacity, entries are flushed to the target ring
+pub const REMOTE_FREE_BATCH_SIZE: usize = 32;
+
+/// Maximum target CPUs to batch for
+/// Limits memory overhead while covering most common cases
+pub const MAX_REMOTE_FREE_TARGETS: usize = 8;
+
+/// Per-target batch buffer entry
+#[derive(Clone, Copy)]
+pub struct RemoteFreeBatchEntry {
+    /// Target CPU ID
+    pub target_cpu: u16,
+    /// Batch buffer for this target
+    pub entries: [RemoteFreeEntry; REMOTE_FREE_BATCH_SIZE],
+    /// Number of valid entries in the buffer
+    pub len: u8,
+}
+
+impl RemoteFreeBatchEntry {
+    pub const fn new() -> Self {
+        Self {
+            target_cpu: u16::MAX,  // Invalid - indicates unused slot
+            entries: [const { RemoteFreeEntry::empty() }; REMOTE_FREE_BATCH_SIZE],
+            len: 0,
+        }
+    }
+
+    /// Check if this entry is in use (has a valid target CPU)
+    #[inline]
+    pub const fn is_active(&self) -> bool {
+        self.target_cpu != u16::MAX
+    }
+
+    /// Reset this entry for reuse
+    #[inline]
+    pub fn reset(&mut self) {
+        self.target_cpu = u16::MAX;
+        self.len = 0;
+    }
+
+    /// Check if buffer is full
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.len as usize >= REMOTE_FREE_BATCH_SIZE
+    }
+
+    /// Add an entry to the buffer
+    /// Returns true if added, false if buffer is full
+    #[inline]
+    pub fn push(&mut self, entry: RemoteFreeEntry) -> bool {
+        if self.is_full() {
+            return false;
+        }
+        self.entries[self.len as usize] = entry;
+        self.len += 1;
+        true
+    }
+
+    /// Get iterator over valid entries
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &RemoteFreeEntry> {
+        self.entries[..self.len as usize].iter()
+    }
+}
+
+/// Per-CPU Remote Free Batch Buffer
+///
+/// Batches remote free requests destined for different target CPUs.
+/// When a buffer for a specific target fills up, all entries are
+/// pushed to the target's RemoteFreeRing in a single batch, reducing
+/// contention on the ring's head pointer.
+///
+/// # Design
+/// - Per-target sub-buffers to batch requests by destination
+/// - Amortizes CAS overhead: one batch push vs many individual pushes
+/// - Falls back to immediate push if no buffer slot available
+///
+/// # Benefits
+/// - Reduces lock contention on RemoteFreeRing head
+/// - Better cache utilization (fewer ring accesses)
+/// - Allows range coalescing in future versions
+#[derive(Clone, Copy)]
+pub struct RemoteFreeBatchBuffer {
+    /// Per-target batch entries
+    targets: [RemoteFreeBatchEntry; MAX_REMOTE_FREE_TARGETS],
+    /// Statistics: total entries batched
+    pub batched_count: u64,
+    /// Statistics: total flushes performed
+    pub flush_count: u64,
+}
+
+impl RemoteFreeBatchBuffer {
+    pub const fn new() -> Self {
+        Self {
+            targets: [const { RemoteFreeBatchEntry::new() }; MAX_REMOTE_FREE_TARGETS],
+            batched_count: 0,
+            flush_count: 0,
+        }
+    }
+
+    /// Find or allocate a slot for the given target CPU
+    fn find_or_allocate_slot(&mut self, target_cpu: u16) -> Option<usize> {
+        // First pass: find existing slot
+        for i in 0..MAX_REMOTE_FREE_TARGETS {
+            if self.targets[i].target_cpu == target_cpu {
+                return Some(i);
+            }
+        }
+        // Second pass: find empty slot
+        for i in 0..MAX_REMOTE_FREE_TARGETS {
+            if !self.targets[i].is_active() {
+                self.targets[i].target_cpu = target_cpu;
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    /// Add an entry to be freed on the target CPU.
+    ///
+    /// # Returns
+    /// - `Ok(None)` - Entry was batched successfully
+    /// - `Ok(Some(entries))` - Buffer is full, returns entries to flush
+    /// - `Err(entry)` - No slot available, caller should push immediately
+    pub fn add_entry(
+        &mut self, 
+        target_cpu: u16, 
+        entry: RemoteFreeEntry
+    ) -> Result<Option<(u16, &[RemoteFreeEntry])>, RemoteFreeEntry> {
+        if let Some(slot_idx) = self.find_or_allocate_slot(target_cpu) {
+            let slot = &mut self.targets[slot_idx];
+            
+            if slot.is_full() {
+                // Return full buffer for flushing
+                // Caller will flush and retry
+                return Ok(Some((slot.target_cpu, &slot.entries[..slot.len as usize])));
+            }
+            
+            slot.push(entry);
+            self.batched_count += 1;
+            Ok(None)
+        } else {
+            // No slot available - caller should push immediately
+            Err(entry)
+        }
+    }
+
+    /// Mark a slot as flushed (reset for reuse)
+    pub fn mark_flushed(&mut self, target_cpu: u16) {
+        for slot in &mut self.targets {
+            if slot.target_cpu == target_cpu {
+                slot.reset();
+                self.flush_count += 1;
+                break;
+            }
+        }
+    }
+
+    /// Flush all pending entries for a specific target
+    /// Returns the entries to be pushed to the target's ring
+    pub fn flush_target(&mut self, target_cpu: u16) -> Option<&[RemoteFreeEntry]> {
+        for slot in &mut self.targets {
+            if slot.target_cpu == target_cpu && slot.len > 0 {
+                let entries = &slot.entries[..slot.len as usize];
+                return Some(entries);
+            }
+        }
+        None
+    }
+
+    /// Flush all pending entries for all targets
+    /// Returns iterator over (target_cpu, entries) pairs
+    pub fn flush_all(&mut self) -> impl Iterator<Item = (u16, &[RemoteFreeEntry])> {
+        self.targets.iter().filter_map(|slot| {
+            if slot.is_active() && slot.len > 0 {
+                Some((slot.target_cpu, &slot.entries[..slot.len as usize]))
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Reset all slots (called after flush_all)
+    pub fn reset_all(&mut self) {
+        for slot in &mut self.targets {
+            slot.reset();
+        }
+        self.flush_count += 1;
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> (u64, u64) {
+        (self.batched_count, self.flush_count)
+    }
+}
+
 /// Per-CPUデータ構造
 /// GsBaseからのオフセットでアクセス
 #[repr(C, align(64))]
@@ -267,8 +445,17 @@ pub struct PerCpuData {
     /// Interrupt nesting depth (incremented on ISR entry, decremented on exit)
     /// Used to detect if code is running in interrupt context.
     pub interrupt_depth: core::sync::atomic::AtomicU32,
-    /// パディング（キャッシュラインに揃える - 調整必要かも）
-    _padding: [u64; 1], // Reduced padding due to pt_magazine addition
+    /// NUMA Zonelist: pre-sorted list of NUMA nodes by distance from local node
+    /// Cached at CPU initialization to avoid repeated distance lookups during allocation.
+    /// zonelist[0] is always the local node (closest), subsequent entries are sorted
+    /// by increasing distance. This enables O(1) fallback node selection.
+    pub numa_zonelist: [NumaNodeId; MAX_NUMA_NODES],
+    /// Number of valid entries in numa_zonelist
+    pub numa_zonelist_len: u8,
+    /// Local NUMA node ID for this CPU (same as zonelist[0] when initialized)
+    pub local_numa_node: NumaNodeId,
+    /// Remote Free Batch Buffer: batches cross-CPU free requests to reduce contention
+    pub remote_free_batch: RemoteFreeBatchBuffer,
 }
 
 impl PerCpuData {
@@ -281,16 +468,74 @@ impl PerCpuData {
             alloc_count: 0,
             dealloc_count: 0,
             iommu_domain_cache: PerCpuDomainCache::new(),
-            iova_magazines: [IovaMagazine::new(); MAX_IOMMU_CONTROLLERS],
+            // const fn内で配列初期化: const { expr }パターンを使用
+            iova_magazines: [const { IovaMagazine::new() }; MAX_IOMMU_CONTROLLERS],
             pt_magazine: PtMagazine::new(),
             interrupt_depth: core::sync::atomic::AtomicU32::new(0),
-            _padding: [0; 1],
+            // NUMA zonelist: initialized with default (node 0) until setup_numa_zonelist is called
+            numa_zonelist: [const { NumaNodeId::new(0) }; MAX_NUMA_NODES],
+            numa_zonelist_len: 1, // At least one node (node 0)
+            local_numa_node: NumaNodeId::new(0),
+            // Remote free batch buffer for cross-CPU memory reclamation
+            remote_free_batch: RemoteFreeBatchBuffer::new(),
         }
     }
 
     /// 自己参照ポインタを設定
     pub fn set_self_ptr(&mut self) {
         self.self_ptr = self as *const _ as usize;
+    }
+
+    /// Initialize the NUMA zonelist for this CPU based on its local NUMA node.
+    ///
+    /// This should be called once during CPU initialization after NUMA topology
+    /// is known. The zonelist is sorted by distance from the local node,
+    /// enabling fast fallback allocation without runtime distance lookups.
+    ///
+    /// # Arguments
+    /// * `local_node` - The NUMA node ID where this CPU resides
+    /// * `sorted_nodes` - Pre-sorted array of NUMA nodes by distance from local_node
+    /// * `node_count` - Number of valid nodes in the sorted_nodes array
+    pub fn setup_numa_zonelist(
+        &mut self,
+        local_node: NumaNodeId,
+        sorted_nodes: &[NumaNodeId; MAX_NUMA_NODES],
+        node_count: usize,
+    ) {
+        self.local_numa_node = local_node;
+        self.numa_zonelist_len = (node_count as u8).min(MAX_NUMA_NODES as u8);
+        
+        // Copy the pre-sorted zonelist
+        for i in 0..self.numa_zonelist_len as usize {
+            self.numa_zonelist[i] = sorted_nodes[i];
+        }
+    }
+
+    /// Get the local NUMA node for this CPU.
+    #[inline]
+    pub fn get_local_numa_node(&self) -> NumaNodeId {
+        self.local_numa_node
+    }
+
+    /// Get the NUMA zonelist iterator for fallback allocation.
+    ///
+    /// Returns an iterator over NUMA nodes sorted by distance from the local node.
+    /// This enables efficient fallback allocation without runtime distance lookups.
+    #[inline]
+    pub fn zonelist_iter(&self) -> impl Iterator<Item = NumaNodeId> + '_ {
+        self.numa_zonelist[..self.numa_zonelist_len as usize].iter().copied()
+    }
+
+    /// Get the nth preferred NUMA node from the zonelist.
+    ///
+    /// Returns `None` if index is out of bounds.
+    #[inline]
+    pub fn get_zonelist_node(&self, index: usize) -> Option<NumaNodeId> {
+        if index < self.numa_zonelist_len as usize {
+            Some(self.numa_zonelist[index])
+        } else {
+            None
+        }
     }
 
     /// Check if currently executing in interrupt context.

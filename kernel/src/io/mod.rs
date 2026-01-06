@@ -64,7 +64,9 @@ pub use dma::{
 pub use iommu::api::{disable_iommu, enable_iommu, with_iommu};
 pub use iommu::types::{DeviceId, IommuError};
 
-
+// Benchmark exports (only available with "bench" feature)
+#[cfg(feature = "bench")]
+pub use iommu::{IovaBitmap, IovaBitmapV2, IovaAllocatorSimple};
 
 // ============================================================================
 // Usage Guide

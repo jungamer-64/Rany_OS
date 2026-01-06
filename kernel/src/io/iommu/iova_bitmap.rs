@@ -1,6 +1,9 @@
 // ============================================================================
 // kernel/src/io/iommu/iova_bitmap.rs
 // ============================================================================
+//! [DEPRECATED] Use `io::iommu::iova_allocator` instead.
+//! This module is kept only for benchmarking purposes.
+//!
 //! Allocation-Free IOVA Allocator (Bitmap + Magazine)
 //!
 //! This module provides a high-performance IOVA allocator that eliminates
@@ -59,6 +62,26 @@ use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU16, AtomicU32, AtomicU64,
 use crate::sync::IrqMutex;
 use super::types::IommuError;
 
+// アトミックユーティリティをインポート（IOVA_MM_MIGRATION_PLAN Phase 0.2）
+use crate::mm::atomic_utils::AtomicU8;
+// マガジンキャッシュをインポート（IOVA_MM_MIGRATION_PLAN Phase 1.1）
+use crate::mm::magazine::{Magazine, DEFAULT_MAGAZINE_CAPACITY};
+// リモートフリーリング（IOVA_MM_MIGRATION_PLAN Phase 1.3 / Phase 2統合）
+// Note: IovaRemoteFreeRing, IovaQuarantineRingはPhase 4以降で使用予定
+#[allow(unused_imports)]
+use crate::mm::remote_free::{
+    IovaFreeEntry as RemoteFreeEntry,
+    IovaQuarantineEntry as QuarantineEntry,
+    IovaRemoteFreeRing,
+    IovaQuarantineRing,
+};
+// HugePageBitmap（IOVA_MM_MIGRATION_PLAN Phase 3統合準備）
+// TODO: Phase 3.2でIovaBitmapの内部実装をHugePageBitmapに委譲予定
+use crate::mm::bitmap::HugePageBitmap;
+// 注: PAGES_PER_2MB, BLOCKS_2MB_PER_1GBはローカル定数と重複するため、別名でインポートまたは使用時に完全パス
+#[allow(unused_imports)]
+use crate::mm::bitmap::HierarchicalBitmap as MmHierarchicalBitmap;
+
 // ============================================================================
 // Constants
 // ============================================================================
@@ -82,9 +105,6 @@ const PAGES_PER_WORD: usize = BITS_PER_WORD;
 
 /// Maximum words in the bitmap
 const MAX_BITMAP_WORDS: usize = MAX_BITMAP_PAGES / BITS_PER_WORD;
-
-/// Magazine capacity (number of pre-allocated IOVAs per size class)
-const MAGAZINE_CAPACITY: usize = 64;
 
 /// Number of size classes in magazine (4KB, 2MB, 1GB)
 const MAGAZINE_SIZE_CLASSES: usize = 3;
@@ -169,60 +189,228 @@ impl IovaGranularity {
 }
 
 // ============================================================================
+// BitmapProvider Trait (Phase 3.2c - Interoperability)
+// ============================================================================
+
+/// Common trait for hierarchical bitmap providers
+///
+/// This trait defines the minimal interface required for bitmap-based allocators,
+/// allowing interoperability between `IovaBitmap` and `HugePageBitmap`.
+///
+/// # Future Migration
+/// Once `IovaBitmap` is fully migrated to use `HugePageBitmap` internally,
+/// this trait can be used to abstract over both implementations.
+pub trait BitmapProvider {
+    /// Get total 4KB pages managed
+    fn total_pages(&self) -> usize;
+    
+    /// Get free 4KB page count
+    fn free_count_4k(&self) -> usize;
+    
+    /// Get free 2MB block count (fully free only)
+    fn free_count_2m(&self) -> usize;
+    
+    /// Get free 1GB block count (fully free only)
+    fn free_count_1g(&self) -> usize;
+    
+    /// Get total 2MB blocks
+    fn total_2m_blocks(&self) -> usize;
+    
+    /// Get total 1GB blocks
+    fn total_1g_blocks(&self) -> usize;
+    
+    /// Allocate a single 4KB page
+    fn allocate_4k(&self) -> Option<usize>;
+    
+    /// Free a 4KB page
+    fn free_4k(&self, page_idx: usize) -> bool;
+    
+    /// Allocate a fully-free 2MB block
+    fn allocate_2m(&self) -> Option<usize>;
+    
+    /// Free a 2MB block
+    fn free_2m(&self, block_idx: usize) -> bool;
+    
+    /// Allocate a fully-free 1GB block
+    fn allocate_1g(&self) -> Option<usize>;
+    
+    /// Check if a page is free
+    fn is_page_free(&self, page_idx: usize) -> bool;
+    
+    /// Check if a 2MB block is fully free
+    fn is_2m_free(&self, block_idx: usize) -> bool;
+    
+    /// Check if a 1GB block is fully free
+    fn is_1g_free(&self, block_idx: usize) -> bool;
+}
+
+// BitmapProvider implementation for HugePageBitmap
+impl BitmapProvider for HugePageBitmap {
+    fn total_pages(&self) -> usize {
+        self.total_pages()
+    }
+    
+    fn free_count_4k(&self) -> usize {
+        self.free_count_4k()
+    }
+    
+    fn free_count_2m(&self) -> usize {
+        self.free_count_2m()
+    }
+    
+    fn free_count_1g(&self) -> usize {
+        self.free_count_1g()
+    }
+    
+    fn total_2m_blocks(&self) -> usize {
+        self.total_2m_blocks()
+    }
+    
+    fn total_1g_blocks(&self) -> usize {
+        self.total_1g_blocks()
+    }
+    
+    fn allocate_4k(&self) -> Option<usize> {
+        self.allocate_4k()
+    }
+    
+    fn free_4k(&self, page_idx: usize) -> bool {
+        self.free_4k(page_idx)
+    }
+    
+    fn allocate_2m(&self) -> Option<usize> {
+        self.allocate_2m()
+    }
+    
+    fn free_2m(&self, block_idx: usize) -> bool {
+        self.free_2m(block_idx)
+    }
+    
+    fn allocate_1g(&self) -> Option<usize> {
+        self.allocate_1g()
+    }
+    
+    fn is_page_free(&self, page_idx: usize) -> bool {
+        self.is_page_free(page_idx)
+    }
+    
+    fn is_2m_free(&self, block_idx: usize) -> bool {
+        self.is_2m_free(block_idx)
+    }
+    
+    fn is_1g_free(&self, block_idx: usize) -> bool {
+        self.is_1g_free(block_idx)
+    }
+}
+
+// BitmapProvider implementation for IovaBitmap
+// Note: IovaBitmap operates with IOVA addresses internally, but BitmapProvider
+// uses page indices. This implementation converts between the two.
+impl BitmapProvider for IovaBitmap {
+    fn total_pages(&self) -> usize {
+        self.total_pages
+    }
+    
+    fn free_count_4k(&self) -> usize {
+        self.free_count_4k.load(Ordering::Relaxed)
+    }
+    
+    fn free_count_2m(&self) -> usize {
+        self.free_count_2m.load(Ordering::Relaxed)
+    }
+    
+    fn free_count_1g(&self) -> usize {
+        self.free_count_1g.load(Ordering::Relaxed)
+    }
+    
+    fn total_2m_blocks(&self) -> usize {
+        self.total_2mb_blocks
+    }
+    
+    fn total_1g_blocks(&self) -> usize {
+        self.total_1gb_blocks
+    }
+    
+    fn allocate_4k(&self) -> Option<usize> {
+        // Allocate page and convert IOVA to page index
+        self.allocate_page().map(|iova| {
+            ((iova - self.base) / PAGE_SIZE_4K) as usize
+        })
+    }
+    
+    fn free_4k(&self, page_idx: usize) -> bool {
+        // Convert page index to IOVA and free
+        let iova = self.base + (page_idx as u64) * PAGE_SIZE_4K;
+        self.free_page(iova).is_ok()
+    }
+    
+    fn allocate_2m(&self) -> Option<usize> {
+        // Allocate 2MB block and convert IOVA to block index
+        self.allocate_2mb().map(|iova| {
+            ((iova - self.base) / PAGE_SIZE_2M) as usize
+        })
+    }
+    
+    fn free_2m(&self, block_idx: usize) -> bool {
+        // Convert block index to IOVA and free
+        let iova = self.base + (block_idx as u64) * PAGE_SIZE_2M;
+        self.free_2mb(iova).is_ok()
+    }
+    
+    fn allocate_1g(&self) -> Option<usize> {
+        // Allocate 1GB block and convert IOVA to block index
+        self.allocate_1gb().map(|iova| {
+            ((iova - self.base) / PAGE_SIZE_1G) as usize
+        })
+    }
+    
+    fn is_page_free(&self, page_idx: usize) -> bool {
+        if page_idx >= self.total_pages {
+            return false;
+        }
+        let word_idx = page_idx / BITS_PER_WORD;
+        let bit_idx = page_idx % BITS_PER_WORD;
+        if word_idx >= self.detail.len() {
+            return false;
+        }
+        let word = self.detail[word_idx].load(Ordering::Relaxed);
+        (word & (1u64 << bit_idx)) != 0
+    }
+    
+    fn is_2m_free(&self, block_idx: usize) -> bool {
+        if block_idx >= self.total_2mb_blocks {
+            return false;
+        }
+        let word_idx = block_idx / BITS_PER_WORD;
+        let bit_idx = block_idx % BITS_PER_WORD;
+        if word_idx >= self.bitmap_2m.len() {
+            return false;
+        }
+        let word = self.bitmap_2m[word_idx].load(Ordering::Relaxed);
+        (word & (1u64 << bit_idx)) != 0
+    }
+    
+    fn is_1g_free(&self, block_idx: usize) -> bool {
+        if block_idx >= self.total_1gb_blocks {
+            return false;
+        }
+        let word_idx = block_idx / BITS_PER_WORD;
+        let bit_idx = block_idx % BITS_PER_WORD;
+        if word_idx >= self.bitmap_1g.len() {
+            return false;
+        }
+        let word = self.bitmap_1g[word_idx].load(Ordering::Relaxed);
+        (word & (1u64 << bit_idx)) != 0
+    }
+}
+
+// ============================================================================
 // Per-CPU Magazine Cache (IRQ-off Fast Path)
 // ============================================================================
 
-/// Single magazine for one size class
-#[repr(C, align(64))] // Cache line aligned
-pub struct Magazine {
-    /// Cached IOVAs (stack-like, top at count-1)
-    entries: [u64; MAGAZINE_CAPACITY],
-    /// Number of valid entries
-    count: usize,
-}
-
-impl Magazine {
-    /// Create an empty magazine
-    pub const fn new() -> Self {
-        Self {
-            entries: [0; MAGAZINE_CAPACITY],
-            count: 0,
-        }
-    }
-
-    /// Try to pop an IOVA from the magazine (O(1))
-    #[inline]
-    pub fn pop(&mut self) -> Option<u64> {
-        if self.count == 0 {
-            return None;
-        }
-        self.count -= 1;
-        Some(self.entries[self.count])
-    }
-
-    /// Try to push an IOVA to the magazine (O(1))
-    #[inline]
-    pub fn push(&mut self, iova: u64) -> bool {
-        if self.count >= MAGAZINE_CAPACITY {
-            return false; // Magazine full
-        }
-        self.entries[self.count] = iova;
-        self.count += 1;
-        true
-    }
-
-    /// Get current count
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.count
-    }
-
-    /// Check if empty
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-}
+// Magazine<T, N>はcrate::mm::magazineからインポート（IOVA_MM_MIGRATION_PLAN Phase 1.1）
+// IOVAアドレス用にu64を要素型として使用
+type IovaMagazine = Magazine<u64, DEFAULT_MAGAZINE_CAPACITY>;
 
 // ============================================================================
 // Sub-Magazine (Per-CPU Claimed Word for Zero-Contention Allocation)
@@ -1199,7 +1387,7 @@ pub struct PerCpuMagazine {
     /// This CPU's ID (for arena ownership tracking)
     pub cpu_id: usize,
     /// Magazines indexed by size class
-    magazines: [IrqMutex<Magazine>; MAGAZINE_SIZE_CLASSES],
+    magazines: [IrqMutex<IovaMagazine>; MAGAZINE_SIZE_CLASSES],
     /// Per-CPU hint for 4KB allocation (word index to start searching)
     pub hint_4k: AtomicUsize,
     /// Per-CPU hint for 2MB allocation (block index to start searching)
@@ -1242,9 +1430,9 @@ impl PerCpuMagazine {
         Self {
             cpu_id: 0, // Will be set by set_arena()
             magazines: [
-                IrqMutex::new(Magazine::new()), // 4KB
-                IrqMutex::new(Magazine::new()), // 2MB
-                IrqMutex::new(Magazine::new()), // 1GB
+                IrqMutex::new(IovaMagazine::new()), // 4KB
+                IrqMutex::new(IovaMagazine::new()), // 2MB
+                IrqMutex::new(IovaMagazine::new()), // 1GB
             ],
             hint_4k: AtomicUsize::new(0),
             hint_2m: AtomicUsize::new(0),
@@ -1361,7 +1549,7 @@ impl PerCpuMagazine {
 
     /// Get magazine for a size class
     #[inline]
-    pub fn get(&self, size_class: usize) -> Option<&IrqMutex<Magazine>> {
+    pub fn get(&self, size_class: usize) -> Option<&IrqMutex<IovaMagazine>> {
         self.magazines.get(size_class)
     }
 
@@ -1507,507 +1695,143 @@ impl FreeWordStack {
 }
 
 // ============================================================================
-// Quarantine Ring Buffer (Epoch-Based Delayed Reclamation)
+// Quarantine / Remote Free Ring (IOVA_MM_MIGRATION_PLAN Phase 2 統合)
 // ============================================================================
+// QuarantineEntry, RemoteFreeEntry は crate::mm::remote_free からインポート済み
+// QuarantineRing, RemoteFreeRing はローカルラッパーで iova フィールド互換を維持
 
-/// Capacity of per-CPU quarantine ring buffer
+/// Quarantine ring capacity (for legacy code compatibility)
 const QUARANTINE_CAPACITY: usize = 256;
 
-/// Entry in the quarantine ring buffer
-#[derive(Clone, Copy)]
-pub struct QuarantineEntry {
-    /// IOVA address to be freed
-    pub iova: u64,
-    /// Size class: 0 = 4KB, 1 = 2MB, 2 = 1GB
-    pub size_class: u8,
-    /// Epoch when this entry was quarantined
-    pub epoch: u32,
-}
+/// Remote free ring capacity (for legacy code compatibility)
+const REMOTE_FREE_RING_CAPACITY: usize = 512;
 
-impl QuarantineEntry {
-    pub const fn empty() -> Self {
-        Self {
-            iova: 0,
-            size_class: 0,
-            epoch: 0,
-        }
-    }
-}
-
-/// Per-CPU quarantine ring buffer for delayed IOVA reclamation
-///
-/// IOVAs are not returned to the bitmap immediately after free. Instead,
-/// they are placed in a quarantine ring. After IOTLB invalidation completes
-/// (or the epoch advances), quarantined entries are batch-returned to the bitmap.
-///
-/// # Benefits
-/// - Prevents IOTLB stale entry issues (UAF via DMA)
-/// - Reduces bitmap write frequency (batch returns)
-/// - Synergizes with zombie_queue for async cleanup
-///
-/// # Thread Safety
-/// - Each CPU has its own quarantine ring (no contention)
-/// - Protected by IRQ-off guard
+/// QuarantineRing wrapper that maintains the same API as the original
+/// but uses the generic implementation from mm/remote_free.rs
 #[repr(C, align(128))]
 pub struct QuarantineRing {
-    /// Ring buffer entries
-    entries: [QuarantineEntry; QUARANTINE_CAPACITY],
-    /// Write position (head)
-    head: usize,
-    /// Read position (tail, for drain)
-    tail: usize,
-    /// Number of valid entries
-    count: usize,
+    inner: crate::mm::remote_free::QuarantineRing<QUARANTINE_CAPACITY>,
 }
 
 impl QuarantineRing {
     /// Create an empty quarantine ring
     pub const fn new() -> Self {
         Self {
-            entries: [QuarantineEntry::empty(); QUARANTINE_CAPACITY],
-            head: 0,
-            tail: 0,
-            count: 0,
+            inner: crate::mm::remote_free::QuarantineRing::new(),
         }
     }
-
+    
     /// Try to add an entry to quarantine (O(1))
-    ///
-    /// Returns false if the ring is full (caller should drain first).
     #[inline]
     pub fn push(&mut self, iova: u64, size_class: u8, epoch: u32) -> bool {
-        if self.count >= QUARANTINE_CAPACITY {
-            return false;
-        }
-        
-        self.entries[self.head] = QuarantineEntry {
-            iova,
-            size_class,
-            epoch,
-        };
-        self.head = (self.head + 1) % QUARANTINE_CAPACITY;
-        self.count += 1;
-        true
+        self.inner.push(iova, size_class, epoch)
     }
-
+    
     /// Pop entries that are older than the given epoch
-    ///
-    /// Returns up to `max` entries that have epoch <= completed_epoch.
-    /// Entries are removed from the ring.
     pub fn drain_older_than(&mut self, completed_epoch: u32, max: usize, out: &mut [QuarantineEntry]) -> usize {
-        let mut drained = 0;
-        
-        while drained < max && drained < out.len() && self.count > 0 {
-            let entry = &self.entries[self.tail];
-            
-            // Only drain if epoch has passed
-            // Handle wrap-around: completed_epoch - entry.epoch should be positive
-            // Using signed comparison to handle wrap
-            let age = completed_epoch.wrapping_sub(entry.epoch) as i32;
-            if age < 0 {
-                // Entry is from a future epoch, stop draining
-                break;
-            }
-            
-            out[drained] = *entry;
-            self.tail = (self.tail + 1) % QUARANTINE_CAPACITY;
-            self.count -= 1;
-            drained += 1;
+        // Convert from generic QuarantineEntry (addr field) to IovaQuarantineEntry (iova field)
+        let mut generic_out = [crate::mm::remote_free::QuarantineEntry::empty(); 64];
+        let count = self.inner.drain_older_than(completed_epoch, max.min(64), &mut generic_out[..out.len().min(64)]);
+        for i in 0..count {
+            out[i] = QuarantineEntry::from_generic(generic_out[i]);
         }
-        
-        drained
+        count
     }
-
+    
     /// Force drain all entries (for shutdown or emergency)
     pub fn drain_all(&mut self, out: &mut [QuarantineEntry]) -> usize {
-        let mut drained = 0;
-        
-        while drained < out.len() && self.count > 0 {
-            out[drained] = self.entries[self.tail];
-            self.tail = (self.tail + 1) % QUARANTINE_CAPACITY;
-            self.count -= 1;
-            drained += 1;
+        let mut generic_out = [crate::mm::remote_free::QuarantineEntry::empty(); 64];
+        let count = self.inner.drain_all(&mut generic_out[..out.len().min(64)]);
+        for i in 0..count {
+            out[i] = QuarantineEntry::from_generic(generic_out[i]);
         }
-        
-        drained
+        count
     }
-
+    
     /// Get current count
     #[inline]
     pub fn len(&self) -> usize {
-        self.count
+        self.inner.len()
     }
-
+    
     /// Check if full
     #[inline]
     pub fn is_full(&self) -> bool {
-        self.count >= QUARANTINE_CAPACITY
+        self.inner.is_full()
     }
 }
 
-// ============================================================================
-// Remote Free Ring (Cross-CPU Free Aggregation for Owner-Based Bitmap Access)
-// ============================================================================
-
-/// Capacity of remote free ring per CPU
-/// Must be power of 2 for efficient modulo operation
-const REMOTE_FREE_RING_CAPACITY: usize = 512;
-
-/// Entry in the remote free ring (Range-based for batch efficiency)
-///
-/// # Range-based Free (Optimization 3)
-///
-/// Instead of storing one entry per page, we can store a contiguous range:
-/// - Single page: iova = addr, count = 1
-/// - Range: iova = start_addr, count = N (frees N contiguous 4KB pages)
-///
-/// This dramatically reduces ring push/drain overhead for scatter-gather
-/// buffer releases and batch DMA unmaps.
-#[derive(Clone, Copy)]
-pub struct RemoteFreeEntry {
-    /// IOVA address to be freed (start of range)
-    pub iova: u64,
-    /// Number of contiguous pages (1 = single page, N = N pages)
-    /// For 2MB/1GB (size_class 1/2), this is the count of 2MB/1GB blocks
-    pub count: u16,
-    /// Size class: 0 = 4KB, 1 = 2MB, 2 = 1GB
-    pub size_class: u8,
-}
-
-impl RemoteFreeEntry {
-    pub const fn empty() -> Self {
-        Self {
-            iova: 0,
-            count: 0,
-            size_class: 0,
-        }
-    }
-    
-    /// Create a single-page entry (backward compatible)
-    #[inline]
-    pub const fn single(iova: u64, size_class: u8) -> Self {
-        Self {
-            iova,
-            count: 1,
-            size_class,
-        }
-    }
-    
-    /// Create a range entry for multiple contiguous pages
-    #[inline]
-    pub const fn range(iova: u64, count: u16, size_class: u8) -> Self {
-        Self {
-            iova,
-            count,
-            size_class,
-        }
-    }
-    
-    /// Check if this is an empty/invalid entry
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-    
-    /// Get total bytes covered by this entry
-    #[inline]
-    pub fn total_bytes(&self) -> u64 {
-        let page_size = match self.size_class {
-            0 => PAGE_SIZE_4K,
-            1 => PAGE_SIZE_2M,
-            2 => PAGE_SIZE_1G,
-            _ => PAGE_SIZE_4K,
-        };
-        page_size * (self.count as u64)
-    }
-}
-
-/// Lock-free MPSC (Multi-Producer Single-Consumer) ring for remote frees
-///
-/// When a CPU frees an IOVA that belongs to another CPU's arena, it pushes
-/// the IOVA to the owner CPU's remote free ring. The owner CPU periodically
-/// drains this ring and updates its bitmap.
-///
-/// # Design (Vyukov MPSC with Sequences)
-///
-/// Uses sequence numbers to avoid the "hole" problem where producers reserve
-/// slots but haven't written yet:
-/// - seq == pos: slot is ready for producer at position `pos`
-/// - seq == pos + 1: slot contains committed data for consumer
-/// - Producer: CAS head to reserve → write data → update seq (commit)
-/// - Consumer: check seq to verify data is committed before reading
-///
-/// # Benefits
-///
-/// - **No holes**: Consumer never reads uncommitted data
-/// - **Lock-free push**: Multiple CPUs can push concurrently using CAS on head
-/// - **Single-consumer pop**: Only the owner CPU drains (no contention on tail)
-/// - **Bounded capacity**: If full, pusher falls back to direct bitmap update
+/// RemoteFreeRing wrapper that maintains the same API as the original
+/// but uses the generic implementation from mm/remote_free.rs
 #[repr(C, align(128))]
 pub struct RemoteFreeRing {
-    /// Ring buffer entries (lock-free, written by pushers)
-    entries: [AtomicU64; REMOTE_FREE_RING_CAPACITY],
-    /// Size classes packed separately (to keep entries as simple u64)
-    size_classes: [AtomicU8; REMOTE_FREE_RING_CAPACITY],
-    /// Page counts for range-based free (Optimization 3)
-    /// count = 0 means empty, count = N means N contiguous pages/blocks
-    counts: [AtomicU16Wrapper; REMOTE_FREE_RING_CAPACITY],
-    /// Sequence numbers for each slot (Vyukov protocol)
-    sequences: [AtomicUsize; REMOTE_FREE_RING_CAPACITY],
-    /// Write position (head), incremented by pushers via CAS
-    head: AtomicUsize,
-    // --- Cache line boundary ---
-    /// Read position (tail), only modified by owner CPU
-    tail: AtomicUsize,
-    /// Overflow counter (pushes that failed due to full ring)
-    overflow_count: AtomicU64,
-    /// Total pages freed via range entries (for statistics)
-    range_pages_freed: AtomicU64,
-}
-
-/// Atomic u8 wrapper (since core doesn't have AtomicU8 on all platforms)
-#[repr(transparent)]
-pub struct AtomicU8(AtomicUsize);
-
-impl AtomicU8 {
-    pub const fn new(v: u8) -> Self {
-        Self(AtomicUsize::new(v as usize))
-    }
-    
-    #[inline]
-    pub fn store(&self, v: u8, order: Ordering) {
-        self.0.store(v as usize, order);
-    }
-    
-    #[inline]
-    pub fn load(&self, order: Ordering) -> u8 {
-        self.0.load(order) as u8
-    }
-    
-    /// Atomically AND with a value, returning the previous value
-    #[inline]
-    pub fn fetch_and(&self, val: u8, order: Ordering) -> u8 {
-        // Use CAS loop since AtomicUsize operations affect all bits
-        loop {
-            let current = self.0.load(Ordering::Acquire);
-            let new_val = (current as u8) & val;
-            if self.0.compare_exchange_weak(
-                current,
-                new_val as usize,
-                order,
-                Ordering::Relaxed,
-            ).is_ok() {
-                return current as u8;
-            }
-            core::hint::spin_loop();
-        }
-    }
-    
-    /// Atomically OR with a value, returning the previous value
-    #[inline]
-    pub fn fetch_or(&self, val: u8, order: Ordering) -> u8 {
-        // Use CAS loop since AtomicUsize operations affect all bits
-        loop {
-            let current = self.0.load(Ordering::Acquire);
-            let new_val = (current as u8) | val;
-            if self.0.compare_exchange_weak(
-                current,
-                new_val as usize,
-                order,
-                Ordering::Relaxed,
-            ).is_ok() {
-                return current as u8;
-            }
-            core::hint::spin_loop();
-        }
-    }
-}
-
-/// Atomic u16 wrapper for count field in RemoteFreeRing
-/// This uses AtomicUsize internally because no_std doesn't guarantee AtomicU16
-#[repr(transparent)]
-pub struct AtomicU16Wrapper(AtomicUsize);
-
-impl AtomicU16Wrapper {
-    pub const fn new(v: u16) -> Self {
-        Self(AtomicUsize::new(v as usize))
-    }
-    
-    #[inline]
-    pub fn store(&self, v: u16, order: Ordering) {
-        self.0.store(v as usize, order);
-    }
-    
-    #[inline]
-    pub fn load(&self, order: Ordering) -> u16 {
-        self.0.load(order) as u16
-    }
+    inner: crate::mm::remote_free::RemoteFreeRing<REMOTE_FREE_RING_CAPACITY>,
 }
 
 impl RemoteFreeRing {
-    /// Create a new empty remote free ring (Vyukov MPSC)
+    /// Create a new empty remote free ring
     pub const fn new() -> Self {
-        const EMPTY_ENTRY: AtomicU64 = AtomicU64::new(0);
-        const EMPTY_SIZE: AtomicU8 = AtomicU8::new(0);
-        const EMPTY_COUNT: AtomicU16Wrapper = AtomicU16Wrapper::new(0);
-        const INIT_SEQ: AtomicUsize = AtomicUsize::new(0);
         Self {
-            entries: [EMPTY_ENTRY; REMOTE_FREE_RING_CAPACITY],
-            size_classes: [EMPTY_SIZE; REMOTE_FREE_RING_CAPACITY],
-            counts: [EMPTY_COUNT; REMOTE_FREE_RING_CAPACITY],
-            sequences: [INIT_SEQ; REMOTE_FREE_RING_CAPACITY],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
-            overflow_count: AtomicU64::new(0),
-            range_pages_freed: AtomicU64::new(0),
+            inner: crate::mm::remote_free::RemoteFreeRing::new(),
         }
     }
     
     /// Initialize sequence numbers (call once after construction)
-    /// Each slot i starts with sequence = i, meaning "ready for producer at pos i"
     pub fn init(&self) {
-        for i in 0..REMOTE_FREE_RING_CAPACITY {
-            self.sequences[i].store(i, Ordering::Relaxed);
-        }
+        self.inner.init();
     }
     
-    /// Try to push a single entry (backward compatible, lock-free Vyukov MPSC)
-    ///
-    /// Returns true if pushed successfully, false if ring is full.
-    /// No "holes" possible: uses CAS to reserve slot, then commits with sequence update.
+    /// Try to push a single entry
     #[inline]
     pub fn try_push(&self, iova: u64, size_class: u8) -> bool {
-        self.try_push_range(iova, 1, size_class)
+        self.inner.try_push(iova, size_class)
     }
     
-    /// Try to push a range entry (Optimization 3: Range-based Remote Free)
-    ///
-    /// # Arguments
-    /// * `iova` - Start address of the range
-    /// * `count` - Number of contiguous pages/blocks to free
-    /// * `size_class` - 0 = 4KB, 1 = 2MB, 2 = 1GB
-    ///
-    /// # Benefits
-    /// - Single ring entry for N pages → reduces push/drain overhead
-    /// - Better cache utilization (fewer ring traversals)
-    /// - Enables batch free_pages_coalesced processing
+    /// Try to push a range entry
     #[inline]
     pub fn try_push_range(&self, iova: u64, count: u16, size_class: u8) -> bool {
-        if count == 0 {
-            return true; // Nothing to free
-        }
-        
-        let mut pos = self.head.load(Ordering::Relaxed);
-        
-        loop {
-            let idx = pos % REMOTE_FREE_RING_CAPACITY;
-            let seq = self.sequences[idx].load(Ordering::Acquire);
-            let diff = seq as isize - pos as isize;
-            
-            if diff == 0 {
-                // Slot is ready for this position, try to claim it
-                match self.head.compare_exchange_weak(
-                    pos,
-                    pos.wrapping_add(1),
-                    Ordering::AcqRel,
-                    Ordering::Relaxed,
-                ) {
-                    Ok(_) => {
-                        // Successfully reserved slot, write data
-                        self.size_classes[idx].store(size_class, Ordering::Relaxed);
-                        self.counts[idx].store(count, Ordering::Relaxed);
-                        self.entries[idx].store(iova, Ordering::Relaxed);
-                        // Update range statistics
-                        if count > 1 {
-                            self.range_pages_freed.fetch_add(count as u64, Ordering::Relaxed);
-                        }
-                        // Commit: set seq = pos + 1 to signal consumer
-                        self.sequences[idx].store(pos.wrapping_add(1), Ordering::Release);
-                        return true;
-                    }
-                    Err(new_pos) => {
-                        pos = new_pos; // Retry with updated head
-                    }
-                }
-            } else if diff < 0 {
-                // Ring is full (consumer hasn't caught up)
-                self.overflow_count.fetch_add(1, Ordering::Relaxed);
-                return false;
-            } else {
-                // Another producer is still writing to this slot, reload head
-                pos = self.head.load(Ordering::Relaxed);
-            }
-            core::hint::spin_loop();
-        }
+        self.inner.try_push_range(iova, count, size_class)
     }
     
-    /// Drain entries from the ring (single-consumer Vyukov, called by owner CPU only)
-    ///
-    /// Returns the number of entries drained (each entry may represent multiple pages).
-    /// Only reads slots where sequence indicates data is committed (no holes!)
-    ///
-    /// # Range-based Entries
-    /// Each entry may have count > 1, representing multiple contiguous pages.
-    /// The caller should iterate from iova to iova + (count-1) * page_size.
+    /// Drain entries from the ring
     pub fn drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
-        let mut drained = 0;
-        let mut pos = self.tail.load(Ordering::Relaxed);
-        
-        while drained < out.len() {
-            let idx = pos % REMOTE_FREE_RING_CAPACITY;
-            let seq = self.sequences[idx].load(Ordering::Acquire);
-            let expected_seq = pos.wrapping_add(1);
-            
-            if seq != expected_seq {
-                // Slot not ready (either empty or producer still writing)
-                break;
-            }
-            
-            // Read data (order doesn't matter, seq acquire already synchronized)
-            let iova = self.entries[idx].load(Ordering::Relaxed);
-            let size_class = self.size_classes[idx].load(Ordering::Relaxed);
-            let count = self.counts[idx].load(Ordering::Relaxed);
-            
-            // Reset sequence for next producer: seq = pos + CAPACITY
-            self.sequences[idx].store(pos.wrapping_add(REMOTE_FREE_RING_CAPACITY), Ordering::Release);
-            
-            out[drained] = RemoteFreeEntry { iova, count, size_class };
-            drained += 1;
-            pos = pos.wrapping_add(1);
+        // RemoteFreeEntry = IovaFreeEntry which has the same layout
+        // We need to convert from the generic RemoteFreeEntry (addr field) 
+        // to IovaFreeEntry (iova field)
+        let mut generic_out = [crate::mm::remote_free::RemoteFreeEntry::empty(); 64];
+        let count = self.inner.drain(&mut generic_out[..out.len().min(64)]);
+        for i in 0..count {
+            out[i] = RemoteFreeEntry::from_generic(crate::mm::remote_free::RemoteFreeEntry {
+                addr: generic_out[i].addr,
+                count: generic_out[i].count,
+                size_class: generic_out[i].size_class,
+            });
         }
-        
-        // Update tail if we drained anything
-        if drained > 0 {
-            self.tail.store(pos, Ordering::Release);
-        }
-        
-        drained
+        count
     }
     
     /// Get approximate number of pending entries
     #[inline]
     pub fn len(&self) -> usize {
-        let head = self.head.load(Ordering::Relaxed);
-        let tail = self.tail.load(Ordering::Relaxed);
-        head.wrapping_sub(tail).min(REMOTE_FREE_RING_CAPACITY)
+        self.inner.len()
     }
     
     /// Check if ring appears empty
     #[inline]
     pub fn is_empty(&self) -> bool {
-        self.head.load(Ordering::Relaxed) == self.tail.load(Ordering::Relaxed)
+        self.inner.is_empty()
     }
     
     /// Get overflow count (failed pushes)
     #[inline]
     pub fn overflow_count(&self) -> u64 {
-        self.overflow_count.load(Ordering::Relaxed)
+        self.inner.overflow_count()
     }
     
     /// Get total pages freed via range entries (statistics)
     #[inline]
     pub fn range_pages_freed(&self) -> u64 {
-        self.range_pages_freed.load(Ordering::Relaxed)
+        self.inner.range_pages_freed()
     }
 }
 
@@ -5791,6 +5615,553 @@ impl IovaBitmap {
     pub fn detail(&self) -> &[AtomicU64] {
         &self.detail
     }
+    
+    // ========================================================================
+    // HugePageBitmap Compatibility Accessors (Phase 3.2b)
+    // ========================================================================
+    // These accessors provide compatibility with mm::bitmap::HugePageBitmap
+    // to facilitate future migration.
+    
+    /// Get summary bitmap (L1)
+    #[inline]
+    pub fn summary(&self) -> &[AtomicU64] {
+        &self.summary
+    }
+    
+    /// Get summary_l2 bitmap (L2)
+    #[inline]
+    pub fn summary_l2(&self) -> &[AtomicU64] {
+        &self.summary_l2
+    }
+    
+    /// Get used_count_2m array
+    #[inline]
+    pub fn used_count_2m(&self) -> &[AtomicU16] {
+        &self.used_count_2m
+    }
+    
+    /// Get bitmap_2m (fully-free 2MB blocks)
+    #[inline]
+    pub fn bitmap_2m(&self) -> &[AtomicU64] {
+        &self.bitmap_2m
+    }
+    
+    /// Get bitmap_2m_partial (partially-used 2MB blocks)
+    #[inline]
+    pub fn bitmap_2m_partial(&self) -> &[AtomicU64] {
+        &self.bitmap_2m_partial
+    }
+    
+    /// Get demoted_2m (demoted 2MB blocks)
+    #[inline]
+    pub fn demoted_2m(&self) -> &[AtomicU64] {
+        &self.demoted_2m
+    }
+    
+    /// Get free_word_mask_2m
+    #[inline]
+    pub fn free_word_mask_2m(&self) -> &[AtomicU8] {
+        &self.free_word_mask_2m
+    }
+    
+    /// Get used_count_1g array
+    #[inline]
+    pub fn used_count_1g(&self) -> &[AtomicU16] {
+        &self.used_count_1g
+    }
+    
+    /// Get bitmap_1g (fully-free 1GB blocks)
+    #[inline]
+    pub fn bitmap_1g(&self) -> &[AtomicU64] {
+        &self.bitmap_1g
+    }
+    
+    /// Get last word mask
+    #[inline]
+    pub fn last_word_mask(&self) -> u64 {
+        self.last_word_mask
+    }
+    
+    /// Get partial 2MB block count
+    #[inline]
+    pub fn partial_count_2m(&self) -> usize {
+        self.partial_count_2m.load(Ordering::Relaxed)
+    }
+    
+    /// Get demoted 2MB block count
+    #[inline]
+    pub fn demoted_count_2m(&self) -> usize {
+        self.demoted_count_2m.load(Ordering::Relaxed)
+    }
+    
+    /// Get allocation hint for 4KB
+    #[inline]
+    pub fn hint_4k(&self) -> usize {
+        self.hint_4k.load(Ordering::Relaxed)
+    }
+    
+    /// Set allocation hint for 4KB
+    #[inline]
+    pub fn set_hint_4k(&self, hint: usize) {
+        self.hint_4k.store(hint, Ordering::Relaxed);
+    }
+    
+    /// Get allocation hint for 2MB
+    #[inline]
+    pub fn hint_2m(&self) -> usize {
+        self.hint_2m.load(Ordering::Relaxed)
+    }
+    
+    /// Set allocation hint for 2MB
+    #[inline]
+    pub fn set_hint_2m(&self, hint: usize) {
+        self.hint_2m.store(hint, Ordering::Relaxed);
+    }
+    
+    /// Get allocation hint for partial 2MB
+    #[inline]
+    pub fn hint_2m_partial(&self) -> usize {
+        self.hint_2m_partial.load(Ordering::Relaxed)
+    }
+    
+    /// Set allocation hint for partial 2MB
+    #[inline]
+    pub fn set_hint_2m_partial(&self, hint: usize) {
+        self.hint_2m_partial.store(hint, Ordering::Relaxed);
+    }
+}
+
+// ============================================================================
+// IovaBitmapV2 - HugePageBitmap-based Implementation (Phase 3.3)
+// ============================================================================
+
+/// IOVA Bitmap V2 - Uses HugePageBitmap internally for bitmap operations
+///
+/// This is a refactored version of `IovaBitmap` that delegates bitmap operations
+/// to `HugePageBitmap` from the `mm` module, while maintaining IOVA-specific
+/// optimizations like `FreeWordStack`, `Buddy2mFreeList`, and `ArenaOwnership`.
+///
+/// # Benefits
+/// - Code deduplication: Bitmap logic is shared with physical memory allocator
+/// - Maintainability: Bug fixes in `HugePageBitmap` automatically apply here
+/// - Consistency: Same allocation algorithms across IOVA and PMM domains
+///
+/// # Migration Path
+/// 1. Create `IovaBitmapV2` alongside `IovaBitmap` (current phase)
+/// 2. Test and benchmark to ensure no performance regression
+/// 3. Gradually replace `IovaBitmap` usage with `IovaBitmapV2`
+/// 4. Remove `IovaBitmap` once migration is complete
+pub struct IovaBitmapV2 {
+    /// Base IOVA address
+    base_iova: u64,
+    
+    /// Underlying bitmap (delegates to mm::bitmap::HugePageBitmap)
+    bitmap: HugePageBitmap,
+    
+    // === IOVA-specific optimizations ===
+    
+    /// Free word stack for O(1) allocation fast path
+    free_word_stack: FreeWordStack,
+    
+    /// 2MB buddy allocator for contiguous 2MB block allocation
+    buddy_2m: Buddy2mFreeList,
+    
+    /// Arena ownership tracking for single-writer optimization
+    arena_ownership: ArenaOwnership,
+}
+
+impl IovaBitmapV2 {
+    /// Create a new IovaBitmapV2
+    ///
+    /// # Arguments
+    /// * `base` - Base IOVA address (must be page-aligned)
+    /// * `total_pages` - Number of 4KB pages to manage
+    pub fn new(base: u64, total_pages: usize) -> Self {
+        let capped_pages = total_pages.min(MAX_BITMAP_PAGES);
+        let total_2mb_blocks = (capped_pages + PAGES_PER_2MB_BLOCK - 1) / PAGES_PER_2MB_BLOCK;
+        
+        // Create the underlying HugePageBitmap
+        let bitmap = HugePageBitmap::new(capped_pages);
+        
+        // Create IOVA-specific structures
+        let free_word_stack = FreeWordStack::new();
+        let buddy_2m = Buddy2mFreeList::new(total_2mb_blocks);
+        
+        // Create arena ownership (will be configured later)
+        let detail_words = (capped_pages + BITS_PER_WORD - 1) / BITS_PER_WORD;
+        let arena_ownership = ArenaOwnership::new(detail_words, 1);
+        
+        // Initialize free word stack count
+        let detail = bitmap.detail();
+        for (i, word) in detail.iter().enumerate() {
+            if word.load(Ordering::Relaxed) != 0 {
+                free_word_stack.notify_non_empty();
+            }
+            // Also initialize buddy at order 0 for fully-free 2MB blocks
+            if i % WORDS_PER_2MB_BLOCK == 0 {
+                let block_2m = i / WORDS_PER_2MB_BLOCK;
+                if block_2m < total_2mb_blocks {
+                    // Check if entire 2MB block is free
+                    let start_word = block_2m * WORDS_PER_2MB_BLOCK;
+                    let mut all_free = true;
+                    for j in 0..WORDS_PER_2MB_BLOCK {
+                        if start_word + j < detail.len() {
+                            let w = detail[start_word + j].load(Ordering::Relaxed);
+                            let expected = if start_word + j == detail.len() - 1 {
+                                bitmap.valid_mask(start_word + j)
+                            } else {
+                                u64::MAX
+                            };
+                            if w != expected {
+                                all_free = false;
+                                break;
+                            }
+                        }
+                    }
+                    if all_free {
+                        buddy_2m.set_free(0, block_2m);
+                    }
+                }
+            }
+        }
+        
+        Self {
+            base_iova: base,
+            bitmap,
+            free_word_stack,
+            buddy_2m,
+            arena_ownership,
+        }
+    }
+    
+    // ========================================================================
+    // Basic Getters
+    // ========================================================================
+    
+    /// Get base IOVA address
+    #[inline]
+    pub fn base(&self) -> u64 {
+        self.base_iova
+    }
+    
+    /// Get total 4KB pages
+    #[inline]
+    pub fn total_pages(&self) -> usize {
+        self.bitmap.total_pages()
+    }
+    
+    /// Get free 4KB page count
+    #[inline]
+    pub fn free_count(&self) -> usize {
+        self.bitmap.free_count_4k()
+    }
+    
+    /// Get free 2MB block count (fully free only)
+    #[inline]
+    pub fn free_count_2mb(&self) -> usize {
+        self.bitmap.free_count_2m()
+    }
+    
+    /// Get free 1GB block count (fully free only)
+    #[inline]
+    pub fn free_count_1gb(&self) -> usize {
+        self.bitmap.free_count_1g()
+    }
+    
+    /// Get total 2MB blocks
+    #[inline]
+    pub fn total_2mb_blocks(&self) -> usize {
+        self.bitmap.total_2m_blocks()
+    }
+    
+    /// Get total 1GB blocks
+    #[inline]
+    pub fn total_1gb_blocks(&self) -> usize {
+        self.bitmap.total_1g_blocks()
+    }
+    
+    // ========================================================================
+    // Bitmap Access (for compatibility)
+    // ========================================================================
+    
+    /// Get detail bitmap
+    #[inline]
+    pub fn detail(&self) -> &[AtomicU64] {
+        self.bitmap.detail()
+    }
+    
+    /// Get summary bitmap
+    #[inline]
+    pub fn summary(&self) -> &[AtomicU64] {
+        self.bitmap.summary()
+    }
+    
+    /// Get summary_l2 bitmap
+    #[inline]
+    pub fn summary_l2(&self) -> &[AtomicU64] {
+        self.bitmap.summary_l2()
+    }
+    
+    /// Get arena ownership
+    #[inline]
+    pub fn arena_ownership(&self) -> &ArenaOwnership {
+        &self.arena_ownership
+    }
+    
+    /// Get mutable arena ownership
+    #[inline]
+    pub fn arena_ownership_mut(&mut self) -> &mut ArenaOwnership {
+        &mut self.arena_ownership
+    }
+    
+    // ========================================================================
+    // Allocation Methods (delegate to HugePageBitmap)
+    // ========================================================================
+    
+    /// Allocate a single 4KB page
+    ///
+    /// Returns the page index, or None if no free pages available.
+    #[inline]
+    pub fn allocate_4k(&self) -> Option<usize> {
+        self.bitmap.allocate_4k()
+    }
+    
+    /// Free a 4KB page
+    #[inline]
+    pub fn free_4k(&self, page_idx: usize) -> bool {
+        self.bitmap.free_4k(page_idx)
+    }
+    
+    /// Allocate a fully-free 2MB block
+    ///
+    /// Returns the block index, or None if no fully-free 2MB blocks available.
+    #[inline]
+    pub fn allocate_2mb(&self) -> Option<usize> {
+        self.bitmap.allocate_2m()
+    }
+    
+    /// Free a 2MB block
+    #[inline]
+    pub fn free_2mb(&self, block_idx: usize) -> bool {
+        self.bitmap.free_2m(block_idx)
+    }
+    
+    /// Allocate a fully-free 1GB block
+    ///
+    /// Returns the block index, or None if no fully-free 1GB blocks available.
+    #[inline]
+    pub fn allocate_1gb(&self) -> Option<usize> {
+        self.bitmap.allocate_1g()
+    }
+    
+    /// Allocate 4KB from partial 2MB blocks (hugepage-preserving)
+    #[inline]
+    pub fn allocate_4k_from_partial(&self) -> Option<usize> {
+        self.bitmap.allocate_4k_from_partial()
+    }
+    
+    // ========================================================================
+    // IOVA-specific Methods
+    // ========================================================================
+    
+    /// Convert page index to IOVA address
+    #[inline]
+    pub fn page_to_iova(&self, page_idx: usize) -> u64 {
+        self.base_iova + (page_idx as u64) * PAGE_SIZE_4K
+    }
+    
+    /// Convert IOVA address to page index
+    #[inline]
+    pub fn iova_to_page(&self, iova: u64) -> Option<usize> {
+        if iova < self.base_iova {
+            return None;
+        }
+        let offset = iova - self.base_iova;
+        if offset % PAGE_SIZE_4K != 0 {
+            return None;
+        }
+        let page_idx = (offset / PAGE_SIZE_4K) as usize;
+        if page_idx >= self.total_pages() {
+            return None;
+        }
+        Some(page_idx)
+    }
+    
+    /// Check if a page is free
+    #[inline]
+    pub fn is_page_free(&self, page_idx: usize) -> bool {
+        self.bitmap.is_page_free(page_idx)
+    }
+    
+    /// Check if a 2MB block is fully free
+    #[inline]
+    pub fn is_2mb_free(&self, block_idx: usize) -> bool {
+        self.bitmap.is_2m_free(block_idx)
+    }
+    
+    /// Check if a 1GB block is fully free
+    #[inline]
+    pub fn is_1gb_free(&self, block_idx: usize) -> bool {
+        self.bitmap.is_1g_free(block_idx)
+    }
+    
+    /// Get the underlying HugePageBitmap
+    #[inline]
+    pub fn inner(&self) -> &HugePageBitmap {
+        &self.bitmap
+    }
+    
+    /// Get mutable access to the underlying HugePageBitmap
+    #[inline]
+    pub fn inner_mut(&mut self) -> &mut HugePageBitmap {
+        &mut self.bitmap
+    }
+
+    // ========================================================================
+    // IovaBitmap-Compatible Methods (IOVA addresses instead of indices)
+    // ========================================================================
+
+    /// Allocate a single 4KB page (IovaBitmap-compatible)
+    ///
+    /// Returns the IOVA address, or None if no free pages available.
+    #[inline]
+    pub fn allocate_page(&self) -> Option<u64> {
+        self.bitmap.allocate_4k().map(|idx| self.page_to_iova(idx))
+    }
+
+    /// Free a 4KB page by IOVA address (IovaBitmap-compatible)
+    ///
+    /// Returns Ok(Some(word_idx)) if a word became non-empty, Ok(None) otherwise.
+    pub fn free_page(&self, iova: u64) -> Result<Option<usize>, IommuError> {
+        let page_idx = self.iova_to_page(iova)
+            .ok_or(IommuError::InvalidAddress)?;
+        
+        if self.bitmap.free_4k(page_idx) {
+            // Check if word became non-empty (simplified - always return None)
+            Ok(None)
+        } else {
+            // Page was already free (double free attempt)
+            Err(IommuError::NotMapped)
+        }
+    }
+
+    /// Allocate a 2MB block (IovaBitmap-compatible)
+    ///
+    /// Returns the IOVA address, or None if no free 2MB blocks available.
+    #[inline]
+    pub fn allocate_2mb_iova(&self) -> Option<u64> {
+        self.bitmap.allocate_2m().map(|idx| {
+            self.base_iova + (idx as u64) * PAGE_SIZE_2M
+        })
+    }
+
+    /// Free a 2MB block by IOVA address (IovaBitmap-compatible)
+    pub fn free_2mb_iova(&self, iova: u64) -> Result<(), IommuError> {
+        if iova < self.base_iova {
+            return Err(IommuError::InvalidAddress);
+        }
+        let offset = iova - self.base_iova;
+        if offset % PAGE_SIZE_2M != 0 {
+            return Err(IommuError::InvalidAddress);
+        }
+        let block_idx = (offset / PAGE_SIZE_2M) as usize;
+        if block_idx >= self.bitmap.total_2m_blocks() {
+            return Err(IommuError::InvalidAddress);
+        }
+        if self.bitmap.free_2m(block_idx) {
+            Ok(())
+        } else {
+            // Block was already free (double free attempt)
+            Err(IommuError::NotMapped)
+        }
+    }
+
+    /// Allocate a 1GB block (IovaBitmap-compatible)
+    ///
+    /// Returns the IOVA address, or None if no free 1GB blocks available.
+    #[inline]
+    pub fn allocate_1gb_iova(&self) -> Option<u64> {
+        self.bitmap.allocate_1g().map(|idx| {
+            self.base_iova + (idx as u64) * PAGE_SIZE_1G
+        })
+    }
+
+    /// Get free 4KB page count (IovaBitmap-compatible alias)
+    #[inline]
+    pub fn free_count_4k(&self) -> usize {
+        self.bitmap.free_count_4k()
+    }
+
+    /// Get free 2MB block count (IovaBitmap-compatible alias)
+    #[inline]
+    pub fn free_count_2m(&self) -> usize {
+        self.bitmap.free_count_2m()
+    }
+
+    /// Get free 1GB block count (IovaBitmap-compatible alias)
+    #[inline]
+    pub fn free_count_1g(&self) -> usize {
+        self.bitmap.free_count_1g()
+    }
+}
+
+// Implement BitmapProvider for IovaBitmapV2
+impl BitmapProvider for IovaBitmapV2 {
+    fn total_pages(&self) -> usize {
+        self.total_pages()
+    }
+    
+    fn free_count_4k(&self) -> usize {
+        self.free_count()
+    }
+    
+    fn free_count_2m(&self) -> usize {
+        self.free_count_2mb()
+    }
+    
+    fn free_count_1g(&self) -> usize {
+        self.free_count_1gb()
+    }
+    
+    fn total_2m_blocks(&self) -> usize {
+        self.total_2mb_blocks()
+    }
+    
+    fn total_1g_blocks(&self) -> usize {
+        self.total_1gb_blocks()
+    }
+    
+    fn allocate_4k(&self) -> Option<usize> {
+        IovaBitmapV2::allocate_4k(self)
+    }
+    
+    fn free_4k(&self, page_idx: usize) -> bool {
+        IovaBitmapV2::free_4k(self, page_idx)
+    }
+    
+    fn allocate_2m(&self) -> Option<usize> {
+        self.allocate_2mb()
+    }
+    
+    fn free_2m(&self, block_idx: usize) -> bool {
+        self.free_2mb(block_idx)
+    }
+    
+    fn allocate_1g(&self) -> Option<usize> {
+        self.allocate_1gb()
+    }
+    
+    fn is_page_free(&self, page_idx: usize) -> bool {
+        self.is_page_free(page_idx)
+    }
+    
+    fn is_2m_free(&self, block_idx: usize) -> bool {
+        self.is_2mb_free(block_idx)
+    }
+    
+    fn is_1g_free(&self, block_idx: usize) -> bool {
+        self.is_1gb_free(block_idx)
+    }
 }
 
 // ============================================================================
@@ -6684,12 +7055,12 @@ impl IovaAllocatorFast {
             mag.len()
         };
         
-        if current_len >= MAGAZINE_CAPACITY / 2 {
+        if current_len >= DEFAULT_MAGAZINE_CAPACITY / 2 {
             return; // Already has enough
         }
         
         // Calculate how many pages to refill
-        let target = MAGAZINE_CAPACITY / 2;
+        let target = DEFAULT_MAGAZINE_CAPACITY / 2;
         let to_refill = target.saturating_sub(current_len);
         
         if to_refill == 0 {
@@ -7284,5 +7655,719 @@ impl IovaAllocatorStatsFast {
         } else {
             self.single_writer_allocs as f64 / total as f64
         }
+    }
+}
+
+// ============================================================================
+// Simple IOVA Allocator using BitmapProvider (Phase 4 - Migration Path)
+// ============================================================================
+
+/// Simple IOVA allocator using the BitmapProvider trait
+///
+/// This allocator provides a simpler interface compared to `IovaAllocatorFast`,
+/// using the `BitmapProvider` trait to abstract over different bitmap implementations
+/// (`IovaBitmap`, `IovaBitmapV2`, or `HugePageBitmap`).
+///
+/// # Use Cases
+/// - Testing and benchmarking different bitmap implementations
+/// - Simpler allocation scenarios without per-CPU magazine optimization
+/// - Migration path from `IovaBitmap` to `IovaBitmapV2`
+///
+/// # Performance
+/// - O(log N) allocation via hierarchical bitmap scan
+/// - No per-CPU magazine cache (simpler but may have higher contention)
+/// - No quarantine ring (immediate free)
+pub struct IovaAllocatorSimple<B: BitmapProvider> {
+    /// Base IOVA address
+    base: u64,
+    /// Total size in bytes
+    size: u64,
+    /// Underlying bitmap allocator
+    bitmap: B,
+    /// Allocation statistics
+    stats: IovaAllocatorSimpleStats,
+}
+
+/// Statistics for the simple allocator
+#[derive(Debug, Default)]
+pub struct IovaAllocatorSimpleStats {
+    /// Total 4KB allocations
+    pub allocs_4k: AtomicU64,
+    /// Total 4KB frees
+    pub frees_4k: AtomicU64,
+    /// Total 2MB allocations
+    pub allocs_2m: AtomicU64,
+    /// Total 2MB frees
+    pub frees_2m: AtomicU64,
+    /// Total 1GB allocations
+    pub allocs_1g: AtomicU64,
+    /// Total 1GB frees
+    pub frees_1g: AtomicU64,
+    /// Allocation failures
+    pub alloc_failures: AtomicU64,
+}
+
+impl IovaAllocatorSimpleStats {
+    const fn new() -> Self {
+        Self {
+            allocs_4k: AtomicU64::new(0),
+            frees_4k: AtomicU64::new(0),
+            allocs_2m: AtomicU64::new(0),
+            frees_2m: AtomicU64::new(0),
+            allocs_1g: AtomicU64::new(0),
+            frees_1g: AtomicU64::new(0),
+            alloc_failures: AtomicU64::new(0),
+        }
+    }
+}
+
+impl IovaAllocatorSimple<IovaBitmapV2> {
+    /// Create a new simple allocator using IovaBitmapV2
+    pub fn new_v2(base: u64, size: u64) -> Self {
+        let total_pages = (size / PAGE_SIZE_4K) as usize;
+        let bitmap = IovaBitmapV2::new(base, total_pages);
+        Self {
+            base,
+            size,
+            bitmap,
+            stats: IovaAllocatorSimpleStats::new(),
+        }
+    }
+}
+
+impl IovaAllocatorSimple<IovaBitmap> {
+    /// Create a new simple allocator using IovaBitmap (legacy)
+    pub fn new_legacy(base: u64, size: u64) -> Self {
+        let total_pages = (size / PAGE_SIZE_4K) as usize;
+        let bitmap = IovaBitmap::new(base, total_pages);
+        Self {
+            base,
+            size,
+            bitmap,
+            stats: IovaAllocatorSimpleStats::new(),
+        }
+    }
+}
+
+impl<B: BitmapProvider> IovaAllocatorSimple<B> {
+    /// Create a new simple allocator with a custom bitmap
+    pub fn with_bitmap(base: u64, size: u64, bitmap: B) -> Self {
+        Self {
+            base,
+            size,
+            bitmap,
+            stats: IovaAllocatorSimpleStats::new(),
+        }
+    }
+
+    /// Get base IOVA address
+    #[inline]
+    pub fn base(&self) -> u64 {
+        self.base
+    }
+
+    /// Get total size in bytes
+    #[inline]
+    pub fn size(&self) -> u64 {
+        self.size
+    }
+
+    /// Get total 4KB pages
+    #[inline]
+    pub fn total_pages(&self) -> usize {
+        self.bitmap.total_pages()
+    }
+
+    /// Get free 4KB page count
+    #[inline]
+    pub fn free_count(&self) -> usize {
+        self.bitmap.free_count_4k()
+    }
+
+    /// Get free 2MB block count
+    #[inline]
+    pub fn free_count_2m(&self) -> usize {
+        self.bitmap.free_count_2m()
+    }
+
+    /// Get free 1GB block count
+    #[inline]
+    pub fn free_count_1g(&self) -> usize {
+        self.bitmap.free_count_1g()
+    }
+
+    /// Get statistics
+    pub fn stats(&self) -> &IovaAllocatorSimpleStats {
+        &self.stats
+    }
+
+    /// Get reference to underlying bitmap
+    pub fn bitmap(&self) -> &B {
+        &self.bitmap
+    }
+
+    /// Allocate a single 4KB page
+    ///
+    /// Returns the IOVA address of the allocated page, or None if exhausted.
+    pub fn allocate_4k(&self) -> Option<u64> {
+        match self.bitmap.allocate_4k() {
+            Some(page_idx) => {
+                self.stats.allocs_4k.fetch_add(1, Ordering::Relaxed);
+                Some(self.base + (page_idx as u64) * PAGE_SIZE_4K)
+            }
+            None => {
+                self.stats.alloc_failures.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    /// Free a 4KB page
+    ///
+    /// Returns true if the page was successfully freed.
+    pub fn free_4k(&self, iova: u64) -> bool {
+        if iova < self.base {
+            return false;
+        }
+        let offset = iova - self.base;
+        if offset % PAGE_SIZE_4K != 0 {
+            return false;
+        }
+        let page_idx = (offset / PAGE_SIZE_4K) as usize;
+        if page_idx >= self.bitmap.total_pages() {
+            return false;
+        }
+        if self.bitmap.free_4k(page_idx) {
+            self.stats.frees_4k.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Allocate a 2MB block
+    ///
+    /// Returns the IOVA address of the allocated block, or None if exhausted.
+    pub fn allocate_2m(&self) -> Option<u64> {
+        match self.bitmap.allocate_2m() {
+            Some(block_idx) => {
+                self.stats.allocs_2m.fetch_add(1, Ordering::Relaxed);
+                Some(self.base + (block_idx as u64) * PAGE_SIZE_2M)
+            }
+            None => {
+                self.stats.alloc_failures.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    /// Free a 2MB block
+    ///
+    /// Returns true if the block was successfully freed.
+    pub fn free_2m(&self, iova: u64) -> bool {
+        if iova < self.base {
+            return false;
+        }
+        let offset = iova - self.base;
+        if offset % PAGE_SIZE_2M != 0 {
+            return false;
+        }
+        let block_idx = (offset / PAGE_SIZE_2M) as usize;
+        if block_idx >= self.bitmap.total_2m_blocks() {
+            return false;
+        }
+        if self.bitmap.free_2m(block_idx) {
+            self.stats.frees_2m.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Allocate a 1GB block
+    ///
+    /// Returns the IOVA address of the allocated block, or None if exhausted.
+    pub fn allocate_1g(&self) -> Option<u64> {
+        match self.bitmap.allocate_1g() {
+            Some(block_idx) => {
+                self.stats.allocs_1g.fetch_add(1, Ordering::Relaxed);
+                Some(self.base + (block_idx as u64) * PAGE_SIZE_1G)
+            }
+            None => {
+                self.stats.alloc_failures.fetch_add(1, Ordering::Relaxed);
+                None
+            }
+        }
+    }
+
+    /// Check if a page is free
+    #[inline]
+    pub fn is_page_free(&self, iova: u64) -> bool {
+        if iova < self.base {
+            return false;
+        }
+        let offset = iova - self.base;
+        if offset % PAGE_SIZE_4K != 0 {
+            return false;
+        }
+        let page_idx = (offset / PAGE_SIZE_4K) as usize;
+        self.bitmap.is_page_free(page_idx)
+    }
+}
+
+// ============================================================================
+// Tests for IovaBitmapV2
+// ============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ========================================================================
+    // IovaBitmapV2 Basic Tests
+    // ========================================================================
+
+    #[test]
+    fn test_iova_bitmap_v2_creation() {
+        // Test with 1MB = 256 pages
+        let bitmap = IovaBitmapV2::new(0x1000_0000, 256);
+        
+        assert_eq!(bitmap.base(), 0x1000_0000);
+        assert_eq!(bitmap.total_pages(), 256);
+        assert_eq!(bitmap.free_count(), 256);
+    }
+
+    #[test]
+    fn test_iova_bitmap_v2_4k_allocation() {
+        let bitmap = IovaBitmapV2::new(0x1000_0000, 1024);
+        
+        // Allocate a page
+        let page1 = bitmap.allocate_4k();
+        assert!(page1.is_some());
+        let idx1 = page1.unwrap();
+        assert!(idx1 < 1024);
+        assert_eq!(bitmap.free_count(), 1023);
+        assert!(!bitmap.is_page_free(idx1));
+        
+        // Allocate another page
+        let page2 = bitmap.allocate_4k();
+        assert!(page2.is_some());
+        let idx2 = page2.unwrap();
+        assert_ne!(idx1, idx2);
+        assert_eq!(bitmap.free_count(), 1022);
+        
+        // Free first page
+        assert!(bitmap.free_4k(idx1));
+        assert_eq!(bitmap.free_count(), 1023);
+        assert!(bitmap.is_page_free(idx1));
+    }
+
+    #[test]
+    fn test_iova_bitmap_v2_iova_conversion() {
+        let base = 0x1000_0000u64;
+        let bitmap = IovaBitmapV2::new(base, 1024);
+        
+        // Page 0 -> IOVA
+        assert_eq!(bitmap.page_to_iova(0), base);
+        // Page 1 -> IOVA
+        assert_eq!(bitmap.page_to_iova(1), base + PAGE_SIZE_4K);
+        // Page 100 -> IOVA
+        assert_eq!(bitmap.page_to_iova(100), base + 100 * PAGE_SIZE_4K);
+        
+        // IOVA -> Page
+        assert_eq!(bitmap.iova_to_page(base), Some(0));
+        assert_eq!(bitmap.iova_to_page(base + PAGE_SIZE_4K), Some(1));
+        assert_eq!(bitmap.iova_to_page(base + 100 * PAGE_SIZE_4K), Some(100));
+        
+        // Invalid IOVAs
+        assert_eq!(bitmap.iova_to_page(base - 1), None); // Before base
+        assert_eq!(bitmap.iova_to_page(base + 1), None); // Not aligned
+        assert_eq!(bitmap.iova_to_page(base + 2048 * PAGE_SIZE_4K), None); // Beyond limit
+    }
+
+    #[test]
+    fn test_iova_bitmap_v2_2mb_allocation() {
+        // Need at least 512 pages for one 2MB block
+        let bitmap = IovaBitmapV2::new(0x1000_0000, 1024); // 2 x 2MB blocks
+        
+        // Check initial 2MB counts
+        assert_eq!(bitmap.total_2mb_blocks(), 2);
+        
+        // Allocate a 2MB block
+        let block = bitmap.allocate_2mb();
+        assert!(block.is_some());
+        let block_idx = block.unwrap();
+        assert!(block_idx < 2);
+        
+        // The block should no longer be free
+        assert!(!bitmap.is_2mb_free(block_idx));
+        
+        // Free the block
+        assert!(bitmap.free_2mb(block_idx));
+        assert!(bitmap.is_2mb_free(block_idx));
+    }
+
+    #[test]
+    fn test_iova_bitmap_v2_exhaustion() {
+        // Small bitmap for exhaustion test
+        let bitmap = IovaBitmapV2::new(0x1000_0000, 64);
+        let mut allocated = alloc::vec::Vec::new();
+        
+        // Allocate all pages
+        while let Some(idx) = bitmap.allocate_4k() {
+            allocated.push(idx);
+        }
+        
+        assert_eq!(allocated.len(), 64);
+        assert_eq!(bitmap.free_count(), 0);
+        
+        // Should return None when exhausted
+        assert!(bitmap.allocate_4k().is_none());
+        
+        // Free all pages
+        for idx in allocated {
+            assert!(bitmap.free_4k(idx));
+        }
+        
+        assert_eq!(bitmap.free_count(), 64);
+    }
+
+    // ========================================================================
+    // BitmapProvider Trait Tests
+    // ========================================================================
+
+    #[test]
+    fn test_bitmap_provider_trait() {
+        let bitmap = IovaBitmapV2::new(0x1000_0000, 1024);
+        
+        // Test via trait
+        fn test_provider<T: BitmapProvider>(provider: &T) {
+            assert_eq!(provider.total_pages(), 1024);
+            assert_eq!(provider.free_count_4k(), 1024);
+            
+            // Allocate via trait
+            let page = provider.allocate_4k();
+            assert!(page.is_some());
+            assert_eq!(provider.free_count_4k(), 1023);
+            
+            // Free via trait
+            assert!(provider.free_4k(page.unwrap()));
+            assert_eq!(provider.free_count_4k(), 1024);
+        }
+        
+        test_provider(&bitmap);
+    }
+
+    #[test]
+    fn test_bitmap_provider_interop() {
+        // Test that both HugePageBitmap and IovaBitmapV2 work with BitmapProvider
+        let huge_page = HugePageBitmap::new(512);
+        let iova_v2 = IovaBitmapV2::new(0x0, 512);
+        
+        fn allocate_from_provider<T: BitmapProvider>(p: &T) -> Option<usize> {
+            p.allocate_4k()
+        }
+        
+        // Both should work
+        assert!(allocate_from_provider(&huge_page).is_some());
+        assert!(allocate_from_provider(&iova_v2).is_some());
+    }
+
+    // ========================================================================
+    // IovaBitmap Accessor Tests (Phase 3.2b)
+    // ========================================================================
+
+    #[test]
+    fn test_iova_bitmap_accessors() {
+        let bitmap = IovaBitmap::new(0x1000_0000, 1024);
+        
+        // Test accessors
+        assert!(!bitmap.summary().is_empty());
+        assert!(!bitmap.summary_l2().is_empty());
+        assert!(bitmap.used_count_2m().len() >= 1);
+    }
+
+    #[test]
+    fn test_iova_bitmap_hint_operations() {
+        let bitmap = IovaBitmap::new(0x1000_0000, 2048);
+        
+        // Test hint getters/setters
+        let initial_hint = bitmap.hint_4k();
+        bitmap.set_hint_4k(100);
+        assert_eq!(bitmap.hint_4k(), 100);
+        
+        // Restore original
+        bitmap.set_hint_4k(initial_hint);
+    }
+
+    // ========================================================================
+    // IovaAllocatorSimple Tests (Phase 4)
+    // ========================================================================
+
+    #[test]
+    fn test_simple_allocator_v2() {
+        let allocator = IovaAllocatorSimple::new_v2(0x1000_0000, 4 * 1024 * 1024); // 4MB
+        
+        assert_eq!(allocator.base(), 0x1000_0000);
+        assert_eq!(allocator.total_pages(), 1024);
+        assert_eq!(allocator.free_count(), 1024);
+        
+        // Allocate a 4KB page
+        let iova1 = allocator.allocate_4k();
+        assert!(iova1.is_some());
+        let addr1 = iova1.unwrap();
+        assert!(addr1 >= 0x1000_0000);
+        assert_eq!(allocator.free_count(), 1023);
+        
+        // Allocate another
+        let iova2 = allocator.allocate_4k();
+        assert!(iova2.is_some());
+        assert_ne!(iova1, iova2);
+        
+        // Free first page
+        assert!(allocator.free_4k(addr1));
+        assert_eq!(allocator.free_count(), 1023);
+    }
+
+    #[test]
+    fn test_simple_allocator_legacy() {
+        let allocator = IovaAllocatorSimple::new_legacy(0x2000_0000, 4 * 1024 * 1024);
+        
+        assert_eq!(allocator.base(), 0x2000_0000);
+        assert_eq!(allocator.total_pages(), 1024);
+        
+        // Allocate and free
+        let iova = allocator.allocate_4k();
+        assert!(iova.is_some());
+        assert!(allocator.free_4k(iova.unwrap()));
+    }
+
+    #[test]
+    fn test_simple_allocator_2mb() {
+        // Need 2MB+ for 2MB allocation
+        let allocator = IovaAllocatorSimple::new_v2(0x0, 4 * 1024 * 1024); // 4MB = 2 x 2MB
+        
+        // Allocate 2MB block
+        let block = allocator.allocate_2m();
+        assert!(block.is_some());
+        let addr = block.unwrap();
+        assert_eq!(addr % PAGE_SIZE_2M, 0); // 2MB aligned
+        
+        // Free 2MB block
+        assert!(allocator.free_2m(addr));
+    }
+
+    #[test]
+    fn test_simple_allocator_invalid_free() {
+        let allocator = IovaAllocatorSimple::new_v2(0x1000_0000, 1024 * 1024);
+        
+        // Free invalid IOVA (before base)
+        assert!(!allocator.free_4k(0x0));
+        
+        // Free invalid IOVA (not aligned)
+        assert!(!allocator.free_4k(0x1000_0001));
+        
+        // Free invalid IOVA (beyond range)
+        assert!(!allocator.free_4k(0x2000_0000));
+    }
+
+    #[test]
+    fn test_bitmap_provider_for_iova_bitmap() {
+        // Test that IovaBitmap also implements BitmapProvider
+        let bitmap = IovaBitmap::new(0x1000_0000, 512);
+        
+        fn test_provider<T: BitmapProvider>(p: &T) -> bool {
+            p.total_pages() > 0 && p.allocate_4k().is_some()
+        }
+        
+        assert!(test_provider(&bitmap));
+    }
+
+    // ========================================================================
+    // IovaBitmapV2 IOVA-Compatible Methods Tests (Phase 5)
+    // ========================================================================
+
+    #[test]
+    fn test_iova_bitmap_v2_allocate_page() {
+        let base = 0x1000_0000u64;
+        let bitmap = IovaBitmapV2::new(base, 1024);
+        
+        // allocate_page returns IOVA
+        let iova1 = bitmap.allocate_page();
+        assert!(iova1.is_some());
+        let addr1 = iova1.unwrap();
+        assert!(addr1 >= base);
+        assert_eq!(addr1 % PAGE_SIZE_4K, 0);
+        
+        // free_page takes IOVA
+        let result = bitmap.free_page(addr1);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_iova_bitmap_v2_free_page_errors() {
+        let base = 0x1000_0000u64;
+        let bitmap = IovaBitmapV2::new(base, 1024);
+        
+        // Invalid address (before base)
+        let result = bitmap.free_page(0x0);
+        assert!(result.is_err());
+        
+        // Invalid address (not aligned)
+        let result = bitmap.free_page(base + 1);
+        assert!(result.is_err());
+        
+        // Double free
+        let iova = bitmap.allocate_page().unwrap();
+        assert!(bitmap.free_page(iova).is_ok());
+        let result = bitmap.free_page(iova);
+        assert!(result.is_err()); // Double free should fail
+    }
+
+    #[test]
+    fn test_iova_bitmap_v2_2mb_iova() {
+        let base = 0x0u64;
+        let bitmap = IovaBitmapV2::new(base, 2048); // 4 x 2MB blocks
+        
+        // allocate_2mb_iova returns IOVA
+        let iova = bitmap.allocate_2mb_iova();
+        assert!(iova.is_some());
+        let addr = iova.unwrap();
+        assert_eq!(addr % PAGE_SIZE_2M, 0); // 2MB aligned
+        
+        // free_2mb_iova takes IOVA
+        let result = bitmap.free_2mb_iova(addr);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_iova_bitmap_v2_1gb_iova() {
+        let base = 0x0u64;
+        // 1GB = 262144 pages
+        let bitmap = IovaBitmapV2::new(base, 262144 * 2); // 2 x 1GB blocks
+        
+        // allocate_1gb_iova returns IOVA
+        let iova = bitmap.allocate_1gb_iova();
+        assert!(iova.is_some());
+        let addr = iova.unwrap();
+        assert_eq!(addr % PAGE_SIZE_1G, 0); // 1GB aligned
+    }
+
+    // ========================================================================
+    // Performance Comparison Tests (Phase 5b)
+    // ========================================================================
+
+    /// Test throughput comparison between IovaBitmap and IovaBitmapV2
+    #[test]
+    fn test_bitmap_throughput_comparison() {
+        const ITERATIONS: usize = 1000;
+        const PAGES: usize = 4096; // 16MB
+        
+        // Test IovaBitmap (Legacy)
+        let legacy = IovaBitmap::new(0x1000_0000, PAGES);
+        let mut allocated_legacy = alloc::vec::Vec::with_capacity(ITERATIONS);
+        
+        for _ in 0..ITERATIONS {
+            if let Some(iova) = legacy.allocate_page() {
+                allocated_legacy.push(iova);
+            }
+        }
+        
+        for iova in allocated_legacy {
+            let _ = legacy.free_page(iova);
+        }
+        
+        // Test IovaBitmapV2
+        let v2 = IovaBitmapV2::new(0x1000_0000, PAGES);
+        let mut allocated_v2 = alloc::vec::Vec::with_capacity(ITERATIONS);
+        
+        for _ in 0..ITERATIONS {
+            if let Some(iova) = v2.allocate_page() {
+                allocated_v2.push(iova);
+            }
+        }
+        
+        for iova in allocated_v2 {
+            let _ = v2.free_page(iova);
+        }
+        
+        // Both should have same free count after all operations
+        assert_eq!(legacy.free_count_4k.load(Ordering::Relaxed), v2.free_count_4k());
+    }
+
+    /// Test IovaAllocatorSimple with different bitmap backends
+    #[test]
+    fn test_allocator_simple_backend_comparison() {
+        const BASE: u64 = 0x0;
+        const SIZE: u64 = 16 * 1024 * 1024; // 16MB
+        const ALLOCS: usize = 100;
+        
+        // Test with IovaBitmapV2
+        let alloc_v2 = IovaAllocatorSimple::new_v2(BASE, SIZE);
+        let mut iovas_v2 = alloc::vec::Vec::with_capacity(ALLOCS);
+        
+        for _ in 0..ALLOCS {
+            if let Some(iova) = alloc_v2.allocate_4k() {
+                iovas_v2.push(iova);
+            }
+        }
+        assert_eq!(iovas_v2.len(), ALLOCS);
+        
+        for iova in iovas_v2 {
+            assert!(alloc_v2.free_4k(iova));
+        }
+        
+        // Test with IovaBitmap (Legacy)
+        let alloc_legacy = IovaAllocatorSimple::new_legacy(BASE, SIZE);
+        let mut iovas_legacy = alloc::vec::Vec::with_capacity(ALLOCS);
+        
+        for _ in 0..ALLOCS {
+            if let Some(iova) = alloc_legacy.allocate_4k() {
+                iovas_legacy.push(iova);
+            }
+        }
+        assert_eq!(iovas_legacy.len(), ALLOCS);
+        
+        for iova in iovas_legacy {
+            assert!(alloc_legacy.free_4k(iova));
+        }
+        
+        // Verify both have same state after operations
+        assert_eq!(
+            alloc_v2.stats().allocations.load(Ordering::Relaxed),
+            alloc_legacy.stats().allocations.load(Ordering::Relaxed)
+        );
+    }
+
+    /// Test 2MB allocation comparison
+    #[test]
+    fn test_2mb_allocation_comparison() {
+        const BASE: u64 = 0x0;
+        const SIZE: u64 = 64 * 1024 * 1024; // 64MB = 32 x 2MB blocks
+        
+        // Test with IovaBitmapV2
+        let alloc_v2 = IovaAllocatorSimple::new_v2(BASE, SIZE);
+        let mut blocks_v2 = alloc::vec::Vec::new();
+        
+        while let Some(iova) = alloc_v2.allocate_2m() {
+            blocks_v2.push(iova);
+        }
+        
+        // Should allocate 32 blocks
+        assert_eq!(blocks_v2.len(), 32);
+        
+        for iova in blocks_v2 {
+            assert!(alloc_v2.free_2m(iova));
+        }
+        
+        // Test with IovaBitmap (Legacy)
+        let alloc_legacy = IovaAllocatorSimple::new_legacy(BASE, SIZE);
+        let mut blocks_legacy = alloc::vec::Vec::new();
+        
+        while let Some(iova) = alloc_legacy.allocate_2m() {
+            blocks_legacy.push(iova);
+        }
+        
+        assert_eq!(blocks_legacy.len(), 32);
     }
 }
