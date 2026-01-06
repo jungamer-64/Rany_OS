@@ -30,6 +30,7 @@
 //! type FrameRemoteFreeRing = RemoteFreeRing<1024>;
 //! type FrameQuarantineRing = QuarantineRing<512>;
 //! ```
+#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

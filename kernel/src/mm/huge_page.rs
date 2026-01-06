@@ -18,6 +18,7 @@
 //
 // - 2MB (Order-9): 通常のHuge Page
 // - 1GB (Order-18): Giant Page（サポートがあれば）
+#![allow(dead_code)]
 //
 // ## フォールバック戦略
 //

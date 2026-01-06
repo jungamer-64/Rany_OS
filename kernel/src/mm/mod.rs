@@ -39,6 +39,7 @@ pub mod memcg; // 新: Memory Cgroup - メモリリソース制限とアカウ�
 pub mod frame_backing; // 新: Frame backing tracker (frame -> inode/page) for targeted writeback
 #[allow(unused_imports)]
 pub use frame_backing::{FrameBackingInfo, track_frame_backing, untrack_frame_backing, get_frame_backing};
+pub mod async_swapout; // 新: 非同期スワップアウトと書き戻し合流
 pub mod zswap; // 新: ZSWAP - スワップ前メモリ圧縮キャッシュ
 pub mod shrinker; // 新: Shrinker Framework - キャッシュ縮小とメモリ圧力通知
 pub mod arena; // 新: Single-Writer Arena - ロックフリーPer-CPU割り当て最適化

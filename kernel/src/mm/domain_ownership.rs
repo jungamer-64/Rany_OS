@@ -22,6 +22,7 @@
 //! // ドメインクラッシュ時の一括回収
 //! let freed_bytes = reclaim_domain_allocations(domain_id);
 //! ```
+#![allow(dead_code)]
 
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
