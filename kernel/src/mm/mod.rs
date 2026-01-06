@@ -27,6 +27,7 @@ pub mod frame_magazine; // 新: Per-CPU Frame Magazine (PCP) - ロックフリ�
 pub mod memory_compaction; // 新: Memory Compaction - 断片化解消
 pub mod page_table_cache; // 新: Page Table Quicklist - TLB安全なPTページキャッシュ
 pub mod rcu; // 新: RCU (Read-Copy-Update) - 読み取り優位の同期プリミティブ
+pub mod page_flags;
 pub mod zero_page; // 新: Non-Temporal ゼロクリア + バックグラウンドスクラビング
 pub mod autonuma; // 新: AutoNUMA - 自動ページマイグレーション
 pub mod page_reclaim; // 新: Page Reclaim + LRU - メモリ回収とActive/Inactive管理
