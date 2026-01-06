@@ -182,7 +182,6 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
                 mapped_count += 1;
             }
             Err(err) => {
-                error_count += 1;
                 log::error!(
                     "[IOMMU][CRITICAL] RMRR map FAILED for {:04x}:{:02x}:{:02x}.{}: \
                      region {:#x}-{:#x}, error: {:?}",

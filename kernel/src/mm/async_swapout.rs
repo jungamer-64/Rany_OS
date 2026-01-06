@@ -202,6 +202,183 @@ mod test_impl {
     }
 } 
 
+// カーネル向け実装: 永続ワーカ（non-test）
+#[cfg(not(test))]
+mod kernel_impl {
+    use super::*;
+    use alloc::collections::{BTreeSet, VecDeque};
+    use alloc::vec::Vec;
+    use core::task::Waker;
+    use spin::{Mutex, Once};
+    use crate::task::Task;
+
+    const QUEUE_CAPACITY: usize = 4096;
+    const BATCH_SIZE: usize = 32;
+
+    struct WorkerState {
+        queue: VecDeque<SwapEntryKernel>,
+        pending: BTreeSet<usize>,
+        waiters: Vec<Waker>,
+    }
+
+    impl WorkerState {
+        fn new() -> Self {
+            Self {
+                queue: VecDeque::new(),
+                pending: BTreeSet::new(),
+                waiters: Vec::new(),
+            }
+        }
+    }
+
+    #[derive(Clone, Copy)]
+    struct SwapEntryKernel {
+        frame: FrameIndex,
+        kind: SwapKind,
+    }
+
+    static WORKER_STATE: Mutex<WorkerState> = Mutex::new(WorkerState::new());
+    static WORKER_ONCE: Once = Once::new();
+
+    // Future that waits until there is work in the queue
+    struct WaitForWork;
+    impl core::future::Future for WaitForWork {
+        type Output = ();
+        fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
+            let mut st = WORKER_STATE.lock();
+            if !st.queue.is_empty() {
+                core::task::Poll::Ready(())
+            } else {
+                // Register the Waker for future notifications
+                st.waiters.push(cx.waker().clone());
+                core::task::Poll::Pending
+            }
+        }
+    }
+
+    async fn worker_loop() {
+        loop {
+            WaitForWork.await;
+
+            // Drain a batch
+            let mut batch: Vec<SwapEntryKernel> = Vec::new();
+            {
+                let mut st = WORKER_STATE.lock();
+                for _ in 0..BATCH_SIZE {
+                    if let Some(entry) = st.queue.pop_front() {
+                        batch.push(entry);
+                    } else {
+                        break;
+                    }
+                }
+            }
+
+            // Process batch entries
+            for entry in batch {
+                match entry.kind {
+                    SwapKind::File { ino, page_num } => {
+                        let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
+                            match crate::fs::write_inode_by_number(ino, offset, data) {
+                                Ok(_) => Ok(()),
+                                Err(_) => Err(()),
+                            }
+                        });
+
+                        match written {
+                            Ok(true) => {
+                                // Success - untrack and free
+                                let _ = frame_backing::untrack_frame_backing(entry.frame);
+                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
+                                buddy_allocator::buddy_dealloc_frame(physf);
+                                // remove pending
+                                let mut st = WORKER_STATE.lock();
+                                st.pending.remove(&entry.frame.as_usize());
+                            }
+                            _ => {
+                                // Fall back to global sync
+                                if crate::fs::page_cache().sync_all(|ino, offset, data| {
+                                    match crate::fs::write_inode_by_number(ino, offset, data) {
+                                        Ok(_) => Ok(()),
+                                        Err(_) => Err(()),
+                                    }
+                                }).unwrap_or(0) > 0 {
+                                    if let Some(info) = crate::mm::memcg::memcg_untrack_page(entry.frame) {
+                                        let _ = crate::mm::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                    }
+                                    let _ = frame_backing::untrack_frame_backing(entry.frame);
+                                    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
+                                    buddy_allocator::buddy_dealloc_frame(physf);
+                                    let mut st = WORKER_STATE.lock();
+                                    st.pending.remove(&entry.frame.as_usize());
+                                } else {
+                                    // Cannot writeback now: skip (allow reclaim path to retry later)
+                                    crate::mm::PAGE_RECLAIM.writeback_skipped.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                                    let mut st = WORKER_STATE.lock();
+                                    st.pending.remove(&entry.frame.as_usize());
+                                }
+                            }
+                        }
+                    }
+                    SwapKind::Anon => {
+                        // Attempt zswap if enabled; free frame regardless to reduce pressure
+                        if crate::mm::zswap::ZPOOL.is_enabled() {
+                            let phys = entry.frame.to_phys_addr();
+                            let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+                            let src = vaddr.as_u64() as *const u8;
+                            let mut buf = alloc::vec![0u8; crate::mm::PAGE_SIZE_4K];
+                            unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
+                            let _ = crate::mm::zswap::ZPOOL.store(0, &buf);
+                            let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
+                            buddy_allocator::buddy_dealloc_frame(physf);
+                            let mut st = WORKER_STATE.lock();
+                            st.pending.remove(&entry.frame.as_usize());
+                        } else {
+                            let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
+                            buddy_allocator::buddy_dealloc_frame(physf);
+                            let mut st = WORKER_STATE.lock();
+                            st.pending.remove(&entry.frame.as_usize());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn ensure_worker_started() {
+        WORKER_ONCE.call_once(|| {
+            let task = Task::new(async move { worker_loop().await });
+            // Spawn into global executor
+            crate::task::Executor::spawn_global(task);
+        });
+    }
+
+    pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {
+        ensure_worker_started();
+
+        let mut st = WORKER_STATE.lock();
+
+        if st.pending.contains(&frame.as_usize()) {
+            return Err(SwapError::AlreadyPending);
+        }
+
+        if st.queue.len() >= QUEUE_CAPACITY {
+            return Err(SwapError::QueueFull);
+        }
+
+        st.pending.insert(frame.as_usize());
+        st.queue.push_back(SwapEntryKernel { frame, kind });
+
+        // Wake any waiters
+        let waiters = core::mem::take(&mut st.waiters);
+        drop(st);
+        for w in waiters {
+            w.wake();
+        }
+
+        Ok(super::SwapHandle {})
+    }
+}
+
 // 公開API: try_enqueue_swapout
 pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHandle, SwapError> {
     #[cfg(test)]
@@ -211,35 +388,7 @@ pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHand
 
     #[cfg(not(test))]
     {
-        // 非テストではフォールバックとして同期処理を行う
-        match kind {
-            SwapKind::File { ino, page_num } => {
-                let written = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
-                    match crate::fs::write_inode_by_number(ino, offset, data) {
-                        Ok(_) => Ok(()),
-                        Err(_) => Err(()),
-                    }
-                });
-
-                match written {
-                    Ok(true) => {
-                        let _ = frame_backing::untrack_frame_backing(frame);
-                        let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
-                        buddy_allocator::buddy_dealloc_frame(physf);
-                        Err(SwapError::NotSupported) // indicates sync fallback was used
-                    }
-                    _ => Err(SwapError::NotSupported),
-                }
-            }
-            SwapKind::Anon => {
-                // zswap attempt
-                // if crate::mm::zswap::ZPOOL.is_enabled() {
-                    Err(SwapError::NotSupported)
-                // } else {
-                //     Err(SwapError::NotSupported)
-                // }
-            }
-        }
+        kernel_impl::try_enqueue(frame, kind)
     }
 }
 

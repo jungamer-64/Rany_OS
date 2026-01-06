@@ -47,6 +47,7 @@ use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 /// x86_64 Page Fault Error Code bits
 #[derive(Debug, Clone, Copy)]
+#[repr(transparent)]
 pub struct PageFaultErrorCode {
     bits: u64,
 }
