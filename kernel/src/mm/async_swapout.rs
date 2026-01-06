@@ -80,8 +80,16 @@ mod test_impl {
     use std::thread;
 
     /// キュー容量／バッチサイズはテスト向けに控えめに設定可能
-    const QUEUE_CAPACITY: usize = 1024;
-    const BATCH_SIZE: usize = 32;
+    const QUEUE_CAPACITY: usize = 64;
+    const BATCH_SIZE: usize = 8;
+    const RESERVED_FILE_SLOTS_TEST: usize = QUEUE_CAPACITY / 8;
+
+    use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
+
+    static TEST_FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static TEST_PROCESSING_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+    static TEST_WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
+    static TEST_WORKER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
     struct WorkerInner {
         queue: StdMutex<VecDeque<SwapEntry>>,
@@ -99,14 +107,25 @@ mod test_impl {
                 condvar: Condvar::new(),
             });
 
-            // 永続ワーカスレッドを生成
-            let thread_inner = inner.clone();
-            thread::spawn(move || {
+            Some(inner)
+        });
+
+        let worker = WORKER.get().as_ref().unwrap().clone();
+
+        // Spawn worker thread if not already running
+        if TEST_WORKER_RUNNING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            let thread_inner = worker.clone();
+            std::thread::spawn(move || {
                 loop {
-                    // キューからバッチを取り出す
+                    // Wait for work or shutdown
                     let mut q_guard = thread_inner.queue.lock().unwrap();
-                    while q_guard.is_empty() {
+                    while q_guard.is_empty() && !TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
                         q_guard = thread_inner.condvar.wait(q_guard).unwrap();
+                    }
+
+                    // if shutdown and queue empty, exit
+                    if q_guard.is_empty() && TEST_WORKER_SHUTDOWN.load(Ordering::Acquire) {
+                        break;
                     }
 
                     let mut batch = Vec::new();
@@ -161,14 +180,25 @@ mod test_impl {
 
                         // pending を解除
                         thread_inner.pending.lock().unwrap().remove(&entry.frame.as_usize());
+
+                        // decrement file queue count when file processed
+                        if let SwapKind::File { .. } = entry.kind {
+                            TEST_FILE_QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
+                        }
+
+                        // optional processing delay
+                        let d = TEST_PROCESSING_DELAY_MS.load(Ordering::Acquire);
+                        if d > 0 {
+                            std::thread::sleep(std::time::Duration::from_millis(d));
+                        }
                     }
                 }
+
+                TEST_WORKER_RUNNING.store(false, Ordering::Release);
             });
+        }
 
-            Some(inner)
-        });
-
-        WORKER.get().as_ref().unwrap().clone()
+        worker
     }
 
     pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {
@@ -181,24 +211,35 @@ mod test_impl {
                 return Err(SwapError::AlreadyPending);
             }
 
-            let q = worker.queue.lock().unwrap();
+            let mut q = worker.queue.lock().unwrap();
             if q.len() >= QUEUE_CAPACITY {
                 return Err(SwapError::QueueFull);
             }
 
+            // Enforce reservation for file writes when queue nearly full
+            if let SwapKind::Anon = kind {
+                let total = q.len();
+                let file_q = TEST_FILE_QUEUE_COUNT.load(Ordering::Acquire);
+                let free_slots = QUEUE_CAPACITY.saturating_sub(total);
+                if free_slots <= RESERVED_FILE_SLOTS_TEST && file_q >= RESERVED_FILE_SLOTS_TEST {
+                    return Err(SwapError::QueueFull);
+                }
+            }
+
             pending.insert(frame.as_usize());
-        }
 
-        let completion = Arc::new((StdMutex::new(false), Condvar::new()));
-        let entry = SwapEntry { frame, kind, completion: completion.clone() };
+            let completion = Arc::new((StdMutex::new(false), Condvar::new()));
+            let entry = SwapEntry { frame, kind, completion: completion.clone() };
 
-        {
-            let mut q = worker.queue.lock().unwrap();
+            if let SwapKind::File { .. } = entry.kind {
+                TEST_FILE_QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
+            }
+
             q.push_back(entry);
             worker.condvar.notify_one();
-        }
 
-        Ok(super::SwapHandle { done: completion })
+            Ok(super::SwapHandle { done: completion })
+        }
     }
 
     // Test inspection helpers
@@ -218,6 +259,46 @@ mod test_impl {
     pub fn _is_pending(frame: FrameIndex) -> bool {
         let worker = init_worker();
         worker.pending.lock().unwrap().contains(&frame.as_usize())
+    }
+
+    // Additional test helpers
+    #[cfg(test)]
+    pub fn _file_queue_len() -> usize {
+        TEST_FILE_QUEUE_COUNT.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn _queue_capacity() -> usize {
+        QUEUE_CAPACITY
+    }
+
+    #[cfg(test)]
+    pub fn _reserved_file_slots() -> usize {
+        RESERVED_FILE_SLOTS_TEST
+    }
+
+    #[cfg(test)]
+    pub fn set_processing_delay(ms: u64) {
+        TEST_PROCESSING_DELAY_MS.store(ms, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub fn stop_worker() {
+        TEST_WORKER_SHUTDOWN.store(true, Ordering::Release);
+        if let Some(inner) = WORKER.get().as_ref().and_then(|o| o.as_ref()) {
+            inner.condvar.notify_all();
+        }
+    }
+
+    #[cfg(test)]
+    pub fn start_worker() {
+        TEST_WORKER_SHUTDOWN.store(false, Ordering::Release);
+        init_worker();
+    }
+
+    #[cfg(test)]
+    pub fn is_worker_running() -> bool {
+        TEST_WORKER_RUNNING.load(Ordering::Acquire)
     }
 } 
 
@@ -254,8 +335,7 @@ mod kernel_impl {
     static FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
     const RESERVED_FILE_SLOTS: usize = CHANNEL_SIZE / 8; // reserve ~12.5% for file writes
 
-    // Worker start guard and waker
-    static WORKER_STARTED: Once = Once::new();
+    // Worker waker and running flags
     static WORKER_WAKER: AtomicWaker = AtomicWaker::new();
     static WORKER_RUNNING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
     static WORKER_SHUTDOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -266,12 +346,12 @@ mod kernel_impl {
             Some((s, r))
         });
 
-        WORKER_STARTED.call_once(|| {
+        // Try to spawn the worker if not already running
+        if WORKER_RUNNING.compare_exchange(false, true, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_ok() {
             WORKER_SHUTDOWN.store(false, core::sync::atomic::Ordering::Release);
-            WORKER_RUNNING.store(true, core::sync::atomic::Ordering::Release);
             let task = Task::new(async move { worker_loop().await });
             crate::task::Executor::spawn_global(task);
-        });
+        }
     }
 
     // Future that waits until there is work in the channel
@@ -708,5 +788,90 @@ mod tests {
         assert!(!test_impl::_is_pending(frame_idx));
 
         assert!(crate::mm::frame_backing::get_frame_backing(frame_idx).is_none());
+    }
+
+    #[test]
+    fn test_worker_restart() {
+        // ensure worker lifecycle control works
+        test_impl::start_worker();
+        assert!(test_impl::is_worker_running(), "worker should be running after start");
+
+        test_impl::stop_worker();
+        // Wait for worker to stop
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!test_impl::is_worker_running(), "worker should have stopped");
+
+        // Restart and ensure it runs
+        test_impl::start_worker();
+        assert!(test_impl::is_worker_running(), "worker should be running after restart");
+
+        // Clean up
+        test_impl::stop_worker();
+    }
+
+    #[test]
+    fn test_async_swapout_qos_reservation() {
+        crate::fs::cache::init_page_cache(64 * 1024);
+        let cache = crate::fs::page_cache();
+
+        // Stop worker to allow deterministic queue fill
+        test_impl::stop_worker();
+        for _ in 0..20 {
+            if !test_impl::is_worker_running() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let cap = test_impl::_queue_capacity();
+        let reserved = test_impl::_reserved_file_slots();
+
+        let fill_count = cap.saturating_sub(reserved) + 1;
+
+        let mut handles = Vec::new();
+
+        let ino = 3000u64;
+        for i in 0..fill_count {
+            let page_num = i as u64;
+            let data = alloc::vec![0u8; PAGE_SIZE_4K];
+            cache.insert(ino, page_num as usize, data, PAGE_SIZE_4K as u64);
+            assert!(cache.mark_dirty(ino, page_num as usize));
+
+            let frame = crate::mm::alloc_frame().expect("alloc frame");
+            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            crate::mm::frame_backing::track_frame_backing(frame_idx, ino, page_num);
+
+            let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+            handles.push(h);
+        }
+
+        assert!(test_impl::_queue_len() >= fill_count);
+        assert!(test_impl::_file_queue_len() >= reserved);
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let err = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect_err("expected QueueFull due to reservation");
+        assert_eq!(err, SwapError::QueueFull);
+
+        // Start worker to process entries
+        test_impl::start_worker();
+
+        for h in handles {
+            h.wait();
+        }
+
+        // After processing, queue should be empty
+        assert_eq!(test_impl::_queue_len(), 0);
+        assert_eq!(test_impl::_file_queue_len(), 0);
+
+        // Now anon enqueue should succeed
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        h.wait();
+
+        // Ensure backing removed (if any)
+        assert!(crate::mm::memcg::memcg_get_page_info(frame_idx).is_none());
     }
 }
