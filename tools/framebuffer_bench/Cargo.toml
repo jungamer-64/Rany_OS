@@ -10,7 +10,7 @@ edition = "2024"
 # prevents duplicate-lang-item E0152 when running release/criterion benches.
 
 [dependencies]
-criterion = "0.4"
+criterion = "0.5"
 rany_kernel = { path = "../../kernel", features = ["bench", "std"] }
 
 [features]

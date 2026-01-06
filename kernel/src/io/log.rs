@@ -862,6 +862,7 @@ impl Log for KernelLogger {
 
         // 画面への出力（統合実装）
         // パニック中以外、かつロックが取得できた場合のみ出力してデッドロックを回避する
+        #[cfg(not(feature = "bench"))]
         if !is_in_panic() {
             if let Some(mut guard) = crate::graphics::global::try_lock_console() {
                 if let Some(console) = guard.as_mut() {
@@ -1427,10 +1428,13 @@ fn print_system_status() {
     early_print("\n");
     
     // パニック統計
-    let panic_stats = crate::panic_handler::panic_stats();
-    early_print("[DEBUG] Panic count: ");
-    early_print_dec(panic_stats.total_panics);
-    early_print("\n");
+    #[cfg(not(feature = "bench"))]
+    {
+        let panic_stats = crate::panic_handler::panic_stats();
+        early_print("[DEBUG] Panic count: ");
+        early_print_dec(panic_stats.total_panics);
+        early_print("\n");
+    }
     
     early_print("[DEBUG] ======================\n");
 }
