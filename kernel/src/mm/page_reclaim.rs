@@ -618,9 +618,15 @@ impl PageReclaimController {
                 // ダーティならライトバック、そうでなければ破棄
                 if entry.flags.contains(LruFlags::DIRTY) {
                     // TODO: writeback
+                    // 現在はライトバック未実装のため、ダーティページはスキップ
+                } else {
+                    // クリーンなら即座に回収可能
+                    // Memcg: ページがmemcgでトラックされている場合はアンチャージ
+                    if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                    }
+                    self.free_frame(entry.frame);
                 }
-                // クリーンなら即座に回収可能
-                self.free_frame(entry.frame);
             }
             PageType::Slab => {
                 // Slabキャッシュの縮小
