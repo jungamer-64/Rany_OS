@@ -47,6 +47,26 @@ pub mod mm {
     use x86_64::VirtAddr;
     use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
+    pub mod magazine {
+        pub struct Magazine<T, const N: usize> {
+            _marker: core::marker::PhantomData<T>,
+        }
+        impl<T, const N: usize> Magazine<T, N> {
+            pub fn new() -> Self {
+                Self {
+                    _marker: core::marker::PhantomData,
+                }
+            }
+        }
+        // Clone implementation might be needed if IovaMagazine is cloned in tests
+        impl<T, const N: usize> Clone for Magazine<T, N> {
+            fn clone(&self) -> Self {
+                Self::new()
+            }
+        }
+        impl<T, const N: usize> Copy for Magazine<T, N> {} 
+    }
+
     pub mod numa {
         use alloc::alloc::{Layout as ALayout, alloc_zeroed, dealloc};
         use core::alloc::Layout;

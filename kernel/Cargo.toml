@@ -129,7 +129,7 @@ std = ["hal/std"]
 
 
 [dev-dependencies]
-criterion = "0.4"
+criterion = "0.5"
 graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }
 
 # ============================================================================

@@ -8,7 +8,7 @@ edition = "2024"
 # inheriting top-level cargo config (same pattern as framebuffer_bench).
 
 [dependencies]
-criterion = "0.4"
+criterion = "0.5"
 rany_kernel = { path = "../../kernel", features = ["bench", "std"] }
 
 [features]

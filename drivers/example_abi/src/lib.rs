@@ -1,8 +1,7 @@
 #![cfg_attr(target_os = "none", no_std)]
 #![cfg_attr(feature = "standalone", feature(alloc_error_handler))]
 
-use core::alloc::{GlobalAlloc, Layout};
-use kernel_api::driver_abi::{AbiDriverType, DriverContext};
+use kernel_api::driver_abi::DriverContext;
 
 #[cfg(all(feature = "standalone", target_os = "none"))]
 struct DummyAllocator;
@@ -20,7 +19,6 @@ unsafe impl GlobalAlloc for DummyAllocator {
 #[global_allocator]
 static DUMMY_ALLOC: DummyAllocator = DummyAllocator;
 
-use core::panic::PanicInfo;
 
 #[cfg(all(feature = "standalone", target_os = "none"))]
 #[panic_handler]

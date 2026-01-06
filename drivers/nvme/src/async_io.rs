@@ -17,7 +17,6 @@ use core::task::{Context, Poll};
 use super::commands::NvmeCompletion;
 use super::error::NvmeError;
 use super::polling_driver::NvmePollingDriver;
-use super::requests::PendingRequests;
 
 // ============================================================================
 // I/O Request State
