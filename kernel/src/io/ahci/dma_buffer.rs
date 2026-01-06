@@ -74,6 +74,7 @@ impl AhciDmaReadBuffer {
 pub struct AhciDmaWriteBuffer {
     buffer: Option<TypedDmaSlice<CpuOwned>>,
     inflight: Option<(TypedDmaSlice<DeviceOwned>, SliceDmaGuard)>,
+    #[allow(dead_code)]
     sector_count: usize,
 }
 
