@@ -560,6 +560,11 @@ pub fn init_zswap() {
     ZSWAP_POOL.init();
 }
 
+/// ZSWAPが有効か確認
+pub fn zswap_is_enabled() -> bool {
+    ZSWAP_POOL.is_enabled()
+}
+
 /// ZSWAPを有効化/無効化
 pub fn zswap_set_enabled(enabled: bool) {
     let mut config = ZSWAP_POOL.config.write();

@@ -130,9 +130,6 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
     };
 
     let page_size = crate::io::iommu::PAGE_SIZE_4K;
-    let mut mapped_count = 0u32;
-    #[allow(unused_assignments)]
-    let mut error_count = 0u32;
 
     for region in registry.reserved_regions() {
         if region.segment != device.segment {
@@ -199,14 +196,6 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
         }
     }
 
-    if error_count > 0 {
-        log::error!(
-            "[IOMMU] RMRR mapping summary for {:04x}:{:02x}:{:02x}.{}: {} success, {} FAILED",
-            device.segment, device.bus, device.device, device.function,
-            mapped_count, error_count
-        );
-        return Err(IommuError::RmrrMapFailed);
-    }
 
     Ok(())
 }

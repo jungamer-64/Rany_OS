@@ -137,13 +137,13 @@ mod test_impl {
                                 }
                             }
                             SwapKind::Anon => {
-                                if crate::mm::zswap::ZPOOL.is_enabled() {
+                                if crate::mm::zswap::zswap_is_enabled() {
                                     let phys = entry.frame.to_phys_addr();
                                     let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
                                     let src = vaddr.as_u64() as *const u8;
                                     let mut buf = vec![0u8; crate::mm::PAGE_SIZE_4K];
                                     unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                                    let _ = crate::mm::zswap::ZPOOL.store(0, &buf);
+                                    let _ = crate::mm::zswap::zswap_store(0, &buf);
                                     let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                                     buddy_allocator::buddy_dealloc_frame(physf);
                                 } else {
@@ -222,7 +222,7 @@ mod kernel_impl {
     }
 
     impl WorkerState {
-        fn new() -> Self {
+        const fn new() -> Self {
             Self {
                 queue: VecDeque::new(),
                 pending: BTreeSet::new(),
@@ -312,7 +312,7 @@ mod kernel_impl {
                                     st.pending.remove(&entry.frame.as_usize());
                                 } else {
                                     // Cannot writeback now: skip (allow reclaim path to retry later)
-                                    crate::mm::PAGE_RECLAIM.writeback_skipped.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                                    crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
                                     let mut st = WORKER_STATE.lock();
                                     st.pending.remove(&entry.frame.as_usize());
                                 }
@@ -321,13 +321,13 @@ mod kernel_impl {
                     }
                     SwapKind::Anon => {
                         // Attempt zswap if enabled; free frame regardless to reduce pressure
-                        if crate::mm::zswap::ZPOOL.is_enabled() {
+                        if crate::mm::zswap::zswap_is_enabled() {
                             let phys = entry.frame.to_phys_addr();
                             let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
                             let src = vaddr.as_u64() as *const u8;
                             let mut buf = alloc::vec![0u8; crate::mm::PAGE_SIZE_4K];
                             unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                            let _ = crate::mm::zswap::ZPOOL.store(0, &buf);
+                            let _ = crate::mm::zswap::zswap_store(0, &buf);
                             let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                             buddy_allocator::buddy_dealloc_frame(physf);
                             let mut st = WORKER_STATE.lock();
@@ -355,27 +355,31 @@ mod kernel_impl {
     pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {
         ensure_worker_started();
 
-        let mut st = WORKER_STATE.lock();
+        // Fast, non-blocking enqueue: avoid blocking reclaim path by using try_lock.
+        if let Some(mut st) = WORKER_STATE.try_lock() {
+            if st.pending.contains(&frame.as_usize()) {
+                return Err(SwapError::AlreadyPending);
+            }
 
-        if st.pending.contains(&frame.as_usize()) {
-            return Err(SwapError::AlreadyPending);
+            if st.queue.len() >= QUEUE_CAPACITY {
+                return Err(SwapError::QueueFull);
+            }
+
+            st.pending.insert(frame.as_usize());
+            st.queue.push_back(SwapEntryKernel { frame, kind });
+
+            // Wake any waiters
+            let waiters = core::mem::take(&mut st.waiters);
+            drop(st);
+            for w in waiters {
+                w.wake();
+            }
+
+            Ok(super::SwapHandle {})
+        } else {
+            // Contention: fail fast and let caller fallback to sync path
+            Err(SwapError::QueueFull)
         }
-
-        if st.queue.len() >= QUEUE_CAPACITY {
-            return Err(SwapError::QueueFull);
-        }
-
-        st.pending.insert(frame.as_usize());
-        st.queue.push_back(SwapEntryKernel { frame, kind });
-
-        // Wake any waiters
-        let waiters = core::mem::take(&mut st.waiters);
-        drop(st);
-        for w in waiters {
-            w.wake();
-        }
-
-        Ok(super::SwapHandle {})
     }
 }
 
