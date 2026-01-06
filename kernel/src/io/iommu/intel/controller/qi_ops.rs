@@ -195,7 +195,7 @@ impl InvalidationOps for IommuController {
         // Debug check: warn if called from ISR context (blocking waits are dangerous)
         #[cfg(debug_assertions)]
         {
-            if crate::mm::in_interrupt_context() {
+            if crate::mm::per_cpu::in_interrupt_context() {
                 log::warn!(
                     "[IOMMU] qi_wait_sync() called from ISR context - \
                      this may cause system instability!"

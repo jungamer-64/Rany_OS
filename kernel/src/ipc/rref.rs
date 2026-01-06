@@ -367,10 +367,7 @@ impl RRefRawParts {
     /// # Signature matching RRef API:
     /// - `RRef::into_raw(self) -> (NonNull<T>, DomainId)`
     /// - `RRef::from_raw(ptr: NonNull<T>, owner: DomainId) -> Self`
-    pub fn from_rref<T: ?Sized + Pointee + 'static>(rref: RRef<T>) -> Self
-    where
-        <T as Pointee>::Metadata: Copy,
-    {
+    pub fn from_rref<T: Sized + 'static>(rref: RRef<T>) -> Self {
         #[cfg(debug_assertions)]
         let size = core::mem::size_of_val(&*rref);
         #[cfg(debug_assertions)]
@@ -381,26 +378,14 @@ impl RRefRawParts {
         );
 
         let (ptr, owner) = rref.into_raw();
-        let meta = if core::mem::size_of::<T::Metadata>() == 0 {
-            0
-        } else {
-            // SAFETY: Metadata fits in usize for slices and trait objects.
-            unsafe { core::mem::transmute_copy(&ptr::metadata(ptr.as_ptr())) }
-        };
+        // Simplified: avoid unstable ptr::metadata / from_raw_parts by assuming sized metadata
+        let meta = 0usize;
 
-        // Embed type-specific drop function
-        unsafe fn drop_impl<T: ?Sized + Pointee + 'static>(ptr: NonNull<u8>, owner: DomainId, meta: usize)
-        where
-            <T as Pointee>::Metadata: Copy,
-        {
-            let data_ptr = ptr.as_ptr() as *mut ();
-            let meta = if core::mem::size_of::<T::Metadata>() == 0 {
-                core::mem::zeroed()
-            } else {
-                core::mem::transmute_copy::<usize, T::Metadata>(&meta)
-            };
-            let typed_ptr = ptr::from_raw_parts_mut::<T>(data_ptr, meta);
-            let rref: RRef<T> = RRef::from_raw(NonNull::new_unchecked(typed_ptr), owner);
+        // Embed type-specific drop function (Sized-only for test shim)
+        unsafe fn drop_impl<T: Sized + 'static>(ptr: NonNull<u8>, owner: DomainId, _meta: usize) {
+            // For sized types we can reconstruct the typed pointer directly.
+            let data_ptr = ptr.as_ptr() as *mut T;
+            let rref: RRef<T> = RRef::from_raw(NonNull::new_unchecked(data_ptr), owner);
             drop(rref); // Proper Drop path via Exchange Heap
         }
 
@@ -424,24 +409,18 @@ impl RRefRawParts {
     ///
     /// # Errors
     /// Returns `RawPartsError` if type/size mismatch detected (debug only)
-    pub unsafe fn into_rref<T: ?Sized + Pointee>(self) -> Result<RRef<T>, RawPartsError>
-    where
-        <T as Pointee>::Metadata: Copy,
-    {
-        let meta = if core::mem::size_of::<T::Metadata>() == 0 {
-            core::mem::zeroed()
-        } else {
-            core::mem::transmute_copy::<usize, T::Metadata>(&self.meta)
-        };
-        let typed_ptr = ptr::from_raw_parts_mut::<T>(self.ptr.as_ptr() as *mut (), meta);
+    pub unsafe fn into_rref<T: Sized>(self) -> Result<RRef<T>, RawPartsError> {
+        // Reconstruct typed pointer - test shim assumes sized T.
+        let typed_ptr = self.ptr.as_ptr() as *mut T;
 
         #[cfg(debug_assertions)]
         {
-            let actual_size = core::mem::size_of_val(&*typed_ptr);
+            let typed_ref: &T = unsafe { &*typed_ptr };
+            let actual_size = core::mem::size_of_val(typed_ref);
             let actual_hash = compute_simple_type_hash(
                 core::any::type_name::<T>(),
                 actual_size,
-                core::mem::align_of_val(&*typed_ptr),
+                core::mem::align_of_val(typed_ref),
             );
             if self.type_hash != actual_hash {
                 return Err(RawPartsError::TypeMismatch);

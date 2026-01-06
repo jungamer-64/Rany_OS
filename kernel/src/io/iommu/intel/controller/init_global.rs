@@ -28,11 +28,15 @@ use super::qi_init::QIManager;
 use super::dma::DomainManager;
 // use crate::io::acpi::dmar; // For parse_dmar - verified this path exists in kernel/src/io/acpi/dmar.rs
 
-fn align_down(value: u64, align: u64) -> u64 {
+fn align_down(value: u64, align: usize) -> u64 {
+    let align = align as u64;
+    if align == 0 { return value; }
     value & !(align - 1)
 }
 
-fn align_up(value: u64, align: u64) -> u64 {
+fn align_up(value: u64, align: usize) -> u64 {
+    let align = align as u64;
+    if align == 0 { return value; }
     (value + align - 1) & !(align - 1)
 }
 
@@ -109,7 +113,7 @@ pub unsafe fn init_iommu_from_acpi(
             }
 
             let iova_bits = controller.max_guest_address_width().min(48).max(12);
-            let iova_base = crate::io::iommu::PAGE_SIZE_4K;
+            let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
             let iova_limit = 1u64 << iova_bits;
             let iova_size = iova_limit.saturating_sub(iova_base);
             if iova_size == 0 {
@@ -298,7 +302,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
     }
 
     let iova_bits = controller.max_guest_address_width().min(48).max(12);
-    let iova_base = crate::io::iommu::PAGE_SIZE_4K;
+    let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
     let iova_limit = 1u64 << iova_bits;
     let iova_size = iova_limit.saturating_sub(iova_base);
     if iova_size == 0 {

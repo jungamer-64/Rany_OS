@@ -38,7 +38,7 @@ use crate::sync::IrqMutex;
 
 use crate::mm::fast_allocator::{FastBitmapAllocator, PageGranularity};
 use crate::mm::remote_free::{QuarantineRing, QuarantineEntry}; // Using generic QuarantineRing
-use crate::mm::MAX_CPUS;
+use crate::mm::per_cpu::MAX_CPUS;
 
 use super::IommuError;
 
@@ -183,7 +183,7 @@ impl IovaAllocator {
     /// Use this for normal IOVA unmapping. The IOVA will be added to the
     /// current CPU's quarantine ring stamped with the current epoch.
     pub fn free_with_granularity(&self, addr: u64, granularity: PageGranularity) -> Result<(), IommuError> {
-        let cpu_id = crate::mm::try_current_cpu_id().unwrap_or(0);
+        let cpu_id = crate::mm::per_cpu::try_current_cpu_id().unwrap_or(0);
         
         // Ensure CPU ID is valid
         if cpu_id >= MAX_CPUS {
@@ -301,7 +301,7 @@ impl IovaAllocator {
         let _ = self.completed_epoch.fetch_max(epoch, Ordering::Release);
         
         // Opportunistic drain: Try to reclaim memory from current CPU's ring
-        if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
              if cpu_id < MAX_CPUS {
                  self.drain_quarantine_for_cpu(cpu_id, false);
              }
@@ -362,7 +362,7 @@ impl IovaAllocator {
         self.inner.drain_remote_frees();
 
         // Drain quarantine if needed
-        if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+        if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
             if cpu_id < MAX_CPUS {
                  self.drain_quarantine_for_cpu(cpu_id, false);
             }

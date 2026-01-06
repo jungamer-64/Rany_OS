@@ -70,17 +70,19 @@ impl PollHandler for NvmePollHandler {
         with_driver(|driver| {
             if let Some(queue) = driver.get_queue(self.core_id) {
                 // SAFETY: poll は内部で適切に同期されている
-                while let Some(cqe) = queue.poll() {
-                    let cid = cqe.cid;
+                unsafe {
+                    while let Some(cqe) = queue.poll() {
+                        let cid = cqe.cid;
 
-                    let pending = self.pending.lock();
-                    if let Some((&io_id, _)) = pending.iter().find(|&(_, &c)| c == cid) {
-                        let result = if cqe.is_success() {
-                            IoResult::Success(512)
-                        } else {
-                            IoResult::Error(IoError::DeviceError)
-                        };
-                        results.push((io_id, result));
+                        let pending = self.pending.lock();
+                        if let Some((&io_id, _)) = pending.iter().find(|&(_, &c)| c == cid) {
+                            let result = if cqe.is_success() {
+                                IoResult::Success(512)
+                            } else {
+                                IoResult::Error(IoError::DeviceError)
+                            };
+                            results.push((io_id, result));
+                        }
                     }
                 }
             }
