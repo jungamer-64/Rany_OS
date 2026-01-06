@@ -264,23 +264,33 @@ pub mod mm {
         /// Maximum CPUs for the test/bench shim
         pub const MAX_CPUS: usize = 8;
 
+        use alloc::boxed::Box;
+        use core::sync::atomic::{AtomicBool, Ordering};
+
         // Lazily-initialized static per-cpu data for unit tests
-        static mut PER_CPU: Option<PerCpuData> = None;
+        static PER_CPU_INIT: AtomicBool = AtomicBool::new(false);
+        static mut PER_CPU_PTR: *mut PerCpuData = core::ptr::null_mut();
 
         /// Get a mutable reference to per-CPU data (test shim)
         pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
-            if PER_CPU.is_none() {
-                PER_CPU = Some(PerCpuData::new());
+            if !PER_CPU_INIT.load(Ordering::SeqCst) {
+                let boxed = Box::new(PerCpuData::new());
+                let ptr = Box::into_raw(boxed);
+                PER_CPU_PTR = ptr;
+                PER_CPU_INIT.store(true, Ordering::SeqCst);
             }
-            PER_CPU.as_mut()
+            (PER_CPU_PTR as *mut PerCpuData).as_mut()
         }
 
         /// Get an immutable reference to per-CPU data (test shim)
         pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
-            if PER_CPU.is_none() {
-                PER_CPU = Some(PerCpuData::new());
+            if !PER_CPU_INIT.load(Ordering::SeqCst) {
+                let boxed = Box::new(PerCpuData::new());
+                let ptr = Box::into_raw(boxed);
+                PER_CPU_PTR = ptr;
+                PER_CPU_INIT.store(true, Ordering::SeqCst);
             }
-            PER_CPU.as_ref()
+            (PER_CPU_PTR as *mut PerCpuData).as_ref()
         }
     }
 

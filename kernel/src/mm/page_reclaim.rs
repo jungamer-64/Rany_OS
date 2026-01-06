@@ -887,57 +887,80 @@ impl PageReclaimController {
                 if entry.flags.contains(LruFlags::DIRTY) {
                     // Prefer targeted per-frame writeback if we know the backing inode/page
                     if let Some(backing) = super::frame_backing::get_frame_backing(entry.frame) {
-                        let written = crate::fs::page_cache().sync_page(backing.ino, backing.page_num, |offset, data| {
-                            match crate::fs::write_inode_by_number(backing.ino, offset, data) {
-                                Ok(_) => Ok(()),
-                                Err(_) => Err(()),
-                            }
-                        });
-
-                        match written {
-                            Ok(true) => {
-                                // Success - untrack memcg and free
-                                if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                    let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-                                }
-                                // Remove backing mapping
-                                let _ = super::frame_backing::untrack_frame_backing(entry.frame);
-                                self.free_frame(entry.frame);
-                            }
-                            Ok(false) => {
-                                // Not written (page not found / not dirty) - fallback to global sync
-                                if self.attempt_writeback_all() {
-                                    if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-                                    }
-                                    let _ = super::frame_backing::untrack_frame_backing(entry.frame);
-                                    self.free_frame(entry.frame);
-                                } else {
-                                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
-                                }
+                        // Try asynchronous enqueue first - if it succeeds the worker will
+                        // perform the writeback and free the frame.
+                        match crate::mm::async_swapout::try_enqueue_swapout(
+                            entry.frame,
+                            crate::mm::async_swapout::SwapKind::File { ino: backing.ino, page_num: backing.page_num },
+                        ) {
+                            Ok(_handle) => {
+                                // Successfully enqueued - do not free here
+                                continue;
                             }
                             Err(_) => {
-                                // Writer failed - fallback to global sync
-                                if self.attempt_writeback_all() {
-                                    if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                // Enqueue failed - fallback to synchronous writeback (existing path)
+                                let written = crate::fs::page_cache().sync_page(backing.ino, backing.page_num, |offset, data| {
+                                    match crate::fs::write_inode_by_number(backing.ino, offset, data) {
+                                        Ok(_) => Ok(()),
+                                        Err(_) => Err(()),
                                     }
-                                    let _ = super::frame_backing::untrack_frame_backing(entry.frame);
-                                    self.free_frame(entry.frame);
-                                } else {
-                                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                });
+
+                                match written {
+                                    Ok(true) => {
+                                        // Success - untrack memcg and free
+                                        if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                            let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                        }
+                                        // Remove backing mapping
+                                        let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                                        self.free_frame(entry.frame);
+                                    }
+                                    Ok(false) => {
+                                        // Not written (page not found / not dirty) - fallback to global sync
+                                        if self.attempt_writeback_all() {
+                                            if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                            }
+                                            let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                                            self.free_frame(entry.frame);
+                                        } else {
+                                            self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                    }
+                                    Err(_) => {
+                                        // Writer failed - fallback to global sync
+                                        if self.attempt_writeback_all() {
+                                            if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                            }
+                                            let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                                            self.free_frame(entry.frame);
+                                        } else {
+                                            self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                    }
                                 }
                             }
                         }
                     } else {
-                        // No precise mapping; fall back to coarse global sync
-                        if self.attempt_writeback_all() {
-                            if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                        // No precise mapping; attempt async anon swapout first
+                        match crate::mm::async_swapout::try_enqueue_swapout(entry.frame, crate::mm::async_swapout::SwapKind::Anon) {
+                            Ok(_handle) => {
+                                // enqueued - worker will handle freeing
+                                continue;
                             }
-                            self.free_frame(entry.frame);
-                        } else {
-                            self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                            Err(_) => {
+                                // fall back to coarse global sync
+                                if self.attempt_writeback_all() {
+                                    if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                    }
+                                    self.free_frame(entry.frame);
+                                } else {
+                                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
                         }
                     }
                 } else {

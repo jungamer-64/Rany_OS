@@ -16,6 +16,7 @@
 //    - L2/L3キャッシュセット競合の回避
 //    - 色ごとのフリーリストで均等分散
 // ============================================================================
+#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use alloc::vec::Vec;

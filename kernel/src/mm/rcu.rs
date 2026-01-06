@@ -3,6 +3,7 @@
 //
 // RCUは読み取り側が非常に軽量で、書き込み側が遅延解放を待つ同期プリミティブ。
 // VMAの検索、ルーティングテーブルの参照など、読み取り優位なデータ構造に最適。
+#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use alloc::collections::VecDeque;
