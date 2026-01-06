@@ -477,11 +477,11 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
 
         let phys = if frame_count == 1 {
             let frame = if let Some(node) = numa_hint {
-                crate::mm::alloc_frame_on_numa_node(crate::mm::NumaNodeId::new(
+                crate::mm::frame_allocator::alloc_frame_on_numa_node(crate::mm::types::NumaNodeId::new(
                     node as u8,
                 ))
             } else {
-                crate::mm::alloc_frame()
+                crate::mm::frame_allocator::alloc_frame()
             }
             .ok_or(IommuError::OutOfMemory)?;
             frame.start_address().as_u64()
@@ -489,7 +489,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             if numa_hint.is_some() {
                 log::debug!("[IOMMU] NUMA hint ignored for contiguous table allocation");
             }
-            crate::mm::alloc_contiguous_frames(frame_count)
+            crate::mm::frame_allocator::alloc_contiguous_frames(frame_count)
                 .ok_or(IommuError::OutOfMemory)?
                 .as_u64()
         };

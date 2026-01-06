@@ -499,7 +499,7 @@ pub fn bench_iommu_iova(runner: &mut BenchmarkRunner) {
     use crate::mm::per_cpu::MAX_IOMMU_CONTROLLERS;
 
     let controller = IommuController::new(0, 0);
-    let iova_base = PAGE_SIZE_4K;
+    let iova_base: u64 = PAGE_SIZE_4K as u64;
     let iova_size = 1024 * 1024 * 1024u64; // 1 GiB scratch window
     if IovaManager::init_iova(&controller, iova_base, iova_size).is_err() {
         log::info!("[BENCH] IOMMU IOVA init failed; skipping");
@@ -531,16 +531,16 @@ pub fn bench_iommu_iova(runner: &mut BenchmarkRunner) {
     if enable_fast {
         controller.set_controller_idx(controller_idx);
         for _ in 0..64 {
-            let iova = IovaManager::allocate_iova_fast(&controller, PAGE_SIZE_4K)
+            let iova = IovaManager::allocate_iova_fast(&controller, PAGE_SIZE_4K as u64)
                 .expect("warmup alloc");
-            IovaManager::free_iova_fast(&controller, iova, PAGE_SIZE_4K)
+            IovaManager::free_iova_fast(&controller, iova, PAGE_SIZE_4K as u64)
                 .expect("warmup free");
         }
 
         runner.bench("iommu_iova_fast_4k", 100000, || {
-            let iova = IovaManager::allocate_iova_fast(&controller, PAGE_SIZE_4K)
+            let iova = IovaManager::allocate_iova_fast(&controller, PAGE_SIZE_4K as u64)
                 .expect("alloc");
-            IovaManager::free_iova_fast(&controller, iova, PAGE_SIZE_4K).expect("free");
+            IovaManager::free_iova_fast(&controller, iova, PAGE_SIZE_4K as u64).expect("free");
             core::hint::black_box(iova);
         });
     } else {
@@ -548,8 +548,8 @@ pub fn bench_iommu_iova(runner: &mut BenchmarkRunner) {
     }
 
     runner.bench("iommu_iova_global_4k", 100000, || {
-        let iova = IovaManager::allocate_iova(&controller, PAGE_SIZE_4K).expect("alloc");
-        IovaManager::free_iova(&controller, iova, PAGE_SIZE_4K).expect("free");
+        let iova = IovaManager::allocate_iova(&controller, PAGE_SIZE_4K as u64).expect("alloc");
+        IovaManager::free_iova(&controller, iova, PAGE_SIZE_4K as u64).expect("free");
         core::hint::black_box(iova);
     });
 }

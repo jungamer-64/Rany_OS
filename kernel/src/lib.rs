@@ -170,10 +170,75 @@ pub mod mm {
         use crate::mm::magazine::Magazine;
         pub type IovaMagazine = Magazine<u64, IOVA_MAG_CAPACITY>;
 
+        // Small per-CPU PtMagazine capacity for page tables
+        pub const PT_MAG_CAPACITY: usize = 8;
+
+        #[derive(Clone, Copy)]
+        pub struct PtMagEntry {
+            pub phys: u64,
+            pub virt: usize,
+            pub node: u8,
+        }
+
+        impl PtMagEntry {
+            pub const fn empty() -> Self {
+                Self { phys: 0, virt: 0, node: 0 }
+            }
+            pub const fn is_valid(&self) -> bool {
+                self.phys != 0
+            }
+        }
+
+        pub struct PtMagazine {
+            entries: [PtMagEntry; PT_MAG_CAPACITY],
+            len: usize,
+            preferred_node: u8,
+        }
+
+        impl PtMagazine {
+            pub fn new() -> Self {
+                Self {
+                    entries: [PtMagEntry::empty(); PT_MAG_CAPACITY],
+                    len: 0,
+                    preferred_node: 0,
+                }
+            }
+
+            pub fn pop(&mut self) -> Option<PtMagEntry> {
+                if self.len == 0 { None } else {
+                    self.len -= 1;
+                    let entry = self.entries[self.len];
+                    self.entries[self.len] = PtMagEntry::empty();
+                    Some(entry)
+                }
+            }
+
+            pub fn push(&mut self, entry: PtMagEntry) -> bool {
+                if self.len >= PT_MAG_CAPACITY { false } else {
+                    self.entries[self.len] = entry;
+                    self.len += 1;
+                    true
+                }
+            }
+
+            pub fn available(&self) -> usize {
+                PT_MAG_CAPACITY - self.len
+            }
+
+            pub fn len(&self) -> usize {
+                self.len
+            }
+
+            pub fn preferred_node(&self) -> u8 {
+                self.preferred_node
+            }
+        }
+
         /// Per-CPU data (test shim)
         pub struct PerCpuData {
             pub iommu_domain_cache: PerCpuDomainCache,
             pub iova_magazines: [IovaMagazine; MAX_IOMMU_CONTROLLERS],
+            pub pt_magazine: PtMagazine,
         }
 
         impl PerCpuData {
@@ -181,29 +246,262 @@ pub mod mm {
                 Self {
                     iommu_domain_cache: PerCpuDomainCache::new(),
                     iova_magazines: array::from_fn(|_| IovaMagazine::new()),
+                    pt_magazine: PtMagazine::new(),
                 }
             }
         }
 
-        /// Try to get the current CPU id (test shim: not initialized)
+        /// Try to get the current CPU id (test shim: single CPU 0)
         pub fn try_current_cpu_id() -> Option<usize> {
-            None
+            Some(0)
+        }
+
+        /// Whether current execution is in interrupt context (test shim: false)
+        pub fn in_interrupt_context() -> bool {
+            false
         }
 
         /// Maximum CPUs for the test/bench shim
         pub const MAX_CPUS: usize = 8;
 
-        /// Get a mutable reference to per-CPU data (test shim: not available)
-        /// Returning `None` is acceptable for unit tests and forces global
-        /// allocator fallback paths to be exercised.
+        // Lazily-initialized static per-cpu data for unit tests
+        static mut PER_CPU: Option<PerCpuData> = None;
+
+        /// Get a mutable reference to per-CPU data (test shim)
         pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
+            if PER_CPU.is_none() {
+                PER_CPU = Some(PerCpuData::new());
+            }
+            PER_CPU.as_mut()
+        }
+
+        /// Get an immutable reference to per-CPU data (test shim)
+        pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
+            if PER_CPU.is_none() {
+                PER_CPU = Some(PerCpuData::new());
+            }
+            PER_CPU.as_ref()
+        }
+    }
+
+    // Minimal fast allocator shim used by IOMMU tests
+    pub mod fast_allocator {
+        use core::cell::RefCell;
+
+        pub const PAGE_SIZE_4K: u64 = 4096;
+        pub const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
+        pub const PAGE_SIZE_1G: u64 = 1024 * 1024 * 1024;
+
+        #[derive(Clone, Copy, Debug)]
+        pub enum PageGranularity {
+            Page4K,
+            Page2M,
+            Page1G,
+        }
+
+        impl PageGranularity {
+            pub fn size_bytes(&self) -> u64 {
+                match self {
+                    PageGranularity::Page4K => PAGE_SIZE_4K,
+                    PageGranularity::Page2M => PAGE_SIZE_2M,
+                    PageGranularity::Page1G => PAGE_SIZE_1G,
+                }
+            }
+        }
+
+        use core::sync::atomic::{AtomicU64, Ordering};
+
+        pub struct FastBitmapAllocator {
+            base: u64,
+            size: u64,
+            next: AtomicU64,
+        }
+
+        impl FastBitmapAllocator {
+            pub fn new(base: u64, size: u64) -> Self {
+                Self { base, size, next: AtomicU64::new(0) }
+            }
+
+            pub fn allocate_4k(&self) -> Option<u64> { self.allocate_with_size(PAGE_SIZE_4K) }
+            pub fn allocate_2m(&self) -> Option<u64> { self.allocate_with_size(PAGE_SIZE_2M) }
+            pub fn allocate_1g(&self) -> Option<u64> { self.allocate_with_size(PAGE_SIZE_1G) }
+
+            fn allocate_with_size(&self, sz: u64) -> Option<u64> {
+                // Simple atomic bump allocator
+                loop {
+                    let cur = self.next.load(Ordering::Relaxed);
+                    if cur + sz > self.size {
+                        return None;
+                    }
+                    if self.next.compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                        return Some(self.base + cur);
+                    }
+                }
+            }
+
+            pub fn allocate_4k_below(&self, limit: u64) -> Option<u64> { self.allocate_below(PAGE_SIZE_4K, limit) }
+            pub fn allocate_2m_below(&self, limit: u64) -> Option<u64> { self.allocate_below(PAGE_SIZE_2M, limit) }
+            pub fn allocate_1g_below(&self, limit: u64) -> Option<u64> { self.allocate_below(PAGE_SIZE_1G, limit) }
+
+            fn allocate_below(&self, sz: u64, limit: u64) -> Option<u64> {
+                loop {
+                    let cur = self.next.load(Ordering::Relaxed);
+                    if cur + sz > self.size || self.base + cur + sz > limit {
+                        return None;
+                    }
+                    if self.next.compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                        return Some(self.base + cur);
+                    }
+                }
+            }
+
+            pub fn allocate_contiguous(&self, _size: u64, _align: u64) -> Option<u64> {
+                // Align up current pointer and allocate
+                loop {
+                    let cur = self.next.load(Ordering::Relaxed);
+                    let aligned = ((cur + (_align - 1)) / _align) * _align;
+                    if aligned + _size > self.size {
+                        return None;
+                    }
+                    if self.next.compare_exchange(cur, aligned + _size, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+                        return Some(self.base + aligned);
+                    }
+                }
+            }
+
+            pub fn free_immediate(&self, _addr: u64, _gran: PageGranularity) -> Result<(), ()> { Ok(()) }
+
+            pub fn reserve(&self, _start: u64, _size: u64) -> Result<(), ()> { Ok(()) }
+
+            pub fn reconfigure_for_cpu_ids(&mut self, _cpu_ids: &[usize]) {}
+
+            pub fn enable_single_writer_arenas(&self) {}
+
+            pub fn drain_remote_frees(&self) {}
+            pub fn base(&self) -> u64 { self.base }
+            pub fn size(&self) -> u64 { self.size }
+        }
+    }
+
+    // Minimal remote-free / quarantine shim used by IOVA allocator
+    pub mod remote_free {
+        use alloc::collections::VecDeque;
+
+        #[derive(Clone, Copy, Default)]
+        pub struct QuarantineEntry {
+            pub addr: u64,
+            pub epoch: u32,
+            pub size_class: u8,
+        }
+
+        pub struct QuarantineRing<const CAP: usize> {
+            buf: VecDeque<QuarantineEntry>,
+        }
+
+        impl<const CAP: usize> QuarantineRing<CAP> {
+            pub fn new() -> Self { Self { buf: VecDeque::new() } }
+
+            pub fn push(&mut self, addr: u64, size_class: u8, epoch: u32) -> bool {
+                if self.buf.len() >= CAP { false } else {
+                    self.buf.push_back(QuarantineEntry { addr, epoch, size_class });
+                    true
+                }
+            }
+
+            pub fn drain_older_than(&mut self, completed_epoch: u32, limit: usize, out: &mut [QuarantineEntry]) -> usize {
+                let mut count = 0usize;
+                while count < limit {
+                    if let Some(front) = self.buf.front() {
+                        if front.epoch <= completed_epoch {
+                            let e = self.buf.pop_front().unwrap();
+                            out[count] = e;
+                            count += 1;
+                        } else { break; }
+                    } else { break; }
+                }
+                count
+            }
+
+            pub fn drain_all(&mut self, out: &mut [QuarantineEntry]) -> usize {
+                let mut count = 0usize;
+                while count < out.len() {
+                    if let Some(e) = self.buf.pop_front() { out[count] = e; count += 1; } else { break; }
+                }
+                count
+            }
+        }
+    }
+
+    pub mod types {
+        #[derive(Clone, Copy)]
+        pub struct NumaNodeId(pub u8);
+        impl NumaNodeId {
+            pub fn new(n: u8) -> Self { Self(n) }
+            pub fn as_usize(&self) -> usize { self.0 as usize }
+        }
+    }
+
+    pub mod frame_allocator {
+        use x86_64::structures::paging::{PhysFrame, Size4KiB};
+        use x86_64::PhysAddr;
+
+        pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
+            super::buddy_alloc_frame()
+        }
+
+        pub fn alloc_frame_on_numa_node(node: super::types::NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
+            super::buddy_alloc_frame_on_node(node.as_usize())
+        }
+
+        pub fn alloc_contiguous_frames(frames: usize) -> Option<PhysAddr> {
+            super::buddy_alloc_contiguous_frames(frames)
+        }
+
+        pub fn dealloc_contiguous_frames(_phys: PhysAddr, _frames: usize) {
+            // No-op in test shim
+        }
+
+        pub fn pmm_managed_end() -> Option<u64> {
             None
         }
 
-        /// Get an immutable reference to per-CPU data (test shim: not available)
-        pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
-            None
+        pub fn is_range_managed_by_pmm(_addr: PhysAddr, _size: u64) -> bool {
+            true
         }
+
+        pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
+            super::buddy_dealloc_frame(frame);
+        }
+
+        /// Expose a convenient wrapper at `crate::mm::dealloc_frame` for tests
+        pub use self::frame_allocator::dealloc_frame;
+
+        /// Memory pressure hint for tests (0 = no pressure)
+        pub fn memory_pressure_level() -> u8 { 0 }
+    }
+
+    // Minimal `higher_half` shim (for tests): small wrappers around u64 addresses
+    pub mod higher_half {
+        #[derive(Clone, Copy, Debug)]
+        pub struct VirtAddr(u64);
+        impl VirtAddr {
+            pub const fn new(addr: u64) -> Self { Self(addr) }
+            pub const fn as_u64(&self) -> u64 { self.0 }
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        pub struct PhysAddr(u64);
+        impl PhysAddr {
+            pub const fn new(addr: u64) -> Self { Self(addr) }
+            pub const fn as_u64(&self) -> u64 { self.0 }
+        }
+    }
+
+    // Global translate helper for tests (use kernel `higher_half` types)
+    pub fn global_translate(virt: crate::mm::higher_half::VirtAddr) -> Option<crate::mm::higher_half::PhysAddr> {
+        let v = x86_64::VirtAddr::new(virt.as_u64());
+        let p = mapping::virt_to_phys(v);
+        Some(crate::mm::higher_half::PhysAddr::new(p.as_u64()))
     }
 
     // Minimal address translation helpers for tests/benches.
@@ -367,27 +665,21 @@ pub mod ipc {
         unsafe impl Sync for RRefRawParts {}
 
         impl RRefRawParts {
-            pub fn from_rref<T: ?Sized>(rref: RRef<T>) -> Self {
+            pub fn from_rref<T: Sized>(rref: RRef<T>) -> Self {
                 #[cfg(debug_assertions)]
                 let size = core::mem::size_of_val(&*rref);
                 #[cfg(debug_assertions)]
                 let type_hash = debug_type_hash(&*rref);
                 let (ptr, owner) = rref.into_raw();
-                let meta = if core::mem::size_of::<T::Metadata>() == 0 {
-                    0
-                } else {
-                    unsafe { core::mem::transmute_copy(&ptr::metadata(ptr.as_ptr())) }
-                };
+                // Simplified: avoid unstable ptr::metadata / ptr::from_raw_parts usage by
+                // only supporting sized `RRef<T>` in the test shim. Store meta as zero.
+                let meta = 0usize;
 
-                unsafe fn drop_impl<T: ?Sized>(ptr: NonNull<u8>, owner: DomainId, meta: usize) {
-                    let data_ptr = ptr.as_ptr() as *mut ();
-                    let meta = if core::mem::size_of::<T::Metadata>() == 0 {
-                        core::mem::zeroed()
-                    } else {
-                        core::mem::transmute_copy::<usize, T::Metadata>(&meta)
-                    };
-                    let typed_ptr = ptr::from_raw_parts_mut::<T>(data_ptr, meta);
-                    let rref: RRef<T> = unsafe { RRef::from_raw(NonNull::new_unchecked(typed_ptr), owner) };
+                // Embed type-specific drop function (Sized-only for test shim)
+                unsafe fn drop_impl<T: Sized>(ptr: NonNull<u8>, owner: DomainId, _meta: usize) {
+                    // For sized types we can reconstruct the typed pointer directly.
+                    let data_ptr = ptr.as_ptr() as *mut T;
+                    let rref: RRef<T> = unsafe { RRef::from_raw(NonNull::new_unchecked(data_ptr), owner) };
                     drop(rref);
                 }
 
@@ -403,18 +695,15 @@ pub mod ipc {
                 }
             }
 
-            pub unsafe fn into_rref<T: ?Sized>(self) -> Result<RRef<T>, RawPartsError> {
-                let meta = if core::mem::size_of::<T::Metadata>() == 0 {
-                    core::mem::zeroed()
-                } else {
-                    core::mem::transmute_copy::<usize, T::Metadata>(&self.meta)
-                };
-                let typed_ptr = ptr::from_raw_parts_mut::<T>(self.ptr.as_ptr() as *mut (), meta);
+            pub unsafe fn into_rref<T: Sized>(self) -> Result<RRef<T>, RawPartsError> {
+                // Reconstruct typed pointer - test shim assumes sized T.
+                let typed_ptr = self.ptr.as_ptr() as *mut T;
 
                 #[cfg(debug_assertions)]
                 {
-                    let actual_size = core::mem::size_of_val(&*typed_ptr);
-                    let actual_hash = debug_type_hash(&*typed_ptr);
+                    let typed_ref: &T = unsafe { &*typed_ptr };
+                    let actual_size = core::mem::size_of_val(typed_ref);
+                    let actual_hash = debug_type_hash(typed_ref);
                     if self.type_hash != actual_hash {
                         return Err(RawPartsError::TypeMismatch);
                     }
@@ -428,6 +717,12 @@ pub mod ipc {
 
             pub unsafe fn drop_erased(self) {
                 unsafe { (self.drop_fn)(self.ptr, self.owner, self.meta) };
+            }
+
+            pub(crate) fn into_components(
+                self,
+            ) -> (NonNull<u8>, DomainId, usize, unsafe fn(NonNull<u8>, DomainId, usize)) {
+                (self.ptr, self.owner, self.meta, self.drop_fn)
             }
 
             pub fn owner(&self) -> DomainId {

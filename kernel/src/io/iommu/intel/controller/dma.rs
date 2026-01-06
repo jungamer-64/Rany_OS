@@ -14,7 +14,8 @@ use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
-use crate::mm::{global_translate, VirtAddr};
+use crate::mm::global_translate;
+use x86_64::VirtAddr;
 use x86_64::PhysAddr;
 
 use super::IommuController;
@@ -23,11 +24,15 @@ use super::IommuController;
 use super::init::CapabilityManager;
 use super::qi_ops::InvalidationOps;
 
-fn align_down(value: u64, align: u64) -> u64 {
+fn align_down(value: u64, align: usize) -> u64 {
+    let align = align as u64;
+    if align == 0 { return value; }
     value & !(align - 1)
 }
 
-fn align_up(value: u64, align: u64) -> u64 {
+fn align_up(value: u64, align: usize) -> u64 {
+    let align = align as u64;
+    if align == 0 { return value; }
     (value + align - 1) & !(align - 1)
 }
 
@@ -47,8 +52,8 @@ fn kernel_phys_range() -> Option<(u64, u64)> {
         return None;
     }
 
-    let start_phys = global_translate(VirtAddr::new(start))?.as_u64();
-    let end_phys = global_translate(VirtAddr::new(end - 1))?.as_u64();
+    let start_phys = crate::mm::global_translate(crate::mm::higher_half::VirtAddr::new(start))?.as_u64();
+    let end_phys = crate::mm::global_translate(crate::mm::higher_half::VirtAddr::new(end - 1))?.as_u64();
     Some((start_phys, end_phys.saturating_add(1)))
 }
 
@@ -77,7 +82,7 @@ fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
     }
 
     // Best-effort bounds check against known physical memory.
-    let max_phys = crate::mm::pmm_managed_end().unwrap_or(0);
+    let max_phys = crate::mm::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys != 0 && end > max_phys {
         log::error!(
             "[IOMMU][SECURITY] RMRR outside known RAM: {:#x}-{:#x} (max {:#x})",
@@ -89,7 +94,7 @@ fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {
     }
 
     // Warn if the range is not within managed regions (may be firmware-reserved).
-    if !crate::mm::is_range_managed_by_pmm(PhysAddr::new(start), size) {
+    if !crate::mm::frame_allocator::is_range_managed_by_pmm(PhysAddr::new(start), size) {
         log::warn!(
             "[IOMMU] RMRR outside managed RAM: {:#x}-{:#x} (allowing reserved region)",
             start,

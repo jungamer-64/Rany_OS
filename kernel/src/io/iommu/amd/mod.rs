@@ -179,12 +179,12 @@ impl AmdDeviceTable {
         let mut size_bytes = (entry_count as u64)
             .checked_mul(entry_bytes)
             .ok_or(IommuError::InvalidAddress)?;
-        if size_bytes < PAGE_SIZE_4K {
-            size_bytes = PAGE_SIZE_4K;
+        if size_bytes < (PAGE_SIZE_4K as u64) {
+            size_bytes = PAGE_SIZE_4K as u64;
         }
         size_bytes = size_bytes.next_power_of_two();
 
-        let frame_count = (size_bytes / PAGE_SIZE_4K) as usize;
+        let frame_count = (size_bytes / (PAGE_SIZE_4K as u64)) as usize;
         let phys_base =
             alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
@@ -286,7 +286,7 @@ unsafe impl Sync for AmdEventLog {}
 impl AmdEventLog {
     fn new() -> Result<Self, IommuError> {
         let size_bytes = EVT_BUFFER_BYTES as u64;
-        let frame_count = (size_bytes / PAGE_SIZE_4K) as usize;
+        let frame_count = (size_bytes / (PAGE_SIZE_4K as u64)) as usize;
         let phys_base =
             alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
@@ -733,7 +733,7 @@ impl AmdIommuDriver {
     ) -> Self {
         let page_table_pool = PageTablePool::new(crate::mm::numa::num_nodes().max(1), 32);
         let iova_bits = AMD_DEFAULT_MAX_ADDR_BITS.min(48).max(12);
-        let iova_base = PAGE_SIZE_4K;
+        let iova_base: u64 = PAGE_SIZE_4K as u64;
         let iova_limit = 1u64 << iova_bits;
         let iova_size = iova_limit.saturating_sub(iova_base);
         let iova_allocator = IovaAllocatorFast::new(iova_base, iova_size);
@@ -1719,11 +1719,15 @@ fn init_device_tables(units: &[AmdIommuUnit]) -> Result<HashMap<u16, AmdDeviceTa
     Ok(tables)
 }
 
-fn align_down(value: u64, align: u64) -> u64 {
+fn align_down(value: u64, align: usize) -> u64 {
+    let align = align as u64;
+    if align == 0 { return value; }
     value & !(align - 1)
 }
 
-fn align_up(value: u64, align: u64) -> u64 {
+fn align_up(value: u64, align: usize) -> u64 {
+    let align = align as u64;
+    if align == 0 { return value; }
     (value + align - 1) & !(align - 1)
 }
 

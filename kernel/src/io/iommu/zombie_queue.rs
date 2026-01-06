@@ -48,7 +48,8 @@ use core::mem::MaybeUninit;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::ipc::rref::{DomainId, RRefRawParts};
+use crate::ipc::DomainId;
+use crate::ipc::rref::RRefRawParts;
 
 /// Maximum number of zombie entries.
 /// Must be power of 2 for efficient modulo.
