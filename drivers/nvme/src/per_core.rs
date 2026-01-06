@@ -474,7 +474,8 @@ pub fn irq_handler() {
 #[inline]
 fn current_apic_id() -> u32 {
     #[cfg(target_arch = "x86_64")]
-    unsafe {
+    #[cfg(target_arch = "x86_64")]
+    {
         let res = core::arch::x86_64::__cpuid(1);
         (res.ebx >> 24) as u32
     }

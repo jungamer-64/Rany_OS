@@ -13,6 +13,8 @@
 //! - **Injector**: The executor injects fuel into the task context before polling.
 //! - **Consumption**: The task consumes fuel during loops or heavy operations.
 //! - **Yielding**: When fuel is exhausted, the task yields (returns `Poll::Pending`).
+//!
+#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
