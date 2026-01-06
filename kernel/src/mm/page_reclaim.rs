@@ -36,6 +36,244 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 
 use super::types::FrameIndex;
+use super::types::AddressUnit;
+
+// ============================================================================
+// PageVec - Batched LRU Updates (Linux pagevec equivalent)
+// ============================================================================
+
+/// PageVec容量（Linuxは15、キャッシュライン最適化）
+const PAGEVEC_SIZE: usize = 15;
+
+/// 最大CPU数
+const MAX_CPUS: usize = 256;
+
+/// Per-CPU PageVec for batched LRU additions
+/// 
+/// ## 概要
+/// 
+/// LRUリストへの追加をPer-CPUでバッファリングし、一定数溜まったら
+/// 一括でフラッシュする。これにより、ロック取得回数を最大15分の1に削減。
+/// 
+/// ## 使用パターン
+/// 
+/// ```ignore
+/// // ページをバッファに追加
+/// pagevec_add(cpu_id, entry);
+/// 
+/// // バッファが満杯なら自動フラッシュ
+/// // または明示的にフラッシュ
+/// pagevec_lru_add_flush(cpu_id);
+/// ```
+/// 
+/// ## パフォーマンス
+/// 
+/// - ロック取得: 15回のadd → 1回のロック取得
+/// - キャッシュ効率: エントリがL1に載った状態でまとめて処理
+#[repr(C, align(64))]
+pub struct PageVec {
+    /// バッファされたエントリ（フレームインデックス + メタデータ）
+    entries: [PageVecEntry; PAGEVEC_SIZE],
+    /// 現在のエントリ数
+    count: usize,
+    /// 統計: フラッシュ回数
+    flush_count: u64,
+    /// 統計: 追加されたページ総数
+    total_added: u64,
+}
+
+/// PageVec内のエントリ（軽量版）
+#[derive(Clone, Copy)]
+#[repr(C)]
+pub struct PageVecEntry {
+    /// 物理フレームインデックス
+    pub frame: u64,
+    /// ページタイプ (PageType as u8)
+    pub page_type: u8,
+    /// NUMAノードID
+    pub numa_node: u8,
+    /// 追加先 (0 = Active, 1 = Inactive)
+    pub target_list: u8,
+    /// Reserved padding
+    _pad: u8,
+    /// タイムスタンプ
+    pub timestamp: u64,
+}
+
+impl PageVecEntry {
+    pub const fn empty() -> Self {
+        Self {
+            frame: 0,
+            page_type: 0,
+            numa_node: 0,
+            target_list: 0,
+            _pad: 0,
+            timestamp: 0,
+        }
+    }
+
+    pub fn new(frame: FrameIndex, page_type: PageType, numa_node: u8, timestamp: u64) -> Self {
+        Self {
+            frame: frame.as_u64(),
+            page_type: page_type as u8,
+            numa_node,
+            target_list: 0, // Active by default
+            _pad: 0,
+            timestamp,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.frame == 0
+    }
+
+    pub fn frame_index(&self) -> FrameIndex {
+        FrameIndex::from_phys_addr(self.frame)
+    }
+
+    pub fn page_type(&self) -> PageType {
+        match self.page_type {
+            0 => PageType::Anonymous,
+            1 => PageType::FileBacked,
+            2 => PageType::Slab,
+            _ => PageType::Kernel,
+        }
+    }
+}
+
+impl PageVec {
+    pub const fn new() -> Self {
+        Self {
+            entries: [PageVecEntry::empty(); PAGEVEC_SIZE],
+            count: 0,
+            flush_count: 0,
+            total_added: 0,
+        }
+    }
+
+    /// エントリを追加（満杯ならfalseを返す）
+    #[inline]
+    pub fn add(&mut self, entry: PageVecEntry) -> bool {
+        if self.count >= PAGEVEC_SIZE {
+            return false;
+        }
+        self.entries[self.count] = entry;
+        self.count += 1;
+        self.total_added += 1;
+        true
+    }
+
+    /// バッファが満杯か
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.count >= PAGEVEC_SIZE
+    }
+
+    /// バッファが空か
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// 現在のエントリ数
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// バッファをフラッシュしてLRUリストに追加
+    pub fn flush(&mut self, lru_lists: &[LruList; 8]) {
+        if self.count == 0 {
+            return;
+        }
+
+        // NUMAノードごとにグループ化して効率的にフラッシュ
+        for i in 0..self.count {
+            let entry = &self.entries[i];
+            if entry.is_empty() {
+                continue;
+            }
+
+            let node_idx = (entry.numa_node as usize).min(7);
+            let lru_entry = LruPageEntry::new(
+                entry.frame_index(),
+                entry.page_type(),
+                entry.timestamp,
+            );
+
+            if entry.target_list == 0 {
+                lru_lists[node_idx].add_to_active(lru_entry);
+            } else {
+                lru_lists[node_idx].add_to_inactive(lru_entry);
+            }
+        }
+
+        self.flush_count += 1;
+        self.count = 0;
+    }
+
+    /// 統計情報
+    pub fn stats(&self) -> PageVecStats {
+        PageVecStats {
+            current_count: self.count,
+            flush_count: self.flush_count,
+            total_added: self.total_added,
+        }
+    }
+}
+
+/// PageVec統計
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PageVecStats {
+    pub current_count: usize,
+    pub flush_count: u64,
+    pub total_added: u64,
+}
+
+/// Per-CPU PageVec配列
+static mut PER_CPU_PAGEVEC: [PageVec; MAX_CPUS] = {
+    const INIT: PageVec = PageVec::new();
+    [INIT; MAX_CPUS]
+};
+
+/// 現在のCPUのPageVecにエントリを追加
+/// 
+/// # Safety
+/// 割り込み禁止状態で呼び出すこと
+#[inline]
+pub unsafe fn pagevec_add(cpu_id: usize, entry: PageVecEntry) -> bool {
+    let pv = &mut PER_CPU_PAGEVEC[cpu_id.min(MAX_CPUS - 1)];
+    pv.add(entry)
+}
+
+/// 現在のCPUのPageVecが満杯か
+#[inline]
+pub fn pagevec_is_full(cpu_id: usize) -> bool {
+    unsafe {
+        PER_CPU_PAGEVEC[cpu_id.min(MAX_CPUS - 1)].is_full()
+    }
+}
+
+/// 現在のCPUのPageVecをフラッシュ
+/// 
+/// # Safety
+/// 割り込み禁止状態で呼び出すこと
+pub unsafe fn pagevec_lru_add_flush(cpu_id: usize) {
+    let pv = &mut PER_CPU_PAGEVEC[cpu_id.min(MAX_CPUS - 1)];
+    pv.flush(&PAGE_RECLAIM.lru_lists);
+}
+
+/// 全CPUのPageVecをフラッシュ（kswapdから呼び出し）
+pub fn pagevec_flush_all() {
+    for cpu_id in 0..MAX_CPUS {
+        unsafe {
+            let pv = &mut PER_CPU_PAGEVEC[cpu_id];
+            if !pv.is_empty() {
+                pv.flush(&PAGE_RECLAIM.lru_lists);
+            }
+        }
+    }
+}
 
 // ============================================================================
 // Watermarks
@@ -464,6 +702,9 @@ pub struct PageReclaimController {
     
     /// 統計: 回収したページ数（合計）
     total_reclaimed: AtomicU64,
+
+    /// 統計: ダーティなファイルページのライトバックが未実装でスキップした回数
+    writeback_skipped: AtomicU64,
     
     /// スキャン比率（Active:Inactive）
     scan_ratio: AtomicU64,
@@ -490,6 +731,7 @@ impl PageReclaimController {
             direct_reclaim_count: AtomicU64::new(0),
             background_reclaim_count: AtomicU64::new(0),
             total_reclaimed: AtomicU64::new(0),
+            writeback_skipped: AtomicU64::new(0),
             scan_ratio: AtomicU64::new(1), // 1:1
         }
     }
@@ -612,13 +854,24 @@ impl PageReclaimController {
         match entry.page_type {
             PageType::Anonymous => {
                 // スワップアウト（未実装の場合はスキップ）
-                // TODO: swap subsystem
+                // swap 未実装のため、ダーティな匿名ページはスキップしておく
+                if entry.flags.contains(LruFlags::DIRTY) {
+                    // TODO: swapout writeback - currently cannot reclaim dirty anonymous pages
+                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    // クリーンな匿名ページは即座に回収可能
+                    if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                    }
+                    self.free_frame(entry.frame);
+                }
             }
             PageType::FileBacked => {
                 // ダーティならライトバック、そうでなければ破棄
                 if entry.flags.contains(LruFlags::DIRTY) {
                     // TODO: writeback
                     // 現在はライトバック未実装のため、ダーティページはスキップ
+                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
                 } else {
                     // クリーンなら即座に回収可能
                     // Memcg: ページがmemcgでトラックされている場合はアンチャージ
@@ -672,6 +925,7 @@ impl PageReclaimController {
             background_reclaim_count: self.background_reclaim_count.load(Ordering::Relaxed),
             total_reclaimed: self.total_reclaimed.load(Ordering::Relaxed),
             pressure: self.current_pressure(),
+            writeback_skipped: self.writeback_skipped.load(Ordering::Relaxed),
             lru_stats,
         }
     }
@@ -684,6 +938,7 @@ pub struct ReclaimStats {
     pub background_reclaim_count: u64,
     pub total_reclaimed: u64,
     pub pressure: MemoryPressure,
+    pub writeback_skipped: u64,
     pub lru_stats: [LruStats; 8],
 }
 
@@ -731,14 +986,26 @@ pub fn lru_add_page(frame: x86_64::structures::paging::PhysFrame, page_type: Pag
     let frame_index = FrameIndex::from_phys_addr(frame.start_address().as_u64());
     
     // NUMA ノードIDを取得
-    // 簡易実装: 物理アドレスから推測（単一ノード環境では常に0）
-    // 将来的にはACPI SRATテーブルを参照
     let numa_node = numa_node_for_phys_addr(frame.start_address().as_u64());
     
     // タイムスタンプ（ナノ秒精度）
     let timestamp = crate::time::current_time_ns();
     
-    PAGE_RECLAIM.add_page(frame_index, page_type, numa_node, timestamp);
+    // PageVecエントリを作成
+    let entry = PageVecEntry::new(frame_index, page_type, numa_node as u8, timestamp);
+    
+    // 現在のCPU IDを取得（割り込み禁止状態を想定）
+    let cpu_id = crate::mm::per_cpu::current_cpu_id();
+    
+    unsafe {
+        // PageVecが満杯ならまずフラッシュ
+        if pagevec_is_full(cpu_id) {
+            pagevec_lru_add_flush(cpu_id);
+        }
+        
+        // エントリを追加
+        pagevec_add(cpu_id, entry);
+    }
 }
 
 /// ページをLRUリストに追加（NUMAノード指定版）
@@ -790,6 +1057,9 @@ pub fn kswapd_cycle() {
     if !PAGE_RECLAIM.should_wake_kswapd() {
         return;
     }
+    
+    // 回収前に全CPUのPageVecをフラッシュ（保留中のLRU追加を確定）
+    pagevec_flush_all();
     
     // Watermark高まで回収
     let target = 64; // 1サイクルの回収目標
@@ -986,6 +1256,58 @@ impl MemoryPressureNotifier {
             level_change_count: self.level_change_count.load(Ordering::Relaxed),
             current_level: self.current_level(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mm::types::FrameIndex;
+    use core::sync::atomic::Ordering;
+
+    #[test]
+    fn test_get_reclaimable_returns_clean_anonymous() {
+        let lru = LruList::new();
+        let ts = crate::time::current_time_ns();
+        let mut entry = LruPageEntry::new(FrameIndex::new(100), PageType::Anonymous, ts);
+        entry.mapcount.store(0, Ordering::Relaxed);
+        lru.add_to_inactive(entry);
+        let reclaimable = lru.get_reclaimable(1);
+        assert_eq!(reclaimable.len(), 1);
+    }
+
+    #[test]
+    fn test_filebacked_dirty_increments_writeback_skipped() {
+        let controller = PageReclaimController::new();
+        let ts = crate::time::current_time_ns();
+        let mut entry = LruPageEntry::new(FrameIndex::new(200), PageType::FileBacked, ts);
+        entry.mapcount.store(0, Ordering::Relaxed);
+        entry.flags = LruFlags::DIRTY;
+        controller.lru_lists[0].add_to_inactive(entry);
+
+        let skipped_before = controller.writeback_skipped.load(Ordering::Relaxed);
+        let reclaimed = controller.background_reclaim(1);
+        assert_eq!(reclaimed, 1);
+        assert_eq!(controller.writeback_skipped.load(Ordering::Relaxed), skipped_before + 1);
+    }
+
+    #[test]
+    fn test_anonymous_dirty_increments_writeback_skipped() {
+        let controller = PageReclaimController::new();
+        let ts = crate::time::current_time_ns();
+        let mut entry = LruPageEntry::new(FrameIndex::new(300), PageType::Anonymous, ts);
+        entry.mapcount.store(0, Ordering::Relaxed);
+        entry.flags = LruFlags::DIRTY;
+        controller.lru_lists[0].add_to_inactive(entry);
+
+        let skipped_before = controller.writeback_skipped.load(Ordering::Relaxed);
+        let reclaimed = controller.background_reclaim(1);
+        assert_eq!(reclaimed, 1);
+        assert_eq!(controller.writeback_skipped.load(Ordering::Relaxed), skipped_before + 1);
+
+        // stats() に反映されるか確認
+        let stats = controller.stats();
+        assert_eq!(stats.writeback_skipped, skipped_before + 1);
     }
 }
 
