@@ -22,6 +22,22 @@ pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024;
 pub const PAGE_SIZE_1G: usize = 1024 * 1024 * 1024;
 
 // ============================================================================
+// Huge Page 共通定数 (huge_page.rs/huge_pages.rs 統一)
+// ============================================================================
+
+/// 2MB Huge Page のサイズ（バイト）
+pub const HUGE_PAGE_SIZE_2MB: usize = PAGE_SIZE_2M;
+
+/// 1GB Giant Page のサイズ（バイト）
+pub const HUGE_PAGE_SIZE_1GB: usize = PAGE_SIZE_1G;
+
+/// 2MB Huge Page の Buddy Order (512 * 4KB = 2MB)
+pub const HUGE_PAGE_ORDER_2MB: usize = 9;
+
+/// 1GB Giant Page の Buddy Order (256K * 4KB = 1GB)
+pub const HUGE_PAGE_ORDER_1GB: usize = 18;
+
+// ============================================================================
 // FrameIndex: フレーム番号の統一型
 // ============================================================================
 

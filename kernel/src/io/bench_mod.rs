@@ -5,6 +5,6 @@
 #[path = "log.rs"]
 pub mod log;
 
-// Include the CommandQueue implementation for IOMMU microbenchmarks
-#[path = "iommu_cmdqueue.rs"]
-pub mod iommu_cmdqueue;
+// Note: IOVA bitmap benchmarks require full mm module dependencies.
+// For IOVA benchmarks, use kernel unit tests instead:
+//   cargo test --package rany_kernel test_bitmap_throughput_comparison

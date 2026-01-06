@@ -146,40 +146,9 @@ pub mod mm {
         pub const IOVA_MAG_CAPACITY: usize = 256;
         pub const MAX_IOMMU_CONTROLLERS: usize = 8;
 
-        /// Small per-CPU IOVA magazine (test shim)
-        #[derive(Clone, Copy)]
-        pub struct IovaMagazine {
-            cache: [u64; IOVA_MAG_CAPACITY],
-            len: usize,
-        }
-
-        impl IovaMagazine {
-            pub const fn new() -> Self {
-                Self {
-                    cache: [0; IOVA_MAG_CAPACITY],
-                    len: 0,
-                }
-            }
-
-            pub fn push(&mut self, iova: u64) -> bool {
-                if self.len < IOVA_MAG_CAPACITY {
-                    self.cache[self.len] = iova;
-                    self.len += 1;
-                    true
-                } else {
-                    false
-                }
-            }
-
-            pub fn pop(&mut self) -> Option<u64> {
-                if self.len == 0 {
-                    None
-                } else {
-                    self.len -= 1;
-                    Some(self.cache[self.len])
-                }
-            }
-        }
+        // IOVA_MM_MIGRATION_PLAN Phase 1.1: Magazine<T, N>の型エイリアス
+        use crate::mm::magazine::Magazine;
+        pub type IovaMagazine = Magazine<u64, IOVA_MAG_CAPACITY>;
 
         /// Per-CPU data (test shim)
         pub struct PerCpuData {

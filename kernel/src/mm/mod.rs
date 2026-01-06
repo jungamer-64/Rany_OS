@@ -2,8 +2,13 @@
 // Memory Management Module
 // 設計書 5: メモリ管理戦略 - 階層型アロケータ設計
 // ============================================================================
+pub mod atomic_utils; // アトミック操作ユーティリティ（AtomicU8, AtomicU16）
+pub mod bitmap; // 階層ビットマップ（IOVA_MM_MIGRATION_PLAN Phase 1.2）
+pub mod magazine; // ジェネリックマガジンキャッシュ（IOVA_MM_MIGRATION_PLAN Phase 1.1）
+pub mod remote_free; // リモートフリーリング（IOVA_MM_MIGRATION_PLAN Phase 1.3）
 pub mod types; // 共通型定義（FrameIndex, NumaNodeId, AddressUnit）
 pub mod buddy_allocator;
+pub mod buddy_freelist; // 新: フリーリストベースBuddy + ページモビリティ
 pub mod domain_ownership; // 新: ドメインオーナーシップ追跡 (設計書 5.4, 8.1)
 pub mod exchange_heap;
 pub mod frame_allocator;
@@ -14,9 +19,55 @@ pub mod mmap;
 pub mod numa;
 pub mod per_cpu;
 pub mod slab_cache;
+pub mod thp_promotion; // 新: Transparent Huge Page Promotion - 自動THP昇格
+pub mod zeroed_pool; // 新: PMM Idle Zeroing - バックグラウンドゼロクリア
+pub mod per_node_buddy; // 新: Per-NUMA-Node Buddy Allocator - ノードごとの独立ロック
+pub mod frame_magazine; // 新: Per-CPU Frame Magazine (PCP) - ロックフリーフレームキャッシュ
+pub mod memory_compaction; // 新: Memory Compaction - 断片化解消
+pub mod page_table_cache; // 新: Page Table Quicklist - TLB安全なPTページキャッシュ
+pub mod rcu; // 新: RCU (Read-Copy-Update) - 読み取り優位の同期プリミティブ
+pub mod zero_page; // 新: Non-Temporal ゼロクリア + バックグラウンドスクラビング
+pub mod autonuma; // 新: AutoNUMA - 自動ページマイグレーション
+pub mod page_reclaim; // 新: Page Reclaim + LRU - メモリ回収とActive/Inactive管理
+pub mod tlb_batch; // 新: TLB Shootdown Batching - バッチ化IPIフラッシュ
+pub mod huge_page; // 新: Huge Page Direct Allocation - Direct Compaction付き
+pub mod rcu_vma; // 新: RCU VMA/PageTable Walk - ロックフリーVMA検索
+pub mod ksm; // 新: KSM (Kernel Same-page Merging) - 重複ページ統合
+pub mod hotplug; // 新: Memory Hotplug - 動的メモリ追加/削除
+pub mod balloon; // 新: Memory Ballooning - 仮想環境メモリ動的調整
+pub mod memcg; // 新: Memory Cgroup - メモリリソース制限とアカウンティング
+pub mod zswap; // 新: ZSWAP - スワップ前メモリ圧縮キャッシュ
+pub mod shrinker; // 新: Shrinker Framework - キャッシュ縮小とメモリ圧力通知
+pub mod arena; // 新: Single-Writer Arena - ロックフリーPer-CPU割り当て最適化
+pub mod fast_allocator; // 新: High-Performance Bitmap Allocator - IOVA/PMM共通アロケータ
+pub mod fault_handler; // 新: Page Fault Handler - Demand Paging/CoW/Stack Growth統合
+pub mod cow; // 新: Copy-on-Write - ページ参照カウント管理とフォルト時複製
+pub mod demand_paging; // 新: Demand Paging - 遅延ページ割り当て
+pub mod stack_growth; // 新: Stack Growth - 自動スタック拡張
+pub mod address_space; // 新: Process Address Space - プロセスアドレス空間管理
+
 
 // 共通型を再エクスポート
 pub use types::{NumaNodeId, PAGE_SIZE_4K};
+// Huge Page 共通定数
+pub use types::{HUGE_PAGE_SIZE_2MB, HUGE_PAGE_SIZE_1GB, HUGE_PAGE_ORDER_2MB, HUGE_PAGE_ORDER_1GB};
+
+// Page Reclaim / LRU API
+#[allow(unused_imports)]
+pub use page_reclaim::{
+    // LRU API
+    lru_add_page,
+    lru_add_page_on_node,
+    lru_mark_accessed,
+    // Page types
+    PageType as LruPageType,
+    // Memory pressure
+    MemoryPressure,
+    check_memory_pressure,
+    try_to_free_pages,
+    init_page_reclaim,
+};
+// アトミックユーティリティを再エクスポート
 
 #[allow(unused_imports)]
 pub use buddy_allocator::{
@@ -109,6 +160,44 @@ pub use slab_cache::{
     per_core_alloc_auto,
     per_core_dealloc,
     per_core_dealloc_auto,
+    // コンストラクタ/デストラクタ付きTyped Slab Cache
+    TypedSlabCache,
+    TypedSlabStats,
+    SlabCtor,
+    SlabDtor,
+};
+
+// RCU (Read-Copy-Update) 同期プリミティブ
+#[allow(unused_imports)]
+pub use rcu::{
+    // Read-side API
+    RcuReadGuard,
+    rcu_read_lock,
+    rcu_read_active,
+    // Write-side / Grace period API
+    rcu_current_epoch,
+    rcu_advance_epoch,
+    rcu_note_context_switch,
+    synchronize_rcu,
+    // Deferred callback API
+    call_rcu,
+    rcu_process_callbacks,
+    rcu_pending_callbacks,
+    // RCU-protected pointer
+    RcuPtr,
+    // Per-CPU state
+    PerCpuRcuState,
+    // Statistics
+    RcuStats,
+    rcu_stats,
+};
+
+// Page Table Quicklist (TLB-safe page table page cache)
+#[allow(unused_imports)]
+pub use page_table_cache::{
+    alloc_page_table_page,
+    free_page_table_page,
+    page_table_cache_stats,
 };
 
 // ============================================================================
@@ -258,3 +347,34 @@ pub fn memory_pressure_level() -> u8 {
 
     pressure
 }
+
+// ============================================================================
+// Address Space Management API
+// ============================================================================
+
+#[allow(unused_imports)]
+pub use address_space::{
+    // Core types
+    ProcessAddressSpace,
+    AddressSpaceManager,
+    AddressSpaceError,
+    AddressSpaceStats,
+    // Region types
+    MemoryRegion,
+    RegionType,
+    Protection as AddressSpaceProtection,
+    FileBackingInfo,
+    // Constants
+    USER_SPACE_START,
+    USER_SPACE_END,
+    KERNEL_SPACE_START,
+    DEFAULT_HEAP_START,
+    DEFAULT_STACK_TOP,
+    DEFAULT_MMAP_BASE,
+    // Global API
+    address_space_manager,
+    create_address_space,
+    destroy_address_space,
+    switch_address_space,
+    current_asid,
+};

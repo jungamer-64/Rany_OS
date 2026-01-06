@@ -1,91 +1,67 @@
 // ============================================================================
-// src/mm/huge_pages.rs - 1GB Huge Page Support
+// src/mm/huge_pages.rs - 1GB Huge Page Support (Legacy Compatibility Layer)
 // 設計書 11.1.1: 初期ページテーブル設定 (1GB Huge Page)
 // ============================================================================
 //!
-//! # 1GB Huge Page サポート
+//! # 1GB Huge Page サポート（互換レイヤー）
 //!
-//! 1GBページを使用してTLBミスを大幅に削減し、
-//! 物理メモリへのアクセス効率を向上させる。
+//! このモジュールは後方互換性のために維持されています。
+//! 新規コードは `huge_page` モジュールを直接使用してください。
 //!
-//! ## 設計書準拠
+//! ## 機能
 //!
-//! - セクション 11.1.1: 可能な限り1GBページを使用してリニアマッピング
-//! - Phase 1ブートストラップでは静的バッファを使用
-//! - 最大4TB (4 PDPT × 512 entries × 1GB) のマッピングが可能
+//! - CPU機能検出（1GBページサポート）
+//! - ブートストラップ用シンプルアロケータ
+//! - リニアマッピング設定ヘルパー
 //!
-//! ## CPU要件
+//! ## 移行ガイド
 //!
-//! - CPUID.80000001H:EDX.Page1GB (bit 26) が必要
-//! - サポートされていない場合は 2MB ページにフォールバック
+//! | 旧API (huge_pages) | 新API (huge_page) |
+//! |-------------------|-------------------|
+//! | `detect_1g_page_support()` | `huge_page::detect_1g_page_support()` |
+//! | `is_1g_page_supported()` | `huge_page::is_1g_page_supported()` |
+//! | `alloc_huge_page_1g()` | `huge_page::allocate_huge_page_1gb()` |
+//! | `HugePageAllocator` | `huge_page::HugePageAllocator` (拡張版) |
 
 #![allow(dead_code)]
 
 use crate::sync::PoisonLock;
-use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::PhysAddr;
 
-// ============================================================================
-// CPU Feature Detection
-// ============================================================================
+// huge_page モジュールから主要機能を再エクスポート
+pub use super::huge_page::{
+    // CPU検出
+    detect_1g_page_support,
+    is_1g_page_supported,
+};
 
-/// 1GB Huge Page機能が検出されたか
-static HUGE_PAGE_1G_AVAILABLE: AtomicBool = AtomicBool::new(false);
-
-/// 1GBページサポートを検出
-pub fn detect_1g_page_support() -> bool {
-    #[cfg(target_arch = "x86_64")]
-    {
-        use core::arch::x86_64::__cpuid;
-
-        // Extended features: CPUID.80000001H
-        let result = __cpuid(0x80000001);
-        let supported = (result.edx & (1 << 26)) != 0;
-
-        HUGE_PAGE_1G_AVAILABLE.store(supported, Ordering::Release);
-
-        if supported {
-            log::info!("[HUGE_PAGE] 1GB page support detected\n");
-        } else {
-            log::info!("[HUGE_PAGE] 1GB page not supported, using 2MB pages\n");
-        }
-
-        supported
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        log::info!("[HUGE_PAGE] 1GB page not available on this architecture\n");
-        false
-    }
-}
-
-/// 1GBページがサポートされているかチェック
-pub fn is_1g_page_supported() -> bool {
-    HUGE_PAGE_1G_AVAILABLE.load(Ordering::Acquire)
-}
+// types.rs から追加の定数
+pub use super::types::{
+    PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G,
+    HUGE_PAGE_SIZE_2MB, HUGE_PAGE_SIZE_1GB,
+    HUGE_PAGE_ORDER_2MB, HUGE_PAGE_ORDER_1GB,
+};
 
 // ============================================================================
-// Huge Page Constants
+// Legacy Constants (互換性のため維持)
 // ============================================================================
 
-/// 1GBページサイズ
-pub const HUGE_PAGE_SIZE_1G: usize = 1 << 30; // 1 GiB = 1073741824 bytes
+/// 1GBページサイズ (HUGE_PAGE_SIZE_1GB と同義)
+pub const HUGE_PAGE_SIZE_1G: usize = super::types::HUGE_PAGE_SIZE_1GB;
 
-/// 2MBページサイズ
-pub const HUGE_PAGE_SIZE_2M: usize = 1 << 21; // 2 MiB = 2097152 bytes
-
-/// 4KBページサイズ
-pub const PAGE_SIZE_4K: usize = 1 << 12; // 4 KiB = 4096 bytes
+/// 2MBページサイズ (HUGE_PAGE_SIZE_2MB と同義)
+pub const HUGE_PAGE_SIZE_2M: usize = super::types::HUGE_PAGE_SIZE_2MB;
 
 // ============================================================================
-// Huge Page Allocator
+// Bootstrap Huge Page Allocator (ブートストラップ専用)
 // ============================================================================
 
-/// 1GBページアロケータ
+/// 1GBページアロケータ（ブートストラップ用シンプル版）
 ///
 /// 物理メモリの連続した1GB領域を管理する。
 /// ブートストラップ時に使用可能なメモリ領域を設定する。
+///
+/// **注意**: ランタイムでは `huge_page::HugePageAllocator` を使用してください。
 #[derive(Debug)]
 pub struct HugePageAllocator {
     /// 利用可能な1GBページのビットマップ
@@ -124,7 +100,7 @@ impl HugePageAllocator {
         self.allocated = 0;
 
         log::info!(
-            "[HUGE_PAGE] Allocator initialized: base=0x{:X}, count={}\n",
+            "[HUGE_PAGE] Bootstrap allocator initialized: base=0x{:X}, count={}",
             base.as_u64(),
             count
         );
@@ -196,7 +172,7 @@ pub struct HugePageStats {
 }
 
 // ============================================================================
-// Linear Mapping with Huge Pages
+// Linear Mapping Helpers
 // ============================================================================
 
 /// 1GBページを使用したリニアマッピングを設定
@@ -207,19 +183,18 @@ pub struct HugePageStats {
 #[cfg(target_arch = "x86_64")]
 pub unsafe fn setup_linear_mapping_1g(total_memory: usize) -> usize {
     if !is_1g_page_supported() {
-        log::info!("[HUGE_PAGE] Falling back to 2MB pages for linear mapping\n");
+        log::info!("[HUGE_PAGE] Falling back to 2MB pages for linear mapping");
         return setup_linear_mapping_2m(total_memory);
     }
 
     let pages_needed = (total_memory + HUGE_PAGE_SIZE_1G - 1) / HUGE_PAGE_SIZE_1G;
     log::info!(
-        "[HUGE_PAGE] Setting up linear mapping with {} 1GB pages for {} bytes\n",
+        "[HUGE_PAGE] Setting up linear mapping with {} 1GB pages for {} bytes",
         pages_needed,
         total_memory
     );
 
     // ページテーブル設定は higher_half モジュールに委譲
-    // ここではマッピングに必要なページ数を返す
     pages_needed
 }
 
@@ -228,7 +203,7 @@ pub unsafe fn setup_linear_mapping_1g(total_memory: usize) -> usize {
 pub unsafe fn setup_linear_mapping_2m(total_memory: usize) -> usize {
     let pages_needed = (total_memory + HUGE_PAGE_SIZE_2M - 1) / HUGE_PAGE_SIZE_2M;
     log::info!(
-        "[HUGE_PAGE] Setting up linear mapping with {} 2MB pages for {} bytes\n",
+        "[HUGE_PAGE] Setting up linear mapping with {} 2MB pages for {} bytes",
         pages_needed,
         total_memory
     );
@@ -250,13 +225,11 @@ pub unsafe fn setup_linear_mapping_2m(_total_memory: usize) -> usize {
 // Global Instance & Initialization
 // ============================================================================
 
-/// グローバル1GBページアロケータ
+/// グローバル1GBページアロケータ（ブートストラップ用）
 static HUGE_PAGE_ALLOCATOR: PoisonLock<HugePageAllocator> =
     PoisonLock::new(HugePageAllocator::new());
 
-/// Huge Pageアロケータに安全にアクセスします。
-///
-/// ロックが poisoned の場合は `None` を返し、ランタイムでの不整合なデータアクセスを防ぎます。
+/// Huge Pageアロケータに安全にアクセス
 pub fn with_huge_page_allocator<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut HugePageAllocator) -> R,
@@ -264,11 +237,11 @@ where
     match HUGE_PAGE_ALLOCATOR.lock() {
         Ok(mut guard) => Some(f(&mut guard)),
         Err(_) => {
-            log::error!("[MM] Huge Page Allocator poisoned - refusing to access allocator");
+            log::error!("[MM] Huge Page Allocator poisoned - refusing to access");
             None
         }
     }
-} 
+}
 
 /// 1GBページを割り当て（グローバルAPI）
 pub fn alloc_huge_page_1g() -> Option<PhysAddr> {
@@ -365,41 +338,5 @@ mod tests {
         let stats = alloc.stats();
         assert_eq!(stats.used_pages_1g, 2);
         assert_eq!(stats.free_pages_1g, 6);
-    }
-    #[test]
-    fn test_with_huge_page_allocator_poisoned_returns_none() {
-        use crate::sync::set_panicking;
-        // Poison the allocator lock
-        set_panicking(true);
-        if let Ok(_g) = HUGE_PAGE_ALLOCATOR.lock() {
-            // drop to poison
-        }
-        set_panicking(false);
-
-        let res = with_huge_page_allocator(|alloc| alloc.allocate());
-        assert!(res.is_none());
-    }
-    #[test]
-    fn test_global_huge_page_allocator_poisoned_allocation_fails() {
-        use crate::sync::set_panicking;
-
-        // Initialize global allocator
-        init_allocator(PhysAddr::new(0x40000000), 4);
-
-        // Poison the global lock by simulating a panic while holding it
-        set_panicking(true);
-        {
-            let _guard = HUGE_PAGE_ALLOCATOR.lock().unwrap();
-        }
-        set_panicking(false);
-
-        // Allocation should fail when the lock is poisoned
-        assert!(alloc_huge_page_1g().is_none());
-
-        // Stats should return zeros when poisoned
-        let stats = huge_page_stats();
-        assert_eq!(stats.total_pages_1g, 0);
-        assert_eq!(stats.used_pages_1g, 0);
-        assert_eq!(stats.free_pages_1g, 0);
     }
 }

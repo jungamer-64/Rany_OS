@@ -364,3 +364,98 @@ pub fn get_total_stats() -> (u64, u64, u64) {
 
     (total_allocs, total_used, total_fallbacks)
 }
+
+// ============================================================================
+// RCU-Protected NUMA Topology Access
+// ============================================================================
+//
+// NUMAトポロジ情報は頻繁に参照されるが、更新は稀（ホットプラグ時のみ）。
+// RCUを使用することで、参照側はロックフリーになり、
+// ページフォールト処理などのクリティカルパスでの性能が向上する。
+//
+// ============================================================================
+
+use super::rcu::{rcu_read_lock, RcuReadGuard};
+
+/// RCU保護されたNUMAノード数の読み取り
+///
+/// ロックを取らずにノード数を取得する。
+/// ホットプラグによる更新中でも安全に読み取れる。
+#[inline]
+pub fn numa_node_count_rcu() -> usize {
+    // NUMA_ALLOCATOR.node_count は AtomicUsize なので
+    // ロックなしで読み取り可能
+    NUMA_ALLOCATOR_NODE_COUNT.load(Ordering::Acquire)
+}
+
+/// グローバルなノード数（ロックフリー参照用）
+static NUMA_ALLOCATOR_NODE_COUNT: AtomicUsize = AtomicUsize::new(1);
+
+/// ノード数を更新（初期化時に呼び出す）
+pub fn update_numa_node_count(count: usize) {
+    NUMA_ALLOCATOR_NODE_COUNT.store(count, Ordering::Release);
+}
+
+/// RCU保護されたCPU→ノードマッピングの読み取り
+///
+/// 指定されたCPU IDが属するNUMAノードIDを返す。
+/// ロックフリーで高速。
+#[inline]
+pub fn cpu_to_node_rcu(cpu_id: usize) -> Option<u8> {
+    // 事前に構築されたマッピングテーブルを参照
+    if cpu_id < CPU_TO_NODE_MAP.len() {
+        let node = CPU_TO_NODE_MAP[cpu_id].load(Ordering::Acquire);
+        if node != u8::MAX {
+            return Some(node);
+        }
+    }
+    None
+}
+
+/// CPU→ノードマッピングテーブル（ロックフリー参照用）
+/// u8::MAX = 未設定
+static CPU_TO_NODE_MAP: [core::sync::atomic::AtomicU8; 256] = {
+    const INIT: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(u8::MAX);
+    [INIT; 256]
+};
+
+/// CPU→ノードマッピングを更新
+pub fn set_cpu_to_node(cpu_id: usize, node_id: u8) {
+    if cpu_id < CPU_TO_NODE_MAP.len() {
+        CPU_TO_NODE_MAP[cpu_id].store(node_id, Ordering::Release);
+    }
+}
+
+/// 現在のCPUのNUMAノードIDをロックフリーで取得
+///
+/// GsBaseからCPU IDを取得し、マッピングテーブルを参照。
+/// ページフォールトハンドラなどの高頻度パスで使用。
+#[inline]
+pub fn current_numa_node_fast() -> Option<u8> {
+    if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+        cpu_to_node_rcu(cpu_id)
+    } else {
+        None
+    }
+}
+
+/// RCU読み取りセクション内でNUMAトポロジを参照
+///
+/// 複数の読み取りを行う場合、一度だけrcu_read_lockを取得し、
+/// そのガード内で全ての読み取りを行うことで効率化。
+///
+/// # Example
+/// ```ignore
+/// let topology = with_numa_topology_rcu(|guard| {
+///     let node_count = numa_node_count_rcu();
+///     let my_node = current_numa_node_fast();
+///     (node_count, my_node)
+/// });
+/// ```
+pub fn with_numa_topology_rcu<F, R>(f: F) -> R
+where
+    F: FnOnce(&RcuReadGuard) -> R,
+{
+    let guard = rcu_read_lock();
+    f(&guard)
+}

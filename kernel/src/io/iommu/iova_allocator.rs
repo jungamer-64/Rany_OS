@@ -1,0 +1,377 @@
+// ============================================================================
+// kernel/src/io/iommu/iova_allocator.rs - IOVA-Specific Allocator with Quarantine
+// ============================================================================
+//
+// DESIGN: This module implements the IOVA-specific allocator that wraps the generic
+// memory management `FastBitmapAllocator`. It adds:
+//
+// 1. **Per-CPU Quarantine**: Delayed reclamation for IOTLB consistency.
+//    Frees are not applied immediately but queued until the IOMMU IOTLB is invalidated.
+// 2. **Epoch Management**: Tracks IOTLB invalidation generations.
+//    Quarantined pages are only freed after the global epoch advances.
+// 3. **IOVA Granularity**: Strongly typed page sizes (4KB, 2MB, 1GB).
+//
+// ARCHITECTURE:
+//
+// ```text
+// ┌─────────────────────────────────────────────────────────────┐
+// │                       IovaAllocator                         │
+// │                                                             │
+// │  ┌──────────────────────┐   ┌────────────────────────────┐  │
+// │  │  Quarantine Layer    │   │      Epoch Manager         │  │
+// │  │ (Per-CPU Rings)      │   │ (Atomic Sequence Counter)  │  │
+// │  └──────────┬───────────┘   └──────────────┬─────────────┘  │
+// │             │ Free (Delayed)               │ Advance        │
+// │             ▼                              ▼                │
+// │  ┌────────────────────────────────────────────────────────┐ │
+// │  │             mm::FastBitmapAllocator                    │ │
+// │  │          (Generic Bitmap + Magazine)                   │ │
+// │  └────────────────────────────────────────────────────────┘ │
+// └─────────────────────────────────────────────────────────────┘
+// ```
+// ============================================================================
+
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use crate::sync::IrqMutex;
+
+use crate::mm::fast_allocator::{FastBitmapAllocator, PageGranularity};
+use crate::mm::remote_free::{QuarantineRing, QuarantineEntry}; // Using generic QuarantineRing
+use crate::mm::MAX_CPUS;
+
+use super::IommuError;
+
+/// Backward compatibility alias
+pub type IovaGranularity = PageGranularity;
+
+/// Default capacity for quarantine ring (must be power of 2)
+const QUARANTINE_CAPACITY: usize = 256;
+
+// ============================================================================
+// IovaAllocator
+// ============================================================================
+
+/// IOVA Allocator with Epoch-based Quarantine
+pub struct IovaAllocator {
+    /// Generic Fast Bitmap Allocator (providing core allocation/free logic)
+    inner: FastBitmapAllocator,
+
+    /// Per-CPU Quarantine Rings (delayed free queue)
+    /// Protected by IrqMutex to allow safe access from IRQ handlers
+    quarantines: Box<[IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>]>,
+
+    /// Current global epoch (incremented *before* IOTLB invalidation)
+    current_epoch: AtomicU32,
+
+    /// Last completed epoch (updated *after* IOTLB invalidation completes)
+    /// All quarantine entries with epoch <= completed_epoch are safe to free.
+    completed_epoch: AtomicU32,
+
+    // Statistics
+    stats: IovaAllocatorStats,
+}
+
+/// IOVA Allocator Statistics
+#[derive(Debug, Default)]
+pub struct IovaAllocatorStats {
+    pub quarantine_pushes: AtomicU64,
+    pub quarantine_drains: AtomicU64,
+    pub quarantine_forced_drains: AtomicU64,
+}
+
+impl IovaAllocator {
+    /// Create a new IOVA Allocator
+    ///
+    /// # Arguments
+    /// * `base` - Base IOVA address (must be 4KB aligned)
+    /// * `size` - Size of the IOVA space (bytes)
+    pub fn new(base: u64, size: u64) -> Self {
+        // Initialize Inner Allocator
+        let inner = FastBitmapAllocator::new(base, size);
+
+        // Initialize Per-CPU Quarantine Rings
+        let mut quarantines = Vec::with_capacity(MAX_CPUS);
+        for _ in 0..MAX_CPUS {
+            quarantines.push(IrqMutex::new(QuarantineRing::new()));
+        }
+
+        Self {
+            inner,
+            quarantines: quarantines.into_boxed_slice(),
+            current_epoch: AtomicU32::new(0),
+            completed_epoch: AtomicU32::new(0),
+            stats: IovaAllocatorStats::default(),
+        }
+    }
+
+    /// Configure arenas for specific CPU IDs (NUMA awareness)
+    pub fn configure_arenas_for_cpu_ids(&mut self, cpu_ids: &[usize]) {
+        self.inner.reconfigure_for_cpu_ids(cpu_ids);
+    }
+
+    /// Enable single-writer arena optimizations
+    pub fn enable_single_writer_arenas(&self) {
+        self.inner.enable_single_writer_arenas();
+    }
+
+    // ========================================================================
+    // Allocation API (Delegated to FastBitmapAllocator)
+    // ========================================================================
+
+    /// Allocate a 4KB page
+    #[inline]
+    pub fn allocate_4k(&self) -> Option<u64> {
+        self.inner.allocate_4k()
+    }
+
+    /// Allocate a 2MB huge page
+    #[inline]
+    pub fn allocate_2m(&self) -> Option<u64> {
+        self.inner.allocate_2m()
+    }
+
+    /// Allocate a 1GB huge page
+    #[inline]
+    pub fn allocate_1g(&self) -> Option<u64> {
+        self.inner.allocate_1g()
+    }
+
+    /// Allocate a contiguous range
+    #[inline]
+    pub fn allocate_contiguous(&self, size: u64, align: u64) -> Option<u64> {
+        self.inner.allocate_contiguous(size, align)
+    }
+
+    /// Allocate with granularity (Backward Compatibility)
+    #[inline]
+    pub fn allocate(&self, size: u64, granularity: IovaGranularity) -> Option<u64> {
+        if size != granularity.size_bytes() {
+            return None;
+        }
+        match granularity {
+            PageGranularity::Page4K => self.allocate_4k(),
+            PageGranularity::Page2M => self.allocate_2m(),
+            PageGranularity::Page1G => self.allocate_1g(),
+        }
+    }
+
+    /// Get base address
+    #[inline]
+    pub fn base(&self) -> u64 {
+        self.inner.base()
+    }
+
+    /// Get total size
+    #[inline]
+    pub fn size(&self) -> u64 {
+        self.inner.size()
+    }
+
+    /// Reserve a range of addresses
+    pub fn reserve(&self, start: u64, size: u64) -> Result<(), IommuError> {
+        self.inner.reserve(start, size)
+            .map_err(|_| IommuError::InvalidAddress)
+    }
+
+    // ========================================================================
+    // Deallocation API (With Quarantine)
+    // ========================================================================
+
+    /// Free a page/block with delayed reclamation (Quarantine)
+    ///
+    /// Use this for normal IOVA unmapping. The IOVA will be added to the
+    /// current CPU's quarantine ring stamped with the current epoch.
+    pub fn free_with_granularity(&self, addr: u64, granularity: PageGranularity) -> Result<(), IommuError> {
+        let cpu_id = crate::mm::try_current_cpu_id().unwrap_or(0);
+        
+        // Ensure CPU ID is valid
+        if cpu_id >= MAX_CPUS {
+            // Fallback for invalid CPU ID: behave as immediate free? 
+            // Or just use CPU 0. Let's use CPU 0 for safety but this shouldn't happen.
+            return self.free_immediate(addr, granularity);
+        }
+
+        let epoch = self.current_epoch.load(Ordering::Relaxed);
+        let entry = QuarantineEntry {
+            addr,
+            epoch,
+            size_class: match granularity {
+                PageGranularity::Page4K => 0,
+                PageGranularity::Page2M => 1,
+                PageGranularity::Page1G => 2,
+            },
+        };
+
+        // Try to push to quarantine ring
+        let pushed = {
+            let mut ring = self.quarantines[cpu_id].lock();
+            ring.push(entry.addr, entry.size_class, entry.epoch)
+        };
+
+        if pushed {
+            self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        } else {
+            // Ring full: Force drain this ring to make space, then try push again
+            // This is a "forced drain" - potentially expensive but prevents failure
+            self.drain_quarantine_for_cpu(cpu_id, true);
+            self.stats.quarantine_forced_drains.fetch_add(1, Ordering::Relaxed);
+
+            // Retry push
+            let mut ring = self.quarantines[cpu_id].lock();
+            if ring.push(entry.addr, entry.size_class, entry.epoch) {
+                 self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
+                 Ok(())
+            } else {
+                // Still full after drain? This is bad. Fallback to immediate free.
+                // NOTE: Immediate free bypasses quarantine safety! 
+                // Only safe if we assume IOTLB flush happens immediately after this call (which it usually doesn't).
+                // But dropping the free is worse (leak).
+                // A better approach might be to wait/spin, but we are in kernel context.
+                self.inner.free_immediate(addr, granularity)
+                    .map_err(|_| IommuError::NotMapped)
+            }
+        }
+    }
+
+    /// Free an IOVA range (splits into granularity blocks)
+    pub fn free(&self, mut addr: u64, mut size: u64) -> Result<(), IommuError> {
+        use crate::mm::fast_allocator::{PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+        
+        // Ensure alignment
+        if addr % PAGE_SIZE_4K != 0 || size % PAGE_SIZE_4K != 0 {
+             return Err(IommuError::InvalidAlignment);
+        }
+
+        while size > 0 {
+            if size >= PAGE_SIZE_1G && addr % PAGE_SIZE_1G == 0 {
+                self.free_with_granularity(addr, PageGranularity::Page1G)?;
+                addr += PAGE_SIZE_1G;
+                size -= PAGE_SIZE_1G;
+            } else if size >= PAGE_SIZE_2M && addr % PAGE_SIZE_2M == 0 {
+                self.free_with_granularity(addr, PageGranularity::Page2M)?;
+                addr += PAGE_SIZE_2M;
+                size -= PAGE_SIZE_2M;
+            } else {
+                self.free_with_granularity(addr, PageGranularity::Page4K)?;
+                addr += PAGE_SIZE_4K;
+                size -= PAGE_SIZE_4K;
+            }
+        }
+        Ok(())
+    }
+
+    /// Allocate within a limit (e.g. 32-bit address space)
+    pub fn allocate_with_limit(&self, size: u64, granularity: IovaGranularity, limit: u64) -> Option<u64> {
+        // TODO: Implement proper top-down allocation or limit checking in FastBitmapAllocator
+        // For now, we optimistically allocate and check result.
+        // This is safe but might fail if memory is fragmented or high.
+        
+        let addr = self.allocate(size, granularity)?;
+        if addr + size <= limit + 1 {
+            Some(addr)
+        } else {
+            // Allocated address is too high.
+             let _ = self.free_with_granularity(addr, granularity);
+             None
+        }
+    }
+
+    /// Free immediately (Bypass Quarantine)
+    ///
+    /// Use this only during initialization or teardown when no IOTLB caching is active.
+    pub fn free_immediate(&self, addr: u64, granularity: PageGranularity) -> Result<(), IommuError> {
+        self.inner.free_immediate(addr, granularity)
+            .map_err(|_| IommuError::NotMapped)
+    }
+
+    // ========================================================================
+    // Epoch / Quarantine Management
+    // ========================================================================
+
+    /// Advance the global epoch (Start of IOTLB Invalidation)
+    ///
+    /// Call this *before* issuing IOTLB invalidation commands.
+    /// Returns the new epoch value.
+    pub fn advance_epoch(&self) -> u32 {
+        self.current_epoch.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// Complete an epoch (End of IOTLB Invalidation)
+    ///
+    /// Call this *after* generic IOTLB invalidation completion is confirmed.
+    /// This allows quarantined items from `epoch` to be freed.
+    pub fn complete_epoch(&self, epoch: u32) {
+        // Monotonic update: only forward
+        let _ = self.completed_epoch.fetch_max(epoch, Ordering::Release);
+        
+        // Opportunistic drain: Try to reclaim memory from current CPU's ring
+        if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+             if cpu_id < MAX_CPUS {
+                 self.drain_quarantine_for_cpu(cpu_id, false);
+             }
+        }
+    }
+
+    /// Drain quarantine ring for a specific CPU
+    ///
+    /// Reclaims pages that have been safe-guarded long enough.
+    fn drain_quarantine_for_cpu(&self, cpu_id: usize, force: bool) {
+        let completed_epoch = self.completed_epoch.load(Ordering::Acquire);
+        
+        // We use a small on-stack buffer to batch frees
+        // This minimizes lock hold time on the quarantine ring
+        let mut entries = [QuarantineEntry::default(); 32];
+        
+        loop {
+            let count = {
+                let mut ring = self.quarantines[cpu_id].lock();
+                if force {
+                    // In force mode, we just take the oldest items regardless of epoch
+                    // WARNING: potentially unsafe for IOTLB, but prevents OOM/deadlock
+                     ring.drain_all(&mut entries)
+                } else {
+                     ring.drain_older_than(completed_epoch, entries.len(), &mut entries)
+                }
+            };
+
+            if count == 0 {
+                break;
+            }
+
+            // Process batch free outside the lock
+            for i in 0..count {
+                let entry = entries[i];
+                let granularity = match entry.size_class {
+                    0 => PageGranularity::Page4K,
+                    1 => PageGranularity::Page2M,
+                    2 => PageGranularity::Page1G,
+                    _ => PageGranularity::Page4K,
+                };
+                
+                // Free to the underlying allocator
+                let _ = self.inner.free_immediate(entry.addr, granularity);
+            }
+            
+            self.stats.quarantine_drains.fetch_add(count as u64, Ordering::Relaxed);
+            
+            if count < entries.len() {
+                break; // Ring drained enough
+            }
+        }
+    }
+
+    /// Per-CPU maintenance (call periodically, e.g. from timer or idle loop)
+    pub fn poll(&self) {
+        // Drain remote frees (cross-CPU frees)
+        self.inner.drain_remote_frees();
+
+        // Drain quarantine if needed
+        if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+            if cpu_id < MAX_CPUS {
+                 self.drain_quarantine_for_cpu(cpu_id, false);
+            }
+        }
+    }
+}
