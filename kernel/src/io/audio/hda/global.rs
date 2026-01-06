@@ -26,8 +26,9 @@ use hda_driver::hda::HdaController;
 // ============================================================================
 
 /// HDA 割り込みベクタ番号
+/// HDA 割り込みベクタ番号
 /// PCI デバイスの interrupt_line から動的に決定される
-static HDA_IRQ: AtomicU8 = AtomicU8::new(0);
+pub(crate) static HDA_IRQ: AtomicU8 = AtomicU8::new(0);
 
 /// HDA 割り込み発生カウンタ（デバッグ用）
 static HDA_INTERRUPT_COUNT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
@@ -39,7 +40,7 @@ static HDA_INTERRUPT_PENDING: AtomicBool = AtomicBool::new(false);
 // Global HDA Driver Instance
 // ============================================================================
 
-static HDA_DRIVER: Mutex<Option<HdaController>> = Mutex::new(None);
+pub(crate) static HDA_DRIVER: Mutex<Option<HdaController>> = Mutex::new(None);
 
 /// Initialize the HDA driver
 pub fn init() -> HdaResult<()> {

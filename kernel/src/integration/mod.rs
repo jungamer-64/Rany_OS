@@ -295,16 +295,22 @@ impl SystemIntegration {
                         let bar0_virt =
                             crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
                                 .as_u64();
-                        unsafe {
-                            match crate::io::virtio::init_virtio_blk_for_device(
-                                bar0_virt,
-                                iommu_device,
-                            ) {
-                                Ok(()) => self.log("    VirtIO-blk driver initialized"),
-                                Err(e) => {
-                                    self.log(&alloc::format!("    VirtIO-blk init failed: {:?}", e))
+
+                        // Register Driver via DriverRegistry
+                        use alloc::boxed::Box;
+                        use crate::driver_registry::{register_driver, driver_registry};
+                        use crate::io::virtio::VirtioBlkDriver;
+
+                        let drv = Box::new(VirtioBlkDriver::new(bar0_virt, iommu_device));
+                        match register_driver(drv) {
+                            Ok(handle) => {
+                                if let Err(e) = driver_registry().probe_and_start(handle) {
+                                    self.log(&alloc::format!("    VirtIO-blk driver start failed: {:?}", e));
+                                } else {
+                                    self.log("    VirtIO-blk driver initialized via DriverRegistry");
                                 }
                             }
+                            Err(e) => self.log(&alloc::format!("    VirtIO-blk driver registration failed: {:?}", e)),
                         }
                     } else {
                         self.log("    VirtIO-blk found but BAR0 is missing, skipping init");
@@ -334,14 +340,22 @@ impl SystemIntegration {
                         let bar0_virt =
                             crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
                                 .as_u64();
-                        match crate::io::virtio::init_virtio_net_for_device(
-                            bar0_virt as usize,
-                            iommu_device,
-                        ) {
-                            Ok(()) => self.log("    VirtIO-net driver initialized"),
-                            Err(e) => {
-                                self.log(&alloc::format!("    VirtIO-net init failed: {:?}", e))
+
+                        // Register Driver via DriverRegistry
+                        use alloc::boxed::Box;
+                        use crate::driver_registry::{register_driver, driver_registry};
+                        use crate::net::driver::VirtioNetDriver;
+
+                        let drv = Box::new(VirtioNetDriver::new_with_device(bar0_virt as u64, iommu_device));
+                        match register_driver(drv) {
+                            Ok(handle) => {
+                                if let Err(e) = driver_registry().probe_and_start(handle) {
+                                    self.log(&alloc::format!("    VirtIO-net driver start failed: {:?}", e));
+                                } else {
+                                    self.log("    VirtIO-net driver initialized via DriverRegistry");
+                                }
                             }
+                            Err(e) => self.log(&alloc::format!("    VirtIO-net driver registration failed: {:?}", e)),
                         }
                     } else {
                         self.log("    VirtIO-net found but BAR0 is missing, skipping init");
@@ -363,6 +377,43 @@ impl SystemIntegration {
             register_pci_dma_width(&dev, 64);
             dev.enable_bus_master();
             dev.enable_memory_space();
+        }
+
+        // Initialize HDA Audio
+        let hda_devices = crate::io::pci::find_by_class(0x04, 0x03);
+        for dev in hda_devices {
+             self.log(&alloc::format!(
+                "  Initializing HDA Audio at {:02x}:{:02x}.{}",
+                dev.bdf.bus(),
+                dev.bdf.device(),
+                dev.bdf.function()
+            ));
+
+            dev.enable_bus_master();
+            dev.enable_memory_space();
+
+            if let Some(bar0) = dev.bars[0] {
+                 let bar0_phys = bar0.base();
+                 let bar0_virt = crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys)).as_u64();
+                 
+                 use crate::io::audio::hda::HdaDriver;
+                 use crate::driver_registry::{register_driver, driver_registry};
+                 use alloc::boxed::Box;
+
+                 let drv = Box::new(HdaDriver::new(dev, bar0_virt));
+                 match register_driver(drv) {
+                     Ok(handle) => {
+                         if let Err(e) = driver_registry().probe_and_start(handle) {
+                             self.log(&alloc::format!("    HDA driver start failed: {:?}", e));
+                         } else {
+                             self.log("    HDA driver initialized via DriverRegistry");
+                         }
+                     }
+                     Err(e) => self.log(&alloc::format!("    HDA driver registration failed: {:?}", e)),
+                 }
+            } else {
+                self.log("    HDA device found but BAR0 is missing");
+            }
         }
 
         self.status = IntegrationStatus::DevicesInitialized;

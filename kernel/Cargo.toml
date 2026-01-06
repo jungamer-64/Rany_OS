@@ -125,6 +125,11 @@ pkey_integration_test = []
 # Feature to enable running integration tests at boot (CI/e2e)
 run-integration-tests = []
 
+# Opt-in feature to compile the full `mm` tree for running mm-level unit tests
+# directly under `cargo test --features full_mm_tests`. This avoids pulling
+# the heavy memory subsystem by default into the library test harness.
+full_mm_tests = []
+
 std = ["hal/std"]
 
 
