@@ -1583,3 +1583,38 @@ pub fn is_global_dma_mapping_allowed() -> bool {
     ALLOW_GLOBAL_MAPPINGS.load(Ordering::Acquire)
 }
 
+// ============================================================================
+// Security Notifier Registration
+// ============================================================================
+
+// use alloc::sync::Arc; // Already imported at top
+use spin::RwLock;
+
+static SECURITY_NOTIFIER: RwLock<Option<Arc<dyn SecurityNotifier>>> = RwLock::new(None);
+
+/// Register a custom security event notifier.
+///
+/// This allows higher-level subsystems (like the Exoshell or Userspace Monitor)
+/// to receive and log IOMMU security events.
+///
+/// Returns:
+/// - `Ok(true)` if registered successfully
+/// - `Ok(false)` if a notifier was already registered (no-op)
+/// - `Err` if registration failed (not used currently, but reserved)
+pub fn set_security_notifier(notifier: Arc<dyn SecurityNotifier>) -> Result<bool, IommuError> {
+    let mut lock = SECURITY_NOTIFIER.write();
+    if lock.is_some() {
+        return Ok(false);
+    }
+    *lock = Some(notifier);
+    Ok(true)
+}
+
+/// Notify the registered security listener (if any)
+pub(crate) fn notify_security_listener(event: SecurityEvent) {
+    if let Some(notifier) = SECURITY_NOTIFIER.read().as_ref() {
+        notifier.notify(event);
+    }
+}
+
+

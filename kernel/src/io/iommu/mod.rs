@@ -25,7 +25,7 @@ pub use self::types::{DeviceId, IommuError};
 
 // Benchmark exports (only available with "bench" feature)
 #[cfg(feature = "bench")]
-pub use iova_bitmap::{IovaBitmap, IovaBitmapV2, IovaAllocatorSimple};
+// pub use iova_bitmap::{IovaBitmap, IovaBitmapV2, IovaAllocatorSimple};
 
 // Internal modules (crate-visible)
 pub(crate) mod cache;
@@ -37,7 +37,7 @@ pub(crate) mod flush;
 pub(crate) mod groups;
 pub(crate) mod interface;
 
-pub(crate) mod iova_bitmap; // Keep module implementation for now (contains constants)
+// pub(crate) mod iova_bitmap; // Keep module implementation for now (contains constants)
 // pub(crate) use iova_bitmap::PAGE_SIZE_4K;
 pub(crate) use crate::mm::fast_allocator::PAGE_SIZE_4K;
 
