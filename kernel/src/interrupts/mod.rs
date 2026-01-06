@@ -77,7 +77,7 @@ pub enum InterruptVector {
 fn init_idt() {
     crate::io::log::early_print("[IDT] init\n");
 
-    unsafe {
+    let idt = unsafe {
         let idt_ptr = (*IDT_CONTAINER.0.get()).as_mut_ptr();
 
         // IDTをゼロクリア（大きなstructなので慎重に）
@@ -92,7 +92,8 @@ fn init_idt() {
 
         // IDTはすでにゼロ初期化されているので、ハンドラだけ設定
         // InterruptDescriptorTable::new()を呼ばずに直接設定
-        let idt = &mut *(idt_ptr as *mut InterruptDescriptorTable);
+        &mut *(idt_ptr as *mut InterruptDescriptorTable)
+    };
 
         crate::io::log::early_print("[IDT] handlers\n");
 
@@ -115,12 +116,14 @@ fn init_idt() {
         ));
 
         // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
-        idt.double_fault
-            .set_handler_fn(handler_to_x86!(
-                exceptions::double_fault_handler
-                    as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !
-            ))
-            .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        unsafe {
+            idt.double_fault
+                .set_handler_fn(handler_to_x86!(
+                    exceptions::double_fault_handler
+                        as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !
+                ))
+                .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
+        }
 
         idt.general_protection_fault.set_handler_fn(handler_to_x86!(
             exceptions::general_protection_fault_handler
@@ -203,7 +206,7 @@ fn init_idt() {
         // IDTをロード
         idt.load();
         crate::io::log::early_print("[IDT] done\n");
-    }
+
 }
 
 // ============================================================================

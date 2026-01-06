@@ -221,7 +221,7 @@ pub fn init_erms() {
     #[cfg(target_arch = "x86_64")]
     {
         // CPUID.07H:EBX.ERMS[bit 9]をチェック
-        let cpuid_result = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
+        let cpuid_result = core::arch::x86_64::__cpuid_count(7, 0);
         let erms_supported = (cpuid_result.ebx >> 9) & 1 != 0;
         ERMS_AVAILABLE.store(erms_supported, Ordering::Release);
     }

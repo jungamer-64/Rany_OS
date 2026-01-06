@@ -77,12 +77,12 @@ mod simd_support {
         #[cfg(target_arch = "x86_64")]
         {
             // CPUID.01H:ECX.SSE4_2[bit 20]
-            let cpuid1 = unsafe { core::arch::x86_64::__cpuid(1) };
+            let cpuid1 = core::arch::x86_64::__cpuid(1);
             let sse42 = (cpuid1.ecx >> 20) & 1 != 0;
             SSE42_AVAILABLE.store(sse42, Ordering::Release);
             
             // CPUID.07H:EBX.AVX2[bit 5]
-            let cpuid7 = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
+            let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
             let avx2 = (cpuid7.ebx >> 5) & 1 != 0;
             AVX2_AVAILABLE.store(avx2, Ordering::Release);
         }

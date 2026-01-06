@@ -2723,6 +2723,7 @@ pub unsafe fn init_iommu_from_ivrs(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::io::iommu::iova_allocator::IovaAllocator;
 
     fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         let unit = AmdIommuUnit {
@@ -2746,11 +2747,10 @@ mod tests {
             next_domain_id: AtomicU64::new(1),
             page_table_pool: PageTablePool::new(1, 1),
             command_queue: None,
-            iova_allocator: PoisonLock::new(IovaAllocator::new(
-                crate::io::iommu::iova_allocator::PAGE_SIZE_4K,
-                (1u64 << AMD_DEFAULT_MAX_ADDR_BITS)
-                    .saturating_sub(crate::io::iommu::iova_allocator::PAGE_SIZE_4K),
-            )),
+            iova_allocator: IovaAllocatorFast::new(
+                PAGE_SIZE_4K as u64,
+                (1u64 << AMD_DEFAULT_MAX_ADDR_BITS).saturating_sub(PAGE_SIZE_4K as u64),
+            ),
             enabled: AtomicBool::new(false),
             security_notifier: spin::Once::new(),
         }
@@ -2898,9 +2898,9 @@ mod tests {
         map_ivmd_ranges(&domain, &ranges).expect("map ivmd ranges");
 
         let mappings = domain.mappings_snapshot();
-        assert!(mappings.contains_key(&0x1000));
-        assert!(mappings.contains_key(&0x3000));
-        assert!(!mappings.contains_key(&0x2000));
+        assert!(mappings.iter().any(|m| m.iova == 0x1000));
+        assert!(mappings.iter().any(|m| m.iova == 0x3000));
+        assert!(!mappings.iter().any(|m| m.iova == 0x2000));
         assert_eq!(mappings.len(), 2);
     }
 

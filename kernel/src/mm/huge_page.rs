@@ -53,7 +53,7 @@ pub fn detect_1g_page_support() -> bool {
         use core::arch::x86_64::__cpuid;
 
         // Extended features: CPUID.80000001H
-        let result = unsafe { __cpuid(0x80000001) };
+        let result = __cpuid(0x80000001);
         let supported = (result.edx & (1 << 26)) != 0;
 
         HUGE_PAGE_1G_AVAILABLE.store(supported, Ordering::Release);

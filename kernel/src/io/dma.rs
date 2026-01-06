@@ -682,7 +682,7 @@ static SUPPORTS_CLWB: AtomicBool = AtomicBool::new(false);
 pub fn init_cache_features() {
     // CPUID.07H:EBX.CLFLUSHOPT[bit 23]
     // CPUID.07H:EBX.CLWB[bit 24]
-    let result = unsafe { core::arch::x86_64::__cpuid_count(0x07, 0) };
+    let result = core::arch::x86_64::__cpuid_count(0x07, 0);
     SUPPORTS_CLFLUSHOPT.store((result.ebx & (1 << 23)) != 0, Ordering::Relaxed);
     SUPPORTS_CLWB.store((result.ebx & (1 << 24)) != 0, Ordering::Relaxed);
 }
