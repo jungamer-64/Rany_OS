@@ -91,6 +91,12 @@ mod test_impl {
     static TEST_WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
     static TEST_WORKER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
+    // Token-bucket backpressure (test)
+    const TEST_TOKEN_CAPACITY: usize = QUEUE_CAPACITY / 4; // burst capacity for anon entries
+    const TEST_REFILL_PER_BATCH: usize = BATCH_SIZE / 2; // tokens added per processed batch
+
+    static TEST_TOKENS: AtomicUsize = AtomicUsize::new(TEST_TOKEN_CAPACITY);
+
     struct WorkerInner {
         queue: StdMutex<VecDeque<SwapEntry>>,
         pending: StdMutex<BTreeSet<usize>>,
@@ -192,6 +198,20 @@ mod test_impl {
                             std::thread::sleep(std::time::Duration::from_millis(d));
                         }
                     }
+
+                    // Refill token bucket after processing batch
+                    {
+                        let add = TEST_REFILL_PER_BATCH;
+                        loop {
+                            let cur = TEST_TOKENS.load(Ordering::Acquire);
+                            if cur >= TEST_TOKEN_CAPACITY { break; }
+                            let new = (cur + add).min(TEST_TOKEN_CAPACITY);
+                            match TEST_TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
+                                Ok(_) => break,
+                                Err(_) => continue,
+                            }
+                        }
+                    }
                 }
 
                 TEST_WORKER_RUNNING.store(false, Ordering::Release);
@@ -230,6 +250,22 @@ mod test_impl {
 
             let completion = Arc::new((StdMutex::new(false), Condvar::new()));
             let entry = SwapEntry { frame, kind, completion: completion.clone() };
+
+            // Consume a token for anon entries
+            if let SwapKind::Anon = entry.kind {
+                let mut cur = TEST_TOKENS.load(Ordering::Acquire);
+                loop {
+                    if cur == 0 {
+                        // rollback pending and fail fast
+                        worker.pending.lock().unwrap().remove(&frame.as_usize());
+                        return Err(SwapError::QueueFull);
+                    }
+                    match TEST_TOKENS.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire) {
+                        Ok(_) => break,
+                        Err(c) => cur = c,
+                    }
+                }
+            }
 
             if let SwapKind::File { .. } = entry.kind {
                 TEST_FILE_QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
@@ -300,18 +336,46 @@ mod test_impl {
     pub fn is_worker_running() -> bool {
         TEST_WORKER_RUNNING.load(Ordering::Acquire)
     }
+
+    #[cfg(test)]
+    pub fn _token_count() -> usize {
+        TEST_TOKENS.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn set_tokens(n: usize) {
+        TEST_TOKENS.store(n.min(TEST_TOKEN_CAPACITY), Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub fn add_tokens(n: usize) {
+        loop {
+            let cur = TEST_TOKENS.load(Ordering::Acquire);
+            if cur >= TEST_TOKEN_CAPACITY { break; }
+            let new = (cur + n).min(TEST_TOKEN_CAPACITY);
+            match TEST_TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn token_capacity() -> usize {
+        TEST_TOKEN_CAPACITY
+    }
 } 
 
 // カーネル向け実装: 永続ワーカ（non-test）
 #[cfg(not(test))]
 mod kernel_impl {
     use super::*;
-    use alloc::collections::BTreeSet;
     use alloc::vec::Vec;
     use spin::{Once, Mutex};
     use crate::sync::lockfree::{BoundedChannel, BoundedSender, BoundedReceiver};
     use crate::sync::AtomicWaker;
     use crate::task::Task;
+    use crate::mm::page_flags::{self, PageFlags};
 
     // Channel capacity and batch size tunables
     const CHANNEL_SIZE: usize = 1024;
@@ -326,15 +390,17 @@ mod kernel_impl {
     // Static channel (initialized once)
     static CHANNEL_ONCE: Once<Option<(BoundedSender<SwapEntryKernel, CHANNEL_SIZE>, BoundedReceiver<SwapEntryKernel, CHANNEL_SIZE>)>> = Once::new();
 
-    // Pending set to avoid duplicate enqueues
-    static PENDING: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+    // Pending set is replaced by GlobalPageFlags
 
     // Queue occupancy counters (for reservation of file slots)
     use core::sync::atomic::{AtomicUsize, Ordering};
     static QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
     static FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
     const RESERVED_FILE_SLOTS: usize = CHANNEL_SIZE / 8; // reserve ~12.5% for file writes
-
+    // Token-bucket backpressure
+    const TOKEN_BUCKET_CAPACITY: usize = CHANNEL_SIZE / 4; // anonymous burst capacity
+    const TOKEN_REFILL_PER_BATCH: usize = BATCH_SIZE / 2;
+    static TOKENS: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
     // Worker waker and running flags
     static WORKER_WAKER: AtomicWaker = AtomicWaker::new();
     static WORKER_RUNNING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -447,8 +513,8 @@ mod kernel_impl {
                             }
                         }
 
-                        // Remove pending and update queue counters
-                        PENDING.lock().remove(&entry.frame.as_usize());
+                        // Remove pending flag and update queue counters
+                        page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
                         QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
                         FILE_QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel); // safe to decrement even if zero due to caller correctness
                     }
@@ -467,7 +533,7 @@ mod kernel_impl {
                             buddy_allocator::buddy_dealloc_frame(physf);
                         }
 
-                        PENDING.lock().remove(&entry.frame.as_usize());
+                        page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
                         QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
                     }
                 }
@@ -496,50 +562,64 @@ mod kernel_impl {
             return Err(SwapError::NotSupported);
         }
 
-        // Fast-path: try to acquire pending lock (non-blocking)
-        if let Some(mut pending) = PENDING.try_lock() {
-            if pending.contains(&frame.as_usize()) {
-                return Err(SwapError::AlreadyPending);
+        // Fast-path: try to set pending flag (atomic)
+        if page_flags::test_and_set_flag(frame, PageFlags::SwapPending) {
+             // Already set
+             return Err(SwapError::AlreadyPending);
+        }
+
+        // Check sender capacity
+        if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+            let sender = &ch.0;
+            if sender.is_full() {
+                page_flags::clear_flag(frame, PageFlags::SwapPending);
+                return Err(SwapError::QueueFull);
             }
 
-            // Check sender capacity
-            if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
-                let sender = &ch.0;
-                if sender.is_full() {
+            // Enforce strict reservation for file writes: keep RESERVED_FILE_SLOTS free for file entries
+            if let SwapKind::Anon = kind {
+                let total = QUEUE_COUNT.load(Ordering::Acquire);
+                let free_slots = CHANNEL_SIZE.saturating_sub(total);
+                if free_slots <= RESERVED_FILE_SLOTS {
+                    // reserve slots for file writes — anon enqueues fail fast
+                    page_flags::clear_flag(frame, PageFlags::SwapPending);
                     return Err(SwapError::QueueFull);
                 }
+            }
 
-                // Enforce strict reservation for file writes: keep RESERVED_FILE_SLOTS free for file entries
-                if let SwapKind::Anon = kind {
-                    let total = QUEUE_COUNT.load(Ordering::Acquire);
-                    let free_slots = CHANNEL_SIZE.saturating_sub(total);
-                    if free_slots <= RESERVED_FILE_SLOTS {
-                        // reserve slots for file writes — anon enqueues fail fast
-                        return Err(SwapError::QueueFull);
-                    }
+            // Token-bucket consumption for anon entries
+            let mut token_consumed = false;
+            if let SwapKind::Anon = kind {
+                if !try_consume_token() {
+                    page_flags::clear_flag(frame, PageFlags::SwapPending);
+                    return Err(SwapError::QueueFull);
                 }
+                token_consumed = true;
+            }
 
-                match sender.send(SwapEntryKernel { frame, kind }) {
-                    Ok(()) => {
-                        // Update counters
-                        QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
-                        if let SwapKind::File { .. } = kind {
-                            FILE_QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
-                        }
-
-                        pending.insert(frame.as_usize());
-                        // Wake the worker
-                        WORKER_WAKER.wake();
-                        Ok(super::SwapHandle {})
+            match sender.send(SwapEntryKernel { frame, kind }) {
+                Ok(()) => {
+                    // Update counters
+                    QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
+                    if let SwapKind::File { .. } = kind {
+                        FILE_QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
                     }
-                    Err(_v) => Err(SwapError::QueueFull),
+
+                    // Wake the worker
+                    WORKER_WAKER.wake();
+                    Ok(super::SwapHandle {})
                 }
-            } else {
-                Err(SwapError::NotSupported)
+                Err(_v) => {
+                    if token_consumed {
+                        add_tokens(1);
+                    }
+                    page_flags::clear_flag(frame, PageFlags::SwapPending);
+                    Err(SwapError::QueueFull)
+                }
             }
         } else {
-            // Contention: fail fast
-            Err(SwapError::QueueFull)
+            page_flags::clear_flag(frame, PageFlags::SwapPending);
+            Err(SwapError::NotSupported)
         }
     }
 
@@ -929,4 +1009,251 @@ mod tests {
         // Ensure backing removed (if any)
         assert!(crate::mm::memcg::memcg_get_page_info(frame_idx).is_none());
     }
+
+    #[test]
+    fn test_token_bucket_exhaustion_and_refill() {
+        // Ensure worker controlled
+        stop_worker();
+        for _ in 0..20 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        // Set tokens to zero to simulate exhaustion
+        test_impl::set_tokens(0);
+
+        // allocate a frame
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+        // Ensure anon enqueue fails
+        let err = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect_err("should be QueueFull due to tokens");
+        assert_eq!(err, SwapError::QueueFull);
+
+        // Add one token and try again
+        test_impl::add_tokens(1);
+
+        // Start worker to allow processing
+        start_worker();
+
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        h.wait();
+
+        // cleanup: restore tokens to capacity
+        test_impl::set_tokens(test_impl::token_capacity());
+
+        // stop worker
+        stop_worker();
+    }
+
+    #[test]
+    fn test_token_refill_on_processing() {
+        // Stop worker to control processing
+        stop_worker();
+        for _ in 0..20 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        // Set tokens to zero
+        test_impl::set_tokens(0);
+
+        // Enqueue a file-backed entry to trigger processing and refill
+        crate::fs::cache::init_page_cache(64 * 1024);
+        let cache = crate::fs::page_cache();
+        let ino = 4000u64;
+        let page_num = 1u64;
+        let data = alloc::vec![0u8; PAGE_SIZE_4K];
+        cache.insert(ino, page_num as usize, data, PAGE_SIZE_4K as u64);
+        assert!(cache.mark_dirty(ino, page_num as usize));
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        crate::mm::frame_backing::track_frame_backing(frame_idx, ino, page_num);
+
+        // Enqueue file entry
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+
+        // Start worker to process and refill tokens
+        start_worker();
+
+        h.wait();
+
+        // After processing, tokens should have been refilled
+        assert!(test_impl::_token_count() > 0);
+
+        // Clean up
+        stop_worker();
+    }
+
+    #[test]
+    fn test_async_swapout_stress_concurrency() {
+        crate::mm::memcg::init_memcg();
+        let cg = crate::mm::memcg::memcg_create(String::from("stress"), crate::mm::memcg::memcg_root()).expect("create memcg");
+        crate::fs::cache::init_page_cache(64 * 1024);
+        let cache = crate::fs::page_cache();
+
+        // Slow down processing to build pressure and exercise tokens
+        test_impl::set_processing_delay(2);
+        test_impl::set_tokens(test_impl::token_capacity());
+
+        start_worker();
+
+        let threads = 32usize;
+        let iters = 80usize;
+        let mut joiners = Vec::new();
+
+        for t in 0..threads {
+            let cache = cache;
+            let cg = cg;
+            let j = std::thread::spawn(move || {
+                for i in 0..iters {
+                    let frame = crate::mm::alloc_frame().expect("alloc frame");
+                    let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+                    if ((i + t) % 2) == 0 {
+                        // file-backed
+                        assert!(crate::mm::memcg::memcg_charge(cg, 1, crate::mm::memcg::ChargeType::Cache).is_ok());
+                        crate::mm::memcg::memcg_track_page(frame_idx, cg, crate::mm::memcg::ChargeType::Cache);
+
+                        let ino = 6000u64 + (i % 256) as u64;
+                        let page_num = i as u64;
+                        let data = alloc::vec![0u8; PAGE_SIZE_4K];
+                        cache.insert(ino, page_num as usize, data, PAGE_SIZE_4K as u64);
+                        assert!(cache.mark_dirty(ino, page_num as usize));
+                        crate::mm::frame_backing::track_frame_backing(frame_idx, ino, page_num);
+
+                        match crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }) {
+                            Ok(h) => { h.wait(); }
+                            Err(SwapError::QueueFull) => {
+                                // fallback sync writeback
+                                let _ = crate::fs::page_cache().sync_page(ino, page_num, |_offset, _data| Ok(()));
+                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                buddy_allocator::buddy_dealloc_frame(physf);
+                            }
+                            Err(e) => panic!("unexpected enqueue error: {:?}", e),
+                        }
+                    } else {
+                        // anon
+                        assert!(crate::mm::memcg::memcg_charge(cg, 1, crate::mm::memcg::ChargeType::Anon).is_ok());
+                        crate::mm::memcg::memcg_track_page(frame_idx, cg, crate::mm::memcg::ChargeType::Anon);
+
+                        match crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon) {
+                            Ok(h) => { h.wait(); }
+                            Err(SwapError::QueueFull) => {
+                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                buddy_allocator::buddy_dealloc_frame(physf);
+                            }
+                            Err(e) => panic!("unexpected enqueue error: {:?}", e),
+                        }
+                    }
+                }
+            });
+
+            joiners.push(j);
+        }
+
+        for j in joiners {
+            j.join().expect("join");
+        }
+
+        stop_worker();
+        for _ in 0..200 {
+            if !is_worker_running() { break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+
+        let stats = crate::mm::memcg::memcg_stats(cg).expect("stats");
+        assert_eq!(stats.cache_pages, 0);
+        assert_eq!(stats.anon_pages, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn test_async_swapout_heavy_stress() {
+        crate::mm::memcg::init_memcg();
+        let cg = crate::mm::memcg::memcg_create(String::from("heavy"), crate::mm::memcg::memcg_root()).expect("create memcg");
+        crate::fs::cache::init_page_cache(64 * 1024);
+        let cache = crate::fs::page_cache();
+
+        test_impl::set_processing_delay(5);
+        test_impl::set_tokens(test_impl::token_capacity());
+
+        start_worker();
+
+        let threads = 64usize;
+        let iters = 200usize;
+        let mut joiners = Vec::new();
+
+        for t in 0..threads {
+            let cache = cache;
+            let cg = cg;
+            let j = std::thread::spawn(move || {
+                for i in 0..iters {
+                    let frame = crate::mm::alloc_frame().expect("alloc frame");
+                    let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+                    if ((i + t) % 2) == 0 {
+                        assert!(crate::mm::memcg::memcg_charge(cg, 1, crate::mm::memcg::ChargeType::Cache).is_ok());
+                        crate::mm::memcg::memcg_track_page(frame_idx, cg, crate::mm::memcg::ChargeType::Cache);
+                        let ino = 7000u64 + (i % 512) as u64;
+                        let page_num = i as u64;
+                        let data = alloc::vec![0u8; PAGE_SIZE_4K];
+                        cache.insert(ino, page_num as usize, data, PAGE_SIZE_4K as u64);
+                        assert!(cache.mark_dirty(ino, page_num as usize));
+                        crate::mm::frame_backing::track_frame_backing(frame_idx, ino, page_num);
+                        match crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }) {
+                            Ok(h) => { h.wait(); }
+                            Err(SwapError::QueueFull) => {
+                                let _ = crate::fs::page_cache().sync_page(ino, page_num, |_o, _d| Ok(()));
+                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                buddy_allocator::buddy_dealloc_frame(physf);
+                            }
+                            Err(e) => panic!("unexpected enqueue error: {:?}", e),
+                        }
+                    } else {
+                        assert!(crate::mm::memcg::memcg_charge(cg, 1, crate::mm::memcg::ChargeType::Anon).is_ok());
+                        crate::mm::memcg::memcg_track_page(frame_idx, cg, crate::mm::memcg::ChargeType::Anon);
+                        match crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon) {
+                            Ok(h) => { h.wait(); }
+                            Err(SwapError::QueueFull) => {
+                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame_idx.to_phys_addr())) };
+                                buddy_allocator::buddy_dealloc_frame(physf);
+                            }
+                            Err(e) => panic!("unexpected enqueue error: {:?}", e),
+                        }
+                    }
+                }
+            });
+            joiners.push(j);
+        }
+
+        for j in joiners { j.join().expect("join"); }
+
+        stop_worker();
+        for _ in 0..500 { if !is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        let stats = crate::mm::memcg::memcg_stats(cg).expect("stats");
+        assert_eq!(stats.cache_pages, 0);
+        assert_eq!(stats.anon_pages, 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_enqueue_throughput() {
+        crate::fs::cache::init_page_cache(64 * 1024);
+
+        test_impl::set_processing_delay(1);
+        test_impl::set_tokens(test_impl::token_capacity());
+
+        start_worker();
+
+        let count = 2000usize;
+        let start = std::time::Instant::now();
+        for _ in 0..count {
+            let frame = crate::mm::alloc_frame().expect("alloc frame");
+            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+            h.wait();
+        }
+        let dur = start.elapsed();
+        println!("Enqueued+processed {} anon entries in {:?}", count, dur);
+
+        stop_worker();
+    }
 }
+
+
