@@ -1078,7 +1078,7 @@ mod tests {
         assert!(processed1 >= 1);
 
         // Drain remaining items (best-effort)
-        let processed2 = q.process_up_to(|_k| Ok(0), DEFAULT_QUEUE_SIZE);
+        let _processed2 = q.process_up_to(|_k| Ok(0), DEFAULT_QUEUE_SIZE);
 
         // Process until the spawned submit thread completes (it will set `done`)
         let mut iter = 0;

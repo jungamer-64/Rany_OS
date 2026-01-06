@@ -227,7 +227,7 @@ pub fn last_panic_record_message() -> Option<&'static str> {
 /// # Safety
 ///
 /// The caller must ensure the record memory remains valid and immutable.
-pub unsafe fn read_panic_record_message(info: &PanicDmaRecordInfo) -> Option<&'static str> {
+pub unsafe fn read_panic_record_message(info: &PanicDmaRecordInfo) -> Option<&'static str> { unsafe {
     if info.total < core::mem::size_of::<PanicDmaRecordHeader>() {
         return None;
     }
@@ -242,7 +242,7 @@ pub unsafe fn read_panic_record_message(info: &PanicDmaRecordInfo) -> Option<&'s
     let payload_ptr = (info.virt as *const u8).add(core::mem::size_of::<PanicDmaRecordHeader>());
     let payload = core::slice::from_raw_parts(payload_ptr, len);
     core::str::from_utf8(payload).ok()
-}
+}}
 
 /// Check whether the panic DMA pool is initialized.
 pub fn panic_dma_pool_ready() -> bool {
