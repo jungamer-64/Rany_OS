@@ -512,12 +512,17 @@ fn populate_file_page(page_addr: VirtAddr, region: &VmRegion) -> DemandResult {
     let frame_phys = PhysAddr::new(frame.start_address().as_u64());
     
     // ファイルオフセットを計算
-    let _file_offset = _file_info.offset + (page_addr.as_u64() - region.start.as_u64());
+    let file_offset = _file_info.offset + (page_addr.as_u64() - region.start.as_u64());
     
     // TODO: ファイルシステムからページを読み込む
-    // let result = vfs::read_page(_file_info.inode, _file_offset, frame)?;
+    // let result = vfs::read_page(_file_info.inode, file_offset, frame)?;
     // 仮実装: ゼロクリア
     zero_page(frame_phys);
+    
+    // Track frame -> file backing mapping (for targeted writeback)
+    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
+    let page_num = (file_offset / super::PAGE_SIZE_4K as u64) as u64;
+    crate::mm::frame_backing::track_frame_backing(frame_idx, _file_info.inode as crate::fs::InodeNum, page_num);
     
     // Memcgチャージ (file cache)
     let mut memcg_id = MemcgId::ROOT;

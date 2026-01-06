@@ -2,6 +2,7 @@
 // src/demo/mod.rs - Demo Applications
 // Phase 6: Demo & Integration Showcase
 // ============================================================================
+#![allow(dead_code)]
 
 // Demo modules
 pub mod echo_server;
