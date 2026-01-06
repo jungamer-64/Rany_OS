@@ -483,6 +483,33 @@ impl PageCache {
         }
     }
 
+    /// Sync a specific page for a file
+    pub fn sync_page<F>(&self, ino: InodeNum, page_num: u64, mut writer: F) -> Result<bool, ()>
+    where
+        F: FnMut(u64, &[u8]) -> Result<(), ()>,
+    {
+        let files = self.files.read();
+
+        if let Some(file_cache) = files.get(&ino) {
+            if let Some(page) = file_cache.get_page(page_num) {
+                if page.is_dirty() {
+                    let offset = page.page_num() * PAGE_SIZE as u64;
+                    let data = page.data_for_sync();
+                    writer(offset, &data)?;
+                    page.mark_clean();
+
+                    let mut stats = self.stats.lock();
+                    stats.writebacks += 1;
+                    stats.dirty_pages = stats.dirty_pages.saturating_sub(1);
+
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
     /// Sync all dirty pages for a file
     pub fn sync_file<F>(&self, ino: InodeNum, mut writer: F) -> Result<usize, ()>
     where
@@ -649,6 +676,42 @@ mod tests {
         let stats = cache.stats();
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.pages, 1);
+    }
+
+    #[test]
+    fn test_sync_page() {
+        let cache = PageCache::new(64 * 1024);
+
+        // Insert and dirty a page
+        let data = alloc::vec![0x55u8; PAGE_SIZE];
+        cache.insert(2, 1, data, PAGE_SIZE as u64);
+        assert!(cache.mark_dirty(2, 1));
+
+        // Writer that records the offset and first byte
+        let mut recorded_offset = 0u64;
+        let mut recorded_first = 0u8;
+
+        let res = cache.sync_page(2, 1, |offset, data| {
+            recorded_offset = offset;
+            recorded_first = data[0];
+            Ok(())
+        }).expect("sync_page failed");
+
+        assert!(res);
+        assert_eq!(recorded_offset, 1 * PAGE_SIZE as u64);
+        assert_eq!(recorded_first, 0x55u8);
+
+        // Page should be clean now
+        let files = cache.files.read();
+        if let Some(file_cache) = files.get(&2) {
+            if let Some(page) = file_cache.get_page(1) {
+                assert!(!page.is_dirty());
+            } else {
+                panic!("page not found");
+            }
+        } else {
+            panic!("file cache not found");
+        }
     }
 }
 

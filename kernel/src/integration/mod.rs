@@ -16,8 +16,8 @@ use spin::Mutex;
 pub mod device_manager;
 pub mod interrupt_routing;
 pub mod security_integration;
-
 // Re-exports
+#[allow(dead_code)]
 pub use device_manager::{DeviceInfo, DeviceManager};
 pub use interrupt_routing::InterruptRouter;
 pub use security_integration::SecurityIntegration;

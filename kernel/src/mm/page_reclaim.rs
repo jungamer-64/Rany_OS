@@ -885,16 +885,60 @@ impl PageReclaimController {
             PageType::FileBacked => {
                 // ダーティならライトバック、そうでなければ破棄
                 if entry.flags.contains(LruFlags::DIRTY) {
-                    // Try to writeback dirty pages via the page cache.
-                    if self.attempt_writeback_all() {
-                        // After successful writeback, untrack/uncharge and free frame.
-                        if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                            let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                    // Prefer targeted per-frame writeback if we know the backing inode/page
+                    if let Some(backing) = super::frame_backing::get_frame_backing(entry.frame) {
+                        let written = crate::fs::page_cache().sync_page(backing.ino, backing.page_num, |offset, data| {
+                            match crate::fs::write_inode_by_number(backing.ino, offset, data) {
+                                Ok(_) => Ok(()),
+                                Err(_) => Err(()),
+                            }
+                        });
+
+                        match written {
+                            Ok(true) => {
+                                // Success - untrack memcg and free
+                                if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                    let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                }
+                                // Remove backing mapping
+                                let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                                self.free_frame(entry.frame);
+                            }
+                            Ok(false) => {
+                                // Not written (page not found / not dirty) - fallback to global sync
+                                if self.attempt_writeback_all() {
+                                    if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                    }
+                                    let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                                    self.free_frame(entry.frame);
+                                } else {
+                                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                            Err(_) => {
+                                // Writer failed - fallback to global sync
+                                if self.attempt_writeback_all() {
+                                    if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                    }
+                                    let _ = super::frame_backing::untrack_frame_backing(entry.frame);
+                                    self.free_frame(entry.frame);
+                                } else {
+                                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
                         }
-                        self.free_frame(entry.frame);
                     } else {
-                        // Writeback failed or no candidates; skip for now.
-                        self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                        // No precise mapping; fall back to coarse global sync
+                        if self.attempt_writeback_all() {
+                            if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                            }
+                            self.free_frame(entry.frame);
+                        } else {
+                            self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                        }
                     }
                 } else {
                     // クリーンなら即座に回収可能
@@ -921,6 +965,9 @@ impl PageReclaimController {
         use x86_64::structures::paging::{PhysFrame, Size4KiB};
         use x86_64::PhysAddr;
         
+        // Remove any frame backing mapping if present
+        let _ = super::frame_backing::untrack_frame_backing(frame);
+
         let phys_frame = unsafe {
             PhysFrame::<Size4KiB>::from_start_address_unchecked(
                 PhysAddr::new(frame.to_phys_addr())
@@ -1330,6 +1377,44 @@ mod tests {
         assert_eq!(reclaimed, 1);
         assert_eq!(controller.writeback_skipped.load(Ordering::Relaxed), skipped_before);
         assert!(crate::fs::page_cache().stats().writebacks >= writebacks_before + 1);
+    }
+
+    #[test]
+    fn test_per_frame_writeback_reclaim() {
+        // Initialize page cache
+        crate::fs::init_page_cache(64 * 1024);
+
+        // Mount a MemoryFs at root
+        let memfs = crate::fs::memfs::MemoryFs::new();
+        crate::fs::mount_table().mount("/", memfs.clone()).unwrap();
+        let root = memfs.root().unwrap();
+        let file = root.create("pf", crate::fs::FileMode::DEFAULT_FILE, crate::fs::OpenFlags::empty()).unwrap();
+        let ino = file.getattr().unwrap().ino;
+
+        // Insert and dirty a page for inode
+        let data = vec![0x77u8; crate::fs::PAGE_SIZE];
+        crate::fs::page_cache().insert(ino, 0, data, crate::fs::PAGE_SIZE as u64);
+        assert!(crate::fs::page_cache().mark_dirty(ino, 0));
+
+        // Track a fake frame as backing that page
+        let frame = FrameIndex::new(600);
+        super::frame_backing::track_frame_backing(frame, ino, 0);
+
+        // Add LRU entry referring to that frame
+        let controller = PageReclaimController::new();
+        let ts = crate::time::current_time_ns();
+        let mut entry = LruPageEntry::new(frame, PageType::FileBacked, ts);
+        entry.mapcount.store(0, Ordering::Relaxed);
+        entry.flags = LruFlags::DIRTY;
+        controller.lru_lists[0].add_to_inactive(entry);
+
+        let writebacks_before = crate::fs::page_cache().stats().writebacks;
+        let reclaimed = controller.background_reclaim(1);
+        assert_eq!(reclaimed, 1);
+        assert!(crate::fs::page_cache().stats().writebacks >= writebacks_before + 1);
+
+        // Backing mapping should be removed after free
+        assert!(super::frame_backing::get_frame_backing(frame).is_none());
     }
 
     #[test]
