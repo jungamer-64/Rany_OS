@@ -28,7 +28,7 @@ use spin::RwLock;
 
 use super::frame_allocator::alloc_frame;
 use super::higher_half::{global_map_page, PageFlags, MapError, VirtAddr, PhysAddr};
-use super::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, MemcgId};
+use super::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType};
 use super::types::FrameIndex;
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 

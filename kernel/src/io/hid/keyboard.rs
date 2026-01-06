@@ -73,18 +73,13 @@ pub use super::keymap::{DEFAULT_KEYMAP, DvorakKeymap, JisKeymap, Keymap, UsQwert
 ///
 /// 単一のPS/2キーボードをサポートする場合はこれを使用。
 /// 複数デバイスが必要な場合は、別のインスタンスを作成してください。
-static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
+pub(crate) static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
 
 // ============================================================================
 // Public API
 // ============================================================================
 
-
-
-/// PS/2キーボードを初期化
-pub fn init() {
-    PS2_KEYBOARD.init();
-}
+// init() function removed - use Ps2KeyboardDriver via DriverRegistry instead
 
 /// 割り込みハンドラから呼ばれる（PS/2キーボード用）
 pub fn handle_keyboard_interrupt(scancode: u8) {

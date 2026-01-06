@@ -36,11 +36,6 @@ pub use super::huge_page::{
 };
 
 // types.rs から追加の定数
-pub use super::types::{
-    PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G,
-    HUGE_PAGE_SIZE_2MB, HUGE_PAGE_SIZE_1GB,
-    HUGE_PAGE_ORDER_2MB, HUGE_PAGE_ORDER_1GB,
-};
 
 // ============================================================================
 // Legacy Constants (互換性のため維持)

@@ -589,31 +589,34 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
         debug!(target: "init", "No initramfs or no Cells found");
     }
 
-    // 3. キーボードドライバの初期化
-    info!(target: "init", "Initializing keyboard driver");
-    io::hid::keyboard::init();
-    info!(target: "init", "Keyboard driver initialized");
-
-    // 3.1. 入力デバイスの初期化（PS/2キーボード・マウス）using DriverRegistry
-    info!(target: "init", "Initializing input devices via DriverRegistry");
+    // 3. HID ドライバの初期化 (DriverRegistry 経由)
+    info!(target: "init", "Initializing HID drivers via DriverRegistry");
     {
         use alloc::boxed::Box;
         use driver_registry::register_driver;
-        use io::hid::ps2::Ps2Driver;
+        use io::hid::{Ps2KeyboardDriver, Ps2MouseDriver};
 
-        // PS/2ドライバを登録
-        let ps2_handle = register_driver(Box::new(Ps2Driver::new()));
-
-        // プローブと開始
+        // PS/2 キーボードドライバを登録
+        let kb_handle = register_driver(Box::new(Ps2KeyboardDriver::new()));
         if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(ps2_handle.expect("Failed to register PS/2 driver"))
+            .probe_and_start(kb_handle.expect("Failed to register PS/2 Keyboard driver"))
         {
-            warn!(target: "init", "PS/2 driver init failed: {:?}", e);
+            warn!(target: "init", "PS/2 Keyboard driver init failed: {:?}", e);
         } else {
-            info!(target: "init", "PS/2 driver initialized via DriverRegistry");
+            info!(target: "init", "PS/2 Keyboard driver initialized via DriverRegistry");
+        }
+
+        // PS/2 マウスドライバを登録
+        let mouse_handle = register_driver(Box::new(Ps2MouseDriver::new()));
+        if let Err(e) = driver_registry::driver_registry()
+            .probe_and_start(mouse_handle.expect("Failed to register PS/2 Mouse driver"))
+        {
+            warn!(target: "init", "PS/2 Mouse driver init failed: {:?}", e);
+        } else {
+            info!(target: "init", "PS/2 Mouse driver initialized via DriverRegistry");
         }
     }
-    info!(target: "init", "Input devices initialized");
+    info!(target: "init", "HID drivers initialized");
 
     // 完了
     info!(target: "boot", "BOOT COMPLETE!");

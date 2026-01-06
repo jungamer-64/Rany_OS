@@ -5,7 +5,6 @@
 //!
 //! Functions for mapping/unmapping memory for DMA access.
 
-use core::sync::atomic::Ordering;
 use x86_64::PhysAddr;
 
 use crate::io::iommu::registry::{get_iommu_driver, validate_dma_mask_pre_allocation, is_iommu_enabled};

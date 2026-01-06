@@ -50,7 +50,6 @@ pub mod address_space; // 新: Process Address Space - プロセスアドレス�
 // 共通型を再エクスポート
 pub use types::{NumaNodeId, PAGE_SIZE_4K};
 // Huge Page 共通定数
-pub use types::{HUGE_PAGE_SIZE_2MB, HUGE_PAGE_SIZE_1GB, HUGE_PAGE_ORDER_2MB, HUGE_PAGE_ORDER_1GB};
 
 // Page Reclaim / LRU API
 #[allow(unused_imports)]

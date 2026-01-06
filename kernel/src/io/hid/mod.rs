@@ -20,7 +20,9 @@
 //! - PS/2: `crate::io::hid::ps2`
 
 pub mod keyboard;
+pub mod keyboard_driver;
 pub mod mouse;
+pub mod mouse_driver;
 pub use hid_driver::ps2;
 
 // Re-export keymap from hid_driver
@@ -53,8 +55,7 @@ pub use keyboard::{
     StreamAlreadyTaken,
     handle_keyboard_interrupt,
     has_event,
-    // Functions
-    init as keyboard_init,
+    // Functions (init removed - use Ps2KeyboardDriver via DriverRegistry)
     process_pending_wakes,
     take_stream,
     take_stream_with_arc_keymap,
@@ -91,9 +92,17 @@ pub use ps2::{
 
 pub use hid_driver::{MouseButton, MouseEvent};
 pub use mouse::{
-    Mouse, MouseInitError, handle_mouse_packet, has_mouse_event, init as mouse_init,
+    Mouse, MouseInitError, handle_mouse_packet, has_mouse_event,
+    // init removed - use Ps2MouseDriver via DriverRegistry
     is_mouse_initialized, poll_mouse_event,
 };
+
+// ============================================================================
+// Driver Trait Re-exports
+// ============================================================================
+
+pub use keyboard_driver::Ps2KeyboardDriver;
+pub use mouse_driver::Ps2MouseDriver;
 
 // ============================================================================
 // Keymap Re-exports

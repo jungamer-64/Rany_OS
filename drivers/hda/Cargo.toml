@@ -16,7 +16,7 @@ path = "src/lib.rs"
 [dependencies]
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
-spin = "0.9"
+spin = "0.10"
 x86_64 = "0.15"
 pci_driver = { path = "../pci" }
 log = "0.4"

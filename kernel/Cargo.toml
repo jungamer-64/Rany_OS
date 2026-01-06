@@ -52,12 +52,11 @@ vfs = { path = "../libs/vfs" }
 # ブートローダーAPI（ExoLoader Protocol）
 boot_proto = { path = "../libs/boot_proto" }
 
+# Hardware Abstraction Layer (MMIO/Port I/O wrappers)
+hal = { path = "../hal" }
 
 # x86_64アーキテクチャサポート
 x86_64 = "0.15"
-
-# Hardware Abstraction Layer (MMIO/Port I/O wrappers)
-hal = { path = "../hal" }
 
 # スピンロック（no_std互換）
 spin = "0.10"

@@ -21,7 +21,8 @@ pub use super::stats::{
 pub use super::security::{
     FaultSummary, IsolationDecision, IsolationReason, SecurityEvent, SecurityNotifier,
     set_security_notifier, 
-    set_unsafe_identity_mapping_allowed, is_unsafe_identity_mapping_allowed,
+    // set_unsafe_identity_mapping_allowed,
+    is_unsafe_identity_mapping_allowed,
     set_global_dma_mapping_allowed, is_global_dma_mapping_allowed,
 };
 pub use super::registry::{
