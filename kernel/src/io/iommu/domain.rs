@@ -2414,7 +2414,7 @@ impl IommuDomain {
     ///
     /// # Safety
     /// - The domain must not be in use by hardware (IOMMU disabled or domain detached)
-    unsafe fn deallocate_page_tables_iterative(&mut self) {
+    unsafe fn deallocate_page_tables_iterative(&mut self) { unsafe {
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
                 .expect("invalid page table layout");
@@ -2509,14 +2509,14 @@ impl IommuDomain {
                 stack[entry_idx].next_idx = PT_ENTRIES;
             }
         }
-    }
+    }}
 
     /// Legacy recursive deallocation - kept for reference but not used.
     #[allow(dead_code)]
-    unsafe fn deallocate_page_tables_recursive(&mut self) {
+    unsafe fn deallocate_page_tables_recursive(&mut self) { unsafe {
         // Delegate to the iterative version
         self.deallocate_page_tables_iterative();
-    }
+    }}
 }
 
 impl Drop for IommuDomain {

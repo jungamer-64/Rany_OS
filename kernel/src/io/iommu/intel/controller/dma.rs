@@ -167,7 +167,6 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
 
         match domain.map(start, start, size, true, true) {
             Ok(()) => {
-                mapped_count += 1;
                 log::debug!(
                     "[IOMMU] RMRR mapped for {:04x}:{:02x}:{:02x}.{}: {:#x}-{:#x}",
                     device.segment, device.bus, device.device, device.function,
@@ -176,7 +175,6 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
             }
             Err(IommuError::AlreadyMapped) => {
                 // Already mapped, that's fine
-                mapped_count += 1;
             }
             Err(err) => {
                 log::error!(

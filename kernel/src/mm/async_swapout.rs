@@ -200,36 +200,41 @@ mod test_impl {
 
         Ok(super::SwapHandle { done: completion })
     }
+
+    // Test inspection helpers
+    #[cfg(test)]
+    pub fn _queue_len() -> usize {
+        let worker = init_worker();
+        worker.queue.lock().unwrap().len()
+    }
+
+    #[cfg(test)]
+    pub fn _pending_len() -> usize {
+        let worker = init_worker();
+        worker.pending.lock().unwrap().len()
+    }
+
+    #[cfg(test)]
+    pub fn _is_pending(frame: FrameIndex) -> bool {
+        let worker = init_worker();
+        worker.pending.lock().unwrap().contains(&frame.as_usize())
+    }
 } 
 
 // カーネル向け実装: 永続ワーカ（non-test）
 #[cfg(not(test))]
 mod kernel_impl {
     use super::*;
-    use alloc::collections::{BTreeSet, VecDeque};
+    use alloc::collections::BTreeSet;
     use alloc::vec::Vec;
-    use core::task::Waker;
-    use spin::{Mutex, Once};
+    use spin::{Once, Mutex};
+    use crate::sync::lockfree::{BoundedChannel, BoundedSender, BoundedReceiver};
+    use crate::sync::AtomicWaker;
     use crate::task::Task;
 
-    const QUEUE_CAPACITY: usize = 4096;
+    // Channel capacity and batch size tunables
+    const CHANNEL_SIZE: usize = 1024;
     const BATCH_SIZE: usize = 32;
-
-    struct WorkerState {
-        queue: VecDeque<SwapEntryKernel>,
-        pending: BTreeSet<usize>,
-        waiters: Vec<Waker>,
-    }
-
-    impl WorkerState {
-        const fn new() -> Self {
-            Self {
-                queue: VecDeque::new(),
-                pending: BTreeSet::new(),
-                waiters: Vec::new(),
-            }
-        }
-    }
 
     #[derive(Clone, Copy)]
     struct SwapEntryKernel {
@@ -237,22 +242,61 @@ mod kernel_impl {
         kind: SwapKind,
     }
 
-    static WORKER_STATE: Mutex<WorkerState> = Mutex::new(WorkerState::new());
-    static WORKER_ONCE: Once = Once::new();
+    // Static channel (initialized once)
+    static CHANNEL_ONCE: Once<Option<(BoundedSender<SwapEntryKernel, CHANNEL_SIZE>, BoundedReceiver<SwapEntryKernel, CHANNEL_SIZE>)>> = Once::new();
 
-    // Future that waits until there is work in the queue
+    // Pending set to avoid duplicate enqueues
+    static PENDING: Mutex<BTreeSet<usize>> = Mutex::new(BTreeSet::new());
+
+    // Queue occupancy counters (for reservation of file slots)
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    static QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    const RESERVED_FILE_SLOTS: usize = CHANNEL_SIZE / 8; // reserve ~12.5% for file writes
+
+    // Worker start guard and waker
+    static WORKER_STARTED: Once = Once::new();
+    static WORKER_WAKER: AtomicWaker = AtomicWaker::new();
+    static WORKER_RUNNING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+    static WORKER_SHUTDOWN: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+    fn ensure_channel_started() {
+        CHANNEL_ONCE.call_once(|| {
+            let (s, r) = BoundedChannel::<SwapEntryKernel, CHANNEL_SIZE>::new();
+            Some((s, r))
+        });
+
+        WORKER_STARTED.call_once(|| {
+            WORKER_SHUTDOWN.store(false, core::sync::atomic::Ordering::Release);
+            WORKER_RUNNING.store(true, core::sync::atomic::Ordering::Release);
+            let task = Task::new(async move { worker_loop().await });
+            crate::task::Executor::spawn_global(task);
+        });
+    }
+
+    // Future that waits until there is work in the channel
     struct WaitForWork;
     impl core::future::Future for WaitForWork {
         type Output = ();
         fn poll(self: core::pin::Pin<&mut Self>, cx: &mut core::task::Context<'_>) -> core::task::Poll<()> {
-            let mut st = WORKER_STATE.lock();
-            if !st.queue.is_empty() {
-                core::task::Poll::Ready(())
-            } else {
-                // Register the Waker for future notifications
-                st.waiters.push(cx.waker().clone());
-                core::task::Poll::Pending
+            // Fast path: if receiver has elements, return ready
+            if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+                if !ch.1.is_empty() {
+                    return core::task::Poll::Ready(());
+                }
             }
+
+            // Register waker
+            WORKER_WAKER.register(cx.waker());
+
+            // Re-check to avoid races
+            if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+                if !ch.1.is_empty() {
+                    return core::task::Poll::Ready(());
+                }
+            }
+
+            core::task::Poll::Pending
         }
     }
 
@@ -260,12 +304,25 @@ mod kernel_impl {
         loop {
             WaitForWork.await;
 
-            // Drain a batch
+            // If shutdown requested and channel empty, stop
+            if WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
+                if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+                    if ch.1.is_empty() {
+                        WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
+                        break;
+                    }
+                } else {
+                    WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
+                    break;
+                }
+            }
+
+            // Drain up to BATCH_SIZE entries
             let mut batch: Vec<SwapEntryKernel> = Vec::new();
-            {
-                let mut st = WORKER_STATE.lock();
+            if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+                let rx = &ch.1;
                 for _ in 0..BATCH_SIZE {
-                    if let Some(entry) = st.queue.pop_front() {
+                    if let Some(entry) = rx.recv() {
                         batch.push(entry);
                     } else {
                         break;
@@ -273,7 +330,7 @@ mod kernel_impl {
                 }
             }
 
-            // Process batch entries
+            // Process batch
             for entry in batch {
                 match entry.kind {
                     SwapKind::File { ino, page_num } => {
@@ -286,13 +343,9 @@ mod kernel_impl {
 
                         match written {
                             Ok(true) => {
-                                // Success - untrack and free
                                 let _ = frame_backing::untrack_frame_backing(entry.frame);
                                 let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                                 buddy_allocator::buddy_dealloc_frame(physf);
-                                // remove pending
-                                let mut st = WORKER_STATE.lock();
-                                st.pending.remove(&entry.frame.as_usize());
                             }
                             _ => {
                                 // Fall back to global sync
@@ -308,19 +361,18 @@ mod kernel_impl {
                                     let _ = frame_backing::untrack_frame_backing(entry.frame);
                                     let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                                     buddy_allocator::buddy_dealloc_frame(physf);
-                                    let mut st = WORKER_STATE.lock();
-                                    st.pending.remove(&entry.frame.as_usize());
                                 } else {
-                                    // Cannot writeback now: skip (allow reclaim path to retry later)
                                     crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
-                                    let mut st = WORKER_STATE.lock();
-                                    st.pending.remove(&entry.frame.as_usize());
                                 }
                             }
                         }
+
+                        // Remove pending and update queue counters
+                        PENDING.lock().remove(&entry.frame.as_usize());
+                        QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
+                        FILE_QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel); // safe to decrement even if zero due to caller correctness
                     }
                     SwapKind::Anon => {
-                        // Attempt zswap if enabled; free frame regardless to reduce pressure
                         if crate::mm::zswap::zswap_is_enabled() {
                             let phys = entry.frame.to_phys_addr();
                             let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
@@ -330,58 +382,104 @@ mod kernel_impl {
                             let _ = crate::mm::zswap::zswap_store(0, &buf);
                             let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                             buddy_allocator::buddy_dealloc_frame(physf);
-                            let mut st = WORKER_STATE.lock();
-                            st.pending.remove(&entry.frame.as_usize());
                         } else {
                             let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                             buddy_allocator::buddy_dealloc_frame(physf);
-                            let mut st = WORKER_STATE.lock();
-                            st.pending.remove(&entry.frame.as_usize());
                         }
+
+                        PENDING.lock().remove(&entry.frame.as_usize());
+                        QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
                     }
+                }
+            }
+
+            // If shutdown requested and channel empty after processing, stop
+            if WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
+                if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+                    if ch.1.is_empty() {
+                        WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
+                        break;
+                    }
+                } else {
+                    WORKER_RUNNING.store(false, core::sync::atomic::Ordering::Release);
+                    break;
                 }
             }
         }
     }
 
-    fn ensure_worker_started() {
-        WORKER_ONCE.call_once(|| {
-            let task = Task::new(async move { worker_loop().await });
-            // Spawn into global executor
-            crate::task::Executor::spawn_global(task);
-        });
-    }
-
     pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {
-        ensure_worker_started();
+        ensure_channel_started();
 
-        // Fast, non-blocking enqueue: avoid blocking reclaim path by using try_lock.
-        if let Some(mut st) = WORKER_STATE.try_lock() {
-            if st.pending.contains(&frame.as_usize()) {
+        // If worker has been stopped, not supported
+        if !WORKER_RUNNING.load(core::sync::atomic::Ordering::Acquire) {
+            return Err(SwapError::NotSupported);
+        }
+
+        // Fast-path: try to acquire pending lock (non-blocking)
+        if let Some(mut pending) = PENDING.try_lock() {
+            if pending.contains(&frame.as_usize()) {
                 return Err(SwapError::AlreadyPending);
             }
 
-            if st.queue.len() >= QUEUE_CAPACITY {
-                return Err(SwapError::QueueFull);
+            // Check sender capacity
+            if let Some(ch) = CHANNEL_ONCE.get().and_then(|opt| opt.as_ref()) {
+                let sender = &ch.0;
+                if sender.is_full() {
+                    return Err(SwapError::QueueFull);
+                }
+
+                // Enforce reservation for file writes: when nearly full, prefer file entries
+                if let SwapKind::Anon = kind {
+                    let total = QUEUE_COUNT.load(Ordering::Acquire);
+                    let file_q = FILE_QUEUE_COUNT.load(Ordering::Acquire);
+                    let free_slots = CHANNEL_SIZE.saturating_sub(total);
+                    if free_slots <= RESERVED_FILE_SLOTS && file_q >= RESERVED_FILE_SLOTS {
+                        // preferentially reserve slots for file writes
+                        return Err(SwapError::QueueFull);
+                    }
+                }
+
+                match sender.send(SwapEntryKernel { frame, kind }) {
+                    Ok(()) => {
+                        // Update counters
+                        QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
+                        if let SwapKind::File { .. } = kind {
+                            FILE_QUEUE_COUNT.fetch_add(1, Ordering::AcqRel);
+                        }
+
+                        pending.insert(frame.as_usize());
+                        // Wake the worker
+                        WORKER_WAKER.wake();
+                        Ok(super::SwapHandle {})
+                    }
+                    Err(_v) => Err(SwapError::QueueFull),
+                }
+            } else {
+                Err(SwapError::NotSupported)
             }
-
-            st.pending.insert(frame.as_usize());
-            st.queue.push_back(SwapEntryKernel { frame, kind });
-
-            // Wake any waiters
-            let waiters = core::mem::take(&mut st.waiters);
-            drop(st);
-            for w in waiters {
-                w.wake();
-            }
-
-            Ok(super::SwapHandle {})
         } else {
-            // Contention: fail fast and let caller fallback to sync path
+            // Contention: fail fast
             Err(SwapError::QueueFull)
         }
     }
+
+    // Kernel control / introspection
+    pub fn queued_counts() -> (usize, usize) {
+        (QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire), FILE_QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire))
+    }
+
+    pub fn stop_worker() {
+        WORKER_SHUTDOWN.store(true, core::sync::atomic::Ordering::Release);
+        WORKER_WAKER.wake();
+    }
+
+    pub fn is_worker_running() -> bool {
+        WORKER_RUNNING.load(core::sync::atomic::Ordering::Acquire)
+    }
 }
+
+
 
 // 公開API: try_enqueue_swapout
 pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHandle, SwapError> {
@@ -466,5 +564,149 @@ mod tests {
 
         // after completion backing must be removed
         assert!(frame_backing::get_frame_backing(frame_idx).is_none());
+    }
+
+    #[test]
+    fn test_memcg_concurrent_swapout() {
+        // Initialize memcg and global page cache
+        crate::mm::memcg::init_memcg();
+        let cg = crate::mm::memcg::memcg_create(String::from("concurrent"), crate::mm::memcg::memcg_root()).expect("create memcg");
+        crate::fs::cache::init_page_cache(64 * 1024);
+        let cache = crate::fs::page_cache();
+
+        let n = 64usize;
+        let mut join_handles = Vec::new();
+
+        for i in 0..n {
+            let cache = cache; // copy ref
+            let cg = cg;
+            let handle = std::thread::spawn(move || {
+                // allocate a frame
+                let frame = crate::mm::alloc_frame().expect("alloc frame");
+                let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+                if i % 2 == 0 {
+                    // file-backed
+                    assert!(crate::mm::memcg::memcg_charge(cg, 1, crate::mm::memcg::ChargeType::Cache).is_ok());
+                    crate::mm::memcg::memcg_track_page(frame_idx, cg, crate::mm::memcg::ChargeType::Cache);
+
+                    let ino = 1000u64;
+                    let page_num = i as u64;
+                    let data = alloc::vec![0u8; PAGE_SIZE_4K];
+                    cache.insert(ino, page_num as usize, data, PAGE_SIZE_4K as u64);
+                    assert!(cache.mark_dirty(ino, page_num as usize));
+                    crate::mm::frame_backing::track_frame_backing(frame_idx, ino, page_num);
+
+                    let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num }).expect("enqueue ok");
+                    h.wait();
+                } else {
+                    // anon
+                    assert!(crate::mm::memcg::memcg_charge(cg, 1, crate::mm::memcg::ChargeType::Anon).is_ok());
+                    crate::mm::memcg::memcg_track_page(frame_idx, cg, crate::mm::memcg::ChargeType::Anon);
+
+                    let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+                    h.wait();
+                }
+
+                // After completion, page info should be gone
+                assert!(crate::mm::memcg::memcg_get_page_info(frame_idx).is_none());
+            });
+
+            join_handles.push(handle);
+        }
+
+        for h in join_handles {
+            h.join().expect("thread join");
+        }
+
+        // All charges should be cleared
+        let stats = crate::mm::memcg::memcg_stats(cg).expect("stats");
+        assert_eq!(stats.cache_pages, 0);
+        assert_eq!(stats.anon_pages, 0);
+    }
+
+    #[test]
+    fn test_async_swapout_concurrent_dedup() {
+        // Initialize global cache
+        crate::fs::cache::init_page_cache(64 * 1024);
+        let cache = crate::fs::page_cache();
+
+        // Setup a single frame and track it
+        let ino = 2000u64;
+        let page_num = 1u64;
+        let data = alloc::vec![0xEEu8; PAGE_SIZE_4K];
+        cache.insert(ino, page_num as usize, data, PAGE_SIZE_4K as u64);
+        assert!(cache.mark_dirty(ino, page_num as usize));
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        crate::mm::frame_backing::track_frame_backing(frame_idx, ino, page_num);
+
+        // Check queue/pending metrics before enqueue
+        assert_eq!(test_impl::_queue_len(), 0);
+        assert_eq!(test_impl::_pending_len(), 0);
+        assert!(!test_impl::_is_pending(frame_idx));
+
+        // Barrier to synchronize enqueuers
+        let threads = 8usize;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(threads + 1));
+        let results = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let mut joiners = Vec::new();
+        for _ in 0..threads {
+            let barrier = barrier.clone();
+            let results = results.clone();
+            let frame_idx = frame_idx;
+            let t = std::thread::spawn(move || {
+                barrier.wait();
+                let res = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::File { ino, page_num });
+                results.lock().unwrap().push(res);
+            });
+            joiners.push(t);
+        }
+
+        // Release all enqueuers
+        barrier.wait();
+
+        // Give a tiny moment for enqueues to be processed
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // After enqueuing, queue and pending should reflect the entry
+        assert!(test_impl::_queue_len() >= 1);
+        assert_eq!(test_impl::_pending_len(), 1);
+        assert!(test_impl::_is_pending(frame_idx));
+
+        for j in joiners {
+            j.join().expect("join");
+        }
+
+        let resvec = results.lock().unwrap();
+        // There should be at least one Ok and at least one AlreadyPending among the others
+        let mut ok_count = 0usize;
+        let mut pending_count = 0usize;
+        for r in resvec.iter() {
+            match r {
+                Ok(_) => ok_count += 1,
+                Err(SwapError::AlreadyPending) => pending_count += 1,
+                Err(_) => (),
+            }
+        }
+
+        assert!(ok_count >= 1, "expected at least one successful enqueue");
+        assert!(pending_count >= 1, "expected at least one AlreadyPending");
+
+        // Wait for any successful handles to complete
+        for r in resvec.iter() {
+            if let Ok(h) = r {
+                h.wait();
+            }
+        }
+
+        // After completion, queue must be drained and pending cleared
+        assert_eq!(test_impl::_queue_len(), 0);
+        assert_eq!(test_impl::_pending_len(), 0);
+        assert!(!test_impl::_is_pending(frame_idx));
+
+        assert!(crate::mm::frame_backing::get_frame_backing(frame_idx).is_none());
     }
 }

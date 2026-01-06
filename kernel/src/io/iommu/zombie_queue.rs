@@ -220,17 +220,17 @@ impl ZombieEntry {
 
     /// Write payload data to a claimed slot.
     /// SAFETY: Caller must have successfully called try_claim_for_writing().
-    unsafe fn write_payload(&self, payload: ZombiePayload) {
+    unsafe fn write_payload(&self, payload: ZombiePayload) { unsafe {
         let ptr = self.payload.get();
         (*ptr).write(payload);
-    }
+    }}
 
     /// Read payload data from an acquired slot.
     /// SAFETY: Caller must have successfully called try_acquire_for_processing().
-    unsafe fn read_payload(&self) -> ZombiePayload {
+    unsafe fn read_payload(&self) -> ZombiePayload { unsafe {
         let ptr = self.payload.get();
         (*ptr).assume_init_read()
-    }
+    }}
 }
 
 /// Components for RRef raw parts stored in zombie entry

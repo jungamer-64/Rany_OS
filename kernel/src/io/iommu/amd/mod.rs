@@ -2723,7 +2723,7 @@ pub unsafe fn init_iommu_from_ivrs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::iommu::iova_allocator::IovaAllocator;
+    
 
     fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         let unit = AmdIommuUnit {
@@ -2859,7 +2859,7 @@ mod tests {
     #[test]
     fn test_map_ivmd_ranges_exclusion_splits() {
         let pool = PageTablePool::new(1, 1);
-        let mut domain = DomainState::new(
+        let domain = DomainState::new(
             0,
             None,
             false,

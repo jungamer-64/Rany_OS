@@ -272,7 +272,7 @@ pub mod mm {
         static mut PER_CPU_PTR: *mut PerCpuData = core::ptr::null_mut();
 
         /// Get a mutable reference to per-CPU data (test shim)
-        pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> {
+        pub unsafe fn current_per_cpu_mut() -> Option<&'static mut PerCpuData> { unsafe {
             if !PER_CPU_INIT.load(Ordering::SeqCst) {
                 let boxed = Box::new(PerCpuData::new());
                 let ptr = Box::into_raw(boxed);
@@ -280,10 +280,10 @@ pub mod mm {
                 PER_CPU_INIT.store(true, Ordering::SeqCst);
             }
             (PER_CPU_PTR as *mut PerCpuData).as_mut()
-        }
+        }}
 
         /// Get an immutable reference to per-CPU data (test shim)
-        pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> {
+        pub unsafe fn current_per_cpu() -> Option<&'static PerCpuData> { unsafe {
             if !PER_CPU_INIT.load(Ordering::SeqCst) {
                 let boxed = Box::new(PerCpuData::new());
                 let ptr = Box::into_raw(boxed);
@@ -291,12 +291,12 @@ pub mod mm {
                 PER_CPU_INIT.store(true, Ordering::SeqCst);
             }
             (PER_CPU_PTR as *mut PerCpuData).as_ref()
-        }
+        }}
     }
 
     // Minimal fast allocator shim used by IOMMU tests
     pub mod fast_allocator {
-        use core::cell::RefCell;
+        
 
         pub const PAGE_SIZE_4K: u64 = 4096;
         pub const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
@@ -599,7 +599,7 @@ pub mod ipc {
     pub mod rref {
         use alloc::boxed::Box;
         use core::ops::{Deref, DerefMut};
-        use core::ptr::{self, NonNull};
+        use core::ptr::NonNull;
 
         use super::DomainId;
 
@@ -796,7 +796,7 @@ pub mod task {
     /// Synchronous helper to drive a Future to completion in tests
     pub fn block_on<F: core::future::Future>(future: F) -> F::Output {
         use alloc::sync::Arc;
-        use core::pin::Pin;
+        
         use core::sync::atomic::{AtomicBool, Ordering};
         use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 

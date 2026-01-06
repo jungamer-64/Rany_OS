@@ -53,5 +53,75 @@
 
 ---
 
-次のアクション: `kernel/src/mm/async_swapout.rs` のスケルトン実装と `mm/mod.rs` への登録、
-`page_reclaim.rs` のキュー呼び出し埋め込みを行います（まずはテスト用実装）。
+## プロダクションワーカ設計（Kernel-safe Persistent Worker）
+
+### 目的
+
+- カーネル実行環境（no_std）で安全に動作する永続バックグラウンドワーカを実装し、
+  ダーティページの非同期書き戻し・スワップアウトを効率的に処理する。
+- 書き戻し/スワップ完了時にフレームを確実に解放してメモリ圧力を緩和し、
+  MemCG の不変量（トラック / アンチャージ）を保持する。
+
+### 要求仕様（高レベル）
+
+- `try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHandle, SwapError>` は非ブロッキングで高速に失敗を返せること（呼び出し元はフォールバック可能）。
+- キューはバウンド容量を持ち、バックプレッシャを提供する（QueueFull を返す）。
+- 二重キュー化防止のため `pending` セットを保持する。
+- ワーカは Executor の Task として永続的に実行され、バッチ処理と遅延ポーリングで IO のスループットとレイテンシを両立する。
+- 優先度（ファイル書き戻しを優先）や QoS を将来導入できる設計にする。
+
+### API と失敗モード
+
+- 成功: `Ok(SwapHandle)`（非同期完了を待てるハンドル、もしくは空ハンドル）
+- 失敗: `SwapError::AlreadyPending`（同じフレームが既に処理待ち）、`SwapError::QueueFull`（容量不足）、`SwapError::NotSupported`（環境上未サポート）
+
+呼び出し側（page_reclaim）は `AlreadyPending` / `QueueFull` を受け取った場合に同期フォールバック（該当ページの即時 writeback または global sync）を行う。
+
+### キュー実装方針
+
+- 最終設計は lock-free のリングバッファを目指すが、まずは `spin::Mutex` + `VecDeque` ベースで `try_lock()` を利用した非ブロッキング合成を実装する（テストしやすさと安全性優先）。
+- `try_enqueue_swapout` は `try_lock()` に失敗した場合に即座に `QueueFull` を返す（ISRでの呼出を想定しないが、呼び出しが短時間で済むことを保証する）。
+- `pending` セットで二重登録を防ぎ、書き戻し完了で `pending` を解除する。
+
+### ワーカ実行モデル
+
+- Executor 上の永続 Task として実装し、ループ内で `WaitForWork` を await → バッチを取り出して処理。
+- 1ループあたりの最大処理数は `BATCH_SIZE` で制限し、各バッチ後に `yield`（await の形で）して長時間のブロッキングを避ける。
+- ファイルページは `PageCache::sync_page(ino,page,writer)` を用いて精密書き戻しを試みる。書き戻し成功時に `frame_backing::untrack_frame_backing()` → `buddy_dealloc_frame()` を行う（これにより memcg のアンチャージが行われる既存経路を利用）。
+- 匿名ページはまず `zswap` に格納を試み、成功／失敗に関わらずフレームは `buddy_dealloc_frame()` で返却（zswap miss 時は後続で swap-on-disk 実装を試みる）。
+
+### バックプレッシャ & 優先度
+
+- キューの閾値（high_water, reserve_for_file 等）を設け、ファイル書き戻し用の予約容量を検討する。
+- キュー満杯時は `QueueFull` を返し、page_reclaim 側で同期書き戻しへフォールバックすることで進行性を担保する。
+
+### エラーと代替経路
+
+- 書き込み失敗時は global `page_cache().sync_all()` にフォールバックして再試行・進行性を確保する。
+- それでも進展しない場合は `writeback_skipped` カウントをインクリメントして回収をスキップする（再試行は将来の reclaim パスに委ねる）。
+
+### セーフティ / MemCG 不変量
+
+- フレームの最終解放は `buddy_dealloc_frame()` 経路で行い、各 4KiB 単位で `memcg_untrack_page()` / `memcg_uncharge()` が行われることを前提とする。
+- ワーカは書き戻し成功を確認してからフレームを解放する。書き戻し失敗時はフォールバック経路で解放・アンチャージを行うか、スキップカウントを増やして明示する。
+
+### テスト計画
+
+- 単体: ファイル書き戻しの非同期完了、二重キュー化の回避（AlreadyPending）、QueueFull の返却
+- 統合: 高並列の enqueue と reclaim をシミュレートして memcg 不変量（アンチャージの二重実行やリーク）が発生しないことを確認
+- ストレス: キューが満杯になった際のフォールバック動作・遅延特性を検証
+
+### ワーカのインスペクションと停止（カーネル用 API）
+
+- `queued_counts() -> (usize, usize)`: 現在の総キュー長とファイル書き戻しエントリ数を返す（監視 / メトリクス向け）
+- `is_worker_running() -> bool`: ワーカが稼働中かどうかを返す
+- `stop_worker()`: ワーカに対してグレースフルシャットダウンをリクエストする（キューが空くまで現在の処理を継続し、その後停止することを試みる）。この呼び出しは再開 (restart) を保証しないため、通常はテストや一時的なシャットダウン用途に留める。
+
+---
+
+次のアクション:
+1) この設計をもとに `kernel/src/mm/async_swapout.rs` のプロダクション実装を進める（まずは `try_lock()` ベースのバウンドキュー）
+2) カーネル向けバウンドキュープリミティブを実装しユニットテストを追加
+3) ワーカを `Executor` に統合し、優先度・バッチング・バックプレッシャを実装して統合テストを追加
+4) パフォーマンスと memcg 保証のためのストレステストを実行し設計を調整する
+
