@@ -11,15 +11,33 @@ use alloc::vec::Vec;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::virtio::init_virtio_net_for_device;
+
 /// VirtIO-Net driver wrapper for DriverRegistry
 pub struct VirtioNetDriver {
     initialized: bool,
+    mmio_base: Option<u64>,
+    iommu_id: Option<IommuDeviceId>,
 }
 
 impl VirtioNetDriver {
-    /// Create a new VirtIO-Net driver
+    /// Create a new VirtIO-Net driver (legacy default)
     pub fn new() -> Self {
-        Self { initialized: false }
+        Self { 
+            initialized: false,
+            mmio_base: None,
+            iommu_id: None,
+        }
+    }
+
+    /// Create a new VirtIO-Net driver with specific device configuration
+    pub fn new_with_device(mmio_base: u64, iommu_id: IommuDeviceId) -> Self {
+        Self {
+            initialized: false,
+            mmio_base: Some(mmio_base),
+            iommu_id: Some(iommu_id),
+        }
     }
 }
 
@@ -37,13 +55,27 @@ impl Driver for VirtioNetDriver {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        // Check if VirtIO-Net device is available
+        // If specific device info is provided, initialize the device first
+        if let (Some(base), Some(id)) = (self.mmio_base, self.iommu_id) {
+            log::info!(target: "net", "Probing VirtIO-Net at {:#x}", base);
+            match init_virtio_net_for_device(base as usize, id) {
+                Ok(_) => {
+                    log::info!(target: "net", "VirtIO-Net device initialized");
+                }
+                Err(e) => {
+                    log::error!(target: "net", "Failed to initialize VirtIO-Net device: {:?}", e);
+                    return Err(KapiError::IoError);
+                }
+            }
+        }
+
+        // Check if VirtIO-Net device is available (global instance)
         if super::driver_bridge::is_initialized() {
             self.initialized = true;
             return Ok(());
         }
 
-        // Try to initialize the bridge
+        // Initialize the bridge (connects global device to stack)
         match super::driver_bridge::init_bridge() {
             Ok(()) => {
                 self.initialized = true;
@@ -55,7 +87,7 @@ impl Driver for VirtioNetDriver {
 
     fn start(&mut self) -> KapiResult<()> {
         if !self.initialized {
-            return Err(KapiError::NotSupported);
+            return Err(KapiError::Internal(-1));
         }
 
         // Bridge is already started during probe

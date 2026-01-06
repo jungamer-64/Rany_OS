@@ -17,6 +17,7 @@
 #![allow(dead_code)]
 
 pub mod blk;
+pub mod blk_driver;
 pub mod net;
 
 // Re-export defs from virtio_driver crate
@@ -47,3 +48,4 @@ pub use blk::{
     VringDesc as BlkVringDesc, features as blk_features, handle_virtio_blk_interrupt,
     init_virtio_blk, init_virtio_blk_for_device,
 };
+pub use blk_driver::VirtioBlkDriver;
