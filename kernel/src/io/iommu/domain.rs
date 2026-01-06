@@ -2436,15 +2436,13 @@ impl IommuDomain {
             level: 0,
             next_idx: 0,
         }; MAX_STACK_DEPTH];
-        let mut stack_top: usize = 0;
-
         // Push root table
         stack[0] = StackEntry {
             table_ptr: self.page_table,
             level: PT_LEVELS,
             next_idx: 0,
         };
-        stack_top = 1;
+        let mut stack_top: usize = 1;
 
         while stack_top > 0 {
             let entry_idx = stack_top - 1;

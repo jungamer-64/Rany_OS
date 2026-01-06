@@ -27,6 +27,7 @@
 
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use x86_64::registers::control::Cr2;
+use x86_64::structures::idt::InterruptStackFrame;
 
 use super::rcu::rcu_read_lock;
 use super::rcu_vma::{VmArea, VmaFlags};
@@ -354,6 +355,7 @@ fn handle_vma_fault(
 /// Demand Paging フォルトハンドラ
 ///
 /// 初回アクセス時にページを割り当て、ゼロクリアしてマッピングする。
+#[allow(unused_assignments)]
 fn handle_demand_paging(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultResult {
     FAULT_STATS.demand_paging.fetch_add(1, Ordering::Relaxed);
     

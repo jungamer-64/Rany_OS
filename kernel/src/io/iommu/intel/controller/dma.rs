@@ -131,6 +131,7 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
 
     let page_size = crate::io::iommu::PAGE_SIZE_4K;
     let mut mapped_count = 0u32;
+    #[allow(unused_assignments)]
     let mut error_count = 0u32;
 
     for region in registry.reserved_regions() {
