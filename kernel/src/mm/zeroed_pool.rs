@@ -22,6 +22,63 @@ use x86_64::PhysAddr;
 use crate::sync::IrqMutex;
 use super::types::NumaNodeId;
 
+// ============================================================================
+// Non-Temporal Zeroing (Cache Pollution Prevention)
+// ============================================================================
+
+/// ページを Non-Temporal Store でゼロクリア（AVX2/SSE2）
+/// 
+/// キャッシュを汚さずにメモリを初期化する。アイドル時のバックグラウンド
+/// ゼロクリアに最適。
+/// 
+/// # Safety
+/// - `virt_addr` は 4096 バイト以上のアクセス可能なメモリを指すこと
+/// - `virt_addr` は 64 バイトアライン推奨（パフォーマンス最適化）
+#[inline]
+pub unsafe fn zero_page_nontemporal(virt_addr: u64) {
+    let ptr = virt_addr as *mut u8;
+    
+    #[cfg(target_arch = "x86_64")]
+    {
+        use core::arch::x86_64::*;
+        
+        // Check if AVX2 is available (done at compile time with target_feature)
+        // Use SSE2 which is guaranteed on x86_64
+        let zero = _mm_setzero_si128();
+        let mut offset = 0usize;
+        
+        // 4096 bytes / 16 bytes per MOVNTDQ = 256 iterations
+        // Unroll 4x for better throughput = 64 iterations
+        while offset < 4096 {
+            _mm_stream_si128(ptr.add(offset) as *mut __m128i, zero);
+            _mm_stream_si128(ptr.add(offset + 16) as *mut __m128i, zero);
+            _mm_stream_si128(ptr.add(offset + 32) as *mut __m128i, zero);
+            _mm_stream_si128(ptr.add(offset + 48) as *mut __m128i, zero);
+            offset += 64;
+        }
+        
+        // Memory fence to ensure all stores are visible
+        _mm_sfence();
+    }
+    
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        // Fallback for non-x86_64
+        core::ptr::write_bytes(ptr, 0, 4096);
+    }
+}
+
+/// ページを標準的な方法でゼロクリア（通常のストア命令）
+/// 
+/// 即座にゼロクリアされたページを使う場合（ユーザー空間への
+/// ページ割り当て直前など）に使用。キャッシュに載るので
+/// 直後の読み書きが高速。
+#[inline]
+pub unsafe fn zero_page_standard(virt_addr: u64) {
+    let ptr = virt_addr as *mut u8;
+    core::ptr::write_bytes(ptr, 0, 4096);
+}
+
 /// Per-NUMAノードのゼロ済みフレームプール容量
 const ZEROED_POOL_CAPACITY: usize = 256;
 
@@ -262,10 +319,10 @@ fn refill_pool_if_needed(node: usize) -> usize {
             None => break,
         };
 
-        // フレームをゼロクリア
+        // フレームをゼロクリア（Non-Temporal Store でキャッシュ汚染を防止）
         let virt_addr = crate::mm::mapping::phys_to_virt(frame.start_address());
         unsafe {
-            core::ptr::write_bytes(virt_addr.as_u64() as *mut u8, 0, 4096);
+            zero_page_nontemporal(virt_addr.as_u64());
         }
 
         // プールに追加

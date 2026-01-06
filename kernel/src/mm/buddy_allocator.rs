@@ -1011,6 +1011,12 @@ impl BuddyFrameAllocator {
     /// 4KiB フレームを解放
     pub fn deallocate_4k_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+        // Memcg: ページがmemcgでトラックされている場合はアンチャージ
+        if let Some(info) = super::memcg::memcg_untrack_page(frame_idx) {
+            let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+        }
+
         self.deallocate_order(frame_idx, 0);
     }
 
@@ -1018,18 +1024,38 @@ impl BuddyFrameAllocator {
     /// 
     /// 大きなブロックは即時結合を使用（スラッシングのリスクが低い）
     pub fn deallocate_2m_frame(&mut self, frame: PhysFrame<Size2MiB>) {
-        let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frames_count = PAGE_SIZE_2M / PAGE_SIZE_4K;
+
+        // Memcg: 各4KiBページについてアンチャージ/アンストラックする
+        for i in 0..frames_count {
+            let idx = FrameIndex::new(start_frame.as_usize() + i);
+            if let Some(info) = super::memcg::memcg_untrack_page(idx) {
+                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+            }
+        }
+
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
-        self.deallocate_order_immediate(frame_idx, order);
+        self.deallocate_order_immediate(start_frame, order);
     }
 
     /// 1GiB フレームを解放
     /// 
     /// 大きなブロックは即時結合を使用（スラッシングのリスクが低い）
     pub fn deallocate_1g_frame(&mut self, frame: PhysFrame<Size1GiB>) {
-        let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
+        let frames_count = PAGE_SIZE_1G / PAGE_SIZE_4K;
+
+        // Memcg: 各4KiBページについてアンチャージ/アンストラックする
+        for i in 0..frames_count {
+            let idx = FrameIndex::new(start_frame.as_usize() + i);
+            if let Some(info) = super::memcg::memcg_untrack_page(idx) {
+                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+            }
+        }
+
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
-        self.deallocate_order_immediate(frame_idx, order);
+        self.deallocate_order_immediate(start_frame, order);
     }
 
     /// 連続する物理フレームを割り当て（2のべき乗に切り上げ）

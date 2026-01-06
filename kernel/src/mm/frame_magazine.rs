@@ -45,6 +45,13 @@ pub const REFILL_BATCH: usize = 16;
 /// バッチ返却のトリガー閾値
 pub const DRAIN_THRESHOLD: usize = MAGAZINE_CAPACITY - 4;
 
+/// Per-CPU ゼロクリア済みフレームキャッシュ容量
+/// グローバルプールへのロック頻度を減らすため、各CPUがローカルにキャッシュ
+pub const ZEROED_CACHE_CAPACITY: usize = 16;
+
+/// ゼロクリア済みキャッシュのバッチ補充サイズ
+pub const ZEROED_REFILL_BATCH: usize = 8;
+
 /// 4KiBページサイズ
 const PAGE_SIZE_4K: u64 = 4096;
 
@@ -255,6 +262,150 @@ impl Default for LocalFreeWordStack {
 }
 
 // ============================================================================
+// Zeroed Frame Cache (Per-CPU Cache for Pre-Zeroed Pages)
+// ============================================================================
+
+/// Per-CPU ゼロクリア済みフレームキャッシュ
+/// 
+/// グローバルな `ZeroedFramePool` へのロック取得を減らすため、
+/// 各CPUが少量のゼロクリア済みフレームをローカルにキャッシュする。
+/// 
+/// ## 用途
+/// 
+/// - ユーザー空間へのページ割り当て（COW、mmap、スタック拡張等）
+/// - ページテーブルの割り当て
+/// 
+/// ## 動作
+/// 
+/// 1. `alloc_zeroed` で要求時、まずローカルキャッシュから取得
+/// 2. キャッシュが空なら `ZeroedFramePool` からバッチ補充
+/// 3. プールも空ならオンデマンドでゼロクリア
+#[repr(C)]
+pub struct ZeroedFrameCache {
+    /// ゼロクリア済みフレームのアドレス配列
+    frames: [u64; ZEROED_CACHE_CAPACITY],
+    /// 現在のフレーム数
+    count: usize,
+    /// 統計: ヒット回数
+    hit_count: u64,
+    /// 統計: ミス回数（グローバルプールにフォールバック）
+    miss_count: u64,
+    /// 統計: リフィル回数
+    refill_count: u64,
+}
+
+impl ZeroedFrameCache {
+    /// 空のキャッシュを作成
+    pub const fn new() -> Self {
+        Self {
+            frames: [0; ZEROED_CACHE_CAPACITY],
+            count: 0,
+            hit_count: 0,
+            miss_count: 0,
+            refill_count: 0,
+        }
+    }
+
+    /// キャッシュが空かどうか
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    /// キャッシュが満杯かどうか
+    #[inline]
+    pub fn is_full(&self) -> bool {
+        self.count >= ZEROED_CACHE_CAPACITY
+    }
+
+    /// 現在のフレーム数
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// ゼロクリア済みフレームを取得
+    #[inline]
+    pub fn pop(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        if self.count == 0 {
+            self.miss_count += 1;
+            return None;
+        }
+
+        self.count -= 1;
+        let addr = self.frames[self.count];
+        self.frames[self.count] = 0;
+        self.hit_count += 1;
+
+        Some(unsafe { PhysFrame::from_start_address_unchecked(PhysAddr::new(addr)) })
+    }
+
+    /// ゼロクリア済みフレームをキャッシュに追加
+    #[inline]
+    pub fn push(&mut self, frame: PhysFrame<Size4KiB>) -> bool {
+        if self.count >= ZEROED_CACHE_CAPACITY {
+            return false;
+        }
+
+        self.frames[self.count] = frame.start_address().as_u64();
+        self.count += 1;
+        true
+    }
+
+    /// グローバルプールからバッチ補充
+    pub fn refill_from_global(&mut self, numa_node: usize) {
+        use super::zeroed_pool;
+
+        for _ in 0..ZEROED_REFILL_BATCH {
+            if self.is_full() {
+                break;
+            }
+
+            if let Some(frame) = zeroed_pool::allocate_zeroed_frame(numa_node) {
+                self.push(frame);
+            } else {
+                break;
+            }
+        }
+
+        if self.count > 0 {
+            self.refill_count += 1;
+        }
+    }
+
+    /// 統計情報を取得
+    pub fn stats(&self) -> ZeroedCacheStats {
+        ZeroedCacheStats {
+            current_count: self.count,
+            hit_count: self.hit_count,
+            miss_count: self.miss_count,
+            refill_count: self.refill_count,
+            hit_rate_percent: if self.hit_count + self.miss_count > 0 {
+                (self.hit_count * 100) / (self.hit_count + self.miss_count)
+            } else {
+                0
+            },
+        }
+    }
+}
+
+impl Default for ZeroedFrameCache {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// ゼロクリア済みキャッシュ統計
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ZeroedCacheStats {
+    pub current_count: usize,
+    pub hit_count: u64,
+    pub miss_count: u64,
+    pub refill_count: u64,
+    pub hit_rate_percent: u64,
+}
+
+// ============================================================================
 // Frame Magazine
 // ============================================================================
 
@@ -340,6 +491,11 @@ impl Default for FrameMagazine {
 /// - Activeが空になったらSpareと即座にswap
 /// - バックグラウンドでSpareを非同期リフィル
 /// - ホットパスでのBuddyロック競合を最小化
+/// 
+/// ## ゼロクリア済みキャッシュ
+/// 
+/// ユーザー空間へのページ割り当て（常にゼロクリアが必要）の高速化のため、
+/// Per-CPU の zeroed_cache を保持。グローバル ZeroedFramePool へのロック取得を削減。
 #[repr(C)]
 pub struct PerCpuMagazineSet {
     /// Activeマガジン（通常のalloc/freeで使用）
@@ -349,6 +505,9 @@ pub struct PerCpuMagazineSet {
     /// Sub-magazine for claimed word optimization (64x atomic reduction)
     /// Highest priority in allocation hot path
     sub_magazine: SubFrameMagazine,
+    /// ゼロクリア済みフレームのPer-CPUキャッシュ
+    /// ユーザー空間ページ割り当て用
+    zeroed_cache: ZeroedFrameCache,
     /// 所属NUMAノード
     numa_node: NumaNodeId,
     /// バックグラウンドリフィル要求フラグ
@@ -366,6 +525,8 @@ pub struct PerCpuMagazineSet {
     bg_refill_count: u64,
     /// 統計: SubMagazineからの割り当て回数
     sub_magazine_hits: u64,
+    /// 統計: ゼロクリア済みキャッシュからの割り当て回数
+    zeroed_cache_hits: u64,
 }
 
 impl PerCpuMagazineSet {
@@ -375,6 +536,7 @@ impl PerCpuMagazineSet {
             active: FrameMagazine::new(),
             spare: FrameMagazine::new(),
             sub_magazine: SubFrameMagazine::new(),
+            zeroed_cache: ZeroedFrameCache::new(),
             numa_node,
             refill_pending: core::sync::atomic::AtomicBool::new(false),
             alloc_count: 0,
@@ -383,6 +545,7 @@ impl PerCpuMagazineSet {
             drain_count: 0,
             bg_refill_count: 0,
             sub_magazine_hits: 0,
+            zeroed_cache_hits: 0,
         }
     }
 
@@ -425,6 +588,43 @@ impl PerCpuMagazineSet {
             self.alloc_count += 1;
             frame
         })
+    }
+
+    /// ゼロクリア済みフレームを割り当て（ユーザー空間向け）
+    /// 
+    /// Priority:
+    /// 1. **Fastest**: Per-CPU zeroed cache (ロックなし)
+    /// 2. **Fast**: グローバル ZeroedFramePool からバッチ補充してから取得
+    /// 3. **Slow**: 通常フレームを取得してオンデマンドゼロクリア
+    #[inline]
+    pub fn alloc_zeroed(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        // Fastest path: Per-CPU zeroed cache
+        if let Some(frame) = self.zeroed_cache.pop() {
+            self.zeroed_cache_hits += 1;
+            self.alloc_count += 1;
+            return Some(frame);
+        }
+
+        // Medium path: グローバルプールからバッチ補充
+        self.zeroed_cache.refill_from_global(self.numa_node.as_u8() as usize);
+        if let Some(frame) = self.zeroed_cache.pop() {
+            self.zeroed_cache_hits += 1;
+            self.alloc_count += 1;
+            return Some(frame);
+        }
+
+        // Slow path: 通常フレームを取得してオンデマンドゼロクリア
+        if let Some(frame) = self.alloc() {
+            // Note: alloc() already incremented alloc_count
+            let virt_addr = crate::mm::mapping::phys_to_virt(frame.start_address());
+            unsafe {
+                // 即座に使うのでキャッシュに載せる標準ゼロクリアを使用
+                super::zeroed_pool::zero_page_standard(virt_addr.as_u64());
+            }
+            return Some(frame);
+        }
+
+        None
     }
 
     /// フレームを解放（ロックフリー fast path）
@@ -508,11 +708,14 @@ impl PerCpuMagazineSet {
             active_count: self.active.len(),
             spare_count: self.spare.len(),
             sub_magazine_count: self.sub_magazine.remaining_count(),
+            zeroed_cache_count: self.zeroed_cache.len(),
             alloc_count: self.alloc_count,
             free_count: self.free_count,
             refill_count: self.refill_count,
             drain_count: self.drain_count,
             sub_magazine_hits: self.sub_magazine_hits,
+            zeroed_cache_hits: self.zeroed_cache_hits,
+            zeroed_cache_stats: self.zeroed_cache.stats(),
         }
     }
 
@@ -547,6 +750,8 @@ pub struct MagazineStats {
     pub spare_count: usize,
     /// Sub-magazine remaining frame count (claimed word)
     pub sub_magazine_count: usize,
+    /// Zeroed cache frame count
+    pub zeroed_cache_count: usize,
     /// Total allocations
     pub alloc_count: u64,
     /// Total frees
@@ -557,6 +762,10 @@ pub struct MagazineStats {
     pub drain_count: u64,
     /// SubMagazine hit count (64x more efficient than regular alloc)
     pub sub_magazine_hits: u64,
+    /// Zeroed cache hit count
+    pub zeroed_cache_hits: u64,
+    /// Detailed zeroed cache statistics
+    pub zeroed_cache_stats: ZeroedCacheStats,
 }
 
 // ============================================================================
