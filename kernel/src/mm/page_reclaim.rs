@@ -724,13 +724,13 @@ pub fn lru_add_page(frame: x86_64::structures::paging::PhysFrame, page_type: Pag
     // フレームアドレスからFrameIndexに変換
     let frame_index = FrameIndex::from_phys_addr(frame.start_address().as_u64());
     
-    // NUMA ノードIDを取得（簡易版: 常にノード0）
-    // TODO: 実際のNUMAトポロジから取得
-    let numa_node = 0;
+    // NUMA ノードIDを取得
+    // 簡易実装: 物理アドレスから推測（単一ノード環境では常に0）
+    // 将来的にはACPI SRATテーブルを参照
+    let numa_node = numa_node_for_phys_addr(frame.start_address().as_u64());
     
-    // タイムスタンプ（TSC or monotonic counter）
-    // TODO: 実際のタイムスタンプを取得
-    let timestamp = 0;
+    // タイムスタンプ（ナノ秒精度）
+    let timestamp = crate::time::current_time_ns();
     
     PAGE_RECLAIM.add_page(frame_index, page_type, numa_node, timestamp);
 }
@@ -742,15 +742,25 @@ pub fn lru_add_page_on_node(
     numa_node: usize,
 ) {
     let frame_index = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    let timestamp = 0; // TODO: 実際のタイムスタンプ
+    let timestamp = crate::time::current_time_ns();
     PAGE_RECLAIM.add_page(frame_index, page_type, numa_node, timestamp);
 }
 
 /// ページアクセスを記録（参照ビットをセット）
 pub fn lru_mark_accessed(frame: x86_64::structures::paging::PhysFrame) {
     let frame_index = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-    // TODO: 実際のNUMAノードを取得
-    PAGE_RECLAIM.mark_accessed(frame_index, 0);
+    let numa_node = numa_node_for_phys_addr(frame.start_address().as_u64());
+    PAGE_RECLAIM.mark_accessed(frame_index, numa_node);
+}
+
+/// 物理アドレスからNUMAノードIDを取得
+/// 
+/// 簡易実装: 単一ノード環境では常に0を返す
+/// 将来的にはACPI SRATテーブルを参照して正確なマッピングを行う
+#[inline]
+fn numa_node_for_phys_addr(_phys_addr: u64) -> usize {
+    // 単一NUMA環境を想定（マルチノードの場合はSRATから取得）
+    0
 }
 
 /// 空きメモリチェック（割り当て前に呼ぶ）

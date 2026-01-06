@@ -28,7 +28,8 @@ use spin::RwLock;
 
 use super::frame_allocator::alloc_frame;
 use super::higher_half::{global_map_page, PageFlags, MapError, VirtAddr, PhysAddr};
-use super::memcg::{memcg_charge, ChargeType, MemcgId};
+use super::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, MemcgId};
+use super::types::FrameIndex;
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 // ============================================================================
@@ -352,8 +353,11 @@ fn grow_single_page(page_addr: VirtAddr) -> StackResult {
     zero_page(frame_phys);
     
     // Memcgチャージ
-    // TODO: 現在のタスクのmemcg IDを取得
-    let _ = memcg_charge(MemcgId::ROOT, 1, ChargeType::Anon);
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
+        super::frame_allocator::dealloc_frame(frame);
+        return StackResult::OutOfMemory;
+    }
     
     // マッピング作成
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
@@ -362,10 +366,12 @@ fn grow_single_page(page_addr: VirtAddr) -> StackResult {
         Ok(()) => {}
         Err(MapError::AlreadyMapped) => {
             // 既にマッピング済み（レースコンディション）
+            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
             super::frame_allocator::dealloc_frame(frame);
             return StackResult::Ok;
         }
         Err(_) => {
+            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
             super::frame_allocator::dealloc_frame(frame);
             return StackResult::OutOfMemory;
         }
@@ -373,6 +379,10 @@ fn grow_single_page(page_addr: VirtAddr) -> StackResult {
     
     // LRUに追加
     lru_add_page(frame, LruPageType::Anonymous);
+
+    // ページとmemcgを追跡
+    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
+    memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
     
     StackResult::Ok
 }

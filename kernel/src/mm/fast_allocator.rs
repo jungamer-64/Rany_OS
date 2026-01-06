@@ -562,6 +562,63 @@ impl FastBitmapAllocator {
     }
 
     // ========================================================================
+    // Bounded Allocation
+    // ========================================================================
+
+    /// Allocate 4KB page below limit
+    pub fn allocate_4k_below(&self, limit: u64) -> Option<u64> {
+        if limit >= self.base + self.size {
+            return self.allocate_4k();
+        }
+        if limit <= self.base { return None; }
+        
+        // Strict limit: bypass magazine
+        let limit_idx = ((limit - self.base) / PAGE_SIZE_4K) as usize;
+        
+        if let Some(idx) = self.bitmap.allocate_4k_below(limit_idx) {
+             let addr = self.base + (idx as u64) * PAGE_SIZE_4K;
+             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+             Some(addr)
+        } else {
+             None
+        }
+    }
+
+    /// Allocate 2MB page below limit
+    pub fn allocate_2m_below(&self, limit: u64) -> Option<u64> {
+        if limit >= self.base + self.size {
+            return self.allocate_2m();
+        }
+        if limit <= self.base { return None; }
+
+        let limit_idx = ((limit - self.base) / PAGE_SIZE_2M) as usize;
+        if let Some(idx) = self.bitmap.allocate_2m_below(limit_idx) {
+             let addr = self.base + (idx as u64) * PAGE_SIZE_2M;
+             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+             Some(addr)
+        } else {
+             None
+        }
+    }
+
+    /// Allocate 1GB page below limit
+    pub fn allocate_1g_below(&self, limit: u64) -> Option<u64> {
+         if limit >= self.base + self.size {
+            return self.allocate_1g();
+         }
+         if limit <= self.base { return None; }
+
+         let limit_idx = ((limit - self.base) / PAGE_SIZE_1G) as usize;
+         if let Some(idx) = self.bitmap.allocate_1g_below(limit_idx) {
+             let addr = self.base + (idx as u64) * PAGE_SIZE_1G;
+             self.stats.bitmap_allocs.fetch_add(1, Ordering::Relaxed);
+             Some(addr)
+         } else {
+             None
+         }
+    }
+
+    // ========================================================================
     // Free Operations
     // ========================================================================
 

@@ -34,3 +34,110 @@ pub fn is_iommu_enabled() -> bool {
 pub fn init_driver(driver: Arc<IommuBackend>) {
     IOMMU_DRIVER.call_once(|| driver);
 }
+
+// ========================================================================
+// Device DMA Address Mask Registry
+// ========================================================================
+
+use alloc::collections::BTreeMap;
+use spin::RwLock;
+use super::types::{DeviceId, IommuError};
+
+// Per-device DMA address masks (inclusive).
+static DEVICE_DMA_MASKS: RwLock<BTreeMap<DeviceId, u64>> = RwLock::new(BTreeMap::new());
+
+/// Register or update a device DMA mask (inclusive).
+///
+/// Example: 32-bit DMA mask => 0xFFFF_FFFF.
+pub fn register_device_dma_mask(device: DeviceId, mask: u64) {
+    DEVICE_DMA_MASKS.write().insert(device, mask);
+}
+
+/// Register a device DMA mask using a bit width (1..=64).
+pub fn register_device_dma_width(device: DeviceId, bits: u8) -> Result<(), IommuError> {
+    if bits == 0 || bits > 64 {
+        return Err(IommuError::InvalidAddress);
+    }
+
+    let mask = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    register_device_dma_mask(device, mask);
+    Ok(())
+}
+
+/// Clear a previously registered DMA mask for a device.
+pub fn clear_device_dma_mask(device: DeviceId) {
+    DEVICE_DMA_MASKS.write().remove(&device);
+}
+
+/// Get a device DMA mask if registered.
+pub fn get_device_dma_mask(device: &DeviceId) -> Option<u64> {
+    DEVICE_DMA_MASKS.read().get(device).copied()
+}
+
+fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
+    if size == 0 {
+        return true;
+    }
+
+    let end = match addr.checked_add(size) {
+        Some(end) => end,
+        None => return false,
+    };
+
+    let limit = (mask as u128) + 1;
+    (addr as u128) <= (mask as u128) && (end as u128) <= limit
+}
+
+#[allow(dead_code)]
+pub(crate) fn validate_device_dma_mask(device: &DeviceId, addr: u64, size: u64) -> Result<(), IommuError> {
+    let Some(mask) = get_device_dma_mask(device) else {
+        return Ok(());
+    };
+
+    if dma_mask_allows_range(mask, addr, size) {
+        Ok(())
+    } else {
+        Err(IommuError::InvalidAddress)
+    }
+}
+
+// ============================================================================
+// DMA Mask Pre-Validation (TOCTOU-safe)
+// ============================================================================
+
+/// Pre-validate that a mapping size can fit within the device's DMA mask.
+///
+/// # TOCTOU-Safety
+///
+/// This validation is performed **before** any IOVA allocation or page table
+/// modification. Combined with `allocate_iova_masked()`, this ensures that
+/// an invalid mapping is never created, eliminating the time-of-check
+/// time-of-use vulnerability window.
+///
+/// # Returns
+/// * `Ok(Some(mask))` - Device has a DMA mask, returned for use in allocation
+/// * `Ok(None)` - No mask registered, no constraint
+/// * `Err(IommuError::InvalidAddress)` - Size exceeds maximum addressable range
+pub(crate) fn validate_dma_mask_pre_allocation(device: &DeviceId, size: u64) -> Result<Option<u64>, IommuError> {
+    let Some(mask) = get_device_dma_mask(device) else {
+        return Ok(None);
+    };
+
+    // Check if the size alone exceeds the mask's addressable range
+    // (i.e., there exists no IOVA where `iova + size <= mask + 1`)
+    let max_addressable = (mask as u128) + 1;
+    if (size as u128) > max_addressable {
+        log::warn!(
+            "[IOMMU] DMA mapping size {} exceeds device {:?} mask limit {}",
+            size, device, max_addressable
+        );
+        return Err(IommuError::InvalidAddress);
+    }
+
+    Ok(Some(mask))
+}
+

@@ -36,7 +36,8 @@ use super::higher_half::{
     PageFlags, MapError, VirtAddr, PhysAddr,
 };
 use super::tlb_batch::flush_tlb_immediate;
-use super::memcg::{memcg_charge, ChargeType, MemcgId};
+use super::memcg::{memcg_charge, memcg_uncharge, memcg_track_page, ChargeType, MemcgId};
+use super::types::FrameIndex;
 use super::page_reclaim::{lru_add_page, PageType as LruPageType};
 
 // ============================================================================
@@ -365,30 +366,47 @@ fn handle_demand_paging(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> Fau
     zero_page(frame_phys);
     
     // Memcgチャージ（オプション）
-    // TODO: 現在のタスクのmemcg IDを取得
-    let _ = memcg_charge(MemcgId::ROOT, 1, ChargeType::Anon);
-    
+    let mut memcg_id = MemcgId::ROOT;
+    let mut memcg_charged = false;
+    // Demand Pagingの設定はdemand_paging.rsで管理される場合が多いが、
+    // フォールトハンドラでは常にプロセスのmemcgを参照してチャージを試行
+    memcg_id = crate::task::process::get_current_process_memcg_id();
+    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
+        super::frame_allocator::dealloc_frame(frame);
+        FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::OutOfMemory;
+    }
+    memcg_charged = true;
+
     // ページマッピング
     // デフォルトはRead/Write、User accessible
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
-    
+
     // Safety: ページテーブル操作
     match unsafe { global_map_page(page_addr, frame_phys, flags) } {
         Ok(()) => {}
         Err(MapError::AlreadyMapped) => {
             // 既にマッピングされている（レースコンディション）
-            // フレームを解放して成功として扱う
+            // チャージを戻してフレームを解放
+            if memcg_charged { memcg_uncharge(memcg_id, 1, ChargeType::Anon); }
             super::frame_allocator::dealloc_frame(frame);
             return FaultResult::Resolved;
         }
         Err(_) => {
+            if memcg_charged { memcg_uncharge(memcg_id, 1, ChargeType::Anon); }
             super::frame_allocator::dealloc_frame(frame);
             return FaultResult::KernelBug;
         }
     }
-    
+
     // LRUに追加
     lru_add_page(frame, LruPageType::Anonymous);
+
+    // ページとmemcgを追跡
+    if memcg_charged {
+        let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
+        memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
+    }
 
     FaultResult::DemandPaged
 }
@@ -447,8 +465,13 @@ fn handle_cow_fault(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultRe
     copy_page(old_phys, new_phys);
     
     // Memcgチャージ
-    let _ = memcg_charge(MemcgId::ROOT, 1, ChargeType::Anon);
-    
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
+        super::frame_allocator::dealloc_frame(new_frame);
+        FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::OutOfMemory;
+    }
+
     // 古いマッピングを削除
     // Safety: ページテーブル操作
     let _ = unsafe { global_unmap_page(page_addr) };
@@ -460,6 +483,8 @@ fn handle_cow_fault(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultRe
     match unsafe { global_map_page(page_addr, new_phys, flags) } {
         Ok(()) => {}
         Err(_) => {
+            // マッピング失敗: チャージを戻してフレーム解放
+            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
             super::frame_allocator::dealloc_frame(new_frame);
             return FaultResult::KernelBug;
         }
@@ -473,6 +498,10 @@ fn handle_cow_fault(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> FaultRe
     
     // LRUに追加
     lru_add_page(new_frame, LruPageType::Anonymous);
+
+    // ページとmemcgを追跡
+    let frame_idx = FrameIndex::from_phys_addr(new_phys.as_u64());
+    memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
     
     FaultResult::CowHandled
 }
@@ -542,7 +571,12 @@ fn handle_stack_growth(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> Faul
     zero_page(frame_phys);
     
     // Memcgチャージ
-    let _ = memcg_charge(MemcgId::ROOT, 1, ChargeType::Anon);
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    if memcg_charge(memcg_id, 1, ChargeType::Anon).is_err() {
+        super::frame_allocator::dealloc_frame(frame);
+        FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::OutOfMemory;
+    }
     
     // マッピング作成
     let flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE | PageFlags::USER);
@@ -551,10 +585,12 @@ fn handle_stack_growth(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> Faul
     match unsafe { global_map_page(page_addr, frame_phys, flags) } {
         Ok(()) => {}
         Err(MapError::AlreadyMapped) => {
+            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
             super::frame_allocator::dealloc_frame(frame);
             return FaultResult::Resolved;
         }
         Err(_) => {
+            memcg_uncharge(memcg_id, 1, ChargeType::Anon);
             super::frame_allocator::dealloc_frame(frame);
             return FaultResult::KernelBug;
         }
@@ -562,6 +598,10 @@ fn handle_stack_growth(fault_addr: VirtAddr, _error: PageFaultErrorCode) -> Faul
     
     // LRUに追加
     lru_add_page(frame, LruPageType::Anonymous);
+
+    // ページとmemcgを追跡
+    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
+    memcg_track_page(frame_idx, memcg_id, ChargeType::Anon);
     
     FaultResult::StackGrown
 }
@@ -599,8 +639,13 @@ fn handle_file_fault(fault_addr: VirtAddr, vma: &VmArea) -> FaultResult {
     let _ = file_offset; // 未使用警告を抑制
     
     // Memcgチャージ（ファイルキャッシュ）
-    let _ = memcg_charge(MemcgId::ROOT, 1, ChargeType::Cache);
-    
+    let memcg_id = crate::task::process::get_current_process_memcg_id();
+    if memcg_charge(memcg_id, 1, ChargeType::Cache).is_err() {
+        super::frame_allocator::dealloc_frame(frame);
+        FAULT_STATS.oom.fetch_add(1, Ordering::Relaxed);
+        return FaultResult::OutOfMemory;
+    }
+
     // マッピング作成
     let mut base_flags = PageFlags::PRESENT | PageFlags::USER;
     if vma.is_writable() {
@@ -608,23 +653,29 @@ fn handle_file_fault(fault_addr: VirtAddr, vma: &VmArea) -> FaultResult {
         base_flags |= PageFlags::WRITABLE;
     }
     let flags = PageFlags::new(base_flags);
-    
+
     // Safety: ページテーブル操作
     match unsafe { global_map_page(page_addr, frame_phys, flags) } {
         Ok(()) => {}
         Err(MapError::AlreadyMapped) => {
+            memcg_uncharge(memcg_id, 1, ChargeType::Cache);
             super::frame_allocator::dealloc_frame(frame);
             return FaultResult::Resolved;
         }
         Err(_) => {
+            memcg_uncharge(memcg_id, 1, ChargeType::Cache);
             super::frame_allocator::dealloc_frame(frame);
             return FaultResult::KernelBug;
         }
     }
-    
+
     // LRUに追加
     lru_add_page(frame, LruPageType::FileBacked);
-    
+
+    // ページとmemcgを追跡
+    let frame_idx = FrameIndex::from_phys_addr(frame_phys.as_u64());
+    memcg_track_page(frame_idx, memcg_id, ChargeType::Cache);
+
     FaultResult::FilePageLoaded
 }
 

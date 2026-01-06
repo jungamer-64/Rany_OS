@@ -466,11 +466,8 @@ impl CompactionManager {
         // 実装時は mm::higher_half::PageTableManager を使用
 
         // 4. TLBフラッシュ
-        // ローカルCPUのTLBをフラッシュ
-        flush_tlb_page(src_phys);
-        
-        // マルチCPU環境では IPI で他CPUにもフラッシュを要求
-        // TODO: broadcast_tlb_flush(src_phys);
+        // マルチCPU環境では IPI で全CPUにフラッシュを要求
+        broadcast_tlb_flush(src_phys);
 
         // 5. ソースページを解放
         buddy_allocator::buddy_dealloc_frame(source);
@@ -640,19 +637,18 @@ fn flush_tlb_page(phys_addr: u64) {
 ///
 /// # Warning
 /// これは高コストな操作。可能な限りバッチ処理すること。
-#[allow(unused)]
 fn broadcast_tlb_flush(phys_addr: u64) {
-    // ローカルCPUをまずフラッシュ
-    flush_tlb_page(phys_addr);
+    use super::mapping::PHYSICAL_MEMORY_OFFSET;
+    use x86_64::VirtAddr;
     
-    // TODO: IPIを使用して他CPUにフラッシュを要求
-    // 実装時は以下のフローになる:
-    // 1. TLB_FLUSH_REQUESTにアドレスを格納
-    // 2. 全CPUに IPI (Vector 0xFE など) を送信
-    // 3. 各CPUの IPI ハンドラでフラッシュを実行
-    // 4. ACKを待機（またはバリア同期）
-    //
-    // 現時点では単一CPU環境を想定
+    // 直接マッピングの仮想アドレスを計算
+    let virt_addr = VirtAddr::new(phys_addr + PHYSICAL_MEMORY_OFFSET);
+    
+    // TLBバッチシステムを使用して全CPUにフラッシュを送信
+    // flush_tlb_immediateは:
+    // 1. ローカルCPUのTLBをフラッシュ
+    // 2. IPI経由で他の全CPUにフラッシュを要求
+    super::tlb_batch::flush_tlb_immediate(virt_addr);
 }
 
 // ============================================================================

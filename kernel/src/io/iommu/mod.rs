@@ -16,6 +16,10 @@ pub mod cmdqueue;
 pub mod dma_handle;
 pub mod types;
 
+// Re-export specific modules used by api but also useful directly
+pub mod irq; 
+pub mod stats;
+
 pub use self::backend::IommuBackend;
 pub use self::types::{DeviceId, IommuError};
 
@@ -32,8 +36,6 @@ pub(crate) mod fault_log;
 pub(crate) mod flush;
 pub(crate) mod groups;
 pub(crate) mod interface;
-// pub(crate) mod iova_bitmap;  // High-performance bitmap-based IOVA allocator (Legacy)
-// pub(crate) use iova_bitmap::{IovaAllocatorFast, IovaGranularity, PAGE_SIZE_4K};
 
 pub(crate) mod iova_bitmap; // Keep module implementation for now (contains constants)
 // pub(crate) use iova_bitmap::PAGE_SIZE_4K;
@@ -49,9 +51,6 @@ pub(crate) mod quarantine;
 pub(crate) mod registry;
 pub(crate) mod security;
 pub(crate) mod tables;
-
-// Re-export fast allocator types for internal use
-// pub(crate) use iova_bitmap::{IovaAllocatorFast, IovaGranularity, PAGE_SIZE_4K};
 
 // Architectures (crate-local)
 pub(crate) mod amd;

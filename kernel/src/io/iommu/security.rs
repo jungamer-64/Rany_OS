@@ -1447,3 +1447,139 @@ fn invalidate_device_iotlb(source_id: u16) -> Result<(), IommuError> {
 }
 
 use crate::io::iommu::types::IommuError;
+
+// ============================================================================
+// Identity Mapping & Global Controls
+// ============================================================================
+
+use core::sync::atomic::AtomicBool;
+
+/// Identity mapping fallback gate (default: false).
+///
+/// # Security Warning
+///
+/// **CRITICAL**: Enabling identity mapping completely bypasses IOMMU protection
+/// and exposes the system to DMA attacks. A malicious or buggy device can:
+///
+/// - Read/write arbitrary physical memory (including kernel code and secrets)
+/// - Escalate privileges by modifying kernel data structures
+/// - Exfiltrate cryptographic keys and other sensitive data
+/// - Bypass all isolation guarantees provided by the IOMMU
+///
+/// This flag is available **only** when:
+/// - `feature = "unsafe_iommu_bypass"` is enabled, OR
+/// - `debug_assertions` are enabled (debug builds)
+///
+/// In release builds without `unsafe_iommu_bypass`, this flag does not exist
+/// and identity mapping is unconditionally prohibited.
+///
+/// ## RMRR (Reserved Memory Region Reporting) Exception
+///
+/// The **only** legitimate use of identity mapping in production is for RMRR
+/// regions declared by system firmware (ACPI DMAR table). These regions are:
+///
+/// - Legacy USB controllers that require specific physical addresses
+/// - BIOS/UEFI video buffers that firmware expects at fixed locations
+/// - Other firmware-reserved regions that cannot be relocated
+///
+/// RMRR mappings are handled automatically by the IOMMU driver during
+/// initialization and do NOT require enabling this global flag.
+///
+/// ## Acceptable Use Cases (Non-Production Only)
+/// - Very early boot (before IOMMU initialization completes)
+/// - Hardware debugging on trusted systems with no external devices
+/// - IOMMU hardware bring-up on new platforms
+///
+/// ## Never Use When
+/// - Untrusted PCIe devices are present
+/// - System processes sensitive data
+/// - Production deployments
+#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+static UNSAFE_ALLOW_IDENTITY_MAPPING: AtomicBool = AtomicBool::new(false);
+
+/// Global DMA mapping gate (device-scoped mappings remain allowed).
+static ALLOW_GLOBAL_MAPPINGS: AtomicBool = AtomicBool::new(cfg!(debug_assertions));
+
+/// Enable/disable identity mapping fallback.
+///
+/// # Safety
+///
+/// **DANGEROUS**: This function weakens or completely removes IOMMU protection.
+///
+/// The caller must guarantee:
+/// - This is called during a trusted early initialization phase
+/// - No untrusted PCIe/Thunderbolt devices are present
+/// - The system is in a controlled debugging environment
+/// - Identity mapping will be disabled before untrusted code runs
+///
+/// Enabling identity mapping in production environments is a **critical security vulnerability**.
+/// See [`UNSAFE_ALLOW_IDENTITY_MAPPING`] for detailed security implications.
+///
+/// # Platform Behavior
+/// - Debug builds: Sets the flag (with warning log)
+/// - Release builds with `unsafe_iommu_bypass`: Sets the flag (with warning log)
+/// - **Release builds without `unsafe_iommu_bypass`: Function does not exist (linker error if called)**
+///
+/// # Compile-Time Enforcement
+///
+/// In production release builds, this function is **not compiled at all**.
+/// Any attempt to call it will result in a linker error, preventing accidental usage.
+#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+pub unsafe fn set_unsafe_identity_mapping_allowed(allowed: bool) {
+    if allowed {
+        log::error!(
+            "[IOMMU][SECURITY][CRITICAL] Identity mapping ENABLED - \
+             system is VULNERABLE to DMA attacks! \
+             This should NEVER be enabled in production!"
+        );
+        log::error!("[IOMMU][SECURITY][TAINTED] TAINTED: IOMMU BYPASS ENABLED");
+        // Additional compile-time warning
+        #[cfg(all(not(debug_assertions), feature = "unsafe_iommu_bypass"))]
+        log::error!(
+            "[IOMMU][SECURITY] You are using unsafe_iommu_bypass in a release build. \
+             This feature should only be used for hardware bring-up and debugging."
+        );
+    } else {
+        log::info!("[IOMMU][SECURITY] Identity mapping DISABLED - DMA protection restored");
+    }
+    UNSAFE_ALLOW_IDENTITY_MAPPING.store(allowed, Ordering::Release);
+}
+
+// NOTE: In release builds without `unsafe_iommu_bypass`, this function is intentionally
+// **not defined**. This ensures that any code attempting to use identity mapping
+// will fail to compile/link in production builds.
+//
+// If you see a linker error about `set_unsafe_identity_mapping_allowed` not found,
+// it means you are trying to use identity mapping in a release build without
+// explicitly enabling the `unsafe_iommu_bypass` feature. This is by design.
+
+/// Check whether identity mapping fallback is allowed.
+///
+/// In release builds without `unsafe_iommu_bypass`, this always returns `false`
+/// and is marked `#[inline(always)]` to allow dead code elimination.
+#[cfg(any(feature = "unsafe_iommu_bypass", debug_assertions))]
+pub fn is_unsafe_identity_mapping_allowed() -> bool {
+    UNSAFE_ALLOW_IDENTITY_MAPPING.load(Ordering::Acquire)
+}
+
+/// Check whether identity mapping fallback is allowed.
+///
+/// In production release builds, this always returns `false` and is optimized
+/// away by the compiler, allowing all identity mapping code paths to be
+/// eliminated as dead code.
+#[cfg(not(any(feature = "unsafe_iommu_bypass", debug_assertions)))]
+#[inline(always)]
+pub fn is_unsafe_identity_mapping_allowed() -> bool {
+    false // Compile-time constant, enables dead code elimination
+}
+
+/// Enable/disable global DMA mappings (non device-scoped).
+pub fn set_global_dma_mapping_allowed(allowed: bool) {
+    ALLOW_GLOBAL_MAPPINGS.store(allowed, Ordering::Release);
+}
+
+/// Check whether global DMA mappings are allowed.
+pub fn is_global_dma_mapping_allowed() -> bool {
+    ALLOW_GLOBAL_MAPPINGS.load(Ordering::Acquire)
+}
+
