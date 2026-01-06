@@ -336,6 +336,7 @@ impl QrCode {
 }
 
 /// 英数字をQRコード用にエンコード
+#[allow(unused_assignments)]
 fn encode_alphanumeric(data: &str) -> Option<[u8; 26]> {
     let mut result = [0u8; 26];
     let mut bit_buffer: u32 = 0;

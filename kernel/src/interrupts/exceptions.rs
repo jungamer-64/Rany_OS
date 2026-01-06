@@ -1,3 +1,4 @@
+#![allow(unused_doc_comments)]
 // ============================================================================
 // src/interrupts/exceptions.rs - CPU Exception Handlers
 // 堅牢な例外処理：詳細なダンプ、リカバリ可能な場合の対応

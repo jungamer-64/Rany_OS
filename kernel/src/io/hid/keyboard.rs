@@ -55,7 +55,7 @@ pub use hid_driver::{
 pub use hid_driver::{KeyCodeExt, KeyEventExt};
 
 // to_char() method on KeyEvent
-use hid_driver::KeyEventExt as _KeyEventExt;
+// use hid_driver::KeyEventExt as _KeyEventExt;
 
 // Error types
 pub use hid_driver::StreamAlreadyTaken;

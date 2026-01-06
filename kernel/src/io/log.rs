@@ -134,6 +134,7 @@ struct RingBuffer<const N: usize> {
     full: bool,
 }
 
+#[allow(dead_code)]
 impl<const N: usize> RingBuffer<N> {
     pub const fn new() -> Self {
         Self {

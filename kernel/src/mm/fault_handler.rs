@@ -297,6 +297,16 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode) -> FaultR
     FaultResult::PermissionDenied
 }
 
+#[allow(unused_assignments)]
+#[allow(dead_code)]
+pub extern "x86-interrupt" fn page_fault_handler(
+    stack_frame: InterruptStackFrame,
+    error_code: PageFaultErrorCode,
+) {
+    let _ = stack_frame;
+    handle_page_fault(error_code.bits());
+}
+
 /// VMAに対するフォルト処理
 #[allow(dead_code)]
 fn handle_vma_fault(

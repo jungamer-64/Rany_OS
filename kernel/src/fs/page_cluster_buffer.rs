@@ -8,7 +8,7 @@ use core::ptr::NonNull;
 use core::slice;
 
 use fat32::{ClusterBuffer, ClusterBufferAllocator};
-use vfs::block::{DmaInfo, ZeroCopyBuffer};
+use vfs::block::DmaInfo;
 use x86_64::PhysAddr;
 
 use crate::mm::{alloc_contiguous_frames, dealloc_contiguous_frames, PAGE_SIZE_4K};
