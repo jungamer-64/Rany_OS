@@ -721,6 +721,55 @@ mod pcid_support {
     pub fn has_invpcid() -> bool {
         INVPCID_AVAILABLE.load(Ordering::Relaxed)
     }
+
+    /// CR4.PCIDE ビット（bit 17）
+    const CR4_PCIDE: u64 = 1 << 17;
+
+    /// PCIDを有効化（CR4.PCIDEをセット）
+    /// 
+    /// # Safety
+    /// - カーネルモードで実行すること
+    /// - 全CPUで呼び出すこと（BSPとAP両方）
+    /// - 現在のCR3がPCID 0（カーネル）で設定されていること
+    /// 
+    /// # Returns
+    /// - Ok(true): PCID有効化成功
+    /// - Ok(false): PCID非対応CPU
+    /// - Err: 有効化失敗
+    pub unsafe fn enable_pcid() -> Result<bool, &'static str> {
+        // まず機能をチェック
+        init_pcid_features();
+
+        if !has_pcid() {
+            log::info!("[PCID] CPU does not support PCID, skipping");
+            return Ok(false);
+        }
+
+        // 現在のCR4を読み取り
+        let cr4: u64;
+        core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
+
+        // 既に有効なら何もしない
+        if (cr4 & CR4_PCIDE) != 0 {
+            log::debug!("[PCID] Already enabled");
+            return Ok(true);
+        }
+
+        // CR3にPCIDを設定する前にCR4.PCIDEを有効化
+        // 注意: CR3の下位12ビットがPCIDとして解釈されるようになる
+        let new_cr4 = cr4 | CR4_PCIDE;
+        core::arch::asm!("mov cr4, {}", in(reg) new_cr4, options(nostack));
+
+        log::info!("[PCID] Enabled CR4.PCIDE (INVPCID={})", has_invpcid());
+
+        Ok(true)
+    }
+
+    /// PCID初期化済みか確認
+    #[inline]
+    pub fn is_initialized() -> bool {
+        PCID_INITIALIZED.load(Ordering::Acquire)
+    }
 }
 
 /// PCID統計
@@ -933,6 +982,67 @@ pub struct PcidStatus {
     pub invpcid_available: bool,
     pub used_pcids: usize,
     pub max_pcids: usize,
+}
+
+/// PCIDを初期化・有効化（公開API）
+/// 
+/// カーネル初期化時とAP起動時に呼び出すこと。
+/// 
+/// # 使用例
+/// 
+/// ```ignore
+/// // BSP初期化時
+/// mm::tlb_batch::init_pcid();
+/// 
+/// // AP起動時（SMP初期化）
+/// mm::tlb_batch::init_pcid();
+/// ```
+/// 
+/// # Returns
+/// - `true`: PCID有効化成功
+/// - `false`: PCID非対応またはエラー
+pub fn init_pcid() -> bool {
+    unsafe {
+        match pcid_support::enable_pcid() {
+            Ok(enabled) => enabled,
+            Err(e) => {
+                log::error!("[PCID] Failed to enable: {}", e);
+                false
+            }
+        }
+    }
+}
+
+/// 現在のCPUにPCIDを割り当て（プロセス作成時）
+pub fn allocate_pcid() -> Option<u16> {
+    PCID_ALLOCATOR.allocate()
+}
+
+/// PCIDを解放（プロセス終了時）
+pub fn deallocate_pcid(pcid: u16) {
+    PCID_ALLOCATOR.deallocate(pcid);
+}
+
+/// PCID対応のコンテキストスイッチ（公開API）
+/// 
+/// TLBをフラッシュせずにアドレス空間を切り替える。
+/// 
+/// # Safety
+/// - カーネルモードで実行すること
+/// - pml4_physは有効な物理アドレスであること
+/// - pcidは割り当て済みの値であること
+pub unsafe fn switch_address_space_pcid(pml4_phys: u64, pcid: u16) {
+    if pcid_support::has_pcid() {
+        // noflush=true でTLBフラッシュを回避
+        set_cr3_with_pcid(pml4_phys, pcid, true);
+    } else {
+        // PCID非対応: 通常のCR3書き込み（TLBフラッシュ発生）
+        core::arch::asm!(
+            "mov cr3, {}",
+            in(reg) pml4_phys,
+            options(nostack)
+        );
+    }
 }
 
 // ============================================================================
