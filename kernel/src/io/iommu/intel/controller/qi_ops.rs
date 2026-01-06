@@ -342,60 +342,62 @@ impl IommuInvalidator for IommuController {
     }
 
     /// Optimized async invalidation using QI wait
-    async fn invalidate_async(&self, request: InvalidateRequest) -> Result<(), IommuError> {
-        // Submit the invalidation request first (sync part)
-        let drain = request
-            .flags
-            .intersects(InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE);
+    fn invalidate_async(&self, request: InvalidateRequest) -> impl Future<Output = Result<(), IommuError>> + Send {
+        async move {
+            // Submit the invalidation request first (sync part)
+            let drain = request
+                .flags
+                .intersects(InvalidateFlags::DRAIN_READ | InvalidateFlags::DRAIN_WRITE);
 
-        let submit_result: Result<(), IommuError> = match request.kind {
-            InvalidateKind::Pages {
-                start_iova,
-                bytes: _,
-            } => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_iotlb_page(request.domain_id, start_iova, drain)
-                } else {
-                    unsafe { self.invalidate_iotlb_direct(request.domain_id) };
-                    Ok(())
+            let submit_result: Result<(), IommuError> = match request.kind {
+                InvalidateKind::Pages {
+                    start_iova,
+                    bytes: _,
+                } => {
+                    if self.is_queued_invalidation_enabled() {
+                        self.qi_invalidate_iotlb_page(request.domain_id, start_iova, drain)
+                    } else {
+                        unsafe { self.invalidate_iotlb_direct(request.domain_id) };
+                        Ok(())
+                    }
                 }
-            }
-            InvalidateKind::Domain => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_iotlb_domain(request.domain_id, drain)
-                } else {
-                    unsafe { self.invalidate_iotlb_direct(request.domain_id) };
-                    Ok(())
+                InvalidateKind::Domain => {
+                    if self.is_queued_invalidation_enabled() {
+                        self.qi_invalidate_iotlb_domain(request.domain_id, drain)
+                    } else {
+                        unsafe { self.invalidate_iotlb_direct(request.domain_id) };
+                        Ok(())
+                    }
                 }
-            }
-            InvalidateKind::Global => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_iotlb_global(drain)
-                } else {
-                    unsafe { self.invalidate_iotlb_global() };
-                    Ok(())
+                InvalidateKind::Global => {
+                    if self.is_queued_invalidation_enabled() {
+                        self.qi_invalidate_iotlb_global(drain)
+                    } else {
+                        unsafe { self.invalidate_iotlb_global() };
+                        Ok(())
+                    }
                 }
-            }
-            InvalidateKind::Context { source_id: _ } => {
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_context_global()
-                } else {
-                    Ok(()) // No non-QI context invalidation
+                InvalidateKind::Context { source_id: _ } => {
+                    if self.is_queued_invalidation_enabled() {
+                        self.qi_invalidate_context_global()
+                    } else {
+                        Ok(()) // No non-QI context invalidation
+                    }
                 }
-            }
-            InvalidateKind::Iec {
-                global: _,
-                index: _,
-            } => self.qi_invalidate_iec_global(),
-        };
+                InvalidateKind::Iec {
+                    global: _,
+                    index: _,
+                } => self.qi_invalidate_iec_global(),
+            };
 
-        submit_result?;
+            submit_result?;
 
-        // If QI is enabled, use async wait; otherwise we're done
-        if self.is_queued_invalidation_enabled() {
-            self.qi_wait_async().await
-        } else {
-            Ok(())
+            // If QI is enabled, use async wait; otherwise we're done
+            if self.is_queued_invalidation_enabled() {
+                self.qi_wait_async().await
+            } else {
+                Ok(())
+            }
         }
     }
 }

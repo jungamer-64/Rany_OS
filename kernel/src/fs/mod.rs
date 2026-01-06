@@ -60,7 +60,7 @@ pub use async_ops::{
 #[allow(unused_imports)]
 pub use block::{BlockDevice, BlockRequest, RequestType};
 #[allow(unused_imports)]
-pub use cache::{CacheStats, CachedPage, PageCache};
+pub use cache::{CacheStats, CachedPage, PageCache, page_cache, init_page_cache};
 #[allow(unused_imports)]
 pub use devfs::{
     ConsoleDevice, DevEntry, DevError, DevFileHandle, DevFs, DevInode, DeviceNumber, DeviceOps,
@@ -73,7 +73,7 @@ pub use ext2::Ext2FileSystem;
 pub use fs_abstraction::{
     AsyncReadFuture, AsyncWriteFuture, DirEntry, FileAttr, FileHandle, FileMode, FileSystem,
     FileType, FsError, FsResult, FsStats, Inode, MountTable, OpenFlags, PathResolver, SeekFrom,
-    mount_table,
+    write_inode_by_number, mount_table,
 };
 #[allow(unused_imports)]
 pub use memfs::{

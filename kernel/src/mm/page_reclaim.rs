@@ -848,6 +848,22 @@ impl PageReclaimController {
         self.total_reclaimed.fetch_add(total_reclaimed as u64, Ordering::Relaxed);
         total_reclaimed
     }
+
+    /// Attempt to write back all dirty pages via the global page cache.
+    /// Returns true if any pages were written back successfully.
+    fn attempt_writeback_all(&self) -> bool {
+        let res = crate::fs::page_cache().sync_all(|ino, offset, data| {
+            match crate::fs::write_inode_by_number(ino, offset, data) {
+                Ok(_) => Ok(()),
+                Err(_) => Err(()),
+            }
+        });
+
+        match res {
+            Ok(n) => n > 0,
+            Err(_) => false,
+        }
+    }
     
     /// ページを実際に回収
     fn reclaim_page(&self, entry: &LruPageEntry) {
@@ -869,9 +885,17 @@ impl PageReclaimController {
             PageType::FileBacked => {
                 // ダーティならライトバック、そうでなければ破棄
                 if entry.flags.contains(LruFlags::DIRTY) {
-                    // TODO: writeback
-                    // 現在はライトバック未実装のため、ダーティページはスキップ
-                    self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                    // Try to writeback dirty pages via the page cache.
+                    if self.attempt_writeback_all() {
+                        // After successful writeback, untrack/uncharge and free frame.
+                        if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
+                            let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                        }
+                        self.free_frame(entry.frame);
+                    } else {
+                        // Writeback failed or no candidates; skip for now.
+                        self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+                    }
                 } else {
                     // クリーンなら即座に回収可能
                     // Memcg: ページがmemcgでトラックされている場合はアンチャージ
@@ -1277,7 +1301,22 @@ mod tests {
     }
 
     #[test]
-    fn test_filebacked_dirty_increments_writeback_skipped() {
+    fn test_filebacked_dirty_writeback_and_reclaim() {
+        // Initialize page cache
+        crate::fs::init_page_cache(64 * 1024);
+
+        // Mount a MemoryFs at root
+        let memfs = crate::fs::memfs::MemoryFs::new();
+        crate::fs::mount_table().mount("/", memfs.clone()).unwrap();
+        let root = memfs.root().unwrap();
+        let file = root.create("testfile", crate::fs::FileMode::DEFAULT_FILE, crate::fs::OpenFlags::empty()).unwrap();
+        let ino = file.getattr().unwrap().ino;
+
+        // Insert a dirty page into the page cache
+        let data = vec![0xAAu8; crate::fs::PAGE_SIZE];
+        crate::fs::page_cache().insert(ino, 0, data, crate::fs::PAGE_SIZE as u64);
+        crate::fs::page_cache().mark_dirty(ino, 0);
+
         let controller = PageReclaimController::new();
         let ts = crate::time::current_time_ns();
         let mut entry = LruPageEntry::new(FrameIndex::new(200), PageType::FileBacked, ts);
@@ -1286,9 +1325,11 @@ mod tests {
         controller.lru_lists[0].add_to_inactive(entry);
 
         let skipped_before = controller.writeback_skipped.load(Ordering::Relaxed);
+        let writebacks_before = crate::fs::page_cache().stats().writebacks;
         let reclaimed = controller.background_reclaim(1);
         assert_eq!(reclaimed, 1);
-        assert_eq!(controller.writeback_skipped.load(Ordering::Relaxed), skipped_before + 1);
+        assert_eq!(controller.writeback_skipped.load(Ordering::Relaxed), skipped_before);
+        assert!(crate::fs::page_cache().stats().writebacks >= writebacks_before + 1);
     }
 
     #[test]

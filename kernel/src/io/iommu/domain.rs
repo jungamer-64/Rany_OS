@@ -193,8 +193,8 @@ pub trait IommuInvalidator: Send + Sync {
     ///
     /// Returns when the IOTLB invalidation is done. The default implementation
     /// delegates to the synchronous path.
-    async fn invalidate_async(&self, request: InvalidateRequest) -> Result<(), IommuError> {
-        self.invalidate(request)
+    fn invalidate_async(&self, request: InvalidateRequest) -> impl Future<Output = Result<(), IommuError>> + Send {
+        async move { self.invalidate(request) }
     }
 }
 

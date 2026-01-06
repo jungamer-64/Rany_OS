@@ -3,6 +3,7 @@
 // ============================================================================
 
 //! IOMMU Register Definitions
+#![allow(dead_code)]
 
 /// DMAR (DMA Remapping) register offsets
 pub mod regs {
