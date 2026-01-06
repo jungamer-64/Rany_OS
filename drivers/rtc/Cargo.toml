@@ -11,5 +11,5 @@ categories.workspace = true
 description = "RTC Driver for RanyOS"
 
 [dependencies]
-spin = "0.9"
+spin = "0.10"
 hal = { path = "../../hal" }

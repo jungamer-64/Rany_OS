@@ -15,7 +15,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Lock-free synchronization
-spin = "0.9"
+spin = "0.10"
 
 # x86_64 port I/O
 x86_64 = "0.15"

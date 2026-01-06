@@ -24,7 +24,7 @@ crate-type = ["rlib"]
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
 spin = "0.10"
-x86_64 = "0.14"
+x86_64 = "0.15"
 
 [features]
 default = []

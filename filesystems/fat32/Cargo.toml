@@ -17,7 +17,7 @@ path = "src/lib.rs"
 [dependencies]
 vfs = { path = "../../libs/vfs" }
 log = "0.4"
-hashbrown = "0.14"
+hashbrown = "0.16"
 
 [dev-dependencies]
 futures = "0.3"

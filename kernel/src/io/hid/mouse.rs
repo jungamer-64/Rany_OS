@@ -20,20 +20,13 @@ pub use hid_driver::{MouseButton, MouseEvent};
 // ============================================================================
 
 /// グローバルマウス
-static MOUSE: Mutex<Mouse> = Mutex::new(Mouse::new());
+pub(crate) static MOUSE: Mutex<Mouse> = Mutex::new(Mouse::new());
 
 // ============================================================================
 // Public API - Initialization
 // ============================================================================
 
-/// マウスを初期化
-///
-/// # Returns
-/// - `Ok(())` - 初期化成功
-/// - `Err(MouseInitError)` - 初期化失敗
-pub fn init() -> Result<(), MouseInitError> {
-    MOUSE.lock().init()
-}
+// init() function removed - use Ps2MouseDriver via DriverRegistry instead
 
 // ============================================================================
 // Public API - Mouse (割り込みハンドラ用)

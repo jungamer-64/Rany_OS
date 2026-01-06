@@ -11,7 +11,7 @@ categories.workspace = true
 description = "Serial Driver for RanyOS"
 
 [dependencies]
-spin = "0.9"
+spin = "0.10"
 x86_64 = "0.15"
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }

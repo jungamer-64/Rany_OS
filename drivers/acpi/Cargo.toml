@@ -11,5 +11,5 @@ categories.workspace = true
 description = "ACPI Driver for RanyOS"
 
 [dependencies]
-spin = "0.9"
+spin = "0.10"
 log = "0.4"
