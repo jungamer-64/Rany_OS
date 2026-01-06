@@ -32,6 +32,8 @@
 //! ```
 #![allow(dead_code)]
 
+use alloc::vec::Vec;
+use spin::Mutex;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::atomic_utils::{AtomicU8, AtomicU16};
@@ -189,6 +191,10 @@ pub struct RemoteFreeRing<const N: usize = DEFAULT_REMOTE_FREE_CAPACITY> {
     overflow_count: AtomicU64,
     /// Total pages freed via range entries (for statistics)
     range_pages_freed: AtomicU64,
+    
+    /// Fallback overflow list (protected by lock, used when ring is full)
+    /// This prevents extensive spinning or falling back to the main allocator lock.
+    overflow: Mutex<Vec<RemoteFreeEntry>>,
 }
 
 impl<const N: usize> RemoteFreeRing<N> {
@@ -215,6 +221,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             tail: AtomicUsize::new(0),
             overflow_count: AtomicU64::new(0),
             range_pages_freed: AtomicU64::new(0),
+            overflow: Mutex::new(Vec::new()),
         }
     }
     
@@ -308,22 +315,53 @@ impl<const N: usize> RemoteFreeRing<N> {
         }
     }
     
-    /// Drain entries from the ring (single-consumer, called by owner CPU only)
-    ///
-    /// Returns the number of entries drained.
-    /// Only reads slots where sequence indicates data is committed (no holes!).
+
+    /// Push a single entry, using fallback if ring is full
+    /// Always succeeds (unless OOM in fallback Vec, which is unlikely/panic)
+    #[inline]
+    pub fn push(&self, addr: u64, size_class: u8) {
+        self.push_range(addr, 1, size_class)
+    }
+
+    /// Push a range entry, using fallback if ring is full
+    pub fn push_range(&self, addr: u64, count: u16, size_class: u8) {
+         if !self.try_push_range(addr, count, size_class) {
+             // Ring full, use fallback
+             let mut lock = self.overflow.lock();
+             lock.push(RemoteFreeEntry { addr, count, size_class });
+         }
+    }
+
+    /// Drain entries from the ring AND the overflow fallback
     ///
     /// # Arguments
     /// * `out` - Output buffer to write drained entries
     ///
     /// # Returns
-    /// Number of entries drained (0 to `out.len()`)
-    ///
-    /// # Range-based Entries
-    /// Each entry may have count > 1, representing multiple contiguous pages.
-    /// The caller should iterate from addr to addr + (count-1) * page_size.
+    /// Number of entries drained
     pub fn drain(&self, out: &mut [RemoteFreeEntry]) -> usize {
         let mut drained = 0;
+        
+        // 1. Drain from overflow list primarily (it has the "oldest" failed pushes, theoretically)
+        // Or drain it to clear the lock pressure? 
+        // Let's drain overflow first to return memory quickly.
+        if !self.overflow.lock().is_empty() {
+             let mut lock = self.overflow.lock();
+             while drained < out.len() {
+                 if let Some(entry) = lock.pop() {
+                     out[drained] = entry;
+                     drained += 1;
+                 } else {
+                     break;
+                 }
+             }
+        }
+
+        if drained >= out.len() {
+            return drained;
+        }
+
+        // 2. Drain from ring
         let mut pos = self.tail.load(Ordering::Relaxed);
         
         while drained < out.len() {
@@ -349,9 +387,18 @@ impl<const N: usize> RemoteFreeRing<N> {
             pos = pos.wrapping_add(1);
         }
         
-        // Update tail if we drained anything
+        // Update tail if we drained anything from the ring
         if drained > 0 {
-            self.tail.store(pos, Ordering::Release);
+             // We can't distinguish easily how many came from ring vs overflow here due to single `drained` counter
+             // But we only updated `pos` for ring entries.
+             // Wait, current logic: `pos` is local var, updated only in loop.
+             // We should only store `pos` if it changed.
+             
+             // Check if we advanced pos
+             let old_tail = self.tail.load(Ordering::Relaxed);
+             if pos != old_tail {
+                 self.tail.store(pos, Ordering::Release);
+             }
         }
         
         drained

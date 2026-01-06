@@ -1325,13 +1325,10 @@ pub fn slab_remote_free_push(owner_cpu: usize, ptr: u64, size_class: u8) -> bool
         return false;
     }
     
-    if SLAB_REMOTE_FREE_RINGS[owner_cpu].try_push(ptr, size_class) {
-        REMOTE_FREE_STATS.remote_pushes.fetch_add(1, Ordering::Relaxed);
-        true
-    } else {
-        REMOTE_FREE_STATS.remote_push_failures.fetch_add(1, Ordering::Relaxed);
-        false
-    }
+    // Always succeeds (internally falls back to overflow list)
+    SLAB_REMOTE_FREE_RINGS[owner_cpu].push(ptr, size_class);
+    REMOTE_FREE_STATS.remote_pushes.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 /// 自分のリモートフリーリングをドレイン（オーナー CPU のみ）
@@ -1555,16 +1552,9 @@ pub unsafe fn per_core_dealloc_remote(
         }
     };
     
-    // リモートフリーリングにプッシュを試みる
-    if slab_remote_free_push(owner_cpu, ptr.as_ptr() as u64, size_class) {
-        return true;
-    }
-    
-    // リング満杯の場合はフォールバック（直接解放）
-    // これはレアケースなので、ロック取得のオーバーヘッドは許容
-    unsafe {
-        per_core_dealloc(owner_cpu, ptr, layout);
-    }
+    // リモートフリーリングにプッシュ
+    // リング満杯時も内部でフォールバックキューに保存されるため、常に成功する
+    slab_remote_free_push(owner_cpu, ptr.as_ptr() as u64, size_class);
     true
 }
 

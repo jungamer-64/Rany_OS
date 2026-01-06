@@ -396,8 +396,12 @@ mod kernel_impl {
     use core::sync::atomic::{AtomicUsize, Ordering};
     static QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
     static FILE_QUEUE_COUNT: AtomicUsize = AtomicUsize::new(0);
+    // Reserve some slots for file writes so heavy anon traffic cannot starve file writebacks
     const RESERVED_FILE_SLOTS: usize = CHANNEL_SIZE / 8; // reserve ~12.5% for file writes
-    // Token-bucket backpressure
+    // Token-bucket backpressure (anonymous pages)
+    // - TOKEN_BUCKET_CAPACITY: Burst capacity for anon enqueues. Larger value allows absorbing transient spikes
+    //   but increases risk of anon traffic delaying file writebacks.
+    // - TOKEN_REFILL_PER_BATCH: Amount of tokens restored per processed batch. Controls long-term sustained rate.
     const TOKEN_BUCKET_CAPACITY: usize = CHANNEL_SIZE / 4; // anonymous burst capacity
     const TOKEN_REFILL_PER_BATCH: usize = BATCH_SIZE / 2;
     static TOKENS: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
@@ -628,6 +632,10 @@ mod kernel_impl {
         (QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire), FILE_QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire))
     }
 
+    pub fn token_count() -> usize {
+        TOKENS.load(core::sync::atomic::Ordering::Acquire)
+    }
+
     pub fn start_worker() {
         ensure_channel_started();
     }
@@ -706,6 +714,19 @@ pub fn queued_counts() -> (usize, usize) {
     #[cfg(not(test))]
     {
         kernel_impl::queued_counts()
+    }
+}
+
+/// Return the current token count (anon token bucket)
+pub fn token_count() -> usize {
+    #[cfg(test)]
+    {
+        test_impl::_token_count()
+    }
+
+    #[cfg(not(test))]
+    {
+        kernel_impl::token_count()
     }
 }
 
