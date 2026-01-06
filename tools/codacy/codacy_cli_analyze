@@ -1,9 +1,0 @@
-#!/usr/bin/env sh
-# Wrapper to run Codacy Analysis CLI (Unix)
-DIR="$(cd "$(dirname "$0")" && pwd)"
-JAR="$DIR/codacy-analysis-cli-assembly.jar"
-if [ ! -f "$JAR" ]; then
-  echo "Error: $JAR not found" >&2
-  exit 2
-fi
-exec java -jar "$JAR" "$@"
