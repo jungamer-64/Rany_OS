@@ -259,7 +259,7 @@ pub struct UdpDatagram {
 }
 
 /// UDP socket state
-struct UdpSocketInner {
+pub(crate) struct UdpSocketInner {
     /// Local port
     local_port: u16,
     /// Receive queue

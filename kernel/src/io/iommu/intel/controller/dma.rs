@@ -14,8 +14,6 @@ use crate::io::iommu::intel::registry::get_iommu_registry;
 use crate::io::iommu::intel::registers::ecap_bits;
 use crate::io::iommu::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
-use crate::mm::global_translate;
-use x86_64::VirtAddr;
 use x86_64::PhysAddr;
 
 use super::IommuController;

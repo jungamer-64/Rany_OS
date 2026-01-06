@@ -8,7 +8,7 @@
 
 use core::alloc::Layout;
 use core::ops::{Deref, DerefMut};
-use core::ptr::{self, NonNull, Pointee};
+use core::ptr::NonNull;
 
 // DomainIdはdomain_system.rsから使用
 pub use crate::domain_system::DomainId;

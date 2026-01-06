@@ -116,12 +116,13 @@ fn init_idt() {
         ));
 
         // 【設計書 8.5.2】Double Fault ハンドラには IST を使用し、専用スタックを確保
+        let double_fault_handler = handler_to_x86!(
+            exceptions::double_fault_handler
+                as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !
+        );
         unsafe {
             idt.double_fault
-                .set_handler_fn(handler_to_x86!(
-                    exceptions::double_fault_handler
-                        as extern "x86-interrupt" fn(InterruptStackFrame, u64) -> !
-                ))
+                .set_handler_fn(double_fault_handler)
                 .set_stack_index(gdt::DOUBLE_FAULT_IST_INDEX);
         }
 

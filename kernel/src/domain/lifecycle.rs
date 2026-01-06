@@ -3,6 +3,8 @@
 // 設計書 8: フォールトアイソレーションと回復メカニズム
 // 設計書 8.1: スタックアンワインドとリソース回収
 // ============================================================================
+#![allow(dead_code)]
+
 use super::registry::{DomainState, get_domain, register_domain, set_domain_state, update_domain};
 use crate::ipc::rref::{DomainId, reclaim_domain_resources};
 use crate::task::Task;

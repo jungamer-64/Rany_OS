@@ -346,9 +346,9 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
             // Instead of synchronous unmap (which can block the executor or ISR),
             // we enqueue the handle metadata for async cleanup by the GC task.
             // This ensures Drop completes in O(1) without locks or I/O.
-            use crate::ipc::rref::RRefRawParts;
+            
 
-            let mapping_kind = super::zombie_queue::encode_mapping_kind(&self.mapping);
+            let _mapping_kind = super::zombie_queue::encode_mapping_kind(&self.mapping);
             drop(rref);
             log::debug!("[DmaHandle] Performed synchronous cleanup (IOVA=0x{:x}, size={})", self.iova, self.size);
 

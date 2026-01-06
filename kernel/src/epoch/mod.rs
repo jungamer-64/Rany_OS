@@ -24,6 +24,7 @@
 //! 4. Quiescent State Detection で全コアの離脱を確認
 //! 5. 旧セルのメモリを解放
 //! ```
+#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU64, AtomicBool, Ordering};
 use alloc::vec::Vec;

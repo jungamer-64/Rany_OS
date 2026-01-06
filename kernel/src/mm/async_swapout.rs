@@ -8,10 +8,7 @@
 //!
 #![allow(dead_code)]
 
-use alloc::collections::VecDeque;
-use alloc::sync::Arc;
-use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex as SpinMutex;
+use x86_64::structures::paging::PhysFrame;
 
 use crate::mm::types::FrameIndex;
 use crate::mm::frame_backing;
@@ -41,6 +38,9 @@ pub struct SwapHandle {
     done: Arc<(SpinMutex<bool>, std::sync::Condvar)>,
 }
 
+#[cfg(not(test))]
+pub struct SwapHandle;
+
 #[cfg(test)]
 impl SwapHandle {
     pub fn wait(&self) {
@@ -65,97 +65,19 @@ struct SwapEntry {
     completion: Arc<(SpinMutex<bool>, std::sync::Condvar)>,
 }
 
-// テスト専用: 単純なキュー + worker
+// テスト専用: 単発ワーカ実装（エントリごとに短命スレッドを生成）
 #[cfg(test)]
 mod test_impl {
     use super::*;
-    use alloc::collections::VecDeque;
+    use alloc::collections::BTreeSet;
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicBool, Ordering};
     use spin::Mutex as SpinMutex;
     use std::thread;
 
-    static QUEUE: SpinMutex<Option<VecDeque<SwapEntry>>> = SpinMutex::new(None);
-    static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
-    static PENDING: SpinMutex<alloc::collections::BTreeSet<usize>> = SpinMutex::new(alloc::collections::BTreeSet::new());
-
-    pub fn init_worker_once() {
-        if WORKER_STARTED.compare_and_swap(false, true, Ordering::SeqCst) == false {
-            *QUEUE.lock() = Some(VecDeque::new());
-            thread::spawn(|| worker_loop());
-        }
-    }
-
-    fn worker_loop() {
-        loop {
-            let mut entry_opt = None;
-            {
-                let mut q = QUEUE.lock();
-                if let Some(ref mut qv) = *q {
-                    if let Some(e) = qv.pop_front() { entry_opt = Some(e); }
-                }
-            }
-
-            if let Some(entry) = entry_opt {
-                // 処理: File / Anon
-                match entry.kind {
-                    SwapKind::File { ino, page_num } => {
-                        // Try targeted page writeback
-                        let res = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
-                            match crate::fs::write_inode_by_number(ino, offset, data) {
-                                Ok(_) => Ok(()),
-                                Err(_) => Err(()),
-                            }
-                        });
-
-                        if res.is_ok() {
-                            // Remove frame backing if present
-                            let _ = frame_backing::untrack_frame_backing(entry.frame);
-                            // Free frame
-                            let phys = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                            buddy_allocator::buddy_dealloc_frame(phys);
-                        }
-                    }
-                    SwapKind::Anon => {
-                        // Try zswap
-                        if crate::mm::zswap::ZPOOL.is_enabled() {
-                            // Read page content and store
-                            let phys = entry.frame.to_phys_addr();
-                            let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
-                            let src = vaddr.as_u64() as *const u8;
-                            let mut buf = vec![0u8; crate::mm::PAGE_SIZE_4K];
-                            unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                            // Store into zswap (simplified offset selection)
-                            // NOTE: In real implementation swap_offset must be allocated
-                            let _ = crate::mm::zswap::ZPOOL.store(0, &buf);
-                            // Free frame
-                            let physf = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                            buddy_allocator::buddy_dealloc_frame(physf);
-                        } else {
-                            // zswap 無効 -> 直ちに解放（データ損失）
-                            let physf = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                            buddy_allocator::buddy_dealloc_frame(physf);
-                        }
-                    }
-                }
-
-                // 完了通知
-                let (lock, cvar) = &*entry.completion;
-                *lock.lock() = true;
-                cvar.notify_all();
-
-                // Unmark pending
-                PENDING.lock().remove(&entry.frame.as_usize());
-            } else {
-                // Sleep briefly to avoid busy loop
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-        }
-    }
+    static PENDING: SpinMutex<BTreeSet<usize>> = SpinMutex::new(BTreeSet::new());
 
     pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {
-        init_worker_once();
-
         // Mark pending (prevent duplicate)
         {
             let mut p = PENDING.lock();
@@ -165,19 +87,51 @@ mod test_impl {
             p.insert(frame.as_usize());
         }
 
-        // Enqueue
         let completion = Arc::new((SpinMutex::new(false), std::sync::Condvar::new()));
-        let entry = SwapEntry { frame, kind, completion: completion.clone() };
+        let completion_clone = completion.clone();
 
-        {
-            let mut q = QUEUE.lock();
-            if let Some(ref mut qv) = *q {
-                qv.push_back(entry);
-            } else {
-                // shouldn't happen
-                return Err(SwapError::NotSupported);
+        // Spawn a short-lived worker for this entry
+        thread::spawn(move || {
+            match kind {
+                SwapKind::File { ino, page_num } => {
+                    let res = crate::fs::page_cache().sync_page(ino, page_num, |offset, data| {
+                        match crate::fs::write_inode_by_number(ino, offset, data) {
+                            Ok(_) => Ok(()),
+                            Err(_) => Err(()),
+                        }
+                    });
+
+                    if res.is_ok() {
+                        let _ = frame_backing::untrack_frame_backing(frame);
+                        let phys = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+                        buddy_allocator::buddy_dealloc_frame(phys);
+                    }
+                }
+                SwapKind::Anon => {
+                    if crate::mm::zswap::ZPOOL.is_enabled() {
+                        let phys = frame.to_phys_addr();
+                        let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+                        let src = vaddr.as_u64() as *const u8;
+                        let mut buf = vec![0u8; crate::mm::PAGE_SIZE_4K];
+                        unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
+                        let _ = crate::mm::zswap::ZPOOL.store(0, &buf);
+                        let physf = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+                        buddy_allocator::buddy_dealloc_frame(physf);
+                    } else {
+                        let physf = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+                        buddy_allocator::buddy_dealloc_frame(physf);
+                    }
+                }
             }
-        }
+
+            // 完了通知
+            let (lock, cvar) = &*completion_clone;
+            *lock.lock() = true;
+            cvar.notify_all();
+
+            // Unmark pending
+            PENDING.lock().remove(&frame.as_usize());
+        });
 
         Ok(super::SwapHandle { done: completion })
     }
@@ -205,7 +159,7 @@ pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHand
                 match written {
                     Ok(true) => {
                         let _ = frame_backing::untrack_frame_backing(frame);
-                        let physf = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+                        let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
                         buddy_allocator::buddy_dealloc_frame(physf);
                         Err(SwapError::NotSupported) // indicates sync fallback was used
                     }
@@ -214,20 +168,11 @@ pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHand
             }
             SwapKind::Anon => {
                 // zswap attempt
-                if crate::mm::zswap::ZPOOL.is_enabled() {
-                    // perform immediate compression & store (synchronous)
-                    let phys = frame.to_phys_addr();
-                    let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
-                    let src = vaddr.as_u64() as *const u8;
-                    let mut buf = vec![0u8; crate::mm::PAGE_SIZE_4K];
-                    unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                    let _ = crate::mm::zswap::ZPOOL.store(0, &buf);
-                    let physf = unsafe { x86_64::PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
-                    buddy_allocator::buddy_dealloc_frame(physf);
+                // if crate::mm::zswap::ZPOOL.is_enabled() {
                     Err(SwapError::NotSupported)
-                } else {
-                    Err(SwapError::NotSupported)
-                }
+                // } else {
+                //     Err(SwapError::NotSupported)
+                // }
             }
         }
     }
