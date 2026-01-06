@@ -2,6 +2,7 @@
 //!
 //! Manages interrupt routing between devices and the APIC system,
 //! including MSI/MSI-X configuration.
+#![allow(dead_code)]
 
 extern crate alloc;
 

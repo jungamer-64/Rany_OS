@@ -72,7 +72,7 @@ pub use ext2::Ext2FileSystem;
 #[allow(unused_imports)]
 pub use fs_abstraction::{
     AsyncReadFuture, AsyncWriteFuture, DirEntry, FileAttr, FileHandle, FileMode, FileSystem,
-    FileType, FsError, FsResult, FsStats, Inode, MountTable, OpenFlags, PathResolver, SeekFrom,
+    FileType, FsError, FsResult, FsStats, Inode, InodeNum, MountTable, OpenFlags, PathResolver, SeekFrom,
     write_inode_by_number, mount_table,
 };
 #[allow(unused_imports)]
