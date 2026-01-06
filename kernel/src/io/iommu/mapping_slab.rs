@@ -537,6 +537,7 @@ mod tests {
             size: 0x1000,
             read: true,
             write: false,
+            domain_id_placeholder: 0,
         };
         
         assert!(slab.insert(mapping.clone()).is_ok());
@@ -561,6 +562,7 @@ mod tests {
             size: 0x2000,
             read: true,
             write: true,
+            domain_id_placeholder: 0,
         };
         
         slab.insert(mapping).unwrap();

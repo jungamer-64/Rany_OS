@@ -699,12 +699,12 @@ mod pcid_support {
         #[cfg(target_arch = "x86_64")]
         {
             // CPUID.01H:ECX.PCID[bit 17]
-            let cpuid1 = unsafe { core::arch::x86_64::__cpuid(1) };
+            let cpuid1 = core::arch::x86_64::__cpuid(1);
             let pcid = (cpuid1.ecx >> 17) & 1 != 0;
             PCID_AVAILABLE.store(pcid, Ordering::Release);
             
             // CPUID.07H:EBX.INVPCID[bit 10]
-            let cpuid7 = unsafe { core::arch::x86_64::__cpuid_count(7, 0) };
+            let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
             let invpcid = (cpuid7.ebx >> 10) & 1 != 0;
             INVPCID_AVAILABLE.store(invpcid, Ordering::Release);
         }

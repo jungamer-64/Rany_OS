@@ -473,12 +473,13 @@ pub mod mm {
             super::buddy_dealloc_frame(frame);
         }
 
-        /// Expose a convenient wrapper at `crate::mm::dealloc_frame` for tests
-        pub use self::frame_allocator::dealloc_frame;
-
         /// Memory pressure hint for tests (0 = no pressure)
         pub fn memory_pressure_level() -> u8 { 0 }
     }
+
+    // Re-export frame allocator helpers at `crate::mm::dealloc_frame` etc.
+    pub use frame_allocator::dealloc_frame;
+    pub use frame_allocator::memory_pressure_level;
 
     // Minimal `higher_half` shim (for tests): small wrappers around u64 addresses
     pub mod higher_half {
