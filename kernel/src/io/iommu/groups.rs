@@ -2,13 +2,6 @@
 // kernel/src/io/iommu/groups.rs
 // ============================================================================
 
-use crate::io::iommu::intel::controller::dma::DomainManager;
-use crate::io::iommu::intel::registry::IommuRegistry;
-use super::types::{DeviceId, IommuDomainType, IommuError, IommuGroup, IommuGroupId};
-use crate::sync::PoisonLock;
-use hashbrown::HashMap;
-use pci_driver::{AcsController, PcieBdf, PcieError, PcieExtManager};
-use spin::Once;
 
 /// Manages the allocation and lookup of IOMMU Groups.
 #[cfg(not(test))]
