@@ -2076,6 +2076,7 @@ impl IommuDomain {
     ///
     /// Also reclaims empty page tables (PT, PD, PDP) to prevent memory accumulation
     /// from sparse mappings.
+    #[allow(unused_assignments)]
     fn unmap_page(&self, iova: u64) -> Result<(), IommuError> {
         // Extract indices for each level
         let pml4_idx = ((iova >> 39) & 0x1FF) as usize;

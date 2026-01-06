@@ -1,3 +1,4 @@
+#![allow(unused_doc_comments)]
 // ============================================================================
 // src/interrupts/mod.rs - 割り込みシステム統合モジュール
 //
@@ -531,6 +532,7 @@ define_interrupt!(
 define_interrupt!(
     fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
         // シリアルポートドライバの割り込みハンドラを呼び出し
+        #[allow(deprecated)]
         crate::io::serial::handle_interrupt();
 
         // Interrupt-Wakerブリッジに通知

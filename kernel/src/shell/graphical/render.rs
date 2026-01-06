@@ -21,7 +21,7 @@
 use super::shell::GraphicalShell;
 use super::types::{ShellResources, ShellState};
 use super::utils::RectList;
-use crate::graphics::{Font, Framebuffer, Rect};
+use crate::graphics::{Framebuffer, Rect};
 
 /// Maximum number of completions to display at once.
 const COMPLETION_LIMIT: usize = 5;

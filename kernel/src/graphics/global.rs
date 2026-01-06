@@ -69,7 +69,7 @@ pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => 32,
             PixelFormat::Rgb888 | PixelFormat::Bgr888 => 24,
             PixelFormat::Rgb565 => 16,
-            _ => 32,
+            // _ => 32,
         };
         final_info.bpp = bpp;
     }

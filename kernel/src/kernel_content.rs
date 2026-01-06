@@ -78,6 +78,7 @@ mod initramfs; // Dynamic Cell loading from TAR archive
 mod integration; // 旧称: userspace → SPL単一特権レベルを反映
 mod service_impl; // KernelServices implementation // Driver lifecycle management
 
+#[allow(dead_code)]
 fn debug_heap_check(tag: &str) {
     io::log::early_print("[HEAP] Check: ");
     io::log::early_print(tag);
@@ -283,6 +284,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
 
     // Serial Driver Initialization (Enables UART interrupts)
     // interrupts::init() already unmasked IRQ4 (COM1) in PIC
+    #[allow(deprecated)]
     if let Err(e) = io::serial::init() {
         error!(target: "init", "Serial driver init failed: {:?}", e);
     } else {
