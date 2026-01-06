@@ -16,6 +16,7 @@
 // - Linux kernel: Automatic NUMA Balancing
 // - RedHat: NUMA balancing
 // ============================================================================
+#![allow(dead_code)]
 
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use alloc::vec::Vec;

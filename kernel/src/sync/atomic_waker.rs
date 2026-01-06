@@ -1,6 +1,7 @@
 // ============================================================================
 // kernel/src/sync/atomic_waker.rs
 // ============================================================================
+#![allow(dead_code)]
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::task::Waker;

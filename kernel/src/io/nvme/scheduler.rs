@@ -70,7 +70,7 @@ impl PollHandler for NvmePollHandler {
         with_driver(|driver| {
             if let Some(queue) = driver.get_queue(self.core_id) {
                 // SAFETY: poll は内部で適切に同期されている
-                while let Some(cqe) = unsafe { queue.poll() } {
+                while let Some(cqe) = queue.poll() {
                     let cid = cqe.cid;
 
                     let pending = self.pending.lock();

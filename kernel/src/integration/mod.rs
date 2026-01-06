@@ -7,6 +7,7 @@
 //! - VirtIO device detection and MSI/MSI-X configuration
 //! - Security context binding to domains
 
+#![allow(dead_code)]
 extern crate alloc;
 
 use alloc::string::String;

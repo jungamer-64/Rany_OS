@@ -17,6 +17,7 @@
 //!          (初期化)                    (マイグレーション)
 //! ```
 
+#![allow(dead_code)]
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
