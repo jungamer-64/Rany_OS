@@ -740,6 +740,11 @@ impl PageReclaimController {
     pub fn set_watermarks(&mut self, watermarks: Watermarks) {
         self.watermarks = watermarks;
     }
+
+    /// 書き戻しスキップ回数をインクリメント
+    pub fn account_writeback_skipped(&self) {
+        self.writeback_skipped.fetch_add(1, Ordering::Relaxed);
+    }
     
     /// 空きページ数を更新し、必要なアクションを返す
     pub fn update_free_pages(&self, free_pages: usize) -> MemoryPressure {
