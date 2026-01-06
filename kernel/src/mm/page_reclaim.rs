@@ -895,7 +895,7 @@ impl PageReclaimController {
                         ) {
                             Ok(_handle) => {
                                 // Successfully enqueued - do not free here
-                                continue;
+                                return;
                             }
                             Err(_) => {
                                 // Enqueue failed - fallback to synchronous writeback (existing path)
@@ -948,7 +948,7 @@ impl PageReclaimController {
                         match crate::mm::async_swapout::try_enqueue_swapout(entry.frame, crate::mm::async_swapout::SwapKind::Anon) {
                             Ok(_handle) => {
                                 // enqueued - worker will handle freeing
-                                continue;
+                                return;
                             }
                             Err(_) => {
                                 // fall back to coarse global sync

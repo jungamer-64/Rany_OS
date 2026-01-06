@@ -152,7 +152,7 @@ impl Default for AmdDeviceTableEntry {
     }
 }
 
-struct AmdDeviceTable {
+pub struct AmdDeviceTable {
     segment: u16,
     phys_base: u64,
     virt_base: NonNull<AmdDeviceTableEntry>,
@@ -272,7 +272,7 @@ impl AmdEventEntry {
     }
 }
 
-struct AmdEventLog {
+pub struct AmdEventLog {
     phys_base: u64,
     virt_base: NonNull<u32>,
     size_bytes: u64,
@@ -1515,7 +1515,7 @@ impl AmdCommandWaitToken {
     }
 }
 
-struct AmdCommandState {
+pub struct AmdCommandState {
     buffer: cmd::AmdCommandBuffer,
     sync_ptr: NonNull<u64>,
     sync_phys: u64,

@@ -215,7 +215,7 @@ pub struct VringUsed {
 ///
 /// # Safety
 /// このラッパーを使う側が、ポインタの有効性とスレッド安全性を保証する必要がある
-struct SendPtr<T>(*mut T);
+pub struct SendPtr<T>(*mut T);
 
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
@@ -278,7 +278,7 @@ pub struct NetVirtQueue {
 unsafe impl Send for NetVirtQueue {}
 unsafe impl Sync for NetVirtQueue {}
 
-struct IommuMapping {
+pub struct IommuMapping {
     device: Option<IommuDeviceId>,
     iova: u64,
     len: usize,
