@@ -509,13 +509,12 @@ mod kernel_impl {
                     return Err(SwapError::QueueFull);
                 }
 
-                // Enforce reservation for file writes: when nearly full, prefer file entries
+                // Enforce strict reservation for file writes: keep RESERVED_FILE_SLOTS free for file entries
                 if let SwapKind::Anon = kind {
                     let total = QUEUE_COUNT.load(Ordering::Acquire);
-                    let file_q = FILE_QUEUE_COUNT.load(Ordering::Acquire);
                     let free_slots = CHANNEL_SIZE.saturating_sub(total);
-                    if free_slots <= RESERVED_FILE_SLOTS && file_q >= RESERVED_FILE_SLOTS {
-                        // preferentially reserve slots for file writes
+                    if free_slots <= RESERVED_FILE_SLOTS {
+                        // reserve slots for file writes — anon enqueues fail fast
                         return Err(SwapError::QueueFull);
                     }
                 }
@@ -549,6 +548,10 @@ mod kernel_impl {
         (QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire), FILE_QUEUE_COUNT.load(core::sync::atomic::Ordering::Acquire))
     }
 
+    pub fn start_worker() {
+        ensure_channel_started();
+    }
+
     pub fn stop_worker() {
         WORKER_SHUTDOWN.store(true, core::sync::atomic::Ordering::Release);
         WORKER_WAKER.wake();
@@ -571,6 +574,58 @@ pub fn try_enqueue_swapout(frame: FrameIndex, kind: SwapKind) -> Result<SwapHand
     #[cfg(not(test))]
     {
         kernel_impl::try_enqueue(frame, kind)
+    }
+}
+
+/// Start the async swapout worker (tests call test worker, kernel calls kernel worker)
+pub fn start_worker() {
+    #[cfg(test)]
+    {
+        test_impl::start_worker();
+    }
+
+    #[cfg(not(test))]
+    {
+        kernel_impl::start_worker();
+    }
+}
+
+/// Stop the async swapout worker
+pub fn stop_worker() {
+    #[cfg(test)]
+    {
+        test_impl::stop_worker();
+    }
+
+    #[cfg(not(test))]
+    {
+        kernel_impl::stop_worker();
+    }
+}
+
+/// Return whether the worker is running
+pub fn is_worker_running() -> bool {
+    #[cfg(test)]
+    {
+        test_impl::is_worker_running()
+    }
+
+    #[cfg(not(test))]
+    {
+        kernel_impl::is_worker_running()
+    }
+}
+
+/// Return (queue_len, file_queue_len)
+pub fn queued_counts() -> (usize, usize) {
+    #[cfg(test)]
+    {
+        (test_impl::_queue_len(), test_impl::_file_queue_len())
+    }
+
+    #[cfg(not(test))]
+    {
+        kernel_impl::queued_counts()
     }
 }
 
@@ -792,24 +847,24 @@ mod tests {
 
     #[test]
     fn test_worker_restart() {
-        // ensure worker lifecycle control works
-        test_impl::start_worker();
-        assert!(test_impl::is_worker_running(), "worker should be running after start");
+        // ensure worker lifecycle control works via top-level API
+        start_worker();
+        assert!(is_worker_running(), "worker should be running after start");
 
-        test_impl::stop_worker();
+        stop_worker();
         // Wait for worker to stop
         for _ in 0..20 {
-            if !test_impl::is_worker_running() { break; }
+            if !is_worker_running() { break; }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        assert!(!test_impl::is_worker_running(), "worker should have stopped");
+        assert!(!is_worker_running(), "worker should have stopped");
 
         // Restart and ensure it runs
-        test_impl::start_worker();
-        assert!(test_impl::is_worker_running(), "worker should be running after restart");
+        start_worker();
+        assert!(is_worker_running(), "worker should be running after restart");
 
         // Clean up
-        test_impl::stop_worker();
+        stop_worker();
     }
 
     #[test]
