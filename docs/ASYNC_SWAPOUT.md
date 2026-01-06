@@ -93,7 +93,68 @@
 ### バックプレッシャ & 優先度
 
 - キューの閾値（high_water, reserve_for_file 等）を設け、ファイル書き戻し用の予約容量を検討する。
-- 動的バックプレッシャ（トークンバケット）を導入: 匿名ページのエントリはトークン消費によりレート制御され、ワーカのバッチ処理完了時にトークンがリフィルされる。これにより突発的な anon エントリの急増を抑えつつ、進行性を維持できる。パラメータ（バースト容量、リフィル量）はワーカの負荷に応じて調整可能。
+- 動的バックプレッシャ（トークンバケット）を導入: 匿名ページのエントリはトークン消費によりレート制御され、ワーカのバッチ処理完了時にトークンがリフィルされる。これにより突発的な anon エントリの急増を抑えつつ、進行性を維持できる。
+
+### パラメータとチューニング
+
+- TOKEN_BUCKET_CAPACITY（バースト容量）: 推奨値は `CHANNEL_SIZE / 4`（実装上の初期値）。大きめに設定すると突発負荷を吸収しやすくなるが、anon エントリがファイル書き戻しを阻害するリスクがある。
+- TOKEN_REFILL_PER_BATCH（リフィル量）: 推奨値は `BATCH_SIZE / 2`。バッチ処理のたびに一定量を回復する設計で、I/O のスループットと公平性のバランスを取る。
+- RESERVED_FILE_SLOTS（ファイル予約）: キュー容量の約 12.5% を予約してファイル書き戻しを優先する実装にしています。システムの I/O 特性により調整してください。
+
+調整の指針:
+- レイテンシ重視（短時間で anon を積極的に解放したい）: `TOKEN_BUCKET_CAPACITY` を増やし、`TOKEN_REFILL_PER_BATCH` を小さめにする。
+- スループット重視（ファイル書き戻し優先）: `RESERVED_FILE_SLOTS` を増やし、`TOKEN_BUCKET_CAPACITY` を控えめにする。
+
+### 調整チェックリスト（実践） ✅
+
+1. ベースラインを取得する（5–10分）
+   - 概要: 現行パラメータの下で軽負荷→中負荷テストを実行し、メトリクスを収集します。
+   - 実行例: `cargo test -p rany_kernel --lib -- --ignored --nocapture`（`test_async_swapout_heavy_stress` / `bench_enqueue_throughput` を含む）
+   - 収集対象: `queued_counts()`（総キュー長, fileキュー長）, `token_count()`（トークン残量）, `writeback_skipped`, `enqueue_failures`（QueueFull 発生回数）, ワーカの処理遅延
+
+2. 問題の初期判別と目安
+   - QueueFull が頻発（enqueue 失敗率が高い）: CHANNEL_SIZE を増やす、あるいは anon の `TOKEN_BUCKET_CAPACITY` を減らしてファイルスロットを優先する。BATCH_SIZE やワーカ処理能力の引き上げも検討。
+   - file_queue が予約枠に張り付く: `RESERVED_FILE_SLOTS` を増やす。
+   - token_count が常に 0 に張り付く: `TOKEN_REFILL_PER_BATCH` または `TOKEN_BUCKET_CAPACITY` を増やす。
+   - writeback_skipped / writeback_failures が発生: ストレージ IO エラーログを確認し、必要なら一時的に同期書き戻し（`sync_all`）の頻度を上げる。
+
+3. 変更は一度に一つ、短時間で観測する
+   - 1つのパラメータ変更 → 5–10 分運用 → 収集結果の比較
+   - 複数のパラメータを同時に変えると原因切り分けが難しくなります。
+
+### メトリクスの解釈 (具体例) 📊
+
+- 平均 `queued_count` が `CHANNEL_SIZE * 0.75` を超えて常時推移 → キューが逼迫している。CHANNEL_SIZE 増加 or worker throughput の改善が必要。
+- `file_queue` が `RESERVED_FILE_SLOTS` を常に占有 → ファイル書き戻しが滞っている。`RESERVED_FILE_SLOTS` を増やすか I/O レイテンシを下げる。
+- `token_count` が 0 に固定 → 匿名ページがレート制御されすぎであり、スループットの低下を招く。リフィル量か容量の増加を検討。
+- `QueueFull` の短期的スパイク → 一時的には許容可能。頻発するならパラメータ調整またはワーカ増強を検討。
+- `writeback_skipped > 0` → 根本はストレージエラーまたは書き込み競合。ログを精査し、必要なら穏やかな fallback を増やす。
+
+### 実践コマンド例（Windows / PowerShell） 🔧
+
+- 全ての重いテストを手動で実行してログを取得:
+  - powershell -Command "cargo test -p rany_kernel --lib -- --ignored --nocapture" | tee async_swapout_stress.log
+- 1分毎に簡易モニタを回してメトリクスをログに落とす（テスト中別セッションで実行する想定）:
+  - powershell -Command "while ($true) { python - <<'PY'
+import time,subprocess,sys
+p=subprocess.run(['cargo','test','-p','rany_kernel','--lib','--','--nocapture','--test-threads=1','-q'],capture_output=True,text=True)
+print(p.stdout)
+time.sleep(60)
+PY
+}"
+
+注: 実環境では `queued_counts()`/`token_count()` を露出する調査用フック（または trace/log 出力）を使って長時間監視する方が安定した傾向把握に有効です。
+
+---
+
+### テストとベンチの実行方法
+
+- 単体テスト（軽量、CI向け）: `cargo test -p rany_kernel --lib`（デフォルトで無視される重いテストは実行されません）
+- 重いストレステストとベンチ（手動実行）: `cargo test -p rany_kernel --lib -- --ignored --nocapture`（`test_async_swapout_heavy_stress` と `bench_enqueue_throughput` は `#[ignore]` です）
+- モニタリング: `queued_counts()` と `token_count()` を使ってキュー長と anon トークン残量を監視できます（テスト/カーネル両方で対応しています）。
+
+---
+
 - キュー満杯時は `QueueFull` を返し、page_reclaim 側で同期書き戻しへフォールバックすることで進行性を担保する。
 
 ### エラーと代替経路

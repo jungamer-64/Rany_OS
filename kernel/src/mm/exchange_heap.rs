@@ -248,7 +248,22 @@ impl SegregatedFreeListHeap {
         // 空きブロックとして追加（隣接結合は将来の最適化として保留）
         // Note: 完全な隣接結合にはブロック境界情報の追跡が必要
         // 現時点ではシンプルにサイズクラスに追加
+        // self.try_coalesce(addr, size); // TODO: Implement coalescing
         self.add_free_block(addr, size);
+    }
+
+    /// Try to coalesce adjacent free blocks (Placeholder)
+    ///
+    /// # Implementation Note
+    /// To implement full coalescing (merging adjacent free blocks), we need:
+    /// 1. **Boundary Tags**: Allocated blocks need a header/footer indicating size and used/free status.
+    /// 2. **Footer**: To coalesce with the *previous* block, we need a footer in the previous block
+    ///    stating its size and status.
+    ///
+    /// Current implementation is specialized for low-overhead zero-copy IPC and relies on
+    /// Segregated Fit to minimize fragmentation overhead. Coalescing is deferred.
+    fn try_coalesce(&mut self, _addr: usize, _size: usize) {
+        // TODO: Check neighbors and merge
     }
 
     fn used(&self) -> usize {
