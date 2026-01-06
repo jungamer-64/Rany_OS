@@ -7,10 +7,10 @@
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
 use spin::Once;
-use crate::io::{DeviceId, IommuError};
+use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::io::iommu::types::{IommuGroupId, IommuGroup, IommuDomainType};
 use crate::io::iommu::registry::IommuRegistry;
-use crate::io::pci::{PcieExtManager, PcieError, PcieBdf, AcsController};
+use pci_driver::{PcieExtManager, PcieError, PcieBdf, AcsController};
 use crate::io::iommu::intel::controller::dma::DomainManager;
 
 #[cfg(not(test))]
