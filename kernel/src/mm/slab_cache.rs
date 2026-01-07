@@ -439,11 +439,27 @@ impl SlabCache {
     /// ページごとに異なるオフセットを使用して、
     /// 同じサイズのオブジェクトがキャッシュの同じセットに
     /// マッピングされることを防ぐ。
+    /// 
+    /// ## Enhanced Randomization (v0.6.0)
+    /// 
+    /// 単純なページ数ローテーションの代わりに、
+    /// xorshift PRNGベースの分散を使用してキャッシュ衝突を最小化。
+    /// - ページインデックスとオブジェクトサイズを元にシード値を生成
+    /// - より均等なキャッシュセット分布を実現
     #[inline]
     fn calculate_color_offset(&self) -> usize {
-        // 現在のページ数をベースにカラーを決定
-        // キャッシュラインサイズの倍数でローテーション
-        let color_index = self.pages.len() % MAX_SLAB_COLORS;
+        // Enhanced: Use xorshift-based PRNG for better distribution
+        let page_index = self.pages.len() as u32;
+        let size_factor = self.object_size as u32;
+        
+        // Simple xorshift32 for fast pseudo-random generation
+        let mut x = page_index.wrapping_add(size_factor).wrapping_add(0x5A5A);
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        
+        // Map to color space: 0 to (MAX_SLAB_COLORS - 1) cache lines
+        let color_index = (x as usize) % MAX_SLAB_COLORS;
         color_index * CACHE_LINE_SIZE
     }
 

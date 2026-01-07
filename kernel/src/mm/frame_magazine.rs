@@ -56,6 +56,92 @@ pub const ZEROED_REFILL_BATCH: usize = 8;
 const PAGE_SIZE_4K: u64 = 4096;
 
 // ============================================================================
+// Adaptive Batch Size
+// ============================================================================
+
+/// Adaptive Batch Size - 最小値
+const ADAPTIVE_BATCH_MIN: usize = 8;
+
+/// Adaptive Batch Size - 最大値
+const ADAPTIVE_BATCH_MAX: usize = 32;
+
+/// Adaptive Batch Size - 調整間隔（割り当て回数）
+const ADAPTIVE_ADJUST_INTERVAL: u64 = 64;
+
+/// Adaptive Batch Size - 高頻度判定閾値（調整間隔内でのrefill回数）
+const ADAPTIVE_HIGH_FREQUENCY_THRESHOLD: u64 = 4;
+
+/// Adaptive batch configuration for dynamic refill/drain sizing
+/// 
+/// Adjusts batch size based on allocation frequency:
+/// - High frequency allocation → larger batches (reduce Buddy lock contention)
+/// - Low frequency allocation → smaller batches (reduce memory waste)
+#[derive(Debug, Clone, Copy)]
+pub struct AdaptiveBatchConfig {
+    /// Current batch size (range: ADAPTIVE_BATCH_MIN..=ADAPTIVE_BATCH_MAX)
+    pub current_batch: usize,
+    /// Refill count in current adjustment window
+    refills_in_window: u64,
+    /// Allocations since last adjustment
+    allocs_since_adjust: u64,
+}
+
+impl AdaptiveBatchConfig {
+    /// Create new adaptive config with default batch size
+    pub const fn new() -> Self {
+        Self {
+            current_batch: REFILL_BATCH,  // Start with default
+            refills_in_window: 0,
+            allocs_since_adjust: 0,
+        }
+    }
+    
+    /// Record an allocation and potentially adjust batch size
+    #[inline]
+    pub fn record_alloc(&mut self) {
+        self.allocs_since_adjust += 1;
+        
+        if self.allocs_since_adjust >= ADAPTIVE_ADJUST_INTERVAL {
+            self.adjust();
+        }
+    }
+    
+    /// Record a refill event
+    #[inline]
+    pub fn record_refill(&mut self) {
+        self.refills_in_window += 1;
+    }
+    
+    /// Adjust batch size based on recent activity
+    fn adjust(&mut self) {
+        if self.refills_in_window >= ADAPTIVE_HIGH_FREQUENCY_THRESHOLD {
+            // High frequency: increase batch size (fewer Buddy accesses)
+            self.current_batch = (self.current_batch + 4).min(ADAPTIVE_BATCH_MAX);
+        } else if self.refills_in_window <= 1 {
+            // Low frequency: decrease batch size (less memory waste)
+            self.current_batch = self.current_batch.saturating_sub(2).max(ADAPTIVE_BATCH_MIN);
+        }
+        // else: moderate frequency, keep current batch size
+        
+        // Reset window
+        self.refills_in_window = 0;
+        self.allocs_since_adjust = 0;
+    }
+    
+    /// Get current effective batch size
+    #[inline]
+    pub fn batch_size(&self) -> usize {
+        self.current_batch
+    }
+}
+
+impl Default for AdaptiveBatchConfig {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
 // Sub-Frame Magazine (Claimed Word Optimization)
 // ============================================================================
 
@@ -527,6 +613,8 @@ pub struct PerCpuMagazineSet {
     sub_magazine_hits: u64,
     /// 統計: ゼロクリア済みキャッシュからの割り当て回数
     zeroed_cache_hits: u64,
+    /// Adaptive batch sizing configuration
+    adaptive_batch: AdaptiveBatchConfig,
 }
 
 impl PerCpuMagazineSet {
@@ -546,6 +634,7 @@ impl PerCpuMagazineSet {
             bg_refill_count: 0,
             sub_magazine_hits: 0,
             zeroed_cache_hits: 0,
+            adaptive_batch: AdaptiveBatchConfig::new(),
         }
     }
 
@@ -562,12 +651,14 @@ impl PerCpuMagazineSet {
         if let Some(frame) = self.sub_magazine.allocate() {
             self.sub_magazine_hits += 1;
             self.alloc_count += 1;
+            self.adaptive_batch.record_alloc();
             return Some(frame);
         }
 
         // Fast path: Activeから取得
         if let Some(frame) = self.active.pop() {
             self.alloc_count += 1;
+            self.adaptive_batch.record_alloc();
             return Some(frame);
         }
 
@@ -576,6 +667,7 @@ impl PerCpuMagazineSet {
             core::mem::swap(&mut self.active, &mut self.spare);
             if let Some(frame) = self.active.pop() {
                 self.alloc_count += 1;
+                self.adaptive_batch.record_alloc();
                 // バックグラウンドリフィルをスケジュール（Spareが空になった）
                 self.refill_pending.store(true, core::sync::atomic::Ordering::Release);
                 return Some(frame);
@@ -586,6 +678,7 @@ impl PerCpuMagazineSet {
         self.refill();
         self.active.pop().map(|frame| {
             self.alloc_count += 1;
+            self.adaptive_batch.record_alloc();
             frame
         })
     }
@@ -651,11 +744,14 @@ impl PerCpuMagazineSet {
     /// Buddyアロケータから補充
     fn refill(&mut self) {
         self.refill_count += 1;
+        self.adaptive_batch.record_refill();
+        
+        let batch_size = self.adaptive_batch.batch_size();
 
         // Per-Node Buddyを優先使用
         if per_node_buddy::is_per_node_initialized() {
             if let Some(allocator) = per_node_buddy::get_node_allocator(self.numa_node) {
-                for _ in 0..REFILL_BATCH {
+                for _ in 0..batch_size {
                     if let Some(frame) = allocator.allocate_4k() {
                         if self.active.push(frame).is_err() {
                             break;
@@ -669,7 +765,7 @@ impl PerCpuMagazineSet {
         }
 
         // フォールバック: グローバルBuddy
-        for _ in 0..REFILL_BATCH {
+        for _ in 0..batch_size {
             if let Some(frame) = buddy_allocator::buddy_alloc_frame() {
                 if self.active.push(frame).is_err() {
                     break;
