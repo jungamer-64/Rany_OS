@@ -1,8 +1,7 @@
-use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec::Vec;
 use alloc::boxed::Box;
+use alloc::format;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::shell::exoshell::types::ExoValue;

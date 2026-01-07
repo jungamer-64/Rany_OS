@@ -160,6 +160,285 @@ static PER_CPU_CACHES: [IrqMutex<PerCpuExchangeCache>; MAX_CPUS] = {
 };
 
 // ============================================================================
+// RRef Memory Pool - Zero-Copy IPC Optimization (v0.6.0)
+// ============================================================================
+//
+// RRef (Remote Reference) プールは、IPC経由でドメイン間を移動する
+// オブジェクトのための専用メモリプールを提供する。
+//
+// ## 目的
+//
+// - **プリアロケーション**: 頻繁に使用されるサイズのブロックを事前確保
+// - **参照カウント**: 複数ドメインからの参照を安全にトラッキング
+// - **スラブ分離**: IPC専用領域でキャッシュ効率を向上
+//
+// ## RedLeaf OS参考
+//
+// RRefは線形型の概念に基づき、所有権が一意であることを保証する。
+// プールはこれらのRRefの効率的な割り当てと解放を担当する。
+//
+// ============================================================================
+
+/// RRef Memory Pool設定
+#[derive(Debug, Clone, Copy)]
+pub struct RRefPoolConfig {
+    /// プリアロケーションするブロック数
+    pub prealloc_count: usize,
+    /// ブロックサイズ（バイト）
+    pub block_size: usize,
+    /// 最大プールサイズ
+    pub max_pool_size: usize,
+    /// 動的拡張を許可するか
+    pub allow_growth: bool,
+}
+
+impl RRefPoolConfig {
+    /// デフォルト設定（小さいIPC向け）
+    pub const fn small_ipc() -> Self {
+        Self {
+            prealloc_count: 64,
+            block_size: 64,
+            max_pool_size: 256,
+            allow_growth: true,
+        }
+    }
+    
+    /// 中サイズIPC向け
+    pub const fn medium_ipc() -> Self {
+        Self {
+            prealloc_count: 32,
+            block_size: 256,
+            max_pool_size: 128,
+            allow_growth: true,
+        }
+    }
+    
+    /// 大きいIPC向け（バッファ転送等）
+    pub const fn large_ipc() -> Self {
+        Self {
+            prealloc_count: 8,
+            block_size: 4096,
+            max_pool_size: 32,
+            allow_growth: false,
+        }
+    }
+}
+
+impl Default for RRefPoolConfig {
+    fn default() -> Self {
+        Self::small_ipc()
+    }
+}
+
+/// RRefブロック状態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RRefBlockState {
+    /// 空き（プール内）
+    Free = 0,
+    /// 割り当て済み（ドメインが所有）
+    Allocated = 1,
+    /// 転送中（IPC経由で移動中）
+    InTransfer = 2,
+}
+
+/// RRefブロックヘッダ
+/// 
+/// 各ブロックの先頭に配置され、参照カウントと状態を管理。
+#[repr(C, align(8))]
+pub struct RRefBlockHeader {
+    /// 参照カウント（通常は1、shared時は>1）
+    pub ref_count: core::sync::atomic::AtomicU32,
+    /// 現在の状態
+    pub state: core::sync::atomic::AtomicU8,
+    /// 所有ドメインID
+    pub owner_domain: u16,
+    /// パディング
+    _pad: u8,
+    /// データサイズ（ヘッダを除く）
+    pub data_size: u32,
+    /// 次の空きブロックへのポインタ（Free時のみ有効）
+    pub next_free: usize,
+}
+
+impl RRefBlockHeader {
+    /// 新しいヘッダを作成
+    pub const fn new(data_size: u32) -> Self {
+        Self {
+            ref_count: core::sync::atomic::AtomicU32::new(1),
+            state: core::sync::atomic::AtomicU8::new(RRefBlockState::Allocated as u8),
+            owner_domain: 0,
+            _pad: 0,
+            data_size,
+            next_free: 0,
+        }
+    }
+    
+    /// 参照カウントをインクリメント
+    #[inline]
+    pub fn inc_ref(&self) -> u32 {
+        self.ref_count.fetch_add(1, core::sync::atomic::Ordering::AcqRel)
+    }
+    
+    /// 参照カウントをデクリメント、0になったらtrueを返す
+    #[inline]
+    pub fn dec_ref(&self) -> bool {
+        self.ref_count.fetch_sub(1, core::sync::atomic::Ordering::AcqRel) == 1
+    }
+    
+    /// 転送開始
+    #[inline]
+    pub fn start_transfer(&self) {
+        self.state.store(RRefBlockState::InTransfer as u8, core::sync::atomic::Ordering::Release);
+    }
+    
+    /// 転送完了
+    #[inline]
+    pub fn complete_transfer(&self, _new_domain: u16) {
+        // Note: owner_domainはAtomic操作ではないので、転送中に呼び出し側が適切に同期すること
+        self.state.store(RRefBlockState::Allocated as u8, core::sync::atomic::Ordering::Release);
+    }
+}
+
+/// RRef Memory Pool統計
+#[derive(Debug, Clone, Copy)]
+pub struct RRefPoolStats {
+    /// 総ブロック数
+    pub total_blocks: usize,
+    /// 空きブロック数
+    pub free_blocks: usize,
+    /// 割り当て数
+    pub allocations: u64,
+    /// 解放数
+    pub deallocations: u64,
+    /// IPC転送数
+    pub transfers: u64,
+}
+
+/// RRef Memory Pool
+/// 
+/// 固定サイズブロックのプールを管理。
+/// スレッドセーフなフリーリストを使用。
+pub struct RRefPool {
+    /// 設定
+    config: RRefPoolConfig,
+    /// フリーリストの先頭
+    free_head: core::sync::atomic::AtomicUsize,
+    /// 空きブロック数
+    free_count: core::sync::atomic::AtomicUsize,
+    /// 総ブロック数
+    total_count: core::sync::atomic::AtomicUsize,
+    /// 統計: 割り当て数
+    alloc_count: core::sync::atomic::AtomicU64,
+    /// 統計: 解放数
+    dealloc_count: core::sync::atomic::AtomicU64,
+    /// 統計: 転送数
+    transfer_count: core::sync::atomic::AtomicU64,
+}
+
+impl RRefPool {
+    /// 新しいプールを作成
+    pub const fn new(config: RRefPoolConfig) -> Self {
+        Self {
+            config,
+            free_head: core::sync::atomic::AtomicUsize::new(0),
+            free_count: core::sync::atomic::AtomicUsize::new(0),
+            total_count: core::sync::atomic::AtomicUsize::new(0),
+            alloc_count: core::sync::atomic::AtomicU64::new(0),
+            dealloc_count: core::sync::atomic::AtomicU64::new(0),
+            transfer_count: core::sync::atomic::AtomicU64::new(0),
+        }
+    }
+    
+    /// ブロックを割り当て
+    /// 
+    /// フリーリストから取得、なければNoneを返す
+    pub fn allocate(&self) -> Option<*mut RRefBlockHeader> {
+        loop {
+            let head = self.free_head.load(core::sync::atomic::Ordering::Acquire);
+            if head == 0 {
+                return None;
+            }
+            
+            let header = head as *mut RRefBlockHeader;
+            let next = unsafe { (*header).next_free };
+            
+            if self.free_head.compare_exchange(
+                head,
+                next,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Relaxed,
+            ).is_ok() {
+                unsafe {
+                    (*header).state.store(RRefBlockState::Allocated as u8, core::sync::atomic::Ordering::Release);
+                    (*header).ref_count.store(1, core::sync::atomic::Ordering::Release);
+                    (*header).next_free = 0;
+                }
+                self.free_count.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+                self.alloc_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+                return Some(header);
+            }
+        }
+    }
+    
+    /// ブロックを解放
+    /// 
+    /// # Safety
+    /// 
+    /// - headerが有効なRRefBlockHeaderを指していること
+    /// - 参照カウントが0であること
+    pub unsafe fn deallocate(&self, header: *mut RRefBlockHeader) {
+        if header.is_null() {
+            return;
+        }
+        
+        (*header).state.store(RRefBlockState::Free as u8, core::sync::atomic::Ordering::Release);
+        
+        loop {
+            let head = self.free_head.load(core::sync::atomic::Ordering::Acquire);
+            (*header).next_free = head;
+            
+            if self.free_head.compare_exchange(
+                head,
+                header as usize,
+                core::sync::atomic::Ordering::AcqRel,
+                core::sync::atomic::Ordering::Relaxed,
+            ).is_ok() {
+                break;
+            }
+        }
+        
+        self.free_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        self.dealloc_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    
+    /// 転送を記録
+    pub fn record_transfer(&self) {
+        self.transfer_count.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+    
+    /// 統計を取得
+    pub fn stats(&self) -> RRefPoolStats {
+        RRefPoolStats {
+            total_blocks: self.total_count.load(core::sync::atomic::Ordering::Relaxed),
+            free_blocks: self.free_count.load(core::sync::atomic::Ordering::Relaxed),
+            allocations: self.alloc_count.load(core::sync::atomic::Ordering::Relaxed),
+            deallocations: self.dealloc_count.load(core::sync::atomic::Ordering::Relaxed),
+            transfers: self.transfer_count.load(core::sync::atomic::Ordering::Relaxed),
+        }
+    }
+}
+
+/// グローバルRRefプール（小サイズIPC用）
+pub static RREF_POOL_SMALL: RRefPool = RRefPool::new(RRefPoolConfig::small_ipc());
+
+/// グローバルRRefプール（中サイズIPC用）
+pub static RREF_POOL_MEDIUM: RRefPool = RRefPool::new(RRefPoolConfig::medium_ipc());
+
+/// グローバルRRefプール（大サイズIPC用）
+pub static RREF_POOL_LARGE: RRefPool = RRefPool::new(RRefPoolConfig::large_ipc());
+
+// ============================================================================
 // Segregated Free Lists アロケータ
 // ============================================================================
 
@@ -653,7 +932,7 @@ impl ExchangeHeap {
                         if let Some(mut victim_cache) = PER_CPU_CACHES[victim_id].try_lock() {
                             if let Some((addr, _stolen_size)) = victim_cache.try_steal_one(size_class) {
                                 // Record successful steal
-                                let mut local = PER_CPU_CACHES[cpu_id].lock();
+                                let local = PER_CPU_CACHES[cpu_id].lock();
                                 local.steal_successes.fetch_add(1, Ordering::Relaxed);
                                 return NonNull::new(addr as *mut u8);
                             }

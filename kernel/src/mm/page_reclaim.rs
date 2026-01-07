@@ -644,8 +644,8 @@ impl MglruList {
         }
         
         // サイズを再計算
-        for (i, gen) in self.generations.iter().enumerate() {
-            let len = gen.lock().len();
+        for (i, generation) in self.generations.iter().enumerate() {
+            let len = generation.lock().len();
             self.gen_sizes[i].store(len, Ordering::Relaxed);
         }
         

@@ -3,7 +3,6 @@
 // ============================================================================
 //! Driver trait implementation for AMD-Vi IOMMU
 
-use alloc::boxed::Box;
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 

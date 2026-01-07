@@ -464,6 +464,190 @@ pub struct CoalescePolicyStats {
     pub forced_coalesces: u64,
 }
 
+// ============================================================================
+// Memory Compaction - Proactive Defragmentation (v0.6.0)
+// ============================================================================
+//
+// フラグメンテーションを削減するためのプロアクティブなメモリ圧縮機構。
+//
+// ## 目的
+//
+// - 高次オーダーの連続領域を確保しやすくする
+// - 大きなブロック（2MB, 1GB）の割り当て成功率を向上
+// - バックグラウンドで徐々に圧縮して突発的なレイテンシを回避
+//
+// ## 戦略
+//
+// 1. フラグメンテーション率を監視
+// 2. 閾値を超えたらバックグラウンド圧縮を開始
+// 3. 低次オーダーのブロックを移動して高次オーダーに結合
+//
+// ============================================================================
+
+/// 圧縮状態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CompactionState {
+    /// アイドル（圧縮不要）
+    Idle = 0,
+    /// 圧縮中（バックグラウンドで実行中）
+    Compacting = 1,
+    /// 完了（圧縮終了、次回チェックまで待機）
+    Done = 2,
+}
+
+/// 圧縮統計
+#[derive(Debug, Clone, Copy)]
+pub struct CompactionStats {
+    /// 圧縮サイクル数
+    pub cycles: u64,
+    /// 移動したページ数
+    pub pages_moved: u64,
+    /// 作成された高次ブロック数
+    pub blocks_created: u64,
+    /// 圧縮による空きブロック増加数
+    pub freed_blocks: u64,
+}
+
+/// 圧縮コントローラ
+/// 
+/// フラグメンテーション率を監視し、必要に応じて圧縮を実行。
+pub struct CompactionController {
+    /// 現在の状態
+    pub state: CompactionState,
+    /// フラグメンテーション閾値（パーセント）
+    /// この値を超えたら圧縮開始
+    pub fragmentation_threshold: usize,
+    /// 1サイクルあたりの最大移動ページ数
+    pub max_pages_per_cycle: usize,
+    /// 圧縮対象の最小オーダー
+    pub min_compact_order: usize,
+    /// 圧縮対象の最大オーダー
+    pub max_compact_order: usize,
+    /// 統計
+    pub stats: CompactionStats,
+    /// 最後の圧縮時刻（TSC）
+    last_compaction_time: u64,
+    /// 圧縮間隔（TSCサイクル）
+    compaction_interval: u64,
+}
+
+impl CompactionController {
+    /// 新しいコントローラを作成
+    pub const fn new() -> Self {
+        Self {
+            state: CompactionState::Idle,
+            fragmentation_threshold: 30, // 30%以上でトリガー
+            max_pages_per_cycle: 64,
+            min_compact_order: 0,
+            max_compact_order: 8, // 最大256ページ（1MB）ブロックまで
+            stats: CompactionStats {
+                cycles: 0,
+                pages_moved: 0,
+                blocks_created: 0,
+                freed_blocks: 0,
+            },
+            last_compaction_time: 0,
+            compaction_interval: 10_000_000_000, // 約3秒@3GHz
+        }
+    }
+    
+    /// フラグメンテーション率を計算
+    /// 
+    /// (空きブロック数 - 理想的な空きブロック数) / 理想的な空きブロック数
+    pub fn calculate_fragmentation(&self, free_counts: &[usize; 19]) -> usize {
+        // 低次オーダーに空きが偏っているほどフラグメンテーションが高い
+        let total_free: usize = free_counts.iter().sum();
+        if total_free == 0 {
+            return 0;
+        }
+        
+        // 低次オーダー（0-3）の空きブロック比率
+        let low_order_free: usize = free_counts[..4].iter().sum();
+        (low_order_free * 100) / total_free
+    }
+    
+    /// 圧縮が必要か判定
+    pub fn should_compact(&self, fragmentation_percent: usize) -> bool {
+        self.state == CompactionState::Idle 
+            && fragmentation_percent >= self.fragmentation_threshold
+    }
+    
+    /// 圧縮を開始
+    pub fn start_compaction(&mut self) {
+        self.state = CompactionState::Compacting;
+    }
+    
+    /// 圧縮完了
+    pub fn finish_compaction(&mut self, pages_moved: usize, blocks_created: usize) {
+        self.state = CompactionState::Done;
+        self.stats.cycles += 1;
+        self.stats.pages_moved += pages_moved as u64;
+        self.stats.blocks_created += blocks_created as u64;
+    }
+    
+    /// アイドルにリセット
+    pub fn reset_to_idle(&mut self) {
+        self.state = CompactionState::Idle;
+    }
+    
+    /// 圧縮候補のブロックを検索
+    /// 
+    /// 低次オーダーのブロックで、Buddyと結合可能なものを特定
+    pub fn find_compaction_candidates(
+        &self,
+        free_counts: &[usize; 19],
+        max_candidates: usize,
+    ) -> CompactionCandidates {
+        let mut candidates = CompactionCandidates::new();
+        
+        // 低次オーダーから検索
+        for order in self.min_compact_order..self.max_compact_order {
+            if candidates.count >= max_candidates {
+                break;
+            }
+            
+            if free_counts[order] >= 2 {
+                // このオーダーにBuddy結合可能なペアがありそう
+                candidates.add(order, free_counts[order].min(max_candidates - candidates.count));
+            }
+        }
+        
+        candidates
+    }
+}
+
+impl Default for CompactionController {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// 圧縮候補リスト
+#[derive(Debug)]
+pub struct CompactionCandidates {
+    /// 各オーダーの候補数
+    pub by_order: [usize; 19],
+    /// 合計候補数
+    pub count: usize,
+}
+
+impl CompactionCandidates {
+    pub const fn new() -> Self {
+        Self {
+            by_order: [0; 19],
+            count: 0,
+        }
+    }
+    
+    pub fn add(&mut self, order: usize, count: usize) {
+        if order < 19 {
+            self.by_order[order] += count;
+            self.count += count;
+        }
+    }
+}
+
 /// 遅延結合の閾値（解放回数がこれを超えたら結合を試みる）
 const LAZY_COALESCE_THRESHOLD: u64 = 64;
 

@@ -16,10 +16,12 @@
 #![allow(dead_code)]
 
 use crate::sync::PoisonLock;
-use alloc::vec::Vec;
 use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
+
+use super::types::FixedVec;
+use alloc::vec::Vec;
 
 // リモートフリー用の型定義
 use super::remote_free::RemoteFreeRing;
@@ -54,6 +56,12 @@ const REFILL_SCALE_DOWN_RATIO: usize = 75;
 /// キャッシュラインサイズ単位でローテーション
 /// 4KB / 64B = 64 だが、オブジェクト用のスペースを確保するため小さめに
 const MAX_SLAB_COLORS: usize = 8;
+
+/// Slabキャッシュが保持できる最大ページ数
+const MAX_SLAB_PAGES: usize = 64;
+
+/// Partial状態のページの最大数
+const MAX_PARTIAL_PAGES: usize = 32;
 
 /// リモートフリーリングの容量（ロックフリークロスCPU解放用）
 /// 各CPUコアが他CPUから解放要求を受け取るためのリング
@@ -200,10 +208,10 @@ pub struct SlabCache {
     object_size: usize,
     /// 空きリスト（高速パス用、Partialページからのオブジェクト）
     free_list: FreeList,
-    /// Slabページのリスト（メモリ管理用）
-    pages: Vec<NonNull<u8>>,
-    /// Partial状態のページメタデータ（優先的に使用）
-    partial_pages: Vec<SlabPageMeta>,
+    /// Slabページのリスト（メモリ管理用）- 固定容量
+    pages: FixedVec<NonNull<u8>, MAX_SLAB_PAGES>,
+    /// Partial状態のページメタデータ（優先的に使用）- 固定容量
+    partial_pages: FixedVec<SlabPageMeta, MAX_PARTIAL_PAGES>,
     /// Empty状態のページ数（統計用）
     empty_page_count: usize,
     /// Full状態のページ数（統計用）
@@ -236,8 +244,8 @@ impl SlabCache {
         Self {
             object_size: aligned_size,
             free_list: FreeList::new(),
-            pages: Vec::new(),
-            partial_pages: Vec::new(),
+            pages: FixedVec::new(),
+            partial_pages: FixedVec::new(),
             empty_page_count: 0,
             full_page_count: 0,
             alloc_count: 0,
@@ -260,8 +268,8 @@ impl SlabCache {
         Self {
             object_size: aligned_size,
             free_list: FreeList::new(),
-            pages: Vec::new(),
-            partial_pages: Vec::new(),
+            pages: FixedVec::new(),
+            partial_pages: FixedVec::new(),
             empty_page_count: 0,
             full_page_count: 0,
             alloc_count: 0,

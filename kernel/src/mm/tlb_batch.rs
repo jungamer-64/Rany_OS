@@ -892,6 +892,181 @@ impl PcidAllocator {
 /// グローバルPCID Allocator
 pub static PCID_ALLOCATOR: PcidAllocator = PcidAllocator::new();
 
+// ============================================================================
+// ASID LRU Manager (v0.6.0 - Enhanced ASID Rotation)
+// ============================================================================
+//
+// 単純なビットマップベースのASID割り当てを改善し、
+// LRU (Least Recently Used) ベースのスマートな再利用を実装。
+//
+// ## 利点
+//
+// - ホットなASIDは保護される（最近使用されたものは再利用されにくい）
+// - コールドなASIDを優先的に再利用してTLBミスを最小化
+// - アクティブプロセス追跡により不要なTLBフラッシュを削減
+//
+// ============================================================================
+
+/// ASID LRUエントリ
+#[repr(C)]
+pub struct AsidLruEntry {
+    /// 最終使用時刻（TSC）
+    pub last_used: AtomicU64,
+    /// 関連付けられたプロセスID（0 = 未使用）
+    pub process_id: AtomicU64,
+    /// アクティブフラグ
+    pub active: AtomicBool,
+}
+
+impl AsidLruEntry {
+    pub const fn new() -> Self {
+        Self {
+            last_used: AtomicU64::new(0),
+            process_id: AtomicU64::new(0),
+            active: AtomicBool::new(false),
+        }
+    }
+    
+    /// 使用を記録
+    #[inline]
+    pub fn touch(&self) {
+        self.last_used.store(read_tsc(), Ordering::Relaxed);
+    }
+    
+    /// プロセスに割り当て
+    pub fn assign(&self, pid: u64) {
+        self.process_id.store(pid, Ordering::Release);
+        self.active.store(true, Ordering::Release);
+        self.touch();
+    }
+    
+    /// 解放
+    pub fn release(&self) {
+        self.active.store(false, Ordering::Release);
+        self.process_id.store(0, Ordering::Release);
+    }
+    
+    /// 未使用か
+    #[inline]
+    pub fn is_free(&self) -> bool {
+        !self.active.load(Ordering::Acquire)
+    }
+}
+
+/// LRUベースのASID/PCID管理
+/// 
+/// 最大256エントリを追跡（実用的なアクティブプロセス数）
+const ASID_LRU_CAPACITY: usize = 256;
+
+pub struct AsidLruManager {
+    /// ASIDエントリ配列
+    entries: [AsidLruEntry; ASID_LRU_CAPACITY],
+    /// 次の検索開始位置
+    search_hint: AtomicU16,
+    /// 統計: LRU再利用回数
+    lru_reuses: AtomicU64,
+    /// 統計: 空きスロット使用回数
+    free_slot_uses: AtomicU64,
+}
+
+impl AsidLruManager {
+    pub const fn new() -> Self {
+        const EMPTY: AsidLruEntry = AsidLruEntry::new();
+        Self {
+            entries: [EMPTY; ASID_LRU_CAPACITY],
+            search_hint: AtomicU16::new(1),
+            lru_reuses: AtomicU64::new(0),
+            free_slot_uses: AtomicU64::new(0),
+        }
+    }
+    
+    /// ASIDを割り当て（プロセスID付き）
+    /// 
+    /// 1. 空きスロットを優先使用
+    /// 2. 空きがなければLRU（最も古いエントリ）を再利用
+    pub fn allocate(&self, process_id: u64) -> u16 {
+        let hint = self.search_hint.load(Ordering::Relaxed) as usize;
+        
+        // 第1パス: 空きスロットを検索
+        for offset in 0..ASID_LRU_CAPACITY {
+            let idx = (hint + offset) % ASID_LRU_CAPACITY;
+            if idx == 0 { continue; } // ASID 0は予約
+            
+            let entry = &self.entries[idx];
+            if entry.is_free() {
+                entry.assign(process_id);
+                self.search_hint.store((idx as u16).wrapping_add(1), Ordering::Relaxed);
+                self.free_slot_uses.fetch_add(1, Ordering::Relaxed);
+                return idx as u16;
+            }
+        }
+        
+        // 第2パス: LRU（最も古い）を検索
+        let mut oldest_idx: usize = 1;
+        let mut oldest_time: u64 = u64::MAX;
+        
+        for idx in 1..ASID_LRU_CAPACITY {
+            let entry = &self.entries[idx];
+            let time = entry.last_used.load(Ordering::Relaxed);
+            if time < oldest_time {
+                oldest_time = time;
+                oldest_idx = idx;
+            }
+        }
+        
+        // 最も古いエントリを再利用
+        let entry = &self.entries[oldest_idx];
+        entry.assign(process_id);
+        self.search_hint.store((oldest_idx as u16).wrapping_add(1), Ordering::Relaxed);
+        self.lru_reuses.fetch_add(1, Ordering::Relaxed);
+        
+        oldest_idx as u16
+    }
+    
+    /// ASIDを解放
+    pub fn deallocate(&self, asid: u16) {
+        if asid == 0 || asid as usize >= ASID_LRU_CAPACITY {
+            return;
+        }
+        self.entries[asid as usize].release();
+    }
+    
+    /// ASIDの使用を記録（アクセス時に呼び出し）
+    #[inline]
+    pub fn touch(&self, asid: u16) {
+        if (asid as usize) < ASID_LRU_CAPACITY {
+            self.entries[asid as usize].touch();
+        }
+    }
+    
+    /// 統計情報を取得
+    pub fn stats(&self) -> AsidLruStats {
+        let active_count = self.entries.iter()
+            .filter(|e| !e.is_free())
+            .count();
+        
+        AsidLruStats {
+            active_asids: active_count,
+            lru_reuses: self.lru_reuses.load(Ordering::Relaxed),
+            free_slot_uses: self.free_slot_uses.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// ASID LRU統計
+#[derive(Debug, Clone, Copy)]
+pub struct AsidLruStats {
+    /// アクティブなASID数
+    pub active_asids: usize,
+    /// LRU再利用回数
+    pub lru_reuses: u64,
+    /// 空きスロット使用回数
+    pub free_slot_uses: u64,
+}
+
+/// グローバルASID LRUマネージャ
+pub static ASID_LRU_MANAGER: AsidLruManager = AsidLruManager::new();
+
 /// PCID対応のTLBフラッシュ（高効率版）
 /// 
 /// INVPCIDが利用可能な場合は、指定PCIDのみを無効化。

@@ -4,7 +4,6 @@
 //!
 //! Driver trait implementation for Intel HD Audio.
 
-use alloc::boxed::Box;
 use core::sync::atomic::Ordering;
 
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};

@@ -5,9 +5,7 @@
 //! Driver trait implementation for VirtIO Block Device.
 //! This wrapper allows the driver to be managed by the DriverRegistry.
 
-use alloc::boxed::Box;
 use alloc::sync::Arc;
-use core::any::Any;
 
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
