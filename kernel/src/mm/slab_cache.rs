@@ -22,6 +22,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 
 use alloc::vec::Vec;
+use alloc::boxed::Box;
+use alloc::sync::Arc;
+use spin::Mutex;
+use crate::mm::slab_registry::{SlabCacheRegistry, SlabFlags};
 
 // リモートフリー用の型定義
 use super::remote_free::RemoteFreeRing;
@@ -174,7 +178,7 @@ impl SlabPageHeader {
     
     /// Calculate offset to the first object (after header + color)
     #[inline]
-    fn payload_offset(color_offset: u16) -> usize {
+    pub(crate) fn payload_offset(color_offset: u16) -> usize {
         let header_size = core::mem::size_of::<Self>();
         let aligned_header = (header_size + 15) & !15; // 16-byte align
         aligned_header + color_offset as usize
@@ -229,6 +233,17 @@ impl SlabPageHeader {
     }
 }
 
+/// Trait for migrating objects during compaction (defrag)
+pub trait ObjectMigrator: Send + Sync + core::fmt::Debug {
+    /// Migrate object from `src` to `dst`.
+    /// 
+    /// # Safety
+    /// Caller guarantees src and dst are valid pointers of correct size.
+    /// Implementor must copy data and update references.
+    /// Returns true if successful. If false, migration is aborted.
+    unsafe fn migrate(&self, src: NonNull<u8>, dst: NonNull<u8>) -> bool;
+}
+
 /// 1つのサイズクラス用のSlabキャッシュ
 /// 
 /// ## Partial Slab分離 (Refactored)
@@ -272,6 +287,9 @@ pub struct SlabCache {
     
     /// NUMA node ID for this Slab
     numa_node: Option<u8>,
+    
+    /// Optional: Migrator for compaction
+    migrator: Option<Box<dyn ObjectMigrator>>,
 }
 
 impl SlabCache {
@@ -297,6 +315,7 @@ impl SlabCache {
             refill_pages: INITIAL_REFILL_PAGES,
             last_scale_alloc_count: 0,
             numa_node: None,
+            migrator: None,
         }
     }
 
@@ -318,6 +337,7 @@ impl SlabCache {
             refill_pages: INITIAL_REFILL_PAGES,
             last_scale_alloc_count: 0,
             numa_node: Some(numa_node),
+            migrator: None,
         }
     }
 
@@ -773,6 +793,115 @@ impl SlabCache {
         returned
     }
     
+
+    /// Register a migrator for this cache
+    pub fn register_migrator(&mut self, migrator: Box<dyn ObjectMigrator>) {
+        self.migrator = Some(migrator);
+    }
+
+    /// Defragment the cache by moving objects from sparsely used pages
+    pub fn defrag(&mut self) -> usize {
+        if self.migrator.is_none() { return 0; }
+        
+        let mut moved_count = 0;
+        // Limit processing to avoid stalls
+        const MAX_PAGES_TO_SCAN: usize = 16;
+        
+        let count = self.partial_page_count;
+        let limit = core::cmp::min(count, MAX_PAGES_TO_SCAN);
+        
+        for _ in 0..limit {
+             let page_ptr = self.pop_partial(); 
+             if page_ptr.is_none() { break; }
+             let mut page = page_ptr.unwrap();
+             
+             // Check utilization (< 25%)
+             let (inuse, total) = unsafe {
+                 let h = page.as_mut();
+                 (h.inuse, h.total_objects)
+             };
+             
+             if inuse > 0 && (inuse as usize * 4) < (total as usize) {
+                 // Victim found
+                 let moved = self.evacuate_page(page);
+                 moved_count += moved;
+             }
+             
+             // After evacuation, check if empty
+             let is_empty = unsafe { page.as_ref().is_empty() };
+             if is_empty {
+                  unsafe { self.free_page_physical(page); }
+                  // pop_partial decremented counters and detached page.
+                  // We just drop it physically. Correct.
+                  continue;
+             }
+             
+             // Push back if not freed
+             unsafe { self.push_partial(page); }
+        }
+        moved_count
+    }
+
+    /// Evacuate all objects from a page
+    fn evacuate_page(&mut self, mut page: NonNull<SlabPageHeader>) -> usize {
+        let mut moved = 0;
+        let object_size = self.object_size; 
+        
+        let header = unsafe { page.as_ref() };
+        let total = header.total_objects;
+        let color_offset = header.color_offset;
+        
+        // 1. Identify free slots
+        // Max objects per 4KB page (min size 8) is 512.
+        let mut free_mask = [0u64; 8];
+        
+        let mut curr = header.next_free;
+        while let Some(idx) = curr {
+            let i = idx as usize;
+            if i < 512 {
+                free_mask[i / 64] |= 1 << (i % 64);
+            }
+            // Read next from object
+            unsafe {
+                let offset = SlabPageHeader::payload_offset(color_offset);
+                let base_ptr = (page.as_ptr() as *mut u8).add(offset);
+                let obj_ptr = base_ptr.add(i * object_size);
+                curr = *(obj_ptr as *const Option<u16>);
+            }
+        }
+        
+        // 2. Iterate all slots
+        for i in 0..total as usize {
+            if i >= 512 { break; } 
+            
+            let is_free = (free_mask[i / 64] & (1 << (i % 64))) != 0;
+            if !is_free {
+                // ALLOCATED -> Migrate
+                unsafe {
+                    let offset = SlabPageHeader::payload_offset(color_offset);
+                    let base_ptr = (page.as_ptr() as *mut u8).add(offset);
+                    let old_ptr = NonNull::new_unchecked(base_ptr.add(i * object_size));
+                    
+                    if let Some(new_ptr) = self.allocate() {
+                        let success = if let Some(migrator) = &self.migrator {
+                             migrator.migrate(old_ptr, new_ptr)
+                        } else { false };
+
+                        if success {
+                             // Manual deallocate from victim page
+                             let ph = page.as_mut();
+                             ph.free(old_ptr, object_size);
+                             self.dealloc_count += 1;
+                             moved += 1;
+                        } else {
+                             self.deallocate(new_ptr);
+                        }
+                    }
+                }
+            }
+        }
+        moved
+    }
 
 }
 
@@ -1792,8 +1921,8 @@ pub type SlabDtor = fn(NonNull<u8>);
 /// );
 /// ```
 pub struct TypedSlabCache {
-    /// 内部のSlabキャッシュ
-    inner: SlabCache,
+    /// 内部のSlabキャッシュ (Shared via Registry)
+    inner: Arc<Mutex<SlabCache>>,
     /// コンストラクタ関数（初回割り当て時に呼ばれる）
     ctor: Option<SlabCtor>,
     /// デストラクタ関数（解放時に呼ばれる）
@@ -1813,8 +1942,11 @@ pub struct TypedSlabCache {
 impl TypedSlabCache {
     /// コンストラクタ付きTypedSlabCacheを作成
     pub fn new_with_ctor(object_size: usize, ctor: SlabCtor) -> Self {
+        // TypedSlabCache maintains internal state (initialized_bitmap) so it cannot be merged
+        let flags = SlabFlags { mergeable: false, read_only: false };
+        let inner = SlabCacheRegistry::global().get_or_create(object_size, flags);
         Self {
-            inner: SlabCache::new(object_size),
+            inner,
             ctor: Some(ctor),
             dtor: None,
             initialized_bitmap: 0,
@@ -1830,8 +1962,11 @@ impl TypedSlabCache {
         ctor: SlabCtor,
         dtor: Option<SlabDtor>,
     ) -> Self {
+        // TypedSlabCache maintains internal state, no merging
+        let flags = SlabFlags { mergeable: false, read_only: false };
+        let inner = SlabCacheRegistry::global().get_or_create(object_size, flags);
         Self {
-            inner: SlabCache::new(object_size),
+            inner,
             ctor: Some(ctor),
             dtor,
             initialized_bitmap: 0,
@@ -1847,8 +1982,14 @@ impl TypedSlabCache {
         ctor: SlabCtor,
         numa_node: u8,
     ) -> Self {
+        // NUMA aware, not mergeable currently (registry doesn't track node yet, or assume non-mergeable)
+        // For now, create direct since Registry doesn't support NUMA constraints yet
+        // OR wrapper allowing new_on_node.
+        // Let's stick to simple Arc<Mutex> wrap for now, bypassing registry for NUMA explicit calls
+        // until Registry is upgraded.
+        let inner = Arc::new(Mutex::new(SlabCache::new_on_node(object_size, numa_node)));
         Self {
-            inner: SlabCache::new_on_node(object_size, numa_node),
+            inner,
             ctor: Some(ctor),
             dtor: None,
             initialized_bitmap: 0,
@@ -1862,7 +2003,7 @@ impl TypedSlabCache {
     ///
     /// 初回割り当てではコンストラクタが呼ばれ、再利用時はスキップ
     pub fn allocate(&mut self) -> Option<NonNull<u8>> {
-        let ptr = self.inner.allocate()?;
+        let ptr = self.inner.lock().allocate()?;
 
         // オブジェクトのインデックスを計算（簡易実装: アドレス下位ビットから）
         let obj_index = self.ptr_to_index(ptr);
@@ -1905,19 +2046,19 @@ impl TypedSlabCache {
         }
 
         // 内部キャッシュに返却（初期化フラグは維持）
-        self.inner.deallocate(ptr);
+        self.inner.lock().deallocate(ptr);
     }
 
     /// ポインタからオブジェクトインデックスを計算（簡易実装）
     fn ptr_to_index(&self, ptr: NonNull<u8>) -> usize {
         // アドレス下位12ビット（ページ内オフセット）をオブジェクトサイズで割る
         let offset = (ptr.as_ptr() as usize) & 0xFFF;
-        offset / self.inner.object_size
+        offset / self.inner.lock().object_size
     }
 
     /// 統計情報を取得
     pub fn stats(&self) -> TypedSlabStats {
-        let inner_stats = self.inner.stats();
+        let inner_stats = self.inner.lock().stats();
         TypedSlabStats {
             alloc_count: inner_stats.alloc_count,
             dealloc_count: inner_stats.dealloc_count,
@@ -1938,9 +2079,9 @@ impl TypedSlabCache {
         }
     }
 
-    /// 内部SlabCacheへのアクセス（統計等）
-    pub fn inner(&self) -> &SlabCache {
-        &self.inner
+    /// 内部SlabCacheへのアクセス（統計等） - ロックが必要
+    pub fn inner(&self) -> Arc<Mutex<SlabCache>> {
+        self.inner.clone()
     }
 }
 
@@ -2072,7 +2213,7 @@ pub struct ObjectCache<T> {
     /// 名前（デバッグ用）
     name: &'static str,
     /// 内部Slabキャッシュ
-    inner: spin::Mutex<SlabCache>,
+    inner: Arc<Mutex<SlabCache>>,
     /// プールされたオブジェクト
     pool: spin::Mutex<Vec<NonNull<T>>>,
     /// 設定
@@ -2093,9 +2234,13 @@ impl<T> ObjectCache<T> {
     
     /// 設定付きで新しいオブジェクトキャッシュを作成
     pub fn with_config(name: &'static str, config: ObjectCacheConfig) -> Self {
+        // ObjectCache is stateless regarding initialization (pools it manually), 
+        // so it IS mergeable.
+        let flags = SlabFlags { mergeable: true, read_only: false };
+        let inner = SlabCacheRegistry::global().get_or_create(core::mem::size_of::<T>(), flags);
         Self {
             name,
-            inner: spin::Mutex::new(SlabCache::new(core::mem::size_of::<T>())),
+            inner,
             pool: spin::Mutex::new(Vec::with_capacity(config.max_pooled)),
             config,
             stats: spin::Mutex::new(ObjectCacheStats::default()),

@@ -20,6 +20,7 @@ pub mod mmap;
 pub mod numa;
 pub mod per_cpu;
 pub mod slab_cache;
+pub mod slab_registry; // 新: Slab Merging Registry
 pub mod thp_promotion; // 新: Transparent Huge Page Promotion - 自動THP昇格
 pub mod zeroed_pool; // 新: PMM Idle Zeroing - バックグラウンドゼロクリア
 pub mod per_node_buddy; // 新: Per-NUMA-Node Buddy Allocator - ノードごとの独立ロック
