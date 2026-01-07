@@ -10,6 +10,7 @@ pub mod net;
 pub mod proc;
 pub mod registry;
 pub mod sys;
+pub mod async_swapout;
 
 pub use cap::CapNamespace;
 pub use driver::DriverNamespace;
@@ -17,6 +18,7 @@ pub use fs::FsNamespace;
 pub use net::NetNamespace;
 pub use proc::ProcNamespace;
 pub use sys::SysNamespace;
+pub use async_swapout::AsyncSwapoutNamespace;
 
 use crate::security::CapabilitySet;
 use crate::shell::exoshell::types::ExoValue;

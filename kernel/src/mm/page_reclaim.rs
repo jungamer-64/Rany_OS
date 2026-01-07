@@ -429,6 +429,299 @@ impl LruPageEntry {
 // LRU List (per NUMA node)
 // ============================================================================
 
+// ============================================================================
+// Multi-Generational LRU (MGLRU) - Linux 6.1+ inspired
+// ============================================================================
+//
+// MGLRU は従来の Active/Inactive 二分法を超え、4世代のリストで
+// より精密なページ年齢追跡を実現する。
+//
+// ## 世代 (Generation)
+//
+// - Gen 0: 最も新しいページ（直近でアクセス）
+// - Gen 1: 比較的新しいページ
+// - Gen 2: 比較的古いページ
+// - Gen 3: 最も古いページ（回収候補）
+//
+// ## 昇格/降格ロジック
+//
+// - アクセスビット検出 → 世代を0にリセット
+// - aging cycle → 各ページの世代を+1
+// - Gen 3 の unreferenced ページを回収
+//
+// ## 参考
+//
+// - Linux mm/vmscan.c (Multi-Gen LRU)
+// - https://lwn.net/Articles/856931/
+// ============================================================================
+
+/// MGLRU世代数
+pub const MGLRU_GENERATIONS: usize = 4;
+
+/// MGLRU世代のインデックス型
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum MglruGen {
+    /// 世代0: 最も新しい（最近アクセス）
+    Gen0 = 0,
+    /// 世代1: 比較的新しい
+    Gen1 = 1,
+    /// 世代2: 比較的古い
+    Gen2 = 2,
+    /// 世代3: 最も古い（回収候補）
+    Gen3 = 3,
+}
+
+impl MglruGen {
+    /// 世代番号から変換
+    #[inline]
+    pub fn from_u8(val: u8) -> Self {
+        match val {
+            0 => Self::Gen0,
+            1 => Self::Gen1,
+            2 => Self::Gen2,
+            _ => Self::Gen3,
+        }
+    }
+    
+    /// 次の世代（古い方向へ）
+    #[inline]
+    pub fn age(self) -> Self {
+        match self {
+            Self::Gen0 => Self::Gen1,
+            Self::Gen1 => Self::Gen2,
+            Self::Gen2 => Self::Gen3,
+            Self::Gen3 => Self::Gen3, // 既に最も古い
+        }
+    }
+    
+    /// 若返り（アクセス検出時）
+    #[inline]
+    pub fn rejuvenate(self) -> Self {
+        Self::Gen0
+    }
+    
+    /// 数値として取得
+    #[inline]
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
+}
+
+/// MGLRU用ページエントリ
+#[derive(Debug)]
+pub struct MglruEntry {
+    /// 物理フレームインデックス
+    pub frame: FrameIndex,
+    /// ページタイプ
+    pub page_type: PageType,
+    /// 現在の世代
+    pub generation: MglruGen,
+    /// 参照ビット（世代更新時にチェック）
+    pub referenced: AtomicBool,
+    /// 追加時刻
+    pub add_time: u64,
+    /// フラグ
+    pub flags: LruFlags,
+}
+
+impl MglruEntry {
+    /// 新しいエントリを作成（Gen0で開始）
+    pub fn new(frame: FrameIndex, page_type: PageType, timestamp: u64) -> Self {
+        Self {
+            frame,
+            page_type,
+            generation: MglruGen::Gen0,
+            referenced: AtomicBool::new(true),
+            add_time: timestamp,
+            flags: LruFlags::NONE,
+        }
+    }
+    
+    /// 参照ビットをテスト＆クリア
+    #[inline]
+    pub fn test_clear_referenced(&self) -> bool {
+        self.referenced.swap(false, Ordering::AcqRel)
+    }
+    
+    /// 回収可能か
+    pub fn is_reclaimable(&self) -> bool {
+        !self.flags.contains(LruFlags::LOCKED)
+            && !self.flags.contains(LruFlags::UNEVICTABLE)
+            && !self.flags.contains(LruFlags::MLOCKED)
+            && !self.flags.contains(LruFlags::WRITEBACK)
+    }
+}
+
+/// Multi-Generational LRU リスト
+/// 
+/// 世代ごとに分離されたリストを管理し、効率的なaging/reclaimを実現。
+pub struct MglruList {
+    /// 世代ごとのページリスト [Gen0, Gen1, Gen2, Gen3]
+    generations: [spin::Mutex<VecDeque<MglruEntry>>; MGLRU_GENERATIONS],
+    /// 各世代のサイズ
+    gen_sizes: [AtomicUsize; MGLRU_GENERATIONS],
+    /// 現在のaging generation（次のaging対象）
+    aging_gen: AtomicUsize,
+    /// 統計: aging cycle回数
+    aging_cycles: AtomicU64,
+    /// 統計: 回収ページ数
+    reclaimed: AtomicU64,
+    /// 統計: 若返り回数
+    rejuvenated: AtomicU64,
+}
+
+impl MglruList {
+    /// 新しいMGLRUリストを作成
+    pub const fn new() -> Self {
+        const EMPTY: spin::Mutex<VecDeque<MglruEntry>> = spin::Mutex::new(VecDeque::new());
+        const ZERO: AtomicUsize = AtomicUsize::new(0);
+        Self {
+            generations: [EMPTY; MGLRU_GENERATIONS],
+            gen_sizes: [ZERO; MGLRU_GENERATIONS],
+            aging_gen: AtomicUsize::new(0),
+            aging_cycles: AtomicU64::new(0),
+            reclaimed: AtomicU64::new(0),
+            rejuvenated: AtomicU64::new(0),
+        }
+    }
+    
+    /// 新しいページを追加（Gen0へ）
+    pub fn add_page(&self, entry: MglruEntry) {
+        let mut gen0 = self.generations[0].lock();
+        gen0.push_back(entry);
+        self.gen_sizes[0].fetch_add(1, Ordering::Relaxed);
+    }
+    
+    /// Aging cycle: 全世代を1つずつ古くする
+    /// 
+    /// 参照ビットが立っているページはGen0に戻す（若返り）
+    pub fn run_aging_cycle(&self) -> MglruAgingStats {
+        let mut aged = 0usize;
+        let mut rejuvenated = 0usize;
+        
+        // Gen2 → Gen3, Gen1 → Gen2, Gen0 → Gen1 の順で処理
+        // (逆順で処理して世代間の移動を効率化)
+        for gen_idx in (0..MGLRU_GENERATIONS - 1).rev() {
+            let mut current_gen = self.generations[gen_idx].lock();
+            let mut next_gen = self.generations[gen_idx + 1].lock();
+            let mut rejuvenate_list = Vec::new();
+            
+            let mut i = 0;
+            while i < current_gen.len() {
+                if let Some(entry) = current_gen.get(i) {
+                    if entry.test_clear_referenced() {
+                        // 参照された → 若返り候補（後でGen0へ）
+                        if let Some(e) = current_gen.remove(i) {
+                            rejuvenate_list.push(e);
+                            rejuvenated += 1;
+                        }
+                        continue;
+                    }
+                }
+                // 次の世代へaging
+                if let Some(mut entry) = current_gen.remove(i) {
+                    entry.generation = entry.generation.age();
+                    next_gen.push_back(entry);
+                    aged += 1;
+                } else {
+                    i += 1;
+                }
+            }
+            
+            drop(current_gen);
+            drop(next_gen);
+            
+            // 若返りページをGen0に追加
+            if !rejuvenate_list.is_empty() {
+                let mut gen0 = self.generations[0].lock();
+                for mut e in rejuvenate_list {
+                    e.generation = MglruGen::Gen0;
+                    e.referenced.store(false, Ordering::Relaxed);
+                    gen0.push_back(e);
+                }
+            }
+        }
+        
+        // サイズを再計算
+        for (i, gen) in self.generations.iter().enumerate() {
+            let len = gen.lock().len();
+            self.gen_sizes[i].store(len, Ordering::Relaxed);
+        }
+        
+        self.aging_cycles.fetch_add(1, Ordering::Relaxed);
+        self.rejuvenated.fetch_add(rejuvenated as u64, Ordering::Relaxed);
+        
+        MglruAgingStats { aged, rejuvenated }
+    }
+    
+    /// Gen3から回収可能なページを取得
+    pub fn reclaim_from_oldest(&self, count: usize) -> Vec<MglruEntry> {
+        let mut gen3 = self.generations[3].lock();
+        let mut victims = Vec::with_capacity(count.min(gen3.len()));
+        
+        let mut i = 0;
+        while victims.len() < count && i < gen3.len() {
+            if let Some(entry) = gen3.get(i) {
+                if entry.is_reclaimable() && !entry.referenced.load(Ordering::Relaxed) {
+                    if let Some(e) = gen3.remove(i) {
+                        victims.push(e);
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+        
+        self.gen_sizes[3].fetch_sub(victims.len(), Ordering::Relaxed);
+        self.reclaimed.fetch_add(victims.len() as u64, Ordering::Relaxed);
+        
+        victims
+    }
+    
+    /// 各世代のサイズを取得
+    pub fn generation_sizes(&self) -> [usize; MGLRU_GENERATIONS] {
+        [
+            self.gen_sizes[0].load(Ordering::Relaxed),
+            self.gen_sizes[1].load(Ordering::Relaxed),
+            self.gen_sizes[2].load(Ordering::Relaxed),
+            self.gen_sizes[3].load(Ordering::Relaxed),
+        ]
+    }
+    
+    /// 統計情報
+    pub fn stats(&self) -> MglruStats {
+        MglruStats {
+            gen_sizes: self.generation_sizes(),
+            aging_cycles: self.aging_cycles.load(Ordering::Relaxed),
+            reclaimed: self.reclaimed.load(Ordering::Relaxed),
+            rejuvenated: self.rejuvenated.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// MGLRU Aging統計
+#[derive(Debug, Clone, Copy)]
+pub struct MglruAgingStats {
+    /// 世代が進んだページ数
+    pub aged: usize,
+    /// 若返ったページ数
+    pub rejuvenated: usize,
+}
+
+/// MGLRU統計
+#[derive(Debug, Clone, Copy)]
+pub struct MglruStats {
+    /// 各世代のサイズ
+    pub gen_sizes: [usize; MGLRU_GENERATIONS],
+    /// Aging cycle回数
+    pub aging_cycles: u64,
+    /// 回収ページ数
+    pub reclaimed: u64,
+    /// 若返り回数
+    pub rejuvenated: u64,
+}
+
 /// Active/Inactive LRUリスト
 /// 
 /// Clock Algorithm対応: select_victim_clock()で効率的な犠牲者選択

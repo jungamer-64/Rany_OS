@@ -101,7 +101,19 @@
 - TOKEN_REFILL_PER_BATCH（リフィル量）: 推奨値は `BATCH_SIZE / 2`。バッチ処理のたびに一定量を回復する設計で、I/O のスループットと公平性のバランスを取る。
 - RESERVED_FILE_SLOTS（ファイル予約）: キュー容量の約 12.5% を予約してファイル書き戻しを優先する実装にしています。システムの I/O 特性により調整してください。
 
-調整の指針:
+**推奨デフォルト（初期設定）**: 初期の簡易スイープでは以下の設定がバランスの良い動作を示していました:
+- `TOKEN_BUCKET_CAPACITY = CHANNEL_SIZE / 4` (→ 128 when `CHANNEL_SIZE=512`)
+- `TOKEN_REFILL_PER_BATCH = BATCH_SIZE / 2` (→ 8 when `BATCH_SIZE=16`)
+- `RESERVED_FILE_SLOTS = CHANNEL_SIZE / 8` (→ 64 when `CHANNEL_SIZE=512`)
+
+**長時間検証結果（推奨値）**: さらに広範囲での 2 段階スイープ（探索 → 上位候補の高反復検証）を実施したところ、ファイル書き戻しをより優先する組合せが安定して高い成功率を示しました。検証で特に良好だった組合せ（検証フェーズ上位）は次の通りです:
+- `TOKEN_BUCKET_CAPACITY = 32`
+- `TOKEN_REFILL_PER_BATCH = 4`
+- `RESERVED_FILE_SLOTS = 128`
+
+この組合せはホストシミュレーションで 10 回の検証実行を行い、平均 `enq_success = 528`、平均 `processed = 528`（全成功）という良好な結果を示しました。該当スクリプト: `tools/async_swapout_long_sweep.ps1`, 検証スクリプト: `tools/async_swapout_validate_default.ps1`, 集計ファイル: `async_swapout_long_agg.csv` と `async_swapout_recommendation.txt`。
+
+スイープのスクリプトと集計結果: `tools/async_swapout_sweep.ps1`, `async_swapout_sweep_agg.csv`.
 
 - レイテンシ重視（短時間で anon を積極的に解放したい）: `TOKEN_BUCKET_CAPACITY` を増やし、`TOKEN_REFILL_PER_BATCH` を小さめにする。
 - スループット重視（ファイル書き戻し優先）: `RESERVED_FILE_SLOTS` を増やし、`TOKEN_BUCKET_CAPACITY` を控えめにする。
@@ -145,6 +157,17 @@ PY
 }"
 
 注: 実環境では `queued_counts()`/`token_count()` を露出する調査用フック（または trace/log 出力）を使って長時間監視する方が安定した傾向把握に有効です。
+
+### ランタイム制御（ExoShell 経由）
+
+デバッグや本番での微調整のために、ExoShell 経由でリアルタイムにパラメータを取得・設定できます（権限: `CAP_SYS_ADMIN` が必要）。
+
+- 現在の状態を取得:
+  - `async_swapout.status()` または `async_swapout.get()` → マップを返します（`token_count`, `token_bucket_capacity`, `token_refill_per_batch`, `reserved_file_slots`, `queue_total`, `file_queue`, `worker_running` 等）。
+- パラメータを設定:
+  - `async_swapout.set(token_capacity, token_refill_per_batch, reserved_file_slots)` 例: `async_swapout.set(32, 4, 128)` （管理者権限が必要）。
+
+このインターフェースはデバッグ用途に適しています。実機では監視を行いながら慎重に微調整してください。
 
 ---
 

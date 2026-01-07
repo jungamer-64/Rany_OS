@@ -347,6 +347,123 @@ const fn total_summary_words() -> usize {
 
 // (FreeList removed: order-local free bitsets are used instead.)
 
+// ============================================================================
+// Coalesce Policy with Hysteresis (v0.6.0)
+// ============================================================================
+//
+// 単純な閾値ベースの遅延結合では、閾値付近で結合と分割が繰り返される
+// 「チャタリング」が発生する可能性がある。
+//
+// Hysteresisパターン:
+// - low watermark以下 → 結合を積極的に実行
+// - high watermark以上 → 結合をスキップ（十分な空きあり）
+// - 間 → 前回の状態を維持
+//
+// これにより、安定した動作と不要なCPUサイクル消費を防ぐ。
+// ============================================================================
+
+/// Coalesceポリシーの状態
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CoalesceState {
+    /// 結合を積極的に実行する状態
+    Coalescing = 0,
+    /// 結合をスキップする状態（十分な空きあり）
+    Deferring = 1,
+}
+
+/// Hysteresisベースの結合ポリシー
+#[derive(Debug, Clone, Copy)]
+pub struct CoalescePolicy {
+    /// Low watermark: この空きブロック数以下で結合開始
+    pub low_watermark: usize,
+    /// High watermark: この空きブロック数以上で結合抑制
+    pub high_watermark: usize,
+    /// 現在の状態
+    state: CoalesceState,
+    /// 統計: 結合遅延回数
+    deferrals: u64,
+    /// 統計: 強制結合回数
+    forced_coalesces: u64,
+}
+
+impl CoalescePolicy {
+    /// 新しいポリシーを作成
+    /// 
+    /// デフォルト: low=32, high=128 のブロック数
+    pub const fn new() -> Self {
+        Self {
+            low_watermark: 32,
+            high_watermark: 128,
+            state: CoalesceState::Deferring,
+            deferrals: 0,
+            forced_coalesces: 0,
+        }
+    }
+    
+    /// watermarkを設定
+    pub fn set_watermarks(&mut self, low: usize, high: usize) {
+        self.low_watermark = low;
+        self.high_watermark = high.max(low + 1);
+    }
+    
+    /// 現在の空きブロック数に基づいて結合すべきか判定
+    /// 
+    /// Hysteresisロジック:
+    /// - free <= low → Coalescing状態へ遷移、trueを返す
+    /// - free >= high → Deferring状態へ遷移、falseを返す
+    /// - 間 → 前回の状態を維持
+    #[inline]
+    pub fn should_coalesce(&mut self, free_blocks: usize) -> bool {
+        if free_blocks <= self.low_watermark {
+            if self.state == CoalesceState::Deferring {
+                self.forced_coalesces += 1;
+            }
+            self.state = CoalesceState::Coalescing;
+            true
+        } else if free_blocks >= self.high_watermark {
+            if self.state == CoalesceState::Coalescing {
+                self.deferrals += 1;
+            }
+            self.state = CoalesceState::Deferring;
+            false
+        } else {
+            // Hysteresis: 前回の状態を維持
+            self.state == CoalesceState::Coalescing
+        }
+    }
+    
+    /// 強制的に結合状態にする（メモリ圧迫時）
+    #[inline]
+    pub fn force_coalesce(&mut self) {
+        self.state = CoalesceState::Coalescing;
+        self.forced_coalesces += 1;
+    }
+    
+    /// 統計情報を取得
+    pub fn stats(&self) -> CoalescePolicyStats {
+        CoalescePolicyStats {
+            state: self.state,
+            deferrals: self.deferrals,
+            forced_coalesces: self.forced_coalesces,
+        }
+    }
+}
+
+impl Default for CoalescePolicy {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// CoalescePolicy統計
+#[derive(Debug, Clone, Copy)]
+pub struct CoalescePolicyStats {
+    pub state: CoalesceState,
+    pub deferrals: u64,
+    pub forced_coalesces: u64,
+}
+
 /// 遅延結合の閾値（解放回数がこれを超えたら結合を試みる）
 const LAZY_COALESCE_THRESHOLD: u64 = 64;
 
@@ -417,6 +534,8 @@ pub struct BuddyFrameAllocator {
     zeroed_allocs: u64,
     /// 統計: スクラブ（バックグラウンドゼロクリア）回数
     scrub_count: u64,
+    /// Coalesceポリシー（Hysteresisベース）
+    coalesce_policy: CoalescePolicy,
 }
 
 impl BuddyFrameAllocator {
@@ -444,6 +563,7 @@ impl BuddyFrameAllocator {
             zeroed_counts: [0usize; MAX_ORDER + 1],
             zeroed_allocs: 0,
             scrub_count: 0,
+            coalesce_policy: CoalescePolicy::new(),
         }
     }
 
