@@ -504,3 +504,248 @@ mod tests {
         assert_eq!(addr, 69 * 4096); // (1 * 64 + 5) * 4096
     }
 }
+
+// ============================================================================
+// FixedVec: ヒープ割り当て不要の固定容量ベクタ
+// ============================================================================
+
+/// 固定容量のスタックベースベクタ
+/// 
+/// `Vec` と同様のインターフェースを提供するが、ヒープ割り当てを行わない。
+/// メモリアロケータ自身の内部構造で使用することで、再帰的な依存を回避する。
+/// 
+/// # 型パラメータ
+/// 
+/// - `T`: 要素の型
+/// - `N`: 最大容量（コンパイル時定数）
+/// 
+/// # 使用例
+/// 
+/// ```rust
+/// let mut vec: FixedVec<u32, 16> = FixedVec::new();
+/// vec.push(1);
+/// vec.push(2);
+/// assert_eq!(vec.len(), 2);
+/// assert_eq!(vec.get(0), Some(&1));
+/// ```
+#[derive(Debug)]
+pub struct FixedVec<T, const N: usize> {
+    /// 要素が格納される配列
+    /// MaybeUninitを使用して未初期化要素のドロップを防ぐ
+    data: [core::mem::MaybeUninit<T>; N],
+    /// 現在の要素数
+    len: usize,
+}
+
+impl<T, const N: usize> FixedVec<T, N> {
+    /// 空のFixedVecを作成
+    #[inline]
+    pub const fn new() -> Self {
+        Self {
+            // SAFETY: MaybeUninitの配列は未初期化で安全
+            data: unsafe { core::mem::MaybeUninit::uninit().assume_init() },
+            len: 0,
+        }
+    }
+
+    /// 最大容量を取得
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        N
+    }
+
+    /// 現在の要素数を取得
+    #[inline]
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// 空かどうかを確認
+    #[inline]
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// 満杯かどうかを確認
+    #[inline]
+    pub const fn is_full(&self) -> bool {
+        self.len >= N
+    }
+
+    /// 要素を末尾に追加
+    /// 
+    /// # Returns
+    /// 
+    /// - `true`: 追加成功
+    /// - `false`: 容量不足で追加失敗
+    #[inline]
+    pub fn push(&mut self, value: T) -> bool {
+        if self.len >= N {
+            return false;
+        }
+        self.data[self.len] = core::mem::MaybeUninit::new(value);
+        self.len += 1;
+        true
+    }
+
+    /// 末尾の要素を削除して返す
+    #[inline]
+    pub fn pop(&mut self) -> Option<T> {
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        // SAFETY: lenが0より大きかったので、この位置には有効な値がある
+        Some(unsafe { self.data[self.len].assume_init_read() })
+    }
+
+    /// 指定位置の要素への参照を取得
+    #[inline]
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if index >= self.len {
+            return None;
+        }
+        // SAFETY: index < lenなので、この位置には有効な値がある
+        Some(unsafe { self.data[index].assume_init_ref() })
+    }
+
+    /// 指定位置の要素への可変参照を取得
+    #[inline]
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index >= self.len {
+            return None;
+        }
+        // SAFETY: index < lenなので、この位置には有効な値がある
+        Some(unsafe { self.data[index].assume_init_mut() })
+    }
+
+    /// 指定位置の要素を末尾の要素と交換して削除
+    /// 
+    /// 順序を維持しないがO(1)で削除可能。
+    /// 
+    /// # Panics
+    /// 
+    /// `index >= len` の場合パニック（デバッグビルドのみ）
+    #[inline]
+    pub fn swap_remove(&mut self, index: usize) -> T {
+        debug_assert!(index < self.len, "swap_remove: index out of bounds");
+        
+        self.len -= 1;
+        
+        if index == self.len {
+            // 末尾の要素を削除する場合
+            // SAFETY: 元のlenがindexより大きかったので有効
+            unsafe { self.data[index].assume_init_read() }
+        } else {
+            // 末尾の要素と入れ替えてから削除
+            // SAFETY: 両方の位置に有効な値がある
+            unsafe {
+                let removed = self.data[index].assume_init_read();
+                let last = self.data[self.len].assume_init_read();
+                self.data[index] = core::mem::MaybeUninit::new(last);
+                removed
+            }
+        }
+    }
+
+    /// 全要素をクリア
+    #[inline]
+    pub fn clear(&mut self) {
+        // 各要素を適切にドロップ
+        for i in 0..self.len {
+            // SAFETY: i < lenなので有効な値がある
+            unsafe {
+                core::ptr::drop_in_place(self.data[i].as_mut_ptr());
+            }
+        }
+        self.len = 0;
+    }
+
+    /// スライスとして参照を取得
+    #[inline]
+    pub fn as_slice(&self) -> &[T] {
+        // SAFETY: 0..lenの範囲は全て初期化済み
+        unsafe {
+            core::slice::from_raw_parts(
+                self.data.as_ptr() as *const T,
+                self.len,
+            )
+        }
+    }
+
+    /// 可変スライスとして参照を取得
+    #[inline]
+    pub fn as_mut_slice(&mut self) -> &mut [T] {
+        // SAFETY: 0..lenの範囲は全て初期化済み
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.data.as_mut_ptr() as *mut T,
+                self.len,
+            )
+        }
+    }
+
+    /// イテレータを取得
+    #[inline]
+    pub fn iter(&self) -> impl Iterator<Item = &T> {
+        self.as_slice().iter()
+    }
+
+    /// 条件に合致する要素のみを保持
+    pub fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&T) -> bool,
+    {
+        let mut i = 0;
+        while i < self.len {
+            // SAFETY: i < lenなので有効
+            let keep = unsafe { f(self.data[i].assume_init_ref()) };
+            if keep {
+                i += 1;
+            } else {
+                // 削除: 末尾の要素と交換
+                self.swap_remove(i);
+                // iは増やさない（次の要素がここに来た）
+            }
+        }
+    }
+}
+
+impl<T: Clone, const N: usize> Clone for FixedVec<T, N> {
+    fn clone(&self) -> Self {
+        let mut new = Self::new();
+        for i in 0..self.len {
+            // SAFETY: i < lenなので有効
+            let value = unsafe { self.data[i].assume_init_ref() };
+            new.push(value.clone());
+        }
+        new
+    }
+}
+
+impl<T, const N: usize> Drop for FixedVec<T, N> {
+    fn drop(&mut self) {
+        self.clear();
+    }
+}
+
+impl<T, const N: usize> Default for FixedVec<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, const N: usize> core::ops::Index<usize> for FixedVec<T, N> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        self.get(index).expect("FixedVec index out of bounds")
+    }
+}
+
+impl<T, const N: usize> core::ops::IndexMut<usize> for FixedVec<T, N> {
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        self.get_mut(index).expect("FixedVec index out of bounds")
+    }
+}
+

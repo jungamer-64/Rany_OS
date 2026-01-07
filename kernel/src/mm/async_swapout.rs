@@ -82,7 +82,6 @@ mod test_impl {
     /// キュー容量／バッチサイズはテスト向けに控えめに設定可能
     const QUEUE_CAPACITY: usize = 64;
     const BATCH_SIZE: usize = 8;
-    const RESERVED_FILE_SLOTS_TEST: usize = QUEUE_CAPACITY / 8;
 
     use core::sync::atomic::{AtomicBool, AtomicUsize, AtomicU64, Ordering};
 
@@ -90,6 +89,9 @@ mod test_impl {
     static TEST_PROCESSING_DELAY_MS: AtomicU64 = AtomicU64::new(0);
     static TEST_WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
     static TEST_WORKER_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+    // Test diagnostics
+    static TEST_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static TEST_ZSWAP_FAILS: AtomicUsize = AtomicUsize::new(0);
 
     // Token-bucket backpressure (test)
     const TEST_TOKEN_CAPACITY: usize = QUEUE_CAPACITY / 4; // burst capacity for anon entries
@@ -174,12 +176,18 @@ mod test_impl {
                                     let src = vaddr.as_u64() as *const u8;
                                     let mut buf = vec![0u8; crate::mm::PAGE_SIZE_4K];
                                     unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                                    let _ = crate::mm::zswap::zswap_store(0, &buf);
-                                    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                                    buddy_allocator::buddy_dealloc_frame(physf);
+                                    if crate::mm::zswap::zswap_store(0, &buf).is_ok() {
+                                        let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
+                                        buddy_allocator::buddy_dealloc_frame(physf);
+                                        TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+                                    } else {
+                                        // zswap failed: do not dealloc; record failure for tests
+                                        TEST_ZSWAP_FAILS.fetch_add(1, Ordering::AcqRel);
+                                    }
                                 } else {
                                     let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                                     buddy_allocator::buddy_dealloc_frame(physf);
+                                    TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
                                 }
                             }
                         }
@@ -193,9 +201,9 @@ mod test_impl {
                         // pending を解除
                         thread_inner.pending.lock().unwrap().remove(&entry.frame.as_usize());
 
-                        // decrement file queue count when file processed
+                        // decrement file queue count when file processed (saturating)
                         if let SwapKind::File { .. } = entry.kind {
-                            TEST_FILE_QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
+                            atomic_saturating_decrement(&TEST_FILE_QUEUE_COUNT);
                         }
 
                         // optional processing delay
@@ -264,8 +272,8 @@ mod test_impl {
                 let mut cur = TEST_TOKENS.load(Ordering::Acquire);
                 loop {
                     if cur == 0 {
-                        // rollback pending and fail fast
-                        worker.pending.lock().unwrap().remove(&frame.as_usize());
+                        // rollback pending and fail fast - use the already-held `pending` guard to avoid re-locking
+                        pending.remove(&frame.as_usize());
                         return Err(SwapError::QueueFull);
                     }
                     match TEST_TOKENS.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire) {
@@ -396,14 +404,39 @@ mod test_impl {
         let v = n.min(QUEUE_CAPACITY);
         TEST_RESERVED_FILE_SLOTS_DYNAMIC.store(v, Ordering::Release);
     }
-} 
+
+    // Helper: saturating decrement for Atomics (test only)
+    fn atomic_saturating_decrement(a: &AtomicUsize) {
+        loop {
+            let cur = a.load(Ordering::Acquire);
+            if cur == 0 { break; }
+            if a.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire).is_ok() { break; }
+        }
+    }
+
+    #[cfg(test)]
+    pub fn _dealloc_count() -> usize {
+        TEST_DEALLOC_COUNT.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn _reset_dealloc_count() {
+        TEST_DEALLOC_COUNT.store(0, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub fn _dec_file_queue_count_safe() {
+        atomic_saturating_decrement(&TEST_FILE_QUEUE_COUNT);
+    }
+}
+
 
 // カーネル向け実装: 永続ワーカ（non-test）
 #[cfg(not(test))]
 mod kernel_impl {
     use super::*;
     use alloc::vec::Vec;
-    use spin::{Once, Mutex};
+    use spin::Once;
     use crate::sync::lockfree::{BoundedChannel, BoundedSender, BoundedReceiver};
     use crate::sync::AtomicWaker;
     use crate::task::Task;
@@ -531,6 +564,10 @@ mod kernel_impl {
 
                         match written {
                             Ok(true) => {
+                                // Release memcg accounting if any
+                                if let Some(info) = crate::mm::memcg::memcg_untrack_page(entry.frame) {
+                                    let _ = crate::mm::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                }
                                 let _ = frame_backing::untrack_frame_backing(entry.frame);
                                 let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                                 buddy_allocator::buddy_dealloc_frame(physf);
@@ -557,8 +594,8 @@ mod kernel_impl {
 
                         // Remove pending flag and update queue counters
                         page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
-                        QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
-                        FILE_QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel); // safe to decrement even if zero due to caller correctness
+                        saturating_dec(&QUEUE_COUNT);
+                        saturating_dec(&FILE_QUEUE_COUNT); // safe to call; saturating at 0
                     }
                     SwapKind::Anon => {
                         if crate::mm::zswap::zswap_is_enabled() {
@@ -567,16 +604,19 @@ mod kernel_impl {
                             let src = vaddr.as_u64() as *const u8;
                             let mut buf = alloc::vec![0u8; crate::mm::PAGE_SIZE_4K];
                             unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                            let _ = crate::mm::zswap::zswap_store(0, &buf);
-                            let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                            buddy_allocator::buddy_dealloc_frame(physf);
+                            if crate::mm::zswap::zswap_store(0, &buf).is_ok() {
+                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
+                                buddy_allocator::buddy_dealloc_frame(physf);
+                            } else {
+                                log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
+                            }
                         } else {
                             let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
                             buddy_allocator::buddy_dealloc_frame(physf);
                         }
 
                         page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
-                        QUEUE_COUNT.fetch_sub(1, Ordering::AcqRel);
+                        saturating_dec(&QUEUE_COUNT);
                     }
                 }
             }
@@ -628,6 +668,15 @@ mod kernel_impl {
                 Ok(_) => return,
                 Err(c) => cur = c,
             }
+        }
+    }
+
+    // Helper: saturating decrement to avoid atomic underflow
+    fn saturating_dec(a: &AtomicUsize) {
+        loop {
+            let cur = a.load(Ordering::Acquire);
+            if cur == 0 { break; }
+            if a.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire).is_ok() { break; }
         }
     }
 
