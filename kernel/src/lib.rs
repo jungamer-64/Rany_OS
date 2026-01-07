@@ -98,19 +98,29 @@ pub mod mm {
             layout: Layout,
             _node: Option<usize>,
         ) -> Option<NonNull<u8>> {
-            let l = ALayout::from_size_align(layout.size(), layout.align()).ok()?;
-            let ptr = unsafe { alloc_zeroed(l) };
-            NonNull::new(ptr)
-        }
-
-        /// Deallocate memory previously allocated by `allocate_zeroed_on_node`
-        pub unsafe fn deallocate_on_node(ptr: NonNull<u8>, layout: Layout, _node: Option<usize>) {
-            let l = ALayout::from_size_align(layout.size(), layout.align()).unwrap();
             unsafe {
-                dealloc(ptr.as_ptr(), l);
+                let ptr = alloc_zeroed(layout);
+                NonNull::new(ptr)
             }
         }
+
+        pub unsafe fn deallocate_on_node(
+            ptr: NonNull<u8>,
+            layout: Layout,
+            _node: Option<usize>,
+        ) {
+            dealloc(ptr.as_ptr(), layout);
+        }
     }
+
+    pub mod memcg {
+        #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+        pub struct MemcgId;
+        impl MemcgId {
+            pub const ROOT: Self = Self;
+        }
+    }
+
 
     // Minimal per-CPU stubs used by IOMMU unit tests. These avoid pulling the
     // full per-CPU subsystem into the test build while providing the API

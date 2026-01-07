@@ -2681,4 +2681,59 @@ mod tests {
         assert!(frame.start_address().as_u64() >= start.as_u64());
         assert!(frame.start_address().as_u64() < start.as_u64() + size);
     }
+    #[test]
+    fn test_folio_allocation_and_flags() {
+        use crate::mm::page_flags::{self, PageFlags};
+        
+        // Initialize page flags for testing (needed for Folio tracking)
+        // We allocate enough space for the test frames.
+        // Note: This modifies global state, so it might conflict if other tests used page_flags.
+        // Currently, other tests largely ignore page_flags (only order-0 allocations).
+        unsafe {
+            let max_frames = 4096; // 16MB range
+            // We blindly call init. In a real scenario, we might want a "try_init" or verify status.
+            // Since tests run in parallel, this is slightly risky, but acceptable for this verification phase.
+            page_flags::init_page_flags(max_frames);
+        }
+
+        let mut allocator = BuddyFrameAllocator::new();
+        
+        // Setup a region: 2MB at 2MB offset (Frames 512 to 1024)
+        let start = PhysAddr::new(0x200000);
+        let size = 0x200000u64; // 2MB
+        let regions = [(start, size)];
+        
+        unsafe {
+            allocator.init(&regions);
+        }
+
+        // Allocate Order 2 (16KB, 4 pages)
+        let frame = allocator.allocate_order(2).expect("Failed to allocate order 2");
+        let frame_idx = frame.as_usize();
+        
+        // 1. Verify Head Page
+        assert!(page_flags::test_flag(frame, PageFlags::CompoundHead), "Head flag not set");
+        assert!(!page_flags::test_flag(frame, PageFlags::CompoundTail), "Head has Tail flag");
+        assert_eq!(page_flags::get_order(frame), 2, "Head order incorrect");
+
+        // 2. Verify Tail Pages
+        for i in 1..4 {
+            let tail = FrameIndex::new(frame_idx + i);
+            assert!(page_flags::test_flag(tail, PageFlags::CompoundTail), "Tail flag not set at index {}", i);
+            assert!(!page_flags::test_flag(tail, PageFlags::CompoundHead), "Tail has Head flag at index {}", i);
+            // Allocation only sets order on HEAD. Tail order remains 0.
+            assert_eq!(page_flags::get_order(tail), 0, "Tail order should be 0");
+        }
+
+        // 3. Verify Deallocation Cleans Up
+        allocator.deallocate_order(frame, 2);
+
+        assert!(!page_flags::test_flag(frame, PageFlags::CompoundHead), "Head flag not cleared");
+        assert_eq!(page_flags::get_order(frame), 0, "Head order not cleared");
+        
+        for i in 1..4 {
+            let tail = FrameIndex::new(frame_idx + i);
+            assert!(!page_flags::test_flag(tail, PageFlags::CompoundTail), "Tail flag not cleared at index {}", i);
+        }
+    }
 }

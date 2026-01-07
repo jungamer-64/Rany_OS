@@ -257,7 +257,7 @@ mod tests {
                 &self,
                 block: u64,
                 count: u32,
-            ) -> fat32::ZcFuture<'_, BlockResult<Self::Buffer>> {
+            ) -> vfs::block::ZcFuture<'_, BlockResult<Self::Buffer>> {
                 let start_block = block as usize;
                 let len = (count as usize) * (self.block_size as usize);
                 let storage_ref = &self.storage;
@@ -286,7 +286,7 @@ mod tests {
                 &self,
                 block: u64,
                 buffer: Self::Buffer,
-            ) -> fat32::ZcFuture<'_, BlockResult<Self::Buffer>> {
+            ) -> vfs::block::ZcFuture<'_, BlockResult<Self::Buffer>> {
                 let start_block = block as usize;
                 let storage_ref = &self.storage;
                 Box::pin(async move {
