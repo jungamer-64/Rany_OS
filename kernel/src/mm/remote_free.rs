@@ -1341,13 +1341,13 @@ mod tests {
         let single = RemoteFreeEntry::single(0x1000, 0);
         assert!(!single.is_empty());
         assert_eq!(single.count, 1);
-        assert_eq!(single.page_size(), PAGE_SIZE_4K);
-        assert_eq!(single.total_bytes(), PAGE_SIZE_4K);
+        assert_eq!(single.page_size(), PAGE_SIZE_4K as u64);
+        assert_eq!(single.total_bytes(), PAGE_SIZE_4K as u64);
         
         let range = RemoteFreeEntry::range(0x200000, 8, 1); // 8 x 2MB
         assert_eq!(range.count, 8);
-        assert_eq!(range.page_size(), PAGE_SIZE_2M);
-        assert_eq!(range.total_bytes(), 8 * PAGE_SIZE_2M);
+        assert_eq!(range.page_size(), PAGE_SIZE_2M as u64);
+        assert_eq!(range.total_bytes(), (8 * PAGE_SIZE_2M) as u64);
     }
     
     #[test]

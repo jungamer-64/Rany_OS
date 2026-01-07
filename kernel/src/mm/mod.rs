@@ -32,6 +32,7 @@ pub mod zero_page; // 新: Non-Temporal ゼロクリア + バックグラウン�
 pub mod autonuma; // 新: AutoNUMA - 自動ページマイグレーション
 pub mod page_reclaim; // 新: Page Reclaim + LRU - メモリ回収とActive/Inactive管理
 pub mod workingset; // 新: Workingset Refault Detection - 作業セット追跡
+pub mod pcid;       // 新: PCID (Process Context ID) Management
 pub mod tlb_batch; // 新: TLB Shootdown Batching - バッチ化IPIフラッシュ
 pub mod huge_page; // 新: Huge Page Direct Allocation - Direct Compaction付き
 pub mod rcu_vma; // 新: RCU VMA/PageTable Walk - ロックフリーVMA検索

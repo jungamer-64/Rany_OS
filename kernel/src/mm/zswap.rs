@@ -31,7 +31,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use spin::{Mutex, RwLock};
 
-use super::PAGE_SIZE_4K;
+use super::{PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 
 /// 圧縮アルゴリズム
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

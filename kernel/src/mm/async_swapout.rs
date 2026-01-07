@@ -37,6 +37,7 @@ pub enum SwapError {
 use alloc::sync::Arc;
 
 #[cfg(test)]
+#[derive(Debug)]
 pub struct SwapHandle {
     done: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 }
@@ -403,6 +404,10 @@ fn try_zswap_store_and_dealloc_any(frame: FrameIndex, buf4k: &mut [u8]) -> bool 
 }
 
 // テスト専用: 永続ワーカ実装（条件変数 + バウンドキュー）
+pub fn stats_huge_2m_skip_count() -> u64 {
+    0 // TODO: Implement tracking
+}
+
 #[cfg(test)]
 mod test_impl {
     use super::*;
@@ -1334,7 +1339,7 @@ mod tests {
         // Initialize memcg and global page cache
         crate::mm::memcg::init_memcg();
         let cg = crate::mm::memcg::memcg_create(String::from("concurrent"), crate::mm::memcg::memcg_root()).expect("create memcg");
-        crate::fs::cache::init_page_cache(64 * 1024);
+        crate::fs::init_page_cache(64 * 1024);
         let cache = crate::fs::page_cache();
 
         let n = 64usize;
