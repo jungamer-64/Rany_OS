@@ -37,6 +37,10 @@ use alloc::vec::Vec;
 
 use super::types::FrameIndex;
 use super::types::AddressUnit;
+use super::types::FixedVec;
+
+/// 一度に若返らせる最大エントリ数
+const MAX_REJUVENATE_BATCH: usize = 64;
 
 // ============================================================================
 // PageVec - Batched LRU Updates (Linux pagevec equivalent)
@@ -605,7 +609,7 @@ impl MglruList {
         for gen_idx in (0..MGLRU_GENERATIONS - 1).rev() {
             let mut current_gen = self.generations[gen_idx].lock();
             let mut next_gen = self.generations[gen_idx + 1].lock();
-            let mut rejuvenate_list = Vec::new();
+            let mut rejuvenate_list: FixedVec<MglruEntry, MAX_REJUVENATE_BATCH> = FixedVec::new();
             
             let mut i = 0;
             while i < current_gen.len() {
@@ -635,7 +639,7 @@ impl MglruList {
             // 若返りページをGen0に追加
             if !rejuvenate_list.is_empty() {
                 let mut gen0 = self.generations[0].lock();
-                for mut e in rejuvenate_list {
+                while let Some(mut e) = rejuvenate_list.pop() {
                     e.generation = MglruGen::Gen0;
                     e.referenced.store(false, Ordering::Relaxed);
                     gen0.push_back(e);
@@ -821,16 +825,21 @@ impl LruList {
     
     /// Inactiveリストから回収可能なページを取得
     /// 
-    /// 返り値: 回収するページのリスト
-    pub fn get_reclaimable(&self, count: usize) -> Vec<LruPageEntry> {
+    /// # Arguments
+    /// * `out` - 回収したページを書き込む出力バッファ
+    /// 
+    /// # Returns
+    /// 書き込まれた要素数
+    pub fn get_reclaimable(&self, out: &mut [LruPageEntry]) -> usize {
+        let max_count = out.len();
         let mut inactive = self.inactive.lock();
         let mut active = self.active.lock();
         
-        let mut reclaimable = Vec::new();
+        let mut written = 0;
         let mut promoted = 0;
         
         let mut i = 0;
-        while i < inactive.len() && reclaimable.len() < count {
+        while i < inactive.len() && written < max_count {
             // 安全のため remove は使わず、swap_remove_back などで効率化可能
             if let Some(entry) = inactive.get(i) {
                 // 参照されているページはActiveに昇格
@@ -846,7 +855,8 @@ impl LruList {
                 // 回収可能なページを取り出す
                 if entry.is_reclaimable() {
                     if let Some(e) = inactive.remove(i) {
-                        reclaimable.push(e);
+                        out[written] = e;
+                        written += 1;
                     }
                     continue;
                 }
@@ -855,13 +865,12 @@ impl LruList {
         }
         
         // サイズを更新
-        let reclaimed_count = reclaimable.len();
-        self.inactive_size.fetch_sub(reclaimed_count + promoted, Ordering::Relaxed);
+        self.inactive_size.fetch_sub(written + promoted, Ordering::Relaxed);
         self.active_size.fetch_add(promoted, Ordering::Relaxed);
         self.promoted.fetch_add(promoted as u64, Ordering::Relaxed);
-        self.reclaimed.fetch_add(reclaimed_count as u64, Ordering::Relaxed);
+        self.reclaimed.fetch_add(written as u64, Ordering::Relaxed);
         
-        reclaimable
+        written
     }
     
     /// 統計
@@ -1098,12 +1107,21 @@ impl PageReclaimController {
             lru.shrink_active(scan_active);
             
             // Inactiveから回収
-            let to_reclaim = target_pages - total_reclaimed;
-            let reclaimable = lru.get_reclaimable(to_reclaim);
+            let to_reclaim = (target_pages - total_reclaimed).min(64);
+            let mut reclaim_buf: [core::mem::MaybeUninit<LruPageEntry>; 64] = 
+                unsafe { core::mem::MaybeUninit::uninit().assume_init() };
+            // SAFETY: LruPageEntryをuninitとして扱い、get_reclaimableが書き込んだ分だけ使用
+            let buf_slice = unsafe { 
+                core::slice::from_raw_parts_mut(
+                    reclaim_buf.as_mut_ptr() as *mut LruPageEntry, 
+                    to_reclaim
+                )
+            };
+            let count = lru.get_reclaimable(buf_slice);
             
-            for entry in &reclaimable {
+            for i in 0..count {
                 // 実際にフレームを解放
-                self.reclaim_page(entry);
+                self.reclaim_page(&buf_slice[i]);
                 total_reclaimed += 1;
             }
         }
@@ -1135,10 +1153,19 @@ impl PageReclaimController {
             lru.shrink_active(scan_count);
             
             // Inactiveから回収
-            let reclaimable = lru.get_reclaimable(needed_pages - total_reclaimed);
+            let to_reclaim = (needed_pages - total_reclaimed).min(64);
+            let mut reclaim_buf: [core::mem::MaybeUninit<LruPageEntry>; 64] = 
+                unsafe { core::mem::MaybeUninit::uninit().assume_init() };
+            let buf_slice = unsafe { 
+                core::slice::from_raw_parts_mut(
+                    reclaim_buf.as_mut_ptr() as *mut LruPageEntry, 
+                    to_reclaim
+                )
+            };
+            let count = lru.get_reclaimable(buf_slice);
             
-            for entry in &reclaimable {
-                self.reclaim_page(entry);
+            for i in 0..count {
+                self.reclaim_page(&buf_slice[i]);
                 total_reclaimed += 1;
             }
         }
@@ -1664,8 +1691,9 @@ mod tests {
         let mut entry = LruPageEntry::new(FrameIndex::new(100), PageType::Anonymous, ts);
         entry.mapcount.store(0, Ordering::Relaxed);
         lru.add_to_inactive(entry);
-        let reclaimable = lru.get_reclaimable(1);
-        assert_eq!(reclaimable.len(), 1);
+        let mut buf = [LruPageEntry::default(); 1];
+        let count = lru.get_reclaimable(&mut buf);
+        assert_eq!(count, 1);
     }
 
     #[test]

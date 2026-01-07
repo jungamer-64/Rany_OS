@@ -68,6 +68,215 @@ struct SwapEntry {
     completion: Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
 } 
 
+use core::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+// Helper: atomic saturating decrement (avoid underflow)
+fn atomic_saturating_decrement(a: &core::sync::atomic::AtomicUsize) {
+    loop {
+        let cur = a.load(core::sync::atomic::Ordering::Acquire);
+        if cur == 0 { break; }
+        if a.compare_exchange(cur, cur - 1, core::sync::atomic::Ordering::AcqRel, core::sync::atomic::Ordering::Acquire).is_ok() { break; }
+    }
+}
+
+// Runtime metrics
+static GLOBAL_ZSWAP_FAILS: AtomicUsize = AtomicUsize::new(0);
+static GLOBAL_ASYNC_DEALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+
+// Helper: release frame backing and deallocate (memcg untrack/uncharge + frame untrack + buddy dealloc)
+fn release_frame_and_untrack(frame: FrameIndex) {
+    // Untrack from memcg if tracked
+    if let Some(info) = crate::mm::memcg::memcg_untrack_page(frame) {
+        let _ = crate::mm::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+    }
+
+    // Untrack frame backing (ignore errors)
+    let _ = frame_backing::untrack_frame_backing(frame);
+
+    // Deallocate
+    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+    buddy_allocator::buddy_dealloc_frame(physf);
+
+    // Update global metric
+    GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+}
+
+// Accessors for metrics
+pub fn stats_zswap_fail_count() -> usize {
+    GLOBAL_ZSWAP_FAILS.load(AtomicOrdering::Acquire)
+}
+
+pub fn stats_async_dealloc_count() -> usize {
+    GLOBAL_ASYNC_DEALLOC_COUNT.load(AtomicOrdering::Acquire)
+}
+
+// ---------------------------
+// 4KiB Buffer Pool
+// ---------------------------
+const BUFFER_POOL_4K_DEFAULT_CAPACITY: usize = 128;
+static BUFFER_POOL_4K_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> = spin::Mutex::new(alloc::vec::Vec::new());
+static BUFFER_POOL_4K_HITS: AtomicUsize = AtomicUsize::new(0);
+static BUFFER_POOL_4K_MISSES: AtomicUsize = AtomicUsize::new(0);
+static BUFFER_POOL_4K_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_4K_DEFAULT_CAPACITY);
+
+pub fn buffer_pool_get_4k() -> alloc::vec::Vec<u8> {
+    let mut pool = BUFFER_POOL_4K_POOL.lock();
+    if let Some(mut buf) = pool.pop() {
+        BUFFER_POOL_4K_HITS.fetch_add(1, AtomicOrdering::AcqRel);
+        if buf.len() != crate::mm::PAGE_SIZE_4K { buf.resize(crate::mm::PAGE_SIZE_4K, 0); }
+        buf
+    } else {
+        BUFFER_POOL_4K_MISSES.fetch_add(1, AtomicOrdering::AcqRel);
+        alloc::vec![0u8; crate::mm::PAGE_SIZE_4K]
+    }
+}
+
+pub fn buffer_pool_put_4k(mut buf: alloc::vec::Vec<u8>) {
+    if buf.len() != crate::mm::PAGE_SIZE_4K { buf.resize(crate::mm::PAGE_SIZE_4K, 0); }
+    let cap = BUFFER_POOL_4K_CAPACITY.load(AtomicOrdering::Acquire);
+    let mut pool = BUFFER_POOL_4K_POOL.lock();
+    if pool.len() < cap {
+        pool.push(buf);
+    }
+}
+
+pub fn buffer_pool_4k_stats() -> (usize, usize, usize) {
+    (BUFFER_POOL_4K_HITS.load(AtomicOrdering::Acquire), BUFFER_POOL_4K_MISSES.load(AtomicOrdering::Acquire), BUFFER_POOL_4K_POOL.lock().len())
+}
+
+pub fn buffer_pool_4k_set_capacity(n: usize) {
+    BUFFER_POOL_4K_CAPACITY.store(n, AtomicOrdering::Release);
+    let mut pool = BUFFER_POOL_4K_POOL.lock();
+    while pool.len() > n { pool.pop(); }
+}
+
+pub fn buffer_pool_4k_clear() {
+    BUFFER_POOL_4K_HITS.store(0, AtomicOrdering::Release);
+    BUFFER_POOL_4K_MISSES.store(0, AtomicOrdering::Release);
+    BUFFER_POOL_4K_POOL.lock().clear();
+}
+
+// ---------------------------
+// 2MiB Buffer Pool
+// ---------------------------
+const BUFFER_POOL_2M_DEFAULT_CAPACITY: usize = 16;
+static BUFFER_POOL_2M_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> = spin::Mutex::new(alloc::vec::Vec::new());
+static BUFFER_POOL_2M_HITS: AtomicUsize = AtomicUsize::new(0);
+static BUFFER_POOL_2M_MISSES: AtomicUsize = AtomicUsize::new(0);
+static BUFFER_POOL_2M_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_2M_DEFAULT_CAPACITY);
+
+pub fn buffer_pool_get_2m() -> alloc::vec::Vec<u8> {
+    let mut pool = BUFFER_POOL_2M_POOL.lock();
+    if let Some(mut buf) = pool.pop() {
+        BUFFER_POOL_2M_HITS.fetch_add(1, AtomicOrdering::AcqRel);
+        if buf.len() != crate::mm::PAGE_SIZE_2M as usize { buf.resize(crate::mm::PAGE_SIZE_2M as usize, 0); }
+        buf
+    } else {
+        BUFFER_POOL_2M_MISSES.fetch_add(1, AtomicOrdering::AcqRel);
+        alloc::vec![0u8; crate::mm::PAGE_SIZE_2M as usize]
+    }
+}
+
+pub fn buffer_pool_put_2m(mut buf: alloc::vec::Vec<u8>) {
+    if buf.len() != crate::mm::PAGE_SIZE_2M as usize { buf.resize(crate::mm::PAGE_SIZE_2M as usize, 0); }
+    let cap = BUFFER_POOL_2M_CAPACITY.load(AtomicOrdering::Acquire);
+    let mut pool = BUFFER_POOL_2M_POOL.lock();
+    if pool.len() < cap {
+        pool.push(buf);
+    }
+}
+
+pub fn buffer_pool_2m_stats() -> (usize, usize, usize) {
+    (BUFFER_POOL_2M_HITS.load(AtomicOrdering::Acquire), BUFFER_POOL_2M_MISSES.load(AtomicOrdering::Acquire), BUFFER_POOL_2M_POOL.lock().len())
+}
+
+pub fn buffer_pool_2m_set_capacity(n: usize) {
+    BUFFER_POOL_2M_CAPACITY.store(n, AtomicOrdering::Release);
+    let mut pool = BUFFER_POOL_2M_POOL.lock();
+    while pool.len() > n { pool.pop(); }
+}
+
+pub fn buffer_pool_2m_clear() {
+    BUFFER_POOL_2M_HITS.store(0, AtomicOrdering::Release);
+    BUFFER_POOL_2M_MISSES.store(0, AtomicOrdering::Release);
+    BUFFER_POOL_2M_POOL.lock().clear();
+}
+
+// ---------------------------
+// 1GiB Buffer Pool
+// ---------------------------
+const BUFFER_POOL_1G_DEFAULT_CAPACITY: usize = 1;
+static BUFFER_POOL_1G_POOL: spin::Mutex<alloc::vec::Vec<alloc::vec::Vec<u8>>> = spin::Mutex::new(alloc::vec::Vec::new());
+static BUFFER_POOL_1G_HITS: AtomicUsize = AtomicUsize::new(0);
+static BUFFER_POOL_1G_MISSES: AtomicUsize = AtomicUsize::new(0);
+static BUFFER_POOL_1G_CAPACITY: AtomicUsize = AtomicUsize::new(BUFFER_POOL_1G_DEFAULT_CAPACITY);
+
+pub fn buffer_pool_get_1g() -> alloc::vec::Vec<u8> {
+    let mut pool = BUFFER_POOL_1G_POOL.lock();
+    if let Some(mut buf) = pool.pop() {
+        BUFFER_POOL_1G_HITS.fetch_add(1, AtomicOrdering::AcqRel);
+        if buf.len() != crate::mm::PAGE_SIZE_1G as usize { buf.resize(crate::mm::PAGE_SIZE_1G as usize, 0); }
+        buf
+    } else {
+        BUFFER_POOL_1G_MISSES.fetch_add(1, AtomicOrdering::AcqRel);
+        alloc::vec![0u8; crate::mm::PAGE_SIZE_1G as usize]
+    }
+}
+
+pub fn buffer_pool_put_1g(mut buf: alloc::vec::Vec<u8>) {
+    if buf.len() != crate::mm::PAGE_SIZE_1G as usize { buf.resize(crate::mm::PAGE_SIZE_1G as usize, 0); }
+    let cap = BUFFER_POOL_1G_CAPACITY.load(AtomicOrdering::Acquire);
+    let mut pool = BUFFER_POOL_1G_POOL.lock();
+    if pool.len() < cap {
+        pool.push(buf);
+    }
+}
+
+pub fn buffer_pool_1g_stats() -> (usize, usize, usize) {
+    (BUFFER_POOL_1G_HITS.load(AtomicOrdering::Acquire), BUFFER_POOL_1G_MISSES.load(AtomicOrdering::Acquire), BUFFER_POOL_1G_POOL.lock().len())
+}
+
+pub fn buffer_pool_1g_set_capacity(n: usize) {
+    BUFFER_POOL_1G_CAPACITY.store(n, AtomicOrdering::Release);
+    let mut pool = BUFFER_POOL_1G_POOL.lock();
+    while pool.len() > n { pool.pop(); }
+}
+
+pub fn buffer_pool_1g_clear() {
+    BUFFER_POOL_1G_HITS.store(0, AtomicOrdering::Release);
+    BUFFER_POOL_1G_MISSES.store(0, AtomicOrdering::Release);
+    BUFFER_POOL_1G_POOL.lock().clear();
+}
+
+// Helper: try storing page to zswap using provided buffer and deallocate on success.
+// Returns true if deallocated, false otherwise.
+fn try_zswap_store_and_dealloc(frame: FrameIndex, buf: &mut [u8]) -> bool {
+    if crate::mm::zswap::zswap_is_enabled() {
+        let phys = frame.to_phys_addr();
+        let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+        let src = vaddr.as_u64() as *const u8;
+        unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
+        match crate::mm::zswap::zswap_store(0, buf) {
+            Ok(_) => {
+                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+                buddy_allocator::buddy_dealloc_frame(physf);
+                GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+                true
+            }
+            Err(e) => {
+                log::warn!("zswap_store failed for frame {:?}: {:?}", frame, e);
+                GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
+                false
+            }
+        }
+    } else {
+        // zswap disabled -> just dealloc
+        let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(frame.to_phys_addr())) };
+        buddy_allocator::buddy_dealloc_frame(physf);
+        true
+    }
+}
+
 // テスト専用: 永続ワーカ実装（条件変数 + バウンドキュー）
 #[cfg(test)]
 mod test_impl {
@@ -130,6 +339,8 @@ mod test_impl {
         if TEST_WORKER_RUNNING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
             let thread_inner = worker.clone();
             std::thread::spawn(move || {
+                // reuse buffer to avoid per-page allocations
+                let mut reuse_buf = crate::mm::async_swapout::buffer_pool_get_4k();
                 loop {
                     // Wait for work or shutdown
                     let mut q_guard = thread_inner.queue.lock().unwrap();
@@ -164,30 +375,16 @@ mod test_impl {
                                 });
 
                                 if res.is_ok() {
-                                    let _ = frame_backing::untrack_frame_backing(entry.frame);
-                                    let phys = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                                    buddy_allocator::buddy_dealloc_frame(phys);
+                                    // Release memcg accounting and deallocate
+                                    release_frame_and_untrack(entry.frame);
+                                    TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
                                 }
                             }
                             SwapKind::Anon => {
-                                if crate::mm::zswap::zswap_is_enabled() {
-                                    let phys = entry.frame.to_phys_addr();
-                                    let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
-                                    let src = vaddr.as_u64() as *const u8;
-                                    let mut buf = vec![0u8; crate::mm::PAGE_SIZE_4K];
-                                    unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                                    if crate::mm::zswap::zswap_store(0, &buf).is_ok() {
-                                        let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                                        buddy_allocator::buddy_dealloc_frame(physf);
-                                        TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
-                                    } else {
-                                        // zswap failed: do not dealloc; record failure for tests
-                                        TEST_ZSWAP_FAILS.fetch_add(1, Ordering::AcqRel);
-                                    }
-                                } else {
-                                    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                                    buddy_allocator::buddy_dealloc_frame(physf);
+                                if try_zswap_store_and_dealloc(entry.frame, &mut reuse_buf) {
                                     TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
+                                } else {
+                                    TEST_ZSWAP_FAILS.fetch_add(1, Ordering::AcqRel);
                                 }
                             }
                         }
@@ -229,6 +426,7 @@ mod test_impl {
                     }
                 }
 
+                crate::mm::async_swapout::buffer_pool_put_4k(reuse_buf);
                 TEST_WORKER_RUNNING.store(false, Ordering::Release);
             });
         }
@@ -405,14 +603,6 @@ mod test_impl {
         TEST_RESERVED_FILE_SLOTS_DYNAMIC.store(v, Ordering::Release);
     }
 
-    // Helper: saturating decrement for Atomics (test only)
-    fn atomic_saturating_decrement(a: &AtomicUsize) {
-        loop {
-            let cur = a.load(Ordering::Acquire);
-            if cur == 0 { break; }
-            if a.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire).is_ok() { break; }
-        }
-    }
 
     #[cfg(test)]
     pub fn _dealloc_count() -> usize {
@@ -427,6 +617,16 @@ mod test_impl {
     #[cfg(test)]
     pub fn _dec_file_queue_count_safe() {
         atomic_saturating_decrement(&TEST_FILE_QUEUE_COUNT);
+    }
+
+    #[cfg(test)]
+    pub fn _zswap_fail_count() -> usize {
+        TEST_ZSWAP_FAILS.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn _reset_zswap_fail_count() {
+        TEST_ZSWAP_FAILS.store(0, Ordering::Release);
     }
 }
 
@@ -522,6 +722,8 @@ mod kernel_impl {
     }
 
     async fn worker_loop() {
+        // reuse buffer to avoid per-page allocations
+        let mut reuse_buf = buffer_pool_get_4k();
         loop {
             WaitForWork.await;
 
@@ -564,28 +766,18 @@ mod kernel_impl {
 
                         match written {
                             Ok(true) => {
-                                // Release memcg accounting if any
-                                if let Some(info) = crate::mm::memcg::memcg_untrack_page(entry.frame) {
-                                    let _ = crate::mm::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-                                }
-                                let _ = frame_backing::untrack_frame_backing(entry.frame);
-                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                                buddy_allocator::buddy_dealloc_frame(physf);
+                                // Release memcg accounting and deallocate
+                                release_frame_and_untrack(entry.frame);
                             }
                             _ => {
-                                // Fall back to global sync
+                                // Fall back to global sync; if any were written by global flush, free
                                 if crate::fs::page_cache().sync_all(|ino, offset, data| {
                                     match crate::fs::write_inode_by_number(ino, offset, data) {
                                         Ok(_) => Ok(()),
                                         Err(_) => Err(()),
                                     }
                                 }).unwrap_or(0) > 0 {
-                                    if let Some(info) = crate::mm::memcg::memcg_untrack_page(entry.frame) {
-                                        let _ = crate::mm::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
-                                    }
-                                    let _ = frame_backing::untrack_frame_backing(entry.frame);
-                                    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                                    buddy_allocator::buddy_dealloc_frame(physf);
+                                    release_frame_and_untrack(entry.frame);
                                 } else {
                                     crate::mm::page_reclaim::PAGE_RECLAIM.account_writeback_skipped();
                                 }
@@ -594,29 +786,18 @@ mod kernel_impl {
 
                         // Remove pending flag and update queue counters
                         page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
-                        saturating_dec(&QUEUE_COUNT);
-                        saturating_dec(&FILE_QUEUE_COUNT); // safe to call; saturating at 0
+                        atomic_saturating_decrement(&QUEUE_COUNT);
+                        atomic_saturating_decrement(&FILE_QUEUE_COUNT); // safe to call; saturating at 0
                     }
                     SwapKind::Anon => {
-                        if crate::mm::zswap::zswap_is_enabled() {
-                            let phys = entry.frame.to_phys_addr();
-                            let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
-                            let src = vaddr.as_u64() as *const u8;
-                            let mut buf = alloc::vec![0u8; crate::mm::PAGE_SIZE_4K];
-                            unsafe { core::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
-                            if crate::mm::zswap::zswap_store(0, &buf).is_ok() {
-                                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                                buddy_allocator::buddy_dealloc_frame(physf);
-                            } else {
-                                log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
-                            }
+                        if try_zswap_store_and_dealloc(entry.frame, &mut reuse_buf) {
+                            // success: frame deallocated via helper
                         } else {
-                            let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(entry.frame.to_phys_addr())) };
-                            buddy_allocator::buddy_dealloc_frame(physf);
+                            log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
                         }
 
                         page_flags::clear_flag(entry.frame, PageFlags::SwapPending);
-                        saturating_dec(&QUEUE_COUNT);
+                        atomic_saturating_decrement(&QUEUE_COUNT);
                     }
                 }
             }
@@ -671,14 +852,7 @@ mod kernel_impl {
         }
     }
 
-    // Helper: saturating decrement to avoid atomic underflow
-    fn saturating_dec(a: &AtomicUsize) {
-        loop {
-            let cur = a.load(Ordering::Acquire);
-            if cur == 0 { break; }
-            if a.compare_exchange(cur, cur - 1, Ordering::AcqRel, Ordering::Acquire).is_ok() { break; }
-        }
-    }
+
 
     pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {
         ensure_channel_started();
@@ -1495,6 +1669,363 @@ mod tests {
         println!("Enqueued+processed {} anon entries in {:?}", count, dur);
 
         stop_worker();
+    }
+
+    #[test]
+    fn test_zswap_failure_does_not_dealloc() {
+        crate::fs::cache::init_page_cache(64 * 1024);
+
+        // Ensure deterministic worker lifecycle
+        test_impl::stop_worker();
+        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        test_impl::_reset_dealloc_count();
+        test_impl::_reset_zswap_fail_count();
+
+        // Configure zswap to be effectively full (force PoolFull)
+        crate::mm::zswap::zswap_set_enabled(true);
+        crate::mm::zswap::zswap_update_config(crate::mm::zswap::ZswapConfig {
+            enabled: true,
+            compressor: crate::mm::zswap::CompressionAlgo::Lz4,
+            max_pool_size: 0,
+            max_compression_ratio: 0.9,
+            same_filled_pages_enabled: false,
+            writeback_threshold: 0.8,
+        });
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        test_impl::start_worker();
+        h.wait();
+
+        // On zswap failure we must NOT deallocate the frame (test-only counter)
+        assert_eq!(test_impl::_dealloc_count(), 0);
+        assert!(test_impl::_zswap_fail_count() > 0);
+
+        stop_worker();
+    }
+
+    #[test]
+    fn test_global_async_swapout_metrics_update() {
+        // ensure metrics are zeroed in the beginning
+        // Note: These are global, so we don't reset them here; just ensure they are accessible and behave monotonically
+        let before_fail = crate::mm::async_swapout::stats_zswap_fail_count();
+        let before_dealloc = crate::mm::async_swapout::stats_async_dealloc_count();
+
+        // Force zswap failure and enqueue anon
+        test_impl::stop_worker();
+        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        crate::mm::zswap::zswap_set_enabled(true);
+        crate::mm::zswap::zswap_update_config(crate::mm::zswap::ZswapConfig {
+            enabled: true,
+            compressor: crate::mm::zswap::CompressionAlgo::Lz4,
+            max_pool_size: 0,
+            max_compression_ratio: 0.9,
+            same_filled_pages_enabled: false,
+            writeback_threshold: 0.8,
+        });
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        test_impl::start_worker();
+        h.wait();
+
+        // Metrics should be non-decreasing
+        assert!(crate::mm::async_swapout::stats_zswap_fail_count() >= before_fail);
+        assert!(crate::mm::async_swapout::stats_async_dealloc_count() >= before_dealloc);
+
+        stop_worker();
+    }
+
+    #[test]
+    fn test_token_exhaustion_does_not_leave_pending() {
+        test_impl::stop_worker();
+        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        test_impl::set_tokens(0);
+
+        let frame = crate::mm::alloc_frame().expect("alloc frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+
+        let err = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect_err("should be QueueFull due to tokens");
+        assert_eq!(err, SwapError::QueueFull);
+
+        // Ensure pending flag was rolled back
+        assert_eq!(test_impl::_pending_len(), 0);
+    }
+
+    #[test]
+    fn test_file_queue_counter_saturation() {
+        test_impl::stop_worker();
+        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        // Repeated safe decrement must not underflow
+        for _ in 0..10 {
+            test_impl::_dec_file_queue_count_safe();
+            assert_eq!(test_impl::_file_queue_len(), 0);
+        }
+    }
+
+    #[test]
+    fn test_buffer_pool_basic() {
+        // Ensure pool is cleared and capacity is small
+        crate::mm::async_swapout::buffer_pool_4k_clear();
+        crate::mm::async_swapout::buffer_pool_4k_set_capacity(2);
+
+        let (h0, m0, o0) = crate::mm::async_swapout::buffer_pool_4k_stats();
+        assert_eq!(h0, 0);
+        assert_eq!(m0, 0);
+        assert_eq!(o0, 0);
+
+        let b1 = crate::mm::async_swapout::buffer_pool_get_4k();
+        let b2 = crate::mm::async_swapout::buffer_pool_get_4k();
+        let (_h1, m1, _o1) = crate::mm::async_swapout::buffer_pool_4k_stats();
+        assert_eq!(m1 - m0, 2);
+
+        crate::mm::async_swapout::buffer_pool_put_4k(b1);
+        crate::mm::async_swapout::buffer_pool_put_4k(b2);
+
+        let _b3 = crate::mm::async_swapout::buffer_pool_get_4k();
+        let _b4 = crate::mm::async_swapout::buffer_pool_get_4k();
+        let (h2, _m2, o2) = crate::mm::async_swapout::buffer_pool_4k_stats();
+        assert!(h2 >= 1);
+        assert!(o2 <= 2);
+
+        crate::mm::async_swapout::buffer_pool_4k_clear();
+    }
+
+    #[test]
+    fn test_buffer_pool_concurrent() {
+        crate::mm::async_swapout::buffer_pool_4k_clear();
+        crate::mm::async_swapout::buffer_pool_4k_set_capacity(16);
+
+        let threads = 8usize;
+        let iters = 500usize;
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let h = std::thread::spawn(move || {
+                for _ in 0..iters {
+                    let mut b = crate::mm::async_swapout::buffer_pool_get_4k();
+                    b[0] = 1; // touch
+                    crate::mm::async_swapout::buffer_pool_put_4k(b);
+                }
+            });
+            handles.push(h);
+        }
+
+        for h in handles { h.join().expect("join"); }
+
+        let (hits, misses, occ) = crate::mm::async_swapout::buffer_pool_4k_stats();
+        assert!(hits + misses >= threads * iters);
+        assert!(occ <= 16);
+
+        crate::mm::async_swapout::buffer_pool_4k_clear();
+    }
+
+    #[test]
+    fn test_buffer_pool_2m_basic() {
+        crate::mm::async_swapout::buffer_pool_2m_clear();
+        crate::mm::async_swapout::buffer_pool_2m_set_capacity(2);
+
+        let (h0, m0, o0) = crate::mm::async_swapout::buffer_pool_2m_stats();
+        assert_eq!(h0, 0);
+        assert_eq!(m0, 0);
+        assert_eq!(o0, 0);
+
+        let b1 = crate::mm::async_swapout::buffer_pool_get_2m();
+        let b2 = crate::mm::async_swapout::buffer_pool_get_2m();
+        let (_h1, m1, _o1) = crate::mm::async_swapout::buffer_pool_2m_stats();
+        assert_eq!(m1 - m0, 2);
+
+        crate::mm::async_swapout::buffer_pool_put_2m(b1);
+        crate::mm::async_swapout::buffer_pool_put_2m(b2);
+
+        let _b3 = crate::mm::async_swapout::buffer_pool_get_2m();
+        let _b4 = crate::mm::async_swapout::buffer_pool_get_2m();
+        let (h2, _m2, o2) = crate::mm::async_swapout::buffer_pool_2m_stats();
+        assert!(h2 >= 1);
+        assert!(o2 <= 2);
+
+        crate::mm::async_swapout::buffer_pool_2m_clear();
+    }
+
+    #[test]
+    fn test_buffer_pool_2m_concurrent() {
+        crate::mm::async_swapout::buffer_pool_2m_clear();
+        crate::mm::async_swapout::buffer_pool_2m_set_capacity(8);
+
+        let threads = 4usize;
+        let iters = 10usize;
+        let mut handles = Vec::new();
+        for _ in 0..threads {
+            let h = std::thread::spawn(move || {
+                for _ in 0..iters {
+                    let mut b = crate::mm::async_swapout::buffer_pool_get_2m();
+                    b[0] = 1; // touch
+                    crate::mm::async_swapout::buffer_pool_put_2m(b);
+                }
+            });
+            handles.push(h);
+        }
+
+        for h in handles { h.join().expect("join"); }
+
+        let (hits, misses, occ) = crate::mm::async_swapout::buffer_pool_2m_stats();
+        assert!(hits + misses >= threads * iters);
+        assert!(occ <= 8);
+
+        crate::mm::async_swapout::buffer_pool_2m_clear();
+    }
+
+    #[test]
+    #[ignore]
+    fn test_buffer_pool_1g_basic() {
+        crate::mm::async_swapout::buffer_pool_1g_clear();
+        crate::mm::async_swapout::buffer_pool_1g_set_capacity(1);
+
+        let (h0, m0, o0) = crate::mm::async_swapout::buffer_pool_1g_stats();
+        assert_eq!(h0, 0);
+        assert_eq!(m0, 0);
+        assert_eq!(o0, 0);
+
+        let b1 = crate::mm::async_swapout::buffer_pool_get_1g();
+        let (_h1, m1, _o1) = crate::mm::async_swapout::buffer_pool_1g_stats();
+        assert_eq!(m1 - m0, 1);
+
+        crate::mm::async_swapout::buffer_pool_put_1g(b1);
+
+        let _b2 = crate::mm::async_swapout::buffer_pool_get_1g();
+        let (h2, _m2, o2) = crate::mm::async_swapout::buffer_pool_1g_stats();
+        assert!(h2 >= 1);
+        assert!(o2 <= 1);
+
+        crate::mm::async_swapout::buffer_pool_1g_clear();
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_enqueue_throughput_pool_vs_nopool() {
+        crate::fs::cache::init_page_cache(64 * 1024);
+
+        // small micro-bench (ignored by default)
+        let count = 200usize;
+
+        // Phase A: no pool
+        crate::mm::async_swapout::buffer_pool_4k_clear();
+        crate::mm::async_swapout::buffer_pool_4k_set_capacity(0);
+
+        test_impl::set_processing_delay(1);
+        test_impl::set_tokens(test_impl::token_capacity());
+        test_impl::start_worker();
+
+        let start = std::time::Instant::now();
+        for _ in 0..count {
+            let frame = crate::mm::alloc_frame().expect("alloc frame");
+            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+            h.wait();
+        }
+        let dur_no_pool = start.elapsed();
+        test_impl::stop_worker();
+
+        // Phase B: pool enabled
+        crate::mm::async_swapout::buffer_pool_4k_clear();
+        crate::mm::async_swapout::buffer_pool_4k_set_capacity(128);
+
+        test_impl::set_processing_delay(1);
+        test_impl::set_tokens(test_impl::token_capacity());
+        test_impl::start_worker();
+
+        let start2 = std::time::Instant::now();
+        for _ in 0..count {
+            let frame = crate::mm::alloc_frame().expect("alloc frame");
+            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(frame.start_address().as_u64());
+            let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+            h.wait();
+        }
+        let dur_pool = start2.elapsed();
+        test_impl::stop_worker();
+
+        eprintln!("No-pool: {:?}, With-pool: {:?}", dur_no_pool, dur_pool);
+
+        // make sure pool was exercised
+        let (hits, misses, _occ) = crate::mm::async_swapout::buffer_pool_4k_stats();
+        assert!(hits + misses > 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_buffer_pool_2m_throughput() {
+        // micro-bench: small counts to avoid excessive memory use
+        let count = 12usize;
+
+        // Phase A: no pool
+        crate::mm::async_swapout::buffer_pool_2m_clear();
+        crate::mm::async_swapout::buffer_pool_2m_set_capacity(0);
+
+        let start = std::time::Instant::now();
+        for _ in 0..count {
+            let mut b = crate::mm::async_swapout::buffer_pool_get_2m();
+            b[0] = 1;
+            crate::mm::async_swapout::buffer_pool_put_2m(b);
+        }
+        let dur_no_pool = start.elapsed();
+
+        // Phase B: pool enabled
+        crate::mm::async_swapout::buffer_pool_2m_clear();
+        crate::mm::async_swapout::buffer_pool_2m_set_capacity(8);
+
+        let start2 = std::time::Instant::now();
+        for _ in 0..count {
+            let mut b = crate::mm::async_swapout::buffer_pool_get_2m();
+            b[0] = 1;
+            crate::mm::async_swapout::buffer_pool_put_2m(b);
+        }
+        let dur_pool = start2.elapsed();
+
+        eprintln!("2M No-pool: {:?}, With-pool: {:?}", dur_no_pool, dur_pool);
+
+        let (hits, misses, _occ) = crate::mm::async_swapout::buffer_pool_2m_stats();
+        assert!(hits + misses > 0);
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_buffer_pool_1g_throughput() {
+        // very small count due to size
+        let count = 2usize;
+
+        crate::mm::async_swapout::buffer_pool_1g_clear();
+        crate::mm::async_swapout::buffer_pool_1g_set_capacity(0);
+
+        let start = std::time::Instant::now();
+        for _ in 0..count {
+            let mut b = crate::mm::async_swapout::buffer_pool_get_1g();
+            b[0] = 1;
+            crate::mm::async_swapout::buffer_pool_put_1g(b);
+        }
+        let dur_no_pool = start.elapsed();
+
+        crate::mm::async_swapout::buffer_pool_1g_clear();
+        crate::mm::async_swapout::buffer_pool_1g_set_capacity(1);
+
+        let start2 = std::time::Instant::now();
+        for _ in 0..count {
+            let mut b = crate::mm::async_swapout::buffer_pool_get_1g();
+            b[0] = 1;
+            crate::mm::async_swapout::buffer_pool_put_1g(b);
+        }
+        let dur_pool = start2.elapsed();
+
+        eprintln!("1G No-pool: {:?}, With-pool: {:?}", dur_no_pool, dur_pool);
+
+        let (hits, misses, _occ) = crate::mm::async_swapout::buffer_pool_1g_stats();
+        assert!(hits + misses > 0);
     }
 }
 

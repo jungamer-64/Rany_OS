@@ -50,6 +50,10 @@
 - ワーカは `buddy_dealloc_frame` を用いてフレーム解放を行う（これにより memcg 側の untrack/uncharge が行われる）
 - データ競合（同じフレームの重複処理）を防ぐため pending セットを導入する
 - カーネル実装時には IRQ/割り込みコンテキストやロック順序に配慮する（テスト実装では std::thread を使用）
+- ZSWAP の格納に失敗した場合はフレームを即時解放せず、失敗をログ／メトリクスとして記録する（フレームの破損を防止）。
+- 監視用に `stats_zswap_fail_count()` と `stats_async_dealloc_count()` を公開しており、グローバルな失敗数／非同期解放数を収集できる。
+- さらに、4KiB / 2MiB / 1GiB バッファプールの **ヒット / ミス / 占有** 統計をそれぞれ `buffer_pool_4k_stats()`, `buffer_pool_2m_stats()`, `buffer_pool_1g_stats()` で取得できます。
+- ExoShell の `async_swapout.status()` では `zswap_fail_count`, `async_dealloc_count`, 及び各バッファプールの統計（`buffer_pool_4k` / `buffer_pool_2m` / `buffer_pool_1g`）が得られます。
 
 ---
 
