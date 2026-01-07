@@ -29,6 +29,9 @@ use crate::mm::types::FrameIndex;
 /// Global array of atomic page flags.
 /// Initialized during memory management setup.
 static mut PAGE_FLAGS: *mut AtomicU8 = core::ptr::null_mut();
+/// Global array of page orders (store allocation order for Folios).
+/// 0 for order-0 pages.
+static mut PAGE_ORDERS: *mut u8 = core::ptr::null_mut();
 static mut TOTAL_FRAMES: usize = 0;
 
 /// Atomic flags for each page
@@ -45,6 +48,10 @@ pub enum PageFlags {
     Locked = 1 << 3,
     /// Page is referenced (software accessed bit for LRU)
     Referenced = 1 << 4,
+    /// Page is a head page of a compound page (Folio)
+    CompoundHead = 1 << 5,
+    /// Page is a tail page of a compound page
+    CompoundTail = 1 << 6,
 }
 
 impl PageFlags {
@@ -61,15 +68,17 @@ impl PageFlags {
 pub unsafe fn init_page_flags(total_frames: usize) {
     TOTAL_FRAMES = total_frames;
     
-    // Allocate the array using the global allocator
-    // Since we are in the kernel, we leak this vector to keep it alive forever.
+    // Allocate the flags array
     let mut flags = Vec::with_capacity(total_frames);
-    // Initialize all to 0
     flags.resize_with(total_frames, || AtomicU8::new(0));
-    
-    // Leak to get a static raw pointer
-    let leaked = flags.leak();
-    PAGE_FLAGS = leaked.as_mut_ptr();
+    let leaked_flags = flags.leak();
+    PAGE_FLAGS = leaked_flags.as_mut_ptr();
+
+    // Allocate the orders array
+    let mut orders = Vec::with_capacity(total_frames);
+    orders.resize(total_frames, 0);
+    let leaked_orders = orders.leak();
+    PAGE_ORDERS = leaked_orders.as_mut_ptr();
 }
 
 /// Get reference to the atomic flags for a frame.
@@ -132,4 +141,28 @@ pub fn test_and_clear_flag(frame: FrameIndex, flag: PageFlags) -> bool {
     } else {
         false
     }
+}
+
+/// Get the allocated order of a page.
+#[inline]
+pub fn get_order(frame: FrameIndex) -> u8 {
+    let idx = frame.as_usize();
+    unsafe {
+        if idx >= TOTAL_FRAMES || PAGE_ORDERS.is_null() {
+            return 0;
+        }
+        *PAGE_ORDERS.add(idx)
+    }
+}
+
+/// Set the allocated order of a page.
+/// 
+/// # Safety
+/// Caller must ensure synchronization. Typically set during allocation/deallocation.
+#[inline]
+pub unsafe fn set_order(frame: FrameIndex, order: u8) {
+     let idx = frame.as_usize();
+     if idx < TOTAL_FRAMES && !PAGE_ORDERS.is_null() {
+         *PAGE_ORDERS.add(idx) = order;
+     }
 }
