@@ -2728,7 +2728,7 @@ pub fn swap_prefetch_stats() -> SwapPrefetchStats {
 // ============================================================================
 
 #[cfg(test)]
-mod tests {
+mod tests_late {
     use super::*;
     
     #[test]

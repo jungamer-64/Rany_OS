@@ -654,6 +654,129 @@ impl ProcessAddressSpace {
             heap_size: self.heap_end.load(Ordering::Relaxed) - DEFAULT_HEAP_START,
         }
     }
+    /// NUMAヒントスキャンを実行
+    ///
+    /// 指定されたアドレスからスキャンを開始し、PresentなページのPresentフラグを落とし、
+    /// NUMA_HINTフラグを立てる。
+    ///
+    /// # Returns
+    /// (scanned_pages, faults_set, next_scan_addr)
+    pub fn scan_numa_hints(&self, start_addr: VirtAddr, batch_size: usize) -> (usize, usize, VirtAddr) {
+        let mut scanned = 0;
+        let mut faults = 0;
+        let mut current_addr = start_addr;
+        let regions = self.regions.read();
+
+        // 指定アドレス以降の領域を検索
+        // Note: BTreeMap::range works on keys. start_addr might be in the middle of a region.
+        // We find the first region that ends after start_addr.
+        for (&r_start, region) in regions.range(..).filter(|(&_s, r)| r.end > start_addr) {
+            if scanned >= batch_size {
+                break;
+            }
+
+            // スキャン対象外の領域（カーネル、デバイスなど）はスキップ
+            // Anon / Shared / FileBacked のみを対象とする
+            match region.region_type {
+                RegionType::Data | RegionType::Stack | RegionType::Heap | RegionType::Bss | RegionType::Mmap => {} // OK
+                _ => {
+                    // Skip this region, move current_addr to end
+                    if current_addr < region.end {
+                        current_addr = region.end;
+                    }
+                    continue;
+                }
+            }
+            
+            // 権限チェック (Read/Write access requires Present)
+            // If not present (e.g. pure guard page), skip.
+            // But we check PTEs.
+            
+            // 領域内のスキャン開始位置
+            let region_scan_start = if current_addr < region.start {
+                region.start
+            } else {
+                current_addr
+            };
+
+            let mut page_addr = region_scan_start;
+            while page_addr < region.end && scanned < batch_size {
+                // ページテーブル設定
+                // Note: walking page tables recursively. 
+                // Using a helper to update PTE directly.
+                if self.update_pte_for_numa_hint(page_addr) {
+                    faults += 1;
+                }
+                
+                scanned += 1;
+                page_addr = VirtAddr::new(page_addr.as_u64() + PAGE_SIZE);
+            }
+            current_addr = page_addr;
+        }
+
+        // If we ran out of regions, wrap around? 
+        // Caller handles wrap around.
+        
+        (scanned, faults, current_addr)
+    }
+
+    /// PTEを更新してNUMAヒントを設定
+    fn update_pte_for_numa_hint(&self, addr: VirtAddr) -> bool {
+        // ページテーブルをウォークしてPTEを取得
+        let pt_root = self.page_table_root.load(Ordering::Acquire);
+        if pt_root == 0 {
+            return false;
+        }
+
+        let indices = addr.page_table_indices();
+        
+        // Manual four-level walk using phys_to_virt
+        // Level 4 (PML4)
+        let pml4_phys = PhysAddr::new(pt_root);
+        let pml4_ptr = super::higher_half::phys_to_virt(pml4_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pml4 = unsafe { &mut *pml4_ptr };
+        let pml4e = pml4.entry_mut(indices[0]);
+        if !pml4e.is_present() { return false; }
+
+        // Level 3 (PDPT)
+        let pdpt_phys = pml4e.phys_addr();
+        let pdpt_ptr = super::higher_half::phys_to_virt(pdpt_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pdpt = unsafe { &mut *pdpt_ptr };
+        let pdpte = pdpt.entry_mut(indices[1]);
+        if !pdpte.is_present() { return false; }
+        if pdpte.is_huge() { return false; } // 1GB pages not supported for auto numa yet
+
+        // Level 2 (PD)
+        let pd_phys = pdpte.phys_addr();
+        let pd_ptr = super::higher_half::phys_to_virt(pd_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pd = unsafe { &mut *pd_ptr };
+        let pde = pd.entry_mut(indices[2]);
+        if !pde.is_present() { return false; }
+        if pde.is_huge() { return false; } // 2MB pages not supported for auto numa yet
+
+        // Level 1 (PT)
+        let pt_phys = pde.phys_addr();
+        let pt_ptr = super::higher_half::phys_to_virt(pt_phys).as_mut_ptr::<super::higher_half::PageTable>();
+        let pt = unsafe { &mut *pt_ptr };
+        let pte = pt.entry_mut(indices[3]);
+
+        // Hint設定
+        if pte.is_present() {
+            let mut flags = pte.flags();
+            // 既にHintが立っている場合はスキップ
+            if flags.contains(PageFlags::NUMA_HINT) {
+                return false;
+            }
+            // Presentを落とし、Hintを立てる
+            flags = flags.clear(PageFlags::PRESENT).set(PageFlags::NUMA_HINT);
+            pte.set_flags(flags);
+            
+            // TLB Invalidation handled by caller (usually flush_tlb_local if current, or ignored until next context switch)
+            return true;
+        }
+
+        false
+    }
 }
 
 impl Default for ProcessAddressSpace {
@@ -786,6 +909,19 @@ impl AddressSpaceManager {
             Ok(())
         } else {
             Err(AddressSpaceError::RegionNotFound)
+        }
+    }
+
+    /// 現在のアドレス空間をスキャン（NUMA Hint）
+    pub fn scan_current_address_space(&self, start_addr: VirtAddr, batch_size: usize) -> Option<(usize, usize, VirtAddr)> {
+        let asid = self.current_asid.load(Ordering::Acquire);
+        if asid == 0 { return None; }
+
+        let spaces = self.spaces.read();
+        if let Some(space) = spaces.get(&asid) {
+            Some(space.scan_numa_hints(start_addr, batch_size))
+        } else {
+            None
         }
     }
 }

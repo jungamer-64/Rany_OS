@@ -284,8 +284,12 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode) -> FaultR
     }
     */
     
-    // Present bit がない場合 = ページが割り当てられていない
+    // Present bit がない場合 = ページが割り当てられていない または NUMA Hint Fault
     if !error.is_present() {
+        // NUMA Hint Fault チェック
+        if let Some(res) = handle_numa_hint_fault(fault_addr) {
+            return res;
+        }
         return handle_demand_paging(fault_addr, error);
     }
     
@@ -297,6 +301,57 @@ fn handle_fault_inner(fault_addr: VirtAddr, error: PageFaultErrorCode) -> FaultR
     // その他は権限違反
     FAULT_STATS.permission_denied.fetch_add(1, Ordering::Relaxed);
     FaultResult::PermissionDenied
+}
+
+/// NUMA Hint Fault ハンドラ
+fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
+    use super::higher_half::{with_current_pte_mut, PageFlags};
+    use super::autonuma::{handle_numa_fault, get_page_numa_stats, NumaFaultAction};
+
+    // PTEを確認し、NUMA_HINTが立っているかチェック
+    // 立っていればクリアしてPresentを立てる
+    with_current_pte_mut(fault_addr, |pte| {
+        let flags = pte.flags();
+        if flags.contains(PageFlags::NUMA_HINT) {
+            // Hintフラグをクリアし、Presentを立てる
+            let new_flags = flags.clear(PageFlags::NUMA_HINT).set(PageFlags::PRESENT);
+            pte.set_flags(new_flags);
+            
+            // TLB無効化（現在のアドレスなのでinvlpgでOK）
+            super::higher_half::invalidate_page(fault_addr);
+            
+            // アクセス情報を記録＆マイグレーション判断
+            let frame = FrameIndex::from_phys_addr(pte.phys_addr().as_u64());
+            let stats = get_page_numa_stats(frame);
+            
+            // 現在のCPUのNUMAノードを取得
+            if let Some(_cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+                // NUMAノードIDを取得 (Per-CPUデータから)
+                let node_id = if let Some(pc) = unsafe { crate::mm::per_cpu::current_per_cpu() } {
+                    pc.get_local_numa_node().as_u8()
+                } else {
+                    0 // Per-CPU未初期化時はノード0と仮定
+                };
+                
+                let action = handle_numa_fault(&stats, node_id, crate::time::current_time_ns());
+                
+                if let NumaFaultAction::Migrate { from_node: _, to_node } = action {
+                     use super::autonuma::{MigrationRequest, MIGRATION_ENGINE};
+                     // マイグレーションキューに追加
+                     MIGRATION_ENGINE.queue_migration(MigrationRequest {
+                         src_frame: frame,
+                         dest_node: to_node,
+                         priority: 5,
+                         timestamp: crate::time::current_time_ns(),
+                     });
+                }
+            }
+
+            Some(FaultResult::Resolved)
+        } else {
+            None
+        }
+    }).flatten()
 }
 
 #[allow(unused_assignments)]

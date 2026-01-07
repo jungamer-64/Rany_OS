@@ -406,6 +406,8 @@ pub struct ProcessInfo {
     children: Vec<ProcessId>,
     /// スレッド
     threads: Vec<ThreadId>,
+    /// AutoNUMA スキャン用の現在アドレス
+    pub numa_scan_addr: AtomicU64,
 }
 
 impl ProcessInfo {
@@ -429,6 +431,7 @@ impl ProcessInfo {
             exit_code: None,
             children: Vec::new(),
             threads: Vec::new(),
+            numa_scan_addr: AtomicU64::new(super::mm::address_space::USER_SPACE_START),
         }
     }
 
