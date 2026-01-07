@@ -53,6 +53,7 @@
 - ZSWAP の格納に失敗した場合はフレームを即時解放せず、失敗をログ／メトリクスとして記録する（フレームの破損を防止）。
 - 監視用に `stats_zswap_fail_count()` と `stats_async_dealloc_count()` を公開しており、グローバルな失敗数／非同期解放数を収集できる。
 - さらに、4KiB / 2MiB / 1GiB バッファプールの **ヒット / ミス / 占有** 統計をそれぞれ `buffer_pool_4k_stats()`, `buffer_pool_2m_stats()`, `buffer_pool_1g_stats()` で取得できます。
+- 現在の状態: **zswap は 4KiB / 2MiB / 1GiB のページサイズをサポートするよう拡張されました**。ワーカは `detect_frame_page_size` によりページサイズを判定し、対応するバッファプール（4KiB/2MiB/1GiB）を用いてページデータを読み出し `zswap_store_auto` で格納します。zswap が無効、プール満杯、または圧縮率が悪い場合はフォールバック（プールリジェクト／書き戻し）やスキップが発生し、`huge_2m_skipped` のようなメトリクスで観測できます。将来的には書き戻しポリシーやプールの会計の微調整を行ってください。
 - ExoShell の `async_swapout.status()` では `zswap_fail_count`, `async_dealloc_count`, 及び各バッファプールの統計（`buffer_pool_4k` / `buffer_pool_2m` / `buffer_pool_1g`）が得られます。
 
 ---
@@ -106,11 +107,13 @@
 - RESERVED_FILE_SLOTS（ファイル予約）: キュー容量の約 12.5% を予約してファイル書き戻しを優先する実装にしています。システムの I/O 特性により調整してください。
 
 **推奨デフォルト（初期設定）**: 初期の簡易スイープでは以下の設定がバランスの良い動作を示していました:
+
 - `TOKEN_BUCKET_CAPACITY = CHANNEL_SIZE / 4` (→ 128 when `CHANNEL_SIZE=512`)
 - `TOKEN_REFILL_PER_BATCH = BATCH_SIZE / 2` (→ 8 when `BATCH_SIZE=16`)
 - `RESERVED_FILE_SLOTS = CHANNEL_SIZE / 8` (→ 64 when `CHANNEL_SIZE=512`)
 
 **長時間検証結果（推奨値）**: さらに広範囲での 2 段階スイープ（探索 → 上位候補の高反復検証）を実施したところ、ファイル書き戻しをより優先する組合せが安定して高い成功率を示しました。検証で特に良好だった組合せ（検証フェーズ上位）は次の通りです:
+
 - `TOKEN_BUCKET_CAPACITY = 32`
 - `TOKEN_REFILL_PER_BATCH = 4`
 - `RESERVED_FILE_SLOTS = 128`

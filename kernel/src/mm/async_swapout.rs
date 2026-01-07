@@ -8,7 +8,7 @@
 //!
 #![allow(dead_code)]
 
-use x86_64::structures::paging::PhysFrame;
+use x86_64::structures::paging::{PhysFrame, Size2MiB, Size1GiB};
 
 use crate::mm::types::FrameIndex;
 use crate::mm::frame_backing;
@@ -277,6 +277,131 @@ fn try_zswap_store_and_dealloc(frame: FrameIndex, buf: &mut [u8]) -> bool {
     }
 }
 
+// Detect page size for a given frame. Returns PAGE_SIZE_1G / PAGE_SIZE_2M / PAGE_SIZE_4K
+// Conservative check: alignment + all subframes allocated.
+fn detect_frame_page_size(frame: FrameIndex) -> usize {
+    // Try 1GiB first (very rare)
+    let frames_per_1g = crate::mm::PAGE_SIZE_1G / crate::mm::PAGE_SIZE_4K;
+    if frame.as_usize() % frames_per_1g == 0 {
+        let mut ok = true;
+        for i in 0..frames_per_1g {
+            if !crate::mm::buddy_allocator::is_frame_allocated(frame.as_usize() + i) {
+                ok = false;
+                break;
+            }
+        }
+        if ok { return crate::mm::PAGE_SIZE_1G; }
+    }
+
+    // Try 2MiB
+    let frames_per_2m = crate::mm::PAGE_SIZE_2M / crate::mm::PAGE_SIZE_4K;
+    if frame.as_usize() % frames_per_2m == 0 {
+        let mut ok = true;
+        for i in 0..frames_per_2m {
+            if !crate::mm::buddy_allocator::is_frame_allocated(frame.as_usize() + i) {
+                ok = false;
+                break;
+            }
+        }
+        if ok { return crate::mm::PAGE_SIZE_2M; }
+    }
+
+    // Otherwise treat as 4KiB page
+    crate::mm::PAGE_SIZE_4K
+}
+
+// Generic helper: try storing page to zswap (4K/2M/1G) using available buffer(s) and
+// deallocate via the appropriate buddy deallocator on success. Returns true if deallocated.
+fn try_zswap_store_and_dealloc_any(frame: FrameIndex, buf4k: &mut [u8]) -> bool {
+    let page_size = detect_frame_page_size(frame);
+    let phys = frame.to_phys_addr();
+
+    // If zswap is disabled, just dealloc directly according to page size
+    if !crate::mm::zswap::zswap_is_enabled() {
+        match page_size {
+            s if s == crate::mm::PAGE_SIZE_4K => {
+                let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+                buddy_allocator::buddy_dealloc_frame(physf);
+                return true;
+            }
+            s if s == crate::mm::PAGE_SIZE_2M => {
+                let physf2m = unsafe { PhysFrame::<Size2MiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+                buddy_allocator::buddy_dealloc_frame_2m(physf2m);
+                return true;
+            }
+            s if s == crate::mm::PAGE_SIZE_1G => {
+                let physf1g = unsafe { PhysFrame::<Size1GiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+                buddy_allocator::buddy_dealloc_frame_1g(physf1g);
+                return true;
+            }
+            _ => return false,
+        }
+    }
+
+    // zswap enabled: perform store and dealloc on success
+    match page_size {
+        s if s == crate::mm::PAGE_SIZE_4K => {
+            let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+            let src = vaddr.as_u64() as *const u8;
+            unsafe { core::ptr::copy_nonoverlapping(src, buf4k.as_mut_ptr(), crate::mm::PAGE_SIZE_4K); }
+            match crate::mm::zswap::zswap_store_auto(buf4k) {
+                Ok(_) => {
+                    let physf = unsafe { PhysFrame::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+                    buddy_allocator::buddy_dealloc_frame(physf);
+                    GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+                    true
+                }
+                Err(e) => {
+                    log::warn!("zswap_store failed for 4K frame {:?}: {:?}", frame, e);
+                    GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
+                    false
+                }
+            }
+        }
+        s if s == crate::mm::PAGE_SIZE_2M => {
+            let mut buf = crate::mm::async_swapout::buffer_pool_get_2m();
+            let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+            unsafe { core::ptr::copy_nonoverlapping(vaddr.as_u64() as *const u8, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_2M); }
+            match crate::mm::zswap::zswap_store_auto(&buf) {
+                Ok(_) => {
+                    let physf2m = unsafe { PhysFrame::<Size2MiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+                    buddy_allocator::buddy_dealloc_frame_2m(physf2m);
+                    GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+                    crate::mm::async_swapout::buffer_pool_put_2m(buf);
+                    true
+                }
+                Err(e) => {
+                    log::warn!("zswap_store failed for 2M frame {:?}: {:?}", frame, e);
+                    GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
+                    crate::mm::async_swapout::buffer_pool_put_2m(buf);
+                    false
+                }
+            }
+        }
+        s if s == crate::mm::PAGE_SIZE_1G => {
+            let mut buf = crate::mm::async_swapout::buffer_pool_get_1g();
+            let vaddr = crate::mm::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
+            unsafe { core::ptr::copy_nonoverlapping(vaddr.as_u64() as *const u8, buf.as_mut_ptr(), crate::mm::PAGE_SIZE_1G); }
+            match crate::mm::zswap::zswap_store_auto(&buf) {
+                Ok(_) => {
+                    let physf1g = unsafe { PhysFrame::<Size1GiB>::from_start_address_unchecked(x86_64::PhysAddr::new(phys)) };
+                    buddy_allocator::buddy_dealloc_frame_1g(physf1g);
+                    GLOBAL_ASYNC_DEALLOC_COUNT.fetch_add(1, AtomicOrdering::AcqRel);
+                    crate::mm::async_swapout::buffer_pool_put_1g(buf);
+                    true
+                }
+                Err(e) => {
+                    log::warn!("zswap_store failed for 1G frame {:?}: {:?}", frame, e);
+                    GLOBAL_ZSWAP_FAILS.fetch_add(1, AtomicOrdering::AcqRel);
+                    crate::mm::async_swapout::buffer_pool_put_1g(buf);
+                    false
+                }
+            }
+        }
+        _ => false,
+    }
+}
+
 // テスト専用: 永続ワーカ実装（条件変数 + バウンドキュー）
 #[cfg(test)]
 mod test_impl {
@@ -381,7 +506,7 @@ mod test_impl {
                                 }
                             }
                             SwapKind::Anon => {
-                                if try_zswap_store_and_dealloc(entry.frame, &mut reuse_buf) {
+                                if try_zswap_store_and_dealloc_any(entry.frame, &mut reuse_buf) {
                                     TEST_DEALLOC_COUNT.fetch_add(1, Ordering::AcqRel);
                                 } else {
                                     TEST_ZSWAP_FAILS.fetch_add(1, Ordering::AcqRel);
@@ -560,6 +685,16 @@ mod test_impl {
     pub fn set_tokens(n: usize) {
         let cap = TEST_TOKEN_CAPACITY_DYNAMIC.load(Ordering::Acquire);
         TEST_TOKENS.store(n.min(cap), Ordering::Release);
+    }
+
+    #[cfg(test)]
+    pub fn _huge_2m_skip_count() -> usize {
+        GLOBAL_HUGE_2M_SKIPPED.load(Ordering::Acquire)
+    }
+
+    #[cfg(test)]
+    pub fn _reset_huge_2m_skip_count() {
+        GLOBAL_HUGE_2M_SKIPPED.store(0, Ordering::Release);
     }
 
     #[cfg(test)]
@@ -790,7 +925,7 @@ mod kernel_impl {
                         atomic_saturating_decrement(&FILE_QUEUE_COUNT); // safe to call; saturating at 0
                     }
                     SwapKind::Anon => {
-                        if try_zswap_store_and_dealloc(entry.frame, &mut reuse_buf) {
+                        if try_zswap_store_and_dealloc_any(entry.frame, &mut reuse_buf) {
                             // success: frame deallocated via helper
                         } else {
                             log::warn!("zswap store failed during anon swapout for frame {:?}", entry.frame);
@@ -1703,6 +1838,41 @@ mod tests {
         // On zswap failure we must NOT deallocate the frame (test-only counter)
         assert_eq!(test_impl::_dealloc_count(), 0);
         assert!(test_impl::_zswap_fail_count() > 0);
+
+        stop_worker();
+    }
+
+    #[test]
+    fn test_huge_page_2m_anon_store() {
+        // Ensure deterministic worker lifecycle
+        test_impl::stop_worker();
+        for _ in 0..20 { if !test_impl::is_worker_running() { break; } std::thread::sleep(std::time::Duration::from_millis(10)); }
+
+        // Ensure zswap is enabled and has room for 2MiB
+        crate::mm::zswap::zswap_set_enabled(true);
+        crate::mm::zswap::zswap_update_config(crate::mm::zswap::ZswapConfig {
+            enabled: true,
+            compressor: crate::mm::zswap::CompressionAlgo::Lz4,
+            max_pool_size: crate::mm::PAGE_SIZE_2M * 4,
+            max_compression_ratio: 1.0,
+            same_filled_pages_enabled: false,
+            writeback_threshold: 0.8,
+        });
+
+        // Allocate a 2MiB huge page (buddy allocator)
+        let huge = crate::mm::buddy_allocator::buddy_alloc_frame_2m().expect("alloc 2m frame");
+        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(huge.start_address().as_u64());
+
+        let before = crate::mm::zswap::zswap_stats().stored_pages_2m;
+
+        // Enqueue as anon
+        let h = crate::mm::async_swapout::try_enqueue_swapout(frame_idx, SwapKind::Anon).expect("enqueue ok");
+        test_impl::start_worker();
+        h.wait();
+
+        // Should have been stored and deallocated
+        assert!(crate::mm::zswap::zswap_stats().stored_pages_2m > before);
+        assert!(!crate::mm::buddy_allocator::is_frame_allocated(frame_idx.as_usize()));
 
         stop_worker();
     }
