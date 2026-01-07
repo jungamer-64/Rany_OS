@@ -404,6 +404,12 @@ mod kernel_impl {
     // - TOKEN_REFILL_PER_BATCH: Amount of tokens restored per processed batch. Controls long-term sustained rate.
     const TOKEN_BUCKET_CAPACITY: usize = CHANNEL_SIZE / 4; // anonymous burst capacity
     const TOKEN_REFILL_PER_BATCH: usize = BATCH_SIZE / 2;
+
+    // Runtime-adjustable parameters (Atomics allow tuning without recompilation)
+    static RESERVED_FILE_SLOTS_ATOMIC: AtomicUsize = AtomicUsize::new(RESERVED_FILE_SLOTS);
+    static TOKEN_BUCKET_CAPACITY_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
+    static TOKEN_REFILL_PER_BATCH_ATOMIC: AtomicUsize = AtomicUsize::new(TOKEN_REFILL_PER_BATCH);
+
     static TOKENS: AtomicUsize = AtomicUsize::new(TOKEN_BUCKET_CAPACITY);
     // Worker waker and running flags
     static WORKER_WAKER: AtomicWaker = AtomicWaker::new();
@@ -547,7 +553,7 @@ mod kernel_impl {
             // Refill token bucket after processing batch
             // Only refill if we actually processed something or if we just woke up to check
             // Use a simple strategy: constant refill rate per batch processing cycle
-            add_tokens(TOKEN_REFILL_PER_BATCH);
+            add_tokens(TOKEN_REFILL_PER_BATCH_ATOMIC.load(Ordering::Acquire));
 
             // If shutdown requested and channel empty after processing, stop
             if WORKER_SHUTDOWN.load(core::sync::atomic::Ordering::Acquire) {
@@ -578,12 +584,14 @@ mod kernel_impl {
     }
 
     fn add_tokens(n: usize) {
+        // Respect current dynamic capacity
+        let cap = TOKEN_BUCKET_CAPACITY_ATOMIC.load(Ordering::Acquire);
         let mut cur = TOKENS.load(Ordering::Acquire);
         loop {
-            if cur >= TOKEN_BUCKET_CAPACITY {
+            if cur >= cap {
                 return;
             }
-            let new = (cur + n).min(TOKEN_BUCKET_CAPACITY);
+            let new = (cur + n).min(cap);
             match TOKENS.compare_exchange(cur, new, Ordering::AcqRel, Ordering::Acquire) {
                 Ok(_) => return,
                 Err(c) => cur = c,
@@ -617,7 +625,8 @@ mod kernel_impl {
             if let SwapKind::Anon = kind {
                 let total = QUEUE_COUNT.load(Ordering::Acquire);
                 let free_slots = CHANNEL_SIZE.saturating_sub(total);
-                if free_slots <= RESERVED_FILE_SLOTS {
+                let reserved = RESERVED_FILE_SLOTS_ATOMIC.load(Ordering::Acquire);
+                if free_slots <= reserved {
                     // reserve slots for file writes — anon enqueues fail fast
                     page_flags::clear_flag(frame, PageFlags::SwapPending);
                     return Err(SwapError::QueueFull);
@@ -667,6 +676,50 @@ mod kernel_impl {
 
     pub fn token_count() -> usize {
         TOKENS.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Runtime tunables and inspection
+    pub fn set_token_bucket_capacity(n: usize) {
+        let n = n.min(CHANNEL_SIZE);
+        TOKEN_BUCKET_CAPACITY_ATOMIC.store(n, Ordering::Release);
+        // Trim current tokens if above new capacity
+        loop {
+            let cur = TOKENS.load(Ordering::Acquire);
+            if cur <= n { break; }
+            match TOKENS.compare_exchange(cur, n, Ordering::AcqRel, Ordering::Acquire) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    pub fn token_bucket_capacity() -> usize {
+        TOKEN_BUCKET_CAPACITY_ATOMIC.load(Ordering::Acquire)
+    }
+
+    pub fn set_token_refill_per_batch(n: usize) {
+        TOKEN_REFILL_PER_BATCH_ATOMIC.store(n, Ordering::Release);
+    }
+
+    pub fn token_refill_per_batch() -> usize {
+        TOKEN_REFILL_PER_BATCH_ATOMIC.load(Ordering::Acquire)
+    }
+
+    pub fn set_reserved_file_slots(n: usize) {
+        RESERVED_FILE_SLOTS_ATOMIC.store(n.min(CHANNEL_SIZE), Ordering::Release);
+    }
+
+    pub fn reserved_file_slots() -> usize {
+        RESERVED_FILE_SLOTS_ATOMIC.load(Ordering::Acquire)
+    }
+
+    pub fn set_token_count(n: usize) {
+        let cap = TOKEN_BUCKET_CAPACITY_ATOMIC.load(Ordering::Acquire);
+        TOKENS.store(n.min(cap), Ordering::Release);
+    }
+
+    pub fn add_tokens_public(n: usize) {
+        add_tokens(n);
     }
 
     pub fn start_worker() {
@@ -761,6 +814,57 @@ pub fn token_count() -> usize {
     {
         kernel_impl::token_count()
     }
+}
+
+/// Runtime tunables (top-level wrappers)
+pub fn set_token_bucket_capacity(n: usize) {
+    #[cfg(not(test))]
+    { kernel_impl::set_token_bucket_capacity(n); }
+}
+
+pub fn token_bucket_capacity() -> usize {
+    #[cfg(not(test))]
+    { kernel_impl::token_bucket_capacity() }
+    #[cfg(test)]
+    { 0 }
+}
+
+pub fn set_token_refill_per_batch(n: usize) {
+    #[cfg(not(test))]
+    { kernel_impl::set_token_refill_per_batch(n); }
+}
+
+pub fn token_refill_per_batch() -> usize {
+    #[cfg(not(test))]
+    { kernel_impl::token_refill_per_batch() }
+    #[cfg(test)]
+    { 0 }
+}
+
+pub fn set_reserved_file_slots(n: usize) {
+    #[cfg(not(test))]
+    { kernel_impl::set_reserved_file_slots(n); }
+}
+
+pub fn reserved_file_slots() -> usize {
+    #[cfg(not(test))]
+    { kernel_impl::reserved_file_slots() }
+    #[cfg(test)]
+    { 0 }
+}
+
+pub fn set_token_count(n: usize) {
+    #[cfg(not(test))]
+    { kernel_impl::set_token_count(n); }
+    #[cfg(test)]
+    { test_impl::set_tokens(n); }
+}
+
+pub fn add_tokens(n: usize) {
+    #[cfg(not(test))]
+    { kernel_impl::add_tokens_public(n); }
+    #[cfg(test)]
+    { test_impl::add_tokens(n); }
 }
 
 // テスト: キューイング API とワーカの動作を検証するユニットテストを追加

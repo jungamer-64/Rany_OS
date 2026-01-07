@@ -5,6 +5,9 @@
 //! AMD-Vi backend driver (skeleton).
 
 pub mod cmd;
+pub mod driver;
+
+pub use driver::AmdViDriver;
 pub mod tables;
 
 use alloc::sync::Arc;

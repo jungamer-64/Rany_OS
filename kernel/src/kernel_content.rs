@@ -369,43 +369,51 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                 unsafe {
                     match parser.find_table(b"DMAR") {
                         Ok(dmar_addr) => {
-                            if let Err(e) = crate::io::iommu::intel::controller::init_global::init_iommu_from_acpi(dmar_addr, iommu_config)
-                            {
-                                // If IOMMU not present or disabled, we just warn.
-                                if e != io::iommu::types::IommuError::NotPresent {
-                                    warn!(target: "init", "IOMMU init failed: {:?}", e);
-                                } else {
-                                    info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
-                                }
-                            } else {
-                                info!(target: "init", "IOMMU initialized successfully");
+                            use crate::io::iommu::intel::IntelVtDDriver;
+                            use crate::driver_registry::{register_driver, driver_registry};
+                            use alloc::boxed::Box;
 
-                                // Enable IOMMU
-                                if let Err(e) = io::iommu::api::enable_iommu() {
-                                    error!(target: "init", "Failed to enable IOMMU: {:?}", e);
-                                } else {
-                                    info!(target: "init", "IOMMU translation enabled");
+                            let drv = Box::new(IntelVtDDriver::new(dmar_addr, iommu_config.clone()));
+                            match register_driver(drv) {
+                                Ok(handle) => {
+                                    info!(target: "init", "Registered Intel VT-d driver");
+                                    if let Err(e) = driver_registry().probe_and_start(handle) {
+                                        warn!(target: "init", "Intel VT-d start failed: {:?}", e);
+                                    } else {
+                                        info!(target: "init", "Intel VT-d initialized via DriverRegistry");
+                                        // Enable IOMMU API
+                                        if let Err(e) = io::iommu::api::enable_iommu() {
+                                            error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                                        } else {
+                                            info!(target: "init", "IOMMU translation enabled");
+                                        }
+                                    }
                                 }
+                                Err(e) => warn!(target: "init", "Intel VT-d registration failed: {:?}", e),
                             }
                         }
                         Err(_) => match parser.find_table(b"IVRS") {
                             Ok(ivrs_addr) => {
-                                if let Err(e) = crate::io::iommu::amd::init_iommu_from_ivrs(
-                                    ivrs_addr,
-                                    iommu_config,
-                                ) {
-                                    if e != io::iommu::types::IommuError::NotPresent {
-                                        warn!(target: "init", "AMD-Vi init failed: {:?}", e);
-                                    } else {
-                                        info!(target: "init", "IOMMU not initialized (Not Present or Disabled)");
+                                use crate::io::iommu::amd::AmdViDriver;
+                                use crate::driver_registry::{register_driver, driver_registry};
+                                use alloc::boxed::Box;
+                                
+                                let drv = Box::new(AmdViDriver::new(ivrs_addr, iommu_config.clone()));
+                                match register_driver(drv) {
+                                    Ok(handle) => {
+                                        info!(target: "init", "Registered AMD-Vi driver");
+                                        if let Err(e) = driver_registry().probe_and_start(handle) {
+                                            warn!(target: "init", "AMD-Vi start failed: {:?}", e);
+                                        } else {
+                                            info!(target: "init", "AMD-Vi initialized via DriverRegistry");
+                                             if let Err(e) = io::iommu::api::enable_iommu() {
+                                                error!(target: "init", "Failed to enable IOMMU: {:?}", e);
+                                            } else {
+                                                info!(target: "init", "IOMMU translation enabled");
+                                            }
+                                        }
                                     }
-                                } else {
-                                    info!(target: "init", "AMD-Vi detected; backend registered");
-                                    if let Err(e) = io::iommu::api::enable_iommu() {
-                                        error!(target: "init", "Failed to enable AMD-Vi: {:?}", e);
-                                    } else {
-                                        info!(target: "init", "AMD-Vi translation enabled");
-                                    }
+                                    Err(e) => warn!(target: "init", "AMD-Vi registration failed: {:?}", e),
                                 }
                             }
                             Err(_) => {
