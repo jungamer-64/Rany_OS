@@ -561,7 +561,7 @@ impl ProcFs {
         let ctx_switches = crate::task::context::CONTEXT_SWITCH_COUNT.load(Ordering::Relaxed);
         let boot_time = crate::time::now().saturating_sub(crate::time::current_tick() / 1000);
         let cpu_count = crate::smp::cpu_count();
-        let process_count = crate::task::process_manager().count();
+        let process_count = process_manager().count();
 
         use core::fmt::Write;
         let mut output = String::new();
