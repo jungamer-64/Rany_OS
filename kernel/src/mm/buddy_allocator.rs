@@ -1298,6 +1298,21 @@ impl BuddyFrameAllocator {
                 debug_assert!(self.free_frames >= block_size);
                 self.free_frames = self.free_frames.saturating_sub(block_size);
 
+                // Phase 6: Set Folio (Compound Page) flags
+                if order > 0 {
+                    use crate::mm::page_flags::{self, PageFlags};
+                    // Set order
+                    unsafe { page_flags::set_order(frame, order as u8); }
+
+                    // Head page
+                    page_flags::set_flag(frame, PageFlags::CompoundHead);
+                    // Tail pages
+                    for i in 1..block_size {
+                         let tail_frame = FrameIndex::new(frame.as_usize() + i as usize);
+                         page_flags::set_flag(tail_frame, PageFlags::CompoundTail);
+                    }
+                }
+
                 return Some(frame);
             }
         }
@@ -1332,6 +1347,19 @@ impl BuddyFrameAllocator {
     fn deallocate_order(&mut self, frame: FrameIndex, order: usize) {
         debug_assert_eq!(frame.align_down(order), frame);
 
+        // Phase 6: Clear Folio flags
+        if order > 0 {
+            use crate::mm::page_flags::{self, PageFlags};
+            unsafe { page_flags::set_order(frame, 0); }
+
+            let count = 1usize << order;
+             page_flags::clear_flag(frame, PageFlags::CompoundHead);
+             for i in 1..count {
+                 let tail_frame = FrameIndex::new(frame.as_usize() + i);
+                 page_flags::clear_flag(tail_frame, PageFlags::CompoundTail);
+             }
+        }
+
         // フレームを空きとしてマーク
         let block_idx = frame.as_usize() >> order;
         if self.is_block_free(order, block_idx) {
@@ -1363,6 +1391,19 @@ impl BuddyFrameAllocator {
     /// 大きなブロック（2MB以上）の解放など、結合が有利な場合に使用。
     fn deallocate_order_immediate(&mut self, frame: FrameIndex, order: usize) {
         debug_assert_eq!(frame.align_down(order), frame);
+
+        // Phase 6: Clear Folio flags
+        if order > 0 {
+            use crate::mm::page_flags::{self, PageFlags};
+            unsafe { page_flags::set_order(frame, 0); }
+
+            let count = 1usize << order;
+             page_flags::clear_flag(frame, PageFlags::CompoundHead);
+             for i in 1..count {
+                 let tail_frame = FrameIndex::new(frame.as_usize() + i);
+                 page_flags::clear_flag(tail_frame, PageFlags::CompoundTail);
+             }
+        }
 
         let block_idx = frame.as_usize() >> order;
         if self.is_block_free(order, block_idx) {
@@ -1504,12 +1545,15 @@ impl BuddyFrameAllocator {
     pub fn deallocate_4k_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
 
+        // Phase 6: Check for Folio order
+        let order = crate::mm::page_flags::get_order(frame_idx) as usize;
+
         // Memcg: ページがmemcgでトラックされている場合はアンチャージ
         if let Some(info) = super::memcg::memcg_untrack_page(frame_idx) {
             let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
         }
 
-        self.deallocate_order(frame_idx, 0);
+        self.deallocate_order(frame_idx, order);
     }
 
     /// 2MiB フレームを解放

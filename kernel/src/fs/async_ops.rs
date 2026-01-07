@@ -504,7 +504,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
             let core_id = current_cpu();
 
             // 1. Check completion
-            let completed = nvme_global::with_driver(|driver| {
+            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                 driver.check_completion(core_id, request_id as u16)
             });
 
@@ -527,12 +527,12 @@ impl<'a> Future for AsyncWriteFuture<'a> {
             }
 
             // 2. Register Waker
-            nvme_global::with_driver(|driver| {
+            nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                 driver.register_waker(core_id, request_id as u16, cx.waker().clone());
             });
 
             // 3. Double check
-            let completed_retry = nvme_global::with_driver(|driver| {
+            let completed_retry = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                 driver.check_completion(core_id, request_id as u16)
             });
 

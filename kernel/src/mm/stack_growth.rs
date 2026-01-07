@@ -580,7 +580,7 @@ pub fn init_stack_growth() {
 mod tests {
     use super::*;
     
-    #[test_case]
+    #[test]
     fn test_stack_region_new() {
         let stack = StackRegion::new(
             VirtAddr::new(0x8000_0000),
@@ -592,7 +592,7 @@ mod tests {
         assert_eq!(stack.current_size(), 64 * 1024);
     }
     
-    #[test_case]
+    #[test]
     fn test_stack_region_contains() {
         let stack = StackRegion::new(
             VirtAddr::new(0x8000_0000),
@@ -607,7 +607,7 @@ mod tests {
         assert!(!stack.contains(VirtAddr::new(0x8000_0000)));
     }
     
-    #[test_case]
+    #[test]
     fn test_stack_can_grow() {
         let stack = StackRegion::new(
             VirtAddr::new(0x8000_0000),

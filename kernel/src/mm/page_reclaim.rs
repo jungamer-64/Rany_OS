@@ -961,6 +961,11 @@ impl LruList {
     
     /// 新しいページをActiveリストに追加
     pub fn add_to_active(&self, entry: LruPageEntry) {
+        // Phase 6: Ignore tail pages
+        if crate::mm::page_flags::test_flag(entry.frame, crate::mm::page_flags::PageFlags::CompoundTail) {
+             return;
+        }
+
         let mut active = self.active.lock();
         active.push_back(entry);
         self.active_size.fetch_add(1, Ordering::Relaxed);
@@ -968,6 +973,11 @@ impl LruList {
     
     /// 新しいページをInactiveリストに追加
     pub fn add_to_inactive(&self, entry: LruPageEntry) {
+        // Phase 6: Ignore tail pages
+        if crate::mm::page_flags::test_flag(entry.frame, crate::mm::page_flags::PageFlags::CompoundTail) {
+             return;
+        }
+
         let mut inactive = self.inactive.lock();
         inactive.push_back(entry);
         self.inactive_size.fetch_add(1, Ordering::Relaxed);
@@ -1424,6 +1434,9 @@ impl PageReclaimController {
     
     /// ページを実際に回収
     fn reclaim_page(&self, entry: &LruPageEntry) {
+        let order = crate::mm::page_flags::get_order(entry.frame);
+        let count = 1usize << order;
+
         match entry.page_type {
             PageType::Anonymous => {
                 // スワップアウト（未実装の場合はスキップ）
@@ -1434,7 +1447,7 @@ impl PageReclaimController {
                 } else {
                     // クリーンな匿名ページは即座に回収可能
                     if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                        let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                        let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
                     }
                     self.free_frame(entry.frame);
                 }
@@ -2002,7 +2015,7 @@ mod tests {
 
         // Track a fake frame as backing that page
         let frame = FrameIndex::new(600);
-        super::frame_backing::track_frame_backing(frame, ino, 0);
+        crate::mm::frame_backing::track_frame_backing(frame, ino, 0);
 
         // Add LRU entry referring to that frame
         let controller = PageReclaimController::new();
@@ -2018,7 +2031,7 @@ mod tests {
         assert!(crate::fs::page_cache().stats().writebacks >= writebacks_before + 1);
 
         // Backing mapping should be removed after free
-        assert!(super::frame_backing::get_frame_backing(frame).is_none());
+        assert!(crate::mm::frame_backing::get_frame_backing(frame).is_none());
     }
 
     #[test]

@@ -1002,4 +1002,35 @@ mod tests {
         assert!(!pte.has_numa_hint());
         assert_ne!(pte.0 & pte_flags::PRESENT, 0);
     }
+    #[test]
+    fn test_numa_fault_action_migrate() {
+        let stats = PageNumaStats::new();
+        stats.current_node.store(0, Ordering::Relaxed);
+        
+        // Remote access from Node 1
+        // Threshold is 4, so we need > 4 accesses
+        let access_count = NUMA_MIGRATION_THRESHOLD + 1;
+        for _ in 0..access_count {
+            stats.record_access(1, 1000);
+        }
+        
+        // Simulate elapsed time > cooldown (to allow migration)
+        // Last migration was 0 (init), current time needs to be > cooldown
+        let current_time = NUMA_MIGRATION_COOLDOWN_MS + 1000;
+        
+        // Node 1 should be hottest
+        let (hottest, count) = stats.get_hottest_node();
+        assert_eq!(hottest, 1);
+        assert!(count >= access_count);
+        
+        // Should trigger migration to Node 1
+        let action = handle_numa_fault(&stats, 1, current_time);
+        
+        if let NumaFaultAction::Migrate { from_node, to_node } = action {
+            assert_eq!(from_node, 0);
+            assert_eq!(to_node, 1);
+        } else {
+            panic!("Expected Migrate action, got {:?}", action);
+        }
+    }
 }

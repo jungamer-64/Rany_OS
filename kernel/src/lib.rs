@@ -967,6 +967,83 @@ pub mod task {
         pub fn notify_task_started(_tick: u64) {}
     }
 
+    // Basic smp shim for test builds
+    pub mod smp {
+        pub fn current_cpu() -> u32 { 0 }
+        pub fn cpu_count() -> usize { 1 }
+        pub fn try_current_cpu_id() -> Option<u32> { Some(0) }
+    }
+
+    // Minimal memory helpers for tests
+    pub mod memory {
+        pub fn physical_memory_offset() -> u64 { 0 }
+        pub fn total_memory_kb() -> u64 { 1024 * 1024 }
+        pub fn free_memory_kb() -> u64 { 512 * 1024 }
+    }
+
+    // Minimal interrupts shim
+    pub mod interrupts {
+        pub fn get_timer_ticks() -> u64 { 0 }
+    }
+
+    // Minimal domain system stub
+    pub mod domain_system {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct DomainId(pub u64);
+    }
+
+    // Task context counters used by procfs tests
+    pub mod context {
+        use core::sync::atomic::AtomicU64;
+        pub static CONTEXT_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);
+    }
+
+    // Minimal IO shims for tests
+    pub mod io {
+        pub mod log {
+            pub fn early_print_char(_c: u8) {}
+        }
+
+        pub mod interrupt_manager {
+            pub fn send_ipi(_apic_id: u32, _vector: u8) {}
+            pub fn broadcast_ipi(_vector: u8) {}
+        }
+
+        pub mod nvme {
+            /// Minimal NVMe completion type for tests
+            #[derive(Clone, Copy, Debug)]
+            pub struct NvmeCompletion {
+                pub cid: u16,
+                pub status: u16,
+            }
+
+            impl NvmeCompletion {
+                pub fn is_success(&self) -> bool { (self.status & 0x1) != 0 }
+                pub fn command_id(&self) -> u16 { self.cid }
+            }
+
+            /// Minimal driver handle stub used in `with_driver` closures
+            pub struct NvmePollingDriver;
+
+            pub mod global {
+                use super::NvmePollingDriver;
+
+                pub fn with_driver<F, R>(_f: F) -> Option<R>
+                where
+                    F: FnOnce(&NvmePollingDriver) -> R,
+                {
+                    None
+                }
+
+                pub fn with_driver_mut<F, R>(_f: F) -> Option<R>
+                where
+                    F: FnOnce(&mut NvmePollingDriver) -> R,
+                {
+                    None
+                }
+            }
+        }
+    }
     // Minimal process manager stub for tests (provides `process_manager()` and types used by `procfs` tests)
     pub mod process {
         use alloc::sync::Arc;

@@ -670,7 +670,7 @@ impl ProcessAddressSpace {
         // 指定アドレス以降の領域を検索
         // Note: BTreeMap::range works on keys. start_addr might be in the middle of a region.
         // We find the first region that ends after start_addr.
-        for (&r_start, region) in regions.range(..).filter(|(_, r)| r.end > start_addr) {
+        for (&r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
             if scanned >= batch_size {
                 break;
             }
