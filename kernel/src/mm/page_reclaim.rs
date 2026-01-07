@@ -191,25 +191,43 @@ impl PageVec {
             return;
         }
 
-        // NUMAノードごとにグループ化して効率的にフラッシュ
-        for i in 0..self.count {
-            let entry = &self.entries[i];
-            if entry.is_empty() {
-                continue;
-            }
+        // Phase 6.2: Batch pages per NUMA node for reduced lock contention
+        for node_idx in 0..8 {
+             // Vectors to batch updates for this node
+             let mut active_batch = Vec::with_capacity(PAGEVEC_SIZE);
+             let mut inactive_batch = Vec::with_capacity(PAGEVEC_SIZE);
 
-            let node_idx = (entry.numa_node as usize).min(7);
-            let lru_entry = LruPageEntry::new(
-                entry.frame_index(),
-                entry.page_type(),
-                entry.timestamp,
-            );
+             for i in 0..self.count {
+                 let entry = &self.entries[i];
+                 if entry.is_empty() { continue; }
+                 
+                 let e_node = (entry.numa_node as usize).min(7);
+                 if e_node != node_idx { continue; }
 
-            if entry.target_list == 0 {
-                lru_lists[node_idx].add_to_active(lru_entry);
-            } else {
-                lru_lists[node_idx].add_to_inactive(lru_entry);
-            }
+                 // Check for tail pages early (also checked in LruList but saves alloc)
+                 if crate::mm::page_flags::test_flag(FrameIndex::from_phys_addr(entry.frame), crate::mm::page_flags::PageFlags::CompoundTail) {
+                     continue;
+                 }
+
+                 let lru_entry = LruPageEntry::new(
+                     entry.frame_index(),
+                     entry.page_type(),
+                     entry.timestamp,
+                 );
+
+                 if entry.target_list == 0 {
+                     active_batch.push(lru_entry);
+                 } else {
+                     inactive_batch.push(lru_entry);
+                 }
+             }
+
+             if !active_batch.is_empty() {
+                 lru_lists[node_idx].add_batch_active(active_batch);
+             }
+             if !inactive_batch.is_empty() {
+                 lru_lists[node_idx].add_batch_inactive(inactive_batch);
+             }
         }
 
         self.flush_count += 1;
@@ -982,6 +1000,46 @@ impl LruList {
         inactive.push_back(entry);
         self.inactive_size.fetch_add(1, Ordering::Relaxed);
     }
+
+    /// 新しいページをActiveリストに一括追加
+    pub fn add_batch_active(&self, entries: Vec<LruPageEntry>) {
+        if entries.is_empty() { return; }
+        
+        let mut active = self.active.lock();
+        let mut added_count = 0;
+        
+        for entry in entries {
+            if crate::mm::page_flags::test_flag(entry.frame, crate::mm::page_flags::PageFlags::CompoundTail) {
+                 continue;
+            }
+            active.push_back(entry);
+            added_count += 1;
+        }
+        
+        if added_count > 0 {
+            self.active_size.fetch_add(added_count, Ordering::Relaxed);
+        }
+    }
+
+    /// 新しいページをInactiveリストに一括追加
+    pub fn add_batch_inactive(&self, entries: Vec<LruPageEntry>) {
+        if entries.is_empty() { return; }
+
+        let mut inactive = self.inactive.lock();
+        let mut added_count = 0;
+
+        for entry in entries {
+            if crate::mm::page_flags::test_flag(entry.frame, crate::mm::page_flags::PageFlags::CompoundTail) {
+                 continue;
+            }
+            inactive.push_back(entry);
+            added_count += 1;
+        }
+
+        if added_count > 0 {
+            self.inactive_size.fetch_add(added_count, Ordering::Relaxed);
+        }
+    }
     
     /// Activeリストのサイズ
     pub fn active_count(&self) -> usize {
@@ -1435,7 +1493,7 @@ impl PageReclaimController {
     /// ページを実際に回収
     fn reclaim_page(&self, entry: &LruPageEntry) {
         let order = crate::mm::page_flags::get_order(entry.frame);
-        let count = 1usize << order;
+        let count = 1u64 << order;
 
         match entry.page_type {
             PageType::Anonymous => {
@@ -1480,7 +1538,7 @@ impl PageReclaimController {
                                     Ok(true) => {
                                         // Success - untrack memcg and free
                                         if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                            let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                            let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
                                         }
                                         // Remove backing mapping
                                         let _ = super::frame_backing::untrack_frame_backing(entry.frame);
@@ -1490,7 +1548,7 @@ impl PageReclaimController {
                                         // Not written (page not found / not dirty) - fallback to global sync
                                         if self.attempt_writeback_all() {
                                             if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                                let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
                                             }
                                             let _ = super::frame_backing::untrack_frame_backing(entry.frame);
                                             self.free_frame(entry.frame);
@@ -1502,7 +1560,7 @@ impl PageReclaimController {
                                         // Writer failed - fallback to global sync
                                         if self.attempt_writeback_all() {
                                             if let Some(info) = super::memcg::memcg_untrack_page(entry.frame) {
-                                                let _ = super::memcg::memcg_uncharge(info.memcg_id, 1, info.charge_type);
+                                                let _ = super::memcg::memcg_uncharge(info.memcg_id, count, info.charge_type);
                                             }
                                             let _ = super::frame_backing::untrack_frame_backing(entry.frame);
                                             self.free_frame(entry.frame);
@@ -2771,5 +2829,52 @@ mod tests_late {
         lru.add_to_active(entry);
         assert_eq!(lru.active_count(), 1);
         assert_eq!(lru.inactive_count(), 0);
+    }
+    #[test]
+    fn test_lru_batch_insertion() {
+        use crate::mm::page_flags::{self, PageFlags};
+        use alloc::vec::Vec;
+
+        // Init page flags
+        unsafe {
+            page_flags::init_page_flags(100);
+        }
+
+        let lru = LruList::new();
+        let mut entries = Vec::new();
+
+        // 1. Normal Page (Frame 1)
+        entries.push(LruPageEntry::new(FrameIndex::new(1), PageType::Anonymous, 0));
+
+        // 2. Head Page (Frame 2) - should be accepted
+        unsafe { page_flags::set_flag(FrameIndex::new(2), PageFlags::CompoundHead); }
+        entries.push(LruPageEntry::new(FrameIndex::new(2), PageType::Anonymous, 0));
+
+        // 3. Tail Page (Frame 3) - should be REJECTED
+        unsafe { page_flags::set_flag(FrameIndex::new(3), PageFlags::CompoundTail); }
+        entries.push(LruPageEntry::new(FrameIndex::new(3), PageType::Anonymous, 0));
+
+        // 4. Normal Page (Frame 4)
+        entries.push(LruPageEntry::new(FrameIndex::new(4), PageType::Anonymous, 0));
+
+        // Batch insert
+        lru.add_batch_active(entries);
+
+        // Check count: Should be 3 (1, 2, 4). Frame 3 rejected.
+        assert_eq!(lru.active_count(), 3);
+        
+        // Verify contents indirectly via eviction (if possible) or just count
+        // LruList internals are private, so we trust the count and our read-code.
+        // But we can try to pop 3 times? shrink_active might work.
+        // Or select_victim_clock if we add to inactive.
+        
+        // Let's try adding to inactive as well
+        let mut inactive_entries = Vec::new();
+        inactive_entries.push(LruPageEntry::new(FrameIndex::new(11), PageType::Anonymous, 0)); // OK
+        unsafe { page_flags::set_flag(FrameIndex::new(12), PageFlags::CompoundTail); }
+        inactive_entries.push(LruPageEntry::new(FrameIndex::new(12), PageType::Anonymous, 0)); // Reject
+        
+        lru.add_batch_inactive(inactive_entries);
+        assert_eq!(lru.inactive_count(), 1);
     }
 }
