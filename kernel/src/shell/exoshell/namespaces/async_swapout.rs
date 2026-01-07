@@ -20,6 +20,33 @@ impl AsyncSwapoutNamespace {
         map.insert(String::from("token_refill_per_batch"), ExoValue::Int(crate::mm::async_swapout::token_refill_per_batch() as i64));
         map.insert(String::from("reserved_file_slots"), ExoValue::Int(crate::mm::async_swapout::reserved_file_slots() as i64));
         map.insert(String::from("worker_running"), ExoValue::Bool(crate::mm::async_swapout::is_worker_running()));
+
+        // Expose ZSWAP / async dealloc metrics
+        map.insert(String::from("zswap_fail_count"), ExoValue::Int(crate::mm::async_swapout::stats_zswap_fail_count() as i64));
+        map.insert(String::from("async_dealloc_count"), ExoValue::Int(crate::mm::async_swapout::stats_async_dealloc_count() as i64));
+
+        // Buffer pool stats for 4K, 2M, 1G
+        let (h4k, m4k, o4k) = crate::mm::async_swapout::buffer_pool_4k_stats();
+        let mut p4k = BTreeMap::new();
+        p4k.insert(String::from("hits"), ExoValue::Int(h4k as i64));
+        p4k.insert(String::from("misses"), ExoValue::Int(m4k as i64));
+        p4k.insert(String::from("occupancy"), ExoValue::Int(o4k as i64));
+        map.insert(String::from("buffer_pool_4k"), ExoValue::Map(p4k));
+
+        let (h2m, m2m, o2m) = crate::mm::async_swapout::buffer_pool_2m_stats();
+        let mut p2m = BTreeMap::new();
+        p2m.insert(String::from("hits"), ExoValue::Int(h2m as i64));
+        p2m.insert(String::from("misses"), ExoValue::Int(m2m as i64));
+        p2m.insert(String::from("occupancy"), ExoValue::Int(o2m as i64));
+        map.insert(String::from("buffer_pool_2m"), ExoValue::Map(p2m));
+
+        let (h1g, m1g, o1g) = crate::mm::async_swapout::buffer_pool_1g_stats();
+        let mut p1g = BTreeMap::new();
+        p1g.insert(String::from("hits"), ExoValue::Int(h1g as i64));
+        p1g.insert(String::from("misses"), ExoValue::Int(m1g as i64));
+        p1g.insert(String::from("occupancy"), ExoValue::Int(o1g as i64));
+        map.insert(String::from("buffer_pool_1g"), ExoValue::Map(p1g));
+
         ExoValue::Map(map)
     }
 

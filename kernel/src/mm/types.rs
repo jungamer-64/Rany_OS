@@ -709,6 +709,16 @@ impl<T, const N: usize> FixedVec<T, N> {
             }
         }
     }
+
+    /// 比較関数でソート
+    /// 
+    /// スライスのsort_byに委譲する。
+    pub fn sort_by<F>(&mut self, compare: F)
+    where
+        F: FnMut(&T, &T) -> core::cmp::Ordering,
+    {
+        self.as_mut_slice().sort_by(compare);
+    }
 }
 
 impl<T: Clone, const N: usize> Clone for FixedVec<T, N> {

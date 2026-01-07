@@ -37,17 +37,20 @@ use spin::Mutex;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::atomic_utils::{AtomicU8, AtomicU16};
-use super::types::{PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+use super::types::{FixedVec, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 
 // ============================================================================
 // Constants
 // ============================================================================
 
-/// Default capacity for remote free ring (must be power of 2)
-pub const DEFAULT_REMOTE_FREE_CAPACITY: usize = 512;
+/// Default capacity for RemoteFreeRing
+pub const DEFAULT_REMOTE_FREE_CAPACITY: usize = 256;
 
 /// Default capacity for quarantine ring
 pub const DEFAULT_QUARANTINE_CAPACITY: usize = 256;
+
+/// Maximum overflow entries (fallback when ring is full)
+const MAX_OVERFLOW_ENTRIES: usize = 128;
 
 // ============================================================================
 // Remote Free Entry (Range-based for batch efficiency)
@@ -194,7 +197,8 @@ pub struct RemoteFreeRing<const N: usize = DEFAULT_REMOTE_FREE_CAPACITY> {
     
     /// Fallback overflow list (protected by lock, used when ring is full)
     /// This prevents extensive spinning or falling back to the main allocator lock.
-    overflow: Mutex<Vec<RemoteFreeEntry>>,
+    /// Uses fixed capacity to avoid heap allocation.
+    overflow: Mutex<FixedVec<RemoteFreeEntry, MAX_OVERFLOW_ENTRIES>>,
 }
 
 impl<const N: usize> RemoteFreeRing<N> {
@@ -221,7 +225,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             tail: AtomicUsize::new(0),
             overflow_count: AtomicU64::new(0),
             range_pages_freed: AtomicU64::new(0),
-            overflow: Mutex::new(Vec::new()),
+            overflow: Mutex::new(FixedVec::new()),
         }
     }
     

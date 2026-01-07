@@ -32,7 +32,7 @@ use alloc::vec::Vec;
 use x86_64::structures::paging::{PhysFrame, Size4KiB};
 use x86_64::PhysAddr;
 
-use super::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M};
+use super::types::{FixedVec, FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M};
 use super::buddy_allocator;
 
 // ============================================================================
@@ -50,6 +50,12 @@ const COMPACTION_THRESHOLD: f64 = 0.3;
 
 /// 2MBページを構成する4KBページ数
 const PAGES_PER_2MB: usize = PAGE_SIZE_2M / PAGE_SIZE_4K;
+
+/// コンパクションゾーンの最大数
+const MAX_COMPACTION_ZONES: usize = 16;
+
+/// マイグレーションターゲットの最大数
+const MAX_MIGRATION_TARGETS: usize = 64;
 
 // ============================================================================
 // Migration Target
@@ -130,10 +136,10 @@ pub struct CompactionStats {
 
 /// メモリコンパクションマネージャ
 pub struct CompactionManager {
-    /// 検出したコンパクションゾーン
-    zones: Vec<CompactionZone>,
-    /// マイグレーション候補
-    migration_queue: Vec<MigrationTarget>,
+    /// 検出したコンパクションゾーン - 固定容量
+    zones: FixedVec<CompactionZone, MAX_COMPACTION_ZONES>,
+    /// マイグレーション候補 - 固定容量
+    migration_queue: FixedVec<MigrationTarget, MAX_MIGRATION_TARGETS>,
     /// スキャン位置
     scan_position: FrameIndex,
     /// 最大フレーム番号
@@ -150,8 +156,8 @@ impl CompactionManager {
     /// 新しいコンパクションマネージャを作成
     pub const fn new() -> Self {
         Self {
-            zones: Vec::new(),
-            migration_queue: Vec::new(),
+            zones: FixedVec::new(),
+            migration_queue: FixedVec::new(),
             scan_position: FrameIndex::new(0),
             max_frame: FrameIndex::new(0),
             stats: CompactionStats {

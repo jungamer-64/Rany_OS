@@ -32,7 +32,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::sync::IrqMutex;
 use alloc::vec::Vec;
 
-use super::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M};
+use super::types::{FixedVec, FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M};
 
 // ============================================================================
 // Constants
@@ -47,6 +47,9 @@ const SCAN_STRIDE: usize = 512;
 
 /// 一度のスキャンで検出する最大候補数
 const MAX_CANDIDATES_PER_SCAN: usize = 16;
+
+/// THP候補の最大数
+const MAX_THP_CANDIDATES: usize = 32;
 
 // ============================================================================
 // Phase 6: THP Promotion Statistics
@@ -138,8 +141,8 @@ pub struct ThpStats {
 
 /// THP昇格マネージャ
 pub struct ThpPromotionManager {
-    /// 昇格候補リスト
-    candidates: Vec<ThpCandidate>,
+    /// 昇格候補リスト - 固定容量
+    candidates: FixedVec<ThpCandidate, MAX_THP_CANDIDATES>,
     /// 現在のスキャン位置（フレーム番号）
     scan_position: FrameIndex,
     /// スキャン対象の最大フレーム番号
@@ -154,7 +157,7 @@ impl ThpPromotionManager {
     /// 新しいTHP昇格マネージャを作成
     pub const fn new() -> Self {
         Self {
-            candidates: Vec::new(),
+            candidates: FixedVec::new(),
             scan_position: FrameIndex::new(0),
             max_frame: FrameIndex::new(0),
             stats: ThpStats {
