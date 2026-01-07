@@ -304,6 +304,11 @@ impl PageFlags {
     /// x86_64 では 16 個の Protection Key (0-15) をサポート
     pub const PROTECTION_KEY_MASK: u64 = 0xF << 59;
 
+    #[inline]
+    pub fn bits(&self) -> u64 {
+        self.0
+    }
+
     /// Protection Key のビットシフト量
     const PKEY_SHIFT: u64 = 59;
 

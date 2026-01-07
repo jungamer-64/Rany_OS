@@ -42,6 +42,18 @@ pub static __tls_end: u8 = 0;
 // Minimal test/bench `mm::numa` shim to satisfy IOMMU tests and benchmark builds
 // without pulling in the full memory subsystem and its heavy dependencies.
 #[cfg(feature = "full_mm_tests")]
+pub mod fs;
+
+#[cfg(feature = "full_mm_tests")]
+pub mod io;
+
+#[cfg(feature = "full_mm_tests")]
+pub mod task;
+
+#[cfg(feature = "full_mm_tests")]
+pub mod time;
+
+#[cfg(feature = "full_mm_tests")]
 pub mod mm;
 
 #[cfg(not(feature = "full_mm_tests"))]
@@ -1020,6 +1032,8 @@ pub mod time {
         Pit
     }
 }
+
+pub mod pcid_support;
 
 #[cfg(all(test, not(feature = "bench")))]
 pub mod io {
