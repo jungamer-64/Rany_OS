@@ -317,7 +317,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
                 let prp2 = 0u64; // 単一ページの場合は0
 
                 // NVMeドライバ経由でリードコマンドを発行
-                let result = nvme_global::with_driver(|driver| {
+                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                     // Safety: 現在のコアIDで自身のキューにアクセス
                     unsafe { driver.submit_read(core_id, 1, lba, blocks, prp1, prp2) }
                 });
@@ -358,7 +358,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
             let core_id = current_cpu();
 
             // 1. まず完了済みかチェック
-            let completed = nvme_global::with_driver(|driver| {
+            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                 driver.check_completion(core_id, request_id as u16)
             });
 
@@ -375,12 +375,12 @@ impl<'a> Future for AsyncReadFuture<'a> {
             }
 
             // 2. まだならWakerを登録
-            nvme_global::with_driver(|driver| {
+            nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                 driver.register_waker(core_id, request_id as u16, cx.waker().clone());
             });
 
             // 3. 登録中に完了した可能性をダブルチェック
-            let completed_retry = nvme_global::with_driver(|driver| {
+            let completed_retry = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                 driver.check_completion(core_id, request_id as u16)
             });
 
@@ -455,7 +455,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                 let prp2 = 0u64; // 単一ページの場合は0
 
                 // NVMeドライバ経由でライトコマンドを発行
-                let result = nvme_global::with_driver(|driver| {
+                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                     // Safety: 現在のコアIDで自身のキューにアクセス
                     unsafe { driver.submit_write(core_id, 1, lba, blocks, prp1, prp2) }
                 });

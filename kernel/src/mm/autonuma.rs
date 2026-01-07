@@ -370,7 +370,6 @@ impl NumaScanner {
             self.record_scan(current_time, scanned as u64, faults as u64);
         }
     }
-    }
 }
 
 /// 現在のプロセスのAutoNUMAスキャンを試行

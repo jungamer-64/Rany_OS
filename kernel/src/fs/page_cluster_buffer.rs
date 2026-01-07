@@ -174,7 +174,7 @@ mod tests {
 
             let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), size).expect("new_from_phys failed");
             // Now we can safely read via as_slice because the memory is valid
-            let s = buf.as_slice();
+            let s = ClusterBuffer::as_slice(&buf);
             assert_eq!(s[0], 0u8);
             assert_eq!(s[1], 1u8);
             // Drop buf -> dealloc happens automatically
@@ -290,7 +290,7 @@ mod tests {
                 let start_block = block as usize;
                 let storage_ref = &self.storage;
                 Box::pin(async move {
-                    let data = buffer.as_slice();
+                    let data = ZeroCopyBuffer::as_slice(&buffer);
                     let mut st = storage_ref.lock();
                     let offset = start_block * (self.block_size as usize);
                     st[offset..offset + data.len()].copy_from_slice(&data[..]);
@@ -319,7 +319,7 @@ mod tests {
         let read_buf = block_on(dev.read_async(0, 1)).expect("read_async failed");
         let info = read_buf.dma_info().expect("dma_info missing");
         assert_eq!(info.len, 512);
-        assert_eq!(read_buf.as_slice()[11..13], 512u16.to_le_bytes());
+        assert_eq!(ZeroCopyBuffer::as_slice(&read_buf)[11..13], 512u16.to_le_bytes());
 
         // Mount FAT using the PageClusterBuffer allocator
         let alloc = Arc::new(PageClusterBufferAllocator::new());

@@ -1029,7 +1029,7 @@ pub mod task {
         pub fn process_manager() -> &'static ProcessManager { &PROCESS_MANAGER }
 
         /// Minimal process info type used by some subsystems
-        #[derive(Clone, Debug)]
+        #[derive(Debug)]
         pub struct ProcessInfo {
             pub pid: ProcessId,
             pub numa_scan_addr: core::sync::atomic::AtomicU64,
