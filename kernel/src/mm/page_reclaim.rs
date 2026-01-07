@@ -395,6 +395,19 @@ impl LruFlags {
     }
 }
 
+impl Default for LruPageEntry {
+    fn default() -> Self {
+        Self {
+            frame: FrameIndex::new(0),
+            page_type: PageType::Kernel,
+            referenced: AtomicBool::new(false),
+            mapcount: AtomicU64::new(0),
+            add_time: 0,
+            flags: LruFlags::NONE,
+        }
+    }
+}
+
 impl LruPageEntry {
     pub fn new(frame: FrameIndex, page_type: PageType, timestamp: u64) -> Self {
         Self {
