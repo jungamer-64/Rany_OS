@@ -44,14 +44,7 @@ pub static __tls_end: u8 = 0;
 #[cfg(feature = "full_mm_tests")]
 pub mod fs;
 
-#[cfg(feature = "full_mm_tests")]
-pub mod io;
 
-#[cfg(feature = "full_mm_tests")]
-pub mod task;
-
-#[cfg(feature = "full_mm_tests")]
-pub mod time;
 
 #[cfg(feature = "full_mm_tests")]
 pub mod mm;
@@ -974,6 +967,80 @@ pub mod task {
         pub fn notify_task_started(_tick: u64) {}
     }
 
+    // Minimal process manager stub for tests (provides `process_manager()` and types used by `procfs` tests)
+    pub mod process {
+        use alloc::sync::Arc;
+        use alloc::vec::Vec;
+        use alloc::string::String;
+        use core::sync::atomic::{AtomicU64, Ordering};
+        use spin::RwLock;
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct ProcessId(u64);
+        impl ProcessId {
+            pub const fn new(id: u64) -> Self { Self(id) }
+            pub fn as_u64(&self) -> u64 { self.0 }
+        }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum ProcessState { Running, Blocked, Ready, Stopped, Zombie, Dead, Creating }
+
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct UserId(u32);
+        impl UserId { pub fn as_u32(&self) -> u32 { self.0 } }
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub struct GroupId(u32);
+        impl GroupId { pub fn as_u32(&self) -> u32 { self.0 } }
+
+        #[derive(Clone, Debug)]
+        pub struct Credentials { pub uid: UserId, pub gid: GroupId }
+
+        #[derive(Clone, Debug)]
+        pub struct ProcessInner {
+            pub name: String,
+            pub state: ProcessState,
+            pub ppid: ProcessId,
+            pub credentials: Credentials,
+            pub threads: Vec<u64>,
+            pub priority: Priority,
+            pub cmdline: Vec<String>,
+            pub memcg_id: u64,
+            pub exit_code: Option<u64>,
+        }
+
+        impl ProcessInner {
+            pub fn threads(&self) -> &Vec<u64> { &self.threads }
+        }
+
+        #[derive(Clone, Copy, Debug)]
+        pub struct Priority(i8);
+        impl Priority { pub fn as_i8(&self) -> i8 { self.0 } }
+
+        pub type Process = Arc<RwLock<ProcessInner>>;
+
+        pub struct ProcessManager;
+        impl ProcessManager {
+            pub fn count(&self) -> usize { 0 }
+            pub fn get(&self, _pid: ProcessId) -> Option<Process> { None }
+            pub fn create(&self, _ppid: ProcessId, _name: &str) -> Result<ProcessId, ()> { Err(()) }
+        }
+
+        static PROCESS_MANAGER: ProcessManager = ProcessManager;
+        pub fn process_manager() -> &'static ProcessManager { &PROCESS_MANAGER }
+
+        /// Minimal process info type used by some subsystems
+        #[derive(Clone, Debug)]
+        pub struct ProcessInfo {
+            pub pid: ProcessId,
+            pub numa_scan_addr: core::sync::atomic::AtomicU64,
+        }
+
+        pub fn get_current_process() -> ProcessId { ProcessId::new(1) }
+
+        // Helper to return current process memcg id (used by some tests)
+        pub fn get_current_process_memcg_id() -> crate::mm::memcg::MemcgId { crate::mm::memcg::MemcgId::ROOT }
+    }
+
     // Test shim removed: tests and benches should use the canonical
     // `crate::task::TaskId` directly. If you see failures related to TaskId
     // field access, please update tests to use `as_u64()` accessor.
@@ -1021,6 +1088,21 @@ pub mod time {
     /// Return uptime in milliseconds (test stub)
     pub fn get_uptime_ms() -> u64 {
         0
+    }
+
+    /// Current tick in milliseconds (legacy alias)
+    pub fn current_tick() -> u64 {
+        get_uptime_ms()
+    }
+
+    /// Return current Unix time in seconds (test stub)
+    pub fn now() -> u64 {
+        precise_time_nanos() / 1_000_000_000
+    }
+
+    /// High-precision current time in nanoseconds
+    pub fn current_time_ns() -> u64 {
+        precise_time_nanos()
     }
 
     /// PIT delay stub used by audio controller code in tests/benches

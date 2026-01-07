@@ -149,6 +149,40 @@ impl PageNumaStats {
     }
 }
 
+// Global storage for PageNumaStats
+// Using BTreeMap for sparse tracking. For production, a flat array or resizing Vec is better.
+use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
+use crate::sync::PoisonLock;
+
+static PAGE_NUMA_STATS: PoisonLock<BTreeMap<FrameIndex, Arc<PageNumaStats>>> = PoisonLock::new(BTreeMap::new());
+
+/// ページのNUMA統計を取得（存在しなければ作成）
+pub fn get_page_numa_stats(frame: FrameIndex) -> Arc<PageNumaStats> {
+    // Fast path: try to acquire lock for read
+    if let Ok(guard) = PAGE_NUMA_STATS.lock() {
+        if let Some(stats) = guard.get(&frame) {
+            return stats.clone();
+        }
+    }
+
+    // Slow path: acquire lock for write (insert if missing)
+    match PAGE_NUMA_STATS.lock() {
+        Ok(mut guard) => {
+            guard.entry(frame)
+                .or_insert_with(|| Arc::new(PageNumaStats::new()))
+                .clone()
+        }
+        Err(poisoned) => {
+            // If poisoned, recover the inner and use it
+            let mut guard = poisoned.into_inner();
+            guard.entry(frame)
+                .or_insert_with(|| Arc::new(PageNumaStats::new()))
+                .clone()
+        }
+    }
+}
+
 // ============================================================================
 // NUMA Hint Fault ハンドラ
 // ============================================================================
@@ -299,6 +333,56 @@ impl NumaScanner {
             self.pages_scanned.load(Ordering::Relaxed),
             self.faults_set.load(Ordering::Relaxed),
         )
+    }
+    /// タスクのアドレス空間をスキャン
+    pub fn scan_task(&self, task: &crate::task::process::ProcessInfo) {
+        if !self.is_enabled() { return; }
+
+        let current_time = crate::time::current_time_ns();
+        if !self.should_scan(current_time) {
+            return;
+        }
+
+        // 現在のタスクのみ対象（簡易実装: リモートスキャンはロックが必要なため）
+        let current_pid = crate::task::process::get_current_process();
+        if task.pid != current_pid {
+            return;
+        }
+
+        let address_space_manager = crate::mm::address_space::address_space_manager();
+        
+        // スキャン位置を取得
+        let scan_addr_val = task.numa_scan_addr.load(Ordering::Relaxed);
+        let scan_addr = crate::mm::higher_half::VirtAddr::new(scan_addr_val);
+        let batch_size = self.scan_batch_size.load(Ordering::Relaxed) as usize;
+
+        // アドレス空間をスキャン
+        if let Some((scanned, faults, next_addr)) = address_space_manager.scan_current_address_space(scan_addr, batch_size) {
+            // 次のスキャン位置を保存
+            // ユーザー空間の終端を超えたらループ
+            let next_val = if next_addr.as_u64() >= crate::mm::address_space::USER_SPACE_END {
+                crate::mm::address_space::USER_SPACE_START
+            } else {
+                next_addr.as_u64()
+            };
+            
+            task.numa_scan_addr.store(next_val, Ordering::Release);
+            self.record_scan(current_time, scanned as u64, faults as u64);
+        }
+    }
+    }
+}
+
+/// 現在のプロセスのAutoNUMAスキャンを試行
+pub fn try_scan_current_process() {
+    use crate::task::process::{get_current_process, process_manager};
+    let pid = get_current_process();
+    // KERNEL/INIT以外をスキャン対象とする
+    if pid != crate::task::process::ProcessId::KERNEL {
+        if let Some(proc_lock) = process_manager().get(pid) {
+            let proc = proc_lock.read();
+            NUMA_SCANNER.scan_task(&proc);
+        }
     }
 }
 

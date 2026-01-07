@@ -296,6 +296,10 @@ impl PageFlags {
     /// No execute
     pub const NO_EXECUTE: u64 = 1 << 63;
 
+    /// NUMA Hint Fault pending (Software defined, triggers #PF when Present is cleared)
+    /// Using bit 9 (Available for OS)
+    pub const NUMA_HINT: u64 = 1 << 9;
+
     // ========================================================================
     // MPK (Memory Protection Keys) Support - 設計書 9.2.2
     // ========================================================================
@@ -719,6 +723,60 @@ impl<'a> PageTableWalker<'a> {
 
         // 4KiB page
         Some(PhysAddr::new(pte.phys_addr().as_u64() + virt.page_offset()))
+    }
+
+    /// ページテーブルエントリーを取得
+    /// Note: 最終レベルのエントリーが存在する場合、Presentでなくても返す
+    pub fn walk(&self, virt: VirtAddr) -> Option<PageTableEntry> {
+        let indices = virt.page_table_indices();
+
+        // PML4
+        let pml4: &PageTable = unsafe { &*self.mapper.phys_as_ptr(self.pml4_phys) };
+        let pml4e = pml4.entry(indices[0]);
+        if !pml4e.is_present() { return None; }
+
+        // PDPT
+        let pdpt: &PageTable = unsafe { &*self.mapper.phys_as_ptr(pml4e.phys_addr()) };
+        let pdpte = pdpt.entry(indices[1]);
+        if !pdpte.is_present() { return None; }
+        if pdpte.is_huge() { return Some(*pdpte); }
+
+        // PD
+        let pd: &PageTable = unsafe { &*self.mapper.phys_as_ptr(pdpte.phys_addr()) };
+        let pde = pd.entry(indices[2]);
+        if !pde.is_present() { return None; }
+        if pde.is_huge() { return Some(*pde); }
+
+        // PT
+        let pt: &PageTable = unsafe { &*self.mapper.phys_as_ptr(pde.phys_addr()) };
+        return Some(*pt.entry(indices[3]));
+    }
+
+    /// ページテーブルエントリーを可変参照で取得
+    /// Note: 呼び出し元はデータ競合に注意すること
+    pub unsafe fn walk_mut(&self, virt: VirtAddr) -> Option<&mut PageTableEntry> {
+        let indices = virt.page_table_indices();
+
+        // PML4
+        let pml4: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(self.pml4_phys);
+        let pml4e = pml4.entry_mut(indices[0]);
+        if !pml4e.is_present() { return None; }
+
+        // PDPT
+        let pdpt: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pml4e.phys_addr());
+        let pdpte = pdpt.entry_mut(indices[1]);
+        if !pdpte.is_present() { return None; }
+        if pdpte.is_huge() { return Some(pdpte); }
+
+        // PD
+        let pd: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pdpte.phys_addr());
+        let pde = pd.entry_mut(indices[2]);
+        if !pde.is_present() { return None; }
+        if pde.is_huge() { return Some(pde); }
+
+        // PT
+        let pt: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pde.phys_addr());
+        return Some(pt.entry_mut(indices[3]));
     }
 }
 
@@ -1342,15 +1400,40 @@ pub unsafe fn global_unmap_page(virt: VirtAddr) -> Result<PhysAddr, MapError> {
 
 /// グローバルページテーブルマネージャーで仮想→物理変換
 pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
-    match PAGE_TABLE_MANAGER.lock() {
+    match HIGHER_HALF_MANAGER.lock() {
         Ok(guard) => {
-            let manager = guard.as_ref();
-            manager.and_then(|m| m.translate(virt))
+            let manager = guard.as_ref()?;
+            manager.mapper().virt_to_phys(virt)
         }
-        Err(_) => {
-            log::error!("[MM] Page Table Manager lock poisoned - returning None");
-            None
+        Err(_) => None,
+    }
+}
+
+/// 仮想アドレスのPTEを取得（現在のCR3を使用）
+pub fn get_current_pte(virt: VirtAddr) -> Option<PageTableEntry> {
+    match HIGHER_HALF_MANAGER.lock() {
+        Ok(guard) => {
+            let manager = guard.as_ref()?;
+            // Unsafe: Reading CR3 is safe here as we are in kernel mode
+            let walker = unsafe { PageTableWalker::from_current_cr3(manager.mapper()) };
+            walker.walk(virt)
         }
+        Err(_) => None,
+    }
+}
+
+/// 仮想アドレスのPTEを変更（現在のCR3を使用）
+pub fn with_current_pte_mut<F, R>(virt: VirtAddr, f: F) -> Option<R>
+where
+    F: FnOnce(&mut PageTableEntry) -> R,
+{
+    match HIGHER_HALF_MANAGER.lock() {
+        Ok(guard) => {
+            let manager = guard.as_ref()?;
+            let walker = unsafe { PageTableWalker::from_current_cr3(manager.mapper()) };
+            unsafe { walker.walk_mut(virt).map(|pte| f(pte)) }
+        }
+        Err(_) => None,
     }
 }
 

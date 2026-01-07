@@ -769,6 +769,10 @@ impl GlobalScheduler {
         let count = self.poll_counter.load(Ordering::Relaxed);
         if count % LOAD_BALANCE_INTERVAL == 0 {
             self.load_balance();
+            
+            // AutoNUMA スキャン
+            // 内部でタイマーチェックを行うため、頻繁に呼び出しても安全
+            crate::mm::autonuma::try_scan_current_process();
         }
     }
 
