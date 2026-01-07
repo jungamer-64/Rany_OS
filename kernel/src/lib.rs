@@ -3,6 +3,8 @@
 // alloc-dependent graphics helpers can build and run under the host test
 // runner.
 #![cfg_attr(not(any(test, feature = "std")), no_std)]
+#![cfg_attr(feature = "full_mm_tests", allow(unsafe_op_in_unsafe_fn))]
+#![cfg_attr(feature = "full_mm_tests", feature(abi_x86_interrupt))]
 
 // Interrupt helper macro moved to a shared module so it's visible in both the
 // library and binary crate (define_interrupt! is used by modules included by

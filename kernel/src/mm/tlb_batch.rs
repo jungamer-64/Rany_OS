@@ -49,6 +49,7 @@ fn read_tsc() -> u64 {
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 use x86_64::VirtAddr;
+use crate::mm::pcid::{PCID_STATS, PCID_ALLOCATOR};
 
 // ============================================================================
 // Configuration
@@ -425,32 +426,15 @@ pub unsafe fn flush_tlb_all_local() {
     asm!("mov cr3, {}", in(reg) cr3, options(nostack, preserves_flags));
 }
 
-/// INVPCID命令（PCID対応環境用）
-/// 
-/// # Safety
-/// 
-/// - INVPCID命令がサポートされていること
+/// INVPCID命令ラッパー (delegates to pcid module)
 #[inline]
 pub unsafe fn invpcid(pcid: u64, addr: u64, invpcid_type: u64) {
-    let descriptor: [u64; 2] = [pcid, addr];
-    asm!(
-        "invpcid {}, [{}]",
-        in(reg) invpcid_type,
-        in(reg) descriptor.as_ptr(),
-        options(nostack, preserves_flags)
-    );
+    super::pcid::invpcid(pcid as u16, addr, invpcid_type);
 }
 
-/// INVPCID タイプ
+/// INVPCID タイプ (re-export from pcid module)
 pub mod invpcid_type {
-    /// Individual address invalidation
-    pub const INDIVIDUAL_ADDR: u64 = 0;
-    /// Single-context invalidation
-    pub const SINGLE_CONTEXT: u64 = 1;
-    /// All-context invalidation
-    pub const ALL_CONTEXT: u64 = 2;
-    /// All-context invalidation, retaining global translations
-    pub const ALL_CONTEXT_GLOBAL: u64 = 3;
+    pub use super::super::pcid::invpcid_types::*;
 }
 
 // ============================================================================
@@ -672,225 +656,14 @@ pub static TLB_STATS: TlbGlobalStats = TlbGlobalStats {
 // Phase 2 最適化: PCID (Process Context Identifier) 完全サポート
 // ============================================================================
 
-/// PCID機能フラグ
-mod pcid_support {
-    use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-    
-    /// PCIDが利用可能か
-    pub static PCID_AVAILABLE: AtomicBool = AtomicBool::new(false);
-    /// INVPCIDが利用可能か
-    pub static INVPCID_AVAILABLE: AtomicBool = AtomicBool::new(false);
-    /// PCID初期化済みフラグ
-    pub static PCID_INITIALIZED: AtomicBool = AtomicBool::new(false);
-    /// 次に割り当てるPCID
-    pub static NEXT_PCID: AtomicU16 = AtomicU16::new(1);
-    
-    /// 最大PCID数（12ビット = 4096）
-    pub const MAX_PCID: u16 = 4096;
-    /// 予約済みPCID（カーネル用）
-    pub const KERNEL_PCID: u16 = 0;
-    
-    /// PCID機能を初期化
-    pub fn init_pcid_features() {
-        if PCID_INITIALIZED.load(Ordering::Acquire) {
-            return;
-        }
-        
-        #[cfg(target_arch = "x86_64")]
-        {
-            // CPUID.01H:ECX.PCID[bit 17]
-            let cpuid1 = core::arch::x86_64::__cpuid(1);
-            let pcid = (cpuid1.ecx >> 17) & 1 != 0;
-            PCID_AVAILABLE.store(pcid, Ordering::Release);
-            
-            // CPUID.07H:EBX.INVPCID[bit 10]
-            let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
-            let invpcid = (cpuid7.ebx >> 10) & 1 != 0;
-            INVPCID_AVAILABLE.store(invpcid, Ordering::Release);
-        }
-        
-        PCID_INITIALIZED.store(true, Ordering::Release);
-    }
-    
-    #[inline]
-    pub fn has_pcid() -> bool {
-        PCID_AVAILABLE.load(Ordering::Relaxed)
-    }
-    
-    #[inline]
-    pub fn has_invpcid() -> bool {
-        INVPCID_AVAILABLE.load(Ordering::Relaxed)
-    }
+// リファクタリング: PCID ロジックは kernel/src/mm/pcid.rs に移動しました。
+// 後方互換性のため、必要であれば use 文を追加しますが、現状は tlb_batch.rs 内部で
+// 直接 super::pcid を参照するように変更しています。
 
-    /// CR4.PCIDE ビット（bit 17）
-    const CR4_PCIDE: u64 = 1 << 17;
 
-    /// PCIDを有効化（CR4.PCIDEをセット）
-    /// 
-    /// # Safety
-    /// - カーネルモードで実行すること
-    /// - 全CPUで呼び出すこと（BSPとAP両方）
-    /// - 現在のCR3がPCID 0（カーネル）で設定されていること
-    /// 
-    /// # Returns
-    /// - Ok(true): PCID有効化成功
-    /// - Ok(false): PCID非対応CPU
-    /// - Err: 有効化失敗
-    pub unsafe fn enable_pcid() -> Result<bool, &'static str> {
-        // まず機能をチェック
-        init_pcid_features();
+// (Removed redundant definitions: PCID_STATS, PcidAllocator, PCID_ALLOCATOR)
+// Note: These are now imported from crate::mm::pcid
 
-        if !has_pcid() {
-            log::info!("[PCID] CPU does not support PCID, skipping");
-            return Ok(false);
-        }
-
-        // 現在のCR4を読み取り
-        let cr4: u64;
-        core::arch::asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack));
-
-        // 既に有効なら何もしない
-        if (cr4 & CR4_PCIDE) != 0 {
-            log::debug!("[PCID] Already enabled");
-            return Ok(true);
-        }
-
-        // CR3にPCIDを設定する前にCR4.PCIDEを有効化
-        // 注意: CR3の下位12ビットがPCIDとして解釈されるようになる
-        let new_cr4 = cr4 | CR4_PCIDE;
-        core::arch::asm!("mov cr4, {}", in(reg) new_cr4, options(nostack));
-
-        log::info!("[PCID] Enabled CR4.PCIDE (INVPCID={})", has_invpcid());
-
-        Ok(true)
-    }
-
-    /// PCID初期化済みか確認
-    #[inline]
-    pub fn is_initialized() -> bool {
-        PCID_INITIALIZED.load(Ordering::Acquire)
-    }
-}
-
-/// PCID統計
-pub struct PcidStats {
-    /// PCID割り当て回数
-    pub allocations: AtomicU64,
-    /// PCID解放回数
-    pub deallocations: AtomicU64,
-    /// PCIDサイクル（最大値到達後のリセット）回数
-    pub cycles: AtomicU64,
-    /// INVPCID使用回数
-    pub invpcid_calls: AtomicU64,
-    /// PCIDなしフォールバック回数
-    pub fallback_flushes: AtomicU64,
-}
-
-impl PcidStats {
-    pub const fn new() -> Self {
-        Self {
-            allocations: AtomicU64::new(0),
-            deallocations: AtomicU64::new(0),
-            cycles: AtomicU64::new(0),
-            invpcid_calls: AtomicU64::new(0),
-            fallback_flushes: AtomicU64::new(0),
-        }
-    }
-}
-
-/// グローバルPCID統計
-pub static PCID_STATS: PcidStats = PcidStats::new();
-
-/// PCID Allocator
-/// 
-/// プロセスごとにPCIDを割り当て、コンテキストスイッチ時の
-/// TLBフラッシュを回避する。
-pub struct PcidAllocator {
-    /// 使用中のPCIDビットマップ（4096ビット = 64 x u64）
-    bitmap: [AtomicU64; 64],
-    /// 次に検索を開始する位置
-    search_hint: AtomicU16,
-}
-
-impl PcidAllocator {
-    pub const fn new() -> Self {
-        const ZERO: AtomicU64 = AtomicU64::new(0);
-        Self {
-            bitmap: [ZERO; 64],
-            search_hint: AtomicU16::new(1), // 0はカーネル用に予約
-        }
-    }
-    
-    /// PCIDを割り当て
-    /// 
-    /// 空きPCIDを検索して割り当てる。全て使用中の場合は
-    /// 最も古いPCIDを再利用（LRU的に）。
-    pub fn allocate(&self) -> Option<u16> {
-        if !pcid_support::has_pcid() {
-            return None;
-        }
-        
-        let hint = self.search_hint.load(Ordering::Relaxed);
-        let start_word = (hint as usize / 64) % 64;
-        
-        // ビットマップから空きPCIDを検索
-        for offset in 0..64 {
-            let word_idx = (start_word + offset) % 64;
-            let word = self.bitmap[word_idx].load(Ordering::Acquire);
-            
-            // 空きビット（0）を検索
-            if word != u64::MAX {
-                let bit = (!word).trailing_zeros() as u16;
-                let pcid = (word_idx as u16 * 64) + bit;
-                
-                // PCID 0はカーネル予約
-                if pcid == 0 {
-                    continue;
-                }
-                
-                // CASで確保
-                let new_word = word | (1u64 << bit);
-                if self.bitmap[word_idx]
-                    .compare_exchange(word, new_word, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    self.search_hint.store(pcid.wrapping_add(1), Ordering::Relaxed);
-                    PCID_STATS.allocations.fetch_add(1, Ordering::Relaxed);
-                    return Some(pcid);
-                }
-            }
-        }
-        
-        // 全PCID使用中 → サイクル
-        PCID_STATS.cycles.fetch_add(1, Ordering::Relaxed);
-        
-        // 強制的にPCID 1を再利用（TLBフラッシュが必要）
-        Some(1)
-    }
-    
-    /// PCIDを解放
-    pub fn deallocate(&self, pcid: u16) {
-        if pcid == 0 || pcid >= pcid_support::MAX_PCID {
-            return;
-        }
-        
-        let word_idx = (pcid / 64) as usize;
-        let bit = pcid % 64;
-        
-        self.bitmap[word_idx].fetch_and(!(1u64 << bit), Ordering::Release);
-        PCID_STATS.deallocations.fetch_add(1, Ordering::Relaxed);
-    }
-    
-    /// 使用中のPCID数を取得
-    pub fn used_count(&self) -> usize {
-        self.bitmap.iter()
-            .map(|w| w.load(Ordering::Relaxed).count_ones() as usize)
-            .sum()
-    }
-}
-
-/// グローバルPCID Allocator
-pub static PCID_ALLOCATOR: PcidAllocator = PcidAllocator::new();
 
 // ============================================================================
 // ASID LRU Manager (v0.6.0 - Enhanced ASID Rotation)
@@ -1073,11 +846,11 @@ pub static ASID_LRU_MANAGER: AsidLruManager = AsidLruManager::new();
 /// これによりコンテキストスイッチ時のオーバーヘッドを大幅に削減。
 pub unsafe fn flush_tlb_pcid(pcid: u16, addr: Option<u64>) {
     // PCID初期化チェック
-    if !pcid_support::PCID_INITIALIZED.load(Ordering::Acquire) {
-        pcid_support::init_pcid_features();
+    if !super::pcid::is_initialized() {
+        super::pcid::init_features();
     }
     
-    if pcid_support::has_invpcid() {
+    if super::pcid::has_invpcid() {
         match addr {
             Some(address) => {
                 // 特定アドレスの特定PCID
@@ -1098,7 +871,7 @@ pub unsafe fn flush_tlb_pcid(pcid: u16, addr: Option<u64>) {
 
 /// 全PCID（グローバル以外）をフラッシュ
 pub unsafe fn flush_tlb_all_pcids() {
-    if pcid_support::has_invpcid() {
+    if super::pcid::has_invpcid() {
         invpcid(0, 0, invpcid_type::ALL_CONTEXT);
         PCID_STATS.invpcid_calls.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -1108,7 +881,7 @@ pub unsafe fn flush_tlb_all_pcids() {
 
 /// グローバルエントリを保持したまま全PCIDをフラッシュ
 pub unsafe fn flush_tlb_all_pcids_preserve_global() {
-    if pcid_support::has_invpcid() {
+    if super::pcid::has_invpcid() {
         invpcid(0, 0, invpcid_type::ALL_CONTEXT_GLOBAL);
         PCID_STATS.invpcid_calls.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -1124,7 +897,7 @@ pub unsafe fn set_cr3_with_pcid(pml4_phys: u64, pcid: u16, noflush: bool) {
     let mut cr3_value = pml4_phys & !0xFFF; // 下位12ビットクリア
     cr3_value |= pcid as u64; // PCID設定（下位12ビット）
     
-    if noflush && pcid_support::has_pcid() {
+    if noflush && super::pcid::is_available() {
         // bit 63 = noflush bit
         cr3_value |= 1u64 << 63;
     }
@@ -1138,15 +911,15 @@ pub unsafe fn set_cr3_with_pcid(pml4_phys: u64, pcid: u16, noflush: bool) {
 
 /// PCID対応状態を取得
 pub fn pcid_status() -> PcidStatus {
-    if !pcid_support::PCID_INITIALIZED.load(Ordering::Acquire) {
-        pcid_support::init_pcid_features();
+    if !super::pcid::is_initialized() {
+        super::pcid::init_features();
     }
     
     PcidStatus {
-        pcid_available: pcid_support::has_pcid(),
-        invpcid_available: pcid_support::has_invpcid(),
-        used_pcids: PCID_ALLOCATOR.used_count(),
-        max_pcids: pcid_support::MAX_PCID as usize,
+        pcid_available: super::pcid::is_available(),
+        invpcid_available: super::pcid::has_invpcid(),
+        used_pcids: PCID_ALLOCATOR.lock().used_count(),
+        max_pcids: super::pcid::MAX_PCID as usize,
     }
 }
 
@@ -1178,7 +951,7 @@ pub struct PcidStatus {
 /// - `false`: PCID非対応またはエラー
 pub fn init_pcid() -> bool {
     unsafe {
-        match pcid_support::enable_pcid() {
+        match super::pcid::enable_on_this_cpu() {
             Ok(enabled) => enabled,
             Err(e) => {
                 log::error!("[PCID] Failed to enable: {}", e);
@@ -1190,12 +963,12 @@ pub fn init_pcid() -> bool {
 
 /// 現在のCPUにPCIDを割り当て（プロセス作成時）
 pub fn allocate_pcid() -> Option<u16> {
-    PCID_ALLOCATOR.allocate()
+    PCID_ALLOCATOR.lock().allocate()
 }
 
 /// PCIDを解放（プロセス終了時）
 pub fn deallocate_pcid(pcid: u16) {
-    PCID_ALLOCATOR.deallocate(pcid);
+    PCID_ALLOCATOR.lock().deallocate(pcid);
 }
 
 /// PCID対応のコンテキストスイッチ（公開API）
@@ -1207,7 +980,7 @@ pub fn deallocate_pcid(pcid: u16) {
 /// - pml4_physは有効な物理アドレスであること
 /// - pcidは割り当て済みの値であること
 pub unsafe fn switch_address_space_pcid(pml4_phys: u64, pcid: u16) {
-    if pcid_support::has_pcid() {
+    if super::pcid::is_available() {
         // noflush=true でTLBフラッシュを回避
         set_cr3_with_pcid(pml4_phys, pcid, true);
     } else {
@@ -1297,7 +1070,7 @@ impl PerCpuLazyTlb {
             unsafe {
                 if asid == 0 {
                     flush_tlb_all_local();
-                } else if pcid_support::has_invpcid() {
+                } else if super::pcid::has_invpcid() {
                     flush_tlb_pcid(asid as u16, None);
                 } else {
                     flush_tlb_all_local();
@@ -1653,7 +1426,7 @@ impl IplFreeFlushQueue {
                 // 個別ページフラッシュ
                 for i in 0..page_count {
                     let addr = start_addr + (i as u64 * PAGE_SIZE);
-                    if asid != 0 && pcid_support::has_pcid() {
+                    if asid != 0 && super::pcid::is_available() {
                         flush_tlb_pcid(asid, Some(addr));
                     } else {
                         flush_tlb_page_local(VirtAddr::new(addr));
