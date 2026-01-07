@@ -36,6 +36,19 @@ struct FreeBlock {
     next: Option<NonNull<FreeBlock>>,
 }
 
+/// ブロックフッター（Boundary Tag）
+/// 隣接ブロックの結合を可能にするため、各ブロックの末尾にサイズを記録
+#[repr(C)]
+struct BlockFooter {
+    /// ブロックサイズ（ヘッダと同じ値）
+    size: usize,
+    /// このブロックが空いているかどうか
+    is_free: bool,
+}
+
+/// 最小ブロックサイズ (ヘッダ + フッター + 最小データ)
+const MIN_BLOCK_WITH_FOOTER: usize = core::mem::size_of::<FreeBlock>() + core::mem::size_of::<BlockFooter>();
+
 /// Segregated Free Lists アロケータ
 ///
 /// TLSFアロケータに類似したアプローチで、サイズクラスごとに
@@ -142,23 +155,138 @@ impl SegregatedFreeListHeap {
         }
     }
 
-    /// 空きブロックを適切なサイズクラスに追加
+    /// 空きブロックを適切なサイズクラスに追加（結合を試みる）
     fn add_free_block(&mut self, addr: usize, size: usize) {
-        let min_size = core::mem::size_of::<FreeBlock>();
+        let min_size = MIN_BLOCK_WITH_FOOTER;
         if size < min_size {
             return;
         }
 
-        let class = Self::size_to_class(size);
-        let block_ptr = addr as *mut FreeBlock;
+        // Try to coalesce with previous block
+        let (final_addr, final_size) = self.try_coalesce_prev(addr, size);
+        
+        // Try to coalesce with next block
+        let (final_addr, final_size) = self.try_coalesce_next(final_addr, final_size);
+
+        let class = Self::size_to_class(final_size);
+        let block_ptr = final_addr as *mut FreeBlock;
 
         unsafe {
-            (*block_ptr).size = size;
+            // Set header
+            (*block_ptr).size = final_size;
             (*block_ptr).next = self.free_lists[class];
+            
+            // Set footer (boundary tag)
+            let footer_addr = final_addr + final_size - core::mem::size_of::<BlockFooter>();
+            let footer_ptr = footer_addr as *mut BlockFooter;
+            (*footer_ptr).size = final_size;
+            (*footer_ptr).is_free = true;
         }
 
         self.free_lists[class] = NonNull::new(block_ptr);
         self.free_bitmap |= 1u32 << class;
+    }
+    
+    /// Try to coalesce with the previous block (using its footer)
+    fn try_coalesce_prev(&mut self, addr: usize, size: usize) -> (usize, usize) {
+        if addr <= self.heap_start + core::mem::size_of::<BlockFooter>() {
+            return (addr, size);
+        }
+        
+        let prev_footer_addr = addr - core::mem::size_of::<BlockFooter>();
+        if prev_footer_addr < self.heap_start {
+            return (addr, size);
+        }
+        
+        let prev_footer = unsafe { &*(prev_footer_addr as *const BlockFooter) };
+        
+        if !prev_footer.is_free {
+            return (addr, size);
+        }
+        
+        let prev_size = prev_footer.size;
+        if prev_size == 0 || prev_size > addr - self.heap_start {
+            return (addr, size);
+        }
+        
+        let prev_addr = addr - prev_size;
+        if prev_addr < self.heap_start {
+            return (addr, size);
+        }
+        
+        // Remove previous block from its free list
+        if self.remove_from_free_list(prev_addr, prev_size) {
+            self.coalesce_count += 1;
+            return (prev_addr, prev_size + size);
+        }
+        
+        (addr, size)
+    }
+    
+    /// Try to coalesce with the next block
+    fn try_coalesce_next(&mut self, addr: usize, size: usize) -> (usize, usize) {
+        let next_addr = addr + size;
+        if next_addr >= self.heap_end {
+            return (addr, size);
+        }
+        
+        let next_block = unsafe { &*(next_addr as *const FreeBlock) };
+        let next_size = next_block.size;
+        
+        if next_size == 0 || next_addr + next_size > self.heap_end {
+            return (addr, size);
+        }
+        
+        // Check if next block is free by checking its footer
+        let next_footer_addr = next_addr + next_size - core::mem::size_of::<BlockFooter>();
+        if next_footer_addr >= self.heap_end {
+            return (addr, size);
+        }
+        
+        let next_footer = unsafe { &*(next_footer_addr as *const BlockFooter) };
+        if !next_footer.is_free {
+            return (addr, size);
+        }
+        
+        // Remove next block from its free list
+        if self.remove_from_free_list(next_addr, next_size) {
+            self.coalesce_count += 1;
+            return (addr, size + next_size);
+        }
+        
+        (addr, size)
+    }
+    
+    /// Remove a block from its free list
+    fn remove_from_free_list(&mut self, addr: usize, size: usize) -> bool {
+        let class = Self::size_to_class(size);
+        let target_ptr = addr as *mut FreeBlock;
+        
+        let mut prev: Option<NonNull<FreeBlock>> = None;
+        let mut current = self.free_lists[class];
+        
+        while let Some(block) = current {
+            if block.as_ptr() == target_ptr {
+                // Found the block, remove it
+                let next = unsafe { (*block.as_ptr()).next };
+                
+                match prev {
+                    Some(p) => unsafe { (*p.as_ptr()).next = next },
+                    None => self.free_lists[class] = next,
+                }
+                
+                if self.free_lists[class].is_none() {
+                    self.free_bitmap &= !(1u32 << class);
+                }
+                
+                return true;
+            }
+            
+            prev = current;
+            current = unsafe { (*block.as_ptr()).next };
+        }
+        
+        false
     }
 
     /// 指定サイズクラスから空きブロックを取得
@@ -225,6 +353,16 @@ impl SegregatedFreeListHeap {
 
         self.allocated_bytes += total_needed;
         self.alloc_count += 1;
+        
+        // Mark block as allocated in footer
+        let footer_addr = aligned_addr + size - core::mem::size_of::<BlockFooter>();
+        if footer_addr >= aligned_addr && footer_addr + core::mem::size_of::<BlockFooter>() <= self.heap_end {
+            unsafe {
+                let footer_ptr = footer_addr as *mut BlockFooter;
+                (*footer_ptr).size = size;
+                (*footer_ptr).is_free = false;
+            }
+        }
 
         Ok(NonNull::new(aligned_addr as *mut u8).expect("aligned addr null"))
     }
@@ -252,19 +390,9 @@ impl SegregatedFreeListHeap {
         self.add_free_block(addr, size);
     }
 
-    /// Try to coalesce adjacent free blocks (Placeholder)
+    /// Try to coalesce adjacent free blocks
     ///
-    /// # Implementation Note
-    /// To implement full coalescing (merging adjacent free blocks), we need:
-    /// 1. **Boundary Tags**: Allocated blocks need a header/footer indicating size and used/free status.
-    /// 2. **Footer**: To coalesce with the *previous* block, we need a footer in the previous block
-    ///    stating its size and status.
-    ///
-    /// Current implementation is specialized for low-overhead zero-copy IPC and relies on
-    /// Segregated Fit to minimize fragmentation overhead. Coalescing is deferred.
-    fn try_coalesce(&mut self, _addr: usize, _size: usize) {
-        // TODO: Check neighbors and merge
-    }
+    /// Now implemented via boundary tags in add_free_block
 
     fn used(&self) -> usize {
         self.allocated_bytes

@@ -14,6 +14,7 @@ pub mod qi;
 pub mod registers;
 pub mod registry; // Intel-specific registry
 pub mod tables;
+pub mod driver;
 
 use self::controller::dma::DomainManager;
 use self::controller::fault::FaultHandler;
@@ -34,6 +35,8 @@ use super::types::{DeviceId, IommuDomainType, IommuError};
 use self::registry::get_iommu_registry;
 
 /// Intel VT-d driver wrapper.
+pub use driver::IntelVtDDriver;
+
 #[derive(Default)]
 pub struct IntelIommuDriver;
 

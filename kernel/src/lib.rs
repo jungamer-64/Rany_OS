@@ -1174,6 +1174,8 @@ mod async_swapout_sim_lib {
 
         let threads: usize = std::env::var("ASYNC_SWAPOUT_THREADS").ok().and_then(|v| v.parse().ok()).unwrap_or(8);
         let iters: usize = std::env::var("ASYNC_SWAPOUT_ITERS").ok().and_then(|v| v.parse().ok()).unwrap_or(400); // each thread iterations
+        // Optional processing delay (ms) to simulate slower I/O via env var
+        let proc_delay_ms: u64 = std::env::var("ASYNC_SWAPOUT_PROCESSING_DELAY_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(1);
 
         // Shared state
         let queue = Arc::new((Mutex::new(VecDeque::<SwapEntry>::new()), Condvar::new()));
@@ -1239,12 +1241,12 @@ mod async_swapout_sim_lib {
                         match entry.kind {
                             SwapKind::File => {
                                 // simulate page writeback latency
-                                thread::sleep(Duration::from_millis(1));
+                                thread::sleep(Duration::from_millis(proc_delay_ms));
                                 file_queue_count.fetch_sub(1, Ordering::AcqRel);
                             }
                             SwapKind::Anon => {
                                 // simulate zswap store latency (faster)
-                                thread::sleep(Duration::from_millis(1));
+                                thread::sleep(Duration::from_millis(proc_delay_ms));
                             }
                         }
 
@@ -1354,7 +1356,11 @@ mod async_swapout_sim_lib {
             drop(lock.lock().unwrap());
             cvar.notify_all();
         }
-        thread::sleep(Duration::from_millis(50));
+        // Wait for workers to finish processing enqueued items (respect proc_delay_ms)
+        let wait_deadline = Instant::now() + Duration::from_secs(5);
+        while processed.load(Ordering::Acquire) < enqueue_success.load(Ordering::Acquire) && Instant::now() < wait_deadline {
+            thread::sleep(Duration::from_millis(10));
+        }
 
         let elapsed = start.elapsed();
         let success = enqueue_success.load(Ordering::Acquire);
