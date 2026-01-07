@@ -24,6 +24,8 @@ impl AsyncSwapoutNamespace {
         // Expose ZSWAP / async dealloc metrics
         map.insert(String::from("zswap_fail_count"), ExoValue::Int(crate::mm::async_swapout::stats_zswap_fail_count() as i64));
         map.insert(String::from("async_dealloc_count"), ExoValue::Int(crate::mm::async_swapout::stats_async_dealloc_count() as i64));
+        // Huge-page related metrics (2MiB)
+        map.insert(String::from("huge_2m_skipped"), ExoValue::Int(crate::mm::async_swapout::stats_huge_2m_skip_count() as i64));
 
         // Buffer pool stats for 4K, 2M, 1G
         let (h4k, m4k, o4k) = crate::mm::async_swapout::buffer_pool_4k_stats();

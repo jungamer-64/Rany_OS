@@ -509,6 +509,194 @@ pub struct CompactionStats {
     pub freed_blocks: u64,
 }
 
+// ============================================================================
+// Fragmentation Index - Detailed Fragmentation Metrics (Phase 2.1)
+// ============================================================================
+//
+// より詳細なフラグメンテーション分析を提供。
+// 外部/内部フラグメンテーションを分離して計算することで、
+// 適切な対処法（コンパクション vs 結合）を選択できる。
+//
+// ## 指標
+//
+// - external: 空き領域が散在している度合い (0.0-1.0)
+//   高い値 → コンパクションが有効
+// - internal: 大きなブロックが小さく分割されている度合い (0.0-1.0)
+//   高い値 → 結合 (coalescing) が有効
+// - unusable: 要求オーダーに対して使用不能な空き領域の割合
+//
+// ============================================================================
+
+/// 詳細なフラグメンテーション指標
+/// 
+/// 単純なパーセンテージではなく、フラグメンテーションの種類と
+/// 深刻度を分離して表現する。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FragmentationIndex {
+    /// 外部フラグメンテーション (0.0 = 断片化なし, 1.0 = 完全断片化)
+    /// 
+    /// 空き領域が多数の小さなブロックに分散している度合い。
+    /// 高い値は物理的に連続した大きな領域の確保が困難なことを示す。
+    pub external: f32,
+    
+    /// 内部フラグメンテーション (0.0 = 最適, 1.0 = 最悪)
+    /// 
+    /// 低次オーダーに空きが偏っている度合い。
+    /// 高い値は過度な分割により大きなブロックが失われていることを示す。
+    pub internal: f32,
+    
+    /// 使用不能率 (特定オーダー用)
+    /// 
+    /// 特定のオーダーの割り当てに使用できない空き領域の割合。
+    pub unusable_ratio: f32,
+    
+    /// 推奨アクション
+    pub recommended_action: FragmentationAction,
+    
+    /// 緊急度 (0-100)
+    /// 
+    /// Compaction/Coalesceを実行すべき緊急度。
+    pub urgency: u8,
+}
+
+/// 推奨されるフラグメンテーション対策
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
+pub enum FragmentationAction {
+    /// 特に対処不要
+    #[default]
+    None = 0,
+    /// 遅延結合を実行すべき
+    Coalesce = 1,
+    /// バックグラウンドコンパクションを開始すべき
+    CompactBackground = 2,
+    /// 緊急コンパクションが必要
+    CompactUrgent = 3,
+}
+
+impl FragmentationIndex {
+    /// フラグメンテーション指標を計算
+    /// 
+    /// # Arguments
+    /// * `free_counts` - 各オーダーの空きブロック数
+    /// * `total_frames` - 総フレーム数
+    /// * `target_order` - (オプション) 特定オーダーの使用不能率を計算
+    pub fn calculate(
+        free_counts: &[usize; MAX_ORDER + 1],
+        total_frames: usize,
+        target_order: Option<usize>,
+    ) -> Self {
+        let total_free: usize = free_counts.iter().sum();
+        if total_free == 0 || total_frames == 0 {
+            return Self::default();
+        }
+        
+        // External fragmentation: 空きブロック数 vs 最大可能ブロック数
+        // 理想: 全ての空きが1つの最大オーダーブロックに
+        // 現実: 多数の小さなブロックに分散
+        let total_free_pages: usize = free_counts.iter()
+            .enumerate()
+            .map(|(order, &count)| count * (1usize << order))
+            .sum();
+        
+        // 理想的な場合の最大オーダーブロック数
+        let ideal_max_order = total_free_pages.checked_ilog2().unwrap_or(0) as usize;
+        let ideal_block_count = if ideal_max_order > 0 { 1 } else { 0 };
+        
+        let external = if ideal_block_count > 0 && total_free > ideal_block_count {
+            // 実際のブロック数が理想より多い → 断片化
+            let excess = (total_free - ideal_block_count) as f32;
+            (excess / total_free as f32).min(1.0)
+        } else {
+            0.0
+        };
+        
+        // Internal fragmentation: 低次オーダーへの偏り
+        // オーダー0-3 (4KB-32KB) に偏っているほど内部断片化が高い
+        let low_order_free: usize = free_counts[..4.min(MAX_ORDER + 1)].iter().sum();
+        let high_order_free: usize = free_counts[4.min(MAX_ORDER + 1)..].iter().sum();
+        
+        let internal = if total_free > 0 {
+            (low_order_free as f32 / total_free as f32).min(1.0)
+        } else {
+            0.0
+        };
+        
+        // Unusable ratio for target order
+        let unusable_ratio = if let Some(order) = target_order {
+            // target_order より小さいブロックは使用不能
+            let unusable: usize = free_counts[..order.min(MAX_ORDER + 1)].iter().sum();
+            (unusable as f32 / total_free as f32).min(1.0)
+        } else {
+            0.0
+        };
+        
+        // 緊急度と推奨アクションを決定
+        let (urgency, action) = Self::determine_action(external, internal, free_counts, total_frames);
+        
+        Self {
+            external,
+            internal,
+            unusable_ratio,
+            recommended_action: action,
+            urgency,
+        }
+    }
+    
+    /// 緊急度と推奨アクションを決定
+    fn determine_action(
+        external: f32,
+        internal: f32,
+        free_counts: &[usize; MAX_ORDER + 1],
+        total_frames: usize,
+    ) -> (u8, FragmentationAction) {
+        // Calculate total free pages
+        let total_free_pages: usize = free_counts.iter()
+            .enumerate()
+            .map(|(order, &count)| count * (1usize << order))
+            .sum();
+        
+        let free_ratio = total_free_pages as f32 / total_frames as f32;
+        
+        // 空きが少ない + 高断片化 → 緊急
+        if free_ratio < 0.05 && (external > 0.7 || internal > 0.8) {
+            return (90, FragmentationAction::CompactUrgent);
+        }
+        
+        // 高い外部断片化 → コンパクション
+        if external > 0.6 {
+            let urgency = ((external - 0.3) * 100.0).clamp(0.0, 80.0) as u8;
+            return (urgency, FragmentationAction::CompactBackground);
+        }
+        
+        // 高い内部断片化 → 結合
+        if internal > 0.7 {
+            let urgency = ((internal - 0.4) * 80.0).clamp(0.0, 60.0) as u8;
+            return (urgency, FragmentationAction::Coalesce);
+        }
+        
+        (0, FragmentationAction::None)
+    }
+    
+    /// コンパクションが必要かどうか
+    pub fn needs_compaction(&self) -> bool {
+        matches!(
+            self.recommended_action,
+            FragmentationAction::CompactBackground | FragmentationAction::CompactUrgent
+        )
+    }
+    
+    /// 結合が必要かどうか
+    pub fn needs_coalesce(&self) -> bool {
+        matches!(self.recommended_action, FragmentationAction::Coalesce)
+    }
+    
+    /// 緊急対応が必要かどうか
+    pub fn is_urgent(&self) -> bool {
+        self.urgency >= 70
+    }
+}
+
 /// 圧縮コントローラ
 /// 
 /// フラグメンテーション率を監視し、必要に応じて圧縮を実行。
@@ -1727,6 +1915,33 @@ impl BuddyFrameAllocator {
     /// ゼロクリア統計を取得
     pub fn zeroed_stats(&self) -> (u64, u64, [usize; MAX_ORDER + 1]) {
         (self.zeroed_allocs, self.scrub_count, self.zeroed_counts)
+    }
+
+    // ========================================================================
+    // Fragmentation Index (Phase 2.1)
+    // ========================================================================
+
+    /// 詳細なフラグメンテーション指標を計算
+    ///
+    /// 外部/内部フラグメンテーションを分離して計算し、
+    /// 適切な対処法（コンパクション vs 結合）を推奨する。
+    ///
+    /// # Arguments
+    /// * `target_order` - 特定オーダーの使用不能率を計算する場合に指定
+    ///
+    /// # Returns
+    /// FragmentationIndex 構造体
+    pub fn fragmentation_index(&self, target_order: Option<usize>) -> FragmentationIndex {
+        FragmentationIndex::calculate(
+            &self.order_free_counts,
+            self.total_frames,
+            target_order,
+        )
+    }
+
+    /// 各オーダーの空きブロック数を取得
+    pub fn order_free_counts(&self) -> [usize; MAX_ORDER + 1] {
+        self.order_free_counts
     }
 }
 
