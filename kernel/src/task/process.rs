@@ -431,7 +431,7 @@ impl ProcessInfo {
             exit_code: None,
             children: Vec::new(),
             threads: Vec::new(),
-            numa_scan_addr: AtomicU64::new(super::mm::address_space::USER_SPACE_START),
+            numa_scan_addr: AtomicU64::new(crate::mm::address_space::USER_SPACE_START),
         }
     }
 

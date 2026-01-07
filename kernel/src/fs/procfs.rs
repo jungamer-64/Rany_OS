@@ -600,17 +600,17 @@ impl ProcFs {
 
     fn generate_process_status(pid: Pid) -> String {
         // プロセスマネージャーから情報を取得
-        let proc_id = crate::task::ProcessId::new(pid.as_u32() as u64);
-        if let Some(process) = crate::task::process_manager().get(proc_id) {
+        let proc_id = ProcessId::new(pid.as_u32() as u64);
+        if let Some(process) = process_manager().get(proc_id) {
             let p = process.read();
             let state_char = match p.state {
-                crate::task::ProcessState::Running => 'R',
-                crate::task::ProcessState::Blocked => 'S',
-                crate::task::ProcessState::Ready => 'R',
-                crate::task::ProcessState::Stopped => 'T',
-                crate::task::ProcessState::Zombie => 'Z',
-                crate::task::ProcessState::Dead => 'X',
-                crate::task::ProcessState::Creating => 'D',
+                ProcessState::Running => 'R',
+                ProcessState::Blocked => 'S',
+                ProcessState::Ready => 'R',
+                ProcessState::Stopped => 'T',
+                ProcessState::Zombie => 'Z',
+                ProcessState::Dead => 'X',
+                ProcessState::Creating => 'D',
             };
             alloc::format!(
                 "Name:\t{}\n\
@@ -677,17 +677,17 @@ impl ProcFs {
 
     fn generate_process_stat(pid: Pid) -> String {
         // プロセスマネージャーから情報を取得
-        let proc_id = crate::task::ProcessId::new(pid.as_u32() as u64);
-        if let Some(process) = crate::task::process_manager().get(proc_id) {
+        let proc_id = ProcessId::new(pid.as_u32() as u64);
+        if let Some(process) = process_manager().get(proc_id) {
             let p = process.read();
             let state_char = match p.state {
-                crate::task::ProcessState::Running => 'R',
-                crate::task::ProcessState::Blocked => 'S',
-                crate::task::ProcessState::Ready => 'R',
-                crate::task::ProcessState::Stopped => 'T',
-                crate::task::ProcessState::Zombie => 'Z',
-                crate::task::ProcessState::Dead => 'X',
-                crate::task::ProcessState::Creating => 'D',
+                ProcessState::Running => 'R',
+                ProcessState::Blocked => 'S',
+                ProcessState::Ready => 'R',
+                ProcessState::Stopped => 'T',
+                ProcessState::Zombie => 'Z',
+                ProcessState::Dead => 'X',
+                ProcessState::Creating => 'D',
             };
             alloc::format!(
                 "{} ({}) {} {} {} {} 0 0 0 0 0 0 0 0 0 {} 0 {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
@@ -726,8 +726,8 @@ impl ProcFs {
 
     fn generate_process_cmdline(pid: Pid) -> String {
         // プロセスマネージャーから情報を取得
-        let proc_id = crate::task::ProcessId::new(pid.as_u32() as u64);
-        if let Some(process) = crate::task::process_manager().get(proc_id) {
+        let proc_id = ProcessId::new(pid.as_u32() as u64);
+        if let Some(process) = process_manager().get(proc_id) {
             let p = process.read();
             if p.cmdline.is_empty() {
                 alloc::format!("{}\0", p.name)

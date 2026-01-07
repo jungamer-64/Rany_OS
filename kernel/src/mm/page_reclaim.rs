@@ -1937,6 +1937,7 @@ mod tests {
     use super::*;
     use crate::mm::types::FrameIndex;
     use core::sync::atomic::Ordering;
+    use crate::fs::fs_abstraction::FileSystem;
 
     #[test]
     fn test_get_reclaimable_returns_clean_anonymous() {
@@ -1959,7 +1960,7 @@ mod tests {
         let memfs = crate::fs::memfs::MemoryFs::new();
         crate::fs::mount_table().mount("/", memfs.clone()).unwrap();
         let root = memfs.root().unwrap();
-        let file = root.create("testfile", crate::fs::FileMode::DEFAULT_FILE, crate::fs::OpenFlags::empty()).unwrap();
+        let file = root.create("testfile", crate::fs::FileMode::DEFAULT_FILE, crate::fs::OpenFlags::default()).unwrap();
         let ino = file.getattr().unwrap().ino;
 
         // Insert a dirty page into the page cache
@@ -1991,7 +1992,7 @@ mod tests {
         let memfs = crate::fs::memfs::MemoryFs::new();
         crate::fs::mount_table().mount("/", memfs.clone()).unwrap();
         let root = memfs.root().unwrap();
-        let file = root.create("pf", crate::fs::FileMode::DEFAULT_FILE, crate::fs::OpenFlags::empty()).unwrap();
+        let file = root.create("pf", crate::fs::FileMode::DEFAULT_FILE, crate::fs::OpenFlags::default()).unwrap();
         let ino = file.getattr().unwrap().ino;
 
         // Insert and dirty a page for inode
