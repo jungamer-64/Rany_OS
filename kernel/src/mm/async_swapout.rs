@@ -460,7 +460,9 @@ mod test_impl {
             })
         });
 
-        let worker = WORKER.get().as_ref().unwrap().clone();
+        let worker = WORKER.get().as_ref().unwrap().clone(); // Arc clone
+
+        // Spawn worker thread if not already running
 
         // Spawn worker thread if not already running
         if TEST_WORKER_RUNNING.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_ok() {
@@ -558,7 +560,7 @@ mod test_impl {
             });
         }
 
-        worker
+        worker.clone()
     }
 
     pub fn try_enqueue(frame: FrameIndex, kind: SwapKind) -> Result<super::SwapHandle, SwapError> {

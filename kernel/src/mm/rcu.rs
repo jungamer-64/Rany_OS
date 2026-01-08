@@ -8,6 +8,9 @@
 use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
 use alloc::collections::VecDeque;
 use alloc::boxed::Box;
+use alloc::vec::Vec;
+use spin::Mutex;
+use crate::mm::per_cpu;
 
 /// RCUのグレース期間を追跡するためのエポックカウンタ
 ///
@@ -15,8 +18,7 @@ use alloc::boxed::Box;
 /// その時点で保持されていた全ての参照が解放されたと見なせる
 static RCU_GLOBAL_EPOCH: AtomicUsize = AtomicUsize::new(0);
 
-/// 現在RCU読み取りセクション内かどうか（Per-CPUで管理すべきだが簡易実装）
-static RCU_READ_ACTIVE: AtomicBool = AtomicBool::new(false);
+
 
 /// RCUコンテキストスイッチカウンタ（グレース期間検出用）
 static RCU_CONTEXT_SWITCHES: AtomicUsize = AtomicUsize::new(0);
@@ -62,21 +64,48 @@ impl Drop for RcuReadGuard {
 pub fn rcu_read_lock() -> RcuReadGuard {
     // 読み取り開始を記録（compiler fence のみ、実際のロックなし）
     core::sync::atomic::compiler_fence(Ordering::Acquire);
-    RCU_READ_ACTIVE.store(true, Ordering::Release);
+    
+    // Increment local read depth
+    unsafe {
+        let gs_base = per_cpu::read_gs_base();
+        if gs_base != 0 {
+            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
+            pcp.rcu_state.read_depth.fetch_add(1, Ordering::Relaxed);
+        } else {
+             // Fallback for non-SMP/init
+             // Using interrupts disabled can be a fallback? 
+             // Or just do nothing and rely on non-preemption if early?
+        }
+    }
+    
     RcuReadGuard::new()
 }
 
 /// RCU読み取りセクションを終了（内部用）
 #[inline]
 fn rcu_read_unlock_internal() {
-    RCU_READ_ACTIVE.store(false, Ordering::Release);
+    unsafe {
+        let gs_base = per_cpu::read_gs_base();
+        if gs_base != 0 {
+            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
+            pcp.rcu_state.read_depth.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
     core::sync::atomic::compiler_fence(Ordering::Release);
 }
 
 /// 現在RCU読み取りセクション内かどうか
 #[inline]
 pub fn rcu_read_active() -> bool {
-    RCU_READ_ACTIVE.load(Ordering::Acquire)
+    unsafe {
+        let gs_base = per_cpu::read_gs_base();
+        if gs_base != 0 {
+            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
+            pcp.rcu_state.read_depth.load(Ordering::Relaxed) > 0
+        } else {
+            false
+        }
+    }
 }
 
 // ============================================================================
@@ -100,7 +129,18 @@ pub fn rcu_advance_epoch() {
 /// スケジューラのコンテキストスイッチ処理から呼び出す
 #[inline]
 pub fn rcu_note_context_switch() {
-    RCU_CONTEXT_SWITCHES.fetch_add(1, Ordering::Release);
+    unsafe {
+        let gs = per_cpu::read_gs_base();
+        if gs != 0 {
+            let pcp = &*(gs as *const per_cpu::PerCpuData);
+            // Only report QS if not in a read section
+            if pcp.rcu_state.read_depth.load(Ordering::Relaxed) == 0 {
+                 pcp.rcu_state.qs_count.fetch_add(1, Ordering::Release);
+            }
+        }
+    }
+    // Also update global for compatibility if needed, but we rely on local now.
+    // RCU_CONTEXT_SWITCHES.fetch_add(1, Ordering::Release);
 }
 
 /// 現在のコンテキストスイッチカウントを取得
@@ -115,17 +155,44 @@ pub fn rcu_context_switch_count() -> usize {
 ///
 /// # Warning
 /// これはビジーウェイトなので、割り込みコンテキストでは使用しないこと
+/// 同期的にグレース期間の終了を待つ
+///
+/// 呼び出し時点で存在した全てのRCU読み取りセクションが終了するまでブロック
+///
+/// # Warning
+/// これはビジーウェイトなので、割り込みコンテキストでは使用しないこと
 pub fn synchronize_rcu() {
-    let start_switches = rcu_context_switch_count();
-    let target_switches = start_switches + RCU_GRACE_PERIOD_SWITCHES;
-
-    // 全CPUがコンテキストスイッチするまでスピンウェイト
-    // 実際の実装ではIPIやスケジューラとの連携が必要
-    while rcu_context_switch_count() < target_switches {
-        core::hint::spin_loop();
+    // 1. Snapshot QS counts for all online CPUs
+    let mut snapshots = Vec::new();
+    for i in 0..per_cpu::MAX_CPUS {
+        if per_cpu::is_cpu_online(i) {
+             unsafe {
+                 let pcp = per_cpu::get_per_cpu_data(i);
+                 snapshots.push((i, pcp.rcu_state.qs_count.load(Ordering::Acquire)));
+             }
+        }
     }
 
-    // エポックを進める
+    // 2. Wait for each active CPU to pass through a quiescent state
+    // (switch context or go offline)
+    for (cpu_id, snap_val) in snapshots {
+        loop {
+            if !per_cpu::is_cpu_online(cpu_id) {
+                // CPU went offline -> Quiescent State
+                break;
+            }
+            unsafe {
+                let pcp = per_cpu::get_per_cpu_data(cpu_id);
+                let current_val = pcp.rcu_state.qs_count.load(Ordering::Acquire);
+                if current_val != snap_val {
+                    break;
+                }
+            }
+            core::hint::spin_loop();
+        }
+    }
+
+    // 3. Advance epoch to release callbacks
     rcu_advance_epoch();
 }
 
@@ -137,6 +204,7 @@ pub fn synchronize_rcu() {
 pub type RcuCallback = fn(*mut u8);
 
 /// 遅延解放用のコールバックエントリ
+#[derive(Debug)]
 struct RcuCallbackEntry {
     /// 解放対象のポインタ
     ptr: *mut u8,
@@ -168,6 +236,11 @@ static RCU_CALLBACK_QUEUE: spin::Mutex<VecDeque<RcuCallbackEntry>> =
 ///
 /// call_rcu(old_vma as *mut u8, free_old_vma);
 /// ```
+/// グレース期間後にコールバックを呼び出す（非同期版synchronize_rcu）
+///
+/// # Arguments
+/// * `ptr` - 解放対象のポインタ
+/// * `callback` - グレース期間後に呼び出されるコールバック
 pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
     let entry = RcuCallbackEntry {
         ptr,
@@ -175,38 +248,64 @@ pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
         epoch: rcu_current_epoch(),
     };
 
-    let mut queue = RCU_CALLBACK_QUEUE.lock();
-    queue.push_back(entry);
-}
-
-/// 期限切れのRCUコールバックを処理
-///
-/// 定期的に呼び出す（スケジューラのアイドルループやタイマー割り込みから）
-pub fn rcu_process_callbacks() {
-    let current_epoch = rcu_current_epoch();
-    let mut queue = RCU_CALLBACK_QUEUE.lock();
-
-    // グレース期間が経過したコールバックを処理
-    while let Some(entry) = queue.front() {
-        // エポックが2以上離れていればグレース期間経過
-        if current_epoch.wrapping_sub(entry.epoch) >= 2 {
-            let entry = queue.pop_front().unwrap();
-            drop(queue); // ロックを解放してからコールバック実行
-
-            // コールバック呼び出し
-            (entry.callback)(entry.ptr);
-
-            // ロック再取得
-            queue = RCU_CALLBACK_QUEUE.lock();
+    // Try per-CPU queue first
+    unsafe {
+        let gs_base = per_cpu::read_gs_base();
+        if gs_base != 0 {
+            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
+            pcp.rcu_state.batch_queue.lock().push_back(entry);
         } else {
-            break;
+            // Fallback for early boot / non-PerCPU context (should be rare)
+            // Just leak or use a temporary global? 
+            // For now, panic/warn or use static fallback.
+            // Using the static fallback defined previously (if kept) or simple static.
+            RCU_CALLBACK_QUEUE.lock().push_back(entry);
         }
     }
 }
 
-/// ペンディング中のRCUコールバック数を取得
+/// 期限切れのRCUコールバックを処理 (Per-CPU)
+///
+/// 定期的に呼び出す（スケジューラのアイドルループやタイマー割り込みから）
+pub fn rcu_process_callbacks() {
+    let current_epoch = rcu_current_epoch();
+    
+    unsafe {
+        let gs_base = per_cpu::read_gs_base();
+        if gs_base == 0 { return; }
+        let pcp = &*(gs_base as *const per_cpu::PerCpuData);
+        let mut queue = pcp.rcu_state.batch_queue.lock();
+
+        // グレース期間が経過したコールバックを処理
+        while let Some(entry) = queue.front() {
+            // エポックが2以上離れていればグレース期間経過
+            if current_epoch.wrapping_sub(entry.epoch) >= 2 {
+                let entry = queue.pop_front().unwrap();
+                drop(queue); // ロックを解放してからコールバック実行
+
+                // コールバック呼び出し
+                (entry.callback)(entry.ptr);
+
+                // ロック再取得
+                queue = pcp.rcu_state.batch_queue.lock();
+            } else {
+                break;
+            }
+        }
+    }
+}
+
+/// ペンディング中のRCUコールバック数を取得 (Current CPU)
 pub fn rcu_pending_callbacks() -> usize {
-    RCU_CALLBACK_QUEUE.lock().len()
+    unsafe {
+        let gs_base = per_cpu::read_gs_base();
+        if gs_base != 0 {
+            let pcp = &*(gs_base as *const per_cpu::PerCpuData);
+            pcp.rcu_state.batch_queue.lock().len()
+        } else {
+            RCU_CALLBACK_QUEUE.lock().len()
+        }
+    }
 }
 
 // ============================================================================
@@ -282,6 +381,8 @@ pub struct PerCpuRcuState {
     pub last_gp: AtomicUsize,
     /// このCPUでの読み取りセクションネスト深度
     pub read_depth: AtomicUsize,
+    /// Callbacks buffered on this CPU (to be moved to global/batch list)
+    pub batch_queue: Mutex<VecDeque<RcuCallbackEntry>>,
 }
 
 impl PerCpuRcuState {
@@ -291,6 +392,7 @@ impl PerCpuRcuState {
             qs_count: AtomicUsize::new(0),
             last_gp: AtomicUsize::new(0),
             read_depth: AtomicUsize::new(0),
+            batch_queue: Mutex::new(VecDeque::new()),
         }
     }
 

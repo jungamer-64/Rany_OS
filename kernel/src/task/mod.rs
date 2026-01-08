@@ -17,6 +17,7 @@ pub mod interrupt_waker;
 pub mod per_core_executor;
 pub mod preemption;
 pub mod process;
+pub mod io;
 #[cfg(feature = "legacy-scheduler")]
 pub mod scheduler; 
 pub mod signal;

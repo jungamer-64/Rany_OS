@@ -615,7 +615,7 @@ pub fn flush_tlb_all() {
 /// 単一CPUにTLBフラッシュIPIを送信
 fn send_tlb_ipi_to_cpu(cpu_id: usize) {
     // CPU IDをAPIC IDとして使用（通常は1:1マッピング）
-    let apic_id = cpu_id as u8;
+    let apic_id = cpu_id as u32;
     
     // interrupt_manager経由でIPI送信
     crate::io::interrupt_manager::send_ipi(apic_id, TLB_FLUSH_VECTOR);

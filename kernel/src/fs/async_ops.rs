@@ -27,8 +27,8 @@ use spin::Mutex;
 use super::vfs::{FileAttr, FsError, FsResult, SeekFrom};
 
 // NVMe per-core API
-use crate::io::nvme::global as nvme_global;
-use crate::smp::current_cpu;
+use crate::nvme::global as nvme_global;
+use crate::task::smp::current_cpu;
 
 // ============================================================================
 // 非同期I/Oリクエスト

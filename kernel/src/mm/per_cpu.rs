@@ -456,6 +456,8 @@ pub struct PerCpuData {
     pub local_numa_node: NumaNodeId,
     /// Remote Free Batch Buffer: batches cross-CPU free requests to reduce contention
     pub remote_free_batch: RemoteFreeBatchBuffer,
+    /// Per-CPU RCU State (Phase 9)
+    pub rcu_state: crate::mm::rcu::PerCpuRcuState,
 }
 
 impl PerCpuData {
@@ -478,6 +480,7 @@ impl PerCpuData {
             local_numa_node: NumaNodeId::new(0),
             // Remote free batch buffer for cross-CPU memory reclamation
             remote_free_batch: RemoteFreeBatchBuffer::new(),
+            rcu_state: crate::mm::rcu::PerCpuRcuState::new(),
         }
     }
 
@@ -581,6 +584,21 @@ static INITIALIZED: spin::Once<()> = spin::Once::new();
 static ACTIVE_CPUS: Mutex<usize> = Mutex::new(0);
 /// Online CPU bitmask (bit N set => CPU N online)
 static ONLINE_CPU_MASK: AtomicU64 = AtomicU64::new(0);
+
+/// Get reference to Per-CPU data for a specific CPU ID
+/// 
+/// # Safety
+/// Caller must ensure cpu_id is valid (< MAX_CPUS)
+pub unsafe fn get_per_cpu_data(cpu_id: usize) -> &'static PerCpuData {
+    &PER_CPU_DATA[cpu_id]
+}
+
+/// Check if a CPU is online
+pub fn is_cpu_online(cpu_id: usize) -> bool {
+    if cpu_id >= 64 { return false; }
+    let mask = ONLINE_CPU_MASK.load(Ordering::Acquire);
+    (mask & (1 << cpu_id)) != 0
+}
 
 /// GsBaseレジスタを読み取る
 ///
