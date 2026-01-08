@@ -2374,6 +2374,16 @@ pub unsafe fn init_buddy_allocator(usable_regions: &[(PhysAddr, u64)]) {
     }
 }
 
+/// Allocate a Huge Frame (2MB, Order 9)
+/// 
+/// Returns physical frame of 2MB size.
+pub fn alloc_huge_frame() -> Option<PhysFrame<Size2MiB>> {
+    let order = 9; // 2MB / 4KB = 512 = 2^9
+    let start_frame = BUDDY_ALLOCATOR.lock().allocate(order)?;
+    let phys_addr = PhysAddr::new((start_frame as u64) * PAGE_SIZE_4K);
+    Some(PhysFrame::from_start_address(phys_addr).unwrap())
+}
+
 /// 4KiB フレームを割り当て（Buddy版）
 pub fn buddy_alloc_frame() -> Option<PhysFrame<Size4KiB>> {
     BUDDY_ALLOCATOR.lock().allocate_4k_frame()
@@ -2609,7 +2619,7 @@ mod tests {
 
     #[test]
     fn test_init_numa_frame_allocator_registers_region_with_buddy() {
-        use crate::mm::frame_allocator::NumaNodeId;
+        use crate::mm::types::NumaNodeId;
         use crate::mm::{init_buddy_allocator, init_numa_frame_allocator};
 
         // Initialize buddy allocator with a default region

@@ -379,8 +379,8 @@ pub fn try_scan_current_process() {
     // KERNEL/INIT以外をスキャン対象とする
     if pid != crate::task::process::ProcessId::KERNEL {
         if let Some(proc_lock) = process_manager().get(pid) {
-            let proc = proc_lock.read();
-            NUMA_SCANNER.scan_task(&proc);
+            let proc_info = crate::task::process::ProcessInfo { pid, numa_scan_addr: core::sync::atomic::AtomicU64::new(0) };
+            NUMA_SCANNER.scan_task(&proc_info);
         }
     }
 }

@@ -34,6 +34,10 @@ use super::cow::{cow_mark_page, cow_copy_pte, page_get, page_put};
 use super::rcu_vma::VmaFlags;
 use super::memcg::{memcg_charge, memcg_uncharge, ChargeType, MemcgId};
 use super::stack_growth::{create_stack, StackResult};
+use crate::mm::thp_promotion::ThpCandidate;
+use super::buddy_allocator::{alloc_huge_frame, buddy_dealloc_frame, buddy_dealloc_frame_2m};
+use x86_64::structures::paging::{PhysFrame, Size4KiB, Size2MiB};
+use x86_64::PhysAddr as X64PhysAddr;
 
 // ============================================================================
 // Address Space Constants
@@ -776,6 +780,202 @@ impl ProcessAddressSpace {
         }
 
         false
+    }
+
+    /// THP昇格候補を検索
+    ///
+    /// 指定されたアドレスからスキャンを開始し、昇格可能な2MB領域を探す。
+    pub fn find_thp_candidates(&self, start_addr: VirtAddr, limit: usize) -> (Vec<ThpCandidate>, VirtAddr) {
+        let mut candidates = Vec::new();
+        let mut current_addr = start_addr;
+        let regions = self.regions.read();
+        
+        // Iterate regions starting from start_addr
+        for (&_r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
+            if candidates.len() >= limit {
+                break;
+            }
+
+            // Skip unsuitable regions (e.g. non-Anon, non-aligned size check?)
+            match region.region_type {
+                 RegionType::Heap | RegionType::Bss | RegionType::Data => {}
+                 _ => {
+                     // Determine skip
+                     if current_addr < region.end { current_addr = region.end; }
+                     continue;
+                 }
+            }
+            
+            // Adjust scan start within this region
+            let region_scan_start = if current_addr < region.start { region.start } else { current_addr };
+            
+            // Align to 2MB
+            let mut scan_cursor = VirtAddr::new((region_scan_start.as_u64() + 0x1FFFFF) & !0x1FFFFF);
+            
+            while scan_cursor.as_u64() + 0x200000 <= region.end.as_u64() && candidates.len() < limit {
+                if let Some(candidate) = self.check_if_thp_candidate(scan_cursor) {
+                    candidates.push(candidate);
+                }
+                scan_cursor = VirtAddr::new(scan_cursor.as_u64() + 0x200000);
+            }
+            
+            current_addr = scan_cursor;
+        }
+        
+        (candidates, current_addr)
+    }
+
+    /// Check if a 2MB range is a candidate
+    fn check_if_thp_candidate(&self, start: VirtAddr) -> Option<ThpCandidate> {
+        // Here we need to check if pages are mapped and present
+        let mut used_pages = 0;
+        
+        // This is a simplified check. In reality we'd walk the PT.
+        for i in 0..512 {
+            let addr = VirtAddr::new(start.as_u64() + i * 4096);
+            if let Some(_phys) = global_translate(addr) {
+                used_pages += 1;
+            }
+        }
+
+        // Threshold: 50%
+        if used_pages > 256 {
+            Some(ThpCandidate {
+                start_addr: start,
+                used_pages: used_pages as u16,
+                flags: 0, // Fill later or get from first page
+                priority: ((used_pages * 100 / 512).min(255)) as u8,
+            })
+        } else {
+            None
+        }
+    }
+
+    /// Promote a 2MB range to a Huge Page
+    pub fn promote_huge_page(&self, start_addr: VirtAddr) -> bool {
+        // 1. alignment check
+        if !start_addr.is_page_aligned() || start_addr.as_u64() & 0x1FFFFF != 0 {
+            return false;
+        }
+
+        // 2. Get protection flags from region
+        let protection = match self.get_region(start_addr.as_u64()) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        // 3. Allocate Huge Frame
+        let huge_frame = match alloc_huge_frame() {
+            Some(f) => f,
+            None => return false,
+        };
+        let huge_phys = huge_frame.start_address();
+        let huge_virt = super::mapping::phys_to_virt(huge_phys);
+
+        // 4. Zero the huge page (safety)
+        unsafe {
+            core::ptr::write_bytes(huge_virt.as_mut_ptr::<u8>(), 0, 0x200000);
+        }
+
+        // 5. Copy data and prepare for switch
+        let pt_root = self.page_table_root.load(Ordering::Acquire);
+        if pt_root == 0 {
+            let idx = super::types::FrameIndex::new(huge_phys.frame_number() as usize);
+            super::buddy_allocator::dealloc_frame(idx, 9);
+            return false; 
+        }
+
+        // Walk to PDE
+        let indices = start_addr.page_table_indices();
+        
+        // Scope for unsafe PT walk and updates
+        let result = unsafe { self.perform_promotion(pt_root, indices, huge_phys, protection) };
+        
+        if !result {
+             let idx = super::types::FrameIndex::new(huge_phys.frame_number() as usize);
+             super::buddy_allocator::dealloc_frame(idx, 9);
+        }
+        
+        result
+    }
+
+    /// Internal unsafe helper for promotion
+    unsafe fn perform_promotion(
+        &self, 
+        pt_root: u64, 
+        indices: [usize; 4], 
+        huge_phys: PhysAddr,
+        protection: Protection
+    ) -> bool {
+        use super::higher_half::{PageTable, PageFlags, PageTableEntry};
+        
+        // Level 4 (PML4)
+        let pml4_phys = PhysAddr::new(pt_root);
+        let pml4 = &*super::higher_half::phys_to_virt(pml4_phys).as_ptr::<PageTable>();
+        let pml4e = pml4.entry(indices[0]);
+        if !pml4e.is_present() { return false; }
+
+        // Level 3 (PDPT)
+        let pdpt_phys = pml4e.phys_addr();
+        let pdpt = &*super::higher_half::phys_to_virt(pdpt_phys).as_ptr::<PageTable>();
+        let pdpte = pdpt.entry(indices[1]);
+        if !pdpte.is_present() { return false; }
+        if pdpte.is_huge() { return false; } 
+
+        // Level 2 (PD) - This is where we modify
+        let pd_phys = pdpte.phys_addr();
+        let pd = &mut *super::higher_half::phys_to_virt(pd_phys).as_mut_ptr::<PageTable>();
+        let pde = pd.entry_mut(indices[2]);
+        if !pde.is_present() { return false; }
+        if pde.is_huge() { return false; } // Already huge
+
+        // Level 1 (PT) - The table we are replacing
+        let pt_phys = pde.phys_addr();
+        let pt = &*super::higher_half::phys_to_virt(pt_phys).as_ptr::<PageTable>();
+        
+        let huge_base_virt = super::mapping::phys_to_virt(huge_phys);
+        
+        let mut frames_to_free = Vec::new();
+        
+        for i in 0..512 {
+            let pte = pt.entry(i);
+            if pte.is_present() {
+                let src_phys = pte.phys_addr();
+                let src_virt = super::mapping::phys_to_virt(src_phys);
+                let dst_virt = huge_base_virt.offset(i as u64 * 4096);
+                
+                // Copy 4KB
+                core::ptr::copy_nonoverlapping(src_virt.as_ptr::<u8>(), dst_virt.as_mut_ptr::<u8>(), 4096);
+                
+                frames_to_free.push(src_phys);
+            }
+        }
+        
+        // Update PDE to point to Huge Page
+        let mut flags = protection.to_page_flags();
+        flags = flags.set(PageFlags::PRESENT | PageFlags::HUGE_PAGE);
+        if protection.write { flags = flags.set(PageFlags::DIRTY); }
+        
+        let new_pde = PageTableEntry::huge(huge_phys, flags);
+        
+        *pde = new_pde;
+        
+        // TLB Flush
+        let vaddr = (indices[0] as u64) << 39 | (indices[1] as u64) << 30 | (indices[2] as u64) << 21;
+        let _vaddr_canon = if vaddr & (1 << 47) != 0 { vaddr | 0xFFFF000000000000 } else { vaddr };
+        core::arch::asm!("invlpg [{}]", in(reg) _vaddr_canon);
+
+        // Free old frames
+        for frame in frames_to_free {
+             let idx = super::types::FrameIndex::new(frame.frame_number() as usize);
+             super::buddy_allocator::dealloc_frame(idx, 0);
+        }
+        
+        // Free the PT frame
+        let pt_idx = super::types::FrameIndex::new(pt_phys.frame_number() as usize);
+        super::buddy_allocator::dealloc_frame(pt_idx, 0);
+        
+        true
     }
 }
 

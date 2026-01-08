@@ -3306,6 +3306,11 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32FileSystem<B> {
         self.time_provider.as_ref()
     }
 
+    /// Total sectors in the filesystem (derived from total_clusters and sectors_per_cluster)
+    pub fn total_sectors(&self) -> u32 {
+        self.total_clusters * self.sectors_per_cluster
+    }
+
     /// FAT32ファイルシステムをマウント（ゼロコピー/Async）
     pub async fn mount_zero_copy(
         device: Arc<dyn ZeroCopyBlockDevice<Buffer = B>>,

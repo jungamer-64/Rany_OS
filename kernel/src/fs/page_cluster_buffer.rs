@@ -328,9 +328,9 @@ mod tests {
             alloc,
         ));
 
-        let fs = fs_res.expect("mount_zero_copy_with_allocator failed");
+        let fs: Arc<fat32::Fat32FileSystem<PageClusterBuffer>> = fs_res.expect("mount_zero_copy_with_allocator failed");
         // Basic sanity check: total sectors should be non-zero
-        assert!(fs.total_sectors() > 0);
+        assert!((*fs).total_sectors() > 0);
     }
 }
 

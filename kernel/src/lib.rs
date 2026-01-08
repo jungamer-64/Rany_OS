@@ -984,6 +984,26 @@ pub mod task {
         pub fn try_current_cpu_id() -> Option<u32> { Some(0) }
     }
 
+    // Minimal work_stealing_advanced shim used by NUMA helpers in tests
+    pub mod work_stealing_advanced {
+        pub struct NumaTopology;
+        impl NumaTopology {
+            pub fn get() -> &'static Self {
+                static T: NumaTopology = NumaTopology;
+                &T
+            }
+
+            pub fn num_nodes(&self) -> usize { 1 }
+
+            pub fn get_cores_in_node(&self, _node: usize) -> &'static [u32] {
+                static CORES: [u32; 1] = [0];
+                &CORES
+            }
+
+            pub fn get_numa_node(&self, _cpu: u32) -> usize { 0 }
+        }
+    }
+
     // Minimal memory helpers for tests
     pub mod memory {
         pub fn physical_memory_offset() -> u64 { 0 }
@@ -998,8 +1018,24 @@ pub mod task {
 
     // Minimal domain system stub
     pub mod domain_system {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
         pub struct DomainId(pub u64);
+
+        impl DomainId {
+            pub const fn new(v: u64) -> Self {
+                DomainId(v)
+            }
+
+            pub fn as_u64(&self) -> u64 {
+                self.0
+            }
+        }
+
+        impl core::fmt::Display for DomainId {
+            fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+                write!(f, "DomainId({})", self.0)
+            }
+        }
     }
 
     // Task context counters used by procfs tests
@@ -1032,11 +1068,29 @@ pub mod task {
                 pub fn command_id(&self) -> u16 { self.cid }
             }
 
-            /// Minimal driver handle stub used in `with_driver` closures
+            /// Minimal driver handle stub used in `with_driver` closures.
+            #[derive(Debug)]
             pub struct NvmePollingDriver;
 
+            impl NvmePollingDriver {
+                pub fn new() -> Self { NvmePollingDriver }
+
+                /// Submit a read command (test stub)
+                pub unsafe fn submit_read(&self, _core_id: u32, _nsid: u32, _lba: u64, _blocks: u16, _prp1: u64, _prp2: u64) -> Result<u16, &'static str> {
+                    Err("no-driver")
+                }
+
+                /// Submit a write command (test stub)
+                pub unsafe fn submit_write(&self, _core_id: u32, _nsid: u32, _lba: u64, _blocks: u16, _prp1: u64, _prp2: u64) -> Result<u16, &'static str> {
+                    Err("no-driver")
+                }
+
+                pub fn check_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> { None }
+                pub fn register_waker(&self, _core_id: u32, _cid: u16, _waker: core::task::Waker) {}
+            }
+
             pub mod global {
-                use super::NvmePollingDriver;
+                use crate::task::io::nvme::NvmePollingDriver;
 
                 pub fn with_driver<F, R>(_f: F) -> Option<R>
                 where
@@ -1065,6 +1119,8 @@ pub mod task {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub struct ProcessId(u64);
         impl ProcessId {
+            pub const KERNEL: Self = Self(0);
+            pub const INIT: Self = Self(1);
             pub const fn new(id: u64) -> Self { Self(id) }
             pub fn as_u64(&self) -> u64 { self.0 }
         }
@@ -1091,7 +1147,7 @@ pub mod task {
             pub threads: Vec<u64>,
             pub priority: Priority,
             pub cmdline: Vec<String>,
-            pub memcg_id: u64,
+            pub memcg_id: crate::mm::memcg::MemcgId,
             pub exit_code: Option<u64>,
         }
 
@@ -1126,6 +1182,12 @@ pub mod task {
 
         // Helper to return current process memcg id (used by some tests)
         pub fn get_current_process_memcg_id() -> crate::mm::memcg::MemcgId { crate::mm::memcg::MemcgId::ROOT }
+
+        // Re-export the minimal io::nvme driver for compatibility with code that
+        // expects `crate::io::nvme` in test builds. This points at `crate::task::io::nvme`.
+        pub mod nvme {
+            pub use crate::task::io::nvme::*;
+        }
     }
 
     // Test shim removed: tests and benches should use the canonical
@@ -1219,6 +1281,9 @@ pub mod io {
         /// Early boot serial-like print used before the full logger is initialized.
         pub fn early_print(_s: &str) {}
 
+        /// Early boot single-character print used by low-level routines.
+        pub fn early_print_char(_c: u8) {}
+
         /// Initialize the logger. Returns Ok(()) for the test shim.
         pub fn init() -> Result<(), ()> {
             Ok(())
@@ -1226,6 +1291,11 @@ pub mod io {
 
         /// Notify the logging subsystem that the heap is now available.
         pub fn notify_heap_available() {}
+    }
+
+    pub mod interrupt_manager {
+        pub fn send_ipi(_apic_id: u32, _vector: u8) {}
+        pub fn broadcast_ipi(_vector: u8) {}
     }
 
     // Minimal PCI stub for test builds so IOMMU functions that reference
@@ -1254,6 +1324,30 @@ pub mod io {
         impl PciDeviceInfo {
             pub fn is_pci_bridge(&self) -> bool {
                 false
+            }
+        }
+    }
+
+    pub mod nvme {
+        // Re-export the task-scoped NVMe driver for compatibility in test builds.
+        // Tests expect `crate::io::nvme::NvmePollingDriver` and driver-global helpers.
+        pub use crate::task::io::nvme::NvmePollingDriver;
+
+        pub mod global {
+            use crate::task::io::nvme::NvmePollingDriver;
+
+            pub fn with_driver<F, R>(_f: F) -> Option<R>
+            where
+                F: FnOnce(&NvmePollingDriver) -> R,
+            {
+                None
+            }
+
+            pub fn with_driver_mut<F, R>(_f: F) -> Option<R>
+            where
+                F: FnOnce(&mut NvmePollingDriver) -> R,
+            {
+                None
             }
         }
     }
@@ -1325,6 +1419,23 @@ pub mod sas;
 
 #[cfg(any(test, feature = "bench"))]
 pub mod util;
+
+#[cfg(any(test, feature = "bench"))]
+pub mod nvme {
+    pub use crate::io::nvme::*;
+}
+
+// Re-export task-scoped shims at crate root so modules that reference
+// `crate::memory`, `crate::smp`, `crate::interrupts`, and
+// `crate::domain_system` compile in test builds without changes.
+#[cfg(any(test, feature = "bench"))]
+pub use crate::task::memory as memory;
+#[cfg(any(test, feature = "bench"))]
+pub use crate::task::smp as smp;
+#[cfg(any(test, feature = "bench"))]
+pub use crate::task::interrupts as interrupts;
+#[cfg(any(test, feature = "bench"))]
+pub use crate::task::domain_system as domain_system;
 
 #[cfg(test)]
 mod async_swapout_sim_lib {
