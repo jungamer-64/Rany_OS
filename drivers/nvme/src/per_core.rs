@@ -55,13 +55,36 @@ pub struct NvmeQueueStats {
 // ============================================================================
 
 const MAX_CORES: usize = 256;
+const INVALID_CORE_ID: u32 = u32::MAX;
 static QUEUES: [AtomicPtr<PerCoreNvmeQueue>; MAX_CORES] =
     [const { AtomicPtr::new(ptr::null_mut()) }; MAX_CORES];
+static APIC_TO_CORE: [AtomicU32; MAX_CORES] =
+    [const { AtomicU32::new(INVALID_CORE_ID) }; MAX_CORES];
 
 /// ISR用にキューを登録
 pub fn register_queue(core_id: u32, queue: &PerCoreNvmeQueue) {
     if (core_id as usize) < MAX_CORES {
         QUEUES[core_id as usize].store(queue as *const _ as *mut _, Ordering::Release);
+    }
+}
+
+/// APIC ID -> core ID の対応を登録
+pub fn register_apic_mapping(apic_id: u32, core_id: u32) {
+    if (apic_id as usize) < MAX_CORES {
+        APIC_TO_CORE[apic_id as usize].store(core_id, Ordering::Release);
+    }
+}
+
+/// APIC ID からコアIDを取得
+pub fn apic_to_core(apic_id: u32) -> Option<u32> {
+    if (apic_id as usize) >= MAX_CORES {
+        return None;
+    }
+    let core_id = APIC_TO_CORE[apic_id as usize].load(Ordering::Acquire);
+    if core_id == INVALID_CORE_ID {
+        None
+    } else {
+        Some(core_id)
     }
 }
 
@@ -73,7 +96,8 @@ pub fn get_local_queue() -> Option<&'static PerCoreNvmeQueue> {
     // For now, using crate::apic::local_apic_id() if available or similar.
     // Actually, interrupt_manager has `current_apic_id()`.
 
-    let core_id = current_apic_id();
+    let apic_id = current_apic_id();
+    let core_id = apic_to_core(apic_id).unwrap_or(apic_id);
     if (core_id as usize) < MAX_CORES {
         let ptr = QUEUES[core_id as usize].load(Ordering::Acquire);
         if !ptr.is_null() {
@@ -190,16 +214,14 @@ impl PerCoreNvmeQueue {
 
         // CIDはSQのtailから取得
         let cid = qp.sq().tail();
+        let cmd = NvmeCommand::read(cid, nsid, lba, blocks, prp1, prp2);
+        let _tail = qp.submit_no_doorbell(&cmd)?;
 
-        // Register pending request BEFORE submission to ensure we don't miss completion
-        // if it happens abnormally fast (though unlikely given SQ doorbells)
+        // Register pending request BEFORE doorbell to avoid missing completions
         {
             let mut pending = self.pending_requests.lock();
             let _ = pending.register(cid, qp.sq().qid());
         }
-
-        let cmd = NvmeCommand::read(cid, nsid, lba, blocks, prp1, prp2);
-        let _tail = qp.sq().submit_no_doorbell(&cmd)?;
 
         self.stats
             .commands_submitted
@@ -236,7 +258,8 @@ impl PerCoreNvmeQueue {
         // CIDはSQのtailから取得
         let cid = qp.sq().tail();
         let cmd = NvmeCommand::read(cid, nsid, lba, blocks, prp1, prp2);
-        qp.submit(&cmd)?;
+        let _tail = qp.submit_no_doorbell(&cmd)?;
+        qp.sq().ring_doorbell();
 
         self.stats
             .commands_submitted
@@ -265,15 +288,14 @@ impl PerCoreNvmeQueue {
 
         // CIDはSQのtailから取得
         let cid = qp.sq().tail();
+        let cmd = NvmeCommand::write(cid, nsid, lba, blocks, prp1, prp2);
+        let _tail = qp.submit_no_doorbell(&cmd)?;
 
-        // Register pending request
+        // Register pending request BEFORE doorbell
         {
             let mut pending = self.pending_requests.lock();
             let _ = pending.register(cid, qp.sq().qid());
         }
-
-        let cmd = NvmeCommand::write(cid, nsid, lba, blocks, prp1, prp2);
-        let _tail = qp.sq().submit_no_doorbell(&cmd)?;
 
         self.stats
             .commands_submitted
@@ -286,6 +308,68 @@ impl PerCoreNvmeQueue {
         let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
 
         // 閾値を超えたらドアベルをフラッシュ
+        if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
+            unsafe { self.flush_doorbell() };
+        }
+
+        Ok(cid)
+    }
+
+    /// フラッシュコマンドを発行
+    ///
+    /// # Safety
+    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    pub unsafe fn flush(&self, nsid: u32) -> Result<u16, &'static str> {
+        let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
+
+        let cid = qp.sq().tail();
+        let cmd = NvmeCommand::flush(cid, nsid);
+        let _tail = qp.submit_no_doorbell(&cmd)?;
+
+        {
+            let mut pending = self.pending_requests.lock();
+            let _ = pending.register(cid, qp.sq().qid());
+        }
+
+        self.stats
+            .commands_submitted
+            .fetch_add(1, Ordering::Relaxed);
+
+        let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
+        if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
+            unsafe { self.flush_doorbell() };
+        }
+
+        Ok(cid)
+    }
+
+    /// Dataset Management (TRIM) コマンドを発行
+    ///
+    /// # Safety
+    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// prp1は有効な物理アドレスである必要がある。
+    pub unsafe fn dataset_management(
+        &self,
+        nsid: u32,
+        nr: u8,
+        prp1: u64,
+    ) -> Result<u16, &'static str> {
+        let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
+
+        let cid = qp.sq().tail();
+        let cmd = NvmeCommand::dataset_management(cid, nsid, nr, prp1);
+        let _tail = qp.submit_no_doorbell(&cmd)?;
+
+        {
+            let mut pending = self.pending_requests.lock();
+            let _ = pending.register(cid, qp.sq().qid());
+        }
+
+        self.stats
+            .commands_submitted
+            .fetch_add(1, Ordering::Relaxed);
+
+        let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
             unsafe { self.flush_doorbell() };
         }
@@ -310,7 +394,8 @@ impl PerCoreNvmeQueue {
         // CIDはSQのtailから取得
         let cid = qp.sq().tail();
         let cmd = NvmeCommand::write(cid, nsid, lba, blocks, prp1, prp2);
-        qp.submit(&cmd)?;
+        let _tail = qp.submit_no_doorbell(&cmd)?;
+        qp.sq().ring_doorbell();
 
         self.stats
             .commands_submitted
@@ -413,12 +498,24 @@ impl PerCoreNvmeQueue {
 
     /// Wakerを登録（非同期I/O用）
     pub fn register_waker(&self, cid: u16, waker: Waker) {
-        self.pending_requests.lock().set_waker(cid, waker);
+        let wake = {
+            let mut pending = self.pending_requests.lock();
+            pending.set_waker(cid, waker)
+        };
+        if let Some(waker) = wake {
+            waker.wake();
+        }
     }
 
     /// 完了を確認（ISRが処理済みのものを取得）
     pub fn check_completion(&self, cid: u16) -> Option<NvmeCompletion> {
         self.pending_requests.lock().check_completion(cid)
+    }
+
+    /// 完了を取得してペンディングから削除
+    pub fn take_completion(&self, cid: u16) -> Option<NvmeCompletion> {
+        let mut pending = self.pending_requests.lock();
+        pending.take(cid).and_then(|req| req.result().cloned())
     }
 
     /// 保留中のリクエストマップを取得（ISR用）

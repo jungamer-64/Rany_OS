@@ -384,6 +384,26 @@ pub fn test_storage() -> IntegrationTestSuite {
         }
     }));
 
+    suite.add_result(run_test("nvme_polling_basic", || {
+        let active = crate::io::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
+        if !active {
+            return Ok(String::from("NVMe driver not initialized; skipped"));
+        }
+
+        let queue_ready = crate::io::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
+        if !queue_ready {
+            return Err(String::from("NVMe queue missing for core 0"));
+        }
+
+        let handle = crate::fs::DirectBlockHandle::new(1, 0, 1, 512);
+        let mut buf = [0u8; 512];
+        match crate::task::block_on(handle.read_blocks(0, &mut buf)) {
+            Ok(n) if n == buf.len() => Ok(String::from("NVMe read ok")),
+            Ok(n) => Err(alloc::format!("NVMe read size mismatch: {}", n)),
+            Err(e) => Err(alloc::format!("NVMe read failed: {:?}", e)),
+        }
+    }));
+
     suite
 }
 

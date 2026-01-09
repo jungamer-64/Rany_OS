@@ -865,12 +865,14 @@ impl ProcessAddressSpace {
         };
 
         // 3. Allocate Huge Frame
-        let huge_frame = match alloc_huge_frame() {
+        let huge_frame: PhysFrame<Size2MiB> = match alloc_huge_frame() {
             Some(f) => f,
             None => return false,
         };
-        let huge_phys = huge_frame.start_address();
-        let huge_virt = super::mapping::phys_to_virt(huge_phys);
+        let huge_phys_x64 = huge_frame.start_address(); // x86_64::PhysAddr
+        let huge_virt = super::mapping::phys_to_virt(huge_phys_x64); // mapping uses x86_64 types
+        // For higher_half functions, convert:
+        let huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
 
         // 4. Zero the huge page (safety)
         unsafe {
@@ -880,8 +882,7 @@ impl ProcessAddressSpace {
         // 5. Copy data and prepare for switch
         let pt_root = self.page_table_root.load(Ordering::Acquire);
         if pt_root == 0 {
-            let idx = super::types::FrameIndex::new(huge_phys.frame_number() as usize);
-            super::buddy_allocator::dealloc_frame(idx, 9);
+            buddy_dealloc_frame_2m(huge_frame);
             return false; 
         }
 
@@ -889,11 +890,10 @@ impl ProcessAddressSpace {
         let indices = start_addr.page_table_indices();
         
         // Scope for unsafe PT walk and updates
-        let result = unsafe { self.perform_promotion(pt_root, indices, huge_phys, protection) };
+        let result = unsafe { self.perform_promotion(pt_root, indices, huge_phys_x64, protection) };
         
         if !result {
-             let idx = super::types::FrameIndex::new(huge_phys.frame_number() as usize);
-             super::buddy_allocator::dealloc_frame(idx, 9);
+            buddy_dealloc_frame_2m(huge_frame);
         }
         
         result
@@ -904,10 +904,12 @@ impl ProcessAddressSpace {
         &self, 
         pt_root: u64, 
         indices: [usize; 4], 
-        huge_phys: PhysAddr,
+        huge_phys_x64: X64PhysAddr,
         protection: Protection
     ) -> bool {
         use super::higher_half::{PageTable, PageFlags, PageTableEntry};
+        // Convert x86_64::PhysAddr to higher_half::PhysAddr for PT operations
+        let huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
         
         // Level 4 (PML4)
         let pml4_phys = PhysAddr::new(pt_root);
@@ -933,21 +935,22 @@ impl ProcessAddressSpace {
         let pt_phys = pde.phys_addr();
         let pt = &*super::higher_half::phys_to_virt(pt_phys).as_ptr::<PageTable>();
         
-        let huge_base_virt = super::mapping::phys_to_virt(huge_phys);
+        let huge_base_virt = super::mapping::phys_to_virt(huge_phys_x64);
         
         let mut frames_to_free = Vec::new();
         
         for i in 0..512 {
             let pte = pt.entry(i);
             if pte.is_present() {
-                let src_phys = pte.phys_addr();
-                let src_virt = super::mapping::phys_to_virt(src_phys);
-                let dst_virt = huge_base_virt.offset(i as u64 * 4096);
+                let src_phys_hh = pte.phys_addr(); // higher_half::PhysAddr
+                let src_phys_x64 = X64PhysAddr::new(src_phys_hh.as_u64());
+                let src_virt = super::mapping::phys_to_virt(src_phys_x64);
+                let dst_virt = huge_base_virt + (i as u64 * 4096);
                 
                 // Copy 4KB
                 core::ptr::copy_nonoverlapping(src_virt.as_ptr::<u8>(), dst_virt.as_mut_ptr::<u8>(), 4096);
                 
-                frames_to_free.push(src_phys);
+                frames_to_free.push(src_phys_hh);
             }
         }
         
@@ -965,15 +968,17 @@ impl ProcessAddressSpace {
         let _vaddr_canon = if vaddr & (1 << 47) != 0 { vaddr | 0xFFFF000000000000 } else { vaddr };
         core::arch::asm!("invlpg [{}]", in(reg) _vaddr_canon);
 
-        // Free old frames
+        // Free old frames using x86_64 PhysFrame
         for frame in frames_to_free {
-             let idx = super::types::FrameIndex::new(frame.frame_number() as usize);
-             super::buddy_allocator::dealloc_frame(idx, 0);
+            let frame_addr = X64PhysAddr::new(frame.as_u64());
+            let phys_frame: PhysFrame<Size4KiB> = PhysFrame::from_start_address(frame_addr).unwrap();
+            buddy_dealloc_frame(phys_frame);
         }
         
         // Free the PT frame
-        let pt_idx = super::types::FrameIndex::new(pt_phys.frame_number() as usize);
-        super::buddy_allocator::dealloc_frame(pt_idx, 0);
+        let pt_frame_addr = X64PhysAddr::new(pt_phys.as_u64());
+        let pt_frame: PhysFrame<Size4KiB> = PhysFrame::from_start_address(pt_frame_addr).unwrap();
+        buddy_dealloc_frame(pt_frame);
         
         true
     }

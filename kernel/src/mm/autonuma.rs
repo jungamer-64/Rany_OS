@@ -374,15 +374,20 @@ impl NumaScanner {
 
 /// 現在のプロセスのAutoNUMAスキャンを試行
 pub fn try_scan_current_process() {
-    use crate::task::process::{get_current_process, process_manager};
-    let pid = get_current_process();
-    // KERNEL/INIT以外をスキャン対象とする
-    if pid != crate::task::process::ProcessId::KERNEL {
-        if let Some(proc_lock) = process_manager().get(pid) {
-            let proc_info = crate::task::process::ProcessInfo { pid, numa_scan_addr: core::sync::atomic::AtomicU64::new(0) };
-            NUMA_SCANNER.scan_task(&proc_info);
-        }
-    }
+    // TODO: Fix ProcessInfo type mismatch - scan_task expects a different struct
+    // than what process::ProcessInfo provides. Need to either:
+    // 1. Add numa_scan_addr field to process::ProcessInfo
+    // 2. Create a separate NumaScanInfo trait/struct
+    // 3. Change scan_task signature to accept just PID
+    
+    // Temporarily disabled until design is resolved.
+    // use crate::task::process::{get_current_process, process_manager};
+    // let pid = get_current_process();
+    // if pid != crate::task::process::ProcessId::KERNEL {
+    //     if let Some(proc_lock) = process_manager().get(pid) {
+    //         // ...
+    //     }
+    // }
 }
 
 /// グローバルスキャナ

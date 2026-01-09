@@ -5,6 +5,8 @@
 
 use graphic_types::FramebufferInfo;
 
+pub const EXO_BOOT_INFO_VERSION: u64 = 2;
+
 /// Boot information passed from ExoLoader (UEFI) to the Kernel.
 ///
 /// This struct must be `#[repr(C)]` to ensure ABI compatibility between
@@ -27,10 +29,9 @@ pub struct ExoBootInfo {
     /// Length of the command line string.
     pub cmdline_len: u64,
 
-    /// Physical address of the PML4 page table (CR3 value) created by the bootloader.
+    /// Physical address of the root page table (CR3 value) created by the bootloader.
     /// This allows the kernel to immediately take over memory management without finding it again.
     pub page_table_base: u64,
-
     /// TLS (Thread Local Storage) template information.
     /// Required for initializing TLS for the BSP and APs.
     pub tls_template: TlsInfo,
@@ -80,6 +81,11 @@ pub struct ExoBootInfo {
     /// Self-test results.
     /// Contains results from boot-time hardware validation.
     pub self_test: SelfTestInfo,
+
+    /// Paging levels used by the bootloader (4 or 5).
+    pub paging_levels: u64,
+    /// LA57 enabled state (1 if CR4.LA57 is set, 0 otherwise).
+    pub la57_enabled: u64,
 }
 
 /// Initramfs module information.

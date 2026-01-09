@@ -81,7 +81,7 @@ impl<'a> Future for ReadFuture<'a> {
             }
 
             // Not completed, register waker
-            pending.set_waker(self.cid, cx.waker().clone());
+            let wake = pending.set_waker(self.cid, cx.waker().clone());
 
             // Check one more time to avoid race condition
             if let Some(completion) = pending.check_completion(self.cid) {
@@ -92,6 +92,10 @@ impl<'a> Future for ReadFuture<'a> {
                 } else {
                     return Poll::Ready(Err(NvmeError::CommandError(completion)));
                 }
+            }
+            drop(pending);
+            if let Some(waker) = wake {
+                waker.wake();
             }
         } else {
             return Poll::Ready(Err(NvmeError::QueueNotFound));
@@ -142,7 +146,7 @@ impl<'a> Future for WriteFuture<'a> {
             }
 
             // Not completed, register waker
-            pending.set_waker(self.cid, cx.waker().clone());
+            let wake = pending.set_waker(self.cid, cx.waker().clone());
 
             // Check one more time
             if let Some(completion) = pending.check_completion(self.cid) {
@@ -153,6 +157,10 @@ impl<'a> Future for WriteFuture<'a> {
                 } else {
                     return Poll::Ready(Err(NvmeError::CommandError(completion)));
                 }
+            }
+            drop(pending);
+            if let Some(waker) = wake {
+                waker.wake();
             }
         } else {
             return Poll::Ready(Err(NvmeError::QueueNotFound));

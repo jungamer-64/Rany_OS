@@ -44,7 +44,8 @@ pub static __tls_end: u8 = 0;
 #[cfg(feature = "full_mm_tests")]
 pub mod fs;
 
-
+// Intrusive collections for kernel use (always available)
+pub mod collections;
 
 #[cfg(feature = "full_mm_tests")]
 pub mod mm;
@@ -1087,6 +1088,7 @@ pub mod task {
 
                 pub fn check_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> { None }
                 pub fn register_waker(&self, _core_id: u32, _cid: u16, _waker: core::task::Waker) {}
+                pub fn namespace_block_size(&self, _nsid: u32) -> u32 { 512 }
             }
 
             pub mod global {

@@ -152,7 +152,7 @@ impl PendingRequests {
     pub fn take(&mut self, cid: u16) -> Option<AsyncIoRequest> {
         let idx = (cid as usize) % 256;
         if let Some(ref req) = self.requests[idx] {
-            if req.cid == cid {
+            if req.cid == cid && req.is_complete() {
                 self.active_count.fetch_sub(1, Ordering::Relaxed);
                 return self.requests[idx].take();
             }
@@ -161,13 +161,18 @@ impl PendingRequests {
     }
 
     /// Wakerを設定
-    pub fn set_waker(&mut self, cid: u16, waker: Waker) {
+    pub fn set_waker(&mut self, cid: u16, waker: Waker) -> Option<Waker> {
         let idx = (cid as usize) % 256;
         if let Some(ref mut req) = self.requests[idx] {
             if req.cid == cid {
+                if req.is_complete() {
+                    return Some(waker);
+                }
                 req.waker = Some(waker);
+                return None;
             }
         }
+        Some(waker)
     }
 
     /// 完了を確認（ステータスチェックのみ）

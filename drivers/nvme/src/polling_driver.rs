@@ -28,6 +28,7 @@ use super::controller::{
     NvmeControllerStatus, POLL_BATCH_SIZE, QUEUE_ENTRY_SIZE,
 };
 use super::defs::AdminOpcode;
+use super::identify::IdentifyNamespace;
 use super::per_core::PerCoreNvmeQueue;
 use super::queue::QueuePair;
 
@@ -62,12 +63,20 @@ pub struct NvmePollingDriver {
     admin_queue: Option<QueuePair>,
     /// コアごとのI/Oキュー
     io_queues: Vec<PerCoreNvmeQueue>,
+    /// 初期化済みI/Oキュー数
+    io_queue_count: u16,
+    /// コアごとのI/O SQ DMAバッファ
+    io_sq_buffers: Vec<Option<DmaBuffer>>,
+    /// コアごとのI/O CQ DMAバッファ
+    io_cq_buffers: Vec<Option<DmaBuffer>>,
     /// 名前空間ID
     pub nsid: u32,
     /// 最大転送サイズ
     max_transfer_size: usize,
     /// 最大キュー深度
     pub max_queue_depth: u16,
+    /// 名前空間の論理ブロックサイズ（バイト）
+    namespace_block_size: u32,
     /// アロケートされたI/Oキュー数
     allocated_sq_count: u16,
     allocated_cq_count: u16,
@@ -91,8 +100,12 @@ impl NvmePollingDriver {
     /// 新しいドライバを作成
     pub fn new(bar0: u64, num_cores: u32) -> Self {
         let mut io_queues = Vec::new();
+        let mut io_sq_buffers = Vec::new();
+        let mut io_cq_buffers = Vec::new();
         for i in 0..num_cores {
             io_queues.push(PerCoreNvmeQueue::new(i));
+            io_sq_buffers.push(None);
+            io_cq_buffers.push(None);
         }
 
         Self {
@@ -101,13 +114,17 @@ impl NvmePollingDriver {
             doorbell_stride: 4, // デフォルト
             admin_queue: None,
             io_queues,
+            io_queue_count: 0,
+            io_sq_buffers,
+            io_cq_buffers,
             nsid: 1,
             max_transfer_size: MAX_TRANSFER_SIZE,
             max_queue_depth: DEFAULT_QUEUE_DEPTH,
+            namespace_block_size: 512,
             allocated_sq_count: 0,
             allocated_cq_count: 0,
             active: AtomicBool::new(false),
-            interrupt_mode: true, // 割り込みモード (Reactor Pattern)
+            interrupt_mode: false, // ポーリングモードをデフォルトにする
             cmb_info: None,
             use_cmb: true, // デフォルトでCMBを使用（利用可能なら）
             admin_sq_buffer: None,
@@ -252,12 +269,90 @@ impl NvmePollingDriver {
         // コントローラを有効化
         self.enable_controller()?;
 
-        self.active.store(true, Ordering::Release);
+        // Identify Namespaceでブロックサイズを取得
+        if let Ok(ns) = self.identify_namespace(self.nsid) {
+            let block_size = ns.block_size() as u32;
+            if block_size != 0 {
+                self.namespace_block_size = block_size;
+            }
+        }
+
+        // I/Oキューを初期化
+        let num_cores = self.io_queues.len() as u32;
+        self.init_io_queues(num_cores)?;
+
         self.active.store(true, Ordering::Release);
 
-        // Register Interrupt Handler
-        // The driver cannot directly access kernel::io::interrupt_manager from here.
-        // The integration layer (kernel) must register the irq_handler exported by per_core.
+        Ok(())
+    }
+
+    /// I/Oキューを初期化
+    fn init_io_queues(&mut self, num_cores: u32) -> Result<(), &'static str> {
+        if num_cores == 0 {
+            return Err("No cores available for I/O queues");
+        }
+
+        // コントローラに対してI/Oキュー数を要求
+        let (allocated_sq, allocated_cq) =
+            self.set_num_queues(num_cores as u16, num_cores as u16).unwrap_or((1, 1));
+        let io_queue_count = core::cmp::min(allocated_sq, allocated_cq).min(num_cores as u16);
+        if io_queue_count == 0 {
+            return Err("No I/O queues allocated by controller");
+        }
+
+        let depth = self
+            .max_queue_depth
+            .min(DEFAULT_QUEUE_DEPTH as u16)
+            .max(2);
+        let kernel = kernel_api::services::kernel();
+
+        for core_id in 0..io_queue_count as u32 {
+            let sq_size = (depth as usize) * QUEUE_ENTRY_SIZE;
+            let cq_size = (depth as usize) * CQ_ENTRY_SIZE;
+
+            // CQバッファはホストメモリから確保
+            let cq_buffer = kernel
+                .alloc_dma(cq_size)
+                .map_err(|_| "Failed to allocate IO CQ DMA buffer")?;
+            let cq_phys = cq_buffer.physical_address();
+            if cq_phys & 0xFFF != 0 {
+                return Err("IO CQ DMA buffer not 4KB aligned");
+            }
+            let cq_ptr = cq_buffer.as_ptr() as *mut NvmeCompletion;
+
+            // SQはCMB優先（利用不可ならホストメモリ）
+            if self.use_cmb && self.has_cmb() {
+                if let Ok((_qid, _sq_addr)) =
+                    self.create_io_queue_with_cmb(core_id, cq_ptr, cq_phys, depth)
+                {
+                    self.io_cq_buffers[core_id as usize] = Some(cq_buffer);
+                    continue;
+                }
+            }
+
+            let sq_buffer = kernel
+                .alloc_dma(sq_size)
+                .map_err(|_| "Failed to allocate IO SQ DMA buffer")?;
+            let sq_phys = sq_buffer.physical_address();
+            if sq_phys & 0xFFF != 0 {
+                return Err("IO SQ DMA buffer not 4KB aligned");
+            }
+            let sq_ptr = sq_buffer.as_ptr() as *mut NvmeCommand;
+
+            self.create_io_queue_pair_internal(
+                core_id,
+                sq_ptr,
+                cq_ptr,
+                sq_phys,
+                cq_phys,
+                depth,
+            )?;
+
+            self.io_sq_buffers[core_id as usize] = Some(sq_buffer);
+            self.io_cq_buffers[core_id as usize] = Some(cq_buffer);
+        }
+
+        self.io_queue_count = self.allocated_sq_count;
 
         Ok(())
     }
@@ -347,6 +442,36 @@ impl NvmePollingDriver {
         }
 
         Err("Identify Controller timeout")
+    }
+
+    /// Identify Namespaceコマンドを発行
+    fn identify_namespace(&mut self, nsid: u32) -> Result<IdentifyNamespace, &'static str> {
+        let admin_queue = self
+            .admin_queue
+            .as_ref()
+            .ok_or("Admin queue not initialized")?;
+
+        let kernel = kernel_api::services::kernel();
+        let identify_buffer = kernel
+            .alloc_dma(4096)
+            .map_err(|_| "Failed to allocate Identify Namespace DMA buffer")?;
+        let buffer_phys = identify_buffer.physical_address();
+
+        let cid = admin_queue.sq().tail();
+        let cmd = NvmeCommand::identify_namespace(cid, nsid, buffer_phys);
+        admin_queue.submit(&cmd)?;
+
+        self.poll_admin_completion()?;
+
+        let ns = unsafe { &*(identify_buffer.as_ptr() as *const IdentifyNamespace) };
+        let ns_copy = *ns;
+
+        if let Some(buf) = self.identify_buffer.take() {
+            kernel.free_dma(buf);
+        }
+        self.identify_buffer = Some(identify_buffer);
+
+        Ok(ns_copy)
     }
 
     /// Set Features - Number of Queuesを設定
@@ -549,7 +674,16 @@ impl NvmePollingDriver {
 
     /// コアのキューを取得
     pub fn get_queue(&self, core_id: u32) -> Option<&PerCoreNvmeQueue> {
-        self.io_queues.get(core_id as usize)
+        let max_queues = self.io_queue_count as u32;
+        if max_queues == 0 || core_id >= max_queues {
+            return None;
+        }
+        let queue = self.io_queues.get(core_id as usize)?;
+        if queue.is_initialized() {
+            Some(queue)
+        } else {
+            None
+        }
     }
 
     // ========================================================================
@@ -566,15 +700,7 @@ impl NvmePollingDriver {
             None => return 0,
         };
 
-        let mut completed = 0;
-
-        for _ in 0..POLL_BATCH_SIZE {
-            if let Some(_cqe) = unsafe { queue.poll() } {
-                completed += 1;
-            } else {
-                break;
-            }
-        }
+        let completed = unsafe { queue.process_completions() };
 
         if completed == 0 {
             cpu_pause();
@@ -598,7 +724,9 @@ impl NvmePollingDriver {
         prp2: u64,
     ) -> Result<u16, &'static str> {
         let queue = self.get_queue(core_id).ok_or("Queue not found")?;
-        unsafe { queue.read(nsid, lba, blocks, prp1, prp2) }
+        let cid = unsafe { queue.read(nsid, lba, blocks, prp1, prp2) }?;
+        unsafe { queue.flush_doorbell() };
+        Ok(cid)
     }
 
     /// ライトコマンドを発行
@@ -616,7 +744,38 @@ impl NvmePollingDriver {
         prp2: u64,
     ) -> Result<u16, &'static str> {
         let queue = self.get_queue(core_id).ok_or("Queue not found")?;
-        unsafe { queue.write(nsid, lba, blocks, prp1, prp2) }
+        let cid = unsafe { queue.write(nsid, lba, blocks, prp1, prp2) }?;
+        unsafe { queue.flush_doorbell() };
+        Ok(cid)
+    }
+
+    /// フラッシュコマンドを発行
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    pub unsafe fn submit_flush(&self, core_id: u32, nsid: u32) -> Result<u16, &'static str> {
+        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let cid = unsafe { queue.flush(nsid) }?;
+        unsafe { queue.flush_doorbell() };
+        Ok(cid)
+    }
+
+    /// Dataset Management (TRIM) コマンドを発行
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// prp1は有効な物理アドレスである必要がある。
+    pub unsafe fn submit_dataset_management(
+        &self,
+        core_id: u32,
+        nsid: u32,
+        nr: u8,
+        prp1: u64,
+    ) -> Result<u16, &'static str> {
+        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let cid = unsafe { queue.dataset_management(nsid, nr, prp1) }?;
+        unsafe { queue.flush_doorbell() };
+        Ok(cid)
     }
 
     /// 特定のCIDの完了をポーリング
@@ -691,6 +850,11 @@ impl NvmePollingDriver {
         self.active.load(Ordering::Acquire)
     }
 
+    /// 初期化済みI/Oキュー数を取得
+    pub fn io_queue_count(&self) -> u16 {
+        self.io_queue_count
+    }
+
     /// 最大転送サイズを取得
     pub fn max_transfer_size(&self) -> usize {
         self.max_transfer_size
@@ -700,7 +864,11 @@ impl NvmePollingDriver {
     pub fn collect_stats(&self) -> NvmeDriverStats {
         let mut stats = NvmeDriverStats::default();
 
-        for queue in &self.io_queues {
+        for queue in self
+            .io_queues
+            .iter()
+            .take(self.io_queue_count as usize)
+        {
             let qs = queue.stats();
             stats.total_commands_submitted += qs.commands_submitted.load(Ordering::Relaxed);
             stats.total_commands_completed += qs.commands_completed.load(Ordering::Relaxed);
@@ -732,6 +900,12 @@ impl Drop for NvmePollingDriver {
         if let Some(buf) = self.identify_buffer.take() {
             kernel.free_dma(buf);
         }
+        for buf in self.io_sq_buffers.iter_mut().filter_map(|b| b.take()) {
+            kernel.free_dma(buf);
+        }
+        for buf in self.io_cq_buffers.iter_mut().filter_map(|b| b.take()) {
+            kernel.free_dma(buf);
+        }
     }
 }
 
@@ -744,17 +918,40 @@ fn cpu_pause() {
 impl NvmePollingDriver {
     /// Wakerを登録（Reactor Pattern）
     pub fn register_waker(&self, core_id: u32, cid: u16, waker: core::task::Waker) {
-        if let Some(queue) = self.io_queues.get(core_id as usize) {
+        if let Some(queue) = self.get_queue(core_id) {
             queue.register_waker(cid, waker);
         }
     }
 
     /// 完了を確認（ソフトウェア状態のみチェック）
     pub fn check_completion(&self, core_id: u32, cid: u16) -> Option<NvmeCompletion> {
-        if let Some(queue) = self.io_queues.get(core_id as usize) {
+        if let Some(queue) = self.get_queue(core_id) {
             queue.check_completion(cid)
         } else {
             None
+        }
+    }
+
+    /// 完了を取得してペンディングから削除
+    pub fn take_completion(&self, core_id: u32, cid: u16) -> Option<NvmeCompletion> {
+        if let Some(queue) = self.get_queue(core_id) {
+            queue.take_completion(cid)
+        } else {
+            None
+        }
+    }
+
+    /// 割り込みモードかどうか
+    pub fn interrupt_mode(&self) -> bool {
+        self.interrupt_mode
+    }
+
+    /// 名前空間の論理ブロックサイズ（バイト）
+    pub fn namespace_block_size(&self, nsid: u32) -> u32 {
+        if nsid == self.nsid {
+            self.namespace_block_size
+        } else {
+            self.namespace_block_size
         }
     }
 }

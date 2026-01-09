@@ -432,6 +432,10 @@ pub extern "C" fn ap_entry(ap_index: u32) {
     }
     crate::mm::init_per_core_cache_for_cpu(ap_index as usize);
 
+    // Map APIC ID to logical CPU ID for NVMe queue routing.
+    let apic_id = crate::io::apic::local_apic().id() as u32;
+    crate::io::nvme::per_core::register_apic_mapping(apic_id, ap_index);
+
     // Mark as started
     if let Some(bootstrap) = AP_BOOTSTRAP.lock().as_ref() {
         if let Some(info) = bootstrap.get_ap_info(ap_index as usize) {

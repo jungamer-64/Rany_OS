@@ -2378,10 +2378,7 @@ pub unsafe fn init_buddy_allocator(usable_regions: &[(PhysAddr, u64)]) {
 /// 
 /// Returns physical frame of 2MB size.
 pub fn alloc_huge_frame() -> Option<PhysFrame<Size2MiB>> {
-    let order = 9; // 2MB / 4KB = 512 = 2^9
-    let start_frame = BUDDY_ALLOCATOR.lock().allocate(order)?;
-    let phys_addr = PhysAddr::new((start_frame as u64) * PAGE_SIZE_4K);
-    Some(PhysFrame::from_start_address(phys_addr).unwrap())
+    BUDDY_ALLOCATOR.lock().allocate_2m_frame()
 }
 
 /// 4KiB フレームを割り当て（Buddy版）
