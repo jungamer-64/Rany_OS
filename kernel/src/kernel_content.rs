@@ -21,16 +21,6 @@ mod interrupt_macros;
 // ============================================================================
 // Macro Re-exports (from drivers)
 // ============================================================================
-#[deprecated(
-    note = "serial_print is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
-)]
-#[allow(deprecated)]
-pub use serial_driver::serial_print;
-#[deprecated(
-    note = "serial_println is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`)."
-)]
-#[allow(deprecated)]
-pub use serial_driver::serial_println;
 
 mod graphics;
 pub mod interrupts;

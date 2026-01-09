@@ -896,7 +896,7 @@ pub struct BuddyFrameAllocator {
     /// NUMA node -> list of managed (start_frame, end_frame) ranges
     /// This is optional so the allocator can remain const-constructible; it is
     /// initialized during `init` or when regions are registered.
-    numa_regions: Option<BTreeMap<usize, alloc::vec::Vec<(FrameIndex, FrameIndex)>>>,
+    numa_regions: Option<BTreeMap<NumaNodeId, alloc::vec::Vec<(FrameIndex, FrameIndex)>>>,
     /// 探索カーソル: 各オーダーの次回探索開始位置（Round-Robin）
     /// これにより特定領域への割り当て集中を防ぎ、メモリ全体を均等に使用
     search_cursor: [usize; MAX_ORDER + 1],
@@ -995,7 +995,7 @@ impl BuddyFrameAllocator {
             self.add_region(start_frame, end_frame);
 
             if let Some(map) = self.numa_regions.as_mut() {
-                map.entry(0)
+                map.entry(NumaNodeId::NODE_0)
                     .or_insert_with(alloc::vec::Vec::new)
                     .push((start_frame, end_frame));
             }
@@ -1608,7 +1608,7 @@ impl BuddyFrameAllocator {
     }
 
     /// Register a NUMA region for a node and add it to the allocator
-    pub fn register_numa_region(&mut self, node: usize, start: FrameIndex, end: FrameIndex) {
+    pub fn register_numa_region(&mut self, node: NumaNodeId, start: FrameIndex, end: FrameIndex) {
         self.init_layout();
 
         if self.numa_regions.is_none() {
@@ -1661,7 +1661,7 @@ impl BuddyFrameAllocator {
     }
 
     /// Try to allocate a 4KiB frame on a preferred NUMA node; fallback to others and global
-    pub fn allocate_4k_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size4KiB>> {
+    pub fn allocate_4k_frame_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
         // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
         let map_clone = self.numa_regions.clone();
         if let Some(map) = map_clone.as_ref() {
@@ -1696,7 +1696,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 2MiB allocation on a preferred NUMA node
-    pub fn allocate_2m_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size2MiB>> {
+    pub fn allocate_2m_frame_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
         // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
         let map_clone = self.numa_regions.clone();
@@ -1730,7 +1730,7 @@ impl BuddyFrameAllocator {
     }
 
     /// 1GiB allocation on a preferred NUMA node
-    pub fn allocate_1g_frame_on_node(&mut self, node: usize) -> Option<PhysFrame<Size1GiB>> {
+    pub fn allocate_1g_frame_on_node(&mut self, node: NumaNodeId) -> Option<PhysFrame<Size1GiB>> {
         let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
         // Clone the map to avoid borrow conflict with &mut self in allocate_order_in_range
         let map_clone = self.numa_regions.clone();
@@ -2377,7 +2377,7 @@ pub unsafe fn init_buddy_allocator(usable_regions: &[(PhysAddr, u64)]) {
     }
 }
 
-fn borrow_exact_order_from_pmm(order: usize, preferred_node: Option<usize>) -> bool {
+fn borrow_exact_order_from_pmm(order: usize, preferred_node: Option<NumaNodeId>) -> bool {
     if order > MAX_ORDER {
         return false;
     }
@@ -2391,7 +2391,7 @@ fn borrow_exact_order_from_pmm(order: usize, preferred_node: Option<usize>) -> b
 
     let addr = match preferred_node {
         Some(node) => crate::mm::frame_allocator::alloc_contiguous_frames_aligned_on_node(
-            NumaNodeId::new(node as u8),
+            node,
             frames,
             align_bytes,
         )
@@ -2407,11 +2407,11 @@ fn borrow_exact_order_from_pmm(order: usize, preferred_node: Option<usize>) -> b
 
     let node_id = crate::mm::frame_allocator::numa_node_for_addr(addr)
         .unwrap_or(NumaNodeId::NODE_0);
-    buddy_register_numa_region(node_id.as_usize(), addr, size_bytes);
+    buddy_register_numa_region(node_id, addr, size_bytes);
     true
 }
 
-fn borrow_from_pmm_for_order(order: usize, preferred_node: Option<usize>) -> bool {
+fn borrow_from_pmm_for_order(order: usize, preferred_node: Option<NumaNodeId>) -> bool {
     if !crate::mm::frame_allocator::pmm_initialized() {
         return false;
     }
@@ -2508,7 +2508,7 @@ pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
 }
 
 /// Register a NUMA region with the global Buddy Allocator
-pub fn buddy_register_numa_region(node: usize, start: PhysAddr, size: u64) {
+pub fn buddy_register_numa_region(node: NumaNodeId, start: PhysAddr, size: u64) {
     let mut allocator = BUDDY_ALLOCATOR.lock();
     let start_frame = FrameIndex::from_phys_addr(start.as_u64());
     let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
@@ -2516,7 +2516,7 @@ pub fn buddy_register_numa_region(node: usize, start: PhysAddr, size: u64) {
 }
 
 /// Allocate a 4KiB frame preferring the given NUMA node (best-effort)
-pub fn buddy_alloc_frame_on_node(node: usize) -> Option<PhysFrame<Size4KiB>> {
+pub fn buddy_alloc_frame_on_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
     if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_4k_frame_on_node(node) {
         return Some(frame);
     }
@@ -2527,7 +2527,7 @@ pub fn buddy_alloc_frame_on_node(node: usize) -> Option<PhysFrame<Size4KiB>> {
 }
 
 /// Allocate a 2MiB frame preferring the given NUMA node (best-effort)
-pub fn buddy_alloc_frame_2m_on_node(node: usize) -> Option<PhysFrame<Size2MiB>> {
+pub fn buddy_alloc_frame_2m_on_node(node: NumaNodeId) -> Option<PhysFrame<Size2MiB>> {
     if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_2m_frame_on_node(node) {
         return Some(frame);
     }
@@ -2539,7 +2539,7 @@ pub fn buddy_alloc_frame_2m_on_node(node: usize) -> Option<PhysFrame<Size2MiB>> 
 }
 
 /// Allocate a 1GiB frame preferring the given NUMA node (best-effort)
-pub fn buddy_alloc_frame_1g_on_node(node: usize) -> Option<PhysFrame<Size1GiB>> {
+pub fn buddy_alloc_frame_1g_on_node(node: NumaNodeId) -> Option<PhysFrame<Size1GiB>> {
     if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_1g_frame_on_node(node) {
         return Some(frame);
     }
@@ -2739,7 +2739,7 @@ mod tests {
         ));
 
         // Try to allocate a frame preferring that node (best-effort) via PMM borrow
-        let alloc = crate::mm::buddy_alloc_frame_on_node(1).expect("borrowed alloc");
+        let alloc = crate::mm::buddy_alloc_frame_on_node(NumaNodeId::new(1)).expect("borrowed alloc");
         assert!(crate::mm::buddy_allocator::is_managed_by_buddy(
             alloc.start_address()
         ));
@@ -2765,10 +2765,12 @@ mod tests {
         let start_frame = FrameIndex::from_phys_addr(start.as_u64());
         let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
 
-        allocator.register_numa_region(0, start_frame, end_frame);
+        allocator.register_numa_region(NumaNodeId::new(0), start_frame, end_frame);
 
         // Allocate a 4K frame preferring node 0
-        let frame = allocator.allocate_4k_frame_on_node(0).expect("alloc local");
+        let frame = allocator
+            .allocate_4k_frame_on_node(NumaNodeId::new(0))
+            .expect("alloc local");
         assert!(frame.start_address().as_u64() >= start.as_u64());
         assert!(frame.start_address().as_u64() < start.as_u64() + size);
     }
@@ -2783,11 +2785,11 @@ mod tests {
         let start_frame = FrameIndex::from_phys_addr(start.as_u64());
         let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
 
-        allocator.register_numa_region(1, start_frame, end_frame);
+        allocator.register_numa_region(NumaNodeId::new(1), start_frame, end_frame);
 
         // Try 4K allocation on node 1 (2M allocation may fail due to size)
         let frame = allocator
-            .allocate_4k_frame_on_node(1)
+            .allocate_4k_frame_on_node(NumaNodeId::new(1))
             .expect("alloc 4K local");
         assert!(frame.start_address().as_u64() >= start.as_u64());
         assert!(frame.start_address().as_u64() < start.as_u64() + size);

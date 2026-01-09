@@ -532,8 +532,7 @@ define_interrupt!(
 define_interrupt!(
     fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
         // シリアルポートドライバの割り込みハンドラを呼び出し
-        #[allow(deprecated)]
-        crate::io::serial::handle_interrupt();
+        crate::io::serial::dispatch_interrupt();
 
         // Interrupt-Wakerブリッジに通知
         crate::task::interrupt_waker::wake_from_interrupt(

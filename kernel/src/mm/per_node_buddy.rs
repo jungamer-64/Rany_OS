@@ -308,7 +308,7 @@ pub fn alloc_frame_local_first() -> Option<PhysFrame<Size4KiB>> {
 /// 指定ノードから4KiBフレームを割り当て
 pub fn alloc_frame_on_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
     if !is_per_node_initialized() {
-        return super::buddy_allocator::buddy_alloc_frame_on_node(node.as_usize());
+        return super::buddy_allocator::buddy_alloc_frame_on_node(node);
     }
 
     // 指定ノードを試行
@@ -319,7 +319,7 @@ pub fn alloc_frame_on_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
     }
 
     // フォールバック: グローバルBuddy（ノード指定あり）
-    super::buddy_allocator::buddy_alloc_frame_on_node(node.as_usize())
+    super::buddy_allocator::buddy_alloc_frame_on_node(node)
 }
 
 /// 2MiBフレームを割り当て（ローカルノード優先）

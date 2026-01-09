@@ -2000,7 +2000,7 @@ pub struct OldMagazine { /* ... */ }
     - `fetch_add()`, `fetch_sub()`
     - `compare_exchange()`, `compare_exchange_weak()`, `swap()`
   - `AtomicU16`: 16ビットアトミック操作ラッパー
-  - `AtomicU16Wrapper`: 後方互換性エイリアス（非推奨マーク付き）
+  - `AtomicU16Wrapper`: 後方互換性エイリアス（削除済 - 使用法: `AtomicU16` を使用してください）
 - **削除**: `iova_bitmap.rs` の重複定義（約70行削減）
 - **結果**: ビルド警告が 259件 → 199件 に減少
 

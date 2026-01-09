@@ -18,9 +18,6 @@
 
 // FS抽象化レイヤー（旧称: vfs → オプショナルな層であることを明確化）
 pub mod fs_abstraction;
-// 後方互換性のためのエイリアス
-#[deprecated(note = "`vfs` alias is deprecated; use `fs_abstraction` directly.")]
-pub use fs_abstraction as vfs;
 
 pub mod async_ops;
 pub mod block;
@@ -29,9 +26,6 @@ pub mod devfs;
 pub mod ext2;
 pub mod fat32_adapter;
 pub mod page_cluster_buffer;
-#[allow(unused_imports)]
-#[deprecated(note = "`Fat32FileSystem` alias is deprecated; prefer `filesystems::fat32::Fat32FileSystem` or use `fs_abstraction` directly.")]
-pub use fat32_adapter::Fat32FileSystemAdapter as Fat32FileSystem;
 
 // Kernel-provided page-backed cluster allocator
 #[allow(unused_imports)]

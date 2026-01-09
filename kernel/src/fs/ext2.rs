@@ -21,7 +21,7 @@ use alloc::vec::Vec;
 use core::mem;
 
 use super::block::BlockDevice;
-use super::vfs::{
+use super::fs_abstraction::{
     DirEntry, FileAttr, FileMode, FileSystem, FileType, FsError, FsResult, FsStats, Inode,
     InodeNum, OpenFlags,
 };

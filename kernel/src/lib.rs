@@ -484,7 +484,7 @@ pub mod mm {
         }
 
         pub fn alloc_frame_on_numa_node(node: super::types::NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
-            super::buddy_alloc_frame_on_node(node.as_usize())
+            super::buddy_alloc_frame_on_node(node)
         }
 
         pub fn alloc_contiguous_frames(frames: usize) -> Option<PhysAddr> {
@@ -566,7 +566,7 @@ pub mod mm {
         }
     }
 
-    pub fn buddy_alloc_frame_on_node(_node: usize) -> Option<PhysFrame<Size4KiB>> {
+    pub fn buddy_alloc_frame_on_node(_node: types::NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
         buddy_alloc_frame()
     }
 

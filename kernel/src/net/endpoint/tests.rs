@@ -46,8 +46,8 @@ mod tests {
             let _ = inner.transition_to(SocketState::Listening);
         }
 
-        // 空のキューからacceptするとTimeout
-        let result = socket.accept();
+        // 空のキューからnext_incomingするとTimeout
+        let result = socket.next_incoming();
         assert!(matches!(result, Err(SocketError::Timeout)));
     }
 

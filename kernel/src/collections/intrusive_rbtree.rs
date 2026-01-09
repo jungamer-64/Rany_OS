@@ -564,8 +564,8 @@ impl<A: KeyAdapter> RBTree<A> {
 
     /// ノードを削除
     unsafe fn remove_node(&mut self, node: *mut RBLink) {
-        let mut child: *mut RBLink;
-        let mut parent: *mut RBLink;
+        let child: *mut RBLink;
+        let parent: *mut RBLink;
         let color: Color;
 
         if (*node).left.is_null() {

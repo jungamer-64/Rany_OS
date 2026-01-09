@@ -35,7 +35,6 @@ use vfs::block::{
     BlockResult as VfsBlockResult, IoBuffer, IoBufferMut, OwnedBytes, ZcFuture,
     ZeroCopyBlockDevice,
 };
-use x86_64::PhysAddr;
 
 // ============================================================================
 // VirtIO Common Definitions
