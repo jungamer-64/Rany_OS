@@ -44,10 +44,10 @@ use super::types::DmaMapping;
 
 /// Maximum number of mappings per shard.
 /// Should be power of 2 for efficient hash computation.
-pub const SLAB_CAPACITY: usize = 4096;
+pub const SLAB_CAPACITY: usize = 512;
 
 /// Number of hash buckets (should be ~2x capacity for good load factor).
-const HASH_BUCKETS: usize = 8192;
+const HASH_BUCKETS: usize = 1024;
 
 /// Invalid slot index sentinel.
 const INVALID_INDEX: u16 = u16::MAX;

@@ -354,11 +354,42 @@ impl LockedBuddyHeap {
 
 unsafe impl GlobalAlloc for LockedBuddyHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let size = layout.size();
+        let align = layout.align();
+        
+        // Log suspicious allocations
+        if size == 0 {
+             crate::io::log::early_print("[ALLOC] WARNING: alloc called with size 0\n");
+        }
+
         match self.0.lock() {
-            Ok(mut guard) => guard.allocate(layout),
+            Ok(mut guard) => {
+                let ptr = guard.allocate(layout);
+                if ptr.is_null() {
+                    // Manual integer printing (no heap)
+                    crate::io::log::early_print("[ALLOC] FAILED size=");
+                    let mut s = size;
+                    let mut buf = [0u8; 20];
+                    let mut i = 19;
+                    if s == 0 {
+                        buf[i] = b'0';
+                        i -= 1;
+                    } else {
+                        while s > 0 {
+                            buf[i] = b'0' + (s % 10) as u8;
+                            s /= 10;
+                            i -= 1;
+                        }
+                    }
+                    for k in (i+1)..20 {
+                        crate::io::log::early_print_char(buf[k]);
+                    }
+                    crate::io::log::early_print(" align=\n"); // Lazy formatting
+                }
+                ptr
+            }
             Err(_) => {
-                // Poisoned: Heap is corrupt. Return null (OOM).
-                // Cannot log here due to recursion risk.
+                crate::io::log::early_print("[ALLOC] Poisoned lock\n");
                 null_mut()
             }
         }
@@ -860,4 +891,17 @@ pub fn free_memory_kb() -> u64 {
 /// 使用中メモリをKB単位で取得
 pub fn used_memory_kb() -> u64 {
     total_memory_kb().saturating_sub(free_memory_kb())
+}
+
+#[cfg(not(test))]
+#[alloc_error_handler]
+fn alloc_error_handler(layout: alloc::alloc::Layout) -> ! {
+    crate::io::log::early_print("\n!!! ALLOCATION FAILED !!!\n");
+    crate::io::log::early_print("Layout Size: ");
+    crate::io::log::early_print_dec(layout.size() as u64);
+    crate::io::log::early_print("\nLayout Align: ");
+    crate::io::log::early_print_dec(layout.align() as u64);
+    crate::io::log::early_print("\n");
+    
+    panic!("allocation error: size={} align={}", layout.size(), layout.align())
 }

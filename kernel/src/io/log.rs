@@ -695,6 +695,25 @@ impl KernelLogger {
         Self::write_byte_raw(c);
     }
 
+    /// Print a decimal number to serial (no lock, no heap)
+    fn print_dec_raw(mut n: usize) {
+        if n == 0 {
+            Self::write_byte_raw(b'0');
+            return;
+        }
+        let mut buf = [0u8; 20];
+        let mut i = 0;
+        while n > 0 {
+            buf[i] = b'0' + (n % 10) as u8;
+            n /= 10;
+            i += 1;
+        }
+        while i > 0 {
+            i -= 1;
+            Self::write_byte_raw(buf[i]);
+        }
+    }
+
     /// ログレベルのプレフィックスを取得
     fn level_prefix(level: Level) -> &'static str {
         match level {

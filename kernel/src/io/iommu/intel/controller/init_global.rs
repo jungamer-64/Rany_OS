@@ -62,7 +62,13 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
 
 #[cfg(not(test))]
 fn spawn_command_queue_worker(controller: Arc<IommuController>) {
-    crate::task::per_core_executor::spawn(command_queue_worker(controller));
+    let future = command_queue_worker(controller);
+    unsafe {
+        crate::io::log::early_print("[IOMMU] Future size: ");
+        crate::io::log::early_print_dec(core::mem::size_of_val(&future) as u64);
+        crate::io::log::early_print("\n");
+    }
+    crate::task::per_core_executor::spawn(future);
 }
 
 /// Initialize IOMMU using ACPI DMAR table at `dmar_addr`
@@ -112,7 +118,10 @@ pub unsafe fn init_iommu_from_acpi(
                 continue;
             }
 
-            let iova_bits = controller.max_guest_address_width().min(48).max(12);
+            // Cap IOVA space to 36 bits (64GB) to prevent OOM with flat bitmap allocator.
+            // 64GB needs ~2MB bitmap, which fits in our 32MB global heap.
+            // 48 bits (256TB) would need 8GB bitmap.
+            let iova_bits = controller.max_guest_address_width().min(36).max(12);
             let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
             let iova_limit = 1u64 << iova_bits;
             let iova_size = iova_limit.saturating_sub(iova_base);
@@ -193,15 +202,19 @@ pub unsafe fn init_iommu_from_acpi(
 
     #[cfg(not(test))]
     {
-        for controller in &registry.controllers {
+        unsafe { crate::io::log::early_print("[IOMMU] Loop start.\n"); }
+        for (_i, controller) in registry.controllers.iter().enumerate() {
             if controller.command_queue.is_some() {
                 spawn_command_queue_worker(Arc::clone(controller));
             }
         }
+        unsafe { crate::io::log::early_print("[IOMMU] Loop end.\n"); }
     }
+    unsafe { crate::io::log::early_print("[IOMMU] Block end.\n"); }
 
     // Apply Reserved Regions (RMRR)
     // Need to do this before publishing registry because we need mutable access to controllers
+    unsafe { crate::io::log::early_print("[IOMMU] Processing RMRR...\n"); }
     for region in &registry.reserved_regions {
         let page_size = crate::io::iommu::PAGE_SIZE_4K;
         let start = align_down(region.base, page_size);
@@ -266,24 +279,31 @@ pub unsafe fn init_iommu_from_acpi(
             }
         }
     }
+    unsafe { crate::io::log::early_print("[IOMMU] RMRR done.\n"); }
 
+    unsafe { crate::io::log::early_print("[IOMMU] Init registry...\n"); }
     init_registry(registry);
+    unsafe { crate::io::log::early_print("[IOMMU] Registry done.\n"); }
 
     #[cfg(not(test))]
     {
         // Register Intel VT-d driver backend (Phase 1 abstraction hook).
+        unsafe { crate::io::log::early_print("[IOMMU] Registering driver...\n"); }
         super::super::IntelIommuDriver::register_driver();
         crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
 
         // Create default domain 0 for generic DMA mappings (used by panic DMA pool, etc.)
+        unsafe { crate::io::log::early_print("[IOMMU] Creating default domain...\n"); }
         if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
             match driver.create_domain(None, IommuDomainType::Translated) {
                 Ok(id) => log::info!("IOMMU default domain created: ID={}", id),
                 Err(e) => log::warn!("Failed to create default IOMMU domain: {:?}", e),
             }
         }
+        unsafe { crate::io::log::early_print("[IOMMU] Default domain done.\n"); }
 
         // Initialize IOMMU Group Manager
+        unsafe { crate::io::log::early_print("[IOMMU] Init Group Manager...\n"); }
         IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
     }
 
@@ -301,7 +321,7 @@ pub unsafe fn init_iommu(mmio_base: u64) -> Result<(), IommuError> {
         controller.init(config.scalable_mode)?;
     }
 
-    let iova_bits = controller.max_guest_address_width().min(48).max(12);
+    let iova_bits = controller.max_guest_address_width().min(36).max(12);
     let iova_base: u64 = crate::io::iommu::PAGE_SIZE_4K as u64;
     let iova_limit = 1u64 << iova_bits;
     let iova_size = iova_limit.saturating_sub(iova_base);
