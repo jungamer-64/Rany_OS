@@ -85,7 +85,7 @@ impl TextConsole {
     fn color_to_ansi_code(&self, color: Color, is_fg: bool) -> u8 {
         let base = if is_fg { 30 } else { 40 };
         // Very basic mapping
-        match (color.r, color.g, color.b) {
+        match (color.red, color.green, color.blue) {
             (0, 0, 0) => base + 0, // Black
             (255, 0, 0) | (170, 0, 0) => base + 1, // Red
             (0, 255, 0) | (0, 170, 0) => base + 2, // Green
@@ -131,10 +131,10 @@ impl TextConsole {
                     let (fg_ansi, bg_ansi) = cell.attr.effective_colors();
                     
                     let fc = fg_ansi.to_rgb();
-                    let fg = Color { r: (fc >> 16) as u8, g: (fc >> 8) as u8, b: fc as u8 };
+                    let fg = Color { red: (fc >> 16) as u8, green: (fc >> 8) as u8, blue: fc as u8, alpha: 0xFF };
                     
                     let bc = bg_ansi.to_rgb();
-                    let bg = Color { r: (bc >> 16) as u8, g: (bc >> 8) as u8, b: bc as u8 };
+                    let bg = Color { red: (bc >> 16) as u8, green: (bc >> 8) as u8, blue: bc as u8, alpha: 0xFF };
 
                     unsafe {
                         // 背景色描画が必要（フォント描画はグリフのみの場合があるため）
@@ -157,7 +157,7 @@ impl TextConsole {
              let h = self.font.height();
              let w = self.font.width();
              // Draw a white rect at bottom of cell
-             (*self.fb).fill_rect(cx_px, cy_px + h as i32 - 2, w, 2, Color::WHITE);
+             (*self.fb).fill_rect(super::Rect::new(cx_px, (cy_px + h as i32 - 2).max(0), w as u32, 2), Color::WHITE);
         }
     }
 

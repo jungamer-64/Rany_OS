@@ -6,6 +6,8 @@
 #![cfg_attr(feature = "full_mm_tests", allow(unsafe_op_in_unsafe_fn))]
 #![cfg_attr(feature = "full_mm_tests", feature(abi_x86_interrupt))]
 
+extern crate alloc;
+
 // Interrupt helper macro moved to a shared module so it's visible in both the
 // library and binary crate (define_interrupt! is used by modules included by
 // `main.rs`). See `interrupt_macros.rs` for the implementation.

@@ -26,6 +26,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::error::KapiError;
+use kernel_api::KapiResult;
 use kernel_api::services::KernelServices;
 use kernel_api::{
     ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, OpenMode, TaskHandle, TcpEndpoint,

@@ -18,7 +18,9 @@
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
+use alloc::vec;
 use alloc::vec::Vec;
+use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -528,7 +530,7 @@ fn prepare_nvme_sgl(
 
     let entry_count = list.entries().len();
     let device = crate::io::nvme::iommu_device();
-    let mut data_maps = Vec::new();
+    let mut data_maps: Vec<NvmeIommuMapping> = Vec::new();
     let mut mapped_entries = Vec::with_capacity(entry_count);
 
     for entry in list.entries() {
@@ -1044,6 +1046,9 @@ pub struct AsyncReadFuture<'a> {
     io_future: Option<crate::io::io_scheduler::IoFuture>,
     dma_user_len: usize,
     cancel_guard: Option<NvmeCancelGuard>,
+    dma_result: Option<Arc<Mutex<Option<(TypedDmaSlice<CpuOwned>, usize)>>>>,
+    dma_offset_in_block: Option<usize>,
+    dma_dma_len: Option<usize>,
 }
 
 impl<'a> AsyncReadFuture<'a> {
@@ -1055,6 +1060,9 @@ impl<'a> AsyncReadFuture<'a> {
             io_future: None,
             dma_user_len: 0,
             cancel_guard: None,
+            dma_result: None,
+            dma_offset_in_block: None,
+            dma_dma_len: None,
         }
     }
 }
@@ -1109,8 +1117,11 @@ impl<'a> Future for AsyncReadFuture<'a> {
 
                 let canceled = Arc::new(AtomicBool::new(false));
                 self.cancel_guard = Some(NvmeCancelGuard::new(canceled.clone()));
-                let buf_ptr = self.buf.as_mut_ptr();
-                let user_len = to_read;
+                let slot = Arc::new(Mutex::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
+                let slot_clone = slot.clone();
+                self.dma_result = Some(slot);
+                self.dma_offset_in_block = Some(offset_in_block);
+                self.dma_dma_len = Some(dma_len);
 
                 let payload = IoPayload::NvmeRw(NvmeRwPayload {
                     lba,
@@ -1134,19 +1145,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
                         return;
                     }
                     if let IoResult::Success(bytes) = result {
-                        let available = bytes.min(dma_len).min(data.len());
-                        let start = offset_in_block.min(available);
-                        let remaining = available.saturating_sub(start);
-                        let copy_len = remaining.min(user_len);
-                        if copy_len > 0 {
-                            unsafe {
-                                core::ptr::copy_nonoverlapping(
-                                    data.as_slice().as_ptr().add(start),
-                                    buf_ptr,
-                                    copy_len,
-                                );
-                            }
-                        }
+                        *slot_clone.lock() = Some((data, bytes));
                     }
                 });
                 crate::io::io_scheduler::io_scheduler()
@@ -1176,10 +1175,31 @@ impl<'a> Future for AsyncReadFuture<'a> {
                     if let Some(mut guard) = self.cancel_guard.take() {
                         guard.disarm();
                     }
-                    self.file
-                        .position
-                        .fetch_add(self.dma_user_len as u64, Ordering::Relaxed);
-                    return Poll::Ready(Ok(self.dma_user_len));
+
+                    if let Some(slot) = self.dma_result.take() {
+                        let (data, bytes_received) = slot.lock().take().ok_or(FsError::IoError)?;
+                        let dma_len = self.dma_dma_len.take().ok_or(FsError::IoError)?;
+                        let offset_in_block = self.dma_offset_in_block.take().ok_or(FsError::IoError)?;
+                        let available = bytes_received.min(dma_len).min(data.len());
+                        let start = offset_in_block.min(available);
+                        let remaining = available.saturating_sub(start);
+                        let copy_len = remaining.min(self.dma_user_len);
+                        if copy_len > 0 {
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    data.as_slice().as_ptr().add(start),
+                                    self.buf.as_mut_ptr(),
+                                    copy_len,
+                                );
+                            }
+                        }
+                        self.file
+                            .position
+                            .fetch_add(copy_len as u64, Ordering::Relaxed);
+                        return Poll::Ready(Ok(copy_len));
+                    }
+
+                    return Poll::Ready(Err(FsError::IoError));
                 }
                 Poll::Ready(Err(_)) => {
                     if let Some(mut guard) = self.cancel_guard.take() {
@@ -1669,8 +1689,8 @@ impl DirectBlockHandle {
         let lba = self.start_block + block_offset;
         let canceled = Arc::new(AtomicBool::new(false));
         let mut cancel_guard = NvmeCancelGuard::new(canceled.clone());
-        let buf_ptr = buf.as_mut_ptr();
-        let buf_len = buf.len();
+        let slot = Arc::new(Mutex::new(None::<(TypedDmaSlice<CpuOwned>, usize)>));
+        let slot_clone = slot.clone();
         let payload = IoPayload::NvmeRw(NvmeRwPayload {
             lba,
             blocks: blocks as u16,
@@ -1693,12 +1713,7 @@ impl DirectBlockHandle {
                 return;
             }
             if let IoResult::Success(bytes) = result {
-                let copy_len = bytes.min(dma_len).min(buf_len);
-                if copy_len > 0 {
-                    unsafe {
-                        core::ptr::copy_nonoverlapping(data.as_slice().as_ptr(), buf_ptr, copy_len);
-                    }
-                }
+                *slot_clone.lock() = Some((data, bytes));
             }
         });
         crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
@@ -1706,7 +1721,17 @@ impl DirectBlockHandle {
         let result = future.await;
         cancel_guard.disarm();
         match result {
-            Ok(bytes) => Ok(bytes.min(dma_len)),
+            Ok(_reported) => {
+                let mut guard = slot.lock();
+                let (data, bytes_received) = guard.take().ok_or(FsError::IoError)?;
+                let copy_len = bytes_received.min(dma_len).min(buf.len());
+                if copy_len > 0 {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(data.as_slice().as_ptr(), buf.as_mut_ptr(), copy_len);
+                    }
+                }
+                Ok(copy_len)
+            }
             Err(_) => Err(FsError::IoError),
         }
     }
@@ -1982,7 +2007,7 @@ impl DirectBlockHandle {
             return Ok(0);
         }
 
-        if request.offset % self.block_size != 0 {
+        if request.offset % (self.block_size as u64) != 0 {
             return Err(FsError::InvalidArgument);
         }
 
@@ -1994,7 +2019,7 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let block_offset = request.offset / self.block_size;
+        let block_offset = request.offset / (self.block_size as u64);
         let list = sg_request_to_dma_list(request)?;
 
         if request.is_read {

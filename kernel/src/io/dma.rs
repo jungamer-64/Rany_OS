@@ -359,6 +359,12 @@ impl Drop for SliceDmaGuard {
     }
 }
 
+// SAFETY: SliceDmaGuard only holds a raw pointer and allocation metadata for a DMA buffer.
+// Moving it between threads is safe as long as the guard's `complete()` is called exactly once
+// and caller ensures proper synchronization. We assert Send here to allow completion hooks
+// to be executed on poll handlers which may run on other CPUs.
+unsafe impl Send for SliceDmaGuard {}
+
 // ============================================================================
 // 型安全なDMAスライス
 // ============================================================================
