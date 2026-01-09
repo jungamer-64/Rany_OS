@@ -201,6 +201,10 @@ impl Drop for NvmeSglContext {
             map.unmap();
         }
 
+        for map in self.data_maps.drain(..) {
+            map.unmap();
+        }
+
         if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take())
         {
             let _ = list_guard.complete(list_dev);
@@ -2234,7 +2238,27 @@ impl Future for SgIoFuture {
             return Poll::Ready(result);
         }
 
-        *self.request.waker.lock() = Some(cx.waker().clone());
+        {
+            let mut slot = self.request.waker.lock();
+            let replace = match slot.as_ref() {
+                Some(existing) => !existing.will_wake(cx.waker()),
+                None => true,
+            };
+            if replace {
+                *slot = Some(cx.waker().clone());
+            }
+        }
+
+        if self.request.completed.load(Ordering::Acquire) {
+            let result = self
+                .request
+                .result
+                .lock()
+                .take()
+                .unwrap_or(Err(FsError::IoError));
+            return Poll::Ready(result);
+        }
+
         Poll::Pending
     }
 }

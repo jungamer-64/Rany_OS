@@ -348,6 +348,8 @@ impl Executor {
             // 0. Process pending interrupt events and deferred waker notifications (non-ISR)
             // Interrupt events (ISRs) enqueue InterruptSource events; handle them here.
             crate::task::interrupt_waker::process_interrupt_events();
+            // Defer I/O completions to executor context (ISR-safe queue drain).
+            crate::io::io_scheduler::process_deferred_completions();
             // Process any AtomicWaker notifications enqueued by ISRs.
             crate::sync::process_deferred_wakes();
             // Drive IoScheduler dispatch/poll in non-ISR context.

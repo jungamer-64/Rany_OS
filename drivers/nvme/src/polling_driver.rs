@@ -25,7 +25,7 @@ use super::commands::{NvmeCommand, NvmeCompletion};
 use super::controller::{
     CQ_ENTRY_SIZE, CmbInfo, DEFAULT_QUEUE_DEPTH, FEATURE_NUM_QUEUES, MAX_QUEUE_DEPTH,
     MAX_SGL_ENTRIES, MAX_TRANSFER_SIZE, NvmeAdminQueueAttributes, NvmeCapabilities,
-    NvmeControllerConfig, NvmeControllerStatus, POLL_BATCH_SIZE, QUEUE_ENTRY_SIZE,
+    NvmeControllerConfig, NvmeControllerStatus, QUEUE_ENTRY_SIZE,
 };
 use super::defs::{AdminOpcode, SglDescriptor};
 use super::identify::{IdentifyController, IdentifyNamespace};
