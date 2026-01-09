@@ -27,6 +27,7 @@ use core::task::{Context, Poll};
 
 use super::exoshell::{ExoShell, ExoValue};
 use crate::io::serial::{self, InputEvent, LineEditor};
+use crate::console_println;
 
 /// ANSI escape codes for colors
 mod ansi {
@@ -176,30 +177,30 @@ impl History {
 /// This function runs as an async task and handles serial input via interrupts
 #[allow(deprecated)]
 pub async fn run_async_shell() {
-    crate::serial_println!("\n");
-    crate::serial_println!("{}{}", ansi::CYAN, ansi::RESET);
-    crate::serial_println!(
+    console_println!();
+    console_println!("{}{}", ansi::CYAN, ansi::RESET);
+    console_println!(
         "{}{}  RanyOS ExoShell v0.3                            {}{}",
         ansi::CYAN,
         ansi::WHITE,
         ansi::CYAN,
         ansi::RESET
     );
-    crate::serial_println!(
+    console_println!(
         "{}{}  Type 'help' for available commands              {}{}",
         ansi::CYAN,
         ansi::WHITE,
         ansi::CYAN,
         ansi::RESET
     );
-    crate::serial_println!(
+    console_println!(
         "{}{}  Use / for history, Tab for completion         {}{}",
         ansi::CYAN,
         ansi::WHITE,
         ansi::CYAN,
         ansi::RESET
     );
-    crate::serial_println!("{}{}\n", ansi::CYAN, ansi::RESET);
+    console_println!("{}{}\n", ansi::CYAN, ansi::RESET);
 
     let mut exoshell = ExoShell::new();
     // Yield after heavy ExoShell allocation to allow other tasks (e.g., graphical shell) to start
@@ -233,7 +234,7 @@ pub async fn run_async_shell() {
                 // Check for exit command
                 let trimmed = line.trim();
                 if trimmed == "exit" || trimmed == "quit" {
-                    serial::serial1().send_str(&format!(
+                    crate::console::write(&format!(
                         "\n{}Goodbye!{}\n",
                         ansi::YELLOW,
                         ansi::RESET
@@ -262,7 +263,7 @@ pub async fn run_async_shell() {
                         // Input occurred during execution
                         if evt == InputEvent::Interrupt {
                             // Ctrl+C pressed - Execution future is dropped (cancelled)
-                            crate::serial_println!("{}Interrupted!{}", ansi::RED, ansi::RESET);
+                            console_println!("{}Interrupted!{}", ansi::RED, ansi::RESET);
                             print_prompt(&exoshell);
                         } else {
                             // User typed something else (type-ahead or accidental)
@@ -281,7 +282,7 @@ pub async fn run_async_shell() {
                             // We need to keep polling execution future.
 
                             // Refined logic: manual polling loop for "Interrupt-able execution"
-                            crate::serial_println!(
+                            console_println!(
                                 "{}Warning: Input during execution ignored (except Ctrl+C){}",
                                 ansi::YELLOW,
                                 ansi::RESET
@@ -332,7 +333,7 @@ pub async fn run_async_shell() {
                     clear_line(&stream.editor);
                     stream.editor.set_content(prev_line);
                     print_prompt(&exoshell);
-                    serial::serial1().send_str(&stream.editor.content());
+                    crate::console::write(&stream.editor.content());
                 }
             }
 
@@ -341,7 +342,7 @@ pub async fn run_async_shell() {
                     clear_line(&stream.editor);
                     stream.editor.set_content(next_line);
                     print_prompt(&exoshell);
-                    serial::serial1().send_str(&stream.editor.content());
+                    crate::console::write(&stream.editor.content());
                 }
             }
 
@@ -351,25 +352,25 @@ pub async fn run_async_shell() {
                     clear_line(&stream.editor);
                     stream.editor.set_content(&completions[0]);
                     print_prompt(&exoshell);
-                    serial::serial1().send_str(&stream.editor.content());
+                    crate::console::write(&stream.editor.content());
                 } else if completions.len() > 1 {
-                    serial::serial1().send_str("\r\n");
+                    crate::console::write("\r\n");
                     for c in &completions {
-                        serial::serial1().send_str(&format!("  {}\n", c));
+                        crate::console::write(&format!("  {}\n", c));
                     }
                     print_prompt(&exoshell);
-                    serial::serial1().send_str(&stream.editor.content());
+                    crate::console::write(&stream.editor.content());
                 }
             }
 
             InputEvent::Interrupt => {
-                serial::serial1().send_str("^C\n");
+                crate::console::write("^C\n");
                 stream.editor.clear();
                 print_prompt(&exoshell);
             }
 
             InputEvent::Eof => {
-                serial::serial1().send_str(&format!("\n{}exit{}\n", ansi::YELLOW, ansi::RESET));
+                crate::console::write(&format!("\n{}exit{}\n", ansi::YELLOW, ansi::RESET));
                 break;
             }
 
@@ -379,7 +380,8 @@ pub async fn run_async_shell() {
         }
     }
 
-    crate::serial_println!("\n[SHELL] ExoShell terminated");
+    console_println!();
+    console_println!("[SHELL] ExoShell terminated");
 }
 
 /// Execute command in ExoShell (async version)
@@ -390,25 +392,25 @@ async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
     match &result {
         ExoValue::Nil => {}
         ExoValue::Error(e) => {
-            serial::serial1().send_str(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
+            crate::console::write(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
         }
         ExoValue::Bytes(bytes) => {
             if let Ok(text) = core::str::from_utf8(bytes) {
-                serial::serial1().send_str(text);
+                crate::console::write(text);
                 if !text.ends_with('\n') {
-                    serial::serial1().send_str("\n");
+                    crate::console::write("\n");
                 }
             } else {
-                serial::serial1().send_str(&format!("<{} bytes>\n", bytes.len()));
+                crate::console::write(&format!("<{} bytes>\n", bytes.len()));
             }
         }
         ExoValue::Array(items) => {
             for item in items {
-                serial::serial1().send_str(&format!("{}\n", item));
+                crate::console::write(&format!("{}\n", item));
             }
         }
         other => {
-            serial::serial1().send_str(&format!("{}\n", other));
+            crate::console::write(&format!("{}\n", other));
         }
     }
 }
@@ -416,7 +418,7 @@ async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
 /// Print colored prompt
 #[allow(deprecated)]
 fn print_prompt(exoshell: &ExoShell) {
-    serial::serial1().send_str(&format!(
+    crate::console::write(&format!(
         "{}exo{}:{}{}{} {}>{} ",
         ansi::MAGENTA,
         ansi::RESET,
@@ -426,18 +428,17 @@ fn print_prompt(exoshell: &ExoShell) {
         ansi::MAGENTA,
         ansi::RESET
     ));
-}
+} 
 
 /// Clear current line (for history navigation)
 #[allow(deprecated)]
 fn clear_line(_editor: &LineEditor) {
-    let port = serial::serial1();
-    port.send_str("\r");
-    port.send_str("\x1b[K");
+    crate::console::write("\r");
+    crate::console::write("\x1b[K");
 }
 
 /// Start the async shell task
 pub fn spawn_async_shell() {
     crate::task::spawn(run_async_shell());
-    crate::serial_println!("[SHELL] ExoShell task spawned");
+    console_println!("[SHELL] ExoShell task spawned");
 }

@@ -131,7 +131,7 @@ impl<T> PoisonLock<T> {
         #[cfg(test)]
         let start = std::time::Instant::now();
         #[cfg(not(test))]
-        let start = crate::task::current_tick();
+        let start = crate::task::timer::current_tick();
 
         let mut spin_count: u64 = 0;
         let mut backoff = Backoff::new();
@@ -148,7 +148,7 @@ impl<T> PoisonLock<T> {
         #[cfg(test)]
         let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
         #[cfg(not(test))]
-        let acquire_time = crate::task::current_tick().saturating_sub(start);
+        let acquire_time = crate::task::timer::current_tick().saturating_sub(start);
 
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
         LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
@@ -175,7 +175,7 @@ impl<T> PoisonLock<T> {
         #[cfg(test)]
         let start = std::time::Instant::now();
         #[cfg(not(test))]
-        let start = crate::task::current_tick();
+        let start = crate::task::timer::current_tick();
 
         if self
             .locked
@@ -185,7 +185,7 @@ impl<T> PoisonLock<T> {
             #[cfg(test)]
             let acquire_time = std::time::Instant::now().duration_since(start).as_micros() as u64;
             #[cfg(not(test))]
-            let acquire_time = crate::task::current_tick().saturating_sub(start);
+            let acquire_time = crate::task::timer::current_tick().saturating_sub(start);
 
             LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
             LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);

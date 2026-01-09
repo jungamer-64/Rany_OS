@@ -264,7 +264,7 @@ pub fn bench_function_call() -> TestResult {
     let mut syscall_bench = BenchmarkResult::new("exorust_syscall");
     for _ in 0..ITERATIONS {
         let start = rdtsc();
-        let tick = crate::task::current_tick();
+        let tick = crate::task::timer::current_tick();
         let end = rdtsc();
         syscall_bench.record(end - start);
         core::hint::black_box(tick);
