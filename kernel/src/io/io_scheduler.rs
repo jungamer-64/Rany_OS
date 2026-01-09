@@ -17,7 +17,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::{Mutex, RwLock};
 
@@ -1040,6 +1040,210 @@ impl Drop for IoFuture {
 }
 
 // ============================================================================
+// Deferred I/O Completions (ISR-safe queue)
+// ============================================================================
+
+const IO_COMPLETION_QUEUE_SIZE: usize = 256;
+const IO_COMPLETION_QUEUE_MASK: usize = IO_COMPLETION_QUEUE_SIZE - 1;
+const IO_RESULT_ERROR_FLAG: u64 = 1 << 63;
+
+struct DeferredIoCompletionQueue {
+    head: AtomicUsize,
+    tail: AtomicUsize,
+    devices: [AtomicU64; IO_COMPLETION_QUEUE_SIZE],
+    ids: [AtomicU64; IO_COMPLETION_QUEUE_SIZE],
+    results: [AtomicU64; IO_COMPLETION_QUEUE_SIZE],
+}
+
+impl DeferredIoCompletionQueue {
+    const fn new() -> Self {
+        const ZERO: AtomicU64 = AtomicU64::new(0);
+        Self {
+            head: AtomicUsize::new(0),
+            tail: AtomicUsize::new(0),
+            devices: [ZERO; IO_COMPLETION_QUEUE_SIZE],
+            ids: [ZERO; IO_COMPLETION_QUEUE_SIZE],
+            results: [ZERO; IO_COMPLETION_QUEUE_SIZE],
+        }
+    }
+
+    fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
+        let head = self.head.load(Ordering::Relaxed);
+        let tail = self.tail.load(Ordering::Acquire);
+        if head.wrapping_sub(tail) >= IO_COMPLETION_QUEUE_SIZE {
+            return false;
+        }
+
+        let idx = head & IO_COMPLETION_QUEUE_MASK;
+        self.devices[idx].store(encode_device_id(device), Ordering::Release);
+        self.ids[idx].store(id.0, Ordering::Release);
+        self.results[idx].store(encode_io_result(result), Ordering::Release);
+        self.head.store(head.wrapping_add(1), Ordering::Release);
+        true
+    }
+
+    fn pop(&self) -> Option<(DeviceId, IoRequestId, IoResult)> {
+        loop {
+            let tail = self.tail.load(Ordering::Relaxed);
+            let head = self.head.load(Ordering::Acquire);
+            if tail == head {
+                return None;
+            }
+            let idx = tail & IO_COMPLETION_QUEUE_MASK;
+            if self
+                .tail
+                .compare_exchange_weak(
+                    tail,
+                    tail.wrapping_add(1),
+                    Ordering::Release,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                let device_raw = self.devices[idx].load(Ordering::Acquire);
+                let id_raw = self.ids[idx].load(Ordering::Acquire);
+                let result_raw = self.results[idx].load(Ordering::Acquire);
+
+                self.devices[idx].store(0, Ordering::Release);
+                self.ids[idx].store(0, Ordering::Release);
+                self.results[idx].store(0, Ordering::Release);
+
+                let device =
+                    decode_device_id(device_raw).unwrap_or(DeviceId::Custom(0));
+                let id = IoRequestId(id_raw);
+                let result = decode_io_result(result_raw);
+                return Some((device, id, result));
+            }
+            core::hint::spin_loop();
+        }
+    }
+}
+
+static DEFERRED_IO_COMPLETIONS: DeferredIoCompletionQueue = DeferredIoCompletionQueue::new();
+
+fn defer_io_completion(device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
+    DEFERRED_IO_COMPLETIONS.push(device, id, result)
+}
+
+pub fn process_deferred_completions() -> usize {
+    let coordinator = hybrid_coordinator();
+    let scheduler = coordinator.scheduler.clone();
+    let bridge = coordinator.interrupt_bridge();
+    let mut processed = 0;
+
+    while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop() {
+        scheduler.complete_request(id, result);
+        bridge.complete_pending(device, id);
+        processed += 1;
+    }
+
+    processed
+}
+
+fn encode_device_id(device: DeviceId) -> u64 {
+    const KIND_NVME: u64 = 1;
+    const KIND_VIRTIO_BLK: u64 = 2;
+    const KIND_VIRTIO_NET: u64 = 3;
+    const KIND_AHCI: u64 = 4;
+    const KIND_USB: u64 = 5;
+    const KIND_CUSTOM: u64 = 6;
+    const KIND_SHIFT: u64 = 56;
+
+    match device {
+        DeviceId::Nvme {
+            controller,
+            namespace,
+        } => {
+            (KIND_NVME << KIND_SHIFT)
+                | ((controller as u64) << 48)
+                | (namespace as u64)
+        }
+        DeviceId::VirtioBlk { index } => (KIND_VIRTIO_BLK << KIND_SHIFT) | ((index as u64) << 48),
+        DeviceId::VirtioNet { index } => (KIND_VIRTIO_NET << KIND_SHIFT) | ((index as u64) << 48),
+        DeviceId::Ahci { port } => (KIND_AHCI << KIND_SHIFT) | ((port as u64) << 48),
+        DeviceId::Usb { bus, device } => {
+            (KIND_USB << KIND_SHIFT) | ((bus as u64) << 48) | ((device as u64) << 40)
+        }
+        DeviceId::Custom(code) => (KIND_CUSTOM << KIND_SHIFT) | (code as u64),
+    }
+}
+
+fn decode_device_id(raw: u64) -> Option<DeviceId> {
+    if raw == 0 {
+        return None;
+    }
+    let kind = (raw >> 56) & 0xFF;
+    match kind {
+        1 => Some(DeviceId::Nvme {
+            controller: ((raw >> 48) & 0xFF) as u8,
+            namespace: (raw & 0xFFFF_FFFF) as u32,
+        }),
+        2 => Some(DeviceId::VirtioBlk {
+            index: ((raw >> 48) & 0xFF) as u8,
+        }),
+        3 => Some(DeviceId::VirtioNet {
+            index: ((raw >> 48) & 0xFF) as u8,
+        }),
+        4 => Some(DeviceId::Ahci {
+            port: ((raw >> 48) & 0xFF) as u8,
+        }),
+        5 => Some(DeviceId::Usb {
+            bus: ((raw >> 48) & 0xFF) as u8,
+            device: ((raw >> 40) & 0xFF) as u8,
+        }),
+        6 => Some(DeviceId::Custom((raw & 0xFFFF_FFFF) as u32)),
+        _ => None,
+    }
+}
+
+fn encode_io_result(result: IoResult) -> u64 {
+    match result {
+        IoResult::Success(bytes) => {
+            let raw = bytes as u64;
+            if raw >= IO_RESULT_ERROR_FLAG {
+                IO_RESULT_ERROR_FLAG | (io_error_to_u8(IoError::InvalidParameter) as u64)
+            } else {
+                raw
+            }
+        }
+        IoResult::Error(err) => IO_RESULT_ERROR_FLAG | (io_error_to_u8(err) as u64),
+    }
+}
+
+fn decode_io_result(raw: u64) -> IoResult {
+    if (raw & IO_RESULT_ERROR_FLAG) == 0 {
+        return IoResult::Success(raw as usize);
+    }
+    let code = (raw & 0xFF) as u8;
+    IoResult::Error(io_error_from_u8(code))
+}
+
+fn io_error_to_u8(err: IoError) -> u8 {
+    match err {
+        IoError::DeviceError => 1,
+        IoError::Timeout => 2,
+        IoError::Cancelled => 3,
+        IoError::InvalidParameter => 4,
+        IoError::NoResources => 5,
+        IoError::Busy => 6,
+        IoError::NotSupported => 7,
+    }
+}
+
+fn io_error_from_u8(code: u8) -> IoError {
+    match code {
+        1 => IoError::DeviceError,
+        2 => IoError::Timeout,
+        3 => IoError::Cancelled,
+        4 => IoError::InvalidParameter,
+        5 => IoError::NoResources,
+        6 => IoError::Busy,
+        7 => IoError::NotSupported,
+        _ => IoError::DeviceError,
+    }
+}
+
+// ============================================================================
 // Interrupt-to-Waker Bridge
 // ============================================================================
 
@@ -1072,12 +1276,20 @@ impl IoInterruptBridge {
     /// 割り込みハンドラから呼ばれる
     pub fn handle_interrupt(&self, device: DeviceId, results: &[(IoRequestId, IoResult)]) {
         for (id, result) in results {
-            self.scheduler.complete_request(*id, result.clone());
+            if !defer_io_completion(device, *id, result.clone()) {
+                self.scheduler.complete_request(*id, result.clone());
+                self.complete_pending(device, *id);
+            }
         }
+    }
 
-        // 保留リストからも削除
-        if let Some(pending) = self.pending_requests.write().get_mut(&device) {
-            pending.retain(|id| results.iter().all(|(rid, _)| rid != id));
+    fn complete_pending(&self, device: DeviceId, request_id: IoRequestId) {
+        let mut pending_requests = self.pending_requests.write();
+        if let Some(pending) = pending_requests.get_mut(&device) {
+            pending.retain(|id| *id != request_id);
+            if pending.is_empty() {
+                pending_requests.remove(&device);
+            }
         }
     }
 

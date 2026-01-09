@@ -9,7 +9,7 @@ use boot_proto::{ExoBootInfo, EXO_BOOT_INFO_VERSION};
 
 use log::{debug, error, info, warn};
 
-mod allocator;
+
 
 mod domain;
 mod domain_system;
@@ -57,7 +57,7 @@ mod vga;
 // Phase 4: High-Performance & Advanced Features
 mod console;
 mod diag;
-mod smp_advanced;
+
 
 // Phase 5: Extended Features & System Integration
 mod gpu;
@@ -458,10 +458,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
         warn!(target: "init", "No RSDP found provided by bootloader");
     }
 
-    // 1.1. 1GB Huge Page サポートの初期化 (設計書 11.1.1)
-    info!(target: "init", "Initializing 1GB Huge Page support...");
-    mm::huge_pages::init();
-    info!(target: "init", "1GB Huge Page support initialized");
+
 
     // Debug: pinpoint crash location
     io::log::early_print("[DEBUG] After huge_pages::init\n");

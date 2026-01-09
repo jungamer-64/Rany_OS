@@ -14,7 +14,6 @@ pub mod domain_ownership; // 新: ドメインオーナーシップ追跡 (設�
 pub mod exchange_heap;
 pub mod frame_allocator;
 pub mod higher_half;
-pub mod huge_pages; // 新: 1GB Huge Page サポート (設計書 11.1.1)
 pub mod mapping;
 pub mod mmap;
 pub mod numa;
@@ -35,10 +34,10 @@ pub mod page_reclaim; // 新: Page Reclaim + LRU - メモリ回収とActive/Inac
 pub mod workingset; // 新: Workingset Refault Detection - 作業セット追跡
 pub mod pcid;       // 新: PCID (Process Context ID) Management
 pub mod tlb_batch; // 新: TLB Shootdown Batching - バッチ化IPIフラッシュ
-pub mod huge_page; // 新: Huge Page Direct Allocation - Direct Compaction付き
 pub mod rcu_vma; // 新: RCU VMA/PageTable Walk - ロックフリーVMA検索
 pub mod ksm; // 新: KSM (Kernel Same-page Merging) - 重複ページ統合
 pub mod hotplug; // 新: Memory Hotplug - 動的メモリ追加/削除
+pub mod huge_page; // 新: Huge Page Direct Allocation - Direct Compaction付き
 pub mod balloon; // 新: Memory Ballooning - 仮想環境メモリ動的調整
 pub mod memcg; // 新: Memory Cgroup - メモリリソース制限とアカウンティング
 pub mod frame_backing; // 新: Frame backing tracker (frame -> inode/page) for targeted writeback

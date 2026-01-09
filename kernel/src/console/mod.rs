@@ -338,6 +338,16 @@ impl TerminalBuffer {
         self.current_attr = attr;
     }
 
+    /// 列数を取得
+    pub fn cols(&self) -> usize {
+        self.cols
+    }
+
+    /// 行数を取得
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
     /// 行をクリア
     pub fn clear_line(&mut self, mode: ClearMode) {
         let y = self.cursor_y;
