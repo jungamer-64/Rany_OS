@@ -282,22 +282,19 @@ pool.free(packet);
 バッチ処理とゼロコピーを前提とした設計：
 
 ```rust
-use exorust::net::tcp::{TcpEndpoint, TcpSegment};
+use exorust::net::tcp::TcpStream;
 
-// TCPエンドポイント（ソケットではない）
-let endpoint = TcpEndpoint::new(cap)?;
+// TCP接続（Async-first API）
+let mut connection = TcpStream::dial(remote_addr).await?;
 
-// 接続を確立（所有権ベースのハンドシェイク）
-let connection = endpoint.connect(remote_addr).await?;
+// 送信：AsyncWrite トレイトとして書き込む
+connection.write(b"hello").await?;
 
-// 送信：バッファの所有権を渡す
-connection.send_segment(segment).await;
+// 受信：AsyncRead トレイトとして読み出す
+let mut buf = [0u8; 2048];
+let n = connection.read(&mut buf).await?;
 
-// 受信：セグメントの所有権を取得
-let segment: TcpSegment = connection.recv_segment().await;
-
-// バッチ送信（高スループット用）
-connection.send_batch(&mut segment_batch).await;
+// （バッチ送信などの最適化APIは別途提供されます）
 ```
 
 #### 10Gbps最適化API
@@ -339,7 +336,7 @@ let data: Buffer = req.complete().await;
 #### VFS（型付きハンドル）
 
 ```rust
-use exorust::fs::vfs::{File, OpenMode};
+use exorust::fs::fs_abstraction::{File, OpenMode};
 use exorust::security::FsCapability;
 
 // ファイルシステムケイパビリティが必要

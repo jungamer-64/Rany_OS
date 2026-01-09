@@ -31,7 +31,7 @@ use x86_64::PhysAddr;
 use kernel_api::DmaBuffer;
 
 use super::cache::{page_cache, PAGE_SIZE as CACHE_PAGE_SIZE};
-use super::vfs::{
+use super::fs_abstraction::{
     read_inode_by_number, write_inode_by_number, FileAttr, FsError, FsResult, SeekFrom,
 };
 
@@ -1138,6 +1138,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
                 );
                 let request_id = future.request_id();
 
+                let mut ctx: NvmeDmaContext = ctx;
                 ctx.mark_inflight();
                 let hook: CompletionHook = Box::new(move |result| {
                     let data = ctx.complete();
@@ -1326,6 +1327,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                         payload,
                     );
                     let request_id = future.request_id();
+                    let mut ctx: NvmeDmaContext = ctx;
                     ctx.mark_inflight();
                     let hook: CompletionHook = Box::new(move |result| {
                         let data = ctx.complete();
@@ -1375,6 +1377,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                     payload,
                 );
                 let request_id = future.request_id();
+                let mut ctx: NvmeDmaContext = ctx;
                 ctx.mark_inflight();
                 let hook: CompletionHook = Box::new(move |_result| {
                     let _ = ctx.complete();
@@ -1467,6 +1470,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                             payload,
                         );
                         let request_id = future.request_id();
+                        let mut write_ctx: NvmeDmaContext = write_ctx;
                         write_ctx.mark_inflight();
                         let hook: CompletionHook = Box::new(move |_result| {
                             let _ = write_ctx.complete();
@@ -1706,6 +1710,7 @@ impl DirectBlockHandle {
         );
         let request_id = future.request_id();
 
+        let mut ctx: NvmeDmaContext = ctx;
         ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |result| {
             let data = ctx.complete();
@@ -1724,10 +1729,15 @@ impl DirectBlockHandle {
             Ok(_reported) => {
                 let mut guard = slot.lock();
                 let (data, bytes_received) = guard.take().ok_or(FsError::IoError)?;
+                let bytes_received: usize = bytes_received;
                 let copy_len = bytes_received.min(dma_len).min(buf.len());
                 if copy_len > 0 {
                     unsafe {
-                        core::ptr::copy_nonoverlapping(data.as_slice().as_ptr(), buf.as_mut_ptr(), copy_len);
+                    core::ptr::copy_nonoverlapping(
+                        (data as TypedDmaSlice<CpuOwned>).as_slice().as_ptr(),
+                        buf.as_mut_ptr(),
+                        copy_len,
+                    );
                     }
                 }
                 Ok(copy_len)
@@ -1781,6 +1791,7 @@ impl DirectBlockHandle {
             payload,
         );
         let request_id = future.request_id();
+        let mut ctx: NvmeExternalDmaContext = ctx;
         ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |_result| {
             ctx.complete();
@@ -1909,6 +1920,7 @@ impl DirectBlockHandle {
             payload,
         );
         let request_id = future.request_id();
+        let mut ctx: NvmeDmaContext = ctx;
         ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |_result| {
             let _ = ctx.complete();
@@ -1972,6 +1984,7 @@ impl DirectBlockHandle {
                 let request_id = future.request_id();
                 let slot = Arc::new(Mutex::new(None));
                 let slot_clone = slot.clone();
+                let mut ctx: NvmeSglContext = ctx;
                 ctx.mark_inflight();
                 let hook: CompletionHook = Box::new(move |result| {
                     let data = ctx.complete();
@@ -2077,6 +2090,7 @@ impl DirectBlockHandle {
             payload,
         );
         let request_id = future.request_id();
+        let mut ctx: NvmeExternalDmaContext = ctx;
         ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |_result| {
             ctx.complete();
@@ -2138,7 +2152,7 @@ impl DirectBlockHandle {
 
         let device = crate::io::nvme::iommu_device();
         let (prp1, prp_map) = map_nvme_iommu(device, dsm.phys_addr().as_u64(), dsm.len())?;
-        let prp_map = prp_map;
+        let prp_map: Option<NvmeIommuMapping> = prp_map;
         let (dev, guard) = dsm.start_dma();
         let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
             self.io_device(),
@@ -2148,7 +2162,7 @@ impl DirectBlockHandle {
         );
         let request_id = future.request_id();
         let hook: CompletionHook = Box::new(move |_result| {
-            let _ = guard.complete(dev);
+            let _ = (guard as SliceDmaGuard).complete(dev);
             if let Some(map) = prp_map {
                 map.unmap();
             }

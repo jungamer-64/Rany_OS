@@ -543,9 +543,8 @@ impl LineEditor {
 
 /// Read a line from serial port with advanced editing support
 /// Returns InputEvent for special keys, allowing shell to handle history
-#[allow(deprecated)]
 pub async fn read_line_advanced(editor: &mut LineEditor) -> InputEvent {
-    let port = serial1();
+    let port = &SERIAL1;
 
     loop {
         let byte = port.read_byte().await;
@@ -686,9 +685,8 @@ fn redraw_from_cursor(port: &AsyncSerialPort, editor: &LineEditor) {
 
 /// Read a line from serial port asynchronously (simple version)
 /// Returns when Enter is pressed or buffer is full
-#[allow(deprecated)]
 pub async fn read_line() -> String {
-    let port = serial1();
+    let port = &SERIAL1;
     let mut buffer = Vec::with_capacity(256);
 
     loop {
@@ -768,17 +766,10 @@ pub fn init() -> Result<(), SerialError> {
     Ok(())
 }
 
-#[deprecated(
-    note = "serial1() is deprecated; prefer `crate::io::log::early_print` or the kernel logging APIs (e.g., `log::info!`). This global will be removed in a future release."
-)]
-pub fn serial1() -> &'static AsyncSerialPort {
-    &SERIAL1
-}
+// Removed: `serial1()` accessor. Use `crate::io::log::early_print` or the kernel logging APIs instead.
 
-#[deprecated(
-    note = "serial::handle_interrupt() is deprecated; prefer registering the serial driver (via `driver_registry::register_driver`) and allow the driver to expose its interrupt handling interface; this free function will be removed in a future release."
-)]
-pub fn handle_interrupt() {
+/// Dispatch COM1 interrupt to the serial driver's handler (replaces the old free function)
+pub fn dispatch_interrupt() {
     SERIAL1.handle_interrupt();
 }
 
@@ -801,24 +792,9 @@ pub fn _print(args: fmt::Arguments) {
     let _ = writer.write_fmt(args);
 }
 
-#[deprecated(
-    note = "serial_print macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging."
-)]
-#[macro_export]
-macro_rules! serial_print {
-    ($($arg:tt)*) => {
-        $crate::_print(format_args!($($arg)*))
-    };
-}
+// Removed: `serial_print!` macro. Use `crate::io::log::early_print` or `log::info!`/`log::debug!`.
 
-#[deprecated(
-    note = "serial_println macro is deprecated; prefer `crate::io::log::early_print` or `log::info!`/`log::debug!` for logging."
-)]
-#[macro_export]
-macro_rules! serial_println {
-    () => ($crate::_print(format_args!("\n")));
-    ($($arg:tt)*) => ($crate::_print(format_args!("{}\n", format_args!($($arg)*))));
-}
+// Removed: `serial_println!` macro. Use `crate::io::log::early_print` or `log::info!`/`log::debug!`.
 
 // ============================================================================
 // Serial Driver implementing Driver trait

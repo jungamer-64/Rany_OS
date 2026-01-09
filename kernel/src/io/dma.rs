@@ -1259,6 +1259,7 @@ impl IommuDmaBuffer {
                 return None;
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for DMA
+            #[allow(deprecated)]
             match unsafe { crate::io::iommu::api::raw::map_for_dma(inner.phys_addr(), size as u64) } {
                 Ok(iova) => Some(iova),
                 Err(e) => {
@@ -1300,7 +1301,8 @@ impl IommuDmaBuffer {
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for device DMA
             unsafe {
-                crate::io::iommu::api::raw::map_for_device(&device, inner.phys_addr(), size as u64)
+                #[allow(deprecated)]
+            crate::io::iommu::api::raw::map_for_device(&device, inner.phys_addr(), size as u64)
             }
             .map(Some)
             .unwrap_or_else(|e| {
@@ -1341,7 +1343,8 @@ impl IommuDmaBuffer {
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for async device DMA
             unsafe {
-                crate::io::iommu::api::raw::map_for_device_async(&device, inner.phys_addr(), size as u64)
+                #[allow(deprecated)]
+            crate::io::iommu::api::raw::map_for_device_async(&device, inner.phys_addr(), size as u64)
                     .await
             }
             .map(Some)
@@ -1582,8 +1585,10 @@ impl DmaAllocator for GlobalDmaAllocator {
         let (device_addr, iova_mapped) = if crate::io::iommu::api::is_iommu_enabled() {
             // SAFETY: Just allocated DMA-capable memory that we own
             let map_result = if let Some(ref dev) = self.device_id {
+                #[allow(deprecated)]
                 unsafe { crate::io::iommu::api::raw::map_for_device(dev, phys_addr, size as u64) }
             } else {
+                #[allow(deprecated)]
                 unsafe { crate::io::iommu::api::raw::map_for_dma(phys_addr, size as u64) }
             };
             match map_result {

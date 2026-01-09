@@ -15,10 +15,10 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `crate::task::timer::current_tick()` directly in tests/benches.
 
 - `kernel/src/fs/mod.rs` (fs alias)
-  - `vfs` alias ✅ **deprecated**
-    - Migration: Use `fs_abstraction` directly to make the optional layer explicit.
-  - `Fat32FileSystem` alias ✅ **deprecated**
-    - Migration: Use `filesystems::fat32::Fat32FileSystem` or `fs_abstraction` directly.
+  - `vfs` alias ❌ **removed**
+    - Replacement: Use `fs_abstraction` directly to make the optional layer explicit.
+  - `Fat32FileSystem` alias ❌ **removed**
+    - Replacement: Use `filesystems::fat32::Fat32FileSystem` or `fs_abstraction` directly.
 
 - `kernel/src/io/log.rs`
   - `LOG_AGGREGATOR_PRIORITY`, `AGGREGATOR_STARTED`, `spawn_log_aggregator()` ✅ **deprecated**
@@ -114,8 +114,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `redraw_input_line()`.
 
 - `kernel/src/kernel_content.rs`
-  - `pub use serial_driver::serial_print(ln)` ✅ **deprecated** (prefer kernel logging APIs)
-    - Migration: Use `crate::io::log::early_print` or `log` macros once available.
+  - `pub use serial_driver::serial_print(ln)` ❌ **removed** (prefer kernel logging APIs)
+    - Replacement: Use `crate::io::log::early_print` or `log` macros once available.
 
 - `kernel/src/task/executor.rs`
   - `TASK_STORE` (legacy global task store) ✅ **deprecated**
@@ -129,14 +129,14 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use the new `pci_driver` ECAM-based APIs (`EcamAccess`, `PciBusScanner`, etc.).
 
 - `drivers/serial` (`drivers/serial/src/lib.rs`)
-  - `serial_print!`, `serial_println!` macros ✅ **deprecated**
-    - Migration: Use `crate::io::log::early_print` or the `log` crate for structured logging.
-  - `serial1()` ✅ **deprecated**
-    - Migration: Use `crate::io::log::early_print` or `log::info!`/`log::debug!` instead of using the `AsyncSerialPort` global.
+  - `serial_print!`, `serial_println!` macros ❌ **removed**
+    - Replacement: Use `crate::io::log::early_print` or the `log` crate for structured logging.
+  - `serial1()` ❌ **removed**
+    - Replacement: Use `crate::io::log::early_print` or `log::info!`/`log::debug!` instead of using the `AsyncSerialPort` global.
   - `init()` ✅ **deprecated**
     - Migration: Register the serial driver with `driver_registry::register_driver` (e.g., `register_driver(Box::new(SerialDriver::new()))`) and let the DriverRegistry perform initialization.
-  - `handle_interrupt()` ✅ **deprecated**
-    - Migration: Prefer driver-registered interrupt handling via the DriverRegistry or the driver's interrupt methods; do not call the free function directly.
+  - `handle_interrupt()` ❌ **removed**
+    - Replacement: Prefer driver-registered interrupt handling via the DriverRegistry or the driver's interrupt methods; use `serial::dispatch_interrupt()` for direct dispatch in low-level code.
 
 ## Notes
 

@@ -14,7 +14,6 @@
 
 #![allow(dead_code)]
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::cmp::max;
 

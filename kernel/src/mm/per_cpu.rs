@@ -17,7 +17,7 @@ use spin::Mutex;
 use super::magazine::Magazine;
 // NUMA zonelist support
 use super::types::NumaNodeId;
-use super::frame_allocator::MAX_NUMA_NODES;
+use super::numa::MAX_NUMA_NODES;
 // Remote Free batch support
 use super::remote_free::RemoteFreeEntry;
 

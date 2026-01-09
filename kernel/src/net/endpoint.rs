@@ -55,8 +55,7 @@ pub use manager::{SocketManager, init_socket_manager, socket_manager};
 // Re-exports: socket
 #[allow(deprecated)]
 pub use socket::{
-    OwnedSocket, Socket, create_tcp_server, create_tcp_socket, create_udp_socket, open_tcp_connection, tcp_connect,
-    udp_bind,
+    OwnedSocket, Socket, create_tcp_server, create_tcp_socket, create_udp_socket, open_tcp_connection,
 };
 
 // Re-exports: futures

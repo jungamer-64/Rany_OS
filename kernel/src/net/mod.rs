@@ -243,9 +243,7 @@ pub use endpoint::{
     retransmit_queue_remove,
     send_tcp_segment,
     tcb_table,
-    tcp_connect,
     tcp_flags,
-    udp_bind,
 };
 
 // ============================================================================

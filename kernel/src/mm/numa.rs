@@ -18,10 +18,12 @@
 #![allow(dead_code)]
 
 use alloc::alloc::Layout;
-use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use spin::Mutex;
+
+use super::types::NumaNodeId;
+use crate::task::work_stealing_advanced::NumaTopology as SchedulerNumaTopology;
 
 /// 最大NUMAノード数
 pub const MAX_NUMA_NODES: usize = 8;
@@ -81,40 +83,256 @@ impl NumaNodeStats {
     }
 }
 
-/// NUMAノードごとのメモリ範囲
-#[derive(Debug, Clone, Copy)]
-pub struct NumaMemoryRange {
-    /// 開始物理アドレス
-    pub start: u64,
-    /// 終了物理アドレス
-    pub end: u64,
-}
-
 /// NUMAノード情報
+#[derive(Debug)]
 pub struct NumaNode {
     /// ノードID
-    pub id: usize,
-    /// このノードに属するメモリ範囲
-    pub memory_ranges: Vec<NumaMemoryRange>,
-    /// このノードに属するCPUコアのリスト
-    pub cpus: Vec<u32>,
+    pub id: NumaNodeId,
+    /// このノードのメモリ範囲（開始アドレス、サイズ）
+    pub memory_ranges: [(u64, u64); 4],
+    /// 有効なメモリ範囲数
+    pub range_count: usize,
+    /// このノードに属するCPUコアのビットマスク
+    pub cpu_mask: u64,
+    /// 総メモリサイズ（バイト）
+    pub total_memory: u64,
     /// 統計情報
     pub stats: NumaNodeStats,
 }
 
 impl NumaNode {
-    pub fn new(id: usize) -> Self {
+    /// 空のNUMAノードを作成
+    pub const fn empty(id: NumaNodeId) -> Self {
         Self {
             id,
-            memory_ranges: Vec::new(),
-            cpus: Vec::new(),
+            memory_ranges: [(0, 0); 4],
+            range_count: 0,
+            cpu_mask: 0,
+            total_memory: 0,
             stats: NumaNodeStats::new(),
         }
     }
 
+    pub fn new(id: NumaNodeId) -> Self {
+        Self::empty(id)
+    }
+
+    /// メモリ範囲を追加
+    pub fn add_memory_range(&mut self, start: u64, size: u64) {
+        if self.range_count < self.memory_ranges.len() {
+            self.memory_ranges[self.range_count] = (start, size);
+            self.range_count += 1;
+            self.total_memory += size;
+        }
+    }
+
+    /// CPUコアを追加
+    pub fn add_cpu(&mut self, cpu_id: u8) {
+        if cpu_id < 64 {
+            self.cpu_mask |= 1u64 << cpu_id;
+        }
+    }
+
+    /// 指定アドレスがこのノードに属するか判定
+    pub fn contains_address(&self, addr: u64) -> bool {
+        for i in 0..self.range_count {
+            let (start, size) = self.memory_ranges[i];
+            if addr >= start && addr < start + size {
+                return true;
+            }
+        }
+        false
+    }
+
     /// このノードの総メモリサイズを取得
     pub fn total_memory(&self) -> u64 {
-        self.memory_ranges.iter().map(|r| r.end - r.start).sum()
+        self.total_memory
+    }
+}
+
+/// NUMAトポロジ情報
+/// 設計書 5.3.1: 起動時にACPI SRATから検出
+pub struct NumaTopology {
+    /// 各NUMAノードの情報
+    pub(crate) nodes: [NumaNode; MAX_NUMA_NODES],
+    /// 有効なノード数
+    pub(crate) node_count: usize,
+    /// ノード間距離行列（キャッシュライン考慮）
+    /// 値が大きいほど遠い（レイテンシが高い）
+    distance_matrix: [[u8; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+    /// プリコンピュートされた距離順ノードリスト
+    /// distance_cache[from_node] = 距離順にソートされたノードID配列
+    distance_cache: [[NumaNodeId; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+    /// 距離キャッシュが初期化済みか
+    distance_cache_valid: bool,
+}
+
+impl NumaTopology {
+    /// 空のトポロジを作成（シングルノードとして初期化）
+    pub const fn new() -> Self {
+        let nodes = [
+            NumaNode::empty(NumaNodeId::new(0)),
+            NumaNode::empty(NumaNodeId::new(1)),
+            NumaNode::empty(NumaNodeId::new(2)),
+            NumaNode::empty(NumaNodeId::new(3)),
+            NumaNode::empty(NumaNodeId::new(4)),
+            NumaNode::empty(NumaNodeId::new(5)),
+            NumaNode::empty(NumaNodeId::new(6)),
+            NumaNode::empty(NumaNodeId::new(7)),
+        ];
+
+        // デフォルトの距離行列（ローカル=10、リモート=20）
+        let distance_matrix = [
+            [10, 20, 20, 20, 20, 20, 20, 20],
+            [20, 10, 20, 20, 20, 20, 20, 20],
+            [20, 20, 10, 20, 20, 20, 20, 20],
+            [20, 20, 20, 10, 20, 20, 20, 20],
+            [20, 20, 20, 20, 10, 20, 20, 20],
+            [20, 20, 20, 20, 20, 10, 20, 20],
+            [20, 20, 20, 20, 20, 20, 10, 20],
+            [20, 20, 20, 20, 20, 20, 20, 10],
+        ];
+
+        // デフォルトの距離キャッシュ（自ノードが最初、他は番号順）
+        let distance_cache = [
+            [NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2), NumaNodeId::new(3),
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(1), NumaNodeId::new(0), NumaNodeId::new(2), NumaNodeId::new(3),
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(2), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(3),
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(3), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(4), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(5), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(5), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(6), NumaNodeId::new(7)],
+            [NumaNodeId::new(6), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(7)],
+            [NumaNodeId::new(7), NumaNodeId::new(0), NumaNodeId::new(1), NumaNodeId::new(2),
+             NumaNodeId::new(3), NumaNodeId::new(4), NumaNodeId::new(5), NumaNodeId::new(6)],
+        ];
+
+        Self {
+            nodes,
+            node_count: 1, // デフォルトは1ノード
+            distance_matrix,
+            distance_cache,
+            distance_cache_valid: false,
+        }
+    }
+
+    /// 距離キャッシュを事前計算（起動時に一度だけ呼び出し）
+    ///
+    /// 各ノードからの距離順にノードをソートしてキャッシュに格納。
+    /// これにより `nodes_by_distance()` が O(1) で動作する。
+    pub fn precompute_distance_cache(&mut self) {
+        for from in 0..self.node_count {
+            // (node_id, distance) のペアを作成
+            let mut pairs: [(usize, u8); MAX_NUMA_NODES] = [(0, 255); MAX_NUMA_NODES];
+            for to in 0..self.node_count {
+                pairs[to] = (to, self.distance_matrix[from][to]);
+            }
+
+            // 距離でソート（insertion sort、小配列なので十分）
+            for i in 1..self.node_count {
+                let mut j = i;
+                while j > 0 && pairs[j - 1].1 > pairs[j].1 {
+                    pairs.swap(j - 1, j);
+                    j -= 1;
+                }
+            }
+
+            // 結果をキャッシュに格納
+            for (i, &(node_idx, _)) in pairs.iter().enumerate().take(MAX_NUMA_NODES) {
+                self.distance_cache[from][i] = NumaNodeId::new(node_idx as u8);
+            }
+        }
+
+        self.distance_cache_valid = true;
+    }
+
+    /// ノード数を取得
+    #[inline]
+    pub fn node_count(&self) -> usize {
+        self.node_count
+    }
+
+    /// ノード情報を取得
+    pub fn get_node(&self, id: NumaNodeId) -> Option<&NumaNode> {
+        let idx = id.as_usize();
+        if idx < self.node_count {
+            Some(&self.nodes[idx])
+        } else {
+            None
+        }
+    }
+
+    /// CPUコアが属するNUMAノードを取得
+    pub fn cpu_to_node(&self, cpu_id: u8) -> NumaNodeId {
+        for i in 0..self.node_count {
+            if (self.nodes[i].cpu_mask & (1u64 << cpu_id)) != 0 {
+                return NumaNodeId::new(i as u8);
+            }
+        }
+        // 見つからない場合はノード0
+        NumaNodeId::new(0)
+    }
+
+    /// 物理アドレスが属するNUMAノードを取得
+    pub fn addr_to_node(&self, addr: u64) -> NumaNodeId {
+        for i in 0..self.node_count {
+            if self.nodes[i].contains_address(addr) {
+                return NumaNodeId::new(i as u8);
+            }
+        }
+        NumaNodeId::new(0)
+    }
+
+    /// ノード間の距離を取得
+    #[inline]
+    pub fn distance(&self, from: NumaNodeId, to: NumaNodeId) -> u8 {
+        self.distance_matrix[from.as_usize()][to.as_usize()]
+    }
+
+    /// 指定ノードからの優先順位でノードをソート
+    /// 近いノードが先頭に来る
+    ///
+    /// ## 最適化
+    ///
+    /// `precompute_distance_cache()` が呼ばれていれば O(1) で返却。
+    /// キャッシュ無効時はフォールバックでソートを実行。
+    #[inline]
+    pub fn nodes_by_distance(&self, from: NumaNodeId) -> [NumaNodeId; MAX_NUMA_NODES] {
+        // 高速パス: プリコンピュート済みキャッシュを返す
+        if self.distance_cache_valid {
+            return self.distance_cache[from.as_usize()];
+        }
+
+        // フォールバック: 動的にソート（起動初期のみ）
+        self.compute_nodes_by_distance_slow(from)
+    }
+
+    /// 動的に距離順ソートを実行（フォールバック用）
+    fn compute_nodes_by_distance_slow(&self, from: NumaNodeId) -> [NumaNodeId; MAX_NUMA_NODES] {
+        let mut result = [NumaNodeId::new(0); MAX_NUMA_NODES];
+        let mut indices: [usize; MAX_NUMA_NODES] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+        // 距離でソート（バブルソート）
+        for i in 0..self.node_count {
+            for j in (i + 1)..self.node_count {
+                let dist_i = self.distance(from, NumaNodeId::new(indices[i] as u8));
+                let dist_j = self.distance(from, NumaNodeId::new(indices[j] as u8));
+                if dist_i > dist_j {
+                    indices.swap(i, j);
+                }
+            }
+        }
+
+        for (i, &idx) in indices.iter().enumerate() {
+            result[i] = NumaNodeId::new(idx as u8);
+        }
+        result
     }
 }
 
@@ -142,7 +360,7 @@ impl NumaAllocator {
 
     /// NUMAノードを登録
     pub fn register_node(&mut self, node: NumaNode) {
-        let id = node.id;
+        let id = node.id.as_usize();
         if id < MAX_NUMA_NODES {
             self.nodes[id] = Some(node);
             let current = self.node_count.load(Ordering::Relaxed);
@@ -250,15 +468,15 @@ pub fn init_numa_allocator() {
     let mut allocator = NUMA_ALLOCATOR.lock();
     
     // NumaTopologyから情報を取得
-    let topology = crate::task::work_stealing_advanced::NumaTopology::get();
+    let topology = SchedulerNumaTopology::get();
     let num_nodes = topology.num_nodes();
     
     for node_id in 0..num_nodes {
-        let mut node = NumaNode::new(node_id);
+        let mut node = NumaNode::new(NumaNodeId::new(node_id as u8));
         
         // このノードに属するCPUコアを登録
         for &cpu in topology.get_cores_in_node(node_id) {
-            node.cpus.push(cpu);
+            node.add_cpu(cpu as u8);
         }
         
         allocator.register_node(node);
@@ -274,13 +492,13 @@ pub fn init_numa_allocator() {
 
 /// Return the number of NUMA nodes in the system (1 for single-node)
 pub fn num_nodes() -> usize {
-    crate::task::work_stealing_advanced::NumaTopology::get().num_nodes()
+    SchedulerNumaTopology::get().num_nodes()
 }
 
 /// Return the NUMA node for the current CPU if available
 pub fn current_node() -> usize {
     if let Some(cpu) = crate::mm::per_cpu::try_current_cpu_id() {
-        crate::task::work_stealing_advanced::NumaTopology::get()
+        SchedulerNumaTopology::get()
             .get_numa_node(cpu as u32)
     } else {
         0

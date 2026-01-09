@@ -21,7 +21,7 @@
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use alloc::vec::Vec;
 
-use super::types::FrameIndex;
+use super::types::{FrameIndex, NumaNodeId};
 
 // ============================================================================
 // NUMA Hint Fault 定数
@@ -707,7 +707,7 @@ pub unsafe fn migrate_numa_page(src_frame: FrameIndex, dest_node: u8) -> Migrati
     use super::types::PAGE_SIZE_4K;
     
     // 1. 移動先ノードからフレームを確保
-    let dest_frame = match buddy_allocator::buddy_alloc_frame_on_node(dest_node as usize) {
+    let dest_frame = match buddy_allocator::buddy_alloc_frame_on_node(NumaNodeId::new(dest_node)) {
         Some(frame) => frame,
         None => return MigrationResult::NoMemory,
     };
