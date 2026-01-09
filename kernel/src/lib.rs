@@ -793,14 +793,7 @@ pub mod task {
         }
     }
 
-    /// Convenience: expose `current_tick` at `crate::task::current_tick()` for
-    /// code that expects that symbol (legacy usage in some modules).
-    #[deprecated(
-        note = "Test shim `crate::task::current_tick()` is deprecated; call `crate::task::timer::current_tick()` directly."
-    )]
-    pub fn current_tick() -> u64 {
-        timer::current_tick()
-    }
+    // Convenience shim for tests/benches removed — use `crate::task::timer::current_tick()` directly.
 
     pub mod scheduler {
         /// Yield the current task (test stub - no-op)

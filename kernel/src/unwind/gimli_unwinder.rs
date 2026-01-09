@@ -13,6 +13,7 @@
 #![allow(dead_code)]
 
 use core::ops::Range;
+use alloc::format;
 use gimli::{
     BaseAddresses, CieOrFde, EhFrame, EndianSlice, LittleEndian, UninitializedUnwindContext,
     UnwindSection,
@@ -451,7 +452,7 @@ impl DomainUnwinder {
     /// 3. ドメインが所有するExchange Heapリソースを解放
     /// 4. ドメインを終了状態に移行
     pub fn recover_from_panic(&self) -> Result<(), GimliUnwindError> {
-        crate::serial_println!("Domain {} panic recovery initiated", self.domain_id);
+        crate::io::log::early_print(&alloc::format!("Domain {} panic recovery initiated\n", self.domain_id));
 
         // スタック範囲の有効性チェック
         if self.stack_range.is_empty() {
@@ -467,7 +468,7 @@ impl DomainUnwinder {
         // 3. ドメインが保持するロックを解放
         self.release_domain_locks();
 
-        crate::serial_println!("Domain {} panic recovery completed", self.domain_id);
+        crate::io::log::early_print(&alloc::format!("Domain {} panic recovery completed\n", self.domain_id));
         Ok(())
     }
 
@@ -488,7 +489,7 @@ impl DomainUnwinder {
                         (drop_fn)(guard.data_ptr);
                     }
                 }
-                crate::serial_println!("  Executed drop guard at {:#x}", guard.stack_addr);
+                crate::io::log::early_print(&alloc::format!("  Executed drop guard at {:#x}\n", guard.stack_addr));
             }
         }
 
@@ -502,10 +503,10 @@ impl DomainUnwinder {
         let domain_id = DomainId::new(self.domain_id);
         crate::ipc::reclaim_domain_resources(domain_id);
 
-        crate::serial_println!(
-            "  Reclaimed Exchange Heap resources for domain {}",
+        crate::io::log::early_print(&alloc::format!(
+            "  Reclaimed Exchange Heap resources for domain {}\n",
             self.domain_id
-        );
+        ));
     }
 
     /// ドメインが保持するロックを解放
@@ -515,11 +516,11 @@ impl DomainUnwinder {
 
         for lock_info in locks {
             // ロックを強制解放（poison状態にする）
-            crate::serial_println!(
-                "  Released lock {} for domain {}",
+            crate::io::log::early_print(&alloc::format!(
+                "  Released lock {} for domain {}\n",
                 lock_info.name,
                 self.domain_id
-            );
+            ));
         }
     }
 

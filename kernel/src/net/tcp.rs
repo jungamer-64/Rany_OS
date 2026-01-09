@@ -795,7 +795,7 @@ fn allocate_ephemeral_port() -> u16 {
 /// RFC 6528に従い、タイムスタンプベースで予測困難な値を生成
 fn generate_initial_seq() -> u32 {
     // タイムスタンプベースの値（マイクロ秒精度）
-    let time_component = crate::task::current_tick() as u32;
+    let time_component = crate::task::timer::current_tick() as u32;
     // カウンターを追加して同一タイミングでも異なる値に
     let counter = SEQ_COUNTER.fetch_add(64000, Ordering::Relaxed);
     // XORで混合
@@ -1296,7 +1296,7 @@ impl TcpProcessor {
         tcb.remote_addr = Some(remote_addr);
         tcb.state = TcpState::SynSent;
         // Generate initial sequence number (simplified: use tick count)
-        tcb.snd_nxt = crate::task::current_tick() as u32;
+        tcb.snd_nxt = crate::task::timer::current_tick() as u32;
         tcb.snd_una = tcb.snd_nxt;
 
         self.connections.insert((local_addr, remote_addr), tcb);
@@ -1446,7 +1446,7 @@ impl TcpProcessor {
                 tcb.remote_addr = Some(remote_addr);
                 tcb.state = TcpState::SynReceived;
                 tcb.rcv_nxt = seq_num.wrapping_add(1);
-                tcb.snd_nxt = crate::task::current_tick() as u32;
+                tcb.snd_nxt = crate::task::timer::current_tick() as u32;
                 tcb.snd_una = tcb.snd_nxt;
                 tcb.snd_wnd = window;
 

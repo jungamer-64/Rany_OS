@@ -56,14 +56,14 @@ pub fn test_task_scheduling() -> TestResult {
 /// Test async sleep mechanism
 pub fn test_async_sleep() -> TestResult {
     // Get current tick
-    let start_tick = crate::task::current_tick();
+    let start_tick = crate::task::timer::current_tick();
     
     // Busy wait for a short time to verify tick is advancing
     let mut iterations = 0;
     const MAX_ITERATIONS: u64 = 100_000;
     
     while iterations < MAX_ITERATIONS {
-        let current = crate::task::current_tick();
+        let current = crate::task::timer::current_tick();
         if current > start_tick {
             // Tick is advancing
             return TestResult::Passed;

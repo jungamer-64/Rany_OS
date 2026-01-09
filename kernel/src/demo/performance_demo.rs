@@ -101,7 +101,7 @@ fn demo_syscall_elimination() {
     for _ in 0..ITERATIONS {
         let start = rdtsc();
         // This is what a "syscall" looks like in ExoRust - just a function call!
-        let _tick = crate::task::current_tick();
+        let _tick = crate::task::timer::current_tick();
         let end = rdtsc();
         total_cycles += end - start;
     }

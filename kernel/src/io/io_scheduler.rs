@@ -1516,7 +1516,7 @@ pub fn hybrid_coordinator() -> Arc<HybridIoCoordinator> {
 fn current_tick() -> u64 {
     #[cfg(feature = "task")]
     {
-        crate::task::current_tick()
+        crate::task::timer::current_tick()
     }
     #[cfg(not(feature = "task"))]
     {

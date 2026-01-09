@@ -353,7 +353,7 @@ impl Executor {
             // Process any AtomicWaker notifications enqueued by ISRs.
             crate::sync::process_deferred_wakes();
             // Drive IoScheduler dispatch/poll in non-ISR context.
-            crate::io::io_scheduler::hybrid_coordinator().tick(crate::task::current_tick());
+            crate::io::io_scheduler::hybrid_coordinator().tick(crate::task::timer::current_tick());
             // IOMMU command queue processing (process a few commands per loop)
             if let Some(reg) = crate::io::iommu::intel::registry::get_iommu_registry() {
                 for ctrl in &reg.controllers {

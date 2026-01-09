@@ -11,7 +11,7 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `domain_count()`.
 
 - `kernel/src/lib.rs` (test shim)
-  - `crate::task::current_tick()` ✅ **deprecated**
+  - `crate::task::current_tick()` ❌ **removed** (was deprecated)
     - Migration: Use `crate::task::timer::current_tick()` directly in tests/benches.
 
 - `kernel/src/fs/mod.rs` (fs alias)
