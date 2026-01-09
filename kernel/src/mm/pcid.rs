@@ -24,7 +24,7 @@
 // - Intel SDM Vol. 3A 4.10.1 Process-Context Identifiers (PCIDs)
 // ============================================================================
 
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 
 /// 最大PCID数（12ビット = 4096）

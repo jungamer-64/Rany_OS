@@ -1,7 +1,6 @@
 // Minimal task-scoped IO shims for tests
 // Provides a small NVMe shim to satisfy `crate::task::io::nvme` references
 
-use core::task::Waker;
 
 pub mod nvme {
     #[derive(Clone, Copy, Debug)]

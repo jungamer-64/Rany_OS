@@ -704,7 +704,6 @@ pub static NUMA_DISTANCE_CACHE: NumaDistanceCache = NumaDistanceCache::new();
 /// - ページテーブルエントリの更新は呼び出し側で行うこと
 pub unsafe fn migrate_numa_page(src_frame: FrameIndex, dest_node: u8) -> MigrationResult {
     use super::buddy_allocator;
-    use super::mapping::PHYSICAL_MEMORY_OFFSET;
     use super::types::PAGE_SIZE_4K;
     
     // 1. 移動先ノードからフレームを確保
@@ -717,8 +716,9 @@ pub unsafe fn migrate_numa_page(src_frame: FrameIndex, dest_node: u8) -> Migrati
     let src_phys = (src_frame.as_usize() * PAGE_SIZE_4K) as u64;
     let dst_phys = dest_frame.start_address().as_u64();
     
-    let src_virt = (src_phys + PHYSICAL_MEMORY_OFFSET) as *const u8;
-    let dst_virt = (dst_phys + PHYSICAL_MEMORY_OFFSET) as *mut u8;
+    let offset = super::mapping::physical_memory_offset();
+    let src_virt = (src_phys + offset) as *const u8;
+    let dst_virt = (dst_phys + offset) as *mut u8;
     
     // Non-temporal storeを使用（キャッシュを汚染しない）
     #[cfg(target_arch = "x86_64")]

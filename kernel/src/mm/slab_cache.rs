@@ -641,7 +641,7 @@ impl SlabCache {
     /// - より均等なキャッシュセット分布を実現
     #[inline]
     /// Slab Coloringのオフセットを計算
-    #[inline]
+    
     fn calculate_color_offset(&self) -> usize {
         // Enhanced: Use xorshift-based PRNG for better distribution
         let page_index = (self.full_page_count + self.partial_page_count + self.empty_page_count) as u32;
@@ -662,7 +662,7 @@ impl SlabCache {
     /// 統計情報を取得
     pub fn stats(&self) -> SlabStats {
         let mut free_count = 0;
-        let objects_per_page = SLAB_PAGE_SIZE / self.object_size; // approx max, accurate for empty
+        let _objects_per_page = SLAB_PAGE_SIZE / self.object_size; // approx max, accurate for empty
         
         // Calculate free count from empty pages
         // For empty pages, free_count is not strictly objects_per_page because of coloring,

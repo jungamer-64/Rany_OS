@@ -621,6 +621,12 @@ impl PhysicalMemoryMapper {
         }
     }
 
+    /// 物理メモリオフセットを取得
+    #[inline]
+    pub const fn offset(&self) -> u64 {
+        self.offset
+    }
+
     /// 物理アドレスから仮想アドレスに変換
     #[inline]
     pub fn phys_to_virt(&self, phys: PhysAddr) -> VirtAddr {
@@ -812,6 +818,11 @@ impl HigherHalfManager {
         &self.mapper
     }
 
+    /// 物理メモリオフセットを取得
+    pub fn physical_memory_offset(&self) -> u64 {
+        self.mapper.offset()
+    }
+
     /// カーネル仮想アドレス領域を割り当て
     pub fn allocate_kernel_virt(&self, pages: usize) -> VirtAddr {
         let size = (pages as u64) * PageSize::Size4KiB.as_bytes();
@@ -840,6 +851,16 @@ pub fn init(physical_memory_offset: u64) {
     let mut mgr_guard = HIGHER_HALF_MANAGER.lock_for_init("[MM] Higher Half init");
     *mgr_guard = Some(manager);
     // log::info!("Higher half kernel initialized with offset {:#x}", physical_memory_offset);
+}
+
+/// 物理メモリオフセットを取得
+pub fn physical_memory_offset() -> u64 {
+    let guard = match HIGHER_HALF_MANAGER.lock() {
+        Ok(g) => g,
+        Err(_) => panic!("[MM] Higher Half manager poisoned (physical_memory_offset)"),
+    };
+    let manager = guard.as_ref().expect("Higher half not initialized");
+    manager.physical_memory_offset()
 }
 
 /// 物理アドレスを仮想アドレスに変換

@@ -156,8 +156,8 @@ impl PtQuicklist {
             unsafe {
                 // 物理アドレスから直接マッピング経由で仮想アドレスを取得
                 let phys = frame.start_address().as_u64();
-                // PHYSICAL_MEMORY_OFFSETを使用
-                let virt = phys + super::mapping::PHYSICAL_MEMORY_OFFSET;
+                // HigherHalfのオフセットを使用
+                let virt = phys + super::mapping::physical_memory_offset();
                 core::ptr::write_bytes(virt as *mut u8, 0, 4096);
             }
             self.alloc_count += 1;
@@ -474,7 +474,7 @@ pub fn alloc_page_table_page() -> Option<PhysFrame<Size4KiB>> {
     // ゼロクリア
     unsafe {
         let phys = frame.start_address().as_u64();
-        let virt = phys + super::mapping::PHYSICAL_MEMORY_OFFSET;
+        let virt = phys + super::mapping::physical_memory_offset();
         core::ptr::write_bytes(virt as *mut u8, 0, 4096);
     }
     

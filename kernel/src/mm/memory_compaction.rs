@@ -614,17 +614,14 @@ pub enum MigrationError {
 /// 物理アドレスを仮想アドレスに変換（カーネル直接マッピング）
 #[inline]
 fn phys_to_virt(phys: PhysAddr) -> usize {
-    // カーネルの物理メモリ直接マッピングオフセット
-    use super::mapping::PHYSICAL_MEMORY_OFFSET;
-    (phys.as_u64() + PHYSICAL_MEMORY_OFFSET) as usize
+    super::mapping::phys_to_virt(phys).as_u64() as usize
 }
 
 /// 特定のページのTLBエントリをフラッシュ
 #[inline]
 fn flush_tlb_page(phys_addr: u64) {
     // 直接マッピングの仮想アドレスを計算
-    use super::mapping::PHYSICAL_MEMORY_OFFSET;
-    let virt_addr = phys_addr + PHYSICAL_MEMORY_OFFSET;
+    let virt_addr = super::mapping::phys_to_virt(PhysAddr::new(phys_addr)).as_u64();
     
     // x86_64: INVLPG 命令でTLBエントリを無効化
     unsafe {
@@ -644,11 +641,10 @@ fn flush_tlb_page(phys_addr: u64) {
 /// # Warning
 /// これは高コストな操作。可能な限りバッチ処理すること。
 fn broadcast_tlb_flush(phys_addr: u64) {
-    use super::mapping::PHYSICAL_MEMORY_OFFSET;
     use x86_64::VirtAddr;
     
     // 直接マッピングの仮想アドレスを計算
-    let virt_addr = VirtAddr::new(phys_addr + PHYSICAL_MEMORY_OFFSET);
+    let virt_addr = VirtAddr::new(super::mapping::phys_to_virt(PhysAddr::new(phys_addr)).as_u64());
     
     // TLBバッチシステムを使用して全CPUにフラッシュを送信
     // flush_tlb_immediateは:

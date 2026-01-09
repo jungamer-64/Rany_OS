@@ -598,13 +598,16 @@ impl PmmAllocatorFast {
     }
 
     fn alloc_contiguous(&self, frames: usize) -> Option<PhysAddr> {
+        self.alloc_contiguous_aligned(frames, PAGE_SIZE_4K as u64)
+    }
+
+    fn alloc_contiguous_aligned(&self, frames: usize, align_bytes: u64) -> Option<PhysAddr> {
         if frames == 0 {
             return None;
         }
         let size = (frames as u64).checked_mul(PAGE_SIZE_4K as u64)?;
-        let addr = self
-            .inner
-            .allocate_contiguous(size, PAGE_SIZE_4K as u64)?;
+        let align = align_bytes.max(PAGE_SIZE_4K as u64);
+        let addr = self.inner.allocate_contiguous(size, align)?;
         Some(PhysAddr::new(addr))
     }
 
@@ -709,6 +712,13 @@ fn align_up(value: u64, align: u64) -> u64 {
         return value;
     }
     value.wrapping_add(align - 1) & !(align - 1)
+}
+
+fn align_size_to_page(size: usize) -> usize {
+    if size <= PAGE_SIZE_4K {
+        return PAGE_SIZE_4K;
+    }
+    size.saturating_add(PAGE_SIZE_4K - 1) / PAGE_SIZE_4K * PAGE_SIZE_4K
 }
 
 fn normalize_regions(usable_regions: &[(PhysAddr, u64)]) -> Vec<(u64, u64)> {
@@ -1082,6 +1092,19 @@ impl NumaPmmAllocator {
         self.node_allocators.get(idx)?.as_ref()?.alloc_contiguous(frames)
     }
 
+    fn alloc_contiguous_on_node_aligned(
+        &self,
+        node: NumaNodeId,
+        frames: usize,
+        align_bytes: u64,
+    ) -> Option<PhysAddr> {
+        let idx = node.as_usize();
+        self.node_allocators
+            .get(idx)?
+            .as_ref()?
+            .alloc_contiguous_aligned(frames, align_bytes)
+    }
+
     fn alloc_contiguous_local(&self, current_cpu: u8, frames: usize) -> Option<PhysAddr> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
@@ -1089,6 +1112,25 @@ impl NumaPmmAllocator {
         for i in 0..self.topology.node_count() {
             let node = fallback_order[i];
             if let Some(addr) = self.alloc_contiguous_on_node(node, frames) {
+                return Some(addr);
+            }
+        }
+
+        None
+    }
+
+    fn alloc_contiguous_local_aligned(
+        &self,
+        current_cpu: u8,
+        frames: usize,
+        align_bytes: u64,
+    ) -> Option<PhysAddr> {
+        let preferred_node = self.topology.cpu_to_node(current_cpu);
+        let fallback_order = self.topology.nodes_by_distance(preferred_node);
+
+        for i in 0..self.topology.node_count() {
+            let node = fallback_order[i];
+            if let Some(addr) = self.alloc_contiguous_on_node_aligned(node, frames, align_bytes) {
                 return Some(addr);
             }
         }
@@ -1489,37 +1531,90 @@ pub fn alloc_frame_2m_local(current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
     FRAME_ALLOCATOR.lock().allocate_2m_frame()
 }
 
-/// 連続した (4KiB) フレームを割り当てるラッパー
+/// PMM fast が初期化済みかどうか
+pub fn pmm_initialized() -> bool {
+    pmm_numa().is_some() || pmm_global().is_some()
+}
+
+/// 物理アドレスが属するNUMAノードを取得（PMM fastが初期化済みの場合のみ）
+pub fn numa_node_for_addr(addr: PhysAddr) -> Option<NumaNodeId> {
+    pmm_numa().map(|numa| numa.topology().addr_to_node(addr.as_u64()))
+}
+
+/// 連続した (4KiB) フレームをアライン指定で割り当てるラッパー
 ///
 /// - `frames_needed`: 割り当てたいフレーム数
+/// - `align_bytes`: アラインメント（バイト）
 /// - 戻り値: 割り当て開始物理アドレス (4KiB 単位)
-pub fn alloc_contiguous_frames(frames_needed: usize) -> Option<PhysAddr> {
+pub fn alloc_contiguous_frames_aligned(
+    frames_needed: usize,
+    align_bytes: usize,
+) -> Option<PhysAddr> {
     if frames_needed == 0 {
         return None;
     }
 
+    let align = align_size_to_page(align_bytes);
+
     if let Some(numa) = pmm_numa() {
         if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
-            if let Some(addr) = numa.alloc_contiguous_local(cpu_id as u8, frames_needed) {
+            if let Some(addr) =
+                numa.alloc_contiguous_local_aligned(cpu_id as u8, frames_needed, align as u64)
+            {
                 return Some(addr);
             }
         }
         for node_idx in 0..numa.topology().node_count() {
-            if let Some(addr) =
-                numa.alloc_contiguous_on_node(NumaNodeId::new(node_idx as u8), frames_needed)
-            {
+            if let Some(addr) = numa.alloc_contiguous_on_node_aligned(
+                NumaNodeId::new(node_idx as u8),
+                frames_needed,
+                align as u64,
+            ) {
                 return Some(addr);
             }
         }
     }
 
     if let Some(pmm) = pmm_global() {
-        return pmm.alloc_contiguous(frames_needed);
+        return pmm.alloc_contiguous_aligned(frames_needed, align as u64);
     }
 
     FRAME_ALLOCATOR
         .lock()
-        .allocate_contiguous(frames_needed, PAGE_SIZE_4K)
+        .allocate_contiguous(frames_needed, align)
+}
+
+/// 連続した (4KiB) フレームを指定NUMAノードからアライン指定で割り当てる
+pub fn alloc_contiguous_frames_aligned_on_node(
+    node: NumaNodeId,
+    frames_needed: usize,
+    align_bytes: usize,
+) -> Option<PhysAddr> {
+    if frames_needed == 0 {
+        return None;
+    }
+
+    let align = align_size_to_page(align_bytes);
+
+    if let Some(numa) = pmm_numa() {
+        return numa.alloc_contiguous_on_node_aligned(node, frames_needed, align as u64);
+    }
+
+    if let Some(pmm) = pmm_global() {
+        return pmm.alloc_contiguous_aligned(frames_needed, align as u64);
+    }
+
+    FRAME_ALLOCATOR
+        .lock()
+        .allocate_contiguous(frames_needed, align)
+}
+
+/// 連続した (4KiB) フレームを割り当てるラッパー
+///
+/// - `frames_needed`: 割り当てたいフレーム数
+/// - 戻り値: 割り当て開始物理アドレス (4KiB 単位)
+pub fn alloc_contiguous_frames(frames_needed: usize) -> Option<PhysAddr> {
+    alloc_contiguous_frames_aligned(frames_needed, PAGE_SIZE_4K)
 }
 
 /// 連続領域を解放するラッパー

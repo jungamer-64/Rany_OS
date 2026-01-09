@@ -674,7 +674,7 @@ impl ProcessAddressSpace {
         // 指定アドレス以降の領域を検索
         // Note: BTreeMap::range works on keys. start_addr might be in the middle of a region.
         // We find the first region that ends after start_addr.
-        for (&r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
+        for (&_r_start, region) in regions.range(..).filter(|&(&_s, ref r)| r.end > start_addr) {
             if scanned >= batch_size {
                 break;
             }
@@ -872,7 +872,7 @@ impl ProcessAddressSpace {
         let huge_phys_x64 = huge_frame.start_address(); // x86_64::PhysAddr
         let huge_virt = super::mapping::phys_to_virt(huge_phys_x64); // mapping uses x86_64 types
         // For higher_half functions, convert:
-        let huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
+        let _huge_phys = PhysAddr::new(huge_phys_x64.as_u64());
 
         // 4. Zero the huge page (safety)
         unsafe {

@@ -355,7 +355,7 @@ impl LockedBuddyHeap {
 unsafe impl GlobalAlloc for LockedBuddyHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let size = layout.size();
-        let align = layout.align();
+        let _align = layout.align();
         
         // Log suspicious allocations
         if size == 0 {
@@ -668,12 +668,12 @@ pub fn init(rsdp_addr: Option<u64>, numa_info: Option<&NumaInfo>, boot_info: Opt
     if let Some(info) = boot_info {
         usable_regions = reserve_boot_info_ranges(usable_regions, info);
     }
-    crate::io::log::early_print("[MEM] buddy init\n");
+    crate::io::log::early_print("[MEM] buddy bootstrap\n");
 
     unsafe {
-        crate::mm::init_buddy_allocator(&usable_regions);
+        crate::mm::init_buddy_allocator(&[]);
     }
-    crate::io::log::early_print("[MEM] buddy done\n");
+    crate::io::log::early_print("[MEM] buddy ready\n");
 
     // 2.5. NUMA情報（ブートローダー/ACPI）からPMMを初期化
     let mut pmm_initialized = false;

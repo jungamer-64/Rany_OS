@@ -24,7 +24,7 @@
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use super::types::FrameIndex;
-use super::page_reclaim::{MglruGen, MGLRU_GENERATIONS};
+use super::page_reclaim::MglruGen;
 
 // ============================================================================
 // Configuration

@@ -31,7 +31,6 @@ use alloc::vec::Vec;
 
 use crate::sync::IrqMutex;
 use super::types::{FrameIndex, PAGE_SIZE_4K};
-use super::mapping::PHYSICAL_MEMORY_OFFSET;
 
 // ============================================================================
 // Configuration
@@ -308,7 +307,7 @@ impl KsmManager {
     /// ページデータを読み取り
     fn read_page_data(&self, frame: FrameIndex) -> Option<[u8; PAGE_SIZE_4K]> {
         let phys_addr = (frame.as_usize() * PAGE_SIZE_4K) as u64;
-        let virt_addr = phys_addr + PHYSICAL_MEMORY_OFFSET;
+        let virt_addr = phys_addr + super::mapping::physical_memory_offset();
         
         let mut data = [0u8; PAGE_SIZE_4K];
         unsafe {
@@ -329,9 +328,9 @@ impl KsmManager {
         
         let phys1 = (frame1.as_usize() * PAGE_SIZE_4K) as u64;
         let phys2 = (frame2.as_usize() * PAGE_SIZE_4K) as u64;
-        
-        let virt1 = (phys1 + PHYSICAL_MEMORY_OFFSET) as *const u64;
-        let virt2 = (phys2 + PHYSICAL_MEMORY_OFFSET) as *const u64;
+        let offset = super::mapping::physical_memory_offset();
+        let virt1 = (phys1 + offset) as *const u64;
+        let virt2 = (phys2 + offset) as *const u64;
         
         // 64ビットごとに比較（高速化）
         for i in 0..(PAGE_SIZE_4K / 8) {

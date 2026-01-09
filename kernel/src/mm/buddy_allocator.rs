@@ -25,7 +25,7 @@ use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
 // 共通型定義をインポート（IOVA_MM_MIGRATION_PLAN Phase 0.1）
-use super::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
+use super::types::{FrameIndex, NumaNodeId, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 
 // ============================================================================
 // TZCNT (Trailing Zero Count) 高速化
@@ -312,6 +312,9 @@ pub fn find_contiguous_set_bits(bitmap: &[u64], count: usize) -> Option<usize> {
 /// MAX_ORDER = 10 → 4MiB ブロック
 /// MAX_ORDER = 18 → 1GiB ブロック（1GiBページ対応）
 pub const MAX_ORDER: usize = 18;
+
+/// PMMから借りる最小オーダー（小さな要求でもまとめて確保）
+const BUDDY_BORROW_MIN_ORDER: usize = 9; // 2MiB
 
 /// 物理メモリの最大サイズ（16GiB想定）
 const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024;
@@ -614,7 +617,7 @@ impl FragmentationIndex {
         // Internal fragmentation: 低次オーダーへの偏り
         // オーダー0-3 (4KB-32KB) に偏っているほど内部断片化が高い
         let low_order_free: usize = free_counts[..4.min(MAX_ORDER + 1)].iter().sum();
-        let high_order_free: usize = free_counts[4.min(MAX_ORDER + 1)..].iter().sum();
+        let _high_order_free: usize = free_counts[4.min(MAX_ORDER + 1)..].iter().sum();
         
         let internal = if total_free > 0 {
             (low_order_free as f32 / total_free as f32).min(1.0)
@@ -2374,26 +2377,99 @@ pub unsafe fn init_buddy_allocator(usable_regions: &[(PhysAddr, u64)]) {
     }
 }
 
+fn borrow_exact_order_from_pmm(order: usize, preferred_node: Option<usize>) -> bool {
+    if order > MAX_ORDER {
+        return false;
+    }
+
+    let frames = 1usize << order;
+    let align_bytes = frames.saturating_mul(PAGE_SIZE_4K);
+    let size_bytes = (frames as u64).saturating_mul(PAGE_SIZE_4K as u64);
+    if size_bytes == 0 {
+        return false;
+    }
+
+    let addr = match preferred_node {
+        Some(node) => crate::mm::frame_allocator::alloc_contiguous_frames_aligned_on_node(
+            NumaNodeId::new(node as u8),
+            frames,
+            align_bytes,
+        )
+        .or_else(|| {
+            crate::mm::frame_allocator::alloc_contiguous_frames_aligned(frames, align_bytes)
+        }),
+        None => crate::mm::frame_allocator::alloc_contiguous_frames_aligned(frames, align_bytes),
+    };
+
+    let Some(addr) = addr else {
+        return false;
+    };
+
+    let node_id = crate::mm::frame_allocator::numa_node_for_addr(addr)
+        .unwrap_or(NumaNodeId::NODE_0);
+    buddy_register_numa_region(node_id.as_usize(), addr, size_bytes);
+    true
+}
+
+fn borrow_from_pmm_for_order(order: usize, preferred_node: Option<usize>) -> bool {
+    if !crate::mm::frame_allocator::pmm_initialized() {
+        return false;
+    }
+
+    let capped_order = order.min(MAX_ORDER);
+    let primary_order = capped_order.max(BUDDY_BORROW_MIN_ORDER);
+
+    if borrow_exact_order_from_pmm(primary_order, preferred_node) {
+        return true;
+    }
+
+    if primary_order != capped_order {
+        return borrow_exact_order_from_pmm(capped_order, preferred_node);
+    }
+
+    false
+}
+
 /// Allocate a Huge Frame (2MB, Order 9)
 /// 
 /// Returns physical frame of 2MB size.
 pub fn alloc_huge_frame() -> Option<PhysFrame<Size2MiB>> {
-    BUDDY_ALLOCATOR.lock().allocate_2m_frame()
+    buddy_alloc_frame_2m()
 }
 
 /// 4KiB フレームを割り当て（Buddy版）
 pub fn buddy_alloc_frame() -> Option<PhysFrame<Size4KiB>> {
-    BUDDY_ALLOCATOR.lock().allocate_4k_frame()
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_4k_frame() {
+        return Some(frame);
+    }
+    if borrow_from_pmm_for_order(0, None) {
+        return BUDDY_ALLOCATOR.lock().allocate_4k_frame();
+    }
+    None
 }
 
 /// 2MiB フレームを割り当て（Buddy版）
 pub fn buddy_alloc_frame_2m() -> Option<PhysFrame<Size2MiB>> {
-    BUDDY_ALLOCATOR.lock().allocate_2m_frame()
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_2m_frame() {
+        return Some(frame);
+    }
+    let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
+    if borrow_from_pmm_for_order(order, None) {
+        return BUDDY_ALLOCATOR.lock().allocate_2m_frame();
+    }
+    None
 }
 
 /// 1GiB フレームを割り当て（Buddy版）
 pub fn buddy_alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
-    BUDDY_ALLOCATOR.lock().allocate_1g_frame()
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_1g_frame() {
+        return Some(frame);
+    }
+    let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
+    if borrow_from_pmm_for_order(order, None) {
+        return BUDDY_ALLOCATOR.lock().allocate_1g_frame();
+    }
+    None
 }
 
 /// 連続する物理フレームを割り当て（2のべき乗に切り上げ）
@@ -2401,7 +2477,14 @@ pub fn buddy_alloc_contiguous_frames(frame_count: usize) -> Option<PhysAddr> {
     if frame_count == 0 {
         return None;
     }
-    BUDDY_ALLOCATOR.lock().allocate_contiguous(frame_count)
+    if let Some(addr) = BUDDY_ALLOCATOR.lock().allocate_contiguous(frame_count) {
+        return Some(addr);
+    }
+    let order = BuddyFrameAllocator::frames_to_order(frame_count);
+    if borrow_from_pmm_for_order(order, None) {
+        return BUDDY_ALLOCATOR.lock().allocate_contiguous(frame_count);
+    }
+    None
 }
 
 /// 4KiB フレームを解放（Buddy版）
@@ -2434,17 +2517,37 @@ pub fn buddy_register_numa_region(node: usize, start: PhysAddr, size: u64) {
 
 /// Allocate a 4KiB frame preferring the given NUMA node (best-effort)
 pub fn buddy_alloc_frame_on_node(node: usize) -> Option<PhysFrame<Size4KiB>> {
-    BUDDY_ALLOCATOR.lock().allocate_4k_frame_on_node(node)
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_4k_frame_on_node(node) {
+        return Some(frame);
+    }
+    if borrow_from_pmm_for_order(0, Some(node)) {
+        return BUDDY_ALLOCATOR.lock().allocate_4k_frame_on_node(node);
+    }
+    None
 }
 
 /// Allocate a 2MiB frame preferring the given NUMA node (best-effort)
 pub fn buddy_alloc_frame_2m_on_node(node: usize) -> Option<PhysFrame<Size2MiB>> {
-    BUDDY_ALLOCATOR.lock().allocate_2m_frame_on_node(node)
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_2m_frame_on_node(node) {
+        return Some(frame);
+    }
+    let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
+    if borrow_from_pmm_for_order(order, Some(node)) {
+        return BUDDY_ALLOCATOR.lock().allocate_2m_frame_on_node(node);
+    }
+    None
 }
 
 /// Allocate a 1GiB frame preferring the given NUMA node (best-effort)
 pub fn buddy_alloc_frame_1g_on_node(node: usize) -> Option<PhysFrame<Size1GiB>> {
-    BUDDY_ALLOCATOR.lock().allocate_1g_frame_on_node(node)
+    if let Some(frame) = BUDDY_ALLOCATOR.lock().allocate_1g_frame_on_node(node) {
+        return Some(frame);
+    }
+    let order = BuddyFrameAllocator::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
+    if borrow_from_pmm_for_order(order, Some(node)) {
+        return BUDDY_ALLOCATOR.lock().allocate_1g_frame_on_node(node);
+    }
+    None
 }
 
 /// 指定アドレスがBuddy Allocatorで管理されているかチェック
@@ -2619,26 +2722,27 @@ mod tests {
         use crate::mm::types::NumaNodeId;
         use crate::mm::{init_buddy_allocator, init_numa_frame_allocator};
 
-        // Initialize buddy allocator with a default region
-        let base_region = [(PhysAddr::new(0x100000), 0x400000u64)];
+        // Initialize buddy allocator without owning global memory
         unsafe {
-            init_buddy_allocator(&base_region);
+            init_buddy_allocator(&[]);
         }
 
-        // Register a NUMA region and ensure buddy knows about it
+        // Register a NUMA region for PMM
         let numa_region = [(PhysAddr::new(0x200000), 0x2000u64, NumaNodeId::new(1))];
         unsafe {
             init_numa_frame_allocator(&numa_region);
         }
 
-        // Check buddy reports the address as managed
-        assert!(crate::mm::buddy_allocator::is_managed_by_buddy(PhysAddr::new(
-            0x200000
-        )));
+        // Buddy should not manage the PMM range until it borrows from PMM
+        assert!(!crate::mm::buddy_allocator::is_managed_by_buddy(
+            PhysAddr::new(0x200000)
+        ));
 
-        // Try to allocate a frame preferring that node (best-effort)
-        let alloc = crate::mm::buddy_alloc_frame_on_node(1);
-        assert!(alloc.is_some());
+        // Try to allocate a frame preferring that node (best-effort) via PMM borrow
+        let alloc = crate::mm::buddy_alloc_frame_on_node(1).expect("borrowed alloc");
+        assert!(crate::mm::buddy_allocator::is_managed_by_buddy(
+            alloc.start_address()
+        ));
     }
 
     #[test]
