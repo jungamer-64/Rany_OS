@@ -742,7 +742,7 @@ impl KernelLogger {
         let core_id = {
             #[cfg(not(feature = "bench"))]
             {
-                crate::smp_advanced::current_core_id()
+                crate::smp::current_cpu() as usize
             }
             #[cfg(feature = "bench")]
             {

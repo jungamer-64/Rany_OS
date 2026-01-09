@@ -38,6 +38,7 @@ fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
     a_start < b_end && b_start < a_end
 }
 
+#[cfg(target_os = "none")]
 fn kernel_phys_range() -> Option<(u64, u64)> {
     unsafe extern "C" {
         static __kernel_start: u8;
@@ -53,6 +54,13 @@ fn kernel_phys_range() -> Option<(u64, u64)> {
     let start_phys = crate::mm::global_translate(crate::mm::higher_half::VirtAddr::new(start))?.as_u64();
     let end_phys = crate::mm::global_translate(crate::mm::higher_half::VirtAddr::new(end - 1))?.as_u64();
     Some((start_phys, end_phys.saturating_add(1)))
+}
+
+#[cfg(not(target_os = "none"))]
+fn kernel_phys_range() -> Option<(u64, u64)> {
+    // On non-kernel builds (host tools), we cannot rely on linker-provided
+    // __kernel_start/__kernel_end symbols. Return None to disable RMRR validation.
+    None
 }
 
 fn validate_rmrr_region(start: u64, end: u64) -> Result<(), IommuError> {

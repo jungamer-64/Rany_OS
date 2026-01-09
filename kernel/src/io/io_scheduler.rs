@@ -751,8 +751,8 @@ impl IoScheduler {
             hook.run(result);
         }
 
-        if let Some(w) = waker {
-            w.wake();
+        if let Some(ref w) = waker {
+            w.wake_by_ref();
         }
 
         if abandoned {

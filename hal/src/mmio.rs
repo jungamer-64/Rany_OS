@@ -341,7 +341,8 @@ pub mod simd_level {
     pub const NONE: u8 = 0;
     pub const SSE2: u8 = 0; // Baseline for x86_64
     pub const AVX: u8 = 1;
-    pub const AVX2: u8 = 2; // For future use
+    pub const SSSE3: u8 = 2;
+    pub const AVX2: u8 = 3; // For future use
 }
 
 /// Set the supported SIMD level for optimized MMIO operations.

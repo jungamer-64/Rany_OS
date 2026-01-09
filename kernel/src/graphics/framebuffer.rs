@@ -1464,11 +1464,15 @@ impl Framebuffer {
 
     /// 最適化されたバッファ転送 - transfers all dirty rects
     pub fn flush_dirty_area(&mut self) {
+        let mut to_flush = Vec::new();
         for slot in self.dirty_rects.iter_mut() {
             if let Some(rect) = slot.take() {
-                self.stats.flushes += 1;
-                self.blit_rect(rect);
+                to_flush.push(rect);
             }
+        }
+        for rect in to_flush {
+            self.stats.flushes += 1;
+            self.blit_rect(rect);
         }
     }
 
@@ -2490,9 +2494,9 @@ impl Framebuffer {
                         // Get color bytes in correct order
                         let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
                         let (c0, c1, c2) = if is_bgr {
-                            (color.b, color.g, color.r)
+                            (color.blue, color.green, color.red)
                         } else {
-                            (color.r, color.g, color.b)
+                            (color.red, color.green, color.blue)
                         };
                         
                         // Ensure scratch buffer has enough space for one row
@@ -3129,43 +3133,7 @@ impl Framebuffer {
         Some((draw_rect, src_off_x, src_off_y))
     }
 
-    /// Write 1 row of an 8px wide glyph (expanded to 32bpp) without issuing sfence.
-    /// Returns true if MMIO streaming writes were used (caller must sfence).
-    #[inline]
-    fn write_glyph_row_32bit_nofence(&mut self, byte: u8, offset: usize, fg: u32, bg: u32) -> bool {
-        // Expand 8 bits to 8 u32 pixels
-        let mut pixels = [bg; 8];
-        if byte != 0 {
-            if byte == 0xFF {
-                pixels = [fg; 8];
-            } else {
-                for i in 0..8 {
-                    if (byte >> (7 - i)) & 1 != 0 {
-                        pixels[i] = fg;
-                    }
-                }
-            }
-        }
-        
-        if let Some(ref mut back) = self.back_buffer {
-            debug_assert!(offset + 32 <= back.len(), "write_glyph_row_32bit_nofence: OOB");
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    pixels.as_ptr() as *const u8, 
-                    back.as_mut_ptr().add(offset), 
-                    32
-                );
-            }
-            false // No MMIO, no sfence needed
-        } else {
-            let addr = self.buffer as usize + offset;
-            unsafe {
-                let bytes = core::slice::from_raw_parts(pixels.as_ptr() as *const u8, 32);
-                mmio::stream_write_bytes(addr, bytes);
-            }
-            true // MMIO streaming used, sfence needed
-        }
-    }
+
 
     /// 32-bit不透明ランの描画
     fn write_opaque_run_32bit(
@@ -3458,6 +3426,25 @@ impl Framebuffer {
                     }
                 }
             }
+        }
+    }
+
+    /// helper: detect AVX2 availability (used by draw_image)
+    fn get_avx2_available() -> bool {
+        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+        {
+            #[cfg(feature = "std")]
+            {
+                std::is_x86_feature_detected!("avx2")
+            }
+            #[cfg(not(feature = "std"))]
+            {
+                hal::mmio::get_simd_level() >= hal::mmio::simd_level::AVX2
+            }
+        }
+        #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            false
         }
     }
 
