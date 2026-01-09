@@ -24,13 +24,17 @@ use kernel_api::DmaBuffer;
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::controller::{
     CQ_ENTRY_SIZE, CmbInfo, DEFAULT_QUEUE_DEPTH, FEATURE_NUM_QUEUES, MAX_QUEUE_DEPTH,
-    MAX_TRANSFER_SIZE, NvmeAdminQueueAttributes, NvmeCapabilities, NvmeControllerConfig,
-    NvmeControllerStatus, POLL_BATCH_SIZE, QUEUE_ENTRY_SIZE,
+    MAX_SGL_ENTRIES, MAX_TRANSFER_SIZE, NvmeAdminQueueAttributes, NvmeCapabilities,
+    NvmeControllerConfig, NvmeControllerStatus, POLL_BATCH_SIZE, QUEUE_ENTRY_SIZE,
 };
-use super::defs::AdminOpcode;
-use super::identify::IdentifyNamespace;
+use super::defs::{AdminOpcode, SglDescriptor};
+use super::identify::{IdentifyController, IdentifyNamespace};
 use super::per_core::PerCoreNvmeQueue;
 use super::queue::QueuePair;
+
+// Identify Controller SGLS bits (NVMe spec).
+const SGLS_SUPPORTED: u32 = 1 << 0;
+const SGLS_DATA_BLOCK: u32 = 1 << 2;
 
 // ============================================================================
 // Driver Statistics
@@ -94,6 +98,8 @@ pub struct NvmePollingDriver {
     admin_cq_buffer: Option<DmaBuffer>,
     /// Identifyバッファ（動的割り当て）
     identify_buffer: Option<DmaBuffer>,
+    /// Identify Controllerデータ
+    identify_controller: Option<IdentifyController>,
 }
 
 impl NvmePollingDriver {
@@ -130,6 +136,7 @@ impl NvmePollingDriver {
             admin_sq_buffer: None,
             admin_cq_buffer: None,
             identify_buffer: None,
+            identify_controller: None,
         }
     }
 
@@ -268,6 +275,10 @@ impl NvmePollingDriver {
 
         // コントローラを有効化
         self.enable_controller()?;
+
+        if let Err(err) = self.identify_controller() {
+            log::warn!("[NVME] Identify Controller failed: {}", err);
+        }
 
         // Identify Namespaceでブロックサイズを取得
         if let Ok(ns) = self.identify_namespace(self.nsid) {
@@ -433,14 +444,18 @@ impl NvmePollingDriver {
             if let Some(cqe) = admin_queue.poll_completion() {
                 let status = cqe.status >> 1;
                 if status != 0 {
+                    kernel.free_dma(identify_buffer);
                     return Err("Identify Controller command failed");
                 }
-                self.identify_buffer = Some(identify_buffer);
+                let ctrl = unsafe { &*(identify_buffer.as_ptr() as *const IdentifyController) };
+                self.identify_controller = Some(*ctrl);
+                kernel.free_dma(identify_buffer);
                 return Ok(());
             }
             core::hint::spin_loop();
         }
 
+        kernel.free_dma(identify_buffer);
         Err("Identify Controller timeout")
     }
 
@@ -729,6 +744,25 @@ impl NvmePollingDriver {
         Ok(cid)
     }
 
+    /// リードコマンドを発行（SGL）
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// sglは有効なデータブロック/セグメントディスクリプタである必要がある。
+    pub unsafe fn submit_read_sgl(
+        &self,
+        core_id: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        sgl: SglDescriptor,
+    ) -> Result<u16, &'static str> {
+        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let cid = unsafe { queue.read_sgl(nsid, lba, blocks, sgl) }?;
+        unsafe { queue.flush_doorbell() };
+        Ok(cid)
+    }
+
     /// ライトコマンドを発行
     ///
     /// # Safety
@@ -747,6 +781,47 @@ impl NvmePollingDriver {
         let cid = unsafe { queue.write(nsid, lba, blocks, prp1, prp2) }?;
         unsafe { queue.flush_doorbell() };
         Ok(cid)
+    }
+
+    /// ライトコマンドを発行（SGL）
+    ///
+    /// # Safety
+    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// sglは有効なデータブロック/セグメントディスクリプタである必要がある。
+    pub unsafe fn submit_write_sgl(
+        &self,
+        core_id: u32,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        sgl: SglDescriptor,
+    ) -> Result<u16, &'static str> {
+        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let cid = unsafe { queue.write_sgl(nsid, lba, blocks, sgl) }?;
+        unsafe { queue.flush_doorbell() };
+        Ok(cid)
+    }
+
+    /// SGL最大エントリ数を取得
+    pub fn sgl_max_entries(&self) -> Option<usize> {
+        let ctrl = self.identify_controller?;
+        if (ctrl.sgls & SGLS_SUPPORTED) == 0 {
+            return None;
+        }
+        if (ctrl.sgls & SGLS_DATA_BLOCK) == 0 {
+            return None;
+        }
+        let max = if ctrl.msdbd == 0 {
+            MAX_SGL_ENTRIES
+        } else {
+            ctrl.msdbd as usize
+        };
+        let max = max.min(MAX_SGL_ENTRIES);
+        if max == 0 {
+            None
+        } else {
+            Some(max)
+        }
     }
 
     /// フラッシュコマンドを発行

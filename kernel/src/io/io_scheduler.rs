@@ -117,6 +117,8 @@ pub enum IoPayload {
     None,
     /// NVMe Read/Write 用
     NvmeRw(NvmeRwPayload),
+    /// NVMe SGL Read/Write 用
+    NvmeSgl(NvmeSglPayload),
     /// NVMe Dataset Management 用
     NvmeDsm(NvmeDsmPayload),
 }
@@ -136,6 +138,41 @@ pub struct NvmeRwPayload {
 pub struct NvmeDsmPayload {
     pub prp1: u64,
     pub nr: u8,
+}
+
+/// NVMe SGL ディスクリプタ（I/Oスケジューラ用）
+#[derive(Debug, Clone, Copy)]
+pub struct NvmeSglDescriptor {
+    pub addr: u64,
+    pub length: u32,
+    pub type_specific: u8,
+}
+
+impl NvmeSglDescriptor {
+    pub fn data_block(addr: u64, length: u32) -> Self {
+        Self {
+            addr,
+            length,
+            type_specific: 0x00 << 4,
+        }
+    }
+
+    pub fn last_segment(addr: u64, length: u32) -> Self {
+        Self {
+            addr,
+            length,
+            type_specific: 0x03 << 4,
+        }
+    }
+}
+
+/// NVMe SGL Read/Write ペイロード
+#[derive(Debug, Clone)]
+pub struct NvmeSglPayload {
+    pub lba: u64,
+    pub blocks: u16,
+    pub sgl: NvmeSglDescriptor,
+    pub bytes: usize,
 }
 
 /// I/Oリクエスト記述子
@@ -160,6 +197,8 @@ pub struct IoRequest {
     pub waker: Option<Waker>,
     /// 結果
     pub result: Option<IoResult>,
+    /// 呼び出し側が破棄済みか
+    pub abandoned: bool,
 }
 
 /// I/O結果
@@ -571,6 +610,7 @@ impl IoScheduler {
             completed_at: None,
             waker: None,
             result: None,
+            abandoned: false,
         };
 
         // リクエストを登録
@@ -638,7 +678,7 @@ impl IoScheduler {
 
     /// リクエスト完了を通知
     pub fn complete_request(&self, id: IoRequestId, result: IoResult) {
-        let waker = {
+        let (waker, abandoned) = {
             let mut requests = self.requests.write();
             if let Some(request) = requests.get_mut(&id) {
                 request.state = match &result {
@@ -666,9 +706,9 @@ impl IoScheduler {
                     }
                 }
 
-                request.waker.take()
+                (request.waker.take(), request.abandoned)
             } else {
-                None
+                (None, false)
             }
         };
 
@@ -680,12 +720,16 @@ impl IoScheduler {
         if let Some(w) = waker {
             w.wake();
         }
+
+        if abandoned {
+            self.requests.write().remove(&id);
+        }
     }
 
     /// リクエストをキャンセル
     pub fn cancel_request(&self, id: IoRequestId) -> bool {
         let result = IoResult::Error(IoError::Cancelled);
-        let waker = {
+        let (waker, abandoned) = {
             let mut requests = self.requests.write();
             if let Some(request) = requests.get_mut(&id) {
                 if request.state == IoState::Pending {
@@ -694,12 +738,12 @@ impl IoScheduler {
                     self.stats
                         .current_queue_depth
                         .fetch_sub(1, Ordering::Relaxed);
-                    request.waker.take()
+                    (request.waker.take(), request.abandoned)
                 } else {
-                    None
+                    (None, request.abandoned)
                 }
             } else {
-                None
+                (None, false)
             }
         };
 
@@ -709,9 +753,27 @@ impl IoScheduler {
 
         if let Some(w) = waker {
             w.wake();
-            true
-        } else {
-            false
+        }
+
+        if abandoned {
+            self.requests.write().remove(&id);
+        }
+
+        waker.is_some()
+    }
+
+    /// リクエストを破棄（Future drop 時に使用）
+    pub fn abandon_request(&self, id: IoRequestId) {
+        let mut requests = self.requests.write();
+        if let Some(request) = requests.get_mut(&id) {
+            request.abandoned = true;
+            request.waker = None;
+            if matches!(
+                request.state,
+                IoState::Completed | IoState::Failed | IoState::Cancelled
+            ) {
+                requests.remove(&id);
+            }
         }
     }
 
@@ -723,6 +785,21 @@ impl IoScheduler {
     /// リクエストの結果を取得
     pub fn get_result(&self, id: IoRequestId) -> Option<IoResult> {
         self.requests.read().get(&id).and_then(|r| r.result.clone())
+    }
+
+    /// 完了済みリクエストの結果を取り出して削除
+    pub fn take_result(&self, id: IoRequestId) -> Option<IoResult> {
+        let mut requests = self.requests.write();
+        let should_remove = requests
+            .get(&id)
+            .map(|r| matches!(r.state, IoState::Completed | IoState::Failed | IoState::Cancelled))
+            .unwrap_or(false);
+        if should_remove {
+            let result = requests.get(&id).and_then(|r| r.result.clone());
+            requests.remove(&id);
+            return result;
+        }
+        None
     }
 
     /// 完了フックを登録
@@ -782,6 +859,7 @@ impl Clone for IoRequest {
             completed_at: self.completed_at,
             waker: None, // Waker は clone しない
             result: self.result.clone(),
+            abandoned: self.abandoned,
         }
     }
 }
@@ -922,7 +1000,7 @@ impl Future for IoFuture {
         if let Some(state) = self.scheduler.get_state(self.request_id) {
             match state {
                 IoState::Completed => {
-                    if let Some(result) = self.scheduler.get_result(self.request_id) {
+                    if let Some(result) = self.scheduler.take_result(self.request_id) {
                         return Poll::Ready(match result {
                             IoResult::Success(bytes) => Ok(bytes),
                             IoResult::Error(e) => Err(e),
@@ -930,7 +1008,7 @@ impl Future for IoFuture {
                     }
                 }
                 IoState::Failed | IoState::Cancelled => {
-                    if let Some(result) = self.scheduler.get_result(self.request_id) {
+                    if let Some(result) = self.scheduler.take_result(self.request_id) {
                         return Poll::Ready(match result {
                             IoResult::Success(bytes) => Ok(bytes),
                             IoResult::Error(e) => Err(e),
@@ -951,6 +1029,13 @@ impl Future for IoFuture {
         }
 
         Poll::Ready(Err(IoError::InvalidParameter))
+    }
+}
+
+impl Drop for IoFuture {
+    fn drop(&mut self) {
+        self.scheduler.abandon_request(self.request_id);
+        let _ = self.scheduler.cancel_request(self.request_id);
     }
 }
 
@@ -1138,6 +1223,10 @@ impl HybridIoCoordinator {
                 Some(request) => request,
                 None => continue,
             };
+
+            if !matches!(request.state, IoState::InProgress) {
+                continue;
+            }
 
             let result = match request.device {
                 DeviceId::Nvme { .. } => crate::io::nvme::scheduler::submit_request(&request),

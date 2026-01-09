@@ -33,6 +33,13 @@ pub mod nvme {
     #[derive(Debug)]
     pub struct NvmePollingDriver;
 
+    #[derive(Clone, Copy, Debug)]
+    pub struct SglDescriptor {
+        pub addr: u64,
+        pub length: u32,
+        pub type_specific: u8,
+    }
+
     impl NvmePollingDriver {
         pub fn new() -> Self { NvmePollingDriver }
 
@@ -50,6 +57,18 @@ pub mod nvme {
             Ok(0)
         }
 
+        /// Submit a read command (SGL). Minimal test implementation: returns Ok(0).
+        pub unsafe fn submit_read_sgl(
+            &self,
+            _core_id: u32,
+            _nsid: u32,
+            _lba: u64,
+            _blocks: u16,
+            _sgl: SglDescriptor,
+        ) -> Result<u16, defs::NvmeError> {
+            Ok(0)
+        }
+
         /// Submit a write command. Minimal test implementation: returns Ok(0).
         pub unsafe fn submit_write(
             &self,
@@ -61,6 +80,23 @@ pub mod nvme {
             _prp2: u64,
         ) -> Result<u16, defs::NvmeError> {
             Ok(0)
+        }
+
+        /// Submit a write command (SGL). Minimal test implementation: returns Ok(0).
+        pub unsafe fn submit_write_sgl(
+            &self,
+            _core_id: u32,
+            _nsid: u32,
+            _lba: u64,
+            _blocks: u16,
+            _sgl: SglDescriptor,
+        ) -> Result<u16, defs::NvmeError> {
+            Ok(0)
+        }
+
+        /// SGL max entries. Minimal test implementation: None.
+        pub fn sgl_max_entries(&self) -> Option<usize> {
+            None
         }
 
         /// Submit a flush command. Minimal test implementation: returns Ok(0).
