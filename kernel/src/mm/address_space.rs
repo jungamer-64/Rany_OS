@@ -31,7 +31,7 @@ use spin::RwLock;
 use super::higher_half::{VirtAddr, PhysAddr, PageFlags, global_unmap_page, global_translate};
 use super::frame_allocator::alloc_frame;
 use super::cow::{cow_mark_page, cow_copy_pte, page_get, page_put};
-use super::rcu_vma::VmaFlags;
+use super::rcu_vma::{VmaFlags, VmaList, VmArea};
 use super::memcg::{memcg_charge, memcg_uncharge, ChargeType, MemcgId};
 use super::stack_growth::{create_stack, StackResult};
 use crate::mm::thp_promotion::ThpCandidate;
@@ -117,6 +117,30 @@ impl Protection {
     pub const READ_WRITE: Self = Self { read: true, write: true, execute: false };
     pub const READ_EXEC: Self = Self { read: true, write: false, execute: true };
     pub const READ_WRITE_EXEC: Self = Self { read: true, write: true, execute: true };
+
+    #[inline]
+    pub fn can_read(&self) -> bool {
+        self.read
+    }
+
+    #[inline]
+    pub fn can_write(&self) -> bool {
+        self.write
+    }
+
+    #[inline]
+    pub fn can_exec(&self) -> bool {
+        self.execute
+    }
+
+    #[inline]
+    pub fn union(&self, other: Self) -> Self {
+        Self {
+            read: self.read || other.read,
+            write: self.write || other.write,
+            execute: self.execute || other.execute,
+        }
+    }
     
     /// PageFlagsに変換
     pub fn to_page_flags(&self) -> PageFlags {
@@ -217,6 +241,42 @@ impl MemoryRegion {
     pub fn put_ref(&self) -> bool {
         self.refcount.fetch_sub(1, Ordering::Release) == 1
     }
+
+    /// VMAフラグへ変換
+    fn vma_flags(&self) -> u32 {
+        let mut flags = 0u32;
+        if self.protection.read {
+            flags |= VmaFlags::Read as u32;
+        }
+        if self.protection.write {
+            flags |= VmaFlags::Write as u32;
+        }
+        if self.protection.execute {
+            flags |= VmaFlags::Execute as u32;
+        }
+        if self.cow {
+            flags |= VmaFlags::CopyOnWrite as u32;
+        }
+        if matches!(self.region_type, RegionType::Shared) {
+            flags |= VmaFlags::Shared as u32;
+        }
+        if self.file_info.is_some() || matches!(self.region_type, RegionType::FileBacked) {
+            flags |= VmaFlags::FileBacked as u32;
+        } else {
+            flags |= VmaFlags::Anonymous as u32;
+        }
+        flags
+    }
+
+    /// MemoryRegionからVmAreaを生成
+    fn to_vma(&self) -> VmArea {
+        let mut vma = VmArea::new(self.start, self.end, self.vma_flags());
+        if let Some(info) = &self.file_info {
+            vma.file_inode = info.inode;
+            vma.file_offset = info.offset;
+        }
+        vma
+    }
 }
 
 // ============================================================================
@@ -231,6 +291,8 @@ pub struct ProcessAddressSpace {
     page_table_root: AtomicU64,
     /// メモリ領域のマップ（start_addr -> region）
     regions: RwLock<BTreeMap<u64, Box<MemoryRegion>>>,
+    /// RCU保護されたVMAリスト
+    vma_list: VmaList,
     /// ヒープ境界（brk）
     heap_end: AtomicU64,
     /// mmap領域の次の割り当てアドレス
@@ -252,6 +314,7 @@ impl ProcessAddressSpace {
             asid: allocate_asid(),
             page_table_root: AtomicU64::new(0),
             regions: RwLock::new(BTreeMap::new()),
+            vma_list: VmaList::new(),
             heap_end: AtomicU64::new(DEFAULT_HEAP_START),
             mmap_hint: AtomicU64::new(DEFAULT_MMAP_BASE),
             stack_top: AtomicU64::new(DEFAULT_STACK_TOP),
@@ -315,22 +378,15 @@ impl ProcessAddressSpace {
             }
         }
         
+        let vma = region.to_vma();
         regions.insert(start, Box::new(region));
+        self.vma_list.insert(Box::new(vma));
         Ok(())
     }
     
     /// アドレスに対応する領域を検索
     pub fn find_region(&self, addr: VirtAddr) -> Option<u64> {
-        let regions = self.regions.read();
-        
-        // start <= addr となる最大のキーを探す
-        for (&start, region) in regions.range(..=addr.as_u64()).rev() {
-            if region.contains(addr) {
-                return Some(start);
-            }
-            break;
-        }
-        None
+        self.vma_list.find(addr).map(|info| info.start.as_u64())
     }
     
     /// 領域を取得
@@ -344,6 +400,7 @@ impl ProcessAddressSpace {
         let mut regions = self.regions.write();
         
         if let Some(region) = regions.remove(&start_addr) {
+            let _ = self.vma_list.remove(region.start);
             // マッピングを解除
             let page_count = region.page_count();
             for i in 0..page_count {
@@ -426,6 +483,10 @@ impl ProcessAddressSpace {
             // 権限を更新
             // TODO: 部分的な範囲の場合は領域を分割
             region.protection = prot;
+
+            let vma = region.to_vma();
+            let _ = self.vma_list.remove(region.start);
+            self.vma_list.insert(Box::new(vma));
             
             // ページテーブルエントリを更新
             let page_count = size / PAGE_SIZE;
@@ -541,7 +602,9 @@ impl ProcessAddressSpace {
             
             // 子に領域を追加
             let mut child_regions = child.regions.write();
+            let child_vma = child_region.to_vma();
             child_regions.insert(start, Box::new(child_region));
+            child.vma_list.insert(Box::new(child_vma));
         }
         
         // ヒープとスタック境界をコピー
@@ -567,6 +630,7 @@ impl ProcessAddressSpace {
         let keys: Vec<u64> = regions.keys().copied().collect();
         for start in keys {
             if let Some(region) = regions.remove(&start) {
+                let _ = self.vma_list.remove(region.start);
                 // ユーザー空間のみ解除
                 if region.start.as_u64() < KERNEL_SPACE_START {
                     let page_count = region.page_count();

@@ -145,8 +145,10 @@ pub use mapping::{
     virt_to_phys as mapping_virt_to_phys,
 };
 #[allow(unused_imports)]
+pub use types::{MappedAddress, MappingOffset, MappingSize};
+#[allow(unused_imports)]
 pub use mmap::{
-    MappedAddress, MappingFlags, MappingSize, MemoryMapping, MmapError, MmapManager, Protection,
+    MappingFlags, MemoryMapping, MmapError, MmapManager,
     mmap, mmap_manager, mprotect, msync, munmap,
 };
 #[allow(unused_imports)]
@@ -376,6 +378,7 @@ pub use address_space::{
     // Region types
     MemoryRegion,
     RegionType,
+    Protection,
     Protection as AddressSpaceProtection,
     FileBackingInfo,
     // Constants
