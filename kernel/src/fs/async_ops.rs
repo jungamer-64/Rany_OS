@@ -16,6 +16,7 @@
 
 #![allow(dead_code)]
 
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
@@ -46,7 +47,6 @@ use crate::io::io_scheduler::{
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
-use crate::smp::current_cpu;
 
 const NVME_PAGE_SIZE: usize = 4096;
 const NVME_BLOCK_SIZE: u64 = 512;
@@ -90,19 +90,32 @@ impl NvmePrpListChain {
 }
 
 struct NvmeDmaContext {
-    data_dev: TypedDmaSlice<DeviceOwned>,
-    data_guard: SliceDmaGuard,
+    data_dev: Option<TypedDmaSlice<DeviceOwned>>,
+    data_guard: Option<SliceDmaGuard>,
     prp_list: Option<NvmePrpListChain>,
     data_map: Option<NvmeIommuMapping>,
+    completed: bool,
+    inflight: bool,
 }
 
 impl NvmeDmaContext {
-    fn complete(self) -> TypedDmaSlice<CpuOwned> {
-        if let Some(prp) = self.prp_list {
+    fn mark_inflight(&mut self) {
+        self.inflight = true;
+    }
+
+    fn complete(mut self) -> TypedDmaSlice<CpuOwned> {
+        self.completed = true;
+        self.inflight = false;
+        if let Some(prp) = self.prp_list.take() {
             prp.complete();
         }
-        let data = self.data_guard.complete(self.data_dev);
-        if let Some(map) = self.data_map {
+        let data_dev = self.data_dev.take().expect("NvmeDmaContext missing data_dev");
+        let data_guard = self
+            .data_guard
+            .take()
+            .expect("NvmeDmaContext missing data_guard");
+        let data = data_guard.complete(data_dev);
+        if let Some(map) = self.data_map.take() {
             map.unmap();
         }
         data
@@ -112,14 +125,63 @@ impl NvmeDmaContext {
 struct NvmeExternalDmaContext {
     prp_list: Option<NvmePrpListChain>,
     data_map: Option<NvmeIommuMapping>,
+    completed: bool,
+    inflight: bool,
 }
 
 impl NvmeExternalDmaContext {
-    fn complete(self) {
-        if let Some(prp) = self.prp_list {
+    fn mark_inflight(&mut self) {
+        self.inflight = true;
+    }
+
+    fn complete(mut self) {
+        self.completed = true;
+        self.inflight = false;
+        if let Some(prp) = self.prp_list.take() {
             prp.complete();
         }
-        if let Some(map) = self.data_map {
+        if let Some(map) = self.data_map.take() {
+            map.unmap();
+        }
+    }
+}
+
+impl Drop for NvmeDmaContext {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if self.inflight {
+            log::warn!("[NVME] NvmeDmaContext dropped while in-flight; leaking DMA resources");
+            return;
+        }
+        if let Some(prp) = self.prp_list.take() {
+            prp.complete();
+        }
+        if let (Some(data_dev), Some(data_guard)) =
+            (self.data_dev.take(), self.data_guard.take())
+        {
+            let _ = data_guard.complete(data_dev);
+        }
+        if let Some(map) = self.data_map.take() {
+            map.unmap();
+        }
+    }
+}
+
+impl Drop for NvmeExternalDmaContext {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if self.inflight {
+            log::warn!("[NVME] NvmeExternalDmaContext dropped while in-flight; leaking mappings");
+            return;
+        }
+        if let Some(prp) = self.prp_list.take() {
+            prp.complete();
+        }
+        if let Some(map) = self.data_map.take() {
             map.unmap();
         }
     }
@@ -291,10 +353,12 @@ fn prepare_dma_read(len: usize) -> FsResult<(NvmeDmaContext, u64, u64)> {
     let (data_dev, data_guard) = data.start_dma();
     Ok((
         NvmeDmaContext {
-            data_dev,
-            data_guard,
+            data_dev: Some(data_dev),
+            data_guard: Some(data_guard),
             prp_list,
             data_map,
+            completed: false,
+            inflight: false,
         },
         data_addr,
         prp2,
@@ -315,10 +379,12 @@ fn prepare_dma_write(buf: &[u8], dma_len: usize) -> FsResult<(NvmeDmaContext, u6
     let (data_dev, data_guard) = data.start_dma();
     Ok((
         NvmeDmaContext {
-            data_dev,
-            data_guard,
+            data_dev: Some(data_dev),
+            data_guard: Some(data_guard),
             prp_list,
             data_map,
+            completed: false,
+            inflight: false,
         },
         data_addr,
         prp2,
@@ -336,10 +402,12 @@ fn prepare_dma_from_cpu_buffer(
     let (data_dev, data_guard) = data.start_dma();
     Ok((
         NvmeDmaContext {
-            data_dev,
-            data_guard,
+            data_dev: Some(data_dev),
+            data_guard: Some(data_guard),
             prp_list,
             data_map,
+            completed: false,
+            inflight: false,
         },
         data_addr,
         prp2,
@@ -358,6 +426,8 @@ fn prepare_dma_from_kapi_buffer(
         NvmeExternalDmaContext {
             prp_list,
             data_map,
+            completed: false,
+            inflight: false,
         },
         data_addr,
         prp2,
@@ -554,6 +624,7 @@ impl AsyncIoRequest {
     pub fn complete(&self, result: Result<usize, FsError>) {
         *self.result.lock() = Some(result);
         self.completed.store(true, Ordering::Release);
+        async_io_scheduler().mark_completed(self.id);
 
         // Wakerを起こす
         if let Some(waker) = self.waker.lock().take() {
@@ -637,6 +708,13 @@ impl AsyncFile {
         }
     }
 
+    fn io_device(&self) -> IoDeviceId {
+        IoDeviceId::Nvme {
+            controller: 0,
+            namespace: nsid_from_device(self.device_id),
+        }
+    }
+
     /// 非同期読み取り
     pub fn read<'a>(&'a self, buf: &'a mut [u8]) -> AsyncReadFuture<'a> {
         AsyncReadFuture::new(self, buf)
@@ -707,10 +785,9 @@ pub struct AsyncReadFuture<'a> {
     file: &'a AsyncFile,
     buf: &'a mut [u8],
     started: bool,
-    request_id: Option<u64>,
-    dma_ctx: Option<NvmeDmaContext>,
+    io_future: Option<crate::io::io_scheduler::IoFuture>,
     dma_user_len: usize,
-    dma_offset: usize,
+    cancel_guard: Option<NvmeCancelGuard>,
 }
 
 impl<'a> AsyncReadFuture<'a> {
@@ -719,10 +796,9 @@ impl<'a> AsyncReadFuture<'a> {
             file,
             buf,
             started: false,
-            request_id: None,
-            dma_ctx: None,
+            io_future: None,
             dma_user_len: 0,
-            dma_offset: 0,
+            cancel_guard: None,
         }
     }
 }
@@ -759,7 +835,6 @@ impl<'a> Future for AsyncReadFuture<'a> {
             // ダイレクトI/Oの場合は直接デバイスアクセス
             if self.file.direct_io {
                 // NVMeリードコマンド発行（コア固有のNVMeキューを使用）
-                let core_id = current_cpu();
                 let block_size = self.file.block_size;
                 let offset_in_block = (position % block_size) as usize;
                 let total_len = offset_in_block + to_read;
@@ -770,33 +845,61 @@ impl<'a> Future for AsyncReadFuture<'a> {
                 let blocks = blocks_u64 as u16;
                 let dma_len = (blocks as usize) * (block_size as usize);
                 let lba = self.file.start_block + (position / block_size);
-                let nsid = nsid_from_device(self.file.device_id);
 
-                let (ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
+                let (mut ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
                     Ok(v) => v,
                     Err(e) => return Poll::Ready(Err(e)),
                 };
 
-                // NVMeドライバ経由でリードコマンドを発行
-                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.submit_read(core_id, nsid, lba, blocks, prp1, prp2) }
-                });
+                let canceled = Arc::new(AtomicBool::new(false));
+                self.cancel_guard = Some(NvmeCancelGuard::new(canceled.clone()));
+                let buf_ptr = self.buf.as_mut_ptr();
+                let buf_len = self.buf.len();
 
-                match result {
-                    Some(Ok(cid)) => {
-                        self.request_id = Some(cid as u64);
-                        self.dma_ctx = Some(ctx);
-                        self.dma_user_len = to_read;
-                        self.dma_offset = offset_in_block;
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
+                let payload = IoPayload::NvmeRw(NvmeRwPayload {
+                    lba,
+                    blocks,
+                    prp1,
+                    prp2,
+                    bytes: dma_len,
+                });
+                let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+                    self.file.io_device(),
+                    IoOperationType::Read,
+                    IoPriority::Normal,
+                    payload,
+                );
+                let request_id = future.request_id();
+
+                ctx.mark_inflight();
+                let hook: CompletionHook = Box::new(move |result| {
+                    let data = ctx.complete();
+                    if canceled.load(Ordering::Acquire) {
+                        return;
                     }
-                    Some(Err(_)) | None => {
-                        let _ = ctx.complete();
-                        return Poll::Ready(Err(FsError::IoError));
+                    if let IoResult::Success(bytes) = result {
+                        let copy_len = bytes.min(dma_len).min(buf_len);
+                        let start = offset_in_block;
+                        let end = start.saturating_add(copy_len).min(data.len());
+                        let out_len = end.saturating_sub(start);
+                        if out_len > 0 {
+                            unsafe {
+                                core::ptr::copy_nonoverlapping(
+                                    data.as_slice().as_ptr().add(start),
+                                    buf_ptr,
+                                    out_len,
+                                );
+                            }
+                        }
                     }
-                }
+                });
+                crate::io::io_scheduler::io_scheduler()
+                    .register_completion_hook(request_id, hook);
+
+                self.io_future = Some(future);
+                self.dma_user_len = to_read;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
 
             let file_id = self.file.id;
@@ -811,83 +914,28 @@ impl<'a> Future for AsyncReadFuture<'a> {
             }
         }
 
-        // リクエストの完了を確認 (Polling/Interrupt対応)
-        if let Some(request_id) = self.request_id {
-            let core_id = current_cpu();
-
-            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                if !driver.interrupt_mode() {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.poll_loop(core_id) };
-                }
-                driver.take_completion(core_id, request_id as u16)
-            });
-
-            if let Some(Some(cqe)) = completed {
-                if cqe.is_success() {
-                    if let Some(ctx) = self.dma_ctx.take() {
-                        let data = ctx.complete();
-                        let start = self.dma_offset;
-                        let end = start + self.dma_user_len;
-                        self.buf[..self.dma_user_len]
-                            .copy_from_slice(&data.as_slice()[start..end]);
+        if let Some(future) = self.io_future.as_mut() {
+            match Pin::new(future).poll(cx) {
+                Poll::Ready(Ok(_)) => {
+                    if let Some(mut guard) = self.cancel_guard.take() {
+                        guard.disarm();
                     }
                     self.file
                         .position
                         .fetch_add(self.dma_user_len as u64, Ordering::Relaxed);
                     return Poll::Ready(Ok(self.dma_user_len));
                 }
-
-                if let Some(ctx) = self.dma_ctx.take() {
-                    let _ = ctx.complete();
-                }
-                return Poll::Ready(Err(FsError::IoError));
-            }
-
-            let interrupt_mode =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.interrupt_mode()
-                })
-                .unwrap_or(false);
-
-            if interrupt_mode {
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.register_waker(core_id, request_id as u16, cx.waker().clone());
-                });
-
-                let completed_retry =
-                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                        driver.take_completion(core_id, request_id as u16)
-                    });
-
-                if let Some(Some(cqe)) = completed_retry {
-                    if cqe.is_success() {
-                        if let Some(ctx) = self.dma_ctx.take() {
-                            let data = ctx.complete();
-                            let start = self.dma_offset;
-                            let end = start + self.dma_user_len;
-                            self.buf[..self.dma_user_len]
-                                .copy_from_slice(&data.as_slice()[start..end]);
-                        }
-                        self.file
-                            .position
-                            .fetch_add(self.dma_user_len as u64, Ordering::Relaxed);
-                        return Poll::Ready(Ok(self.dma_user_len));
-                    }
-
-                    if let Some(ctx) = self.dma_ctx.take() {
-                        let _ = ctx.complete();
+                Poll::Ready(Err(_)) => {
+                    if let Some(mut guard) = self.cancel_guard.take() {
+                        guard.disarm();
                     }
                     return Poll::Ready(Err(FsError::IoError));
                 }
-            } else {
-                cx.waker().wake_by_ref();
+                Poll::Pending => return Poll::Pending,
             }
-
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(0))
         }
+
+        Poll::Ready(Ok(0))
     }
 }
 
@@ -896,15 +944,27 @@ pub struct AsyncWriteFuture<'a> {
     file: &'a AsyncFile,
     buf: &'a [u8],
     started: bool,
-    request_id: Option<u64>,
-    dma_ctx: Option<NvmeDmaContext>,
+    io_future: Option<crate::io::io_scheduler::IoFuture>,
     dma_user_len: usize,
     unaligned: Option<UnalignedWriteState>,
 }
 
+struct UnalignedReadSlot {
+    data: Mutex<Option<TypedDmaSlice<CpuOwned>>>,
+}
+
+impl UnalignedReadSlot {
+    fn new() -> Self {
+        Self {
+            data: Mutex::new(None),
+        }
+    }
+}
+
 enum UnalignedWriteState {
     Reading {
-        ctx: NvmeDmaContext,
+        io_future: crate::io::io_scheduler::IoFuture,
+        data_slot: Arc<UnalignedReadSlot>,
         lba: u64,
         blocks: u16,
         offset: usize,
@@ -912,9 +972,7 @@ enum UnalignedWriteState {
         start_pos: u64,
     },
     Writing {
-        ctx: NvmeDmaContext,
-        lba: u64,
-        blocks: u16,
+        io_future: crate::io::io_scheduler::IoFuture,
         len: usize,
         start_pos: u64,
     },
@@ -926,88 +984,9 @@ impl<'a> AsyncWriteFuture<'a> {
             file,
             buf,
             started: false,
-            request_id: None,
-            dma_ctx: None,
+            io_future: None,
             dma_user_len: 0,
             unaligned: None,
-        }
-    }
-
-    fn handle_unaligned_completion(
-        &mut self,
-        state: UnalignedWriteState,
-        cqe: crate::io::nvme::NvmeCompletion,
-        cx: &mut Context<'_>,
-    ) -> Poll<FsResult<usize>> {
-        if !cqe.is_success() {
-            match state {
-                UnalignedWriteState::Reading { ctx, .. }
-                | UnalignedWriteState::Writing { ctx, .. } => {
-                    let _ = ctx.complete();
-                }
-            }
-            return Poll::Ready(Err(FsError::IoError));
-        }
-
-        match state {
-            UnalignedWriteState::Reading {
-                ctx,
-                lba,
-                blocks,
-                offset,
-                len,
-                start_pos,
-            } => {
-                let mut data = ctx.complete();
-                let end = offset + len;
-                if end > data.len() {
-                    return Poll::Ready(Err(FsError::InvalidArgument));
-                }
-                data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
-
-                let (write_ctx, prp1, prp2) = match prepare_dma_from_cpu_buffer(data) {
-                    Ok(v) => v,
-                    Err(e) => return Poll::Ready(Err(e)),
-                };
-
-                let core_id = current_cpu();
-                let nsid = nsid_from_device(self.file.device_id);
-                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.submit_write(core_id, nsid, lba, blocks, prp1, prp2) }
-                });
-
-                match result {
-                    Some(Ok(cid)) => {
-                        self.request_id = Some(cid as u64);
-                        self.unaligned = Some(UnalignedWriteState::Writing {
-                            ctx: write_ctx,
-                            lba,
-                            blocks,
-                            len,
-                            start_pos,
-                        });
-                        cx.waker().wake_by_ref();
-                        Poll::Pending
-                    }
-                    Some(Err(_)) | None => {
-                        let _ = write_ctx.complete();
-                        Poll::Ready(Err(FsError::IoError))
-                    }
-                }
-            }
-            UnalignedWriteState::Writing { ctx, len, start_pos, .. } => {
-                let _ = ctx.complete();
-                self.file.position.fetch_add(len as u64, Ordering::Relaxed);
-                {
-                    let mut attr = self.file.attr.lock();
-                    let new_end = start_pos + len as u64;
-                    if new_end > attr.size {
-                        attr.size = new_end;
-                    }
-                }
-                Poll::Ready(Ok(len))
-            }
         }
     }
 }
@@ -1033,7 +1012,6 @@ impl<'a> Future for AsyncWriteFuture<'a> {
             // ダイレクトI/Oの場合
             if self.file.direct_io {
                 // NVMeライトコマンド発行（コア固有のNVMeキューを使用）
-                let core_id = current_cpu();
                 let block_size = self.file.block_size;
                 let offset_in_block = (position % block_size) as usize;
                 if offset_in_block != 0 || (len as u64) % block_size != 0 {
@@ -1050,37 +1028,48 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                     let blocks = blocks_u64 as u16;
                     let dma_len = (blocks as usize) * (block_size as usize);
                     let lba = self.file.start_block + aligned_start;
-                    let nsid = nsid_from_device(self.file.device_id);
 
-                    let (ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
+                    let (mut ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
                         Ok(v) => v,
                         Err(e) => return Poll::Ready(Err(e)),
                     };
 
-                    let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                        // Safety: 現在のコアIDで自身のキューにアクセス
-                        unsafe { driver.submit_read(core_id, nsid, lba, blocks, prp1, prp2) }
+                    let data_slot = Arc::new(UnalignedReadSlot::new());
+                    let slot = data_slot.clone();
+                    let payload = IoPayload::NvmeRw(NvmeRwPayload {
+                        lba,
+                        blocks,
+                        prp1,
+                        prp2,
+                        bytes: dma_len,
                     });
+                    let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+                        self.file.io_device(),
+                        IoOperationType::Read,
+                        IoPriority::Normal,
+                        payload,
+                    );
+                    let request_id = future.request_id();
+                    ctx.mark_inflight();
+                    let hook: CompletionHook = Box::new(move |result| {
+                        let data = ctx.complete();
+                        if let IoResult::Success(_) = result {
+                            *slot.data.lock() = Some(data);
+                        }
+                    });
+                    crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 
-                    match result {
-                        Some(Ok(cid)) => {
-                            self.request_id = Some(cid as u64);
-                            self.unaligned = Some(UnalignedWriteState::Reading {
-                                ctx,
-                                lba,
-                                blocks,
-                                offset: offset_in_block,
-                                len,
-                                start_pos: position,
-                            });
-                            cx.waker().wake_by_ref();
-                            return Poll::Pending;
-                        }
-                        Some(Err(_)) | None => {
-                            let _ = ctx.complete();
-                            return Poll::Ready(Err(FsError::IoError));
-                        }
-                    }
+                    self.unaligned = Some(UnalignedWriteState::Reading {
+                        io_future: future,
+                        data_slot,
+                        lba,
+                        blocks,
+                        offset: offset_in_block,
+                        len,
+                        start_pos: position,
+                    });
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
                 }
 
                 let blocks_u64 = len as u64 / block_size;
@@ -1090,32 +1079,36 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                 let blocks = blocks_u64 as u16;
                 let dma_len = (blocks as usize) * (block_size as usize);
                 let lba = self.file.start_block + (position / block_size);
-                let nsid = nsid_from_device(self.file.device_id);
 
-                let (ctx, prp1, prp2) = match prepare_dma_write(self.buf, dma_len) {
+                let (mut ctx, prp1, prp2) = match prepare_dma_write(self.buf, dma_len) {
                     Ok(v) => v,
                     Err(e) => return Poll::Ready(Err(e)),
                 };
 
-                // NVMeドライバ経由でライトコマンドを発行
-                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.submit_write(core_id, nsid, lba, blocks, prp1, prp2) }
+                let payload = IoPayload::NvmeRw(NvmeRwPayload {
+                    lba,
+                    blocks,
+                    prp1,
+                    prp2,
+                    bytes: dma_len,
                 });
+                let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+                    self.file.io_device(),
+                    IoOperationType::Write,
+                    IoPriority::Normal,
+                    payload,
+                );
+                let request_id = future.request_id();
+                ctx.mark_inflight();
+                let hook: CompletionHook = Box::new(move |_result| {
+                    let _ = ctx.complete();
+                });
+                crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 
-                match result {
-                    Some(Ok(cid)) => {
-                        self.request_id = Some(cid as u64);
-                        self.dma_ctx = Some(ctx);
-                        self.dma_user_len = len;
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                    Some(Err(_)) | None => {
-                        let _ = ctx.complete();
-                        return Poll::Ready(Err(FsError::IoError));
-                    }
-                }
+                self.io_future = Some(future);
+                self.dma_user_len = len;
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
 
             let file_size = self.file.attr.lock().size;
@@ -1137,75 +1130,11 @@ impl<'a> Future for AsyncWriteFuture<'a> {
             }
         }
 
-        if let Some(state) = self.unaligned.take() {
-            let core_id = current_cpu();
-            let request_id = match self.request_id {
-                Some(id) => id as u16,
-                None => return Poll::Ready(Err(FsError::IoError)),
-            };
-
-            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                if !driver.interrupt_mode() {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.poll_loop(core_id) };
-                }
-                driver.take_completion(core_id, request_id)
-            });
-
-            if completed.is_none() {
-                return Poll::Ready(Err(FsError::IoError));
-            }
-
-            if let Some(Some(cqe)) = completed {
-                return self.handle_unaligned_completion(state, cqe, cx);
-            }
-
-            let interrupt_mode =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.interrupt_mode()
-                })
-                .unwrap_or(false);
-
-            if interrupt_mode {
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.register_waker(core_id, request_id, cx.waker().clone());
-                });
-
-                let completed_retry =
-                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                        driver.take_completion(core_id, request_id)
-                    });
-
-                if let Some(Some(cqe)) = completed_retry {
-                    return self.handle_unaligned_completion(state, cqe, cx);
-                }
-            } else {
-                cx.waker().wake_by_ref();
-            }
-
-            self.unaligned = Some(state);
-            return Poll::Pending;
-        }
-
-        // 完了確認 (Polling/Interrupt対応)
-        if let Some(request_id) = self.request_id {
-            let core_id = current_cpu();
-
-            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                if !driver.interrupt_mode() {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.poll_loop(core_id) };
-                }
-                driver.take_completion(core_id, request_id as u16)
-            });
-
-            if let Some(Some(cqe)) = completed {
-                if cqe.is_success() {
-                    if let Some(ctx) = self.dma_ctx.take() {
-                        let _ = ctx.complete();
-                    }
-                    let position = self.file.position.load(Ordering::Relaxed);
+        if let Some(future) = self.io_future.as_mut() {
+            match Pin::new(future).poll(cx) {
+                Poll::Ready(Ok(_)) => {
                     let len = self.dma_user_len;
+                    let position = self.file.position.load(Ordering::Relaxed);
                     self.file.position.fetch_add(len as u64, Ordering::Relaxed);
                     {
                         let mut attr = self.file.attr.lock();
@@ -1216,60 +1145,111 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                     }
                     return Poll::Ready(Ok(len));
                 }
-
-                if let Some(ctx) = self.dma_ctx.take() {
-                    let _ = ctx.complete();
-                }
-                return Poll::Ready(Err(FsError::IoError));
+                Poll::Ready(Err(_)) => return Poll::Ready(Err(FsError::IoError)),
+                Poll::Pending => return Poll::Pending,
             }
+        }
 
-            let interrupt_mode =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.interrupt_mode()
-                })
-                .unwrap_or(false);
-
-            if interrupt_mode {
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.register_waker(core_id, request_id as u16, cx.waker().clone());
-                });
-
-                let completed_retry =
-                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                        driver.take_completion(core_id, request_id as u16)
-                    });
-
-                if let Some(Some(cqe)) = completed_retry {
-                    if cqe.is_success() {
-                        if let Some(ctx) = self.dma_ctx.take() {
-                            let _ = ctx.complete();
+        if let Some(state) = self.unaligned.take() {
+            match state {
+                UnalignedWriteState::Reading {
+                    mut io_future,
+                    data_slot,
+                    lba,
+                    blocks,
+                    offset,
+                    len,
+                    start_pos,
+                } => match Pin::new(&mut io_future).poll(cx) {
+                    Poll::Ready(Ok(_)) => {
+                        let mut data = match data_slot.data.lock().take() {
+                            Some(data) => data,
+                            None => return Poll::Ready(Err(FsError::IoError)),
+                        };
+                        let end = offset + len;
+                        if end > data.len() {
+                            return Poll::Ready(Err(FsError::InvalidArgument));
                         }
-                        let position = self.file.position.load(Ordering::Relaxed);
-                        let len = self.dma_user_len;
+                        data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
+
+                        let dma_len = data.len();
+                        let (mut write_ctx, prp1, prp2) = match prepare_dma_from_cpu_buffer(data) {
+                            Ok(v) => v,
+                            Err(e) => return Poll::Ready(Err(e)),
+                        };
+                        let payload = IoPayload::NvmeRw(NvmeRwPayload {
+                            lba,
+                            blocks,
+                            prp1,
+                            prp2,
+                            bytes: dma_len,
+                        });
+                        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+                            self.file.io_device(),
+                            IoOperationType::Write,
+                            IoPriority::Normal,
+                            payload,
+                        );
+                        let request_id = future.request_id();
+                        write_ctx.mark_inflight();
+                        let hook: CompletionHook = Box::new(move |_result| {
+                            let _ = write_ctx.complete();
+                        });
+                        crate::io::io_scheduler::io_scheduler()
+                            .register_completion_hook(request_id, hook);
+
+                        self.unaligned = Some(UnalignedWriteState::Writing {
+                            io_future: future,
+                            len,
+                            start_pos,
+                        });
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    Poll::Ready(Err(_)) => return Poll::Ready(Err(FsError::IoError)),
+                    Poll::Pending => {
+                        self.unaligned = Some(UnalignedWriteState::Reading {
+                            io_future,
+                            data_slot,
+                            lba,
+                            blocks,
+                            offset,
+                            len,
+                            start_pos,
+                        });
+                        return Poll::Pending;
+                    }
+                },
+                UnalignedWriteState::Writing {
+                    mut io_future,
+                    len,
+                    start_pos,
+                } => match Pin::new(&mut io_future).poll(cx) {
+                    Poll::Ready(Ok(_)) => {
                         self.file.position.fetch_add(len as u64, Ordering::Relaxed);
                         {
                             let mut attr = self.file.attr.lock();
-                            let new_end = position + len as u64;
+                            let new_end = start_pos + len as u64;
                             if new_end > attr.size {
                                 attr.size = new_end;
                             }
                         }
                         return Poll::Ready(Ok(len));
                     }
-
-                    if let Some(ctx) = self.dma_ctx.take() {
-                        let _ = ctx.complete();
+                    Poll::Ready(Err(_)) => return Poll::Ready(Err(FsError::IoError)),
+                    Poll::Pending => {
+                        self.unaligned = Some(UnalignedWriteState::Writing {
+                            io_future,
+                            len,
+                            start_pos,
+                        });
+                        return Poll::Pending;
                     }
-                    return Poll::Ready(Err(FsError::IoError));
-                }
-            } else {
-                cx.waker().wake_by_ref();
+                },
             }
-
-            Poll::Pending
-        } else {
-            Poll::Ready(Ok(0))
         }
+
+        Poll::Ready(Ok(0))
     }
 }
 
@@ -1277,7 +1257,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
 pub struct AsyncFlushFuture<'a> {
     file: &'a AsyncFile,
     started: bool,
-    request_id: Option<u64>,
+    io_future: Option<crate::io::io_scheduler::IoFuture>,
 }
 
 impl<'a> AsyncFlushFuture<'a> {
@@ -1285,7 +1265,7 @@ impl<'a> AsyncFlushFuture<'a> {
         Self {
             file,
             started: false,
-            request_id: None,
+            io_future: None,
         }
     }
 }
@@ -1298,23 +1278,15 @@ impl<'a> Future for AsyncFlushFuture<'a> {
             self.started = true;
 
             if self.file.direct_io {
-                let core_id = current_cpu();
-                let nsid = nsid_from_device(self.file.device_id);
-                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.submit_flush(core_id, nsid) }
-                });
-
-                match result {
-                    Some(Ok(cid)) => {
-                        self.request_id = Some(cid as u64);
-                        cx.waker().wake_by_ref();
-                        return Poll::Pending;
-                    }
-                    Some(Err(_)) | None => {
-                        return Poll::Ready(Err(FsError::IoError));
-                    }
-                }
+                let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+                    self.file.io_device(),
+                    IoOperationType::Flush,
+                    IoPriority::High,
+                    IoPayload::None,
+                );
+                self.io_future = Some(future);
+                cx.waker().wake_by_ref();
+                return Poll::Pending;
             }
 
             return match flush_page_cache(self.file.id) {
@@ -1323,51 +1295,12 @@ impl<'a> Future for AsyncFlushFuture<'a> {
             };
         }
 
-        if let Some(request_id) = self.request_id {
-            let core_id = current_cpu();
-
-            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                if !driver.interrupt_mode() {
-                    // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.poll_loop(core_id) };
-                }
-                driver.take_completion(core_id, request_id as u16)
-            });
-
-            if let Some(Some(cqe)) = completed {
-                if cqe.is_success() {
-                    return Poll::Ready(Ok(()));
-                }
-                return Poll::Ready(Err(FsError::IoError));
-            }
-
-            let interrupt_mode =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.interrupt_mode()
-                })
-                .unwrap_or(false);
-
-            if interrupt_mode {
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    driver.register_waker(core_id, request_id as u16, cx.waker().clone());
-                });
-
-                let completed_retry =
-                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                        driver.take_completion(core_id, request_id as u16)
-                    });
-
-                if let Some(Some(cqe)) = completed_retry {
-                    if cqe.is_success() {
-                        return Poll::Ready(Ok(()));
-                    }
-                    return Poll::Ready(Err(FsError::IoError));
-                }
-            } else {
-                cx.waker().wake_by_ref();
-            }
-
-            return Poll::Pending;
+        if let Some(future) = self.io_future.as_mut() {
+            return match Pin::new(future).poll(cx) {
+                Poll::Ready(Ok(_)) => Poll::Ready(Ok(())),
+                Poll::Ready(Err(_)) => Poll::Ready(Err(FsError::IoError)),
+                Poll::Pending => Poll::Pending,
+            };
         }
 
         Poll::Ready(Ok(()))
@@ -1475,7 +1408,7 @@ impl DirectBlockHandle {
         }
 
         let dma_len = blocks * self.block_size as usize;
-        let (ctx, prp1, prp2) = prepare_dma_read(dma_len)?;
+        let (mut ctx, prp1, prp2) = prepare_dma_read(dma_len)?;
         let lba = self.start_block + block_offset;
         let canceled = Arc::new(AtomicBool::new(false));
         let mut cancel_guard = NvmeCancelGuard::new(canceled.clone());
@@ -1496,6 +1429,7 @@ impl DirectBlockHandle {
         );
         let request_id = future.request_id();
 
+        ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |result| {
             let data = ctx.complete();
             if canceled.load(Ordering::Acquire) {
@@ -1549,7 +1483,7 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let (ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
+        let (mut ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
         let lba = self.start_block + block_offset;
         let payload = IoPayload::NvmeRw(NvmeRwPayload {
             lba,
@@ -1565,6 +1499,7 @@ impl DirectBlockHandle {
             payload,
         );
         let request_id = future.request_id();
+        ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |_result| {
             ctx.complete();
         });
@@ -1600,7 +1535,7 @@ impl DirectBlockHandle {
         }
 
         let dma_len = blocks * self.block_size as usize;
-        let (ctx, prp1, prp2) = prepare_dma_write(buf, dma_len)?;
+        let (mut ctx, prp1, prp2) = prepare_dma_write(buf, dma_len)?;
         let lba = self.start_block + block_offset;
         let payload = IoPayload::NvmeRw(NvmeRwPayload {
             lba,
@@ -1616,6 +1551,7 @@ impl DirectBlockHandle {
             payload,
         );
         let request_id = future.request_id();
+        ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |_result| {
             let _ = ctx.complete();
         });
@@ -1657,7 +1593,7 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let (ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
+        let (mut ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
         let lba = self.start_block + block_offset;
         let payload = IoPayload::NvmeRw(NvmeRwPayload {
             lba,
@@ -1673,6 +1609,7 @@ impl DirectBlockHandle {
             payload,
         );
         let request_id = future.request_id();
+        ctx.mark_inflight();
         let hook: CompletionHook = Box::new(move |_result| {
             ctx.complete();
         });
@@ -1826,9 +1763,11 @@ impl SgIoRequest {
 /// 非同期I/Oスケジューラ
 pub struct AsyncIoScheduler {
     /// 保留中のリクエスト
-    pending: Mutex<Vec<Arc<AsyncIoRequest>>>,
+    pending: Mutex<BTreeMap<u64, Arc<AsyncIoRequest>>>,
     /// 完了したリクエスト
     completed: Mutex<Vec<Arc<AsyncIoRequest>>>,
+    /// 完了済みリクエストIDキュー
+    completed_ids: Mutex<Vec<u64>>,
     /// 次のリクエストID
     next_id: AtomicU64,
     /// 統計: 発行リクエスト数
@@ -1841,8 +1780,9 @@ impl AsyncIoScheduler {
     /// 新しいスケジューラを作成
     pub const fn new() -> Self {
         Self {
-            pending: Mutex::new(Vec::new()),
+            pending: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(Vec::new()),
+            completed_ids: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(0),
             requests_issued: AtomicU64::new(0),
             requests_completed: AtomicU64::new(0),
@@ -1851,7 +1791,7 @@ impl AsyncIoScheduler {
 
     /// リクエストを発行
     pub fn submit(&self, request: Arc<AsyncIoRequest>) {
-        self.pending.lock().push(request);
+        self.pending.lock().insert(request.id, request);
         self.requests_issued.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -1859,16 +1799,19 @@ impl AsyncIoScheduler {
     pub fn process_completions(&self) {
         let mut pending = self.pending.lock();
         let mut completed = self.completed.lock();
+        let mut completed_ids = self.completed_ids.lock();
 
-        pending.retain(|req| {
-            if req.is_completed() {
-                completed.push(req.clone());
+        for request_id in completed_ids.drain(..) {
+            if let Some(req) = pending.remove(&request_id) {
+                completed.push(req);
                 self.requests_completed.fetch_add(1, Ordering::Relaxed);
-                false
-            } else {
-                true
             }
-        });
+        }
+    }
+
+    /// 完了したリクエストIDを登録
+    pub fn mark_completed(&self, request_id: u64) {
+        self.completed_ids.lock().push(request_id);
     }
 
     /// 統計を取得
