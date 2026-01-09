@@ -31,12 +31,19 @@ pub fn current_packer_mode() -> u8 {
     super::packer::current_packer_mode()
 }
 
-// Bench-only wrappers to expose internal packer paths to the bench harness.
-// These are gated behind `feature = "bench"` to avoid exposing internals
-// in production builds.
+// ============================================================================
+// BENCHMARK-ONLY FUNCTIONS
+// ============================================================================
+// The following impl block contains functions compiled only with `feature = "bench"`:
+// - counted_sfence: sfence with counter for measuring fence overhead
+// - bench_pack_rgba_to_bgr24_*: packer benchmarks
+// - bench_fill_rect_per_row_fenced: per-row fenced fill for comparison
+// - bench_draw_text_per_glyph_fenced: per-glyph fenced text for comparison
+// - bench_get/reset_sfence_count: fence counter access
+// - bench_write_bgr_run_pixels, bench_write_bytes_mmio: low-level write benchmarks
+// ============================================================================
+
 #[cfg(feature = "bench")]
-// Bench-only counter for sfence calls issued by this module. Tests and
-// benchmarks can query/reset this to verify batching behavior.
 static SFENCE_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(feature = "bench")]
@@ -797,10 +804,24 @@ impl Framebuffer {
                 "write_u32_run: OOB write ({} + {} > {})",
                 dst_offset_bytes, run_len_pixels * 4, back.len()
             );
-            // Backed by a Vec -> safe to write via slice
-            let row_ptr = unsafe { back.as_mut_ptr().add(dst_offset_bytes) } as *mut u32;
-            let row_slice = unsafe { core::slice::from_raw_parts_mut(row_ptr, run_len_pixels) };
-            row_slice.fill(color_u32);
+            // Backed by a Vec -> write via slice with alignment safety
+            let row_ptr = unsafe { back.as_mut_ptr().add(dst_offset_bytes) };
+            
+            // Check alignment before creating u32 slice
+            if row_ptr as usize % 4 == 0 {
+                // Fast path: pointer is properly aligned for u32
+                let row_slice = unsafe {
+                    core::slice::from_raw_parts_mut(row_ptr as *mut u32, run_len_pixels)
+                };
+                row_slice.fill(color_u32);
+            } else {
+                // Safe path: use unaligned writes to avoid UB
+                for i in 0..run_len_pixels {
+                    unsafe {
+                        ptr::write_unaligned(row_ptr.add(i * 4) as *mut u32, color_u32);
+                    }
+                }
+            }
         } else {
             // MMIO path: use streaming stores for better VRAM throughput
             let mut addr = self.buffer as usize + dst_offset_bytes;
@@ -1411,16 +1432,21 @@ impl Framebuffer {
             }
         }
 
-        // All slots full: force merge the two smallest area rects
-        let mut min_combined_area = u64::MAX;
+        // All slots full: force merge the two rects with smallest area INCREASE
+        // This prevents merging distant rects that would create huge bounding boxes
+        let mut min_added_area = u64::MAX;
         let mut merge_pair = (0, 1);
         for i in 0..4 {
             for j in (i + 1)..4 {
                 if let (Some(a), Some(b)) = (&self.dirty_rects[i], &self.dirty_rects[j]) {
+                    let area_a = a.width as u64 * a.height as u64;
+                    let area_b = b.width as u64 * b.height as u64;
                     let combined = a.union(b);
-                    let area = combined.width as u64 * combined.height as u64;
-                    if area < min_combined_area {
-                        min_combined_area = area;
+                    let combined_area = combined.width as u64 * combined.height as u64;
+                    // Area increase = how much "wasted" space the merge creates
+                    let added_area = combined_area.saturating_sub(area_a + area_b);
+                    if added_area < min_added_area {
+                        min_added_area = added_area;
                         merge_pair = (i, j);
                     }
                 }
@@ -1950,7 +1976,7 @@ impl Framebuffer {
                         let y = (start_y as usize) + i;
                         let off = y * stride + x_off * 4;
                         unsafe {
-                            ptr::write(base.add(off) as *mut u32, color_u32);
+                            ptr::write_unaligned(base.add(off) as *mut u32, color_u32);
                         }
                     }
                 } else {
@@ -2005,7 +2031,7 @@ impl Framebuffer {
                         let y = (start_y as usize) + i;
                         let off = y * stride + x_off * 2;
                         unsafe {
-                            ptr::write(base.add(off) as *mut u16, pixel);
+                            ptr::write_unaligned(base.add(off) as *mut u16, pixel);
                         }
                     }
                 } else {
@@ -2416,13 +2442,26 @@ impl Framebuffer {
                         }
                     }
 
-                    // Bulk fill via slice
+                    // Bulk fill via slice with alignment safety
                     for y in r.y..r.bottom() {
                         let offset = (y as usize * stride as usize) + (r.x as usize * 4);
-                        let row_ptr = unsafe { buffer.add(offset) as *mut u32 };
-                        let row_slice =
-                            unsafe { core::slice::from_raw_parts_mut(row_ptr, r.width as usize) };
-                        row_slice.fill(color_u32);
+                        let row_ptr = unsafe { buffer.add(offset) };
+                        
+                        // Check alignment before creating u32 slice
+                        if row_ptr as usize % 4 == 0 {
+                            // Fast path: pointer is properly aligned for u32
+                            let row_slice = unsafe {
+                                core::slice::from_raw_parts_mut(row_ptr as *mut u32, r.width as usize)
+                            };
+                            row_slice.fill(color_u32);
+                        } else {
+                            // Safe path: use unaligned writes to avoid UB
+                            for i in 0..(r.width as usize) {
+                                unsafe {
+                                    ptr::write_unaligned(row_ptr.add(i * 4) as *mut u32, color_u32);
+                                }
+                            }
+                        }
                     }
                 } else {
                     // MMIO path: use aligned streaming write helper
