@@ -182,13 +182,9 @@ impl PerCoreTaskStore {
             }
             Err(_) => {
                 log::error!(
-                    "[EXECUTOR] Per-core tasks lock poisoned during insert - falling back to TASK_STORE"
+                    "[EXECUTOR] Per-core tasks lock poisoned during insert; dropping task"
                 );
-                if let Ok(mut legacy) = TASK_STORE.lock() {
-                    legacy.insert(task_id, task);
-                } else {
-                    log::error!("[EXECUTOR] TASK_STORE poisoned - dropping task");
-                }
+                // Legacy global TASK_STORE is deprecated and not used here.
             }
         }
     }
@@ -205,14 +201,9 @@ impl PerCoreTaskStore {
             }
             Err(_) => {
                 log::error!(
-                    "[EXECUTOR] Per-core tasks lock poisoned during remove - trying TASK_STORE fallback"
+                    "[EXECUTOR] Per-core tasks lock poisoned during remove; cannot remove task"
                 );
-                if let Ok(mut legacy) = TASK_STORE.lock() {
-                    legacy.remove(task_id)
-                } else {
-                    log::error!("[EXECUTOR] TASK_STORE poisoned during remove");
-                    None
-                }
+                None
             }
         }
     }
@@ -248,12 +239,7 @@ static PER_CORE_STORES: [PerCoreTaskStore; MAX_CPUS] = {
     [INIT; MAX_CPUS]
 };
 
-/// レガシー用グローバルタスクストア（後方互換性）
-/// 新規コードはper-coreストアを使用すべき
-#[deprecated(
-    note = "TASK_STORE is deprecated; use per-core task stores (PER_CORE_STORES) instead. This legacy global will be removed in a future release."
-)]
-static TASK_STORE: PoisonLock<BTreeMap<TaskId, Task>> = PoisonLock::new(BTreeMap::new());
+// Legacy global task store removed — migrate to `PER_CORE_STORES` instead.
 
 /// Wake queue（ISR-safe ロックフリー）
 static WAKE_QUEUE: LockFreeQueue = LockFreeQueue::new();
@@ -541,25 +527,9 @@ impl Executor {
                         }
                     }
                 }
-                // レガシーストアも探す（後方互換性）
+                // Legacy TASK_STORE is deprecated; cache the task id for later.
                 if !found {
-                    match TASK_STORE.lock() {
-                        Ok(mut legacy) => {
-                            if let Some(task) = legacy.remove(&task_id) {
-                                self.local_queue.push_back(task);
-                                woken += 1;
-                            } else {
-                                // タスクが見つからない場合はローカルキャッシュに追加
-                                self.local_cache.push_back(task_id);
-                            }
-                        }
-                        Err(_) => {
-                            log::error!(
-                                "[EXECUTOR] TASK_STORE poisoned during wake handling - caching task id"
-                            );
-                            self.local_cache.push_back(task_id);
-                        }
-                    }
+                    self.local_cache.push_back(task_id);
                 }
             }
 
@@ -593,21 +563,9 @@ impl Executor {
                         }
                     }
                 }
-                // レガシーストアも探す
+                // Legacy TASK_STORE is deprecated; cache the task id for later processing.
                 if !found {
-                    match TASK_STORE.lock() {
-                        Ok(mut legacy) => {
-                            if let Some(task) = legacy.remove(&task_id) {
-                                self.local_queue.push_back(task);
-                                fetched += 1;
-                            }
-                        }
-                        Err(_) => {
-                            log::error!(
-                                "[EXECUTOR] TASK_STORE poisoned during global fetch - skipping"
-                            );
-                        }
-                    }
+                    self.local_cache.push_back(task_id);
                 }
             } else {
                 break;

@@ -340,12 +340,13 @@ impl Mempool {
                 (*buffer_ptr).meta.ref_count = AtomicU64::new(0);
                 // 仮想アドレスから物理アドレスへ変換
                 // カーネルヒープはリニアマッピングされているため、
-                // PHYSICAL_MEMORY_OFFSETを引くことで物理アドレスを得る
+                // HigherHalfのオフセットを引くことで物理アドレスを得る
                 let virt_addr = buffer_ptr as u64;
-                let phys = if virt_addr >= crate::mm::mapping::PHYSICAL_MEMORY_OFFSET {
-                    virt_addr - crate::mm::mapping::PHYSICAL_MEMORY_OFFSET
+                let offset = crate::mm::mapping::physical_memory_offset();
+                let phys = if virt_addr >= offset {
+                    virt_addr - offset
                 } else {
-                    // PHYSICAL_MEMORY_OFFSET未満の場合はそのままとする
+                    // オフセット未満の場合はそのままとする
                     // （カーネルイメージ内のアドレスなど）
                     virt_addr
                 };

@@ -32,7 +32,6 @@
 //! ```
 #![allow(dead_code)]
 
-use alloc::vec::Vec;
 use spin::Mutex;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 

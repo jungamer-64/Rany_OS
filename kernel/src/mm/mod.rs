@@ -141,7 +141,7 @@ pub use higher_half::{
 };
 #[allow(unused_imports)]
 pub use mapping::{
-    PHYSICAL_MEMORY_OFFSET, phys_to_virt as mapping_phys_to_virt,
+    physical_memory_offset, phys_to_virt as mapping_phys_to_virt,
     virt_to_phys as mapping_virt_to_phys,
 };
 #[allow(unused_imports)]
@@ -214,7 +214,7 @@ pub use page_table_cache::{
 //
 // 設計方針:
 // - PMM fast allocator（bitmap + per-CPU magazine）を主経路
-// - 旧Buddy/Bitmapは後方互換/非常用
+// - BuddyはPMMから借りたプールとして動作（別管理はしない）
 // - 新規コードは UnifiedFrameAllocator を使用すること
 // ============================================================================
 
@@ -272,14 +272,14 @@ impl UnifiedFrameAllocator {
 
     /// 統計を取得
     pub fn stats() -> UnifiedAllocatorStats {
-        let (bitmap_free, bitmap_total_usize) = frame_allocator_stats();
+        let (pmm_free, pmm_total_usize) = frame_allocator_stats();
         let buddy = buddy_allocator_stats();
 
         UnifiedAllocatorStats {
-            bitmap_total: bitmap_total_usize as u64,
-            bitmap_used: bitmap_total_usize as u64 - bitmap_free,
-            buddy_total: buddy.total_frames as u64,
-            buddy_used: buddy.total_frames as u64 - buddy.free_frames,
+            pmm_total: pmm_total_usize as u64,
+            pmm_free,
+            buddy_pool_total: buddy.total_frames as u64,
+            buddy_pool_free: buddy.free_frames as u64,
         }
     }
 }
@@ -287,30 +287,35 @@ impl UnifiedFrameAllocator {
 /// 統一アロケータ統計
 #[derive(Debug, Clone, Copy)]
 pub struct UnifiedAllocatorStats {
-    /// Bitmapアロケータの総フレーム数
-    pub bitmap_total: u64,
-    /// Bitmapアロケータの使用フレーム数
-    pub bitmap_used: u64,
-    /// Buddyアロケータの総フレーム数
-    pub buddy_total: u64,
-    /// Buddyアロケータの使用フレーム数
-    pub buddy_used: u64,
+    /// PMM fast の総フレーム数
+    pub pmm_total: u64,
+    /// PMM fast の空きフレーム数
+    pub pmm_free: u64,
+    /// Buddyプールの総フレーム数（PMMから借りているサブセット）
+    pub buddy_pool_total: u64,
+    /// Buddyプールの空きフレーム数
+    pub buddy_pool_free: u64,
 }
 
 impl UnifiedAllocatorStats {
-    /// 総フレーム数
+    /// 総フレーム数（PMMベース）
     pub fn total_frames(&self) -> u64 {
-        self.bitmap_total + self.buddy_total
+        self.pmm_total
     }
 
-    /// 使用フレーム数
-    pub fn used_frames(&self) -> u64 {
-        self.bitmap_used + self.buddy_used
+    /// PMM使用フレーム数
+    pub fn pmm_used_frames(&self) -> u64 {
+        self.pmm_total.saturating_sub(self.pmm_free)
     }
 
-    /// 空きフレーム数
+    /// PMM空きフレーム数
     pub fn free_frames(&self) -> u64 {
-        self.total_frames() - self.used_frames()
+        self.pmm_free
+    }
+
+    /// Buddyプール使用フレーム数
+    pub fn buddy_pool_used_frames(&self) -> u64 {
+        self.buddy_pool_total.saturating_sub(self.buddy_pool_free)
     }
 }
 

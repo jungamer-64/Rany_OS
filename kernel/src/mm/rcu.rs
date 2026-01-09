@@ -5,7 +5,7 @@
 // VMAの検索、ルーティングテーブルの参照など、読み取り優位なデータ構造に最適。
 #![allow(dead_code)]
 
-use core::sync::atomic::{AtomicUsize, AtomicBool, Ordering};
+use core::sync::atomic::{AtomicUsize, Ordering};
 use alloc::collections::VecDeque;
 use alloc::boxed::Box;
 use alloc::vec::Vec;

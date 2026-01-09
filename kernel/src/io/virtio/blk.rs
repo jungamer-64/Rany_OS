@@ -17,8 +17,7 @@
 
 use crate::io::dma::{IommuBounceAllocError, allocate_iommu_bounce_bytes, iommu_needs_bounce};
 use crate::io::iommu::api::{
-    raw, DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
-    unmap_dma, unmap_for_device,
+    DmaDirection, DmaHandle, is_iommu_enabled, is_iommu_required, map_rref_slice_for_device,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use alloc::boxed::Box;
@@ -1545,44 +1544,15 @@ fn block_to_sector(block: u64, block_size: u32) -> Result<u64, VfsBlockError> {
         .ok_or(VfsBlockError::InvalidBufferSize)
 }
 
-fn map_dma_addr(
-    device: Option<IommuDeviceId>,
-    phys_addr: u64,
-    len: usize,
-) -> Result<Option<u64>, VfsBlockError> {
-    if !is_iommu_enabled() {
-        if is_iommu_required() {
-            return Err(VfsBlockError::IoError);
-        }
-        return Ok(None);
-    }
-    if iommu_needs_bounce(phys_addr, len) {
-        return Err(VfsBlockError::InvalidBufferSize);
-    }
-    // SAFETY: caller guarantees phys_addr is owned and valid for DMA for len bytes.
-    let result = match device {
-        Some(device) => unsafe {
-            raw::map_for_device(&device, PhysAddr::new(phys_addr), len as u64)
-        },
-        None => unsafe { raw::map_for_dma(PhysAddr::new(phys_addr), len as u64) },
-    };
-    result
-        .map(Some)
-        .map_err(|_| VfsBlockError::IoError)
-}
-
-fn unmap_dma_addr(device: Option<IommuDeviceId>, iova: u64, len: usize) {
-    let result = match device {
-        Some(device) => unmap_for_device(&device, iova, len as u64),
-        None => unmap_dma(iova, len as u64),
-    };
-    if let Err(err) = result {
-        log::warn!("[VIRTIO-BLK] failed to unmap DMA address: {:?}", err);
-    }
-}
+// NOTE: raw mapping helpers removed for `virtio-blk`; drivers should use
+// `DeviceDmaContext` / `DmaHandle`-based mappings or bounce buffers via
+// `allocate_iommu_bounce_bytes()` and `map_rref_slice_for_device()` /
+// `DmaHandle::map_rref_slice()` to avoid deprecated APIs.
 
 impl ZeroCopyBlockDevice for VirtioBlkDevice {
     type Buffer = OwnedBytes;
+
+
 
     fn info(&self) -> VfsBlockDeviceInfo {
         let block_size = effective_block_size(&self.config);
@@ -1732,11 +1702,54 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     Ok(())
                 });
             }
-            let iova = match map_dma_addr(self.iommu_device_id, dma.phys_addr, len) {
-                Ok(iova) => iova,
-                Err(err) => return Box::pin(async move { Err(err) }),
-            };
-            let dma_addr = iova.unwrap_or(dma.phys_addr);
+            // IOMMU enabled: use a bounce-backed mapping (avoid deprecated raw mapping).
+            if is_iommu_enabled() {
+                // Allocate an aligned bounce buffer and map it for the device (read path - FromDevice)
+                let rref = match allocate_iommu_bounce_bytes(len).map_err(|err| match err {
+                    IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
+                    IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
+                }) {
+                    Ok(r) => r,
+                    Err(e) => return Box::pin(async move { Err(e) }),
+                };
+
+                let handle = match self.iommu_device_id {
+                    Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::FromDevice),
+                    None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::FromDevice),
+                }
+                .map_err(|_| VfsBlockError::IoError);
+
+                let handle = match handle {
+                    Ok(handle) => handle,
+                    Err(err) => return Box::pin(async move { Err(err) }),
+                };
+
+                let dma_addr = handle.iova();
+
+                return Box::pin(async move {
+                    let result = DmaReadFuture {
+                        device: self,
+                        sector,
+                        dma_addr,
+                        buf,
+                        submitted: false,
+                        desc_id: None,
+                        queue_idx: 0,
+                    }
+                    .await;
+
+                    // Unmap and copy back from the bounce buffer
+                    let rref = handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+                    result.map_err(map_vfs_block_error)?;
+                    buf.copy_from_slice(&rref[..len]);
+                    Ok(())
+                });
+            } else if is_iommu_required() {
+                return Box::pin(async move { Err(VfsBlockError::IoError) });
+            }
+
+            // Fallback: IOMMU not enabled
+            let dma_addr = dma.phys_addr;
             return Box::pin(async move {
                 let result = DmaReadFuture {
                     device: self,
@@ -1748,9 +1761,6 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     queue_idx: 0,
                 }
                 .await;
-                if let Some(iova) = iova {
-                    unmap_dma_addr(self.iommu_device_id, iova, len);
-                }
                 result.map_err(map_vfs_block_error)?;
                 Ok(())
             });
@@ -1826,11 +1836,57 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     Ok(())
                 });
             }
-            let iova = match map_dma_addr(self.iommu_device_id, dma.phys_addr, len) {
-                Ok(iova) => iova,
-                Err(err) => return Box::pin(async move { Err(err) }),
-            };
-            let dma_addr = iova.unwrap_or(dma.phys_addr);
+            // IOMMU enabled: use bounce-backed mapping (avoid deprecated raw mapping)
+            if is_iommu_enabled() {
+                let mut rref = match allocate_iommu_bounce_bytes(len).map_err(|err| match err {
+                    IommuBounceAllocError::InvalidLen => VfsBlockError::InvalidBufferSize,
+                    IommuBounceAllocError::AllocFailed => VfsBlockError::IoError,
+                }) {
+                    Ok(r) => r,
+                    Err(e) => return Box::pin(async move { Err(e) }),
+                };
+
+                // Copy source data into the bounce buffer
+                rref[..len].copy_from_slice(data);
+                // Ensure cache is flushed for device
+                crate::io::dma::flush_cache_range(rref.as_ptr(), rref.len());
+
+                let handle = match self.iommu_device_id {
+                    Some(device) => map_rref_slice_for_device(rref, &device, DmaDirection::ToDevice),
+                    None => DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice),
+                }
+                .map_err(|_| VfsBlockError::IoError);
+
+                let handle = match handle {
+                    Ok(handle) => handle,
+                    Err(err) => return Box::pin(async move { Err(err) }),
+                };
+
+                let dma_addr = handle.iova();
+
+                return Box::pin(async move {
+                    let result = DmaWriteFuture {
+                        device: self,
+                        sector,
+                        dma_addr,
+                        buf: data,
+                        submitted: false,
+                        desc_id: None,
+                        queue_idx: 0,
+                    }
+                    .await;
+
+                    // Unmap the bounce buffer
+                    handle.unmap().map_err(|_| VfsBlockError::IoError)?;
+                    result.map_err(map_vfs_block_error)?;
+                    Ok(())
+                });
+            } else if is_iommu_required() {
+                return Box::pin(async move { Err(VfsBlockError::IoError) });
+            }
+
+            // Fallback: IOMMU not enabled
+            let dma_addr = dma.phys_addr;
             return Box::pin(async move {
                 let result = DmaWriteFuture {
                     device: self,
@@ -1842,9 +1898,6 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
                     queue_idx: 0,
                 }
                 .await;
-                if let Some(iova) = iova {
-                    unmap_dma_addr(self.iommu_device_id, iova, len);
-                }
                 result.map_err(map_vfs_block_error)?;
                 Ok(())
             });
@@ -1966,5 +2019,23 @@ mod tests {
         assert_eq!(config.capacity, 0);
         assert_eq!(config.block_size, 512);
         assert!(!config.read_only);
+    }
+
+    #[test]
+    fn test_bounce_map_unmap_via_dmahandle() {
+        // Verify that bounce allocation + DmaHandle mapping/unmap works
+        let len = 4096usize;
+        let mut rref = allocate_iommu_bounce_bytes(len).expect("alloc bounce bytes failed");
+        for i in 0..len {
+            rref[i] = 0xABu8;
+        }
+
+        // Map (domain 0 / identity mapping in test env)
+        let handle = crate::io::iommu::dma_handle::DmaHandle::map_rref_slice(rref, 0, DmaDirection::ToDevice)
+            .expect("map_rref_slice failed");
+        let _iova = handle.iova();
+        // Unmap and recover RRef
+        let rref = handle.unmap().expect("unmap failed");
+        assert_eq!(rref[0], 0xABu8);
     }
 }

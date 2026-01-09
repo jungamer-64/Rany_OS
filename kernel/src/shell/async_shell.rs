@@ -27,7 +27,6 @@ use core::task::{Context, Poll};
 
 use super::exoshell::{ExoShell, ExoValue};
 use crate::io::serial::{self, InputEvent, LineEditor};
-use crate::console_println;
 
 /// ANSI escape codes for colors
 mod ansi {
@@ -177,30 +176,35 @@ impl History {
 /// This function runs as an async task and handles serial input via interrupts
 #[allow(deprecated)]
 pub async fn run_async_shell() {
-    console_println!();
-    console_println!("{}{}", ansi::CYAN, ansi::RESET);
-    console_println!(
+    crate::console::write("\n");
+    crate::console::write(&format!("{}{}", ansi::CYAN, ansi::RESET));
+    crate::console::write("\n");
+    crate::console::write(&format!(
         "{}{}  RanyOS ExoShell v0.3                            {}{}",
         ansi::CYAN,
         ansi::WHITE,
         ansi::CYAN,
         ansi::RESET
-    );
-    console_println!(
+    ));
+    crate::console::write("\n");
+    crate::console::write(&format!(
         "{}{}  Type 'help' for available commands              {}{}",
         ansi::CYAN,
         ansi::WHITE,
         ansi::CYAN,
         ansi::RESET
-    );
-    console_println!(
+    ));
+    crate::console::write("\n");
+    crate::console::write(&format!(
         "{}{}  Use / for history, Tab for completion         {}{}",
         ansi::CYAN,
         ansi::WHITE,
         ansi::CYAN,
         ansi::RESET
-    );
-    console_println!("{}{}\n", ansi::CYAN, ansi::RESET);
+    ));
+    crate::console::write("\n");
+    crate::console::write(&format!("{}{}\n", ansi::CYAN, ansi::RESET));
+    crate::console::write("\n");
 
     let mut exoshell = ExoShell::new();
     // Yield after heavy ExoShell allocation to allow other tasks (e.g., graphical shell) to start
@@ -263,7 +267,8 @@ pub async fn run_async_shell() {
                         // Input occurred during execution
                         if evt == InputEvent::Interrupt {
                             // Ctrl+C pressed - Execution future is dropped (cancelled)
-                            console_println!("{}Interrupted!{}", ansi::RED, ansi::RESET);
+                            crate::console::write(&format!("{}Interrupted!{}", ansi::RED, ansi::RESET));
+                            crate::console::write("\n");
                             print_prompt(&exoshell);
                         } else {
                             // User typed something else (type-ahead or accidental)
@@ -282,11 +287,12 @@ pub async fn run_async_shell() {
                             // We need to keep polling execution future.
 
                             // Refined logic: manual polling loop for "Interrupt-able execution"
-                            console_println!(
+                            crate::console::write(&format!(
                                 "{}Warning: Input during execution ignored (except Ctrl+C){}",
                                 ansi::YELLOW,
                                 ansi::RESET
-                            );
+                            ));
+                            crate::console::write("\n");
                             // For simplicity in Phase 2, we just treat any input as potential interrupt check,
                             // if it's NOT interrupt, we should resume waiting for execution.
                             // BUT select consumes the futures passed by value (even if boxed pin).
@@ -380,8 +386,9 @@ pub async fn run_async_shell() {
         }
     }
 
-    console_println!();
-    console_println!("[SHELL] ExoShell terminated");
+    crate::console::write("\n");
+    crate::console::write(&format!("[SHELL] ExoShell terminated"));
+    crate::console::write("\n");
 }
 
 /// Execute command in ExoShell (async version)
@@ -440,5 +447,6 @@ fn clear_line(_editor: &LineEditor) {
 /// Start the async shell task
 pub fn spawn_async_shell() {
     crate::task::spawn(run_async_shell());
-    console_println!("[SHELL] ExoShell task spawned");
+    crate::console::write(&format!("[SHELL] ExoShell task spawned"));
+    crate::console::write("\n");
 }

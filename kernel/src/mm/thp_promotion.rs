@@ -32,7 +32,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::sync::IrqMutex;
 use alloc::vec::Vec;
 
-use super::types::{FixedVec, FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M};
+use super::types::{FixedVec, PAGE_SIZE_4K, PAGE_SIZE_2M};
 use super::higher_half::VirtAddr;
 use super::address_space::ProcessAddressSpace;
 
@@ -207,11 +207,11 @@ impl ThpPromotionManager {
 
         // Current scan position
         let start_addr = self.scan_addr;
-        let mut current_addr = start_addr;
+        let current_addr = start_addr;
         
         // Limit scan range per invocation to avoid stalls
         const SCAN_BYTES: u64 = SCAN_STRIDE as u64 * MAX_CANDIDATES_PER_SCAN as u64 * PAGE_SIZE_4K as u64; 
-        let end_addr_limit = current_addr.as_u64() + SCAN_BYTES;
+        let _end_addr_limit = current_addr.as_u64() + SCAN_BYTES;
 
         // Iterate regions starting from current_addr
         // Note: We need access to space.regions. Since it's locked, we rely on helper?
