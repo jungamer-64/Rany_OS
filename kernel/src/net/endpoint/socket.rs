@@ -99,14 +99,6 @@ impl Socket {
         inner.transition_to(SocketState::Bound)
     }
 
-    /// 【非推奨】バインド - 互換性のために残すが、set_local_addr()を使用すべき
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。set_local_addr()を使用してください"
-    )]
-    pub fn bind(&self, addr: SocketAddr) -> SocketResult<()> {
-        self.set_local_addr(addr)
-    }
 
     /// リモートアドレスへ接続を開始（推奨API）
     ///
@@ -137,14 +129,6 @@ impl Socket {
         })
     }
 
-    /// 【非推奨】接続（TCP用）- 互換性のために残すが、open_connection()を使用すべき
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。open_connection()を使用してください"
-    )]
-    pub fn connect(&self, addr: SocketAddr) -> SocketResult<()> {
-        self.open_connection(addr)
-    }
 
     /// リッスンモードを開始（推奨API）
     ///
@@ -174,9 +158,8 @@ impl Socket {
                 ),
                 local_addr.port,
             );
-            #[allow(deprecated)]
             let listener =
-                TcpListenerImpl::bind(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
+                TcpListenerImpl::new(tcp_addr).map_err(|_| SocketError::AddressInUse)?;
             inner.tcp_listener = Some(listener);
             inner.transition_to(SocketState::Listening)?;
         }
@@ -189,14 +172,6 @@ impl Socket {
         })
     }
 
-    /// 【非推奨】リッスン開始（TCP用）- 互換性のために残すが、start_listening()を使用すべき
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。start_listening()を使用してください"
-    )]
-    pub fn listen(&self, backlog: u32) -> SocketResult<()> {
-        self.start_listening(backlog)
-    }
 
     /// 次の接続を取得（推奨API）
     ///
@@ -242,14 +217,6 @@ impl Socket {
         Err(SocketError::Timeout)
     }
 
-    /// 【非推奨】接続受け入れ（TCP用）- 互換性のために残すが、next_incoming()を使用すべき
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。next_incoming()を使用してください"
-    )]
-    pub fn accept(&self) -> SocketResult<(Socket, SocketAddr)> {
-        self.next_incoming()
-    }
 
     /// Accept用Wakerを登録（非同期用）
     pub fn register_accept_waker(&self, waker: core::task::Waker) {
@@ -522,18 +489,6 @@ impl OwnedSocket {
             .set_local_addr(addr)
     }
 
-    /// 【非推奨】バインド
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。set_local_addr()を使用してください"
-    )]
-    #[allow(deprecated)]
-    pub fn bind(&self, addr: SocketAddr) -> SocketResult<()> {
-        self.socket
-            .as_ref()
-            .ok_or(SocketError::NotFound)?
-            .bind(addr)
-    }
 
     /// リモートアドレスへ接続を開始（推奨API）
     pub fn open_connection(&self, addr: SocketAddr) -> SocketResult<()> {
@@ -543,18 +498,6 @@ impl OwnedSocket {
             .open_connection(addr)
     }
 
-    /// 【非推奨】接続
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。open_connection()を使用してください"
-    )]
-    #[allow(deprecated)]
-    pub fn connect(&self, addr: SocketAddr) -> SocketResult<()> {
-        self.socket
-            .as_ref()
-            .ok_or(SocketError::NotFound)?
-            .connect(addr)
-    }
 
     /// リッスンモードを開始（推奨API）
     pub fn start_listening(&self, backlog: u32) -> SocketResult<()> {
@@ -564,18 +507,6 @@ impl OwnedSocket {
             .start_listening(backlog)
     }
 
-    /// 【非推奨】リッスン
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。start_listening()を使用してください"
-    )]
-    #[allow(deprecated)]
-    pub fn listen(&self, backlog: u32) -> SocketResult<()> {
-        self.socket
-            .as_ref()
-            .ok_or(SocketError::NotFound)?
-            .listen(backlog)
-    }
 
     /// 次の接続を取得（推奨API）
     pub fn next_incoming(&self) -> SocketResult<(OwnedSocket, SocketAddr)> {
@@ -587,20 +518,6 @@ impl OwnedSocket {
         Ok((OwnedSocket::from_socket(socket), addr))
     }
 
-    /// 【非推奨】接続受け入れ
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。next_incoming()を使用してください"
-    )]
-    #[allow(deprecated)]
-    pub fn accept(&self) -> SocketResult<(OwnedSocket, SocketAddr)> {
-        let (socket, addr) = self
-            .socket
-            .as_ref()
-            .ok_or(SocketError::NotFound)?
-            .accept()?;
-        Ok((OwnedSocket::from_socket(socket), addr))
-    }
 
     /// 送信
     pub fn send(&self, data: &[u8]) -> SocketResult<usize> {
@@ -684,14 +601,6 @@ pub fn open_tcp_connection(addr: SocketAddr) -> SocketResult<OwnedSocket> {
     Ok(socket)
 }
 
-/// 【非推奨】TCP接続
-#[deprecated(
-    since = "0.4.0",
-    note = "設計書: POSIXソケットAPIを使用しない。open_tcp_connection()を使用してください"
-)]
-pub fn tcp_connect(addr: SocketAddr) -> SocketResult<OwnedSocket> {
-    open_tcp_connection(addr)
-}
 
 /// UDPソケット作成とローカルアドレス設定（推奨API）
 pub fn create_udp_endpoint(addr: SocketAddr) -> SocketResult<OwnedSocket> {
@@ -700,14 +609,6 @@ pub fn create_udp_endpoint(addr: SocketAddr) -> SocketResult<OwnedSocket> {
     Ok(socket)
 }
 
-/// 【非推奨】UDPバインド
-#[deprecated(
-    since = "0.4.0",
-    note = "設計書: POSIXソケットAPIを使用しない。create_udp_endpoint()を使用してください"
-)]
-pub fn udp_bind(addr: SocketAddr) -> SocketResult<OwnedSocket> {
-    create_udp_endpoint(addr)
-}
 
 // =====================================================
 // テスト

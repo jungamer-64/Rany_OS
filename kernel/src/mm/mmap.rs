@@ -11,125 +11,8 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-
-/// マッピングアドレス (Newtype)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct MappedAddress(usize);
-
-impl MappedAddress {
-    pub const NULL: Self = Self(0);
-
-    pub const fn new(addr: usize) -> Self {
-        Self(addr)
-    }
-
-    pub const fn as_usize(&self) -> usize {
-        self.0
-    }
-
-    pub fn as_ptr<T>(&self) -> *const T {
-        self.0 as *const T
-    }
-
-    pub fn as_mut_ptr<T>(&self) -> *mut T {
-        self.0 as *mut T
-    }
-
-    /// ページアライメントされているか
-    pub fn is_page_aligned(&self) -> bool {
-        self.0 % MappingSize::PAGE_SIZE == 0
-    }
-}
-
-/// マッピングサイズ (Newtype)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MappingSize(usize);
-
-impl MappingSize {
-    pub const PAGE_SIZE: usize = 4096;
-    pub const HUGE_PAGE_2M: usize = 2 * 1024 * 1024;
-    pub const HUGE_PAGE_1G: usize = 1024 * 1024 * 1024;
-
-    pub const fn new(size: usize) -> Self {
-        Self(size)
-    }
-
-    pub const fn as_usize(&self) -> usize {
-        self.0
-    }
-
-    /// ページ数を計算
-    pub fn page_count(&self) -> usize {
-        (self.0 + Self::PAGE_SIZE - 1) / Self::PAGE_SIZE
-    }
-
-    /// ページ境界に切り上げ
-    pub fn page_aligned(&self) -> Self {
-        Self(self.page_count() * Self::PAGE_SIZE)
-    }
-}
-
-/// マッピングオフセット (Newtype)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MappingOffset(u64);
-
-impl MappingOffset {
-    pub const fn new(offset: u64) -> Self {
-        Self(offset)
-    }
-
-    pub const fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    pub const fn as_usize(&self) -> usize {
-        self.0 as usize
-    }
-
-    /// ページアライメントされているか
-    pub fn is_page_aligned(&self) -> bool {
-        self.0 as usize % MappingSize::PAGE_SIZE == 0
-    }
-}
-
-/// メモリ保護フラグ
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Protection {
-    bits: u32,
-}
-
-impl Protection {
-    pub const NONE: Self = Self { bits: 0 };
-    pub const READ: Self = Self { bits: 1 };
-    pub const WRITE: Self = Self { bits: 2 };
-    pub const EXEC: Self = Self { bits: 4 };
-
-    pub const READ_WRITE: Self = Self { bits: 1 | 2 };
-    pub const READ_EXEC: Self = Self { bits: 1 | 4 };
-    pub const READ_WRITE_EXEC: Self = Self { bits: 1 | 2 | 4 };
-
-    pub const fn new(bits: u32) -> Self {
-        Self { bits }
-    }
-
-    pub fn can_read(&self) -> bool {
-        (self.bits & 1) != 0
-    }
-
-    pub fn can_write(&self) -> bool {
-        (self.bits & 2) != 0
-    }
-
-    pub fn can_exec(&self) -> bool {
-        (self.bits & 4) != 0
-    }
-
-    pub fn union(&self, other: Self) -> Self {
-        Self {
-            bits: self.bits | other.bits,
-        }
-    }
-}
+use super::address_space::Protection;
+use super::types::{MappedAddress, MappingOffset, MappingSize};
 
 /// マッピングフラグ
 #[derive(Debug, Clone, Copy)]
@@ -685,7 +568,7 @@ impl MmapManager {
     /// これはゼロコピー操作に最適。
     pub fn get_sas_linear_mapping(&self, phys_addr: u64, size: usize) -> Option<MappedAddress> {
         // SAS: 物理メモリは physical_memory_offset + phys_addr でアクセス可能
-        let offset = crate::memory::physical_memory_offset();
+        let offset = crate::mm::mapping::physical_memory_offset();
         let virt_addr = offset + phys_addr;
 
         // 範囲チェック

@@ -26,7 +26,7 @@
 #![allow(dead_code)]
 
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
-use core::ptr::{null_mut, NonNull};
+use core::ptr::null_mut;
 use alloc::boxed::Box;
 use x86_64::VirtAddr;
 
@@ -201,6 +201,18 @@ impl VmArea {
     pub fn is_file_backed(&self) -> bool {
         self.flags & VmaFlags::FileBacked as u32 != 0
     }
+
+    /// VMA情報をコピーして取得
+    #[inline]
+    pub fn info(&self) -> VmaInfo {
+        VmaInfo {
+            start: self.start,
+            end: self.end,
+            flags: self.flags,
+            file_inode: self.file_inode,
+            file_offset: self.file_offset,
+        }
+    }
     
     /// 参照カウントを増加
     #[inline]
@@ -213,6 +225,16 @@ impl VmArea {
     pub fn put(&self) -> bool {
         self.refcount.fetch_sub(1, Ordering::Release) == 1
     }
+}
+
+/// VMAのスナップショット情報（RCU読み取り用）
+#[derive(Debug, Clone, Copy)]
+pub struct VmaInfo {
+    pub start: VirtAddr,
+    pub end: VirtAddr,
+    pub flags: u32,
+    pub file_inode: u64,
+    pub file_offset: u64,
 }
 
 /// VMA解放コールバック
@@ -249,7 +271,7 @@ impl VmaList {
     ///
     /// ロックフリーでO(n)検索。
     /// 実際の実装ではRBツリーやスキップリストを使用する。
-    pub fn find(&self, addr: VirtAddr) -> Option<NonNull<VmArea>> {
+    pub fn find(&self, addr: VirtAddr) -> Option<VmaInfo> {
         let guard = rcu_read_lock();
         
         let mut current_ptr = self.head.get_raw(&guard);
@@ -258,7 +280,7 @@ impl VmaList {
             let current = unsafe { &*current_ptr };
             
             if current.contains(addr) {
-                return NonNull::new(current_ptr as *mut VmArea);
+                return Some(current.info());
             }
             
             if addr < current.start {
@@ -273,7 +295,7 @@ impl VmaList {
     }
     
     /// 指定範囲と重なるVMAを検索
-    pub fn find_intersection(&self, start: VirtAddr, end: VirtAddr) -> Option<NonNull<VmArea>> {
+    pub fn find_intersection(&self, start: VirtAddr, end: VirtAddr) -> Option<VmaInfo> {
         let guard = rcu_read_lock();
         
         let mut current_ptr = self.head.get_raw(&guard);
@@ -282,7 +304,7 @@ impl VmaList {
             
             // 重なりをチェック
             if current.start < end && current.end > start {
-                return NonNull::new(current_ptr as *mut VmArea);
+                return Some(current.info());
             }
             
             if start < current.start && end <= current.start {
@@ -300,27 +322,64 @@ impl VmaList {
     ///
     /// 呼び出し側で適切なロックを取得すること。
     /// 新しいVMAはソート位置に挿入される。
-    pub fn insert(&self, new_vma: Box<VmArea>) {
-        // TODO: 外部ロックが必要
-        // 簡易実装: 先頭に挿入
-        let old_head = self.head.rcu_assign(new_vma);
-        
+    pub fn insert(&self, mut new_vma: Box<VmArea>) {
+        // NOTE: 外部ロックが必要（呼び出し側で排他制御）
+        let mut prev_ptr: *mut VmArea = core::ptr::null_mut();
+        let mut current_ptr = self.head.ptr.load(Ordering::Acquire);
+
+        while !current_ptr.is_null() {
+            let current = unsafe { &*current_ptr };
+            if new_vma.start < current.start {
+                break;
+            }
+            prev_ptr = current_ptr as *mut VmArea;
+            current_ptr = current.next.ptr.load(Ordering::Acquire);
+        }
+
+        new_vma.next.ptr.store(current_ptr, Ordering::Release);
+        let new_ptr = Box::into_raw(new_vma);
+
+        if prev_ptr.is_null() {
+            self.head.ptr.store(new_ptr, Ordering::Release);
+        } else {
+            unsafe {
+                (*prev_ptr).next.ptr.store(new_ptr, Ordering::Release);
+            }
+        }
+
         self.count.fetch_add(1, Ordering::Relaxed);
-        
-        // 古いheadは新しいVMAのnextに設定する必要がある
-        // （この簡易実装では正しく動作しない）
-        let _ = old_head;
     }
     
     /// VMAを削除（書き込み側、ロックが必要）
     ///
     /// 削除したVMAはcall_rcuで遅延解放される。
     pub fn remove(&self, addr: VirtAddr) -> bool {
-        // TODO: 実装
-        // 1. 前のノードを見つける
-        // 2. 前のノードのnextを更新
-        // 3. 削除したノードをcall_rcuで遅延解放
-        let _ = addr;
+        // NOTE: 外部ロックが必要（呼び出し側で排他制御）
+        let mut prev_ptr: *mut VmArea = core::ptr::null_mut();
+        let mut current_ptr = self.head.ptr.load(Ordering::Acquire);
+
+        while !current_ptr.is_null() {
+            let current = unsafe { &*current_ptr };
+            if current.start == addr {
+                let next_ptr = current.next.ptr.load(Ordering::Acquire);
+                if prev_ptr.is_null() {
+                    self.head.ptr.store(next_ptr, Ordering::Release);
+                } else {
+                    unsafe {
+                        (*prev_ptr).next.ptr.store(next_ptr, Ordering::Release);
+                    }
+                }
+                self.count.fetch_sub(1, Ordering::Relaxed);
+                super::rcu::call_rcu(current_ptr as *mut u8, free_vma_callback);
+                return true;
+            }
+            if addr < current.start {
+                break;
+            }
+            prev_ptr = current_ptr as *mut VmArea;
+            current_ptr = current.next.ptr.load(Ordering::Acquire);
+        }
+
         false
     }
     

@@ -280,14 +280,6 @@ impl TcpStream {
         Ok(Self { tcb })
     }
 
-    /// 【非推奨】connect() - 互換性のために残すが、dial()を使用すべき
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。dial()を使用してください"
-    )]
-    pub async fn connect(addr: SocketAddr) -> Result<Self, TcpError> {
-        Self::dial(addr).await
-    }
 
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> SocketAddr {
@@ -534,14 +526,6 @@ impl TcpListener {
         })
     }
 
-    /// 【非推奨】bind() - 互換性のために残すが、new()を使用すべき
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。new()を使用してください"
-    )]
-    pub fn bind(addr: SocketAddr) -> Result<Self, TcpError> {
-        Self::new(addr)
-    }
 
     /// ローカルアドレスを取得
     pub fn local_addr(&self) -> SocketAddr {
@@ -555,14 +539,6 @@ impl TcpListener {
         AcceptFuture { listener: self }.await
     }
 
-    /// 【非推奨】accept() - 互換性のために残すが、next_connection()を使用すべき
-    #[deprecated(
-        since = "0.4.0",
-        note = "設計書: POSIXソケットAPIを使用しない。next_connection()を使用してください"
-    )]
-    pub async fn accept(&self) -> Result<(TcpStream, SocketAddr), TcpError> {
-        self.next_connection().await
-    }
 
     /// 新しい接続をバックログに追加（内部使用）
     pub(crate) fn push_connection(&self, stream: TcpStream, _addr: SocketAddr) {
