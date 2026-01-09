@@ -16,33 +16,19 @@ use alloc::vec::Vec;
 use core::ptr;
 use hal::mmio;
 
-// Packer selection cache. Only one of these statics will be compiled in for a
-// given target architecture (x86/x86_64 or aarch64). 0 = unknown, 1 = scalar,
-// 2 = ssse3, 3 = avx2, 4 = neon.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-static PACKER_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-
-// Cache AVX2 availability to avoid repeated CPUID queries during heavy
-// drawing loops (e.g., per-row detection is expensive). 0 = unknown,
-// 1 = not available, 2 = available.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-static AVX2_AVAILABLE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-
-#[cfg(target_arch = "aarch64")]
-static PACKER_MODE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+// NOTE: Packer static variables (PACKER_MODE, AVX2_AVAILABLE) have been moved
+// to graphics/packer.rs module. Bench functions delegate to that module.
 
 // Bench-time helpers to force or query the packer mode deterministically.
 // Guarded by `bench` feature to avoid exposing this API in production builds.
 #[cfg(feature = "bench")]
 pub fn force_packer_mode(mode: u8) {
-    use core::sync::atomic::Ordering;
-    PACKER_MODE.store(mode, Ordering::Relaxed);
+    super::packer::force_packer_mode(mode);
 }
 
 #[cfg(feature = "bench")]
 pub fn current_packer_mode() -> u8 {
-    use core::sync::atomic::Ordering;
-    PACKER_MODE.load(Ordering::Relaxed)
+    super::packer::current_packer_mode()
 }
 
 // Bench-only wrappers to expose internal packer paths to the bench harness.
@@ -209,74 +195,10 @@ impl Framebuffer {
         Self::pack_rgba_to_bgr24(src, dst, is_bgr);
     }
 
-    /// AVX2 path (guarded): calls internal AVX2 packer directly
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub unsafe fn bench_pack_rgba_to_bgr24_avx2(
-        src: &[u8],
-        dst: &mut [u8],
-        pixels: usize,
-        is_bgr: bool,
-    ) {
-        // SAFETY: Caller guarantees AVX2 is available and buffers are valid
-        unsafe { Self::pack_rgba_to_bgr24_avx2(src, dst, pixels, is_bgr) };
-    }
-
-    /// Bench-only: call the 8-pixel AVX2 helper directly to measure inner-loop
-    /// throughput. This avoids the outer loop overhead in pack_rgba_to_bgr24_avx2.
-    #[cfg(all(feature = "bench", any(target_arch = "x86", target_arch = "x86_64")))]
-    pub unsafe fn bench_pack_rgba_to_bgr24_avx2_8pixels(
-        src: *const u8,
-        dst: *mut u8,
-        is_bgr: bool,
-    ) {
-        unsafe { Self::pack_rgba_to_bgr24_avx2_8pixels(src, dst, is_bgr) };
-    }
-
-    /// SSSE3 path (guarded): calls internal SSSE3 packer directly
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    pub unsafe fn bench_pack_rgba_to_bgr24_ssse3(
-        src: &[u8],
-        dst: &mut [u8],
-        pixels: usize,
-        is_bgr: bool,
-    ) {
-        // SAFETY: Caller guarantees SSSE3 is available and buffers are valid
-        unsafe { Self::pack_rgba_to_bgr24_ssse3(src, dst, pixels, is_bgr) };
-    }
-
-    /// Bench-only: call the 8-pixel SSSE3 helper directly to measure inner-loop
-    /// throughput.
-    #[cfg(all(feature = "bench", any(target_arch = "x86", target_arch = "x86_64")))]
-    pub unsafe fn bench_pack_rgba_to_bgr24_ssse3_8pixels(
-        src: *const u8,
-        dst: *mut u8,
-        is_bgr: bool,
-    ) {
-        unsafe { Self::pack_rgba_to_bgr24_ssse3_8pixels(src, dst, is_bgr) };
-    }
-
-    /// NEON path (guarded): calls internal NEON packer directly
-    #[cfg(target_arch = "aarch64")]
-    pub unsafe fn bench_pack_rgba_to_bgr24_neon(
-        src: &[u8],
-        dst: &mut [u8],
-        pixels: usize,
-        is_bgr: bool,
-    ) {
-        // SAFETY: Caller guarantees NEON is available and buffers are valid
-        unsafe { Self::pack_rgba_to_bgr24_neon(src, dst, pixels, is_bgr) };
-    }
-
-    /// Bench-only: call the 8-pixel NEON helper directly to measure inner-loop
-    /// throughput.
-    #[cfg(all(feature = "bench", target_arch = "aarch64"))]
-    pub unsafe fn bench_pack_rgba_to_bgr24_neon_8pixels(
-        src: *const u8,
-        dst: *mut u8,
-        is_bgr: bool,
-    ) {
-        unsafe { Self::pack_rgba_to_bgr24_neon_8pixels(src, dst, is_bgr) };
-    }
+    // NOTE: Bench functions for direct SIMD paths (AVX2, SSSE3, NEON) have been
+    // removed. Use the packer module directly for benchmarking:
+    //   super::packer::pack_rgba_to_bgr24(src, dst, is_bgr)
+    //   super::packer::pack_rgba_to_bgra(src, dst)
 }
 
 // Non-bench version of counted_sfence - just calls sfence without counting
@@ -288,87 +210,7 @@ impl Framebuffer {
     }
 }
 
-// Macro to dispatch SIMD packing calls
-macro_rules! simd_pack_dispatch {
-    ($src:expr, $dst:expr, $len:expr,
-     $simd_fn_avx2:ident, $simd_fn_ssse3:ident, $simd_fn_neon:ident, $scalar_fn:ident
-     $(, $extra_args:expr)*) => {
-        {
-            use core::sync::atomic::Ordering;
-            #[allow(unused_mut)]
-            let mut mode = PACKER_MODE.load(Ordering::Relaxed);
-
-            if mode == 0 {
-                // Runtime detection logic
-                let mut app_mode = 1u8; // Default scalar
-
-                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                {
-                    #[cfg(feature = "std")]
-                    {
-                        if std::is_x86_feature_detected!("avx2") { app_mode = 3; }
-                        else if std::is_x86_feature_detected!("ssse3") { app_mode = 2; }
-                    }
-                    #[cfg(not(feature = "std"))]
-                    {
-                        // Use kernel HAL detection
-                        use crate::hal::mmio;
-                        if mmio::get_simd_level() >= mmio::simd_level::AVX2 { app_mode = 3; }
-                        else if mmio::get_simd_level() >= mmio::simd_level::SSSE3 { app_mode = 2; }
-                    }
-                }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    if cfg!(target_feature = "neon") { app_mode = 4; }
-                }
-
-                // Environment override logic (std only)
-                #[cfg(feature = "std")]
-                if let Ok(val) = std::env::var("RANY_PACKER") {
-                    let low = val.to_ascii_lowercase();
-                    let forced: Option<u8> = match low.as_str() {
-                        "scalar" => Some(1u8),
-                        "ssse3" => Some(2u8),
-                        "avx2" => Some(3u8),
-                        "neon" => Some(4u8),
-                        s => s.parse::<u8>().ok(),
-                    };
-                    if let Some(f) = forced {
-                        // CRITICAL: Clamp forced mode to detected limits to avoid UB
-                        // (e.g. executing AVX2 instructions on non-AVX2 CPU)
-                        if f > app_mode {
-                            app_mode = app_mode; // Fallback to safe max
-                        } else {
-                            app_mode = f;
-                        }
-                    }
-                }
-
-                mode = app_mode;
-                PACKER_MODE.store(mode, Ordering::Relaxed);
-            }
-
-            match mode {
-                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                3 => unsafe {
-                    // AVX2
-                    Framebuffer::$simd_fn_avx2($src, $dst, $len $(, $extra_args)*)
-                },
-                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                2 => unsafe {
-                    // SSSE3
-                    Framebuffer::$simd_fn_ssse3($src, $dst, $len $(, $extra_args)*)
-                },
-                 #[cfg(target_arch = "aarch64")]
-                4 => unsafe {
-                    // NEON
-                    Framebuffer::$simd_fn_neon($src, $dst, $len $(, $extra_args)*)
-                },
-                _ => Framebuffer::$scalar_fn($src, $dst $(, $extra_args)*),
-            }
-        }
-    };
-}
+// NOTE: SIMD dispatch logic has been moved to graphics/packer.rs module.
 /// Performance statistics for the framebuffer
 #[derive(Debug, Clone, Copy, Default)]
 pub struct PerfStats {
@@ -936,560 +778,15 @@ impl Framebuffer {
         super::packer::pack_rgba_to_bgra_scalar(src, dst)
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[target_feature(enable = "avx2")]
+    /// 24-bit scalar packer (public for bench tests)
     #[inline]
-    unsafe fn pack_rgba_to_bgr24_avx2(src: &[u8], dst: &mut [u8], pixels: usize, is_bgr: bool) {
-        let mut processed = 0;
-        let mut src_ptr = src.as_ptr();
-        let mut dst_ptr = dst.as_mut_ptr();
-        while processed + 8 <= pixels {
-            unsafe {
-                Framebuffer::pack_rgba_to_bgr24_avx2_8pixels(src_ptr, dst_ptr, is_bgr);
-                src_ptr = src_ptr.add(32);
-                dst_ptr = dst_ptr.add(24);
-                processed += 8;
-            }
-        }
-        let end_src = pixels * 4;
-        let end_dst = pixels * 3;
-        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
+    pub fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
+        super::packer::pack_rgba_to_bgr24_scalar(src, dst, is_bgr)
     }
 
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[target_feature(enable = "ssse3")]
-    #[inline]
-    unsafe fn pack_rgba_to_bgr24_ssse3(src: &[u8], dst: &mut [u8], pixels: usize, is_bgr: bool) {
-        let mut processed = 0;
-        let mut src_ptr = src.as_ptr();
-        let mut dst_ptr = dst.as_mut_ptr();
-        while processed + 8 <= pixels {
-            unsafe {
-                Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels(src_ptr, dst_ptr, is_bgr);
-                src_ptr = src_ptr.add(32);
-                dst_ptr = dst_ptr.add(24);
-                processed += 8;
-            }
-        }
-        let end_src = pixels * 4;
-        let end_dst = pixels * 3;
-        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
-    }
-
-    #[cfg(target_arch = "aarch64")]
-    #[inline]
-    unsafe fn pack_rgba_to_bgr24_neon(src: &[u8], dst: &mut [u8], pixels: usize, is_bgr: bool) {
-        let mut processed = 0;
-        let mut src_ptr = src.as_ptr();
-        let mut dst_ptr = dst.as_mut_ptr();
-        while processed + 8 <= pixels {
-            unsafe {
-                Framebuffer::pack_rgba_to_bgr24_neon_8pixels(src_ptr, dst_ptr, is_bgr);
-                src_ptr = src_ptr.add(32);
-                dst_ptr = dst_ptr.add(24);
-                processed += 8;
-            }
-        }
-        let end_src = pixels * 4;
-        let end_dst = pixels * 3;
-        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
-    }
-
-    #[inline(always)]
-    fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
-        // Clamp to safe range based on both src and dst sizes
-        let len = core::cmp::min(src.len() / 4, dst.len() / 3);
-        let mut i = 0;
-        let mut src_idx = 0;
-        let mut dst_off = 0;
-
-        // x86 fast-path: process 4 pixels at a time for BGR output only
-        // (RGB output uses the simple per-pixel loop for clarity)
-        #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        if is_bgr {
-            unsafe {
-                let src_ptr = src.as_ptr();
-                let dst_ptr = dst.as_mut_ptr();
-                while i + 3 < len {
-                    let p0 = core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32);
-                    let p1 = core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32);
-                    let p2 = core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32);
-                    let p3 = core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32);
-
-                    let b0 = ((p0 >> 16) & 0xFF) as u32;
-                    let g0 = ((p0 >> 8) & 0xFF) as u32;
-                    let r0 = (p0 & 0xFF) as u32;
-                    let b1 = ((p1 >> 16) & 0xFF) as u32;
-                    let g1 = ((p1 >> 8) & 0xFF) as u32;
-                    let r1 = (p1 & 0xFF) as u32;
-                    let b2 = ((p2 >> 16) & 0xFF) as u32;
-                    let g2 = ((p2 >> 8) & 0xFF) as u32;
-                    let r2 = (p2 & 0xFF) as u32;
-                    let b3 = ((p3 >> 16) & 0xFF) as u32;
-                    let g3 = ((p3 >> 8) & 0xFF) as u32;
-                    let r3 = (p3 & 0xFF) as u32;
-
-                    // Pack into three 32-bit words to emit 12 bytes per 4 pixels in
-                    // BGR ordering: [b0,g0,r0,b1,g1,r1,b2,g2,r2,b3,g3,r3]
-                    let d0 = (b0) | (g0 << 8) | (r0 << 16) | (b1 << 24);
-                    let d1 = (g1) | (r1 << 8) | (b2 << 16) | (g2 << 24);
-                    let d2 = (r2) | (b3 << 8) | (g3 << 16) | (r3 << 24);
-
-                    core::ptr::write_unaligned(dst_ptr.add(dst_off) as *mut u32, d0);
-                    core::ptr::write_unaligned(dst_ptr.add(dst_off + 4) as *mut u32, d1);
-                    core::ptr::write_unaligned(dst_ptr.add(dst_off + 8) as *mut u32, d2);
-
-                    src_idx += 16;
-                    dst_off += 12;
-                    i += 4;
-                }
-            }
-        }
-
-        // Per-pixel tail loop (or full loop for RGB / non-x86)
-        if is_bgr {
-            while i < len {
-                dst[dst_off] = src[src_idx + 2];     // B
-                dst[dst_off + 1] = src[src_idx + 1]; // G
-                dst[dst_off + 2] = src[src_idx];     // R
-                src_idx += 4;
-                dst_off += 3;
-                i += 1;
-            }
-        } else {
-            while i < len {
-                dst[dst_off] = src[src_idx];         // R
-                dst[dst_off + 1] = src[src_idx + 1]; // G
-                dst[dst_off + 2] = src[src_idx + 2]; // B
-                src_idx += 4;
-                dst_off += 3;
-                i += 1;
-            }
-        }
-    }
-
-
-    /// Query AVX2 availability once and cache result to avoid repeated
-    /// CPUID calls. Only used on x86-family builds and when `std` is
-    /// available for runtime detection.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    fn get_avx2_available() -> bool {
-        #[cfg(not(feature = "std"))]
-        {
-            hal::mmio::get_simd_level() >= hal::mmio::simd_level::AVX2
-        }
-        #[cfg(feature = "std")]
-        {
-            use core::sync::atomic::Ordering;
-            let v = AVX2_AVAILABLE.load(Ordering::Relaxed);
-            if v == 0 {
-                let avail = std::is_x86_feature_detected!("avx2");
-                if avail {
-                    // Sync with HAL for benchmarks
-                    unsafe {
-                        hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
-                    }
-                } else if std::is_x86_feature_detected!("avx") {
-                    unsafe {
-                        hal::mmio::set_simd_level(hal::mmio::simd_level::AVX);
-                    }
-                }
-                AVX2_AVAILABLE.store(if avail { 2 } else { 1 }, Ordering::Relaxed);
-                avail
-            } else {
-                v == 2
-            }
-        }
-    }
-
-    /// Scalar packer implementation (public so benches can call it directly).
-    #[inline(always)]
-    pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
-        let pixels = core::cmp::min(src.len(), dst.len()) / 4;
-        let bytes = pixels * 4;
-
-        // Fast scalar path: operate on u32 words using bit manipulations to
-        // swap the R and B bytes in each 32-bit lane. Unroll two pixels at a
-        // time to reduce loop overhead.
-        let mut i = 0usize;
-
-        // Process two pixels at a time and write as a single u64 when
-        // possible. This reduces the number of memory writes and loop
-        // overhead compared to writing two u32 values separately.
-        // Process 16-byte blocks by computing four swapped u32 words and
-        // emitting as two u64 unaligned writes. This halves the number of
-        // memory writes compared to four separate u32 writes.
-        while i + 16 <= bytes {
-            let v0 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i) as *const u32) };
-            let v1 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i + 4) as *const u32) };
-            let v2 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i + 8) as *const u32) };
-            let v3 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i + 12) as *const u32) };
-
-            let s0 = (v0 & 0xFF00FF00) | ((v0 & 0x000000FF) << 16) | ((v0 & 0x00FF0000) >> 16);
-            let s1 = (v1 & 0xFF00FF00) | ((v1 & 0x000000FF) << 16) | ((v1 & 0x00FF0000) >> 16);
-            let s2 = (v2 & 0xFF00FF00) | ((v2 & 0x000000FF) << 16) | ((v2 & 0x00FF0000) >> 16);
-            let s3 = (v3 & 0xFF00FF00) | ((v3 & 0x000000FF) << 16) | ((v3 & 0x00FF0000) >> 16);
-
-            let p0 = (s0 as u64) | ((s1 as u64) << 32);
-            let p1 = (s2 as u64) | ((s3 as u64) << 32);
-
-            unsafe {
-                core::ptr::write_unaligned(dst.as_mut_ptr().add(i) as *mut u64, p0);
-                core::ptr::write_unaligned(dst.as_mut_ptr().add(i + 8) as *mut u64, p1);
-            }
-            i += 16;
-        }
-
-        while i + 8 <= bytes {
-            let v0 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i) as *const u32) };
-            let v1 = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i + 4) as *const u32) };
-            let s0 = (v0 & 0xFF00FF00) | ((v0 & 0x000000FF) << 16) | ((v0 & 0x00FF0000) >> 16);
-            let s1 = (v1 & 0xFF00FF00) | ((v1 & 0x000000FF) << 16) | ((v1 & 0x00FF0000) >> 16);
-            let p = (s0 as u64) | ((s1 as u64) << 32);
-            unsafe {
-                core::ptr::write_unaligned(dst.as_mut_ptr().add(i) as *mut u64, p);
-            }
-            i += 8;
-        }
-
-        while i + 4 <= bytes {
-            let v = unsafe { core::ptr::read_unaligned(src.as_ptr().add(i) as *const u32) };
-            let swapped = (v & 0xFF00FF00) | ((v & 0x000000FF) << 16) | ((v & 0x00FF0000) >> 16);
-            unsafe {
-                core::ptr::write_unaligned(dst.as_mut_ptr().add(i) as *mut u32, swapped);
-            }
-            i += 4;
-        }
-    }
-
-    /// AVX2 implementation (unsafe). Processes 32-byte blocks using 256-bit
-    /// byte shuffles and falls back to SSSE3 / scalar for tails.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[target_feature(enable = "avx2")]
-    unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
-        use core::arch::x86_64::*;
-        // 32-byte shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
-        let mask = _mm256_setr_epi8(
-            2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15, 18, 17, 16, 19, 22, 21, 20, 23,
-            26, 25, 24, 27, 30, 29, 28, 31,
-        );
-
-        let mut i = 0usize;
-
-        // Fast path when both src and dst are 32-byte aligned: use aligned loads/stores
-        let src_aligned = (src as usize) & 31 == 0;
-        let dst_aligned = (dst as usize) & 31 == 0;
-
-        if src_aligned && dst_aligned {
-            // Unroll 64-byte per iteration to reduce loop overhead
-            while i + 64 <= bytes {
-                // Use unaligned loads/stores to avoid strict alignment requirements
-                let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
-                let r0 = _mm256_shuffle_epi8(v0, mask);
-                let r1 = _mm256_shuffle_epi8(v1, mask);
-                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
-                unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
-                i += 64;
-            }
-
-            while i + 32 <= bytes {
-                let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                let r = _mm256_shuffle_epi8(v, mask);
-                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
-                i += 32;
-            }
-        } else {
-            // Unaligned (general) path
-            while i + 64 <= bytes {
-                let v0 = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                let v1 = unsafe { _mm256_loadu_si256(src.add(i + 32) as *const __m256i) };
-                let r0 = _mm256_shuffle_epi8(v0, mask);
-                let r1 = _mm256_shuffle_epi8(v1, mask);
-                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0) };
-                unsafe { _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1) };
-                i += 64;
-            }
-
-            while i + 32 <= bytes {
-                let v = unsafe { _mm256_loadu_si256(src.add(i) as *const __m256i) };
-                let r = _mm256_shuffle_epi8(v, mask);
-                unsafe { _mm256_storeu_si256(dst.add(i) as *mut __m256i, r) };
-                i += 32;
-            }
-        }
-
-        // Process remaining 16-byte block(s) via SSSE3-style shuffle
-        while i + 16 <= bytes {
-            let v = unsafe { _mm_loadu_si128(src.add(i) as *const __m128i) };
-            let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
-            let r = _mm_shuffle_epi8(v, m);
-            unsafe { _mm_storeu_si128(dst.add(i) as *mut __m128i, r) };
-            i += 16;
-        }
-
-        // Tail: scalar
-        while i < bytes {
-            let pixel_idx = i / 4;
-            let s = pixel_idx * 4;
-            unsafe {
-                let r = *src.add(s + 0);
-                let g = *src.add(s + 1);
-                let b = *src.add(s + 2);
-                let a = *src.add(s + 3);
-                *dst.add(s + 0) = b;
-                *dst.add(s + 1) = g;
-                *dst.add(s + 2) = r;
-                *dst.add(s + 3) = a;
-            }
-            i += 4;
-        }
-    }
-
-    /// AVX2 helper: pack exactly 8 RGBA pixels (32 bytes) into 24 BGR bytes.
-    /// `is_bgr` selects whether output order is BGR (true) or RGB (false).
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[target_feature(enable = "avx2")]
-    #[inline]
-    unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
-        use core::arch::x86_64::*;
-
-        // Masks select bytes per 128-bit lane. For BGR each pixel maps [r,g,b,a] -> [b,g,r]
-        let mask_bgr = _mm256_setr_epi8(
-            2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1, 2, 1, 0, 6, 5, 4, 10, 9, 8, 14,
-            13, 12, -1, -1, -1, -1,
-        );
-
-        // Masks for RGB ordering: [r,g,b]
-        let mask_rgb = _mm256_setr_epi8(
-            0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1, 0, 1, 2, 4, 5, 6, 8, 9, 10, 12,
-            13, 14, -1, -1, -1, -1,
-        );
-
-        let v = unsafe { _mm256_loadu_si256(src as *const __m256i) };
-        let mask = if is_bgr { mask_bgr } else { mask_rgb };
-        let shuffled = _mm256_shuffle_epi8(v, mask);
-
-        // Extract lanes and write: store lane0 at dst, lane1 at dst+12 (overlap)
-        let lane0 = _mm256_extracti128_si256(shuffled, 0);
-        let lane1 = _mm256_extracti128_si256(shuffled, 1);
-
-        // Store 24 bytes safely without overrunning the destination buffer using unaligned writes:
-        // - store low 8 bytes of lane0 -> dst[0..7]
-        let val0 = _mm_cvtsi128_si64(lane0);
-        core::ptr::copy_nonoverlapping(&val0 as *const i64 as *const u8, dst, 8);
-
-        // - store next 8 bytes of lane0 -> dst[8..15]
-        let lane0_hi = _mm_srli_si128(lane0, 8);
-        let val1 = _mm_cvtsi128_si64(lane0_hi);
-        core::ptr::copy_nonoverlapping(&val1 as *const i64 as *const u8, dst.add(8), 8);
-
-        // low 32 bits of lane1 -> bytes 12..15
-        let low32 = _mm_cvtsi128_si32(lane1) as i32;
-        unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
-
-        // store bytes 16..23: use lane1 >> 4 bytes so we get r1[4..11]
-        let r1_shift = _mm_srli_si128(lane1, 4);
-        let val2 = _mm_cvtsi128_si64(r1_shift);
-        core::ptr::copy_nonoverlapping(&val2 as *const i64 as *const u8, dst.add(16), 8);
-    }
-
-    /// SSSE3 implementation of 8-pixel RGBA -> 24-byte BGR/RGB compression.
-    /// Uses pshufb on 16-byte lanes and overlapping stores to emit 24 bytes.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[target_feature(enable = "ssse3")]
-    #[inline]
-    unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
-        unsafe {
-            use core::arch::x86_64::*;
-
-            // Masks select bytes per 128-bit lane. For BGR each pixel maps [r,g,b,a] -> [b,g,r]
-            let mask_bgr = _mm_setr_epi8(2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, -1, -1, -1, -1);
-
-            // Masks for RGB ordering: [r,g,b]
-            let mask_rgb = _mm_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1);
-
-            let v0 = _mm_loadu_si128(src as *const __m128i);
-            let v1 = _mm_loadu_si128(src.add(16) as *const __m128i);
-            let mask = if is_bgr { mask_bgr } else { mask_rgb };
-            let r0 = _mm_shuffle_epi8(v0, mask);
-            let r1 = _mm_shuffle_epi8(v1, mask);
-
-            // Store 24 bytes safely avoiding alignment requirements of _mm_storel_epi64
-            // (which takes *mut __m128i, expecting 16-byte alignment in Rust debug builds)
-            let val0 = _mm_cvtsi128_si64(r0);
-            core::ptr::copy_nonoverlapping(&val0 as *const i64 as *const u8, dst, 8);
-
-            let r0_hi = _mm_srli_si128(r0, 8);
-            let val1 = _mm_cvtsi128_si64(r0_hi);
-            core::ptr::copy_nonoverlapping(&val1 as *const i64 as *const u8, dst.add(8), 8);
-
-            let low32 = _mm_cvtsi128_si32(r1) as i32;
-            core::ptr::write_unaligned(dst.add(12) as *mut i32, low32);
-
-            let r1_shift = _mm_srli_si128(r1, 4);
-            let val2 = _mm_cvtsi128_si64(r1_shift);
-            core::ptr::copy_nonoverlapping(&val2 as *const i64 as *const u8, dst.add(16), 8);
-        }
-    }
-
-
-    /// NEON implementation (aarch64) for packing exactly 8 RGBA pixels into
-    /// 24 BGR or RGB bytes. Implemented as a small, unrolled scalar loop for
-    /// correctness initially; can be replaced with a table-based tbl variant
-    /// later for better performance.
-    #[cfg(target_arch = "aarch64")]
-    #[target_feature(enable = "neon")]
-    #[inline]
-    unsafe fn pack_rgba_to_bgr24_neon_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
-        unsafe {
-            use core::arch::aarch64::*;
-
-            // Table masks: for each 16-byte lane pick bytes [2,1,0,6,5,4,10,9,8,14,13,12, -1,-1,-1,-1]
-            // -1 (255) picks zero when using tbl/vqtbl intrinsics.
-            let mask_bgr: [u8; 16] = [2, 1, 0, 6, 5, 4, 10, 9, 8, 14, 13, 12, 255, 255, 255, 255];
-            let mask_rgb: [u8; 16] = [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, 255, 255, 255, 255];
-
-            let tbl = vld1q_u8(if is_bgr {
-                mask_bgr.as_ptr()
-            } else {
-                mask_rgb.as_ptr()
-            });
-
-            // Load 8 pixels (32 bytes)
-            let v0 = vld1q_u8(src as *const u8);
-            let v1 = vld1q_u8(src.add(16) as *const u8);
-
-            // Shuffle each 16-byte lane to compress RGBA->BGR triples
-            // Use vqtbl1q_u8 to perform a byte-wise table lookup; out-of-range
-            // indices (255) produce zero bytes (which we overwrite or ignore).
-            let r0 = vqtbl1q_u8(v0, tbl);
-            let r1 = vqtbl1q_u8(v1, tbl);
-
-            // Store bytes safely as in SSSE3/AVX2 helpers:
-            // - store low 8 bytes of r0 -> dst[0..7]
-            // - store next 8 bytes of r0 -> dst[8..15]
-            // - store low 4 bytes of r1 -> dst[12..15] (overwrite middle)
-            // - store low 8 bytes of (r1 >> 4) -> dst[16..23]
-
-            // dst[0..7]
-            vst1_u8(dst, vget_low_u8(r0));
-            // dst[8..15]
-            vst1_u8(dst.add(8), vget_high_u8(r0));
-
-            // dst[12..15] overlap - tricky in neon.
-            // Just scalar store the middle 4 bytes from R1 lane 0
-            let r1_lane0 = vget_low_u8(r1);
-            let r1_lane0_u32 = vget_lane_u32::<0>(vreinterpret_u32_u8(r1_lane0));
-            core::ptr::write_unaligned(dst.add(12) as *mut u32, r1_lane0_u32);
-
-            // dst[16..23] -> r1 >> 4 bytes
-            // We can shift right by vector extr
-            let r1_shifted = vextq_u8(r1, r1, 4);
-            vst1_u8(dst.add(16), vget_low_u8(r1_shifted));
-        }
-    }
-
-    /// NEON implementation placeholder (aarch64). For now this falls back to
-    /// a scalar loop for correctness; a NEON tbl-based implementation can be
-    /// added later for further speedups.
-    #[cfg(target_arch = "aarch64")]
-    #[target_feature(enable = "neon")]
-    unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
-        unsafe {
-            use core::arch::aarch64::*;
-
-            // Vectorized 32-bit lane byte-swizzle:
-            // For each u32 lane (little-endian RGBA), produce BGRA by shifting
-            // low and high byte lanes and OR-ing the parts.
-            let mut i = 0usize;
-
-            // Prepare masks once to avoid redundant vdupq calls in the loop
-            let low_mask = vdupq_n_u32(0x000000FF);
-            let mid_mask = vdupq_n_u32(0x0000FF00);
-            let high_mask = vdupq_n_u32(0x00FF0000);
-            let alpha_mask = vdupq_n_u32(0xFF000000);
-
-            // Process 4 pixels (16 bytes) per iteration using 32-bit vector ops
-            while i + 16 <= bytes {
-                // Load 4 lanes (may be unaligned)
-                let v = vld1q_u32(src.add(i) as *const u32);
-
-                let low = vandq_u32(v, low_mask);
-                let mid = vandq_u32(v, mid_mask);
-                let high = vandq_u32(v, high_mask);
-                let alpha = vandq_u32(v, alpha_mask);
-
-                // swap: low << 16 | mid | high >> 16 | alpha
-                let low_shift = vshlq_n_u32(low, 16);
-                let high_shift = vshrq_n_u32(high, 16);
-                let tmp = vorrq_u32(low_shift, mid);
-                let swapped = vorrq_u32(vorrq_u32(tmp, high_shift), alpha);
-
-                vst1q_u32(dst.add(i) as *mut u32, swapped);
-                i += 16;
-            }
-
-            // Tail: scalar per-pixel
-            while i + 4 <= bytes {
-                let p = core::ptr::read_unaligned(src.add(i) as *const u32);
-                let swapped = ((p & 0x000000FF) << 16)
-                    | (p & 0x0000FF00)
-                    | ((p & 0x00FF0000) >> 16)
-                    | (p & 0xFF000000);
-                core::ptr::write_unaligned(dst.add(i) as *mut u32, swapped);
-                i += 4;
-            }
-        }
-    }
-
-    /// SSSE3 implementation (unsafe). Processes `bytes` bytes (must be multiple
-    /// of 4). Uses pshufb to permute bytes inside 16-byte lanes.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    #[target_feature(enable = "ssse3")]
-    unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) {
-        unsafe {
-            use core::arch::x86_64::*;
-
-            // shuffle mask: for each 4-byte lane [r,g,b,a] -> [b,g,r,a]
-            let mask = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
-
-            let mut i = 0usize;
-
-            // Unroll 32-byte per iteration (two 16-byte lanes) to reduce loop overhead
-            while i + 32 <= bytes {
-                let v0 = _mm_loadu_si128(src.add(i) as *const __m128i);
-                let v1 = _mm_loadu_si128(src.add(i + 16) as *const __m128i);
-                let r0 = _mm_shuffle_epi8(v0, mask);
-                let r1 = _mm_shuffle_epi8(v1, mask);
-                _mm_storeu_si128(dst.add(i) as *mut __m128i, r0);
-                _mm_storeu_si128(dst.add(i + 16) as *mut __m128i, r1);
-                i += 32;
-            }
-
-            while i + 16 <= bytes {
-                let v = _mm_loadu_si128(src.add(i) as *const __m128i);
-                let r = _mm_shuffle_epi8(v, mask);
-                _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
-                i += 16;
-            }
-
-            // Tail: scalar for remaining (will be multiple of 4)
-            while i < bytes {
-                let pixel_idx = i / 4;
-                let s = pixel_idx * 4;
-                let r = *src.add(s + 0);
-                let g = *src.add(s + 1);
-                let b = *src.add(s + 2);
-                let a = *src.add(s + 3);
-                *dst.add(s + 0) = b;
-                *dst.add(s + 1) = g;
-                *dst.add(s + 2) = r;
-                *dst.add(s + 3) = a;
-                i += 4;
-            }
-        }
-    }
+    // NOTE: All SIMD pack implementations (AVX2, SSSE3, NEON) have been moved to
+    // graphics/packer.rs module. The public pack_rgba_to_bgra() and pack_rgba_to_bgr24()
+    // functions delegate to that module.
 
     /// Write a run of u32 pixels (color already packed) to destination offset
     fn write_u32_run(&mut self, dst_offset_bytes: usize, run_len_pixels: usize, color_u32: u32) {
@@ -2356,6 +1653,11 @@ impl Framebuffer {
     }
 
     /// ピクセルを取得
+    ///
+    /// # Performance Warning
+    /// When no back_buffer is present, this reads directly from VRAM which is
+    /// **extremely slow** (100-1000x slower than RAM reads due to PCIe latency).
+    /// For blend operations or repeated pixel reads, ensure double buffering is enabled.
     pub fn get_pixel(&self, x: u32, y: u32) -> Color {
         if x >= self.info.width || y >= self.info.height {
             return Color::BLACK;
@@ -2364,6 +1666,36 @@ impl Framebuffer {
         let offset =
             (y * self.info.stride) as usize + (x as usize * self.info.format.bytes_per_pixel());
 
+        // Read from back_buffer if available (fast RAM access) instead of VRAM
+        if let Some(ref back) = self.back_buffer {
+            if offset + self.info.format.bytes_per_pixel() <= back.len() {
+                return match self.info.format {
+                    PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => {
+                        let pixel = unsafe {
+                            core::ptr::read_unaligned(back.as_ptr().add(offset) as *const u32)
+                        };
+                        Color::from_u32(pixel)
+                    }
+                    PixelFormat::Bgr888 => {
+                        Color::new(back[offset + 2], back[offset + 1], back[offset])
+                    }
+                    PixelFormat::Rgb888 => {
+                        Color::new(back[offset], back[offset + 1], back[offset + 2])
+                    }
+                    PixelFormat::Rgb565 => {
+                        let pixel = unsafe {
+                            core::ptr::read_unaligned(back.as_ptr().add(offset) as *const u16)
+                        };
+                        let r = ((pixel >> 11) & 0x1F) as u8 * 8;
+                        let g = ((pixel >> 5) & 0x3F) as u8 * 4;
+                        let b = (pixel & 0x1F) as u8 * 8;
+                        Color::new(r, g, b)
+                    }
+                };
+            }
+        }
+
+        // Fallback: read directly from VRAM (SLOW!)
         match self.info.format {
             PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => unsafe {
                 let pixel = mmio::mmio_read_u32(self.buffer.add(offset) as usize);
@@ -3105,13 +2437,64 @@ impl Framebuffer {
                 }
             }
             _ => {
-                // その他のフォーマット: try to use per-row bulk writes when
-                // possible (24-bit and 16-bit) to avoid per-pixel overhead.
+                // 24bpp (and other) formats: use safe 1-row pattern approach
+                // Create one row of the pattern, then copy it to subsequent rows.
                 match self.info.format {
+                    PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
+                        let width = r.width as usize;
+                        let row_bytes = width * 3;
+                        
+                        if row_bytes == 0 {
+                            return;
+                        }
+                        
+                        // Get color bytes in correct order
+                        let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
+                        let (c0, c1, c2) = if is_bgr {
+                            (color.b, color.g, color.r)
+                        } else {
+                            (color.r, color.g, color.b)
+                        };
+                        
+                        // Ensure scratch buffer has enough space for one row
+                        self.ensure_scratch_u8(row_bytes);
+                        
+                        // Build one row pattern in scratch buffer
+                        for i in 0..width {
+                            self.scratch_u8[i * 3] = c0;
+                            self.scratch_u8[i * 3 + 1] = c1;
+                            self.scratch_u8[i * 3 + 2] = c2;
+                        }
+                        
+                        let stride = stride as usize;
+                        
+                        if let Some(ref mut back) = self.back_buffer {
+                            // Backbuffer path: copy pattern row to each line
+                            for y in r.y..r.bottom() {
+                                let offset = y as usize * stride + r.x as usize * 3;
+                                // Safety: bounds already checked by clip and scratch_u8 allocation
+                                if offset + row_bytes <= back.len() {
+                                    unsafe {
+                                        ptr::copy_nonoverlapping(
+                                            self.scratch_u8.as_ptr(),
+                                            back.as_mut_ptr().add(offset),
+                                            row_bytes,
+                                        );
+                                    }
+                                }
+                            }
+                        } else {
+                            // MMIO path: use streaming writes for each row
+                            for y in r.y..r.bottom() {
+                                let offset = y as usize * stride + r.x as usize * 3;
+                                let addr = self.buffer as usize + offset;
+                                self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..row_bytes]);
+                            }
+                            mmio::sfence();
+                        }
+                    }
                     _ => {
-                        // CRITICAL: Temporary fallback to simple pixel loop to diagnosis heap corruption
-                        // The optimized 24bpp path used scratch_u8 and unsafe ptr::copy which
-                        // likely caused heap corruption and subsequent Page Faults.
+                        // Other formats: per-pixel fallback (16-bit etc)
                         for y in r.y..r.bottom() {
                             for x in r.x..r.right() {
                                 self.set_pixel_raw(x, y, color);

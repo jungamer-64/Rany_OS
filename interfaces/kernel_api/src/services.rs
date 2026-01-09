@@ -114,6 +114,48 @@ pub trait KernelServices: Send + Sync {
     fn fs_close(&self, handle: FileHandle) -> KapiResult<()>;
 
     // ========================================================================
+    // Direct NVMe Block I/O
+    // ========================================================================
+
+    /// Open a direct NVMe block handle (namespace + range)
+    fn nvme_open_direct(
+        &self,
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+    ) -> KapiResult<crate::DirectBlockHandle>;
+
+    /// Read blocks into a DMA buffer (buffer returned on completion)
+    fn nvme_read_blocks_dma(
+        &self,
+        handle: crate::DirectBlockHandle,
+        block_offset: u64,
+        buffer: DmaBuffer,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>>;
+
+    /// Write blocks from a DMA buffer (buffer returned on completion)
+    fn nvme_write_blocks_dma(
+        &self,
+        handle: crate::DirectBlockHandle,
+        block_offset: u64,
+        buffer: DmaBuffer,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>>;
+
+    /// Flush pending writes for a direct handle
+    fn nvme_flush_direct(
+        &self,
+        handle: crate::DirectBlockHandle,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+
+    /// Discard blocks (TRIM)
+    fn nvme_discard_direct(
+        &self,
+        handle: crate::DirectBlockHandle,
+        block_offset: u64,
+        block_count: u64,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+
+    // ========================================================================
     // IPC (Inter-Process Communication)
     // ========================================================================
 

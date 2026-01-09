@@ -25,6 +25,8 @@ use core::task::{Context, Poll, Waker};
 use spin::Mutex;
 use x86_64::PhysAddr;
 
+use kernel_api::DmaBuffer;
+
 use super::cache::{page_cache, PAGE_SIZE as CACHE_PAGE_SIZE};
 use super::vfs::{
     read_inode_by_number, write_inode_by_number, FileAttr, FsError, FsResult, SeekFrom,
@@ -32,6 +34,16 @@ use super::vfs::{
 
 // NVMe per-core API
 use crate::io::nvme::global as nvme_global;
+use crate::io::io_scheduler::{
+    CompletionHook,
+    DeviceId as IoDeviceId,
+    IoOperationType,
+    IoPayload,
+    IoPriority,
+    IoResult,
+    NvmeDsmPayload,
+    NvmeRwPayload,
+};
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
 use crate::smp::current_cpu;
@@ -94,6 +106,48 @@ impl NvmeDmaContext {
             map.unmap();
         }
         data
+    }
+}
+
+struct NvmeExternalDmaContext {
+    prp_list: Option<NvmePrpListChain>,
+    data_map: Option<NvmeIommuMapping>,
+}
+
+impl NvmeExternalDmaContext {
+    fn complete(self) {
+        if let Some(prp) = self.prp_list {
+            prp.complete();
+        }
+        if let Some(map) = self.data_map {
+            map.unmap();
+        }
+    }
+}
+
+struct NvmeCancelGuard {
+    canceled: Arc<AtomicBool>,
+    active: bool,
+}
+
+impl NvmeCancelGuard {
+    fn new(canceled: Arc<AtomicBool>) -> Self {
+        Self {
+            canceled,
+            active: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for NvmeCancelGuard {
+    fn drop(&mut self) {
+        if self.active {
+            self.canceled.store(true, Ordering::Release);
+        }
     }
 }
 
@@ -284,6 +338,24 @@ fn prepare_dma_from_cpu_buffer(
         NvmeDmaContext {
             data_dev,
             data_guard,
+            prp_list,
+            data_map,
+        },
+        data_addr,
+        prp2,
+    ))
+}
+
+fn prepare_dma_from_kapi_buffer(
+    buffer: &DmaBuffer,
+) -> FsResult<(NvmeExternalDmaContext, u64, u64)> {
+    let alloc_len = buffer.size();
+    let data_phys = buffer.physical_address();
+    let device = crate::io::nvme::iommu_device();
+    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    Ok((
+        NvmeExternalDmaContext {
             prp_list,
             data_map,
         },
@@ -1373,6 +1445,13 @@ impl DirectBlockHandle {
         }
     }
 
+    fn io_device(&self) -> IoDeviceId {
+        IoDeviceId::Nvme {
+            controller: 0,
+            namespace: nsid_from_device(self.device_id),
+        }
+    }
+
     /// ブロック読み取り
     pub async fn read_blocks(&self, block_offset: u64, buf: &mut [u8]) -> FsResult<usize> {
         if block_offset >= self.block_count {
@@ -1397,50 +1476,104 @@ impl DirectBlockHandle {
 
         let dma_len = blocks * self.block_size as usize;
         let (ctx, prp1, prp2) = prepare_dma_read(dma_len)?;
-        let core_id = current_cpu();
         let lba = self.start_block + block_offset;
-        let nsid = nsid_from_device(self.device_id);
-
-        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-            // Safety: 現在のコアIDで自身のキューにアクセス
-            unsafe { driver.submit_read(core_id, nsid, lba, blocks as u16, prp1, prp2) }
+        let canceled = Arc::new(AtomicBool::new(false));
+        let mut cancel_guard = NvmeCancelGuard::new(canceled.clone());
+        let buf_ptr = buf.as_mut_ptr();
+        let buf_len = buf.len();
+        let payload = IoPayload::NvmeRw(NvmeRwPayload {
+            lba,
+            blocks: blocks as u16,
+            prp1,
+            prp2,
+            bytes: dma_len,
         });
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+            self.io_device(),
+            IoOperationType::Read,
+            IoPriority::Normal,
+            payload,
+        );
+        let request_id = future.request_id();
 
-        let cid = match result {
-            Some(Ok(cid)) => cid,
-            _ => {
-                let _ = ctx.complete();
-                return Err(FsError::IoError);
+        let hook: CompletionHook = Box::new(move |result| {
+            let data = ctx.complete();
+            if canceled.load(Ordering::Acquire) {
+                return;
             }
-        };
-
-        loop {
-            let completed =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    if !driver.interrupt_mode() {
-                        // Safety: 現在のコアIDで自身のキューにアクセス
-                        unsafe { driver.poll_loop(core_id) };
+            if let IoResult::Success(bytes) = result {
+                let copy_len = bytes.min(dma_len).min(buf_len);
+                if copy_len > 0 {
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(data.as_slice().as_ptr(), buf_ptr, copy_len);
                     }
-                    driver.take_completion(core_id, cid)
-                });
-
-            if completed.is_none() {
-                let _ = ctx.complete();
-                return Err(FsError::IoError);
-            }
-
-            if let Some(Some(cqe)) = completed {
-                if cqe.is_success() {
-                    let data = ctx.complete();
-                    buf[..dma_len].copy_from_slice(&data.as_slice()[..dma_len]);
-                    return Ok(dma_len);
                 }
-
-                let _ = ctx.complete();
-                return Err(FsError::IoError);
             }
+        });
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 
-            crate::task::yield_now().await;
+        let result = future.await;
+        cancel_guard.disarm();
+        match result {
+            Ok(bytes) => Ok(bytes.min(dma_len)),
+            Err(_) => Err(FsError::IoError),
+        }
+    }
+
+    /// DMAバッファへのブロック読み取り
+    pub async fn read_blocks_dma(
+        &self,
+        block_offset: u64,
+        buffer: DmaBuffer,
+    ) -> FsResult<DmaBuffer> {
+        if block_offset >= self.block_count {
+            return Err(FsError::InvalidArgument);
+        }
+
+        if buffer.size() == 0 {
+            return Ok(buffer);
+        }
+
+        if buffer.size() % self.block_size as usize != 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let blocks = buffer.size() / self.block_size as usize;
+        if blocks == 0 {
+            return Ok(buffer);
+        }
+        if blocks > u16::MAX as usize {
+            return Err(FsError::InvalidArgument);
+        }
+        if blocks as u64 > self.block_count - block_offset {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let (ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
+        let lba = self.start_block + block_offset;
+        let payload = IoPayload::NvmeRw(NvmeRwPayload {
+            lba,
+            blocks: blocks as u16,
+            prp1,
+            prp2,
+            bytes: blocks * self.block_size as usize,
+        });
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+            self.io_device(),
+            IoOperationType::Read,
+            IoPriority::Normal,
+            payload,
+        );
+        let request_id = future.request_id();
+        let hook: CompletionHook = Box::new(move |_result| {
+            ctx.complete();
+        });
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
+
+        let result = future.await;
+        match result {
+            Ok(_) => Ok(buffer),
+            Err(_) => Err(FsError::IoError),
         }
     }
 
@@ -1468,84 +1601,104 @@ impl DirectBlockHandle {
 
         let dma_len = blocks * self.block_size as usize;
         let (ctx, prp1, prp2) = prepare_dma_write(buf, dma_len)?;
-        let core_id = current_cpu();
         let lba = self.start_block + block_offset;
-        let nsid = nsid_from_device(self.device_id);
-
-        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-            // Safety: 現在のコアIDで自身のキューにアクセス
-            unsafe { driver.submit_write(core_id, nsid, lba, blocks as u16, prp1, prp2) }
+        let payload = IoPayload::NvmeRw(NvmeRwPayload {
+            lba,
+            blocks: blocks as u16,
+            prp1,
+            prp2,
+            bytes: dma_len,
         });
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+            self.io_device(),
+            IoOperationType::Write,
+            IoPriority::Normal,
+            payload,
+        );
+        let request_id = future.request_id();
+        let hook: CompletionHook = Box::new(move |_result| {
+            let _ = ctx.complete();
+        });
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 
-        let cid = match result {
-            Some(Ok(cid)) => cid,
-            _ => {
-                let _ = ctx.complete();
-                return Err(FsError::IoError);
-            }
-        };
+        let result = future.await;
+        match result {
+            Ok(bytes) => Ok(bytes),
+            Err(_) => Err(FsError::IoError),
+        }
+    }
 
-        loop {
-            let completed =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    if !driver.interrupt_mode() {
-                        // Safety: 現在のコアIDで自身のキューにアクセス
-                        unsafe { driver.poll_loop(core_id) };
-                    }
-                    driver.take_completion(core_id, cid)
-                });
+    /// DMAバッファからのブロック書き込み
+    pub async fn write_blocks_dma(
+        &self,
+        block_offset: u64,
+        buffer: DmaBuffer,
+    ) -> FsResult<DmaBuffer> {
+        if block_offset >= self.block_count {
+            return Err(FsError::InvalidArgument);
+        }
 
-            if completed.is_none() {
-                let _ = ctx.complete();
-                return Err(FsError::IoError);
-            }
+        if buffer.size() == 0 {
+            return Ok(buffer);
+        }
 
-            if let Some(Some(cqe)) = completed {
-                let _ = ctx.complete();
-                return if cqe.is_success() {
-                    Ok(dma_len)
-                } else {
-                    Err(FsError::IoError)
-                };
-            }
+        if buffer.size() % self.block_size as usize != 0 {
+            return Err(FsError::InvalidArgument);
+        }
 
-            crate::task::yield_now().await;
+        let blocks = buffer.size() / self.block_size as usize;
+        if blocks == 0 {
+            return Ok(buffer);
+        }
+        if blocks > u16::MAX as usize {
+            return Err(FsError::InvalidArgument);
+        }
+        if blocks as u64 > self.block_count - block_offset {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let (ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
+        let lba = self.start_block + block_offset;
+        let payload = IoPayload::NvmeRw(NvmeRwPayload {
+            lba,
+            blocks: blocks as u16,
+            prp1,
+            prp2,
+            bytes: blocks * self.block_size as usize,
+        });
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+            self.io_device(),
+            IoOperationType::Write,
+            IoPriority::Normal,
+            payload,
+        );
+        let request_id = future.request_id();
+        let hook: CompletionHook = Box::new(move |_result| {
+            ctx.complete();
+        });
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
+
+        let result = future.await;
+        match result {
+            Ok(_) => Ok(buffer),
+            Err(_) => Err(FsError::IoError),
         }
     }
 
     /// フラッシュ
     pub async fn flush(&self) -> FsResult<()> {
-        let core_id = current_cpu();
-        let nsid = nsid_from_device(self.device_id);
-        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-            // Safety: 現在のコアIDで自身のキューにアクセス
-            unsafe { driver.submit_flush(core_id, nsid) }
-        });
+        let result = crate::io::io_scheduler::hybrid_coordinator()
+            .submit_io_with_payload(
+                self.io_device(),
+                IoOperationType::Flush,
+                IoPriority::High,
+                IoPayload::None,
+            )
+            .await;
 
-        let cid = match result {
-            Some(Ok(cid)) => cid,
-            _ => return Err(FsError::IoError),
-        };
-
-        loop {
-            let completed =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    if !driver.interrupt_mode() {
-                        // Safety: 現在のコアIDで自身のキューにアクセス
-                        unsafe { driver.poll_loop(core_id) };
-                    }
-                    driver.take_completion(core_id, cid)
-                });
-
-            if let Some(Some(cqe)) = completed {
-                return if cqe.is_success() {
-                    Ok(())
-                } else {
-                    Err(FsError::IoError)
-                };
-            }
-
-            crate::task::yield_now().await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(_) => Err(FsError::IoError),
         }
     }
 
@@ -1580,50 +1733,27 @@ impl DirectBlockHandle {
 
         let device = crate::io::nvme::iommu_device();
         let (prp1, prp_map) = map_nvme_iommu(device, dsm.phys_addr().as_u64(), dsm.len())?;
-        let mut prp_map = prp_map;
+        let prp_map = prp_map;
         let (dev, guard) = dsm.start_dma();
-        let core_id = current_cpu();
-        let nsid = nsid_from_device(self.device_id);
-
-        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-            // Safety: 現在のコアIDで自身のキューにアクセス
-            unsafe { driver.submit_dataset_management(core_id, nsid, 0, prp1) }
+        let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+            self.io_device(),
+            IoOperationType::Custom(0),
+            IoPriority::High,
+            IoPayload::NvmeDsm(NvmeDsmPayload { prp1, nr: 0 }),
+        );
+        let request_id = future.request_id();
+        let hook: CompletionHook = Box::new(move |_result| {
+            let _ = guard.complete(dev);
+            if let Some(map) = prp_map {
+                map.unmap();
+            }
         });
+        crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
 
-        let cid = match result {
-            Some(Ok(cid)) => cid,
-            _ => {
-                let _ = guard.complete(dev);
-                if let Some(map) = prp_map.take() {
-                    map.unmap();
-                }
-                return Err(FsError::IoError);
-            }
-        };
-
-        loop {
-            let completed =
-                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                    if !driver.interrupt_mode() {
-                        // Safety: 現在のコアIDで自身のキューにアクセス
-                        unsafe { driver.poll_loop(core_id) };
-                    }
-                    driver.take_completion(core_id, cid)
-                });
-
-            if let Some(Some(cqe)) = completed {
-                let _ = guard.complete(dev);
-                if let Some(map) = prp_map.take() {
-                    map.unmap();
-                }
-                return if cqe.is_success() {
-                    Ok(())
-                } else {
-                    Err(FsError::IoError)
-                };
-            }
-
-            crate::task::yield_now().await;
+        let result = future.await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(_) => Err(FsError::IoError),
         }
     }
 }
