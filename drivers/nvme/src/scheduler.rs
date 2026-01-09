@@ -142,9 +142,15 @@ pub fn register_with_io_scheduler(
     let scheduler = io_scheduler();
     let coordinator = hybrid_coordinator();
 
+    let available = with_driver(|driver| driver.io_queue_count()).unwrap_or(0);
+    if available == 0 {
+        return Err("NVMe driver not initialized or no I/O queues");
+    }
+    let handler_count = num_cores.min(available as u32);
+
     let mut handlers = Vec::new();
 
-    for core_id in 0..num_cores {
+    for core_id in 0..handler_count {
         let device_id = IoDeviceId::Nvme {
             controller: controller_id,
             namespace: namespace_id,

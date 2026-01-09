@@ -366,6 +366,7 @@ impl SystemIntegration {
         }
 
         // Initialize NVMe controllers
+        let mut nvme_controller_id: u8 = 0;
         let nvme_devices = crate::io::pci::find_by_class(0x01, 0x08);
         for dev in nvme_devices {
             self.log(&alloc::format!(
@@ -377,6 +378,56 @@ impl SystemIntegration {
             register_pci_dma_width(&dev, 64);
             dev.enable_bus_master();
             dev.enable_memory_space();
+
+            let iommu_device = crate::io::iommu::types::DeviceId::new(
+                dev.segment,
+                dev.bdf.bus(),
+                dev.bdf.device(),
+                dev.bdf.function(),
+            );
+            crate::io::nvme::set_iommu_device(iommu_device);
+
+            if crate::io::nvme::with_driver(|_| ()).is_some() {
+                self.log("    NVMe driver already initialized, skipping");
+                continue;
+            }
+
+            if let Some(bar0) = dev.bars[0] {
+                let bar0_phys = bar0.base();
+                let bar0_virt =
+                    crate::memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0_phys))
+                        .as_u64();
+                let num_cores = crate::smp::cpu_count();
+
+                match crate::io::nvme::init_nvme_polling(bar0_virt, num_cores) {
+                    Ok(()) => {
+                        self.log("    NVMe driver initialized (polling)");
+                        let apic_id = crate::io::apic::local_apic().id() as u32;
+                        let core_id = crate::smp::current_cpu();
+                        crate::io::nvme::per_core::register_apic_mapping(apic_id, core_id);
+                        if let Err(e) = crate::io::nvme::register_with_io_scheduler(
+                            nvme_controller_id,
+                            1,
+                            num_cores,
+                        ) {
+                            self.log(&alloc::format!(
+                                "    NVMe IoScheduler registration failed: {}",
+                                e
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        self.log(&alloc::format!(
+                            "    NVMe driver init failed: {}",
+                            e
+                        ));
+                    }
+                }
+            } else {
+                self.log("    NVMe controller found but BAR0 is missing");
+            }
+
+            nvme_controller_id = nvme_controller_id.wrapping_add(1);
         }
 
         // Initialize HDA Audio

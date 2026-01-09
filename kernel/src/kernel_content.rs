@@ -5,7 +5,7 @@ extern crate alloc;
 
 // use alloc::string::String;
 // use core::panic::PanicInfo;
-use boot_proto::ExoBootInfo;
+use boot_proto::{ExoBootInfo, EXO_BOOT_INFO_VERSION};
 
 use log::{debug, error, info, warn};
 
@@ -165,7 +165,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     // Limine protocol check removed.
     // Verify ExoBootInfo version if necessary.
     io::log::early_print("[BOOT] Booted via ExoLoader!\n");
-    if boot_info.version != 1 {
+    if boot_info.version != EXO_BOOT_INFO_VERSION {
         io::log::early_print("[BOOT] WARNING: Protocol version mismatch\n");
     }
 

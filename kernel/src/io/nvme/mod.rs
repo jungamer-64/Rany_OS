@@ -24,9 +24,29 @@
 
 #![allow(dead_code)]
 
+use spin::Mutex;
+
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+
 // Kernel-local modules (depend on kernel's io_scheduler)
 pub mod driver;
 pub mod scheduler;
+
+// ============================================================================
+// IOMMU Device Registration (Kernel-only)
+// ============================================================================
+
+static NVME_IOMMU_DEVICE: Mutex<Option<IommuDeviceId>> = Mutex::new(None);
+
+/// Register NVMe device ID for IOMMU mapping
+pub fn set_iommu_device(device: IommuDeviceId) {
+    *NVME_IOMMU_DEVICE.lock() = Some(device);
+}
+
+/// Get NVMe device ID for IOMMU mapping
+pub fn iommu_device() -> Option<IommuDeviceId> {
+    *NVME_IOMMU_DEVICE.lock()
+}
 
 // Re-export modules from nvme_driver
 pub use nvme_driver::async_io;

@@ -37,6 +37,7 @@ pub mod framebuffer;
 #[cfg(not(any(test, feature = "bench")))]
 pub mod global;
 pub mod mmio;
+pub mod packer;
 pub mod psf;
 
 // 既存のサブモジュール

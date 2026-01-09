@@ -1,5 +1,5 @@
 // ============================================================================
-// src/graphics/framebuffer.rs - Framebuffer Implementation
+// kernel/src/graphics/framebuffer.rs - Framebuffer Implementation
 // ============================================================================
 //!
 //! フレームバッファ描画実装
@@ -63,8 +63,9 @@ impl Framebuffer {
     }
     /// Call scalar packer directly for micro-benchmarks
     pub fn bench_pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8]) {
-        Self::pack_rgba_to_bgr24_scalar(src, dst);
+        Self::pack_rgba_to_bgr24_scalar(src, dst, true); // Default to BGR for backward compat
     }
+
 
     /// Bench-only: get the current sfence call count recorded by hal::mmio
     #[cfg(feature = "bench")]
@@ -297,7 +298,31 @@ macro_rules! simd_pack_dispatch {
             #[allow(unused_mut)]
             let mut mode = PACKER_MODE.load(Ordering::Relaxed);
 
-            // Environment override logic
+            if mode == 0 {
+                // Runtime detection logic
+                let mut app_mode = 1u8; // Default scalar
+
+                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+                {
+                    #[cfg(feature = "std")]
+                    {
+                        if std::is_x86_feature_detected!("avx2") { app_mode = 3; }
+                        else if std::is_x86_feature_detected!("ssse3") { app_mode = 2; }
+                    }
+                    #[cfg(not(feature = "std"))]
+                    {
+                        // Use kernel HAL detection
+                        use crate::hal::mmio;
+                        if mmio::get_simd_level() >= mmio::simd_level::AVX2 { app_mode = 3; }
+                        else if mmio::get_simd_level() >= mmio::simd_level::SSSE3 { app_mode = 2; }
+                    }
+                }
+                #[cfg(target_arch = "aarch64")]
+                {
+                    if cfg!(target_feature = "neon") { app_mode = 4; }
+                }
+
+                // Environment override logic (std only)
                 #[cfg(feature = "std")]
                 if let Ok(val) = std::env::var("RANY_PACKER") {
                     let low = val.to_ascii_lowercase();
@@ -309,25 +334,17 @@ macro_rules! simd_pack_dispatch {
                         s => s.parse::<u8>().ok(),
                     };
                     if let Some(f) = forced {
-                        PACKER_MODE.store(f, Ordering::Relaxed);
-                        mode = f;
+                        // CRITICAL: Clamp forced mode to detected limits to avoid UB
+                        // (e.g. executing AVX2 instructions on non-AVX2 CPU)
+                        if f > app_mode {
+                            app_mode = app_mode; // Fallback to safe max
+                        } else {
+                            app_mode = f;
+                        }
                     }
-
-            }
-
-            if mode == 0 {
-                // Runtime detection logic
-                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                {
-                    if cfg!(target_feature = "avx2") { mode = 3; }
-                    else if cfg!(target_feature = "ssse3") { mode = 2; }
-                    else { mode = 1; }
                 }
-                #[cfg(target_arch = "aarch64")]
-                {
-                    if cfg!(target_feature = "neon") { mode = 4; }
-                    else { mode = 1; }
-                }
+
+                mode = app_mode;
                 PACKER_MODE.store(mode, Ordering::Relaxed);
             }
 
@@ -347,7 +364,7 @@ macro_rules! simd_pack_dispatch {
                     // NEON
                     Framebuffer::$simd_fn_neon($src, $dst, $len $(, $extra_args)*)
                 },
-                _ => Framebuffer::$scalar_fn($src, $dst),
+                _ => Framebuffer::$scalar_fn($src, $dst $(, $extra_args)*),
             }
         }
     };
@@ -368,8 +385,9 @@ pub struct Framebuffer {
     clip: Rect,
     scratch_u8: Vec<u8>,
     scratch_u32: Vec<u32>,
-    /// Dirty rectangle tracking for optimized partial updates
-    dirty_rect: Option<Rect>,
+    /// Dirty rectangle tracking for optimized partial updates.
+    /// Up to 4 disjoint rectangles are tracked; when full, two closest are merged.
+    dirty_rects: [Option<Rect>; 4],
     /// Performance statistics
     pub stats: PerfStats,
 }
@@ -393,7 +411,7 @@ impl Framebuffer {
             clip,
             scratch_u8: Vec::with_capacity(width_usize * 4),
             scratch_u32: Vec::with_capacity(width_usize),
-            dirty_rect: None,
+            dirty_rects: [None, None, None, None],
             stats: PerfStats::default(),
         }
     }
@@ -900,103 +918,22 @@ impl Framebuffer {
         self.counted_sfence();
     }
 
-    /// Pack RGBA byte buffer into BGRA byte buffer. Prefer SIMD (SSSE3) when
-    /// available on x86/x86_64; otherwise use scalar fallback.
-    /// Pack RGBA byte buffer into BGRA byte buffer. Prefer SIMD (SSSE3) when
-    /// available on x86/x86_64; otherwise use scalar fallback.
-    ///
-    /// Note: made an associated function (no &self) so callers can pass a
-    /// mutable borrow of scratch buffers without conflicting with an immutable
-    /// borrow of `self` during method calls.
-    /// Public packer: RGBA -> BGRA. Dispatches to AVX2/SSSE3/NEON implementations
-    /// when available; otherwise falls back to a scalar implementation.
-    /// Pack RGBA byte buffer into BGRA byte buffer. Prefer scalar fallback for now as SIMD is 24-bit focused.
+    /// Pack RGBA byte buffer into BGRA byte buffer.
+    /// Delegates to the packer module which handles SIMD dispatch.
+    #[inline]
     pub fn pack_rgba_to_bgra(src: &[u8], dst: &mut [u8]) {
-        // Determine how many bytes we can safely process
-        let bytes = core::cmp::min(src.len(), dst.len());
-
-        // Small-run fast-path: scalar implementation is cheaper for tiny buffers
-        if bytes < 16 {
-            Self::pack_rgba_to_bgra_scalar(src, dst);
-            return;
-        }
-
-        use core::sync::atomic::Ordering;
-        let mut mode = PACKER_MODE.load(Ordering::Relaxed);
-
-        // Environment override (tests/bench harness may set RANY_PACKER)
-        #[cfg(feature = "std")]
-        if let Ok(val) = std::env::var("RANY_PACKER") {
-            let low = val.to_ascii_lowercase();
-            let forced: Option<u8> = match low.as_str() {
-                "scalar" => Some(1u8),
-                "ssse3" => Some(2u8),
-                "avx2" => Some(3u8),
-                "neon" => Some(4u8),
-                s => s.parse::<u8>().ok(),
-            };
-            if let Some(f) = forced {
-                PACKER_MODE.store(f, Ordering::Relaxed);
-                mode = f;
-            }
-        }
-
-        if mode == 0 {
-            // Runtime detection
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            {
-                if cfg!(target_feature = "avx2") {
-                    mode = 3;
-                } else if cfg!(target_feature = "ssse3") {
-                    mode = 2;
-                } else {
-                    mode = 1;
-                }
-            }
-            #[cfg(target_arch = "aarch64")]
-            {
-                if cfg!(target_feature = "neon") {
-                    mode = 4;
-                } else {
-                    mode = 1;
-                }
-            }
-            PACKER_MODE.store(mode, Ordering::Relaxed);
-        }
-
-        match mode {
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            3 => unsafe { Self::pack_rgba_to_bgra_avx2(src.as_ptr(), dst.as_mut_ptr(), bytes) },
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            2 => unsafe { Self::pack_rgba_to_bgra_ssse3(src.as_ptr(), dst.as_mut_ptr(), bytes) },
-            #[cfg(target_arch = "aarch64")]
-            4 => unsafe { Self::pack_rgba_to_bgra_neon(src.as_ptr(), dst.as_mut_ptr(), bytes) },
-            _ => Self::pack_rgba_to_bgra_scalar(src, dst),
-        }
+        super::packer::pack_rgba_to_bgra(src, dst)
     }
 
     /// Public dispatcher for 24-bit packing (uses SIMD if available)
+    #[inline]
     pub fn pack_rgba_to_bgr24(src: &[u8], dst: &mut [u8], is_bgr: bool) {
-        let pixels = core::cmp::min(src.len() / 4, dst.len() / 3);
-
-        // Small-run fast-path: dispatch overhead can dominate for tiny
-        // pixel counts. Handle these directly with the scalar packer to
-        // reduce overhead and improve micro-benchmark stability.
-        if pixels < 8 {
-            Self::pack_rgba_to_bgr24_scalar(src, dst);
-            return;
-        }
-
-        simd_pack_dispatch!(
-            src,
-            dst,
-            pixels,
-            pack_rgba_to_bgr24_avx2,
-            pack_rgba_to_bgr24_ssse3,
-            pack_rgba_to_bgr24_neon,
-            pack_rgba_to_bgr24_scalar,
-            is_bgr
-        );
+        super::packer::pack_rgba_to_bgr24(src, dst, is_bgr)
+    }
+    /// Scalar packer (public for bench tests)
+    #[inline]
+    pub fn pack_rgba_to_bgra_scalar(src: &[u8], dst: &mut [u8]) {
+        super::packer::pack_rgba_to_bgra_scalar(src, dst)
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -1014,7 +951,9 @@ impl Framebuffer {
                 processed += 8;
             }
         }
-        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..], &mut dst[processed * 3..]);
+        let end_src = pixels * 4;
+        let end_dst = pixels * 3;
+        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -1032,7 +971,9 @@ impl Framebuffer {
                 processed += 8;
             }
         }
-        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..], &mut dst[processed * 3..]);
+        let end_src = pixels * 4;
+        let end_dst = pixels * 3;
+        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
     }
 
     #[cfg(target_arch = "aarch64")]
@@ -1049,64 +990,84 @@ impl Framebuffer {
                 processed += 8;
             }
         }
-        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..], &mut dst[processed * 3..]);
+        let end_src = pixels * 4;
+        let end_dst = pixels * 3;
+        Framebuffer::pack_rgba_to_bgr24_scalar(&src[processed * 4..end_src], &mut dst[processed * 3..end_dst], is_bgr);
     }
 
     #[inline(always)]
-    fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8]) {
-        let len = src.len() / 4;
+    fn pack_rgba_to_bgr24_scalar(src: &[u8], dst: &mut [u8], is_bgr: bool) {
+        // Clamp to safe range based on both src and dst sizes
+        let len = core::cmp::min(src.len() / 4, dst.len() / 3);
         let mut i = 0;
         let mut src_idx = 0;
         let mut dst_off = 0;
 
+        // x86 fast-path: process 4 pixels at a time for BGR output only
+        // (RGB output uses the simple per-pixel loop for clarity)
         #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-        unsafe {
-            let src_ptr = src.as_ptr();
-            let dst_ptr = dst.as_mut_ptr();
-            while i + 3 < len {
-                let p0 = core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32);
-                let p1 = core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32);
-                let p2 = core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32);
-                let p3 = core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32);
+        if is_bgr {
+            unsafe {
+                let src_ptr = src.as_ptr();
+                let dst_ptr = dst.as_mut_ptr();
+                while i + 3 < len {
+                    let p0 = core::ptr::read_unaligned(src_ptr.add(src_idx) as *const u32);
+                    let p1 = core::ptr::read_unaligned(src_ptr.add(src_idx + 4) as *const u32);
+                    let p2 = core::ptr::read_unaligned(src_ptr.add(src_idx + 8) as *const u32);
+                    let p3 = core::ptr::read_unaligned(src_ptr.add(src_idx + 12) as *const u32);
 
-                let b0 = ((p0 >> 16) & 0xFF) as u32;
-                let g0 = ((p0 >> 8) & 0xFF) as u32;
-                let r0 = (p0 & 0xFF) as u32;
-                let b1 = ((p1 >> 16) & 0xFF) as u32;
-                let g1 = ((p1 >> 8) & 0xFF) as u32;
-                let r1 = (p1 & 0xFF) as u32;
-                let b2 = ((p2 >> 16) & 0xFF) as u32;
-                let g2 = ((p2 >> 8) & 0xFF) as u32;
-                let r2 = (p2 & 0xFF) as u32;
-                let b3 = ((p3 >> 16) & 0xFF) as u32;
-                let g3 = ((p3 >> 8) & 0xFF) as u32;
-                let r3 = (p3 & 0xFF) as u32;
+                    let b0 = ((p0 >> 16) & 0xFF) as u32;
+                    let g0 = ((p0 >> 8) & 0xFF) as u32;
+                    let r0 = (p0 & 0xFF) as u32;
+                    let b1 = ((p1 >> 16) & 0xFF) as u32;
+                    let g1 = ((p1 >> 8) & 0xFF) as u32;
+                    let r1 = (p1 & 0xFF) as u32;
+                    let b2 = ((p2 >> 16) & 0xFF) as u32;
+                    let g2 = ((p2 >> 8) & 0xFF) as u32;
+                    let r2 = (p2 & 0xFF) as u32;
+                    let b3 = ((p3 >> 16) & 0xFF) as u32;
+                    let g3 = ((p3 >> 8) & 0xFF) as u32;
+                    let r3 = (p3 & 0xFF) as u32;
 
-                // Pack into three 32-bit words to emit 12 bytes per 4 pixels in
-                // BGR ordering: [b0,g0,r0,b1,g1,r1,b2,g2,r2,b3,g3,r3]
-                let d0 = (b0) | (g0 << 8) | (r0 << 16) | (b1 << 24);
-                let d1 = (g1) | (r1 << 8) | (b2 << 16) | (g2 << 24);
-                let d2 = (r2) | (b3 << 8) | (g3 << 16) | (r3 << 24);
+                    // Pack into three 32-bit words to emit 12 bytes per 4 pixels in
+                    // BGR ordering: [b0,g0,r0,b1,g1,r1,b2,g2,r2,b3,g3,r3]
+                    let d0 = (b0) | (g0 << 8) | (r0 << 16) | (b1 << 24);
+                    let d1 = (g1) | (r1 << 8) | (b2 << 16) | (g2 << 24);
+                    let d2 = (r2) | (b3 << 8) | (g3 << 16) | (r3 << 24);
 
-                core::ptr::write_unaligned(dst_ptr.add(dst_off) as *mut u32, d0);
-                core::ptr::write_unaligned(dst_ptr.add(dst_off + 4) as *mut u32, d1);
-                core::ptr::write_unaligned(dst_ptr.add(dst_off + 8) as *mut u32, d2);
+                    core::ptr::write_unaligned(dst_ptr.add(dst_off) as *mut u32, d0);
+                    core::ptr::write_unaligned(dst_ptr.add(dst_off + 4) as *mut u32, d1);
+                    core::ptr::write_unaligned(dst_ptr.add(dst_off + 8) as *mut u32, d2);
 
-                src_idx += 16;
-                dst_off += 12;
-                i += 4;
+                    src_idx += 16;
+                    dst_off += 12;
+                    i += 4;
+                }
             }
         }
 
-        while i < len {
-            dst[dst_off] = src[src_idx + 2];
-            dst[dst_off + 1] = src[src_idx + 1];
-            dst[dst_off + 2] = src[src_idx];
-            src_idx += 4;
-            dst_off += 3;
-            i += 1;
+        // Per-pixel tail loop (or full loop for RGB / non-x86)
+        if is_bgr {
+            while i < len {
+                dst[dst_off] = src[src_idx + 2];     // B
+                dst[dst_off + 1] = src[src_idx + 1]; // G
+                dst[dst_off + 2] = src[src_idx];     // R
+                src_idx += 4;
+                dst_off += 3;
+                i += 1;
+            }
+        } else {
+            while i < len {
+                dst[dst_off] = src[src_idx];         // R
+                dst[dst_off + 1] = src[src_idx + 1]; // G
+                dst[dst_off + 2] = src[src_idx + 2]; // B
+                src_idx += 4;
+                dst_off += 3;
+                i += 1;
+            }
         }
     }
+
 
     /// Query AVX2 availability once and cache result to avoid repeated
     /// CPUID calls. Only used on x86-family builds and when `std` is
@@ -1313,22 +1274,24 @@ impl Framebuffer {
         let lane0 = _mm256_extracti128_si256(shuffled, 0);
         let lane1 = _mm256_extracti128_si256(shuffled, 1);
 
-        // Store 24 bytes safely without overrunning the destination buffer:
+        // Store 24 bytes safely without overrunning the destination buffer using unaligned writes:
         // - store low 8 bytes of lane0 -> dst[0..7]
+        let val0 = _mm_cvtsi128_si64(lane0);
+        core::ptr::copy_nonoverlapping(&val0 as *const i64 as *const u8, dst, 8);
+
         // - store next 8 bytes of lane0 -> dst[8..15]
-        // - store low 4 bytes of lane1 -> dst[12..15] (overwrite middle)
-        // - store low 8 bytes of lane1 -> dst[16..23]
-        unsafe { _mm_storel_epi64(dst as *mut __m128i, lane0) };
         let lane0_hi = _mm_srli_si128(lane0, 8);
-        unsafe { _mm_storel_epi64(dst.add(8) as *mut __m128i, lane0_hi) };
+        let val1 = _mm_cvtsi128_si64(lane0_hi);
+        core::ptr::copy_nonoverlapping(&val1 as *const i64 as *const u8, dst.add(8), 8);
 
         // low 32 bits of lane1 -> bytes 12..15
         let low32 = _mm_cvtsi128_si32(lane1) as i32;
         unsafe { core::ptr::write_unaligned(dst.add(12) as *mut i32, low32) };
 
         // store bytes 16..23: use lane1 >> 4 bytes so we get r1[4..11]
-        let lane1_shift = _mm_srli_si128(lane1, 4);
-        unsafe { _mm_storel_epi64(dst.add(16) as *mut __m128i, lane1_shift) };
+        let r1_shift = _mm_srli_si128(lane1, 4);
+        let val2 = _mm_cvtsi128_si64(r1_shift);
+        core::ptr::copy_nonoverlapping(&val2 as *const i64 as *const u8, dst.add(16), 8);
     }
 
     /// SSSE3 implementation of 8-pixel RGBA -> 24-byte BGR/RGB compression.
@@ -1352,16 +1315,24 @@ impl Framebuffer {
             let r0 = _mm_shuffle_epi8(v0, mask);
             let r1 = _mm_shuffle_epi8(v1, mask);
 
-            // Store 24 bytes safely as described in AVX2 helper to avoid overruns
-            _mm_storel_epi64(dst as *mut __m128i, r0);
+            // Store 24 bytes safely avoiding alignment requirements of _mm_storel_epi64
+            // (which takes *mut __m128i, expecting 16-byte alignment in Rust debug builds)
+            let val0 = _mm_cvtsi128_si64(r0);
+            core::ptr::copy_nonoverlapping(&val0 as *const i64 as *const u8, dst, 8);
+
             let r0_hi = _mm_srli_si128(r0, 8);
-            _mm_storel_epi64(dst.add(8) as *mut __m128i, r0_hi);
+            let val1 = _mm_cvtsi128_si64(r0_hi);
+            core::ptr::copy_nonoverlapping(&val1 as *const i64 as *const u8, dst.add(8), 8);
+
             let low32 = _mm_cvtsi128_si32(r1) as i32;
             core::ptr::write_unaligned(dst.add(12) as *mut i32, low32);
+
             let r1_shift = _mm_srli_si128(r1, 4);
-            _mm_storel_epi64(dst.add(16) as *mut __m128i, r1_shift);
+            let val2 = _mm_cvtsi128_si64(r1_shift);
+            core::ptr::copy_nonoverlapping(&val2 as *const i64 as *const u8, dst.add(16), 8);
         }
     }
+
 
     /// NEON implementation (aarch64) for packing exactly 8 RGBA pixels into
     /// 24 BGR or RGB bytes. Implemented as a small, unrolled scalar loop for
@@ -1523,6 +1494,12 @@ impl Framebuffer {
     /// Write a run of u32 pixels (color already packed) to destination offset
     fn write_u32_run(&mut self, dst_offset_bytes: usize, run_len_pixels: usize, color_u32: u32) {
         if let Some(ref mut back) = self.back_buffer {
+            // OOB check: prevent silent heap corruption
+            debug_assert!(
+                dst_offset_bytes + run_len_pixels * 4 <= back.len(),
+                "write_u32_run: OOB write ({} + {} > {})",
+                dst_offset_bytes, run_len_pixels * 4, back.len()
+            );
             // Backed by a Vec -> safe to write via slice
             let row_ptr = unsafe { back.as_mut_ptr().add(dst_offset_bytes) } as *mut u32;
             let row_slice = unsafe { core::slice::from_raw_parts_mut(row_ptr, run_len_pixels) };
@@ -1571,11 +1548,16 @@ impl Framebuffer {
         }
     }
 
-    /// Write a run of BGR(3-byte) pixels
+    /// Write a run of 24-bit (3-byte) pixels with format-aware byte ordering.
+    /// For Bgr888: [B,G,R], for Rgb888: [R,G,B]
     fn write_bgr_run(&mut self, dst_offset_bytes: usize, run_len_pixels: usize, color: Color) {
-        let b = color.blue;
-        let g = color.green;
-        let r = color.red;
+        // Determine byte order based on format: BGR = [B,G,R], RGB = [R,G,B]
+        let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
+        let (c0, c1, c2) = if is_bgr {
+            (color.blue, color.green, color.red)
+        } else {
+            (color.red, color.green, color.blue)
+        };
 
         let total = run_len_pixels * 3;
         // Prepare scratch buffer first to avoid holding a mutable borrow to self
@@ -1601,40 +1583,47 @@ impl Framebuffer {
         if self.back_buffer.is_none() && run_len_pixels <= small_bgr_direct_threshold() {
             let addr = self.buffer as usize + dst_offset_bytes;
             if addr != 0 {
-                // Architecture-specific fast-path: on x86-family, if the start
-                // address is 4-byte aligned we can write pairs of pixels using
-                // a single u32 + u16 for every two pixels (6 bytes total). This
-                // reduces volatile write overhead from 6 to 2 per pair.
-                #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-                {
-                    if (addr & 3) == 0 && run_len_pixels >= 2 {
-                        let pairs = run_len_pixels / 2;
-                        let pair_u32 = (b as u32)
-                            | ((g as u32) << 8)
-                            | ((r as u32) << 16)
-                            | ((b as u32) << 24);
-                        let pair_u16 = (g as u16) | ((r as u16) << 8);
-                        let mut off = addr;
-                        for _ in 0..pairs {
-                            mmio::mmio_write_u32(off, pair_u32);
-                            mmio::mmio_write_u16(off + 4, pair_u16);
-                            off += 6;
-                        }
-                        if (run_len_pixels & 1) == 1 {
-                            mmio::volatile_write::<u8>(off, b);
-                            mmio::volatile_write::<u8>(off + 1, g);
-                            mmio::volatile_write::<u8>(off + 2, r);
-                        }
-                        return;
+                // 4-pixel (12-byte) optimization: write as u32 × 3
+                // Pack 4 pixels into 3 u32 words for aligned writes:
+                // p0(c0,c1,c2), p1(c0,c1,c2), p2(c0,c1,c2), p3(c0,c1,c2) = 12 bytes
+                // u32_0 = [c0, c1, c2, c0]  (p0 + p1.c0)
+                // u32_1 = [c1, c2, c0, c1]  (p1.c1c2 + p2.c0c1)
+                // u32_2 = [c2, c0, c1, c2]  (p2.c2 + p3)
+                let u32_0 = (c0 as u32) | ((c1 as u32) << 8) | ((c2 as u32) << 16) | ((c0 as u32) << 24);
+                let u32_1 = (c1 as u32) | ((c2 as u32) << 8) | ((c0 as u32) << 16) | ((c1 as u32) << 24);
+                let u32_2 = (c2 as u32) | ((c0 as u32) << 8) | ((c1 as u32) << 16) | ((c2 as u32) << 24);
+
+                let mut off = addr;
+                let mut remaining = run_len_pixels;
+
+                // Align to 4-byte boundary first (write individual bytes)
+                let misalign = off & 3;
+                if misalign != 0 && remaining > 0 {
+                    let to_align = core::cmp::min((4 - misalign) / 3 + 1, remaining);
+                    for _ in 0..to_align {
+                        mmio::volatile_write::<u8>(off, c0);
+                        mmio::volatile_write::<u8>(off + 1, c1);
+                        mmio::volatile_write::<u8>(off + 2, c2);
+                        off += 3;
+                        remaining -= 1;
                     }
                 }
 
-                // Generic fallback: per-pixel byte writes
-                for i in 0..run_len_pixels {
-                    let off = addr + i * 3;
-                    mmio::volatile_write::<u8>(off, b);
-                    mmio::volatile_write::<u8>(off + 1, g);
-                    mmio::volatile_write::<u8>(off + 2, r);
+                // Now write 4-pixel groups using u32 × 3 (12 bytes = 4 pixels)
+                while remaining >= 4 {
+                    mmio::volatile_write::<u32>(off, u32_0);
+                    mmio::volatile_write::<u32>(off + 4, u32_1);
+                    mmio::volatile_write::<u32>(off + 8, u32_2);
+                    off += 12;
+                    remaining -= 4;
+                }
+
+                // Handle remaining 1-3 pixels with byte writes
+                for _ in 0..remaining {
+                    mmio::volatile_write::<u8>(off, c0);
+                    mmio::volatile_write::<u8>(off + 1, c1);
+                    mmio::volatile_write::<u8>(off + 2, c2);
+                    off += 3;
                 }
                 return;
             }
@@ -1667,6 +1656,9 @@ impl Framebuffer {
             if addr != 0 {
                 let mut remaining = run_len_pixels * 3;
 
+                // Component array for indexed access
+                let comps = [c0, c1, c2];
+
                 // Align to 8-byte boundary by writing up to 7 initial bytes
                 let align8 = addr & 7;
                 let mut to_align_total = 0usize;
@@ -1674,12 +1666,7 @@ impl Framebuffer {
                     let to_align = core::cmp::min(8 - align8, remaining);
                     to_align_total = to_align;
                     for i in 0..to_align {
-                        let comp = match i % 3 {
-                            0 => b,
-                            1 => g,
-                            _ => r,
-                        };
-                        mmio::volatile_write::<u8>(addr + i, comp);
+                        mmio::volatile_write::<u8>(addr + i, comps[i % 3]);
                     }
                     addr += to_align;
                     remaining -= to_align;
@@ -1688,17 +1675,13 @@ impl Framebuffer {
 
                 // Precompute 8-byte patterns for each possible component
                 // starting index (0..2). This allows us to emit correctly
-                // rotated 8-byte patterns for the repeating BGR stream
+                // rotated 8-byte patterns for the repeating stream
                 // without rebuilding the pattern on every iteration.
                 let mut patterns = [0u64; 3];
                 for k in 0..3 {
                     let mut patt = 0u64;
                     for j in 0..8 {
-                        let byte = match (k + j) % 3 {
-                            0 => b,
-                            1 => g,
-                            _ => r,
-                        } as u64;
+                        let byte = comps[(k + j) % 3] as u64;
                         patt |= byte << (8 * j);
                     }
                     patterns[k] = patt;
@@ -1726,12 +1709,7 @@ impl Framebuffer {
 
                 // Handle remaining bytes
                 while remaining > 0 {
-                    let comp = match comp_idx % 3 {
-                        0 => b,
-                        1 => g,
-                        _ => r,
-                    };
-                    mmio::volatile_write::<u8>(addr, comp);
+                    mmio::volatile_write::<u8>(addr, comps[comp_idx % 3]);
                     addr += 1;
                     remaining -= 1;
                     comp_idx = (comp_idx + 1) % 3;
@@ -1745,9 +1723,9 @@ impl Framebuffer {
             // Exponential fill: write first pixel then copy already-filled region
             // repeatedly to build the rest of the buffer. This reduces per-pixel
             // overhead for large fills of a single color.
-            self.scratch_u8[0] = b;
-            self.scratch_u8[1] = g;
-            self.scratch_u8[2] = r;
+            self.scratch_u8[0] = c0;
+            self.scratch_u8[1] = c1;
+            self.scratch_u8[2] = c2;
 
             let mut filled = 1usize;
             while filled < run_len_pixels {
@@ -1767,6 +1745,12 @@ impl Framebuffer {
         }
 
         if let Some(ref mut back) = self.back_buffer {
+            // OOB check: prevent silent heap corruption
+            debug_assert!(
+                dst_offset_bytes + total <= back.len(),
+                "write_bgr_run: OOB write ({} + {} > {})",
+                dst_offset_bytes, total, back.len()
+            );
             unsafe {
                 ptr::copy_nonoverlapping(
                     self.scratch_u8.as_ptr(),
@@ -1780,6 +1764,7 @@ impl Framebuffer {
             self.write_bytes_mmio(addr, &self.scratch_u8[..total]);
         }
     }
+
 
     /// Bench helper: expose targeted BGR run write for micro-bench timing.
     /// Only compiled when the `bench` feature is enabled.
@@ -2092,6 +2077,7 @@ impl Framebuffer {
     }
 
     /// 描画領域を「汚れ」としてマーク
+    /// Uses up to 4 disjoint rects; merges when full to avoid over-expanding.
     fn mark_dirty(&mut self, rect: Rect) {
         // クリップ領域との共通部分をとる
         let draw_rect = match rect.intersection(&self.clip) {
@@ -2103,20 +2089,63 @@ impl Framebuffer {
             return;
         }
 
-        if let Some(current) = self.dirty_rect {
-            // 既存の汚れ領域とマージ（包含する矩形に拡張）
-            self.dirty_rect = Some(current.union(&draw_rect));
-        } else {
-            self.dirty_rect = Some(draw_rect);
+        // Try to merge with an overlapping or adjacent existing rect
+        for slot in self.dirty_rects.iter_mut() {
+            if let Some(existing) = slot {
+                // Check if rects overlap or are adjacent (touching)
+                let merged = existing.union(&draw_rect);
+                let existing_area = existing.width as u64 * existing.height as u64;
+                let draw_area = draw_rect.width as u64 * draw_rect.height as u64;
+                let merged_area = merged.width as u64 * merged.height as u64;
+                
+                // Merge if union doesn't expand area too much (< 1.5x sum of individual areas)
+                if merged_area <= (existing_area + draw_area) * 3 / 2 {
+                    *slot = Some(merged);
+                    return;
+                }
+            }
+        }
+
+        // Try to find an empty slot
+        for slot in self.dirty_rects.iter_mut() {
+            if slot.is_none() {
+                *slot = Some(draw_rect);
+                return;
+            }
+        }
+
+        // All slots full: force merge the two smallest area rects
+        let mut min_combined_area = u64::MAX;
+        let mut merge_pair = (0, 1);
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                if let (Some(a), Some(b)) = (&self.dirty_rects[i], &self.dirty_rects[j]) {
+                    let combined = a.union(b);
+                    let area = combined.width as u64 * combined.height as u64;
+                    if area < min_combined_area {
+                        min_combined_area = area;
+                        merge_pair = (i, j);
+                    }
+                }
+            }
+        }
+
+        // Merge the pair and put the new rect in one of the freed slots
+        let (i, j) = merge_pair;
+        if let (Some(a), Some(b)) = (&self.dirty_rects[i], &self.dirty_rects[j]) {
+            let merged = a.union(b);
+            self.dirty_rects[i] = Some(merged);
+            self.dirty_rects[j] = Some(draw_rect);
         }
     }
 
-    /// 最適化されたバッファ転送
+    /// 最適化されたバッファ転送 - transfers all dirty rects
     pub fn flush_dirty_area(&mut self) {
-        if let Some(rect) = self.dirty_rect.take() {
-            // 全画面ではなく、汚れた部分だけを転送
-            self.stats.flushes += 1;
-            self.blit_rect(rect);
+        for slot in self.dirty_rects.iter_mut() {
+            if let Some(rect) = slot.take() {
+                self.stats.flushes += 1;
+                self.blit_rect(rect);
+            }
         }
     }
 
@@ -2157,9 +2186,9 @@ impl Framebuffer {
                     // a generic memcpy which may be suboptimal for volatile MMIO.
                     match bytes_per_pixel {
                         4 => {
-                            let src_ptr = back.as_ptr().add(offset) as *const u32;
-                            let src_slice = core::slice::from_raw_parts(src_ptr, w);
-                            self.write_u32_slice_mmio(addr, src_slice);
+                            // Use streaming writes + final sfence for 32bpp
+                            let src_bytes = &back[offset..offset + row_bytes];
+                            self.write_bytes_mmio_streaming(addr, src_bytes);
                         }
                         3 => {
                             let src_bytes = &back[offset..offset + row_bytes];
@@ -2174,6 +2203,7 @@ impl Framebuffer {
                         }
                     }
                 }
+                mmio::sfence();
             }
         }
     }
@@ -2268,10 +2298,15 @@ impl Framebuffer {
                     PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => {
                         *(ptr as *mut u32) = color.to_u32();
                     }
-                    PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
+                    PixelFormat::Bgr888 => {
                         *ptr = color.blue;
                         *ptr.add(1) = color.green;
                         *ptr.add(2) = color.red;
+                    }
+                    PixelFormat::Rgb888 => {
+                        *ptr = color.red;
+                        *ptr.add(1) = color.green;
+                        *ptr.add(2) = color.blue;
                     }
                     PixelFormat::Rgb565 => {
                         let r = (color.red as u16 >> 3) & 0x1F;
@@ -2296,11 +2331,17 @@ impl Framebuffer {
                     let pixel_addr = buffer.add(offset) as usize;
                     mmio::mmio_write_u32(pixel_addr, color.to_u32());
                 },
-                PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
+                PixelFormat::Bgr888 => unsafe {
                     let addr = buffer.add(offset) as usize;
                     mmio::volatile_write::<u8>(addr, color.blue);
                     mmio::volatile_write::<u8>(addr + 1, color.green);
                     mmio::volatile_write::<u8>(addr + 2, color.red);
+                },
+                PixelFormat::Rgb888 => unsafe {
+                    let addr = buffer.add(offset) as usize;
+                    mmio::volatile_write::<u8>(addr, color.red);
+                    mmio::volatile_write::<u8>(addr + 1, color.green);
+                    mmio::volatile_write::<u8>(addr + 2, color.blue);
                 },
                 PixelFormat::Rgb565 => unsafe {
                     let r = (color.red as u16 >> 3) & 0x1F;
@@ -2328,10 +2369,16 @@ impl Framebuffer {
                 let pixel = mmio::mmio_read_u32(self.buffer.add(offset) as usize);
                 Color::from_u32(pixel)
             },
-            PixelFormat::Bgr888 | PixelFormat::Rgb888 => unsafe {
+            PixelFormat::Bgr888 => unsafe {
                 let b = mmio::volatile_read::<u8>(self.buffer.add(offset) as usize);
                 let g = mmio::volatile_read::<u8>(self.buffer.add(offset + 1) as usize);
                 let r = mmio::volatile_read::<u8>(self.buffer.add(offset + 2) as usize);
+                Color::new(r, g, b)
+            },
+            PixelFormat::Rgb888 => unsafe {
+                let r = mmio::volatile_read::<u8>(self.buffer.add(offset) as usize);
+                let g = mmio::volatile_read::<u8>(self.buffer.add(offset + 1) as usize);
+                let b = mmio::volatile_read::<u8>(self.buffer.add(offset + 2) as usize);
                 Color::new(r, g, b)
             },
             PixelFormat::Rgb565 => unsafe {
@@ -2374,20 +2421,29 @@ impl Framebuffer {
                 }
             }
             PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
-                let b = color.blue;
-                let g = color.green;
-                let r = color.red;
+                let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
                 let row_bytes = width * 3;
                 // Prepare one scratch row and reuse for every row
                 self.ensure_scratch_u8(row_bytes);
-                // Exponential fill into scratch
-                self.scratch_u8[0] = b;
-                if row_bytes > 1 {
-                    self.scratch_u8[1] = g;
+                // Fill first pixel with correct byte order
+                if is_bgr {
+                    self.scratch_u8[0] = color.blue;
+                    if row_bytes > 1 {
+                        self.scratch_u8[1] = color.green;
+                    }
+                    if row_bytes > 2 {
+                        self.scratch_u8[2] = color.red;
+                    }
+                } else {
+                    self.scratch_u8[0] = color.red;
+                    if row_bytes > 1 {
+                        self.scratch_u8[1] = color.green;
+                    }
+                    if row_bytes > 2 {
+                        self.scratch_u8[2] = color.blue;
+                    }
                 }
-                if row_bytes > 2 {
-                    self.scratch_u8[2] = r;
-                }
+
                 let mut filled = 1usize; // number of pixels filled
                 while filled < width {
                     let copy_pixels = core::cmp::min(filled, width - filled);
@@ -2575,6 +2631,13 @@ impl Framebuffer {
                 }
             }
             3 => {
+                let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
+                let (c0, c1, c2) = if is_bgr {
+                    (color.blue, color.green, color.red)
+                } else {
+                    (color.red, color.green, color.blue)
+                };
+
                 if let Some(_) = self.back_buffer {
                     let base = self.draw_buffer();
                     for i in 0..run_len {
@@ -2582,9 +2645,9 @@ impl Framebuffer {
                         let off = y * stride + x_off * 3;
                         unsafe {
                             let ptr = base.add(off);
-                            ptr::write(ptr, color.blue);
-                            ptr::write(ptr.add(1), color.green);
-                            ptr::write(ptr.add(2), color.red);
+                            ptr::write(ptr, c0);
+                            ptr::write(ptr.add(1), c1);
+                            ptr::write(ptr.add(2), c2);
                         }
                     }
                 } else {
@@ -2592,12 +2655,13 @@ impl Framebuffer {
                     for i in 0..run_len {
                         let y = (start_y as usize) + i;
                         let off = base_addr + y * stride + x_off * 3;
-                        mmio::volatile_write(off, color.blue);
-                        mmio::volatile_write(off + 1, color.green);
-                        mmio::volatile_write(off + 2, color.red);
+                        mmio::volatile_write(off, c0);
+                        mmio::volatile_write(off + 1, c1);
+                        mmio::volatile_write(off + 2, c2);
                     }
                 }
             }
+
             2 => {
                 let r = (color.red as u16 >> 3) & 0x1F;
                 let g = (color.green as u16 >> 2) & 0x3F;
@@ -3125,8 +3189,35 @@ impl Framebuffer {
         let format = self.info.format;
         let bpp = format.bytes_per_pixel() as usize;
         let mut cx = x;
+        let mut need_fence = false; // Track if any MMIO streaming writes occurred
         for c in text.chars() {
             if c == '\n' {
+                continue;
+            }
+
+            // 32-bit Fast Path: fully clipped & opaque
+            // If the character is completely contained within the clip rect, we can
+            // write full rows efficiently without per-pixel checks or separate background fill.
+            let char_w = font.width() as i32;
+            let char_h = font.height() as i32;
+            if bpp == 4 
+                && cx >= self.clip.x && (cx + char_w) <= self.clip.right()
+                && y >= self.clip.y && (y + char_h) <= self.clip.bottom()
+            {
+                // Mark dirty for double-buffering support
+                self.mark_dirty(Rect::new(cx, y, char_w as u32, char_h as u32));
+                
+                let fg_u32 = format.encode_u32(color).unwrap_or(color.to_u32());
+                let bg_u32 = format.encode_u32(bg_color).unwrap_or(bg_color.to_u32());
+                
+                let data = font.glyph(c).unwrap_or(&[0u8; 16]);
+                
+                for (row, &byte) in data.iter().enumerate() {
+                    let offset = ((y + row as i32) as usize * stride) + (cx as usize * 4);
+                    need_fence |= self.write_glyph_row_32bit_nofence(byte, offset, fg_u32, bg_u32);
+                }
+                
+                cx += char_w;
                 continue;
             }
 
@@ -3231,6 +3322,11 @@ impl Framebuffer {
             }
 
             cx += font.width() as i32;
+        }
+
+        // Ensure batched 32-bit writes are visible (once per string, not per char)
+        if need_fence {
+            self.counted_sfence();
         }
     }
 
@@ -3482,6 +3578,7 @@ impl Framebuffer {
             self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
         }
 
+        let mut mmio_written = false;
         for (row, &byte) in glyph.iter().enumerate() {
             let dst_y = y + row as i32;
             if dst_y < self.clip.y || dst_y >= self.clip.bottom() {
@@ -3506,7 +3603,7 @@ impl Framebuffer {
                                 .format
                                 .encode_u32(bg_color)
                                 .unwrap_or(bg_color.to_u32());
-                            self.write_glyph_row_32bit(byte, dst_offset, fg_u32, bg_u32);
+                            mmio_written |= self.write_glyph_row_32bit_nofence(byte, dst_offset, fg_u32, bg_u32);
                             continue;
                         }
                     }
@@ -3572,6 +3669,10 @@ impl Framebuffer {
                 }
             }
         }
+
+        if mmio_written {
+            self.counted_sfence();
+        }
     }
 
     /// 画像描画用のクリッピング計算 helper
@@ -3604,6 +3705,44 @@ impl Framebuffer {
         let src_off_y = (dst_y0 - y) as u32;
 
         Some((draw_rect, src_off_x, src_off_y))
+    }
+
+    /// Write 1 row of an 8px wide glyph (expanded to 32bpp) without issuing sfence.
+    /// Returns true if MMIO streaming writes were used (caller must sfence).
+    #[inline]
+    fn write_glyph_row_32bit_nofence(&mut self, byte: u8, offset: usize, fg: u32, bg: u32) -> bool {
+        // Expand 8 bits to 8 u32 pixels
+        let mut pixels = [bg; 8];
+        if byte != 0 {
+            if byte == 0xFF {
+                pixels = [fg; 8];
+            } else {
+                for i in 0..8 {
+                    if (byte >> (7 - i)) & 1 != 0 {
+                        pixels[i] = fg;
+                    }
+                }
+            }
+        }
+        
+        if let Some(ref mut back) = self.back_buffer {
+            debug_assert!(offset + 32 <= back.len(), "write_glyph_row_32bit_nofence: OOB");
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    pixels.as_ptr() as *const u8, 
+                    back.as_mut_ptr().add(offset), 
+                    32
+                );
+            }
+            false // No MMIO, no sfence needed
+        } else {
+            let addr = self.buffer as usize + offset;
+            unsafe {
+                let bytes = core::slice::from_raw_parts(pixels.as_ptr() as *const u8, 32);
+                mmio::stream_write_bytes(addr, bytes);
+            }
+            true // MMIO streaming used, sfence needed
+        }
     }
 
     /// 32-bit不透明ランの描画

@@ -1,4 +1,6 @@
-//! MMIO Access Optimization
+// ============================================================================
+// kernel/src/graphics/mmio.rs - MMIO Access Optimization
+// ============================================================================
 //!
 //! Provides optimized writers for Memory Mapped I/O, handling alignment and
 //! ensuring efficient bus transactions (e.g. using u64 pair writes).

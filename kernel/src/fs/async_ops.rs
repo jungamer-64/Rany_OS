@@ -23,12 +23,382 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 use spin::Mutex;
+use x86_64::PhysAddr;
 
-use super::vfs::{FileAttr, FsError, FsResult, SeekFrom};
+use super::cache::{page_cache, PAGE_SIZE as CACHE_PAGE_SIZE};
+use super::vfs::{
+    read_inode_by_number, write_inode_by_number, FileAttr, FsError, FsResult, SeekFrom,
+};
 
 // NVMe per-core API
-use crate::nvme::global as nvme_global;
-use crate::task::smp::current_cpu;
+use crate::io::nvme::global as nvme_global;
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
+use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
+use crate::smp::current_cpu;
+
+const NVME_PAGE_SIZE: usize = 4096;
+const NVME_BLOCK_SIZE: u64 = 512;
+
+struct NvmeIommuMapping {
+    device: IommuDeviceId,
+    iova: u64,
+    size: u64,
+}
+
+impl NvmeIommuMapping {
+    fn unmap(self) {
+        let _ = crate::io::iommu::api::unmap_for_device(&self.device, self.iova, self.size);
+    }
+}
+
+struct NvmePrpListPage {
+    dev: TypedDmaSlice<DeviceOwned>,
+    guard: SliceDmaGuard,
+    map: Option<NvmeIommuMapping>,
+    iova: u64,
+}
+
+struct NvmePrpListChain {
+    pages: Vec<NvmePrpListPage>,
+}
+
+impl NvmePrpListChain {
+    fn first_iova(&self) -> u64 {
+        self.pages.first().map(|page| page.iova).unwrap_or(0)
+    }
+
+    fn complete(self) {
+        for page in self.pages {
+            let _ = page.guard.complete(page.dev);
+            if let Some(map) = page.map {
+                map.unmap();
+            }
+        }
+    }
+}
+
+struct NvmeDmaContext {
+    data_dev: TypedDmaSlice<DeviceOwned>,
+    data_guard: SliceDmaGuard,
+    prp_list: Option<NvmePrpListChain>,
+    data_map: Option<NvmeIommuMapping>,
+}
+
+impl NvmeDmaContext {
+    fn complete(self) -> TypedDmaSlice<CpuOwned> {
+        if let Some(prp) = self.prp_list {
+            prp.complete();
+        }
+        let data = self.data_guard.complete(self.data_dev);
+        if let Some(map) = self.data_map {
+            map.unmap();
+        }
+        data
+    }
+}
+
+fn align_up(value: usize, align: usize) -> usize {
+    (value + align - 1) & !(align - 1)
+}
+
+fn map_nvme_iommu(
+    device: Option<IommuDeviceId>,
+    phys_addr: u64,
+    size: usize,
+) -> FsResult<(u64, Option<NvmeIommuMapping>)> {
+    if !crate::io::iommu::api::is_iommu_enabled() {
+        if crate::io::iommu::api::is_iommu_required() {
+            return Err(FsError::IoError);
+        }
+        if !crate::io::iommu::api::is_unsafe_identity_mapping_allowed() {
+            return Err(FsError::IoError);
+        }
+        return Ok((phys_addr, None));
+    }
+
+    let device = device.ok_or(FsError::IoError)?;
+    let map_len = align_up(size, NVME_PAGE_SIZE);
+    #[allow(deprecated)]
+    let iova = unsafe {
+        crate::io::iommu::api::raw::map_for_device(&device, PhysAddr::new(phys_addr), map_len as u64)
+    }
+    .map_err(|_| FsError::IoError)?;
+
+    Ok((
+        iova,
+        Some(NvmeIommuMapping {
+            device,
+            iova,
+            size: map_len as u64,
+        }),
+    ))
+}
+
+fn build_prp_list(
+    device: Option<IommuDeviceId>,
+    base_addr: u64,
+    len: usize,
+) -> FsResult<(u64, Option<NvmePrpListChain>)> {
+    if len == 0 {
+        return Err(FsError::InvalidArgument);
+    }
+
+    let pages = (len + NVME_PAGE_SIZE - 1) / NVME_PAGE_SIZE;
+    if pages <= 1 {
+        return Ok((0, None));
+    }
+    if pages == 2 {
+        return Ok((base_addr + NVME_PAGE_SIZE as u64, None));
+    }
+
+    let total_entries = pages - 1;
+    let mut remaining = total_entries;
+    let mut list_buffers = Vec::new();
+
+    while remaining > 0 {
+        let list =
+            TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE).ok_or(FsError::NoSpace)?;
+        list_buffers.push(list);
+
+        if remaining > 512 {
+            remaining = remaining.saturating_sub(511);
+        } else {
+            remaining = 0;
+        }
+    }
+
+    let mut list_iovas = Vec::with_capacity(list_buffers.len());
+    let mut list_maps = Vec::with_capacity(list_buffers.len());
+    for list in &list_buffers {
+        let list_phys = list.phys_addr().as_u64();
+        let (list_addr, list_map) = map_nvme_iommu(device, list_phys, NVME_PAGE_SIZE)?;
+        list_iovas.push(list_addr);
+        list_maps.push(list_map);
+    }
+
+    let mut filled = 0usize;
+    for idx in 0..list_buffers.len() {
+        let remaining_entries = total_entries - filled;
+        let needs_chain = remaining_entries > 512;
+        let data_capacity = if needs_chain {
+            511
+        } else {
+            remaining_entries
+        };
+
+        let entries = unsafe {
+            core::slice::from_raw_parts_mut(
+                list_buffers[idx].as_mut_slice().as_mut_ptr() as *mut u64,
+                NVME_PAGE_SIZE / core::mem::size_of::<u64>(),
+            )
+        };
+
+        for j in 0..data_capacity {
+            entries[j] = base_addr + ((filled + j + 1) * NVME_PAGE_SIZE) as u64;
+        }
+
+        if needs_chain {
+            let next_iova = *list_iovas
+                .get(idx + 1)
+                .ok_or(FsError::InvalidArgument)?;
+            entries[511] = next_iova;
+        }
+
+        filled += data_capacity;
+    }
+
+    let mut pages = Vec::with_capacity(list_buffers.len());
+    for ((list, map), iova) in list_buffers
+        .into_iter()
+        .zip(list_maps)
+        .zip(list_iovas)
+    {
+        let (dev, guard) = list.start_dma();
+        pages.push(NvmePrpListPage {
+            dev,
+            guard,
+            map,
+            iova,
+        });
+    }
+
+    let chain = NvmePrpListChain { pages };
+    let prp2 = chain.first_iova();
+    Ok((prp2, Some(chain)))
+}
+
+fn prepare_dma_read(len: usize) -> FsResult<(NvmeDmaContext, u64, u64)> {
+    let alloc_len = align_up(len, NVME_PAGE_SIZE);
+    let data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(FsError::NoSpace)?;
+    let data_phys = data.phys_addr().as_u64();
+    let device = crate::io::nvme::iommu_device();
+    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    let (data_dev, data_guard) = data.start_dma();
+    Ok((
+        NvmeDmaContext {
+            data_dev,
+            data_guard,
+            prp_list,
+            data_map,
+        },
+        data_addr,
+        prp2,
+    ))
+}
+
+fn prepare_dma_write(buf: &[u8], dma_len: usize) -> FsResult<(NvmeDmaContext, u64, u64)> {
+    let alloc_len = align_up(dma_len, NVME_PAGE_SIZE);
+    let mut data = TypedDmaSlice::<CpuOwned>::new(alloc_len).ok_or(FsError::NoSpace)?;
+    data.as_mut_slice()[..buf.len()].copy_from_slice(buf);
+    if alloc_len > buf.len() {
+        data.as_mut_slice()[buf.len()..].fill(0);
+    }
+    let data_phys = data.phys_addr().as_u64();
+    let device = crate::io::nvme::iommu_device();
+    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    let (data_dev, data_guard) = data.start_dma();
+    Ok((
+        NvmeDmaContext {
+            data_dev,
+            data_guard,
+            prp_list,
+            data_map,
+        },
+        data_addr,
+        prp2,
+    ))
+}
+
+fn prepare_dma_from_cpu_buffer(
+    data: TypedDmaSlice<CpuOwned>,
+) -> FsResult<(NvmeDmaContext, u64, u64)> {
+    let alloc_len = data.len();
+    let data_phys = data.phys_addr().as_u64();
+    let device = crate::io::nvme::iommu_device();
+    let (data_addr, data_map) = map_nvme_iommu(device, data_phys, alloc_len)?;
+    let (prp2, prp_list) = build_prp_list(device, data_addr, alloc_len)?;
+    let (data_dev, data_guard) = data.start_dma();
+    Ok((
+        NvmeDmaContext {
+            data_dev,
+            data_guard,
+            prp_list,
+            data_map,
+        },
+        data_addr,
+        prp2,
+    ))
+}
+
+fn nsid_from_device(device_id: u64) -> u32 {
+    let nsid = device_id as u32;
+    if nsid == 0 {
+        1
+    } else {
+        nsid
+    }
+}
+
+fn nvme_block_size(device_id: u64) -> u64 {
+    let nsid = nsid_from_device(device_id);
+    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+        driver.namespace_block_size(nsid) as u64
+    })
+    .unwrap_or(NVME_BLOCK_SIZE)
+}
+
+fn read_via_page_cache(
+    ino: u64,
+    offset: u64,
+    buf: &mut [u8],
+    file_size: u64,
+) -> FsResult<usize> {
+    let cache = page_cache();
+    let mut total = 0;
+
+    while total < buf.len() {
+        let cur_offset = offset + total as u64;
+        let page_num = cur_offset / CACHE_PAGE_SIZE as u64;
+        let page_offset = (cur_offset % CACHE_PAGE_SIZE as u64) as usize;
+        let chunk = (CACHE_PAGE_SIZE - page_offset).min(buf.len() - total);
+
+        if let Some(read) = cache.read(ino, cur_offset, &mut buf[total..total + chunk], file_size) {
+            total += read;
+            continue;
+        }
+
+        let page_start = page_num * CACHE_PAGE_SIZE as u64;
+        let mut page_data = alloc::vec![0u8; CACHE_PAGE_SIZE];
+        if page_start < file_size {
+            let read_len =
+                read_inode_by_number(ino, page_start, &mut page_data).map_err(|_| FsError::IoError)?;
+            if read_len < CACHE_PAGE_SIZE {
+                page_data[read_len..].fill(0);
+            }
+        }
+
+        let copy_end = page_offset + chunk;
+        buf[total..total + chunk].copy_from_slice(&page_data[page_offset..copy_end]);
+        cache.insert(ino, page_num, page_data, file_size);
+        total += chunk;
+    }
+
+    Ok(total)
+}
+
+fn write_via_page_cache(
+    ino: u64,
+    offset: u64,
+    buf: &[u8],
+    file_size: u64,
+) -> FsResult<usize> {
+    let cache = page_cache();
+    let mut total = 0;
+
+    while total < buf.len() {
+        let cur_offset = offset + total as u64;
+        let page_num = cur_offset / CACHE_PAGE_SIZE as u64;
+        let page_offset = (cur_offset % CACHE_PAGE_SIZE as u64) as usize;
+        let chunk = (CACHE_PAGE_SIZE - page_offset).min(buf.len() - total);
+
+        if let Some(written) = cache.write(ino, cur_offset, &buf[total..total + chunk], file_size)
+        {
+            total += written;
+            continue;
+        }
+
+        let page_start = page_num * CACHE_PAGE_SIZE as u64;
+        let mut page_data = alloc::vec![0u8; CACHE_PAGE_SIZE];
+        let needs_preserve = page_offset != 0 || chunk != CACHE_PAGE_SIZE;
+        if needs_preserve && page_start < file_size {
+            let read_len =
+                read_inode_by_number(ino, page_start, &mut page_data).map_err(|_| FsError::IoError)?;
+            if read_len < CACHE_PAGE_SIZE {
+                page_data[read_len..].fill(0);
+            }
+        }
+
+        let copy_end = page_offset + chunk;
+        page_data[page_offset..copy_end].copy_from_slice(&buf[total..total + chunk]);
+        cache.insert(ino, page_num, page_data, file_size);
+        cache.mark_dirty(ino, page_num);
+        total += chunk;
+    }
+
+    Ok(total)
+}
+
+fn flush_page_cache(ino: u64) -> FsResult<()> {
+    let cache = page_cache();
+    cache
+        .sync_file(ino, |offset, data| {
+            write_inode_by_number(ino, offset, data).map_err(|_| ())
+        })
+        .map_err(|_| FsError::IoError)?;
+    Ok(())
+}
 
 // ============================================================================
 // 非同期I/Oリクエスト
@@ -149,10 +519,12 @@ pub struct AsyncFile {
     writable: bool,
     /// ダイレクトI/O（バイパスキャッシュ）
     direct_io: bool,
-    /// バックエンドデバイスID
+    /// バックエンドデバイスID（NVMe namespace ID）
     device_id: u64,
     /// 開始ブロック（ダイレクトI/O用）
     start_block: u64,
+    /// ブロックサイズ（バイト、ダイレクトI/O用）
+    block_size: u64,
 }
 
 impl AsyncFile {
@@ -167,6 +539,7 @@ impl AsyncFile {
             direct_io: false,
             device_id: 0,
             start_block: 0,
+            block_size: NVME_BLOCK_SIZE,
         }
     }
 
@@ -177,6 +550,7 @@ impl AsyncFile {
             size,
             ..Default::default()
         };
+        let block_size = nvme_block_size(device_id);
 
         Self {
             id,
@@ -187,6 +561,7 @@ impl AsyncFile {
             direct_io: true,
             device_id,
             start_block,
+            block_size,
         }
     }
 
@@ -261,6 +636,9 @@ pub struct AsyncReadFuture<'a> {
     buf: &'a mut [u8],
     started: bool,
     request_id: Option<u64>,
+    dma_ctx: Option<NvmeDmaContext>,
+    dma_user_len: usize,
+    dma_offset: usize,
 }
 
 impl<'a> AsyncReadFuture<'a> {
@@ -270,6 +648,9 @@ impl<'a> AsyncReadFuture<'a> {
             buf,
             started: false,
             request_id: None,
+            dma_ctx: None,
+            dma_user_len: 0,
+            dma_offset: 0,
         }
     }
 }
@@ -307,96 +688,130 @@ impl<'a> Future for AsyncReadFuture<'a> {
             if self.file.direct_io {
                 // NVMeリードコマンド発行（コア固有のNVMeキューを使用）
                 let core_id = current_cpu();
-                const BLOCK_SIZE: u64 = 512;
-                let lba = position / BLOCK_SIZE;
-                let blocks = ((to_read as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE) as u16;
+                let block_size = self.file.block_size;
+                let offset_in_block = (position % block_size) as usize;
+                let total_len = offset_in_block + to_read;
+                let blocks_u64 = (total_len as u64 + block_size - 1) / block_size;
+                if blocks_u64 > u16::MAX as u64 {
+                    return Poll::Ready(Err(FsError::InvalidArgument));
+                }
+                let blocks = blocks_u64 as u16;
+                let dma_len = (blocks as usize) * (block_size as usize);
+                let lba = self.file.start_block + (position / block_size);
+                let nsid = nsid_from_device(self.file.device_id);
 
-                // PRP1: バッファの物理アドレス（仮想→物理変換が必要）
-                // Note: 実運用では適切なDMAメモリ割り当てと物理アドレス変換が必要
-                let prp1 = self.buf.as_ptr() as u64;
-                let prp2 = 0u64; // 単一ページの場合は0
+                let (ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
+                    Ok(v) => v,
+                    Err(e) => return Poll::Ready(Err(e)),
+                };
 
                 // NVMeドライバ経由でリードコマンドを発行
                 let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                     // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.submit_read(core_id, 1, lba, blocks, prp1, prp2) }
+                    unsafe { driver.submit_read(core_id, nsid, lba, blocks, prp1, prp2) }
                 });
 
                 match result {
                     Some(Ok(cid)) => {
                         self.request_id = Some(cid as u64);
-                        // Wakerを登録して後で起こされるようにする
+                        self.dma_ctx = Some(ctx);
+                        self.dma_user_len = to_read;
+                        self.dma_offset = offset_in_block;
                         cx.waker().wake_by_ref();
                         return Poll::Pending;
                     }
                     Some(Err(_)) | None => {
-                        // NVMeが利用不可、フォールバック
-                        self.buf[..to_read].fill(0);
-                        self.file
-                            .position
-                            .fetch_add(to_read as u64, Ordering::Relaxed);
-                        return Poll::Ready(Ok(to_read));
+                        let _ = ctx.complete();
+                        return Poll::Ready(Err(FsError::IoError));
                     }
                 }
             }
 
-            // ページキャッシュ経由（シミュレーション）
-            // 実際にはキャッシュヒット/ミスを処理
-            self.buf[..to_read].fill(0); // プレースホルダー
-
-            // 位置を更新
-            self.file
-                .position
-                .fetch_add(to_read as u64, Ordering::Relaxed);
-
-            return Poll::Ready(Ok(to_read));
+            let file_id = self.file.id;
+            match read_via_page_cache(file_id, position, &mut self.buf[..to_read], size) {
+                Ok(read_len) => {
+                    self.file
+                        .position
+                        .fetch_add(read_len as u64, Ordering::Relaxed);
+                    return Poll::Ready(Ok(read_len));
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
         }
 
-        // リクエストの完了を確認
-        // リクエストの完了を確認 (Reactor Pattern)
+        // リクエストの完了を確認 (Polling/Interrupt対応)
         if let Some(request_id) = self.request_id {
             let core_id = current_cpu();
 
-            // 1. まず完了済みかチェック
             let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                driver.check_completion(core_id, request_id as u16)
+                if !driver.interrupt_mode() {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe { driver.poll_loop(core_id) };
+                }
+                driver.take_completion(core_id, request_id as u16)
             });
 
             if let Some(Some(cqe)) = completed {
                 if cqe.is_success() {
-                    let to_read = self.buf.len();
+                    if let Some(ctx) = self.dma_ctx.take() {
+                        let data = ctx.complete();
+                        let start = self.dma_offset;
+                        let end = start + self.dma_user_len;
+                        self.buf[..self.dma_user_len]
+                            .copy_from_slice(&data.as_slice()[start..end]);
+                    }
                     self.file
                         .position
-                        .fetch_add(to_read as u64, Ordering::Relaxed);
-                    return Poll::Ready(Ok(to_read));
-                } else {
-                    return Poll::Ready(Err(FsError::IoError));
+                        .fetch_add(self.dma_user_len as u64, Ordering::Relaxed);
+                    return Poll::Ready(Ok(self.dma_user_len));
                 }
+
+                if let Some(ctx) = self.dma_ctx.take() {
+                    let _ = ctx.complete();
+                }
+                return Poll::Ready(Err(FsError::IoError));
             }
 
-            // 2. まだならWakerを登録
-            nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                driver.register_waker(core_id, request_id as u16, cx.waker().clone());
-            });
+            let interrupt_mode =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.interrupt_mode()
+                })
+                .unwrap_or(false);
 
-            // 3. 登録中に完了した可能性をダブルチェック
-            let completed_retry = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                driver.check_completion(core_id, request_id as u16)
-            });
+            if interrupt_mode {
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.register_waker(core_id, request_id as u16, cx.waker().clone());
+                });
 
-            if let Some(Some(cqe)) = completed_retry {
-                if cqe.is_success() {
-                    let to_read = self.buf.len();
-                    self.file
-                        .position
-                        .fetch_add(to_read as u64, Ordering::Relaxed);
-                    return Poll::Ready(Ok(to_read));
-                } else {
+                let completed_retry =
+                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                        driver.take_completion(core_id, request_id as u16)
+                    });
+
+                if let Some(Some(cqe)) = completed_retry {
+                    if cqe.is_success() {
+                        if let Some(ctx) = self.dma_ctx.take() {
+                            let data = ctx.complete();
+                            let start = self.dma_offset;
+                            let end = start + self.dma_user_len;
+                            self.buf[..self.dma_user_len]
+                                .copy_from_slice(&data.as_slice()[start..end]);
+                        }
+                        self.file
+                            .position
+                            .fetch_add(self.dma_user_len as u64, Ordering::Relaxed);
+                        return Poll::Ready(Ok(self.dma_user_len));
+                    }
+
+                    if let Some(ctx) = self.dma_ctx.take() {
+                        let _ = ctx.complete();
+                    }
                     return Poll::Ready(Err(FsError::IoError));
                 }
+            } else {
+                cx.waker().wake_by_ref();
             }
 
-            // ISRがWakerを起こすのを待つ
             Poll::Pending
         } else {
             Poll::Ready(Ok(0))
@@ -410,6 +825,27 @@ pub struct AsyncWriteFuture<'a> {
     buf: &'a [u8],
     started: bool,
     request_id: Option<u64>,
+    dma_ctx: Option<NvmeDmaContext>,
+    dma_user_len: usize,
+    unaligned: Option<UnalignedWriteState>,
+}
+
+enum UnalignedWriteState {
+    Reading {
+        ctx: NvmeDmaContext,
+        lba: u64,
+        blocks: u16,
+        offset: usize,
+        len: usize,
+        start_pos: u64,
+    },
+    Writing {
+        ctx: NvmeDmaContext,
+        lba: u64,
+        blocks: u16,
+        len: usize,
+        start_pos: u64,
+    },
 }
 
 impl<'a> AsyncWriteFuture<'a> {
@@ -419,6 +855,87 @@ impl<'a> AsyncWriteFuture<'a> {
             buf,
             started: false,
             request_id: None,
+            dma_ctx: None,
+            dma_user_len: 0,
+            unaligned: None,
+        }
+    }
+
+    fn handle_unaligned_completion(
+        &mut self,
+        state: UnalignedWriteState,
+        cqe: crate::io::nvme::NvmeCompletion,
+        cx: &mut Context<'_>,
+    ) -> Poll<FsResult<usize>> {
+        if !cqe.is_success() {
+            match state {
+                UnalignedWriteState::Reading { ctx, .. }
+                | UnalignedWriteState::Writing { ctx, .. } => {
+                    let _ = ctx.complete();
+                }
+            }
+            return Poll::Ready(Err(FsError::IoError));
+        }
+
+        match state {
+            UnalignedWriteState::Reading {
+                ctx,
+                lba,
+                blocks,
+                offset,
+                len,
+                start_pos,
+            } => {
+                let mut data = ctx.complete();
+                let end = offset + len;
+                if end > data.len() {
+                    return Poll::Ready(Err(FsError::InvalidArgument));
+                }
+                data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
+
+                let (write_ctx, prp1, prp2) = match prepare_dma_from_cpu_buffer(data) {
+                    Ok(v) => v,
+                    Err(e) => return Poll::Ready(Err(e)),
+                };
+
+                let core_id = current_cpu();
+                let nsid = nsid_from_device(self.file.device_id);
+                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe { driver.submit_write(core_id, nsid, lba, blocks, prp1, prp2) }
+                });
+
+                match result {
+                    Some(Ok(cid)) => {
+                        self.request_id = Some(cid as u64);
+                        self.unaligned = Some(UnalignedWriteState::Writing {
+                            ctx: write_ctx,
+                            lba,
+                            blocks,
+                            len,
+                            start_pos,
+                        });
+                        cx.waker().wake_by_ref();
+                        Poll::Pending
+                    }
+                    Some(Err(_)) | None => {
+                        let _ = write_ctx.complete();
+                        Poll::Ready(Err(FsError::IoError))
+                    }
+                }
+            }
+            UnalignedWriteState::Writing { ctx, len, start_pos, .. } => {
+                let _ = ctx.complete();
+                self.file.position.fetch_add(len as u64, Ordering::Relaxed);
+                {
+                    let mut attr = self.file.attr.lock();
+                    let new_end = start_pos + len as u64;
+                    if new_end > attr.size {
+                        attr.size = new_end;
+                    }
+                }
+                Poll::Ready(Ok(len))
+            }
         }
     }
 }
@@ -445,30 +962,218 @@ impl<'a> Future for AsyncWriteFuture<'a> {
             if self.file.direct_io {
                 // NVMeライトコマンド発行（コア固有のNVMeキューを使用）
                 let core_id = current_cpu();
-                const BLOCK_SIZE: u64 = 512;
-                let lba = position / BLOCK_SIZE;
-                let blocks = ((len as u64 + BLOCK_SIZE - 1) / BLOCK_SIZE) as u16;
+                let block_size = self.file.block_size;
+                let offset_in_block = (position % block_size) as usize;
+                if offset_in_block != 0 || (len as u64) % block_size != 0 {
+                    let end_pos = position + len as u64;
+                    let aligned_start = position / block_size;
+                    let aligned_end =
+                        (end_pos + block_size - 1) / block_size;
+                    let blocks_u64 = aligned_end.saturating_sub(aligned_start);
 
-                // PRP1: バッファの物理アドレス（仮想→物理変換が必要）
-                // Note: 実運用では適切なDMAメモリ割り当てと物理アドレス変換が必要
-                let prp1 = self.buf.as_ptr() as u64;
-                let prp2 = 0u64; // 単一ページの場合は0
+                    if blocks_u64 > u16::MAX as u64 {
+                        return Poll::Ready(Err(FsError::InvalidArgument));
+                    }
+
+                    let blocks = blocks_u64 as u16;
+                    let dma_len = (blocks as usize) * (block_size as usize);
+                    let lba = self.file.start_block + aligned_start;
+                    let nsid = nsid_from_device(self.file.device_id);
+
+                    let (ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
+                        Ok(v) => v,
+                        Err(e) => return Poll::Ready(Err(e)),
+                    };
+
+                    let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                        // Safety: 現在のコアIDで自身のキューにアクセス
+                        unsafe { driver.submit_read(core_id, nsid, lba, blocks, prp1, prp2) }
+                    });
+
+                    match result {
+                        Some(Ok(cid)) => {
+                            self.request_id = Some(cid as u64);
+                            self.unaligned = Some(UnalignedWriteState::Reading {
+                                ctx,
+                                lba,
+                                blocks,
+                                offset: offset_in_block,
+                                len,
+                                start_pos: position,
+                            });
+                            cx.waker().wake_by_ref();
+                            return Poll::Pending;
+                        }
+                        Some(Err(_)) | None => {
+                            let _ = ctx.complete();
+                            return Poll::Ready(Err(FsError::IoError));
+                        }
+                    }
+                }
+
+                let blocks_u64 = len as u64 / block_size;
+                if blocks_u64 > u16::MAX as u64 {
+                    return Poll::Ready(Err(FsError::InvalidArgument));
+                }
+                let blocks = blocks_u64 as u16;
+                let dma_len = (blocks as usize) * (block_size as usize);
+                let lba = self.file.start_block + (position / block_size);
+                let nsid = nsid_from_device(self.file.device_id);
+
+                let (ctx, prp1, prp2) = match prepare_dma_write(self.buf, dma_len) {
+                    Ok(v) => v,
+                    Err(e) => return Poll::Ready(Err(e)),
+                };
 
                 // NVMeドライバ経由でライトコマンドを発行
                 let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
                     // Safety: 現在のコアIDで自身のキューにアクセス
-                    unsafe { driver.submit_write(core_id, 1, lba, blocks, prp1, prp2) }
+                    unsafe { driver.submit_write(core_id, nsid, lba, blocks, prp1, prp2) }
                 });
 
                 match result {
                     Some(Ok(cid)) => {
                         self.request_id = Some(cid as u64);
-                        // Wakerを登録して後で起こされるようにする
+                        self.dma_ctx = Some(ctx);
+                        self.dma_user_len = len;
                         cx.waker().wake_by_ref();
                         return Poll::Pending;
                     }
                     Some(Err(_)) | None => {
-                        // NVMeが利用不可、フォールバック（キャッシュ経由）
+                        let _ = ctx.complete();
+                        return Poll::Ready(Err(FsError::IoError));
+                    }
+                }
+            }
+
+            let file_size = self.file.attr.lock().size;
+            match write_via_page_cache(self.file.id, position, self.buf, file_size) {
+                Ok(written) => {
+                    self.file
+                        .position
+                        .fetch_add(written as u64, Ordering::Relaxed);
+                    {
+                        let mut attr = self.file.attr.lock();
+                        let new_end = position + written as u64;
+                        if new_end > attr.size {
+                            attr.size = new_end;
+                        }
+                    }
+                    return Poll::Ready(Ok(written));
+                }
+                Err(e) => return Poll::Ready(Err(e)),
+            }
+        }
+
+        if let Some(state) = self.unaligned.take() {
+            let core_id = current_cpu();
+            let request_id = match self.request_id {
+                Some(id) => id as u16,
+                None => return Poll::Ready(Err(FsError::IoError)),
+            };
+
+            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                if !driver.interrupt_mode() {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe { driver.poll_loop(core_id) };
+                }
+                driver.take_completion(core_id, request_id)
+            });
+
+            if completed.is_none() {
+                return Poll::Ready(Err(FsError::IoError));
+            }
+
+            if let Some(Some(cqe)) = completed {
+                return self.handle_unaligned_completion(state, cqe, cx);
+            }
+
+            let interrupt_mode =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.interrupt_mode()
+                })
+                .unwrap_or(false);
+
+            if interrupt_mode {
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.register_waker(core_id, request_id, cx.waker().clone());
+                });
+
+                let completed_retry =
+                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                        driver.take_completion(core_id, request_id)
+                    });
+
+                if let Some(Some(cqe)) = completed_retry {
+                    return self.handle_unaligned_completion(state, cqe, cx);
+                }
+            } else {
+                cx.waker().wake_by_ref();
+            }
+
+            self.unaligned = Some(state);
+            return Poll::Pending;
+        }
+
+        // 完了確認 (Polling/Interrupt対応)
+        if let Some(request_id) = self.request_id {
+            let core_id = current_cpu();
+
+            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                if !driver.interrupt_mode() {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe { driver.poll_loop(core_id) };
+                }
+                driver.take_completion(core_id, request_id as u16)
+            });
+
+            if let Some(Some(cqe)) = completed {
+                if cqe.is_success() {
+                    if let Some(ctx) = self.dma_ctx.take() {
+                        let _ = ctx.complete();
+                    }
+                    let position = self.file.position.load(Ordering::Relaxed);
+                    let len = self.dma_user_len;
+                    self.file.position.fetch_add(len as u64, Ordering::Relaxed);
+                    {
+                        let mut attr = self.file.attr.lock();
+                        let new_end = position + len as u64;
+                        if new_end > attr.size {
+                            attr.size = new_end;
+                        }
+                    }
+                    return Poll::Ready(Ok(len));
+                }
+
+                if let Some(ctx) = self.dma_ctx.take() {
+                    let _ = ctx.complete();
+                }
+                return Poll::Ready(Err(FsError::IoError));
+            }
+
+            let interrupt_mode =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.interrupt_mode()
+                })
+                .unwrap_or(false);
+
+            if interrupt_mode {
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.register_waker(core_id, request_id as u16, cx.waker().clone());
+                });
+
+                let completed_retry =
+                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                        driver.take_completion(core_id, request_id as u16)
+                    });
+
+                if let Some(Some(cqe)) = completed_retry {
+                    if cqe.is_success() {
+                        if let Some(ctx) = self.dma_ctx.take() {
+                            let _ = ctx.complete();
+                        }
+                        let position = self.file.position.load(Ordering::Relaxed);
+                        let len = self.dma_user_len;
                         self.file.position.fetch_add(len as u64, Ordering::Relaxed);
                         {
                             let mut attr = self.file.attr.lock();
@@ -479,82 +1184,16 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                         }
                         return Poll::Ready(Ok(len));
                     }
-                }
-            }
 
-            // ページキャッシュ経由（シミュレーション）
-            // 位置を更新
-            self.file.position.fetch_add(len as u64, Ordering::Relaxed);
-
-            // ファイルサイズを更新
-            {
-                let mut attr = self.file.attr.lock();
-                let new_end = position + len as u64;
-                if new_end > attr.size {
-                    attr.size = new_end;
-                }
-            }
-
-            return Poll::Ready(Ok(len));
-        }
-
-        // 完了確認
-        // 完了確認 (Reactor Pattern)
-        if let Some(request_id) = self.request_id {
-            let core_id = current_cpu();
-
-            // 1. Check completion
-            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                driver.check_completion(core_id, request_id as u16)
-            });
-
-            if let Some(Some(cqe)) = completed {
-                if cqe.is_success() {
-                    let position = self.file.position.load(Ordering::Relaxed);
-                    let len = self.buf.len();
-                    self.file.position.fetch_add(len as u64, Ordering::Relaxed);
-                    {
-                        let mut attr = self.file.attr.lock();
-                        let new_end = position + len as u64;
-                        if new_end > attr.size {
-                            attr.size = new_end;
-                        }
+                    if let Some(ctx) = self.dma_ctx.take() {
+                        let _ = ctx.complete();
                     }
-                    return Poll::Ready(Ok(len));
-                } else {
                     return Poll::Ready(Err(FsError::IoError));
                 }
+            } else {
+                cx.waker().wake_by_ref();
             }
 
-            // 2. Register Waker
-            nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                driver.register_waker(core_id, request_id as u16, cx.waker().clone());
-            });
-
-            // 3. Double check
-            let completed_retry = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
-                driver.check_completion(core_id, request_id as u16)
-            });
-
-            if let Some(Some(cqe)) = completed_retry {
-                if cqe.is_success() {
-                    let position = self.file.position.load(Ordering::Relaxed);
-                    let len = self.buf.len();
-                    self.file.position.fetch_add(len as u64, Ordering::Relaxed);
-                    {
-                        let mut attr = self.file.attr.lock();
-                        let new_end = position + len as u64;
-                        if new_end > attr.size {
-                            attr.size = new_end;
-                        }
-                    }
-                    return Poll::Ready(Ok(len));
-                } else {
-                    return Poll::Ready(Err(FsError::IoError));
-                }
-            }
-
-            // Sleep
             Poll::Pending
         } else {
             Poll::Ready(Ok(0))
@@ -566,6 +1205,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
 pub struct AsyncFlushFuture<'a> {
     file: &'a AsyncFile,
     started: bool,
+    request_id: Option<u64>,
 }
 
 impl<'a> AsyncFlushFuture<'a> {
@@ -573,6 +1213,7 @@ impl<'a> AsyncFlushFuture<'a> {
         Self {
             file,
             started: false,
+            request_id: None,
         }
     }
 }
@@ -580,18 +1221,81 @@ impl<'a> AsyncFlushFuture<'a> {
 impl<'a> Future for AsyncFlushFuture<'a> {
     type Output = FsResult<()>;
 
-    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.started {
             self.started = true;
 
             if self.file.direct_io {
-                // ダイレクトI/Oの場合、デバイスフラッシュコマンドを発行
-                // NVMe Flushコマンド: NSIDに対してキャッシュされたデータをメディアに書き込み
-                // crate::io::nvme::commands::NvmeCommand::flush(cid, nsid)
+                let core_id = current_cpu();
+                let nsid = nsid_from_device(self.file.device_id);
+                let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe { driver.submit_flush(core_id, nsid) }
+                });
+
+                match result {
+                    Some(Ok(cid)) => {
+                        self.request_id = Some(cid as u64);
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    Some(Err(_)) | None => {
+                        return Poll::Ready(Err(FsError::IoError));
+                    }
+                }
             }
 
-            // シミュレーション: 即座に完了
-            return Poll::Ready(Ok(()));
+            return match flush_page_cache(self.file.id) {
+                Ok(()) => Poll::Ready(Ok(())),
+                Err(e) => Poll::Ready(Err(e)),
+            };
+        }
+
+        if let Some(request_id) = self.request_id {
+            let core_id = current_cpu();
+
+            let completed = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                if !driver.interrupt_mode() {
+                    // Safety: 現在のコアIDで自身のキューにアクセス
+                    unsafe { driver.poll_loop(core_id) };
+                }
+                driver.take_completion(core_id, request_id as u16)
+            });
+
+            if let Some(Some(cqe)) = completed {
+                if cqe.is_success() {
+                    return Poll::Ready(Ok(()));
+                }
+                return Poll::Ready(Err(FsError::IoError));
+            }
+
+            let interrupt_mode =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.interrupt_mode()
+                })
+                .unwrap_or(false);
+
+            if interrupt_mode {
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    driver.register_waker(core_id, request_id as u16, cx.waker().clone());
+                });
+
+                let completed_retry =
+                    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                        driver.take_completion(core_id, request_id as u16)
+                    });
+
+                if let Some(Some(cqe)) = completed_retry {
+                    if cqe.is_success() {
+                        return Poll::Ready(Ok(()));
+                    }
+                    return Poll::Ready(Err(FsError::IoError));
+                }
+            } else {
+                cx.waker().wake_by_ref();
+            }
+
+            return Poll::Pending;
         }
 
         Poll::Ready(Ok(()))
@@ -602,6 +1306,7 @@ impl<'a> Future for AsyncFlushFuture<'a> {
 pub struct AsyncSyncFuture<'a> {
     file: &'a AsyncFile,
     started: bool,
+    flush: Option<AsyncFlushFuture<'a>>,
 }
 
 impl<'a> AsyncSyncFuture<'a> {
@@ -609,6 +1314,7 @@ impl<'a> AsyncSyncFuture<'a> {
         Self {
             file,
             started: false,
+            flush: None,
         }
     }
 }
@@ -616,20 +1322,21 @@ impl<'a> AsyncSyncFuture<'a> {
 impl<'a> Future for AsyncSyncFuture<'a> {
     type Output = FsResult<()>;
 
-    fn poll(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Self::Output> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         if !self.started {
             self.started = true;
 
             // データとメタデータの同期
             // ダイレクトI/Oの場合は既に同期済み
-            if !self.file.direct_io {
-                // ページキャッシュのフラッシュ
-                // Note: ファイルに関連するダーティページをディスクに書き込み
-                // 実装: crate::fs::cache::PageCache::flush_file(inode)
-                // メタデータも含めて永続化する場合はfsync相当
+            if self.file.direct_io {
+                self.flush = Some(AsyncFlushFuture::new(self.file));
+            } else {
+                self.flush = Some(AsyncFlushFuture::new(self.file));
             }
+        }
 
-            return Poll::Ready(Ok(()));
+        if let Some(flush) = self.flush.as_mut() {
+            return Pin::new(flush).poll(cx);
         }
 
         Poll::Ready(Ok(()))
@@ -645,7 +1352,7 @@ impl<'a> Future for AsyncSyncFuture<'a> {
 /// データベースなどのアプリケーション向けに、
 /// ファイルシステムを通さずNVMeを直接操作
 pub struct DirectBlockHandle {
-    /// デバイスID
+    /// デバイスID（NVMe namespace ID）
     device_id: u64,
     /// 開始ブロック
     start_block: u64,
@@ -672,6 +1379,10 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
+        if buf.len() % self.block_size as usize != 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
         let blocks_to_read = buf.len() / self.block_size as usize;
         let blocks_available = (self.block_count - block_offset) as usize;
         let blocks = blocks_to_read.min(blocks_available);
@@ -680,24 +1391,66 @@ impl DirectBlockHandle {
             return Ok(0);
         }
 
-        // NVMeリードコマンド発行
-        // Note: コア固有のSubmission Queueを使用
-        // let nsid = 1; // ネームスペースID
-        // let lba = block_offset;
-        // let blocks_u16 = blocks as u16;
-        // let prp1 = virt_to_phys(buf.as_ptr());
-        // unsafe { crate::io::nvme::per_core::PerCoreNvme::read(nsid, lba, blocks_u16, prp1, 0) }
+        if blocks > u16::MAX as usize {
+            return Err(FsError::InvalidArgument);
+        }
 
-        // シミュレーション
-        let bytes = blocks * self.block_size as usize;
-        buf[..bytes].fill(0);
+        let dma_len = blocks * self.block_size as usize;
+        let (ctx, prp1, prp2) = prepare_dma_read(dma_len)?;
+        let core_id = current_cpu();
+        let lba = self.start_block + block_offset;
+        let nsid = nsid_from_device(self.device_id);
 
-        Ok(bytes)
+        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+            // Safety: 現在のコアIDで自身のキューにアクセス
+            unsafe { driver.submit_read(core_id, nsid, lba, blocks as u16, prp1, prp2) }
+        });
+
+        let cid = match result {
+            Some(Ok(cid)) => cid,
+            _ => {
+                let _ = ctx.complete();
+                return Err(FsError::IoError);
+            }
+        };
+
+        loop {
+            let completed =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    if !driver.interrupt_mode() {
+                        // Safety: 現在のコアIDで自身のキューにアクセス
+                        unsafe { driver.poll_loop(core_id) };
+                    }
+                    driver.take_completion(core_id, cid)
+                });
+
+            if completed.is_none() {
+                let _ = ctx.complete();
+                return Err(FsError::IoError);
+            }
+
+            if let Some(Some(cqe)) = completed {
+                if cqe.is_success() {
+                    let data = ctx.complete();
+                    buf[..dma_len].copy_from_slice(&data.as_slice()[..dma_len]);
+                    return Ok(dma_len);
+                }
+
+                let _ = ctx.complete();
+                return Err(FsError::IoError);
+            }
+
+            crate::task::yield_now().await;
+        }
     }
 
     /// ブロック書き込み
     pub async fn write_blocks(&self, block_offset: u64, buf: &[u8]) -> FsResult<usize> {
         if block_offset >= self.block_count {
+            return Err(FsError::InvalidArgument);
+        }
+
+        if buf.len() % self.block_size as usize != 0 {
             return Err(FsError::InvalidArgument);
         }
 
@@ -709,23 +1462,91 @@ impl DirectBlockHandle {
             return Ok(0);
         }
 
-        // NVMeライトコマンド発行
-        // Note: コア固有のSubmission Queueを使用
-        // let nsid = 1;
-        // let lba = block_offset;
-        // let blocks_u16 = blocks as u16;
-        // let prp1 = virt_to_phys(buf.as_ptr());
-        // unsafe { crate::io::nvme::per_core::PerCoreNvme::write(nsid, lba, blocks_u16, prp1, 0) }
+        if blocks > u16::MAX as usize {
+            return Err(FsError::InvalidArgument);
+        }
 
-        Ok(blocks * self.block_size as usize)
+        let dma_len = blocks * self.block_size as usize;
+        let (ctx, prp1, prp2) = prepare_dma_write(buf, dma_len)?;
+        let core_id = current_cpu();
+        let lba = self.start_block + block_offset;
+        let nsid = nsid_from_device(self.device_id);
+
+        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+            // Safety: 現在のコアIDで自身のキューにアクセス
+            unsafe { driver.submit_write(core_id, nsid, lba, blocks as u16, prp1, prp2) }
+        });
+
+        let cid = match result {
+            Some(Ok(cid)) => cid,
+            _ => {
+                let _ = ctx.complete();
+                return Err(FsError::IoError);
+            }
+        };
+
+        loop {
+            let completed =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    if !driver.interrupt_mode() {
+                        // Safety: 現在のコアIDで自身のキューにアクセス
+                        unsafe { driver.poll_loop(core_id) };
+                    }
+                    driver.take_completion(core_id, cid)
+                });
+
+            if completed.is_none() {
+                let _ = ctx.complete();
+                return Err(FsError::IoError);
+            }
+
+            if let Some(Some(cqe)) = completed {
+                let _ = ctx.complete();
+                return if cqe.is_success() {
+                    Ok(dma_len)
+                } else {
+                    Err(FsError::IoError)
+                };
+            }
+
+            crate::task::yield_now().await;
+        }
     }
 
     /// フラッシュ
     pub async fn flush(&self) -> FsResult<()> {
-        // NVMe Flushコマンド
-        // crate::io::nvme::commands::NvmeCommand::flush(cid, nsid)
-        // Note: ネームスペースの全キャッシュをフラッシュ
-        Ok(())
+        let core_id = current_cpu();
+        let nsid = nsid_from_device(self.device_id);
+        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+            // Safety: 現在のコアIDで自身のキューにアクセス
+            unsafe { driver.submit_flush(core_id, nsid) }
+        });
+
+        let cid = match result {
+            Some(Ok(cid)) => cid,
+            _ => return Err(FsError::IoError),
+        };
+
+        loop {
+            let completed =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    if !driver.interrupt_mode() {
+                        // Safety: 現在のコアIDで自身のキューにアクセス
+                        unsafe { driver.poll_loop(core_id) };
+                    }
+                    driver.take_completion(core_id, cid)
+                });
+
+            if let Some(Some(cqe)) = completed {
+                return if cqe.is_success() {
+                    Ok(())
+                } else {
+                    Err(FsError::IoError)
+                };
+            }
+
+            crate::task::yield_now().await;
+        }
     }
 
     /// TRIM（Discard）
@@ -734,14 +1555,76 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let _count = block_count.min(self.block_count - block_offset);
+        let count = block_count.min(self.block_count - block_offset);
+        if count == 0 {
+            return Ok(());
+        }
+        if count > u32::MAX as u64 {
+            return Err(FsError::InvalidArgument);
+        }
 
-        // NVMe Dataset Management (TRIM) コマンド
-        // Note: DSMコマンドでデアロケーションをSSDに通知
-        // コマンド: Opcode 0x09, CDW10-11にレンジ情報
-        // crate::io::nvme::commands::NvmeCommand::dataset_management(cid, nsid, ranges)
+        let mut dsm = TypedDmaSlice::<CpuOwned>::new(NVME_PAGE_SIZE)
+            .ok_or(FsError::NoSpace)?;
+        let range = crate::io::nvme::commands::DsmRange::new(
+            self.start_block + block_offset,
+            count as u32,
+        );
+        let dsm_bytes = dsm.as_mut_slice();
+        let dst = unsafe {
+            core::slice::from_raw_parts_mut(
+                dsm_bytes.as_mut_ptr() as *mut crate::io::nvme::commands::DsmRange,
+                1,
+            )
+        };
+        dst[0] = range;
 
-        Ok(())
+        let device = crate::io::nvme::iommu_device();
+        let (prp1, prp_map) = map_nvme_iommu(device, dsm.phys_addr().as_u64(), dsm.len())?;
+        let mut prp_map = prp_map;
+        let (dev, guard) = dsm.start_dma();
+        let core_id = current_cpu();
+        let nsid = nsid_from_device(self.device_id);
+
+        let result = nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+            // Safety: 現在のコアIDで自身のキューにアクセス
+            unsafe { driver.submit_dataset_management(core_id, nsid, 0, prp1) }
+        });
+
+        let cid = match result {
+            Some(Ok(cid)) => cid,
+            _ => {
+                let _ = guard.complete(dev);
+                if let Some(map) = prp_map.take() {
+                    map.unmap();
+                }
+                return Err(FsError::IoError);
+            }
+        };
+
+        loop {
+            let completed =
+                nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+                    if !driver.interrupt_mode() {
+                        // Safety: 現在のコアIDで自身のキューにアクセス
+                        unsafe { driver.poll_loop(core_id) };
+                    }
+                    driver.take_completion(core_id, cid)
+                });
+
+            if let Some(Some(cqe)) = completed {
+                let _ = guard.complete(dev);
+                if let Some(map) = prp_map.take() {
+                    map.unmap();
+                }
+                return if cqe.is_success() {
+                    Ok(())
+                } else {
+                    Err(FsError::IoError)
+                };
+            }
+
+            crate::task::yield_now().await;
+        }
     }
 }
 

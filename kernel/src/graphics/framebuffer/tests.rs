@@ -1447,3 +1447,85 @@ fn test_draw_text_partial_left_clip_32bit_backbuffer() {
     assert_eq!(back_ref[off2 + 1], bg.green);
     assert_eq!(back_ref[off2 + 2], bg.red);
 }
+
+#[test]
+fn test_draw_image_24bit_rgb888_backbuffer() {
+    use crate::graphics::image::Image;
+
+    let width = 8u32;
+    let height = 2u32;
+    let mut img = Image::new(width, height);
+
+    // Fill with pattern
+    // Pixel 0: Red (255, 0, 0)
+    img.set_pixel(0, 0, Color::RED);
+    // Pixel 1: Green (0, 255, 0)
+    img.set_pixel(1, 0, Color::GREEN);
+    // Pixel 2: Blue (0, 0, 255)
+    img.set_pixel(2, 0, Color::BLUE);
+
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 3,
+        format: PixelFormat::Rgb888, // Testing RGB format
+        bpp: 24,
+    };
+
+    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let back = vec![0u8; info.size()];
+    fb.enable_double_buffering_from_vec(back);
+
+    fb.draw_image(&img, 0, 0);
+
+    let back_ref = fb.back_buffer.as_ref().unwrap();
+
+    // Verify Pixel 0 (Red) -> Expect [R, G, B] = [255, 0, 0]
+    assert_eq!(back_ref[0], 255);
+    assert_eq!(back_ref[1], 0);
+    assert_eq!(back_ref[2], 0);
+
+    // Verify Pixel 1 (Green) -> Expect [R, G, B] = [0, 255, 0]
+    assert_eq!(back_ref[3], 0);
+    assert_eq!(back_ref[4], 255);
+    assert_eq!(back_ref[5], 0);
+
+    // Verify Pixel 2 (Blue) -> Expect [R, G, B] = [0, 0, 255]
+    assert_eq!(back_ref[6], 0);
+    assert_eq!(back_ref[7], 0);
+    assert_eq!(back_ref[8], 255);
+}
+
+#[test]
+fn test_draw_hline_24bit_rgb888_mmio() {
+    let width = 10u32;
+    let height = 2u32;
+    let info = FramebufferInfo {
+        address: 0,
+        width,
+        height,
+        stride: width * 3,
+        format: PixelFormat::Rgb888,
+        bpp: 24,
+    };
+
+    let mut vram = vec![0u8; info.size()];
+    let addr = vram.as_mut_ptr() as u64;
+    let mut info2 = info.clone();
+    info2.address = addr;
+
+    let mut fb = unsafe { Framebuffer::new(info2) };
+
+    // Draw Blue line: Color(0, 0, 255)
+    // Rgb888 memory should be [0, 0, 255] repeatedly
+    fb.draw_hline(0, 4, 0, Color::BLUE);
+
+    for i in 0..5 {
+        let off = i * 3;
+        assert_eq!(vram[off], 0, "Pixel {} R", i);
+        assert_eq!(vram[off + 1], 0, "Pixel {} G", i);
+        assert_eq!(vram[off + 2], 255, "Pixel {} B", i);
+    }
+}
+

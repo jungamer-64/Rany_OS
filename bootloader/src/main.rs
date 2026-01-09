@@ -599,16 +599,18 @@ fn main() -> Status {
     );
 
     // 6. Populate Boot Info
-    use boot_proto::{ExoBootInfo, MemoryDescriptor as BootMemoryDescriptor};
+    use boot_proto::{ExoBootInfo, MemoryDescriptor as BootMemoryDescriptor, EXO_BOOT_INFO_VERSION};
 
     info!("Allocating BootInfo...");
     let boot_info_phys =
         UefiMapper::alloc_zeroed_pages(1).expect("Failed to allocate BootInfo");
     let boot_info = unsafe { &mut *(boot_info_phys as *mut ExoBootInfo) };
 
-    boot_info.version = 1;
+    boot_info.version = EXO_BOOT_INFO_VERSION;
     boot_info.phys_mem_offset = hhdm_start;
     boot_info.page_table_base = pml4_addr;
+    boot_info.paging_levels = 4;
+    boot_info.la57_enabled = 0;
 
     // TLS template information for kernel per-CPU variables
     boot_info.tls_template = tls_info;

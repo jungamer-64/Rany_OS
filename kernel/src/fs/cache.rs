@@ -396,6 +396,44 @@ impl PageCache {
         None
     }
 
+    /// Write to cache
+    pub fn write(
+        &self,
+        ino: InodeNum,
+        offset: u64,
+        buf: &[u8],
+        file_size: u64,
+    ) -> Option<usize> {
+        self.get_or_create_file_cache(ino, file_size);
+
+        let page_num = offset / PAGE_SIZE as u64;
+        let page_offset = (offset % PAGE_SIZE as u64) as usize;
+        let time = self.tick();
+
+        let files = self.files.read();
+        let file_cache = files.get(&ino)?;
+
+        if let Some(page) = file_cache.get_page(page_num) {
+            page.touch(time);
+
+            let was_dirty = page.is_dirty();
+            let written = page.write(page_offset, buf);
+
+            let mut stats = self.stats.lock();
+            stats.hits += 1;
+            if written > 0 && !was_dirty {
+                stats.dirty_pages += 1;
+            }
+
+            return Some(written);
+        }
+
+        let mut stats = self.stats.lock();
+        stats.misses += 1;
+
+        None
+    }
+
     /// Insert a page into cache
     pub fn insert(&self, ino: InodeNum, page_num: u64, data: Vec<u8>, file_size: u64) {
         self.get_or_create_file_cache(ino, file_size);

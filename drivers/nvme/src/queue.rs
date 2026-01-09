@@ -225,8 +225,26 @@ impl QueuePair {
 
     /// コマンドを送信
     pub fn submit(&self, cmd: &NvmeCommand) -> Result<u16, &'static str> {
+        let cid = self.submit_no_doorbell(cmd)?;
+        self.sq.ring_doorbell();
+        Ok(cid)
+    }
+
+    /// コマンドを送信（ドアベル書き込みなし）
+    pub fn submit_no_doorbell(&self, cmd: &NvmeCommand) -> Result<u16, &'static str> {
+        let max_outstanding = self.sq.depth().saturating_sub(1) as u32;
+        let outstanding = self.outstanding.load(Ordering::Acquire);
+        if max_outstanding == 0 || outstanding >= max_outstanding {
+            return Err("Queue full");
+        }
         self.outstanding.fetch_add(1, Ordering::AcqRel);
-        self.sq.submit(cmd)
+        match self.sq.submit_no_doorbell(cmd) {
+            Ok(cid) => Ok(cid),
+            Err(e) => {
+                self.outstanding.fetch_sub(1, Ordering::AcqRel);
+                Err(e)
+            }
+        }
     }
 
     /// 完了をポーリング

@@ -17,7 +17,10 @@ pub fn cpu_count() -> u32 {
 
 /// Get current CPU ID
 pub fn current_cpu() -> u32 {
-    // Read from LAPIC ID register
+    if let Some(cpu_id) = crate::mm::try_current_cpu_id() {
+        return cpu_id as u32;
+    }
+    // Fallback to LAPIC ID when per-CPU data isn't ready yet
     crate::io::apic::local_apic().id() as u32
 }
 
