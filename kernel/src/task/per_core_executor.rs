@@ -402,6 +402,9 @@ impl PerCoreExecutor {
         // タイマーからの保留Wakerも処理
         crate::task::timer::process_pending_timer_wakers();
 
+        // Drive IoScheduler dispatch/poll in non-ISR context.
+        crate::io::io_scheduler::hybrid_coordinator().tick(crate::task::current_tick());
+
         if let Some(task) = self.next_task() {
             self.run_task(&task);
             true

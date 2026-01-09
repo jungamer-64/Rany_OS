@@ -12,10 +12,11 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use spin::{Mutex, RwLock};
 
 use crate::io::io_scheduler::{
-    DeviceId as IoDeviceId, IoError, IoRequestId, IoResult, ModeThresholds, PollHandler,
+    DeviceId as IoDeviceId, IoError, IoOperationType, IoPayload, IoRequest, IoRequestId, IoResult,
+    ModeThresholds, PollHandler,
 };
 
 use super::global::with_driver;
@@ -23,6 +24,16 @@ use super::global::with_driver;
 // ============================================================================
 // Poll Handler
 // ============================================================================
+
+type NvmeHandlerKey = (u8, u32);
+
+struct PendingNvmeRequest {
+    io_id: IoRequestId,
+    bytes: usize,
+}
+
+static NVME_POLL_HANDLERS: RwLock<BTreeMap<NvmeHandlerKey, Vec<Arc<NvmePollHandler>>>> =
+    RwLock::new(BTreeMap::new());
 
 /// NVMe用PollHandlerラッパー
 ///
@@ -33,8 +44,8 @@ pub struct NvmePollHandler {
     core_id: u32,
     /// 名前空間ID
     nsid: u32,
-    /// 保留中のI/OリクエストID → NVMeコマンドID
-    pending: Mutex<BTreeMap<IoRequestId, u16>>,
+    /// 保留中のNVMeコマンドID → I/Oリクエスト
+    pending: Mutex<BTreeMap<u16, PendingNvmeRequest>>,
 }
 
 impl NvmePollHandler {
@@ -48,18 +59,14 @@ impl NvmePollHandler {
     }
 
     /// I/OリクエストIDとNVMeコマンドIDを紐付け
-    pub fn register_request(&self, io_id: IoRequestId, cid: u16) {
-        self.pending.lock().insert(io_id, cid);
-    }
-
-    /// I/OリクエストIDからNVMeコマンドIDを取得
-    pub fn get_cid(&self, io_id: &IoRequestId) -> Option<u16> {
-        self.pending.lock().get(io_id).copied()
-    }
-
-    /// 完了したリクエストを削除
-    pub fn remove_request(&self, io_id: &IoRequestId) -> Option<u16> {
-        self.pending.lock().remove(io_id)
+    pub fn register_request(&self, io_id: IoRequestId, cid: u16, bytes: usize) {
+        self.pending.lock().insert(
+            cid,
+            PendingNvmeRequest {
+                io_id,
+                bytes,
+            },
+        );
     }
 }
 
@@ -69,29 +76,33 @@ impl PollHandler for NvmePollHandler {
 
         with_driver(|driver| {
             if let Some(queue) = driver.get_queue(self.core_id) {
+                let pending_requests = queue.get_pending_requests();
                 // SAFETY: poll は内部で適切に同期されている
                 unsafe {
                     while let Some(cqe) = queue.poll() {
                         let cid = cqe.cid;
+                        let entry = self.pending.lock().remove(&cid);
 
-                        let pending = self.pending.lock();
-                        if let Some((&io_id, _)) = pending.iter().find(|&(_, &c)| c == cid) {
+                        {
+                            let mut pending = pending_requests.lock();
+                            pending.complete(cid, cqe);
+                            if entry.is_some() {
+                                let _ = pending.take(cid);
+                            }
+                        }
+
+                        if let Some(entry) = entry {
                             let result = if cqe.is_success() {
-                                IoResult::Success(512)
+                                IoResult::Success(entry.bytes)
                             } else {
                                 IoResult::Error(IoError::DeviceError)
                             };
-                            results.push((io_id, result));
+                            results.push((entry.io_id, result));
                         }
                     }
                 }
             }
         });
-
-        // 完了したリクエストを削除
-        for (io_id, _) in &results {
-            self.pending.lock().remove(io_id);
-        }
 
         results
     }
@@ -150,16 +161,15 @@ pub fn register_with_io_scheduler(
     let handler_count = num_cores.min(available as u32);
 
     let mut handlers = Vec::new();
+    let device_id = IoDeviceId::Nvme {
+        controller: controller_id,
+        namespace: namespace_id,
+    };
+
+    // デフォルトのモード閾値でデバイスを登録
+    scheduler.register_device(device_id, ModeThresholds::default());
 
     for core_id in 0..handler_count {
-        let device_id = IoDeviceId::Nvme {
-            controller: controller_id,
-            namespace: namespace_id,
-        };
-
-        // デフォルトのモード閾値でデバイスを登録
-        scheduler.register_device(device_id, ModeThresholds::default());
-
         // PollHandlerを作成して登録
         let handler = Arc::new(NvmePollHandler::new(core_id, namespace_id));
         coordinator.polling_executor().register_handler(
@@ -172,5 +182,100 @@ pub fn register_with_io_scheduler(
         handlers.push(handler);
     }
 
+    NVME_POLL_HANDLERS
+        .write()
+        .insert((controller_id, namespace_id), handlers.clone());
+
     Ok(handlers)
+}
+
+pub(crate) fn submit_request(request: &IoRequest) -> Result<(), IoError> {
+    let (controller_id, namespace_id) = match request.device {
+        IoDeviceId::Nvme {
+            controller,
+            namespace,
+        } => (controller, namespace),
+        _ => return Err(IoError::InvalidParameter),
+    };
+
+    let core_id = crate::smp::current_cpu();
+    let handler = handler_for_device(controller_id, namespace_id, core_id)
+        .ok_or(IoError::NoResources)?;
+
+    let (cid, bytes) = match (request.operation, &request.payload) {
+        (IoOperationType::Read, IoPayload::NvmeRw(payload)) => {
+            if payload.blocks == 0 {
+                return Err(IoError::InvalidParameter);
+            }
+            let cid = with_driver(|driver| unsafe {
+                driver.submit_read(
+                    core_id,
+                    namespace_id,
+                    payload.lba,
+                    payload.blocks,
+                    payload.prp1,
+                    payload.prp2,
+                )
+            })
+            .ok_or(IoError::NoResources)?
+            .map_err(map_nvme_error)?;
+            (cid, payload.bytes)
+        }
+        (IoOperationType::Write, IoPayload::NvmeRw(payload)) => {
+            if payload.blocks == 0 {
+                return Err(IoError::InvalidParameter);
+            }
+            let cid = with_driver(|driver| unsafe {
+                driver.submit_write(
+                    core_id,
+                    namespace_id,
+                    payload.lba,
+                    payload.blocks,
+                    payload.prp1,
+                    payload.prp2,
+                )
+            })
+            .ok_or(IoError::NoResources)?
+            .map_err(map_nvme_error)?;
+            (cid, payload.bytes)
+        }
+        (IoOperationType::Flush, _) => {
+            let cid = with_driver(|driver| unsafe { driver.submit_flush(core_id, namespace_id) })
+                .ok_or(IoError::NoResources)?
+                .map_err(map_nvme_error)?;
+            (cid, 0)
+        }
+        (IoOperationType::Custom(_), IoPayload::NvmeDsm(payload)) => {
+            let cid = with_driver(|driver| unsafe {
+                driver.submit_dataset_management(core_id, namespace_id, payload.nr, payload.prp1)
+            })
+            .ok_or(IoError::NoResources)?
+            .map_err(map_nvme_error)?;
+            (cid, 0)
+        }
+        _ => return Err(IoError::NotSupported),
+    };
+
+    handler.register_request(request.id, cid, bytes);
+    Ok(())
+}
+
+fn handler_for_device(
+    controller_id: u8,
+    namespace_id: u32,
+    core_id: u32,
+) -> Option<Arc<NvmePollHandler>> {
+    let handlers = NVME_POLL_HANDLERS.read();
+    handlers
+        .get(&(controller_id, namespace_id))
+        .and_then(|list| list.get(core_id as usize))
+        .cloned()
+}
+
+fn map_nvme_error(err: &'static str) -> IoError {
+    match err {
+        "Queue full" => IoError::Busy,
+        "Queue not found" | "Queue not initialized" => IoError::NoResources,
+        _ => IoError::DeviceError,
+    }
 }

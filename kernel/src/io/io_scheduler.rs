@@ -110,6 +110,34 @@ pub enum DeviceId {
     Custom(u32),
 }
 
+/// I/Oリクエスト追加ペイロード
+#[derive(Debug, Clone)]
+pub enum IoPayload {
+    /// 追加情報なし
+    None,
+    /// NVMe Read/Write 用
+    NvmeRw(NvmeRwPayload),
+    /// NVMe Dataset Management 用
+    NvmeDsm(NvmeDsmPayload),
+}
+
+/// NVMe Read/Write ペイロード
+#[derive(Debug, Clone)]
+pub struct NvmeRwPayload {
+    pub lba: u64,
+    pub blocks: u16,
+    pub prp1: u64,
+    pub prp2: u64,
+    pub bytes: usize,
+}
+
+/// NVMe Dataset Management ペイロード
+#[derive(Debug, Clone)]
+pub struct NvmeDsmPayload {
+    pub prp1: u64,
+    pub nr: u8,
+}
+
 /// I/Oリクエスト記述子
 pub struct IoRequest {
     /// リクエストID
@@ -118,6 +146,8 @@ pub struct IoRequest {
     pub device: DeviceId,
     /// 操作タイプ
     pub operation: IoOperationType,
+    /// 追加ペイロード
+    pub payload: IoPayload,
     /// 優先度
     pub priority: IoPriority,
     /// 状態
@@ -159,6 +189,23 @@ pub enum IoError {
     /// 未サポート
     NotSupported,
 }
+
+/// I/O完了フック
+pub trait IoCompletionHook: Send {
+    fn run(self: Box<Self>, result: IoResult);
+}
+
+impl<F> IoCompletionHook for F
+where
+    F: FnOnce(IoResult) + Send + 'static,
+{
+    fn run(self: Box<Self>, result: IoResult) {
+        (*self)(result);
+    }
+}
+
+/// I/O完了フック型
+pub type CompletionHook = Box<dyn IoCompletionHook>;
 
 // ============================================================================
 // Adaptive I/O Mode Controller
@@ -428,6 +475,8 @@ pub struct IoScheduler {
     mode_controllers: RwLock<BTreeMap<DeviceId, Arc<DeviceIoModeController>>>,
     /// グローバルI/O統計
     stats: IoSchedulerStats,
+    /// 完了フック
+    completion_hooks: Mutex<BTreeMap<IoRequestId, CompletionHook>>,
     /// ポーリング有効フラグ
     polling_enabled: AtomicBool,
     /// シャットダウンフラグ
@@ -480,6 +529,7 @@ impl IoScheduler {
             requests: RwLock::new(BTreeMap::new()),
             mode_controllers: RwLock::new(BTreeMap::new()),
             stats: IoSchedulerStats::new(),
+            completion_hooks: Mutex::new(BTreeMap::new()),
             polling_enabled: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
         }
@@ -498,11 +548,23 @@ impl IoScheduler {
         operation: IoOperationType,
         priority: IoPriority,
     ) -> IoRequestId {
+        self.submit_with_payload(device, operation, priority, IoPayload::None)
+    }
+
+    /// ペイロード付きI/Oリクエストをサブミット
+    pub fn submit_with_payload(
+        &self,
+        device: DeviceId,
+        operation: IoOperationType,
+        priority: IoPriority,
+        payload: IoPayload,
+    ) -> IoRequestId {
         let id = IoRequestId::next();
         let request = IoRequest {
             id,
             device,
             operation,
+            payload,
             priority,
             state: IoState::Pending,
             submitted_at: current_tick(),
@@ -610,6 +672,10 @@ impl IoScheduler {
             }
         };
 
+        if let Some(hook) = self.completion_hooks.lock().remove(&id) {
+            hook.run(result);
+        }
+
         // Wakerを起動
         if let Some(w) = waker {
             w.wake();
@@ -618,12 +684,13 @@ impl IoScheduler {
 
     /// リクエストをキャンセル
     pub fn cancel_request(&self, id: IoRequestId) -> bool {
+        let result = IoResult::Error(IoError::Cancelled);
         let waker = {
             let mut requests = self.requests.write();
             if let Some(request) = requests.get_mut(&id) {
                 if request.state == IoState::Pending {
                     request.state = IoState::Cancelled;
-                    request.result = Some(IoResult::Error(IoError::Cancelled));
+                    request.result = Some(result.clone());
                     self.stats
                         .current_queue_depth
                         .fetch_sub(1, Ordering::Relaxed);
@@ -635,6 +702,10 @@ impl IoScheduler {
                 None
             }
         };
+
+        if let Some(hook) = self.completion_hooks.lock().remove(&id) {
+            hook.run(result);
+        }
 
         if let Some(w) = waker {
             w.wake();
@@ -652,6 +723,17 @@ impl IoScheduler {
     /// リクエストの結果を取得
     pub fn get_result(&self, id: IoRequestId) -> Option<IoResult> {
         self.requests.read().get(&id).and_then(|r| r.result.clone())
+    }
+
+    /// 完了フックを登録
+    pub fn register_completion_hook(&self, id: IoRequestId, hook: CompletionHook) {
+        self.completion_hooks.lock().insert(id, hook);
+
+        if let Some(result) = self.get_result(id) {
+            if let Some(hook) = self.completion_hooks.lock().remove(&id) {
+                hook.run(result);
+            }
+        }
     }
 
     /// デバイスのI/Oモードを取得
@@ -693,6 +775,7 @@ impl Clone for IoRequest {
             id: self.id,
             device: self.device,
             operation: self.operation,
+            payload: self.payload.clone(),
             priority: self.priority,
             state: self.state,
             submitted_at: self.submitted_at,
@@ -714,7 +797,7 @@ pub struct PollingExecutor {
     /// スケジューラ参照
     scheduler: Arc<IoScheduler>,
     /// ポーリングハンドラ
-    poll_handlers: RwLock<BTreeMap<DeviceId, Box<dyn PollHandler + Send + Sync>>>,
+    poll_handlers: RwLock<BTreeMap<DeviceId, Vec<Box<dyn PollHandler + Send + Sync>>>>,
     /// 最大ポーリング反復回数
     max_poll_iterations: u32,
     /// ポーリング間隔（μs）
@@ -745,7 +828,11 @@ impl PollingExecutor {
 
     /// ポーリングハンドラを登録
     pub fn register_handler(&self, device: DeviceId, handler: Box<dyn PollHandler + Send + Sync>) {
-        self.poll_handlers.write().insert(device, handler);
+        self.poll_handlers
+            .write()
+            .entry(device)
+            .or_insert_with(Vec::new)
+            .push(handler);
     }
 
     /// ポーリングを開始
@@ -767,11 +854,13 @@ impl PollingExecutor {
         let mut completed = 0;
         let handlers = self.poll_handlers.read();
 
-        for (_device, handler) in handlers.iter() {
-            if handler.is_ready() {
-                for (id, result) in handler.poll_completions() {
-                    self.scheduler.complete_request(id, result);
-                    completed += 1;
+        for (_device, handlers) in handlers.iter() {
+            for handler in handlers.iter() {
+                if handler.is_ready() {
+                    for (id, result) in handler.poll_completions() {
+                        self.scheduler.complete_request(id, result);
+                        completed += 1;
+                    }
                 }
             }
         }
@@ -818,6 +907,10 @@ impl IoFuture {
             request_id,
             registered: false,
         }
+    }
+
+    pub fn request_id(&self) -> IoRequestId {
+        self.request_id
     }
 }
 
@@ -958,20 +1051,41 @@ impl HybridIoCoordinator {
         operation: IoOperationType,
         priority: IoPriority,
     ) -> IoFuture {
-        let id = self.scheduler.submit(device, operation, priority);
+        self.submit_io_with_payload(device, operation, priority, IoPayload::None)
+    }
 
-        // モードに応じて登録先を選択
-        let mode = self.scheduler.device_mode(device);
-        match mode {
-            IoMode::Interrupt => {
-                self.interrupt_bridge.register_pending(device, id);
-            }
-            IoMode::Polling => {
-                // ポーリングの場合は特に登録不要
-            }
-            IoMode::Hybrid => {
-                // 両方に登録
-                self.interrupt_bridge.register_pending(device, id);
+    /// ペイロード付きI/Oをサブミット
+    pub fn submit_io_with_payload(
+        &self,
+        device: DeviceId,
+        operation: IoOperationType,
+        priority: IoPriority,
+        payload: IoPayload,
+    ) -> IoFuture {
+        let id = self
+            .scheduler
+            .submit_with_payload(device, operation, priority, payload);
+
+        let global_mode = match self.global_mode.load(Ordering::Acquire) {
+            0 => IoMode::Interrupt,
+            1 => IoMode::Polling,
+            _ => IoMode::Hybrid,
+        };
+
+        if matches!(global_mode, IoMode::Interrupt) {
+            // モードに応じて登録先を選択
+            let mode = self.scheduler.device_mode(device);
+            match mode {
+                IoMode::Interrupt => {
+                    self.interrupt_bridge.register_pending(device, id);
+                }
+                IoMode::Polling => {
+                    // ポーリングの場合は特に登録不要
+                }
+                IoMode::Hybrid => {
+                    // 両方に登録
+                    self.interrupt_bridge.register_pending(device, id);
+                }
             }
         }
 
@@ -987,7 +1101,10 @@ impl HybridIoCoordinator {
         // 1. モード評価
         self.scheduler.evaluate_modes(current_tick);
 
-        // 2. ポーリングモードならポーリング実行
+        // 2. ペンディングI/Oをディスパッチ
+        self.dispatch_pending();
+
+        // 3. ポーリングモードならポーリング実行
         let global_mode = match self.global_mode.load(Ordering::Acquire) {
             0 => IoMode::Interrupt,
             1 => IoMode::Polling,
@@ -1004,6 +1121,32 @@ impl HybridIoCoordinator {
             }
             IoMode::Interrupt => {
                 // 割り込み待ち
+            }
+        }
+    }
+
+    fn dispatch_pending(&self) {
+        const DISPATCH_BATCH_LIMIT: usize = 64;
+
+        for _ in 0..DISPATCH_BATCH_LIMIT {
+            let id = match self.scheduler.next_request() {
+                Some(id) => id,
+                None => break,
+            };
+
+            let request = match self.scheduler.start_request(id) {
+                Some(request) => request,
+                None => continue,
+            };
+
+            let result = match request.device {
+                DeviceId::Nvme { .. } => crate::io::nvme::scheduler::submit_request(&request),
+                _ => Err(IoError::NotSupported),
+            };
+
+            if let Err(err) = result {
+                self.scheduler
+                    .complete_request(id, IoResult::Error(err));
             }
         }
     }
@@ -1045,6 +1188,7 @@ static HYBRID_COORDINATOR: spin::Once<Arc<HybridIoCoordinator>> = spin::Once::ne
 pub fn init_io_scheduler() {
     IO_SCHEDULER.call_once(|| Arc::new(IoScheduler::new()));
     HYBRID_COORDINATOR.call_once(|| Arc::new(HybridIoCoordinator::new(io_scheduler())));
+    hybrid_coordinator().set_global_mode(IoMode::Polling);
 }
 
 /// グローバルI/Oスケジューラを取得

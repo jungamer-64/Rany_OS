@@ -1198,7 +1198,8 @@ pub fn get_real_arp_cache() -> Vec<ArpCacheEntry>
 
 - [x] ~~USBスタック基盤~~ (src/io/usb/mod.rs)
 - [ ] USBスタック完全実装
-- [ ] NVMe最適化
+- [x] ~~NVMe最適化~~ (per-coreキュー/ポーリング/LBAサイズ反映/Direct DMA API)
+- [x] NVMe IoSchedulerデータパス統合
 - [ ] プロセス分離強化
 
 ### 優先度: 低

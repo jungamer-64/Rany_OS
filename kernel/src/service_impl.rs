@@ -27,7 +27,9 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::error::KapiError;
 use kernel_api::services::KernelServices;
-use kernel_api::{ChannelHandle, DmaBuffer, FileHandle, OpenMode, TaskHandle, TcpEndpoint};
+use kernel_api::{
+    ChannelHandle, DirectBlockHandle, DmaBuffer, FileHandle, OpenMode, TaskHandle, TcpEndpoint,
+};
 use spin::Mutex;
 
 use crate::io::dma;
@@ -313,6 +315,104 @@ impl KernelServices for ExoKernel {
             .unregister(handle_id)
             .ok_or(KapiError::InvalidHandle)?;
         Ok(())
+    }
+
+    fn nvme_open_direct(
+        &self,
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+    ) -> Result<DirectBlockHandle, KapiError> {
+        if block_count == 0 {
+            return Err(KapiError::IoError);
+        }
+
+        let nsid = if device_id == 0 { 1 } else { device_id as u32 };
+        let block_size =
+            crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid))
+                .unwrap_or(512);
+
+        Ok(DirectBlockHandle::new(
+            device_id,
+            start_block,
+            block_count,
+            block_size,
+        ))
+    }
+
+    fn nvme_read_blocks_dma(
+        &self,
+        handle: DirectBlockHandle,
+        block_offset: u64,
+        buffer: DmaBuffer,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
+        Box::pin(async move {
+            let direct = crate::fs::DirectBlockHandle::new(
+                handle.device_id(),
+                handle.start_block(),
+                handle.block_count(),
+                handle.block_size(),
+            );
+            direct
+                .read_blocks_dma(block_offset, buffer)
+                .await
+                .map_err(|_| KapiError::IoError)
+        })
+    }
+
+    fn nvme_write_blocks_dma(
+        &self,
+        handle: DirectBlockHandle,
+        block_offset: u64,
+        buffer: DmaBuffer,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
+        Box::pin(async move {
+            let direct = crate::fs::DirectBlockHandle::new(
+                handle.device_id(),
+                handle.start_block(),
+                handle.block_count(),
+                handle.block_size(),
+            );
+            direct
+                .write_blocks_dma(block_offset, buffer)
+                .await
+                .map_err(|_| KapiError::IoError)
+        })
+    }
+
+    fn nvme_flush_direct(
+        &self,
+        handle: DirectBlockHandle,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+        Box::pin(async move {
+            let direct = crate::fs::DirectBlockHandle::new(
+                handle.device_id(),
+                handle.start_block(),
+                handle.block_count(),
+                handle.block_size(),
+            );
+            direct.flush().await.map_err(|_| KapiError::IoError)
+        })
+    }
+
+    fn nvme_discard_direct(
+        &self,
+        handle: DirectBlockHandle,
+        block_offset: u64,
+        block_count: u64,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+        Box::pin(async move {
+            let direct = crate::fs::DirectBlockHandle::new(
+                handle.device_id(),
+                handle.start_block(),
+                handle.block_count(),
+                handle.block_size(),
+            );
+            direct
+                .discard(block_offset, block_count)
+                .await
+                .map_err(|_| KapiError::IoError)
+        })
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {

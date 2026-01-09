@@ -44,18 +44,15 @@ pub(crate) fn bench_debug_print_allowed() -> bool {
         BENCH_DEBUG_PRINTS_LEFT.store(limit, Ordering::Relaxed);
     }
 
-    // Try to decrement once; if zero then no prints allowed.
-    loop {
-        let old = BENCH_DEBUG_PRINTS_LEFT.load(Ordering::Acquire);
-        if old == 0 {
-            return false;
-        }
-        if BENCH_DEBUG_PRINTS_LEFT
-            .compare_exchange(old, old - 1, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            return true;
-        }
+    // Decrement and check if we had quota remaining.
+    // fetch_sub returns old value; if old > 0, we had quota.
+    let old = BENCH_DEBUG_PRINTS_LEFT.fetch_sub(1, Ordering::AcqRel);
+    if old > 0 {
+        true
+    } else {
+        // Restore to 0 if we went negative (shouldn't happen, but be safe)
+        BENCH_DEBUG_PRINTS_LEFT.store(0, Ordering::Relaxed);
+        false
     }
 }
 

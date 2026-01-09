@@ -211,6 +211,69 @@ pub mod net {
     }
 }
 
+// ========================================================================
+// NVMe Direct Block API
+// ========================================================================
+
+/// Direct NVMe block API
+pub mod nvme {
+    use super::*;
+
+    /// Open a direct NVMe block handle (namespace + range)
+    pub fn open_direct(
+        _cap: &IoCapability,
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+    ) -> KapiResult<crate::DirectBlockHandle> {
+        crate::kernel().nvme_open_direct(device_id, start_block, block_count)
+    }
+
+    /// Read blocks into a DMA buffer (buffer returned on completion)
+    pub async fn read_blocks_dma(
+        _cap: &IoCapability,
+        handle: crate::DirectBlockHandle,
+        block_offset: u64,
+        buffer: crate::DmaBuffer,
+    ) -> KapiResult<crate::DmaBuffer> {
+        crate::kernel()
+            .nvme_read_blocks_dma(handle, block_offset, buffer)
+            .await
+    }
+
+    /// Write blocks from a DMA buffer (buffer returned on completion)
+    pub async fn write_blocks_dma(
+        _cap: &IoCapability,
+        handle: crate::DirectBlockHandle,
+        block_offset: u64,
+        buffer: crate::DmaBuffer,
+    ) -> KapiResult<crate::DmaBuffer> {
+        crate::kernel()
+            .nvme_write_blocks_dma(handle, block_offset, buffer)
+            .await
+    }
+
+    /// Flush pending writes for a direct handle
+    pub async fn flush_direct(
+        _cap: &IoCapability,
+        handle: crate::DirectBlockHandle,
+    ) -> KapiResult<()> {
+        crate::kernel().nvme_flush_direct(handle).await
+    }
+
+    /// Discard blocks (TRIM)
+    pub async fn discard_direct(
+        _cap: &IoCapability,
+        handle: crate::DirectBlockHandle,
+        block_offset: u64,
+        block_count: u64,
+    ) -> KapiResult<()> {
+        crate::kernel()
+            .nvme_discard_direct(handle, block_offset, block_count)
+            .await
+    }
+}
+
 // ============================================================================
 // Filesystem API
 // ============================================================================

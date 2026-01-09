@@ -900,6 +900,9 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Per-core executors initialized");
     io::log::early_print("[DEBUG] After executor init\n");
 
+    // 4.6. I/Oスケジューラの初期化
+    io::io_scheduler::init_io_scheduler();
+
     // Aggregation is performed in the executor idle loop; explicit aggregator
     // spawn is not required in the normal runtime path.
     debug!(target: "init", "Log aggregation will run on executor idle");

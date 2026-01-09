@@ -322,13 +322,26 @@ impl QrCode {
         // 背景（ライトカラー）
         fb.fill_rect(Rect::new(x, y, total_size, total_size), light_color);
 
-        // モジュールを描画
+        // モジュールを描画（行単位で連続する黒モジュールをマージ）
         for row in 0..self.size {
-            for col in 0..self.size {
-                if self.is_dark(col, row) {
-                    let px = x + ((quiet_zone + col) as u32 * module_size) as i32;
-                    let py = y + ((quiet_zone + row) as u32 * module_size) as i32;
-                    fb.fill_rect(Rect::new(px, py, module_size, module_size), dark_color);
+            let py = y + ((quiet_zone + row) as u32 * module_size) as i32;
+            let mut run_start: Option<usize> = None;
+            
+            for col in 0..=self.size {
+                let is_dark = col < self.size && self.is_dark(col, row);
+                
+                if is_dark {
+                    if run_start.is_none() {
+                        run_start = Some(col);
+                    }
+                } else {
+                    // Run ended - draw it
+                    if let Some(start) = run_start {
+                        let px = x + ((quiet_zone + start) as u32 * module_size) as i32;
+                        let width = (col - start) as u32 * module_size;
+                        fb.fill_rect(Rect::new(px, py, width, module_size), dark_color);
+                        run_start = None;
+                    }
                 }
             }
         }
@@ -352,17 +365,29 @@ fn encode_alphanumeric(data: &str) -> Option<[u8; 26]> {
     bit_buffer = (bit_buffer << 9) | (char_count & 0x1FF);
     bit_count += 9;
 
-    // 英数字データをエンコード
-    let chars: alloc::vec::Vec<u8> = data.chars().filter_map(|c| alphanumeric_value(c)).collect();
+    // 英数字データをエンコード (固定サイズ配列でヒープ割り当て回避)
+    let mut chars = [0u8; 25]; // Version 1 max: 25 chars
+    let mut char_count_actual = 0usize;
+    for c in data.chars() {
+        if let Some(v) = alphanumeric_value(c) {
+            if char_count_actual < 25 {
+                chars[char_count_actual] = v;
+                char_count_actual += 1;
+            }
+        } else {
+            return None; // 無効な文字が含まれている
+        }
+    }
 
-    if chars.len() != data.len() {
+    if char_count_actual != data.len() {
         return None; // 無効な文字が含まれている
     }
+    let chars_len = char_count_actual;
 
     // 2文字ずつエンコード
     let mut i = 0;
-    while i < chars.len() {
-        if i + 1 < chars.len() {
+    while i < chars_len {
+        if i + 1 < chars_len {
             // 2文字: 45 * first + second = 11ビット
             let value = (chars[i] as u32) * 45 + (chars[i + 1] as u32);
             bit_buffer = (bit_buffer << 11) | (value & 0x7FF);

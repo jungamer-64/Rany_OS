@@ -168,6 +168,48 @@ impl FileHandle {
     }
 }
 
+/// Direct block device handle (NVMe namespace)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DirectBlockHandle {
+    device_id: u64,
+    start_block: u64,
+    block_count: u64,
+    block_size: u32,
+}
+
+impl DirectBlockHandle {
+    /// Create a new direct block handle (kernel-only)
+    pub const fn new(
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+        block_size: u32,
+    ) -> Self {
+        Self {
+            device_id,
+            start_block,
+            block_count,
+            block_size,
+        }
+    }
+
+    pub fn device_id(&self) -> u64 {
+        self.device_id
+    }
+
+    pub fn start_block(&self) -> u64 {
+        self.start_block
+    }
+
+    pub fn block_count(&self) -> u64 {
+        self.block_count
+    }
+
+    pub fn block_size(&self) -> u32 {
+        self.block_size
+    }
+}
+
 /// IPC channel handle
 pub struct ChannelHandle {
     id: u64,
