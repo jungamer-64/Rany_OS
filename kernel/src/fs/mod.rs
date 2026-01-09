@@ -54,6 +54,7 @@ pub use async_ops::{
     IoSchedulerStats,
     // Scatter-Gather I/O
     SgEntry,
+    SgIoFuture,
     SgIoRequest,
     async_io_scheduler,
 };

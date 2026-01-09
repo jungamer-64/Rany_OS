@@ -24,7 +24,7 @@ use core::ptr;
 use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
-use super::defs::{DOORBELL_BATCH_THRESHOLD, SECTOR_SIZE};
+use super::defs::{DOORBELL_BATCH_THRESHOLD, SECTOR_SIZE, SglDescriptor};
 use super::queue::QueuePair;
 use super::requests::PendingRequests;
 use crate::sync::IrqMutex;
@@ -241,6 +241,43 @@ impl PerCoreNvmeQueue {
         Ok(cid)
     }
 
+    /// 読み取り操作を発行（SGL）
+    ///
+    /// # Safety
+    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    pub unsafe fn read_sgl(
+        &self,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        sgl: SglDescriptor,
+    ) -> Result<u16, &'static str> {
+        let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
+
+        let cid = qp.sq().tail();
+        let cmd = NvmeCommand::read_sgl(cid, nsid, lba, blocks, sgl);
+        let _tail = qp.submit_no_doorbell(&cmd)?;
+
+        {
+            let mut pending = self.pending_requests.lock();
+            let _ = pending.register(cid, qp.sq().qid());
+        }
+
+        self.stats
+            .commands_submitted
+            .fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .read_bytes
+            .fetch_add((blocks as u64) * (SECTOR_SIZE as u64), Ordering::Relaxed);
+
+        let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
+        if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
+            unsafe { self.flush_doorbell() };
+        }
+
+        Ok(cid)
+    }
+
     /// 読み取り操作を即時発行（ドアベルを即座に書き込み）
     ///
     /// # Safety
@@ -308,6 +345,43 @@ impl PerCoreNvmeQueue {
         let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
 
         // 閾値を超えたらドアベルをフラッシュ
+        if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
+            unsafe { self.flush_doorbell() };
+        }
+
+        Ok(cid)
+    }
+
+    /// 書き込み操作を発行（SGL）
+    ///
+    /// # Safety
+    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    pub unsafe fn write_sgl(
+        &self,
+        nsid: u32,
+        lba: u64,
+        blocks: u16,
+        sgl: SglDescriptor,
+    ) -> Result<u16, &'static str> {
+        let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
+
+        let cid = qp.sq().tail();
+        let cmd = NvmeCommand::write_sgl(cid, nsid, lba, blocks, sgl);
+        let _tail = qp.submit_no_doorbell(&cmd)?;
+
+        {
+            let mut pending = self.pending_requests.lock();
+            let _ = pending.register(cid, qp.sq().qid());
+        }
+
+        self.stats
+            .commands_submitted
+            .fetch_add(1, Ordering::Relaxed);
+        self.stats
+            .write_bytes
+            .fetch_add((blocks as u64) * (SECTOR_SIZE as u64), Ordering::Relaxed);
+
+        let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
             unsafe { self.flush_doorbell() };
         }

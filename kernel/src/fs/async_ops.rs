@@ -44,12 +44,15 @@ use crate::io::io_scheduler::{
     IoResult,
     NvmeDsmPayload,
     NvmeRwPayload,
+    NvmeSglDescriptor,
+    NvmeSglPayload,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
-use crate::io::dma::{CpuOwned, DeviceOwned, SliceDmaGuard, TypedDmaSlice};
+use crate::io::dma::{CpuOwned, DeviceOwned, SgDmaGuard, SliceDmaGuard, TypedDmaSlice, TypedSgList};
 
 const NVME_PAGE_SIZE: usize = 4096;
 const NVME_BLOCK_SIZE: u64 = 512;
+const NVME_MAX_SGL_ENTRIES: usize = 32;
 
 struct NvmeIommuMapping {
     device: IommuDeviceId,
@@ -142,6 +145,70 @@ impl NvmeExternalDmaContext {
         }
         if let Some(map) = self.data_map.take() {
             map.unmap();
+        }
+    }
+}
+
+struct NvmeSglContext {
+    data_list: Option<TypedSgList<DeviceOwned>>,
+    data_guard: Option<SgDmaGuard>,
+    data_maps: Vec<NvmeIommuMapping>,
+    list_dev: Option<TypedDmaSlice<DeviceOwned>>,
+    list_guard: Option<SliceDmaGuard>,
+    list_map: Option<NvmeIommuMapping>,
+    completed: bool,
+    inflight: bool,
+}
+
+impl NvmeSglContext {
+    fn mark_inflight(&mut self) {
+        self.inflight = true;
+    }
+
+    fn complete(mut self) -> TypedSgList<CpuOwned> {
+        self.completed = true;
+        self.inflight = false;
+
+        if let Some(map) = self.list_map.take() {
+            map.unmap();
+        }
+        for map in self.data_maps.drain(..) {
+            map.unmap();
+        }
+
+        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take())
+        {
+            let _ = list_guard.complete(list_dev);
+        }
+
+        let data_list = self.data_list.take().expect("NvmeSglContext missing data_list");
+        let data_guard = self.data_guard.take().expect("NvmeSglContext missing data_guard");
+        data_guard.complete_all(data_list)
+    }
+}
+
+impl Drop for NvmeSglContext {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        if self.inflight {
+            log::warn!("[NVME] NvmeSglContext dropped while in-flight; leaking DMA resources");
+            return;
+        }
+
+        if let Some(map) = self.list_map.take() {
+            map.unmap();
+        }
+
+        if let (Some(list_dev), Some(list_guard)) = (self.list_dev.take(), self.list_guard.take())
+        {
+            let _ = list_guard.complete(list_dev);
+        }
+
+        if let (Some(data_list), Some(data_guard)) = (self.data_list.take(), self.data_guard.take())
+        {
+            let _ = data_guard.complete_all(data_list);
         }
     }
 }
@@ -432,6 +499,191 @@ fn prepare_dma_from_kapi_buffer(
         data_addr,
         prp2,
     ))
+}
+
+fn prepare_nvme_sgl(
+    list: TypedSgList<CpuOwned>,
+    max_entries: usize,
+) -> FsResult<(NvmeSglContext, NvmeSglDescriptor, usize)> {
+    if list.is_empty() {
+        return Err(FsError::InvalidArgument);
+    }
+    if list.len() > max_entries {
+        return Err(FsError::InvalidArgument);
+    }
+
+    let mut total_bytes: usize = 0;
+    for entry in list.entries() {
+        if entry.size == 0 {
+            return Err(FsError::InvalidArgument);
+        }
+        total_bytes = total_bytes
+            .checked_add(entry.size as usize)
+            .ok_or(FsError::InvalidArgument)?;
+    }
+
+    let entry_count = list.entries().len();
+    let device = crate::io::nvme::iommu_device();
+    let mut data_maps = Vec::new();
+    let mut mapped_entries = Vec::with_capacity(entry_count);
+
+    for entry in list.entries() {
+        let (addr, map) = match map_nvme_iommu(device, entry.phys_addr, entry.size as usize) {
+            Ok(v) => v,
+            Err(e) => {
+                for map in data_maps.drain(..) {
+                    map.unmap();
+                }
+                return Err(e);
+            }
+        };
+        if let Some(map) = map {
+            data_maps.push(map);
+        }
+        mapped_entries.push((addr, entry.size));
+    }
+
+    if entry_count == 1 {
+        let (data_list, data_guard) = list.start_dma();
+        let (addr, size) = mapped_entries[0];
+        let sgl = NvmeSglDescriptor::data_block(addr, size);
+        let ctx = NvmeSglContext {
+            data_list: Some(data_list),
+            data_guard: Some(data_guard),
+            data_maps,
+            list_dev: None,
+            list_guard: None,
+            list_map: None,
+            completed: false,
+            inflight: false,
+        };
+        return Ok((ctx, sgl, total_bytes));
+    }
+
+    let list_bytes = entry_count * core::mem::size_of::<crate::io::nvme::SglDescriptor>();
+    let list_len = match u32::try_from(list_bytes) {
+        Ok(v) => v,
+        Err(_) => {
+            for map in data_maps.drain(..) {
+                map.unmap();
+            }
+            return Err(FsError::InvalidArgument);
+        }
+    };
+    let mut list_buf = match TypedDmaSlice::<CpuOwned>::new(list_bytes) {
+        Some(v) => v,
+        None => {
+            for map in data_maps.drain(..) {
+                map.unmap();
+            }
+            return Err(FsError::NoSpace);
+        }
+    };
+    let list_slice = unsafe {
+        core::slice::from_raw_parts_mut(
+            list_buf.as_mut_slice().as_mut_ptr() as *mut crate::io::nvme::SglDescriptor,
+            entry_count,
+        )
+    };
+
+    for (dst, (addr, size)) in list_slice.iter_mut().zip(mapped_entries.iter()) {
+        *dst = crate::io::nvme::SglDescriptor::data_block(*addr, *size);
+    }
+
+    let list_phys = list_buf.phys_addr().as_u64();
+    let (list_addr, list_map) = match map_nvme_iommu(device, list_phys, list_bytes) {
+        Ok(v) => v,
+        Err(e) => {
+            for map in data_maps.drain(..) {
+                map.unmap();
+            }
+            return Err(e);
+        }
+    };
+
+    let (data_list, data_guard) = list.start_dma();
+    let (list_dev, list_guard) = list_buf.start_dma();
+    let sgl = NvmeSglDescriptor::last_segment(list_addr, list_len);
+    let ctx = NvmeSglContext {
+        data_list: Some(data_list),
+        data_guard: Some(data_guard),
+        data_maps,
+        list_dev: Some(list_dev),
+        list_guard: Some(list_guard),
+        list_map,
+        completed: false,
+        inflight: false,
+    };
+
+    Ok((ctx, sgl, total_bytes))
+}
+
+fn nvme_sgl_max_entries() -> Option<usize> {
+    nvme_global::with_driver(|driver: &crate::io::nvme::NvmePollingDriver| {
+        driver.sgl_max_entries()
+    })
+    .flatten()
+}
+
+fn sg_total_bytes(list: &TypedSgList<CpuOwned>) -> FsResult<usize> {
+    list.entries()
+        .iter()
+        .try_fold(0usize, |acc, entry| {
+            acc.checked_add(entry.size as usize)
+                .ok_or(FsError::InvalidArgument)
+        })
+}
+
+fn sg_copy_to_vec(list: &TypedSgList<CpuOwned>) -> FsResult<Vec<u8>> {
+    let total = sg_total_bytes(list)?;
+    let mut buf = vec![0u8; total];
+    let mut offset = 0usize;
+
+    for idx in 0..list.len() {
+        let slice = list
+            .buffer(idx)
+            .ok_or(FsError::InvalidArgument)?;
+        let len = slice.len();
+        let end = offset
+            .checked_add(len)
+            .ok_or(FsError::InvalidArgument)?;
+        buf[offset..end].copy_from_slice(slice.as_slice());
+        offset = end;
+    }
+
+    Ok(buf)
+}
+
+fn sg_copy_from_vec(list: &mut TypedSgList<CpuOwned>, buf: &[u8]) -> FsResult<()> {
+    let mut offset = 0usize;
+    let total = sg_total_bytes(list)?;
+
+    for idx in 0..list.len() {
+        let slice = list
+            .buffer_mut(idx)
+            .ok_or(FsError::InvalidArgument)?;
+        let len = slice.len();
+        let end = offset
+            .checked_add(len)
+            .ok_or(FsError::InvalidArgument)?;
+        let dst = slice.as_mut_slice();
+        if offset >= buf.len() {
+            dst.fill(0);
+        } else if end <= buf.len() {
+            dst.copy_from_slice(&buf[offset..end]);
+        } else {
+            let copy_len = buf.len().saturating_sub(offset);
+            dst[..copy_len].copy_from_slice(&buf[offset..]);
+            dst[copy_len..].fill(0);
+        }
+        offset = end;
+    }
+
+    if total < buf.len() {
+        return Err(FsError::InvalidArgument);
+    }
+
+    Ok(())
 }
 
 fn nsid_from_device(device_id: u64) -> u32 {
@@ -854,7 +1106,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
                 let canceled = Arc::new(AtomicBool::new(false));
                 self.cancel_guard = Some(NvmeCancelGuard::new(canceled.clone()));
                 let buf_ptr = self.buf.as_mut_ptr();
-                let buf_len = self.buf.len();
+                let user_len = to_read;
 
                 let payload = IoPayload::NvmeRw(NvmeRwPayload {
                     lba,
@@ -878,16 +1130,16 @@ impl<'a> Future for AsyncReadFuture<'a> {
                         return;
                     }
                     if let IoResult::Success(bytes) = result {
-                        let copy_len = bytes.min(dma_len).min(buf_len);
-                        let start = offset_in_block;
-                        let end = start.saturating_add(copy_len).min(data.len());
-                        let out_len = end.saturating_sub(start);
-                        if out_len > 0 {
+                        let available = bytes.min(dma_len).min(data.len());
+                        let start = offset_in_block.min(available);
+                        let remaining = available.saturating_sub(start);
+                        let copy_len = remaining.min(user_len);
+                        if copy_len > 0 {
                             unsafe {
                                 core::ptr::copy_nonoverlapping(
                                     data.as_slice().as_ptr().add(start),
                                     buf_ptr,
-                                    out_len,
+                                    copy_len,
                                 );
                             }
                         }
@@ -1356,6 +1608,7 @@ impl<'a> Future for AsyncSyncFuture<'a> {
 /// ダイレクトブロックデバイスハンドル
 /// データベースなどのアプリケーション向けに、
 /// ファイルシステムを通さずNVMeを直接操作
+#[derive(Clone, Copy)]
 pub struct DirectBlockHandle {
     /// デバイスID（NVMe namespace ID）
     device_id: u64,
@@ -1512,6 +1765,82 @@ impl DirectBlockHandle {
         }
     }
 
+    /// Scatter-Gather DMAバッファへのブロック読み取り
+    pub async fn read_blocks_sg_dma(
+        &self,
+        block_offset: u64,
+        mut list: TypedSgList<CpuOwned>,
+    ) -> FsResult<TypedSgList<CpuOwned>> {
+        if block_offset >= self.block_count {
+            return Err(FsError::InvalidArgument);
+        }
+        if list.is_empty() {
+            return Ok(list);
+        }
+
+        let total_bytes = sg_total_bytes(&list)?;
+        if total_bytes == 0 {
+            return Ok(list);
+        }
+        if total_bytes % self.block_size as usize != 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let blocks_u64 = total_bytes as u64 / self.block_size as u64;
+        if blocks_u64 > u16::MAX as u64 {
+            return Err(FsError::InvalidArgument);
+        }
+        if blocks_u64 > self.block_count - block_offset {
+            return Err(FsError::InvalidArgument);
+        }
+
+        if let Some(max_entries) = nvme_sgl_max_entries() {
+            let max_entries = max_entries.min(NVME_MAX_SGL_ENTRIES).max(1);
+            if list.len() <= max_entries {
+                let blocks = blocks_u64 as u16;
+                let lba = self.start_block + block_offset;
+                let (mut ctx, sgl, bytes) = prepare_nvme_sgl(list, max_entries)?;
+                let payload = IoPayload::NvmeSgl(NvmeSglPayload {
+                    lba,
+                    blocks,
+                    sgl,
+                    bytes,
+                });
+                let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+                    self.io_device(),
+                    IoOperationType::Read,
+                    IoPriority::Normal,
+                    payload,
+                );
+                let request_id = future.request_id();
+                let slot = Arc::new(Mutex::new(None));
+                let slot_clone = slot.clone();
+                ctx.mark_inflight();
+                let hook: CompletionHook = Box::new(move |result| {
+                    let data = ctx.complete();
+                    if let IoResult::Success(_) = result {
+                        *slot_clone.lock() = Some(data);
+                    }
+                });
+                crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
+
+                let result = future.await;
+                return match result {
+                    Ok(_) => slot
+                        .lock()
+                        .take()
+                        .ok_or(FsError::IoError),
+                    Err(_) => Err(FsError::IoError),
+                };
+            }
+        }
+
+        let mut bounce = vec![0u8; total_bytes];
+        let read_len = self.read_blocks(block_offset, &mut bounce).await?;
+        sg_copy_from_vec(&mut list, &bounce[..read_len])?;
+        Ok(list)
+    }
+
     /// ブロック書き込み
     pub async fn write_blocks(&self, block_offset: u64, buf: &[u8]) -> FsResult<usize> {
         if block_offset >= self.block_count {
@@ -1562,6 +1891,116 @@ impl DirectBlockHandle {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(FsError::IoError),
         }
+    }
+
+    /// Scatter-Gather DMAバッファからのブロック書き込み
+    pub async fn write_blocks_sg_dma(
+        &self,
+        block_offset: u64,
+        list: TypedSgList<CpuOwned>,
+    ) -> FsResult<TypedSgList<CpuOwned>> {
+        if block_offset >= self.block_count {
+            return Err(FsError::InvalidArgument);
+        }
+        if list.is_empty() {
+            return Ok(list);
+        }
+
+        let total_bytes = sg_total_bytes(&list)?;
+        if total_bytes == 0 {
+            return Ok(list);
+        }
+        if total_bytes % self.block_size as usize != 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let blocks_u64 = total_bytes as u64 / self.block_size as u64;
+        if blocks_u64 > u16::MAX as u64 {
+            return Err(FsError::InvalidArgument);
+        }
+        if blocks_u64 > self.block_count - block_offset {
+            return Err(FsError::InvalidArgument);
+        }
+
+        if let Some(max_entries) = nvme_sgl_max_entries() {
+            let max_entries = max_entries.min(NVME_MAX_SGL_ENTRIES).max(1);
+            if list.len() <= max_entries {
+                let blocks = blocks_u64 as u16;
+                let lba = self.start_block + block_offset;
+                let (mut ctx, sgl, bytes) = prepare_nvme_sgl(list, max_entries)?;
+                let payload = IoPayload::NvmeSgl(NvmeSglPayload {
+                    lba,
+                    blocks,
+                    sgl,
+                    bytes,
+                });
+                let future = crate::io::io_scheduler::hybrid_coordinator().submit_io_with_payload(
+                    self.io_device(),
+                    IoOperationType::Write,
+                    IoPriority::Normal,
+                    payload,
+                );
+                let request_id = future.request_id();
+                let slot = Arc::new(Mutex::new(None));
+                let slot_clone = slot.clone();
+                ctx.mark_inflight();
+                let hook: CompletionHook = Box::new(move |result| {
+                    let data = ctx.complete();
+                    if let IoResult::Success(_) = result {
+                        *slot_clone.lock() = Some(data);
+                    }
+                });
+                crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, hook);
+
+                let result = future.await;
+                return match result {
+                    Ok(_) => slot
+                        .lock()
+                        .take()
+                        .ok_or(FsError::IoError),
+                    Err(_) => Err(FsError::IoError),
+                };
+            }
+        }
+
+        let bounce = sg_copy_to_vec(&list)?;
+        let _ = self.write_blocks(block_offset, &bounce).await?;
+        Ok(list)
+    }
+
+    /// Scatter-Gatherリクエストを非同期スケジューラに送信
+    pub fn submit_sg_request(&self, request: Arc<SgIoRequest>) -> SgIoFuture {
+        async_io_scheduler().submit_sg_request(*self, request)
+    }
+
+    async fn execute_sg_request(&self, request: &SgIoRequest) -> FsResult<usize> {
+        if request.entries.is_empty() {
+            return Ok(0);
+        }
+
+        if request.offset % self.block_size != 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let total_bytes = request.total_bytes();
+        if total_bytes == 0 {
+            return Ok(0);
+        }
+        if total_bytes % self.block_size as usize != 0 {
+            return Err(FsError::InvalidArgument);
+        }
+
+        let block_offset = request.offset / self.block_size;
+        let list = sg_request_to_dma_list(request)?;
+
+        if request.is_read {
+            let list = self.read_blocks_sg_dma(block_offset, list).await?;
+            sg_request_copy_back(request, &list, total_bytes)?;
+        } else {
+            let _ = self.write_blocks_sg_dma(block_offset, list).await?;
+        }
+
+        Ok(total_bytes)
     }
 
     /// DMAバッファからのブロック書き込み
@@ -1754,6 +2193,105 @@ impl SgIoRequest {
             waker.wake();
         }
     }
+
+    /// 完了したか
+    pub fn is_completed(&self) -> bool {
+        self.completed.load(Ordering::Acquire)
+    }
+
+    /// Futureを取得
+    pub fn into_future(self: Arc<Self>) -> SgIoFuture {
+        SgIoFuture::new(self)
+    }
+}
+
+/// Scatter-Gather I/O Future
+pub struct SgIoFuture {
+    request: Arc<SgIoRequest>,
+}
+
+impl SgIoFuture {
+    fn new(request: Arc<SgIoRequest>) -> Self {
+        Self { request }
+    }
+
+    pub fn request_id(&self) -> u64 {
+        self.request.id
+    }
+}
+
+impl Future for SgIoFuture {
+    type Output = FsResult<usize>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.request.completed.load(Ordering::Acquire) {
+            let result = self
+                .request
+                .result
+                .lock()
+                .take()
+                .unwrap_or(Err(FsError::IoError));
+            return Poll::Ready(result);
+        }
+
+        *self.request.waker.lock() = Some(cx.waker().clone());
+        Poll::Pending
+    }
+}
+
+fn sg_request_to_dma_list(request: &SgIoRequest) -> FsResult<TypedSgList<CpuOwned>> {
+    let mut list = TypedSgList::new();
+
+    for entry in &request.entries {
+        if entry.len == 0 {
+            return Err(FsError::InvalidArgument);
+        }
+        let idx = list.add_buffer(entry.len).ok_or(FsError::NoSpace)?;
+        if !request.is_read {
+            // Safety: caller provides valid source buffers in SgEntry.
+            let src = unsafe { core::slice::from_raw_parts(entry.addr as *const u8, entry.len) };
+            let dst = list
+                .buffer_mut(idx)
+                .ok_or(FsError::InvalidArgument)?;
+            dst.as_mut_slice().copy_from_slice(src);
+        }
+    }
+
+    Ok(list)
+}
+
+fn sg_request_copy_back(
+    request: &SgIoRequest,
+    list: &TypedSgList<CpuOwned>,
+    bytes: usize,
+) -> FsResult<()> {
+    let mut remaining = bytes;
+
+    for (idx, entry) in request.entries.iter().enumerate() {
+        let src = list.buffer(idx).ok_or(FsError::InvalidArgument)?;
+        let copy_len = entry.len.min(remaining);
+        unsafe {
+            // Safety: caller provides valid destination buffers in SgEntry.
+            core::ptr::copy_nonoverlapping(
+                src.as_slice().as_ptr(),
+                entry.addr as *mut u8,
+                copy_len,
+            );
+        }
+        if copy_len < entry.len {
+            unsafe {
+                // Safety: caller provides valid destination buffers in SgEntry.
+                core::ptr::write_bytes(
+                    (entry.addr as *mut u8).add(copy_len),
+                    0,
+                    entry.len - copy_len,
+                );
+            }
+        }
+        remaining = remaining.saturating_sub(copy_len);
+    }
+
+    Ok(())
 }
 
 // ============================================================================
@@ -1764,6 +2302,8 @@ impl SgIoRequest {
 pub struct AsyncIoScheduler {
     /// 保留中のリクエスト
     pending: Mutex<BTreeMap<u64, Arc<AsyncIoRequest>>>,
+    /// 保留中のSGリクエスト
+    pending_sg: Mutex<BTreeMap<u64, Arc<SgIoRequest>>>,
     /// 完了したリクエスト
     completed: Mutex<Vec<Arc<AsyncIoRequest>>>,
     /// 完了済みリクエストIDキュー
@@ -1781,6 +2321,7 @@ impl AsyncIoScheduler {
     pub const fn new() -> Self {
         Self {
             pending: Mutex::new(BTreeMap::new()),
+            pending_sg: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(Vec::new()),
             completed_ids: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(0),
@@ -1793,6 +2334,31 @@ impl AsyncIoScheduler {
     pub fn submit(&self, request: Arc<AsyncIoRequest>) {
         self.pending.lock().insert(request.id, request);
         self.requests_issued.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Scatter-Gatherリクエストを発行
+    pub fn submit_sg_request(
+        &self,
+        handle: DirectBlockHandle,
+        request: Arc<SgIoRequest>,
+    ) -> SgIoFuture {
+        let request_id = request.id;
+        self.pending_sg.lock().insert(request_id, request.clone());
+        self.requests_issued.fetch_add(1, Ordering::Relaxed);
+        let future = SgIoFuture::new(request.clone());
+        let task_request = request.clone();
+
+        crate::task::spawn(async move {
+            let result = handle.execute_sg_request(&task_request).await;
+            task_request.complete(result);
+            async_io_scheduler().complete_sg_request(request_id);
+        });
+        future
+    }
+
+    fn complete_sg_request(&self, request_id: u64) {
+        self.pending_sg.lock().remove(&request_id);
+        self.requests_completed.fetch_add(1, Ordering::Relaxed);
     }
 
     /// 完了したリクエストを処理
@@ -1819,7 +2385,7 @@ impl AsyncIoScheduler {
         IoSchedulerStats {
             requests_issued: self.requests_issued.load(Ordering::Relaxed),
             requests_completed: self.requests_completed.load(Ordering::Relaxed),
-            pending_count: self.pending.lock().len(),
+            pending_count: self.pending.lock().len() + self.pending_sg.lock().len(),
         }
     }
 }

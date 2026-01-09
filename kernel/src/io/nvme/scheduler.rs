@@ -18,6 +18,7 @@ use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, IoError, IoOperationType, IoPayload, IoRequest, IoRequestId, IoResult,
     ModeThresholds, PollHandler,
 };
+use crate::io::nvme::SglDescriptor;
 
 use super::global::with_driver;
 
@@ -221,6 +222,28 @@ pub(crate) fn submit_request(request: &IoRequest) -> Result<(), IoError> {
             .map_err(map_nvme_error)?;
             (cid, payload.bytes)
         }
+        (IoOperationType::Read, IoPayload::NvmeSgl(payload)) => {
+            if payload.blocks == 0 {
+                return Err(IoError::InvalidParameter);
+            }
+            let sgl = match payload.sgl.type_specific >> 4 {
+                0x00 => SglDescriptor::data_block(payload.sgl.addr, payload.sgl.length),
+                0x03 => SglDescriptor::last_segment(payload.sgl.addr, payload.sgl.length),
+                _ => return Err(IoError::InvalidParameter),
+            };
+            let cid = with_driver(|driver| unsafe {
+                driver.submit_read_sgl(
+                    core_id,
+                    namespace_id,
+                    payload.lba,
+                    payload.blocks,
+                    sgl,
+                )
+            })
+            .ok_or(IoError::NoResources)?
+            .map_err(map_nvme_error)?;
+            (cid, payload.bytes)
+        }
         (IoOperationType::Write, IoPayload::NvmeRw(payload)) => {
             if payload.blocks == 0 {
                 return Err(IoError::InvalidParameter);
@@ -233,6 +256,28 @@ pub(crate) fn submit_request(request: &IoRequest) -> Result<(), IoError> {
                     payload.blocks,
                     payload.prp1,
                     payload.prp2,
+                )
+            })
+            .ok_or(IoError::NoResources)?
+            .map_err(map_nvme_error)?;
+            (cid, payload.bytes)
+        }
+        (IoOperationType::Write, IoPayload::NvmeSgl(payload)) => {
+            if payload.blocks == 0 {
+                return Err(IoError::InvalidParameter);
+            }
+            let sgl = match payload.sgl.type_specific >> 4 {
+                0x00 => SglDescriptor::data_block(payload.sgl.addr, payload.sgl.length),
+                0x03 => SglDescriptor::last_segment(payload.sgl.addr, payload.sgl.length),
+                _ => return Err(IoError::InvalidParameter),
+            };
+            let cid = with_driver(|driver| unsafe {
+                driver.submit_write_sgl(
+                    core_id,
+                    namespace_id,
+                    payload.lba,
+                    payload.blocks,
+                    sgl,
                 )
             })
             .ok_or(IoError::NoResources)?

@@ -253,11 +253,45 @@ impl NvmeCommand {
         cmd
     }
 
+    /// Read コマンドを作成（SGL）
+    pub fn read_sgl(
+        cid: u16,
+        nsid: u32,
+        slba: u64,
+        nlb: u16,
+        sgl: SglDescriptor,
+    ) -> Self {
+        let mut cmd = Self::with_opcode_and_cid(IoOpcode::Read as u8, cid);
+        cmd.nsid = nsid;
+        cmd.set_sgl(&sgl);
+        cmd.cdw10 = slba as u32;
+        cmd.cdw11 = (slba >> 32) as u32;
+        cmd.cdw12 = nlb as u32; // NLB is 0-based
+        cmd
+    }
+
     /// Write コマンドを作成
     pub fn write(cid: u16, nsid: u32, slba: u64, nlb: u16, prp1: u64, prp2: u64) -> Self {
         let mut cmd = Self::with_opcode_and_cid(IoOpcode::Write as u8, cid);
         cmd.nsid = nsid;
         cmd.set_prp(prp1, prp2);
+        cmd.cdw10 = slba as u32;
+        cmd.cdw11 = (slba >> 32) as u32;
+        cmd.cdw12 = nlb as u32; // NLB is 0-based
+        cmd
+    }
+
+    /// Write コマンドを作成（SGL）
+    pub fn write_sgl(
+        cid: u16,
+        nsid: u32,
+        slba: u64,
+        nlb: u16,
+        sgl: SglDescriptor,
+    ) -> Self {
+        let mut cmd = Self::with_opcode_and_cid(IoOpcode::Write as u8, cid);
+        cmd.nsid = nsid;
+        cmd.set_sgl(&sgl);
         cmd.cdw10 = slba as u32;
         cmd.cdw11 = (slba >> 32) as u32;
         cmd.cdw12 = nlb as u32; // NLB is 0-based
