@@ -285,10 +285,10 @@ const PML4_ENTRIES_PER_SHARD: usize = PT_ENTRIES / DOMAIN_SHARD_COUNT;
 
 /// Maximum entries in the DMA resource registry slab.
 /// Power of 2 for efficient hash computation.
-const REGISTRY_SLAB_CAPACITY: usize = 4096;
+const REGISTRY_SLAB_CAPACITY: usize = 512;
 
 /// Number of hash buckets for registry lookups.
-const REGISTRY_HASH_BUCKETS: usize = 8192;
+const REGISTRY_HASH_BUCKETS: usize = 1024;
 
 /// Invalid slot index sentinel.
 const REGISTRY_INVALID_INDEX: u16 = u16::MAX;
@@ -360,9 +360,9 @@ impl RegistrySlot {
 /// This eliminates the BTreeMap heap allocation bottleneck for 100Gbps+ I/O.
 pub struct DmaResourceRegistry {
     /// Pre-allocated slots (no heap allocation on map/unmap)
-    slots: PoisonLock<Box<[RegistrySlot; REGISTRY_SLAB_CAPACITY]>>,
+    slots: PoisonLock<Box<[RegistrySlot]>>,
     /// Hash buckets for O(1) IOVA lookup
-    hash_buckets: PoisonLock<Box<[u16; REGISTRY_HASH_BUCKETS]>>,
+    hash_buckets: PoisonLock<Box<[u16]>>,
     /// Head of free slot list
     free_head: PoisonLock<u16>,
     /// Total active mappings count
@@ -374,15 +374,25 @@ pub struct DmaResourceRegistry {
 impl DmaResourceRegistry {
     /// Create a new empty registry with pre-allocated slab
     pub fn new() -> Self {
-        // Initialize slots with free list
-        let mut slots = Box::new([RegistrySlot::empty(); REGISTRY_SLAB_CAPACITY]);
-        for i in 0..(REGISTRY_SLAB_CAPACITY - 1) {
-            slots[i].next = (i + 1) as u16;
+        // Initialize slots with free list using Vec to avoid stack overflow
+        let mut slots_vec = Vec::with_capacity(REGISTRY_SLAB_CAPACITY);
+        for i in 0..REGISTRY_SLAB_CAPACITY {
+            let mut slot = RegistrySlot::empty();
+            if i < REGISTRY_SLAB_CAPACITY - 1 {
+                slot.next = (i + 1) as u16;
+            } else {
+                slot.next = REGISTRY_INVALID_INDEX;
+            }
+            slots_vec.push(slot);
         }
-        slots[REGISTRY_SLAB_CAPACITY - 1].next = REGISTRY_INVALID_INDEX;
+        let slots = slots_vec.into_boxed_slice();
 
         // Initialize hash buckets to empty
-        let hash_buckets = Box::new([REGISTRY_INVALID_INDEX; REGISTRY_HASH_BUCKETS]);
+        let mut buckets_vec = Vec::with_capacity(REGISTRY_HASH_BUCKETS);
+        for _ in 0..REGISTRY_HASH_BUCKETS {
+            buckets_vec.push(REGISTRY_INVALID_INDEX);
+        }
+        let hash_buckets = buckets_vec.into_boxed_slice();
 
         Self {
             slots: PoisonLock::new(slots),
@@ -783,7 +793,7 @@ impl IommuDomain {
             // Uses bitmap-based IovaAllocatorFast with O(1) magazine allocation.
             per_domain_iova: super::IovaAllocatorFast::new(
                 0x1_0000_0000,           // 4GB base (above 32-bit space)
-                0x40_0000_0000,          // 256GB size
+                0x8_0000_0000,           // 32GB size (1MB bitmap)
             ),
             dma_registry: DmaResourceRegistry::new(),
         }

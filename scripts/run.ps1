@@ -34,7 +34,9 @@
 .PARAMETER NoIommu
     Disable IOMMU emulation (for compatibility testing without DMA protection).
 .PARAMETER Numa
-    Enable NUMA topology simulation (2 nodes, for Share-Nothing architecture testing).
+    Enable NUMA topology simulation (default: enabled, 2 nodes).
+.PARAMETER NoNuma
+    Disable NUMA topology simulation.
 .PARAMETER Network
     Enable VirtIO network device with IOMMU support (hostfwd: tcp/udp 5555->80).
 .PARAMETER Monitor
@@ -82,7 +84,8 @@ param(
     [switch]$Lint,
     [bool]$Iommu = $true,  # ExoRust: IOMMU enabled by default for DMA protection
     [switch]$NoIommu,      # Explicitly disable IOMMU
-    [switch]$Numa,
+    [bool]$Numa = $true,   # ExoRust: NUMA enabled by default (2 nodes)
+    [switch]$NoNuma,       # Explicitly disable NUMA
     [switch]$Network,
     [switch]$Monitor,
     [switch]$Tcg,          # Force TCG software emulation
@@ -570,7 +573,8 @@ function Start-Qemu {
     # [ExoRust] NUMA Topology Simulation
     # Required for Share-Nothing architecture testing (Design Doc 5.3)
     # Memory split: ensure mem0 + mem1 = Memory (remainder goes to node1)
-    if ($Numa -and $Smp -ge 2) {
+    $numaRequested = $Numa -and (-not $NoNuma)
+    if ($numaRequested -and $Smp -ge 2) {
         $coresNode0 = [math]::Floor($Smp / 2)
         $memNode0 = [math]::Floor($Memory / 2)
         $memNode1 = $Memory - $memNode0  # Remainder to node1 to ensure exact match with -m

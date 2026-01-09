@@ -120,16 +120,44 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     // 現在のドメインIDを取得
     let domain_id = get_current_domain();
 
-    // パニックメッセージを構築
+    // 3. ログ出力（ヒープ割り当ての前に行う！）
+    //
+    // 注意: ここで String::new() などを呼ぶと、パニックの原因がメモリアロケータの破損だった場合に
+    // ダブルパニック（再帰的パニック）が発生し、元のパニック理由が表示されないままシステム停止する。
+    // したがって、まず最小限の情報を出力し、その後にリッチなログ記録を試みる。
+
+    // Raw output to ensure we see SOMETHING
+    crate::io::log::early_print("\n!!! KERNEL PANIC DETECTED !!!\n");
+
+    // Print location if available
+    if let Some(location) = info.location() {
+        log::error!(
+            "Panic at {}:{}:{}",
+            location.file(),
+            location.line(),
+            location.column()
+        );
+    } else {
+        log::error!("Panic at unknown location");
+    }
+
+    // Print message directly (no heap alloc yet)
+    log::error!("Message: {}", info.message());
+
+    // ここから下はヒープ割り当てを含む可能性があるため、失敗するリスクがある
+    // パニックメッセージを構築（DMAログ用）
     let message = {
         use core::fmt::Write;
+        // String::new() はヒープを使用する
         let mut s = String::new();
         // PanicMessage から文字列を取得
-        let _ = write!(s, "{}", info.message());
-        if s.is_empty() {
-            String::from("Unknown panic")
+        if write!(s, "{}", info.message()).is_err() {
+            // アロケーション失敗時は静的文字列を使用（ダブルパニック回避の最終手段）
+            String::from("Panic (OOM while formatting message)")
+        } else if s.is_empty() {
+             String::from("Unknown panic")
         } else {
-            s
+             s
         }
     };
 

@@ -1,6 +1,7 @@
 // ============================================================================
 // kernel/src/collections/intrusive_rbtree.rs
 // ============================================================================
+#![allow(unsafe_op_in_unsafe_fn)]
 //! Intrusive Red-Black Tree Implementation
 //!
 //! Linux カーネルの rbtree スタイルの侵入型赤黒木。
@@ -625,105 +626,107 @@ impl<A: KeyAdapter> RBTree<A> {
 
     /// 削除後のリバランス
     unsafe fn remove_fixup(&mut self, mut node: *mut RBLink, mut parent: *mut RBLink) {
-        while node != self.root && (node.is_null() || (*node).color() == Color::Black) {
-            if parent.is_null() {
-                break;
-            }
-
-            if node == (*parent).left {
-                let mut sibling = (*parent).right;
-
-                if !sibling.is_null() && (*sibling).color() == Color::Red {
-                    (*sibling).set_color(Color::Black);
-                    (*parent).set_color(Color::Red);
-                    self.rotate_left(parent);
-                    sibling = (*parent).right;
+        unsafe {
+            while node != self.root && (node.is_null() || (*node).color() == Color::Black) {
+                if parent.is_null() {
+                    break;
                 }
 
-                if sibling.is_null() {
-                    node = parent;
-                    parent = (*node).parent();
-                    continue;
-                }
+                if node == (*parent).left {
+                    let mut sibling = (*parent).right;
 
-                let left_black = (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
-                let right_black = (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
-
-                if left_black && right_black {
-                    (*sibling).set_color(Color::Red);
-                    node = parent;
-                    parent = (*node).parent();
-                } else {
-                    if right_black {
-                        if !(*sibling).left.is_null() {
-                            (*(*sibling).left).set_color(Color::Black);
-                        }
-                        (*sibling).set_color(Color::Red);
-                        self.rotate_right(sibling);
+                    if !sibling.is_null() && (*sibling).color() == Color::Red {
+                        (*sibling).set_color(Color::Black);
+                        (*parent).set_color(Color::Red);
+                        self.rotate_left(parent);
                         sibling = (*parent).right;
                     }
 
-                    if !sibling.is_null() {
-                        (*sibling).set_color((*parent).color());
+                    if sibling.is_null() {
+                        node = parent;
+                        parent = (*node).parent();
+                        continue;
                     }
-                    (*parent).set_color(Color::Black);
-                    if !sibling.is_null() && !(*sibling).right.is_null() {
-                        (*(*sibling).right).set_color(Color::Black);
-                    }
-                    self.rotate_left(parent);
-                    node = self.root;
-                    break;
-                }
-            } else {
-                // 対称ケース
-                let mut sibling = (*parent).left;
 
-                if !sibling.is_null() && (*sibling).color() == Color::Red {
-                    (*sibling).set_color(Color::Black);
-                    (*parent).set_color(Color::Red);
-                    self.rotate_right(parent);
-                    sibling = (*parent).left;
-                }
+                    let left_black = (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
+                    let right_black = (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
 
-                if sibling.is_null() {
-                    node = parent;
-                    parent = (*node).parent();
-                    continue;
-                }
+                    if left_black && right_black {
+                        (*sibling).set_color(Color::Red);
+                        node = parent;
+                        parent = (*node).parent();
+                    } else {
+                        if right_black {
+                            if !(*sibling).left.is_null() {
+                                (*(*sibling).left).set_color(Color::Black);
+                            }
+                            (*sibling).set_color(Color::Red);
+                            self.rotate_right(sibling);
+                            sibling = (*parent).right;
+                        }
 
-                let left_black = (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
-                let right_black = (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
-
-                if left_black && right_black {
-                    (*sibling).set_color(Color::Red);
-                    node = parent;
-                    parent = (*node).parent();
-                } else {
-                    if left_black {
-                        if !(*sibling).right.is_null() {
+                        if !sibling.is_null() {
+                            (*sibling).set_color((*parent).color());
+                        }
+                        (*parent).set_color(Color::Black);
+                        if !sibling.is_null() && !(*sibling).right.is_null() {
                             (*(*sibling).right).set_color(Color::Black);
                         }
-                        (*sibling).set_color(Color::Red);
-                        self.rotate_left(sibling);
+                        self.rotate_left(parent);
+                        node = self.root;
+                        break;
+                    }
+                } else {
+                    // 対称ケース
+                    let mut sibling = (*parent).left;
+
+                    if !sibling.is_null() && (*sibling).color() == Color::Red {
+                        (*sibling).set_color(Color::Black);
+                        (*parent).set_color(Color::Red);
+                        self.rotate_right(parent);
                         sibling = (*parent).left;
                     }
 
-                    if !sibling.is_null() {
-                        (*sibling).set_color((*parent).color());
+                    if sibling.is_null() {
+                        node = parent;
+                        parent = (*node).parent();
+                        continue;
                     }
-                    (*parent).set_color(Color::Black);
-                    if !sibling.is_null() && !(*sibling).left.is_null() {
-                        (*(*sibling).left).set_color(Color::Black);
+
+                    let left_black = (*sibling).left.is_null() || (*(*sibling).left).color() == Color::Black;
+                    let right_black = (*sibling).right.is_null() || (*(*sibling).right).color() == Color::Black;
+
+                    if left_black && right_black {
+                        (*sibling).set_color(Color::Red);
+                        node = parent;
+                        parent = (*node).parent();
+                    } else {
+                        if left_black {
+                            if !(*sibling).right.is_null() {
+                                (*(*sibling).right).set_color(Color::Black);
+                            }
+                            (*sibling).set_color(Color::Red);
+                            self.rotate_left(sibling);
+                            sibling = (*parent).left;
+                        }
+
+                        if !sibling.is_null() {
+                            (*sibling).set_color((*parent).color());
+                        }
+                        (*parent).set_color(Color::Black);
+                        if !sibling.is_null() && !(*sibling).left.is_null() {
+                            (*(*sibling).left).set_color(Color::Black);
+                        }
+                        self.rotate_right(parent);
+                        node = self.root;
+                        break;
                     }
-                    self.rotate_right(parent);
-                    node = self.root;
-                    break;
                 }
             }
-        }
 
-        if !node.is_null() {
-            (*node).set_color(Color::Black);
+            if !node.is_null() {
+                (*node).set_color(Color::Black);
+            }
         }
     }
 }
