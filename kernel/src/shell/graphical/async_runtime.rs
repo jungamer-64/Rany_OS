@@ -253,8 +253,13 @@ pub async fn run_async_shell() {
 
             if let Some(mut exoshell) = shell_opt {
                 let result = exoshell.eval(&req.command).await;
-                let output = format!("{}", result);
                 let is_error = matches!(result, ExoValue::Error(_));
+                let output = if is_error {
+                    format!("{}", result)
+                } else {
+                    crate::shell::exoshell::display::format_shell_output(&result)
+                        .unwrap_or_default()
+                };
 
                 *ASYNC_EXOSHELL.lock() = Some(exoshell);
 

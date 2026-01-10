@@ -28,7 +28,7 @@ pub struct RenderInputState<'a> {
     pub prompt_end_x: i32,
 }
 
-pub use crate::shell::line_buffer::{LineBuffer, MAX_LINE_LENGTH};
+pub use crate::shell::line_buffer::LineBuffer;
 
 /// マウスカーソルの描画状態
 #[cfg(feature = "mouse")]

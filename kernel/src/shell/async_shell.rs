@@ -278,28 +278,17 @@ fn clear_line_visual(buffer: &LineBuffer) {
 async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
     let result = exoshell.eval(line).await;
 
-    match &result {
-        ExoValue::Nil => {}
-        ExoValue::Error(e) => {
-            crate::console::write(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
-        }
-        ExoValue::Bytes(bytes) => {
-            if let Ok(text) = core::str::from_utf8(bytes) {
-                crate::console::write(text);
-                if !text.ends_with('\n') {
-                    crate::console::write("\n");
-                }
-            } else {
-                crate::console::write(&format!("<{} bytes>\n", bytes.len()));
-            }
-        }
-        ExoValue::Array(items) => {
-            for item in items {
-                crate::console::write(&format!("{}\n", item));
-            }
-        }
-        other => {
-            crate::console::write(&format!("{}\n", other));
+    // Error handling with color
+    if let ExoValue::Error(ref e) = result {
+        crate::console::write(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
+        return;
+    }
+
+    // Normal output
+    if let Some(text) = crate::shell::exoshell::display::format_shell_output(&result) {
+        crate::console::write(&text);
+        if !text.ends_with('\n') {
+            crate::console::write("\n");
         }
     }
 }
