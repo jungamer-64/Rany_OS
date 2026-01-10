@@ -90,9 +90,9 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `crate::io::hid::ps2::commands` directly or prefer `Ps2Controller` APIs instead of top-level re-exports.
   - `io::ps2_commands` ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::commands` or `Ps2Controller` APIs instead.
-  - `ps2_kbd_commands` ✅ **deprecated**
+  - `ps2::kbd_commands` ✅ **deprecated**
     - Migration: Use `crate::io::hid::ps2::kbd_commands` or `Ps2Controller` helpers instead.
-  - `io::ps2_kbd_commands` ✅ **deprecated**
+  - `io::ps2::kbd_commands` ✅ **deprecated**
     - Migration: Use `crate::io::hid::ps2::kbd_commands` or `Ps2Controller` helpers instead.
   - `ps2_mouse_commands` ✅ **deprecated**
     - Migration: Use `crate::io::hid::ps2::mouse_commands` or `Ps2Controller` helpers instead.
