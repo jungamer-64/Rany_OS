@@ -471,7 +471,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
 
     // Initialize Graphical Shell (requires gui service)
     use crate::shell::graphical::async_runtime as graphical_shell;
-    graphical_shell::init();
+    // Moved below graphics initialization
 
     io::log::early_print("[DEBUG] After first info! macro\n");
 
@@ -490,12 +490,15 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
             info!(target: "init", "Graphics framebuffer initialized");
 
             // ブートスプラッシュを表示
-            graphics::show_boot_splash();
-            info!(target: "init", "Boot splash displayed");
+            // graphics::show_boot_splash(); // Disabled by user request
+            // info!(target: "init", "Boot splash displayed");
 
             // Initialize Text Console driver
             graphics::init_console();
             info!(target: "init", "Text Console driver initialized");
+
+            // Initialize Graphical Shell (now that framebuffer is ready)
+            graphical_shell::init();
         } else {
             warn!(target: "init", "Graphics framebuffer init failed");
         }
@@ -503,12 +506,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     #[cfg(any(test, feature = "bench"))]
     {
         info!(target: "init", "Skipping graphics framebuffer init in test/bench build");
-    }
-
-    // 進捗: 10% - メモリ初期化完了
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        graphics::update_boot_progress_with_message(10, "Memory initialized");
     }
 
     // アロケーションテスト（シンプル化）
@@ -548,10 +545,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     // domain_system::init();
     info!(target: "init", "Domain system initialized");
     io::log::early_print("[DEBUG] After domain_system::init\n");
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        graphics::update_boot_progress_with_message(20, "Domain system ready");
-    }
 
     // 2.5. SAS（単一アドレス空間）の初期化
     info!(target: "init", "Initializing SAS");
@@ -562,10 +555,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Initializing Spectre mitigations");
     spectre::init();
     info!(target: "init", "Spectre mitigations initialized");
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        graphics::update_boot_progress_with_message(30, "Security initialized");
-    }
 
     // 2.7. セキュリティフレームワークの初期化
     info!(target: "init", "Initializing security framework");
@@ -576,10 +565,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Initializing MPK/PKU security");
     security::mpk::init();
     info!(target: "init", "MPK/PKU security initialized");
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        graphics::update_boot_progress_with_message(40, "Kernel API ready");
-    }
 
     // 2.9. Initramfs からドライバ Cells をロード
     info!(target: "init", "Loading driver Cells from initramfs...");
@@ -829,11 +814,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     net::init_network_shell();
     info!(target: "init", "Network stack initialized");
     */
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        // graphics::update_boot_progress_with_message(50, "Network stack ready"); // DISABLED FOR HEAP DEBUG
-        io::log::early_print("[DEBUG] Boot progress 50 SKIPPED\n");
-    }
 
     // 3.6.2. VirtIO-Net driver via DriverRegistry
     /*
@@ -865,12 +845,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     fs::init_shell_fs();
     info!(target: "init", "Memory filesystem initialized");
     io::log::early_print("[DEBUG] After memfs init\n");
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        io::log::early_print("[DEBUG] Before boot progress 60\n");
-        graphics::update_boot_progress_with_message(60, "Filesystem mounted");
-        io::log::early_print("[DEBUG] After boot progress 60\n");
-    }
 
     // 4. タスクスケジューラの初期化
     io::log::early_print("[DEBUG] Before scheduler init\n");
@@ -879,10 +853,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     task::init_scheduler(0); // CPU 0
     info!(target: "init", "Task scheduler initialized");
     io::log::early_print("[DEBUG] After scheduler init\n");
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        graphics::update_boot_progress_with_message(70, "Scheduler started");
-    }
 
     // 4.5. Per-Core Executorの初期化（設計書 4.3）
     io::log::early_print("[DEBUG] Before executor init\n");
@@ -910,10 +880,6 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Initializing live update (Epoch-based Reclamation)");
     loader::live_update::init();
     info!(target: "init", "Live update initialized");
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        graphics::update_boot_progress_with_message(80, "Loader ready");
-    }
 
     // 5.5. シンボルテーブルの初期化（バックトレース用）
     io::log::early_print("[DEBUG] Before symbol table init\n");
@@ -979,22 +945,12 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
             }
         }
     }
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        graphics::update_boot_progress_with_message(90, "Integration complete");
-    }
 
     // 6. 割り込みを有効化
     io::log::early_print("[DEBUG] Before enable interrupts\n");
     interrupts::enable_interrupts();
     info!(target: "init", "Interrupts enabled");
     io::log::early_print("[DEBUG] After enable interrupts\n");
-    #[cfg(not(any(test, feature = "bench")))]
-    {
-        io::log::early_print("[DEBUG] Before boot progress 100\n");
-        graphics::update_boot_progress_with_message(100, "Ready!");
-        io::log::early_print("[DEBUG] After boot progress 100\n");
-    }
 
     // 7. システム統計を表示
     io::log::early_print("[DEBUG] Before print_system_stats\n");
@@ -1198,8 +1154,7 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     executor.spawn(Task::new(async {
         info!(target: "task9", "Graphical shell task starting...");
 
-        // グラフィカルシェルを初期化
-        shell::graphical::init();
+        // グラフィカルシェルを開始 (initはkmainで完了と想定)
         shell::graphical::start();
 
         info!(target: "task9", "Graphical shell started - running async...");

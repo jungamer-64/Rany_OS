@@ -3,9 +3,7 @@
 //! This module implements fine-grained capability-based access control
 //! inspired by Linux capabilities.
 
-use alloc::collections::BTreeSet;
 use alloc::format;
-use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt;
 use spin::Mutex;

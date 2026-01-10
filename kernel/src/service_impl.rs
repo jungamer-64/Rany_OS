@@ -47,6 +47,7 @@ struct FileHandleEntry {
     path: String,
     mode: OpenMode,
     position: u64,
+    token: Option<u64>,
 }
 
 // Channel Registry for IPC
@@ -142,6 +143,74 @@ impl DmaRegistry {
 }
 
 static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
+
+// ============================================================================
+// NVMe Direct Handle Registry
+// ============================================================================
+
+/// Entry for a kernel-opened direct block handle
+struct NvmeOpenEntry {
+    device_id: u64,
+    start_block: u64,
+    block_count: u64,
+    block_size: u32,
+    owner: u64,
+    token: Option<u64>,
+}
+
+struct NvmeDirectRegistry {
+    opens: Mutex<BTreeMap<u64, NvmeOpenEntry>>,
+    next_id: AtomicU64,
+}
+
+impl NvmeDirectRegistry {
+    const fn new() -> Self {
+        Self {
+            opens: Mutex::new(BTreeMap::new()),
+            next_id: AtomicU64::new(1),
+        }
+    }
+
+    fn register(
+        &self,
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+        block_size: u32,
+        owner: u64,
+        token: Option<u64>,
+    ) -> u64 {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        self.opens.lock().insert(
+            id,
+            NvmeOpenEntry {
+                device_id,
+                start_block,
+                block_count,
+                block_size,
+                owner,
+                token,
+            },
+        );
+        id
+    }
+
+    /// Unregister only if caller is owner or has CAP_SYS_ADMIN
+    fn unregister_if_owner_or_admin(&self, id: u64, caller: u64) -> Option<NvmeOpenEntry> {
+        // Check permission first
+        let mgr = crate::security::capability::manager();
+        let has_admin = mgr.has_capability(caller, crate::security::capability::CAP_SYS_ADMIN);
+        let mut opens = self.opens.lock();
+        if let Some(entry) = opens.get(&id) {
+            if entry.owner == caller || has_admin {
+                return opens.remove(&id);
+            }
+        }
+        None
+    }
+}
+
+static NVME_DIRECT_REGISTRY: NvmeDirectRegistry = NvmeDirectRegistry::new();
 
 // ============================================================================
 // ExoKernel: The KernelServices Implementation
@@ -279,6 +348,11 @@ impl KernelServices for ExoKernel {
     // ========================================================================
 
     fn fs_open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, KapiError> {
+        // Backward-compatible: open without token
+        self.fs_open_with_token(path, mode, None)
+    }
+
+    fn fs_open_with_token(&self, path: &str, mode: OpenMode, token: Option<u64>) -> Result<FileHandle, KapiError> {
         use crate::fs::memfs;
 
         // Check if file exists
@@ -301,21 +375,40 @@ impl KernelServices for ExoKernel {
             }
         }
 
+        let caller = context::current_task_id();
+
+        // If token provided, validate and increment in-flight counter
+        if let Some(t) = token {
+            if !crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_FOWNER) {
+                return Err(KapiError::PermissionDenied);
+            }
+
+            if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                return Err(KapiError::PermissionDenied);
+            }
+        }
+
         // Register in file handle table
         let handle_id = FILE_HANDLE_REGISTRY.register(FileHandleEntry {
             path: path_buf,
             mode,
             position: 0,
+            token,
         });
+
         Ok(FileHandle::new(handle_id, mode))
     }
 
     fn fs_close(&self, handle: FileHandle) -> Result<(), KapiError> {
         let handle_id = handle.id();
-        FILE_HANDLE_REGISTRY
-            .unregister(handle_id)
-            .ok_or(KapiError::InvalidHandle)?;
-        Ok(())
+        if let Some(entry) = FILE_HANDLE_REGISTRY.unregister(handle_id) {
+            if let Some(t) = entry.token {
+                let _ = crate::security::capability::manager().decrement_in_flight(t);
+            }
+            Ok(())
+        } else {
+            Err(KapiError::InvalidHandle)
+        }
     }
 
     fn nvme_open_direct(
@@ -323,6 +416,17 @@ impl KernelServices for ExoKernel {
         device_id: u64,
         start_block: u64,
         block_count: u64,
+    ) -> Result<DirectBlockHandle, KapiError> {
+        // Backward-compatible: open without token
+        self.nvme_open_direct_with_token(device_id, start_block, block_count, None)
+    }
+
+    fn nvme_open_direct_with_token(
+        &self,
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+        token: Option<u64>,
     ) -> Result<DirectBlockHandle, KapiError> {
         if block_count == 0 {
             return Err(KapiError::IoError);
@@ -333,12 +437,41 @@ impl KernelServices for ExoKernel {
             crate::io::nvme::with_driver(|driver| driver.namespace_block_size(nsid))
                 .unwrap_or(512);
 
-        Ok(DirectBlockHandle::new(
-            device_id,
-            start_block,
-            block_count,
-            block_size,
-        ))
+        let caller = context::current_task_id();
+
+        // If token provided, validate and increment in-flight counter
+        if let Some(t) = token {
+            if !crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_DMA) {
+                return Err(KapiError::PermissionDenied);
+            }
+            if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                return Err(KapiError::PermissionDenied);
+            }
+        }
+
+        // Register the open in kernel registry and return a handle with open_id
+        let id = NVME_DIRECT_REGISTRY.register(device_id, start_block, block_count, block_size, caller, token);
+        Ok(DirectBlockHandle::new_with_id(device_id, start_block, block_count, block_size, id))
+    }
+
+    fn nvme_close_direct(&self, handle: DirectBlockHandle) -> Result<(), KapiError> {
+        let id = handle.open_id();
+        if id == 0 {
+            return Err(KapiError::InvalidHandle);
+        }
+
+        let caller = context::current_task_id();
+
+        match NVME_DIRECT_REGISTRY.unregister_if_owner_or_admin(id, caller) {
+            Some(entry) => {
+                if let Some(t) = entry.token {
+                    // Best-effort decrement
+                    let _ = crate::security::capability::manager().decrement_in_flight(t);
+                }
+                Ok(())
+            }
+            None => Err(KapiError::InvalidHandle),
+        }
     }
 
     fn nvme_read_blocks_dma(
@@ -1008,6 +1141,108 @@ static EXOKERNEL: ExoKernel = ExoKernel::new();
 pub unsafe fn register_kernel_services() {
     unsafe {
         kernel_api::register_kernel(&EXOKERNEL);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod nvme_tests {
+    use super::*;
+    use crate::task::process;
+    use crate::security::capability::{self, CapabilitySet};
+
+    #[test]
+    fn test_nvme_open_with_token_reclaim() {
+        // Setup: create caller and target domains
+        let caller = process::process_manager().create(process::ProcessId::INIT, "caller_nvme").unwrap();
+        let target = process::process_manager().create(process::ProcessId::INIT, "target_nvme").unwrap();
+
+        // Caller gets permission to grant CAP_DMA
+        process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(crate::security::capability::CAP_DMA));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_DMA, None, false)
+            .unwrap();
+
+        // Target opens using token
+        process::set_current_process(target);
+        let handle = EXOKERNEL
+            .nvme_open_direct_with_token(0, 0, 1, Some(token))
+            .expect("open should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Target closes handle
+        process::set_current_process(target);
+        assert!(EXOKERNEL.nvme_close_direct(handle).is_ok());
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod fs_tests {
+    use super::*;
+    use crate::task::process;
+    use crate::security::capability::{self, CapabilitySet};
+
+    #[test]
+    fn test_fs_open_with_token_reclaim() {
+        // Setup: create caller and target domains
+        let caller = process::process_manager().create(process::ProcessId::INIT, "caller_fs").unwrap();
+        let target = process::process_manager().create(process::ProcessId::INIT, "target_fs").unwrap();
+
+        // Caller gets permission to grant CAP_FOWNER
+        process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
+            .unwrap();
+
+        // Target opens using token
+        process::set_current_process(target);
+        let handle = EXOKERNEL
+            .fs_open_with_token("test_token_file", crate::OpenMode::Write, Some(token))
+            .expect("open should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Close file handle
+        process::set_current_process(target);
+        assert!(EXOKERNEL.fs_close(handle).is_ok());
+
+        // Now reclaim should succeed
+        process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 }
 

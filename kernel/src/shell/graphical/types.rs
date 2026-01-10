@@ -85,6 +85,11 @@ pub struct ShellState {
     /// カーソル位置の文字
     pub cached_cursor_char: Option<char>,
 
+    /// 入力全体の幅（キャッシュ済み）
+    pub cached_total_input_width: i32,
+    /// 前回描画時の入力行幅（汚染領域計算用）
+    pub last_drawn_input_width: i32,
+
     /// 前回の補完描画領域（部分更新の消去用）
     pub last_completion_rect: Rect,
 }

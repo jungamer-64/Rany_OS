@@ -229,6 +229,24 @@ pub mod nvme {
         crate::kernel().nvme_open_direct(device_id, start_block, block_count)
     }
 
+    /// Open a direct NVMe block handle and associate it with an optional token.
+    /// The caller must hold an `IoCapability` and the provided token must be
+    /// valid for `CAP_DMA`.
+    pub fn open_direct_with_token(
+        _cap: &IoCapability,
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+        token: Option<u64>,
+    ) -> KapiResult<crate::DirectBlockHandle> {
+        crate::kernel().nvme_open_direct_with_token(device_id, start_block, block_count, token)
+    }
+
+    /// Close a kernel-registered direct NVMe handle
+    pub fn close_direct(_cap: &IoCapability, handle: crate::DirectBlockHandle) -> KapiResult<()> {
+        crate::kernel().nvme_close_direct(handle)
+    }
+
     /// Read blocks into a DMA buffer (buffer returned on completion)
     pub async fn read_blocks_dma(
         _cap: &IoCapability,
@@ -289,6 +307,18 @@ pub mod fs {
         mode: crate::OpenMode,
     ) -> KapiResult<crate::FileHandle> {
         crate::kernel().fs_open(path, mode)
+    }
+
+    /// Open a file and associate it with an optional token.
+    /// The caller must hold a `FsCapability` and the provided token must be
+    /// valid for `CAP_FOWNER`.
+    pub fn open_with_token(
+        _cap: &FsCapability,
+        path: &str,
+        mode: crate::OpenMode,
+        token: Option<u64>,
+    ) -> KapiResult<crate::FileHandle> {
+        crate::kernel().fs_open_with_token(path, mode, token)
     }
 }
 

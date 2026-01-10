@@ -12,8 +12,6 @@ use alloc::boxed::Box;
 
 use super::{BoxFuture, ShellNamespace};
 use crate::shell::exoshell::types::*;
-use crate::security::capability::{self, CapabilitySet, capability_name, manager, CAP_SYS_ADMIN, Capability as BitCapability};
-use crate::task::process::{self, ProcessId};
 
 /// Shell namespace that provides a `spawn()` API returning a ShellProxy map
 /// which can be chained with `with_cap`/`revoke`/`run` to spawn processes

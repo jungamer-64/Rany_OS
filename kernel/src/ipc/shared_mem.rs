@@ -335,14 +335,39 @@ pub struct ShmHandle {
     region: Arc<spin::RwLock<SharedMemoryRegion>>,
     base_addr: usize,
     attached: AtomicBool,
+    /// Optional capability token associated with this handle (in-flight accounting)
+    token: Option<u64>,
 }
 
 impl ShmHandle {
-    /// 新しいハンドルを作成
+    /// 新しいハンドルを作成 (トークンなし)
     fn new(region: Arc<spin::RwLock<SharedMemoryRegion>>) -> Result<Self, ShmError> {
+        Self::new_with_token(region, None)
+    }
+
+    /// 新しいハンドルを作成し、オプションのトークンを関連付ける。
+    /// トークンが指定された場合、in-flight カウンタをインクリメントし、
+    /// 失敗したらエラーを返す。
+    fn new_with_token(
+        region: Arc<spin::RwLock<SharedMemoryRegion>>,
+        token: Option<u64>,
+    ) -> Result<Self, ShmError> {
+        // If a token is provided, attempt to increment in-flight. On failure, deny.
+        if let Some(t) = token {
+            if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                return Err(ShmError::PermissionDenied);
+            }
+        }
+
+        // Attach to the region; if attach fails, roll back in-flight increment.
         let base_addr = {
             let r = region.read();
-            r.attach()?;
+            if let Err(e) = r.attach() {
+                if let Some(t) = token {
+                    let _ = crate::security::capability::manager().decrement_in_flight(t);
+                }
+                return Err(e);
+            }
             r.as_ptr() as usize
         };
 
@@ -350,6 +375,7 @@ impl ShmHandle {
             region,
             base_addr,
             attached: AtomicBool::new(true),
+            token,
         })
     }
 
@@ -422,6 +448,12 @@ impl ShmHandle {
 
         let r = self.region.read();
         r.detach()?;
+
+        // If a token was associated with this handle, decrement its in-flight counter.
+        if let Some(t) = self.token {
+            let _ = crate::security::capability::manager().decrement_in_flight(t);
+        }
+
         Ok(())
     }
 
@@ -571,11 +603,17 @@ impl SharedMemoryManager {
         name_map.get(name).copied()
     }
 
-    /// 共有メモリにアタッチ
+    /// 共有メモリにアタッチ (従来互換: トークンなし)
     pub fn attach(&self, id: ShmId) -> Result<ShmHandle, ShmError> {
+        self.attach_with_token(id, None)
+    }
+
+    /// 共有メモリにアタッチし、オプションでトークンを紐付ける。
+    /// トークンが与えられた場合、in-flight カウンタがインクリメントされる。
+    pub fn attach_with_token(&self, id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
         let id_map = self.regions_by_id.read();
         let region = id_map.get(&id).ok_or(ShmError::NotFound)?;
-        ShmHandle::new(region.clone())
+        ShmHandle::new_with_token(region.clone(), token)
     }
 
     /// 共有メモリを削除
@@ -700,9 +738,14 @@ pub fn shmget(key: ShmKey, size: ShmSize, flags: ShmFlags) -> Result<ShmId, ShmE
     }
 }
 
-/// shmat() 相当
+/// shmat() 相当 (従来互換: トークンなし)
 pub fn shmat(id: ShmId) -> Result<ShmHandle, ShmError> {
-    SHM_MANAGER.attach(id)
+    SHM_MANAGER.attach_with_token(id, None)
+}
+
+/// shmat() with optional token: attach with a capability token id to register in-flight usage
+pub fn shmat_with_token(id: ShmId, token: Option<u64>) -> Result<ShmHandle, ShmError> {
+    SHM_MANAGER.attach_with_token(id, token)
 }
 
 /// shmdt() 相当 (ShmHandle::detach を使用)
@@ -1098,5 +1141,70 @@ mod tests {
         let rref = region.read_as_rref().unwrap();
         assert_eq!(*rref, 42);
         assert_eq!(rref.owner(), domain1);
+    }
+
+    #[test]
+    fn test_shm_attach_with_token_reclaim() {
+        // Setup: create caller and target domains
+        let caller = crate::task::process::process_manager()
+            .create(crate::task::process::ProcessId::INIT, "caller_shm")
+            .unwrap();
+        let target = crate::task::process::process_manager()
+            .create(crate::task::process::ProcessId::INIT, "target_shm")
+            .unwrap();
+
+        // Caller gets permission to grant CAP_IPC_LOCK
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(
+            caller.as_u64(),
+            crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_IPC_LOCK),
+        );
+
+        // Grant token to target
+        let token = crate::security::capability::manager().grant_capability_with_opts(
+            caller.as_u64(),
+            target.as_u64(),
+            crate::security::capability::CAP_IPC_LOCK,
+            None,
+            false,
+        )
+        .unwrap();
+
+        // Caller creates the named shared memory
+        crate::task::process::set_current_process(caller);
+        let name = "/token_shm";
+        let id = shm_open(
+            name,
+            ShmSize::new(4096),
+            ShmFlags {
+                create: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // Target attaches using token
+        crate::task::process::set_current_process(target);
+        let handle = shmat_with_token(id, Some(token)).unwrap();
+        assert!(handle.is_attached());
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issuer revokes token
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Now detach (target releases resource)
+        crate::task::process::set_current_process(target);
+        handle.detach().unwrap();
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+        // Now reclaim should succeed
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 }

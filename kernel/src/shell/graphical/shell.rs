@@ -92,6 +92,8 @@ impl GraphicalShell {
                 cached_prompt_end_x,
                 cached_cursor_pixel_x: 0,
                 cached_cursor_char: None,
+                cached_total_input_width: 0,
+                last_drawn_input_width: 0,
                 last_completion_rect: Rect::new(0, 0, 0, 0),
             },
             resources: ShellResources {
@@ -147,6 +149,7 @@ impl GraphicalShell {
     /// 入力変更時にキャッシュを更新
     #[inline]
     pub(crate) fn update_cursor_cache(&mut self) {
+        // カーソル X 位置
         self.state.cached_cursor_pixel_x = self.resources.font.iter_width(
             self.state
                 .input_buffer
@@ -154,12 +157,19 @@ impl GraphicalShell {
                 .chars()
                 .take(self.state.input_buffer.cursor),
         ) as i32;
+        
+        // カーソル文字
         self.state.cached_cursor_char = self
             .state
             .input_buffer
             .content
             .chars()
             .nth(self.state.input_buffer.cursor);
+            
+        // 入力全体の幅 (Optimization for dirty rects)
+        self.state.cached_total_input_width = self.resources.font.iter_width(
+            self.state.input_buffer.content.chars()
+        ) as i32;
     }
 
     /// プロンプト変更時にキャッシュを更新
@@ -447,7 +457,7 @@ impl GraphicalShell {
         ) {
             self.state.input_buffer.set(&prev);
             self.update_cursor_cache();
-            self.redraw();
+            self.redraw_input_line();
         }
     }
 
@@ -456,9 +466,10 @@ impl GraphicalShell {
         if let Some(next) = self.state.history_navigator.next(self.shell.history()) {
             self.state.input_buffer.set(&next);
             self.update_cursor_cache();
-            self.redraw();
+            self.redraw_input_line();
         }
     }
+
 
     /// Tab補完処理
     pub(crate) fn handle_tab(&mut self) {
@@ -482,7 +493,7 @@ impl GraphicalShell {
         }
 
         self.update_cursor_cache();
-        self.redraw();
+        self.redraw_input_line();
     }
 
     /// 上にスクロール

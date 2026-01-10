@@ -112,6 +112,10 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 - `short-lived tokens` を発行する一時トークン API（`issue_temp_token(duration)`）
 - process::spawn_with_caps によって作成されたトークンは、その子プロセスのライフタイム中に **in-flight** としてカウントされます。子プロセスの終了（reap）の際に in-flight カウントは減少し、これにより `revoke` の直後でも in-flight カウントが 0 になるまで `reclaim` が保留されることが保証されます（例: `spawn_with_caps(...)` 内で `increment_in_flight(token)` を呼び、プロセス回収時に `decrement_in_flight(token)` を呼ぶ）。
 - ネットワークのバインドのような長期保持リソースもトークンと紐付けられます（例: `net.bind(port, token_id)`）。この場合、`bind(..., token)` は内部で `increment_in_flight(token)` を呼び、`unbind(...)` やソケットのクローズ時に `decrement_in_flight(token)` を呼び戻します。
+- NVMe のダイレクトブロックハンドルもトークンと紐付け可能です（例: `nvme.open_direct_with_token(device, start, count, token)`）。`open` は `increment_in_flight(token)` を呼び、`close`（`nvme.close_direct(handle)`）は `decrement_in_flight(token)` を呼び戻します。
+- デバイスファイルハンドル（例: `/dev/null` 等）もトークンと紐付け可能です（例: `DevFileHandle::open_with_token("null", Some(token_id))`）。`open_with_token` は `increment_in_flight(token)` を呼び、`Drop` 時に `decrement_in_flight(token)` を呼び戻します。
+- ファイルのオープン（ファイルハンドル）もトークンと紐付け可能です（例: `fs.open_with_token(path, mode, Some(token_id))`）。`open_with_token` は `increment_in_flight(token)` を呼び、`fs_close`（`fs.close(handle)`）は `decrement_in_flight(token)` を呼び戻します。
+- 共有メモリのアタッチもトークンと紐付け可能です（例: `shmat_with_token(shm_id, Some(token_id))`）。`shmat_with_token` は内部で `increment_in_flight(token)` を呼び、`shmdt`（`ShmHandle::detach`）やハンドルの破棄時に `decrement_in_flight(token)` を呼び戻します。
 - GUI 統合: grant/revoke の結果を ExoGUI で可視化
 
 ---
