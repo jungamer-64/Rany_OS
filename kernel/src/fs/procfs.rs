@@ -6,7 +6,9 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
+
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use crate::task::process::{ProcessState, ProcessId, process_manager};
@@ -389,7 +391,7 @@ impl ProcFs {
         // /proc/[pid]/maps
         let pid_copy = pid;
         proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "maps", move || {
-            Ok(Self::generate_process_maps(pid_copy))
+            Self::generate_process_maps(pid_copy)
         }));
 
         // /proc/[pid]/cmdline
@@ -397,15 +399,28 @@ impl ProcFs {
         proc_dir.add_child(ProcEntry::file(
             self.allocate_inode(),
             "cmdline",
-            move || Ok(Self::generate_process_cmdline(pid_copy)),
+            move || Self::generate_process_cmdline(pid_copy),
         ));
 
-        // /proc/[pid]/exe (symlink)
-        proc_dir.add_child(ProcEntry::symlink(
-            self.allocate_inode(),
-            "exe",
-            String::from("/bin/process"),
-        ));
+        // /proc/[pid]/exe (permission-checked entry)
+        let pid_copy = pid;
+        proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "exe", move || {
+            let proc_id = ProcessId::new(pid_copy.as_u32() as u64);
+            let caller = crate::task::context::current_task_id();
+            if let Some(_process) = process_manager().get(proc_id) {
+                if caller == proc_id.as_u64()
+                    || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_FOWNER)
+                    || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_PTRACE)
+                    || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_ADMIN)
+                {
+                    Ok(String::from("/bin/process"))
+                } else {
+                    Err(ProcError::PermissionDenied)
+                }
+            } else {
+                Err(ProcError::NotFound)
+            }
+        }));
 
         // /proc/[pid]/cwd (symlink)
         proc_dir.add_child(ProcEntry::symlink(
@@ -425,7 +440,7 @@ impl ProcFs {
         */
 
         // /proc/[pid]/fd ディレクトリ
-        proc_dir.add_child(ProcEntry::directory(self.allocate_inode(), "fd"));
+        proc_dir.add_child(ProcEntry::directory(self.allocate_inode(), "fd")); // permission-checked via ProcDirHandle::readdir()
 
         let mut root = self.root.write();
         root.add_child(proc_dir);
@@ -720,32 +735,55 @@ impl ProcFs {
         }
     }
 
-    fn generate_process_maps(pid: Pid) -> String {
+    fn generate_process_maps(pid: Pid) -> Result<String, ProcError> {
         // プロセスのメモリマップ（簡易実装）
-        alloc::format!(
-            "00400000-00401000 r-xp 00000000 00:00 0          /bin/process{}\n\
-             00600000-00601000 r--p 00000000 00:00 0          /bin/process{}\n\
-             00601000-00602000 rw-p 00001000 00:00 0          /bin/process{}\n\
-             7ffff7ff8000-7ffff7ffa000 r-xp 00000000 00:00 0  [vdso]\n\
-             7ffffffde000-7ffffffff000 rw-p 00000000 00:00 0  [stack]\n",
-            pid.as_u32(),
-            pid.as_u32(),
-            pid.as_u32()
-        )
-    }
-
-    fn generate_process_cmdline(pid: Pid) -> String {
-        // プロセスマネージャーから情報を取得
         let proc_id = ProcessId::new(pid.as_u32() as u64);
-        if let Some(process) = process_manager().get(proc_id) {
-            let p = process.read();
-            if p.cmdline.is_empty() {
-                alloc::format!("{}\0", p.name)
+        let caller = crate::task::context::current_task_id();
+
+        if let Some(_process) = process_manager().get(proc_id) {
+            if caller == proc_id.as_u64()
+                || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_PTRACE)
+                || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_ADMIN)
+            {
+                Ok(alloc::format!(
+                    "00400000-00401000 r-xp 00000000 00:00 0          /bin/process{}\n\
+                     00600000-00601000 r--p 00000000 00:00 0          /bin/process{}\n\
+                     00601000-00602000 rw-p 00001000 00:00 0          /bin/process{}\n\
+                     7ffff7ff8000-7ffff7ffa000 r-xp 00000000 00:00 0  [vdso]\n\
+                     7ffffffde000-7ffffffff000 rw-p 00000000 00:00 0  [stack]\n",
+                    pid.as_u32(),
+                    pid.as_u32(),
+                    pid.as_u32()
+                ))
             } else {
-                p.cmdline.join("\0") + "\0"
+                Err(ProcError::PermissionDenied)
             }
         } else {
-            String::from("/bin/process\0")
+            Err(ProcError::NotFound)
+        }
+    }
+
+    fn generate_process_cmdline(pid: Pid) -> Result<String, ProcError> {
+        // プロセスマネージャーから情報を取得
+        let proc_id = ProcessId::new(pid.as_u32() as u64);
+        let caller = crate::task::context::current_task_id();
+
+        if let Some(process) = process_manager().get(proc_id) {
+            if caller == proc_id.as_u64()
+                || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_PTRACE)
+                || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_ADMIN)
+            {
+                let p = process.read();
+                if p.cmdline.is_empty() {
+                    Ok(alloc::format!("{}\0", p.name))
+                } else {
+                    Ok(p.cmdline.join("\0") + "\0")
+                }
+            } else {
+                Err(ProcError::PermissionDenied)
+            }
+        } else {
+            Err(ProcError::NotFound)
         }
     }
 
@@ -810,9 +848,25 @@ impl ProcFileHandle {
 
         let caller = context::current_task_id();
 
+        // Determine required capability for tokens based on path
+        let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let required_cap = if let Some(last) = comps.last() {
+            if *last == "mem" || *last == "maps" || *last == "cmdline" {
+                crate::security::capability::CAP_SYS_PTRACE
+            } else if *last == "exe" || *last == "fd" {
+                crate::security::capability::CAP_FOWNER
+            } else if comps.len() >= 2 && comps[comps.len()-2] == "fd" {
+                crate::security::capability::CAP_FOWNER
+            } else {
+                crate::security::capability::CAP_SYS_PTRACE
+            }
+        } else {
+            crate::security::capability::CAP_SYS_PTRACE
+        };
+
         // If token provided, validate and increment in-flight counter
         if let Some(t) = token {
-            if !crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_SYS_PTRACE) {
+            if !crate::security::capability::manager().validate_token(caller, t, required_cap) {
                 return Err(ProcError::PermissionDenied);
             }
 
@@ -869,6 +923,124 @@ impl Drop for ProcFileHandle {
     }
 }
 
+/// Directory handle that may hold a token (in-flight counted)
+pub struct ProcDirHandle {
+    path: String,
+    token: Option<u64>,
+}
+
+impl ProcDirHandle {
+    /// Read directory entries. For `/proc/<pid>/fd` this enforces permission checks
+    /// using caller identity, capabilities, or an associated token.
+    pub fn readdir(&self) -> Result<Vec<String>, ProcError> {
+        use crate::task::context;
+        let caller = context::current_task_id();
+
+        // If this is a per-process fd directory, do permission checks
+        let comps: alloc::vec::Vec<&str> = self.path.split('/').filter(|s| !s.is_empty()).collect();
+        if comps.len() >= 2 && comps[comps.len() - 1] == "fd" {
+            let pid_comp = comps[comps.len() - 2];
+            if let Ok(pid_num) = pid_comp.parse::<u32>() {
+                let pid = Pid::new(pid_num);
+                let proc_id = ProcessId::new(pid.as_u32() as u64);
+                if process_manager().get(proc_id).is_none() {
+                    return Err(ProcError::NotFound);
+                }
+
+                // permission: same process, CAP_FOWNER, CAP_SYS_PTRACE, CAP_SYS_ADMIN, or valid token
+                let mut allowed = false;
+                if caller == proc_id.as_u64() {
+                    allowed = true;
+                }
+                if !allowed {
+                    if crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_FOWNER)
+                        || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_PTRACE)
+                        || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_ADMIN)
+                    {
+                        allowed = true;
+                    }
+                }
+                if !allowed {
+                    if let Some(t) = self.token {
+                        if crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_FOWNER) {
+                            allowed = true;
+                        }
+                    }
+                }
+                if !allowed {
+                    return Err(ProcError::PermissionDenied);
+                }
+
+                // Return placeholder fd list (fd table not implemented)
+                return Ok(vec![String::from("0"), String::from("1"), String::from("2")]);
+            } else {
+                return Err(ProcError::InvalidArgument);
+            }
+        }
+
+        // Fallback to regular readdir for other directories
+        procfs().readdir(&self.path)
+    }
+}
+
+impl Drop for ProcDirHandle {
+    fn drop(&mut self) {
+        if let Some(t) = self.token {
+            let _ = crate::security::capability::manager().decrement_in_flight(t);
+        }
+    }
+}
+
+impl ProcFs {
+    /// Open a directory and optionally bind it to a token (increment in-flight).
+    pub fn opendir_with_token(&self, path: &str, token: Option<u64>) -> Result<ProcDirHandle, ProcError> {
+        use crate::task::context;
+        let caller = context::current_task_id();
+
+        // Required capability for fd directory is CAP_FOWNER
+        let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        let required_cap = if comps.len() >= 1 && comps[comps.len() - 1] == "fd" {
+            crate::security::capability::CAP_FOWNER
+        } else {
+            crate::security::capability::CAP_FOWNER
+        };
+
+        if let Some(t) = token {
+            if !crate::security::capability::manager().validate_token(caller, t, required_cap) {
+                return Err(ProcError::PermissionDenied);
+            }
+            if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                return Err(ProcError::PermissionDenied);
+            }
+        }
+
+        // Verify path exists and is directory
+        let root = self.root.read();
+        let mut current = &*root;
+        if !path.is_empty() && path != "/" {
+            for component in path.split('/').filter(|s| !s.is_empty()) {
+                match current.children.get(component) {
+                    Some(entry) => current = entry,
+                    None => {
+                        if let Some(t) = token {
+                            let _ = crate::security::capability::manager().decrement_in_flight(t);
+                        }
+                        return Err(ProcError::NotFound);
+                    }
+                }
+            }
+        }
+
+        if current.file_type != ProcFileType::Directory {
+            if let Some(t) = token {
+                let _ = crate::security::capability::manager().decrement_in_flight(t);
+            }
+            return Err(ProcError::NotDirectory);
+        }
+
+        Ok(ProcDirHandle { path: String::from(path), token })
+    }
+}
 // ============================================================================
 // CPU情報取得ヘルパー
 // ============================================================================
@@ -1008,6 +1180,581 @@ mod tests {
         // Drop handle
         crate::task::process::set_current_process(target);
         drop(handle);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_mem_revoke_reclaim_stress() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_proc_stress").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_proc_stress").unwrap();
+
+        // Caller gets permission to grant CAP_SYS_PTRACE
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+        let path = alloc::format!("{}/mem", target.as_u64());
+
+        const N_WORKERS: usize = 8;
+        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+
+        let mut threads = Vec::new();
+        for _ in 0..N_WORKERS {
+            let opened_barrier = opened_barrier.clone();
+            let release_barrier = release_barrier.clone();
+            let path = path.clone();
+            let tok = token;
+            let target_pid = target;
+
+            threads.push(thread::spawn(move || {
+                // Set thread's current process to target
+                crate::task::process::set_current_process(target_pid);
+
+                // Open and hold handle
+                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
+
+                // Signal that this thread has opened and is holding the handle
+                opened_barrier.wait();
+
+                // Wait until main thread tells us to release
+                release_barrier.wait();
+
+                drop(handle);
+            }));
+        }
+
+        // Wait for all workers to open and hold handles
+        opened_barrier.wait();
+
+        // Revoke token as caller
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Release workers so they drop handles
+        release_barrier.wait();
+
+        // Join workers
+        for t in threads {
+            t.join().expect("worker thread failed");
+        }
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_maps_open_with_token_reclaim() {
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_maps").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_maps").unwrap();
+
+        // Caller gets permission to grant CAP_SYS_PTRACE
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+
+        // Target opens using token
+        crate::task::process::set_current_process(target);
+        let path = alloc::format!("{}/maps", target.as_u64());
+        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Drop handle
+        crate::task::process::set_current_process(target);
+        drop(handle);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_maps_revoke_reclaim_stress() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_maps_stress").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_maps_stress").unwrap();
+
+        // Caller gets permission to grant CAP_SYS_PTRACE
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+        let path = alloc::format!("{}/maps", target.as_u64());
+
+        const N_WORKERS: usize = 8;
+        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+
+        let mut threads = Vec::new();
+        for _ in 0..N_WORKERS {
+            let opened_barrier = opened_barrier.clone();
+            let release_barrier = release_barrier.clone();
+            let path = path.clone();
+            let tok = token;
+            let target_pid = target;
+
+            threads.push(thread::spawn(move || {
+                // Set thread's current process to target
+                crate::task::process::set_current_process(target_pid);
+
+                // Open and hold handle
+                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
+
+                // Signal that this thread has opened and is holding the handle
+                opened_barrier.wait();
+
+                // Wait until main thread tells us to release
+                release_barrier.wait();
+
+                drop(handle);
+            }));
+        }
+
+        // Wait for all workers to open and hold handles
+        opened_barrier.wait();
+
+        // Revoke token as caller
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Release workers so they drop handles
+        release_barrier.wait();
+
+        // Join workers
+        for t in threads {
+            t.join().expect("worker thread failed");
+        }
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_cmdline_open_with_token_reclaim() {
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_cmdline").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_cmdline").unwrap();
+
+        // Caller gets permission to grant CAP_SYS_PTRACE
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+
+        // Target opens using token
+        crate::task::process::set_current_process(target);
+        let path = alloc::format!("{}/cmdline", target.as_u64());
+        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Drop handle
+        crate::task::process::set_current_process(target);
+        drop(handle);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_cmdline_revoke_reclaim_stress() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_cmdline_stress").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_cmdline_stress").unwrap();
+
+        // Caller gets permission to grant CAP_SYS_PTRACE
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+        let path = alloc::format!("{}/cmdline", target.as_u64());
+
+        const N_WORKERS: usize = 8;
+        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+
+        let mut threads = Vec::new();
+        for _ in 0..N_WORKERS {
+            let opened_barrier = opened_barrier.clone();
+            let release_barrier = release_barrier.clone();
+            let path = path.clone();
+            let tok = token;
+            let target_pid = target;
+
+            threads.push(thread::spawn(move || {
+                // Set thread's current process to target
+                crate::task::process::set_current_process(target_pid);
+
+                // Open and hold handle
+                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
+
+                // Signal that this thread has opened and is holding the handle
+                opened_barrier.wait();
+
+                // Wait until main thread tells us to release
+                release_barrier.wait();
+
+                drop(handle);
+            }));
+        }
+
+        // Wait for all workers to open and hold handles
+        opened_barrier.wait();
+
+        // Revoke token as caller
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Release workers so they drop handles
+        release_barrier.wait();
+
+        // Join workers
+        for t in threads {
+            t.join().expect("worker thread failed");
+        }
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_fd_open_with_token_reclaim() {
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_fd").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd").unwrap();
+
+        // Caller gets permission to grant CAP_FOWNER
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+
+        // Target opens fd directory using token
+        crate::task::process::set_current_process(target);
+        let path = alloc::format!("{}/fd", target.as_u64());
+        let handle = procfs().opendir_with_token(&path, Some(token)).expect("opendir should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Drop handle
+        crate::task::process::set_current_process(target);
+        drop(handle);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_fd_revoke_reclaim_stress() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_fd_stress").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd_stress").unwrap();
+
+        // Caller gets permission to grant CAP_FOWNER
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+        let path = alloc::format!("{}/fd", target.as_u64());
+
+        const N_WORKERS: usize = 8;
+        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+
+        let mut threads = Vec::new();
+        for _ in 0..N_WORKERS {
+            let opened_barrier = opened_barrier.clone();
+            let release_barrier = release_barrier.clone();
+            let path = path.clone();
+            let tok = token;
+            let target_pid = target;
+
+            threads.push(thread::spawn(move || {
+                // Set thread's current process to target
+                crate::task::process::set_current_process(target_pid);
+
+                // Open and hold handle
+                let handle = procfs().opendir_with_token(&path, Some(tok)).expect("opendir should succeed");
+
+                // Signal that this thread has opened and is holding the handle
+                opened_barrier.wait();
+
+                // Wait until main thread tells us to release
+                release_barrier.wait();
+
+                drop(handle);
+            }));
+        }
+
+        // Wait for all workers to open and hold handles
+        opened_barrier.wait();
+
+        // Revoke token as caller
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Release workers so they drop handles
+        release_barrier.wait();
+
+        // Join workers
+        for t in threads {
+            t.join().expect("worker thread failed");
+        }
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_exe_open_with_token_reclaim() {
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_exe").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_exe").unwrap();
+
+        // Caller gets permission to grant CAP_FOWNER
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+
+        // Target opens exe using token
+        crate::task::process::set_current_process(target);
+        let path = alloc::format!("{}/exe", target.as_u64());
+        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Drop handle
+        crate::task::process::set_current_process(target);
+        drop(handle);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_exe_revoke_reclaim_stress() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_exe_stress").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_exe_stress").unwrap();
+
+        // Caller gets permission to grant CAP_FOWNER
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+        let path = alloc::format!("{}/exe", target.as_u64());
+
+        const N_WORKERS: usize = 8;
+        let opened_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+        let release_barrier = Arc::new(Barrier::new(N_WORKERS + 1));
+
+        let mut threads = Vec::new();
+        for _ in 0..N_WORKERS {
+            let opened_barrier = opened_barrier.clone();
+            let release_barrier = release_barrier.clone();
+            let path = path.clone();
+            let tok = token;
+            let target_pid = target;
+
+            threads.push(thread::spawn(move || {
+                // Set thread's current process to target
+                crate::task::process::set_current_process(target_pid);
+
+                // Open and hold handle
+                let handle = ProcFileHandle::open_with_token(&path, Some(tok)).expect("open should succeed");
+
+                // Signal that this thread has opened and is holding the handle
+                opened_barrier.wait();
+
+                // Wait until main thread tells us to release
+                release_barrier.wait();
+
+                drop(handle);
+            }));
+        }
+
+        // Wait for all workers to open and hold handles
+        opened_barrier.wait();
+
+        // Revoke token as caller
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Release workers so they drop handles
+        release_barrier.wait();
+
+        // Join workers
+        for t in threads {
+            t.join().expect("worker thread failed");
+        }
 
         assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
 

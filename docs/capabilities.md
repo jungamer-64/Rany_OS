@@ -117,6 +117,8 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 - ファイルのオープン（ファイルハンドル）もトークンと紐付け可能です（例: `fs.open_with_token(path, mode, Some(token_id))`）。`open_with_token` は `increment_in_flight(token)` を呼び、`fs_close`（`fs.close(handle)`）は `decrement_in_flight(token)` を呼び戻します。
 - 共有メモリのアタッチもトークンと紐付け可能です（例: `shmat_with_token(shm_id, Some(token_id))`）。`shmat_with_token` は内部で `increment_in_flight(token)` を呼び、`shmdt`（`ShmHandle::detach`）やハンドルの破棄時に `decrement_in_flight(token)` を呼び戻します。
 - `/proc/<pid>/mem` のようなプロセスメモリへのアクセスは `CAP_SYS_PTRACE`（または同等のトークン）で保護されます。`ProcFileHandle::open_with_token("<pid>/mem", Some(token))` のようにトークンでのオープンをサポートしており、`open_with_token` は `increment_in_flight(token)` を呼び、`Drop` 時に `decrement_in_flight(token)` を呼び戻します。これにより `revoke` の直後でも in-flight が 0 になるまで `reclaim` は保留されます。
+- `/proc/<pid>/maps` (メモリマップ) と `/proc/<pid>/cmdline` (コマンドライン引数) は他プロセスの情報を含むため、**他プロセスのこれらのファイルを読む場合は `CAP_SYS_PTRACE` が必要**です。`ProcFileHandle::open_with_token("<pid>/maps", Some(token))` や `ProcFileHandle::open_with_token("<pid>/cmdline", Some(token))` のようにトークンでのオープンを許可し、`increment_in_flight` / `decrement_in_flight` による安全な回収をサポートします。
+- `/proc/<pid>/fd` (ファイル記述子一覧) と `/proc/<pid>/exe` (実行バイナリの参照) は **他プロセスのアクセス時に `CAP_FOWNER` を要求**します。`ProcFs::opendir_with_token("<pid>/fd", Some(token))` は `CAP_FOWNER` を検証し、ディレクトリハンドルの `Drop` で `decrement_in_flight` を呼び戻します。`ProcFileHandle::open_with_token("<pid>/exe", Some(token))` も同様に `CAP_FOWNER` を要求します.
 - GUI 統合: grant/revoke の結果を ExoGUI で可視化
 
 ---
