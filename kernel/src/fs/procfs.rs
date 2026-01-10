@@ -63,8 +63,8 @@ pub struct ProcEntry {
     pub name: String,
     /// ファイルタイプ
     pub file_type: ProcFileType,
-    /// 読み取りハンドラ
-    pub read_fn: Option<Box<dyn Fn() -> String + Send + Sync>>,
+    /// 読み取りハンドラ (権限チェックのため Result を返す)
+    pub read_fn: Option<Box<dyn Fn() -> Result<String, ProcError> + Send + Sync>>,
     /// 書き込みハンドラ
     pub write_fn: Option<Box<dyn Fn(&str) -> Result<(), ProcError> + Send + Sync>>,
     /// 子エントリ (ディレクトリの場合)
@@ -87,7 +87,7 @@ impl ProcEntry {
     /// 新しいファイルエントリ
     pub fn file<F>(inode: ProcInode, name: &str, read_fn: F) -> Self
     where
-        F: Fn() -> String + Send + Sync + 'static,
+        F: Fn() -> Result<String, ProcError> + Send + Sync + 'static,
     {
         Self {
             inode,
@@ -102,7 +102,7 @@ impl ProcEntry {
     /// 書き込み可能ファイルエントリ
     pub fn writable_file<R, W>(inode: ProcInode, name: &str, read_fn: R, write_fn: W) -> Self
     where
-        R: Fn() -> String + Send + Sync + 'static,
+        R: Fn() -> Result<String, ProcError> + Send + Sync + 'static,
         W: Fn(&str) -> Result<(), ProcError> + Send + Sync + 'static,
     {
         Self {
@@ -121,7 +121,7 @@ impl ProcEntry {
             inode,
             name: String::from(name),
             file_type: ProcFileType::Symlink,
-            read_fn: Some(Box::new(move || target.clone())),
+            read_fn: Some(Box::new(move || Ok(target.clone()))),
             write_fn: None,
             children: BTreeMap::new(),
         }
@@ -176,11 +176,11 @@ impl ProcFs {
     fn init_static_entries(&self) {
         // /proc/version
         self.add_file("version", || {
-            alloc::format!(
+            Ok(alloc::format!(
                 "ExoRust Kernel {} ({}) (gcc version 12.0.0)\n",
                 env!("CARGO_PKG_VERSION"),
                 "x86_64"
-            )
+            ))
         });
 
         // /proc/uptime
@@ -192,47 +192,47 @@ impl ProcFs {
             // アイドル時間（簡易実装：稼働時間の90%と仮定）
             let idle_secs = uptime_secs * 9 / 10;
             let idle_frac = uptime_frac * 9 / 10;
-            alloc::format!(
+            Ok(alloc::format!(
                 "{}.{:02} {}.{:02}\n",
                 uptime_secs,
                 uptime_frac,
                 idle_secs,
                 idle_frac
-            )
+            ))
         });
 
         // /proc/meminfo
-        self.add_file("meminfo", Self::generate_meminfo);
+        self.add_file("meminfo", || Ok(Self::generate_meminfo()));
 
         // /proc/cpuinfo
-        self.add_file("cpuinfo", Self::generate_cpuinfo);
+        self.add_file("cpuinfo", || Ok(Self::generate_cpuinfo()));
 
         // /proc/stat
-        self.add_file("stat", Self::generate_stat);
+        self.add_file("stat", || Ok(Self::generate_stat()));
 
         // /proc/loadavg
-        self.add_file("loadavg", || alloc::format!("0.00 0.00 0.00 1/1 1\n"));
+        self.add_file("loadavg", || Ok(alloc::format!("0.00 0.00 0.00 1/1 1\n")));
 
         // /proc/filesystems
         self.add_file("filesystems", || {
-            alloc::format!(
+            Ok(alloc::format!(
                 "nodev\tproc\n\
                  nodev\tdevfs\n\
                  \text2\n\
                  nodev\ttmpfs\n"
-            )
+            ))
         });
 
         // /proc/mounts
         self.add_file("mounts", || {
-            alloc::format!(
+            Ok(alloc::format!(
                 "proc /proc proc rw,nosuid,nodev,noexec 0 0\n\
                  devfs /dev devfs rw,nosuid 0 0\n"
-            )
+            ))
         });
 
         // /proc/cmdline
-        self.add_file("cmdline", || alloc::format!("console=ttyS0\n"));
+        self.add_file("cmdline", || Ok(alloc::format!("console=ttyS0\n")));
 
         // /proc/sys ディレクトリ
         self.add_directory("sys");
@@ -249,7 +249,7 @@ impl ProcFs {
         // /proc/sys/kernel/hostname
         let hostname_inode = self.allocate_inode();
         let hostname_entry = ProcEntry::file(hostname_inode, "kernel/hostname", || {
-            alloc::string::String::from("exorust\n")
+            Ok(alloc::string::String::from("exorust\n"))
         });
         let mut root = self.root.write();
         if let Some(sys_dir) = root.children.get_mut("sys") {
@@ -260,7 +260,7 @@ impl ProcFs {
         // /proc/sys/kernel/ostype
         let ostype_inode = self.allocate_inode();
         let ostype_entry = ProcEntry::file(ostype_inode, "kernel/ostype", || {
-            alloc::string::String::from("ExoRust\n")
+            Ok(alloc::string::String::from("ExoRust\n"))
         });
         let mut root = self.root.write();
         if let Some(sys_dir) = root.children.get_mut("sys") {
@@ -271,7 +271,7 @@ impl ProcFs {
         // /proc/sys/kernel/version
         let version_inode = self.allocate_inode();
         let version_entry = ProcEntry::file(version_inode, "kernel/version", || {
-            alloc::format!("#1 SMP {}\n", "ExoRust 0.1.0")
+            Ok(alloc::format!("#1 SMP {}\n", "ExoRust 0.1.0"))
         });
         let mut root = self.root.write();
         if let Some(sys_dir) = root.children.get_mut("sys") {
@@ -291,7 +291,7 @@ impl ProcFs {
             // 仮想ネットワーク統計（将来的にはNetworkStackから取得）
             output.push_str("    lo:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n");
             output.push_str("  eth0:       0       0    0    0    0     0          0         0        0       0    0    0    0     0       0          0\n");
-            output
+            Ok(output)
         });
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
@@ -306,7 +306,7 @@ impl ProcFs {
                 "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
             );
             // 将来的にはTcpProcessorから取得
-            output
+            Ok(output)
         });
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
@@ -317,9 +317,9 @@ impl ProcFs {
         // /proc/net/udp - UDP接続情報
         let udp_inode = self.allocate_inode();
         let udp_entry = ProcEntry::file(udp_inode, "udp", || {
-            alloc::string::String::from(
+            Ok(alloc::string::String::from(
                 "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode\n",
-            )
+            ))
         });
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
@@ -330,9 +330,9 @@ impl ProcFs {
         // /proc/net/arp - ARPテーブル
         let arp_inode = self.allocate_inode();
         let arp_entry = ProcEntry::file(arp_inode, "arp", || {
-            alloc::string::String::from(
+            Ok(alloc::string::String::from(
                 "IP address       HW type     Flags       HW address            Mask     Device\n",
-            )
+            ))
         });
         let mut root = self.root.write();
         if let Some(net_dir) = root.children.get_mut("net") {
@@ -348,7 +348,7 @@ impl ProcFs {
     /// ファイルを追加
     pub fn add_file<F>(&self, name: &str, read_fn: F)
     where
-        F: Fn() -> String + Send + Sync + 'static,
+        F: Fn() -> Result<String, ProcError> + Send + Sync + 'static,
     {
         let inode = self.allocate_inode();
         let entry = ProcEntry::file(inode, name, read_fn);
@@ -377,19 +377,19 @@ impl ProcFs {
         proc_dir.add_child(ProcEntry::file(
             self.allocate_inode(),
             "status",
-            move || Self::generate_process_status(pid_copy),
+            move || Ok(Self::generate_process_status(pid_copy)),
         ));
 
         // /proc/[pid]/stat
         let pid_copy = pid;
         proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "stat", move || {
-            Self::generate_process_stat(pid_copy)
+            Ok(Self::generate_process_stat(pid_copy))
         }));
 
         // /proc/[pid]/maps
         let pid_copy = pid;
         proc_dir.add_child(ProcEntry::file(self.allocate_inode(), "maps", move || {
-            Self::generate_process_maps(pid_copy)
+            Ok(Self::generate_process_maps(pid_copy))
         }));
 
         // /proc/[pid]/cmdline
@@ -397,7 +397,7 @@ impl ProcFs {
         proc_dir.add_child(ProcEntry::file(
             self.allocate_inode(),
             "cmdline",
-            move || Self::generate_process_cmdline(pid_copy),
+            move || Ok(Self::generate_process_cmdline(pid_copy)),
         ));
 
         // /proc/[pid]/exe (symlink)
@@ -413,6 +413,16 @@ impl ProcFs {
             "cwd",
             String::from("/"),
         ));
+
+        // /proc/[pid]/mem
+        /*
+        let pid_copy = pid;
+        proc_dir.add_child(ProcEntry::file(
+            self.allocate_inode(),
+            "mem",
+            move || Self::generate_process_mem(pid_copy),
+        ));
+        */
 
         // /proc/[pid]/fd ディレクトリ
         proc_dir.add_child(ProcEntry::directory(self.allocate_inode(), "fd"));
@@ -456,7 +466,7 @@ impl ProcFs {
         }
 
         match &current.read_fn {
-            Some(read_fn) => Ok(read_fn()),
+            Some(read_fn) => read_fn(),
             None => Err(ProcError::NotReadable),
         }
     }
@@ -738,6 +748,26 @@ impl ProcFs {
             String::from("/bin/process\0")
         }
     }
+
+    fn generate_process_mem(pid: Pid) -> Result<String, ProcError> {
+        // プロセスのメモリへのアクセスは、通常自身か CAP_SYS_PTRACE/CAP_SYS_ADMIN を要求します
+        let proc_id = ProcessId::new(pid.as_u32() as u64);
+        let caller = crate::task::context::current_task_id();
+
+        if let Some(_process) = process_manager().get(proc_id) {
+            if caller == proc_id.as_u64()
+                || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_PTRACE)
+                || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_ADMIN)
+            {
+                // 実際の /proc/[pid]/mem 実装は未完（ここではプレースホルダを返す）
+                Ok(alloc::format!("Process {} memory (placeholder)\n", pid.as_u32()))
+            } else {
+                Err(ProcError::PermissionDenied)
+            }
+        } else {
+            Err(ProcError::NotFound)
+        }
+    }
 }
 
 /// グローバル procfs インスタンス
@@ -766,15 +796,47 @@ pub struct ProcFileHandle {
     path: String,
     content: String,
     position: AtomicUsize,
+    token: Option<u64>,
 }
 
 impl ProcFileHandle {
     pub fn open(path: &str) -> Result<Self, ProcError> {
-        let content = procfs().read(path)?;
+        // Backward-compatible: open without token
+        Self::open_with_token(path, None)
+    }
+
+    pub fn open_with_token(path: &str, token: Option<u64>) -> Result<Self, ProcError> {
+        use crate::task::context;
+
+        let caller = context::current_task_id();
+
+        // If token provided, validate and increment in-flight counter
+        if let Some(t) = token {
+            if !crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_SYS_PTRACE) {
+                return Err(ProcError::PermissionDenied);
+            }
+
+            if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                return Err(ProcError::PermissionDenied);
+            }
+        }
+
+        let content = match procfs().read(path) {
+            Ok(c) => c,
+            Err(e) => {
+                // Rollback in-flight on failure
+                if let Some(t) = token {
+                    let _ = crate::security::capability::manager().decrement_in_flight(t);
+                }
+                return Err(e);
+            }
+        };
+
         Ok(Self {
             path: String::from(path),
             content,
             position: AtomicUsize::new(0),
+            token,
         })
     }
 
@@ -796,6 +858,14 @@ impl ProcFileHandle {
 
     pub fn seek(&self, pos: usize) {
         self.position.store(pos, Ordering::Release);
+    }
+}
+
+impl Drop for ProcFileHandle {
+    fn drop(&mut self) {
+        if let Some(t) = self.token {
+            let _ = crate::security::capability::manager().decrement_in_flight(t);
+        }
     }
 }
 
@@ -900,4 +970,50 @@ mod tests {
         fs.remove_process(Pid::new(1234));
         assert!(fs.lookup("1234").is_err());
     }
+
+    #[test]
+    fn test_proc_mem_open_with_token_reclaim() {
+        // Setup caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_proc").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_proc").unwrap();
+
+        // Caller gets permission to grant CAP_SYS_PTRACE
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_SYS_PTRACE));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_SYS_PTRACE, None, false)
+            .unwrap();
+
+        // Ensure procfs has an entry for the target
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+
+        // Target opens using token
+        crate::task::process::set_current_process(target);
+        let path = alloc::format!("{}/mem", target.as_u64());
+        let handle = ProcFileHandle::open_with_token(&path, Some(token)).expect("open should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Drop handle
+        crate::task::process::set_current_process(target);
+        drop(handle);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
 }
+

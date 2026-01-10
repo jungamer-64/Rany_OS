@@ -3044,9 +3044,16 @@ impl Framebuffer {
         let char_h = font.height() as u32;
         self.mark_dirty(Rect::new(x, y, char_w, char_h));
 
-        // If background specified, fill the rectangle first using optimized path
+        // CHECK FAST PATH CONDITIONS
+        // We can skip fill_rect if we are going to overwrite everything with write_glyph_row_32bit_nofence
+        let is_fully_visible = x >= self.clip.x && (x + char_w_i32) <= self.clip.right();
+        let use_fast_path_32 = bpp == 4 && bg.is_some() && is_fully_visible;
+
+        // If background specified AND we won't use the fast path (which handles bg), fill it now.
         if let Some(bg_color) = bg {
-            self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
+            if !use_fast_path_32 {
+                self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
+            }
         }
 
         let mut mmio_written = false;
@@ -3058,22 +3065,20 @@ impl Framebuffer {
 
             match bpp {
                 4 => {
-                    // 32-bit formats: if background provided we already filled it
-                    // and can simply write foreground pixels; otherwise write
-                    // only on-bit pixels.
+                    // 32-bit formats
                     let fg_u32 = self.info.format.encode_u32(color).unwrap_or(color.to_u32());
 
                     if bg.is_some() {
                         // If fully visible horizontally, write whole 8-pixel row
-                        let dst_x = x;
-                        if dst_x >= self.clip.x && (dst_x + char_w_i32) <= self.clip.right() {
-                            let dst_offset = (dst_y as usize * stride) + (dst_x as usize * 4);
+                        if is_fully_visible {
+                            let dst_offset = (dst_y as usize * stride) + (x as usize * 4);
                             let bg_color = bg.unwrap();
                             let bg_u32 = self
                                 .info
                                 .format
                                 .encode_u32(bg_color)
                                 .unwrap_or(bg_color.to_u32());
+                            // This writes both FG and BG pixels
                             mmio_written |= self.write_glyph_row_32bit_nofence(byte, dst_offset, fg_u32, bg_u32);
                             continue;
                         }
