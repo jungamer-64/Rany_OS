@@ -25,7 +25,7 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use super::ast::{BinaryOp, Expr, UnaryOp};
+use super::ast::{BinaryOp, Expr, Stmt, UnaryOp};
 use super::error::ParseError;
 use super::tokenizer::Token;
 use crate::shell::exoshell::types::ExoValue;
@@ -97,6 +97,72 @@ impl ExprParser {
     // ========================================================================
     // Public API
     // ========================================================================
+
+
+    /// 文をパース
+    pub fn parse_stmt(&mut self) -> Result<Stmt<'static>, ParseError> {
+        if self.match_token(&Token::Let) {
+            self.parse_let_stmt()
+        } else {
+            self.parse_expr_stmt()
+        }
+    }
+
+    /// Let文: `let name = expr`
+    fn parse_let_stmt(&mut self) -> Result<Stmt<'static>, ParseError> {
+        // パラメータ名
+        let name = if let Some(Token::Ident(name)) = self.peek().cloned() {
+            self.advance();
+            name
+        } else {
+            return Err(ParseError::UnexpectedToken {
+                expected: "variable name".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        };
+
+        // `=`
+        if !self.match_operator("=") {
+             return Err(ParseError::UnexpectedToken {
+                expected: "'='".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+
+        let value = self.parse_expr()?;
+
+        Ok(Stmt::let_binding(name, value))
+    }
+
+    /// 式文またはコマンド文
+    fn parse_expr_stmt(&mut self) -> Result<Stmt<'static>, ParseError> {
+        let expr = self.parse_expr()?;
+        
+        // トップレベルの識別子のみの場合はコマンドとして扱う可能性があるが、
+        // 現状は Expr として返し、Evaluator 側で処理するか、
+        // ここで Stmt::Command に変換するか。
+        // リファクタ案では `Command` を AST レベルでサポートする。
+        
+        match expr {
+            // `cmd arg1 arg2` 形式はサポートしていない（Rust式ではない）。
+            // しかし、 `help` や `exit` のような単独識別子はコマンドとして扱いたい。
+            // また `cmd(arg)` 形式の MethodCall で object が空文字の場合もコマンド。
+            
+            Expr::Ident(name) => Ok(Stmt::Command { name, args: Vec::new() }),
+            
+            Expr::MethodCall { object, method, args } => {
+                // object が Ident("") の場合はグローバル関数呼び出し -> コマンド
+                if let Expr::Ident(ref s) = *object {
+                    if s.is_empty() {
+                         return Ok(Stmt::Command { name: method, args });
+                    }
+                }
+                Ok(Stmt::Expr(Box::new(Expr::MethodCall { object, method, args })))
+            }
+            
+            _ => Ok(Stmt::Expr(Box::new(expr))),
+        }
+    }
 
     /// 式をパース
     ///
@@ -561,6 +627,15 @@ impl ExprParser {
 // ============================================================================
 // Convenience Function
 // ============================================================================
+
+
+/// 文字列から直接文をパース
+pub fn parse(input: &str) -> Result<Stmt<'static>, ParseError> {
+    let mut tokenizer = super::tokenizer::Tokenizer::new(input);
+    let tokens = tokenizer.tokenize();
+    let mut parser = ExprParser::new(tokens);
+    parser.parse_stmt()
+}
 
 /// 文字列から直接式をパース
 ///

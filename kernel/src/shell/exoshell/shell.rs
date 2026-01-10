@@ -15,6 +15,10 @@ use alloc::vec::Vec;
 use super::namespaces::*;
 use super::parser::*;
 use super::types::*;
+use super::environment::Environment;
+use super::command::{CommandRegistry, HelpCommand, ExitCommand, ClearCommand, ShellCommand};
+use super::error::ExoResult;
+use super::parser::ast::Stmt;
 use crate::security::CapabilitySet;
 use alloc::sync::Arc;
 
@@ -50,8 +54,10 @@ impl ShellNamespace for ArcNamespaceWrapper {
 /// シェルインスタンス自体が CapabilitySet を保持し、
 /// 名前空間呼び出し時にこれを証明として渡す。
 pub struct ExoShell {
-    /// 変数バインディング
-    pub bindings: BTreeMap<String, ExoValue<'static>>,
+    /// 変数環境（スコープ対応）
+    pub env: Environment,
+    /// コマンドレジストリ
+    commands: CommandRegistry,
     /// カレントディレクトリ
     pub cwd: String,
     /// コマンド履歴
@@ -98,8 +104,15 @@ impl ExoShell {
             m
         };
         
+
+        let mut commands = CommandRegistry::new();
+        commands.register(HelpCommand);
+        commands.register(ExitCommand);
+        commands.register(ClearCommand);
+
         Self {
-            bindings: BTreeMap::new(),
+            env: Environment::new(),
+            commands,
             cwd: String::from("/"),
             history: Vec::new(),
             last_result: ExoValue::Nil,
@@ -112,62 +125,65 @@ impl ExoShell {
     /// 式を評価（メソッドチェーン対応）- async版
     pub async fn eval(&mut self, input: &str) -> ExoValue<'static> {
         let input = input.trim();
-
         if input.is_empty() || input.starts_with('#') {
             return ExoValue::Nil;
         }
 
-        // History addition is handled by the caller (REPL loop)
-        // to avoid duplication with background commands.
-
-        // Check for exit
-        if input == "exit" || input == "quit" {
-            return ExoValue::Exit;
+        match parser::parse(input) {
+            Ok(stmt) => match self.eval_stmt(stmt).await {
+                Ok(val) => {
+                    self.last_result = val.clone();
+                    // Auto-add to history for successful commands if not calling history itself?
+                    // Actually history is handled by caller.
+                    val
+                }
+                Err(e) => {
+                    let err_msg = e.to_string();
+                    ExoValue::Error(err_msg)
+                }
+            },
+            Err(e) => ExoValue::Error(e.to_string()),
         }
-
-        // 代入式: let x = ...
-        if input.starts_with("let ") {
-            let result = self.eval_let(&input[4..]).await;
-            self.last_result = result.clone();
-            return result;
-        }
-
-        // ヘルプ
-        if input == "help" || input == "?" {
-            return self.help();
-        }
-
-        // 変数参照
-        if input.starts_with('$') {
-            let var_name = &input[1..];
-            return self
-                .bindings
-                .get(var_name)
-                .cloned()
-                .unwrap_or(ExoValue::Nil);
-        }
-
-        // メソッドチェーン対応の式評価
-        let result = self.eval_chain(input).await;
-        self.last_result = result.clone();
-        result
     }
 
-    /// メソッドチェーンを評価（async版）
-    async fn eval_chain(&mut self, input: &str) -> ExoValue<'static> {
-        // 式をパース
-        let expr = match parse_expression(input) {
-            Ok(e) => e,
-            Err(e) => {
-                // パースエラーの場合はエイリアスとして試行（互換性のため）
-                // ただしエイリアスもパース可能な識別子であることが多いので、
-                // エラー内容によってはエイリアス評価に回す
-                return self.eval_alias(input).await;
+    /// 文を評価
+    async fn eval_stmt(&mut self, stmt: Stmt<'_>) -> ExoResult<ExoValue<'static>> {
+        match stmt {
+            Stmt::Let { name, value } => {
+                let val = self.evaluate_expr(&value).await;
+                self.env.define(name, val.clone());
+                Ok(val)
             }
-        };
+            Stmt::Command { name, args } => {
+                // 1. Try built-in command
+                if let Some(cmd) = self.commands.get(&name) {
+                    let mut eval_args = Vec::new();
+                    for arg in args {
+                        eval_args.push(self.evaluate_expr(&arg).await);
+                    }
+                    return cmd.execute(self, &eval_args);
+                }
 
-        // ASTを評価
-        self.evaluate_expr(&expr).await
+                // 2. If no args, try variable or alias
+                if args.is_empty() {
+                    if let Some(val) = self.env.get(&name) {
+                        return Ok(val.clone());
+                    }
+                    // Alias fallback (legacy)
+                    let alias_result = self.eval_alias(&name).await;
+                    // If alias returns generic error, it usually means not found or failed.
+                    // But eval_alias returns ExoValue.
+                    // If it returns Error, we wrap it?
+                    if matches!(alias_result, ExoValue::Error(_)) {
+                         return Err(super::error::ShellError::CommandNotFound(name));
+                    }
+                    return Ok(alias_result);
+                }
+
+                Err(super::error::ShellError::CommandNotFound(name))
+            }
+            Stmt::Expr(expr) => Ok(self.evaluate_expr(&expr).await),
+        }
     }
 
     /// AST式を評価（非同期・副作用あり）
@@ -187,7 +203,7 @@ impl ExoShell {
                 // 変数参照 ($var) または予約語
                 if name.starts_with('$') {
                     return self
-                        .bindings
+                        .env
                         .get(&name[1..])
                         .cloned()
                         .unwrap_or(ExoValue::Nil);
@@ -198,7 +214,7 @@ impl ExoShell {
                     "nil" => ExoValue::Nil,
                     _ => {
                         // binding にあるかチェック
-                        if let Some(val) = self.bindings.get(name.as_str()) {
+                        if let Some(val) = self.env.get(name.as_str()) {
                             return val.clone();
                         }
                         // 名前空間の可能性（fs 等）は MethodCall で処理されるが、
@@ -1239,19 +1255,6 @@ impl ExoShell {
             ExoValue::String(s) => ExoValue::String(Cow::Owned(s.clone().into_owned())),
             ExoValue::Int(i) => ExoValue::Int(*i),
             _ => ExoValue::Nil,
-        }
-    }
-
-    /// let 式を評価（async版）
-    async fn eval_let(&mut self, expr: &str) -> ExoValue<'static> {
-        if let Some(eq_pos) = expr.find('=') {
-            let name = expr[..eq_pos].trim().to_string();
-            let value_expr = expr[eq_pos + 1..].trim();
-            let value = self.eval_chain(value_expr).await;
-            self.bindings.insert(name.clone(), value.clone());
-            value
-        } else {
-            ExoValue::Error(String::from("Invalid let expression"))
         }
     }
 

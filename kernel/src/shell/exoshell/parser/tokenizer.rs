@@ -38,6 +38,8 @@ pub enum Token {
     RBrace,
     /// コロン
     Colon,
+    /// Let キーワード
+    Let,
 }
 
 /// 簡易トークナイザー
@@ -249,7 +251,11 @@ impl<'a> Tokenizer<'a> {
             }
         }
 
-        Token::Ident(self.input[start..self.pos].to_string())
+        let s = self.input[start..self.pos].to_string();
+        match s.as_str() {
+            "let" => Token::Let,
+            _ => Token::Ident(s),
+        }
     }
 
     fn read_operator(&mut self) -> Token {
