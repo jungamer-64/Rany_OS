@@ -3,7 +3,7 @@
 // ============================================================================
 
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
+
 
 /// Shell history navigation state
 /// 
@@ -23,7 +23,7 @@ impl HistoryNavigator {
     }
 
     /// Go back in history (Up key)
-    pub fn prev(&mut self, history: &[String], current: &str) -> Option<&str> {
+    pub fn prev(&mut self, history: &[String], current: &str) -> Option<String> {
         if history.is_empty() {
             return None;
         }
@@ -36,28 +36,28 @@ impl HistoryNavigator {
             }
             Some(0) => {
                 // Already at oldest, do nothing
-                return Some(&history[0]);
+                return Some(history[0].clone());
             }
             Some(idx) => {
                 self.index = Some(idx - 1);
             }
         }
 
-        self.index.map(|i| history[i].as_str())
+        self.index.map(|i| history[i].clone())
     }
 
     /// Go forward in history (Down key)
-    pub fn next(&mut self, history: &[String]) -> Option<&str> {
+    pub fn next(&mut self, history: &[String]) -> Option<String> {
         match self.index {
             None => None,
             Some(idx) => {
                 if idx + 1 >= history.len() {
                     // Back to current input
                     self.index = None;
-                    Some(self.stash.as_str())
+                    Some(self.stash.clone())
                 } else {
                     self.index = Some(idx + 1);
-                    Some(&history[idx + 1])
+                    Some(history[idx + 1].clone())
                 }
             }
         }

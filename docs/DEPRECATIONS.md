@@ -26,6 +26,10 @@ This document lists symbols that have been marked deprecated and recommended mig
   - `io_log_info!`, `io_log_warn!`, `io_log_debug!`, `io_log_error!` ✅ **deprecated**
     - Migration: Use `log::info!`, `log::warn!`, `log::debug!`, `log::error!`.
 
+- `kernel/src/graphics/global.rs`
+  - `with_console` ❌ **removed**
+    - Migration: Use `crate::console::with_console(console_id, f)` or `crate::console::write()` and ConsoleManager APIs.
+
 - `kernel/src/io/hid/mod.rs`
   - Compatibility aliases (`InputKeyCode`, `InputKeyEvent`, `InputKeyState`, `InputModifiers`) ✅ **deprecated**
     - Migration: Use `KeyCode`, `KeyEvent`, `KeyState`, `Modifiers` directly.

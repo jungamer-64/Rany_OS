@@ -353,23 +353,7 @@ where
     guard.as_mut().map(f)
 }
 
-// Deprecated/Removed: with_console
-// If you need to print, use `console_print` or `crate::console::write`.
-// If you need to change fonts/colors, we need a new API on ConsoleManager (Task for later).
-// For now, support for locking console is removed as it's owned by ConsoleManager driver box.
-pub fn with_console<F, R>(_f: F) -> Option<R>
-where
-    F: FnOnce(&mut TextConsole) -> R,
-{
-    // Not supported anymore as TextConsole is boxed in ConsoleManager
-    None
-}
-
-/// コンソールのロックを試行（非ブロッキング）
-pub fn try_lock_console() -> Option<spin::MutexGuard<'static, Option<TextConsole>>> {
-    // Not supported
-    None
-}
+// `with_console` and `try_lock_console` are removed; use `crate::console` APIs instead.
 
 /// フレームバッファが初期化されているか確認
 pub fn framebuffer() -> Option<()> {

@@ -26,6 +26,7 @@
 pub mod async_shell;
 pub mod exoshell;
 pub mod graphical;
+pub mod line_buffer;
 
 // Re-export ExoShell types
 
