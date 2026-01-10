@@ -61,6 +61,7 @@ pub struct ExoShell {
     /// 登録済み名前空間（動的登録対応）
     namespaces: BTreeMap<String, Box<dyn super::namespaces::ShellNamespace>>,
     /// シェルインスタンスの権限
+    capabilities: CapabilitySet,
     /// 最大履歴数
     max_history: usize,
 }

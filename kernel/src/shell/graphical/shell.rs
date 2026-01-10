@@ -345,7 +345,7 @@ impl GraphicalShell {
         // 入力バッファをクリア
         self.state.input_buffer.clear();
         self.state.completions.clear();
-        self.state.history_search_buffer = None;
+        self.state.completions.clear();
 
         // 空でなければ履歴に追加
         if !input.trim().is_empty() {
@@ -445,7 +445,7 @@ impl GraphicalShell {
             self.shell.history(),
             self.state.input_buffer.as_str(),
         ) {
-            self.state.input_buffer.set(prev);
+            self.state.input_buffer.set(&prev);
             self.update_cursor_cache();
             self.redraw();
         }
@@ -454,7 +454,7 @@ impl GraphicalShell {
     /// 履歴を次に
     pub(crate) fn history_next(&mut self) {
         if let Some(next) = self.state.history_navigator.next(self.shell.history()) {
-            self.state.input_buffer.set(next);
+            self.state.input_buffer.set(&next);
             self.update_cursor_cache();
             self.redraw();
         }

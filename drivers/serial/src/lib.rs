@@ -762,6 +762,21 @@ pub fn dispatch_interrupt() {
     SERIAL1.handle_interrupt();
 }
 
+/// Read a byte asynchronously from COM1
+pub async fn read_byte() -> u8 {
+    SERIAL1.read_byte().await
+}
+
+/// Write a byte to COM1 (blocking)
+pub fn write_byte(byte: u8) {
+    SERIAL1.port.send(byte);
+}
+
+/// Write a string to COM1 (blocking)
+pub fn write_str(s: &str) {
+    SERIAL1.send_str(s);
+}
+
 // Helper struct for safe writing
 struct SerialWriter;
 

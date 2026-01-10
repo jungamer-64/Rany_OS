@@ -68,7 +68,7 @@ pub use framebuffer::Framebuffer;
 #[cfg(not(any(test, feature = "bench")))]
 pub use global::{
     console_print, force_unlock_framebuffer, framebuffer, init, init_console, init_from_boot_info,
-    with_console, with_framebuffer,
+    with_framebuffer,
 };
 
 // ブートスプラッシュ関数の再エクスポート

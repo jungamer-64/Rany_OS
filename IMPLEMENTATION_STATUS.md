@@ -142,6 +142,8 @@ ExoRustは、Linux/POSIX互換性を排除し、Rustの特性を最大限活用�
 | **PCIバスサポート (7.2)** | ✅ 完了 | `src/io/pci/mod.rs` |
 
 **注意 (2026-01-10)**: `drivers/pci` の deprecated な再エクスポート `LegacyPciAccessor` と `get_legacy_accessor` を削除しました。移行先: `pci_driver::EcamAccess` または新しい PCI APIs (`PciBusScanner` 等)。
+
+**注意 (2026-01-10)**: `graphics::with_console` を削除しました。移行先: `crate::console::with_console(console_id, f)` を利用するか、出力には `crate::console::write()` / ConsoleManager API を使用してください。
 | **ACPIテーブル解析 (7.2)** | ✅ 完了 | `src/io/acpi/` |
 | **AHCIドライバ** | ✅ 完了 | `src/io/ahci/` |
 | **IDEドライバ** | ✅ 完了 | `src/io/ide.rs` |
