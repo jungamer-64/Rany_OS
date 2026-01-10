@@ -8,7 +8,7 @@
 
 use crate::graphics::{Color, Font, Rect};
 use alloc::boxed::Box;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 
 // ============================================================================
 

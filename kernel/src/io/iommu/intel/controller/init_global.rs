@@ -63,11 +63,9 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
 #[cfg(not(test))]
 fn spawn_command_queue_worker(controller: Arc<IommuController>) {
     let future = command_queue_worker(controller);
-    unsafe {
-        crate::io::log::early_print("[IOMMU] Future size: ");
-        crate::io::log::early_print_dec(core::mem::size_of_val(&future) as u64);
-        crate::io::log::early_print("\n");
-    }
+    crate::io::log::early_print("[IOMMU] Future size: ");
+    crate::io::log::early_print_dec(core::mem::size_of_val(&future) as u64);
+    crate::io::log::early_print("\n");
     crate::task::per_core_executor::spawn(future);
 }
 
@@ -202,19 +200,19 @@ pub unsafe fn init_iommu_from_acpi(
 
     #[cfg(not(test))]
     {
-        unsafe { crate::io::log::early_print("[IOMMU] Loop start.\n"); }
+        crate::io::log::early_print("[IOMMU] Loop start.\n");
         for (_i, controller) in registry.controllers.iter().enumerate() {
             if controller.command_queue.is_some() {
                 spawn_command_queue_worker(Arc::clone(controller));
             }
         }
-        unsafe { crate::io::log::early_print("[IOMMU] Loop end.\n"); }
+        crate::io::log::early_print("[IOMMU] Loop end.\n");
     }
-    unsafe { crate::io::log::early_print("[IOMMU] Block end.\n"); }
+    crate::io::log::early_print("[IOMMU] Block end.\n");
 
     // Apply Reserved Regions (RMRR)
     // Need to do this before publishing registry because we need mutable access to controllers
-    unsafe { crate::io::log::early_print("[IOMMU] Processing RMRR...\n"); }
+    crate::io::log::early_print("[IOMMU] Processing RMRR...\n");
     for region in &registry.reserved_regions {
         let page_size = crate::io::iommu::PAGE_SIZE_4K;
         let start = align_down(region.base, page_size);
@@ -279,31 +277,31 @@ pub unsafe fn init_iommu_from_acpi(
             }
         }
     }
-    unsafe { crate::io::log::early_print("[IOMMU] RMRR done.\n"); }
+    crate::io::log::early_print("[IOMMU] RMRR done.\n");
 
-    unsafe { crate::io::log::early_print("[IOMMU] Init registry...\n"); }
+    crate::io::log::early_print("[IOMMU] Init registry...\n");
     init_registry(registry);
-    unsafe { crate::io::log::early_print("[IOMMU] Registry done.\n"); }
+    crate::io::log::early_print("[IOMMU] Registry done.\n");
 
     #[cfg(not(test))]
     {
         // Register Intel VT-d driver backend (Phase 1 abstraction hook).
-        unsafe { crate::io::log::early_print("[IOMMU] Registering driver...\n"); }
+        crate::io::log::early_print("[IOMMU] Registering driver...\n");
         super::super::IntelIommuDriver::register_driver();
         crate::io::iommu::api::set_global_dma_mapping_allowed(config.allow_global_mappings);
 
         // Create default domain 0 for generic DMA mappings (used by panic DMA pool, etc.)
-        unsafe { crate::io::log::early_print("[IOMMU] Creating default domain...\n"); }
+        crate::io::log::early_print("[IOMMU] Creating default domain...\n");
         if let Some(driver) = crate::io::iommu::registry::get_iommu_driver() {
             match driver.create_domain(None, IommuDomainType::Translated) {
                 Ok(id) => log::info!("IOMMU default domain created: ID={}", id),
                 Err(e) => log::warn!("Failed to create default IOMMU domain: {:?}", e),
             }
         }
-        unsafe { crate::io::log::early_print("[IOMMU] Default domain done.\n"); }
+        crate::io::log::early_print("[IOMMU] Default domain done.\n");
 
         // Initialize IOMMU Group Manager
-        unsafe { crate::io::log::early_print("[IOMMU] Init Group Manager...\n"); }
+        crate::io::log::early_print("[IOMMU] Init Group Manager...\n");
         IOMMU_GROUP_MANAGER.call_once(|| IommuGroupManager::new());
     }
 

@@ -352,7 +352,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
                 }
 
                 // Initialize IOMMU using ACPI tables and config
-                unsafe {
+                {
                     match parser.find_table(b"DMAR") {
                         Ok(dmar_addr) => {
                             use crate::io::iommu::intel::IntelVtDDriver;
@@ -468,6 +468,10 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     io::log::early_print("[DEBUG] About to call info! macro\n");
 
     info!(target: "init", "Kernel services registered");
+
+    // Initialize Graphical Shell (requires gui service)
+    use crate::shell::graphical::async_runtime as graphical_shell;
+    graphical_shell::init();
 
     io::log::early_print("[DEBUG] After first info! macro\n");
 
@@ -1023,6 +1027,9 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     // info!("================================================================================");  // DISABLED FOR DEBUGGING
     io::log::early_print("[DEBUG] Before executor.run()\n");
 
+    // グラフィカルシェルを開始
+    graphical_shell::start();
+
     // メインループ開始（戻ってこない）
     executor.run();
 }
@@ -1031,6 +1038,14 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
 fn spawn_kernel_tasks(executor: &mut task::Executor) {
     use ipc::RRef;
     use task::Task;
+    use crate::shell::async_shell::spawn_async_shell;
+    use crate::shell::graphical::async_runtime as graphical_shell;
+
+    // Spawn Serial Shell
+    spawn_async_shell(executor);
+
+    // Spawn Graphical Shell Task
+    executor.spawn(Task::new(graphical_shell::run_async_shell()));
 
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))

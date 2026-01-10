@@ -202,6 +202,18 @@ pub async fn run_async_shell() {
                         shell.print_colored(&output, fg_color);
                     }
 
+                    // Update CWD if changed (Syncs Frontend with Backend)
+                    if let Some(cwd) = result.cwd {
+                        shell.shell.cwd = cwd;
+                        let new_prompt = shell.shell.prompt();
+                        shell.state.prompt = new_prompt;
+                        
+                        // Recalculate cached prompt metrics
+                        use crate::graphics::font::FontExt;
+                        shell.state.cached_prompt_end_x = 
+                            shell.resources.font.iter_width(shell.state.prompt.chars()) as i32;
+                    }
+
                     shell.state.is_executing = false;
                     shell.redraw();
                 }
@@ -261,12 +273,15 @@ pub async fn run_async_shell() {
                         .unwrap_or_default()
                 };
 
+                let cwd = Some(exoshell.cwd.clone());
+
                 *ASYNC_EXOSHELL.lock() = Some(exoshell);
 
                 push_result(CommandResult {
                     id: req.id,
                     output,
                     is_error,
+                    cwd,
                 });
             } else {
                 // ExoShellがビジー - リクエストを再キュー

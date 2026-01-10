@@ -205,7 +205,7 @@ pub type RcuCallback = fn(*mut u8);
 
 /// 遅延解放用のコールバックエントリ
 #[derive(Debug)]
-struct RcuCallbackEntry {
+pub(crate) struct RcuCallbackEntry {
     /// 解放対象のポインタ
     ptr: *mut u8,
     /// コールバック関数

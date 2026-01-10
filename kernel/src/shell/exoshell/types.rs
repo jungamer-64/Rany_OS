@@ -49,6 +49,8 @@ pub enum ExoValue<'a> {
     StringRef(super::buffer_view::StringView),
     /// エラー
     Error(String),
+    /// 終了シグナル
+    Exit,
 }
 
 impl<'a> ExoValue<'a> {
@@ -80,6 +82,7 @@ impl<'a> ExoValue<'a> {
             ExoValue::BufferRef(b) => ExoValue::BufferRef(b),
             ExoValue::StringRef(s) => ExoValue::StringRef(s),
             ExoValue::Error(e) => ExoValue::Error(e),
+            ExoValue::Exit => ExoValue::Exit,
         }
     }
 
