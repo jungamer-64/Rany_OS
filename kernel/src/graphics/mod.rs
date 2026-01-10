@@ -29,8 +29,6 @@
 
 // コア機能モジュール
 #[cfg(not(any(test, feature = "bench")))]
-pub mod boot_splash;
-#[cfg(not(any(test, feature = "bench")))]
 pub mod console;
 pub mod font;
 pub mod framebuffer;
