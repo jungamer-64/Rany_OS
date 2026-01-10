@@ -45,11 +45,17 @@ pub fn handle_mouse_packet(data: u8) {
 // ============================================================================
 
 /// マウスイベントを取得（割り込みを無効にして実行）
+///
+/// Deprecated: Prefer event-driven `MouseEvent` streams or `MouseHandler::pop_event()`.
+#[deprecated(since = "0.3.0", note = "Use event-driven MouseEvent streams or `MouseHandler::pop_event()` instead")]
 pub fn poll_mouse_event() -> Option<MouseEvent> {
     x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().poll_event())
 }
 
 /// マウスイベントがあるか（割り込みを無効にして実行）
+///
+/// Deprecated: Prefer event-driven APIs (avoid polling in hot paths).
+#[deprecated(since = "0.3.0", note = "Use event-driven MouseEvent streams or `mouse::has_event()` alternatives instead")]
 pub fn has_mouse_event() -> bool {
     x86_64::instructions::interrupts::without_interrupts(|| MOUSE.lock().has_event())
 }
