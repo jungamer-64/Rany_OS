@@ -15,7 +15,7 @@
 //! - ANSIカラーサポート
 //! - スクロールバック
 
-mod async_runtime;
+pub mod async_runtime;
 mod input;
 mod render;
 mod shell;

@@ -143,7 +143,8 @@ pub fn init_features() {
     }
 
     #[cfg(target_arch = "x86_64")]
-    unsafe {
+    #[cfg(target_arch = "x86_64")]
+    {
         // CPUID.01H:ECX.PCID[bit 17]
         let cpuid1 = core::arch::x86_64::__cpuid(1);
         let pcid = (cpuid1.ecx >> 17) & 1 != 0;

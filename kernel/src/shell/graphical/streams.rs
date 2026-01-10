@@ -190,6 +190,7 @@ pub struct CommandResult {
     pub id: u64,
     pub output: String,
     pub is_error: bool,
+    pub cwd: Option<String>,
 }
 
 static RESULT_QUEUE: Mutex<VecDeque<CommandResult>> = Mutex::new(VecDeque::new());

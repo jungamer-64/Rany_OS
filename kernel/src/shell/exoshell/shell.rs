@@ -117,12 +117,12 @@ impl ExoShell {
             return ExoValue::Nil;
         }
 
-        // 履歴に追加 (重複排除と最大数制限)
-        if self.history.last().map(|s| s.as_str()) != Some(input) {
-            self.history.push(input.to_string());
-            if self.history.len() > self.max_history {
-                self.history.remove(0);
-            }
+        // History addition is handled by the caller (REPL loop)
+        // to avoid duplication with background commands.
+
+        // Check for exit
+        if input == "exit" || input == "quit" {
+            return ExoValue::Exit;
         }
 
         // 代入式: let x = ...

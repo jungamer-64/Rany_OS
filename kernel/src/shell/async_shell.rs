@@ -11,7 +11,7 @@
 //! - History navigation (/ arrow keys)
 //! - Tab completion (namespace, method, file path)
 //! - ANSI color prompts
-use alloc::boxed::Box;
+
 use alloc::format;
 use alloc::string::ToString;
 
@@ -96,18 +96,15 @@ pub async fn run_async_shell() {
                     // Add to history
                     exoshell.add_history(line.clone());
 
-                    // Check for exit
-                    if line.trim() == "exit" || line.trim() == "quit" {
-                        crate::console::write(&format!(
+                    // Execute
+                    if execute_exoshell(&mut exoshell, &line).await {
+                         crate::console::write(&format!(
                             "\n{}Goodbye!{}\n",
                             ansi::YELLOW,
                             ansi::RESET
                         ));
                         break;
                     }
-
-                    // Execute
-                    execute_exoshell(&mut exoshell, &line).await;
                 }
                 
                 line_buffer.clear();
@@ -275,13 +272,18 @@ fn clear_line_visual(buffer: &LineBuffer) {
 }
 
 /// Execute command in ExoShell (async version)
-async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
+/// Returns true if proper exit is requested
+async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) -> bool {
     let result = exoshell.eval(line).await;
+
+    if let ExoValue::Exit = result {
+        return true;
+    }
 
     // Error handling with color
     if let ExoValue::Error(ref e) = result {
         crate::console::write(&format!("{}Error: {}{}\n", ansi::RED, e, ansi::RESET));
-        return;
+        return false;
     }
 
     // Normal output
@@ -291,6 +293,7 @@ async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
             crate::console::write("\n");
         }
     }
+    false
 }
 
 /// Print colored prompt
@@ -310,8 +313,10 @@ fn print_prompt(exoshell: &ExoShell) {
 
 
 /// Start the async shell task
-pub fn spawn_async_shell() {
-    crate::task::spawn(run_async_shell());
+/// Start the async shell task
+pub fn spawn_async_shell(executor: &mut crate::task::Executor) {
+    use crate::task::Task;
+    executor.spawn(Task::new(run_async_shell()));
     crate::console::write(&format!("[SHELL] ExoShell task spawned"));
     crate::console::write("\n");
 }

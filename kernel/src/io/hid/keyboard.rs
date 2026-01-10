@@ -151,9 +151,10 @@ pub fn take_stream_with_arc_keymap(
 
 /// 次の文字をポーリング（非ブロッキング）
 ///
-/// # Note
-/// 内部使用向け。新しいコードでは`KeyboardStream`を使用してください。
+/// Deprecated: Use `KeyboardStream` and the async stream APIs instead. Acquire a stream with
+/// `crate::io::hid::keyboard::take_stream()` and poll it asynchronously.
 #[doc(hidden)]
+#[deprecated(since = "0.3.0", note = "Use `KeyboardStream` (via `crate::io::hid::keyboard::take_stream()`) and async stream APIs instead")]
 pub(crate) fn poll_char() -> Option<char> {
     use hid_driver::DriverOps;
     while let Some(event) = PS2_KEYBOARD.poll_key_event_internal() {
@@ -166,8 +167,12 @@ pub(crate) fn poll_char() -> Option<char> {
 
 /// 次のキーイベントをポーリング（非ブロッキング）- 内部API
 ///
-/// service_impl.rs の poll_input_event から使用される。
+/// Deprecated: Internal polling shims are deprecated. Prefer `KeyboardStream` and async
+/// stream-based APIs (acquire a stream via `crate::io::hid::keyboard::take_stream()`).
+///
+/// service_impl.rs の poll_input_event から使用されますが、将来的に移行が必要です。
 #[doc(hidden)]
+#[deprecated(since = "0.3.0", note = "Use `KeyboardStream` and async stream APIs (via `take_stream()`) instead")]
 pub(crate) fn poll_input_event() -> Option<KeyEvent> {
     use hid_driver::DriverOps;
     PS2_KEYBOARD.poll_key_event_internal()
