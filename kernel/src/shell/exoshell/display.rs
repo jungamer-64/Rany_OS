@@ -1,5 +1,5 @@
 // ============================================================================
-// src/shell/exoshell/display.rs - Display implementations
+// kernel/src/shell/exoshell/display.rs - Display implementations
 // ============================================================================
 
 use alloc::format;

@@ -13,18 +13,13 @@
 
 #![allow(dead_code)]
 
-use alloc::format;
-use alloc::vec;
 use spin::Mutex;
+use alloc::vec;
 
 use crate::graphics::Color;
-use crate::io::hid::{KeyCode, KeyEvent, KeyState, Modifiers};
-use crate::shell::exoshell::{ExoShell, ExoValue};
-use kernel_api::gui::{InputEvent, KeyState as KapiKeyState};
-use kernel_api::services::kernel;
+use crate::shell::exoshell::ExoShell;
 
 use super::shell::GraphicalShell;
-use super::streams::{CommandQueueStream, CommandResult, poll_result, push_result};
 
 // ============================================================================
 // Global State
@@ -116,186 +111,37 @@ where
 /// 非同期タスクとしてグラフィカルシェルを実行
 ///
 /// ## 設計
-/// - コマンドキューは Waker 駆動（イベント到着時のみ起床）
-/// - キーボードは KeyboardStream で Waker 駆動
-/// - マウスは従来のポーリング（TODO: MouseStream化）
-/// - カーソル点滅は定期的なyieldで処理
+/// - `GraphicalFrontend` が入力ループと描画を駆動 (ShellFrontendトレイト)
+/// - `ExoShell` でコマンド実行
 pub async fn run_async_shell() {
     use log::info;
+    use crate::shell::exoshell::frontend::graphical::GraphicalFrontend;
+    use crate::shell::exoshell::frontend::ShellFrontend;
 
-    info!(target: "gshell", "Starting async graphical shell task (event-driven)...");
+    info!(target: "gshell", "Starting async graphical shell task (frontend-driven)...");
 
-    let mut cmd_stream = CommandQueueStream::new();
-    let mut input_poll_counter = 0u32;
+    let mut frontend = GraphicalFrontend::new();
+
+    // Acquire ExoShell (take ownership for this task)
+    let mut exoshell = {
+        let mut guard = ASYNC_EXOSHELL.lock();
+        if guard.is_none() {
+             // Fallback if not initialized (should stay in init, but safe guard)
+             *guard = Some(ExoShell::new());
+        }
+        guard.take().unwrap()
+    };
 
     loop {
-        // ========================================
-        // Phase 1: 入力イベント処理
-        // ========================================
-        // Get current tick via GuiServices
-        let current_time = kernel().gui().map(|g| g.current_tick()).unwrap_or(0);
-
-        // Shell owns its framebuffer - no need for with_framebuffer wrapper
-        {
-            let mut guard = GRAPHICAL_SHELL.lock();
-            if let Some(ref mut shell) = *guard {
-                // 入力処理: GuiServices経由 (Cell分離アーキテクチャ)
-                if let Some(gui_services) = kernel().gui() {
-                    for _ in 0..8 {
-                        if let Some(input_event) = gui_services.poll_input_event() {
-                            match input_event {
-                                InputEvent::Key(kapi_key) => {
-                                    // Convert kernel_api::gui::KeyEvent to internal HID KeyEvent
-                                    let state = match kapi_key.state {
-                                        KapiKeyState::Pressed => KeyState::Pressed,
-                                        KapiKeyState::Released => KeyState::Released,
-                                    };
-                                    let modifiers = Modifiers {
-                                        shift: (kapi_key.modifiers & 0x01) != 0,
-                                        ctrl: (kapi_key.modifiers & 0x02) != 0,
-                                        alt: (kapi_key.modifiers & 0x04) != 0,
-                                        alt_gr: (kapi_key.modifiers & 0x08) != 0,
-                                        caps_lock: (kapi_key.modifiers & 0x10) != 0,
-                                        num_lock: false,
-                                        scroll_lock: false,
-                                    };
-                                    let hid_event = KeyEvent {
-                                        key: KeyCode::Unknown,
-                                        state,
-                                        modifiers,
-                                        raw_scancode: kapi_key.scancode,
-                                    };
-                                    shell.handle_key(hid_event);
-                                }
-                                InputEvent::Mouse(_kapi_mouse) => {
-                                    #[cfg(feature = "mouse")]
-                                    {
-                                        use crate::io::hid::MouseEvent;
-                                        use kernel_api::gui::MouseButtons;
-                                        // Convert KAPI MouseEvent to internal MouseEvent
-                                        let hid_mouse = MouseEvent {
-                                            dx: kapi_mouse.dx as i32,
-                                            dy: kapi_mouse.dy as i32,
-                                            left_down: kapi_mouse.buttons.left(),
-                                            right_down: kapi_mouse.buttons.right(),
-                                            middle_down: kapi_mouse.buttons.middle(),
-                                        };
-                                        shell.handle_mouse(hid_mouse);
-                                    }
-                                }
-                            }
-                        } else {
-                            break;
-                        }
-                    }
-                }
-
-                // 結果キューをチェックして表示
-                while let Some(result) = poll_result() {
-                    let output = format!("{}\n", result.output);
-
-                    if result.is_error {
-                        let error_color = shell.resources.theme.error;
-                        shell.print_colored(&output, error_color);
-                    } else {
-                        let fg_color = shell.resources.theme.foreground;
-                        shell.print_colored(&output, fg_color);
-                    }
-
-                    // Update CWD if changed (Syncs Frontend with Backend)
-                    if let Some(cwd) = result.cwd {
-                        shell.shell.cwd = cwd;
-                        let new_prompt = shell.shell.prompt();
-                        shell.state.prompt = new_prompt;
-                        
-                        // Recalculate cached prompt metrics
-                        use crate::graphics::font::FontExt;
-                        shell.state.cached_prompt_end_x = 
-                            shell.resources.font.iter_width(shell.state.prompt.chars()) as i32;
-                    }
-
-                    shell.state.is_executing = false;
-                    shell.redraw();
-                }
-
-                // カーソル点滅を更新（定期的）
-                input_poll_counter = input_poll_counter.wrapping_add(1);
-                if input_poll_counter % 10 == 0 {
-                    shell.update_cursor(current_time);
-                }
-            }
-        }
-
-        // ========================================
-        // Phase 2: コマンド実行（Waker駆動）
-        // ========================================
-        // 非ブロッキングでコマンドキューをポーリング
-        // Context はawaitをまたげないので、ポーリング結果を先に取得
-        let maybe_request = {
-            use core::future::Future;
-            use core::pin::Pin;
-            use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
-
-            fn dummy_raw_waker() -> RawWaker {
-                fn no_op(_: *const ()) {}
-                fn clone_fn(ptr: *const ()) -> RawWaker {
-                    RawWaker::new(ptr, &VTABLE)
-                }
-                static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_fn, no_op, no_op, no_op);
-                RawWaker::new(core::ptr::null(), &VTABLE)
-            }
-
-            let waker = unsafe { Waker::from_raw(dummy_raw_waker()) };
-            let mut cx = Context::from_waker(&waker);
-
-            let mut cmd_future = cmd_stream.next();
-            match Pin::new(&mut cmd_future).poll(&mut cx) {
-                Poll::Ready(req) => Some(req),
-                Poll::Pending => None,
-            }
-            // waker と cx はここでドロップ
-        };
-
-        // awaitの外でコマンドを実行
-        if let Some(req) = maybe_request {
-            let shell_opt = {
-                let mut guard = ASYNC_EXOSHELL.lock();
-                guard.take()
-            };
-
-            if let Some(mut exoshell) = shell_opt {
-                let result = exoshell.eval(&req.command).await;
-                let is_error = matches!(result, ExoValue::Error(_));
-                let output = if is_error {
-                    format!("{}", result)
-                } else {
-                    crate::shell::exoshell::display::format_shell_output(&result)
-                        .unwrap_or_default()
-                };
-
-                let cwd = Some(exoshell.cwd.clone());
-
-                *ASYNC_EXOSHELL.lock() = Some(exoshell);
-
-                push_result(CommandResult {
-                    id: req.id,
-                    output,
-                    is_error,
-                    cwd,
-                });
-            } else {
-                // ExoShellがビジー - リクエストを再キュー
-                super::streams::submit_command(req.command);
-            }
-        }
-
-        // ========================================
-        // Phase 3: 他のタスクに譲る
-        // ========================================
-        if let Some(gui_services) = kernel().gui() {
-            gui_services.yield_control();
-        } else {
-            crate::task::yield_now().await;
+        // Block until line is entered (while handling UI events internally)
+        if let Some(line) = frontend.read_line(&mut exoshell).await {
+            // Execute command
+            let result = exoshell.eval(&line).await;
+            
+            // Display result
+            frontend.print_result(&Ok(result));
+            
+            // Loop automatically handles next prompt via read_line syncing
         }
     }
 }

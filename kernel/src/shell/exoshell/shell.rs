@@ -13,10 +13,11 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::namespaces::*;
-use super::parser::*;
+use super::parser; // Import module itself
+use super::parser::*; // Import items from module
 use super::types::*;
 use super::environment::Environment;
-use super::command::{CommandRegistry, HelpCommand, ExitCommand, ClearCommand, ShellCommand};
+use super::command::{CommandRegistry, HelpCommand, ExitCommand, ClearCommand};
 use super::error::ExoResult;
 use super::parser::ast::Stmt;
 use crate::security::CapabilitySet;
@@ -142,7 +143,7 @@ impl ExoShell {
                     ExoValue::Error(err_msg)
                 }
             },
-            Err(e) => ExoValue::Error(e.to_string()),
+            Err(e) => <ExoValue<'static>>::Error(e.to_string()),
         }
     }
 
@@ -1584,5 +1585,10 @@ impl ExoShell {
     /// 履歴のエントリを取得
     pub fn history_get(&self, index: usize) -> Option<&String> {
         self.history.get(index)
+    }
+
+    /// 履歴を設定（同期用）
+    pub fn set_history(&mut self, history: Vec<String>) {
+        self.history = history;
     }
 }
