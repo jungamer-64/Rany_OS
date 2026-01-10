@@ -73,9 +73,7 @@ pub use ps2::{
     // Types
     Ps2Controller,
     commands as ps2_commands,
-    get_key_event,
-    get_modifiers,
-    get_mouse_event,
+    // Note: PS/2 polling helpers (`get_key_event`, `get_modifiers`, `get_mouse_event`) were deprecated and removed.
     // Functions
     init as ps2_init,
     keyboard_interrupt_handler,

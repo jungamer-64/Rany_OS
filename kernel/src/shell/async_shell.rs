@@ -11,19 +11,12 @@
 //! - History navigation (/ arrow keys)
 //! - Tab completion (namespace, method, file path)
 //! - ANSI color prompts
-//! - Cursor movement (/, Home/End)
-//! - **Ctrl+C Interruption Support** via `select`
-//!
-
 use alloc::boxed::Box;
 use alloc::format;
-
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
+use alloc::string::ToString;
 
 use super::exoshell::{ExoShell, ExoValue};
-use crate::io::serial::{self, InputEvent, LineEditor};
+use crate::io::serial;
 
 /// ANSI escape codes for colors
 mod ansi {
@@ -184,6 +177,41 @@ pub async fn run_async_shell() {
                                 crate::console::write("\x1b[D");
                             }
                         }
+                        b'H' => { // Home
+                            let moves = line_buffer.cursor;
+                            line_buffer.move_home();
+                            for _ in 0..moves {
+                                crate::console::write("\x1b[D");
+                            }
+                        }
+                        b'F' => { // End
+                            let moves = line_buffer.content.len() - line_buffer.cursor;
+                            line_buffer.move_end();
+                            for _ in 0..moves {
+                                crate::console::write("\x1b[C");
+                            }
+                        }
+                        b'3' => { // Delete (Esc [ 3 ~)
+                            let tilde = serial::read_byte().await;
+                            if tilde == b'~' {
+                                if line_buffer.cursor < line_buffer.len() {
+                                    line_buffer.delete();
+                                    // Visual update is hard without scrolling everything.
+                                    // Use Save/Restore cursor if supported (Esc 7 / Esc 8 or Esc [ s / Esc [ u)
+                                    // Or just reprint line.
+                                    clear_line_visual(&line_buffer);
+                                    crate::console::write("\r");
+                                    print_prompt(&exoshell);
+                                    crate::console::write(line_buffer.as_str());
+                                    
+                                    // Restore cursor logic (similar to insert)
+                                    let diff = line_buffer.len() - line_buffer.cursor;
+                                    for _ in 0..diff {
+                                        crate::console::write("\x08");
+                                    }
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -290,11 +318,7 @@ fn print_prompt(exoshell: &ExoShell) {
     ));
 } 
 
-/// Clear current line (for history navigation)
-fn clear_line(_editor: &LineEditor) {
-    crate::console::write("\r");
-    crate::console::write("\x1b[K");
-}
+
 
 /// Start the async shell task
 pub fn spawn_async_shell() {
