@@ -37,8 +37,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `keyboard::has_event()` or the `KeyboardStream` async API.
   - `MouseBtn`, `MouseEvt` ✅ **deprecated**
     - Migration: Use `MouseButton` and `MouseEvent` directly.
-  - PS/2 helpers (`get_key_event`, `get_modifiers`, `get_mouse_event`) ✅ **deprecated**
-    - Migration: Prefer `KeyboardStream` or unified HID driver APIs instead of PS/2-specific helpers.
+  - PS/2 helpers (`get_key_event`, `get_modifiers`, `get_mouse_event`) ❌ **removed**
+    - Migration: Prefer `KeyboardStream` or unified HID driver APIs; use `keyboard::take_stream()` or `keyboard::has_event()` instead.
   - Internal polling shims (`poll_key_char`, `poll_key_event`, `poll_input_event`) ✅ **deprecated**
     - Migration: Use `KeyboardStream` and the async stream APIs.
   - PS/2 alias types (`Ps2DeviceType`, `Ps2KeyCode`, `Ps2KeyEvent`, `Ps2Modifiers`) ✅ **deprecated**
@@ -62,11 +62,11 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Use `take_stream()` and handle `StreamAlreadyTaken` errors; avoid panics in production code.
 
 - IO-level re-exports (deprecated to propagate HID deprecations to `crate::io` namespace)
-  - `io::get_key_event` ✅ **deprecated**
+  - `io::get_key_event` ❌ **removed**
     - Migration: Use `KeyboardStream` or `keyboard::has_event()` instead.
-  - `io::get_modifiers` ✅ **deprecated**
+  - `io::get_modifiers` ❌ **removed**
     - Migration: Use `keyboard` APIs or `KeyboardStream` instead.
-  - `io::get_mouse_event` ✅ **deprecated**
+  - `io::get_mouse_event` ❌ **removed**
     - Migration: Use `MouseEvent` streams or `mouse::poll_event` instead.
   - `io::handle_keyboard_interrupt` ✅ **deprecated**
     - Migration: Register the PS/2 driver's interrupt handler via the DriverRegistry or use `keyboard_interrupt_handler` directly.

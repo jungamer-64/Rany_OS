@@ -141,8 +141,7 @@ impl ShellState {
 
 
 
-/// 最大行バッファサイズ
-pub const MAX_LINE_LENGTH: usize = 256;
+
 
 /// スクロールバック行数
 pub const SCROLLBACK_LINES: usize = 500;
