@@ -1248,6 +1248,7 @@ impl SafePackedRead for DirEntryRaw {
     /// 4. **Copyトレイト**: 構造体は`Copy`を実装しており、ビット単位のコピーが安全
     /// 5. **有効性**: 任意のビットパターンが有効なDirEntryRaw値を形成する
     ///    （無効なパターンは上位層で検証）
+    #[allow(deprecated)]
     fn from_bytes_safe(bytes: &[u8]) -> Self {
         debug_assert!(
             bytes.len() >= DIR_ENTRY_SIZE,
@@ -1270,6 +1271,7 @@ impl SafePackedRead for LfnEntry {
     /// - `#[repr(C, packed)]`で32バイト固定
     /// - 全フィールドがアラインメント要求1バイト
     /// - 任意のビットパターンが有効（無効パターンは上位層で検証）
+    #[allow(deprecated)]
     fn from_bytes_safe(bytes: &[u8]) -> Self {
         debug_assert!(
             bytes.len() >= DIR_ENTRY_SIZE,
@@ -1278,7 +1280,7 @@ impl SafePackedRead for LfnEntry {
             DIR_ENTRY_SIZE
         );
         // Delegate to safe field-by-field parser
-        LfnEntry::from_bytes(bytes)
+        <LfnEntry as SafePackedRead>::from_bytes_safe(bytes)
     }
 }
 
@@ -1828,6 +1830,7 @@ impl fmt::Debug for DirEntryRaw {
 
 impl DirEntryRaw {
     /// バイト列から安全にDirEntryRawを読み取る
+    #[deprecated(since = "0.3.0", note = "Use `SafePackedRead::from_bytes_safe` or directory-level parsers instead")]
     pub fn from_bytes(bytes: &[u8]) -> Self {
         // Safe field-by-field copy to avoid relying on #[repr(C, packed)] pointer casting.
         debug_assert!(
@@ -2233,6 +2236,7 @@ impl LfnEntry {
         self.checksum
     }
 
+    #[deprecated(since = "0.3.0", note = "Use `SafePackedRead::from_bytes_safe` or higher-level parser APIs instead")]
     pub fn from_bytes(bytes: &[u8]) -> Self {
         debug_assert_eq!(bytes.len(), DIR_ENTRY_SIZE);
         unsafe { *(bytes.as_ptr() as *const Self) }
@@ -2666,11 +2670,11 @@ impl From<&[u8]> for DirectoryEntryKind {
 
         let attr = FileAttributes::from(bytes[11]);
         if attr.is_long_name() {
-            DirectoryEntryKind::LongName(LfnEntry::from_bytes(bytes))
+            DirectoryEntryKind::LongName(<LfnEntry as SafePackedRead>::from_bytes_safe(bytes))
         } else if attr.is_volume_id() {
             DirectoryEntryKind::VolumeLabel
         } else {
-            DirectoryEntryKind::Standard(DirEntryRaw::from_bytes(bytes))
+            DirectoryEntryKind::Standard(<DirEntryRaw as SafePackedRead>::from_bytes_safe(bytes))
         }
     }
 }
@@ -5454,7 +5458,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
             for i in 0..entries_per_cluster {
                 let offset = i * DIR_ENTRY_SIZE;
-                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+                let raw = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[offset..offset + DIR_ENTRY_SIZE]);
 
                 if let Some(result) = predicate(&raw, offset) {
                     return Ok(Some((result, current_cluster, offset)));
@@ -5497,7 +5501,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
             for i in 0..entries_per_cluster {
                 let offset = i * DIR_ENTRY_SIZE;
-                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+                let raw = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[offset..offset + DIR_ENTRY_SIZE]);
 
                 if let Some(result) = predicate(&raw, offset) {
                     return Ok(Some((result, current_cluster, offset)));
@@ -5543,7 +5547,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
             for i in 0..entries_per_cluster {
                 let offset = i * DIR_ENTRY_SIZE;
-                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+                let raw = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[offset..offset + DIR_ENTRY_SIZE]);
 
                 if raw.is_end() {
                     // 終端が見つかった。ここから先はすべて空き。
@@ -5599,7 +5603,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
             for i in 0..entries_per_cluster {
                 let offset = i * DIR_ENTRY_SIZE;
-                let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+                let raw = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[offset..offset + DIR_ENTRY_SIZE]);
 
                 if raw.is_end() {
                     if found_count == 0 {
@@ -6055,7 +6059,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
             .read_cluster_async(cluster, &mut buffer)
             .await?;
 
-        let raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+        let raw = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[offset..offset + DIR_ENTRY_SIZE]);
         let parent_cluster = self.inner.lock_async().await.first_cluster;
         let first_cluster = raw.first_cluster();
 
@@ -6566,7 +6570,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
                     .await?;
 
                 let dotdot =
-                    DirEntryRaw::from_bytes(&buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2]);
+                    <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2]);
                 let next = dotdot.first_cluster();
                 if next == curr_cluster {
                     break;
@@ -6593,7 +6597,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
             let dotdot_offset = DIR_ENTRY_SIZE;
             let mut dotdot =
-                DirEntryRaw::from_bytes(&buffer[dotdot_offset..dotdot_offset + DIR_ENTRY_SIZE]);
+                <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[dotdot_offset..dotdot_offset + DIR_ENTRY_SIZE]);
             let new_parent = other_inode.inner.lock().first_cluster;
             let new_parent_val = if new_parent == self.fs.root_cluster {
                 Cluster(0)
@@ -6668,7 +6672,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
                     PooledClusterBuffer::new(self.fs.cluster_buffer_pool.as_ref(), cluster_size)?;
                 self.fs.read_cluster(curr_cluster, &mut buffer)?;
 
-                let dotdot = DirEntryRaw::from_bytes(&buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2]);
+                let dotdot = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[DIR_ENTRY_SIZE..DIR_ENTRY_SIZE * 2]);
                 let next = dotdot.first_cluster();
                 if next == curr_cluster {
                     break;
@@ -6694,7 +6698,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
 
             let dotdot_offset = DIR_ENTRY_SIZE;
             let mut dotdot =
-                DirEntryRaw::from_bytes(&buffer[dotdot_offset..dotdot_offset + DIR_ENTRY_SIZE]);
+                <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[dotdot_offset..dotdot_offset + DIR_ENTRY_SIZE]);
             let new_parent = other_inode.inner.lock().first_cluster;
             let new_parent_val = if new_parent == self.fs.root_cluster {
                 Cluster(0)
@@ -7328,7 +7332,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
         self.fs.read_cluster(cluster, &mut buffer)?;
 
         // rawエントリを可変として取得し、現在のメタデータで更新します。
-        let mut raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+        let mut raw = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[offset..offset + DIR_ENTRY_SIZE]);
         raw.set_file_size(inner.size as u32);
         raw.set_first_cluster(inner.first_cluster);
         raw.set_attributes(inner.attributes);
@@ -7390,7 +7394,7 @@ impl<B: ZeroCopyBufferMut + 'static> Fat32Inode<B> {
             .read_cluster_async(cluster, &mut buffer)
             .await?;
 
-        let mut raw = DirEntryRaw::from_bytes(&buffer[offset..offset + DIR_ENTRY_SIZE]);
+        let mut raw = <DirEntryRaw as SafePackedRead>::from_bytes_safe(&buffer[offset..offset + DIR_ENTRY_SIZE]);
         raw.set_file_size(size as u32);
         raw.set_first_cluster(first_cluster);
         raw.set_attributes(attributes);
