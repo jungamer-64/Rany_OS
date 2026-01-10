@@ -19,6 +19,8 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Replacement: Use `fs_abstraction` directly to make the optional layer explicit.
   - `Fat32FileSystem` alias ❌ **removed**
     - Replacement: Use `filesystems::fat32::Fat32FileSystem` or `fs_abstraction` directly.
+  - `filesystems/fat32` low-level helpers (`DirEntryRaw::from_bytes`, `LfnEntry::from_bytes`) ✅ **deprecated**
+    - Migration: Use `SafePackedRead::from_bytes_safe` or the high-level parser APIs in `filesystems::fat32`.
 
 - `kernel/src/io/log.rs`
   - `LOG_AGGREGATOR_PRIORITY`, `AGGREGATOR_STARTED`, `spawn_log_aggregator()` ✅ **deprecated**
