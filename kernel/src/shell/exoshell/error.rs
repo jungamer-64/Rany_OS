@@ -1,5 +1,5 @@
 // ============================================================================
-// src/shell/exoshell/error.rs - ExoShell Error Handling
+// kernel/src/shell/exoshell/error.rs - ExoShell Error Handling
 // ============================================================================
 
 use alloc::borrow::Cow;

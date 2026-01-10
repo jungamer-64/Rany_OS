@@ -33,6 +33,9 @@ pub mod buffer_view;
 pub mod display;
 pub mod history;
 pub mod command;
+
+pub mod frontend;
+
 pub mod environment;
 pub mod namespaces;
 pub mod parser;
@@ -44,7 +47,6 @@ pub mod error;
 pub use shell::ExoShell;
 
 pub use types::*;
-pub use error::{ShellError, ExoResult};
 
 // ============================================================================
 // Global ExoShell instance

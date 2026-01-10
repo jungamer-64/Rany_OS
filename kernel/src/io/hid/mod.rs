@@ -87,9 +87,9 @@ pub use ps2::{
 
 pub use hid_driver::{MouseButton, MouseEvent};
 pub use mouse::{
-    Mouse, MouseInitError, handle_mouse_packet, has_mouse_event,
+    Mouse, MouseInitError, handle_mouse_packet,
     // init removed - use Ps2MouseDriver via DriverRegistry
-    is_mouse_initialized, poll_mouse_event,
+    is_mouse_initialized,
 };
 
 // ============================================================================
@@ -110,4 +110,3 @@ pub use keymap::{
 // ============================================================================
 // Internal Backward Compatibility (crate-only)
 // ============================================================================
-// poll_input_event removed. Consumers should use `keyboard::poll_input_event` directly.

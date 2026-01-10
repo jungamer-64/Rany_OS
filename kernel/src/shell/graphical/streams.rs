@@ -82,6 +82,11 @@ pub fn submit_command(command: String) -> u64 {
     id
 }
 
+/// コマンドを非同期に取得（非ブロッキング）
+pub fn try_recv_command() -> Option<CommandRequest> {
+    COMMAND_QUEUE.lock().pop_front()
+}
+
 /// コマンドキューからの非同期ストリーム
 pub struct CommandQueueStream {
     _marker: (),

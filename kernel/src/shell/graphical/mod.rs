@@ -16,11 +16,11 @@
 //! - スクロールバック
 
 pub mod async_runtime;
-mod input;
-mod render;
-mod shell;
+pub mod input;
+pub mod render;
+pub mod shell;
 pub mod streams;
-mod types;
+pub mod types;
 pub mod utils;
 
 // Re-export types

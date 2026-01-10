@@ -1,10 +1,14 @@
+// ============================================================================
+// kernel/src/shell/exoshell/command.rs - Command
+// ============================================================================
 
-use alloc::boxed::Box;
+
+use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::shell::exoshell::error::{ExoResult, ShellError};
+use crate::shell::exoshell::error::ExoResult;
 use crate::shell::exoshell::types::ExoValue;
 use crate::shell::exoshell::ExoShell;
 
@@ -47,7 +51,7 @@ impl CommandRegistry {
 
     /// 登録済みコマンド一覧を取得
     pub fn list(&self) -> Vec<&str> {
-        self.commands.keys().map(|k| k.as_str()).collect()
+        self.commands.keys().map(|k: &String| k.as_str()).collect()
     }
 }
 
