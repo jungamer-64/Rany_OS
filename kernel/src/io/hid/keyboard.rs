@@ -82,6 +82,10 @@ pub(crate) static PS2_KEYBOARD: KeyboardDriver = KeyboardDriver::new();
 // init() function removed - use Ps2KeyboardDriver via DriverRegistry instead
 
 /// 割り込みハンドラから呼ばれる（PS/2キーボード用）
+///
+/// Deprecated: Use the PS/2 controller's `keyboard_interrupt_handler()` or register the
+/// PS/2 driver's interrupt handler via `driver_registry::register_driver` instead.
+#[deprecated(since = "0.3.0", note = "Use `crate::io::hid::ps2::keyboard_interrupt_handler()` or register the PS/2 driver's handler")]
 pub fn handle_keyboard_interrupt(scancode: u8) {
     PS2_KEYBOARD.handle_scancode(scancode);
 }

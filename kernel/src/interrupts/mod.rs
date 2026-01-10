@@ -477,13 +477,8 @@ pub fn poll_timer_events() {
 // Interrupt-Wakerブリッジとの連携
 define_interrupt!(
     fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-        // Port import not needed; use crate::io::inb for port reads
-
-        // キーボードデータポートから読み取り（これをしないと次の割り込みが来ない）
-        let scancode: u8 = crate::io::inb(0x60);
-
-        // スキャンコードをhidモジュールに渡して処理
-        crate::io::hid::handle_keyboard_interrupt(scancode);
+        // Delegate to the PS/2 controller handler which reads status/data itself.
+        crate::io::hid::ps2::keyboard_interrupt_handler();
 
         // Interrupt-Wakerブリッジにキーボード割り込みを通知（設計書 4.2）
         crate::task::interrupt_waker::wake_from_interrupt(
