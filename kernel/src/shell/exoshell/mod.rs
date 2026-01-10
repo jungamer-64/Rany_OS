@@ -31,6 +31,7 @@ extern crate alloc;
 // サブモジュール
 pub mod buffer_view;
 pub mod display;
+pub mod history;
 pub mod namespaces;
 pub mod parser;
 pub mod shell;

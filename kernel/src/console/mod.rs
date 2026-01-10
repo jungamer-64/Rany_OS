@@ -18,6 +18,7 @@
 #![allow(clippy::derivable_impls)]
 #![allow(dead_code)]
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -754,6 +755,16 @@ impl ConsoleManager {
         }
     }
 
+    /// アクティブなコンソールに書き込む (Non-blocking)
+    pub fn try_write(&self, s: &str) {
+        let active = self.active.load(Ordering::Acquire) as usize;
+        if let Some(console) = self.consoles.get(active) {
+            if let Some(mut locked_console) = console.try_lock() {
+                locked_console.write(s);
+            }
+        }
+    }
+
     /// 指定コンソールに書き込む
     pub fn write_to(&self, console_id: u32, s: &str) {
         if let Some(console) = self.consoles.get(console_id as usize) {
@@ -814,10 +825,26 @@ impl ConsoleManager {
 }
 
 // ============================================================================
+// Console Driver Trait
+// ============================================================================
+
+/// コンソール描画ドライバー
+///
+/// コンソールマネージャーからの出力を実際に画面に描画するためのトレイト
+pub trait ConsoleDriver: Send {
+    /// バッファの内容を画面に反映
+    ///
+    /// buffer: 描画すべき端末バッファ
+    /// full_redraw: 画面全体の再描画が必要かどうか
+    fn flush(&mut self, buffer: &TerminalBuffer);
+}
+
+// ============================================================================
 // Global Instance
 // ============================================================================
 
 static CONSOLE_MANAGER: Mutex<Option<ConsoleManager>> = Mutex::new(None);
+static CONSOLE_DRIVER: Mutex<Option<Box<dyn ConsoleDriver>>> = Mutex::new(None);
 
 /// コンソールシステムを初期化
 pub fn init(cols: usize, rows: usize) {
@@ -829,10 +856,62 @@ pub fn init_default() {
     init(DEFAULT_COLS, DEFAULT_ROWS);
 }
 
-/// コンソールに書き込む
-pub fn write(s: &str) {
+/// ドライバを設定
+pub fn set_driver(driver: Box<dyn ConsoleDriver>) {
+    *CONSOLE_DRIVER.lock() = Some(driver);
+    // 初期描画のためにフラッシュ
+    flush_screen();
+}
+
+/// 画面を強制的にフラッシュ
+pub fn flush_screen() {
     if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
-        manager.write(s);
+        if let Some(ref mut driver) = *CONSOLE_DRIVER.lock() {
+             let active = manager.active_console();
+             if let Some(console) = manager.consoles.get(active as usize) {
+                 // Use .buffer() getter as the field is private
+                 driver.flush(console.lock().buffer());
+             }
+        }
+    }
+}
+
+/// コンソールに書き込む (Blocking)
+pub fn write(s: &str) {
+    {
+        if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+            manager.write(s);
+        }
+    }
+    // 書き込み後にフラッシュ
+    flush_screen();
+}
+
+/// コンソールに書き込む (Non-blocking / Try Lock)
+/// 割り込みハンドラやロガーからの呼び出し用
+pub fn try_write(s: &str) {
+    // Try to lock manager
+    if let Some(guard) = CONSOLE_MANAGER.try_lock() {
+        if let Some(ref manager) = *guard {
+             manager.try_write(s);
+        }
+    }
+
+    // Try to flush (best effort)
+    if let Some(manager_guard) = CONSOLE_MANAGER.try_lock() {
+        if let Some(ref manager) = *manager_guard {
+            if let Some(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
+                if let Some(ref mut driver) = *driver_guard {
+                     let active = manager.active_console();
+                     if let Some(console) = manager.consoles.get(active as usize) {
+                         // Try lock console
+                         if let Some(locked_console) = console.try_lock() {
+                             driver.flush(locked_console.buffer());
+                         }
+                     }
+                }
+            }
+        }
     }
 }
 
@@ -849,6 +928,7 @@ pub fn switch(console_id: u32) {
     if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
         manager.switch_to(console_id);
     }
+    flush_screen();
 }
 
 // ============================================================================

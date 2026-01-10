@@ -1320,7 +1320,7 @@ impl<'a> Future for RecvFuture<'a> {
                         bounce_handle = Some(handle);
                     } else {
                         // Allocate a page-aligned bounce buffer and map it for device writes
-                        let mut rref = match allocate_iommu_bounce_bytes(map_len).map_err(|err| match err {
+                        let rref = match allocate_iommu_bounce_bytes(map_len).map_err(|err| match err {
                             IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
                             IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
                         }) {
@@ -1693,7 +1693,7 @@ impl<'a> Future for ZeroCopyRecvFuture<'a> {
                     bounce_handle = Some(handle);
                 } else {
                     // Allocate a page-aligned bounce buffer and map it for device writes
-                    let mut rref = match allocate_iommu_bounce_bytes(map_len).map_err(|err| match err {
+                    let rref = match allocate_iommu_bounce_bytes(map_len).map_err(|err| match err {
                         IommuBounceAllocError::InvalidLen => VirtioNetError::BufferTooSmall,
                         IommuBounceAllocError::AllocFailed => VirtioNetError::DeviceError,
                     }) {

@@ -54,7 +54,6 @@ pub fn map_rref_slice_for_device<T>(
 /// - `phys_addr` and `size` are 4K-aligned when IOMMU translation is enabled
 ///
 /// **ExoRust Guideline**: Prefer safe wrappers like `map_rref()` over this raw API.
-#[allow(deprecated)]
 pub(crate) unsafe fn map_for_dma(
     phys_addr: PhysAddr,
     size: u64,

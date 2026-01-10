@@ -370,82 +370,8 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
 impl<T: ?Sized + 'static> DmaHandle<T> {
     /// Attempt to unmap the DMA buffer during drop.
     ///
-    /// # Deprecated
-    ///
-    /// This method is kept for backward compatibility but is no longer used
-    /// by Drop. The new Drop implementation uses zombie_queue for async cleanup.
-    ///
-    /// This is a best-effort cleanup that tries to:
-    /// 1. Get the global IOMMU driver
-    /// 2. Unmap based on the mapping kind
-    /// 3. Handle errors gracefully (no panics)
-    ///
-    /// Returns `true` if cleanup succeeded and RRef can be safely dropped.
-    /// Returns `false` if cleanup failed and RRef must be leaked.
-    fn try_cleanup_on_drop(&self) -> bool {
-        use crate::io::iommu::registry::get_iommu_driver;
-
-        // Identity mappings don't need IOMMU cleanup
-        if matches!(self.mapping, MappingKind::Identity) {
-            return true;
-        }
-
-        let Some(driver) = get_iommu_driver() else {
-            log::warn!(
-                "[DmaHandle] Cannot cleanup: IOMMU driver unavailable (IOVA=0x{:x})",
-                self.iova
-            );
-            return false;
-        };
-
-        let result = match &self.mapping {
-            MappingKind::Identity => {
-                // Already handled above, but for completeness
-                Ok(())
-            }
-            MappingKind::Global => {
-                // Global DMA mapping - use driver's unmap_dma
-                driver.unmap_dma(self.iova, self.size)
-            }
-            MappingKind::Device(device_id) => {
-                // Device-specific mapping
-                driver.unmap_for_device(device_id, self.iova, self.size)
-            }
-            MappingKind::Domain => {
-                // Domain-managed mapping - we don't have the domain context here,
-                // so we cannot safely unmap. This is a design limitation.
-                log::warn!(
-                    "[DmaHandle] Domain-managed mapping cannot be auto-cleaned \
-                     (IOVA=0x{:x}, domain={}). Consider using Device mapping instead.",
-                    self.iova,
-                    self.domain_id
-                );
-                return false;
-            }
-        };
-
-        match result {
-            Ok(()) => {
-                log::debug!(
-                    "[DmaHandle] Auto-cleanup succeeded (IOVA=0x{:x}, size={})",
-                    self.iova,
-                    self.size
-                );
-                // Try to unregister from domain registry (best-effort)
-                self.try_unregister_from_domain();
-                true
-            }
-            Err(e) => {
-                log::error!(
-                    "[DmaHandle] Auto-cleanup failed: {:?} (IOVA=0x{:x}, size={})",
-                    e,
-                    self.iova,
-                    self.size
-                );
-                false
-            }
-        }
-    }
+    // Removed: `try_cleanup_on_drop` (was deprecated). Drop uses the `zombie_queue`-based
+    // async cleanup path and no longer relies on synchronous best-effort cleanup.
 
     /// Try to unregister this mapping from the domain's resource registry.
     ///

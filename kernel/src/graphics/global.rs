@@ -33,8 +33,7 @@ impl Write for EarlyBuf {
 /// グローバルフレームバッファ
 static FRAMEBUFFER: Mutex<Option<Framebuffer>> = Mutex::new(None);
 
-/// グローバルコンソール
-static CONSOLE: Mutex<Option<TextConsole>> = Mutex::new(None);
+
 
 /// フレームバッファを初期化
 pub fn init(info: FramebufferInfo) {
@@ -313,14 +312,35 @@ fn detect_pixel_format(
     }
 }
 
+// Note: TextConsole is now managed by crate::console as a driver
+// We keep CONSOLE for legacy direct access if needed, but primary output goes through ConsoleManager.
+// Actually, TextConsole now implements ConsoleDriver and does NOT own VirtualConsole.
+// So direct access to TextConsole for 'write_str' (which depended on VC) is no longer possible in the same way.
+// We must repurpose CONSOLE to be a holder if we want `with_console` to still work for accessing font/colors?
+// Or we should remove `with_console` access to TextConsole directly and route everything through ConsoleManager.
+// However `with_console` returns `Option<R>`, used by `boot_splash`? No, boot_splash uses `with_framebuffer`.
+
+// Let's remove the global CONSOLE mutex and route everything via ConsoleManager.
+// This is a breaking change for `with_console`.
+// I checked `with_console` usage via grep:
+// users: graphics/global.rs (self), graphics/mod.rs (re-export).
+// If external crates don't use it, we are fine.
+
 /// グラフィカルコンソールを初期化
 pub fn init_console() {
     let mut fb_guard = FRAMEBUFFER.lock();
     if let Some(ref mut fb) = *fb_guard {
-        let console = TextConsole::new(fb);
+        // Create TextConsole and get dimensions
+        let (console, cols, rows) = TextConsole::new(fb);
+        
+        // Initialize ConsoleManager with correct dimensions
+        crate::console::init(cols, rows);
+        
+        // Register TextConsole as the driver
+        crate::console::set_driver(alloc::boxed::Box::new(console));
+        
         drop(fb_guard);
-        *CONSOLE.lock() = Some(console);
-        log::info!("[GRAPHICS] Text console initialized\n");
+        log::info!("[GRAPHICS] Text console initialized as driver\n");
     }
 }
 
@@ -333,21 +353,22 @@ where
     guard.as_mut().map(f)
 }
 
-/// コンソールにアクセス
-pub fn with_console<F, R>(f: F) -> Option<R>
+// Deprecated/Removed: with_console
+// If you need to print, use `console_print` or `crate::console::write`.
+// If you need to change fonts/colors, we need a new API on ConsoleManager (Task for later).
+// For now, support for locking console is removed as it's owned by ConsoleManager driver box.
+pub fn with_console<F, R>(_f: F) -> Option<R>
 where
     F: FnOnce(&mut TextConsole) -> R,
 {
-    let mut guard = CONSOLE.lock();
-    guard.as_mut().map(f)
+    // Not supported anymore as TextConsole is boxed in ConsoleManager
+    None
 }
 
 /// コンソールのロックを試行（非ブロッキング）
-///
-/// ロガーなどの割り込みコンテキストから安全に呼び出すための関数。
-/// ロックが取得できない場合は `None` を返す。
 pub fn try_lock_console() -> Option<spin::MutexGuard<'static, Option<TextConsole>>> {
-    CONSOLE.try_lock()
+    // Not supported
+    None
 }
 
 /// フレームバッファが初期化されているか確認
@@ -361,9 +382,7 @@ pub fn framebuffer() -> Option<()> {
 
 /// コンソールに出力
 pub fn console_print(s: &str) {
-    with_console(|console| {
-        console.write_str(s);
-    });
+    crate::console::write(s);
 }
 
 /// フレームバッファのロックを強制解除（パニック時用）

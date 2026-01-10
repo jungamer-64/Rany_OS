@@ -50,12 +50,8 @@ pub struct ShellState {
     pub output_lines: alloc::collections::VecDeque<ConsoleLine>,
     /// 入力バッファ
     pub input_buffer: LineBuffer,
-    /// コマンド履歴
-    pub history: alloc::vec::Vec<String>,
-    /// 履歴インデックス（-1 = 履歴なし）
-    pub history_index: isize,
-    /// 履歴検索バッファ
-    pub history_search_buffer: Option<String>,
+    /// 履歴ナビゲータ（共有ロジック）
+    pub history_navigator: crate::shell::exoshell::history::HistoryNavigator,
     /// スクロールオフセット
     pub scroll_offset: usize,
     /// カーソル表示フラグ
@@ -141,8 +137,7 @@ impl ShellState {
 // Configuration Constants
 // ============================================================================
 
-/// 最大履歴エントリ数
-pub const MAX_HISTORY: usize = 100;
+
 
 /// 最大行バッファサイズ
 pub const MAX_LINE_LENGTH: usize = 256;

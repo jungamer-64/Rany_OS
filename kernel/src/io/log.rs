@@ -882,14 +882,21 @@ impl Log for KernelLogger {
 
         // 画面への出力（統合実装）
         // パニック中以外、かつロックが取得できた場合のみ出力してデッドロックを回避する
+        // 画面への出力（統合実装）
+        // パニック中以外、かつロックが取得できた場合のみ出力してデッドロックを回避する
         #[cfg(not(feature = "bench"))]
         if !is_in_panic() {
-            if let Some(mut guard) = crate::graphics::global::try_lock_console() {
-                if let Some(console) = guard.as_mut() {
-                    use core::fmt::Write;
-                    let _ = write!(console, "{}\n", record.args());
+            // Helper adapter to use formatting with try_write
+            struct ConsoleLogWriter;
+            impl core::fmt::Write for ConsoleLogWriter {
+                fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                    crate::console::try_write(s);
+                    Ok(())
                 }
             }
+            
+            use core::fmt::Write;
+            let _ = write!(ConsoleLogWriter, "{}\n", record.args());
         }
     }
 

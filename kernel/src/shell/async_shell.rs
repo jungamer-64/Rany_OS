@@ -15,8 +15,6 @@
 //! - **Ctrl+C Interruption Support** via `select`
 //!
 
-#![allow(deprecated)]
-
 use alloc::boxed::Box;
 use alloc::format;
 use alloc::string::{String, ToString};
@@ -91,90 +89,10 @@ fn select<A: Future + Unpin, B: Future + Unpin>(a: A, b: B) -> Select<A, B> {
     Select { a, b }
 }
 
-/// Shell history manager
-struct History {
-    entries: Vec<String>,
-    index: Option<usize>,
-    stash: String,
-    max_size: usize,
-}
-
-impl History {
-    fn new(max_size: usize) -> Self {
-        Self {
-            entries: Vec::new(),
-            index: None,
-            stash: String::new(),
-            max_size,
-        }
-    }
-
-    /// Add entry to history (avoids duplicates at the end)
-    fn push(&mut self, entry: String) {
-        if entry.trim().is_empty() {
-            return;
-        }
-        // Don't add duplicates
-        if self.entries.last() != Some(&entry) {
-            self.entries.push(entry);
-            if self.entries.len() > self.max_size {
-                self.entries.remove(0);
-            }
-        }
-        self.index = None;
-    }
-
-    /// Go back in history ( key)
-    fn prev(&mut self, current: &str) -> Option<&str> {
-        if self.entries.is_empty() {
-            return None;
-        }
-
-        match self.index {
-            None => {
-                // First time going back, stash current input
-                self.stash = current.to_string();
-                self.index = Some(self.entries.len() - 1);
-            }
-            Some(0) => {
-                // Already at oldest, do nothing
-                return Some(&self.entries[0]);
-            }
-            Some(idx) => {
-                self.index = Some(idx - 1);
-            }
-        }
-
-        self.index.map(|i| self.entries[i].as_str())
-    }
-
-    /// Go forward in history ( key)
-    fn next(&mut self) -> Option<&str> {
-        match self.index {
-            None => None,
-            Some(idx) => {
-                if idx + 1 >= self.entries.len() {
-                    // Back to current input
-                    self.index = None;
-                    Some(self.stash.as_str())
-                } else {
-                    self.index = Some(idx + 1);
-                    Some(&self.entries[idx + 1])
-                }
-            }
-        }
-    }
-
-    /// Reset navigation state
-    fn reset_navigation(&mut self) {
-        self.index = None;
-        self.stash.clear();
-    }
-}
+use crate::shell::exoshell::history::HistoryNavigator;
 
 /// Async shell task
 /// This function runs as an async task and handles serial input via interrupts
-#[allow(deprecated)]
 pub async fn run_async_shell() {
     crate::console::write("\n");
     crate::console::write(&format!("{}{}", ansi::CYAN, ansi::RESET));
@@ -210,7 +128,7 @@ pub async fn run_async_shell() {
     // Yield after heavy ExoShell allocation to allow other tasks (e.g., graphical shell) to start
     crate::task::yield_now().await;
 
-    let mut history = History::new(100);
+    let mut navigator = HistoryNavigator::new();
     let mut stream = InputEventStream::new();
 
     // Yield again after all initialization is complete
@@ -231,9 +149,8 @@ pub async fn run_async_shell() {
                     continue;
                 }
 
-                // Add to history
-                history.push(line.clone());
-                history.reset_navigation();
+                // Reset navigation state
+                navigator.reset_navigation();
 
                 // Check for exit command
                 let trimmed = line.trim();
@@ -335,7 +252,7 @@ pub async fn run_async_shell() {
             }
 
             InputEvent::ArrowUp => {
-                if let Some(prev_line) = history.prev(&stream.editor.content()) {
+                if let Some(prev_line) = navigator.prev(exoshell.history(), &stream.editor.content()) {
                     clear_line(&stream.editor);
                     stream.editor.set_content(prev_line);
                     print_prompt(&exoshell);
@@ -344,7 +261,7 @@ pub async fn run_async_shell() {
             }
 
             InputEvent::ArrowDown => {
-                if let Some(next_line) = history.next() {
+                if let Some(next_line) = navigator.next(exoshell.history()) {
                     clear_line(&stream.editor);
                     stream.editor.set_content(next_line);
                     print_prompt(&exoshell);
@@ -392,7 +309,6 @@ pub async fn run_async_shell() {
 }
 
 /// Execute command in ExoShell (async version)
-#[allow(deprecated)]
 async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
     let result = exoshell.eval(line).await;
 
@@ -423,7 +339,6 @@ async fn execute_exoshell(exoshell: &mut ExoShell, line: &str) {
 }
 
 /// Print colored prompt
-#[allow(deprecated)]
 fn print_prompt(exoshell: &ExoShell) {
     crate::console::write(&format!(
         "{}exo{}:{}{}{} {}>{} ",
@@ -438,7 +353,6 @@ fn print_prompt(exoshell: &ExoShell) {
 } 
 
 /// Clear current line (for history navigation)
-#[allow(deprecated)]
 fn clear_line(_editor: &LineEditor) {
     crate::console::write("\r");
     crate::console::write("\x1b[K");

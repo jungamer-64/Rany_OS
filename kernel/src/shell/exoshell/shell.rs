@@ -61,11 +61,14 @@ pub struct ExoShell {
     /// 登録済み名前空間（動的登録対応）
     namespaces: BTreeMap<String, Box<dyn super::namespaces::ShellNamespace>>,
     /// シェルインスタンスの権限
-    capabilities: CapabilitySet,
+    /// 最大履歴数
+    max_history: usize,
 }
 
 impl ExoShell {
     const MAX_RECURSION_DEPTH: usize = 256;
+    const DEFAULT_MAX_HISTORY: usize = 100;
+
     /// フル権限でシェルを作成
     pub fn new() -> Self {
         Self::with_capabilities(CapabilitySet::full())
@@ -101,6 +104,7 @@ impl ExoShell {
             last_result: ExoValue::Nil,
             namespaces,
             capabilities,
+            max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
 
@@ -112,8 +116,13 @@ impl ExoShell {
             return ExoValue::Nil;
         }
 
-        // 履歴に追加
-        self.history.push(input.to_string());
+        // 履歴に追加 (重複排除と最大数制限)
+        if self.history.last().map(|s| s.as_str()) != Some(input) {
+            self.history.push(input.to_string());
+            if self.history.len() > self.max_history {
+                self.history.remove(0);
+            }
+        }
 
         // 代入式: let x = ...
         if input.starts_with("let ") {
@@ -1542,6 +1551,20 @@ impl ExoShell {
             .collect();
 
         Some(completions)
+    }
+
+    /// 履歴にエントリを追加
+    pub fn add_history(&mut self, entry: String) {
+        if entry.trim().is_empty() {
+            return;
+        }
+        // 重複排除
+        if self.history.last() != Some(&entry) {
+            self.history.push(entry);
+            if self.history.len() > self.max_history {
+                self.history.remove(0);
+            }
+        }
     }
 
     /// 履歴を取得（読み取り専用）

@@ -25,7 +25,7 @@ use super::streams::submit_command;
 #[cfg(feature = "mouse")]
 use super::types::MouseState;
 use super::types::{
-    CURSOR_BLINK_MS, ConsoleLine, LineBuffer, MAX_HISTORY, SCROLLBACK_LINES, ShellResources,
+    CURSOR_BLINK_MS, ConsoleLine, LineBuffer, SCROLLBACK_LINES, ShellResources,
     ShellState, ShellTheme,
 };
 
@@ -73,9 +73,7 @@ impl GraphicalShell {
             state: ShellState {
                 output_lines: VecDeque::with_capacity(SCROLLBACK_LINES),
                 input_buffer: LineBuffer::new(),
-                history: Vec::with_capacity(MAX_HISTORY),
-                history_index: -1,
-                history_search_buffer: None,
+                history_navigator: crate::shell::exoshell::history::HistoryNavigator::new(),
                 scroll_offset: 0,
                 cursor_visible: true,
                 last_cursor_toggle: 0,
@@ -351,15 +349,9 @@ impl GraphicalShell {
 
         // 空でなければ履歴に追加
         if !input.trim().is_empty() {
-            // 重複を避ける
-            if self.state.history.last() != Some(&input) {
-                self.state.history.push(input.clone());
-                if self.state.history.len() > MAX_HISTORY {
-                    self.state.history.remove(0);
-                }
-            }
-            self.state.history_index = self.state.history.len() as isize;
+             self.shell.add_history(input.clone());
         }
+        self.state.history_navigator.reset_navigation();
 
         // コマンドを非同期キューに追加
         self.queue_command(&input);
@@ -449,19 +441,11 @@ impl GraphicalShell {
 
     /// 履歴を前に
     pub(crate) fn history_prev(&mut self) {
-        if self.state.history.is_empty() {
-            return;
-        }
-
-        // 最初のナビゲーションで現在の入力を保存
-        if self.state.history_search_buffer.is_none() {
-            self.state.history_search_buffer = Some(self.state.input_buffer.as_str().to_string());
-        }
-
-        if self.state.history_index > 0 {
-            self.state.history_index -= 1;
-            let entry = self.state.history[self.state.history_index as usize].clone();
-            self.state.input_buffer.set(&entry);
+        if let Some(prev) = self.state.history_navigator.prev(
+            self.shell.history(),
+            self.state.input_buffer.as_str(),
+        ) {
+            self.state.input_buffer.set(prev);
             self.update_cursor_cache();
             self.redraw();
         }
@@ -469,25 +453,11 @@ impl GraphicalShell {
 
     /// 履歴を次に
     pub(crate) fn history_next(&mut self) {
-        if self.state.history.is_empty() {
-            return;
+        if let Some(next) = self.state.history_navigator.next(self.shell.history()) {
+            self.state.input_buffer.set(next);
+            self.update_cursor_cache();
+            self.redraw();
         }
-
-        if self.state.history_index < self.state.history.len() as isize - 1 {
-            self.state.history_index += 1;
-            let entry = self.state.history[self.state.history_index as usize].clone();
-            self.state.input_buffer.set(&entry);
-        } else {
-            self.state.history_index = self.state.history.len() as isize;
-            if let Some(ref saved) = self.state.history_search_buffer {
-                self.state.input_buffer.set(saved);
-            } else {
-                self.state.input_buffer.clear();
-            }
-            self.state.history_search_buffer = None;
-        }
-        self.update_cursor_cache();
-        self.redraw();
     }
 
     /// Tab補完処理

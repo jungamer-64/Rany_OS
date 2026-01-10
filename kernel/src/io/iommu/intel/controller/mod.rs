@@ -764,18 +764,8 @@ impl IommuController {
         }
     }
 
-    /// Legacy method for backward compatibility
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use enable_ats_for_device with trust_level parameter instead"
-    )]
-    pub fn enable_ats_for_device_legacy(&self, device: DeviceId) {
-        // Assume partial trust for backward compatibility
-        let _ = self.enable_ats_for_device(
-            device,
-            crate::io::iommu::security::DeviceTrustLevel::Partial,
-        );
-    }
+    // Removed: `enable_ats_for_device_legacy` (was deprecated).
+    // Migration: Use `enable_ats_for_device(device, trust_level)` instead.
 }
 
 impl IommuHardwareContext for IommuController {

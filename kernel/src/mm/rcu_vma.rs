@@ -28,7 +28,7 @@
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use core::ptr::null_mut;
 use alloc::boxed::Box;
-use x86_64::VirtAddr;
+use super::higher_half::VirtAddr;
 
 use super::rcu::{rcu_read_lock, RcuReadGuard};
 
@@ -322,7 +322,7 @@ impl VmaList {
     ///
     /// 呼び出し側で適切なロックを取得すること。
     /// 新しいVMAはソート位置に挿入される。
-    pub fn insert(&self, mut new_vma: Box<VmArea>) {
+    pub fn insert(&self, new_vma: Box<VmArea>) {
         // NOTE: 外部ロックが必要（呼び出し側で排他制御）
         let mut prev_ptr: *mut VmArea = core::ptr::null_mut();
         let mut current_ptr = self.head.ptr.load(Ordering::Acquire);

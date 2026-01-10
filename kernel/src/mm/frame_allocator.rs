@@ -21,7 +21,7 @@ use x86_64::PhysAddr;
 use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
 // 共通型定義をインポート（IOVA_MM_MIGRATION_PLAN Phase 0.1）
-use super::numa::{MAX_NUMA_NODES, NumaNode, NumaTopology};
+use super::numa::{MAX_NUMA_NODES, NumaTopology};
 use super::types::{FrameIndex, NumaNodeId, PAGE_SIZE_4K, PAGE_SIZE_2M, PAGE_SIZE_1G};
 
 // ============================================================================
