@@ -3,7 +3,7 @@
 // ============================================================================
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::fmt::{self, Display};
 
@@ -154,5 +154,31 @@ pub fn format_size(bytes: u64) -> String {
         format!("{:.1}K", bytes as f64 / KB as f64)
     } else {
         format!("{}B", bytes)
+    }
+}
+
+/// シェル出力用に値をフォーマット
+/// - Nil: 出力なし (None)
+/// - Bytes: UTF-8なら文字列として表示
+/// - Array: 各要素を改行区切りで表示
+/// - その他: そのまま文字列化
+pub fn format_shell_output(val: &ExoValue) -> Option<String> {
+    match val {
+        ExoValue::Nil => None,
+        ExoValue::Bytes(bytes) => {
+            if let Ok(s) = core::str::from_utf8(bytes) {
+                Some(s.to_string())
+            } else {
+                Some(format!("{}", val))
+            }
+        }
+        ExoValue::Array(items) => {
+            if items.is_empty() {
+                return None;
+            }
+            let lines: Vec<String> = items.iter().map(|item| format!("{}", item)).collect();
+            Some(lines.join("\n"))
+        }
+        _ => Some(format!("{}", val)),
     }
 }

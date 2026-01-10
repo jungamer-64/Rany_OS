@@ -72,16 +72,14 @@ pub use ps2::{
     MouseHandler,
     // Types
     Ps2Controller,
-    commands as ps2_commands,
-    // Note: PS/2 polling helpers (`get_key_event`, `get_modifiers`, `get_mouse_event`) were deprecated and removed.
+    // Note: Top-level PS/2 convenience re-exports (e.g., `ps2_init`, `ps2_ports`, `ps2_status`, `ps2_commands`) were removed.
+    // Access the raw PS/2 module directly: `crate::io::hid::ps2::init()` or use `Ps2Controller` APIs.
     // Functions
-    init as ps2_init,
+
     keyboard_interrupt_handler,
     mouse_interrupt_handler,
-    // Constants
-    ports as ps2_ports,
+    // Constants (use `crate::io::hid::ps2::ports` / `crate::io::hid::ps2::status` directly)
     set_leds,
-    status as ps2_status,
 };
 
 // ============================================================================

@@ -74,17 +74,17 @@ This document lists symbols that have been marked deprecated and recommended mig
     - Migration: Acquire a `KeyboardStream` via `crate::io::hid::keyboard::take_stream()` or call `crate::io::hid::keyboard_init()`.
   - `io::keyboard_init` ✅ **deprecated**
     - Migration: Prefer `crate::io::hid::keyboard_init()` or registering the PS/2 driver via `driver_registry::register_driver`.
-  - `io::ps2_init` ✅ **deprecated**
+  - `io::ps2_init` ❌ **removed**
     - Migration: Register the PS/2 driver with `driver_registry::register_driver(Box::new(Ps2Driver::new()))` or call `crate::io::hid::ps2::init()` directly.
-  - `io::ps2_ports` ✅ **deprecated**
+  - `io::ps2_ports` ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::ports` or `Ps2Controller` APIs directly.
-  - `io::ps2_status` ✅ **deprecated**
+  - `io::ps2_status` ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::status` or `ps2::status` directly.
   - `io::set_leds` ✅ **deprecated**
     - Migration: Use `crate::io::hid::ps2::set_leds` or `Ps2Controller::set_leds` instead.
-  - `ps2_commands` (hid top-level re-export) ✅ **deprecated**
+  - `ps2_commands` (hid top-level re-export) ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::commands` directly or prefer `Ps2Controller` APIs instead of top-level re-exports.
-  - `io::ps2_commands` ✅ **deprecated**
+  - `io::ps2_commands` ❌ **removed**
     - Migration: Use `crate::io::hid::ps2::commands` or `Ps2Controller` APIs instead.
   - `ps2_kbd_commands` ✅ **deprecated**
     - Migration: Use `crate::io::hid::ps2::kbd_commands` or `Ps2Controller` helpers instead.
