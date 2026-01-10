@@ -312,26 +312,26 @@ impl Framebuffer {
 
     /// Ensure scratch_u32 has at least `capacity` elements
     fn ensure_scratch_u32(&mut self, capacity: usize) {
-        // Avoid frequent reallocs: grow capacity geometrically
-        if self.scratch_u32.len() < capacity {
-            let mut new_cap = self.scratch_u32.len().max(1);
-            while new_cap < capacity {
-                new_cap *= 2;
-            }
-            self.scratch_u32.resize(new_cap, 0);
+        if self.scratch_u32.capacity() < capacity {
+            // Calculate additional capacity needed
+            let additional = capacity - self.scratch_u32.capacity();
+            self.scratch_u32.reserve(additional);
         }
+        // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
+        // all elements up to `capacity` before reading.
+        unsafe { self.scratch_u32.set_len(capacity); }
     }
 
     /// Ensure scratch_u8 has at least `capacity` bytes
     fn ensure_scratch_u8(&mut self, capacity: usize) {
-        // Avoid frequent reallocs: grow capacity geometrically
-        if self.scratch_u8.len() < capacity {
-            let mut new_cap = self.scratch_u8.len().max(1);
-            while new_cap < capacity {
-                new_cap *= 2;
-            }
-            self.scratch_u8.resize(new_cap, 0);
+        if self.scratch_u8.capacity() < capacity {
+            // Calculate additional capacity needed
+            let additional = capacity - self.scratch_u8.capacity();
+            self.scratch_u8.reserve(additional);
         }
+        // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
+        // all bytes up to `capacity` before reading.
+        unsafe { self.scratch_u8.set_len(capacity); }
     }
 
     /// Write a slice of bytes to MMIO region efficiently.
@@ -1318,6 +1318,23 @@ impl Framebuffer {
     ) -> bool {
         let addr = self.buffer as usize + dst_offset_bytes;
 
+        // Helper for branchless selection
+        #[inline(always)]
+        fn sel(mask: u32, fg: u32, bg: u32) -> u32 {
+            bg ^ ((bg ^ fg) & mask)
+        }
+
+        // Generate masks using arithmetic shift to propagate the bit to all positions
+        let b = bits as i32;
+        let m0 = ((b << 24) >> 31) as u32;
+        let m1 = ((b << 25) >> 31) as u32;
+        let m2 = ((b << 26) >> 31) as u32;
+        let m3 = ((b << 27) >> 31) as u32;
+        let m4 = ((b << 28) >> 31) as u32;
+        let m5 = ((b << 29) >> 31) as u32;
+        let m6 = ((b << 30) >> 31) as u32;
+        let m7 = ((b << 31) >> 31) as u32;
+
         if let Some(ref mut back) = self.back_buffer {
             // Write to back buffer: pack into u64 writes to reduce the
             // number of memory operations compared to eight separate u32 writes.
@@ -1334,14 +1351,14 @@ impl Framebuffer {
 
             let base = unsafe { back.as_mut_ptr().add(dst_offset_bytes) } as *mut u8;
             unsafe {
-                let s0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
-                let s1 = if (bits & 0x40) != 0 { fg_u32 } else { bg_u32 };
-                let s2 = if (bits & 0x20) != 0 { fg_u32 } else { bg_u32 };
-                let s3 = if (bits & 0x10) != 0 { fg_u32 } else { bg_u32 };
-                let s4 = if (bits & 0x08) != 0 { fg_u32 } else { bg_u32 };
-                let s5 = if (bits & 0x04) != 0 { fg_u32 } else { bg_u32 };
-                let s6 = if (bits & 0x02) != 0 { fg_u32 } else { bg_u32 };
-                let s7 = if (bits & 0x01) != 0 { fg_u32 } else { bg_u32 };
+                let s0 = sel(m0, fg_u32, bg_u32);
+                let s1 = sel(m1, fg_u32, bg_u32);
+                let s2 = sel(m2, fg_u32, bg_u32);
+                let s3 = sel(m3, fg_u32, bg_u32);
+                let s4 = sel(m4, fg_u32, bg_u32);
+                let s5 = sel(m5, fg_u32, bg_u32);
+                let s6 = sel(m6, fg_u32, bg_u32);
+                let s7 = sel(m7, fg_u32, bg_u32);
 
                 let v0 = (s0 as u64) | ((s1 as u64) << 32);
                 let v1 = (s2 as u64) | ((s3 as u64) << 32);
@@ -1376,26 +1393,26 @@ impl Framebuffer {
 
         // Write to MMIO using 64-bit streaming writes where possible
         // 0x80 -> pixel 0, 0x40 -> pixel 1
-        let p0 = if (bits & 0x80) != 0 { fg_u32 } else { bg_u32 };
-        let p1 = if (bits & 0x40) != 0 { fg_u32 } else { bg_u32 };
+        let p0 = sel(m0, fg_u32, bg_u32);
+        let p1 = sel(m1, fg_u32, bg_u32);
         let v0 = (p0 as u64) | ((p1 as u64) << 32);
         mmio::stream_write_u64(addr, v0);
 
         // 0x20 -> pixel 2, 0x10 -> pixel 3
-        let p2 = if (bits & 0x20) != 0 { fg_u32 } else { bg_u32 };
-        let p3 = if (bits & 0x10) != 0 { fg_u32 } else { bg_u32 };
+        let p2 = sel(m2, fg_u32, bg_u32);
+        let p3 = sel(m3, fg_u32, bg_u32);
         let v1 = (p2 as u64) | ((p3 as u64) << 32);
         mmio::stream_write_u64(addr + 8, v1);
 
         // 0x08 -> pixel 4, 0x04 -> pixel 5
-        let p4 = if (bits & 0x08) != 0 { fg_u32 } else { bg_u32 };
-        let p5 = if (bits & 0x04) != 0 { fg_u32 } else { bg_u32 };
+        let p4 = sel(m4, fg_u32, bg_u32);
+        let p5 = sel(m5, fg_u32, bg_u32);
         let v2 = (p4 as u64) | ((p5 as u64) << 32);
         mmio::stream_write_u64(addr + 16, v2);
 
         // 0x02 -> pixel 6, 0x01 -> pixel 7
-        let p6 = if (bits & 0x02) != 0 { fg_u32 } else { bg_u32 };
-        let p7 = if (bits & 0x01) != 0 { fg_u32 } else { bg_u32 };
+        let p6 = sel(m6, fg_u32, bg_u32);
+        let p7 = sel(m7, fg_u32, bg_u32);
         let v3 = (p6 as u64) | ((p7 as u64) << 32);
         mmio::stream_write_u64(addr + 24, v3);
 
@@ -1509,15 +1526,17 @@ impl Framebuffer {
 
     /// 最適化されたバッファ転送 - transfers all dirty rects
     pub fn flush_dirty_area(&mut self) {
-        let mut to_flush = Vec::new();
-        for slot in self.dirty_rects.iter_mut() {
-            if let Some(rect) = slot.take() {
-                to_flush.push(rect);
-            }
+        // Extract rects to stack to avoid borrowing self.dirty_rects while calling self.blit_rect
+        let mut rects = [None; 4];
+        for (i, slot) in self.dirty_rects.iter_mut().enumerate() {
+            rects[i] = slot.take();
         }
-        for rect in to_flush {
-            self.stats.flushes += 1;
-            self.blit_rect(rect);
+
+        for rect_opt in rects.iter() {
+            if let Some(rect) = rect_opt {
+                self.stats.flushes += 1;
+                self.blit_rect(*rect);
+            }
         }
     }
 
@@ -2654,10 +2673,22 @@ impl Framebuffer {
     /// * `bg_color` - 背景色
     pub fn draw_text(&mut self, x: i32, y: i32, text: &str, color: Color, bg_color: Color) {
         let font = BitmapFont::default_8x16();
-
-        // Original slow path for non-32bit formats
         let stride = self.info.stride as usize;
+        
+        // --- Single-Pass Background Fill Optimization ---
+        // Calculate the total width of the text to limit the number of fill_rect calls.
+        // Currently draw_text only handles single line (strips newlines).
+        let char_count = text.chars().filter(|&c| c != '\n').count() as i32;
+        let total_w = char_count * font.width() as i32;
+        let char_h = font.height() as u32;
+
+        if total_w > 0 {
+            // Fill the entire background once
+            self.fill_rect(Rect::new(x, y, total_w as u32, char_h), bg_color);
+        }
+
         let format = self.info.format;
+
         let bpp = format.bytes_per_pixel() as usize;
         let mut cx = x;
         let mut need_fence = false; // Track if any MMIO streaming writes occurred
@@ -2695,11 +2726,12 @@ impl Framebuffer {
             let glyph_opt = font.glyph(c);
 
             // For either a missing glyph or regular glyph, we should
-            // fill the character box with the background color to provide
-            // opaque text rendering semantics (tests expect space to write bg).
-            let char_w = font.width() as u32;
-            let char_h = font.height() as u32;
-            self.fill_rect(Rect::new(cx, y, char_w, char_h), bg_color);
+            // We skip filling the character box (fill_rect) because we pre-filled
+            // the entire string background at the start of the function.
+            // This massively reduces MMIO/fill overhead for 24bpp and clipped text.
+            // let char_w = font.width() as u32;
+            // let _char_h = font.height() as u32;
+            // self.fill_rect(Rect::new(cx, y, char_w, char_h), bg_color);
 
             let glyph = match glyph_opt {
                 Some(g) => g,
@@ -2754,10 +2786,12 @@ impl Framebuffer {
 
                     match bpp {
                         3 => {
-                            // Use per-pixel fallback for 24bpp to avoid MMIO issues
-                            for i in 0..clipped_len {
-                                self.set_pixel_raw(clipped_start + i as i32, dst_y, color);
-                            }
+                            // 24bpp Optimized: Use write_bgr_run instead of per-pixel loops
+                            // Background is already filled; only write the FG runs.
+                            // write_bgr_run handles MMIO streaming internally.
+                            // Note: We need to mark need_fence because write_bgr_run typically uses non-temporal stores
+                            self.write_bgr_run(start_offset, clipped_len, color);
+                            need_fence = true;
                         }
                         2 => {
                             for i in 0..clipped_len {
@@ -3194,12 +3228,13 @@ impl Framebuffer {
         run_len: usize,
         dst_byte_offset: usize,
         avx2_available: bool,
-    ) {
+    ) -> bool {
         let src_base = (src_row * image.width() + run_start) as usize;
         let imgdata = image.data();
-        // Allow tuning the stream threshold via environment variable for
-        // bench-driven experiments (RANY_STREAM_THRESHOLD_PIXELS). Use a
-        // sensible default when `std` is not available.
+        let mut mmio_written = false;
+        
+        // Allow tuning... (omitted for brevity, keep existing logic if possible, or just copy-paste)
+        /* ... keeping variable declarations ... */
         #[cfg(feature = "std")]
         let stream_threshold_pixels: usize = std::env::var("RANY_STREAM_THRESHOLD_PIXELS")
             .ok()
@@ -3223,7 +3258,8 @@ impl Framebuffer {
             } else {
                 let addr = self.buffer as usize + dst_byte_offset;
                 self.write_bytes_mmio_streaming(addr, src_slice);
-                mmio::sfence();
+                // mmio::sfence(); // DEFERRED
+                mmio_written = true;
             }
         } else if self.info.format == PixelFormat::Bgra8888 {
             let src_slice = &imgdata[src_base * 4..src_base * 4 + run_len * 4];
@@ -3248,7 +3284,8 @@ impl Framebuffer {
                 if avx2_available && run_len >= stream_threshold_pixels {
                     let addr = self.buffer as usize + dst_byte_offset;
                     self.write_rgba_packed_to_mmio_stream(addr, src_slice);
-                    return;
+                    // return; // DEFERRED
+                    return true;
                 }
 
                 self.ensure_scratch_u32(run_len);
@@ -3261,8 +3298,10 @@ impl Framebuffer {
                 Self::pack_rgba_to_bgra(src_slice, dst_bytes);
                 let addr = self.buffer as usize + dst_byte_offset;
                 self.write_u32_slice_mmio(addr, &self.scratch_u32[..run_len]);
+                mmio_written = true; // Volatile writes technically don't need sfence but we signal activity
             }
         }
+        mmio_written
     }
 
     /// 24-bit不透明ランの描画
@@ -3276,7 +3315,7 @@ impl Framebuffer {
         x: i32,
         dst_row: i32,
         _avx2_available: bool,
-    ) {
+    ) -> bool {
         let total_bytes = run_len * 3;
         self.ensure_scratch_u8(total_bytes);
         let src_base = (src_row * image.width() + run_start) as usize;
@@ -3364,9 +3403,11 @@ impl Framebuffer {
             }
             // Ensure streaming stores are globally visible after the full run
             if self.back_buffer.is_none() {
-                mmio::sfence();
+                // mmio::sfence(); // DEFERRED
+                return true;
             }
         }
+        false
     }
 
     /// ピクセルをブレンドして描画
@@ -3406,7 +3447,8 @@ impl Framebuffer {
         row_end: u32,
         x: i32,
         avx2_available: bool,
-    ) {
+    ) -> bool {
+        let mut mmio_written = false;
         let bytes_per_pixel = self.info.format.bytes_per_pixel();
         let dst_row_offset = (dst_row as u32 * self.info.stride) as usize;
         let mut col = row_start;
@@ -3450,33 +3492,45 @@ impl Framebuffer {
             let dst_byte_offset = dst_row_offset + abs_x * bytes_per_pixel;
 
             match bytes_per_pixel {
-                4 => self.write_opaque_run_32bit(
-                    image,
-                    src_row,
-                    run_start,
-                    run_len,
-                    dst_byte_offset,
-                    avx2_available,
-                ),
-                3 => self.write_opaque_run_24bit(
-                    image,
-                    src_row,
-                    run_start,
-                    run_len,
-                    dst_byte_offset,
-                    x,
-                    dst_row,
-                    avx2_available,
-                ),
+                4 => {
+                     if self.write_opaque_run_32bit(
+                        image,
+                        src_row,
+                        run_start,
+                        run_len,
+                        dst_byte_offset,
+                        avx2_available,
+                    ) {
+                        mmio_written = true;
+                    }
+                }
+                3 => {
+                    if self.write_opaque_run_24bit(
+                        image,
+                        src_row,
+                        run_start,
+                        run_len,
+                        dst_byte_offset,
+                        x,
+                        dst_row,
+                        avx2_available,
+                    ) {
+                        mmio_written = true;
+                    }
+                }
                 _ => {
                     // Fallback
                     for i in 0..run_len {
                         let c = image.get_pixel(run_start + i as u32, src_row);
                         self.set_pixel(x + (run_start as i32 + i as i32), dst_row, c);
                     }
+                    if self.back_buffer.is_none() {
+                        mmio_written = true;
+                    }
                 }
             }
         }
+        mmio_written
     }
 
     /// helper: detect AVX2 availability (used by draw_image)
@@ -3527,12 +3581,13 @@ impl Framebuffer {
                 false
             }
         };
+        let mut mmio_written = false;
         for dst_row in dst_y0..dst_y1 {
             let src_row = (dst_row - y) as u32;
             let row_start = (dst_x0 - x) as u32;
             let row_end = (dst_x1 - x) as u32; // exclusive
 
-            self.draw_image_scanline(
+            if self.draw_image_scanline(
                 image,
                 src_row,
                 dst_row,
@@ -3540,7 +3595,12 @@ impl Framebuffer {
                 row_end,
                 x,
                 avx2_available,
-            );
+            ) {
+                mmio_written = true;
+            }
+        }
+        if mmio_written {
+            mmio::sfence();
         }
     }
 }
