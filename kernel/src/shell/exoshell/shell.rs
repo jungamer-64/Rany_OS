@@ -593,14 +593,132 @@ impl ExoShell {
                     .unwrap_or(0);
                 CapNamespace::revoke(id)
             }
-            "grant" => ExoValue::Error(String::from("grant() は未実装です")),
+            "grant" => {
+                // grant(resource, [ops], target, [expires], [delegatable])
+                let resource = args
+                    .get(0)
+                    .and_then(|v| match v {
+                        ExoValue::String(s) => Some(s.as_ref()),
+                        _ => None,
+                    })
+                    .unwrap_or("");
+                if resource.is_empty() {
+                    return ExoValue::Error(String::from(
+                        "grant(resource, [ops], target) requires a resource string",
+                    ));
+                }
+
+                // Helper to parse a single operation string
+                fn parse_op(s: &str) -> Option<CapOperation> {
+                    match s.to_lowercase().as_str() {
+                        "read" => Some(CapOperation::Read),
+                        "write" => Some(CapOperation::Write),
+                        "execute" => Some(CapOperation::Execute),
+                        "delete" => Some(CapOperation::Delete),
+                        "grant" => Some(CapOperation::Grant),
+                        "revoke" => Some(CapOperation::Revoke),
+                        "create" => Some(CapOperation::Create),
+                        "list" => Some(CapOperation::List),
+                        _ => None,
+                    }
+                }
+
+                let mut ops: Vec<CapOperation> = Vec::new();
+                if let Some(v) = args.get(1) {
+                    match v {
+                        ExoValue::Array(arr) => {
+                            for item in arr {
+                                if let ExoValue::String(s) = item {
+                                    if let Some(op) = parse_op(s.as_ref()) {
+                                        ops.push(op);
+                                    }
+                                }
+                            }
+                        }
+                        ExoValue::String(s) => {
+                            if let Some(op) = parse_op(s.as_ref()) {
+                                ops.push(op);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Determine target: either args[2] or args[1] if ops omitted
+                let target_arg = if args.len() >= 3 {
+                    args.get(2)
+                } else if args.len() == 2 {
+                    // if second arg isn't ops but target
+                    match args.get(1) {
+                        Some(ExoValue::String(_)) | Some(ExoValue::Int(_)) => args.get(1),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+
+                let target = match target_arg {
+                    Some(ExoValue::Int(n)) => n.to_string(),
+                    Some(ExoValue::String(s)) => s.to_string(),
+                    _ => {
+                        return ExoValue::Error(String::from(
+                            "grant requires target domain id as second or third argument",
+                        ));
+                    }
+                };
+
+                // Parse optional arguments after target: expires (int) and delegatable (bool)
+                let mut expires: Option<u64> = None;
+                let mut delegatable: bool = false;
+                if args.len() > 3 {
+                    if let Some(v) = args.get(3) {
+                        match v {
+                            ExoValue::Int(n) => expires = Some(*n as u64),
+                            ExoValue::Bool(b) => delegatable = *b,
+                            ExoValue::Map(map) => {
+                                if let Some(e) = map.get("expires") {
+                                    if let ExoValue::Int(n) = e {
+                                        expires = Some(*n as u64);
+                                    }
+                                }
+                                if let Some(d) = map.get("delegatable") {
+                                    if let ExoValue::Bool(b) = d {
+                                        delegatable = *b;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+
+                // Also accept delegatable as 4th argument if present
+                if args.len() > 4 {
+                    if let Some(ExoValue::Bool(b)) = args.get(4) {
+                        delegatable = *b;
+                    }
+                }
+
+                CapNamespace::grant(resource, &ops, target.as_str(), expires, delegatable)
+            },
+            "tokens" => {
+                // Optional domain id as first arg
+                let domain = args
+                    .first()
+                    .and_then(|v| match v {
+                        ExoValue::Int(n) => Some(*n as u64),
+                        ExoValue::String(s) => s.parse().ok(),
+                        _ => None,
+                    });
+                CapNamespace::tokens(domain)
+            },
             _ => ExoValue::Error(
                 ParseError::UnknownMethod {
                     namespace: String::from("cap"),
                     method: name.to_string(),
                 }
                 .to_string()
-                    + "\n有効なメソッド: list, grant, revoke",
+                    + "\n有効なメソッド: list, tokens, grant, revoke",
             ),
         }
     }
@@ -882,6 +1000,13 @@ impl ExoShell {
         method: &str,
         args: &[ExoValue<'static>],
     ) -> ExoValue<'static> {
+        // ShellProxy handling
+        if let Some(ExoValue::String(t)) = map.get("__proxy_type") {
+            if t.as_ref() == "shell_proxy" {
+                return crate::shell::exoshell::namespaces::shell::ShellControlNamespace::proxy_dispatch(map, method, args);
+            }
+        }
+
         match method {
             "get" => {
                 let empty = String::new();
@@ -1347,8 +1472,30 @@ impl ExoShell {
             }
             "uname" => SysNamespace::info(),
             "free" => SysNamespace::memory(),
+            // Dispatch to namespaces
+            "net" => {
+                 if let Some(method) = parts.get(1) {
+                     let args: Vec<ExoValue> = parts.iter().skip(2)
+                        .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
+                        .collect();
+                     super::namespaces::net::NetNamespace::dispatch(method, &args)
+                 } else {
+                     ExoValue::String(Cow::Borrowed("Usage: net <method> [args...]"))
+                 }
+            }
+            "cell" => {
+                 if let Some(method) = parts.get(1) {
+                     let args: Vec<ExoValue> = parts.iter().skip(2)
+                        .map(|s| ExoValue::String(Cow::Owned((*s).to_string())))
+                        .collect();
+                     super::namespaces::cell::CellNamespace::dispatch(method, &args)
+                 } else {
+                     ExoValue::String(Cow::Borrowed("Usage: cell <method> [args...]"))
+                 }
+            }
             "uptime" => SysNamespace::time(),
-            _ => ExoValue::Error(format!(
+            _ => ExoValue::Error(
+format!(
                 "Unknown: '{}'\nTry 'help' or use ExoShell syntax: fs.entries(), net.config(), etc.",
                 cmd
             )),

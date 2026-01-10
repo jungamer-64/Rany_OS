@@ -198,6 +198,30 @@ impl CellRegistry {
     pub fn cells_by_state(&self, state: CellState) -> impl Iterator<Item = &CellEntry> {
         self.cells.values().filter(move |c| c.state == state)
     }
+
+    /// List all loaded cells (public API for shell)
+    pub fn list(&self) -> Vec<ExoCellInfo> {
+        self.cells
+            .values()
+            .map(|c| ExoCellInfo {
+                id: c.id,
+                name: c.name.clone(),
+                base_address: c.load_address as u64,
+                size: c.load_size,
+                driver_count: c.registered_drivers.len(),
+            })
+            .collect()
+    }
+}
+
+/// Public info about a cell for listing (Shell API)
+#[derive(Debug, Clone)]
+pub struct ExoCellInfo {
+    pub id: CellId,
+    pub name: String,
+    pub base_address: u64,
+    pub size: usize,
+    pub driver_count: usize,
 }
 
 /// グローバルセルレジストリ

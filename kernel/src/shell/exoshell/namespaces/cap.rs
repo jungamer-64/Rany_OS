@@ -155,11 +155,15 @@ impl CapNamespace {
         ExoValue::Array(cap_names)
     }
 
-    /// 権限を付与 (Requires CAP_SYS_ADMIN)
+    /// 権限を付与 (Requires CAP_SYS_ADMIN or permitted capability).
+    ///
+    /// Signature: grant(resource, [ops], target, [expires], [delegatable])
     pub fn grant(
         resource: &str,
         operations: &[CapOperation],
         target_domain: &str,
+        expires: Option<u64>,
+        delegatable: bool,
     ) -> ExoValue<'static> {
         let caller_pid = kernel_api::services::kernel()
             .shell()
@@ -181,56 +185,60 @@ impl CapNamespace {
         }
 
         // Delegate actual grant logic to the capability manager so it can be
-        // tested independently from the shell layer.
+        // tested independently from the shell layer. We use the `_with_opts`
+        // variant which returns a token id.
         let caller_caps = manager().get_capabilities(caller_pid);
-        if let Err(e) = manager().grant_capability(caller_pid, domain_id, cap_bit) {
-            return ExoValue::Error(format!("Failed to grant: {:?}", e));
+        match manager().grant_capability_with_opts(caller_pid, domain_id, cap_bit, expires, delegatable) {
+            Ok(token_id) => {
+                let cap = Capability {
+                    id: token_id,
+                    resource: resource.to_string(),
+                    operations: operations.to_vec(),
+                    issuer: format!("domain:{}", caller_pid),
+                    expires,
+                    delegatable: caller_caps.is_permitted(cap_bit) || delegatable,
+                };
+
+                log::info!(
+                    "[CAP] Granted {} on {} to domain {} by domain {} (token={})\n",
+                    capability_name(cap_bit),
+                    resource,
+                    domain_id,
+                    caller_pid,
+                    token_id
+                );
+                ExoValue::Capability(cap)
+            }
+            Err(e) => ExoValue::Error(format!("Failed to grant: {:?}", e)),
         }
-
-        let cap = Capability {
-            id: cap_bit,
-            resource: resource.to_string(),
-            operations: operations.to_vec(),
-            issuer: format!("domain:{}", caller_pid),
-            expires: None,
-            delegatable: caller_caps.is_permitted(cap_bit),
-        };
-
-        log::info!(
-            "[CAP] Granted {} on {} to domain {} by domain {}\n",
-            capability_name(cap_bit),
-            resource,
-            domain_id,
-            caller_pid
-        );
-        ExoValue::Capability(cap)
     }
 
-    /// 自分の権限を放棄 (Revoke from self)
+    /// 自分の権限を放棄 (Revoke a grant by token id)
     pub fn revoke(cap_id: u64) -> ExoValue<'static> {
         let pid = kernel_api::services::kernel()
             .shell()
             .map(|s| s.current_pid())
             .unwrap_or(0);
-        let mut caps = manager().get_capabilities(pid);
 
-        // cap_idはここでの実装ではCapabilityビットと仮定
-        // IDからビットへの変換が必要だが、ここでは簡略化して cap_id = bit とする
-        // あるいは `list` で返した ID (1..N) とのマッピングが必要。
-        // リストのインデックスに依存するのは脆弱なので、
-        // 実際には cap_id はビットマスクか、名前で指定させるべき。
-        // ここでは ExoShell の仕様上 cap_id が渡されるので、ビットとして扱うか、
-        // 名前解決ロジックが必要だが、とりあえずビットとして扱う（既存コード準拠）
+        // First, attempt to revoke a grant token with the given id.
+        match manager().revoke_grant(pid, cap_id, false) {
+            Ok(_) => {
+                log::info!("[CAP] Revoked token {} by domain {}\n", cap_id, pid);
+                return ExoValue::Bool(true);
+            }
+            Err(capability::CapabilityError::InvalidCapability) => {
+                // If no token with that id exists, fall back to self-revocation
+                // treating cap_id as a capability bit (legacy behavior).
+                let mut caps = manager().get_capabilities(pid);
+                caps.drop(cap_id);
+                caps.drop_permanently(cap_id);
+                manager().set_capabilities(pid, caps);
 
-        caps.drop(cap_id);
-        // 永続的に放棄するか、effectiveだけ落とすか？
-        // 通常 revoke と言えば二度と使えないようにすること
-        caps.drop_permanently(cap_id);
-
-        manager().set_capabilities(pid, caps);
-
-        log::info!("[CAP] Revoked capability bit {} from self\n", cap_id);
-        ExoValue::Bool(true)
+                log::info!("[CAP] Revoked capability bit {} from self (legacy)\n", cap_id);
+                return ExoValue::Bool(true);
+            }
+            Err(e) => return ExoValue::Error(format!("Failed to revoke: {:?}", e)),
+        }
     }
 
     /// ドメインの権限を完全に剥奪 (Requires CAP_SYS_ADMIN)
@@ -248,6 +256,36 @@ impl CapNamespace {
         ExoValue::Bool(true)
     }
 
+    /// List active grant tokens for a domain
+    pub fn tokens(domain: Option<u64>) -> ExoValue<'static> {
+        let caller_pid = kernel_api::services::kernel()
+            .shell()
+            .map(|s| s.current_pid())
+            .unwrap_or(0);
+        let target = domain.unwrap_or(caller_pid);
+
+        // If requesting another domain's tokens, require CAP_SYS_ADMIN
+        if target != caller_pid && !manager().has_capability(caller_pid, CAP_SYS_ADMIN) {
+            return ExoValue::Error(String::from(
+                "Permission denied: CAP_SYS_ADMIN required",
+            ));
+        }
+
+        let grants = manager().list_grants(target);
+        let mut caps: Vec<Capability> = Vec::new();
+        for g in grants {
+            caps.push(Capability {
+                id: g.id,
+                resource: capability_name(g.cap).to_string(),
+                operations: Vec::new(),
+                issuer: format!("domain:{}", g.issuer),
+                expires: g.expires,
+                delegatable: g.delegatable,
+            });
+        }
+        ExoValue::Array(caps.into_iter().map(ExoValue::Capability).collect())
+    }
+
     /// ドメインが特定の権限を持っているかチェック
     pub fn check(domain_id: u64, cap_name: &str) -> ExoValue<'static> {
         let cap_bit = Self::name_to_capability(cap_name);
@@ -259,7 +297,7 @@ impl CapNamespace {
     }
 
     /// リソースパスからCapabilityビットへの変換
-    fn resource_to_capability(resource: &str) -> capability::Capability {
+    pub(crate) fn resource_to_capability(resource: &str) -> capability::Capability {
         match resource {
             "/net/bind" => CAP_NET_BIND,
             "/net/raw" => CAP_NET_RAW,
@@ -330,7 +368,7 @@ mod tests {
 
         let target = process_manager().create(ProcessId::INIT, "target").unwrap();
 
-        let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()));
+        let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
         match res {
             ExoValue::Error(_) => {}
             other => panic!("Expected error, got {:?}", other),
@@ -350,15 +388,153 @@ mod tests {
             .create(ProcessId::INIT, "target2")
             .unwrap();
 
-        let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()));
+        let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
 
         match res {
             ExoValue::Capability(cap) => {
                 assert_eq!(cap.resource, "/net/bind");
+                // Should have a token id
+                assert!(cap.id > 0);
                 // target should now have effective capability
                 assert!(manager().has_capability(target.as_u64(), CAP_NET_BIND));
+                let grants = manager().list_grants(target.as_u64());
+                assert_eq!(grants.len(), 1);
+                assert_eq!(grants[0].id, cap.id);
             }
             other => panic!("grant failed: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_tokens_listing_and_revoke() {
+        let caller = process_manager()
+            .create(ProcessId::INIT, "caller3")
+            .unwrap();
+        set_current_process(caller);
+        manager().set_capabilities(caller.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
+
+        let target = process_manager()
+            .create(ProcessId::INIT, "target3")
+            .unwrap();
+
+        // Grant a token
+        let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
+        let token_id = match res {
+            ExoValue::Capability(cap) => cap.id,
+            other => panic!("grant failed: {:?}", other),
+        };
+
+        // Switch to target and list tokens
+        set_current_process(target);
+        match CapNamespace::tokens(None) {
+            ExoValue::Array(arr) => {
+                assert_eq!(arr.len(), 1);
+                match &arr[0] {
+                    ExoValue::Capability(cap) => assert_eq!(cap.id, token_id),
+                    other => panic!("Expected capability token, got {:?}", other),
+                }
+            }
+            other => panic!("tokens() failed: {:?}", other),
+        }
+
+        // Try to revoke as non-issuer (should fail)
+        set_current_process(target);
+        match CapNamespace::revoke(token_id) {
+            ExoValue::Error(_) => {}
+            other => panic!("Expected error on unauthorized revoke, got {:?}", other),
+        }
+
+        // Revoke as issuer
+        set_current_process(caller);
+        match CapNamespace::revoke(token_id) {
+            ExoValue::Bool(true) => {}
+            other => panic!("Expected success on revoke by issuer, got {:?}", other),
+        }
+
+        // Token removed
+        assert!(manager().list_grants(target.as_u64()).is_empty());
+    }
+
+    #[test]
+    fn test_sysadmin_can_revoke() {
+        let issuer = process_manager()
+            .create(ProcessId::INIT, "issuer")
+            .unwrap();
+        set_current_process(issuer);
+        manager().set_capabilities(issuer.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
+
+        let target = process_manager()
+            .create(ProcessId::INIT, "target_admin")
+            .unwrap();
+
+        let res = CapNamespace::grant("/net/bind", &[], &format!("{}", target.as_u64()), None, false);
+        let token_id = match res {
+            ExoValue::Capability(cap) => cap.id,
+            other => panic!("grant failed: {:?}", other),
+        };
+
+        let admin = process_manager().create(ProcessId::INIT, "admin").unwrap();
+        manager().set_capabilities(admin.as_u64(), CapabilitySet::with_permitted(CAP_SYS_ADMIN));
+
+        set_current_process(admin);
+        match CapNamespace::revoke(token_id) {
+            ExoValue::Bool(true) => {}
+            other => panic!("Expected admin revoke to succeed, got {:?}", other),
+        }
+
+        assert!(manager().list_grants(target.as_u64()).is_empty());
+    }
+
+    #[test]
+    fn test_delegation_allows_regrant() {
+        let parent = process_manager()
+            .create(ProcessId::INIT, "parent")
+            .unwrap();
+        set_current_process(parent);
+        manager().set_capabilities(parent.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
+
+        let child = process_manager().create(ProcessId::INIT, "child").unwrap();
+        let grand = process_manager().create(ProcessId::INIT, "grand").unwrap();
+
+        // Parent grants to child with delegatable=true
+        let _t = match CapNamespace::grant("/net/bind", &[], &format!("{}", child.as_u64()), None, true) {
+            ExoValue::Capability(cap) => cap.id,
+            other => panic!("grant failed: {:?}", other),
+        };
+
+        // Child re-grants to grand
+        set_current_process(child);
+        let res = CapNamespace::grant("/net/bind", &[], &format!("{}", grand.as_u64()), None, false);
+        match res {
+            ExoValue::Capability(cap) => {
+                assert!(manager().has_capability(grand.as_u64(), CAP_NET_BIND));
+            }
+            other => panic!("regrant failed: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_delegation_denies_regrant_when_not_delegatable() {
+        let parent = process_manager()
+            .create(ProcessId::INIT, "parent2")
+            .unwrap();
+        set_current_process(parent);
+        manager().set_capabilities(parent.as_u64(), CapabilitySet::with_permitted(CAP_NET_BIND));
+
+        let child = process_manager().create(ProcessId::INIT, "child2").unwrap();
+        let grand = process_manager().create(ProcessId::INIT, "grand2").unwrap();
+
+        // Parent grants to child with delegatable=false
+        let _t = match CapNamespace::grant("/net/bind", &[], &format!("{}", child.as_u64()), None, false) {
+            ExoValue::Capability(cap) => cap.id,
+            other => panic!("grant failed: {:?}", other),
+        };
+
+        // Child tries to re-grant to grand and should fail
+        set_current_process(child);
+        match CapNamespace::grant("/net/bind", &[], &format!("{}", grand.as_u64()), None, false) {
+            ExoValue::Error(_) => {}
+            other => panic!("Expected regrant to fail, got {:?}", other),
         }
     }
 }
@@ -463,7 +639,40 @@ impl ShellNamespace for CapNamespace {
                         }
                     };
 
-                    Self::grant(resource, &ops, target.as_str())
+                    // Parse optional arguments after target: expires (int) and delegatable (bool)
+                    // Or accept a Map with keys "expires" and "delegatable"
+                    let mut expires: Option<u64> = None;
+                    let mut delegatable: bool = false;
+                    if args.len() > 3 {
+                        if let Some(v) = args.get(3) {
+                            match v {
+                                ExoValue::Int(n) => expires = Some(*n as u64),
+                                ExoValue::Bool(b) => delegatable = *b,
+                                ExoValue::Map(map) => {
+                                    if let Some(e) = map.get("expires") {
+                                        if let ExoValue::Int(n) = e {
+                                            expires = Some(*n as u64);
+                                        }
+                                    }
+                                    if let Some(d) = map.get("delegatable") {
+                                        if let ExoValue::Bool(b) = d {
+                                            delegatable = *b;
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
+                    // Also accept delegatable as 4th argument if present
+                    if args.len() > 4 {
+                        if let Some(ExoValue::Bool(b)) = args.get(4) {
+                            delegatable = *b;
+                        }
+                    }
+
+                    Self::grant(resource, &ops, target.as_str(), expires, delegatable)
                 }
                 "revoke_all" => {
                     let domain_id = args
@@ -474,6 +683,17 @@ impl ShellNamespace for CapNamespace {
                         })
                         .unwrap_or(0);
                     Self::revoke_all(domain_id)
+                }
+                "tokens" => {
+                    // Optional domain id as first arg
+                    let domain = args
+                        .first()
+                        .and_then(|v| match v {
+                            ExoValue::Int(n) => Some(*n as u64),
+                            ExoValue::String(s) => s.parse().ok(),
+                            _ => None,
+                        });
+                    Self::tokens(domain)
                 }
                 "check" => {
                     let domain_id = args
@@ -493,7 +713,7 @@ impl ShellNamespace for CapNamespace {
                     Self::check(domain_id, cap)
                 }
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'cap.{}'\nValid methods: list, revoke, grant, check",
+                    "Unknown method 'cap.{}'\nValid methods: list, tokens, revoke, grant, check",
                     method
                 )),
             }

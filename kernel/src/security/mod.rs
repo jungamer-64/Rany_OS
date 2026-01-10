@@ -625,6 +625,9 @@ pub fn init() {
             Err(err) => log::warn!("[SECURITY] IOMMU notifier registration failed: {:?}", err),
         }
     }
+
+    // Start capability expiry daemon (idempotent)
+    crate::security::capability::spawn_expiry_daemon_task();
 }
 
 #[cfg(test)]
