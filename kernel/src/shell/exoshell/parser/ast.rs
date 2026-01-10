@@ -24,8 +24,25 @@ use alloc::vec::Vec;
 use crate::shell::exoshell::types::ExoValue;
 
 // ============================================================================
-// Expression AST
+// Statement AST
 // ============================================================================
+
+/// 抽象構文木の文（Statement）
+#[derive(Debug, Clone, PartialEq)]
+pub enum Stmt<'a> {
+    /// 変数束縛: `let x = 10`
+    Let {
+        name: String,
+        value: Box<Expr<'a>>,
+    },
+    /// コマンド呼び出し: `help`, `exit`, `clear`
+    Command {
+        name: String,
+        args: Vec<Expr<'a>>,
+    },
+    /// 式だけの文: `fs.list("/")`
+    Expr(Box<Expr<'a>>),
+}
 
 /// 抽象構文木 (AST) のノード
 ///
@@ -101,6 +118,26 @@ pub enum Expr<'a> {
     /// マップリテラル
     /// 例: `{name: "foo", value: 42}`
     Map(Vec<(String, Expr<'a>)>),
+}
+
+impl<'a> Stmt<'a> {
+    pub fn let_binding(name: impl Into<String>, value: Expr<'a>) -> Self {
+        Self::Let {
+            name: name.into(),
+            value: Box::new(value),
+        }
+    }
+
+    pub fn command(name: impl Into<String>, args: Vec<Expr<'a>>) -> Self {
+        Self::Command {
+            name: name.into(),
+            args,
+        }
+    }
+
+    pub fn expr(e: Expr<'a>) -> Self {
+        Self::Expr(Box::new(e))
+    }
 }
 
 // ============================================================================
