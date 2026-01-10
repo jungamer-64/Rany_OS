@@ -6,6 +6,7 @@
 
 // Demo modules
 pub mod echo_server;
+pub mod counter;
 // Note: These modules are disabled until API stabilization
 // pub mod http_server;
 // pub mod performance_demo;
@@ -44,6 +45,13 @@ pub fn run_demo(name: &str) -> DemoResult {
             echo_server::run()
         }
         "perf" | "performance" => run_basic_perf_demo(),
+        "verify" | "verify_persistence" => {
+            if counter::test_persistence() {
+                DemoResult::Success
+            } else {
+                DemoResult::Error(String::from("Persistence test failed"))
+            }
+        }
         _ => DemoResult::Error(alloc::format!("Unknown demo: {}", name)),
     }
 }

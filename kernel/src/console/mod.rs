@@ -136,7 +136,7 @@ impl AnsiColor {
 // ============================================================================
 
 /// 文字属性
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CharAttributes {
     pub fg_color: AnsiColor,
     pub bg_color: AnsiColor,
@@ -166,7 +166,7 @@ impl CharAttributes {
 }
 
 /// 文字セル
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CharCell {
     pub ch: char,
     pub attr: CharAttributes,
@@ -392,6 +392,10 @@ impl TerminalBuffer {
                 self.clear();
             }
         }
+    }
+    /// バッファ全体をスライスとして取得
+    pub fn chars(&self) -> &[CharCell] {
+        &self.screen
     }
 }
 

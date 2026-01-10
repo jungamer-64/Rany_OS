@@ -29,14 +29,14 @@ impl CpuPageFeatures {
     /// Detect CPU page size support via CPUID
     pub fn detect() -> Self {
         // CPUID.01H:EDX[3] = PSE (Page Size Extension, 2MB pages)
-        let cpuid_01 = unsafe { core::arch::x86_64::__cpuid(0x01) };
+        let cpuid_01 = core::arch::x86_64::__cpuid(0x01);
         let pse = (cpuid_01.edx & (1 << 3)) != 0;
 
         // Check if extended CPUID is available
-        let cpuid_ext = unsafe { core::arch::x86_64::__cpuid(0x80000000) };
+        let cpuid_ext = core::arch::x86_64::__cpuid(0x80000000);
         let page_1gb = if cpuid_ext.eax >= 0x80000001 {
             // CPUID.80000001H:EDX[26] = Page1GB
-            let cpuid_ext_01 = unsafe { core::arch::x86_64::__cpuid(0x80000001) };
+            let cpuid_ext_01 = core::arch::x86_64::__cpuid(0x80000001);
             (cpuid_ext_01.edx & (1 << 26)) != 0
         } else {
             false

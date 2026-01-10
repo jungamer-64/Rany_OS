@@ -175,10 +175,13 @@ pub struct DirectBlockHandle {
     start_block: u64,
     block_count: u64,
     block_size: u32,
+    /// Optional kernel-assigned open id (0 == not an open returned by kernel)
+    open_id: u64,
 }
 
 impl DirectBlockHandle {
     /// Create a new direct block handle (kernel-only)
+    /// This constructor represents a *standalone* handle (not a kernel-registered open).
     pub const fn new(
         device_id: u64,
         start_block: u64,
@@ -190,6 +193,24 @@ impl DirectBlockHandle {
             start_block,
             block_count,
             block_size,
+            open_id: 0,
+        }
+    }
+
+    /// Create a kernel-registered handle with an `open_id`
+    pub const fn new_with_id(
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+        block_size: u32,
+        open_id: u64,
+    ) -> Self {
+        Self {
+            device_id,
+            start_block,
+            block_count,
+            block_size,
+            open_id,
         }
     }
 
@@ -207,6 +228,11 @@ impl DirectBlockHandle {
 
     pub fn block_size(&self) -> u32 {
         self.block_size
+    }
+
+    /// Kernel-assigned open id (0 if not from `nvme_open_direct_with_token`/`nvme_open_direct`)
+    pub fn open_id(&self) -> u64 {
+        self.open_id
     }
 }
 

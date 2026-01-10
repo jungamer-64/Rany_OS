@@ -374,14 +374,48 @@ impl LiveUpdateManager {
         let entry_fn: kernel_api::driver_abi::DriverEntryFn =
             unsafe { core::mem::transmute(entry_addr) };
 
+        // Resolve entry symbol in OLD cell (for rollback)
+        let old_entry_addr = crate::loader::with_registry(|r| {
+            let cell = r.get(old_cell_id)?;
+            cell.exports
+                .iter()
+                .find(|(n, _)| n == kernel_api::driver_abi::DRIVER_ENTRY_SYMBOL)
+                .map(|(_, addr)| *addr)
+        });
+
         // Update all drivers registered to the old cell
+        let mut updated_handles = Vec::new();
+        let mut update_failed = false;
+
         for handle in &old_drivers {
             match crate::driver_registry::update_abi_driver(*handle, entry_fn) {
-                Ok(_) => {}
+                Ok(_) => updated_handles.push(*handle),
                 Err(_) => {
-                    return Err(LiveUpdateError::StateMigrationFailed);
+                    update_failed = true;
+                    break;
                 }
             }
+        }
+
+        if update_failed {
+            log::error!("[LIVE_UPDATE] Update failed, rolling back {} drivers...\n", updated_handles.len());
+            // Rollback successful updates
+            if let Some(old_addr) = old_entry_addr {
+                let old_entry_fn: kernel_api::driver_abi::DriverEntryFn =
+                    unsafe { core::mem::transmute(old_addr) };
+                
+                for handle in updated_handles {
+                    if let Err(e) = crate::driver_registry::update_abi_driver(handle, old_entry_fn) {
+                         log::error!("[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n", handle, e);
+                    }
+                }
+            } else {
+                 log::error!("[LIVE_UPDATE] CRITICAL: Cannot rollback, old entry point not found\n");
+            }
+
+            // Cleanup new cell
+            let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
+            return Err(LiveUpdateError::StateMigrationFailed);
         }
 
         // Step 3.5: Migrate ownership in Cell Registry

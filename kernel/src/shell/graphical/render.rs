@@ -239,7 +239,7 @@ impl<'a, 'b> RenderContext<'a, 'b> {
                     y,
                     &line.text,
                     line.color,
-                    Some(theme.background),
+                    None,
                 );
             });
     }
@@ -268,7 +268,7 @@ impl<'a, 'b> RenderContext<'a, 'b> {
             input_y,
             &self.state.prompt,
             theme.prompt,
-            Some(theme.background),
+            None,
         );
         font.draw_string(
             self.fb,
@@ -276,7 +276,7 @@ impl<'a, 'b> RenderContext<'a, 'b> {
             input_y,
             &self.state.input_buffer.content,
             theme.input,
-            Some(theme.background),
+            None,
         );
     }
 
@@ -337,7 +337,7 @@ impl<'a, 'b> RenderContext<'a, 'b> {
             y,
             &self.state.temp_fmt_buffer,
             self.res.theme.info,
-            Some(self.res.theme.background),
+            None,
         );
     }
 
@@ -463,7 +463,29 @@ impl GraphicalShell {
             let layout = Layout::compute(&shell.state, &shell.resources);
             let new_comp = shell.completion_rect_from_layout(&layout);
             let old_comp = shell.state.last_completion_rect;
-            let input_rect = shell.current_input_line_rect();
+            
+            // Calculate necessary dirty width for input line
+            // Width = Prompt + InputText + Cursor(approx) + Padding
+            let font_w = shell.resources.font.width() as i32;
+            let current_content_width = shell.state.cached_prompt_end_x 
+                + shell.state.cached_total_input_width 
+                + (font_w * 2); // padding for cursor/caret
+            
+            // Ensure we clear previous content if line shortened (backspace)
+            let dirty_width = current_content_width.max(shell.state.last_drawn_input_width);
+            
+            // Update last drawn width for next frame
+            shell.state.last_drawn_input_width = current_content_width;
+            
+            // Clamp to screen width
+            let safe_width = (dirty_width + font_w).min(shell.resources.fb_width as i32);
+            
+            let input_rect = Rect::new(
+                0, 
+                shell.resources.input_line_y(), 
+                safe_width as u32, 
+                shell.resources.font.height() as u32
+            );
 
             shell.state.last_completion_rect = new_comp;
 

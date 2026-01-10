@@ -70,7 +70,3 @@ pub use global::{
     console_print, force_unlock_framebuffer, framebuffer, init, init_console, init_from_boot_info,
     with_framebuffer,
 };
-
-// ブートスプラッシュ関数の再エクスポート
-#[cfg(not(any(test, feature = "bench")))]
-pub use boot_splash::{show_boot_splash, update_boot_progress, update_boot_progress_with_message};

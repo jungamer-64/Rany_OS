@@ -624,16 +624,44 @@ pub fn init() {
 pub struct DevFileHandle {
     ops: Arc<dyn DeviceOps>,
     position: AtomicUsize,
+    token: Option<u64>,
 }
 
 impl DevFileHandle {
     pub fn open(path: &str) -> Result<Self, DevError> {
+        // Backward-compatible: open without token
+        Self::open_with_token(path, None)
+    }
+
+    pub fn open_with_token(path: &str, token: Option<u64>) -> Result<Self, DevError> {
+        use crate::task::context;
+
+        let caller = context::current_task_id();
+
+        // If token provided, validate and increment in-flight counter
+        if let Some(t) = token {
+            if !crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_FOWNER) {
+                return Err(DevError::NotSupported);
+            }
+
+            if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                return Err(DevError::NotSupported);
+            }
+        }
+
         let ops = devfs().open(path)?;
-        ops.open()?;
+        if let Err(e) = ops.open() {
+            // Rollback in-flight on failure to open
+            if let Some(t) = token {
+                let _ = crate::security::capability::manager().decrement_in_flight(t);
+            }
+            return Err(e);
+        }
 
         Ok(Self {
             ops,
             position: AtomicUsize::new(0),
+            token,
         })
     }
 
@@ -663,6 +691,9 @@ impl DevFileHandle {
 impl Drop for DevFileHandle {
     fn drop(&mut self) {
         let _ = self.ops.close();
+        if let Some(t) = self.token {
+            let _ = crate::security::capability::manager().decrement_in_flight(t);
+        }
     }
 }
 
@@ -702,6 +733,47 @@ mod tests {
 
         // 異なる値が生成される(ほぼ確実)
         assert_ne!(buf1, buf2);
+    }
+
+    #[test]
+    fn test_dev_open_with_token_reclaim() {
+        // Setup: create caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_dev").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_dev").unwrap();
+
+        // Caller gets permission to grant CAP_FOWNER
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_FOWNER));
+
+        // Grant token to target
+        let token = crate::security::capability::manager()
+            .grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_FOWNER, None, false)
+            .unwrap();
+
+        // Target opens using token
+        crate::task::process::set_current_process(target);
+        let handle = DevFileHandle::open_with_token("null", Some(token)).expect("open should succeed");
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issue revocation
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Drop handle
+        crate::task::process::set_current_process(target);
+        drop(handle);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+
+        // Now reclaim should succeed
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
     #[test]

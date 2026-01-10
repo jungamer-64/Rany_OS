@@ -120,6 +120,11 @@ pub async fn run_async_shell() {
 
     info!(target: "gshell", "Starting async graphical shell task (frontend-driven)...");
 
+    if GRAPHICAL_SHELL.lock().is_none() {
+        log::warn!(target: "gshell", "Graphical shell not initialized - aborting task");
+        return;
+    }
+
     let mut frontend = GraphicalFrontend::new();
 
     // Acquire ExoShell (take ownership for this task)

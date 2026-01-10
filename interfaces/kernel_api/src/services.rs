@@ -107,6 +107,11 @@ pub trait KernelServices: Send + Sync {
     /// - `KapiError::PermissionDenied` if permissions prevent opening
     fn fs_open(&self, path: &str, mode: crate::OpenMode) -> KapiResult<FileHandle>;
 
+    /// Open a file and associate with an optional token.
+    /// If `token` is Some(id) then the token must validate for `CAP_FOWNER`
+    /// and the manager's in-flight counter will be incremented until `fs_close`.
+    fn fs_open_with_token(&self, path: &str, mode: crate::OpenMode, token: Option<u64>) -> KapiResult<FileHandle>;
+
     /// Close a file
     ///
     /// # Errors
@@ -124,6 +129,20 @@ pub trait KernelServices: Send + Sync {
         start_block: u64,
         block_count: u64,
     ) -> KapiResult<crate::DirectBlockHandle>;
+
+    /// Open a direct NVMe block handle and associate it with an optional token.
+    /// If `token` is Some(id) the token must validate for `CAP_DMA` and the manager's
+    /// in-flight counter will be incremented until `nvme_close_direct` is called.
+    fn nvme_open_direct_with_token(
+        &self,
+        device_id: u64,
+        start_block: u64,
+        block_count: u64,
+        token: Option<u64>,
+    ) -> KapiResult<crate::DirectBlockHandle>;
+
+    /// Close a kernel-registered direct NVMe open.
+    fn nvme_close_direct(&self, handle: crate::DirectBlockHandle) -> KapiResult<()>;
 
     /// Read blocks into a DMA buffer (buffer returned on completion)
     fn nvme_read_blocks_dma(

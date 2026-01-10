@@ -5,13 +5,11 @@
 // Provides commands to manage loaded cells (hot-swappable components/drivers).
 //
 
-use alloc::borrow::Cow;
-use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::{String, ToString};
-use alloc::vec::Vec;
 
 use crate::loader::{unload_cell, with_registry, CellId};
+use crate::loader::live_update::live_update_manager;
 use crate::shell::exoshell::parser::ParseError;
 use crate::shell::exoshell::ExoValue;
 
@@ -87,6 +85,36 @@ impl CellNamespace {
                     Err(e) => ExoValue::Error(format!("Failed to unload cell {}: {:?}", id, e)),
                 }
             }
+            "update" => {
+                 let id = match args.first() {
+                    Some(ExoValue::Int(n)) => *n as u64,
+                    Some(ExoValue::String(s)) => s.parse().unwrap_or(0),
+                    _ => return ExoValue::Error(String::from("Usage: cell.update(id, path)")),
+                };
+
+                let path = match args.get(1) {
+                     Some(ExoValue::String(s)) => s.as_ref(),
+                     _ => return ExoValue::Error(String::from("Usage: cell.update(id, path)")),
+                };
+
+                // Read file content via shell service
+                let shell = match kernel_api::services::kernel().shell() {
+                    Some(s) => s,
+                    None => return ExoValue::Error(String::from("Shell services unavailable")),
+                };
+
+                // Read file (Zero Copy returns Arc<Vec<u8>>)
+                let content = match shell.read_file_zero_copy(path) {
+                    Ok(c) => c,
+                    Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
+                };
+
+                // Perform update (Hot-Swap)
+                match live_update_manager().perform_update(id, &content) {
+                    Ok(new_id) => ExoValue::String(format!("Cell {} updated successfully. New ID: {}", id, new_id).into()),
+                    Err(e) => ExoValue::Error(format!("Update failed: {}", e)),
+                }
+            }
             "reload" => {
                 ExoValue::Error(String::from("reload() is not yet implemented"))
             }
@@ -96,7 +124,7 @@ impl CellNamespace {
                     method: String::from(method),
                 }
                 .to_string()
-                    + "\nValid methods: list, stats, unload, reload",
+                    + "\nValid methods: list, stats, unload, update, reload",
             ),
         }
     }
