@@ -15,6 +15,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll, Waker};
+use crate::net::NetworkError;
 
 extern crate alloc;
 
@@ -268,7 +269,9 @@ pub(crate) struct UdpSocketInner {
     waker: Option<Waker>,
     /// Is socket closed
     closed: bool,
-}
+    /// Optional associated grant token id used to authorize this binding
+    token: Option<u64>,
+} 
 
 /// UDP socket (async)
 pub struct UdpSocket {
@@ -278,12 +281,18 @@ pub struct UdpSocket {
 impl UdpSocket {
     /// Create a new UDP socket bound to a port
     pub fn new(local_port: u16) -> Self {
+        Self::new_with_token(local_port, None)
+    }
+
+    /// Create a new UDP socket bound to a port and associated with an optional capability token
+    pub fn new_with_token(local_port: u16, token: Option<u64>) -> Self {
         UdpSocket {
             inner: Arc::new(PoisonLock::new(UdpSocketInner {
                 local_port,
                 rx_queue: VecDeque::new(),
                 waker: None,
                 closed: false,
+                token,
             })),
         }
     }
@@ -431,8 +440,15 @@ impl UdpSocketTable {
         }
     }
 
-    /// Bind a socket to a port
+    /// Bind a socket to a port (backwards-compatible, no token)
     pub fn bind(&self, port: u16) -> Option<UdpSocket> {
+        self.bind_with_token(port, None)
+    }
+
+    /// Bind a socket to a port and associate it with an optional capability token.
+    /// If `token` is Some(id), this will attempt to increment the token's in-flight
+    /// counter. On failure, bind will return None.
+    pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Option<UdpSocket> {
         match self.sockets.lock() {
             Ok(mut sockets) => {
                 // Find slot for this port
@@ -443,11 +459,20 @@ impl UdpSocketTable {
                     return None;
                 }
 
+                // If a token was provided, attempt to increment in-flight. If it fails,
+                // abort bind.
+                if let Some(t) = token {
+                    if let Err(_) = crate::security::capability::manager().increment_in_flight(t) {
+                        return None;
+                    }
+                }
+
                 let inner = Arc::new(PoisonLock::new(UdpSocketInner {
                     local_port: port,
                     rx_queue: VecDeque::new(),
                     waker: None,
                     closed: false,
+                    token,
                 }));
 
                 sockets[slot] = Some(inner.clone());
@@ -456,17 +481,30 @@ impl UdpSocketTable {
             }
             Err(_) => {
                 log::error!("[NET] UDP Table poisoned during bind");
+                // If we incremented in-flight above, roll back
+                if let Some(t) = token {
+                    let _ = crate::security::capability::manager().decrement_in_flight(t);
+                }
                 None
             }
         }
     }
 
-    /// Unbind a socket from a port
+    /// Unbind a socket from a port and decrement any associated token in-flight counter
     pub fn unbind(&self, port: u16) {
         match self.sockets.lock() {
             Ok(mut sockets) => {
                 let slot = (port as usize) % MAX_UDP_SOCKETS;
-                sockets[slot] = None;
+                if let Some(inner) = sockets[slot].take() {
+                    match inner.lock() {
+                        Ok(mut guard) => {
+                            if let Some(t) = guard.token.take() {
+                                let _ = crate::security::capability::manager().decrement_in_flight(t);
+                            }
+                        }
+                        Err(_) => log::error!("[NET] UDP Socket poisoned during unbind - token cleanup skipped"),
+                    }
+                }
             }
             Err(_) => log::error!("[NET] UDP Table poisoned during unbind"),
         }
@@ -547,6 +585,7 @@ impl UdpSocketTable {
 }
 
 /// UDP processor for handling UDP packets
+
 pub struct UdpProcessor {
     /// Socket table
     sockets: UdpSocketTable,
@@ -612,6 +651,31 @@ impl UdpProcessor {
     /// Bind a new socket
     pub fn bind(&self, port: u16) -> Option<UdpSocket> {
         self.sockets.bind(port)
+    }
+
+    /// Bind to a port with a capability token
+    pub fn bind_with_token(&self, port: u16, token: Option<u64>) -> Result<UdpSocket, NetworkError> {
+        // If no token, just bind (backwards compat / system)
+        let t = match token {
+            Some(v) => v,
+            None => {
+                // No token provided. Just try bind.
+                return self.sockets.bind(port).ok_or(NetworkError::PortInUse);
+            }
+        };
+
+        // Find the token in the capability manager
+        let pid = crate::task::process::get_current_process();
+        if !crate::security::capability::manager().validate_token(pid.as_u64(), t, crate::security::capability::CAP_NET_BIND) {
+             return Err(NetworkError::PermissionDenied);
+        }
+        
+        self.sockets.bind_with_token(port, Some(t)).ok_or(NetworkError::PortInUse)
+    }
+
+    /// Unbind a socket
+    pub fn unbind(&self, port: u16) {
+        self.sockets.unbind(port)
     }
 
     /// Build a UDP packet for transmission
@@ -680,6 +744,44 @@ mod tests {
 
         // Close should be a no-op
         socket.close();
+    }
+
+    #[test]
+    fn test_bind_with_token_reclaim() {
+        // Setup: create caller and target domains
+        let caller = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "caller_bind").unwrap();
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_bind").unwrap();
+
+        // Caller gets permission to grant CAP_NET_BIND
+        crate::task::process::set_current_process(caller);
+        crate::security::capability::manager().set_capabilities(caller.as_u64(), crate::security::capability::CapabilitySet::with_permitted(crate::security::capability::CAP_NET_BIND));
+
+        // Grant token to target
+        let token = crate::security::capability::manager().grant_capability_with_opts(caller.as_u64(), target.as_u64(), crate::security::capability::CAP_NET_BIND, None, false).unwrap();
+
+        // Target binds using token
+        crate::task::process::set_current_process(target);
+        let sock = crate::net::bind_udp_with_token(40000, Some(token));
+        assert!(sock.is_some());
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 1);
+
+        // Issuer revokes token (mark revoked)
+        crate::task::process::set_current_process(caller);
+        assert!(crate::security::capability::manager().revoke_grant(caller.as_u64(), token, false).is_ok());
+
+        // Immediate reclaim should fail (in-flight)
+        match crate::security::capability::manager().reclaim_token(token) {
+            Err(crate::security::capability::CapabilityError::ReclamationBusy) => {}
+            other => panic!("expected ReclamationBusy, got {:?}", other),
+        }
+
+        // Now unbind the socket (target releases resource)
+        crate::task::process::set_current_process(target);
+        crate::net::unbind_udp(40000);
+
+        assert_eq!(crate::security::capability::manager().in_flight_count(token), 0);
+        // Now reclaim should succeed
+        assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
     }
 
     #[test]

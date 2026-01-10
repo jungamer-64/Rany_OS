@@ -7,6 +7,16 @@
 #![allow(unused_imports)]
 #![allow(unused_variables)]
 
+/// Common Network Errors
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkError {
+    PermissionDenied,
+    PortInUse,
+    InvalidAddress,
+    Timeout,
+    Unknown,
+}
+
 pub mod mempool;
 pub mod tcp;
 

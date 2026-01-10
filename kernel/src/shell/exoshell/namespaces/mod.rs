@@ -3,6 +3,7 @@
 // ============================================================================
 
 pub mod cap;
+pub mod cell;
 pub mod driver;
 pub mod dynamic_driver;
 pub mod fs;
@@ -10,6 +11,7 @@ pub mod net;
 pub mod proc;
 pub mod registry;
 pub mod sys;
+pub mod shell;
 pub mod async_swapout;
 
 pub use cap::CapNamespace;
@@ -18,6 +20,7 @@ pub use fs::FsNamespace;
 pub use net::NetNamespace;
 pub use proc::ProcNamespace;
 pub use sys::SysNamespace;
+pub use shell::ShellControlNamespace;
 pub use async_swapout::AsyncSwapoutNamespace;
 
 use crate::security::CapabilitySet;

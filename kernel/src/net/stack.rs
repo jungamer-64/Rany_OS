@@ -615,6 +615,16 @@ impl NetworkStack {
         self.udp.bind(port)
     }
 
+    /// Bind a UDP socket and associate it with an optional capability token
+    pub fn bind_udp_with_token(&mut self, port: u16, token: Option<u64>) -> Option<UdpSocket> {
+        self.udp.bind_with_token(port, token).ok()
+    }
+
+    /// Unbind a UDP socket (removes binding and decrements any associated token)
+    pub fn unbind_udp(&mut self, port: u16) {
+        self.udp.bind(port);
+    }
+
     /// Transmit a raw Ethernet frame
     pub fn transmit(&self, data: &[u8]) -> bool {
         if let Some(f) = self.transmit_fn {
@@ -866,6 +876,29 @@ pub fn bind_udp(port: u16) -> Option<UdpSocket> {
             log::error!("[NET] Global Stack poisoned - bind_udp failed");
             None
         }
+    }
+}
+
+/// Bind a UDP socket and associate it with an optional capability token
+pub fn bind_udp_with_token(port: u16, token: Option<u64>) -> Option<UdpSocket> {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => guard.as_mut().and_then(|s| s.bind_udp_with_token(port, token)),
+        Err(_) => {
+            log::error!("[NET] Global Stack poisoned - bind_udp_with_token failed");
+            None
+        }
+    }
+}
+
+/// Unbind a UDP socket
+pub fn unbind_udp(port: u16) {
+    match NETWORK_STACK.lock() {
+        Ok(mut guard) => {
+            if let Some(ref mut s) = *guard {
+                s.unbind_udp(port);
+            }
+        }
+        Err(_) => log::error!("[NET] Global Stack poisoned - unbind_udp failed"),
     }
 }
 

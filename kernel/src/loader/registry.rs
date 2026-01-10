@@ -91,6 +91,30 @@ impl CellRegistry {
             .find(|(_, cell)| cell.registered_drivers.contains(&handle))
             .map(|(id, _)| *id)
     }
+
+    /// List all loaded cells
+    pub fn list(&self) -> Vec<CellInfo> {
+        self.cells
+            .values()
+            .map(|c| CellInfo {
+                id: c.id,
+                name: c.name.clone(),
+                base_address: c.base_address,
+                size: c.size,
+                driver_count: c.registered_drivers.len(),
+            })
+            .collect()
+    }
+}
+
+/// Public info about a cell for listing
+#[derive(Debug, Clone)]
+pub struct CellInfo {
+    pub id: CellId,
+    pub name: String,
+    pub base_address: u64,
+    pub size: usize,
+    pub driver_count: usize,
 }
 
 static REGISTRY: RwLock<CellRegistry> = RwLock::new(CellRegistry::new());

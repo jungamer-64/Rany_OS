@@ -12,6 +12,7 @@ description = "Security Primitives for RanyOS"
 
 [dependencies]
 spin = "0.10"
+log = "0.4"
 
 [features]
 # Default to std for tests and host builds
