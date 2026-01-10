@@ -751,20 +751,9 @@ static SERIAL1: AsyncSerialPort = AsyncSerialPort::new(ComPort::Com1);
 /// COM1 IRQ number
 const COM1_IRQ: u8 = 4;
 
-#[deprecated(
-    note = "serial::init() is deprecated; prefer registering the serial driver with `driver_registry::register_driver` and let the DriverRegistry initialize it. This function will be removed in a future release."
-)]
-pub fn init() -> Result<(), SerialError> {
-    SERIAL1.init(BaudRate::Baud115200)?;
-    SERIAL1.port.set_interrupts(false, false);
-
-    // Unmasking IRQ must be done by kernel, as driver doesn't have access to PIC.
-    // crate::interrupts::unmask_irq(COM1_IRQ);
-
-    // Using literal string to avoid circular reference with formatter
-    SERIAL1.send_str("[SERIAL] COM1 initialized (IRQ4 enabled)\n");
-    Ok(())
-}
+// Removed: deprecated convenience `init()` function. Prefer registering the driver:
+// driver_registry::register_driver(Box::new(SerialDriver::new()));
+// DriverRegistry will perform initialization at the appropriate time and context.
 
 // Removed: `serial1()` accessor. Use `crate::io::log::early_print` or the kernel logging APIs instead.
 

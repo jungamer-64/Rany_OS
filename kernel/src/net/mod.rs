@@ -98,7 +98,6 @@ pub use icmp::{
 
 // Re-export UDP
 #[allow(unused_imports)]
-#[allow(deprecated)]
 pub use udp::{
     UdpAddr, UdpDatagram, UdpHeader, UdpPacket, UdpPacketMut, UdpProcessor, UdpResult, UdpSocket,
     UdpSocketTable,
@@ -193,7 +192,6 @@ pub use optimization::{
 
 // Re-export Endpoint (Socket Layer with Event-Driven Architecture)
 #[allow(unused_imports)]
-#[allow(deprecated)]
 pub use endpoint::{
     AcceptFuture,
     // Accept機能

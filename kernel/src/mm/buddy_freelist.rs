@@ -20,6 +20,7 @@
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use alloc::vec::Vec;
+use crate::sync::IrqMutex;
 
 use super::types::{FrameIndex, PAGE_SIZE_4K, PAGE_SIZE_2M};
 
@@ -466,6 +467,53 @@ impl FreeListBuddyAllocator {
         self.list_del(frame_idx, order, migrate_type);
         Some(frame_idx)
     }
+
+    /// ページブロック内の空きページを指定のモビリティタイプに移動
+    /// 
+    /// 断片化防止のため、あるブロックからページを「盗む」際に、
+    /// そのブロック内の他の空きページもまとめて移動させるために使用。
+    fn move_freepages_block(
+        &mut self,
+        start_frame: usize,
+        end_frame: usize,
+        new_mt: MigrateType,
+    ) -> usize {
+        let mut moved_count = 0;
+        let mut curr = start_frame;
+        
+        while curr < end_frame {
+            // ページ記述子を取得（範囲外チェック含む）
+            let page = match self.get_page(curr) {
+                Some(p) => p,
+                None => break,
+            };
+            
+            // 空きページでなければスキップ
+            // 注意: フリーブロックのHeadのみがFREEフラグを持つ
+            if !page.is_free() {
+                curr += 1;
+                continue;
+            }
+            
+            // 空きページ発見
+            let order = page.order as usize;
+            let old_mt = page.migrate_type;
+            
+            // 既に同じタイプなら移動不要
+            if old_mt != new_mt {
+                // リストから削除して、新しいタイプで追加し直す
+                self.list_del(curr, order, old_mt);
+                self.list_add_head(curr, order, new_mt);
+                moved_count += 1;
+            }
+            
+            // 次のブロックへ（現在のオーダー分進む）
+            // バディアロケータの整合性により、curr + (1<<order) は次のブロックの先頭になる
+            curr += 1 << order;
+        }
+        
+        moved_count
+    }
     
     // ========================================================================
     // 割り当て
@@ -499,10 +547,34 @@ impl FreeListBuddyAllocator {
                 self.fallback_count.fetch_add(1, Ordering::Relaxed);
                 self.migrate_allocs[fallback_type as usize].fetch_add(1, Ordering::Relaxed);
                 
-                // フォールバック時、ページブロックのタイプを変更する可能性
-                // （大きなブロックを借りた場合）
-                if order >= 9 { // 2MB以上
-                    self.set_pageblock_migratetype(frame.as_usize(), migrate_type);
+                let frame_idx = frame.as_usize();
+
+                // ページブロック制御（断片化防止 - 2MB Huge Page最適化）
+                if order >= 9 { 
+                    // 2MB以上の割り当てなら、ブロックのタイプを即座に変更
+                    // (Huge Page割り当て成功時)
+                    self.set_pageblock_migratetype(frame_idx, migrate_type);
+                } else {
+                    // 小さな割り当てでフォールバックが発生した場合
+                    // ページブロック全体を「盗む」ことで、将来のHuge Page割り当てを保護する
+                    // （Linuxの claim_alloc / steal_suitable_fallback 相当）
+                    
+                    // ページブロックの境界を計算
+                    let block_start = frame_idx & !(PAGES_PER_PAGEBLOCK - 1);
+                    let block_end = block_start + PAGES_PER_PAGEBLOCK;
+                    
+                    // 現在のブロックのタイプを確認
+                    let current_block_mt = self.get_pageblock_migratetype(frame_idx);
+                    
+                    // ブロックのタイプが要求と異なる場合、ブロックごと乗っ取る
+                    if current_block_mt != migrate_type {
+                         // ブロックのタイプを変更
+                         self.set_pageblock_migratetype(frame_idx, migrate_type);
+                         
+                         // ブロック内の他の空きページも全て新しいタイプに移動
+                         // これにより、このブロックは新しいタイプ専用（排他）になる
+                         self.move_freepages_block(block_start, block_end, migrate_type);
+                    }
                 }
                 
                 return Some(frame);
@@ -775,5 +847,70 @@ mod tests {
         flags.remove(PageFlags::FREE);
         assert!(!flags.contains(PageFlags::FREE));
         assert!(flags.contains(PageFlags::ZEROED));
+    }
+}
+
+// ============================================================================
+// ロック付きラッパー
+// ============================================================================
+
+/// スピンロック（割り込み禁止）で保護されたBuddy Allocator
+/// 
+/// `FreeListBuddyAllocator` は内部可変性を持たない（`&mut self`を要求する）ため、
+/// マルチコア環境で共有するにはロックが必要。
+/// カーネルアロケータとして使用する場合、割り込みコンテキストからの呼び出しも
+/// 考慮して `IrqMutex` を使用する。
+pub struct LockedFreeListBuddyAllocator(IrqMutex<FreeListBuddyAllocator>);
+
+impl LockedFreeListBuddyAllocator {
+    /// 新しいロック付きアロケータを作成
+    pub const fn new() -> Self {
+        Self(IrqMutex::new(FreeListBuddyAllocator::new()))
+    }
+    
+    /// ページ記述子配列を設定（初期化）
+    /// 
+    /// # Safety
+    /// `FreeListBuddyAllocator::set_page_descriptors` を参照
+    pub unsafe fn init(
+        &self,
+        descriptors: &'static mut [PageDescriptor],
+        total_frames: usize,
+    ) {
+        self.0.lock().set_page_descriptors(descriptors, total_frames);
+    }
+    
+    /// フレームを割り当て
+    pub fn allocate(
+        &self,
+        order: usize,
+        migrate_type: MigrateType,
+    ) -> Option<FrameIndex> {
+        self.0.lock().allocate(order, migrate_type)
+    }
+    
+    /// フレームを解放
+    pub fn deallocate(&self, frame: FrameIndex, order: usize) {
+        self.0.lock().deallocate(frame, order)
+    }
+    
+    /// カラーリング対応割り当て
+    pub fn allocate_with_color(
+        &self,
+        order: usize,
+        migrate_type: MigrateType,
+        preferred_color: u8,
+    ) -> Option<FrameIndex> {
+        self.0.lock().allocate_with_color(order, migrate_type, preferred_color)
+    }
+    
+    /// 統計: 空きフレーム数
+    pub fn free_count(&self) -> u64 {
+        self.0.lock().free_count()
+    }
+    
+    /// 統計: 総フレーム数
+    pub fn total_count(&self) -> usize {
+        self.0.lock().total_count()
     }
 }

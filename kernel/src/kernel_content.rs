@@ -272,14 +272,10 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     info!(target: "init", "Initializing interrupt system");
     interrupts::init();
 
-    // Serial Driver Initialization (Enables UART interrupts)
-    // interrupts::init() already unmasked IRQ4 (COM1) in PIC
-    #[allow(deprecated)]
-    if let Err(e) = io::serial::init() {
-        error!(target: "init", "Serial driver init failed: {:?}", e);
-    } else {
-        info!(target: "init", "Serial driver initialized");
-    }
+    // Serial driver initialization is handled later via the DriverRegistry.
+    // Avoid calling the deprecated `io::serial::init()` here to keep
+    // initialization centralized and ensure drivers are started via
+    // `driver_registry::register_driver` (see serial registration below).
 
     info!(target: "init", "Interrupt system initialized");
 
@@ -492,6 +488,10 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
             // ブートスプラッシュを表示
             graphics::show_boot_splash();
             info!(target: "init", "Boot splash displayed");
+
+            // Initialize Text Console driver
+            graphics::init_console();
+            info!(target: "init", "Text Console driver initialized");
         } else {
             warn!(target: "init", "Graphics framebuffer init failed");
         }

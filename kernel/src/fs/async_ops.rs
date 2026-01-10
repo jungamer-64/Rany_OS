@@ -307,9 +307,8 @@ fn map_nvme_iommu(
 
     let device = device.ok_or(FsError::IoError)?;
     let map_len = align_up(size, NVME_PAGE_SIZE);
-    #[allow(deprecated)]
     let iova = unsafe {
-        crate::io::iommu::api::raw::map_for_device(&device, PhysAddr::new(phys_addr), map_len as u64)
+        crate::io::iommu::api::map_for_device(&device, PhysAddr::new(phys_addr), map_len as u64)
     }
     .map_err(|_| FsError::IoError)?;
 
@@ -1110,7 +1109,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
                 let dma_len = (blocks as usize) * (block_size as usize);
                 let lba = self.file.start_block + (position / block_size);
 
-                let (mut ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
+                let (ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
                     Ok(v) => v,
                     Err(e) => return Poll::Ready(Err(e)),
                 };
@@ -1306,7 +1305,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                     let dma_len = (blocks as usize) * (block_size as usize);
                     let lba = self.file.start_block + aligned_start;
 
-                    let (mut ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
+                    let (ctx, prp1, prp2) = match prepare_dma_read(dma_len) {
                         Ok(v) => v,
                         Err(e) => return Poll::Ready(Err(e)),
                     };
@@ -1358,7 +1357,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                 let dma_len = (blocks as usize) * (block_size as usize);
                 let lba = self.file.start_block + (position / block_size);
 
-                let (mut ctx, prp1, prp2) = match prepare_dma_write(self.buf, dma_len) {
+                let (ctx, prp1, prp2) = match prepare_dma_write(self.buf, dma_len) {
                     Ok(v) => v,
                     Err(e) => return Poll::Ready(Err(e)),
                 };
@@ -1452,7 +1451,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                         data.as_mut_slice()[offset..end].copy_from_slice(self.buf);
 
                         let dma_len = data.len();
-                        let (mut write_ctx, prp1, prp2) = match prepare_dma_from_cpu_buffer(data) {
+                        let (write_ctx, prp1, prp2) = match prepare_dma_from_cpu_buffer(data) {
                             Ok(v) => v,
                             Err(e) => return Poll::Ready(Err(e)),
                         };
@@ -1689,7 +1688,7 @@ impl DirectBlockHandle {
         }
 
         let dma_len = blocks * self.block_size as usize;
-        let (mut ctx, prp1, prp2) = prepare_dma_read(dma_len)?;
+        let (ctx, prp1, prp2) = prepare_dma_read(dma_len)?;
         let lba = self.start_block + block_offset;
         let canceled = Arc::new(AtomicBool::new(false));
         let mut cancel_guard = NvmeCancelGuard::new(canceled.clone());
@@ -1775,7 +1774,7 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let (mut ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
+        let (ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
         let lba = self.start_block + block_offset;
         let payload = IoPayload::NvmeRw(NvmeRwPayload {
             lba,
@@ -1904,7 +1903,7 @@ impl DirectBlockHandle {
         }
 
         let dma_len = blocks * self.block_size as usize;
-        let (mut ctx, prp1, prp2) = prepare_dma_write(buf, dma_len)?;
+        let (ctx, prp1, prp2) = prepare_dma_write(buf, dma_len)?;
         let lba = self.start_block + block_offset;
         let payload = IoPayload::NvmeRw(NvmeRwPayload {
             lba,
@@ -1968,7 +1967,7 @@ impl DirectBlockHandle {
             if list.len() <= max_entries {
                 let blocks = blocks_u64 as u16;
                 let lba = self.start_block + block_offset;
-                let (mut ctx, sgl, bytes) = prepare_nvme_sgl(list, max_entries)?;
+                let (ctx, sgl, bytes) = prepare_nvme_sgl(list, max_entries)?;
                 let payload = IoPayload::NvmeSgl(NvmeSglPayload {
                     lba,
                     blocks,
@@ -2074,7 +2073,7 @@ impl DirectBlockHandle {
             return Err(FsError::InvalidArgument);
         }
 
-        let (mut ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
+        let (ctx, prp1, prp2) = prepare_dma_from_kapi_buffer(&buffer)?;
         let lba = self.start_block + block_offset;
         let payload = IoPayload::NvmeRw(NvmeRwPayload {
             lba,

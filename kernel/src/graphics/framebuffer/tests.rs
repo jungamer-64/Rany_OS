@@ -352,6 +352,7 @@ fn test_write_bgr_run_small_mmio_generic_unaligned() {
 #[cfg(test)]
 pub fn _test_get_packer_mode() -> u8 {
     use core::sync::atomic::Ordering;
+    use crate::graphics::packer::PACKER_MODE;
     PACKER_MODE.load(Ordering::Relaxed)
 }
 
@@ -1321,23 +1322,23 @@ fn test_dirty_rect_tracking() {
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
 
     // Initial state: dirty_rect is None
-    assert!(fb.dirty_rect.is_none());
+    assert!(fb.dirty_rect().is_none());
 
     // Draw a pixel
     fb.set_pixel(10, 10, Color::RED);
-    assert!(fb.dirty_rect.is_some());
-    let d = fb.dirty_rect.unwrap();
+    assert!(fb.dirty_rect().is_some());
+    let d = fb.dirty_rect().unwrap();
     assert_eq!(d, Rect::new(10, 10, 1, 1));
 
     // Draw another pixel
     fb.set_pixel(20, 20, Color::BLUE);
-    let d = fb.dirty_rect.unwrap();
+    let d = fb.dirty_rect().unwrap();
     // Should be union of (10,10,1,1) and (20,20,1,1) -> (10,10, 11, 11)
     assert_eq!(d, Rect::new(10, 10, 11, 11));
 
     // Flush
     fb.flush_dirty_area();
-    assert!(fb.dirty_rect.is_none());
+    assert!(fb.dirty_rect().is_none());
 }
 
 #[test]

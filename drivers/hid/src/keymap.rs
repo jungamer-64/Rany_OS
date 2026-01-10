@@ -189,21 +189,7 @@ pub trait Keymap: Send + Sync {
     /// レイアウト名を取得
     fn name(&self) -> &'static str;
 
-    /// 簡易変換（後方互換性用）
-    ///
-    /// 新しいコードでは`to_char(key, modifiers)`を使用してください。
-    #[deprecated(
-        since = "0.2.0",
-        note = "Use to_char(key, &Modifiers { shift, caps_lock, ..Default::default() }) instead"
-    )]
-    fn to_char_simple(&self, key: KeyCode, shift: bool, caps_lock: bool) -> Option<char> {
-        let modifiers = Modifiers {
-            shift,
-            caps_lock,
-            ..Default::default()
-        };
-        self.to_char(key, &modifiers)
-    }
+
 }
 
 // ============================================================================

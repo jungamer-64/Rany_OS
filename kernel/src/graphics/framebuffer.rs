@@ -791,6 +791,37 @@ impl Framebuffer {
         super::packer::pack_rgba_to_bgr24_scalar(src, dst, is_bgr)
     }
 
+    // ------------------------------------------------------------------------
+    // SIMD entry points (exposed for tests/benching)
+    // ------------------------------------------------------------------------
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
+        crate::graphics::packer::pack_rgba_to_bgra_avx2(src, dst, bytes);
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) {
+        crate::graphics::packer::pack_rgba_to_bgra_ssse3(src, dst, bytes);
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
+        crate::graphics::packer::pack_rgba_to_bgr24_avx2_8pixels(src, dst, is_bgr);
+    }
+
+    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    pub unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
+        crate::graphics::packer::pack_rgba_to_bgr24_ssse3_8pixels(src, dst, is_bgr);
+    }
+
+    #[cfg(target_arch = "aarch64")]
+    pub unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
+        crate::graphics::packer::pack_rgba_to_bgra_neon(src, dst, bytes);
+    }
+
+    // ------------------------------------------------------------------------
+    /// Write a run of u32 pixels (color already packed) to destination offset
+
     // NOTE: All SIMD pack implementations (AVX2, SSSE3, NEON) have been moved to
     // graphics/packer.rs module. The public pack_rgba_to_bgra() and pack_rgba_to_bgr24()
     // functions delegate to that module.
@@ -1392,6 +1423,20 @@ impl Framebuffer {
     /// ダブルバッファリングが有効かどうかを取得
     pub fn is_double_buffered(&self) -> bool {
         self.back_buffer.is_some()
+    }
+
+    /// Compatibility accessor for previous `dirty_rect` field.
+    pub fn dirty_rect(&self) -> Option<Rect> {
+        let mut out: Option<Rect> = None;
+        for slot in self.dirty_rects.iter() {
+            if let Some(r) = slot {
+                out = Some(match out {
+                    None => *r,
+                    Some(prev) => prev.union(r),
+                });
+            }
+        }
+        out
     }
 
     /// 描画領域を「汚れ」としてマーク

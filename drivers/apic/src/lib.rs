@@ -852,12 +852,6 @@ impl IoApic {
     // Legacy API (後方互換性のため)
     // ========================================================================
 
-    /// リダイレクションエントリを書き込み（u64版、後方互換）
-    #[deprecated(note = "Use write_entry with RedirectionEntry instead")]
-    fn write_redirection_entry(&self, irq: u8, entry: u64) {
-        self.write_entry(irq, RedirectionEntry::from_raw(entry));
-    }
-
     /// リダイレクションエントリを読み取り（u64版、後方互換）
     pub fn read_redirection_entry(&self, irq: u8) -> u64 {
         self.read_entry(irq).to_raw()

@@ -69,11 +69,8 @@ pub use bus::{
     scan_all_devices,
 };
 pub use ecam::{EcamAccess, EcamManager};
-#[deprecated(note = "LegacyPciAccessor is deprecated; use `pci_driver::EcamAccess` or the new PCI APIs instead.")]
-pub use legacy::LegacyPciAccessor;
-
-#[deprecated(note = "get_legacy_accessor is deprecated; prefer the new accessors exposed by the `pci_driver` crate.")]
-pub use legacy::get_legacy_accessor;
+// Removed deprecated re-exports `LegacyPciAccessor` and `get_legacy_accessor`.
+// Migration: use `pci_driver::EcamAccess` or the new PCI APIs instead.
 
 pub use legacy::{ pci_read, pci_read8, pci_read16, pci_write };
 pub use msi::{

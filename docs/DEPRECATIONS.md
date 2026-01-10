@@ -124,17 +124,18 @@ This document lists symbols that have been marked deprecated and recommended mig
 ## Drivers
 
 - `drivers/pci` (`drivers/pci/src/lib.rs`)
-  - `LegacyPciAccessor` ✅ **deprecated**
-  - `get_legacy_accessor()` ✅ **deprecated**
-    - Migration: Use the new `pci_driver` ECAM-based APIs (`EcamAccess`, `PciBusScanner`, etc.).
+  - `LegacyPciAccessor` ❌ **removed** (was deprecated)
+    - Migration: Use `pci_driver::EcamAccess` or the new PCI APIs instead. The internal helper remains in `drivers/pci::legacy` but is no longer publicly re-exported.
+  - `get_legacy_accessor()` ❌ **removed** (was deprecated)
+    - Migration: Prefer `pci_driver` accessors or ECAM APIs; for internal debugging use `drivers::pci::legacy::get_legacy_accessor` if necessary.
 
 - `drivers/serial` (`drivers/serial/src/lib.rs`)
   - `serial_print!`, `serial_println!` macros ❌ **removed**
     - Replacement: Use `crate::io::log::early_print` or the `log` crate for structured logging.
   - `serial1()` ❌ **removed**
     - Replacement: Use `crate::io::log::early_print` or `log::info!`/`log::debug!` instead of using the `AsyncSerialPort` global.
-  - `init()` ✅ **deprecated**
-    - Migration: Register the serial driver with `driver_registry::register_driver` (e.g., `register_driver(Box::new(SerialDriver::new()))`) and let the DriverRegistry perform initialization.
+  - `init()` ❌ **removed** (was deprecated)
+    - Replacement: Register the serial driver with `driver_registry::register_driver(Box::new(SerialDriver::new()))` and let the DriverRegistry perform initialization.
   - `handle_interrupt()` ❌ **removed**
     - Replacement: Prefer driver-registered interrupt handling via the DriverRegistry or the driver's interrupt methods; use `serial::dispatch_interrupt()` for direct dispatch in low-level code.
 

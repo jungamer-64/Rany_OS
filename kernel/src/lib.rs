@@ -1394,12 +1394,6 @@ pub mod io;
 #[cfg(any(test, feature = "bench"))]
 pub use hal;
 
-// Some graphics modules depend on the `alloc` crate and other internal
-// modules (e.g. unwind). When compiling benches we need to make these
-// available so the bench harness can build the same code paths we
-// exercise at runtime.
-#[cfg(any(test, feature = "bench"))]
-extern crate alloc;
 
 #[cfg(test)]
 pub mod unwind;

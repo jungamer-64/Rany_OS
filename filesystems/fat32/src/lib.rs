@@ -1608,15 +1608,6 @@ impl TryFrom<&[u8]> for BootSector {
 }
 
 impl BootSector {
-    /// バイト列から安全にBootSectorを読み取る
-    ///
-    /// # Deprecated
-    /// `TryFrom` トレイトを使用してください: `BootSector::try_from(bytes)?`
-    #[deprecated(since = "0.1.0", note = "Use TryFrom trait instead")]
-    pub fn from_bytes(bytes: &[u8]) -> FsResult<Self> {
-        Self::try_from(bytes)
-    }
-
     /// シグネチャを取得
     #[inline]
     pub fn signature(&self) -> u16 {

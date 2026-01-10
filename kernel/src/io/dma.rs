@@ -1259,8 +1259,7 @@ impl IommuDmaBuffer {
                 return None;
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for DMA
-            #[allow(deprecated)]
-            match unsafe { crate::io::iommu::api::raw::map_for_dma(inner.phys_addr(), size as u64) } {
+            match unsafe { crate::io::iommu::api::map_for_dma(inner.phys_addr(), size as u64) } {
                 Ok(iova) => Some(iova),
                 Err(e) => {
                     log::error!("[DMA] IOMMU map_for_dma failed: {:?}", e);
@@ -1300,15 +1299,13 @@ impl IommuDmaBuffer {
                 return None;
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for device DMA
-            unsafe {
-                #[allow(deprecated)]
-            crate::io::iommu::api::raw::map_for_device(&device, inner.phys_addr(), size as u64)
+            match unsafe { crate::io::iommu::api::map_for_device(&device, inner.phys_addr(), size as u64) } {
+                Ok(iova) => Some(iova),
+                Err(e) => {
+                    log::error!("[DMA] IOMMU map_for_device failed: {:?}", e);
+                    None
+                }
             }
-            .map(Some)
-            .unwrap_or_else(|e| {
-                log::error!("[DMA] IOMMU map_for_device failed: {:?}", e);
-                None
-            })
         } else {
             if crate::io::iommu::api::is_iommu_required() {
                 log::error!(
@@ -1342,16 +1339,13 @@ impl IommuDmaBuffer {
                 return None;
             }
             // SAFETY: CoherentDmaBuffer owns this memory, safe for async device DMA
-            unsafe {
-                #[allow(deprecated)]
-            crate::io::iommu::api::raw::map_for_device_async(&device, inner.phys_addr(), size as u64)
-                    .await
+            match unsafe { crate::io::iommu::api::map_for_device_async(&device, inner.phys_addr(), size as u64).await } {
+                Ok(iova) => Some(iova),
+                Err(e) => {
+                    log::error!("[DMA] IOMMU map_for_device_async failed: {:?}", e);
+                    None
+                }
             }
-            .map(Some)
-            .unwrap_or_else(|e| {
-                log::error!("[DMA] IOMMU map_for_device_async failed: {:?}", e);
-                None
-            })
         } else {
             if crate::io::iommu::api::is_iommu_required() {
                 log::error!(
@@ -1585,11 +1579,9 @@ impl DmaAllocator for GlobalDmaAllocator {
         let (device_addr, iova_mapped) = if crate::io::iommu::api::is_iommu_enabled() {
             // SAFETY: Just allocated DMA-capable memory that we own
             let map_result = if let Some(ref dev) = self.device_id {
-                #[allow(deprecated)]
-                unsafe { crate::io::iommu::api::raw::map_for_device(dev, phys_addr, size as u64) }
+                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, size as u64) }
             } else {
-                #[allow(deprecated)]
-                unsafe { crate::io::iommu::api::raw::map_for_dma(phys_addr, size as u64) }
+                unsafe { crate::io::iommu::api::map_for_dma(phys_addr, size as u64) }
             };
             match map_result {
                 Ok(iova) => (iova, true),
@@ -1682,9 +1674,9 @@ impl DmaAllocator for GlobalDmaAllocator {
         let (device_addr, iova_mapped) = if crate::io::iommu::api::is_iommu_enabled() {
             // SAFETY: Buffer is caller-owned; delegate safety to caller
             let map_result = if let Some(ref dev) = self.device_id {
-                unsafe { crate::io::iommu::api::raw::map_for_device(dev, phys_addr, mapped_len as u64) }
+                unsafe { crate::io::iommu::api::map_for_device(dev, phys_addr, mapped_len as u64) }
             } else {
-                unsafe { crate::io::iommu::api::raw::map_for_dma(phys_addr, mapped_len as u64) }
+                unsafe { crate::io::iommu::api::map_for_dma(phys_addr, mapped_len as u64) }
             };
             match map_result {
                 Ok(iova) => (iova, true),
