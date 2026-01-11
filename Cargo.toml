@@ -36,6 +36,31 @@ members = [
     # They are runnable via their manifest paths.
 ]
 exclude = ["tools/framebuffer_bench", "tools/signer"]
+default-members = [
+    "kernel",
+    "hal",
+    "interfaces/kernel_api",
+    "libs/app_sdk",
+    "libs/security",
+    "libs/graphic_types",
+    "libs/vfs",
+    "filesystems/fat32",
+    "drivers/pci",
+    "drivers/ahci",
+    "drivers/usb",
+    "drivers/nvme",
+    "drivers/serial",
+    "drivers/gpu",
+    "drivers/hid",
+    "drivers/hda",
+    "drivers/virtio",
+    "drivers/acpi",
+    "drivers/rtc",
+    "drivers/ide",
+    "drivers/example_abi",
+    "apps",
+    "libs/boot_proto"
+]
 
 
 [workspace.package]

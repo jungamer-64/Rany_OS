@@ -3,13 +3,16 @@
 # `config.build-std.toml` or pass `-Z 'build-std=...'` on the command line when
 # you need to build a local copy of core/alloc/compiler_builtins for cross-target
 # builds (e.g. kernel cross-builds).
-# [unstable]
-# build-std = ["core", "compiler_builtins", "alloc"]
-# build-std-features = ["compiler-builtins-mem"]
+[unstable]
+build-std = ["core", "compiler_builtins", "alloc"]
+build-std-features = ["compiler-builtins-mem"]
+
+[build]
+target = "x86_64-exorust.json"
 
 # Custom kernel target with PIE disabled and higher-half linker script
 # Note: For JSON targets, use the full path including .json extension
-[target.x86_64-kernel]
+[target.x86_64-exorust]
 rustflags = [
     "-C",
     "link-arg=-Tkernel/linker.ld",
@@ -28,4 +31,4 @@ rustflags = [
 ]
 
 [target.'cfg(target_os = "none")']
-runner = "bootloader"
+runner = ["pwsh", "scripts/run.ps1", "-CargoRunner", "-CargoKernelPath"]

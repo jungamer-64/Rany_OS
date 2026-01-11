@@ -185,42 +185,52 @@ pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize)
     let mut i = 0usize;
 
     while i + 64 <= bytes {
-        let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
-        let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
-        let r0 = _mm256_shuffle_epi8(v0, mask);
-        let r1 = _mm256_shuffle_epi8(v1, mask);
-        _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
-        _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
+        // SAFETY: `src` and `dst` are valid pointers to at least `bytes` bytes; loads/stores are within bounds
+        // and aligned as required by the intrinsic usage here.
+        unsafe {
+            let v0 = _mm256_loadu_si256(src.add(i) as *const __m256i);
+            let v1 = _mm256_loadu_si256(src.add(i + 32) as *const __m256i);
+            let r0 = _mm256_shuffle_epi8(v0, mask);
+            let r1 = _mm256_shuffle_epi8(v1, mask);
+            _mm256_storeu_si256(dst.add(i) as *mut __m256i, r0);
+            _mm256_storeu_si256(dst.add(i + 32) as *mut __m256i, r1);
+        }
         i += 64;
     }
 
     while i + 32 <= bytes {
-        let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
-        let r = _mm256_shuffle_epi8(v, mask);
-        _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
+        unsafe {
+            let v = _mm256_loadu_si256(src.add(i) as *const __m256i);
+            let r = _mm256_shuffle_epi8(v, mask);
+            _mm256_storeu_si256(dst.add(i) as *mut __m256i, r);
+        }
         i += 32;
     }
 
     // SSSE3 tail
     while i + 16 <= bytes {
-        let v = _mm_loadu_si128(src.add(i) as *const __m128i);
-        let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
-        let r = _mm_shuffle_epi8(v, m);
-        _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+        unsafe {
+            let v = _mm_loadu_si128(src.add(i) as *const __m128i);
+            let m = _mm_setr_epi8(2, 1, 0, 3, 6, 5, 4, 7, 10, 9, 8, 11, 14, 13, 12, 15);
+            let r = _mm_shuffle_epi8(v, m);
+            _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+        }
         i += 16;
     }
 
     // Scalar tail
     while i < bytes {
         let s = (i / 4) * 4;
-        let r = *src.add(s);
-        let g = *src.add(s + 1);
-        let b = *src.add(s + 2);
-        let a = *src.add(s + 3);
-        *dst.add(s) = b;
-        *dst.add(s + 1) = g;
-        *dst.add(s + 2) = r;
-        *dst.add(s + 3) = a;
+        unsafe {
+            let r = *src.add(s);
+            let g = *src.add(s + 1);
+            let b = *src.add(s + 2);
+            let a = *src.add(s + 3);
+            *dst.add(s) = b;
+            *dst.add(s + 1) = g;
+            *dst.add(s + 2) = r;
+            *dst.add(s + 3) = a;
+        }
         i += 4;
     }
 }
@@ -234,33 +244,39 @@ pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize
     let mut i = 0usize;
 
     while i + 32 <= bytes {
-        let v0 = _mm_loadu_si128(src.add(i) as *const __m128i);
-        let v1 = _mm_loadu_si128(src.add(i + 16) as *const __m128i);
-        let r0 = _mm_shuffle_epi8(v0, mask);
-        let r1 = _mm_shuffle_epi8(v1, mask);
-        _mm_storeu_si128(dst.add(i) as *mut __m128i, r0);
-        _mm_storeu_si128(dst.add(i + 16) as *mut __m128i, r1);
+        unsafe {
+            let v0 = _mm_loadu_si128(src.add(i) as *const __m128i);
+            let v1 = _mm_loadu_si128(src.add(i + 16) as *const __m128i);
+            let r0 = _mm_shuffle_epi8(v0, mask);
+            let r1 = _mm_shuffle_epi8(v1, mask);
+            _mm_storeu_si128(dst.add(i) as *mut __m128i, r0);
+            _mm_storeu_si128(dst.add(i + 16) as *mut __m128i, r1);
+        }
         i += 32;
     }
 
     while i + 16 <= bytes {
-        let v = _mm_loadu_si128(src.add(i) as *const __m128i);
-        let r = _mm_shuffle_epi8(v, mask);
-        _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+        unsafe {
+            let v = _mm_loadu_si128(src.add(i) as *const __m128i);
+            let r = _mm_shuffle_epi8(v, mask);
+            _mm_storeu_si128(dst.add(i) as *mut __m128i, r);
+        }
         i += 16;
     }
 
     // Scalar tail
     while i < bytes {
         let s = (i / 4) * 4;
-        let r = *src.add(s);
-        let g = *src.add(s + 1);
-        let b = *src.add(s + 2);
-        let a = *src.add(s + 3);
-        *dst.add(s) = b;
-        *dst.add(s + 1) = g;
-        *dst.add(s + 2) = r;
-        *dst.add(s + 3) = a;
+        unsafe {
+            let r = *src.add(s);
+            let g = *src.add(s + 1);
+            let b = *src.add(s + 2);
+            let a = *src.add(s + 3);
+            *dst.add(s) = b;
+            *dst.add(s + 1) = g;
+            *dst.add(s + 2) = r;
+            *dst.add(s + 3) = a;
+        }
         i += 4;
     }
 }
@@ -271,14 +287,16 @@ pub unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize)
     let mut i = 0usize;
     while i < bytes {
         let s = (i / 4) * 4;
-        let r = *src.add(s);
-        let g = *src.add(s + 1);
-        let b = *src.add(s + 2);
-        let a = *src.add(s + 3);
-        *dst.add(s) = b;
-        *dst.add(s + 1) = g;
-        *dst.add(s + 2) = r;
-        *dst.add(s + 3) = a;
+        unsafe {
+            let r = *src.add(s);
+            let g = *src.add(s + 1);
+            let b = *src.add(s + 2);
+            let a = *src.add(s + 3);
+            *dst.add(s) = b;
+            *dst.add(s + 1) = g;
+            *dst.add(s + 2) = r;
+            *dst.add(s + 3) = a;
+        }
         i += 4;
     }
 }
@@ -347,9 +365,12 @@ unsafe fn pack_rgba_to_bgr24_avx2(src: &[u8], dst: &mut [u8], pixels: usize, is_
     let mut dst_ptr = dst.as_mut_ptr();
     
     while processed + 8 <= pixels {
-        pack_rgba_to_bgr24_avx2_8pixels(src_ptr, dst_ptr, is_bgr);
-        src_ptr = src_ptr.add(32);
-        dst_ptr = dst_ptr.add(24);
+        // SAFETY: Caller must ensure `src_ptr`/`dst_ptr` point to valid memory for 8 pixels.
+        unsafe {
+            pack_rgba_to_bgr24_avx2_8pixels(src_ptr, dst_ptr, is_bgr);
+            src_ptr = src_ptr.add(32);
+            dst_ptr = dst_ptr.add(24);
+        }
         processed += 8;
     }
     
@@ -376,27 +397,31 @@ pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_b
         )
     };
 
-    let rgba = _mm256_loadu_si256(src as *const __m256i);
-    let shuffled = _mm256_shuffle_epi8(rgba, shuffle_mask);
-    
-    // Extract and merge the two 12-byte results
-    let lo = _mm256_extracti128_si256::<0>(shuffled);
-    let hi = _mm256_extracti128_si256::<1>(shuffled);
-    
-    // Store first 12 bytes from each lane
-    let lo_val = _mm_cvtsi128_si64(lo) as u64;
-    core::ptr::copy_nonoverlapping(&lo_val as *const u64 as *const u8, dst, 8);
-    
-    let lo_shifted = _mm_srli_si128::<8>(lo);
-    let lo_upper = _mm_cvtsi128_si64(lo_shifted) as u32;
-    core::ptr::copy_nonoverlapping(&lo_upper as *const u32 as *const u8, dst.add(8), 4);
-    
-    let hi_val = _mm_cvtsi128_si64(hi) as u64;
-    core::ptr::copy_nonoverlapping(&hi_val as *const u64 as *const u8, dst.add(12), 8);
-    
-    let hi_shifted = _mm_srli_si128::<8>(hi);
-    let hi_upper = _mm_cvtsi128_si64(hi_shifted) as u32;
-    core::ptr::copy_nonoverlapping(&hi_upper as *const u32 as *const u8, dst.add(20), 4);
+    // SAFETY: `src` and `dst` must point to at least 8 pixels worth of data. Intrinsics and ptr ops
+    // below are unsafe and are executed in a documented `unsafe` block.
+    unsafe {
+        let rgba = _mm256_loadu_si256(src as *const __m256i);
+        let shuffled = _mm256_shuffle_epi8(rgba, shuffle_mask);
+        
+        // Extract and merge the two 12-byte results
+        let lo = _mm256_extracti128_si256::<0>(shuffled);
+        let hi = _mm256_extracti128_si256::<1>(shuffled);
+        
+        // Store first 12 bytes from each lane
+        let lo_val = _mm_cvtsi128_si64(lo) as u64;
+        core::ptr::copy_nonoverlapping(&lo_val as *const u64 as *const u8, dst, 8);
+        
+        let lo_shifted = _mm_srli_si128::<8>(lo);
+        let lo_upper = _mm_cvtsi128_si64(lo_shifted) as u32;
+        core::ptr::copy_nonoverlapping(&lo_upper as *const u32 as *const u8, dst.add(8), 4);
+        
+        let hi_val = _mm_cvtsi128_si64(hi) as u64;
+        core::ptr::copy_nonoverlapping(&hi_val as *const u64 as *const u8, dst.add(12), 8);
+        
+        let hi_shifted = _mm_srli_si128::<8>(hi);
+        let hi_upper = _mm_cvtsi128_si64(hi_shifted) as u32;
+        core::ptr::copy_nonoverlapping(&hi_upper as *const u32 as *const u8, dst.add(20), 4);
+    }
 }
 
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
@@ -408,9 +433,12 @@ pub unsafe fn pack_rgba_to_bgr24_ssse3(src: &[u8], dst: &mut [u8], pixels: usize
     let mut dst_ptr = dst.as_mut_ptr();
     
     while processed + 8 <= pixels {
-        pack_rgba_to_bgr24_ssse3_8pixels(src_ptr, dst_ptr, is_bgr);
-        src_ptr = src_ptr.add(32);
-        dst_ptr = dst_ptr.add(24);
+        // SAFETY: Caller must ensure `src_ptr`/`dst_ptr` point to valid memory for 8 pixels.
+        unsafe {
+            pack_rgba_to_bgr24_ssse3_8pixels(src_ptr, dst_ptr, is_bgr);
+            src_ptr = src_ptr.add(32);
+            dst_ptr = dst_ptr.add(24);
+        }
         processed += 8;
     }
     
@@ -431,28 +459,32 @@ pub unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_
         _mm_setr_epi8(0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14, -1, -1, -1, -1)
     };
 
-    // Process first 4 pixels (16 bytes -> 12 bytes)
-    let rgba_lo = _mm_loadu_si128(src as *const __m128i);
-    let shuffled_lo = _mm_shuffle_epi8(rgba_lo, shuffle_mask);
-    
-    // Process second 4 pixels
-    let rgba_hi = _mm_loadu_si128(src.add(16) as *const __m128i);
-    let shuffled_hi = _mm_shuffle_epi8(rgba_hi, shuffle_mask);
-    
-    // Store 12 bytes from each
-    let lo_val = _mm_cvtsi128_si64(shuffled_lo) as u64;
-    core::ptr::copy_nonoverlapping(&lo_val as *const u64 as *const u8, dst, 8);
-    
-    let lo_shifted = _mm_srli_si128::<8>(shuffled_lo);
-    let lo_upper = _mm_cvtsi128_si64(lo_shifted) as u32;
-    core::ptr::copy_nonoverlapping(&lo_upper as *const u32 as *const u8, dst.add(8), 4);
-    
-    let hi_val = _mm_cvtsi128_si64(shuffled_hi) as u64;
-    core::ptr::copy_nonoverlapping(&hi_val as *const u64 as *const u8, dst.add(12), 8);
-    
-    let hi_shifted = _mm_srli_si128::<8>(shuffled_hi);
-    let hi_upper = _mm_cvtsi128_si64(hi_shifted) as u32;
-    core::ptr::copy_nonoverlapping(&hi_upper as *const u32 as *const u8, dst.add(20), 4);
+    // SAFETY: `src` and `dst` must point to at least 8 pixels worth of data. Intrinsics and ptr ops
+    // below are unsafe and are executed in a documented `unsafe` block.
+    unsafe {
+        // Process first 4 pixels (16 bytes -> 12 bytes)
+        let rgba_lo = _mm_loadu_si128(src as *const __m128i);
+        let shuffled_lo = _mm_shuffle_epi8(rgba_lo, shuffle_mask);
+        
+        // Process second 4 pixels
+        let rgba_hi = _mm_loadu_si128(src.add(16) as *const __m128i);
+        let shuffled_hi = _mm_shuffle_epi8(rgba_hi, shuffle_mask);
+        
+        // Store 12 bytes from each
+        let lo_val = _mm_cvtsi128_si64(shuffled_lo) as u64;
+        core::ptr::copy_nonoverlapping(&lo_val as *const u64 as *const u8, dst, 8);
+        
+        let lo_shifted = _mm_srli_si128::<8>(shuffled_lo);
+        let lo_upper = _mm_cvtsi128_si64(lo_shifted) as u32;
+        core::ptr::copy_nonoverlapping(&lo_upper as *const u32 as *const u8, dst.add(8), 4);
+        
+        let hi_val = _mm_cvtsi128_si64(shuffled_hi) as u64;
+        core::ptr::copy_nonoverlapping(&hi_val as *const u64 as *const u8, dst.add(12), 8);
+        
+        let hi_shifted = _mm_srli_si128::<8>(shuffled_hi);
+        let hi_upper = _mm_cvtsi128_si64(hi_shifted) as u32;
+        core::ptr::copy_nonoverlapping(&hi_upper as *const u32 as *const u8, dst.add(20), 4);
+    }
 }
 
 #[cfg(target_arch = "aarch64")]
@@ -481,6 +513,133 @@ pub fn get_avx2_available() -> bool {
             avail
         } else {
             v == 2
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use core::sync::atomic::Ordering as AOrdering;
+
+    fn fill_src(buf: &mut [u8], pixels: usize) {
+        for i in 0..pixels {
+            let r = ((i * 37) & 0xFF) as u8;
+            let g = ((i * 73) & 0xFF) as u8;
+            let b = ((i * 91) & 0xFF) as u8;
+            let a = 0xFFu8;
+            buf[4 * i] = r;
+            buf[4 * i + 1] = g;
+            buf[4 * i + 2] = b;
+            buf[4 * i + 3] = a;
+        }
+    }
+
+    #[test]
+    fn pack_rgba_to_bgra_matches_scalar_mode() {
+        let pixels_list = [1usize, 2, 7, 8, 9, 15, 16, 17, 24, 32, 33, 64];
+        for &pixels in pixels_list.iter() {
+            let mut src = [0u8; 4 * 64];
+            fill_src(&mut src, pixels);
+            let mut out_dispatch = [0u8; 4 * 64];
+            let mut out_scalar = [0u8; 4 * 64];
+            let prev = PACKER_MODE.load(AOrdering::Relaxed);
+            PACKER_MODE.store(1, AOrdering::Relaxed);
+            pack_rgba_to_bgra(&src[..pixels * 4], &mut out_dispatch[..pixels * 4]);
+            pack_rgba_to_bgra_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 4]);
+            PACKER_MODE.store(prev, AOrdering::Relaxed);
+            assert_eq!(&out_dispatch[..pixels * 4], &out_scalar[..pixels * 4], "pixels={}", pixels);
+        }
+    }
+
+    #[test]
+    fn pack_rgba_to_bgra_matches_simd_if_available() {
+        #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            let pixels_list = [8usize, 9, 15, 16, 17, 24, 32, 33];
+            // SSSE3
+            if std::is_x86_feature_detected!("ssse3") {
+                let prev = PACKER_MODE.load(AOrdering::Relaxed);
+                PACKER_MODE.store(2, AOrdering::Relaxed);
+                for &pixels in pixels_list.iter() {
+                    let mut src = [0u8; 4 * 64];
+                    fill_src(&mut src, pixels);
+                    let mut out_dispatch = [0u8; 4 * 64];
+                    let mut out_scalar = [0u8; 4 * 64];
+                    pack_rgba_to_bgra(&src[..pixels * 4], &mut out_dispatch[..pixels * 4]);
+                    pack_rgba_to_bgra_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 4]);
+                    assert_eq!(&out_dispatch[..pixels * 4], &out_scalar[..pixels * 4], "ssse3 pixels={}", pixels);
+                }
+                PACKER_MODE.store(prev, AOrdering::Relaxed);
+            }
+            // AVX2
+            if std::is_x86_feature_detected!("avx2") {
+                let prev = PACKER_MODE.load(AOrdering::Relaxed);
+                PACKER_MODE.store(3, AOrdering::Relaxed);
+                for &pixels in pixels_list.iter() {
+                    let mut src = [0u8; 4 * 64];
+                    fill_src(&mut src, pixels);
+                    let mut out_dispatch = [0u8; 4 * 64];
+                    let mut out_scalar = [0u8; 4 * 64];
+                    pack_rgba_to_bgra(&src[..pixels * 4], &mut out_dispatch[..pixels * 4]);
+                    pack_rgba_to_bgra_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 4]);
+                    assert_eq!(&out_dispatch[..pixels * 4], &out_scalar[..pixels * 4], "avx2 pixels={}", pixels);
+                }
+                PACKER_MODE.store(prev, AOrdering::Relaxed);
+            }
+        }
+    }
+
+    #[test]
+    fn pack_rgba_to_bgr24_matches_scalar_mode() {
+        let pixels_list = [1usize, 2, 7, 8, 9, 15, 16, 17, 24, 31, 32, 33, 64];
+        for &pixels in pixels_list.iter() {
+            let mut src = [0u8; 4 * 64];
+            fill_src(&mut src, pixels);
+            let mut out_dispatch = [0u8; 3 * 64];
+            let mut out_scalar = [0u8; 3 * 64];
+            let prev = PACKER_MODE.load(AOrdering::Relaxed);
+            PACKER_MODE.store(1, AOrdering::Relaxed);
+            pack_rgba_to_bgr24(&src[..pixels * 4], &mut out_dispatch[..pixels * 3], true);
+            pack_rgba_to_bgr24_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 3], true);
+            PACKER_MODE.store(prev, AOrdering::Relaxed);
+            assert_eq!(&out_dispatch[..pixels * 3], &out_scalar[..pixels * 3], "pixels={}", pixels);
+        }
+    }
+
+    #[test]
+    fn pack_rgba_to_bgr24_matches_simd_if_available() {
+        #[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
+        {
+            let pixels_list = [8usize, 9, 15, 16, 17, 24, 32, 33];
+            if std::is_x86_feature_detected!("ssse3") {
+                let prev = PACKER_MODE.load(AOrdering::Relaxed);
+                PACKER_MODE.store(2, AOrdering::Relaxed);
+                for &pixels in pixels_list.iter() {
+                    let mut src = [0u8; 4 * 64];
+                    fill_src(&mut src, pixels);
+                    let mut out_dispatch = [0u8; 3 * 64];
+                    let mut out_scalar = [0u8; 3 * 64];
+                    pack_rgba_to_bgr24(&src[..pixels * 4], &mut out_dispatch[..pixels * 3], true);
+                    pack_rgba_to_bgr24_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 3], true);
+                    assert_eq!(&out_dispatch[..pixels * 3], &out_scalar[..pixels * 3], "ssse3 pixels={}", pixels);
+                }
+                PACKER_MODE.store(prev, AOrdering::Relaxed);
+            }
+            if std::is_x86_feature_detected!("avx2") {
+                let prev = PACKER_MODE.load(AOrdering::Relaxed);
+                PACKER_MODE.store(3, AOrdering::Relaxed);
+                for &pixels in pixels_list.iter() {
+                    let mut src = [0u8; 4 * 64];
+                    fill_src(&mut src, pixels);
+                    let mut out_dispatch = [0u8; 3 * 64];
+                    let mut out_scalar = [0u8; 3 * 64];
+                    pack_rgba_to_bgr24(&src[..pixels * 4], &mut out_dispatch[..pixels * 3], true);
+                    pack_rgba_to_bgr24_scalar(&src[..pixels * 4], &mut out_scalar[..pixels * 3], true);
+                    assert_eq!(&out_dispatch[..pixels * 3], &out_scalar[..pixels * 3], "avx2 pixels={}", pixels);
+                }
+                PACKER_MODE.store(prev, AOrdering::Relaxed);
+            }
         }
     }
 }
