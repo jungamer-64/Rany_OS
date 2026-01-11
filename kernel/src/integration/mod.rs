@@ -511,7 +511,10 @@ impl SystemIntegration {
 
     /// Add log entry
     fn log(&mut self, msg: &str) {
-        log::info!("[INTEGRATION] {}\n", msg);
+        crate::io::log::early_print("[INTEGRATION] ");
+        crate::io::log::early_print(msg);
+        crate::io::log::early_print("\n");
+        // log::info!("[INTEGRATION] {}\n", msg);
         self.boot_log.push(String::from(msg));
     }
 }

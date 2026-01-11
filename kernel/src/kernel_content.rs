@@ -560,7 +560,7 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // 2. ドメイン管理システムの初期化
     io::log::early_print("[DEBUG] Before domain_system::init\n");
     info!(target: "init", "Initializing domain system");
-    // domain_system::init();
+    domain_system::init();
     info!(target: "init", "Domain system initialized");
     io::log::early_print("[DEBUG] After domain_system::init\n");
 
@@ -907,17 +907,21 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     io::log::early_print("[DEBUG] After symbol table init\n");
 
     // 5.6. テストフレームワークの初期化
+    io::log::early_print("[DEBUG] Before test::init\n");
     info!(target: "init", "Initializing test framework");
     test::init();
     info!(target: "init", "Test framework initialized");
+    io::log::early_print("[DEBUG] After test::init\n");
 
     // 5.7. システム統合の初期化
+    io::log::early_print("[DEBUG] Before integration::init\n");
     info!(target: "init", "Initializing system integration");
     if let Err(e) = integration::init() {
         warn!(target: "init", "System integration failed: {:?}", e);
     } else {
         info!(target: "init", "System integration initialized");
     }
+    io::log::early_print("[DEBUG] After integration::init\n");
 
     // If built with feature `run-integration-tests`, run the integration tests at boot and exit QEMU
     #[cfg(feature = "run-integration-tests")]
@@ -997,9 +1001,8 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // =========================================================================
 
     io::log::early_print("[DEBUG] Before executor info macro\n");
-    // info!(target: "run", "Starting executor main loop");  // DISABLED FOR DEBUGGING
-    // info!("================================================================================");  // DISABLED FOR DEBUGGING
-    io::log::early_print("[DEBUG] Before executor.run()\n");
+    info!(target: "run", "Starting executor main loop");
+    crate::io::log::early_print("[DEBUG] Executor run starting...\n");
 
     // グラフィカルシェルを開始
     // graphical_shell::start();
@@ -1048,6 +1051,7 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
 
         info!(target: "task1", "User application completed");
     }));
+    crate::io::log::early_print("[INIT] Task 1 (User App) spawned\n");
 
     // タスク2: ゼロコピー通信デモ
     let domain2 = domain_system::create_domain(alloc::string::String::from("ipc_demo"))
@@ -1056,21 +1060,28 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
 
     executor.spawn(Task::new(async move {
         info!(target: "task2", "IPC demonstration started");
+        crate::io::log::early_print("[TASK2] IPC demo started\n");
 
         // RRefを使用したゼロコピーデータ転送
+        crate::io::log::early_print("[TASK2] Creating RRef...\n");
         let data = RRef::new(
             ipc::DomainId::new(domain1.as_u64()),
             alloc::vec![0xDE, 0xAD, 0xBE, 0xEF],
         );
+        crate::io::log::early_print("[TASK2] RRef created\n");
         debug!(target: "task2", "Created RRef in domain {}", domain1.as_u64());
 
         // 所有権を domain2 に移動
+        crate::io::log::early_print("[TASK2] Moving RRef...\n");
         let data = data.move_to(ipc::DomainId::new(domain2.as_u64()));
+        crate::io::log::early_print("[TASK2] RRef moved\n");
         debug!(target: "task2", "Transferred ownership to domain {} (zero-copy)", data.owner().as_u64());
 
         debug!(target: "task2", "Data: {:?}", &data[..]);
         info!(target: "task2", "IPC demo completed");
+        crate::io::log::early_print("[TASK2] IPC demo completed\n");
     }));
+    crate::io::log::early_print("[INIT] Task 2 (IPC Demo) spawned\n");
 
     // タスク3: プリエンプション統計デモ
     executor.spawn(Task::new(async {

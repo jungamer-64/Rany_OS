@@ -908,49 +908,64 @@ impl ExchangeHeap {
     }
 
     /// Exchange Heap上にメモリを割り当て
-    pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
-        let size = layout.size().max(core::mem::size_of::<FreeBlock>());
-        let size_class = SegregatedFreeListHeap::size_to_class(size);
-        
-        // Fast path: try per-CPU cache first
-        if size_class < CACHED_SIZE_CLASSES {
-            if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
-                if cpu_id < MAX_CPUS {
-                    let mut cache = PER_CPU_CACHES[cpu_id].lock();
-                    if let Some((addr, _cached_size)) = cache.try_alloc(size_class) {
-                        return NonNull::new(addr as *mut u8);
-                    }
-                    
-                    // Record steal attempt
-                    cache.steal_attempts.fetch_add(1, Ordering::Relaxed);
-                    drop(cache); // Release local lock before stealing
-                    
-                    // Medium path: try to steal from neighbor CPUs (Victim Cache)
-                    // Round-robin through other CPUs to find one with spare blocks
-                    for offset in 1..MAX_CPUS {
-                        let victim_id = (cpu_id + offset) % MAX_CPUS;
-                        if let Some(mut victim_cache) = PER_CPU_CACHES[victim_id].try_lock() {
-                            if let Some((addr, _stolen_size)) = victim_cache.try_steal_one(size_class) {
-                                // Record successful steal
-                                let local = PER_CPU_CACHES[cpu_id].lock();
-                                local.steal_successes.fetch_add(1, Ordering::Relaxed);
-                                return NonNull::new(addr as *mut u8);
-                            }
+pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
+    crate::io::log::early_print("[ExHeap] allocate: enter\n");
+    let size = layout.size().max(core::mem::size_of::<FreeBlock>());
+    let size_class = SegregatedFreeListHeap::size_to_class(size);
+    
+    // Fast path: try per-CPU cache first
+    if size_class < CACHED_SIZE_CLASSES {
+        if let Some(cpu_id) = crate::mm::per_cpu::try_current_cpu_id() {
+            if cpu_id < MAX_CPUS {
+                // crate::io::log::early_print("[ExHeap] allocate: try per-cpu\n");
+                let mut cache = PER_CPU_CACHES[cpu_id].lock();
+                if let Some((addr, _cached_size)) = cache.try_alloc(size_class) {
+                     crate::io::log::early_print("[ExHeap] allocate: per-cpu success\n");
+                    return NonNull::new(addr as *mut u8);
+                }
+                
+                // Record steal attempt
+                cache.steal_attempts.fetch_add(1, Ordering::Relaxed);
+                drop(cache); // Release local lock before stealing
+                
+                // Medium path: try to steal from neighbor CPUs (Victim Cache)
+                // Round-robin through other CPUs to find one with spare blocks
+                for offset in 1..MAX_CPUS {
+                    let victim_id = (cpu_id + offset) % MAX_CPUS;
+                    if let Some(mut victim_cache) = PER_CPU_CACHES[victim_id].try_lock() {
+                        if let Some((addr, _stolen_size)) = victim_cache.try_steal_one(size_class) {
+                            // Record successful steal
+                            let local = PER_CPU_CACHES[cpu_id].lock();
+                            local.steal_successes.fetch_add(1, Ordering::Relaxed);
+                             crate::io::log::early_print("[ExHeap] allocate: steal success\n");
+                            return NonNull::new(addr as *mut u8);
                         }
                     }
                 }
             }
         }
-        
-        // Slow path: global heap
-        match self.heap.lock() {
-            Ok(mut guard) => guard.allocate_first_fit(layout).ok(),
-            Err(_) => {
-                log::error!("[MEM] Exchange Heap poisoned - allocation failed");
-                None
+    }
+    
+    // Slow path: global heap
+    crate::io::log::early_print("[ExHeap] allocate: global heap lock...\n");
+    match self.heap.lock() {
+        Ok(mut guard) => {
+            crate::io::log::early_print("[ExHeap] allocate: global heap locked\n");
+            let res = guard.allocate_first_fit(layout).ok();
+            if res.is_some() {
+                crate::io::log::early_print("[ExHeap] allocate: global success\n");
+            } else {
+                crate::io::log::early_print("[ExHeap] allocate: global failed\n");
             }
+            res
+        },
+        Err(_) => {
+            crate::io::log::early_print("[ExHeap] allocate: poisoned\n");
+            log::error!("[MEM] Exchange Heap poisoned - allocation failed");
+            None
         }
     }
+}
 
     /// Exchange Heap上のメモリを解放
     ///

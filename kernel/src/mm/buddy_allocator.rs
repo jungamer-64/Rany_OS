@@ -326,7 +326,20 @@ const MAX_4K_FRAMES: usize = MAX_PHYSICAL_MEMORY / PAGE_SIZE_4K;
 const TOTAL_BLOCKS: usize = MAX_4K_FRAMES * 2 - 1;
 
 /// 空きビットの総ワード数（u64）
-const TOTAL_DETAIL_WORDS: usize = (TOTAL_BLOCKS + 63) / 64;
+/// 空きビットの総ワード数（u64）
+const TOTAL_DETAIL_WORDS: usize = total_detail_words();
+
+const fn total_detail_words() -> usize {
+    let mut total = 0usize;
+    let mut order = 0usize;
+    while order <= MAX_ORDER {
+        let blocks = MAX_4K_FRAMES >> order;
+        let detail_words = (blocks + 63) / 64;
+        total += detail_words;
+        order += 1;
+    }
+    total
+}
 
 /// 各オーダーのサマリービットの総ワード数（u64）
 const TOTAL_SUMMARY_WORDS: usize = total_summary_words();
