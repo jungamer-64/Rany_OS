@@ -469,8 +469,8 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
 
     info!(target: "init", "Kernel services registered");
 
-    // Initialize Graphical Shell (requires gui service)
-    use crate::shell::graphical::async_runtime as graphical_shell;
+    // Initialize Graphical Shell (removed - integrated into console)
+    // use crate::shell::graphical::async_runtime as graphical_shell;
     // Moved below graphics initialization
 
     io::log::early_print("[DEBUG] After first info! macro\n");
@@ -498,7 +498,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
             info!(target: "init", "Text Console driver initialized");
 
             // Initialize Graphical Shell (now that framebuffer is ready)
-            graphical_shell::init();
+            // graphical_shell::init();
         } else {
             warn!(target: "init", "Graphics framebuffer init failed");
         }
@@ -984,7 +984,7 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
     io::log::early_print("[DEBUG] Before executor.run()\n");
 
     // グラフィカルシェルを開始
-    graphical_shell::start();
+    // graphical_shell::start();
 
     // メインループ開始（戻ってこない）
     executor.run();
@@ -994,14 +994,13 @@ extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
 fn spawn_kernel_tasks(executor: &mut task::Executor) {
     use ipc::RRef;
     use task::Task;
-    use crate::shell::async_shell::spawn_async_shell;
-    use crate::shell::graphical::async_runtime as graphical_shell;
+    use crate::shell::session::{spawn_console_shell, spawn_serial_shell};
 
     // Spawn Serial Shell
-    spawn_async_shell(executor);
+    spawn_serial_shell(executor);
 
-    // Spawn Graphical Shell Task
-    executor.spawn(Task::new(graphical_shell::run_async_shell()));
+    // Spawn Console Shell Task
+    spawn_console_shell(executor);
 
     // ドメイン1を作成：ユーザーアプリケーション
     let domain1 = domain_system::create_domain(alloc::string::String::from("user_app_1"))
@@ -1143,14 +1142,20 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
     // }));
 
     // タスク8: 非同期シリアルシェル（IRQ4駆動）
-    // シリアルシェルはバックグラウンドで維持（シリアル接続用）
+    // タスク8: 非同期シリアルシェル（IRQ4駆動）
+    // Serial Shell spawned above
+    /*
     executor.spawn(Task::new(async {
         info!(target: "task8", "Async serial shell task starting...");
         // シェルをすぐに開始（デバッグ用）
         shell::async_shell::run_async_shell().await;
     }));
+    */
 
     // タスク9: グラフィカルシェル（フレームバッファ描画）
+    // タスク9: グラフィカルシェル（フレームバッファ描画）
+    // Console Shell spawned above
+    /*
     executor.spawn(Task::new(async {
         info!(target: "task9", "Graphical shell task starting...");
 
@@ -1162,6 +1167,7 @@ fn spawn_kernel_tasks(executor: &mut task::Executor) {
         // 非同期メインループ（完全async版）
         shell::graphical::run_async_shell().await;
     }));
+    */
 }
 
 /// システム統計を表示

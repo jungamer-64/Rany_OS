@@ -133,9 +133,9 @@ impl<'a> UefiMapper<'a> {
         Self { pml4 }
     }
 
-    /// Allocate zeroed frames
-    pub fn alloc_zeroed_pages(num_pages: usize) -> Option<u64> {
-        boot::allocate_pages(AllocateType::AnyPages, MemoryType::LOADER_DATA, num_pages)
+    /// Allocate zeroed frames with specific memory type
+    pub fn alloc_zeroed_pages(num_pages: usize, mem_type: MemoryType) -> Option<u64> {
+        boot::allocate_pages(AllocateType::AnyPages, mem_type, num_pages)
             .ok()
             .map(|ptr| {
                 let addr = ptr.as_ptr() as u64;
@@ -204,7 +204,8 @@ impl<'a> UefiMapper<'a> {
 
     fn get_or_create_table(&mut self, index: usize) -> Result<&'a mut PageTable, ()> {
         if self.pml4.entries[index].is_unused() {
-            let frame = Self::alloc_zeroed_pages(1).ok_or(())?;
+            // Allocate page tables as RUNTIME_SERVICES_DATA so kernel preserves them
+            let frame = Self::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA).ok_or(())?;
             self.pml4.entries[index].set_addr(frame, PAGE_PRESENT | PAGE_WRITABLE);
         }
         let addr = self.pml4.entries[index].addr();
@@ -217,7 +218,8 @@ impl<'a> UefiMapper<'a> {
         index: usize,
     ) -> Result<&'a mut PageTable, ()> {
         if table.entries[index].is_unused() {
-            let frame = Self::alloc_zeroed_pages(1).ok_or(())?;
+            // Allocate page tables as RUNTIME_SERVICES_DATA so kernel preserves them
+            let frame = Self::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA).ok_or(())?;
             table.entries[index].set_addr(frame, PAGE_PRESENT | PAGE_WRITABLE);
         }
         let addr = table.entries[index].addr();

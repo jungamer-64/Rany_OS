@@ -3,7 +3,6 @@
 // ============================================================================
 
 pub mod serial;
-pub mod graphical;
 
 use alloc::string::String;
 
