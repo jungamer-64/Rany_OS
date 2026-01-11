@@ -121,7 +121,10 @@ debug = true
 panic = "abort"
 lto = true
 opt-level = 3
-debug = true
+# Disable debug info and strip symbols for release kernel images to avoid
+# embedding large debug/symbol sections that can overlap loadable ranges.
+debug = false
+strip = "symbols"
 
 [profile.test]
 panic = "abort"

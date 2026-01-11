@@ -1,6 +1,3 @@
-/* Limine Bootloader Linker Script for RanyOS */
-/* Supports both UEFI and BIOS boot */
-
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(kmain)
 

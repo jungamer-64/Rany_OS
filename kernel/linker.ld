@@ -1,6 +1,3 @@
-/* Limine Bootloader Linker Script for RanyOS */
-/* Supports both UEFI and BIOS boot */
-
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(kmain)
 
@@ -77,11 +74,19 @@ SECTIONS
            file-offset layout collisions with loadable sections. */
         *(.symtab)
         *(.strtab)
-        *(.shstrtab)
         *(.symtab.*)
         *(.gnu.version)
         *(.gnu.version_r)
         *(.gnu_debuglink)
         *(.note.GNU-stack)
     }
+
+    /* Place non-alloc ELF metadata (symbol tables, section name tables, ksymtab, etc.)
+       after the kernel image so they do not overlap with loadable segments' file offsets. */
+    . = ALIGN(4096);
+    .shstrtab : { *(.shstrtab) }
+    .symtab   : { *(.symtab) }
+    .strtab   : { *(.strtab) }
+    .ksymtab  : { *(.ksymtab) *(.ksymtab.*) }
+    .ksymtab_gpl : { *(.ksymtab_gpl) *(.ksymtab_gpl.*) }
 }
