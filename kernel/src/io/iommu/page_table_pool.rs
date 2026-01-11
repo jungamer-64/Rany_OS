@@ -416,7 +416,10 @@ impl PageTablePool {
     /// Deallocate a page table
     fn dealloc(pt: PooledPt) {
         // Use the matching dealloc function for allocate_zeroed_on_node
-        crate::mm::numa::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
+        // deallocate_on_node is unsafe: wrap in unsafe block to make the unsafety explicit
+        unsafe {
+            crate::mm::numa::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
+        }
     }
 
     // ========================================================================

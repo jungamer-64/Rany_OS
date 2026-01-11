@@ -38,6 +38,13 @@ pub enum Token {
     RBrace,
     /// コロン
     Colon,
+    /// セミコロン
+    Semicolon,
+    /// If / For / Else / In キーワード
+    If,
+    Else,
+    For,
+    In,
     /// Let キーワード
     Let,
 }
@@ -160,6 +167,10 @@ impl<'a> Tokenizer<'a> {
                     self.advance();
                     tokens.push(Token::Operator(c.to_string()));
                 }
+                ';' => {
+                    self.advance();
+                    tokens.push(Token::Semicolon);
+                }
                 '-' => {
                     // Minus: could be negative number or subtraction operator
                     // If previous token is a value (Number, Float, Ident, RParen), treat as operator
@@ -254,6 +265,10 @@ impl<'a> Tokenizer<'a> {
         let s = self.input[start..self.pos].to_string();
         match s.as_str() {
             "let" => Token::Let,
+            "if" => Token::If,
+            "else" => Token::Else,
+            "for" => Token::For,
+            "in" => Token::In,
             _ => Token::Ident(s),
         }
     }

@@ -69,6 +69,8 @@ pub struct ExoShell {
     namespaces: BTreeMap<String, Box<dyn super::namespaces::ShellNamespace>>,
     /// シェルインスタンスの権限
     capabilities: CapabilitySet,
+    /// ループネスト深さ（Break/Continue用）
+    loop_depth: usize,
     /// 最大履歴数
     max_history: usize,
 }
@@ -119,6 +121,7 @@ impl ExoShell {
             last_result: ExoValue::Nil,
             namespaces,
             capabilities,
+            loop_depth: 0,
             max_history: Self::DEFAULT_MAX_HISTORY,
         }
     }
@@ -151,16 +154,33 @@ impl ExoShell {
     async fn eval_stmt(&mut self, stmt: Stmt<'_>) -> ExoResult<ExoValue<'static>> {
         match stmt {
             Stmt::Let { name, value } => {
-                let val = self.evaluate_expr(&value).await;
+                let val = Box::pin(self.evaluate_expr(&value)).await;
                 self.env.define(name, val.clone());
                 Ok(val)
             }
+
+            Stmt::Break => {
+                if self.loop_depth == 0 {
+                    Err(super::error::ShellError::Runtime("break used outside loop".to_string()))
+                } else {
+                    Ok(ExoValue::Break)
+                }
+            }
+
+            Stmt::Continue => {
+                if self.loop_depth == 0 {
+                    Err(super::error::ShellError::Runtime("continue used outside loop".to_string()))
+                } else {
+                    Ok(ExoValue::Continue)
+                }
+            }
+
             Stmt::Command { name, args } => {
                 // 1. Try built-in command
                 if let Some(cmd) = self.commands.get(&name) {
                     let mut eval_args = Vec::new();
                     for arg in args {
-                        eval_args.push(self.evaluate_expr(&arg).await);
+                        eval_args.push(Box::pin(self.evaluate_expr(&arg)).await);
                     }
                     return cmd.execute(self, &eval_args);
                 }
@@ -183,13 +203,13 @@ impl ExoShell {
 
                 Err(super::error::ShellError::CommandNotFound(name))
             }
-            Stmt::Expr(expr) => Ok(self.evaluate_expr(&expr).await),
+            Stmt::Expr(expr) => Ok(Box::pin(self.evaluate_expr(&expr)).await),
         }
     }
 
     /// AST式を評価（非同期・副作用あり）
     async fn evaluate_expr(&mut self, expr: &Expr<'_>) -> ExoValue<'static> {
-        self.evaluate_expr_inner(expr, 0).await
+        Box::pin(self.evaluate_expr_inner(expr, 0)).await
     }
 
     async fn evaluate_expr_inner(&mut self, expr: &Expr<'_>, depth: usize) -> ExoValue<'static> {
@@ -346,6 +366,99 @@ impl ExoShell {
                     map.insert(key.clone(), value);
                 }
                 ExoValue::Map(map)
+            }
+
+            Expr::Block(stmts) => {
+                self.env.push_scope();
+
+                let mut result = ExoValue::Nil;
+                for stmt in stmts {
+                    match Box::pin(self.eval_stmt(stmt.clone())).await {
+                        Ok(val) => match val {
+                            ExoValue::Break => {
+                                self.env.pop_scope();
+                                return ExoValue::Break;
+                            }
+                            ExoValue::Continue => {
+                                self.env.pop_scope();
+                                return ExoValue::Continue;
+                            }
+                            other => result = other,
+                        },
+                        Err(e) => {
+                            self.env.pop_scope();
+                            return ExoValue::Error(e.to_string());
+                        }
+                    }
+                }
+
+                self.env.pop_scope();
+                result
+            }
+
+            Expr::If { cond, then_block, else_block } => {
+                let cond_val = Box::pin(self.evaluate_expr_inner(cond, depth + 1)).await;
+
+                // 真偽判定
+                let is_true = match cond_val {
+                    ExoValue::Bool(b) => b,
+                    ExoValue::Nil => false,
+                    _ => true,
+                };
+
+                if is_true {
+                    Box::pin(self.evaluate_expr_inner(then_block, depth + 1)).await
+                } else if let Some(else_expr) = else_block {
+                    Box::pin(self.evaluate_expr_inner(else_expr, depth + 1)).await
+                } else {
+                    ExoValue::Nil
+                }
+            }
+
+            Expr::For { param, iterable, body } => {
+                let iter_val = Box::pin(self.evaluate_expr_inner(iterable, depth + 1)).await;
+
+                // 配列（またはイテレータ）として取得
+                let items = match iter_val {
+                    ExoValue::Array(arr) => arr,
+                    // TODO: イテレータ対応
+                    _ => return ExoValue::Error("For loop requires an array".to_string()),
+                };
+
+                let mut last_result = ExoValue::Nil;
+                let mut broke = false;
+
+                // Enter loop context
+                self.loop_depth += 1;
+
+                // ループ実行
+                for item in items {
+                    // スコープ作成
+                    self.env.push_scope();
+
+                    // ループ変数を定義
+                    self.env.define(param.clone(), item.clone());
+
+                    // 本体評価
+                    let res = Box::pin(self.evaluate_expr_inner(body, depth + 1)).await;
+
+                    self.env.pop_scope();
+
+                    match res {
+                        ExoValue::Break => { broke = true; break; }
+                        ExoValue::Continue => { crate::task::yield_now().await; continue; }
+                        ExoValue::Error(_) => { self.loop_depth -= 1; return res; }
+                        other => last_result = other,
+                    }
+
+                    // 協調的マルチタスクのためのYield
+                    crate::task::yield_now().await;
+                }
+
+                // Exit loop context
+                self.loop_depth -= 1;
+
+                last_result
             }
 
             // クロージャは値として評価できない（メソッド引数としてのみ有効）
@@ -1737,5 +1850,69 @@ format!(
     /// 履歴を設定（同期用）
     pub fn set_history(&mut self, history: Vec<String>) {
         self.history = history;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::shell::exoshell::parser::parse_expression;
+    use crate::task::block_on;
+    use crate::security::CapabilitySet;
+
+    #[test]
+    fn test_block_scoping() {
+        let mut shell = ExoShell::with_capabilities(CapabilitySet::full());
+        let expr = parse_expression("{ let x = 5; x }").unwrap();
+        let val = block_on(shell.evaluate_expr(&expr));
+        assert_eq!(val, ExoValue::Int(5));
+        // x should not be visible after block
+        assert!(shell.env.get("x").is_none());
+    }
+
+    #[test]
+    fn test_if_expression_evaluation() {
+        let mut shell = ExoShell::new();
+        let expr = parse_expression("if true { 1 } else { 2 }").unwrap();
+        let val = crate::task::block_on(shell.evaluate_expr(&expr));
+        assert_eq!(val, ExoValue::Int(1));
+    }
+
+    #[test]
+    fn test_for_expression_evaluation() {
+        let mut shell = ExoShell::new();
+        let expr = parse_expression("for i in [1,2,3] { i }").unwrap();
+        let val = crate::task::block_on(shell.evaluate_expr(&expr));
+        assert_eq!(val, ExoValue::Int(3));
+        assert!(shell.env.get("i").is_none());
+    }
+
+    #[test]
+    fn test_else_if_chain() {
+        let mut shell = ExoShell::new();
+        let expr = parse_expression("if false { 1 } else if true { 2 } else { 3 }").unwrap();
+        let val = crate::task::block_on(shell.evaluate_expr(&expr));
+        assert_eq!(val, ExoValue::Int(2));
+    }
+
+    #[test]
+    fn test_break_in_loop() {
+        let mut shell = ExoShell::new();
+        let val = crate::task::block_on(shell.eval("for i in [1,2,3] { if i == 2 { break } i }"));
+        assert_eq!(val, ExoValue::Int(1));
+    }
+
+    #[test]
+    fn test_continue_in_loop() {
+        let mut shell = ExoShell::new();
+        let val = crate::task::block_on(shell.eval("for i in [1,2,3] { if i == 2 { continue } i }"));
+        assert_eq!(val, ExoValue::Int(3));
+    }
+
+    #[test]
+    fn test_break_outside_loop_error() {
+        let mut shell = ExoShell::new();
+        let val = crate::task::block_on(shell.eval("break"));
+        assert!(matches!(val, ExoValue::Error(_)));
     }
 }

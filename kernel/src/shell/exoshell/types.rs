@@ -49,9 +49,48 @@ pub enum ExoValue<'a> {
     StringRef(super::buffer_view::StringView),
     /// エラー
     Error(String),
+    /// Break control flow
+    Break,
+    /// Continue control flow
+    Continue,
     /// 終了シグナル
     Exit,
 }
+
+impl<'a> ExoValue<'a> {
+    /// 所有権を持つ静的な値に変換（ディープコピー）
+    pub fn into_owned(self) -> ExoValue<'static> {
+        match self {
+            ExoValue::Nil => ExoValue::Nil,
+            ExoValue::Bool(b) => ExoValue::Bool(b),
+            ExoValue::Int(n) => ExoValue::Int(n),
+            ExoValue::Float(f) => ExoValue::Float(f),
+            ExoValue::String(s) => ExoValue::String(Cow::Owned(s.into_owned())),
+            ExoValue::Bytes(b) => ExoValue::Bytes(Cow::Owned(b.into_owned())),
+            ExoValue::Array(arr) => {
+                ExoValue::Array(arr.into_iter().map(|v| v.into_owned()).collect())
+            }
+            ExoValue::Map(map) => {
+                let mut new_map = BTreeMap::new();
+                for (k, v) in map {
+                    new_map.insert(k, v.into_owned());
+                }
+                ExoValue::Map(new_map)
+            }
+            ExoValue::FileEntry(e) => ExoValue::FileEntry(e),
+            ExoValue::NetConnection(c) => ExoValue::NetConnection(c),
+            ExoValue::Process(p) => ExoValue::Process(p),
+            ExoValue::Capability(c) => ExoValue::Capability(c),
+            ExoValue::Iterator(i) => ExoValue::Iterator(i),
+            // BufferRef はゼロコピー - Arc のクローンのみ
+            ExoValue::BufferRef(b) => ExoValue::BufferRef(b),
+            ExoValue::StringRef(s) => ExoValue::StringRef(s),
+            ExoValue::Error(e) => ExoValue::Error(e),
+            ExoValue::Break => ExoValue::Break,
+            ExoValue::Continue => ExoValue::Continue,
+            ExoValue::Exit => ExoValue::Exit,
+        }
+    }
 
 impl<'a> ExoValue<'a> {
     /// 所有権を持つ静的な値に変換（ディープコピー）

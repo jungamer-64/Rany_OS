@@ -313,9 +313,8 @@ impl Framebuffer {
     /// Ensure scratch_u32 has at least `capacity` elements
     fn ensure_scratch_u32(&mut self, capacity: usize) {
         if self.scratch_u32.capacity() < capacity {
-            // Calculate additional capacity needed
-            let additional = capacity - self.scratch_u32.capacity();
-            self.scratch_u32.reserve(additional);
+            // Correctly reserve from current length
+            self.scratch_u32.reserve(capacity - self.scratch_u32.len());
         }
         // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
         // all elements up to `capacity` before reading.
@@ -325,9 +324,8 @@ impl Framebuffer {
     /// Ensure scratch_u8 has at least `capacity` bytes
     fn ensure_scratch_u8(&mut self, capacity: usize) {
         if self.scratch_u8.capacity() < capacity {
-            // Calculate additional capacity needed
-            let additional = capacity - self.scratch_u8.capacity();
-            self.scratch_u8.reserve(additional);
+            // Correctly reserve from current length
+            self.scratch_u8.reserve(capacity - self.scratch_u8.len());
         }
         // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
         // all bytes up to `capacity` before reading.
@@ -858,6 +856,9 @@ impl Framebuffer {
             }
         } else {
             // MMIO path: use streaming stores for better VRAM throughput
+            if self.buffer.is_null() {
+                return;
+            }
             let mut addr = self.buffer as usize + dst_offset_bytes;
             let mut remaining = run_len_pixels;
 
@@ -911,6 +912,10 @@ impl Framebuffer {
             (color.red, color.green, color.blue)
         };
 
+        if self.back_buffer.is_none() && self.buffer.is_null() {
+            return;
+        }
+
         let total = run_len_pixels * 3;
         // Prepare scratch buffer first to avoid holding a mutable borrow to self
         self.ensure_scratch_u8(total);
@@ -949,16 +954,20 @@ impl Framebuffer {
                 let mut remaining = run_len_pixels;
 
                 // Align to 4-byte boundary first (write individual bytes)
+                // Align to 4-byte boundary first (write individual bytes)
                 let misalign = off & 3;
                 if misalign != 0 && remaining > 0 {
-                    let to_align = core::cmp::min((4 - misalign) / 3 + 1, remaining);
-                    for _ in 0..to_align {
+                    // 3 bytes/pixel. misalign(1..3) pixels writes (3*misalign) bytes.
+                    // (off + 3*mis) % 4 == (mis + 3*mis) % 4 == (4*mis) % 4 == 0. Correct.
+                    let k = core::cmp::min(misalign, remaining);
+                    for _ in 0..k {
                         mmio::volatile_write::<u8>(off, c0);
                         mmio::volatile_write::<u8>(off + 1, c1);
                         mmio::volatile_write::<u8>(off + 2, c2);
                         off += 3;
                         remaining -= 1;
                     }
+                    debug_assert!(remaining == 0 || (off & 3) == 0, "Alignment logic failed: off={}", off);
                 }
 
                 // Now write 4-pixel groups using u32 × 3 (12 bytes = 4 pixels)
@@ -1367,6 +1376,10 @@ impl Framebuffer {
             }
 
             // Back buffer writes are not MMIO
+            return false;
+        }
+
+        if self.buffer.is_null() {
             return false;
         }
 
@@ -2354,8 +2367,11 @@ impl Framebuffer {
         self.mark_dirty(Rect::new(d_x, d_y, s.width, s.height));
 
         let buffer = self.draw_buffer();
-        let stride = self.info.stride as usize;
-        let bpp = self.info.format.bytes_per_pixel();
+        let (stride, bpp) = if self.back_buffer.is_some() {
+            (self.info.width as usize * 4, 4)
+        } else {
+            (self.info.stride as usize, self.info.format.bytes_per_pixel())
+        };
         let copy_bytes = s.width as usize * bpp;
 
         unsafe {
@@ -2385,7 +2401,133 @@ impl Framebuffer {
         }
     }
 
-    /// 塗りつぶし矩形を描画（高速化版）
+    /// Draw entire image at (dst_x, dst_y)
+    pub fn draw_image(&mut self, image: &crate::graphics::image::Image, dst_x: i32, dst_y: i32) {
+        self.draw_image_part(image, Rect::new(0, 0, image.width(), image.height()), dst_x, dst_y);
+    }
+
+    /// Draw a part of an image
+    pub fn draw_image_part(
+        &mut self,
+        image: &crate::graphics::image::Image,
+        src_rect: Rect,
+        dst_x: i32,
+        dst_y: i32,
+    ) {
+        // Clip source rect to image bounds
+        let s_x = src_rect.x.max(0);
+        let s_y = src_rect.y.max(0);
+        let s_w = (src_rect.width as i32).min(image.width() as i32 - s_x).max(0) as u32;
+        let s_h = (src_rect.height as i32).min(image.height() as i32 - s_y).max(0) as u32;
+
+        if s_w == 0 || s_h == 0 {
+            return;
+        }
+
+        // Clip destination rect to screen bounds
+        let mut d_x = dst_x;
+        let mut d_y = dst_y;
+        let mut r_x = s_x;
+        let mut r_y = s_y;
+        let mut r_w = s_w;
+        let mut r_h = s_h;
+
+        // Left clip
+        if d_x < self.clip.x {
+            let diff = self.clip.x - d_x;
+            if diff >= r_w as i32 { return; }
+            d_x += diff;
+            r_x += diff;
+            r_w -= diff as u32;
+        }
+        // Top clip
+        if d_y < self.clip.y {
+            let diff = self.clip.y - d_y;
+            if diff >= r_h as i32 { return; }
+            d_y += diff;
+            r_y += diff;
+            r_h -= diff as u32;
+        }
+        // Right clip
+        let over_x = (d_x + r_w as i32) - self.clip.right();
+        if over_x > 0 {
+            if over_x >= r_w as i32 { return; }
+            r_w -= over_x as u32;
+        }
+        // Bottom clip
+        let over_y = (d_y + r_h as i32) - self.clip.bottom();
+        if over_y > 0 {
+            if over_y >= r_h as i32 { return; }
+            r_h -= over_y as u32;
+        }
+
+        if r_w == 0 || r_h == 0 {
+            return;
+        }
+
+        // Mark dirty
+        self.mark_dirty(Rect::new(d_x, d_y, r_w, r_h));
+
+        // Perform blit
+        let src_stride = image.width() * 4; // Image is always RGBA8888 packed
+        let src_data = image.data();
+        let dst_stride = if self.back_buffer.is_some() { self.info.width * 4 } else { self.info.stride } as usize;
+        let dst_bpp = if self.back_buffer.is_some() { 4 } else { self.info.format.bytes_per_pixel() } as usize;
+
+        let buf_ptr = self.draw_buffer();
+
+        // Check if formats match (Image is RGBA, we need to know FB format)
+        // If backbuffer is active, it is BGRA (u32). Image is RGBA (u8 bytes).
+        // Wait, backbuffer is Vec<u32>. `set_pixel` converts Color (RGBA internal?) to u32 (BGRA).
+        // Color struct is R,G,B,A. `to_u32` -> A R G B? No, usually 0xAARRGGBB.
+        // If LE, 0xAARRGGBB is B G R A in memory.
+        // Image data is R G B A in memory.
+        // So we need R<->B swap (swizzle).
+        // Except if format is Rgba8888.
+        let needs_swizzle = match (self.back_buffer.is_some(), self.info.format) {
+             (true, _) => true, // Backbuffer is BGRA (u32)
+             (false, PixelFormat::Bgra8888 | PixelFormat::Bgr888) => true,
+             _ => false,
+        };
+
+        for i in 0..r_h {
+            let src_row_offset = ((r_y as u32 + i as u32) * src_stride + (r_x as u32 * 4)) as usize;
+            // Ensure all operands are usize for offset calculation
+            let dst_row_offset = (d_y as usize + i as usize) * dst_stride + (d_x as usize * dst_bpp as usize);
+            
+            let src_row = &src_data[src_row_offset .. src_row_offset + (r_w as usize * 4)];
+            
+            unsafe {
+                let dst_ptr = buf_ptr.add(dst_row_offset);
+                
+                if self.back_buffer.is_some() {
+                   // Writing to Vec<u32> (backbuffer)
+                   let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4);
+                   crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
+                } else {
+                   // MMIO
+                   match dst_bpp {
+                       4 => {
+                           if needs_swizzle {
+                               let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4);
+                               crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
+                           } else {
+                               self.write_bytes_mmio_streaming(dst_ptr as usize, src_row);
+                           }
+                       }
+                       3 => {
+                           let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 3);
+                           crate::graphics::packer::pack_rgba_to_bgr24(src_row, dst_slice, needs_swizzle);
+                       }
+                       _ => {}
+                   }
+                   if i == r_h - 1 {
+                       mmio::sfence();
+                   }
+                }
+            }
+        }
+    }
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         // クリップ処理
         let mut r = rect;
@@ -2397,6 +2539,10 @@ impl Framebuffer {
         r.height = (bottom - r.y).max(0) as u32;
 
         if r.width == 0 || r.height == 0 {
+            return;
+        }
+
+        if self.back_buffer.is_none() && self.buffer.is_null() {
             return;
         }
 
@@ -3462,55 +3608,4 @@ impl Framebuffer {
         }
     }
 
-    /// 画像を描画
-    pub fn draw_image(&mut self, image: &super::image::Image, x: i32, y: i32) {
-        let (draw_rect, _src_off_x, _src_off_y) = match self.calculate_image_clip(image, x, y) {
-            Some(v) => v,
-            None => return,
-        };
-
-        self.stats.rectangles_drawn += 1;
-        self.stats.pixels_drawn += (draw_rect.width * draw_rect.height) as usize;
-
-        // Mark dirty
-        self.mark_dirty(draw_rect);
-
-        let dst_x0 = draw_rect.x;
-        let dst_y0 = draw_rect.y;
-        let dst_x1 = draw_rect.right();
-        let dst_y1 = draw_rect.bottom();
-
-        // Pre-detect CPU features once per draw to avoid repeated CPUID calls
-        let avx2_available = {
-            #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-            {
-                Self::get_avx2_available()
-            }
-            #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-            {
-                false
-            }
-        };
-        let mut mmio_written = false;
-        for dst_row in dst_y0..dst_y1 {
-            let src_row = (dst_row - y) as u32;
-            let row_start = (dst_x0 - x) as u32;
-            let row_end = (dst_x1 - x) as u32; // exclusive
-
-            if self.draw_image_scanline(
-                image,
-                src_row,
-                dst_row,
-                row_start,
-                row_end,
-                x,
-                avx2_available,
-            ) {
-                mmio_written = true;
-            }
-        }
-        if mmio_written {
-            mmio::sfence();
-        }
-    }
 }
