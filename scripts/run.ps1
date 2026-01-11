@@ -98,7 +98,11 @@ param(
     [string]$Serial = "stdio",
     [string]$NvmeDevice,
     [string[]]$Features = @(),
-    [string[]]$QemuExtraArgs = @()
+    [string[]]$QemuExtraArgs = @(),
+
+    # Cargo Runner Integration
+    [switch]$CargoRunner,
+    [string]$CargoKernelPath
 )
 
 $ErrorActionPreference = "Stop"
@@ -140,7 +144,11 @@ else {
 $TARGET_DIR = Join-Path $ROOT_DIR "target"
 $KERNEL_TARGET_DIR = Join-Path $TARGET_DIR "x86_64-exorust/$PROFILE"
 $LOADER_TARGET_DIR = Join-Path $TARGET_DIR "$TARGET_LOADER/release" # Loader is always release
-$KERNEL_RAW = Join-Path $KERNEL_TARGET_DIR "exorust_kernel"
+if ($CargoRunner -and $CargoKernelPath) {
+    $KERNEL_RAW = $CargoKernelPath
+} else {
+    $KERNEL_RAW = Join-Path $KERNEL_TARGET_DIR "exorust_kernel"
+}
 $KERNEL_SIGNED = Join-Path $KERNEL_TARGET_DIR "rany_os_signed"
 $LOADER_EFI = Join-Path $LOADER_TARGET_DIR $LOADER_BIN_NAME
 $SIGNER_TOOL_DIR = Join-Path $TOOLS_DIR "signer"
@@ -218,6 +226,16 @@ function Test-NightlyToolchain {
         throw "Nightly toolchain required. Current: $version`nFix: rustup override set nightly"
     }
     Write-Done "Nightly toolchain: OK"
+}
+
+function Get-HostTarget {
+    $out = rustc -vV
+    foreach ($line in $out) {
+        if ($line -match '^host:\s*(.+)$') {
+            return $matches[1]
+        }
+    }
+    return $null
 }
 
 function Check-Dependencies {
@@ -310,7 +328,12 @@ function Build-Signer {
         Write-Step "🛠️" "Building Kernel Signer Tool..."
         Push-Location $SIGNER_TOOL_DIR
         try {
+            $hostTarget = Get-HostTarget
             $buildArgs = @("build", "--release")
+            if ($hostTarget) {
+                $buildArgs += "--target"
+                $buildArgs += $hostTarget
+            }
             if (-not $VerboseOutput) { $buildArgs += "--quiet" }
             & cargo $buildArgs
             if ($LASTEXITCODE -ne 0) { throw "Signer build failed" }
@@ -676,7 +699,9 @@ try {
     
     # 2. Compilation
     Build-Loader
-    Build-Kernel
+    if (-not $CargoRunner) {
+        Build-Kernel
+    }
     
     # 3. Packaging
     Sign-Kernel-Binary

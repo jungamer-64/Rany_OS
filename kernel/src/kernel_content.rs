@@ -90,8 +90,26 @@ fn debug_heap_check(tag: &str) {
 }
 
 #[cfg(not(test))]
+#[repr(align(4096))]
+struct KernelStack([u8; 4096 * 20]);
+
+#[unsafe(link_section = ".bss")]
+static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * 20]);
+
 #[unsafe(no_mangle)]
-extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
+#[unsafe(naked)]
+pub extern "C" fn kmain(boot_info: &'static ExoBootInfo) -> ! {
+    core::arch::naked_asm!(
+        "lea rsp, [rip + {stack} + {size}]",
+        "jmp {kmain_inner}",
+        stack = sym KERNEL_STACK,
+        size = const 4096 * 20,
+        kmain_inner = sym kmain_inner,
+    );
+}
+
+#[unsafe(no_mangle)]
+extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     // Early serial output to confirm kernel loaded
     unsafe {
         // Initialize COM1 (0x3F8)

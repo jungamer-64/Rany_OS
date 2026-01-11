@@ -62,10 +62,26 @@ SECTIONS
 
     __kernel_end = .;
 
-    /* Discard unnecessary sections */
+    /* Discard unnecessary sections (includes DWARF/debug sections to avoid placing
+       large debug segments inside loadable ranges and causing overlapping ranges in the final
+       kernel image). */
     /DISCARD/ : {
         *(.eh_frame*)
         *(.note*)
         *(.comment*)
+        /* Strip debug sections produced by Rust/LLVM/other deps for kernel image builds */
+        *(.debug*)
+        *(.zdebug*)
+
+        /* Remove link-time symbol / string tables (not needed in kernel image) to prevent
+           file-offset layout collisions with loadable sections. */
+        *(.symtab)
+        *(.strtab)
+        *(.shstrtab)
+        *(.symtab.*)
+        *(.gnu.version)
+        *(.gnu.version_r)
+        *(.gnu_debuglink)
+        *(.note.GNU-stack)
     }
 }

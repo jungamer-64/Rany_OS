@@ -112,7 +112,7 @@ pub mod mm {
             layout: Layout,
             _node: Option<usize>,
         ) {
-            dealloc(ptr.as_ptr(), layout);
+            unsafe { dealloc(ptr.as_ptr(), layout); }
         }
     }
 

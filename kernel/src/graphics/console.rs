@@ -157,7 +157,7 @@ impl ConsoleDriver for TextConsole {
                         }
                         
                         // キャッシュを更新
-                        self.prev_buffer[idx] = *cell;
+                        self.prev_buffer[idx] = cell;
                     }
                 }
             }

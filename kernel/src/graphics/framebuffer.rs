@@ -794,27 +794,33 @@ impl Framebuffer {
     // ------------------------------------------------------------------------
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub unsafe fn pack_rgba_to_bgra_avx2(src: *const u8, dst: *mut u8, bytes: usize) {
-        crate::graphics::packer::pack_rgba_to_bgra_avx2(src, dst, bytes);
+        // SAFETY: `src` and `dst` must be valid for `bytes` bytes and non-overlapping as required by the
+        // underlying SIMD implementation. The caller of this `unsafe` function is responsible for ensuring that.
+        unsafe { crate::graphics::packer::pack_rgba_to_bgra_avx2(src, dst, bytes); }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub unsafe fn pack_rgba_to_bgra_ssse3(src: *const u8, dst: *mut u8, bytes: usize) {
-        crate::graphics::packer::pack_rgba_to_bgra_ssse3(src, dst, bytes);
+        // SAFETY: Same invariants as `pack_rgba_to_bgra_avx2`.
+        unsafe { crate::graphics::packer::pack_rgba_to_bgra_ssse3(src, dst, bytes); }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub unsafe fn pack_rgba_to_bgr24_avx2_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
-        crate::graphics::packer::pack_rgba_to_bgr24_avx2_8pixels(src, dst, is_bgr);
+        // SAFETY: `src` and `dst` must point to at least 8 pixels' worth of data.
+        unsafe { crate::graphics::packer::pack_rgba_to_bgr24_avx2_8pixels(src, dst, is_bgr); }
     }
 
     #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
     pub unsafe fn pack_rgba_to_bgr24_ssse3_8pixels(src: *const u8, dst: *mut u8, is_bgr: bool) {
-        crate::graphics::packer::pack_rgba_to_bgr24_ssse3_8pixels(src, dst, is_bgr);
+        // SAFETY: `src` and `dst` must point to at least 8 pixels' worth of data.
+        unsafe { crate::graphics::packer::pack_rgba_to_bgr24_ssse3_8pixels(src, dst, is_bgr); }
     }
 
     #[cfg(target_arch = "aarch64")]
     pub unsafe fn pack_rgba_to_bgra_neon(src: *const u8, dst: *mut u8, bytes: usize) {
-        crate::graphics::packer::pack_rgba_to_bgra_neon(src, dst, bytes);
+        // SAFETY: same invariants as other SIMD entry points.
+        unsafe { crate::graphics::packer::pack_rgba_to_bgra_neon(src, dst, bytes); }
     }
 
     // ------------------------------------------------------------------------

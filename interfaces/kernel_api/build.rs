@@ -41,14 +41,19 @@ fn calculate_abi_hash(content: &str) -> u64 {
         .stdout;
     hasher.write(&rustc_version);
 
-    // 2. Hash all `#[repr(...)]` attributes found in the file
-    // This catches if a struct loses #[repr(C)] or changes packing,
-    // even if the struct body parser doesn't catch it.
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("#[repr") {
-            hasher.write(trimmed.as_bytes());
-        }
+    // 2. Hash `#[repr(...)]` attributes only for ABI-critical declarations.
+    // This avoids unrelated repr additions from changing DRIVER_TYPE_HASH.
+    for line in repr_lines_for_decls(
+        &content,
+        &[
+            "pub struct DriverContext",
+            "pub struct DriverVTable",
+            "pub struct DriverCapabilities",
+            "pub enum AbiDriverType",
+            "pub enum AbiError",
+        ],
+    ) {
+        hasher.write(line.as_bytes());
     }
 
     // 3. Extract and hash specific ABI types
@@ -102,6 +107,39 @@ fn extract_and_hash_decl(content: &str, decl_start: &str, hasher: &mut Fnv1aHash
 
         hasher.write(buffer.as_bytes());
     }
+}
+
+fn repr_lines_for_decls(content: &str, decls: &[&str]) -> Vec<String> {
+    let lines: Vec<&str> = content.lines().collect();
+    let mut repr_lines = Vec::new();
+
+    for (idx, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("#[repr") {
+            continue;
+        }
+
+        // Scan forward to the next non-empty, non-comment, non-attribute line.
+        let mut j = idx + 1;
+        while j < lines.len() {
+            let next = lines[j].trim();
+            if next.is_empty() || next.starts_with("//") {
+                j += 1;
+                continue;
+            }
+            if next.starts_with('#') {
+                j += 1;
+                continue;
+            }
+
+            if decls.iter().any(|decl| next.starts_with(decl)) {
+                repr_lines.push(trimmed.to_string());
+            }
+            break;
+        }
+    }
+
+    repr_lines
 }
 
 // Simple FNV-1a 64-bit hash implementation
