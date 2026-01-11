@@ -51,6 +51,10 @@ pub struct Compositor {
     screen_height: u32,
     /// ブラー用一時バッファ
     blur_buffer: Image,
+    /// ブラー計算用スクラッチバッファ（行）
+    blur_scratch_row: Vec<Color>,
+    /// ブラー計算用スクラッチバッファ（列）
+    blur_scratch_col: Vec<Color>,
 }
 
 impl Compositor {
@@ -70,6 +74,8 @@ impl Compositor {
             screen_width,
             screen_height,
             blur_buffer: Image::new(screen_width, screen_height),
+            blur_scratch_row: vec![Color::BLACK; screen_width as usize],
+            blur_scratch_col: vec![Color::BLACK; screen_height as usize],
         }
     }
 
@@ -696,19 +702,14 @@ impl Compositor {
 
     /// バックバッファをフレームバッファにコピー
     fn copy_to_framebuffer(&self, fb: &mut Framebuffer, region: Option<Rect>) {
-        let region = region.unwrap_or(Rect::new(0, 0, self.screen_width, self.screen_height));
-
-        // 画面範囲にクリップ
-        let x_start = region.x.max(0) as u32;
-        let y_start = region.y.max(0) as u32;
-        let x_end = (region.x + region.width as i32).min(self.screen_width as i32) as u32;
-        let y_end = (region.y + region.height as i32).min(self.screen_height as i32) as u32;
-
-        for y in y_start..y_end {
-            for x in x_start..x_end {
-                let color = self.back_buffer.get_pixel(x, y);
-                fb.set_pixel(x as i32, y as i32, color);
-            }
+        if let Some(r) = region {
+             // 画面範囲にクリップ (draw_image_part handles clipping but we need valid rect for it)
+             let clip = Rect::new(0, 0, self.screen_width, self.screen_height);
+             if let Some(draw_rect) = r.intersection(&clip) {
+                 fb.draw_image_part(&self.back_buffer, draw_rect, draw_rect.x, draw_rect.y);
+             }
+        } else {
+             fb.draw_image(&self.back_buffer, 0, 0);
         }
     }
 
@@ -791,7 +792,8 @@ impl Compositor {
         let x_end = (region.x + region.width as i32).min(self.screen_width as i32);
 
         // 一時バッファ（行ごとに処理）
-        let mut row_buffer: Vec<Color> = vec![Color::BLACK; self.screen_width as usize];
+        // let mut row_buffer: Vec<Color> = vec![Color::BLACK; self.screen_width as usize];
+        // self.blur_scratch_row を使用
 
         for y in y_start..y_end {
             // 累積和を計算
@@ -810,7 +812,7 @@ impl Compositor {
 
             for x in x_start..x_end {
                 // 平均を計算
-                row_buffer[x as usize] = Color::new(
+                self.blur_scratch_row[x as usize] = Color::new(
                     (sum_r / diameter) as u8,
                     (sum_g / diameter) as u8,
                     (sum_b / diameter) as u8,
@@ -830,7 +832,7 @@ impl Compositor {
             // 結果を書き戻し
             for x in x_start..x_end {
                 self.blur_buffer
-                    .set_pixel(x as u32, y as u32, row_buffer[x as usize]);
+                    .set_pixel(x as u32, y as u32, self.blur_scratch_row[x as usize]);
             }
         }
     }
@@ -846,7 +848,8 @@ impl Compositor {
         let x_end = (region.x + region.width as i32).min(self.screen_width as i32);
 
         // 一時バッファ（列ごとに処理）
-        let mut col_buffer: Vec<Color> = vec![Color::BLACK; self.screen_height as usize];
+        // let mut col_buffer: Vec<Color> = vec![Color::BLACK; self.screen_height as usize];
+        // self.blur_scratch_col を使用
 
         for x in x_start..x_end {
             // 累積和を計算
@@ -865,7 +868,7 @@ impl Compositor {
 
             for y in y_start..y_end {
                 // 平均を計算
-                col_buffer[y as usize] = Color::new(
+                self.blur_scratch_col[y as usize] = Color::new(
                     (sum_r / diameter) as u8,
                     (sum_g / diameter) as u8,
                     (sum_b / diameter) as u8,
@@ -885,7 +888,7 @@ impl Compositor {
             // 結果を書き戻し
             for y in y_start..y_end {
                 self.blur_buffer
-                    .set_pixel(x as u32, y as u32, col_buffer[y as usize]);
+                    .set_pixel(x as u32, y as u32, self.blur_scratch_col[y as usize]);
             }
         }
     }

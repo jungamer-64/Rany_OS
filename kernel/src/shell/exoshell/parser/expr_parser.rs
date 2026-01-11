@@ -148,7 +148,15 @@ impl ExprParser {
             // しかし、 `help` や `exit` のような単独識別子はコマンドとして扱いたい。
             // また `cmd(arg)` 形式の MethodCall で object が空文字の場合もコマンド。
             
-            Expr::Ident(name) => Ok(Stmt::Command { name, args: Vec::new() }),
+            Expr::Ident(name) => {
+                if name == "break" {
+                    Ok(Stmt::Break)
+                } else if name == "continue" {
+                    Ok(Stmt::Continue)
+                } else {
+                    Ok(Stmt::Command { name, args: Vec::new() })
+                }
+            }
             
             Expr::MethodCall { object, method, args } => {
                 // object が Ident("") の場合はグローバル関数呼び出し -> コマンド
@@ -405,9 +413,112 @@ impl ExprParser {
         Ok(expr)
     }
 
-    /// 基本式（リテラル、識別子、括弧、クロージャ）
+    /// ブロック式のパース
+    fn parse_block_expr(&mut self) -> Result<Expr<'static>, ParseError> {
+        self.advance(); // consume '{'
+        let mut stmts = Vec::new();
+
+        // 空ブロックチェック: {}
+        if self.match_token(&Token::RBrace) {
+            return Ok(Expr::Block(stmts));
+        }
+
+        while !self.match_token(&Token::RBrace) {
+            if self.is_at_end() {
+                return Err(ParseError::UnexpectedEof);
+            }
+            stmts.push(self.parse_stmt()?);
+            // セミコロンは任意
+            let _ = self.match_token(&Token::Semicolon);
+        }
+
+        Ok(Expr::Block(stmts))
+    }
+
+    /// If式のパース
+    fn parse_if_expr(&mut self) -> Result<Expr<'static>, ParseError> {
+        self.advance(); // consume 'if'
+        let cond = self.parse_expr()?;
+
+        if self.peek() != Some(&Token::LBrace) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'{'".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        let then_block = self.parse_block_expr()?;
+
+        let else_block = if self.match_token(&Token::Else) {
+            if self.peek() == Some(&Token::If) {
+                Some(Box::new(self.parse_if_expr()?))
+            } else if self.peek() == Some(&Token::LBrace) {
+                Some(Box::new(self.parse_block_expr()?))
+            } else {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "'{' or 'if'".to_string(),
+                    found: format!("{:?}", self.peek()),
+                });
+            }
+        } else {
+            None
+        };
+
+        Ok(Expr::If {
+            cond: Box::new(cond),
+            then_block: Box::new(then_block),
+            else_block,
+        })
+    }
+
+    /// For式のパース
+    fn parse_for_expr(&mut self) -> Result<Expr<'static>, ParseError> {
+        self.advance(); // consume 'for'
+
+        // パラメータ名
+        let param = if let Some(Token::Ident(name)) = self.peek().cloned() {
+            self.advance();
+            name
+        } else {
+            return Err(ParseError::UnexpectedToken {
+                expected: "identifier".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        };
+
+        // 'in'
+        if !self.match_token(&Token::In) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'in'".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+
+        // イテラブル（配列など）
+        let iterable = self.parse_expr()?;
+
+        // 本体ブロック
+        if self.peek() != Some(&Token::LBrace) {
+            return Err(ParseError::UnexpectedToken {
+                expected: "'{'".to_string(),
+                found: format!("{:?}", self.peek()),
+            });
+        }
+        let body = self.parse_block_expr()?;
+
+        Ok(Expr::For {
+            param,
+            iterable: Box::new(iterable),
+            body: Box::new(body),
+        })
+    }
+
+    /// 基本式（リテラル、識別子、括弧、クロージャ、制御構文）
     fn parse_primary(&mut self) -> Result<Expr<'static>, ParseError> {
         match self.peek().cloned() {
+            // If / For
+            Some(Token::If) => self.parse_if_expr(),
+            Some(Token::For) => self.parse_for_expr(),
+
             // 数値リテラル
             Some(Token::Number(n)) => {
                 self.advance();
@@ -494,64 +605,73 @@ impl ExprParser {
                 Ok(Expr::Array(elements))
             }
 
-            // マップリテラル: {key: value, ...}
+            // 波括弧: マップかブロックかを判定
             Some(Token::LBrace) => {
-                self.advance();
-                let mut pairs = Vec::new();
+                // Heuristic: look ahead for `ident`/`string` followed by `:` to detect map
+                if self.peek_next().map_or(false, |t| matches!(t, Token::Ident(_) | Token::StringLit(_)))
+                    && self.tokens.get(self.pos + 2).map_or(false, |t| matches!(t, Token::Colon))
+                {
+                    // parse as map
+                    self.advance();
+                    let mut pairs = Vec::new();
 
-                // 空マップチェック
-                if !self.match_token(&Token::RBrace) {
-                    loop {
-                        // キー（識別子または文字列）
-                        let key = match self.peek().cloned() {
-                            Some(Token::Ident(k)) => {
-                                self.advance();
-                                k
-                            }
-                            Some(Token::StringLit(k)) => {
-                                self.advance();
-                                k
-                            }
-                            _ => {
+                    // 空マップチェック
+                    if !self.match_token(&Token::RBrace) {
+                        loop {
+                            // キー（識別子または文字列）
+                            let key = match self.peek().cloned() {
+                                Some(Token::Ident(k)) => {
+                                    self.advance();
+                                    k
+                                }
+                                Some(Token::StringLit(k)) => {
+                                    self.advance();
+                                    k
+                                }
+                                _ => {
+                                    return Err(ParseError::UnexpectedToken {
+                                        expected: "map key (identifier or string)".to_string(),
+                                        found: format!("{:?}", self.peek()),
+                                    });
+                                }
+                            };
+
+                            // コロン
+                            if !self.match_token(&Token::Colon) {
                                 return Err(ParseError::UnexpectedToken {
-                                    expected: "map key (identifier or string)".to_string(),
+                                    expected: "':'".to_string(),
                                     found: format!("{:?}", self.peek()),
                                 });
                             }
-                        };
 
-                        // コロン
-                        if !self.match_token(&Token::Colon) {
+                            // 値
+                            let value = self.parse_expr()?;
+                            pairs.push((key, value));
+
+                            // カンマまたは閉じ波括弧
+                            if self.match_token(&Token::Comma) {
+                                // 末尾カンマ対応
+                                if matches!(self.peek(), Some(Token::RBrace)) {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+
+                        if !self.match_token(&Token::RBrace) {
                             return Err(ParseError::UnexpectedToken {
-                                expected: "':'".to_string(),
+                                expected: "'}'".to_string(),
                                 found: format!("{:?}", self.peek()),
                             });
                         }
-
-                        // 値
-                        let value = self.parse_expr()?;
-                        pairs.push((key, value));
-
-                        // カンマまたは閉じ波括弧
-                        if self.match_token(&Token::Comma) {
-                            // 末尾カンマ対応
-                            if matches!(self.peek(), Some(Token::RBrace)) {
-                                break;
-                            }
-                        } else {
-                            break;
-                        }
                     }
 
-                    if !self.match_token(&Token::RBrace) {
-                        return Err(ParseError::UnexpectedToken {
-                            expected: "'}'".to_string(),
-                            found: format!("{:?}", self.peek()),
-                        });
-                    }
+                    Ok(Expr::Map(pairs))
+                } else {
+                    // parse as block
+                    self.parse_block_expr()
                 }
-
-                Ok(Expr::Map(pairs))
             }
 
             // クロージャ: |e| expr
@@ -710,6 +830,61 @@ mod tests {
                 assert!(matches!(*left, Expr::Group(_)));
             }
             _ => panic!("Expected And expression with grouped left"),
+        }
+    }
+
+    #[test]
+    fn test_parse_block_expression() {
+        let expr = parse_expression("{ let x = 1; x }").unwrap();
+        match expr {
+            Expr::Block(stmts) => {
+                assert_eq!(stmts.len(), 2);
+            }
+            _ => panic!("Expected Block expression"),
+        }
+    }
+
+    #[test]
+    fn test_parse_if_expression() {
+        let expr = parse_expression("if true { 1 } else { 2 }").unwrap();
+        match expr {
+            Expr::If { cond, then_block, else_block } => {
+                assert!(matches!(*cond, Expr::Literal(ExoValue::Bool(true))));
+                assert!(matches!(*then_block, Expr::Block(_)));
+                assert!(else_block.is_some());
+            }
+            _ => panic!("Expected If expression"),
+        }
+    }
+
+    #[test]
+    fn test_parse_for_expression() {
+        let expr = parse_expression("for x in [1,2,3] { x }").unwrap();
+        match expr {
+            Expr::For { param, iterable, body } => {
+                assert_eq!(param, "x");
+                assert!(matches!(*iterable, Expr::Array(_)));
+                assert!(matches!(*body, Expr::Block(_)));
+            }
+            _ => panic!("Expected For expression"),
+        }
+    }
+
+    #[test]
+    fn test_parse_break_statement() {
+        let stmt = parse("break").unwrap();
+        match stmt {
+            Stmt::Break => {}
+            _ => panic!("Expected Break statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_continue_statement() {
+        let stmt = parse("continue").unwrap();
+        match stmt {
+            Stmt::Continue => {}
+            _ => panic!("Expected Continue statement"),
         }
     }
 }

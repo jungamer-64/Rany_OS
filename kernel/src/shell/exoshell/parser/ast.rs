@@ -42,6 +42,12 @@ pub enum Stmt<'a> {
     },
     /// 式だけの文: `fs.list("/")`
     Expr(Box<Expr<'a>>),
+
+    /// Break文
+    Break,
+
+    /// Continue文
+    Continue,
 }
 
 /// 抽象構文木 (AST) のノード
@@ -118,6 +124,25 @@ pub enum Expr<'a> {
     /// マップリテラル
     /// 例: `{name: "foo", value: 42}`
     Map(Vec<(String, Expr<'a>)>),
+
+    /// ブロック式: `{ stmt; expr }`
+    /// 最後の式の結果を返す（Rustライク）
+    Block(Vec<Stmt<'a>>),
+
+    /// If式: `if cond { ... } else { ... }`
+    If {
+        cond: Box<Expr<'a>>,
+        then_block: Box<Expr<'a>>,
+        else_block: Option<Box<Expr<'a>>>,
+    },
+
+    /// Forループ: `for var in iter { ... }`
+    /// 最後に評価された値を返す、または Nil
+    For {
+        param: String,
+        iterable: Box<Expr<'a>>,
+        body: Box<Expr<'a>>,
+    },
 }
 
 impl<'a> Stmt<'a> {
