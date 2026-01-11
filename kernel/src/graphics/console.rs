@@ -136,10 +136,10 @@ impl ConsoleDriver for TextConsole {
             for col in 0..cols {
                 let idx = row * cols + col;
                 
-                if let Some(cell) = buffer.get_cell(col, row) {
+                if let Some(cell) = buffer.get_display_cell(col, row) {
                     let is_force_redraw = force_redraw_idx == Some(idx);
                     // 変更がある場合、または強制再描画の場合のみ描画
-                    if is_force_redraw || self.prev_buffer[idx] != *cell {
+                    if is_force_redraw || self.prev_buffer[idx] != cell {
                         let x = (col as u32 * self.font.width()) as i32;
                         let y = (row as u32 * self.font.height()) as i32;
                         

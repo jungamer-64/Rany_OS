@@ -23,14 +23,10 @@
 
 #![allow(dead_code)]
 
-pub mod async_shell;
 pub mod exoshell;
-pub mod graphical;
+pub mod frontend;
 pub mod line_buffer;
-
-// Re-export ExoShell types
-
-// Re-export graphical shell
+pub mod session;
 
 // ============================================================================
 // Removed: Legacy Shell implementation

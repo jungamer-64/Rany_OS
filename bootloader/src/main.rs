@@ -301,7 +301,8 @@ fn main() -> Status {
 
     info!("Allocating PML4...");
     let pml4_addr =
-        UefiMapper::alloc_zeroed_pages(1).expect("Failed to allocate PML4");
+        UefiMapper::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA)
+            .expect("Failed to allocate PML4");
     let pml4 = unsafe { &mut *(pml4_addr as *mut PageTable) };
 
     let mut mapper = UefiMapper::new(pml4);
@@ -343,7 +344,7 @@ fn main() -> Status {
                     virt_addr, virt_start_aligned, page_offset, mem_size, num_pages, ph_flags
                 );
 
-                let phys_start = UefiMapper::alloc_zeroed_pages(num_pages)
+                let phys_start = UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
                     .expect("Failed to allocate kernel segment");
 
                 // Track this segment for relocation processing (use original VAddr)
@@ -526,9 +527,16 @@ fn main() -> Status {
 
     // Use max_phys to cover all regions including MMIO, but cap at 4GB
     // This ensures IOMMU registers (0xfed90000), LAPIC, etc. are accessible.
-    let map_limit = max_phys.min(4 * 1024 * 1024 * 1024); // 4GB max
+    // 4GB制限を撤廃し、物理メモリの最大値までマップする
+    // ただし、MMIO領域（I/O APICなど）のために最低でも4GBまでは確保する
+    let map_limit = if max_phys < 4 * 1024 * 1024 * 1024 {
+        4 * 1024 * 1024 * 1024
+    } else {
+        max_phys
+    };
+
     info!(
-        "Mapping HHDM: max_phys=0x{:x}, limit=0x{:x}",
+        "Mapping HHDM: max_phys=0x{:x}, limit=0x{:x} (Full Memory)",
         max_phys, map_limit
     );
 
@@ -603,7 +611,8 @@ fn main() -> Status {
 
     info!("Allocating BootInfo...");
     let boot_info_phys =
-        UefiMapper::alloc_zeroed_pages(1).expect("Failed to allocate BootInfo");
+        UefiMapper::alloc_zeroed_pages(1, MemoryType::RUNTIME_SERVICES_DATA)
+            .expect("Failed to allocate BootInfo");
     let boot_info = unsafe { &mut *(boot_info_phys as *mut ExoBootInfo) };
 
     boot_info.version = EXO_BOOT_INFO_VERSION;
@@ -851,7 +860,7 @@ fn main() -> Status {
     // Copy initramfs data to allocated pages and set up boot_info.initramfs
     if let Some(ref initramfs) = initramfs_data {
         let num_pages = (initramfs.len() + 4095) / 4096;
-        let initramfs_phys = UefiMapper::alloc_zeroed_pages(num_pages)
+        let initramfs_phys = UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
             .expect("Failed to alloc initramfs");
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -878,7 +887,7 @@ fn main() -> Status {
         // Allocate pages for command line (+ 1 for null terminator)
         let cmdline_size = cmdline.len() + 1;
         let num_pages = (cmdline_size + 4095) / 4096;
-        let cmdline_phys = UefiMapper::alloc_zeroed_pages(num_pages)
+        let cmdline_phys = UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
             .expect("Failed to alloc cmdline");
         unsafe {
             core::ptr::copy_nonoverlapping(
@@ -907,7 +916,7 @@ fn main() -> Status {
     let mmap_estimate_count = 512; // Generous estimate for typical systems
     let mmap_buffer_size = mmap_estimate_count * core::mem::size_of::<BootMemoryDescriptor>();
     let mmap_buffer_pages = (mmap_buffer_size + 4095) / 4096;
-    let mmap_buffer_phys = UefiMapper::alloc_zeroed_pages(mmap_buffer_pages)
+    let mmap_buffer_phys = UefiMapper::alloc_zeroed_pages(mmap_buffer_pages, MemoryType::RUNTIME_SERVICES_DATA)
         .expect("Failed to allocate memory map buffer");
 
     // Log kernel entry points before exiting boot services (info!() won't work after)
