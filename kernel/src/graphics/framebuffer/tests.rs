@@ -15,19 +15,20 @@ fn test_draw_image_32bit_bgra_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let img = Image::filled(width, height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
 
-    // Check that back buffer contains BGRA bytes per pixel
+    // Check that back buffer contains BGRA per-pixel u32 values
     let back_ref = fb.back_buffer.as_ref().unwrap();
-    for i in (0..back_ref.len()).step_by(4) {
-        assert_eq!(back_ref[i], 30); // blue
-        assert_eq!(back_ref[i + 1], 20); // green
-        assert_eq!(back_ref[i + 2], 10); // red
-        assert_eq!(back_ref[i + 3], 255); // alpha
+    for &pixel in back_ref.iter() {
+        let c = Color::from_u32(pixel);
+        assert_eq!(c.blue, 30); // blue
+        assert_eq!(c.green, 20); // green
+        assert_eq!(c.red, 10); // red
+        assert_eq!(c.alpha, 255); // alpha
     }
 }
 
@@ -45,17 +46,18 @@ fn test_draw_image_24bit_bgr_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let img = Image::filled(width, height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
 
     let back_ref = fb.back_buffer.as_ref().unwrap();
-    for i in (0..back_ref.len()).step_by(3) {
-        assert_eq!(back_ref[i], 0); // blue
-        assert_eq!(back_ref[i + 1], 0); // green
-        assert_eq!(back_ref[i + 2], 255); // red
+    for &pixel in back_ref.iter() {
+        let c = Color::from_u32(pixel);
+        assert_eq!(c.blue, 0);
+        assert_eq!(c.green, 0);
+        assert_eq!(c.red, 255);
     }
 }
 
@@ -75,7 +77,7 @@ fn bench_draw_image_bulk() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let img = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
@@ -104,7 +106,7 @@ fn bench_draw_image_24bit_bulk() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let img = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
@@ -133,7 +135,7 @@ fn bench_draw_image_rgba_bulk() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let img = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
@@ -162,7 +164,7 @@ fn bench_draw_hline_bulk() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let start = Instant::now();
@@ -396,7 +398,7 @@ fn bench_draw_text_bulk() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let start = Instant::now();
@@ -429,7 +431,7 @@ fn test_draw_hline_32bit_backbuffer() {
     // the optimized and naive implementations and compare backbuffers.
     let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
     let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb_opt.enable_double_buffering_from_vec(back.clone());
     fb_naive.enable_double_buffering_from_vec(back);
 
@@ -480,28 +482,19 @@ fn test_draw_hline_32bit_backbuffer() {
                 .filter_map(|(i, (a, b))| if a != b { Some(i) } else { None })
                 .collect();
             // For clarity, list coordinates & colors of non-zero pixels in each buffer
-            let stride = info.stride as usize;
             let mut opt_pixels = Vec::new();
             let mut naive_pixels = Vec::new();
             for y in 0..info.height as usize {
                 for x in 0..info.width as usize {
-                    let off = y * stride + x * 4;
-                    let o = (
-                        buf_opt[off],
-                        buf_opt[off + 1],
-                        buf_opt[off + 2],
-                        buf_opt[off + 3],
-                    );
-                    let n = (
-                        buf_naive[off],
-                        buf_naive[off + 1],
-                        buf_naive[off + 2],
-                        buf_naive[off + 3],
-                    );
-                    if o != (0, 0, 0, 0) {
+                    let idx = y * info.width as usize + x;
+                    let o_pixel = buf_opt[idx];
+                    let n_pixel = buf_naive[idx];
+                    if o_pixel != 0 {
+                        let o = Color::from_u32(o_pixel);
                         opt_pixels.push((x as i32, y as i32, o));
                     }
-                    if n != (0, 0, 0, 0) {
+                    if n_pixel != 0 {
+                        let n = Color::from_u32(n_pixel);
                         naive_pixels.push((x as i32, y as i32, n));
                     }
                 }
@@ -531,13 +524,13 @@ fn test_draw_hline_32bit_backbuffer() {
     fb_opt.draw_vline(1, 0, 5, color);
 
     let back_ref = fb_opt.back_buffer.as_ref().unwrap();
-    let stride = info.stride as usize;
     for y in 0..6 {
-        let off = (y as usize * stride) + 1usize * 4;
-        assert_eq!(back_ref[off], 3);
-        assert_eq!(back_ref[off + 1], 2);
-        assert_eq!(back_ref[off + 2], 1);
-        assert_eq!(back_ref[off + 3], 255);
+        let idx = (y as usize * info.width as usize) + 1usize;
+        let c = Color::from_u32(back_ref[idx]);
+        assert_eq!(c.blue, 3);
+        assert_eq!(c.green, 2);
+        assert_eq!(c.red, 1);
+        assert_eq!(c.alpha, 255);
     }
 }
 
@@ -555,7 +548,7 @@ fn test_draw_text_space_32bit_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let fg = Color::with_alpha(1, 2, 3, 255);
@@ -564,15 +557,15 @@ fn test_draw_text_space_32bit_backbuffer() {
     fb.draw_text(0, 0, " ", fg, bg);
 
     let back_ref = fb.back_buffer.as_ref().unwrap();
-    let stride = info.stride as usize;
     // Space glyph is blank; entire 8x16 area should be background
     for y in 0..16 {
         for x in 0..8 {
-            let off = (y as usize * stride) + (x as usize * 4);
-            assert_eq!(back_ref[off], 120);
-            assert_eq!(back_ref[off + 1], 110);
-            assert_eq!(back_ref[off + 2], 100);
-            assert_eq!(back_ref[off + 3], 255);
+            let idx = (y as usize * info.width as usize) + x as usize;
+            let c = Color::from_u32(back_ref[idx]);
+            assert_eq!(c.blue, 120);
+            assert_eq!(c.green, 110);
+            assert_eq!(c.red, 100);
+            assert_eq!(c.alpha, 255);
         }
     }
 }
@@ -592,7 +585,7 @@ fn test_draw_line_matches_naive_32bit_backbuffer() {
 
     let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
     let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb_opt.enable_double_buffering_from_vec(back.clone());
     fb_naive.enable_double_buffering_from_vec(back);
 
@@ -668,7 +661,7 @@ fn test_draw_line_matches_naive_24bit_backbuffer() {
 
     let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
     let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb_opt.enable_double_buffering_from_vec(back.clone());
     fb_naive.enable_double_buffering_from_vec(back);
 
@@ -732,7 +725,7 @@ fn test_draw_text_space_24bit_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let fg = Color::with_alpha(1, 2, 3, 255);
@@ -741,14 +734,14 @@ fn test_draw_text_space_24bit_backbuffer() {
     fb.draw_text(0, 0, " ", fg, bg);
 
     let back_ref = fb.back_buffer.as_ref().unwrap();
-    let stride = info.stride as usize;
     // Space glyph is blank; entire 8x16 area should be background
     for y in 0..16 {
         for x in 0..8 {
-            let off = (y as usize * stride) + (x as usize * 3);
-            assert_eq!(back_ref[off], 120);
-            assert_eq!(back_ref[off + 1], 110);
-            assert_eq!(back_ref[off + 2], 100);
+            let idx = (y as usize * info.width as usize) + x as usize;
+            let c = Color::from_u32(back_ref[idx]);
+            assert_eq!(c.blue, 120);
+            assert_eq!(c.green, 110);
+            assert_eq!(c.red, 100);
         }
     }
 }
@@ -973,16 +966,17 @@ fn test_write_opaque_run_24bit_even_odd_mmio() {
 
     // Backbuffer path
     let mut fb2 = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb2.enable_double_buffering_from_vec(back);
     fb2.draw_image(&img, 0, 0);
     let back_ref = fb2.back_buffer.as_ref().unwrap();
     for x in 0..(width as usize) {
-        let off = x * 3;
+        let idx = x;
+        let pixel_c = Color::from_u32(back_ref[idx]);
         let c = cols[x];
-        assert_eq!(back_ref[off], c.blue);
-        assert_eq!(back_ref[off + 1], c.green);
-        assert_eq!(back_ref[off + 2], c.red);
+        assert_eq!(pixel_c.blue, c.blue);
+        assert_eq!(pixel_c.green, c.green);
+        assert_eq!(pixel_c.red, c.red);
     }
 }
 
@@ -1362,10 +1356,11 @@ fn test_dirty_rect_flush_only_marked_area() {
     info2.address = addr;
 
     let mut fb = unsafe { Framebuffer::new(info2) };
-    let mut back = vec![0u8; info.size()];
-    // Fill back buffer with white
+    let mut back = vec![0u32; (info.width * info.height) as usize];
+    // Fill back buffer with white (opaque white in BGRA)
+    let white = Color::with_alpha(255, 255, 255, 255).to_u32();
     for i in 0..back.len() {
-        back[i] = 255;
+        back[i] = white;
     }
     fb.enable_double_buffering_from_vec(back);
 
@@ -1376,8 +1371,9 @@ fn test_dirty_rect_flush_only_marked_area() {
 
     // Mark a small area as dirty manually (to simulate drawing)
     // Let's modify back buffer at (5,5)
-    let offset = (5 * 10 + 5) * 4;
-    let dst = unsafe { fb.back_buffer.as_mut().unwrap().as_mut_ptr().add(offset) };
+    let offset = (5 * 10 + 5) * 4; // byte offset used for VM checks below
+    let idx = 5 * info.width as usize + 5; // pixel index in back buffer
+    let dst = unsafe { (fb.back_buffer.as_mut().unwrap().as_mut_ptr() as *mut u8).add(idx * 4) };
     unsafe {
         *dst = 0xAA;
         *dst.add(1) = 0xBB;
@@ -1414,7 +1410,7 @@ fn test_draw_text_partial_left_clip_32bit_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     let fg = Color::with_alpha(10, 20, 30, 255);
@@ -1425,28 +1421,30 @@ fn test_draw_text_partial_left_clip_32bit_backbuffer() {
     // bits (font row index 2 contains 0x18 => bits at cols 3 and 4).
     fb.draw_text(-3, 0, "!", fg, bg);
 
-    let stride = info.stride as usize;
     let row = 2usize;
-    let off0 = row * stride + 0 * 4;
-    let off1 = row * stride + 1 * 4;
-    let off2 = row * stride + 2 * 4;
+    let idx0 = row * info.width as usize + 0;
+    let idx1 = row * info.width as usize + 1;
+    let idx2 = row * info.width as usize + 2;
 
     let back_ref = fb.back_buffer.as_ref().unwrap();
 
     // px 0 should be fg (column 3 of glyph)
-    assert_eq!(back_ref[off0], fg.blue);
-    assert_eq!(back_ref[off0 + 1], fg.green);
-    assert_eq!(back_ref[off0 + 2], fg.red);
+    let c0 = Color::from_u32(back_ref[idx0]);
+    assert_eq!(c0.blue, fg.blue);
+    assert_eq!(c0.green, fg.green);
+    assert_eq!(c0.red, fg.red);
 
     // px 1 should be fg (column 4 of glyph)
-    assert_eq!(back_ref[off1], fg.blue);
-    assert_eq!(back_ref[off1 + 1], fg.green);
-    assert_eq!(back_ref[off1 + 2], fg.red);
+    let c1 = Color::from_u32(back_ref[idx1]);
+    assert_eq!(c1.blue, fg.blue);
+    assert_eq!(c1.green, fg.green);
+    assert_eq!(c1.red, fg.red);
 
     // px 2 should be background
-    assert_eq!(back_ref[off2], bg.blue);
-    assert_eq!(back_ref[off2 + 1], bg.green);
-    assert_eq!(back_ref[off2 + 2], bg.red);
+    let c2 = Color::from_u32(back_ref[idx2]);
+    assert_eq!(c2.blue, bg.blue);
+    assert_eq!(c2.green, bg.green);
+    assert_eq!(c2.red, bg.red);
 }
 
 #[test]
@@ -1475,27 +1473,30 @@ fn test_draw_image_24bit_rgb888_backbuffer() {
     };
 
     let mut fb = unsafe { Framebuffer::new(info.clone()) };
-    let back = vec![0u8; info.size()];
+    let back = vec![0u32; (info.width * info.height) as usize];
     fb.enable_double_buffering_from_vec(back);
 
     fb.draw_image(&img, 0, 0);
 
     let back_ref = fb.back_buffer.as_ref().unwrap();
 
-    // Verify Pixel 0 (Red) -> Expect [R, G, B] = [255, 0, 0]
-    assert_eq!(back_ref[0], 255);
-    assert_eq!(back_ref[1], 0);
-    assert_eq!(back_ref[2], 0);
+    // Verify Pixel 0 (Red)
+    let p0 = Color::from_u32(back_ref[0]);
+    assert_eq!(p0.red, 255);
+    assert_eq!(p0.green, 0);
+    assert_eq!(p0.blue, 0);
 
-    // Verify Pixel 1 (Green) -> Expect [R, G, B] = [0, 255, 0]
-    assert_eq!(back_ref[3], 0);
-    assert_eq!(back_ref[4], 255);
-    assert_eq!(back_ref[5], 0);
+    // Verify Pixel 1 (Green)
+    let p1 = Color::from_u32(back_ref[1]);
+    assert_eq!(p1.red, 0);
+    assert_eq!(p1.green, 255);
+    assert_eq!(p1.blue, 0);
 
-    // Verify Pixel 2 (Blue) -> Expect [R, G, B] = [0, 0, 255]
-    assert_eq!(back_ref[6], 0);
-    assert_eq!(back_ref[7], 0);
-    assert_eq!(back_ref[8], 255);
+    // Verify Pixel 2 (Blue)
+    let p2 = Color::from_u32(back_ref[2]);
+    assert_eq!(p2.red, 0);
+    assert_eq!(p2.green, 0);
+    assert_eq!(p2.blue, 255);
 }
 
 #[test]

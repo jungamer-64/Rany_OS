@@ -30,6 +30,6 @@ pub use types::{MouseState, RenderMouseState};
 // Re-export shell
 
 // Re-export async runtime functions
-pub use async_runtime::{init, run_async_shell, start};
+pub use async_runtime::{run_async_shell, start};
 
 // Re-export stream types (for submit_command)
