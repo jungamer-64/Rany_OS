@@ -45,6 +45,8 @@ impl<'a> Display for ExoValue<'a> {
             ExoValue::BufferRef(b) => write!(f, "<BufferRef: {} bytes, zero-copy>", b.len()),
             ExoValue::StringRef(s) => write!(f, "{}", s.as_str()),
             ExoValue::Error(e) => write!(f, "Error: {}", e),
+            ExoValue::Break => write!(f, "<Break>"),
+            ExoValue::Continue => write!(f, "<Continue>"),
             ExoValue::Exit => write!(f, "Exit"),
         }
     }
@@ -165,7 +167,7 @@ pub fn format_size(bytes: u64) -> String {
 /// - その他: そのまま文字列化
 pub fn format_shell_output(val: &ExoValue) -> Option<String> {
     match val {
-        ExoValue::Nil | ExoValue::Exit => None,
+        ExoValue::Nil | ExoValue::Exit | ExoValue::Break | ExoValue::Continue => None,
         ExoValue::Bytes(bytes) => {
             if let Ok(s) = core::str::from_utf8(bytes) {
                 Some(s.to_string())
