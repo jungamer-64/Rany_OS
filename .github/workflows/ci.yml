@@ -26,6 +26,19 @@ jobs:
       with:
         components: rust-src, llvm-tools-preview
     
+    - name: Ensure no duplicate '-T' in .cargo/config
+      run: |
+        if [ -f .cargo/config.toml ]; then
+          if grep -nF "link-arg=-Tlinker.ld" .cargo/config.toml; then
+            echo "ERROR: '.cargo/config.toml' contains '-C link-arg=-Tlinker.ld'. Remove it to avoid duplicate -T flags."
+            exit 1
+          else
+            echo "OK: no duplicate -T in .cargo/config.toml"
+          fi
+        else
+          echo "No .cargo/config.toml found, skipping check."
+        fi
+
     - name: Cache cargo registry
       uses: actions/cache@v4
       with:
@@ -39,6 +52,12 @@ jobs:
     
     - name: Build kernel
       run: cargo build --target x86_64-rany_os.json
+
+    - name: Install pyelftools
+      run: pip install pyelftools
+
+    - name: Check linker layout
+      run: python scripts/check_linker_layout.py || (echo 'Linker layout check failed.' && exit 1)
     
     - name: Build release
       run: cargo build --target x86_64-rany_os.json --release

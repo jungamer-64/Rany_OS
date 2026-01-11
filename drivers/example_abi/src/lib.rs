@@ -1,36 +1,10 @@
 #![cfg_attr(target_os = "none", no_std)]
-#![cfg_attr(feature = "standalone", feature(alloc_error_handler))]
+
+// Register Cell runtime stubs (allocator, panic handler) for standalone builds
+#[cfg(feature = "standalone")]
+kernel_api::register_cell_runtime!();
 
 use kernel_api::driver_abi::DriverContext;
-
-#[cfg(all(feature = "standalone", target_os = "none"))]
-struct DummyAllocator;
-
-#[cfg(all(feature = "standalone", target_os = "none"))]
-unsafe impl GlobalAlloc for DummyAllocator {
-    unsafe fn alloc(&self, _layout: Layout) -> *mut u8 {
-        core::ptr::null_mut()
-    }
-
-    unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {}
-}
-
-#[cfg(all(feature = "standalone", target_os = "none"))]
-#[global_allocator]
-static DUMMY_ALLOC: DummyAllocator = DummyAllocator;
-
-
-#[cfg(all(feature = "standalone", target_os = "none"))]
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
-    loop {}
-}
-
-#[cfg(all(feature = "standalone", target_os = "none"))]
-#[alloc_error_handler]
-fn oom(_layout: Layout) -> ! {
-    loop {}
-}
 
 pub extern "C" fn probe_fn(_ctx: *mut DriverContext) -> i32 {
     0

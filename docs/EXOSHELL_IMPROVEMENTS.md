@@ -68,7 +68,7 @@ CI ワークフロー
 - `cargo fmt --all -- --check`
 - `cargo clippy --all-targets -- -D warnings`
 - `cargo test -p security`
-- `cargo test -p cap_harness`
+- `cargo test --manifest-path tools/cap_harness/Cargo.toml --target x86_64-unknown-linux-gnu`
 - `cargo test --manifest-path kernel/Cargo.toml --lib`
 
 CI の audit ステップでは `serena_audit` / `codacy_cli_analyze` の CLI が利用可能であれば実行し、そうでない場合はスキップします。ローカルで同じチェックを実行するには、上のコマンドを順に実行してください。

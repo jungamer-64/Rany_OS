@@ -1,11 +1,8 @@
 # Build-std is intentionally disabled in the workspace default config to avoid
-# duplicate-lang-item (E0152) errors when running host tests. Use
-# `config.build-std.toml` or pass `-Z 'build-std=...'` on the command line when
+# duplicate-lang-item (E0152) errors when running host tests.
+# Use `config.build-std.toml` or pass `-Z 'build-std=...'` on the command line when
 # you need to build a local copy of core/alloc/compiler_builtins for cross-target
-# builds (e.g. kernel cross-builds).
-[unstable]
-build-std = ["core", "compiler_builtins", "alloc"]
-build-std-features = ["compiler-builtins-mem"]
+# builds (e.g. kernel cross-builds). The separate file is `.cargo/config.build-std.toml`.
 
 [build]
 target = "x86_64-exorust.json"
@@ -14,8 +11,6 @@ target = "x86_64-exorust.json"
 # Note: For JSON targets, use the full path including .json extension
 [target.x86_64-exorust]
 rustflags = [
-    "-C",
-    "link-arg=-Tkernel/linker.ld",
     "-C",
     "relocation-model=static",
     "-C",

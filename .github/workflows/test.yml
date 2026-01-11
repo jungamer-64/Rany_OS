@@ -37,8 +37,8 @@ jobs:
       - name: Clippy: security
         run: cargo clippy -p security -- -D warnings
 
-      - name: Clippy: cap_harness
-        run: cargo clippy -p cap_harness -- -D warnings
+      - name: Clippy: cap_harness (host)
+        run: cargo clippy --manifest-path tools/cap_harness/Cargo.toml --target x86_64-unknown-linux-gnu -- -D warnings
 
       - name: Clippy: graphic_types
         run: cargo clippy -p graphic_types -- -D warnings
@@ -71,8 +71,8 @@ jobs:
       - name: Run security crate tests
         run: cargo test -p security --verbose
 
-      - name: Run cap_harness tests
-        run: cargo test -p cap_harness --verbose
+      - name: Run cap_harness tests (host)
+        run: cargo test --manifest-path tools/cap_harness/Cargo.toml --verbose --target x86_64-unknown-linux-gnu
 
       - name: Run kernel lib tests
         run: cargo test --manifest-path kernel/Cargo.toml --lib --verbose

@@ -13,12 +13,15 @@ description = "Example ABI Driver for RanyOS"
 [lib]
 name = "example_abi"
 path = "src/lib.rs"
-crate-type = ["staticlib"]
+# Default: rlib for kernel integration (statically linked)
+crate-type = ["rlib"]
 
 [dependencies]
 kernel_api = { path = "../../interfaces/kernel_api" }
 
 [features]
-# Standalone: build the driver as a standalone no_std artifact (adds panic/alloc handlers and a dummy allocator)
 default = []
-standalone = []
+# Standalone: build as a standalone Cell (enables export symbol and cell runtime stub)
+standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
+# Feature to enable exporting driver entry symbol for dynamic loader
+export_driver_entry = ["kernel_api/export_driver_entry"]
