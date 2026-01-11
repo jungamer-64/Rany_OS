@@ -268,6 +268,11 @@ impl TerminalBuffer {
                 self.cursor_x += 1;
             }
         }
+        
+        // Reset scroll on input
+        if self.scroll_offset > 0 {
+             self.scroll_offset = 0;
+        }
     }
 
     /// 文字列を書き込む
@@ -396,6 +401,56 @@ impl TerminalBuffer {
     /// バッファ全体をスライスとして取得
     pub fn chars(&self) -> &[CharCell] {
         &self.screen
+    }
+
+    /// 表示用のセルを取得（スクロールバック考慮）
+    pub fn get_display_cell(&self, x: usize, y: usize) -> Option<CharCell> {
+        if x >= self.cols || y >= self.rows {
+            return None;
+        }
+
+        if self.scroll_offset == 0 {
+            return Some(self.screen[y * self.cols + x]);
+        }
+
+        // history index: 0 is oldest
+        let history_len = self.scrollback.len();
+        // The line index `y` relative to the top of the viewing window
+        // Viewing window starts at: (Total Rows) - (Screen Rows) - scroll_offset
+        // Total logical rows = history_len + self.rows
+        
+        let total_rows = history_len + self.rows;
+        let view_start_row = total_rows.saturating_sub(self.rows + self.scroll_offset);
+        let target_abs_row = view_start_row + y;
+
+        if target_abs_row < history_len {
+            // In history
+            self.scrollback.get(target_abs_row).and_then(|line| line.get(x).copied())
+        } else {
+            // In active screen
+            let screen_y = target_abs_row - history_len;
+            if screen_y < self.rows {
+                 Some(self.screen[screen_y * self.cols + x])
+            } else {
+                 Some(CharCell::default())
+            }
+        }
+    }
+
+    /// 画面表示をスクロール
+    /// delta > 0: View older lines (scroll Up)
+    /// delta < 0: View newer lines (scroll Down)
+    pub fn scroll_view(&mut self, delta: isize) {
+        if delta > 0 {
+            self.scroll_offset = (self.scroll_offset + delta as usize).min(self.scrollback.len());
+        } else {
+            self.scroll_offset = self.scroll_offset.saturating_sub((-delta) as usize);
+        }
+    }
+
+    /// ビューをリセット（一番下へ）
+    pub fn reset_view(&mut self) {
+        self.scroll_offset = 0;
     }
 }
 
@@ -710,9 +765,18 @@ impl VirtualConsole {
         self.active.store(active, Ordering::Release);
     }
 
-    /// アクティブかどうか
     pub fn is_active(&self) -> bool {
         self.active.load(Ordering::Acquire)
+    }
+
+    /// スクロールビュー
+    pub fn scroll_view(&mut self, delta: isize) {
+        self.buffer.scroll_view(delta);
+    }
+
+    /// ビューをリセット
+    pub fn reset_view(&mut self) {
+        self.buffer.reset_view();
     }
 }
 
@@ -775,6 +839,15 @@ impl ConsoleManager {
             console.lock().write(s);
         }
     }
+
+    /// アクティブなコンソールをスクロール
+    pub fn scroll_view(&self, delta: isize) {
+        let active = self.active.load(Ordering::Acquire);
+         if let Some(console) = self.consoles.get(active as usize) {
+            console.lock().scroll_view(delta);
+        }
+    }
+
 
     /// コンソールを切り替え
     pub fn switch_to(&self, console_id: u32) {
@@ -934,6 +1007,14 @@ pub fn switch(console_id: u32) {
     }
     flush_screen();
 }
+
+/// アクティブなコンソールをスクロール
+pub fn scroll(delta: isize) {
+     if let Some(ref manager) = *CONSOLE_MANAGER.lock() {
+        manager.scroll_view(delta);
+    }
+    flush_screen();
+} 
 
 // ============================================================================
 // Print Macros
