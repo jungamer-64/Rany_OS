@@ -60,8 +60,8 @@ struct BuddyHeapAllocator {
 impl BuddyHeapAllocator {
     /// 最小ブロックサイズ（64バイト = キャッシュライン）
     const MIN_BLOCK_SIZE: usize = 64;
-    /// 最大オーダー（64バイト * 2^16 = 4MB最大ブロック）
-    const MAX_ORDER: usize = 16;
+    /// 最大オーダー（64バイト * 2^20 = 64MB最大ブロック）
+    const MAX_ORDER: usize = 20;
 
     const fn new() -> Self {
         Self {
@@ -155,8 +155,8 @@ impl BuddyHeapAllocator {
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
         // DEBUG: Log the operation
-        #[cfg(debug_assertions)]
-        crate::io::log::early_print("[HEAP] add_to_free_list\n");
+
+
 
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr_addr = addr as usize;
@@ -174,8 +174,7 @@ impl BuddyHeapAllocator {
 
     /// フリーリストからブロックを取得
     fn remove_from_free_list(&mut self, order: usize) -> Option<usize> {
-        #[cfg(debug_assertions)]
-        crate::io::log::early_print("[HEAP] remove_from_free_list\n");
+
 
         self.free_lists[order].take().map(|addr| {
             // DEBUG: Validate the address being returned
@@ -192,7 +191,13 @@ impl BuddyHeapAllocator {
             // DEBUG: Validate next pointer
             #[cfg(debug_assertions)]
             if next != 0 && (next < self.heap_start || next >= self.heap_start + HEAP_SIZE) {
-                crate::io::log::early_print("[HEAP] ERROR: next pointer is invalid!\n");
+                crate::io::log::early_print("[HEAP] ERROR: next pointer is invalid! Addr=");
+                crate::io::log::print_hex(ptr_addr as u64);
+                crate::io::log::early_print(" Next=");
+                crate::io::log::print_hex(next as u64);
+                crate::io::log::early_print(" Order=");
+                crate::io::log::early_print_dec(order as u64);
+                crate::io::log::early_print("\n");
             }
 
             self.free_lists[order] = if next == 0 { None } else { Some(next) };
@@ -229,8 +234,8 @@ impl BuddyHeapAllocator {
 
     /// メモリを割り当て（O(log n)）
     fn allocate(&mut self, layout: Layout) -> *mut u8 {
-        #[cfg(debug_assertions)]
-        crate::io::log::early_print("[HEAP] allocate enter\n");
+
+
 
         if !self.initialized {
             #[cfg(debug_assertions)]
@@ -262,8 +267,8 @@ impl BuddyHeapAllocator {
                 // 必要に応じて分割
                 self.split_block(block, current_order, order);
 
-                #[cfg(debug_assertions)]
-                crate::io::log::early_print("[HEAP] allocate success\n");
+
+        
 
                 // Buddyブロックは自身のサイズでアラインされているため、
                 // block_size >= align なら自動的にアラインメントを満たす
@@ -289,8 +294,8 @@ impl BuddyHeapAllocator {
 
     /// メモリを解放（O(log n)）
     fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
-        #[cfg(debug_assertions)]
-        crate::io::log::early_print("[HEAP] deallocate enter\n");
+
+
 
         if ptr.is_null() || !self.initialized {
             #[cfg(debug_assertions)]
@@ -302,15 +307,15 @@ impl BuddyHeapAllocator {
         let order = Self::size_to_order(size);
         let addr = ptr as usize;
 
-        #[cfg(debug_assertions)]
+
         if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
             crate::io::log::early_print("[HEAP] ERROR: deallocate got invalid ptr!\n");
         }
 
         self.coalesce(addr, order);
 
-        #[cfg(debug_assertions)]
-        crate::io::log::early_print("[HEAP] deallocate done\n");
+
+
     }
 
     /// Buddyとの合体を反復的に試みる
@@ -408,7 +413,7 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
 static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 
 /// ヒープのサイズ
-pub const HEAP_SIZE: usize = 32 * 1024 * 1024; // 32 MiB
+pub const HEAP_SIZE: usize = 128 * 1024 * 1024; // 128 MiB
 
 /// Exchange Heap のサイズ
 pub const EXCHANGE_HEAP_SIZE: usize = 4 * 1024 * 1024; // 4 MiB
