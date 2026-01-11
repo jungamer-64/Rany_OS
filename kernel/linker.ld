@@ -16,12 +16,11 @@ SECTIONS
     . = 0xffffffff80000000;
     __kernel_start = .;
 
-    /* Place section header string table and other metadata in a non-loadable
-       program header to avoid collisions with PT_LOAD file offsets. */
-    .shstrtab : { KEEP(*(.shstrtab)) } :metadata
+    /* Section header string table moved to the non-alloc 'metadata' PHDR at the end
+       of this script to ensure file offsets are placed after PT_LOAD data. */
 
     /* Code section */
-    .text : {
+    .text : AT(0x1000) {
         *(.text .text.*)
     } :text
 
@@ -89,7 +88,7 @@ SECTIONS
     /* Place non-alloc ELF metadata (symbol tables, section name tables, ksymtab, etc.)
        after the kernel image so they do not overlap with loadable segments' file offsets. */
     . = ALIGN(4096);
-    .shstrtab : { *(.shstrtab) }
+    .shstrtab (NOLOAD) : { *(.shstrtab) } :metadata
     .symtab   : { *(.symtab) }
     .strtab   : { *(.strtab) }
     .ksymtab  : { *(.ksymtab) *(.ksymtab.*) }

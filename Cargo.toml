@@ -28,40 +28,13 @@ members = [
     "drivers/example_abi",
     # Apps
     "apps",
-    "tools/cap_harness",
     "libs/boot_proto",
     "bootloader",
-    # NOTE: `tools/framebuffer_bench` and `tools/signer` are intentionally not workspace members
+    # NOTE: `tools/framebuffer_bench`, `tools/signer`, and `tools/cap_harness` are intentionally not workspace members
     # to avoid workspace-wide `build-std` / duplicate-lang-item (E0152) issues.
     # They are runnable via their manifest paths.
 ]
-exclude = ["tools/framebuffer_bench", "tools/signer"]
-default-members = [
-    "kernel",
-    "hal",
-    "interfaces/kernel_api",
-    "libs/app_sdk",
-    "libs/security",
-    "libs/graphic_types",
-    "libs/vfs",
-    "filesystems/fat32",
-    "drivers/pci",
-    "drivers/ahci",
-    "drivers/usb",
-    "drivers/nvme",
-    "drivers/serial",
-    "drivers/gpu",
-    "drivers/hid",
-    "drivers/hda",
-    "drivers/virtio",
-    "drivers/acpi",
-    "drivers/rtc",
-    "drivers/ide",
-    "drivers/example_abi",
-    "apps",
-    "libs/boot_proto"
-]
-
+exclude = ["tools/framebuffer_bench", "tools/signer", "tools/cap_harness"]
 
 [workspace.package]
 edition = "2024"
@@ -113,11 +86,6 @@ debug = true
 # This avoids embedding large .debug* sections in the kernel ELF which can cause
 # loadable segment file-offset overlaps when linking with lld.
 split-debuginfo = "unpacked"
-# Strip symbol tables from dev builds (symbols will still exist in external debug
-# objects produced by split-debuginfo). This prevents `.symtab`, `.strtab`, and
-# other link-time metadata from being embedded in the kernel binary and causing
-# file-offset collisions in the produced ELF.
-strip = "symbols"
 
 
 #[profile.dev.package."*"]

@@ -15,6 +15,6 @@ spin = "0.10"
 log = "0.4"
 
 [features]
-# Default to std for tests and host builds
-default = ["std"]
+# Default to no-std; enable std explicitly for host tests via `--features std`
+default = []
 std = []

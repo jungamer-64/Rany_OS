@@ -1,14 +1,18 @@
 [package]
 name = "cap_harness"
 version = "0.1.0"
-edition.workspace = true
-authors.workspace = true
-license.workspace = true
-repository.workspace = true
-readme.workspace = true
-keywords.workspace = true
-categories.workspace = true
+edition = "2024"
+authors = ["ExoRust Team"]
+license = "MIT"
+repository = "https://github.com/Start-Rany-OS/Rany_OS"
+readme = "README.md"
+keywords = ["os", "kernel", "rust"]
+categories = ["os"]
 description = "Capability Test Harness for RanyOS"
+
+[workspace]
+# This package intentionally declares its own empty workspace so it is
+# independent from the repository workspace and can be built for the host target.
 
 [dependencies]
 # No external dependencies; keep this host-only and minimal
