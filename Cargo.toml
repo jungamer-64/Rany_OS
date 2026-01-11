@@ -109,6 +109,16 @@ test-timeout = 300
 panic = "abort"
 opt-level = 0
 debug = true
+# Use split-debuginfo to keep DWARF and other debug sections out-of-band for dev builds.
+# This avoids embedding large .debug* sections in the kernel ELF which can cause
+# loadable segment file-offset overlaps when linking with lld.
+split-debuginfo = "unpacked"
+# Strip symbol tables from dev builds (symbols will still exist in external debug
+# objects produced by split-debuginfo). This prevents `.symtab`, `.strtab`, and
+# other link-time metadata from being embedded in the kernel binary and causing
+# file-offset collisions in the produced ELF.
+strip = "symbols"
+
 
 #[profile.dev.package."*"]
 #opt-level = 3
