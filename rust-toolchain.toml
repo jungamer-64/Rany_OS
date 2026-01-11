@@ -1,4 +1,5 @@
 [toolchain]
-channel = "nightly"
-components = ["rust-src", "llvm-tools"]
+# Pinned nightly for reproducible builds
+channel = "nightly-2026-01-10"
+components = ["rust-src", "llvm-tools-preview"]
 
