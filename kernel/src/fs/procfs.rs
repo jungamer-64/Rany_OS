@@ -6,7 +6,7 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
-use alloc::vec;
+use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -507,6 +507,66 @@ impl ProcFs {
         Ok(current.children.keys().cloned().collect())
     }
 
+    /// Read with an optional token for permissioned dynamic entries (e.g., `/proc/<pid>/fd/<n>`).
+    pub fn read_with_token(&self, path: &str, token: Option<u64>) -> Result<String, ProcError> {
+        use crate::task::context;
+        let caller = context::current_task_id();
+
+        // Special-case: per-process fd entries like `<pid>/fd/<n>`
+        let comps: alloc::vec::Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
+        if comps.len() >= 3 && comps[comps.len() - 2] == "fd" {
+            let pid_comp = comps[comps.len() - 3];
+            if let Ok(pid_num) = pid_comp.parse::<u32>() {
+                let pid = Pid::new(pid_num);
+                let proc_id = ProcessId::new(pid.as_u32() as u64);
+                if process_manager().get(proc_id).is_none() {
+                    return Err(ProcError::NotFound);
+                }
+
+                // permission: same process, CAP_FOWNER, CAP_SYS_PTRACE, CAP_SYS_ADMIN, or valid token
+                let mut allowed = false;
+                if caller == proc_id.as_u64() {
+                    allowed = true;
+                }
+                if !allowed {
+                    if crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_FOWNER)
+                        || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_PTRACE)
+                        || crate::security::capability::manager().has_capability(caller, crate::security::capability::CAP_SYS_ADMIN)
+                    {
+                        allowed = true;
+                    }
+                }
+                if !allowed {
+                    if let Some(t) = token {
+                        if crate::security::capability::manager().validate_token(caller, t, crate::security::capability::CAP_FOWNER) {
+                            allowed = true;
+                        }
+                    }
+                }
+                if !allowed {
+                    return Err(ProcError::PermissionDenied);
+                }
+
+                // Last component is handle id
+                let handle_comp = comps.last().unwrap();
+                if let Ok(handle_id) = handle_comp.parse::<u64>() {
+                    if let Some(p) = crate::service_impl::file_handle_path(handle_id) {
+                        return Ok(p);
+                    } else {
+                        return Err(ProcError::NotFound);
+                    }
+                } else {
+                    return Err(ProcError::InvalidArgument);
+                }
+            } else {
+                return Err(ProcError::InvalidArgument);
+            }
+        }
+
+        // Fallback to regular read for static entries
+        self.read(path)
+    }
+
     // --- 情報生成関数 ---
 
     fn generate_meminfo() -> String {
@@ -875,7 +935,7 @@ impl ProcFileHandle {
             }
         }
 
-        let content = match procfs().read(path) {
+        let content = match procfs().read_with_token(path, token) {
             Ok(c) => c,
             Err(e) => {
                 // Rollback in-flight on failure
@@ -971,8 +1031,12 @@ impl ProcDirHandle {
                     return Err(ProcError::PermissionDenied);
                 }
 
-                // Return placeholder fd list (fd table not implemented)
-                return Ok(vec![String::from("0"), String::from("1"), String::from("2")]);
+                // Enumerate real file handles owned by this process
+                let owner_id = proc_id.as_u64();
+                let handles = crate::service_impl::file_handles_for_owner(owner_id);
+                let mut entries: alloc::vec::Vec<String> = handles.iter().map(|id| id.to_string()).collect();
+                entries.sort();
+                return Ok(entries);
             } else {
                 return Err(ProcError::InvalidArgument);
             }
@@ -1761,6 +1825,28 @@ mod tests {
         // Now reclaim should succeed
         crate::task::process::set_current_process(caller);
         assert!(crate::security::capability::manager().reclaim_token(token).is_ok());
+    }
+
+    #[test]
+    fn test_proc_fd_listing_shows_open_handles() {
+        // Create target process
+        let target = crate::task::process::process_manager().create(crate::task::process::ProcessId::INIT, "target_fd_list").unwrap();
+
+        // Make sure procfs entry exists
+        procfs().add_process(Pid::new(target.as_u64() as u32));
+
+        // Set current process to target and open a file
+        crate::task::process::set_current_process(target);
+        let handle = crate::service_impl::EXOKERNEL
+            .fs_open_with_token("test_proc_fd_file", crate::OpenMode::Write, None)
+            .expect("open should succeed");
+
+        // Read fd dir
+        let entries = procfs().readdir(&alloc::format!("{}/fd", target.as_u64())).expect("readdir should succeed");
+        assert!(entries.contains(&handle.id().to_string()));
+
+        // Close handle
+        crate::service_impl::EXOKERNEL.fs_close(handle).expect("close should succeed");
     }
 }
 

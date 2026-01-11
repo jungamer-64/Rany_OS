@@ -83,9 +83,12 @@ pub fn start() {
     let mut guard = GRAPHICAL_SHELL.lock();
     if let Some(ref mut shell) = *guard {
         // Enable double buffering on the shell's owned framebuffer
-        let buffer_size = shell.framebuffer.info().size();
-        if buffer_size > 0 {
-            let backing_buffer = vec![0u8; buffer_size];
+        let width = shell.framebuffer.width();
+        let height = shell.framebuffer.height();
+        let buffer_count = width as usize * height as usize;
+        
+        if buffer_count > 0 {
+            let backing_buffer = vec![0u32; buffer_count];
             shell
                 .framebuffer
                 .enable_double_buffering_from_vec(backing_buffer);

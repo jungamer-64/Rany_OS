@@ -167,7 +167,7 @@ impl<'a, 'b> RenderContext<'a, 'b> {
             fb_width,
             ..
         } = self.layout;
-        let theme = &self.res.theme;
+        let _theme = &self.res.theme;
 
         // SAFETY: font_h must be positive for division
         // Use checked_div for belt-and-suspenders safety
