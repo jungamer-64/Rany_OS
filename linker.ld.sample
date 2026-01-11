@@ -1,3 +1,10 @@
+/*
+ * NOTE: This file has been renamed to `linker.ld.sample` to avoid confusion
+ * with the kernel-specific linker script at `kernel/linker.ld` which is the
+ * one actually used for kernel builds (see `.cargo/config.toml`).
+ *
+ * This file is kept as an example/template only and is not used by the build.
+ */
 OUTPUT_FORMAT(elf64-x86-64)
 ENTRY(kmain)
 

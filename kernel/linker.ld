@@ -7,6 +7,7 @@ PHDRS
     rodata          PT_LOAD FLAGS(4);  /* r  */
     data            PT_LOAD FLAGS(6);  /* rw */
     tls             PT_TLS  FLAGS(4);  /* r - Thread Local Storage */
+    metadata        PT_NOTE FLAGS(4); /* Non-loadable metadata (symtab, shstrtab, debug info) */
 }
 
 SECTIONS
@@ -14,6 +15,10 @@ SECTIONS
     /* Higher half kernel at -2GiB */
     . = 0xffffffff80000000;
     __kernel_start = .;
+
+    /* Place section header string table and other metadata in a non-loadable
+       program header to avoid collisions with PT_LOAD file offsets. */
+    .shstrtab : { KEEP(*(.shstrtab)) } :metadata
 
     /* Code section */
     .text : {
