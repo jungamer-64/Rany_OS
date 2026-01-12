@@ -616,8 +616,8 @@ impl SegregatedFreeListHeap {
             crate::io::log::early_print_hex(old_head as u64);
             crate::io::log::early_print("\n");
 
-            // Set header
-            (*block_ptr).size = final_size;
+            // Set header (use checked store for debug)
+            crate::memory::checked_store_usize(block_ptr as usize, final_size, "ExHeap header size store");
             (*block_ptr).next = self.free_lists[class];
 
             // Dump next after set
@@ -626,10 +626,22 @@ impl SegregatedFreeListHeap {
             crate::io::log::early_print_hex(next_val as u64);
             crate::io::log::early_print("\n");
 
-            // Set footer (boundary tag)
+            #[cfg(debug_assertions)] {
+                if next_val == crate::memory::EXCHANGE_HEAP_SIZE {
+                    crate::io::log::early_print("[ExHeap] WARNING: next pointer equal to EXCHANGE_HEAP_SIZE!\n");
+                    let bt = crate::unwind::Backtrace::capture();
+                    for entry in bt.iter() {
+                        crate::io::log::early_print("[ExHeap][BT] IP=");
+                        crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+                        crate::io::log::early_print("\n");
+                    }
+                }
+            }
+
+            // Set footer (boundary tag) using checked store for its size
             let footer_addr = final_addr + final_size - core::mem::size_of::<BlockFooter>();
+            crate::memory::checked_store_usize(footer_addr, final_size, "ExHeap footer size store");
             let footer_ptr = footer_addr as *mut BlockFooter;
-            (*footer_ptr).size = final_size;
             (*footer_ptr).is_free = true;
         }
 

@@ -178,7 +178,7 @@ impl BuddyHeapAllocator {
             crate::io::log::early_print("\n");
         }
 
-        crate::io::mmio::volatile_write::<usize>(ptr_addr, old_head);
+        checked_volatile_write_usize(ptr_addr, old_head, "BUD add_to_free_list");
         self.free_lists[order] = Some(addr);
     }
 
@@ -247,7 +247,7 @@ impl BuddyHeapAllocator {
                 let next_opt = if next == 0 { None } else { Some(next) };
 
                 if let Some(prev_addr) = prev {
-                    crate::io::mmio::volatile_write::<usize>(prev_addr, next);
+                    checked_volatile_write_usize(prev_addr, next, "BUD remove_specific prev->next");
                 } else {
                     self.free_lists[order] = next_opt;
                 }
@@ -876,6 +876,48 @@ pub fn verify_buddy_integrity() {
             crate::io::log::early_print("[HEAP_CHECK] Failed to lock buddy allocator\n");
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Debug write-detection helpers (debug-only)
+// - Detect suspicious writes of values like EXCHANGE_HEAP_SIZE (0x400000)
+// - Print a backtrace when detected and continue (non-fatal)
+// ---------------------------------------------------------------------------
+
+#[cfg(debug_assertions)]
+fn debug_log_suspicious_write(addr: usize, val: usize, context: &str) {
+    const SUSPICIOUS_VAL: usize = EXCHANGE_HEAP_SIZE; // 0x400000
+    if val == SUSPICIOUS_VAL || val == 0x0000_0000_0400_000usize {
+        crate::io::log::early_print("[SUSPICIOUS-WRITE] ");
+        crate::io::log::early_print(context);
+        crate::io::log::early_print(" addr=");
+        crate::io::log::early_print_hex(addr as u64);
+        crate::io::log::early_print(" val=");
+        crate::io::log::early_print_hex(val as u64);
+        crate::io::log::early_print("\n");
+
+        crate::io::log::early_print("[SUSPICIOUS-WRITE] Capturing backtrace...\n");
+        let bt = crate::unwind::Backtrace::capture();
+        for entry in bt.iter() {
+            crate::io::log::early_print("[SUSPICIOUS-WRITE][BT] IP=");
+            crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
+            crate::io::log::early_print("\n");
+        }
+    }
+}
+
+/// Volatile write wrapper that performs debug checks for suspicious values
+pub fn checked_volatile_write_usize(addr: usize, val: usize, context: &str) {
+    #[cfg(debug_assertions)]
+    debug_log_suspicious_write(addr, val, context);
+    crate::io::mmio::volatile_write::<usize>(addr, val);
+}
+
+/// Direct volatile store wrapper (for plain memory stores)
+pub fn checked_store_usize(addr: usize, val: usize, context: &str) {
+    #[cfg(debug_assertions)]
+    debug_log_suspicious_write(addr, val, context);
+    unsafe { core::ptr::write_volatile(addr as *mut usize, val); }
 }
 
 /// ACPI Reclaimable メモリをPMMへ返却
