@@ -526,7 +526,7 @@ pub fn init_symbol_table() {
     }
 }
 
-/// シンボル情報を解決
+/// シンボル情報を解決(内部)
 fn resolve_symbol(address: usize) -> Option<SymbolInfo> {
     // まずシンボルテーブルから検索
     if let Some(Some(table)) = KERNEL_SYMBOLS.get() {
@@ -544,6 +544,12 @@ fn resolve_symbol(address: usize) -> Option<SymbolInfo> {
 
     // シンボルテーブルがない場合はNone
     None
+}
+
+/// ヘルパー: アドレスからシンボル名（存在する場合）を返す
+/// 診断用に外部から呼べるように公開
+pub fn resolve_symbol_name(address: usize) -> Option<&'static str> {
+    resolve_symbol(address).and_then(|s| s.name)
 }
 
 /// パニックハンドラ用バックトレース表示
