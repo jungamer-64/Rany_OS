@@ -719,7 +719,15 @@ extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
 
             // Use BAR5 if available (common for AHCI HBA registers)
             if let Some(bar5) = dev.bars[5] {
-                let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(bar5.base())).as_u64();
+                let base_phys = bar5.base();
+                let base_virt = memory::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
+
+                crate::io::log::early_print("[AHCI] BAR5 phys=");
+                crate::io::log::early_print_hex(base_phys);
+                crate::io::log::early_print(" base_virt=");
+                crate::io::log::early_print_hex(base_virt);
+                crate::io::log::early_print("\n");
+
                 match crate::io::ahci::init_from_pci(base_virt) {
                     Ok(controller) => {
                         info!(target: "init", "AHCI controller initialized");
