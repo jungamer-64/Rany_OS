@@ -252,6 +252,13 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
         registers.rsp as usize,
         registers.rbp as usize,
     );
+
+    // Try to resolve the crashing RIP to a symbol name (diagnostic helper)
+    if let Some(sym_name) = crate::unwind::resolve_symbol_name(registers.rip as usize) {
+        crate::io::log::early_print("[PANIC] Resolved RIP -> ");
+        crate::io::log::early_print(sym_name);
+        crate::io::log::early_print("\n");
+    }
     
     let (file_str, line, col) = unsafe {
         if PANIC_RECORD_STATE.load(Ordering::Acquire) == 2 {
